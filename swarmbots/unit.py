@@ -19,7 +19,7 @@ class Unit:
             leg_length: float,
             leg_radius: float,
             hip_range: float,
-            body_rgba=(0.75, 0, 0, 1),
+            body_rgba=(0.75, 0, 0, 0.1),
             leg_rgba=(0, 0, 0, 1)
     ):
         self.model = mjcf.RootElement()
@@ -31,18 +31,24 @@ class Unit:
         leg = Unit.Leg(leg_length, leg_radius, hip_range, rgba=leg_rgba)
         hip_site.attach(leg.model)
 
-        rotations = [
+        lower_leg_positions = [
             [np.sqrt(8/9), 0, -1/3],
             [-np.sqrt(2/9), np.sqrt(2/3), -1/3],
             [-np.sqrt(2/9), -np.sqrt(2/3), -1/3]
         ]
 
         for i in range(3):
-            theta = i * 2 * np.pi / 3
-            hip_pos = body_radius * np.cos(np.pi / 6) * np.array([np.cos(theta), np.sin(theta), -np.sin(np.pi / 6)])
-            hip_site = self.model.worldbody.add('site', pos=hip_pos, zaxis=rotations[i])
+            # theta = i * 2 * np.pi / 3
+            # hip_pos = body_radius * np.array([
+            #     np.cos(np.pi / 6) * np.cos(theta),
+            #     np.cos(np.pi / 6) * np.sin(theta),
+            #     -np.sin(np.pi / 6)
+            # ])
+            hip_pos = body_radius * np.array(lower_leg_positions[i])
+            hip_site = self.model.worldbody.add('site', pos=hip_pos, zaxis=hip_pos)
             leg = Unit.Leg(leg_length, leg_radius, hip_range, rgba=leg_rgba)
             hip_site.attach(leg.model)
+
 
 
 
