@@ -1,6 +1,7 @@
 import numpy as np
 from dm_control import mjcf
 
+
 class Unit:
 
     class Leg:
@@ -38,19 +39,7 @@ class Unit:
         ]
 
         for i in range(3):
-            # theta = i * 2 * np.pi / 3
-            # hip_pos = body_radius * np.array([
-            #     np.cos(np.pi / 6) * np.cos(theta),
-            #     np.cos(np.pi / 6) * np.sin(theta),
-            #     -np.sin(np.pi / 6)
-            # ])
             hip_pos = body_radius * np.array(lower_leg_positions[i])
             hip_site = self.model.worldbody.add('site', pos=hip_pos, zaxis=hip_pos)
             leg = Unit.Leg(leg_length, leg_radius, hip_range, rgba=leg_rgba)
             hip_site.attach(leg.model)
-
-
-
-
-
-
