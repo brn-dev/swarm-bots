@@ -10,6 +10,8 @@ class Unit:
 
     class Leg:
         def __init__(self, length: float, radius: float, hip_range: float, rgba: Iterable[float], name: str):
+            rgba = tuple(rgba)
+
             self.model = mjcf.RootElement()
 
             self.leg = self.model.worldbody.add('body', name=name)
@@ -27,7 +29,7 @@ class Unit:
                 type='cylinder',
                 fromto=[0, 0, length*0.99, 0, 0, length*1.01],
                 size=[radius*1.1],
-                rgba=rgba
+                rgba=[*[np.clip(val + 0.1, a_min=0, a_max=1) ** 0.25 for val in rgba[0:-1]]] + [rgba[-1]]
             )
 
             # TODO: actuator
