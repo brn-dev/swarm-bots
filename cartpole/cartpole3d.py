@@ -10,7 +10,9 @@ class CartPole3D(gym.Env):
 
     def __init__(
             self,
-            movement_type: Literal['1d', '2d'],
+            nr_movement_dimensions: Literal[1, 2, 3],
+            force_magnitude=5000,
+            physics_steps_per_step=1,
             reset_randomization_magnitude=0.1,
             slide_range=0.8,
             hinge_range=0.8,
@@ -22,7 +24,9 @@ class CartPole3D(gym.Env):
             render_width=640,
             render_height=480,
     ):
-        self.movement_type = movement_type.lower()
+        self.nr_movement_dimensions = nr_movement_dimensions
+        self.force_magnitude = force_magnitude
+        self.physics_steps_per_step = physics_steps_per_step
 
         self.reset_randomization_magnitude = reset_randomization_magnitude
 
@@ -40,9 +44,9 @@ class CartPole3D(gym.Env):
 
         self.physics = self.create_physics()
 
-    def step(self, action: np.ndarray, nstep: int = 1) -> tuple[np.ndarray, SupportsFloat, bool, bool, dict[str, Any]]:
-        self.physics.set_control(action)
-        self.physics.step(nstep=nstep)
+    def step(self, action: np.ndarray) -> tuple[np.ndarray, SupportsFloat, bool, bool, dict[str, Any]]:
+        self.physics.set_control(action * self.force_magnitude)
+        self.physics.step(nstep=self.physics_steps_per_step)
 
         observations = self.get_observations()
         time = self.get_time()
@@ -50,7 +54,7 @@ class CartPole3D(gym.Env):
         reward = self.step_reward_function(time, observations)
         terminated, truncated, info = False, False, dict()
 
-        slide_pos, hinge_pos = np.split(self.physics.data.qpos, 2)
+        slide_pos, hinge_pos = np.split(self.physics.data.qpos, [self.nr_movement_dimensions])
 
         if np.any(np.abs(slide_pos) > self.hinge_range):
             reward = self.out_ouf_range_reward
@@ -91,8 +95,10 @@ class CartPole3D(gym.Env):
 
         qpos = self.physics.data.qpos
 
-        qpos[:int(len(qpos)/2)] = self.np_random.uniform(-self.slide_range, self.slide_range, int(qpos.size/2))
-        qpos[int(len(qpos)/2):] = self.np_random.uniform(-self.hinge_range, self.hinge_range, int(qpos.size/2))
+        qpos[:self.nr_movement_dimensions] = \
+            self.np_random.uniform(-self.slide_range, self.slide_range, self.nr_movement_dimensions)
+        qpos[self.nr_movement_dimensions:] = \
+            self.np_random.uniform(-self.hinge_range, self.hinge_range, qpos.size - self.nr_movement_dimensions)
 
         self.physics.data.qpos *= self.reset_randomization_magnitude
 
@@ -131,14 +137,12 @@ class CartPole3D(gym.Env):
         appendage.add('geom', type='cylinder', fromto=[0, -0.25, 0.5, 0, 0.25, 0.5], size=[0.02])
 
         appendage.add('joint', type='hinge', axis=[0, 1, 0], range=[-np.pi / 3, np.pi / 3])
-        if self.movement_type == '2d':
+        if self.nr_movement_dimensions >= 2:
             appendage.add('joint', type='hinge', axis=[1, 0, 0], range=[-np.pi / 3, np.pi / 3])
 
-        slide1 = base.add('joint', type='slide', axis=[1, 0, 0], name='s1')
-        cart.actuator.add('motor', joint=slide1)
-        if self.movement_type == '2d':
-            slide2 = base.add('joint', type='slide', axis=[0, 1, 0], name='s2')
-            cart.actuator.add('motor', joint=slide2)
+        for i in range(self.nr_movement_dimensions):
+            slide_joint = base.add('joint', type='slide', axis=np.eye(3)[i], name=f's{i}')
+            cart.actuator.add('motor', joint=slide_joint)
 
         spawn_site = env.worldbody.add('site', pos=[0, 0, 0.25])
         spawn_site.attach(cart)
