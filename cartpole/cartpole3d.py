@@ -1,20 +1,22 @@
 from typing import Literal, SupportsFloat, Any
 
 import gymnasium as gym
+import PIL.Image
 import numpy as np
 from dm_control import mjcf
+
 
 
 class CartPole3D(gym.Env):
 
     def __init__(
-            self,
-            movement_type: Literal['1d', '2d'],
-            render_mode='human',
-            render_width=640,
-            render_height=480
+        self,
+        movement_type: Literal['1d', '2d'],
+        render_mode='human',
+        render_width=640,
+        render_height=480
     ):
-        self.movement_type = movement_type
+        self.movement_type = movement_type.lower()
 
         self.render_mode = render_mode
         self.render_width = render_width
@@ -22,9 +24,9 @@ class CartPole3D(gym.Env):
 
         self.physics = self.create_physics()
 
-    def step(self, action: np.ndarray) -> tuple[np.ndarray, SupportsFloat, bool, bool, dict[str, Any]]:
+    def step(self, action: np.ndarray, nstep: int = 1) -> tuple[np.ndarray, SupportsFloat, bool, bool, dict[str, Any]]:
         self.physics.set_control(action)
-        self.physics.step()
+        self.physics.step(nstep=nstep)
 
         observations = self.get_observations()
         reward, terminated, truncated = self.calc_reward_terminated_and_truncated()
@@ -33,6 +35,8 @@ class CartPole3D(gym.Env):
 
     def render(self) -> np.ndarray | None:
         if self.render_mode == 'human':
+            return PIL.Image.fromarray(self.physics.render(width=self.render_width, height=self.render_height, camera_id=-1))
+        if self.render_mode == 'numpy':
             return self.physics.render(width=self.render_width, height=self.render_height, camera_id=-1)
         if self.render_mode is None:
             return None
@@ -40,14 +44,12 @@ class CartPole3D(gym.Env):
 
     def reset(
             self,
-            randomize_initial_position=False,
             seed: int | None = None,
             options: dict[str, Any] | None = None
     ) -> tuple[np.ndarray, dict[str, Any]]:
         self.physics.reset()
 
-        if randomize_initial_position:
-            self.physics.data.qpos = (np.random.random(self.physics.data.qpos.size) - 0.5) / 10
+        self.physics.data.qpos = (np.random.random(self.physics.data.qpos.size) - 0.5) / 10
 
         return self.get_observations(), dict()
 
@@ -61,7 +63,7 @@ class CartPole3D(gym.Env):
         if self.physics.data.time > 10:
             return 1000, True, True
 
-        return 1, False, False
+        return (1 + self.physics.time()) ** 2, False, False
 
     def create_physics(self):
         env = mjcf.RootElement()
