@@ -1,3 +1,3 @@
 # Cartpole
 
-This subpackage is used for testing the mujoco environment and training algorithms
+This subpackage is used for experimenting with the mujoco physics environment and reinforcement training algorithms
