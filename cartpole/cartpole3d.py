@@ -6,6 +6,9 @@ import numpy as np
 from dm_control import mjcf
 
 
+RewardFunction = Callable[[float, np.ndarray, np.ndarray], float]
+
+
 class CartPole3D(gym.Env):
 
     def __init__(
@@ -17,9 +20,9 @@ class CartPole3D(gym.Env):
             slide_range=0.8,
             hinge_range=0.8,
             time_limit=10.0,
-            step_reward_function: Callable[[float, np.ndarray], float] = lambda time, state: 1.0,
-            out_ouf_range_reward=-10,
-            time_limit_reward=1000,
+            step_reward_function: RewardFunction = lambda time, action, state: 1.0,
+            out_ouf_range_reward_function: RewardFunction = lambda time, action, state: 1.0,
+            time_limit_reward_function: RewardFunction = lambda time, action, state: 1.01000,
             render_mode='human',
             render_width=640,
             render_height=480,
@@ -35,8 +38,8 @@ class CartPole3D(gym.Env):
         self.time_limit = time_limit
 
         self.step_reward_function = step_reward_function
-        self.time_limit_reward = time_limit_reward
-        self.out_ouf_range_reward = out_ouf_range_reward
+        self.time_limit_reward_function = time_limit_reward_function
+        self.out_ouf_range_reward_function = out_ouf_range_reward_function
 
         self.render_mode = render_mode
         self.render_width = render_width
@@ -51,23 +54,23 @@ class CartPole3D(gym.Env):
         observations = self.get_observations()
         time = self.get_time()
 
-        reward = self.step_reward_function(time, observations)
+        reward = self.step_reward_function(time, action, observations)
         terminated, truncated, info = False, False, dict()
 
         slide_pos, hinge_pos = np.split(self.physics.data.qpos, [self.nr_movement_dimensions])
 
         if np.any(np.abs(slide_pos) > self.hinge_range):
-            reward = self.out_ouf_range_reward
+            reward = self.out_ouf_range_reward_function(time, action, observations)
             terminated = True
             info['termination_reason'] = 'slide_out_of_range'
 
         if np.any(np.abs(hinge_pos) > self.slide_range):
-            reward = self.out_ouf_range_reward
+            reward = self.out_ouf_range_reward_function(time, action, observations)
             terminated = True
             info['termination_reason'] = 'hinge_out_of_range'
 
         if time > self.time_limit:
-            reward = self.time_limit_reward
+            reward = self.time_limit_reward_function(time, action, observations)
             terminated, truncated = True, True
             info['termination_reason'] = 'time_limit_reached'
 
