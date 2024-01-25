@@ -124,6 +124,9 @@ class CartPole3D(gym.Env):
     def get_time(self):
         return self.physics.time()
 
+    def get_timesteps_per_second(self):
+        return self.physics.timestep()
+
     def create_physics(self):
         env = mjcf.RootElement()
 
