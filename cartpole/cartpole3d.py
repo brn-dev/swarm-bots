@@ -28,6 +28,8 @@ class CartPole3D(gym.Env):
             render_height=480,
     ):
         self.nr_movement_dimensions = nr_movement_dimensions
+        self.nr_topple_dimensions = min(nr_movement_dimensions, 2)
+
         self.force_magnitude = force_magnitude
         self.physics_steps_per_step = physics_steps_per_step
 
@@ -46,6 +48,15 @@ class CartPole3D(gym.Env):
         self.render_height = render_height
 
         self.physics = self.create_physics()
+
+        self.action_space = gym.spaces.Box(low=-1.0, high=1.0, shape=(self.nr_movement_dimensions,))
+        obs_range = np.array(
+            [self.slide_range] * self.nr_movement_dimensions
+            + [self.hinge_range] * self.nr_topple_dimensions
+            + [1.0e20] * self.nr_movement_dimensions
+            + [1.0e20] * self.nr_topple_dimensions
+        )
+        self.observation_space = gym.spaces.Box(low=-obs_range, high=obs_range)
 
     def step(self, action: np.ndarray) -> tuple[np.ndarray, SupportsFloat, bool, bool, dict[str, Any]]:
         self.physics.set_control(action * self.force_magnitude)
@@ -139,9 +150,9 @@ class CartPole3D(gym.Env):
         appendage.add('geom', type='cylinder', fromto=[-0.25, 0, 0.5, 0.25, 0, 0.5], size=[0.02])
         appendage.add('geom', type='cylinder', fromto=[0, -0.25, 0.5, 0, 0.25, 0.5], size=[0.02])
 
-        appendage.add('joint', type='hinge', axis=[0, 1, 0], range=[-np.pi / 3, np.pi / 3])
+        appendage.add('joint', type='hinge', axis=[0, 1, 0], range=[-np.pi / 2, np.pi / 2])
         if self.nr_movement_dimensions >= 2:
-            appendage.add('joint', type='hinge', axis=[1, 0, 0], range=[-np.pi / 3, np.pi / 3])
+            appendage.add('joint', type='hinge', axis=[1, 0, 0], range=[-np.pi / 2, np.pi / 2])
 
         for i in range(self.nr_movement_dimensions):
             slide_joint = base.add('joint', type='slide', axis=np.eye(3)[i], name=f's{i}')
