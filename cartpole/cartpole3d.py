@@ -14,6 +14,7 @@ class CartPole3D(gym.Env):
     def __init__(
             self,
             nr_movement_dimensions: Literal[1, 2, 3],
+            cart_size=0.25,
             force_magnitude=5000,
             physics_steps_per_step=1,
             reset_randomization_magnitude=0.1,
@@ -30,6 +31,7 @@ class CartPole3D(gym.Env):
         self.nr_movement_dimensions = nr_movement_dimensions
         self.nr_topple_dimensions = min(nr_movement_dimensions, 2)
 
+        self.cart_size = cart_size
         self.force_magnitude = force_magnitude
         self.physics_steps_per_step = physics_steps_per_step
 
@@ -70,12 +72,12 @@ class CartPole3D(gym.Env):
 
         slide_pos, hinge_pos = np.split(self.physics.data.qpos, [self.nr_movement_dimensions])
 
-        if np.any(np.abs(slide_pos) > self.hinge_range):
+        if np.any(np.abs(slide_pos) > self.slide_range):
             reward = self.out_ouf_range_reward_function(time, action, observations)
             terminated = True
             info['termination_reason'] = 'slide_out_of_range'
 
-        if np.any(np.abs(hinge_pos) > self.slide_range):
+        if np.any(np.abs(hinge_pos) > self.hinge_range):
             reward = self.out_ouf_range_reward_function(time, action, observations)
             terminated = True
             info['termination_reason'] = 'hinge_out_of_range'
@@ -146,12 +148,15 @@ class CartPole3D(gym.Env):
         cart.compiler.angle = 'radian'
 
         base = cart.worldbody.add('body')
-        base.add('geom', type='box', size=[0.25, 0.25, 0.05])
+        base.add('geom', type='box', size=[self.cart_size, self.cart_size, self.cart_size / 5])
 
-        appendage = base.add('body', pos=[0, 0, 0.0])
-        appendage.add('geom', type='cylinder', fromto=[0, 0, 0, 0, 0, 0.5], size=[0.1])
-        appendage.add('geom', type='cylinder', fromto=[-0.25, 0, 0.5, 0.25, 0, 0.5], size=[0.02])
-        appendage.add('geom', type='cylinder', fromto=[0, -0.25, 0.5, 0, 0.25, 0.5], size=[0.02])
+        appendage = base.add('body', pos=[0, 0, self.cart_size / 5])
+        appendage.add('geom', type='sphere', size=[self.cart_size / 2], pos=[0, 0, 0])
+        appendage.add('geom', type='cylinder', fromto=[0, 0, 0, 0, 0, self.cart_size * 2], size=[self.cart_size / 3])
+        # appendage.add('geom', type='cylinder', fromto=[
+        #   -self.cart_size, 0, self.cart_size * 2, self.cart_size, 0, self.cart_size * 2], size=[self.cart_size / 10])
+        # appendage.add('geom', type='cylinder', fromto=[
+        #   0, -self.cart_size, self.cart_size * 2, 0, self.cart_size, self.cart_size * 2], size=[self.cart_size / 10])
 
         appendage.add('joint', type='hinge', axis=[0, 1, 0], range=[-np.pi / 2, np.pi / 2])
         if self.nr_movement_dimensions >= 2:
@@ -161,7 +166,7 @@ class CartPole3D(gym.Env):
             slide_joint = base.add('joint', type='slide', axis=np.eye(3)[i], name=f's{i}')
             cart.actuator.add('motor', joint=slide_joint)
 
-        spawn_site = env.worldbody.add('site', pos=[0, 0, 0.25])
+        spawn_site = env.worldbody.add('site', pos=[0, 0, self.cart_size])
         spawn_site.attach(cart)
 
         return mjcf.Physics.from_mjcf_model(env)
