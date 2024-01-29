@@ -1,6 +1,7 @@
 import torch.nn as nn
 import torch.nn.init as init
 
+
 class SelfNormalizingFNN(nn.Module):
 
     def __init__(self, input_size, hidden_sizes, output_size):

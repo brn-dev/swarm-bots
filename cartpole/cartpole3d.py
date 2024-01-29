@@ -6,6 +6,7 @@ import numpy as np
 from dm_control import mjcf
 
 
+StepRewardFunction = Callable[[float, np.ndarray, np.ndarray, np.ndarray], float]
 RewardFunction = Callable[[float, np.ndarray, np.ndarray], float]
 
 
@@ -21,9 +22,9 @@ class CartPole3D(gym.Env):
             slide_range=0.8,
             hinge_range=0.8,
             time_limit=10.0,
-            step_reward_function: RewardFunction = lambda time, action, state: 1.0,
+            step_reward_function: StepRewardFunction = lambda time, action, state, previous_state: 1.0,
             out_ouf_range_reward_function: RewardFunction = lambda time, action, state: 1.0,
-            time_limit_reward_function: RewardFunction = lambda time, action, state: 1.01000,
+            time_limit_reward_function: RewardFunction = lambda time, action, state: 100.0,
             render_mode='human',
             render_width=640,
             render_height=480,
@@ -61,13 +62,15 @@ class CartPole3D(gym.Env):
         self.observation_space = gym.spaces.Box(low=-obs_range, high=obs_range)
 
     def step(self, action: np.ndarray) -> tuple[np.ndarray, SupportsFloat, bool, bool, dict[str, Any]]:
+        previous_observations = self.get_observations()
+
         self.physics.set_control(action * self.force_magnitude)
         self.physics.step(nstep=self.physics_steps_per_step)
 
         observations = self.get_observations()
         time = self.get_time()
 
-        reward = self.step_reward_function(time, action, observations)
+        reward = self.step_reward_function(time, action, observations, previous_observations)
         terminated, truncated, info = False, False, dict()
 
         slide_pos, hinge_pos = np.split(self.physics.data.qpos, [self.nr_movement_dimensions])
@@ -167,6 +170,8 @@ class CartPole3D(gym.Env):
             cart.actuator.add('motor', joint=slide_joint)
 
         spawn_site = env.worldbody.add('site', pos=[0, 0, self.cart_size])
-        spawn_site.attach(cart)
+        cart = spawn_site.attach(cart)
+
+        env.worldbody.add('camera', mode='targetbody', target=base, pos=[0, 4, 2.5])
 
         return mjcf.Physics.from_mjcf_model(env)
