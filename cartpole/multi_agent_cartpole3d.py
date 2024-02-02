@@ -55,45 +55,42 @@ class MultiAgentCartPole3D(gym.Env):
 
         self.physics = self.create_physics()
 
-        # TODO
-        # self.action_space = gym.spaces.Box(low=-1.0, high=1.0, shape=(self.nr_movement_dimensions,))
-        # obs_range = np.array(
-        #     [self.slide_range] * self.nr_movement_dimensions
-        #     + [self.hinge_range] * self.nr_topple_dimensions
-        #     + [1.0e20] * self.nr_movement_dimensions
-        #     + [1.0e20] * self.nr_topple_dimensions
-        # )
-        # self.observation_space = gym.spaces.Box(low=-obs_range, high=obs_range)
+        self.action_space = gym.spaces.Box(low=-1.0, high=1.0, shape=(self.nr_carts, 2))
+        obs_range = np.array([
+            [self.slide_range] * 2 + [self.hinge_range] * 2,
+            [1.0e20] * 2 + [1.0e20] * 2
+        ])[np.newaxis, :, :].repeat(self.nr_carts, axis=0)
+        self.observation_space = gym.spaces.Box(low=-obs_range, high=obs_range)
 
     def step(self, action: np.ndarray) -> tuple[np.ndarray, SupportsFloat, bool, bool, dict[str, Any]]:
-        # previous_observations = self.get_observations()
-        #
-        # self.physics.set_control(action * self.force_magnitude)
+        previous_observations = self.get_observations()
+
+        self.physics.set_control(action.flatten() * self.force_magnitude)
         self.physics.step(nstep=self.physics_steps_per_step)
 
         observations = self.get_observations()
         time = self.get_time()
 
-        # reward = self.step_reward_function(time, action, observations, previous_observations)
-        reward = 0
+        reward = self.step_reward_function(time, action, observations, previous_observations)
         terminated, truncated, info = False, False, dict()
 
-        # slide_pos, hinge_pos = np.split(self.physics.data.qpos, [self.nr_movement_dimensions])
-        #
-        # if np.any(np.abs(slide_pos) > self.slide_range):
-        #     reward = self.out_ouf_range_reward_function(time, action, observations)
-        #     terminated = True
-        #     info['termination_reason'] = 'slide_out_of_range'
-        #
+        slide_pos = observations[:, 0, :2]
+        hinge_pos = observations[:, 0, 2:]
+
+        if np.any(np.abs(slide_pos) > self.slide_range):
+            reward = self.out_ouf_range_reward_function(time, action, observations)
+            terminated = True
+            info['termination_reason'] = 'slide_out_of_range'
+
         # if np.any(np.abs(hinge_pos) > self.hinge_range):
         #     reward = self.out_ouf_range_reward_function(time, action, observations)
         #     terminated = True
         #     info['termination_reason'] = 'hinge_out_of_range'
-        #
-        # if time > self.time_limit:
-        #     reward = self.time_limit_reward_function(time, action, observations)
-        #     terminated, truncated = True, True
-        #     info['termination_reason'] = 'time_limit_reached'
+
+        if time > self.time_limit:
+            reward = self.time_limit_reward_function(time, action, observations)
+            terminated, truncated = True, True
+            info['termination_reason'] = 'time_limit_reached'
 
         return observations, reward, terminated, truncated, info
 
@@ -130,11 +127,17 @@ class MultiAgentCartPole3D(gym.Env):
             qpos[4 * i + 2:4 * i + 4] = self.np_random.uniform(
                 -self.reset_randomization_magnitude, self.reset_randomization_magnitude, size=2)
 
+        self.physics.step()
+        self.physics.data.qvel[:] = 0.0
+        self.physics.step()
+
         return self.get_observations(), dict()
 
     def get_observations(self):
-        # TODO:
-        return np.concatenate([self.physics.data.qpos, self.physics.data.qvel])
+        return np.concatenate([
+            self.physics.data.qpos.reshape((self.nr_carts, -1)),
+            self.physics.data.qvel.reshape((self.nr_carts, -1))
+        ], axis=-1).reshape((self.nr_carts, 2, -1))
 
     def get_time(self):
         return self.physics.time()
@@ -174,16 +177,17 @@ class MultiAgentCartPole3D(gym.Env):
         grid = env.asset.add('material', name='grid', texture=chequered,
                              texrepeat=[5, 5], reflectance=.2)
         env.worldbody.add('geom', type='plane', size=[2, 2, .1], material=grid)
-        env.worldbody.add('camera', pos=[0, -4, 3], euler=[np.pi/3.5, 0, 0])
 
-        for x in [-2, 2]:
-            env.worldbody.add('light', pos=[x, -1, 3], dir=[-x, 1, -2])
+        for x in [-3, 3]:
+            env.worldbody.add('light', pos=[x, 0, 10], dir=[-x/5, 0, -1])
 
         if self.slide_range_enforcement == 'walls':
+            wall_width = 0.1
+            wall_height = 0.2
             for i in range(4):
                 wall_position = np.array([
-                    self.slide_range * (i % 2),
-                    self.slide_range * ((i + 1) % 2),
+                    (self.slide_range + wall_width) * (i % 2),
+                    (self.slide_range + wall_width) * ((i + 1) % 2),
                     0.15
                 ], dtype=float)
                 if i > 1:
@@ -192,14 +196,18 @@ class MultiAgentCartPole3D(gym.Env):
                 env.worldbody.add(
                     'geom',
                     type='box',
-                    size=[self.slide_range, 0.1, 0.15],
+                    size=[self.slide_range + wall_width, wall_width, wall_height],
                     pos=wall_position,
                     euler=[0, 0, i * np.pi / 2]
                 )
 
+        carts = env.worldbody.add('body')
         for _ in range(self.nr_carts):
             cart = self.create_cart()
-            spawn_site = env.worldbody.add('site', pos=[0, 0, self.cart_size])
+            spawn_site = carts.add('site', pos=[0, 0, self.cart_size])
             spawn_site.attach(cart)
+
+        env.worldbody.add('camera', pos=[0, -4, 3], euler=[np.pi/3.5, 0, 0])
+        env.worldbody.add('camera', pos=[0, -4, 3], mode='targetbodycom', target=carts)
 
         return mjcf.Physics.from_mjcf_model(env)
