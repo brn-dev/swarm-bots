@@ -19,7 +19,9 @@ class MultiAgentCartPole3D(gym.Env):
             force_magnitude=5000,
             physics_steps_per_step=1,
             reset_position_radius=1,
-            reset_randomization_magnitude=0.1,
+            reset_randomize_position_angle_offset=True,
+            reset_position_randomization_magnitude=0.1,
+            reset_hinge_randomization_magnitude=0.1,
             slide_range_enforcement: Literal['termination', 'walls'] = 'walls',
             slide_range=0.8,
             hinge_range=0.8,
@@ -38,7 +40,9 @@ class MultiAgentCartPole3D(gym.Env):
         self.physics_steps_per_step = physics_steps_per_step
 
         self.reset_position_radius = reset_position_radius
-        self.reset_randomization_magnitude = reset_randomization_magnitude
+        self.reset_randomize_position_angle_offset = reset_randomize_position_angle_offset
+        self.reset_position_randomization_magnitude = reset_position_randomization_magnitude
+        self.reset_hinge_randomization_magnitude = reset_hinge_randomization_magnitude
 
         self.slide_range_enforcement = slide_range_enforcement
         self.slide_range = slide_range
@@ -82,10 +86,10 @@ class MultiAgentCartPole3D(gym.Env):
             terminated = True
             info['termination_reason'] = 'slide_out_of_range'
 
-        # if np.any(np.abs(hinge_pos) > self.hinge_range):
-        #     reward = self.out_ouf_range_reward_function(time, action, observations)
-        #     terminated = True
-        #     info['termination_reason'] = 'hinge_out_of_range'
+        if np.any(np.abs(hinge_pos) > self.hinge_range):
+            reward = self.out_ouf_range_reward_function(time, action, observations)
+            terminated = True
+            info['termination_reason'] = 'hinge_out_of_range'
 
         if time > self.time_limit:
             reward = self.time_limit_reward_function(time, action, observations)
@@ -116,16 +120,20 @@ class MultiAgentCartPole3D(gym.Env):
 
         qpos = self.physics.data.qpos
 
+        angle_offset = 0.0
+        if self.reset_randomize_position_angle_offset:
+            angle_offset = self.np_random.uniform(0, 2 * np.pi)
+
         for i in range(self.nr_carts):
-            angle = 2 * np.pi * i / self.nr_carts
-            x = np.cos(angle) * self.reset_position_radius \
-                + self.np_random.uniform(-self.reset_randomization_magnitude, self.reset_randomization_magnitude)
-            y = np.sin(angle) * self.reset_position_radius \
-                + self.np_random.uniform(-self.reset_randomization_magnitude, self.reset_randomization_magnitude)
+            angle = 2 * np.pi * i / self.nr_carts + angle_offset
+            x = np.cos(angle) * self.reset_position_radius + self.np_random.uniform(
+                -self.reset_position_randomization_magnitude, self.reset_position_randomization_magnitude)
+            y = np.sin(angle) * self.reset_position_radius + self.np_random.uniform(
+                -self.reset_position_randomization_magnitude, self.reset_position_randomization_magnitude)
             qpos[4 * i:4 * i + 2] = [x, y]
 
             qpos[4 * i + 2:4 * i + 4] = self.np_random.uniform(
-                -self.reset_randomization_magnitude, self.reset_randomization_magnitude, size=2)
+                -self.reset_hinge_randomization_magnitude, self.reset_hinge_randomization_magnitude, size=2)
 
         self.physics.step()
         self.physics.data.qvel[:] = 0.0
