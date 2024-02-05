@@ -15,8 +15,8 @@ class SelfNormalizingFNN(nn.Module):
             linear = nn.Linear(layers_sizes[i], layers_sizes[i + 1])
 
             # lecun initialization
-            init.normal_(self.linear.weight, mean=0.0, std=np.sqrt(1.0 / layers_sizes[i]))
-            init.constant_(self.linear.bias, 0.0)
+            init.normal_(linear.weight, mean=0.0, std=np.sqrt(1.0 / layers_sizes[i]))
+            init.constant_(linear.bias, 0.0)
 
             layers.append(linear)
 
