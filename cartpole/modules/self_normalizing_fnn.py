@@ -1,3 +1,4 @@
+import numpy as np
 import torch.nn as nn
 import torch.nn.init as init
 
@@ -11,17 +12,18 @@ class SelfNormalizingFNN(nn.Module):
 
         layers = []
         for i in range(len(layers_sizes) - 1):
-            layers.append(nn.Linear(layers_sizes[i], layers_sizes[i + 1]))
+            linear = nn.Linear(layers_sizes[i], layers_sizes[i + 1])
+
+            # lecun initialization
+            init.normal_(self.linear.weight, mean=0.0, std=np.sqrt(1.0 / layers_sizes[i]))
+            init.constant_(self.linear.bias, 0.0)
+
+            layers.append(linear)
+
             if i < len(layers_sizes) - 2:
                 layers.append(nn.SELU())
 
         self.snn = nn.Sequential(*layers)
-        self.initialize_weights()
-
-    def initialize_weights(self):
-        for layer in self.snn:
-            if isinstance(layer, nn.Linear):
-                init.kaiming_normal_(layer.weight, nonlinearity='selu')
 
     def forward(self, x):
         x = self.snn.forward(x)
