@@ -39,7 +39,7 @@ class OneStepAttentionWithStatePredictionMultiAgentPolicy(nn.Module):
             hidden_sizes=action_pred_hidden_sizes,
             output_size=action_size
         )
-        nn.init.xavier_normal_(self.action_regression.snn[-1].weight)  # apply xavier initialization for softmax
+        nn.init.xavier_normal_(self.action_regression.snn[-1].weight)  # apply xavier initialization for tanh
 
         self.next_state_regression = SelfNormalizingFNN(
             input_size=embedded_state_size + action_size,

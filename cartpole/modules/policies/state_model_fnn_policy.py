@@ -29,7 +29,7 @@ class StateModelFnnPolicy(nn.Module):
             hidden_sizes=action_pred_hidden_sizes,
             output_size=action_size
         )
-        nn_init.xavier_normal_(self.action_regression.snn[-1].weight)  # apply xavier initialization for softmax
+        nn_init.xavier_normal_(self.action_regression.snn[-1].weight)  # apply xavier initialization for tanh
 
         self.state_regression = SelfNormalizingFNN(
             input_size=in_state_embedding_sizes[-1] + action_size,
