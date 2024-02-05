@@ -57,14 +57,14 @@ class MultiAgentCartPole3D(gym.Env):
         self.render_width = render_width
         self.render_height = render_height
 
-        self.physics = self.create_physics()
-
         self.action_space = gym.spaces.Box(low=-1.0, high=1.0, shape=(self.nr_carts, 2))
         obs_range = np.array([
             [self.slide_range] * 2 + [self.hinge_range] * 2,
             [1.0e20] * 2 + [1.0e20] * 2
         ])[np.newaxis, :, :].repeat(self.nr_carts, axis=0)
         self.observation_space = gym.spaces.Box(low=-obs_range, high=obs_range)
+
+        self.physics = self.create_physics()
 
     def step(self, action: np.ndarray) -> tuple[np.ndarray, SupportsFloat, bool, bool, dict[str, Any]]:
         previous_observations = self.get_observations()
@@ -150,8 +150,11 @@ class MultiAgentCartPole3D(gym.Env):
     def get_time(self):
         return self.physics.time()
 
-    def get_timesteps_per_second(self):
+    def get_timestep(self):
         return self.physics.timestep()
+
+    def get_steps_per_second(self):
+        return 1 / self.physics.timestep()
 
     def create_cart(self):
         cart = mjcf.RootElement()
