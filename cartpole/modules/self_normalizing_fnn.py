@@ -1,6 +1,4 @@
-import numpy as np
 import torch.nn as nn
-import torch.nn.init as init
 
 
 class SelfNormalizingFNN(nn.Module):
@@ -14,9 +12,8 @@ class SelfNormalizingFNN(nn.Module):
         for i in range(len(layers_sizes) - 1):
             linear = nn.Linear(layers_sizes[i], layers_sizes[i + 1])
 
-            # lecun initialization
-            init.normal_(linear.weight, mean=0.0, std=np.sqrt(1.0 / layers_sizes[i]))
-            init.constant_(linear.bias, 0.0)
+            nn.init.kaiming_normal_(linear.weight, mode='fan_in', nonlinearity='linear')
+            nn.init.zeros_(linear.bias)
 
             layers.append(linear)
 
