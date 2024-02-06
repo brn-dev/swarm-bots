@@ -1,3 +1,4 @@
+import torch
 from torch import nn
 
 from ..self_normalizing_fnn import SelfNormalizingFNN
@@ -56,8 +57,6 @@ class OneStepAttentionWithStatePredictionMultiAgentPolicy(nn.Module):
         action_pred = self.action_regression.forward(agent_states)
         action_pred = nn.functional.tanh(action_pred)
 
-        state_pred = self.next_state_regression.forward(agent_states)
+        state_pred = self.next_state_regression.forward(torch.cat([agent_states, action_pred], dim=-1))
 
         return action_pred, state_pred
-
-
