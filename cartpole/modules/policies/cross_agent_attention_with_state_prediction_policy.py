@@ -3,7 +3,7 @@ from torch import nn
 
 from ..self_normalizing_fnn import SelfNormalizingFNN
 
-class OneStepAttentionWithStatePredictionMultiAgentPolicy(nn.Module):
+class CrossAgentAttentionWithStatePredictionPolicy(nn.Module):
 
     def __init__(
             self,
