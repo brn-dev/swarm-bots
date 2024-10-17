@@ -1,6 +1,5 @@
-from collections import Iterable
 import uuid
-from typing import Optional
+from typing import Optional, Iterable
 
 import numpy as np
 from dm_control import mjcf
@@ -9,13 +8,25 @@ from dm_control import mjcf
 class Unit:
 
     class Leg:
-        def __init__(self, length: float, radius: float, hip_range: float, rgba: Iterable[float], name: str):
+        def __init__(
+                self,
+                length: float,
+                radius: float,
+                hinge_range: float,
+                rgba: Iterable[float],
+                name: str
+        ):
             rgba = tuple(rgba)
 
             self.model = mjcf.RootElement()
 
             self.leg = self.model.worldbody.add('body', name=name)
-            self.hip = self.leg.add('joint', type='ball', range=f'0 {hip_range}')
+
+            self.hinge1 = self.leg.add(
+                'joint', type='hinge', axis=[0, 0, 1], range=f'{-hinge_range} {hinge_range}', name=f'{name}-hinge1')
+            self.hinge2 = self.leg.add(
+                'joint', type='hinge', axis=[1, 0, 0], range=f'{-hinge_range} {hinge_range}', name=f'{name}-hinge2')
+
             self.leg.add(
                 'geom',
                 type='cylinder',
@@ -32,7 +43,8 @@ class Unit:
                 rgba=[*[np.clip(val + 0.1, a_min=0, a_max=1) ** 0.25 for val in rgba[0:-1]]] + [rgba[-1]]
             )
 
-            # TODO: actuator
+            self.model.actuator.add('motor', joint=self.hinge1, name=f'{name}-actuator1')
+            self.model.actuator.add('motor', joint=self.hinge2, name=f'{name}-actuator2')
 
     def __init__(
             self,
@@ -45,7 +57,7 @@ class Unit:
             name: Optional[str] = None
     ):
         if name is None:
-            name = f'Unit{str(uuid.uuid4())[0:8]}'
+            name = f'Unit#{str(uuid.uuid4())[0:8]}'
         self.name = name
 
         self.model = mjcf.RootElement()
