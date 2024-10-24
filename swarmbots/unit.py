@@ -23,7 +23,7 @@ class Unit:
             self.leg = self.model.worldbody.add('body', name=name)
 
             self.hinge1 = self.leg.add(
-                'joint', type='hinge', axis=[0, 0, 1], range=f'{-hinge_range} {hinge_range}', name=f'{name}-hinge1')
+                'joint', type='hinge', axis=[0, 1, 0], range=f'{-hinge_range} {hinge_range}', name=f'{name}-hinge1')
             self.hinge2 = self.leg.add(
                 'joint', type='hinge', axis=[1, 0, 0], range=f'{-hinge_range} {hinge_range}', name=f'{name}-hinge2')
 
@@ -72,12 +72,12 @@ class Unit:
         hip_site.attach(leg.model)
 
         lower_leg_positions = [
-            [np.sqrt(8/9), 0, -1/3],
+            # [np.sqrt(8/9), 0, -1/3],
             [-np.sqrt(2/9), np.sqrt(2/3), -1/3],
             [-np.sqrt(2/9), -np.sqrt(2/3), -1/3]
         ]
 
-        for (i, leg_rgba) in zip(range(3), [(0, 1, 1, 1), (0, 0, 1, 1), (1, 1, 0, 1)]):
+        for (i, leg_rgba) in zip(range(3), [(0, 0, 1, 1), (1, 1, 0, 1)]):  # [(0, 1, 1, 1), (0, 0, 1, 1), (1, 1, 0, 1)]):
             hip_pos = body_radius * np.array(lower_leg_positions[i])
             hip_site = self.body.add('site', pos=hip_pos, zaxis=hip_pos)
             leg = Unit.Leg(leg_length, leg_radius, hip_range, rgba=leg_rgba, name=f'{name}-leg{i+1}')
