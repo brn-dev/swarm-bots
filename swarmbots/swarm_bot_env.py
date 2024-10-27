@@ -21,11 +21,11 @@ class SwarmBotEnv(Env):
             hip_range: float = np.pi / 3,
             forward_reward_weight: float = 1.0,
             ctrl_cost_weight: float = 0.01,
-            physics_error_reward: float = -100
+            physics_error_reward: float = -100.0
     ):
         self.physics_steps_per_step = physics_steps_per_step
         self.max_time = max_time
-        self.action_scale = action_scale
+        self.action_scale = float(action_scale)
         self.hip_range = hip_range
 
         self.forward_reward_weight = forward_reward_weight
@@ -46,7 +46,7 @@ class SwarmBotEnv(Env):
                 'hip_range': hip_range,
                 'forward_reward_weight': forward_reward_weight,
                 'ctrl_cost_weight': ctrl_cost_weight,
-
+                'physics_error_reward': physics_error_reward,
             }
         )
 
@@ -119,6 +119,8 @@ class SwarmBotEnv(Env):
 
             return self.get_obs(), reward, False, truncated, {}
         except PhysicsError as pe:
+            print(f'Encountered PhysicsError, terminating env: {pe}')
+
             obs = self.get_obs()
 
             if np.isnan(obs).any() or np.isinf(obs).any():
