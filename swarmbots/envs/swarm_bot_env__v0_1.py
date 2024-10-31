@@ -63,11 +63,11 @@ class SwarmBotEnv(Env):
             model.worldbody.add('light', pos=[x, -1, 3], dir=[-x, 1, -2])
 
         unit1 = Unit(0.1, 0.2, 0.025, self.hip_range)
-        spawn_site = model.worldbody.add('site', pos=[0.305, 0, 0.2], euler=[0, -np.pi/2, 0])
+        spawn_site = model.worldbody.add('site', pos=[0.305, 0, 0.2], euler=[0, -np.pi / 2, 0])
         spawn_site.attach(unit1.model).add('freejoint')
 
         unit2 = Unit(0.1, 0.2, 0.025, self.hip_range)
-        spawn_site = model.worldbody.add('site', pos=[-0.305, 0, 0.2], euler=[0, np.pi/2, np.pi])
+        spawn_site = model.worldbody.add('site', pos=[-0.305, 0, 0.2], euler=[0, np.pi / 2, np.pi])
         spawn_site.attach(unit2.model).add('freejoint')
         model.equality.add(
             'weld',
@@ -76,9 +76,12 @@ class SwarmBotEnv(Env):
             torquescale=10_000
         )
 
-        cam = model.worldbody.add('camera', mode='targetbody',
-                                  target=f'unnamed_model_1/unnamed_model/{unit2.name}-leg0',
-                                  pos=[0, 1.5, 1])
+        cam = model.worldbody.add(
+            'camera',
+            mode='targetbody',
+            target=f'unnamed_model_1/unnamed_model/{unit2.name}-leg0',
+            pos=[0, 1.5, 1]
+        )
 
         return mjcf.Physics.from_mjcf_model(model)
 
@@ -94,10 +97,10 @@ class SwarmBotEnv(Env):
         )).copy()
 
     def reset(
-        self,
-        *,
-        seed: int | None = None,
-        options: dict[str, Any] | None = None,
+            self,
+            *,
+            seed: int | None = None,
+            options: dict[str, Any] | None = None,
     ) -> tuple[ObsType, dict[str, Any]]:
         self.physics.reset()
         return self.get_obs(), {}
@@ -111,7 +114,8 @@ class SwarmBotEnv(Env):
             self.physics.set_control(np.asarray(action) * self.action_scale)
             self.physics.step(self.physics_steps_per_step)
 
-            forward_reward = self.forward_reward_weight * (self.physics.data.xpos[:, 0].mean() - xpos_before[:, 0].mean())
+            forward_reward = self.forward_reward_weight * (
+                        self.physics.data.xpos[:, 0].mean() - xpos_before[:, 0].mean())
             ctrl_cost = self.ctrl_cost_weight * -np.sum(np.square(action))
             reward = forward_reward + ctrl_cost
 
