@@ -5,9 +5,9 @@ import numpy as np
 from dm_control import mjcf
 
 
-class Unit:
+class UnitModel:
 
-    class Leg:
+    class LegModel:
         def __init__(
                 self,
                 length: float,
@@ -68,7 +68,7 @@ class Unit:
         self.body.add('geom', type='sphere', size=[body_radius], rgba=body_rgba)
 
         hip_site = self.body.add('site', pos=[0, 0, body_radius], euler=[0, 0, 0])
-        leg = Unit.Leg(leg_length, leg_radius, hip_range, rgba=(0, 1, 0, 1), name=f'{name}-leg0')
+        leg = UnitModel.LegModel(leg_length, leg_radius, hip_range, rgba=(0, 1, 0, 1), name=f'{name}-leg0')
         hip_site.attach(leg.model)
 
         lower_leg_positions = [
@@ -80,5 +80,5 @@ class Unit:
         for (i, leg_rgba) in zip(range(3), [(0, 1, 1, 1), (0, 0, 1, 1), (1, 1, 0, 1)]):
             hip_pos = body_radius * np.array(lower_leg_positions[i])
             hip_site = self.body.add('site', pos=hip_pos, zaxis=hip_pos)
-            leg = Unit.Leg(leg_length, leg_radius, hip_range, rgba=leg_rgba, name=f'{name}-leg{i+1}')
+            leg = UnitModel.LegModel(leg_length, leg_radius, hip_range, rgba=leg_rgba, name=f'{name}-leg{i + 1}')
             hip_site.attach(leg.model)

@@ -8,7 +8,7 @@ from gymnasium import Env
 from gymnasium.core import ActType, ObsType, RenderFrame
 from gymnasium.envs.registration import EnvSpec
 
-from swarmbots.unit import Unit
+from swarmbots.unit_model import UnitModel
 
 
 class SwarmBotEnv(Env):
@@ -62,11 +62,11 @@ class SwarmBotEnv(Env):
         for x in [-2, 2]:
             model.worldbody.add('light', pos=[x, -1, 3], dir=[-x, 1, -2])
 
-        unit1 = Unit(0.1, 0.2, 0.025, self.hip_range)
+        unit1 = UnitModel(0.1, 0.2, 0.025, self.hip_range)
         spawn_site = model.worldbody.add('site', pos=[0.305, 0, 0.2], euler=[0, -np.pi / 2, 0])
         spawn_site.attach(unit1.model).add('freejoint')
 
-        unit2 = Unit(0.1, 0.2, 0.025, self.hip_range)
+        unit2 = UnitModel(0.1, 0.2, 0.025, self.hip_range)
         spawn_site = model.worldbody.add('site', pos=[-0.305, 0, 0.2], euler=[0, np.pi / 2, np.pi])
         spawn_site.attach(unit2.model).add('freejoint')
         model.equality.add(
