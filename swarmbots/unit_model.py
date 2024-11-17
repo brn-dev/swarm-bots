@@ -18,9 +18,9 @@ class UnitModel:
         ):
             rgba = tuple(rgba)
 
-            self.model = mjcf.RootElement()
+            self.model = mjcf.RootElement(name)
 
-            self.leg = self.model.worldbody.add('body', name=name)
+            self.leg = self.model.worldbody.add('body', name='~')
 
             self.hinge1 = self.leg.add(
                 'joint', type='hinge', axis=[0, 1, 0], range=f'{-hinge_range} {hinge_range}', name=f'{name}-hinge1')
@@ -34,7 +34,7 @@ class UnitModel:
                 size=[radius],
                 rgba=rgba
             )
-            self.foot = self.leg.add('body', name=f'{name}-foot')
+            self.foot = self.leg.add('body', name=f'foot')
             self.foot.add(
                 'geom',
                 type='cylinder',
@@ -43,8 +43,8 @@ class UnitModel:
                 rgba=[*[np.clip(val + 0.1, a_min=0, a_max=1) ** 0.25 for val in rgba[0:-1]]] + [rgba[-1]]
             )
 
-            self.model.actuator.add('motor', joint=self.hinge1, name=f'{name}-actuator1')
-            self.model.actuator.add('motor', joint=self.hinge2, name=f'{name}-actuator2')
+            self.model.actuator.add('motor', joint=self.hinge1, name=f'{name}-actuator0')
+            self.model.actuator.add('motor', joint=self.hinge2, name=f'{name}-actuator1')
 
     def __init__(
             self,
@@ -54,21 +54,21 @@ class UnitModel:
             hip_range: float,
             body_rgba=(0.75, 0, 0, 0.1),
             leg_rgba=(0, 0, 0, 1),
-            name: Optional[str] = None
+            unit_id: Optional[str] = None
     ):
-        if name is None:
-            name = f'Unit#{str(uuid.uuid4())[0:8]}'
-        self.name = name
+        if unit_id is None:
+            unit_id = f'Unit#{str(uuid.uuid4())[0:8]}'
+        self.unit_id = unit_id
 
-        self.model = mjcf.RootElement()
+        self.model = mjcf.RootElement(unit_id)
         self.model.compiler.angle = 'radian'
 
-        self.body = self.model.worldbody.add('body', name=name)
+        self.body = self.model.worldbody.add('body', name='~')
 
         self.body.add('geom', type='sphere', size=[body_radius], rgba=body_rgba)
 
         hip_site = self.body.add('site', pos=[0, 0, body_radius], euler=[0, 0, 0])
-        leg = UnitModel.LegModel(leg_length, leg_radius, hip_range, rgba=(0, 1, 0, 1), name=f'{name}-leg0')
+        leg = UnitModel.LegModel(leg_length, leg_radius, hip_range, rgba=(0, 1, 0, 1), name=f'leg0')
         hip_site.attach(leg.model)
 
         lower_leg_positions = [
@@ -80,5 +80,5 @@ class UnitModel:
         for (i, leg_rgba) in zip(range(3), [(0, 1, 1, 1), (0, 0, 1, 1), (1, 1, 0, 1)]):
             hip_pos = body_radius * np.array(lower_leg_positions[i])
             hip_site = self.body.add('site', pos=hip_pos, zaxis=hip_pos)
-            leg = UnitModel.LegModel(leg_length, leg_radius, hip_range, rgba=leg_rgba, name=f'{name}-leg{i + 1}')
+            leg = UnitModel.LegModel(leg_length, leg_radius, hip_range, rgba=leg_rgba, name=f'leg{i + 1}')
             hip_site.attach(leg.model)
