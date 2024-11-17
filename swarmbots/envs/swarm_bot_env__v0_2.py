@@ -1,4 +1,4 @@
-from typing import SupportsFloat, Any
+from typing import SupportsFloat, Any, Callable, NamedTuple
 
 import gymnasium.spaces
 import numpy as np
@@ -8,7 +8,11 @@ from gymnasium import Env
 from gymnasium.core import ActType, ObsType, RenderFrame
 from gymnasium.envs.registration import EnvSpec
 
+from swarmbots.swarm_model import SwarmModel, Connection, ConnectionSite
 from swarmbots.unit_model import UnitModel
+
+
+UnitModelProvider = Callable[[], UnitModel]
 
 
 class SwarmBotEnv(Env):
@@ -21,8 +25,13 @@ class SwarmBotEnv(Env):
             hip_range: float = np.pi / 3,
             forward_reward_weight: float = 1.0,
             ctrl_cost_weight: float = 0.01,
-            physics_error_reward: float = -100.0
+            physics_error_reward: float = -100.0,
+            # init_unit_model: UnitModelProvider | list[UnitModelProvider],
+            obs_fields: list[str] = None
     ):
+        if obs_fields is None:
+            obs_fields = ['qpos', 'qvel']
+
         self.physics_steps_per_step = physics_steps_per_step
         self.max_time = max_time
         self.action_scale = float(action_scale)
@@ -32,13 +41,41 @@ class SwarmBotEnv(Env):
         self.ctrl_cost_weight = ctrl_cost_weight
         self.physics_error_reward = physics_error_reward
 
+        # TODO also add to envspec?
+        self.unit_models = [
+            UnitModel(
+                body_radius=0.1,
+                leg_length=0.2,
+                leg_radius=0.025,
+                hip_range=self.hip_range
+            )
+            for _ in range(2)
+        ]
+        self.unit_ids = [
+            um.unit_id for um in self.unit_models
+        ]
+        self.num_units = len(self.unit_ids)
+
+        self.enabled_connections = [
+            Connection(ConnectionSite(0, 0), ConnectionSite(1, 0))
+        ]
+
+        self.model = mjcf.RootElement()
         self.physics = self.setup_physics()
+
+        self.obs_fields = obs_fields
+        self.unit_field_indices = {
+            field: np.stack([
+                 self.collect_unit_field_indices(unit_id, field) for unit_id in self.unit_ids
+            ])
+            for field in obs_fields
+        }
 
         self.observation_space = gymnasium.spaces.Box(-np.inf, np.inf, self.get_obs().shape)
         self.action_space = gymnasium.spaces.Box(-1, 1, self.physics.data.actuator_velocity.shape)
 
         self.spec = EnvSpec(
-            id='SwarmBot-v0.1',
+            id='SwarmBot-v0.2',
             kwargs={
                 'physics_steps_per_step': physics_steps_per_step,
                 'max_time': max_time,
@@ -47,54 +84,61 @@ class SwarmBotEnv(Env):
                 'forward_reward_weight': forward_reward_weight,
                 'ctrl_cost_weight': ctrl_cost_weight,
                 'physics_error_reward': physics_error_reward,
+                'obs_fields': obs_fields,
             }
         )
 
-    def setup_physics(self):
-        model = mjcf.RootElement()
+    def collect_unit_field_indices(self, unit_id: str, field_key: str):
+        indices = np.arange(len(getattr(self.physics.data, field_key)), dtype=int)
 
-        chequered = model.asset.add('texture', type='2d', builtin='checker', width=300,
-                                    height=300, rgb1=[.2, .3, .4], rgb2=[.3, .4, .5])
-        grid = model.asset.add('material', name='grid', texture=chequered,
-                               texrepeat=[5, 5], reflectance=.2)
-        model.worldbody.add('geom', type='plane', size=[2, 2, .1], material=grid)
+        field_indices = np.empty((0,), dtype=int)
+        field_axis = getattr(self.physics.named.data, field_key).axes.row
+        for key in [n for n in field_axis.names if n.startswith(unit_id)]:
+            field_indices = np.concatenate((
+                field_indices,
+                np.atleast_1d(indices[field_axis.convert_key_item(key)])
+            ))
+
+        return field_indices
+
+    def setup_physics(self):
+        chequered = self.model.asset.add('texture', type='2d', builtin='checker', width=300,
+                                         height=300, rgb1=[.2, .3, .4], rgb2=[.3, .4, .5])
+        grid = self.model.asset.add('material', name='grid', texture=chequered,
+                                    texrepeat=[5, 5], reflectance=.2)
+        self.model.worldbody.add('geom', type='plane', size=[2, 2, .1], material=grid)
 
         for x in [-2, 2]:
-            model.worldbody.add('light', pos=[x, -1, 3], dir=[-x, 1, -2])
+            self.model.worldbody.add('light', pos=[x, -1, 3], dir=[-x, 1, -2])
 
-        unit1 = UnitModel(0.1, 0.2, 0.025, self.hip_range)
-        spawn_site = model.worldbody.add('site', pos=[0.305, 0, 0.2], euler=[0, -np.pi / 2, 0])
-        spawn_site.attach(unit1.model).add('freejoint')
-
-        unit2 = UnitModel(0.1, 0.2, 0.025, self.hip_range)
-        spawn_site = model.worldbody.add('site', pos=[-0.305, 0, 0.2], euler=[0, np.pi / 2, np.pi])
-        spawn_site.attach(unit2.model).add('freejoint')
-        model.equality.add(
-            'weld',
-            body1=f'unnamed_model/unnamed_model/{unit1.unit_id}-leg0-foot',
-            body2=f'unnamed_model_1/unnamed_model/{unit2.unit_id}-leg0-foot',
-            torquescale=10_000
+        SwarmModel.attach_to(
+            self.model,
+            unit_models=self.unit_models,
+            positions=[
+                (0.305, 0, 0.2),
+                (-0.305, 0, 0.2),
+            ],
+            eulers=[
+                (0, -np.pi / 2, 0),
+                (0, np.pi / 2, np.pi),
+            ],
+            enabled_connections=self.enabled_connections,
         )
 
-        cam = model.worldbody.add(
+        cam = self.model.worldbody.add(
             'camera',
             mode='targetbody',
-            target=f'unnamed_model_1/unnamed_model/{unit2.unit_id}-leg0',
+            target=f'{self.unit_models[0].unit_id}/leg3/~',
             pos=[0, 1.5, 1]
         )
 
-        return mjcf.Physics.from_mjcf_model(model)
+        return mjcf.Physics.from_mjcf_model(self.model)
 
     def get_obs(self):
-        # return np.concatenate((
-        #     self.physics.data.qpos,
-        #     self.physics.data.qvel,
-        #     self.physics.data.xpos.reshape(-1),
-        # )).copy()
-        return np.concatenate((
-            self.physics.data.qpos,
-            self.physics.data.qvel,
-        )).copy()
+        return np.concatenate([
+            getattr(self.physics.data, field)[self.unit_field_indices[field]].reshape((self.num_units, -1))
+            for field in self.obs_fields
+        ], axis=1).copy()
 
     def reset(
             self,

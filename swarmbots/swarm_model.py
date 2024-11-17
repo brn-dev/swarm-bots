@@ -1,47 +1,52 @@
-from typing import Callable
+from typing import Callable, NamedTuple
 
 from dm_control import mjcf
 
 from swarmbots.unit_model import UnitModel
 
 
-UnitModelProvider = Callable[[], UnitModel]
+class ConnectionSite(NamedTuple):
+    unit_idx: int
+    leg_index: int
+
+
+class Connection(NamedTuple):
+    a: ConnectionSite
+    b: ConnectionSite
 
 
 class SwarmModel:
 
-    def __init__(
-            self,
-            num_units: int,
-            init_unit_model: UnitModelProvider | list[UnitModelProvider],
+    @staticmethod
+    def attach_to(
+            model: mjcf.RootElement,
+            unit_models: list[UnitModel],
             positions: list[tuple[float, float, float]],
-            eulers: list[tuple[float, float, float]]
+            eulers: list[tuple[float, float, float]],
+            enabled_connections: list[Connection],
     ):
-        if isinstance(init_unit_model, list):
-            if len(init_unit_model) != num_units:
-                raise ValueError(
-                    f'Invalid number of UnitProviders at init_unit: {len(init_unit_model) = } vs {num_units = }'
-                )
-            init_unit_models = init_unit_model
-        else:
-            init_unit_models = [init_unit_model] * num_units
 
-        self.unit_models: list[UnitModel] = []
-        self.model = mjcf.RootElement()
+        unit: UnitModel
+        pos: tuple[float, float, float]
+        positions: tuple[float, float, float]
+        for unit, pos, euler in zip(unit_models, positions, eulers, strict=True):
 
-        for init_unit_model, pos, euler in zip(init_unit_models, positions, eulers, strict=True):
-            unit = init_unit_model()
-            self.unit_models.append(unit)
-
-            spawn_site = self.model.worldbody.add('site', pos=pos, euler=euler)
+            spawn_site = model.worldbody.add('site', pos=pos, euler=euler, name=f'{unit.unit_id}-site')
             spawn_site.attach(unit.model).add('freejoint')
 
-        # self.model.equality.add(
-        #     'weld',
-        #     body1=f'unnamed_model/unnamed_model/{unit1.name}-leg0-foot',
-        #     body2=f'unnamed_model_1/unnamed_model/{unit2.name}-leg0-foot',
-        #     torquescale=10_000
-        # )
+        for connection in enabled_connections:
+            assert connection.a.unit_idx < connection.b.unit_idx
+
+            unit_a_name = unit_models[connection.a.unit_idx].unit_id
+            unit_b_name = unit_models[connection.b.unit_idx].unit_id
+
+            model.equality.add(
+                'weld',
+                body1=f'{unit_a_name}/leg{connection.a.leg_index}/foot',
+                body2=f'{unit_b_name}/leg{connection.b.leg_index}/foot',
+                torquescale=10_000,
+                name=f'{unit_a_name}_{connection.a.leg_index}--{unit_b_name}_{connection.b.leg_index}'
+            )
 
 
 
