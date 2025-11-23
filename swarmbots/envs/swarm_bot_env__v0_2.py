@@ -9,7 +9,7 @@ from gymnasium.core import ActType, ObsType, RenderFrame
 from gymnasium.envs.registration import EnvSpec
 
 from swarmbots.swarm_model import SwarmModel, Connection, ConnectionSite
-from swarmbots.unit_model import UnitModel
+from swarmbots.unit import UnitModel
 
 
 UnitModelProvider = Callable[[], UnitModel]

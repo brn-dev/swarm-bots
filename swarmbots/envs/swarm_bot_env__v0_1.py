@@ -8,7 +8,7 @@ from gymnasium import Env
 from gymnasium.core import ActType, ObsType, RenderFrame
 from gymnasium.envs.registration import EnvSpec
 
-from swarmbots.unit_model import UnitModel
+from swarmbots.unit import UnitModel
 
 
 class SwarmBotEnv(Env):
