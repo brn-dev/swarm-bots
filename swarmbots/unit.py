@@ -8,18 +8,33 @@ class HingeType(int, enum.Enum):
     yx = 0
     zx = 1
 
+limb_directions: dict[int, dict[str, np.ndarray]] = {
+    6: {
+        'xp': np.array([1, 0, 0]),
+        'xn': np.array([-1, 0, 0]),
+        'yp': np.array([0, 1, 0]),
+        'yn': np.array([0, -1, 0]),
+        'zp': np.array([0, 0, 1]),
+        'zn': np.array([0, 0, -1])
+    }
+}
+
 class Unit:
+
     def __init__(
             self,
             body_radius: float,
             leg_length: float,
             leg_radius: float,
             hinge_range: float,
+            num_limbs: int = 6,
             body_rgba=(0.75, 0, 0, 0.1),
             leg_rgba=(0, 0, 0, 1),
             hinge_type: HingeType = HingeType.zx,
             segment_1_ratio: float = 0.1
     ):
+
+        self.num_limbs = num_limbs
         
         self.spec = mujoco.MjSpec()
         self.spec.compiler.degree = False
@@ -35,16 +50,7 @@ class Unit:
             rgba=body_rgba
         )
 
-        directions = [
-            ('xp', [1, 0, 0]),
-            ('xn', [-1, 0, 0]),
-            ('yp', [0, 1, 0]),
-            ('yn', [0, -1, 0]),
-            ('zp', [0, 0, 1]),
-            ('zn', [0, 0, -1])
-        ]
-
-        for direction_name, direction in directions:
+        for direction_name, direction in limb_directions[num_limbs].items():
             direction = np.array(direction)
             hip_pos = body_radius * direction
             
