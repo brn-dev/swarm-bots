@@ -5,7 +5,7 @@ import mujoco
 import numpy as np
 from gymnasium import spaces
 from gymnasium.core import ActType, ObsType, RenderFrame
-from mujoco import MjsBody
+from mujoco import MjsBody, MjvOption
 
 from swarmbots.scenarios.base_scenario import BaseScenario
 from swarmbots.swarm.base_swarm import BaseSwarm
@@ -26,6 +26,8 @@ class SwarmBotEnv(gymnasium.Env):
         render_mode: str | None = None,
         width: int = 640,
         height: int = 480,
+        camera: int = 0,
+        scene_option: MjvOption = None
     ):
         self.swarm = swarm
         self.scenario = scenario
@@ -35,6 +37,8 @@ class SwarmBotEnv(gymnasium.Env):
         self.render_mode = render_mode
         self.width = width
         self.height = height
+        self.camera = camera
+        self.scene_option = scene_option
 
         spec = mujoco.MjSpec()
         worldbody: MjsBody = spec.worldbody
@@ -128,7 +132,7 @@ class SwarmBotEnv(gymnasium.Env):
                 self.model, height=self.height, width=self.width
             )
 
-        self._renderer.update_scene(self.data)
+        self._renderer.update_scene(self.data, camera=self.camera, scene_option=self.scene_option)
 
         if self.render_mode in ("human", "rgb_array"):
             return self._renderer.render()
