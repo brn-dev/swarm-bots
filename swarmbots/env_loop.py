@@ -2,11 +2,11 @@ import mujoco
 from mujoco import MjsBody, MjSpec
 
 from swarmbots.scenarios.base_scenario import BaseScenario
-from swarmbots.swarm_initializers.base_swarm_initializer import BaseSwarmInitializer
+from swarmbots.swarm.base_swarm import BaseSwarm
 
 
 def do_loop(
-        swarm_initializer: BaseSwarmInitializer,
+        swarm: BaseSwarm,
         scenario: BaseScenario,
         duration: float = 5.0,
 ):
@@ -15,7 +15,7 @@ def do_loop(
 
     (worldbody
      .add_frame(pos=[scenario.get_start_location()])
-     .attach_body(swarm_initializer.build_swarm_spec()))
+     .attach_body(swarm.build_swarm_spec()))
 
     (worldbody
      .add_frame()
@@ -30,7 +30,7 @@ def do_loop(
         if reset:
             mujoco.mj_resetData(model, data)
             scenario_state = scenario.reset_scenario(model, data)
-            swarm_initializer.reset_swarm(model, data)
+            swarm.reset_swarm(model, data)
             reset = False
 
         mujoco.mj_step(model, data)

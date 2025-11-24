@@ -9,7 +9,7 @@ TState = TypeVar('TState')
 class BaseScenario(abc.ABC, Generic[TState]):
 
     def get_start_location(self):
-        return np.zeros(3)
+        return np.array([0.0, 0.0, 2.0])
 
     @abc.abstractmethod
     def build_scenario_spec(self) -> mujoco.MjsBody:

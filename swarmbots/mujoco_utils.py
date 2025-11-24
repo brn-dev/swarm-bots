@@ -9,11 +9,6 @@ def quat_z2vec(vec: Union[list, tuple, np.array]):
     mujoco.mju_quatZ2Vec(quat, vec)
     return quat
 
-
-# ---------------------------
-# Helpers: find ids by prefix
-# ---------------------------
-
 def body_ids_for_prefix(model: mujoco.MjModel, prefix: str) -> list[int]:
     """Return all body ids whose names start with prefix."""
     ids: list[int] = []
@@ -32,11 +27,6 @@ def actuator_ids_for_prefix(model: mujoco.MjModel, prefix: str) -> list[int]:
         if name and name.startswith(prefix):
             ids.append(i)
     return ids
-
-
-# ---------------------------
-# qpos indices (state)
-# ---------------------------
 
 def qpos_indices_for_body(model: mujoco.MjModel, body_name: str) -> list[int]:
     """
@@ -74,9 +64,28 @@ def qpos_indices_for_prefix(model: mujoco.MjModel, prefix: str) -> list[int]:
     return sorted(out)
 
 
-# ---------------------------
-# ctrl indices (controls)
-# ---------------------------
+def dof_indices_for_body(model: mujoco.MjModel, body_name: str) -> list[int]:
+    """
+    Indices into data.qvel (degrees of freedom) for all joints attached to body_name.
+    """
+    body_id = model.body(body_name).id
+    dof_adr = model.body_dofadr[body_id]
+    dof_num = model.body_dofnum[body_id]
+
+    if dof_adr < 0 or dof_num == 0:
+        return []
+
+    return list(range(dof_adr, dof_adr + dof_num))
+
+
+def dof_indices_for_prefix(model: mujoco.MjModel, prefix: str) -> list[int]:
+    """
+    Union of dof (qvel) indices for all bodies whose names start with prefix.
+    """
+    out: set[int] = set()
+    for bid in body_ids_for_prefix(model, prefix):
+        out.update(dof_indices_for_body(model, model.body(bid).name))
+    return sorted(out)
 
 def ctrl_index_for_actuator(model: mujoco.MjModel, actuator_name: str) -> int:
     """Single ctrl index for a named actuator."""
