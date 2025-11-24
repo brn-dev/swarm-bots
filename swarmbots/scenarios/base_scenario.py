@@ -9,10 +9,10 @@ TState = TypeVar('TState')
 class BaseScenario(abc.ABC, Generic[TState]):
 
     def get_start_location(self):
-        return np.array([0.0, 0.0, 2.0])
+        return np.array([0.0, 0.0, 1.0])
 
     @abc.abstractmethod
-    def build_scenario_spec(self) -> mujoco.MjsBody:
+    def build_scenario_spec(self) -> mujoco.MjSpec:
         raise NotImplementedError()
 
     @abc.abstractmethod
@@ -20,7 +20,17 @@ class BaseScenario(abc.ABC, Generic[TState]):
         raise NotImplementedError()
 
     @abc.abstractmethod
-    def evaluate_state(
+    def modify_obs(
+            self,
+            model: mujoco.MjModel,
+            data: mujoco.MjData,
+            state: TState | None,
+            obs: np.ndarray
+    ) -> np.ndarray:
+        raise NotImplementedError()
+
+    @abc.abstractmethod
+    def scenario_step(
             self,
             model: mujoco.MjModel,
             data: mujoco.MjData,
@@ -29,4 +39,4 @@ class BaseScenario(abc.ABC, Generic[TState]):
         """
         :return: (new_state, reward for step, done)
         """
-        raise NotImplementedError
+        raise NotImplementedError()

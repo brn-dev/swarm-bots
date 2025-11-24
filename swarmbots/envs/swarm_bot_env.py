@@ -5,6 +5,7 @@ import mujoco
 import numpy as np
 from gymnasium import spaces
 from gymnasium.core import ActType, ObsType, RenderFrame
+from mujoco import MjsBody
 
 from swarmbots.scenarios.base_scenario import BaseScenario
 from swarmbots.swarm.base_swarm import BaseSwarm
@@ -36,13 +37,14 @@ class SwarmBotEnv(gymnasium.Env):
         self.height = height
 
         spec = mujoco.MjSpec()
-        worldbody = spec.worldbody
+        worldbody: MjsBody = spec.worldbody
 
-        (worldbody
-          .add_frame(pos=[scenario.get_start_location()])
-          .attach_body(swarm.build_swarm_spec()))
 
-        worldbody.add_frame().attach_body(scenario.build_scenario_spec())
+        swarm_site = worldbody.add_site(pos=scenario.get_start_location(), name='swarm_site')
+        spec.attach(swarm.build_swarm_spec(), '', site=swarm_site)
+
+        scenario_site = worldbody.add_site(pos=[0, 0, 0], name='scenario_site')
+        spec.attach(scenario.build_scenario_spec(), '', site=scenario_site)
 
         self.model = spec.compile()
         self.data = mujoco.MjData(self.model)
@@ -50,9 +52,11 @@ class SwarmBotEnv(gymnasium.Env):
         self.agent_prefixes = swarm.get_unit_prefixes()
         self.n_agents = len(self.agent_prefixes)
 
-        obs_dim = self.swarm.get_n_obs_features_per_agent(self.model)
+        self.scenario_state: TState | None = None
+
+        dummy_obs = self._get_obs()
         self.observation_space = spaces.Box(
-            low=-np.inf, high=np.inf, shape=(self.n_agents, obs_dim), dtype=np.float32
+            low=-np.inf, high=np.inf, shape=dummy_obs.shape, dtype=np.float32
         )
 
         action_dim = self.swarm.get_n_actions_per_agent(self.model)
@@ -60,11 +64,15 @@ class SwarmBotEnv(gymnasium.Env):
             low=-1, high=1, shape=(self.n_agents, action_dim), dtype=np.float32
         )
 
-        self.scenario_state: TState | None = None
         self._renderer = None
 
     def _get_obs(self) -> np.ndarray:
-        return self.swarm.get_obs(self.model, self.data)
+        return self.scenario.modify_obs(
+            self.model,
+            self.data,
+            self.scenario_state,
+            self.swarm.get_obs(self.model, self.data)
+        )
 
     def reset(
         self,
@@ -100,7 +108,7 @@ class SwarmBotEnv(gymnasium.Env):
                 {"error": "simulation_unstable"},
             )
 
-        self.scenario_state, reward, terminated = self.scenario.evaluate_state(
+        self.scenario_state, reward, terminated = self.scenario.scenario_step(
             self.model, self.data, self.scenario_state
         )
 
