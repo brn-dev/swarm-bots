@@ -15,7 +15,7 @@ class BaseSwarm(abc.ABC):
         self._ctrl_indices: np.ndarray | None = None
 
     @abc.abstractmethod
-    def build_swarm_spec(self) -> mujoco.MjsBody:
+    def build_swarm_spec(self) -> mujoco.MjSpec:
         raise NotImplementedError()
 
     @abc.abstractmethod

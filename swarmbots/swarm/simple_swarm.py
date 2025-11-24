@@ -12,7 +12,15 @@ class SimpleSwarm(BaseSwarm):
         spec = mujoco.MjSpec()
         worldbody: MjsBody = spec.worldbody
 
-        swarm_body = worldbody.add_body(name="Swarm")
+        unit = init_unit(
+            body_radius=0.1,
+            leg_length=0.2,
+            leg_radius=0.025,
+            hinge_range=np.pi / 4
+        )
+        unit.add_joint(type=mujoco.mjtJoint.mjJNT_FREE)
+
+        worldbody.add_frame(pos=[0, 0, 0]).attach_body(unit, 'Unit1--', '')  # , quat=quat_z2vec([1, 1, 0])
 
         unit = init_unit(
             body_radius=0.1,
@@ -22,19 +30,23 @@ class SimpleSwarm(BaseSwarm):
         )
         unit.add_joint(type=mujoco.mjtJoint.mjJNT_FREE)
 
-        swarm_body.add_frame(pos=[0, 0, 0]).attach_body(unit, 'Unit1--', '')  # , quat=quat_z2vec([1, 1, 0])
+        worldbody.add_frame(pos=[0, 0.6, 0]).attach_body(unit, 'Unit2--', '')
 
-        unit = init_unit(
-            body_radius=0.1,
-            leg_length=0.2,
-            leg_radius=0.025,
-            hinge_range=np.pi / 4
+        eq = spec.add_equality(
+            name="site_weld",
+            type=mujoco.mjtEq.mjEQ_WELD,  # or mjEQ_CONNECT
+            objtype=mujoco.mjtObj.mjOBJ_BODY,  # tells MuJoCo the objs are sites
+            name1="Unit1--limb_yp-tip",
+            name2="Unit2--limb_yn-tip",
+
+            #   data[0:7]  = relpose (3 pos + 4 quat)
+            #   data[7:10] = anchor  (3)
+            #   data[10]   = torquescale
+            # data=[0,0,0,0,1,0,0,  0,0,0,  10.0]
         )
-        unit.add_joint(type=mujoco.mjtJoint.mjJNT_FREE)
+        eq.data[10] = 50
 
-        swarm_body.add_frame(pos=[0, 0.6, 0]).attach_body(unit, 'Unit2--', '')
-
-        return swarm_body
+        return spec
 
     def reset_swarm(self, model: mujoco.MjModel, data: mujoco.MjData) -> None:
         # mujoco reset should be enough
