@@ -10,6 +10,7 @@ class SimpleSwarm(BaseSwarm):
 
     def build_swarm_spec(self) -> mujoco.MjsBody:
         spec = mujoco.MjSpec()
+        spec.compiler.degree = 0
         worldbody: MjsBody = spec.worldbody
 
         unit = init_unit(

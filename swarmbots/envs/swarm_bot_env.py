@@ -41,6 +41,7 @@ class SwarmBotEnv(gymnasium.Env):
         self.scene_option = scene_option
 
         spec = mujoco.MjSpec()
+        spec.compiler.degree = 0
         worldbody: MjsBody = spec.worldbody
 
 
