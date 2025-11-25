@@ -1,11 +1,11 @@
 from swarmbots.envs.swarm_bot_env import SwarmBotEnv
 from swarmbots.swarm.simple_swarm import SimpleSwarm
-from swarmbots.scenarios.simple_scenario import SimpleScenario
+from swarmbots.scenarios.obstacle_dungeon_scenario import ObstacleDungeonScenario
 from rendering import display_video
 
 # Initialize swarm and scenario
 swarm = SimpleSwarm()
-scenario = SimpleScenario()
+scenario = ObstacleDungeonScenario()
 
 # Initialize environment
 env = SwarmBotEnv(

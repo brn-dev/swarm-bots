@@ -5,8 +5,8 @@ from swarmbots.mujoco_utils import quat_z2vec
 from swarmbots.scenarios.base_scenario import BaseScenario
 
 
-class SimpleScenario(BaseScenario[dict]):
-    def build_scenario_spec(self) -> mujoco.MjSpec:
+class ObstacleDungeonScenario(BaseScenario):
+    def create_scenario_spec(self) -> mujoco.MjSpec:
         spec = mujoco.MjSpec()
         spec.compiler.degree = 0
         worldbody: mujoco.MjsBody = spec.worldbody
@@ -87,17 +87,12 @@ class SimpleScenario(BaseScenario[dict]):
 
         return spec
 
-    def reset_scenario(self, model: mujoco.MjModel, data: mujoco.MjData) -> dict:
-        return dict()
-
-    def modify_obs(self, model: mujoco.MjModel, data: mujoco.MjData, state: dict, obs: np.ndarray) -> np.ndarray:
-        return obs
-
-    def scenario_step(
+    def evaluate_step(
             self,
+            action: np.ndarray,
             model: mujoco.MjModel,
             data: mujoco.MjData,
-            old_state: dict | None
+            old_state: dict,
     ) -> tuple[dict, float, bool]:
         # avg y vel
         reward = np.mean(data.qvel[1::18])
