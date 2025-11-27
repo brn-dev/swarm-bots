@@ -49,9 +49,8 @@ class SimpleSwarm(BaseSwarm):
 
         return spec
 
-    def reset_swarm(self, model: mujoco.MjModel, data: mujoco.MjData) -> None:
-        # mujoco reset should be enough
-        pass
+    def reset_swarm(self, model: mujoco.MjModel, data: mujoco.MjData) -> dict:
+        return dict()
 
-    def get_unit_prefixes(self) -> set[str]:
-        return set(f'Unit{i}--' for i in range(1, 3))
+    def get_unit_prefixes(self) -> list[str]:
+        return [f'Unit{i}--' for i in range(1, 3)]
