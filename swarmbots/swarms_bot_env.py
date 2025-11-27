@@ -10,21 +10,23 @@ from mujoco import MjvOption
 from swarmbots.scenarios.base_scenario import BaseScenario
 
 
-class SwarmBotEnv(gymnasium.Env):
+class SwarmBotsEnv(gymnasium.Env):
     metadata = {"render_modes": ["human", "rgb_array", "depth_array"]}
 
     def __init__(
         self,
         scenario: BaseScenario,
-        duration: float = 5.0,
+        duration: float = 10.0,
         physics_steps_per_step: int = 1,
         action_scale: float = 1.0,
+        action_repeat: int = 15,
         render_mode: str | None = None,
         width: int = 640,
         height: int = 480,
         camera: int = 0,
-        scene_option: MjvOption = None
+        scene_option: MjvOption = None,
     ):
+        self.action_repeat = action_repeat
         self.duration = duration
         self.physics_steps_per_step = physics_steps_per_step
         self.action_scale = action_scale
@@ -60,18 +62,22 @@ class SwarmBotEnv(gymnasium.Env):
         mujoco.mj_resetData(self.model, self.data)
         self.scenario_state = self.scenario.reset_scenario(self.model, self.data)
 
-        mujoco.mj_forward(self.model, self.data)
-
         return self.scenario.get_obs(self.model, self.data, self.scenario_state), {}
 
     def step(
         self, action: ActType
     ) -> tuple[ObsType, SupportsFloat, bool, bool, dict[str, Any]]:
         action = np.array(action)
-        self.scenario.apply_action(self.model, self.data, action, self.action_scale, self.scenario_state)
+        self.scenario.apply_action(
+            self.model,
+            self.data,
+            action,
+            self.action_scale,
+            self.scenario_state
+        )
 
         for _ in range(self.physics_steps_per_step):
-            mujoco.mj_step(self.model, self.data)
+            mujoco.mj_step(self.model, self.data, self.action_repeat)
 
         if np.isnan(self.data.qpos).any() or np.isnan(self.data.qvel).any():
             return (
@@ -82,7 +88,7 @@ class SwarmBotEnv(gymnasium.Env):
                 {"error": "simulation_unstable"},
             )
 
-        self.scenario_state, reward, terminated = self.scenario.evaluate_step(
+        reward, terminated = self.scenario.evaluate_step(
             action, self.model, self.data, self.scenario_state
         )
 
