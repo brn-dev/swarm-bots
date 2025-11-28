@@ -1,19 +1,24 @@
-from typing import Union, Literal
+from typing import Literal
 
 import mujoco
 import numpy as np
-from mujoco import MjsBody
 
-from swarmbots.mujoco_utils import quat_z2vec
 from swarmbots.scenarios.base_scenario import BaseScenario
 from swarmbots.swarm.base_swarm import BaseSwarm
 
-PayloadType = Literal['ball', 'box'] | None
+PayloadType = Literal['sphere', 'box'] | None
 
 
 class ObstacleDungeonScenario(BaseScenario):
 
-    def __init__(self, swarm: BaseSwarm, payload_type: PayloadType, payload_size: float = 0.3):
+    def __init__(
+            self,
+            swarm: BaseSwarm,
+            payload_type: PayloadType,
+            ctrl_cost_weight: float = 0.001,
+            payload_size: float = 0.3
+    ):
+        self.ctrl_cost_weight = ctrl_cost_weight
 
         self.payload_type = payload_type
         self.payload_size = payload_size
@@ -48,7 +53,7 @@ class ObstacleDungeonScenario(BaseScenario):
         worldbody.add_light(pos=[0, 100, 100], dir=[-1, -1, -1])
 
         worldbody.add_camera(
-            pos=[12, 0, 5], euler=[0, np.pi / 3, np.pi / 2],
+            pos=[5, 0, 3], euler=[0, np.pi / 3, np.pi / 2],
             mode=mujoco.mjtCamLight.mjCAMLIGHT_TRACK, targetbody='Unit1--main_body')
 
         # side walls
@@ -165,10 +170,10 @@ class ObstacleDungeonScenario(BaseScenario):
 
         old_progress = state['progress']
         new_progress = self._compute_progress(model, data)
+        state['progress'] = new_progress
 
         reward = new_progress - old_progress
-
-        state['progress'] = new_progress
+        reward -= np.square(action).mean() * self.ctrl_cost_weight
 
         return reward, False
 
