@@ -52,7 +52,7 @@ class FlattenMultiAgentWrapper(gym.Wrapper):
         return obs.flatten(), reward, terminated, truncated, info
 
 def make_env():
-    swarm = SimpleSwarm()
+    swarm = SimpleSwarm(42)
     scenario = ObstacleDungeonScenario(swarm=swarm, payload_type=None)
     env = SwarmBotsEnv(scenario=scenario, render_mode=None)
     env = FlattenMultiAgentWrapper(env)
@@ -62,7 +62,7 @@ def make_env():
 def train():
     vec_env = SubprocVecEnv([make_env] * 6)
 
-    policy_kwargs = dict(net_arch=dict(pi=[128, 128], vf=[128, 128]))
+    policy_kwargs = dict(net_arch=dict(pi=[256, 256], vf=[256, 256]))
     model = PPO("MlpPolicy", vec_env, policy_kwargs=policy_kwargs, verbose=1, n_steps=64 * 31, device="cpu")
 
     print("Starting training...")
@@ -76,7 +76,7 @@ def record(model=None):
     if model is None:
         model = PPO.load("ppo_swarm_bots")
 
-    swarm = SimpleSwarm()
+    swarm = SimpleSwarm(42)
     scenario = ObstacleDungeonScenario(swarm=swarm, payload_type=None)
     
     env = SwarmBotsEnv(scenario=scenario, render_mode="rgb_array", width=640, height=480)
@@ -100,8 +100,8 @@ def record(model=None):
     env.close()
 
     if images:
-        imageio.mimsave("swarm_bots_rollout.gif", images, fps=30)
-        print("Saved swarm_bots_rollout.gif")
+        imageio.mimsave("swarm_bots_rollout_ppo.gif", images, fps=30)
+        print("Saved swarm_bots_rollout_ppo.gif")
     else:
         print("No images captured.")
 
