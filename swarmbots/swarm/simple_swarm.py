@@ -3,15 +3,17 @@ import numpy as np
 from mujoco import MjsBody
 
 from swarmbots.swarm.base_swarm import BaseSwarm
-from swarmbots.unit import init_unit
+from swarmbots.swarm.swarm_config import SwarmConfig
+from swarmbots.swarm.swarm_connections import SwarmConnections
+from swarmbots.unit import init_unit, CUBE_ZX_LIMB_CONFIGS
 
 
 class SimpleSwarm(BaseSwarm):
 
     def __init__(self, seed: int):
-        super().__init__(2, seed)
+        super().__init__(SwarmConfig(2, 6), seed)
 
-    def create_swarm_spec(self) -> mujoco.MjsBody:
+    def create_swarm_spec(self) -> mujoco.MjSpec:
         spec = mujoco.MjSpec()
         spec.compiler.degree = 0
         worldbody: MjsBody = spec.worldbody
@@ -22,7 +24,8 @@ class SimpleSwarm(BaseSwarm):
             body_radius=0.1,
             leg_length=0.2,
             leg_radius=0.025,
-            hinge_range=np.pi / 4
+            hinge_range=np.pi / 4,
+            limb_configs=CUBE_ZX_LIMB_CONFIGS,
         )
         unit.add_joint(type=mujoco.mjtJoint.mjJNT_FREE)
 
@@ -32,7 +35,8 @@ class SimpleSwarm(BaseSwarm):
             body_radius=0.1,
             leg_length=0.2,
             leg_radius=0.025,
-            hinge_range=np.pi / 4
+            hinge_range=np.pi / 4,
+            limb_configs=CUBE_ZX_LIMB_CONFIGS,
         )
         unit.add_joint(type=mujoco.mjtJoint.mjJNT_FREE)
 
@@ -54,5 +58,8 @@ class SimpleSwarm(BaseSwarm):
         eq.data[10] = 50  # torquescale
 
         return spec
+
+    def reset_swarm(self, model: mujoco.MjModel, data: mujoco.MjData) -> tuple[dict, SwarmConnections]:
+
 
 

@@ -7,6 +7,8 @@ from mujoco import MjsBody
 
 from swarmbots.swarm.base_swarm import BaseSwarm
 import swarmbots.mujoco_utils as mj_utils
+from swarmbots.swarm.swarm_connections import SwarmConnections
+
 
 class BaseScenario(abc.ABC):
 
@@ -54,8 +56,10 @@ class BaseScenario(abc.ABC):
         spec.compiler.degree = 0
         worldbody: MjsBody = spec.worldbody
 
+        swarm_spec = self.swarm.create_swarm_spec()
+
         swarm_site = worldbody.add_site(pos=self.get_swarm_start_location(), name='swarm_site')
-        spec.attach(self.swarm.create_swarm_spec(), '', site=swarm_site)
+        spec.attach(swarm_spec, '', site=swarm_site)
 
         scenario_site = worldbody.add_site(pos=[0, 0, 0], name='scenario_site')
         spec.attach(self.create_scenario_spec(), '', site=scenario_site)
@@ -68,7 +72,7 @@ class BaseScenario(abc.ABC):
     def get_swarm_start_location(self):
         return np.array([0.0, 0.0, 1.0])
 
-    def reset_scenario(self, model: mujoco.MjModel, data: mujoco.MjData) -> dict:
+    def reset_scenario(self, model: mujoco.MjModel, data: mujoco.MjData) -> tuple[dict, SwarmConnections]:
         return self.swarm.reset_swarm(model, data)
 
     def get_obs(

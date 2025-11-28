@@ -61,7 +61,7 @@ def make_env():
     return env
 
 def train():
-    vec_env = SubprocVecEnv([make_env] * 6)
+    vec_env = SubprocVecEnv([make_env] * 8)
 
     policy_kwargs = dict(net_arch=dict(pi=[256, 256], vf=[256, 256]))
     model = PPO(
@@ -69,8 +69,10 @@ def train():
         vec_env,
         policy_kwargs=policy_kwargs,
         verbose=1,
-        n_steps=64 * 31,
-        device="cpu"
+        n_steps=512,
+        device="cpu",
+        learning_rate=2e-5,
+        target_kl=0.05
     )
 
     print("Starting training...")

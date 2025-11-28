@@ -5,9 +5,9 @@ import numpy as np
 
 from swarmbots.scenarios.base_scenario import BaseScenario
 from swarmbots.swarm.base_swarm import BaseSwarm
+from swarmbots.swarm.swarm_connections import SwarmConnections
 
 PayloadType = Literal['sphere', 'box'] | None
-
 
 class ObstacleDungeonScenario(BaseScenario):
 
@@ -116,8 +116,8 @@ class ObstacleDungeonScenario(BaseScenario):
 
         return spec
 
-    def reset_scenario(self, model: mujoco.MjModel, data: mujoco.MjData) -> dict:
-        state = self.swarm.reset_swarm(model, data)
+    def reset_scenario(self, model: mujoco.MjModel, data: mujoco.MjData) -> tuple[dict, SwarmConnections]:
+        state, connections = self.swarm.reset_swarm(model, data)
 
         rng = self.rng
 
@@ -158,7 +158,7 @@ class ObstacleDungeonScenario(BaseScenario):
 
         state['progress'] = self._compute_progress(model, data)
 
-        return state
+        return state, connections
 
     def evaluate_step(
             self,
