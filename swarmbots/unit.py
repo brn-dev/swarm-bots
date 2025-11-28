@@ -4,18 +4,19 @@ from typing import Optional, Iterable
 import numpy as np
 import mujoco
 
-class HingeType(int, enum.Enum):
+class LimbType(int, enum.Enum):
     yx = 0
     zx = 1
 
-limb_directions: dict[int, dict[str, np.ndarray]] = {
+# name -> (direction, rgba)
+limb_directions: dict[int, dict[str, tuple[np.ndarray, tuple[float, float, float, float]]]] = {
     6: {
-        'xp': np.array([1, 0, 0]),
-        'xn': np.array([-1, 0, 0]),
-        'yp': np.array([0, 1, 0]),
-        'yn': np.array([0, -1, 0]),
-        'zp': np.array([0, 0, 1]),
-        'zn': np.array([0, 0, -1])
+        'xp': (np.array([ 1,  0,  0]), (  1,   0,   0,   1)),
+        'xn': (np.array([-1,  0,  0]), (0.7, 0.3,   0,   1)),
+        'yp': (np.array([ 0,  1,  0]), (  0,   1,   0,   1)),
+        'yn': (np.array([ 0, -1,  0]), (  0, 0.7, 0.3,   1)),
+        'zp': (np.array([ 0,  0,  1]), (  0,   0,   1,   1)),
+        'zn': (np.array([ 0,  0, -1]), (0.3,   0, 0.7,   1))
     }
 }
 
@@ -26,8 +27,7 @@ def init_unit(
     hinge_range: float,
     num_limbs: int = 6,
     body_rgba=(0.75, 0, 0, 0.1),
-    leg_rgba=(0, 0, 0, 1),
-    hinge_type: HingeType = HingeType.zx,
+    limb_type: LimbType = LimbType.zx,
     segment_1_ratio: float = 0.1
 ) -> mujoco.MjsBody:
     spec = mujoco.MjSpec()
@@ -44,7 +44,7 @@ def init_unit(
         rgba=body_rgba
     )
 
-    for direction_name, direction in limb_directions[num_limbs].items():
+    for direction_name, (direction, direction_rgba) in limb_directions[num_limbs].items():
         direction = np.array(direction)
         hip_pos = body_radius * direction
 
@@ -60,9 +60,9 @@ def init_unit(
             length=leg_length,
             radius=leg_radius,
             hinge_range=hinge_range,
-            rgba=leg_rgba,
+            rgba=direction_rgba,
             name=f'limb_{direction_name}',
-            hinge_type=hinge_type,
+            limb_type=limb_type,
             segment_1_ratio=segment_1_ratio
         )
 
@@ -76,14 +76,14 @@ def _build_limb(
         hinge_range: float,
         rgba: Iterable[float],
         name: str,
-        hinge_type: HingeType,
+        limb_type: LimbType,
         segment_1_ratio: float,
 ):
     rgba = tuple(rgba)
 
     first_segment = parent_body.add_body(name=name)
 
-    if hinge_type == HingeType.yx:
+    if limb_type == LimbType.yx:
         hinge1_name = f'{name}-hinge1y'
         hinge1 = first_segment.add_joint(
             type=mujoco.mjtJoint.mjJNT_HINGE,
@@ -91,7 +91,7 @@ def _build_limb(
             range=[-hinge_range, hinge_range],
             name=hinge1_name
         )
-    elif hinge_type == HingeType.zx:
+    elif limb_type == LimbType.zx:
         hinge1_name = f'{name}-hinge1z'
         hinge1 = first_segment.add_joint(
             type=mujoco.mjtJoint.mjJNT_HINGE,
@@ -99,7 +99,7 @@ def _build_limb(
             name=hinge1_name
         )
     else:
-        raise NotImplementedError(hinge_type)
+        raise NotImplementedError(limb_type)
 
     length1 = length * segment_1_ratio
 
@@ -131,20 +131,15 @@ def _build_limb(
         rgba=rgba
     )
 
-    tip: mujoco.MjsBody = second_segment.add_body(
-        name=f'{name}-tip',
+    connector: mujoco.MjsBody = second_segment.add_body(
+        name=f'{name}-connector',
         pos=[0, 0, length2]
     )
-    tip.add_geom(
+    connector.add_geom(
         type=mujoco.mjtGeom.mjGEOM_CYLINDER,
         fromto=[0, 0, 0, 0, 0, -length * 0.05],
         size=[radius * 1.1, 0, 0],
         rgba=rgba
-    )
-
-    second_segment.add_site(
-        name=f'{name}-tip-site',
-        pos=[0, 0, length2 * 1.]
     )
 
     spec.add_actuator(

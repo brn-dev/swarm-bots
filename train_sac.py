@@ -52,7 +52,8 @@ class FlattenMultiAgentWrapper(gym.Wrapper):
         return obs.flatten(), reward, terminated, truncated, info
 
 def make_env():
-    swarm = SimpleSwarm()
+    rng = np.random.default_rng(42)
+    swarm = SimpleSwarm(rng.integers(0, 10000000))
     scenario = ObstacleDungeonScenario(swarm=swarm, payload_type=None)
     env = SwarmBotsEnv(scenario=scenario, render_mode=None)
     env = FlattenMultiAgentWrapper(env)
@@ -73,6 +74,7 @@ def train():
         buffer_size=1_000_000, # Default is 1e6, which can be large in RAM. Adjust if needed.
         batch_size=256,
         learning_starts=10000,
+        ent_coef=0.05,
     )
 
     print("Starting training...")
@@ -86,7 +88,7 @@ def record(model=None):
     if model is None:
         model = SAC.load("sac_swarm_bots")
 
-    swarm = SimpleSwarm()
+    swarm = SimpleSwarm(42)
     scenario = ObstacleDungeonScenario(swarm=swarm, payload_type=None)
     
     env = SwarmBotsEnv(scenario=scenario, render_mode="rgb_array", width=640, height=480)

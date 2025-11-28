@@ -97,9 +97,14 @@ class SwarmBotsEnv(gymnasium.Env):
         if self.render_mode == "human":
             self.render()
 
-        return self.scenario.get_obs(self.model, self.data, self.scenario_state), reward, terminated, truncated, {}
+        obs = self.scenario.get_obs(self.model, self.data, self.scenario_state).copy()
 
-    def render(self) -> RenderFrame | list[RenderFrame] | None:
+        return obs, reward, terminated, truncated, {}
+
+    def render(
+            self,
+            scene_option: mujoco.MjvOption = None
+    ) -> RenderFrame | list[RenderFrame] | None:
         if self.render_mode is None:
             return None
 
@@ -108,7 +113,8 @@ class SwarmBotsEnv(gymnasium.Env):
                 self.model, height=self.height, width=self.width
             )
 
-        self._renderer.update_scene(self.data, camera=self.camera, scene_option=self.scene_option)
+        scene_option = scene_option or self.scene_option
+        self._renderer.update_scene(self.data, camera=self.camera, scene_option=scene_option)
 
         if self.render_mode in ("human", "rgb_array"):
             return self._renderer.render()
