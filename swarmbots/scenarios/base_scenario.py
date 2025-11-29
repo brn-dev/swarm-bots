@@ -18,21 +18,21 @@ class BaseScenario(abc.ABC):
 
         self.spec, self.model, self.data = self.build_scenario()
 
-        self._unit_prefixes = self.swarm.get_unit_prefixes()
+        unit_prefixes = self.swarm.config.unit_prefixes
         self._qpos_indices = np.array(
-            [mj_utils.qpos_indices_for_prefix(self.model, prefix) for prefix in self._unit_prefixes],
+            [mj_utils.qpos_indices_for_prefix(self.model, prefix) for prefix in unit_prefixes],
             dtype=int,
         )
         self._qvel_indices = np.array(
-            [mj_utils.dof_indices_for_prefix(self.model, prefix) for prefix in self._unit_prefixes],
+            [mj_utils.dof_indices_for_prefix(self.model, prefix) for prefix in unit_prefixes],
             dtype=int,
         )
         self._ctrl_indices = np.array(
-            [mj_utils.ctrl_indices_for_prefix(self.model, prefix) for prefix in self._unit_prefixes],
+            [mj_utils.ctrl_indices_for_prefix(self.model, prefix) for prefix in unit_prefixes],
             dtype=int,
         )
 
-        self._dummy_state = self.reset_scenario(self.model, self.data)
+        self._dummy_state, self._dummy_connections = self.reset_scenario(self.model, self.data)
 
     @abc.abstractmethod
     def create_scenario_spec(self) -> mujoco.MjSpec:
@@ -73,7 +73,13 @@ class BaseScenario(abc.ABC):
         return np.array([0.0, 0.0, 1.0])
 
     def reset_scenario(self, model: mujoco.MjModel, data: mujoco.MjData) -> tuple[dict, SwarmConnections]:
-        return self.swarm.reset_swarm(model, data)
+        state = dict()
+        connections = self.swarm.reset_swarm(model, data)
+
+        data.eq_active[:] = 0
+        # TODO activate eq constraints
+
+        return state, connections
 
     def get_obs(
             self,

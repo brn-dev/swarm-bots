@@ -54,7 +54,7 @@ class ObstacleDungeonScenario(BaseScenario):
 
         worldbody.add_camera(
             pos=[5, 0, 3], euler=[0, np.pi / 3, np.pi / 2],
-            mode=mujoco.mjtCamLight.mjCAMLIGHT_TRACK, targetbody='Unit1--main_body')
+            mode=mujoco.mjtCamLight.mjCAMLIGHT_TRACK, targetbody=f'{self.swarm.config.unit_prefixes[0]}-main_body')
 
         # side walls
         worldbody.add_geom(
@@ -117,7 +117,7 @@ class ObstacleDungeonScenario(BaseScenario):
         return spec
 
     def reset_scenario(self, model: mujoco.MjModel, data: mujoco.MjData) -> tuple[dict, SwarmConnections]:
-        state, connections = self.swarm.reset_swarm(model, data)
+        state, connections = super().reset_scenario(model, data)
 
         rng = self.rng
 

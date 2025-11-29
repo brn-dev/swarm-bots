@@ -14,31 +14,34 @@ class BaseSwarm(abc.ABC):
         self.rng = np.random.default_rng(seed)
         self.config = config
 
+
     @abc.abstractmethod
-    def create_swarm_spec(self) -> mujoco.MjSpec:
+    def _create_swarm_spec(self) -> mujoco.MjSpec:
         raise NotImplementedError()
 
     @abc.abstractmethod
-    def reset_swarm(self, model: mujoco.MjModel, data: mujoco.MjData) -> tuple[dict, SwarmConnections]:
+    def reset_swarm(self, model: mujoco.MjModel, data: mujoco.MjData) -> SwarmConnections:
         """
         initialize state and potentially randomize swarm
         """
         raise NotImplementedError()
 
-    def get_unit_prefixes(self) -> list[str]:
-        return [f'Unit{i}--' for i in range(0, self.config.num_units)]
+    def create_swarm_spec(self) -> mujoco.MjSpec:
+        spec = self._create_swarm_spec()
+        self.add_eq_constraints(spec)
+        return spec
 
     def add_eq_constraints(self, spec: mujoco.MjSpec):
-        for i in range(self.config.num_units - 1):
-            for j in range(i + 1, self.config.num_units):
+        for unit1 in range(self.config.num_units - 1):
+            for unit2 in range(unit1 + 1, self.config.num_units):
                 for conn1 in range(self.config.limbs_per_unit):
                     for conn2 in range(self.config.limbs_per_unit):
                         eq = spec.add_equality(
-                            name="site_weld",
-                            type=mujoco.mjtEq.mjEQ_WELD,  # or mjEQ_CONNECT
-                            objtype=mujoco.mjtObj.mjOBJ_BODY,  # tells MuJoCo the objs are sites
-                            name1=f"Unit{i}--connector",
-                            name2=f"Unit{j}--connector",
+                            name=self.config.get_eq_name(unit1, conn1, unit2, conn2),
+                            type=mujoco.mjtEq.mjEQ_WELD,
+                            objtype=mujoco.mjtObj.mjOBJ_BODY,
+                            name1=self.config.get_connector_name(unit1, conn1),
+                            name2=self.config.get_connector_name(unit2, conn2),
                         )
 
                         eq.data[:3] = [0, 0, 0]  # anchor
