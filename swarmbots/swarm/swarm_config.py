@@ -1,8 +1,36 @@
 from dataclasses import dataclass
 
+from swarmbots.swarm.unit_config import UnitConfig
+
+
+def get_connector_suffix(connector: int):
+    return f'-{connector}-connector'
 
 @dataclass
 class SwarmConfig:
-    num_units: int
-    limbs_per_unit: int
+
+    def __init__(
+            self,
+            num_units: int,
+            unit_config: UnitConfig
+    ):
+
+        self.num_units = num_units
+        self.unit_config = unit_config
+
+        self.limbs_per_unit = len(unit_config)
+        self.limb_name_to_idx = {
+            limb_cfg.name: i
+            for i, limb_cfg in enumerate(self.unit_config)
+        }
+
+        self.unit_prefixes = [f'Unit{i}-' for i in range(0, self.num_units)]
+
+    def get_connector_name(self, unit: int, connector: int):
+        return f'{self.unit_prefixes[unit]}{get_connector_suffix(connector)}'
+
+    def get_eq_name(self, unit1: int, conn1: int, unit2: int, conn2: int):
+        return f'eq_{unit1}-{conn1}_{unit2}-{conn2}'
+
+
 
