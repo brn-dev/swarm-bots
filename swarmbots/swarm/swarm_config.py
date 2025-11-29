@@ -12,11 +12,13 @@ class SwarmConfig:
     def __init__(
             self,
             num_units: int,
-            unit_config: UnitConfig
+            unit_config: UnitConfig,
+            connection_torquescale: float
     ):
 
         self.num_units = num_units
         self.unit_config = unit_config
+        self.connection_torquescale = connection_torquescale
 
         self.limbs_per_unit = len(unit_config)
         self.limb_name_to_idx = {

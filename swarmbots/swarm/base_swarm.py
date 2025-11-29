@@ -1,5 +1,4 @@
 import abc
-from dataclasses import dataclass
 
 import mujoco
 import numpy as np
@@ -10,17 +9,15 @@ from swarmbots.swarm.swarm_connections import SwarmConnections
 
 class BaseSwarm(abc.ABC):
 
-    def __init__(self, config: SwarmConfig, seed: int):
-        self.rng = np.random.default_rng(seed)
+    def __init__(self, config: SwarmConfig):
         self.config = config
-
 
     @abc.abstractmethod
     def _create_swarm_spec(self) -> mujoco.MjSpec:
         raise NotImplementedError()
 
     @abc.abstractmethod
-    def reset_swarm(self, model: mujoco.MjModel, data: mujoco.MjData) -> SwarmConnections:
+    def reset_swarm(self, model: mujoco.MjModel, data: mujoco.MjData, rng: np.random.Generator) -> SwarmConnections:
         """
         initialize state and potentially randomize swarm
         """
@@ -42,10 +39,11 @@ class BaseSwarm(abc.ABC):
                             objtype=mujoco.mjtObj.mjOBJ_BODY,
                             name1=self.config.get_connector_name(unit1, conn1),
                             name2=self.config.get_connector_name(unit2, conn2),
+                            active=False,
                         )
 
                         eq.data[:3] = [0, 0, 0]  # anchor
                         eq.data[3:6] = [0, 0, 0]  # relpose pos
                         eq.data[6:10] = [0, 1, 0, 0]  # relpose quat
-                        eq.data[10] = 50  # torquescale
+                        eq.data[10] = self.config.connection_torquescale  # torquescale
 
