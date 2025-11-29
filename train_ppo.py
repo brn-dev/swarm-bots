@@ -2,7 +2,7 @@ import gymnasium as gym
 from gymnasium import spaces
 import numpy as np
 from stable_baselines3 import PPO
-from stable_baselines3.common.vec_env import SubprocVecEnv
+from stable_baselines3.common.vec_env import SubprocVecEnv, VecNormalize, DummyVecEnv
 from stable_baselines3.common.monitor import Monitor
 import imageio
 
@@ -62,6 +62,7 @@ def make_env():
 
 def train():
     vec_env = SubprocVecEnv([make_env] * 8)
+    vec_env = VecNormalize(vec_env, norm_obs=True, norm_reward=True)
 
     policy_kwargs = dict(net_arch=dict(pi=[256, 256], vf=[256, 256]))
     model = PPO(
@@ -80,34 +81,47 @@ def train():
     print("Training finished.")
 
     model.save("ppo_swarm_bots")
+    vec_env.save("vecnormalize_swarm_bots.pkl")
     return model
 
-def record(model=None):
-    if model is None:
-        model = PPO.load("ppo_swarm_bots")
+def record(model_path="ppo_swarm_bots", vecnorm_path="vecnormalize_swarm_bots.pkl"):
+    def make_eval_env():
+        swarm = SimpleSwarm(42)
+        scenario = ObstacleDungeonScenario(swarm=swarm, payload_type=None)
+        env = SwarmBotsEnv(scenario=scenario, render_mode="rgb_array", width=640, height=480)
+        env = FlattenMultiAgentWrapper(env)
+        return env
+    model = PPO.load(model_path)
 
-    swarm = SimpleSwarm(42)
-    scenario = ObstacleDungeonScenario(swarm=swarm, payload_type=None)
-    
-    env = SwarmBotsEnv(scenario=scenario, render_mode="rgb_array", width=640, height=480)
-    env = FlattenMultiAgentWrapper(env)
+    # Create a single-env VecEnv for evaluation
+    eval_env = DummyVecEnv([make_eval_env])
 
-    obs, info = env.reset()
+    # Load VecNormalize with the saved stats, applied to this eval_env
+    eval_env = VecNormalize.load(vecnorm_path, eval_env)
+
+    # VERY IMPORTANT: don't keep updating stats during eval
+    eval_env.training = False
+    # And usually you don't want reward normalization in eval
+    eval_env.norm_reward = False
+
+    obs = eval_env.reset()
     images = []
     print("Recording rollout...")
 
     for _ in range(500):
+        # obs is (1, obs_dim) here, which is fine
         action, _states = model.predict(obs, deterministic=True)
-        obs, reward, terminated, truncated, info = env.step(action)
-        
-        img = env.render()
+        obs, rewards, dones, infos = eval_env.step(action)
+
+        # Render from the underlying base env
+        img = eval_env.envs[0].render()
         if img is not None:
             images.append(img)
-            
-        if terminated or truncated:
+
+        if dones[0]:
             break
 
-    env.close()
+    eval_env.close()
 
     if images:
         imageio.mimsave("swarm_bots_rollout_ppo.gif", images, fps=30)
@@ -116,6 +130,6 @@ def record(model=None):
         print("No images captured.")
 
 if __name__ == "__main__":
-    trained_model = train()
-    record(trained_model)
+    train()
+    record()
 
