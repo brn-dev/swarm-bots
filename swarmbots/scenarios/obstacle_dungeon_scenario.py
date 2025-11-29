@@ -1,4 +1,4 @@
-from typing import Literal
+from typing import Literal, Any
 
 import mujoco
 import numpy as np
@@ -16,9 +16,10 @@ class ObstacleDungeonScenario(BaseScenario):
             swarm: BaseSwarm,
             payload_type: PayloadType,
             ctrl_cost_weight: float = 0.001,
-            payload_size: float = 0.3
+            payload_size: float = 0.3,
+            seed: int = None
     ):
-        self.ctrl_cost_weight = ctrl_cost_weight
+        self.actuator_cost_weight = ctrl_cost_weight
 
         self.payload_type = payload_type
         self.payload_size = payload_size
@@ -34,7 +35,7 @@ class ObstacleDungeonScenario(BaseScenario):
         self.ramp_angle = np.asin(self.wall_height / self.ramp_length)
         self.ramp_distance_to_wall = self.ramp_length * np.cos(self.ramp_angle)
 
-        super().__init__(swarm)
+        super().__init__(swarm, seed)
 
     def create_scenario_spec(self) -> mujoco.MjSpec:
         spec = mujoco.MjSpec()
@@ -117,6 +118,7 @@ class ObstacleDungeonScenario(BaseScenario):
         return spec
 
     def reset_scenario(self, model: mujoco.MjModel, data: mujoco.MjData) -> tuple[dict, SwarmConnections]:
+        print('reset')
         state, connections = super().reset_scenario(model, data)
 
         rng = self.rng
@@ -162,7 +164,7 @@ class ObstacleDungeonScenario(BaseScenario):
 
     def evaluate_step(
             self,
-            action: np.ndarray,
+            action: dict[str, Any],
             model: mujoco.MjModel,
             data: mujoco.MjData,
             state: dict,
@@ -173,7 +175,8 @@ class ObstacleDungeonScenario(BaseScenario):
         state['progress'] = new_progress
 
         reward = new_progress - old_progress
-        reward -= np.square(action).mean() * self.ctrl_cost_weight
+
+        reward -= np.square(action['actuators']).mean() * self.actuator_cost_weight
 
         return reward, False
 

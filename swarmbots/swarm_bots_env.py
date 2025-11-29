@@ -1,13 +1,14 @@
-from typing import Any, SupportsFloat, TypeVar
+from typing import Any, SupportsFloat
 
 import gymnasium
 import mujoco
 import numpy as np
 from gymnasium import spaces
-from gymnasium.core import ActType, ObsType, RenderFrame
+from gymnasium.core import ObsType, RenderFrame
 from mujoco import MjvOption
 
 from swarmbots.scenarios.base_scenario import BaseScenario
+from swarmbots.swarm.swarm_connections import SwarmConnections
 
 
 class SwarmBotsEnv(gymnasium.Env):
@@ -16,7 +17,7 @@ class SwarmBotsEnv(gymnasium.Env):
     def __init__(
         self,
         scenario: BaseScenario,
-        duration: float = 10.0,
+        episode_length: int = 500,
         physics_steps_per_step: int = 1,
         action_scale: float = 1.0,
         action_repeat: int = 15,
@@ -27,7 +28,7 @@ class SwarmBotsEnv(gymnasium.Env):
         scene_option: MjvOption = None,
     ):
         self.action_repeat = action_repeat
-        self.duration = duration
+        self.episode_length = episode_length
         self.physics_steps_per_step = physics_steps_per_step
         self.action_scale = action_scale
         self.render_mode = render_mode
@@ -36,18 +37,16 @@ class SwarmBotsEnv(gymnasium.Env):
         self.camera = camera
         self.scene_option = scene_option
 
+        self.current_step = 0
+
         self.scenario = scenario
         self.model, self.data = self.scenario.model, self.scenario.data
 
         self.scenario_state: dict | None = None
+        self.swarm_connections: SwarmConnections | None = None
 
-        self.observation_space = spaces.Box(
-            low=-np.inf, high=np.inf, shape=scenario.get_obs_shape(), dtype=np.float32
-        )
-
-        self.action_space = spaces.Box(
-            low=-1, high=1, shape=scenario.get_action_shape(), dtype=np.float32
-        )
+        self.observation_space = scenario.get_obs_space()
+        self.action_space = scenario.get_action_space()
 
         self._renderer = None
 
@@ -58,46 +57,47 @@ class SwarmBotsEnv(gymnasium.Env):
         options: dict[str, Any] | None = None,
     ) -> tuple[ObsType, dict[str, Any]]:
         super().reset(seed=seed)
+        self.current_step = 0
+        self.scenario_state, self.swarm_connections = self.scenario.reset_scenario(self.model, self.data)
 
-        mujoco.mj_resetData(self.model, self.data)
-        self.scenario_state = self.scenario.reset_scenario(self.model, self.data)
-
-        return self.scenario.get_obs(self.model, self.data, self.scenario_state), {}
+        return self.scenario.get_obs(self.model, self.data, self.scenario_state, self.swarm_connections), {}
 
     def step(
-        self, action: ActType
+        self, action: dict[str, Any]
     ) -> tuple[ObsType, SupportsFloat, bool, bool, dict[str, Any]]:
-        action = np.array(action)
         self.scenario.apply_action(
-            self.model,
-            self.data,
-            action,
-            self.action_scale,
-            self.scenario_state
+            model=self.model,
+            data=self.data,
+            action=action,
+            action_scale=self.action_scale,
+            state=self.scenario_state,
+            connections=self.swarm_connections,
         )
 
         for _ in range(self.physics_steps_per_step):
             mujoco.mj_step(self.model, self.data, self.action_repeat)
 
-        if np.isnan(self.data.qpos).any() or np.isnan(self.data.qvel).any():
+        mj_warning: mujoco.MjWarningStat = self.data.warning[mujoco.mjtWarning.mjWARN_BADQACC]
+        if mj_warning.number > 0 or np.isnan(self.data.qpos).any() or np.isnan(self.data.qvel).any():
             return (
-                np.zeros_like(self.scenario.get_obs(self.model, self.data, self.scenario_state)),
+                np.zeros_like(self.scenario.get_obs(self.model, self.data, self.scenario_state, self.swarm_connections)),
                 -100.0,
                 True,
                 False,
-                {"error": "simulation_unstable"},
+                {"error": "simulation_unstable", "mj_warning.lastinfo": mj_warning.lastinfo},
             )
 
         reward, terminated = self.scenario.evaluate_step(
             action, self.model, self.data, self.scenario_state
         )
 
-        truncated = self.data.time >= self.duration
+        self.current_step += 1
+        truncated = self.current_step >= self.episode_length
 
         if self.render_mode == "human":
             self.render()
 
-        obs = self.scenario.get_obs(self.model, self.data, self.scenario_state).copy()
+        obs = self.scenario.get_obs(self.model, self.data, self.scenario_state, self.swarm_connections).copy()
 
         return obs, reward, terminated, truncated, {}
 

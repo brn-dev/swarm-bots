@@ -6,7 +6,7 @@ from stable_baselines3 import SAC
 from stable_baselines3.common.vec_env import SubprocVecEnv
 from stable_baselines3.common.monitor import Monitor
 
-from swarmbots.swarms_bot_env import SwarmBotsEnv
+from swarmbots.swarm_bots_env import SwarmBotsEnv
 from swarmbots.scenarios.obstacle_dungeon_scenario import ObstacleDungeonScenario
 from swarmbots.swarm.simple_swarm import SimpleSwarm
 
