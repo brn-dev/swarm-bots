@@ -55,10 +55,23 @@ class SwarmConnections:
 
         return unit2, unit2_connector
 
-    def get_is_active(self):
+    def get_is_active_mask(self):
         active_indices = np.where(self.connections[:, :, 0] != -1)
 
         is_active = np.zeros(self.connections.shape[:2], dtype=bool)
         is_active[active_indices] = True
 
         return is_active
+
+    def get_active_connections(self):
+        active_indices = np.where(self.connections[:, :, 0] != -1)
+
+        rows = np.stack(active_indices).T  # (N, 2): (u1, c1)
+        conns = self.connections[active_indices]  # (N, 2): (u2, c2)
+        edges = np.concatenate((rows, conns), axis=-1)  # (N, 4): [u1, c1, u2, c2]
+        angles = self.twist_angles[active_indices]  # (N,)
+
+        u1, c1, u2, c2 = edges[:, 0], edges[:, 1], edges[:, 2], edges[:, 3]
+        mask = (u1 < u2) | ((u1 == u2) & (c1 < c2))
+
+        return edges[mask], angles[mask]

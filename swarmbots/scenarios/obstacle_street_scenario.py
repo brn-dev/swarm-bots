@@ -9,7 +9,7 @@ from swarmbots.swarm.swarm_connections import SwarmConnections
 
 PayloadType = Literal['sphere', 'box'] | None
 
-class ObstacleDungeonScenario(BaseScenario):
+class ObstacleStreetScenario(BaseScenario):
 
     def __init__(
             self,
@@ -37,7 +37,7 @@ class ObstacleDungeonScenario(BaseScenario):
 
         super().__init__(swarm, seed)
 
-    def create_scenario_spec(self) -> mujoco.MjSpec:
+    def _create_scenario_spec(self) -> mujoco.MjSpec:
         spec = mujoco.MjSpec()
         spec.compiler.degree = 0
         worldbody: mujoco.MjsBody = spec.worldbody

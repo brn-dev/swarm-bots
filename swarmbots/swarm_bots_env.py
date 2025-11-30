@@ -40,7 +40,7 @@ class SwarmBotsEnv(gymnasium.Env):
         self.current_step = 0
 
         self.scenario = scenario
-        self.model, self.data = self.scenario.model, self.scenario.data
+        self.model, self.data = self.scenario.build()
 
         self.scenario_state: dict | None = None
         self.swarm_connections: SwarmConnections | None = None

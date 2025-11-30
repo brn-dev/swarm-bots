@@ -1,40 +1,43 @@
 import abc
-from typing import Generic, TypeVar, Optional, Any
+from typing import Any
 
 import mujoco
 import numpy as np
 from gymnasium import spaces
-from gymnasium.core import ActType
 from mujoco import MjsBody
 
-from swarmbots.swarm.base_swarm import BaseSwarm
 import swarmbots.mujoco_utils as mj_utils
+from swarmbots.swarm.base_swarm import BaseSwarm
 from swarmbots.swarm.swarm_connections import SwarmConnections
 
 
 class BaseScenario(abc.ABC):
 
-    def __init__(self, swarm: BaseSwarm, seed: int | None,
-                 connection_dist_threshold: float = 0.1,
-                 connection_angle_threshold: float = -0.3):
-        self.swarm = swarm
+    def __init__(
+        self,
+        swarm: BaseSwarm,
+        seed: int | None,
+    ):
         self.rng = np.random.default_rng(seed)
-        self.connection_dist_threshold = connection_dist_threshold
-        self.connection_angle_threshold = connection_angle_threshold
 
-        self.spec, self.model, self.data = self.build_scenario()
+        self.swarm = swarm
+        self.connection_dist_threshold = swarm.config.connection_dist_threshold
+        self.connection_angle_threshold = swarm.config.connection_angle_threshold
+
+        self.spec = self.create_scenario_spec()
+        self.dummy_model, self.dummy_data = self.build()
 
         unit_prefixes = self.swarm.config.unit_prefixes
         self._qpos_indices = np.array(
-            [mj_utils.qpos_indices_for_prefix(self.model, prefix) for prefix in unit_prefixes],
+            [mj_utils.qpos_indices_for_prefix(self.dummy_model, prefix) for prefix in unit_prefixes],
             dtype=int,
         )
         self._qvel_indices = np.array(
-            [mj_utils.dof_indices_for_prefix(self.model, prefix) for prefix in unit_prefixes],
+            [mj_utils.dof_indices_for_prefix(self.dummy_model, prefix) for prefix in unit_prefixes],
             dtype=int,
         )
         self._ctrl_indices = np.array(
-            [mj_utils.ctrl_indices_for_prefix(self.model, prefix) for prefix in unit_prefixes],
+            [mj_utils.ctrl_indices_for_prefix(self.dummy_model, prefix) for prefix in unit_prefixes],
             dtype=int,
         )
 
@@ -45,7 +48,7 @@ class BaseScenario(abc.ABC):
             for c in range(num_connectors):
                 conn_body_name = self.swarm.config.get_connector_name(u, c)
                 self._connector_body_indices[u, c] = mujoco.mj_name2id(
-                    self.model, mujoco.mjtObj.mjOBJ_BODY, conn_body_name
+                    self.dummy_model, mujoco.mjtObj.mjOBJ_BODY, conn_body_name
                 )
 
         self._eq_indices = np.full((num_units, num_connectors, num_units, num_connectors), -1, dtype=int)
@@ -55,14 +58,14 @@ class BaseScenario(abc.ABC):
                 for c1 in range(num_connectors):
                     for c2 in range(num_connectors):
                         eq_name = self.swarm.config.get_eq_name(u1, c1, u2, c2)
-                        eq_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_EQUALITY, eq_name)
+                        eq_id = mujoco.mj_name2id(self.dummy_model, mujoco.mjtObj.mjOBJ_EQUALITY, eq_name)
                         self._eq_indices[u1, c1, u2, c2] = eq_id
                         self._eq_indices[u2, c2, u1, c1] = eq_id
 
-        self._dummy_state, self._dummy_connections = self.reset_scenario(self.model, self.data)
+        self._dummy_state, self._dummy_connections = self.reset_scenario(self.dummy_model, self.dummy_data)
 
     @abc.abstractmethod
-    def create_scenario_spec(self) -> mujoco.MjSpec:
+    def _create_scenario_spec(self) -> mujoco.MjSpec:
         raise NotImplementedError()
 
     @abc.abstractmethod
@@ -78,7 +81,7 @@ class BaseScenario(abc.ABC):
         """
         raise NotImplementedError()
 
-    def build_scenario(self) -> tuple[mujoco.MjSpec, mujoco.MjModel, mujoco.MjData]:
+    def create_scenario_spec(self) -> mujoco.MjSpec:
         spec = mujoco.MjSpec()
         spec.compiler.degree = 0
         worldbody: MjsBody = spec.worldbody
@@ -89,26 +92,26 @@ class BaseScenario(abc.ABC):
         spec.attach(swarm_spec, '', site=swarm_site)
 
         scenario_site = worldbody.add_site(pos=[0, 0, 0], name='scenario_site')
-        spec.attach(self.create_scenario_spec(), '', site=scenario_site)
+        spec.attach(self._create_scenario_spec(), '', site=scenario_site)
 
-        model = spec.compile()
+        return spec
+
+    def build(self) -> tuple[mujoco.MjModel, mujoco.MjData]:
+        model = self.spec.compile()
         data = mujoco.MjData(model)
-
-        return spec, model, data
+        return model, data
 
     def get_swarm_start_location(self):
         return np.array([0.0, 0.0, 1.0])
 
     def reset_scenario(self, model: mujoco.MjModel, data: mujoco.MjData) -> tuple[dict, SwarmConnections]:
-        mujoco.mj_resetData(self.model, self.data)
+        mujoco.mj_resetData(model, data)
 
         state = dict()
         connections = self.swarm.reset_swarm(model, data, self.rng)
-        # todo remove
-        connections.reset()
 
-        data.eq_active[:] = 0
-        # TODO activate eq constraints
+        for (u1, c1, u2, c2), angle in zip(*connections.get_active_connections()):
+            self._activate_equality_constraint(model, data, u1, c1, u2, c2, angle)
 
         return state, connections
 
@@ -137,7 +140,7 @@ class BaseScenario(abc.ABC):
 
         connector_action = np.asarray(action['connectors'], dtype=bool)
 
-        currently_active = connections.get_is_active()
+        currently_active = connections.get_is_active_mask()
 
         newly_activated = np.logical_and(connector_action, np.logical_not(currently_active))
         newly_deactivated = np.logical_and(np.logical_not(connector_action), currently_active)
@@ -146,17 +149,17 @@ class BaseScenario(abc.ABC):
             model,
             data,
             connections,
-            np.stack(np.where(newly_activated)).T
+            newly_activated
         )
         state['num_connectors_successfully_connected'] = num_connectors_successfully_connected
         state['num_connectors_unsuccessfully_connected'] = num_connectors_unsuccessfully_connected
 
-        num_connectors_disconnected = self.disconnect(data, connections, np.stack(np.where(newly_deactivated)).T)
+        num_connectors_disconnected = self.disconnect(data, connections, newly_deactivated)
         state['num_connectors_disconnected'] = num_connectors_disconnected
 
 
     def get_obs_shape(self) -> tuple[int, ...]:
-        return self.get_obs(self.model, self.data, self._dummy_state, self._dummy_connections).shape
+        return self.get_obs(self.dummy_model, self.dummy_data, self._dummy_state, self._dummy_connections).shape
 
     def get_obs_space(self):
         return spaces.Box(
@@ -182,40 +185,60 @@ class BaseScenario(abc.ABC):
             model: mujoco.MjModel,
             data: mujoco.MjData,
             connections: SwarmConnections,
-            activated_indices: np.ndarray
+            newly_activated: np.ndarray
     ):
-        # Todo: search for closest connectors instead of using first available
-    
+        activated_indices = np.stack(np.where(newly_activated)).T
         activated_indices = np.concatenate((
             np.arange(len(activated_indices))[:, np.newaxis],
             activated_indices
         ), axis=-1)
         unused = np.ones(len(activated_indices), dtype=bool)
 
+        num_successful = 0
+
         for i, unit1, conn1 in activated_indices:
             if not unused[i]:
                 continue
+
             available_connectors = activated_indices[i + 1:][unused[i + 1:]]
+            available_connectors = available_connectors[available_connectors[:, 1] != unit1]
 
-            for j, unit2, conn2 in available_connectors:
-                if unit1 == unit2:
-                    continue
+            if len(available_connectors) == 0:
+                continue
 
-                id1 = self._connector_body_indices[unit1, conn1]
-                id2 = self._connector_body_indices[unit2, conn2]
+            body_id1 = self._connector_body_indices[unit1, conn1]
 
-                pos1 = data.xpos[id1]
-                mat1 = data.xmat[id1].reshape(3, 3)
-                pos2 = data.xpos[id2]
-                mat2 = data.xmat[id2].reshape(3, 3)
+            available_xpos = data.xpos[self._connector_body_indices[
+                available_connectors[:, 1], available_connectors[:, 2]
+            ]]
+
+            pos1 = data.xpos[body_id1]
+
+            available_dist = np.linalg.norm(available_xpos - pos1, axis=1)
+            available_close_enough_indices = np.arange(len(available_connectors))[
+                available_dist < self.connection_dist_threshold
+            ]
+
+            if len(available_close_enough_indices) == 0:
+                continue
+
+            available_connectors = available_connectors[available_close_enough_indices]
+            available_xpos = available_xpos[available_close_enough_indices]
+            available_dist = available_dist[available_close_enough_indices]
+
+            closest_to_farthest_order = np.argsort(available_dist)
+
+            available_connectors = available_connectors[closest_to_farthest_order]
+            available_xpos = available_xpos[closest_to_farthest_order]
+
+            for (j, unit2, conn2), pos2 in zip(available_connectors, available_xpos):
+                body_id2 = self._connector_body_indices[unit2, conn2]
+
+                mat1 = data.xmat[body_id1].reshape(3, 3)
+                mat2 = data.xmat[body_id2].reshape(3, 3)
 
                 z1 = mat1[:, 2]
                 z2 = mat2[:, 2]
-
-                # Distance Check
-                dist = np.linalg.norm(pos1 - pos2)
-                if dist > self.connection_dist_threshold:
-                    continue
 
                 # Orientation Check (Anti-aligned)
                 if np.dot(z1, z2) > self.connection_angle_threshold:
@@ -229,35 +252,32 @@ class BaseScenario(abc.ABC):
                 x1 = mat1[:, 0]
                 y1 = mat1[:, 1]
                 x2 = mat2[:, 0]
-                y2 = mat2[:, 1]
 
                 twist = np.arctan2(np.dot(x2, y1), np.dot(x2, x1))
                 
                 connections.connect(unit1, conn1, unit2, conn2, twist)
 
-                eq_idx = self._eq_indices[unit1, conn1, unit2, conn2]
-                if eq_idx != -1:
-                    data.eq_active[eq_idx] = 1
-                    mj_utils.apply_twist(model, eq_idx, twist)
+                self._activate_equality_constraint(model, data, unit1, conn1, unit2, conn2, twist)
 
-                unused[i] = False
                 unused[j] = False
+                num_successful += 1
                 break
 
-        num_unsuccessfully_connected = np.sum(unused)
-        num_successfully_connected = len(unused) - num_unsuccessfully_connected
+        num_connectors_successful = num_successful * 2
+        num_connectors_unsuccessful = len(activated_indices) - num_connectors_successful
 
-        return num_successfully_connected, num_unsuccessfully_connected
+        return num_connectors_successful, num_connectors_unsuccessful
 
     def disconnect(
             self,
             data: mujoco.MjData,
             connections: SwarmConnections,
-            disconnect_indices: np.ndarray
+            newly_deactivated: np.ndarray
     ):
         num_disconnected = 0
         already_disconnected = np.zeros((self.swarm.config.num_units, self.swarm.config.limbs_per_unit), dtype=bool)
 
+        disconnect_indices = np.stack(np.where(newly_deactivated)).T
         for unit, connector in disconnect_indices:
             if already_disconnected[unit, connector]:
                 continue
@@ -267,8 +287,38 @@ class BaseScenario(abc.ABC):
             already_disconnected[unit, connector] = True
             already_disconnected[other_unit, other_connector] = True
 
-            data.eq_active[self._eq_indices[unit, connector, other_unit, other_connector]] = False
+            self._deactivate_equality_constraint(data, unit, connector, other_unit, other_connector)
 
             num_disconnected += 2
 
         return num_disconnected
+
+    def _activate_equality_constraint(
+            self,
+            model: mujoco.MjModel,
+            data: mujoco.MjData,
+            unit1: int,
+            conn1: int,
+            unit2: int,
+            conn2: int,
+            twist: float
+    ):
+        eq_idx = self._eq_indices[unit1, conn1, unit2, conn2]
+        if eq_idx == -1:
+            raise ValueError(f'Equality constraint {unit1}-{conn1}_{unit2}-{conn2} not found')
+        data.eq_active[eq_idx] = 1
+        mj_utils.apply_twist(model, eq_idx, twist)
+
+    def _deactivate_equality_constraint(
+            self,
+            data: mujoco.MjData,
+            unit1: int,
+            conn1: int,
+            unit2: int,
+            conn2: int
+    ):
+        eq_idx = self._eq_indices[unit1, conn1, unit2, conn2]
+        if eq_idx == -1:
+            raise ValueError(f'Equality constraint {unit1}-{conn1}_{unit2}-{conn2} not found')
+        data.eq_active[eq_idx] = 0
+
