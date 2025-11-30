@@ -13,7 +13,7 @@ class SimpleSwarm(BaseSwarm):
 
     def __init__(self, connection_torquescale: float):
         super().__init__(SwarmConfig(
-            num_units=5,
+            num_units=2,
             unit_config=UNIT_CONFIG_CUBE_ZX,
             connection_torquescale=connection_torquescale,
         ))
@@ -41,38 +41,38 @@ class SimpleSwarm(BaseSwarm):
             unit_config=UNIT_CONFIG_CUBE_ZX,
         )
         unit.add_joint(type=mujoco.mjtJoint.mjJNT_FREE)
-        worldbody.add_frame(pos=[0, 0.6, 0]).attach_body(unit, self.config.unit_prefixes[1], '')
+        worldbody.add_frame(pos=[0, 0.601, 0], euler=[0, np.pi * 0.2, 0]).attach_body(unit, self.config.unit_prefixes[1], '')
+        # , euler=[0, np.pi * 1.9, 0]
 
-
-        unit = init_unit(
-            body_radius=0.1,
-            leg_length=0.2,
-            leg_radius=0.025,
-            hinge_range=np.pi / 4,
-            unit_config=UNIT_CONFIG_CUBE_ZX,
-        )
-        unit.add_joint(type=mujoco.mjtJoint.mjJNT_FREE)
-        worldbody.add_frame(pos=[1, 1, 0]).attach_body(unit, self.config.unit_prefixes[2], '')
-
-        unit = init_unit(
-            body_radius=0.1,
-            leg_length=0.2,
-            leg_radius=0.025,
-            hinge_range=np.pi / 4,
-            unit_config=UNIT_CONFIG_CUBE_ZX,
-        )
-        unit.add_joint(type=mujoco.mjtJoint.mjJNT_FREE)
-        worldbody.add_frame(pos=[-1, 1, 0]).attach_body(unit, self.config.unit_prefixes[3], '')
-
-        unit = init_unit(
-            body_radius=0.1,
-            leg_length=0.2,
-            leg_radius=0.025,
-            hinge_range=np.pi / 4,
-            unit_config=UNIT_CONFIG_CUBE_ZX,
-        )
-        unit.add_joint(type=mujoco.mjtJoint.mjJNT_FREE)
-        worldbody.add_frame(pos=[0, -1, 0]).attach_body(unit, self.config.unit_prefixes[4], '')
+        # unit = init_unit(
+        #     body_radius=0.1,
+        #     leg_length=0.2,
+        #     leg_radius=0.025,
+        #     hinge_range=np.pi / 4,
+        #     unit_config=UNIT_CONFIG_CUBE_ZX,
+        # )
+        # unit.add_joint(type=mujoco.mjtJoint.mjJNT_FREE)
+        # worldbody.add_frame(pos=[1, 1, 0]).attach_body(unit, self.config.unit_prefixes[2], '')
+        #
+        # unit = init_unit(
+        #     body_radius=0.1,
+        #     leg_length=0.2,
+        #     leg_radius=0.025,
+        #     hinge_range=np.pi / 4,
+        #     unit_config=UNIT_CONFIG_CUBE_ZX,
+        # )
+        # unit.add_joint(type=mujoco.mjtJoint.mjJNT_FREE)
+        # worldbody.add_frame(pos=[-1, 1, 0]).attach_body(unit, self.config.unit_prefixes[3], '')
+        #
+        # unit = init_unit(
+        #     body_radius=0.1,
+        #     leg_length=0.2,
+        #     leg_radius=0.025,
+        #     hinge_range=np.pi / 4,
+        #     unit_config=UNIT_CONFIG_CUBE_ZX,
+        # )
+        # unit.add_joint(type=mujoco.mjtJoint.mjJNT_FREE)
+        # worldbody.add_frame(pos=[0, -1, 0]).attach_body(unit, self.config.unit_prefixes[4], '')
 
         return spec
 

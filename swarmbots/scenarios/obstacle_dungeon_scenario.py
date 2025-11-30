@@ -118,7 +118,6 @@ class ObstacleDungeonScenario(BaseScenario):
         return spec
 
     def reset_scenario(self, model: mujoco.MjModel, data: mujoco.MjData) -> tuple[dict, SwarmConnections]:
-        print('reset')
         state, connections = super().reset_scenario(model, data)
 
         rng = self.rng

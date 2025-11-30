@@ -95,3 +95,8 @@ def ctrl_index_for_actuator(model: mujoco.MjModel, actuator_name: str) -> int:
 def ctrl_indices_for_prefix(model: mujoco.MjModel, prefix: str) -> list[int]:
     """All ctrl indices for actuators whose names start with prefix."""
     return actuator_ids_for_prefix(model, prefix)
+
+def apply_twist(model: mujoco.MjModel, eq_idx: int, twist: float):
+    model.eq_data[eq_idx, 7] = np.cos(twist / 2)
+    model.eq_data[eq_idx, 8] = np.sin(twist / 2)
+

@@ -14,9 +14,13 @@ from swarmbots.swarm.swarm_connections import SwarmConnections
 
 class BaseScenario(abc.ABC):
 
-    def __init__(self, swarm: BaseSwarm, seed: int | None):
+    def __init__(self, swarm: BaseSwarm, seed: int | None,
+                 connection_dist_threshold: float = 0.1,
+                 connection_angle_threshold: float = -0.3):
         self.swarm = swarm
         self.rng = np.random.default_rng(seed)
+        self.connection_dist_threshold = connection_dist_threshold
+        self.connection_angle_threshold = connection_angle_threshold
 
         self.spec, self.model, self.data = self.build_scenario()
 
@@ -100,6 +104,8 @@ class BaseScenario(abc.ABC):
 
         state = dict()
         connections = self.swarm.reset_swarm(model, data, self.rng)
+        # todo remove
+        connections.reset()
 
         data.eq_active[:] = 0
         # TODO activate eq constraints
@@ -115,6 +121,7 @@ class BaseScenario(abc.ABC):
     ) -> np.ndarray:
         qpos = data.qpos[self._qpos_indices]
         qvel = data.qvel[self._qvel_indices]
+        # todo connectors
         return np.concatenate([qpos, qvel], axis=1)
 
     def apply_action(
@@ -130,16 +137,22 @@ class BaseScenario(abc.ABC):
 
         connector_action = np.asarray(action['connectors'], dtype=bool)
 
-        currently_active, active_edges, active_angles = connections.get_active_connections()
+        currently_active = connections.get_is_active()
 
         newly_activated = np.logical_and(connector_action, np.logical_not(currently_active))
-
-        # TODO
-
-
         newly_deactivated = np.logical_and(np.logical_not(connector_action), currently_active)
-        for deactivated_unit, deactivated_connector in np.stack(newly_deactivated).T:
-            self.disconnect(data, connections, deactivated_unit, deactivated_connector)
+
+        num_connectors_successfully_connected, num_connectors_unsuccessfully_connected = self.try_connect(
+            model,
+            data,
+            connections,
+            np.stack(np.where(newly_activated)).T
+        )
+        state['num_connectors_successfully_connected'] = num_connectors_successfully_connected
+        state['num_connectors_unsuccessfully_connected'] = num_connectors_unsuccessfully_connected
+
+        num_connectors_disconnected = self.disconnect(data, connections, np.stack(np.where(newly_deactivated)).T)
+        state['num_connectors_disconnected'] = num_connectors_disconnected
 
 
     def get_obs_shape(self) -> tuple[int, ...]:
@@ -164,12 +177,98 @@ class BaseScenario(abc.ABC):
             'connectors': spaces.MultiBinary(self.get_connector_action_shape())
         })
 
+    def try_connect(
+            self,
+            model: mujoco.MjModel,
+            data: mujoco.MjData,
+            connections: SwarmConnections,
+            activated_indices: np.ndarray
+    ):
+        # Todo: search for closest connectors instead of using first available
+    
+        activated_indices = np.concatenate((
+            np.arange(len(activated_indices))[:, np.newaxis],
+            activated_indices
+        ), axis=-1)
+        unused = np.ones(len(activated_indices), dtype=bool)
+
+        for i, unit1, conn1 in activated_indices:
+            if not unused[i]:
+                continue
+            available_connectors = activated_indices[i + 1:][unused[i + 1:]]
+
+            for j, unit2, conn2 in available_connectors:
+                if unit1 == unit2:
+                    continue
+
+                id1 = self._connector_body_indices[unit1, conn1]
+                id2 = self._connector_body_indices[unit2, conn2]
+
+                pos1 = data.xpos[id1]
+                mat1 = data.xmat[id1].reshape(3, 3)
+                pos2 = data.xpos[id2]
+                mat2 = data.xmat[id2].reshape(3, 3)
+
+                z1 = mat1[:, 2]
+                z2 = mat2[:, 2]
+
+                # Distance Check
+                dist = np.linalg.norm(pos1 - pos2)
+                if dist > self.connection_dist_threshold:
+                    continue
+
+                # Orientation Check (Anti-aligned)
+                if np.dot(z1, z2) > self.connection_angle_threshold:
+                    continue
+
+                # "In Front" Check
+                rel_pos = pos2 - pos1
+                if np.dot(rel_pos, z1) < 0:
+                    continue
+
+                x1 = mat1[:, 0]
+                y1 = mat1[:, 1]
+                x2 = mat2[:, 0]
+                y2 = mat2[:, 1]
+
+                twist = np.arctan2(np.dot(x2, y1), np.dot(x2, x1))
+                
+                connections.connect(unit1, conn1, unit2, conn2, twist)
+
+                eq_idx = self._eq_indices[unit1, conn1, unit2, conn2]
+                if eq_idx != -1:
+                    data.eq_active[eq_idx] = 1
+                    mj_utils.apply_twist(model, eq_idx, twist)
+
+                unused[i] = False
+                unused[j] = False
+                break
+
+        num_unsuccessfully_connected = np.sum(unused)
+        num_successfully_connected = len(unused) - num_unsuccessfully_connected
+
+        return num_successfully_connected, num_unsuccessfully_connected
+
     def disconnect(
             self,
             data: mujoco.MjData,
             connections: SwarmConnections,
-            unit: int,
-            connector: int,
+            disconnect_indices: np.ndarray
     ):
-        other_unit, other_connector = connections.disconnect(unit, connector)
-        data.eq_active[self._eq_indices[unit, connector, other_unit, other_connector]] = False
+        num_disconnected = 0
+        already_disconnected = np.zeros((self.swarm.config.num_units, self.swarm.config.limbs_per_unit), dtype=bool)
+
+        for unit, connector in disconnect_indices:
+            if already_disconnected[unit, connector]:
+                continue
+
+            other_unit, other_connector = connections.disconnect(unit, connector)
+
+            already_disconnected[unit, connector] = True
+            already_disconnected[other_unit, other_connector] = True
+
+            data.eq_active[self._eq_indices[unit, connector, other_unit, other_connector]] = False
+
+            num_disconnected += 2
+
+        return num_disconnected
