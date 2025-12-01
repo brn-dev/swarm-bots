@@ -1,13 +1,13 @@
 import mujoco
 from swarmbots.swarm_bots_env import SwarmBotsEnv
-from swarmbots.swarm.simple_swarm import SimpleSwarm
+from swarmbots.swarm.simple_swarm_cube_zx import SimpleSwarmCubeZX
 from swarmbots.scenarios.obstacle_street_scenario import ObstacleStreetScenario
 from rendering import display_video
 
 import numpy as np
 
 
-swarm = SimpleSwarm(connection_torquescale=0.01)
+swarm = SimpleSwarmCubeZX(connection_torquescale=0.01)
 scenario = ObstacleStreetScenario(swarm, payload_type=None, seed=42)
 
 opt = mujoco.MjvOption()
