@@ -15,14 +15,27 @@ class BaseScenario(abc.ABC):
 
     def __init__(
         self,
-        swarm: BaseSwarm,
-        seed: int | None,
+            swarm: BaseSwarm,
+            actuators_activation_reward_weight: float,
+            connectors_stayed_active_reward_weight: float,
+            connectors_successfully_activated_reward_weight: float,
+            connectors_unsuccessfully_activated_reward_weight: float,
+            connectors_deactivated_reward_weight: float,
+            seed: int | None,
     ):
         self.rng = np.random.default_rng(seed)
 
         self.swarm = swarm
+        self.num_units = swarm.config.num_units
+        self.limbs_per_unit = swarm.config.limbs_per_unit
         self.connection_dist_threshold = swarm.config.connection_dist_threshold
         self.connection_angle_threshold = swarm.config.connection_angle_threshold
+
+        self.actuators_activation_reward_weight = actuators_activation_reward_weight
+        self.connectors_stayed_active_reward_weight = connectors_stayed_active_reward_weight
+        self.connectors_successfully_activated_reward_weight = connectors_successfully_activated_reward_weight
+        self.connectors_unsuccessfully_activated_reward_weight = connectors_unsuccessfully_activated_reward_weight
+        self.connectors_deactivated_reward_weight = connectors_deactivated_reward_weight
 
         self.spec = self.create_scenario_spec()
         self.dummy_model, self.dummy_data = self.build()
@@ -41,8 +54,8 @@ class BaseScenario(abc.ABC):
             dtype=int,
         )
 
-        num_units = self.swarm.config.num_units
-        num_connectors = self.swarm.config.limbs_per_unit
+        num_units = self.num_units
+        num_connectors = self.limbs_per_unit
         self._connector_body_indices = np.zeros((num_units, num_connectors), dtype=int)
         for u in range(num_units):
             for c in range(num_connectors):
@@ -124,8 +137,20 @@ class BaseScenario(abc.ABC):
     ) -> np.ndarray:
         qpos = data.qpos[self._qpos_indices]
         qvel = data.qvel[self._qvel_indices]
-        # todo connectors
-        return np.concatenate([qpos, qvel], axis=1)
+
+        # connectors
+        is_active = connections.get_is_active_mask()
+        active_indices = np.where(is_active)
+        non_active_indices = np.where(np.logical_not(is_active))
+        twist_angles = connections.twist_angles.copy()
+
+        connector_obs = np.zeros((self.num_units, self.limbs_per_unit, 3))
+        connector_obs[non_active_indices[0], non_active_indices[1], 0] = 1
+        connector_obs[active_indices[0], active_indices[1], 1] = 1
+        connector_obs[active_indices[0], active_indices[1], 2] = twist_angles[is_active]
+        connector_obs = connector_obs.reshape((self.num_units, -1))
+
+        return np.concatenate([qpos, qvel, connector_obs], axis=1)
 
     def apply_action(
             self,
@@ -136,26 +161,31 @@ class BaseScenario(abc.ABC):
             state: dict,
             connections: SwarmConnections
     ) -> None:
-        data.ctrl[self._ctrl_indices] = action['actuators'] * action_scale
+        actuator_action = action['actuators']
+        data.ctrl[self._ctrl_indices] = actuator_action * action_scale
+        state['actuator_activation'] = np.square(actuator_action).mean()
 
         connector_action = np.asarray(action['connectors'], dtype=bool)
 
         currently_active = connections.get_is_active_mask()
 
+        stayed_active = np.logical_and(connector_action, currently_active)
         newly_activated = np.logical_and(connector_action, np.logical_not(currently_active))
         newly_deactivated = np.logical_and(np.logical_not(connector_action), currently_active)
 
-        num_connectors_successfully_connected, num_connectors_unsuccessfully_connected = self.try_connect(
+        state['num_connectors_stayed_active'] = stayed_active.sum()
+
+        num_connectors_successfully_activated, num_connectors_unsuccessfully_activated = self.try_connect(
             model,
             data,
             connections,
             newly_activated
         )
-        state['num_connectors_successfully_connected'] = num_connectors_successfully_connected
-        state['num_connectors_unsuccessfully_connected'] = num_connectors_unsuccessfully_connected
+        state['num_connectors_successfully_activated'] = num_connectors_successfully_activated
+        state['num_connectors_unsuccessfully_activated'] = num_connectors_unsuccessfully_activated
 
-        num_connectors_disconnected = self.disconnect(data, connections, newly_deactivated)
-        state['num_connectors_disconnected'] = num_connectors_disconnected
+        num_connectors_deactivated = self.disconnect(data, connections, newly_deactivated)
+        state['num_connectors_deactivated'] = num_connectors_deactivated
 
 
     def get_obs_shape(self) -> tuple[int, ...]:
@@ -275,7 +305,7 @@ class BaseScenario(abc.ABC):
             newly_deactivated: np.ndarray
     ):
         num_disconnected = 0
-        already_disconnected = np.zeros((self.swarm.config.num_units, self.swarm.config.limbs_per_unit), dtype=bool)
+        already_disconnected = np.zeros((self.num_units, self.limbs_per_unit), dtype=bool)
 
         disconnect_indices = np.stack(np.where(newly_deactivated)).T
         for unit, connector in disconnect_indices:
@@ -321,4 +351,16 @@ class BaseScenario(abc.ABC):
         if eq_idx == -1:
             raise ValueError(f'Equality constraint {unit1}-{conn1}_{unit2}-{conn2} not found')
         data.eq_active[eq_idx] = 0
+
+    def compute_action_reward(
+            self,
+            state: dict
+    ):
+        reward = 0.0
+        reward += state['actuator_activation'] * self.actuators_activation_reward_weight
+        reward += state['num_connectors_stayed_active'] * self.connectors_stayed_active_reward_weight
+        reward += state['num_connectors_successfully_activated'] * self.connectors_successfully_activated_reward_weight
+        reward += state['num_connectors_unsuccessfully_activated'] * self.connectors_unsuccessfully_activated_reward_weight
+        reward += state['num_connectors_deactivated'] * self.connectors_deactivated_reward_weight
+        return reward
 
