@@ -15,12 +15,14 @@ class ObstacleStreetScenario(BaseScenario):
             self,
             swarm: BaseSwarm,
             payload_type: PayloadType,
-            ctrl_cost_weight: float = 0.001,
             payload_size: float = 0.3,
+            actuators_activation_reward_weight: float = -0.001,
+            connectors_stayed_active_reward_weight: float = 0.0,
+            connectors_successfully_activated_reward_weight: float = 0.0,
+            connectors_unsuccessfully_activated_reward_weight: float = 0.0,
+            connectors_deactivated_reward_weight: float = 0.0,
             seed: int = None
     ):
-        self.actuator_cost_weight = ctrl_cost_weight
-
         self.payload_type = payload_type
         self.payload_size = payload_size
 
@@ -35,7 +37,15 @@ class ObstacleStreetScenario(BaseScenario):
         self.ramp_angle = np.asin(self.wall_height / self.ramp_length)
         self.ramp_distance_to_wall = self.ramp_length * np.cos(self.ramp_angle)
 
-        super().__init__(swarm, seed)
+        super().__init__(
+            swarm=swarm,
+            actuators_activation_reward_weight=actuators_activation_reward_weight,
+            connectors_stayed_active_reward_weight=connectors_stayed_active_reward_weight,
+            connectors_successfully_activated_reward_weight=connectors_successfully_activated_reward_weight,
+            connectors_unsuccessfully_activated_reward_weight=connectors_unsuccessfully_activated_reward_weight,
+            connectors_deactivated_reward_weight=connectors_deactivated_reward_weight,
+            seed=seed
+        )
 
     def _create_scenario_spec(self) -> mujoco.MjSpec:
         spec = mujoco.MjSpec()
@@ -175,7 +185,7 @@ class ObstacleStreetScenario(BaseScenario):
 
         reward = new_progress - old_progress
 
-        reward -= np.square(action['actuators']).mean() * self.actuator_cost_weight
+        reward += self.compute_action_reward(state)
 
         return reward, False
 
