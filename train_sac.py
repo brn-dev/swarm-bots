@@ -8,7 +8,7 @@ from stable_baselines3.common.monitor import Monitor
 
 from swarmbots.swarm_bots_env import SwarmBotsEnv
 from swarmbots.scenarios.obstacle_street_scenario import ObstacleStreetScenario
-from swarmbots.swarm.simple_swarm import SimpleSwarm
+from swarmbots.swarm.simple_swarm_cube_zx import SimpleSwarmCubeZX
 
 class FlattenMultiAgentWrapper(gym.Wrapper):
     def __init__(self, env):
@@ -53,7 +53,7 @@ class FlattenMultiAgentWrapper(gym.Wrapper):
 
 def make_env():
     rng = np.random.default_rng(42)
-    swarm = SimpleSwarm(rng.integers(0, 10000000))
+    swarm = SimpleSwarmCubeZX(rng.integers(0, 10000000))
     scenario = ObstacleStreetScenario(swarm=swarm, payload_type=None)
     env = SwarmBotsEnv(scenario=scenario, render_mode=None)
     env = FlattenMultiAgentWrapper(env)
@@ -88,7 +88,7 @@ def record(model=None):
     if model is None:
         model = SAC.load("sac_swarm_bots")
 
-    swarm = SimpleSwarm(42)
+    swarm = SimpleSwarmCubeZX(42)
     scenario = ObstacleStreetScenario(swarm=swarm, payload_type=None)
     
     env = SwarmBotsEnv(scenario=scenario, render_mode="rgb_array", width=640, height=480)

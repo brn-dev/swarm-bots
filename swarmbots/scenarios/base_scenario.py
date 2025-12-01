@@ -21,6 +21,7 @@ class BaseScenario(abc.ABC):
             connectors_successfully_activated_reward_weight: float,
             connectors_unsuccessfully_activated_reward_weight: float,
             connectors_deactivated_reward_weight: float,
+            average_connectors_reward: bool,
             seed: int | None,
     ):
         self.rng = np.random.default_rng(seed)
@@ -28,6 +29,7 @@ class BaseScenario(abc.ABC):
         self.swarm = swarm
         self.num_units = swarm.config.num_units
         self.limbs_per_unit = swarm.config.limbs_per_unit
+        self.num_connectors = self.num_units * self.limbs_per_unit
         self.connection_dist_threshold = swarm.config.connection_dist_threshold
         self.connection_angle_threshold = swarm.config.connection_angle_threshold
 
@@ -36,6 +38,7 @@ class BaseScenario(abc.ABC):
         self.connectors_successfully_activated_reward_weight = connectors_successfully_activated_reward_weight
         self.connectors_unsuccessfully_activated_reward_weight = connectors_unsuccessfully_activated_reward_weight
         self.connectors_deactivated_reward_weight = connectors_deactivated_reward_weight
+        self.average_connectors_reward = average_connectors_reward
 
         self.spec = self.create_scenario_spec()
         self.dummy_model, self.dummy_data = self.build()
@@ -161,30 +164,28 @@ class BaseScenario(abc.ABC):
             state: dict,
             connections: SwarmConnections
     ) -> None:
-        actuator_action = action['actuators']
-        data.ctrl[self._ctrl_indices] = actuator_action * action_scale
-        state['actuator_activation'] = np.square(actuator_action).mean()
+        data.ctrl[self._ctrl_indices] = action['actuators'] * action_scale
 
-        connector_action = np.asarray(action['connectors'], dtype=bool)
+        connectors_action = np.asarray(action['connectors'], dtype=bool)
 
-        currently_active = connections.get_is_active_mask()
+        currently_active_mask = connections.get_is_active_mask()
 
-        stayed_active = np.logical_and(connector_action, currently_active)
-        newly_activated = np.logical_and(connector_action, np.logical_not(currently_active))
-        newly_deactivated = np.logical_and(np.logical_not(connector_action), currently_active)
+        stayed_active_mask = np.logical_and(connectors_action, currently_active_mask)
+        newly_activated_mask = np.logical_and(connectors_action, np.logical_not(currently_active_mask))
+        newly_deactivated_mask = np.logical_and(np.logical_not(connectors_action), currently_active_mask)
 
-        state['num_connectors_stayed_active'] = stayed_active.sum()
+        state['num_connectors_stayed_active'] = stayed_active_mask.sum()
 
         num_connectors_successfully_activated, num_connectors_unsuccessfully_activated = self.try_connect(
             model,
             data,
             connections,
-            newly_activated
+            newly_activated_mask
         )
         state['num_connectors_successfully_activated'] = num_connectors_successfully_activated
         state['num_connectors_unsuccessfully_activated'] = num_connectors_unsuccessfully_activated
 
-        num_connectors_deactivated = self.disconnect(data, connections, newly_deactivated)
+        num_connectors_deactivated = self.disconnect(data, connections, newly_deactivated_mask)
         state['num_connectors_deactivated'] = num_connectors_deactivated
 
 
@@ -215,9 +216,9 @@ class BaseScenario(abc.ABC):
             model: mujoco.MjModel,
             data: mujoco.MjData,
             connections: SwarmConnections,
-            newly_activated: np.ndarray
+            newly_activated_mask: np.ndarray
     ):
-        activated_indices = np.stack(np.where(newly_activated)).T
+        activated_indices = np.stack(np.where(newly_activated_mask)).T
         activated_indices = np.concatenate((
             np.arange(len(activated_indices))[:, np.newaxis],
             activated_indices
@@ -302,12 +303,12 @@ class BaseScenario(abc.ABC):
             self,
             data: mujoco.MjData,
             connections: SwarmConnections,
-            newly_deactivated: np.ndarray
+            newly_deactivated_mask: np.ndarray
     ):
         num_disconnected = 0
         already_disconnected = np.zeros((self.num_units, self.limbs_per_unit), dtype=bool)
 
-        disconnect_indices = np.stack(np.where(newly_deactivated)).T
+        disconnect_indices = np.stack(np.where(newly_deactivated_mask)).T
         for unit, connector in disconnect_indices:
             if already_disconnected[unit, connector]:
                 continue
@@ -354,13 +355,24 @@ class BaseScenario(abc.ABC):
 
     def compute_action_reward(
             self,
+            action: dict[str, Any],
             state: dict
     ):
         reward = 0.0
-        reward += state['actuator_activation'] * self.actuators_activation_reward_weight
-        reward += state['num_connectors_stayed_active'] * self.connectors_stayed_active_reward_weight
-        reward += state['num_connectors_successfully_activated'] * self.connectors_successfully_activated_reward_weight
-        reward += state['num_connectors_unsuccessfully_activated'] * self.connectors_unsuccessfully_activated_reward_weight
-        reward += state['num_connectors_deactivated'] * self.connectors_deactivated_reward_weight
+
+        actuator_activation = np.square(action['actuators']).mean()
+        reward += actuator_activation * self.actuators_activation_reward_weight
+
+        connectors_reward = 0.0
+        connectors_reward += state['num_connectors_stayed_active'] * self.connectors_stayed_active_reward_weight
+        connectors_reward += state['num_connectors_successfully_activated'] * self.connectors_successfully_activated_reward_weight
+        connectors_reward += state['num_connectors_unsuccessfully_activated'] * self.connectors_unsuccessfully_activated_reward_weight
+        connectors_reward += state['num_connectors_deactivated'] * self.connectors_deactivated_reward_weight
+
+        if self.average_connectors_reward:
+            connectors_reward /= self.num_connectors
+
+        reward += connectors_reward
+
         return reward
 

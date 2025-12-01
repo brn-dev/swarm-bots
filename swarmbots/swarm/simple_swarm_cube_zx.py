@@ -9,7 +9,7 @@ from swarmbots.swarm.unit_config import UNIT_CONFIG_CUBE_ZX
 from swarmbots.swarm.unit import init_unit
 
 
-class SimpleSwarm(BaseSwarm):
+class SimpleSwarmCubeZX(BaseSwarm):
 
     def __init__(self, connection_torquescale: float):
         super().__init__(SwarmConfig(

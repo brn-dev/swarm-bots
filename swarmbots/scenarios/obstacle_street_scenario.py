@@ -17,10 +17,11 @@ class ObstacleStreetScenario(BaseScenario):
             payload_type: PayloadType,
             payload_size: float = 0.3,
             actuators_activation_reward_weight: float = -0.001,
-            connectors_stayed_active_reward_weight: float = 0.0,
-            connectors_successfully_activated_reward_weight: float = 0.0,
-            connectors_unsuccessfully_activated_reward_weight: float = 0.0,
-            connectors_deactivated_reward_weight: float = 0.0,
+            connectors_stayed_active_reward_weight: float = 0.0002,
+            connectors_successfully_activated_reward_weight: float = 0.001,
+            connectors_unsuccessfully_activated_reward_weight: float = -0.001,
+            connectors_deactivated_reward_weight: float = -0.001,
+            average_connectors_reward: bool = True,
             seed: int = None
     ):
         self.payload_type = payload_type
@@ -44,6 +45,7 @@ class ObstacleStreetScenario(BaseScenario):
             connectors_successfully_activated_reward_weight=connectors_successfully_activated_reward_weight,
             connectors_unsuccessfully_activated_reward_weight=connectors_unsuccessfully_activated_reward_weight,
             connectors_deactivated_reward_weight=connectors_deactivated_reward_weight,
+            average_connectors_reward=average_connectors_reward,
             seed=seed
         )
 
@@ -167,7 +169,7 @@ class ObstacleStreetScenario(BaseScenario):
 
         mujoco.mj_forward(model, data)
 
-        state['progress'] = self._compute_progress(model, data)
+        state['progress'] = self._compute_progress(data)
 
         return state, connections
 
@@ -178,20 +180,24 @@ class ObstacleStreetScenario(BaseScenario):
             data: mujoco.MjData,
             state: dict,
     ) -> tuple[float, bool]:
+        """
+        :return: (reward, done)
+        """
 
         old_progress = state['progress']
-        new_progress = self._compute_progress(model, data)
+        new_progress = self._compute_progress(data)
         state['progress'] = new_progress
 
-        reward = new_progress - old_progress
+        progress_reward = new_progress - old_progress
+        state['progress_reward'] = progress_reward
 
-        reward += self.compute_action_reward(state)
+        action_reward = self.compute_action_reward(action, state)
+        state['action_reward'] = action_reward
 
-        return reward, False
+        return progress_reward + action_reward, False
 
     def _compute_progress(
             self,
-            model: mujoco.MjModel,
             data: mujoco.MjData
     ):
         return data.qpos[self._qpos_indices[:, 1]].mean()  # avg y pos of the unit bodies
