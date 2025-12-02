@@ -24,6 +24,7 @@ class BaseScenario(abc.ABC):
         self,
             swarm: BaseSwarm,
             actuators_activation_reward_weight: float,
+            units_without_connections_reward_weight: float,
             connectors_stayed_active_reward_weight: float,
             connectors_successfully_activated_reward_weight: float,
             connectors_unsuccessfully_activated_reward_weight: float,
@@ -42,6 +43,7 @@ class BaseScenario(abc.ABC):
         self.connection_angle_threshold = swarm.config.connection_angle_threshold
 
         self.actuators_activation_reward_weight = actuators_activation_reward_weight
+        self.units_without_connections_reward_weight = units_without_connections_reward_weight
         self.connectors_stayed_active_reward_weight = connectors_stayed_active_reward_weight
         self.connectors_successfully_activated_reward_weight = connectors_successfully_activated_reward_weight
         self.connectors_unsuccessfully_activated_reward_weight = connectors_unsuccessfully_activated_reward_weight
@@ -98,10 +100,11 @@ class BaseScenario(abc.ABC):
     @abc.abstractmethod
     def evaluate_step(
             self,
-            action: dict[str, Any],
+            action: SwarmActDict,
             model: mujoco.MjModel,
             data: mujoco.MjData,
             state: dict,
+            connections: SwarmConnections
     ) -> tuple[float, bool]:
         """
         :return: (new_state, reward for step, done)
@@ -213,6 +216,7 @@ class BaseScenario(abc.ABC):
         deactivation_mask = connections.update_disconnect_potentials(currently_active_mask, newly_deactivated_mask)
         num_connectors_deactivated = self.disconnect(data, connections, deactivation_mask)
         state['num_connectors_deactivated'] = num_connectors_deactivated
+
 
     def get_obs_space(self):
         obs = self.get_obs(self.dummy_model, self.dummy_data, self._dummy_state, self._dummy_connections)
@@ -384,12 +388,18 @@ class BaseScenario(abc.ABC):
     def compute_action_reward(
             self,
             action: dict[str, Any],
-            state: dict
+            state: dict,
+            connections: SwarmConnections
     ):
         reward = 0.0
 
         actuator_activation = np.square(action['actuators']).mean()
         reward += actuator_activation * self.actuators_activation_reward_weight
+
+        num_units_without_connections = np.logical_not(connections.get_is_active_mask()).all(axis=1).sum()
+        state['num_units_without_connections'] = num_units_without_connections
+        units_without_connections_ratio = num_units_without_connections / self.num_units
+        reward += units_without_connections_ratio * self.units_without_connections_reward_weight
 
         connectors_reward = 0.0
         connectors_reward += state['num_connectors_stayed_active'] * self.connectors_stayed_active_reward_weight

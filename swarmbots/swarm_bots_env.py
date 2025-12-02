@@ -4,10 +4,10 @@ import gymnasium
 import mujoco
 import numpy as np
 from gymnasium import spaces
-from gymnasium.core import ObsType, RenderFrame
+from gymnasium.core import RenderFrame
 from mujoco import MjvOption
 
-from swarmbots.scenarios.base_scenario import BaseScenario, SwarmActDict
+from swarmbots.scenarios.base_scenario import BaseScenario, SwarmActDict, SwarmObsDict
 from swarmbots.swarm.swarm_connections import SwarmConnections
 
 
@@ -59,12 +59,17 @@ class SwarmBotsEnv(gymnasium.Env):
 
         self._renderer = None
 
+        self._zeros_obs: SwarmObsDict = {
+            'global_obs': np.zeros(self.observation_space['global_obs'].shape),
+            'local_obs': np.zeros(self.observation_space['local_obs'].shape)
+        }
+
     def reset(
         self,
         *,
         seed: int | None = None,
         options: dict[str, Any] | None = None,
-    ) -> tuple[ObsType, dict[str, Any]]:
+    ) -> tuple[SwarmObsDict, dict[str, Any]]:
         super().reset(seed=seed)
         self.current_step = 0
         self.scenario_state, self.swarm_connections = self.scenario.reset_scenario(self.model, self.data)
@@ -73,7 +78,7 @@ class SwarmBotsEnv(gymnasium.Env):
 
     def step(
         self, action: SwarmActDict
-    ) -> tuple[ObsType, SupportsFloat, bool, bool, dict[str, Any]]:
+    ) -> tuple[SwarmObsDict, SupportsFloat, bool, bool, dict[str, Any]]:
         self.scenario.apply_action(
             model=self.model,
             data=self.data,
@@ -90,7 +95,7 @@ class SwarmBotsEnv(gymnasium.Env):
         if mj_warning.number > 0 or np.isnan(self.data.qpos).any() or np.isnan(self.data.qvel).any():
             print('Simulation Unstable!')
             return (
-                np.zeros_like(self.scenario.get_obs(self.model, self.data, self.scenario_state, self.swarm_connections)),
+                self._zeros_obs.copy(),
                 self.simulation_unstable_reward,
                 True,
                 False,
@@ -98,7 +103,7 @@ class SwarmBotsEnv(gymnasium.Env):
             )
 
         reward, terminated = self.scenario.evaluate_step(
-            action, self.model, self.data, self.scenario_state
+            action, self.model, self.data, self.scenario_state, self.swarm_connections
         )
 
         self.current_step += 1
