@@ -26,6 +26,7 @@ class SwarmBotsEnv(gymnasium.Env):
         height: int = 480,
         camera: int = 0,
         scene_option: MjvOption = None,
+        simulation_unstable_reward: float = -0.1,
     ):
         self.action_repeat = action_repeat
         self.episode_length = episode_length
@@ -36,6 +37,7 @@ class SwarmBotsEnv(gymnasium.Env):
         self.height = height
         self.camera = camera
         self.scene_option = scene_option
+        self.simulation_unstable_reward = simulation_unstable_reward
 
         self.current_step = 0
 
@@ -79,9 +81,10 @@ class SwarmBotsEnv(gymnasium.Env):
 
         mj_warning: mujoco.MjWarningStat = self.data.warning[mujoco.mjtWarning.mjWARN_BADQACC]
         if mj_warning.number > 0 or np.isnan(self.data.qpos).any() or np.isnan(self.data.qvel).any():
+            print('Simulation Unstable!')
             return (
                 np.zeros_like(self.scenario.get_obs(self.model, self.data, self.scenario_state, self.swarm_connections)),
-                -100.0,
+                self.simulation_unstable_reward,
                 True,
                 False,
                 {"error": "simulation_unstable", "mj_warning.lastinfo": mj_warning.lastinfo},
@@ -99,7 +102,7 @@ class SwarmBotsEnv(gymnasium.Env):
 
         obs = self.scenario.get_obs(self.model, self.data, self.scenario_state, self.swarm_connections).copy()
 
-        return obs, reward, terminated, truncated, {}
+        return obs, reward, terminated, truncated, self.scenario_state
 
     def render(
             self,

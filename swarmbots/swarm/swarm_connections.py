@@ -8,6 +8,7 @@ class SwarmConnections:
     def __init__(self, config: SwarmConfig):
         self.connections = np.full((config.num_units, config.limbs_per_unit, 2), -1, dtype=int)
         self.twist_angles = np.zeros((config.num_units, config.limbs_per_unit), dtype=np.float32)
+        self.disconnect_potentials = np.zeros((config.num_units, config.limbs_per_unit), dtype=np.float32)
 
     def reset(self):
         self.connections[:] = -1
@@ -36,9 +37,30 @@ class SwarmConnections:
 
         self.connections[unit1, unit1_connector] = [unit2, unit2_connector]
         self.twist_angles[unit1, unit1_connector] = twist_angle
+        self.disconnect_potentials[unit1, unit1_connector] = 0
 
         self.connections[unit2, unit2_connector] = [unit1, unit1_connector]
         self.twist_angles[unit2, unit2_connector] = twist_angle
+        self.disconnect_potentials[unit2, unit2_connector] = 0
+
+
+    def dis(
+            self,
+            newly_deactivated_mask: np.ndarray,
+            stayed_active_mask: np.ndarray
+    ):
+        self.disconnect_potentials[stayed_active_mask] = np.maximum(
+            0,
+            self.disconnect_potentials[stayed_active_mask] - 1
+        )
+
+        self.disconnect_potentials[newly_deactivated_mask] += 1
+
+        partners = self.connections[newly_deactivated_mask]
+        self.disconnect_potentials[partners[:, 0], partners[:, 1]] += 1
+
+        # TODO
+
 
     def disconnect(
             self,
@@ -49,7 +71,7 @@ class SwarmConnections:
         if unit2 == -1:
             raise ValueError(f'Unit {unit} connector {unit_connector} is not connected')
 
-        # twist angles don't need to be reset necessarily
+        # twist angles and disconnect potentials don't need to be reset necessarily
         self.connections[unit, unit_connector] = [-1, -1]
         self.connections[unit2, unit2_connector] = [-1, -1]
 

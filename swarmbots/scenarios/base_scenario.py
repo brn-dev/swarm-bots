@@ -110,7 +110,15 @@ class BaseScenario(abc.ABC):
         scenario_site = worldbody.add_site(pos=[0, 0, 0], name='scenario_site')
         spec.attach(self._create_scenario_spec(), '', site=scenario_site)
 
+        self.add_cameras(spec)
+
         return spec
+
+    def add_cameras(self, spec: mujoco.MjSpec):
+        unit1_body = spec.body(self.swarm.config.unit_prefixes[0] + '-main_body')
+        unit1_body.add_camera(
+            pos=[5, 0, 3], euler=[0, np.pi / 3, np.pi / 2],
+            mode=mujoco.mjtCamLight.mjCAMLIGHT_TRACK)
 
     def build(self) -> tuple[mujoco.MjModel, mujoco.MjData]:
         model = self.spec.compile()
@@ -185,7 +193,7 @@ class BaseScenario(abc.ABC):
         state['num_connectors_successfully_activated'] = num_connectors_successfully_activated
         state['num_connectors_unsuccessfully_activated'] = num_connectors_unsuccessfully_activated
 
-        num_connectors_deactivated = self.disconnect(data, connections, newly_deactivated_mask)
+        num_connectors_deactivated = self.disconnect(data, connections, newly_deactivated_mask, stayed_active_mask)
         state['num_connectors_deactivated'] = num_connectors_deactivated
 
 
@@ -303,7 +311,8 @@ class BaseScenario(abc.ABC):
             self,
             data: mujoco.MjData,
             connections: SwarmConnections,
-            newly_deactivated_mask: np.ndarray
+            newly_deactivated_mask: np.ndarray,
+            stayed_active_mask: np.ndarray
     ):
         num_disconnected = 0
         already_disconnected = np.zeros((self.num_units, self.limbs_per_unit), dtype=bool)
