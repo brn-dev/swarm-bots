@@ -15,7 +15,8 @@ class SwarmConfig:
             unit_config: UnitConfig,
             connection_torquescale: float,
             connection_dist_threshold: float = 0.1,
-            connection_angle_threshold: float = -0.5
+            connection_angle_threshold: float = -0.5,
+            disconnect_potential_threshold: float = 5,
     ):
 
         self.num_units = num_units
@@ -24,6 +25,8 @@ class SwarmConfig:
         self.connection_torquescale = connection_torquescale
         self.connection_dist_threshold = connection_dist_threshold
         self.connection_angle_threshold = connection_angle_threshold
+
+        self.disconnect_potential_threshold = disconnect_potential_threshold
 
         self.limbs_per_unit = len(unit_config)
         self.limb_name_to_idx = {

@@ -17,7 +17,13 @@ class BaseSwarm(abc.ABC):
         raise NotImplementedError()
 
     @abc.abstractmethod
-    def reset_swarm(self, model: mujoco.MjModel, data: mujoco.MjData, rng: np.random.Generator) -> SwarmConnections:
+    def reset_swarm(
+            self,
+            model: mujoco.MjModel,
+            data: mujoco.MjData,
+            rng: np.random.Generator,
+            start_location: np.ndarray
+    ) -> SwarmConnections:
         """
         initialize state and potentially randomize swarm
         """

@@ -1,5 +1,5 @@
 import abc
-from typing import Any
+from typing import Any, TypedDict
 
 import mujoco
 import numpy as np
@@ -10,6 +10,13 @@ import swarmbots.mujoco_utils as mj_utils
 from swarmbots.swarm.base_swarm import BaseSwarm
 from swarmbots.swarm.swarm_connections import SwarmConnections
 
+class SwarmObsDict(TypedDict):
+    local_obs: np.ndarray  # shape (n_unit, n_obs_per_unit)
+    global_obs: np.ndarray  # shape (n_global_features,)
+
+class SwarmActDict(TypedDict):
+    actuators: np.ndarray  # shape (n_unit, n_actuators_per_unit), type float
+    connectors: np.ndarray  # shape (n_unit, n_connectors_per_unit), type bool
 
 class BaseScenario(abc.ABC):
 
@@ -23,6 +30,7 @@ class BaseScenario(abc.ABC):
             connectors_deactivated_reward_weight: float,
             average_connectors_reward: bool,
             seed: int | None,
+            _reset_in_init: bool = True
     ):
         self.rng = np.random.default_rng(seed)
 
@@ -78,7 +86,10 @@ class BaseScenario(abc.ABC):
                         self._eq_indices[u1, c1, u2, c2] = eq_id
                         self._eq_indices[u2, c2, u1, c1] = eq_id
 
-        self._dummy_state, self._dummy_connections = self.reset_scenario(self.dummy_model, self.dummy_data)
+        if _reset_in_init:
+            self._dummy_state, self._dummy_connections = self.reset_scenario(self.dummy_model, self.dummy_data)
+        else:
+            self._dummy_state, self._dummy_connections = None, None
 
     @abc.abstractmethod
     def _create_scenario_spec(self) -> mujoco.MjSpec:
@@ -115,11 +126,12 @@ class BaseScenario(abc.ABC):
         return spec
 
     def add_cameras(self, spec: mujoco.MjSpec):
-        unit1_body = spec.body(self.swarm.config.unit_prefixes[0] + '-main_body')
-        unit1_body.add_camera(
-            pos=[5, 0, 3], euler=[0, np.pi / 3, np.pi / 2],
-            mode=mujoco.mjtCamLight.mjCAMLIGHT_TRACK)
-
+        for unit_prefix in self.swarm.config.unit_prefixes:
+            unit1_body = spec.body(unit_prefix + '-main_body')
+            unit1_body.add_camera(
+                pos=[5, 0, 3], euler=[0, np.pi / 3, np.pi / 2],
+                mode=mujoco.mjtCamLight.mjCAMLIGHT_TRACK)
+            
     def build(self) -> tuple[mujoco.MjModel, mujoco.MjData]:
         model = self.spec.compile()
         data = mujoco.MjData(model)
@@ -132,7 +144,7 @@ class BaseScenario(abc.ABC):
         mujoco.mj_resetData(model, data)
 
         state = dict()
-        connections = self.swarm.reset_swarm(model, data, self.rng)
+        connections = self.swarm.reset_swarm(model, data, self.rng, self.get_swarm_start_location())
 
         for (u1, c1, u2, c2), angle in zip(*connections.get_active_connections()):
             self._activate_equality_constraint(model, data, u1, c1, u2, c2, angle)
@@ -145,7 +157,7 @@ class BaseScenario(abc.ABC):
             data: mujoco.MjData,
             state: dict,
             connections: SwarmConnections
-    ) -> np.ndarray:
+    ) -> SwarmObsDict:
         qpos = data.qpos[self._qpos_indices]
         qvel = data.qvel[self._qvel_indices]
 
@@ -153,21 +165,26 @@ class BaseScenario(abc.ABC):
         is_active = connections.get_is_active_mask()
         active_indices = np.where(is_active)
         non_active_indices = np.where(np.logical_not(is_active))
-        twist_angles = connections.twist_angles.copy()
+        twist_angles = connections.twist_angles
+        disconnect_potentials = connections.disconnect_potentials
 
-        connector_obs = np.zeros((self.num_units, self.limbs_per_unit, 3))
+        connector_obs = np.zeros((self.num_units, self.limbs_per_unit, 4), dtype=float)
         connector_obs[non_active_indices[0], non_active_indices[1], 0] = 1
         connector_obs[active_indices[0], active_indices[1], 1] = 1
         connector_obs[active_indices[0], active_indices[1], 2] = twist_angles[is_active]
+        connector_obs[active_indices[0], active_indices[1], 3] = disconnect_potentials[is_active]
         connector_obs = connector_obs.reshape((self.num_units, -1))
 
-        return np.concatenate([qpos, qvel, connector_obs], axis=1)
+        return {
+            'local_obs': np.concatenate([qpos, qvel, connector_obs], axis=1),
+            'global_obs': np.empty(0, dtype=float)
+        }
 
     def apply_action(
             self,
             model: mujoco.MjModel,
             data: mujoco.MjData,
-            action: dict[str, Any],
+            action: SwarmActDict,
             action_scale: float,
             state: dict,
             connections: SwarmConnections
@@ -193,17 +210,20 @@ class BaseScenario(abc.ABC):
         state['num_connectors_successfully_activated'] = num_connectors_successfully_activated
         state['num_connectors_unsuccessfully_activated'] = num_connectors_unsuccessfully_activated
 
-        num_connectors_deactivated = self.disconnect(data, connections, newly_deactivated_mask, stayed_active_mask)
+        deactivation_mask = connections.update_disconnect_potentials(currently_active_mask, newly_deactivated_mask)
+        num_connectors_deactivated = self.disconnect(data, connections, deactivation_mask)
         state['num_connectors_deactivated'] = num_connectors_deactivated
 
-
-    def get_obs_shape(self) -> tuple[int, ...]:
-        return self.get_obs(self.dummy_model, self.dummy_data, self._dummy_state, self._dummy_connections).shape
-
     def get_obs_space(self):
-        return spaces.Box(
-            low=-np.inf, high=np.inf, shape=self.get_obs_shape(), dtype=np.float32
-        )
+        obs = self.get_obs(self.dummy_model, self.dummy_data, self._dummy_state, self._dummy_connections)
+        return spaces.Dict({
+            'local_obs': spaces.Box(
+                low=-np.inf, high=np.inf, shape=obs['local_obs'].shape, dtype=np.float32
+            ),
+            'global_obs': spaces.Box(
+                low=-np.inf, high=np.inf, shape=obs['global_obs'].shape, dtype=np.float32
+            )
+        })
 
     def get_actuator_action_shape(self):
         return self._ctrl_indices.shape
@@ -311,13 +331,12 @@ class BaseScenario(abc.ABC):
             self,
             data: mujoco.MjData,
             connections: SwarmConnections,
-            newly_deactivated_mask: np.ndarray,
-            stayed_active_mask: np.ndarray
+            deactivation_mask: np.ndarray,
     ):
         num_disconnected = 0
         already_disconnected = np.zeros((self.num_units, self.limbs_per_unit), dtype=bool)
 
-        disconnect_indices = np.stack(np.where(newly_deactivated_mask)).T
+        disconnect_indices = np.stack(np.where(deactivation_mask)).T
         for unit, connector in disconnect_indices:
             if already_disconnected[unit, connector]:
                 continue
