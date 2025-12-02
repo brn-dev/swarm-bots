@@ -66,7 +66,7 @@ class SimpleSwarmTetrahedronZX(BaseSwarm):
             unit_config=UNIT_CONFIG_TETRAHEDRON_ZX,
         )
         unit.add_joint(type=mujoco.mjtJoint.mjJNT_FREE)
-        worldbody.add_frame(pos=[0, 0, 2]).attach_body(unit, self.config.unit_prefixes[2], '')
+        worldbody.add_frame(pos=[0.5, 0.5, 0]).attach_body(unit, self.config.unit_prefixes[2], '')
 
         return spec
 
@@ -79,19 +79,17 @@ class SimpleSwarmTetrahedronZX(BaseSwarm):
     ) -> SwarmConnections:
         connections = SwarmConnections(self.config)
 
-        unit01_offset = np.array([0, -0.5, 0])
-
         unit0_main_body_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY,
                                                self.config.unit_prefixes[0] + '-main_body')
         jnt_adr = model.body_jntadr[unit0_main_body_id]
         qpos_adr = model.jnt_qposadr[jnt_adr]
-        data.qpos[qpos_adr:qpos_adr + 3] = start_location + unit01_offset
+        data.qpos[qpos_adr:qpos_adr + 3] = start_location
 
         # Place unit 1 such that connector 3 is next to unit 0's connector 1
         v1 = np.array([1, -1, -1], dtype=float)
         v1 /= np.linalg.norm(v1)
         d = self.body_radius + self.leg_length
-        pos = 2 * d * v1 + start_location + unit01_offset
+        pos = 2 * d * v1 + start_location
         # Rotate -90 deg around X axis
         quat = [np.cos(-np.pi/4), np.sin(-np.pi/4), 0, 0]
 

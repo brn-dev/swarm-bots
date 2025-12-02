@@ -17,6 +17,7 @@ class ObstacleStreetScenario(BaseScenario):
             payload_size: Iterable[float] = (0.2, 0.2, 0.2),
             payload_start_location_offset: Iterable[float] = (0, 1, 0),
             actuators_activation_reward_weight: float = -1e-3,
+            units_without_connections_reward_weight: float = -2e-3,
             connectors_stayed_active_reward_weight: float = 2e-4,
             connectors_successfully_activated_reward_weight: float = 1e-3,
             connectors_unsuccessfully_activated_reward_weight: float = -5e-5,
@@ -42,6 +43,7 @@ class ObstacleStreetScenario(BaseScenario):
         super().__init__(
             swarm=swarm,
             actuators_activation_reward_weight=actuators_activation_reward_weight,
+            units_without_connections_reward_weight=units_without_connections_reward_weight,
             connectors_stayed_active_reward_weight=connectors_stayed_active_reward_weight,
             connectors_successfully_activated_reward_weight=connectors_successfully_activated_reward_weight,
             connectors_unsuccessfully_activated_reward_weight=connectors_unsuccessfully_activated_reward_weight,
@@ -187,6 +189,7 @@ class ObstacleStreetScenario(BaseScenario):
             model: mujoco.MjModel,
             data: mujoco.MjData,
             state: dict,
+            connections: SwarmConnections
     ) -> tuple[float, bool]:
         """
         :return: (reward, done)
@@ -199,7 +202,7 @@ class ObstacleStreetScenario(BaseScenario):
         progress_reward = new_progress - old_progress
         state['progress_reward'] = progress_reward
 
-        action_reward = self.compute_action_reward(action, state)
+        action_reward = self.compute_action_reward(action, state, connections)
         state['action_reward'] = action_reward
 
         return progress_reward + action_reward, False
