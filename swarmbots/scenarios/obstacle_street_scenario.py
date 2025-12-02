@@ -16,11 +16,11 @@ class ObstacleStreetScenario(BaseScenario):
             swarm: BaseSwarm,
             payload_type: PayloadType,
             payload_size: float = 0.3,
-            actuators_activation_reward_weight: float = -0.001,
-            connectors_stayed_active_reward_weight: float = 0.0002,
-            connectors_successfully_activated_reward_weight: float = 0.001,
-            connectors_unsuccessfully_activated_reward_weight: float = -0.001,
-            connectors_deactivated_reward_weight: float = -0.001,
+            actuators_activation_reward_weight: float = -1e-3,
+            connectors_stayed_active_reward_weight: float = 2e-4,
+            connectors_successfully_activated_reward_weight: float = 1e-3,
+            connectors_unsuccessfully_activated_reward_weight: float = -5e-5,
+            connectors_deactivated_reward_weight: float = -1e-3,
             average_connectors_reward: bool = True,
             seed: int = None
     ):
@@ -64,10 +64,6 @@ class ObstacleStreetScenario(BaseScenario):
 
         worldbody.add_light(pos=[0, 0, 100], dir=[0, 0, -1])
         worldbody.add_light(pos=[0, 100, 100], dir=[-1, -1, -1])
-
-        worldbody.add_camera(
-            pos=[5, 0, 3], euler=[0, np.pi / 3, np.pi / 2],
-            mode=mujoco.mjtCamLight.mjCAMLIGHT_TRACK, targetbody=f'{self.swarm.config.unit_prefixes[0]}-main_body')
 
         # side walls
         worldbody.add_geom(

@@ -11,11 +11,18 @@ from swarmbots.swarm.unit import init_unit
 
 class SimpleSwarmTetrahedronZX(BaseSwarm):
 
-    def __init__(self, connection_torquescale: float):
+    def __init__(
+            self,
+            connection_torquescale: float = 1.0,
+            connection_dist_threshold: float = 0.1,
+            connection_angle_threshold: float = -0.5
+    ):
         super().__init__(SwarmConfig(
             num_units=2,
             unit_config=UNIT_CONFIG_TETRAHEDRON_ZX,
             connection_torquescale=connection_torquescale,
+            connection_dist_threshold=connection_dist_threshold,
+            connection_angle_threshold=connection_angle_threshold,
         ))
 
     def _create_swarm_spec(self) -> mujoco.MjSpec:
@@ -31,7 +38,7 @@ class SimpleSwarmTetrahedronZX(BaseSwarm):
             unit_config=UNIT_CONFIG_TETRAHEDRON_ZX,
         )
         unit.add_joint(type=mujoco.mjtJoint.mjJNT_FREE)
-        worldbody.add_frame(pos=[0, 0, 0]).attach_body(unit, self.config.unit_prefixes[0], '')
+        worldbody.add_frame(pos=[0.5, 0.5, 0]).attach_body(unit, self.config.unit_prefixes[0], '')
 
         unit = init_unit(
             body_radius=0.1,
@@ -41,7 +48,27 @@ class SimpleSwarmTetrahedronZX(BaseSwarm):
             unit_config=UNIT_CONFIG_TETRAHEDRON_ZX,
         )
         unit.add_joint(type=mujoco.mjtJoint.mjJNT_FREE)
-        worldbody.add_frame(pos=[0, 0.601, 0], euler=[0, np.pi * 0.2, 0]).attach_body(unit, self.config.unit_prefixes[1], '')
+        worldbody.add_frame(pos=[-0.5, 0.5, 0]).attach_body(unit, self.config.unit_prefixes[1], '')
+
+        # unit = init_unit(
+        #     body_radius=0.1,
+        #     leg_length=0.2,
+        #     leg_radius=0.025,
+        #     hinge_range=np.pi / 4,
+        #     unit_config=UNIT_CONFIG_TETRAHEDRON_ZX,
+        # )
+        # unit.add_joint(type=mujoco.mjtJoint.mjJNT_FREE)
+        # worldbody.add_frame(pos=[0.5, -0.5, 0]).attach_body(unit, self.config.unit_prefixes[2], '')
+        #
+        # unit = init_unit(
+        #     body_radius=0.1,
+        #     leg_length=0.2,
+        #     leg_radius=0.025,
+        #     hinge_range=np.pi / 4,
+        #     unit_config=UNIT_CONFIG_TETRAHEDRON_ZX,
+        # )
+        # unit.add_joint(type=mujoco.mjtJoint.mjJNT_FREE)
+        # worldbody.add_frame(pos=[-0.5, -0.5, 0]).attach_body(unit, self.config.unit_prefixes[3], '')
 
         return spec
 
