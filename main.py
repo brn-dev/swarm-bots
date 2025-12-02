@@ -1,14 +1,15 @@
 import mujoco
+
+from swarmbots.swarm.simple_swarm_tetrahedron_zx import SimpleSwarmTetrahedronZX
 from swarmbots.swarm_bots_env import SwarmBotsEnv
-from swarmbots.swarm.simple_swarm_cube_zx import SimpleSwarmCubeZX
 from swarmbots.scenarios.obstacle_street_scenario import ObstacleStreetScenario
 from rendering import display_video
 
 import numpy as np
 
 
-swarm = SimpleSwarmCubeZX(connection_torquescale=0.01)
-scenario = ObstacleStreetScenario(swarm, payload_type=None, seed=42)
+swarm = SimpleSwarmTetrahedronZX(connection_torquescale=0.01)
+scenario = ObstacleStreetScenario(swarm, payload_type='sphere', payload_start_location_offset=(0, 0, 1), seed=42)
 
 opt = mujoco.MjvOption()
 
@@ -33,6 +34,8 @@ for i in range(3):
     while not done:
         # Random action
         action = env.action_space.sample()
+        # if len(frames) % 3 == 0:
+        #     action['connectors'] = True
         obs, reward, terminated, truncated, info = env.step(action)
 
         frame = env.render()
@@ -41,8 +44,8 @@ for i in range(3):
 
         done = terminated or truncated
 
-        if info:
-            print('err ' + str(env.data.time))
+        # if info:
+        #     print('err ' + str(env.data.time))
 
 
         # if len(frames) % 50 == 0:

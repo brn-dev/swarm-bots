@@ -1,4 +1,4 @@
-from typing import Any, SupportsFloat
+from typing import Any, SupportsFloat, Literal, Iterable
 
 import gymnasium
 import mujoco
@@ -7,7 +7,7 @@ from gymnasium import spaces
 from gymnasium.core import ObsType, RenderFrame
 from mujoco import MjvOption
 
-from swarmbots.scenarios.base_scenario import BaseScenario
+from swarmbots.scenarios.base_scenario import BaseScenario, SwarmActDict
 from swarmbots.swarm.swarm_connections import SwarmConnections
 
 
@@ -24,7 +24,7 @@ class SwarmBotsEnv(gymnasium.Env):
         render_mode: str | None = None,
         width: int = 640,
         height: int = 480,
-        camera: int = 0,
+        camera: int | list[int] | Literal['all'] = 'all',
         scene_option: MjvOption = None,
         simulation_unstable_reward: float = -0.1,
     ):
@@ -35,7 +35,7 @@ class SwarmBotsEnv(gymnasium.Env):
         self.render_mode = render_mode
         self.width = width
         self.height = height
-        self.camera = camera
+        self.cameras = list(camera) if isinstance(camera, list) else [camera]
         self.scene_option = scene_option
         self.simulation_unstable_reward = simulation_unstable_reward
 
@@ -49,6 +49,13 @@ class SwarmBotsEnv(gymnasium.Env):
 
         self.observation_space = scenario.get_obs_space()
         self.action_space = scenario.get_action_space()
+
+        if isinstance(camera, int):
+            self.cameras = [camera]
+        if camera == 'all':
+            self.cameras = list(range(self.scenario.swarm.config.num_units))
+        elif isinstance(camera, Iterable):
+            self.cameras = list(camera)
 
         self._renderer = None
 
@@ -65,7 +72,7 @@ class SwarmBotsEnv(gymnasium.Env):
         return self.scenario.get_obs(self.model, self.data, self.scenario_state, self.swarm_connections), {}
 
     def step(
-        self, action: dict[str, Any]
+        self, action: SwarmActDict
     ) -> tuple[ObsType, SupportsFloat, bool, bool, dict[str, Any]]:
         self.scenario.apply_action(
             model=self.model,
@@ -117,17 +124,20 @@ class SwarmBotsEnv(gymnasium.Env):
             )
 
         scene_option = scene_option or self.scene_option
-        self._renderer.update_scene(self.data, camera=self.camera, scene_option=scene_option)
 
-        if self.render_mode in ("human", "rgb_array"):
-            return self._renderer.render()
-        elif self.render_mode == "depth_array":
+        frames = []
+
+        if self.render_mode == "depth_array":
             self._renderer.enable_depth_rendering()
-            depth = self._renderer.render()
-            self._renderer.disable_depth_rendering()
-            return depth
 
-        return None
+        for camera in self.cameras:
+            self._renderer.update_scene(self.data, camera=camera, scene_option=scene_option)
+            frames.append(self._renderer.render())
+
+        if self.render_mode == "depth_array":
+                self._renderer.disable_depth_rendering()
+
+        return np.concatenate(frames, axis=1)
 
     def close(self):
         if self._renderer is not None:

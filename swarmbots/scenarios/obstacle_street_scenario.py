@@ -1,21 +1,21 @@
-from typing import Literal, Any
+from typing import Literal, Any, Iterable
 
 import mujoco
 import numpy as np
+from mujoco import MjsBody
 
-from swarmbots.scenarios.base_scenario import BaseScenario
+from swarmbots.scenarios.base_scenario import BaseScenario, SwarmObsDict
 from swarmbots.swarm.base_swarm import BaseSwarm
 from swarmbots.swarm.swarm_connections import SwarmConnections
-
-PayloadType = Literal['sphere', 'box'] | None
 
 class ObstacleStreetScenario(BaseScenario):
 
     def __init__(
             self,
             swarm: BaseSwarm,
-            payload_type: PayloadType,
-            payload_size: float = 0.3,
+            payload_type: None | str,
+            payload_size: Iterable[float] = (0.2, 0.2, 0.2),
+            payload_start_location_offset: Iterable[float] = (0, 1, 0),
             actuators_activation_reward_weight: float = -1e-3,
             connectors_stayed_active_reward_weight: float = 2e-4,
             connectors_successfully_activated_reward_weight: float = 1e-3,
@@ -26,6 +26,7 @@ class ObstacleStreetScenario(BaseScenario):
     ):
         self.payload_type = payload_type
         self.payload_size = payload_size
+        self.payload_start_location_offset = payload_start_location_offset
 
         self.side_wall_x = 10.0
         self.wall_fixed_width = 25.0
@@ -46,8 +47,13 @@ class ObstacleStreetScenario(BaseScenario):
             connectors_unsuccessfully_activated_reward_weight=connectors_unsuccessfully_activated_reward_weight,
             connectors_deactivated_reward_weight=connectors_deactivated_reward_weight,
             average_connectors_reward=average_connectors_reward,
-            seed=seed
+            seed=seed,
+            _reset_in_init=False
         )
+        
+        self.payload_body_id = mujoco.mj_name2id(self.dummy_model, mujoco.mjtObj.mjOBJ_BODY, 'Payload')
+
+        self._dummy_state, self._dummy_connections = self.reset_scenario(self.dummy_model, self.dummy_data)
 
     def _create_scenario_spec(self) -> mujoco.MjSpec:
         spec = mujoco.MjSpec()
@@ -96,32 +102,38 @@ class ObstacleStreetScenario(BaseScenario):
                 rgba=[0.5, 0.5, 0.6, 1],
             )
 
-            body_ramp = worldbody.add_body(name=f'Ramp_{i}', mocap=True, pos=[0, y - self.ramp_distance_to_wall/2, self.wall_height/2], euler=[self.ramp_angle, 0, 0])
+            body_ramp = worldbody.add_body(
+                name=f'Ramp_{i}', mocap=True,
+                pos=[0, y - self.ramp_distance_to_wall/2, self.wall_height/2],
+                euler=[self.ramp_angle, 0, 0]
+            )
             body_ramp.add_geom(
                 type=mujoco.mjtGeom.mjGEOM_BOX,
                 size=[1, self.ramp_length * 1.2 / 2, 0.1],
                 rgba=[0.5, 0.5, 0.6, 1],
             )
 
-        # payload
-        # if self.payload_type is not None:
-        #     payload_start_position = np.array(self.get_swarm_start_location()) + np.array([0, 2, 1])
-        #     payload_body: MjsBody = worldbody.add_body(name='Payload', pos=payload_start_position)
-        #
-        #     payload_rgba = [0.8, 0.3, 0.3, 0.9]
-        #     if self.payload_type == 'ball':
-        #         payload_body.add_geom(
-        #             type=mujoco.mjtGeom.mjGEOM_SPHERE,
-        #             size=[self.payload_size, 0, 0],
-        #             rgba=payload_rgba
-        #         )
-        #     elif self.payload_type == 'box':
-        #         payload_body.add_geom(
-        #             type=mujoco.mjtGeom.mjGEOM_BOX,
-        #             size=[self.payload_size, self.payload_size, self.payload_size],
-        #             rgba=payload_rgba
-        #         )
-        #     payload_body.add_joint(type=mujoco.mjtJoint.mjJNT_FREE)
+        if self.payload_type is not None:
+            payload_start_position = (
+                    np.array(self.get_swarm_start_location()) + np.array(self.payload_start_location_offset)
+            )
+            payload_body: MjsBody = worldbody.add_body(name='Payload', pos=payload_start_position)
+
+            payload_geom_type = {
+                'sphere': mujoco.mjtGeom.mjGEOM_SPHERE,
+                'box': mujoco.mjtGeom.mjGEOM_BOX,
+                'cylinder': mujoco.mjtGeom.mjGEOM_CYLINDER,
+                'capsule': mujoco.mjtGeom.mjGEOM_CAPSULE,
+                'ellipsoid': mujoco.mjtGeom.mjGEOM_ELLIPSOID
+            }[self.payload_type]
+
+            payload_rgba = [0.8, 0.3, 0.3, 0.9]
+            payload_body.add_geom(
+                type=payload_geom_type,
+                size=self.payload_size,
+                rgba=payload_rgba
+            )
+            payload_body.add_joint(type=mujoco.mjtJoint.mjJNT_FREE)
 
         return spec
 
@@ -192,8 +204,28 @@ class ObstacleStreetScenario(BaseScenario):
 
         return progress_reward + action_reward, False
 
+    def get_obs(
+            self,
+            model: mujoco.MjModel,
+            data: mujoco.MjData,
+            state: dict,
+            connections: SwarmConnections
+    ) -> SwarmObsDict:
+        obs = super().get_obs(model, data, state, connections)
+
+        if self.payload_type is not None:
+            obs['global_obs'] = np.concatenate([
+                data.xpos[self.payload_body_id],
+                data.xquat[self.payload_body_id]
+            ])
+
+        return obs
+
     def _compute_progress(
             self,
             data: mujoco.MjData
     ):
-        return data.qpos[self._qpos_indices[:, 1]].mean()  # avg y pos of the unit bodies
+        if self.payload_type is None:
+            return data.qpos[self._qpos_indices[:, 1]].mean()  # avg y pos of the unit bodies
+
+        return data.xpos[self.payload_body_id, 1]

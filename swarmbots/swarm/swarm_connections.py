@@ -10,6 +10,8 @@ class SwarmConnections:
         self.twist_angles = np.zeros((config.num_units, config.limbs_per_unit), dtype=np.float32)
         self.disconnect_potentials = np.zeros((config.num_units, config.limbs_per_unit), dtype=np.float32)
 
+        self.disconnect_potential_threshold = config.disconnect_potential_threshold
+
     def reset(self):
         self.connections[:] = -1
 
@@ -43,24 +45,25 @@ class SwarmConnections:
         self.twist_angles[unit2, unit2_connector] = twist_angle
         self.disconnect_potentials[unit2, unit2_connector] = 0
 
-
-    def dis(
+    def update_disconnect_potentials(
             self,
+            currently_active_mask: np.ndarray,
             newly_deactivated_mask: np.ndarray,
-            stayed_active_mask: np.ndarray
     ):
-        self.disconnect_potentials[stayed_active_mask] = np.maximum(
-            0,
-            self.disconnect_potentials[stayed_active_mask] - 1
-        )
+        disconnect_potentials_update = np.zeros_like(self.disconnect_potentials)
 
-        self.disconnect_potentials[newly_deactivated_mask] += 1
+        disconnect_potentials_update[newly_deactivated_mask] = 1
 
         partners = self.connections[newly_deactivated_mask]
-        self.disconnect_potentials[partners[:, 0], partners[:, 1]] += 1
+        disconnect_potentials_update[partners[:, 0], partners[:, 1]] += 1
 
-        # TODO
+        stayed_active_mask = np.logical_and(currently_active_mask, disconnect_potentials_update == 0)
+        disconnect_potentials_update[stayed_active_mask] = -2
 
+        self.disconnect_potentials += disconnect_potentials_update
+        self.disconnect_potentials[stayed_active_mask] = np.maximum(0, self.disconnect_potentials[stayed_active_mask])
+
+        return self.disconnect_potentials >= self.disconnect_potential_threshold
 
     def disconnect(
             self,
@@ -71,9 +74,11 @@ class SwarmConnections:
         if unit2 == -1:
             raise ValueError(f'Unit {unit} connector {unit_connector} is not connected')
 
-        # twist angles and disconnect potentials don't need to be reset necessarily
+        # twist angles don't need to be reset necessarily
         self.connections[unit, unit_connector] = [-1, -1]
         self.connections[unit2, unit2_connector] = [-1, -1]
+        self.disconnect_potentials[unit, unit_connector] = 0
+        self.disconnect_potentials[unit2, unit2_connector] = 0
 
         return unit2, unit2_connector
 
