@@ -30,6 +30,8 @@ class BaseScenario(abc.ABC):
             connectors_unsuccessfully_activated_reward_weight: float,
             connectors_deactivated_reward_weight: float,
             average_connectors_reward: bool,
+            include_connectors_xpos_in_obs: bool,
+            include_connectors_xquat_in_obs: bool,
             seed: int | None,
             _reset_in_init: bool = True
     ):
@@ -49,6 +51,8 @@ class BaseScenario(abc.ABC):
         self.connectors_unsuccessfully_activated_reward_weight = connectors_unsuccessfully_activated_reward_weight
         self.connectors_deactivated_reward_weight = connectors_deactivated_reward_weight
         self.average_connectors_reward = average_connectors_reward
+        self.include_connectors_xpos_in_obs = include_connectors_xpos_in_obs
+        self.include_connectors_xquat_in_obs = include_connectors_xquat_in_obs
 
         self.spec = self.create_scenario_spec()
         self.dummy_model, self.dummy_data = self.build()
@@ -178,8 +182,20 @@ class BaseScenario(abc.ABC):
         connector_obs[active_indices[0], active_indices[1], 3] = disconnect_potentials[is_active]
         connector_obs = connector_obs.reshape((self.num_units, -1))
 
+        obs_list = [qpos, qvel, connector_obs]
+
+        if self.include_connectors_xpos_in_obs:
+            conn_xpos = data.xpos[self._connector_body_indices]
+            conn_xpos = conn_xpos.reshape((self.num_units, -1))
+            obs_list.append(conn_xpos)
+
+        if self.include_connectors_xquat_in_obs:
+            conn_xquat = data.xquat[self._connector_body_indices]
+            conn_xquat = conn_xquat.reshape((self.num_units, -1))
+            obs_list.append(conn_xquat)
+
         return {
-            'local_obs': np.concatenate([qpos, qvel, connector_obs], axis=1),
+            'local_obs': np.concatenate(obs_list, axis=1),
             'global_obs': np.empty(0, dtype=float)
         }
 
