@@ -19,7 +19,7 @@ class SwarmBotsEnv(gymnasium.Env):
         scenario: BaseScenario,
         episode_length: int = 500,
         physics_steps_per_step: int = 1,
-        action_scale: float = 1.0,
+        actuator_strength: float = 3.0,
         action_repeat: int = 15,
         render_mode: str | None = None,
         width: int = 640,
@@ -31,7 +31,7 @@ class SwarmBotsEnv(gymnasium.Env):
         self.action_repeat = action_repeat
         self.episode_length = episode_length
         self.physics_steps_per_step = physics_steps_per_step
-        self.action_scale = action_scale
+        self.action_scale = actuator_strength
         self.render_mode = render_mode
         self.width = width
         self.height = height
