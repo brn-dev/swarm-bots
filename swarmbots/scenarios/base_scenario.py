@@ -168,7 +168,15 @@ class BaseScenario(abc.ABC):
         qpos = data.qpos[self._qpos_indices]
         qvel = data.qvel[self._qvel_indices]
 
-        # connectors
+        # encoding hinge angles to sin and cos
+        free_joint_qpos = qpos[:, :7]
+        hinge_qpos = qpos[:, 7:]
+        hinge_sin = np.sin(hinge_qpos)
+        hinge_cos = np.cos(hinge_qpos)
+        hinge_obs = np.stack([hinge_sin, hinge_cos], axis=-1).reshape(self.num_units, -1)
+        qpos_obs = np.concatenate([free_joint_qpos, hinge_obs], axis=1)
+
+        # connector obs
         is_active = connections.get_is_active_mask()
         active_indices = np.where(is_active)
         non_active_indices = np.where(np.logical_not(is_active))
@@ -182,7 +190,7 @@ class BaseScenario(abc.ABC):
         connector_obs[active_indices[0], active_indices[1], 3] = disconnect_potentials[is_active]
         connector_obs = connector_obs.reshape((self.num_units, -1))
 
-        obs_list = [qpos, qvel, connector_obs]
+        obs_list = [qpos_obs, qvel, connector_obs]
 
         if self.include_connectors_xpos_in_obs:
             conn_xpos = data.xpos[self._connector_body_indices]
