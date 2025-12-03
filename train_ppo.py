@@ -1,6 +1,8 @@
 import gymnasium as gym
 from gymnasium import spaces
 import numpy as np
+import os
+from datetime import datetime
 from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import SubprocVecEnv, VecNormalize, DummyVecEnv
 from stable_baselines3.common.monitor import Monitor
@@ -97,21 +99,29 @@ class HybridActionWrapper(gym.Wrapper):
 
         return self._flatten_obs(obs), reward, terminated, truncated, info
 
+def make_base_env(seed: int, render_mode: str | None):
+    swarm = SimpleSwarmTetrahedronZX(connection_torquescale=10.0)
+    scenario = ObstacleStreetScenario(
+        swarm, 
+        payload_type=None, 
+        payload_size=(0.2, 0.2, 0.2),
+        payload_start_location_offset=(0, 0, 1), 
+        seed=seed
+    )
+    return SwarmBotsEnv(scenario=scenario, render_mode=render_mode)
+    
+
 def make_env():
     rng = np.random.default_rng(42)
-    swarm = SimpleSwarmTetrahedronZX(connection_torquescale=10.0)
-    scenario = ObstacleStreetScenario(swarm=swarm, payload_type=None, seed=rng.integers(0, 10000000))
-    env = SwarmBotsEnv(scenario=scenario, render_mode=None)
+    env = make_base_env(seed=rng.integers(0, 10000000), render_mode=None)
     # Use the new wrapper
     env = HybridActionWrapper(env)
     env = Monitor(env)
     return env
 
-def record(model_path="ppo_swarm_bots", vecnorm_path="vecnormalize_swarm_bots.pkl"):
+def record(model_path, vecnorm_path, save_dir):
     def make_eval_env():
-        swarm = SimpleSwarmTetrahedronZX(connection_torquescale=10.0)
-        scenario = ObstacleStreetScenario(swarm=swarm, payload_type=None, seed=42)
-        env = SwarmBotsEnv(scenario=scenario, render_mode="rgb_array", width=640, height=480)
+        env = make_base_env(42, 'rgb_array')
         env = HybridActionWrapper(env)
         return env
 
@@ -137,32 +147,52 @@ def record(model_path="ppo_swarm_bots", vecnorm_path="vecnormalize_swarm_bots.pk
     eval_env.close()
 
     if images:
-        imageio.mimsave("swarm_bots_rollout_ppo.gif", images, fps=30)
-        print("Saved swarm_bots_rollout_ppo.gif")
+        gif_path = os.path.join(save_dir, "swarm_bots_rollout_ppo.gif")
+        imageio.mimsave(gif_path, images, fps=30)
+        print(f"Saved {gif_path}")
     else:
         print("No images captured.")
 
-vec_env = SubprocVecEnv([make_env] * 4)
-vec_env = VecNormalize(vec_env, norm_obs=True, norm_reward=True)
+if __name__ == '__main__':
+    vec_env = SubprocVecEnv([make_env] * 4)
 
-policy_kwargs = dict(net_arch=dict(pi=[256, 256], vf=[256, 256]))
-model = PPO(
-    "MlpPolicy",
-    vec_env,
-    policy_kwargs=policy_kwargs,
-    verbose=1,
-    n_steps=512,
-    device="cpu",
-    learning_rate=2e-5,
-    target_kl=0.05
-)
+    # Create run directory
+    run_id = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    run_dir = os.path.join("runs", run_id)
+    os.makedirs(run_dir, exist_ok=True)
+    print(f"Saving run outputs to {run_dir}")
 
-print("Starting training...")
-model.learn(total_timesteps=20_000_000)
-print("Training finished.")
+    policy_kwargs = dict(net_arch=dict(pi=[256, 256], vf=[256, 256]))
+    continue_training = False
+    if continue_training:
+        print('Continuing training on existing policy')
+        vec_env = VecNormalize.load('vecnormalize_swarm_bots.pkl', vec_env)
+        model = PPO.load("ppo_swarm_bots", env=vec_env, device='cpu', learning_rate=1e-5)
+    else:
+        print('Creating new policy')
+        vec_env = VecNormalize(vec_env, norm_obs=True, norm_reward=True)
+        model = PPO(
+            "MlpPolicy",
+            vec_env,
+            policy_kwargs=policy_kwargs,
+            verbose=1,
+            n_steps=512,
+            device="cpu",
+            learning_rate=2e-5,
+            target_kl=0.05
+        )
 
-model.save("ppo_swarm_bots")
-vec_env.save("vecnormalize_swarm_bots.pkl")
+    print("Starting training...")
+    model.learn(total_timesteps=10_000_000)
+    print("Training finished.")
 
-record()
+    model_save_path = os.path.join(run_dir, "ppo_swarm_bots")
+    vecnorm_save_path = os.path.join(run_dir, "vecnormalize_swarm_bots.pkl")
+
+    model.save(model_save_path)
+    vec_env.save(vecnorm_save_path)
+
+    record(model_save_path, vecnorm_save_path, run_dir)
+
+
 

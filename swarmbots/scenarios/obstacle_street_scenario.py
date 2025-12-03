@@ -23,6 +23,8 @@ class ObstacleStreetScenario(BaseScenario):
             connectors_unsuccessfully_activated_reward_weight: float = -5e-5,
             connectors_deactivated_reward_weight: float = -1e-3,
             average_connectors_reward: bool = True,
+            include_connectors_xpos_in_obs: bool = False,
+            include_connectors_xquat_in_obs: bool = False,
             seed: int = None
     ):
         self.payload_type = payload_type
@@ -50,6 +52,8 @@ class ObstacleStreetScenario(BaseScenario):
             connectors_deactivated_reward_weight=connectors_deactivated_reward_weight,
             average_connectors_reward=average_connectors_reward,
             seed=seed,
+            include_connectors_xpos_in_obs=include_connectors_xpos_in_obs,
+            include_connectors_xquat_in_obs=include_connectors_xquat_in_obs,
             _reset_in_init=False
         )
         

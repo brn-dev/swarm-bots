@@ -20,20 +20,34 @@ class LimbConfig:
     type: LimbType
     rgba: tuple[float, float, float, float]
 
-UnitConfig = list[LimbConfig]
+UnitConfig = tuple[LimbConfig, ...]
 
-UNIT_CONFIG_CUBE_ZX: UnitConfig = [
+UNIT_CONFIG_CUBE_ZX: UnitConfig = (
     LimbConfig('xp', _unit_vec([ 1,  0,  0]), LimbType.zx, (  1,   0,   0,   1)),
     LimbConfig('xn', _unit_vec([-1,  0,  0]), LimbType.zx, (0.7, 0.3,   0,   1)),
     LimbConfig('yp', _unit_vec([ 0,  1,  0]), LimbType.zx, (  0,   1,   0,   1)),
     LimbConfig('yn', _unit_vec([ 0, -1,  0]), LimbType.zx, (  0, 0.7, 0.3,   1)),
     LimbConfig('zp', _unit_vec([ 0,  0,  1]), LimbType.zx, (  0,   0,   1,   1)),
     LimbConfig('zn', _unit_vec([ 0,  0, -1]), LimbType.zx, (0.3,   0, 0.7,   1))
-]
+)
 
-UNIT_CONFIG_TETRAHEDRON_ZX: UnitConfig = [
+UNIT_CONFIG_TETRAHEDRON_ZX: UnitConfig = (
     LimbConfig('ppp', _unit_vec([ 1,  1,  1]), LimbType.zx, (1, 0, 0, 1)),
     LimbConfig('pmm', _unit_vec([ 1, -1, -1]), LimbType.zx, (0, 1, 0, 1)),
     LimbConfig('mpm', _unit_vec([-1,  1, -1]), LimbType.zx, (0, 0, 1, 1)),
     LimbConfig('mmp', _unit_vec([-1, -1,  1]), LimbType.zx, (1, 1, 0, 1)),
-]
+)
+
+UNIT_CONFIG_TETRAHEDRON_YX: UnitConfig = (
+    LimbConfig('ppp', _unit_vec([ 1,  1,  1]), LimbType.yx, (1, 0, 0, 1)),
+    LimbConfig('pmm', _unit_vec([ 1, -1, -1]), LimbType.yx, (0, 1, 0, 1)),
+    LimbConfig('mpm', _unit_vec([-1,  1, -1]), LimbType.yx, (0, 0, 1, 1)),
+    LimbConfig('mmp', _unit_vec([-1, -1,  1]), LimbType.yx, (1, 1, 0, 1)),
+)
+
+UNIT_CONFIG_TETRAHEDRON_ZX_YX_MIX: UnitConfig = (
+    LimbConfig('ppp', _unit_vec([ 1,  1,  1]), LimbType.zx, (1, 0, 0, 1)),
+    LimbConfig('pmm', _unit_vec([ 1, -1, -1]), LimbType.zx, (0, 1, 0, 1)),
+    LimbConfig('mpm', _unit_vec([-1,  1, -1]), LimbType.yx, (0, 0, 1, 1)),
+    LimbConfig('mmp', _unit_vec([-1, -1,  1]), LimbType.yx, (1, 1, 0, 1)),
+)
