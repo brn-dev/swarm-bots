@@ -2,6 +2,7 @@
   <dictionary name="project">
     <words>
       <w>mjutils</w>
+      <w>quats</w>
       <w>torquescale</w>
       <w>worldbody</w>
     </words>
