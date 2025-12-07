@@ -409,6 +409,7 @@ class BaseScenario(abc.ABC):
             raise ValueError(f'Equality constraint {unit1}-{conn1}_{unit2}-{conn2} not found')
         data.eq_active[eq_idx] = 0
 
+    # todo maybe "guidance"
     def compute_action_reward(
             self,
             action: dict[str, Any],

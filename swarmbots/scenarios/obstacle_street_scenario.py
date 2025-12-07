@@ -20,9 +20,10 @@ class ObstacleStreetScenario(BaseScenario):
             num_walls: int = 5,
             wall_height: float = 0.5,
             wall_distance: float = 4.0,
+            first_wall_distance: float = 1.0,
             opening_width: float | list[float] = 2.0,
             unusable_opening_offset: float = 2.0,
-            street_width: float = 20.0,
+            street_width: float = 10.0,
             no_initial_ramp: bool = True,
             actuators_activation_reward_weight: float = -1e-3,
             units_without_connections_reward_weight: float = -2e-3,
@@ -47,6 +48,7 @@ class ObstacleStreetScenario(BaseScenario):
         self.wall_fixed_width = 25.0
         self.wall_height = wall_height
         self.wall_distance = wall_distance
+        self.first_wall_distance = first_wall_distance
 
         self.opening_widths = opening_width if isinstance(opening_width, list) else [opening_width] * num_walls
         self.unusable_opening_offset = unusable_opening_offset
@@ -106,7 +108,7 @@ class ObstacleStreetScenario(BaseScenario):
         )
 
         for i in range(self.num_walls):
-            y = self.wall_distance + self.wall_distance * i
+            y = self.first_wall_distance + self.wall_distance * i
 
             body_left = worldbody.add_body(name=f'Wall_{i}_Left', mocap=True, pos=[0, y, 0])
             body_left.add_geom(
@@ -165,7 +167,7 @@ class ObstacleStreetScenario(BaseScenario):
         rng = self.rng
 
         for i in range(self.num_walls):
-            y = self.wall_distance + self.wall_distance * i
+            y = self.first_wall_distance + self.wall_distance * i
             
             opening_x = (rng.random() - 0.5) * 2 * (
                 self.side_wall_x 

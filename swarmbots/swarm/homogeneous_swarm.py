@@ -2,6 +2,7 @@ import mujoco
 import numpy as np
 from mujoco import MjsBody
 
+from swarmbots.random_utils import random_quat_shoemake
 from swarmbots.swarm.base_swarm import BaseSwarm
 from swarmbots.swarm.swarm_config import SwarmConfig
 from swarmbots.swarm.swarm_connections import SwarmConnections
@@ -22,11 +23,15 @@ class HomogeneousSwarm(BaseSwarm):
             hinge_range: float = np.pi / 3,
             connection_torquescale: float = 1.0,
             connection_dist_threshold: float = 0.1,
-            connection_angle_threshold: float = -0.5
+            connection_angle_threshold: float = -0.5,
+            randomize_unit_orientations: bool = False
     ):
+        assert unit_start_quats is None or not randomize_unit_orientations
+
         self.num_units = len(unit_start_locations)
         self.unit_start_locations = unit_start_locations
         self.unit_start_quats = unit_start_quats
+        self.randomize_unit_orientations = randomize_unit_orientations
 
         assert unit_start_quats is None or len(unit_start_quats) == self.num_units
 
@@ -77,5 +82,21 @@ class HomogeneousSwarm(BaseSwarm):
             start_location: np.ndarray
     ) -> SwarmConnections:
         connections = SwarmConnections(self.config)
+
+        if self.randomize_unit_orientations:
+            for i, unit_start_location in enumerate(self.unit_start_locations):
+                random_quat = random_quat_shoemake()
+
+                body_name = f"{self.config.unit_prefixes[i]}-main_body"
+                body_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, body_name)
+                jnt_adr = model.body_jntadr[body_id]
+
+                qpos_adr = model.jnt_qposadr[jnt_adr]
+                data.qpos[qpos_adr:qpos_adr + 3] = start_location + unit_start_location
+                data.qpos[qpos_adr + 3:qpos_adr + 7] = random_quat
+
+                dof_adr = model.jnt_dofadr[jnt_adr]
+                data.qvel[dof_adr:dof_adr + 6] = 0
+
         return connections
 
