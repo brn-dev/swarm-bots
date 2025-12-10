@@ -25,6 +25,7 @@ class BaseScenario(abc.ABC):
             swarm: BaseSwarm,
             actuators_activation_reward_weight: float,
             units_without_connections_reward_weight: float,
+            movement_reward_weight: float,
             connectors_stayed_active_reward_weight: float,
             connectors_successfully_activated_reward_weight: float,
             connectors_unsuccessfully_activated_reward_weight: float,
@@ -46,6 +47,7 @@ class BaseScenario(abc.ABC):
 
         self.actuators_activation_reward_weight = actuators_activation_reward_weight
         self.units_without_connections_reward_weight = units_without_connections_reward_weight
+        self.movement_reward_weight = movement_reward_weight
         self.connectors_stayed_active_reward_weight = connectors_stayed_active_reward_weight
         self.connectors_successfully_activated_reward_weight = connectors_successfully_activated_reward_weight
         self.connectors_unsuccessfully_activated_reward_weight = connectors_unsuccessfully_activated_reward_weight
@@ -155,6 +157,8 @@ class BaseScenario(abc.ABC):
 
         for (u1, c1, u2, c2), angle in zip(*connections.get_active_connections()):
             self._activate_equality_constraint(model, data, u1, c1, u2, c2, angle)
+
+        state['avg_unit_pos'] = self._compute_avg_pos(data)
 
         return state, connections
 
@@ -409,9 +413,9 @@ class BaseScenario(abc.ABC):
             raise ValueError(f'Equality constraint {unit1}-{conn1}_{unit2}-{conn2} not found')
         data.eq_active[eq_idx] = 0
 
-    # todo maybe "guidance"
-    def compute_action_reward(
+    def compute_guidance_reward(
             self,
+            data: mujoco.MjData,
             action: dict[str, Any],
             state: dict,
             connections: SwarmConnections
@@ -426,6 +430,13 @@ class BaseScenario(abc.ABC):
         units_without_connections_ratio = num_units_without_connections / self.num_units
         reward += units_without_connections_ratio * self.units_without_connections_reward_weight
 
+        previous_avg_pos = state['avg_unit_pos']
+        avg_pos = self._compute_avg_pos(data)
+        state['avg_unit_pos'] = avg_pos
+        avg_movement = np.linalg.norm(avg_pos - previous_avg_pos)
+        state['avg_movement'] = avg_movement
+        reward += avg_movement * self.movement_reward_weight
+
         connectors_reward = 0.0
         connectors_reward += state['num_connectors_stayed_active'] * self.connectors_stayed_active_reward_weight
         connectors_reward += state['num_connectors_successfully_activated'] * self.connectors_successfully_activated_reward_weight
@@ -438,4 +449,7 @@ class BaseScenario(abc.ABC):
         reward += connectors_reward
 
         return reward
+
+    def _compute_avg_pos(self, data: mujoco.MjData):
+        return data.qpos[self._qpos_indices[:, :3]].mean()
 

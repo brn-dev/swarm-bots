@@ -1,4 +1,4 @@
-from typing import Literal, Any, Iterable
+from typing import Any, Iterable
 
 import mujoco
 import numpy as np
@@ -7,6 +7,7 @@ from mujoco import MjsBody
 from swarmbots.scenarios.base_scenario import BaseScenario, SwarmObsDict
 from swarmbots.swarm.base_swarm import BaseSwarm
 from swarmbots.swarm.swarm_connections import SwarmConnections
+
 
 class ObstacleStreetScenario(BaseScenario):
 
@@ -20,13 +21,14 @@ class ObstacleStreetScenario(BaseScenario):
             num_walls: int = 5,
             wall_height: float = 0.5,
             wall_distance: float = 4.0,
-            first_wall_distance: float = 1.0,
+            first_wall_distance: float = 2.0,
             opening_width: float | list[float] = 2.0,
             unusable_opening_offset: float = 2.0,
             street_width: float = 10.0,
             no_initial_ramp: bool = True,
             actuators_activation_reward_weight: float = -1e-3,
             units_without_connections_reward_weight: float = -2e-3,
+            movement_reward_weight: float = 5e-2,
             connectors_stayed_active_reward_weight: float = 2e-4,
             connectors_successfully_activated_reward_weight: float = 1e-3,
             connectors_unsuccessfully_activated_reward_weight: float = -5e-5,
@@ -62,6 +64,7 @@ class ObstacleStreetScenario(BaseScenario):
             swarm=swarm,
             actuators_activation_reward_weight=actuators_activation_reward_weight,
             units_without_connections_reward_weight=units_without_connections_reward_weight,
+            movement_reward_weight=movement_reward_weight,
             connectors_stayed_active_reward_weight=connectors_stayed_active_reward_weight,
             connectors_successfully_activated_reward_weight=connectors_successfully_activated_reward_weight,
             connectors_unsuccessfully_activated_reward_weight=connectors_unsuccessfully_activated_reward_weight,
@@ -222,10 +225,10 @@ class ObstacleStreetScenario(BaseScenario):
         progress_reward = new_progress - old_progress
         state['progress_reward'] = progress_reward
 
-        action_reward = self.compute_action_reward(action, state, connections)
-        state['action_reward'] = action_reward
+        guidance_reward = self.compute_guidance_reward(data, action, state, connections)
+        state['guidance_reward'] = guidance_reward
 
-        return progress_reward + action_reward, False
+        return progress_reward + guidance_reward, False
 
     def get_obs(
             self,
