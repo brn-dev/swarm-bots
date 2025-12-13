@@ -1,7 +1,6 @@
 from typing import Optional, Self
 
 import torch
-from overrides import override
 
 from swarmbots.learn.action_dists.action_dist import ActionNetInitialization
 from swarmbots.learn.action_dists.diag_gaussian_action_dist import DiagGaussianActionDist
@@ -31,12 +30,10 @@ class SquashedDiagGaussianActionDist(DiagGaussianActionDist):
         self.epsilon = epsilon
         self._last_gaussian_actions: Optional[torch.Tensor] = None
 
-    @override
     def update_latent_features(self, latent_pi: torch.Tensor) -> Self:
         super().update_latent_features(latent_pi)
         return self
 
-    @override
     def log_prob(self, actions: torch.Tensor, gaussian_actions: Optional[torch.Tensor] = None) -> torch.Tensor:
         if gaussian_actions is None:
             gaussian_actions = TanhBijector.inverse(actions)
@@ -46,21 +43,17 @@ class SquashedDiagGaussianActionDist(DiagGaussianActionDist):
 
         return log_prob
 
-    @override
     def entropy(self) -> Optional[torch.Tensor]:
         return None
 
-    @override
     def sample(self) -> torch.Tensor:
         self._last_gaussian_actions = super().sample()
         return torch.tanh(self._last_gaussian_actions)
 
-    @override
     def mode(self) -> torch.Tensor:
         self._last_gaussian_actions = super().mode()
         return torch.tanh(self._last_gaussian_actions)
 
-    @override
     def get_actions_with_log_probs(self, latent_pi: torch.Tensor, deterministic: bool = False):
         # get_actions calls sample() or mode(), both of which set _last_gaussian_actions
         # --> prevents squashing and unsquashing which can lead to numerical instability

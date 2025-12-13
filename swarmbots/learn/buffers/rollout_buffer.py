@@ -34,7 +34,7 @@ class Episode:
         self.returns = self.advantages + self.values
 
 
-class EpisodeBuffer:
+class EpisodeAccumulator:
 
     def __init__(
             self,
@@ -60,7 +60,7 @@ class EpisodeBuffer:
             dtype=storage_dtype, device=storage_device
         )
         self.log_probs = torch.zeros(
-            (n_envs, max_episode_length, n_agents, n_agent_actions),
+            (n_envs, max_episode_length, n_agents),
             dtype=storage_dtype, device=storage_device
         )
         self.rewards = torch.zeros(
