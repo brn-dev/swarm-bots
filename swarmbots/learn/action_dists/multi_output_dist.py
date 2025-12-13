@@ -1,21 +1,18 @@
-from typing import Union, Optional
+from typing import Union, Optional, Self
 
 import torch
+import numpy as np
 from gymnasium import spaces
 
 from swarmbots.learn.action_dists.action_dist import ActionDist, ActionNetInitialization, AGENT_ACTIONS_DIM
 from swarmbots.learn.action_dists.bernoulli_action_dist import BernoulliActionDist
 from swarmbots.learn.action_dists.predicted_std_action_dist import PredictedStdActionDist
-from swarmbots.learn.multi_output_utils import get_action_dim
+from swarmbots.learn.multi_output_utils import get_agent_action_dim
 
 """
 https://github.com/adysonmaia/sb3-plus/blob/main/sb3_plus/mimo/distributions.py
 """
 class MultiOutputDistribution(ActionDist):
-    """
-    Distribution to a multi outputs represented as a Dict or Tuple action space
-
-    """
 
     def __init__(
             self,
@@ -23,20 +20,23 @@ class MultiOutputDistribution(ActionDist):
             action_space: Union[spaces.Dict, spaces.Tuple],
             action_net_initialization: ActionNetInitialization | None,
     ):
+        self.action_space = action_space
+        self.list_spaces = action_space.spaces.values() if isinstance(action_space, spaces.Dict) else action_space.spaces
+
+        # Per-agent action dims for split/cat along the last dimension:
+        self.action_dims = [get_agent_action_dim(s) for s in self.list_spaces]
         super().__init__(
             latent_dim=latent_dim,
-            action_dim=get_action_dim(action_space),
+            action_dim=int(sum(self.action_dims)),
             action_net_initialization=action_net_initialization
         )
-        self.action_space = action_space
-        list_spaces = action_space.spaces.values() if isinstance(action_space, spaces.Dict) else action_space.spaces
 
-        self.distributions: list[ActionDist] = [make_proba_distribution(latent_dim, s) for s in list_spaces]
-        self.action_dims = [get_action_dim(s) for s in list_spaces]
+        self.distributions: list[ActionDist] = [make_proba_distribution(latent_dim, s) for s in self.list_spaces]
 
-    def update_latent_features(self, latent_pi: torch.Tensor):
+    def update_latent_features(self, latent_pi: torch.Tensor) -> Self:
         for dist in self.distributions:
             dist.update_latent_features(latent_pi)
+        return self
 
     def sample(self) -> torch.Tensor:
         return torch.cat([dist.sample() for dist in self.distributions], dim=AGENT_ACTIONS_DIM)
@@ -53,7 +53,7 @@ class MultiOutputDistribution(ActionDist):
 
     def entropy(self) -> Optional[torch.Tensor]:
         entropies = [dist.entropy() for dist in self.distributions]
-        if None in entropies:
+        if any(e is None for e in entropies):
             return None
         return torch.stack(entropies, dim=-1).sum(dim=-1)
 
@@ -64,10 +64,10 @@ def make_proba_distribution(
         action_space: spaces.Space,
 ) -> ActionDist:
     if isinstance(action_space, spaces.Box):
-        # todo range
+        _assert_unit_box_range(action_space)
         return PredictedStdActionDist(
             latent_dim=latent_dim,
-            action_dim=action_space.shape[-1],
+            action_dim=get_agent_action_dim(action_space),
             base_std=1.0,
             squash_output=True,
             action_net_initialization=None,
@@ -76,8 +76,22 @@ def make_proba_distribution(
     elif isinstance(action_space, spaces.MultiBinary):
         return BernoulliActionDist(
             latent_dim=latent_dim,
-            action_dim=action_space.shape[-1],
+            action_dim=get_agent_action_dim(action_space),
             action_net_initialization=None,
         )
     else:
         raise NotImplementedError
+
+
+def _assert_unit_box_range(space: spaces.Box, atol: float = 1e-6) -> None:
+    low = np.asarray(space.low, dtype=np.float64)
+    high = np.asarray(space.high, dtype=np.float64)
+
+    if not (np.all(np.isfinite(low)) and np.all(np.isfinite(high))):
+        raise ValueError(f"Box action bounds must be finite, got low/high with non-finite values: {space}")
+
+    if not (np.allclose(low, -1.0, atol=atol) and np.allclose(high, 1.0, atol=atol)):
+        raise ValueError(
+            "Box action space must have bounds low=-1 and high=1 for tanh-squashed policy output. "
+            f"Got low in [{low.min():.6g}, {low.max():.6g}], high in [{high.min():.6g}, {high.max():.6g}]. "
+        )

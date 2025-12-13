@@ -3,7 +3,6 @@ from typing import Optional, Self
 
 import torch
 import torch.distributions as torchdist
-from overrides import override
 from torch import nn
 
 from swarmbots.learn.action_dists.action_dist import ActionNetInitialization
@@ -15,7 +14,7 @@ LogStdNetInitialization = ActionNetInitialization
 
 class PredictedStdActionDist(ContinuousActionDist):
 
-    base_log_std: float
+    base_log_std: Optional[float]
 
     def __init__(
             self,
@@ -49,7 +48,6 @@ class PredictedStdActionDist(ContinuousActionDist):
 
         self._last_gaussian_actions: Optional[torch.Tensor] = None
 
-    @override
     def update_latent_features(self, latent_pi: torch.Tensor) -> Self:
         mean_actions = self.action_net(latent_pi)
         log_stds = self.log_std_net(latent_pi)
@@ -68,19 +66,18 @@ class PredictedStdActionDist(ContinuousActionDist):
 
     def sample(self) -> torch.Tensor:
         gaussian_actions = self.distribution.rsample()
-        if self.squash_output is not None:
+        if self.squash_output:
             self._last_gaussian_actions = gaussian_actions
             return TanhBijector.forward(gaussian_actions)
         return gaussian_actions
 
     def mode(self) -> torch.Tensor:
         gaussian_actions = self.distribution.mean
-        if self.squash_output is not None:
+        if self.squash_output:
             self._last_gaussian_actions = gaussian_actions
             return TanhBijector.forward(gaussian_actions)
         return gaussian_actions
 
-    @override
     def log_prob(self, actions: torch.Tensor, gaussian_actions: Optional[torch.Tensor] = None) -> torch.Tensor:
         if not self.squash_output:
             return super().log_prob(actions)
@@ -93,13 +90,11 @@ class PredictedStdActionDist(ContinuousActionDist):
 
         return log_prob
 
-    @override
     def entropy(self) -> Optional[torch.Tensor]:
-        if self.squash_output is not None:
+        if self.squash_output:
             return None
         return self.sum_action_dim(self.distribution.entropy())
 
-    @override
     def get_actions_with_log_probs(self, latent_pi: torch.Tensor, deterministic: bool = False):
         # get_actions calls sample() or mode(), both of which set _last_gaussian_actions
         # --> prevents squashing and unsquashing which can lead to numerical instability
