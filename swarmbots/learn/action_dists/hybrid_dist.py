@@ -7,31 +7,32 @@ from gymnasium import spaces
 from swarmbots.learn.action_dists.action_dist import ActionDist, ActionNetInitialization, AGENT_ACTIONS_DIM
 from swarmbots.learn.action_dists.bernoulli_action_dist import BernoulliActionDist
 from swarmbots.learn.action_dists.predicted_std_action_dist import PredictedStdActionDist
-from swarmbots.learn.multi_output_utils import get_agent_action_dim
+from swarmbots.learn.hybrid_action_space import HybridActionSpace
 
-"""
-https://github.com/adysonmaia/sb3-plus/blob/main/sb3_plus/mimo/distributions.py
-"""
-class MultiOutputDistribution(ActionDist):
+
+class HybridDistribution(ActionDist):
 
     def __init__(
             self,
             latent_dim: int,
-            action_space: Union[spaces.Dict, spaces.Tuple],
+            action_space: HybridActionSpace,
             action_net_initialization: ActionNetInitialization | None,
+            base_std: float = 1.0,
     ):
         self.action_space = action_space
-        self.list_spaces = action_space.spaces.values() if isinstance(action_space, spaces.Dict) else action_space.spaces
-
-        # Per-agent action dims for split/cat along the last dimension:
-        self.action_dims = [get_agent_action_dim(s) for s in self.list_spaces]
+        self.action_dims = action_space.agent_action_dims
+        self.base_std = base_std
         super().__init__(
             latent_dim=latent_dim,
-            action_dim=int(sum(self.action_dims)),
+            action_dim=action_space.total_agent_action_dim,
             action_net_initialization=action_net_initialization
         )
 
-        self.distributions: list[ActionDist] = [make_proba_distribution(latent_dim, s) for s in self.list_spaces]
+        self.distributions: list[ActionDist] = [
+            make_proba_distribution(latent_dim, sub_space, sub_space_dim, base_std)
+            for sub_space, sub_space_dim
+            in zip(action_space.sub_spaces, action_space.agent_action_dims)
+        ]
 
     def update_latent_features(self, latent_pi: torch.Tensor) -> Self:
         for dist in self.distributions:
@@ -58,17 +59,18 @@ class MultiOutputDistribution(ActionDist):
         return torch.stack(entropies, dim=-1).sum(dim=-1)
 
 
-
 def make_proba_distribution(
         latent_dim: int,
         action_space: spaces.Space,
+        action_space_dim: int,
+        base_std: float,
 ) -> ActionDist:
     if isinstance(action_space, spaces.Box):
         _assert_unit_box_range(action_space)
         return PredictedStdActionDist(
             latent_dim=latent_dim,
-            action_dim=get_agent_action_dim(action_space),
-            base_std=1.0,
+            action_dim=action_space_dim,
+            base_std=base_std,
             squash_output=True,
             action_net_initialization=None,
             log_std_net_initialization=None,
@@ -76,7 +78,7 @@ def make_proba_distribution(
     elif isinstance(action_space, spaces.MultiBinary):
         return BernoulliActionDist(
             latent_dim=latent_dim,
-            action_dim=get_agent_action_dim(action_space),
+            action_dim=action_space_dim,
             action_net_initialization=None,
         )
     else:
