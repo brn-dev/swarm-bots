@@ -54,7 +54,7 @@ class HybridActionWrapper(gym.Wrapper):
 
         total_action_dim = self.act_dim_flat + self.conn_dim_flat
 
-        # Create a single continuous action space for PPO
+        # Create a single continuous action space for ppo
         # We use [-1, 1] range. For binary actions, >0 will be treated as 1.
         self.action_space = spaces.Box(
             low=-1.0,
@@ -74,14 +74,14 @@ class HybridActionWrapper(gym.Wrapper):
         return self._flatten_obs(obs), info
 
     def step(self, action):
-        # 'action' is a flat float array from PPO
+        # 'action' is a flat float array from ppo
 
         # 1. Split into actuator and connector parts
         act_part_flat = action[:self.act_dim_flat]
         conn_part_flat = action[self.act_dim_flat:]
 
         # 2. Reshape actuators (Continuous)
-        # PPO outputs in [-1, 1] which matches the actuator space usually
+        # ppo outputs in [-1, 1] which matches the actuator space usually
         actuators = act_part_flat.reshape(self.act_shape)
 
         # 3. Reshape and Threshold connectors (Binary)
