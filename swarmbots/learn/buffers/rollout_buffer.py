@@ -102,12 +102,12 @@ class EpisodeAccumulator:
     ):
         active_env_indices = torch.where(torch.logical_not(dones))[0]
 
-        self.local_obs[active_env_indices, self.step] = local_obs
-        self.global_obs[active_env_indices, self.step] = global_obs
-        self.actions[active_env_indices, self.step] = actions
-        self.rewards[active_env_indices, self.step] = rewards
-        self.log_probs[active_env_indices, self.step] = log_probs
-        self.values[active_env_indices, self.step] = values
+        self.local_obs[active_env_indices, self.step] = local_obs[active_env_indices]
+        self.global_obs[active_env_indices, self.step] = global_obs[active_env_indices]
+        self.actions[active_env_indices, self.step] = actions[active_env_indices]
+        self.rewards[active_env_indices, self.step] = rewards[active_env_indices]
+        self.log_probs[active_env_indices, self.step] = log_probs[active_env_indices]
+        self.values[active_env_indices, self.step] = values[active_env_indices]
 
         self.step += 1
 
