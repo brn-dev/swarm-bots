@@ -1,14 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Mapping, TypeAlias
+from typing import Any, TypeAlias
 
 import numpy as np
 import torch
 from gymnasium import spaces
 from gymnasium.vector import AutoresetMode, VectorEnv, VectorWrapper
 
-from swarmbots.learn.hybrid_action_space import HybridActionSpace, VectorHybridActionSpace
+from swarmbots.learn.hybrid_action_space import VectorHybridActionSpace
 
 TorchObs: TypeAlias = dict[str, torch.Tensor]
 NumpyObs: TypeAlias = dict[str, np.ndarray]
@@ -73,7 +73,7 @@ class SwarmBotsLearnVectorWrapper(VectorWrapper):
         single_obs_space = getattr(env, "single_observation_space", None) or env.observation_space
         single_act_space = getattr(env, "single_action_space", None) or env.action_space
 
-        self.observation_space: spaces.Dict = _require_dict_space(single_obs_space, what="single_observation_space")
+        self._observation_space: spaces.Dict = _require_dict_space(single_obs_space, what="single_observation_space")
         act_dict = _require_dict_space(single_act_space, what="single_action_space")
 
         if "actuators" not in act_dict.spaces or "connectors" not in act_dict.spaces:
@@ -93,12 +93,24 @@ class SwarmBotsLearnVectorWrapper(VectorWrapper):
         )
 
         self.n_agents: int = actuators_space.shape[0]
-        self.action_space: HybridActionSpace = VectorSwarmBotsActionSpace(
+        self._action_space: VectorHybridActionSpace = VectorSwarmBotsActionSpace(
             n_envs=self._n_envs,
             n_agents=self.n_agents,
             actuators_dim=self._split_spec.actuators_dim,
             connectors_dim=self._split_spec.connectors_dim,
         )
+
+        self.local_obs_dim = self.observation_space['local_obs'].shape[-1]
+        self.global_obs_dim = self.observation_space['global_obs'].shape[-1]
+
+
+    @property
+    def observation_space(self) -> spaces.Dict:
+        return self._observation_space
+
+    @property
+    def action_space(self) -> VectorHybridActionSpace:
+        return self._action_space
 
     def reset(self, **kwargs) -> tuple[TorchObs, dict[str, Any]]:
         obs, info = self.env.reset(**kwargs)
