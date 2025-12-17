@@ -8,7 +8,7 @@ import torch
 from gymnasium import spaces
 from gymnasium.vector import AutoresetMode, VectorEnv, VectorWrapper
 
-from swarmbots.learn.hybrid_action_space import HybridActionSpace
+from swarmbots.learn.hybrid_action_space import HybridActionSpace, VectorHybridActionSpace
 
 TorchObs: TypeAlias = dict[str, torch.Tensor]
 NumpyObs: TypeAlias = dict[str, np.ndarray]
@@ -38,22 +38,12 @@ class ActionSplitSpec:
         return self.actuators_dim + self.connectors_dim
 
 
-class VectorSwarmBotsActionSpace(HybridActionSpace):
+class VectorSwarmBotsActionSpace(VectorHybridActionSpace):
     def __init__(self, n_envs: int, n_agents: int, actuators_dim: int, connectors_dim: int):
         super().__init__(spaces={
             "actuators": spaces.Box(low=-1.0, high=1.0, shape=(n_envs, n_agents, actuators_dim), dtype=np.float32),
-            "connectors": spaces.MultiBinary(shape=(n_envs, n_agents, connectors_dim)),
+            "connectors": spaces.MultiBinary((n_envs, n_agents, connectors_dim)),
         })
-        self.n_envs = int(n_envs)
-
-    def sample(self, mask: dict[str, Any] | None = None, probability: dict[str, Any] | None = None) -> dict[str, Any]:
-        if mask is not None or probability is not None:
-            raise NotImplementedError("mask/probability sampling not supported")
-        out: dict[str, Any] = {}
-        for k, space in self.space_map.items():
-            samples = [space.sample() for _ in range(self.n_envs)]
-            out[k] = np.stack(samples, axis=0)
-        return out
 
 
 class SwarmBotsLearnVectorWrapper(VectorWrapper):
@@ -93,13 +83,9 @@ class SwarmBotsLearnVectorWrapper(VectorWrapper):
             )
 
         self._n_envs: int = int(getattr(env, "num_envs"))
-        
-        actuators_space = self.action_space["actuators"]
-        connectors_space = self.action_space["connectors"]
-        if getattr(actuators_space, "shape", None) is None or len(actuators_space.shape) != 2:
-            raise ValueError(f"Expected actuators space shape (n_agents, dim), got {actuators_space}")
-        if getattr(connectors_space, "shape", None) is None or len(connectors_space.shape) != 2:
-            raise ValueError(f"Expected connectors space shape (n_agents, dim), got {connectors_space}")
+
+        actuators_space = act_dict["actuators"]
+        connectors_space = act_dict["connectors"]
 
         self._split_spec = ActionSplitSpec(
             actuators_dim=int(actuators_space.shape[1]),
@@ -150,6 +136,13 @@ class SwarmBotsLearnVectorWrapper(VectorWrapper):
         }
 
     def _actions_to_env_dict(self, actions: torch.Tensor) -> dict[str, np.ndarray]:
-        return self.action_space.concat_actions(actions)
+        if actions.ndim == 2:
+            actions = actions.unsqueeze(0)
+        act_dim = self._split_spec.actuators_dim
+        actions = actions.detach().to("cpu")
+        actuators = actions[..., :act_dim].numpy().astype(np.float32, copy=False)
+        connectors = actions[..., act_dim:].numpy().astype(bool, copy=False)
+
+        return {"actuators": actuators, "connectors": connectors}
 
 
