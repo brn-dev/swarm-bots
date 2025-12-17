@@ -10,7 +10,7 @@ from swarmbots.learn.action_dists.predicted_std_action_dist import PredictedStdA
 from swarmbots.learn.hybrid_action_space import HybridActionSpace
 
 
-class HybridDistribution(ActionDist):
+class HybridActionDistribution(ActionDist):
 
     def __init__(
             self,

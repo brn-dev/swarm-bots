@@ -98,9 +98,9 @@ class EpisodeAccumulator:
             rewards: torch.Tensor,
             log_probs: torch.Tensor,
             values: torch.Tensor,
-            dones: torch.Tensor,
+            is_final: torch.Tensor,
     ):
-        active_env_indices = torch.where(torch.logical_not(dones))[0]
+        active_env_indices = torch.where(torch.logical_not(is_final))[0]
         if len(active_env_indices) > 0:
             step_indices = self.step[active_env_indices]
             self.local_obs[active_env_indices, step_indices] = local_obs[active_env_indices]
@@ -112,15 +112,15 @@ class EpisodeAccumulator:
 
             self.step[active_env_indices] += 1
 
-        done_env_indices = torch.where(dones)[0]
-        for done_env_idx in done_env_indices.tolist():
+        final_env_indices = torch.where(is_final)[0]
+        for final_env_idx in final_env_indices.tolist():
             yield self.construct_episode(
-                done_env_idx,
-                final_local_obs=local_obs[done_env_idx],
-                final_global_obs=global_obs[done_env_idx],
-                final_value=values[done_env_idx],
+                final_env_idx,
+                final_local_obs=local_obs[final_env_idx],
+                final_global_obs=global_obs[final_env_idx],
+                final_value=values[final_env_idx],
             )
-            self.step[done_env_idx] = 0
+            self.step[final_env_idx] = 0
 
     def construct_episode(
             self,
@@ -214,7 +214,7 @@ class RolloutBuffer:
             rewards: torch.Tensor,
             log_probs: torch.Tensor,
             values: torch.Tensor,
-            dones: torch.Tensor,
+            is_final: torch.Tensor,
     ):
         if self.is_ready():
             logger.warning('Adding into buffer despite being ready')
@@ -226,7 +226,7 @@ class RolloutBuffer:
             rewards=rewards,
             log_probs=log_probs,
             values=values,
-            dones=dones,
+            is_final=is_final,
         )
         for new_ep in new_episodes:
             new_ep.compute_gae(self.gamma, self.gae_lambda)
