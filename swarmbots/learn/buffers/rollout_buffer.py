@@ -101,19 +101,19 @@ class EpisodeAccumulator:
             dones: torch.Tensor,
     ):
         active_env_indices = torch.where(torch.logical_not(dones))[0]
+        if len(active_env_indices) > 0:
+            step_indices = self.step[active_env_indices]
+            self.local_obs[active_env_indices, step_indices] = local_obs[active_env_indices]
+            self.global_obs[active_env_indices, step_indices] = global_obs[active_env_indices]
+            self.actions[active_env_indices, step_indices] = actions[active_env_indices]
+            self.rewards[active_env_indices, step_indices] = rewards[active_env_indices]
+            self.log_probs[active_env_indices, step_indices] = log_probs[active_env_indices]
+            self.values[active_env_indices, step_indices] = values[active_env_indices]
 
-        self.local_obs[active_env_indices, self.step] = local_obs[active_env_indices]
-        self.global_obs[active_env_indices, self.step] = global_obs[active_env_indices]
-        self.actions[active_env_indices, self.step] = actions[active_env_indices]
-        self.rewards[active_env_indices, self.step] = rewards[active_env_indices]
-        self.log_probs[active_env_indices, self.step] = log_probs[active_env_indices]
-        self.values[active_env_indices, self.step] = values[active_env_indices]
-
-        self.step += 1
+            self.step[active_env_indices] += 1
 
         done_env_indices = torch.where(dones)[0]
         for done_env_idx in done_env_indices.tolist():
-            done_env_idx: int
             yield self.construct_episode(
                 done_env_idx,
                 final_local_obs=local_obs[done_env_idx],
@@ -185,7 +185,10 @@ class RolloutBuffer:
 
         self.storage_device = storage_device
         self.storage_dtype = storage_dtype
-        self.sampling_device = sampling_device
+        if sampling_device == "auto":
+            self.sampling_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        else:
+            self.sampling_device = sampling_device
         self.sampling_dtype = sampling_dtype
 
         self.episodes = list()

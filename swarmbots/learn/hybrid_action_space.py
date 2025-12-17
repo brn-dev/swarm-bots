@@ -50,6 +50,10 @@ class HybridActionSpace(Space[dict[str, Space[Any]]], typing.Mapping[str, Space[
             axis=-1
         )
 
+    def split_actions(self, actions: np.ndarray) -> dict[str, np.ndarray]:
+        split = np.split(actions, np.cumsum(self.agent_action_dims)[:-1], axis=-1)
+        return {k: v for k, v in zip(self.key_order, split, strict=True)}
+
     def sample(
         self,
         mask: dict[str, Any] | None = None,
@@ -112,3 +116,54 @@ def get_agent_action_dim(space: Space) -> int:
             raise ValueError(f"Expected shape (n_agents, n_actions_per_agent), got shape={shape} for {space}")
         return int(shape[1])
     raise NotImplementedError(f"{space} space is not supported (expected Box/MultiBinary)")
+
+
+class VectorHybridActionSpace(HybridActionSpace):
+    def __init__(
+        self,
+        spaces: None | dict[str, Space] | Sequence[tuple[str, Space]] = None,
+        seed: int | np.random.Generator | None = None,
+    ):
+        if isinstance(spaces, OrderedDict):
+            spaces = spaces.copy()
+        elif isinstance(spaces, collections.abc.Mapping):
+            spaces = OrderedDict(sorted(spaces.items()))
+        elif isinstance(spaces, Sequence):
+            spaces = OrderedDict(spaces)
+        else:
+            raise TypeError(
+                f"Unexpected Dict space input, expecting dict, OrderedDict or Sequence, actual type: {type(spaces)}"
+            )
+
+        self.space_map: OrderedDict[str, Space[Any]] = spaces
+        self.key_order = list(self.space_map.keys())
+        self.sub_spaces = list(self.space_map.values())
+
+        self.agent_action_dims = [get_vector_agent_action_dim(s) for s in self.space_map.values()]
+        self.total_agent_action_dim = sum(self.agent_action_dims)
+
+        # (n_envs, n_agents, dim)
+        self.n_envs = int(self.sub_spaces[0].shape[0])
+        self.n_agents = int(self.sub_spaces[0].shape[1])
+        for sub_space in self.sub_spaces[1:]:
+            assert int(sub_space.shape[0]) == self.n_envs
+            assert int(sub_space.shape[1]) == self.n_agents
+
+        Space.__init__(self, None, None, seed)
+
+
+def get_vector_agent_action_dim(space: Space) -> int:
+    """
+    Return the per-agent action dimension for a *vector* action space.
+
+    Assumption: Each individual action component space is shaped like (n_envs, n_agents, n_actions_per_agent)
+    """
+    if isinstance(space, (spaces.Box, spaces.MultiBinary)):
+        shape = getattr(space, "shape", None)
+        if shape is None:
+            raise ValueError(f"Expected a shaped space (n_envs, n_agents, n_actions_per_agent), got {space}")
+        if len(shape) != 3:
+            raise ValueError(f"Expected shape (n_envs, n_agents, n_actions_per_agent), got shape={shape} for {space}")
+        return int(shape[2])
+    raise NotImplementedError(f"{space} space is not supported (expected Box/MultiBinary)")
+
