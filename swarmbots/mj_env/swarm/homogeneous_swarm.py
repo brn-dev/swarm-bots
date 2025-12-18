@@ -2,12 +2,12 @@ import mujoco
 import numpy as np
 from mujoco import MjsBody
 
-from swarmbots.random_utils import random_quat_shoemake
-from swarmbots.swarm.base_swarm import BaseSwarm
-from swarmbots.swarm.swarm_config import SwarmConfig
-from swarmbots.swarm.swarm_connections import SwarmConnections
-from swarmbots.swarm.unit import init_unit
-from swarmbots.swarm.unit_config import UnitConfig, UNIT_CONFIG_TETRAHEDRON_YX
+from swarmbots.mj_env.random_utils import random_quat_shoemake
+from swarmbots.mj_env.swarm.base_swarm import BaseSwarm
+from swarmbots.mj_env.swarm.swarm_config import SwarmConfig
+from swarmbots.mj_env.swarm.swarm_connections import SwarmConnections
+from swarmbots.mj_env.swarm.unit import init_unit
+from swarmbots.mj_env.swarm.unit_config import UnitConfig, UNIT_CONFIG_TETRAHEDRON_YX
 
 
 class HomogeneousSwarm(BaseSwarm):

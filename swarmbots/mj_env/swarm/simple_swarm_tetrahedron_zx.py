@@ -2,11 +2,11 @@ import mujoco
 import numpy as np
 from mujoco import MjsBody
 
-from swarmbots.swarm.base_swarm import BaseSwarm
-from swarmbots.swarm.swarm_config import SwarmConfig
-from swarmbots.swarm.swarm_connections import SwarmConnections
-from swarmbots.swarm.unit_config import UNIT_CONFIG_CUBE_ZX, UNIT_CONFIG_TETRAHEDRON_ZX
-from swarmbots.swarm.unit import init_unit
+from swarmbots.mj_env.swarm.base_swarm import BaseSwarm
+from swarmbots.mj_env.swarm.swarm_config import SwarmConfig
+from swarmbots.mj_env.swarm.swarm_connections import SwarmConnections
+from swarmbots.mj_env.swarm.unit_config import UNIT_CONFIG_TETRAHEDRON_ZX
+from swarmbots.mj_env.swarm.unit import init_unit
 
 
 class SimpleSwarmTetrahedronZX(BaseSwarm):

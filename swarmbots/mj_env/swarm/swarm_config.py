@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 
-from swarmbots.swarm.unit_config import UnitConfig
+from swarmbots.mj_env.swarm.unit_config import UnitConfig
 
 
 def get_connector_suffix(connector: int):

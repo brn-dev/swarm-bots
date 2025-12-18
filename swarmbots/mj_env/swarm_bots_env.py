@@ -3,12 +3,11 @@ from typing import Any, SupportsFloat, Literal, Iterable
 import gymnasium
 import mujoco
 import numpy as np
-from gymnasium import spaces
 from gymnasium.core import RenderFrame
 from mujoco import MjvOption
 
-from swarmbots.scenarios.base_scenario import BaseScenario, SwarmActDict, SwarmObsDict
-from swarmbots.swarm.swarm_connections import SwarmConnections
+from swarmbots.mj_env.scenarios.base_scenario import BaseScenario, SwarmActDict, SwarmObsDict
+from swarmbots.mj_env.swarm.swarm_connections import SwarmConnections
 
 
 class SwarmBotsEnv(gymnasium.Env):

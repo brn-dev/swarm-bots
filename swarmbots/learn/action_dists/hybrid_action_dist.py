@@ -1,13 +1,13 @@
-from typing import Union, Optional, Self
+from typing import Optional, Self
 
 import torch
 import numpy as np
 from gymnasium import spaces
 
-from swarmbots.learn.action_dists.action_dist import ActionDist, ActionNetInitialization, AGENT_ACTIONS_DIM
-from swarmbots.learn.action_dists.bernoulli_action_dist import BernoulliActionDist
-from swarmbots.learn.action_dists.predicted_std_action_dist import PredictedStdActionDist
-from swarmbots.learn.hybrid_action_space import HybridActionSpace
+from swarmbots import ActionDist, ActionNetInitialization, AGENT_ACTIONS_DIM
+from swarmbots import BernoulliActionDist
+from swarmbots import PredictedStdActionDist
+from swarmbots import HybridActionSpace
 
 
 class HybridActionDistribution(ActionDist):

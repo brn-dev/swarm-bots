@@ -1,11 +1,10 @@
-from typing import Optional, Self, Callable
+from typing import Optional, Self
 
 import torch
 import torch.distributions as torchdist
-from torch import nn
 
-from swarmbots.learn.action_dists.action_dist import ActionNetInitialization, AGENT_ACTIONS_DIM
-from swarmbots.learn.action_dists.discrete_action_dist import DiscreteActionDist
+from swarmbots import ActionNetInitialization, AGENT_ACTIONS_DIM
+from swarmbots import DiscreteActionDist
 
 
 class BernoulliActionDist(DiscreteActionDist):

@@ -5,8 +5,8 @@ import torch
 import torch.distributions as torchdist
 from torch import nn
 
-from swarmbots.learn.action_dists.action_dist import ActionNetInitialization
-from swarmbots.learn.action_dists.continuous_action_dist import ContinuousActionDist
+from swarmbots import ActionNetInitialization
+from swarmbots import ContinuousActionDist
 
 
 class DiagGaussianActionDist(ContinuousActionDist):

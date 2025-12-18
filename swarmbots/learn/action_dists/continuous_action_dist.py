@@ -4,7 +4,7 @@ from typing import Optional, Self
 import torch
 import torch.distributions as torchdist
 
-from swarmbots.learn.action_dists.action_dist import ActionDist, ActionNetInitialization, AGENT_ACTIONS_DIM
+from swarmbots import ActionDist, ActionNetInitialization, AGENT_ACTIONS_DIM
 
 
 class ContinuousActionDist(ActionDist, abc.ABC):

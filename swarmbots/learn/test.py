@@ -1,8 +1,8 @@
 from gymnasium.vector import AsyncVectorEnv
-from swarmbots.learn.testing_env import TestingSwarmBotsEnv
-from swarmbots.learn.ppo.ppo import collect_rollout
-from swarmbots.learn.buffers.rollout_buffer import RolloutBuffer
-from swarmbots.learn.env_wrappers.swarm_bots_learn_wrapper import SwarmBotsLearnWrapper
+from swarmbots import TestingSwarmBotsEnv
+from swarmbots import collect_rollout
+from swarmbots import RolloutBuffer
+from swarmbots import SwarmBotsLearnWrapper
 
 
 def make_env_fn(
@@ -60,7 +60,7 @@ def main():
     print(f"Running {n_envs} environment(s) with max_steps={max_steps}...")
 
     # Create dummy observation space for RolloutBuffer initialization
-    # Note: env.observation_space is already the correct Vector Dict space from the wrapper
+    # Note: mj_env.observation_space is already the correct Vector Dict space from the wrapper
     # But RolloutBuffer expects single observation space components structure but sized for vector?
     # No, RolloutBuffer usually takes the single observation space structure.
     # But let's look at how RolloutBuffer is implemented.

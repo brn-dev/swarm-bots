@@ -2,9 +2,9 @@ from typing import Optional, Self
 
 import torch
 
-from swarmbots.learn.action_dists.action_dist import ActionNetInitialization
-from swarmbots.learn.action_dists.diag_gaussian_action_dist import DiagGaussianActionDist
-from swarmbots.learn.action_dists.tanh_bijector import TanhBijector
+from swarmbots import ActionNetInitialization
+from swarmbots import DiagGaussianActionDist
+from swarmbots import TanhBijector
 
 
 # Inspired by

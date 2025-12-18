@@ -5,7 +5,7 @@ import torch
 from gymnasium import spaces
 from loguru import logger
 
-from swarmbots.learn.hybrid_action_space import VectorHybridActionSpace
+from swarmbots import VectorHybridActionSpace
 
 MaybeTensor = Optional[torch.Tensor]
 
