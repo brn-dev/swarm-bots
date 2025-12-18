@@ -5,12 +5,13 @@ import torch
 from gymnasium import spaces
 from loguru import logger
 
-from swarmbots import VectorHybridActionSpace
+from swarmbots.learn.hybrid_action_space import VectorHybridActionSpace
 
 MaybeTensor = Optional[torch.Tensor]
 
+
 @dataclass
-class Episode:
+class PPOEpisode:
     local_obs: torch.Tensor  # (n_steps, n_agents, n_local_obs)
     global_obs: torch.Tensor  # (n_steps, n_global_obs)
     actions: torch.Tensor  # (n_steps, n_agents, n_actions_per_agent)
@@ -47,7 +48,7 @@ class Episode:
         self.returns = self.advantages + self.values
 
 
-class EpisodeAccumulator:
+class PPOEpisodeAccumulator:
 
     def __init__(
             self,
@@ -128,9 +129,9 @@ class EpisodeAccumulator:
             final_local_obs: torch.Tensor,
             final_global_obs: torch.Tensor,
             final_value: torch.Tensor,
-    ) -> Episode:
+    ) -> PPOEpisode:
         step = int(self.step[env].item())
-        return Episode(
+        return PPOEpisode(
             local_obs=self.local_obs[env, :step].clone(),
             global_obs=self.global_obs[env, :step].clone(),
             actions=self.actions[env, :step].clone(),
@@ -146,7 +147,7 @@ class EpisodeAccumulator:
         self.step[:] = 0
 
 
-class RolloutBuffer:
+class PPORolloutBuffer:
 
     def __init__(
             self,
@@ -193,7 +194,7 @@ class RolloutBuffer:
         self.sampling_dtype = sampling_dtype
 
         self.episodes = list()
-        self.accumulator = EpisodeAccumulator(
+        self.accumulator = PPOEpisodeAccumulator(
             n_envs=self.n_envs,
             max_episode_length=self.max_episode_length,
             n_agents=self.n_agents,
@@ -241,9 +242,9 @@ class RolloutBuffer:
         self.accumulator.reset()
         self.episodes = []
 
-    def get_episodes(self) -> list[Episode]:
+    def get_episodes(self) -> list[PPOEpisode]:
         return [
-            Episode(
+            PPOEpisode(
                 local_obs=ep.local_obs.to(device=self.sampling_device, dtype=self.sampling_dtype),
                 global_obs=ep.global_obs.to(device=self.sampling_device, dtype=self.sampling_dtype),
                 actions=ep.actions.to(device=self.sampling_device, dtype=self.sampling_dtype),
@@ -259,9 +260,9 @@ class RolloutBuffer:
             for ep in self.episodes
         ]
 
-    def get_episodes_minimal(self) -> list[Episode]:
+    def get_episodes_minimal(self) -> list[PPOEpisode]:
         return [
-            Episode(
+            PPOEpisode(
                 local_obs=ep.local_obs.to(device=self.sampling_device, dtype=self.sampling_dtype),
                 global_obs=ep.global_obs.to(device=self.sampling_device, dtype=self.sampling_dtype),
                 actions=ep.actions.to(device=self.sampling_device, dtype=self.sampling_dtype),
@@ -276,4 +277,49 @@ class RolloutBuffer:
             )
             for ep in self.episodes
         ]
+
+
+@dataclass
+class PPOSamples:
+    local_obs: torch.Tensor
+    global_obs: torch.Tensor
+    actions: torch.Tensor
+    log_probs: torch.Tensor
+    returns: torch.Tensor
+    advantages: torch.Tensor
+
+
+class PPOSampler:
+
+    def __init__(
+            self,
+            episodes: list[PPOEpisode],
+    ):
+        self.local_obs = torch.concatenate(tuple(ep.local_obs for ep in episodes), dim=0)
+        self.global_obs = torch.concatenate(tuple(ep.global_obs for ep in episodes), dim=0)
+        self.actions = torch.concatenate(tuple(ep.actions for ep in episodes), dim=0)
+        self.log_probs = torch.concatenate(tuple(ep.log_probs for ep in episodes), dim=0)
+        self.returns = torch.concatenate(tuple(ep.returns for ep in episodes), dim=0)
+        self.advantages = torch.concatenate(tuple(ep.advantages for ep in episodes), dim=0)
+
+    def sample(self, batch_size: int, drop_last: bool = True):
+        n_samples = self.local_obs.shape[0]
+        indices = torch.randperm(n_samples)
+
+        for start_idx in range(0, n_samples, batch_size):
+            batch_indices = indices[start_idx : start_idx + batch_size]
+
+            if drop_last and len(batch_indices) < batch_size:
+                continue
+
+            yield PPOSamples(
+                local_obs=self.local_obs[batch_indices],
+                global_obs=self.global_obs[batch_indices],
+                actions=self.actions[batch_indices],
+                log_probs=self.log_probs[batch_indices],
+                returns=self.returns[batch_indices],
+                advantages=self.advantages[batch_indices],
+            )
+
+
 
