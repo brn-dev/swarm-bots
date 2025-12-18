@@ -8,10 +8,9 @@ from stable_baselines3.common.vec_env import SubprocVecEnv, VecNormalize, DummyV
 from stable_baselines3.common.monitor import Monitor
 import imageio
 
-from swarmbots import SimpleSwarmTetrahedronZX
-from swarmbots import SwarmBotsEnv
-from swarmbots import ObstacleStreetScenario
-
+from swarmbots.mj_env.scenarios.obstacle_street_scenario import ObstacleStreetScenario
+from swarmbots.mj_env.swarm.simple_swarm_tetrahedron_zx import SimpleSwarmTetrahedronZX
+from swarmbots.mj_env.swarm_bots_env import SwarmBotsEnv
 
 
 class HybridActionWrapper(gym.Wrapper):

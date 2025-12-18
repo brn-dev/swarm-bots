@@ -3,8 +3,8 @@ from typing import Optional, Self
 import torch
 import torch.distributions as torchdist
 
-from swarmbots import ActionNetInitialization, AGENT_ACTIONS_DIM
-from swarmbots import DiscreteActionDist
+from swarmbots.learn.action_dists.action_dist import AGENT_ACTIONS_DIM, ActionNetInitialization
+from swarmbots.learn.action_dists.discrete_action_dist import DiscreteActionDist
 
 
 class BernoulliActionDist(DiscreteActionDist):

@@ -9,8 +9,8 @@ import torch
 from gymnasium import spaces
 from gymnasium.vector import AutoresetMode, VectorEnv, VectorWrapper
 
-from swarmbots import VectorHybridActionSpace
-from swarmbots import as_device
+from swarmbots.learn.hybrid_action_space import VectorHybridActionSpace
+from swarmbots.learn.torch_device import as_device
 
 TorchObs: TypeAlias = dict[str, torch.Tensor]
 NumpyObs: TypeAlias = dict[str, np.ndarray]

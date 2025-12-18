@@ -1,11 +1,10 @@
 import mujoco
 
-from swarmbots import SimpleSwarmTetrahedronZX
-from swarmbots import SwarmBotsEnv
-from swarmbots import ObstacleStreetScenario
-
 import numpy as np
 
+from swarmbots.mj_env.scenarios.obstacle_street_scenario import ObstacleStreetScenario
+from swarmbots.mj_env.swarm.simple_swarm_tetrahedron_zx import SimpleSwarmTetrahedronZX
+from swarmbots.mj_env.swarm_bots_env import SwarmBotsEnv
 
 swarm = SimpleSwarmTetrahedronZX(connection_torquescale=0.01)
 scenario = ObstacleStreetScenario(swarm, payload_type='sphere', payload_start_location_offset=(0, 0, 1), seed=42)
