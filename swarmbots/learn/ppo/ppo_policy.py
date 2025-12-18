@@ -2,8 +2,7 @@ import torch
 from torch import nn
 
 from swarmbots.learn.action_dists.hybrid_action_dist import HybridActionDistribution
-from swarmbots.learn.hybrid_action_space import HybridActionSpace
-from swarmbots.learn.swarm_bots_learn_wrapper import SwarmBotsLearnVectorWrapper
+from swarmbots.learn.env_wrappers.swarm_bots_learn_wrapper import SwarmBotsLearnWrapper
 
 
 class PPOActor(nn.Module):
@@ -69,7 +68,7 @@ class PPOPolicy(nn.Module):
 
     def __init__(
             self,
-            env: SwarmBotsLearnVectorWrapper,
+            env: SwarmBotsLearnWrapper,
             actor_hidden_dims: list[int],
             critic_hidden_dims: list[int],
             act_fun_class = nn.Tanh

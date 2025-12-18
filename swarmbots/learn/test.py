@@ -1,11 +1,8 @@
-import torch
-import numpy as np
-from gymnasium import spaces
 from gymnasium.vector import AsyncVectorEnv
 from swarmbots.learn.testing_env import TestingSwarmBotsEnv
 from swarmbots.learn.ppo.ppo import collect_rollout
 from swarmbots.learn.buffers.rollout_buffer import RolloutBuffer
-from swarmbots.learn.swarm_bots_learn_wrapper import SwarmBotsLearnVectorWrapper
+from swarmbots.learn.env_wrappers.swarm_bots_learn_wrapper import SwarmBotsLearnWrapper
 
 
 def make_env_fn(
@@ -58,7 +55,7 @@ def main():
     vector_env = AsyncVectorEnv(env_fns)
 
     print("Wrapping with SwarmBotsLearnVectorWrapper...")
-    env = SwarmBotsLearnVectorWrapper(vector_env, device="cpu")
+    env = SwarmBotsLearnWrapper(vector_env, device="cpu")
 
     print(f"Running {n_envs} environment(s) with max_steps={max_steps}...")
 

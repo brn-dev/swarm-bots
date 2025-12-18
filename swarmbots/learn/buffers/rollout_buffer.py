@@ -1,11 +1,11 @@
 from dataclasses import dataclass
-from typing import Optional, Union
+from typing import Optional
 
 import torch
 from gymnasium import spaces
 from loguru import logger
 
-from swarmbots.learn.hybrid_action_space import HybridActionSpace
+from swarmbots.learn.hybrid_action_space import VectorHybridActionSpace
 
 MaybeTensor = Optional[torch.Tensor]
 
@@ -153,29 +153,30 @@ class RolloutBuffer:
             n_episodes: int,
             max_episode_length: int,
             observation_space: spaces.Dict,
-            action_space: HybridActionSpace,
+            action_space: VectorHybridActionSpace,
             gamma: float,
             gae_lambda: float,
             storage_device: torch.device | str = 'cpu',
             storage_dtype: torch.dtype = torch.float32,
             sampling_device: torch.device | str = 'auto',
             sampling_dtype: torch.dtype = torch.float32,
-            n_envs: int = 1,
     ):
         super().__init__()
         self.n_episodes = n_episodes
         self.max_episode_length = max_episode_length
-        self.n_envs = n_envs
 
         self.observation_space = observation_space
         self.action_space = action_space
 
+        self.n_envs = self.observation_space.shape[0]
+        assert self.action_space.shape[0] == self.n_envs
+
         self.local_obs_space = observation_space['local_obs']
-        self.n_agents = self.local_obs_space.shape[0]
-        self.agent_obs_shape = self.local_obs_space.shape[1:]
+        self.n_agents = self.local_obs_space.shape[1]
+        self.agent_obs_shape = self.local_obs_space.shape[2:]
 
         self.global_obs_space = observation_space['global_obs']
-        self.global_obs_shape = self.global_obs_space.shape
+        self.global_obs_shape = self.global_obs_space.shape[1:]
 
         assert action_space.n_agents == self.n_agents
         self.n_agent_actions = action_space.total_agent_action_dim
