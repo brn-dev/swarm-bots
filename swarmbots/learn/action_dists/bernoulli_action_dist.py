@@ -5,6 +5,7 @@ import torch.distributions as torchdist
 
 from swarmbots.learn.action_dists.action_dist import AGENT_ACTIONS_DIM, ActionNetInitialization
 from swarmbots.learn.action_dists.discrete_action_dist import DiscreteActionDist
+from swarmbots.learn.nn_components.nn_init import init_linear_orthogonal
 
 
 class BernoulliActionDist(DiscreteActionDist):
@@ -13,7 +14,7 @@ class BernoulliActionDist(DiscreteActionDist):
             self,
             latent_dim: int,
             action_dim: int,
-            action_net_initialization: ActionNetInitialization | None,
+            action_net_initialization: ActionNetInitialization = init_linear_orthogonal,
     ):
         super().__init__(
             latent_dim=latent_dim,

@@ -63,7 +63,7 @@ class TestingSwarmBotsEnv(gymnasium.Env):
         
         truncated = self._step_count >= self.max_steps
         terminated = False
-        reward = self._step_count
+        reward = self._step_count if not truncated else -100
         
         obs = self._get_obs()
         
