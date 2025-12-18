@@ -38,7 +38,6 @@ def main():
     max_steps = 10
     n_episodes = 4
 
-    # Create list of environment factories for AsyncVectorEnv
     env_fns = [
         make_env_fn(
             n_agents=n_agents,
@@ -61,7 +60,6 @@ def main():
 
     print(f"Running {n_envs} environment(s) with max_steps={max_steps}...")
 
-    # Initialize Policy
     print("Initializing PPO Policy...")
     policy = PPOPolicy(
         env=env,
@@ -78,7 +76,7 @@ def main():
         action_space=env.action_space,
         gamma=0.99,
         gae_lambda=0.95,
-        storage_device='cpu', # Keep on CPU for test
+        storage_device='cpu',
         sampling_device='cpu'
     )
 
