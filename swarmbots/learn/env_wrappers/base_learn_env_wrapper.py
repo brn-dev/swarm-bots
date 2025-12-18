@@ -18,7 +18,7 @@ NumpyObs: TypeAlias = dict[str, np.ndarray]
 ActSpace = TypeVar('ActSpace', bound=VectorHybridActionSpace)
 
 
-class LearnVectorEnvWrapper(VectorWrapper, Generic[ActSpace], abc.ABC):
+class BaseLearnEnvWrapper(VectorWrapper, Generic[ActSpace], abc.ABC):
 
     def __init__(
         self,
@@ -42,12 +42,14 @@ class LearnVectorEnvWrapper(VectorWrapper, Generic[ActSpace], abc.ABC):
             )
 
         obs_space = env.observation_space
-        if not isinstance(obs_space, spaces.Dict) or 'local_obs' not in obs_space or 'lobal_obs' not in obs_space:
+        if not isinstance(obs_space, spaces.Dict) or 'local_obs' not in obs_space.keys() or 'global_obs' not in obs_space.keys():
             raise ValueError(f'Observations space must be a dict containing "local_obs" and "global_obs", got {obs_space}')
         self._observation_space: spaces.Dict = obs_space
+        self.local_obs_dim = self._observation_space['local_obs'].shape[2]
+        self.global_obs_dim = self._observation_space['global_obs'].shape[1]
 
         if not isinstance(action_space, VectorHybridActionSpace):
-            raise ValueError(f'Action space must be a VectorHybridActionSpace, got {obs_space}')
+            raise ValueError(f'Action space must be a VectorHybridActionSpace, got {action_space}')
         self._action_space: VectorHybridActionSpace = action_space
 
 

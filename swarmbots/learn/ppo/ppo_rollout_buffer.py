@@ -169,15 +169,14 @@ class PPORolloutBuffer:
         self.observation_space = observation_space
         self.action_space = action_space
 
-        self.n_envs = self.observation_space.shape[0]
-        assert self.action_space.shape[0] == self.n_envs
-
         self.local_obs_space = observation_space['local_obs']
         self.n_agents = self.local_obs_space.shape[1]
         self.agent_obs_shape = self.local_obs_space.shape[2:]
 
         self.global_obs_space = observation_space['global_obs']
         self.global_obs_shape = self.global_obs_space.shape[1:]
+
+        self.n_envs = self.local_obs_space.shape[0]
 
         assert action_space.n_agents == self.n_agents
         self.n_agent_actions = action_space.total_agent_action_dim

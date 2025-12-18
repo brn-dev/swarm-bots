@@ -1,12 +1,12 @@
 import torch
 
-from swarmbots.learn.env_wrappers.swarm_bots_learn_wrapper import SwarmBotsLearnWrapper
+from swarmbots.learn.env_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
 from swarmbots.learn.ppo.ppo_policy import PPOPolicy
 from swarmbots.learn.ppo.ppo_rollout_buffer import PPOEpisode, PPORolloutBuffer
 
 
 def collect_rollout(
-        env: SwarmBotsLearnWrapper,
+        env: BaseLearnEnvWrapper,
         policy: PPOPolicy,
         buffer: PPORolloutBuffer,
         device: torch.device,
