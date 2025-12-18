@@ -1,6 +1,6 @@
 import numpy as np
 
-from swarmbots.swarm.swarm_config import SwarmConfig
+from swarmbots.mj_env.swarm.swarm_config import SwarmConfig
 
 
 class SwarmConnections:

@@ -1,9 +1,8 @@
 import mujoco
 
-from swarmbots.swarm.simple_swarm_tetrahedron_zx import SimpleSwarmTetrahedronZX
-from swarmbots.swarm_bots_env import SwarmBotsEnv
-from swarmbots.scenarios.obstacle_street_scenario import ObstacleStreetScenario
-from rendering import display_video
+from swarmbots import SimpleSwarmTetrahedronZX
+from swarmbots import SwarmBotsEnv
+from swarmbots import ObstacleStreetScenario
 
 import numpy as np
 
@@ -45,12 +44,12 @@ for i in range(3):
         done = terminated or truncated
 
         # if info:
-        #     print('err ' + str(env.data.time))
+        #     print('err ' + str(mj_env.data.time))
 
 
         # if len(frames) % 50 == 0:
-        #     env.data.eq_active[:] = 0
-        #     env.data.eq_active[rng.integers(low=0, high=len(env.data.eq_active))] = 1
+        #     mj_env.data.eq_active[:] = 0
+        #     mj_env.data.eq_active[rng.integers(low=0, high=len(mj_env.data.eq_active))] = 1
 
     print(f"Recorded {len(frames)} frames")
     for _ in range(15):

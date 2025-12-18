@@ -3,8 +3,8 @@ import abc
 import mujoco
 import numpy as np
 
-from swarmbots.swarm.swarm_config import SwarmConfig
-from swarmbots.swarm.swarm_connections import SwarmConnections
+from swarmbots.mj_env.swarm.swarm_config import SwarmConfig
+from swarmbots.mj_env.swarm.swarm_connections import SwarmConnections
 
 
 class BaseSwarm(abc.ABC):

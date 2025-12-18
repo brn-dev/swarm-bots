@@ -8,9 +8,9 @@ from stable_baselines3.common.vec_env import SubprocVecEnv, VecNormalize, DummyV
 from stable_baselines3.common.monitor import Monitor
 import imageio
 
-from swarmbots.swarm.simple_swarm_tetrahedron_zx import SimpleSwarmTetrahedronZX
-from swarmbots.swarm_bots_env import SwarmBotsEnv
-from swarmbots.scenarios.obstacle_street_scenario import ObstacleStreetScenario
+from swarmbots import SimpleSwarmTetrahedronZX
+from swarmbots import SwarmBotsEnv
+from swarmbots import ObstacleStreetScenario
 
 
 
@@ -39,7 +39,7 @@ class HybridActionWrapper(gym.Wrapper):
         )
 
         # --- 2. Flatten Action Space (Hybrid -> Box) ---
-        # The env action space is a Dict with 'actuators' (Box) and 'connectors' (MultiBinary)
+        # The mj_env action space is a Dict with 'actuators' (Box) and 'connectors' (MultiBinary)
         self.original_action_space = env.action_space
 
         # Get shapes

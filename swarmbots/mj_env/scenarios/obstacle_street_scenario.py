@@ -4,9 +4,9 @@ import mujoco
 import numpy as np
 from mujoco import MjsBody
 
-from swarmbots.scenarios.base_scenario import BaseScenario, SwarmObsDict
-from swarmbots.swarm.base_swarm import BaseSwarm
-from swarmbots.swarm.swarm_connections import SwarmConnections
+from swarmbots.mj_env.scenarios.base_scenario import BaseScenario, SwarmObsDict
+from swarmbots.mj_env.swarm.base_swarm import BaseSwarm
+from swarmbots.mj_env.swarm.swarm_connections import SwarmConnections
 
 
 class ObstacleStreetScenario(BaseScenario):

@@ -1,8 +1,8 @@
 import torch
 from torch import nn
 
-from swarmbots.learn.action_dists.hybrid_action_dist import HybridActionDistribution
-from swarmbots.learn.env_wrappers.swarm_bots_learn_wrapper import SwarmBotsLearnWrapper
+from swarmbots import HybridActionDistribution
+from swarmbots import SwarmBotsLearnWrapper
 
 
 class PPOActor(nn.Module):

@@ -1,7 +1,7 @@
 import mujoco
 
-from swarmbots.swarm.swarm_config import get_connector_suffix
-from swarmbots.swarm.unit_config import UnitConfig, LimbConfig, LimbType
+from swarmbots.mj_env.swarm.swarm_config import get_connector_suffix
+from swarmbots.mj_env.swarm.unit_config import UnitConfig, LimbConfig, LimbType
 
 
 def init_unit(

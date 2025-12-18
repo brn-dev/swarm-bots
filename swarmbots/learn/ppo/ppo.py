@@ -1,8 +1,8 @@
 import torch
 
-from swarmbots.learn.buffers.rollout_buffer import Episode, RolloutBuffer
-from swarmbots.learn.ppo.ppo_policy import PPOPolicy
-from swarmbots.learn.env_wrappers.swarm_bots_learn_wrapper import SwarmBotsLearnWrapper
+from swarmbots import Episode, RolloutBuffer
+from swarmbots import PPOPolicy
+from swarmbots import SwarmBotsLearnWrapper
 
 
 def collect_rollout(

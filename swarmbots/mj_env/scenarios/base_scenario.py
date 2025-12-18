@@ -6,9 +6,9 @@ import numpy as np
 from gymnasium import spaces
 from mujoco import MjsBody
 
-import swarmbots.mujoco_utils as mj_utils
-from swarmbots.swarm.base_swarm import BaseSwarm
-from swarmbots.swarm.swarm_connections import SwarmConnections
+import swarmbots.mj_env.mujoco_utils as mj_utils
+from swarmbots.mj_env.swarm.base_swarm import BaseSwarm
+from swarmbots.mj_env.swarm.swarm_connections import SwarmConnections
 
 class SwarmObsDict(TypedDict):
     local_obs: np.ndarray  # shape (n_unit, n_obs_per_unit)
