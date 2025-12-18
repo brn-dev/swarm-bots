@@ -15,7 +15,7 @@ class ActionDist(nn.Module, abc.ABC):
             self,
             latent_dim: int,
             action_dim: int,
-            action_net_initialization: ActionNetInitialization | None,
+            action_net_initialization: ActionNetInitialization,
     ):
         super().__init__()
         self.latent_dim = latent_dim
@@ -28,8 +28,7 @@ class ActionDist(nn.Module, abc.ABC):
         else:
             self.action_net = nn.Linear(latent_dim, action_dim)
 
-            if action_net_initialization is not None:
-                action_net_initialization(self.action_net)
+            action_net_initialization(self.action_net)
 
         self.distribution: Optional[torchdist.Distribution] = None
 

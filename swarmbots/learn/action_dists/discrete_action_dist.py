@@ -12,7 +12,7 @@ class DiscreteActionDist(ActionDist, abc.ABC):
             self,
             latent_dim: int,
             action_dim: int,
-            action_net_initialization: ActionNetInitialization | None,
+            action_net_initialization: ActionNetInitialization,
     ):
         super().__init__(
             latent_dim=latent_dim,

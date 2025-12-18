@@ -9,6 +9,7 @@ from swarmbots.learn.action_dists.action_dist import ActionDist, AGENT_ACTIONS_D
 from swarmbots.learn.action_dists.bernoulli_action_dist import BernoulliActionDist
 from swarmbots.learn.action_dists.predicted_std_action_dist import PredictedStdActionDist
 from swarmbots.learn.hybrid_action_space import HybridActionSpace
+from swarmbots.learn.nn_components.nn_init import init_linear_orthogonal
 
 
 class HybridActionDistribution(ActionDist):
@@ -17,12 +18,13 @@ class HybridActionDistribution(ActionDist):
             self,
             latent_dim: int,
             action_space: HybridActionSpace,
-            action_net_initialization: ActionNetInitialization | None,
+            action_net_initialization: ActionNetInitialization = init_linear_orthogonal,
             base_std: float = 1.0,
     ):
         self.action_space = action_space
         self.action_dims = action_space.agent_action_dims
         self.base_std = base_std
+
         super().__init__(
             latent_dim=latent_dim,
             action_dim=action_space.total_agent_action_dim,
@@ -74,14 +76,11 @@ def make_proba_distribution(
             action_dim=action_space_dim,
             base_std=base_std,
             squash_output=True,
-            action_net_initialization=None,
-            log_std_net_initialization=None,
         )
     elif isinstance(action_space, spaces.MultiBinary):
         return BernoulliActionDist(
             latent_dim=latent_dim,
             action_dim=action_space_dim,
-            action_net_initialization=None,
         )
     else:
         raise NotImplementedError

@@ -8,6 +8,7 @@ from torch import nn
 from swarmbots.learn.action_dists.action_dist import ActionNetInitialization
 from swarmbots.learn.action_dists.continuous_action_dist import ContinuousActionDist
 from swarmbots.learn.action_dists.tanh_bijector import TanhBijector
+from swarmbots.learn.nn_components.nn_init import init_linear_orthogonal
 
 LogStdNetInitialization = ActionNetInitialization
 
@@ -23,8 +24,8 @@ class PredictedStdActionDist(ContinuousActionDist):
             base_std: float,
             squash_output: bool = False,
             epsilon: float = 1e-6,
-            action_net_initialization: ActionNetInitialization | None = None,
-            log_std_net_initialization: LogStdNetInitialization | None = None,
+            action_net_initialization: ActionNetInitialization = init_linear_orthogonal,
+            log_std_net_initialization: LogStdNetInitialization = init_linear_orthogonal,
             log_std_clamp_range: tuple[float, float] = (-20.0, 2.0)
     ):
         super().__init__(
@@ -92,6 +93,7 @@ class PredictedStdActionDist(ContinuousActionDist):
 
     def entropy(self) -> Optional[torch.Tensor]:
         if self.squash_output:
+            # todo: implement entropy for squashed output
             return None
         return self.sum_action_dim(self.distribution.entropy())
 

@@ -5,6 +5,7 @@ import torch
 from swarmbots.learn.action_dists.action_dist import ActionNetInitialization
 from swarmbots.learn.action_dists.diag_gaussian_action_dist import DiagGaussianActionDist
 from swarmbots.learn.action_dists.tanh_bijector import TanhBijector
+from swarmbots.learn.nn_components.nn_init import init_linear_orthogonal
 
 
 # Inspired by
@@ -17,7 +18,7 @@ class SquashedDiagGaussianActionDist(DiagGaussianActionDist):
             std: float,
             std_learnable: bool,
             epsilon: float = 1e-6,
-            action_net_initialization: ActionNetInitialization | None = None,
+            action_net_initialization: ActionNetInitialization = init_linear_orthogonal,
     ):
         super().__init__(
             latent_dim=latent_dim,
