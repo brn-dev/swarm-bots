@@ -286,6 +286,7 @@ class PPOSamples:
     log_probs: torch.Tensor
     returns: torch.Tensor
     advantages: torch.Tensor
+    history_embeddings: Optional[torch.Tensor]
 
 
 class PPOSampler:
@@ -293,6 +294,7 @@ class PPOSampler:
     def __init__(
             self,
             episodes: list[PPOEpisode],
+            history_embeddings: Optional[list[torch.Tensor]]
     ):
         self.local_obs = torch.concatenate(tuple(ep.local_obs for ep in episodes), dim=0)
         self.global_obs = torch.concatenate(tuple(ep.global_obs for ep in episodes), dim=0)
@@ -300,6 +302,9 @@ class PPOSampler:
         self.log_probs = torch.concatenate(tuple(ep.log_probs for ep in episodes), dim=0)
         self.returns = torch.concatenate(tuple(ep.returns for ep in episodes), dim=0)
         self.advantages = torch.concatenate(tuple(ep.advantages for ep in episodes), dim=0)
+        self.history_embeddings: Optional[torch.Tensor] = None
+        if history_embeddings is not None:
+            self.history_embeddings = torch.concatenate(tuple(history_embeddings), dim=0)
 
     def sample(self, batch_size: int, drop_last: bool = True):
         n_samples = self.local_obs.shape[0]
@@ -311,6 +316,10 @@ class PPOSampler:
             if drop_last and len(batch_indices) < batch_size:
                 continue
 
+            history_embeddings = None
+            if self.history_embeddings is not None:
+                history_embeddings = self.history_embeddings[batch_indices]
+
             yield PPOSamples(
                 local_obs=self.local_obs[batch_indices],
                 global_obs=self.global_obs[batch_indices],
@@ -318,6 +327,7 @@ class PPOSampler:
                 log_probs=self.log_probs[batch_indices],
                 returns=self.returns[batch_indices],
                 advantages=self.advantages[batch_indices],
+                history_embeddings=history_embeddings
             )
 
 
