@@ -1,8 +1,10 @@
-from gymnasium.vector import AsyncVectorEnv
-from stable_baselines3.common.buffers import RolloutBuffer
+from gymnasium.vector import AsyncVectorEnv, SyncVectorEnv
+from torch import nn
 
-from swarmbots.learn.env_wrappers.swarm_bots_learn_wrapper import SwarmBotsLearnWrapper
+from swarmbots.learn.env_wrappers.swarm_bots_learn_env_wrapper import SwarmBotsLearnEnvWrapper
 from swarmbots.learn.ppo.ppo import collect_rollout
+from swarmbots.learn.ppo.ppo_policy import PPOPolicy
+from swarmbots.learn.ppo.ppo_rollout_buffer import PPORolloutBuffer
 from swarmbots.learn.testing_env import TestingSwarmBotsEnv
 
 
@@ -50,39 +52,39 @@ def main():
     ]
 
     print(f"Creating AsyncVectorEnv with {n_envs} environments...")
-    # Using shared_memory=False to avoid potential pickling/shared memory issues in simple tests on Windows
-    # though AsyncVectorEnv defaults typically handle this. 
-    # For Windows, we need to be careful with spawn.
-    vector_env = AsyncVectorEnv(env_fns)
+    vector_env = SyncVectorEnv(env_fns)
+    print(f"Vector Action Space: {vector_env.action_space}")
+    print(f"Vector Action Space Type: {type(vector_env.action_space)}")
 
     print("Wrapping with SwarmBotsLearnVectorWrapper...")
-    env = SwarmBotsLearnWrapper(vector_env, device="cpu")
+    env = SwarmBotsLearnEnvWrapper(vector_env, device="cpu")
 
     print(f"Running {n_envs} environment(s) with max_steps={max_steps}...")
 
-    # Create dummy observation space for RolloutBuffer initialization
-    # Note: mj_env.observation_space is already the correct Vector Dict space from the wrapper
-    # But RolloutBuffer expects single observation space components structure but sized for vector?
-    # No, RolloutBuffer usually takes the single observation space structure.
-    # But let's look at how RolloutBuffer is implemented.
-    # The previous code created a manual space. Let's stick to manual if unsure, 
-    # but the wrapper exposes `single_observation_space` probably?
-    # SwarmBotsLearnVectorWrapper exposes `observation_space` which is the single observation space (Dict).
-    # Wait, SwarmBotsLearnVectorWrapper.__init__ sets self.observation_space to single_obs_space.
-    
-    buffer = RolloutBuffer(
+    # Initialize Policy
+    print("Initializing PPO Policy...")
+    policy = PPOPolicy(
+        env=env,
+        actor_hidden_dims=[64, 64],
+        critic_hidden_dims=[64, 64],
+        act_fun_class=nn.Tanh
+    )
+
+    print("Initializing PPORolloutBuffer...")
+    buffer = PPORolloutBuffer(
         n_episodes=n_episodes,
         max_episode_length=max_steps,
-        observation_space=env.observation_space, # This is the single observation space (Dict)
-        action_space=env.action_space, # This is the HybridActionSpace
+        observation_space=env.observation_space,
+        action_space=env.action_space,
         gamma=0.99,
         gae_lambda=0.95,
-        n_envs=n_envs,
+        storage_device='cpu', # Keep on CPU for test
+        sampling_device='cpu'
     )
 
     for _ in range(2):
         print(f"Collecting {n_episodes} episodes...")
-        episodes = collect_rollout(env, buffer, device=env.device)
+        episodes = collect_rollout(env, policy, buffer, device=env.device)
 
         print(f"Collected {len(episodes)} episodes.")
         for i, ep in enumerate(episodes):

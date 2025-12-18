@@ -1,6 +1,6 @@
 Don't be overly defensive
 
-Don't write simple comments. Only write comments when something is non-obvious.
+Don't write simple comments that simple describe the next lines/the next few lines. Only write comments when something is non-obvious.
 
 Write clean but simple code
 * don't repeat yourself

@@ -1,6 +1,7 @@
 from typing import Optional, Self
 
 import torch
+from torch import nn
 import numpy as np
 from gymnasium import spaces
 
@@ -28,11 +29,12 @@ class HybridActionDistribution(ActionDist):
             action_net_initialization=action_net_initialization
         )
 
-        self.distributions: list[ActionDist] = [
+        # noinspection PyTypeChecker
+        self.distributions: list[ActionDist] = nn.ModuleList([
             make_proba_distribution(latent_dim, sub_space, sub_space_dim, base_std)
             for sub_space, sub_space_dim
             in zip(action_space.sub_spaces, action_space.agent_action_dims)
-        ]
+        ])
 
     def update_latent_features(self, latent_pi: torch.Tensor) -> Self:
         for dist in self.distributions:

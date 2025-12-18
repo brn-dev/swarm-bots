@@ -5,7 +5,7 @@ import torch
 from gymnasium import spaces
 from gymnasium.vector import VectorEnv
 
-from swarmbots.learn.env_wrappers.learn_vector_env_wrapper import LearnVectorEnvWrapper
+from swarmbots.learn.env_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
 from swarmbots.learn.hybrid_action_space import VectorHybridActionSpace
 
 
@@ -17,7 +17,7 @@ class VectorSwarmBotsActionSpace(VectorHybridActionSpace):
         })
 
 
-class SwarmBotsLearnWrapper(LearnVectorEnvWrapper):
+class SwarmBotsLearnEnvWrapper(BaseLearnEnvWrapper):
 
     def __init__(
         self,
@@ -28,8 +28,8 @@ class SwarmBotsLearnWrapper(LearnVectorEnvWrapper):
         reward_dtype: torch.dtype = torch.float32,
     ):
         assert isinstance(env.action_space, spaces.Dict)
-        assert 'actuators' in env.action_space
-        assert 'connectors' in env.action_space
+        assert 'actuators' in env.action_space.keys()
+        assert 'connectors' in env.action_space.keys()
 
         n_envs = env.action_space['actuators'].shape[0]
         n_agents = env.action_space['actuators'].shape[1]
