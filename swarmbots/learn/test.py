@@ -1,8 +1,9 @@
 from gymnasium.vector import AsyncVectorEnv
-from swarmbots import TestingSwarmBotsEnv
-from swarmbots import collect_rollout
-from swarmbots import RolloutBuffer
-from swarmbots import SwarmBotsLearnWrapper
+from stable_baselines3.common.buffers import RolloutBuffer
+
+from swarmbots.learn.env_wrappers.swarm_bots_learn_wrapper import SwarmBotsLearnWrapper
+from swarmbots.learn.ppo.ppo import collect_rollout
+from swarmbots.learn.testing_env import TestingSwarmBotsEnv
 
 
 def make_env_fn(

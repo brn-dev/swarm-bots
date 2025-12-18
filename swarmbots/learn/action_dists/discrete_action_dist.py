@@ -3,7 +3,7 @@ from typing import Self
 
 import torch
 
-from swarmbots import ActionNetInitialization, ActionDist
+from swarmbots.learn.action_dists.action_dist import ActionNetInitialization, ActionDist
 
 
 class DiscreteActionDist(ActionDist, abc.ABC):

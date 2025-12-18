@@ -1,9 +1,6 @@
 import torch
 from torch import nn
 
-from swarmbots import HybridActionDistribution
-from swarmbots import SwarmBotsLearnWrapper
-
 
 class PPOActor(nn.Module):
 

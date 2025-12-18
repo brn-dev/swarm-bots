@@ -1,16 +1,16 @@
 import torch
 
-from swarmbots import Episode, RolloutBuffer
-from swarmbots import PPOPolicy
-from swarmbots import SwarmBotsLearnWrapper
+from swarmbots.learn.env_wrappers.swarm_bots_learn_wrapper import SwarmBotsLearnWrapper
+from swarmbots.learn.ppo.ppo_policy import PPOPolicy
+from swarmbots.learn.ppo.ppo_rollout_buffer import PPOEpisode, PPORolloutBuffer
 
 
 def collect_rollout(
         env: SwarmBotsLearnWrapper,
         policy: PPOPolicy,
-        buffer: RolloutBuffer,
+        buffer: PPORolloutBuffer,
         device: torch.device,
-) -> list[Episode]:
+) -> list[PPOEpisode]:
     buffer.reset()
     obs, info = env.reset()
     is_final = torch.zeros((buffer.n_envs,), dtype=torch.bool, device=device)
