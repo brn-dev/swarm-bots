@@ -63,8 +63,9 @@ def main():
     print("Initializing PPO Policy...")
     policy = PPOPolicy(
         env=env,
-        actor_hidden_dims=[64, 64],
-        critic_hidden_dims=[64, 64],
+        actor_hidden_dims=[128],
+        latent_pi_dim=128,
+        critic_hidden_dims=[128, 128],
         act_fun_class=nn.Tanh
     )
 

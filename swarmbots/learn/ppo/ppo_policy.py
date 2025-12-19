@@ -11,42 +11,42 @@ class PPOActor(nn.Module):
 
     def __init__(
             self,
+            n_agents: int,
             local_obs_dim: int,
             global_obs_dim: int,
             hidden_dims: list[int],
+            latent_pi_dim: int,
             linear_init: LinearInitialization = init_linear_orthogonal,
             act_fun_class = nn.Tanh
     ):
         super().__init__()
+        self.n_agents = n_agents
         self.local_obs_dim = local_obs_dim
         self.global_obs_dim = global_obs_dim
         self.has_global_obs = global_obs_dim > 0
         self.hidden_dims = hidden_dims
+        self.latent_pi_dim = latent_pi_dim
 
         self.mlp = MLP(
-            input_dim=local_obs_dim + global_obs_dim,
-            hidden_dims=hidden_dims,
+            input_dim=local_obs_dim * n_agents + global_obs_dim,
+            hidden_dims=hidden_dims + [latent_pi_dim * n_agents],
             end_with_act_fn=True,
             linear_init=linear_init,
             act_fn_cls=act_fun_class
         )
 
     def forward(self, local_obs: torch.Tensor, global_obs: torch.Tensor) -> torch.Tensor:
+        actor_input = torch.flatten(local_obs, start_dim=1)
         if self.has_global_obs:
-            n_agents = local_obs.shape[1]
-            global_obs_expanded = global_obs.unsqueeze(1).expand(-1, n_agents, -1)
-            return self.mlp(torch.concatenate(
-                (local_obs, global_obs_expanded),
-                dim=-1
-            ))
-        else:
-            return self.mlp(local_obs)
+            actor_input = torch.cat((actor_input, global_obs), dim=-1)
+        return self.mlp(actor_input).view((local_obs.shape[0], self.n_agents, self.latent_pi_dim))
 
 
 class PPOCritic(nn.Module):
 
     def __init__(
             self,
+            n_agents: int,
             local_obs_dim: int,
             global_obs_dim: int,
             hidden_dims: list[int],
@@ -54,13 +54,14 @@ class PPOCritic(nn.Module):
             act_fun_class = nn.Tanh
     ):
         super().__init__()
+        self.n_agents = n_agents
         self.local_obs_dim = local_obs_dim
         self.global_obs_dim = global_obs_dim
         self.has_global_obs = global_obs_dim > 0
         self.hidden_dims = hidden_dims
 
         self.mlp = MLP(
-            input_dim=local_obs_dim + global_obs_dim,
+            input_dim=local_obs_dim * n_agents + global_obs_dim,
             hidden_dims=hidden_dims + [1],
             end_with_act_fn=False,
             linear_init=linear_init,
@@ -68,15 +69,10 @@ class PPOCritic(nn.Module):
         )
 
     def forward(self, local_obs: torch.Tensor, global_obs: torch.Tensor) -> torch.Tensor:
+        critic_input = torch.flatten(local_obs, start_dim=1)
         if self.has_global_obs:
-            n_agents = local_obs.shape[1]
-            global_obs_expanded = global_obs.unsqueeze(1).expand(-1, n_agents, -1)
-            return self.mlp(torch.concatenate(
-                (local_obs, global_obs_expanded),
-                dim=-1
-            )).squeeze(dim=-1).mean(dim=-1)
-        else:
-            return self.mlp(local_obs).squeeze(dim=-1).mean(dim=-1)
+            critic_input = torch.cat((critic_input, global_obs), dim=-1)
+        return self.mlp(critic_input).squeeze(dim=-1)
 
 
 class PPOPolicy(nn.Module):
@@ -85,22 +81,28 @@ class PPOPolicy(nn.Module):
             self,
             env: BaseLearnEnvWrapper,
             actor_hidden_dims: list[int],
+            latent_pi_dim: int,
             critic_hidden_dims: list[int],
             act_fun_class = nn.Tanh,
             base_std: float = 1.0
     ):
         super().__init__()
 
+        self.n_agents = env.n_agents
         self.local_obs_dim = env.local_obs_dim
         self.global_obs_dim = env.global_obs_dim
+        self.latent_pi_dim = latent_pi_dim
 
         self.actor = PPOActor(
+            n_agents=env.n_agents,
             local_obs_dim=env.local_obs_dim,
             global_obs_dim=env.global_obs_dim,
             hidden_dims=actor_hidden_dims,
+            latent_pi_dim=latent_pi_dim,
             act_fun_class=act_fun_class
         )
         self.critic = PPOCritic(
+            n_agents=env.n_agents,
             local_obs_dim=env.local_obs_dim,
             global_obs_dim=env.global_obs_dim,
             hidden_dims=critic_hidden_dims,
@@ -108,7 +110,7 @@ class PPOPolicy(nn.Module):
         )
 
         self.action_dist = HybridActionDistribution(
-            latent_dim=actor_hidden_dims[-1],
+            latent_dim=latent_pi_dim,
             action_space=env.action_space,
             base_std=base_std,
         )
@@ -135,6 +137,10 @@ class PPOPolicy(nn.Module):
         self.action_dist.update_latent_features(latent_pi)
         log_probs = self.action_dist.log_prob(actions)
         entropies = self.action_dist.entropy()
+
+        # sum over the agents
+        log_probs = log_probs.sum(dim=1)
+        entropies = entropies.sum(dim=1) if entropies is not None else None
 
         values = self.critic(local_obs, global_obs)
         return log_probs, entropies, values
