@@ -5,6 +5,8 @@ from swarmbots.learn.ppo.ppo_policy import PPOPolicy
 from swarmbots.learn.ppo.ppo_rollout_buffer import PPOEpisode, PPORolloutBuffer
 
 
+
+@torch.no_grad()
 def collect_rollout(
         env: BaseLearnEnvWrapper,
         policy: PPOPolicy,
@@ -23,6 +25,9 @@ def collect_rollout(
 
         new_obs, rewards, terminations, truncations, infos = env.step(actions)
         dones = torch.logical_or(terminations, truncations)
+
+        values = values.clone()
+        values[terminations] = 0.0
 
         buffer.add(
             local_obs=local_obs,
