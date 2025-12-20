@@ -33,6 +33,10 @@ class SwarmBotsLearnEnvWrapper(BaseLearnEnvWrapper):
 
         n_envs = env.action_space['actuators'].shape[0]
         n_agents = env.action_space['actuators'].shape[1]
+
+        assert env.action_space['connectors'].shape[0] == n_envs
+        assert env.action_space['connectors'].shape[1] == n_agents
+
         actuators_dim = env.action_space['actuators'].shape[2]
         connectors_dim = env.action_space['connectors'].shape[2]
 

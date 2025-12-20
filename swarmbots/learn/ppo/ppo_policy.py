@@ -138,9 +138,5 @@ class PPOPolicy(nn.Module):
         log_probs = self.action_dist.log_prob(actions)
         entropies = self.action_dist.entropy()
 
-        # sum over the agents
-        log_probs = log_probs.sum(dim=1)
-        entropies = entropies.sum(dim=1) if entropies is not None else None
-
         values = self.critic(local_obs, global_obs)
         return log_probs, entropies, values
