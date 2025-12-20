@@ -27,7 +27,7 @@ def make_env_fn(
         )
         scenario = ObstacleStreetScenario(
             swarm=swarm,
-            payload_type="box",
+            payload_type=None,
             **scenario_kwargs
         )
         return SwarmBotsEnv(
@@ -42,7 +42,8 @@ def main():
     n_envs = 4
     unit_start_locations = [
         (0.0, 0.0, 0.0),
-        (0.5, 0.0, 0.0)
+        (-0.65, 0, 0),
+        (0.65, 0, 0),
     ]
     episode_length = 512
     n_episodes_per_rollout = 4
