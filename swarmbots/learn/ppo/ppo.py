@@ -123,8 +123,7 @@ class PPO:
         )
 
         self.optimizer = torch.optim.Adam(self.policy.parameters(), lr=learning_rate)
-        
-        self._n_updates = 0
+
 
     def train(self) -> dict[str, float]:
         """
@@ -136,6 +135,14 @@ class PPO:
         
         sampler = PPOSampler(episodes, history_embeddings=None)
 
+        y_pred = sampler.values.flatten()
+        y_true = sampler.returns.flatten()
+        var_y = torch.var(y_true)
+        if not torch.isnan(var_y) and var_y > 1e-8:
+            explained_var = (1 - torch.var(y_true - y_pred) / var_y).item()
+        else:
+            explained_var = 0.0
+
         entropy_losses = []
         pg_losses = []
         value_losses = []
@@ -143,6 +150,7 @@ class PPO:
         approx_kl_divs = []
 
         continue_training = True
+        n_updates = 0
 
         for epoch in range(self.n_epochs):
             for batch in sampler.sample(self.batch_size):
@@ -205,18 +213,19 @@ class PPO:
                 torch.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
                 self.optimizer.step()
 
+                n_updates += 1
+
             if not continue_training:
                 break
 
-        self._n_updates += 1
-        
         metrics = {
-            'entropy_loss': np.mean(entropy_losses),
-            'actor_loss': np.mean(pg_losses),
-            'value_loss': np.mean(value_losses),
+            'ent_loss': np.mean(entropy_losses),
+            'act_loss': np.mean(pg_losses),
+            'val_loss': np.mean(value_losses),
             'approx_kl': np.mean(approx_kl_divs),
             'clip_frac': np.mean(clip_fractions),
-            'n_updates': self._n_updates,
+            'n_updates': n_updates,
+            'expl_var': explained_var,
         }
         
         if len(episode_infos) > 0:
@@ -233,10 +242,7 @@ class PPO:
             self,
             total_timesteps: int,
             log_interval: int = 1,
-            reset_num_timesteps: bool = True,
     ):
-        if reset_num_timesteps:
-            self._n_updates = 0
 
         current_timesteps = 0
         iteration = 0
@@ -258,7 +264,7 @@ class PPO:
                     if np.isclose(value % 1.0, 0):
                         val_str = f'{int(value):>2}'
                     else:
-                        val_str = f'{value:.4f}'
+                        val_str = f'{value: .4f}'
                     log_str += f" | {key}: {val_str}"
                 logger.info(log_str)
 

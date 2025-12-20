@@ -1,7 +1,9 @@
 from gymnasium.vector import AsyncVectorEnv, SyncVectorEnv
-from gymnasium.wrappers.vector import RecordEpisodeStatistics, NormalizeReward, NormalizeObservation
+from gymnasium.wrappers.vector import RecordEpisodeStatistics, NormalizeReward
 from torch import nn
 
+from swarmbots.learn.env_wrappers.normalize_obs_wrapper import NormalizeGlobalWithLocalObsWrapper, \
+    NormalizeLocalObsWrapper
 from swarmbots.learn.env_wrappers.swarm_bots_learn_env_wrapper import SwarmBotsLearnEnvWrapper
 from swarmbots.learn.ppo.ppo import PPO
 from swarmbots.learn.ppo.ppo_policy import PPOPolicy
@@ -42,7 +44,7 @@ def main():
         (0.0, 0.0, 0.0),
         (0.5, 0.0, 0.0)
     ]
-    episode_length = 500
+    episode_length = 512
     n_episodes_per_rollout = 4
     total_timesteps = 1_000_000
 
@@ -60,7 +62,7 @@ def main():
     
     print("Wrapping with RecordEpisodeStatistics, NormalizeObservation, NormalizeReward...")
     vector_env = RecordEpisodeStatistics(vector_env)
-    # vector_env = NormalizeObservation(vector_env)
+    vector_env = NormalizeLocalObsWrapper(vector_env)
     vector_env = NormalizeReward(vector_env, gamma=0.99)
 
     print("Wrapping with SwarmBotsLearnEnvWrapper...")
@@ -76,9 +78,9 @@ def main():
     print("Initializing PPO Policy...")
     policy = PPOPolicy(
         env=env,
-        actor_hidden_dims=[32],
-        latent_pi_dim=16,
-        critic_hidden_dims=[32, 32],
+        actor_hidden_dims=[256],
+        latent_pi_dim=256,
+        critic_hidden_dims=[256, 256],
         act_fun_class=nn.Tanh
     )
 
@@ -89,8 +91,8 @@ def main():
         learning_rate=3e-4,
         n_episodes_per_rollout=n_episodes_per_rollout,
         max_episode_length=episode_length,
-        batch_size=32,
-        n_epochs=2,
+        batch_size=64,
+        n_epochs=10,
         gamma=0.99,
         gae_lambda=0.95,
         clip_range=0.2,
