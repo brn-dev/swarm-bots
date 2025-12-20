@@ -1,9 +1,9 @@
 ## Comments 
 
-Don't write simple comments that simple describe the next lines/the next few lines! For example: 
+Do NOT write simple comments that simple describe the next lines/the next few lines! For example: 
 ```python
-# doing something
-do_something()
+# doing something      <-- don't do this
+do_something() 
 ```
 
 Only write comments when something is non-obvious!
