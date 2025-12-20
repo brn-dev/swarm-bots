@@ -241,7 +241,7 @@ class PPORolloutBuffer:
         self.accumulator.reset()
         self.episodes = []
 
-    def get_episodes(self) -> list[PPOEpisode]:
+    def get_whole_episodes(self) -> list[PPOEpisode]:
         return [
             PPOEpisode(
                 local_obs=ep.local_obs.to(device=self.sampling_device, dtype=self.sampling_dtype),
@@ -259,7 +259,7 @@ class PPORolloutBuffer:
             for ep in self.episodes
         ]
 
-    def get_episodes_minimal(self) -> list[PPOEpisode]:
+    def get_whole_episodes_minimal(self) -> list[PPOEpisode]:
         return [
             PPOEpisode(
                 local_obs=ep.local_obs.to(device=self.sampling_device, dtype=self.sampling_dtype),
@@ -267,7 +267,7 @@ class PPORolloutBuffer:
                 actions=ep.actions.to(device=self.sampling_device, dtype=self.sampling_dtype),
                 rewards=None,
                 log_probs=ep.log_probs.to(device=self.sampling_device, dtype=self.sampling_dtype),
-                values=None,
+                values=ep.values.to(device=self.sampling_device, dtype=self.sampling_dtype),
                 final_local_obs=None,
                 final_global_obs=None,
                 final_value=None,
@@ -284,6 +284,7 @@ class PPOSamples:
     global_obs: torch.Tensor
     actions: torch.Tensor
     log_probs: torch.Tensor
+    values: torch.Tensor
     returns: torch.Tensor
     advantages: torch.Tensor
     history_embeddings: Optional[torch.Tensor]
@@ -300,6 +301,7 @@ class PPOSampler:
         self.global_obs = torch.concatenate(tuple(ep.global_obs for ep in episodes), dim=0)
         self.actions = torch.concatenate(tuple(ep.actions for ep in episodes), dim=0)
         self.log_probs = torch.concatenate(tuple(ep.log_probs for ep in episodes), dim=0)
+        self.values = torch.concatenate(tuple(ep.values for ep in episodes), dim=0)
         self.returns = torch.concatenate(tuple(ep.returns for ep in episodes), dim=0)
         self.advantages = torch.concatenate(tuple(ep.advantages for ep in episodes), dim=0)
         self.history_embeddings: Optional[torch.Tensor] = None
@@ -325,6 +327,7 @@ class PPOSampler:
                 global_obs=self.global_obs[batch_indices],
                 actions=self.actions[batch_indices],
                 log_probs=self.log_probs[batch_indices],
+                values=self.values[batch_indices],
                 returns=self.returns[batch_indices],
                 advantages=self.advantages[batch_indices],
                 history_embeddings=history_embeddings
