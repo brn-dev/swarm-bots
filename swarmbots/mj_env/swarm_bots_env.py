@@ -3,6 +3,7 @@ from typing import Any, SupportsFloat, Literal, Iterable
 import gymnasium
 import mujoco
 import numpy as np
+from gymnasium import spaces
 from gymnasium.core import RenderFrame
 from mujoco import MjvOption
 
@@ -26,6 +27,7 @@ class SwarmBotsEnv(gymnasium.Env):
         camera: int | list[int] | Literal['all'] = 'all',
         scene_option: MjvOption = None,
         simulation_unstable_reward: float = -0.1,
+        return_scenario_state_as_infos: bool = False
     ):
         self.action_repeat = action_repeat
         self.episode_length = episode_length
@@ -37,6 +39,7 @@ class SwarmBotsEnv(gymnasium.Env):
         self.cameras = list(camera) if isinstance(camera, list) else [camera]
         self.scene_option = scene_option
         self.simulation_unstable_reward = simulation_unstable_reward
+        self.return_scenario_state_as_infos = return_scenario_state_as_infos
 
         self.current_step = 0
 
@@ -46,8 +49,8 @@ class SwarmBotsEnv(gymnasium.Env):
         self.scenario_state: dict | None = None
         self.swarm_connections: SwarmConnections | None = None
 
-        self.observation_space = scenario.get_obs_space()
-        self.action_space = scenario.get_action_space()
+        self.observation_space: spaces.Dict = scenario.get_obs_space()
+        self.action_space: spaces.Dict = scenario.get_action_space()
 
         if isinstance(camera, int):
             self.cameras = [camera]
@@ -113,7 +116,9 @@ class SwarmBotsEnv(gymnasium.Env):
 
         obs = self.scenario.get_obs(self.model, self.data, self.scenario_state, self.swarm_connections).copy()
 
-        return obs, reward, terminated, truncated, self.scenario_state
+        info = self.scenario_state if self.return_scenario_state_as_infos else {}
+
+        return obs, reward, terminated, truncated, info
 
     def render(
             self,
