@@ -12,7 +12,7 @@ from swarmbots.learn.ppo.ppo_rollout_buffer import PPOEpisode, PPORolloutBuffer,
 
 
 @torch.no_grad()
-def collect_rollout(
+def collect_whole_episodes(
         env: BaseLearnEnvWrapper,
         policy: PPOPolicy,
         buffer: PPORolloutBuffer,
@@ -58,7 +58,7 @@ def collect_rollout(
         obs = new_obs
         is_final = dones
 
-    return buffer.get_whole_episodes_minimal(), episode_infos
+    return buffer.get_whole_episodes(), episode_infos
 
 
 # based on https://github.com/DLR-RM/stable-baselines3/blob/master/stable_baselines3/ppo/ppo.py
@@ -131,7 +131,7 @@ class PPO:
         """
         self.policy.train()
         
-        episodes, episode_infos = collect_rollout(self.env, self.policy, self.rollout_buffer, self.device)
+        episodes, episode_infos = collect_whole_episodes(self.env, self.policy, self.rollout_buffer, self.device)
         
         sampler = PPOSampler(episodes, history_embeddings=None)
 
