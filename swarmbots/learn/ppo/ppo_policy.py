@@ -2,6 +2,7 @@ import torch
 from torch import nn
 
 from swarmbots.learn.action_dists.hybrid_action_dist import HybridActionDistribution
+from swarmbots.learn.base_policy import BasePolicy
 from swarmbots.learn.env_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
 from swarmbots.learn.nn_components.mlp import MLP
 from swarmbots.learn.nn_components.nn_init import init_linear_orthogonal, LinearInitialization
@@ -75,7 +76,7 @@ class PPOCritic(nn.Module):
         return self.mlp(critic_input).squeeze(dim=-1)
 
 
-class PPOPolicy(nn.Module):
+class PPOPolicy(BasePolicy):
 
     def __init__(
             self,
@@ -140,3 +141,13 @@ class PPOPolicy(nn.Module):
 
         values = self.critic(local_obs, global_obs)
         return log_probs, entropies, values
+
+    def act(
+            self,
+            local_obs: torch.Tensor,
+            global_obs: torch.Tensor,
+            deterministic: bool = False
+    ) -> torch.Tensor:
+        latent_pi = self.actor(local_obs, global_obs)
+        actions = self.action_dist.update_latent_features(latent_pi).get_actions(deterministic)
+        return actions
