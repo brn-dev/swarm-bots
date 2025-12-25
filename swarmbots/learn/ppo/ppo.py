@@ -21,6 +21,7 @@ def collect_whole_episodes(
     buffer.reset()
     obs, info = env.reset()
     is_final = torch.zeros((buffer.n_envs,), dtype=torch.bool, device=device)
+    was_terminated = torch.zeros((buffer.n_envs,), dtype=torch.bool, device=device)
     
     episode_infos = []
 
@@ -29,6 +30,9 @@ def collect_whole_episodes(
         global_obs = obs['global_obs']
 
         actions, log_probs, values = policy(local_obs, global_obs)
+        
+        values = values.clone()
+        values[was_terminated] = 0.0
 
         new_obs, rewards, terminations, truncations, infos = env.step(actions)
         dones = torch.logical_or(terminations, truncations)
@@ -42,9 +46,6 @@ def collect_whole_episodes(
                         't': infos['episode']['t'][i],
                     })
 
-        values = values.clone()
-        values[terminations] = 0.0
-
         buffer.add(
             local_obs=local_obs,
             global_obs=global_obs,
@@ -57,6 +58,7 @@ def collect_whole_episodes(
 
         obs = new_obs
         is_final = dones
+        was_terminated = terminations
 
     return buffer.get_whole_episodes(), episode_infos
 
@@ -218,7 +220,13 @@ class PPO:
             if not continue_training:
                 break
 
-        metrics = {
+
+        metrics = {}
+        for i, dist in enumerate(self.policy.action_dist.distributions):
+            if hasattr(dist, "log_stds"):
+                metrics[f'std{i}'] = torch.exp(dist.log_stds).mean().item()
+
+        metrics.update({
             'ent_loss': np.mean(entropy_losses),
             'act_loss': np.mean(pg_losses),
             'val_loss': np.mean(value_losses),
@@ -226,7 +234,7 @@ class PPO:
             'clip_frac': np.mean(clip_fractions),
             'n_updates': n_updates,
             'expl_var': explained_var,
-        }
+        })
         
         if len(episode_infos) > 0:
             rewards = [ep['r'] for ep in episode_infos]

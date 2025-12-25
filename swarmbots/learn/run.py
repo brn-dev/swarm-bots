@@ -1,3 +1,5 @@
+import sys
+from loguru import logger
 from gymnasium.vector import AsyncVectorEnv, SyncVectorEnv
 from gymnasium.wrappers.vector import RecordEpisodeStatistics, NormalizeReward
 from torch import nn
@@ -42,11 +44,14 @@ def make_env_fn(
 
 
 def main():
+    logger.remove()
+    logger.add(sys.stderr, format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <level>{message}</level>")
+
     n_envs = 4
     unit_start_locations = [
         (0.0, 0.0, 0.0),
-        (-0.65, 0, 0),
-        (0.65, 0, 0),
+        (-0.6, 0, 0),
+        # (0.6, 0, 0),
     ]
     episode_length = 512
     n_episodes_per_rollout = 4
@@ -88,6 +93,7 @@ def main():
         critic_hidden_dims=[256, 256],
         act_fun_class=nn.Tanh
     )
+    print(policy)
 
     print("Initializing PPO Algorithm...")
     ppo = PPO(

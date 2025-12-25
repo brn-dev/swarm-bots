@@ -102,18 +102,18 @@ class PPOPolicy(BasePolicy):
             latent_pi_dim=latent_pi_dim,
             act_fun_class=act_fun_class
         )
+        self.action_dist = HybridActionDistribution(
+            latent_dim=latent_pi_dim,
+            action_space=env.action_space,
+            base_std=base_std,
+        )
+
         self.critic = PPOCritic(
             n_agents=env.n_agents,
             local_obs_dim=env.local_obs_dim,
             global_obs_dim=env.global_obs_dim,
             hidden_dims=critic_hidden_dims,
             act_fun_class=act_fun_class
-        )
-
-        self.action_dist = HybridActionDistribution(
-            latent_dim=latent_pi_dim,
-            action_space=env.action_space,
-            base_std=base_std,
         )
 
     def forward(

@@ -8,6 +8,7 @@ from gymnasium import spaces
 from swarmbots.learn.action_dists.action_dist import ActionDist, AGENT_ACTIONS_DIM, ActionNetInitialization
 from swarmbots.learn.action_dists.bernoulli_action_dist import BernoulliActionDist
 from swarmbots.learn.action_dists.predicted_std_action_dist import PredictedStdActionDist
+from swarmbots.learn.action_dists.squashed_diag_gaussian_action_dist import SquashedDiagGaussianActionDist
 from swarmbots.learn.hybrid_action_space import HybridActionSpace
 from swarmbots.learn.nn_components.nn_init import init_linear_orthogonal
 
@@ -20,10 +21,12 @@ class HybridActionDistribution(ActionDist):
             action_space: HybridActionSpace,
             action_net_initialization: ActionNetInitialization = init_linear_orthogonal,
             base_std: float = 1.0,
+            use_predicted_std: bool = False
     ):
         self.action_space = action_space
         self.action_dims = action_space.agent_action_dims
         self.base_std = base_std
+        self.use_predicted_std = use_predicted_std
 
         super().__init__(
             latent_dim=latent_dim,
@@ -33,7 +36,7 @@ class HybridActionDistribution(ActionDist):
 
         # noinspection PyTypeChecker
         self.distributions: list[ActionDist] = nn.ModuleList([
-            make_proba_distribution(latent_dim, sub_space, sub_space_dim, base_std)
+            make_proba_distribution(latent_dim, sub_space, sub_space_dim, base_std, use_predicted_std)
             for sub_space, sub_space_dim
             in zip(action_space.sub_spaces, action_space.agent_action_dims)
         ])
@@ -68,14 +71,22 @@ def make_proba_distribution(
         action_space: spaces.Space,
         action_space_dim: int,
         base_std: float,
+        use_predicted_std: bool
 ) -> ActionDist:
     if isinstance(action_space, spaces.Box):
         _assert_unit_box_range(action_space)
-        return PredictedStdActionDist(
+        if use_predicted_std:
+            return PredictedStdActionDist(
+                latent_dim=latent_dim,
+                action_dim=action_space_dim,
+                base_std=base_std,
+                squash_output=True,
+            )
+        return SquashedDiagGaussianActionDist(
             latent_dim=latent_dim,
             action_dim=action_space_dim,
-            base_std=base_std,
-            squash_output=True,
+            std=1.0,
+            std_learnable=True,
         )
     elif isinstance(action_space, spaces.MultiBinary):
         return BernoulliActionDist(

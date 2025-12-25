@@ -21,7 +21,7 @@ class HomogeneousSwarm(BaseSwarm):
             leg_length: float = 0.2,
             leg_radius: float = 0.025,
             hinge_range: float = np.pi / 3,
-            connection_torquescale: float = 1.0,
+            connection_torquescale: float = 10.0,
             connection_dist_threshold: float = 0.1,
             connection_angle_threshold: float = -0.5,
             randomize_unit_orientations: bool = False
