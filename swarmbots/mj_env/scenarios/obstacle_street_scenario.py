@@ -28,7 +28,7 @@ class ObstacleStreetScenario(BaseScenario):
             no_initial_ramp: bool = True,
             actuators_activation_reward_weight: float = -1e-3,
             units_without_connections_reward_weight: float = -2e-3,
-            movement_reward_weight: float = 5e-2,
+            movement_reward_weight: float = 0e-2,
             connectors_stayed_active_reward_weight: float = 2e-4,
             connectors_successfully_activated_reward_weight: float = 1e-3,
             connectors_unsuccessfully_activated_reward_weight: float = -5e-5,
