@@ -7,6 +7,7 @@ from swarmbots.learn.env_wrappers.normalize_obs_wrapper import NormalizeGlobalWi
 from swarmbots.learn.env_wrappers.swarm_bots_learn_env_wrapper import SwarmBotsLearnEnvWrapper
 from swarmbots.learn.ppo.ppo import PPO
 from swarmbots.learn.ppo.ppo_policy import PPOPolicy
+from swarmbots.learn.recording import record_policy
 from swarmbots.mj_env.scenarios.obstacle_street_scenario import ObstacleStreetScenario
 from swarmbots.mj_env.swarm.homogeneous_swarm import HomogeneousSwarm
 from swarmbots.mj_env.swarm_bots_env import SwarmBotsEnv
@@ -15,7 +16,8 @@ from swarmbots.mj_env.swarm_bots_env import SwarmBotsEnv
 def make_env_fn(
     unit_start_locations,
     episode_length,
-    scenario_kwargs=None
+    scenario_kwargs=None,
+    render_mode=None
 ):
     if scenario_kwargs is None:
         scenario_kwargs = {}
@@ -33,7 +35,8 @@ def make_env_fn(
         return SwarmBotsEnv(
             scenario=scenario,
             episode_length=episode_length,
-            render_mode=None
+            render_mode=render_mode,
+            camera=0
         )
     return _init
 
@@ -47,13 +50,14 @@ def main():
     ]
     episode_length = 512
     n_episodes_per_rollout = 4
-    total_timesteps = 1_000_000
+    total_timesteps = 5_000_000
 
     env_fns = [
         make_env_fn(
             unit_start_locations=unit_start_locations,
             episode_length=episode_length,
-            scenario_kwargs={"num_walls": 1}
+            scenario_kwargs={"num_walls": 1},
+            render_mode=None
         )
         for _ in range(n_envs)
     ]
@@ -89,7 +93,7 @@ def main():
     ppo = PPO(
         policy=policy,
         env=env,
-        learning_rate=3e-4,
+        learning_rate=2e-5,
         n_episodes_per_rollout=n_episodes_per_rollout,
         max_episode_length=episode_length,
         batch_size=64,
@@ -97,13 +101,49 @@ def main():
         gamma=0.99,
         gae_lambda=0.95,
         clip_range=0.2,
-        device='cpu'
+        device='cpu',
+        target_kl=0.05
     )
 
     print("Starting training...")
     ppo.learn(total_timesteps=total_timesteps, log_interval=1)
     
-    print("Finished.")
+    print("Training Finished.")
+    
+    print("Starting recording...")
+    
+    record_env_fn = make_env_fn(
+        unit_start_locations=unit_start_locations,
+        episode_length=episode_length,
+        scenario_kwargs={"num_walls": 1},
+        render_mode='rgb_array'
+    )
+    
+    record_vector_env = SyncVectorEnv([record_env_fn])
+    record_vector_env = RecordEpisodeStatistics(record_vector_env)
+    
+    record_norm_wrapper = NormalizeLocalObsWrapper(record_vector_env)
+    
+    training_norm_wrapper = env.env.env
+    
+    record_norm_wrapper.local_obs_rms.mean = training_norm_wrapper.local_obs_rms.mean.copy()
+    record_norm_wrapper.local_obs_rms.var = training_norm_wrapper.local_obs_rms.var.copy()
+    record_norm_wrapper.update_running_mean = False
+    
+    record_vector_env = record_norm_wrapper
+    
+    record_env = SwarmBotsLearnEnvWrapper(record_vector_env, device="cpu")
+    
+    record_policy(
+        env=record_env,
+        policy=policy,
+        video_folder='../../videos',
+        video_name_prefix='test_run',
+        num_episodes=1,
+        deterministic=True
+    )
+    
+    record_env.close()
     env.close()
 
 

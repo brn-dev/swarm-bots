@@ -153,7 +153,7 @@ class PPO:
         n_updates = 0
 
         for epoch in range(self.n_epochs):
-            for batch in sampler.sample(self.batch_size):
+            for i, batch in enumerate(sampler.sample(self.batch_size)):
                 log_probs, entropies, values = self.policy.evaluate_actions(
                     local_obs=batch.local_obs,
                     global_obs=batch.global_obs,
@@ -205,7 +205,7 @@ class PPO:
 
                 if self.target_kl is not None and approx_kl_div > 1.5 * self.target_kl:
                     continue_training = False
-                    logger.info(f'Early stopping at epoch {epoch} due to reaching max kl: {approx_kl_div:.2f}')
+                    logger.info(f'Early stopping at epoch {epoch}, batch {i} due to reaching max kl: {approx_kl_div:.2f}')
                     break
 
                 self.optimizer.zero_grad()
