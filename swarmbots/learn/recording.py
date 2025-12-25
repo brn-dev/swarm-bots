@@ -35,7 +35,6 @@ def record_policy(
     """
     os.makedirs(video_folder, exist_ok=True)
     
-    # Ensure policy is in eval mode
     policy.eval()
     policy.to(device)
 
