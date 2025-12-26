@@ -16,7 +16,7 @@ class PPOActor(nn.Module):
             local_obs_dim: int,
             global_obs_dim: int,
             hidden_dims: list[int],
-            latent_pi_dim: int,
+            latent_pi_dim_per_agent: int,
             linear_init: LinearInitialization = init_linear_orthogonal,
             act_fun_class = nn.Tanh
     ):
@@ -26,11 +26,11 @@ class PPOActor(nn.Module):
         self.global_obs_dim = global_obs_dim
         self.has_global_obs = global_obs_dim > 0
         self.hidden_dims = hidden_dims
-        self.latent_pi_dim = latent_pi_dim
+        self.latent_pi_dim = latent_pi_dim_per_agent
 
         self.mlp = MLP(
             input_dim=local_obs_dim * n_agents + global_obs_dim,
-            hidden_dims=hidden_dims + [latent_pi_dim * n_agents],
+            hidden_dims=hidden_dims + [latent_pi_dim_per_agent * n_agents],
             end_with_act_fn=True,
             linear_init=linear_init,
             act_fn_cls=act_fun_class
@@ -82,7 +82,7 @@ class PPOPolicy(BasePolicy):
             self,
             env: BaseLearnEnvWrapper,
             actor_hidden_dims: list[int],
-            latent_pi_dim: int,
+            latent_pi_dim_per_agent: int,
             critic_hidden_dims: list[int],
             act_fun_class = nn.Tanh,
             base_std: float = 1.0
@@ -92,18 +92,18 @@ class PPOPolicy(BasePolicy):
         self.n_agents = env.n_agents
         self.local_obs_dim = env.local_obs_dim
         self.global_obs_dim = env.global_obs_dim
-        self.latent_pi_dim = latent_pi_dim
+        self.latent_pi_dim = latent_pi_dim_per_agent
 
         self.actor = PPOActor(
             n_agents=env.n_agents,
             local_obs_dim=env.local_obs_dim,
             global_obs_dim=env.global_obs_dim,
             hidden_dims=actor_hidden_dims,
-            latent_pi_dim=latent_pi_dim,
+            latent_pi_dim_per_agent=latent_pi_dim_per_agent,
             act_fun_class=act_fun_class
         )
         self.action_dist = HybridActionDistribution(
-            latent_dim=latent_pi_dim,
+            latent_dim=latent_pi_dim_per_agent,
             action_space=env.action_space,
             base_std=base_std,
         )

@@ -1,4 +1,6 @@
 import sys
+from datetime import datetime
+
 from loguru import logger
 from gymnasium.vector import AsyncVectorEnv, SyncVectorEnv
 from gymnasium.wrappers.vector import RecordEpisodeStatistics, NormalizeReward
@@ -55,7 +57,12 @@ def main():
     ]
     episode_length = 512
     n_episodes_per_rollout = 4
-    total_timesteps = 5_000_000
+    total_timesteps = 20_000_000
+    save_interval = 1000
+    run_id = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    save_path_prefix = f"../../runs/ppo_swarm_bots/{run_id}/"
+    load_path = None
+    save_optimizer = True
 
     env_fns = [
         make_env_fn(
@@ -67,13 +74,15 @@ def main():
         for _ in range(n_envs)
     ]
 
-    vector_env = AsyncVectorEnv(env_fns)
+    vector_env = SyncVectorEnv(env_fns)
     print(f"Created {type(vector_env)} with {n_envs} environments...")
+
+    gamma = 0.95
     
     print("Wrapping with RecordEpisodeStatistics, NormalizeObservation, NormalizeReward...")
     vector_env = RecordEpisodeStatistics(vector_env)
     vector_env = NormalizeLocalObsWrapper(vector_env)
-    vector_env = NormalizeReward(vector_env, gamma=0.99)
+    vector_env = NormalizeReward(vector_env, gamma=gamma)
 
     print("Wrapping with SwarmBotsLearnEnvWrapper...")
     env = SwarmBotsLearnEnvWrapper(vector_env, device="cpu")
@@ -89,7 +98,7 @@ def main():
     policy = PPOPolicy(
         env=env,
         actor_hidden_dims=[256],
-        latent_pi_dim=256,
+        latent_pi_dim_per_agent=256 // env.n_agents,
         critic_hidden_dims=[256, 256],
         act_fun_class=nn.Tanh
     )
@@ -104,15 +113,26 @@ def main():
         max_episode_length=episode_length,
         batch_size=64,
         n_epochs=10,
-        gamma=0.99,
+        gamma=gamma,
         gae_lambda=0.95,
         clip_range=0.2,
         device='cpu',
         target_kl=0.05
     )
 
+    if load_path:
+        logger.info(f"Loading model from {load_path}")
+        ppo.load(load_path)
+
     print("Starting training...")
-    ppo.learn(total_timesteps=total_timesteps, log_interval=1)
+    ppo.learn(
+        total_timesteps=total_timesteps, 
+        log_interval=1,
+        save_interval=save_interval,
+        save_path_prefix=save_path_prefix,
+        save_optimizer=save_optimizer,
+        csv_log_dir="../../runs"
+    )
     
     print("Training Finished.")
     
@@ -121,7 +141,7 @@ def main():
     record_env_fn = make_env_fn(
         unit_start_locations=unit_start_locations,
         episode_length=episode_length,
-        scenario_kwargs={"num_walls": 1},
+        scenario_kwargs={"num_walls": 1, 'wall_height': 0.3},
         render_mode='rgb_array'
     )
     
