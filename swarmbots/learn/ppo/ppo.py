@@ -1,4 +1,5 @@
 import time
+import pathlib
 from typing import Optional
 
 import numpy as np
@@ -7,6 +8,7 @@ import torch.nn.functional as F
 from loguru import logger
 
 from swarmbots.learn.env_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
+from swarmbots.learn.logger import MetricLogger
 from swarmbots.learn.ppo.ppo_policy import PPOPolicy
 from swarmbots.learn.ppo.ppo_rollout_buffer import PPOEpisode, PPORolloutBuffer, PPOSampler
 
@@ -125,6 +127,7 @@ class PPO:
         )
 
         self.optimizer = torch.optim.Adam(self.policy.parameters(), lr=learning_rate)
+        self.n_total_updates = 0
 
 
     def train(self) -> dict[str, float]:
@@ -226,13 +229,15 @@ class PPO:
             if hasattr(dist, "log_stds"):
                 metrics[f'std{i}'] = torch.exp(dist.log_stds).mean().item()
 
+        self.n_total_updates += n_updates
         metrics.update({
             'ent_loss': np.mean(entropy_losses),
             'act_loss': np.mean(pg_losses),
             'val_loss': np.mean(value_losses),
             'approx_kl': np.mean(approx_kl_divs),
             'clip_frac': np.mean(clip_fractions),
-            'n_updates': n_updates,
+            'upd': n_updates,
+            'tot_upd': self.n_total_updates,
             'expl_var': explained_var,
         })
         
@@ -243,6 +248,10 @@ class PPO:
             metrics['ep_rew'] = np.mean(rewards)
             metrics['ep_len'] = np.mean(lengths)
             metrics['ep_time'] = np.mean(timings)
+        else:
+            metrics['ep_rew'] = None
+            metrics['ep_len'] = None
+            metrics['ep_time'] = None
 
         return metrics
 
@@ -250,11 +259,17 @@ class PPO:
             self,
             total_timesteps: int,
             log_interval: int = 1,
+            save_interval: Optional[int] = None,
+            save_path_prefix: Optional[str | pathlib.Path] = None,
+            save_optimizer: bool = True,
+            csv_log_dir: Optional[str | pathlib.Path] = None,
     ):
 
         current_timesteps = 0
         iteration = 0
         
+        metric_logger = MetricLogger(log_dir=csv_log_dir)
+
         start_time = time.time()
 
         while current_timesteps < total_timesteps:
@@ -266,14 +281,96 @@ class PPO:
 
             if log_interval is not None and iteration % log_interval == 0:
                 fps = int(current_timesteps / (time.time() - start_time))
-                
-                log_str = f"Iterations: {iteration:>4} | Timesteps: {current_timesteps:10_} | FPS: {fps}"
-                for key, value in metrics.items():
-                    if np.isclose(value % 1.0, 0):
-                        val_str = f'{int(value):>2}'
-                    else:
-                        val_str = f'{value: .4f}'
-                    log_str += f" | {key}: {val_str}"
-                logger.info(log_str)
+
+                metric_logger.log({
+                    'iteration': iteration,
+                    'timesteps': current_timesteps,
+                    **metrics,
+                    'fps': fps,
+                })
+
+            if save_interval is not None and save_path_prefix is not None and iteration % save_interval == 0:
+                 save_path = f"{save_path_prefix}_{current_timesteps}_steps.pt"
+                 self.save(save_path, save_optimizer=save_optimizer)
+                 logger.info(f"Saved model to {save_path}")
+
+        if save_path_prefix is not None:
+             save_path = f"{save_path_prefix}_final.pt"
+             self.save(save_path, save_optimizer=save_optimizer)
+             logger.info(f"Saved final model to {save_path}")
+
+        metric_logger.close()
 
         return self
+
+    def save(self, path: str | pathlib.Path, save_optimizer: bool = True):
+        path = pathlib.Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        
+        env_state = []
+        current_env = self.env
+        while hasattr(current_env, 'env'):
+            wrapper_state = {}
+            if hasattr(current_env, 'local_obs_rms'):
+                 wrapper_state['local_obs_rms'] = current_env.local_obs_rms
+            if hasattr(current_env, 'global_obs_rms'):
+                 wrapper_state['global_obs_rms'] = current_env.global_obs_rms
+            if hasattr(current_env, 'return_rms'):
+                 wrapper_state['return_rms'] = current_env.return_rms
+            
+            if wrapper_state:
+                wrapper_state['wrapper_class'] = type(current_env).__name__
+                env_state.append(wrapper_state)
+            
+            current_env = current_env.env
+            
+        save_dict = {
+            'policy_state_dict': self.policy.state_dict(),
+            'env_state': env_state,
+            'n_total_updates': self.n_total_updates,
+        }
+        
+        if save_optimizer:
+            save_dict['optimizer_state_dict'] = self.optimizer.state_dict()
+            
+        torch.save(save_dict, path)
+
+    def load(self, path: str | pathlib.Path):
+        save_dict = torch.load(path, map_location=self.device, weights_only=False)
+        self.policy.load_state_dict(save_dict['policy_state_dict'])
+        if 'optimizer_state_dict' in save_dict:
+            self.optimizer.load_state_dict(save_dict['optimizer_state_dict'])
+
+        self.n_total_updates = save_dict.get('n_total_updates', 0)
+        
+        env_state = save_dict.get('env_state', [])
+        
+        current_env = self.env
+        state_idx = 0
+        while hasattr(current_env, 'env'):
+            relevant = False
+            if hasattr(current_env, 'local_obs_rms') or hasattr(current_env, 'global_obs_rms') or hasattr(current_env, 'return_rms'):
+                relevant = True
+            
+            if relevant:
+                 if state_idx < len(env_state):
+                     saved_state = env_state[state_idx]
+                     if saved_state['wrapper_class'] != type(current_env).__name__:
+                         logger.warning(f"Wrapper type mismatch during load: {saved_state['wrapper_class']} vs {type(current_env).__name__}")
+                     
+                     if 'local_obs_rms' in saved_state and hasattr(current_env, 'local_obs_rms'):
+                         self._copy_rms(saved_state['local_obs_rms'], current_env.local_obs_rms)
+                     if 'global_obs_rms' in saved_state and hasattr(current_env, 'global_obs_rms'):
+                         self._copy_rms(saved_state['global_obs_rms'], current_env.global_obs_rms)
+                     if 'return_rms' in saved_state and hasattr(current_env, 'return_rms'):
+                         self._copy_rms(saved_state['return_rms'], current_env.return_rms)
+                     
+                     state_idx += 1
+            
+            current_env = current_env.env
+            
+    def _copy_rms(self, src, dst):
+        dst.mean = src.mean.copy()
+        dst.var = src.var.copy()
+        dst.count = src.count
+
