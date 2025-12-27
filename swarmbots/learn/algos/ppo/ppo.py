@@ -9,9 +9,10 @@ from loguru import logger
 
 from swarmbots.learn.env_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
 from swarmbots.learn.logger import MetricLogger
-from swarmbots.learn.ppo.ppo_policy import PPOPolicy
-from swarmbots.learn.ppo.ppo_rollout_buffer import PPOEpisode, PPORolloutBuffer, PPOSampler
+from swarmbots.learn.algos.ppo.ppo_policy import PPOPolicy
+from swarmbots.learn.algos.ppo.ppo_rollout_buffer import PPOEpisode, PPORolloutBuffer, PPOSampler
 
+AGENTS_DIM = 1
 
 @torch.no_grad()
 def collect_whole_episodes(
@@ -165,10 +166,9 @@ class PPO:
                     actions=batch.actions
                 )
                 
-                # sum over agents
-                log_prob = log_probs.sum(dim=1)
-                entropy = entropies.sum(dim=1) if entropies is not None else None
-                old_log_prob = batch.log_probs.sum(dim=1)
+                log_prob = log_probs.sum(dim=AGENTS_DIM)
+                entropy = entropies.sum(dim=AGENTS_DIM) if entropies is not None else None
+                old_log_prob = batch.log_probs.sum(dim=AGENTS_DIM)
 
                 advantages = batch.advantages
                 if self.normalize_advantage and len(advantages) > 1:
@@ -234,7 +234,7 @@ class PPO:
             'ent_loss': np.mean(entropy_losses),
             'act_loss': np.mean(pg_losses),
             'val_loss': np.mean(value_losses),
-            'approx_kl': np.mean(approx_kl_divs),
+            'approx_kl': f'{np.mean(approx_kl_divs):.3f} (max={np.max(approx_kl_divs):.3f})',
             'clip_frac': np.mean(clip_fractions),
             'upd': n_updates,
             'tot_upd': self.n_total_updates,
@@ -258,29 +258,32 @@ class PPO:
     def learn(
             self,
             total_timesteps: int,
+            run_dir: Optional[str | pathlib.Path] = None,
             log_interval: int = 1,
             save_interval: Optional[int] = None,
-            save_path_prefix: Optional[str | pathlib.Path] = None,
             save_optimizer: bool = True,
-            csv_log_dir: Optional[str | pathlib.Path] = None,
     ):
 
         current_timesteps = 0
         iteration = 0
         
-        metric_logger = MetricLogger(log_dir=csv_log_dir)
-
-        start_time = time.time()
+        if run_dir is not None:
+            run_dir = pathlib.Path(run_dir)
+            run_dir.mkdir(parents=True, exist_ok=True)
+            
+        metric_logger = MetricLogger(log_dir=run_dir)
 
         while current_timesteps < total_timesteps:
+            iter_start = time.time()
             metrics = self.train()
+            iter_duration = time.time() - iter_start
             
             total_steps_in_rollout = sum(len(ep.rewards) for ep in self.rollout_buffer.episodes)
             current_timesteps += total_steps_in_rollout
             iteration += 1
 
             if log_interval is not None and iteration % log_interval == 0:
-                fps = int(current_timesteps / (time.time() - start_time))
+                fps = int(total_steps_in_rollout / iter_duration)
 
                 metric_logger.log({
                     'iteration': iteration,
@@ -289,13 +292,13 @@ class PPO:
                     'fps': fps,
                 })
 
-            if save_interval is not None and save_path_prefix is not None and iteration % save_interval == 0:
-                 save_path = f"{save_path_prefix}_{current_timesteps}_steps.pt"
+            if save_interval is not None and run_dir is not None and iteration % save_interval == 0:
+                 save_path = run_dir / f"model_{current_timesteps}_steps.pt"
                  self.save(save_path, save_optimizer=save_optimizer)
                  logger.info(f"Saved model to {save_path}")
 
-        if save_path_prefix is not None:
-             save_path = f"{save_path_prefix}_final.pt"
+        if run_dir is not None:
+             save_path = run_dir / "model_final.pt"
              self.save(save_path, save_optimizer=save_optimizer)
              logger.info(f"Saved final model to {save_path}")
 

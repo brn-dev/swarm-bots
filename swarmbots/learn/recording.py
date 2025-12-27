@@ -15,7 +15,7 @@ def record_policy(
     policy: BasePolicy,
     video_folder: str,
     video_name_prefix: str,
-    num_episodes: int = 1,
+    num_episodes: int = 5,
     deterministic: bool = False,
     fps: int = 30,
     device: torch.device = torch.device("cpu"),
