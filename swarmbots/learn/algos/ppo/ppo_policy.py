@@ -1,3 +1,4 @@
+import abc
 import torch
 from torch import nn
 
@@ -76,7 +77,34 @@ class PPOCritic(nn.Module):
         return self.mlp(critic_input).squeeze(dim=-1)
 
 
-class PPOPolicy(BasePolicy):
+class BasePPOPolicy(BasePolicy, abc.ABC):
+
+    @abc.abstractmethod
+    def forward(
+            self,
+            local_obs: torch.Tensor,
+            global_obs: torch.Tensor,
+            deterministic: bool = False
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        :return: return actions, log_probs, values
+        """
+        raise NotImplementedError()
+
+    @abc.abstractmethod
+    def evaluate_actions(
+            self,
+            local_obs: torch.Tensor,
+            global_obs: torch.Tensor,
+            actions: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        :return: log_probs, entropies, values
+        """
+        raise NotImplementedError()
+
+
+class PPOPolicy(BasePPOPolicy):
 
     def __init__(
             self,

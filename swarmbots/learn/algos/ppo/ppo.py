@@ -1,5 +1,5 @@
-import time
 import pathlib
+import time
 from typing import Optional
 
 import numpy as np
@@ -7,17 +7,17 @@ import torch
 import torch.nn.functional as F
 from loguru import logger
 
-from swarmbots.learn.env_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
-from swarmbots.learn.logger import MetricLogger
-from swarmbots.learn.algos.ppo.ppo_policy import PPOPolicy
+from swarmbots.learn.algos.ppo.ppo_policy import BasePPOPolicy
 from swarmbots.learn.algos.ppo.ppo_rollout_buffer import PPOEpisode, PPORolloutBuffer, PPOSampler
+from swarmbots.learn.env_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
+from swarmbots.learn.metrics_logger import MetricsLogger
 
 AGENTS_DIM = 1
 
 @torch.no_grad()
 def collect_whole_episodes(
         env: BaseLearnEnvWrapper,
-        policy: PPOPolicy,
+        policy: BasePPOPolicy,
         buffer: PPORolloutBuffer,
         device: torch.device,
 ) -> tuple[list[PPOEpisode], list[dict]]:
@@ -74,7 +74,7 @@ class PPO:
 
     def __init__(
             self,
-            policy: PPOPolicy,
+            policy: BasePPOPolicy,
             env: BaseLearnEnvWrapper,
             learning_rate: float = 3e-4,
             n_episodes_per_rollout: int = 64,
@@ -289,7 +289,7 @@ class PPO:
             run_dir = pathlib.Path(run_dir)
             run_dir.mkdir(parents=True, exist_ok=True)
             
-        metric_logger = MetricLogger(log_dir=run_dir)
+        metric_logger = MetricsLogger(log_dir=run_dir)
 
         while current_timesteps < total_timesteps:
             iter_start = time.time()

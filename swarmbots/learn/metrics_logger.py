@@ -4,7 +4,7 @@ from typing import Any, Dict, Union, Optional
 import numpy as np
 from loguru import logger
 
-class MetricLogger:
+class MetricsLogger:
     def __init__(self, log_dir: Optional[Union[str, Path]] = None, filename: str = "log.csv"):
         self.log_dir = Path(log_dir) if log_dir else None
         self.file_path = self.log_dir / filename if self.log_dir else None
@@ -43,7 +43,7 @@ class MetricLogger:
             self.file = open(self.file_path, mode='a', newline='')
             
             fieldnames = list(metrics.keys())
-            self.writer = csv.DictWriter(self.file, fieldnames=fieldnames)
+            self.writer = csv.DictWriter(self.file, fieldnames=fieldnames, delimiter=';')
             
             if not file_exists:
                 self.writer.writeheader()
