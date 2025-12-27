@@ -130,6 +130,24 @@ class PPO:
         self.optimizer = torch.optim.Adam(self.policy.parameters(), lr=learning_rate)
         self.n_total_updates = 0
 
+    def get_hyper_parameters(self):
+        return {
+            'learning_rate': self.learning_rate,
+            'n_episodes_per_rollout': self.n_episodes_per_rollout,
+            'max_episode_length': self.max_episode_length,
+            'batch_size': self.batch_size,
+            'n_epochs': self.n_epochs,
+            'gamma': self.gamma,
+            'gae_lambda': self.gae_lambda,
+            'clip_range': self.clip_range,
+            'clip_range_vf': self.clip_range_vf,
+            'normalize_advantage': self.normalize_advantage,
+            'ent_coef': self.ent_coef,
+            'vf_coef': self.vf_coef,
+            'max_grad_norm': self.max_grad_norm,
+            'target_kl': self.target_kl,
+            'device': str(self.device),
+        }
 
     def train(self) -> dict[str, float]:
         """
@@ -328,7 +346,10 @@ class PPO:
             current_env = current_env.env
             
         save_dict = {
+            'hyper_parameters': self.get_hyper_parameters(),
+            'policy_repr': str(self.policy),
             'policy_state_dict': self.policy.state_dict(),
+            'env_repr': str(self.env),
             'env_state': env_state,
             'n_total_updates': self.n_total_updates,
         }
