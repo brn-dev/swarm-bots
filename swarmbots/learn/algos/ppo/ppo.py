@@ -162,7 +162,7 @@ class PPO:
             'rollout_device': str(self.rollout_device),
         }
 
-    def train(self) -> dict[str, float]:
+    def train(self) -> dict[str, Any]:
         
         episodes, episode_infos = collect_whole_episodes(
             env=self.env,
@@ -263,12 +263,17 @@ class PPO:
             if hasattr(dist, "log_stds"):
                 metrics[f'std{i}'] = torch.exp(dist.log_stds).mean().item()
 
+        approx_kl_mean = float(np.mean(approx_kl_divs)) if len(approx_kl_divs) > 0 else 0.0
+        approx_kl_max = float(np.max(approx_kl_divs)) if len(approx_kl_divs) > 0 else 0.0
+
         self.n_total_updates += n_updates
         metrics.update({
             'ent_loss': np.mean(entropy_losses),
             'act_loss': np.mean(pg_losses),
             'val_loss': np.mean(value_losses),
-            'approx_kl': f'{np.mean(approx_kl_divs):.3f} (max={np.max(approx_kl_divs):.3f})',
+            'approx_kl_mean': approx_kl_mean,
+            'approx_kl_max': approx_kl_max,
+            'approx_kl': f'{approx_kl_mean:.3f} (max={approx_kl_max:.3f})',
             'clip_frac': np.mean(clip_fractions),
             'upd': n_updates,
             'tot_upd': self.n_total_updates,
@@ -297,9 +302,16 @@ class PPO:
             log_interval: int = 1,
             save_interval: Optional[int] = None,
             save_optimizer: bool = True,
-            extra_run_metadata: dict[str, Any] = None,
+            extra_run_metadata: dict[str, Any] | None = None,
             episode_return_ema_alpha: float = 0.05,
             best_rotation_n: int = 1,
+            wandb_project: str | None = None,
+            wandb_entity: str | None = None,
+            wandb_run_name: str | None = None,
+            wandb_group: str | None = None,
+            wandb_tags: list[str] | None = None,
+            wandb_mode: str | None = None,
+            wandb_kwargs: dict[str, Any] | None = None,
     ):
         assert (
                 (max_total_timesteps is not None and max_total_timesteps > 0 and additional_timesteps is None)
@@ -319,7 +331,29 @@ class PPO:
             run_dir.mkdir(parents=True, exist_ok=True)
             self._write_run_metadata(run_dir, extra_run_metadata)
             
-        metric_logger = MetricsLogger(log_dir=run_dir)
+        wandb_config: dict[str, Any] | None = None
+        if wandb_project is not None:
+            wandb_config = {"hyper_parameters": self.get_hyper_parameters()}
+            if extra_run_metadata:
+                wandb_config["extra_run_metadata"] = json.loads(json.dumps(extra_run_metadata, default=str))
+            if run_dir is not None:
+                wandb_config["run_dir"] = str(run_dir)
+
+            if wandb_run_name is None and run_dir is not None:
+                wandb_run_name = run_dir.name
+
+        metric_logger = MetricsLogger(
+            log_dir=run_dir,
+            wandb_project=wandb_project,
+            wandb_entity=wandb_entity,
+            wandb_run_name=wandb_run_name,
+            wandb_group=wandb_group,
+            wandb_tags=wandb_tags,
+            wandb_config=wandb_config,
+            wandb_mode=wandb_mode,
+            wandb_kwargs=wandb_kwargs,
+            wandb_step_key="timesteps",
+        )
         episode_return_ema = ExponentialMovingAverage(alpha=episode_return_ema_alpha)
         best_episode_return_ema: float | None = None
         best_save_counter = 0
