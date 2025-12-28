@@ -8,9 +8,11 @@ import torch
 import torch.nn.functional as F
 from loguru import logger
 
+from swarmbots.learn.torch_device import as_device
 from swarmbots.learn.algos.ppo.ppo_policy import BasePPOPolicy
 from swarmbots.learn.algos.ppo.ppo_rollout_buffer import PPOEpisode, PPORolloutBuffer, PPOSampler
 from swarmbots.learn.env_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
+from swarmbots.learn.exponential_moving_average import ExponentialMovingAverage
 from swarmbots.learn.metrics_logger import MetricsLogger
 
 AGENTS_DIM = 1
@@ -20,12 +22,14 @@ def collect_whole_episodes(
         env: BaseLearnEnvWrapper,
         policy: BasePPOPolicy,
         buffer: PPORolloutBuffer,
-        device: torch.device,
 ) -> tuple[list[PPOEpisode], list[dict]]:
     buffer.reset()
     obs, info = env.reset()
-    is_final = torch.zeros((buffer.n_envs,), dtype=torch.bool, device=device)
-    was_terminated = torch.zeros((buffer.n_envs,), dtype=torch.bool, device=device)
+    is_final = torch.zeros((buffer.n_envs,), dtype=torch.bool, device=buffer.rollout_device)
+    was_terminated = torch.zeros((buffer.n_envs,), dtype=torch.bool, device=buffer.rollout_device)
+
+    policy.to(buffer.rollout_device)
+    policy.eval()
     
     episode_infos = []
 
@@ -91,7 +95,8 @@ class PPO:
             vf_coef: float = 0.5,
             max_grad_norm: float = 0.5,
             target_kl: Optional[float] = None,
-            device: str | torch.device = "auto",
+            train_device: str | torch.device = "auto",
+            rollout_device: str | torch.device = "cpu",
     ):
         self.policy = policy
         self.env = env
@@ -110,12 +115,8 @@ class PPO:
         self.max_grad_norm = max_grad_norm
         self.target_kl = target_kl
 
-        if device == "auto":
-            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        else:
-            self.device = torch.device(device)
-
-        self.policy.to(self.device)
+        self.train_device = as_device(train_device)
+        self.rollout_device = as_device(rollout_device)
 
         self.rollout_buffer = PPORolloutBuffer(
             n_episodes=n_episodes_per_rollout,
@@ -124,12 +125,15 @@ class PPO:
             action_space=env.action_space,
             gamma=gamma,
             gae_lambda=gae_lambda,
-            storage_device=self.device,
-            sampling_device=self.device,
+            rollout_device=self.rollout_device,
+            rollout_dtype=torch.float32,
+            train_device=self.train_device,
+            train_dtype=torch.float32,
         )
 
         self.optimizer = torch.optim.Adam(self.policy.parameters(), lr=learning_rate)
         self.n_total_updates = 0
+        self.n_total_timesteps = 0
 
     def get_hyper_parameters(self):
         return {
@@ -147,16 +151,20 @@ class PPO:
             'vf_coef': self.vf_coef,
             'max_grad_norm': self.max_grad_norm,
             'target_kl': self.target_kl,
-            'device': str(self.device),
+            'train_device': str(self.train_device),
+            'rollout_device': str(self.rollout_device),
         }
 
     def train(self) -> dict[str, float]:
-        """
-        Update policy using the currently gathered rollout buffer.
-        """
-        self.policy.train()
         
-        episodes, episode_infos = collect_whole_episodes(self.env, self.policy, self.rollout_buffer, self.device)
+        episodes, episode_infos = collect_whole_episodes(
+            env=self.env,
+            policy=self.policy,
+            buffer=self.rollout_buffer,
+        )
+
+        self.policy.train()
+        self.policy.to(self.train_device)
         
         sampler = PPOSampler(episodes, history_embeddings=None)
 
@@ -229,7 +237,7 @@ class PPO:
 
                 if self.target_kl is not None and approx_kl_div > 1.5 * self.target_kl:
                     continue_training = False
-                    logger.info(f'Early stopping at epoch {epoch}, batch {i} due to reaching max kl: {approx_kl_div:.2f}')
+                    logger.info(f'Early stopping at epoch {epoch}, batch {i} due to reaching max kl: {approx_kl_div:.3f}')
                     break
 
                 self.optimizer.zero_grad()
@@ -276,16 +284,28 @@ class PPO:
 
     def learn(
             self,
-            total_timesteps: int,
+            max_total_timesteps: int | None = None,
+            additional_timesteps: int | None = None,
             run_dir: Optional[str | pathlib.Path] = None,
             log_interval: int = 1,
             save_interval: Optional[int] = None,
             save_optimizer: bool = True,
-            extra_run_metadata: dict[str, Any] = None
+            extra_run_metadata: dict[str, Any] = None,
+            episode_return_ema_alpha: float = 0.05,
+            best_rotation_n: int = 1,
     ):
+        assert (
+                (max_total_timesteps is not None and max_total_timesteps > 0 and additional_timesteps is None)
+                or
+                (additional_timesteps is not None and additional_timesteps > 0 and max_total_timesteps is None)
+        )
+        assert best_rotation_n >= 1
 
-        current_timesteps = 0
+        current_timesteps = self.n_total_timesteps
         iteration = 0
+
+        if max_total_timesteps is None:
+            max_total_timesteps = current_timesteps + additional_timesteps
         
         if run_dir is not None:
             run_dir = pathlib.Path(run_dir)
@@ -293,15 +313,32 @@ class PPO:
             self._write_run_metadata(run_dir, extra_run_metadata)
             
         metric_logger = MetricsLogger(log_dir=run_dir)
+        episode_return_ema = ExponentialMovingAverage(alpha=episode_return_ema_alpha)
+        best_episode_return_ema: float | None = None
+        best_save_counter = 0
 
-        while current_timesteps < total_timesteps:
+        while current_timesteps < max_total_timesteps:
             iter_start = time.time()
             metrics = self.train()
             iter_duration = time.time() - iter_start
             
             total_steps_in_rollout = sum(len(ep.rewards) for ep in self.rollout_buffer.episodes)
             current_timesteps += total_steps_in_rollout
+            self.n_total_timesteps = current_timesteps
             iteration += 1
+
+            current_episode_return_ema = episode_return_ema.update(metrics["ep_rew"])
+            if best_episode_return_ema is None or current_episode_return_ema > best_episode_return_ema:
+                best_episode_return_ema = current_episode_return_ema
+                if run_dir is not None:
+                    if best_rotation_n == 1:
+                        best_save_path = run_dir / "model_best.pt"
+                    else:
+                        best_save_idx = best_save_counter % best_rotation_n
+                        best_save_path = run_dir / f"model_best_{best_save_idx}.pt"
+                        best_save_counter += 1
+                    self.save(best_save_path, save_optimizer=save_optimizer, return_ema=current_episode_return_ema)
+                    logger.info(f"Saved best-EMA model to {best_save_path} (ep_rew_ema={best_episode_return_ema:.4f})")
 
             if log_interval is not None and iteration % log_interval == 0:
                 fps = int(total_steps_in_rollout / iter_duration)
@@ -310,18 +347,20 @@ class PPO:
                     'iteration': iteration,
                     'timesteps': current_timesteps,
                     **metrics,
+                    'ep_rew_ema': current_episode_return_ema,
+                    'best_ep_rew_ema': best_episode_return_ema,
                     'fps': fps,
                 })
 
             if save_interval is not None and run_dir is not None and iteration % save_interval == 0:
-                 save_path = run_dir / f"model_{current_timesteps}_steps.pt"
-                 self.save(save_path, save_optimizer=save_optimizer)
-                 logger.info(f"Saved model to {save_path}")
+                save_path = run_dir / f"model_{current_timesteps}_steps.pt"
+                self.save(save_path, save_optimizer=save_optimizer, return_ema=current_episode_return_ema)
+                logger.info(f"Saved model to {save_path}")
 
         if run_dir is not None:
-             save_path = run_dir / "model_final.pt"
-             self.save(save_path, save_optimizer=save_optimizer)
-             logger.info(f"Saved final model to {save_path}")
+            save_path = run_dir / "model_final.pt"
+            self.save(save_path, save_optimizer=save_optimizer, return_ema=episode_return_ema.get())
+            logger.info(f"Saved final model to {save_path}")
 
         metric_logger.close()
 
@@ -342,7 +381,7 @@ class PPO:
 
         metadata_path.write_text(json.dumps(metadata, indent=2, sort_keys=True), encoding="utf-8")
 
-    def save(self, path: str | pathlib.Path, save_optimizer: bool = True):
+    def save(self, path: str | pathlib.Path, save_optimizer: bool = True, return_ema: Optional[float] = None) -> None:
         path = pathlib.Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         
@@ -367,6 +406,8 @@ class PPO:
             'policy_state_dict': self.policy.state_dict(),
             'env_state': env_state,
             'n_total_updates': self.n_total_updates,
+            'n_total_timesteps': self.n_total_timesteps,
+            'return_ema': return_ema,
         }
         
         if save_optimizer:
@@ -374,13 +415,14 @@ class PPO:
             
         torch.save(save_dict, path)
 
-    def load(self, path: str | pathlib.Path):
-        save_dict = torch.load(path, map_location=self.device, weights_only=False)
+    def load(self, path: str | pathlib.Path) -> None:
+        save_dict = torch.load(path, weights_only=False)
         self.policy.load_state_dict(save_dict['policy_state_dict'])
         if 'optimizer_state_dict' in save_dict:
             self.optimizer.load_state_dict(save_dict['optimizer_state_dict'])
 
         self.n_total_updates = save_dict.get('n_total_updates', 0)
+        self.n_total_timesteps = save_dict.get('n_total_timesteps', 0)
         
         env_state = save_dict.get('env_state', [])
         
@@ -408,7 +450,7 @@ class PPO:
             
             current_env = current_env.env
             
-    def _copy_rms(self, src, dst):
+    def _copy_rms(self, src, dst) -> None:
         dst.mean = src.mean.copy()
         dst.var = src.var.copy()
         dst.count = src.count

@@ -7,12 +7,10 @@ from gymnasium.wrappers.vector import RecordEpisodeStatistics, NormalizeReward
 import torch
 from torch import nn
 
-from swarmbots.learn.algos.mat.mat import MAT
 from swarmbots.learn.algos.mat.mat_policy import MATPolicy
 from swarmbots.learn.env_wrappers.normalize_obs_wrapper import NormalizeLocalObsWrapper
 from swarmbots.learn.env_wrappers.swarm_bots_learn_env_wrapper import SwarmBotsLearnEnvWrapper
 from swarmbots.learn.algos.ppo.ppo import PPO
-from swarmbots.learn.algos.ppo.ppo_policy import PPOPolicy
 from swarmbots.learn.recording import record_policy
 from swarmbots.mj_env.scenarios.obstacle_street_scenario import ObstacleStreetScenario
 from swarmbots.mj_env.swarm.homogeneous_swarm import HomogeneousSwarm
@@ -52,20 +50,28 @@ def main():
     logger.add(sys.stderr, format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <level>{message}</level>")
 
     n_envs = 4
+    # unit_start_locations = [
+    #     (0.0, 0.0, 0.0),
+    #     (-0.6, 0, 0),
+    # ]
     unit_start_locations = [
         (0.0, 0.0, 0.0),
-        (-0.6, 0, 0),
-        # (0.6, 0, 0),
+        (0.4, 0.4, 0),
+        (0.4, -0.4, 0),
+        (-0.4, 0.4, 0),
+        (-0.4, -0.4, 0),
     ]
     episode_length = 512
     n_episodes_per_rollout = 4
-    total_timesteps = 5_000_000
-    save_interval = 1000
+    total_timesteps = 20_000_000
+    save_interval = 500
     run_id = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     run_dir = f"runs/mat_swarm_bots/{run_id}/"
     load_path = None
     save_optimizer = True
-    device = torch.device("cpu")
+    rollout_device = torch.device("cpu")
+    use_cuda = False and torch.cuda.is_available()
+    train_device = torch.device("cuda" if use_cuda else "cpu")
 
     env_fns = [
         make_env_fn(
@@ -96,7 +102,7 @@ def main():
     vector_env = NormalizeReward(vector_env, gamma=gamma)
 
     print("Wrapping with SwarmBotsLearnEnvWrapper...")
-    env = SwarmBotsLearnEnvWrapper(vector_env, device=device)
+    env = SwarmBotsLearnEnvWrapper(vector_env, device=rollout_device)
     
     print(f"Environment initialized.")
     print(f"n_agents: {env.n_agents}")
@@ -131,7 +137,7 @@ def main():
     print(policy)
 
     print("Initializing PPO Algorithm...")
-    ppo = MAT(
+    ppo = PPO(
         policy=policy,
         env=env,
         learning_rate=2e-5 if load_path is None else 1e-5,
@@ -142,7 +148,8 @@ def main():
         gamma=gamma,
         gae_lambda=0.95,
         clip_range=0.2,
-        device=device,
+        train_device=train_device,
+        rollout_device=rollout_device,
         target_kl=0.05
     )
 
@@ -152,7 +159,7 @@ def main():
 
     print("Starting training...")
     ppo.learn(
-        total_timesteps=total_timesteps, 
+        max_total_timesteps=total_timesteps,
         run_dir=run_dir,
         log_interval=1,
         save_interval=save_interval,
@@ -187,7 +194,7 @@ def main():
     
     record_vector_env = record_norm_wrapper
     
-    record_env = SwarmBotsLearnEnvWrapper(record_vector_env, device=device)
+    record_env = SwarmBotsLearnEnvWrapper(record_vector_env, device=rollout_device)
     
     record_policy(
         env=record_env,
@@ -196,7 +203,7 @@ def main():
         video_name_prefix='test_run',
         num_episodes=5,
         deterministic=True,
-        device=device,
+        device=rollout_device,
     )
     
     record_env.close()

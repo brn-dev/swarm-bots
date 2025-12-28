@@ -5,6 +5,7 @@ import torch
 from gymnasium import spaces
 from loguru import logger
 
+from swarmbots.learn.torch_device import as_device
 from swarmbots.learn.hybrid_action_space import VectorHybridActionSpace
 
 MaybeTensor = Optional[torch.Tensor]
@@ -157,10 +158,10 @@ class PPORolloutBuffer:
             action_space: VectorHybridActionSpace,
             gamma: float,
             gae_lambda: float,
-            storage_device: torch.device | str = 'cpu',
-            storage_dtype: torch.dtype = torch.float32,
-            sampling_device: torch.device | str = 'auto',
-            sampling_dtype: torch.dtype = torch.float32,
+            rollout_device: torch.device | str = 'cpu',
+            rollout_dtype: torch.dtype = torch.float32,
+            train_device: torch.device | str = 'auto',
+            train_dtype: torch.dtype = torch.float32,
     ):
         super().__init__()
         self.n_episodes = n_episodes
@@ -184,13 +185,10 @@ class PPORolloutBuffer:
         self.gamma = gamma
         self.gae_lambda = gae_lambda
 
-        self.storage_device = storage_device
-        self.storage_dtype = storage_dtype
-        if sampling_device == "auto":
-            self.sampling_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        else:
-            self.sampling_device = sampling_device
-        self.sampling_dtype = sampling_dtype
+        self.rollout_device = as_device(rollout_device)
+        self.rollout_dtype = rollout_dtype
+        self.train_device = as_device(train_device)
+        self.train_dtype = train_dtype
 
         self.episodes = list()
         self.accumulator = PPOEpisodeAccumulator(
@@ -200,8 +198,8 @@ class PPORolloutBuffer:
             agent_obs_shape=self.agent_obs_shape,
             global_obs_shape=self.global_obs_shape,
             n_agent_actions=self.n_agent_actions,
-            storage_device=self.storage_device,
-            storage_dtype=self.storage_dtype,
+            storage_device=self.rollout_device,
+            storage_dtype=self.rollout_dtype,
         )
 
     def is_ready(self):
@@ -244,17 +242,17 @@ class PPORolloutBuffer:
     def get_whole_episodes(self) -> list[PPOEpisode]:
         return [
             PPOEpisode(
-                local_obs=ep.local_obs.to(device=self.sampling_device, dtype=self.sampling_dtype),
-                global_obs=ep.global_obs.to(device=self.sampling_device, dtype=self.sampling_dtype),
-                actions=ep.actions.to(device=self.sampling_device, dtype=self.sampling_dtype),
-                rewards=ep.rewards.to(device=self.sampling_device, dtype=self.sampling_dtype),
-                log_probs=ep.log_probs.to(device=self.sampling_device, dtype=self.sampling_dtype),
-                values=ep.values.to(device=self.sampling_device, dtype=self.sampling_dtype),
-                final_local_obs=ep.final_local_obs.to(device=self.sampling_device, dtype=self.sampling_dtype),
-                final_global_obs=ep.final_global_obs.to(device=self.sampling_device, dtype=self.sampling_dtype),
-                final_value=ep.final_value.to(device=self.sampling_device, dtype=self.sampling_dtype),
-                returns=ep.returns.to(device=self.sampling_device, dtype=self.sampling_dtype),
-                advantages=ep.advantages.to(device=self.sampling_device, dtype=self.sampling_dtype),
+                local_obs=ep.local_obs.to(device=self.train_device, dtype=self.train_dtype),
+                global_obs=ep.global_obs.to(device=self.train_device, dtype=self.train_dtype),
+                actions=ep.actions.to(device=self.train_device, dtype=self.train_dtype),
+                rewards=ep.rewards.to(device=self.train_device, dtype=self.train_dtype),
+                log_probs=ep.log_probs.to(device=self.train_device, dtype=self.train_dtype),
+                values=ep.values.to(device=self.train_device, dtype=self.train_dtype),
+                final_local_obs=ep.final_local_obs.to(device=self.train_device, dtype=self.train_dtype),
+                final_global_obs=ep.final_global_obs.to(device=self.train_device, dtype=self.train_dtype),
+                final_value=ep.final_value.to(device=self.train_device, dtype=self.train_dtype),
+                returns=ep.returns.to(device=self.train_device, dtype=self.train_dtype),
+                advantages=ep.advantages.to(device=self.train_device, dtype=self.train_dtype),
             )
             for ep in self.episodes
         ]
@@ -262,17 +260,17 @@ class PPORolloutBuffer:
     def get_whole_episodes_minimal(self) -> list[PPOEpisode]:
         return [
             PPOEpisode(
-                local_obs=ep.local_obs.to(device=self.sampling_device, dtype=self.sampling_dtype),
-                global_obs=ep.global_obs.to(device=self.sampling_device, dtype=self.sampling_dtype),
-                actions=ep.actions.to(device=self.sampling_device, dtype=self.sampling_dtype),
+                local_obs=ep.local_obs.to(device=self.train_device, dtype=self.train_dtype),
+                global_obs=ep.global_obs.to(device=self.train_device, dtype=self.train_dtype),
+                actions=ep.actions.to(device=self.train_device, dtype=self.train_dtype),
                 rewards=None,
-                log_probs=ep.log_probs.to(device=self.sampling_device, dtype=self.sampling_dtype),
-                values=ep.values.to(device=self.sampling_device, dtype=self.sampling_dtype),
+                log_probs=ep.log_probs.to(device=self.train_device, dtype=self.train_dtype),
+                values=ep.values.to(device=self.train_device, dtype=self.train_dtype),
                 final_local_obs=None,
                 final_global_obs=None,
                 final_value=None,
-                returns=ep.returns.to(device=self.sampling_device, dtype=self.sampling_dtype),
-                advantages=ep.advantages.to(device=self.sampling_device, dtype=self.sampling_dtype),
+                returns=ep.returns.to(device=self.train_device, dtype=self.train_dtype),
+                advantages=ep.advantages.to(device=self.train_device, dtype=self.train_dtype),
             )
             for ep in self.episodes
         ]
