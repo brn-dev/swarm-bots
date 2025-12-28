@@ -9,6 +9,33 @@ from swarmbots.learn.nn_components.mlp import MLP
 from swarmbots.learn.nn_components.nn_init import init_linear_orthogonal, LinearInitialization
 
 
+class BasePPOPolicy(BasePolicy, abc.ABC):
+
+    @abc.abstractmethod
+    def forward(
+            self,
+            local_obs: torch.Tensor,
+            global_obs: torch.Tensor,
+            deterministic: bool = False
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        :return: return actions, log_probs, values
+        """
+        raise NotImplementedError()
+
+    @abc.abstractmethod
+    def evaluate_actions(
+            self,
+            local_obs: torch.Tensor,
+            global_obs: torch.Tensor,
+            actions: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        :return: log_probs, entropies, values
+        """
+        raise NotImplementedError()
+
+
 class PPOActor(nn.Module):
 
     def __init__(
@@ -75,33 +102,6 @@ class PPOCritic(nn.Module):
         if self.has_global_obs:
             critic_input = torch.cat((critic_input, global_obs), dim=-1)
         return self.mlp(critic_input).squeeze(dim=-1)
-
-
-class BasePPOPolicy(BasePolicy, abc.ABC):
-
-    @abc.abstractmethod
-    def forward(
-            self,
-            local_obs: torch.Tensor,
-            global_obs: torch.Tensor,
-            deterministic: bool = False
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """
-        :return: return actions, log_probs, values
-        """
-        raise NotImplementedError()
-
-    @abc.abstractmethod
-    def evaluate_actions(
-            self,
-            local_obs: torch.Tensor,
-            global_obs: torch.Tensor,
-            actions: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """
-        :return: log_probs, entropies, values
-        """
-        raise NotImplementedError()
 
 
 class PPOPolicy(BasePPOPolicy):
