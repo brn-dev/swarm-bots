@@ -36,6 +36,7 @@ class BaseScenario(abc.ABC):
             seed: int | None,
             _reset_in_init: bool = True
     ):
+        self.seed = seed
         self.rng = np.random.default_rng(seed)
 
         self.swarm = swarm
@@ -98,6 +99,22 @@ class BaseScenario(abc.ABC):
             self._dummy_state, self._dummy_connections = self.reset_scenario(self.dummy_model, self.dummy_data)
         else:
             self._dummy_state, self._dummy_connections = None, None
+
+    def get_settings(self):
+        return {
+            'swarm': self.swarm.get_settings(),
+            'actuators_activation_reward_weight': self.actuators_activation_reward_weight,
+            'units_without_connections_reward_weight': self.units_without_connections_reward_weight,
+            'movement_reward_weight': self.movement_reward_weight,
+            'connectors_stayed_active_reward_weight': self.connectors_stayed_active_reward_weight,
+            'connectors_successfully_activated_reward_weight': self.connectors_successfully_activated_reward_weight,
+            'connectors_unsuccessfully_activated_reward_weight': self.connectors_unsuccessfully_activated_reward_weight,
+            'connectors_deactivated_reward_weight': self.connectors_deactivated_reward_weight,
+            'average_connectors_reward': self.average_connectors_reward,
+            'include_connectors_xpos_in_obs': self.include_connectors_xpos_in_obs,
+            'include_connectors_xquat_in_obs': self.include_connectors_xquat_in_obs,
+            'seed': self.seed,
+        }
 
     @abc.abstractmethod
     def _create_scenario_spec(self) -> mujoco.MjSpec:

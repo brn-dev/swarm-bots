@@ -18,7 +18,6 @@ class SwarmBotsEnv(gymnasium.Env):
         self,
         scenario: BaseScenario,
         episode_length: int = 500,
-        physics_steps_per_step: int = 1,
         actuator_strength: float = 3.0,
         action_repeat: int = 15,
         render_mode: str | None = None,
@@ -26,12 +25,11 @@ class SwarmBotsEnv(gymnasium.Env):
         height: int = 480,
         camera: int | list[int] | Literal['all'] = 'all',
         scene_option: MjvOption = None,
-        simulation_unstable_reward: float = -0.1,
+        simulation_unstable_reward: float = -0.5,
         return_scenario_state_as_infos: bool = False
     ):
         self.action_repeat = action_repeat
         self.episode_length = episode_length
-        self.physics_steps_per_step = physics_steps_per_step
         self.action_scale = actuator_strength
         self.render_mode = render_mode
         self.width = width
@@ -66,6 +64,15 @@ class SwarmBotsEnv(gymnasium.Env):
             'local_obs': np.zeros(self.observation_space['local_obs'].shape)
         }
 
+    def get_settings(self):
+        return {
+            'scenario': self.scenario.get_settings(),
+            'episode_length': self.episode_length,
+            'actuator_strength': self.action_scale,
+            'action_repeat': self.action_repeat,
+            'simulation_unstable_reward': self.simulation_unstable_reward,
+        }
+
     def reset(
         self,
         *,
@@ -90,8 +97,7 @@ class SwarmBotsEnv(gymnasium.Env):
             connections=self.swarm_connections,
         )
 
-        for _ in range(self.physics_steps_per_step):
-            mujoco.mj_step(self.model, self.data, self.action_repeat)
+        mujoco.mj_step(self.model, self.data, self.action_repeat)
 
         mj_warning: mujoco.MjWarningStat = self.data.warning[mujoco.mjtWarning.mjWARN_BADQACC]
         if mj_warning.number > 0 or np.isnan(self.data.qpos).any() or np.isnan(self.data.qvel).any():

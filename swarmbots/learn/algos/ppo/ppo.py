@@ -1,6 +1,7 @@
+import json
 import pathlib
 import time
-from typing import Optional
+from typing import Optional, Any
 
 import numpy as np
 import torch
@@ -280,6 +281,7 @@ class PPO:
             log_interval: int = 1,
             save_interval: Optional[int] = None,
             save_optimizer: bool = True,
+            extra_run_metadata: dict[str, Any] = None
     ):
 
         current_timesteps = 0
@@ -288,6 +290,7 @@ class PPO:
         if run_dir is not None:
             run_dir = pathlib.Path(run_dir)
             run_dir.mkdir(parents=True, exist_ok=True)
+            self._write_run_metadata(run_dir, extra_run_metadata)
             
         metric_logger = MetricsLogger(log_dir=run_dir)
 
@@ -324,6 +327,21 @@ class PPO:
 
         return self
 
+    def _write_run_metadata(self, run_dir: pathlib.Path, extra_run_metadata: dict[str, Any] | None) -> None:
+        metadata_path = run_dir / "run_metadata.json"
+        if metadata_path.exists():
+            return
+
+        metadata = {
+            "hyper_parameters": self.get_hyper_parameters(),
+            "policy_repr": str(self.policy),
+            "env_repr": str(self.env),
+        }
+        if extra_run_metadata:
+            metadata.update(extra_run_metadata)
+
+        metadata_path.write_text(json.dumps(metadata, indent=2, sort_keys=True), encoding="utf-8")
+
     def save(self, path: str | pathlib.Path, save_optimizer: bool = True):
         path = pathlib.Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -346,10 +364,7 @@ class PPO:
             current_env = current_env.env
             
         save_dict = {
-            'hyper_parameters': self.get_hyper_parameters(),
-            'policy_repr': str(self.policy),
             'policy_state_dict': self.policy.state_dict(),
-            'env_repr': str(self.env),
             'env_state': env_state,
             'n_total_updates': self.n_total_updates,
         }

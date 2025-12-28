@@ -12,6 +12,11 @@ class BaseSwarm(abc.ABC):
     def __init__(self, config: SwarmConfig):
         self.config = config
 
+    def get_settings(self):
+        return {
+            'config': self.config.get_settings()
+        }
+
     @abc.abstractmethod
     def _create_swarm_spec(self) -> mujoco.MjSpec:
         raise NotImplementedError()

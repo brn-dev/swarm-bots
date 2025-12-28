@@ -19,7 +19,7 @@ class ObstacleStreetScenario(BaseScenario):
             payload_mass: float = 5,
             payload_start_location_offset: Iterable[float] = (0, 1, 0),
             num_walls: int = 5,
-            wall_height: float = 0.5,
+            wall_height: float | list[float] = 0.5,
             wall_distance: float = 4.0,
             first_wall_distance: float = 2.0,
             opening_width: float | list[float] = 2.0,
@@ -46,9 +46,10 @@ class ObstacleStreetScenario(BaseScenario):
         self.num_walls = num_walls
         self.no_initial_ramp = no_initial_ramp
 
+        self.street_width = street_width
         self.side_wall_x = street_width / 2
         self.wall_fixed_width = 25.0
-        self.wall_height = wall_height
+        self.wall_heights = wall_height if isinstance(wall_height, list) else [wall_height] * num_walls
         self.wall_distance = wall_distance
         self.first_wall_distance = first_wall_distance
 
@@ -56,9 +57,8 @@ class ObstacleStreetScenario(BaseScenario):
         self.unusable_opening_offset = unusable_opening_offset
         self.ramp_length = wall_distance - 1
         self.ramp_range_x = 8.5
-        self.ramp_angle = np.asin(self.wall_height / self.ramp_length)
-        self.ramp_distance_to_wall = self.ramp_length * np.cos(self.ramp_angle)
-
+        self.ramp_angles = [np.asin(wh / self.ramp_length) for wh in self.wall_heights]
+        self.ramp_distances_to_wall = [self.ramp_length * np.cos(ra) for ra in self.ramp_angles]
 
         super().__init__(
             swarm=swarm,
@@ -79,6 +79,25 @@ class ObstacleStreetScenario(BaseScenario):
         self.payload_body_id = mujoco.mj_name2id(self.dummy_model, mujoco.mjtObj.mjOBJ_BODY, 'Payload')
 
         self._dummy_state, self._dummy_connections = self.reset_scenario(self.dummy_model, self.dummy_data)
+
+    def get_settings(self):
+        settings =  super().get_settings()
+        settings.update({
+            'payload_type': self.payload_type,
+            'payload_size': self.payload_size,
+            'payload_mass': self.payload_mass,
+            'payload_start_location_offset': self.payload_start_location_offset,
+            'num_walls': self.num_walls,
+            'wall_heights': self.wall_heights,
+            'wall_distance': self.wall_distance,
+            'first_wall_distance': self.first_wall_distance,
+            'opening_widths': self.opening_widths,
+            'unusable_opening_offset': self.unusable_opening_offset,
+            'street_width': self.street_width,
+            'no_initial_ramp': self.no_initial_ramp,
+        })
+        return settings
+
 
     def _create_scenario_spec(self) -> mujoco.MjSpec:
         spec = mujoco.MjSpec()
@@ -116,22 +135,22 @@ class ObstacleStreetScenario(BaseScenario):
             body_left = worldbody.add_body(name=f'Wall_{i}_Left', mocap=True, pos=[0, y, 0])
             body_left.add_geom(
                 type=mujoco.mjtGeom.mjGEOM_BOX,
-                size=[self.wall_fixed_width / 2, 0.1, self.wall_height],
+                size=[self.wall_fixed_width / 2, 0.1, self.wall_heights[i]],
                 rgba=[0.5, 0.5, 0.6, 1],
             )
 
             body_right = worldbody.add_body(name=f'Wall_{i}_Right', mocap=True, pos=[0, y, 0])
             body_right.add_geom(
                 type=mujoco.mjtGeom.mjGEOM_BOX,
-                size=[self.wall_fixed_width / 2, 0.1, self.wall_height],
+                size=[self.wall_fixed_width / 2, 0.1, self.wall_heights[i]],
                 rgba=[0.5, 0.5, 0.6, 1],
             )
 
             if i > 0 or not self.no_initial_ramp:
                 body_ramp = worldbody.add_body(
                     name=f'Ramp_{i}', mocap=True,
-                    pos=[0, y - self.ramp_distance_to_wall/2, self.wall_height/2],
-                    euler=[self.ramp_angle, 0, 0]
+                    pos=[0, y - self.ramp_distances_to_wall[i]/2, self.wall_heights[i]/2],
+                    euler=[self.ramp_angles[i], 0, 0]
                 )
                 body_ramp.add_geom(
                     type=mujoco.mjtGeom.mjGEOM_BOX,
@@ -198,7 +217,7 @@ class ObstacleStreetScenario(BaseScenario):
 
                 ramp_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, f'Ramp_{i}')
                 mocap_id = model.body_mocapid[ramp_id]
-                data.mocap_pos[mocap_id] = [ramp_x, y - self.ramp_distance_to_wall / 2, self.wall_height / 2]
+                data.mocap_pos[mocap_id] = [ramp_x, y - self.ramp_distances_to_wall[i] / 2, self.wall_heights[i] / 2]
 
         mujoco.mj_forward(model, data)
 
