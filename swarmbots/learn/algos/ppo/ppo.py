@@ -9,6 +9,13 @@ import torch.nn.functional as F
 from loguru import logger
 
 from swarmbots.learn.torch_device import as_device
+from swarmbots.learn.checkpointing import (
+    apply_env_state,
+    extract_env_state,
+    extract_optimizer_state_dict,
+    extract_policy_state_dict,
+    load_checkpoint,
+)
 from swarmbots.learn.algos.ppo.ppo_policy import BasePPOPolicy
 from swarmbots.learn.algos.ppo.ppo_rollout_buffer import PPOEpisode, PPORolloutBuffer, PPOSampler
 from swarmbots.learn.env_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
@@ -416,42 +423,16 @@ class PPO:
         torch.save(save_dict, path)
 
     def load(self, path: str | pathlib.Path) -> None:
-        save_dict = torch.load(path, weights_only=False)
-        self.policy.load_state_dict(save_dict['policy_state_dict'])
-        if 'optimizer_state_dict' in save_dict:
-            self.optimizer.load_state_dict(save_dict['optimizer_state_dict'])
+        checkpoint = load_checkpoint(path)
+        self.policy.load_state_dict(extract_policy_state_dict(checkpoint))
 
-        self.n_total_updates = save_dict.get('n_total_updates', 0)
-        self.n_total_timesteps = save_dict.get('n_total_timesteps', 0)
-        
-        env_state = save_dict.get('env_state', [])
-        
-        current_env = self.env
-        state_idx = 0
-        while hasattr(current_env, 'env'):
-            relevant = False
-            if hasattr(current_env, 'local_obs_rms') or hasattr(current_env, 'global_obs_rms') or hasattr(current_env, 'return_rms'):
-                relevant = True
-            
-            if relevant:
-                 if state_idx < len(env_state):
-                     saved_state = env_state[state_idx]
-                     if saved_state['wrapper_class'] != type(current_env).__name__:
-                         logger.warning(f"Wrapper type mismatch during load: {saved_state['wrapper_class']} vs {type(current_env).__name__}")
-                     
-                     if 'local_obs_rms' in saved_state and hasattr(current_env, 'local_obs_rms'):
-                         self._copy_rms(saved_state['local_obs_rms'], current_env.local_obs_rms)
-                     if 'global_obs_rms' in saved_state and hasattr(current_env, 'global_obs_rms'):
-                         self._copy_rms(saved_state['global_obs_rms'], current_env.global_obs_rms)
-                     if 'return_rms' in saved_state and hasattr(current_env, 'return_rms'):
-                         self._copy_rms(saved_state['return_rms'], current_env.return_rms)
-                     
-                     state_idx += 1
-            
-            current_env = current_env.env
-            
-    def _copy_rms(self, src, dst) -> None:
-        dst.mean = src.mean.copy()
-        dst.var = src.var.copy()
-        dst.count = src.count
+        optimizer_state_dict = extract_optimizer_state_dict(checkpoint)
+        if optimizer_state_dict is not None:
+            self.optimizer.load_state_dict(optimizer_state_dict)
+
+        if isinstance(checkpoint, dict):
+            self.n_total_updates = checkpoint.get("n_total_updates", 0)
+            self.n_total_timesteps = checkpoint.get("n_total_timesteps", 0)
+
+        apply_env_state(self.env, extract_env_state(checkpoint))
 

@@ -5,7 +5,11 @@ import numpy as np
 from loguru import logger
 
 class MetricsLogger:
-    def __init__(self, log_dir: Optional[Union[str, Path]] = None, filename: str = "log.csv"):
+    def __init__(
+            self,
+            log_dir: Optional[Union[str, Path]] = None,
+            filename: str = "log.csv"
+    ):
         self.log_dir = Path(log_dir) if log_dir else None
         self.file_path = self.log_dir / filename if self.log_dir else None
         
@@ -29,7 +33,7 @@ class MetricsLogger:
                 if np.isclose(value % 1.0, 0):
                     val_str = f'{int(value):>2}'
                 else:
-                    val_str = f'{value: .4f}'
+                    val_str = f'{value: .3f}'
             else:
                 val_str = str(value)
                 
