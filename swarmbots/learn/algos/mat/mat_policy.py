@@ -1,151 +1,18 @@
-from typing import Callable
+from typing import Optional
 
 import torch
 from torch import nn
 
 from swarmbots.learn.action_dists.hybrid_action_dist import HybridActionDistribution
+from swarmbots.learn.algos.mat.mat_decoder import MATDecoder
+from swarmbots.learn.algos.mat.mat_deepset_critic import MATDeepSetCritic
+from swarmbots.learn.algos.mat.mat_encoder import MATEncoder
 from swarmbots.learn.algos.ppo.ppo import AGENTS_DIM
 from swarmbots.learn.algos.ppo.ppo_policy import BasePPOPolicy
 from swarmbots.learn.base_policy import BasePolicy
 from swarmbots.learn.env_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
 from swarmbots.learn.nn_components.mlp import MLP
-from swarmbots.learn.nn_components.nn_init import init_linear_orthogonal, LinearInitialization
-
-
-class MATEncoder(nn.Module):
-
-    def __init__(
-            self,
-            n_agents: int,
-            num_layers: int,
-            bias: bool,
-            norm_first: bool,
-            layer_norm_eps: float,
-            activation: Callable[[torch.Tensor], torch.Tensor],
-            dropout: float,
-            dim_feedforward: int,
-            nhead: int,
-            d_model: int,
-            output_norm: nn.Module,
-    ):
-        super().__init__()
-        self.n_agents = n_agents
-
-        self.encoder = nn.TransformerEncoder(
-            encoder_layer=nn.TransformerEncoderLayer(
-                d_model=d_model,
-                nhead=nhead,
-                dim_feedforward=dim_feedforward,
-                dropout=dropout,
-                activation=activation,
-                layer_norm_eps=layer_norm_eps,
-                batch_first=True,
-                norm_first=norm_first,
-                bias=bias,
-            ),
-            num_layers=num_layers,
-            norm=output_norm,
-        )
-
-    def forward(self, local_embeddings: torch.Tensor):
-        augmented_observations = self.encoder(local_embeddings)
-        return augmented_observations
-
-
-class MATDecoder(nn.Module):
-
-    def __init__(
-            self,
-            n_agents: int,
-            num_layers: int,
-            bias: bool,
-            norm_first: bool,
-            layer_norm_eps: float,
-            activation: Callable[[torch.Tensor], torch.Tensor],
-            dropout: float,
-            dim_feedforward: int,
-            nhead: int,
-            d_model: int,
-            output_norm: nn.Module,
-    ):
-        super().__init__()
-        self.n_agents = n_agents
-
-        self.decoder = nn.TransformerDecoder(
-            decoder_layer=nn.TransformerDecoderLayer(
-                d_model=d_model,
-                nhead=nhead,
-                dim_feedforward=dim_feedforward,
-                dropout=dropout,
-                activation=activation,
-                layer_norm_eps=layer_norm_eps,
-                batch_first=True,
-                norm_first=norm_first,
-                bias=bias,
-            ),
-            num_layers=num_layers,
-            norm=output_norm,
-        )
-
-
-        tgt_mask = nn.Transformer.generate_square_subsequent_mask(
-            self.n_agents
-        )
-        self.register_buffer("tgt_mask", tgt_mask)
-
-    def forward(self, local_embeddings: torch.Tensor, augmented_observations: torch.Tensor):
-        decoder_output = self.decoder(
-            tgt=local_embeddings,
-            memory=augmented_observations,
-            tgt_mask=self.tgt_mask
-        )
-        return decoder_output
-
-
-class MATCritic(nn.Module):
-
-    def __init__(
-            self,
-            n_agents: int,
-            augmented_observations_dim: int,
-            local_projection_hidden_dims: list[int],
-            value_regressor_hidden_dims: list[int],
-            linear_init: LinearInitialization = init_linear_orthogonal,
-            act_fun_class=nn.ReLU
-    ):
-        super().__init__()
-        self.n_agents = n_agents
-        self.augmented_observations_dim = augmented_observations_dim
-        self.local_projection_hidden_dims = local_projection_hidden_dims
-        self.value_regressor_hidden_dims = value_regressor_hidden_dims
-
-        if local_projection_hidden_dims:
-            self.local_projection = MLP(
-                input_dim=augmented_observations_dim,
-                hidden_dims=local_projection_hidden_dims,
-                end_with_act_fn=False,
-                linear_init=linear_init,
-                act_fn_cls=act_fun_class
-            )
-            value_regressor_input_dim = local_projection_hidden_dims[-1]
-        else:
-            self.local_projection = nn.Identity()
-            value_regressor_input_dim = augmented_observations_dim
-
-
-        self.value_regressor = MLP(
-            input_dim=value_regressor_input_dim,
-            hidden_dims=value_regressor_hidden_dims + [1],
-            end_with_act_fn=False,
-            linear_init=linear_init,
-            act_fn_cls=act_fun_class
-        )
-
-    def forward(self, augmented_observations: torch.Tensor) -> torch.Tensor:
-        local_projections = self.local_projection(augmented_observations)
-        pooled = local_projections.sum(AGENTS_DIM)
-
-        return self.value_regressor(pooled).squeeze(dim=-1)
+from swarmbots.learn.nn_components.nn_init import init_linear_orthogonal
 
 
 class MATPolicy(BasePPOPolicy):
@@ -253,7 +120,7 @@ class MATPolicy(BasePPOPolicy):
             base_std=base_std,
         )
 
-        self.critic = MATCritic(
+        self.critic = MATDeepSetCritic(
             n_agents=env.n_agents,
             augmented_observations_dim=d_model,
             local_projection_hidden_dims=[d_model] * n_critic_local_projection_hidden_layers,
@@ -276,7 +143,11 @@ class MATPolicy(BasePPOPolicy):
         batch_size: int,
         deterministic: bool = False,
         return_log_probs: bool = False
-    ) -> tuple[torch.Tensor, torch.Tensor | None]:
+    ) -> tuple[torch.Tensor, Optional[torch.Tensor]]:
+        """
+        Autoregressively generate actions based on augmented observations (encoder output)
+        :return: (actions, Optional[log_probs])
+        """
         actions_list = []
         log_probs_list = []
 
@@ -336,7 +207,6 @@ class MATPolicy(BasePPOPolicy):
             global_obs: torch.Tensor,
             actions: torch.Tensor
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        
         augmented_observations = self._encode_obs(local_obs, global_obs)
         
         action_embeddings = self.action_encoder(actions)

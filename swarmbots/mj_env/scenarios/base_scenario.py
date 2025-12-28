@@ -186,6 +186,15 @@ class BaseScenario(abc.ABC):
             state: dict,
             connections: SwarmConnections
     ) -> SwarmObsDict:
+        """
+        Local observations contain for each unit:
+
+        * qpos - hinge angles are encoded via sin/cos pairs
+        * qvel
+        * connector obs - containing is-connected status, twist angles and disconnect potentials
+        * [Optionally] xpos of connectors
+        * [Optionally] xquat of connectors
+        """
         qpos = data.qpos[self._qpos_indices]
         qvel = data.qvel[self._qvel_indices]
 
@@ -294,7 +303,16 @@ class BaseScenario(abc.ABC):
             data: mujoco.MjData,
             connections: SwarmConnections,
             newly_activated_mask: np.ndarray
-    ):
+    ) -> tuple[int, int]:
+        """
+        Considers newly activated connectors (those that are not connected but are activated by the policy) and connects
+        the closest pairs if the following criteria are fulfilled:
+        * They don't belong to the same unit
+        * They are below a certain threshold in distance
+        * Their z-axis is anti-aligned up to a threshold - meaning they face each other
+        * They are in front of each other (positive z-distance)
+        :return: num_connectors_successful, num_connectors_unsuccessful
+        """
         activated_indices = np.stack(np.where(newly_activated_mask)).T
         activated_indices = np.concatenate((
             np.arange(len(activated_indices))[:, np.newaxis],
