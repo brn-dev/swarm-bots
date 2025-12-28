@@ -48,6 +48,18 @@ class HomogeneousSwarm(BaseSwarm):
         self.leg_radius = leg_radius
         self.hinge_range = hinge_range
 
+    def get_settings(self):
+        settings = super().get_settings()
+        settings.update({
+            'unit_start_locations': self.unit_start_locations,
+            'unit_start_quats': self.unit_start_quats,
+            'body_radius': self.body_radius,
+            'leg_length': self.leg_length,
+            'leg_radius': self.leg_radius,
+            'hinge_range': self.hinge_range,
+            'randomize_unit_orientations': self.randomize_unit_orientations,
+        })
+        return settings
 
     def _create_swarm_spec(self) -> mujoco.MjSpec:
         spec = mujoco.MjSpec()

@@ -1,11 +1,10 @@
 import sys
-import argparse
 from datetime import datetime
 
-import torch
 from loguru import logger
 from gymnasium.vector import SyncVectorEnv, AsyncVectorEnv
 from gymnasium.wrappers.vector import RecordEpisodeStatistics, NormalizeReward
+import torch
 from torch import nn
 
 from swarmbots.learn.algos.mat.mat import MAT
@@ -15,7 +14,6 @@ from swarmbots.learn.env_wrappers.swarm_bots_learn_env_wrapper import SwarmBotsL
 from swarmbots.learn.algos.ppo.ppo import PPO
 from swarmbots.learn.algos.ppo.ppo_policy import PPOPolicy
 from swarmbots.learn.recording import record_policy
-from swarmbots.learn.torch_device import as_device
 from swarmbots.mj_env.scenarios.obstacle_street_scenario import ObstacleStreetScenario
 from swarmbots.mj_env.swarm.homogeneous_swarm import HomogeneousSwarm
 from swarmbots.mj_env.swarm_bots_env import SwarmBotsEnv
@@ -50,22 +48,6 @@ def make_env_fn(
 
 
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--device",
-        type=str,
-        default="auto",
-        choices=["auto", "cpu", "cuda"],
-        help="Torch device for policy + learn env wrapper tensors.",
-    )
-    parser.add_argument(
-        "--tf32",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Enable TF32 matmul on CUDA for extra speed (slightly different numerics).",
-    )
-    args = parser.parse_args()
-
     logger.remove()
     logger.add(sys.stderr, format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <level>{message}</level>")
 
@@ -83,6 +65,7 @@ def main():
     run_dir = f"runs/mat_swarm_bots/{run_id}/"
     load_path = None
     save_optimizer = True
+    device = torch.device("cpu")
 
     env_fns = [
         make_env_fn(
@@ -94,8 +77,16 @@ def main():
         for _ in range(n_envs)
     ]
 
+    print("Creating dummy env for capturing settings...")
+    dummy_env = env_fns[0]()
+    env_settings = dummy_env.get_settings()
+    dummy_env.close()
+    del dummy_env
+    print("Env settings captured.")
+
+    print('Creating vector env...')
     vector_env = AsyncVectorEnv(env_fns)
-    print(f"Created {type(vector_env)} with {n_envs} environments...")
+    print(f"Created {type(vector_env)} with {n_envs} environments.")
 
     gamma = 0.95
     
@@ -105,7 +96,7 @@ def main():
     vector_env = NormalizeReward(vector_env, gamma=gamma)
 
     print("Wrapping with SwarmBotsLearnEnvWrapper...")
-    env = SwarmBotsLearnEnvWrapper(vector_env, device=args.device)
+    env = SwarmBotsLearnEnvWrapper(vector_env, device=device)
     
     print(f"Environment initialized.")
     print(f"n_agents: {env.n_agents}")
@@ -151,18 +142,9 @@ def main():
         gamma=gamma,
         gae_lambda=0.95,
         clip_range=0.2,
-        device=args.device,
+        device=device,
         target_kl=0.05
     )
-
-    device = as_device(ppo.device)
-    print(f"Using device: {device}")
-    if device.type == "cuda":
-        if args.tf32:
-            torch.set_float32_matmul_precision("high")
-            torch.backends.cuda.matmul.allow_tf32 = True
-            torch.backends.cudnn.allow_tf32 = True
-        print(f"CUDA device: {torch.cuda.get_device_name(device)}")
 
     if load_path:
         logger.info(f"Loading model from {load_path}")
@@ -175,6 +157,10 @@ def main():
         log_interval=1,
         save_interval=save_interval,
         save_optimizer=save_optimizer,
+        extra_run_metadata={
+            'load_path': load_path,
+            'env_settings': env_settings
+        }
     )
     
     print("Training Finished.")
@@ -201,7 +187,7 @@ def main():
     
     record_vector_env = record_norm_wrapper
     
-    record_env = SwarmBotsLearnEnvWrapper(record_vector_env, device=str(device))
+    record_env = SwarmBotsLearnEnvWrapper(record_vector_env, device=device)
     
     record_policy(
         env=record_env,

@@ -20,6 +20,14 @@ class LimbConfig:
     type: LimbType
     rgba: tuple[float, float, float, float]
 
+    def toJSON(self):
+        return {
+            'name': self.name,
+            'vec': self.vec.tolist(),
+            'type': str(self.type),
+            'rgba': self.rgba,
+        }
+
 UnitConfig = tuple[LimbConfig, ...]
 
 UNIT_CONFIG_CUBE_ZX: UnitConfig = (

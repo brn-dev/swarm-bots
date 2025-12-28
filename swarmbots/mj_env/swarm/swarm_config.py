@@ -36,6 +36,16 @@ class SwarmConfig:
 
         self.unit_prefixes = [f'Unit{i}-' for i in range(0, self.num_units)]
 
+    def get_settings(self):
+        return {
+            'num_units': self.num_units,
+            'unit_config': [limb_config.toJSON() for limb_config in self.unit_config],
+            'connection_torquescale': self.connection_torquescale,
+            'connection_dist_threshold': self.connection_dist_threshold,
+            'connection_angle_threshold': self.connection_angle_threshold,
+            'disconnect_potential_threshold': self.disconnect_potential_threshold,
+        }
+
     def get_connector_name(self, unit: int, connector: int):
         return f'{self.unit_prefixes[unit]}{get_connector_suffix(connector)}'
 
