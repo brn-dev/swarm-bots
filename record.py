@@ -64,7 +64,7 @@ def main():
         (-0.4, -0.4, 0),
     ]
     episode_length = 512
-    load_path = "runs/mat_swarm_bots/2025-12-28_17-45-07/model_6144000_steps.pt"
+    load_path = "runs/mat_swarm_bots/2025-12-28_17-45-07/models/model_18477056_steps.pt"
     rollout_device = torch.device("cpu")
 
     print("Creating env...")

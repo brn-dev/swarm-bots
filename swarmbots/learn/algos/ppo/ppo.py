@@ -1,6 +1,7 @@
 import json
 import pathlib
 import time
+from collections.abc import Collection
 from typing import Optional, Any
 
 import numpy as np
@@ -46,8 +47,7 @@ def collect_whole_episodes(
 
         actions, log_probs, values = policy(local_obs, global_obs)
         
-        values = values.clone()
-        values[was_terminated] = 0.0
+        values = values.masked_fill(was_terminated, 0.0)
 
         new_obs, rewards, terminations, truncations, infos = env.step(actions)
         dones = torch.logical_or(terminations, truncations)
@@ -244,7 +244,7 @@ class PPO:
 
                 if self.target_kl is not None and approx_kl_div > 1.5 * self.target_kl:
                     continue_training = False
-                    logger.info(f'Early stopping at epoch {epoch}, batch {i} due to reaching max kl: {approx_kl_div:.3f}')
+                    logger.debug(f'Early stopping at epoch {epoch}, batch {i} due to reaching max kl: {approx_kl_div:.3f}')
                     break
 
                 self.optimizer.zero_grad()
@@ -312,6 +312,8 @@ class PPO:
             wandb_tags: list[str] | None = None,
             wandb_mode: str | None = None,
             wandb_kwargs: dict[str, Any] | None = None,
+            logging_ignore_keys_for_persistence: list[str] | None = None,
+            logging_console_keys: Collection[str] | Collection[tuple[str, str | None]] | None = None,
     ):
         assert (
                 (max_total_timesteps is not None and max_total_timesteps > 0 and additional_timesteps is None)
@@ -353,6 +355,8 @@ class PPO:
             wandb_mode=wandb_mode,
             wandb_kwargs=wandb_kwargs,
             wandb_step_key="timesteps",
+            ignore_keys_for_persistent=logging_ignore_keys_for_persistence,
+            console_keys=logging_console_keys,
         )
         episode_return_ema = ExponentialMovingAverage(alpha=episode_return_ema_alpha)
         best_episode_return_ema: float | None = None
@@ -373,10 +377,10 @@ class PPO:
                 best_episode_return_ema = current_episode_return_ema
                 if run_dir is not None:
                     if best_rotation_n == 1:
-                        best_save_path = run_dir / "model_best.pt"
+                        best_save_path = run_dir / "models/model_best.pt"
                     else:
                         best_save_idx = best_save_counter % best_rotation_n
-                        best_save_path = run_dir / f"model_best_{best_save_idx}.pt"
+                        best_save_path = run_dir / f"models/model_best_{best_save_idx}.pt"
                         best_save_counter += 1
                     self.save(best_save_path, save_optimizer=save_optimizer, return_ema=current_episode_return_ema)
                     logger.info(f"Saved best-EMA model to {best_save_path} (ep_rew_ema={best_episode_return_ema:.4f})")
@@ -387,6 +391,7 @@ class PPO:
                 metric_logger.log({
                     'iteration': iteration,
                     'timesteps': current_timesteps,
+                    'lr': self.learning_rate,
                     **metrics,
                     'ep_rew_ema': current_episode_return_ema,
                     'best_ep_rew_ema': best_episode_return_ema,
@@ -394,12 +399,12 @@ class PPO:
                 })
 
             if save_interval is not None and run_dir is not None and iteration % save_interval == 0:
-                save_path = run_dir / f"model_{current_timesteps}_steps.pt"
+                save_path = run_dir / f"models/model_{current_timesteps}_steps.pt"
                 self.save(save_path, save_optimizer=save_optimizer, return_ema=current_episode_return_ema)
                 logger.info(f"Saved model to {save_path}")
 
         if run_dir is not None:
-            save_path = run_dir / "model_final.pt"
+            save_path = run_dir / f"models/model_{current_timesteps}_steps_final.pt"
             self.save(save_path, save_optimizer=save_optimizer, return_ema=episode_return_ema.get())
             logger.info(f"Saved final model to {save_path}")
 
@@ -408,17 +413,58 @@ class PPO:
         return self
 
     def _write_run_metadata(self, run_dir: pathlib.Path, extra_run_metadata: dict[str, Any] | None) -> None:
-        metadata_path = run_dir / "run_metadata.json"
-        if metadata_path.exists():
-            return
-
-        metadata = {
+        metadata: dict[str, Any] = {
             "hyper_parameters": self.get_hyper_parameters(),
             "policy_repr": str(self.policy),
             "env_repr": str(self.env),
         }
         if extra_run_metadata:
             metadata.update(extra_run_metadata)
+        metadata["timesteps"] = int(self.n_total_timesteps)
+
+        def _parse_step_from_metadata_filename(path: pathlib.Path) -> int | None:
+            if path.name == "run_metadata.json":
+                return None
+            if not (path.name.startswith("run_metadata_") and path.name.endswith(".json")):
+                return None
+
+            suffix = path.name.removeprefix("run_metadata_").removesuffix(".json")
+            step_str = suffix.split("_", 1)[0]
+            if not step_str.isdigit():
+                return None
+            return int(step_str)
+
+        def _read_metadata_json(path: pathlib.Path) -> dict[str, Any] | None:
+            try:
+                return json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                return None
+
+        existing_metadata_files = list(run_dir.glob("run_metadata*.json"))
+        if existing_metadata_files:
+            def _sort_key(path: pathlib.Path) -> tuple[int, float, str]:
+                step = _parse_step_from_metadata_filename(path)
+                step_key = step if step is not None else -1
+                return step_key, path.stat().st_mtime, path.name
+
+            latest_path = max(existing_metadata_files, key=_sort_key)
+            latest_metadata = _read_metadata_json(latest_path)
+            if latest_metadata == metadata:
+                return
+
+        step = int(self.n_total_timesteps)
+        base_path = run_dir / f"run_metadata_{step}.json"
+        if base_path.exists():
+            existing = _read_metadata_json(base_path)
+            if existing == metadata:
+                return
+
+            suffix_idx = 1
+            while (run_dir / f"run_metadata_{step}_{suffix_idx}.json").exists():
+                suffix_idx += 1
+            metadata_path = run_dir / f"run_metadata_{step}_{suffix_idx}.json"
+        else:
+            metadata_path = base_path
 
         metadata_path.write_text(json.dumps(metadata, indent=2, sort_keys=True), encoding="utf-8")
 
