@@ -63,11 +63,18 @@ def main():
     ]
     episode_length = 512
     n_episodes_per_rollout = 4
-    total_timesteps = 20_000_000
+    total_timesteps = 25_000_000
     save_interval = 500
-    run_id = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+
+    # =====  ID  =====
+    run_id = "2025-12-28_17-45-07"
+    # run_id = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+
+    # ===== LOAD =====
+    load_path = "runs/mat_swarm_bots/2025-12-28_17-45-07/models/model_20000474.pt"
+    # load_path = None
+
     run_dir = f"runs/mat_swarm_bots/{run_id}/"
-    load_path = None
     save_optimizer = True
     rollout_device = torch.device("cpu")
     use_cuda = False and torch.cuda.is_available()
@@ -140,7 +147,7 @@ def main():
     ppo = PPO(
         policy=policy,
         env=env,
-        learning_rate=2e-5 if load_path is None else 1e-5,
+        learning_rate=2e-5 if load_path is None else 3e-6,
         n_episodes_per_rollout=n_episodes_per_rollout,
         max_episode_length=episode_length,
         batch_size=64,
@@ -150,7 +157,7 @@ def main():
         clip_range=0.2,
         train_device=train_device,
         rollout_device=rollout_device,
-        target_kl=0.05
+        target_kl=0.05,
     )
 
     if load_path:
@@ -164,10 +171,30 @@ def main():
         log_interval=1,
         save_interval=save_interval,
         save_optimizer=save_optimizer,
+        best_rotation_n=3,
         extra_run_metadata={
             'load_path': load_path,
             'env_settings': env_settings
-        }
+        },
+        logging_ignore_keys_for_persistence=[
+            'approx_kl'
+        ],
+        logging_console_keys=[
+            ('iteration', None),
+            ('timesteps', None),
+            ('std0', None),
+            ('val_loss', None),
+            ('approx_kl', None),
+            ('clip_frac', None),
+            ('upd', '3'),
+            ('tot_upd', None),
+            ('expl_var', None),
+            ('ep_rew', ' .3f'),
+            ('ep_rew_ema', ' .3f'),
+            ('best_ep_rew_ema', ' .3f'),
+            ('fps', None),
+        ]
+
     )
     
     print("Training Finished.")

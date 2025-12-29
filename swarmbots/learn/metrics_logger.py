@@ -1,13 +1,14 @@
 import csv
+from collections.abc import Collection, Iterable
 from pathlib import Path
-from typing import Any, Dict, Union, Optional
+from typing import Any
 import numpy as np
 from loguru import logger
 
 class MetricsLogger:
     def __init__(
             self,
-            log_dir: Optional[Union[str, Path]] = None,
+            log_dir: str | Path | None = None,
             filename: str = "log.csv",
             wandb_run: Any | None = None,
             wandb_project: str | None = None,
@@ -19,7 +20,9 @@ class MetricsLogger:
             wandb_mode: str | None = None,
             wandb_kwargs: dict[str, Any] | None = None,
             wandb_step_key: str | None = "timesteps",
-    ):
+            ignore_keys_for_persistent: Collection[str] | None = None,
+            console_keys: list[str] | list[tuple[str, str | None]] | None = None,
+    ) -> None:
         self.log_dir = Path(log_dir) if log_dir else None
         self.file_path = self.log_dir / filename if self.log_dir else None
         
@@ -35,6 +38,9 @@ class MetricsLogger:
         self._wandb_managed_run = False
         self._wandb_step_key = wandb_step_key
 
+        self._ignore_keys_for_persistent = set(ignore_keys_for_persistent or [])
+        self._console_key_specs = self._normalize_console_keys(console_keys)
+
         if self._wandb_run is None and wandb_project is not None:
             self._init_wandb(
                 project=wandb_project,
@@ -47,32 +53,31 @@ class MetricsLogger:
                 wandb_kwargs=wandb_kwargs,
             )
 
-    def log(self, metrics: Dict[str, Any]):
+    def log(self, metrics: dict[str, Any]) -> None:
         self._log_to_console(metrics)
 
-        if self.file_path:
-            self._log_to_csv(metrics)
+        persistent_metrics = self._filter_persistent(metrics)
 
-        if self._wandb_run is not None:
-            self._log_to_wandb(metrics)
+        if self.file_path and persistent_metrics:
+            self._log_to_csv(persistent_metrics)
 
-    def _log_to_console(self, metrics: Dict[str, Any]):
+        if self._wandb_run is not None and persistent_metrics:
+            self._log_to_wandb(persistent_metrics)
+
+    def _log_to_console(self, metrics: dict[str, Any]) -> None:
         parts = []
-        
-        for key, value in metrics.items():
-            if isinstance(value, (int, float, np.number)):
-                if np.isclose(value % 1.0, 0):
-                    val_str = f'{int(value):>2}'
-                else:
-                    val_str = f'{value: .3f}'
-            else:
-                val_str = str(value)
-                
+
+        for key, value, fmt in self._iter_console_metrics(metrics):
+            val_str = self._format_console_value(value, fmt=fmt)
             parts.append(f"{key}: {val_str}")
-            
+
+        if not parts:
+            logger.warning('Nothing to log?')
+            return
+
         logger.info(" | ".join(parts))
 
-    def _log_to_csv(self, metrics: Dict[str, Any]):
+    def _log_to_csv(self, metrics: dict[str, Any]) -> None:
         if self.file is None:
             file_exists = self.file_path.exists()
             self.file = open(self.file_path, mode='a', newline='', encoding="utf-8")
@@ -137,7 +142,7 @@ class MetricsLogger:
         self._wandb_run = wandb.init(**init_kwargs)
         self._wandb_managed_run = True
 
-    def _log_to_wandb(self, metrics: Dict[str, Any]) -> None:
+    def _log_to_wandb(self, metrics: dict[str, Any]) -> None:
         metrics = {k: v for k, v in metrics.items() if v is not None}
         step = None
         if self._wandb_step_key is not None:
@@ -150,7 +155,7 @@ class MetricsLogger:
         else:
             self._wandb_run.log(metrics, step=step)
 
-    def close(self):
+    def close(self) -> None:
         if self.file:
             self.file.close()
             self.file = None
@@ -166,5 +171,61 @@ class MetricsLogger:
                 self._wandb_run = None
                 self._wandb_managed_run = False
 
-    def __del__(self):
+    def __del__(self) -> None:
         self.close()
+
+    def _filter_persistent(self, metrics: dict[str, Any]) -> dict[str, Any]:
+        if not self._ignore_keys_for_persistent:
+            return metrics
+        return {k: v for k, v in metrics.items() if k not in self._ignore_keys_for_persistent}
+
+    def _normalize_console_keys(
+        self,
+        console_keys: Collection[str] | Collection[tuple[str, str | None]] | None,
+    ) -> list[tuple[str, str | None]] | None:
+        if console_keys is None:
+            return None
+
+        items = list(console_keys)
+        if not items:
+            return []
+
+        if all(isinstance(item, str) for item in items):
+            key_specs = [(key, None) for key in items]
+            return key_specs
+
+        if all(isinstance(item, tuple) and len(item) == 2 for item in items):
+            key_specs: list[tuple[str, str | None]] = []
+            for raw_key, raw_fmt in items:
+                if not isinstance(raw_key, str) or not (isinstance(raw_fmt, str) or raw_fmt is None):
+                    raise TypeError(
+                        "console_keys must be None, a collection[str], or a collection[tuple[str, str|None]]"
+                    )
+                key_specs.append((raw_key, raw_fmt))
+            return key_specs
+
+        raise TypeError("console_keys must be None, a collection[str], or a collection[tuple[str, str|None]]")
+
+    def _iter_console_metrics(self, metrics: dict[str, Any]) -> Iterable[tuple[str, Any, str | None]]:
+        if self._console_key_specs is None:
+            for key, value in metrics.items():
+                yield key, value, None
+            return
+
+        for key, fmt in self._console_key_specs:
+            yield key, metrics[key], fmt
+
+    def _format_console_value(self, value: Any, fmt: str | None) -> str:
+        if fmt is not None:
+            try:
+                return f"{value:{fmt}}"
+            except Exception:
+                logger.exception(f"Error formatting console value: {value} with format: {fmt}")
+                return str(value)
+
+        if isinstance(value, (int, float, np.number)):
+            if np.isclose(value % 1.0, 0):
+                return f"{int(value):>2}"
+            return f"{value:.3f}"
+
+        return str(value)
