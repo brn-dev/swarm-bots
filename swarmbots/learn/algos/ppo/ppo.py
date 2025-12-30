@@ -10,6 +10,7 @@ import torch
 import torch.nn.functional as F
 from loguru import logger
 
+from swarmbots.learn.summary_statistics import compute_summary_statistics
 from swarmbots.learn.torch_device import as_device
 from swarmbots.learn.checkpointing import (
     apply_env_state,
@@ -26,6 +27,7 @@ from swarmbots.learn.metrics_logger import MetricsLogger
 
 AGENTS_DIM = 1
 
+MIN_ITERATIONS_FOR_BEST = 10
 
 try:
     logger.level("SAVE")
@@ -269,20 +271,15 @@ class PPO:
         metrics = {}
         for i, dist in enumerate(self.policy.action_dist.distributions):
             if hasattr(dist, "log_stds"):
-                metrics[f'std{i}'] = torch.exp(dist.log_stds).mean().item()
-
-        approx_kl_mean = float(np.mean(approx_kl_divs)) if len(approx_kl_divs) > 0 else 0.0
-        approx_kl_max = float(np.max(approx_kl_divs)) if len(approx_kl_divs) > 0 else 0.0
+                metrics[f'std{i}'] = compute_summary_statistics(torch.exp(dist.log_stds), find_min=True, find_max=True)
 
         self.n_total_updates += n_updates
         metrics.update({
-            'ent_loss': np.mean(entropy_losses),
-            'act_loss': np.mean(pg_losses),
-            'val_loss': np.mean(value_losses),
-            'approx_kl_mean': approx_kl_mean,
-            'approx_kl_max': approx_kl_max,
-            'approx_kl': f'{approx_kl_mean:.3f} (max={approx_kl_max:.3f})',
-            'clip_frac': np.mean(clip_fractions),
+            'ent_loss': compute_summary_statistics(entropy_losses),
+            'act_loss': compute_summary_statistics(pg_losses),
+            'val_loss': compute_summary_statistics(value_losses),
+            'approx_kl': compute_summary_statistics(approx_kl_divs, find_max=True),
+            'clip_frac': compute_summary_statistics(clip_fractions),
             'upd': n_updates,
             'tot_upd': self.n_total_updates,
             'expl_var': explained_var,
@@ -292,9 +289,9 @@ class PPO:
             rewards = [ep['r'] for ep in episode_infos]
             lengths = [ep['l'] for ep in episode_infos]
             timings = [ep['t'] for ep in episode_infos]
-            metrics['ep_rew'] = np.mean(rewards)
-            metrics['ep_len'] = np.mean(lengths)
-            metrics['ep_time'] = np.mean(timings)
+            metrics['ep_rew'] = compute_summary_statistics(rewards, find_min=True, find_max=True)
+            metrics['ep_len'] = compute_summary_statistics(lengths, find_min=True, find_max=True)
+            metrics['ep_time'] = compute_summary_statistics(timings)
         else:
             metrics['ep_rew'] = None
             metrics['ep_len'] = None
@@ -368,7 +365,7 @@ class PPO:
             wandb_mode=wandb_mode,
             wandb_kwargs=wandb_kwargs,
             wandb_step_key="timesteps",
-            ignore_keys_for_persistent=logging_ignore_keys_for_persistence,
+            ignore_keys_for_persistence=logging_ignore_keys_for_persistence,
             console_keys=logging_console_keys,
         )
         episode_return_ema = ExponentialMovingAverage(alpha=episode_return_ema_alpha)
@@ -385,8 +382,9 @@ class PPO:
             self.n_total_timesteps = current_timesteps
             iteration += 1
 
-            current_episode_return_ema = episode_return_ema.update(metrics["ep_rew"])
+            current_episode_return_ema = episode_return_ema.update(metrics["ep_rew"].mean)
             best_episode_return_ema, best_save_counter = self._maybe_save_best_ema_model(
+                iteration=iteration,
                 best_models_dir=best_models_dir,
                 best_rotation_n=best_rotation_n,
                 save_optimizer=save_optimizer,
@@ -424,6 +422,7 @@ class PPO:
 
     def _maybe_save_best_ema_model(
             self,
+            iteration: int,
             best_models_dir: pathlib.Path | None,
             best_rotation_n: int,
             save_optimizer: bool,
@@ -431,7 +430,8 @@ class PPO:
             best_episode_return_ema: float | None,
             best_save_counter: int,
     ) -> tuple[float | None, int]:
-        if best_episode_return_ema is not None and current_episode_return_ema <= best_episode_return_ema:
+        if ((best_episode_return_ema is not None and current_episode_return_ema <= best_episode_return_ema)
+                or iteration < MIN_ITERATIONS_FOR_BEST):
             return best_episode_return_ema, best_save_counter
 
         best_episode_return_ema = current_episode_return_ema
