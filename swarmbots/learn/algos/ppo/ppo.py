@@ -1,6 +1,7 @@
 import json
 import pathlib
 import time
+from datetime import datetime
 from collections.abc import Collection
 from typing import Optional, Any
 
@@ -24,6 +25,13 @@ from swarmbots.learn.exponential_moving_average import ExponentialMovingAverage
 from swarmbots.learn.metrics_logger import MetricsLogger
 
 AGENTS_DIM = 1
+
+
+try:
+    logger.level("SAVE")
+except ValueError:
+    logger.level("SAVE", no=21, color="<magenta>")
+
 
 @torch.no_grad()
 def collect_whole_episodes(
@@ -332,6 +340,11 @@ class PPO:
             run_dir = pathlib.Path(run_dir)
             run_dir.mkdir(parents=True, exist_ok=True)
             self._write_run_metadata(run_dir, extra_run_metadata)
+
+        best_models_dir: pathlib.Path | None = None
+        if run_dir is not None:
+            learn_started_at = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+            best_models_dir = run_dir / "models" / "best" / learn_started_at
             
         wandb_config: dict[str, Any] | None = None
         if wandb_project is not None:
@@ -373,17 +386,14 @@ class PPO:
             iteration += 1
 
             current_episode_return_ema = episode_return_ema.update(metrics["ep_rew"])
-            if best_episode_return_ema is None or current_episode_return_ema > best_episode_return_ema:
-                best_episode_return_ema = current_episode_return_ema
-                if run_dir is not None:
-                    if best_rotation_n == 1:
-                        best_save_path = run_dir / "models/model_best.pt"
-                    else:
-                        best_save_idx = best_save_counter % best_rotation_n
-                        best_save_path = run_dir / f"models/model_best_{best_save_idx}.pt"
-                        best_save_counter += 1
-                    self.save(best_save_path, save_optimizer=save_optimizer, return_ema=current_episode_return_ema)
-                    logger.info(f"Saved best-EMA model to {best_save_path} (ep_rew_ema={best_episode_return_ema:.4f})")
+            best_episode_return_ema, best_save_counter = self._maybe_save_best_ema_model(
+                best_models_dir=best_models_dir,
+                best_rotation_n=best_rotation_n,
+                save_optimizer=save_optimizer,
+                current_episode_return_ema=current_episode_return_ema,
+                best_episode_return_ema=best_episode_return_ema,
+                best_save_counter=best_save_counter,
+            )
 
             if log_interval is not None and iteration % log_interval == 0:
                 fps = int(total_steps_in_rollout / iter_duration)
@@ -401,16 +411,46 @@ class PPO:
             if save_interval is not None and run_dir is not None and iteration % save_interval == 0:
                 save_path = run_dir / f"models/model_{current_timesteps}_steps.pt"
                 self.save(save_path, save_optimizer=save_optimizer, return_ema=current_episode_return_ema)
-                logger.info(f"Saved model to {save_path}")
+                logger.log("SAVE", f"Saved model to {save_path}")
 
         if run_dir is not None:
             save_path = run_dir / f"models/model_{current_timesteps}_steps_final.pt"
             self.save(save_path, save_optimizer=save_optimizer, return_ema=episode_return_ema.get())
-            logger.info(f"Saved final model to {save_path}")
+            logger.log("SAVE", f"Saved final model to {save_path}")
 
         metric_logger.close()
 
         return self
+
+    def _maybe_save_best_ema_model(
+            self,
+            best_models_dir: pathlib.Path | None,
+            best_rotation_n: int,
+            save_optimizer: bool,
+            current_episode_return_ema: float,
+            best_episode_return_ema: float | None,
+            best_save_counter: int,
+    ) -> tuple[float | None, int]:
+        if best_episode_return_ema is not None and current_episode_return_ema <= best_episode_return_ema:
+            return best_episode_return_ema, best_save_counter
+
+        best_episode_return_ema = current_episode_return_ema
+        if best_models_dir is None:
+            return best_episode_return_ema, best_save_counter
+
+        if best_rotation_n == 1:
+            best_save_path = best_models_dir / "model_best.pt"
+        else:
+            best_save_idx = best_save_counter % best_rotation_n
+            best_save_path = best_models_dir / f"model_best_{best_save_idx}.pt"
+            best_save_counter += 1
+
+        self.save(best_save_path, save_optimizer=save_optimizer, return_ema=current_episode_return_ema)
+        logger.log(
+            "SAVE",
+            f"Saved best-EMA model to {best_save_path} (ep_rew_ema={best_episode_return_ema:.4f})",
+        )
+        return best_episode_return_ema, best_save_counter
 
     def _write_run_metadata(self, run_dir: pathlib.Path, extra_run_metadata: dict[str, Any] | None) -> None:
         metadata: dict[str, Any] = {

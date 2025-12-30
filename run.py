@@ -63,7 +63,7 @@ def main():
     ]
     episode_length = 512
     n_episodes_per_rollout = 4
-    total_timesteps = 25_000_000
+    total_timesteps = 40_000_000
     save_interval = 500
 
     # =====  ID  =====
@@ -71,7 +71,7 @@ def main():
     # run_id = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
     # ===== LOAD =====
-    load_path = "runs/mat_swarm_bots/2025-12-28_17-45-07/models/model_20000474.pt"
+    load_path = "runs/mat_swarm_bots/2025-12-28_17-45-07/models/model_25000000_steps.pt"
     # load_path = None
 
     run_dir = f"runs/mat_swarm_bots/{run_id}/"
