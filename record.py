@@ -50,7 +50,11 @@ def make_env_fn(
 
 def main():
     logger.remove()
-    logger.add(sys.stderr, format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <level>{message}</level>")
+    logger.add(
+        sys.stderr,
+        colorize=True,
+        format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <level>{message}</level>",
+    )
 
     # unit_start_locations = [
     #     (0.0, 0.0, 0.0),
@@ -64,7 +68,7 @@ def main():
         (-0.4, -0.4, 0),
     ]
     episode_length = 512
-    load_path = "runs/mat_swarm_bots/2025-12-28_17-45-07/models/model_18477056_steps.pt"
+    load_path = "runs/mat_swarm_bots/2025-12-28_17-45-07/models/model_best_1.pt"
     rollout_device = torch.device("cpu")
 
     print("Creating env...")

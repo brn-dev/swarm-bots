@@ -48,7 +48,11 @@ def make_env_fn(
 
 def main():
     logger.remove()
-    logger.add(sys.stderr, format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <level>{message}</level>")
+    logger.add(
+        sys.stderr,
+        colorize=True,
+        format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <level>{message}</level>",
+    )
 
     n_envs = 4
     # unit_start_locations = [
@@ -182,7 +186,7 @@ def main():
             ('timesteps', None),
             ('std0', SummaryStatisticsFormat(mean='.3f', std='.3f', min_value='.3f', max_value='.3f')),
             ('val_loss', None),
-            ('approx_kl', None),
+            ('approx_kl', SummaryStatisticsFormat(mean='.3f', std='.3f', max_value='.3f')),
             ('clip_frac', None),
             ('upd', '3'),
             ('tot_upd', None),
