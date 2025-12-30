@@ -74,13 +74,13 @@ class MetricsLogger:
 
         for key, value, fmt in self._iter_console_metrics(metrics):
             val_str = self._format_console_value(value, fmt=fmt)
-            parts.append(f"{key}: {val_str}")
+            parts.append(f"<underline>{key}</underline>: {val_str}")
 
         if not parts:
             logger.warning('Nothing to log?')
             return
 
-        logger.info(" | ".join(parts))
+        logger.opt(colors=True).info(" | ".join(parts))
 
     def _log_to_csv(self, metrics: dict[str, Any]) -> None:
         csv_metrics: dict[str, Any] = {}

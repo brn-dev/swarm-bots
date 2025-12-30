@@ -454,6 +454,7 @@ class PPO:
 
     def _write_run_metadata(self, run_dir: pathlib.Path, extra_run_metadata: dict[str, Any] | None) -> None:
         metadata: dict[str, Any] = {
+            "algorithm": "PPO",
             "hyper_parameters": self.get_hyper_parameters(),
             "policy_repr": str(self.policy),
             "env_repr": str(self.env),
@@ -541,6 +542,14 @@ class PPO:
             save_dict['optimizer_state_dict'] = self.optimizer.state_dict()
             
         torch.save(save_dict, path)
+
+        metadata = {
+            "n_total_updates": int(self.n_total_updates),
+            "n_total_timesteps": int(self.n_total_timesteps),
+            "return_ema": return_ema,
+        }
+        metadata_path = path.with_name(f"{path.name}.json")
+        metadata_path.write_text(json.dumps(metadata, indent=2, sort_keys=True), encoding="utf-8")
 
     def load(self, path: str | pathlib.Path) -> None:
         checkpoint = load_checkpoint(path)
