@@ -5,6 +5,8 @@ from typing import Any
 import numpy as np
 from loguru import logger
 
+from swarmbots.learn.summary_statistics import SummaryStatistics, SummaryStatisticsFormat, format_summary_statistics
+
 class MetricsLogger:
     def __init__(
             self,
@@ -20,8 +22,8 @@ class MetricsLogger:
             wandb_mode: str | None = None,
             wandb_kwargs: dict[str, Any] | None = None,
             wandb_step_key: str | None = "timesteps",
-            ignore_keys_for_persistent: Collection[str] | None = None,
-            console_keys: list[str] | list[tuple[str, str | None]] | None = None,
+            ignore_keys_for_persistence: Collection[str] | None = None,
+            console_keys: list[str] | list[tuple[str, str | SummaryStatisticsFormat | None]] | None = None,
     ) -> None:
         self.log_dir = Path(log_dir) if log_dir else None
         self.file_path = self.log_dir / filename if self.log_dir else None
@@ -38,7 +40,7 @@ class MetricsLogger:
         self._wandb_managed_run = False
         self._wandb_step_key = wandb_step_key
 
-        self._ignore_keys_for_persistent = set(ignore_keys_for_persistent or [])
+        self._ignore_keys_for_persistence = set(ignore_keys_for_persistence or [])
         self._console_key_specs = self._normalize_console_keys(console_keys)
 
         if self._wandb_run is None and wandb_project is not None:
@@ -56,13 +58,16 @@ class MetricsLogger:
     def log(self, metrics: dict[str, Any]) -> None:
         self._log_to_console(metrics)
 
-        persistent_metrics = self._filter_persistent(metrics)
+        persistence_metrics = {
+            k: v for k, v in metrics.items()
+            if not self._ignore_keys_for_persistence or k not in self._ignore_keys_for_persistence
+        }
 
-        if self.file_path and persistent_metrics:
-            self._log_to_csv(persistent_metrics)
+        if self.file_path and persistence_metrics:
+            self._log_to_csv(persistence_metrics)
 
-        if self._wandb_run is not None and persistent_metrics:
-            self._log_to_wandb(persistent_metrics)
+        if self._wandb_run is not None and persistence_metrics:
+            self._log_to_wandb(persistence_metrics)
 
     def _log_to_console(self, metrics: dict[str, Any]) -> None:
         parts = []
@@ -78,11 +83,25 @@ class MetricsLogger:
         logger.info(" | ".join(parts))
 
     def _log_to_csv(self, metrics: dict[str, Any]) -> None:
+        csv_metrics: dict[str, Any] = {}
+
+        for k, v in metrics.items():
+            if isinstance(v, SummaryStatistics):
+                csv_metrics[k + '__mean'] = round(v.mean, 6)
+                if v.std is not None:
+                    csv_metrics[k + '__std'] = round(v.std, 6)
+                if v.min_value is not None:
+                    csv_metrics[k + '__min'] = round(v.min_value, 6)
+                if v.max_value is not None:
+                    csv_metrics[k + '__max'] = round(v.max_value, 6)
+            else:
+                csv_metrics[k] = v
+
         if self.file is None:
             file_exists = self.file_path.exists()
             self.file = open(self.file_path, mode='a', newline='', encoding="utf-8")
             
-            self._csv_fieldnames = list(metrics.keys())
+            self._csv_fieldnames = list(csv_metrics.keys())
             self.writer = csv.DictWriter(
                 self.file,
                 fieldnames=self._csv_fieldnames,
@@ -94,7 +113,7 @@ class MetricsLogger:
                 self.writer.writeheader()
         else:
             assert self._csv_fieldnames is not None
-            extra_keys = set(metrics.keys()) - set(self._csv_fieldnames)
+            extra_keys = set(csv_metrics.keys()) - set(self._csv_fieldnames)
             if extra_keys and not self._warned_csv_extra_keys:
                 self._warned_csv_extra_keys = True
                 logger.warning(
@@ -102,7 +121,7 @@ class MetricsLogger:
                     f"{sorted(extra_keys)}"
                 )
         
-        self.writer.writerow(metrics)
+        self.writer.writerow(csv_metrics)
         self.file.flush()
 
     def _init_wandb(
@@ -174,11 +193,6 @@ class MetricsLogger:
     def __del__(self) -> None:
         self.close()
 
-    def _filter_persistent(self, metrics: dict[str, Any]) -> dict[str, Any]:
-        if not self._ignore_keys_for_persistent:
-            return metrics
-        return {k: v for k, v in metrics.items() if k not in self._ignore_keys_for_persistent}
-
     def _normalize_console_keys(
         self,
         console_keys: Collection[str] | Collection[tuple[str, str | None]] | None,
@@ -197,14 +211,10 @@ class MetricsLogger:
         if all(isinstance(item, tuple) and len(item) == 2 for item in items):
             key_specs: list[tuple[str, str | None]] = []
             for raw_key, raw_fmt in items:
-                if not isinstance(raw_key, str) or not (isinstance(raw_fmt, str) or raw_fmt is None):
-                    raise TypeError(
-                        "console_keys must be None, a collection[str], or a collection[tuple[str, str|None]]"
-                    )
                 key_specs.append((raw_key, raw_fmt))
             return key_specs
 
-        raise TypeError("console_keys must be None, a collection[str], or a collection[tuple[str, str|None]]")
+        raise TypeError(console_keys)
 
     def _iter_console_metrics(self, metrics: dict[str, Any]) -> Iterable[tuple[str, Any, str | None]]:
         if self._console_key_specs is None:
@@ -215,8 +225,13 @@ class MetricsLogger:
         for key, fmt in self._console_key_specs:
             yield key, metrics[key], fmt
 
-    def _format_console_value(self, value: Any, fmt: str | None) -> str:
-        if fmt is not None:
+    def _format_console_value(self, value: Any, fmt: str | SummaryStatisticsFormat | None) -> str:
+
+        if isinstance(value, SummaryStatistics):
+            assert fmt is None or isinstance(fmt, SummaryStatisticsFormat), 'supply a summary statistics format'
+            return format_summary_statistics(value, fmt)
+
+        if value is not None and fmt is not None:
             try:
                 return f"{value:{fmt}}"
             except Exception:

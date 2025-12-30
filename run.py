@@ -12,6 +12,7 @@ from swarmbots.learn.env_wrappers.normalize_obs_wrapper import NormalizeLocalObs
 from swarmbots.learn.env_wrappers.swarm_bots_learn_env_wrapper import SwarmBotsLearnEnvWrapper
 from swarmbots.learn.algos.ppo.ppo import PPO
 from swarmbots.learn.recording import record_policy
+from swarmbots.learn.summary_statistics import SummaryStatisticsFormat
 from swarmbots.mj_env.scenarios.obstacle_street_scenario import ObstacleStreetScenario
 from swarmbots.mj_env.swarm.homogeneous_swarm import HomogeneousSwarm
 from swarmbots.mj_env.swarm_bots_env import SwarmBotsEnv
@@ -68,11 +69,11 @@ def main():
 
     # =====  ID  =====
     run_id = "2025-12-28_17-45-07"
-    # run_id = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    run_id = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
     # ===== LOAD =====
     load_path = "runs/mat_swarm_bots/2025-12-28_17-45-07/models/model_25000000_steps.pt"
-    # load_path = None
+    load_path = None
 
     run_dir = f"runs/mat_swarm_bots/{run_id}/"
     save_optimizer = True
@@ -176,20 +177,17 @@ def main():
             'load_path': load_path,
             'env_settings': env_settings
         },
-        logging_ignore_keys_for_persistence=[
-            'approx_kl'
-        ],
         logging_console_keys=[
             ('iteration', None),
             ('timesteps', None),
-            ('std0', None),
+            ('std0', SummaryStatisticsFormat(mean='.3f', std='.3f', min_value='.3f', max_value='.3f')),
             ('val_loss', None),
             ('approx_kl', None),
             ('clip_frac', None),
             ('upd', '3'),
             ('tot_upd', None),
             ('expl_var', None),
-            ('ep_rew', ' .3f'),
+            ('ep_rew', SummaryStatisticsFormat(mean=' .2f', std='.2f', max_value='.2f')),
             ('ep_rew_ema', ' .3f'),
             ('best_ep_rew_ema', ' .3f'),
             ('fps', None),
