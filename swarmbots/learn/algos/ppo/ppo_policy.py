@@ -10,6 +10,7 @@ from swarmbots.learn.nn_components.nn_init import init_linear_orthogonal, Linear
 
 
 class BasePPOPolicy(BasePolicy, abc.ABC):
+    action_dist: HybridActionDistribution
 
     @abc.abstractmethod
     def forward(
@@ -115,7 +116,6 @@ class PPOPolicy(BasePPOPolicy):
             act_fun_class = nn.Tanh,
             base_std: float = 1.0
     ):
-        super().__init__()
 
         self.n_agents = env.n_agents
         self.local_obs_dim = env.local_obs_dim
@@ -143,6 +143,7 @@ class PPOPolicy(BasePPOPolicy):
             hidden_dims=critic_hidden_dims,
             act_fun_class=act_fun_class
         )
+        super().__init__(action_dist=self.action_dist)
 
     def forward(
             self,
