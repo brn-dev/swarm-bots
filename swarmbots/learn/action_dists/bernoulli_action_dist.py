@@ -28,7 +28,7 @@ class BernoulliActionDist(DiscreteActionDist):
         self.distribution = torchdist.Bernoulli(logits=action_logits)
         return self
 
-    def sample(self) -> torch.Tensor:
+    def sample(self, agent: int | None = None) -> torch.Tensor:
         return self.distribution.sample()
 
     def mode(self) -> torch.Tensor:

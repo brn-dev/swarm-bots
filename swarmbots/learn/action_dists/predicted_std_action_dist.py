@@ -65,7 +65,7 @@ class PredictedStdActionDist(ContinuousActionDist):
         self.distribution = torchdist.Normal(mean_actions, log_stds.exp())
         return self
 
-    def sample(self) -> torch.Tensor:
+    def sample(self, agent: int | None = None) -> torch.Tensor:
         gaussian_actions = self.distribution.rsample()
         if self.squash_output:
             self._last_gaussian_actions = gaussian_actions
@@ -97,10 +97,15 @@ class PredictedStdActionDist(ContinuousActionDist):
             return None
         return self.sum_action_dim(self.distribution.entropy())
 
-    def get_actions_with_log_probs(self, latent_pi: torch.Tensor, deterministic: bool = False):
+    def get_actions_with_log_probs(
+            self,
+            latent_pi: torch.Tensor,
+            deterministic: bool = False,
+            agent: int | None = None,
+    ):
         # get_actions calls sample() or mode(), both of which set _last_gaussian_actions
         # --> prevents squashing and unsquashing which can lead to numerical instability
-        actions = self.update_latent_features(latent_pi).get_actions(deterministic=deterministic)
+        actions = self.update_latent_features(latent_pi).get_actions(deterministic=deterministic, agent=agent)
         log_probs = self.log_prob(actions, self._last_gaussian_actions)
         return actions, log_probs
 

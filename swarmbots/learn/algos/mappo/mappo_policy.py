@@ -1,6 +1,6 @@
 from torch import nn
 
-from swarmbots.learn.action_dists.hybrid_action_dist import HybridActionDistribution
+from swarmbots.learn.action_dists.hybrid_action_dist import HybridActionDistribution, ContinuousActionDistConfig
 from swarmbots.learn.algos.mappo.mappo_actor import MAPPOActor
 from swarmbots.learn.algos.mappo.mappo_deep_set_critic import MAPPODeepSetCriticHiddenDims, MAPPODeepSetCritic
 from swarmbots.learn.algos.ppo.ppo_policy import PPOCritic, PPOPolicy
@@ -19,7 +19,7 @@ class MAPPOPolicy(PPOPolicy):
             latent_pi_dim_per_agent: int,
             critic_hidden_dims: list[int] | MAPPODeepSetCriticHiddenDims,
             act_fun_class = nn.Tanh,
-            base_std: float = 1.0
+            continuous_config: ContinuousActionDistConfig | list[ContinuousActionDistConfig | None] | None = None,
     ):
         BasePolicy.__init__(self)
 
@@ -39,7 +39,7 @@ class MAPPOPolicy(PPOPolicy):
         self.action_dist = HybridActionDistribution(
             latent_dim=latent_pi_dim_per_agent,
             action_space=env.action_space,
-            base_std=base_std,
+            continuous_config=continuous_config,
         )
 
         if isinstance(critic_hidden_dims, list):

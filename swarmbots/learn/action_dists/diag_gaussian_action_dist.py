@@ -38,7 +38,7 @@ class DiagGaussianActionDist(ContinuousActionDist):
         self.distribution = torchdist.Normal(loc=means, scale=torch.exp(log_stds))
         return self
 
-    def sample(self) -> torch.Tensor:
+    def sample(self, agent: int | None = None) -> torch.Tensor:
         return self.distribution.rsample()
 
     def mode(self) -> torch.Tensor:

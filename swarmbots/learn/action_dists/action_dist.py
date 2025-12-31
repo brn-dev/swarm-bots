@@ -37,7 +37,7 @@ class ActionDist(nn.Module, abc.ABC):
         raise NotImplementedError
 
     @abc.abstractmethod
-    def sample(self) -> torch.Tensor:
+    def sample(self, agent: int | None = None) -> torch.Tensor:
         raise NotImplementedError
 
     @abc.abstractmethod
@@ -52,13 +52,18 @@ class ActionDist(nn.Module, abc.ABC):
     def entropy(self) -> Optional[torch.Tensor]:
         raise NotImplementedError
 
-    def get_actions(self, deterministic: bool = False) -> torch.Tensor:
+    def get_actions(self, deterministic: bool = False, agent: int | None = None) -> torch.Tensor:
         if deterministic:
             return self.mode()
-        return self.sample()
+        return self.sample(agent=agent)
 
-    def get_actions_with_log_probs(self, latent_pi: torch.Tensor, deterministic: bool = False):
-        actions = self.update_latent_features(latent_pi).get_actions(deterministic=deterministic)
+    def get_actions_with_log_probs(
+            self,
+            latent_pi: torch.Tensor,
+            deterministic: bool = False,
+            agent: int | None = None,
+    ):
+        actions = self.update_latent_features(latent_pi).get_actions(deterministic=deterministic, agent=agent)
         log_probs = self.log_prob(actions)
         return actions, log_probs
 

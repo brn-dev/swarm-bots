@@ -40,6 +40,7 @@ def collect_whole_episodes(
         env: BaseLearnEnvWrapper,
         policy: BasePPOPolicy,
         buffer: PPORolloutBuffer,
+        gsde_sample_freq: int = -1,
 ) -> tuple[list[PPOEpisode], list[dict]]:
     buffer.reset()
     obs, info = env.reset()
@@ -50,10 +51,14 @@ def collect_whole_episodes(
     policy.eval()
     
     episode_infos = []
+    rollout_step_idx = 0
 
     while not buffer.is_ready():
         local_obs = obs['local_obs']
         global_obs = obs['global_obs']
+
+        if policy.gsde_enabled and gsde_sample_freq > 0 and (rollout_step_idx % gsde_sample_freq) == 0:
+            policy.action_dist.reset_noise(batch_shape=tuple(local_obs.shape[:-1]))
 
         actions, log_probs, values = policy(local_obs, global_obs)
         
@@ -84,6 +89,7 @@ def collect_whole_episodes(
         obs = new_obs
         is_final = dones
         was_terminated = terminations
+        rollout_step_idx += 1
 
     return buffer.get_whole_episodes(), episode_infos
 
@@ -112,6 +118,7 @@ class PPO:
             vf_coef: float = 0.5,
             max_grad_norm: float = 0.5,
             target_kl: Optional[float] = None,
+            gsde_sample_freq: int = -1,
             train_device: str | torch.device = "auto",
             rollout_device: str | torch.device = "cpu",
     ):
@@ -131,6 +138,8 @@ class PPO:
         self.vf_coef = vf_coef
         self.max_grad_norm = max_grad_norm
         self.target_kl = target_kl
+        self.gsde_sample_freq = gsde_sample_freq
+        assert not policy.gsde_enabled or gsde_sample_freq > 0
 
         self.train_device = as_device(train_device)
         self.rollout_device = as_device(rollout_device)
@@ -170,6 +179,7 @@ class PPO:
             'target_kl': self.target_kl,
             'train_device': str(self.train_device),
             'rollout_device': str(self.rollout_device),
+            'gsde_sample_freq': self.gsde_sample_freq,
         }
 
     def train(self) -> dict[str, Any]:
@@ -178,6 +188,7 @@ class PPO:
             env=self.env,
             policy=self.policy,
             buffer=self.rollout_buffer,
+            gsde_sample_freq=self.gsde_sample_freq,
         )
 
         self.policy.train()
