@@ -1,16 +1,16 @@
 import sys
 from datetime import datetime
 
-from loguru import logger
+import torch
 from gymnasium.vector import SyncVectorEnv, AsyncVectorEnv
 from gymnasium.wrappers.vector import RecordEpisodeStatistics, NormalizeReward
-import torch
-from torch import nn
+from loguru import logger
 
+from swarmbots.learn.action_dists.hybrid_action_dist import GSDEParams
 from swarmbots.learn.algos.mat.mat_policy import MATPolicy
+from swarmbots.learn.algos.ppo.ppo import PPO
 from swarmbots.learn.env_wrappers.normalize_obs_wrapper import NormalizeLocalObsWrapper
 from swarmbots.learn.env_wrappers.swarm_bots_learn_env_wrapper import SwarmBotsLearnEnvWrapper
-from swarmbots.learn.algos.ppo.ppo import PPO
 from swarmbots.learn.recording import record_policy
 from swarmbots.learn.summary_statistics import SummaryStatisticsFormat
 from swarmbots.mj_env.scenarios.obstacle_street_scenario import ObstacleStreetScenario
@@ -68,7 +68,7 @@ def main():
     ]
     episode_length = 512
     n_episodes_per_rollout = 4
-    total_timesteps = 40_000_000
+    total_timesteps = 50_000_000
     save_interval = 500
 
     # =====  ID  =====
@@ -76,7 +76,7 @@ def main():
     run_id = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
     # ===== LOAD =====
-    load_path = "runs/mat_swarm_bots/2025-12-28_17-45-07/models/model_25000000_steps.pt"
+    load_path = "runs/mat_swarm_bots/2025-12-28_17-45-07/models/model_40001091_steps_final.pt"
     load_path = None
 
     run_dir = f"runs/mat_swarm_bots/{run_id}/"
@@ -85,11 +85,18 @@ def main():
     use_cuda = False and torch.cuda.is_available()
     train_device = torch.device("cuda" if use_cuda else "cpu")
 
+    scenario_kwargs = {
+        "num_walls": 1,
+        'wall_height': 0.3,
+        'opening_width': 0.1,  # basically no opening -> must climb over
+        'actuators_activation_reward_weight': -5e-3,
+    }
+
     env_fns = [
         make_env_fn(
             unit_start_locations=unit_start_locations,
             episode_length=episode_length,
-            scenario_kwargs={"num_walls": 1},
+            scenario_kwargs=scenario_kwargs,
             render_mode=None
         )
         for _ in range(n_envs)
@@ -105,6 +112,10 @@ def main():
     print('Creating vector env...')
     vector_env = AsyncVectorEnv(env_fns)
     print(f"Created {type(vector_env)} with {n_envs} environments.")
+
+    if isinstance(vector_env, SyncVectorEnv):
+        for _ in range(10):
+            logger.warning('USING SYNC VECTOR ENV')
 
     gamma = 0.95
     
@@ -141,10 +152,17 @@ def main():
         dim_feedforward_encoder=96,
         dim_feedforward_decoder=96,
         dropout=0.0,
-        latent_pi_dim_per_agent=64,
-        base_std=1.0,
         n_critic_local_projection_hidden_layers=1,
         n_critic_value_regressor_hidden_layers=2,
+        continuous_config=GSDEParams(
+            base_std=1.0,
+            latent_sde_dim=None,
+            std_learnable=True,
+            full_std=True,
+            sde_learn_features=False,
+            log_std_clamp_range=(-20.0, 2.0),
+            normalize_latent_sde_by_dim=True
+        )
     )
     print(policy)
 
@@ -163,6 +181,7 @@ def main():
         train_device=train_device,
         rollout_device=rollout_device,
         target_kl=0.05,
+        gsde_sample_freq=8,
     )
 
     if load_path:
@@ -208,7 +227,7 @@ def main():
     record_env_fn = make_env_fn(
         unit_start_locations=unit_start_locations,
         episode_length=episode_length,
-        scenario_kwargs={"num_walls": 1, 'wall_height': 0.3},
+        scenario_kwargs=scenario_kwargs,
         render_mode='rgb_array'
     )
     

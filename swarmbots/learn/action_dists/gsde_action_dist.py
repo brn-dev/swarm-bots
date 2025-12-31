@@ -22,6 +22,7 @@ class GSDEActionDist(ContinuousActionDist):
             base_std: float,
             latent_sde_dim: int | None = None,
             std_learnable: bool = True,
+            normalize_latent_sde_by_dim: bool = True,
             squash_output: bool = False,
             epsilon: float = 1e-6,
             full_std: bool = True,
@@ -40,6 +41,7 @@ class GSDEActionDist(ContinuousActionDist):
 
         self.latent_sde_dim = latent_dim if latent_sde_dim is None else latent_sde_dim
         self.std_learnable = std_learnable
+        self.normalize_latent_sde_by_dim = normalize_latent_sde_by_dim
         self.full_std = full_std
         self.sde_learn_features = sde_learn_features
         self.squash_output = squash_output
@@ -79,12 +81,9 @@ class GSDEActionDist(ContinuousActionDist):
         latent_sde = self.latent_sde_net(latent_pi)
         if not self.sde_learn_features:
             latent_sde = latent_sde.detach()
-
+        if self.normalize_latent_sde_by_dim:
+            latent_sde = latent_sde / math.sqrt(self.latent_sde_dim)
         self._latent_sde = latent_sde
-        batch_shape = tuple(latent_sde.shape[:-1])
-        if self._exploration_matrices is None or self._exploration_batch_shape != batch_shape:
-            self.reset_noise(batch_shape=batch_shape)
-
         return self.update_distribution_params(action_means, self.log_stds)
 
     def update_distribution_params(self, means: torch.Tensor, log_stds: torch.Tensor) -> Self:
@@ -101,12 +100,12 @@ class GSDEActionDist(ContinuousActionDist):
         self.distribution = torchdist.Normal(loc=means, scale=action_std)
         return self
 
-    def sample(self) -> torch.Tensor:
+    def sample(self, agent: int | None = None) -> torch.Tensor:
         if self.squash_output:
-            self._last_gaussian_actions = self._sample_gaussian_actions()
+            self._last_gaussian_actions = self._sample_gaussian_actions(agent)
             return TanhBijector.forward(self._last_gaussian_actions)
 
-        return self._sample_gaussian_actions()
+        return self._sample_gaussian_actions(agent)
 
     def mode(self) -> torch.Tensor:
         gaussian_actions = self.distribution.mean
@@ -131,32 +130,33 @@ class GSDEActionDist(ContinuousActionDist):
             return None
         return super().entropy()
 
-    def get_actions_with_log_probs(self, latent_pi: torch.Tensor, deterministic: bool = False):
-        actions = self.update_latent_features(latent_pi).get_actions(deterministic=deterministic)
+    def get_actions_with_log_probs(
+            self,
+            latent_pi: torch.Tensor,
+            deterministic: bool = False,
+            agent: int | None = None,
+    ):
+        actions = self.update_latent_features(latent_pi).get_actions(deterministic=deterministic, agent=agent)
         log_probs = self.log_prob(actions, self._last_gaussian_actions)
         return actions, log_probs
 
-    def _sample_gaussian_actions(self) -> torch.Tensor:
+    def _sample_gaussian_actions(self, agent: int | None) -> torch.Tensor:
         if self._latent_sde is None or self.distribution is None:
             raise RuntimeError("update_latent_features() must be called before sampling actions.")
 
         if self._exploration_matrices is None:
-            return self.distribution.rsample()
+            raise RuntimeError("reset_noise() must be called before sampling GSDE actions.")
 
-        noise = torch.einsum("...d,...da->...a", self._latent_sde, self._exploration_matrices)
+        if agent is not None:
+            exploration_matrices = self._exploration_matrices[:, agent:agent+1]
+        else:
+            exploration_matrices = self._exploration_matrices
+
+        noise = torch.einsum("...d,...da->...a", self._latent_sde, exploration_matrices)
         return self.distribution.mean + noise
 
     def _get_std_matrix(self, log_stds: torch.Tensor) -> torch.Tensor:
-        if log_stds.shape[0] != self.latent_sde_dim:
-            raise ValueError(f"log_stds first dim must be latent_sde_dim={self.latent_sde_dim}, got {log_stds.shape}.")
-
         if self.full_std:
-            if log_stds.shape[1] != self.action_dim:
-                raise ValueError(f"full_std=True requires log_stds shape (latent_sde_dim, action_dim), got {log_stds.shape}.")
-            std = torch.exp(log_stds)
+            return torch.exp(log_stds)
         else:
-            if log_stds.shape[1] != 1:
-                raise ValueError(f"full_std=False requires log_stds shape (latent_sde_dim, 1), got {log_stds.shape}.")
-            std = torch.exp(log_stds).expand(self.latent_sde_dim, self.action_dim)
-
-        return std
+            return torch.exp(log_stds).expand(self.latent_sde_dim, self.action_dim)

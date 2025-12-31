@@ -6,8 +6,8 @@ from collections.abc import KeysView, Sequence
 from typing import Any
 
 import numpy as np
-from gymnasium import spaces
 
+import gymnasium as gym
 from gymnasium.spaces.space import Space
 
 # partially from gymnasium.spaces.Dict
@@ -29,6 +29,7 @@ class HybridActionSpace(Space[dict[str, Space[Any]]], typing.Mapping[str, Space[
                 f"Unexpected Dict space input, expecting dict, OrderedDict or Sequence, actual type: {type(spaces)}"
             )
 
+        self.n_spaces = len(spaces)
         self.space_map: OrderedDict[str, Space[Any]] = spaces
         self.key_order = list(self.space_map.keys())
         self.sub_spaces = list(self.space_map.values())
@@ -108,7 +109,7 @@ def get_agent_action_dim(space: Space) -> int:
 
     Assumption: Each individual action component space is shaped like (n_agents, n_actions_per_agent)
     """
-    if isinstance(space, (spaces.Box, spaces.MultiBinary)):
+    if isinstance(space, (gym.spaces.Box, gym.spaces.MultiBinary)):
         shape = getattr(space, "shape", None)
         if shape is None:
             raise ValueError(f"Expected a shaped space (n_agents, n_actions_per_agent), got {space}")
@@ -135,6 +136,7 @@ class VectorHybridActionSpace(HybridActionSpace):
                 f"Unexpected Dict space input, expecting dict, OrderedDict or Sequence, actual type: {type(spaces)}"
             )
 
+        self.n_spaces = len(spaces)
         self.space_map: OrderedDict[str, Space[Any]] = spaces
         self.key_order = list(self.space_map.keys())
         self.sub_spaces = list(self.space_map.values())
@@ -158,7 +160,7 @@ def get_vector_agent_action_dim(space: Space) -> int:
 
     Assumption: Each individual action component space is shaped like (n_envs, n_agents, n_actions_per_agent)
     """
-    if isinstance(space, (spaces.Box, spaces.MultiBinary)):
+    if isinstance(space, (gym.spaces.Box, gym.spaces.MultiBinary)):
         shape = getattr(space, "shape", None)
         if shape is None:
             raise ValueError(f"Expected a shaped space (n_envs, n_agents, n_actions_per_agent), got {space}")

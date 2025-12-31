@@ -21,7 +21,7 @@ class SummaryStatistics:
     std: Optional[float] = None
     min_value: Optional[float] = None
     max_value: Optional[float] = None
-    data: Optional[list] = None
+    data: Optional[np.ndarray] = None
     histogram: Optional[Histogram] = None
 
 @dataclass
@@ -105,17 +105,22 @@ def compute_summary_statistics(
         make_histogram: bool | int = False,
         keep_data: bool = True,
 ) -> Optional[SummaryStatistics]:
+    values: np.ndarray
     if isinstance(arr, list):
-        arr = np.array(arr)
-    if isinstance(arr, np.ndarray):
-        n = arr.size
+        values = np.array(arr).ravel()
+    elif isinstance(arr, np.ndarray):
+        values = arr.ravel()
+    elif isinstance(arr, torch.Tensor):
+        values = arr.detach().ravel().cpu().numpy()
     else:
-        n = arr.numel()
+        raise ValueError(arr)
+
+    n = values.size
 
     if n == 0:
         return None
 
-    mean = arr.ravel().mean().item()
+    mean = values.mean().item()
 
     if n == 1:
         summary_stats = SummaryStatistics(
@@ -127,21 +132,21 @@ def compute_summary_statistics(
     summary_stats: SummaryStatistics = SummaryStatistics(
         n=n,
         mean=mean,
-        std=arr.ravel().std().item(),
+        std=values.std().item(),
     )
     find_min = find_min or make_histogram
     find_max = find_max or make_histogram
     if find_min:
-        summary_stats.min_value = arr.min().item()
+        summary_stats.min_value = values.min().item()
     if find_max:
-        summary_stats.max_value = arr.max().item()
+        summary_stats.max_value = values.max().item()
 
     if keep_data:
-        summary_stats.data = arr
+        summary_stats.data = values
 
     if make_histogram:
         summary_stats.histogram = _compute_histogram(
-            arr, 
+            values,
             min_val=summary_stats.min_value, 
             max_val=summary_stats.max_value,
             n_bins=make_histogram if isinstance(make_histogram, int) else HISTOGRAM_DEFAULT_BINS,
@@ -172,22 +177,19 @@ def maybe_compute_summary_statistics(
     
 def compute_histogram(stats: SummaryStatistics, n_bins: int = HISTOGRAM_DEFAULT_BINS):
     assert stats.data is not None
-    values = _to_1d_numpy(stats.data)
+    values = stats.data
     stats.min_value = values.min().item()
     stats.max_value = values.max().item()
     stats.histogram = _compute_histogram(values, stats.min_value, stats.max_value, n_bins)
 
 
 def _compute_histogram(
-    arr: TensorNpArrayOrList, 
+    values: np.ndarray,
     min_val: float, 
     max_val: float, 
     n_bins: int = HISTOGRAM_DEFAULT_BINS
 ) -> Histogram:
-    values = _to_1d_numpy(arr)
-    finite_values = values[np.isfinite(values)]
-
-    if finite_values.size == 0:
+    if values.size == 0:
         return Histogram(bin_frequencies=[0.0], bin_edges=[0.0, 1.0])
 
     if min_val == max_val:
@@ -197,7 +199,7 @@ def _compute_histogram(
         return Histogram(bin_frequencies=[1.0], bin_edges=[float(low), float(high)])
 
     bin_count = int(max(1, n_bins))
-    counts, edges = np.histogram(finite_values, bins=bin_count, range=(min_val, max_val))
+    counts, edges = np.histogram(values, bins=bin_count, range=(min_val, max_val))
     total = float(counts.sum())
     frequencies = (counts.astype(np.float64) / total) if total > 0.0 else np.zeros_like(counts, dtype=np.float64)
 
@@ -205,17 +207,6 @@ def _compute_histogram(
         bin_frequencies=[float(x) for x in frequencies.tolist()],
         bin_edges=[float(x) for x in edges.tolist()],
     )
-
-
-def _to_1d_numpy(arr: TensorNpArrayOrList) -> np.ndarray:
-    if isinstance(arr, list):
-        return np.asarray(arr, dtype=np.float64).ravel()
-    if isinstance(arr, np.ndarray):
-        return np.asarray(arr, dtype=np.float64).ravel()
-    if isinstance(arr, torch.Tensor):
-        return arr.detach().cpu().numpy().astype(np.float64, copy=False).ravel()
-    raise TypeError(f"Unsupported input type: {type(arr)}")
-
 
 def _format_histogram_blocks(freqs: list[float]) -> str:
     if not freqs:
@@ -235,17 +226,3 @@ def _format_histogram_blocks(freqs: list[float]) -> str:
             idx = max(0, min(levels, idx))
         chars.append(HISTOGRAM_BLOCKS[idx])
     return "[" + "".join(chars) + "]"
-
-
-def maybe_make_wandb_histogram(histogram: Histogram) -> Any | None:
-    try:
-        import wandb  # type: ignore
-    except Exception:
-        return None
-
-    return wandb.Histogram(
-        np_histogram=(
-            np.asarray(histogram.bin_frequencies, dtype=np.float64),
-            np.asarray(histogram.bin_edges, dtype=np.float64),
-        )
-    )

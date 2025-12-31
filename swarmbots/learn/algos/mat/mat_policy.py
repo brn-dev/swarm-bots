@@ -3,7 +3,7 @@ from typing import Optional
 import torch
 from torch import nn
 
-from swarmbots.learn.action_dists.hybrid_action_dist import HybridActionDistribution
+from swarmbots.learn.action_dists.hybrid_action_dist import HybridActionDistribution, ContinuousActionDistConfig
 from swarmbots.learn.algos.mat.mat_decoder import MATDecoder
 from swarmbots.learn.algos.mat.mat_deepset_critic import MATDeepSetCritic
 from swarmbots.learn.algos.mat.mat_encoder import MATEncoder
@@ -28,10 +28,9 @@ class MATPolicy(BasePPOPolicy):
             dim_feedforward_encoder: int = 128,
             dim_feedforward_decoder: int = 128,
             dropout: float = 0.0,
-            latent_pi_dim_per_agent: int = 64,
-            base_std: float = 1.0,
             n_critic_local_projection_hidden_layers: int = 1,
             n_critic_value_regressor_hidden_layers: int = 2,
+            continuous_config: ContinuousActionDistConfig | list[ContinuousActionDistConfig | None] | None = None,
     ):
         BasePolicy.__init__(self)
 
@@ -39,7 +38,6 @@ class MATPolicy(BasePPOPolicy):
         self.local_obs_dim: int = env.local_obs_dim
         self.global_obs_dim: int = env.global_obs_dim
         self.has_global_obs = env.global_obs_dim > 0
-        self.latent_pi_dim = latent_pi_dim_per_agent
         self.d_model = d_model
 
         self.agent_embeddings = nn.Parameter(torch.zeros(1, env.n_agents, d_model), requires_grad=True)
@@ -103,21 +101,10 @@ class MATPolicy(BasePPOPolicy):
             output_norm=nn.LayerNorm(d_model)
         )
 
-        if d_model != latent_pi_dim_per_agent:
-            self.policy_head = MLP(
-                input_dim=d_model,
-                hidden_dims=[latent_pi_dim_per_agent],
-                end_with_act_fn=False,
-                linear_init=init_linear_orthogonal,
-                act_fn_cls=nn.ReLU
-            )
-        else:
-            self.policy_head = nn.Identity()
-
         self.action_dist = HybridActionDistribution(
-            latent_dim=latent_pi_dim_per_agent,
+            latent_dim=d_model,
             action_space=env.action_space,
-            base_std=base_std,
+            continuous_config=continuous_config
         )
 
         self.critic = MATDeepSetCritic(
@@ -163,14 +150,13 @@ class MATPolicy(BasePPOPolicy):
                 tgt_mask=tgt_mask
             )
 
-            last_out = out[:, -1:, :]
-            latent_pi = self.policy_head(last_out)
+            latent_pi = out[:, -1:, :]
 
             if return_log_probs:
-                action, log_prob = self.action_dist.get_actions_with_log_probs(latent_pi, deterministic)
+                action, log_prob = self.action_dist.get_actions_with_log_probs(latent_pi, deterministic, agent=i)
                 log_probs_list.append(log_prob)
             else:
-                action = self.action_dist.update_latent_features(latent_pi).get_actions(deterministic)
+                action = self.action_dist.update_latent_features(latent_pi).get_actions(deterministic, agent=i)
 
             actions_list.append(action)
 
@@ -215,8 +201,7 @@ class MATPolicy(BasePPOPolicy):
         shifted_actions = torch.cat([sos_expanded, action_embeddings[:, :-1, :]], dim=1)
         
         latent_pi = self.decoder(shifted_actions, augmented_observations)
-        latent_pi = self.policy_head(latent_pi)
-        
+
         self.action_dist.update_latent_features(latent_pi)
         log_probs = self.action_dist.log_prob(actions)
         entropies = self.action_dist.entropy()

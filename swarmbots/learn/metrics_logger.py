@@ -6,11 +6,16 @@ from typing import Any
 import numpy as np
 from loguru import logger
 
+try:
+    import wandb
+    wandb_available = True
+except Exception as e:
+    wandb_available = False
+
 from swarmbots.learn.summary_statistics import (
     SummaryStatistics,
     SummaryStatisticsFormat,
     format_summary_statistics,
-    maybe_make_wandb_histogram,
 )
 
 class MetricsLogger:
@@ -144,9 +149,7 @@ class MetricsLogger:
             mode: str | None,
             wandb_kwargs: dict[str, Any] | None,
     ) -> None:
-        try:
-            import wandb  # type: ignore
-        except Exception as e:
+        if not wandb_available:
             logger.warning(f"wandb is not available ({e}); continuing without wandb logging.")
             return
 
@@ -171,13 +174,17 @@ class MetricsLogger:
         self._wandb_managed_run = True
 
     def _log_to_wandb(self, metrics: dict[str, Any]) -> None:
+        if not wandb_available:
+            logger.warning(f"wandb is not available ({e}); skipping wandb log.")
+            return
+
         metrics = {k: v for k, v in metrics.items() if v is not None}
 
         wandb_metrics: dict[str, Any] = {}
         for k, v in metrics.items():
             if isinstance(v, SummaryStatistics):
                 if v.data:
-                    wandb_metrics[k] = v.data
+                    wandb_metrics[k] = wandb.Histogram(v.data, num_bins=32)
                 else:
                     wandb_metrics[k + "__mean"] = v.mean
                     if v.std is not None:
@@ -190,7 +197,12 @@ class MetricsLogger:
                     if v.histogram is not None:
                         wandb_metrics[k + "__histogram_freqs"] = v.histogram.bin_frequencies
                         wandb_metrics[k + "__histogram_edges"] = v.histogram.bin_edges
-                        wandb_hist = maybe_make_wandb_histogram(v.histogram)
+                        wandb_hist = wandb.Histogram(
+                            np_histogram=(
+                                np.asarray(v.histogram.bin_frequencies, dtype=np.float32),
+                                np.asarray(v.histogram.bin_edges, dtype=np.float32),
+                            )
+                        )
                         if wandb_hist is not None:
                             wandb_metrics[k + "__histogram"] = wandb_hist
             else:

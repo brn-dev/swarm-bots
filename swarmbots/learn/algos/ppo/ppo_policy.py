@@ -2,7 +2,7 @@ import abc
 import torch
 from torch import nn
 
-from swarmbots.learn.action_dists.hybrid_action_dist import HybridActionDistribution
+from swarmbots.learn.action_dists.hybrid_action_dist import HybridActionDistribution, ContinuousActionDistConfig
 from swarmbots.learn.base_policy import BasePolicy
 from swarmbots.learn.env_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
 from swarmbots.learn.nn_components.mlp import MLP
@@ -11,6 +11,10 @@ from swarmbots.learn.nn_components.nn_init import init_linear_orthogonal, Linear
 
 class BasePPOPolicy(BasePolicy, abc.ABC):
     action_dist: HybridActionDistribution
+
+    @property
+    def gsde_enabled(self):
+        return self.action_dist.has_gsde
 
     @abc.abstractmethod
     def forward(
@@ -114,7 +118,7 @@ class PPOPolicy(BasePPOPolicy):
             latent_pi_dim_per_agent: int,
             critic_hidden_dims: list[int],
             act_fun_class = nn.Tanh,
-            base_std: float = 1.0
+            continuous_config: ContinuousActionDistConfig | list[ContinuousActionDistConfig | None] | None = None,
     ):
 
         self.n_agents = env.n_agents
@@ -133,7 +137,7 @@ class PPOPolicy(BasePPOPolicy):
         self.action_dist = HybridActionDistribution(
             latent_dim=latent_pi_dim_per_agent,
             action_space=env.action_space,
-            base_std=base_std,
+            continuous_config=continuous_config,
         )
 
         self.critic = PPOCritic(
