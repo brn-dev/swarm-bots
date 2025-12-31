@@ -1,11 +1,17 @@
 import csv
 from collections.abc import Collection, Iterable
+import json
 from pathlib import Path
 from typing import Any
 import numpy as np
 from loguru import logger
 
-from swarmbots.learn.summary_statistics import SummaryStatistics, SummaryStatisticsFormat, format_summary_statistics
+from swarmbots.learn.summary_statistics import (
+    SummaryStatistics,
+    SummaryStatisticsFormat,
+    format_summary_statistics,
+    maybe_make_wandb_histogram,
+)
 
 class MetricsLogger:
     def __init__(
@@ -94,6 +100,9 @@ class MetricsLogger:
                     csv_metrics[k + '__min'] = round(v.min_value, 6)
                 if v.max_value is not None:
                     csv_metrics[k + '__max'] = round(v.max_value, 6)
+                if v.histogram is not None:
+                    csv_metrics[k + '__histogram_freqs'] = json.dumps([round(x, 6) for x in v.histogram.bin_frequencies])
+                    csv_metrics[k + '__histogram_edges'] = json.dumps([round(x, 6) for x in v.histogram.bin_edges])
             else:
                 csv_metrics[k] = v
 
@@ -163,16 +172,40 @@ class MetricsLogger:
 
     def _log_to_wandb(self, metrics: dict[str, Any]) -> None:
         metrics = {k: v for k, v in metrics.items() if v is not None}
+
+        wandb_metrics: dict[str, Any] = {}
+        for k, v in metrics.items():
+            if isinstance(v, SummaryStatistics):
+                if v.data:
+                    wandb_metrics[k] = v.data
+                else:
+                    wandb_metrics[k + "__mean"] = v.mean
+                    if v.std is not None:
+                        wandb_metrics[k + "__std"] = v.std
+                    if v.min_value is not None:
+                        wandb_metrics[k + "__min"] = v.min_value
+                    if v.max_value is not None:
+                        wandb_metrics[k + "__max"] = v.max_value
+
+                    if v.histogram is not None:
+                        wandb_metrics[k + "__histogram_freqs"] = v.histogram.bin_frequencies
+                        wandb_metrics[k + "__histogram_edges"] = v.histogram.bin_edges
+                        wandb_hist = maybe_make_wandb_histogram(v.histogram)
+                        if wandb_hist is not None:
+                            wandb_metrics[k + "__histogram"] = wandb_hist
+            else:
+                wandb_metrics[k] = v
+
         step = None
         if self._wandb_step_key is not None:
-            value = metrics.get(self._wandb_step_key)
+            value = wandb_metrics.get(self._wandb_step_key)
             if isinstance(value, (int, float, np.number)) and not np.isnan(value):
                 step = int(value)
 
         if step is None:
-            self._wandb_run.log(metrics)
+            self._wandb_run.log(wandb_metrics)
         else:
-            self._wandb_run.log(metrics, step=step)
+            self._wandb_run.log(wandb_metrics, step=step)
 
     def close(self) -> None:
         if self.file:

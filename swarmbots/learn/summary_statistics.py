@@ -6,7 +6,13 @@ import torch
 
 TensorNpArrayOrList = torch.Tensor | np.ndarray | list
 
-SMALL_DATA_THRESHOLD = 0
+HISTOGRAM_DEFAULT_BINS = 10
+HISTOGRAM_BLOCKS = " ▁▂▃▄▅▆▇█"
+
+@dataclass
+class Histogram:
+    bin_frequencies: list[float]  # (n_bins)
+    bin_edges: list[float]  # (n_bins + 1)
 
 @dataclass
 class SummaryStatistics:
@@ -16,6 +22,7 @@ class SummaryStatistics:
     min_value: Optional[float] = None
     max_value: Optional[float] = None
     data: Optional[list] = None
+    histogram: Optional[Histogram] = None
 
 @dataclass
 class SummaryStatisticsFormat:
@@ -24,6 +31,7 @@ class SummaryStatisticsFormat:
     std: Optional[str] = None
     min_value: Optional[str] = None
     max_value: Optional[str] = None
+    histogram: bool | int = False
 
 
 def is_summary_statistics(obj: Any):
@@ -41,12 +49,14 @@ def format_summary_statistics(
             std='.3f',
             min_value=None,
             max_value=None,
+            histogram=False,
         )
 
     summary_statistics = maybe_compute_summary_statistics(
         x,
         find_min=stats_format.min_value is not None,
         find_max=stats_format.max_value is not None,
+        make_histogram=stats_format.histogram,
     )
 
     if summary_statistics is None:
@@ -79,6 +89,11 @@ def format_summary_statistics(
 
     if stats_format.n:
         representation += f' (n={format(n, stats_format.n)})'
+    
+    if stats_format.histogram and summary_statistics.histogram is not None:
+        if representation:
+            representation += ' '
+        representation += _format_histogram_blocks(summary_statistics.histogram.bin_frequencies)
 
     return representation
 
@@ -87,7 +102,8 @@ def compute_summary_statistics(
         arr: TensorNpArrayOrList,
         find_min: bool = False,
         find_max: bool = False,
-        small_data_threshold: int = SMALL_DATA_THRESHOLD,
+        make_histogram: bool | int = False,
+        keep_data: bool = True,
 ) -> Optional[SummaryStatistics]:
     if isinstance(arr, list):
         arr = np.array(arr)
@@ -113,13 +129,23 @@ def compute_summary_statistics(
         mean=mean,
         std=arr.ravel().std().item(),
     )
+    find_min = find_min or make_histogram
+    find_max = find_max or make_histogram
     if find_min:
         summary_stats.min_value = arr.min().item()
     if find_max:
         summary_stats.max_value = arr.max().item()
 
-    if n <= small_data_threshold:
-        summary_stats.data = arr.tolist()
+    if keep_data:
+        summary_stats.data = arr
+
+    if make_histogram:
+        summary_stats.histogram = _compute_histogram(
+            arr, 
+            min_val=summary_stats.min_value, 
+            max_val=summary_stats.max_value,
+            n_bins=make_histogram if isinstance(make_histogram, int) else HISTOGRAM_DEFAULT_BINS,
+        )
 
     return summary_stats
 
@@ -127,9 +153,12 @@ def maybe_compute_summary_statistics(
         x: TensorNpArrayOrList | SummaryStatistics | None,
         find_min: bool = False,
         find_max: bool = False,
-        small_data_threshold: int = SMALL_DATA_THRESHOLD,
+        make_histogram: bool | int = False,
+        keep_data: bool = True,
 ):
     if is_summary_statistics(x):
+        if make_histogram and x.histogram is None and x.data is not None:
+            compute_histogram(x, n_bins=make_histogram if isinstance(make_histogram, int) else HISTOGRAM_DEFAULT_BINS)
         return x
     if x is None:
         return None
@@ -137,5 +166,86 @@ def maybe_compute_summary_statistics(
         x,
         find_min=find_min,
         find_max=find_max,
-        small_data_threshold=small_data_threshold,
+        make_histogram=make_histogram,
+        keep_data=keep_data,
+    )
+    
+def compute_histogram(stats: SummaryStatistics, n_bins: int = HISTOGRAM_DEFAULT_BINS):
+    assert stats.data is not None
+    values = _to_1d_numpy(stats.data)
+    stats.min_value = values.min().item()
+    stats.max_value = values.max().item()
+    stats.histogram = _compute_histogram(values, stats.min_value, stats.max_value, n_bins)
+
+
+def _compute_histogram(
+    arr: TensorNpArrayOrList, 
+    min_val: float, 
+    max_val: float, 
+    n_bins: int = HISTOGRAM_DEFAULT_BINS
+) -> Histogram:
+    values = _to_1d_numpy(arr)
+    finite_values = values[np.isfinite(values)]
+
+    if finite_values.size == 0:
+        return Histogram(bin_frequencies=[0.0], bin_edges=[0.0, 1.0])
+
+    if min_val == max_val:
+        width = 1.0 if min_val == 0.0 else abs(min_val) * 0.01
+        low = min_val - width
+        high = max_val + width
+        return Histogram(bin_frequencies=[1.0], bin_edges=[float(low), float(high)])
+
+    bin_count = int(max(1, n_bins))
+    counts, edges = np.histogram(finite_values, bins=bin_count, range=(min_val, max_val))
+    total = float(counts.sum())
+    frequencies = (counts.astype(np.float64) / total) if total > 0.0 else np.zeros_like(counts, dtype=np.float64)
+
+    return Histogram(
+        bin_frequencies=[float(x) for x in frequencies.tolist()],
+        bin_edges=[float(x) for x in edges.tolist()],
+    )
+
+
+def _to_1d_numpy(arr: TensorNpArrayOrList) -> np.ndarray:
+    if isinstance(arr, list):
+        return np.asarray(arr, dtype=np.float64).ravel()
+    if isinstance(arr, np.ndarray):
+        return np.asarray(arr, dtype=np.float64).ravel()
+    if isinstance(arr, torch.Tensor):
+        return arr.detach().cpu().numpy().astype(np.float64, copy=False).ravel()
+    raise TypeError(f"Unsupported input type: {type(arr)}")
+
+
+def _format_histogram_blocks(freqs: list[float]) -> str:
+    if not freqs:
+        return "[]"
+
+    max_freq = max(freqs)
+    if not np.isfinite(max_freq) or max_freq <= 0.0:
+        return "[" + (" " * len(freqs)) + "]"
+
+    levels = len(HISTOGRAM_BLOCKS) - 1
+    chars: list[str] = []
+    for f in freqs:
+        if not np.isfinite(f) or f <= 0.0:
+            idx = 0
+        else:
+            idx = int(round(levels * (f / max_freq)))
+            idx = max(0, min(levels, idx))
+        chars.append(HISTOGRAM_BLOCKS[idx])
+    return "[" + "".join(chars) + "]"
+
+
+def maybe_make_wandb_histogram(histogram: Histogram) -> Any | None:
+    try:
+        import wandb  # type: ignore
+    except Exception:
+        return None
+
+    return wandb.Histogram(
+        np_histogram=(
+            np.asarray(histogram.bin_frequencies, dtype=np.float64),
+            np.asarray(histogram.bin_edges, dtype=np.float64),
+        )
     )

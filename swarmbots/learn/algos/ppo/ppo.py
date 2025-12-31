@@ -267,35 +267,33 @@ class PPO:
             if not continue_training:
                 break
 
-
-        metrics = {}
-        for i, dist in enumerate(self.policy.action_dist.distributions):
-            if hasattr(dist, "log_stds"):
-                metrics[f'std{i}'] = compute_summary_statistics(torch.exp(dist.log_stds), find_min=True, find_max=True)
-
         self.n_total_updates += n_updates
-        metrics.update({
-            'ent_loss': compute_summary_statistics(entropy_losses),
-            'act_loss': compute_summary_statistics(pg_losses),
-            'val_loss': compute_summary_statistics(value_losses),
-            'approx_kl': compute_summary_statistics(approx_kl_divs, find_max=True),
-            'clip_frac': compute_summary_statistics(clip_fractions),
-            'upd': n_updates,
-            'tot_upd': self.n_total_updates,
-            'expl_var': explained_var,
-        })
-        
-        if len(episode_infos) > 0:
-            rewards = [ep['r'] for ep in episode_infos]
-            lengths = [ep['l'] for ep in episode_infos]
-            timings = [ep['t'] for ep in episode_infos]
-            metrics['ep_rew'] = compute_summary_statistics(rewards, find_min=True, find_max=True)
-            metrics['ep_len'] = compute_summary_statistics(lengths, find_min=True, find_max=True)
-            metrics['ep_time'] = compute_summary_statistics(timings)
-        else:
-            metrics['ep_rew'] = None
-            metrics['ep_len'] = None
-            metrics['ep_time'] = None
+
+        with torch.no_grad():
+            metrics = {
+                'ent_loss': compute_summary_statistics(entropy_losses),
+                'act_loss': compute_summary_statistics(pg_losses),
+                'val_loss': compute_summary_statistics(value_losses),
+                'approx_kl': compute_summary_statistics(approx_kl_divs, find_max=True),
+                'clip_frac': compute_summary_statistics(clip_fractions),
+                'upd': n_updates,
+                'tot_upd': self.n_total_updates,
+                'expl_var': explained_var,
+            }
+
+            act_dim_sum = 0
+            action_dims = self.policy.action_dist.action_dims
+            for i, dist in enumerate(self.policy.action_dist.distributions):
+                act_dim = action_dims[i]
+                actions = sampler.actions[..., act_dim_sum:act_dim_sum+act_dim]
+                act_dim_sum += act_dim
+                metrics[f'act{i}'] = compute_summary_statistics(actions)
+                if hasattr(dist, "log_stds"):
+                    metrics[f'std{i}'] = compute_summary_statistics(torch.exp(dist.log_stds), find_min=True, find_max=True)
+
+            metrics['ep_rew'] = compute_summary_statistics([ep['r'] for ep in episode_infos], find_min=True, find_max=True)
+            metrics['ep_len'] = compute_summary_statistics([ep['l'] for ep in episode_infos], find_min=True, find_max=True)
+            metrics['ep_time'] = compute_summary_statistics([ep['t'] for ep in episode_infos])
 
         return metrics
 

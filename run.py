@@ -184,6 +184,8 @@ def main():
         logging_console_keys=[
             ('iteration', None),
             ('timesteps', None),
+            ('act0', SummaryStatisticsFormat(histogram=10)),
+            ('act1', SummaryStatisticsFormat(histogram=2)),
             ('std0', SummaryStatisticsFormat(mean='.3f', std='.3f', min_value='.3f', max_value='.3f')),
             ('val_loss', None),
             ('approx_kl', SummaryStatisticsFormat(mean='.3f', std='.3f', max_value='.3f')),
