@@ -1,17 +1,16 @@
 import json
 import pathlib
 import time
-from datetime import datetime
 from collections.abc import Collection
+from datetime import datetime
 from typing import Optional, Any
 
-import numpy as np
 import torch
 import torch.nn.functional as F
 from loguru import logger
 
-from swarmbots.learn.summary_statistics import compute_summary_statistics
-from swarmbots.learn.torch_device import as_device
+from swarmbots.learn.algos.ppo.ppo_policy import BasePPOPolicy
+from swarmbots.learn.algos.ppo.ppo_rollout_buffer import PPOEpisode, PPORolloutBuffer, PPOSampler
 from swarmbots.learn.checkpointing import (
     apply_env_state,
     extract_env_state,
@@ -19,11 +18,11 @@ from swarmbots.learn.checkpointing import (
     extract_policy_state_dict,
     load_checkpoint,
 )
-from swarmbots.learn.algos.ppo.ppo_policy import BasePPOPolicy
-from swarmbots.learn.algos.ppo.ppo_rollout_buffer import PPOEpisode, PPORolloutBuffer, PPOSampler
 from swarmbots.learn.env_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
 from swarmbots.learn.exponential_moving_average import ExponentialMovingAverage
 from swarmbots.learn.metrics_logger import MetricsLogger
+from swarmbots.learn.summary_statistics import compute_summary_statistics
+from swarmbots.learn.torch_device import as_device
 
 AGENTS_DIM = 1
 
@@ -265,7 +264,11 @@ class PPO:
 
                 if self.target_kl is not None and approx_kl_div > 1.5 * self.target_kl:
                     continue_training = False
-                    logger.debug(f'Early stopping at epoch {epoch}, batch {i} due to reaching max kl: {approx_kl_div:.3f}')
+                    msg = f"Early stopping at epoch {epoch}, batch {i} due to reaching max kl: {approx_kl_div:.3f}"
+                    if epoch == 0:
+                        logger.warning(msg)
+                    else:
+                        logger.debug(msg)
                     break
 
                 self.optimizer.zero_grad()

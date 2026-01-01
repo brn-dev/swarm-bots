@@ -1,4 +1,4 @@
-from typing import Any, Iterable
+from typing import Any, Iterable, Self
 
 import mujoco
 import numpy as np
@@ -274,3 +274,30 @@ class ObstacleStreetScenario(BaseScenario):
             return data.qpos[self._qpos_indices[:, 1]].mean()  # avg y pos of the unit bodies
 
         return data.xpos[self.payload_body_id, 1]
+
+    @staticmethod
+    def no_payload_no_opening_one_wall(
+            swarm: BaseSwarm,
+            wall_height: float = 0.3,
+            seed: int | None = None,
+            **kwargs
+    ) -> 'ObstacleStreetScenario':
+        scenario_kwargs = {
+            'actuators_activation_reward_weight': -5e-2,
+            'units_without_connections_reward_weight': -5e-3,
+            'movement_reward_weight':  1e-1,
+            'connectors_stayed_active_reward_weight':  1e-4,
+            'connectors_successfully_activated_reward_weight':  1e-3,
+            'connectors_unsuccessfully_activated_reward_weight': -0e-5,
+            'connectors_deactivated_reward_weight': 1.2e-3,
+        }
+        scenario_kwargs.update(kwargs)
+        return ObstacleStreetScenario(
+            swarm=swarm,
+            payload_type=None,
+            num_walls=1,
+            wall_height=wall_height,
+            opening_width=0.01,
+            **scenario_kwargs,
+            seed=seed,
+        )

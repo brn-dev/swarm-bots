@@ -1,13 +1,32 @@
 import os
-from typing import Optional
+from typing import Any
 
 import moviepy.video.io.ImageSequenceClip
 import numpy as np
 import torch
-from gymnasium.vector import VectorEnv
 
 from swarmbots.learn.base_policy import BasePolicy
 from swarmbots.learn.env_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
+
+
+def _maybe_reset_gsde_noise(
+    *,
+    policy: BasePolicy,
+    local_obs: torch.Tensor,
+    deterministic: bool,
+    rollout_step_idx: int,
+    gsde_sample_freq: int,
+) -> None:
+    if deterministic or not bool(getattr(policy, "gsde_enabled", False)):
+        return
+
+    action_dist = getattr(policy, "action_dist", None)
+    if action_dist is None or not hasattr(action_dist, "reset_noise"):
+        raise RuntimeError("Policy reports gsde_enabled=True but has no action_dist.reset_noise().")
+
+    should_reset = rollout_step_idx == 0 or (gsde_sample_freq > 0 and (rollout_step_idx % gsde_sample_freq) == 0)
+    if should_reset:
+        action_dist.reset_noise(batch_shape=tuple(local_obs.shape[:-1]))
 
 
 def record_policy(
@@ -17,6 +36,7 @@ def record_policy(
     video_name_prefix: str,
     num_episodes: int = 5,
     deterministic: bool = False,
+    gsde_sample_freq: int = -1,
     fps: int = 30,
     device: torch.device = torch.device("cpu"),
 ):
@@ -30,6 +50,8 @@ def record_policy(
         video_name_prefix: Prefix for video filenames
         num_episodes: Number of episodes to record
         deterministic: Whether to use deterministic actions
+        gsde_sample_freq: If the policy uses gSDE and deterministic=False, resample noise every N steps. If <= 0,
+            noise is sampled once at the beginning of each episode.
         fps: Frames per second for the output video
         device: Torch device
     """
@@ -75,6 +97,13 @@ def record_policy(
                 local_obs = obs['local_obs']
                 global_obs = obs['global_obs']
                 
+                _maybe_reset_gsde_noise(
+                    policy=policy,
+                    local_obs=local_obs,
+                    deterministic=deterministic,
+                    rollout_step_idx=step_cnt,
+                    gsde_sample_freq=gsde_sample_freq,
+                )
                 actions = policy.act(local_obs, global_obs, deterministic=deterministic)
             
             obs, _, term, trunc, _ = env.step(actions)

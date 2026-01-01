@@ -4,6 +4,7 @@ from gymnasium.wrappers.vector import RecordEpisodeStatistics
 import torch
 import sys
 
+from swarmbots.learn.action_dists.hybrid_action_dist import GSDEParams
 from swarmbots.learn.algos.mat.mat_policy import MATPolicy
 from swarmbots.learn.env_wrappers.normalize_obs_wrapper import NormalizeLocalObsWrapper
 from swarmbots.learn.env_wrappers.swarm_bots_learn_env_wrapper import SwarmBotsLearnEnvWrapper
@@ -34,9 +35,8 @@ def make_env_fn(
             unit_start_locations=unit_start_locations,
             randomize_unit_orientations=False
         )
-        scenario = ObstacleStreetScenario(
+        scenario = ObstacleStreetScenario.no_payload_no_opening_one_wall(
             swarm=swarm,
-            payload_type=None,
             **scenario_kwargs
         )
         return SwarmBotsEnv(
@@ -67,15 +67,16 @@ def main():
         (-0.4, 0.4, 0),
         (-0.4, -0.4, 0),
     ]
-    episode_length = 512
-    load_path = "runs/mat_swarm_bots/2025-12-28_17-45-07/models/model_best_1.pt"
+    episode_length = 256
+    load_path = "runs/mat_swarm_bots/2026-01-01_15-37-20/models/best/2026-01-01_15-37-33/model_best_1.pt"
     rollout_device = torch.device("cpu")
+    gsde_sample_freq = 8
 
     print("Creating env...")
     record_env_fn = make_env_fn(
         unit_start_locations=unit_start_locations,
         episode_length=episode_length,
-        scenario_kwargs={"num_walls": 1, 'wall_height': 0.3},
+        scenario_kwargs={},
         render_mode='rgb_array'
     )
     
@@ -105,10 +106,17 @@ def main():
         dim_feedforward_encoder=96,
         dim_feedforward_decoder=96,
         dropout=0.0,
-        latent_pi_dim_per_agent=64,
-        base_std=1.0,
         n_critic_local_projection_hidden_layers=1,
         n_critic_value_regressor_hidden_layers=2,
+        continuous_config=GSDEParams(
+            base_std=1.0,
+            latent_sde_dim=None,
+            std_learnable=True,
+            full_std=True,
+            sde_learn_features=False,
+            log_std_clamp_range=(-20.0, 2.0),
+            normalize_latent_sde_by_dim=True
+        )
     )
     print(policy)
 
@@ -126,6 +134,7 @@ def main():
         video_name_prefix='test_run',
         num_episodes=5,
         deterministic=True,
+        gsde_sample_freq=gsde_sample_freq,
         device=rollout_device,
     )
     
