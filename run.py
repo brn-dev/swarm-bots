@@ -32,9 +32,8 @@ def make_env_fn(
             unit_start_locations=unit_start_locations,
             randomize_unit_orientations=False
         )
-        scenario = ObstacleStreetScenario(
+        scenario = ObstacleStreetScenario.no_payload_no_opening_one_wall(
             swarm=swarm,
-            payload_type=None,
             **scenario_kwargs
         )
         return SwarmBotsEnv(
@@ -54,7 +53,7 @@ def main():
         format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <level>{message}</level>",
     )
 
-    n_envs = 4
+    n_envs = 8
     # unit_start_locations = [
     #     (0.0, 0.0, 0.0),
     #     (-0.6, 0, 0),
@@ -66,8 +65,7 @@ def main():
         (-0.4, 0.4, 0),
         (-0.4, -0.4, 0),
     ]
-    episode_length = 512
-    n_episodes_per_rollout = 4
+    episode_length = 256
     total_timesteps = 50_000_000
     save_interval = 500
 
@@ -86,10 +84,6 @@ def main():
     train_device = torch.device("cuda" if use_cuda else "cpu")
 
     scenario_kwargs = {
-        "num_walls": 1,
-        'wall_height': 0.3,
-        'opening_width': 0.1,  # basically no opening -> must climb over
-        'actuators_activation_reward_weight': -5e-3,
     }
 
     env_fns = [
@@ -117,7 +111,7 @@ def main():
         for _ in range(10):
             logger.warning('USING SYNC VECTOR ENV')
 
-    gamma = 0.95
+    gamma = 0.98
     
     print("Wrapping with RecordEpisodeStatistics, NormalizeObservation, NormalizeReward...")
     vector_env = RecordEpisodeStatistics(vector_env)
@@ -144,18 +138,18 @@ def main():
     # )
     policy = MATPolicy(
         env=env,
-        d_model=64,
-        nhead_encoder=2,
-        nhead_decoder=2,
+        d_model=96,
+        nhead_encoder=4,
+        nhead_decoder=4,
         num_layers_encoder=2,
         num_layers_decoder=2,
-        dim_feedforward_encoder=96,
-        dim_feedforward_decoder=96,
+        dim_feedforward_encoder=128,
+        dim_feedforward_decoder=128,
         dropout=0.0,
         n_critic_local_projection_hidden_layers=1,
-        n_critic_value_regressor_hidden_layers=2,
+        n_critic_value_regressor_hidden_layers=1,
         continuous_config=GSDEParams(
-            base_std=1.0,
+            base_std=0.6,
             latent_sde_dim=None,
             std_learnable=True,
             full_std=True,
@@ -171,9 +165,9 @@ def main():
         policy=policy,
         env=env,
         learning_rate=2e-5 if load_path is None else 3e-6,
-        n_episodes_per_rollout=n_episodes_per_rollout,
+        n_episodes_per_rollout=n_envs,
         max_episode_length=episode_length,
-        batch_size=64,
+        batch_size=128,
         n_epochs=10,
         gamma=gamma,
         gae_lambda=0.95,
@@ -181,7 +175,7 @@ def main():
         train_device=train_device,
         rollout_device=rollout_device,
         target_kl=0.05,
-        gsde_sample_freq=8,
+        gsde_sample_freq=6,
     )
 
     if load_path:

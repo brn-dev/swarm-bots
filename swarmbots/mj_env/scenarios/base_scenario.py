@@ -175,7 +175,7 @@ class BaseScenario(abc.ABC):
         for (u1, c1, u2, c2), angle in zip(*connections.get_active_connections()):
             self._activate_equality_constraint(model, data, u1, c1, u2, c2, angle)
 
-        state['avg_unit_pos'] = self._compute_avg_pos(data)
+        state['unit_positions'] = data.qpos[self._qpos_indices[:, :3]].copy()
 
         return state, connections
 
@@ -465,10 +465,10 @@ class BaseScenario(abc.ABC):
         units_without_connections_ratio = num_units_without_connections / self.num_units
         reward += units_without_connections_ratio * self.units_without_connections_reward_weight
 
-        previous_avg_pos = state['avg_unit_pos']
-        avg_pos = self._compute_avg_pos(data)
-        state['avg_unit_pos'] = avg_pos
-        avg_movement = np.linalg.norm(avg_pos - previous_avg_pos)
+        prev_unit_positions = state['unit_positions']
+        unit_positions = data.qpos[self._qpos_indices[:, :3]].copy()
+        state['unit_positions'] = unit_positions
+        avg_movement = np.linalg.norm(unit_positions - prev_unit_positions).mean()
         state['avg_movement'] = avg_movement
         reward += avg_movement * self.movement_reward_weight
 
@@ -484,7 +484,4 @@ class BaseScenario(abc.ABC):
         reward += connectors_reward
 
         return reward
-
-    def _compute_avg_pos(self, data: mujoco.MjData):
-        return data.qpos[self._qpos_indices[:, :3]].mean()
 
