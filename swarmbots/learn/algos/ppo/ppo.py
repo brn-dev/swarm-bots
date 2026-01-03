@@ -23,6 +23,7 @@ from swarmbots.learn.exponential_moving_average import ExponentialMovingAverage
 from swarmbots.learn.metrics_logger import MetricsLogger
 from swarmbots.learn.summary_statistics import compute_summary_statistics
 from swarmbots.learn.torch_device import as_device
+from swarmbots.learn.performance_timer import PerformanceTimer
 
 AGENTS_DIM = 1
 
@@ -40,7 +41,7 @@ def collect_whole_episodes(
         policy: BasePPOPolicy,
         buffer: PPORolloutBuffer,
         gsde_sample_freq: int = -1,
-) -> tuple[list[PPOEpisode], list[dict]]:
+) -> tuple[list[PPOEpisode], list[dict], dict[str, Any]]:
     buffer.reset()
     obs, info = env.reset()
     is_final = torch.zeros((buffer.n_envs,), dtype=torch.bool, device=buffer.rollout_device)
@@ -52,18 +53,29 @@ def collect_whole_episodes(
     episode_infos = []
     rollout_step_idx = 0
 
+    reset_noise_timings: list[float] = []
+    policy_forward_timings: list[float] = []
+    env_step_timings: list[float] = []
+    buffer_add_timings: list[float] = []
+
     while not buffer.is_ready():
         local_obs = obs['local_obs']
         global_obs = obs['global_obs']
 
         if policy.gsde_enabled and gsde_sample_freq > 0 and (rollout_step_idx % gsde_sample_freq) == 0:
-            policy.action_dist.reset_noise(batch_shape=tuple(local_obs.shape[:-1]))
+            with PerformanceTimer() as reset_noise_timer:
+                policy.action_dist.reset_noise(batch_shape=tuple(local_obs.shape[:-1]))
+            reset_noise_timings.append(reset_noise_timer.get_duration())
 
-        actions, log_probs, values = policy(local_obs, global_obs)
+        with PerformanceTimer() as policy_forward_timer:
+            actions, log_probs, values = policy(local_obs, global_obs)
+        policy_forward_timings.append(policy_forward_timer.get_duration())
         
         values = values.masked_fill(was_terminated, 0.0)
 
-        new_obs, rewards, terminations, truncations, infos = env.step(actions)
+        with PerformanceTimer() as env_step_timer:
+            new_obs, rewards, terminations, truncations, infos = env.step(actions)
+        env_step_timings.append(env_step_timer.get_duration())
         dones = torch.logical_or(terminations, truncations)
 
         if "episode" in infos:
@@ -75,22 +87,38 @@ def collect_whole_episodes(
                         't': infos['episode']['t'][i],
                     })
 
-        buffer.add(
-            local_obs=local_obs,
-            global_obs=global_obs,
-            actions=actions,
-            rewards=rewards,
-            log_probs=log_probs,
-            values=values,
-            is_final=is_final,
-        )
+        with PerformanceTimer() as buffer_add_timer:
+            buffer.add(
+                local_obs=local_obs,
+                global_obs=global_obs,
+                actions=actions,
+                rewards=rewards,
+                log_probs=log_probs,
+                values=values,
+                is_final=is_final,
+            )
+        buffer_add_timings.append(buffer_add_timer.get_duration())
 
         obs = new_obs
         is_final = dones
         was_terminated = terminations
         rollout_step_idx += 1
 
-    return buffer.get_whole_episodes(), episode_infos
+    with PerformanceTimer() as buffer_get_whole_episodes_timer:
+        episodes = buffer.get_whole_episodes()
+        
+    metrics = {
+        'reset_noise_time': compute_summary_statistics(reset_noise_timings),
+        'total_reset_noise_time': sum(reset_noise_timings),
+        'policy_forward_time': compute_summary_statistics(policy_forward_timings),
+        'total_policy_forward_time': sum(policy_forward_timings),
+        'env_step_time': compute_summary_statistics(env_step_timings),
+        'total_env_step_time': sum(env_step_timings),
+        'buffer_add_time': compute_summary_statistics(buffer_add_timings),
+        'total_buffer_add_time': sum(buffer_add_timings),
+        'buffer_get_whole_episodes_time': buffer_get_whole_episodes_timer.get_duration(),
+    }
+    return episodes, episode_infos, metrics
 
 
 # based on https://github.com/DLR-RM/stable-baselines3/blob/master/stable_baselines3/ppo/ppo.py
@@ -182,18 +210,20 @@ class PPO:
         }
 
     def train(self) -> dict[str, Any]:
-        
-        episodes, episode_infos = collect_whole_episodes(
-            env=self.env,
-            policy=self.policy,
-            buffer=self.rollout_buffer,
-            gsde_sample_freq=self.gsde_sample_freq,
-        )
+        with PerformanceTimer() as rollout_timer:
+            episodes, episode_infos, rollout_metrics = collect_whole_episodes(
+                env=self.env,
+                policy=self.policy,
+                buffer=self.rollout_buffer,
+                gsde_sample_freq=self.gsde_sample_freq,
+            )
 
-        self.policy.train()
-        self.policy.to(self.train_device)
+        with PerformanceTimer() as to_train_device_timer:
+            self.policy.train()
+            self.policy.to(self.train_device)
         
-        sampler = PPOSampler(episodes, history_embeddings=None)
+        with PerformanceTimer() as sampler_init_timer:
+            sampler = PPOSampler(episodes, history_embeddings=None)
 
         y_pred = sampler.values.flatten()
         y_true = sampler.returns.flatten()
@@ -212,8 +242,20 @@ class PPO:
         continue_training = True
         n_updates = 0
 
+        sampling_timings: list[float] = []
+        sample_timer = PerformanceTimer()
+        
+        update_timings: list[float] = []
+        update_timer = PerformanceTimer()
+
+        train_timer = PerformanceTimer().start()
         for epoch in range(self.n_epochs):
+            sample_timer.start()
             for i, batch in enumerate(sampler.sample(self.batch_size)):
+                sampling_timings.append(sample_timer.stop().get_duration())
+
+                update_timer.start()
+
                 log_probs, entropies, values = self.policy.evaluate_actions(
                     local_obs=batch.local_obs,
                     global_obs=batch.global_obs,
@@ -261,7 +303,7 @@ class PPO:
                     log_ratio = log_prob - old_log_prob
                     approx_kl_div = torch.mean((torch.exp(log_ratio) - 1) - log_ratio).item()
                     approx_kl_divs.append(approx_kl_div)
-
+                
                 if self.target_kl is not None and approx_kl_div > 1.5 * self.target_kl:
                     continue_training = False
                     msg = f"Early stopping at epoch {epoch}, batch {i} due to reaching max kl: {approx_kl_div:.3f}"
@@ -278,11 +320,17 @@ class PPO:
 
                 n_updates += 1
 
+                update_timings.append(update_timer.stop().get_duration())
+                sample_timer.start()
+
             if not continue_training:
                 break
+        
+        train_timer.stop()
 
         self.n_total_updates += n_updates
 
+        metrics_timer = PerformanceTimer().start()
         with torch.no_grad():
             metrics = {
                 'ent_loss': compute_summary_statistics(entropy_losses),
@@ -308,8 +356,21 @@ class PPO:
             metrics['ep_rew'] = compute_summary_statistics([ep['r'] for ep in episode_infos], find_min=True, find_max=True)
             metrics['ep_len'] = compute_summary_statistics([ep['l'] for ep in episode_infos], find_min=True, find_max=True)
             metrics['ep_time'] = compute_summary_statistics([ep['t'] for ep in episode_infos])
+        metrics_timer.stop()
 
-        return metrics
+        return {
+            **metrics,
+            **rollout_metrics,
+            'rollout_time': rollout_timer.get_duration(),
+            'to_train_device_time': to_train_device_timer.get_duration(),
+            'sampler_init_time': sampler_init_timer.get_duration(),
+            'sampling_time': compute_summary_statistics(sampling_timings),
+            'total_sampling_time': sum(sampling_timings),
+            'update_time': compute_summary_statistics(update_timings),
+            'total_update_time': sum(update_timings),
+            'metrics_time': metrics_timer.get_duration(),
+            'train_time': train_timer.get_duration(),
+        }
 
     def learn(
             self,
@@ -468,6 +529,7 @@ class PPO:
         metadata: dict[str, Any] = {
             "algorithm": "PPO",
             "hyper_parameters": self.get_hyper_parameters(),
+            "policy_hyper_parameters": self.policy.get_hyper_parameters(),
             "policy_repr": str(self.policy),
             "env_repr": str(self.env),
         }
@@ -556,9 +618,9 @@ class PPO:
         torch.save(save_dict, path)
 
         metadata = {
-            "n_total_updates": int(self.n_total_updates),
-            "n_total_timesteps": int(self.n_total_timesteps),
-            "return_ema": return_ema,
+            'n_total_updates': int(self.n_total_updates),
+            'n_total_timesteps': int(self.n_total_timesteps),
+            'return_ema': return_ema,
         }
         metadata_path = path.with_name(f"{path.name}.json")
         metadata_path.write_text(json.dumps(metadata, indent=2, sort_keys=True), encoding="utf-8")

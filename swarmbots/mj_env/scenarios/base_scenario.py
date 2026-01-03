@@ -40,9 +40,11 @@ class BaseScenario(abc.ABC):
     def __init__(
         self,
             swarm: BaseSwarm,
+            actuator_strength: float,
             actuators_activation_reward_weight: float,
             units_without_connections_reward_weight: float,
             movement_reward_weight: float,
+            height_reward_weight: float,
             connectors_stayed_active_reward_weight: float,
             connectors_successfully_activated_reward_weight: float,
             connectors_unsuccessfully_activated_reward_weight: float,
@@ -64,10 +66,12 @@ class BaseScenario(abc.ABC):
         self.num_connectors = self.num_units * self.limbs_per_unit
         self.connection_dist_threshold = swarm.config.connection_dist_threshold
         self.connection_angle_threshold = swarm.config.connection_angle_threshold
+        self.actuator_strength = actuator_strength
 
         self.actuators_activation_reward_weight = actuators_activation_reward_weight
         self.units_without_connections_reward_weight = units_without_connections_reward_weight
         self.movement_reward_weight = movement_reward_weight
+        self.height_reward_weight = height_reward_weight
         self.connectors_stayed_active_reward_weight = connectors_stayed_active_reward_weight
         self.connectors_successfully_activated_reward_weight = connectors_successfully_activated_reward_weight
         self.connectors_unsuccessfully_activated_reward_weight = connectors_unsuccessfully_activated_reward_weight
@@ -77,7 +81,6 @@ class BaseScenario(abc.ABC):
         self.include_connectors_xquat_in_obs = include_connectors_xquat_in_obs
         self.friction = _validate_geom_friction(friction)
         self.force_elliptic_cone = force_elliptic_cone
-        
         self.spec = self.create_scenario_spec()
         self.dummy_model, self.dummy_data = self.build()
 
@@ -124,9 +127,11 @@ class BaseScenario(abc.ABC):
     def get_settings(self):
         return {
             'swarm': self.swarm.get_settings(),
+            'actuator_strength': self.actuator_strength,
             'actuators_activation_reward_weight': self.actuators_activation_reward_weight,
             'units_without_connections_reward_weight': self.units_without_connections_reward_weight,
             'movement_reward_weight': self.movement_reward_weight,
+            'height_reward_weight': self.height_reward_weight,
             'connectors_stayed_active_reward_weight': self.connectors_stayed_active_reward_weight,
             'connectors_successfully_activated_reward_weight': self.connectors_successfully_activated_reward_weight,
             'connectors_unsuccessfully_activated_reward_weight': self.connectors_unsuccessfully_activated_reward_weight,
@@ -198,7 +203,7 @@ class BaseScenario(abc.ABC):
         return model, data
 
     def get_swarm_start_location(self):
-        return np.array([0.0, 0.0, 1.0])
+        return np.array([0.0, 0.0, 0.35])
 
     def reset_scenario(self, model: mujoco.MjModel, data: mujoco.MjData) -> tuple[dict, SwarmConnections]:
         mujoco.mj_resetData(model, data)
@@ -276,11 +281,10 @@ class BaseScenario(abc.ABC):
             model: mujoco.MjModel,
             data: mujoco.MjData,
             action: SwarmActDict,
-            action_scale: float,
             state: dict,
             connections: SwarmConnections
     ) -> None:
-        data.ctrl[self._ctrl_indices] = action['actuators'] * action_scale
+        data.ctrl[self._ctrl_indices] = action['actuators'] * self.actuator_strength
 
         connectors_action = np.asarray(action['connectors'], dtype=bool)
 
@@ -505,6 +509,10 @@ class BaseScenario(abc.ABC):
         avg_movement = np.linalg.norm(unit_positions - prev_unit_positions, axis=1).mean()
         state['avg_movement'] = avg_movement
         reward += avg_movement * self.movement_reward_weight
+
+        avg_height = unit_positions[:, 2].mean()
+        state['avg_height'] = avg_height
+        reward += avg_height * self.height_reward_weight
 
         connectors_reward = 0.0
         connectors_reward += state['num_connectors_stayed_active'] * self.connectors_stayed_active_reward_weight

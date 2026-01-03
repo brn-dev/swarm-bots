@@ -1,16 +1,13 @@
-from loguru import logger
-from gymnasium.vector import SyncVectorEnv
-from gymnasium.wrappers.vector import RecordEpisodeStatistics
-import torch
 import sys
 
+import torch
+from gymnasium.vector import SyncVectorEnv
+from gymnasium.wrappers.vector import RecordEpisodeStatistics
+from loguru import logger
 from torch import nn
 
 from swarmbots.learn.action_dists.hybrid_action_dist import GSDEParams
 from swarmbots.learn.algos.mat.mat_policy import MATPolicy
-from swarmbots.learn.algos.mat.mat_policy_old1 import MATPolicyOld1
-from swarmbots.learn.env_wrappers.normalize_obs_wrapper import NormalizeLocalObsWrapper
-from swarmbots.learn.env_wrappers.swarm_bots_learn_env_wrapper import SwarmBotsLearnEnvWrapper
 from swarmbots.learn.checkpointing import (
     apply_env_state,
     extract_env_state,
@@ -18,6 +15,8 @@ from swarmbots.learn.checkpointing import (
     freeze_env_normalization,
     load_checkpoint,
 )
+from swarmbots.learn.env_wrappers.normalize_obs_wrapper import NormalizeLocalObsWrapper
+from swarmbots.learn.env_wrappers.swarm_bots_learn_env_wrapper import SwarmBotsLearnEnvWrapper
 from swarmbots.learn.recording import record_policy
 from swarmbots.mj_env.scenarios.obstacle_street_scenario import ObstacleStreetScenario
 from swarmbots.mj_env.swarm.homogeneous_swarm import HomogeneousSwarm
@@ -71,7 +70,7 @@ def main():
         (-0.4, -0.4, 0),
     ]
     episode_length = 256
-    load_path = "runs/mat_swarm_bots/2026-01-02_17-29-17/models/best/2026-01-02_17-29-34/model_best_0.pt"
+    load_path = "runs/mat_swarm_bots/2026-01-03_22-36-40/models/model_2045851_steps.pt"
     deterministic = False
     rollout_device = torch.device("cpu")
     gsde_sample_freq = 6
@@ -93,21 +92,23 @@ def main():
     record_env = SwarmBotsLearnEnvWrapper(record_vector_env, device=rollout_device)
 
     print("Initializing Policy...")
-    policy = MATPolicyOld1(
+    policy = MATPolicy(
         env=record_env,
         d_model=96,
-        nhead_encoder=4,
-        nhead_decoder=4,
+        d_model_decoder=64,
+        nhead_encoder=3,
+        nhead_decoder=2,
         num_layers_encoder=2,
         num_layers_decoder=2,
         dim_feedforward_encoder=128,
-        dim_feedforward_decoder=128,
+        dim_feedforward_decoder=96,
         dropout=0.0,
         n_critic_local_projection_hidden_layers=1,
         n_critic_value_regressor_hidden_layers=1,
+        cross_attn_first=True,
         act_fn_cls=nn.GELU,
         continuous_config=GSDEParams(
-            base_std=0.9,
+            base_std=0.5,
             latent_sde_dim=None,
             std_learnable=True,
             full_std=True,
