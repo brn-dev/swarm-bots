@@ -421,12 +421,12 @@ class PPO:
             if save_interval is not None and run_dir is not None and iteration % save_interval == 0:
                 save_path = run_dir / f"models/model_{current_timesteps}_steps.pt"
                 self.save(save_path, save_optimizer=save_optimizer, return_ema=current_episode_return_ema)
-                logger.log("SAVE", f"Saved model to {save_path}")
+                logger.log("SAVE", f"Saved model to {save_path.as_posix()}")
 
         if run_dir is not None:
             save_path = run_dir / f"models/model_{current_timesteps}_steps_final.pt"
             self.save(save_path, save_optimizer=save_optimizer, return_ema=episode_return_ema.get())
-            logger.log("SAVE", f"Saved final model to {save_path}")
+            logger.log("SAVE", f"Saved final model to {save_path.as_posix()}")
 
         metric_logger.close()
 
@@ -460,7 +460,7 @@ class PPO:
         self.save(best_save_path, save_optimizer=save_optimizer, return_ema=current_episode_return_ema)
         logger.log(
             "SAVE",
-            f"Saved best-EMA model to {best_save_path} (ep_rew_ema={best_episode_return_ema:.4f})",
+            f"Saved best-EMA model to {best_save_path.as_posix()} (ep_rew_ema={best_episode_return_ema:.4f})",
         )
         return best_episode_return_ema, best_save_counter
 

@@ -7,6 +7,8 @@ import torch
 
 from swarmbots.learn.base_policy import BasePolicy
 from swarmbots.learn.env_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
+from swarmbots.learn.summary_statistics import SummaryStatistics, compute_summary_statistics, format_summary_statistics, \
+    SummaryStatisticsFormat
 
 
 def _maybe_reset_gsde_noise(
@@ -105,6 +107,7 @@ def record_policy(
                     gsde_sample_freq=gsde_sample_freq,
                 )
                 actions = policy.act(local_obs, global_obs, deterministic=deterministic)
+                print(format_summary_statistics(compute_summary_statistics(actions[:, :, :8], make_histogram=True), SummaryStatisticsFormat(histogram=True)))
             
             obs, _, term, trunc, _ = env.step(actions)
             

@@ -5,6 +5,7 @@ import torch
 from gymnasium.vector import SyncVectorEnv, AsyncVectorEnv
 from gymnasium.wrappers.vector import RecordEpisodeStatistics, NormalizeReward
 from loguru import logger
+from torch import nn
 
 from swarmbots.learn.action_dists.hybrid_action_dist import GSDEParams
 from swarmbots.learn.algos.mat.mat_policy import MATPolicy
@@ -129,13 +130,6 @@ def main():
     print(f"connectors_dim: {env.connectors_dim}")
 
     print("Initializing Policy...")
-    # policy = PPOPolicy(
-    #     env=env,
-    #     actor_hidden_dims=[256],
-    #     latent_pi_dim_per_agent=256 // env.n_agents,
-    #     critic_hidden_dims=[256, 256],
-    #     act_fun_class=nn.Tanh
-    # )
     policy = MATPolicy(
         env=env,
         d_model=96,
@@ -148,8 +142,9 @@ def main():
         dropout=0.0,
         n_critic_local_projection_hidden_layers=1,
         n_critic_value_regressor_hidden_layers=1,
+        act_fn_cls=nn.GELU,
         continuous_config=GSDEParams(
-            base_std=0.6,
+            base_std=0.5,
             latent_sde_dim=None,
             std_learnable=True,
             full_std=True,
@@ -164,10 +159,10 @@ def main():
     ppo = PPO(
         policy=policy,
         env=env,
-        learning_rate=2e-5 if load_path is None else 3e-6,
+        learning_rate=1e-5 if load_path is None else 3e-6,
         n_episodes_per_rollout=n_envs,
         max_episode_length=episode_length,
-        batch_size=128,
+        batch_size=256,
         n_epochs=10,
         gamma=gamma,
         gae_lambda=0.95,

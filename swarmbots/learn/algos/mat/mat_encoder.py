@@ -19,6 +19,7 @@ class MATEncoder(nn.Module):
             nhead: int,
             d_model: int,
             output_norm: nn.Module,
+            enable_nested_tensor: bool = True,
     ):
         super().__init__()
         self.n_agents = n_agents
@@ -37,6 +38,7 @@ class MATEncoder(nn.Module):
             ),
             num_layers=num_layers,
             norm=output_norm,
+            enable_nested_tensor=enable_nested_tensor,
         )
 
     def forward(self, local_embeddings: torch.Tensor):

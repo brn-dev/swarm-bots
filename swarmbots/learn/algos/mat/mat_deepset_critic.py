@@ -15,7 +15,7 @@ class MATDeepSetCritic(nn.Module):
             local_projection_hidden_dims: list[int],
             value_regressor_hidden_dims: list[int],
             linear_init: LinearInitialization = init_linear_orthogonal,
-            act_fun_class=nn.ReLU
+            act_fn_class=nn.ReLU
     ):
         super().__init__()
         self.n_agents = n_agents
@@ -29,7 +29,7 @@ class MATDeepSetCritic(nn.Module):
                 hidden_dims=local_projection_hidden_dims,
                 end_with_act_fn=False,
                 linear_init=linear_init,
-                act_fn_cls=act_fun_class
+                act_fn_cls=act_fn_class
             )
             value_regressor_input_dim = local_projection_hidden_dims[-1]
         else:
@@ -42,7 +42,7 @@ class MATDeepSetCritic(nn.Module):
             hidden_dims=value_regressor_hidden_dims + [1],
             end_with_act_fn=False,
             linear_init=linear_init,
-            act_fn_cls=act_fun_class
+            act_fn_cls=act_fn_class
         )
 
     def forward(self, augmented_observations: torch.Tensor) -> torch.Tensor:

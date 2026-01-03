@@ -149,7 +149,7 @@ def compute_summary_statistics(
             values,
             min_val=summary_stats.min_value, 
             max_val=summary_stats.max_value,
-            n_bins=make_histogram if isinstance(make_histogram, int) else HISTOGRAM_DEFAULT_BINS,
+            n_bins=HISTOGRAM_DEFAULT_BINS if isinstance(make_histogram, bool) else make_histogram,
         )
 
     return summary_stats
