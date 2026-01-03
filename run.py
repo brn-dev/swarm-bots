@@ -51,7 +51,7 @@ def main():
     logger.add(
         sys.stderr,
         colorize=True,
-        format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <level>{message}</level>",
+        format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <5}</level> | <level>{message}</level>",
     )
 
     n_envs = 8
@@ -112,7 +112,7 @@ def main():
         for _ in range(10):
             logger.warning('USING SYNC VECTOR ENV')
 
-    gamma = 0.98
+    gamma = 0.987
     
     print("Wrapping with RecordEpisodeStatistics, NormalizeObservation, NormalizeReward...")
     vector_env = RecordEpisodeStatistics(vector_env)
@@ -133,15 +133,17 @@ def main():
     policy = MATPolicy(
         env=env,
         d_model=96,
-        nhead_encoder=4,
-        nhead_decoder=4,
+        d_model_decoder=64,
+        nhead_encoder=3,
+        nhead_decoder=2,
         num_layers_encoder=2,
         num_layers_decoder=2,
         dim_feedforward_encoder=128,
-        dim_feedforward_decoder=128,
+        dim_feedforward_decoder=96,
         dropout=0.0,
         n_critic_local_projection_hidden_layers=1,
         n_critic_value_regressor_hidden_layers=1,
+        cross_attn_first=True,
         act_fn_cls=nn.GELU,
         continuous_config=GSDEParams(
             base_std=0.5,
@@ -192,6 +194,7 @@ def main():
         logging_console_keys=[
             ('iteration', None),
             ('timesteps', None),
+            ('tot_upd', None),
             ('act0', SummaryStatisticsFormat(histogram=10)),
             ('act1', SummaryStatisticsFormat(histogram=2)),
             ('std0', SummaryStatisticsFormat(mean='.3f', std='.3f', min_value='.3f', max_value='.3f')),
@@ -199,7 +202,6 @@ def main():
             ('approx_kl', SummaryStatisticsFormat(mean='.3f', std='.3f', max_value='.3f')),
             ('clip_frac', None),
             ('upd', '3'),
-            ('tot_upd', None),
             ('expl_var', None),
             ('ep_rew', SummaryStatisticsFormat(mean=' .2f', std='.2f', max_value='.2f')),
             ('ep_rew_ema', ' .3f'),

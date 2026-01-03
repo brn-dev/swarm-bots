@@ -18,19 +18,17 @@ class SwarmBotsEnv(gymnasium.Env):
         self,
         scenario: BaseScenario,
         episode_length: int = 500,
-        actuator_strength: float = 3.0,
         action_repeat: int = 15,
         render_mode: str | None = None,
         width: int = 640,
         height: int = 480,
         camera: int | list[int] | Literal['all'] = 'all',
         scene_option: MjvOption = None,
-        simulation_unstable_reward: float = -0.5,
+        simulation_unstable_reward: float = -1.0,
         return_scenario_state_as_infos: bool = False
     ):
         self.action_repeat = action_repeat
         self.episode_length = episode_length
-        self.action_scale = actuator_strength
         self.render_mode = render_mode
         self.width = width
         self.height = height
@@ -68,7 +66,6 @@ class SwarmBotsEnv(gymnasium.Env):
         return {
             'scenario': self.scenario.get_settings(),
             'episode_length': self.episode_length,
-            'actuator_strength': self.action_scale,
             'action_repeat': self.action_repeat,
             'simulation_unstable_reward': self.simulation_unstable_reward,
         }
@@ -92,7 +89,6 @@ class SwarmBotsEnv(gymnasium.Env):
             model=self.model,
             data=self.data,
             action=action,
-            action_scale=self.action_scale,
             state=self.scenario_state,
             connections=self.swarm_connections,
         )
