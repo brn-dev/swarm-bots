@@ -1,3 +1,6 @@
+## General
+Be blunt. If you think my request is flawed, tell me what's wrong and suggest something better. If you are unsure about something, ask.
+
 ## Comments 
 
 Do NOT write simple comments that simple describe the next lines/the next few lines! For example: 
@@ -21,3 +24,4 @@ If you are unsure about how a specfic library works or how its API looks like, s
 
 ## Infos
 We are using python >= 3.11
+Don't care too much about backwards compatibility. It's better to implement something properly, just tell me if something breaks old stuff.

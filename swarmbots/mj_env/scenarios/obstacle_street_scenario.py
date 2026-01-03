@@ -26,6 +26,8 @@ class ObstacleStreetScenario(BaseScenario):
             unusable_opening_offset: float = 2.0,
             street_width: float = 10.0,
             no_initial_ramp: bool = True,
+            friction: float | Iterable[float] | None = None,
+            force_elliptic_cone: bool = False,
             actuators_activation_reward_weight: float = -1e-3,
             units_without_connections_reward_weight: float = -8e-3,
             movement_reward_weight: float = 0e-2,
@@ -36,7 +38,7 @@ class ObstacleStreetScenario(BaseScenario):
             average_connectors_reward: bool = True,
             include_connectors_xpos_in_obs: bool = False,
             include_connectors_xquat_in_obs: bool = False,
-            seed: int = None
+            seed: int = None,
     ):
         self.payload_type = payload_type
         self.payload_size = payload_size
@@ -73,6 +75,8 @@ class ObstacleStreetScenario(BaseScenario):
             seed=seed,
             include_connectors_xpos_in_obs=include_connectors_xpos_in_obs,
             include_connectors_xquat_in_obs=include_connectors_xquat_in_obs,
+            friction=friction,
+            force_elliptic_cone=force_elliptic_cone,
             _reset_in_init=False
         )
         
@@ -283,7 +287,9 @@ class ObstacleStreetScenario(BaseScenario):
             **kwargs
     ) -> 'ObstacleStreetScenario':
         scenario_kwargs = {
-            'actuators_activation_reward_weight': -5e-2,
+            'friction': [2, 1e-2, 2e-4],
+            'force_elliptic_cone': True,
+            'actuators_activation_reward_weight': -1e-2,
             'units_without_connections_reward_weight': -5e-3,
             'movement_reward_weight':  1e-1,
             'connectors_stayed_active_reward_weight':  1e-4,

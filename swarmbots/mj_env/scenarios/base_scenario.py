@@ -1,5 +1,5 @@
 import abc
-from typing import Any, TypedDict
+from typing import Any, TypedDict, Iterable
 
 import mujoco
 import numpy as np
@@ -18,6 +18,23 @@ class SwarmActDict(TypedDict):
     actuators: np.ndarray  # shape (n_unit, n_actuators_per_unit), type float
     connectors: np.ndarray  # shape (n_unit, n_connectors_per_unit), type bool
 
+DEFAULT_GEOM_FRICTION: tuple[float, float, float] = (1.0, 0.005, 0.0001)
+HIGH_FRICTION_SLIDING_THRESHOLD: float = 2.0
+
+
+def _validate_geom_friction(
+        friction: float | Iterable[float] | None,
+) -> tuple[float, float, float] | None:
+    if friction is None:
+        return None
+    if isinstance(friction, (int, float)):
+        return (float(friction), DEFAULT_GEOM_FRICTION[1], DEFAULT_GEOM_FRICTION[2])
+    friction_tuple = tuple(float(x) for x in friction)
+    if len(friction_tuple) != 3:
+        raise ValueError(f"Expected friction to be a float or 3-tuple, got {friction_tuple!r}")
+    return friction_tuple
+
+
 class BaseScenario(abc.ABC):
 
     def __init__(
@@ -33,8 +50,10 @@ class BaseScenario(abc.ABC):
             average_connectors_reward: bool,
             include_connectors_xpos_in_obs: bool,
             include_connectors_xquat_in_obs: bool,
+            friction: float | Iterable[float] | None,
+            force_elliptic_cone: bool,
             seed: int | None,
-            _reset_in_init: bool = True
+            _reset_in_init: bool = True,
     ):
         self.seed = seed
         self.rng = np.random.default_rng(seed)
@@ -56,7 +75,9 @@ class BaseScenario(abc.ABC):
         self.average_connectors_reward = average_connectors_reward
         self.include_connectors_xpos_in_obs = include_connectors_xpos_in_obs
         self.include_connectors_xquat_in_obs = include_connectors_xquat_in_obs
-
+        self.friction = _validate_geom_friction(friction)
+        self.force_elliptic_cone = force_elliptic_cone
+        
         self.spec = self.create_scenario_spec()
         self.dummy_model, self.dummy_data = self.build()
 
@@ -113,6 +134,8 @@ class BaseScenario(abc.ABC):
             'average_connectors_reward': self.average_connectors_reward,
             'include_connectors_xpos_in_obs': self.include_connectors_xpos_in_obs,
             'include_connectors_xquat_in_obs': self.include_connectors_xquat_in_obs,
+            'friction': self.friction,
+            'force_elliptic_cone': self.force_elliptic_cone,
             'seed': self.seed,
         }
 
@@ -160,6 +183,17 @@ class BaseScenario(abc.ABC):
             
     def build(self) -> tuple[mujoco.MjModel, mujoco.MjData]:
         model = self.spec.compile()
+        if self.friction is not None:
+            model.geom_friction[:] = np.asarray(self.friction, dtype=float)
+
+            # Elliptic cone is more stable for high friction forces but slower to compute.
+            # If a high friction is set while using pyramidal cone is used, geoms can fall through the plane.
+            sliding = float(self.friction[0])
+            if self.force_elliptic_cone or (
+                sliding >= HIGH_FRICTION_SLIDING_THRESHOLD
+                and int(model.opt.cone) == int(mujoco.mjtCone.mjCONE_PYRAMIDAL)
+            ):
+                model.opt.cone = mujoco.mjtCone.mjCONE_ELLIPTIC
         data = mujoco.MjData(model)
         return model, data
 
@@ -468,7 +502,7 @@ class BaseScenario(abc.ABC):
         prev_unit_positions = state['unit_positions']
         unit_positions = data.qpos[self._qpos_indices[:, :3]].copy()
         state['unit_positions'] = unit_positions
-        avg_movement = np.linalg.norm(unit_positions - prev_unit_positions).mean()
+        avg_movement = np.linalg.norm(unit_positions - prev_unit_positions, axis=1).mean()
         state['avg_movement'] = avg_movement
         reward += avg_movement * self.movement_reward_weight
 
