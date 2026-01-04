@@ -69,6 +69,14 @@ class GSDEActionDist(ContinuousActionDist):
         self._exploration_matrices: Optional[torch.Tensor] = None
         self._exploration_batch_shape: Optional[tuple[int, ...]] = None
 
+    def set_std(self, std: float) -> None:
+        if std <= 0:
+            raise ValueError(f"std must be > 0, got {std}")
+        with torch.no_grad():
+            self.log_stds[:] = math.log(std)
+        if self._exploration_batch_shape is not None:
+            self.reset_noise(self._exploration_batch_shape)
+
     def reset_noise(self, batch_shape: tuple[int, ...]) -> None:
         log_stds = torch.clamp(self.log_stds, *self.log_std_clamp_range)
         std_matrix = self._get_std_matrix(log_stds)

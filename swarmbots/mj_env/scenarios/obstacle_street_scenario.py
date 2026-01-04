@@ -27,6 +27,9 @@ class ObstacleStreetScenario(BaseScenario):
             street_width: float = 10.0,
             no_initial_ramp: bool = True,
             actuator_strength: float = 3.0,
+            connection_dist_threshold: float = 0.1,
+            connection_angle_threshold: float = -0.5,
+            disconnect_potential_threshold: float = 5.0,
             friction: float | Iterable[float] | None = None,
             force_elliptic_cone: bool = False,
             actuators_activation_reward_weight: float = -1e-3,
@@ -80,6 +83,9 @@ class ObstacleStreetScenario(BaseScenario):
             include_connectors_xpos_in_obs=include_connectors_xpos_in_obs,
             include_connectors_xquat_in_obs=include_connectors_xquat_in_obs,
             friction=friction,
+            connection_dist_threshold=connection_dist_threshold,
+            connection_angle_threshold=connection_angle_threshold,
+            disconnect_potential_threshold=disconnect_potential_threshold,
             force_elliptic_cone=force_elliptic_cone,
             _reset_in_init=False
         )
@@ -284,7 +290,7 @@ class ObstacleStreetScenario(BaseScenario):
         return data.xpos[self.payload_body_id, 1]
 
     @staticmethod
-    def no_payload_no_opening_one_wall(
+    def no_payload_no_opening_one_wall_easy(
             swarm: BaseSwarm,
             wall_height: float = 0.3,
             seed: int | None = None,

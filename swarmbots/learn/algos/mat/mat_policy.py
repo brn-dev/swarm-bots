@@ -1,10 +1,13 @@
-from dataclasses import asdict
 from typing import Any, Optional
 
 import torch
 from torch import nn
 
-from swarmbots.learn.action_dists.hybrid_action_dist import HybridActionDistribution, ContinuousActionDistConfig
+from swarmbots.learn.action_dists.hybrid_action_dist import (
+    HybridActionDistribution,
+    ContinuousActionDistConfig,
+    serialize_continuous_action_dist_configs,
+)
 from swarmbots.learn.algos.mat.mat_decoder import MATDecoder
 from swarmbots.learn.algos.mat.mat_deepset_critic import MATDeepSetCritic
 from swarmbots.learn.algos.mat.mat_encoder import MATEncoder
@@ -35,6 +38,7 @@ class MATPolicy(BasePPOPolicy):
             actor_head_hidden_dims: list[int] | None = None,
             act_fn_cls=nn.ReLU,
             continuous_config: ContinuousActionDistConfig | list[ContinuousActionDistConfig | None] | None = None,
+            bernoulli_initial_prob: float | None = None,
             add_agent_embeddings_encoder: bool = True,
             add_agent_embeddings_decoder: bool = True,
     ):
@@ -127,7 +131,8 @@ class MATPolicy(BasePPOPolicy):
         self.action_dist = HybridActionDistribution(
             latent_dim=latent_pi_dim,
             action_space=env.action_space,
-            continuous_config=continuous_config
+            continuous_config=continuous_config,
+            bernoulli_initial_prob=bernoulli_initial_prob,
         )
 
         self.critic = MATDeepSetCritic(
@@ -138,18 +143,7 @@ class MATPolicy(BasePPOPolicy):
             act_fn_class=act_fn_cls,
         )
 
-        def serialize_config(cc: ContinuousActionDistConfig):
-            dict_ = asdict(cc)
-            dict_['latent_sde_net_initialization'] = dict_['latent_sde_net_initialization'].__name__
-            return dict_
-
-        serialized_continuous_config = None
-        if isinstance(continuous_config, ContinuousActionDistConfig):
-            serialized_continuous_config = serialize_config(continuous_config)
-        elif isinstance(continuous_config, list):
-            serialized_continuous_config = [serialize_config(cc) if cc is not None else None for cc in continuous_config]
-        elif continuous_config is not None:
-            raise ValueError(continuous_config)
+        serialized_continuous_config = serialize_continuous_action_dist_configs(continuous_config)
 
         self.hyper_parameters = {
             "d_model_encoder": self.d_model_encoder,
@@ -167,6 +161,7 @@ class MATPolicy(BasePPOPolicy):
             "actor_head_hidden_dims": actor_head_hidden_dims,
             "act_fn_cls": act_fn_cls.__name__,
             "continuous_config": serialized_continuous_config,
+            "bernoulli_initial_prob": bernoulli_initial_prob,
             "add_agent_embeddings_encoder": add_agent_embeddings_encoder,
             "add_agent_embeddings_decoder": add_agent_embeddings_decoder,
         }

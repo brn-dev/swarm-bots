@@ -37,7 +37,7 @@ def make_env_fn(
             unit_start_locations=unit_start_locations,
             randomize_unit_orientations=False
         )
-        scenario = ObstacleStreetScenario.no_payload_no_opening_one_wall(
+        scenario = ObstacleStreetScenario.no_payload_no_opening_one_wall_easy(
             swarm=swarm,
             **scenario_kwargs
         )
@@ -70,7 +70,7 @@ def main():
         (-0.4, -0.4, 0),
     ]
     episode_length = 256
-    load_path = "runs/mat_swarm_bots/2026-01-03_22-36-40/models/model_2045851_steps.pt"
+    load_path = "runs/mat_swarm_bots/2026-01-04_01-09-26/models/best/2026-01-04_12-42-05/model_best_1.pt"
     deterministic = False
     rollout_device = torch.device("cpu")
     gsde_sample_freq = 6
@@ -115,7 +115,8 @@ def main():
             sde_learn_features=False,
             log_std_clamp_range=(-20.0, 2.0),
             normalize_latent_sde_by_dim=True
-        )
+        ),
+        bernoulli_initial_prob=0.75
     )
     print(policy)
 

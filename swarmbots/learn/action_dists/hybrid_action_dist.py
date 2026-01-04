@@ -1,5 +1,5 @@
-from dataclasses import dataclass
-from typing import Optional, Self
+from dataclasses import asdict, dataclass
+from typing import Any, Optional, Self
 
 import torch
 from torch import nn
@@ -9,6 +9,7 @@ from gymnasium import spaces
 import swarmbots
 from swarmbots.learn.action_dists.action_dist import ActionDist, AGENT_ACTIONS_DIM, ActionNetInitialization
 from swarmbots.learn.action_dists.bernoulli_action_dist import BernoulliActionDist
+from swarmbots.learn.action_dists.diag_gaussian_action_dist import DiagGaussianActionDist
 from swarmbots.learn.action_dists.gsde_action_dist import GSDEActionDist
 from swarmbots.learn.action_dists.predicted_std_action_dist import PredictedStdActionDist
 from swarmbots.learn.action_dists.squashed_diag_gaussian_action_dist import SquashedDiagGaussianActionDist
@@ -46,6 +47,27 @@ class GSDEParams:
 ContinuousActionDistConfig = SquashedDiagParams | PredictedStdParams | GSDEParams
 
 
+def serialize_continuous_action_dist_config(config: ContinuousActionDistConfig) -> dict[str, Any]:
+    data = asdict(config)
+    for key in ("log_std_net_initialization", "latent_sde_net_initialization"):
+        if key in data and callable(data[key]):
+            data[key] = data[key].__name__
+    return data
+
+
+def serialize_continuous_action_dist_configs(
+        continuous_config: ContinuousActionDistConfig | list[ContinuousActionDistConfig | None] | None,
+) -> dict[str, Any] | list[dict[str, Any] | None] | None:
+    if continuous_config is None:
+        return None
+    if isinstance(continuous_config, list):
+        return [
+            serialize_continuous_action_dist_config(cc) if cc is not None else None
+            for cc in continuous_config
+        ]
+    return serialize_continuous_action_dist_config(continuous_config)
+
+
 class HybridActionDistribution(ActionDist):
 
     def __init__(
@@ -53,6 +75,7 @@ class HybridActionDistribution(ActionDist):
             latent_dim: int,
             action_space: HybridActionSpace,
             continuous_config: ContinuousActionDistConfig | list[ContinuousActionDistConfig | None] | None,
+            bernoulli_initial_prob: float | None = None,
             action_net_initialization: ActionNetInitialization = init_linear_orthogonal,
     ):
         self.action_space = action_space
@@ -76,16 +99,16 @@ class HybridActionDistribution(ActionDist):
 
         # noinspection PyTypeChecker
         self.distributions: list[ActionDist] = nn.ModuleList([
-            make_proba_distribution(latent_dim, sub_space, sub_space_dim, cont_conf)
+            make_proba_distribution(
+                latent_dim,
+                sub_space,
+                sub_space_dim,
+                cont_conf,
+                bernoulli_initial_prob=bernoulli_initial_prob,
+            )
             for sub_space, sub_space_dim, cont_conf
             in zip(action_space.sub_spaces, action_space.agent_action_dims, self.continuous_configs)
         ])
-
-    def reset_noise(self, batch_shape: tuple[int, ...]) -> None:
-        for idx in self.gsde_indices:
-            # noinspection PyTypeChecker
-            gsde_dist: GSDEActionDist = self.distributions[idx]
-            gsde_dist.reset_noise(batch_shape)
 
     def update_latent_features(self, latent_pi: torch.Tensor) -> Self:
         for dist in self.distributions:
@@ -117,12 +140,25 @@ class HybridActionDistribution(ActionDist):
             return None
         return torch.stack(entropies, dim=-1).sum(dim=-1)
 
+    def reset_noise(self, batch_shape: tuple[int, ...]) -> None:
+        for idx in self.gsde_indices:
+            # noinspection PyTypeChecker
+            gsde_dist: GSDEActionDist = self.distributions[idx]
+            gsde_dist.reset_noise(batch_shape)
+
+    def set_std(self, std: float) -> None:
+        for dist in self.distributions:
+            set_std = getattr(dist, "set_std", None)
+            if callable(set_std):
+                set_std(std)
+
 
 def make_proba_distribution(
         latent_dim: int,
         action_space: spaces.Space,
         action_space_dim: int,
-        continuous_config: ContinuousActionDistConfig | None
+        continuous_config: ContinuousActionDistConfig | None,
+        bernoulli_initial_prob: float | None = None,
 ) -> ActionDist:
     if isinstance(action_space, spaces.Box):
         _assert_unit_box_range(action_space)
@@ -166,6 +202,7 @@ def make_proba_distribution(
         return BernoulliActionDist(
             latent_dim=latent_dim,
             action_dim=action_space_dim,
+            initial_prob=bernoulli_initial_prob,
         )
     else:
         raise NotImplementedError

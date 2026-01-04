@@ -1,3 +1,4 @@
+import math
 from typing import Optional, Self
 
 import torch
@@ -15,6 +16,7 @@ class BernoulliActionDist(DiscreteActionDist):
             latent_dim: int,
             action_dim: int,
             action_net_initialization: ActionNetInitialization = init_linear_orthogonal,
+            initial_prob: float | None = None,
     ):
         super().__init__(
             latent_dim=latent_dim,
@@ -23,6 +25,15 @@ class BernoulliActionDist(DiscreteActionDist):
         )
 
         self.distribution: Optional[torchdist.Bernoulli] = None
+        if initial_prob is not None:
+            if not 0.0 < initial_prob < 1.0:
+                raise ValueError(
+                    f"initial_prob must be strictly between 0 and 1, got {initial_prob}."
+                )
+
+            initial_logit = math.log(initial_prob / (1.0 - initial_prob))
+            with torch.no_grad():
+                self.action_net.bias.fill_(initial_logit)
 
     def update_distribution_params(self, action_logits: torch.Tensor) -> Self:
         self.distribution = torchdist.Bernoulli(logits=action_logits)
