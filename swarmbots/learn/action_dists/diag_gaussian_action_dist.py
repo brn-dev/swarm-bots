@@ -34,6 +34,12 @@ class DiagGaussianActionDist(ContinuousActionDist):
 
         self.distribution: Optional[torchdist.Normal] = None
 
+    def set_std(self, std: float) -> None:
+        if std <= 0:
+            raise ValueError(f"std must be > 0, got {std}")
+        with torch.no_grad():
+            self.log_stds[:] = math.log(std)
+
     def update_distribution_params(self, means: torch.Tensor, log_stds: torch.Tensor) -> Self:
         self.distribution = torchdist.Normal(loc=means, scale=torch.exp(log_stds))
         return self

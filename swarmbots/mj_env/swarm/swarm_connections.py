@@ -10,8 +10,6 @@ class SwarmConnections:
         self.twist_angles = np.zeros((config.num_units, config.limbs_per_unit), dtype=np.float32)
         self.disconnect_potentials = np.zeros((config.num_units, config.limbs_per_unit), dtype=np.float32)
 
-        self.disconnect_potential_threshold = config.disconnect_potential_threshold
-
     def reset(self):
         self.connections[:] = -1
 
@@ -49,6 +47,7 @@ class SwarmConnections:
             self,
             currently_active_mask: np.ndarray,
             newly_deactivated_mask: np.ndarray,
+            disconnect_potential_threshold: float,
     ):
         disconnect_potentials_update = np.zeros_like(self.disconnect_potentials)
 
@@ -63,7 +62,7 @@ class SwarmConnections:
         self.disconnect_potentials += disconnect_potentials_update
         self.disconnect_potentials[stayed_active_mask] = np.maximum(0, self.disconnect_potentials[stayed_active_mask])
 
-        return self.disconnect_potentials >= self.disconnect_potential_threshold
+        return self.disconnect_potentials >= disconnect_potential_threshold
 
     def disconnect(
             self,

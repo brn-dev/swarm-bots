@@ -3,7 +3,11 @@ from typing import Any
 import torch
 from torch import nn
 
-from swarmbots.learn.action_dists.hybrid_action_dist import HybridActionDistribution, ContinuousActionDistConfig
+from swarmbots.learn.action_dists.hybrid_action_dist import (
+    HybridActionDistribution,
+    ContinuousActionDistConfig,
+    serialize_continuous_action_dist_configs,
+)
 from swarmbots.learn.base_policy import BasePolicy
 from swarmbots.learn.env_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
 from swarmbots.learn.nn_components.mlp import MLP
@@ -14,7 +18,7 @@ class BasePPOPolicy(BasePolicy, abc.ABC):
     action_dist: HybridActionDistribution
 
     @property
-    def gsde_enabled(self):
+    def gsde_enabled(self) -> bool:
         return self.action_dist.has_gsde
 
     @abc.abstractmethod
@@ -35,7 +39,7 @@ class BasePPOPolicy(BasePolicy, abc.ABC):
             local_obs: torch.Tensor,
             global_obs: torch.Tensor,
             actions: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor]:
         """
         :return: log_probs, entropies, values
         """
@@ -120,7 +124,9 @@ class PPOPolicy(BasePPOPolicy):
             critic_hidden_dims: list[int],
             act_fun_class = nn.Tanh,
             continuous_config: ContinuousActionDistConfig | list[ContinuousActionDistConfig | None] | None = None,
+            bernoulli_initial_prob: float | None = None,
     ):
+        super().__init__()
 
         self.n_agents = env.n_agents
         self.local_obs_dim = env.local_obs_dim
@@ -139,6 +145,7 @@ class PPOPolicy(BasePPOPolicy):
             latent_dim=latent_pi_dim_per_agent,
             action_space=env.action_space,
             continuous_config=continuous_config,
+            bernoulli_initial_prob=bernoulli_initial_prob,
         )
 
         self.critic = PPOCritic(
@@ -148,14 +155,25 @@ class PPOPolicy(BasePPOPolicy):
             hidden_dims=critic_hidden_dims,
             act_fun_class=act_fun_class
         )
-        super().__init__(action_dist=self.action_dist)
+
+        self.hyper_parameters = {
+            "actor_hidden_dims": actor_hidden_dims,
+            "critic_hidden_dims": critic_hidden_dims,
+            "latent_pi_dim_per_agent": latent_pi_dim_per_agent,
+            "act_fun_class": act_fun_class.__name__,
+            "continuous_config": serialize_continuous_action_dist_configs(continuous_config),
+            "bernoulli_initial_prob": bernoulli_initial_prob,
+        }
+
+    def get_hyper_parameters(self) -> dict[str, Any]:
+        return self.hyper_parameters
 
     def forward(
             self,
             local_obs: torch.Tensor,
             global_obs: torch.Tensor,
             deterministic: bool = False
-    ):
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         latent_pi = self.actor(local_obs, global_obs)
         actions, log_probs = self.action_dist.get_actions_with_log_probs(latent_pi, deterministic)
 
@@ -167,7 +185,7 @@ class PPOPolicy(BasePPOPolicy):
             local_obs: torch.Tensor,
             global_obs: torch.Tensor,
             actions: torch.Tensor,
-    ):
+    ) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor]:
         latent_pi = self.actor(local_obs, global_obs)
         self.action_dist.update_latent_features(latent_pi)
         log_probs = self.action_dist.log_prob(actions)

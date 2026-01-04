@@ -22,8 +22,6 @@ class HomogeneousSwarm(BaseSwarm):
             leg_radius: float = 0.025,
             hinge_range: float = np.pi / 3,
             connection_torquescale: float = 10.0,
-            connection_dist_threshold: float = 0.1,
-            connection_angle_threshold: float = -0.5,
             randomize_unit_orientations: bool = False
     ):
         assert unit_start_quats is None or not randomize_unit_orientations
@@ -39,8 +37,6 @@ class HomogeneousSwarm(BaseSwarm):
             num_units=self.num_units,
             unit_config=unit_config,
             connection_torquescale=connection_torquescale,
-            connection_dist_threshold=connection_dist_threshold,
-            connection_angle_threshold=connection_angle_threshold,
         ))
 
         self.body_radius = body_radius

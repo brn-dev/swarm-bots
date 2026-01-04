@@ -109,5 +109,10 @@ class PredictedStdActionDist(ContinuousActionDist):
         log_probs = self.log_prob(actions, self._last_gaussian_actions)
         return actions, log_probs
 
-    def set_base_std(self, std: float):
-        self.base_log_std = math.log(std)
+    def set_std(self, std: float) -> None:
+        self.set_base_std(std)
+
+    def set_base_std(self, std: float) -> None:
+        if std <= 0:
+            raise ValueError(f"std must be > 0, got {std}")
+        self.base_log_std = None if std == 1.0 else math.log(std)

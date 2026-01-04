@@ -52,6 +52,9 @@ class BaseScenario(abc.ABC):
             average_connectors_reward: bool,
             include_connectors_xpos_in_obs: bool,
             include_connectors_xquat_in_obs: bool,
+            connection_dist_threshold: float,
+            connection_angle_threshold: float,
+            disconnect_potential_threshold: float,
             friction: float | Iterable[float] | None,
             force_elliptic_cone: bool,
             seed: int | None,
@@ -64,9 +67,10 @@ class BaseScenario(abc.ABC):
         self.num_units = swarm.config.num_units
         self.limbs_per_unit = swarm.config.limbs_per_unit
         self.num_connectors = self.num_units * self.limbs_per_unit
-        self.connection_dist_threshold = swarm.config.connection_dist_threshold
-        self.connection_angle_threshold = swarm.config.connection_angle_threshold
         self.actuator_strength = actuator_strength
+        self.connection_dist_threshold = connection_dist_threshold
+        self.connection_angle_threshold = connection_angle_threshold
+        self.disconnect_potential_threshold = disconnect_potential_threshold
 
         self.actuators_activation_reward_weight = actuators_activation_reward_weight
         self.units_without_connections_reward_weight = units_without_connections_reward_weight
@@ -139,6 +143,9 @@ class BaseScenario(abc.ABC):
             'average_connectors_reward': self.average_connectors_reward,
             'include_connectors_xpos_in_obs': self.include_connectors_xpos_in_obs,
             'include_connectors_xquat_in_obs': self.include_connectors_xquat_in_obs,
+            'connection_dist_threshold': self.connection_dist_threshold,
+            'connection_angle_threshold': self.connection_angle_threshold,
+            'disconnect_potential_threshold': self.disconnect_potential_threshold,
             'friction': self.friction,
             'force_elliptic_cone': self.force_elliptic_cone,
             'seed': self.seed,
@@ -209,7 +216,12 @@ class BaseScenario(abc.ABC):
         mujoco.mj_resetData(model, data)
 
         state = dict()
-        connections = self.swarm.reset_swarm(model, data, self.rng, self.get_swarm_start_location())
+        connections = self.swarm.reset_swarm(
+            model,
+            data,
+            self.rng,
+            self.get_swarm_start_location()
+        )
 
         for (u1, c1, u2, c2), angle in zip(*connections.get_active_connections()):
             self._activate_equality_constraint(model, data, u1, c1, u2, c2, angle)
@@ -305,7 +317,11 @@ class BaseScenario(abc.ABC):
         state['num_connectors_successfully_activated'] = num_connectors_successfully_activated
         state['num_connectors_unsuccessfully_activated'] = num_connectors_unsuccessfully_activated
 
-        deactivation_mask = connections.update_disconnect_potentials(currently_active_mask, newly_deactivated_mask)
+        deactivation_mask = connections.update_disconnect_potentials(
+            currently_active_mask,
+            newly_deactivated_mask,
+            self.disconnect_potential_threshold
+        )
         num_connectors_deactivated = self.disconnect(data, connections, deactivation_mask)
         state['num_connectors_deactivated'] = num_connectors_deactivated
 

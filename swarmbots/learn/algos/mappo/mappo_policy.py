@@ -1,6 +1,11 @@
+from typing import Any
 from torch import nn
 
-from swarmbots.learn.action_dists.hybrid_action_dist import HybridActionDistribution, ContinuousActionDistConfig
+from swarmbots.learn.action_dists.hybrid_action_dist import (
+    HybridActionDistribution,
+    ContinuousActionDistConfig,
+    serialize_continuous_action_dist_configs,
+)
 from swarmbots.learn.algos.mappo.mappo_actor import MAPPOActor
 from swarmbots.learn.algos.mappo.mappo_deep_set_critic import MAPPODeepSetCriticHiddenDims, MAPPODeepSetCritic
 from swarmbots.learn.algos.ppo.ppo_policy import PPOCritic, PPOPolicy
@@ -20,6 +25,7 @@ class MAPPOPolicy(PPOPolicy):
             critic_hidden_dims: list[int] | MAPPODeepSetCriticHiddenDims,
             act_fun_class = nn.Tanh,
             continuous_config: ContinuousActionDistConfig | list[ContinuousActionDistConfig | None] | None = None,
+            bernoulli_initial_prob: float | None = None,
     ):
         BasePolicy.__init__(self)
 
@@ -40,6 +46,7 @@ class MAPPOPolicy(PPOPolicy):
             latent_dim=latent_pi_dim_per_agent,
             action_space=env.action_space,
             continuous_config=continuous_config,
+            bernoulli_initial_prob=bernoulli_initial_prob,
         )
 
         if isinstance(critic_hidden_dims, list):
@@ -59,3 +66,15 @@ class MAPPOPolicy(PPOPolicy):
                 value_regressor_hidden_dims=critic_hidden_dims['value_regressor_hidden_dims'],
                 act_fun_class=act_fun_class
             )
+
+        self.hyper_parameters = {
+            "actor_hidden_dims": actor_hidden_dims,
+            "critic_hidden_dims": critic_hidden_dims,
+            "latent_pi_dim_per_agent": latent_pi_dim_per_agent,
+            "act_fun_class": act_fun_class.__name__,
+            "continuous_config": serialize_continuous_action_dist_configs(continuous_config),
+            "bernoulli_initial_prob": bernoulli_initial_prob,
+        }
+
+    def get_hyper_parameters(self) -> dict[str, Any]:
+        return self.hyper_parameters

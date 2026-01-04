@@ -33,7 +33,7 @@ def make_env_fn(
             unit_start_locations=unit_start_locations,
             randomize_unit_orientations=False
         )
-        scenario = ObstacleStreetScenario.no_payload_no_opening_one_wall(
+        scenario = ObstacleStreetScenario.no_payload_no_opening_one_wall_easy(
             swarm=swarm,
             **scenario_kwargs
         )
@@ -71,12 +71,12 @@ def main():
     save_interval = 500
 
     # =====  ID  =====
-    run_id = "2025-12-28_17-45-07"
-    run_id = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    run_id = "2026-01-04_01-09-26"
+    # run_id = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
     # ===== LOAD =====
-    load_path = "runs/mat_swarm_bots/2025-12-28_17-45-07/models/model_40001091_steps_final.pt"
-    load_path = None
+    load_path = "runs/mat_swarm_bots/2026-01-04_01-09-26/models/model_3072000_steps.pt"
+    # load_path = None
 
     run_dir = f"runs/mat_swarm_bots/{run_id}/"
     save_optimizer = True
