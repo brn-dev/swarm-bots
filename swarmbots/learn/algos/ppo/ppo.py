@@ -401,11 +401,8 @@ class PPO(BaseAlgorithm):
         )
         assert best_rotation_n >= 1
 
-        current_timesteps = self.n_total_timesteps
-        iteration = 0
-
         if max_total_timesteps is None:
-            max_total_timesteps = current_timesteps + additional_timesteps
+            max_total_timesteps = self.n_total_timesteps + additional_timesteps
         
         if run_dir is not None:
             run_dir = pathlib.Path(run_dir)
@@ -413,8 +410,8 @@ class PPO(BaseAlgorithm):
             self._write_run_metadata(run_dir, extra_run_metadata)
 
         best_models_dir: pathlib.Path | None = None
+        learn_started_at = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         if run_dir is not None:
-            learn_started_at = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
             best_models_dir = run_dir / "models" / "best" / learn_started_at
             
         wandb_config: dict[str, Any] | None = None
@@ -446,7 +443,7 @@ class PPO(BaseAlgorithm):
         best_episode_return_ema: float | None = None
         best_save_counter = 0
 
-        while current_timesteps < max_total_timesteps:
+        while self.n_total_timesteps < max_total_timesteps:
             iter_timer = PerformanceTimer().start()
             with PerformanceTimer() as rollout_timer:
                 episodes, episode_infos, rollout_metrics = collect_whole_episodes(
@@ -457,9 +454,8 @@ class PPO(BaseAlgorithm):
                 )
 
             total_steps_in_rollout = sum(len(ep.rewards) for ep in episodes)
-            current_timesteps += total_steps_in_rollout
-            self.n_total_timesteps = current_timesteps
-            iteration += 1
+            self.n_total_timesteps += total_steps_in_rollout
+            self.n_total_iterations += 1
 
             ep_rew = compute_summary_statistics([ep['r'] for ep in episode_infos], find_min=True, find_max=True)
             ep_len = compute_summary_statistics([ep['l'] for ep in episode_infos], find_min=True, find_max=True)
@@ -467,7 +463,6 @@ class PPO(BaseAlgorithm):
 
             current_episode_return_ema = episode_return_ema.update(ep_rew.mean)
             best_episode_return_ema, best_save_counter = self._maybe_save_best_ema_model(
-                iteration=iteration,
                 best_models_dir=best_models_dir,
                 best_rotation_n=best_rotation_n,
                 save_optimizer=save_optimizer,
@@ -487,12 +482,13 @@ class PPO(BaseAlgorithm):
             }
             iter_duration = iter_timer.stop().get_duration()
 
-            if log_interval is not None and iteration % log_interval == 0:
+            if log_interval is not None and self.n_total_iterations % log_interval == 0:
                 fps = int(total_steps_in_rollout / iter_duration)
 
                 metric_logger.log({
-                    'iteration': iteration,
-                    'timesteps': current_timesteps,
+                    'learn_start': learn_started_at,
+                    'iteration': self.n_total_iterations,
+                    'timesteps': self.n_total_timesteps,
                     'lr': self.learning_rate,
                     **metrics,
                     'ep_rew_ema': current_episode_return_ema,
@@ -500,8 +496,8 @@ class PPO(BaseAlgorithm):
                     'fps': fps,
                 })
 
-            if save_interval is not None and run_dir is not None and iteration % save_interval == 0:
-                save_path = run_dir / f"models/model_{current_timesteps}_steps.pt"
+            if save_interval is not None and run_dir is not None and self.n_total_iterations % save_interval == 0:
+                save_path = run_dir / f"models/model_{self.n_total_timesteps}_steps.pt"
                 self.save(
                     save_path,
                     optimizer_state_dict=self.optimizer.state_dict() if save_optimizer else None,
@@ -510,7 +506,7 @@ class PPO(BaseAlgorithm):
                 logger.log("SAVE", f"Saved model to {save_path.as_posix()}")
 
         if run_dir is not None:
-            save_path = run_dir / f"models/model_{current_timesteps}_steps_final.pt"
+            save_path = run_dir / f"models/model_{self.n_total_timesteps}_steps_final.pt"
             self.save(
                 save_path,
                 optimizer_state_dict=self.optimizer.state_dict() if save_optimizer else None,
@@ -524,7 +520,6 @@ class PPO(BaseAlgorithm):
 
     def _maybe_save_best_ema_model(
             self,
-            iteration: int,
             best_models_dir: pathlib.Path | None,
             best_rotation_n: int,
             save_optimizer: bool,
@@ -533,7 +528,7 @@ class PPO(BaseAlgorithm):
             best_save_counter: int,
     ) -> tuple[float | None, int]:
         if ((best_episode_return_ema is not None and current_episode_return_ema <= best_episode_return_ema)
-                or iteration < MIN_ITERATIONS_FOR_BEST):
+                or self.n_total_iterations < MIN_ITERATIONS_FOR_BEST):
             return best_episode_return_ema, best_save_counter
 
         best_episode_return_ema = current_episode_return_ema

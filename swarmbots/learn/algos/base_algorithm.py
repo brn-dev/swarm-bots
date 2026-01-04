@@ -43,7 +43,9 @@ class BaseAlgorithm(abc.ABC):
         }
         if extra_run_metadata:
             metadata.update(extra_run_metadata)
-        metadata["timesteps"] = int(self.n_total_timesteps)
+        metadata["iterations"] = self.n_total_iterations
+        metadata["updates"] = self.n_total_updates
+        metadata["timesteps"] = self.n_total_timesteps
         metadata_json: dict[str, Any] = json.loads(json.dumps(metadata, default=str))
 
         existing_metadata_files = list(run_dir.glob("run_metadata*.json"))
