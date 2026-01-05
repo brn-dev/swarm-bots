@@ -52,7 +52,7 @@ class MAPPODeepSetCritic(nn.Module):
 
     def forward(self, local_obs: torch.Tensor, global_obs: torch.Tensor) -> torch.Tensor:
         local_projections = self.local_projection(local_obs)
-        pooled = local_projections.sum(AGENTS_DIM)
+        pooled = local_projections.mean(AGENTS_DIM)
 
         if self.has_global_obs:
             pooled = torch.cat((pooled, global_obs), dim=-1)

@@ -70,7 +70,7 @@ def main():
         (-0.4, -0.4, 0),
     ]
     episode_length = 256
-    load_path = "runs/mat_swarm_bots/2026-01-04_01-09-26/models/best/2026-01-04_12-42-05/model_best_1.pt"
+    load_path = "runs/mat_swarm_bots/2026-01-05_15-20-36/models/best/2026-01-05_15-20-49/model_best_0.pt"
     deterministic = False
     rollout_device = torch.device("cpu")
     gsde_sample_freq = 6
@@ -132,7 +132,7 @@ def main():
         policy=policy,
         video_folder='videos',
         video_name_prefix='test_run',
-        num_episodes=5,
+        num_episodes=3,
         deterministic=deterministic,
         gsde_sample_freq=gsde_sample_freq,
         device=rollout_device,
