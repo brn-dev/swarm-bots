@@ -4,7 +4,6 @@ from typing import Optional, Any
 import numpy as np
 import torch
 
-TensorNpArrayOrList = torch.Tensor | np.ndarray | list
 
 HISTOGRAM_DEFAULT_BINS = 10
 HISTOGRAM_BLOCKS = " ▁▂▃▄▅▆▇█"
@@ -33,13 +32,14 @@ class SummaryStatisticsFormat:
     max_value: Optional[str] = None
     histogram: bool | int = False
 
+SummaryStatisticsInput = list[SummaryStatistics] | torch.Tensor | np.ndarray | list
 
 def is_summary_statistics(obj: Any):
     return isinstance(obj, SummaryStatistics)
 
 
 def format_summary_statistics(
-        x: TensorNpArrayOrList | SummaryStatistics | None,
+        x: SummaryStatisticsInput | SummaryStatistics | None,
         stats_format: SummaryStatisticsFormat | None = None
 ):
     if stats_format is None:
@@ -99,7 +99,7 @@ def format_summary_statistics(
 
 
 def compute_summary_statistics(
-        arr: TensorNpArrayOrList,
+        arr: SummaryStatisticsInput,
         find_min: bool = False,
         find_max: bool = False,
         make_histogram: bool | int = False,
@@ -107,7 +107,12 @@ def compute_summary_statistics(
 ) -> Optional[SummaryStatistics]:
     values: np.ndarray
     if isinstance(arr, list):
-        values = np.array(arr).ravel()
+        if len(arr) == 0:
+            return None
+        if isinstance(arr[0], SummaryStatistics):
+            return combine_summary_statistics(arr, combine_data=False, combine_histograms=False)
+        else:
+            values = np.array(arr).ravel()
     elif isinstance(arr, np.ndarray):
         values = arr.ravel()
     elif isinstance(arr, torch.Tensor):
@@ -155,7 +160,7 @@ def compute_summary_statistics(
     return summary_stats
 
 def maybe_compute_summary_statistics(
-        x: TensorNpArrayOrList | SummaryStatistics | None,
+        x: SummaryStatisticsInput | SummaryStatistics | None,
         find_min: bool = False,
         find_max: bool = False,
         make_histogram: bool | int = False,
@@ -226,3 +231,53 @@ def _format_histogram_blocks(freqs: list[float]) -> str:
             idx = max(0, min(levels, idx))
         chars.append(HISTOGRAM_BLOCKS[idx])
     return "[" + "".join(chars) + "]"
+
+def combine_summary_statistics(
+    stats_list: list[SummaryStatistics],
+    combine_data: bool = False,
+    combine_histograms: bool = False,
+) -> SummaryStatistics:
+    if not stats_list:
+        raise ValueError("stats_list must not be empty.")
+
+    total_n = sum(int(s.n) for s in stats_list)
+    if total_n <= 0:
+        raise ValueError(f"Total n must be > 0, got {total_n}.")
+
+    combined_mean = sum(s.mean * int(s.n) for s in stats_list) / total_n
+
+    if total_n == 1:
+        combined_std: Optional[float] = None
+    else:
+        sum_weighted_second_moment = 0.0
+        for s in stats_list:
+            n_i = int(s.n)
+            if n_i <= 0:
+                continue
+            var_i = s.std ** 2 if (s.std is not None and n_i > 1) else 0.0
+            mean_delta = s.mean - combined_mean
+            sum_weighted_second_moment += n_i * (var_i + (mean_delta * mean_delta))
+        combined_var = sum_weighted_second_moment / total_n
+        combined_std = np.sqrt(combined_var)
+
+    combined = SummaryStatistics(
+        n=total_n,
+        mean=combined_mean,
+        std=combined_std,
+    )
+
+    min_values = [s.min_value for s in stats_list]
+    if all(v is not None for v in min_values):
+        combined.min_value = min(v for v in min_values if v is not None)
+
+    max_values = [s.max_value for s in stats_list]
+    if all(v is not None for v in max_values):
+        combined.max_value = max(v for v in max_values if v is not None)
+
+    if combine_data and all(s.data is not None for s in stats_list):
+        combined.data = np.concatenate([s.data for s in stats_list if s.data is not None]).ravel()
+
+    if combine_histograms:
+        raise NotImplementedError("Combining histograms is not implemented yet.")
+
+    return combined

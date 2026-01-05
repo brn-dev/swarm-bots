@@ -18,6 +18,8 @@ from swarmbots.learn.summary_statistics import (
     format_summary_statistics,
 )
 
+NEWLINE_KEY = '<newline>'
+
 class MetricsLogger:
     def __init__(
             self,
@@ -84,8 +86,12 @@ class MetricsLogger:
         parts = []
 
         for key, value, fmt in self._iter_console_metrics(metrics):
-            val_str = self._format_console_value(value, fmt=fmt)
-            parts.append(f"<underline>{key}</underline>: {val_str}")
+            if key == NEWLINE_KEY:
+                value = value or ''
+                parts.append(f'\n{value}')
+            else:
+                val_str = self._format_console_value(value, fmt=fmt)
+                parts.append(f"<underline>{key}</underline>: {val_str}")
 
         if not parts:
             logger.warning('Nothing to log?')
@@ -268,7 +274,10 @@ class MetricsLogger:
             return
 
         for key, fmt in self._console_key_specs:
-            yield key, metrics[key], fmt
+            if key == NEWLINE_KEY:
+                yield key, fmt, None
+            else:
+                yield key, metrics[key], fmt
 
     def _format_console_value(self, value: Any, fmt: str | SummaryStatisticsFormat | None) -> str:
 

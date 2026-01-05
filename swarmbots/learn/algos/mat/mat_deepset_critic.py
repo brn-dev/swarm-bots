@@ -47,6 +47,6 @@ class MATDeepSetCritic(nn.Module):
 
     def forward(self, augmented_observations: torch.Tensor) -> torch.Tensor:
         local_projections = self.local_projection(augmented_observations)
-        pooled = local_projections.sum(AGENTS_DIM)
+        pooled = local_projections.mean(AGENTS_DIM)
 
         return self.value_regressor(pooled).squeeze(dim=-1)

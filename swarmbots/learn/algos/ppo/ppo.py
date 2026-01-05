@@ -2,14 +2,14 @@ import json
 import pathlib
 from collections.abc import Collection
 from datetime import datetime
-from typing import Optional, Any
+from typing import Optional, Any, Literal
 
 import torch
 import torch.nn.functional as F
 from loguru import logger
 
 from swarmbots.learn.algos.base_algorithm import BaseAlgorithm
-from swarmbots.learn.algos.ppo.ppo_policy import BasePPOPolicy
+from swarmbots.learn.algos.ppo.ppo_policy import BasePPOPolicy, PPOPolicy
 from swarmbots.learn.algos.ppo.ppo_rollout_buffer import PPOEpisode, PPORolloutBuffer, PPOSampler, PPOSamples
 from swarmbots.learn.env_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
 from swarmbots.learn.exponential_moving_average import ExponentialMovingAverage
@@ -149,6 +149,7 @@ class PPO(BaseAlgorithm):
             max_grad_norm: float = 0.5,
             target_kl: Optional[float] = None,
             gsde_sample_freq: int = -1,
+            agent_logprob_reduction: Optional[Literal["sum", "mean"]] = None,
             train_device: str | torch.device = "auto",
             rollout_device: str | torch.device = "cpu",
     ):
@@ -170,6 +171,11 @@ class PPO(BaseAlgorithm):
         self.target_kl = target_kl
         self.gsde_sample_freq = gsde_sample_freq
         assert not policy.gsde_enabled or gsde_sample_freq > 0
+        if agent_logprob_reduction not in (None, "sum", "mean"):
+            raise ValueError(f"{agent_logprob_reduction=} must be 'sum', 'mean', or None")
+        if agent_logprob_reduction is not None and not isinstance(policy, PPOPolicy):
+            logger.warning('agent_logprob_reduction is only intended for single agent PPO')
+        self.agent_logprob_reduction: Optional[Literal["sum", "mean"]] = agent_logprob_reduction
 
         self.train_device = as_device(train_device)
         self.rollout_device = as_device(rollout_device)
@@ -208,6 +214,7 @@ class PPO(BaseAlgorithm):
             'train_device': str(self.train_device),
             'rollout_device': str(self.rollout_device),
             'gsde_sample_freq': self.gsde_sample_freq,
+            'agent_logprob_reduction': self.agent_logprob_reduction,
         }
 
     def _apply_optimizer_state_dict(self, state_dict: dict[str, Any]) -> None:
@@ -226,6 +233,9 @@ class PPO(BaseAlgorithm):
             advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
         ratio = torch.exp(log_prob - old_log_prob)
+
+        if ratio.ndim == 2 and advantages.ndim == 1:
+            advantages = advantages.unsqueeze(-1)
 
         policy_loss_1 = advantages * ratio
         policy_loss_2 = advantages * torch.clamp(ratio, 1 - self.clip_range, 1 + self.clip_range)
@@ -247,18 +257,18 @@ class PPO(BaseAlgorithm):
 
         loss = policy_loss + self.ent_coef * entropy_loss + self.vf_coef * value_loss
 
-
         clip_fraction = torch.mean((torch.abs(ratio - 1) > self.clip_range).float())
         metrics = {
             'ent_loss': entropy_loss.item(),
             'act_loss': policy_loss.item(),
             'val_loss': value_loss.item(),
             'clip_frac': clip_fraction.item(),
+            'ratio': compute_summary_statistics(ratio, find_min=True, find_max=True),
         }
 
         return loss, metrics
 
-    def train(self, episodes: list[PPOEpisode]) -> dict[str, Any]:
+    def train(self, episodes: list[PPOEpisode], compute_agent_metrics: bool = True) -> dict[str, Any]:
         with PerformanceTimer() as to_train_device_timer:
             self.policy.train()
             self.policy.to(self.train_device)
@@ -301,11 +311,29 @@ class PPO(BaseAlgorithm):
                     actions=batch.actions
                 )
 
-                log_prob = log_probs.sum(dim=AGENTS_DIM)
-                entropy = entropies.sum(dim=AGENTS_DIM) if entropies is not None else None
-                old_log_prob = batch.log_probs.sum(dim=AGENTS_DIM)
+                if self.agent_logprob_reduction is None:
+                    log_prob = log_probs
+                    old_log_prob = batch.log_probs
+                    entropy = entropies
+                elif self.agent_logprob_reduction == "sum":
+                    log_prob = log_probs.sum(dim=AGENTS_DIM)
+                    old_log_prob = batch.log_probs.sum(dim=AGENTS_DIM)
+                    entropy = entropies.sum(dim=AGENTS_DIM) if entropies is not None else None
+                elif self.agent_logprob_reduction == "mean":
+                    log_prob = log_probs.mean(dim=AGENTS_DIM)
+                    old_log_prob = batch.log_probs.mean(dim=AGENTS_DIM)
+                    entropy = entropies.mean(dim=AGENTS_DIM) if entropies is not None else None
+                else:
+                    raise ValueError(f"Unhandled {self.agent_logprob_reduction=}")
 
                 loss, metrics = self.compute_loss(batch, entropy, log_prob, old_log_prob, values)
+                if compute_agent_metrics:
+                    with torch.no_grad():
+                        ratio_agent = torch.exp(log_probs - batch.log_probs)
+                        metrics["ratio_agent"] = compute_summary_statistics(ratio_agent, find_min=True, find_max=True)
+                        metrics["clip_frac_agent"] = torch.mean(
+                            (torch.abs(ratio_agent - 1) > self.clip_range).float()
+                        ).item()
 
                 loss_metrics.add(metrics)
 
@@ -343,7 +371,7 @@ class PPO(BaseAlgorithm):
         metrics_timer = PerformanceTimer().start()
         with torch.no_grad():
             metrics: dict[str, Any] = {
-                **{k: compute_summary_statistics(v) for k, v in loss_metrics.get()},
+                **{k: compute_summary_statistics(v) for k, v in loss_metrics.get().items()},
                 'approx_kl': compute_summary_statistics(approx_kl_divs, find_max=True),
                 'upd': n_updates,
                 'tot_upd': self.n_total_updates,
@@ -393,6 +421,7 @@ class PPO(BaseAlgorithm):
             wandb_kwargs: dict[str, Any] | None = None,
             logging_ignore_keys_for_persistence: list[str] | None = None,
             logging_console_keys: Collection[str] | Collection[tuple[str, str | None]] | None = None,
+            compute_agent_metrics: bool = False,
     ):
         assert (
                 (max_total_timesteps is not None and max_total_timesteps > 0 and additional_timesteps is None)
@@ -400,6 +429,9 @@ class PPO(BaseAlgorithm):
                 (additional_timesteps is not None and additional_timesteps > 0 and max_total_timesteps is None)
         )
         assert best_rotation_n >= 1
+
+        if self.agent_logprob_reduction is None and compute_agent_metrics:
+            logger.warning("compute_agent_metrics is unnecessary")
 
         if max_total_timesteps is None:
             max_total_timesteps = self.n_total_timesteps + additional_timesteps
@@ -471,7 +503,7 @@ class PPO(BaseAlgorithm):
                 best_save_counter=best_save_counter,
             )
 
-            update_metrics = self.train(episodes)
+            update_metrics = self.train(episodes, compute_agent_metrics=compute_agent_metrics)
             metrics = {
                 **update_metrics,
                 **rollout_metrics,

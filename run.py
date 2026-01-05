@@ -72,11 +72,12 @@ def main():
 
     # =====  ID  =====
     run_id = "2026-01-04_01-09-26"
-    # run_id = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    run_id = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
     # ===== LOAD =====
-    load_path = "runs/mat_swarm_bots/2026-01-04_01-09-26/models/model_3072000_steps.pt"
-    # load_path = None
+    load_path: str | None = "runs/mat_swarm_bots/2026-01-04_01-09-26/models/model_14336000_steps.pt"
+    std = 0.25
+    load_path = None
 
     run_dir = f"runs/mat_swarm_bots/{run_id}/"
     save_optimizer = True
@@ -146,22 +147,28 @@ def main():
         cross_attn_first=True,
         act_fn_cls=nn.GELU,
         continuous_config=GSDEParams(
-            base_std=0.5,
+            base_std=0.3,
             latent_sde_dim=None,
             std_learnable=True,
             full_std=True,
             sde_learn_features=False,
             log_std_clamp_range=(-20.0, 2.0),
             normalize_latent_sde_by_dim=True
-        )
+        ),
+        bernoulli_initial_prob=0.66,
     )
     print(policy)
+
+    lr = 1e-5
+    if load_path is not None:
+        lr = 3e-6
+        logger.warning(f'Setting {lr = :.2e}')
 
     print("Initializing PPO Algorithm...")
     ppo = PPO(
         policy=policy,
         env=env,
-        learning_rate=1e-5 if load_path is None else 3e-6,
+        learning_rate=lr,
         n_episodes_per_rollout=n_envs,
         max_episode_length=episode_length,
         batch_size=256,
@@ -171,13 +178,17 @@ def main():
         clip_range=0.2,
         train_device=train_device,
         rollout_device=rollout_device,
-        target_kl=0.05,
+        target_kl=0.1,
         gsde_sample_freq=6,
+        agent_logprob_reduction=None,
     )
 
     if load_path:
         logger.info(f"Loading model from {load_path}")
         ppo.load(load_path)
+
+        logger.warning(f'Setting {std = }')
+        ppo.policy.action_dist.set_std(std)
 
     print("Starting training...")
     ppo.learn(
@@ -192,23 +203,23 @@ def main():
             'env_settings': env_settings
         },
         logging_console_keys=[
-            ('iteration', None),
-            ('timesteps', None),
-            ('tot_upd', None),
+            ('iteration', '5'),
+            ('timesteps', '8'),
+            ('tot_upd', '6'),
             ('act0', SummaryStatisticsFormat(histogram=10)),
             ('act1', SummaryStatisticsFormat(histogram=2)),
             ('std0', SummaryStatisticsFormat(mean='.3f', std='.3f', min_value='.3f', max_value='.3f')),
-            ('val_loss', None),
+            ('upd', '3'),
             ('approx_kl', SummaryStatisticsFormat(mean='.3f', std='.3f', max_value='.3f')),
             ('clip_frac', None),
-            ('upd', '3'),
-            ('expl_var', None),
+            ('ratio', SummaryStatisticsFormat(mean='.3f', std='.3f', min_value='.3f', max_value='.3f')),
+            ('val_loss', None),
+            ('expl_var', '.3f'),
             ('ep_rew', SummaryStatisticsFormat(mean=' .2f', std='.2f', max_value='.2f')),
             ('ep_rew_ema', ' .3f'),
             ('best_ep_rew_ema', ' .3f'),
             ('fps', None),
-        ]
-
+        ],
     )
     
     print("Training Finished.")
