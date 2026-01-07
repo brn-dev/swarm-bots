@@ -15,8 +15,6 @@ LogStdNetInitialization = ActionNetInitialization
 
 class PredictedStdActionDist(ContinuousActionDist):
 
-    base_log_std: Optional[float]
-
     def __init__(
             self,
             latent_dim: int,
@@ -39,7 +37,7 @@ class PredictedStdActionDist(ContinuousActionDist):
         if log_std_net_initialization is not None:
             log_std_net_initialization(self.log_std_net)
 
-        self.base_log_std = math.log(base_std) if base_std != 1 else None
+        self.base_log_std = math.log(base_std)
         self.log_std_clamp_range = log_std_clamp_range
 
         self.squash_output = squash_output
@@ -51,9 +49,7 @@ class PredictedStdActionDist(ContinuousActionDist):
 
     def update_latent_features(self, latent_pi: torch.Tensor) -> Self:
         mean_actions = self.action_net(latent_pi)
-        log_stds = self.log_std_net(latent_pi)
-        if self.base_log_std is not None:
-            log_stds = log_stds + self.base_log_std
+        log_stds = self.log_std_net(latent_pi) + self.base_log_std
         return self.update_distribution_params(mean_actions, log_stds)
 
     def update_distribution_params(
@@ -115,4 +111,9 @@ class PredictedStdActionDist(ContinuousActionDist):
     def set_base_std(self, std: float) -> None:
         if std <= 0:
             raise ValueError(f"std must be > 0, got {std}")
-        self.base_log_std = None if std == 1.0 else math.log(std)
+        self.base_log_std = math.log(std)
+
+    def scale_std(self, multiplier: float) -> None:
+        if multiplier <= 0:
+            raise ValueError(f"multiplier must be > 0, got {multiplier}")
+        self.base_log_std += math.log(multiplier)

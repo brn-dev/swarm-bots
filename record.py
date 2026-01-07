@@ -22,7 +22,6 @@ from swarmbots.mj_env.scenarios.obstacle_street_scenario import ObstacleStreetSc
 from swarmbots.mj_env.swarm.homogeneous_swarm import HomogeneousSwarm
 from swarmbots.mj_env.swarm_bots_env import SwarmBotsEnv
 
-
 def make_env_fn(
     unit_start_locations,
     episode_length,
@@ -70,7 +69,7 @@ def main():
         (-0.4, -0.4, 0),
     ]
     episode_length = 256
-    load_path = "runs/mat_swarm_bots/2026-01-05_15-20-36/models/best/2026-01-05_15-20-49/model_best_0.pt"
+    load_path = "runs/mat_swarm_bots/2026-01-06_13-46/models/best/2026-01-06_17-31-33/model_best_2.pt"
     deterministic = False
     rollout_device = torch.device("cpu")
     gsde_sample_freq = 6

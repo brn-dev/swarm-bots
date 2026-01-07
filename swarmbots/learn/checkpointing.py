@@ -41,6 +41,25 @@ def copy_running_mean_std(src: Any, dst: Any) -> None:
     dst.var = src.var.copy()
     dst.count = src.count
 
+def capture_env_state(env: Any) -> list[dict[str, Any]]:
+    env_state: list[dict[str, Any]] = []
+    current_env = env
+    while hasattr(current_env, "env"):
+        wrapper_state: dict[str, Any] = {}
+        if hasattr(current_env, "local_obs_rms"):
+            wrapper_state["local_obs_rms"] = current_env.local_obs_rms
+        if hasattr(current_env, "global_obs_rms"):
+            wrapper_state["global_obs_rms"] = current_env.global_obs_rms
+        if hasattr(current_env, "return_rms"):
+            wrapper_state["return_rms"] = current_env.return_rms
+
+        if wrapper_state:
+            wrapper_state["wrapper_class"] = type(current_env).__name__
+            env_state.append(wrapper_state)
+
+        current_env = current_env.env
+    return env_state
+
 
 def apply_env_state(env: Any, env_state: Optional[list[dict[str, Any]]]) -> None:
     if not env_state:

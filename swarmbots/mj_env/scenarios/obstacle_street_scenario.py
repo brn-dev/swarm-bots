@@ -303,7 +303,7 @@ class ObstacleStreetScenario(BaseScenario):
             'actuators_activation_reward_weight': -8e-3,
             'units_without_connections_reward_weight': -1e-2,
             'movement_reward_weight':  0e-1,
-            'height_reward_weight':  5e-3,
+            'height_reward_weight':  1e-2,
             'connectors_stayed_active_reward_weight':  5e-5,
             'connectors_successfully_activated_reward_weight':  1e-3,
             'connectors_unsuccessfully_activated_reward_weight': -1e-5,

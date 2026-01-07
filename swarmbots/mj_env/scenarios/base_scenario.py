@@ -242,7 +242,7 @@ class BaseScenario(abc.ABC):
 
         * qpos - hinge angles are encoded via sin/cos pairs
         * qvel
-        * connector obs - containing is-connected status, twist angles and disconnect potentials
+        * connector obs - containing is-connected status, twist angle sin/cos and disconnect potentials
         * [Optionally] xpos of connectors
         * [Optionally] xquat of connectors
         """
@@ -264,11 +264,12 @@ class BaseScenario(abc.ABC):
         twist_angles = connections.twist_angles
         disconnect_potentials = connections.disconnect_potentials
 
-        connector_obs = np.zeros((self.num_units, self.limbs_per_unit, 4), dtype=float)
+        connector_obs = np.zeros((self.num_units, self.limbs_per_unit, 5), dtype=float)
         connector_obs[non_active_indices[0], non_active_indices[1], 0] = 1
         connector_obs[active_indices[0], active_indices[1], 1] = 1
-        connector_obs[active_indices[0], active_indices[1], 2] = twist_angles[is_active]
-        connector_obs[active_indices[0], active_indices[1], 3] = disconnect_potentials[is_active]
+        connector_obs[active_indices[0], active_indices[1], 2] = np.sin(twist_angles[is_active])
+        connector_obs[active_indices[0], active_indices[1], 3] = np.cos(twist_angles[is_active])
+        connector_obs[active_indices[0], active_indices[1], 4] = disconnect_potentials[is_active]
         connector_obs = connector_obs.reshape((self.num_units, -1))
 
         obs_list = [qpos_obs, qvel, connector_obs]
