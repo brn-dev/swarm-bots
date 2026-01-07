@@ -40,6 +40,12 @@ class DiagGaussianActionDist(ContinuousActionDist):
         with torch.no_grad():
             self.log_stds[:] = math.log(std)
 
+    def scale_std(self, multiplier: float) -> None:
+        if multiplier <= 0:
+            raise ValueError(f"multiplier must be > 0, got {multiplier}")
+        with torch.no_grad():
+            self.log_stds *= multiplier
+
     def update_distribution_params(self, means: torch.Tensor, log_stds: torch.Tensor) -> Self:
         self.distribution = torchdist.Normal(loc=means, scale=torch.exp(log_stds))
         return self

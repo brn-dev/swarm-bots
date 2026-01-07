@@ -77,6 +77,14 @@ class GSDEActionDist(ContinuousActionDist):
         if self._exploration_batch_shape is not None:
             self.reset_noise(self._exploration_batch_shape)
 
+    def scale_std(self, multiplier: float) -> None:
+        if multiplier <= 0:
+            raise ValueError(f"multiplier must be > 0, got {multiplier}")
+        with torch.no_grad():
+            self.log_stds *= multiplier
+        if self._exploration_batch_shape is not None:
+            self.reset_noise(self._exploration_batch_shape)
+
     def reset_noise(self, batch_shape: tuple[int, ...]) -> None:
         log_stds = torch.clamp(self.log_stds, *self.log_std_clamp_range)
         std_matrix = self._get_std_matrix(log_stds)
