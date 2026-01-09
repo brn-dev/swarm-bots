@@ -124,6 +124,13 @@ class PPO(BaseAlgorithm):
 
     def _apply_optimizer_state_dict(self, state_dict: dict[str, Any]) -> None:
         self.optimizer.load_state_dict(state_dict)
+        self._move_optimizer_state_to_device(self.train_device)
+
+    def _move_optimizer_state_to_device(self, device: torch.device) -> None:
+        for state in self.optimizer.state.values():
+            for k, v in state.items():
+                if torch.is_tensor(v) and v.device != device:
+                    state[k] = v.to(device)
 
     def _apply_learning_rate(self, lr: LearningRate) -> None:
         assert isinstance(lr, float)
@@ -345,45 +352,62 @@ class PPO(BaseAlgorithm):
             raise ValueError(f"Unhandled {self.agent_logprob_reduction=}")
         return entropy, log_prob, old_log_prob
 
-    def _execute_command(self, cmd: str, params: str):
+    def _execute_command(self, cmd: str, params: str) -> bool:
+        """
+        :return: True if the command was executed successfully and updated the hyper parameters, False otherwise
+        """
         if cmd == 'set_std':
             std = float(params)
             logger.warning(f"Setting action std to {std}")
             self.policy.action_dist.set_std(std)
+            return True
         elif cmd == 'scale_std':
             multiplier = float(params)
             logger.warning(f"Scaling action std by {multiplier}")
             self.policy.action_dist.scale_std(multiplier)
+            return True
+        elif cmd == 'set_n_epochs' or cmd == 'set_num_epochs':
+            n_epochs = int(params)
+            logger.warning(f'Setting num epochs to {n_epochs}')
+            self.n_epochs = n_epochs
+            return True
         elif cmd == 'set_target_kl':
             target_kl = float(params)
             logger.warning(f'Setting target KL to {target_kl}')
             self.target_kl = target_kl
+            return True
         elif cmd == "set_clip_range":
             clip_range = float(params)
             logger.warning(f"Setting clip_range to {clip_range}")
             self.clip_range = clip_range
+            return True
         elif cmd == "set_clip_range_vf":
             clip_range_vf = float(params)
             logger.warning(f"Setting clip_range_vf to {clip_range_vf}")
             self.clip_range_vf = clip_range_vf
+            return True
         elif cmd == "set_ent_coef":
             ent_coef = float(params)
             logger.warning(f"Setting ent_coef to {ent_coef}")
             self.ent_coef = ent_coef
+            return True
         elif cmd == "set_vf_coef":
             vf_coef = float(params)
             logger.warning(f"Setting vf_coef to {vf_coef}")
             self.vf_coef = vf_coef
+            return True
         elif cmd == "set_gamma":
             gamma = float(params)
             logger.warning(f"Setting gamma to {gamma}")
             self.gamma = gamma
             self.rollout_buffer.gamma = gamma
+            return True
         elif cmd == "set_gae_lambda":
             gae_lambda = float(params)
             logger.warning(f"Setting gae_lambda to {gae_lambda}")
             self.gae_lambda = gae_lambda
             self.rollout_buffer.gae_lambda = gae_lambda
+            return True
         else:
-            super()._execute_command(cmd, params)
+            return super()._execute_command(cmd, params)
 

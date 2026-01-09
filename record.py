@@ -23,7 +23,6 @@ from swarmbots.mj_env.swarm.homogeneous_swarm import HomogeneousSwarm
 from swarmbots.mj_env.swarm_bots_env import SwarmBotsEnv
 
 def make_env_fn(
-    unit_start_locations,
     episode_length,
     scenario_kwargs=None,
     render_mode=None
@@ -32,12 +31,7 @@ def make_env_fn(
         scenario_kwargs = {}
         
     def _init():
-        swarm = HomogeneousSwarm(
-            unit_start_locations=unit_start_locations,
-            randomize_unit_orientations=False
-        )
         scenario = ObstacleStreetScenario.no_payload_no_opening_one_wall_easy(
-            swarm=swarm,
             **scenario_kwargs
         )
         return SwarmBotsEnv(
@@ -57,26 +51,14 @@ def main():
         format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <level>{message}</level>",
     )
 
-    # unit_start_locations = [
-    #     (0.0, 0.0, 0.0),
-    #     (-0.6, 0, 0),
-    # ]
-    unit_start_locations = [
-        (0.0, 0.0, 0.0),
-        (0.4, 0.4, 0),
-        (0.4, -0.4, 0),
-        (-0.4, 0.4, 0),
-        (-0.4, -0.4, 0),
-    ]
-    episode_length = 256
-    load_path = "runs/mat_swarm_bots/2026-01-06_13-46/models/best/2026-01-06_17-31-33/model_best_2.pt"
+    episode_length = 512
+    load_path = "runs/mat_swarm_bots/2026-01-07_15-05-58/models/best/2026-01-08_13-48-06/model_best_1.pt"
     deterministic = False
     rollout_device = torch.device("cpu")
     gsde_sample_freq = 6
 
     print("Creating env...")
     record_env_fn = make_env_fn(
-        unit_start_locations=unit_start_locations,
         episode_length=episode_length,
         scenario_kwargs={},
         render_mode='rgb_array'

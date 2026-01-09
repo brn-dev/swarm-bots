@@ -6,12 +6,10 @@ import threading
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Optional, Collection, Callable
+from typing import Any, Optional, Collection, Callable, Self
 
 import torch
 from loguru import logger
-from prompt_toolkit import prompt
-from prompt_toolkit.patch_stdout import patch_stdout
 
 try:
     logger.level("SAVE")
@@ -57,10 +55,12 @@ class BaseAlgorithm(abc.ABC):
         self._active_extra_run_metadata: dict[str, Any] | None = None
         self._active_save_optimizer: bool = True
         self._last_return_ema: float | None = None
+        self._latest_hp_update: str | None = None
         self._stop_requested = False
         self._stop_should_save = True
         self._stop_save_optimizer: bool | None = None
         self._make_record_env: Callable[[], BaseLearnEnvWrapper] | None = None
+        self._command_log_path: Path | None = None
 
     @abc.abstractmethod
     def get_hyper_parameters(self) -> dict[str, Any]:
@@ -110,7 +110,7 @@ class BaseAlgorithm(abc.ABC):
             logging_console_keys: Collection[str] | Collection[tuple[str, str | None]] | None = None,
             enable_command_prompt: bool = True,
             make_record_env: Callable[[], BaseLearnEnvWrapper] | None = None,
-    ):
+    ) -> Self:
         assert (
                 (max_total_timesteps is not None and max_total_timesteps > 0 and additional_timesteps is None)
                 or
@@ -128,6 +128,7 @@ class BaseAlgorithm(abc.ABC):
 
         best_models_dir: pathlib.Path | None = None
         learn_started_at = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        self._latest_hp_update = learn_started_at
         if run_dir is not None:
             best_models_dir = run_dir / "models" / "best" / learn_started_at
 
@@ -168,6 +169,7 @@ class BaseAlgorithm(abc.ABC):
         self._stop_save_optimizer = None
         self._last_return_ema = None
         self._make_record_env = make_record_env
+        self._command_log_path = None if run_dir is None else (run_dir / "command_log.jsonl")
 
         try:
             if enable_command_prompt:
@@ -199,6 +201,7 @@ class BaseAlgorithm(abc.ABC):
 
                     metric_logger.log({
                         'learn_start': learn_started_at,
+                        'latest_hp_update': self._latest_hp_update,
                         'iteration': self.n_total_iterations,
                         'timesteps': self.n_total_timesteps,
                         'lr': self.learning_rate,
@@ -241,11 +244,13 @@ class BaseAlgorithm(abc.ABC):
             self._stop_should_save = True
             self._stop_save_optimizer = None
             self._last_return_ema = None
+            self._latest_hp_update = None
             self._make_record_env = None
+            self._command_log_path = None
 
         return self
 
-    def set_learning_rate(self, lr: LearningRate):
+    def set_learning_rate(self, lr: LearningRate) -> None:
         self.learning_rate = lr
         self._apply_learning_rate(lr)
 
@@ -361,8 +366,8 @@ class BaseAlgorithm(abc.ABC):
         metadata_path = path.with_name(f"{path.name}.json")
         metadata_path.write_text(json.dumps(metadata, indent=2, sort_keys=True), encoding="utf-8")
 
-    def load(self, path: str | Path) -> None:
-        checkpoint = load_checkpoint(path)
+    def load(self, path: str | Path, *, map_location: Any | None = "cpu") -> None:
+        checkpoint = load_checkpoint(path, map_location=map_location)
         self.policy.load_state_dict(extract_policy_state_dict(checkpoint))
 
         optimizer_state_dict = extract_optimizer_state_dict(checkpoint)
@@ -376,27 +381,40 @@ class BaseAlgorithm(abc.ABC):
 
         apply_env_state(self.env, extract_env_state(checkpoint))
 
-    def _execute_command(self, cmd: str, params: str):
+    def _execute_command(self, cmd: str, params: str) -> bool:
+        """
+        :return: True if the command was executed successfully and updated the hyper parameters, False otherwise
+        """
         if cmd == 'show_hps':
             logger.info(self.get_hyper_parameters())
+            return False
         elif cmd == 'set_lr':
             lr = json.loads(params)
             logger.warning(f'Setting learning rate to {lr}')
             self.set_learning_rate(lr)
+            return True
         elif cmd == 'save':
             self._cmd_save(params)
+            return False
         elif cmd == 'stop':
             self._cmd_stop(params)
+            return False
         elif cmd == 'record':
             self._cmd_record(params)
+            return False
         else:
             logger.error(f'Unknown command "{cmd}"')
+            return False
 
-    def execute_command(self, cmd: str, params: str) -> None:
+    def execute_command(self, cmd: str, params: str) -> bool:
+        """
+        :return: True if the command was executed successfully and updated the hyper parameters, False otherwise
+        """
         try:
-            self._execute_command(cmd.strip(), params.strip())
+            return self._execute_command(cmd.strip(), params.strip())
         except Exception:
             logger.exception('Executing command failed')
+            return False
 
     def _maybe_start_command_prompt(self) -> None:
         if self._command_prompt_started:
@@ -408,23 +426,29 @@ class BaseAlgorithm(abc.ABC):
             run_dir: Path | None,
             extra_run_metadata: dict[str, Any] | None
     ) -> None:
-        executed_any = False
+        hps_updated: bool = False
         while True:
             try:
                 raw = self._command_queue.get_nowait()
             except queue.Empty:
                 break
-            executed_any |= self._execute_command_line(raw)
+            updated, updated_commands = self._execute_command_line(raw)
+            if updated and updated_commands:
+                self._append_command_log(raw=raw, updated_commands=updated_commands)
+            hps_updated |= updated
 
-        if executed_any and run_dir is not None:
+        if hps_updated:
+            self._latest_hp_update = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        if hps_updated and run_dir is not None:
             self._write_run_metadata(run_dir, extra_run_metadata)
 
-    def _execute_command_line(self, raw: str) -> bool:
+    def _execute_command_line(self, raw: str) -> tuple[bool, list[dict[str, Any]]]:
         raw = raw.strip()
         if not raw:
-            return False
+            return False, []
 
-        executed_any = False
+        hps_updated: bool = False
+        updated_commands: list[dict[str, Any]] = []
         for chunk in raw.split(";"):
             chunk = chunk.strip()
             if not chunk:
@@ -436,9 +460,31 @@ class BaseAlgorithm(abc.ABC):
             cmd = cmd.strip()
             if not cmd:
                 continue
-            self.execute_command(cmd, params)
-            executed_any = True
-        return executed_any
+            updated = self.execute_command(cmd, params)
+            hps_updated |= updated
+            if updated:
+                updated_commands.append({"cmd": cmd, "params": params.strip()})
+        return hps_updated, updated_commands
+
+    def _append_command_log(self, raw: str, updated_commands: list[dict[str, Any]]) -> None:
+        if self._command_log_path is None:
+            return
+
+        entry = {
+            "timestamp": datetime.now().isoformat(timespec="seconds"),
+            "timesteps": int(self.n_total_timesteps),
+            "iterations": int(self.n_total_iterations),
+            "raw": raw.strip(),
+            "updated_commands": updated_commands,
+            "hyper_parameters": self.get_hyper_parameters(),
+        }
+
+        try:
+            self._command_log_path.parent.mkdir(parents=True, exist_ok=True)
+            with self._command_log_path.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(entry, default=str, indent=2) + "\n")
+        except OSError:
+            logger.exception(f"Failed to append command log to {self._command_log_path.as_posix()}")
 
     def _cmd_save(self, params: str) -> None:
         config = _parse_params_maybe_json(params)
@@ -492,6 +538,9 @@ class BaseAlgorithm(abc.ABC):
         logger.warning(f"Stop requested (save={save}). Will stop before next iteration.")
 
     def _cmd_record(self, params: str) -> None:
+        if self._make_record_env is None:
+            raise ValueError(f"{self._make_record_env} is None")
+
         config = _parse_params_maybe_json(params)
         if isinstance(config, dict):
             num_episodes = int(config.get("episodes", 3))
@@ -519,33 +568,18 @@ class BaseAlgorithm(abc.ABC):
 
         device = getattr(self, "rollout_device", torch.device("cpu"))
         gsde_sample_freq = int(getattr(self, "gsde_sample_freq", -1))
-        record_env: BaseLearnEnvWrapper = self.env
-        created_env: BaseLearnEnvWrapper | None = None
-        try:
-            can_render = False
-            try:
-                can_render = self.env.render() is not None
-            except Exception:
-                can_render = False
+        record_env: BaseLearnEnvWrapper | None = None
 
-            if not can_render:
-                if self._make_record_env is None:
-                    raise RuntimeError(
-                        "Cannot record from the current training env (render returned None). "
-                        "This usually means your envs were created with render_mode=None and/or are running in "
-                        "AsyncVectorEnv subprocesses. Fix: create a dedicated recording env with render_mode='rgb_array' "
-                        "and pass it via learn(make_record_env=...). See record.py for an example."
-                    )
-                created_env = self._make_record_env()
-                record_env = created_env
-                apply_env_state(record_env, capture_env_state(self.env))
-                freeze_env_normalization(record_env)
-                first_frame = record_env.render()
-                if first_frame is None:
-                    raise RuntimeError(
-                        "Recording env render() returned None. Ensure make_record_env creates SwarmBotsEnv with "
-                        "render_mode='rgb_array'."
-                    )
+        try:
+            record_env = self._make_record_env()
+            apply_env_state(record_env, capture_env_state(self.env))
+            freeze_env_normalization(record_env)
+            first_frame = record_env.render()
+            if first_frame is None:
+                raise RuntimeError(
+                    "Recording env render() returned None. Ensure make_record_env creates SwarmBotsEnv with "
+                    "render_mode='rgb_array'."
+                )
 
             logger.warning(
                 f"Recording {num_episodes} episode(s) to {folder.as_posix()} (deterministic={deterministic}, fps={fps})"
@@ -562,8 +596,8 @@ class BaseAlgorithm(abc.ABC):
                 device=device,
             )
         finally:
-            if created_env is not None:
-                created_env.close()
+            if record_env is not None:
+                record_env.close()
 
 
 def _parse_step_from_metadata_filename(path: Path) -> int | None:
@@ -586,16 +620,25 @@ def _read_metadata_json(path: Path) -> dict[str, Any] | None:
 
 
 def _start_command_prompt(cmd_q: queue.Queue[str]) -> bool:
-    if not sys.stdin or not sys.stdin.isatty():
-        logger.warning("Command prompt disabled (stdin is not a TTY).")
+    try:
+        from prompt_toolkit import prompt as pt_prompt
+        from prompt_toolkit.patch_stdout import patch_stdout as pt_patch_stdout
+    except ImportError:
+        logger.warning(
+            "Command prompt disabled (prompt_toolkit not installed). "
+            "Install it with `pip install prompt_toolkit`."
+        )
         return False
+
+    if not sys.stdin or not sys.stdin.isatty():
+        logger.warning("Command prompt may not work (stdin is not a TTY).")
 
     def _run() -> None:
         while True:
             try:
-                with patch_stdout():
-                    cmd = prompt("train> ")
-            except EOFError:
+                with pt_patch_stdout():
+                    cmd = pt_prompt("> ")
+            except (EOFError, KeyboardInterrupt):
                 logger.debug("EOF: Exiting command prompt")
                 return
             cmd_q.put(cmd.strip())
