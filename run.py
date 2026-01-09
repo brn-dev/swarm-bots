@@ -59,13 +59,13 @@ def main():
     save_interval = 500
 
     # =====  ID  =====
-    run_id = "2026-01-07_15-05-58"
-    # run_id = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    run_id = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    # run_id = "2026-01-07_15-05-58"
 
     # ===== LOAD =====
-    load_path: str | None = "runs/mat_swarm_bots/2026-01-07_15-05-58/models/model_19456000_steps.pt"
-    std = None
-    # load_path = None
+    load_path = None
+    # load_path: str | None = "runs/mat_swarm_bots/2026-01-07_15-05-58/models/model_19456000_steps.pt"
+    # std = None
 
     run_dir = f"runs/mat_swarm_bots/{run_id}/"
     save_optimizer = True
