@@ -7,8 +7,8 @@ import torch
 from loguru import logger
 
 
-def load_checkpoint(path: str | pathlib.Path) -> Any:
-    return torch.load(pathlib.Path(path), weights_only=False)
+def load_checkpoint(path: str | pathlib.Path, map_location: Any | None = "cpu") -> Any:
+    return torch.load(pathlib.Path(path), map_location=map_location, weights_only=False)
 
 
 def extract_policy_state_dict(checkpoint: Any) -> dict[str, Any]:

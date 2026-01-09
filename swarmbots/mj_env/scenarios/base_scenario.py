@@ -41,7 +41,10 @@ class BaseScenario(abc.ABC):
         self,
             swarm: BaseSwarm,
             actuator_strength: float,
+            progress_reward_weight: float,
+            guidance_reward_weight: float,
             actuators_activation_reward_weight: float,
+            actuators_activation_reward_power: int,
             units_without_connections_reward_weight: float,
             movement_reward_weight: float,
             height_reward_weight: float,
@@ -72,7 +75,10 @@ class BaseScenario(abc.ABC):
         self.connection_angle_threshold = connection_angle_threshold
         self.disconnect_potential_threshold = disconnect_potential_threshold
 
+        self.progress_reward_weight = progress_reward_weight
+        self.guidance_reward_weight = guidance_reward_weight
         self.actuators_activation_reward_weight = actuators_activation_reward_weight
+        self.actuators_activation_reward_power = actuators_activation_reward_power
         self.units_without_connections_reward_weight = units_without_connections_reward_weight
         self.movement_reward_weight = movement_reward_weight
         self.height_reward_weight = height_reward_weight
@@ -132,6 +138,8 @@ class BaseScenario(abc.ABC):
         return {
             'swarm': self.swarm.get_settings(),
             'actuator_strength': self.actuator_strength,
+            'progress_reward_weight': self.progress_reward_weight,
+            'guidance_reward_weight': self.guidance_reward_weight,
             'actuators_activation_reward_weight': self.actuators_activation_reward_weight,
             'units_without_connections_reward_weight': self.units_without_connections_reward_weight,
             'movement_reward_weight': self.movement_reward_weight,
@@ -512,7 +520,7 @@ class BaseScenario(abc.ABC):
     ):
         reward = 0.0
 
-        actuator_activation = np.square(action['actuators']).mean()
+        actuator_activation = np.power(np.abs(action['actuators']), self.actuators_activation_reward_power).mean()
         reward += actuator_activation * self.actuators_activation_reward_weight
 
         num_units_without_connections = np.logical_not(connections.get_is_active_mask()).all(axis=1).sum()

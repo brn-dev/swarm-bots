@@ -6,6 +6,7 @@ from mujoco import MjsBody
 
 from swarmbots.mj_env.scenarios.base_scenario import BaseScenario, SwarmObsDict
 from swarmbots.mj_env.swarm.base_swarm import BaseSwarm
+from swarmbots.mj_env.swarm.homogeneous_swarm import HomogeneousSwarm
 from swarmbots.mj_env.swarm.swarm_connections import SwarmConnections
 
 
@@ -32,7 +33,10 @@ class ObstacleStreetScenario(BaseScenario):
             disconnect_potential_threshold: float = 5.0,
             friction: float | Iterable[float] | None = None,
             force_elliptic_cone: bool = False,
+            progress_reward_weight: float = 1.0,
+            guidance_reward_weight: float = 1.0,
             actuators_activation_reward_weight: float = 0.0,
+            actuators_activation_reward_power: int = 6,
             units_without_connections_reward_weight: float = 0.0,
             movement_reward_weight: float = 0.0,
             height_reward_weight: float = 0.0,
@@ -70,7 +74,10 @@ class ObstacleStreetScenario(BaseScenario):
         super().__init__(
             swarm=swarm,
             actuator_strength=actuator_strength,
+            progress_reward_weight=progress_reward_weight,
+            guidance_reward_weight=guidance_reward_weight,
             actuators_activation_reward_weight=actuators_activation_reward_weight,
+            actuators_activation_reward_power=actuators_activation_reward_power,
             units_without_connections_reward_weight=units_without_connections_reward_weight,
             movement_reward_weight=movement_reward_weight,
             height_reward_weight=height_reward_weight,
@@ -261,7 +268,12 @@ class ObstacleStreetScenario(BaseScenario):
         guidance_reward = self.compute_guidance_reward(data, action, state, connections)
         state['guidance_reward'] = guidance_reward
 
-        return progress_reward + guidance_reward, False
+        weighted_progress_reward = progress_reward * self.progress_reward_weight
+        weighted_guidance_reward = guidance_reward * self.guidance_reward_weight
+        state['weighted_progress_reward'] = weighted_progress_reward
+        state['weighted_guidance_reward'] = weighted_guidance_reward
+
+        return weighted_progress_reward + weighted_guidance_reward, False
 
     def get_obs(
             self,
@@ -291,16 +303,35 @@ class ObstacleStreetScenario(BaseScenario):
 
     @staticmethod
     def no_payload_no_opening_one_wall_easy(
-            swarm: BaseSwarm,
             seed: int | None = None,
+            swarm: BaseSwarm | None = None,
+            unit_start_locations: list[tuple[float, float, float]] | None = None,
+            randomize_unit_orientations: bool = False,
             **kwargs
     ) -> 'ObstacleStreetScenario':
+        assert swarm is None or unit_start_locations is None
+
+        if swarm is None:
+            if unit_start_locations is None:
+                unit_start_locations = [
+                    (0.0, 0.0, 0.0),
+                    (0.4, 0.4, 0),
+                    (0.4, -0.4, 0),
+                    (-0.4, 0.4, 0),
+                    (-0.4, -0.4, 0),
+                ]
+
+            swarm = HomogeneousSwarm(
+                unit_start_locations=unit_start_locations,
+                randomize_unit_orientations=randomize_unit_orientations
+            )
+
         scenario_kwargs = {
-            'wall_height': 0.3,
+            'wall_height': 0.25,
             'friction': [2, 1e-2, 2e-4],
             'force_elliptic_cone': True,
             'actuator_strength': 5.0,
-            'actuators_activation_reward_weight': -8e-3,
+            'actuators_activation_reward_weight': -3e-2,
             'units_without_connections_reward_weight': -1e-2,
             'movement_reward_weight':  0e-1,
             'height_reward_weight':  1e-2,

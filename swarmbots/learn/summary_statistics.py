@@ -98,6 +98,7 @@ def format_summary_statistics(
     return representation
 
 
+@torch.no_grad()
 def compute_summary_statistics(
         arr: SummaryStatisticsInput,
         find_min: bool = False,
@@ -105,7 +106,7 @@ def compute_summary_statistics(
         make_histogram: bool | int = False,
         keep_data: bool = True,
 ) -> Optional[SummaryStatistics]:
-    values: np.ndarray
+    values: np.ndarray | torch.Tensor
     if isinstance(arr, list):
         if len(arr) == 0:
             return None
@@ -116,11 +117,14 @@ def compute_summary_statistics(
     elif isinstance(arr, np.ndarray):
         values = arr.ravel()
     elif isinstance(arr, torch.Tensor):
-        values = arr.detach().ravel().cpu().numpy()
+        values = arr.ravel()
     else:
         raise ValueError(arr)
 
-    n = values.size
+    if isinstance(values, np.ndarray):
+        n = values.size
+    else:
+        n = values.numel()
 
     if n == 0:
         return None
@@ -147,7 +151,10 @@ def compute_summary_statistics(
         summary_stats.max_value = values.max().item()
 
     if keep_data:
-        summary_stats.data = values
+        if isinstance(values, np.ndarray):
+            summary_stats.data = values
+        else:
+            summary_stats.data = values.detach().cpu().numpy()
 
     if make_histogram:
         summary_stats.histogram = _compute_histogram(

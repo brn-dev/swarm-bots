@@ -20,7 +20,6 @@ from swarmbots.mj_env.swarm_bots_env import SwarmBotsEnv
 
 
 def make_env_fn(
-    unit_start_locations,
     episode_length,
     scenario_kwargs=None,
     render_mode=None
@@ -29,12 +28,7 @@ def make_env_fn(
         scenario_kwargs = {}
         
     def _init():
-        swarm = HomogeneousSwarm(
-            unit_start_locations=unit_start_locations,
-            randomize_unit_orientations=False
-        )
         scenario = ObstacleStreetScenario.no_payload_no_opening_one_wall_easy(
-            swarm=swarm,
             **scenario_kwargs
         )
         return SwarmBotsEnv(
@@ -46,6 +40,7 @@ def make_env_fn(
     return _init
 
 
+
 def main():
     logger.remove()
     logger.add(
@@ -54,30 +49,23 @@ def main():
         format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <5}</level> | <level>{message}</level>",
     )
 
-    n_envs = 8
+    n_envs = 6
     # unit_start_locations = [
     #     (0.0, 0.0, 0.0),
     #     (-0.6, 0, 0),
     # ]
-    unit_start_locations = [
-        (0.0, 0.0, 0.0),
-        (0.4, 0.4, 0),
-        (0.4, -0.4, 0),
-        (-0.4, 0.4, 0),
-        (-0.4, -0.4, 0),
-    ]
-    episode_length = 256
+    episode_length = 512
     total_timesteps = 50_000_000
     save_interval = 500
 
     # =====  ID  =====
-    run_id = "2026-01-06_13-46"
-    run_id = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    run_id = "2026-01-07_15-05-58"
+    # run_id = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
     # ===== LOAD =====
-    load_path: str | None = "runs/mat_swarm_bots/2026-01-06_13-46-29/models/best/2026-01-06_13-46-51/model_best_0.pt"
+    load_path: str | None = "runs/mat_swarm_bots/2026-01-07_15-05-58/models/model_19456000_steps.pt"
     std = None
-    load_path = None
+    # load_path = None
 
     run_dir = f"runs/mat_swarm_bots/{run_id}/"
     save_optimizer = True
@@ -90,13 +78,26 @@ def main():
 
     env_fns = [
         make_env_fn(
-            unit_start_locations=unit_start_locations,
             episode_length=episode_length,
             scenario_kwargs=scenario_kwargs,
             render_mode=None
         )
         for _ in range(n_envs)
     ]
+
+    def make_record_env():
+        record_env = SyncVectorEnv([
+            make_env_fn(
+                episode_length=episode_length,
+                scenario_kwargs=scenario_kwargs,
+                render_mode='rgb_array'
+            )
+        ])
+        record_env = RecordEpisodeStatistics(record_env)
+        record_env = NormalizeLocalObsWrapper(record_env)
+        record_env = SwarmBotsLearnEnvWrapper(record_env, device=rollout_device)
+
+        return record_env
 
     print("Creating dummy env for capturing settings...")
     dummy_env = env_fns[0]()
@@ -221,45 +222,11 @@ def main():
             ('best_ep_rew_ema', ' .3f'),
             ('fps', None),
         ],
+        make_record_env=make_record_env
     )
     
     print("Training Finished.")
-    
-    print("Starting recording...")
-    
-    record_env_fn = make_env_fn(
-        unit_start_locations=unit_start_locations,
-        episode_length=episode_length,
-        scenario_kwargs=scenario_kwargs,
-        render_mode='rgb_array'
-    )
-    
-    record_vector_env = SyncVectorEnv([record_env_fn])
-    record_vector_env = RecordEpisodeStatistics(record_vector_env)
-    
-    record_norm_wrapper = NormalizeLocalObsWrapper(record_vector_env)
-    
-    training_norm_wrapper = env.env.env
-    
-    record_norm_wrapper.local_obs_rms.mean = training_norm_wrapper.local_obs_rms.mean.copy()
-    record_norm_wrapper.local_obs_rms.var = training_norm_wrapper.local_obs_rms.var.copy()
-    record_norm_wrapper.update_running_mean = False
-    
-    record_vector_env = record_norm_wrapper
-    
-    record_env = SwarmBotsLearnEnvWrapper(record_vector_env, device=rollout_device)
-    
-    record_policy(
-        env=record_env,
-        policy=policy,
-        video_folder='videos',
-        video_name_prefix='test_run',
-        num_episodes=5,
-        deterministic=True,
-        device=rollout_device,
-    )
-    
-    record_env.close()
+
     env.close()
 
 
