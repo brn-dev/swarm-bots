@@ -10,6 +10,7 @@ from typing import Any, Optional, Collection, Callable, Self
 
 import torch
 from loguru import logger
+from sqlalchemy import false
 
 try:
     logger.level("SAVE")
@@ -620,6 +621,7 @@ def _read_metadata_json(path: Path) -> dict[str, Any] | None:
 
 
 def _start_command_prompt(cmd_q: queue.Queue[str]) -> bool:
+    use_prompt_toolkit = True
     try:
         from prompt_toolkit import prompt as pt_prompt
         from prompt_toolkit.patch_stdout import patch_stdout as pt_patch_stdout
@@ -628,16 +630,20 @@ def _start_command_prompt(cmd_q: queue.Queue[str]) -> bool:
             "Command prompt disabled (prompt_toolkit not installed). "
             "Install it with `pip install prompt_toolkit`."
         )
-        return False
+        use_prompt_toolkit = False
 
     if not sys.stdin or not sys.stdin.isatty():
+        use_prompt_toolkit = False
         logger.warning("Command prompt may not work (stdin is not a TTY).")
 
     def _run() -> None:
         while True:
             try:
-                with pt_patch_stdout():
-                    cmd = pt_prompt("> ")
+                if use_prompt_toolkit:
+                    with pt_patch_stdout():
+                        cmd = pt_prompt("> ")
+                else:
+                    cmd = input("> ")
             except (EOFError, KeyboardInterrupt):
                 logger.debug("EOF: Exiting command prompt")
                 return
