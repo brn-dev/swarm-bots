@@ -268,8 +268,8 @@ class ObstacleStreetScenario(BaseScenario):
         guidance_reward = self.compute_guidance_reward(data, action, state, connections)
         state['guidance_reward'] = guidance_reward
 
-        weighted_progress_reward = progress_reward * self.progress_reward_weight
-        weighted_guidance_reward = guidance_reward * self.guidance_reward_weight
+        weighted_progress_reward = progress_reward * self.reward_weights['progress_reward_weight']
+        weighted_guidance_reward = guidance_reward * self.reward_weights['guidance_reward_weight']
         state['weighted_progress_reward'] = weighted_progress_reward
         state['weighted_guidance_reward'] = weighted_guidance_reward
 

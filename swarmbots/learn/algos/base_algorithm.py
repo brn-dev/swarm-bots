@@ -129,6 +129,7 @@ class BaseAlgorithm(abc.ABC):
 
         best_models_dir: pathlib.Path | None = None
         learn_started_at = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        learn_started_iterations = self.n_total_iterations
         self._latest_hp_update = learn_started_at
         if run_dir is not None:
             best_models_dir = run_dir / "models" / "best" / learn_started_at
@@ -188,14 +189,15 @@ class BaseAlgorithm(abc.ABC):
 
                 current_return_ema = episode_return_ema.get()
                 self._last_return_ema = current_return_ema
-                best_return_ema, best_save_counter = self._maybe_save_best_ema_model(
-                    best_models_dir=best_models_dir,
-                    best_rotation_n=best_rotation_n,
-                    save_optimizer=save_optimizer,
-                    current_episode_return_ema=current_return_ema,
-                    best_episode_return_ema=best_return_ema,
-                    best_save_counter=best_save_counter,
-                )
+                if self.n_total_iterations - learn_started_iterations >= MIN_ITERATIONS_FOR_BEST:
+                    best_return_ema, best_save_counter = self._maybe_save_best_ema_model(
+                        best_models_dir=best_models_dir,
+                        best_rotation_n=best_rotation_n,
+                        save_optimizer=save_optimizer,
+                        current_episode_return_ema=current_return_ema,
+                        best_episode_return_ema=best_return_ema,
+                        best_save_counter=best_save_counter,
+                    )
 
                 if log_interval is not None and self.n_total_iterations % log_interval == 0:
                     fps = int(rollout_steps / iter_duration)
@@ -307,8 +309,7 @@ class BaseAlgorithm(abc.ABC):
             best_episode_return_ema: float | None,
             best_save_counter: int,
     ) -> tuple[float | None, int]:
-        if ((best_episode_return_ema is not None and current_episode_return_ema <= best_episode_return_ema)
-                or self.n_total_iterations < MIN_ITERATIONS_FOR_BEST):
+        if best_episode_return_ema is not None and current_episode_return_ema <= best_episode_return_ema:
             return best_episode_return_ema, best_save_counter
 
         best_episode_return_ema = current_episode_return_ema
@@ -394,10 +395,13 @@ class BaseAlgorithm(abc.ABC):
             logger.warning(f'Setting learning rate to {lr}')
             self.set_learning_rate(lr)
             return True
+        elif cmd in {'set_reward_weights', 'set_rw'}:
+            self._cmd_set_reward_weights(params)
+            return True
         elif cmd == 'save':
             self._cmd_save(params)
             return False
-        elif cmd == 'stop':
+        elif cmd == 'stop' or cmd == 'quit' or cmd == 'exit':
             self._cmd_stop(params)
             return False
         elif cmd == 'record':
@@ -599,6 +603,38 @@ class BaseAlgorithm(abc.ABC):
         finally:
             if record_env is not None:
                 record_env.close()
+
+    def _cmd_set_reward_weights(self, params: str) -> None:
+        config = _parse_params_maybe_json(params)
+        if not isinstance(config, dict):
+            raise ValueError("set_reward_weights expects a JSON object, e.g. set_reward_weights:{\"progress_reward_weight\":1.0}")
+
+        reward_weights = config.get("reward_weights", config)
+        if not isinstance(reward_weights, dict):
+            raise ValueError(
+                "set_reward_weights expects either a JSON object of weights or "
+                "{\"reward_weights\": {...}}"
+            )
+
+        call = self.env.get_wrapper_attr("call")
+        results = call("update_reward_weights", reward_weights)
+
+        if not isinstance(results, list):
+            logger.warning(f"Updated reward weights with unexpected results: {results} for {reward_weights}")
+            return
+
+        failed: list[tuple[int, dict[str, Any]]] = []
+        for i, res in enumerate(results):
+            if isinstance(res, dict) and res.get("ok", True) is False:
+                failed.append((i, res))
+
+        if not failed:
+            logger.warning(f"Updated reward weights in {len(results)} env(s): {reward_weights}")
+            return
+
+        logger.error(f"Reward weights update failed in {len(failed)}/{len(results)} env(s): {reward_weights}")
+        for i, res in failed:
+            logger.error(f"env[{i}] update failed: {res}")
 
 
 def _parse_step_from_metadata_filename(path: Path) -> int | None:
