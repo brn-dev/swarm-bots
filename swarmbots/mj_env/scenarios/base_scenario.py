@@ -1,5 +1,5 @@
 import abc
-from typing import Any, TypedDict, Iterable
+from typing import Any, Iterable, TypedDict
 
 import mujoco
 import numpy as np
@@ -18,8 +18,29 @@ class SwarmActDict(TypedDict):
     actuators: np.ndarray  # shape (n_unit, n_actuators_per_unit), type float
     connectors: np.ndarray  # shape (n_unit, n_connectors_per_unit), type bool
 
+class RewardWeights(TypedDict, total=False):
+    progress_reward_weight: float
+    guidance_reward_weight: float
+    actuators_activation_reward_weight: float
+    actuators_activation_reward_power: int
+    units_without_connections_reward_weight: float
+    movement_reward_weight: float
+    height_reward_weight: float
+    connectors_stayed_active_reward_weight: float
+    connectors_successfully_activated_reward_weight: float
+    connectors_unsuccessfully_activated_reward_weight: float
+    connectors_deactivated_reward_weight: float
+
+class RewardWeightsUpdateResult(TypedDict):
+    ok: bool
+    error: str | None
+    unknown_keys: list[str]
+    updated_keys: list[str]
+
 DEFAULT_GEOM_FRICTION: tuple[float, float, float] = (1.0, 0.005, 0.0001)
 HIGH_FRICTION_SLIDING_THRESHOLD: float = 2.0
+
+_REWARD_WEIGHT_KEYS: frozenset[str] = frozenset(RewardWeights.__annotations__.keys())
 
 
 def _validate_geom_friction(
@@ -75,17 +96,19 @@ class BaseScenario(abc.ABC):
         self.connection_angle_threshold = connection_angle_threshold
         self.disconnect_potential_threshold = disconnect_potential_threshold
 
-        self.progress_reward_weight = progress_reward_weight
-        self.guidance_reward_weight = guidance_reward_weight
-        self.actuators_activation_reward_weight = actuators_activation_reward_weight
-        self.actuators_activation_reward_power = actuators_activation_reward_power
-        self.units_without_connections_reward_weight = units_without_connections_reward_weight
-        self.movement_reward_weight = movement_reward_weight
-        self.height_reward_weight = height_reward_weight
-        self.connectors_stayed_active_reward_weight = connectors_stayed_active_reward_weight
-        self.connectors_successfully_activated_reward_weight = connectors_successfully_activated_reward_weight
-        self.connectors_unsuccessfully_activated_reward_weight = connectors_unsuccessfully_activated_reward_weight
-        self.connectors_deactivated_reward_weight = connectors_deactivated_reward_weight
+        self.reward_weights: RewardWeights = {
+            "progress_reward_weight": progress_reward_weight,
+            "guidance_reward_weight": guidance_reward_weight,
+            "actuators_activation_reward_weight": actuators_activation_reward_weight,
+            "actuators_activation_reward_power": actuators_activation_reward_power,
+            "units_without_connections_reward_weight": units_without_connections_reward_weight,
+            "movement_reward_weight": movement_reward_weight,
+            "height_reward_weight": height_reward_weight,
+            "connectors_stayed_active_reward_weight": connectors_stayed_active_reward_weight,
+            "connectors_successfully_activated_reward_weight": connectors_successfully_activated_reward_weight,
+            "connectors_unsuccessfully_activated_reward_weight": connectors_unsuccessfully_activated_reward_weight,
+            "connectors_deactivated_reward_weight": connectors_deactivated_reward_weight,
+        }
         self.average_connectors_reward = average_connectors_reward
         self.include_connectors_xpos_in_obs = include_connectors_xpos_in_obs
         self.include_connectors_xquat_in_obs = include_connectors_xquat_in_obs
@@ -138,16 +161,7 @@ class BaseScenario(abc.ABC):
         return {
             'swarm': self.swarm.get_settings(),
             'actuator_strength': self.actuator_strength,
-            'progress_reward_weight': self.progress_reward_weight,
-            'guidance_reward_weight': self.guidance_reward_weight,
-            'actuators_activation_reward_weight': self.actuators_activation_reward_weight,
-            'units_without_connections_reward_weight': self.units_without_connections_reward_weight,
-            'movement_reward_weight': self.movement_reward_weight,
-            'height_reward_weight': self.height_reward_weight,
-            'connectors_stayed_active_reward_weight': self.connectors_stayed_active_reward_weight,
-            'connectors_successfully_activated_reward_weight': self.connectors_successfully_activated_reward_weight,
-            'connectors_unsuccessfully_activated_reward_weight': self.connectors_unsuccessfully_activated_reward_weight,
-            'connectors_deactivated_reward_weight': self.connectors_deactivated_reward_weight,
+            'reward_weights': dict(self.reward_weights),
             'average_connectors_reward': self.average_connectors_reward,
             'include_connectors_xpos_in_obs': self.include_connectors_xpos_in_obs,
             'include_connectors_xquat_in_obs': self.include_connectors_xquat_in_obs,
@@ -520,30 +534,31 @@ class BaseScenario(abc.ABC):
     ):
         reward = 0.0
 
-        actuator_activation = np.power(np.abs(action['actuators']), self.actuators_activation_reward_power).mean()
-        reward += actuator_activation * self.actuators_activation_reward_weight
+        rw = self.reward_weights
+        actuator_activation = np.power(np.abs(action['actuators']), rw["actuators_activation_reward_power"]).mean()
+        reward += actuator_activation * rw['actuators_activation_reward_weight']
 
         num_units_without_connections = np.logical_not(connections.get_is_active_mask()).all(axis=1).sum()
         state['num_units_without_connections'] = num_units_without_connections
         units_without_connections_ratio = num_units_without_connections / self.num_units
-        reward += units_without_connections_ratio * self.units_without_connections_reward_weight
+        reward += units_without_connections_ratio * rw['units_without_connections_reward_weight']
 
         prev_unit_positions = state['unit_positions']
         unit_positions = data.qpos[self._qpos_indices[:, :3]].copy()
         state['unit_positions'] = unit_positions
         avg_movement = np.linalg.norm(unit_positions - prev_unit_positions, axis=1).mean()
         state['avg_movement'] = avg_movement
-        reward += avg_movement * self.movement_reward_weight
+        reward += avg_movement * rw['movement_reward_weight']
 
         avg_height = unit_positions[:, 2].mean()
         state['avg_height'] = avg_height
-        reward += avg_height * self.height_reward_weight
+        reward += avg_height * rw['height_reward_weight']
 
         connectors_reward = 0.0
-        connectors_reward += state['num_connectors_stayed_active'] * self.connectors_stayed_active_reward_weight
-        connectors_reward += state['num_connectors_successfully_activated'] * self.connectors_successfully_activated_reward_weight
-        connectors_reward += state['num_connectors_unsuccessfully_activated'] * self.connectors_unsuccessfully_activated_reward_weight
-        connectors_reward += state['num_connectors_deactivated'] * self.connectors_deactivated_reward_weight
+        connectors_reward += state['num_connectors_stayed_active'] * rw['connectors_stayed_active_reward_weight']
+        connectors_reward += state['num_connectors_successfully_activated'] * rw['connectors_successfully_activated_reward_weight']
+        connectors_reward += state['num_connectors_unsuccessfully_activated'] * rw['connectors_unsuccessfully_activated_reward_weight']
+        connectors_reward += state['num_connectors_deactivated'] * rw['connectors_deactivated_reward_weight']
 
         if self.average_connectors_reward:
             connectors_reward /= self.num_connectors
@@ -552,3 +567,33 @@ class BaseScenario(abc.ABC):
 
         return reward
 
+
+    def update_reward_weights(self, reward_weights: RewardWeights) -> RewardWeightsUpdateResult:
+        unknown = set(reward_weights.keys()) - _REWARD_WEIGHT_KEYS
+        if unknown:
+            return {
+                "ok": False,
+                "error": f"Unknown reward weight keys: {sorted(unknown)}.",
+                "unknown_keys": sorted(unknown),
+                "updated_keys": [],
+            }
+
+        updated_keys: list[str] = []
+        new_reward_weights = dict(self.reward_weights)
+        try:
+            for key, value in reward_weights.items():
+                if key == "actuators_activation_reward_power":
+                    new_reward_weights[key] = int(value)
+                else:
+                    new_reward_weights[key] = float(value)
+                updated_keys.append(key)
+        except Exception as e:
+            return {
+                "ok": False,
+                "error": f"Failed to apply reward weights update: {type(e).__name__}: {e}",
+                "unknown_keys": [],
+                "updated_keys": [],
+            }
+
+        self.reward_weights = new_reward_weights
+        return {"ok": True, "error": None, "unknown_keys": [], "updated_keys": updated_keys}

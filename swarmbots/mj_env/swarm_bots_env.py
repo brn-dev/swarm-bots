@@ -7,7 +7,13 @@ from gymnasium import spaces
 from gymnasium.core import RenderFrame
 from mujoco import MjvOption
 
-from swarmbots.mj_env.scenarios.base_scenario import BaseScenario, SwarmActDict, SwarmObsDict
+from swarmbots.mj_env.scenarios.base_scenario import (
+    BaseScenario,
+    RewardWeights,
+    RewardWeightsUpdateResult,
+    SwarmActDict,
+    SwarmObsDict,
+)
 from swarmbots.mj_env.swarm.swarm_connections import SwarmConnections
 
 
@@ -69,6 +75,9 @@ class SwarmBotsEnv(gymnasium.Env):
             'action_repeat': self.action_repeat,
             'simulation_unstable_reward': self.simulation_unstable_reward,
         }
+
+    def update_reward_weights(self, reward_weights: RewardWeights) -> RewardWeightsUpdateResult:
+        return self.scenario.update_reward_weights(reward_weights)
 
     def reset(
         self,
