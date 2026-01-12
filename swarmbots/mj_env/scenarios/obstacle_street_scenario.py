@@ -305,7 +305,7 @@ class ObstacleStreetScenario(BaseScenario):
     def no_payload_no_opening_one_wall_easy(
             seed: int | None = None,
             swarm: BaseSwarm | None = None,
-            unit_start_locations: list[tuple[float, float, float]] | None = None,
+            unit_start_locations: list[tuple[float, float, float]] | str | None = None,
             randomize_unit_orientations: bool = False,
             **kwargs
     ) -> 'ObstacleStreetScenario':
@@ -313,32 +313,25 @@ class ObstacleStreetScenario(BaseScenario):
 
         if swarm is None:
             if unit_start_locations is None:
-                unit_start_locations = [
-                    (0.0, 0.0, 0.0),
-                    (0.4, 0.4, 0),
-                    (0.4, -0.4, 0),
-                    (-0.4, 0.4, 0),
-                    (-0.4, -0.4, 0),
-                ]
-
+                unit_start_locations = '4:diamond'
             swarm = HomogeneousSwarm(
                 unit_start_locations=unit_start_locations,
                 randomize_unit_orientations=randomize_unit_orientations
             )
 
         scenario_kwargs = {
-            'wall_height': 0.25,
+            'wall_height': 0.2,
             'friction': [2, 1e-2, 2e-4],
             'force_elliptic_cone': True,
             'actuator_strength': 5.0,
             'actuators_activation_reward_weight': -1.75e-2,
-            'units_without_connections_reward_weight': -1e-2,
+            'units_without_connections_reward_weight': -6e-3,
             'movement_reward_weight':  0e-1,
-            'height_reward_weight':  1e-2,
-            'connectors_stayed_active_reward_weight':  5e-5,
-            'connectors_successfully_activated_reward_weight':  1e-3,
+            'height_reward_weight':  3e-3,
+            'connectors_stayed_active_reward_weight':  3e-5,
+            'connectors_successfully_activated_reward_weight':  0e-3,
             'connectors_unsuccessfully_activated_reward_weight': -1e-5,
-            'connectors_deactivated_reward_weight': 1.2e-3,
+            'connectors_deactivated_reward_weight': 0e-3,
         }
         scenario_kwargs.update(kwargs)
         return ObstacleStreetScenario(

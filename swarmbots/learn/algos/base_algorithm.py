@@ -390,6 +390,9 @@ class BaseAlgorithm(abc.ABC):
         if cmd == 'show_hps':
             logger.info(self.get_hyper_parameters())
             return False
+        elif cmd in {"show_reward_weights", "show_rw"}:
+            self._cmd_show_reward_weights(params)
+            return False
         elif cmd == 'set_lr':
             lr = json.loads(params)
             logger.warning(f'Setting learning rate to {lr}')
@@ -416,7 +419,7 @@ class BaseAlgorithm(abc.ABC):
         :return: True if the command was executed successfully and updated the hyper parameters, False otherwise
         """
         try:
-            return self._execute_command(cmd.strip(), params.strip())
+            return self._execute_command(cmd.strip().lower(), params.strip())
         except Exception:
             logger.exception('Executing command failed')
             return False
@@ -604,6 +607,17 @@ class BaseAlgorithm(abc.ABC):
             if record_env is not None:
                 record_env.close()
 
+    def _cmd_show_reward_weights(self, params: str) -> None:
+        _ = params
+        results = self.env.unwrapped.call("get_reward_weights")
+
+        if not isinstance(results, list):
+            logger.info({"reward_weights": results})
+            return
+
+        first = results[0] if results else None
+        logger.info(first)
+
     def _cmd_set_reward_weights(self, params: str) -> None:
         config = _parse_params_maybe_json(params)
         if not isinstance(config, dict):
@@ -616,10 +630,9 @@ class BaseAlgorithm(abc.ABC):
                 "{\"reward_weights\": {...}}"
             )
 
-        call = self.env.get_wrapper_attr("call")
-        results = call("update_reward_weights", reward_weights)
+        results = self.env.unwrapped.call("update_reward_weights", reward_weights)
 
-        if not isinstance(results, list):
+        if not isinstance(results, tuple):
             logger.warning(f"Updated reward weights with unexpected results: {results} for {reward_weights}")
             return
 

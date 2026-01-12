@@ -3,12 +3,17 @@ from typing import Callable
 import torch
 from torch import nn
 
+from swarmbots.learn.nn_components.nn_init import init_linear_orthogonal
+
 
 class MATEncoder(nn.Module):
 
     def __init__(
             self,
             n_agents: int,
+            local_obs_dim: int,
+            global_obs_dim: int,
+            d_model: int,
             num_layers: int,
             bias: bool,
             norm_first: bool,
@@ -17,12 +22,25 @@ class MATEncoder(nn.Module):
             dropout: float,
             dim_feedforward: int,
             nhead: int,
-            d_model: int,
             output_norm: nn.Module,
             enable_nested_tensor: bool = True,
+            add_agent_embeddings: bool = True,
     ):
         super().__init__()
-        self.n_agents = n_agents
+        self.n_agents: int = n_agents
+        self.local_obs_dim: int = local_obs_dim
+        self.global_obs_dim: int = global_obs_dim
+        self.has_global_obs: bool = global_obs_dim > 0
+        self.add_agent_embeddings = add_agent_embeddings
+
+        self.local_obs_encoder = nn.Linear(self.local_obs_dim, d_model)
+        init_linear_orthogonal(self.local_obs_encoder)
+
+        if self.has_global_obs:
+            self.global_obs_encoder = nn.Linear(self.global_obs_dim, d_model)
+            init_linear_orthogonal(self.global_obs_encoder)
+        else:
+            self.global_obs_encoder = None
 
         self.encoder = nn.TransformerEncoder(
             encoder_layer=nn.TransformerEncoderLayer(
@@ -41,6 +59,22 @@ class MATEncoder(nn.Module):
             enable_nested_tensor=enable_nested_tensor,
         )
 
-    def forward(self, local_embeddings: torch.Tensor):
+        self.agent_embeddings: nn.Parameter | None = None
+        if self.add_agent_embeddings:
+            self.agent_embeddings = nn.Parameter(
+                torch.zeros(1, n_agents, d_model), requires_grad=True
+            )
+            nn.init.orthogonal_(self.agent_embeddings)
+
+    def forward(self, local_obs: torch.Tensor, global_obs: torch.Tensor) -> torch.Tensor:
+        local_embeddings = self.local_obs_encoder(local_obs)
+        if self.agent_embeddings is not None:
+            local_embeddings = local_embeddings + self.agent_embeddings
+
+        if self.has_global_obs:
+            global_embeddings = self.global_obs_encoder(global_obs)
+            expanded_global_embeddings = global_embeddings.unsqueeze(1).expand(-1, self.n_agents, -1)
+            local_embeddings = local_embeddings + expanded_global_embeddings
+
         augmented_observations = self.encoder(local_embeddings)
         return augmented_observations

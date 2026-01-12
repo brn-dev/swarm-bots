@@ -79,6 +79,9 @@ class SwarmBotsEnv(gymnasium.Env):
     def update_reward_weights(self, reward_weights: RewardWeights) -> RewardWeightsUpdateResult:
         return self.scenario.update_reward_weights(reward_weights)
 
+    def get_reward_weights(self) -> RewardWeights:
+        return self.scenario.get_reward_weights()
+
     def reset(
         self,
         *,
