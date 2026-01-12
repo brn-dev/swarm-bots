@@ -7,10 +7,11 @@ from swarmbots.learn.action_dists.hybrid_action_dist import (
     serialize_continuous_action_dist_configs,
 )
 from swarmbots.learn.algos.mappo.mappo_actor import MAPPOActor
-from swarmbots.learn.algos.mappo.mappo_deep_set_critic import MAPPODeepSetCriticHiddenDims, MAPPODeepSetCritic
+from swarmbots.learn.algos.ppo.ppo import AGENTS_DIM
 from swarmbots.learn.algos.ppo.ppo_policy import PPOCritic, PPOPolicy
 from swarmbots.learn.base_policy import BasePolicy
 from swarmbots.learn.env_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
+from swarmbots.learn.nn_components.deep_set import DeepSetCritic, DeepSetCriticHiddenDims
 
 MAPPOCritic = PPOCritic
 
@@ -22,7 +23,7 @@ class MAPPOPolicy(PPOPolicy):
             env: BaseLearnEnvWrapper,
             actor_hidden_dims: list[int],
             latent_pi_dim_per_agent: int,
-            critic_hidden_dims: list[int] | MAPPODeepSetCriticHiddenDims,
+            critic_hidden_dims: list[int] | DeepSetCriticHiddenDims,
             act_fun_class = nn.Tanh,
             continuous_config: ContinuousActionDistConfig | list[ContinuousActionDistConfig | None] | None = None,
             bernoulli_initial_prob: float | None = None,
@@ -58,13 +59,14 @@ class MAPPOPolicy(PPOPolicy):
                 act_fun_class=act_fun_class
             )
         else:
-            self.critic = MAPPODeepSetCritic(
-                n_agents=env.n_agents,
-                local_obs_dim=env.local_obs_dim,
-                global_obs_dim=env.global_obs_dim,
-                local_projection_hidden_dims=critic_hidden_dims['local_projection_hidden_dims'],
-                value_regressor_hidden_dims=critic_hidden_dims['value_regressor_hidden_dims'],
-                act_fun_class=act_fun_class
+            self.critic = DeepSetCritic(
+                num_local_features=env.local_obs_dim,
+                local_projection_hidden_dims=critic_hidden_dims["local_projection_hidden_dims"],
+                value_regressor_hidden_dims=critic_hidden_dims["value_regressor_hidden_dims"],
+                num_global_features=env.global_obs_dim,
+                set_dim=AGENTS_DIM,
+                pool_mode="mean",
+                act_fn_cls=act_fun_class,
             )
 
         self.hyper_parameters = {

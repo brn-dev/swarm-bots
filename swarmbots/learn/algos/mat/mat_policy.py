@@ -9,11 +9,11 @@ from swarmbots.learn.action_dists.hybrid_action_dist import (
     serialize_continuous_action_dist_configs,
 )
 from swarmbots.learn.algos.mat.mat_decoder import MATDecoder
-from swarmbots.learn.algos.mat.mat_deepset_critic import MATDeepSetCritic
 from swarmbots.learn.algos.mat.mat_encoder import MATEncoder
 from swarmbots.learn.algos.ppo.ppo import AGENTS_DIM
 from swarmbots.learn.algos.ppo.ppo_policy import BasePPOPolicy
 from swarmbots.learn.env_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
+from swarmbots.learn.nn_components.deep_set import DeepSetCritic
 from swarmbots.learn.nn_components.mlp import MLP
 from swarmbots.learn.nn_components.nn_init import init_linear_orthogonal
 
@@ -48,44 +48,17 @@ class MATPolicy(BasePPOPolicy):
         self.local_obs_dim: int = env.local_obs_dim
         self.global_obs_dim: int = env.global_obs_dim
         self.has_global_obs = env.global_obs_dim > 0
+        self.add_agent_embeddings_encoder: bool = add_agent_embeddings_encoder
+        self.add_agent_embeddings_decoder: bool = add_agent_embeddings_decoder
 
         self.d_model_encoder = d_model
         self.d_model_decoder = d_model if d_model_decoder is None else d_model_decoder
 
-        self.add_agent_embeddings_encoder: bool = add_agent_embeddings_encoder
-        self.add_agent_embeddings_decoder: bool = add_agent_embeddings_decoder
-
-        self.agent_embeddings_encoder: nn.Parameter | None = None
-        if self.add_agent_embeddings_encoder:
-            self.agent_embeddings_encoder = nn.Parameter(
-                torch.zeros(1, env.n_agents, self.d_model_encoder), requires_grad=True
-            )
-            nn.init.orthogonal_(self.agent_embeddings_encoder)
-
-        self.agent_embeddings_decoder: nn.Parameter | None = None
-        if self.add_agent_embeddings_decoder:
-            self.agent_embeddings_decoder = nn.Parameter(
-                torch.zeros(1, env.n_agents - 1, self.d_model_decoder), requires_grad=True
-            )
-            nn.init.orthogonal_(self.agent_embeddings_decoder)
-
-        self.local_obs_encoder = nn.Linear(self.local_obs_dim, self.d_model_encoder)
-        init_linear_orthogonal(self.local_obs_encoder)
-        
-        if self.has_global_obs:
-            self.global_obs_encoder = nn.Linear(self.global_obs_dim, self.d_model_encoder)
-            init_linear_orthogonal(self.global_obs_encoder)
-        else:
-            self.global_obs_encoder = None
-
-        self.action_encoder = nn.Linear(env.action_space.total_agent_action_dim, self.d_model_decoder)
-        init_linear_orthogonal(self.action_encoder)
-
-        self.sos_token = nn.Parameter(torch.zeros(1, 1, self.d_model_decoder), requires_grad=True)
-        nn.init.orthogonal_(self.sos_token)
-
         self.encoder = MATEncoder(
             n_agents=env.n_agents,
+            local_obs_dim=env.local_obs_dim,
+            global_obs_dim=env.global_obs_dim,
+            d_model=self.d_model_encoder,
             num_layers=num_layers_encoder,
             bias=True,
             norm_first=True,
@@ -94,10 +67,23 @@ class MATPolicy(BasePPOPolicy):
             dropout=dropout,
             dim_feedforward=dim_feedforward_encoder,
             nhead=nhead_encoder,
-            d_model=self.d_model_encoder,
             output_norm=nn.LayerNorm(self.d_model_encoder),
             enable_nested_tensor=False,
+            add_agent_embeddings=self.add_agent_embeddings_encoder,
         )
+
+        self.agent_embeddings_decoder: nn.Parameter | None = None
+        if self.add_agent_embeddings_decoder:
+            self.agent_embeddings_decoder = nn.Parameter(
+                torch.zeros(1, env.n_agents - 1, self.d_model_decoder), requires_grad=True
+            )
+            nn.init.orthogonal_(self.agent_embeddings_decoder)
+
+        self.action_encoder = nn.Linear(env.action_space.total_agent_action_dim, self.d_model_decoder)
+        init_linear_orthogonal(self.action_encoder)
+
+        self.sos_token = nn.Parameter(torch.zeros(1, 1, self.d_model_decoder), requires_grad=True)
+        nn.init.orthogonal_(self.sos_token)
 
         self.decoder = MATDecoder(
             n_agents=env.n_agents,
@@ -135,12 +121,15 @@ class MATPolicy(BasePPOPolicy):
             bernoulli_initial_prob=bernoulli_initial_prob,
         )
 
-        self.critic = MATDeepSetCritic(
-            n_agents=env.n_agents,
-            augmented_observations_dim=self.d_model_encoder,
+        self.critic = DeepSetCritic(
+            num_local_features=self.d_model_encoder,
             local_projection_hidden_dims=[self.d_model_encoder] * n_critic_local_projection_hidden_layers,
             value_regressor_hidden_dims=[self.d_model_encoder] * n_critic_value_regressor_hidden_layers,
-            act_fn_class=act_fn_cls,
+            num_global_features=0,
+            set_dim=AGENTS_DIM,
+            pool_mode="mean",
+            linear_init=init_linear_orthogonal,
+            act_fn_cls=act_fn_cls,
         )
 
         serialized_continuous_config = serialize_continuous_action_dist_configs(continuous_config)
@@ -170,16 +159,7 @@ class MATPolicy(BasePPOPolicy):
         return self.hyper_parameters
 
     def _encode_obs(self, local_obs: torch.Tensor, global_obs: torch.Tensor) -> torch.Tensor:
-        local_embeddings = self.local_obs_encoder(local_obs)
-        if self.agent_embeddings_encoder is not None:
-            local_embeddings = local_embeddings + self.agent_embeddings_encoder
-
-        if self.has_global_obs:
-            global_embeddings = self.global_obs_encoder(global_obs)
-            expanded_global_embeddings = global_embeddings.unsqueeze(1).expand(-1, self.n_agents, -1)
-            local_embeddings = local_embeddings + expanded_global_embeddings
-        
-        return self.encoder(local_embeddings)
+        return self.encoder(local_obs=local_obs, global_obs=global_obs)
 
     def _generate_actions(
         self,

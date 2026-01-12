@@ -9,12 +9,63 @@ from swarmbots.mj_env.swarm.swarm_connections import SwarmConnections
 from swarmbots.mj_env.swarm.unit import init_unit
 from swarmbots.mj_env.swarm.unit_config import UnitConfig, UNIT_CONFIG_TETRAHEDRON_YX
 
+UNIT_START_LOCATION_PRESETS = {
+    '4:diamond': [
+        (0.0, 0.0, 0.0),
+        (0.4, -0.4, 0),
+        (-0.4, -0.4, 0),
+        (0.0, -0.8, 0.0),
+    ],
+    '5:X': [
+        (0.0, 0.0, 0.0),
+        (0.4, 0.4, 0),
+        (0.4, -0.4, 0),
+        (-0.4, 0.4, 0),
+        (-0.4, -0.4, 0),
+    ],
+    '5:T': [
+        (0.0, 0.0, 0.0),
+        (0.0, -0.4, 0.0),
+        (0.0, 0.4, 0.0),
+        (0.0, 0.4, -0.4),
+        (0.0, 0.4, 0.4),
+    ],
+    '5:T-reverse': [
+        (0.0, 0.0, 0.0),
+        (0.0, 0.4, 0.0),
+        (0.0, -0.4, 0.0),
+        (0.0, -0.4, -0.4),
+        (0.0, -0.4, 0.4),
+    ],
+    '5:3+2': [
+        (0.0, 0.0, 0.0),
+        (-0.6, 0.0, 0.0),
+        (-0.3, -0.4, 0.0),
+        (0.8, 0.0, 0.0),
+        (1.3, 0.0, 0.0),
+    ],
+    '5:W': [
+        (0.0, 0.0, 0.0),
+        (0.8, 0.0, 0.0),
+        (-0.8, 0.0, 0.0),
+        (0.4, -0.4, 0.0),
+        (-0.4, -0.4, 0.0),
+    ],
+    '5:M': [
+        (0.0, -0.4, 0.0),
+        (0.8, -0.4, 0.0),
+        (-0.8, -0.4, 0.0),
+        (0.4, 0.0, 0.0),
+        (-0.4, 0.0, 0.0),
+    ],
+}
+
 
 class HomogeneousSwarm(BaseSwarm):
 
     def __init__(
             self,
-            unit_start_locations: list[tuple[float, float, float]],
+            unit_start_locations: list[tuple[float, float, float]] | str,
             unit_start_quats: list[tuple[float, float, float, float]] = None,
             unit_config: UnitConfig = UNIT_CONFIG_TETRAHEDRON_YX,
             body_radius: float = 0.1,
@@ -25,6 +76,13 @@ class HomogeneousSwarm(BaseSwarm):
             randomize_unit_orientations: bool = False
     ):
         assert unit_start_quats is None or not randomize_unit_orientations
+
+        if isinstance(unit_start_locations, str):
+            if unit_start_locations not in UNIT_START_LOCATION_PRESETS:
+                raise ValueError(f'Unknown unit start location preset "{unit_start_locations}", available presets: '
+                                 + str(list(UNIT_START_LOCATION_PRESETS.keys())))
+            unit_start_locations = UNIT_START_LOCATION_PRESETS.get(unit_start_locations)
+
 
         self.num_units = len(unit_start_locations)
         self.unit_start_locations = unit_start_locations

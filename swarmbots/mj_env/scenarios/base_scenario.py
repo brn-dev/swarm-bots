@@ -173,6 +173,9 @@ class BaseScenario(abc.ABC):
             'seed': self.seed,
         }
 
+    def get_reward_weights(self) -> RewardWeights:
+        return self.reward_weights
+
     @abc.abstractmethod
     def _create_scenario_spec(self) -> mujoco.MjSpec:
         raise NotImplementedError()

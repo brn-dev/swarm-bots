@@ -60,12 +60,12 @@ def main():
 
     # =====  ID  =====
     run_id = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    # run_id = "2026-01-07_15-05-58"
+    # run_id = "2026-01-10_22-08-36"
 
     # ===== LOAD =====
     load_path = None
-    # load_path: str | None = "runs/mat_swarm_bots/2026-01-07_15-05-58/models/model_19456000_steps.pt"
-    # std = None
+    # load_path: str | None = "runs/mat_swarm_bots/2026-01-10_22-08-36/models/model_6951936_steps_stopped.pt"
+    std = None
 
     run_dir = f"runs/mat_swarm_bots/{run_id}/"
     save_optimizer = True
@@ -217,7 +217,7 @@ def main():
             ('ratio', SummaryStatisticsFormat(mean='.3f', std='.3f', min_value='.3f', max_value='.3f')),
             ('val_loss', None),
             ('expl_var', '.3f'),
-            ('ep_rew', SummaryStatisticsFormat(mean=' .2f', std='.2f', max_value='.2f')),
+            ('ep_rew', SummaryStatisticsFormat(mean=' .2f', std='.2f', max_value=' .2f')),
             ('ep_rew_ema', ' .3f'),
             ('best_ep_rew_ema', ' .3f'),
             ('fps', None),
