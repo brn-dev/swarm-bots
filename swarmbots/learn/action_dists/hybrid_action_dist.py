@@ -134,6 +134,28 @@ class HybridActionDistribution(ActionDist):
             dim=-1
         ).sum(dim=-1)
 
+    def get_actions_with_log_probs(
+            self,
+            latent_pi: torch.Tensor,
+            deterministic: bool = False,
+            agent: int | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        actions_parts: list[torch.Tensor] = []
+        log_prob_parts: list[torch.Tensor] = []
+
+        for dist in self.distributions:
+            action_part, log_prob_part = dist.get_actions_with_log_probs(
+                latent_pi=latent_pi,
+                deterministic=deterministic,
+                agent=agent,
+            )
+            actions_parts.append(action_part)
+            log_prob_parts.append(log_prob_part)
+
+        actions = torch.cat(actions_parts, dim=AGENT_ACTIONS_DIM)
+        log_probs = torch.stack(log_prob_parts, dim=-1).sum(dim=-1)
+        return actions, log_probs
+
     def entropy(self) -> Optional[torch.Tensor]:
         entropies = [dist.entropy() for dist in self.distributions]
         if any(e is None for e in entropies):

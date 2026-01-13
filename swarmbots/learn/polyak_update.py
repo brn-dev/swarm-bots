@@ -12,7 +12,3 @@ def polyak_update(source: nn.Module, target: nn.Module, tau: float) -> None:
 
     for src_buf, tgt_buf in zip(source.buffers(), target.buffers(), strict=True):
         tgt_buf.copy_(src_buf)
-
-
-
-

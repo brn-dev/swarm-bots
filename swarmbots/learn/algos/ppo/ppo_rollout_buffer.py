@@ -1,12 +1,13 @@
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, TypeVar
 
 import torch
 from gymnasium import spaces
 from loguru import logger
 
-from swarmbots.learn.torch_device import as_device
+from swarmbots.learn.base_sampler import BaseSampler
 from swarmbots.learn.hybrid_action_space import VectorHybridActionSpace
+from swarmbots.learn.torch_device import as_device
 
 MaybeTensor = Optional[torch.Tensor]
 
@@ -285,15 +286,14 @@ class PPOSamples:
     values: torch.Tensor
     returns: torch.Tensor
     advantages: torch.Tensor
-    history_embeddings: Optional[torch.Tensor]
 
+PPOSamplesType = TypeVar('PPOSamplesType', bound=PPOSamples)
 
-class PPOSampler:
+class PPOSampler(BaseSampler[PPOSamplesType]):
 
     def __init__(
             self,
             episodes: list[PPOEpisode],
-            history_embeddings: Optional[list[torch.Tensor]]
     ):
         self.local_obs = torch.concatenate(tuple(ep.local_obs for ep in episodes), dim=0)
         self.global_obs = torch.concatenate(tuple(ep.global_obs for ep in episodes), dim=0)
@@ -302,34 +302,16 @@ class PPOSampler:
         self.values = torch.concatenate(tuple(ep.values for ep in episodes), dim=0)
         self.returns = torch.concatenate(tuple(ep.returns for ep in episodes), dim=0)
         self.advantages = torch.concatenate(tuple(ep.advantages for ep in episodes), dim=0)
-        self.history_embeddings: Optional[torch.Tensor] = None
-        if history_embeddings is not None:
-            self.history_embeddings = torch.concatenate(tuple(history_embeddings), dim=0)
 
-    def sample(self, batch_size: int, drop_last: bool = True):
-        n_samples = self.local_obs.shape[0]
-        indices = torch.randperm(n_samples)
+        super().__init__(n_samples=self.local_obs.shape[0])
 
-        for start_idx in range(0, n_samples, batch_size):
-            batch_indices = indices[start_idx : start_idx + batch_size]
-
-            if drop_last and len(batch_indices) < batch_size:
-                continue
-
-            history_embeddings = None
-            if self.history_embeddings is not None:
-                history_embeddings = self.history_embeddings[batch_indices]
-
-            yield PPOSamples(
-                local_obs=self.local_obs[batch_indices],
-                global_obs=self.global_obs[batch_indices],
-                actions=self.actions[batch_indices],
-                log_probs=self.log_probs[batch_indices],
-                values=self.values[batch_indices],
-                returns=self.returns[batch_indices],
-                advantages=self.advantages[batch_indices],
-                history_embeddings=history_embeddings
-            )
-
-
-
+    def _fetch_samples(self, batch_indices: torch.Tensor) -> PPOSamples:
+        return PPOSamples(
+            local_obs=self.local_obs[batch_indices],
+            global_obs=self.global_obs[batch_indices],
+            actions=self.actions[batch_indices],
+            log_probs=self.log_probs[batch_indices],
+            values=self.values[batch_indices],
+            returns=self.returns[batch_indices],
+            advantages=self.advantages[batch_indices],
+        )

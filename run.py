@@ -60,12 +60,18 @@ def main():
 
     # =====  ID  =====
     run_id = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    # run_id = "2026-01-10_22-08-36"
 
     # ===== LOAD =====
-    load_path = None
-    # load_path: str | None = "runs/mat_swarm_bots/2026-01-10_22-08-36/models/model_6951936_steps_stopped.pt"
-    std = None
+    load_path: str | None = None
+    load_path = "runs/mat_swarm_bots/2026-01-12_17-26-51/models/model_32987136_steps_stopped.pt"
+    std: float | None = None
+
+    if load_path is not None:
+        if not load_path.endswith('.pt'):
+            logger.error('load_path is missing .pt')
+        logger.info(load_path)
+        run_id = load_path.split('/')[2]
+        logger.info(run_id)
 
     run_dir = f"runs/mat_swarm_bots/{run_id}/"
     save_optimizer = True
