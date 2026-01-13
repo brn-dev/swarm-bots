@@ -224,7 +224,7 @@ class PPO(BaseAlgorithm):
             self.policy.to(self.train_device)
 
         with PerformanceTimer() as sampler_init_timer:
-            sampler = PPOSampler(episodes, history_embeddings=None)
+            sampler = PPOSampler(episodes)
 
         y_pred = sampler.values.flatten()
         y_true = sampler.returns.flatten()

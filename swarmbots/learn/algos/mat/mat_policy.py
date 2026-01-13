@@ -48,17 +48,14 @@ class MATPolicy(BasePPOPolicy):
         self.local_obs_dim: int = env.local_obs_dim
         self.global_obs_dim: int = env.global_obs_dim
         self.has_global_obs = env.global_obs_dim > 0
-        self.add_agent_embeddings_encoder: bool = add_agent_embeddings_encoder
-        self.add_agent_embeddings_decoder: bool = add_agent_embeddings_decoder
 
         self.d_model_encoder = d_model
         self.d_model_decoder = d_model if d_model_decoder is None else d_model_decoder
 
         self.encoder = MATEncoder(
             n_agents=env.n_agents,
-            local_obs_dim=env.local_obs_dim,
-            global_obs_dim=env.global_obs_dim,
-            d_model=self.d_model_encoder,
+            local_obs_dim=self.local_obs_dim,
+            global_obs_dim=self.global_obs_dim,
             num_layers=num_layers_encoder,
             bias=True,
             norm_first=True,
@@ -67,13 +64,14 @@ class MATPolicy(BasePPOPolicy):
             dropout=dropout,
             dim_feedforward=dim_feedforward_encoder,
             nhead=nhead_encoder,
+            d_model=self.d_model_encoder,
             output_norm=nn.LayerNorm(self.d_model_encoder),
             enable_nested_tensor=False,
-            add_agent_embeddings=self.add_agent_embeddings_encoder,
+            add_agent_embeddings=add_agent_embeddings_encoder,
         )
 
         self.agent_embeddings_decoder: nn.Parameter | None = None
-        if self.add_agent_embeddings_decoder:
+        if add_agent_embeddings_decoder:
             self.agent_embeddings_decoder = nn.Parameter(
                 torch.zeros(1, env.n_agents - 1, self.d_model_decoder), requires_grad=True
             )
@@ -125,10 +123,6 @@ class MATPolicy(BasePPOPolicy):
             num_local_features=self.d_model_encoder,
             local_projection_hidden_dims=[self.d_model_encoder] * n_critic_local_projection_hidden_layers,
             value_regressor_hidden_dims=[self.d_model_encoder] * n_critic_value_regressor_hidden_layers,
-            num_global_features=0,
-            set_dim=AGENTS_DIM,
-            pool_mode="mean",
-            linear_init=init_linear_orthogonal,
             act_fn_cls=act_fn_cls,
         )
 
@@ -157,9 +151,6 @@ class MATPolicy(BasePPOPolicy):
 
     def get_hyper_parameters(self) -> dict[str, Any]:
         return self.hyper_parameters
-
-    def _encode_obs(self, local_obs: torch.Tensor, global_obs: torch.Tensor) -> torch.Tensor:
-        return self.encoder(local_obs=local_obs, global_obs=global_obs)
 
     def _generate_actions(
         self,
@@ -215,7 +206,7 @@ class MATPolicy(BasePPOPolicy):
             deterministic: bool = False
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
 
-        augmented_observations = self._encode_obs(local_obs, global_obs)
+        augmented_observations = self.encoder(local_obs, global_obs)
         actions, log_probs = self._generate_actions(
             augmented_observations=augmented_observations,
             batch_size=local_obs.shape[0],
@@ -232,7 +223,7 @@ class MATPolicy(BasePPOPolicy):
             global_obs: torch.Tensor,
             actions: torch.Tensor
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        augmented_observations = self._encode_obs(local_obs, global_obs)
+        augmented_observations = self.encoder(local_obs, global_obs)
         
         action_embeddings = self.action_encoder(actions[:, :-1, :])
         if self.agent_embeddings_decoder is not None:
@@ -256,7 +247,7 @@ class MATPolicy(BasePPOPolicy):
             global_obs: torch.Tensor,
             deterministic: bool = False
     ) -> torch.Tensor:
-        augmented_observations = self._encode_obs(local_obs, global_obs)
+        augmented_observations = self.encoder(local_obs, global_obs)
         actions, _ = self._generate_actions(
             augmented_observations=augmented_observations,
             batch_size=local_obs.shape[0],
