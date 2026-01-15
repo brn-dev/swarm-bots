@@ -52,7 +52,7 @@ def main():
     )
 
     episode_length = 512
-    load_path = "runs/mat_swarm_bots/2026-01-07_15-05-58/models/best/2026-01-08_13-48-06/model_best_1.pt"
+    load_path = "runs/mat_swarm_bots/2026-01-12_17-26-51/models/model_40854528_steps_stopped.pt"
     deterministic = False
     rollout_device = torch.device("cpu")
     gsde_sample_freq = 6
@@ -89,7 +89,7 @@ def main():
         cross_attn_first=True,
         act_fn_cls=nn.GELU,
         continuous_config=GSDEParams(
-            base_std=0.5,
+            base_std=0.45,
             latent_sde_dim=None,
             std_learnable=True,
             full_std=True,
@@ -97,7 +97,7 @@ def main():
             log_std_clamp_range=(-20.0, 2.0),
             normalize_latent_sde_by_dim=True
         ),
-        bernoulli_initial_prob=0.75
+        bernoulli_initial_prob=0.7,
     )
     print(policy)
 

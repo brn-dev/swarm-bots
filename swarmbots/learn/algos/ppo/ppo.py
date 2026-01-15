@@ -95,6 +95,9 @@ class PPO(BaseAlgorithm):
             train_dtype=torch.float32,
         )
 
+        self._policy_num_params = sum(p.numel() for p in self.policy.parameters())
+        self._policy_num_trainable_params = sum(p.numel() for p in self.policy.parameters() if p.requires_grad)
+
         self.optimizer = torch.optim.Adam(self.policy.parameters(), lr=learning_rate)
 
     def get_hyper_parameters(self):
@@ -117,6 +120,8 @@ class PPO(BaseAlgorithm):
             'rollout_device': str(self.rollout_device),
             'gsde_sample_freq': self.gsde_sample_freq,
             'agent_logprob_reduction': self.agent_logprob_reduction,
+            'policy_num_params': self._policy_num_params,
+            'policy_num_trainable_params': self._policy_num_trainable_params,
         }
 
     def _get_optimizer_state_dict(self) -> dict[str, Any]:
@@ -173,11 +178,15 @@ class PPO(BaseAlgorithm):
     def compute_loss(
             self,
             batch: PPOSamples,
-            entropy: torch.Tensor | None,
-            log_prob: torch.Tensor,
-            old_log_prob: torch.Tensor,
-            values: torch.Tensor
-    ) -> tuple[torch.Tensor, dict[str, Any]]:
+    ) -> tuple[torch.Tensor, float, dict[str, Any]]:
+        log_probs, entropies, values = self.policy.evaluate_actions(
+            local_obs=batch.local_obs,
+            global_obs=batch.global_obs,
+            actions=batch.actions
+        )
+
+        entropy, log_prob, old_log_prob = self.reduce_agents(batch, entropies, log_probs)
+
         advantages = batch.advantages
         if self.normalize_advantage and len(advantages) > 1:
             advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
@@ -207,16 +216,21 @@ class PPO(BaseAlgorithm):
 
         loss = policy_loss + self.ent_coef * entropy_loss + self.vf_coef * value_loss
 
-        clip_fraction = torch.mean((torch.abs(ratio - 1) > self.clip_range).float())
+        with torch.no_grad():
+            log_ratio = log_prob - old_log_prob
+            approx_kl_div = torch.mean((torch.exp(log_ratio) - 1) - log_ratio).item()
+
+        clip_fraction = torch.mean((torch.abs(ratio - 1) > self.clip_range).float()).item()
         metrics = {
             'ent_loss': entropy_loss.item(),
             'act_loss': policy_loss.item(),
             'val_loss': value_loss.item(),
-            'clip_frac': clip_fraction.item(),
+            'approx_kl': approx_kl_div,
+            'clip_frac': clip_fraction,
             'ratio': compute_summary_statistics(ratio, find_min=True, find_max=True),
         }
 
-        return loss, metrics
+        return loss, approx_kl_div, metrics
 
     def train(self, episodes: list[PPOEpisode]) -> dict[str, Any]:
         with PerformanceTimer() as to_train_device_timer:
@@ -236,10 +250,10 @@ class PPO(BaseAlgorithm):
 
         loss_metrics = MetricsLists[float]()
 
-        approx_kl_divs = []
-
         continue_training = True
         n_updates = 0
+        grad_norms: list[float] = []
+        n_grad_clipped = 0
 
         sampling_timings: list[float] = []
         sample_timer = PerformanceTimer()
@@ -255,21 +269,8 @@ class PPO(BaseAlgorithm):
 
                 update_timer.start()
 
-                log_probs, entropies, values = self.policy.evaluate_actions(
-                    local_obs=batch.local_obs,
-                    global_obs=batch.global_obs,
-                    actions=batch.actions
-                )
-
-                entropy, log_prob, old_log_prob = self.reduce_agents(batch, entropies, log_probs)
-
-                loss, metrics = self.compute_loss(batch, entropy, log_prob, old_log_prob, values)
+                loss, approx_kl_div, metrics = self.compute_loss(batch)
                 loss_metrics.add(metrics)
-
-                with torch.no_grad():
-                    log_ratio = log_prob - old_log_prob
-                    approx_kl_div = torch.mean((torch.exp(log_ratio) - 1) - log_ratio).item()
-                    approx_kl_divs.append(approx_kl_div)
 
                 if self.target_kl is not None and approx_kl_div > 1.5 * self.target_kl:
                     continue_training = False
@@ -282,7 +283,11 @@ class PPO(BaseAlgorithm):
 
                 self.optimizer.zero_grad()
                 loss.backward()
-                torch.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
+                total_grad_norm = torch.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
+                total_grad_norm_f = float(total_grad_norm)
+                grad_norms.append(total_grad_norm_f)
+                if total_grad_norm_f > self.max_grad_norm:
+                    n_grad_clipped += 1
                 self.optimizer.step()
 
                 n_updates += 1
@@ -300,11 +305,12 @@ class PPO(BaseAlgorithm):
         metrics_timer = PerformanceTimer().start()
         with torch.no_grad():
             metrics: dict[str, Any] = {
-                **{k: compute_summary_statistics(v) for k, v in loss_metrics.get().items()},
-                'approx_kl': compute_summary_statistics(approx_kl_divs, find_max=True),
+                **{k: compute_summary_statistics(v, find_max=True) for k, v in loss_metrics.get().items()},
                 'upd': n_updates,
                 'tot_upd': self.n_total_updates,
                 'expl_var': explained_var,
+                'grad_norm': compute_summary_statistics(grad_norms, find_max=True) if grad_norms else 0.0,
+                'grad_clip_frac': (n_grad_clipped / len(grad_norms)) if grad_norms else 0.0,
             }
 
             act_dim_sum = 0
