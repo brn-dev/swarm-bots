@@ -174,11 +174,11 @@ class HybridActionDistribution(ActionDist):
             if callable(set_std):
                 set_std(std)
 
-    def scale_std(self, std: float) -> None:
+    def scale_std(self, multiplier: float) -> None:
         for dist in self.distributions:
             scale_std = getattr(dist, "scale_std", None)
             if callable(scale_std):
-                scale_std(std)
+                scale_std(multiplier)
 
 
 def make_proba_distribution(

@@ -328,9 +328,9 @@ class ObstacleStreetScenario(BaseScenario):
             'units_without_connections_reward_weight': -6e-3,
             'movement_reward_weight':  0e-1,
             'height_reward_weight':  3e-3,
-            'connectors_stayed_active_reward_weight':  3e-5,
+            'connectors_stayed_active_reward_weight':  0e-5,
             'connectors_successfully_activated_reward_weight':  0e-3,
-            'connectors_unsuccessfully_activated_reward_weight': -1e-5,
+            'connectors_unsuccessfully_activated_reward_weight': -1e-4,
             'connectors_deactivated_reward_weight': 0e-3,
         }
         scenario_kwargs.update(kwargs)

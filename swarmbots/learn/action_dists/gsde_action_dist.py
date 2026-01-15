@@ -81,7 +81,7 @@ class GSDEActionDist(ContinuousActionDist):
         if multiplier <= 0:
             raise ValueError(f"multiplier must be > 0, got {multiplier}")
         with torch.no_grad():
-            self.log_stds *= multiplier
+            self.log_stds += math.log(multiplier)
         if self._exploration_batch_shape is not None:
             self.reset_noise(self._exploration_batch_shape)
 

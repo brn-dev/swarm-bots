@@ -55,7 +55,7 @@ def main():
     #     (-0.6, 0, 0),
     # ]
     episode_length = 512
-    total_timesteps = 50_000_000
+    total_timesteps = 100_000_000
     save_interval = 500
 
     # =====  ID  =====
@@ -63,21 +63,26 @@ def main():
 
     # ===== LOAD =====
     load_path: str | None = None
-    load_path = "runs/mat_swarm_bots/2026-01-12_17-26-51/models/model_32987136_steps_stopped.pt"
+    load_path = "runs/mat_swarm_bots/2026-01-14_14-28-07/models/model_18432000_steps.pt"
     std: float | None = None
+
+    # ===== DEVICE =====
+    use_cuda = False and torch.cuda.is_available()
+    rollout_device = torch.device("cpu")
+    train_device = torch.device("cuda" if use_cuda else "cpu")
+
+    logger.info(f'{rollout_device = }')
+    logger.info(f'{train_device = }')
 
     if load_path is not None:
         if not load_path.endswith('.pt'):
             logger.error('load_path is missing .pt')
-        logger.info(load_path)
+        logger.info(f'{load_path = }')
         run_id = load_path.split('/')[2]
-        logger.info(run_id)
+        logger.info(f'{run_id = }')
 
     run_dir = f"runs/mat_swarm_bots/{run_id}/"
     save_optimizer = True
-    rollout_device = torch.device("cpu")
-    use_cuda = False and torch.cuda.is_available()
-    train_device = torch.device("cuda" if use_cuda else "cpu")
 
     scenario_kwargs = {
     }
@@ -164,12 +169,38 @@ def main():
         ),
         bernoulli_initial_prob=0.7,
     )
+    # policy = MATPolicy(
+    #     env=env,
+    #     d_model=16,
+    #     d_model_decoder=16,
+    #     nhead_encoder=1,
+    #     nhead_decoder=1,
+    #     num_layers_encoder=2,
+    #     num_layers_decoder=2,
+    #     dim_feedforward_encoder=24,
+    #     dim_feedforward_decoder=24,
+    #     dropout=0.0,
+    #     n_critic_local_projection_hidden_layers=1,
+    #     n_critic_value_regressor_hidden_layers=1,
+    #     cross_attn_first=True,
+    #     act_fn_cls=nn.GELU,
+    #     continuous_config=GSDEParams(
+    #         base_std=0.45,
+    #         latent_sde_dim=None,
+    #         std_learnable=True,
+    #         full_std=True,
+    #         sde_learn_features=False,
+    #         log_std_clamp_range=(-20.0, 2.0),
+    #         normalize_latent_sde_by_dim=True
+    #     ),
+    #     bernoulli_initial_prob=0.7,
+    # )
     print(policy)
 
     lr = 1e-5
-    if load_path is not None:
-        lr = 5e-6
-        logger.warning(f'Setting {lr = :.2e}')
+    # if load_path is not None:
+    #     lr = 5e-6
+    #     logger.warning(f'Setting {lr = :.2e}')
 
     print("Initializing PPO Algorithm...")
     ppo = PPO(
@@ -187,6 +218,7 @@ def main():
         rollout_device=rollout_device,
         target_kl=0.04,
         gsde_sample_freq=6,
+        ent_coef=0.01,
         agent_logprob_reduction=None,
     )
 
