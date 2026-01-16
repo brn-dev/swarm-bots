@@ -1,7 +1,7 @@
 from typing import Optional, Any, Literal
 
 import torch
-import torch.nn.functional as F
+import torch.nn as nn
 from loguru import logger
 
 from swarmbots.learn.algos.base_algorithm import BaseAlgorithm, LearningRate
@@ -48,6 +48,7 @@ class PPO(BaseAlgorithm):
             normalize_advantage: bool = True,
             ent_coef: float = 0.0,
             vf_coef: float = 0.5,
+            value_loss_fn: nn.Module | None = None,
             max_grad_norm: float = 0.5,
             target_kl: Optional[float] = None,
             gsde_sample_freq: int = -1,
@@ -69,6 +70,7 @@ class PPO(BaseAlgorithm):
         self.normalize_advantage = normalize_advantage
         self.ent_coef = ent_coef
         self.vf_coef = vf_coef
+        self.value_loss_fn = value_loss_fn if value_loss_fn is not None else nn.MSELoss()
         self.max_grad_norm = max_grad_norm
         self.target_kl = target_kl
         self.gsde_sample_freq = gsde_sample_freq
@@ -114,6 +116,7 @@ class PPO(BaseAlgorithm):
             'normalize_advantage': self.normalize_advantage,
             'ent_coef': self.ent_coef,
             'vf_coef': self.vf_coef,
+            'value_loss_fn': str(self.value_loss_fn),
             'max_grad_norm': self.max_grad_norm,
             'target_kl': self.target_kl,
             'train_device': str(self.train_device),
@@ -207,7 +210,7 @@ class PPO(BaseAlgorithm):
                 values - batch.values, -self.clip_range_vf, self.clip_range_vf
             )
 
-        value_loss = F.mse_loss(batch.returns, values_pred)
+        value_loss = self.value_loss_fn(values_pred, batch.returns)
 
         if entropy is None:
             entropy_loss = -torch.mean(-log_prob)
@@ -236,6 +239,7 @@ class PPO(BaseAlgorithm):
         with PerformanceTimer() as to_train_device_timer:
             self.policy.train()
             self.policy.to(self.train_device)
+            self.value_loss_fn.to(self.train_device)
 
         with PerformanceTimer() as sampler_init_timer:
             sampler = PPOSampler(episodes)

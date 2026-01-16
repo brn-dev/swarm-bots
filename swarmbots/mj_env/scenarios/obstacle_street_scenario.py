@@ -320,7 +320,7 @@ class ObstacleStreetScenario(BaseScenario):
             )
 
         scenario_kwargs = {
-            'wall_height': 0.2,
+            'wall_height': 0.15,
             'friction': [2, 1e-2, 2e-4],
             'force_elliptic_cone': True,
             'actuator_strength': 5.0,

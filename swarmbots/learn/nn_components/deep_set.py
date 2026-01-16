@@ -26,14 +26,14 @@ class DeepSet(nn.Module):
         self,
         *,
         element_encoder: nn.Module,
-        output_network: nn.Module,
+        set_decoder: nn.Module,
         set_dim: int = 1,
         pool_mode: PoolMode = "mean",
         context_dim: int = 0,
     ) -> None:
         super().__init__()
         self.element_encoder = element_encoder
-        self.output_network = output_network
+        self.set_decoder = set_decoder
         self.set_dim = int(set_dim)
         self.pool_mode: PoolMode = pool_mode
         self.context_dim = int(context_dim)
@@ -47,7 +47,7 @@ class DeepSet(nn.Module):
                 raise ValueError("context must be provided when context_dim > 0")
             pooled = torch.cat((pooled, context), dim=-1)
 
-        return self.output_network(pooled)
+        return self.set_decoder(pooled)
 
 
 class DeepSetCriticHiddenDims(TypedDict):
@@ -99,7 +99,7 @@ class DeepSetCritic(nn.Module):
 
         self.deepset = DeepSet(
             element_encoder=element_encoder,
-            output_network=value_regressor,
+            set_decoder=value_regressor,
             set_dim=set_dim,
             pool_mode=pool_mode,
             context_dim=self.num_global_features,

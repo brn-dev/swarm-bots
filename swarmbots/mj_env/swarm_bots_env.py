@@ -25,6 +25,7 @@ class SwarmBotsEnv(gymnasium.Env):
         scenario: BaseScenario,
         episode_length: int = 500,
         action_repeat: int = 15,
+        shuffle_agents: bool = False,
         render_mode: str | None = None,
         width: int = 640,
         height: int = 480,
@@ -35,6 +36,7 @@ class SwarmBotsEnv(gymnasium.Env):
     ):
         self.action_repeat = action_repeat
         self.episode_length = episode_length
+        self.shuffle_agents = shuffle_agents
         self.render_mode = render_mode
         self.width = width
         self.height = height
@@ -64,15 +66,25 @@ class SwarmBotsEnv(gymnasium.Env):
         self._renderer = None
 
         self._zeros_obs: SwarmObsDict = {
-            'global_obs': np.zeros(self.observation_space['global_obs'].shape),
-            'local_obs': np.zeros(self.observation_space['local_obs'].shape)
+            "global_obs": np.zeros(
+                self.observation_space["global_obs"].shape,
+                dtype=self.observation_space["global_obs"].dtype,
+            ),
+            "local_obs": np.zeros(
+                self.observation_space["local_obs"].shape,
+                dtype=self.observation_space["local_obs"].dtype,
+            ),
         }
+
+        self._agent_permutation: np.ndarray | None = None
+        self._inv_agent_permutation: np.ndarray | None = None
 
     def get_settings(self):
         return {
             'scenario': self.scenario.get_settings(),
             'episode_length': self.episode_length,
             'action_repeat': self.action_repeat,
+            'shuffle_agents': self.shuffle_agents,
             'simulation_unstable_reward': self.simulation_unstable_reward,
         }
 
@@ -92,15 +104,19 @@ class SwarmBotsEnv(gymnasium.Env):
         self.current_step = 0
         self.scenario_state, self.swarm_connections = self.scenario.reset_scenario(self.model, self.data)
 
-        return self.scenario.get_obs(self.model, self.data, self.scenario_state, self.swarm_connections), {}
+        self._reset_agent_permutation()
+        obs = self.scenario.get_obs(self.model, self.data, self.scenario_state, self.swarm_connections)
+        obs = self._shuffle_obs(obs)
+        return obs, {}
 
     def step(
         self, action: SwarmActDict
     ) -> tuple[SwarmObsDict, SupportsFloat, bool, bool, dict[str, Any]]:
+        action_unshuffled = self._unshuffle_action(action)
         self.scenario.apply_action(
             model=self.model,
             data=self.data,
-            action=action,
+            action=action_unshuffled,
             state=self.scenario_state,
             connections=self.swarm_connections,
         )
@@ -111,7 +127,10 @@ class SwarmBotsEnv(gymnasium.Env):
         if mj_warning.number > 0 or np.isnan(self.data.qpos).any() or np.isnan(self.data.qvel).any():
             print('Simulation Unstable!')
             return (
-                self._zeros_obs.copy(),
+                {
+                    "global_obs": self._zeros_obs["global_obs"].copy(),
+                    "local_obs": self._zeros_obs["local_obs"].copy(),
+                },
                 self.simulation_unstable_reward,
                 True,
                 False,
@@ -119,7 +138,7 @@ class SwarmBotsEnv(gymnasium.Env):
             )
 
         reward, terminated = self.scenario.evaluate_step(
-            action, self.model, self.data, self.scenario_state, self.swarm_connections
+            action_unshuffled, self.model, self.data, self.scenario_state, self.swarm_connections
         )
 
         self.current_step += 1
@@ -129,6 +148,7 @@ class SwarmBotsEnv(gymnasium.Env):
             self.render()
 
         obs = self.scenario.get_obs(self.model, self.data, self.scenario_state, self.swarm_connections).copy()
+        obs = self._shuffle_obs(obs)
 
         info = self.scenario_state if self.return_scenario_state_as_infos else {}
 
@@ -158,10 +178,39 @@ class SwarmBotsEnv(gymnasium.Env):
             frames.append(self._renderer.render())
 
         if self.render_mode == "depth_array":
-                self._renderer.disable_depth_rendering()
+            self._renderer.disable_depth_rendering()
 
         return np.concatenate(frames, axis=1)
 
     def close(self):
         if self._renderer is not None:
             self._renderer.close()
+
+    def _reset_agent_permutation(self) -> None:
+        if not self.shuffle_agents:
+            self._agent_permutation = None
+            self._inv_agent_permutation = None
+            return
+
+        num_units = self.scenario.swarm.config.num_units
+        permutation = np.asarray(self.np_random.permutation(num_units), dtype=int)
+        self._agent_permutation = permutation
+        self._inv_agent_permutation = np.argsort(permutation)
+
+    def _shuffle_obs(self, obs: SwarmObsDict) -> SwarmObsDict:
+        if not self.shuffle_agents:
+            return obs
+        assert self._agent_permutation is not None
+        return {
+            "local_obs": obs["local_obs"][self._agent_permutation],
+            "global_obs": obs["global_obs"],
+        }
+
+    def _unshuffle_action(self, action: SwarmActDict) -> SwarmActDict:
+        if not self.shuffle_agents:
+            return action
+        assert self._inv_agent_permutation is not None
+        return {
+            "actuators": action["actuators"][self._inv_agent_permutation],
+            "connectors": action["connectors"][self._inv_agent_permutation],
+        }
