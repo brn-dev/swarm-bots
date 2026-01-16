@@ -63,7 +63,7 @@ def main():
 
     # ===== LOAD =====
     load_path: str | None = None
-    load_path = "runs/mat_swarm_bots/2026-01-14_14-28-07/models/model_18432000_steps.pt"
+    # load_path = "runs/mat_swarm_bots/2026-01-14_14-28-07/models/model_18432000_steps.pt"
     std: float | None = None
 
     # ===== DEVICE =====
@@ -145,14 +145,14 @@ def main():
     print("Initializing Policy...")
     policy = MATPolicy(
         env=env,
-        d_model=96,
-        d_model_decoder=64,
-        nhead_encoder=3,
-        nhead_decoder=2,
+        d_model=32,
+        d_model_decoder=32,
+        nhead_encoder=1,
+        nhead_decoder=1,
         num_layers_encoder=2,
         num_layers_decoder=2,
-        dim_feedforward_encoder=128,
-        dim_feedforward_decoder=96,
+        dim_feedforward_encoder=64,
+        dim_feedforward_decoder=64,
         dropout=0.0,
         n_critic_local_projection_hidden_layers=1,
         n_critic_value_regressor_hidden_layers=1,
@@ -169,35 +169,9 @@ def main():
         ),
         bernoulli_initial_prob=0.7,
     )
-    # policy = MATPolicy(
-    #     env=env,
-    #     d_model=16,
-    #     d_model_decoder=16,
-    #     nhead_encoder=1,
-    #     nhead_decoder=1,
-    #     num_layers_encoder=2,
-    #     num_layers_decoder=2,
-    #     dim_feedforward_encoder=24,
-    #     dim_feedforward_decoder=24,
-    #     dropout=0.0,
-    #     n_critic_local_projection_hidden_layers=1,
-    #     n_critic_value_regressor_hidden_layers=1,
-    #     cross_attn_first=True,
-    #     act_fn_cls=nn.GELU,
-    #     continuous_config=GSDEParams(
-    #         base_std=0.45,
-    #         latent_sde_dim=None,
-    #         std_learnable=True,
-    #         full_std=True,
-    #         sde_learn_features=False,
-    #         log_std_clamp_range=(-20.0, 2.0),
-    #         normalize_latent_sde_by_dim=True
-    #     ),
-    #     bernoulli_initial_prob=0.7,
-    # )
     print(policy)
 
-    lr = 1e-5
+    lr = 1e-4
     # if load_path is not None:
     #     lr = 5e-6
     #     logger.warning(f'Setting {lr = :.2e}')
@@ -214,12 +188,12 @@ def main():
         gamma=gamma,
         gae_lambda=0.95,
         clip_range=0.2,
-        train_device=train_device,
-        rollout_device=rollout_device,
         target_kl=0.04,
         gsde_sample_freq=6,
         ent_coef=0.01,
-        agent_logprob_reduction=None,
+        value_loss_fn=nn.SmoothL1Loss(),
+        train_device=train_device,
+        rollout_device=rollout_device,
     )
 
     if load_path:
