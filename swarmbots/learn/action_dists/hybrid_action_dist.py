@@ -168,6 +168,12 @@ class HybridActionDistribution(ActionDist):
             gsde_dist: GSDEActionDist = self.distributions[idx]
             gsde_dist.reset_noise(batch_shape)
 
+    def reset_noise_masked(self, mask: torch.Tensor) -> None:
+        for idx in self.gsde_indices:
+            # noinspection PyTypeChecker
+            gsde_dist: GSDEActionDist = self.distributions[idx]
+            gsde_dist.reset_noise_masked(mask)
+
     def set_std(self, std: float) -> None:
         for dist in self.distributions:
             set_std = getattr(dist, "set_std", None)

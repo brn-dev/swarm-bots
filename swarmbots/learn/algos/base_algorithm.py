@@ -80,7 +80,7 @@ class BaseAlgorithm(abc.ABC):
         raise NotImplementedError()
 
     @abc.abstractmethod
-    def _perform_iteration(
+    def perform_iteration(
             self,
             episode_return_ema: ExponentialMovingAverage
     ) -> tuple[dict[str, Any], int]:
@@ -184,7 +184,7 @@ class BaseAlgorithm(abc.ABC):
                         break
 
                 iter_timer = PerformanceTimer().start()
-                metrics, rollout_steps = self._perform_iteration(episode_return_ema)
+                metrics, rollout_steps = self.perform_iteration(episode_return_ema)
                 iter_duration = iter_timer.stop().get_duration()
 
                 current_return_ema = episode_return_ema.get()
@@ -575,7 +575,7 @@ class BaseAlgorithm(abc.ABC):
 
 
         device = getattr(self, "rollout_device", torch.device("cpu"))
-        gsde_sample_freq = int(getattr(self, "gsde_sample_freq", -1))
+        gsde_reset_mode = getattr(self, "gsde_reset_mode", None)
         record_env: BaseLearnEnvWrapper | None = None
 
         try:
@@ -599,7 +599,7 @@ class BaseAlgorithm(abc.ABC):
                 video_name_prefix=prefix,
                 num_episodes=num_episodes,
                 deterministic=deterministic,
-                gsde_sample_freq=gsde_sample_freq,
+                gsde_reset_mode=gsde_reset_mode,
                 fps=fps,
                 device=device,
             )

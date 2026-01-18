@@ -6,6 +6,7 @@ from swarmbots.learn.algos.ppo.ppo_policy import BasePPOPolicy
 from swarmbots.learn.algos.ppo.ppo_rollout_buffer import PPOEpisode, PPORolloutBuffer
 from swarmbots.learn.env_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
 from swarmbots.learn.performance_timer import PerformanceTimer
+from swarmbots.learn.gsde_reset import GSDEResetMode, GSDEIntervalResetMode, GSDEProbabilityResetMode
 from swarmbots.learn.summary_statistics import compute_summary_statistics
 
 
@@ -14,8 +15,26 @@ def collect_whole_episodes(
         env: BaseLearnEnvWrapper,
         policy: BasePPOPolicy,
         buffer: PPORolloutBuffer,
-        gsde_sample_freq: int = -1,
+        gsde_reset_mode: GSDEResetMode | None = None,
 ) -> tuple[list[PPOEpisode], list[dict], dict[str, Any]]:
+    assert not policy.gsde_enabled or gsde_reset_mode is not None
+    gsde_enabled = policy.gsde_enabled
+    is_gsde_interval_reset_mode = False
+    gsde_reset_interval = -1
+    gsde_reset_prob = -1.0
+    if gsde_enabled:
+        if isinstance(gsde_reset_mode, GSDEIntervalResetMode):
+            is_gsde_interval_reset_mode = True
+            gsde_reset_interval = gsde_reset_mode.interval
+            if gsde_reset_interval <= 0:
+                raise ValueError(f"GSDEIntervalResetMode.interval must be > 0, got {gsde_reset_interval}")
+        elif isinstance(gsde_reset_mode, GSDEProbabilityResetMode):
+            gsde_reset_prob = gsde_reset_mode.probability
+            if not (0.0 < gsde_reset_prob < 1.0):
+                raise ValueError(f"GSDEProbabilityResetMode.probability must be in (0, 1), got {gsde_reset_prob}")
+        else:
+            raise TypeError(f"Unknown gsde_reset_mode type: {type(gsde_reset_mode)}")
+
     buffer.reset()
     obs, info = env.reset()
     is_final = torch.zeros((buffer.n_envs,), dtype=torch.bool, device=buffer.rollout_device)
@@ -42,9 +61,20 @@ def collect_whole_episodes(
         local_obs = obs['local_obs']
         global_obs = obs['global_obs']
 
-        if policy.gsde_enabled and gsde_sample_freq > 0 and (rollout_step_idx % gsde_sample_freq) == 0:
+        if gsde_enabled:
+            batch_shape = tuple(local_obs.shape[:-1])
             with reset_noise_timer:
-                policy.action_dist.reset_noise(batch_shape=tuple(local_obs.shape[:-1]))
+                if is_gsde_interval_reset_mode:
+                    if (rollout_step_idx % gsde_reset_interval) == 0:
+                        policy.action_dist.reset_noise(batch_shape=batch_shape)
+                else:  # probability reset mode
+                    mask = torch.empty(
+                        batch_shape,
+                        device=buffer.rollout_device,
+                        dtype=torch.bool,
+                    ).bernoulli_(gsde_reset_prob)
+                    policy.action_dist.reset_noise_masked(mask)
+
             reset_noise_timings.append(reset_noise_timer.get_duration())
 
         with policy_forward_timer:

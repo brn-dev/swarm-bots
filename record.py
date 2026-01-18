@@ -17,6 +17,7 @@ from swarmbots.learn.checkpointing import (
 )
 from swarmbots.learn.env_wrappers.normalize_obs_wrapper import NormalizeLocalObsWrapper
 from swarmbots.learn.env_wrappers.swarm_bots_learn_env_wrapper import SwarmBotsLearnEnvWrapper
+from swarmbots.learn.gsde_reset import GSDEIntervalResetMode, GSDEProbabilityResetMode
 from swarmbots.learn.recording import record_policy
 from swarmbots.mj_env.scenarios.obstacle_street_scenario import ObstacleStreetScenario
 from swarmbots.mj_env.swarm.homogeneous_swarm import HomogeneousSwarm
@@ -31,7 +32,7 @@ def make_env_fn(
         scenario_kwargs = {}
         
     def _init():
-        scenario = ObstacleStreetScenario.no_payload_no_opening_one_wall_easy(
+        scenario = ObstacleStreetScenario.no_payload_no_opening_one_wall_no_poles(
             **scenario_kwargs
         )
         return SwarmBotsEnv(
@@ -55,7 +56,7 @@ def main():
     load_path = "runs/mat_swarm_bots/2026-01-12_17-26-51/models/model_40854528_steps_stopped.pt"
     deterministic = False
     rollout_device = torch.device("cpu")
-    gsde_sample_freq = 6
+    gsde_reset_mode = GSDEProbabilityResetMode(probability=1/6)
 
     print("Creating env...")
     record_env_fn = make_env_fn(
@@ -115,7 +116,7 @@ def main():
         video_name_prefix='test_run',
         num_episodes=3,
         deterministic=deterministic,
-        gsde_sample_freq=gsde_sample_freq,
+        gsde_reset_mode=gsde_reset_mode,
         device=rollout_device,
     )
     

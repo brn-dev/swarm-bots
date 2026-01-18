@@ -7,6 +7,7 @@ import torch
 
 from swarmbots.learn.base_policy import BasePolicy
 from swarmbots.learn.env_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
+from swarmbots.learn.gsde_reset import GSDEResetMode, GSDEIntervalResetMode, GSDEProbabilityResetMode
 from swarmbots.learn.summary_statistics import SummaryStatistics, compute_summary_statistics, format_summary_statistics, \
     SummaryStatisticsFormat
 
@@ -17,18 +18,34 @@ def _maybe_reset_gsde_noise(
     local_obs: torch.Tensor,
     deterministic: bool,
     rollout_step_idx: int,
-    gsde_sample_freq: int,
+    gsde_reset_mode: GSDEResetMode | None,
 ) -> None:
     if deterministic or not bool(getattr(policy, "gsde_enabled", False)):
         return
+
+    if gsde_reset_mode is None:
+        raise RuntimeError("Policy reports gsde_enabled=True but gsde_reset_mode is None.")
 
     action_dist = getattr(policy, "action_dist", None)
     if action_dist is None or not hasattr(action_dist, "reset_noise"):
         raise RuntimeError("Policy reports gsde_enabled=True but has no action_dist.reset_noise().")
 
-    should_reset = rollout_step_idx == 0 or (gsde_sample_freq > 0 and (rollout_step_idx % gsde_sample_freq) == 0)
-    if should_reset:
-        action_dist.reset_noise(batch_shape=tuple(local_obs.shape[:-1]))
+    batch_shape = tuple(local_obs.shape[:-1])
+    if isinstance(gsde_reset_mode, GSDEIntervalResetMode):
+        if (rollout_step_idx % gsde_reset_mode.interval) == 0:
+            action_dist.reset_noise(batch_shape=batch_shape)
+        return
+
+    if isinstance(gsde_reset_mode, GSDEProbabilityResetMode):
+        if not hasattr(action_dist, "reset_noise_masked"):
+            raise RuntimeError(
+                "GSDEProbabilityResetMode requires action_dist.reset_noise_masked(mask), but it's missing."
+            )
+        mask = torch.empty(batch_shape, device=local_obs.device, dtype=torch.bool).bernoulli_(gsde_reset_mode.probability)
+        action_dist.reset_noise_masked(mask)
+        return
+
+    raise TypeError(f"Unknown gsde_reset_mode type: {type(gsde_reset_mode)}")
 
 
 def record_policy(
@@ -38,7 +55,7 @@ def record_policy(
     video_name_prefix: str,
     num_episodes: int = 5,
     deterministic: bool = False,
-    gsde_sample_freq: int = -1,
+    gsde_reset_mode: GSDEResetMode | None = None,
     fps: int = 30,
     device: torch.device = torch.device("cpu"),
 ):
@@ -52,8 +69,7 @@ def record_policy(
         video_name_prefix: Prefix for video filenames
         num_episodes: Number of episodes to record
         deterministic: Whether to use deterministic actions
-        gsde_sample_freq: If the policy uses gSDE and deterministic=False, resample noise every N steps. If <= 0,
-            noise is sampled once at the beginning of each episode.
+        gsde_reset_mode: Controls gSDE noise resampling strategy when deterministic=False.
         fps: Frames per second for the output video
         device: Torch device
     """
@@ -104,7 +120,7 @@ def record_policy(
                     local_obs=local_obs,
                     deterministic=deterministic,
                     rollout_step_idx=step_cnt,
-                    gsde_sample_freq=gsde_sample_freq,
+                    gsde_reset_mode=gsde_reset_mode,
                 )
                 actions = policy.act(local_obs, global_obs, deterministic=deterministic)
                 print(format_summary_statistics(compute_summary_statistics(actions[:, :, :8], make_histogram=True), SummaryStatisticsFormat(histogram=True)))

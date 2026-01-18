@@ -10,6 +10,7 @@ from swarmbots.learn.algos.ppo.ppo_rollout import collect_whole_episodes
 from swarmbots.learn.algos.ppo.ppo_rollout_buffer import PPOEpisode, PPORolloutBuffer, PPOSampler, PPOSamples
 from swarmbots.learn.env_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
 from swarmbots.learn.exponential_moving_average import ExponentialMovingAverage
+from swarmbots.learn.gsde_reset import GSDEResetMode, GSDEIntervalResetMode, GSDEProbabilityResetMode
 from swarmbots.learn.metrics_list import MetricsLists
 from swarmbots.learn.performance_timer import PerformanceTimer
 from swarmbots.learn.summary_statistics import compute_summary_statistics
@@ -51,7 +52,7 @@ class PPO(BaseAlgorithm):
             value_loss_fn: nn.Module | None = None,
             max_grad_norm: float = 0.5,
             target_kl: Optional[float] = None,
-            gsde_sample_freq: int = -1,
+            gsde_reset_mode: GSDEResetMode | None = None,
             agent_logprob_reduction: Optional[Literal["sum", "mean"]] = None,
             train_device: str | torch.device = "auto",
             rollout_device: str | torch.device = "cpu",
@@ -73,8 +74,8 @@ class PPO(BaseAlgorithm):
         self.value_loss_fn = value_loss_fn if value_loss_fn is not None else nn.MSELoss()
         self.max_grad_norm = max_grad_norm
         self.target_kl = target_kl
-        self.gsde_sample_freq = gsde_sample_freq
-        assert not policy.gsde_enabled or gsde_sample_freq > 0
+        self.gsde_reset_mode = gsde_reset_mode
+        assert not policy.gsde_enabled or self.gsde_reset_mode is not None
         if agent_logprob_reduction not in (None, "sum", "mean"):
             raise ValueError(f"{agent_logprob_reduction=} must be 'sum', 'mean', or None")
         if agent_logprob_reduction is not None and not isinstance(policy, PPOPolicy):
@@ -102,6 +103,7 @@ class PPO(BaseAlgorithm):
 
         self.optimizer = torch.optim.Adam(self.policy.parameters(), lr=learning_rate)
 
+
     def get_hyper_parameters(self):
         return {
             'learning_rate': self.learning_rate,
@@ -121,31 +123,14 @@ class PPO(BaseAlgorithm):
             'target_kl': self.target_kl,
             'train_device': str(self.train_device),
             'rollout_device': str(self.rollout_device),
-            'gsde_sample_freq': self.gsde_sample_freq,
+            'gsde_reset_mode': self._serialize_gsde_reset_mode(self.gsde_reset_mode),
             'agent_logprob_reduction': self.agent_logprob_reduction,
             'policy_num_params': self._policy_num_params,
             'policy_num_trainable_params': self._policy_num_trainable_params,
         }
 
-    def _get_optimizer_state_dict(self) -> dict[str, Any]:
-        return self.optimizer.state_dict()
 
-    def _apply_optimizer_state_dict(self, state_dict: dict[str, Any]) -> None:
-        self.optimizer.load_state_dict(state_dict)
-        self._move_optimizer_state_to_device(self.train_device)
-
-    def _move_optimizer_state_to_device(self, device: torch.device) -> None:
-        for state in self.optimizer.state.values():
-            for k, v in state.items():
-                if torch.is_tensor(v) and v.device != device:
-                    state[k] = v.to(device)
-
-    def _apply_learning_rate(self, lr: LearningRate) -> None:
-        assert isinstance(lr, float)
-        for param_group in self.optimizer.param_groups:
-            param_group["lr"] = lr
-
-    def _perform_iteration(
+    def perform_iteration(
             self,
             episode_return_ema: ExponentialMovingAverage
     ) -> tuple[dict[str, Any], int]:
@@ -154,7 +139,7 @@ class PPO(BaseAlgorithm):
                 env=self.env,
                 policy=self.policy,
                 buffer=self.rollout_buffer,
-                gsde_sample_freq=self.gsde_sample_freq,
+                gsde_reset_mode=self.gsde_reset_mode,
             )
 
             total_steps_in_rollout = sum(len(ep.rewards) for ep in episodes)
@@ -420,4 +405,32 @@ class PPO(BaseAlgorithm):
             return True
         else:
             return super()._execute_command(cmd, params)
+
+    def _get_optimizer_state_dict(self) -> dict[str, Any]:
+        return self.optimizer.state_dict()
+
+    def _apply_optimizer_state_dict(self, state_dict: dict[str, Any]) -> None:
+        self.optimizer.load_state_dict(state_dict)
+        self._move_optimizer_state_to_device(self.train_device)
+
+    def _move_optimizer_state_to_device(self, device: torch.device) -> None:
+        for state in self.optimizer.state.values():
+            for k, v in state.items():
+                if torch.is_tensor(v) and v.device != device:
+                    state[k] = v.to(device)
+
+    def _apply_learning_rate(self, lr: LearningRate) -> None:
+        assert isinstance(lr, float)
+        for param_group in self.optimizer.param_groups:
+            param_group["lr"] = lr
+
+    @staticmethod
+    def _serialize_gsde_reset_mode(mode: GSDEResetMode | None) -> dict[str, Any] | None:
+        if mode is None:
+            return None
+        if isinstance(mode, GSDEIntervalResetMode):
+            return {"mode": "interval", "interval": mode.interval}
+        if isinstance(mode, GSDEProbabilityResetMode):
+            return {"mode": "probability", "probability": mode.probability}
+        return {"mode": type(mode).__name__}
 
