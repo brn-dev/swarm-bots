@@ -85,7 +85,7 @@ class BaseScenario(abc.ABC):
             _reset_in_init: bool = True,
     ):
         self.seed = seed
-        self.rng = np.random.default_rng(seed)
+        self.rng: np.random.Generator = np.random.default_rng(seed)
 
         self.swarm = swarm
         self.num_units = swarm.config.num_units

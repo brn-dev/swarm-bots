@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from typing import Any, Iterable, Self
 
 import mujoco
@@ -9,6 +10,56 @@ from swarmbots.mj_env.swarm.base_swarm import BaseSwarm
 from swarmbots.mj_env.swarm.homogeneous_swarm import HomogeneousSwarm
 from swarmbots.mj_env.swarm.swarm_connections import SwarmConnections
 
+@dataclass
+class UniformDistParams:
+    low: float
+    high: float
+
+    @staticmethod
+    def from_midpoint_and_width(midpoint: float, width: float) -> "UniformDistParams":
+        width_half = width / 2.0
+        return UniformDistParams(
+            low=midpoint - width_half,
+            high=midpoint + width_half
+        )
+
+@dataclass
+class ClampedNormalDistParams:
+    mean: float
+    std: float
+    high: float
+    low: float
+
+DistParams = UniformDistParams | ClampedNormalDistParams
+FloatOrDist = float | DistParams
+
+
+@dataclass
+class PoleParams:
+    x: FloatOrDist
+    y: FloatOrDist
+
+def _fod_low(fod: FloatOrDist) -> float:
+    if isinstance(fod, (float, int)):
+        return float(fod)
+    if isinstance(fod, UniformDistParams):
+        return float(fod.low)
+    if isinstance(fod, ClampedNormalDistParams):
+        return float(fod.low)
+    raise ValueError(fod)
+
+
+def _eval_fod(fod: FloatOrDist, rng: np.random.Generator) -> float:
+    if isinstance(fod, (float, int)):
+        return float(fod)
+    if isinstance(fod, UniformDistParams):
+        return float(rng.uniform(low=fod.low, high=fod.high))
+    if isinstance(fod, ClampedNormalDistParams):
+        x = rng.normal(fod.mean, fod.std)
+        x = np.clip(x, fod.low, fod.high)
+        return float(x)
+    raise ValueError(fod)
+
 
 class ObstacleStreetScenario(BaseScenario):
 
@@ -19,12 +70,15 @@ class ObstacleStreetScenario(BaseScenario):
             payload_size: Iterable[float] = (0.2, 0.2, 0.2),
             payload_mass: float = 5.0,
             payload_start_location_offset: Iterable[float] = (0, 1, 0),
+            poles: Iterable[PoleParams | tuple[FloatOrDist, FloatOrDist]] = (),
+            pole_radius: float = 0.1,
+            pole_height: float = 1.0,
             num_walls: int = 3,
             wall_height: float | list[float] = 0.5,
-            wall_distance: float = 4.0,
-            first_wall_distance: float = 2.0,
-            opening_width: float | list[float] = 2.0,
-            unusable_opening_offset: float = 2.0,
+            inter_wall_distance: FloatOrDist = 4.0,
+            first_wall_distance: FloatOrDist = 2.0,
+            opening_width: FloatOrDist | list[FloatOrDist] = 2.0,
+            unusable_opening_offset: FloatOrDist = 2.0,
             street_width: float = 10.0,
             no_initial_ramp: bool = True,
             actuator_strength: float = 3.0,
@@ -47,12 +101,18 @@ class ObstacleStreetScenario(BaseScenario):
             average_connectors_reward: bool = True,
             include_connectors_xpos_in_obs: bool = False,
             include_connectors_xquat_in_obs: bool = False,
-            seed: int = None,
+            seed: int | None = None,
     ):
         self.payload_type = payload_type
         self.payload_size = payload_size
         self.payload_mass = payload_mass
         self.payload_start_location_offset = payload_start_location_offset
+        self.poles = [
+            p if isinstance(p, PoleParams) else PoleParams(x=p[0], y=p[1])
+            for p in poles
+        ]
+        self.pole_radius = float(pole_radius)
+        self.pole_height = float(pole_height)
 
         self.num_walls = num_walls
         self.no_initial_ramp = no_initial_ramp
@@ -61,14 +121,17 @@ class ObstacleStreetScenario(BaseScenario):
         self.side_wall_x = street_width / 2
         self.wall_fixed_width = 25.0
         self.wall_heights = wall_height if isinstance(wall_height, list) else [wall_height] * num_walls
-        self.wall_distance = wall_distance
+        self.inter_wall_distance = inter_wall_distance
         self.first_wall_distance = first_wall_distance
 
         self.opening_widths = opening_width if isinstance(opening_width, list) else [opening_width] * num_walls
         self.unusable_opening_offset = unusable_opening_offset
-        self.ramp_length = wall_distance - 1
-        self.ramp_range_x = 8.5
-        self.ramp_angles = [np.asin(wh / self.ramp_length) for wh in self.wall_heights]
+        min_inter_wall_distance = _fod_low(self.inter_wall_distance)
+        if min_inter_wall_distance <= 1.0:
+            raise ValueError(f"Expected inter_wall_distance.low > 1.0, got {min_inter_wall_distance}")
+        self.ramp_length = min_inter_wall_distance - 1.0
+        self.ramp_range_x = self.side_wall_x - 1.5
+        self.ramp_angles = [np.asin(wh / self.ramp_length) + np.pi/64 for wh in self.wall_heights]
         self.ramp_distances_to_wall = [self.ramp_length * np.cos(ra) for ra in self.ramp_angles]
 
         super().__init__(
@@ -108,9 +171,12 @@ class ObstacleStreetScenario(BaseScenario):
             'payload_size': self.payload_size,
             'payload_mass': self.payload_mass,
             'payload_start_location_offset': self.payload_start_location_offset,
+            'poles': self.poles,
+            'pole_radius': self.pole_radius,
+            'pole_height': self.pole_height,
             'num_walls': self.num_walls,
             'wall_heights': self.wall_heights,
-            'wall_distance': self.wall_distance,
+            'inter_wall_distance': self.inter_wall_distance,
             'first_wall_distance': self.first_wall_distance,
             'opening_widths': self.opening_widths,
             'unusable_opening_offset': self.unusable_opening_offset,
@@ -136,6 +202,15 @@ class ObstacleStreetScenario(BaseScenario):
         worldbody.add_light(pos=[0, 0, 100], dir=[0, 0, -1])
         worldbody.add_light(pos=[0, 100, 100], dir=[-1, -1, -1])
 
+        for i, _ in enumerate(self.poles):
+            body_pole = worldbody.add_body(name=f'Pole_{i}', mocap=True, pos=[0, 0, 0])
+            body_pole.add_geom(
+                type=mujoco.mjtGeom.mjGEOM_CYLINDER,
+                fromto=[0, 0, 0, 0, 0, self.pole_height],
+                size=[self.pole_radius, 0, 0],
+                rgba=[0.15, 0.8, 0.95, 1],
+            )
+
         # side walls
         worldbody.add_geom(
             type=mujoco.mjtGeom.mjGEOM_BOX,
@@ -151,16 +226,14 @@ class ObstacleStreetScenario(BaseScenario):
         )
 
         for i in range(self.num_walls):
-            y = self.first_wall_distance + self.wall_distance * i
-
-            body_left = worldbody.add_body(name=f'Wall_{i}_Left', mocap=True, pos=[0, y, 0])
+            body_left = worldbody.add_body(name=f'Wall_{i}_Left', mocap=True, pos=[0, 0, 0])
             body_left.add_geom(
                 type=mujoco.mjtGeom.mjGEOM_BOX,
                 size=[self.wall_fixed_width / 2, 0.1, self.wall_heights[i]],
                 rgba=[0.5, 0.5, 0.6, 1],
             )
 
-            body_right = worldbody.add_body(name=f'Wall_{i}_Right', mocap=True, pos=[0, y, 0])
+            body_right = worldbody.add_body(name=f'Wall_{i}_Right', mocap=True, pos=[0, 0, 0])
             body_right.add_geom(
                 type=mujoco.mjtGeom.mjGEOM_BOX,
                 size=[self.wall_fixed_width / 2, 0.1, self.wall_heights[i]],
@@ -170,8 +243,8 @@ class ObstacleStreetScenario(BaseScenario):
             if i > 0 or not self.no_initial_ramp:
                 body_ramp = worldbody.add_body(
                     name=f'Ramp_{i}', mocap=True,
-                    pos=[0, y - self.ramp_distances_to_wall[i]/2, self.wall_heights[i]/2],
-                    euler=[self.ramp_angles[i], 0, 0]
+                    pos=[0, 0, 0],
+                    euler=[self.ramp_angles[i], 0, 0],
                 )
                 body_ramp.add_geom(
                     type=mujoco.mjtGeom.mjGEOM_BOX,
@@ -207,44 +280,69 @@ class ObstacleStreetScenario(BaseScenario):
     def reset_scenario(self, model: mujoco.MjModel, data: mujoco.MjData) -> tuple[dict, SwarmConnections]:
         state, connections = super().reset_scenario(model, data)
 
-        rng = self.rng
-
-        for i in range(self.num_walls):
-            y = self.first_wall_distance + self.wall_distance * i
-            
-            opening_x = (rng.random() - 0.5) * 2 * (
-                self.side_wall_x 
-                - self.opening_widths[i] / 2 
-                + self.unusable_opening_offset)  # small chance that there is no usable opening
-                                                # -> must use ramp to continue
-            
-            first_wall_end_x = opening_x - self.opening_widths[i] / 2
-            wall_left_pos_x = first_wall_end_x - (self.wall_fixed_width / 2)
-            
-            wall_left_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, f'Wall_{i}_Left')
-            mocap_id = model.body_mocapid[wall_left_id]
-            data.mocap_pos[mocap_id] = [wall_left_pos_x, y, 0]
-
-            second_wall_start_x = opening_x + self.opening_widths[i] / 2
-
-            wall_right_pos_x = second_wall_start_x + (self.wall_fixed_width / 2)
-
-            wall_right_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, f'Wall_{i}_Right')
-            mocap_id = model.body_mocapid[wall_right_id]
-            data.mocap_pos[mocap_id] = [wall_right_pos_x, y, 0]
-
-            if i > 0 or not self.no_initial_ramp:
-                ramp_x = (rng.random() - 0.5) * 2 * self.ramp_range_x
-
-                ramp_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, f'Ramp_{i}')
-                mocap_id = model.body_mocapid[ramp_id]
-                data.mocap_pos[mocap_id] = [ramp_x, y - self.ramp_distances_to_wall[i] / 2, self.wall_heights[i] / 2]
+        self.reset_walls_and_ramps(data, model)
+        self.reset_poles(data, model)
 
         mujoco.mj_forward(model, data)
 
         state['progress'] = self._compute_progress(data)
 
         return state, connections
+
+    def reset_poles(self, data: mujoco.MjData, model: mujoco.MjModel) -> None:
+        rng = self.rng
+        for i, pole in enumerate(self.poles):
+            pole_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, f'Pole_{i}')
+            mocap_id = model.body_mocapid[pole_id]
+            data.mocap_pos[mocap_id] = [
+                _eval_fod(pole.x, rng),
+                _eval_fod(pole.y, rng),
+                0.0,
+            ]
+
+    def reset_walls_and_ramps(self, data: mujoco.MjData, model: mujoco.MjModel):
+        rng = self.rng
+
+        unusable_opening_offset = _eval_fod(self.unusable_opening_offset, rng)
+
+        wall_y = _eval_fod(self.first_wall_distance, rng)
+        for i in range(self.num_walls):
+            if i != 0:
+                wall_y += _eval_fod(self.inter_wall_distance, rng)
+
+            opening_width = _eval_fod(self.opening_widths[i], rng)
+
+            opening_x = (rng.random() - 0.5) * 2 * (
+                    self.side_wall_x
+                    - opening_width / 2
+                    + unusable_opening_offset)  # small chance that there is no usable opening
+                                                # -> must use ramp to continue
+
+            first_wall_end_x = opening_x - opening_width / 2
+            wall_left_pos_x = first_wall_end_x - (self.wall_fixed_width / 2)
+
+            wall_left_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, f'Wall_{i}_Left')
+            mocap_id = model.body_mocapid[wall_left_id]
+            data.mocap_pos[mocap_id] = [wall_left_pos_x, wall_y, 0.0]
+
+            second_wall_start_x = opening_x + opening_width / 2
+
+            wall_right_pos_x = second_wall_start_x + (self.wall_fixed_width / 2)
+
+            wall_right_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, f'Wall_{i}_Right')
+            mocap_id = model.body_mocapid[wall_right_id]
+            data.mocap_pos[mocap_id] = [wall_right_pos_x, wall_y, 0.0]
+
+            if i > 0 or not self.no_initial_ramp:
+                ramp_x = (rng.random() - 0.5) * 2 * self.ramp_range_x
+
+                ramp_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, f'Ramp_{i}')
+                mocap_id = model.body_mocapid[ramp_id]
+                data.mocap_pos[mocap_id] = [
+                    ramp_x,
+                    wall_y - self.ramp_distances_to_wall[i] / 2,
+                    self.wall_heights[i] / 2 - 0.05,
+                ]
 
     def evaluate_step(
             self,
@@ -302,7 +400,7 @@ class ObstacleStreetScenario(BaseScenario):
         return data.xpos[self.payload_body_id, 1]
 
     @staticmethod
-    def no_payload_no_opening_one_wall_easy(
+    def no_payload_no_opening_one_wall_no_poles(
             seed: int | None = None,
             swarm: BaseSwarm | None = None,
             unit_start_locations: list[tuple[float, float, float]] | str | None = None,

@@ -12,6 +12,7 @@ from swarmbots.learn.algos.mat.mat_policy import MATPolicy
 from swarmbots.learn.algos.ppo.ppo import PPO
 from swarmbots.learn.env_wrappers.normalize_obs_wrapper import NormalizeLocalObsWrapper
 from swarmbots.learn.env_wrappers.swarm_bots_learn_env_wrapper import SwarmBotsLearnEnvWrapper
+from swarmbots.learn.gsde_reset import GSDEIntervalResetMode, GSDEProbabilityResetMode
 from swarmbots.learn.recording import record_policy
 from swarmbots.learn.summary_statistics import SummaryStatisticsFormat
 from swarmbots.mj_env.scenarios.obstacle_street_scenario import ObstacleStreetScenario
@@ -28,7 +29,7 @@ def make_env_fn(
         scenario_kwargs = {}
         
     def _init():
-        scenario = ObstacleStreetScenario.no_payload_no_opening_one_wall_easy(
+        scenario = ObstacleStreetScenario.no_payload_no_opening_one_wall_no_poles(
             **scenario_kwargs
         )
         return SwarmBotsEnv(
@@ -63,7 +64,7 @@ def main():
 
     # ===== LOAD =====
     load_path: str | None = None
-    # load_path = "runs/mat_swarm_bots/2026-01-14_14-28-07/models/model_18432000_steps.pt"
+    # load_path = "runs/mat_swarm_bots/2026-01-17_16-33-16/models/model_6825984_steps_stopped.pt"
     std: float | None = None
 
     # ===== DEVICE =====
@@ -172,9 +173,9 @@ def main():
     print(policy)
 
     lr = 1e-4
-    # if load_path is not None:
-    #     lr = 5e-6
-    #     logger.warning(f'Setting {lr = :.2e}')
+    if load_path is not None:
+        lr = 2e-5
+        logger.warning(f'Setting {lr = :.2e}')
 
     print("Initializing PPO Algorithm...")
     ppo = PPO(
@@ -189,8 +190,8 @@ def main():
         gae_lambda=0.95,
         clip_range=0.2,
         target_kl=0.04,
-        gsde_sample_freq=6,
-        ent_coef=0.01,
+        gsde_reset_mode=GSDEProbabilityResetMode(probability=1/6),
+        ent_coef=0.005,
         value_loss_fn=nn.SmoothL1Loss(),
         train_device=train_device,
         rollout_device=rollout_device,

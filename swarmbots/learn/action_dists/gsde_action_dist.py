@@ -86,11 +86,31 @@ class GSDEActionDist(ContinuousActionDist):
             self.reset_noise(self._exploration_batch_shape)
 
     def reset_noise(self, batch_shape: tuple[int, ...]) -> None:
-        log_stds = torch.clamp(self.log_stds, *self.log_std_clamp_range)
-        std_matrix = self._get_std_matrix(log_stds)
-        noise = torch.randn((*batch_shape, self.latent_sde_dim, self.action_dim), device=std_matrix.device, dtype=std_matrix.dtype)
-        self._exploration_matrices = noise * std_matrix
-        self._exploration_batch_shape = batch_shape
+        with torch.no_grad():
+            std_matrix = self._get_std_matrix(self.log_stds)
+            noise = torch.randn(
+                (*batch_shape, self.latent_sde_dim, self.action_dim),
+                device=std_matrix.device,
+                dtype=std_matrix.dtype,
+            )
+            self._exploration_matrices = noise * std_matrix
+            self._exploration_batch_shape = batch_shape
+
+    def reset_noise_masked(self, mask: torch.Tensor) -> None:
+        if self._exploration_matrices is None or self._exploration_matrices.shape != mask.shape:
+            self.reset_noise(mask.shape)
+            return
+
+        with torch.no_grad():
+            mask_flat = mask.ravel()
+            std_matrix = self._get_std_matrix(self.log_stds)
+            noise = torch.randn(
+                (mask.sum().item(), self.latent_sde_dim, self.action_dim),
+                device=std_matrix.device,
+                dtype=std_matrix.dtype,
+            )
+            exploration_matrices_flat = self._exploration_matrices.view((-1, self.latent_sde_dim, self.action_dim))
+            exploration_matrices_flat[mask_flat] = noise * std_matrix
 
     def update_latent_features(self, latent_pi: torch.Tensor) -> Self:
         action_means = self.action_net(latent_pi)
@@ -106,7 +126,6 @@ class GSDEActionDist(ContinuousActionDist):
         if self._latent_sde is None:
             raise RuntimeError("update_latent_features() must be called before update_distribution_params().")
 
-        log_stds = torch.clamp(log_stds, *self.log_std_clamp_range)
         std_matrix = self._get_std_matrix(log_stds)
 
         latent_sde_sq = self._latent_sde ** 2
@@ -172,6 +191,7 @@ class GSDEActionDist(ContinuousActionDist):
         return self.distribution.mean + noise
 
     def _get_std_matrix(self, log_stds: torch.Tensor) -> torch.Tensor:
+        log_stds = torch.clamp(log_stds, *self.log_std_clamp_range)
         if self.full_std:
             return torch.exp(log_stds)
         else:
