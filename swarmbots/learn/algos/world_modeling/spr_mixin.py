@@ -11,15 +11,25 @@ from swarmbots.learn.polyak_update import polyak_update
 
 class SPRMixin(abc.ABC):
 
-    def __init__(
+    target_encoder: nn.Module
+    transition_model: TransformerTransitionModel
+    online_projection: nn.Module
+    target_projection: nn.Module
+    predictor: nn.Module
+
+    @property
+    @abc.abstractmethod
+    def online_encoder(self) -> nn.Module:
+        raise NotImplementedError()
+
+    def setup_modules(
             self,
-            online_encoder: nn.Module,
             transition_model: TransformerTransitionModel,
             projection: nn.Module,
             predictor: nn.Module
     ):
         super().__init__()
-        self.target_encoder = copy.deepcopy(online_encoder)
+        self.target_encoder = copy.deepcopy(self.online_encoder)
         self.target_encoder.requires_grad_(False)
         self.target_encoder.eval()
 
@@ -33,13 +43,9 @@ class SPRMixin(abc.ABC):
 
         self.predictor = predictor
 
-    @abc.abstractmethod
-    def update_spr_targets(self, tau: float) -> None:
-        raise NotImplementedError()
-
     @torch.no_grad()
-    def _update_spr_targets(self, online_encoder: nn.Module, tau: float) -> None:
-        polyak_update(source=online_encoder, target=self.target_encoder, tau=tau)
+    def update_spr_targets(self, tau: float) -> None:
+        polyak_update(source=self.online_encoder, target=self.target_encoder, tau=tau)
         polyak_update(source=self.online_projection, target=self.target_projection, tau=tau)
 
     def _cosine_similarity_loss(
