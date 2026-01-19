@@ -1,4 +1,4 @@
-from typing import Optional, Any, Literal
+from typing import Optional, Any, Literal, TypeVar, Generic
 
 import torch
 import torch.nn as nn
@@ -24,8 +24,12 @@ except ValueError:
     logger.level("SAVE", no=21, color="<magenta>")
 
 
+PPOSamplesType = TypeVar('PPOSamplesType', bound=PPOSamples)
+PPOSamplerType = TypeVar('PPOSamplerType', bound=PPOSampler)
+
+
 # based on https://github.com/DLR-RM/stable-baselines3/blob/master/stable_baselines3/ppo/ppo.py
-class PPO(BaseAlgorithm):
+class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerType]):
     """
     Proximal Policy Optimization algorithm (PPO) (clip version)
     """
@@ -103,7 +107,6 @@ class PPO(BaseAlgorithm):
 
         self.optimizer = torch.optim.Adam(self.policy.parameters(), lr=learning_rate)
 
-
     def get_hyper_parameters(self):
         return {
             'learning_rate': self.learning_rate,
@@ -129,50 +132,13 @@ class PPO(BaseAlgorithm):
             'policy_num_trainable_params': self._policy_num_trainable_params,
         }
 
-
-    def perform_iteration(
-            self,
-            episode_return_ema: ExponentialMovingAverage
-    ) -> tuple[dict[str, Any], int]:
-        with PerformanceTimer() as rollout_timer:
-            episodes, episode_infos, rollout_metrics = collect_whole_episodes(
-                env=self.env,
-                policy=self.policy,
-                buffer=self.rollout_buffer,
-                gsde_reset_mode=self.gsde_reset_mode,
-            )
-
-            total_steps_in_rollout = sum(len(ep.rewards) for ep in episodes)
-        self.n_total_timesteps += total_steps_in_rollout
-        self.n_total_iterations += 1
-
-        ep_rew = compute_summary_statistics([ep['r'] for ep in episode_infos], find_min=True, find_max=True)
-        ep_len = compute_summary_statistics([ep['l'] for ep in episode_infos], find_min=True, find_max=True)
-        ep_time = compute_summary_statistics([ep['t'] for ep in episode_infos])
-
-        episode_return_ema.update(ep_rew.mean)
-
-        update_metrics = self.train(episodes)
-        metrics = {
-            **update_metrics,
-            **rollout_metrics,
-            'rollout_time': rollout_timer.get_duration(),
-            'ep_rew': ep_rew,
-            'ep_len': ep_len,
-            'ep_time': ep_time,
-        }
-        return metrics, total_steps_in_rollout
-
-    def compute_loss(
+    def compute_ppo_loss(
             self,
             batch: PPOSamples,
-    ) -> tuple[torch.Tensor, float, dict[str, Any]]:
-        log_probs, entropies, values = self.policy.evaluate_actions(
-            local_obs=batch.local_obs,
-            global_obs=batch.global_obs,
-            actions=batch.actions
-        )
-
+            entropies: torch.Tensor,
+            log_probs: torch.Tensor,
+            values: torch.Tensor,
+    ):
         entropy, log_prob, old_log_prob = self.reduce_agents(batch, entropies, log_probs)
 
         advantages = batch.advantages
@@ -220,6 +186,59 @@ class PPO(BaseAlgorithm):
 
         return loss, approx_kl_div, metrics
 
+    def compute_loss(
+            self,
+            batch: PPOSamplesType,
+    ) -> tuple[torch.Tensor, float, dict[str, Any]]:
+        log_probs, entropies, values = self.policy.evaluate_actions(
+            local_obs=batch.local_obs,
+            global_obs=batch.global_obs,
+            actions=batch.actions
+        )
+
+        return self.compute_ppo_loss(
+            batch=batch,
+            entropies=entropies,
+            log_probs=log_probs,
+            values=values,
+        )
+
+    def perform_iteration(
+            self,
+            episode_return_ema: ExponentialMovingAverage
+    ) -> tuple[dict[str, Any], int]:
+        with PerformanceTimer() as rollout_timer:
+            episodes, episode_infos, rollout_metrics = collect_whole_episodes(
+                env=self.env,
+                policy=self.policy,
+                buffer=self.rollout_buffer,
+                gsde_reset_mode=self.gsde_reset_mode,
+            )
+
+            total_steps_in_rollout = sum(len(ep.rewards) for ep in episodes)
+        self.n_total_timesteps += total_steps_in_rollout
+        self.n_total_iterations += 1
+
+        ep_rew = compute_summary_statistics([ep['r'] for ep in episode_infos], find_min=True, find_max=True)
+        ep_len = compute_summary_statistics([ep['l'] for ep in episode_infos], find_min=True, find_max=True)
+        ep_time = compute_summary_statistics([ep['t'] for ep in episode_infos])
+
+        episode_return_ema.update(ep_rew.mean)
+
+        update_metrics = self.train(episodes)
+        metrics = {
+            **update_metrics,
+            **rollout_metrics,
+            'rollout_time': rollout_timer.get_duration(),
+            'ep_rew': ep_rew,
+            'ep_len': ep_len,
+            'ep_time': ep_time,
+        }
+        return metrics, total_steps_in_rollout
+
+    def _make_sampler(self, episodes: list[PPOEpisode]) -> PPOSamplerType:
+        return PPOSampler[PPOSamplesType](episodes)
+
     def train(self, episodes: list[PPOEpisode]) -> dict[str, Any]:
         with PerformanceTimer() as to_train_device_timer:
             self.policy.train()
@@ -227,7 +246,7 @@ class PPO(BaseAlgorithm):
             self.value_loss_fn.to(self.train_device)
 
         with PerformanceTimer() as sampler_init_timer:
-            sampler = PPOSampler(episodes)
+            sampler = self._make_sampler(episodes)
 
         y_pred = sampler.values.flatten()
         y_true = sampler.returns.flatten()
@@ -278,6 +297,7 @@ class PPO(BaseAlgorithm):
                 if total_grad_norm_f > self.max_grad_norm:
                     n_grad_clipped += 1
                 self.optimizer.step()
+                self._after_optimizer_step()
 
                 n_updates += 1
 
@@ -324,6 +344,9 @@ class PPO(BaseAlgorithm):
             'metrics_time': metrics_timer.get_duration(),
             'train_time': train_timer.get_duration(),
         }
+
+    def _after_optimizer_step(self) -> None:
+        pass
 
     def reduce_agents(
             self,

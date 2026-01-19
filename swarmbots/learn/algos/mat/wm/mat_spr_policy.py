@@ -3,13 +3,14 @@ from torch import nn
 
 from swarmbots.learn.action_dists.hybrid_action_dist import ContinuousActionDistConfig
 from swarmbots.learn.algos.mat.mat_policy import MATPolicy
+from swarmbots.learn.algos.ppo.wm.ppo_wm import PPOWMPolicyMixin
 from swarmbots.learn.algos.world_modeling.spr_mixin import SPRMixin
 from swarmbots.learn.algos.world_modeling.transformer_transition_model import TransformerTransitionModel
 from swarmbots.learn.env_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
 from swarmbots.learn.nn_components.mlp import MLP
 
 
-class MATSPRPolicy(MATPolicy, SPRMixin):
+class MATSPRPolicy(MATPolicy, SPRMixin, PPOWMPolicyMixin):
 
     def __init__(
             self,
@@ -119,16 +120,17 @@ class MATSPRPolicy(MATPolicy, SPRMixin):
             self,
             local_obs: torch.Tensor,
             global_obs: torch.Tensor,
-            actions: torch.Tensor,  # todo might have time (next steps) dimension
+            actions: torch.Tensor,
+            next_local_obs: torch.Tensor,
+            next_global_obs: torch.Tensor,
+            next_validity_mask: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         if actions.ndim == 4:
             policy_actions = actions[:, 0]
-            policy_local_obs = local_obs[:, 0]
-            policy_global_obs = global_obs[:, 0] if global_obs.ndim == 3 else global_obs
         else:
             policy_actions = actions
-            policy_local_obs = local_obs
-            policy_global_obs = global_obs
+        policy_local_obs = local_obs
+        policy_global_obs = global_obs
 
         augmented_observations, log_probs, entropies, values = self._evaluate_actions(
             local_obs=policy_local_obs,
@@ -138,9 +140,13 @@ class MATSPRPolicy(MATPolicy, SPRMixin):
 
         spr_loss = self.compute_spr_loss(
             online_local_latents=augmented_observations,
-            local_obs=local_obs,
-            global_obs=global_obs,
+            next_local_obs=next_local_obs,
+            next_global_obs=next_global_obs,
             actions=actions,
+            time_mask=next_validity_mask,
         )
 
         return log_probs, entropies, values, spr_loss
+
+    def update_world_model_targets(self, tau: float) -> None:
+        self.update_spr_targets(tau)
