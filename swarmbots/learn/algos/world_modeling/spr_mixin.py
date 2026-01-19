@@ -103,8 +103,8 @@ class SPRMixin(abc.ABC):
     def compute_spr_loss(
             self,
             online_local_latents: torch.Tensor,
-            local_obs: torch.Tensor,
-            global_obs: torch.Tensor,
+            next_local_obs: torch.Tensor,
+            next_global_obs: torch.Tensor,
             actions: torch.Tensor,
             agent_mask: torch.Tensor | None = None,
             time_mask: torch.Tensor | None = None,
@@ -118,7 +118,7 @@ class SPRMixin(abc.ABC):
             predictions = self.predictor(online_next_projections)
 
             with torch.no_grad():
-                target_local_latents = self.target_encoder(local_obs=local_obs, global_obs=global_obs)
+                target_local_latents = self.target_encoder(local_obs=next_local_obs, global_obs=next_global_obs)
                 target_projections = self.target_projection(target_local_latents)
 
             return self._cosine_similarity_loss(
@@ -138,22 +138,22 @@ class SPRMixin(abc.ABC):
             raise ValueError(
                 f"Expected online_local_latents shape (B, N, D)=({b}, {n}, D), got {tuple(online_local_latents.shape)}"
             )
-        if local_obs.ndim != 4 or local_obs.shape[:3] != (b, t, n):
+        if next_local_obs.ndim != 4 or next_local_obs.shape[:3] != (b, t, n):
             raise ValueError(
-                f"Expected local_obs shape (B, T, N, F)=({b}, {t}, {n}, F), got {tuple(local_obs.shape)}"
+                f"Expected local_obs shape (B, T, N, F)=({b}, {t}, {n}, F), got {tuple(next_local_obs.shape)}"
             )
 
         z_preds = self.transition_model.predict_n_steps(online_local_latents, actions, agent_mask=agent_mask)
         online_next_projections = self.online_projection(z_preds)
         predictions = self.predictor(online_next_projections)
 
-        if global_obs.ndim == 2:
-            global_obs = global_obs[:, None, :].expand(b, t, -1)
-        if global_obs.ndim != 3 or global_obs.shape[:2] != (b, t):
-            raise ValueError(f"Expected global_obs shape (B, G) or (B, T, G), got {tuple(global_obs.shape)}")
+        if next_global_obs.ndim == 2:
+            next_global_obs = next_global_obs[:, None, :].expand(b, t, -1)
+        if next_global_obs.ndim != 3 or next_global_obs.shape[:2] != (b, t):
+            raise ValueError(f"Expected global_obs shape (B, G) or (B, T, G), got {tuple(next_global_obs.shape)}")
 
-        local_flat = local_obs.reshape(b * t, n, -1)
-        global_flat = global_obs.reshape(b * t, -1)
+        local_flat = next_local_obs.reshape(b * t, n, -1)
+        global_flat = next_global_obs.reshape(b * t, -1)
 
         with torch.no_grad():
             z_targets = self.target_encoder(local_obs=local_flat, global_obs=global_flat).reshape(b, t, n, -1)

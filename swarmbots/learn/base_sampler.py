@@ -3,7 +3,7 @@ from typing import TypeVar, Generic, Generator, Any
 
 import torch
 
-SamplesType = TypeVar('SamplesType')
+SamplesType = TypeVar('SamplesType', covariant=True)
 
 class BaseSampler(Generic[SamplesType], abc.ABC):
 

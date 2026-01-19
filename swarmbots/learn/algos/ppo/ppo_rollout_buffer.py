@@ -287,7 +287,7 @@ class PPOSamples:
     returns: torch.Tensor
     advantages: torch.Tensor
 
-PPOSamplesType = TypeVar('PPOSamplesType', bound=PPOSamples)
+PPOSamplesType = TypeVar('PPOSamplesType', bound=PPOSamples, covariant=True)
 
 class PPOSampler(BaseSampler[PPOSamplesType]):
 

@@ -134,7 +134,7 @@ def main() -> None:
 
     assert torch.equal(batch.next_local_obs, expected_next)
     assert torch.equal(batch.actions, expected_actions)
-    assert torch.equal(batch.next_local_obs_mask, expected_mask)
+    assert torch.equal(batch.next_validity_mask, expected_mask)
 
     print("OK: PPOWMSampler multi-step next_obs/actions windows match expected values.")
 
