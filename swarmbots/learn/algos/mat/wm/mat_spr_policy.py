@@ -1,9 +1,12 @@
+import torch
 from torch import nn
 
 from swarmbots.learn.action_dists.hybrid_action_dist import ContinuousActionDistConfig
 from swarmbots.learn.algos.mat.mat_policy import MATPolicy
 from swarmbots.learn.algos.world_modeling.spr_mixin import SPRMixin
+from swarmbots.learn.algos.world_modeling.transformer_transition_model import TransformerTransitionModel
 from swarmbots.learn.env_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
+from swarmbots.learn.nn_components.mlp import MLP
 
 
 class MATSPRPolicy(MATPolicy, SPRMixin):
@@ -24,12 +27,21 @@ class MATSPRPolicy(MATPolicy, SPRMixin):
             n_critic_local_projection_hidden_layers: int = 1,
             n_critic_value_regressor_hidden_layers: int = 2,
             actor_head_hidden_dims: list[int] | None = None,
-            act_fn_cls=nn.ReLU,
+            act_fn_cls: type[nn.Module] = nn.ReLU,
             continuous_config: ContinuousActionDistConfig | list[ContinuousActionDistConfig | None] | None = None,
             bernoulli_initial_prob: float | None = None,
             add_agent_embeddings_encoder: bool = True,
             add_agent_embeddings_decoder: bool = True,
-    ):
+            d_model_transition_model: int = 128,
+            nhead_transition_model: int = 4,
+            num_layers_transition_model: int = 2,
+            dim_feedforward_transition_model: int = 256,
+            add_agent_embeddings_transition_model: bool = False,
+            transition_model_coembed_hidden_dims: list[int] | None = None,
+            transition_model_head_hidden_dims: list[int] | None = None,
+            transition_model_projection_hidden_dims: list[int] | None = None,
+            transition_model_predictor_hidden_dims: list[int] | None = None,
+    ) -> None:
         super().__init__(
             env=env,
             d_model=d_model,
@@ -51,8 +63,84 @@ class MATSPRPolicy(MATPolicy, SPRMixin):
             add_agent_embeddings_encoder=add_agent_embeddings_encoder,
             add_agent_embeddings_decoder=add_agent_embeddings_decoder,
         )
-        self.setup_modules(...)  # todo
+
+        projection_hidden_dims = [] if transition_model_projection_hidden_dims is None else transition_model_projection_hidden_dims
+        predictor_hidden_dims = [] if transition_model_predictor_hidden_dims is None else transition_model_predictor_hidden_dims
+
+        self.setup_modules(
+            transition_model=TransformerTransitionModel(
+                n_agents=self.n_agents,
+                latent_dim=self.d_model_encoder,
+                action_dim=env.action_space.total_agent_action_dim,
+                d_model=d_model_transition_model,
+                nhead=nhead_transition_model,
+                num_layers=num_layers_transition_model,
+                dim_feedforward=dim_feedforward_transition_model,
+                dropout=dropout,
+                act_fn_cls=act_fn_cls,
+                add_agent_embeddings=add_agent_embeddings_transition_model,
+                predict_delta=True,
+                coembed_mlp_hidden_dims=transition_model_coembed_hidden_dims,
+                head_mlp_hidden_dims=transition_model_head_hidden_dims,
+            ),
+            projection=MLP(
+                input_dim=self.d_model_encoder,
+                hidden_dims=[*projection_hidden_dims, self.d_model_encoder],
+                end_with_act_fn=False,
+                act_fn_cls=act_fn_cls,
+            ),
+            predictor=MLP(
+                input_dim=self.d_model_encoder,
+                hidden_dims=[*predictor_hidden_dims, self.d_model_encoder],
+                end_with_act_fn=False,
+                act_fn_cls=act_fn_cls,
+            )
+        )
+
+        self.hyper_parameters.update(
+            {
+                "d_model_transition_model": d_model_transition_model,
+                "nhead_transition_model": nhead_transition_model,
+                "num_layers_transition_model": num_layers_transition_model,
+                "dim_feedforward_transition_model": dim_feedforward_transition_model,
+                "add_agent_embeddings_transition_model": add_agent_embeddings_transition_model,
+                "transition_model_coembed_hidden_dims": transition_model_coembed_hidden_dims,
+                "transition_model_head_hidden_dims": transition_model_head_hidden_dims,
+                "transition_model_projection_hidden_dims": projection_hidden_dims,
+                "transition_model_predictor_hidden_dims": predictor_hidden_dims,
+            }
+        )
 
     @property
     def online_encoder(self) -> nn.Module:
         return self.encoder
+
+    def evaluate_actions_and_world_model(
+            self,
+            local_obs: torch.Tensor,
+            global_obs: torch.Tensor,
+            actions: torch.Tensor,  # todo might have time (next steps) dimension
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        if actions.ndim == 4:
+            policy_actions = actions[:, 0]
+            policy_local_obs = local_obs[:, 0]
+            policy_global_obs = global_obs[:, 0] if global_obs.ndim == 3 else global_obs
+        else:
+            policy_actions = actions
+            policy_local_obs = local_obs
+            policy_global_obs = global_obs
+
+        augmented_observations, log_probs, entropies, values = self._evaluate_actions(
+            local_obs=policy_local_obs,
+            global_obs=policy_global_obs,
+            actions=policy_actions,
+        )
+
+        spr_loss = self.compute_spr_loss(
+            online_local_latents=augmented_observations,
+            local_obs=local_obs,
+            global_obs=global_obs,
+            actions=actions,
+        )
+
+        return log_probs, entropies, values, spr_loss

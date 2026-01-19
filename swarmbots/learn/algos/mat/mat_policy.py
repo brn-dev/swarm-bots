@@ -223,6 +223,20 @@ class MATPolicy(BasePPOPolicy):
             global_obs: torch.Tensor,
             actions: torch.Tensor
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        augmented_observations, log_probs, entropies, values = self._evaluate_actions(
+            local_obs=local_obs,
+            global_obs=global_obs,
+            actions=actions,
+        )
+
+        return log_probs, entropies, values
+
+    def _evaluate_actions(
+            self,
+            local_obs: torch.Tensor,
+            global_obs: torch.Tensor,
+            actions: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         augmented_observations = self.encoder(local_obs, global_obs)
         
         action_embeddings = self.action_encoder(actions[:, :-1, :])
@@ -239,7 +253,7 @@ class MATPolicy(BasePPOPolicy):
         entropies = self.action_dist.entropy()
 
         values = self.critic(augmented_observations)
-        return log_probs, entropies, values
+        return augmented_observations, log_probs, entropies, values
 
     def act(
             self,
