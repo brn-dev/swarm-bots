@@ -281,14 +281,14 @@ class BaseAlgorithm(abc.ABC):
 
             latest_path = max(existing_metadata_files, key=_sort_key)
             latest_metadata = _read_metadata_json(latest_path)
-            if latest_metadata == metadata_json:
+            if _normalize_run_metadata_for_comparison(latest_metadata) == _normalize_run_metadata_for_comparison(metadata_json):
                 return
 
         step = int(self.n_total_timesteps)
         base_path = run_dir / f"run_metadata_{step}.json"
         if base_path.exists():
             existing = _read_metadata_json(base_path)
-            if existing == metadata_json:
+            if _normalize_run_metadata_for_comparison(existing) == _normalize_run_metadata_for_comparison(metadata_json):
                 return
 
             suffix_idx = 1
@@ -667,6 +667,15 @@ def _read_metadata_json(path: Path) -> dict[str, Any] | None:
         return json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return None
+
+
+_RUN_METADATA_VOLATILE_KEYS: frozenset[str] = frozenset({"iterations", "updates", "timesteps", "load_path"})
+
+
+def _normalize_run_metadata_for_comparison(metadata: dict[str, Any] | None) -> dict[str, Any] | None:
+    if metadata is None:
+        return None
+    return {k: v for k, v in metadata.items() if k not in _RUN_METADATA_VOLATILE_KEYS}
 
 
 def _start_command_prompt(cmd_q: queue.Queue[str]) -> bool:

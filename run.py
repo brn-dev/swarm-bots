@@ -64,7 +64,7 @@ def main():
 
     # ===== LOAD =====
     load_path: str | None = None
-    # load_path = "runs/mat_swarm_bots/2026-01-17_16-33-16/models/model_6825984_steps_stopped.pt"
+    load_path = "runs/mat_swarm_bots/2026-01-17_16-33-16/models/model_45014016_steps_stopped.pt"
     std: float | None = None
 
     # ===== DEVICE =====
