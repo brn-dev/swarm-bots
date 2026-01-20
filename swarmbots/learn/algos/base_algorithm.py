@@ -10,7 +10,6 @@ from typing import Any, Optional, Collection, Callable, Self
 
 import torch
 from loguru import logger
-from sqlalchemy import false
 
 try:
     logger.level("SAVE")
@@ -383,7 +382,12 @@ class BaseAlgorithm(abc.ABC):
 
         apply_env_state(self.env, extract_env_state(checkpoint))
 
-    def _execute_command(self, cmd: str, params: str) -> bool:
+    def _execute_command(
+            self,
+            cmd: str,
+            params: str,
+            extra_run_metadata: dict[str, Any] | None
+    ) -> bool:
         """
         :return: True if the command was executed successfully and updated the hyper parameters, False otherwise
         """
@@ -399,7 +403,7 @@ class BaseAlgorithm(abc.ABC):
             self.set_learning_rate(lr)
             return True
         elif cmd in {'set_reward_weights', 'set_rw'}:
-            self._cmd_set_reward_weights(params)
+            self._cmd_set_reward_weights(params, extra_run_metadata)
             return True
         elif cmd == 'save':
             self._cmd_save(params)
@@ -414,12 +418,17 @@ class BaseAlgorithm(abc.ABC):
             logger.error(f'Unknown command "{cmd}"')
             return False
 
-    def execute_command(self, cmd: str, params: str) -> bool:
+    def execute_command(
+            self,
+            cmd: str,
+            params: str,
+            extra_run_metadata: dict[str, Any] | None
+    ) -> bool:
         """
         :return: True if the command was executed successfully and updated the hyper parameters, False otherwise
         """
         try:
-            return self._execute_command(cmd.strip().lower(), params.strip())
+            return self._execute_command(cmd.strip().lower(), params.strip(), extra_run_metadata)
         except Exception:
             logger.exception('Executing command failed')
             return False
@@ -440,7 +449,7 @@ class BaseAlgorithm(abc.ABC):
                 raw = self._command_queue.get_nowait()
             except queue.Empty:
                 break
-            updated, updated_commands = self._execute_command_line(raw)
+            updated, updated_commands = self._execute_command_line(raw, extra_run_metadata)
             if updated and updated_commands:
                 self._append_command_log(raw=raw, updated_commands=updated_commands)
             hps_updated |= updated
@@ -450,7 +459,11 @@ class BaseAlgorithm(abc.ABC):
         if hps_updated and run_dir is not None:
             self._write_run_metadata(run_dir, extra_run_metadata)
 
-    def _execute_command_line(self, raw: str) -> tuple[bool, list[dict[str, Any]]]:
+    def _execute_command_line(
+            self,
+            raw: str,
+            extra_run_metadata: dict[str, Any] | None
+    ) -> tuple[bool, list[dict[str, Any]]]:
         raw = raw.strip()
         if not raw:
             return False, []
@@ -468,7 +481,7 @@ class BaseAlgorithm(abc.ABC):
             cmd = cmd.strip()
             if not cmd:
                 continue
-            updated = self.execute_command(cmd, params)
+            updated = self.execute_command(cmd, params, extra_run_metadata)
             hps_updated |= updated
             if updated:
                 updated_commands.append({"cmd": cmd, "params": params.strip()})
@@ -618,7 +631,7 @@ class BaseAlgorithm(abc.ABC):
         first = results[0] if results else None
         logger.info(first)
 
-    def _cmd_set_reward_weights(self, params: str) -> None:
+    def _cmd_set_reward_weights(self, params: str, extra_run_metadata: dict[str, Any] | None) -> None:
         config = _parse_params_maybe_json(params)
         if not isinstance(config, dict):
             raise ValueError("set_reward_weights expects a JSON object, e.g. set_reward_weights:{\"progress_reward_weight\":1.0}")
@@ -643,6 +656,8 @@ class BaseAlgorithm(abc.ABC):
 
         if not failed:
             logger.warning(f"Updated reward weights in {len(results)} env(s): {reward_weights}")
+            if extra_run_metadata is not None:
+                extra_run_metadata['updated_reward_weights'] = results[0]
             return
 
         logger.error(f"Reward weights update failed in {len(failed)}/{len(results)} env(s): {reward_weights}")
@@ -669,7 +684,13 @@ def _read_metadata_json(path: Path) -> dict[str, Any] | None:
         return None
 
 
-_RUN_METADATA_VOLATILE_KEYS: frozenset[str] = frozenset({"iterations", "updates", "timesteps", "load_path"})
+_RUN_METADATA_VOLATILE_KEYS: frozenset[str] = frozenset({
+    "iterations",
+    "updates",
+    "timesteps",
+    "load_path",
+    "script",
+})
 
 
 def _normalize_run_metadata_for_comparison(metadata: dict[str, Any] | None) -> dict[str, Any] | None:

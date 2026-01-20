@@ -1,64 +1,21 @@
 from dataclasses import dataclass
-from typing import Any, Iterable, Self
+from typing import Any, Iterable
 
 import mujoco
 import numpy as np
 from mujoco import MjsBody
 
+from swarmbots.mj_env.float_or_dist import FloatOrDist, eval_fod, fod_low
 from swarmbots.mj_env.scenarios.base_scenario import BaseScenario, SwarmObsDict
 from swarmbots.mj_env.swarm.base_swarm import BaseSwarm
 from swarmbots.mj_env.swarm.homogeneous_swarm import HomogeneousSwarm
 from swarmbots.mj_env.swarm.swarm_connections import SwarmConnections
-
-@dataclass
-class UniformDistParams:
-    low: float
-    high: float
-
-    @staticmethod
-    def from_midpoint_and_width(midpoint: float, width: float) -> "UniformDistParams":
-        width_half = width / 2.0
-        return UniformDistParams(
-            low=midpoint - width_half,
-            high=midpoint + width_half
-        )
-
-@dataclass
-class ClampedNormalDistParams:
-    mean: float
-    std: float
-    high: float
-    low: float
-
-DistParams = UniformDistParams | ClampedNormalDistParams
-FloatOrDist = float | DistParams
 
 
 @dataclass
 class PoleParams:
     x: FloatOrDist
     y: FloatOrDist
-
-def _fod_low(fod: FloatOrDist) -> float:
-    if isinstance(fod, (float, int)):
-        return float(fod)
-    if isinstance(fod, UniformDistParams):
-        return float(fod.low)
-    if isinstance(fod, ClampedNormalDistParams):
-        return float(fod.low)
-    raise ValueError(fod)
-
-
-def _eval_fod(fod: FloatOrDist, rng: np.random.Generator) -> float:
-    if isinstance(fod, (float, int)):
-        return float(fod)
-    if isinstance(fod, UniformDistParams):
-        return float(rng.uniform(low=fod.low, high=fod.high))
-    if isinstance(fod, ClampedNormalDistParams):
-        x = rng.normal(fod.mean, fod.std)
-        x = np.clip(x, fod.low, fod.high)
-        return float(x)
-    raise ValueError(fod)
 
 
 class ObstacleStreetScenario(BaseScenario):
@@ -126,7 +83,7 @@ class ObstacleStreetScenario(BaseScenario):
 
         self.opening_widths = opening_width if isinstance(opening_width, list) else [opening_width] * num_walls
         self.unusable_opening_offset = unusable_opening_offset
-        min_inter_wall_distance = _fod_low(self.inter_wall_distance)
+        min_inter_wall_distance = fod_low(self.inter_wall_distance)
         if min_inter_wall_distance <= 1.0:
             raise ValueError(f"Expected inter_wall_distance.low > 1.0, got {min_inter_wall_distance}")
         self.ramp_length = min_inter_wall_distance - 1.0
@@ -295,22 +252,22 @@ class ObstacleStreetScenario(BaseScenario):
             pole_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, f'Pole_{i}')
             mocap_id = model.body_mocapid[pole_id]
             data.mocap_pos[mocap_id] = [
-                _eval_fod(pole.x, rng),
-                _eval_fod(pole.y, rng),
+                eval_fod(pole.x, rng),
+                eval_fod(pole.y, rng),
                 0.0,
             ]
 
     def reset_walls_and_ramps(self, data: mujoco.MjData, model: mujoco.MjModel):
         rng = self.rng
 
-        unusable_opening_offset = _eval_fod(self.unusable_opening_offset, rng)
+        unusable_opening_offset = eval_fod(self.unusable_opening_offset, rng)
 
-        wall_y = _eval_fod(self.first_wall_distance, rng)
+        wall_y = eval_fod(self.first_wall_distance, rng)
         for i in range(self.num_walls):
             if i != 0:
-                wall_y += _eval_fod(self.inter_wall_distance, rng)
+                wall_y += eval_fod(self.inter_wall_distance, rng)
 
-            opening_width = _eval_fod(self.opening_widths[i], rng)
+            opening_width = eval_fod(self.opening_widths[i], rng)
 
             opening_x = (rng.random() - 0.5) * 2 * (
                     self.side_wall_x
