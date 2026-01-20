@@ -370,7 +370,12 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerType]):
             raise ValueError(f"Unhandled {self.agent_logprob_reduction=}")
         return entropy, log_prob, old_log_prob
 
-    def _execute_command(self, cmd: str, params: str) -> bool:
+    def _execute_command(
+            self,
+            cmd: str,
+            params: str,
+            extra_run_metadata: dict[str, Any] | None
+    ) -> bool:
         """
         :return: True if the command was executed successfully and updated the hyper parameters, False otherwise
         """

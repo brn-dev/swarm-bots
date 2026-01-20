@@ -1,5 +1,6 @@
 import sys
 from datetime import datetime
+from pathlib import Path
 
 import torch
 from gymnasium.vector import SyncVectorEnv, AsyncVectorEnv
@@ -64,7 +65,7 @@ def main():
 
     # ===== LOAD =====
     load_path: str | None = None
-    load_path = "runs/mat_swarm_bots/2026-01-17_16-33-16/models/model_45014016_steps_stopped.pt"
+    # load_path = "runs/mat_swarm_bots/2026-01-17_16-33-16/models/model_45014016_steps_stopped.pt"
     std: float | None = None
 
     # ===== DEVICE =====
@@ -215,7 +216,8 @@ def main():
         best_rotation_n=3,
         extra_run_metadata={
             'load_path': load_path,
-            'env_settings': env_settings
+            'env_settings': env_settings,
+            'script': Path(__file__).read_text(encoding='utf-8')
         },
         logging_console_keys=[
             ('iteration', '5'),
