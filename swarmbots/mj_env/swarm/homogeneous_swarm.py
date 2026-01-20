@@ -2,7 +2,7 @@ import mujoco
 import numpy as np
 from mujoco import MjsBody
 
-from swarmbots.mj_env.float_or_dist import FloatOrDist, DistParams, eval_fod
+from swarmbots.mj_env.float_or_dist import FloatOrDist, eval_fod, is_dist_params
 from swarmbots.mj_env.random_utils import random_quat_shoemake
 from swarmbots.mj_env.swarm.base_swarm import BaseSwarm
 from swarmbots.mj_env.swarm.swarm_config import SwarmConfig
@@ -67,7 +67,7 @@ class HomogeneousSwarm(BaseSwarm):
     def __init__(
             self,
             unit_start_locations: list[tuple[FloatOrDist, FloatOrDist, FloatOrDist]] | str,
-            unit_start_quats: list[tuple[float, float, float, float]] = None,
+            unit_start_quats: list[tuple[float, float, float, float]] | None = None,
             unit_config: UnitConfig = UNIT_CONFIG_TETRAHEDRON_YX,
             body_radius: float = 0.1,
             leg_length: float = 0.2,
@@ -104,7 +104,7 @@ class HomogeneousSwarm(BaseSwarm):
 
         self.start_locations_with_dists_indices: list[int] = [
             i for i in range(self.num_units)
-            if any(isinstance(coord, DistParams) for coord in self.unit_start_locations[i])
+            if any(is_dist_params(coord) for coord in self.unit_start_locations[i])
         ]
 
     def get_settings(self):
@@ -161,7 +161,7 @@ class HomogeneousSwarm(BaseSwarm):
 
         for i in self.start_locations_with_dists_indices:
             qpos_adr = self._get_unit_main_body_qpos_adr(model, i)
-            data[qpos_adr:qpos_adr+3] = [eval_fod(coord, rng) for coord in self.unit_start_locations[i]]
+            data.qpos[qpos_adr:qpos_adr + 3] = [eval_fod(coord, rng) for coord in self.unit_start_locations[i]]
 
         return connections
 

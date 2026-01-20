@@ -27,8 +27,7 @@ class SPRMixin(abc.ABC):
             transition_model: TransformerTransitionModel,
             projection: nn.Module,
             predictor: nn.Module
-    ):
-        super().__init__()
+    ) -> None:
         self.target_encoder = copy.deepcopy(self.online_encoder)
         self.target_encoder.requires_grad_(False)
         self.target_encoder.eval()
@@ -118,6 +117,8 @@ class SPRMixin(abc.ABC):
             predictions = self.predictor(online_next_projections)
 
             with torch.no_grad():
+                self.target_encoder.eval()
+                self.target_projection.eval()
                 target_local_latents = self.target_encoder(local_obs=next_local_obs, global_obs=next_global_obs)
                 target_projections = self.target_projection(target_local_latents)
 
@@ -156,6 +157,8 @@ class SPRMixin(abc.ABC):
         global_flat = next_global_obs.reshape(b * t, -1)
 
         with torch.no_grad():
+            self.target_encoder.eval()
+            self.target_projection.eval()
             z_targets = self.target_encoder(local_obs=local_flat, global_obs=global_flat).reshape(b, t, n, -1)
             target_projections = self.target_projection(z_targets)
 
