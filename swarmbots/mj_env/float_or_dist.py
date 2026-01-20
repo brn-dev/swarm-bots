@@ -1,14 +1,23 @@
+import abc
 from dataclasses import dataclass
-from typing import TypeGuard
+from typing import Literal
 
 import numpy as np
+from loguru import logger
 
 
 @dataclass
-class UniformDistParams:
+class DistParams(abc.ABC):
+    pass
+
+@dataclass
+class BoundedDistParams(DistParams, abc.ABC):
     low: float
     high: float
 
+
+@dataclass
+class UniformDistParams(BoundedDistParams):
     @staticmethod
     def from_midpoint_and_width(midpoint: float, width: float) -> "UniformDistParams":
         width_half = width / 2.0
@@ -17,40 +26,57 @@ class UniformDistParams:
             high=midpoint + width_half
         )
 
+TruncatedNormalDistSamplingMode = Literal['clamp', 'rejection']
 
 @dataclass
-class ClampedNormalDistParams:
+class TruncatedNormalDistParams(BoundedDistParams):
     mean: float
     std: float
-    high: float
-    low: float
+    sampling_mode: TruncatedNormalDistSamplingMode = 'clamp'
+
+@dataclass
+class NormalDistParams(DistParams):
+    mean: float
+    std: float
 
 
-DistParams = UniformDistParams | ClampedNormalDistParams
-FloatOrDist = float | DistParams
+FloatOrDistParams = float | DistParams
+FloatOrBoundedDistParams = float | BoundedDistParams
+
+REJECTION_SAMPLING_WARNING_THRESHOLD = 10
 
 
-def is_dist_params(x: object) -> TypeGuard[DistParams]:
-    return isinstance(x, (UniformDistParams, ClampedNormalDistParams))
+def fod_low(fobdp: FloatOrBoundedDistParams) -> float:
+    if isinstance(fobdp, (float, int)):
+        return float(fobdp)
+    return float(fobdp.low)
 
 
-def fod_low(fod: FloatOrDist) -> float:
-    if isinstance(fod, (float, int)):
-        return float(fod)
-    if isinstance(fod, UniformDistParams):
-        return float(fod.low)
-    if isinstance(fod, ClampedNormalDistParams):
-        return float(fod.low)
-    raise ValueError(fod)
+def eval_fod(fodp: FloatOrDistParams, rng: np.random.Generator) -> float:
+    if isinstance(fodp, (float, int)):
+        return float(fodp)
+    if isinstance(fodp, UniformDistParams):
+        return float(rng.uniform(low=fodp.low, high=fodp.high))
+    if isinstance(fodp, TruncatedNormalDistParams):
+        return eval_truncated_normal(fodp, rng)
+    if isinstance(fodp, NormalDistParams):
+        return rng.normal(fodp.mean, fodp.std)
+    raise ValueError(f'{fodp = }')
 
 
-def eval_fod(fod: FloatOrDist, rng: np.random.Generator) -> float:
-    if isinstance(fod, (float, int)):
-        return float(fod)
-    if isinstance(fod, UniformDistParams):
-        return float(rng.uniform(low=fod.low, high=fod.high))
-    if isinstance(fod, ClampedNormalDistParams):
-        x = rng.normal(fod.mean, fod.std)
-        x = np.clip(x, fod.low, fod.high)
-        return float(x)
-    raise ValueError(fod)
+def eval_truncated_normal(dp: TruncatedNormalDistParams, rng: np.random.Generator):
+    x = rng.normal(dp.mean, dp.std)
+
+    if dp.sampling_mode == 'clamp':
+        x = np.clip(x, dp.low, dp.high)
+    elif dp.sampling_mode == 'rejection':
+        counter = 0
+        while x < dp.low or x > dp.high:
+            counter += 1
+            x = rng.normal(dp.mean, dp.std)
+        if counter > REJECTION_SAMPLING_WARNING_THRESHOLD:
+            logger.warning(f'Rejected {counter} samples for {dp}')
+    else:
+        raise ValueError(f'{dp.sampling_mode } = ')
+
+    return float(x)

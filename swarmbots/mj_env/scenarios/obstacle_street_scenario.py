@@ -5,7 +5,7 @@ import mujoco
 import numpy as np
 from mujoco import MjsBody
 
-from swarmbots.mj_env.float_or_dist import FloatOrDist, eval_fod, fod_low
+from swarmbots.mj_env.float_or_dist import FloatOrDistParams, eval_fod, fod_low, FloatOrBoundedDistParams
 from swarmbots.mj_env.scenarios.base_scenario import BaseScenario, SwarmObsDict
 from swarmbots.mj_env.swarm.base_swarm import BaseSwarm
 from swarmbots.mj_env.swarm.homogeneous_swarm import HomogeneousSwarm
@@ -14,8 +14,8 @@ from swarmbots.mj_env.swarm.swarm_connections import SwarmConnections
 
 @dataclass
 class PoleParams:
-    x: FloatOrDist
-    y: FloatOrDist
+    x: FloatOrDistParams
+    y: FloatOrDistParams
 
 
 class ObstacleStreetScenario(BaseScenario):
@@ -27,15 +27,15 @@ class ObstacleStreetScenario(BaseScenario):
             payload_size: Iterable[float] = (0.2, 0.2, 0.2),
             payload_mass: float = 5.0,
             payload_start_location_offset: Iterable[float] = (0, 1, 0),
-            poles: Iterable[PoleParams | tuple[FloatOrDist, FloatOrDist]] = (),
+            poles: Iterable[PoleParams | tuple[FloatOrDistParams, FloatOrDistParams]] = (),
             pole_radius: float = 0.1,
             pole_height: float = 1.0,
             num_walls: int = 3,
             wall_height: float | list[float] = 0.5,
-            inter_wall_distance: FloatOrDist = 4.0,
-            first_wall_distance: FloatOrDist = 2.0,
-            opening_width: FloatOrDist | list[FloatOrDist] = 2.0,
-            unusable_opening_offset: FloatOrDist = 2.0,
+            inter_wall_distance: FloatOrBoundedDistParams = 4.0,
+            first_wall_distance: FloatOrDistParams = 2.0,
+            opening_width: FloatOrDistParams | list[FloatOrDistParams] = 2.0,
+            unusable_opening_offset: FloatOrDistParams = 2.0,
             street_width: float = 10.0,
             no_initial_ramp: bool = True,
             actuator_strength: float = 3.0,
