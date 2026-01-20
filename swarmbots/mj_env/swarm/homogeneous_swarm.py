@@ -157,10 +157,10 @@ class HomogeneousSwarm(BaseSwarm):
         for i in range(self.num_units):
             qpos_adr, dof_adr = self._get_unit_main_body_addresses(model, i)
 
-            data.qpos[qpos_adr:qpos_adr + 3] = [
-                start_location + eval_fod(coord, rng)
+            data.qpos[qpos_adr:qpos_adr + 3] = start_location + np.array([
+                eval_fod(coord, rng)
                 for coord in self.unit_start_locations[i]
-            ]
+            ])
 
             if self.randomize_unit_orientations:
                 data.qpos[qpos_adr + 3:qpos_adr + 7] = random_quat_shoemake()
