@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from typing import TypeGuard
 
 import numpy as np
 
@@ -27,6 +28,10 @@ class ClampedNormalDistParams:
 
 DistParams = UniformDistParams | ClampedNormalDistParams
 FloatOrDist = float | DistParams
+
+
+def is_dist_params(x: object) -> TypeGuard[DistParams]:
+    return isinstance(x, (UniformDistParams, ClampedNormalDistParams))
 
 
 def fod_low(fod: FloatOrDist) -> float:
