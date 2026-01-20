@@ -2,7 +2,7 @@ import mujoco
 import numpy as np
 from mujoco import MjsBody
 
-from swarmbots.mj_env.float_or_dist import FloatOrDist, eval_fod, is_dist_params
+from swarmbots.mj_env.float_or_dist import FloatOrDistParams, eval_fod, DistParams
 from swarmbots.mj_env.random_utils import random_quat_shoemake
 from swarmbots.mj_env.swarm.base_swarm import BaseSwarm
 from swarmbots.mj_env.swarm.swarm_config import SwarmConfig
@@ -66,7 +66,7 @@ class HomogeneousSwarm(BaseSwarm):
 
     def __init__(
             self,
-            unit_start_locations: list[tuple[FloatOrDist, FloatOrDist, FloatOrDist]] | str,
+            unit_start_locations: list[tuple[FloatOrDistParams, FloatOrDistParams, FloatOrDistParams]] | str,
             unit_start_quats: list[tuple[float, float, float, float]] | None = None,
             unit_config: UnitConfig = UNIT_CONFIG_TETRAHEDRON_YX,
             body_radius: float = 0.1,
@@ -104,7 +104,7 @@ class HomogeneousSwarm(BaseSwarm):
 
         self.start_locations_with_dists_indices: list[int] = [
             i for i in range(self.num_units)
-            if any(is_dist_params(coord) for coord in self.unit_start_locations[i])
+            if any(isinstance(coord, DistParams) for coord in self.unit_start_locations[i])
         ]
 
     def get_settings(self):
@@ -154,20 +154,30 @@ class HomogeneousSwarm(BaseSwarm):
     ) -> SwarmConnections:
         connections = SwarmConnections(self.config)
 
-        if self.randomize_unit_orientations:
-            for i, unit_start_location in enumerate(self.unit_start_locations):
-                qpos_adr = self._get_unit_main_body_qpos_adr(model, i)
-                data.qpos[qpos_adr + 3:qpos_adr + 7] = random_quat_shoemake()
+        for i in range(self.num_units):
+            qpos_adr, dof_adr = self._get_unit_main_body_addresses(model, i)
 
-        for i in self.start_locations_with_dists_indices:
-            qpos_adr = self._get_unit_main_body_qpos_adr(model, i)
-            data.qpos[qpos_adr:qpos_adr + 3] = [eval_fod(coord, rng) for coord in self.unit_start_locations[i]]
+            data.qpos[qpos_adr:qpos_adr + 3] = [
+                start_location + eval_fod(coord, rng)
+                for coord in self.unit_start_locations[i]
+            ]
+
+            if self.randomize_unit_orientations:
+                data.qpos[qpos_adr + 3:qpos_adr + 7] = random_quat_shoemake()
+            else:
+                data.qpos[qpos_adr + 3:qpos_adr + 7] = [1, 0, 0, 0]
+
+            data.qvel[dof_adr:dof_adr+6] = 0
+
+        data.ctrl[:] = 0
 
         return connections
 
-    def _get_unit_main_body_qpos_adr(self, model: mujoco.MjModel, unit_idx: int):
+    def _get_unit_main_body_addresses(self, model: mujoco.MjModel, unit_idx: int):
         body_name = f"{self.config.unit_prefixes[unit_idx]}-main_body"
         body_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, body_name)
         jnt_adr = model.body_jntadr[body_id]
-        return model.jnt_qposadr[jnt_adr]
+        qpos_adr = model.jnt_qposadr[jnt_adr]
+        dof_adr = model.jnt_dofadr[jnt_adr]
+        return qpos_adr, dof_adr
 
