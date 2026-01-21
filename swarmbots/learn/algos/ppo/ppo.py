@@ -432,7 +432,7 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerType]):
             self.rollout_buffer.gae_lambda = gae_lambda
             return True
         else:
-            return super()._execute_command(cmd, params)
+            return super()._execute_command(cmd, params, extra_run_metadata)
 
     def _get_optimizer_state_dict(self) -> dict[str, Any]:
         return self.optimizer.state_dict()

@@ -237,6 +237,10 @@ class BaseAlgorithm(abc.ABC):
                         return_ema=episode_return_ema.get()
                     )
                     logger.log("SAVE", f"Saved {suffix} model to {save_path.as_posix()}")
+
+            if self._make_record_env is not None:
+                self._cmd_record('')
+
         finally:
             metric_logger.close()
             self._active_run_dir = None
