@@ -3,6 +3,7 @@ from typing import Any, Literal
 
 import torch
 import torch.nn as nn
+from loguru import logger
 
 from swarmbots.learn.algos.ppo.ppo import PPO
 from swarmbots.learn.algos.ppo.ppo_policy import BasePPOPolicy
@@ -37,14 +38,14 @@ class PPOWMPolicyMixin(abc.ABC):
 
 class PPOWM(PPO[PPOWMSamples, PPOWMSampler]):
 
-    policy: BasePPOPolicy & PPOWMPolicyMixin
+    policy: BasePPOPolicy | PPOWMPolicyMixin
     world_model_num_next_steps: int
     world_model_loss_coef: float
     world_model_target_tau: float | None
 
     def __init__(
             self,
-            policy: BasePPOPolicy & PPOWMPolicyMixin,
+            policy: BasePPOPolicy | PPOWMPolicyMixin,
             env: BaseLearnEnvWrapper,
             learning_rate: LearningRate = 3e-4,
             n_episodes_per_rollout: int = 64,
@@ -138,6 +139,19 @@ class PPOWM(PPO[PPOWMSamples, PPOWMSampler]):
             "world_model_loss_coef": self.world_model_loss_coef,
             "world_model_target_tau": self.world_model_target_tau,
         }
+
+    def _execute_command(
+            self,
+            cmd: str,
+            params: str,
+            extra_run_metadata: dict[str, Any] | None
+    ) -> bool:
+        if cmd in {"set_wm_loss_coef", "set_world_model_loss_coef", "wm_loss_coef"}:
+            coef = float(params)
+            logger.warning(f"Setting world_model_loss_coef to {coef}")
+            self.world_model_loss_coef = coef
+            return True
+        return super()._execute_command(cmd, params, extra_run_metadata)
 
     def _after_optimizer_step(self) -> None:
         if self.world_model_target_tau is None:

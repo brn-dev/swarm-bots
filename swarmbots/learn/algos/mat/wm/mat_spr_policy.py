@@ -70,7 +70,7 @@ class MATSPRPolicy(MATPolicy, SPRMixin, PPOWMPolicyMixin):
             projection_hidden_dims = transition_model_projection_hidden_dims
 
         if transition_model_predictor_hidden_dims is None:
-            predictor_hidden_dims = [self.d_model_encoder]
+            predictor_hidden_dims = [projection_hidden_dims[-1]]
         else:
             predictor_hidden_dims = transition_model_predictor_hidden_dims
 

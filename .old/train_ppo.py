@@ -157,7 +157,7 @@ if __name__ == '__main__':
 
     # Create run directory
     run_id = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    run_dir = os.path.join("runs", run_id)
+    run_dir = os.path.join("../runs", run_id)
     os.makedirs(run_dir, exist_ok=True)
     print(f"Saving run outputs to {run_dir}")
 
