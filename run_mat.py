@@ -10,14 +10,12 @@ from torch import nn
 
 from swarmbots.learn.action_dists.hybrid_action_dist import GSDEParams
 from swarmbots.learn.algos.mat.mat_policy import MATPolicy
-from swarmbots.learn.algos.ppo.ppo import PPO
-from swarmbots.learn.env_wrappers.normalize_obs_wrapper import NormalizeLocalObsWrapper
+from swarmbots.learn.algos.ppo.ppo import PPO, AutomaticLearningRate
+from swarmbots.learn.env_wrappers.obs_normalization.naive_normalize_obs_wrapper import NaiveNormalizeLocalObsWrapper
 from swarmbots.learn.env_wrappers.swarm_bots_learn_env_wrapper import SwarmBotsLearnEnvWrapper
-from swarmbots.learn.gsde_reset import GSDEIntervalResetMode, GSDEProbabilityResetMode
-from swarmbots.learn.recording import record_policy
+from swarmbots.learn.gsde_reset import GSDEProbabilityResetMode
 from swarmbots.learn.summary_statistics import SummaryStatisticsFormat
 from swarmbots.mj_env.scenarios.obstacle_street_scenario import ObstacleStreetScenario
-from swarmbots.mj_env.swarm.homogeneous_swarm import HomogeneousSwarm
 from swarmbots.mj_env.swarm_bots_env import SwarmBotsEnv
 
 
@@ -107,7 +105,7 @@ def main():
             )
         ])
         record_env = RecordEpisodeStatistics(record_env)
-        record_env = NormalizeLocalObsWrapper(record_env)
+        record_env = NaiveNormalizeLocalObsWrapper(record_env)
         record_env = SwarmBotsLearnEnvWrapper(record_env, device=rollout_device)
 
         return record_env
@@ -131,7 +129,7 @@ def main():
     
     print("Wrapping with RecordEpisodeStatistics, NormalizeObservation, NormalizeReward...")
     vector_env = RecordEpisodeStatistics(vector_env)
-    vector_env = NormalizeLocalObsWrapper(vector_env)
+    vector_env = NaiveNormalizeLocalObsWrapper(vector_env)
     vector_env = NormalizeReward(vector_env, gamma=gamma)
 
     print("Wrapping with SwarmBotsLearnEnvWrapper...")
@@ -179,10 +177,17 @@ def main():
         logger.warning(f'Setting {lr = :.2e}')
 
     print("Initializing PPO Algorithm...")
+    auto_lr = AutomaticLearningRate(
+        initial_lr=lr,
+        kl_early_stop_decay_factor=0.9,
+        no_early_stop_increase_after_n_iters=8,
+        no_early_stop_increase_factor=1.05,
+        kl_early_stop_decay_max_epoch=4,
+    )
     ppo = PPO(
         policy=policy,
         env=env,
-        learning_rate=lr,
+        learning_rate=auto_lr,
         n_episodes_per_rollout=n_envs,
         max_episode_length=episode_length,
         batch_size=256,

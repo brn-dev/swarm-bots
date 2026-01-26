@@ -8,10 +8,10 @@ import mujoco
 import numpy as np
 import moviepy.video.io.ImageSequenceClip
 
+from swarmbots.mj_env.float_or_dist import UniformDistParams
 from swarmbots.mj_env.scenarios.obstacle_street_scenario import (
     ObstacleStreetScenario,
     PoleParams,
-    UniformDistParams,
 )
 from swarmbots.mj_env.swarm.homogeneous_swarm import HomogeneousSwarm
 from swarmbots.mj_env.swarm_bots_env import SwarmBotsEnv
@@ -39,7 +39,7 @@ def main() -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     run_id = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
-    swarm = HomogeneousSwarm(unit_start_locations="4:diamond")
+    swarm = HomogeneousSwarm(unit_start_locations="random:6")
 
     scenario = ObstacleStreetScenario(
         swarm=swarm,

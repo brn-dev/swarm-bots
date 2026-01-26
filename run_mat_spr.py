@@ -1,7 +1,9 @@
 import sys
 from datetime import datetime
 from pathlib import Path
+from typing import Any, Callable
 
+import numpy as np
 import torch
 from gymnasium.vector import SyncVectorEnv, AsyncVectorEnv
 from gymnasium.wrappers.vector import RecordEpisodeStatistics, NormalizeReward
@@ -11,7 +13,10 @@ from torch import nn
 from swarmbots.learn.action_dists.hybrid_action_dist import GSDEParams
 from swarmbots.learn.algos.mat.wm.mat_spr_policy import MATSPRPolicy
 from swarmbots.learn.algos.ppo.wm.ppo_wm import PPOWM
-from swarmbots.learn.env_wrappers.normalize_obs_wrapper import NormalizeLocalObsWrapper
+from swarmbots.learn.algos.ppo.ppo import AutomaticLearningRate
+from swarmbots.learn.env_wrappers.obs_normalization.feature_wise_obs_norm_wrapper import (
+    FeatureWiseObsNormWrapper,
+)
 from swarmbots.learn.env_wrappers.swarm_bots_learn_env_wrapper import SwarmBotsLearnEnvWrapper
 from swarmbots.learn.gsde_reset import GSDEProbabilityResetMode
 from swarmbots.learn.summary_statistics import SummaryStatisticsFormat
@@ -20,14 +25,14 @@ from swarmbots.mj_env.swarm_bots_env import SwarmBotsEnv
 
 
 def make_env_fn(
-    episode_length,
-    scenario_kwargs=None,
-    render_mode=None
-):
+    episode_length: int,
+    scenario_kwargs: dict[str, Any] | None = None,
+    render_mode: str | None = None,
+) -> Callable[[], SwarmBotsEnv]:
     if scenario_kwargs is None:
         scenario_kwargs = {}
         
-    def _init():
+    def _init() -> SwarmBotsEnv:
         scenario = ObstacleStreetScenario.no_payload_no_opening_one_wall_no_poles(
             **scenario_kwargs
         )
@@ -41,7 +46,68 @@ def make_env_fn(
 
 
 
-def main():
+def _build_feature_wise_obs_norm_indices(
+    env_settings: dict[str, Any],
+    local_obs_dim: int,
+    global_obs_dim: int,
+) -> tuple[list[int], list[int], list[int], list[int]]:
+    scenario_settings = env_settings["scenario"]
+    swarm_config = scenario_settings["swarm"]["config"]
+    limbs_per_unit = len(swarm_config["unit_config"])
+    include_connectors_xpos_in_obs = bool(scenario_settings["include_connectors_xpos_in_obs"])
+    include_connectors_xquat_in_obs = bool(scenario_settings["include_connectors_xquat_in_obs"])
+
+    num_hinges = limbs_per_unit * 2
+    qpos_obs_dim = 7 + 2 * num_hinges
+    qvel_dim = 6 + num_hinges
+    connector_obs_dim = limbs_per_unit * 5
+    connectors_xpos_dim = limbs_per_unit * 3 if include_connectors_xpos_in_obs else 0
+    connectors_xquat_dim = limbs_per_unit * 4 if include_connectors_xquat_in_obs else 0
+    expected_local_dim = (
+        qpos_obs_dim + qvel_dim + connector_obs_dim + connectors_xpos_dim + connectors_xquat_dim
+    )
+    if local_obs_dim != expected_local_dim:
+        raise ValueError(
+            "Unexpected local_obs_dim for feature-wise normalization. "
+            f"{local_obs_dim=} {expected_local_dim=} {limbs_per_unit=}"
+        )
+    
+    connectors_xpos_offset = qpos_obs_dim + qvel_dim + connector_obs_dim
+    connectors_xquat_offset = connectors_xpos_offset + connectors_xpos_dim
+
+    local_scalar_indices = (
+            list(range(3)) 
+            + list(range(qpos_obs_dim, qpos_obs_dim + qvel_dim)) 
+            + list(range(connectors_xpos_offset, connectors_xpos_offset + connectors_xpos_dim))
+        )
+    local_quat_starts = [3]
+    if include_connectors_xquat_in_obs:
+        local_quat_starts.extend(
+            connectors_xquat_offset + 4 * i for i in range(limbs_per_unit)
+        )
+    
+
+    if scenario_settings.get("payload_type") is not None:
+        if global_obs_dim < 7:
+            raise ValueError(
+                "Expected global_obs to include payload pos+quat when payload_type is set. "
+                f"{global_obs_dim=}"
+            )
+        global_scalar_indices = list(range(3))
+        global_quat_starts = [3]
+    else:
+        global_scalar_indices = []
+        global_quat_starts = []
+    
+    return (
+        local_scalar_indices,
+        local_quat_starts,
+        global_scalar_indices,
+        global_quat_starts,
+    )
+
+
+def main() -> None:
     logger.remove()
     logger.add(
         sys.stderr,
@@ -58,7 +124,7 @@ def main():
     total_timesteps = 100_000_000
     save_interval = 500
     world_model_num_next_steps = 3
-    world_model_loss_coef = 0.1
+    world_model_loss_coef = 0.5
     world_model_target_tau = 0.005
 
     # =====  ID  =====
@@ -66,7 +132,7 @@ def main():
 
     # ===== LOAD =====
     load_path: str | None = None
-    # load_path = "runs/mat_swarm_bots/2026-01-17_16-33-16/models/model_45014016_steps_stopped.pt"
+    # load_path = "runs/mat_spr_swarm_bots/2026-01-26_14-03-41/models/model_7590912_steps_stopped.pt"
     std: float | None = None
 
     # ===== DEVICE =====
@@ -99,7 +165,27 @@ def main():
         for _ in range(n_envs)
     ]
 
-    def make_record_env():
+    print("Creating dummy env for capturing settings...")
+    dummy_env = env_fns[0]()
+    env_settings = dummy_env.get_settings()
+    local_obs_dim = int(dummy_env.observation_space["local_obs"].shape[-1])
+    global_obs_dim = int(dummy_env.observation_space["global_obs"].shape[-1])
+    dummy_env.close()
+    del dummy_env
+    print("Env settings captured.")
+
+    (
+        local_scalar_feature_indices,
+        local_quaternion_indices,
+        global_scalar_feature_indices,
+        global_quaternion_indices,
+    ) = _build_feature_wise_obs_norm_indices(
+        env_settings=env_settings,
+        local_obs_dim=local_obs_dim,
+        global_obs_dim=global_obs_dim,
+    )
+
+    def make_record_env() -> SwarmBotsLearnEnvWrapper:
         record_env = SyncVectorEnv([
             make_env_fn(
                 episode_length=episode_length,
@@ -108,17 +194,16 @@ def main():
             )
         ])
         record_env = RecordEpisodeStatistics(record_env)
-        record_env = NormalizeLocalObsWrapper(record_env)
+        record_env = FeatureWiseObsNormWrapper(
+            record_env,
+            local_scalar_feature_indices=local_scalar_feature_indices,
+            local_quaternion_indices=local_quaternion_indices,
+            global_scalar_feature_indices=global_scalar_feature_indices,
+            global_quaternion_indices=global_quaternion_indices,
+        )
         record_env = SwarmBotsLearnEnvWrapper(record_env, device=rollout_device)
 
         return record_env
-
-    print("Creating dummy env for capturing settings...")
-    dummy_env = env_fns[0]()
-    env_settings = dummy_env.get_settings()
-    dummy_env.close()
-    del dummy_env
-    print("Env settings captured.")
 
     print('Creating vector env...')
     vector_env = AsyncVectorEnv(env_fns)
@@ -132,7 +217,13 @@ def main():
     
     print("Wrapping with RecordEpisodeStatistics, NormalizeObservation, NormalizeReward...")
     vector_env = RecordEpisodeStatistics(vector_env)
-    vector_env = NormalizeLocalObsWrapper(vector_env)
+    vector_env = FeatureWiseObsNormWrapper(
+        vector_env,
+        local_scalar_feature_indices=local_scalar_feature_indices,
+        local_quaternion_indices=local_quaternion_indices,
+        global_scalar_feature_indices=global_scalar_feature_indices,
+        global_quaternion_indices=global_quaternion_indices,
+    )
     vector_env = NormalizeReward(vector_env, gamma=gamma)
 
     print("Wrapping with SwarmBotsLearnEnvWrapper...")
@@ -148,13 +239,13 @@ def main():
     print("Initializing Policy...")
     policy = MATSPRPolicy(
         env=env,
-        d_model=32,
+        d_model=64,
         d_model_decoder=32,
-        nhead_encoder=1,
+        nhead_encoder=2,
         nhead_decoder=1,
         num_layers_encoder=2,
         num_layers_decoder=2,
-        dim_feedforward_encoder=64,
+        dim_feedforward_encoder=128,
         dim_feedforward_decoder=64,
         dropout=0.0,
         n_critic_local_projection_hidden_layers=1,
@@ -171,23 +262,35 @@ def main():
             normalize_latent_sde_by_dim=True
         ),
         bernoulli_initial_prob=0.7,
-        d_model_transition_model=32,
-        nhead_transition_model=1,
+        # SPR
+        d_model_transition_model=64,
+        nhead_transition_model=2,
         num_layers_transition_model=2,
-        dim_feedforward_transition_model=64,
+        dim_feedforward_transition_model=128,
+        spr_projection_hidden_dims=[48],
+        residual_predictor=True
     )
     print(policy)
 
     lr = 1e-4
-    if load_path is not None:
-        lr = 2e-5
-        logger.warning(f'Setting {lr = :.2e}')
+    # if load_path is not None:
+    #     lr = 2e-5
+    #     logger.warning(f'Setting {lr = :.2e}')
 
     print("Initializing PPO Algorithm...")
+    auto_lr = AutomaticLearningRate(
+        initial_lr=lr,
+        max_kl=0.1,
+        max_kl_hit_decay_factor=lambda kl: np.clip(0.9 - kl, 0.5, 0.8),
+        min_epochs=2,
+        min_epochs_hit_decay_factor=lambda epoch: 0.95 if epoch == 1 else 0.8,
+        increase_after_n_iters=2,
+        increase_factor=1.4,
+    )
     ppo = PPOWM(
         policy=policy,
         env=env,
-        learning_rate=lr,
+        learning_rate=auto_lr,
         n_episodes_per_rollout=n_envs,
         max_episode_length=episode_length,
         batch_size=256,
@@ -197,7 +300,7 @@ def main():
         clip_range=0.2,
         target_kl=0.04,
         gsde_reset_mode=GSDEProbabilityResetMode(probability=1/6),
-        ent_coef=0.005,
+        ent_coef=0.001,
         value_loss_fn=nn.SmoothL1Loss(),
         train_device=train_device,
         rollout_device=rollout_device,
@@ -228,22 +331,22 @@ def main():
             'script': Path(__file__).read_text(encoding='utf-8')
         },
         logging_console_keys=[
-            ('iteration', '5'),
-            ('timesteps', '8'),
-            ('tot_upd', '6'),
+            ('iteration', '5', 'it'),
+            ('timesteps', '8', 'steps'),
+            ('total_updates', '6', 'tot_upd'),
             ('act0', SummaryStatisticsFormat(histogram=10)),
             ('act1', SummaryStatisticsFormat(histogram=2)),
             ('std0', SummaryStatisticsFormat(mean='.3f', std='.3f', min_value='.3f', max_value='.3f')),
-            ('upd', '3'),
+            ('updates', '3', 'upd'),
             ('approx_kl', SummaryStatisticsFormat(mean='.3f', std='.3f', max_value='.3f')),
             ('clip_frac', None),
-            ('ratio', SummaryStatisticsFormat(mean='.3f', std='.3f', min_value='.3f', max_value='.3f')),
-            ('wm_loss', None),
-            ('val_loss', None),
+            ('ratio', SummaryStatisticsFormat(mean='.3f', std='.3f', min_value='.1e', max_value='.3f')),
+            ('wm_loss_scaled', None, 'wm_loss'),
+            ('val_loss_scaled', None, 'val_loss'),
             ('expl_var', '.3f'),
             ('ep_rew', SummaryStatisticsFormat(mean=' .2f', std='.2f', max_value=' .2f')),
             ('ep_rew_ema', ' .3f'),
-            ('best_ep_rew_ema', ' .3f'),
+            ('best_ep_rew_ema', ' .3f', 'best_ema'),
             ('fps', None),
         ],
         make_record_env=make_record_env

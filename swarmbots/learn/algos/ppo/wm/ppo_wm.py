@@ -5,11 +5,10 @@ import torch
 import torch.nn as nn
 from loguru import logger
 
-from swarmbots.learn.algos.ppo.ppo import PPO
+from swarmbots.learn.algos.ppo.ppo import PPO, PPOLearningRate
 from swarmbots.learn.algos.ppo.ppo_policy import BasePPOPolicy
 from swarmbots.learn.algos.ppo.ppo_rollout_buffer import PPOEpisode
 from swarmbots.learn.algos.ppo.wm.ppo_wm_sampler import PPOWMSampler, PPOWMSamples
-from swarmbots.learn.algos.base_algorithm import LearningRate
 from swarmbots.learn.env_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
 from swarmbots.learn.gsde_reset import GSDEResetMode
 
@@ -47,7 +46,7 @@ class PPOWM(PPO[PPOWMSamples, PPOWMSampler]):
             self,
             policy: BasePPOPolicy | PPOWMPolicyMixin,
             env: BaseLearnEnvWrapper,
-            learning_rate: LearningRate = 3e-4,
+            learning_rate: PPOLearningRate = 3e-4,
             n_episodes_per_rollout: int = 64,
             max_episode_length: int = 1000,
             batch_size: int = 64,

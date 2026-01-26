@@ -21,9 +21,11 @@ class TransitionObsWrapper(VectorWrapper, gym.utils.RecordConstructorArgs):
     Designed for SwarmBots-style dict observations in a VectorEnv.
     """
 
-    def __init__(self, env: VectorEnv):
-        gym.utils.RecordConstructorArgs.__init__(self)
+    def __init__(self, env: VectorEnv, new_obs_first: bool = True):
+        gym.utils.RecordConstructorArgs.__init__(self, new_obs_first=new_obs_first)
         VectorWrapper.__init__(self, env)
+
+        self.new_obs_first = new_obs_first
 
         if "autoreset_mode" not in self.env.metadata:
             warn(
@@ -159,13 +161,19 @@ class TransitionObsWrapper(VectorWrapper, gym.utils.RecordConstructorArgs):
     ) -> dict[str, np.ndarray]:
         stacked = dict(obs)
         local = np.asarray(obs["local_obs"])
-        stacked["local_obs"] = np.concatenate((prev_local, prev_actions, local), axis=-1)
+        if self.new_obs_first:
+            stacked["local_obs"] = np.concatenate((local, prev_actions, prev_local), axis=-1)
+        else:
+            stacked["local_obs"] = np.concatenate((prev_local, prev_actions, local), axis=-1)
 
         if self._has_global_obs and "global_obs" in obs:
             global_obs = np.asarray(obs["global_obs"])
             if prev_global is None:
                 prev_global = np.zeros_like(global_obs)
-            stacked["global_obs"] = np.concatenate((prev_global, global_obs), axis=-1)
+            if self.new_obs_first:
+                stacked["global_obs"] = np.concatenate((global_obs, prev_global), axis=-1)
+            else:
+                stacked["global_obs"] = np.concatenate((prev_global, global_obs), axis=-1)
 
         return stacked
 

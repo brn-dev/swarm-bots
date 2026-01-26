@@ -36,7 +36,10 @@ class MetricsLogger:
             wandb_kwargs: dict[str, Any] | None = None,
             wandb_step_key: str | None = "timesteps",
             ignore_keys_for_persistence: Collection[str] | None = None,
-            console_keys: list[str] | list[tuple[str, str | SummaryStatisticsFormat | None]] | None = None,
+            console_keys: list[str] | list[
+                tuple[str, str | SummaryStatisticsFormat | None]
+                | tuple[str, str | SummaryStatisticsFormat | None, str]
+            ] | None = None,
     ) -> None:
         self.log_dir = Path(log_dir) if log_dir else None
         self.file_path = self.log_dir / filename if self.log_dir else None
@@ -246,8 +249,11 @@ class MetricsLogger:
 
     def _normalize_console_keys(
         self,
-        console_keys: Collection[str] | Collection[tuple[str, str | None]] | None,
-    ) -> list[tuple[str, str | None]] | None:
+            console_keys: list[str] | list[
+                tuple[str, str | SummaryStatisticsFormat | None]
+                | tuple[str, str | SummaryStatisticsFormat | None, str]
+            ] | None = None
+    ) -> list[tuple[str, str | None, str]] | None:
         if console_keys is None:
             return None
 
@@ -256,13 +262,13 @@ class MetricsLogger:
             return []
 
         if all(isinstance(item, str) for item in items):
-            key_specs = [(key, None) for key in items]
+            key_specs: list[tuple[str, str | None, str]] = [(key, None, key) for key in items]
             return key_specs
 
-        if all(isinstance(item, tuple) and len(item) == 2 for item in items):
-            key_specs: list[tuple[str, str | None]] = []
-            for raw_key, raw_fmt in items:
-                key_specs.append((raw_key, raw_fmt))
+        if all(isinstance(item, tuple) and 2 <= len(item) <= 3 for item in items):
+            key_specs = []
+            for key, fmt, *maybe_alias in items:
+                key_specs.append((key, fmt, maybe_alias[0] if maybe_alias else key))
             return key_specs
 
         raise TypeError(console_keys)
@@ -273,11 +279,11 @@ class MetricsLogger:
                 yield key, value, None
             return
 
-        for key, fmt in self._console_key_specs:
+        for key, fmt, alias in self._console_key_specs:
             if key == NEWLINE_KEY:
                 yield key, fmt, None
             else:
-                yield key, metrics[key], fmt
+                yield alias, metrics[key], fmt
 
     def _format_console_value(self, value: Any, fmt: str | SummaryStatisticsFormat | None) -> str:
 
