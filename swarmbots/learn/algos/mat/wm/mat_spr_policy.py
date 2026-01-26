@@ -40,8 +40,9 @@ class MATSPRPolicy(MATPolicy, SPRMixin, PPOWMPolicyMixin):
             add_agent_embeddings_transition_model: bool = False,
             transition_model_coembed_hidden_dims: list[int] | None = None,
             transition_model_head_hidden_dims: list[int] | None = None,
-            transition_model_projection_hidden_dims: list[int] | None = None,
-            transition_model_predictor_hidden_dims: list[int] | None = None,
+            spr_projection_hidden_dims: list[int] | None = None,
+            spr_predictor_hidden_dims: list[int] | None = None,
+            residual_predictor: bool = True
     ) -> None:
         super().__init__(
             env=env,
@@ -64,15 +65,15 @@ class MATSPRPolicy(MATPolicy, SPRMixin, PPOWMPolicyMixin):
             add_agent_embeddings_encoder=add_agent_embeddings_encoder,
             add_agent_embeddings_decoder=add_agent_embeddings_decoder,
         )
-        if transition_model_projection_hidden_dims is None:
+        if spr_projection_hidden_dims is None:
             projection_hidden_dims = [self.d_model_encoder]
         else:
-            projection_hidden_dims = transition_model_projection_hidden_dims
+            projection_hidden_dims = spr_projection_hidden_dims
 
-        if transition_model_predictor_hidden_dims is None:
+        if spr_predictor_hidden_dims is None:
             predictor_hidden_dims = [projection_hidden_dims[-1]]
         else:
-            predictor_hidden_dims = transition_model_predictor_hidden_dims
+            predictor_hidden_dims = spr_predictor_hidden_dims
 
         assert projection_hidden_dims[-1] == predictor_hidden_dims[-1], \
             'Predictor must have the same final dimensionality as the projection'
@@ -104,7 +105,8 @@ class MATSPRPolicy(MATPolicy, SPRMixin, PPOWMPolicyMixin):
                 hidden_dims=[*predictor_hidden_dims],
                 end_with_act_fn=False,
                 act_fn_cls=act_fn_cls,
-            )
+            ),
+            residual_predictor=residual_predictor
         )
 
         self.hyper_parameters.update(
@@ -116,8 +118,8 @@ class MATSPRPolicy(MATPolicy, SPRMixin, PPOWMPolicyMixin):
                 "add_agent_embeddings_transition_model": add_agent_embeddings_transition_model,
                 "transition_model_coembed_hidden_dims": transition_model_coembed_hidden_dims,
                 "transition_model_head_hidden_dims": transition_model_head_hidden_dims,
-                "transition_model_projection_hidden_dims": projection_hidden_dims,
-                "transition_model_predictor_hidden_dims": predictor_hidden_dims,
+                "spr_projection_hidden_dims": projection_hidden_dims,
+                "spr_predictor_hidden_dims": predictor_hidden_dims,
             }
         )
 

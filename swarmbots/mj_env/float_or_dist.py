@@ -6,17 +6,18 @@ import numpy as np
 from loguru import logger
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class DistParams(abc.ABC):
     pass
 
-@dataclass
+
+@dataclass(frozen=True, slots=True)
 class BoundedDistParams(DistParams, abc.ABC):
     low: float
     high: float
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class UniformDistParams(BoundedDistParams):
     @staticmethod
     def from_midpoint_and_width(midpoint: float, width: float) -> "UniformDistParams":
@@ -28,13 +29,13 @@ class UniformDistParams(BoundedDistParams):
 
 TruncatedNormalDistSamplingMode = Literal['clamp', 'rejection']
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class TruncatedNormalDistParams(BoundedDistParams):
     mean: float
     std: float
     sampling_mode: TruncatedNormalDistSamplingMode = 'clamp'
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class NormalDistParams(DistParams):
     mean: float
     std: float

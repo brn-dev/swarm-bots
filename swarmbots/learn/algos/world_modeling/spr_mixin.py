@@ -6,6 +6,7 @@ from torch import nn
 from torch.nn import functional as F
 
 from swarmbots.learn.algos.world_modeling.transformer_transition_model import TransformerTransitionModel
+from swarmbots.learn.nn_components.residual import Residual
 from swarmbots.learn.polyak_update import polyak_update
 
 
@@ -26,7 +27,8 @@ class SPRMixin(abc.ABC):
             self,
             transition_model: TransformerTransitionModel,
             projection: nn.Module,
-            predictor: nn.Module
+            predictor: nn.Module,
+            residual_predictor: bool = True
     ) -> None:
         self.target_encoder = copy.deepcopy(self.online_encoder)
         self.target_encoder.requires_grad_(False)
@@ -40,7 +42,10 @@ class SPRMixin(abc.ABC):
         self.target_projection.requires_grad_(False)
         self.target_projection.eval()
 
-        self.predictor = predictor
+        if residual_predictor:
+            self.predictor = Residual(predictor)
+        else:
+            self.predictor = predictor
 
     @torch.no_grad()
     def update_spr_targets(self, tau: float) -> None:

@@ -1,21 +1,57 @@
 from dataclasses import dataclass
-from typing import Any, Iterable
+from typing import Any, Iterable, Literal
 
 import mujoco
 import numpy as np
 from mujoco import MjsBody
 
 from swarmbots.mj_env.float_or_dist import FloatOrDistParams, eval_fod, fod_low, FloatOrBoundedDistParams
-from swarmbots.mj_env.scenarios.base_scenario import BaseScenario, SwarmObsDict
+from swarmbots.mj_env.scenarios.base_scenario import BaseScenario, SwarmActDict, SwarmObsDict
 from swarmbots.mj_env.swarm.base_swarm import BaseSwarm
 from swarmbots.mj_env.swarm.homogeneous_swarm import HomogeneousSwarm
 from swarmbots.mj_env.swarm.swarm_connections import SwarmConnections
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class PoleParams:
     x: FloatOrDistParams
     y: FloatOrDistParams
+
+
+TruncatedMultivariateNormal2DSamplingMode = Literal["clamp", "rejection"]
+
+
+@dataclass(frozen=True, slots=True)
+class CorrelatedPoleParams:
+    mean: tuple[float, float]
+    cov: tuple[tuple[float, float], tuple[float, float]]
+    low: tuple[float, float] | None = None
+    high: tuple[float, float] | None = None
+    sampling_mode: TruncatedMultivariateNormal2DSamplingMode = "clamp"
+
+    @staticmethod
+    def from_std_and_rho(
+            *,
+            mean: tuple[float, float],
+            std_x: float,
+            std_y: float,
+            rho: float,
+            low: tuple[float, float] | None = None,
+            high: tuple[float, float] | None = None,
+            sampling_mode: TruncatedMultivariateNormal2DSamplingMode = "clamp",
+    ) -> "CorrelatedPoleParams":
+        if std_x < 0 or std_y < 0:
+            raise ValueError(f"Expected std_x/std_y >= 0, got {std_x=} {std_y=}")
+        if not (-1.0 <= rho <= 1.0):
+            raise ValueError(f"Expected rho in [-1, 1], got {rho}")
+        if (low is None) != (high is None):
+            raise ValueError(f"Expected low/high to be both set or both None, got {low=} {high=}")
+        cov_xy = float(rho) * float(std_x) * float(std_y)
+        cov = ((float(std_x) ** 2, cov_xy), (cov_xy, float(std_y) ** 2))
+        return CorrelatedPoleParams(mean=mean, cov=cov, low=low, high=high, sampling_mode=sampling_mode)
+
+
+PoleSpec = PoleParams | CorrelatedPoleParams
 
 
 class ObstacleStreetScenario(BaseScenario):
@@ -27,7 +63,7 @@ class ObstacleStreetScenario(BaseScenario):
             payload_size: Iterable[float] = (0.2, 0.2, 0.2),
             payload_mass: float = 5.0,
             payload_start_location_offset: Iterable[float] = (0, 1, 0),
-            poles: Iterable[PoleParams | tuple[FloatOrDistParams, FloatOrDistParams]] = (),
+            poles: Iterable[PoleSpec | tuple[FloatOrDistParams, FloatOrDistParams]] = (),
             pole_radius: float = 0.1,
             pole_height: float = 1.0,
             num_walls: int = 3,
@@ -61,13 +97,18 @@ class ObstacleStreetScenario(BaseScenario):
             seed: int | None = None,
     ):
         self.payload_type = payload_type
+        self.payload_body_id: int = -1
         self.payload_size = payload_size
         self.payload_mass = payload_mass
         self.payload_start_location_offset = payload_start_location_offset
-        self.poles = [
-            p if isinstance(p, PoleParams) else PoleParams(x=p[0], y=p[1])
-            for p in poles
-        ]
+        self.poles: list[PoleSpec] = []
+        for p in poles:
+            if isinstance(p, tuple):
+                if len(p) != 2:
+                    raise ValueError(f"Expected pole tuple (x, y), got {p!r}")
+                self.poles.append(PoleParams(x=p[0], y=p[1]))
+            else:
+                self.poles.append(p)
         self.pole_radius = float(pole_radius)
         self.pole_height = float(pole_height)
 
@@ -116,13 +157,11 @@ class ObstacleStreetScenario(BaseScenario):
             force_elliptic_cone=force_elliptic_cone,
             _reset_in_init=False
         )
-        
-        self.payload_body_id = mujoco.mj_name2id(self.dummy_model, mujoco.mjtObj.mjOBJ_BODY, 'Payload')
 
         self._dummy_state, self._dummy_connections = self.reset_scenario(self.dummy_model, self.dummy_data)
 
-    def get_settings(self):
-        settings =  super().get_settings()
+    def get_settings(self) -> dict[str, Any]:
+        settings = super().get_settings()
         settings.update({
             'payload_type': self.payload_type,
             'payload_size': self.payload_size,
@@ -237,6 +276,13 @@ class ObstacleStreetScenario(BaseScenario):
     def reset_scenario(self, model: mujoco.MjModel, data: mujoco.MjData) -> tuple[dict, SwarmConnections]:
         state, connections = super().reset_scenario(model, data)
 
+        if self.payload_type is None:
+            self.payload_body_id = -1
+        else:
+            self.payload_body_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "Payload")
+            if self.payload_body_id == -1:
+                raise RuntimeError("payload_type is set, but body 'Payload' was not found in the model")
+
         self.reset_walls_and_ramps(data, model)
         self.reset_poles(data, model)
 
@@ -250,14 +296,15 @@ class ObstacleStreetScenario(BaseScenario):
         rng = self.rng
         for i, pole in enumerate(self.poles):
             pole_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, f'Pole_{i}')
+            if pole_id == -1:
+                raise RuntimeError(f"Pole body 'Pole_{i}' not found in model")
             mocap_id = model.body_mocapid[pole_id]
-            data.mocap_pos[mocap_id] = [
-                eval_fod(pole.x, rng),
-                eval_fod(pole.y, rng),
-                0.0,
-            ]
+            if mocap_id == -1:
+                raise RuntimeError(f"Pole body 'Pole_{i}' is not a mocap body")
+            x, y = sample_pole_xy(pole, rng)
+            data.mocap_pos[mocap_id] = [x, y, 0.0]
 
-    def reset_walls_and_ramps(self, data: mujoco.MjData, model: mujoco.MjModel):
+    def reset_walls_and_ramps(self, data: mujoco.MjData, model: mujoco.MjModel) -> None:
         rng = self.rng
 
         unusable_opening_offset = eval_fod(self.unusable_opening_offset, rng)
@@ -303,7 +350,7 @@ class ObstacleStreetScenario(BaseScenario):
 
     def evaluate_step(
             self,
-            action: dict[str, Any],
+            action: SwarmActDict,
             model: mujoco.MjModel,
             data: mujoco.MjData,
             state: dict,
@@ -350,11 +397,11 @@ class ObstacleStreetScenario(BaseScenario):
     def _compute_progress(
             self,
             data: mujoco.MjData
-    ):
+    ) -> float:
         if self.payload_type is None:
-            return data.qpos[self._qpos_indices[:, 1]].mean()  # avg y pos of the unit bodies
+            return float(data.qpos[self._qpos_indices[:, 1]].mean())  # avg y pos of the unit bodies
 
-        return data.xpos[self.payload_body_id, 1]
+        return float(data.xpos[self.payload_body_id, 1])
 
     @staticmethod
     def no_payload_no_opening_one_wall_no_poles(
@@ -397,3 +444,43 @@ class ObstacleStreetScenario(BaseScenario):
             **scenario_kwargs,
             seed=seed,
         )
+
+def sample_pole_xy(pole: PoleSpec, rng: np.random.Generator) -> tuple[float, float]:
+    if isinstance(pole, PoleParams):
+        return eval_fod(pole.x, rng), eval_fod(pole.y, rng)
+
+    if not isinstance(pole, CorrelatedPoleParams):
+        raise TypeError(f"Unsupported pole spec: {type(pole).__name__}")
+
+    mean = np.asarray(pole.mean, dtype=float)
+    cov = np.asarray(pole.cov, dtype=float)
+    if mean.shape != (2,) or cov.shape != (2, 2):
+        raise ValueError(f"Expected mean shape (2,) and cov shape (2,2), got {mean.shape=} {cov.shape=}")
+
+    if (pole.low is None) != (pole.high is None):
+        raise ValueError(f"Expected low/high to be both set or both None, got {pole.low=} {pole.high=}")
+
+    if pole.low is None:
+        x, y = rng.multivariate_normal(mean=mean, cov=cov)
+        return float(x), float(y)
+
+    low = np.asarray(pole.low, dtype=float)
+    high = np.asarray(pole.high, dtype=float)
+    if low.shape != (2,) or high.shape != (2,):
+        raise ValueError(f"Expected low/high shape (2,), got {low.shape=} {high.shape=}")
+    if np.any(low > high):
+        raise ValueError(f"Expected low <= high, got {pole.low=} {pole.high=}")
+
+    if pole.sampling_mode == "clamp":
+        xy = rng.multivariate_normal(mean=mean, cov=cov)
+        xy = np.clip(xy, low, high)
+        return float(xy[0]), float(xy[1])
+
+    if pole.sampling_mode == "rejection":
+        for _ in range(10_000):
+            xy = rng.multivariate_normal(mean=mean, cov=cov)
+            if np.all((xy >= low) & (xy <= high)):
+                return float(xy[0]), float(xy[1])
+        raise RuntimeError(f"Failed to sample pole position within bounds after many retries: {pole=}")
+
+    raise ValueError(f"Unknown sampling_mode: {pole.sampling_mode!r}")

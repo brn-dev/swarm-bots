@@ -15,12 +15,11 @@ from swarmbots.learn.checkpointing import (
     freeze_env_normalization,
     load_checkpoint,
 )
-from swarmbots.learn.env_wrappers.normalize_obs_wrapper import NormalizeLocalObsWrapper
+from swarmbots.learn.env_wrappers.obs_normalization.naive_normalize_obs_wrapper import NaiveNormalizeLocalObsWrapper
 from swarmbots.learn.env_wrappers.swarm_bots_learn_env_wrapper import SwarmBotsLearnEnvWrapper
-from swarmbots.learn.gsde_reset import GSDEIntervalResetMode, GSDEProbabilityResetMode
+from swarmbots.learn.gsde_reset import GSDEProbabilityResetMode
 from swarmbots.learn.recording import record_policy
 from swarmbots.mj_env.scenarios.obstacle_street_scenario import ObstacleStreetScenario
-from swarmbots.mj_env.swarm.homogeneous_swarm import HomogeneousSwarm
 from swarmbots.mj_env.swarm_bots_env import SwarmBotsEnv
 
 def make_env_fn(
@@ -68,7 +67,7 @@ def main():
     record_vector_env = SyncVectorEnv([record_env_fn])
     record_vector_env = RecordEpisodeStatistics(record_vector_env)
     
-    record_norm_wrapper = NormalizeLocalObsWrapper(record_vector_env)
+    record_norm_wrapper = NaiveNormalizeLocalObsWrapper(record_vector_env)
     record_vector_env = record_norm_wrapper
     
     record_env = SwarmBotsLearnEnvWrapper(record_vector_env, device=rollout_device)

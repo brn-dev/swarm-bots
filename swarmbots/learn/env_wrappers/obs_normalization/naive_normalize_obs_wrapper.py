@@ -14,11 +14,7 @@ from gymnasium.vector.vector_env import (
 from gymnasium.wrappers.utils import RunningMeanStd
 
 
-class NormalizeLocalGlobalObsWrapper(VectorObservationWrapper, gym.utils.RecordConstructorArgs):
-    """
-    A wrapper that normalizes the 'local_obs' and 'global_obs' of a dictionary observation space.
-    Designed for SwarmBotsEnv wrapped in a VectorEnv.
-    """
+class NaiveNormalizeLocalGlobalObsWrapper(VectorObservationWrapper, gym.utils.RecordConstructorArgs):
 
     def __init__(self, env: VectorEnv, epsilon: float = 1e-8):
         gym.utils.RecordConstructorArgs.__init__(self, epsilon=epsilon)
@@ -26,7 +22,9 @@ class NormalizeLocalGlobalObsWrapper(VectorObservationWrapper, gym.utils.RecordC
 
         if "autoreset_mode" not in self.env.metadata:
             warn(
-                f"{self} is missing `autoreset_mode` data. Assuming that the vector environment it follows the `NextStep` autoreset api or autoreset is disabled. Read https://farama.org/Vector-Autoreset-Mode for more details."
+                f"{self} is missing `autoreset_mode` data. Assuming that the vector environment it follows the "
+                f"`NextStep` autoreset api or autoreset is disabled. Read https://farama.org/Vector-Autoreset-Mode "
+                f"for more details."
             )
         else:
             assert self.env.metadata["autoreset_mode"] in {AutoresetMode.NEXT_STEP}
@@ -83,7 +81,7 @@ class NormalizeLocalGlobalObsWrapper(VectorObservationWrapper, gym.utils.RecordC
         return observations
 
 
-class NormalizeLocalObsWrapper(VectorObservationWrapper, gym.utils.RecordConstructorArgs):
+class NaiveNormalizeLocalObsWrapper(VectorObservationWrapper, gym.utils.RecordConstructorArgs):
     """
     A wrapper that normalizes ONLY the 'local_obs' of a dictionary observation space.
     Designed for SwarmBotsEnv wrapped in a VectorEnv.
@@ -95,7 +93,9 @@ class NormalizeLocalObsWrapper(VectorObservationWrapper, gym.utils.RecordConstru
 
         if "autoreset_mode" not in self.env.metadata:
             warn(
-                f"{self} is missing `autoreset_mode` data. Assuming that the vector environment it follows the `NextStep` autoreset api or autoreset is disabled. Read https://farama.org/Vector-Autoreset-Mode for more details."
+                f"{self} is missing `autoreset_mode` data. Assuming that the vector environment it follows the "
+                f"`NextStep` autoreset api or autoreset is disabled. Read https://farama.org/Vector-Autoreset-Mode "
+                f"for more details."
             )
         else:
             assert self.env.metadata["autoreset_mode"] in {AutoresetMode.NEXT_STEP}
@@ -140,10 +140,9 @@ class NormalizeLocalObsWrapper(VectorObservationWrapper, gym.utils.RecordConstru
         return observations
 
 
-class NormalizeGlobalWithLocalObsWrapper(VectorObservationWrapper, gym.utils.RecordConstructorArgs):
+class NaiveNormalizeGlobalWithLocalObsWrapper(VectorObservationWrapper, gym.utils.RecordConstructorArgs):
     """
-    A wrapper that normalizes both 'local_obs' and 'global_obs' using statistics calculated ONLY from 'local_obs'.
-    Designed for SwarmBotsEnv wrapped in a VectorEnv.
+    A wrapper that normalizes both 'local_obs' and 'global_obs' using statistics calculated ONLY from 'local_obs'
     """
 
     def __init__(self, env: VectorEnv, epsilon: float = 1e-8):
@@ -152,7 +151,9 @@ class NormalizeGlobalWithLocalObsWrapper(VectorObservationWrapper, gym.utils.Rec
 
         if "autoreset_mode" not in self.env.metadata:
             warn(
-                f"{self} is missing `autoreset_mode` data. Assuming that the vector environment it follows the `NextStep` autoreset api or autoreset is disabled. Read https://farama.org/Vector-Autoreset-Mode for more details."
+                f"{self} is missing `autoreset_mode` data. Assuming that the vector environment it follows the "
+                f"`NextStep` autoreset api or autoreset is disabled. Read https://farama.org/Vector-Autoreset-Mode "
+                f"for more details."
             )
         else:
             assert self.env.metadata["autoreset_mode"] in {AutoresetMode.NEXT_STEP}

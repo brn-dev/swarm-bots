@@ -206,7 +206,7 @@ class BaseAlgorithm(abc.ABC):
                         'latest_hp_update': self._latest_hp_update,
                         'iteration': self.n_total_iterations,
                         'timesteps': self.n_total_timesteps,
-                        'lr': self.learning_rate,
+                        'learning_rate': self.learning_rate,
                         **metrics,
                         'ep_rew_ema': current_return_ema,
                         'best_ep_rew_ema': best_return_ema,

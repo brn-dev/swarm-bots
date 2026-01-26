@@ -41,17 +41,27 @@ def copy_running_mean_std(src: Any, dst: Any) -> None:
     dst.var = src.var.copy()
     dst.count = src.count
 
+
+def iter_running_mean_std(env: Any) -> list[tuple[str, Any]]:
+    rms_entries: list[tuple[str, Any]] = []
+    for attr_name in dir(env):
+        if not attr_name.endswith("_rms"):
+            continue
+
+        value = getattr(env, attr_name, None)
+        if value is None:
+            continue
+        if all(hasattr(value, field) for field in ("mean", "var", "count")):
+            rms_entries.append((attr_name, value))
+    return rms_entries
+
 def capture_env_state(env: Any) -> list[dict[str, Any]]:
     env_state: list[dict[str, Any]] = []
     current_env = env
     while hasattr(current_env, "env"):
         wrapper_state: dict[str, Any] = {}
-        if hasattr(current_env, "local_obs_rms"):
-            wrapper_state["local_obs_rms"] = current_env.local_obs_rms
-        if hasattr(current_env, "global_obs_rms"):
-            wrapper_state["global_obs_rms"] = current_env.global_obs_rms
-        if hasattr(current_env, "return_rms"):
-            wrapper_state["return_rms"] = current_env.return_rms
+        for attr_name, value in iter_running_mean_std(current_env):
+            wrapper_state[attr_name] = value
 
         if wrapper_state:
             wrapper_state["wrapper_class"] = type(current_env).__name__
@@ -69,9 +79,8 @@ def apply_env_state(env: Any, env_state: Optional[list[dict[str, Any]]]) -> None
     search_start_idx = 0
 
     while hasattr(current_env, "env"):
-        has_rms = any(
-            hasattr(current_env, attr) for attr in ("local_obs_rms", "global_obs_rms", "return_rms")
-        )
+        rms_entries = dict(iter_running_mean_std(current_env))
+        has_rms = bool(rms_entries)
         if has_rms:
             current_class = type(current_env).__name__
             match_idx = None
@@ -92,12 +101,9 @@ def apply_env_state(env: Any, env_state: Optional[list[dict[str, Any]]]) -> None
                         f"{saved_state.get('wrapper_class')} vs {current_class}"
                     )
 
-                if "local_obs_rms" in saved_state and hasattr(current_env, "local_obs_rms"):
-                    copy_running_mean_std(saved_state["local_obs_rms"], current_env.local_obs_rms)
-                if "global_obs_rms" in saved_state and hasattr(current_env, "global_obs_rms"):
-                    copy_running_mean_std(saved_state["global_obs_rms"], current_env.global_obs_rms)
-                if "return_rms" in saved_state and hasattr(current_env, "return_rms"):
-                    copy_running_mean_std(saved_state["return_rms"], current_env.return_rms)
+                for attr_name, saved_value in saved_state.items():
+                    if attr_name.endswith("_rms") and attr_name in rms_entries:
+                        copy_running_mean_std(saved_value, rms_entries[attr_name])
 
                 search_start_idx = match_idx + 1
 
