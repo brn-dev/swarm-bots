@@ -7,6 +7,7 @@ from mujoco import MjsBody
 
 from swarmbots.mj_env.float_or_dist import FloatOrDistParams, eval_fod, fod_low, FloatOrBoundedDistParams
 from swarmbots.mj_env.scenarios.base_scenario import BaseScenario, SwarmActDict, SwarmObsDict
+from swarmbots.mj_env.quat_rot6d import quat_to_rot6d
 from swarmbots.mj_env.swarm.base_swarm import BaseSwarm
 from swarmbots.mj_env.swarm.homogeneous_swarm import HomogeneousSwarm
 from swarmbots.mj_env.swarm.swarm_connections import SwarmConnections
@@ -92,8 +93,9 @@ class ObstacleStreetScenario(BaseScenario):
             connectors_unsuccessfully_activated_reward_weight: float = 0.0,
             connectors_deactivated_reward_weight: float = 0.0,
             average_connectors_reward: bool = True,
-            include_connectors_xpos_in_obs: bool = False,
-            include_connectors_xquat_in_obs: bool = False,
+            include_connectors_xpos_in_obs: bool = True,
+            include_connectors_xquat_in_obs: bool = True,
+            quat_rot6d_representation: bool = True,
             seed: int | None = None,
     ):
         self.payload_type = payload_type
@@ -150,6 +152,7 @@ class ObstacleStreetScenario(BaseScenario):
             seed=seed,
             include_connectors_xpos_in_obs=include_connectors_xpos_in_obs,
             include_connectors_xquat_in_obs=include_connectors_xquat_in_obs,
+            quat_rot6d_representation=quat_rot6d_representation,
             friction=friction,
             connection_dist_threshold=connection_dist_threshold,
             connection_angle_threshold=connection_angle_threshold,
@@ -283,28 +286,27 @@ class ObstacleStreetScenario(BaseScenario):
             if self.payload_body_id == -1:
                 raise RuntimeError("payload_type is set, but body 'Payload' was not found in the model")
 
-        self.reset_walls_and_ramps(data, model)
-        self.reset_poles(data, model)
+        hidden_vars: list[float] = []
+        self.reset_walls_and_ramps(data, model, hidden_vars)
+        self.reset_poles(data, model, hidden_vars)
 
         mujoco.mj_forward(model, data)
 
         state['progress'] = self._compute_progress(data)
+        state['hidden_vars'] = np.array(hidden_vars)
 
         return state, connections
 
-    def reset_poles(self, data: mujoco.MjData, model: mujoco.MjModel) -> None:
+    def reset_poles(self, data: mujoco.MjData, model: mujoco.MjModel, hidden_vars: list[float]) -> None:
         rng = self.rng
         for i, pole in enumerate(self.poles):
             pole_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, f'Pole_{i}')
-            if pole_id == -1:
-                raise RuntimeError(f"Pole body 'Pole_{i}' not found in model")
             mocap_id = model.body_mocapid[pole_id]
-            if mocap_id == -1:
-                raise RuntimeError(f"Pole body 'Pole_{i}' is not a mocap body")
             x, y = sample_pole_xy(pole, rng)
+            hidden_vars.extend([x, y])
             data.mocap_pos[mocap_id] = [x, y, 0.0]
 
-    def reset_walls_and_ramps(self, data: mujoco.MjData, model: mujoco.MjModel) -> None:
+    def reset_walls_and_ramps(self, data: mujoco.MjData, model: mujoco.MjModel, hidden_vars: list[float]):
         rng = self.rng
 
         unusable_opening_offset = eval_fod(self.unusable_opening_offset, rng)
@@ -313,14 +315,17 @@ class ObstacleStreetScenario(BaseScenario):
         for i in range(self.num_walls):
             if i != 0:
                 wall_y += eval_fod(self.inter_wall_distance, rng)
+            hidden_vars.append(wall_y)
 
             opening_width = eval_fod(self.opening_widths[i], rng)
+            hidden_vars.append(opening_width)
 
             opening_x = (rng.random() - 0.5) * 2 * (
                     self.side_wall_x
                     - opening_width / 2
                     + unusable_opening_offset)  # small chance that there is no usable opening
                                                 # -> must use ramp to continue
+            hidden_vars.append(opening_x)
 
             first_wall_end_x = opening_x - opening_width / 2
             wall_left_pos_x = first_wall_end_x - (self.wall_fixed_width / 2)
@@ -339,6 +344,7 @@ class ObstacleStreetScenario(BaseScenario):
 
             if i > 0 or not self.no_initial_ramp:
                 ramp_x = (rng.random() - 0.5) * 2 * self.ramp_range_x
+                hidden_vars.append(ramp_x)
 
                 ramp_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, f'Ramp_{i}')
                 mocap_id = model.body_mocapid[ramp_id]
@@ -387,10 +393,12 @@ class ObstacleStreetScenario(BaseScenario):
         obs = super().get_obs(model, data, state, connections)
 
         if self.payload_type is not None:
-            obs['global_obs'] = np.concatenate([
-                data.xpos[self.payload_body_id],
-                data.xquat[self.payload_body_id]
-            ])
+            payload_quat = data.xquat[self.payload_body_id]
+            if self.quat_rot6d_representation:
+                payload_quat = quat_to_rot6d(payload_quat, axis=-1)
+            obs['global_obs'] = np.concatenate([data.xpos[self.payload_body_id], payload_quat])
+
+        obs['hidden_vars'] = state['hidden_vars'].copy()
 
         return obs
 
@@ -399,9 +407,9 @@ class ObstacleStreetScenario(BaseScenario):
             data: mujoco.MjData
     ) -> float:
         if self.payload_type is None:
-            return float(data.qpos[self._qpos_indices[:, 1]].mean())  # avg y pos of the unit bodies
+            return data.qpos[self._qpos_indices[:, 1]].mean()  # avg y pos of the unit bodies
 
-        return float(data.xpos[self.payload_body_id, 1])
+        return data.xpos[self.payload_body_id, 1]
 
     @staticmethod
     def no_payload_no_opening_one_wall_no_poles(
@@ -422,14 +430,14 @@ class ObstacleStreetScenario(BaseScenario):
             )
 
         scenario_kwargs = {
-            'wall_height': 0.15,
+            'wall_height': 0.10,
             'friction': [2, 1e-2, 2e-4],
             'force_elliptic_cone': True,
             'actuator_strength': 5.0,
-            'actuators_activation_reward_weight': -1.75e-2,
-            'units_without_connections_reward_weight': -6e-3,
+            'actuators_activation_reward_weight': -1.5e-2,
+            'units_without_connections_reward_weight': -1e-3,
             'movement_reward_weight':  0e-1,
-            'height_reward_weight':  3e-3,
+            'height_reward_weight':  0e-4,
             'connectors_stayed_active_reward_weight':  0e-5,
             'connectors_successfully_activated_reward_weight':  0e-3,
             'connectors_unsuccessfully_activated_reward_weight': -1e-4,

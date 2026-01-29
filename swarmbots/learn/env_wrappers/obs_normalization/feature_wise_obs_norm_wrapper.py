@@ -14,29 +14,26 @@ from gymnasium.wrappers.utils import RunningMeanStd
 
 class FeatureWiseObsNormWrapper(VectorObservationWrapper, gym.utils.RecordConstructorArgs):
     """
-    Normalizes selected observation features and canonicalizes quaternion signs.
-
-    Metric indices are normalized independently using running mean/variance.
-    Quaternion indices represent the first element of a quaternion (4 values total) and are
-    sign-normalized so that the first component is non-negative.
+    Normalizes selected observation features for a single obs dict entry and
+    canonicalizes quaternion signs.
     """
 
     def __init__(
         self,
         env: VectorEnv,
-        local_scalar_feature_indices: list[int] | np.ndarray,
-        local_quaternion_indices: list[int] | np.ndarray,
-        global_scalar_feature_indices: list[int] | np.ndarray,
-        global_quaternion_indices: list[int] | np.ndarray,
+        obs_key: str,
+        scalar_feature_indices: list[int] | np.ndarray,
+        quaternion_indices: list[int] | np.ndarray,
         eps: float = 1e-6,
+        per_agent: bool = False,
     ):
         gym.utils.RecordConstructorArgs.__init__(
             self,
-            local_scalar_feature_indices=local_scalar_feature_indices,
-            local_quaternion_indices=local_quaternion_indices,
-            global_scalar_feature_indices=global_scalar_feature_indices,
-            global_quaternion_indices=global_quaternion_indices,
+            obs_key=obs_key,
+            scalar_feature_indices=scalar_feature_indices,
+            quaternion_indices=quaternion_indices,
             eps=eps,
+            per_agent=per_agent,
         )
         VectorObservationWrapper.__init__(self, env)
 
@@ -51,51 +48,31 @@ class FeatureWiseObsNormWrapper(VectorObservationWrapper, gym.utils.RecordConstr
 
         if not isinstance(self.env.single_observation_space, gym.spaces.Dict):
             raise ValueError(f"Expected Dict observation space, got {type(self.env.single_observation_space)}")
-        if "local_obs" not in self.env.single_observation_space.spaces:
-            raise ValueError('Expected "local_obs" key in observation space')
-        if "global_obs" not in self.env.single_observation_space.spaces:
-            raise ValueError('Expected "global_obs" key in observation space')
+        if obs_key not in self.env.single_observation_space.spaces:
+            raise ValueError(f'Expected "{obs_key}" key in observation space')
 
-        local_space: gym.spaces.Box = self.env.single_observation_space["local_obs"]  # type: ignore[assignment]
-        global_space: gym.spaces.Box = self.env.single_observation_space["global_obs"]  # type: ignore[assignment]
-        local_obs_dim = int(local_space.shape[-1])
-        global_obs_dim = int(global_space.shape[-1])
+        self._obs_key = obs_key
+        space: gym.spaces.Box = self.env.single_observation_space[obs_key]  # type: ignore[assignment]
+        obs_dim = int(space.shape[-1])
 
-        self._local_scalar_indices = self._as_index_array(
-            local_scalar_feature_indices, max_index=local_obs_dim, name="local_scalar_feature_indices"
+        self._scalar_indices = self._as_index_array(
+            scalar_feature_indices, max_index=obs_dim, name=f"{obs_key}_scalar_feature_indices"
         )
-        self._global_scalar_indices = self._as_index_array(
-            global_scalar_feature_indices, max_index=global_obs_dim, name="global_scalar_feature_indices"
+        self._quaternion_slices = self._as_quaternion_slices(
+            quaternion_indices, max_index=obs_dim, name=f"{obs_key}_quaternion_indices"
         )
-        self._local_quaternion_slices = self._as_quaternion_slices(
-            local_quaternion_indices, max_index=local_obs_dim, name="local_quaternion_indices"
-        )
-        self._global_quaternion_slices = self._as_quaternion_slices(
-            global_quaternion_indices, max_index=global_obs_dim, name="global_quaternion_indices"
-        )
-        self._ensure_no_overlap(
-            self._local_scalar_indices, self._local_quaternion_slices, name="local"
-        )
-        self._ensure_no_overlap(
-            self._global_scalar_indices, self._global_quaternion_slices, name="global"
-        )
+        self._ensure_no_overlap(self._scalar_indices, self._quaternion_slices, name=obs_key)
 
-        self.local_obs_rms: RunningMeanStd | None = None
-        if self._local_scalar_indices.size > 0:
-            self.local_obs_rms = RunningMeanStd(
-                shape=(self._local_scalar_indices.size,),
-                dtype=local_space.dtype,
-            )
-
-        self.global_obs_rms: RunningMeanStd | None = None
-        if self._global_scalar_indices.size > 0:
-            self.global_obs_rms = RunningMeanStd(
-                shape=(self._global_scalar_indices.size,),
-                dtype=global_space.dtype,
+        self.obs_rms: RunningMeanStd | None = None
+        if self._scalar_indices.size > 0:
+            self.obs_rms = RunningMeanStd(
+                shape=(self._scalar_indices.size,),
+                dtype=space.dtype,
             )
 
         self._eps = float(eps)
         self._update_running_mean = True
+        self._per_agent = bool(per_agent)
 
     @property
     def update_running_mean(self) -> bool:
@@ -106,33 +83,30 @@ class FeatureWiseObsNormWrapper(VectorObservationWrapper, gym.utils.RecordConstr
         self._update_running_mean = setting
 
     def observations(self, observations: ObsType) -> ObsType:
-        local_obs = observations["local_obs"]
-        global_obs = observations["global_obs"]
+        obs = observations[self._obs_key]
 
         if self._update_running_mean:
-            if self.local_obs_rms is not None:
-                self.local_obs_rms.update(local_obs[..., self._local_scalar_indices])
-            if self.global_obs_rms is not None:
-                self.global_obs_rms.update(global_obs[..., self._global_scalar_indices])
+            if self.obs_rms is not None:
+                scalars = obs[..., self._scalar_indices]
+                self.obs_rms.update(self._prepare_batch(scalars))
 
-        if self.local_obs_rms is not None:
-            local_scalars = local_obs[..., self._local_scalar_indices]
-            local_obs[..., self._local_scalar_indices] = (
-                local_scalars - self.local_obs_rms.mean
-            ) / np.sqrt(self.local_obs_rms.var + self._eps)
+        if self.obs_rms is not None:
+            scalars = obs[..., self._scalar_indices]
+            obs[..., self._scalar_indices] = (scalars - self.obs_rms.mean) / np.sqrt(
+                self.obs_rms.var + self._eps
+            )
 
-        if self.global_obs_rms is not None:
-            global_scalars = global_obs[..., self._global_scalar_indices]
-            global_obs[..., self._global_scalar_indices] = (
-                global_scalars - self.global_obs_rms.mean
-            ) / np.sqrt(self.global_obs_rms.var + self._eps)
-
-        if self._local_quaternion_slices.size > 0:
-            self._normalize_quaternion_signs(local_obs, self._local_quaternion_slices)
-        if self._global_quaternion_slices.size > 0:
-            self._normalize_quaternion_signs(global_obs, self._global_quaternion_slices)
+        if self._quaternion_slices.size > 0:
+            self._normalize_quaternion_signs(obs, self._quaternion_slices)
 
         return observations
+
+    def _prepare_batch(self, samples: np.ndarray) -> np.ndarray:
+        if self._per_agent:
+            return samples
+        if samples.ndim == 1:
+            return samples.reshape(1, -1)
+        return samples.reshape(-1, samples.shape[-1])
 
     @staticmethod
     def _as_index_array(

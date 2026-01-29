@@ -4,6 +4,7 @@ import torch
 from torch import nn
 
 from swarmbots.learn.nn_components.nn_init import init_linear_orthogonal
+from swarmbots.learn.nn_components.mlp import MLP
 
 
 class MATEncoder(nn.Module):
@@ -19,12 +20,15 @@ class MATEncoder(nn.Module):
             norm_first: bool,
             layer_norm_eps: float,
             activation: Callable[[torch.Tensor], torch.Tensor],
+            act_fn_cls: type[nn.Module],
             dropout: float,
             dim_feedforward: int,
             nhead: int,
             output_norm: nn.Module,
             enable_nested_tensor: bool = True,
             add_agent_embeddings: bool = True,
+            local_obs_encoder_hidden_dims: list[int] | None = None,
+            global_obs_encoder_hidden_dims: list[int] | None = None,
     ):
         super().__init__()
         self.n_agents: int = n_agents
@@ -33,12 +37,30 @@ class MATEncoder(nn.Module):
         self.has_global_obs: bool = global_obs_dim > 0
         self.add_agent_embeddings = add_agent_embeddings
 
-        self.local_obs_encoder = nn.Linear(self.local_obs_dim, d_model)
-        init_linear_orthogonal(self.local_obs_encoder)
+        if local_obs_encoder_hidden_dims is None or len(local_obs_encoder_hidden_dims) == 0:
+            self.local_obs_encoder = nn.Linear(self.local_obs_dim, d_model)
+            init_linear_orthogonal(self.local_obs_encoder)
+        else:
+            self.local_obs_encoder = MLP(
+                input_dim=self.local_obs_dim,
+                hidden_dims=[*local_obs_encoder_hidden_dims, d_model],
+                end_with_act_fn=False,
+                linear_init=init_linear_orthogonal,
+                act_fn_cls=act_fn_cls,
+            )
 
         if self.has_global_obs:
-            self.global_obs_encoder = nn.Linear(self.global_obs_dim, d_model)
-            init_linear_orthogonal(self.global_obs_encoder)
+            if global_obs_encoder_hidden_dims is None or len(global_obs_encoder_hidden_dims) == 0:
+                self.global_obs_encoder = nn.Linear(self.global_obs_dim, d_model)
+                init_linear_orthogonal(self.global_obs_encoder)
+            else:
+                self.global_obs_encoder = MLP(
+                    input_dim=self.global_obs_dim,
+                    hidden_dims=[*global_obs_encoder_hidden_dims, d_model],
+                    end_with_act_fn=False,
+                    linear_init=init_linear_orthogonal,
+                    act_fn_cls=act_fn_cls,
+                )
         else:
             self.global_obs_encoder = None
 

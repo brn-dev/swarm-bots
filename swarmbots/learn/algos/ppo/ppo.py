@@ -88,12 +88,6 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerType]):
         if isinstance(learning_rate, AutomaticLearningRate):
             if target_kl is None:
                 raise ValueError("AutomaticLearningRate requires target_kl (otherwise KL early stopping cannot happen).")
-
-            if learning_rate.kl_early_stop_decay_max_epoch is None:
-                learning_rate.kl_early_stop_decay_max_epoch = n_epochs
-            if learning_rate.kl_early_stop_decay_min_kl is None:
-                learning_rate.kl_early_stop_decay_min_kl = 0.0
-
             self.automatic_lr = learning_rate
             self._auto_lr_enabled = True
             initial_lr = learning_rate.initial_lr
@@ -448,9 +442,11 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerType]):
                 else:
                     decay_factor = self.automatic_lr.max_kl_hit_decay_factor
                 new_lr = self.learning_rate * decay_factor
+                ratio = new_lr / self.learning_rate
                 logger.warning(
                     f"Decaying LR from {self.learning_rate:.2e} to {new_lr:.2e} due to "
-                    f"KL early stopping at epoch {early_stop_epoch} with kl div {early_stop_kl_div:.3f}"
+                    f"KL early stopping at epoch {early_stop_epoch} with kl div {early_stop_kl_div:.3f} "
+                    f"({ratio=:.2f})"
                 )
                 self.set_learning_rate(new_lr)
                 return {"auto_lr_event": "max_kl_hit_decay", "auto_lr": new_lr}
@@ -461,12 +457,14 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerType]):
                 else:
                     decay_factor = self.automatic_lr.min_epochs_hit_decay_factor
                 new_lr = self.learning_rate * decay_factor
+                ratio = new_lr / self.learning_rate
                 logger.warning(
                     f"Decaying LR from {self.learning_rate:.2e} to {new_lr:.2e} due to "
-                    f"KL early stopping at epoch {early_stop_epoch} with kl div {early_stop_kl_div:.3f}"
+                    f"KL early stopping at epoch {early_stop_epoch} with kl div {early_stop_kl_div:.3f} "
+                    f"({ratio=:.2f})"
                 )
                 self.set_learning_rate(new_lr)
-                return {"auto_lr_event": "min_epoch_hit_decay", "auto_lr": new_lr}
+                return {"auto_lr_event": "min_epochs_hit_decay", "auto_lr": new_lr}
 
         self._auto_lr__iters_without_kl_early_stop += 1
         if self._auto_lr__iters_without_kl_early_stop < self.automatic_lr.increase_after_n_iters:
@@ -474,14 +472,17 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerType]):
 
         unclamped_lr = self.learning_rate * self.automatic_lr.increase_factor
         new_lr = min(unclamped_lr, self.automatic_lr.max_lr)
+        ratio = new_lr / self.learning_rate
         if new_lr < unclamped_lr:
             logger.warning(
-                f"Auto LR capped at {new_lr:.2e} (requested {unclamped_lr:.2e}, max_lr={self.automatic_lr.max_lr:.2e})"
+                f"Auto LR capped at {new_lr:.2e} (requested {unclamped_lr:.2e}, max_lr={self.automatic_lr.max_lr:.2e}, "
+                f"{ratio=:.2f})"
             )
         else:
             logger.warning(
                 f"Increasing LR from {self.learning_rate:.2e} to {new_lr:.2e} due to no "
-                f"critical KL early stopping for {self._auto_lr__iters_without_kl_early_stop} epochs"
+                f"critical KL early stopping for {self._auto_lr__iters_without_kl_early_stop} epochs "
+                f"({ratio=:.2f})"
             )
         self._auto_lr__iters_without_kl_early_stop = 0
         self.set_learning_rate(new_lr)

@@ -73,7 +73,7 @@ class RandomUnitLocationsConfig:
     z_pos: float = 0.0
     center: bool = True
 
-UnitStartLocations = list[tuple[FloatOrDistParams, FloatOrDistParams, FloatOrDistParams]] | RandomUnitLocationsConfig
+UnitStartLocations = list[tuple[float, float, float]] | RandomUnitLocationsConfig
 
 class HomogeneousSwarm(BaseSwarm):
 
@@ -88,6 +88,7 @@ class HomogeneousSwarm(BaseSwarm):
             leg_length: float = 0.2,
             leg_radius: float = 0.025,
             hinge_range: float = np.pi / 3,
+            hinge_armature: float = 0.001,
             connection_torquescale: float = 10.0,
             randomize_unit_orientations: bool = False
     ):
@@ -126,11 +127,7 @@ class HomogeneousSwarm(BaseSwarm):
         self.leg_length = leg_length
         self.leg_radius = leg_radius
         self.hinge_range = hinge_range
-
-        self.start_locations_with_dists_indices: list[int] = [
-            i for i in range(self.num_units)
-            if any(isinstance(coord, DistParams) for coord in self.unit_start_locations[i])
-        ]
+        self.hinge_armature = hinge_armature
 
     def get_settings(self):
         settings = super().get_settings()
@@ -141,6 +138,7 @@ class HomogeneousSwarm(BaseSwarm):
             'leg_length': self.leg_length,
             'leg_radius': self.leg_radius,
             'hinge_range': self.hinge_range,
+            'hinge_armature': self.hinge_armature,
             'randomize_unit_orientations': self.randomize_unit_orientations,
         })
         return settings
@@ -166,6 +164,7 @@ class HomogeneousSwarm(BaseSwarm):
                 leg_length=self.leg_length,
                 leg_radius=self.leg_radius,
                 hinge_range=self.hinge_range,
+                hinge_armature=self.hinge_armature,
                 unit_config=self.config.unit_config,
             )
             unit.add_joint(type=mujoco.mjtJoint.mjJNT_FREE)
@@ -185,21 +184,14 @@ class HomogeneousSwarm(BaseSwarm):
         connections = SwarmConnections(self.config)
 
         if self.random_unit_start_locations:
-            unit_start_locations = self._generate_random_start_locations(
-                num_units=self.num_units,
-                distance=2 * (self.body_radius + self.leg_length + 0.02),
-                rng=np.random.default_rng()
-            )
+            unit_start_locations = self._generate_random_start_locations(rng=rng)
         else:
             unit_start_locations = self.unit_start_locations
 
         for i in range(self.num_units):
             qpos_adr, dof_adr = self._get_unit_main_body_addresses(model, i)
 
-            data.qpos[qpos_adr:qpos_adr + 3] = start_location + np.array([
-                eval_fod(coord, rng)
-                for coord in unit_start_locations[i]
-            ])
+            data.qpos[qpos_adr:qpos_adr + 3] = start_location + np.array(unit_start_locations[i])
 
             if self.randomize_unit_orientations:
                 data.qpos[qpos_adr + 3:qpos_adr + 7] = random_quat_shoemake()

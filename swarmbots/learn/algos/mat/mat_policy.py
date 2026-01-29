@@ -37,6 +37,9 @@ class MATPolicy(BasePPOPolicy):
             n_critic_value_regressor_hidden_layers: int = 2,
             actor_head_hidden_dims: list[int] | None = None,
             act_fn_cls=nn.ReLU,
+            local_obs_encoder_hidden_dims: list[int] | None = None,
+            global_obs_encoder_hidden_dims: list[int] | None = None,
+            action_encoder_hidden_dims: list[int] | None = None,
             continuous_config: ContinuousActionDistConfig | list[ContinuousActionDistConfig | None] | None = None,
             bernoulli_initial_prob: float | None = None,
             add_agent_embeddings_encoder: bool = True,
@@ -68,6 +71,9 @@ class MATPolicy(BasePPOPolicy):
             output_norm=nn.LayerNorm(self.d_model_encoder),
             enable_nested_tensor=False,
             add_agent_embeddings=add_agent_embeddings_encoder,
+            act_fn_cls=act_fn_cls,
+            local_obs_encoder_hidden_dims=local_obs_encoder_hidden_dims,
+            global_obs_encoder_hidden_dims=global_obs_encoder_hidden_dims,
         )
 
         self.agent_embeddings_decoder: nn.Parameter | None = None
@@ -77,8 +83,17 @@ class MATPolicy(BasePPOPolicy):
             )
             nn.init.orthogonal_(self.agent_embeddings_decoder)
 
-        self.action_encoder = nn.Linear(env.action_space.total_agent_action_dim, self.d_model_decoder)
-        init_linear_orthogonal(self.action_encoder)
+        if action_encoder_hidden_dims is None or len(action_encoder_hidden_dims) == 0:
+            self.action_encoder = nn.Linear(env.action_space.total_agent_action_dim, self.d_model_decoder)
+            init_linear_orthogonal(self.action_encoder)
+        else:
+            self.action_encoder = MLP(
+                input_dim=env.action_space.total_agent_action_dim,
+                hidden_dims=[*action_encoder_hidden_dims, self.d_model_decoder],
+                end_with_act_fn=False,
+                linear_init=init_linear_orthogonal,
+                act_fn_cls=act_fn_cls,
+            )
 
         self.sos_token = nn.Parameter(torch.zeros(1, 1, self.d_model_decoder), requires_grad=True)
         nn.init.orthogonal_(self.sos_token)
@@ -147,6 +162,9 @@ class MATPolicy(BasePPOPolicy):
             "bernoulli_initial_prob": bernoulli_initial_prob,
             "add_agent_embeddings_encoder": add_agent_embeddings_encoder,
             "add_agent_embeddings_decoder": add_agent_embeddings_decoder,
+            "local_obs_encoder_hidden_dims": local_obs_encoder_hidden_dims,
+            "global_obs_encoder_hidden_dims": global_obs_encoder_hidden_dims,
+            "action_encoder_hidden_dims": action_encoder_hidden_dims,
         }
 
     def get_hyper_parameters(self) -> dict[str, Any]:

@@ -74,6 +74,10 @@ class SwarmBotsEnv(gymnasium.Env):
                 self.observation_space["local_obs"].shape,
                 dtype=self.observation_space["local_obs"].dtype,
             ),
+            "hidden_vars": np.zeros(
+                self.observation_space["hidden_vars"].shape,
+                dtype=self.observation_space["hidden_vars"].dtype,
+            ),
         }
 
         self._agent_permutation: np.ndarray | None = None
@@ -130,6 +134,7 @@ class SwarmBotsEnv(gymnasium.Env):
                 {
                     "global_obs": self._zeros_obs["global_obs"].copy(),
                     "local_obs": self._zeros_obs["local_obs"].copy(),
+                    "hidden_vars": self._zeros_obs["hidden_vars"].copy(),
                 },
                 self.simulation_unstable_reward,
                 True,
@@ -204,6 +209,7 @@ class SwarmBotsEnv(gymnasium.Env):
         return {
             "local_obs": obs["local_obs"][self._agent_permutation],
             "global_obs": obs["global_obs"],
+            "hidden_vars": obs["hidden_vars"],
         }
 
     def _unshuffle_action(self, action: SwarmActDict) -> SwarmActDict:
