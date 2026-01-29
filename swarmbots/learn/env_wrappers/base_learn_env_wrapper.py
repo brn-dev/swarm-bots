@@ -42,11 +42,19 @@ class BaseLearnEnvWrapper(VectorWrapper, Generic[ActSpace], abc.ABC):
             )
 
         obs_space = env.observation_space
-        if not isinstance(obs_space, spaces.Dict) or 'local_obs' not in obs_space.keys() or 'global_obs' not in obs_space.keys():
-            raise ValueError(f'Observations space must be a dict containing "local_obs" and "global_obs", got {obs_space}')
+        if (
+            not isinstance(obs_space, spaces.Dict)
+            or 'local_obs' not in obs_space.keys()
+            or 'global_obs' not in obs_space.keys()
+        ):
+            raise ValueError(
+                'Observations space must be a dict containing "local_obs" and "global_obs", '
+                f'got {obs_space}'
+            )
         self._observation_space: spaces.Dict = obs_space
         self.local_obs_dim = self._observation_space['local_obs'].shape[2]
         self.global_obs_dim = self._observation_space['global_obs'].shape[1]
+        self.hidden_vars_dim = self._observation_space['hidden_vars'].shape[1]
 
         if not isinstance(action_space, VectorHybridActionSpace):
             raise ValueError(f'Action space must be a VectorHybridActionSpace, got {action_space}')
@@ -103,10 +111,13 @@ class BaseLearnEnvWrapper(VectorWrapper, Generic[ActSpace], abc.ABC):
     def _obs_to_torch(self, obs: NumpyObs) -> TorchObs:
         # local_obs: (n_envs, n_agents, n_local_obs)
         # global_obs: (n_envs, n_global_obs)
-        return {
+        obs_t: TorchObs = {
             "local_obs": torch.as_tensor(obs["local_obs"], device=self.device, dtype=self.obs_dtype),
             "global_obs": torch.as_tensor(obs["global_obs"], device=self.device, dtype=self.obs_dtype),
         }
+        if "hidden_vars" in obs:
+            obs_t["hidden_vars"] = torch.as_tensor(obs["hidden_vars"], device=self.device, dtype=self.obs_dtype)
+        return obs_t
 
     @abc.abstractmethod
     def _actions_to_env_dict(self, actions: torch.Tensor) -> dict[str, np.ndarray]:

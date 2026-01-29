@@ -114,6 +114,7 @@ def record_policy(
             with torch.no_grad():
                 local_obs = obs['local_obs']
                 global_obs = obs['global_obs']
+                hidden_vars = obs["hidden_vars"]
                 
                 _maybe_reset_gsde_noise(
                     policy=policy,
@@ -122,7 +123,7 @@ def record_policy(
                     rollout_step_idx=step_cnt,
                     gsde_reset_mode=gsde_reset_mode,
                 )
-                actions = policy.act(local_obs, global_obs, deterministic=deterministic)
+                actions = policy.act(local_obs, global_obs, hidden_vars=hidden_vars, deterministic=deterministic)
                 print(format_summary_statistics(compute_summary_statistics(actions[:, :, :8], make_histogram=True), SummaryStatisticsFormat(histogram=True)))
             
             obs, _, term, trunc, _ = env.step(actions)

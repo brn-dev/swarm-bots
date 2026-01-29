@@ -33,6 +33,7 @@ class MAPPOPolicy(PPOPolicy):
         self.n_agents = env.n_agents
         self.local_obs_dim = env.local_obs_dim
         self.global_obs_dim = env.global_obs_dim
+        self.hidden_vars_dim = env.hidden_vars_dim
         self.latent_pi_dim = latent_pi_dim_per_agent
 
         self.actor = MAPPOActor(
@@ -54,7 +55,7 @@ class MAPPOPolicy(PPOPolicy):
             self.critic = MAPPOCritic(
                 n_agents=env.n_agents,
                 local_obs_dim=env.local_obs_dim,
-                global_obs_dim=env.global_obs_dim,
+                global_obs_dim=env.global_obs_dim + self.hidden_vars_dim,
                 hidden_dims=critic_hidden_dims,
                 act_fun_class=act_fun_class
             )
@@ -63,7 +64,7 @@ class MAPPOPolicy(PPOPolicy):
                 num_local_features=env.local_obs_dim,
                 local_projection_hidden_dims=critic_hidden_dims["local_projection_hidden_dims"],
                 value_regressor_hidden_dims=critic_hidden_dims["value_regressor_hidden_dims"],
-                num_global_features=env.global_obs_dim,
+                num_global_features=env.global_obs_dim + self.hidden_vars_dim,
                 set_dim=AGENTS_DIM,
                 pool_mode="mean",
                 act_fn_cls=act_fun_class,

@@ -138,6 +138,7 @@ class MATSPRPolicy(MATPolicy, SPRMixin, PPOWMPolicyMixin):
             next_local_obs: torch.Tensor,
             next_global_obs: torch.Tensor,
             next_validity_mask: torch.Tensor,
+            hidden_vars: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         if actions.ndim == 4:
             policy_actions = actions[:, 0]
@@ -150,6 +151,7 @@ class MATSPRPolicy(MATPolicy, SPRMixin, PPOWMPolicyMixin):
             local_obs=policy_local_obs,
             global_obs=policy_global_obs,
             actions=policy_actions,
+            hidden_vars=hidden_vars,
         )
 
         spr_loss = self.compute_spr_loss(

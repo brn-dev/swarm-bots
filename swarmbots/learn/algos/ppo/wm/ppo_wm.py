@@ -24,6 +24,7 @@ class PPOWMPolicyMixin(abc.ABC):
             next_local_obs: torch.Tensor,
             next_global_obs: torch.Tensor,
             next_validity_mask: torch.Tensor,
+            hidden_vars: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         :return: log_probs, entropies, values, world_model_loss
@@ -115,6 +116,7 @@ class PPOWM(PPO[PPOWMSamples, PPOWMSampler]):
             next_local_obs=batch.next_local_obs,
             next_global_obs=batch.next_global_obs,
             next_validity_mask=batch.next_validity_mask,
+            hidden_vars=batch.hidden_vars,
         )
 
         ppo_loss, approx_kl_div, metrics = self.compute_ppo_loss(

@@ -60,6 +60,7 @@ def collect_whole_episodes(
     while not buffer.is_ready():
         local_obs = obs['local_obs']
         global_obs = obs['global_obs']
+        hidden_vars = obs["hidden_vars"]
 
         if gsde_enabled:
             batch_shape = tuple(local_obs.shape[:-1])
@@ -78,7 +79,7 @@ def collect_whole_episodes(
             reset_noise_timings.append(reset_noise_timer.get_duration())
 
         with policy_forward_timer:
-            actions, log_probs, values = policy(local_obs, global_obs)
+            actions, log_probs, values = policy(local_obs, global_obs, hidden_vars=hidden_vars)
         policy_forward_timings.append(policy_forward_timer.get_duration())
 
         values = values.masked_fill(was_terminated, 0.0)
@@ -101,6 +102,7 @@ def collect_whole_episodes(
             buffer.add(
                 local_obs=local_obs,
                 global_obs=global_obs,
+                hidden_vars=hidden_vars,
                 actions=actions,
                 rewards=rewards,
                 log_probs=log_probs,

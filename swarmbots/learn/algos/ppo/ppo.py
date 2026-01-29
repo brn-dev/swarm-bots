@@ -261,7 +261,8 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerType]):
         log_probs, entropies, values = self.policy.evaluate_actions(
             local_obs=batch.local_obs,
             global_obs=batch.global_obs,
-            actions=batch.actions
+            actions=batch.actions,
+            hidden_vars=batch.hidden_vars,
         )
 
         return self.compute_ppo_loss(

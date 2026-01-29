@@ -29,22 +29,26 @@ class DeepSet(nn.Module):
         set_decoder: nn.Module,
         set_dim: int = 1,
         pool_mode: PoolMode = "mean",
-        context_dim: int = 0,
+        context_features: int = 0,
+        context_in_elements: bool = False,
     ) -> None:
         super().__init__()
         self.element_encoder = element_encoder
         self.set_decoder = set_decoder
         self.set_dim = int(set_dim)
         self.pool_mode: PoolMode = pool_mode
-        self.context_dim = int(context_dim)
+        self.context_features = int(context_features)
+        self.context_in_elements = bool(context_in_elements)
 
     def forward(self, elements: torch.Tensor, *, context: torch.Tensor | None = None) -> torch.Tensor:
+        if self.context_in_elements:
+            expanded_context = context.unsqueeze(self.set_dim).expand(*elements.shape[:-1], context.shape[-1])
+            elements = torch.cat((elements, expanded_context), dim=-1)
+
         encoded = self.element_encoder(elements)
         pooled = _pool_over_set(encoded, set_dim=self.set_dim, mode=self.pool_mode)
 
-        if self.context_dim > 0:
-            if context is None:
-                raise ValueError("context must be provided when context_dim > 0")
+        if self.context_features > 0 and not self.context_in_elements:
             pooled = torch.cat((pooled, context), dim=-1)
 
         return self.set_decoder(pooled)
@@ -71,14 +75,22 @@ class DeepSetCritic(nn.Module):
         pool_mode: PoolMode = "mean",
         linear_init: LinearInitialization = init_linear_orthogonal,
         act_fn_cls: Callable[[], nn.Module] = nn.Tanh,
+        context_in_elements: bool = False,
     ) -> None:
         super().__init__()
         self.num_local_features = int(num_local_features)
         self.num_global_features = int(num_global_features)
+        self.context_in_elements = bool(context_in_elements)
+
+        if self.context_in_elements and self.num_global_features == 0:
+            raise ValueError("context_in_elements requires num_global_features > 0")
+
+        element_input_features = self.num_local_features + (self.num_global_features if self.context_in_elements else 0)
+        context_features_after_pool = 0 if self.context_in_elements else self.num_global_features
 
         if local_projection_hidden_dims:
             element_encoder: nn.Module = MLP(
-                input_dim=self.num_local_features,
+                input_dim=element_input_features,
                 hidden_dims=local_projection_hidden_dims,
                 end_with_act_fn=False,
                 linear_init=linear_init,
@@ -87,10 +99,10 @@ class DeepSetCritic(nn.Module):
             pooled_dim = int(local_projection_hidden_dims[-1])
         else:
             element_encoder = nn.Identity()
-            pooled_dim = self.num_local_features
+            pooled_dim = element_input_features
 
         value_regressor = MLP(
-            input_dim=pooled_dim + self.num_global_features,
+            input_dim=pooled_dim + context_features_after_pool,
             hidden_dims=[*value_regressor_hidden_dims, 1],
             end_with_act_fn=False,
             linear_init=linear_init,
@@ -102,7 +114,8 @@ class DeepSetCritic(nn.Module):
             set_decoder=value_regressor,
             set_dim=set_dim,
             pool_mode=pool_mode,
-            context_dim=self.num_global_features,
+            context_features=context_features_after_pool,
+            context_in_elements=self.context_in_elements,
         )
 
     def forward(self, local_features: torch.Tensor, global_features: torch.Tensor | None = None) -> torch.Tensor:
