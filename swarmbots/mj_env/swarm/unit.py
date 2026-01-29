@@ -11,7 +11,8 @@ def init_unit(
     hinge_range: float,
     unit_config: UnitConfig,
     body_rgba=(0.75, 0, 0, 0.1),
-    segment_1_ratio: float = 0.1
+    segment_1_ratio: float = 0.1,
+    hinge_armature: float = 0.0
 ) -> mujoco.MjsBody:
     spec = mujoco.MjSpec()
     spec.compiler.degree = False
@@ -44,7 +45,8 @@ def init_unit(
             length=leg_length,
             radius=leg_radius,
             hinge_range=hinge_range,
-            segment_1_ratio=segment_1_ratio
+            segment_1_ratio=segment_1_ratio,
+            hinge_armature=hinge_armature,
         )
 
     return body
@@ -58,6 +60,7 @@ def _build_limb(
         radius: float,
         hinge_range: float,
         segment_1_ratio: float,
+        hinge_armature: float,
 ):
     rgba = tuple(limb_config.rgba)
 
@@ -69,14 +72,16 @@ def _build_limb(
             type=mujoco.mjtJoint.mjJNT_HINGE,
             axis=[0, 1, 0],
             range=[-hinge_range, hinge_range],
-            name=hinge1_name
+            name=hinge1_name,
+            armature=hinge_armature,
         )
     elif limb_config.type == LimbType.zx:
         hinge1_name = f'-{limb_idx}-hinge1z'
         hinge1 = first_segment.add_joint(
             type=mujoco.mjtJoint.mjJNT_HINGE,
             axis=[0, 0, 1],
-            name=hinge1_name
+            name=hinge1_name,
+            armature=hinge_armature,
         )
     else:
         raise NotImplementedError(limb_config.type)
@@ -100,7 +105,8 @@ def _build_limb(
         type=mujoco.mjtJoint.mjJNT_HINGE,
         axis=[1, 0, 0],
         range=[-hinge_range, hinge_range],
-        name=hinge2_name
+        name=hinge2_name,
+        armature=hinge_armature,
     )
 
     length2 = length * (1 - segment_1_ratio)

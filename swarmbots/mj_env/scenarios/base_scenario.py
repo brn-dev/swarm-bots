@@ -1,5 +1,5 @@
 import abc
-from typing import Any, Iterable, TypedDict
+from typing import Any, Iterable, TypedDict, Literal
 
 import mujoco
 import numpy as np
@@ -7,12 +7,14 @@ from gymnasium import spaces
 from mujoco import MjsBody
 
 import swarmbots.mj_env.mujoco_utils as mj_utils
+from swarmbots.mj_env.quat_rot6d import quat_to_rot6d
 from swarmbots.mj_env.swarm.base_swarm import BaseSwarm
 from swarmbots.mj_env.swarm.swarm_connections import SwarmConnections
 
 class SwarmObsDict(TypedDict):
     local_obs: np.ndarray  # shape (n_unit, n_obs_per_unit)
     global_obs: np.ndarray  # shape (n_global_features,)
+    hidden_vars: np.ndarray  # shape (n_hidden_vars,)
 
 class SwarmActDict(TypedDict):
     actuators: np.ndarray  # shape (n_unit, n_actuators_per_unit), type float
@@ -76,6 +78,7 @@ class BaseScenario(abc.ABC):
             average_connectors_reward: bool,
             include_connectors_xpos_in_obs: bool,
             include_connectors_xquat_in_obs: bool,
+            quat_rot6d_representation: bool,
             connection_dist_threshold: float,
             connection_angle_threshold: float,
             disconnect_potential_threshold: float,
@@ -112,6 +115,7 @@ class BaseScenario(abc.ABC):
         self.average_connectors_reward = average_connectors_reward
         self.include_connectors_xpos_in_obs = include_connectors_xpos_in_obs
         self.include_connectors_xquat_in_obs = include_connectors_xquat_in_obs
+        self.quat_rot6d_representation = quat_rot6d_representation
         self.friction = _validate_geom_friction(friction)
         self.force_elliptic_cone = force_elliptic_cone
         self.spec = self.create_scenario_spec()
@@ -165,6 +169,7 @@ class BaseScenario(abc.ABC):
             'average_connectors_reward': self.average_connectors_reward,
             'include_connectors_xpos_in_obs': self.include_connectors_xpos_in_obs,
             'include_connectors_xquat_in_obs': self.include_connectors_xquat_in_obs,
+            'quat_rot6d_representation': self.quat_rot6d_representation,
             'connection_dist_threshold': self.connection_dist_threshold,
             'connection_angle_threshold': self.connection_angle_threshold,
             'disconnect_potential_threshold': self.disconnect_potential_threshold,
@@ -276,11 +281,16 @@ class BaseScenario(abc.ABC):
 
         # encoding hinge angles to sin and cos
         free_joint_qpos = qpos[:, :7]
+        free_joint_cartesian = free_joint_qpos[:, :3]
+        free_joint_quats = free_joint_qpos[:, 3:]
+        if self.quat_rot6d_representation:
+            free_joint_quats = quat_to_rot6d(free_joint_quats, axis=-1)
+
         hinge_qpos = qpos[:, 7:]
         hinge_sin = np.sin(hinge_qpos)
         hinge_cos = np.cos(hinge_qpos)
         hinge_obs = np.stack([hinge_sin, hinge_cos], axis=-1).reshape(self.num_units, -1)
-        qpos_obs = np.concatenate([free_joint_qpos, hinge_obs], axis=1)
+        qpos_obs = np.concatenate([free_joint_cartesian, free_joint_quats, hinge_obs], axis=1)
 
         # connector obs
         is_active = connections.get_is_active_mask()
@@ -306,12 +316,15 @@ class BaseScenario(abc.ABC):
 
         if self.include_connectors_xquat_in_obs:
             conn_xquat = data.xquat[self._connector_body_indices]
+            if self.quat_rot6d_representation:
+                conn_xquat = quat_to_rot6d(conn_xquat, axis=-1)
             conn_xquat = conn_xquat.reshape((self.num_units, -1))
             obs_list.append(conn_xquat)
 
         return {
             'local_obs': np.concatenate(obs_list, axis=1),
-            'global_obs': np.empty(0, dtype=float)
+            'global_obs': np.empty(0, dtype=float),
+            'hidden_vars': np.empty(0, dtype=float),
         }
 
     def apply_action(
@@ -360,7 +373,10 @@ class BaseScenario(abc.ABC):
             ),
             'global_obs': spaces.Box(
                 low=-np.inf, high=np.inf, shape=obs['global_obs'].shape, dtype=np.float32
-            )
+            ),
+            'hidden_vars': spaces.Box(
+                low=-np.inf, high=np.inf, shape=obs['hidden_vars'].shape, dtype=np.float32
+            ),
         })
 
     def get_actuator_action_shape(self):
@@ -531,7 +547,7 @@ class BaseScenario(abc.ABC):
     def compute_guidance_reward(
             self,
             data: mujoco.MjData,
-            action: dict[str, Any],
+            action: SwarmActDict,
             state: dict,
             connections: SwarmConnections
     ):

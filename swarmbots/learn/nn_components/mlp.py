@@ -10,6 +10,7 @@ class MLP(nn.Sequential):
             input_dim: int,
             hidden_dims: list[int],
             end_with_act_fn: bool,
+            start_with_act_fn: bool = False,
             linear_init: LinearInitialization = init_linear_orthogonal,
             act_fn_cls=nn.Tanh,
     ):
@@ -22,6 +23,10 @@ class MLP(nn.Sequential):
         n_layers = len(dims) - 1
 
         modules: list[nn.Module] = []
+
+        if start_with_act_fn:
+            modules.append(act_fn_cls())
+
         for i in range(n_layers):
             linear = nn.Linear(dims[i], dims[i + 1])
             linear_init(linear)

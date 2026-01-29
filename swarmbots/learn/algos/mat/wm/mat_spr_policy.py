@@ -29,6 +29,9 @@ class MATSPRPolicy(MATPolicy, SPRMixin, PPOWMPolicyMixin):
             n_critic_value_regressor_hidden_layers: int = 2,
             actor_head_hidden_dims: list[int] | None = None,
             act_fn_cls: type[nn.Module] = nn.ReLU,
+            local_obs_encoder_hidden_dims: list[int] | None = None,
+            global_obs_encoder_hidden_dims: list[int] | None = None,
+            action_encoder_hidden_dims: list[int] | None = None,
             continuous_config: ContinuousActionDistConfig | list[ContinuousActionDistConfig | None] | None = None,
             bernoulli_initial_prob: float | None = None,
             add_agent_embeddings_encoder: bool = True,
@@ -40,7 +43,7 @@ class MATSPRPolicy(MATPolicy, SPRMixin, PPOWMPolicyMixin):
             add_agent_embeddings_transition_model: bool = False,
             transition_model_coembed_hidden_dims: list[int] | None = None,
             transition_model_head_hidden_dims: list[int] | None = None,
-            spr_projection_hidden_dims: list[int] | None = None,
+            spr_projection_dims: list[int] | None = None,
             spr_predictor_hidden_dims: list[int] | None = None,
             residual_predictor: bool = True
     ) -> None:
@@ -60,23 +63,23 @@ class MATSPRPolicy(MATPolicy, SPRMixin, PPOWMPolicyMixin):
             n_critic_value_regressor_hidden_layers=n_critic_value_regressor_hidden_layers,
             actor_head_hidden_dims=actor_head_hidden_dims,
             act_fn_cls=act_fn_cls,
+            local_obs_encoder_hidden_dims=local_obs_encoder_hidden_dims,
+            global_obs_encoder_hidden_dims=global_obs_encoder_hidden_dims,
+            action_encoder_hidden_dims=action_encoder_hidden_dims,
             continuous_config=continuous_config,
             bernoulli_initial_prob=bernoulli_initial_prob,
             add_agent_embeddings_encoder=add_agent_embeddings_encoder,
             add_agent_embeddings_decoder=add_agent_embeddings_decoder,
         )
-        if spr_projection_hidden_dims is None:
-            projection_hidden_dims = [self.d_model_encoder]
+        if spr_projection_dims is None:
+            projection_dims = [self.d_model_encoder]
         else:
-            projection_hidden_dims = spr_projection_hidden_dims
+            projection_dims = spr_projection_dims
 
         if spr_predictor_hidden_dims is None:
-            predictor_hidden_dims = [projection_hidden_dims[-1]]
+            predictor_hidden_dims = [projection_dims[-1]]
         else:
-            predictor_hidden_dims = spr_predictor_hidden_dims
-
-        assert projection_hidden_dims[-1] == predictor_hidden_dims[-1], \
-            'Predictor must have the same final dimensionality as the projection'
+            predictor_hidden_dims = spr_predictor_hidden_dims + [projection_dims[-1]]
 
         self.setup_modules(
             transition_model=TransformerTransitionModel(
@@ -96,12 +99,12 @@ class MATSPRPolicy(MATPolicy, SPRMixin, PPOWMPolicyMixin):
             ),
             projection=MLP(
                 input_dim=self.d_model_encoder,
-                hidden_dims=[*projection_hidden_dims],
+                hidden_dims=[*projection_dims],
                 end_with_act_fn=False,
                 act_fn_cls=act_fn_cls,
             ),
             predictor=MLP(
-                input_dim=projection_hidden_dims[-1],
+                input_dim=projection_dims[-1],
                 hidden_dims=[*predictor_hidden_dims],
                 end_with_act_fn=False,
                 act_fn_cls=act_fn_cls,
@@ -118,7 +121,7 @@ class MATSPRPolicy(MATPolicy, SPRMixin, PPOWMPolicyMixin):
                 "add_agent_embeddings_transition_model": add_agent_embeddings_transition_model,
                 "transition_model_coembed_hidden_dims": transition_model_coembed_hidden_dims,
                 "transition_model_head_hidden_dims": transition_model_head_hidden_dims,
-                "spr_projection_hidden_dims": projection_hidden_dims,
+                "spr_projection_dims": projection_dims,
                 "spr_predictor_hidden_dims": predictor_hidden_dims,
             }
         )
