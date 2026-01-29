@@ -51,6 +51,7 @@ class MATPolicy(BasePPOPolicy):
         self.local_obs_dim: int = env.local_obs_dim
         self.global_obs_dim: int = env.global_obs_dim
         self.has_global_obs = env.global_obs_dim > 0
+        self.hidden_vars_dim: int = env.hidden_vars_dim
 
         self.d_model_encoder = d_model
         self.d_model_decoder = d_model if d_model_decoder is None else d_model_decoder
@@ -138,7 +139,9 @@ class MATPolicy(BasePPOPolicy):
             num_local_features=self.d_model_encoder,
             local_projection_hidden_dims=[self.d_model_encoder] * n_critic_local_projection_hidden_layers,
             value_regressor_hidden_dims=[self.d_model_encoder] * n_critic_value_regressor_hidden_layers,
+            num_global_features=self.hidden_vars_dim,
             act_fn_cls=act_fn_cls,
+            context_in_elements=True,
         )
 
         serialized_continuous_config = serialize_continuous_action_dist_configs(continuous_config)
@@ -221,6 +224,7 @@ class MATPolicy(BasePPOPolicy):
             self,
             local_obs: torch.Tensor,
             global_obs: torch.Tensor,
+            hidden_vars: torch.Tensor | None = None,
             deterministic: bool = False
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
 
@@ -231,7 +235,7 @@ class MATPolicy(BasePPOPolicy):
             deterministic=deterministic,
             return_log_probs=True,
         )
-        values = self.critic(augmented_observations)
+        values = self._critic_with_hidden_vars(augmented_observations, hidden_vars)
 
         return actions, log_probs, values
 
@@ -239,12 +243,14 @@ class MATPolicy(BasePPOPolicy):
             self,
             local_obs: torch.Tensor,
             global_obs: torch.Tensor,
-            actions: torch.Tensor
+            actions: torch.Tensor,
+            hidden_vars: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         augmented_observations, log_probs, entropies, values = self._evaluate_actions(
             local_obs=local_obs,
             global_obs=global_obs,
             actions=actions,
+            hidden_vars=hidden_vars,
         )
 
         return log_probs, entropies, values
@@ -253,7 +259,8 @@ class MATPolicy(BasePPOPolicy):
             self,
             local_obs: torch.Tensor,
             global_obs: torch.Tensor,
-            actions: torch.Tensor
+            actions: torch.Tensor,
+            hidden_vars: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         augmented_observations = self.encoder(local_obs, global_obs)
         
@@ -270,13 +277,14 @@ class MATPolicy(BasePPOPolicy):
         log_probs = self.action_dist.log_prob(actions)
         entropies = self.action_dist.entropy()
 
-        values = self.critic(augmented_observations)
+        values = self._critic_with_hidden_vars(augmented_observations, hidden_vars)
         return augmented_observations, log_probs, entropies, values
 
     def act(
             self,
             local_obs: torch.Tensor,
             global_obs: torch.Tensor,
+            hidden_vars: torch.Tensor | None = None,
             deterministic: bool = False
     ) -> torch.Tensor:
         augmented_observations = self.encoder(local_obs, global_obs)
@@ -287,3 +295,14 @@ class MATPolicy(BasePPOPolicy):
             return_log_probs=False,
         )
         return actions
+
+    def _critic_with_hidden_vars(
+            self,
+            augmented_observations: torch.Tensor,
+            hidden_vars: torch.Tensor | None
+    ) -> torch.Tensor:
+        if self.hidden_vars_dim <= 0:
+            return self.critic(augmented_observations)
+        if hidden_vars is None:
+            raise ValueError("hidden_vars must be provided when hidden_vars_dim > 0")
+        return self.critic(augmented_observations, hidden_vars)

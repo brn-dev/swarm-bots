@@ -100,6 +100,7 @@ class PPOWMSampler(PPOSampler[PPOWMSamples]):
         return PPOWMSamples(
             local_obs=self.local_obs[batch_indices],
             global_obs=self.global_obs[batch_indices],
+            hidden_vars=self.hidden_vars[batch_indices],
             actions=self.multi_step_actions[batch_indices],
             log_probs=self.log_probs[batch_indices],
             values=self.values[batch_indices],

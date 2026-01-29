@@ -26,6 +26,7 @@ class BasePPOPolicy(BasePolicy, abc.ABC):
             self,
             local_obs: torch.Tensor,
             global_obs: torch.Tensor,
+            hidden_vars: torch.Tensor | None = None,
             deterministic: bool = False
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
@@ -39,6 +40,7 @@ class BasePPOPolicy(BasePolicy, abc.ABC):
             local_obs: torch.Tensor,
             global_obs: torch.Tensor,
             actions: torch.Tensor,
+            hidden_vars: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor]:
         """
         :return: log_probs, entropies, values
@@ -131,6 +133,7 @@ class PPOPolicy(BasePPOPolicy):
         self.n_agents = env.n_agents
         self.local_obs_dim = env.local_obs_dim
         self.global_obs_dim = env.global_obs_dim
+        self.hidden_vars_dim = env.hidden_vars_dim
         self.latent_pi_dim = latent_pi_dim_per_agent
 
         self.actor = PPOActor(
@@ -151,7 +154,7 @@ class PPOPolicy(BasePPOPolicy):
         self.critic = PPOCritic(
             n_agents=env.n_agents,
             local_obs_dim=env.local_obs_dim,
-            global_obs_dim=env.global_obs_dim,
+            global_obs_dim=env.global_obs_dim + self.hidden_vars_dim,
             hidden_dims=critic_hidden_dims,
             act_fun_class=act_fun_class
         )
@@ -172,12 +175,14 @@ class PPOPolicy(BasePPOPolicy):
             self,
             local_obs: torch.Tensor,
             global_obs: torch.Tensor,
+            hidden_vars: torch.Tensor | None = None,
             deterministic: bool = False
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         latent_pi = self.actor(local_obs, global_obs)
         actions, log_probs = self.action_dist.get_actions_with_log_probs(latent_pi, deterministic)
 
-        values = self.critic(local_obs, global_obs)
+        critic_global_obs = self._build_critic_global_obs(global_obs, hidden_vars)
+        values = self.critic(local_obs, critic_global_obs)
         return actions, log_probs, values
 
     def evaluate_actions(
@@ -185,21 +190,35 @@ class PPOPolicy(BasePPOPolicy):
             local_obs: torch.Tensor,
             global_obs: torch.Tensor,
             actions: torch.Tensor,
+            hidden_vars: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor]:
         latent_pi = self.actor(local_obs, global_obs)
         self.action_dist.update_latent_features(latent_pi)
         log_probs = self.action_dist.log_prob(actions)
         entropies = self.action_dist.entropy()
 
-        values = self.critic(local_obs, global_obs)
+        critic_global_obs = self._build_critic_global_obs(global_obs, hidden_vars)
+        values = self.critic(local_obs, critic_global_obs)
         return log_probs, entropies, values
 
     def act(
             self,
             local_obs: torch.Tensor,
             global_obs: torch.Tensor,
+            hidden_vars: torch.Tensor | None = None,
             deterministic: bool = False
     ) -> torch.Tensor:
         latent_pi = self.actor(local_obs, global_obs)
         actions = self.action_dist.update_latent_features(latent_pi).get_actions(deterministic)
         return actions
+
+    @staticmethod
+    def _build_critic_global_obs(
+            global_obs: torch.Tensor,
+            hidden_vars: torch.Tensor | None
+    ) -> torch.Tensor:
+        if hidden_vars is None or hidden_vars.shape[-1] == 0:
+            return global_obs
+        if global_obs.shape[-1] == 0:
+            return hidden_vars
+        return torch.cat((global_obs, hidden_vars), dim=-1)

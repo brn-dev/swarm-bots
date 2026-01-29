@@ -240,7 +240,10 @@ def main() -> None:
         return record_env
 
     print('Creating vector env...')
-    vector_env = AsyncVectorEnv(env_fns)
+    if sys.gettrace() is None:
+        vector_env = AsyncVectorEnv(env_fns)
+    else:
+        vector_env = SyncVectorEnv(env_fns[:1])
     print(f"Created {type(vector_env)} with {n_envs} environments.")
 
     if isinstance(vector_env, SyncVectorEnv):
@@ -285,7 +288,7 @@ def main() -> None:
     print("Initializing Policy...")
     policy = MATSPRPolicy(
         env=env,
-        local_obs_encoder_hidden_dims=[256, 256],
+        local_obs_encoder_hidden_dims=[128, 128],
         action_encoder_hidden_dims=[32],
         d_model=64,
         d_model_decoder=32,
