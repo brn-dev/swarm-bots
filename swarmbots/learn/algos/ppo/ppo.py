@@ -1,11 +1,10 @@
 import inspect
 from dataclasses import dataclass
-from typing import Optional, Any, Literal, TypeVar, Generic, Callable
+from typing import Optional, Any, Literal, TypeVar, Generic, Callable, Protocol, NotRequired, TypedDict
 
 import torch
 import torch.nn as nn
 from loguru import logger
-from prompt_toolkit.key_binding.bindings.named_commands import self_insert
 
 from swarmbots.learn.algos.base_algorithm import BaseAlgorithm, LearningRate
 from swarmbots.learn.algos.ppo.ppo_policy import BasePPOPolicy, PPOPolicy
@@ -28,21 +27,29 @@ try:
 except ValueError:
     logger.level("SAVE", no=21, color="<magenta>")
 
+class AutomaticLearningRateUpdateResult(TypedDict):
+    ratio: Optional[float]
+    msg: NotRequired[str]
+    event: NotRequired[str]
+
+class AutomaticLearningRateUpdater(Protocol):
+
+    def __call__(
+            self,
+            state: dict[str, Any],
+            early_stop_kl_div: Optional[float],
+            early_stop_epoch: Optional[int],
+            metrics: dict[str, Any]
+    ) -> AutomaticLearningRateUpdateResult:
+        ...
+
 
 @dataclass(slots=True)
 class AutomaticLearningRate:
     initial_lr: float
+    updater: AutomaticLearningRateUpdater
 
     max_lr: float = 1e-2
-
-    max_kl: float = 0.1
-    max_kl_hit_decay_factor: float | Callable[[float], float] = 0.7
-
-    min_epochs: float = 2
-    min_epochs_hit_decay_factor: float | Callable[[int], float] = 0.9
-
-    increase_after_n_iters: int = 2
-    increase_factor: float = 1.4
 
 PPOLearningRate = float | AutomaticLearningRate
 
@@ -82,7 +89,7 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerType]):
     ):
         self.automatic_lr: AutomaticLearningRate | None = None
         self._auto_lr_enabled = False
-        self._auto_lr__iters_without_kl_early_stop = 0
+        self._auto_lr_state: dict[str, Any] = {}
 
         initial_lr: float
         if isinstance(learning_rate, AutomaticLearningRate):
@@ -147,27 +154,11 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerType]):
         if self.automatic_lr is None:
             auto_lr = None
         else:
-            if callable(self.automatic_lr.max_kl_hit_decay_factor):
-                max_kl_hit_decay_factor = self._serialize_fn(self.automatic_lr.max_kl_hit_decay_factor)
-            else:
-                max_kl_hit_decay_factor = self.automatic_lr.max_kl_hit_decay_factor
-
-            if callable(self.automatic_lr.min_epochs_hit_decay_factor):
-                min_epochs_hit_decay_factor = self._serialize_fn(self.automatic_lr.min_epochs_hit_decay_factor)
-            else:
-                min_epochs_hit_decay_factor = self.automatic_lr.min_epochs_hit_decay_factor
-
             auto_lr = {
                 "enabled": self._auto_lr_enabled,
                 "initial_lr": self.automatic_lr.initial_lr,
                 "max_lr": self.automatic_lr.max_lr,
-                "max_kl": self.automatic_lr.max_kl,
-                "max_kl_hit_decay_factor": max_kl_hit_decay_factor,
-                "min_epochs": self.automatic_lr.min_epochs,
-                "min_epochs_hit_decay_factor": min_epochs_hit_decay_factor,
-                "increase_after_n_iters": self.automatic_lr.increase_after_n_iters,
-                "increase_factor": self.automatic_lr.increase_factor,
-                "iters_without_kl_early_stop": self._auto_lr__iters_without_kl_early_stop,
+                "updater": self._serialize_fn(self.automatic_lr.updater),
             }
 
         return {
@@ -328,7 +319,6 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerType]):
         loss_metrics = MetricsLists[float]()
 
         continue_training = True
-        early_stopped_on_kl = False
         early_stop_epoch: int | None = None
         early_stop_kl_div: float | None = None
         n_updates = 0
@@ -354,7 +344,6 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerType]):
 
                 if self.target_kl is not None and approx_kl_div > TARGET_KL_MARGIN * self.target_kl:
                     continue_training = False
-                    early_stopped_on_kl = True
                     early_stop_epoch = epoch
                     early_stop_kl_div = approx_kl_div
                     msg = f"Early stopping at epoch {epoch}, batch {i} due to reaching max kl: {approx_kl_div:.3f}"
@@ -384,8 +373,6 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerType]):
 
         train_timer.stop()
 
-        auto_lr_metrics = self._maybe_update_automatic_lr(early_stopped_on_kl, early_stop_epoch, early_stop_kl_div)
-
         self.n_total_updates += n_updates
 
         metrics_timer = PerformanceTimer().start()
@@ -397,8 +384,14 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerType]):
                 'expl_var': explained_var,
                 'grad_norm': compute_summary_statistics(grad_norms, find_max=True) if grad_norms else 0.0,
                 'grad_clip_frac': (n_grad_clipped / len(grad_norms)) if grad_norms else 0.0,
-                **auto_lr_metrics,
             }
+
+            auto_lr_metrics = self._maybe_update_automatic_lr(
+                early_stop_kl_div=early_stop_kl_div,
+                early_stop_epoch=early_stop_epoch,
+                metrics=metrics,
+            )
+            metrics.update(auto_lr_metrics)
 
             act_dim_sum = 0
             action_dims = self.policy.action_dist.action_dims
@@ -425,9 +418,9 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerType]):
 
     def _maybe_update_automatic_lr(
             self,
-            early_stopped_on_kl: bool,
-            early_stop_epoch: int | None,
-            early_stop_kl_div: float | None,
+            early_stop_kl_div: Optional[float],
+            early_stop_epoch: Optional[int],
+            metrics: dict[str, Any]
     ) -> dict[str, Any]:
         if self.automatic_lr is None:
             return {}
@@ -435,60 +428,44 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerType]):
         if not self._auto_lr_enabled:
             return {"auto_lr_event": "disabled", "auto_lr": self.learning_rate}
 
-        if early_stopped_on_kl:
-            if early_stop_kl_div > self.automatic_lr.max_kl:
-                self._auto_lr__iters_without_kl_early_stop = 0
-                if callable(self.automatic_lr.max_kl_hit_decay_factor):
-                    decay_factor = self.automatic_lr.max_kl_hit_decay_factor(early_stop_kl_div)
-                else:
-                    decay_factor = self.automatic_lr.max_kl_hit_decay_factor
-                new_lr = self.learning_rate * decay_factor
-                ratio = new_lr / self.learning_rate
-                logger.warning(
-                    f"Decaying LR from {self.learning_rate:.2e} to {new_lr:.2e} due to "
-                    f"KL early stopping at epoch {early_stop_epoch} with kl div {early_stop_kl_div:.3f} "
-                    f"({ratio=:.2f})"
-                )
-                self.set_learning_rate(new_lr)
-                return {"auto_lr_event": "max_kl_hit_decay", "auto_lr": new_lr}
-            if early_stop_epoch < self.automatic_lr.min_epochs:
-                self._auto_lr__iters_without_kl_early_stop = 0
-                if callable(self.automatic_lr.min_epochs_hit_decay_factor):
-                    decay_factor = self.automatic_lr.min_epochs_hit_decay_factor(early_stop_epoch)
-                else:
-                    decay_factor = self.automatic_lr.min_epochs_hit_decay_factor
-                new_lr = self.learning_rate * decay_factor
-                ratio = new_lr / self.learning_rate
-                logger.warning(
-                    f"Decaying LR from {self.learning_rate:.2e} to {new_lr:.2e} due to "
-                    f"KL early stopping at epoch {early_stop_epoch} with kl div {early_stop_kl_div:.3f} "
-                    f"({ratio=:.2f})"
-                )
-                self.set_learning_rate(new_lr)
-                return {"auto_lr_event": "min_epochs_hit_decay", "auto_lr": new_lr}
+        update_result = self.automatic_lr.updater(
+            state=self._auto_lr_state,
+            early_stop_kl_div=early_stop_kl_div,
+            early_stop_epoch=early_stop_epoch,
+            metrics=metrics,
+        )
+        update_ratio = update_result.get('ratio', None)
+        update_msg = update_result.get('msg', None)
+        update_event = update_result.get('event', None)
 
-        self._auto_lr__iters_without_kl_early_stop += 1
-        if self._auto_lr__iters_without_kl_early_stop < self.automatic_lr.increase_after_n_iters:
+        if update_ratio is None:
             return {"auto_lr_event": None, "auto_lr": self.learning_rate}
 
-        unclamped_lr = self.learning_rate * self.automatic_lr.increase_factor
-        new_lr = min(unclamped_lr, self.automatic_lr.max_lr)
-        ratio = new_lr / self.learning_rate
-        if new_lr < unclamped_lr:
-            logger.warning(
-                f"Auto LR capped at {new_lr:.2e} (requested {unclamped_lr:.2e}, max_lr={self.automatic_lr.max_lr:.2e}, "
-                f"{ratio=:.2f})"
-            )
-        else:
-            logger.warning(
-                f"Increasing LR from {self.learning_rate:.2e} to {new_lr:.2e} due to no "
-                f"critical KL early stopping for {self._auto_lr__iters_without_kl_early_stop} epochs "
-                f"({ratio=:.2f})"
-            )
-        self._auto_lr__iters_without_kl_early_stop = 0
+        if update_ratio > 1:
+            unclamped_lr = self.learning_rate * update_ratio
+            new_lr = min(unclamped_lr, self.automatic_lr.max_lr)
+            ratio = new_lr / self.learning_rate
+            if new_lr < unclamped_lr:
+                msg = f', {update_msg}' if update_msg else ''
+                logger.warning(
+                    f"Auto LR capped at {new_lr:.2e} (requested {unclamped_lr:.2e}{msg}, {ratio=:.2f})"
+                )
+            else:
+                msg = f': {update_msg}' if update_msg else ''
+                logger.warning(
+                    f"Increasing LR to {new_lr:.2e}{msg} ({ratio=:.2f})"
+                )
+            self.set_learning_rate(new_lr)
+            event = update_event or ("lr_increase" if new_lr == unclamped_lr else "lr_increase_capped")
+            return {"auto_lr_event": event, "auto_lr": new_lr}
+
+        new_lr = self.learning_rate * update_ratio
+        msg = f': {update_msg}' if update_msg else ''
+        logger.warning(
+            f"Decaying LR to {new_lr:.2e}{msg} (ratio={update_ratio:.2f})"
+        )
         self.set_learning_rate(new_lr)
-        event = "no_kl_early_stop_increase" if new_lr == unclamped_lr else "no_kl_early_stop_increase_capped"
-        return {"auto_lr_event": event, "auto_lr": new_lr}
+        return {"auto_lr_event": update_event or "lr_decay", "auto_lr": new_lr}
 
     def _after_optimizer_step(self) -> None:
         pass
@@ -598,7 +575,7 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerType]):
                 logger.warning("Automatic LR is already enabled.")
                 return False
             self._auto_lr_enabled = True
-            self._auto_lr__iters_without_kl_early_stop = 0
+            self._auto_lr_state = {}
             logger.warning("Enabled automatic LR (resetting no-early-stop counter).")
             return True
         else:

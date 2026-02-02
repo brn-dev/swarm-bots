@@ -8,7 +8,7 @@ import mujoco
 import numpy as np
 import moviepy.video.io.ImageSequenceClip
 
-from swarmbots.mj_env.float_or_dist import UniformDistParams
+from swarmbots.mj_env.float_or_dist_params import UniformDistParams
 from swarmbots.mj_env.scenarios.obstacle_street_scenario import (
     ObstacleStreetScenario,
     PoleParams,

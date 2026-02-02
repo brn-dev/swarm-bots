@@ -6,6 +6,7 @@ from torch import nn
 from torch.nn import functional as F
 
 from swarmbots.learn.algos.world_modeling.transformer_transition_model import TransformerTransitionModel
+from swarmbots.learn.masking import build_valid_mask, masked_mean
 from swarmbots.learn.nn_components.residual import Residual
 from swarmbots.learn.polyak_update import polyak_update
 
@@ -60,49 +61,16 @@ class SPRMixin(abc.ABC):
         agent_mask: torch.Tensor | None,
         time_mask: torch.Tensor | None,
     ) -> torch.Tensor:
-        pred_norm = F.normalize(predictions, dim=-1)
-        targ_norm = F.normalize(targets, dim=-1)
-        cosine_sim = (pred_norm * targ_norm).sum(dim=-1)
+        cosine_sim = F.cosine_similarity(predictions, targets, dim=-1, eps=1e-8)
         loss_per_item = 1.0 - cosine_sim
-
-        if agent_mask is None and time_mask is None:
-            return loss_per_item.mean()
-
-        valid = torch.ones_like(loss_per_item, dtype=torch.bool)
-
-        if agent_mask is not None:
-            if loss_per_item.ndim == 2:
-                if agent_mask.ndim != 2 or agent_mask.shape != loss_per_item.shape:
-                    raise ValueError(f"Expected agent_mask shape {tuple(loss_per_item.shape)}, got {tuple(agent_mask.shape)}")
-                valid = valid & agent_mask
-            elif loss_per_item.ndim == 3:
-                b, t, n = loss_per_item.shape
-                if agent_mask.ndim == 2:
-                    if agent_mask.shape != (b, n):
-                        raise ValueError(f"Expected agent_mask shape (B, N)=({b}, {n}), got {tuple(agent_mask.shape)}")
-                    valid = valid & agent_mask[:, None, :]
-                elif agent_mask.ndim == 3:
-                    if agent_mask.shape != (b, t, n):
-                        raise ValueError(f"Expected agent_mask shape (B, T, N)=({b}, {t}, {n}), got {tuple(agent_mask.shape)}")
-                    valid = valid & agent_mask
-                else:
-                    raise ValueError(f"Expected agent_mask ndim 2 or 3, got {agent_mask.ndim}")
-            else:
-                raise ValueError(f"Unsupported predictions/targets rank: {loss_per_item.ndim}")
-
-        if time_mask is not None:
-            if loss_per_item.ndim != 3:
-                raise ValueError("time_mask is only supported for multi-step loss (actions shape (B, T, N, A))")
-            b, t, _n = loss_per_item.shape
-            if time_mask.shape != (b, t) or time_mask.dtype != torch.bool:
-                raise ValueError(
-                    f"Expected time_mask shape (B, T)=({b}, {t}) and dtype bool, got {tuple(time_mask.shape)} / {time_mask.dtype}"
-                )
-            valid = valid & time_mask[:, :, None]
-
-        valid_f = valid.to(dtype=loss_per_item.dtype)
-        denom = valid_f.sum().clamp_min(1.0)
-        return (loss_per_item * valid_f).sum() / denom
+        base_shape = loss_per_item.shape
+        valid = build_valid_mask(
+            base_shape=base_shape,
+            device=loss_per_item.device,
+            agent_mask=agent_mask,
+            time_mask=time_mask,
+        )
+        return masked_mean(loss_per_item, valid)
 
     def compute_spr_loss(
             self,
