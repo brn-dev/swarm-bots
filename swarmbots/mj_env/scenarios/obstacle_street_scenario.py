@@ -5,7 +5,7 @@ import mujoco
 import numpy as np
 from mujoco import MjsBody
 
-from swarmbots.mj_env.float_or_dist import FloatOrDistParams, eval_fod, fod_low, FloatOrBoundedDistParams
+from swarmbots.mj_env.float_or_dist_params import FloatOrDistParams, eval_fodp, fodp_low, FloatOrBoundedDistParams
 from swarmbots.mj_env.scenarios.base_scenario import BaseScenario, SwarmActDict, SwarmObsDict
 from swarmbots.mj_env.quat_rot6d import quat_to_rot6d
 from swarmbots.mj_env.swarm.base_swarm import BaseSwarm
@@ -75,7 +75,7 @@ class ObstacleStreetScenario(BaseScenario):
             unusable_opening_offset: FloatOrDistParams = 2.0,
             street_width: float = 10.0,
             no_initial_ramp: bool = True,
-            actuator_strength: float = 3.0,
+            actuator_strength: float = 8.0,
             connection_dist_threshold: float = 0.1,
             connection_angle_threshold: float = -0.5,
             disconnect_potential_threshold: float = 5.0,
@@ -94,7 +94,7 @@ class ObstacleStreetScenario(BaseScenario):
             connectors_deactivated_reward_weight: float = 0.0,
             average_connectors_reward: bool = True,
             include_connectors_xpos_in_obs: bool = True,
-            include_connectors_xquat_in_obs: bool = True,
+            include_connectors_xquat_in_obs: bool = False,
             quat_rot6d_representation: bool = True,
             seed: int | None = None,
     ):
@@ -126,7 +126,7 @@ class ObstacleStreetScenario(BaseScenario):
 
         self.opening_widths = opening_width if isinstance(opening_width, list) else [opening_width] * num_walls
         self.unusable_opening_offset = unusable_opening_offset
-        min_inter_wall_distance = fod_low(self.inter_wall_distance)
+        min_inter_wall_distance = fodp_low(self.inter_wall_distance)
         if min_inter_wall_distance <= 1.0:
             raise ValueError(f"Expected inter_wall_distance.low > 1.0, got {min_inter_wall_distance}")
         self.ramp_length = min_inter_wall_distance - 1.0
@@ -309,15 +309,15 @@ class ObstacleStreetScenario(BaseScenario):
     def reset_walls_and_ramps(self, data: mujoco.MjData, model: mujoco.MjModel, hidden_vars: list[float]):
         rng = self.rng
 
-        unusable_opening_offset = eval_fod(self.unusable_opening_offset, rng)
+        unusable_opening_offset = eval_fodp(self.unusable_opening_offset, rng)
 
-        wall_y = eval_fod(self.first_wall_distance, rng)
+        wall_y = eval_fodp(self.first_wall_distance, rng)
         for i in range(self.num_walls):
             if i != 0:
-                wall_y += eval_fod(self.inter_wall_distance, rng)
+                wall_y += eval_fodp(self.inter_wall_distance, rng)
             hidden_vars.append(wall_y)
 
-            opening_width = eval_fod(self.opening_widths[i], rng)
+            opening_width = eval_fodp(self.opening_widths[i], rng)
             hidden_vars.append(opening_width)
 
             opening_x = (rng.random() - 0.5) * 2 * (
@@ -430,12 +430,11 @@ class ObstacleStreetScenario(BaseScenario):
             )
 
         scenario_kwargs = {
-            'wall_height': 0.10,
+            'wall_height': 0.15,
             'friction': [2, 1e-2, 2e-4],
             'force_elliptic_cone': True,
-            'actuator_strength': 5.0,
-            'actuators_activation_reward_weight': -1.5e-2,
-            'units_without_connections_reward_weight': -1e-3,
+            'actuators_activation_reward_weight': -5e-3,
+            'units_without_connections_reward_weight': -5e-4,
             'movement_reward_weight':  0e-1,
             'height_reward_weight':  0e-4,
             'connectors_stayed_active_reward_weight':  0e-5,
@@ -455,7 +454,7 @@ class ObstacleStreetScenario(BaseScenario):
 
 def sample_pole_xy(pole: PoleSpec, rng: np.random.Generator) -> tuple[float, float]:
     if isinstance(pole, PoleParams):
-        return eval_fod(pole.x, rng), eval_fod(pole.y, rng)
+        return eval_fodp(pole.x, rng), eval_fodp(pole.y, rng)
 
     if not isinstance(pole, CorrelatedPoleParams):
         raise TypeError(f"Unsupported pole spec: {type(pole).__name__}")

@@ -1,11 +1,11 @@
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Optional
 
 import numpy as np
 import torch
-from gymnasium.vector import SyncVectorEnv, AsyncVectorEnv
+from gymnasium.vector import SyncVectorEnv, AsyncVectorEnv, VectorEnv
 from gymnasium.wrappers.vector import RecordEpisodeStatistics, NormalizeReward
 from loguru import logger
 from torch import nn
@@ -13,17 +13,17 @@ from torch import nn
 from swarmbots.learn.action_dists.hybrid_action_dist import GSDEParams
 from swarmbots.learn.algos.mat.wm.mat_spr_policy import MATSPRPolicy
 from swarmbots.learn.algos.ppo.wm.ppo_wm import PPOWM
-from swarmbots.learn.algos.ppo.ppo import AutomaticLearningRate
+from swarmbots.learn.algos.ppo.ppo import AutomaticLearningRate, AutomaticLearningRateUpdateResult
 from swarmbots.learn.env_wrappers.obs_normalization.feature_wise_obs_norm_wrapper import (
     FeatureWiseObsNormWrapper,
 )
 from swarmbots.learn.env_wrappers.swarm_bots_learn_env_wrapper import SwarmBotsLearnEnvWrapper
 from swarmbots.learn.env_wrappers.transition_obs_wrapper import TransitionObsWrapper
 from swarmbots.learn.gsde_reset import GSDEProbabilityResetMode
-from swarmbots.learn.summary_statistics import SummaryStatisticsFormat
-from swarmbots.mj_env.float_or_dist import UniformDistParams
+from swarmbots.learn.summary_statistics import SummaryStatisticsFormat, SummaryStatistics
+from swarmbots.mj_env.float_or_dist_params import UniformDistParams
 from swarmbots.mj_env.scenarios.obstacle_street_scenario import ObstacleStreetScenario
-from swarmbots.mj_env.swarm.homogeneous_swarm import HomogeneousSwarm, RandomUnitLocationsConfig
+from swarmbots.mj_env.swarm.homogeneous_swarm import HomogeneousSwarm, RandomLatticeUnitLocationsConfig
 from swarmbots.mj_env.swarm_bots_env import SwarmBotsEnv
 
 
@@ -45,8 +45,9 @@ def make_env_fn(
             #     ),
             #     randomize_unit_orientations=True,
             # ),
-            randomize_unit_orientations=False,
-            first_wall_distance=UniformDistParams(1.0, 3.0),
+            unit_start_locations='8:hourglass',
+            randomize_unit_orientations=True,
+            first_wall_distance=UniformDistParams(1.5, 2.5),
             **scenario_kwargs
         )
         return SwarmBotsEnv(
@@ -125,6 +126,54 @@ def _build_feature_wise_obs_norm_indices(
     )
 
 
+def wrap_vec_env(
+        vector_env: SyncVectorEnv | AsyncVectorEnv,
+        env_settings: dict,
+        gamma: float,
+        global_obs_dim: int,
+        hidden_vars_dim: int,
+        local_obs_dim: int,
+        rollout_device: torch.device
+) -> SwarmBotsLearnEnvWrapper:
+    (
+        local_scalar_feature_indices,
+        local_quaternion_indices,
+        global_scalar_feature_indices,
+        global_quaternion_indices,
+    ) = _build_feature_wise_obs_norm_indices(
+        env_settings=env_settings,
+        local_obs_dim=local_obs_dim,
+        global_obs_dim=global_obs_dim,
+    )
+    hidden_vars_scalar_feature_indices = list(range(hidden_vars_dim))
+    hidden_vars_quaternion_indices: list[int] = []
+
+    vector_env = RecordEpisodeStatistics(vector_env)
+    vector_env = FeatureWiseObsNormWrapper(
+        vector_env,
+        obs_key="local_obs",
+        scalar_feature_indices=local_scalar_feature_indices,
+        quaternion_indices=local_quaternion_indices,
+    )
+    vector_env = FeatureWiseObsNormWrapper(
+        vector_env,
+        obs_key="global_obs",
+        scalar_feature_indices=global_scalar_feature_indices,
+        quaternion_indices=global_quaternion_indices,
+    )
+    vector_env = FeatureWiseObsNormWrapper(
+        vector_env,
+        obs_key="hidden_vars",
+        scalar_feature_indices=hidden_vars_scalar_feature_indices,
+        quaternion_indices=hidden_vars_quaternion_indices,
+    )
+    vector_env = TransitionObsWrapper(vector_env)
+    vector_env = NormalizeReward(vector_env, gamma=gamma)
+
+    env = SwarmBotsLearnEnvWrapper(vector_env, device=rollout_device)
+    return env
+
+
 def main() -> None:
     logger.remove()
     logger.add(
@@ -150,11 +199,11 @@ def main() -> None:
 
     # ===== LOAD =====
     load_path: str | None = None
-    # load_path = "runs/mat_spr_swarm_bots/2026-01-27_22-50-41/models/model_6048768_steps_stopped.pt"
+    load_path = "runs/mat_spr_swarm_bots/2026-02-01_20-31-56/models/model_6951936_steps_stopped.pt"
     std: float | None = None
 
     # ===== DEVICE =====
-    use_cuda = False and torch.cuda.is_available()
+    use_cuda = True and torch.cuda.is_available()
     rollout_device = torch.device("cpu")
     train_device = torch.device("cuda" if use_cuda else "cpu")
 
@@ -193,18 +242,6 @@ def main() -> None:
     del dummy_env
     print("Env settings captured.")
 
-    (
-        local_scalar_feature_indices,
-        local_quaternion_indices,
-        global_scalar_feature_indices,
-        global_quaternion_indices,
-    ) = _build_feature_wise_obs_norm_indices(
-        env_settings=env_settings,
-        local_obs_dim=local_obs_dim,
-        global_obs_dim=global_obs_dim,
-    )
-    hidden_vars_scalar_feature_indices = list(range(hidden_vars_dim))
-    hidden_vars_quaternion_indices: list[int] = []
 
     def make_record_env() -> SwarmBotsLearnEnvWrapper:
         record_env = SyncVectorEnv([
@@ -214,29 +251,15 @@ def main() -> None:
                 render_mode='rgb_array'
             )
         ])
-        record_env = RecordEpisodeStatistics(record_env)
-        record_env = FeatureWiseObsNormWrapper(
-            record_env,
-            obs_key="local_obs",
-            scalar_feature_indices=local_scalar_feature_indices,
-            quaternion_indices=local_quaternion_indices,
+        record_env = wrap_vec_env(
+            vector_env=record_env,
+            env_settings=env_settings,
+            gamma=gamma,
+            global_obs_dim=global_obs_dim,
+            hidden_vars_dim=hidden_vars_dim,
+            local_obs_dim=local_obs_dim,
+            rollout_device=rollout_device,
         )
-        record_env = FeatureWiseObsNormWrapper(
-            record_env,
-            obs_key="global_obs",
-            scalar_feature_indices=global_scalar_feature_indices,
-            quaternion_indices=global_quaternion_indices,
-        )
-        record_env = FeatureWiseObsNormWrapper(
-            record_env,
-            obs_key="hidden_vars",
-            scalar_feature_indices=hidden_vars_scalar_feature_indices,
-            quaternion_indices=hidden_vars_quaternion_indices,
-        )
-        record_env = TransitionObsWrapper(record_env)
-        record_env = NormalizeReward(record_env, gamma=gamma)
-        record_env = SwarmBotsLearnEnvWrapper(record_env, device=rollout_device)
-
         return record_env
 
     print('Creating vector env...')
@@ -250,34 +273,19 @@ def main() -> None:
         for _ in range(10):
             logger.warning('USING SYNC VECTOR ENV')
 
-    gamma = 0.987
+    gamma = 0.991
     
     print("Wrapping...")
-    vector_env = RecordEpisodeStatistics(vector_env)
-    vector_env = FeatureWiseObsNormWrapper(
-        vector_env,
-        obs_key="local_obs",
-        scalar_feature_indices=local_scalar_feature_indices,
-        quaternion_indices=local_quaternion_indices,
+    env = wrap_vec_env(
+        vector_env=vector_env,
+        env_settings=env_settings,
+        gamma=gamma,
+        global_obs_dim=global_obs_dim,
+        hidden_vars_dim=hidden_vars_dim,
+        local_obs_dim=local_obs_dim,
+        rollout_device=rollout_device,
     )
-    vector_env = FeatureWiseObsNormWrapper(
-        vector_env,
-        obs_key="global_obs",
-        scalar_feature_indices=global_scalar_feature_indices,
-        quaternion_indices=global_quaternion_indices,
-    )
-    vector_env = FeatureWiseObsNormWrapper(
-        vector_env,
-        obs_key="hidden_vars",
-        scalar_feature_indices=hidden_vars_scalar_feature_indices,
-        quaternion_indices=hidden_vars_quaternion_indices,
-    )
-    vector_env = TransitionObsWrapper(vector_env)
-    vector_env = NormalizeReward(vector_env, gamma=gamma)
 
-    print("Wrapping with SwarmBotsLearnEnvWrapper...")
-    env = SwarmBotsLearnEnvWrapper(vector_env, device=rollout_device)
-    
     print(f"Environment initialized.")
     print(f"n_agents: {env.n_agents}")
     print(f"local_obs_dim: {env.local_obs_dim}")
@@ -288,7 +296,7 @@ def main() -> None:
     print("Initializing Policy...")
     policy = MATSPRPolicy(
         env=env,
-        local_obs_encoder_hidden_dims=[128, 128],
+        local_obs_encoder_hidden_dims=[192, 192],
         action_encoder_hidden_dims=[32],
         d_model=64,
         d_model_decoder=32,
@@ -324,21 +332,46 @@ def main() -> None:
     )
     print(policy)
 
-    lr = 1e-4
-    # if load_path is not None:
-    #     lr = 2e-5
-    #     logger.warning(f'Setting {lr = :.2e}')
-
     print("Initializing PPO Algorithm...")
+
+    lr = 1e-4
+
+    def auto_lr_updater(
+            state: dict[str, Any],
+            early_stop_kl_div: Optional[float],
+            early_stop_epoch: Optional[int],
+            metrics: dict[str, Any]
+    ) -> AutomaticLearningRateUpdateResult:
+        if early_stop_kl_div and early_stop_kl_div > 0.1:
+            state['counter'] = 0
+            decay_factor = np.clip(0.9 - early_stop_kl_div, 0.4, 0.8)
+            return {'ratio': decay_factor, 'msg': f'kl={early_stop_kl_div:.3f}', 'event': 'max_kl_hit'}
+
+        if early_stop_epoch and early_stop_epoch < 2:
+            state['counter'] = 0
+            decay_factor = 0.9 if early_stop_epoch == 1 else 0.75
+            return {'ratio': decay_factor, 'msg': f'epoch={early_stop_epoch}', 'event': 'min_epoch_hit'}
+
+        clip_frac_stats: Optional[SummaryStatistics] = metrics.get('clip_frac', None)
+        if clip_frac_stats and clip_frac_stats.mean > 0.25:
+            clip_frac = clip_frac_stats.mean
+            state['counter'] = 0
+            decay_factor = np.clip(1.15 - clip_frac, 0.5, 0.9)
+            return {'ratio': decay_factor, 'msg': f'{clip_frac=:.3f}', 'event': 'max_clip_frac_hit'}
+
+        counter = state.get('counter', 0) + 1
+
+        if counter >= 2:
+            state['counter'] = 0
+            return {'ratio': 1.3}
+
+        state['counter'] = counter
+        return {'ratio': None}
+
     auto_lr = AutomaticLearningRate(
         initial_lr=lr,
-        max_lr=3e-4,
-        max_kl=0.1,
-        max_kl_hit_decay_factor=lambda kl: np.clip(0.9 - kl, 0.4, 0.8),
-        min_epochs=2,
-        min_epochs_hit_decay_factor=lambda epoch: 0.9 if epoch == 1 else 0.75,
-        increase_after_n_iters=2,
-        increase_factor=1.3,
+        max_lr=2e-4,
+        updater=auto_lr_updater
     )
     ppo = PPOWM(
         policy=policy,
@@ -353,7 +386,7 @@ def main() -> None:
         clip_range=0.2,
         target_kl=0.04,
         gsde_reset_mode=GSDEProbabilityResetMode(probability=1/6),
-        ent_coef=0.001,
+        ent_coef=0.003,
         value_loss_fn=nn.SmoothL1Loss(),
         train_device=train_device,
         rollout_device=rollout_device,

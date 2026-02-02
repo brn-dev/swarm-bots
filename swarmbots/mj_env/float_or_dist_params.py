@@ -47,13 +47,13 @@ FloatOrBoundedDistParams = float | BoundedDistParams
 REJECTION_SAMPLING_WARNING_THRESHOLD = 10
 
 
-def fod_low(fobdp: FloatOrBoundedDistParams) -> float:
+def fodp_low(fobdp: FloatOrBoundedDistParams) -> float:
     if isinstance(fobdp, (float, int)):
         return float(fobdp)
     return float(fobdp.low)
 
 
-def eval_fod(fodp: FloatOrDistParams, rng: np.random.Generator) -> float:
+def eval_fodp(fodp: FloatOrDistParams, rng: np.random.Generator) -> float:
     if isinstance(fodp, (float, int)):
         return float(fodp)
     if isinstance(fodp, UniformDistParams):
@@ -63,6 +63,13 @@ def eval_fod(fodp: FloatOrDistParams, rng: np.random.Generator) -> float:
     if isinstance(fodp, NormalDistParams):
         return rng.normal(fodp.mean, fodp.std)
     raise ValueError(f'{fodp = }')
+
+def eval_fodp_3d(fodp_3d: tuple[FloatOrDistParams, FloatOrDistParams, FloatOrDistParams], rng: np.random.Generator):
+    return (
+        eval_fodp(fodp_3d[0], rng),
+        eval_fodp(fodp_3d[1], rng),
+        eval_fodp(fodp_3d[2], rng),
+    )
 
 
 def eval_truncated_normal(dp: TruncatedNormalDistParams, rng: np.random.Generator):

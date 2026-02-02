@@ -1,11 +1,11 @@
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, TypeVar, TypeAlias
 
 import mujoco
 import numpy as np
 from mujoco import MjsBody
 
-from swarmbots.mj_env.float_or_dist import FloatOrDistParams, eval_fod, DistParams
+from swarmbots.mj_env.float_or_dist_params import FloatOrDistParams, eval_fodp, DistParams, eval_fodp_3d
 from swarmbots.mj_env.random_utils import random_quat_shoemake
 from swarmbots.mj_env.swarm.base_swarm import BaseSwarm
 from swarmbots.mj_env.swarm.swarm_config import SwarmConfig
@@ -16,16 +16,16 @@ from swarmbots.mj_env.swarm.unit_config import UnitConfig, UNIT_CONFIG_TETRAHEDR
 UNIT_START_LOCATION_PRESETS = {
     '4:diamond': [
         (0.0, 0.0, 0.0),
-        (0.4, -0.4, 0),
-        (-0.4, -0.4, 0),
+        (0.4, -0.4, 0.0),
+        (-0.4, -0.4, 0.0),
         (0.0, -0.8, 0.0),
     ],
     '5:X': [
         (0.0, 0.0, 0.0),
-        (0.4, 0.4, 0),
-        (0.4, -0.4, 0),
-        (-0.4, 0.4, 0),
-        (-0.4, -0.4, 0),
+        (0.4, 0.4, 0.0),
+        (0.4, -0.4, 0.0),
+        (-0.4, 0.4, 0.0),
+        (-0.4, -0.4, 0.0),
     ],
     '5:T': [
         (0.0, 0.0, 0.0),
@@ -62,10 +62,37 @@ UNIT_START_LOCATION_PRESETS = {
         (0.4, 0.0, 0.0),
         (-0.4, 0.0, 0.0),
     ],
+    '8:hourglass': [
+        (0.0, 0.0, 0.0),
+        (0.8, 0.0, 0.0),
+        (-0.8, 0.0, 0.0),
+        (0.4, -0.4, 0.0),
+        (-0.4, -0.4, 0.0),
+        (0.0, -0.8, 0.0),
+        (0.8, -0.8, 0.0),
+        (-0.8, -0.8, 0.0),
+    ],
 }
 
+T = TypeVar('T')
+Tuple2: TypeAlias = tuple[T, T]
+Tuple3: TypeAlias = tuple[T, T, T]
+Tuple2or3: TypeAlias = Tuple2 | Tuple3
+
+def _normalize_tuple2or3(tup: Tuple2or3[T], default_val: T) -> Tuple3[T]:
+    l = len(tup)
+    if l == 2:
+        # noinspection PyTypeChecker
+        return tup + (default_val,)
+    if l == 3:
+        return tup
+    raise ValueError(tup)
+
+def _normalize_tuples2or3(tuples: list[Tuple2or3[T]], default_val: T) -> list[Tuple3[T]]:
+    return [_normalize_tuple2or3(tup, default_val) for tup in tuples]
+
 @dataclass
-class RandomUnitLocationsConfig:
+class RandomLatticeUnitLocationsConfig:
     num_units: int
     pairwise_distance: float
 
@@ -73,7 +100,36 @@ class RandomUnitLocationsConfig:
     z_pos: float = 0.0
     center: bool = True
 
-UnitStartLocations = list[tuple[float, float, float]] | RandomUnitLocationsConfig
+@dataclass
+class RandomWiggleUnitLocationsConfig:
+    num_units: int
+    unit_locations: list[Tuple3[float]]
+    wiggle_params: list[Tuple3[FloatOrDistParams]]
+
+    def __init__(
+            self,
+            unit_locations: list[Tuple2or3[float]] | str,
+            wiggle_params: DistParams | Tuple2or3[DistParams] | list[Tuple2or3[FloatOrDistParams]],
+    ):
+        if isinstance(unit_locations, str):
+            self.unit_locations = UNIT_START_LOCATION_PRESETS[unit_locations]
+        else:
+            self.unit_locations = _normalize_tuples2or3(unit_locations, 0.0)
+
+        self.num_units = len(self.unit_locations)
+        if isinstance(wiggle_params, DistParams):
+            self.wiggle_params = [(wiggle_params,) * 3] * self.num_units
+        elif isinstance(wiggle_params, tuple):
+            self.wiggle_params = [_normalize_tuple2or3(wiggle_params, 0.0)] * self.num_units
+        else:
+            assert len(wiggle_params) == self.num_units
+            self.wiggle_params = _normalize_tuples2or3(wiggle_params, 0.0)
+
+UnitStartLocations = (
+        list[Tuple2or3[FloatOrDistParams]]
+        | RandomLatticeUnitLocationsConfig
+        | RandomWiggleUnitLocationsConfig
+)
 
 class HomogeneousSwarm(BaseSwarm):
 
@@ -88,29 +144,27 @@ class HomogeneousSwarm(BaseSwarm):
             leg_length: float = 0.2,
             leg_radius: float = 0.025,
             hinge_range: float = np.pi / 3,
-            hinge_armature: float = 0.001,
+            hinge_armature: float = 0.003,
             connection_torquescale: float = 10.0,
             randomize_unit_orientations: bool = False
     ):
         assert unit_start_quats is None or not randomize_unit_orientations
 
-        self.random_unit_start_locations = False
-        if isinstance(unit_start_locations, RandomUnitLocationsConfig):
+        if isinstance(unit_start_locations, str):
+            self.unit_start_locations = UNIT_START_LOCATION_PRESETS[unit_start_locations]
+            self.num_units = len(self.unit_start_locations)
+        elif isinstance(unit_start_locations, RandomLatticeUnitLocationsConfig):
             assert unit_start_locations.max_distance > unit_start_locations.pairwise_distance
             self.num_units = unit_start_locations.num_units
             self.unit_start_locations = unit_start_locations
-            self.random_unit_start_locations = True
-
-        elif isinstance(unit_start_locations, str):
-            if unit_start_locations in UNIT_START_LOCATION_PRESETS:
-                self.unit_start_locations = UNIT_START_LOCATION_PRESETS.get(unit_start_locations)
-                self.num_units = len(self.unit_start_locations)
-            else:
-                raise ValueError(f'Unknown unit start location preset "{unit_start_locations}", available presets: '
-                             + str(list(UNIT_START_LOCATION_PRESETS.keys())))
-        else:
-            self.num_units = len(unit_start_locations)
+        elif isinstance(unit_start_locations, RandomWiggleUnitLocationsConfig):
+            self.num_units = unit_start_locations.num_units
             self.unit_start_locations = unit_start_locations
+        elif isinstance(unit_start_locations, list):
+            self.num_units = len(unit_start_locations)
+            self.unit_start_locations = _normalize_tuples2or3(unit_start_locations, 0.0)
+        else:
+            raise ValueError(unit_start_locations)
 
         self.unit_start_quats = unit_start_quats
         self.randomize_unit_orientations = randomize_unit_orientations
@@ -148,14 +202,19 @@ class HomogeneousSwarm(BaseSwarm):
         spec.compiler.degree = 0
         worldbody: MjsBody = spec.worldbody
 
-        if self.random_unit_start_locations:
-            unit_start_locations = self._generate_random_start_locations(rng=np.random.default_rng())
+        unit_start_locations: list[Tuple3[FloatOrDistParams]]
+        if isinstance(self.unit_start_locations, RandomLatticeUnitLocationsConfig):
+            unit_start_locations = self._generate_random_lattice_start_locations(rng=rng)
+        elif isinstance(self.unit_start_locations, RandomWiggleUnitLocationsConfig):
+            unit_start_locations = self.unit_start_locations.unit_locations
         else:
             unit_start_locations = self.unit_start_locations
 
+        rng = np.random.default_rng()
+
         for i, unit_start_location in enumerate(unit_start_locations):
-            unit_start_location = np.array(unit_start_location)
-            unit_start_quat = np.zeros(4, dtype=float)
+            unit_start_location = np.array([eval_fodp(coord, rng) for coord in unit_start_location])
+            unit_start_quat = np.array([1.0, 0.0, 0.0, 0.0], dtype=float)
             if self.unit_start_quats is not None:
                 unit_start_quat = np.array(self.unit_start_quats[i])
 
@@ -183,10 +242,25 @@ class HomogeneousSwarm(BaseSwarm):
     ) -> SwarmConnections:
         connections = SwarmConnections(self.config)
 
-        if self.random_unit_start_locations:
-            unit_start_locations = self._generate_random_start_locations(rng=rng)
+        unit_start_locations: list[Tuple3[float]]
+        if isinstance(self.unit_start_locations, RandomLatticeUnitLocationsConfig):
+            unit_start_locations = self._generate_random_lattice_start_locations(rng)
+        elif isinstance(self.unit_start_locations, RandomWiggleUnitLocationsConfig):
+            unit_start_locations = []
+            for unit_loc, unit_wiggle in zip(
+                    self.unit_start_locations.unit_locations,
+                    self.unit_start_locations.wiggle_params
+            ):
+                # noinspection PyTypeChecker
+                unit_start_locations.append(tuple(
+                    coord + eval_fodp(wiggle, rng)
+                    for coord, wiggle in zip(unit_loc, unit_wiggle)
+                ))
         else:
-            unit_start_locations = self.unit_start_locations
+            unit_start_locations = [
+                eval_fodp_3d(unit_loc, rng)
+                for unit_loc in self.unit_start_locations
+            ]
 
         for i in range(self.num_units):
             qpos_adr, dof_adr = self._get_unit_main_body_addresses(model, i)
@@ -195,6 +269,8 @@ class HomogeneousSwarm(BaseSwarm):
 
             if self.randomize_unit_orientations:
                 data.qpos[qpos_adr + 3:qpos_adr + 7] = random_quat_shoemake()
+            elif self.unit_start_quats is not None:
+                data.qpos[qpos_adr + 3:qpos_adr + 7] = self.unit_start_quats[i]
             else:
                 data.qpos[qpos_adr + 3:qpos_adr + 7] = [1, 0, 0, 0]
 
@@ -212,12 +288,12 @@ class HomogeneousSwarm(BaseSwarm):
         dof_adr = model.jnt_dofadr[jnt_adr]
         return qpos_adr, dof_adr
 
-    def _generate_random_start_locations(
+    def _generate_random_lattice_start_locations(
             self,
             rng: np.random.Generator,
             eps: float = 1e-6,
     ) -> list[tuple[float, float, float]]:
-        random_config: RandomUnitLocationsConfig = self.unit_start_locations
+        random_config: RandomLatticeUnitLocationsConfig = self.unit_start_locations
         num_units = random_config.num_units
         pairwise_distance = random_config.pairwise_distance
         max_distance = random_config.max_distance
@@ -235,7 +311,7 @@ class HomogeneousSwarm(BaseSwarm):
 
             target_point = source_point + np.array([proposal_x, proposal_y])
 
-            if np.linalg.norm(target_point) > max_distance:
+            if float(np.linalg.norm(target_point)) > max_distance:
                 rejected_count += 1
                 continue
 
