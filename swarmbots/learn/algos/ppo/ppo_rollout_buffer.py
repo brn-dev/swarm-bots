@@ -17,6 +17,7 @@ class PPOEpisode:
     local_obs: torch.Tensor  # (n_steps, n_agents, n_local_obs)
     global_obs: torch.Tensor  # (n_steps, n_global_obs)
     hidden_vars: torch.Tensor  # (n_steps, n_hidden_vars)
+    agent_mask: MaybeTensor  # (n_steps, n_agents)
     actions: torch.Tensor  # (n_steps, n_agents, n_actions_per_agent)
     rewards: MaybeTensor  # (n_steps)
     log_probs: torch.Tensor  # (n_steps, n_agents)
@@ -25,6 +26,7 @@ class PPOEpisode:
     final_local_obs: MaybeTensor  # (n_agents, n_local_obs)
     final_global_obs: MaybeTensor  # (n_global_obs)
     final_hidden_vars: MaybeTensor  # (n_hidden_vars)
+    final_agent_mask: MaybeTensor  # (n_agents)
     final_value: MaybeTensor  # (1)
 
     returns: MaybeTensor = None  # (n_steps)
@@ -63,6 +65,7 @@ class PPOEpisodeAccumulator:
             global_obs_shape: tuple[int, ...],
             hidden_vars_shape: tuple[int, ...],
             n_agent_actions: int,
+            has_agent_mask: bool,
             storage_device: torch.device | str,
             storage_dtype: torch.dtype
     ):
@@ -78,6 +81,10 @@ class PPOEpisodeAccumulator:
             (n_envs, max_episode_length, *hidden_vars_shape),
             dtype=storage_dtype, device=storage_device
         )
+        self.agent_mask: MaybeTensor = torch.zeros(
+            (n_envs, max_episode_length, n_agents),
+            dtype=torch.bool, device=storage_device
+        ) if has_agent_mask else None
         self.actions = torch.zeros(
             (n_envs, max_episode_length, n_agents, n_agent_actions),
             dtype=storage_dtype, device=storage_device
@@ -105,6 +112,7 @@ class PPOEpisodeAccumulator:
             local_obs: torch.Tensor,
             global_obs: torch.Tensor,
             hidden_vars: torch.Tensor,
+            agent_mask: MaybeTensor,
             actions: torch.Tensor,
             rewards: torch.Tensor,
             log_probs: torch.Tensor,
@@ -117,6 +125,8 @@ class PPOEpisodeAccumulator:
             self.local_obs[active_env_indices, step_indices] = local_obs[active_env_indices]
             self.global_obs[active_env_indices, step_indices] = global_obs[active_env_indices]
             self.hidden_vars[active_env_indices, step_indices] = hidden_vars[active_env_indices]
+            if agent_mask is not None:
+                self.agent_mask[active_env_indices, step_indices] = agent_mask[active_env_indices]
             self.actions[active_env_indices, step_indices] = actions[active_env_indices]
             self.rewards[active_env_indices, step_indices] = rewards[active_env_indices]
             self.log_probs[active_env_indices, step_indices] = log_probs[active_env_indices]
@@ -131,6 +141,7 @@ class PPOEpisodeAccumulator:
                 final_local_obs=local_obs[final_env_idx],
                 final_global_obs=global_obs[final_env_idx],
                 final_hidden_vars=hidden_vars[final_env_idx],
+                final_agent_mask=None if agent_mask is None else agent_mask[final_env_idx],
                 final_value=values[final_env_idx],
             )
             self.step[final_env_idx] = 0
@@ -141,13 +152,16 @@ class PPOEpisodeAccumulator:
             final_local_obs: torch.Tensor,
             final_global_obs: torch.Tensor,
             final_hidden_vars: torch.Tensor,
+            final_agent_mask: torch.Tensor,
             final_value: torch.Tensor,
     ) -> PPOEpisode:
         step = int(self.step[env].item())
+        agent_mask = None if self.agent_mask is None else self.agent_mask[env, :step].clone()
         return PPOEpisode(
             local_obs=self.local_obs[env, :step].clone(),
             global_obs=self.global_obs[env, :step].clone(),
             hidden_vars=self.hidden_vars[env, :step].clone(),
+            agent_mask=agent_mask,
             actions=self.actions[env, :step].clone(),
             rewards=self.rewards[env, :step].clone(),
             log_probs=self.log_probs[env, :step].clone(),
@@ -155,6 +169,7 @@ class PPOEpisodeAccumulator:
             final_local_obs=final_local_obs.clone(),
             final_global_obs=final_global_obs.clone(),
             final_hidden_vars=final_hidden_vars.clone(),
+            final_agent_mask=None if final_agent_mask is None else final_agent_mask.clone(),
             final_value=final_value.clone(),
         )
 
@@ -192,6 +207,7 @@ class PPORolloutBuffer:
         self.global_obs_shape = self.global_obs_space.shape[1:]
         self.hidden_vars_space = observation_space['hidden_vars']
         self.hidden_vars_shape = self.hidden_vars_space.shape[1:]
+        self.has_agent_mask = 'agent_mask' in observation_space and observation_space['agent_mask'] is not None
 
         self.n_envs = self.local_obs_space.shape[0]
 
@@ -215,6 +231,7 @@ class PPORolloutBuffer:
             global_obs_shape=self.global_obs_shape,
             hidden_vars_shape=self.hidden_vars_shape,
             n_agent_actions=self.n_agent_actions,
+            has_agent_mask=self.has_agent_mask,
             storage_device=self.rollout_device,
             storage_dtype=self.rollout_dtype,
         )
@@ -227,6 +244,7 @@ class PPORolloutBuffer:
             local_obs: torch.Tensor,
             global_obs: torch.Tensor,
             hidden_vars: torch.Tensor,
+            agent_mask: MaybeTensor,
             actions: torch.Tensor,
             rewards: torch.Tensor,
             log_probs: torch.Tensor,
@@ -240,6 +258,7 @@ class PPORolloutBuffer:
             local_obs=local_obs,
             global_obs=global_obs,
             hidden_vars=hidden_vars,
+            agent_mask=agent_mask,
             actions=actions,
             rewards=rewards,
             log_probs=log_probs,
@@ -264,6 +283,7 @@ class PPORolloutBuffer:
                 local_obs=ep.local_obs.to(device=self.train_device, dtype=self.train_dtype),
                 global_obs=ep.global_obs.to(device=self.train_device, dtype=self.train_dtype),
                 hidden_vars=ep.hidden_vars.to(device=self.train_device, dtype=self.train_dtype),
+                agent_mask=None if ep.agent_mask is None else ep.agent_mask.to(device=self.train_device),
                 actions=ep.actions.to(device=self.train_device, dtype=self.train_dtype),
                 rewards=ep.rewards.to(device=self.train_device, dtype=self.train_dtype),
                 log_probs=ep.log_probs.to(device=self.train_device, dtype=self.train_dtype),
@@ -271,6 +291,7 @@ class PPORolloutBuffer:
                 final_local_obs=ep.final_local_obs.to(device=self.train_device, dtype=self.train_dtype),
                 final_global_obs=ep.final_global_obs.to(device=self.train_device, dtype=self.train_dtype),
                 final_hidden_vars=ep.final_hidden_vars.to(device=self.train_device, dtype=self.train_dtype),
+                final_agent_mask=None if ep.final_agent_mask is None else ep.final_agent_mask.to(device=self.train_device),
                 final_value=ep.final_value.to(device=self.train_device, dtype=self.train_dtype),
                 returns=ep.returns.to(device=self.train_device, dtype=self.train_dtype),
                 advantages=ep.advantages.to(device=self.train_device, dtype=self.train_dtype),
@@ -278,25 +299,6 @@ class PPORolloutBuffer:
             for ep in self.episodes
         ]
 
-    def get_whole_episodes_minimal(self) -> list[PPOEpisode]:
-        return [
-            PPOEpisode(
-                local_obs=ep.local_obs.to(device=self.train_device, dtype=self.train_dtype),
-                global_obs=ep.global_obs.to(device=self.train_device, dtype=self.train_dtype),
-                hidden_vars=ep.hidden_vars.to(device=self.train_device, dtype=self.train_dtype),
-                actions=ep.actions.to(device=self.train_device, dtype=self.train_dtype),
-                rewards=None,
-                log_probs=ep.log_probs.to(device=self.train_device, dtype=self.train_dtype),
-                values=ep.values.to(device=self.train_device, dtype=self.train_dtype),
-                final_local_obs=None,
-                final_global_obs=None,
-                final_hidden_vars=None,
-                final_value=None,
-                returns=ep.returns.to(device=self.train_device, dtype=self.train_dtype),
-                advantages=ep.advantages.to(device=self.train_device, dtype=self.train_dtype),
-            )
-            for ep in self.episodes
-        ]
 
 
 @dataclass
@@ -304,6 +306,7 @@ class PPOSamples:
     local_obs: torch.Tensor
     global_obs: torch.Tensor
     hidden_vars: torch.Tensor
+    agent_mask: MaybeTensor
     actions: torch.Tensor
     log_probs: torch.Tensor
     values: torch.Tensor
@@ -321,6 +324,10 @@ class PPOSampler(BaseSampler[PPOSamplesType]):
         self.local_obs = torch.concatenate(tuple(ep.local_obs for ep in episodes), dim=0)
         self.global_obs = torch.concatenate(tuple(ep.global_obs for ep in episodes), dim=0)
         self.hidden_vars = torch.concatenate(tuple(ep.hidden_vars for ep in episodes), dim=0)
+        if any(ep.agent_mask is None for ep in episodes):
+            self.agent_mask = None
+        else:
+            self.agent_mask = torch.concatenate(tuple(ep.agent_mask for ep in episodes), dim=0)
         self.actions = torch.concatenate(tuple(ep.actions for ep in episodes), dim=0)
         self.log_probs = torch.concatenate(tuple(ep.log_probs for ep in episodes), dim=0)
         self.values = torch.concatenate(tuple(ep.values for ep in episodes), dim=0)
@@ -334,6 +341,7 @@ class PPOSampler(BaseSampler[PPOSamplesType]):
             local_obs=self.local_obs[batch_indices],
             global_obs=self.global_obs[batch_indices],
             hidden_vars=self.hidden_vars[batch_indices],
+            agent_mask=None if self.agent_mask is None else self.agent_mask[batch_indices],
             actions=self.actions[batch_indices],
             log_probs=self.log_probs[batch_indices],
             values=self.values[batch_indices],

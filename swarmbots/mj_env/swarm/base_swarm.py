@@ -1,4 +1,5 @@
 import abc
+from typing import Optional
 
 import mujoco
 import numpy as np
@@ -17,8 +18,13 @@ class BaseSwarm(abc.ABC):
             'config': self.config.get_settings()
         }
 
+    @property
     @abc.abstractmethod
-    def _create_swarm_spec(self) -> mujoco.MjSpec:
+    def can_have_inactive_units(self) -> bool:
+        raise NotImplementedError()
+
+    @abc.abstractmethod
+    def _create_swarm_spec(self, rng: np.random.Generator | None = None) -> mujoco.MjSpec:
         raise NotImplementedError()
 
     @abc.abstractmethod
@@ -27,15 +33,18 @@ class BaseSwarm(abc.ABC):
             model: mujoco.MjModel,
             data: mujoco.MjData,
             rng: np.random.Generator,
-            start_location: np.ndarray
-    ) -> SwarmConnections:
+            start_location: np.ndarray,
+            parking_location: np.ndarray,
+    ) -> tuple[SwarmConnections, Optional[np.ndarray]]:
         """
         initialize state and potentially randomize swarm
         """
         raise NotImplementedError()
 
-    def create_swarm_spec(self) -> mujoco.MjSpec:
-        spec = self._create_swarm_spec()
+    def create_swarm_spec(self, rng: np.random.Generator | None = None) -> mujoco.MjSpec:
+        if rng is None:
+            rng = np.random.default_rng(42)
+        spec = self._create_swarm_spec(rng)
         self.add_eq_constraints(spec)
         return spec
 

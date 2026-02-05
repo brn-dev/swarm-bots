@@ -39,7 +39,7 @@ def extract_env_state(checkpoint: Any) -> Optional[list[dict[str, Any]]]:
 def copy_running_mean_std(src: Any, dst: Any) -> None:
     if dst.mean.shape != src.mean.shape:
         raise ValueError(f'{dst.mean.shape = } is not equal {src.mean.shape = }')
-    if dst.mean.var != src.mean.var:
+    if dst.var.shape != src.var.shape:
         raise ValueError(f'{dst.mean.var = } is not equal {src.mean.var = }')
     dst.mean = src.mean.copy()
     dst.var = src.var.copy()

@@ -88,7 +88,10 @@ class FeatureWiseObsNormWrapper(VectorObservationWrapper, gym.utils.RecordConstr
         if self._update_running_mean:
             if self.obs_rms is not None:
                 scalars = obs[..., self._scalar_indices]
-                self.obs_rms.update(self._prepare_batch(scalars))
+                agent_mask = observations.get("agent_mask", None)
+                batch = self._prepare_batch(scalars, agent_mask)
+                if batch.size > 0:
+                    self.obs_rms.update(batch)
 
         if self.obs_rms is not None:
             scalars = obs[..., self._scalar_indices]
@@ -101,7 +104,16 @@ class FeatureWiseObsNormWrapper(VectorObservationWrapper, gym.utils.RecordConstr
 
         return observations
 
-    def _prepare_batch(self, samples: np.ndarray) -> np.ndarray:
+    def _prepare_batch(
+        self,
+        samples: np.ndarray,
+        agent_mask: np.ndarray | None,
+    ) -> np.ndarray:
+        if agent_mask is not None and samples.ndim >= 2 and agent_mask.shape == samples.shape[:2]:
+            samples = samples[agent_mask]
+            if samples.ndim == 1:
+                return samples.reshape(1, -1)
+            return samples.reshape(-1, samples.shape[-1])
         if self._per_agent:
             return samples
         if samples.ndim == 1:

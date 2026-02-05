@@ -1,5 +1,5 @@
 import abc
-from typing import Any, Iterable, TypedDict, Literal
+from typing import Any, Iterable, TypedDict, Literal, NotRequired, Optional
 
 import mujoco
 import numpy as np
@@ -15,6 +15,7 @@ class SwarmObsDict(TypedDict):
     local_obs: np.ndarray  # shape (n_unit, n_obs_per_unit)
     global_obs: np.ndarray  # shape (n_global_features,)
     hidden_vars: np.ndarray  # shape (n_hidden_vars,)
+    agent_mask: NotRequired[Optional[np.ndarray]]  # shape (n_unit,), type bool
 
 class SwarmActDict(TypedDict):
     actuators: np.ndarray  # shape (n_unit, n_actuators_per_unit), type float
@@ -204,7 +205,9 @@ class BaseScenario(abc.ABC):
         spec.compiler.degree = 0
         worldbody: MjsBody = spec.worldbody
 
-        swarm_spec = self.swarm.create_swarm_spec()
+        seed = self.seed if self.seed is not None else 42
+        spec_rng = np.random.default_rng(seed)
+        swarm_spec = self.swarm.create_swarm_spec(rng=spec_rng)
 
         swarm_site = worldbody.add_site(pos=self.get_swarm_start_location(), name='swarm_site')
         spec.attach(swarm_spec, '', site=swarm_site)
@@ -242,21 +245,32 @@ class BaseScenario(abc.ABC):
     def get_swarm_start_location(self):
         return np.array([0.0, 0.0, 0.35])
 
+    def get_swarm_parking_location(self):
+        return np.array([0.0, -5.0, 0.35])
+
+
     def reset_scenario(self, model: mujoco.MjModel, data: mujoco.MjData) -> tuple[dict, SwarmConnections]:
         mujoco.mj_resetData(model, data)
 
         state = dict()
-        connections = self.swarm.reset_swarm(
+        connections, units_active_mask = self.swarm.reset_swarm(
             model,
             data,
             self.rng,
-            self.get_swarm_start_location()
+            self.get_swarm_start_location(),
+            self.get_swarm_parking_location()
         )
+        if self.swarm.can_have_inactive_units:
+            if units_active_mask is None:
+                units_active_mask = np.ones(self.num_units, dtype=bool)
+        else:
+            units_active_mask = None
 
         for (u1, c1, u2, c2), angle in zip(*connections.get_active_connections()):
             self._activate_equality_constraint(model, data, u1, c1, u2, c2, angle)
 
         state['unit_positions'] = data.qpos[self._qpos_indices[:, :3]].copy()
+        state['units_active_mask'] = units_active_mask
 
         return state, connections
 
@@ -321,11 +335,17 @@ class BaseScenario(abc.ABC):
             conn_xquat = conn_xquat.reshape((self.num_units, -1))
             obs_list.append(conn_xquat)
 
-        return {
+        obs: SwarmObsDict = {
             'local_obs': np.concatenate(obs_list, axis=1),
             'global_obs': np.empty(0, dtype=float),
             'hidden_vars': np.empty(0, dtype=float),
         }
+        if self.swarm.can_have_inactive_units:
+            units_active_mask = state['units_active_mask']
+            if units_active_mask is None:
+                raise ValueError("units_active_mask must be set when can_have_inactive_units is True")
+            obs['agent_mask'] = units_active_mask.copy()
+        return obs
 
     def apply_action(
             self,
@@ -335,9 +355,17 @@ class BaseScenario(abc.ABC):
             state: dict,
             connections: SwarmConnections
     ) -> None:
-        data.ctrl[self._ctrl_indices] = action['actuators'] * self.actuator_strength
+        agent_mask = state['units_active_mask']
+        actuators_action = np.asarray(action['actuators'], dtype=float)
+        if agent_mask is not None:
+            actuators_action = actuators_action.copy()
+            actuators_action[~agent_mask] = 0.0
+        data.ctrl[self._ctrl_indices] = actuators_action * self.actuator_strength
 
         connectors_action = np.asarray(action['connectors'], dtype=bool)
+        if agent_mask is not None:
+            connectors_action = connectors_action.copy()
+            connectors_action[~agent_mask] = False
 
         currently_active_mask = connections.get_is_active_mask()
 
@@ -367,7 +395,7 @@ class BaseScenario(abc.ABC):
 
     def get_obs_space(self):
         obs = self.get_obs(self.dummy_model, self.dummy_data, self._dummy_state, self._dummy_connections)
-        return spaces.Dict({
+        obs_space = spaces.Dict({
             'local_obs': spaces.Box(
                 low=-np.inf, high=np.inf, shape=obs['local_obs'].shape, dtype=np.float32
             ),
@@ -378,6 +406,9 @@ class BaseScenario(abc.ABC):
                 low=-np.inf, high=np.inf, shape=obs['hidden_vars'].shape, dtype=np.float32
             ),
         })
+        if self.swarm.can_have_inactive_units:
+            obs_space['agent_mask'] = spaces.MultiBinary((self.num_units,))
+        return obs_space
 
     def get_actuator_action_shape(self):
         return self._ctrl_indices.shape
@@ -405,8 +436,8 @@ class BaseScenario(abc.ABC):
         the closest pairs if the following criteria are fulfilled:
         * They don't belong to the same unit
         * They are below a certain threshold in distance
-        * Their z-axis is anti-aligned up to a threshold - meaning they face each other
-        * They are in front of each other (positive z-distance)
+        * Their z-axes are anti-aligned up to a threshold - meaning they face each other
+        * They are in front of each other (positive relative z-distance)
         :return: num_connectors_successful, num_connectors_unsuccessful
         """
         activated_indices = np.stack(np.where(newly_activated_mask)).T

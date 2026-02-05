@@ -92,7 +92,11 @@ class SPRMixin(abc.ABC):
             with torch.no_grad():
                 self.target_encoder.eval()
                 self.target_projection.eval()
-                target_local_latents = self.target_encoder(local_obs=next_local_obs, global_obs=next_global_obs)
+                target_local_latents = self.target_encoder(
+                    local_obs=next_local_obs,
+                    global_obs=next_global_obs,
+                    agent_mask=agent_mask,
+                )
                 target_projections = self.target_projection(target_local_latents)
 
             return self._cosine_similarity_loss(
@@ -132,7 +136,20 @@ class SPRMixin(abc.ABC):
         with torch.no_grad():
             self.target_encoder.eval()
             self.target_projection.eval()
-            z_targets = self.target_encoder(local_obs=local_flat, global_obs=global_flat).reshape(b, t, n, -1)
+            if agent_mask is None:
+                flat_agent_mask = None
+            elif agent_mask.ndim == 2:
+                flat_agent_mask = agent_mask[:, None, :].expand(b, t, n).reshape(b * t, n)
+            elif agent_mask.ndim == 3:
+                flat_agent_mask = agent_mask.reshape(b * t, n)
+            else:
+                raise ValueError(f"Expected agent_mask ndim 2 or 3, got {agent_mask.ndim}")
+
+            z_targets = self.target_encoder(
+                local_obs=local_flat,
+                global_obs=global_flat,
+                agent_mask=flat_agent_mask,
+            ).reshape(b, t, n, -1)
             target_projections = self.target_projection(z_targets)
 
         return self._cosine_similarity_loss(
