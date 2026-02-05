@@ -88,7 +88,12 @@ class MATEncoder(nn.Module):
             )
             nn.init.orthogonal_(self.agent_embeddings)
 
-    def forward(self, local_obs: torch.Tensor, global_obs: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        local_obs: torch.Tensor,
+        global_obs: torch.Tensor,
+        agent_mask: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         local_embeddings = self.local_obs_encoder(local_obs)
         if self.agent_embeddings is not None:
             local_embeddings = local_embeddings + self.agent_embeddings
@@ -98,5 +103,13 @@ class MATEncoder(nn.Module):
             expanded_global_embeddings = global_embeddings.unsqueeze(1).expand(-1, self.n_agents, -1)
             local_embeddings = local_embeddings + expanded_global_embeddings
 
-        augmented_observations = self.encoder(local_embeddings)
+        src_key_padding_mask = None
+        if agent_mask is not None:
+            if agent_mask.shape != local_obs.shape[:2]:
+                raise ValueError(
+                    f"Expected agent_mask shape {tuple(local_obs.shape[:2])}, got {tuple(agent_mask.shape)}"
+                )
+            src_key_padding_mask = ~agent_mask
+
+        augmented_observations = self.encoder(local_embeddings, src_key_padding_mask=src_key_padding_mask)
         return augmented_observations

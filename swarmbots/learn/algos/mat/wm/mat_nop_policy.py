@@ -44,18 +44,22 @@ class MATNOPPolicy(MATPolicy, NextObsPredMixin, PPOWMPolicyMixin):
             transition_model_coembed_hidden_dims: list[int] | None = None,
             transition_model_head_hidden_dims: list[int] | None = None,
             transition_model_predict_delta: bool = True,
+            wm_pre_transition_dims: list[int] | None = None,
+            wm_pre_predictors_dims: list[int] | None = None,
             local_scalar_target_indices: list[int] | None = None,
             local_angle_target_indices: list[int] | None = None,
             local_rot6d_target_indices: list[int] | None = None,
             local_binary_target_indices: list[int] | None = None,
-            wm_predictor_hidden_dims: list[int] | None = None,
-            scalar_loss_fn: nn.Module | None = None,
+            wm_scalar_predictor_hidden_dims: list[int] | None = None,
+            wm_angle_predictor_hidden_dims: list[int] | None = None,
+            wm_rot6d_predictor_hidden_dims: list[int] | None = None,
+            wm_binary_predictor_hidden_dims: list[int] | None = None,
+            scalar_loss_fn: str | nn.Module | None = None,
             binary_loss_fn: nn.Module | None = None,
             scalar_loss_weight: float = 1.0,
             angle_loss_weight: float = 1.0,
             rot6d_loss_weight: float = 1.0,
             binary_loss_weight: float = 1.0,
-            pre_transition_dims: list[int] | None = None,
     ) -> None:
         super().__init__(
             env=env,
@@ -81,46 +85,64 @@ class MATNOPPolicy(MATPolicy, NextObsPredMixin, PPOWMPolicyMixin):
             add_agent_embeddings_encoder=add_agent_embeddings_encoder,
             add_agent_embeddings_decoder=add_agent_embeddings_decoder,
         )
-        predictor_hidden_dims = wm_predictor_hidden_dims or []
 
-        if local_scalar_target_indices is not None and scalar_loss_fn is None:
-            scalar_loss_fn = nn.MSELoss(reduction="none")
+        if not isinstance(scalar_loss_fn, nn.Module):
+            scalar_loss_name = scalar_loss_fn or "mse"
+            scalar_loss_name = scalar_loss_name.lower()
+            if scalar_loss_name == "mse":
+                scalar_loss_fn = nn.MSELoss(reduction="none")
+            elif scalar_loss_name == "smooth_l1":
+                scalar_loss_fn = nn.SmoothL1Loss(reduction="none")
+            else:
+                raise ValueError(f"Unknown scalar_loss {scalar_loss_name!r}")
+
         if local_binary_target_indices is not None and binary_loss_fn is None:
             binary_loss_fn = nn.BCEWithLogitsLoss(reduction="none")
 
         pre_transition_transform = None
         wm_latent_dim = self.d_model_encoder
-        if pre_transition_dims is not None and len(pre_transition_dims) > 0:
+        if wm_pre_transition_dims is not None and len(wm_pre_transition_dims) > 0:
             pre_transition_transform = MLP(
                 input_dim=self.d_model_encoder,
-                hidden_dims=[*pre_transition_dims],
+                hidden_dims=[*wm_pre_transition_dims],
                 end_with_act_fn=False,
                 act_fn_cls=act_fn_cls,
             )
-            wm_latent_dim = pre_transition_dims[-1]
+            wm_latent_dim = wm_pre_transition_dims[-1]
+
+        pre_predictors_transform = None
+        wm_pre_predictors_dim = wm_latent_dim
+        if wm_pre_predictors_dims is not None and len(wm_pre_predictors_dims) > 0:
+            pre_predictors_transform = MLP(
+                input_dim=wm_latent_dim,
+                hidden_dims=[*wm_pre_predictors_dims],
+                end_with_act_fn=False,
+                act_fn_cls=act_fn_cls,
+            )
+            wm_pre_predictors_dim = wm_pre_predictors_dims[-1]
 
         local_scalars_predictor = self._build_predictor(
-            input_dim=wm_latent_dim,
+            input_dim=wm_pre_predictors_dim,
             output_dim=len(local_scalar_target_indices) if local_scalar_target_indices is not None else 0,
-            hidden_dims=predictor_hidden_dims,
+            hidden_dims=wm_scalar_predictor_hidden_dims,
             act_fn_cls=act_fn_cls,
         )
         local_angles_predictor = self._build_predictor(
-            input_dim=wm_latent_dim,
+            input_dim=wm_pre_predictors_dim,
             output_dim=(len(local_angle_target_indices) * 2) if local_angle_target_indices is not None else 0,
-            hidden_dims=predictor_hidden_dims,
+            hidden_dims=wm_angle_predictor_hidden_dims,
             act_fn_cls=act_fn_cls,
         )
         local_rot6ds_predictor = self._build_predictor(
-            input_dim=wm_latent_dim,
+            input_dim=wm_pre_predictors_dim,
             output_dim=(len(local_rot6d_target_indices) * 6) if local_rot6d_target_indices is not None else 0,
-            hidden_dims=predictor_hidden_dims,
+            hidden_dims=wm_rot6d_predictor_hidden_dims,
             act_fn_cls=act_fn_cls,
         )
         local_binaries_predictor = self._build_predictor(
-            input_dim=wm_latent_dim,
+            input_dim=wm_pre_predictors_dim,
             output_dim=len(local_binary_target_indices) if local_binary_target_indices is not None else 0,
-            hidden_dims=predictor_hidden_dims,
+            hidden_dims=wm_binary_predictor_hidden_dims,
             act_fn_cls=act_fn_cls,
         )
 
@@ -141,6 +163,7 @@ class MATNOPPolicy(MATPolicy, NextObsPredMixin, PPOWMPolicyMixin):
                 head_mlp_hidden_dims=transition_model_head_hidden_dims,
             ),
             pre_transition_transform=pre_transition_transform,
+            pre_predictors_transform=pre_predictors_transform,
             local_scalar_target_indices=local_scalar_target_indices,
             local_angle_target_indices=local_angle_target_indices,
             local_rot6d_target_indices=local_rot6d_target_indices,
@@ -167,16 +190,22 @@ class MATNOPPolicy(MATPolicy, NextObsPredMixin, PPOWMPolicyMixin):
                 "transition_model_coembed_hidden_dims": transition_model_coembed_hidden_dims,
                 "transition_model_head_hidden_dims": transition_model_head_hidden_dims,
                 "transition_model_predict_delta": transition_model_predict_delta,
+                "wm_pre_transition_dims": wm_pre_transition_dims,
+                "wm_pre_predictors_dims": wm_pre_predictors_dims,
                 "local_scalar_target_indices": local_scalar_target_indices,
                 "local_angle_target_indices": local_angle_target_indices,
                 "local_rot6d_target_indices": local_rot6d_target_indices,
                 "local_binary_target_indices": local_binary_target_indices,
-                "wm_predictor_hidden_dims": predictor_hidden_dims,
+                "wm_scalar_predictor_hidden_dims": wm_scalar_predictor_hidden_dims,
+                "wm_angle_predictor_hidden_dims": wm_angle_predictor_hidden_dims,
+                "wm_rot6d_predictor_hidden_dims": wm_rot6d_predictor_hidden_dims,
+                "wm_binary_predictor_hidden_dims": wm_binary_predictor_hidden_dims,
+                "scalar_loss_fn": scalar_loss_fn,
+                "binary_loss_fn": binary_loss_fn,
                 "scalar_loss_weight": scalar_loss_weight,
                 "angle_loss_weight": angle_loss_weight,
                 "rot6d_loss_weight": rot6d_loss_weight,
                 "binary_loss_weight": binary_loss_weight,
-                "pre_transition_dims": pre_transition_dims,
             }
         )
 
@@ -188,6 +217,7 @@ class MATNOPPolicy(MATPolicy, NextObsPredMixin, PPOWMPolicyMixin):
             next_local_obs: torch.Tensor,
             next_global_obs: torch.Tensor,
             next_validity_mask: torch.Tensor,
+            agent_mask: torch.Tensor | None = None,
             hidden_vars: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         if actions.ndim == 4:
@@ -202,11 +232,13 @@ class MATNOPPolicy(MATPolicy, NextObsPredMixin, PPOWMPolicyMixin):
             global_obs=policy_global_obs,
             actions=policy_actions,
             hidden_vars=hidden_vars,
+            agent_mask=agent_mask,
         )
         next_obs_pred_loss = self.compute_next_obs_pred_loss(
             local_latents=augmented_observations,
             next_local_obs=next_local_obs,
             actions=actions,
+            agent_mask=agent_mask,
             time_mask=next_validity_mask,
         )
 

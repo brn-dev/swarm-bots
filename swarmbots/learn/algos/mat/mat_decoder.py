@@ -51,10 +51,44 @@ class MATDecoder(nn.Module):
         )
         self.register_buffer("tgt_mask", tgt_mask)
 
-    def forward(self, local_embeddings: torch.Tensor, augmented_observations: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        action_embeddings: torch.Tensor,
+        augmented_observations: torch.Tensor,
+        agent_mask: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        if action_embeddings.shape[0] != augmented_observations.shape[0]:
+            raise ValueError(
+                "Expected local_embeddings and augmented_observations to share batch size, "
+                f"got {action_embeddings.shape[0]} and {augmented_observations.shape[0]}"
+            )
+        if augmented_observations.shape[1] != self.n_agents:
+            raise ValueError(
+                f"Expected augmented_observations second dim {self.n_agents}, got {augmented_observations.shape[1]}"
+            )
+        seq_len = action_embeddings.shape[1]
+        if seq_len > self.n_agents:
+            raise ValueError(f"Expected seq_len <= n_agents ({self.n_agents}), got {seq_len}")
+        tgt_mask = self.tgt_mask[:seq_len, :seq_len]
+
+        tgt_key_padding_mask = None
+        memory_key_padding_mask = None
+        if agent_mask is not None:
+            if agent_mask.dtype != torch.bool:
+                raise ValueError(f"Expected agent_mask dtype bool, got {agent_mask.dtype}")
+            expected_mask_shape = (action_embeddings.shape[0], self.n_agents)
+            if agent_mask.shape != expected_mask_shape:
+                raise ValueError(
+                    f"Expected agent_mask shape {expected_mask_shape}, got {tuple(agent_mask.shape)}"
+                )
+            tgt_key_padding_mask = ~agent_mask[:, :seq_len]
+            memory_key_padding_mask = ~agent_mask
+
         decoder_output = self.decoder(
-            tgt=local_embeddings,
+            tgt=action_embeddings,
             memory=augmented_observations,
-            tgt_mask=self.tgt_mask
+            tgt_mask=tgt_mask,
+            tgt_key_padding_mask=tgt_key_padding_mask,
+            memory_key_padding_mask=memory_key_padding_mask,
         )
         return decoder_output

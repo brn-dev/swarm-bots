@@ -13,6 +13,7 @@ from swarmbots.learn.algos.ppo.ppo_rollout_buffer import PPOEpisode, PPORolloutB
 from swarmbots.learn.env_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
 from swarmbots.learn.exponential_moving_average import ExponentialMovingAverage
 from swarmbots.learn.gsde_reset import GSDEResetMode, GSDEIntervalResetMode, GSDEProbabilityResetMode
+from swarmbots.learn.masking import masked_mean
 from swarmbots.learn.metrics_list import MetricsLists
 from swarmbots.learn.performance_timer import PerformanceTimer
 from swarmbots.learn.summary_statistics import compute_summary_statistics
@@ -194,6 +195,7 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerType]):
             values: torch.Tensor,
     ) -> tuple[torch.Tensor, float, dict[str, Any]]:
         entropy, log_prob, old_log_prob = self.reduce_agents(batch, entropies, log_probs)
+        valid_mask = self._build_agent_valid_mask(batch.agent_mask, log_prob)
 
         advantages = batch.advantages
         if self.normalize_advantage and len(advantages) > 1:
@@ -206,7 +208,7 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerType]):
 
         policy_loss_1 = advantages * ratio
         policy_loss_2 = advantages * torch.clamp(ratio, 1 - self.clip_range, 1 + self.clip_range)
-        policy_loss = -torch.min(policy_loss_1, policy_loss_2).mean()
+        policy_loss = -masked_mean(torch.min(policy_loss_1, policy_loss_2), valid_mask)
 
         if self.clip_range_vf is None:
             values_pred = values
@@ -218,9 +220,9 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerType]):
         value_loss: torch.Tensor = self.value_loss_fn(values_pred, batch.returns)
 
         if entropy is None:
-            entropy_loss = -torch.mean(-log_prob)
+            entropy_loss = masked_mean(log_prob, valid_mask)
         else:
-            entropy_loss = -torch.mean(entropy)
+            entropy_loss = -masked_mean(entropy, valid_mask)
 
         value_loss_scaled = self.vf_coef * value_loss
         entropy_loss_scaled = self.ent_coef * entropy_loss
@@ -229,9 +231,9 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerType]):
 
         with torch.no_grad():
             log_ratio = log_prob - old_log_prob
-            approx_kl_div = torch.mean((torch.exp(log_ratio) - 1) - log_ratio).item()
+            approx_kl_div = masked_mean((torch.exp(log_ratio) - 1) - log_ratio, valid_mask).item()
 
-        clip_fraction = torch.mean((torch.abs(ratio - 1) > self.clip_range).float()).item()
+        clip_fraction = masked_mean((torch.abs(ratio - 1) > self.clip_range).float(), valid_mask).item()
         metrics = {
             'act_loss': policy_loss.item(),
             'ent_loss': entropy_loss.item(),
@@ -254,6 +256,7 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerType]):
             global_obs=batch.global_obs,
             actions=batch.actions,
             hidden_vars=batch.hidden_vars,
+            agent_mask=batch.agent_mask,
         )
 
         return self.compute_ppo_loss(
@@ -476,21 +479,64 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerType]):
             entropies: torch.Tensor | None,
             log_probs: torch.Tensor
     ) -> tuple[torch.Tensor | None, torch.Tensor, torch.Tensor]:
+        agent_mask = batch.agent_mask
+        if agent_mask is not None:
+            if agent_mask.dtype != torch.bool:
+                raise ValueError(f"Expected agent_mask dtype bool, got {agent_mask.dtype}")
+            if agent_mask.shape != log_probs.shape:
+                raise ValueError(
+                    f"Expected agent_mask shape {tuple(log_probs.shape)}, got {tuple(agent_mask.shape)}"
+                )
+
         if self.agent_logprob_reduction is None:
             log_prob = log_probs
             old_log_prob = batch.log_probs
             entropy = entropies
         elif self.agent_logprob_reduction == "sum":
-            log_prob = log_probs.sum(dim=AGENTS_DIM)
-            old_log_prob = batch.log_probs.sum(dim=AGENTS_DIM)
-            entropy = entropies.sum(dim=AGENTS_DIM) if entropies is not None else None
+            if agent_mask is None:
+                log_prob = log_probs.sum(dim=AGENTS_DIM)
+                old_log_prob = batch.log_probs.sum(dim=AGENTS_DIM)
+                entropy = entropies.sum(dim=AGENTS_DIM) if entropies is not None else None
+            else:
+                mask_f = agent_mask.to(dtype=log_probs.dtype)
+                log_prob = (log_probs * mask_f).sum(dim=AGENTS_DIM)
+                old_log_prob = (batch.log_probs * mask_f).sum(dim=AGENTS_DIM)
+                entropy = (entropies * mask_f).sum(dim=AGENTS_DIM) if entropies is not None else None
         elif self.agent_logprob_reduction == "mean":
-            log_prob = log_probs.mean(dim=AGENTS_DIM)
-            old_log_prob = batch.log_probs.mean(dim=AGENTS_DIM)
-            entropy = entropies.mean(dim=AGENTS_DIM) if entropies is not None else None
+            if agent_mask is None:
+                log_prob = log_probs.mean(dim=AGENTS_DIM)
+                old_log_prob = batch.log_probs.mean(dim=AGENTS_DIM)
+                entropy = entropies.mean(dim=AGENTS_DIM) if entropies is not None else None
+            else:
+                mask_f = agent_mask.to(dtype=log_probs.dtype)
+                denom = mask_f.sum(dim=AGENTS_DIM).clamp_min(1.0)
+                log_prob = (log_probs * mask_f).sum(dim=AGENTS_DIM) / denom
+                old_log_prob = (batch.log_probs * mask_f).sum(dim=AGENTS_DIM) / denom
+                entropy = (entropies * mask_f).sum(dim=AGENTS_DIM) / denom if entropies is not None else None
         else:
             raise ValueError(f"Unhandled {self.agent_logprob_reduction=}")
         return entropy, log_prob, old_log_prob
+
+    @staticmethod
+    def _build_agent_valid_mask(
+            agent_mask: torch.Tensor | None,
+            target: torch.Tensor,
+    ) -> torch.Tensor | None:
+        if agent_mask is None:
+            return None
+        if target.ndim == 2:
+            if agent_mask.shape != target.shape:
+                raise ValueError(
+                    f"Expected agent_mask shape {tuple(target.shape)}, got {tuple(agent_mask.shape)}"
+                )
+            return agent_mask
+        if target.ndim == 1:
+            if agent_mask.ndim != 2 or agent_mask.shape[0] != target.shape[0]:
+                raise ValueError(
+                    f"Expected agent_mask shape (B, N) with B={target.shape[0]}, got {tuple(agent_mask.shape)}"
+                )
+            return agent_mask.any(dim=AGENTS_DIM)
+        raise ValueError(f"Unsupported target ndim for agent mask: {target.ndim}")
 
     def _execute_command(
             self,

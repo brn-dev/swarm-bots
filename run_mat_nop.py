@@ -11,7 +11,7 @@ from loguru import logger
 from torch import nn
 
 from swarmbots.learn.action_dists.hybrid_action_dist import GSDEParams
-from swarmbots.learn.algos.mat.wm.mat_spr_policy import MATSPRPolicy
+from swarmbots.learn.algos.mat.wm.mat_nop_policy import MATNOPPolicy
 from swarmbots.learn.algos.ppo.wm.ppo_wm import PPOWM
 from swarmbots.learn.algos.ppo.ppo import AutomaticLearningRate, AutomaticLearningRateUpdateResult
 from swarmbots.learn.env_wrappers.obs_normalization.feature_wise_obs_norm_wrapper import (
@@ -39,15 +39,15 @@ def make_env_fn(
         
     def _init() -> SwarmBotsEnv:
         scenario = ObstacleStreetScenario.no_payload_no_opening_one_wall_no_poles(
-            # swarm=HomogeneousSwarm(
-            #     unit_start_locations=RandomUnitLocationsConfig(
-            #         num_units=4,
-            #         pairwise_distance=0.605,
-            #         max_distance=1.5,
-            #     ),
-            #     randomize_unit_orientations=True,
-            # ),
-            unit_start_locations='8:hourglass',
+            swarm=HomogeneousSwarm(
+                unit_start_locations=RandomLatticeUnitLocationsConfig(
+                    num_units=5,
+                    pairwise_distance=0.605,
+                    max_radius=1.5,
+                ),
+                randomize_unit_orientations=True,
+            ),
+            # unit_start_locations='8:hourglass',
             randomize_unit_orientations=True,
             first_wall_distance=UniformDistParams(1.5, 2.5),
             **scenario_kwargs
@@ -59,10 +59,6 @@ def make_env_fn(
             camera=0
         )
     return _init
-
-
-
- 
 
 
 def wrap_vec_env(
@@ -116,14 +112,14 @@ def main() -> None:
     save_interval = 500
     world_model_num_next_steps = 3
     world_model_loss_coef = 0.5
-    world_model_target_tau = 0.005
+    world_model_target_tau = None
 
     # =====  ID  =====
     run_id = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
     # ===== LOAD =====
     load_path: str | None = None
-    load_path = "runs/mat_spr_swarm_bots/2026-02-01_20-31-56/models/model_6951936_steps_stopped.pt"
+    # load_path = "runs/mat_nop_swarm_bots/2026-02-03_15-00-31/models/model_13922304_steps_stopped.pt"
     std: float | None = None
 
     # ===== DEVICE =====
@@ -141,7 +137,7 @@ def main() -> None:
         run_id = load_path.split('/')[2]
         logger.info(f'{run_id = }')
 
-    run_dir = f"runs/mat_spr_swarm_bots/{run_id}/"
+    run_dir = f"runs/mat_nop_swarm_bots/{run_id}/"
     save_optimizer = True
 
     scenario_kwargs = {
@@ -201,7 +197,7 @@ def main() -> None:
         for _ in range(10):
             logger.warning('USING SYNC VECTOR ENV')
 
-    gamma = 0.991
+    gamma = 0.99
     
     print("Wrapping...")
     env = wrap_vec_env(
@@ -219,7 +215,7 @@ def main() -> None:
     print(f"connectors_dim: {env.connectors_dim}")
 
     print("Initializing Policy...")
-    policy = MATSPRPolicy(
+    policy = MATNOPPolicy(
         env=env,
         local_obs_encoder_hidden_dims=[192, 192],
         action_encoder_hidden_dims=[32],
@@ -246,14 +242,27 @@ def main() -> None:
             normalize_latent_sde_by_dim=True
         ),
         bernoulli_initial_prob=0.75,
-        # SPR
+        # NOP
+        wm_pre_transition_dims=[64],
         d_model_transition_model=64,
         nhead_transition_model=2,
         num_layers_transition_model=2,
         dim_feedforward_transition_model=128,
         transition_model_coembed_hidden_dims=[96],
-        spr_projection_dims=[48],
-        residual_predictor=True
+        wm_pre_predictors_dims=[96],
+        wm_scalar_predictor_hidden_dims=[],
+        wm_angle_predictor_hidden_dims=[],
+        wm_rot6d_predictor_hidden_dims=[],
+        wm_binary_predictor_hidden_dims=[],
+        local_scalar_target_indices=obs_indices.local_scalar_indices,
+        local_angle_target_indices=obs_indices.local_angle_indices,
+        local_rot6d_target_indices=obs_indices.local_rot6d_indices,
+        local_binary_target_indices=obs_indices.local_binary_indices,
+        scalar_loss_fn='smooth_l1',
+        scalar_loss_weight=1.0,
+        angle_loss_weight=1.0,
+        rot6d_loss_weight=1.0,
+        binary_loss_weight=1.0,
     )
     print(policy)
 

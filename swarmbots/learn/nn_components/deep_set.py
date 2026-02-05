@@ -11,13 +11,41 @@ from swarmbots.learn.nn_components.nn_init import LinearInitialization, init_lin
 PoolMode = Literal["mean", "sum", "max"]
 
 
-def _pool_over_set(x: torch.Tensor, *, set_dim: int, mode: PoolMode) -> torch.Tensor:
-    if mode == "mean":
-        return x.mean(dim=set_dim)
+def _pool_over_set(
+    x: torch.Tensor,
+    *,
+    set_dim: int,
+    mode: PoolMode,
+    mask: torch.Tensor | None = None,
+) -> torch.Tensor:
+    if mask is None:
+        if mode == "mean":
+            return x.mean(dim=set_dim)
+        if mode == "sum":
+            return x.sum(dim=set_dim)
+        if mode == "max":
+            return x.max(dim=set_dim).values
+        raise ValueError(f"Unknown pool mode: {mode}")
+
+    if mask.dtype != torch.bool:
+        raise ValueError(f"Expected mask dtype bool, got {mask.dtype}")
+    if mask.ndim != x.ndim - 1:
+        raise ValueError(f"Expected mask ndim {x.ndim - 1}, got {mask.ndim}")
+    if mask.shape != x.shape[:-1]:
+        raise ValueError(f"Expected mask shape {x.shape[:-1]}, got {mask.shape}")
+
+    mask_f = mask.to(dtype=x.dtype).unsqueeze(-1)
     if mode == "sum":
-        return x.sum(dim=set_dim)
+        return (x * mask_f).sum(dim=set_dim)
+    if mode == "mean":
+        denom = mask_f.sum(dim=set_dim).clamp_min(1.0)
+        return (x * mask_f).sum(dim=set_dim) / denom
     if mode == "max":
-        return x.max(dim=set_dim).values
+        neg_inf = torch.finfo(x.dtype).min
+        x_masked = x.masked_fill(~mask.unsqueeze(-1), neg_inf)
+        pooled = x_masked.max(dim=set_dim).values
+        any_valid = mask.any(dim=set_dim)
+        return torch.where(any_valid.unsqueeze(-1), pooled, torch.zeros_like(pooled))
     raise ValueError(f"Unknown pool mode: {mode}")
 
 
@@ -40,13 +68,19 @@ class DeepSet(nn.Module):
         self.context_features = int(context_features)
         self.context_in_elements = bool(context_in_elements)
 
-    def forward(self, elements: torch.Tensor, *, context: torch.Tensor | None = None) -> torch.Tensor:
+    def forward(
+        self,
+        elements: torch.Tensor,
+        *,
+        context: torch.Tensor | None = None,
+        element_mask: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         if self.context_in_elements:
             expanded_context = context.unsqueeze(self.set_dim).expand(*elements.shape[:-1], context.shape[-1])
             elements = torch.cat((elements, expanded_context), dim=-1)
 
         encoded = self.element_encoder(elements)
-        pooled = _pool_over_set(encoded, set_dim=self.set_dim, mode=self.pool_mode)
+        pooled = _pool_over_set(encoded, set_dim=self.set_dim, mode=self.pool_mode, mask=element_mask)
 
         if self.context_features > 0 and not self.context_in_elements:
             pooled = torch.cat((pooled, context), dim=-1)
@@ -118,6 +152,11 @@ class DeepSetCritic(nn.Module):
             context_in_elements=self.context_in_elements,
         )
 
-    def forward(self, local_features: torch.Tensor, global_features: torch.Tensor | None = None) -> torch.Tensor:
+    def forward(
+        self,
+        local_features: torch.Tensor,
+        global_features: torch.Tensor | None = None,
+        agent_mask: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         context = global_features if self.num_global_features > 0 else None
-        return self.deepset(local_features, context=context).squeeze(dim=-1)
+        return self.deepset(local_features, context=context, element_mask=agent_mask).squeeze(dim=-1)

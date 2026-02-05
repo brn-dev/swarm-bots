@@ -22,6 +22,7 @@ class BasePolicy(nn.Module, abc.ABC):
             local_obs: torch.Tensor,
             global_obs: torch.Tensor,
             hidden_vars: torch.Tensor | None = None,
+            agent_mask: torch.Tensor | None = None,
             deterministic: bool = False
     ) -> torch.Tensor:
         raise NotImplementedError()

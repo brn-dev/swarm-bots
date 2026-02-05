@@ -35,6 +35,7 @@ class NextObsPredMixin(abc.ABC):
             self,
             transition_model: TransformerTransitionModel,
             pre_transition_transform: Optional[nn.Module] = None,
+            pre_predictors_transform: Optional[nn.Module] = None,
             local_scalar_target_indices: Optional[list[int]] = None,
             local_angle_target_indices: Optional[list[int]] = None,
             local_rot6d_target_indices: Optional[list[int]] = None,
@@ -73,6 +74,9 @@ class NextObsPredMixin(abc.ABC):
             pre_transition_transform if pre_transition_transform is not None else nn.Identity()
         )
         self.transition_model = transition_model
+        self.pre_predictors_transform = (
+            pre_predictors_transform if pre_predictors_transform is not None else nn.Identity()
+        )
 
         self.local_scalar_target_indices = local_scalar_target_indices
         self.local_angle_target_indices = local_angle_target_indices
@@ -105,7 +109,8 @@ class NextObsPredMixin(abc.ABC):
         pred_scalars = self.local_scalars_predictor(latent_preds)
         target_scalars = next_local_obs[..., self.local_scalar_target_indices]
         scalar_losses = self.scalar_loss_fn(pred_scalars, target_scalars)
-        return masked_mean(scalar_losses, valid_mask)
+        loss_per_item = self._reduce_feature_loss(scalar_losses)
+        return masked_mean(loss_per_item, valid_mask)
 
     def compute_angle_loss(
             self,
@@ -168,7 +173,8 @@ class NextObsPredMixin(abc.ABC):
         pred_binaries = self.local_binaries_predictor(latent_preds)
         target_binaries = next_local_obs[..., self.local_binary_target_indices]
         binary_losses = self.binary_loss_fn(pred_binaries, target_binaries)
-        return masked_mean(binary_losses, valid_mask)
+        loss_per_item = self._reduce_feature_loss(binary_losses)
+        return masked_mean(loss_per_item, valid_mask)
 
 
     def compute_next_obs_pred_loss(
@@ -191,6 +197,8 @@ class NextObsPredMixin(abc.ABC):
             agent_mask=agent_mask,
             time_mask=time_mask,
         )
+        latent_preds = self.pre_predictors_transform(latent_preds)
+
         valid_mask = build_valid_mask(
             base_shape=base_shape,
             device=latent_preds.device,
@@ -245,6 +253,12 @@ class NextObsPredMixin(abc.ABC):
         if len(indices) == 0:
             return None
         return list(indices)
+
+    @staticmethod
+    def _reduce_feature_loss(losses: torch.Tensor) -> torch.Tensor:
+        if losses.ndim < 3:
+            return losses
+        return losses.mean(dim=-1)
 
     @staticmethod
     def _expand_rot6d_indices(indices: list[int]) -> list[int]:

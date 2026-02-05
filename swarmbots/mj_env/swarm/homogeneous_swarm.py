@@ -96,7 +96,8 @@ class RandomLatticeUnitLocationsConfig:
     num_units: int
     pairwise_distance: float
 
-    max_distance: float = 1e8
+    num_unit_probs: Optional[dict[int, float]] = None
+    max_radius: float = 1e8
     z_pos: float = 0.0
     center: bool = True
 
@@ -150,13 +151,27 @@ class HomogeneousSwarm(BaseSwarm):
     ):
         assert unit_start_quats is None or not randomize_unit_orientations
 
+        self._can_have_inactive_units = False
+
         if isinstance(unit_start_locations, str):
             self.unit_start_locations = UNIT_START_LOCATION_PRESETS[unit_start_locations]
             self.num_units = len(self.unit_start_locations)
         elif isinstance(unit_start_locations, RandomLatticeUnitLocationsConfig):
-            assert unit_start_locations.max_distance > unit_start_locations.pairwise_distance
+            assert unit_start_locations.max_radius > unit_start_locations.pairwise_distance
             self.num_units = unit_start_locations.num_units
             self.unit_start_locations = unit_start_locations
+            if unit_start_locations.num_unit_probs is not None:
+                counts = np.array(list(unit_start_locations.num_unit_probs.keys()), dtype=int)
+                probs = np.array(list(unit_start_locations.num_unit_probs.values()), dtype=float)
+                if (counts < 1).any():
+                    raise ValueError("num_unit_probs must only contain counts >= 1")
+                if (counts > unit_start_locations.num_units).any():
+                    raise ValueError("num_unit_probs must not exceed num_units")
+                if (probs < 0).any():
+                    raise ValueError("num_unit_probs must not contain negative probabilities")
+                if not np.isclose(probs.sum(), 1):
+                    raise ValueError("num_unit_probs must sum to 1")
+                self._can_have_inactive_units = True
         elif isinstance(unit_start_locations, RandomWiggleUnitLocationsConfig):
             self.num_units = unit_start_locations.num_units
             self.unit_start_locations = unit_start_locations
@@ -183,6 +198,10 @@ class HomogeneousSwarm(BaseSwarm):
         self.hinge_range = hinge_range
         self.hinge_armature = hinge_armature
 
+    @property
+    def can_have_inactive_units(self) -> bool:
+        return self._can_have_inactive_units
+
     def get_settings(self):
         settings = super().get_settings()
         settings.update({
@@ -197,20 +216,23 @@ class HomogeneousSwarm(BaseSwarm):
         })
         return settings
 
-    def _create_swarm_spec(self) -> mujoco.MjSpec:
+    def _create_swarm_spec(self, rng: np.random.Generator | None = None) -> mujoco.MjSpec:
         spec = mujoco.MjSpec()
         spec.compiler.degree = 0
         worldbody: MjsBody = spec.worldbody
+        if rng is None:
+            rng = np.random.default_rng()
 
         unit_start_locations: list[Tuple3[FloatOrDistParams]]
         if isinstance(self.unit_start_locations, RandomLatticeUnitLocationsConfig):
-            unit_start_locations = self._generate_random_lattice_start_locations(rng=rng)
+            unit_start_locations = self._generate_random_lattice_start_locations(
+                rng=rng,
+                force_full=True
+            )
         elif isinstance(self.unit_start_locations, RandomWiggleUnitLocationsConfig):
             unit_start_locations = self.unit_start_locations.unit_locations
         else:
             unit_start_locations = self.unit_start_locations
-
-        rng = np.random.default_rng()
 
         for i, unit_start_location in enumerate(unit_start_locations):
             unit_start_location = np.array([eval_fodp(coord, rng) for coord in unit_start_location])
@@ -238,34 +260,35 @@ class HomogeneousSwarm(BaseSwarm):
             model: mujoco.MjModel,
             data: mujoco.MjData,
             rng: np.random.Generator,
-            start_location: np.ndarray
-    ) -> SwarmConnections:
+            start_location: np.ndarray,
+            parking_location: np.ndarray,
+    ) -> tuple[SwarmConnections, Optional[np.ndarray]]:
         connections = SwarmConnections(self.config)
 
-        unit_start_locations: list[Tuple3[float]]
+        start_locations: list[Tuple3[float]]
         if isinstance(self.unit_start_locations, RandomLatticeUnitLocationsConfig):
-            unit_start_locations = self._generate_random_lattice_start_locations(rng)
+            start_locations = self._generate_random_lattice_start_locations(rng)
         elif isinstance(self.unit_start_locations, RandomWiggleUnitLocationsConfig):
-            unit_start_locations = []
+            start_locations = []
             for unit_loc, unit_wiggle in zip(
                     self.unit_start_locations.unit_locations,
                     self.unit_start_locations.wiggle_params
             ):
                 # noinspection PyTypeChecker
-                unit_start_locations.append(tuple(
+                start_locations.append(tuple(
                     coord + eval_fodp(wiggle, rng)
                     for coord, wiggle in zip(unit_loc, unit_wiggle)
                 ))
         else:
-            unit_start_locations = [
+            start_locations = [
                 eval_fodp_3d(unit_loc, rng)
                 for unit_loc in self.unit_start_locations
             ]
 
-        for i in range(self.num_units):
+        for i, unit_start_location in enumerate(start_locations):
             qpos_adr, dof_adr = self._get_unit_main_body_addresses(model, i)
 
-            data.qpos[qpos_adr:qpos_adr + 3] = start_location + np.array(unit_start_locations[i])
+            data.qpos[qpos_adr:qpos_adr + 3] = start_location + np.array(unit_start_location)
 
             if self.randomize_unit_orientations:
                 data.qpos[qpos_adr + 3:qpos_adr + 7] = random_quat_shoemake()
@@ -276,9 +299,21 @@ class HomogeneousSwarm(BaseSwarm):
 
             data.qvel[dof_adr:dof_adr+6] = 0
 
+        for i in range(len(start_locations), self.num_units):
+            qpos_adr, dof_adr = self._get_unit_main_body_addresses(model, i)
+
+            data.qpos[qpos_adr:qpos_adr + 3] = parking_location + np.array([0.0, -1.0, 0.0]) * i  # todo: improve
+            data.qpos[qpos_adr + 3:qpos_adr + 7] = [1, 0, 0, 0]
+            data.qvel[dof_adr:dof_adr + 6] = 0
+
         data.ctrl[:] = 0
 
-        return connections
+        units_active_mask: Optional[np.ndarray] = None
+        if self.can_have_inactive_units:
+            units_active_mask = np.zeros(self.num_units, dtype=bool)
+            units_active_mask[:len(start_locations)] = True
+
+        return connections, units_active_mask
 
     def _get_unit_main_body_addresses(self, model: mujoco.MjModel, unit_idx: int):
         body_name = f"{self.config.unit_prefixes[unit_idx]}-main_body"
@@ -292,17 +327,26 @@ class HomogeneousSwarm(BaseSwarm):
             self,
             rng: np.random.Generator,
             eps: float = 1e-6,
+            force_full: bool = False
     ) -> list[tuple[float, float, float]]:
         random_config: RandomLatticeUnitLocationsConfig = self.unit_start_locations
         num_units = random_config.num_units
         pairwise_distance = random_config.pairwise_distance
-        max_distance = random_config.max_distance
+        max_distance = random_config.max_radius
 
-        points = np.zeros((num_units, 2))
+        if force_full or random_config.num_unit_probs is None:
+            num_active_units = num_units
+        else:
+            unit_probs = random_config.num_unit_probs
+            num_active_units = rng.choice(list(unit_probs.keys()), p=list(unit_probs.values()))
+        if num_active_units < 1:
+            raise ValueError("num_active_units must be >= 1")
+
+        points = np.zeros((num_active_units, 2))
         points_found = 1
         rejected_count = 0
 
-        while points_found < num_units:
+        while points_found < num_active_units:
             source_point = points[rng.choice(points_found)]
 
             angle = rng.random() * 2 * np.pi
@@ -330,8 +374,10 @@ class HomogeneousSwarm(BaseSwarm):
             mean = points.mean(axis=0, keepdims=True)
             points -= mean
 
-            while np.any(np.linalg.norm(points, axis=-1) > max_distance):
+            counter = 0
+            while np.any(np.linalg.norm(points, axis=-1) > max_distance) and counter < 4:
                 points += mean / 4
+                counter += 1
 
 
         return [(float(p[0]), float(p[1]), random_config.z_pos) for p in points]

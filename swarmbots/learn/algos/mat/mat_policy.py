@@ -177,6 +177,7 @@ class MATPolicy(BasePPOPolicy):
         self,
         augmented_observations: torch.Tensor,
         batch_size: int,
+        agent_mask: torch.Tensor | None = None,
         deterministic: bool = False,
         return_log_probs: bool = False
     ) -> tuple[torch.Tensor, Optional[torch.Tensor]]:
@@ -190,13 +191,10 @@ class MATPolicy(BasePPOPolicy):
         decoder_input = self.sos_token.expand(batch_size, 1, -1)
 
         for i in range(self.n_agents):
-            seq_len = decoder_input.shape[1]
-            tgt_mask = self.decoder.tgt_mask[:seq_len, :seq_len]
-
-            out = self.decoder.decoder(
-                tgt=decoder_input,
-                memory=augmented_observations,
-                tgt_mask=tgt_mask
+            out = self.decoder(
+                action_embeddings=decoder_input,
+                augmented_observations=augmented_observations,
+                agent_mask=agent_mask,
             )
 
             latent_pi = self.actor_head(out[:, -1:, :])
@@ -225,17 +223,19 @@ class MATPolicy(BasePPOPolicy):
             local_obs: torch.Tensor,
             global_obs: torch.Tensor,
             hidden_vars: torch.Tensor | None = None,
+            agent_mask: torch.Tensor | None = None,
             deterministic: bool = False
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
 
-        augmented_observations = self.encoder(local_obs, global_obs)
+        augmented_observations = self.encoder(local_obs, global_obs, agent_mask=agent_mask)
         actions, log_probs = self._generate_actions(
             augmented_observations=augmented_observations,
             batch_size=local_obs.shape[0],
+            agent_mask=agent_mask,
             deterministic=deterministic,
             return_log_probs=True,
         )
-        values = self._critic_with_hidden_vars(augmented_observations, hidden_vars)
+        values = self._critic_with_hidden_vars(augmented_observations, hidden_vars, agent_mask=agent_mask)
 
         return actions, log_probs, values
 
@@ -245,12 +245,14 @@ class MATPolicy(BasePPOPolicy):
             global_obs: torch.Tensor,
             actions: torch.Tensor,
             hidden_vars: torch.Tensor | None = None,
+            agent_mask: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         augmented_observations, log_probs, entropies, values = self._evaluate_actions(
             local_obs=local_obs,
             global_obs=global_obs,
             actions=actions,
             hidden_vars=hidden_vars,
+            agent_mask=agent_mask,
         )
 
         return log_probs, entropies, values
@@ -261,8 +263,9 @@ class MATPolicy(BasePPOPolicy):
             global_obs: torch.Tensor,
             actions: torch.Tensor,
             hidden_vars: torch.Tensor | None = None,
+            agent_mask: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        augmented_observations = self.encoder(local_obs, global_obs)
+        augmented_observations = self.encoder(local_obs, global_obs, agent_mask=agent_mask)
         
         action_embeddings = self.action_encoder(actions[:, :-1, :])
         if self.agent_embeddings_decoder is not None:
@@ -271,13 +274,17 @@ class MATPolicy(BasePPOPolicy):
         
         shifted_actions = torch.cat([sos_expanded, action_embeddings], dim=1)
         
-        latent_pi = self.actor_head(self.decoder(shifted_actions, augmented_observations))
+        latent_pi = self.actor_head(self.decoder(
+            action_embeddings=shifted_actions,
+            augmented_observations=augmented_observations,
+            agent_mask=agent_mask
+        ))
 
         self.action_dist.update_latent_features(latent_pi)
         log_probs = self.action_dist.log_prob(actions)
         entropies = self.action_dist.entropy()
 
-        values = self._critic_with_hidden_vars(augmented_observations, hidden_vars)
+        values = self._critic_with_hidden_vars(augmented_observations, hidden_vars, agent_mask=agent_mask)
         return augmented_observations, log_probs, entropies, values
 
     def act(
@@ -285,12 +292,14 @@ class MATPolicy(BasePPOPolicy):
             local_obs: torch.Tensor,
             global_obs: torch.Tensor,
             hidden_vars: torch.Tensor | None = None,
+            agent_mask: torch.Tensor | None = None,
             deterministic: bool = False
     ) -> torch.Tensor:
-        augmented_observations = self.encoder(local_obs, global_obs)
+        augmented_observations = self.encoder(local_obs, global_obs, agent_mask=agent_mask)
         actions, _ = self._generate_actions(
             augmented_observations=augmented_observations,
             batch_size=local_obs.shape[0],
+            agent_mask=agent_mask,
             deterministic=deterministic,
             return_log_probs=False,
         )
@@ -299,10 +308,11 @@ class MATPolicy(BasePPOPolicy):
     def _critic_with_hidden_vars(
             self,
             augmented_observations: torch.Tensor,
-            hidden_vars: torch.Tensor | None
+            hidden_vars: torch.Tensor | None,
+            agent_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
         if self.hidden_vars_dim <= 0:
-            return self.critic(augmented_observations)
+            return self.critic(augmented_observations, agent_mask=agent_mask)
         if hidden_vars is None:
             raise ValueError("hidden_vars must be provided when hidden_vars_dim > 0")
-        return self.critic(augmented_observations, hidden_vars)
+        return self.critic(augmented_observations, hidden_vars, agent_mask=agent_mask)

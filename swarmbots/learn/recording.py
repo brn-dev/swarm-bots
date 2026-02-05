@@ -115,6 +115,7 @@ def record_policy(
                 local_obs = obs['local_obs']
                 global_obs = obs['global_obs']
                 hidden_vars = obs["hidden_vars"]
+                agent_mask = obs.get("agent_mask", None)
                 
                 _maybe_reset_gsde_noise(
                     policy=policy,
@@ -123,7 +124,13 @@ def record_policy(
                     rollout_step_idx=step_cnt,
                     gsde_reset_mode=gsde_reset_mode,
                 )
-                actions = policy.act(local_obs, global_obs, hidden_vars=hidden_vars, deterministic=deterministic)
+                actions = policy.act(
+                    local_obs,
+                    global_obs,
+                    hidden_vars=hidden_vars,
+                    agent_mask=agent_mask,
+                    deterministic=deterministic,
+                )
                 print(format_summary_statistics(compute_summary_statistics(actions[:, :, :8], make_histogram=True), SummaryStatisticsFormat(histogram=True)))
             
             obs, _, term, trunc, _ = env.step(actions)

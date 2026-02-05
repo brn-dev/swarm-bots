@@ -55,6 +55,11 @@ class BaseLearnEnvWrapper(VectorWrapper, Generic[ActSpace], abc.ABC):
         self.local_obs_dim = self._observation_space['local_obs'].shape[2]
         self.global_obs_dim = self._observation_space['global_obs'].shape[1]
         self.hidden_vars_dim = self._observation_space['hidden_vars'].shape[1]
+        self.has_agent_mask = "agent_mask" in self._observation_space.spaces
+        if self.has_agent_mask:
+            agent_mask_shape = self._observation_space["agent_mask"].shape
+            if len(agent_mask_shape) != 2:
+                raise ValueError(f"Expected agent_mask shape (n_envs, n_agents), got {agent_mask_shape}")
 
         if not isinstance(action_space, VectorHybridActionSpace):
             raise ValueError(f'Action space must be a VectorHybridActionSpace, got {action_space}')
@@ -67,6 +72,13 @@ class BaseLearnEnvWrapper(VectorWrapper, Generic[ActSpace], abc.ABC):
             assert space.shape[0] == self._n_envs, space
 
         self.n_agents = obs_space['local_obs'].shape[1]
+
+        if self.has_agent_mask:
+            agent_mask_shape = self._observation_space["agent_mask"].shape
+            if agent_mask_shape[1] != self.n_agents:
+                raise ValueError(
+                    f"Expected agent_mask second dim to match n_agents ({self.n_agents}), got {agent_mask_shape}"
+                )
 
         for space in action_space.values():
             assert space.shape[1] == self.n_agents, space
@@ -117,6 +129,8 @@ class BaseLearnEnvWrapper(VectorWrapper, Generic[ActSpace], abc.ABC):
         }
         if "hidden_vars" in obs:
             obs_t["hidden_vars"] = torch.as_tensor(obs["hidden_vars"], device=self.device, dtype=self.obs_dtype)
+        if "agent_mask" in obs and obs["agent_mask"] is not None:
+            obs_t["agent_mask"] = torch.as_tensor(obs["agent_mask"], device=self.device, dtype=torch.bool)
         return obs_t
 
     @abc.abstractmethod

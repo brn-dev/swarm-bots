@@ -79,6 +79,11 @@ class SwarmBotsEnv(gymnasium.Env):
                 dtype=self.observation_space["hidden_vars"].dtype,
             ),
         }
+        if "agent_mask" in self.observation_space and self.observation_space["agent_mask"] is not None:
+            self._zeros_obs["agent_mask"] = np.zeros(
+                self.observation_space["agent_mask"].shape,
+                dtype=bool,
+            )
 
         self._agent_permutation: np.ndarray | None = None
         self._inv_agent_permutation: np.ndarray | None = None
@@ -130,12 +135,10 @@ class SwarmBotsEnv(gymnasium.Env):
         mj_warning: mujoco.MjWarningStat = self.data.warning[mujoco.mjtWarning.mjWARN_BADQACC]
         if mj_warning.number > 0 or np.isnan(self.data.qpos).any() or np.isnan(self.data.qvel).any():
             print('Simulation Unstable!')
+            # noinspection PyTypeChecker
+            err_obs: SwarmObsDict = {key: value.copy() for key, value in self._zeros_obs.items()}
             return (
-                {
-                    "global_obs": self._zeros_obs["global_obs"].copy(),
-                    "local_obs": self._zeros_obs["local_obs"].copy(),
-                    "hidden_vars": self._zeros_obs["hidden_vars"].copy(),
-                },
+                err_obs,
                 self.simulation_unstable_reward,
                 True,
                 False,
@@ -206,11 +209,15 @@ class SwarmBotsEnv(gymnasium.Env):
         if not self.shuffle_agents:
             return obs
         assert self._agent_permutation is not None
-        return {
+        shuffled = {
             "local_obs": obs["local_obs"][self._agent_permutation],
             "global_obs": obs["global_obs"],
             "hidden_vars": obs["hidden_vars"],
         }
+        if "agent_mask" in obs:
+            agent_mask = obs["agent_mask"]
+            shuffled["agent_mask"] = None if agent_mask is None else agent_mask[self._agent_permutation]
+        return shuffled
 
     def _unshuffle_action(self, action: SwarmActDict) -> SwarmActDict:
         if not self.shuffle_agents:

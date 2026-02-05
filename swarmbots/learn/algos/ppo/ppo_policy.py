@@ -27,6 +27,7 @@ class BasePPOPolicy(BasePolicy, abc.ABC):
             local_obs: torch.Tensor,
             global_obs: torch.Tensor,
             hidden_vars: torch.Tensor | None = None,
+            agent_mask: torch.Tensor | None = None,
             deterministic: bool = False
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
@@ -41,6 +42,7 @@ class BasePPOPolicy(BasePolicy, abc.ABC):
             global_obs: torch.Tensor,
             actions: torch.Tensor,
             hidden_vars: torch.Tensor | None = None,
+            agent_mask: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor]:
         """
         :return: log_probs, entropies, values
@@ -109,7 +111,20 @@ class PPOCritic(nn.Module):
             act_fn_cls=act_fun_class
         )
 
-    def forward(self, local_obs: torch.Tensor, global_obs: torch.Tensor) -> torch.Tensor:
+    def forward(
+            self,
+            local_obs: torch.Tensor,
+            global_obs: torch.Tensor,
+            agent_mask: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        if agent_mask is not None:
+            if agent_mask.dtype != torch.bool:
+                raise ValueError(f"Expected agent_mask dtype bool, got {agent_mask.dtype}")
+            if agent_mask.shape != local_obs.shape[:2]:
+                raise ValueError(
+                    f"Expected agent_mask shape {tuple(local_obs.shape[:2])}, got {tuple(agent_mask.shape)}"
+                )
+            local_obs = local_obs * agent_mask.to(dtype=local_obs.dtype).unsqueeze(-1)
         critic_input = torch.flatten(local_obs, start_dim=1)
         if self.has_global_obs:
             critic_input = torch.cat((critic_input, global_obs), dim=-1)
@@ -176,13 +191,15 @@ class PPOPolicy(BasePPOPolicy):
             local_obs: torch.Tensor,
             global_obs: torch.Tensor,
             hidden_vars: torch.Tensor | None = None,
+            agent_mask: torch.Tensor | None = None,
             deterministic: bool = False
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        local_obs = self._mask_local_obs(local_obs, agent_mask)
         latent_pi = self.actor(local_obs, global_obs)
         actions, log_probs = self.action_dist.get_actions_with_log_probs(latent_pi, deterministic)
 
         critic_global_obs = self._build_critic_global_obs(global_obs, hidden_vars)
-        values = self.critic(local_obs, critic_global_obs)
+        values = self.critic(local_obs, critic_global_obs, agent_mask=agent_mask)
         return actions, log_probs, values
 
     def evaluate_actions(
@@ -191,14 +208,16 @@ class PPOPolicy(BasePPOPolicy):
             global_obs: torch.Tensor,
             actions: torch.Tensor,
             hidden_vars: torch.Tensor | None = None,
+            agent_mask: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor]:
+        local_obs = self._mask_local_obs(local_obs, agent_mask)
         latent_pi = self.actor(local_obs, global_obs)
         self.action_dist.update_latent_features(latent_pi)
         log_probs = self.action_dist.log_prob(actions)
         entropies = self.action_dist.entropy()
 
         critic_global_obs = self._build_critic_global_obs(global_obs, hidden_vars)
-        values = self.critic(local_obs, critic_global_obs)
+        values = self.critic(local_obs, critic_global_obs, agent_mask=agent_mask)
         return log_probs, entropies, values
 
     def act(
@@ -206,11 +225,28 @@ class PPOPolicy(BasePPOPolicy):
             local_obs: torch.Tensor,
             global_obs: torch.Tensor,
             hidden_vars: torch.Tensor | None = None,
+            agent_mask: torch.Tensor | None = None,
             deterministic: bool = False
     ) -> torch.Tensor:
+        local_obs = self._mask_local_obs(local_obs, agent_mask)
         latent_pi = self.actor(local_obs, global_obs)
         actions = self.action_dist.update_latent_features(latent_pi).get_actions(deterministic)
         return actions
+
+    @staticmethod
+    def _mask_local_obs(
+            local_obs: torch.Tensor,
+            agent_mask: torch.Tensor | None,
+    ) -> torch.Tensor:
+        if agent_mask is None:
+            return local_obs
+        if agent_mask.dtype != torch.bool:
+            raise ValueError(f"Expected agent_mask dtype bool, got {agent_mask.dtype}")
+        if agent_mask.shape != local_obs.shape[:2]:
+            raise ValueError(
+                f"Expected agent_mask shape {tuple(local_obs.shape[:2])}, got {tuple(agent_mask.shape)}"
+            )
+        return local_obs * agent_mask.to(dtype=local_obs.dtype).unsqueeze(-1)
 
     @staticmethod
     def _build_critic_global_obs(
