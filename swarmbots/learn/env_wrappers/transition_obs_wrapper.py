@@ -131,7 +131,7 @@ class TransitionObsWrapper(VectorWrapper, gym.utils.RecordConstructorArgs):
                 dtype=local_space.dtype,
             )
 
-        if self._has_global_obs and "global_obs" in obs_space.spaces:
+        if self._has_global_obs and "global_obs" in obs_space.keys():
             global_space: spaces.Box = obs_space["global_obs"]  # type: ignore[assignment]
             global_shape = tuple(int(x) for x in global_space.shape)
             if is_vector:

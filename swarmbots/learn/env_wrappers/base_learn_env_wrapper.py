@@ -55,7 +55,7 @@ class BaseLearnEnvWrapper(VectorWrapper, Generic[ActSpace], abc.ABC):
         self.local_obs_dim = self._observation_space['local_obs'].shape[2]
         self.global_obs_dim = self._observation_space['global_obs'].shape[1]
         self.hidden_vars_dim = self._observation_space['hidden_vars'].shape[1]
-        self.has_agent_mask = "agent_mask" in self._observation_space.spaces
+        self.has_agent_mask = "agent_mask" in self._observation_space.keys()
         if self.has_agent_mask:
             agent_mask_shape = self._observation_space["agent_mask"].shape
             if len(agent_mask_shape) != 2:

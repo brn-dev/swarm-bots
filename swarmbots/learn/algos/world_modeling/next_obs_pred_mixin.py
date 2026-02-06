@@ -1,5 +1,5 @@
 import abc
-from typing import Optional
+from typing import Optional, Any
 
 import torch
 from torch import nn
@@ -30,6 +30,7 @@ class NextObsPredMixin(abc.ABC):
     angle_loss_weight: float
     rot6d_loss_weight: float
     binary_loss_weight: float
+    predict_delta: bool
 
     def setup_modules(
             self,
@@ -50,6 +51,7 @@ class NextObsPredMixin(abc.ABC):
             angle_loss_weight: float = 1.0,
             rot6d_loss_weight: float = 1.0,
             binary_loss_weight: float = 1.0,
+            predict_delta: bool = True,
     ) -> None:
 
         local_scalar_target_indices = self._normalize_indices(local_scalar_target_indices)
@@ -95,19 +97,25 @@ class NextObsPredMixin(abc.ABC):
         self.angle_loss_weight = angle_loss_weight
         self.rot6d_loss_weight = rot6d_loss_weight
         self.binary_loss_weight = binary_loss_weight
+        self.predict_delta = predict_delta
 
 
     def compute_scalar_loss(
             self,
             latent_preds: torch.Tensor,
             next_local_obs: torch.Tensor,
-            valid_mask: torch.Tensor | None
+            valid_mask: torch.Tensor | None,
+            base_local_obs: torch.Tensor | None,
     ) -> Optional[torch.Tensor]:
         if self.local_scalar_target_indices is None:
             return None
 
         pred_scalars = self.local_scalars_predictor(latent_preds)
         target_scalars = next_local_obs[..., self.local_scalar_target_indices]
+        if self.predict_delta:
+            if base_local_obs is None:
+                raise ValueError("local_obs is required when predict_delta is True")
+            target_scalars = target_scalars - base_local_obs[..., self.local_scalar_target_indices]
         scalar_losses = self.scalar_loss_fn(pred_scalars, target_scalars)
         loss_per_item = self._reduce_feature_loss(scalar_losses)
         return masked_mean(loss_per_item, valid_mask)
@@ -117,18 +125,32 @@ class NextObsPredMixin(abc.ABC):
             latent_preds: torch.Tensor,
             next_local_obs: torch.Tensor,
             valid_mask: torch.Tensor | None,
+            base_local_obs: torch.Tensor | None,
     ) -> Optional[torch.Tensor]:
         if self.local_angle_target_indices is None:
             return None
 
-        target_angles_sin = next_local_obs[..., self.local_angle_target_indices]
-        target_angles_cos = next_local_obs[..., [i + 1 for i in self.local_angle_target_indices]]
-        target_angles = torch.stack((target_angles_sin, target_angles_cos), dim=-1)
-
         pred_angles = self.local_angles_predictor(latent_preds)
+        if self.predict_delta:
+            if base_local_obs is None:
+                raise ValueError("local_obs is required when predict_delta is True")
+            target_angles_sin = next_local_obs[..., self.local_angle_target_indices]
+            target_angles_cos = next_local_obs[..., [i + 1 for i in self.local_angle_target_indices]]
+            base_angles_sin = base_local_obs[..., self.local_angle_target_indices]
+            base_angles_cos = base_local_obs[..., [i + 1 for i in self.local_angle_target_indices]]
+            delta_angles_sin = target_angles_sin * base_angles_cos - target_angles_cos * base_angles_sin
+            delta_angles_cos = target_angles_cos * base_angles_cos + target_angles_sin * base_angles_sin
+            target_pairs = torch.stack((delta_angles_sin, delta_angles_cos), dim=-1)
 
-        pred_pairs = pred_angles.reshape(*pred_angles.shape[:-1], -1, 2)
-        target_pairs = target_angles.reshape(*target_angles.shape[:-2], -1, 2)
+            pred_angles = pred_angles.reshape(*pred_angles.shape[:-1], -1)
+            pred_pairs = torch.stack((torch.sin(pred_angles), torch.cos(pred_angles)), dim=-1)
+        else:
+            target_angles_sin = next_local_obs[..., self.local_angle_target_indices]
+            target_angles_cos = next_local_obs[..., [i + 1 for i in self.local_angle_target_indices]]
+            target_angles = torch.stack((target_angles_sin, target_angles_cos), dim=-1)
+
+            pred_pairs = pred_angles.reshape(*pred_angles.shape[:-1], -1, 2)
+            target_pairs = target_angles.reshape(*target_angles.shape[:-2], -1, 2)
 
         cosine_sim = F.cosine_similarity(pred_pairs, target_pairs, dim=-1, eps=1e-8)
         loss_per_angle = 1.0 - cosine_sim
@@ -140,20 +162,37 @@ class NextObsPredMixin(abc.ABC):
             latent_preds: torch.Tensor,
             next_local_obs: torch.Tensor,
             valid_mask: torch.Tensor | None,
+            base_local_obs: torch.Tensor | None,
     ) -> Optional[torch.Tensor]:
         if self.local_rot6d_target_indices is None:
             return None
 
-        pred_rot6ds = self.local_rot6ds_predictor(latent_preds)
-
         target_indices = self._expand_rot6d_indices(self.local_rot6d_target_indices)
-        target_rot6ds = next_local_obs[..., target_indices]
+        if self.predict_delta:
+            if base_local_obs is None:
+                raise ValueError("local_obs is required when predict_delta is True")
+            pred_rotvecs = self.local_rot6ds_predictor(latent_preds)
+            pred_rotvecs = pred_rotvecs.reshape(*pred_rotvecs.shape[:-1], -1, 3)
 
-        pred_rot6ds = pred_rot6ds.reshape(*pred_rot6ds.shape[:-1], -1, 6)
-        target_rot6ds = target_rot6ds.reshape(*target_rot6ds.shape[:-1], -1, 6)
+            target_rot6ds = next_local_obs[..., target_indices]
+            base_rot6ds = base_local_obs[..., target_indices]
+            target_rot6ds = target_rot6ds.reshape(*target_rot6ds.shape[:-1], -1, 6)
+            base_rot6ds = base_rot6ds.reshape(*base_rot6ds.shape[:-1], -1, 6)
 
-        pred_mats = self._rot6d_to_matrix(pred_rot6ds)
-        target_mats = self._rot6d_to_matrix(target_rot6ds)
+            target_mats = self._rot6d_to_matrix(target_rot6ds)
+            base_mats = self._rot6d_to_matrix(base_rot6ds)
+            target_mats = target_mats @ base_mats.transpose(-1, -2)
+
+            pred_mats = self._rotvec_to_matrix(pred_rotvecs)
+        else:
+            pred_rot6ds = self.local_rot6ds_predictor(latent_preds)
+            target_rot6ds = next_local_obs[..., target_indices]
+
+            pred_rot6ds = pred_rot6ds.reshape(*pred_rot6ds.shape[:-1], -1, 6)
+            target_rot6ds = target_rot6ds.reshape(*target_rot6ds.shape[:-1], -1, 6)
+
+            pred_mats = self._rot6d_to_matrix(pred_rot6ds)
+            target_mats = self._rot6d_to_matrix(target_rot6ds)
 
         trace_sim = (pred_mats * target_mats).sum(dim=(-1, -2))
         loss_per_rot = 1.0 - (trace_sim / 3.0)
@@ -166,6 +205,7 @@ class NextObsPredMixin(abc.ABC):
             latent_preds: torch.Tensor,
             next_local_obs: torch.Tensor,
             valid_mask: torch.Tensor | None,
+            base_local_obs: torch.Tensor | None,
     ) -> Optional[torch.Tensor]:
         if self.local_binary_target_indices is None:
             return None
@@ -182,9 +222,11 @@ class NextObsPredMixin(abc.ABC):
             local_latents: torch.Tensor,
             next_local_obs: torch.Tensor,
             actions: torch.Tensor,
+            local_obs: torch.Tensor | None = None,
             agent_mask: torch.Tensor | None = None,
+            loss_agent_mask: torch.Tensor | None = None,
             time_mask: torch.Tensor | None = None,
-    ) -> torch.Tensor:
+    ) -> tuple[torch.Tensor, dict[str, Any]]:
         if local_latents.ndim != 3:
             raise ValueError(f"Expected online_local_latents shape (B, N, D), got {tuple(local_latents.shape)}")
 
@@ -199,52 +241,75 @@ class NextObsPredMixin(abc.ABC):
         )
         latent_preds = self.pre_predictors_transform(latent_preds)
 
+        base_local_obs = None
+        if self.predict_delta:
+            if local_obs is None:
+                raise ValueError("local_obs is required when predict_delta is True")
+            base_local_obs = self._align_base_local_obs(local_obs, next_local_obs)
+
         valid_mask = build_valid_mask(
             base_shape=base_shape,
             device=latent_preds.device,
-            agent_mask=agent_mask,
+            agent_mask=loss_agent_mask,
             time_mask=time_mask,
         )
 
         losses = []
+        metrics: dict[str, Any] = {}
 
         scalar_loss = self.compute_scalar_loss(
             latent_preds=latent_preds,
             next_local_obs=next_local_obs,
             valid_mask=valid_mask,
+            base_local_obs=base_local_obs,
         )
         if scalar_loss is not None:
-            losses.append(scalar_loss * self.scalar_loss_weight)
+            scalar_loss_scaled = scalar_loss * self.scalar_loss_weight
+            losses.append(scalar_loss_scaled)
+            metrics["scalar_loss"] = scalar_loss.item()
+            metrics["scalar_loss_scaled"] = scalar_loss_scaled.item()
 
         angle_loss = self.compute_angle_loss(
             latent_preds=latent_preds,
             next_local_obs=next_local_obs,
             valid_mask=valid_mask,
+            base_local_obs=base_local_obs,
         )
         if angle_loss is not None:
-            losses.append(angle_loss * self.angle_loss_weight)
+            angle_loss_scaled = angle_loss * self.angle_loss_weight
+            losses.append(angle_loss_scaled)
+            metrics["angle_loss"] = angle_loss.item()
+            metrics["angle_loss_scaled"] = angle_loss_scaled.item()
 
         rot6d_loss = self.compute_rot6d_loss(
             latent_preds=latent_preds,
             next_local_obs=next_local_obs,
             valid_mask=valid_mask,
+            base_local_obs=base_local_obs,
         )
         if rot6d_loss is not None:
-            losses.append(rot6d_loss * self.rot6d_loss_weight)
+            rot6d_loss_scaled = rot6d_loss * self.rot6d_loss_weight
+            losses.append(rot6d_loss_scaled)
+            metrics["rot6d_loss"] = rot6d_loss.item()
+            metrics["rot6d_loss_scaled"] = rot6d_loss_scaled.item()
 
         binary_loss = self.compute_binary_loss(
             latent_preds=latent_preds,
             next_local_obs=next_local_obs,
             valid_mask=valid_mask,
+            base_local_obs=base_local_obs,
         )
         if binary_loss is not None:
-            losses.append(binary_loss * self.binary_loss_weight)
-            
+            binary_loss_scaled = binary_loss * self.binary_loss_weight
+            losses.append(binary_loss_scaled)
+            metrics["binary_loss"] = binary_loss.item()
+            metrics["binary_loss_scaled"] = binary_loss_scaled.item()
+
         present_losses = losses
         if not present_losses:
             raise ValueError("No next-observation prediction targets configured")
 
-        return torch.stack(present_losses).sum()
+        return torch.stack(present_losses).sum(), metrics
 
     @staticmethod
     def _normalize_indices(indices: Optional[list[int]]) -> Optional[list[int]]:
@@ -263,6 +328,29 @@ class NextObsPredMixin(abc.ABC):
     @staticmethod
     def _expand_rot6d_indices(indices: list[int]) -> list[int]:
         return [start + offset for start in indices for offset in range(6)]
+
+    @staticmethod
+    def _align_base_local_obs(local_obs: torch.Tensor, next_local_obs: torch.Tensor) -> torch.Tensor:
+        if local_obs.ndim == next_local_obs.ndim:
+            if local_obs.shape != next_local_obs.shape:
+                raise ValueError(
+                    f"Expected local_obs shape {tuple(next_local_obs.shape)}, got {tuple(local_obs.shape)}"
+                )
+            return local_obs
+        if local_obs.ndim + 1 == next_local_obs.ndim:
+            if local_obs.shape[0] != next_local_obs.shape[0]:
+                raise ValueError(
+                    f"Expected local_obs batch size {next_local_obs.shape[0]}, got {local_obs.shape[0]}"
+                )
+            if local_obs.shape[1] != next_local_obs.shape[2] or local_obs.shape[2] != next_local_obs.shape[3]:
+                raise ValueError(
+                    f"Expected local_obs shape (B, N, F)=({next_local_obs.shape[0]}, {next_local_obs.shape[2]}, "
+                    f"{next_local_obs.shape[3]}), got {tuple(local_obs.shape)}"
+                )
+            return local_obs.unsqueeze(1)
+        raise ValueError(
+            f"Expected local_obs shape (B, N, F) or {tuple(next_local_obs.shape)}, got {tuple(local_obs.shape)}"
+        )
 
     def _predict_latents_and_base_shape(
             self,
@@ -313,3 +401,22 @@ class NextObsPredMixin(abc.ABC):
         b2 = F.normalize(a2_proj, dim=-1)
         b3 = torch.cross(b1, b2, dim=-1)
         return torch.stack((b1, b2, b3), dim=-1)
+
+    @staticmethod
+    def _rotvec_to_matrix(rotvec: torch.Tensor) -> torch.Tensor:
+        angle = torch.linalg.norm(rotvec, dim=-1)
+        axis = rotvec / angle.clamp_min(1e-8).unsqueeze(-1)
+        x, y, z = axis.unbind(-1)
+        zeros = torch.zeros_like(x)
+        k_mat = torch.stack(
+            (
+                zeros, -z, y,
+                z, zeros, -x,
+                -y, x, zeros,
+            ),
+            dim=-1,
+        ).reshape(*rotvec.shape[:-1], 3, 3)
+        sin = torch.sin(angle)[..., None, None]
+        cos = torch.cos(angle)[..., None, None]
+        eye = torch.eye(3, device=rotvec.device, dtype=rotvec.dtype).expand(*rotvec.shape[:-1], 3, 3)
+        return eye + sin * k_mat + (1.0 - cos) * (k_mat @ k_mat)

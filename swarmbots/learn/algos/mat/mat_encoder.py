@@ -11,7 +11,7 @@ class MATEncoder(nn.Module):
 
     def __init__(
             self,
-            n_agents: int,
+            max_agents: int,
             local_obs_dim: int,
             global_obs_dim: int,
             d_model: int,
@@ -29,13 +29,13 @@ class MATEncoder(nn.Module):
             add_agent_embeddings: bool = True,
             local_obs_encoder_hidden_dims: list[int] | None = None,
             global_obs_encoder_hidden_dims: list[int] | None = None,
-    ):
+    ) -> None:
         super().__init__()
-        self.n_agents: int = n_agents
         self.local_obs_dim: int = local_obs_dim
         self.global_obs_dim: int = global_obs_dim
         self.has_global_obs: bool = global_obs_dim > 0
         self.add_agent_embeddings = add_agent_embeddings
+        self.max_agents = max_agents
 
         if local_obs_encoder_hidden_dims is None or len(local_obs_encoder_hidden_dims) == 0:
             self.local_obs_encoder = nn.Linear(self.local_obs_dim, d_model)
@@ -84,7 +84,7 @@ class MATEncoder(nn.Module):
         self.agent_embeddings: nn.Parameter | None = None
         if self.add_agent_embeddings:
             self.agent_embeddings = nn.Parameter(
-                torch.zeros(1, n_agents, d_model), requires_grad=True
+                torch.zeros(1, self.max_agents, d_model), requires_grad=True
             )
             nn.init.orthogonal_(self.agent_embeddings)
 
@@ -94,13 +94,16 @@ class MATEncoder(nn.Module):
         global_obs: torch.Tensor,
         agent_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
+        n_agents = local_obs.shape[1]
+        if n_agents > self.max_agents:
+            raise ValueError(f"Expected local_obs second dim <= {self.max_agents}, got {n_agents}")
         local_embeddings = self.local_obs_encoder(local_obs)
         if self.agent_embeddings is not None:
-            local_embeddings = local_embeddings + self.agent_embeddings
+            local_embeddings = local_embeddings + self.agent_embeddings[:, :n_agents, :]
 
         if self.has_global_obs:
             global_embeddings = self.global_obs_encoder(global_obs)
-            expanded_global_embeddings = global_embeddings.unsqueeze(1).expand(-1, self.n_agents, -1)
+            expanded_global_embeddings = global_embeddings.unsqueeze(1).expand(-1, n_agents, -1)
             local_embeddings = local_embeddings + expanded_global_embeddings
 
         src_key_padding_mask = None

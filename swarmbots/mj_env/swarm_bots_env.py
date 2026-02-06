@@ -79,8 +79,8 @@ class SwarmBotsEnv(gymnasium.Env):
                 dtype=self.observation_space["hidden_vars"].dtype,
             ),
         }
-        if "agent_mask" in self.observation_space and self.observation_space["agent_mask"] is not None:
-            self._zeros_obs["agent_mask"] = np.zeros(
+        if "agent_mask" in self.observation_space.keys() and self.observation_space["agent_mask"] is not None:
+            self._zeros_obs["agent_mask"] = np.ones(
                 self.observation_space["agent_mask"].shape,
                 dtype=bool,
             )
@@ -137,6 +137,11 @@ class SwarmBotsEnv(gymnasium.Env):
             print('Simulation Unstable!')
             # noinspection PyTypeChecker
             err_obs: SwarmObsDict = {key: value.copy() for key, value in self._zeros_obs.items()}
+            if "agent_mask" in err_obs:
+                units_active_mask = self.scenario_state.get("units_active_mask")
+                if units_active_mask is not None:
+                    err_obs["agent_mask"] = np.asarray(units_active_mask, dtype=bool).copy()
+            err_obs = self._shuffle_obs(err_obs)
             return (
                 err_obs,
                 self.simulation_unstable_reward,
@@ -201,7 +206,15 @@ class SwarmBotsEnv(gymnasium.Env):
             return
 
         num_units = self.scenario.swarm.config.num_units
-        permutation = np.asarray(self.np_random.permutation(num_units), dtype=int)
+        units_active_mask = None if self.scenario_state is None else self.scenario_state.get("units_active_mask", None)
+        if units_active_mask is None:
+            permutation = np.asarray(self.np_random.permutation(num_units), dtype=int)
+        else:
+            active_indices = np.flatnonzero(np.asarray(units_active_mask, dtype=bool))
+            permutation = np.arange(num_units, dtype=int)
+            if active_indices.size > 1:
+                shuffled_active = np.asarray(self.np_random.permutation(active_indices), dtype=int)
+                permutation[active_indices] = shuffled_active
         self._agent_permutation = permutation
         self._inv_agent_permutation = np.argsort(permutation)
 
@@ -209,7 +222,7 @@ class SwarmBotsEnv(gymnasium.Env):
         if not self.shuffle_agents:
             return obs
         assert self._agent_permutation is not None
-        shuffled = {
+        shuffled: SwarmObsDict = {
             "local_obs": obs["local_obs"][self._agent_permutation],
             "global_obs": obs["global_obs"],
             "hidden_vars": obs["hidden_vars"],

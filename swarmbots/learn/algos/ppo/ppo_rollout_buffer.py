@@ -207,7 +207,7 @@ class PPORolloutBuffer:
         self.global_obs_shape = self.global_obs_space.shape[1:]
         self.hidden_vars_space = observation_space['hidden_vars']
         self.hidden_vars_shape = self.hidden_vars_space.shape[1:]
-        self.has_agent_mask = 'agent_mask' in observation_space and observation_space['agent_mask'] is not None
+        self.has_agent_mask = 'agent_mask' in observation_space.keys() and observation_space['agent_mask'] is not None
 
         self.n_envs = self.local_obs_space.shape[0]
 
@@ -324,7 +324,11 @@ class PPOSampler(BaseSampler[PPOSamplesType]):
         self.local_obs = torch.concatenate(tuple(ep.local_obs for ep in episodes), dim=0)
         self.global_obs = torch.concatenate(tuple(ep.global_obs for ep in episodes), dim=0)
         self.hidden_vars = torch.concatenate(tuple(ep.hidden_vars for ep in episodes), dim=0)
-        if any(ep.agent_mask is None for ep in episodes):
+        has_agent_mask = any(ep.agent_mask is not None for ep in episodes)
+        has_missing_agent_mask = any(ep.agent_mask is None for ep in episodes)
+        if has_agent_mask and has_missing_agent_mask:
+            raise ValueError("agent_mask must be provided for all episodes or none")
+        if has_missing_agent_mask:
             self.agent_mask = None
         else:
             self.agent_mask = torch.concatenate(tuple(ep.agent_mask for ep in episodes), dim=0)

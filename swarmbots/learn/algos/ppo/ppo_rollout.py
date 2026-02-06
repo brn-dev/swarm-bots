@@ -36,7 +36,8 @@ def collect_whole_episodes(
             raise TypeError(f"Unknown gsde_reset_mode type: {type(gsde_reset_mode)}")
 
     buffer.reset()
-    obs, info = env.reset()
+    with PerformanceTimer() as env_reset_timer:
+        obs, info = env.reset()
     is_final = torch.zeros((buffer.n_envs,), dtype=torch.bool, device=buffer.rollout_device)
     was_terminated = torch.zeros((buffer.n_envs,), dtype=torch.bool, device=buffer.rollout_device)
 
@@ -127,6 +128,7 @@ def collect_whole_episodes(
         episodes = buffer.get_whole_episodes()
 
     metrics = {
+        'env_reset_time': env_reset_timer.get_duration(),
         'to_rollout_device_time': to_rollout_device_timer.get_duration(),
         'reset_noise_time': compute_summary_statistics(reset_noise_timings),
         'total_reset_noise_time': sum(reset_noise_timings),

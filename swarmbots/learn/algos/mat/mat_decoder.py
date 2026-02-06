@@ -10,7 +10,7 @@ class MATDecoder(nn.Module):
 
     def __init__(
             self,
-            n_agents: int,
+            max_agents: int,
             num_layers: int,
             bias: bool,
             norm_first: bool,
@@ -25,7 +25,7 @@ class MATDecoder(nn.Module):
             output_norm: nn.Module,
     ) -> None:
         super().__init__()
-        self.n_agents = n_agents
+        self.max_agents = max_agents
 
         self.decoder = nn.TransformerDecoder(
             decoder_layer=CustomTransformerDecoderLayer(
@@ -46,10 +46,8 @@ class MATDecoder(nn.Module):
         )
 
 
-        tgt_mask = nn.Transformer.generate_square_subsequent_mask(
-            self.n_agents
-        )
-        self.register_buffer("tgt_mask", tgt_mask)
+        causal_mask = torch.triu(torch.ones(self.max_agents, self.max_agents, dtype=torch.bool), diagonal=1)
+        self.register_buffer("tgt_mask", causal_mask)
 
     def forward(
         self,
@@ -62,13 +60,14 @@ class MATDecoder(nn.Module):
                 "Expected local_embeddings and augmented_observations to share batch size, "
                 f"got {action_embeddings.shape[0]} and {augmented_observations.shape[0]}"
             )
-        if augmented_observations.shape[1] != self.n_agents:
+        n_agents = augmented_observations.shape[1]
+        if n_agents > self.max_agents:
             raise ValueError(
-                f"Expected augmented_observations second dim {self.n_agents}, got {augmented_observations.shape[1]}"
+                f"Expected augmented_observations second dim <= {self.max_agents}, got {n_agents}"
             )
         seq_len = action_embeddings.shape[1]
-        if seq_len > self.n_agents:
-            raise ValueError(f"Expected seq_len <= n_agents ({self.n_agents}), got {seq_len}")
+        if seq_len > n_agents:
+            raise ValueError(f"Expected seq_len <= n_agents ({n_agents}), got {seq_len}")
         tgt_mask = self.tgt_mask[:seq_len, :seq_len]
 
         tgt_key_padding_mask = None
@@ -76,7 +75,7 @@ class MATDecoder(nn.Module):
         if agent_mask is not None:
             if agent_mask.dtype != torch.bool:
                 raise ValueError(f"Expected agent_mask dtype bool, got {agent_mask.dtype}")
-            expected_mask_shape = (action_embeddings.shape[0], self.n_agents)
+            expected_mask_shape = (action_embeddings.shape[0], n_agents)
             if agent_mask.shape != expected_mask_shape:
                 raise ValueError(
                     f"Expected agent_mask shape {expected_mask_shape}, got {tuple(agent_mask.shape)}"
