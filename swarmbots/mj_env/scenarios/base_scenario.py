@@ -581,26 +581,52 @@ class BaseScenario(abc.ABC):
             action: SwarmActDict,
             state: dict,
             connections: SwarmConnections
-    ):
+    ) -> float:
         reward = 0.0
 
         rw = self.reward_weights
-        actuator_activation = np.power(np.abs(action['actuators']), rw["actuators_activation_reward_power"]).mean()
+        units_active_mask = state.get("units_active_mask", None)
+        active_units_mask = None if units_active_mask is None else np.asarray(units_active_mask, dtype=bool)
+        active_units_count = self.num_units if active_units_mask is None else int(active_units_mask.sum())
+
+        actuators = np.asarray(action['actuators'], dtype=float)
+        if active_units_mask is not None:
+            actuators = actuators[active_units_mask]
+        if actuators.size == 0:
+            actuator_activation = 0.0
+        else:
+            actuator_activation = np.power(np.abs(actuators), rw["actuators_activation_reward_power"]).mean()
         reward += actuator_activation * rw['actuators_activation_reward_weight']
 
-        num_units_without_connections = np.logical_not(connections.get_is_active_mask()).all(axis=1).sum()
+        connection_mask = connections.get_is_active_mask()
+        if active_units_mask is not None:
+            connection_mask = connection_mask[active_units_mask]
+        num_units_without_connections = 0
+        if active_units_count > 0:
+            num_units_without_connections = np.logical_not(connection_mask).all(axis=1).sum()
         state['num_units_without_connections'] = num_units_without_connections
-        units_without_connections_ratio = num_units_without_connections / self.num_units
+        units_without_connections_ratio = (
+            num_units_without_connections / active_units_count if active_units_count > 0 else 0.0
+        )
         reward += units_without_connections_ratio * rw['units_without_connections_reward_weight']
 
         prev_unit_positions = state['unit_positions']
         unit_positions = data.qpos[self._qpos_indices[:, :3]].copy()
         state['unit_positions'] = unit_positions
-        avg_movement = np.linalg.norm(unit_positions - prev_unit_positions, axis=1).mean()
+        if active_units_mask is not None:
+            prev_unit_positions = prev_unit_positions[active_units_mask]
+            unit_positions_active = unit_positions[active_units_mask]
+        else:
+            unit_positions_active = unit_positions
+        if unit_positions_active.shape[0] == 0:
+            avg_movement = 0.0
+            avg_height = 0.0
+        else:
+            avg_movement = np.linalg.norm(unit_positions_active - prev_unit_positions, axis=1).mean()
+            avg_height = unit_positions_active[:, 2].mean()
         state['avg_movement'] = avg_movement
         reward += avg_movement * rw['movement_reward_weight']
 
-        avg_height = unit_positions[:, 2].mean()
         state['avg_height'] = avg_height
         reward += avg_height * rw['height_reward_weight']
 
@@ -611,7 +637,13 @@ class BaseScenario(abc.ABC):
         connectors_reward += state['num_connectors_deactivated'] * rw['connectors_deactivated_reward_weight']
 
         if self.average_connectors_reward:
-            connectors_reward /= self.num_connectors
+            connector_denominator = self.num_connectors
+            if active_units_mask is not None:
+                connector_denominator = int(active_units_count * self.limbs_per_unit)
+            if connector_denominator > 0:
+                connectors_reward /= connector_denominator
+            else:
+                connectors_reward = 0.0
 
         reward += connectors_reward
 

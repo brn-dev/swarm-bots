@@ -1,3 +1,5 @@
+from typing import Any
+
 import torch
 from torch import nn
 
@@ -36,6 +38,7 @@ class MATSPRPolicy(MATPolicy, SPRMixin, PPOWMPolicyMixin):
             bernoulli_initial_prob: float | None = None,
             add_agent_embeddings_encoder: bool = True,
             add_agent_embeddings_decoder: bool = True,
+            max_agents: int | None = None,
             d_model_transition_model: int = 128,
             nhead_transition_model: int = 4,
             num_layers_transition_model: int = 2,
@@ -70,6 +73,7 @@ class MATSPRPolicy(MATPolicy, SPRMixin, PPOWMPolicyMixin):
             bernoulli_initial_prob=bernoulli_initial_prob,
             add_agent_embeddings_encoder=add_agent_embeddings_encoder,
             add_agent_embeddings_decoder=add_agent_embeddings_decoder,
+            max_agents=max_agents,
         )
         if spr_projection_dims is None:
             projection_dims = [self.d_model_encoder]
@@ -139,8 +143,10 @@ class MATSPRPolicy(MATPolicy, SPRMixin, PPOWMPolicyMixin):
             next_global_obs: torch.Tensor,
             next_validity_mask: torch.Tensor,
             agent_mask: torch.Tensor | None = None,
+            wm_agent_mask: torch.Tensor | None = None,
+            wm_loss_agent_mask: torch.Tensor | None = None,
             hidden_vars: torch.Tensor | None = None,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, dict[str, Any]]:
         if actions.ndim == 4:
             policy_actions = actions[:, 0]
         else:
@@ -161,11 +167,12 @@ class MATSPRPolicy(MATPolicy, SPRMixin, PPOWMPolicyMixin):
             next_local_obs=next_local_obs,
             next_global_obs=next_global_obs,
             actions=actions,
-            agent_mask=agent_mask,
+            agent_mask=wm_agent_mask,
+            loss_agent_mask=wm_loss_agent_mask,
             time_mask=next_validity_mask,
         )
 
-        return log_probs, entropies, values, spr_loss
+        return log_probs, entropies, values, spr_loss, {}
 
     def update_world_model_targets(self, tau: float) -> None:
         self.update_spr_targets(tau)

@@ -25,10 +25,12 @@ class PPOWMPolicyMixin(abc.ABC):
             next_global_obs: torch.Tensor,
             next_validity_mask: torch.Tensor,
             agent_mask: torch.Tensor | None = None,
+            wm_agent_mask: torch.Tensor | None = None,
+            wm_loss_agent_mask: torch.Tensor | None = None,
             hidden_vars: torch.Tensor | None = None,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, dict[str, Any]]:
         """
-        :return: log_probs, entropies, values, world_model_loss
+        :return: log_probs, entropies, values, world_model_loss, metrics
         """
         raise NotImplementedError()
 
@@ -110,7 +112,7 @@ class PPOWM(PPO[PPOWMSamples, PPOWMSampler]):
             self,
             batch: PPOWMSamples,
     ) -> tuple[torch.Tensor, float, dict[str, Any]]:
-        log_probs, entropies, values, world_model_loss = self.policy.evaluate_actions_and_world_model(
+        log_probs, entropies, values, world_model_loss, wm_loss_metrics = self.policy.evaluate_actions_and_world_model(
             local_obs=batch.local_obs,
             global_obs=batch.global_obs,
             actions=batch.actions,
@@ -118,6 +120,8 @@ class PPOWM(PPO[PPOWMSamples, PPOWMSampler]):
             next_global_obs=batch.next_global_obs,
             next_validity_mask=batch.next_validity_mask,
             agent_mask=batch.agent_mask,
+            wm_agent_mask=batch.wm_agent_mask,
+            wm_loss_agent_mask=batch.wm_loss_agent_mask,
             hidden_vars=batch.hidden_vars,
         )
 
@@ -129,6 +133,8 @@ class PPOWM(PPO[PPOWMSamples, PPOWMSampler]):
         )
 
         loss = ppo_loss + self.world_model_loss_coef * world_model_loss
+
+        metrics.update(wm_loss_metrics)
 
         metrics['wm_loss'] = world_model_loss.item()
         metrics['wm_loss_scaled'] = (self.world_model_loss_coef * world_model_loss).item()

@@ -51,7 +51,7 @@ class FeatureWiseObsNormWrapper(VectorObservationWrapper, gym.utils.RecordConstr
         if obs_key not in self.env.single_observation_space.spaces:
             raise ValueError(f'Expected "{obs_key}" key in observation space')
 
-        self._obs_key = obs_key
+        self.obs_key = obs_key
         space: gym.spaces.Box = self.env.single_observation_space[obs_key]  # type: ignore[assignment]
         obs_dim = int(space.shape[-1])
 
@@ -83,7 +83,7 @@ class FeatureWiseObsNormWrapper(VectorObservationWrapper, gym.utils.RecordConstr
         self._update_running_mean = setting
 
     def observations(self, observations: ObsType) -> ObsType:
-        obs = observations[self._obs_key]
+        obs = observations[self.obs_key]
 
         if self._update_running_mean:
             if self.obs_rms is not None:

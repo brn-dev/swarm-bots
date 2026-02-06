@@ -292,7 +292,7 @@ class ObstacleStreetScenario(BaseScenario):
 
         mujoco.mj_forward(model, data)
 
-        state['progress'] = self._compute_progress(data)
+        state['progress'] = self._compute_progress(data, state.get("units_active_mask"))
         state['hidden_vars'] = np.array(hidden_vars)
 
         return state, connections
@@ -367,7 +367,7 @@ class ObstacleStreetScenario(BaseScenario):
         """
 
         old_progress = state['progress']
-        new_progress = self._compute_progress(data)
+        new_progress = self._compute_progress(data, state.get("units_active_mask"))
         state['progress'] = new_progress
 
         progress_reward = new_progress - old_progress
@@ -404,12 +404,19 @@ class ObstacleStreetScenario(BaseScenario):
 
     def _compute_progress(
             self,
-            data: mujoco.MjData
+            data: mujoco.MjData,
+            units_active_mask: np.ndarray | None,
     ) -> float:
         if self.payload_type is None:
-            return data.qpos[self._qpos_indices[:, 1]].mean()  # avg y pos of the unit bodies
+            unit_positions = data.qpos[self._qpos_indices[:, 1]]
+            if units_active_mask is None:
+                return float(unit_positions.mean())
+            active_units_mask = np.asarray(units_active_mask, dtype=bool)
+            if not active_units_mask.any():
+                return 0.0
+            return float(unit_positions[active_units_mask].mean())
 
-        return data.xpos[self.payload_body_id, 1]
+        return float(data.xpos[self.payload_body_id, 1])
 
     @staticmethod
     def no_payload_no_opening_one_wall_no_poles(

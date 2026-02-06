@@ -6,6 +6,8 @@ from typing import Any, Optional
 import torch
 from loguru import logger
 
+from swarmbots.learn.env_wrappers.obs_normalization.feature_wise_obs_norm_wrapper import FeatureWiseObsNormWrapper
+
 
 def load_checkpoint(path: str | pathlib.Path, map_location: Any | None = "cpu") -> Any:
     return torch.load(pathlib.Path(path), map_location=map_location, weights_only=False)
@@ -64,6 +66,10 @@ def capture_env_state(env: Any) -> list[dict[str, Any]]:
     current_env = env
     while hasattr(current_env, "env"):
         wrapper_state: dict[str, Any] = {}
+
+        if isinstance(current_env, FeatureWiseObsNormWrapper):
+            wrapper_state['obs_key'] = current_env.obs_key
+
         for attr_name, value in iter_running_mean_std(current_env):
             wrapper_state[attr_name] = value
 
@@ -88,13 +94,31 @@ def apply_env_state(env: Any, env_state: Optional[list[dict[str, Any]]]) -> None
         if has_rms:
             current_class = type(current_env).__name__
             match_idx = None
-            for i in range(search_start_idx, len(env_state)):
-                if env_state[i].get("wrapper_class") == current_class:
-                    match_idx = i
-                    break
+            has_rms_key = lambda state: any(key.endswith("_rms") for key in state)
+            candidates = [
+                i
+                for i in range(search_start_idx, len(env_state))
+                if env_state[i].get("wrapper_class") == current_class and has_rms_key(env_state[i])
+            ]
+            if candidates:
+                if isinstance(current_env, FeatureWiseObsNormWrapper):
+                    for i in candidates:
+                        if env_state[i].get("obs_key") == current_env.obs_key:
+                            match_idx = i
+                            break
+                    if match_idx is None:
+                        if any("obs_key" in env_state[i] for i in candidates):
+                            raise ValueError(
+                                f"Obs keys not equal: {current_env.obs_key} vs "
+                                f"{[env_state[i].get('obs_key') for i in candidates]}"
+                            )
+                        match_idx = candidates[0]
+                else:
+                    match_idx = candidates[0]
 
             if match_idx is None:
-                logger.warning(
+                # Hard fail so we avoid easy to overlook errors
+                raise ValueError(
                     f"No saved env_state entry for wrapper {current_class}; normalization stats not restored for it."
                 )
             else:
@@ -120,5 +144,4 @@ def freeze_env_normalization(env: Any) -> None:
         if hasattr(current_env, "update_running_mean"):
             current_env.update_running_mean = False
         current_env = current_env.env
-
 

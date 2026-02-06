@@ -44,10 +44,16 @@ class MATPolicy(BasePPOPolicy):
             bernoulli_initial_prob: float | None = None,
             add_agent_embeddings_encoder: bool = True,
             add_agent_embeddings_decoder: bool = True,
-    ):
+            max_agents: int | None = None,
+    ) -> None:
         super().__init__()
 
         self.n_agents: int = env.n_agents
+        self.max_agents = self.n_agents if max_agents is None else max_agents
+        if self.max_agents < self.n_agents:
+            raise ValueError(
+                f"max_agents must be >= env.n_agents ({self.n_agents}), got {self.max_agents}"
+            )
         self.local_obs_dim: int = env.local_obs_dim
         self.global_obs_dim: int = env.global_obs_dim
         self.has_global_obs = env.global_obs_dim > 0
@@ -57,7 +63,7 @@ class MATPolicy(BasePPOPolicy):
         self.d_model_decoder = d_model if d_model_decoder is None else d_model_decoder
 
         self.encoder = MATEncoder(
-            n_agents=env.n_agents,
+            max_agents=self.max_agents,
             local_obs_dim=self.local_obs_dim,
             global_obs_dim=self.global_obs_dim,
             num_layers=num_layers_encoder,
@@ -80,7 +86,7 @@ class MATPolicy(BasePPOPolicy):
         self.agent_embeddings_decoder: nn.Parameter | None = None
         if add_agent_embeddings_decoder:
             self.agent_embeddings_decoder = nn.Parameter(
-                torch.zeros(1, env.n_agents - 1, self.d_model_decoder), requires_grad=True
+                torch.zeros(1, self.max_agents - 1, self.d_model_decoder), requires_grad=True
             )
             nn.init.orthogonal_(self.agent_embeddings_decoder)
 
@@ -100,7 +106,7 @@ class MATPolicy(BasePPOPolicy):
         nn.init.orthogonal_(self.sos_token)
 
         self.decoder = MATDecoder(
-            n_agents=env.n_agents,
+            max_agents=self.max_agents,
             num_layers=num_layers_decoder,
             bias=True,
             norm_first=True,
@@ -165,6 +171,7 @@ class MATPolicy(BasePPOPolicy):
             "bernoulli_initial_prob": bernoulli_initial_prob,
             "add_agent_embeddings_encoder": add_agent_embeddings_encoder,
             "add_agent_embeddings_decoder": add_agent_embeddings_decoder,
+            "max_agents": max_agents,
             "local_obs_encoder_hidden_dims": local_obs_encoder_hidden_dims,
             "global_obs_encoder_hidden_dims": global_obs_encoder_hidden_dims,
             "action_encoder_hidden_dims": action_encoder_hidden_dims,
@@ -185,6 +192,7 @@ class MATPolicy(BasePPOPolicy):
         Autoregressively generate actions based on augmented observations (encoder output)
         :return: (actions, Optional[log_probs])
         """
+        self._validate_agent_mask(agent_mask, batch_size=batch_size)
         actions_list = []
         log_probs_list = []
 
@@ -227,6 +235,7 @@ class MATPolicy(BasePPOPolicy):
             deterministic: bool = False
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
 
+        self._validate_agent_mask(agent_mask, batch_size=local_obs.shape[0])
         augmented_observations = self.encoder(local_obs, global_obs, agent_mask=agent_mask)
         actions, log_probs = self._generate_actions(
             augmented_observations=augmented_observations,
@@ -265,11 +274,17 @@ class MATPolicy(BasePPOPolicy):
             hidden_vars: torch.Tensor | None = None,
             agent_mask: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        self._validate_agent_mask(agent_mask, batch_size=local_obs.shape[0])
         augmented_observations = self.encoder(local_obs, global_obs, agent_mask=agent_mask)
         
         action_embeddings = self.action_encoder(actions[:, :-1, :])
         if self.agent_embeddings_decoder is not None:
-            action_embeddings = action_embeddings + self.agent_embeddings_decoder
+            if action_embeddings.shape[1] > self.agent_embeddings_decoder.shape[1]:
+                raise ValueError(
+                    "Expected actions second dim to be <= "
+                    f"{self.agent_embeddings_decoder.shape[1] + 1}, got {actions.shape[1]}"
+                )
+            action_embeddings = action_embeddings + self.agent_embeddings_decoder[:, :action_embeddings.shape[1], :]
         sos_expanded = self.sos_token.expand(actions.shape[0], 1, -1)
         
         shifted_actions = torch.cat([sos_expanded, action_embeddings], dim=1)
@@ -295,6 +310,7 @@ class MATPolicy(BasePPOPolicy):
             agent_mask: torch.Tensor | None = None,
             deterministic: bool = False
     ) -> torch.Tensor:
+        self._validate_agent_mask(agent_mask, batch_size=local_obs.shape[0])
         augmented_observations = self.encoder(local_obs, global_obs, agent_mask=agent_mask)
         actions, _ = self._generate_actions(
             augmented_observations=augmented_observations,
@@ -304,6 +320,29 @@ class MATPolicy(BasePPOPolicy):
             return_log_probs=False,
         )
         return actions
+
+    def _validate_agent_mask(
+            self,
+            agent_mask: torch.Tensor | None,
+            *,
+            batch_size: int,
+    ) -> None:
+        if agent_mask is None:
+            return
+        if agent_mask.dtype != torch.bool:
+            raise ValueError(f"Expected agent_mask dtype bool, got {agent_mask.dtype}")
+        if agent_mask.ndim != 2:
+            raise ValueError(f"Expected agent_mask shape (B, N), got {tuple(agent_mask.shape)}")
+        expected_shape = (batch_size, self.n_agents)
+        if agent_mask.shape != expected_shape:
+            raise ValueError(f"Expected agent_mask shape {expected_shape}, got {tuple(agent_mask.shape)}")
+        # MAT decoder uses agent embeddings as identity + autoregressive position, so active agents must be contiguous.
+        # This is intentional for this version of MAT.
+        if not agent_mask[:, 0].all():
+            raise ValueError("agent_mask must start with True for every batch entry")
+        mask_int = agent_mask.to(torch.int8)
+        if not torch.all(mask_int[:, 1:] <= mask_int[:, :-1]):
+            raise ValueError("agent_mask must be a True-prefix/False-suffix for every batch entry")
 
     def _critic_with_hidden_vars(
             self,

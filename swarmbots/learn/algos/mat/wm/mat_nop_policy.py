@@ -1,3 +1,5 @@
+from typing import Any
+
 import torch
 from torch import nn
 
@@ -36,6 +38,7 @@ class MATNOPPolicy(MATPolicy, NextObsPredMixin, PPOWMPolicyMixin):
             bernoulli_initial_prob: float | None = None,
             add_agent_embeddings_encoder: bool = True,
             add_agent_embeddings_decoder: bool = True,
+            max_agents: int | None = None,
             d_model_transition_model: int = 128,
             nhead_transition_model: int = 4,
             num_layers_transition_model: int = 2,
@@ -46,6 +49,7 @@ class MATNOPPolicy(MATPolicy, NextObsPredMixin, PPOWMPolicyMixin):
             transition_model_predict_delta: bool = True,
             wm_pre_transition_dims: list[int] | None = None,
             wm_pre_predictors_dims: list[int] | None = None,
+            wm_predict_delta: bool = True,
             local_scalar_target_indices: list[int] | None = None,
             local_angle_target_indices: list[int] | None = None,
             local_rot6d_target_indices: list[int] | None = None,
@@ -84,6 +88,7 @@ class MATNOPPolicy(MATPolicy, NextObsPredMixin, PPOWMPolicyMixin):
             bernoulli_initial_prob=bernoulli_initial_prob,
             add_agent_embeddings_encoder=add_agent_embeddings_encoder,
             add_agent_embeddings_decoder=add_agent_embeddings_decoder,
+            max_agents=max_agents,
         )
 
         if not isinstance(scalar_loss_fn, nn.Module):
@@ -121,6 +126,9 @@ class MATNOPPolicy(MATPolicy, NextObsPredMixin, PPOWMPolicyMixin):
             )
             wm_pre_predictors_dim = wm_pre_predictors_dims[-1]
 
+        angle_output_multiplier = 1 if wm_predict_delta else 2
+        rot6d_output_multiplier = 3 if wm_predict_delta else 6
+
         local_scalars_predictor = self._build_predictor(
             input_dim=wm_pre_predictors_dim,
             output_dim=len(local_scalar_target_indices) if local_scalar_target_indices is not None else 0,
@@ -129,13 +137,21 @@ class MATNOPPolicy(MATPolicy, NextObsPredMixin, PPOWMPolicyMixin):
         )
         local_angles_predictor = self._build_predictor(
             input_dim=wm_pre_predictors_dim,
-            output_dim=(len(local_angle_target_indices) * 2) if local_angle_target_indices is not None else 0,
+            output_dim=(
+                len(local_angle_target_indices) * angle_output_multiplier
+                if local_angle_target_indices is not None
+                else 0
+            ),
             hidden_dims=wm_angle_predictor_hidden_dims,
             act_fn_cls=act_fn_cls,
         )
         local_rot6ds_predictor = self._build_predictor(
             input_dim=wm_pre_predictors_dim,
-            output_dim=(len(local_rot6d_target_indices) * 6) if local_rot6d_target_indices is not None else 0,
+            output_dim=(
+                len(local_rot6d_target_indices) * rot6d_output_multiplier
+                if local_rot6d_target_indices is not None
+                else 0
+            ),
             hidden_dims=wm_rot6d_predictor_hidden_dims,
             act_fn_cls=act_fn_cls,
         )
@@ -178,6 +194,7 @@ class MATNOPPolicy(MATPolicy, NextObsPredMixin, PPOWMPolicyMixin):
             angle_loss_weight=angle_loss_weight,
             rot6d_loss_weight=rot6d_loss_weight,
             binary_loss_weight=binary_loss_weight,
+            predict_delta=wm_predict_delta,
         )
 
         self.hyper_parameters.update(
@@ -192,6 +209,7 @@ class MATNOPPolicy(MATPolicy, NextObsPredMixin, PPOWMPolicyMixin):
                 "transition_model_predict_delta": transition_model_predict_delta,
                 "wm_pre_transition_dims": wm_pre_transition_dims,
                 "wm_pre_predictors_dims": wm_pre_predictors_dims,
+                "wm_predict_delta": wm_predict_delta,
                 "local_scalar_target_indices": local_scalar_target_indices,
                 "local_angle_target_indices": local_angle_target_indices,
                 "local_rot6d_target_indices": local_rot6d_target_indices,
@@ -218,8 +236,10 @@ class MATNOPPolicy(MATPolicy, NextObsPredMixin, PPOWMPolicyMixin):
             next_global_obs: torch.Tensor,
             next_validity_mask: torch.Tensor,
             agent_mask: torch.Tensor | None = None,
+            wm_agent_mask: torch.Tensor | None = None,
+            wm_loss_agent_mask: torch.Tensor | None = None,
             hidden_vars: torch.Tensor | None = None,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, dict[str, Any]]:
         if actions.ndim == 4:
             policy_actions = actions[:, 0]
         else:
@@ -234,15 +254,17 @@ class MATNOPPolicy(MATPolicy, NextObsPredMixin, PPOWMPolicyMixin):
             hidden_vars=hidden_vars,
             agent_mask=agent_mask,
         )
-        next_obs_pred_loss = self.compute_next_obs_pred_loss(
+        next_obs_pred_loss, nop_loss_metrics = self.compute_next_obs_pred_loss(
             local_latents=augmented_observations,
             next_local_obs=next_local_obs,
             actions=actions,
-            agent_mask=agent_mask,
+            local_obs=local_obs,
+            agent_mask=wm_agent_mask,
+            loss_agent_mask=wm_loss_agent_mask,
             time_mask=next_validity_mask,
         )
 
-        return log_probs, entropies, values, next_obs_pred_loss
+        return log_probs, entropies, values, next_obs_pred_loss, nop_loss_metrics
 
     def update_world_model_targets(self, tau: float) -> None:
         pass
@@ -252,14 +274,14 @@ class MATNOPPolicy(MATPolicy, NextObsPredMixin, PPOWMPolicyMixin):
             *,
             input_dim: int,
             output_dim: int,
-            hidden_dims: list[int],
+            hidden_dims: list[int] | None,
             act_fn_cls: type[nn.Module],
     ) -> nn.Module | None:
         if output_dim <= 0:
             return None
         return MLP(
             input_dim=input_dim,
-            hidden_dims=[*hidden_dims, output_dim] if hidden_dims else [output_dim],
+            hidden_dims=[*(hidden_dims or []), output_dim] if hidden_dims else [output_dim],
             end_with_act_fn=False,
             act_fn_cls=act_fn_cls,
         )

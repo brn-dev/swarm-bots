@@ -44,12 +44,18 @@ def make_env_fn(
                     num_units=5,
                     pairwise_distance=0.605,
                     max_radius=1.5,
+                    num_unit_probs={
+                        2: 0.25,
+                        3: 0.25,
+                        4: 0.25,
+                        5: 0.25,
+                    }
                 ),
                 randomize_unit_orientations=True,
             ),
             # unit_start_locations='8:hourglass',
             randomize_unit_orientations=True,
-            first_wall_distance=UniformDistParams(1.5, 2.5),
+            first_wall_distance=2.0, # UniformDistParams(1.5, 2.5),
             **scenario_kwargs
         )
         return SwarmBotsEnv(
@@ -111,7 +117,7 @@ def main() -> None:
     total_timesteps = 100_000_000
     save_interval = 500
     world_model_num_next_steps = 3
-    world_model_loss_coef = 0.5
+    world_model_loss_coef = 0.1
     world_model_target_tau = None
 
     # =====  ID  =====
@@ -119,7 +125,7 @@ def main() -> None:
 
     # ===== LOAD =====
     load_path: str | None = None
-    # load_path = "runs/mat_nop_swarm_bots/2026-02-03_15-00-31/models/model_13922304_steps_stopped.pt"
+    # load_path = "runs/mat_nop_swarm_bots/2026-02-06_16-54-32/models/model_9480192_steps_stopped.pt"
     std: float | None = None
 
     # ===== DEVICE =====
@@ -242,6 +248,7 @@ def main() -> None:
             normalize_latent_sde_by_dim=True
         ),
         bernoulli_initial_prob=0.75,
+        max_agents=20,
         # NOP
         wm_pre_transition_dims=[64],
         d_model_transition_model=64,
@@ -249,7 +256,7 @@ def main() -> None:
         num_layers_transition_model=2,
         dim_feedforward_transition_model=128,
         transition_model_coembed_hidden_dims=[96],
-        wm_pre_predictors_dims=[96],
+        wm_pre_predictors_dims=[96, 96],
         wm_scalar_predictor_hidden_dims=[],
         wm_angle_predictor_hidden_dims=[],
         wm_rot6d_predictor_hidden_dims=[],
