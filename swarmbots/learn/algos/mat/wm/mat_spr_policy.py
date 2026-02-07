@@ -85,7 +85,7 @@ class MATSPRPolicy(MATPolicy, SPRMixin, PPOWMPolicyMixin):
         else:
             predictor_hidden_dims = spr_predictor_hidden_dims + [projection_dims[-1]]
 
-        self.setup_modules(
+        self.setup_spr(
             transition_model=TransformerTransitionModel(
                 n_agents=self.n_agents,
                 latent_dim=self.d_model_encoder,
