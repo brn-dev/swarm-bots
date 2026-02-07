@@ -288,7 +288,7 @@ def main() -> None:
             decay_factor = np.clip(0.9 - early_stop_kl_div, 0.4, 0.8)
             return {'ratio': decay_factor, 'msg': f'kl={early_stop_kl_div:.3f}', 'event': 'max_kl_hit'}
 
-        if early_stop_epoch and early_stop_epoch < 2:
+        if early_stop_epoch is not None and early_stop_epoch < 2:
             state['counter'] = 0
             decay_factor = 0.9 if early_stop_epoch == 1 else 0.75
             return {'ratio': decay_factor, 'msg': f'epoch={early_stop_epoch}', 'event': 'min_epoch_hit'}

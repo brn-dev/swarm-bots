@@ -60,6 +60,7 @@ class TransitionObsWrapper(VectorWrapper, gym.utils.RecordConstructorArgs):
         if self._has_global_obs:
             global_single: spaces.Box = self.env.single_observation_space["global_obs"]  # type: ignore[assignment]
             self._prev_global = np.zeros((self._n_envs, int(global_single.shape[0])), dtype=np.float32)
+        self._prev_dones = np.zeros(self._n_envs, dtype=bool)
 
     @property
     def single_observation_space(self) -> spaces.Dict:
@@ -73,6 +74,7 @@ class TransitionObsWrapper(VectorWrapper, gym.utils.RecordConstructorArgs):
         obs, info = self.env.reset(**kwargs)
         local = np.asarray(obs["local_obs"])
         self._prev_local = local.copy()
+        self._prev_dones = np.zeros(self._n_envs, dtype=bool)
 
         if self._has_global_obs and "global_obs" in obs:
             global_obs = np.asarray(obs["global_obs"])
@@ -90,6 +92,9 @@ class TransitionObsWrapper(VectorWrapper, gym.utils.RecordConstructorArgs):
     ) -> tuple[dict[str, np.ndarray], np.ndarray, np.ndarray, np.ndarray, dict[str, Any]]:
         prev_local = self._prev_local
         prev_actions = self._actions_to_features(actions, dtype=prev_local.dtype)
+        if np.any(self._prev_dones):
+            prev_actions = prev_actions.copy()
+            prev_actions[self._prev_dones] = 0
         prev_global = self._prev_global if self._has_global_obs else None
 
         obs, rewards, terminations, truncations, infos = self.env.step(actions)
@@ -102,6 +107,7 @@ class TransitionObsWrapper(VectorWrapper, gym.utils.RecordConstructorArgs):
             self._prev_local[dones] = 0
             if self._has_global_obs and self._prev_global is not None:
                 self._prev_global[dones] = 0
+        self._prev_dones = dones
 
         stacked_obs = self._stack_obs(obs, prev_local=prev_local, prev_actions=prev_actions, prev_global=prev_global)
         return stacked_obs, rewards, terminations, truncations, infos
@@ -206,5 +212,4 @@ class TransitionObsWrapper(VectorWrapper, gym.utils.RecordConstructorArgs):
         if shape is None or len(shape) < 2:
             raise ValueError(f"Unsupported action space for transition wrapper: {single_action_space}")
         return int(shape[-1])
-
 

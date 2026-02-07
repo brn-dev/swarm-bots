@@ -24,7 +24,7 @@ class SPRMixin(abc.ABC):
     def online_encoder(self) -> nn.Module:
         raise NotImplementedError()
 
-    def setup_modules(
+    def setup_spr(
             self,
             transition_model: TransformerTransitionModel,
             projection: nn.Module,

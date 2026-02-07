@@ -6,7 +6,7 @@ from torch import nn
 from swarmbots.learn.action_dists.hybrid_action_dist import ContinuousActionDistConfig
 from swarmbots.learn.algos.mat.mat_policy import MATPolicy
 from swarmbots.learn.algos.ppo.wm.ppo_wm import PPOWMPolicyMixin
-from swarmbots.learn.algos.world_modeling.next_obs_pred_mixin import NextObsPredMixin
+from swarmbots.learn.algos.world_modeling.next_obs_pred_mixin import NextObsPredMixin, PredictDeltaMode
 from swarmbots.learn.algos.world_modeling.transformer_transition_model import TransformerTransitionModel
 from swarmbots.learn.env_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
 from swarmbots.learn.nn_components.mlp import MLP
@@ -49,7 +49,7 @@ class MATNOPPolicy(MATPolicy, NextObsPredMixin, PPOWMPolicyMixin):
             transition_model_predict_delta: bool = True,
             wm_pre_transition_dims: list[int] | None = None,
             wm_pre_predictors_dims: list[int] | None = None,
-            wm_predict_delta: bool = True,
+            wm_predict_delta: PredictDeltaMode | bool = True,
             local_scalar_target_indices: list[int] | None = None,
             local_angle_target_indices: list[int] | None = None,
             local_rot6d_target_indices: list[int] | None = None,
@@ -59,7 +59,6 @@ class MATNOPPolicy(MATPolicy, NextObsPredMixin, PPOWMPolicyMixin):
             wm_rot6d_predictor_hidden_dims: list[int] | None = None,
             wm_binary_predictor_hidden_dims: list[int] | None = None,
             scalar_loss_fn: str | nn.Module | None = None,
-            binary_loss_fn: nn.Module | None = None,
             scalar_loss_weight: float = 1.0,
             angle_loss_weight: float = 1.0,
             rot6d_loss_weight: float = 1.0,
@@ -100,9 +99,6 @@ class MATNOPPolicy(MATPolicy, NextObsPredMixin, PPOWMPolicyMixin):
                 scalar_loss_fn = nn.SmoothL1Loss(reduction="none")
             else:
                 raise ValueError(f"Unknown scalar_loss {scalar_loss_name!r}")
-
-        if local_binary_target_indices is not None and binary_loss_fn is None:
-            binary_loss_fn = nn.BCEWithLogitsLoss(reduction="none")
 
         pre_transition_transform = None
         wm_latent_dim = self.d_model_encoder
@@ -162,7 +158,7 @@ class MATNOPPolicy(MATPolicy, NextObsPredMixin, PPOWMPolicyMixin):
             act_fn_cls=act_fn_cls,
         )
 
-        self.setup_modules(
+        self.setup_next_obs_pred(
             transition_model=TransformerTransitionModel(
                 n_agents=self.n_agents,
                 latent_dim=wm_latent_dim,
@@ -185,7 +181,6 @@ class MATNOPPolicy(MATPolicy, NextObsPredMixin, PPOWMPolicyMixin):
             local_rot6d_target_indices=local_rot6d_target_indices,
             local_binary_target_indices=local_binary_target_indices,
             scalar_loss_fn=scalar_loss_fn,
-            binary_loss_fn=binary_loss_fn,
             local_scalars_predictor=local_scalars_predictor,
             local_angles_predictor=local_angles_predictor,
             local_rot6ds_predictor=local_rot6ds_predictor,
@@ -219,7 +214,6 @@ class MATNOPPolicy(MATPolicy, NextObsPredMixin, PPOWMPolicyMixin):
                 "wm_rot6d_predictor_hidden_dims": wm_rot6d_predictor_hidden_dims,
                 "wm_binary_predictor_hidden_dims": wm_binary_predictor_hidden_dims,
                 "scalar_loss_fn": scalar_loss_fn,
-                "binary_loss_fn": binary_loss_fn,
                 "scalar_loss_weight": scalar_loss_weight,
                 "angle_loss_weight": angle_loss_weight,
                 "rot6d_loss_weight": rot6d_loss_weight,
@@ -269,9 +263,8 @@ class MATNOPPolicy(MATPolicy, NextObsPredMixin, PPOWMPolicyMixin):
     def update_world_model_targets(self, tau: float) -> None:
         pass
 
+    @staticmethod
     def _build_predictor(
-            self,
-            *,
             input_dim: int,
             output_dim: int,
             hidden_dims: list[int] | None,

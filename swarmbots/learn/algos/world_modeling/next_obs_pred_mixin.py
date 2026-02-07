@@ -1,4 +1,5 @@
 import abc
+from enum import Enum
 from typing import Optional, Any
 
 import torch
@@ -7,6 +8,10 @@ from torch.nn import functional as F
 
 from swarmbots.learn.algos.world_modeling.transformer_transition_model import TransformerTransitionModel
 from swarmbots.learn.masking import build_valid_mask, masked_mean
+
+class PredictDeltaMode(Enum):
+    PER_STEP_DELTA = 1
+    INITIAL_DELTA = 2
 
 
 class NextObsPredMixin(abc.ABC):
@@ -20,7 +25,6 @@ class NextObsPredMixin(abc.ABC):
     local_binary_target_indices: Optional[list[int]]
 
     scalar_loss_fn: Optional[nn.Module]
-    binary_loss_fn: Optional[nn.Module]
 
     local_scalars_predictor: Optional[nn.Module]
     local_angles_predictor: Optional[nn.Module]
@@ -31,9 +35,15 @@ class NextObsPredMixin(abc.ABC):
     angle_loss_weight: float
     rot6d_loss_weight: float
     binary_loss_weight: float
-    predict_delta: bool
 
-    def setup_modules(
+    predict_delta: bool
+    predict_delta_mode: PredictDeltaMode | None
+
+    binary_target_ema: Optional[torch.Tensor]
+    binary_target_ema_decay: float
+    binary_target_ema_eps: float
+
+    def setup_next_obs_pred(
             self,
             transition_model: TransformerTransitionModel,
             pre_transition_transform: Optional[nn.Module] = None,
@@ -43,7 +53,6 @@ class NextObsPredMixin(abc.ABC):
             local_rot6d_target_indices: Optional[list[int]] = None,
             local_binary_target_indices: Optional[list[int]] = None,
             scalar_loss_fn: Optional[nn.Module] = None,
-            binary_loss_fn: Optional[nn.Module] = None,
             local_scalars_predictor: Optional[nn.Module] = None,
             local_angles_predictor: Optional[nn.Module] = None,
             local_rot6ds_predictor: Optional[nn.Module] = None,
@@ -52,7 +61,9 @@ class NextObsPredMixin(abc.ABC):
             angle_loss_weight: float = 1.0,
             rot6d_loss_weight: float = 1.0,
             binary_loss_weight: float = 1.0,
-            predict_delta: bool = True,
+            binary_target_ema_decay: float = 0.99,
+            binary_target_ema_eps: float = 1e-4,
+            predict_delta: Optional[PredictDeltaMode | bool] = PredictDeltaMode.PER_STEP_DELTA,
     ) -> None:
 
         local_scalar_target_indices = self._normalize_indices(local_scalar_target_indices)
@@ -65,8 +76,6 @@ class NextObsPredMixin(abc.ABC):
 
         if local_scalar_target_indices is not None and scalar_loss_fn is None:
             raise ValueError("scalar_loss_fn is required when local_scalar_target_indices is provided")
-        if local_binary_target_indices is not None and binary_loss_fn is None:
-            raise ValueError("binary_loss_fn is required when local_binary_target_indices is provided")
         if local_scalar_target_indices is not None and local_scalars_predictor is None:
             raise ValueError("local_scalars_predictor is required when local_scalar_target_indices is provided")
         if local_angle_target_indices is not None and local_angles_predictor is None:
@@ -91,7 +100,6 @@ class NextObsPredMixin(abc.ABC):
         self.local_binary_target_indices = local_binary_target_indices
 
         self.scalar_loss_fn = scalar_loss_fn
-        self.binary_loss_fn = binary_loss_fn
 
         self.local_scalars_predictor = local_scalars_predictor
         self.local_angles_predictor = local_angles_predictor
@@ -102,7 +110,21 @@ class NextObsPredMixin(abc.ABC):
         self.angle_loss_weight = angle_loss_weight
         self.rot6d_loss_weight = rot6d_loss_weight
         self.binary_loss_weight = binary_loss_weight
-        self.predict_delta = predict_delta
+        
+        self.predict_delta_mode = self._normalize_predict_delta_mode(predict_delta)
+        self.predict_delta = self.predict_delta_mode is not None
+
+        self.binary_target_ema_decay = binary_target_ema_decay
+        self.binary_target_ema_eps = binary_target_ema_eps
+
+        if local_binary_target_indices is not None:
+            ema = torch.full((len(local_binary_target_indices),), 0.5)
+            if hasattr(self, "register_buffer"):
+                self.register_buffer("binary_target_ema", ema)
+            else:
+                self.binary_target_ema = ema
+        else:
+            self.binary_target_ema = None
 
 
     def compute_scalar_loss(
@@ -218,7 +240,14 @@ class NextObsPredMixin(abc.ABC):
 
         pred_binaries = self.local_binaries_predictor(latent_preds)
         target_binaries = next_local_obs[..., self.local_binary_target_indices]
-        binary_losses = self.binary_loss_fn(pred_binaries, target_binaries)
+        ema = self._update_binary_target_ema(target_binaries, valid_mask)
+        weights = self._binary_balance_weights(target_binaries, ema)
+        binary_losses = F.binary_cross_entropy_with_logits(
+            pred_binaries,
+            target_binaries,
+            reduction="none",
+            weight=weights,
+        )
         loss_per_item = self._reduce_feature_loss(binary_losses)
         return masked_mean(loss_per_item, valid_mask)
 
@@ -251,7 +280,7 @@ class NextObsPredMixin(abc.ABC):
         if self.predict_delta:
             if local_obs is None:
                 raise ValueError("local_obs is required when predict_delta is True")
-            base_local_obs = self._align_base_local_obs(local_obs, next_local_obs)
+            base_local_obs = self._build_base_local_obs(local_obs, next_local_obs)
 
         valid_mask = build_valid_mask(
             base_shape=base_shape,
@@ -326,6 +355,18 @@ class NextObsPredMixin(abc.ABC):
         return list(indices)
 
     @staticmethod
+    def _normalize_predict_delta_mode(
+            predict_delta: PredictDeltaMode | bool | None,
+    ) -> PredictDeltaMode | None:
+        if predict_delta is None or predict_delta is False:
+            return None
+        if isinstance(predict_delta, PredictDeltaMode):
+            return predict_delta
+        if predict_delta is True:
+            return PredictDeltaMode.INITIAL_DELTA
+        raise ValueError(f"Unsupported predict_delta value: {predict_delta!r}")
+
+    @staticmethod
     def _reduce_feature_loss(losses: torch.Tensor) -> torch.Tensor:
         if losses.ndim < 3:
             return losses
@@ -357,6 +398,43 @@ class NextObsPredMixin(abc.ABC):
         raise ValueError(
             f"Expected local_obs shape (B, N, F) or {tuple(next_local_obs.shape)}, got {tuple(local_obs.shape)}"
         )
+
+    def _build_base_local_obs(self, local_obs: torch.Tensor, next_local_obs: torch.Tensor) -> torch.Tensor:
+        base_local_obs = self._align_base_local_obs(local_obs, next_local_obs)
+        if self.predict_delta_mode != PredictDeltaMode.PER_STEP_DELTA:
+            return base_local_obs
+        if base_local_obs.shape == next_local_obs.shape:
+            return base_local_obs
+        return torch.cat([base_local_obs, next_local_obs[:, :-1]], dim=1)
+
+    def _update_binary_target_ema(
+            self,
+            target_binaries: torch.Tensor,
+            valid_mask: torch.Tensor | None,
+    ) -> torch.Tensor:
+        if self.binary_target_ema is None:
+            raise ValueError("binary_target_ema is not initialized for binary targets")
+
+        target_binaries = target_binaries.float()
+        if valid_mask is None:
+            feature_mean = target_binaries.mean(dim=tuple(range(target_binaries.ndim - 1)))
+        else:
+            weights = valid_mask.to(dtype=target_binaries.dtype).unsqueeze(-1)
+            denom = weights.sum(dim=tuple(range(weights.ndim - 1))).clamp_min(1.0)
+            feature_mean = (target_binaries * weights).sum(dim=tuple(range(target_binaries.ndim - 1))) / denom
+
+        if self.training:
+            with torch.no_grad():
+                self.binary_target_ema.mul_(self.binary_target_ema_decay).add_(
+                    feature_mean * (1.0 - self.binary_target_ema_decay)
+                )
+        return self.binary_target_ema
+
+    def _binary_balance_weights(self, target_binaries: torch.Tensor, ema: torch.Tensor) -> torch.Tensor:
+        eps = self.binary_target_ema_eps
+        pos_weights = 0.5 / ema.clamp(min=eps)
+        neg_weights = 0.5 / (1.0 - ema).clamp(min=eps)
+        return target_binaries * pos_weights + (1.0 - target_binaries) * neg_weights
 
     def _predict_latents_and_base_shape(
             self,
