@@ -14,7 +14,8 @@ class NextObsPredMixin(abc.ABC):
     transition_model: TransformerTransitionModel
 
     local_scalar_target_indices: Optional[list[int]]
-    local_angle_target_indices: Optional[list[int]]
+    local_angle_target_sin_indices: Optional[list[int]]
+    local_angle_target_cos_indices: Optional[list[int]]
     local_rot6d_target_indices: Optional[list[int]]
     local_binary_target_indices: Optional[list[int]]
 
@@ -58,6 +59,9 @@ class NextObsPredMixin(abc.ABC):
         local_angle_target_indices = self._normalize_indices(local_angle_target_indices)
         local_rot6d_target_indices = self._normalize_indices(local_rot6d_target_indices)
         local_binary_target_indices = self._normalize_indices(local_binary_target_indices)
+        local_angle_target_cos_indices = (
+            [i + 1 for i in local_angle_target_indices] if local_angle_target_indices is not None else None
+        )
 
         if local_scalar_target_indices is not None and scalar_loss_fn is None:
             raise ValueError("scalar_loss_fn is required when local_scalar_target_indices is provided")
@@ -81,7 +85,8 @@ class NextObsPredMixin(abc.ABC):
         )
 
         self.local_scalar_target_indices = local_scalar_target_indices
-        self.local_angle_target_indices = local_angle_target_indices
+        self.local_angle_target_sin_indices = local_angle_target_indices
+        self.local_angle_target_cos_indices = local_angle_target_cos_indices
         self.local_rot6d_target_indices = local_rot6d_target_indices
         self.local_binary_target_indices = local_binary_target_indices
 
@@ -127,32 +132,33 @@ class NextObsPredMixin(abc.ABC):
             valid_mask: torch.Tensor | None,
             base_local_obs: torch.Tensor | None,
     ) -> Optional[torch.Tensor]:
-        if self.local_angle_target_indices is None:
+        if self.local_angle_target_sin_indices is None:
             return None
 
         pred_angles = self.local_angles_predictor(latent_preds)
         if self.predict_delta:
             if base_local_obs is None:
                 raise ValueError("local_obs is required when predict_delta is True")
-            target_angles_sin = next_local_obs[..., self.local_angle_target_indices]
-            target_angles_cos = next_local_obs[..., [i + 1 for i in self.local_angle_target_indices]]
-            base_angles_sin = base_local_obs[..., self.local_angle_target_indices]
-            base_angles_cos = base_local_obs[..., [i + 1 for i in self.local_angle_target_indices]]
+            target_angles_sin = next_local_obs[..., self.local_angle_target_sin_indices]
+            target_angles_cos = next_local_obs[..., self.local_angle_target_cos_indices]
+            base_angles_sin = base_local_obs[..., self.local_angle_target_sin_indices]
+            base_angles_cos = base_local_obs[..., self.local_angle_target_cos_indices]
             delta_angles_sin = target_angles_sin * base_angles_cos - target_angles_cos * base_angles_sin
             delta_angles_cos = target_angles_cos * base_angles_cos + target_angles_sin * base_angles_sin
-            target_pairs = torch.stack((delta_angles_sin, delta_angles_cos), dim=-1)
 
             pred_angles = pred_angles.reshape(*pred_angles.shape[:-1], -1)
-            pred_pairs = torch.stack((torch.sin(pred_angles), torch.cos(pred_angles)), dim=-1)
+            pred_sin = torch.sin(pred_angles)
+            pred_cos = torch.cos(pred_angles)
+            cosine_sim = pred_sin * delta_angles_sin + pred_cos * delta_angles_cos
         else:
-            target_angles_sin = next_local_obs[..., self.local_angle_target_indices]
-            target_angles_cos = next_local_obs[..., [i + 1 for i in self.local_angle_target_indices]]
+            target_angles_sin = next_local_obs[..., self.local_angle_target_sin_indices]
+            target_angles_cos = next_local_obs[..., self.local_angle_target_cos_indices]
             target_angles = torch.stack((target_angles_sin, target_angles_cos), dim=-1)
 
             pred_pairs = pred_angles.reshape(*pred_angles.shape[:-1], -1, 2)
             target_pairs = target_angles.reshape(*target_angles.shape[:-2], -1, 2)
+            cosine_sim = F.cosine_similarity(pred_pairs, target_pairs, dim=-1, eps=1e-8)
 
-        cosine_sim = F.cosine_similarity(pred_pairs, target_pairs, dim=-1, eps=1e-8)
         loss_per_angle = 1.0 - cosine_sim
         loss_per_item = loss_per_angle.mean(dim=-1)
         return masked_mean(loss_per_item, valid_mask)
