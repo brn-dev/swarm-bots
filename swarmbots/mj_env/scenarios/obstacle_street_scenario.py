@@ -441,7 +441,7 @@ class ObstacleStreetScenario(BaseScenario):
             'friction': [2, 1e-2, 2e-4],
             'force_elliptic_cone': True,
             'actuators_activation_reward_weight': -5e-3,
-            'units_without_connections_reward_weight': -5e-4,
+            'units_without_connections_reward_weight': -1e-3,
             'movement_reward_weight':  0e-1,
             'height_reward_weight':  0e-4,
             'connectors_stayed_active_reward_weight':  0e-5,
