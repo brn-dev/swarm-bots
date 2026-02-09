@@ -87,6 +87,7 @@ class ObstacleStreetScenario(PayloadScenario):
             actuators_activation_reward_weight: float = 0.0,
             actuators_activation_reward_power: int = 8,
             units_without_connections_reward_weight: float = 0.0,
+            units_with_double_connection_reward_weight: float = 0.0,
             movement_reward_weight: float = 0.0,
             height_reward_weight: float = 0.0,
             connectors_stayed_active_reward_weight: float = 0.0,
@@ -142,6 +143,7 @@ class ObstacleStreetScenario(PayloadScenario):
             actuators_activation_reward_weight=actuators_activation_reward_weight,
             actuators_activation_reward_power=actuators_activation_reward_power,
             units_without_connections_reward_weight=units_without_connections_reward_weight,
+            units_with_double_connection_reward_weight=units_with_double_connection_reward_weight,
             movement_reward_weight=movement_reward_weight,
             height_reward_weight=height_reward_weight,
             connectors_stayed_active_reward_weight=connectors_stayed_active_reward_weight,
@@ -354,47 +356,6 @@ class ObstacleStreetScenario(PayloadScenario):
             return float(unit_positions[active_units_mask].mean())
 
         return float(data.xpos[self.payload_body_id, 1])
-
-    @staticmethod
-    def no_payload_no_opening_one_wall_no_poles(
-            seed: int | None = None,
-            swarm: BaseSwarm | None = None,
-            unit_start_locations: list[tuple[float, float, float]] | str | None = None,
-            randomize_unit_orientations: bool = False,
-            **kwargs
-    ) -> 'ObstacleStreetScenario':
-        assert swarm is None or unit_start_locations is None
-
-        if swarm is None:
-            if unit_start_locations is None:
-                unit_start_locations = '4:diamond'
-            swarm = HomogeneousSwarm(
-                unit_start_locations=unit_start_locations,
-                randomize_unit_orientations=randomize_unit_orientations
-            )
-
-        scenario_kwargs = {
-            'wall_height': 0.15,
-            'friction': [2, 1e-2, 2e-4],
-            'force_elliptic_cone': True,
-            'actuators_activation_reward_weight': -5e-3,
-            'units_without_connections_reward_weight': -2e-3,
-            'movement_reward_weight':  0e-1,
-            'height_reward_weight':  0e-4,
-            'connectors_stayed_active_reward_weight':  0e-5,
-            'connectors_successfully_activated_reward_weight':  0e-3,
-            'connectors_unsuccessfully_activated_reward_weight': -1e-4,
-            'connectors_deactivated_reward_weight': 0e-3,
-        }
-        scenario_kwargs.update(kwargs)
-        return ObstacleStreetScenario(
-            swarm=swarm,
-            payload_type=None,
-            num_walls=1,
-            opening_width=0.01,
-            **scenario_kwargs,
-            seed=seed,
-        )
 
 def sample_pole_xy(pole: PoleSpec, rng: np.random.Generator) -> tuple[float, float]:
     if isinstance(pole, PoleParams):

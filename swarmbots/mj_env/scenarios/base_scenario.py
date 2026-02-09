@@ -27,6 +27,7 @@ class RewardWeights(TypedDict, total=False):
     actuators_activation_reward_weight: float
     actuators_activation_reward_power: int
     units_without_connections_reward_weight: float
+    units_with_double_connection_reward_weight: float
     movement_reward_weight: float
     height_reward_weight: float
     connectors_stayed_active_reward_weight: float
@@ -70,6 +71,7 @@ class BaseScenario(abc.ABC):
             actuators_activation_reward_weight: float,
             actuators_activation_reward_power: int,
             units_without_connections_reward_weight: float,
+            units_with_double_connection_reward_weight: float,
             movement_reward_weight: float,
             height_reward_weight: float,
             connectors_stayed_active_reward_weight: float,
@@ -106,6 +108,7 @@ class BaseScenario(abc.ABC):
             "actuators_activation_reward_weight": actuators_activation_reward_weight,
             "actuators_activation_reward_power": actuators_activation_reward_power,
             "units_without_connections_reward_weight": units_without_connections_reward_weight,
+            "units_with_double_connection_reward_weight": units_with_double_connection_reward_weight,
             "movement_reward_weight": movement_reward_weight,
             "height_reward_weight": height_reward_weight,
             "connectors_stayed_active_reward_weight": connectors_stayed_active_reward_weight,
@@ -632,6 +635,21 @@ class BaseScenario(abc.ABC):
             num_units_without_connections / active_units_count if active_units_count > 0 else 0.0
         )
         reward += units_without_connections_ratio * rw['units_without_connections_reward_weight']
+
+        connection_targets = connections.connections[:, :, 0]
+        if active_units_mask is not None:
+            connection_targets = connection_targets[active_units_mask]
+        if connection_targets.size == 0:
+            num_units_with_double_connection = 0
+        else:
+            sorted_targets = np.sort(connection_targets, axis=1)
+            double_connected_mask = (
+                (sorted_targets[:, 1:] == sorted_targets[:, :-1])
+                & (sorted_targets[:, 1:] != -1)
+            )
+            num_units_with_double_connection = int(double_connected_mask.any(axis=1).sum())
+        state['num_units_with_double_connection'] = num_units_with_double_connection
+        reward += num_units_with_double_connection * rw['units_with_double_connection_reward_weight']
 
         prev_unit_positions = state['unit_positions']
         unit_positions = data.qpos[self._qpos_indices[:, :3]].copy()

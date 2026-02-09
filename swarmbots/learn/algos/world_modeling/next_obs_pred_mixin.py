@@ -7,7 +7,7 @@ from torch import nn
 from torch.nn import functional as F
 
 from swarmbots.learn.algos.world_modeling.transformer_transition_model import TransformerTransitionModel
-from swarmbots.learn.masking import build_valid_mask, masked_mean
+from swarmbots.learn.masking import build_valid_mask, masked_mean, restrict_loss_agent_mask
 
 class PredictDeltaMode(Enum):
     PER_STEP_DELTA = 1
@@ -282,10 +282,15 @@ class NextObsPredMixin(abc.ABC):
                 raise ValueError("local_obs is required when predict_delta is True")
             base_local_obs = self._build_base_local_obs(local_obs, next_local_obs)
 
+        effective_loss_agent_mask = restrict_loss_agent_mask(
+            base_shape=base_shape,
+            loss_agent_mask=loss_agent_mask,
+            agent_mask=agent_mask,
+        )
         valid_mask = build_valid_mask(
             base_shape=base_shape,
             device=latent_preds.device,
-            agent_mask=loss_agent_mask,
+            agent_mask=effective_loss_agent_mask,
             time_mask=time_mask,
         )
 
