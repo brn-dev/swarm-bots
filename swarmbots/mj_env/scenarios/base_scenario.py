@@ -187,6 +187,13 @@ class BaseScenario(abc.ABC):
         raise NotImplementedError()
 
     @abc.abstractmethod
+    def compute_progress(
+            self,
+            data: mujoco.MjData,
+            units_active_mask: np.ndarray | None,
+    ) -> float:
+        raise NotImplementedError()
+
     def evaluate_step(
             self,
             action: SwarmActDict,
@@ -196,9 +203,25 @@ class BaseScenario(abc.ABC):
             connections: SwarmConnections
     ) -> tuple[float, bool]:
         """
-        :return: (new_state, reward for step, done)
+        :return: (reward, done)
         """
-        raise NotImplementedError()
+
+        old_progress = state['progress']
+        new_progress = self.compute_progress(data, state.get("units_active_mask"))
+        state['progress'] = new_progress
+
+        progress_reward = new_progress - old_progress
+        state['progress_reward'] = progress_reward
+
+        guidance_reward = self.compute_guidance_reward(data, action, state, connections)
+        state['guidance_reward'] = guidance_reward
+
+        weighted_progress_reward = progress_reward * self.reward_weights['progress_reward_weight']
+        weighted_guidance_reward = guidance_reward * self.reward_weights['guidance_reward_weight']
+        state['weighted_progress_reward'] = weighted_progress_reward
+        state['weighted_guidance_reward'] = weighted_guidance_reward
+
+        return weighted_progress_reward + weighted_guidance_reward, False
 
     def create_scenario_spec(self) -> mujoco.MjSpec:
         spec = mujoco.MjSpec()

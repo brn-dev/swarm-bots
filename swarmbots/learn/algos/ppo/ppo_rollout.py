@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from typing import Any
 
 import torch
@@ -10,13 +11,31 @@ from swarmbots.learn.gsde_reset import GSDEResetMode, GSDEIntervalResetMode, GSD
 from swarmbots.learn.summary_statistics import compute_summary_statistics
 
 
-@torch.no_grad()
-def collect_whole_episodes(
-        env: BaseLearnEnvWrapper,
+@dataclass(slots=True)
+class PPORolloutState:
+    obs: dict[str, torch.Tensor]
+    is_final: torch.Tensor
+    was_terminated: torch.Tensor
+    rollout_step_idx: int
+    pending_episode_infos: list[dict[str, Any] | None]
+
+
+@dataclass(slots=True)
+class _RolloutTimers:
+    reset_noise_timings: list[float]
+    policy_forward_timings: list[float]
+    env_step_timings: list[float]
+    buffer_add_timings: list[float]
+    reset_noise_timer: PerformanceTimer
+    policy_forward_timer: PerformanceTimer
+    env_step_timer: PerformanceTimer
+    buffer_add_timer: PerformanceTimer
+
+
+def _parse_gsde_reset_mode(
         policy: BasePPOPolicy,
-        buffer: PPORolloutBuffer,
-        gsde_reset_mode: GSDEResetMode | None = None,
-) -> tuple[list[PPOEpisode], list[dict], dict[str, Any]]:
+        gsde_reset_mode: GSDEResetMode | None,
+) -> tuple[bool, bool, int, float]:
     assert not policy.gsde_enabled or gsde_reset_mode is not None
     gsde_enabled = policy.gsde_enabled
     is_gsde_interval_reset_mode = False
@@ -34,6 +53,168 @@ def collect_whole_episodes(
                 raise ValueError(f"GSDEProbabilityResetMode.probability must be in (0, 1), got {gsde_reset_prob}")
         else:
             raise TypeError(f"Unknown gsde_reset_mode type: {type(gsde_reset_mode)}")
+    return gsde_enabled, is_gsde_interval_reset_mode, gsde_reset_interval, gsde_reset_prob
+
+
+def _init_rollout_timers() -> _RolloutTimers:
+    return _RolloutTimers(
+        reset_noise_timings=[],
+        policy_forward_timings=[],
+        env_step_timings=[],
+        buffer_add_timings=[],
+        reset_noise_timer=PerformanceTimer(),
+        policy_forward_timer=PerformanceTimer(),
+        env_step_timer=PerformanceTimer(),
+        buffer_add_timer=PerformanceTimer(),
+    )
+
+
+def _maybe_reset_gsde_noise(
+        *,
+        policy: BasePPOPolicy,
+        local_obs: torch.Tensor,
+        rollout_step_idx: int,
+        gsde_enabled: bool,
+        is_gsde_interval_reset_mode: bool,
+        gsde_reset_interval: int,
+        gsde_reset_prob: float,
+        rollout_device: torch.device,
+        timers: _RolloutTimers,
+) -> None:
+    if not gsde_enabled:
+        return
+    batch_shape = tuple(local_obs.shape[:-1])
+    with timers.reset_noise_timer:
+        if is_gsde_interval_reset_mode:
+            if (rollout_step_idx % gsde_reset_interval) == 0:
+                policy.action_dist.reset_noise(batch_shape=batch_shape)
+        else:
+            mask = torch.empty(
+                batch_shape,
+                device=rollout_device,
+                dtype=torch.bool,
+            ).bernoulli_(gsde_reset_prob)
+            policy.action_dist.reset_noise_masked(mask)
+    timers.reset_noise_timings.append(timers.reset_noise_timer.get_duration())
+
+
+def _collect_rollout_step(
+        *,
+        env: BaseLearnEnvWrapper,
+        policy: BasePPOPolicy,
+        buffer: PPORolloutBuffer,
+        obs: dict[str, torch.Tensor],
+        is_final: torch.Tensor,
+        was_terminated: torch.Tensor,
+        rollout_step_idx: int,
+        timers: _RolloutTimers,
+        episode_infos: list[dict[str, Any]],
+        episode_info_buffers: list[dict[str, Any] | None],
+        gsde_enabled: bool,
+        is_gsde_interval_reset_mode: bool,
+        gsde_reset_interval: int,
+        gsde_reset_prob: float,
+) -> tuple[dict[str, torch.Tensor], torch.Tensor, torch.Tensor, int]:
+    local_obs = obs['local_obs']
+    global_obs = obs['global_obs']
+    hidden_vars = obs["hidden_vars"]
+    agent_mask = obs.get("agent_mask", None)
+
+    _maybe_reset_gsde_noise(
+        policy=policy,
+        local_obs=local_obs,
+        rollout_step_idx=rollout_step_idx,
+        gsde_enabled=gsde_enabled,
+        is_gsde_interval_reset_mode=is_gsde_interval_reset_mode,
+        gsde_reset_interval=gsde_reset_interval,
+        gsde_reset_prob=gsde_reset_prob,
+        rollout_device=buffer.rollout_device,
+        timers=timers,
+    )
+
+    with timers.policy_forward_timer:
+        actions, log_probs, values = policy(
+            local_obs,
+            global_obs,
+            hidden_vars=hidden_vars,
+            agent_mask=agent_mask,
+        )
+    timers.policy_forward_timings.append(timers.policy_forward_timer.get_duration())
+
+    values = values.masked_fill(was_terminated, 0.0)
+
+    with timers.env_step_timer:
+        new_obs, rewards, terminations, truncations, infos = env.step(actions)
+    timers.env_step_timings.append(timers.env_step_timer.get_duration())
+    dones = torch.logical_or(terminations, truncations)
+
+    if "episode" in infos:
+        for i, has_ep_info in enumerate(infos["_episode"]):
+            if has_ep_info:
+                episode_info_buffers[i] = {
+                    'r': infos['episode']['r'][i],
+                    'l': infos['episode']['l'][i],
+                    't': infos['episode']['t'][i],
+                }
+
+    with timers.buffer_add_timer:
+        buffer.add(
+            local_obs=local_obs,
+            global_obs=global_obs,
+            hidden_vars=hidden_vars,
+            agent_mask=agent_mask,
+            actions=actions,
+            rewards=rewards,
+            log_probs=log_probs,
+            values=values,
+            is_final=is_final,
+        )
+    timers.buffer_add_timings.append(timers.buffer_add_timer.get_duration())
+
+    final_env_indices = torch.where(is_final)[0]
+    for env_idx in final_env_indices.tolist():
+        buffered_info = episode_info_buffers[env_idx]
+        if buffered_info is not None:
+            episode_infos.append(buffered_info)
+            episode_info_buffers[env_idx] = None
+
+    return new_obs, dones, terminations, rollout_step_idx + 1
+
+
+def _build_rollout_metrics(
+        *,
+        env_reset_time: float,
+        to_rollout_device_time: float,
+        timers: _RolloutTimers,
+        buffer_get_whole_episodes_time: float,
+) -> dict[str, Any]:
+    return {
+        'env_reset_time': env_reset_time,
+        'to_rollout_device_time': to_rollout_device_time,
+        'reset_noise_time': compute_summary_statistics(timers.reset_noise_timings),
+        'total_reset_noise_time': sum(timers.reset_noise_timings),
+        'policy_forward_time': compute_summary_statistics(timers.policy_forward_timings),
+        'total_policy_forward_time': sum(timers.policy_forward_timings),
+        'env_step_time': compute_summary_statistics(timers.env_step_timings),
+        'total_env_step_time': sum(timers.env_step_timings),
+        'buffer_add_time': compute_summary_statistics(timers.buffer_add_timings),
+        'total_buffer_add_time': sum(timers.buffer_add_timings),
+        'buffer_get_whole_episodes_time': buffer_get_whole_episodes_time,
+    }
+
+
+@torch.no_grad()
+def collect_whole_episodes(
+        env: BaseLearnEnvWrapper,
+        policy: BasePPOPolicy,
+        buffer: PPORolloutBuffer,
+        n_episodes: int,
+        gsde_reset_mode: GSDEResetMode | None = None,
+) -> tuple[list[PPOEpisode], list[dict[str, Any]], dict[str, Any]]:
+    gsde_enabled, is_gsde_interval_reset_mode, gsde_reset_interval, gsde_reset_prob = _parse_gsde_reset_mode(
+        policy,
+        gsde_reset_mode,
+    )
 
     buffer.reset()
     with PerformanceTimer() as env_reset_timer:
@@ -45,99 +226,146 @@ def collect_whole_episodes(
         policy.to(buffer.rollout_device)
         policy.eval()
 
-    episode_infos = []
+    episode_infos: list[dict[str, Any]] = []
+    episode_info_buffers: list[dict[str, Any] | None] = [None for _ in range(buffer.n_envs)]
     rollout_step_idx = 0
 
-    reset_noise_timings: list[float] = []
-    policy_forward_timings: list[float] = []
-    env_step_timings: list[float] = []
-    buffer_add_timings: list[float] = []
+    timers = _init_rollout_timers()
 
-    reset_noise_timer = PerformanceTimer()
-    policy_forward_timer = PerformanceTimer()
-    env_step_timer = PerformanceTimer()
-    buffer_add_timer = PerformanceTimer()
-
-    while not buffer.is_ready():
-        local_obs = obs['local_obs']
-        global_obs = obs['global_obs']
-        hidden_vars = obs["hidden_vars"]
-        agent_mask = obs.get("agent_mask", None)
-
-        if gsde_enabled:
-            batch_shape = tuple(local_obs.shape[:-1])
-            with reset_noise_timer:
-                if is_gsde_interval_reset_mode:
-                    if (rollout_step_idx % gsde_reset_interval) == 0:
-                        policy.action_dist.reset_noise(batch_shape=batch_shape)
-                else:  # probability reset mode
-                    mask = torch.empty(
-                        batch_shape,
-                        device=buffer.rollout_device,
-                        dtype=torch.bool,
-                    ).bernoulli_(gsde_reset_prob)
-                    policy.action_dist.reset_noise_masked(mask)
-
-            reset_noise_timings.append(reset_noise_timer.get_duration())
-
-        with policy_forward_timer:
-            actions, log_probs, values = policy(
-                local_obs,
-                global_obs,
-                hidden_vars=hidden_vars,
-                agent_mask=agent_mask,
-            )
-        policy_forward_timings.append(policy_forward_timer.get_duration())
-
-        values = values.masked_fill(was_terminated, 0.0)
-
-        with env_step_timer:
-            new_obs, rewards, terminations, truncations, infos = env.step(actions)
-        env_step_timings.append(env_step_timer.get_duration())
-        dones = torch.logical_or(terminations, truncations)
-
-        if "episode" in infos:
-            for i, has_ep_info in enumerate(infos["_episode"]):
-                if has_ep_info:
-                    episode_infos.append({
-                        'r': infos['episode']['r'][i],
-                        'l': infos['episode']['l'][i],
-                        't': infos['episode']['t'][i],
-                    })
-
-        with buffer_add_timer:
-            buffer.add(
-                local_obs=local_obs,
-                global_obs=global_obs,
-                hidden_vars=hidden_vars,
-                agent_mask=agent_mask,
-                actions=actions,
-                rewards=rewards,
-                log_probs=log_probs,
-                values=values,
-                is_final=is_final,
-            )
-        buffer_add_timings.append(buffer_add_timer.get_duration())
-
-        obs = new_obs
-        is_final = dones
-        was_terminated = terminations
-        rollout_step_idx += 1
+    while len(buffer.episodes) < n_episodes:
+        obs, is_final, was_terminated, rollout_step_idx = _collect_rollout_step(
+            env=env,
+            policy=policy,
+            buffer=buffer,
+            obs=obs,
+            is_final=is_final,
+            was_terminated=was_terminated,
+            rollout_step_idx=rollout_step_idx,
+            timers=timers,
+            episode_infos=episode_infos,
+            episode_info_buffers=episode_info_buffers,
+            gsde_enabled=gsde_enabled,
+            is_gsde_interval_reset_mode=is_gsde_interval_reset_mode,
+            gsde_reset_interval=gsde_reset_interval,
+            gsde_reset_prob=gsde_reset_prob,
+        )
 
     with PerformanceTimer() as buffer_get_whole_episodes_timer:
         episodes = buffer.get_whole_episodes()
 
-    metrics = {
-        'env_reset_time': env_reset_timer.get_duration(),
-        'to_rollout_device_time': to_rollout_device_timer.get_duration(),
-        'reset_noise_time': compute_summary_statistics(reset_noise_timings),
-        'total_reset_noise_time': sum(reset_noise_timings),
-        'policy_forward_time': compute_summary_statistics(policy_forward_timings),
-        'total_policy_forward_time': sum(policy_forward_timings),
-        'env_step_time': compute_summary_statistics(env_step_timings),
-        'total_env_step_time': sum(env_step_timings),
-        'buffer_add_time': compute_summary_statistics(buffer_add_timings),
-        'total_buffer_add_time': sum(buffer_add_timings),
-        'buffer_get_whole_episodes_time': buffer_get_whole_episodes_timer.get_duration(),
-    }
+    metrics = _build_rollout_metrics(
+        env_reset_time=env_reset_timer.get_duration(),
+        to_rollout_device_time=to_rollout_device_timer.get_duration(),
+        timers=timers,
+        buffer_get_whole_episodes_time=buffer_get_whole_episodes_timer.get_duration(),
+    )
     return episodes, episode_infos, metrics
+
+
+@torch.no_grad()
+def collect_steps(
+        env: BaseLearnEnvWrapper,
+        policy: BasePPOPolicy,
+        buffer: PPORolloutBuffer,
+        n_steps: int,
+        rollout_state: PPORolloutState | None = None,
+        gsde_reset_mode: GSDEResetMode | None = None,
+) -> tuple[list[PPOEpisode], list[dict[str, Any]], dict[str, Any], PPORolloutState]:
+    gsde_enabled, is_gsde_interval_reset_mode, gsde_reset_interval, gsde_reset_prob = _parse_gsde_reset_mode(
+        policy,
+        gsde_reset_mode,
+    )
+
+    buffer.reset()
+
+    env_reset_time = 0.0
+    if rollout_state is None:
+        with PerformanceTimer() as env_reset_timer:
+            obs, info = env.reset()
+        env_reset_time = env_reset_timer.get_duration()
+        is_final = torch.zeros((buffer.n_envs,), dtype=torch.bool, device=buffer.rollout_device)
+        was_terminated = torch.zeros((buffer.n_envs,), dtype=torch.bool, device=buffer.rollout_device)
+        rollout_step_idx = 0
+        episode_info_buffers: list[dict[str, Any] | None] = [None for _ in range(buffer.n_envs)]
+    else:
+        obs = rollout_state.obs
+        is_final = rollout_state.is_final
+        was_terminated = rollout_state.was_terminated
+        rollout_step_idx = rollout_state.rollout_step_idx
+        episode_info_buffers = rollout_state.pending_episode_infos
+
+    with PerformanceTimer() as to_rollout_device_timer:
+        policy.to(buffer.rollout_device)
+        policy.eval()
+
+    episode_infos: list[dict[str, Any]] = []
+    timers = _init_rollout_timers()
+
+    initial_episode_count = len(buffer.episodes)
+
+    if n_steps < 0:
+        raise ValueError(f"n_steps must be >= 0, got {n_steps}")
+
+    transitions_collected = 0
+    while transitions_collected < n_steps:
+        transitions_collected += int(torch.count_nonzero(torch.logical_not(is_final)).item())
+        obs, is_final, was_terminated, rollout_step_idx = _collect_rollout_step(
+            env=env,
+            policy=policy,
+            buffer=buffer,
+            obs=obs,
+            is_final=is_final,
+            was_terminated=was_terminated,
+            rollout_step_idx=rollout_step_idx,
+            timers=timers,
+            episode_infos=episode_infos,
+            episode_info_buffers=episode_info_buffers,
+            gsde_enabled=gsde_enabled,
+            is_gsde_interval_reset_mode=is_gsde_interval_reset_mode,
+            gsde_reset_interval=gsde_reset_interval,
+            gsde_reset_prob=gsde_reset_prob,
+        )
+
+    final_env_indices = torch.where(is_final)[0]
+    for env_idx in final_env_indices.tolist():
+        buffered_info = episode_info_buffers[env_idx]
+        if buffered_info is not None:
+            episode_infos.append(buffered_info)
+            episode_info_buffers[env_idx] = None
+
+    local_obs = obs["local_obs"]
+    global_obs = obs["global_obs"]
+    hidden_vars = obs["hidden_vars"]
+    agent_mask = obs.get("agent_mask", None)
+    _, _, final_values = policy(
+        local_obs,
+        global_obs,
+        hidden_vars=hidden_vars,
+        agent_mask=agent_mask,
+        deterministic=True,
+    )
+    final_values = final_values.masked_fill(was_terminated, 0.0)
+
+    with PerformanceTimer() as buffer_get_whole_episodes_timer:
+        completed_episodes = buffer.get_whole_episodes()[initial_episode_count:]
+    buffer_get_whole_episodes_time = buffer_get_whole_episodes_timer.get_duration()
+    with PerformanceTimer() as buffer_dump_partial_episodes_timer:
+        partial_episodes = buffer.dump_partial_episodes(final_obs=obs, final_values=final_values)
+    buffer_get_whole_episodes_time += buffer_dump_partial_episodes_timer.get_duration()
+
+    episodes = completed_episodes + partial_episodes
+
+    metrics = _build_rollout_metrics(
+        env_reset_time=env_reset_time,
+        to_rollout_device_time=to_rollout_device_timer.get_duration(),
+        timers=timers,
+        buffer_get_whole_episodes_time=buffer_get_whole_episodes_time,
+    )
+    new_state = PPORolloutState(
+        obs=obs,
+        is_final=is_final,
+        was_terminated=was_terminated,
+        rollout_step_idx=rollout_step_idx,
+        pending_episode_infos=episode_info_buffers,
+    )
+    return episodes, episode_infos, metrics, new_state

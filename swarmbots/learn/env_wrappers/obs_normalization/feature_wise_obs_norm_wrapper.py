@@ -110,7 +110,7 @@ class FeatureWiseObsNormWrapper(VectorObservationWrapper, gym.utils.RecordConstr
         agent_mask: np.ndarray | None,
     ) -> np.ndarray:
         if agent_mask is not None and samples.ndim >= 2 and agent_mask.shape == samples.shape[:2]:
-            samples = samples[agent_mask]
+            samples = samples[agent_mask.astype(bool)]
             if samples.ndim == 1:
                 return samples.reshape(1, -1)
             return samples.reshape(-1, samples.shape[-1])

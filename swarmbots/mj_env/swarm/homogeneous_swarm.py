@@ -163,14 +163,19 @@ class HomogeneousSwarm(BaseSwarm):
             if unit_start_locations.num_unit_probs is not None:
                 counts = np.array(list(unit_start_locations.num_unit_probs.keys()), dtype=int)
                 probs = np.array(list(unit_start_locations.num_unit_probs.values()), dtype=float)
+                if counts.max() != self.num_units:
+                    raise ValueError("num_unit_probs must contain an entry for count == num_units")
                 if (counts < 1).any():
                     raise ValueError("num_unit_probs must only contain counts >= 1")
                 if (counts > unit_start_locations.num_units).any():
                     raise ValueError("num_unit_probs must not exceed num_units")
                 if (probs < 0).any():
                     raise ValueError("num_unit_probs must not contain negative probabilities")
-                if not np.isclose(probs.sum(), 1):
-                    raise ValueError("num_unit_probs must sum to 1")
+                probs_sum = probs.sum()
+                if probs_sum <= 0:
+                    raise ValueError("num_unit_probs must sum to a positive value")
+                probs = probs / probs_sum
+                unit_start_locations.num_unit_probs = dict(zip(counts.tolist(), probs.tolist()))
                 self._can_have_inactive_units = True
         elif isinstance(unit_start_locations, RandomWiggleUnitLocationsConfig):
             self.num_units = unit_start_locations.num_units
