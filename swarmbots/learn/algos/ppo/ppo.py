@@ -1,3 +1,4 @@
+import abc
 import inspect
 from dataclasses import dataclass
 from typing import Optional, Any, Literal, TypeVar, Generic, Callable, Protocol, NotRequired, TypedDict
@@ -8,7 +9,7 @@ from loguru import logger
 
 from swarmbots.learn.algos.base_algorithm import BaseAlgorithm, LearningRate
 from swarmbots.learn.algos.ppo.ppo_policy import BasePPOPolicy, PPOPolicy
-from swarmbots.learn.algos.ppo.ppo_rollout import collect_whole_episodes
+from swarmbots.learn.algos.ppo.ppo_rollout import PPORolloutState, collect_steps, collect_whole_episodes
 from swarmbots.learn.algos.ppo.ppo_rollout_buffer import PPOEpisode, PPORolloutBuffer, PPOSampler, PPOSamples
 from swarmbots.learn.env_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
 from swarmbots.learn.exponential_moving_average import ExponentialMovingAverage
@@ -54,6 +55,18 @@ class AutomaticLearningRate:
 
 PPOLearningRate = float | AutomaticLearningRate
 
+class PPORolloutMode(abc.ABC):
+    pass
+
+@dataclass(slots=True, frozen=True)
+class WholeEpisodesRolloutMode(PPORolloutMode):
+    n_episodes_per_rollout: int
+
+
+@dataclass(slots=True, frozen=True)
+class StepsRolloutMode(PPORolloutMode):
+    n_steps_per_rollout: int
+
 
 PPOSamplesType = TypeVar('PPOSamplesType', bound=PPOSamples)
 PPOSamplerType = TypeVar('PPOSamplerType', bound=PPOSampler)
@@ -69,7 +82,7 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerType]):
             policy: BasePPOPolicy,
             env: BaseLearnEnvWrapper,
             learning_rate: PPOLearningRate = 3e-4,
-            n_episodes_per_rollout: int = 64,
+            rollout_mode: PPORolloutMode = WholeEpisodesRolloutMode(6),
             max_episode_length: int = 1000,
             batch_size: int = 64,
             n_epochs: int = 10,
@@ -107,7 +120,8 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerType]):
         super().__init__(policy, env, initial_lr)
 
         self.learning_rate = initial_lr
-        self.n_episodes_per_rollout = n_episodes_per_rollout
+        self.rollout_mode = rollout_mode
+        self._rollout_state: PPORolloutState | None = None
         self.max_episode_length = max_episode_length
         self.batch_size = batch_size
         self.n_epochs = n_epochs
@@ -133,7 +147,6 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerType]):
         self.rollout_device = as_device(rollout_device)
 
         self.rollout_buffer = PPORolloutBuffer(
-            n_episodes=n_episodes_per_rollout,
             max_episode_length=max_episode_length,
             observation_space=env.observation_space,
             action_space=env.action_space,
@@ -165,7 +178,7 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerType]):
         return {
             'learning_rate': self.learning_rate,
             'automatic_learning_rate': auto_lr,
-            'n_episodes_per_rollout': self.n_episodes_per_rollout,
+            'rollout_mode': self._serialize_rollout_mode(self.rollout_mode),
             'max_episode_length': self.max_episode_length,
             'batch_size': self.batch_size,
             'n_epochs': self.n_epochs,
@@ -271,12 +284,26 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerType]):
             episode_return_ema: ExponentialMovingAverage
     ) -> tuple[dict[str, Any], int]:
         with PerformanceTimer() as rollout_timer:
-            episodes, episode_infos, rollout_metrics = collect_whole_episodes(
-                env=self.env,
-                policy=self.policy,
-                buffer=self.rollout_buffer,
-                gsde_reset_mode=self.gsde_reset_mode,
-            )
+            if isinstance(self.rollout_mode, WholeEpisodesRolloutMode):
+                episodes, episode_infos, rollout_metrics = collect_whole_episodes(
+                    env=self.env,
+                    policy=self.policy,
+                    buffer=self.rollout_buffer,
+                    n_episodes=self.rollout_mode.n_episodes_per_rollout,
+                    gsde_reset_mode=self.gsde_reset_mode,
+                )
+                self._rollout_state = None
+            elif isinstance(self.rollout_mode, StepsRolloutMode):
+                episodes, episode_infos, rollout_metrics, self._rollout_state = collect_steps(
+                    env=self.env,
+                    policy=self.policy,
+                    buffer=self.rollout_buffer,
+                    n_steps=self.rollout_mode.n_steps_per_rollout,
+                    rollout_state=self._rollout_state,
+                    gsde_reset_mode=self.gsde_reset_mode,
+                )
+            else:
+                raise TypeError(f"Unknown rollout_mode type: {type(self.rollout_mode)}")
 
             total_steps_in_rollout = sum(len(ep.rewards) for ep in episodes)
         self.n_total_timesteps += total_steps_in_rollout
@@ -286,7 +313,8 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerType]):
         ep_len = compute_summary_statistics([ep['l'] for ep in episode_infos], find_min=True, find_max=True)
         ep_time = compute_summary_statistics([ep['t'] for ep in episode_infos])
 
-        episode_return_ema.update(ep_rew.mean)
+        if ep_rew is not None:
+            episode_return_ema.update(ep_rew.mean, weight=ep_rew.n)
 
         update_metrics = self.train(episodes)
         metrics = {
@@ -651,6 +679,14 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerType]):
             param_group["lr"] = lr
 
     @staticmethod
+    def _serialize_rollout_mode(rollout_mode: PPORolloutMode) -> dict[str, Any]:
+        if isinstance(rollout_mode, WholeEpisodesRolloutMode):
+            return {"mode": "whole_episodes", "n_episodes_per_rollout": rollout_mode.n_episodes_per_rollout}
+        if isinstance(rollout_mode, StepsRolloutMode):
+            return {"mode": "steps", "n_steps_per_rollout": rollout_mode.n_steps_per_rollout}
+        return {"mode": type(rollout_mode).__name__}
+
+    @staticmethod
     def _serialize_gsde_reset_mode(mode: GSDEResetMode | None) -> dict[str, Any] | None:
         if mode is None:
             return None
@@ -670,5 +706,3 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerType]):
         except OSError as err:
             fn_dict['source'] = str(err)
         return fn_dict
-
-

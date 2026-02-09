@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Optional, TypeVar
+from typing import Optional, TypeVar, Iterator
 
 import torch
 from gymnasium import spaces
@@ -32,7 +32,7 @@ class PPOEpisode:
     returns: MaybeTensor = None  # (n_steps)
     advantages: MaybeTensor = None  # (n_steps)
 
-    def compute_gae(self, gamma: float, gae_lambda: float):
+    def compute_gae(self, gamma: float, gae_lambda: float) -> None:
         assert self.rewards is not None
         assert self.values is not None
         assert self.final_value is not None
@@ -118,7 +118,7 @@ class PPOEpisodeAccumulator:
             log_probs: torch.Tensor,
             values: torch.Tensor,
             is_final: torch.Tensor,
-    ):
+    ) -> Iterator[PPOEpisode]:
         active_env_indices = torch.where(torch.logical_not(is_final))[0]
         if len(active_env_indices) > 0:
             step_indices = self.step[active_env_indices]
@@ -136,6 +136,10 @@ class PPOEpisodeAccumulator:
 
         final_env_indices = torch.where(is_final)[0]
         for final_env_idx in final_env_indices.tolist():
+            step = int(self.step[final_env_idx].item())
+            if step == 0:
+                self.step[final_env_idx] = 0
+                continue
             yield self.construct_episode(
                 final_env_idx,
                 final_local_obs=local_obs[final_env_idx],
@@ -173,7 +177,7 @@ class PPOEpisodeAccumulator:
             final_value=final_value.clone(),
         )
 
-    def reset(self):
+    def reset(self) -> None:
         self.step[:] = 0
 
 
@@ -181,7 +185,6 @@ class PPORolloutBuffer:
 
     def __init__(
             self,
-            n_episodes: int,
             max_episode_length: int,
             observation_space: spaces.Dict,
             action_space: VectorHybridActionSpace,
@@ -193,7 +196,6 @@ class PPORolloutBuffer:
             train_dtype: torch.dtype = torch.float32,
     ):
         super().__init__()
-        self.n_episodes = n_episodes
         self.max_episode_length = max_episode_length
 
         self.observation_space = observation_space
@@ -236,9 +238,6 @@ class PPORolloutBuffer:
             storage_dtype=self.rollout_dtype,
         )
 
-    def is_ready(self):
-        return len(self.episodes) >= self.n_episodes
-
     def add(
             self,
             local_obs: torch.Tensor,
@@ -250,10 +249,7 @@ class PPORolloutBuffer:
             log_probs: torch.Tensor,
             values: torch.Tensor,
             is_final: torch.Tensor,
-    ):
-        if self.is_ready():
-            logger.warning('Adding into buffer despite being ready')
-
+    ) -> None:
         new_episodes = self.accumulator.add(
             local_obs=local_obs,
             global_obs=global_obs,
@@ -269,15 +265,37 @@ class PPORolloutBuffer:
             new_ep.compute_gae(self.gamma, self.gae_lambda)
             self.episodes.append(new_ep)
 
-    def reset(self):
-        steps_remaining_in_acc = self.accumulator.total_steps
-        if steps_remaining_in_acc > 0:
-            logger.warning(f'Resetting buffer & accumulator with {steps_remaining_in_acc} steps in the accumulator')
-
+    def reset(self) -> None:
         self.accumulator.reset()
         self.episodes = []
 
     def get_whole_episodes(self) -> list[PPOEpisode]:
+        return self._episodes_to_train_dev(self.episodes)
+
+    def dump_partial_episodes(
+            self,
+            final_obs: dict[str, torch.Tensor],
+            final_values: torch.Tensor,
+    ) -> list[PPOEpisode]:
+        final_agent_mask = final_obs.get("agent_mask", None)
+        partial_episodes: list[PPOEpisode] = []
+        for env_idx in range(self.n_envs):
+            step = int(self.accumulator.step[env_idx].item())
+            if step == 0:
+                continue
+            episode = self.accumulator.construct_episode(
+                env=env_idx,
+                final_local_obs=final_obs["local_obs"][env_idx],
+                final_global_obs=final_obs["global_obs"][env_idx],
+                final_hidden_vars=final_obs["hidden_vars"][env_idx],
+                final_agent_mask=None if final_agent_mask is None else final_agent_mask[env_idx],
+                final_value=final_values[env_idx],
+            )
+            episode.compute_gae(self.gamma, self.gae_lambda)
+            partial_episodes.append(episode)
+        return self._episodes_to_train_dev(partial_episodes)
+
+    def _episodes_to_train_dev(self, episodes: list[PPOEpisode]) -> list[PPOEpisode]:
         return [
             PPOEpisode(
                 local_obs=ep.local_obs.to(device=self.train_device, dtype=self.train_dtype),
@@ -296,7 +314,7 @@ class PPORolloutBuffer:
                 returns=ep.returns.to(device=self.train_device, dtype=self.train_dtype),
                 advantages=ep.advantages.to(device=self.train_device, dtype=self.train_dtype),
             )
-            for ep in self.episodes
+            for ep in episodes
         ]
 
 

@@ -97,7 +97,7 @@ class BaseAlgorithm(abc.ABC):
             save_interval: Optional[int] = None,
             save_optimizer: bool = True,
             extra_run_metadata: dict[str, Any] | None = None,
-            episode_return_ema_alpha: float = 0.05,
+            episode_return_ema_alpha: float = 0.01,
             best_rotation_n: int = 1,
             wandb_project: str | None = None,
             wandb_entity: str | None = None,

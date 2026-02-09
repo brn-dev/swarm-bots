@@ -8,6 +8,7 @@ from mujoco import MjsBody
 from swarmbots.mj_env.float_or_dist_params import FloatOrDistParams, eval_fodp, fodp_low, FloatOrBoundedDistParams
 from swarmbots.mj_env.scenarios.base_scenario import BaseScenario, SwarmActDict, SwarmObsDict
 from swarmbots.mj_env.quat_rot6d import quat_to_rot6d
+from swarmbots.mj_env.scenarios.payload_scenario import PayloadScenario
 from swarmbots.mj_env.swarm.base_swarm import BaseSwarm
 from swarmbots.mj_env.swarm.homogeneous_swarm import HomogeneousSwarm
 from swarmbots.mj_env.swarm.swarm_connections import SwarmConnections
@@ -55,7 +56,7 @@ class CorrelatedPoleParams:
 PoleSpec = PoleParams | CorrelatedPoleParams
 
 
-class ObstacleStreetScenario(BaseScenario):
+class ObstacleStreetScenario(PayloadScenario):
 
     def __init__(
             self,
@@ -98,11 +99,6 @@ class ObstacleStreetScenario(BaseScenario):
             quat_rot6d_representation: bool = True,
             seed: int | None = None,
     ):
-        self.payload_type = payload_type
-        self.payload_body_id: int = -1
-        self.payload_size = payload_size
-        self.payload_mass = payload_mass
-        self.payload_start_location_offset = payload_start_location_offset
         self.poles: list[PoleSpec] = []
         for p in poles:
             if isinstance(p, tuple):
@@ -136,6 +132,10 @@ class ObstacleStreetScenario(BaseScenario):
 
         super().__init__(
             swarm=swarm,
+            payload_type=payload_type,
+            payload_size=payload_size,
+            payload_mass=payload_mass,
+            payload_start_location_offset=payload_start_location_offset,
             actuator_strength=actuator_strength,
             progress_reward_weight=progress_reward_weight,
             guidance_reward_weight=guidance_reward_weight,
@@ -251,40 +251,12 @@ class ObstacleStreetScenario(BaseScenario):
                     rgba=[0.5, 0.5, 0.6, 1],
                 )
 
-        if self.payload_type is not None:
-            payload_start_position = (
-                    np.array(self.get_swarm_start_location()) + np.array(self.payload_start_location_offset)
-            )
-            payload_body: MjsBody = worldbody.add_body(name='Payload', pos=payload_start_position)
-
-            payload_geom_type = {
-                'sphere': mujoco.mjtGeom.mjGEOM_SPHERE,
-                'box': mujoco.mjtGeom.mjGEOM_BOX,
-                'cylinder': mujoco.mjtGeom.mjGEOM_CYLINDER,
-                'capsule': mujoco.mjtGeom.mjGEOM_CAPSULE,
-                'ellipsoid': mujoco.mjtGeom.mjGEOM_ELLIPSOID
-            }[self.payload_type]
-
-            payload_rgba = [0.8, 0.3, 0.3, 0.9]
-            payload_body.add_geom(
-                type=payload_geom_type,
-                size=self.payload_size,
-                mass=self.payload_mass,
-                rgba=payload_rgba
-            )
-            payload_body.add_joint(type=mujoco.mjtJoint.mjJNT_FREE)
+        self._maybe_add_payload_spec(spec)
 
         return spec
 
     def reset_scenario(self, model: mujoco.MjModel, data: mujoco.MjData) -> tuple[dict, SwarmConnections]:
         state, connections = super().reset_scenario(model, data)
-
-        if self.payload_type is None:
-            self.payload_body_id = -1
-        else:
-            self.payload_body_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "Payload")
-            if self.payload_body_id == -1:
-                raise RuntimeError("payload_type is set, but body 'Payload' was not found in the model")
 
         hidden_vars: list[float] = []
         self.reset_walls_and_ramps(data, model, hidden_vars)
@@ -292,7 +264,7 @@ class ObstacleStreetScenario(BaseScenario):
 
         mujoco.mj_forward(model, data)
 
-        state['progress'] = self._compute_progress(data, state.get("units_active_mask"))
+        state['progress'] = self.compute_progress(data, state.get("units_active_mask"))
         state['hidden_vars'] = np.array(hidden_vars)
 
         return state, connections
@@ -354,35 +326,6 @@ class ObstacleStreetScenario(BaseScenario):
                     self.wall_heights[i] / 2 - 0.05,
                 ]
 
-    def evaluate_step(
-            self,
-            action: SwarmActDict,
-            model: mujoco.MjModel,
-            data: mujoco.MjData,
-            state: dict,
-            connections: SwarmConnections
-    ) -> tuple[float, bool]:
-        """
-        :return: (reward, done)
-        """
-
-        old_progress = state['progress']
-        new_progress = self._compute_progress(data, state.get("units_active_mask"))
-        state['progress'] = new_progress
-
-        progress_reward = new_progress - old_progress
-        state['progress_reward'] = progress_reward
-
-        guidance_reward = self.compute_guidance_reward(data, action, state, connections)
-        state['guidance_reward'] = guidance_reward
-
-        weighted_progress_reward = progress_reward * self.reward_weights['progress_reward_weight']
-        weighted_guidance_reward = guidance_reward * self.reward_weights['guidance_reward_weight']
-        state['weighted_progress_reward'] = weighted_progress_reward
-        state['weighted_guidance_reward'] = weighted_guidance_reward
-
-        return weighted_progress_reward + weighted_guidance_reward, False
-
     def get_obs(
             self,
             model: mujoco.MjModel,
@@ -392,17 +335,11 @@ class ObstacleStreetScenario(BaseScenario):
     ) -> SwarmObsDict:
         obs = super().get_obs(model, data, state, connections)
 
-        if self.payload_type is not None:
-            payload_quat = data.xquat[self.payload_body_id]
-            if self.quat_rot6d_representation:
-                payload_quat = quat_to_rot6d(payload_quat, axis=-1)
-            obs['global_obs'] = np.concatenate([data.xpos[self.payload_body_id], payload_quat])
-
         obs['hidden_vars'] = state['hidden_vars'].copy()
 
         return obs
 
-    def _compute_progress(
+    def compute_progress(
             self,
             data: mujoco.MjData,
             units_active_mask: np.ndarray | None,
@@ -441,7 +378,7 @@ class ObstacleStreetScenario(BaseScenario):
             'friction': [2, 1e-2, 2e-4],
             'force_elliptic_cone': True,
             'actuators_activation_reward_weight': -5e-3,
-            'units_without_connections_reward_weight': -1e-3,
+            'units_without_connections_reward_weight': -2e-3,
             'movement_reward_weight':  0e-1,
             'height_reward_weight':  0e-4,
             'connectors_stayed_active_reward_weight':  0e-5,

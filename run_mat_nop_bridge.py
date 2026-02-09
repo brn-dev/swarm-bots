@@ -13,7 +13,7 @@ from torch import nn
 from swarmbots.learn.action_dists.hybrid_action_dist import GSDEParams
 from swarmbots.learn.algos.mat.wm.mat_nop_policy import MATNOPPolicy
 from swarmbots.learn.algos.ppo.wm.ppo_wm import PPOWM
-from swarmbots.learn.algos.ppo.ppo import AutomaticLearningRate, AutomaticLearningRateUpdateResult
+from swarmbots.learn.algos.ppo.ppo import AutomaticLearningRate, AutomaticLearningRateUpdateResult, StepsRolloutMode
 from swarmbots.learn.env_wrappers.obs_normalization.feature_wise_obs_norm_wrapper import (
     FeatureWiseObsNormWrapper,
 )
@@ -24,6 +24,7 @@ from swarmbots.learn.summary_statistics import SummaryStatisticsFormat, SummaryS
 from swarmbots.learn.obs_indices import ObsIndices
 from swarmbots.learn.swarmbots_obs_indices import build_obs_indices
 from swarmbots.mj_env.float_or_dist_params import UniformDistParams
+from swarmbots.mj_env.scenarios.bridge_scenario import BridgeScenario
 from swarmbots.mj_env.scenarios.obstacle_street_scenario import ObstacleStreetScenario
 from swarmbots.mj_env.swarm.homogeneous_swarm import HomogeneousSwarm, RandomLatticeUnitLocationsConfig
 from swarmbots.mj_env.swarm_bots_env import SwarmBotsEnv
@@ -38,24 +39,24 @@ def make_env_fn(
         scenario_kwargs = {}
         
     def _init() -> SwarmBotsEnv:
-        scenario = ObstacleStreetScenario.no_payload_no_opening_one_wall_no_poles(
+        scenario = BridgeScenario.default(
             swarm=HomogeneousSwarm(
                 unit_start_locations=RandomLatticeUnitLocationsConfig(
-                    num_units=5,
+                    num_units=4,
                     pairwise_distance=0.605,
                     max_radius=1.5,
                     num_unit_probs={
                         2: 0.25,
                         3: 0.25,
                         4: 0.25,
-                        5: 0.25,
+                        # 5: 0.25,
                     }
                 ),
                 randomize_unit_orientations=True,
             ),
             # unit_start_locations='8:hourglass',
             randomize_unit_orientations=True,
-            first_wall_distance=2.0, # UniformDistParams(1.5, 2.5),
+            bridge_x=0.0,
             **scenario_kwargs
         )
         return SwarmBotsEnv(
@@ -125,8 +126,7 @@ def main() -> None:
 
     # ===== LOAD =====
     load_path: str | None = None
-    # load_path = "runs/mat_nop_swarm_bots/2026-02-06_16-54-32/models/model_9480192_steps_stopped.pt"
-    std: float | None = None
+    # load_path = "runs/mat_nop_swarm_bots_bridge/2026-02-08_22-49-56/models/model_6417385_steps_stopped.pt"
 
     # ===== DEVICE =====
     use_cuda = True and torch.cuda.is_available()
@@ -143,7 +143,7 @@ def main() -> None:
         run_id = load_path.split('/')[2]
         logger.info(f'{run_id = }')
 
-    run_dir = f"runs/mat_nop_swarm_bots/{run_id}/"
+    run_dir = f"runs/mat_nop_swarm_bots_bridge/{run_id}/"
     save_optimizer = True
 
     scenario_kwargs = {
@@ -318,7 +318,7 @@ def main() -> None:
         policy=policy,
         env=env,
         learning_rate=auto_lr,
-        n_episodes_per_rollout=n_envs,
+        rollout_mode=StepsRolloutMode(256 * 16),
         max_episode_length=episode_length,
         batch_size=256,
         n_epochs=5,
@@ -339,10 +339,6 @@ def main() -> None:
     if load_path:
         logger.info(f"Loading model from {load_path}")
         ppo.load(load_path)
-
-        if std:
-            logger.warning(f'Setting {std = }')
-            ppo.policy.action_dist.set_std(std)
 
     print("Starting training...")
     ppo.learn(
@@ -371,7 +367,8 @@ def main() -> None:
             ('wm_loss_scaled', None, 'wm_loss'),
             ('val_loss_scaled', None, 'val_loss'),
             ('expl_var', '.3f'),
-            ('ep_rew', SummaryStatisticsFormat(mean=' .2f', std='.2f', max_value=' .2f')),
+            ('ep_len', SummaryStatisticsFormat(mean='3.0f', std='3.0f')),
+            ('ep_rew', SummaryStatisticsFormat(mean=' .2f', std='.2f', max_value=' .2f', n='1')),
             ('ep_rew_ema', ' .3f'),
             ('best_ep_rew_ema', ' .3f', 'best_ema'),
             ('fps', None),
