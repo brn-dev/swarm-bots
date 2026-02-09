@@ -26,6 +26,7 @@ from swarmbots.learn.obs_indices import ObsIndices
 from swarmbots.learn.swarmbots_obs_indices import build_obs_indices
 from swarmbots.mj_env.float_or_dist_params import UniformDistParams
 from swarmbots.mj_env.scenarios.obstacle_street_scenario import ObstacleStreetScenario
+from swarmbots.mj_env.scenarios.scenario_presets import default_wall
 from swarmbots.mj_env.swarm.homogeneous_swarm import HomogeneousSwarm, RandomLatticeUnitLocationsConfig
 from swarmbots.mj_env.swarm_bots_env import SwarmBotsEnv
 
@@ -39,7 +40,7 @@ def make_env_fn(
         scenario_kwargs = {}
         
     def _init() -> SwarmBotsEnv:
-        scenario = ObstacleStreetScenario.no_payload_no_opening_one_wall_no_poles(
+        scenario = default_wall(
             swarm=HomogeneousSwarm(
                 unit_start_locations=RandomLatticeUnitLocationsConfig(
                     num_units=5,

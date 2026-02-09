@@ -6,7 +6,7 @@ from torch import nn
 from torch.nn import functional as F
 
 from swarmbots.learn.algos.world_modeling.transformer_transition_model import TransformerTransitionModel
-from swarmbots.learn.masking import build_valid_mask, masked_mean
+from swarmbots.learn.masking import build_valid_mask, masked_mean, restrict_loss_agent_mask
 from swarmbots.learn.nn_components.residual import Residual
 from swarmbots.learn.polyak_update import polyak_update
 
@@ -89,6 +89,11 @@ class SPRMixin(abc.ABC):
             online_next_latents = self.transition_model(online_local_latents, actions, agent_mask=agent_mask)
             online_next_projections = self.online_projection(online_next_latents)
             predictions = self.predictor(online_next_projections)
+            effective_loss_agent_mask = restrict_loss_agent_mask(
+                base_shape=predictions.shape[:2],
+                loss_agent_mask=loss_agent_mask,
+                agent_mask=agent_mask,
+            )
 
             with torch.no_grad():
                 self.target_encoder.eval()
@@ -96,14 +101,14 @@ class SPRMixin(abc.ABC):
                 target_local_latents = self.target_encoder(
                     local_obs=next_local_obs,
                     global_obs=next_global_obs,
-                    agent_mask=loss_agent_mask,
+                    agent_mask=effective_loss_agent_mask,
                 )
                 target_projections = self.target_projection(target_local_latents)
 
             return self._cosine_similarity_loss(
                 predictions,
                 target_projections,
-                agent_mask=loss_agent_mask,
+                agent_mask=effective_loss_agent_mask,
                 time_mask=None,
             )
 
@@ -125,6 +130,11 @@ class SPRMixin(abc.ABC):
         z_preds = self.transition_model.predict_n_steps(online_local_latents, actions, agent_mask=agent_mask)
         online_next_projections = self.online_projection(z_preds)
         predictions = self.predictor(online_next_projections)
+        effective_loss_agent_mask = restrict_loss_agent_mask(
+            base_shape=(b, t, n),
+            loss_agent_mask=loss_agent_mask,
+            agent_mask=agent_mask,
+        )
 
         if next_global_obs.ndim == 2:
             next_global_obs = next_global_obs[:, None, :].expand(b, t, -1)
@@ -137,14 +147,16 @@ class SPRMixin(abc.ABC):
         with torch.no_grad():
             self.target_encoder.eval()
             self.target_projection.eval()
-            if loss_agent_mask is None:
+            if effective_loss_agent_mask is None:
                 flat_agent_mask = None
-            elif loss_agent_mask.ndim == 2:
-                flat_agent_mask = loss_agent_mask[:, None, :].expand(b, t, n).reshape(b * t, n)
-            elif loss_agent_mask.ndim == 3:
-                flat_agent_mask = loss_agent_mask.reshape(b * t, n)
+            elif effective_loss_agent_mask.ndim == 2:
+                flat_agent_mask = effective_loss_agent_mask[:, None, :].expand(b, t, n).reshape(b * t, n)
+            elif effective_loss_agent_mask.ndim == 3:
+                flat_agent_mask = effective_loss_agent_mask.reshape(b * t, n)
             else:
-                raise ValueError(f"Expected loss_agent_mask ndim 2 or 3, got {loss_agent_mask.ndim}")
+                raise ValueError(
+                    f"Expected loss_agent_mask ndim 2 or 3, got {effective_loss_agent_mask.ndim}"
+                )
 
             z_targets = self.target_encoder(
                 local_obs=local_flat,
@@ -156,7 +168,7 @@ class SPRMixin(abc.ABC):
         return self._cosine_similarity_loss(
             predictions,
             target_projections,
-            agent_mask=loss_agent_mask,
+            agent_mask=effective_loss_agent_mask,
             time_mask=time_mask,
         )
 
