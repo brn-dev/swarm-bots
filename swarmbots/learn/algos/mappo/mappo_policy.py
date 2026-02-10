@@ -10,7 +10,7 @@ from swarmbots.learn.algos.mappo.mappo_actor import MAPPOActor
 from swarmbots.learn.algos.ppo.ppo import AGENTS_DIM
 from swarmbots.learn.algos.ppo.ppo_policy import PPOCritic, PPOPolicy
 from swarmbots.learn.base_policy import BasePolicy
-from swarmbots.learn.env_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
+from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
 from swarmbots.learn.nn_components.deep_set import DeepSetCritic, DeepSetCriticHiddenDims
 
 MAPPOCritic = PPOCritic

@@ -12,7 +12,7 @@ from swarmbots.learn.algos.mat.mat_decoder import MATDecoder
 from swarmbots.learn.algos.mat.mat_encoder import MATEncoder
 from swarmbots.learn.algos.ppo.ppo import AGENTS_DIM
 from swarmbots.learn.algos.ppo.ppo_policy import BasePPOPolicy
-from swarmbots.learn.env_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
+from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
 from swarmbots.learn.nn_components.deep_set import DeepSetCritic
 from swarmbots.learn.nn_components.mlp import MLP
 from swarmbots.learn.nn_components.nn_init import init_linear_orthogonal

@@ -12,7 +12,7 @@ from swarmbots.learn.action_dists.hybrid_action_dist import GSDEParams
 from swarmbots.learn.algos.mat.mat_policy import MATPolicy
 from swarmbots.learn.algos.ppo.ppo import PPO, AutomaticLearningRate
 from swarmbots.learn.env_wrappers.obs_normalization.naive_normalize_obs_wrapper import NaiveNormalizeLocalObsWrapper
-from swarmbots.learn.env_wrappers.swarm_bots_learn_env_wrapper import SwarmBotsLearnEnvWrapper
+from swarmbots.learn.env_wrappers.learn_wrappers.swarm_bots_learn_env_wrapper import SwarmBotsLearnEnvWrapper
 from swarmbots.learn.gsde_reset import GSDEProbabilityResetMode
 from swarmbots.learn.summary_statistics import SummaryStatisticsFormat
 from swarmbots.mj_env.scenarios.obstacle_street_scenario import ObstacleStreetScenario

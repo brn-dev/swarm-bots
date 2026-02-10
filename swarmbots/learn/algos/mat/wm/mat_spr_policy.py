@@ -8,7 +8,7 @@ from swarmbots.learn.algos.mat.mat_policy import MATPolicy
 from swarmbots.learn.algos.ppo.wm.ppo_wm import PPOWMPolicyMixin
 from swarmbots.learn.algos.world_modeling.spr_mixin import SPRMixin
 from swarmbots.learn.algos.world_modeling.transformer_transition_model import TransformerTransitionModel
-from swarmbots.learn.env_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
+from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
 from swarmbots.learn.nn_components.mlp import MLP
 
 
