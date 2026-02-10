@@ -11,7 +11,7 @@ from gymnasium.vector import AutoresetMode, SyncVectorEnv, VectorWrapper
 from swarmbots.learn.algos.ppo.ppo_policy import BasePPOPolicy
 from swarmbots.learn.algos.ppo.ppo_rollout import collect_whole_episodes
 from swarmbots.learn.algos.ppo.ppo_rollout_buffer import PPORolloutBuffer
-from swarmbots.learn.env_wrappers.swarm_bots_learn_env_wrapper import SwarmBotsLearnEnvWrapper
+from swarmbots.learn.env_wrappers.learn_wrappers.swarm_bots_learn_env_wrapper import SwarmBotsLearnEnvWrapper
 from swarmbots.learn.env_wrappers.transition_obs_wrapper import TransitionObsWrapper
 from swarmbots.learn.testing_env import TestingSwarmBotsEnv
 

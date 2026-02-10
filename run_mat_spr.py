@@ -5,7 +5,7 @@ from typing import Any, Callable, Optional
 
 import numpy as np
 import torch
-from gymnasium.vector import SyncVectorEnv, AsyncVectorEnv, VectorEnv
+from gymnasium.vector import SyncVectorEnv, AsyncVectorEnv
 from gymnasium.wrappers.vector import RecordEpisodeStatistics, NormalizeReward
 from loguru import logger
 from torch import nn
@@ -17,7 +17,7 @@ from swarmbots.learn.algos.ppo.ppo import AutomaticLearningRate, AutomaticLearni
 from swarmbots.learn.env_wrappers.obs_normalization.feature_wise_obs_norm_wrapper import (
     FeatureWiseObsNormWrapper,
 )
-from swarmbots.learn.env_wrappers.swarm_bots_learn_env_wrapper import SwarmBotsLearnEnvWrapper
+from swarmbots.learn.env_wrappers.learn_wrappers.swarm_bots_learn_env_wrapper import SwarmBotsLearnEnvWrapper
 from swarmbots.learn.env_wrappers.transition_obs_wrapper import TransitionObsWrapper
 from swarmbots.learn.gsde_reset import GSDEProbabilityResetMode
 from swarmbots.learn.summary_statistics import SummaryStatisticsFormat, SummaryStatistics
@@ -25,7 +25,6 @@ from swarmbots.learn.obs_indices import ObsIndices
 from swarmbots.learn.swarmbots_obs_indices import build_obs_indices
 from swarmbots.mj_env.float_or_dist_params import UniformDistParams
 from swarmbots.mj_env.scenarios.obstacle_street_scenario import ObstacleStreetScenario
-from swarmbots.mj_env.swarm.homogeneous_swarm import HomogeneousSwarm, RandomLatticeUnitLocationsConfig
 from swarmbots.mj_env.swarm_bots_env import SwarmBotsEnv
 
 

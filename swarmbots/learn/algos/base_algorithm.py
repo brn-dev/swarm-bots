@@ -19,7 +19,7 @@ except ValueError:
 from swarmbots.learn.base_policy import BasePolicy
 from swarmbots.learn.checkpointing import load_checkpoint, extract_policy_state_dict, extract_optimizer_state_dict, \
     apply_env_state, extract_env_state, freeze_env_normalization, capture_env_state
-from swarmbots.learn.env_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
+from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
 from swarmbots.learn.exponential_moving_average import ExponentialMovingAverage
 from swarmbots.learn.metrics_logger import MetricsLogger
 from swarmbots.learn.performance_timer import PerformanceTimer

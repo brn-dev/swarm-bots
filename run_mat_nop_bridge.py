@@ -5,7 +5,7 @@ from typing import Any, Callable, Optional
 
 import numpy as np
 import torch
-from gymnasium.vector import SyncVectorEnv, AsyncVectorEnv, VectorEnv
+from gymnasium.vector import SyncVectorEnv, AsyncVectorEnv
 from gymnasium.wrappers.vector import RecordEpisodeStatistics, NormalizeReward
 from loguru import logger
 from torch import nn
@@ -17,14 +17,12 @@ from swarmbots.learn.algos.ppo.ppo import AutomaticLearningRate, AutomaticLearni
 from swarmbots.learn.env_wrappers.obs_normalization.feature_wise_obs_norm_wrapper import (
     FeatureWiseObsNormWrapper,
 )
-from swarmbots.learn.env_wrappers.swarm_bots_learn_env_wrapper import SwarmBotsLearnEnvWrapper
+from swarmbots.learn.env_wrappers.learn_wrappers.swarm_bots_learn_env_wrapper import SwarmBotsLearnEnvWrapper
 from swarmbots.learn.env_wrappers.transition_obs_wrapper import TransitionObsWrapper
 from swarmbots.learn.gsde_reset import GSDEProbabilityResetMode
 from swarmbots.learn.summary_statistics import SummaryStatisticsFormat, SummaryStatistics
 from swarmbots.learn.obs_indices import ObsIndices
 from swarmbots.learn.swarmbots_obs_indices import build_obs_indices
-from swarmbots.mj_env.float_or_dist_params import UniformDistParams
-from swarmbots.mj_env.scenarios.bridge_scenario import BridgeScenario
 from swarmbots.mj_env.scenarios.scenario_presets import default_bridge
 from swarmbots.mj_env.swarm.homogeneous_swarm import HomogeneousSwarm, RandomLatticeUnitLocationsConfig
 from swarmbots.mj_env.swarm_bots_env import SwarmBotsEnv
@@ -126,7 +124,7 @@ def main() -> None:
 
     # ===== LOAD =====
     load_path: str | None = None
-    # load_path = "runs/mat_nop_swarm_bots_bridge/2026-02-08_22-49-56/models/model_6417385_steps_stopped.pt"
+    # load_path = "runs/mat_nop_swarm_bots_bridge/2026-02-08_22-49-56/models/model_24602377_steps_stopped.pt"
 
     # ===== DEVICE =====
     use_cuda = True and torch.cuda.is_available()
@@ -224,15 +222,15 @@ def main() -> None:
     policy = MATNOPPolicy(
         env=env,
         local_obs_encoder_hidden_dims=[192, 192],
-        action_encoder_hidden_dims=[32],
-        d_model=64,
-        d_model_decoder=32,
+        action_encoder_hidden_dims=[64],
+        d_model=128,
+        d_model_decoder=64,
         nhead_encoder=2,
-        nhead_decoder=1,
+        nhead_decoder=2,
         num_layers_encoder=2,
         num_layers_decoder=2,
-        dim_feedforward_encoder=128,
-        dim_feedforward_decoder=64,
+        dim_feedforward_encoder=256,
+        dim_feedforward_decoder=128,
         dropout=0.0,
         n_critic_local_projection_hidden_layers=1,
         n_critic_value_regressor_hidden_layers=1,
@@ -250,13 +248,13 @@ def main() -> None:
         bernoulli_initial_prob=0.75,
         max_agents=20,
         # NOP
-        wm_pre_transition_dims=[64],
-        d_model_transition_model=64,
+        wm_pre_transition_dims=[128],
+        d_model_transition_model=128,
         nhead_transition_model=2,
         num_layers_transition_model=2,
         dim_feedforward_transition_model=128,
-        transition_model_coembed_hidden_dims=[96],
-        wm_pre_predictors_dims=[96, 96],
+        transition_model_coembed_hidden_dims=[128],
+        wm_pre_predictors_dims=[128, 128],
         wm_scalar_predictor_hidden_dims=[],
         wm_angle_predictor_hidden_dims=[],
         wm_rot6d_predictor_hidden_dims=[],
@@ -275,42 +273,77 @@ def main() -> None:
 
     print("Initializing PPO Algorithm...")
 
-    lr = 1e-4
+    initial_lr = 1e-4
 
     def auto_lr_updater(
+            old_lr: float,
             state: dict[str, Any],
+            n_iterations: int,
+            n_model_updates: int,
+            n_timesteps: int,
             early_stop_kl_div: Optional[float],
             early_stop_epoch: Optional[int],
             metrics: dict[str, Any]
     ) -> AutomaticLearningRateUpdateResult:
+        warmup_iterations: int = 100
+        cold_lr = initial_lr / 10
+
+        warmup: bool = state.get('warmup', warmup_iterations > 0)
+
         if early_stop_kl_div and early_stop_kl_div > 0.1:
             state['counter'] = 0
+            state['warmup'] = False
             decay_factor = np.clip(0.9 - early_stop_kl_div, 0.4, 0.8)
-            return {'ratio': decay_factor, 'msg': f'kl={early_stop_kl_div:.3f}', 'event': 'max_kl_hit'}
+            return {
+                'new_lr': old_lr * decay_factor,
+                'msg': f'kl={early_stop_kl_div:.3f}',
+                'event': 'max_kl_hit'
+            }
 
         if early_stop_epoch is not None and early_stop_epoch < 2:
             state['counter'] = 0
+            state['warmup'] = False
             decay_factor = 0.9 if early_stop_epoch == 1 else 0.75
-            return {'ratio': decay_factor, 'msg': f'epoch={early_stop_epoch}', 'event': 'min_epoch_hit'}
+            return {
+                'new_lr': old_lr * decay_factor,
+                'msg': f'epoch={early_stop_epoch}',
+                'event': 'min_epoch_hit'
+            }
 
         clip_frac_stats: Optional[SummaryStatistics] = metrics.get('clip_frac', None)
         if clip_frac_stats and clip_frac_stats.mean > 0.25:
-            clip_frac = clip_frac_stats.mean
             state['counter'] = 0
+            state['warmup'] = False
+            clip_frac = clip_frac_stats.mean
             decay_factor = np.clip(1.15 - clip_frac, 0.5, 0.9)
-            return {'ratio': decay_factor, 'msg': f'{clip_frac=:.3f}', 'event': 'max_clip_frac_hit'}
+            return {
+                'new_lr': old_lr * decay_factor,
+                'msg': f'{clip_frac=:.3f}',
+                'event': 'max_clip_frac_hit'
+            }
+
+        if warmup:
+            if n_iterations >= warmup_iterations:
+                state['warmup'] = False
+
+            new_lr = cold_lr + (initial_lr - cold_lr) * n_iterations / warmup_iterations
+            return {
+                'new_lr': new_lr,
+                'msg': f'Warmup ({n_iterations}/{warmup_iterations})',
+                'event': 'warmup'
+            }
 
         counter = state.get('counter', 0) + 1
 
         if counter >= 2:
             state['counter'] = 0
-            return {'ratio': 1.3}
+            return {'new_lr': old_lr * 1.3}
 
         state['counter'] = counter
-        return {'ratio': None}
+        return {'new_lr': None}
 
     auto_lr = AutomaticLearningRate(
-        initial_lr=lr,
+        initial_lr=initial_lr,
         max_lr=2e-4,
         updater=auto_lr_updater
     )
@@ -327,7 +360,7 @@ def main() -> None:
         clip_range=0.2,
         target_kl=0.04,
         gsde_reset_mode=GSDEProbabilityResetMode(probability=1/6),
-        ent_coef=0.003,
+        ent_coef=0.001,
         value_loss_fn=nn.SmoothL1Loss(),
         train_device=train_device,
         rollout_device=rollout_device,

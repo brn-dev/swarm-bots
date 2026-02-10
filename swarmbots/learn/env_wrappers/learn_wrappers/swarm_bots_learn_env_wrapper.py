@@ -5,7 +5,7 @@ import torch
 from gymnasium import spaces
 from gymnasium.vector import VectorEnv
 
-from swarmbots.learn.env_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
+from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
 from swarmbots.learn.hybrid_action_space import VectorHybridActionSpace
 
 

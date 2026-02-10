@@ -16,7 +16,7 @@ from swarmbots.learn.checkpointing import (
     load_checkpoint,
 )
 from swarmbots.learn.env_wrappers.obs_normalization.naive_normalize_obs_wrapper import NaiveNormalizeLocalObsWrapper
-from swarmbots.learn.env_wrappers.swarm_bots_learn_env_wrapper import SwarmBotsLearnEnvWrapper
+from swarmbots.learn.env_wrappers.learn_wrappers.swarm_bots_learn_env_wrapper import SwarmBotsLearnEnvWrapper
 from swarmbots.learn.gsde_reset import GSDEProbabilityResetMode
 from swarmbots.learn.recording import record_policy
 from swarmbots.mj_env.scenarios.obstacle_street_scenario import ObstacleStreetScenario

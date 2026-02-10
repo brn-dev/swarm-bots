@@ -11,7 +11,7 @@ from swarmbots.learn.algos.base_algorithm import BaseAlgorithm, LearningRate
 from swarmbots.learn.algos.ppo.ppo_policy import BasePPOPolicy, PPOPolicy
 from swarmbots.learn.algos.ppo.ppo_rollout import PPORolloutState, collect_steps, collect_whole_episodes
 from swarmbots.learn.algos.ppo.ppo_rollout_buffer import PPOEpisode, PPORolloutBuffer, PPOSampler, PPOSamples
-from swarmbots.learn.env_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
+from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
 from swarmbots.learn.exponential_moving_average import ExponentialMovingAverage
 from swarmbots.learn.gsde_reset import GSDEResetMode, GSDEIntervalResetMode, GSDEProbabilityResetMode
 from swarmbots.learn.masking import masked_mean
@@ -30,7 +30,7 @@ except ValueError:
     logger.level("SAVE", no=21, color="<magenta>")
 
 class AutomaticLearningRateUpdateResult(TypedDict):
-    ratio: Optional[float]
+    new_lr: Optional[float]
     msg: NotRequired[str]
     event: NotRequired[str]
 
@@ -38,7 +38,11 @@ class AutomaticLearningRateUpdater(Protocol):
 
     def __call__(
             self,
+            old_lr: float,
             state: dict[str, Any],
+            n_iterations: int,
+            n_model_updates: int,
+            n_timesteps: int,
             early_stop_kl_div: Optional[float],
             early_stop_epoch: Optional[int],
             metrics: dict[str, Any]
@@ -460,26 +464,29 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerType]):
             return {"auto_lr_event": "disabled", "auto_lr": self.learning_rate}
 
         update_result = self.automatic_lr.updater(
+            old_lr=self.learning_rate,
             state=self._auto_lr_state,
+            n_iterations=self.n_total_iterations,
+            n_model_updates=self.n_total_updates,
+            n_timesteps=self.n_total_timesteps,
             early_stop_kl_div=early_stop_kl_div,
             early_stop_epoch=early_stop_epoch,
             metrics=metrics,
         )
-        update_ratio = update_result.get('ratio', None)
+        requested_lr = update_result.get('new_lr', None)
         update_msg = update_result.get('msg', None)
         update_event = update_result.get('event', None)
 
-        if update_ratio is None:
-            return {"auto_lr_event": None, "auto_lr": self.learning_rate}
+        if requested_lr is None:
+            return {"auto_lr_event": update_event, "auto_lr": self.learning_rate}
 
-        if update_ratio > 1:
-            unclamped_lr = self.learning_rate * update_ratio
-            new_lr = min(unclamped_lr, self.automatic_lr.max_lr)
-            ratio = new_lr / self.learning_rate
-            if new_lr < unclamped_lr:
+        new_lr = min(requested_lr, self.automatic_lr.max_lr)
+        ratio = new_lr / self.learning_rate
+        if new_lr > self.learning_rate:
+            if new_lr < requested_lr:
                 msg = f', {update_msg}' if update_msg else ''
                 logger.warning(
-                    f"Auto LR capped at {new_lr:.2e} (requested {unclamped_lr:.2e}{msg}, {ratio=:.2f})"
+                    f"Auto LR capped at {new_lr:.2e} (requested {requested_lr:.2e}{msg}, {ratio=:.2f})"
                 )
             else:
                 msg = f': {update_msg}' if update_msg else ''
@@ -487,16 +494,18 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerType]):
                     f"Increasing LR to {new_lr:.2e}{msg} ({ratio=:.2f})"
                 )
             self.set_learning_rate(new_lr)
-            event = update_event or ("lr_increase" if new_lr == unclamped_lr else "lr_increase_capped")
+            event = update_event or ("lr_increase" if new_lr == requested_lr else "lr_increase_capped")
             return {"auto_lr_event": event, "auto_lr": new_lr}
 
-        new_lr = self.learning_rate * update_ratio
-        msg = f': {update_msg}' if update_msg else ''
-        logger.warning(
-            f"Decaying LR to {new_lr:.2e}{msg} (ratio={update_ratio:.2f})"
-        )
-        self.set_learning_rate(new_lr)
-        return {"auto_lr_event": update_event or "lr_decay", "auto_lr": new_lr}
+        if new_lr < self.learning_rate:
+            msg = f': {update_msg}' if update_msg else ''
+            logger.warning(
+                f"Decaying LR to {new_lr:.2e}{msg} ({ratio=:.2f})"
+            )
+            self.set_learning_rate(new_lr)
+            return {"auto_lr_event": update_event or "lr_decay", "auto_lr": new_lr}
+
+        return {"auto_lr_event": update_event, "auto_lr": self.learning_rate}
 
     def _after_optimizer_step(self) -> None:
         pass

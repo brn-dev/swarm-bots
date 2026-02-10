@@ -6,7 +6,7 @@ from swarmbots.mj_env.swarm.homogeneous_swarm import HomogeneousSwarm
 DEFAULT_KWARGS = {
     'friction': [2, 1e-2, 2e-4],
     'force_elliptic_cone': True,
-    'actuators_activation_reward_weight': -5e-3,
+    'actuators_activation_reward_weight': -7e-3,
     'units_without_connections_reward_weight': -2e-3,
     'units_with_double_connection_reward_weight': -1e-3,
     'movement_reward_weight': 0e-1,
@@ -16,6 +16,25 @@ DEFAULT_KWARGS = {
     'connectors_unsuccessfully_activated_reward_weight': -1e-4,
     'connectors_deactivated_reward_weight': 0e-3,
 }
+
+def _resolve_swarm(
+        swarm: BaseSwarm | None,
+        unit_start_locations: list[tuple[float, float, float]] | str | None = None,
+        randomize_unit_orientations: bool = False,
+) -> BaseSwarm:
+    assert swarm is None or unit_start_locations is None
+
+    if swarm is not None:
+        return swarm
+
+    if unit_start_locations is None:
+        unit_start_locations = '4:diamond'
+
+    return HomogeneousSwarm(
+        unit_start_locations=unit_start_locations,
+        randomize_unit_orientations=randomize_unit_orientations
+    )
+
 
 def default_wall(
         seed: int | None = None,
@@ -53,23 +72,4 @@ def default_bridge(
         payload_type=None,
         **scenario_kwargs,
         seed=seed,
-    )
-
-
-def _resolve_swarm(
-        swarm: BaseSwarm | None,
-        unit_start_locations: list[tuple[float, float, float]] | str | None = None,
-        randomize_unit_orientations: bool = False,
-) -> BaseSwarm:
-    assert swarm is None or unit_start_locations is None
-
-    if swarm is not None:
-        return swarm
-
-    if unit_start_locations is None:
-        unit_start_locations = '4:diamond'
-
-    return HomogeneousSwarm(
-        unit_start_locations=unit_start_locations,
-        randomize_unit_orientations=randomize_unit_orientations
     )

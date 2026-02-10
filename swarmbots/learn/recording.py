@@ -1,14 +1,13 @@
 import os
-from typing import Any
 
 import moviepy.video.io.ImageSequenceClip
 import numpy as np
 import torch
 
 from swarmbots.learn.base_policy import BasePolicy
-from swarmbots.learn.env_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
+from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
 from swarmbots.learn.gsde_reset import GSDEResetMode, GSDEIntervalResetMode, GSDEProbabilityResetMode
-from swarmbots.learn.summary_statistics import SummaryStatistics, compute_summary_statistics, format_summary_statistics, \
+from swarmbots.learn.summary_statistics import compute_summary_statistics, format_summary_statistics, \
     SummaryStatisticsFormat
 
 
