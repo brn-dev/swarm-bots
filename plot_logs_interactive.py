@@ -28,6 +28,8 @@ class PlotRow:
     index_label: ttk.Label
     y_var: tk.StringVar
     y_combo: ttk.Combobox
+    height_var: tk.StringVar
+    height_entry: ttk.Entry
     std_var: tk.BooleanVar
     std_check: ttk.Checkbutton
     remove_button: ttk.Button
@@ -86,6 +88,7 @@ class PlotLogsInteractiveApp:
         self.line_width_var = tk.DoubleVar(value=0.75)
 
         self._build_layout()
+        self.root.protocol("WM_DELETE_WINDOW", self.on_close)
         self.root.bind_all("<KeyPress>", self.on_global_keypress, add=True)
         self.add_plot_row()
 
@@ -164,11 +167,13 @@ class PlotLogsInteractiveApp:
         self.plots_container.columnconfigure(1, weight=1)
         self.plots_container.columnconfigure(2, weight=0)
         self.plots_container.columnconfigure(3, weight=0)
+        self.plots_container.columnconfigure(4, weight=0)
 
         ttk.Label(self.plots_container, text="#").grid(row=0, column=0, sticky="w")
         ttk.Label(self.plots_container, text="Y Column").grid(row=0, column=1, sticky="w", padx=(10, 4))
-        ttk.Label(self.plots_container, text="STD").grid(row=0, column=2, sticky="w", padx=(6, 4))
-        ttk.Label(self.plots_container, text="").grid(row=0, column=3, sticky="w", padx=(6, 4))
+        ttk.Label(self.plots_container, text="Height").grid(row=0, column=2, sticky="w", padx=(6, 4))
+        ttk.Label(self.plots_container, text="STD").grid(row=0, column=3, sticky="w", padx=(6, 4))
+        ttk.Label(self.plots_container, text="").grid(row=0, column=4, sticky="w", padx=(6, 4))
 
         plots_buttons = ttk.Frame(plots_frame)
         plots_buttons.grid(row=1, column=0, sticky="ew", pady=(6, 0))
@@ -266,14 +271,17 @@ class PlotLogsInteractiveApp:
             self.x_combo.configure(values=[], state="disabled")
             self.x_combo.set("")
 
-        for row in self.plot_rows:
-            self.update_row_options(row, columns)
+        for index, row in enumerate(self.plot_rows):
+            self.update_row_options(row, columns, prefer_default=index == 0)
 
-    def update_row_options(self, row: PlotRow, columns: Sequence[str]) -> None:
+    def update_row_options(self, row: PlotRow, columns: Sequence[str], prefer_default: bool) -> None:
         if columns:
             row.y_combo.configure(values=columns, state="readonly")
             if row.y_combo.get() not in columns:
-                row.y_combo.set(columns[0])
+                if prefer_default and "ep_rew_ema" in columns:
+                    row.y_combo.set("ep_rew_ema")
+                else:
+                    row.y_combo.set(columns[0])
             self.update_std_checkbox(row)
         else:
             row.y_combo.configure(values=[], state="disabled")
@@ -291,17 +299,23 @@ class PlotLogsInteractiveApp:
         y_combo.grid(row=row_index, column=1, sticky="ew", padx=(10, 4), pady=2)
         self.bind_typeahead(y_combo, lambda: self.available_columns)
 
+        height_var = tk.StringVar(value="1")
+        height_entry = ttk.Entry(self.plots_container, textvariable=height_var, width=5)
+        height_entry.grid(row=row_index, column=2, sticky="w", padx=(6, 4), pady=2)
+
         std_var = tk.BooleanVar(value=False)
         std_check = ttk.Checkbutton(self.plots_container, text="Use", variable=std_var)
-        std_check.grid(row=row_index, column=2, sticky="w", padx=(6, 4), pady=2)
+        std_check.grid(row=row_index, column=3, sticky="w", padx=(6, 4), pady=2)
 
         remove_button = ttk.Button(self.plots_container, text="Remove")
-        remove_button.grid(row=row_index, column=3, sticky="e", pady=2)
+        remove_button.grid(row=row_index, column=4, sticky="e", pady=2)
 
         row = PlotRow(
             index_label=index_label,
             y_var=y_var,
             y_combo=y_combo,
+            height_var=height_var,
+            height_entry=height_entry,
             std_var=std_var,
             std_check=std_check,
             remove_button=remove_button,
@@ -309,7 +323,7 @@ class PlotLogsInteractiveApp:
         remove_button.configure(command=lambda target=row: self.remove_plot_row(target))
         y_combo.bind("<<ComboboxSelected>>", lambda _event, target=row: self.update_std_checkbox(target))
         self.plot_rows.append(row)
-        self.update_row_options(row, self.available_columns)
+        self.update_row_options(row, self.available_columns, prefer_default=len(self.plot_rows) == 1)
         self.refresh_row_labels()
 
     def update_std_checkbox(self, row: PlotRow) -> None:
@@ -427,7 +441,7 @@ class PlotLogsInteractiveApp:
         listbox.see(current_index)
 
     def remove_plot_row(self, row: PlotRow) -> None:
-        for widget in (row.index_label, row.y_combo, row.std_check, row.remove_button):
+        for widget in (row.index_label, row.y_combo, row.height_entry, row.std_check, row.remove_button):
             widget.destroy()
         if row in self.plot_rows:
             self.plot_rows.remove(row)
@@ -435,7 +449,7 @@ class PlotLogsInteractiveApp:
 
     def clear_plot_rows(self) -> None:
         for row in self.plot_rows:
-            for widget in (row.index_label, row.y_combo, row.std_check, row.remove_button):
+            for widget in (row.index_label, row.y_combo, row.height_entry, row.std_check, row.remove_button):
                 widget.destroy()
         self.plot_rows.clear()
         self.add_plot_row()
@@ -445,8 +459,9 @@ class PlotLogsInteractiveApp:
             row.index_label.configure(text=str(index))
             row.index_label.grid_configure(row=index, column=0)
             row.y_combo.grid_configure(row=index, column=1)
-            row.std_check.grid_configure(row=index, column=2)
-            row.remove_button.grid_configure(row=index, column=3)
+            row.height_entry.grid_configure(row=index, column=2)
+            row.std_check.grid_configure(row=index, column=3)
+            row.remove_button.grid_configure(row=index, column=4)
 
     def plot(self) -> None:
         if not self.paths:
@@ -470,6 +485,23 @@ class PlotLogsInteractiveApp:
             return
         if len(set(y_columns)) != len(y_columns):
             self.show_error("Y columns must be unique.")
+            return
+        ratios: list[float] = []
+        for index, row in enumerate(self.plot_rows, start=1):
+            raw_ratio = row.height_var.get().strip()
+            if not raw_ratio:
+                ratio = 1.0
+            else:
+                try:
+                    ratio = float(raw_ratio)
+                except ValueError:
+                    self.show_error(f"Height ratio must be a number (row {index}).")
+                    return
+            ratios.append(ratio)
+        try:
+            ratios = plot_logs.validate_ratios(ratios, y_columns) or []
+        except ValueError as exc:
+            self.show_error(str(exc))
             return
         std_mapping: dict[str, str | None] = {}
         for row in self.plot_rows:
@@ -508,7 +540,7 @@ class PlotLogsInteractiveApp:
             x_column,
             y_columns,
             std_mapping,
-            ratios=None,
+            ratios=ratios or None,
             title=title,
         )
         self.apply_line_opacity(figure, self.line_alpha_var.get())
@@ -564,6 +596,15 @@ class PlotLogsInteractiveApp:
 
     def set_status(self, message: str) -> None:
         self.status_var.set(message)
+
+    def on_close(self) -> None:
+        for after_id in self.typeahead_after_ids.values():
+            self.root.after_cancel(after_id)
+        if self.figure:
+            plt.close(self.figure)
+            self.figure = None
+        self.root.quit()
+        self.root.destroy()
 
 
 def main() -> int:

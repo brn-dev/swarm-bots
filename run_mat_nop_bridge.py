@@ -124,7 +124,7 @@ def main() -> None:
 
     # ===== LOAD =====
     load_path: str | None = None
-    # load_path = "runs/mat_nop_swarm_bots_bridge/2026-02-08_22-49-56/models/model_24602377_steps_stopped.pt"
+    # load_path = "runs/mat_nop_swarm_bots_bridge/2026-02-10_14-57-40/models/model_24590522_steps.pt"
 
     # ===== DEVICE =====
     use_cuda = True and torch.cuda.is_available()
@@ -288,8 +288,6 @@ def main() -> None:
         warmup_iterations: int = 100
         cold_lr = initial_lr / 10
 
-        warmup: bool = state.get('warmup', warmup_iterations > 0)
-
         if early_stop_kl_div and early_stop_kl_div > 0.1:
             state['counter'] = 0
             state['warmup'] = False
@@ -322,10 +320,10 @@ def main() -> None:
                 'event': 'max_clip_frac_hit'
             }
 
-        if warmup:
-            if n_iterations >= warmup_iterations:
-                state['warmup'] = False
 
+        warmup: bool = state.get('warmup', warmup_iterations > 0) and n_iterations <= warmup_iterations
+        state['warmup'] = warmup
+        if warmup:
             new_lr = cold_lr + (initial_lr - cold_lr) * n_iterations / warmup_iterations
             return {
                 'new_lr': new_lr,
