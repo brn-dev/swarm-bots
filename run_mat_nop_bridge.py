@@ -237,7 +237,7 @@ def main() -> None:
         cross_attn_first=True,
         act_fn_cls=nn.GELU,
         continuous_config=GSDEParams(
-            base_std=0.45,
+            base_std=0.25,
             latent_sde_dim=None,
             std_learnable=True,
             full_std=True,
@@ -358,7 +358,7 @@ def main() -> None:
         clip_range=0.2,
         target_kl=0.04,
         gsde_reset_mode=GSDEProbabilityResetMode(probability=1/6),
-        ent_coef=0.001,
+        ent_coef=1e-5,
         value_loss_fn=nn.SmoothL1Loss(),
         train_device=train_device,
         rollout_device=rollout_device,
