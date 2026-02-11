@@ -245,6 +245,12 @@ class HomogeneousSwarm(BaseSwarm):
             if self.unit_start_quats is not None:
                 unit_start_quat = np.array(self.unit_start_quats[i])
 
+            if self.num_units > 1:
+                shade = 1.0 - (i / (self.num_units - 1))
+            else:
+                shade = 1.0
+            body_rgba = (shade, shade, shade, 0.35)
+
             unit = init_unit(
                 body_radius=self.body_radius,
                 leg_length=self.leg_length,
@@ -252,6 +258,7 @@ class HomogeneousSwarm(BaseSwarm):
                 hinge_range=self.hinge_range,
                 hinge_armature=self.hinge_armature,
                 unit_config=self.config.unit_config,
+                body_rgba=body_rgba,
             )
             unit.add_joint(type=mujoco.mjtJoint.mjJNT_FREE)
             (worldbody

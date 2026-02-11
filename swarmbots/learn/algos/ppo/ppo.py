@@ -317,8 +317,8 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerType]):
         ep_len = compute_summary_statistics([ep['l'] for ep in episode_infos], find_min=True, find_max=True)
         ep_time = compute_summary_statistics([ep['t'] for ep in episode_infos])
 
-        if ep_rew is not None:
-            episode_return_ema.update(ep_rew.mean, weight=ep_rew.n)
+        for ep_info in episode_infos:
+            episode_return_ema.update(ep_info['r'])
 
         update_metrics = self.train(episodes)
         metrics = {
