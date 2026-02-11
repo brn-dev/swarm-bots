@@ -357,6 +357,7 @@ def main() -> None:
         gae_lambda=0.95,
         clip_range=0.2,
         target_kl=0.04,
+        max_grad_norm=2.0,
         gsde_reset_mode=GSDEProbabilityResetMode(probability=1/6),
         ent_coef=1e-5,
         value_loss_fn=nn.SmoothL1Loss(),

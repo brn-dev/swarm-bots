@@ -98,7 +98,7 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerType]):
             ent_coef: float = 0.0,
             vf_coef: float = 0.5,
             value_loss_fn: nn.Module | None = None,
-            max_grad_norm: float = 0.5,
+            max_grad_norm: float = 2.0,
             target_kl: Optional[float] = None,
             gsde_reset_mode: GSDEResetMode | None = None,
             agent_logprob_reduction: Optional[Literal["sum", "mean"]] = None,
