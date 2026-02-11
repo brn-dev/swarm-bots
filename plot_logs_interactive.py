@@ -62,6 +62,17 @@ class HistogramSeries:
 
 PLOT_PRESETS: tuple[PlotPreset, ...] = (
     PlotPreset(
+        name="Actions",
+        entries=(
+            PresetEntry("ep_rew_ema", 5.0, False),
+            PresetEntry("act0__histogram_freqs", 3.0, False),
+            PresetEntry("act1__histogram_freqs", 1.0, False),
+            PresetEntry("act0__mean", 1.0, True),
+            PresetEntry("std0__mean", 1.0, True),
+            PresetEntry("act1__mean", 1.0, True),
+        ),
+    ),
+    PlotPreset(
         name="PPO Metrics",
         entries=(
             PresetEntry("ep_rew_ema", 5.0, False),
