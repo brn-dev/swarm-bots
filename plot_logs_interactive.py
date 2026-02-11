@@ -62,6 +62,14 @@ class HistogramSeries:
 
 PLOT_PRESETS: tuple[PlotPreset, ...] = (
     PlotPreset(
+        name="Episode Stats",
+        entries=(
+            PresetEntry("ep_rew_ema", 3.0, False),
+            PresetEntry("ep_rew__mean", 1.0, True),
+            PresetEntry("ep_len__mean", 1.0, True),
+        ),
+    ),
+    PlotPreset(
         name="Actions",
         entries=(
             PresetEntry("ep_rew_ema", 5.0, False),
@@ -75,11 +83,13 @@ PLOT_PRESETS: tuple[PlotPreset, ...] = (
     PlotPreset(
         name="PPO Metrics",
         entries=(
-            PresetEntry("ep_rew_ema", 5.0, False),
+            PresetEntry("ep_rew_ema", 3.0, False),
             PresetEntry("approx_kl__mean", 1.0, True),
             PresetEntry("clip_frac__mean", 1.0, True),
             PresetEntry("ratio__std", 1.0, False),
             PresetEntry("expl_var", 1.0, False),
+            PresetEntry("grad_norm__mean", 1.0, True),
+            PresetEntry("grad_clip_frac", 1.0, False),
             PresetEntry("learning_rate", 1.0, False),
         ),
     ),
@@ -90,12 +100,14 @@ PLOT_PRESETS: tuple[PlotPreset, ...] = (
             PresetEntry("act_loss__mean", 1.0, True),
             PresetEntry("val_loss__mean", 1.0, True),
             PresetEntry("ent_loss__mean", 1.0, True),
+            PresetEntry("grad_norm__mean", 1.0, True),
+            PresetEntry("grad_clip_frac", 1.0, False),
         ),
     ),
     PlotPreset(
         name="PPO Full",
         entries=(
-            PresetEntry("ep_rew_ema", 5.0, False),
+            PresetEntry("ep_rew_ema", 2.0, False),
             PresetEntry("approx_kl__mean", 1.0, True),
             PresetEntry("clip_frac__mean", 1.0, True),
             PresetEntry("ratio__std", 1.0, False),
@@ -103,6 +115,8 @@ PLOT_PRESETS: tuple[PlotPreset, ...] = (
             PresetEntry("val_loss__mean", 1.0, True),
             PresetEntry("act_loss__mean", 1.0, True),
             PresetEntry("ent_loss__mean", 1.0, True),
+            PresetEntry("grad_norm__mean", 1.0, True),
+            PresetEntry("grad_clip_frac", 1.0, False),
             PresetEntry("learning_rate", 1.0, False),
         ),
     ),
@@ -114,6 +128,19 @@ PLOT_PRESETS: tuple[PlotPreset, ...] = (
             PresetEntry("angle_loss__mean", 1.0, True),
             PresetEntry("rot6d_loss__mean", 1.0, True),
             PresetEntry("binary_loss__mean", 1.0, True),
+        ),
+    ),
+    PlotPreset(
+        name="Performance",
+        entries=(
+            PresetEntry("fps", 1.0, False),
+            PresetEntry("updates", 1.0, False),
+            PresetEntry("policy_forward_time__mean", 1.0, True),
+            PresetEntry("env_step_time__mean", 1.0, True),
+            PresetEntry("rollout_time", 1.0, False),
+            PresetEntry("sampling_time__mean", 1.0, True),
+            PresetEntry("update_time__mean", 1.0, True),
+            PresetEntry("train_time", 1.0, False),
         ),
     ),
 )
@@ -475,14 +502,22 @@ class PlotLogsInteractiveApp:
             presets_label.grid(row=2, column=0, sticky="w", pady=(8, 0))
             presets_frame = ttk.Frame(plots_frame)
             presets_frame.grid(row=3, column=0, sticky="ew", pady=(4, 0))
-            presets_frame.columnconfigure(0, weight=1)
+            preset_columns = 3
+            for column in range(preset_columns):
+                presets_frame.columnconfigure(column, weight=1)
             for index, preset in enumerate(PLOT_PRESETS):
                 button = ttk.Button(
                     presets_frame,
                     text=preset.name,
                     command=lambda target=preset: self.apply_preset(target),
                 )
-                button.grid(row=index, column=0, sticky="ew", pady=2)
+                button.grid(
+                    row=index // preset_columns,
+                    column=index % preset_columns,
+                    sticky="ew",
+                    padx=2,
+                    pady=2,
+                )
 
         action_frame = ttk.Frame(controls_frame)
         action_frame.grid(row=3, column=0, sticky="ew")

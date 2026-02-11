@@ -63,7 +63,7 @@ class PPOWM(PPO[PPOWMSamples, PPOWMSampler]):
             ent_coef: float = 0.0,
             vf_coef: float = 0.5,
             value_loss_fn: nn.Module | None = None,
-            max_grad_norm: float = 0.5,
+            max_grad_norm: float = 2.0,
             target_kl: float | None = None,
             gsde_reset_mode: GSDEResetMode | None = None,
             agent_logprob_reduction: Literal["sum", "mean"] | None = None,
