@@ -16,6 +16,8 @@ class LogSeries:
     x_values: list[float]
     y_values: dict[str, list[float]]
     y_std_values: dict[str, list[float]]
+    y_min_values: dict[str, list[float]]
+    y_max_values: dict[str, list[float]]
 
 
 def parse_args() -> argparse.Namespace:
@@ -174,11 +176,27 @@ def load_log(
     y_columns: Sequence[str],
     std_mapping: dict[str, str | None],
     delimiter: str,
+    min_mapping: dict[str, str | None] | None = None,
+    max_mapping: dict[str, str | None] | None = None,
 ) -> LogSeries:
     x_values: list[float] = []
     y_values: dict[str, list[float]] = {column: [] for column in y_columns}
     y_std_values: dict[str, list[float]] = {
         column: [] for column in y_columns if std_mapping[column] is not None
+    }
+    resolved_min_mapping = {column: None for column in y_columns}
+    if min_mapping:
+        for column in y_columns:
+            resolved_min_mapping[column] = min_mapping.get(column)
+    resolved_max_mapping = {column: None for column in y_columns}
+    if max_mapping:
+        for column in y_columns:
+            resolved_max_mapping[column] = max_mapping.get(column)
+    y_min_values: dict[str, list[float]] = {
+        column: [] for column in y_columns if resolved_min_mapping[column] is not None
+    }
+    y_max_values: dict[str, list[float]] = {
+        column: [] for column in y_columns if resolved_max_mapping[column] is not None
     }
     with path.open(newline="") as handle:
         reader = csv.DictReader(handle, delimiter=delimiter)
@@ -188,6 +206,12 @@ def load_log(
         for std_column in std_mapping.values():
             if std_column is not None:
                 required_columns.append(std_column)
+        for min_column in resolved_min_mapping.values():
+            if min_column is not None:
+                required_columns.append(min_column)
+        for max_column in resolved_max_mapping.values():
+            if max_column is not None:
+                required_columns.append(max_column)
         validate_columns(reader.fieldnames, required_columns, path)
         for row_index, row in enumerate(reader, start=2):
             x_value = parse_scalar(row.get(x_column), x_column, path, row_index)
@@ -203,11 +227,23 @@ def load_log(
                     y_std_values[column].append(
                         parse_scalar(row.get(std_column), std_column, path, row_index)
                     )
+                min_column = resolved_min_mapping[column]
+                if min_column is not None:
+                    y_min_values[column].append(
+                        parse_scalar(row.get(min_column), min_column, path, row_index)
+                    )
+                max_column = resolved_max_mapping[column]
+                if max_column is not None:
+                    y_max_values[column].append(
+                        parse_scalar(row.get(max_column), max_column, path, row_index)
+                    )
     return LogSeries(
         label=label,
         x_values=x_values,
         y_values=y_values,
         y_std_values=y_std_values,
+        y_min_values=y_min_values,
+        y_max_values=y_max_values,
     )
 
 

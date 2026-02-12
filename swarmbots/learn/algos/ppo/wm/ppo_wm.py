@@ -160,6 +160,25 @@ class PPOWM(PPO[PPOWMSamples, PPOWMSampler]):
             logger.warning(f"Setting world_model_loss_coef to {coef}")
             self.world_model_loss_coef = coef
             return True
+        if cmd in {"set_wm_num_next_steps", "set_world_model_num_next_steps", "wm_num_next_steps"}:
+            num_next_steps = int(params)
+            if num_next_steps < 1:
+                raise ValueError(f"world_model_num_next_steps must be >= 1, got {num_next_steps}")
+            logger.warning(f"Setting world_model_num_next_steps to {num_next_steps}")
+            self.world_model_num_next_steps = num_next_steps
+            return True
+        if cmd in {"set_wm_target_tau", "set_world_model_target_tau", "wm_target_tau"}:
+            param = params.strip().lower()
+            if param in {"none", "null", ""}:
+                logger.warning("Disabling world_model_target_tau")
+                self.world_model_target_tau = None
+                return True
+            tau = float(params)
+            if not (0.0 < tau <= 1.0):
+                raise ValueError(f"world_model_target_tau must be in (0, 1], got {tau}")
+            logger.warning(f"Setting world_model_target_tau to {tau}")
+            self.world_model_target_tau = tau
+            return True
         return super()._execute_command(cmd, params, extra_run_metadata)
 
     def _after_optimizer_step(self) -> None:

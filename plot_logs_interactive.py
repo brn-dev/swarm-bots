@@ -34,6 +34,10 @@ class PlotRow:
     height_entry: ttk.Entry
     std_var: tk.BooleanVar
     std_check: ttk.Checkbutton
+    min_var: tk.BooleanVar
+    min_check: ttk.Checkbutton
+    max_var: tk.BooleanVar
+    max_check: ttk.Checkbutton
     remove_button: ttk.Button
 
 
@@ -367,6 +371,7 @@ class PlotLogsInteractiveApp:
         self.root.rowconfigure(0, weight=1)
 
         self.paths: list[Path] = []
+        self.path_groups: dict[Path, str] = {}
         self.available_columns: list[str] = []
         self.plot_rows: list[PlotRow] = []
         self.typeahead_buffers: dict[tk.Widget, str] = {}
@@ -380,6 +385,7 @@ class PlotLogsInteractiveApp:
         self.delimiter_var = tk.StringVar(value=";")
         self.title_var = tk.StringVar()
         self.status_var = tk.StringVar(value="Select CSV files to begin.")
+        self.group_var = tk.StringVar()
         self.line_alpha_var = tk.DoubleVar(value=1.0)
         self.line_width_var = tk.DoubleVar(value=0.75)
         self.dark_mode_var = tk.BooleanVar(value=True)
@@ -415,6 +421,7 @@ class PlotLogsInteractiveApp:
 
         self.files_listbox = tk.Listbox(files_frame, height=6, selectmode="extended")
         self.files_listbox.grid(row=0, column=0, sticky="ew")
+        self.files_listbox.bind("<<ListboxSelect>>", self.on_file_selection)
         files_scrollbar = ttk.Scrollbar(files_frame, orient="vertical", command=self.files_listbox.yview)
         files_scrollbar.grid(row=0, column=1, sticky="ns")
         self.files_listbox.configure(yscrollcommand=files_scrollbar.set)
@@ -427,6 +434,18 @@ class PlotLogsInteractiveApp:
         remove_button.grid(row=0, column=1, sticky="ew")
         refresh_button = ttk.Button(files_buttons, text="Refresh Columns", command=self.refresh_columns)
         refresh_button.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(4, 0))
+
+        group_frame = ttk.Frame(files_frame)
+        group_frame.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(6, 0))
+        group_frame.columnconfigure(1, weight=0)
+
+        ttk.Label(group_frame, text="Group").grid(row=0, column=0, sticky="w")
+        group_entry = ttk.Entry(group_frame, textvariable=self.group_var, width=7)
+        group_entry.grid(row=0, column=1, sticky="w", padx=(6, 6))
+        set_group_button = ttk.Button(group_frame, text="Set", width=5, command=self.set_group_for_selection)
+        set_group_button.grid(row=0, column=2, sticky="w")
+        clear_group_button = ttk.Button(group_frame, text="Clear", width=5, command=self.clear_group_for_selection)
+        clear_group_button.grid(row=0, column=3, sticky="w", padx=(6, 0))
 
         settings_frame = ttk.LabelFrame(controls_frame, text="Settings")
         settings_frame.grid(row=1, column=0, sticky="ew", pady=(0, 8))
@@ -483,12 +502,16 @@ class PlotLogsInteractiveApp:
         self.plots_container.columnconfigure(2, weight=0)
         self.plots_container.columnconfigure(3, weight=0)
         self.plots_container.columnconfigure(4, weight=0)
+        self.plots_container.columnconfigure(5, weight=0)
+        self.plots_container.columnconfigure(6, weight=0)
 
         ttk.Label(self.plots_container, text="#").grid(row=0, column=0, sticky="w")
         ttk.Label(self.plots_container, text="Y Column").grid(row=0, column=1, sticky="w", padx=(10, 4))
         ttk.Label(self.plots_container, text="Height").grid(row=0, column=2, sticky="w", padx=(6, 4))
         ttk.Label(self.plots_container, text="STD").grid(row=0, column=3, sticky="w", padx=(6, 4))
-        ttk.Label(self.plots_container, text="").grid(row=0, column=4, sticky="w", padx=(6, 4))
+        ttk.Label(self.plots_container, text="Min").grid(row=0, column=4, sticky="w", padx=(6, 4))
+        ttk.Label(self.plots_container, text="Max").grid(row=0, column=5, sticky="w", padx=(6, 4))
+        ttk.Label(self.plots_container, text="").grid(row=0, column=6, sticky="w", padx=(6, 4))
 
         plots_buttons = ttk.Frame(plots_frame)
         plots_buttons.grid(row=1, column=0, sticky="ew", pady=(6, 0))
@@ -496,6 +519,18 @@ class PlotLogsInteractiveApp:
         add_plot_button.grid(row=0, column=0, sticky="ew", padx=(0, 4))
         clear_plot_button = ttk.Button(plots_buttons, text="Clear Plots", command=self.clear_plot_rows)
         clear_plot_button.grid(row=0, column=1, sticky="ew")
+        self.toggle_min_button = ttk.Button(
+            self.plots_container,
+            text="All",
+            command=self.toggle_all_min,
+            width=4,
+        )
+        self.toggle_max_button = ttk.Button(
+            self.plots_container,
+            text="All",
+            command=self.toggle_all_max,
+            width=4,
+        )
 
         if PLOT_PRESETS:
             presets_label = ttk.Label(plots_frame, text="Presets")
@@ -551,6 +586,7 @@ class PlotLogsInteractiveApp:
         if not selected_indices:
             return
         for index in sorted(selected_indices, reverse=True):
+            self.path_groups.pop(self.paths[index], None)
             del self.paths[index]
         self.refresh_file_list()
         self.refresh_columns()
@@ -559,12 +595,53 @@ class PlotLogsInteractiveApp:
         self.files_listbox.delete(0, tk.END)
         for path in self.paths:
             self.files_listbox.insert(tk.END, self.display_path(path))
+        self.on_file_selection(None)
 
     def display_path(self, path: Path) -> str:
+        group = self.path_groups.get(path)
         try:
-            return str(path.relative_to(REPO_ROOT))
+            display = str(path.relative_to(REPO_ROOT))
         except ValueError:
-            return str(path)
+            display = str(path)
+        if group:
+            return f"[{group}] {display}"
+        return display
+
+    def on_file_selection(self, _event: tk.Event | None) -> None:
+        selected_indices = list(self.files_listbox.curselection())
+        if not selected_indices:
+            self.group_var.set("")
+            return
+        groups = {self.path_groups.get(self.paths[index], "") for index in selected_indices}
+        if len(groups) == 1:
+            self.group_var.set(groups.pop())
+        else:
+            self.group_var.set("")
+
+    def set_group_for_selection(self) -> None:
+        selected_indices = list(self.files_listbox.curselection())
+        if not selected_indices:
+            return
+        group = self.group_var.get().strip()
+        if not group:
+            self.show_error("Group name cannot be empty.")
+            return
+        for index in selected_indices:
+            self.path_groups[self.paths[index]] = group
+        self.refresh_file_list()
+        for index in selected_indices:
+            self.files_listbox.selection_set(index)
+
+    def clear_group_for_selection(self) -> None:
+        selected_indices = list(self.files_listbox.curselection())
+        if not selected_indices:
+            return
+        for index in selected_indices:
+            self.path_groups.pop(self.paths[index], None)
+        self.group_var.set("")
+        self.refresh_file_list()
+        for index in selected_indices:
+            self.files_listbox.selection_set(index)
 
     def refresh_columns(self) -> None:
         if not self.paths:
@@ -619,12 +696,16 @@ class PlotLogsInteractiveApp:
                     row.y_combo.set("ep_rew_ema")
                 else:
                     row.y_combo.set(columns[0])
-            self.update_std_checkbox(row)
+            self.update_summary_checkboxes(row)
         else:
             row.y_combo.configure(values=[], state="disabled")
             row.y_combo.set("")
             row.std_var.set(False)
             row.std_check.state(["disabled"])
+            row.min_var.set(False)
+            row.min_check.state(["disabled"])
+            row.max_var.set(False)
+            row.max_check.state(["disabled"])
 
     def add_plot_row(self) -> None:
         row_index = len(self.plot_rows) + 1
@@ -644,8 +725,16 @@ class PlotLogsInteractiveApp:
         std_check = ttk.Checkbutton(self.plots_container, text="Use", variable=std_var)
         std_check.grid(row=row_index, column=3, sticky="w", padx=(6, 4), pady=2)
 
+        min_var = tk.BooleanVar(value=False)
+        min_check = ttk.Checkbutton(self.plots_container, text="Use", variable=min_var)
+        min_check.grid(row=row_index, column=4, sticky="w", padx=(6, 4), pady=2)
+
+        max_var = tk.BooleanVar(value=False)
+        max_check = ttk.Checkbutton(self.plots_container, text="Use", variable=max_var)
+        max_check.grid(row=row_index, column=5, sticky="w", padx=(6, 4), pady=2)
+
         remove_button = ttk.Button(self.plots_container, text="Remove")
-        remove_button.grid(row=row_index, column=4, sticky="e", pady=2)
+        remove_button.grid(row=row_index, column=6, sticky="e", pady=2)
 
         row = PlotRow(
             index_label=index_label,
@@ -655,10 +744,14 @@ class PlotLogsInteractiveApp:
             height_entry=height_entry,
             std_var=std_var,
             std_check=std_check,
+            min_var=min_var,
+            min_check=min_check,
+            max_var=max_var,
+            max_check=max_check,
             remove_button=remove_button,
         )
         remove_button.configure(command=lambda target=row: self.remove_plot_row(target))
-        y_combo.bind("<<ComboboxSelected>>", lambda _event, target=row: self.update_std_checkbox(target))
+        y_combo.bind("<<ComboboxSelected>>", lambda _event, target=row: self.update_summary_checkboxes(target))
         self.plot_rows.append(row)
         self.update_row_options(row, self.available_columns, prefer_default=len(self.plot_rows) == 1)
         self.refresh_row_labels()
@@ -676,6 +769,26 @@ class PlotLogsInteractiveApp:
             else:
                 row.std_var.set(desired)
 
+    def update_minmax_checkboxes(
+        self,
+        row: PlotRow,
+        desired_min: bool | None = None,
+        desired_max: bool | None = None,
+    ) -> None:
+        self.update_min_checkbox(row, desired=desired_min)
+        self.update_max_checkbox(row, desired=desired_max)
+
+    def update_summary_checkboxes(
+        self,
+        row: PlotRow,
+        desired_std: bool | None = None,
+        desired_min: bool | None = None,
+        desired_max: bool | None = None,
+    ) -> None:
+        self.update_std_checkbox(row, desired=desired_std)
+        self.update_min_checkbox(row, desired=desired_min)
+        self.update_max_checkbox(row, desired=desired_max)
+
     def std_column_for(self, y_value: str) -> str | None:
         if not y_value or not y_value.endswith("__mean"):
             return None
@@ -683,6 +796,48 @@ class PlotLogsInteractiveApp:
         if candidate in self.available_columns:
             return candidate
         return None
+
+    def min_column_for(self, y_value: str) -> str | None:
+        if not y_value or not y_value.endswith("__mean"):
+            return None
+        candidate = f"{y_value.removesuffix('__mean')}__min"
+        if candidate in self.available_columns:
+            return candidate
+        return None
+
+    def max_column_for(self, y_value: str) -> str | None:
+        if not y_value or not y_value.endswith("__mean"):
+            return None
+        candidate = f"{y_value.removesuffix('__mean')}__max"
+        if candidate in self.available_columns:
+            return candidate
+        return None
+
+    def update_min_checkbox(self, row: PlotRow, desired: bool | None = None) -> None:
+        y_value = row.y_combo.get()
+        min_candidate = self.min_column_for(y_value)
+        if min_candidate is None:
+            row.min_var.set(False)
+            row.min_check.state(["disabled"])
+        else:
+            row.min_check.state(["!disabled"])
+            if desired is None:
+                row.min_var.set(False)
+            else:
+                row.min_var.set(desired)
+
+    def update_max_checkbox(self, row: PlotRow, desired: bool | None = None) -> None:
+        y_value = row.y_combo.get()
+        max_candidate = self.max_column_for(y_value)
+        if max_candidate is None:
+            row.max_var.set(False)
+            row.max_check.state(["disabled"])
+        else:
+            row.max_check.state(["!disabled"])
+            if desired is None:
+                row.max_var.set(False)
+            else:
+                row.max_var.set(desired)
 
     def is_histogram_column(self, column: str) -> bool:
         return column.endswith("__histogram_freqs") or column.endswith("__histogram_edges")
@@ -807,7 +962,15 @@ class PlotLogsInteractiveApp:
         listbox.see(current_index)
 
     def remove_plot_row(self, row: PlotRow) -> None:
-        for widget in (row.index_label, row.y_combo, row.height_entry, row.std_check, row.remove_button):
+        for widget in (
+            row.index_label,
+            row.y_combo,
+            row.height_entry,
+            row.std_check,
+            row.min_check,
+            row.max_check,
+            row.remove_button,
+        ):
             widget.destroy()
         if row in self.plot_rows:
             self.plot_rows.remove(row)
@@ -815,7 +978,15 @@ class PlotLogsInteractiveApp:
 
     def clear_plot_rows(self) -> None:
         for row in self.plot_rows:
-            for widget in (row.index_label, row.y_combo, row.height_entry, row.std_check, row.remove_button):
+            for widget in (
+                row.index_label,
+                row.y_combo,
+                row.height_entry,
+                row.std_check,
+                row.min_check,
+                row.max_check,
+                row.remove_button,
+            ):
                 widget.destroy()
         self.plot_rows.clear()
         self.add_plot_row()
@@ -848,7 +1019,7 @@ class PlotLogsInteractiveApp:
             row.height_var.set(self.format_ratio(entry.height))
             if entry.std and self.std_column_for(entry.y_column) is None:
                 missing_std.append(entry.y_column)
-            self.update_std_checkbox(row, desired=entry.std)
+            self.update_summary_checkboxes(row, desired_std=entry.std)
         if missing_std:
             self.set_status(
                 "Preset "
@@ -870,7 +1041,57 @@ class PlotLogsInteractiveApp:
             row.y_combo.grid_configure(row=index, column=1)
             row.height_entry.grid_configure(row=index, column=2)
             row.std_check.grid_configure(row=index, column=3)
-            row.remove_button.grid_configure(row=index, column=4)
+            row.min_check.grid_configure(row=index, column=4)
+            row.max_check.grid_configure(row=index, column=5)
+            row.remove_button.grid_configure(row=index, column=6)
+        footer_row = len(self.plot_rows) + 1
+        self.toggle_min_button.grid(row=footer_row, column=4, pady=(4, 0))
+        self.toggle_max_button.grid(row=footer_row, column=5, pady=(4, 0))
+
+    def toggle_all_min(self) -> None:
+        desired = not any(
+            row.min_var.get()
+            for row in self.plot_rows
+            if self.min_column_for(row.y_combo.get()) is not None
+        )
+        self.set_all_min(desired)
+
+    def toggle_all_max(self) -> None:
+        desired = not any(
+            row.max_var.get()
+            for row in self.plot_rows
+            if self.max_column_for(row.y_combo.get()) is not None
+        )
+        self.set_all_max(desired)
+
+    def set_all_min(self, enabled: bool) -> None:
+        for row in self.plot_rows:
+            self.update_min_checkbox(row, desired=enabled)
+
+    def set_all_max(self, enabled: bool) -> None:
+        for row in self.plot_rows:
+            self.update_max_checkbox(row, desired=enabled)
+
+    def group_keys_for_labels(self, labels: Sequence[str]) -> list[str]:
+        return [
+            self.path_groups.get(path, label)
+            for path, label in zip(self.paths, labels, strict=True)
+        ]
+
+    def group_color_map(self, group_keys: Sequence[str]) -> dict[str, str]:
+        colors = plt.rcParams["axes.prop_cycle"].by_key().get("color", [])
+        if not colors:
+            colors = list(matplotlib.colors.TABLEAU_COLORS.values())
+        if not colors:
+            return {}
+        color_map: dict[str, str] = {}
+        color_index = 0
+        for key in group_keys:
+            if key in color_map:
+                continue
+            color_map[key] = colors[color_index % len(colors)]
+            color_index += 1
+        return color_map
 
     def plot(self) -> None:
         if not self.paths:
@@ -927,6 +1148,8 @@ class PlotLogsInteractiveApp:
         scalar_columns = [column for column in y_columns if column not in histogram_specs]
         scalar_column_set = set(scalar_columns)
         std_mapping: dict[str, str | None] = {column: None for column in scalar_columns}
+        min_mapping: dict[str, str | None] = {column: None for column in scalar_columns}
+        max_mapping: dict[str, str | None] = {column: None for column in scalar_columns}
         for row in self.plot_rows:
             y_value = row.y_combo.get()
             if not y_value or y_value not in scalar_column_set:
@@ -937,8 +1160,21 @@ class PlotLogsInteractiveApp:
                     self.show_error(f"No std column found for {y_value}.")
                     return
                 std_mapping[y_value] = std_column
+            if row.min_var.get():
+                min_column = self.min_column_for(y_value)
+                if min_column is None:
+                    self.show_error(f"No min column found for {y_value}.")
+                    return
+                min_mapping[y_value] = min_column
+            if row.max_var.get():
+                max_column = self.max_column_for(y_value)
+                if max_column is None:
+                    self.show_error(f"No max column found for {y_value}.")
+                    return
+                max_mapping[y_value] = max_column
 
         labels = plot_logs.build_labels(self.paths, None)
+        group_keys: list[str] | None = None
         logs: list[plot_logs.LogSeries] = []
         if scalar_columns:
             try:
@@ -950,9 +1186,12 @@ class PlotLogsInteractiveApp:
                         scalar_columns,
                         std_mapping,
                         delimiter,
+                        min_mapping=min_mapping,
+                        max_mapping=max_mapping,
                     )
                     for path, label in zip(self.paths, labels, strict=True)
                 ]
+                group_keys = self.group_keys_for_labels(labels)
             except (ValueError, FileNotFoundError) as exc:
                 self.show_error(str(exc))
                 return
@@ -982,8 +1221,11 @@ class PlotLogsInteractiveApp:
             x_column=x_column,
             y_columns=y_columns,
             std_mapping=std_mapping,
+            min_mapping=min_mapping,
+            max_mapping=max_mapping,
             ratios=ratios or None,
             title=title,
+            group_keys=group_keys,
         )
         self.apply_line_opacity(figure, self.line_alpha_var.get())
         self.apply_line_width(figure, self.line_width_var.get())
@@ -1001,8 +1243,11 @@ class PlotLogsInteractiveApp:
         x_column: str,
         y_columns: Sequence[str],
         std_mapping: dict[str, str | None],
+        min_mapping: dict[str, str | None],
+        max_mapping: dict[str, str | None],
         ratios: Sequence[float] | None,
         title: str | None,
+        group_keys: Sequence[str] | None,
     ) -> plt.Figure:
         base_ratios = list(ratios) if ratios is not None else [1.0] * len(y_columns)
         axis_specs: list[tuple[str, HistogramSeries | None, float]] = []
@@ -1027,6 +1272,9 @@ class PlotLogsInteractiveApp:
         )
         if row_count == 1:
             axes = [axes]
+        if group_keys is None:
+            group_keys = [log.label for log in logs]
+        group_color_map = self.group_color_map(group_keys) if logs else {}
         hist_ranges = {
             column: histogram_value_range(series_list)
             for column, series_list in histogram_data.items()
@@ -1036,8 +1284,14 @@ class PlotLogsInteractiveApp:
         first_scalar_axis: plt.Axes | None = None
         for axis, (column, series, _ratio) in zip(axes, axis_specs, strict=True):
             if series is None:
-                for log in logs:
-                    axis.plot(log.x_values, log.y_values[column], label=log.label)
+                for log, group_key in zip(logs, group_keys, strict=True):
+                    color = group_color_map.get(group_key)
+                    line = axis.plot(
+                        log.x_values,
+                        log.y_values[column],
+                        label=log.label,
+                        color=color,
+                    )[0]
                     std_column = std_mapping.get(column)
                     if std_column is not None:
                         std_values = log.y_std_values.get(column)
@@ -1058,7 +1312,35 @@ class PlotLogsInteractiveApp:
                                     strict=True,
                                 )
                             ]
-                            axis.fill_between(log.x_values, lower, upper, alpha=0.2)
+                            axis.fill_between(
+                                log.x_values,
+                                lower,
+                                upper,
+                                alpha=0.2,
+                                color=line.get_color(),
+                            )
+                    min_column = min_mapping.get(column)
+                    if min_column is not None:
+                        min_values = log.y_min_values.get(column)
+                        if min_values:
+                            axis.plot(
+                                log.x_values,
+                                min_values,
+                                color=line.get_color(),
+                                linestyle="--",
+                                label="_min",
+                            )
+                    max_column = max_mapping.get(column)
+                    if max_column is not None:
+                        max_values = log.y_max_values.get(column)
+                        if max_values:
+                            axis.plot(
+                                log.x_values,
+                                max_values,
+                                color=line.get_color(),
+                                linestyle=":",
+                                label="_max",
+                            )
                 axis.set_ylabel(column)
                 axis.grid(alpha=0.3)
                 if first_scalar_axis is None:

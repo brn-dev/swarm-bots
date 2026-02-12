@@ -148,7 +148,7 @@ class HomogeneousSwarm(BaseSwarm):
             hinge_armature: float = 0.003,
             connection_torquescale: float = 10.0,
             randomize_unit_orientations: bool = False
-    ):
+    ) -> None:
         assert unit_start_quats is None or not randomize_unit_orientations
 
         self._can_have_inactive_units = False
@@ -191,11 +191,14 @@ class HomogeneousSwarm(BaseSwarm):
 
         assert unit_start_quats is None or len(unit_start_quats) == self.num_units
 
-        super().__init__(SwarmConfig(
-            num_units=self.num_units,
-            unit_config=unit_config,
-            connection_torquescale=connection_torquescale,
-        ))
+        super().__init__(
+            config=SwarmConfig(
+                num_units=self.num_units,
+                unit_config=unit_config,
+                connection_torquescale=connection_torquescale,
+            ),
+            max_unit_extent=(body_radius + leg_length) * 1.1
+        )
 
         self.body_radius = body_radius
         self.leg_length = leg_length
@@ -272,8 +275,8 @@ class HomogeneousSwarm(BaseSwarm):
             model: mujoco.MjModel,
             data: mujoco.MjData,
             rng: np.random.Generator,
-            start_location: np.ndarray,
-            parking_location: np.ndarray,
+            swarm_start_location: np.ndarray,
+            inactive_unit_positions: np.ndarray
     ) -> tuple[SwarmConnections, Optional[np.ndarray]]:
         connections = SwarmConnections(self.config)
 
@@ -300,7 +303,7 @@ class HomogeneousSwarm(BaseSwarm):
         for i, unit_start_location in enumerate(start_locations):
             qpos_adr, dof_adr = self._get_unit_main_body_addresses(model, i)
 
-            data.qpos[qpos_adr:qpos_adr + 3] = start_location + np.array(unit_start_location)
+            data.qpos[qpos_adr:qpos_adr + 3] = swarm_start_location + np.array(unit_start_location)
 
             if self.randomize_unit_orientations:
                 data.qpos[qpos_adr + 3:qpos_adr + 7] = random_quat_shoemake()
@@ -314,7 +317,7 @@ class HomogeneousSwarm(BaseSwarm):
         for i in range(len(start_locations), self.num_units):
             qpos_adr, dof_adr = self._get_unit_main_body_addresses(model, i)
 
-            data.qpos[qpos_adr:qpos_adr + 3] = parking_location + np.array([0.0, -1.0, 0.0]) * i  # todo: improve
+            data.qpos[qpos_adr:qpos_adr + 3] = inactive_unit_positions[i]
             data.qpos[qpos_adr + 3:qpos_adr + 7] = [1, 0, 0, 0]
             data.qvel[dof_adr:dof_adr + 6] = 0
 

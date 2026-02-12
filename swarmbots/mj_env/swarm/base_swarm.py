@@ -1,4 +1,5 @@
 import abc
+from dataclasses import dataclass
 from typing import Optional
 
 import mujoco
@@ -10,8 +11,9 @@ from swarmbots.mj_env.swarm.swarm_connections import SwarmConnections
 
 class BaseSwarm(abc.ABC):
 
-    def __init__(self, config: SwarmConfig):
+    def __init__(self, config: SwarmConfig, max_unit_extent: float):
         self.config = config
+        self.max_unit_extent = max_unit_extent
 
     def get_settings(self):
         return {
@@ -33,11 +35,20 @@ class BaseSwarm(abc.ABC):
             model: mujoco.MjModel,
             data: mujoco.MjData,
             rng: np.random.Generator,
-            start_location: np.ndarray,
-            parking_location: np.ndarray,
+            swarm_start_location: np.ndarray,
+            inactive_unit_positions: np.ndarray
     ) -> tuple[SwarmConnections, Optional[np.ndarray]]:
         """
+
+        :param model:
+        :param data:
+        :param rng:
+        :param swarm_start_location: shape (3,)
+        :param inactive_unit_positions: shape (N, 3)
+
         initialize state and potentially randomize swarm
+
+        :return: connections, units_active_mask
         """
         raise NotImplementedError()
 

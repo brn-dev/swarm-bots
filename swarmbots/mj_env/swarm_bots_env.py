@@ -112,6 +112,13 @@ class SwarmBotsEnv(gymnasium.Env):
         super().reset(seed=seed)
         self.current_step = 0
         self.scenario_state, self.swarm_connections = self.scenario.reset_scenario(self.model, self.data)
+        # self.scenario.settle_reset(
+        #     self.model,
+        #     self.data,
+        #     self.swarm_connections,
+        #     self.scenario_state,
+        #     self.action_repeat,
+        # )
 
         self._reset_agent_permutation()
         obs = self.scenario.get_obs(self.model, self.data, self.scenario_state, self.swarm_connections)
