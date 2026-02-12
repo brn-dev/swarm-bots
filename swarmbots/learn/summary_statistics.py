@@ -18,6 +18,8 @@ class SummaryStatistics:
     n: int
     mean: float
     std: Optional[float] = None
+    skewness: Optional[float] = None
+    kurtosis: Optional[float] = None
     min_value: Optional[float] = None
     max_value: Optional[float] = None
     data: Optional[np.ndarray] = None
@@ -28,6 +30,8 @@ class SummaryStatisticsFormat:
     n: Optional[str] = None
     mean: Optional[str] = None
     std: Optional[str] = None
+    skewness: Optional[str] = None
+    kurtosis: Optional[str] = None
     min_value: Optional[str] = None
     max_value: Optional[str] = None
     histogram: bool | int = False
@@ -47,6 +51,8 @@ def format_summary_statistics(
             n=None,
             mean='.3f',
             std='.3f',
+            skewness=None,
+            kurtosis=None,
             min_value=None,
             max_value=None,
             histogram=False,
@@ -57,6 +63,8 @@ def format_summary_statistics(
         find_min=stats_format.min_value is not None,
         find_max=stats_format.max_value is not None,
         make_histogram=stats_format.histogram,
+        compute_skewness=stats_format.skewness is not None,
+        compute_kurtosis=stats_format.kurtosis is not None,
     )
 
     if summary_statistics is None:
@@ -75,6 +83,16 @@ def format_summary_statistics(
 
     if std is not None and stats_format.std:
         representation += f' ± {format(std, stats_format.std)}'
+
+    if stats_format.skewness and summary_statistics.skewness is not None:
+        if representation:
+            representation += ' '
+        representation += f'skew={format(summary_statistics.skewness, stats_format.skewness)}'
+
+    if stats_format.kurtosis and summary_statistics.kurtosis is not None:
+        if representation:
+            representation += ' '
+        representation += f'kurt={format(summary_statistics.kurtosis, stats_format.kurtosis)}'
 
     min_val_available = min_value is not None and stats_format.min_value
     max_val_available = max_value is not None and stats_format.max_value
@@ -104,6 +122,8 @@ def compute_summary_statistics(
         find_min: bool = False,
         find_max: bool = False,
         make_histogram: bool | int = False,
+        compute_skewness: bool = False,
+        compute_kurtosis: bool = False,
         keep_data: bool = True,
 ) -> Optional[SummaryStatistics]:
     values: np.ndarray | torch.Tensor
@@ -143,6 +163,12 @@ def compute_summary_statistics(
         mean=mean,
         std=values.std().item(),
     )
+    if compute_skewness or compute_kurtosis:
+        skewness, kurtosis = _compute_standardized_moments(values, mean, summary_stats.std)
+        if compute_skewness:
+            summary_stats.skewness = skewness
+        if compute_kurtosis:
+            summary_stats.kurtosis = kurtosis
     find_min = find_min or make_histogram
     find_max = find_max or make_histogram
     if find_min:
@@ -171,11 +197,22 @@ def maybe_compute_summary_statistics(
         find_min: bool = False,
         find_max: bool = False,
         make_histogram: bool | int = False,
+        compute_skewness: bool = False,
+        compute_kurtosis: bool = False,
         keep_data: bool = True,
 ):
     if is_summary_statistics(x):
         if make_histogram and x.histogram is None and x.data is not None:
             compute_histogram(x, n_bins=make_histogram if isinstance(make_histogram, int) else HISTOGRAM_DEFAULT_BINS)
+        if (compute_skewness or compute_kurtosis) and x.data is not None:
+            needs_skewness = compute_skewness and x.skewness is None
+            needs_kurtosis = compute_kurtosis and x.kurtosis is None
+            if needs_skewness or needs_kurtosis:
+                skewness, kurtosis = _compute_standardized_moments(x.data, x.mean, x.std)
+                if needs_skewness:
+                    x.skewness = skewness
+                if needs_kurtosis:
+                    x.kurtosis = kurtosis
         return x
     if x is None:
         return None
@@ -184,6 +221,8 @@ def maybe_compute_summary_statistics(
         find_min=find_min,
         find_max=find_max,
         make_histogram=make_histogram,
+        compute_skewness=compute_skewness,
+        compute_kurtosis=compute_kurtosis,
         keep_data=keep_data,
     )
     
@@ -219,6 +258,34 @@ def _compute_histogram(
         bin_frequencies=[float(x) for x in frequencies.tolist()],
         bin_edges=[float(x) for x in edges.tolist()],
     )
+
+def _compute_standardized_moments(
+    values: np.ndarray | torch.Tensor,
+    mean: float,
+    std: Optional[float],
+) -> tuple[Optional[float], Optional[float]]:
+    if std is None or not np.isfinite(std) or std <= 0.0:
+        return None, None
+
+    if isinstance(values, np.ndarray):
+        centered = values - mean
+        m3 = np.mean(centered ** 3)
+        m4 = np.mean(centered ** 4)
+        skewness = float(m3 / (std ** 3))
+        kurtosis = float(m4 / (std ** 4))
+    else:
+        centered = values - mean
+        m3 = (centered ** 3).mean()
+        m4 = (centered ** 4).mean()
+        skewness = (m3 / (std ** 3)).item()
+        kurtosis = (m4 / (std ** 4)).item()
+
+    if not np.isfinite(skewness):
+        skewness = None
+    if not np.isfinite(kurtosis):
+        kurtosis = None
+
+    return skewness, kurtosis
 
 def _format_histogram_blocks(freqs: list[float]) -> str:
     if not freqs:
@@ -283,6 +350,9 @@ def combine_summary_statistics(
 
     if combine_data and all(s.data is not None for s in stats_list):
         combined.data = np.concatenate([s.data for s in stats_list if s.data is not None]).ravel()
+        skewness, kurtosis = _compute_standardized_moments(combined.data, combined.mean, combined.std)
+        combined.skewness = skewness
+        combined.kurtosis = kurtosis
 
     if combine_histograms:
         raise NotImplementedError("Combining histograms is not implemented yet.")

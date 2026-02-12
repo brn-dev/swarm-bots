@@ -20,7 +20,7 @@ from swarmbots.learn.base_policy import BasePolicy
 from swarmbots.learn.checkpointing import load_checkpoint, extract_policy_state_dict, extract_optimizer_state_dict, \
     apply_env_state, extract_env_state, freeze_env_normalization, capture_env_state
 from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
-from swarmbots.learn.exponential_moving_average import ExponentialMovingAverage
+from swarmbots.learn.exponential_moving_average import ExponentialMovingAverage, HybridEMA
 from swarmbots.learn.metrics_logger import MetricsLogger
 from swarmbots.learn.performance_timer import PerformanceTimer
 from swarmbots.learn.recording import record_policy
@@ -55,6 +55,7 @@ class BaseAlgorithm(abc.ABC):
         self._active_extra_run_metadata: dict[str, Any] | None = None
         self._active_save_optimizer: bool = True
         self._last_return_ema: float | None = None
+        self._best_return_ema: float | None = None
         self._latest_hp_update: str | None = None
         self._stop_requested = False
         self._stop_should_save = True
@@ -158,8 +159,8 @@ class BaseAlgorithm(abc.ABC):
             ignore_keys_for_persistence=logging_ignore_keys_for_persistence,
             console_keys=logging_console_keys,
         )
-        episode_return_ema = ExponentialMovingAverage(alpha=episode_return_ema_alpha)
-        best_return_ema: float | None = None
+        episode_return_ema = HybridEMA(alpha=episode_return_ema_alpha)
+        best_return_ema: float | None = self._best_return_ema
         best_save_counter = 0
 
         self._active_run_dir = run_dir
@@ -197,6 +198,7 @@ class BaseAlgorithm(abc.ABC):
                         best_episode_return_ema=best_return_ema,
                         best_save_counter=best_save_counter,
                     )
+                    self._best_return_ema = best_return_ema
 
                 if log_interval is not None and self.n_total_iterations % log_interval == 0:
                     fps = int(rollout_steps / iter_duration)
@@ -316,6 +318,7 @@ class BaseAlgorithm(abc.ABC):
             return best_episode_return_ema, best_save_counter
 
         best_episode_return_ema = current_episode_return_ema
+        self._best_return_ema = best_episode_return_ema
         if best_models_dir is None:
             return best_episode_return_ema, best_save_counter
 
@@ -355,6 +358,7 @@ class BaseAlgorithm(abc.ABC):
             'n_total_updates': self.n_total_updates,
             'n_total_timesteps': self.n_total_timesteps,
             'return_ema': return_ema,
+            'best_return_ema': self._best_return_ema,
         }
 
         if optimizer_state_dict is not None:
@@ -367,6 +371,7 @@ class BaseAlgorithm(abc.ABC):
             'n_total_updates': self.n_total_updates,
             'n_total_timesteps': self.n_total_timesteps,
             'return_ema': return_ema,
+            'best_return_ema': self._best_return_ema,
         }
         metadata_path = path.with_name(f"{path.name}.json")
         metadata_path.write_text(json.dumps(metadata, indent=2, sort_keys=True), encoding="utf-8")
@@ -383,6 +388,7 @@ class BaseAlgorithm(abc.ABC):
             self.n_total_iterations = checkpoint.get("n_total_iterations", 0)
             self.n_total_updates = checkpoint.get("n_total_updates", 0)
             self.n_total_timesteps = checkpoint.get("n_total_timesteps", 0)
+            self._best_return_ema = checkpoint.get("best_return_ema", checkpoint.get("return_ema", None))
 
         apply_env_state(self.env, extract_env_state(checkpoint))
 

@@ -15,6 +15,7 @@ DEFAULT_KWARGS = {
     'connectors_successfully_activated_reward_weight': 0e-3,
     'connectors_unsuccessfully_activated_reward_weight': -1e-4,
     'connectors_deactivated_reward_weight': 0e-3,
+    'reset_settle_steps': 30,
 }
 
 def _resolve_swarm(

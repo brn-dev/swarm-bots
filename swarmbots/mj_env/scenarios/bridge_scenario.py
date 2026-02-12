@@ -53,6 +53,7 @@ class BridgeScenario(PayloadScenario):
             include_connectors_xpos_in_obs: bool = True,
             include_connectors_xquat_in_obs: bool = False,
             quat_rot6d_representation: bool = True,
+            reset_settle_steps: int = 0,
             seed: int | None = None,
     ) -> None:
         self.street_width = float(street_width)
@@ -120,6 +121,8 @@ class BridgeScenario(PayloadScenario):
             connection_angle_threshold=connection_angle_threshold,
             disconnect_potential_threshold=disconnect_potential_threshold,
             force_elliptic_cone=force_elliptic_cone,
+            reset_settle_steps=reset_settle_steps,
+            inactive_area_location=[-street_width * 1.5, 0, 0.1],
             _reset_in_init=False,
         )
 

@@ -1,4 +1,5 @@
 import abc
+import math
 from typing import Any, Iterable, TypedDict, Literal, NotRequired, Optional
 
 import mujoco
@@ -43,6 +44,7 @@ class RewardWeightsUpdateResult(TypedDict):
 
 DEFAULT_GEOM_FRICTION: tuple[float, float, float] = (1.0, 0.005, 0.0001)
 HIGH_FRICTION_SLIDING_THRESHOLD: float = 2.0
+DEFAULT_INACTIVE_AREA_LOCATION: tuple[float, float, float] = (50.0, 0.0, 0.1)
 
 _REWARD_WEIGHT_KEYS: frozenset[str] = frozenset(RewardWeights.__annotations__.keys())
 
@@ -87,9 +89,11 @@ class BaseScenario(abc.ABC):
             disconnect_potential_threshold: float,
             friction: float | Iterable[float] | None,
             force_elliptic_cone: bool,
+            reset_settle_steps: int,
+            inactive_area_location: Iterable[float] | None,
             seed: int | None,
             _reset_in_init: bool = True,
-    ):
+    ) -> None:
         self.seed = seed
         self.rng: np.random.Generator = np.random.default_rng(seed)
 
@@ -101,6 +105,9 @@ class BaseScenario(abc.ABC):
         self.connection_dist_threshold = connection_dist_threshold
         self.connection_angle_threshold = connection_angle_threshold
         self.disconnect_potential_threshold = disconnect_potential_threshold
+        if reset_settle_steps < 0:
+            raise ValueError(f"Expected reset_settle_steps >= 0, got {reset_settle_steps}")
+        self.reset_settle_steps = int(reset_settle_steps)
 
         self.reward_weights: RewardWeights = {
             "progress_reward_weight": progress_reward_weight,
@@ -122,6 +129,12 @@ class BaseScenario(abc.ABC):
         self.quat_rot6d_representation = quat_rot6d_representation
         self.friction = _validate_geom_friction(friction)
         self.force_elliptic_cone = force_elliptic_cone
+
+        if inactive_area_location is None:
+            inactive_area_location = DEFAULT_INACTIVE_AREA_LOCATION
+        self.inactive_area_location = np.asarray(inactive_area_location, dtype=float)
+        self.inactive_unit_positions = self._generate_inactive_unit_positions(swarm, self.inactive_area_location)
+
         self.spec = self.create_scenario_spec()
         self.dummy_model, self.dummy_data = self.build()
 
@@ -160,12 +173,29 @@ class BaseScenario(abc.ABC):
                         self._eq_indices[u1, c1, u2, c2] = eq_id
                         self._eq_indices[u2, c2, u1, c1] = eq_id
 
+        self._unit_body_ids: list[np.ndarray] = []
+        self._unit_geom_ids: list[np.ndarray] = []
+        self._unit_geom_contype: list[np.ndarray] = []
+        self._unit_geom_conaffinity: list[np.ndarray] = []
+        self._unit_body_gravcomp: list[np.ndarray] = []
+        for prefix in unit_prefixes:
+            body_ids = np.asarray(mj_utils.body_ids_for_prefix(self.dummy_model, prefix), dtype=int)
+            if body_ids.size == 0:
+                geom_ids = np.zeros(0, dtype=int)
+            else:
+                geom_ids = np.nonzero(np.isin(self.dummy_model.geom_bodyid, body_ids))[0].astype(int)
+            self._unit_body_ids.append(body_ids)
+            self._unit_geom_ids.append(geom_ids)
+            self._unit_geom_contype.append(self.dummy_model.geom_contype[geom_ids].copy())
+            self._unit_geom_conaffinity.append(self.dummy_model.geom_conaffinity[geom_ids].copy())
+            self._unit_body_gravcomp.append(self.dummy_model.body_gravcomp[body_ids].copy())
+
         if _reset_in_init:
             self._dummy_state, self._dummy_connections = self.reset_scenario(self.dummy_model, self.dummy_data)
         else:
             self._dummy_state, self._dummy_connections = None, None
 
-    def get_settings(self):
+    def get_settings(self) -> dict[str, Any]:
         return {
             'swarm': self.swarm.get_settings(),
             'actuator_strength': self.actuator_strength,
@@ -180,6 +210,8 @@ class BaseScenario(abc.ABC):
             'friction': self.friction,
             'force_elliptic_cone': self.force_elliptic_cone,
             'seed': self.seed,
+            'reset_settle_steps': self.reset_settle_steps,
+            'inactive_area_location': self.inactive_area_location,
         }
 
     def get_reward_weights(self) -> RewardWeights:
@@ -208,6 +240,9 @@ class BaseScenario(abc.ABC):
         """
         :return: (reward, done)
         """
+        units_active_mask = state.get("units_active_mask")
+        if units_active_mask is not None:
+            self._enforce_inactive_units_state(model, data, units_active_mask)
 
         old_progress = state['progress']
         new_progress = self.compute_progress(data, state.get("units_active_mask"))
@@ -269,11 +304,7 @@ class BaseScenario(abc.ABC):
         return model, data
 
     def get_swarm_start_location(self):
-        return np.array([0.0, 0.0, 0.35])
-
-    def get_swarm_parking_location(self):
-        return np.array([0.0, -5.0, 0.35])
-
+        return np.array([0.0, 0.0, self.swarm.max_unit_extent])
 
     def reset_scenario(self, model: mujoco.MjModel, data: mujoco.MjData) -> tuple[dict, SwarmConnections]:
         mujoco.mj_resetData(model, data)
@@ -284,11 +315,12 @@ class BaseScenario(abc.ABC):
             data,
             self.rng,
             self.get_swarm_start_location(),
-            self.get_swarm_parking_location()
+            self.inactive_unit_positions
         )
         if self.swarm.can_have_inactive_units:
             if units_active_mask is None:
                 units_active_mask = np.ones(self.num_units, dtype=bool)
+            self._apply_units_active_mask(model, data, units_active_mask)
         else:
             units_active_mask = None
 
@@ -299,6 +331,29 @@ class BaseScenario(abc.ABC):
         state['units_active_mask'] = units_active_mask
 
         return state, connections
+
+    def settle_reset(
+            self,
+            model: mujoco.MjModel,
+            data: mujoco.MjData,
+            connections: SwarmConnections,
+            state: dict,
+            action_repeat: int,
+    ) -> None:
+        if self.reset_settle_steps <= 0:
+            return
+        units_active_mask = state.get("units_active_mask")
+        settle_action: SwarmActDict = {
+            "actuators": np.zeros(self.get_actuator_action_shape(), dtype=float),
+            "connectors": connections.get_is_active_mask().copy(),
+        }
+        settle_state = {"units_active_mask": units_active_mask}
+        for _ in range(self.reset_settle_steps):
+            self.apply_action(model, data, settle_action, settle_state, connections)
+            mujoco.mj_step(model, data, action_repeat)
+        state["unit_positions"] = data.qpos[self._qpos_indices[:, :3]].copy()
+        if "progress" in state:
+            state["progress"] = self.compute_progress(data, state.get("units_active_mask"))
 
     def get_obs(
             self,
@@ -720,3 +775,82 @@ class BaseScenario(abc.ABC):
 
         self.reward_weights = new_reward_weights
         return {"ok": True, "error": None, "unknown_keys": [], "updated_keys": updated_keys}
+
+    def _apply_units_active_mask(
+            self,
+            model: mujoco.MjModel,
+            data: mujoco.MjData,
+            units_active_mask: np.ndarray,
+    ) -> None:
+        active_mask = np.asarray(units_active_mask, dtype=bool)
+        if active_mask.shape[0] != self.num_units:
+            raise ValueError(f"Expected units_active_mask length {self.num_units}, got {active_mask.shape[0]}")
+
+        for unit_idx in range(self.num_units):
+            self._apply_unit_active_state(model, data, unit_idx, bool(active_mask[unit_idx]))
+
+        mujoco.mj_forward(model, data)
+
+    def _apply_unit_active_state(
+            self,
+            model: mujoco.MjModel,
+            data: mujoco.MjData,
+            unit_idx: int,
+            is_active: bool,
+    ) -> None:
+        geom_ids = self._unit_geom_ids[unit_idx]
+        body_ids = self._unit_body_ids[unit_idx]
+        dof_ids = self._qvel_indices[unit_idx]
+
+        if is_active:
+            if geom_ids.size > 0:
+                model.geom_contype[geom_ids] = self._unit_geom_contype[unit_idx]
+                model.geom_conaffinity[geom_ids] = self._unit_geom_conaffinity[unit_idx]
+            if body_ids.size > 0:
+                model.body_gravcomp[body_ids] = self._unit_body_gravcomp[unit_idx]
+        else:
+            if geom_ids.size > 0:
+                model.geom_contype[geom_ids] = 0
+                model.geom_conaffinity[geom_ids] = 0
+            if body_ids.size > 0:
+                model.body_gravcomp[body_ids] = 1.0
+            if dof_ids.size > 0:
+                data.qvel[dof_ids] = 0.0
+                data.qacc[dof_ids] = 0.0
+
+    def _enforce_inactive_units_state(
+            self,
+            model: mujoco.MjModel,
+            data: mujoco.MjData,
+            units_active_mask: np.ndarray,
+    ) -> None:
+        inactive_mask = np.logical_not(np.asarray(units_active_mask, dtype=bool))
+        if not inactive_mask.any():
+            return
+        qpos_indices = self._qpos_indices[inactive_mask]
+        qvel_indices = self._qvel_indices[inactive_mask].ravel()
+        if qpos_indices.size > 0:
+            data.qpos[qpos_indices[:, :3]] = self.inactive_unit_positions[inactive_mask]
+        if qvel_indices.size > 0:
+            data.qvel[qvel_indices] = 0.0
+        if qpos_indices.size > 0 or qvel_indices.size > 0:
+            mujoco.mj_forward(model, data)
+
+    @staticmethod
+    def _generate_inactive_unit_positions(swarm: BaseSwarm, inactive_area_location: np.ndarray):
+        num_units = swarm.config.num_units
+        max_unit_extent = swarm.max_unit_extent
+
+        num_units_sqrt = int(math.ceil(math.sqrt(num_units)))
+        unit_spacing = max_unit_extent * 3
+
+        inactive_unit_positions = np.zeros((num_units, 3), dtype=float)
+        inactive_unit_positions[:, 2] = max_unit_extent
+
+        for i in range(num_units):
+            inactive_unit_positions[i, 0] = (i // num_units_sqrt) * unit_spacing
+            inactive_unit_positions[i, 1] = (i % num_units_sqrt) * unit_spacing
+
+        inactive_unit_positions[:, :2] -= inactive_unit_positions[:, :2].mean(axis=0)
+
+        return inactive_area_location + inactive_unit_positions

@@ -110,6 +110,10 @@ class MetricsLogger:
                 csv_metrics[k + '__mean'] = round(v.mean, 6)
                 if v.std is not None:
                     csv_metrics[k + '__std'] = round(v.std, 6)
+                if v.skewness is not None:
+                    csv_metrics[k + '__skew'] = round(v.skewness, 6)
+                if v.kurtosis is not None:
+                    csv_metrics[k + '__kurt'] = round(v.kurtosis, 6)
                 if v.min_value is not None:
                     csv_metrics[k + '__min'] = round(v.min_value, 6)
                 if v.max_value is not None:
@@ -198,6 +202,10 @@ class MetricsLogger:
                     wandb_metrics[k + "__mean"] = v.mean
                     if v.std is not None:
                         wandb_metrics[k + "__std"] = v.std
+                    if v.skewness is not None:
+                        wandb_metrics[k + "__skew"] = v.skewness
+                    if v.kurtosis is not None:
+                        wandb_metrics[k + "__kurt"] = v.kurtosis
                     if v.min_value is not None:
                         wandb_metrics[k + "__min"] = v.min_value
                     if v.max_value is not None:

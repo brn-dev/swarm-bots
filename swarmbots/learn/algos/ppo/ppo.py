@@ -7,7 +7,7 @@ import torch
 import torch.nn as nn
 from loguru import logger
 
-from swarmbots.learn.algos.base_algorithm import BaseAlgorithm, LearningRate
+from swarmbots.learn.algos.base_algorithm import BaseAlgorithm, LearningRate, _parse_bool
 from swarmbots.learn.algos.ppo.ppo_policy import BasePPOPolicy, PPOPolicy
 from swarmbots.learn.algos.ppo.ppo_rollout import PPORolloutState, collect_steps, collect_whole_episodes
 from swarmbots.learn.algos.ppo.ppo_rollout_buffer import PPOEpisode, PPORolloutBuffer, PPOSampler, PPOSamples
@@ -313,8 +313,16 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerType]):
         self.n_total_timesteps += total_steps_in_rollout
         self.n_total_iterations += 1
 
-        ep_rew = compute_summary_statistics([ep['r'] for ep in episode_infos], find_min=True, find_max=True)
-        ep_len = compute_summary_statistics([ep['l'] for ep in episode_infos], find_min=True, find_max=True)
+        ep_rew = compute_summary_statistics(
+            [ep['r'] for ep in episode_infos],
+            find_min=True, find_max=True,
+            compute_skewness=True, compute_kurtosis=True
+        )
+        ep_len = compute_summary_statistics(
+            [ep['l'] for ep in episode_infos],
+            find_min=True, find_max=True,
+            compute_skewness=True, compute_kurtosis=True
+        )
         ep_time = compute_summary_statistics([ep['t'] for ep in episode_infos])
 
         for ep_info in episode_infos:
@@ -413,11 +421,15 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerType]):
         metrics_timer = PerformanceTimer().start()
         with torch.no_grad():
             metrics: dict[str, Any] = {
-                **{k: compute_summary_statistics(v, find_max=True) for k, v in loss_metrics.get().items()},
+                **{k: compute_summary_statistics(
+                    v, find_min=True, find_max=True, compute_skewness=True, compute_kurtosis=True
+                ) for k, v in loss_metrics.get().items()},
                 'updates': n_updates,
                 'total_updates': self.n_total_updates,
                 'expl_var': explained_var,
-                'grad_norm': compute_summary_statistics(grad_norms, find_max=True) if grad_norms else 0.0,
+                'grad_norm': compute_summary_statistics(
+                    grad_norms, find_max=True, find_min=True, compute_skewness=True, compute_kurtosis=True,
+                ) if grad_norms else 0.0,
                 'grad_clip_frac': (n_grad_clipped / len(grad_norms)) if grad_norms else 0.0,
             }
 
@@ -436,16 +448,21 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerType]):
                 act_dim_sum += act_dim
                 metrics[f'act{i}'] = compute_summary_statistics(actions)
                 if hasattr(dist, "log_stds"):
-                    metrics[f'std{i}'] = compute_summary_statistics(torch.exp(dist.log_stds), find_min=True, find_max=True)
+                    metrics[f'std{i}'] = compute_summary_statistics(
+                        torch.exp(dist.log_stds), find_min=True, find_max=True,
+                        compute_skewness=True, compute_kurtosis=True
+                    )
         metrics_timer.stop()
 
         return {
             **metrics,
             'to_train_device_time': to_train_device_timer.get_duration(),
             'sampler_init_time': sampler_init_timer.get_duration(),
-            'sampling_time': compute_summary_statistics(sampling_timings),
+            'sampling_time': compute_summary_statistics(
+                sampling_timings, find_min=True, find_max=True, compute_kurtosis=True, compute_skewness=True),
             'total_sampling_time': sum(sampling_timings),
-            'update_time': compute_summary_statistics(update_timings),
+            'update_time': compute_summary_statistics(
+                update_timings, find_min=True, find_max=True, compute_kurtosis=True, compute_skewness=True),
             'total_update_time': sum(update_timings),
             'metrics_time': metrics_timer.get_duration(),
             'train_time': train_timer.get_duration(),
@@ -623,6 +640,43 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerType]):
             vf_coef = float(params)
             logger.warning(f"Setting vf_coef to {vf_coef}")
             self.vf_coef = vf_coef
+            return True
+        elif cmd in {"set_batch_size", "batch_size"}:
+            batch_size = int(params)
+            if batch_size <= 0:
+                raise ValueError(f"batch_size must be > 0, got {batch_size}")
+            logger.warning(f"Setting batch_size to {batch_size}")
+            self.batch_size = batch_size
+            return True
+        elif cmd in {"set_normalize_advantage", "normalize_advantage"}:
+            normalize_advantage = _parse_bool(params)
+            logger.warning(f"Setting normalize_advantage to {normalize_advantage}")
+            self.normalize_advantage = normalize_advantage
+            return True
+        elif cmd in {"set_gsde_prob", "set_gsde_probability", "gsde_prob"}:
+            probability = float(params)
+            if not (0.0 <= probability <= 1.0):
+                raise ValueError(f"gsde probability must be in [0, 1], got {probability}")
+            logger.warning(f"Setting gsde_reset_mode to probability={probability}")
+            self.gsde_reset_mode = GSDEProbabilityResetMode(probability=probability)
+            return True
+        elif cmd in {"set_gsde_interval", "gsde_interval"}:
+            interval = int(params)
+            if interval <= 0:
+                raise ValueError(f"gsde interval must be > 0, got {interval}")
+            logger.warning(f"Setting gsde_reset_mode to interval={interval}")
+            self.gsde_reset_mode = GSDEIntervalResetMode(interval=interval)
+            return True
+        elif cmd in {"disable_gsde_reset", "gsde_reset_off"}:
+            logger.warning("Disabling gsde_reset_mode")
+            self.gsde_reset_mode = None
+            return True
+        elif cmd in {"set_max_grad_norm", "max_grad_norm"}:
+            max_grad_norm = float(params)
+            if max_grad_norm <= 0:
+                raise ValueError(f"max_grad_norm must be > 0, got {max_grad_norm}")
+            logger.warning(f"Setting max_grad_norm to {max_grad_norm}")
+            self.max_grad_norm = max_grad_norm
             return True
         elif cmd == "set_gamma":
             gamma = float(params)

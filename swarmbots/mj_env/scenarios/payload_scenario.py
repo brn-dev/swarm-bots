@@ -42,9 +42,11 @@ class PayloadScenario(BaseScenario, abc.ABC):
             include_connectors_xpos_in_obs: bool = True,
             include_connectors_xquat_in_obs: bool = False,
             quat_rot6d_representation: bool = True,
+            reset_settle_steps: int = 0,
+            inactive_area_location: Iterable[float] | None = None,
             seed: int | None = None,
             _reset_in_init: bool = True,
-    ):
+    ) -> None:
         self.payload_type = payload_type
         self.payload_body_id: int = -1
         self.payload_size = payload_size
@@ -76,6 +78,8 @@ class PayloadScenario(BaseScenario, abc.ABC):
             connection_angle_threshold=connection_angle_threshold,
             disconnect_potential_threshold=disconnect_potential_threshold,
             force_elliptic_cone=force_elliptic_cone,
+            reset_settle_steps=reset_settle_steps,
+            inactive_area_location=inactive_area_location,
             _reset_in_init=_reset_in_init
         )
 

@@ -124,7 +124,7 @@ def main() -> None:
 
     # ===== LOAD =====
     load_path: str | None = None
-    # load_path = "runs/mat_nop_swarm_bots_bridge/2026-02-10_14-57-40/models/model_24590522_steps.pt"
+    # load_path = "runs/mat_nop_swarm_bots_bridge/2026-02-12_14-14-10/models/model_4618446_steps_stopped.pt"
 
     # ===== DEVICE =====
     use_cuda = True and torch.cuda.is_available()
@@ -221,7 +221,7 @@ def main() -> None:
     print("Initializing Policy...")
     policy = MATNOPPolicy(
         env=env,
-        local_obs_encoder_hidden_dims=[192, 192],
+        local_obs_encoder_hidden_dims=[256, 256],
         action_encoder_hidden_dims=[64],
         d_model=128,
         d_model_decoder=64,
@@ -285,10 +285,10 @@ def main() -> None:
             early_stop_epoch: Optional[int],
             metrics: dict[str, Any]
     ) -> AutomaticLearningRateUpdateResult:
-        warmup_iterations: int = 100
-        cold_lr = initial_lr / 10
+        warmup_iterations: int = 250
+        cold_lr = initial_lr / 50
 
-        if early_stop_kl_div and early_stop_kl_div > 0.1:
+        if early_stop_kl_div is not None and early_stop_kl_div > 0.1:
             state['counter'] = 0
             state['warmup'] = False
             decay_factor = np.clip(0.9 - early_stop_kl_div, 0.4, 0.8)
@@ -357,7 +357,7 @@ def main() -> None:
         gae_lambda=0.95,
         clip_range=0.2,
         target_kl=0.04,
-        max_grad_norm=2.0,
+        max_grad_norm=10.0,
         gsde_reset_mode=GSDEProbabilityResetMode(probability=1/6),
         ent_coef=1e-5,
         value_loss_fn=nn.SmoothL1Loss(),
