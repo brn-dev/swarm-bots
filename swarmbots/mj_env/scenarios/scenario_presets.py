@@ -67,6 +67,9 @@ def default_bridge(
         **kwargs
 ) -> BridgeScenario:
     scenario_kwargs = DEFAULT_KWARGS.copy()
+    scenario_kwargs.update({
+        'fell_off_bridge_reward': -2.0,
+    })
     scenario_kwargs.update(kwargs)
     return BridgeScenario(
         swarm=_resolve_swarm(swarm, unit_start_locations, randomize_unit_orientations),

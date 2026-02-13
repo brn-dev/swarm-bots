@@ -376,7 +376,13 @@ class BaseAlgorithm(abc.ABC):
         metadata_path = path.with_name(f"{path.name}.json")
         metadata_path.write_text(json.dumps(metadata, indent=2, sort_keys=True), encoding="utf-8")
 
-    def load(self, path: str | Path, *, map_location: Any | None = "cpu") -> None:
+    def load(
+            self,
+            path: str | Path,
+            *,
+            map_location: Any | None = "cpu",
+            recover_best_return_ema: bool = True
+    ) -> None:
         checkpoint = load_checkpoint(path, map_location=map_location)
         self.policy.load_state_dict(extract_policy_state_dict(checkpoint))
 
@@ -388,7 +394,8 @@ class BaseAlgorithm(abc.ABC):
             self.n_total_iterations = checkpoint.get("n_total_iterations", 0)
             self.n_total_updates = checkpoint.get("n_total_updates", 0)
             self.n_total_timesteps = checkpoint.get("n_total_timesteps", 0)
-            self._best_return_ema = checkpoint.get("best_return_ema", checkpoint.get("return_ema", None))
+            if recover_best_return_ema:
+                self._best_return_ema = checkpoint.get("best_return_ema", checkpoint.get("return_ema", None))
 
         apply_env_state(self.env, extract_env_state(checkpoint))
 

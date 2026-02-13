@@ -2,7 +2,8 @@ import csv
 from collections.abc import Collection, Iterable
 import json
 from pathlib import Path
-from typing import Any
+from datetime import datetime, timezone
+from typing import Any, Literal, Optional
 import numpy as np
 from loguru import logger
 
@@ -15,7 +16,7 @@ except Exception as e:
 from swarmbots.learn.summary_statistics import (
     SummaryStatistics,
     SummaryStatisticsFormat,
-    format_summary_statistics,
+    format_summary_statistics, NO_DATA,
 )
 
 NEWLINE_KEY = '<newline>'
@@ -72,6 +73,8 @@ class MetricsLogger:
             )
 
     def log(self, metrics: dict[str, Any]) -> None:
+        metrics.setdefault("timestamp", datetime.now(timezone.utc).isoformat(timespec="seconds"))
+
         self._log_to_console(metrics)
 
         persistence_metrics = {
@@ -107,20 +110,25 @@ class MetricsLogger:
 
         for k, v in metrics.items():
             if isinstance(v, SummaryStatistics):
-                csv_metrics[k + '__mean'] = round(v.mean, 6)
+                csv_metrics[k + '__n'] = v.n
+                csv_metrics[k + '__mean'] = self._replace_no_data(v.mean, round_ndigits=6)
                 if v.std is not None:
-                    csv_metrics[k + '__std'] = round(v.std, 6)
+                    csv_metrics[k + '__std'] = self._replace_no_data(v.std, round_ndigits=6)
                 if v.skewness is not None:
-                    csv_metrics[k + '__skew'] = round(v.skewness, 6)
+                    csv_metrics[k + '__skew'] = self._replace_no_data(v.skewness, round_ndigits=6)
                 if v.kurtosis is not None:
-                    csv_metrics[k + '__kurt'] = round(v.kurtosis, 6)
+                    csv_metrics[k + '__kurt'] = self._replace_no_data(v.kurtosis, round_ndigits=6)
                 if v.min_value is not None:
-                    csv_metrics[k + '__min'] = round(v.min_value, 6)
+                    csv_metrics[k + '__min'] = self._replace_no_data(v.min_value, round_ndigits=6)
                 if v.max_value is not None:
-                    csv_metrics[k + '__max'] = round(v.max_value, 6)
-                if v.histogram is not None:
+                    csv_metrics[k + '__max'] = self._replace_no_data(v.max_value, round_ndigits=6)
+
+                if v.histogram is not None and v.histogram is not NO_DATA:
                     csv_metrics[k + '__histogram_freqs'] = json.dumps([round(x, 6) for x in v.histogram.bin_frequencies])
                     csv_metrics[k + '__histogram_edges'] = json.dumps([round(x, 6) for x in v.histogram.bin_edges])
+                elif v.histogram is NO_DATA:
+                    csv_metrics[k + '__histogram_freqs'] = None
+                    csv_metrics[k + '__histogram_edges'] = None
             else:
                 csv_metrics[k] = v
 
@@ -199,17 +207,17 @@ class MetricsLogger:
                 if v.data:
                     wandb_metrics[k] = wandb.Histogram(v.data, num_bins=32)
                 else:
-                    wandb_metrics[k + "__mean"] = v.mean
+                    wandb_metrics[k + "__mean"] = self._replace_no_data(v.mean)
                     if v.std is not None:
-                        wandb_metrics[k + "__std"] = v.std
+                        wandb_metrics[k + "__std"] = self._replace_no_data(v.std)
                     if v.skewness is not None:
-                        wandb_metrics[k + "__skew"] = v.skewness
+                        wandb_metrics[k + "__skew"] = self._replace_no_data(v.skewness)
                     if v.kurtosis is not None:
-                        wandb_metrics[k + "__kurt"] = v.kurtosis
+                        wandb_metrics[k + "__kurt"] = self._replace_no_data(v.kurtosis)
                     if v.min_value is not None:
-                        wandb_metrics[k + "__min"] = v.min_value
+                        wandb_metrics[k + "__min"] = self._replace_no_data(v.min_value)
                     if v.max_value is not None:
-                        wandb_metrics[k + "__max"] = v.max_value
+                        wandb_metrics[k + "__max"] = self._replace_no_data(v.max_value)
 
                     if v.histogram is not None:
                         wandb_metrics[k + "__histogram_freqs"] = v.histogram.bin_frequencies
@@ -312,3 +320,11 @@ class MetricsLogger:
             return f"{value:.3f}"
 
         return str(value)
+
+    @staticmethod
+    def _replace_no_data(x: float | Literal[NO_DATA], round_ndigits: Optional[int] = None) -> Optional[float]:
+        if x is NO_DATA:
+            return None
+        if round_ndigits is not None:
+            x = round(x, round_ndigits)
+        return x
