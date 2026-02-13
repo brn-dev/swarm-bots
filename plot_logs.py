@@ -16,6 +16,7 @@ class LogSeries:
     x_values: list[float]
     y_values: dict[str, list[float]]
     y_std_values: dict[str, list[float]]
+    y_skew_values: dict[str, list[float]]
     y_min_values: dict[str, list[float]]
     y_max_values: dict[str, list[float]]
 
@@ -178,11 +179,19 @@ def load_log(
     delimiter: str,
     min_mapping: dict[str, str | None] | None = None,
     max_mapping: dict[str, str | None] | None = None,
+    skew_mapping: dict[str, str | None] | None = None,
 ) -> LogSeries:
     x_values: list[float] = []
     y_values: dict[str, list[float]] = {column: [] for column in y_columns}
     y_std_values: dict[str, list[float]] = {
         column: [] for column in y_columns if std_mapping[column] is not None
+    }
+    resolved_skew_mapping = {column: None for column in y_columns}
+    if skew_mapping:
+        for column in y_columns:
+            resolved_skew_mapping[column] = skew_mapping.get(column)
+    y_skew_values: dict[str, list[float]] = {
+        column: [] for column in y_columns if resolved_skew_mapping[column] is not None
     }
     resolved_min_mapping = {column: None for column in y_columns}
     if min_mapping:
@@ -206,6 +215,9 @@ def load_log(
         for std_column in std_mapping.values():
             if std_column is not None:
                 required_columns.append(std_column)
+        for skew_column in resolved_skew_mapping.values():
+            if skew_column is not None:
+                required_columns.append(skew_column)
         for min_column in resolved_min_mapping.values():
             if min_column is not None:
                 required_columns.append(min_column)
@@ -227,6 +239,11 @@ def load_log(
                     y_std_values[column].append(
                         parse_scalar(row.get(std_column), std_column, path, row_index)
                     )
+                skew_column = resolved_skew_mapping[column]
+                if skew_column is not None:
+                    y_skew_values[column].append(
+                        parse_scalar(row.get(skew_column), skew_column, path, row_index)
+                    )
                 min_column = resolved_min_mapping[column]
                 if min_column is not None:
                     y_min_values[column].append(
@@ -242,6 +259,7 @@ def load_log(
         x_values=x_values,
         y_values=y_values,
         y_std_values=y_std_values,
+        y_skew_values=y_skew_values,
         y_min_values=y_min_values,
         y_max_values=y_max_values,
     )

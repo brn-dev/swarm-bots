@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import csv
+import json
 import math
 import sys
 from dataclasses import dataclass
@@ -9,7 +10,7 @@ from pathlib import Path
 from typing import Callable, Sequence
 
 import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
+from tkinter import colorchooser, filedialog, messagebox, ttk
 
 import matplotlib
 
@@ -24,6 +25,8 @@ if str(REPO_ROOT) not in sys.path:
 
 import plot_logs
 
+STATE_PATH = Path(__file__).resolve().with_name(".plot_logs_interactive_paths.json")
+
 
 @dataclass(slots=True)
 class PlotRow:
@@ -34,6 +37,8 @@ class PlotRow:
     height_entry: ttk.Entry
     std_var: tk.BooleanVar
     std_check: ttk.Checkbutton
+    skew_var: tk.BooleanVar
+    skew_check: ttk.Checkbutton
     min_var: tk.BooleanVar
     min_check: ttk.Checkbutton
     max_var: tk.BooleanVar
@@ -92,8 +97,6 @@ PLOT_PRESETS: tuple[PlotPreset, ...] = (
             PresetEntry("clip_frac__mean", 1.0, True),
             PresetEntry("ratio__std", 1.0, False),
             PresetEntry("expl_var", 1.0, False),
-            PresetEntry("grad_norm__mean", 1.0, True),
-            PresetEntry("grad_clip_frac", 1.0, False),
             PresetEntry("learning_rate", 1.0, False),
         ),
     ),
@@ -106,6 +109,7 @@ PLOT_PRESETS: tuple[PlotPreset, ...] = (
             PresetEntry("ent_loss__mean", 1.0, True),
             PresetEntry("grad_norm__mean", 1.0, True),
             PresetEntry("grad_clip_frac", 1.0, False),
+            PresetEntry("learning_rate", 1.0, False),
         ),
     ),
     PlotPreset(
@@ -389,6 +393,10 @@ class PlotLogsInteractiveApp:
         self.line_alpha_var = tk.DoubleVar(value=1.0)
         self.line_width_var = tk.DoubleVar(value=0.75)
         self.dark_mode_var = tk.BooleanVar(value=True)
+        self.file_opacity_var = tk.StringVar(value="1.0")
+        self.file_opacity_by_path: dict[Path, float] = {}
+        self.file_color_var = tk.StringVar(value="")
+        self.file_color_by_path: dict[Path, str] = {}
         self.light_figure_palette = {
             "figure_face": matplotlib.rcParams["figure.facecolor"],
             "axes_face": matplotlib.rcParams["axes.facecolor"],
@@ -428,24 +436,68 @@ class PlotLogsInteractiveApp:
 
         files_buttons = ttk.Frame(files_frame)
         files_buttons.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(6, 0))
+        files_buttons.columnconfigure(0, weight=1, uniform="files_buttons")
+        files_buttons.columnconfigure(1, weight=1, uniform="files_buttons")
         add_button = ttk.Button(files_buttons, text="Add CSV Files", command=self.add_files)
         add_button.grid(row=0, column=0, sticky="ew", padx=(0, 4))
         remove_button = ttk.Button(files_buttons, text="Remove Selected", command=self.remove_selected_files)
         remove_button.grid(row=0, column=1, sticky="ew")
         refresh_button = ttk.Button(files_buttons, text="Refresh Columns", command=self.refresh_columns)
-        refresh_button.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(4, 0))
+        refresh_button.grid(row=1, column=0, sticky="ew", padx=(0, 4), pady=(4, 0))
+        load_button = ttk.Button(files_buttons, text="Load Saved", command=self.load_saved_paths)
+        load_button.grid(row=1, column=1, sticky="ew", pady=(4, 0))
+        move_up_button = ttk.Button(files_buttons, text="Move Up", command=lambda: self.move_selected_files(-1))
+        move_up_button.grid(row=2, column=0, sticky="ew", padx=(0, 4), pady=(4, 0))
+        move_down_button = ttk.Button(files_buttons, text="Move Down", command=lambda: self.move_selected_files(1))
+        move_down_button.grid(row=2, column=1, sticky="ew", pady=(4, 0))
 
-        group_frame = ttk.Frame(files_frame)
-        group_frame.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(6, 0))
-        group_frame.columnconfigure(1, weight=0)
+        meta_frame = ttk.Frame(files_frame)
+        meta_frame.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        meta_frame.columnconfigure(1, weight=1)
 
-        ttk.Label(group_frame, text="Group").grid(row=0, column=0, sticky="w")
-        group_entry = ttk.Entry(group_frame, textvariable=self.group_var, width=7)
-        group_entry.grid(row=0, column=1, sticky="w", padx=(6, 6))
-        set_group_button = ttk.Button(group_frame, text="Set", width=5, command=self.set_group_for_selection)
+        ttk.Label(meta_frame, text="Group").grid(row=0, column=0, sticky="w")
+        group_entry = ttk.Entry(meta_frame, textvariable=self.group_var)
+        group_entry.grid(row=0, column=1, sticky="ew", padx=(6, 6))
+        set_group_button = ttk.Button(meta_frame, text="Set", width=5, command=self.set_group_for_selection)
         set_group_button.grid(row=0, column=2, sticky="w")
-        clear_group_button = ttk.Button(group_frame, text="Clear", width=5, command=self.clear_group_for_selection)
+        clear_group_button = ttk.Button(meta_frame, text="Clear", width=5, command=self.clear_group_for_selection)
         clear_group_button.grid(row=0, column=3, sticky="w", padx=(6, 0))
+
+        ttk.Label(meta_frame, text="Opacity").grid(row=1, column=0, sticky="w", pady=(6, 0))
+        opacity_entry = ttk.Entry(meta_frame, textvariable=self.file_opacity_var)
+        opacity_entry.grid(row=1, column=1, sticky="ew", padx=(6, 6), pady=(6, 0))
+        set_opacity_button = ttk.Button(
+            meta_frame,
+            text="Set",
+            width=5,
+            command=self.set_opacity_for_selection,
+        )
+        set_opacity_button.grid(row=1, column=2, sticky="w", pady=(6, 0))
+        reset_opacity_button = ttk.Button(
+            meta_frame,
+            text="Reset",
+            width=5,
+            command=lambda: self.set_opacity_for_selection(reset=True),
+        )
+        reset_opacity_button.grid(row=1, column=3, sticky="w", padx=(6, 0), pady=(6, 0))
+
+        ttk.Label(meta_frame, text="Color").grid(row=2, column=0, sticky="w", pady=(6, 0))
+        color_entry = ttk.Entry(meta_frame, textvariable=self.file_color_var)
+        color_entry.grid(row=2, column=1, sticky="ew", padx=(6, 6), pady=(6, 0))
+        pick_color_button = ttk.Button(
+            meta_frame,
+            text="Pick",
+            width=5,
+            command=self.pick_color_for_selection,
+        )
+        pick_color_button.grid(row=2, column=2, sticky="w", pady=(6, 0))
+        clear_color_button = ttk.Button(
+            meta_frame,
+            text="Clear",
+            width=5,
+            command=lambda: self.set_color_for_selection(reset=True),
+        )
+        clear_color_button.grid(row=2, column=3, sticky="w", padx=(6, 0), pady=(6, 0))
 
         settings_frame = ttk.LabelFrame(controls_frame, text="Settings")
         settings_frame.grid(row=1, column=0, sticky="ew", pady=(0, 8))
@@ -504,14 +556,16 @@ class PlotLogsInteractiveApp:
         self.plots_container.columnconfigure(4, weight=0)
         self.plots_container.columnconfigure(5, weight=0)
         self.plots_container.columnconfigure(6, weight=0)
+        self.plots_container.columnconfigure(7, weight=0)
 
         ttk.Label(self.plots_container, text="#").grid(row=0, column=0, sticky="w")
         ttk.Label(self.plots_container, text="Y Column").grid(row=0, column=1, sticky="w", padx=(10, 4))
         ttk.Label(self.plots_container, text="Height").grid(row=0, column=2, sticky="w", padx=(6, 4))
-        ttk.Label(self.plots_container, text="STD").grid(row=0, column=3, sticky="w", padx=(6, 4))
-        ttk.Label(self.plots_container, text="Min").grid(row=0, column=4, sticky="w", padx=(6, 4))
-        ttk.Label(self.plots_container, text="Max").grid(row=0, column=5, sticky="w", padx=(6, 4))
-        ttk.Label(self.plots_container, text="").grid(row=0, column=6, sticky="w", padx=(6, 4))
+        ttk.Label(self.plots_container, text="STD").grid(row=0, column=3, sticky="w", padx=(2, 2))
+        ttk.Label(self.plots_container, text="Skew").grid(row=0, column=4, sticky="w", padx=(2, 2))
+        ttk.Label(self.plots_container, text="Min").grid(row=0, column=5, sticky="w", padx=(2, 2))
+        ttk.Label(self.plots_container, text="Max").grid(row=0, column=6, sticky="w", padx=(2, 2))
+        ttk.Label(self.plots_container, text="").grid(row=0, column=7, sticky="w", padx=(6, 4))
 
         plots_buttons = ttk.Frame(plots_frame)
         plots_buttons.grid(row=1, column=0, sticky="ew", pady=(6, 0))
@@ -519,17 +573,29 @@ class PlotLogsInteractiveApp:
         add_plot_button.grid(row=0, column=0, sticky="ew", padx=(0, 4))
         clear_plot_button = ttk.Button(plots_buttons, text="Clear Plots", command=self.clear_plot_rows)
         clear_plot_button.grid(row=0, column=1, sticky="ew")
+        self.toggle_std_button = ttk.Button(
+            self.plots_container,
+            text="All",
+            command=self.toggle_all_std,
+            width=3,
+        )
+        self.toggle_skew_button = ttk.Button(
+            self.plots_container,
+            text="All",
+            command=self.toggle_all_skew,
+            width=3,
+        )
         self.toggle_min_button = ttk.Button(
             self.plots_container,
             text="All",
             command=self.toggle_all_min,
-            width=4,
+            width=3,
         )
         self.toggle_max_button = ttk.Button(
             self.plots_container,
             text="All",
             command=self.toggle_all_max,
-            width=4,
+            width=3,
         )
 
         if PLOT_PRESETS:
@@ -578,8 +644,11 @@ class PlotLogsInteractiveApp:
             path = Path(filename).resolve()
             if path not in self.paths:
                 self.paths.append(path)
+            self.file_opacity_by_path.setdefault(path, 1.0)
+            self.file_color_by_path.setdefault(path, "")
         self.refresh_file_list()
         self.refresh_columns()
+        self.save_selected_paths()
 
     def remove_selected_files(self) -> None:
         selected_indices = list(self.files_listbox.curselection())
@@ -587,9 +656,12 @@ class PlotLogsInteractiveApp:
             return
         for index in sorted(selected_indices, reverse=True):
             self.path_groups.pop(self.paths[index], None)
+            self.file_opacity_by_path.pop(self.paths[index], None)
+            self.file_color_by_path.pop(self.paths[index], None)
             del self.paths[index]
         self.refresh_file_list()
         self.refresh_columns()
+        self.save_selected_paths()
 
     def refresh_file_list(self) -> None:
         self.files_listbox.delete(0, tk.END)
@@ -599,24 +671,88 @@ class PlotLogsInteractiveApp:
 
     def display_path(self, path: Path) -> str:
         group = self.path_groups.get(path)
+        opacity = self.opacity_for_path(path)
+        color = self.file_color_by_path.get(path, "")
         try:
             display = str(path.relative_to(REPO_ROOT))
         except ValueError:
             display = str(path)
+        parts: list[str] = []
         if group:
-            return f"[{group}] {display}"
+            parts.append(f"[{group}]")
+        if not math.isclose(opacity, 1.0):
+            parts.append(f"[α={self.format_opacity(opacity)}]")
+        if color:
+            parts.append(f"[c={color}]")
+        if parts:
+            return f"{' '.join(parts)} {display}"
         return display
+
+    def format_opacity(self, value: float) -> str:
+        text = f"{value:.2f}"
+        return text.rstrip("0").rstrip(".")
+
+    def opacity_for_path(self, path: Path) -> float:
+        value = self.file_opacity_by_path.get(path, 1.0)
+        return max(0.0, min(1.0, value))
 
     def on_file_selection(self, _event: tk.Event | None) -> None:
         selected_indices = list(self.files_listbox.curselection())
         if not selected_indices:
             self.group_var.set("")
+            self.file_opacity_var.set("")
+            self.file_color_var.set("")
             return
         groups = {self.path_groups.get(self.paths[index], "") for index in selected_indices}
         if len(groups) == 1:
             self.group_var.set(groups.pop())
         else:
             self.group_var.set("")
+        opacities = {
+            self.opacity_for_path(self.paths[index]) for index in selected_indices
+        }
+        if len(opacities) == 1:
+            self.file_opacity_var.set(self.format_opacity(opacities.pop()))
+        else:
+            self.file_opacity_var.set("")
+        colors = {
+            self.file_color_by_path.get(self.paths[index], "") for index in selected_indices
+        }
+        colors.discard("")
+        if len(colors) == 1:
+            self.file_color_var.set(colors.pop())
+        else:
+            self.file_color_var.set("")
+
+    def move_selected_files(self, direction: int) -> None:
+        if direction not in {-1, 1}:
+            return
+        selected_indices = list(self.files_listbox.curselection())
+        if not selected_indices:
+            return
+        selected_set = set(selected_indices)
+        if direction < 0:
+            for index in range(1, len(self.paths)):
+                if index in selected_set and (index - 1) not in selected_set:
+                    self.paths[index - 1], self.paths[index] = (
+                        self.paths[index],
+                        self.paths[index - 1],
+                    )
+                    selected_set.remove(index)
+                    selected_set.add(index - 1)
+        else:
+            for index in range(len(self.paths) - 2, -1, -1):
+                if index in selected_set and (index + 1) not in selected_set:
+                    self.paths[index + 1], self.paths[index] = (
+                        self.paths[index],
+                        self.paths[index + 1],
+                    )
+                    selected_set.remove(index)
+                    selected_set.add(index + 1)
+        self.refresh_file_list()
+        for index in sorted(selected_set):
+            self.files_listbox.selection_set(index)
+        self.save_selected_paths()
 
     def set_group_for_selection(self) -> None:
         selected_indices = list(self.files_listbox.curselection())
@@ -631,6 +767,7 @@ class PlotLogsInteractiveApp:
         self.refresh_file_list()
         for index in selected_indices:
             self.files_listbox.selection_set(index)
+        self.save_selected_paths()
 
     def clear_group_for_selection(self) -> None:
         selected_indices = list(self.files_listbox.curselection())
@@ -642,6 +779,166 @@ class PlotLogsInteractiveApp:
         self.refresh_file_list()
         for index in selected_indices:
             self.files_listbox.selection_set(index)
+        self.save_selected_paths()
+
+    def set_opacity_for_selection(self, reset: bool = False) -> None:
+        selected_indices = list(self.files_listbox.curselection())
+        if not selected_indices:
+            self.show_error("Select at least one file to set opacity.")
+            return
+        if reset:
+            opacity = 1.0
+        else:
+            raw_value = self.file_opacity_var.get().strip()
+            if not raw_value:
+                self.show_error("Opacity cannot be empty.")
+                return
+            try:
+                opacity = float(raw_value)
+            except ValueError:
+                self.show_error("Opacity must be a number between 0 and 1.")
+                return
+            if not (0.0 <= opacity <= 1.0):
+                self.show_error("Opacity must be between 0 and 1.")
+                return
+        for index in selected_indices:
+            self.file_opacity_by_path[self.paths[index]] = opacity
+        self.refresh_file_list()
+        for index in selected_indices:
+            self.files_listbox.selection_set(index)
+        self.save_selected_paths()
+
+    def set_color_for_selection(self, reset: bool = False, color: str | None = None) -> None:
+        selected_indices = list(self.files_listbox.curselection())
+        if not selected_indices:
+            self.show_error("Select at least one file to set color.")
+            return
+        if reset:
+            color_value = ""
+        else:
+            raw_value = color or self.file_color_var.get().strip()
+            if not raw_value:
+                self.show_error("Color cannot be empty.")
+                return
+            color_value = raw_value.lower()
+            if not self.is_valid_color(color_value):
+                self.show_error("Color must be a hex value like #RRGGBB.")
+                return
+        for index in selected_indices:
+            if color_value:
+                self.file_color_by_path[self.paths[index]] = color_value
+            else:
+                self.file_color_by_path.pop(self.paths[index], None)
+        self.refresh_file_list()
+        for index in selected_indices:
+            self.files_listbox.selection_set(index)
+        self.save_selected_paths()
+
+    def pick_color_for_selection(self) -> None:
+        initial = self.file_color_var.get().strip()
+        if not self.is_valid_color(initial):
+            initial = None
+        _rgb, hex_value = colorchooser.askcolor(color=initial, title="Pick line color")
+        if not hex_value:
+            return
+        self.file_color_var.set(hex_value)
+        self.set_color_for_selection(color=hex_value)
+
+    def is_valid_color(self, value: str | None) -> bool:
+        if not value:
+            return False
+        if not value.startswith("#") or len(value) != 7:
+            return False
+        return all(char in "0123456789abcdefABCDEF" for char in value[1:])
+
+    def save_selected_paths(self) -> None:
+        payload: list[dict[str, str | float]] = []
+        for path in self.paths:
+            try:
+                stored_path = str(path.relative_to(REPO_ROOT))
+            except ValueError:
+                stored_path = str(path)
+            payload.append(
+                {
+                    "path": stored_path,
+                    "group": self.path_groups.get(path, ""),
+                    "opacity": self.opacity_for_path(path),
+                    "color": self.file_color_by_path.get(path, ""),
+                }
+            )
+        try:
+            STATE_PATH.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        except OSError as exc:
+            self.show_error(f"Failed to save selected paths: {exc}")
+
+    def load_saved_paths(self) -> None:
+        if not STATE_PATH.exists():
+            self.set_status("No saved paths found.")
+            return
+        try:
+            payload = json.loads(STATE_PATH.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            self.show_error(f"Failed to load saved paths: {exc}")
+            return
+        if not isinstance(payload, list):
+            self.show_error("Saved paths file is invalid.")
+            return
+        loaded_paths: list[Path] = []
+        loaded_groups: dict[Path, str] = {}
+        loaded_opacities: dict[Path, float] = {}
+        loaded_colors: dict[Path, str] = {}
+        missing_paths: list[str] = []
+        for entry in payload:
+            if not isinstance(entry, dict):
+                continue
+            raw_path = entry.get("path")
+            if not isinstance(raw_path, str) or not raw_path:
+                continue
+            group = entry.get("group")
+            group_value = group if isinstance(group, str) else ""
+            opacity_value = entry.get("opacity")
+            opacity = 1.0
+            if isinstance(opacity_value, (int, float)):
+                opacity = float(opacity_value)
+            elif isinstance(opacity_value, str):
+                try:
+                    opacity = float(opacity_value)
+                except ValueError:
+                    opacity = 1.0
+            color_value = entry.get("color")
+            color = color_value if isinstance(color_value, str) else ""
+            candidate = Path(raw_path)
+            if not candidate.is_absolute():
+                candidate = (REPO_ROOT / candidate).resolve()
+            if candidate.exists():
+                if candidate not in loaded_paths:
+                    loaded_paths.append(candidate)
+                if group_value:
+                    loaded_groups[candidate] = group_value
+                if 0.0 <= opacity <= 1.0:
+                    loaded_opacities[candidate] = opacity
+                if self.is_valid_color(color):
+                    loaded_colors[candidate] = color.lower()
+            else:
+                missing_paths.append(raw_path)
+        self.paths = loaded_paths
+        self.path_groups = loaded_groups
+        self.file_opacity_by_path = loaded_opacities
+        self.file_color_by_path = loaded_colors
+        self.refresh_file_list()
+        self.refresh_columns()
+        if not loaded_paths:
+            if missing_paths:
+                self.set_status("Saved paths missing on disk.")
+            else:
+                self.set_status("No saved paths available.")
+            return
+        if missing_paths:
+            self.set_status(
+                f"Loaded {len(loaded_paths)} saved paths. Missing {len(missing_paths)}."
+            )
+        else:
+            self.set_status(f"Loaded {len(loaded_paths)} saved paths.")
 
     def refresh_columns(self) -> None:
         if not self.paths:
@@ -702,6 +999,8 @@ class PlotLogsInteractiveApp:
             row.y_combo.set("")
             row.std_var.set(False)
             row.std_check.state(["disabled"])
+            row.skew_var.set(False)
+            row.skew_check.state(["disabled"])
             row.min_var.set(False)
             row.min_check.state(["disabled"])
             row.max_var.set(False)
@@ -722,19 +1021,23 @@ class PlotLogsInteractiveApp:
         height_entry.grid(row=row_index, column=2, sticky="w", padx=(6, 4), pady=2)
 
         std_var = tk.BooleanVar(value=False)
-        std_check = ttk.Checkbutton(self.plots_container, text="Use", variable=std_var)
-        std_check.grid(row=row_index, column=3, sticky="w", padx=(6, 4), pady=2)
+        std_check = ttk.Checkbutton(self.plots_container, text="", variable=std_var, padding=0)
+        std_check.grid(row=row_index, column=3, padx=(2, 2), pady=2)
+
+        skew_var = tk.BooleanVar(value=False)
+        skew_check = ttk.Checkbutton(self.plots_container, text="", variable=skew_var, padding=0)
+        skew_check.grid(row=row_index, column=4, padx=(2, 2), pady=2)
 
         min_var = tk.BooleanVar(value=False)
-        min_check = ttk.Checkbutton(self.plots_container, text="Use", variable=min_var)
-        min_check.grid(row=row_index, column=4, sticky="w", padx=(6, 4), pady=2)
+        min_check = ttk.Checkbutton(self.plots_container, text="", variable=min_var, padding=0)
+        min_check.grid(row=row_index, column=5, padx=(2, 2), pady=2)
 
         max_var = tk.BooleanVar(value=False)
-        max_check = ttk.Checkbutton(self.plots_container, text="Use", variable=max_var)
-        max_check.grid(row=row_index, column=5, sticky="w", padx=(6, 4), pady=2)
+        max_check = ttk.Checkbutton(self.plots_container, text="", variable=max_var, padding=0)
+        max_check.grid(row=row_index, column=6, padx=(2, 2), pady=2)
 
-        remove_button = ttk.Button(self.plots_container, text="Remove")
-        remove_button.grid(row=row_index, column=6, sticky="e", pady=2)
+        remove_button = ttk.Button(self.plots_container, text="🗑️", width=2)
+        remove_button.grid(row=row_index, column=7, sticky="e", pady=2)
 
         row = PlotRow(
             index_label=index_label,
@@ -744,6 +1047,8 @@ class PlotLogsInteractiveApp:
             height_entry=height_entry,
             std_var=std_var,
             std_check=std_check,
+            skew_var=skew_var,
+            skew_check=skew_check,
             min_var=min_var,
             min_check=min_check,
             max_var=max_var,
@@ -769,6 +1074,19 @@ class PlotLogsInteractiveApp:
             else:
                 row.std_var.set(desired)
 
+    def update_skew_checkbox(self, row: PlotRow, desired: bool | None = None) -> None:
+        y_value = row.y_combo.get()
+        candidate = self.skew_column_for(y_value)
+        if candidate is None:
+            row.skew_var.set(False)
+            row.skew_check.state(["disabled"])
+        else:
+            row.skew_check.state(["!disabled"])
+            if desired is None:
+                row.skew_var.set(False)
+            else:
+                row.skew_var.set(desired)
+
     def update_minmax_checkboxes(
         self,
         row: PlotRow,
@@ -782,10 +1100,12 @@ class PlotLogsInteractiveApp:
         self,
         row: PlotRow,
         desired_std: bool | None = None,
+        desired_skew: bool | None = None,
         desired_min: bool | None = None,
         desired_max: bool | None = None,
     ) -> None:
         self.update_std_checkbox(row, desired=desired_std)
+        self.update_skew_checkbox(row, desired=desired_skew)
         self.update_min_checkbox(row, desired=desired_min)
         self.update_max_checkbox(row, desired=desired_max)
 
@@ -793,6 +1113,14 @@ class PlotLogsInteractiveApp:
         if not y_value or not y_value.endswith("__mean"):
             return None
         candidate = f"{y_value.removesuffix('__mean')}__std"
+        if candidate in self.available_columns:
+            return candidate
+        return None
+
+    def skew_column_for(self, y_value: str) -> str | None:
+        if not y_value or not y_value.endswith("__mean"):
+            return None
+        candidate = f"{y_value.removesuffix('__mean')}__skew"
         if candidate in self.available_columns:
             return candidate
         return None
@@ -967,6 +1295,7 @@ class PlotLogsInteractiveApp:
             row.y_combo,
             row.height_entry,
             row.std_check,
+            row.skew_check,
             row.min_check,
             row.max_check,
             row.remove_button,
@@ -983,6 +1312,7 @@ class PlotLogsInteractiveApp:
                 row.y_combo,
                 row.height_entry,
                 row.std_check,
+                row.skew_check,
                 row.min_check,
                 row.max_check,
                 row.remove_button,
@@ -1041,12 +1371,31 @@ class PlotLogsInteractiveApp:
             row.y_combo.grid_configure(row=index, column=1)
             row.height_entry.grid_configure(row=index, column=2)
             row.std_check.grid_configure(row=index, column=3)
-            row.min_check.grid_configure(row=index, column=4)
-            row.max_check.grid_configure(row=index, column=5)
-            row.remove_button.grid_configure(row=index, column=6)
+            row.skew_check.grid_configure(row=index, column=4)
+            row.min_check.grid_configure(row=index, column=5)
+            row.max_check.grid_configure(row=index, column=6)
+            row.remove_button.grid_configure(row=index, column=7)
         footer_row = len(self.plot_rows) + 1
-        self.toggle_min_button.grid(row=footer_row, column=4, pady=(4, 0))
-        self.toggle_max_button.grid(row=footer_row, column=5, pady=(4, 0))
+        self.toggle_std_button.grid(row=footer_row, column=3, pady=(4, 0))
+        self.toggle_skew_button.grid(row=footer_row, column=4, pady=(4, 0))
+        self.toggle_min_button.grid(row=footer_row, column=5, pady=(4, 0))
+        self.toggle_max_button.grid(row=footer_row, column=6, pady=(4, 0))
+
+    def toggle_all_std(self) -> None:
+        desired = not any(
+            row.std_var.get()
+            for row in self.plot_rows
+            if self.std_column_for(row.y_combo.get()) is not None
+        )
+        self.set_all_std(desired)
+
+    def toggle_all_skew(self) -> None:
+        desired = not any(
+            row.skew_var.get()
+            for row in self.plot_rows
+            if self.skew_column_for(row.y_combo.get()) is not None
+        )
+        self.set_all_skew(desired)
 
     def toggle_all_min(self) -> None:
         desired = not any(
@@ -1071,6 +1420,14 @@ class PlotLogsInteractiveApp:
     def set_all_max(self, enabled: bool) -> None:
         for row in self.plot_rows:
             self.update_max_checkbox(row, desired=enabled)
+
+    def set_all_std(self, enabled: bool) -> None:
+        for row in self.plot_rows:
+            self.update_std_checkbox(row, desired=enabled)
+
+    def set_all_skew(self, enabled: bool) -> None:
+        for row in self.plot_rows:
+            self.update_skew_checkbox(row, desired=enabled)
 
     def group_keys_for_labels(self, labels: Sequence[str]) -> list[str]:
         return [
@@ -1148,9 +1505,10 @@ class PlotLogsInteractiveApp:
         scalar_columns = [column for column in y_columns if column not in histogram_specs]
         scalar_column_set = set(scalar_columns)
         std_mapping: dict[str, str | None] = {column: None for column in scalar_columns}
+        skew_mapping: dict[str, str | None] = {column: None for column in scalar_columns}
         min_mapping: dict[str, str | None] = {column: None for column in scalar_columns}
         max_mapping: dict[str, str | None] = {column: None for column in scalar_columns}
-        for row in self.plot_rows:
+        for index, row in enumerate(self.plot_rows, start=1):
             y_value = row.y_combo.get()
             if not y_value or y_value not in scalar_column_set:
                 continue
@@ -1160,6 +1518,12 @@ class PlotLogsInteractiveApp:
                     self.show_error(f"No std column found for {y_value}.")
                     return
                 std_mapping[y_value] = std_column
+            if row.skew_var.get():
+                skew_column = self.skew_column_for(y_value)
+                if skew_column is None:
+                    self.show_error(f"No skew column found for {y_value}.")
+                    return
+                skew_mapping[y_value] = skew_column
             if row.min_var.get():
                 min_column = self.min_column_for(y_value)
                 if min_column is None:
@@ -1174,6 +1538,8 @@ class PlotLogsInteractiveApp:
                 max_mapping[y_value] = max_column
 
         labels = plot_logs.build_labels(self.paths, None)
+        file_opacities = [self.opacity_for_path(path) for path in self.paths]
+        file_colors = [self.file_color_by_path.get(path, "") for path in self.paths]
         group_keys: list[str] | None = None
         logs: list[plot_logs.LogSeries] = []
         if scalar_columns:
@@ -1186,6 +1552,7 @@ class PlotLogsInteractiveApp:
                         scalar_columns,
                         std_mapping,
                         delimiter,
+                        skew_mapping=skew_mapping,
                         min_mapping=min_mapping,
                         max_mapping=max_mapping,
                     )
@@ -1221,11 +1588,14 @@ class PlotLogsInteractiveApp:
             x_column=x_column,
             y_columns=y_columns,
             std_mapping=std_mapping,
+            skew_mapping=skew_mapping,
             min_mapping=min_mapping,
             max_mapping=max_mapping,
             ratios=ratios or None,
             title=title,
             group_keys=group_keys,
+            file_opacities=file_opacities,
+            file_colors=file_colors,
         )
         self.apply_line_opacity(figure, self.line_alpha_var.get())
         self.apply_line_width(figure, self.line_width_var.get())
@@ -1243,11 +1613,14 @@ class PlotLogsInteractiveApp:
         x_column: str,
         y_columns: Sequence[str],
         std_mapping: dict[str, str | None],
+        skew_mapping: dict[str, str | None],
         min_mapping: dict[str, str | None],
         max_mapping: dict[str, str | None],
         ratios: Sequence[float] | None,
         title: str | None,
         group_keys: Sequence[str] | None,
+        file_opacities: Sequence[float] | None,
+        file_colors: Sequence[str] | None,
     ) -> plt.Figure:
         base_ratios = list(ratios) if ratios is not None else [1.0] * len(y_columns)
         axis_specs: list[tuple[str, HistogramSeries | None, float]] = []
@@ -1274,6 +1647,10 @@ class PlotLogsInteractiveApp:
             axes = [axes]
         if group_keys is None:
             group_keys = [log.label for log in logs]
+        if file_opacities is None or len(file_opacities) != len(logs):
+            file_opacities = [1.0] * len(logs)
+        if file_colors is None or len(file_colors) != len(logs):
+            file_colors = [""] * len(logs)
         group_color_map = self.group_color_map(group_keys) if logs else {}
         hist_ranges = {
             column: histogram_value_range(series_list)
@@ -1284,14 +1661,26 @@ class PlotLogsInteractiveApp:
         first_scalar_axis: plt.Axes | None = None
         for axis, (column, series, _ratio) in zip(axes, axis_specs, strict=True):
             if series is None:
-                for log, group_key in zip(logs, group_keys, strict=True):
-                    color = group_color_map.get(group_key)
+                skew_axis: plt.Axes | None = None
+                if skew_mapping.get(column) is not None:
+                    skew_axis = axis.twinx()
+                    skew_axis.set_ylabel("skew")
+                    skew_axis.grid(False)
+                for log, group_key, base_alpha, file_color in zip(
+                    logs,
+                    group_keys,
+                    file_opacities,
+                    file_colors,
+                    strict=True,
+                ):
+                    color = file_color or group_color_map.get(group_key)
                     line = axis.plot(
                         log.x_values,
                         log.y_values[column],
                         label=log.label,
                         color=color,
                     )[0]
+                    line._plot_alpha_base = base_alpha
                     std_column = std_mapping.get(column)
                     if std_column is not None:
                         std_values = log.y_std_values.get(column)
@@ -1316,31 +1705,44 @@ class PlotLogsInteractiveApp:
                                 log.x_values,
                                 lower,
                                 upper,
-                                alpha=0.2,
+                                alpha=0.2 * base_alpha,
                                 color=line.get_color(),
                             )
+                    if skew_axis is not None:
+                        skew_values = log.y_skew_values.get(column)
+                        if skew_values:
+                            skew_line = skew_axis.plot(
+                                log.x_values,
+                                skew_values,
+                                color=line.get_color(),
+                                linestyle="-.",
+                                label="_skew",
+                            )[0]
+                            skew_line._plot_alpha_base = base_alpha
                     min_column = min_mapping.get(column)
                     if min_column is not None:
                         min_values = log.y_min_values.get(column)
                         if min_values:
-                            axis.plot(
+                            min_line = axis.plot(
                                 log.x_values,
                                 min_values,
                                 color=line.get_color(),
                                 linestyle="--",
                                 label="_min",
-                            )
+                            )[0]
+                            min_line._plot_alpha_base = base_alpha
                     max_column = max_mapping.get(column)
                     if max_column is not None:
                         max_values = log.y_max_values.get(column)
                         if max_values:
-                            axis.plot(
+                            max_line = axis.plot(
                                 log.x_values,
                                 max_values,
                                 color=line.get_color(),
                                 linestyle=":",
                                 label="_max",
-                            )
+                            )[0]
+                            max_line._plot_alpha_base = base_alpha
                 axis.set_ylabel(column)
                 axis.grid(alpha=0.3)
                 if first_scalar_axis is None:
@@ -1413,7 +1815,8 @@ class PlotLogsInteractiveApp:
         clamped = max(0.0, min(1.0, alpha))
         for axis in figure.get_axes():
             for line in axis.get_lines():
-                line.set_alpha(clamped)
+                base_alpha = getattr(line, "_plot_alpha_base", 1.0)
+                line.set_alpha(clamped * base_alpha)
 
     def apply_line_width(self, figure: plt.Figure, width: float) -> None:
         clamped = max(0.1, width)
