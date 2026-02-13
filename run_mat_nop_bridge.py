@@ -107,7 +107,7 @@ def main() -> None:
         format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <5}</level> | <level>{message}</level>",
     )
 
-    n_envs = 6
+    n_envs = 23
     # unit_start_locations = [
     #     (0.0, 0.0, 0.0),
     #     (-0.6, 0, 0),
@@ -124,7 +124,7 @@ def main() -> None:
 
     # ===== LOAD =====
     load_path: str | None = None
-    # load_path = "runs/mat_nop_swarm_bots_bridge/2026-02-12_14-14-10/models/model_4618446_steps_stopped.pt"
+    # load_path = "runs/mat_nop_swarm_bots_bridge/2026-02-12_14-14-10/models/model_37515077_steps_stopped.pt"
 
     # ===== DEVICE =====
     use_cuda = True and torch.cuda.is_available()
@@ -370,7 +370,7 @@ def main() -> None:
 
     if load_path:
         logger.info(f"Loading model from {load_path}")
-        ppo.load(load_path)
+        ppo.load(load_path, recover_best_return_ema=False)
 
     print("Starting training...")
     ppo.learn(

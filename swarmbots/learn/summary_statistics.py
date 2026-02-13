@@ -1,9 +1,10 @@
 from dataclasses import dataclass
-from typing import Optional, Any
+from typing import Optional, Any, Literal
 
 import numpy as np
 import torch
 
+NO_DATA = object()
 
 HISTOGRAM_DEFAULT_BINS = 10
 HISTOGRAM_BLOCKS = " ▁▂▃▄▅▆▇█"
@@ -16,14 +17,14 @@ class Histogram:
 @dataclass
 class SummaryStatistics:
     n: int
-    mean: float
-    std: Optional[float] = None
-    skewness: Optional[float] = None
-    kurtosis: Optional[float] = None
-    min_value: Optional[float] = None
-    max_value: Optional[float] = None
+    mean: float | Literal[NO_DATA]
+    std: float | Literal[NO_DATA]
+    skewness: Optional[float | Literal[NO_DATA]] = None
+    kurtosis: Optional[float | Literal[NO_DATA]] = None
+    min_value: Optional[float | Literal[NO_DATA]] = None
+    max_value: Optional[float | Literal[NO_DATA]] = None
     data: Optional[np.ndarray] = None
-    histogram: Optional[Histogram] = None
+    histogram: Optional[Histogram | Literal[NO_DATA]] = None
 
 @dataclass
 class SummaryStatisticsFormat:
@@ -79,31 +80,31 @@ def format_summary_statistics(
     representation = ''
 
     if stats_format.mean:
-        representation += format(mean, stats_format.mean)
+        representation += _fmt_no_data(mean, stats_format.mean)
 
     if std is not None and stats_format.std:
-        representation += f' ± {format(std, stats_format.std)}'
+        representation += f' ± {_fmt_no_data(std, stats_format.std)}'
 
     if stats_format.skewness and summary_statistics.skewness is not None:
         if representation:
             representation += ' '
-        representation += f'skew={format(summary_statistics.skewness, stats_format.skewness)}'
+        representation += f'skew={_fmt_no_data(summary_statistics.skewness, stats_format.skewness)}'
 
     if stats_format.kurtosis and summary_statistics.kurtosis is not None:
         if representation:
             representation += ' '
-        representation += f'kurt={format(summary_statistics.kurtosis, stats_format.kurtosis)}'
+        representation += f'kurt={_fmt_no_data(summary_statistics.kurtosis, stats_format.kurtosis)}'
 
     min_val_available = min_value is not None and stats_format.min_value
     max_val_available = max_value is not None and stats_format.max_value
 
     if min_val_available and max_val_available:
-        representation += (f' [{format(min_value, stats_format.min_value)}, '
-                           f'{format(max_value, stats_format.max_value)}]')
+        representation += (f' [{_fmt_no_data(min_value, stats_format.min_value)}, '
+                           f'{_fmt_no_data(max_value, stats_format.max_value)}]')
     elif min_val_available:
-        representation += f' ≥ {format(min_value, stats_format.min_value)}'
+        representation += f' ≥ {_fmt_no_data(min_value, stats_format.min_value)}'
     elif max_val_available:
-        representation += f' ≤ {format(max_value, stats_format.max_value)}'
+        representation += f' ≤ {_fmt_no_data(max_value, stats_format.max_value)}'
 
     if stats_format.n:
         representation += f' (n={format(n, stats_format.n)})'
@@ -114,6 +115,11 @@ def format_summary_statistics(
         representation += _format_histogram_blocks(summary_statistics.histogram.bin_frequencies)
 
     return representation
+
+def _fmt_no_data(x: float | NO_DATA, fmt: str) -> str:
+    if x is NO_DATA:
+        return 'n/a'
+    return format(x, fmt)
 
 
 @torch.no_grad()
@@ -129,7 +135,13 @@ def compute_summary_statistics(
     values: np.ndarray | torch.Tensor
     if isinstance(arr, list):
         if len(arr) == 0:
-            return None
+            return _no_data_stats(
+                find_min=find_min,
+                find_max=find_max,
+                make_histogram=make_histogram,
+                compute_skewness=compute_skewness,
+                compute_kurtosis=compute_kurtosis,
+            )
         if isinstance(arr[0], SummaryStatistics):
             return combine_summary_statistics(arr, combine_data=False, combine_histograms=False)
         else:
@@ -147,7 +159,13 @@ def compute_summary_statistics(
         n = values.numel()
 
     if n == 0:
-        return None
+        return _no_data_stats(
+            find_min=find_min,
+            find_max=find_max,
+            make_histogram=make_histogram,
+            compute_skewness=compute_skewness,
+            compute_kurtosis=compute_kurtosis,
+        )
 
     mean = values.mean().item()
 
@@ -155,7 +173,19 @@ def compute_summary_statistics(
         summary_stats = SummaryStatistics(
             n=n,
             mean=mean,
+            std=0.0,
+            skewness=0.0 if compute_skewness else None,
+            kurtosis=0.0 if compute_kurtosis else None,
+            min_value=mean if find_min else None,
+            max_value=mean if find_max else None,
         )
+        if make_histogram:
+            summary_stats.histogram = _compute_histogram(
+                values,
+                min_val=summary_stats.min_value,
+                max_val=summary_stats.max_value,
+                n_bins=HISTOGRAM_DEFAULT_BINS if isinstance(make_histogram, bool) else make_histogram,
+            )
         return summary_stats
 
     summary_stats: SummaryStatistics = SummaryStatistics(
@@ -215,7 +245,13 @@ def maybe_compute_summary_statistics(
                     x.kurtosis = kurtosis
         return x
     if x is None:
-        return None
+        return _no_data_stats(
+            find_min=find_min,
+            find_max=find_max,
+            make_histogram=make_histogram,
+            compute_skewness=compute_skewness,
+            compute_kurtosis=compute_kurtosis,
+        )
     return compute_summary_statistics(
         x,
         find_min=find_min,
@@ -358,3 +394,21 @@ def combine_summary_statistics(
         raise NotImplementedError("Combining histograms is not implemented yet.")
 
     return combined
+
+def _no_data_stats(
+        find_min: bool = False,
+        find_max: bool = False,
+        make_histogram: bool | int = False,
+        compute_skewness: bool = False,
+        compute_kurtosis: bool = False,
+) -> SummaryStatistics:
+    return SummaryStatistics(
+        n=0,
+        mean=NO_DATA,
+        std=NO_DATA,
+        skewness=NO_DATA if compute_skewness else None,
+        kurtosis=NO_DATA if compute_kurtosis else None,
+        min_value=NO_DATA if find_min else None,
+        max_value=NO_DATA if find_max else None,
+        histogram=NO_DATA if make_histogram else None
+    )

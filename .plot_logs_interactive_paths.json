@@ -1,14 +1,23 @@
 [
   {
-    "path": "swarm-bots\\runs\\mat_nop_swarm_bots_bridge\\2026-02-10_14-57-40\\log.csv",
-    "group": "",
-    "opacity": 0.5,
-    "color": ""
+    "path": "swarm-bots\\runs\\mat_nop_swarm_bots_bridge\\2026-02-12_14-14-10\\log.csv",
+    "group": "1",
+    "opacity": 1.0,
+    "color": "",
+    "enabled": true
   },
   {
-    "path": "swarm-bots\\runs\\mat_nop_swarm_bots_bridge\\2026-02-12_14-14-10\\log.csv",
-    "group": "",
+    "path": "swarm-bots\\runs\\mat_nop_swarm_bots_bridge\\2026-02-12_14-14-10\\.log.csv",
+    "group": "1",
     "opacity": 1.0,
-    "color": ""
+    "color": "",
+    "enabled": true
+  },
+  {
+    "path": "swarm-bots\\runs\\mat_nop_swarm_bots_bridge\\2026-02-12_14-14-10\\..log.csv",
+    "group": "1",
+    "opacity": 1.0,
+    "color": "",
+    "enabled": true
   }
 ]
