@@ -309,11 +309,11 @@ def main() -> None:
             }
 
         clip_frac_stats: Optional[SummaryStatistics] = metrics.get('clip_frac', None)
-        if clip_frac_stats and clip_frac_stats.mean > 0.25:
+        if clip_frac_stats and clip_frac_stats.mean > 0.2:
             state['counter'] = 0
             state['warmup'] = False
             clip_frac = clip_frac_stats.mean
-            decay_factor = np.clip(1.15 - clip_frac, 0.5, 0.9)
+            decay_factor = np.clip(1.1 - clip_frac, 0.5, 0.9)
             return {
                 'new_lr': old_lr * decay_factor,
                 'msg': f'{clip_frac=:.3f}',
