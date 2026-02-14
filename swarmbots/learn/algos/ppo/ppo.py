@@ -285,7 +285,8 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerType]):
 
     def perform_iteration(
             self,
-            episode_return_ema: ExponentialMovingAverage
+            episode_return_ema: ExponentialMovingAverage,
+            update_ema: bool,
     ) -> tuple[dict[str, Any], int]:
         with PerformanceTimer() as rollout_timer:
             if isinstance(self.rollout_mode, WholeEpisodesRolloutMode):
@@ -325,8 +326,9 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerType]):
         )
         ep_time = compute_summary_statistics([ep['t'] for ep in episode_infos])
 
-        for ep_info in episode_infos:
-            episode_return_ema.update(ep_info['r'])
+        if update_ema:
+            for ep_info in episode_infos:
+                episode_return_ema.update(ep_info['r'])
 
         update_metrics = self.train(episodes)
         metrics = {

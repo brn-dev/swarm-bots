@@ -92,11 +92,22 @@ def _normalize_tuples2or3(tuples: list[Tuple2or3[T]], default_val: T) -> list[Tu
     return [_normalize_tuple2or3(tup, default_val) for tup in tuples]
 
 @dataclass
-class RandomLatticeUnitLocationsConfig:
+class PoissonDiscUnitLocationsConfig:
     num_units: int
     pairwise_distance: float
 
     num_unit_probs: Optional[dict[int, float]] = None
+    max_radius: float = 1e8
+    z_pos: float = 0.0
+    center: bool = True
+
+@dataclass
+class PreConnectedUnitLocationsConfig:
+    num_units: int
+    unit_config: UnitConfig
+
+    num_unit_probs: Optional[dict[int, float]] = None
+
     max_radius: float = 1e8
     z_pos: float = 0.0
     center: bool = True
@@ -128,7 +139,7 @@ class RandomWiggleUnitLocationsConfig:
 
 UnitStartLocations = (
         list[Tuple2or3[FloatOrDistParams]]
-        | RandomLatticeUnitLocationsConfig
+        | PoissonDiscUnitLocationsConfig
         | RandomWiggleUnitLocationsConfig
 )
 
@@ -156,7 +167,7 @@ class HomogeneousSwarm(BaseSwarm):
         if isinstance(unit_start_locations, str):
             self.unit_start_locations = UNIT_START_LOCATION_PRESETS[unit_start_locations]
             self.num_units = len(self.unit_start_locations)
-        elif isinstance(unit_start_locations, RandomLatticeUnitLocationsConfig):
+        elif isinstance(unit_start_locations, PoissonDiscUnitLocationsConfig):
             assert unit_start_locations.max_radius > unit_start_locations.pairwise_distance
             self.num_units = unit_start_locations.num_units
             self.unit_start_locations = unit_start_locations
@@ -232,8 +243,8 @@ class HomogeneousSwarm(BaseSwarm):
             rng = np.random.default_rng()
 
         unit_start_locations: list[Tuple3[FloatOrDistParams]]
-        if isinstance(self.unit_start_locations, RandomLatticeUnitLocationsConfig):
-            unit_start_locations = self._generate_random_lattice_start_locations(
+        if isinstance(self.unit_start_locations, PoissonDiscUnitLocationsConfig):
+            unit_start_locations = self._generate_poisson_disc_start_locations(
                 rng=rng,
                 force_full=True
             )
@@ -281,8 +292,8 @@ class HomogeneousSwarm(BaseSwarm):
         connections = SwarmConnections(self.config)
 
         start_locations: list[Tuple3[float]]
-        if isinstance(self.unit_start_locations, RandomLatticeUnitLocationsConfig):
-            start_locations = self._generate_random_lattice_start_locations(rng)
+        if isinstance(self.unit_start_locations, PoissonDiscUnitLocationsConfig):
+            start_locations = self._generate_poisson_disc_start_locations(rng)
         elif isinstance(self.unit_start_locations, RandomWiggleUnitLocationsConfig):
             start_locations = []
             for unit_loc, unit_wiggle in zip(
@@ -338,13 +349,13 @@ class HomogeneousSwarm(BaseSwarm):
         dof_adr = model.jnt_dofadr[jnt_adr]
         return qpos_adr, dof_adr
 
-    def _generate_random_lattice_start_locations(
+    def _generate_poisson_disc_start_locations(
             self,
             rng: np.random.Generator,
             eps: float = 1e-6,
             force_full: bool = False
     ) -> list[tuple[float, float, float]]:
-        random_config: RandomLatticeUnitLocationsConfig = self.unit_start_locations
+        random_config: PoissonDiscUnitLocationsConfig = self.unit_start_locations
         num_units = random_config.num_units
         pairwise_distance = random_config.pairwise_distance
         max_distance = random_config.max_radius
@@ -396,3 +407,153 @@ class HomogeneousSwarm(BaseSwarm):
 
 
         return [(float(p[0]), float(p[1]), random_config.z_pos) for p in points]
+
+
+    def _generate_preconnected_swarm(
+            self,
+            rng: np.random.Generator,
+            force_full: bool = False
+    ) -> tuple[
+        list[tuple[float, float, float]],
+        list[tuple[float, float, float, float]],
+        SwarmConnections
+    ]:
+        random_config: PreConnectedUnitLocationsConfig = self.unit_start_locations
+        num_units = random_config.num_units
+        unit_config = random_config.unit_config
+        max_radius = random_config.max_radius
+
+        if force_full or random_config.num_unit_probs is None:
+            num_active_units = num_units
+        else:
+            unit_probs = random_config.num_unit_probs
+            num_active_units = rng.choice(list(unit_probs.keys()), p=list(unit_probs.values()))
+        if num_active_units < 1:
+            raise ValueError("num_active_units must be >= 1")
+
+        def random_quat(gen: np.random.Generator) -> np.ndarray:
+            u1, u2, u3 = gen.random(3)
+            s1 = np.sqrt(1.0 - u1)
+            s2 = np.sqrt(u1)
+            theta1 = 2.0 * np.pi * u2
+            theta2 = 2.0 * np.pi * u3
+            return np.array([
+                s2 * np.cos(theta2),
+                s1 * np.sin(theta1),
+                s1 * np.cos(theta1),
+                s2 * np.sin(theta2),
+            ], dtype=float)
+
+        def quat_to_mat(quat: np.ndarray) -> np.ndarray:
+            mat = np.empty(9, dtype=float)
+            mujoco.mju_quat2Mat(mat, quat)
+            return mat.reshape(3, 3)
+
+        def mat_to_quat(mat: np.ndarray) -> np.ndarray:
+            quat = np.empty(4, dtype=float)
+            mujoco.mju_mat2Quat(quat, mat.reshape(9))
+            return quat
+
+        limb_rot_mats = np.zeros((len(unit_config), 3, 3), dtype=float)
+        for i, limb in enumerate(unit_config):
+            quat = np.empty(4, dtype=float)
+            mujoco.mju_quatZ2Vec(quat, limb.vec)
+            mat = np.empty(9, dtype=float)
+            mujoco.mju_quat2Mat(mat, quat)
+            limb_rot_mats[i] = mat.reshape(3, 3)
+
+        positions = np.zeros((num_active_units, 3), dtype=float)
+        quats = np.zeros((num_active_units, 4), dtype=float)
+        rot_mats = np.zeros((num_active_units, 3, 3), dtype=float)
+
+        connections = SwarmConnections(self.config)
+
+        connector_distance = self.body_radius + self.leg_length
+        min_center_distance = 2 * self.max_unit_extent
+
+        available_connectors = [list(range(len(unit_config))) for _ in range(num_active_units)]
+
+        locations_found = 1
+        quats[0] = random_quat(rng)
+        rot_mats[0] = quat_to_mat(quats[0])
+
+        rejected_count = 0
+
+        while locations_found < num_active_units:
+            existing_choices = [
+                (unit_idx, conn_idx)
+                for unit_idx in range(locations_found)
+                for conn_idx in available_connectors[unit_idx]
+            ]
+            if not existing_choices:
+                raise RuntimeError("No available connectors left to build a preconnected swarm")
+
+            unit1, conn1 = existing_choices[rng.integers(len(existing_choices))]
+            new_available = available_connectors[locations_found]
+            conn2 = new_available[rng.integers(len(new_available))]
+
+            rot1 = rot_mats[unit1]
+            conn1_rot = rot1 @ limb_rot_mats[conn1]
+            z1 = conn1_rot[:, 2]
+            pos1 = positions[unit1] + z1 * connector_distance
+
+            twist = rng.random() * 2 * np.pi
+            x1 = conn1_rot[:, 0]
+            y1 = conn1_rot[:, 1]
+
+            z2 = -z1
+            x2 = np.cos(twist) * x1 + np.sin(twist) * y1
+            x2 /= np.linalg.norm(x2)
+            y2 = np.cross(z2, x2)
+            y2 /= np.linalg.norm(y2)
+
+            conn2_rot = np.stack([x2, y2, z2], axis=1)
+            unit2_rot = conn2_rot @ limb_rot_mats[conn2].T
+            pos2 = pos1 + z1 * connector_distance
+
+            if float(np.linalg.norm(pos2)) > max_radius:
+                rejected_count += 1
+                if rejected_count > 1000:
+                    raise RuntimeError(
+                        f"Failed to generate preconnected swarm after 1000 attempts: {random_config=}"
+                    )
+                continue
+
+            if locations_found > 0:
+                distances = np.linalg.norm(positions[:locations_found] - pos2, axis=1)
+                if np.any(distances + 1e-6 < min_center_distance):
+                    rejected_count += 1
+                    if rejected_count > 1000:
+                        raise RuntimeError(
+                            f"Failed to generate preconnected swarm after 1000 attempts: {random_config=}"
+                        )
+                    continue
+
+            positions[locations_found] = pos2
+            rot_mats[locations_found] = unit2_rot
+            quats[locations_found] = mat_to_quat(unit2_rot)
+            connections.connect(unit1, conn1, locations_found, conn2, twist)
+
+            available_connectors[unit1].remove(conn1)
+            available_connectors[locations_found].remove(conn2)
+            locations_found += 1
+
+            rejected_count = 0
+
+        if random_config.center:
+            mean = positions.mean(axis=0, keepdims=True)
+            positions -= mean
+
+            counter = 0
+            while np.any(np.linalg.norm(positions, axis=-1) > max_radius) and counter < 4:
+                positions += mean / 4
+                counter += 1
+
+        positions[:, 2] += random_config.z_pos
+
+        pos_list = [tuple(map(float, pos)) for pos in positions]
+        quat_list = [tuple(map(float, quat)) for quat in quats]
+
+        return pos_list, quat_list, connections
+
+

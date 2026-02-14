@@ -32,8 +32,13 @@ class SwarmBotsEnv(gymnasium.Env):
         camera: int | list[int] | Literal['all'] = 'all',
         scene_option: MjvOption = None,
         simulation_unstable_reward: float = -1.0,
-        return_scenario_state_as_infos: bool = False
+        return_scenario_state_as_infos: bool = False,
+        first_episode_length: int | None = None
     ):
+        if first_episode_length is not None and first_episode_length > episode_length:
+            raise ValueError(f'first_episode_length can not be longer than episode_length '
+                             f'({episode_length}), got {first_episode_length}')
+
         self.action_repeat = action_repeat
         self.episode_length = episode_length
         self.shuffle_agents = shuffle_agents
@@ -44,6 +49,9 @@ class SwarmBotsEnv(gymnasium.Env):
         self.scene_option = scene_option
         self.simulation_unstable_reward = simulation_unstable_reward
         self.return_scenario_state_as_infos = return_scenario_state_as_infos
+
+        self.first_episode_length = first_episode_length
+        self.is_first_episode = True
 
         self.current_step = 0
 
@@ -162,7 +170,13 @@ class SwarmBotsEnv(gymnasium.Env):
         )
 
         self.current_step += 1
-        truncated = self.current_step >= self.episode_length
+        if self.first_episode_length is not None and self.is_first_episode:
+            truncated = self.current_step >= self.first_episode_length
+        else:
+            truncated = self.current_step >= self.episode_length
+
+        if terminated or truncated:
+            self.is_first_episode = False
 
         if self.render_mode == "human":
             self.render()

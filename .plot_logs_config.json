@@ -1,0 +1,57 @@
+{
+  "paths": [
+    {
+      "path": "swarm-bots\\runs\\mat_nop_swarm_bots_wall\\2026-02-14_13-44-33\\log.csv",
+      "group": "",
+      "opacity": 1.0,
+      "color": "",
+      "enabled": true
+    },
+    {
+      "path": "swarm-bots\\runs\\mat_swarm_bots_wall\\2026-02-14_16-48-26\\log.csv",
+      "group": "",
+      "opacity": 1.0,
+      "color": "",
+      "enabled": true
+    },
+    {
+      "path": "swarm-bots\\runs\\mat_spr_swarm_bots_wall\\2026-02-14_21-41-00\\log.csv",
+      "group": "",
+      "opacity": 1.0,
+      "color": "",
+      "enabled": true
+    }
+  ],
+  "plots": {
+    "x": "timesteps",
+    "rows": [
+      {
+        "y": "ep_rew_ema",
+        "height": "3",
+        "ema": "0.02",
+        "std": false,
+        "skew": false,
+        "min": false,
+        "max": false
+      },
+      {
+        "y": "ep_rew__mean",
+        "height": "1",
+        "ema": "0.02",
+        "std": true,
+        "skew": false,
+        "min": false,
+        "max": false
+      },
+      {
+        "y": "ep_len__mean",
+        "height": "1",
+        "ema": "0.02",
+        "std": true,
+        "skew": false,
+        "min": false,
+        "max": false
+      }
+    ]
+  }
+}

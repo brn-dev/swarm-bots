@@ -12,6 +12,7 @@ from torch import nn
 
 from swarmbots.learn.action_dists.hybrid_action_dist import GSDEParams
 from swarmbots.learn.algos.mat.wm.mat_nop_policy import MATNOPPolicy
+from swarmbots.learn.algos.mat.wm.mat_spr_policy import MATSPRPolicy
 from swarmbots.learn.algos.ppo.wm.ppo_wm import PPOWM
 from swarmbots.learn.algos.ppo.ppo import AutomaticLearningRate, AutomaticLearningRateUpdateResult, StepsRolloutMode
 from swarmbots.learn.env_wrappers.obs_normalization.feature_wise_obs_norm_wrapper import (
@@ -23,22 +24,22 @@ from swarmbots.learn.gsde_reset import GSDEProbabilityResetMode
 from swarmbots.learn.summary_statistics import SummaryStatisticsFormat, SummaryStatistics
 from swarmbots.learn.obs_indices import ObsIndices
 from swarmbots.learn.swarmbots_obs_indices import build_obs_indices
-from swarmbots.mj_env.scenarios.scenario_presets import default_bridge
+from swarmbots.mj_env.scenarios.scenario_presets import default_wall
 from swarmbots.mj_env.swarm.homogeneous_swarm import HomogeneousSwarm, PoissonDiscUnitLocationsConfig
 from swarmbots.mj_env.swarm_bots_env import SwarmBotsEnv
 
 
 def make_env_fn(
-    episode_length: int,
-    scenario_kwargs: dict[str, Any] | None = None,
-    render_mode: str | None = None,
-    first_episode_length: int | None = None
+        episode_length: int,
+        scenario_kwargs: dict[str, Any] | None = None,
+        render_mode: str | None = None,
+        first_episode_length: int | None = None
 ) -> Callable[[], SwarmBotsEnv]:
     if scenario_kwargs is None:
         scenario_kwargs = {}
-        
+
     def _init() -> SwarmBotsEnv:
-        scenario = default_bridge(
+        scenario = default_wall(
             swarm=HomogeneousSwarm(
                 unit_start_locations=PoissonDiscUnitLocationsConfig(
                     num_units=4,
@@ -55,15 +56,17 @@ def make_env_fn(
             ),
             # unit_start_locations='8:hourglass',
             randomize_unit_orientations=True,
-            bridge_x=0.0,
+            first_wall_distance=2.0, # UniformDistParams(1.5, 2.5),
             **scenario_kwargs
         )
         return SwarmBotsEnv(
             scenario=scenario,
             episode_length=episode_length,
             render_mode=render_mode,
-            camera=0
+            camera=0,
+            first_episode_length=first_episode_length,
         )
+
     return _init
 
 
@@ -73,7 +76,6 @@ def wrap_vec_env(
         gamma: float,
         rollout_device: torch.device
 ) -> SwarmBotsLearnEnvWrapper:
-
     vector_env = RecordEpisodeStatistics(vector_env)
     vector_env = FeatureWiseObsNormWrapper(
         vector_env,
@@ -125,7 +127,7 @@ def main() -> None:
 
     # ===== LOAD =====
     load_path: str | None = None
-    # load_path = "runs/mat_nop_swarm_bots_bridge/2026-02-12_14-14-10/models/model_55513104_steps_stopped.pt"
+    # load_path = "runs/mat_spr_swarm_bots_wall/2026-02-12_14-14-10/models/model_55513104_steps_stopped.pt"
 
     # ===== DEVICE =====
     use_cuda = True and torch.cuda.is_available()
@@ -142,7 +144,7 @@ def main() -> None:
         run_id = load_path.split('/')[2]
         logger.info(f'{run_id = }')
 
-    run_dir = f"runs/mat_nop_swarm_bots_bridge/{run_id}/"
+    run_dir = f"runs/mat_spr_swarm_bots_wall/{run_id}/"
     save_optimizer = True
 
     scenario_kwargs = {
@@ -175,7 +177,6 @@ def main() -> None:
         hidden_vars_dim=hidden_vars_dim,
     )
 
-
     def make_record_env() -> SwarmBotsLearnEnvWrapper:
         record_env = SyncVectorEnv([
             make_env_fn(
@@ -204,7 +205,7 @@ def main() -> None:
             logger.warning('USING SYNC VECTOR ENV')
 
     gamma = 0.99
-    
+
     print("Wrapping...")
     env = wrap_vec_env(
         vector_env=vector_env,
@@ -221,7 +222,7 @@ def main() -> None:
     print(f"connectors_dim: {env.connectors_dim}")
 
     print("Initializing Policy...")
-    policy = MATNOPPolicy(
+    policy = MATSPRPolicy(
         env=env,
         local_obs_encoder_hidden_dims=[256, 256],
         action_encoder_hidden_dims=[64],
@@ -248,28 +249,14 @@ def main() -> None:
             normalize_latent_sde_by_dim=True
         ),
         bernoulli_initial_prob=0.75,
-        max_agents=20,
-        # NOP
-        wm_pre_transition_dims=[128],
+        # SPR
         d_model_transition_model=128,
         nhead_transition_model=2,
         num_layers_transition_model=2,
-        dim_feedforward_transition_model=128,
+        dim_feedforward_transition_model=256,
         transition_model_coembed_hidden_dims=[128],
-        wm_pre_predictors_dims=[128, 128],
-        wm_scalar_predictor_hidden_dims=[],
-        wm_angle_predictor_hidden_dims=[],
-        wm_rot6d_predictor_hidden_dims=[],
-        wm_binary_predictor_hidden_dims=[],
-        local_scalar_target_indices=obs_indices.local_scalar_indices,
-        local_angle_target_indices=obs_indices.local_angle_indices,
-        local_rot6d_target_indices=obs_indices.local_rot6d_indices,
-        local_binary_target_indices=obs_indices.local_binary_indices,
-        scalar_loss_fn='smooth_l1',
-        scalar_loss_weight=1.0,
-        angle_loss_weight=1.0,
-        rot6d_loss_weight=1.0,
-        binary_loss_weight=1.0,
+        spr_projection_dims=[96],
+        residual_predictor=True
     )
     print(policy)
 
@@ -322,7 +309,6 @@ def main() -> None:
                 'event': 'max_clip_frac_hit'
             }
 
-
         warmup: bool = state.get('warmup', warmup_iterations > 0) and n_iterations <= warmup_iterations
         state['warmup'] = warmup
         if warmup:
@@ -360,7 +346,7 @@ def main() -> None:
         clip_range=0.2,
         target_kl=0.04,
         max_grad_norm=10.0,
-        gsde_reset_mode=GSDEProbabilityResetMode(probability=1/6),
+        gsde_reset_mode=GSDEProbabilityResetMode(probability=1 / 6),
         ent_coef=1e-5,
         value_loss_fn=nn.SmoothL1Loss(),
         train_device=train_device,
@@ -401,7 +387,6 @@ def main() -> None:
             ('wm_loss_scaled', None, 'wm_loss'),
             ('val_loss_scaled', None, 'val_loss'),
             ('expl_var', '.3f'),
-            ('ep_len', SummaryStatisticsFormat(mean='3.0f', std='3.0f')),
             ('ep_rew', SummaryStatisticsFormat(mean=' .2f', std='.2f', max_value=' .2f', n='1')),
             ('ep_rew_ema', ' .3f'),
             ('best_ep_rew_ema', ' .3f', 'best_ema'),
@@ -409,7 +394,7 @@ def main() -> None:
         ],
         make_record_env=make_record_env
     )
-    
+
     print("Training Finished.")
 
     env.close()

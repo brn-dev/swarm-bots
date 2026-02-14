@@ -3,10 +3,12 @@ from __future__ import annotations
 import argparse
 import csv
 import math
+from datetime import datetime
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Sequence
 
+import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
 
 
@@ -14,6 +16,7 @@ import matplotlib.pyplot as plt
 class LogSeries:
     label: str
     x_values: list[float]
+    x_is_datetime: bool
     y_values: dict[str, list[float]]
     y_std_values: dict[str, list[float]]
     y_skew_values: dict[str, list[float]]
@@ -128,6 +131,41 @@ def parse_scalar(value: str | None, column: str, path: Path, row_index: int) -> 
         raise ValueError(message) from exc
 
 
+def parse_timestamp(value: str) -> datetime | None:
+    cleaned = value.strip()
+    if not cleaned:
+        return None
+    try:
+        return datetime.fromisoformat(cleaned)
+    except ValueError:
+        if cleaned.endswith("Z"):
+            try:
+                return datetime.fromisoformat(f"{cleaned[:-1]}+00:00")
+            except ValueError:
+                return None
+    return None
+
+
+def parse_x_value(
+    value: str | None,
+    column: str,
+    path: Path,
+    row_index: int,
+) -> tuple[float, bool]:
+    if value is None or value == "":
+        return float("nan"), False
+    try:
+        return float(value), False
+    except ValueError:
+        timestamp = parse_timestamp(value)
+        if timestamp is None:
+            message = (
+                f"Non-scalar value in {path} row {row_index} column {column}: {value!r}"
+            )
+            raise ValueError(message)
+        return mdates.date2num(timestamp), True
+
+
 def validate_columns(
     available_columns: Iterable[str],
     required_columns: Iterable[str],
@@ -182,6 +220,7 @@ def load_log(
     skew_mapping: dict[str, str | None] | None = None,
 ) -> LogSeries:
     x_values: list[float] = []
+    x_is_datetime: bool | None = None
     y_values: dict[str, list[float]] = {column: [] for column in y_columns}
     y_std_values: dict[str, list[float]] = {
         column: [] for column in y_columns if std_mapping[column] is not None
@@ -226,9 +265,15 @@ def load_log(
                 required_columns.append(max_column)
         validate_columns(reader.fieldnames, required_columns, path)
         for row_index, row in enumerate(reader, start=2):
-            x_value = parse_scalar(row.get(x_column), x_column, path, row_index)
+            x_value, is_datetime = parse_x_value(row.get(x_column), x_column, path, row_index)
             if math.isnan(x_value):
                 continue
+            if x_is_datetime is None:
+                x_is_datetime = is_datetime
+            elif x_is_datetime != is_datetime:
+                raise ValueError(
+                    f"Mixed numeric and timestamp values in {path} column {x_column}."
+                )
             x_values.append(x_value)
             for column in y_columns:
                 y_values[column].append(
@@ -257,6 +302,7 @@ def load_log(
     return LogSeries(
         label=label,
         x_values=x_values,
+        x_is_datetime=bool(x_is_datetime),
         y_values=y_values,
         y_std_values=y_std_values,
         y_skew_values=y_skew_values,
@@ -285,6 +331,10 @@ def plot_logs(
     )
     if row_count == 1:
         axes = [axes]
+    x_is_datetime_flags = {log.x_is_datetime for log in logs}
+    if len(x_is_datetime_flags) > 1:
+        raise ValueError("Mixed numeric and timestamp values in X column.")
+    x_is_datetime = next(iter(x_is_datetime_flags), False)
     for axis, column in zip(axes, y_columns, strict=True):
         for log in logs:
             axis.plot(log.x_values, log.y_values[column], label=log.label)
@@ -296,6 +346,12 @@ def plot_logs(
                     axis.fill_between(log.x_values, lower, upper, alpha=0.2)
         axis.set_ylabel(column)
         axis.grid(alpha=0.3)
+    if x_is_datetime:
+        for axis in axes:
+            locator = mdates.AutoDateLocator()
+            formatter = mdates.ConciseDateFormatter(locator)
+            axis.xaxis.set_major_locator(locator)
+            axis.xaxis.set_major_formatter(formatter)
     axes[-1].set_xlabel(x_column)
     if title:
         figure.suptitle(title)
