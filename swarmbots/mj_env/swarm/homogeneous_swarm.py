@@ -3,6 +3,7 @@ from typing import Optional, TypeVar, TypeAlias
 
 import mujoco
 import numpy as np
+from loguru import logger
 from mujoco import MjsBody
 
 from swarmbots.mj_env.float_or_dist_params import FloatOrDistParams, eval_fodp, DistParams, eval_fodp_3d
@@ -94,7 +95,6 @@ def _normalize_tuples2or3(tuples: list[Tuple2or3[T]], default_val: T) -> list[Tu
 @dataclass
 class PoissonDiscUnitLocationsConfig:
     num_units: int
-    pairwise_distance: float
 
     num_unit_probs: Optional[dict[int, float]] = None
     max_radius: float = 1e8
@@ -140,6 +140,7 @@ class RandomWiggleUnitLocationsConfig:
 UnitStartLocations = (
         list[Tuple2or3[FloatOrDistParams]]
         | PoissonDiscUnitLocationsConfig
+        | PreConnectedUnitLocationsConfig
         | RandomWiggleUnitLocationsConfig
 )
 
@@ -168,9 +169,29 @@ class HomogeneousSwarm(BaseSwarm):
             self.unit_start_locations = UNIT_START_LOCATION_PRESETS[unit_start_locations]
             self.num_units = len(self.unit_start_locations)
         elif isinstance(unit_start_locations, PoissonDiscUnitLocationsConfig):
-            assert unit_start_locations.max_radius > unit_start_locations.pairwise_distance
             self.num_units = unit_start_locations.num_units
             self.unit_start_locations = unit_start_locations
+            if unit_start_locations.num_unit_probs is not None:
+                counts = np.array(list(unit_start_locations.num_unit_probs.keys()), dtype=int)
+                probs = np.array(list(unit_start_locations.num_unit_probs.values()), dtype=float)
+                if counts.max() != self.num_units:
+                    raise ValueError("num_unit_probs must contain an entry for count == num_units")
+                if (counts < 1).any():
+                    raise ValueError("num_unit_probs must only contain counts >= 1")
+                if (counts > unit_start_locations.num_units).any():
+                    raise ValueError("num_unit_probs must not exceed num_units")
+                if (probs < 0).any():
+                    raise ValueError("num_unit_probs must not contain negative probabilities")
+                probs_sum = probs.sum()
+                if probs_sum <= 0:
+                    raise ValueError("num_unit_probs must sum to a positive value")
+                probs = probs / probs_sum
+                unit_start_locations.num_unit_probs = dict(zip(counts.tolist(), probs.tolist()))
+                self._can_have_inactive_units = True
+        elif isinstance(unit_start_locations, PreConnectedUnitLocationsConfig):
+            self.num_units = unit_start_locations.num_units
+            self.unit_start_locations = unit_start_locations
+            unit_config = unit_start_locations.unit_config
             if unit_start_locations.num_unit_probs is not None:
                 counts = np.array(list(unit_start_locations.num_unit_probs.keys()), dtype=int)
                 probs = np.array(list(unit_start_locations.num_unit_probs.values()), dtype=float)
@@ -200,6 +221,10 @@ class HomogeneousSwarm(BaseSwarm):
         self.unit_start_quats = unit_start_quats
         self.randomize_unit_orientations = randomize_unit_orientations
 
+        if isinstance(unit_start_locations, PreConnectedUnitLocationsConfig):
+            if unit_start_quats is not None or randomize_unit_orientations:
+                raise ValueError("PreConnectedUnitLocationsConfig determines unit orientations")
+
         assert unit_start_quats is None or len(unit_start_quats) == self.num_units
 
         super().__init__(
@@ -208,7 +233,7 @@ class HomogeneousSwarm(BaseSwarm):
                 unit_config=unit_config,
                 connection_torquescale=connection_torquescale,
             ),
-            max_unit_extent=(body_radius + leg_length) * 1.1
+            max_unit_extent=body_radius + leg_length
         )
 
         self.body_radius = body_radius
@@ -243,8 +268,14 @@ class HomogeneousSwarm(BaseSwarm):
             rng = np.random.default_rng()
 
         unit_start_locations: list[Tuple3[FloatOrDistParams]]
+        unit_start_quats: list[tuple[float, float, float, float]] | None = None
         if isinstance(self.unit_start_locations, PoissonDiscUnitLocationsConfig):
             unit_start_locations = self._generate_poisson_disc_start_locations(
+                rng=rng,
+                force_full=True
+            )
+        elif isinstance(self.unit_start_locations, PreConnectedUnitLocationsConfig):
+            unit_start_locations, unit_start_quats, _ = self._generate_preconnected_swarm(
                 rng=rng,
                 force_full=True
             )
@@ -256,7 +287,9 @@ class HomogeneousSwarm(BaseSwarm):
         for i, unit_start_location in enumerate(unit_start_locations):
             unit_start_location = np.array([eval_fodp(coord, rng) for coord in unit_start_location])
             unit_start_quat = np.array([1.0, 0.0, 0.0, 0.0], dtype=float)
-            if self.unit_start_quats is not None:
+            if unit_start_quats is not None:
+                unit_start_quat = np.array(unit_start_quats[i])
+            elif self.unit_start_quats is not None:
                 unit_start_quat = np.array(self.unit_start_quats[i])
 
             if self.num_units > 1:
@@ -292,8 +325,11 @@ class HomogeneousSwarm(BaseSwarm):
         connections = SwarmConnections(self.config)
 
         start_locations: list[Tuple3[float]]
+        start_quats: list[tuple[float, float, float, float]] | None = None
         if isinstance(self.unit_start_locations, PoissonDiscUnitLocationsConfig):
             start_locations = self._generate_poisson_disc_start_locations(rng)
+        elif isinstance(self.unit_start_locations, PreConnectedUnitLocationsConfig):
+            start_locations, start_quats, connections = self._generate_preconnected_swarm(rng)
         elif isinstance(self.unit_start_locations, RandomWiggleUnitLocationsConfig):
             start_locations = []
             for unit_loc, unit_wiggle in zip(
@@ -316,7 +352,9 @@ class HomogeneousSwarm(BaseSwarm):
 
             data.qpos[qpos_adr:qpos_adr + 3] = swarm_start_location + np.array(unit_start_location)
 
-            if self.randomize_unit_orientations:
+            if start_quats is not None:
+                data.qpos[qpos_adr + 3:qpos_adr + 7] = start_quats[i]
+            elif self.randomize_unit_orientations:
                 data.qpos[qpos_adr + 3:qpos_adr + 7] = random_quat_shoemake()
             elif self.unit_start_quats is not None:
                 data.qpos[qpos_adr + 3:qpos_adr + 7] = self.unit_start_quats[i]
@@ -357,7 +395,7 @@ class HomogeneousSwarm(BaseSwarm):
     ) -> list[tuple[float, float, float]]:
         random_config: PoissonDiscUnitLocationsConfig = self.unit_start_locations
         num_units = random_config.num_units
-        pairwise_distance = random_config.pairwise_distance
+        pairwise_distance = 2.1 * self.max_unit_extent
         max_distance = random_config.max_radius
 
         if force_full or random_config.num_unit_probs is None:
@@ -511,6 +549,10 @@ class HomogeneousSwarm(BaseSwarm):
             unit2_rot = conn2_rot @ limb_rot_mats[conn2].T
             pos2 = pos1 + z1 * connector_distance
 
+
+            if rejected_count > 100:
+                logger.warning(f'{rejected_count = }')
+
             if float(np.linalg.norm(pos2)) > max_radius:
                 rejected_count += 1
                 if rejected_count > 1000:
@@ -539,6 +581,7 @@ class HomogeneousSwarm(BaseSwarm):
             locations_found += 1
 
             rejected_count = 0
+
 
         if random_config.center:
             mean = positions.mean(axis=0, keepdims=True)
