@@ -16,6 +16,7 @@ import matplotlib
 
 matplotlib.use("TkAgg")
 
+import matplotlib.dates as mdates
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 import matplotlib.pyplot as plt
 
@@ -25,7 +26,7 @@ if str(REPO_ROOT) not in sys.path:
 
 import plot_logs
 
-STATE_PATH = Path(__file__).resolve().with_name(".plot_logs_interactive_paths.json")
+STATE_PATH = Path(__file__).resolve().with_name(".plot_logs_config.json")
 
 
 @dataclass(slots=True)
@@ -52,7 +53,11 @@ class PlotRow:
 class PresetEntry:
     y_column: str
     height: float
-    std: bool
+    ema: float | None = None
+    std: bool = False
+    skew: bool = False
+    min: bool = False
+    max: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,6 +71,7 @@ class PlotPreset:
 class HistogramSeries:
     label: str
     x_values: list[float]
+    x_is_datetime: bool
     bin_edges: list[float] | None
     values: list[list[float]]
     edges_status: str
@@ -75,82 +81,82 @@ PLOT_PRESETS: tuple[PlotPreset, ...] = (
     PlotPreset(
         name="Episode Stats",
         entries=(
-            PresetEntry("ep_rew_ema", 3.0, False),
-            PresetEntry("ep_rew__mean", 1.0, True),
-            PresetEntry("ep_len__mean", 1.0, True),
+            PresetEntry("ep_rew_ema", 3.0, ema=0.02),
+            PresetEntry("ep_rew__mean", 1.0, std=True, ema=0.02),
+            PresetEntry("ep_len__mean", 1.0, std=True, ema=0.02),
         ),
     ),
     PlotPreset(
         name="Actions",
         entries=(
-            PresetEntry("ep_rew_ema", 5.0, False),
-            PresetEntry("act0__histogram_freqs", 3.0, False),
-            PresetEntry("act1__histogram_freqs", 1.0, False),
-            PresetEntry("act0__mean", 1.0, True),
-            PresetEntry("std0__mean", 1.0, True),
-            PresetEntry("act1__mean", 1.0, True),
+            PresetEntry("ep_rew_ema", 2.0, ema=0.02),
+            PresetEntry("act0__histogram_freqs", 3.0),
+            PresetEntry("act1__histogram_freqs", 1.0),
+            PresetEntry("act0__mean", 1.0, std=True),
+            PresetEntry("std0__mean", 1.0, std=True),
+            PresetEntry("act1__mean", 1.0, std=True),
         ),
     ),
     PlotPreset(
         name="PPO Metrics",
         entries=(
-            PresetEntry("ep_rew_ema", 3.0, False),
-            PresetEntry("approx_kl__mean", 1.0, True),
-            PresetEntry("clip_frac__mean", 1.0, True),
-            PresetEntry("ratio__std", 1.0, False),
-            PresetEntry("expl_var", 1.0, False),
-            PresetEntry("learning_rate", 1.0, False),
+            PresetEntry("ep_rew_ema", 2.0, ema=0.02),
+            PresetEntry("approx_kl__mean", 1.0, std=True),
+            PresetEntry("clip_frac__mean", 1.0, std=True),
+            PresetEntry("ratio__std", 1.0),
+            PresetEntry("expl_var", 1.0),
+            PresetEntry("learning_rate", 1.0),
         ),
     ),
     PlotPreset(
         name="PPO Losses",
         entries=(
-            PresetEntry("ep_rew_ema", 3.0, False),
-            PresetEntry("act_loss__mean", 1.0, True),
-            PresetEntry("val_loss__mean", 1.0, True),
-            PresetEntry("ent_loss__mean", 1.0, True),
-            PresetEntry("grad_norm__mean", 1.0, True),
-            PresetEntry("grad_clip_frac", 1.0, False),
-            PresetEntry("learning_rate", 1.0, False),
+            PresetEntry("ep_rew_ema", 2.0, ema=0.02),
+            PresetEntry("act_loss__mean", 1.0, std=True),
+            PresetEntry("val_loss__mean", 1.0, std=True),
+            PresetEntry("ent_loss__mean", 1.0, std=True),
+            PresetEntry("grad_norm__mean", 1.0, std=True),
+            PresetEntry("grad_clip_frac", 1.0),
+            PresetEntry("learning_rate", 1.0),
         ),
     ),
     PlotPreset(
         name="PPO Full",
         entries=(
-            PresetEntry("ep_rew_ema", 2.0, False),
-            PresetEntry("approx_kl__mean", 1.0, True),
-            PresetEntry("clip_frac__mean", 1.0, True),
-            PresetEntry("ratio__std", 1.0, False),
-            PresetEntry("expl_var", 1.0, False),
-            PresetEntry("val_loss__mean", 1.0, True),
-            PresetEntry("act_loss__mean", 1.0, True),
-            PresetEntry("ent_loss__mean", 1.0, True),
-            PresetEntry("grad_norm__mean", 1.0, True),
-            PresetEntry("grad_clip_frac", 1.0, False),
-            PresetEntry("learning_rate", 1.0, False),
+            PresetEntry("ep_rew_ema", 2.0, ema=0.02),
+            PresetEntry("approx_kl__mean", 1.0, std=True),
+            PresetEntry("clip_frac__mean", 1.0, std=True),
+            PresetEntry("ratio__std", 1.0),
+            PresetEntry("expl_var", 1.0),
+            PresetEntry("val_loss__mean", 1.0, std=True),
+            PresetEntry("act_loss__mean", 1.0, std=True),
+            PresetEntry("ent_loss__mean", 1.0, std=True),
+            PresetEntry("grad_norm__mean", 1.0, std=True),
+            PresetEntry("grad_clip_frac", 1.0),
+            PresetEntry("learning_rate", 1.0),
         ),
     ),
     PlotPreset(
         name="NOP Losses",
         entries=(
-            PresetEntry("ep_rew_ema", 5.0, False),
-            PresetEntry("scalar_loss__mean", 1.0, True),
-            PresetEntry("angle_loss__mean", 1.0, True),
-            PresetEntry("rot6d_loss__mean", 1.0, True),
-            PresetEntry("binary_loss__mean", 1.0, True),
+            PresetEntry("ep_rew_ema", 2.0, ema=0.02),
+            PresetEntry("scalar_loss__mean", 1.0, std=True),
+            PresetEntry("angle_loss__mean", 1.0, std=True),
+            PresetEntry("rot6d_loss__mean", 1.0, std=True),
+            PresetEntry("binary_loss__mean", 1.0, std=True),
         ),
     ),
     PlotPreset(
         name="Performance",
         entries=(
-            PresetEntry("fps", 1.0, False),
-            PresetEntry("updates", 1.0, False),
-            PresetEntry("policy_forward_time__mean", 1.0, True),
-            PresetEntry("env_step_time__mean", 1.0, True),
-            PresetEntry("rollout_time", 1.0, False),
-            PresetEntry("sampling_time__mean", 1.0, True),
-            PresetEntry("update_time__mean", 1.0, True),
-            PresetEntry("train_time", 1.0, False),
+            PresetEntry("fps", 1.0, ema=0.02),
+            PresetEntry("updates", 1.0),
+            PresetEntry("policy_forward_time__mean", 1.0, std=True),
+            PresetEntry("env_step_time__mean", 1.0, std=True),
+            PresetEntry("rollout_time", 1.0),
+            PresetEntry("sampling_time__mean", 1.0, std=True),
+            PresetEntry("update_time__mean", 1.0, std=True),
+            PresetEntry("train_time", 1.0),
         ),
     ),
 )
@@ -325,6 +331,20 @@ def histogram_status_message(histogram_data: dict[str, list[HistogramSeries]]) -
     return f"Histogram edges drift for {joined}; using range-based edges."
 
 
+def resolve_x_datetime_flag(
+    logs: Sequence[plot_logs.LogSeries],
+    histogram_data: dict[str, list[HistogramSeries]],
+    x_column: str,
+) -> bool:
+    flags: set[bool] = set()
+    flags.update(log.x_is_datetime for log in logs)
+    for series_list in histogram_data.values():
+        flags.update(series.x_is_datetime for series in series_list)
+    if len(flags) > 1:
+        raise ValueError(f"Mixed numeric and timestamp values in X column {x_column}.")
+    return next(iter(flags), False)
+
+
 def load_histogram_series(
     path: Path,
     label: str,
@@ -334,6 +354,7 @@ def load_histogram_series(
     delimiter: str,
 ) -> HistogramSeries:
     x_values: list[float] = []
+    x_is_datetime: bool | None = None
     values: list[list[float]] = []
     bin_edges: list[float] | None = None
     edges_status = "missing" if edges_column is None else "edges"
@@ -349,9 +370,20 @@ def load_histogram_series(
             required_columns.append(edges_column)
         plot_logs.validate_columns(reader.fieldnames, required_columns, path)
         for row_index, row in enumerate(reader, start=2):
-            x_value = plot_logs.parse_scalar(row.get(x_column), x_column, path, row_index)
+            x_value, is_datetime = plot_logs.parse_x_value(
+                row.get(x_column),
+                x_column,
+                path,
+                row_index,
+            )
             if math.isnan(x_value):
                 continue
+            if x_is_datetime is None:
+                x_is_datetime = is_datetime
+            elif x_is_datetime != is_datetime:
+                raise ValueError(
+                    f"Mixed numeric and timestamp values in {path} column {x_column}."
+                )
             freqs = parse_histogram_list(row.get(freqs_column), freqs_column, path, row_index)
             if expected_bins is None:
                 expected_bins = len(freqs)
@@ -379,6 +411,7 @@ def load_histogram_series(
     return HistogramSeries(
         label=label,
         x_values=x_values,
+        x_is_datetime=bool(x_is_datetime),
         bin_edges=bin_edges,
         values=values,
         edges_status=edges_status,
@@ -476,16 +509,11 @@ class PlotLogsInteractiveApp:
         delimiter_entry = ttk.Entry(settings_frame, textvariable=self.delimiter_var, width=4)
         delimiter_entry.grid(row=0, column=1, sticky="w")
 
-        ttk.Label(settings_frame, text="X Column").grid(row=1, column=0, sticky="w", pady=(6, 0))
-        self.x_combo = ttk.Combobox(settings_frame, state="disabled")
-        self.x_combo.grid(row=1, column=1, sticky="ew", pady=(6, 0))
-        self.bind_typeahead(self.x_combo, lambda: self.available_columns)
-
-        ttk.Label(settings_frame, text="Title").grid(row=2, column=0, sticky="w", pady=(6, 0))
+        ttk.Label(settings_frame, text="Title").grid(row=1, column=0, sticky="w", pady=(6, 0))
         title_entry = ttk.Entry(settings_frame, textvariable=self.title_var)
-        title_entry.grid(row=2, column=1, sticky="ew", pady=(6, 0))
+        title_entry.grid(row=1, column=1, sticky="ew", pady=(6, 0))
 
-        ttk.Label(settings_frame, text="Line Opacity").grid(row=3, column=0, sticky="w", pady=(6, 0))
+        ttk.Label(settings_frame, text="Line Opacity").grid(row=2, column=0, sticky="w", pady=(6, 0))
         opacity_scale = ttk.Scale(
             settings_frame,
             from_=0.0,
@@ -493,9 +521,9 @@ class PlotLogsInteractiveApp:
             variable=self.line_alpha_var,
             command=self.on_opacity_change,
         )
-        opacity_scale.grid(row=3, column=1, sticky="ew", pady=(6, 0))
+        opacity_scale.grid(row=2, column=1, sticky="ew", pady=(6, 0))
 
-        ttk.Label(settings_frame, text="Line Width").grid(row=4, column=0, sticky="w", pady=(6, 0))
+        ttk.Label(settings_frame, text="Line Width").grid(row=3, column=0, sticky="w", pady=(6, 0))
         width_scale = ttk.Scale(
             settings_frame,
             from_=0.1,
@@ -503,15 +531,40 @@ class PlotLogsInteractiveApp:
             variable=self.line_width_var,
             command=self.on_line_width_change,
         )
-        width_scale.grid(row=4, column=1, sticky="ew", pady=(6, 0))
+        width_scale.grid(row=3, column=1, sticky="ew", pady=(6, 0))
 
+        ttk.Label(settings_frame, text="Dark Mode").grid(row=4, column=0, sticky="w", pady=(6, 0))
         dark_mode_check = ttk.Checkbutton(
             settings_frame,
             text="Dark Mode",
             variable=self.dark_mode_var,
             command=self.on_theme_toggle,
         )
-        dark_mode_check.grid(row=5, column=0, columnspan=2, sticky="w", pady=(6, 0))
+        dark_mode_check.grid(row=4, column=1, sticky="w", pady=(6, 0))
+
+        settings_buttons = ttk.Frame(settings_frame)
+        settings_buttons.grid(row=5, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        settings_buttons.columnconfigure(0, weight=1, uniform="settings_buttons")
+        settings_buttons.columnconfigure(1, weight=1, uniform="settings_buttons")
+        settings_buttons.columnconfigure(2, weight=1, uniform="settings_buttons")
+        save_config_button = ttk.Button(
+            settings_buttons,
+            text="Save Config",
+            command=self.save_config_to_file,
+        )
+        save_config_button.grid(row=0, column=0, sticky="ew", padx=(0, 4))
+        load_config_button = ttk.Button(
+            settings_buttons,
+            text="Load Config",
+            command=self.load_config_from_file,
+        )
+        load_config_button.grid(row=0, column=1, sticky="ew", padx=(0, 4))
+        load_recent_button = ttk.Button(
+            settings_buttons,
+            text="Load Recent",
+            command=self.load_saved_paths,
+        )
+        load_recent_button.grid(row=0, column=2, sticky="ew")
 
         files_frame = ttk.LabelFrame(controls_frame, text="CSV Files", padding=(4, 4))
         files_frame.grid(row=1, column=0, sticky="ew", pady=(0, 8))
@@ -532,38 +585,22 @@ class PlotLogsInteractiveApp:
         add_button.grid(row=0, column=0, sticky="ew", padx=(0, 4))
         remove_button = ttk.Button(files_buttons, text="Remove Selected", command=self.remove_selected_files)
         remove_button.grid(row=0, column=1, sticky="ew")
-        refresh_button = ttk.Button(files_buttons, text="Refresh Columns", command=self.refresh_columns)
-        refresh_button.grid(row=1, column=0, sticky="ew", padx=(0, 4), pady=(4, 0))
-        load_button = ttk.Button(files_buttons, text="Load Recent", command=self.load_saved_paths)
-        load_button.grid(row=1, column=1, sticky="ew", pady=(4, 0))
-        save_config_button = ttk.Button(
-            files_buttons,
-            text="Save Config",
-            command=self.save_config_to_file,
-        )
-        save_config_button.grid(row=2, column=0, sticky="ew", padx=(0, 4), pady=(4, 0))
-        load_config_button = ttk.Button(
-            files_buttons,
-            text="Load Config",
-            command=self.load_config_from_file,
-        )
-        load_config_button.grid(row=2, column=1, sticky="ew", pady=(4, 0))
         move_up_button = ttk.Button(files_buttons, text="Move Up", command=lambda: self.move_selected_files(-1))
-        move_up_button.grid(row=3, column=0, sticky="ew", padx=(0, 4), pady=(4, 0))
+        move_up_button.grid(row=1, column=0, sticky="ew", padx=(0, 4), pady=(4, 0))
         move_down_button = ttk.Button(files_buttons, text="Move Down", command=lambda: self.move_selected_files(1))
-        move_down_button.grid(row=3, column=1, sticky="ew", pady=(4, 0))
-        disable_button = ttk.Button(
-            files_buttons,
-            text="Disable Selected",
-            command=lambda: self.set_enabled_for_selection(False),
-        )
-        disable_button.grid(row=4, column=0, sticky="ew", padx=(0, 4), pady=(4, 0))
+        move_down_button.grid(row=1, column=1, sticky="ew", pady=(4, 0))
         enable_button = ttk.Button(
             files_buttons,
             text="Enable Selected",
             command=lambda: self.set_enabled_for_selection(True),
         )
-        enable_button.grid(row=4, column=1, sticky="ew", pady=(4, 0))
+        enable_button.grid(row=2, column=0, sticky="ew", padx=(0, 4), pady=(4, 0))
+        disable_button = ttk.Button(
+            files_buttons,
+            text="Disable Selected",
+            command=lambda: self.set_enabled_for_selection(False),
+        )
+        disable_button.grid(row=2, column=1, sticky="ew", pady=(4, 0))
 
         meta_frame = ttk.Frame(files_frame)
         meta_frame.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(8, 0))
@@ -617,8 +654,16 @@ class PlotLogsInteractiveApp:
         plots_frame.grid(row=2, column=0, sticky="ew", pady=(0, 8))
         plots_frame.columnconfigure(0, weight=1)
 
+        x_column_frame = ttk.Frame(plots_frame)
+        x_column_frame.grid(row=0, column=0, sticky="ew")
+        x_column_frame.columnconfigure(1, weight=1)
+        ttk.Label(x_column_frame, text="X Column").grid(row=0, column=0, sticky="w")
+        self.x_combo = ttk.Combobox(x_column_frame, state="disabled")
+        self.x_combo.grid(row=0, column=1, sticky="ew", padx=(6, 0))
+        self.bind_typeahead(self.x_combo, lambda: self.available_columns)
+
         self.plots_container = ttk.Frame(plots_frame)
-        self.plots_container.grid(row=0, column=0, sticky="ew", pady=(4, 0))
+        self.plots_container.grid(row=1, column=0, sticky="ew", pady=(6, 0))
         self.plots_container.columnconfigure(1, weight=1, minsize=100)
         self.plots_container.columnconfigure(2, weight=0)
         self.plots_container.columnconfigure(3, weight=0)
@@ -639,41 +684,46 @@ class PlotLogsInteractiveApp:
         ttk.Label(self.plots_container, text="").grid(row=0, column=8, sticky="w", padx=(6, 4))
 
         plots_buttons = ttk.Frame(plots_frame)
-        plots_buttons.grid(row=1, column=0, sticky="ew", pady=(6, 0))
+        plots_buttons.grid(row=2, column=0, sticky="ew", pady=(6, 0))
+        plots_buttons.columnconfigure(0, weight=1, uniform="plots_buttons")
+        plots_buttons.columnconfigure(1, weight=1, uniform="plots_buttons")
+        plots_buttons.columnconfigure(2, weight=1, uniform="plots_buttons")
         add_plot_button = ttk.Button(plots_buttons, text="Add Plot", command=self.add_plot_row)
         add_plot_button.grid(row=0, column=0, sticky="ew", padx=(0, 4))
         clear_plot_button = ttk.Button(plots_buttons, text="Clear Plots", command=self.clear_plot_rows)
-        clear_plot_button.grid(row=0, column=1, sticky="ew")
+        clear_plot_button.grid(row=0, column=1, sticky="ew", padx=(0, 4))
+        refresh_button = ttk.Button(plots_buttons, text="Refresh Columns", command=self.refresh_columns)
+        refresh_button.grid(row=0, column=2, sticky="ew")
         self.toggle_std_button = ttk.Button(
             self.plots_container,
-            text="∀",
+            text="A",
             command=self.toggle_all_std,
             width=2,
         )
         self.toggle_skew_button = ttk.Button(
             self.plots_container,
-            text="∀",
+            text="A",
             command=self.toggle_all_skew,
             width=2,
         )
         self.toggle_min_button = ttk.Button(
             self.plots_container,
-            text="∀",
+            text="A",
             command=self.toggle_all_min,
             width=2,
         )
         self.toggle_max_button = ttk.Button(
             self.plots_container,
-            text="∀",
+            text="A",
             command=self.toggle_all_max,
             width=2,
         )
 
         if PLOT_PRESETS:
             presets_label = ttk.Label(plots_frame, text="Presets")
-            presets_label.grid(row=2, column=0, sticky="w", pady=(8, 0))
+            presets_label.grid(row=3, column=0, sticky="w", pady=(8, 0))
             presets_frame = ttk.Frame(plots_frame)
-            presets_frame.grid(row=3, column=0, sticky="ew", pady=(4, 0))
+            presets_frame.grid(row=4, column=0, sticky="ew", pady=(4, 0))
             preset_columns = 3
             for column in range(preset_columns):
                 presets_frame.columnconfigure(column, weight=1)
@@ -728,22 +778,42 @@ class PlotLogsInteractiveApp:
         self.controls_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
 
     def add_files(self) -> None:
-        filenames = filedialog.askopenfilenames(
-            title="Select log CSV files",
-            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
+        directory = filedialog.askdirectory(
+            title="Select folder containing log.csv files",
+            initialdir=str(REPO_ROOT),
         )
-        if not filenames:
+        if not directory:
             return
-        for filename in filenames:
-            path = Path(filename).resolve()
+        root_path = Path(directory).resolve()
+        found_paths = [
+            path.resolve()
+            for path in root_path.rglob("log.csv")
+            if path.is_file()
+        ]
+        if not found_paths:
+            self.set_status("No log.csv files found in the selected folder.")
+            return
+        added_paths: list[Path] = []
+        for path in sorted(found_paths):
             if path not in self.paths:
                 self.paths.append(path)
+                added_paths.append(path)
             self.file_opacity_by_path.setdefault(path, 1.0)
             self.file_color_by_path.setdefault(path, "")
             self.path_enabled.setdefault(path, True)
+        if len(added_paths) > 5:
+            for path in added_paths:
+                self.path_enabled[path] = False
         self.refresh_file_list()
         self.refresh_columns()
-        self.save_selected_paths()
+        if not added_paths:
+            self.set_status("All log.csv files in the selected folder are already added.")
+        elif len(added_paths) > 5:
+            self.set_status(
+                f"Added {len(added_paths)} log.csv files (disabled by default)."
+            )
+        else:
+            self.set_status(f"Added {len(added_paths)} log.csv files.")
 
     def remove_selected_files(self) -> None:
         selected_indices = list(self.files_listbox.curselection())
@@ -757,7 +827,6 @@ class PlotLogsInteractiveApp:
             del self.paths[index]
         self.refresh_file_list()
         self.refresh_columns()
-        self.save_selected_paths()
 
     def refresh_file_list(self) -> None:
         self.files_listbox.delete(0, tk.END)
@@ -851,7 +920,6 @@ class PlotLogsInteractiveApp:
         self.refresh_file_list()
         for index in sorted(selected_set):
             self.files_listbox.selection_set(index)
-        self.save_selected_paths()
 
     def set_group_for_selection(self) -> None:
         selected_indices = list(self.files_listbox.curselection())
@@ -866,7 +934,6 @@ class PlotLogsInteractiveApp:
         self.refresh_file_list()
         for index in selected_indices:
             self.files_listbox.selection_set(index)
-        self.save_selected_paths()
 
     def clear_group_for_selection(self) -> None:
         selected_indices = list(self.files_listbox.curselection())
@@ -878,7 +945,6 @@ class PlotLogsInteractiveApp:
         self.refresh_file_list()
         for index in selected_indices:
             self.files_listbox.selection_set(index)
-        self.save_selected_paths()
 
     def set_opacity_for_selection(self, reset: bool = False) -> None:
         selected_indices = list(self.files_listbox.curselection())
@@ -905,7 +971,6 @@ class PlotLogsInteractiveApp:
         self.refresh_file_list()
         for index in selected_indices:
             self.files_listbox.selection_set(index)
-        self.save_selected_paths()
 
     def set_color_for_selection(self, reset: bool = False, color: str | None = None) -> None:
         selected_indices = list(self.files_listbox.curselection())
@@ -931,7 +996,6 @@ class PlotLogsInteractiveApp:
         self.refresh_file_list()
         for index in selected_indices:
             self.files_listbox.selection_set(index)
-        self.save_selected_paths()
 
     def pick_color_for_selection(self) -> None:
         initial = self.file_color_var.get().strip()
@@ -963,7 +1027,6 @@ class PlotLogsInteractiveApp:
         for index in selected_indices:
             self.files_listbox.selection_set(index)
         self.refresh_columns(preserve_state=True)
-        self.save_selected_paths()
 
     def build_paths_payload(self) -> list[dict[str, str | float | bool]]:
         payload: list[dict[str, str | float | bool]] = []
@@ -982,6 +1045,33 @@ class PlotLogsInteractiveApp:
                 }
             )
         return payload
+
+    def build_plot_payload(self) -> dict[str, object]:
+        rows: list[dict[str, object]] = []
+        for row in self.plot_rows:
+            y_value = row.y_combo.get().strip()
+            if not y_value:
+                continue
+            entry: dict[str, object] = {
+                "y": y_value,
+                "height": row.height_var.get().strip(),
+                "ema": row.ema_var.get().strip(),
+                "std": row.std_var.get(),
+                "skew": row.skew_var.get(),
+                "min": row.min_var.get(),
+                "max": row.max_var.get(),
+            }
+            rows.append(entry)
+        return {
+            "x": self.x_combo.get().strip(),
+            "rows": rows,
+        }
+
+    def build_config_payload(self) -> dict[str, object]:
+        return {
+            "paths": self.build_paths_payload(),
+            "plots": self.build_plot_payload(),
+        }
 
     def apply_paths_payload(self, payload: object) -> tuple[int, int]:
         if not isinstance(payload, list):
@@ -1037,21 +1127,79 @@ class PlotLogsInteractiveApp:
         self.refresh_columns()
         return len(loaded_paths), len(missing_paths)
 
-    def set_loaded_paths_status(self, loaded_count: int, missing_count: int, label: str) -> None:
+    def apply_plot_payload(self, payload: object) -> tuple[int, list[str], str | None]:
+        if not isinstance(payload, dict):
+            raise ValueError("Saved plot configuration is invalid.")
+        rows_payload = payload.get("rows")
+        if rows_payload is None:
+            return 0, [], None
+        if not isinstance(rows_payload, list):
+            raise ValueError("Saved plot configuration is invalid.")
+        missing_columns: list[str] = []
+        missing_x: str | None = None
+        if rows_payload:
+            self.clear_plot_rows()
+            for _ in range(len(rows_payload) - 1):
+                self.add_plot_row()
+            for row, row_data in zip(self.plot_rows, rows_payload, strict=True):
+                if not isinstance(row_data, dict):
+                    continue
+                y_value = row_data.get("y")
+                y_valid = False
+                if isinstance(y_value, str) and y_value:
+                    if self.available_columns and y_value in self.available_columns:
+                        row.y_combo.set(y_value)
+                        y_valid = True
+                    else:
+                        missing_columns.append(y_value)
+                height_value = row_data.get("height")
+                if isinstance(height_value, (int, float)):
+                    row.height_var.set(self.format_ratio(float(height_value)))
+                elif isinstance(height_value, str):
+                    row.height_var.set(height_value)
+                ema_value = row_data.get("ema")
+                if isinstance(ema_value, (int, float)):
+                    row.ema_var.set(str(ema_value))
+                elif isinstance(ema_value, str):
+                    row.ema_var.set(ema_value)
+                if y_valid:
+                    desired_std = row_data.get("std") if isinstance(row_data.get("std"), bool) else None
+                    desired_skew = row_data.get("skew") if isinstance(row_data.get("skew"), bool) else None
+                    desired_min = row_data.get("min") if isinstance(row_data.get("min"), bool) else None
+                    desired_max = row_data.get("max") if isinstance(row_data.get("max"), bool) else None
+                    self.update_summary_checkboxes(
+                        row,
+                        desired_std=desired_std,
+                        desired_skew=desired_skew,
+                        desired_min=desired_min,
+                        desired_max=desired_max,
+                        preserve_existing=True,
+                    )
+        else:
+            self.clear_plot_rows()
+        x_value = payload.get("x")
+        if isinstance(x_value, str) and x_value:
+            if self.available_columns and x_value in self.available_columns:
+                self.x_combo.set(x_value)
+            else:
+                missing_x = x_value
+        return len(rows_payload), missing_columns, missing_x
+
+    def loaded_paths_message(self, loaded_count: int, missing_count: int, label: str) -> str:
         label_capitalized = label[:1].upper() + label[1:] if label else label
         if loaded_count == 0:
             if missing_count:
-                self.set_status(f"{label_capitalized} missing on disk.")
-            else:
-                self.set_status(f"No {label} available.")
-            return
+                return f"{label_capitalized} missing on disk."
+            return f"No {label} available."
         if missing_count:
-            self.set_status(f"Loaded {loaded_count} {label}. Missing {missing_count}.")
-        else:
-            self.set_status(f"Loaded {loaded_count} {label}.")
+            return f"Loaded {loaded_count} {label}. Missing {missing_count}."
+        return f"Loaded {loaded_count} {label}."
+
+    def set_loaded_paths_status(self, loaded_count: int, missing_count: int, label: str) -> None:
+        self.set_status(self.loaded_paths_message(loaded_count, missing_count, label))
 
     def save_selected_paths(self) -> None:
-        payload = self.build_paths_payload()
+        payload = self.build_config_payload()
         try:
             STATE_PATH.write_text(json.dumps(payload, indent=2), encoding="utf-8")
         except OSError as exc:
@@ -1066,7 +1214,7 @@ class PlotLogsInteractiveApp:
         )
         if not path_str:
             return
-        payload = self.build_paths_payload()
+        payload = self.build_config_payload()
         path = Path(path_str)
         try:
             path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
@@ -1084,12 +1232,43 @@ class PlotLogsInteractiveApp:
         except (OSError, json.JSONDecodeError) as exc:
             self.show_error(f"Failed to load saved paths: {exc}")
             return
+        if isinstance(payload, list):
+            try:
+                loaded_count, missing_count = self.apply_paths_payload(payload)
+            except ValueError as exc:
+                self.show_error(str(exc))
+                return
+            self.set_loaded_paths_status(loaded_count, missing_count, "saved paths")
+            return
+        if not isinstance(payload, dict):
+            self.show_error("Saved configuration is invalid.")
+            return
+        paths_payload = payload.get("paths")
         try:
-            loaded_count, missing_count = self.apply_paths_payload(payload)
+            loaded_count, missing_count = self.apply_paths_payload(paths_payload)
         except ValueError as exc:
             self.show_error(str(exc))
             return
-        self.set_loaded_paths_status(loaded_count, missing_count, "saved paths")
+        missing_plot_columns: list[str] = []
+        missing_x: str | None = None
+        plots_payload = payload.get("plots")
+        if plots_payload is not None:
+            try:
+                _plot_count, missing_plot_columns, missing_x = self.apply_plot_payload(
+                    plots_payload
+                )
+            except ValueError as exc:
+                self.show_error(str(exc))
+                return
+        status_parts = [
+            self.loaded_paths_message(loaded_count, missing_count, "saved paths")
+        ]
+        if missing_plot_columns:
+            unique_missing = ", ".join(sorted(set(missing_plot_columns)))
+            status_parts.append(f"Missing plot columns: {unique_missing}.")
+        if missing_x:
+            status_parts.append(f"Missing X column: {missing_x}.")
+        self.set_status(" ".join(status_parts))
 
     def load_config_from_file(self) -> None:
         path_str = filedialog.askopenfilename(
@@ -1105,12 +1284,43 @@ class PlotLogsInteractiveApp:
         except (OSError, json.JSONDecodeError) as exc:
             self.show_error(f"Failed to load CSV configuration: {exc}")
             return
+        if isinstance(payload, list):
+            try:
+                loaded_count, missing_count = self.apply_paths_payload(payload)
+            except ValueError as exc:
+                self.show_error(str(exc))
+                return
+            self.set_loaded_paths_status(loaded_count, missing_count, f"paths from {path.name}")
+            return
+        if not isinstance(payload, dict):
+            self.show_error("Saved configuration is invalid.")
+            return
+        paths_payload = payload.get("paths")
         try:
-            loaded_count, missing_count = self.apply_paths_payload(payload)
+            loaded_count, missing_count = self.apply_paths_payload(paths_payload)
         except ValueError as exc:
             self.show_error(str(exc))
             return
-        self.set_loaded_paths_status(loaded_count, missing_count, f"paths from {path.name}")
+        missing_plot_columns: list[str] = []
+        missing_x: str | None = None
+        plots_payload = payload.get("plots")
+        if plots_payload is not None:
+            try:
+                _plot_count, missing_plot_columns, missing_x = self.apply_plot_payload(
+                    plots_payload
+                )
+            except ValueError as exc:
+                self.show_error(str(exc))
+                return
+        status_parts = [
+            self.loaded_paths_message(loaded_count, missing_count, f"paths from {path.name}")
+        ]
+        if missing_plot_columns:
+            unique_missing = ", ".join(sorted(set(missing_plot_columns)))
+            status_parts.append(f"Missing plot columns: {unique_missing}.")
+        if missing_x:
+            status_parts.append(f"Missing X column: {missing_x}.")
+        self.set_status(" ".join(status_parts))
 
     def refresh_columns(self, preserve_state: bool = False) -> None:
         enabled_paths = self.enabled_paths()
@@ -1557,20 +1767,56 @@ class PlotLogsInteractiveApp:
         for _ in range(len(preset.entries) - 1):
             self.add_plot_row()
         missing_std: list[str] = []
+        missing_skew: list[str] = []
+        missing_min: list[str] = []
+        missing_max: list[str] = []
+        invalid_ema: list[str] = []
         for row, entry in zip(self.plot_rows, preset.entries, strict=True):
             row.y_combo.set(entry.y_column)
             row.height_var.set(self.format_ratio(entry.height))
+            if entry.ema is None:
+                row.ema_var.set("")
+            else:
+                row.ema_var.set(str(entry.ema))
+                if self.is_histogram_column(entry.y_column):
+                    invalid_ema.append(entry.y_column)
             if entry.std and self.std_column_for(entry.y_column) is None:
                 missing_std.append(entry.y_column)
-            self.update_summary_checkboxes(row, desired_std=entry.std)
-        if missing_std:
-            self.set_status(
-                "Preset "
-                f"{preset.name!r} loaded. Missing std columns for: "
-                f"{', '.join(missing_std)}."
+            if entry.skew and self.skew_column_for(entry.y_column) is None:
+                missing_skew.append(entry.y_column)
+            if entry.min and self.min_column_for(entry.y_column) is None:
+                missing_min.append(entry.y_column)
+            if entry.max and self.max_column_for(entry.y_column) is None:
+                missing_max.append(entry.y_column)
+            self.update_summary_checkboxes(
+                row,
+                desired_std=entry.std,
+                desired_skew=entry.skew,
+                desired_min=entry.min,
+                desired_max=entry.max,
             )
-        else:
-            self.set_status(f"Preset {preset.name!r} loaded.")
+        status_parts = [f"Preset {preset.name!r} loaded."]
+        if missing_std:
+            status_parts.append(
+                f"Missing std columns for: {', '.join(sorted(set(missing_std)))}."
+            )
+        if missing_skew:
+            status_parts.append(
+                f"Missing skew columns for: {', '.join(sorted(set(missing_skew)))}."
+            )
+        if missing_min:
+            status_parts.append(
+                f"Missing min columns for: {', '.join(sorted(set(missing_min)))}."
+            )
+        if missing_max:
+            status_parts.append(
+                f"Missing max columns for: {', '.join(sorted(set(missing_max)))}."
+            )
+        if invalid_ema:
+            status_parts.append(
+                f"EMA ignored for histogram columns: {', '.join(sorted(set(invalid_ema)))}."
+            )
+        self.set_status(" ".join(status_parts))
 
     def format_ratio(self, ratio: float) -> str:
         if ratio.is_integer():
@@ -1819,25 +2065,30 @@ class PlotLogsInteractiveApp:
                 return
 
         title = self.title_var.get().strip() or None
-        figure = self.build_figure(
-            logs=logs,
-            histogram_data=histogram_data,
-            x_column=x_column,
-            y_columns=y_columns,
-            std_mapping=std_mapping,
-            skew_mapping=skew_mapping,
-            min_mapping=min_mapping,
-            max_mapping=max_mapping,
-            ema_mapping=ema_mapping or None,
-            ratios=ratios or None,
-            title=title,
-            group_keys=group_keys,
-            file_opacities=file_opacities,
-            file_colors=file_colors,
-        )
+        try:
+            figure = self.build_figure(
+                logs=logs,
+                histogram_data=histogram_data,
+                x_column=x_column,
+                y_columns=y_columns,
+                std_mapping=std_mapping,
+                skew_mapping=skew_mapping,
+                min_mapping=min_mapping,
+                max_mapping=max_mapping,
+                ema_mapping=ema_mapping or None,
+                ratios=ratios or None,
+                title=title,
+                group_keys=group_keys,
+                file_opacities=file_opacities,
+                file_colors=file_colors,
+            )
+        except ValueError as exc:
+            self.show_error(str(exc))
+            return
         self.apply_line_opacity(figure, self.line_alpha_var.get())
         self.apply_line_width(figure, self.line_width_var.get())
         self.render_figure(figure)
+        self.save_selected_paths()
         status_message = histogram_status_message(histogram_data)
         if status_message:
             self.set_status(f"Plot updated. {status_message}")
@@ -1914,26 +2165,36 @@ class PlotLogsInteractiveApp:
                     strict=True,
                 ):
                     color = file_color or group_color_map.get(group_key)
-                    y_values = log.y_values[column]
-                    if ema_alpha is not None:
-                        y_values = exponential_moving_average(y_values, ema_alpha)
+                    raw_values = log.y_values[column]
+                    ema_values = (
+                        exponential_moving_average(raw_values, ema_alpha)
+                        if ema_alpha is not None
+                        else None
+                    )
                     line = axis.plot(
                         log.x_values,
-                        y_values,
+                        raw_values,
                         label=log.label,
                         color=color,
                     )[0]
                     line._plot_alpha_base = base_alpha
+                    if ema_values is not None:
+                        ema_line = axis.plot(
+                            log.x_values,
+                            ema_values,
+                            label="_ema",
+                            color=line.get_color(),
+                            linestyle="--",
+                        )[0]
+                        ema_line._plot_alpha_base = base_alpha
                     std_column = std_mapping.get(column)
                     if std_column is not None:
                         std_values = log.y_std_values.get(column)
                         if std_values:
-                            if ema_alpha is not None:
-                                std_values = exponential_moving_average(std_values, ema_alpha)
                             upper = [
                                 value + std
                                 for value, std in zip(
-                                    y_values,
+                                    raw_values,
                                     std_values,
                                     strict=True,
                                 )
@@ -1941,7 +2202,7 @@ class PlotLogsInteractiveApp:
                             lower = [
                                 value - std
                                 for value, std in zip(
-                                    y_values,
+                                    raw_values,
                                     std_values,
                                     strict=True,
                                 )
@@ -2018,6 +2279,13 @@ class PlotLogsInteractiveApp:
                 axis.set_title(series.label)
             hist_axes.setdefault(column, []).append(axis)
             hist_meshes[column] = mesh
+
+        if resolve_x_datetime_flag(logs, histogram_data, x_column):
+            for axis in axes:
+                locator = mdates.AutoDateLocator()
+                formatter = mdates.ConciseDateFormatter(locator)
+                axis.xaxis.set_major_locator(locator)
+                axis.xaxis.set_major_formatter(formatter)
 
         axes[-1].set_xlabel(x_column)
         if title:

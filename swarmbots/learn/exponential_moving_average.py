@@ -22,7 +22,7 @@ class ExponentialMovingAverage:
 
 
 class HybridEMA(ExponentialMovingAverage):
-    def __init__(self, alpha: float, n_pre_exponential_samples: int = 100):
+    def __init__(self, alpha: float, n_pre_exponential_samples: int = 200):
         super().__init__(alpha=alpha)
 
         if n_pre_exponential_samples < 0:

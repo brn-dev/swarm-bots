@@ -11,9 +11,9 @@ from loguru import logger
 from torch import nn
 
 from swarmbots.learn.action_dists.hybrid_action_dist import GSDEParams
-from swarmbots.learn.algos.mat.wm.mat_spr_policy import MATSPRPolicy
+from swarmbots.learn.algos.mat.wm.mat_nop_policy import MATNOPPolicy
 from swarmbots.learn.algos.ppo.wm.ppo_wm import PPOWM
-from swarmbots.learn.algos.ppo.ppo import AutomaticLearningRate, AutomaticLearningRateUpdateResult
+from swarmbots.learn.algos.ppo.ppo import AutomaticLearningRate, AutomaticLearningRateUpdateResult, StepsRolloutMode
 from swarmbots.learn.env_wrappers.obs_normalization.feature_wise_obs_norm_wrapper import (
     FeatureWiseObsNormWrapper,
 )
@@ -23,45 +23,50 @@ from swarmbots.learn.gsde_reset import GSDEProbabilityResetMode
 from swarmbots.learn.summary_statistics import SummaryStatisticsFormat, SummaryStatistics
 from swarmbots.learn.obs_indices import ObsIndices
 from swarmbots.learn.swarmbots_obs_indices import build_obs_indices
-from swarmbots.mj_env.float_or_dist_params import UniformDistParams
-from swarmbots.mj_env.scenarios.obstacle_street_scenario import ObstacleStreetScenario
+from swarmbots.mj_env.scenarios.scenario_presets import default_wall
+from swarmbots.mj_env.swarm.homogeneous_swarm import HomogeneousSwarm, PoissonDiscUnitLocationsConfig
 from swarmbots.mj_env.swarm_bots_env import SwarmBotsEnv
 
 
 def make_env_fn(
-    episode_length: int,
-    scenario_kwargs: dict[str, Any] | None = None,
-    render_mode: str | None = None,
+        episode_length: int,
+        scenario_kwargs: dict[str, Any] | None = None,
+        render_mode: str | None = None,
+        first_episode_length: int | None = None
 ) -> Callable[[], SwarmBotsEnv]:
     if scenario_kwargs is None:
         scenario_kwargs = {}
-        
+
     def _init() -> SwarmBotsEnv:
-        scenario = ObstacleStreetScenario.no_payload_no_opening_one_wall_no_poles(
-            # swarm=HomogeneousSwarm(
-            #     unit_start_locations=RandomUnitLocationsConfig(
-            #         num_units=4,
-            #         pairwise_distance=0.605,
-            #         max_distance=1.5,
-            #     ),
-            #     randomize_unit_orientations=True,
-            # ),
-            unit_start_locations='8:hourglass',
+        scenario = default_wall(
+            swarm=HomogeneousSwarm(
+                unit_start_locations=PoissonDiscUnitLocationsConfig(
+                    num_units=4,
+                    pairwise_distance=0.605,
+                    max_radius=1.5,
+                    num_unit_probs={
+                        2: 0.25,
+                        3: 0.25,
+                        4: 0.25,
+                        # 5: 0.25,
+                    }
+                ),
+                randomize_unit_orientations=True,
+            ),
+            # unit_start_locations='8:hourglass',
             randomize_unit_orientations=True,
-            first_wall_distance=UniformDistParams(1.5, 2.5),
+            first_wall_distance=2.0, # UniformDistParams(1.5, 2.5),
             **scenario_kwargs
         )
         return SwarmBotsEnv(
             scenario=scenario,
             episode_length=episode_length,
             render_mode=render_mode,
-            camera=0
+            camera=0,
+            first_episode_length=first_episode_length,
         )
+
     return _init
-
-
-
- 
 
 
 def wrap_vec_env(
@@ -70,7 +75,6 @@ def wrap_vec_env(
         gamma: float,
         rollout_device: torch.device
 ) -> SwarmBotsLearnEnvWrapper:
-
     vector_env = RecordEpisodeStatistics(vector_env)
     vector_env = FeatureWiseObsNormWrapper(
         vector_env,
@@ -105,7 +109,7 @@ def main() -> None:
         format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <5}</level> | <level>{message}</level>",
     )
 
-    n_envs = 6
+    n_envs = 23
     # unit_start_locations = [
     #     (0.0, 0.0, 0.0),
     #     (-0.6, 0, 0),
@@ -114,16 +118,15 @@ def main() -> None:
     total_timesteps = 100_000_000
     save_interval = 500
     world_model_num_next_steps = 3
-    world_model_loss_coef = 0.5
-    world_model_target_tau = 0.005
+    world_model_loss_coef = 0.1
+    world_model_target_tau = None
 
     # =====  ID  =====
     run_id = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
     # ===== LOAD =====
     load_path: str | None = None
-    load_path = "runs/mat_spr_swarm_bots/2026-02-01_20-31-56/models/model_6951936_steps_stopped.pt"
-    std: float | None = None
+    # load_path = "runs/mat_nop_swarm_bots_wall/2026-02-12_14-14-10/models/model_55513104_steps_stopped.pt"
 
     # ===== DEVICE =====
     use_cuda = True and torch.cuda.is_available()
@@ -140,7 +143,7 @@ def main() -> None:
         run_id = load_path.split('/')[2]
         logger.info(f'{run_id = }')
 
-    run_dir = f"runs/mat_spr_swarm_bots/{run_id}/"
+    run_dir = f"runs/mat_nop_swarm_bots_wall/{run_id}/"
     save_optimizer = True
 
     scenario_kwargs = {
@@ -150,9 +153,10 @@ def main() -> None:
         make_env_fn(
             episode_length=episode_length,
             scenario_kwargs=scenario_kwargs,
-            render_mode=None
+            render_mode=None,
+            first_episode_length=int(i * episode_length / n_envs)
         )
-        for _ in range(n_envs)
+        for i in range(1, n_envs + 1)
     ]
 
     print("Creating dummy env for capturing settings...")
@@ -171,7 +175,6 @@ def main() -> None:
         global_obs_dim=global_obs_dim,
         hidden_vars_dim=hidden_vars_dim,
     )
-
 
     def make_record_env() -> SwarmBotsLearnEnvWrapper:
         record_env = SyncVectorEnv([
@@ -200,8 +203,8 @@ def main() -> None:
         for _ in range(10):
             logger.warning('USING SYNC VECTOR ENV')
 
-    gamma = 0.991
-    
+    gamma = 0.99
+
     print("Wrapping...")
     env = wrap_vec_env(
         vector_env=vector_env,
@@ -218,25 +221,25 @@ def main() -> None:
     print(f"connectors_dim: {env.connectors_dim}")
 
     print("Initializing Policy...")
-    policy = MATSPRPolicy(
+    policy = MATNOPPolicy(
         env=env,
-        local_obs_encoder_hidden_dims=[192, 192],
-        action_encoder_hidden_dims=[32],
-        d_model=64,
-        d_model_decoder=32,
+        local_obs_encoder_hidden_dims=[256, 256],
+        action_encoder_hidden_dims=[64],
+        d_model=128,
+        d_model_decoder=64,
         nhead_encoder=2,
-        nhead_decoder=1,
+        nhead_decoder=2,
         num_layers_encoder=2,
         num_layers_decoder=2,
-        dim_feedforward_encoder=128,
-        dim_feedforward_decoder=64,
+        dim_feedforward_encoder=256,
+        dim_feedforward_decoder=128,
         dropout=0.0,
         n_critic_local_projection_hidden_layers=1,
         n_critic_value_regressor_hidden_layers=1,
         cross_attn_first=True,
         act_fn_cls=nn.GELU,
         continuous_config=GSDEParams(
-            base_std=0.45,
+            base_std=0.25,
             latent_sde_dim=None,
             std_learnable=True,
             full_std=True,
@@ -245,55 +248,101 @@ def main() -> None:
             normalize_latent_sde_by_dim=True
         ),
         bernoulli_initial_prob=0.75,
-        # SPR
-        d_model_transition_model=64,
+        max_agents=20,
+        # NOP
+        wm_pre_transition_dims=[128],
+        d_model_transition_model=128,
         nhead_transition_model=2,
         num_layers_transition_model=2,
         dim_feedforward_transition_model=128,
-        transition_model_coembed_hidden_dims=[96],
-        spr_projection_dims=[48],
-        residual_predictor=True
+        transition_model_coembed_hidden_dims=[128],
+        wm_pre_predictors_dims=[128, 128],
+        wm_scalar_predictor_hidden_dims=[],
+        wm_angle_predictor_hidden_dims=[],
+        wm_rot6d_predictor_hidden_dims=[],
+        wm_binary_predictor_hidden_dims=[],
+        local_scalar_target_indices=obs_indices.local_scalar_indices,
+        local_angle_target_indices=obs_indices.local_angle_indices,
+        local_rot6d_target_indices=obs_indices.local_rot6d_indices,
+        local_binary_target_indices=obs_indices.local_binary_indices,
+        scalar_loss_fn='smooth_l1',
+        scalar_loss_weight=1.0,
+        angle_loss_weight=1.0,
+        rot6d_loss_weight=1.0,
+        binary_loss_weight=1.0,
     )
     print(policy)
 
     print("Initializing PPO Algorithm...")
 
-    lr = 1e-4
+    initial_lr = 1e-4
 
     def auto_lr_updater(
+            old_lr: float,
             state: dict[str, Any],
+            n_iterations: int,
+            n_model_updates: int,
+            n_timesteps: int,
             early_stop_kl_div: Optional[float],
             early_stop_epoch: Optional[int],
             metrics: dict[str, Any]
     ) -> AutomaticLearningRateUpdateResult:
-        if early_stop_kl_div and early_stop_kl_div > 0.1:
-            state['counter'] = 0
-            decay_factor = np.clip(0.9 - early_stop_kl_div, 0.4, 0.8)
-            return {'ratio': decay_factor, 'msg': f'kl={early_stop_kl_div:.3f}', 'event': 'max_kl_hit'}
+        warmup_iterations: int = 250
+        cold_lr = initial_lr / 50
 
-        if early_stop_epoch and early_stop_epoch < 2:
+        if early_stop_kl_div is not None and early_stop_kl_div > 0.1:
             state['counter'] = 0
+            state['warmup'] = False
+            decay_factor = np.clip(0.9 - early_stop_kl_div, 0.4, 0.8)
+            return {
+                'new_lr': old_lr * decay_factor,
+                'msg': f'kl={early_stop_kl_div:.3f}',
+                'event': 'max_kl_hit'
+            }
+
+        if early_stop_epoch is not None and early_stop_epoch < 2:
+            state['counter'] = 0
+            state['warmup'] = False
             decay_factor = 0.9 if early_stop_epoch == 1 else 0.75
-            return {'ratio': decay_factor, 'msg': f'epoch={early_stop_epoch}', 'event': 'min_epoch_hit'}
+            return {
+                'new_lr': old_lr * decay_factor,
+                'msg': f'epoch={early_stop_epoch}',
+                'event': 'min_epoch_hit'
+            }
 
         clip_frac_stats: Optional[SummaryStatistics] = metrics.get('clip_frac', None)
-        if clip_frac_stats and clip_frac_stats.mean > 0.25:
-            clip_frac = clip_frac_stats.mean
+        if clip_frac_stats and clip_frac_stats.mean > 0.2:
             state['counter'] = 0
-            decay_factor = np.clip(1.15 - clip_frac, 0.5, 0.9)
-            return {'ratio': decay_factor, 'msg': f'{clip_frac=:.3f}', 'event': 'max_clip_frac_hit'}
+            state['warmup'] = False
+            clip_frac = clip_frac_stats.mean
+            decay_factor = np.clip(1.1 - clip_frac, 0.5, 0.9)
+            return {
+                'new_lr': old_lr * decay_factor,
+                'msg': f'{clip_frac=:.3f}',
+                'event': 'max_clip_frac_hit'
+            }
+
+        warmup: bool = state.get('warmup', warmup_iterations > 0) and n_iterations <= warmup_iterations
+        state['warmup'] = warmup
+        if warmup:
+            new_lr = cold_lr + (initial_lr - cold_lr) * n_iterations / warmup_iterations
+            return {
+                'new_lr': new_lr,
+                'msg': f'Warmup ({n_iterations}/{warmup_iterations})',
+                'event': 'warmup'
+            }
 
         counter = state.get('counter', 0) + 1
 
         if counter >= 2:
             state['counter'] = 0
-            return {'ratio': 1.3}
+            return {'new_lr': old_lr * 1.3}
 
         state['counter'] = counter
-        return {'ratio': None}
+        return {'new_lr': None}
 
     auto_lr = AutomaticLearningRate(
-        initial_lr=lr,
+        initial_lr=initial_lr,
         max_lr=2e-4,
         updater=auto_lr_updater
     )
@@ -301,7 +350,7 @@ def main() -> None:
         policy=policy,
         env=env,
         learning_rate=auto_lr,
-        n_episodes_per_rollout=n_envs,
+        rollout_mode=StepsRolloutMode(256 * 16),
         max_episode_length=episode_length,
         batch_size=256,
         n_epochs=5,
@@ -309,8 +358,9 @@ def main() -> None:
         gae_lambda=0.95,
         clip_range=0.2,
         target_kl=0.04,
-        gsde_reset_mode=GSDEProbabilityResetMode(probability=1/6),
-        ent_coef=0.003,
+        max_grad_norm=10.0,
+        gsde_reset_mode=GSDEProbabilityResetMode(probability=1 / 6),
+        ent_coef=1e-5,
         value_loss_fn=nn.SmoothL1Loss(),
         train_device=train_device,
         rollout_device=rollout_device,
@@ -321,11 +371,7 @@ def main() -> None:
 
     if load_path:
         logger.info(f"Loading model from {load_path}")
-        ppo.load(load_path)
-
-        if std:
-            logger.warning(f'Setting {std = }')
-            ppo.policy.action_dist.set_std(std)
+        ppo.load(load_path, recover_best_return_ema=False)
 
     print("Starting training...")
     ppo.learn(
@@ -354,14 +400,14 @@ def main() -> None:
             ('wm_loss_scaled', None, 'wm_loss'),
             ('val_loss_scaled', None, 'val_loss'),
             ('expl_var', '.3f'),
-            ('ep_rew', SummaryStatisticsFormat(mean=' .2f', std='.2f', max_value=' .2f')),
+            ('ep_rew', SummaryStatisticsFormat(mean=' .2f', std='.2f', max_value=' .2f', n='1')),
             ('ep_rew_ema', ' .3f'),
             ('best_ep_rew_ema', ' .3f', 'best_ema'),
             ('fps', None),
         ],
         make_record_env=make_record_env
     )
-    
+
     print("Training Finished.")
 
     env.close()

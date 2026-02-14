@@ -28,7 +28,8 @@ from swarmbots.learn.recording import record_policy
 
 
 
-MIN_ITERATIONS_FOR_BEST = 10
+MIN_ITERATIONS_FOR_EMA = 5
+MIN_ITERATIONS_FOR_BEST = 15
 
 LearningRate = float | list[float] | dict[str, float]
 
@@ -82,7 +83,8 @@ class BaseAlgorithm(abc.ABC):
     @abc.abstractmethod
     def perform_iteration(
             self,
-            episode_return_ema: ExponentialMovingAverage
+            episode_return_ema: ExponentialMovingAverage,
+            update_ema: bool,
     ) -> tuple[dict[str, Any], int]:
         """
         :return: metrics, rollout_steps
@@ -184,7 +186,10 @@ class BaseAlgorithm(abc.ABC):
                         break
 
                 iter_timer = PerformanceTimer().start()
-                metrics, rollout_steps = self.perform_iteration(episode_return_ema)
+                metrics, rollout_steps = self.perform_iteration(
+                    episode_return_ema,
+                    update_ema=self.n_total_iterations >= MIN_ITERATIONS_FOR_EMA
+                )
                 iter_duration = iter_timer.stop().get_duration()
 
                 current_return_ema = episode_return_ema.get()
@@ -240,8 +245,8 @@ class BaseAlgorithm(abc.ABC):
                     )
                     logger.log("SAVE", f"Saved {suffix} model to {save_path.as_posix()}")
 
-            if self._make_record_env is not None:
-                self._cmd_record('')
+            # if self._make_record_env is not None:
+            #     self._cmd_record('')
 
         finally:
             metric_logger.close()

@@ -3,7 +3,7 @@ from collections.abc import Collection, Iterable
 import json
 from pathlib import Path
 from datetime import datetime, timezone
-from typing import Any, Literal, Optional
+from typing import Any, Optional
 import numpy as np
 from loguru import logger
 
@@ -16,7 +16,9 @@ except Exception as e:
 from swarmbots.learn.summary_statistics import (
     SummaryStatistics,
     SummaryStatisticsFormat,
-    format_summary_statistics, NO_DATA,
+    format_summary_statistics,
+    NO_DATA,
+    NoData,
 )
 
 NEWLINE_KEY = '<newline>'
@@ -123,12 +125,13 @@ class MetricsLogger:
                 if v.max_value is not None:
                     csv_metrics[k + '__max'] = self._replace_no_data(v.max_value, round_ndigits=6)
 
-                if v.histogram is not None and v.histogram is not NO_DATA:
-                    csv_metrics[k + '__histogram_freqs'] = json.dumps([round(x, 6) for x in v.histogram.bin_frequencies])
-                    csv_metrics[k + '__histogram_edges'] = json.dumps([round(x, 6) for x in v.histogram.bin_edges])
-                elif v.histogram is NO_DATA:
-                    csv_metrics[k + '__histogram_freqs'] = None
-                    csv_metrics[k + '__histogram_edges'] = None
+                if v.histogram is not None:
+                    if v.histogram is NO_DATA:
+                        csv_metrics[k + '__histogram_freqs'] = None
+                        csv_metrics[k + '__histogram_edges'] = None
+                    else:
+                        csv_metrics[k + '__histogram_freqs'] = json.dumps([round(x, 6) for x in v.histogram.bin_frequencies])
+                        csv_metrics[k + '__histogram_edges'] = json.dumps([round(x, 6) for x in v.histogram.bin_edges])
             else:
                 csv_metrics[k] = v
 
@@ -204,7 +207,7 @@ class MetricsLogger:
         wandb_metrics: dict[str, Any] = {}
         for k, v in metrics.items():
             if isinstance(v, SummaryStatistics):
-                if v.data:
+                if v.data is not None and v.data.size > 0:
                     wandb_metrics[k] = wandb.Histogram(v.data, num_bins=32)
                 else:
                     wandb_metrics[k + "__mean"] = self._replace_no_data(v.mean)
@@ -219,7 +222,7 @@ class MetricsLogger:
                     if v.max_value is not None:
                         wandb_metrics[k + "__max"] = self._replace_no_data(v.max_value)
 
-                    if v.histogram is not None:
+                    if v.histogram is not None and v.histogram is not NO_DATA:
                         wandb_metrics[k + "__histogram_freqs"] = v.histogram.bin_frequencies
                         wandb_metrics[k + "__histogram_edges"] = v.histogram.bin_edges
                         wandb_hist = wandb.Histogram(
@@ -322,7 +325,7 @@ class MetricsLogger:
         return str(value)
 
     @staticmethod
-    def _replace_no_data(x: float | Literal[NO_DATA], round_ndigits: Optional[int] = None) -> Optional[float]:
+    def _replace_no_data(x: float | NoData, round_ndigits: Optional[int] = None) -> Optional[float]:
         if x is NO_DATA:
             return None
         if round_ndigits is not None:
