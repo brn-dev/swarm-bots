@@ -12,14 +12,14 @@
       "group": "",
       "opacity": 1.0,
       "color": "",
-      "enabled": true
+      "enabled": false
     },
     {
       "path": "swarm-bots\\runs\\mat_spr_swarm_bots_wall\\2026-02-14_21-41-00\\log.csv",
       "group": "",
       "opacity": 1.0,
       "color": "",
-      "enabled": true
+      "enabled": false
     }
   ],
   "plots": {
@@ -27,7 +27,7 @@
     "rows": [
       {
         "y": "ep_rew_ema",
-        "height": "3",
+        "height": "2",
         "ema": "0.02",
         "std": false,
         "skew": false,
@@ -35,18 +35,72 @@
         "max": false
       },
       {
-        "y": "ep_rew__mean",
+        "y": "act_loss__mean",
         "height": "1",
-        "ema": "0.02",
+        "ema": "",
         "std": true,
         "skew": false,
         "min": false,
         "max": false
       },
       {
-        "y": "ep_len__mean",
+        "y": "val_loss__mean",
         "height": "1",
-        "ema": "0.02",
+        "ema": "",
+        "std": true,
+        "skew": false,
+        "min": false,
+        "max": false
+      },
+      {
+        "y": "ent_loss__mean",
+        "height": "1",
+        "ema": "",
+        "std": true,
+        "skew": false,
+        "min": false,
+        "max": false
+      },
+      {
+        "y": "grad_norm__mean",
+        "height": "1",
+        "ema": "",
+        "std": true,
+        "skew": false,
+        "min": false,
+        "max": false
+      },
+      {
+        "y": "grad_clip_frac",
+        "height": "1",
+        "ema": "",
+        "std": false,
+        "skew": false,
+        "min": false,
+        "max": false
+      },
+      {
+        "y": "learning_rate",
+        "height": "1",
+        "ema": "",
+        "std": false,
+        "skew": false,
+        "min": false,
+        "max": false
+      },
+      {
+        "y": "metrics_time",
+        "height": "1",
+        "ema": "",
+        "std": false,
+        "skew": false,
+        "min": false,
+        "max": false
+      },
+      {
+        "y": "wm_loss_scaled__mean",
+        "height": "1",
+        "ema": "",
         "std": true,
         "skew": false,
         "min": false,

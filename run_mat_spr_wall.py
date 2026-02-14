@@ -43,7 +43,6 @@ def make_env_fn(
             swarm=HomogeneousSwarm(
                 unit_start_locations=PoissonDiscUnitLocationsConfig(
                     num_units=4,
-                    pairwise_distance=0.605,
                     max_radius=1.5,
                     num_unit_probs={
                         2: 0.25,

@@ -281,10 +281,29 @@ class BaseScenario(abc.ABC):
         return spec
 
     def add_cameras(self, spec: mujoco.MjSpec):
+        desired_pos_world = np.array([5.0, 0.0, 3.0], dtype=float)
+        desired_quat_world = np.empty(4, dtype=float)
+        desired_euler = np.array([0.0, np.pi / 3, np.pi / 2], dtype=float)
+        mujoco.mju_euler2Quat(desired_quat_world, desired_euler, "xyz")
+
         for unit_prefix in self.swarm.config.unit_prefixes:
             unit1_body = spec.body(unit_prefix + '-main_body')
+            body_quat = np.array(unit1_body.quat, dtype=float)
+            if unit1_body.frame is not None:
+                frame_quat = np.array(unit1_body.frame.quat, dtype=float)
+                combined = np.empty(4, dtype=float)
+                mujoco.mju_mulQuat(combined, frame_quat, body_quat)
+                body_quat = combined
+            body_quat_inv = body_quat.copy()
+            body_quat_inv[1:] *= -1.0
+
+            pos_body = np.empty(3, dtype=float)
+            mujoco.mju_rotVecQuat(pos_body, desired_pos_world, body_quat_inv)
+            cam_quat = np.empty(4, dtype=float)
+            mujoco.mju_mulQuat(cam_quat, body_quat_inv, desired_quat_world)
+
             unit1_body.add_camera(
-                pos=[5, 0, 3], euler=[0, np.pi / 3, np.pi / 2],
+                pos=pos_body.tolist(), quat=cam_quat.tolist(),
                 mode=mujoco.mjtCamLight.mjCAMLIGHT_TRACK)
             
     def build(self) -> tuple[mujoco.MjModel, mujoco.MjData]:
@@ -304,7 +323,7 @@ class BaseScenario(abc.ABC):
         return model, data
 
     def get_swarm_start_location(self):
-        return np.array([0.0, 0.0, self.swarm.max_unit_extent])
+        return np.array([0.0, 0.0, self.swarm.max_unit_extent * 1.1])
 
     def reset_scenario(self, model: mujoco.MjModel, data: mujoco.MjData) -> tuple[dict, SwarmConnections]:
         mujoco.mj_resetData(model, data)
