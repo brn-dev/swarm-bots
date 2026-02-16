@@ -24,7 +24,9 @@ from swarmbots.learn.summary_statistics import SummaryStatisticsFormat, SummaryS
 from swarmbots.learn.obs_indices import ObsIndices
 from swarmbots.learn.swarmbots_obs_indices import build_obs_indices
 from swarmbots.mj_env.scenarios.scenario_presets import default_wall
-from swarmbots.mj_env.swarm.homogeneous_swarm import HomogeneousSwarm, PoissonDiscUnitLocationsConfig
+from swarmbots.mj_env.swarm.homogeneous_swarm import HomogeneousSwarm, PoissonDiscUnitLocationsConfig, \
+    PreConnectedUnitLocationsConfig
+from swarmbots.mj_env.swarm.unit_config import UNIT_CONFIG_TETRAHEDRON_YX, UnitConfig
 from swarmbots.mj_env.swarm_bots_env import SwarmBotsEnv
 
 
@@ -40,20 +42,31 @@ def make_env_fn(
     def _init() -> SwarmBotsEnv:
         scenario = default_wall(
             swarm=HomogeneousSwarm(
-                unit_start_locations=PoissonDiscUnitLocationsConfig(
+                unit_config=UNIT_CONFIG_TETRAHEDRON_YX,
+                # unit_start_locations=PoissonDiscUnitLocationsConfig(
+                #     num_units=4,
+                #     max_radius=1.5,
+                #     num_unit_probs={
+                #         2: 1.0,
+                #         3: 1.0,
+                #         4: 1.0,
+                #         # 5: 1.0,
+                #     }
+                # ),
+                unit_start_locations=PreConnectedUnitLocationsConfig(
                     num_units=4,
-                    max_radius=1.5,
                     num_unit_probs={
-                        2: 0.25,
-                        3: 0.25,
-                        4: 0.25,
-                        # 5: 0.25,
-                    }
+                        2: 1.0,
+                        3: 1.0,
+                        4: 1.0,
+                        # 5: 1.0,
+                    },
+                    max_radius=1.5,
+                    z_pos=0.5,
                 ),
                 randomize_unit_orientations=True,
             ),
             # unit_start_locations='8:hourglass',
-            randomize_unit_orientations=True,
             first_wall_distance=2.0, # UniformDistParams(1.5, 2.5),
             **scenario_kwargs
         )
@@ -125,7 +138,7 @@ def main() -> None:
 
     # ===== LOAD =====
     load_path: str | None = None
-    # load_path = "runs/mat_nop_swarm_bots_wall/2026-02-12_14-14-10/models/model_55513104_steps_stopped.pt"
+    # load_path = "runs/mat_nop_swarm_bots_wall/2026-02-14_13-44-33/models/model_32456791_steps_stopped.pt"
 
     # ===== DEVICE =====
     use_cuda = True and torch.cuda.is_available()

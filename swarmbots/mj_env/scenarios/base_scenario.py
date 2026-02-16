@@ -8,6 +8,7 @@ from gymnasium import spaces
 from mujoco import MjsBody
 
 import swarmbots.mj_env.mujoco_utils as mj_utils
+from swarmbots.learn.performance_timer import PerformanceTimer
 from swarmbots.mj_env.quat_rot6d import quat_to_rot6d
 from swarmbots.mj_env.swarm.base_swarm import BaseSwarm
 from swarmbots.mj_env.swarm.swarm_connections import SwarmConnections
@@ -89,7 +90,8 @@ class BaseScenario(abc.ABC):
             disconnect_potential_threshold: float,
             friction: float | Iterable[float] | None,
             force_elliptic_cone: bool,
-            reset_settle_steps: int,
+            reset_settle_time: float,
+            reset_settle_timestep_scale: float,
             inactive_area_location: Iterable[float] | None,
             seed: int | None,
             _reset_in_init: bool = True,
@@ -105,9 +107,14 @@ class BaseScenario(abc.ABC):
         self.connection_dist_threshold = connection_dist_threshold
         self.connection_angle_threshold = connection_angle_threshold
         self.disconnect_potential_threshold = disconnect_potential_threshold
-        if reset_settle_steps < 0:
-            raise ValueError(f"Expected reset_settle_steps >= 0, got {reset_settle_steps}")
-        self.reset_settle_steps = int(reset_settle_steps)
+        if reset_settle_time < 0:
+            raise ValueError(f"Expected reset_settle_time >= 0, got {reset_settle_time}")
+        self.reset_settle_time = reset_settle_time
+        if reset_settle_timestep_scale <= 0:
+            raise ValueError(
+                f"Expected reset_settle_timestep_scale > 0, got {reset_settle_timestep_scale}"
+            )
+        self.reset_settle_timestep_scale = reset_settle_timestep_scale
 
         self.reward_weights: RewardWeights = {
             "progress_reward_weight": progress_reward_weight,
@@ -210,7 +217,8 @@ class BaseScenario(abc.ABC):
             'friction': self.friction,
             'force_elliptic_cone': self.force_elliptic_cone,
             'seed': self.seed,
-            'reset_settle_steps': self.reset_settle_steps,
+            'reset_settle_time': self.reset_settle_time,
+            'reset_settle_timestep_scale': self.reset_settle_timestep_scale,
             'inactive_area_location': self.inactive_area_location,
         }
 
@@ -349,27 +357,40 @@ class BaseScenario(abc.ABC):
         state['unit_positions'] = data.qpos[self._qpos_indices[:, :3]].copy()
         state['units_active_mask'] = units_active_mask
 
+
+        with PerformanceTimer() as settle_timer:
+            self.settle_reset(
+                model=model,
+                data=data,
+                state=state,
+            )
+        print(f'{settle_timer.get_duration() = }')
+
         return state, connections
 
     def settle_reset(
             self,
             model: mujoco.MjModel,
             data: mujoco.MjData,
-            connections: SwarmConnections,
             state: dict,
-            action_repeat: int,
     ) -> None:
-        if self.reset_settle_steps <= 0:
+        if self.reset_settle_time <= 0:
             return
-        units_active_mask = state.get("units_active_mask")
-        settle_action: SwarmActDict = {
-            "actuators": np.zeros(self.get_actuator_action_shape(), dtype=float),
-            "connectors": connections.get_is_active_mask().copy(),
-        }
-        settle_state = {"units_active_mask": units_active_mask}
-        for _ in range(self.reset_settle_steps):
-            self.apply_action(model, data, settle_action, settle_state, connections)
-            mujoco.mj_step(model, data, action_repeat)
+
+        remaining_time = self.reset_settle_time - data.time
+        if remaining_time <= 0:
+            return
+        original_timestep = model.opt.timestep
+        effective_timestep = original_timestep * self.reset_settle_timestep_scale
+        nstep = math.ceil(remaining_time / effective_timestep)
+        if self.reset_settle_timestep_scale != 1.0:
+            model.opt.timestep = effective_timestep
+        try:
+            mujoco.mj_step(model, data, nstep=int(nstep))
+        finally:
+            if model.opt.timestep != original_timestep:
+                model.opt.timestep = original_timestep
+
         state["unit_positions"] = data.qpos[self._qpos_indices[:, :3]].copy()
         if "progress" in state:
             state["progress"] = self.compute_progress(data, state.get("units_active_mask"))

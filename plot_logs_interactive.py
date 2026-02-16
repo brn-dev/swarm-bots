@@ -38,6 +38,8 @@ class PlotRow:
     height_entry: ttk.Entry
     ema_var: tk.StringVar
     ema_entry: ttk.Entry
+    ema_only_var: tk.BooleanVar
+    ema_only_check: ttk.Checkbutton
     std_var: tk.BooleanVar
     std_check: ttk.Checkbutton
     skew_var: tk.BooleanVar
@@ -256,6 +258,12 @@ def exponential_moving_average(values: Sequence[float], alpha: float) -> list[fl
     return result
 
 
+def cube_root(value: float) -> float:
+    if math.isnan(value):
+        return math.nan
+    return math.copysign(abs(value) ** (1.0 / 3.0), value)
+
+
 def histogram_edges_match(reference: Sequence[float], candidate: Sequence[float]) -> bool:
     if len(reference) != len(candidate):
         return False
@@ -423,6 +431,7 @@ class PlotLogsInteractiveApp:
         self.root = root
         self.root.title("Plot Logs Interactive")
         self.root.minsize(900, 600)
+        self.root.columnconfigure(0, minsize=450)
         self.root.columnconfigure(1, weight=1)
         self.root.rowconfigure(0, weight=1)
 
@@ -671,17 +680,19 @@ class PlotLogsInteractiveApp:
         self.plots_container.columnconfigure(5, weight=0, minsize=20)
         self.plots_container.columnconfigure(6, weight=0, minsize=20)
         self.plots_container.columnconfigure(7, weight=0, minsize=20)
-        self.plots_container.columnconfigure(8, weight=0)
+        self.plots_container.columnconfigure(8, weight=0, minsize=20)
+        self.plots_container.columnconfigure(9, weight=0)
 
         ttk.Label(self.plots_container, text="#").grid(row=0, column=0, sticky="w")
         ttk.Label(self.plots_container, text="Y Column").grid(row=0, column=1, sticky="w", padx=(10, 4))
         ttk.Label(self.plots_container, text="Height").grid(row=0, column=2, sticky="w", padx=(6, 4))
         ttk.Label(self.plots_container, text="EMA").grid(row=0, column=3, sticky="w", padx=(2, 4))
-        ttk.Label(self.plots_container, text="STD").grid(row=0, column=4, sticky="w", padx=(1, 1))
-        ttk.Label(self.plots_container, text="Skew").grid(row=0, column=5, sticky="w", padx=(1, 1))
-        ttk.Label(self.plots_container, text="Min").grid(row=0, column=6, sticky="w", padx=(1, 1))
-        ttk.Label(self.plots_container, text="Max").grid(row=0, column=7, sticky="w", padx=(1, 1))
-        ttk.Label(self.plots_container, text="").grid(row=0, column=8, sticky="w", padx=(6, 4))
+        ttk.Label(self.plots_container, text="(only)").grid(row=0, column=4, sticky="w", padx=(1, 1))
+        ttk.Label(self.plots_container, text="STD").grid(row=0, column=5, sticky="w", padx=(1, 1))
+        ttk.Label(self.plots_container, text="Skew").grid(row=0, column=6, sticky="w", padx=(1, 1))
+        ttk.Label(self.plots_container, text="Min").grid(row=0, column=7, sticky="w", padx=(1, 1))
+        ttk.Label(self.plots_container, text="Max").grid(row=0, column=8, sticky="w", padx=(1, 1))
+        ttk.Label(self.plots_container, text="").grid(row=0, column=9, sticky="w", padx=(6, 4))
 
         plots_buttons = ttk.Frame(plots_frame)
         plots_buttons.grid(row=2, column=0, sticky="ew", pady=(6, 0))
@@ -696,25 +707,25 @@ class PlotLogsInteractiveApp:
         refresh_button.grid(row=0, column=2, sticky="ew")
         self.toggle_std_button = ttk.Button(
             self.plots_container,
-            text="A",
+            text="↑",
             command=self.toggle_all_std,
             width=2,
         )
         self.toggle_skew_button = ttk.Button(
             self.plots_container,
-            text="A",
+            text="↑",
             command=self.toggle_all_skew,
             width=2,
         )
         self.toggle_min_button = ttk.Button(
             self.plots_container,
-            text="A",
+            text="↑",
             command=self.toggle_all_min,
             width=2,
         )
         self.toggle_max_button = ttk.Button(
             self.plots_container,
-            text="A",
+            text="↑",
             command=self.toggle_all_max,
             width=2,
         )
@@ -1056,6 +1067,7 @@ class PlotLogsInteractiveApp:
                 "y": y_value,
                 "height": row.height_var.get().strip(),
                 "ema": row.ema_var.get().strip(),
+                "ema_only": row.ema_only_var.get(),
                 "std": row.std_var.get(),
                 "skew": row.skew_var.get(),
                 "min": row.min_var.get(),
@@ -1162,6 +1174,9 @@ class PlotLogsInteractiveApp:
                     row.ema_var.set(str(ema_value))
                 elif isinstance(ema_value, str):
                     row.ema_var.set(ema_value)
+                ema_only_value = row_data.get("ema_only")
+                if isinstance(ema_only_value, bool):
+                    row.ema_only_var.set(ema_only_value)
                 if y_valid:
                     desired_std = row_data.get("std") if isinstance(row_data.get("std"), bool) else None
                     desired_skew = row_data.get("skew") if isinstance(row_data.get("skew"), bool) else None
@@ -1429,24 +1444,28 @@ class PlotLogsInteractiveApp:
         ema_entry = ttk.Entry(self.plots_container, textvariable=ema_var, width=5)
         ema_entry.grid(row=row_index, column=3, sticky="w", padx=(2, 4), pady=2)
 
+        ema_only_var = tk.BooleanVar(value=False)
+        ema_only_check = ttk.Checkbutton(self.plots_container, text="", variable=ema_only_var, padding=0)
+        ema_only_check.grid(row=row_index, column=4, padx=(1, 1), pady=2)
+
         std_var = tk.BooleanVar(value=False)
         std_check = ttk.Checkbutton(self.plots_container, text="", variable=std_var, padding=0)
-        std_check.grid(row=row_index, column=4, padx=(1, 1), pady=2)
+        std_check.grid(row=row_index, column=5, padx=(1, 1), pady=2)
 
         skew_var = tk.BooleanVar(value=False)
         skew_check = ttk.Checkbutton(self.plots_container, text="", variable=skew_var, padding=0)
-        skew_check.grid(row=row_index, column=5, padx=(1, 1), pady=2)
+        skew_check.grid(row=row_index, column=6, padx=(1, 1), pady=2)
 
         min_var = tk.BooleanVar(value=False)
         min_check = ttk.Checkbutton(self.plots_container, text="", variable=min_var, padding=0)
-        min_check.grid(row=row_index, column=6, padx=(1, 1), pady=2)
+        min_check.grid(row=row_index, column=7, padx=(1, 1), pady=2)
 
         max_var = tk.BooleanVar(value=False)
         max_check = ttk.Checkbutton(self.plots_container, text="", variable=max_var, padding=0)
-        max_check.grid(row=row_index, column=7, padx=(1, 1), pady=2)
+        max_check.grid(row=row_index, column=8, padx=(1, 1), pady=2)
 
         remove_button = ttk.Button(self.plots_container, text="🗑️", width=2)
-        remove_button.grid(row=row_index, column=8, sticky="e", pady=2)
+        remove_button.grid(row=row_index, column=9, sticky="e", pady=2)
 
         row = PlotRow(
             index_label=index_label,
@@ -1456,6 +1475,8 @@ class PlotLogsInteractiveApp:
             height_entry=height_entry,
             ema_var=ema_var,
             ema_entry=ema_entry,
+            ema_only_var=ema_only_var,
+            ema_only_check=ema_only_check,
             std_var=std_var,
             std_check=std_check,
             skew_var=skew_var,
@@ -1716,6 +1737,7 @@ class PlotLogsInteractiveApp:
             row.y_combo,
             row.height_entry,
             row.ema_entry,
+            row.ema_only_check,
             row.std_check,
             row.skew_check,
             row.min_check,
@@ -1734,6 +1756,7 @@ class PlotLogsInteractiveApp:
                 row.y_combo,
                 row.height_entry,
                 row.ema_entry,
+                row.ema_only_check,
                 row.std_check,
                 row.skew_check,
                 row.min_check,
@@ -1830,16 +1853,17 @@ class PlotLogsInteractiveApp:
             row.y_combo.grid_configure(row=index, column=1)
             row.height_entry.grid_configure(row=index, column=2)
             row.ema_entry.grid_configure(row=index, column=3)
-            row.std_check.grid_configure(row=index, column=4)
-            row.skew_check.grid_configure(row=index, column=5)
-            row.min_check.grid_configure(row=index, column=6)
-            row.max_check.grid_configure(row=index, column=7)
-            row.remove_button.grid_configure(row=index, column=8)
+            row.ema_only_check.grid_configure(row=index, column=4)
+            row.std_check.grid_configure(row=index, column=5)
+            row.skew_check.grid_configure(row=index, column=6)
+            row.min_check.grid_configure(row=index, column=7)
+            row.max_check.grid_configure(row=index, column=8)
+            row.remove_button.grid_configure(row=index, column=9)
         footer_row = len(self.plot_rows) + 1
-        self.toggle_std_button.grid(row=footer_row, column=4, pady=(4, 0))
-        self.toggle_skew_button.grid(row=footer_row, column=5, pady=(4, 0))
-        self.toggle_min_button.grid(row=footer_row, column=6, pady=(4, 0))
-        self.toggle_max_button.grid(row=footer_row, column=7, pady=(4, 0))
+        self.toggle_std_button.grid(row=footer_row, column=5, pady=(4, 0))
+        self.toggle_skew_button.grid(row=footer_row, column=6, pady=(4, 0))
+        self.toggle_min_button.grid(row=footer_row, column=7, pady=(4, 0))
+        self.toggle_max_button.grid(row=footer_row, column=8, pady=(4, 0))
 
     def toggle_all_std(self) -> None:
         desired = not any(
@@ -1956,6 +1980,7 @@ class PlotLogsInteractiveApp:
             return
 
         ema_mapping: dict[str, float] = {}
+        ema_only_columns: set[str] = set()
         for index, row in enumerate(self.plot_rows, start=1):
             raw_ema = row.ema_var.get().strip()
             if not raw_ema:
@@ -1973,6 +1998,8 @@ class PlotLogsInteractiveApp:
                 self.show_error(f"EMA is only supported for scalar plots (row {index}).")
                 return
             ema_mapping[y_value] = alpha
+            if row.ema_only_var.get():
+                ema_only_columns.add(y_value)
         histogram_columns = [column for column in y_columns if self.is_histogram_column(column)]
         histogram_specs: dict[str, tuple[str, str | None]] = {}
         for column in histogram_columns:
@@ -2076,6 +2103,7 @@ class PlotLogsInteractiveApp:
                 min_mapping=min_mapping,
                 max_mapping=max_mapping,
                 ema_mapping=ema_mapping or None,
+                ema_only_columns=ema_only_columns or None,
                 ratios=ratios or None,
                 title=title,
                 group_keys=group_keys,
@@ -2106,6 +2134,7 @@ class PlotLogsInteractiveApp:
         min_mapping: dict[str, str | None],
         max_mapping: dict[str, str | None],
         ema_mapping: dict[str, float] | None,
+        ema_only_columns: set[str] | None,
         ratios: Sequence[float] | None,
         title: str | None,
         group_keys: Sequence[str] | None,
@@ -2142,6 +2171,7 @@ class PlotLogsInteractiveApp:
         if file_colors is None or len(file_colors) != len(logs):
             file_colors = [""] * len(logs)
         group_color_map = self.group_color_map(group_keys) if logs else {}
+        ema_only_columns = ema_only_columns or set()
         hist_ranges = {
             column: histogram_value_range(series_list)
             for column, series_list in histogram_data.items()
@@ -2153,9 +2183,10 @@ class PlotLogsInteractiveApp:
             if series is None:
                 ema_alpha = ema_mapping.get(column) if ema_mapping else None
                 skew_axis: plt.Axes | None = None
-                if skew_mapping.get(column) is not None:
+                only_ema = ema_alpha is not None and column in ema_only_columns
+                if not only_ema and skew_mapping.get(column) is not None:
                     skew_axis = axis.twinx()
-                    skew_axis.set_ylabel("skew")
+                    skew_axis.set_ylabel("mean + cbrt(skew)")
                     skew_axis.grid(False)
                 for log, group_key, base_alpha, file_color in zip(
                     logs,
@@ -2171,90 +2202,104 @@ class PlotLogsInteractiveApp:
                         if ema_alpha is not None
                         else None
                     )
-                    line = axis.plot(
-                        log.x_values,
-                        raw_values,
-                        label=log.label,
-                        color=color,
-                    )[0]
-                    line._plot_alpha_base = base_alpha
+                    line_color = color
+                    if not only_ema:
+                        line = axis.plot(
+                            log.x_values,
+                            raw_values,
+                            label=log.label,
+                            color=color,
+                        )[0]
+                        line._plot_alpha_base = base_alpha
+                        line_color = line.get_color()
                     if ema_values is not None:
                         ema_line = axis.plot(
                             log.x_values,
                             ema_values,
-                            label="_ema",
-                            color=line.get_color(),
+                            label=log.label if only_ema else "_ema",
+                            color=line_color,
                             linestyle="--",
                         )[0]
                         ema_line._plot_alpha_base = base_alpha
-                    std_column = std_mapping.get(column)
-                    if std_column is not None:
-                        std_values = log.y_std_values.get(column)
-                        if std_values:
-                            upper = [
-                                value + std
-                                for value, std in zip(
-                                    raw_values,
-                                    std_values,
-                                    strict=True,
+                    if not only_ema:
+                        std_column = std_mapping.get(column)
+                        if std_column is not None:
+                            std_values = log.y_std_values.get(column)
+                            if std_values:
+                                upper = [
+                                    value + std
+                                    for value, std in zip(
+                                        raw_values,
+                                        std_values,
+                                        strict=True,
+                                    )
+                                ]
+                                lower = [
+                                    value - std
+                                    for value, std in zip(
+                                        raw_values,
+                                        std_values,
+                                        strict=True,
+                                    )
+                                ]
+                                axis.fill_between(
+                                    log.x_values,
+                                    lower,
+                                    upper,
+                                    alpha=0.2 * base_alpha,
+                                    color=line_color,
                                 )
-                            ]
-                            lower = [
-                                value - std
-                                for value, std in zip(
-                                    raw_values,
-                                    std_values,
-                                    strict=True,
-                                )
-                            ]
-                            axis.fill_between(
-                                log.x_values,
-                                lower,
-                                upper,
-                                alpha=0.2 * base_alpha,
-                                color=line.get_color(),
-                            )
-                    if skew_axis is not None:
-                        skew_values = log.y_skew_values.get(column)
-                        if skew_values:
-                            if ema_alpha is not None:
-                                skew_values = exponential_moving_average(skew_values, ema_alpha)
-                            skew_line = skew_axis.plot(
-                                log.x_values,
-                                skew_values,
-                                color=line.get_color(),
-                                linestyle="-.",
-                                label="_skew",
-                            )[0]
-                            skew_line._plot_alpha_base = base_alpha
-                    min_column = min_mapping.get(column)
-                    if min_column is not None:
-                        min_values = log.y_min_values.get(column)
-                        if min_values:
-                            if ema_alpha is not None:
-                                min_values = exponential_moving_average(min_values, ema_alpha)
-                            min_line = axis.plot(
-                                log.x_values,
-                                min_values,
-                                color=line.get_color(),
-                                linestyle="--",
-                                label="_min",
-                            )[0]
-                            min_line._plot_alpha_base = base_alpha
-                    max_column = max_mapping.get(column)
-                    if max_column is not None:
-                        max_values = log.y_max_values.get(column)
-                        if max_values:
-                            if ema_alpha is not None:
-                                max_values = exponential_moving_average(max_values, ema_alpha)
-                            max_line = axis.plot(
-                                log.x_values,
-                                max_values,
-                                color=line.get_color(),
-                                linestyle=":",
-                                label="_max",
-                            )[0]
-                            max_line._plot_alpha_base = base_alpha
+                        if skew_axis is not None:
+                            skew_values = log.y_skew_values.get(column)
+                            if skew_values:
+                                if ema_alpha is not None:
+                                    skew_values = exponential_moving_average(skew_values, ema_alpha)
+                                skew_adjusted = [
+                                    mean + cube_root(skew)
+                                    if not (math.isnan(mean) or math.isnan(skew))
+                                    else math.nan
+                                    for mean, skew in zip(
+                                        raw_values,
+                                        skew_values,
+                                        strict=True,
+                                    )
+                                ]
+                                skew_line = skew_axis.plot(
+                                    log.x_values,
+                                    skew_adjusted,
+                                    color=line_color,
+                                    linestyle="-.",
+                                    label="_skew",
+                                )[0]
+                                skew_line._plot_alpha_base = base_alpha
+                        min_column = min_mapping.get(column)
+                        if min_column is not None:
+                            min_values = log.y_min_values.get(column)
+                            if min_values:
+                                if ema_alpha is not None:
+                                    min_values = exponential_moving_average(min_values, ema_alpha)
+                                min_line = axis.plot(
+                                    log.x_values,
+                                    min_values,
+                                    color=line_color,
+                                    linestyle="--",
+                                    label="_min",
+                                )[0]
+                                min_line._plot_alpha_base = base_alpha
+                        max_column = max_mapping.get(column)
+                        if max_column is not None:
+                            max_values = log.y_max_values.get(column)
+                            if max_values:
+                                if ema_alpha is not None:
+                                    max_values = exponential_moving_average(max_values, ema_alpha)
+                                max_line = axis.plot(
+                                    log.x_values,
+                                    max_values,
+                                    color=line_color,
+                                    linestyle=":",
+                                    label="_max",
+                                )[0]
+                                max_line._plot_alpha_base = base_alpha
                 axis.set_ylabel(column)
                 axis.grid(alpha=0.3)
                 if first_scalar_axis is None:

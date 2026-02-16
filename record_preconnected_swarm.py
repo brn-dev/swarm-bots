@@ -19,7 +19,7 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--episodes", type=int, default=3)
     p.add_argument("--episode-length", type=int, default=200)
     p.add_argument("--action-repeat", type=int, default=15)
-    p.add_argument("--num-units", type=int, default=50)
+    p.add_argument("--num-units", type=int, default=6)
     p.add_argument("--max-radius", type=float, default=3.0)
     p.add_argument("--z-pos", type=float, default=1.5)
     p.add_argument("--no-center", action="store_true")
@@ -81,10 +81,11 @@ def main() -> None:
             done = False
             while not done:
                 action = env.action_space.sample()
+                action["actuators"][:] = 0
                 action["connectors"] = connectors_mask
-
-                if rng.random() < 0.1:
-                    action["actuators"] *= 0.0
+                #
+                # if rng.random() < 0.1:
+                #     action["actuators"] *= 0.0
 
                 obs, reward, terminated, truncated, info = env.step(action)
 
