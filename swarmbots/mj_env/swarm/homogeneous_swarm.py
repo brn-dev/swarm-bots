@@ -104,7 +104,6 @@ class PoissonDiscUnitLocationsConfig:
 @dataclass
 class PreConnectedUnitLocationsConfig:
     num_units: int
-    unit_config: UnitConfig
 
     num_unit_probs: Optional[dict[int, float]] = None
 
@@ -158,7 +157,7 @@ class HomogeneousSwarm(BaseSwarm):
             leg_radius: float = 0.025,
             hinge_range: float = np.pi / 3,
             hinge_armature: float = 0.003,
-            connection_torquescale: float = 10.0,
+            connection_torquescale: float = 50.0,
             randomize_unit_orientations: bool = False
     ) -> None:
         assert unit_start_quats is None or not randomize_unit_orientations
@@ -191,7 +190,6 @@ class HomogeneousSwarm(BaseSwarm):
         elif isinstance(unit_start_locations, PreConnectedUnitLocationsConfig):
             self.num_units = unit_start_locations.num_units
             self.unit_start_locations = unit_start_locations
-            unit_config = unit_start_locations.unit_config
             if unit_start_locations.num_unit_probs is not None:
                 counts = np.array(list(unit_start_locations.num_unit_probs.keys()), dtype=int)
                 probs = np.array(list(unit_start_locations.num_unit_probs.values()), dtype=float)
@@ -222,7 +220,7 @@ class HomogeneousSwarm(BaseSwarm):
         self.randomize_unit_orientations = randomize_unit_orientations
 
         if isinstance(unit_start_locations, PreConnectedUnitLocationsConfig):
-            if unit_start_quats is not None or randomize_unit_orientations:
+            if unit_start_quats is not None:
                 raise ValueError("PreConnectedUnitLocationsConfig determines unit orientations")
 
         assert unit_start_quats is None or len(unit_start_quats) == self.num_units
@@ -355,7 +353,7 @@ class HomogeneousSwarm(BaseSwarm):
             if start_quats is not None:
                 data.qpos[qpos_adr + 3:qpos_adr + 7] = start_quats[i]
             elif self.randomize_unit_orientations:
-                data.qpos[qpos_adr + 3:qpos_adr + 7] = random_quat_shoemake()
+                data.qpos[qpos_adr + 3:qpos_adr + 7] = random_quat_shoemake(rng)
             elif self.unit_start_quats is not None:
                 data.qpos[qpos_adr + 3:qpos_adr + 7] = self.unit_start_quats[i]
             else:
@@ -430,7 +428,7 @@ class HomogeneousSwarm(BaseSwarm):
             else:
                 points[points_found] = target_point
                 points_found += 1
-            
+
             if rejected_count > 1000:
                 raise RuntimeError(f"Failed to generate random start locations after 1000 attempts: {random_config=}")
 
@@ -457,8 +455,8 @@ class HomogeneousSwarm(BaseSwarm):
         SwarmConnections
     ]:
         random_config: PreConnectedUnitLocationsConfig = self.unit_start_locations
+        unit_config = self.config.unit_config
         num_units = random_config.num_units
-        unit_config = random_config.unit_config
         max_radius = random_config.max_radius
 
         if force_full or random_config.num_unit_probs is None:
@@ -468,19 +466,6 @@ class HomogeneousSwarm(BaseSwarm):
             num_active_units = rng.choice(list(unit_probs.keys()), p=list(unit_probs.values()))
         if num_active_units < 1:
             raise ValueError("num_active_units must be >= 1")
-
-        def random_quat(gen: np.random.Generator) -> np.ndarray:
-            u1, u2, u3 = gen.random(3)
-            s1 = np.sqrt(1.0 - u1)
-            s2 = np.sqrt(u1)
-            theta1 = 2.0 * np.pi * u2
-            theta2 = 2.0 * np.pi * u3
-            return np.array([
-                s2 * np.cos(theta2),
-                s1 * np.sin(theta1),
-                s1 * np.cos(theta1),
-                s2 * np.sin(theta2),
-            ], dtype=float)
 
         def quat_to_mat(quat: np.ndarray) -> np.ndarray:
             mat = np.empty(9, dtype=float)
@@ -512,7 +497,7 @@ class HomogeneousSwarm(BaseSwarm):
         available_connectors = [list(range(len(unit_config))) for _ in range(num_active_units)]
 
         locations_found = 1
-        quats[0] = random_quat(rng)
+        quats[0] = random_quat_shoemake(rng)
         rot_mats[0] = quat_to_mat(quats[0])
 
         rejected_count = 0
@@ -535,18 +520,7 @@ class HomogeneousSwarm(BaseSwarm):
             z1 = conn1_rot[:, 2]
             pos1 = positions[unit1] + z1 * connector_distance
 
-            twist = rng.random() * 2 * np.pi
-            x1 = conn1_rot[:, 0]
-            y1 = conn1_rot[:, 1]
-
             z2 = -z1
-            x2 = np.cos(twist) * x1 + np.sin(twist) * y1
-            x2 /= np.linalg.norm(x2)
-            y2 = np.cross(z2, x2)
-            y2 /= np.linalg.norm(y2)
-
-            conn2_rot = np.stack([x2, y2, z2], axis=1)
-            unit2_rot = conn2_rot @ limb_rot_mats[conn2].T
             pos2 = pos1 + z1 * connector_distance
 
 
@@ -570,6 +544,18 @@ class HomogeneousSwarm(BaseSwarm):
                             f"Failed to generate preconnected swarm after 1000 attempts: {random_config=}"
                         )
                     continue
+
+            twist = rng.random() * 2 * np.pi
+            x1 = conn1_rot[:, 0]
+            y1 = conn1_rot[:, 1]
+
+            x2 = np.cos(twist) * x1 + np.sin(twist) * y1
+            x2 /= np.linalg.norm(x2)
+            y2 = np.cross(z2, x2)
+            y2 /= np.linalg.norm(y2)
+
+            conn2_rot = np.stack([x2, y2, z2], axis=1)
+            unit2_rot = conn2_rot @ limb_rot_mats[conn2].T
 
             positions[locations_found] = pos2
             rot_mats[locations_found] = unit2_rot

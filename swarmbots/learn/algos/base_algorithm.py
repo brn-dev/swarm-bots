@@ -245,8 +245,8 @@ class BaseAlgorithm(abc.ABC):
                     )
                     logger.log("SAVE", f"Saved {suffix} model to {save_path.as_posix()}")
 
-            # if self._make_record_env is not None:
-            #     self._cmd_record('')
+            if self._make_record_env is not None:
+                self._cmd_record('')
 
         finally:
             metric_logger.close()

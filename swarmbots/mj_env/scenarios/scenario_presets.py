@@ -6,6 +6,7 @@ from swarmbots.mj_env.swarm.homogeneous_swarm import HomogeneousSwarm
 DEFAULT_KWARGS = {
     'friction': [2, 1e-2, 2e-4],
     'force_elliptic_cone': True,
+    'actuator_strength': 15.0,
     'actuators_activation_reward_weight': -7e-3,
     'units_without_connections_reward_weight': -2e-3,
     'units_with_double_connection_reward_weight': -1e-3,
@@ -15,7 +16,8 @@ DEFAULT_KWARGS = {
     'connectors_successfully_activated_reward_weight': 0e-3,
     'connectors_unsuccessfully_activated_reward_weight': -1e-4,
     'connectors_deactivated_reward_weight': 0e-3,
-    'reset_settle_steps': 30,
+    'reset_settle_time': 1.0,
+    'reset_settle_timestep_scale': 5,
 }
 
 def _resolve_swarm(
