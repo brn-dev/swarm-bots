@@ -3,6 +3,7 @@ from typing import Callable, Optional, Self
 
 import torch
 import torch.distributions as torchdist
+from glfw import init
 from torch import nn
 
 ActionNetInitialization = Callable[[nn.Linear], None]
@@ -15,20 +16,28 @@ class ActionDist(nn.Module, abc.ABC):
             self,
             latent_dim: int,
             action_dim: int,
-            action_net_initialization: ActionNetInitialization,
+            action_net_initialization: ActionNetInitialization | None,
+            init_action_net: bool = True
     ):
+        if init_action_net and action_net_initialization is None:
+            raise ValueError('If init_action_net=True, then action_net_initialization must be given!')
+
         super().__init__()
         self.latent_dim = latent_dim
         self.action_dim = action_dim
 
-        self.action_net_initialization = action_net_initialization
+        if init_action_net:
+            self.action_net_initialization = action_net_initialization
 
-        if latent_dim == action_dim:
-            self.action_net = nn.Identity()
+            if latent_dim == action_dim:
+                self.action_net = nn.Identity()
+            else:
+                self.action_net = nn.Linear(latent_dim, action_dim)
+
+                action_net_initialization(self.action_net)
         else:
-            self.action_net = nn.Linear(latent_dim, action_dim)
-
-            action_net_initialization(self.action_net)
+            self.action_net_initialization = None
+            self.action_net = None
 
         self.distribution: Optional[torchdist.Distribution] = None
 

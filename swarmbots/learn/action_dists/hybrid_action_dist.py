@@ -94,7 +94,8 @@ class HybridActionDistribution(ActionDist):
         super().__init__(
             latent_dim=latent_dim,
             action_dim=action_space.total_agent_action_dim,
-            action_net_initialization=action_net_initialization
+            action_net_initialization=None,
+            init_action_net=False,
         )
 
         # noinspection PyTypeChecker
@@ -103,6 +104,7 @@ class HybridActionDistribution(ActionDist):
                 latent_dim,
                 sub_space,
                 sub_space_dim,
+                action_net_initialization,
                 cont_conf,
                 bernoulli_initial_prob=bernoulli_initial_prob,
             )
@@ -191,6 +193,7 @@ def make_proba_distribution(
         latent_dim: int,
         action_space: spaces.Space,
         action_space_dim: int,
+        action_net_initialization: ActionNetInitialization,
         continuous_config: ContinuousActionDistConfig | None,
         bernoulli_initial_prob: float | None = None,
 ) -> ActionDist:
@@ -206,6 +209,7 @@ def make_proba_distribution(
                 std=continuous_config.std,
                 std_learnable=continuous_config.std_learnable,
                 epsilon=continuous_config.epsilon,
+                action_net_initialization=action_net_initialization,
             )
         elif isinstance(continuous_config, PredictedStdParams):
             return PredictedStdActionDist(
@@ -213,6 +217,7 @@ def make_proba_distribution(
                 action_dim=action_space_dim,
                 base_std=continuous_config.base_std,
                 epsilon=continuous_config.epsilon,
+                action_net_initialization=action_net_initialization,
                 log_std_net_initialization=continuous_config.log_std_net_initialization,
                 log_std_clamp_range=continuous_config.log_std_clamp_range,
                 squash_output=True,
@@ -231,12 +236,14 @@ def make_proba_distribution(
                 sde_learn_features=continuous_config.sde_learn_features,
                 latent_sde_net_initialization=continuous_config.latent_sde_net_initialization,
                 log_std_clamp_range=continuous_config.log_std_clamp_range,
+                action_net_initialization=action_net_initialization,
             )
     elif isinstance(action_space, spaces.MultiBinary):
         return BernoulliActionDist(
             latent_dim=latent_dim,
             action_dim=action_space_dim,
             initial_prob=bernoulli_initial_prob,
+            action_net_initialization=action_net_initialization,
         )
     else:
         raise NotImplementedError

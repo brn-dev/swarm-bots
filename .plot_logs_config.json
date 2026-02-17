@@ -1,28 +1,21 @@
 {
   "paths": [
     {
-      "path": "swarm-bots\\runs\\mat_nop_swarm_bots_wall\\2026-02-14_13-44-33\\log.csv",
-      "group": "",
-      "opacity": 1.0,
-      "color": "",
-      "enabled": false
-    },
-    {
-      "path": "swarm-bots\\runs\\mat_swarm_bots_wall\\2026-02-14_16-48-26\\log.csv",
-      "group": "",
-      "opacity": 1.0,
-      "color": "",
-      "enabled": false
-    },
-    {
-      "path": "swarm-bots\\runs\\mat_spr_swarm_bots_wall\\2026-02-14_21-41-00\\log.csv",
-      "group": "",
-      "opacity": 1.0,
-      "color": "",
-      "enabled": false
-    },
-    {
       "path": "swarm-bots\\runs\\mat_nop_swarm_bots_wall\\2026-02-15_13-34-05\\log.csv",
+      "group": "",
+      "opacity": 1.0,
+      "color": "",
+      "enabled": true
+    },
+    {
+      "path": "swarm-bots\\runs\\mat_nop_swarm_bots_wall\\2026-02-16_13-07-10\\log.csv",
+      "group": "",
+      "opacity": 1.0,
+      "color": "",
+      "enabled": true
+    },
+    {
+      "path": "swarm-bots\\runs\\mat_nop_swarm_bots_wall\\2026-02-16_14-44-26\\log.csv",
       "group": "",
       "opacity": 1.0,
       "color": "",

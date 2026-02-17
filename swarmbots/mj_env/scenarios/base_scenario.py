@@ -357,14 +357,11 @@ class BaseScenario(abc.ABC):
         state['unit_positions'] = data.qpos[self._qpos_indices[:, :3]].copy()
         state['units_active_mask'] = units_active_mask
 
-
-        with PerformanceTimer() as settle_timer:
-            self.settle_reset(
-                model=model,
-                data=data,
-                state=state,
-            )
-        print(f'{settle_timer.get_duration() = }')
+        self.settle_reset(
+            model=model,
+            data=data,
+            state=state,
+        )
 
         return state, connections
 
