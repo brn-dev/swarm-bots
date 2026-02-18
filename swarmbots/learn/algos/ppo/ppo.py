@@ -723,7 +723,19 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerType]):
     def _get_optimizer_state_dict(self) -> dict[str, Any]:
         return self.optimizer.state_dict()
 
-    def _apply_optimizer_state_dict(self, state_dict: dict[str, Any]) -> None:
+    def _apply_optimizer_state_dict(
+            self,
+            state_dict: dict[str, Any],
+            missing_keys: list[str],
+            unexpected_keys: list[str],
+    ) -> None:
+        if missing_keys:
+            raise NotImplementedError()
+        if unexpected_keys:
+            state_dict = state_dict.copy()
+            for k in unexpected_keys:
+                state_dict.pop(k, None)
+
         self.optimizer.load_state_dict(state_dict)
         self._move_optimizer_state_to_device(self.train_device)
         try:

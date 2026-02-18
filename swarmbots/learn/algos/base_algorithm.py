@@ -29,7 +29,7 @@ from swarmbots.learn.recording import record_policy
 
 
 MIN_ITERATIONS_FOR_EMA = 5
-MIN_ITERATIONS_FOR_BEST = 15
+MIN_ITERATIONS_FOR_BEST = 50
 
 LearningRate = float | list[float] | dict[str, float]
 
@@ -73,7 +73,12 @@ class BaseAlgorithm(abc.ABC):
         raise NotImplementedError()
 
     @abc.abstractmethod
-    def _apply_optimizer_state_dict(self, state_dict: dict[str, Any]) -> None:
+    def _apply_optimizer_state_dict(
+            self,
+            state_dict: dict[str, Any],
+            missing_keys: list[str],
+            unexpected_keys: list[str],
+    ) -> None:
         raise NotImplementedError()
 
     @abc.abstractmethod
@@ -194,7 +199,7 @@ class BaseAlgorithm(abc.ABC):
 
                 current_return_ema = episode_return_ema.get()
                 self._last_return_ema = current_return_ema
-                if self.n_total_iterations - learn_started_iterations >= MIN_ITERATIONS_FOR_BEST:
+                if current_return_ema and self.n_total_iterations - learn_started_iterations >= MIN_ITERATIONS_FOR_BEST:
                     best_return_ema, best_save_counter = self._maybe_save_best_ema_model(
                         best_models_dir=best_models_dir,
                         best_rotation_n=best_rotation_n,
@@ -386,14 +391,30 @@ class BaseAlgorithm(abc.ABC):
             path: str | Path,
             *,
             map_location: Any | None = "cpu",
-            recover_best_return_ema: bool = True
+            recover_best_return_ema: bool = True,
+            strict_load_state_dict: bool = True
     ) -> None:
         checkpoint = load_checkpoint(path, map_location=map_location)
-        self.policy.load_state_dict(extract_policy_state_dict(checkpoint))
+        missing_keys, unexpected_keys = self.policy.load_state_dict(
+            extract_policy_state_dict(checkpoint),
+            strict=strict_load_state_dict
+        )
+        if missing_keys or unexpected_keys:
+            logger.warning(f'{missing_keys = },  {unexpected_keys = }')
 
         optimizer_state_dict = extract_optimizer_state_dict(checkpoint)
         if optimizer_state_dict is not None:
-            self._apply_optimizer_state_dict(optimizer_state_dict)
+            if missing_keys or unexpected_keys:
+                logger.warning(f'Skipping optimizer state dict load, as we have missing/unexpected keys')
+                self._apply_learning_rate(self.learning_rate)
+            else:
+                self._apply_optimizer_state_dict(
+                    optimizer_state_dict,
+                    missing_keys=missing_keys,
+                    unexpected_keys=unexpected_keys,
+                )
+        else:
+            self._apply_learning_rate(self.learning_rate)
 
         if isinstance(checkpoint, dict):
             self.n_total_iterations = checkpoint.get("n_total_iterations", 0)

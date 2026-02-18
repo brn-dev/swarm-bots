@@ -31,23 +31,37 @@ STATE_PATH = Path(__file__).resolve().with_name(".plot_logs_config.json")
 
 @dataclass(slots=True)
 class PlotRow:
-    index_label: ttk.Label
+    index_var: tk.StringVar
+    index_combo: ttk.Combobox
     y_var: tk.StringVar
     y_combo: ttk.Combobox
     height_var: tk.StringVar
     height_entry: ttk.Entry
     ema_var: tk.StringVar
+    ema_container: ttk.Frame
     ema_entry: ttk.Entry
     ema_only_var: tk.BooleanVar
     ema_only_check: ttk.Checkbutton
+    std_container: ttk.Frame
     std_var: tk.BooleanVar
     std_check: ttk.Checkbutton
+    std_ema_var: tk.BooleanVar
+    std_ema_check: ttk.Checkbutton
+    skew_container: ttk.Frame
     skew_var: tk.BooleanVar
     skew_check: ttk.Checkbutton
+    skew_ema_var: tk.BooleanVar
+    skew_ema_check: ttk.Checkbutton
+    min_container: ttk.Frame
     min_var: tk.BooleanVar
     min_check: ttk.Checkbutton
+    min_ema_var: tk.BooleanVar
+    min_ema_check: ttk.Checkbutton
+    max_container: ttk.Frame
     max_var: tk.BooleanVar
     max_check: ttk.Checkbutton
+    max_ema_var: tk.BooleanVar
+    max_ema_check: ttk.Checkbutton
     remove_button: ttk.Button
 
 
@@ -431,7 +445,7 @@ class PlotLogsInteractiveApp:
         self.root = root
         self.root.title("Plot Logs Interactive")
         self.root.minsize(900, 600)
-        self.root.columnconfigure(0, minsize=450)
+        self.root.columnconfigure(0, minsize=500)
         self.root.columnconfigure(1, weight=1)
         self.root.rowconfigure(0, weight=1)
 
@@ -448,8 +462,10 @@ class PlotLogsInteractiveApp:
         self.figure: plt.Figure | None = None
         self.canvas: FigureCanvasTkAgg | None = None
         self.toolbar: NavigationToolbar2Tk | None = None
+        self.updating_row_index_widgets = False
 
         self.delimiter_var = tk.StringVar(value=";")
+        self.auto_refresh_interval_var = tk.StringVar(value="0")
         self.title_var = tk.StringVar()
         self.status_var = tk.StringVar(value="Select CSV files to begin.")
         self.group_var = tk.StringVar()
@@ -469,8 +485,10 @@ class PlotLogsInteractiveApp:
             "grid": matplotlib.rcParams["grid.color"],
             "legend_face": matplotlib.rcParams["legend.facecolor"],
         }
+        self.auto_refresh_after_id: str | None = None
 
         self._build_layout()
+        self.auto_refresh_interval_var.trace_add("write", self.on_auto_refresh_interval_change)
         self.apply_theme(self.dark_mode_var.get())
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
         self.root.bind_all("<KeyPress>", self.on_global_keypress, add=True)
@@ -680,19 +698,17 @@ class PlotLogsInteractiveApp:
         self.plots_container.columnconfigure(5, weight=0, minsize=20)
         self.plots_container.columnconfigure(6, weight=0, minsize=20)
         self.plots_container.columnconfigure(7, weight=0, minsize=20)
-        self.plots_container.columnconfigure(8, weight=0, minsize=20)
-        self.plots_container.columnconfigure(9, weight=0)
+        self.plots_container.columnconfigure(8, weight=0)
 
         ttk.Label(self.plots_container, text="#").grid(row=0, column=0, sticky="w")
         ttk.Label(self.plots_container, text="Y Column").grid(row=0, column=1, sticky="w", padx=(10, 4))
         ttk.Label(self.plots_container, text="Height").grid(row=0, column=2, sticky="w", padx=(6, 4))
-        ttk.Label(self.plots_container, text="EMA").grid(row=0, column=3, sticky="w", padx=(2, 4))
-        ttk.Label(self.plots_container, text="(only)").grid(row=0, column=4, sticky="w", padx=(1, 1))
-        ttk.Label(self.plots_container, text="STD").grid(row=0, column=5, sticky="w", padx=(1, 1))
-        ttk.Label(self.plots_container, text="Skew").grid(row=0, column=6, sticky="w", padx=(1, 1))
-        ttk.Label(self.plots_container, text="Min").grid(row=0, column=7, sticky="w", padx=(1, 1))
-        ttk.Label(self.plots_container, text="Max").grid(row=0, column=8, sticky="w", padx=(1, 1))
-        ttk.Label(self.plots_container, text="").grid(row=0, column=9, sticky="w", padx=(6, 4))
+        ttk.Label(self.plots_container, text="EMA (only)").grid(row=0, column=3, sticky="w", padx=(2, 4))
+        ttk.Label(self.plots_container, text="STD\n(ema)").grid(row=0, column=4, sticky="w", padx=(1, 1))
+        ttk.Label(self.plots_container, text="Skew\n(ema)").grid(row=0, column=5, sticky="w", padx=(1, 1))
+        ttk.Label(self.plots_container, text="Min\n(ema)").grid(row=0, column=6, sticky="w", padx=(1, 1))
+        ttk.Label(self.plots_container, text="Max\n(ema)").grid(row=0, column=7, sticky="w", padx=(1, 1))
+        ttk.Label(self.plots_container, text="").grid(row=0, column=8, sticky="w", padx=(6, 4))
 
         plots_buttons = ttk.Frame(plots_frame)
         plots_buttons.grid(row=2, column=0, sticky="ew", pady=(6, 0))
@@ -754,8 +770,16 @@ class PlotLogsInteractiveApp:
 
         action_frame = ttk.Frame(controls_frame)
         action_frame.grid(row=3, column=0, sticky="ew")
+        action_frame.columnconfigure(0, weight=1)
         plot_button = ttk.Button(action_frame, text="Plot", command=self.plot, style="Accent.TButton")
         plot_button.grid(row=0, column=0, sticky="ew")
+        ttk.Label(action_frame, text="Auto refresh (s)").grid(row=0, column=1, sticky="w", padx=(8, 4))
+        auto_refresh_entry = ttk.Entry(
+            action_frame,
+            textvariable=self.auto_refresh_interval_var,
+            width=6,
+        )
+        auto_refresh_entry.grid(row=0, column=2, sticky="w")
 
         status_label = ttk.Label(controls_frame, textvariable=self.status_var, wraplength=240)
         status_label.grid(row=4, column=0, sticky="w", pady=(6, 0))
@@ -1069,9 +1093,13 @@ class PlotLogsInteractiveApp:
                 "ema": row.ema_var.get().strip(),
                 "ema_only": row.ema_only_var.get(),
                 "std": row.std_var.get(),
+                "std_ema": row.std_ema_var.get(),
                 "skew": row.skew_var.get(),
+                "skew_ema": row.skew_ema_var.get(),
                 "min": row.min_var.get(),
+                "min_ema": row.min_ema_var.get(),
                 "max": row.max_var.get(),
+                "max_ema": row.max_ema_var.get(),
             }
             rows.append(entry)
         return {
@@ -1083,7 +1111,15 @@ class PlotLogsInteractiveApp:
         return {
             "paths": self.build_paths_payload(),
             "plots": self.build_plot_payload(),
+            "auto_refresh_interval": self.auto_refresh_interval_var.get().strip(),
         }
+
+    def apply_auto_refresh_interval_payload(self, payload: dict[str, object]) -> None:
+        interval_value = payload.get("auto_refresh_interval")
+        if isinstance(interval_value, (int, float)):
+            self.auto_refresh_interval_var.set(str(interval_value))
+        elif isinstance(interval_value, str):
+            self.auto_refresh_interval_var.set(interval_value.strip() or "0")
 
     def apply_paths_payload(self, payload: object) -> tuple[int, int]:
         if not isinstance(payload, list):
@@ -1179,15 +1215,31 @@ class PlotLogsInteractiveApp:
                     row.ema_only_var.set(ema_only_value)
                 if y_valid:
                     desired_std = row_data.get("std") if isinstance(row_data.get("std"), bool) else None
+                    desired_std_ema = (
+                        row_data.get("std_ema") if isinstance(row_data.get("std_ema"), bool) else None
+                    )
                     desired_skew = row_data.get("skew") if isinstance(row_data.get("skew"), bool) else None
+                    desired_skew_ema = (
+                        row_data.get("skew_ema") if isinstance(row_data.get("skew_ema"), bool) else None
+                    )
                     desired_min = row_data.get("min") if isinstance(row_data.get("min"), bool) else None
+                    desired_min_ema = (
+                        row_data.get("min_ema") if isinstance(row_data.get("min_ema"), bool) else None
+                    )
                     desired_max = row_data.get("max") if isinstance(row_data.get("max"), bool) else None
+                    desired_max_ema = (
+                        row_data.get("max_ema") if isinstance(row_data.get("max_ema"), bool) else None
+                    )
                     self.update_summary_checkboxes(
                         row,
                         desired_std=desired_std,
+                        desired_std_ema=desired_std_ema,
                         desired_skew=desired_skew,
+                        desired_skew_ema=desired_skew_ema,
                         desired_min=desired_min,
+                        desired_min_ema=desired_min_ema,
                         desired_max=desired_max,
+                        desired_max_ema=desired_max_ema,
                         preserve_existing=True,
                     )
         else:
@@ -1275,6 +1327,7 @@ class PlotLogsInteractiveApp:
             except ValueError as exc:
                 self.show_error(str(exc))
                 return
+        self.apply_auto_refresh_interval_payload(payload)
         status_parts = [
             self.loaded_paths_message(loaded_count, missing_count, "saved paths")
         ]
@@ -1327,6 +1380,7 @@ class PlotLogsInteractiveApp:
             except ValueError as exc:
                 self.show_error(str(exc))
                 return
+        self.apply_auto_refresh_interval_payload(payload)
         status_parts = [
             self.loaded_paths_message(loaded_count, missing_count, f"paths from {path.name}")
         ]
@@ -1418,18 +1472,33 @@ class PlotLogsInteractiveApp:
             if not preserve_state:
                 row.y_combo.set("")
                 row.std_var.set(False)
+                row.std_ema_var.set(False)
                 row.skew_var.set(False)
+                row.skew_ema_var.set(False)
                 row.min_var.set(False)
+                row.min_ema_var.set(False)
                 row.max_var.set(False)
+                row.max_ema_var.set(False)
             row.std_check.state(["disabled"])
+            row.std_ema_check.state(["disabled"])
             row.skew_check.state(["disabled"])
+            row.skew_ema_check.state(["disabled"])
             row.min_check.state(["disabled"])
+            row.min_ema_check.state(["disabled"])
             row.max_check.state(["disabled"])
+            row.max_ema_check.state(["disabled"])
 
     def add_plot_row(self) -> None:
         row_index = len(self.plot_rows) + 1
-        index_label = ttk.Label(self.plots_container, text=str(row_index))
-        index_label.grid(row=row_index, column=0, sticky="w", pady=2)
+        index_var = tk.StringVar(value=str(row_index))
+        index_combo = ttk.Combobox(
+            self.plots_container,
+            textvariable=index_var,
+            state="readonly",
+            width=2,
+            values=[str(index) for index in range(1, len(self.plot_rows) + 2)],
+        )
+        index_combo.grid(row=row_index, column=0, sticky="w", pady=2)
 
         y_var = tk.StringVar()
         y_combo = ttk.Combobox(self.plots_container, textvariable=y_var, state="disabled", width=28)
@@ -1441,51 +1510,91 @@ class PlotLogsInteractiveApp:
         height_entry.grid(row=row_index, column=2, sticky="w", padx=(6, 4), pady=2)
 
         ema_var = tk.StringVar()
-        ema_entry = ttk.Entry(self.plots_container, textvariable=ema_var, width=5)
-        ema_entry.grid(row=row_index, column=3, sticky="w", padx=(2, 4), pady=2)
+        ema_container = ttk.Frame(self.plots_container)
+        ema_container.grid(row=row_index, column=3, sticky="w", padx=(2, 4), pady=2)
+        ema_entry = ttk.Entry(ema_container, textvariable=ema_var, width=5)
+        ema_entry.grid(row=0, column=0, sticky="w")
 
         ema_only_var = tk.BooleanVar(value=False)
-        ema_only_check = ttk.Checkbutton(self.plots_container, text="", variable=ema_only_var, padding=0)
-        ema_only_check.grid(row=row_index, column=4, padx=(1, 1), pady=2)
+        ema_only_check = ttk.Checkbutton(ema_container, text="", variable=ema_only_var, padding=0)
+        ema_only_check.grid(row=0, column=1, padx=(3, 0))
 
+        std_container = ttk.Frame(self.plots_container)
+        std_container.grid(row=row_index, column=4, padx=(1, 1), pady=2, sticky="w")
         std_var = tk.BooleanVar(value=False)
-        std_check = ttk.Checkbutton(self.plots_container, text="", variable=std_var, padding=0)
-        std_check.grid(row=row_index, column=5, padx=(1, 1), pady=2)
+        std_check = ttk.Checkbutton(std_container, text="", variable=std_var, padding=0)
+        std_check.grid(row=0, column=0)
+        std_ema_var = tk.BooleanVar(value=False)
+        std_ema_check = ttk.Checkbutton(std_container, text="", variable=std_ema_var, padding=0)
+        std_ema_check.grid(row=0, column=1)
 
+        skew_container = ttk.Frame(self.plots_container)
+        skew_container.grid(row=row_index, column=5, padx=(1, 1), pady=2, sticky="w")
         skew_var = tk.BooleanVar(value=False)
-        skew_check = ttk.Checkbutton(self.plots_container, text="", variable=skew_var, padding=0)
-        skew_check.grid(row=row_index, column=6, padx=(1, 1), pady=2)
+        skew_check = ttk.Checkbutton(skew_container, text="", variable=skew_var, padding=0)
+        skew_check.grid(row=0, column=0)
+        skew_ema_var = tk.BooleanVar(value=False)
+        skew_ema_check = ttk.Checkbutton(skew_container, text="", variable=skew_ema_var, padding=0)
+        skew_ema_check.grid(row=0, column=1)
 
+        min_container = ttk.Frame(self.plots_container)
+        min_container.grid(row=row_index, column=6, padx=(1, 1), pady=2, sticky="w")
         min_var = tk.BooleanVar(value=False)
-        min_check = ttk.Checkbutton(self.plots_container, text="", variable=min_var, padding=0)
-        min_check.grid(row=row_index, column=7, padx=(1, 1), pady=2)
+        min_check = ttk.Checkbutton(min_container, text="", variable=min_var, padding=0)
+        min_check.grid(row=0, column=0)
+        min_ema_var = tk.BooleanVar(value=False)
+        min_ema_check = ttk.Checkbutton(min_container, text="", variable=min_ema_var, padding=0)
+        min_ema_check.grid(row=0, column=1)
 
+        max_container = ttk.Frame(self.plots_container)
+        max_container.grid(row=row_index, column=7, padx=(1, 1), pady=2, sticky="w")
         max_var = tk.BooleanVar(value=False)
-        max_check = ttk.Checkbutton(self.plots_container, text="", variable=max_var, padding=0)
-        max_check.grid(row=row_index, column=8, padx=(1, 1), pady=2)
+        max_check = ttk.Checkbutton(max_container, text="", variable=max_var, padding=0)
+        max_check.grid(row=0, column=0)
+        max_ema_var = tk.BooleanVar(value=False)
+        max_ema_check = ttk.Checkbutton(max_container, text="", variable=max_ema_var, padding=0)
+        max_ema_check.grid(row=0, column=1)
 
         remove_button = ttk.Button(self.plots_container, text="🗑️", width=2)
-        remove_button.grid(row=row_index, column=9, sticky="e", pady=2)
+        remove_button.grid(row=row_index, column=8, sticky="e", pady=2)
 
         row = PlotRow(
-            index_label=index_label,
+            index_var=index_var,
+            index_combo=index_combo,
             y_var=y_var,
             y_combo=y_combo,
             height_var=height_var,
             height_entry=height_entry,
             ema_var=ema_var,
+            ema_container=ema_container,
             ema_entry=ema_entry,
             ema_only_var=ema_only_var,
             ema_only_check=ema_only_check,
+            std_container=std_container,
             std_var=std_var,
             std_check=std_check,
+            std_ema_var=std_ema_var,
+            std_ema_check=std_ema_check,
+            skew_container=skew_container,
             skew_var=skew_var,
             skew_check=skew_check,
+            skew_ema_var=skew_ema_var,
+            skew_ema_check=skew_ema_check,
+            min_container=min_container,
             min_var=min_var,
             min_check=min_check,
+            min_ema_var=min_ema_var,
+            min_ema_check=min_ema_check,
+            max_container=max_container,
             max_var=max_var,
             max_check=max_check,
+            max_ema_var=max_ema_var,
+            max_ema_check=max_ema_check,
             remove_button=remove_button,
+        )
+        index_combo.bind(
+            "<<ComboboxSelected>>",
+            lambda _event, target=row: self.on_row_index_selected(target),
         )
         remove_button.configure(command=lambda target=row: self.remove_plot_row(target))
         y_combo.bind("<<ComboboxSelected>>", lambda _event, target=row: self.update_summary_checkboxes(target))
@@ -1493,31 +1602,55 @@ class PlotLogsInteractiveApp:
         self.update_row_options(row, self.available_columns, prefer_default=len(self.plot_rows) == 1)
         self.refresh_row_labels()
 
-    def update_std_checkbox(self, row: PlotRow, desired: bool | None = None) -> None:
+    def update_std_checkbox(
+        self,
+        row: PlotRow,
+        desired: bool | None = None,
+        desired_ema: bool | None = None,
+    ) -> None:
         y_value = row.y_combo.get()
         candidate = self.std_column_for(y_value)
         if candidate is None:
             row.std_var.set(False)
+            row.std_ema_var.set(False)
             row.std_check.state(["disabled"])
+            row.std_ema_check.state(["disabled"])
         else:
             row.std_check.state(["!disabled"])
+            row.std_ema_check.state(["!disabled"])
             if desired is None:
                 row.std_var.set(True)
             else:
                 row.std_var.set(desired)
+            if desired_ema is None:
+                row.std_ema_var.set(False)
+            else:
+                row.std_ema_var.set(desired_ema)
 
-    def update_skew_checkbox(self, row: PlotRow, desired: bool | None = None) -> None:
+    def update_skew_checkbox(
+        self,
+        row: PlotRow,
+        desired: bool | None = None,
+        desired_ema: bool | None = None,
+    ) -> None:
         y_value = row.y_combo.get()
         candidate = self.skew_column_for(y_value)
         if candidate is None:
             row.skew_var.set(False)
+            row.skew_ema_var.set(False)
             row.skew_check.state(["disabled"])
+            row.skew_ema_check.state(["disabled"])
         else:
             row.skew_check.state(["!disabled"])
+            row.skew_ema_check.state(["!disabled"])
             if desired is None:
                 row.skew_var.set(False)
             else:
                 row.skew_var.set(desired)
+            if desired_ema is None:
+                row.skew_ema_var.set(False)
+            else:
+                row.skew_ema_var.set(desired_ema)
 
     def update_minmax_checkboxes(
         self,
@@ -1532,24 +1665,36 @@ class PlotLogsInteractiveApp:
         self,
         row: PlotRow,
         desired_std: bool | None = None,
+        desired_std_ema: bool | None = None,
         desired_skew: bool | None = None,
+        desired_skew_ema: bool | None = None,
         desired_min: bool | None = None,
+        desired_min_ema: bool | None = None,
         desired_max: bool | None = None,
+        desired_max_ema: bool | None = None,
         preserve_existing: bool = False,
     ) -> None:
         if preserve_existing:
             if desired_std is None:
                 desired_std = row.std_var.get()
+            if desired_std_ema is None:
+                desired_std_ema = row.std_ema_var.get()
             if desired_skew is None:
                 desired_skew = row.skew_var.get()
+            if desired_skew_ema is None:
+                desired_skew_ema = row.skew_ema_var.get()
             if desired_min is None:
                 desired_min = row.min_var.get()
+            if desired_min_ema is None:
+                desired_min_ema = row.min_ema_var.get()
             if desired_max is None:
                 desired_max = row.max_var.get()
-        self.update_std_checkbox(row, desired=desired_std)
-        self.update_skew_checkbox(row, desired=desired_skew)
-        self.update_min_checkbox(row, desired=desired_min)
-        self.update_max_checkbox(row, desired=desired_max)
+            if desired_max_ema is None:
+                desired_max_ema = row.max_ema_var.get()
+        self.update_std_checkbox(row, desired=desired_std, desired_ema=desired_std_ema)
+        self.update_skew_checkbox(row, desired=desired_skew, desired_ema=desired_skew_ema)
+        self.update_min_checkbox(row, desired=desired_min, desired_ema=desired_min_ema)
+        self.update_max_checkbox(row, desired=desired_max, desired_ema=desired_max_ema)
 
     def std_column_for(self, y_value: str) -> str | None:
         if not y_value or not y_value.endswith("__mean"):
@@ -1583,31 +1728,55 @@ class PlotLogsInteractiveApp:
             return candidate
         return None
 
-    def update_min_checkbox(self, row: PlotRow, desired: bool | None = None) -> None:
+    def update_min_checkbox(
+        self,
+        row: PlotRow,
+        desired: bool | None = None,
+        desired_ema: bool | None = None,
+    ) -> None:
         y_value = row.y_combo.get()
         min_candidate = self.min_column_for(y_value)
         if min_candidate is None:
             row.min_var.set(False)
+            row.min_ema_var.set(False)
             row.min_check.state(["disabled"])
+            row.min_ema_check.state(["disabled"])
         else:
             row.min_check.state(["!disabled"])
+            row.min_ema_check.state(["!disabled"])
             if desired is None:
                 row.min_var.set(False)
             else:
                 row.min_var.set(desired)
+            if desired_ema is None:
+                row.min_ema_var.set(False)
+            else:
+                row.min_ema_var.set(desired_ema)
 
-    def update_max_checkbox(self, row: PlotRow, desired: bool | None = None) -> None:
+    def update_max_checkbox(
+        self,
+        row: PlotRow,
+        desired: bool | None = None,
+        desired_ema: bool | None = None,
+    ) -> None:
         y_value = row.y_combo.get()
         max_candidate = self.max_column_for(y_value)
         if max_candidate is None:
             row.max_var.set(False)
+            row.max_ema_var.set(False)
             row.max_check.state(["disabled"])
+            row.max_ema_check.state(["disabled"])
         else:
             row.max_check.state(["!disabled"])
+            row.max_ema_check.state(["!disabled"])
             if desired is None:
                 row.max_var.set(False)
             else:
                 row.max_var.set(desired)
+            if desired_ema is None:
+                row.max_ema_var.set(False)
+            else:
+                row.max_ema_var.set(desired_ema)
 
     def is_histogram_column(self, column: str) -> bool:
         return column.endswith("__histogram_freqs") or column.endswith("__histogram_edges")
@@ -1733,15 +1902,14 @@ class PlotLogsInteractiveApp:
 
     def remove_plot_row(self, row: PlotRow) -> None:
         for widget in (
-            row.index_label,
+            row.index_combo,
             row.y_combo,
             row.height_entry,
-            row.ema_entry,
-            row.ema_only_check,
-            row.std_check,
-            row.skew_check,
-            row.min_check,
-            row.max_check,
+            row.ema_container,
+            row.std_container,
+            row.skew_container,
+            row.min_container,
+            row.max_container,
             row.remove_button,
         ):
             widget.destroy()
@@ -1752,15 +1920,14 @@ class PlotLogsInteractiveApp:
     def clear_plot_rows(self) -> None:
         for row in self.plot_rows:
             for widget in (
-                row.index_label,
+                row.index_combo,
                 row.y_combo,
                 row.height_entry,
-                row.ema_entry,
-                row.ema_only_check,
-                row.std_check,
-                row.skew_check,
-                row.min_check,
-                row.max_check,
+                row.ema_container,
+                row.std_container,
+                row.skew_container,
+                row.min_container,
+                row.max_container,
                 row.remove_button,
             ):
                 widget.destroy()
@@ -1846,72 +2013,149 @@ class PlotLogsInteractiveApp:
             return str(int(ratio))
         return str(ratio)
 
+    def on_row_index_selected(self, row: PlotRow) -> None:
+        if self.updating_row_index_widgets:
+            return
+        if row not in self.plot_rows:
+            return
+        try:
+            target_index = int(row.index_var.get()) - 1
+        except ValueError:
+            self.refresh_row_labels()
+            return
+        current_index = self.plot_rows.index(row)
+        clamped_target = max(0, min(len(self.plot_rows) - 1, target_index))
+        if clamped_target == current_index:
+            self.refresh_row_labels()
+            return
+        self.plot_rows[current_index], self.plot_rows[clamped_target] = (
+            self.plot_rows[clamped_target],
+            self.plot_rows[current_index],
+        )
+        self.refresh_row_labels()
+
     def refresh_row_labels(self) -> None:
-        for index, row in enumerate(self.plot_rows, start=1):
-            row.index_label.configure(text=str(index))
-            row.index_label.grid_configure(row=index, column=0)
-            row.y_combo.grid_configure(row=index, column=1)
-            row.height_entry.grid_configure(row=index, column=2)
-            row.ema_entry.grid_configure(row=index, column=3)
-            row.ema_only_check.grid_configure(row=index, column=4)
-            row.std_check.grid_configure(row=index, column=5)
-            row.skew_check.grid_configure(row=index, column=6)
-            row.min_check.grid_configure(row=index, column=7)
-            row.max_check.grid_configure(row=index, column=8)
-            row.remove_button.grid_configure(row=index, column=9)
+        row_positions = [str(index) for index in range(1, len(self.plot_rows) + 1)]
+        self.updating_row_index_widgets = True
+        try:
+            for index, row in enumerate(self.plot_rows, start=1):
+                row.index_combo.configure(values=row_positions)
+                row.index_var.set(str(index))
+                row.index_combo.grid_configure(row=index, column=0)
+                row.y_combo.grid_configure(row=index, column=1)
+                row.height_entry.grid_configure(row=index, column=2)
+                row.ema_container.grid_configure(row=index, column=3)
+                row.std_container.grid_configure(row=index, column=4)
+                row.skew_container.grid_configure(row=index, column=5)
+                row.min_container.grid_configure(row=index, column=6)
+                row.max_container.grid_configure(row=index, column=7)
+                row.remove_button.grid_configure(row=index, column=8)
+        finally:
+            self.updating_row_index_widgets = False
         footer_row = len(self.plot_rows) + 1
-        self.toggle_std_button.grid(row=footer_row, column=5, pady=(4, 0))
-        self.toggle_skew_button.grid(row=footer_row, column=6, pady=(4, 0))
-        self.toggle_min_button.grid(row=footer_row, column=7, pady=(4, 0))
-        self.toggle_max_button.grid(row=footer_row, column=8, pady=(4, 0))
+        self.toggle_std_button.grid(row=footer_row, column=4, pady=(4, 0))
+        self.toggle_skew_button.grid(row=footer_row, column=5, pady=(4, 0))
+        self.toggle_min_button.grid(row=footer_row, column=6, pady=(4, 0))
+        self.toggle_max_button.grid(row=footer_row, column=7, pady=(4, 0))
 
     def toggle_all_std(self) -> None:
-        desired = not any(
-            row.std_var.get()
-            for row in self.plot_rows
-            if self.std_column_for(row.y_combo.get()) is not None
+        self.cycle_summary_column(
+            available=self.std_column_for,
+            is_enabled=lambda row: row.std_var.get(),
+            is_ema_enabled=lambda row: row.std_ema_var.get(),
+            apply=lambda row, enabled, ema: self.update_std_checkbox(
+                row,
+                desired=enabled,
+                desired_ema=ema,
+            ),
         )
-        self.set_all_std(desired)
 
     def toggle_all_skew(self) -> None:
-        desired = not any(
-            row.skew_var.get()
-            for row in self.plot_rows
-            if self.skew_column_for(row.y_combo.get()) is not None
+        self.cycle_summary_column(
+            available=self.skew_column_for,
+            is_enabled=lambda row: row.skew_var.get(),
+            is_ema_enabled=lambda row: row.skew_ema_var.get(),
+            apply=lambda row, enabled, ema: self.update_skew_checkbox(
+                row,
+                desired=enabled,
+                desired_ema=ema,
+            ),
         )
-        self.set_all_skew(desired)
 
     def toggle_all_min(self) -> None:
-        desired = not any(
-            row.min_var.get()
-            for row in self.plot_rows
-            if self.min_column_for(row.y_combo.get()) is not None
+        self.cycle_summary_column(
+            available=self.min_column_for,
+            is_enabled=lambda row: row.min_var.get(),
+            is_ema_enabled=lambda row: row.min_ema_var.get(),
+            apply=lambda row, enabled, ema: self.update_min_checkbox(
+                row,
+                desired=enabled,
+                desired_ema=ema,
+            ),
         )
-        self.set_all_min(desired)
 
     def toggle_all_max(self) -> None:
-        desired = not any(
-            row.max_var.get()
-            for row in self.plot_rows
-            if self.max_column_for(row.y_combo.get()) is not None
+        self.cycle_summary_column(
+            available=self.max_column_for,
+            is_enabled=lambda row: row.max_var.get(),
+            is_ema_enabled=lambda row: row.max_ema_var.get(),
+            apply=lambda row, enabled, ema: self.update_max_checkbox(
+                row,
+                desired=enabled,
+                desired_ema=ema,
+            ),
         )
-        self.set_all_max(desired)
+
+    def cycle_summary_column(
+        self,
+        available: Callable[[str], str | None],
+        is_enabled: Callable[[PlotRow], bool],
+        is_ema_enabled: Callable[[PlotRow], bool],
+        apply: Callable[[PlotRow, bool, bool], None],
+    ) -> None:
+        rows = [
+            row
+            for row in self.plot_rows
+            if available(row.y_combo.get()) is not None
+        ]
+        if not rows:
+            return
+
+        all_off = all(not is_enabled(row) for row in rows)
+        all_on_no_ema = all(is_enabled(row) and not is_ema_enabled(row) for row in rows)
+        all_on_ema = all(is_enabled(row) and is_ema_enabled(row) for row in rows)
+
+        if all_off:
+            target_enabled = True
+            target_ema = False
+        elif all_on_no_ema:
+            target_enabled = True
+            target_ema = True
+        elif all_on_ema:
+            target_enabled = False
+            target_ema = False
+        else:
+            target_enabled = False
+            target_ema = False
+
+        for row in rows:
+            apply(row, target_enabled, target_ema)
 
     def set_all_min(self, enabled: bool) -> None:
         for row in self.plot_rows:
-            self.update_min_checkbox(row, desired=enabled)
+            self.update_min_checkbox(row, desired=enabled, desired_ema=False)
 
     def set_all_max(self, enabled: bool) -> None:
         for row in self.plot_rows:
-            self.update_max_checkbox(row, desired=enabled)
+            self.update_max_checkbox(row, desired=enabled, desired_ema=False)
 
     def set_all_std(self, enabled: bool) -> None:
         for row in self.plot_rows:
-            self.update_std_checkbox(row, desired=enabled)
+            self.update_std_checkbox(row, desired=enabled, desired_ema=False)
 
     def set_all_skew(self, enabled: bool) -> None:
         for row in self.plot_rows:
-            self.update_skew_checkbox(row, desired=enabled)
+            self.update_skew_checkbox(row, desired=enabled, desired_ema=False)
 
     def group_keys_for_labels(self, paths: Sequence[Path], labels: Sequence[str]) -> list[str]:
         return [
@@ -1935,6 +2179,9 @@ class PlotLogsInteractiveApp:
         return color_map
 
     def plot(self) -> None:
+        auto_refresh_interval = self.parse_auto_refresh_interval(show_error=True)
+        if auto_refresh_interval is None:
+            return
         enabled_paths = self.enabled_paths()
         if not self.paths:
             self.show_error("No CSV files selected.")
@@ -2018,6 +2265,10 @@ class PlotLogsInteractiveApp:
         skew_mapping: dict[str, str | None] = {column: None for column in scalar_columns}
         min_mapping: dict[str, str | None] = {column: None for column in scalar_columns}
         max_mapping: dict[str, str | None] = {column: None for column in scalar_columns}
+        std_ema_columns: set[str] = set()
+        skew_ema_columns: set[str] = set()
+        min_ema_columns: set[str] = set()
+        max_ema_columns: set[str] = set()
         for index, row in enumerate(self.plot_rows, start=1):
             y_value = row.y_combo.get()
             if not y_value or y_value not in scalar_column_set:
@@ -2028,24 +2279,44 @@ class PlotLogsInteractiveApp:
                     self.show_error(f"No std column found for {y_value}.")
                     return
                 std_mapping[y_value] = std_column
+                if row.std_ema_var.get():
+                    if y_value not in ema_mapping:
+                        self.show_error(f"STD EMA requires an EMA alpha in row {index}.")
+                        return
+                    std_ema_columns.add(y_value)
             if row.skew_var.get():
                 skew_column = self.skew_column_for(y_value)
                 if skew_column is None:
                     self.show_error(f"No skew column found for {y_value}.")
                     return
                 skew_mapping[y_value] = skew_column
+                if row.skew_ema_var.get():
+                    if y_value not in ema_mapping:
+                        self.show_error(f"Skew EMA requires an EMA alpha in row {index}.")
+                        return
+                    skew_ema_columns.add(y_value)
             if row.min_var.get():
                 min_column = self.min_column_for(y_value)
                 if min_column is None:
                     self.show_error(f"No min column found for {y_value}.")
                     return
                 min_mapping[y_value] = min_column
+                if row.min_ema_var.get():
+                    if y_value not in ema_mapping:
+                        self.show_error(f"Min EMA requires an EMA alpha in row {index}.")
+                        return
+                    min_ema_columns.add(y_value)
             if row.max_var.get():
                 max_column = self.max_column_for(y_value)
                 if max_column is None:
                     self.show_error(f"No max column found for {y_value}.")
                     return
                 max_mapping[y_value] = max_column
+                if row.max_ema_var.get():
+                    if y_value not in ema_mapping:
+                        self.show_error(f"Max EMA requires an EMA alpha in row {index}.")
+                        return
+                    max_ema_columns.add(y_value)
 
         labels = plot_logs.build_labels(enabled_paths, None)
         file_opacities = [self.opacity_for_path(path) for path in enabled_paths]
@@ -2099,9 +2370,13 @@ class PlotLogsInteractiveApp:
                 x_column=x_column,
                 y_columns=y_columns,
                 std_mapping=std_mapping,
+                std_ema_columns=std_ema_columns or None,
                 skew_mapping=skew_mapping,
+                skew_ema_columns=skew_ema_columns or None,
                 min_mapping=min_mapping,
+                min_ema_columns=min_ema_columns or None,
                 max_mapping=max_mapping,
+                max_ema_columns=max_ema_columns or None,
                 ema_mapping=ema_mapping or None,
                 ema_only_columns=ema_only_columns or None,
                 ratios=ratios or None,
@@ -2122,6 +2397,53 @@ class PlotLogsInteractiveApp:
             self.set_status(f"Plot updated. {status_message}")
         else:
             self.set_status("Plot updated.")
+        self.schedule_auto_refresh(auto_refresh_interval)
+
+    def on_auto_refresh_interval_change(self, *_args: object) -> None:
+        self.schedule_auto_refresh()
+
+    def parse_auto_refresh_interval(self, show_error: bool) -> float | None:
+        raw_interval = self.auto_refresh_interval_var.get().strip()
+        if not raw_interval:
+            return 0.0
+        try:
+            interval = float(raw_interval)
+        except ValueError:
+            if show_error:
+                self.show_error("Auto refresh interval must be a number >= 0.")
+            return None
+        if interval < 0:
+            if show_error:
+                self.show_error("Auto refresh interval must be >= 0.")
+            return None
+        return interval
+
+    def schedule_auto_refresh(self, interval_seconds: float | None = None) -> None:
+        self.cancel_auto_refresh()
+        if self.figure is None:
+            return
+        resolved_interval = (
+            self.parse_auto_refresh_interval(show_error=False)
+            if interval_seconds is None
+            else interval_seconds
+        )
+        if resolved_interval is None or resolved_interval <= 0:
+            return
+        delay_ms = max(1, int(resolved_interval * 1000))
+        self.auto_refresh_after_id = self.root.after(delay_ms, self.on_auto_refresh_timer)
+
+    def cancel_auto_refresh(self) -> None:
+        if self.auto_refresh_after_id is None:
+            return
+        self.root.after_cancel(self.auto_refresh_after_id)
+        self.auto_refresh_after_id = None
+
+    def on_auto_refresh_timer(self) -> None:
+        self.auto_refresh_after_id = None
+        interval = self.parse_auto_refresh_interval(show_error=False)
+        if interval is None or interval <= 0:
+            return
+        self.plot()
 
     def build_figure(
         self,
@@ -2130,9 +2452,13 @@ class PlotLogsInteractiveApp:
         x_column: str,
         y_columns: Sequence[str],
         std_mapping: dict[str, str | None],
+        std_ema_columns: set[str] | None,
         skew_mapping: dict[str, str | None],
+        skew_ema_columns: set[str] | None,
         min_mapping: dict[str, str | None],
+        min_ema_columns: set[str] | None,
         max_mapping: dict[str, str | None],
+        max_ema_columns: set[str] | None,
         ema_mapping: dict[str, float] | None,
         ema_only_columns: set[str] | None,
         ratios: Sequence[float] | None,
@@ -2172,6 +2498,10 @@ class PlotLogsInteractiveApp:
             file_colors = [""] * len(logs)
         group_color_map = self.group_color_map(group_keys) if logs else {}
         ema_only_columns = ema_only_columns or set()
+        std_ema_columns = std_ema_columns or set()
+        skew_ema_columns = skew_ema_columns or set()
+        min_ema_columns = min_ema_columns or set()
+        max_ema_columns = max_ema_columns or set()
         hist_ranges = {
             column: histogram_value_range(series_list)
             for column, series_list in histogram_data.items()
@@ -2184,7 +2514,8 @@ class PlotLogsInteractiveApp:
                 ema_alpha = ema_mapping.get(column) if ema_mapping else None
                 skew_axis: plt.Axes | None = None
                 only_ema = ema_alpha is not None and column in ema_only_columns
-                if not only_ema and skew_mapping.get(column) is not None:
+                force_summary_ema = only_ema and ema_alpha is not None
+                if skew_mapping.get(column) is not None:
                     skew_axis = axis.twinx()
                     skew_axis.set_ylabel("mean + cbrt(skew)")
                     skew_axis.grid(False)
@@ -2221,85 +2552,108 @@ class PlotLogsInteractiveApp:
                             linestyle="--",
                         )[0]
                         ema_line._plot_alpha_base = base_alpha
-                    if not only_ema:
-                        std_column = std_mapping.get(column)
-                        if std_column is not None:
-                            std_values = log.y_std_values.get(column)
-                            if std_values:
-                                upper = [
-                                    value + std
-                                    for value, std in zip(
-                                        raw_values,
-                                        std_values,
-                                        strict=True,
-                                    )
-                                ]
-                                lower = [
-                                    value - std
-                                    for value, std in zip(
-                                        raw_values,
-                                        std_values,
-                                        strict=True,
-                                    )
-                                ]
-                                axis.fill_between(
-                                    log.x_values,
-                                    lower,
-                                    upper,
-                                    alpha=0.2 * base_alpha,
-                                    color=line_color,
+                    std_column = std_mapping.get(column)
+                    if std_column is not None:
+                        std_values = log.y_std_values.get(column)
+                        if std_values:
+                            center_values = raw_values
+                            should_ema_std = (
+                                ema_alpha is not None
+                                and (column in std_ema_columns or force_summary_ema)
+                            )
+                            if should_ema_std:
+                                std_values = exponential_moving_average(std_values, ema_alpha)
+                                if ema_values is not None:
+                                    center_values = ema_values
+                            upper = [
+                                center + std
+                                for center, std in zip(
+                                    center_values,
+                                    std_values,
+                                    strict=True,
                                 )
-                        if skew_axis is not None:
-                            skew_values = log.y_skew_values.get(column)
-                            if skew_values:
-                                if ema_alpha is not None:
-                                    skew_values = exponential_moving_average(skew_values, ema_alpha)
-                                skew_adjusted = [
-                                    mean + cube_root(skew)
-                                    if not (math.isnan(mean) or math.isnan(skew))
-                                    else math.nan
-                                    for mean, skew in zip(
-                                        raw_values,
-                                        skew_values,
-                                        strict=True,
-                                    )
-                                ]
-                                skew_line = skew_axis.plot(
-                                    log.x_values,
-                                    skew_adjusted,
-                                    color=line_color,
-                                    linestyle="-.",
-                                    label="_skew",
-                                )[0]
-                                skew_line._plot_alpha_base = base_alpha
-                        min_column = min_mapping.get(column)
-                        if min_column is not None:
-                            min_values = log.y_min_values.get(column)
-                            if min_values:
-                                if ema_alpha is not None:
-                                    min_values = exponential_moving_average(min_values, ema_alpha)
-                                min_line = axis.plot(
-                                    log.x_values,
-                                    min_values,
-                                    color=line_color,
-                                    linestyle="--",
-                                    label="_min",
-                                )[0]
-                                min_line._plot_alpha_base = base_alpha
-                        max_column = max_mapping.get(column)
-                        if max_column is not None:
-                            max_values = log.y_max_values.get(column)
-                            if max_values:
-                                if ema_alpha is not None:
-                                    max_values = exponential_moving_average(max_values, ema_alpha)
-                                max_line = axis.plot(
-                                    log.x_values,
-                                    max_values,
-                                    color=line_color,
-                                    linestyle=":",
-                                    label="_max",
-                                )[0]
-                                max_line._plot_alpha_base = base_alpha
+                            ]
+                            lower = [
+                                center - std
+                                for center, std in zip(
+                                    center_values,
+                                    std_values,
+                                    strict=True,
+                                )
+                            ]
+                            axis.fill_between(
+                                log.x_values,
+                                lower,
+                                upper,
+                                alpha=0.2 * base_alpha,
+                                color=line_color,
+                            )
+                    if skew_axis is not None:
+                        skew_values = log.y_skew_values.get(column)
+                        if skew_values:
+                            mean_values_for_skew = raw_values
+                            should_ema_skew = (
+                                ema_alpha is not None
+                                and (column in skew_ema_columns or force_summary_ema)
+                            )
+                            if should_ema_skew:
+                                skew_values = exponential_moving_average(skew_values, ema_alpha)
+                                if ema_values is not None:
+                                    mean_values_for_skew = ema_values
+                            skew_adjusted = [
+                                mean + cube_root(skew)
+                                if not (math.isnan(mean) or math.isnan(skew))
+                                else math.nan
+                                for mean, skew in zip(
+                                    mean_values_for_skew,
+                                    skew_values,
+                                    strict=True,
+                                )
+                            ]
+                            skew_line = skew_axis.plot(
+                                log.x_values,
+                                skew_adjusted,
+                                color=line_color,
+                                linestyle="-.",
+                                label="_skew",
+                            )[0]
+                            skew_line._plot_alpha_base = base_alpha
+                    min_column = min_mapping.get(column)
+                    if min_column is not None:
+                        min_values = log.y_min_values.get(column)
+                        if min_values:
+                            should_ema_min = (
+                                ema_alpha is not None
+                                and (column in min_ema_columns or force_summary_ema)
+                            )
+                            if should_ema_min:
+                                min_values = exponential_moving_average(min_values, ema_alpha)
+                            min_line = axis.plot(
+                                log.x_values,
+                                min_values,
+                                color=line_color,
+                                linestyle="--",
+                                label="_min",
+                            )[0]
+                            min_line._plot_alpha_base = base_alpha
+                    max_column = max_mapping.get(column)
+                    if max_column is not None:
+                        max_values = log.y_max_values.get(column)
+                        if max_values:
+                            should_ema_max = (
+                                ema_alpha is not None
+                                and (column in max_ema_columns or force_summary_ema)
+                            )
+                            if should_ema_max:
+                                max_values = exponential_moving_average(max_values, ema_alpha)
+                            max_line = axis.plot(
+                                log.x_values,
+                                max_values,
+                                color=line_color,
+                                linestyle=":",
+                                label="_max",
+                            )[0]
+                            max_line._plot_alpha_base = base_alpha
                 axis.set_ylabel(column)
                 axis.grid(alpha=0.3)
                 if first_scalar_axis is None:
@@ -2595,6 +2949,7 @@ class PlotLogsInteractiveApp:
     def on_close(self) -> None:
         for after_id in self.typeahead_after_ids.values():
             self.root.after_cancel(after_id)
+        self.cancel_auto_refresh()
         if self.figure:
             plt.close(self.figure)
             self.figure = None
