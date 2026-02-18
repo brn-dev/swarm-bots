@@ -112,7 +112,6 @@ class MetricsLogger:
 
         for k, v in metrics.items():
             if isinstance(v, SummaryStatistics):
-                csv_metrics[k + '__n'] = v.n
                 csv_metrics[k + '__mean'] = self._replace_no_data(v.mean, round_ndigits=6)
                 if v.std is not None:
                     csv_metrics[k + '__std'] = self._replace_no_data(v.std, round_ndigits=6)
@@ -132,6 +131,8 @@ class MetricsLogger:
                     else:
                         csv_metrics[k + '__histogram_freqs'] = json.dumps([round(x, 6) for x in v.histogram.bin_frequencies])
                         csv_metrics[k + '__histogram_edges'] = json.dumps([round(x, 6) for x in v.histogram.bin_edges])
+
+                csv_metrics[k + '__n'] = v.n
             else:
                 csv_metrics[k] = v
 
@@ -233,6 +234,8 @@ class MetricsLogger:
                         )
                         if wandb_hist is not None:
                             wandb_metrics[k + "__histogram"] = wandb_hist
+
+                    wandb_metrics[k + "__n"] = v.n
             else:
                 wandb_metrics[k] = v
 

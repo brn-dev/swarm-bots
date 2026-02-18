@@ -138,7 +138,7 @@ def main() -> None:
 
     # ===== LOAD =====
     load_path: str | None = None
-    # load_path = "runs/mat_nop_swarm_bots_wall/2026-02-14_13-44-33/models/model_32456791_steps_stopped.pt"
+    # load_path = "runs/mat_nop_swarm_bots_wall/2026-02-16_22-12-51/models/model_19266983_steps_stopped.pt"
 
     # ===== DEVICE =====
     use_cuda = True and torch.cuda.is_available()
@@ -287,7 +287,7 @@ def main() -> None:
 
     print("Initializing PPO Algorithm...")
 
-    initial_lr = 1e-4
+    initial_lr = 5e-5
 
     def auto_lr_updater(
             old_lr: float,
@@ -299,7 +299,7 @@ def main() -> None:
             early_stop_epoch: Optional[int],
             metrics: dict[str, Any]
     ) -> AutomaticLearningRateUpdateResult:
-        warmup_iterations: int = 250
+        warmup_iterations: int = 500
         cold_lr = initial_lr / 50
 
         if early_stop_kl_div is not None and early_stop_kl_div > 0.1:
@@ -323,11 +323,11 @@ def main() -> None:
             }
 
         clip_frac_stats: Optional[SummaryStatistics] = metrics.get('clip_frac', None)
-        if clip_frac_stats and clip_frac_stats.mean > 0.2:
+        if clip_frac_stats and clip_frac_stats.mean > 0.11:
             state['counter'] = 0
             state['warmup'] = False
             clip_frac = clip_frac_stats.mean
-            decay_factor = np.clip(1.1 - clip_frac, 0.5, 0.9)
+            decay_factor = np.clip(1 - clip_frac, 0.5, 0.9)
             return {
                 'new_lr': old_lr * decay_factor,
                 'msg': f'{clip_frac=:.3f}',
@@ -348,23 +348,23 @@ def main() -> None:
 
         if counter >= 2:
             state['counter'] = 0
-            return {'new_lr': old_lr * 1.3}
+            return {'new_lr': old_lr * 1.2}
 
         state['counter'] = counter
         return {'new_lr': None}
 
     auto_lr = AutomaticLearningRate(
         initial_lr=initial_lr,
-        max_lr=2e-4,
+        max_lr=1e-4,
         updater=auto_lr_updater
     )
     ppo = PPOWM(
         policy=policy,
         env=env,
         learning_rate=auto_lr,
-        rollout_mode=StepsRolloutMode(256 * 16),
+        rollout_mode=StepsRolloutMode(4096),
         max_episode_length=episode_length,
-        batch_size=256,
+        batch_size=512,
         n_epochs=5,
         gamma=gamma,
         gae_lambda=0.95,
@@ -372,7 +372,7 @@ def main() -> None:
         target_kl=0.04,
         max_grad_norm=10.0,
         gsde_reset_mode=GSDEProbabilityResetMode(probability=1 / 6),
-        ent_coef=1e-5,
+        ent_coef=0e-5,
         value_loss_fn=nn.SmoothL1Loss(),
         train_device=train_device,
         rollout_device=rollout_device,
@@ -383,7 +383,7 @@ def main() -> None:
 
     if load_path:
         logger.info(f"Loading model from {load_path}")
-        ppo.load(load_path, recover_best_return_ema=False)
+        ppo.load(load_path, recover_best_return_ema=False, strict_load_state_dict=True)
 
     print("Starting training...")
     ppo.learn(
