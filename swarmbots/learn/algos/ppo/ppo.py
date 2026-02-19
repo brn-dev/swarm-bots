@@ -317,12 +317,14 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerType]):
         ep_rew = compute_summary_statistics(
             [ep['r'] for ep in episode_infos],
             find_min=True, find_max=True,
-            compute_skewness=True, compute_kurtosis=True
+            compute_skewness=True, compute_kurtosis=True,
+            make_histogram=20
         )
         ep_len = compute_summary_statistics(
             [ep['l'] for ep in episode_infos],
             find_min=True, find_max=True,
-            compute_skewness=True, compute_kurtosis=True
+            compute_skewness=True, compute_kurtosis=True,
+            make_histogram=20
         )
         ep_time = compute_summary_statistics([ep['t'] for ep in episode_infos])
 

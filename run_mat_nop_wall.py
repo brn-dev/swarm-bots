@@ -138,7 +138,7 @@ def main() -> None:
 
     # ===== LOAD =====
     load_path: str | None = None
-    # load_path = "runs/mat_nop_swarm_bots_wall/2026-02-16_22-12-51/models/model_19266983_steps_stopped.pt"
+    # load_path = "runs/mat_nop_swarm_bots_wall/2026-02-17_23-05-06/models/model_7231796_steps_stopped.pt"
 
     # ===== DEVICE =====
     use_cuda = True and torch.cuda.is_available()
@@ -153,7 +153,7 @@ def main() -> None:
             logger.error('load_path is missing .pt')
         logger.info(f'{load_path = }')
         run_id = load_path.split('/')[2]
-        logger.info(f'{run_id = }')
+    logger.info(f'{run_id = }')
 
     run_dir = f"runs/mat_nop_swarm_bots_wall/{run_id}/"
     save_optimizer = True
