@@ -65,15 +65,25 @@ class PlotRow:
     remove_button: ttk.Button
 
 
+class AsEma:
+    __slots__ = ()
+
+    def __repr__(self) -> str:
+        return "AS_EMA"
+
+
+AS_EMA: AsEma = AsEma()
+
+
 @dataclass(frozen=True, slots=True)
 class PresetEntry:
     y_column: str
     height: float
     ema: float | None = None
-    std: bool = False
-    skew: bool = False
-    min: bool = False
-    max: bool = False
+    std: bool | AsEma = False
+    skew: bool | AsEma = False
+    min: bool | AsEma = False
+    max: bool | AsEma = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,8 +107,8 @@ PLOT_PRESETS: tuple[PlotPreset, ...] = (
     PlotPreset(
         name="Episode Stats",
         entries=(
-            PresetEntry("ep_rew_ema", 3.0, ema=0.02),
-            PresetEntry("ep_rew__mean", 1.0, std=True, ema=0.02),
+            PresetEntry("ep_rew_ema", 2.0, ema=0.01),
+            PresetEntry("ep_rew__mean", 3.0, std=True, ema=0.02, min=AS_EMA, max=AS_EMA),
             PresetEntry("ep_len__mean", 1.0, std=True, ema=0.02),
         ),
     ),
@@ -240,6 +250,15 @@ def parse_histogram_list(
     return values
 
 
+def is_missing_histogram_cell(raw: str | None) -> bool:
+    if raw is None:
+        return True
+    stripped = raw.strip()
+    if stripped == "":
+        return True
+    return stripped.lower() in {"none", "null", "nan"}
+
+
 def build_edges_from_centers(centers: Sequence[float]) -> list[float]:
     if not centers:
         raise ValueError("Cannot build edges from empty centers.")
@@ -285,6 +304,14 @@ def histogram_edges_match(reference: Sequence[float], candidate: Sequence[float]
         math.isclose(left, right, rel_tol=1e-3, abs_tol=1e-4)
         for left, right in zip(reference, candidate, strict=True)
     )
+
+
+def validate_histogram_edges(edges: Sequence[float]) -> None:
+    if len(edges) < 2:
+        raise ValueError("Histogram edges must contain at least two values.")
+    for left, right in zip(edges, edges[1:]):
+        if not right > left:
+            raise ValueError("Histogram edges must be strictly increasing.")
 
 
 def histogram_value_range(series_list: Sequence[HistogramSeries]) -> tuple[float, float]:
@@ -342,15 +369,50 @@ def linear_edges_from_range(min_edge: float, max_edge: float, bin_count: int) ->
     return [min_edge + step * index for index in range(bin_count + 1)]
 
 
+def rebin_histogram_row(
+    source_values: Sequence[float],
+    source_edges: Sequence[float],
+    target_edges: Sequence[float],
+) -> list[float]:
+    source_bin_count = len(source_values)
+    if len(source_edges) != source_bin_count + 1:
+        raise ValueError("Source histogram edges do not match source bin count.")
+    target_bin_count = len(target_edges) - 1
+    if target_bin_count <= 0:
+        raise ValueError("Target histogram edges must define at least one bin.")
+    validate_histogram_edges(source_edges)
+    validate_histogram_edges(target_edges)
+    rebinned = [0.0] * target_bin_count
+    source_index = 0
+    target_index = 0
+    while source_index < source_bin_count and target_index < target_bin_count:
+        source_left = source_edges[source_index]
+        source_right = source_edges[source_index + 1]
+        target_left = target_edges[target_index]
+        target_right = target_edges[target_index + 1]
+        overlap_left = max(source_left, target_left)
+        overlap_right = min(source_right, target_right)
+        if overlap_right > overlap_left:
+            source_width = source_right - source_left
+            rebinned[target_index] += (
+                source_values[source_index] * (overlap_right - overlap_left) / source_width
+            )
+        if source_right <= target_right:
+            source_index += 1
+        if target_right <= source_right:
+            target_index += 1
+    return rebinned
+
+
 def histogram_status_message(histogram_data: dict[str, list[HistogramSeries]]) -> str | None:
     drifting: list[str] = []
     for column, series_list in histogram_data.items():
-        if any(series.edges_status == "drifting" for series in series_list):
+        if any(series.edges_status.startswith("drifting") for series in series_list):
             drifting.append(column)
     if not drifting:
         return None
     joined = ", ".join(drifting)
-    return f"Histogram edges drift for {joined}; using range-based edges."
+    return f"Histogram edges drift for {joined}; values were rebinned onto a shared edge grid."
 
 
 def resolve_x_datetime_flag(
@@ -383,6 +445,7 @@ def load_histogram_series(
     expected_bins: int | None = None
     min_edge: float | None = None
     max_edge: float | None = None
+    row_edges: list[list[float] | None] = []
     with path.open(newline="") as handle:
         reader = csv.DictReader(handle, delimiter=delimiter)
         if reader.fieldnames is None:
@@ -406,7 +469,16 @@ def load_histogram_series(
                 raise ValueError(
                     f"Mixed numeric and timestamp values in {path} column {x_column}."
                 )
-            freqs = parse_histogram_list(row.get(freqs_column), freqs_column, path, row_index)
+            raw_freqs = row.get(freqs_column)
+            if is_missing_histogram_cell(raw_freqs):
+                if expected_bins is None:
+                    continue
+                x_values.append(x_value)
+                values.append([0.0] * expected_bins)
+                if edges_column is not None:
+                    row_edges.append(None)
+                continue
+            freqs = parse_histogram_list(raw_freqs, freqs_column, path, row_index)
             if expected_bins is None:
                 expected_bins = len(freqs)
             elif len(freqs) != expected_bins:
@@ -414,14 +486,20 @@ def load_histogram_series(
                     f"Histogram bins changed in {path} column {freqs_column} at row {row_index}."
                 )
             if edges_column is not None:
-                edges = parse_histogram_list(row.get(edges_column), edges_column, path, row_index)
-                normalized = normalize_histogram_edges(edges, expected_bins)
-                if bin_edges is None:
-                    bin_edges = normalized
-                elif not histogram_edges_match(bin_edges, normalized):
-                    edges_status = "drifting"
-                min_edge = normalized[0] if min_edge is None else min(min_edge, normalized[0])
-                max_edge = normalized[-1] if max_edge is None else max(max_edge, normalized[-1])
+                raw_edges = row.get(edges_column)
+                if is_missing_histogram_cell(raw_edges):
+                    row_edges.append(None)
+                else:
+                    edges = parse_histogram_list(raw_edges, edges_column, path, row_index)
+                    normalized = normalize_histogram_edges(edges, expected_bins)
+                    validate_histogram_edges(normalized)
+                    if bin_edges is None:
+                        bin_edges = normalized
+                    elif not histogram_edges_match(bin_edges, normalized):
+                        edges_status = "drifting"
+                    min_edge = normalized[0] if min_edge is None else min(min_edge, normalized[0])
+                    max_edge = normalized[-1] if max_edge is None else max(max_edge, normalized[-1])
+                    row_edges.append(normalized)
             x_values.append(x_value)
             values.append(freqs)
     if not x_values:
@@ -429,7 +507,18 @@ def load_histogram_series(
     if edges_column is not None and edges_status == "drifting":
         if expected_bins is None or min_edge is None or max_edge is None:
             raise ValueError(f"Histogram edges missing in {path} for {freqs_column}.")
-        bin_edges = linear_edges_from_range(min_edge, max_edge, expected_bins)
+        target_edges = linear_edges_from_range(min_edge, max_edge, expected_bins)
+        edges_status = "drifting-range"
+        if len(row_edges) != len(values):
+            raise ValueError(f"Histogram edges missing in {path} for {freqs_column}.")
+        rebinned_values: list[list[float]] = []
+        for freqs, source_edges in zip(values, row_edges, strict=True):
+            if source_edges is None:
+                rebinned_values.append([0.0] * expected_bins)
+                continue
+            rebinned_values.append(rebin_histogram_row(freqs, source_edges, target_edges))
+        values = rebinned_values
+        bin_edges = target_edges
     return HistogramSeries(
         label=label,
         x_values=x_values,
@@ -468,6 +557,8 @@ class PlotLogsInteractiveApp:
         self.auto_refresh_interval_var = tk.StringVar(value="0")
         self.title_var = tk.StringVar()
         self.status_var = tk.StringVar(value="Select CSV files to begin.")
+        self.global_ema_var = tk.StringVar()
+        self.global_ema_only_var = tk.BooleanVar(value=False)
         self.group_var = tk.StringVar()
         self.line_alpha_var = tk.DoubleVar(value=1.0)
         self.line_width_var = tk.DoubleVar(value=0.75)
@@ -486,6 +577,9 @@ class PlotLogsInteractiveApp:
             "legend_face": matplotlib.rcParams["legend.facecolor"],
         }
         self.auto_refresh_after_id: str | None = None
+        self.global_ema_entry: ttk.Entry | None = None
+        self.global_ema_container: ttk.Frame | None = None
+        self.global_ema_only_check: ttk.Checkbutton | None = None
 
         self._build_layout()
         self.auto_refresh_interval_var.trace_add("write", self.on_auto_refresh_interval_change)
@@ -745,6 +839,23 @@ class PlotLogsInteractiveApp:
             command=self.toggle_all_max,
             width=2,
         )
+        self.global_ema_container = ttk.Frame(self.plots_container)
+        self.global_ema_entry = ttk.Entry(
+            self.global_ema_container,
+            textvariable=self.global_ema_var,
+            width=5,
+        )
+        self.global_ema_only_check = ttk.Checkbutton(
+            self.global_ema_container,
+            text="",
+            variable=self.global_ema_only_var,
+            padding=0,
+            command=self.on_global_ema_only_toggle,
+        )
+        self.global_ema_entry.grid(row=0, column=0, sticky="w")
+        self.global_ema_only_check.grid(row=0, column=1, padx=(3, 0))
+        self.global_ema_entry.bind("<Return>", self.on_global_ema_submit)
+        self.global_ema_entry.bind("<FocusOut>", self.on_global_ema_focus_out)
 
         if PLOT_PRESETS:
             presets_label = ttk.Label(plots_frame, text="Presets")
@@ -812,21 +923,9 @@ class PlotLogsInteractiveApp:
             return
         self.controls_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
 
-    def add_files(self) -> None:
-        directory = filedialog.askdirectory(
-            title="Select folder containing log.csv files",
-            initialdir=str(REPO_ROOT),
-        )
-        if not directory:
-            return
-        root_path = Path(directory).resolve()
-        found_paths = [
-            path.resolve()
-            for path in root_path.rglob("log.csv")
-            if path.is_file()
-        ]
+    def add_paths(self, found_paths: Sequence[Path], source_label: str) -> None:
         if not found_paths:
-            self.set_status("No log.csv files found in the selected folder.")
+            self.set_status(f"No CSV files found in the selected {source_label}.")
             return
         added_paths: list[Path] = []
         for path in sorted(found_paths):
@@ -842,13 +941,48 @@ class PlotLogsInteractiveApp:
         self.refresh_file_list()
         self.refresh_columns()
         if not added_paths:
-            self.set_status("All log.csv files in the selected folder are already added.")
+            self.set_status(f"All CSV files in the selected {source_label} are already added.")
         elif len(added_paths) > 5:
-            self.set_status(
-                f"Added {len(added_paths)} log.csv files (disabled by default)."
-            )
+            self.set_status(f"Added {len(added_paths)} CSV files (disabled by default).")
         else:
-            self.set_status(f"Added {len(added_paths)} log.csv files.")
+            self.set_status(f"Added {len(added_paths)} CSV files.")
+
+    def add_files(self) -> None:
+        choice = messagebox.askyesnocancel(
+            "Add CSV Files",
+            "Choose source:\nYes = pick CSV files\nNo = pick a folder",
+            parent=self.root,
+        )
+        if choice is None:
+            return
+        if choice:
+            selected_paths = filedialog.askopenfilenames(
+                title="Select CSV files",
+                initialdir=str(REPO_ROOT),
+                filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
+            )
+            if not selected_paths:
+                return
+            found_paths = [
+                Path(path).resolve()
+                for path in selected_paths
+                if Path(path).is_file() and Path(path).suffix.lower() == ".csv"
+            ]
+            self.add_paths(found_paths, "files")
+            return
+        directory = filedialog.askdirectory(
+            title="Select folder containing CSV files",
+            initialdir=str(REPO_ROOT),
+        )
+        if not directory:
+            return
+        root_path = Path(directory).resolve()
+        found_paths = [
+            path.resolve()
+            for path in root_path.rglob("*.csv")
+            if path.is_file()
+        ]
+        self.add_paths(found_paths, "folder")
 
     def remove_selected_files(self) -> None:
         selected_indices = list(self.files_listbox.curselection())
@@ -1498,6 +1632,7 @@ class PlotLogsInteractiveApp:
             width=2,
             values=[str(index) for index in range(1, len(self.plot_rows) + 2)],
         )
+        self.disable_combobox_scroll_input(index_combo)
         index_combo.grid(row=row_index, column=0, sticky="w", pady=2)
 
         y_var = tk.StringVar()
@@ -1525,7 +1660,13 @@ class PlotLogsInteractiveApp:
         std_check = ttk.Checkbutton(std_container, text="", variable=std_var, padding=0)
         std_check.grid(row=0, column=0)
         std_ema_var = tk.BooleanVar(value=False)
-        std_ema_check = ttk.Checkbutton(std_container, text="", variable=std_ema_var, padding=0)
+        std_ema_check = ttk.Checkbutton(
+            std_container,
+            text="",
+            variable=std_ema_var,
+            padding=0,
+            style="SmallEma.TCheckbutton",
+        )
         std_ema_check.grid(row=0, column=1)
 
         skew_container = ttk.Frame(self.plots_container)
@@ -1534,7 +1675,13 @@ class PlotLogsInteractiveApp:
         skew_check = ttk.Checkbutton(skew_container, text="", variable=skew_var, padding=0)
         skew_check.grid(row=0, column=0)
         skew_ema_var = tk.BooleanVar(value=False)
-        skew_ema_check = ttk.Checkbutton(skew_container, text="", variable=skew_ema_var, padding=0)
+        skew_ema_check = ttk.Checkbutton(
+            skew_container,
+            text="",
+            variable=skew_ema_var,
+            padding=0,
+            style="SmallEma.TCheckbutton",
+        )
         skew_ema_check.grid(row=0, column=1)
 
         min_container = ttk.Frame(self.plots_container)
@@ -1543,7 +1690,13 @@ class PlotLogsInteractiveApp:
         min_check = ttk.Checkbutton(min_container, text="", variable=min_var, padding=0)
         min_check.grid(row=0, column=0)
         min_ema_var = tk.BooleanVar(value=False)
-        min_ema_check = ttk.Checkbutton(min_container, text="", variable=min_ema_var, padding=0)
+        min_ema_check = ttk.Checkbutton(
+            min_container,
+            text="",
+            variable=min_ema_var,
+            padding=0,
+            style="SmallEma.TCheckbutton",
+        )
         min_ema_check.grid(row=0, column=1)
 
         max_container = ttk.Frame(self.plots_container)
@@ -1552,7 +1705,13 @@ class PlotLogsInteractiveApp:
         max_check = ttk.Checkbutton(max_container, text="", variable=max_var, padding=0)
         max_check.grid(row=0, column=0)
         max_ema_var = tk.BooleanVar(value=False)
-        max_ema_check = ttk.Checkbutton(max_container, text="", variable=max_ema_var, padding=0)
+        max_ema_check = ttk.Checkbutton(
+            max_container,
+            text="",
+            variable=max_ema_var,
+            padding=0,
+            style="SmallEma.TCheckbutton",
+        )
         max_ema_check.grid(row=0, column=1)
 
         remove_button = ttk.Button(self.plots_container, text="🗑️", width=2)
@@ -1803,11 +1962,20 @@ class PlotLogsInteractiveApp:
     ) -> None:
         self.combo_values_getters[combo] = values_getter
         self.register_listbox(combo)
+        self.disable_combobox_scroll_input(combo)
         combo.bind(
             "<KeyPress>",
             lambda event, target=combo, getter=values_getter: self.on_typeahead(event, target, getter),
             add=True,
         )
+
+    def disable_combobox_scroll_input(self, combo: ttk.Combobox) -> None:
+        combo.bind("<MouseWheel>", self.on_combobox_mousewheel)
+        combo.bind("<Button-4>", self.on_combobox_mousewheel)
+        combo.bind("<Button-5>", self.on_combobox_mousewheel)
+
+    def on_combobox_mousewheel(self, _event: tk.Event) -> str:
+        return "break"
 
     def on_typeahead(
         self,
@@ -1961,6 +2129,7 @@ class PlotLogsInteractiveApp:
         missing_min: list[str] = []
         missing_max: list[str] = []
         invalid_ema: list[str] = []
+        invalid_summary_ema: list[str] = []
         for row, entry in zip(self.plot_rows, preset.entries, strict=True):
             row.y_combo.set(entry.y_column)
             row.height_var.set(self.format_ratio(entry.height))
@@ -1970,20 +2139,41 @@ class PlotLogsInteractiveApp:
                 row.ema_var.set(str(entry.ema))
                 if self.is_histogram_column(entry.y_column):
                     invalid_ema.append(entry.y_column)
-            if entry.std and self.std_column_for(entry.y_column) is None:
+            std_enabled, std_use_ema = self.resolve_preset_summary_option(entry.std)
+            skew_enabled, skew_use_ema = self.resolve_preset_summary_option(entry.skew)
+            min_enabled, min_use_ema = self.resolve_preset_summary_option(entry.min)
+            max_enabled, max_use_ema = self.resolve_preset_summary_option(entry.max)
+            if std_enabled and self.std_column_for(entry.y_column) is None:
                 missing_std.append(entry.y_column)
-            if entry.skew and self.skew_column_for(entry.y_column) is None:
+            if skew_enabled and self.skew_column_for(entry.y_column) is None:
                 missing_skew.append(entry.y_column)
-            if entry.min and self.min_column_for(entry.y_column) is None:
+            if min_enabled and self.min_column_for(entry.y_column) is None:
                 missing_min.append(entry.y_column)
-            if entry.max and self.max_column_for(entry.y_column) is None:
+            if max_enabled and self.max_column_for(entry.y_column) is None:
                 missing_max.append(entry.y_column)
+            has_row_ema = entry.ema is not None and not self.is_histogram_column(entry.y_column)
+            if std_use_ema and not has_row_ema:
+                std_use_ema = False
+                invalid_summary_ema.append(f"{entry.y_column}: std")
+            if skew_use_ema and not has_row_ema:
+                skew_use_ema = False
+                invalid_summary_ema.append(f"{entry.y_column}: skew")
+            if min_use_ema and not has_row_ema:
+                min_use_ema = False
+                invalid_summary_ema.append(f"{entry.y_column}: min")
+            if max_use_ema and not has_row_ema:
+                max_use_ema = False
+                invalid_summary_ema.append(f"{entry.y_column}: max")
             self.update_summary_checkboxes(
                 row,
-                desired_std=entry.std,
-                desired_skew=entry.skew,
-                desired_min=entry.min,
-                desired_max=entry.max,
+                desired_std=std_enabled,
+                desired_std_ema=std_use_ema,
+                desired_skew=skew_enabled,
+                desired_skew_ema=skew_use_ema,
+                desired_min=min_enabled,
+                desired_min_ema=min_use_ema,
+                desired_max=max_enabled,
+                desired_max_ema=max_use_ema,
             )
         status_parts = [f"Preset {preset.name!r} loaded."]
         if missing_std:
@@ -2006,7 +2196,19 @@ class PlotLogsInteractiveApp:
             status_parts.append(
                 f"EMA ignored for histogram columns: {', '.join(sorted(set(invalid_ema)))}."
             )
+        if invalid_summary_ema:
+            status_parts.append(
+                "Summary EMA toggles require a row EMA alpha; ignored for: "
+                f"{', '.join(sorted(set(invalid_summary_ema)))}."
+            )
         self.set_status(" ".join(status_parts))
+
+    def resolve_preset_summary_option(self, value: bool | AsEma) -> tuple[bool, bool]:
+        if value is AS_EMA:
+            return True, True
+        if value:
+            return True, False
+        return False, False
 
     def format_ratio(self, ratio: float) -> str:
         if ratio.is_integer():
@@ -2053,10 +2255,70 @@ class PlotLogsInteractiveApp:
         finally:
             self.updating_row_index_widgets = False
         footer_row = len(self.plot_rows) + 1
+        if self.global_ema_container is not None:
+            self.global_ema_container.grid(
+                row=footer_row,
+                column=3,
+                sticky="w",
+                padx=(2, 4),
+                pady=(4, 0),
+            )
         self.toggle_std_button.grid(row=footer_row, column=4, pady=(4, 0))
         self.toggle_skew_button.grid(row=footer_row, column=5, pady=(4, 0))
         self.toggle_min_button.grid(row=footer_row, column=6, pady=(4, 0))
         self.toggle_max_button.grid(row=footer_row, column=7, pady=(4, 0))
+
+    def on_global_ema_submit(self, _event: tk.Event) -> str:
+        self.apply_global_ema_to_rows(show_error=True)
+        return "break"
+
+    def on_global_ema_focus_out(self, _event: tk.Event) -> None:
+        self.apply_global_ema_to_rows(show_error=False)
+
+    def on_global_ema_only_toggle(self) -> None:
+        self.apply_global_ema_only_to_rows()
+
+    def apply_global_ema_to_rows(self, show_error: bool) -> None:
+        raw_alpha = self.global_ema_var.get().strip()
+        if raw_alpha == "":
+            for row in self.plot_rows:
+                row.ema_var.set("")
+            self.set_status("Cleared EMA alpha for all rows.")
+            return
+        try:
+            alpha = float(raw_alpha)
+        except ValueError:
+            if show_error:
+                self.show_error("Global EMA alpha must be a number between 0 and 1.")
+            return
+        if not 0.0 < alpha < 1.0:
+            if show_error:
+                self.show_error("Global EMA alpha must be between 0 and 1.")
+            return
+        applied_count = 0
+        skipped_count = 0
+        for row in self.plot_rows:
+            y_value = row.y_combo.get()
+            if y_value and self.is_histogram_column(y_value):
+                skipped_count += 1
+                continue
+            row.ema_var.set(raw_alpha)
+            applied_count += 1
+        if skipped_count:
+            self.set_status(
+                f"Applied EMA alpha to {applied_count} rows (skipped {skipped_count} histogram rows)."
+            )
+        else:
+            self.set_status(f"Applied EMA alpha to {applied_count} rows.")
+
+    def apply_global_ema_only_to_rows(self) -> None:
+        enabled = self.global_ema_only_var.get()
+        for row in self.plot_rows:
+            row.ema_only_var.set(enabled)
+        if enabled:
+            self.set_status("Enabled EMA (only) for all rows.")
+        else:
+            self.set_status("Disabled EMA (only) for all rows.")
 
     def toggle_all_std(self) -> None:
         self.cycle_summary_column(
@@ -2817,6 +3079,16 @@ class PlotLogsInteractiveApp:
             background=palette["panel_bg"],
             foreground=palette["fg"],
         )
+        style.configure(
+            "SmallEma.TCheckbutton",
+            background=palette["panel_bg"],
+            foreground=palette["fg"],
+            padding=0,
+        )
+        try:
+            style.configure("SmallEma.TCheckbutton", indicatorsize=9)
+        except tk.TclError:
+            pass
         style.configure("TScale", background=palette["panel_bg"])
         style.configure("TScrollbar", background=palette["panel_bg"])
 

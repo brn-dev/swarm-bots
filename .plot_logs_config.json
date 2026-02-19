@@ -8,8 +8,15 @@
       "enabled": false
     },
     {
+      "path": "swarm-bots\\runs\\mat_nop_swarm_bots_wall\\2026-02-17_23-05-06\\.log.csv",
+      "group": "1",
+      "opacity": 1.0,
+      "color": "",
+      "enabled": true
+    },
+    {
       "path": "swarm-bots\\runs\\mat_nop_swarm_bots_wall\\2026-02-17_23-05-06\\log.csv",
-      "group": "",
+      "group": "1",
       "opacity": 1.0,
       "color": "",
       "enabled": true
@@ -20,8 +27,8 @@
     "rows": [
       {
         "y": "ep_rew_ema",
-        "height": "3",
-        "ema": "0.02",
+        "height": "2",
+        "ema": "0.01",
         "ema_only": false,
         "std": false,
         "std_ema": false,
@@ -34,17 +41,17 @@
       },
       {
         "y": "ep_rew__mean",
-        "height": "1",
+        "height": "3",
         "ema": "0.02",
         "ema_only": false,
         "std": true,
         "std_ema": false,
-        "skew": false,
-        "skew_ema": false,
-        "min": false,
-        "min_ema": false,
-        "max": false,
-        "max_ema": false
+        "skew": true,
+        "skew_ema": true,
+        "min": true,
+        "min_ema": true,
+        "max": true,
+        "max_ema": true
       },
       {
         "y": "ep_len__mean",

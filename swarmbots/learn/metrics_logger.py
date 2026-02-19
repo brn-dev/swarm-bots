@@ -139,17 +139,26 @@ class MetricsLogger:
         if self.file is None:
             file_exists = self.file_path.exists()
             self.file = open(self.file_path, mode='a', newline='', encoding="utf-8")
-            
-            self._csv_fieldnames = list(csv_metrics.keys())
+
+            existing_fieldnames = self._read_csv_header_fieldnames() if file_exists else None
+            self._csv_fieldnames = existing_fieldnames if existing_fieldnames is not None else list(csv_metrics.keys())
             self.writer = csv.DictWriter(
                 self.file,
                 fieldnames=self._csv_fieldnames,
                 delimiter=';',
                 extrasaction="ignore",
             )
-            
+
             if not file_exists:
                 self.writer.writeheader()
+            else:
+                extra_keys = set(csv_metrics.keys()) - set(self._csv_fieldnames)
+                if extra_keys and not self._warned_csv_extra_keys:
+                    self._warned_csv_extra_keys = True
+                    logger.warning(
+                        "MetricsLogger: ignoring new CSV metric keys not present in the header: "
+                        f"{sorted(extra_keys)}"
+                    )
         else:
             assert self._csv_fieldnames is not None
             extra_keys = set(csv_metrics.keys()) - set(self._csv_fieldnames)
@@ -162,6 +171,19 @@ class MetricsLogger:
         
         self.writer.writerow(csv_metrics)
         self.file.flush()
+
+    def _read_csv_header_fieldnames(self) -> list[str] | None:
+        if self.file_path is None or not self.file_path.exists() or self.file_path.stat().st_size == 0:
+            return None
+
+        with open(self.file_path, mode='r', newline='', encoding='utf-8') as existing_file:
+            reader = csv.reader(existing_file, delimiter=';')
+            header = next(reader, None)
+
+        if not header:
+            return None
+
+        return [column_name.strip() for column_name in header]
 
     def _init_wandb(
             self,
