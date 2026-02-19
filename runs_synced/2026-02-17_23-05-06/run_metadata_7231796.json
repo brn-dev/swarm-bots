@@ -1,0 +1,321 @@
+{
+  "algorithm": "PPOWM",
+  "env_repr": "<SwarmBotsLearnEnvWrapper, <NormalizeReward, <TransitionObsWrapper, <FeatureWiseObsNormWrapper, <FeatureWiseObsNormWrapper, <FeatureWiseObsNormWrapper, <RecordEpisodeStatistics, AsyncVectorEnv(num_envs=23)>>>>>>>",
+  "env_settings": {
+    "action_repeat": 15,
+    "episode_length": 512,
+    "scenario": {
+      "actuator_strength": 15.0,
+      "average_connectors_reward": true,
+      "connection_angle_threshold": -0.5,
+      "connection_dist_threshold": 0.1,
+      "disconnect_potential_threshold": 5.0,
+      "first_wall_distance": 2.0,
+      "force_elliptic_cone": true,
+      "friction": [
+        2.0,
+        0.01,
+        0.0002
+      ],
+      "inactive_area_location": "[20.   0.   0.1]",
+      "include_connectors_xpos_in_obs": true,
+      "include_connectors_xquat_in_obs": false,
+      "inter_wall_distance": 4.0,
+      "no_initial_ramp": true,
+      "num_walls": 1,
+      "opening_widths": [
+        0.01
+      ],
+      "payload_mass": 5.0,
+      "payload_size": [
+        0.2,
+        0.2,
+        0.2
+      ],
+      "payload_start_location_offset": [
+        0,
+        1,
+        0
+      ],
+      "payload_type": null,
+      "pole_height": 1.0,
+      "pole_radius": 0.1,
+      "poles": [],
+      "quat_rot6d_representation": true,
+      "reset_settle_time": 1.0,
+      "reset_settle_timestep_scale": 5,
+      "reward_weights": {
+        "actuators_activation_reward_power": 8,
+        "actuators_activation_reward_weight": -0.007,
+        "connectors_deactivated_reward_weight": 0.0,
+        "connectors_stayed_active_reward_weight": 0.0,
+        "connectors_successfully_activated_reward_weight": 0.0,
+        "connectors_unsuccessfully_activated_reward_weight": -0.0001,
+        "guidance_reward_weight": 1.0,
+        "height_reward_weight": 0.0,
+        "movement_reward_weight": 0.0,
+        "progress_reward_weight": 1.0,
+        "units_with_double_connection_reward_weight": -0.001,
+        "units_without_connections_reward_weight": -0.002
+      },
+      "seed": null,
+      "street_width": 10.0,
+      "swarm": {
+        "body_radius": 0.1,
+        "config": {
+          "connection_torquescale": 50.0,
+          "num_units": 4,
+          "unit_config": [
+            {
+              "name": "ppp",
+              "rgba": [
+                1,
+                0,
+                0,
+                1
+              ],
+              "type": "LimbType.yx",
+              "vec": [
+                0.5773502691896258,
+                0.5773502691896258,
+                0.5773502691896258
+              ]
+            },
+            {
+              "name": "pmm",
+              "rgba": [
+                0,
+                1,
+                0,
+                1
+              ],
+              "type": "LimbType.yx",
+              "vec": [
+                0.5773502691896258,
+                -0.5773502691896258,
+                -0.5773502691896258
+              ]
+            },
+            {
+              "name": "mpm",
+              "rgba": [
+                0,
+                0,
+                1,
+                1
+              ],
+              "type": "LimbType.yx",
+              "vec": [
+                -0.5773502691896258,
+                0.5773502691896258,
+                -0.5773502691896258
+              ]
+            },
+            {
+              "name": "mmp",
+              "rgba": [
+                1,
+                1,
+                0,
+                1
+              ],
+              "type": "LimbType.yx",
+              "vec": [
+                -0.5773502691896258,
+                -0.5773502691896258,
+                0.5773502691896258
+              ]
+            }
+          ]
+        },
+        "hinge_armature": 0.003,
+        "hinge_range": 1.0471975511965976,
+        "leg_length": 0.2,
+        "leg_radius": 0.025,
+        "randomize_unit_orientations": true,
+        "unit_start_locations": "PreConnectedUnitLocationsConfig(num_units=4, num_unit_probs={2: 0.3333333333333333, 3: 0.3333333333333333, 4: 0.3333333333333333}, max_radius=1.5, z_pos=0.5, center=True)",
+        "unit_start_quats": null
+      },
+      "unusable_opening_offset": 2.0,
+      "wall_heights": [
+        0.15
+      ]
+    },
+    "shuffle_agents": false,
+    "simulation_unstable_reward": -1.0
+  },
+  "hyper_parameters": {
+    "agent_logprob_reduction": null,
+    "automatic_learning_rate": {
+      "enabled": true,
+      "initial_lr": 5e-05,
+      "max_lr": 0.0001,
+      "updater": {
+        "repr": "<function main.<locals>.auto_lr_updater at 0x000001D323B676A0>",
+        "source": "    def auto_lr_updater(\n            old_lr: float,\n            state: dict[str, Any],\n            n_iterations: int,\n            n_model_updates: int,\n            n_timesteps: int,\n            early_stop_kl_div: Optional[float],\n            early_stop_epoch: Optional[int],\n            metrics: dict[str, Any]\n    ) -> AutomaticLearningRateUpdateResult:\n        warmup_iterations: int = 500\n        cold_lr = initial_lr / 50\n\n        if early_stop_kl_div is not None and early_stop_kl_div > 0.1:\n            state['counter'] = 0\n            state['warmup'] = False\n            decay_factor = np.clip(0.9 - early_stop_kl_div, 0.4, 0.8)\n            return {\n                'new_lr': old_lr * decay_factor,\n                'msg': f'kl={early_stop_kl_div:.3f}',\n                'event': 'max_kl_hit'\n            }\n\n        if early_stop_epoch is not None and early_stop_epoch < 2:\n            state['counter'] = 0\n            state['warmup'] = False\n            decay_factor = 0.9 if early_stop_epoch == 1 else 0.75\n            return {\n                'new_lr': old_lr * decay_factor,\n                'msg': f'epoch={early_stop_epoch}',\n                'event': 'min_epoch_hit'\n            }\n\n        clip_frac_stats: Optional[SummaryStatistics] = metrics.get('clip_frac', None)\n        if clip_frac_stats and clip_frac_stats.mean > 0.11:\n            state['counter'] = 0\n            state['warmup'] = False\n            clip_frac = clip_frac_stats.mean\n            decay_factor = np.clip(1 - clip_frac, 0.5, 0.9)\n            return {\n                'new_lr': old_lr * decay_factor,\n                'msg': f'{clip_frac=:.3f}',\n                'event': 'max_clip_frac_hit'\n            }\n\n        warmup: bool = state.get('warmup', warmup_iterations > 0) and n_iterations <= warmup_iterations\n        state['warmup'] = warmup\n        if warmup:\n            new_lr = cold_lr + (initial_lr - cold_lr) * n_iterations / warmup_iterations\n            return {\n                'new_lr': new_lr,\n                'msg': f'Warmup ({n_iterations}/{warmup_iterations})',\n                'event': 'warmup'\n            }\n\n        counter = state.get('counter', 0) + 1\n\n        if counter >= 2:\n            state['counter'] = 0\n            return {'new_lr': old_lr * 1.2}\n\n        state['counter'] = counter\n        return {'new_lr': None}\n"
+      }
+    },
+    "batch_size": 512,
+    "clip_range": 0.2,
+    "clip_range_vf": null,
+    "ent_coef": 0.0,
+    "gae_lambda": 0.95,
+    "gamma": 0.99,
+    "gsde_reset_mode": {
+      "mode": "probability",
+      "probability": 0.16666666666666666
+    },
+    "learning_rate": 1.822320588140194e-05,
+    "max_episode_length": 512,
+    "max_grad_norm": 10.0,
+    "n_epochs": 5,
+    "normalize_advantage": true,
+    "policy_num_params": 870977,
+    "policy_num_trainable_params": 870977,
+    "rollout_device": "cpu",
+    "rollout_mode": {
+      "mode": "steps",
+      "n_steps_per_rollout": 4096
+    },
+    "target_kl": 0.04,
+    "train_device": "cuda",
+    "value_loss_fn": "SmoothL1Loss()",
+    "vf_coef": 0.5,
+    "world_model_loss_coef": 0.1,
+    "world_model_num_next_steps": 3,
+    "world_model_target_tau": null
+  },
+  "iterations": 1760,
+  "load_path": "runs/mat_nop_swarm_bots_wall/2026-02-17_23-05-06/models/model_7231796_steps_stopped.pt",
+  "policy_hyper_parameters": {
+    "act_fn_cls": "GELU",
+    "action_encoder_hidden_dims": [
+      64
+    ],
+    "actor_head_hidden_dims": null,
+    "add_agent_embeddings_decoder": true,
+    "add_agent_embeddings_encoder": true,
+    "add_agent_embeddings_transition_model": false,
+    "angle_loss_weight": 1.0,
+    "bernoulli_initial_prob": 0.75,
+    "binary_loss_weight": 1.0,
+    "continuous_config": {
+      "base_std": 0.25,
+      "epsilon": 1e-06,
+      "full_std": true,
+      "latent_sde_dim": null,
+      "latent_sde_net_initialization": "init_linear_orthogonal",
+      "log_std_clamp_range": [
+        -20.0,
+        2.0
+      ],
+      "normalize_latent_sde_by_dim": true,
+      "sde_learn_features": false,
+      "std_learnable": true
+    },
+    "cross_attn_first_decoder": true,
+    "d_model_decoder": 64,
+    "d_model_encoder": 128,
+    "d_model_transition_model": 128,
+    "dim_feedforward_decoder": 128,
+    "dim_feedforward_encoder": 256,
+    "dim_feedforward_transition_model": 128,
+    "dropout": 0.0,
+    "global_obs_encoder_hidden_dims": null,
+    "local_angle_target_indices": [
+      9,
+      11,
+      13,
+      15,
+      17,
+      19,
+      21,
+      23,
+      41,
+      46,
+      51,
+      56
+    ],
+    "local_binary_target_indices": [
+      39,
+      44,
+      49,
+      54
+    ],
+    "local_obs_encoder_hidden_dims": [
+      256,
+      256
+    ],
+    "local_rot6d_target_indices": [
+      3
+    ],
+    "local_scalar_target_indices": [
+      0,
+      1,
+      2,
+      25,
+      26,
+      27,
+      28,
+      29,
+      30,
+      31,
+      32,
+      33,
+      34,
+      35,
+      36,
+      37,
+      38,
+      59,
+      60,
+      61,
+      62,
+      63,
+      64,
+      65,
+      66,
+      67,
+      68,
+      69,
+      70,
+      43,
+      48,
+      53,
+      58
+    ],
+    "max_agents": 20,
+    "n_critic_local_projection_hidden_layers": 1,
+    "n_critic_value_regressor_hidden_layers": 1,
+    "nhead_decoder": 2,
+    "nhead_encoder": 2,
+    "nhead_transition_model": 2,
+    "num_layers_decoder": 2,
+    "num_layers_encoder": 2,
+    "num_layers_transition_model": 2,
+    "rot6d_loss_weight": 1.0,
+    "scalar_loss_fn": "SmoothL1Loss()",
+    "scalar_loss_weight": 1.0,
+    "transition_model_coembed_hidden_dims": [
+      128
+    ],
+    "transition_model_head_hidden_dims": null,
+    "transition_model_predict_delta": true,
+    "wm_angle_predictor_hidden_dims": [],
+    "wm_binary_predictor_hidden_dims": [],
+    "wm_pre_predictors_dims": [
+      128,
+      128
+    ],
+    "wm_pre_transition_dims": [
+      128
+    ],
+    "wm_predict_delta": true,
+    "wm_rot6d_predictor_hidden_dims": [],
+    "wm_scalar_predictor_hidden_dims": []
+  },
+  "policy_repr": "MATNOPPolicy(\n  (encoder): MATEncoder(\n    (local_obs_encoder): MLP(\n      (0): Linear(in_features=154, out_features=256, bias=True)\n      (1): GELU(approximate='none')\n      (2): Linear(in_features=256, out_features=256, bias=True)\n      (3): GELU(approximate='none')\n      (4): Linear(in_features=256, out_features=128, bias=True)\n    )\n    (encoder): TransformerEncoder(\n      (layers): ModuleList(\n        (0-1): 2 x TransformerEncoderLayer(\n          (self_attn): MultiheadAttention(\n            (out_proj): NonDynamicallyQuantizableLinear(in_features=128, out_features=128, bias=True)\n          )\n          (linear1): Linear(in_features=128, out_features=256, bias=True)\n          (dropout): Dropout(p=0.0, inplace=False)\n          (linear2): Linear(in_features=256, out_features=128, bias=True)\n          (norm1): LayerNorm((128,), eps=1e-05, elementwise_affine=True)\n          (norm2): LayerNorm((128,), eps=1e-05, elementwise_affine=True)\n          (dropout1): Dropout(p=0.0, inplace=False)\n          (dropout2): Dropout(p=0.0, inplace=False)\n          (activation): GELU(approximate='none')\n        )\n      )\n      (norm): LayerNorm((128,), eps=1e-05, elementwise_affine=True)\n    )\n  )\n  (action_encoder): MLP(\n    (0): Linear(in_features=12, out_features=64, bias=True)\n    (1): GELU(approximate='none')\n    (2): Linear(in_features=64, out_features=64, bias=True)\n  )\n  (decoder): MATDecoder(\n    (decoder): TransformerDecoder(\n      (layers): ModuleList(\n        (0-1): 2 x CustomTransformerDecoderLayer(\n          (self_attn): MultiheadAttention(\n            (out_proj): NonDynamicallyQuantizableLinear(in_features=64, out_features=64, bias=True)\n          )\n          (multihead_attn): MultiheadAttention(\n            (out_proj): NonDynamicallyQuantizableLinear(in_features=64, out_features=64, bias=True)\n          )\n          (linear1): Linear(in_features=64, out_features=128, bias=True)\n          (dropout): Dropout(p=0.0, inplace=False)\n          (linear2): Linear(in_features=128, out_features=64, bias=True)\n          (norm1): LayerNorm((64,), eps=1e-05, elementwise_affine=True)\n          (norm2): LayerNorm((64,), eps=1e-05, elementwise_affine=True)\n          (norm3): LayerNorm((64,), eps=1e-05, elementwise_affine=True)\n          (dropout1): Dropout(p=0.0, inplace=False)\n          (dropout2): Dropout(p=0.0, inplace=False)\n          (dropout3): Dropout(p=0.0, inplace=False)\n          (activation): GELU(approximate='none')\n        )\n      )\n      (norm): LayerNorm((64,), eps=1e-05, elementwise_affine=True)\n    )\n  )\n  (actor_head): Identity()\n  (action_dist): HybridActionDistribution(\n    (distributions): ModuleList(\n      (0): GSDEActionDist(\n        (action_net): Linear(in_features=64, out_features=8, bias=True)\n        (latent_sde_net): Identity()\n      )\n      (1): BernoulliActionDist(\n        (action_net): Linear(in_features=64, out_features=4, bias=True)\n      )\n    )\n  )\n  (critic): DeepSetCritic(\n    (deepset): DeepSet(\n      (element_encoder): MLP(\n        (0): Linear(in_features=131, out_features=128, bias=True)\n      )\n      (set_decoder): MLP(\n        (0): Linear(in_features=128, out_features=128, bias=True)\n        (1): GELU(approximate='none')\n        (2): Linear(in_features=128, out_features=1, bias=True)\n      )\n    )\n  )\n  (pre_transition_transform): MLP(\n    (0): Linear(in_features=128, out_features=128, bias=True)\n  )\n  (transition_model): TransformerTransitionModel(\n    (coembed): MLP(\n      (0): Linear(in_features=140, out_features=128, bias=True)\n      (1): GELU(approximate='none')\n      (2): Linear(in_features=128, out_features=128, bias=True)\n      (3): GELU(approximate='none')\n    )\n    (encoder): TransformerEncoder(\n      (layers): ModuleList(\n        (0-1): 2 x TransformerEncoderLayer(\n          (self_attn): MultiheadAttention(\n            (out_proj): NonDynamicallyQuantizableLinear(in_features=128, out_features=128, bias=True)\n          )\n          (linear1): Linear(in_features=128, out_features=128, bias=True)\n          (dropout): Dropout(p=0.0, inplace=False)\n          (linear2): Linear(in_features=128, out_features=128, bias=True)\n          (norm1): LayerNorm((128,), eps=1e-05, elementwise_affine=True)\n          (norm2): LayerNorm((128,), eps=1e-05, elementwise_affine=True)\n          (dropout1): Dropout(p=0.0, inplace=False)\n          (dropout2): Dropout(p=0.0, inplace=False)\n          (activation): GELU(approximate='none')\n        )\n      )\n      (norm): LayerNorm((128,), eps=1e-05, elementwise_affine=True)\n    )\n    (head): Linear(in_features=128, out_features=128, bias=True)\n  )\n  (pre_predictors_transform): MLP(\n    (0): Linear(in_features=128, out_features=128, bias=True)\n    (1): GELU(approximate='none')\n    (2): Linear(in_features=128, out_features=128, bias=True)\n  )\n  (scalar_loss_fn): SmoothL1Loss()\n  (local_scalars_predictor): MLP(\n    (0): Linear(in_features=128, out_features=33, bias=True)\n  )\n  (local_angles_predictor): MLP(\n    (0): Linear(in_features=128, out_features=12, bias=True)\n  )\n  (local_rot6ds_predictor): MLP(\n    (0): Linear(in_features=128, out_features=3, bias=True)\n  )\n  (local_binaries_predictor): MLP(\n    (0): Linear(in_features=128, out_features=4, bias=True)\n  )\n)",
+  "script": "import sys\nfrom datetime import datetime\nfrom pathlib import Path\nfrom typing import Any, Callable, Optional\n\nimport numpy as np\nimport torch\nfrom gymnasium.vector import SyncVectorEnv, AsyncVectorEnv\nfrom gymnasium.wrappers.vector import RecordEpisodeStatistics, NormalizeReward\nfrom loguru import logger\nfrom torch import nn\n\nfrom swarmbots.learn.action_dists.hybrid_action_dist import GSDEParams\nfrom swarmbots.learn.algos.mat.wm.mat_nop_policy import MATNOPPolicy\nfrom swarmbots.learn.algos.ppo.wm.ppo_wm import PPOWM\nfrom swarmbots.learn.algos.ppo.ppo import AutomaticLearningRate, AutomaticLearningRateUpdateResult, StepsRolloutMode\nfrom swarmbots.learn.env_wrappers.obs_normalization.feature_wise_obs_norm_wrapper import (\n    FeatureWiseObsNormWrapper,\n)\nfrom swarmbots.learn.env_wrappers.learn_wrappers.swarm_bots_learn_env_wrapper import SwarmBotsLearnEnvWrapper\nfrom swarmbots.learn.env_wrappers.transition_obs_wrapper import TransitionObsWrapper\nfrom swarmbots.learn.gsde_reset import GSDEProbabilityResetMode\nfrom swarmbots.learn.summary_statistics import SummaryStatisticsFormat, SummaryStatistics\nfrom swarmbots.learn.obs_indices import ObsIndices\nfrom swarmbots.learn.swarmbots_obs_indices import build_obs_indices\nfrom swarmbots.mj_env.scenarios.scenario_presets import default_wall\nfrom swarmbots.mj_env.swarm.homogeneous_swarm import HomogeneousSwarm, PoissonDiscUnitLocationsConfig, \\\n    PreConnectedUnitLocationsConfig\nfrom swarmbots.mj_env.swarm.unit_config import UNIT_CONFIG_TETRAHEDRON_YX, UnitConfig\nfrom swarmbots.mj_env.swarm_bots_env import SwarmBotsEnv\n\n\ndef make_env_fn(\n        episode_length: int,\n        scenario_kwargs: dict[str, Any] | None = None,\n        render_mode: str | None = None,\n        first_episode_length: int | None = None\n) -> Callable[[], SwarmBotsEnv]:\n    if scenario_kwargs is None:\n        scenario_kwargs = {}\n\n    def _init() -> SwarmBotsEnv:\n        scenario = default_wall(\n            swarm=HomogeneousSwarm(\n                unit_config=UNIT_CONFIG_TETRAHEDRON_YX,\n                # unit_start_locations=PoissonDiscUnitLocationsConfig(\n                #     num_units=4,\n                #     max_radius=1.5,\n                #     num_unit_probs={\n                #         2: 1.0,\n                #         3: 1.0,\n                #         4: 1.0,\n                #         # 5: 1.0,\n                #     }\n                # ),\n                unit_start_locations=PreConnectedUnitLocationsConfig(\n                    num_units=4,\n                    num_unit_probs={\n                        2: 1.0,\n                        3: 1.0,\n                        4: 1.0,\n                        # 5: 1.0,\n                    },\n                    max_radius=1.5,\n                    z_pos=0.5,\n                ),\n                randomize_unit_orientations=True,\n            ),\n            # unit_start_locations='8:hourglass',\n            first_wall_distance=2.0, # UniformDistParams(1.5, 2.5),\n            **scenario_kwargs\n        )\n        return SwarmBotsEnv(\n            scenario=scenario,\n            episode_length=episode_length,\n            render_mode=render_mode,\n            camera=0,\n            first_episode_length=first_episode_length,\n        )\n\n    return _init\n\n\ndef wrap_vec_env(\n        vector_env: SyncVectorEnv | AsyncVectorEnv,\n        obs_indices: ObsIndices,\n        gamma: float,\n        rollout_device: torch.device\n) -> SwarmBotsLearnEnvWrapper:\n    vector_env = RecordEpisodeStatistics(vector_env)\n    vector_env = FeatureWiseObsNormWrapper(\n        vector_env,\n        obs_key=\"local_obs\",\n        scalar_feature_indices=obs_indices.local_scalar_indices,\n        quaternion_indices=obs_indices.local_quaternion_indices,\n    )\n    vector_env = FeatureWiseObsNormWrapper(\n        vector_env,\n        obs_key=\"global_obs\",\n        scalar_feature_indices=obs_indices.global_scalar_indices,\n        quaternion_indices=obs_indices.global_quaternion_indices,\n    )\n    vector_env = FeatureWiseObsNormWrapper(\n        vector_env,\n        obs_key=\"hidden_vars\",\n        scalar_feature_indices=obs_indices.hidden_vars_scalar_indices,\n        quaternion_indices=obs_indices.hidden_vars_quaternion_indices,\n    )\n    vector_env = TransitionObsWrapper(vector_env)\n    vector_env = NormalizeReward(vector_env, gamma=gamma)\n\n    env = SwarmBotsLearnEnvWrapper(vector_env, device=rollout_device)\n    return env\n\n\ndef main() -> None:\n    logger.remove()\n    logger.add(\n        sys.stderr,\n        colorize=True,\n        format=\"<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <5}</level> | <level>{message}</level>\",\n    )\n\n    n_envs = 23\n    # unit_start_locations = [\n    #     (0.0, 0.0, 0.0),\n    #     (-0.6, 0, 0),\n    # ]\n    episode_length = 512\n    total_timesteps = 100_000_000\n    save_interval = 500\n    world_model_num_next_steps = 3\n    world_model_loss_coef = 0.1\n    world_model_target_tau = None\n\n    # =====  ID  =====\n    run_id = datetime.now().strftime(\"%Y-%m-%d_%H-%M-%S\")\n\n    # ===== LOAD =====\n    load_path: str | None = None\n    load_path = \"runs/mat_nop_swarm_bots_wall/2026-02-17_23-05-06/models/model_7231796_steps_stopped.pt\"\n\n    # ===== DEVICE =====\n    use_cuda = True and torch.cuda.is_available()\n    rollout_device = torch.device(\"cpu\")\n    train_device = torch.device(\"cuda\" if use_cuda else \"cpu\")\n\n    logger.info(f'{rollout_device = }')\n    logger.info(f'{train_device = }')\n\n    if load_path is not None:\n        if not load_path.endswith('.pt'):\n            logger.error('load_path is missing .pt')\n        logger.info(f'{load_path = }')\n        run_id = load_path.split('/')[2]\n    logger.info(f'{run_id = }')\n\n    run_dir = f\"runs/mat_nop_swarm_bots_wall/{run_id}/\"\n    save_optimizer = True\n\n    scenario_kwargs = {\n    }\n\n    env_fns = [\n        make_env_fn(\n            episode_length=episode_length,\n            scenario_kwargs=scenario_kwargs,\n            render_mode=None,\n            first_episode_length=int(i * episode_length / n_envs)\n        )\n        for i in range(1, n_envs + 1)\n    ]\n\n    print(\"Creating dummy env for capturing settings...\")\n    dummy_env = env_fns[0]()\n    env_settings = dummy_env.get_settings()\n    local_obs_dim = int(dummy_env.observation_space[\"local_obs\"].shape[-1])\n    global_obs_dim = int(dummy_env.observation_space[\"global_obs\"].shape[-1])\n    hidden_vars_dim = int(dummy_env.observation_space[\"hidden_vars\"].shape[-1])\n    dummy_env.close()\n    del dummy_env\n    print(\"Env settings captured.\")\n\n    obs_indices = build_obs_indices(\n        env_settings=env_settings,\n        local_obs_dim=local_obs_dim,\n        global_obs_dim=global_obs_dim,\n        hidden_vars_dim=hidden_vars_dim,\n    )\n\n    def make_record_env() -> SwarmBotsLearnEnvWrapper:\n        record_env = SyncVectorEnv([\n            make_env_fn(\n                episode_length=episode_length,\n                scenario_kwargs=scenario_kwargs,\n                render_mode='rgb_array'\n            )\n        ])\n        record_env = wrap_vec_env(\n            vector_env=record_env,\n            obs_indices=obs_indices,\n            gamma=gamma,\n            rollout_device=rollout_device,\n        )\n        return record_env\n\n    print('Creating vector env...')\n    if sys.gettrace() is None:\n        vector_env = AsyncVectorEnv(env_fns)\n    else:\n        vector_env = SyncVectorEnv(env_fns[:1])\n    print(f\"Created {type(vector_env)} with {n_envs} environments.\")\n\n    if isinstance(vector_env, SyncVectorEnv):\n        for _ in range(10):\n            logger.warning('USING SYNC VECTOR ENV')\n\n    gamma = 0.99\n\n    print(\"Wrapping...\")\n    env = wrap_vec_env(\n        vector_env=vector_env,\n        obs_indices=obs_indices,\n        gamma=gamma,\n        rollout_device=rollout_device,\n    )\n\n    print(f\"Environment initialized.\")\n    print(f\"n_agents: {env.n_agents}\")\n    print(f\"local_obs_dim: {env.local_obs_dim}\")\n    print(f\"global_obs_dim: {env.global_obs_dim}\")\n    print(f\"actuators_dim: {env.actuators_dim}\")\n    print(f\"connectors_dim: {env.connectors_dim}\")\n\n    print(\"Initializing Policy...\")\n    policy = MATNOPPolicy(\n        env=env,\n        local_obs_encoder_hidden_dims=[256, 256],\n        action_encoder_hidden_dims=[64],\n        d_model=128,\n        d_model_decoder=64,\n        nhead_encoder=2,\n        nhead_decoder=2,\n        num_layers_encoder=2,\n        num_layers_decoder=2,\n        dim_feedforward_encoder=256,\n        dim_feedforward_decoder=128,\n        dropout=0.0,\n        n_critic_local_projection_hidden_layers=1,\n        n_critic_value_regressor_hidden_layers=1,\n        cross_attn_first=True,\n        act_fn_cls=nn.GELU,\n        continuous_config=GSDEParams(\n            base_std=0.25,\n            latent_sde_dim=None,\n            std_learnable=True,\n            full_std=True,\n            sde_learn_features=False,\n            log_std_clamp_range=(-20.0, 2.0),\n            normalize_latent_sde_by_dim=True\n        ),\n        bernoulli_initial_prob=0.75,\n        max_agents=20,\n        # NOP\n        wm_pre_transition_dims=[128],\n        d_model_transition_model=128,\n        nhead_transition_model=2,\n        num_layers_transition_model=2,\n        dim_feedforward_transition_model=128,\n        transition_model_coembed_hidden_dims=[128],\n        wm_pre_predictors_dims=[128, 128],\n        wm_scalar_predictor_hidden_dims=[],\n        wm_angle_predictor_hidden_dims=[],\n        wm_rot6d_predictor_hidden_dims=[],\n        wm_binary_predictor_hidden_dims=[],\n        local_scalar_target_indices=obs_indices.local_scalar_indices,\n        local_angle_target_indices=obs_indices.local_angle_indices,\n        local_rot6d_target_indices=obs_indices.local_rot6d_indices,\n        local_binary_target_indices=obs_indices.local_binary_indices,\n        scalar_loss_fn='smooth_l1',\n        scalar_loss_weight=1.0,\n        angle_loss_weight=1.0,\n        rot6d_loss_weight=1.0,\n        binary_loss_weight=1.0,\n    )\n    print(policy)\n\n    print(\"Initializing PPO Algorithm...\")\n\n    initial_lr = 5e-5\n\n    def auto_lr_updater(\n            old_lr: float,\n            state: dict[str, Any],\n            n_iterations: int,\n            n_model_updates: int,\n            n_timesteps: int,\n            early_stop_kl_div: Optional[float],\n            early_stop_epoch: Optional[int],\n            metrics: dict[str, Any]\n    ) -> AutomaticLearningRateUpdateResult:\n        warmup_iterations: int = 500\n        cold_lr = initial_lr / 50\n\n        if early_stop_kl_div is not None and early_stop_kl_div > 0.1:\n            state['counter'] = 0\n            state['warmup'] = False\n            decay_factor = np.clip(0.9 - early_stop_kl_div, 0.4, 0.8)\n            return {\n                'new_lr': old_lr * decay_factor,\n                'msg': f'kl={early_stop_kl_div:.3f}',\n                'event': 'max_kl_hit'\n            }\n\n        if early_stop_epoch is not None and early_stop_epoch < 2:\n            state['counter'] = 0\n            state['warmup'] = False\n            decay_factor = 0.9 if early_stop_epoch == 1 else 0.75\n            return {\n                'new_lr': old_lr * decay_factor,\n                'msg': f'epoch={early_stop_epoch}',\n                'event': 'min_epoch_hit'\n            }\n\n        clip_frac_stats: Optional[SummaryStatistics] = metrics.get('clip_frac', None)\n        if clip_frac_stats and clip_frac_stats.mean > 0.11:\n            state['counter'] = 0\n            state['warmup'] = False\n            clip_frac = clip_frac_stats.mean\n            decay_factor = np.clip(1 - clip_frac, 0.5, 0.9)\n            return {\n                'new_lr': old_lr * decay_factor,\n                'msg': f'{clip_frac=:.3f}',\n                'event': 'max_clip_frac_hit'\n            }\n\n        warmup: bool = state.get('warmup', warmup_iterations > 0) and n_iterations <= warmup_iterations\n        state['warmup'] = warmup\n        if warmup:\n            new_lr = cold_lr + (initial_lr - cold_lr) * n_iterations / warmup_iterations\n            return {\n                'new_lr': new_lr,\n                'msg': f'Warmup ({n_iterations}/{warmup_iterations})',\n                'event': 'warmup'\n            }\n\n        counter = state.get('counter', 0) + 1\n\n        if counter >= 2:\n            state['counter'] = 0\n            return {'new_lr': old_lr * 1.2}\n\n        state['counter'] = counter\n        return {'new_lr': None}\n\n    auto_lr = AutomaticLearningRate(\n        initial_lr=initial_lr,\n        max_lr=1e-4,\n        updater=auto_lr_updater\n    )\n    ppo = PPOWM(\n        policy=policy,\n        env=env,\n        learning_rate=auto_lr,\n        rollout_mode=StepsRolloutMode(4096),\n        max_episode_length=episode_length,\n        batch_size=512,\n        n_epochs=5,\n        gamma=gamma,\n        gae_lambda=0.95,\n        clip_range=0.2,\n        target_kl=0.04,\n        max_grad_norm=10.0,\n        gsde_reset_mode=GSDEProbabilityResetMode(probability=1 / 6),\n        ent_coef=0e-5,\n        value_loss_fn=nn.SmoothL1Loss(),\n        train_device=train_device,\n        rollout_device=rollout_device,\n        world_model_num_next_steps=world_model_num_next_steps,\n        world_model_loss_coef=world_model_loss_coef,\n        world_model_target_tau=world_model_target_tau,\n    )\n\n    if load_path:\n        logger.info(f\"Loading model from {load_path}\")\n        ppo.load(load_path, recover_best_return_ema=False, strict_load_state_dict=True)\n\n    print(\"Starting training...\")\n    ppo.learn(\n        max_total_timesteps=total_timesteps,\n        run_dir=run_dir,\n        log_interval=1,\n        save_interval=save_interval,\n        save_optimizer=save_optimizer,\n        best_rotation_n=3,\n        extra_run_metadata={\n            'load_path': load_path,\n            'env_settings': env_settings,\n            'script': Path(__file__).read_text(encoding='utf-8')\n        },\n        logging_console_keys=[\n            ('iteration', '5', 'it'),\n            ('timesteps', '8', 'steps'),\n            ('total_updates', '6', 'tot_upd'),\n            ('act0', SummaryStatisticsFormat(histogram=10)),\n            ('act1', SummaryStatisticsFormat(histogram=2)),\n            ('std0', SummaryStatisticsFormat(mean='.3f', std='.3f', min_value='.3f', max_value='.3f')),\n            ('updates', '3', 'upd'),\n            ('approx_kl', SummaryStatisticsFormat(mean='.3f', std='.3f', max_value='.3f')),\n            ('clip_frac', None),\n            ('ratio', SummaryStatisticsFormat(mean='.3f', std='.3f', min_value='.1e', max_value='.3f')),\n            ('wm_loss_scaled', None, 'wm_loss'),\n            ('val_loss_scaled', None, 'val_loss'),\n            ('expl_var', '.3f'),\n            ('ep_rew', SummaryStatisticsFormat(mean=' .2f', std='.2f', max_value=' .2f', n='1')),\n            ('ep_rew_ema', ' .3f'),\n            ('best_ep_rew_ema', ' .3f', 'best_ema'),\n            ('fps', None),\n        ],\n        make_record_env=make_record_env\n    )\n\n    print(\"Training Finished.\")\n\n    env.close()\n\n\nif __name__ == \"__main__\":\n    main()\n",
+  "timesteps": 7231796,
+  "updates": 70261
+}
