@@ -1,0 +1,129 @@
+{
+  "paths": [
+    {
+      "path": "runs\\mat_nop_swarm_bots_wall\\2026-02-15_13-34-05\\log.csv",
+      "group": "",
+      "opacity": 1.0,
+      "color": "",
+      "enabled": false
+    },
+    {
+      "path": "runs\\mat_nop_swarm_bots_wall\\2026-02-16_13-07-10\\log.csv",
+      "group": "",
+      "opacity": 1.0,
+      "color": "",
+      "enabled": false
+    },
+    {
+      "path": "runs\\mat_nop_swarm_bots_wall\\2026-02-16_14-44-26\\log.csv",
+      "group": "",
+      "opacity": 1.0,
+      "color": "",
+      "enabled": false
+    },
+    {
+      "path": "runs_synced\\2026-02-17_23-05-06\\.log.csv",
+      "group": "1",
+      "opacity": 1.0,
+      "color": "",
+      "enabled": false
+    },
+    {
+      "path": "runs_synced\\2026-02-17_23-05-06\\log.csv",
+      "group": "1",
+      "opacity": 1.0,
+      "color": "",
+      "enabled": false
+    },
+    {
+      "path": "runs\\mat_nop_swarm_bots_wall\\2026-02-19_16-07-58\\log.csv",
+      "group": "",
+      "opacity": 1.0,
+      "color": "",
+      "enabled": false
+    },
+    {
+      "path": "runs\\mat_nop_swarm_bots_wall\\2026-02-19_16-08-35\\log.csv",
+      "group": "",
+      "opacity": 1.0,
+      "color": "",
+      "enabled": false
+    },
+    {
+      "path": "runs\\mat_nop_swarm_bots_wall\\2026-02-20_13-20-37\\log.csv",
+      "group": "",
+      "opacity": 1.0,
+      "color": "",
+      "enabled": true
+    },
+    {
+      "path": "runs\\mat_nop_swarm_bots_wall\\2026-02-20_13-22-17\\log.csv",
+      "group": "",
+      "opacity": 1.0,
+      "color": "",
+      "enabled": true
+    }
+  ],
+  "plots": {
+    "x": "timesteps",
+    "rows": [
+      {
+        "y": "ep_rew_ema",
+        "height": "2",
+        "ema": "0.01",
+        "ema_only": false,
+        "std": false,
+        "std_ema": false,
+        "skew": false,
+        "skew_ema": false,
+        "min": false,
+        "min_ema": false,
+        "max": false,
+        "max_ema": false
+      },
+      {
+        "y": "ep_rew__histogram_freqs",
+        "height": "3",
+        "ema": "35;20",
+        "ema_only": false,
+        "std": false,
+        "std_ema": false,
+        "skew": false,
+        "skew_ema": false,
+        "min": false,
+        "min_ema": false,
+        "max": false,
+        "max_ema": false
+      },
+      {
+        "y": "ep_rew__mean",
+        "height": "1",
+        "ema": "0.02",
+        "ema_only": false,
+        "std": true,
+        "std_ema": false,
+        "skew": false,
+        "skew_ema": false,
+        "min": true,
+        "min_ema": true,
+        "max": true,
+        "max_ema": true
+      },
+      {
+        "y": "ep_len__mean",
+        "height": "1",
+        "ema": "0.02",
+        "ema_only": false,
+        "std": true,
+        "std_ema": false,
+        "skew": false,
+        "skew_ema": false,
+        "min": false,
+        "min_ema": false,
+        "max": false,
+        "max_ema": false
+      }
+    ]
+  },
+  "auto_refresh_interval": "300"
+}
