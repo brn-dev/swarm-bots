@@ -26,7 +26,8 @@ if str(REPO_ROOT) not in sys.path:
 
 import plot_logs
 
-STATE_PATH = Path(__file__).resolve().with_name(".plot_logs_config.json")
+STATE_PATH = Path(__file__).resolve().with_name(".plot_logs_recent_config.json")
+PRESETS_PATH = Path(__file__).resolve().with_name(".plot_logs_presets.json")
 
 
 @dataclass(slots=True)
@@ -80,6 +81,8 @@ class PresetEntry:
     y_column: str
     height: float
     ema: float | None = None
+    nbins: int | None = None
+    pooling: int | None = None
     std: bool | AsEma = False
     skew: bool | AsEma = False
     min: bool | AsEma = False
@@ -103,89 +106,202 @@ class HistogramSeries:
     edges_status: str
 
 
-PLOT_PRESETS: tuple[PlotPreset, ...] = (
-    PlotPreset(
-        name="Episode Stats",
-        entries=(
-            PresetEntry("ep_rew_ema", 2.0, ema=0.01),
-            PresetEntry("ep_rew__mean", 3.0, std=True, ema=0.02, min=AS_EMA, max=AS_EMA),
-            PresetEntry("ep_len__mean", 1.0, std=True, ema=0.02),
+def parse_preset_summary_option(
+    raw_value: object,
+    preset_name: str,
+    y_column: str,
+    field_name: str,
+) -> bool | AsEma:
+    if isinstance(raw_value, bool):
+        return raw_value
+    if raw_value == "AS_EMA":
+        return AS_EMA
+    raise ValueError(
+        f"Preset {preset_name!r} entry {y_column!r} field {field_name!r} must be "
+        f"true, false, or 'AS_EMA'."
+    )
+
+
+def as_int_like(value: object) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    return None
+
+
+def is_histogram_preset_column(y_column: str) -> bool:
+    return y_column.endswith("__histogram_freqs") or y_column.endswith("__histogram_edges")
+
+
+def parse_preset_ema(
+    raw_value: object,
+    preset_name: str,
+    y_column: str,
+) -> float | None:
+    if raw_value is None:
+        return None
+    if isinstance(raw_value, bool):
+        raise ValueError(
+            f"Preset {preset_name!r} entry {y_column!r} field 'ema' must be a number between 0 and 1."
+        )
+    if isinstance(raw_value, (int, float)):
+        alpha = float(raw_value)
+        if 0.0 < alpha < 1.0:
+            return alpha
+        raise ValueError(
+            f"Preset {preset_name!r} entry {y_column!r} field 'ema' must be between 0 and 1."
+        )
+    raise ValueError(
+        f"Preset {preset_name!r} entry {y_column!r} field 'ema' must be a number between 0 and 1."
+    )
+
+
+def parse_preset_positive_int(
+    raw_value: object,
+    preset_name: str,
+    y_column: str,
+) -> int | None:
+    if raw_value is None:
+        return None
+    parsed = as_int_like(raw_value)
+    if parsed is None or parsed <= 0:
+        raise ValueError(
+            f"Preset {preset_name!r} entry {y_column!r} must use positive integers for histogram parameters."
+        )
+    return parsed
+
+
+def parse_preset_ema_fields(
+    raw_entry: dict[str, object],
+    preset_name: str,
+    y_column: str,
+) -> tuple[float | None, int | None, int | None]:
+    if "ema_binspool" in raw_entry:
+        raise ValueError(
+            f"Preset {preset_name!r} entry {y_column!r} uses deprecated field 'ema_binspool'. Use 'ema' and/or 'nbins'/'pooling'."
+        )
+    if "bins_pool" in raw_entry:
+        raise ValueError(
+            f"Preset {preset_name!r} entry {y_column!r} uses deprecated field 'bins_pool'. Use 'nbins' and 'pooling'."
+        )
+    has_ema = "ema" in raw_entry
+    has_nbins = "nbins" in raw_entry
+    has_pooling = "pooling" in raw_entry
+    is_histogram = is_histogram_preset_column(y_column)
+    if is_histogram and has_ema:
+        raise ValueError(
+            f"Preset {preset_name!r} entry {y_column!r}: 'ema' is not allowed for histogram columns."
+        )
+    if not is_histogram and (has_nbins or has_pooling):
+        raise ValueError(
+            f"Preset {preset_name!r} entry {y_column!r}: 'nbins' and 'pooling' are only allowed for histogram columns."
+        )
+    if is_histogram:
+        nbins = parse_preset_positive_int(raw_entry.get("nbins"), preset_name, y_column)
+        pooling = parse_preset_positive_int(raw_entry.get("pooling"), preset_name, y_column)
+        if nbins is None and pooling is not None:
+            raise ValueError(
+                f"Preset {preset_name!r} entry {y_column!r}: 'pooling' requires 'nbins'."
+            )
+        if nbins is not None and pooling is None:
+            pooling = 1
+        return None, nbins, pooling
+    return parse_preset_ema(raw_entry.get("ema"), preset_name, y_column), None, None
+
+
+def parse_preset_entry(raw_entry: object, preset_name: str, entry_index: int) -> PresetEntry:
+    if not isinstance(raw_entry, dict):
+        raise ValueError(
+            f"Preset {preset_name!r} entry {entry_index} must be an object."
+        )
+    y_column = raw_entry.get("y_column")
+    if not isinstance(y_column, str) or not y_column:
+        raise ValueError(
+            f"Preset {preset_name!r} entry {entry_index} has invalid 'y_column'."
+        )
+    height = raw_entry.get("height")
+    if isinstance(height, bool) or not isinstance(height, (int, float)):
+        raise ValueError(
+            f"Preset {preset_name!r} entry {y_column!r} has invalid 'height'."
+        )
+    ema, nbins, pooling = parse_preset_ema_fields(raw_entry, preset_name, y_column)
+    return PresetEntry(
+        y_column=y_column,
+        height=float(height),
+        ema=ema,
+        nbins=nbins,
+        pooling=pooling,
+        std=parse_preset_summary_option(
+            raw_entry.get("std", False),
+            preset_name=preset_name,
+            y_column=y_column,
+            field_name="std",
         ),
-    ),
-    PlotPreset(
-        name="Actions",
-        entries=(
-            PresetEntry("ep_rew_ema", 2.0, ema=0.02),
-            PresetEntry("act0__histogram_freqs", 3.0),
-            PresetEntry("act1__histogram_freqs", 1.0),
-            PresetEntry("act0__mean", 1.0, std=True),
-            PresetEntry("std0__mean", 1.0, std=True),
-            PresetEntry("act1__mean", 1.0, std=True),
+        skew=parse_preset_summary_option(
+            raw_entry.get("skew", False),
+            preset_name=preset_name,
+            y_column=y_column,
+            field_name="skew",
         ),
-    ),
-    PlotPreset(
-        name="PPO Metrics",
-        entries=(
-            PresetEntry("ep_rew_ema", 2.0, ema=0.02),
-            PresetEntry("approx_kl__mean", 1.0, std=True),
-            PresetEntry("clip_frac__mean", 1.0, std=True),
-            PresetEntry("ratio__std", 1.0),
-            PresetEntry("expl_var", 1.0),
-            PresetEntry("learning_rate", 1.0),
+        min=parse_preset_summary_option(
+            raw_entry.get("min", False),
+            preset_name=preset_name,
+            y_column=y_column,
+            field_name="min",
         ),
-    ),
-    PlotPreset(
-        name="PPO Losses",
-        entries=(
-            PresetEntry("ep_rew_ema", 2.0, ema=0.02),
-            PresetEntry("act_loss__mean", 1.0, std=True),
-            PresetEntry("val_loss__mean", 1.0, std=True),
-            PresetEntry("ent_loss__mean", 1.0, std=True),
-            PresetEntry("grad_norm__mean", 1.0, std=True),
-            PresetEntry("grad_clip_frac", 1.0),
-            PresetEntry("learning_rate", 1.0),
+        max=parse_preset_summary_option(
+            raw_entry.get("max", False),
+            preset_name=preset_name,
+            y_column=y_column,
+            field_name="max",
         ),
-    ),
-    PlotPreset(
-        name="PPO Full",
-        entries=(
-            PresetEntry("ep_rew_ema", 2.0, ema=0.02),
-            PresetEntry("approx_kl__mean", 1.0, std=True),
-            PresetEntry("clip_frac__mean", 1.0, std=True),
-            PresetEntry("ratio__std", 1.0),
-            PresetEntry("expl_var", 1.0),
-            PresetEntry("val_loss__mean", 1.0, std=True),
-            PresetEntry("act_loss__mean", 1.0, std=True),
-            PresetEntry("ent_loss__mean", 1.0, std=True),
-            PresetEntry("grad_norm__mean", 1.0, std=True),
-            PresetEntry("grad_clip_frac", 1.0),
-            PresetEntry("learning_rate", 1.0),
-        ),
-    ),
-    PlotPreset(
-        name="NOP Losses",
-        entries=(
-            PresetEntry("ep_rew_ema", 2.0, ema=0.02),
-            PresetEntry("scalar_loss__mean", 1.0, std=True),
-            PresetEntry("angle_loss__mean", 1.0, std=True),
-            PresetEntry("rot6d_loss__mean", 1.0, std=True),
-            PresetEntry("binary_loss__mean", 1.0, std=True),
-        ),
-    ),
-    PlotPreset(
-        name="Performance",
-        entries=(
-            PresetEntry("fps", 1.0, ema=0.02),
-            PresetEntry("updates", 1.0),
-            PresetEntry("policy_forward_time__mean", 1.0, std=True),
-            PresetEntry("env_step_time__mean", 1.0, std=True),
-            PresetEntry("rollout_time", 1.0),
-            PresetEntry("sampling_time__mean", 1.0, std=True),
-            PresetEntry("update_time__mean", 1.0, std=True),
-            PresetEntry("train_time", 1.0),
-        ),
-    ),
-)
+    )
+
+
+def parse_plot_preset(raw_preset: object, preset_index: int) -> PlotPreset:
+    if not isinstance(raw_preset, dict):
+        raise ValueError(f"Preset index {preset_index} must be an object.")
+    name = raw_preset.get("name")
+    if not isinstance(name, str) or not name:
+        raise ValueError(f"Preset index {preset_index} has invalid 'name'.")
+    x_column = raw_preset.get("x_column")
+    if x_column is not None and not isinstance(x_column, str):
+        raise ValueError(f"Preset {name!r} has invalid 'x_column'.")
+    raw_entries = raw_preset.get("entries")
+    if not isinstance(raw_entries, list) or not raw_entries:
+        raise ValueError(f"Preset {name!r} must contain a non-empty 'entries' list.")
+    entries = tuple(
+        parse_preset_entry(raw_entry, preset_name=name, entry_index=entry_index)
+        for entry_index, raw_entry in enumerate(raw_entries, start=1)
+    )
+    return PlotPreset(name=name, entries=entries, x_column=x_column)
+
+
+def load_plot_presets(path: Path) -> tuple[PlotPreset, ...]:
+    if not path.exists():
+        return ()
+    raw_payload = json.loads(path.read_text(encoding="utf-8"))
+    raw_presets = raw_payload.get("presets") if isinstance(raw_payload, dict) else raw_payload
+    if not isinstance(raw_presets, list):
+        raise ValueError("Preset file must contain a list or {'presets': [...]} format.")
+    return tuple(
+        parse_plot_preset(raw_preset, preset_index=preset_index)
+        for preset_index, raw_preset in enumerate(raw_presets, start=1)
+    )
+
+
+def load_plot_presets_safe(path: Path) -> tuple[PlotPreset, ...]:
+    try:
+        return load_plot_presets(path)
+    except (OSError, json.JSONDecodeError, ValueError) as exc:
+        print(f"Failed to load plot presets from {path}: {exc}", file=sys.stderr)
+        return ()
+
+
+PLOT_PRESETS: tuple[PlotPreset, ...] = load_plot_presets_safe(PRESETS_PATH)
 
 
 def read_columns(path: Path, delimiter: str) -> list[str]:
@@ -404,6 +520,32 @@ def rebin_histogram_row(
     return rebinned
 
 
+def pool_histogram_along_x(
+    x_values: Sequence[float],
+    values: Sequence[Sequence[float]],
+    pooling: int,
+) -> tuple[list[float], list[list[float]]]:
+    if pooling <= 1 or not values:
+        return list(x_values), [list(row) for row in values]
+    full_window_count = len(values) // pooling
+    if full_window_count == 0:
+        return [], []
+    bin_count = len(values[0])
+    pooled_x_values: list[float] = []
+    pooled_values: list[list[float]] = []
+    for start in range(0, full_window_count * pooling, pooling):
+        x_chunk = x_values[start : start + pooling]
+        value_chunk = values[start : start + pooling]
+        pooled_x_values.append(sum(x_chunk) / len(x_chunk))
+        pooled_values.append(
+            [
+                sum(row[bin_index] for row in value_chunk) / len(value_chunk)
+                for bin_index in range(bin_count)
+            ]
+        )
+    return pooled_x_values, pooled_values
+
+
 def histogram_status_message(histogram_data: dict[str, list[HistogramSeries]]) -> str | None:
     drifting: list[str] = []
     for column, series_list in histogram_data.items():
@@ -436,6 +578,8 @@ def load_histogram_series(
     freqs_column: str,
     edges_column: str | None,
     delimiter: str,
+    target_bin_count: int | None = None,
+    x_pooling: int = 1,
 ) -> HistogramSeries:
     x_values: list[float] = []
     x_is_datetime: bool | None = None
@@ -519,6 +663,32 @@ def load_histogram_series(
             rebinned_values.append(rebin_histogram_row(freqs, source_edges, target_edges))
         values = rebinned_values
         bin_edges = target_edges
+    if target_bin_count is not None and target_bin_count != len(values[0]):
+        source_bin_count = len(values[0])
+        source_edges = (
+            normalize_histogram_edges(bin_edges, source_bin_count)
+            if bin_edges is not None
+            else [float(index) for index in range(source_bin_count + 1)]
+        )
+        target_edges = linear_edges_from_range(
+            source_edges[0],
+            source_edges[-1],
+            target_bin_count,
+        )
+        values = [
+            rebin_histogram_row(freqs, source_edges, target_edges)
+            for freqs in values
+        ]
+        bin_edges = target_edges
+    if x_pooling <= 0:
+        raise ValueError("Histogram pooling must be >= 1.")
+    if x_pooling > 1:
+        x_values, values = pool_histogram_along_x(x_values, values, x_pooling)
+        if not x_values:
+            raise ValueError(
+                f"Histogram pooling ({x_pooling}) is larger than available timesteps "
+                f"in {path} for {freqs_column}."
+            )
     return HistogramSeries(
         label=label,
         x_values=x_values,
@@ -546,6 +716,11 @@ class PlotLogsInteractiveApp:
         self.typeahead_after_ids: dict[tk.Widget, str] = {}
         self.combo_values_getters: dict[ttk.Combobox, Callable[[], Sequence[str]]] = {}
         self.listbox_owner: dict[str, ttk.Combobox] = {}
+        self.histogram_bin_count_cache: dict[
+            tuple[tuple[str, ...], str, str],
+            int | None,
+        ] = {}
+        self.previous_y_by_row: dict[int, str] = {}
         self.controls_canvas: tk.Canvas | None = None
         self.controls_canvas_window: int | None = None
         self.figure: plt.Figure | None = None
@@ -797,7 +972,17 @@ class PlotLogsInteractiveApp:
         ttk.Label(self.plots_container, text="#").grid(row=0, column=0, sticky="w")
         ttk.Label(self.plots_container, text="Y Column").grid(row=0, column=1, sticky="w", padx=(10, 4))
         ttk.Label(self.plots_container, text="Height").grid(row=0, column=2, sticky="w", padx=(6, 4))
-        ttk.Label(self.plots_container, text="EMA (only)").grid(row=0, column=3, sticky="w", padx=(2, 4))
+        ttk.Label(
+            self.plots_container,
+            text="EMA (only)\n/\nnbins;pool",
+            justify="center",
+            anchor="center",
+        ).grid(
+            row=0,
+            column=3,
+            sticky="n",
+            padx=(2, 4),
+        )
         ttk.Label(self.plots_container, text="STD\n(ema)").grid(row=0, column=4, sticky="w", padx=(1, 1))
         ttk.Label(self.plots_container, text="Skew\n(ema)").grid(row=0, column=5, sticky="w", padx=(1, 1))
         ttk.Label(self.plots_container, text="Min\n(ema)").grid(row=0, column=6, sticky="w", padx=(1, 1))
@@ -1376,6 +1561,7 @@ class PlotLogsInteractiveApp:
                         desired_max_ema=desired_max_ema,
                         preserve_existing=True,
                     )
+                    self.update_row_ema_field(row, preserve_existing=True)
         else:
             self.clear_plot_rows()
         x_value = payload.get("x")
@@ -1546,6 +1732,7 @@ class PlotLogsInteractiveApp:
         except ValueError as exc:
             self.show_error(str(exc))
             return
+        self.histogram_bin_count_cache.clear()
         if not columns:
             self.available_columns = []
             self.update_column_options(preserve_state=preserve_state)
@@ -1597,7 +1784,7 @@ class PlotLogsInteractiveApp:
                     row.y_combo.set("ep_rew_ema")
                 else:
                     row.y_combo.set(columns[0])
-            self.update_summary_checkboxes(
+            self.on_row_column_selected(
                 row,
                 preserve_existing=preserve_state and selection_preserved,
             )
@@ -1756,10 +1943,165 @@ class PlotLogsInteractiveApp:
             lambda _event, target=row: self.on_row_index_selected(target),
         )
         remove_button.configure(command=lambda target=row: self.remove_plot_row(target))
-        y_combo.bind("<<ComboboxSelected>>", lambda _event, target=row: self.update_summary_checkboxes(target))
+        y_combo.bind(
+            "<<ComboboxSelected>>",
+            lambda _event, target=row: self.on_row_column_selected(target),
+        )
         self.plot_rows.append(row)
         self.update_row_options(row, self.available_columns, prefer_default=len(self.plot_rows) == 1)
         self.refresh_row_labels()
+
+    def on_row_column_selected(self, row: PlotRow, preserve_existing: bool = False) -> None:
+        previous_y = self.previous_y_by_row.get(id(row), "")
+        current_y = row.y_combo.get()
+        transitioned_from_histogram = (
+            bool(previous_y)
+            and self.is_histogram_column(previous_y)
+            and not self.is_histogram_column(current_y)
+        )
+        transitioned_to_histogram = (
+            bool(previous_y)
+            and not self.is_histogram_column(previous_y)
+            and self.is_histogram_column(current_y)
+        )
+        self.update_summary_checkboxes(row, preserve_existing=preserve_existing)
+        if transitioned_from_histogram:
+            row.ema_var.set("")
+        if transitioned_to_histogram:
+            row.ema_var.set("")
+            preserve_existing = False
+        if not transitioned_from_histogram:
+            self.update_row_ema_field(row, preserve_existing=preserve_existing)
+        self.previous_y_by_row[id(row)] = current_y
+
+    def parse_histogram_input(
+        self,
+        raw_value: str,
+        row_index: int,
+    ) -> tuple[int, int] | None:
+        if not raw_value:
+            return None
+        parts = [part.strip() for part in raw_value.split(";")]
+        if len(parts) == 1:
+            parts.append("1")
+        if len(parts) != 2 or not parts[0] or not parts[1]:
+            self.show_error(
+                f"Histogram input must be 'nbins;pooling' with positive integers (row {row_index})."
+            )
+            return None
+        bin_count = self.parse_positive_int(parts[0], row_index)
+        pooling = self.parse_positive_int(parts[1], row_index)
+        if bin_count is None or pooling is None:
+            return None
+        return bin_count, pooling
+
+    def parse_positive_int(self, raw_value: str, row_index: int) -> int | None:
+        try:
+            numeric_value = float(raw_value)
+        except ValueError:
+            self.show_error(
+                f"Histogram input must be 'nbins;pooling' with positive integers (row {row_index})."
+            )
+            return None
+        if numeric_value <= 0.0 or not numeric_value.is_integer():
+            self.show_error(
+                f"Histogram input must be 'nbins;pooling' with positive integers (row {row_index})."
+            )
+            return None
+        return int(numeric_value)
+
+    def as_positive_int(self, value: object) -> int | None:
+        if isinstance(value, bool):
+            return None
+        if isinstance(value, int):
+            return value if value > 0 else None
+        if isinstance(value, float) and value > 0.0 and value.is_integer():
+            return int(value)
+        return None
+
+    def as_ema_alpha(self, value: object) -> float | None:
+        if isinstance(value, bool):
+            return None
+        try:
+            numeric_value = float(value)
+        except (TypeError, ValueError):
+            return None
+        if 0.0 < numeric_value < 1.0:
+            return numeric_value
+        return None
+
+    def update_row_ema_field(self, row: PlotRow, preserve_existing: bool = False) -> None:
+        y_value = row.y_combo.get()
+        if not y_value:
+            return
+        raw_value = row.ema_var.get().strip()
+        if self.is_histogram_column(y_value):
+            if raw_value and preserve_existing:
+                return
+            if raw_value:
+                return
+            bin_count = self.infer_histogram_bin_count(y_value)
+            if bin_count is not None:
+                row.ema_var.set(f"{bin_count};1")
+            return
+        if preserve_existing or not raw_value:
+            return
+        try:
+            alpha = float(raw_value)
+        except ValueError:
+            row.ema_var.set("")
+            return
+        if not 0.0 < alpha < 1.0:
+            row.ema_var.set("")
+
+    def infer_histogram_bin_count(self, y_value: str) -> int | None:
+        resolved = self.resolve_histogram_columns(y_value)
+        if resolved is None:
+            return None
+        freqs_column, _edges_column = resolved
+        enabled_paths = self.enabled_paths()
+        if not enabled_paths:
+            return None
+        delimiter = self.delimiter_var.get()
+        if len(delimiter) != 1:
+            return None
+        cache_key = (
+            tuple(str(path) for path in enabled_paths),
+            delimiter,
+            freqs_column,
+        )
+        cached = self.histogram_bin_count_cache.get(cache_key)
+        if cache_key in self.histogram_bin_count_cache:
+            return cached
+        inferred: int | None = None
+        for path in enabled_paths:
+            try:
+                with path.open(newline="") as handle:
+                    reader = csv.DictReader(handle, delimiter=delimiter)
+                    if reader.fieldnames is None or freqs_column not in reader.fieldnames:
+                        continue
+                    for row_index, csv_row in enumerate(reader, start=2):
+                        raw_freqs = csv_row.get(freqs_column)
+                        if is_missing_histogram_cell(raw_freqs):
+                            continue
+                        try:
+                            inferred = len(
+                                parse_histogram_list(
+                                    raw_freqs,
+                                    freqs_column,
+                                    path,
+                                    row_index,
+                                )
+                            )
+                        except ValueError:
+                            continue
+                        break
+            except OSError:
+                continue
+            if inferred is not None:
+                break
+        self.histogram_bin_count_cache[cache_key] = inferred
+        return inferred
 
     def update_std_checkbox(
         self,
@@ -2083,6 +2425,7 @@ class PlotLogsInteractiveApp:
             widget.destroy()
         if row in self.plot_rows:
             self.plot_rows.remove(row)
+        self.previous_y_by_row.pop(id(row), None)
         self.refresh_row_labels()
 
     def clear_plot_rows(self) -> None:
@@ -2100,6 +2443,7 @@ class PlotLogsInteractiveApp:
             ):
                 widget.destroy()
         self.plot_rows.clear()
+        self.previous_y_by_row.clear()
         self.add_plot_row()
 
     def apply_preset(self, preset: PlotPreset) -> None:
@@ -2128,17 +2472,36 @@ class PlotLogsInteractiveApp:
         missing_skew: list[str] = []
         missing_min: list[str] = []
         missing_max: list[str] = []
-        invalid_ema: list[str] = []
+        invalid_histogram_bins: list[str] = []
+        invalid_scalar_ema: list[str] = []
         invalid_summary_ema: list[str] = []
         for row, entry in zip(self.plot_rows, preset.entries, strict=True):
             row.y_combo.set(entry.y_column)
             row.height_var.set(self.format_ratio(entry.height))
-            if entry.ema is None:
-                row.ema_var.set("")
+            has_row_ema = False
+            if self.is_histogram_column(entry.y_column):
+                if entry.nbins is None:
+                    row.ema_var.set("")
+                else:
+                    bins = self.as_positive_int(entry.nbins)
+                    pooling_value = entry.pooling if entry.pooling is not None else 1
+                    pooling = self.as_positive_int(pooling_value)
+                    if bins is None or pooling is None:
+                        row.ema_var.set("")
+                        invalid_histogram_bins.append(entry.y_column)
+                    else:
+                        row.ema_var.set(f"{bins};{pooling}")
             else:
-                row.ema_var.set(str(entry.ema))
-                if self.is_histogram_column(entry.y_column):
-                    invalid_ema.append(entry.y_column)
+                if entry.ema is None:
+                    row.ema_var.set("")
+                else:
+                    alpha = self.as_ema_alpha(entry.ema)
+                    if alpha is None:
+                        row.ema_var.set("")
+                        invalid_scalar_ema.append(entry.y_column)
+                    else:
+                        row.ema_var.set(str(alpha))
+                        has_row_ema = True
             std_enabled, std_use_ema = self.resolve_preset_summary_option(entry.std)
             skew_enabled, skew_use_ema = self.resolve_preset_summary_option(entry.skew)
             min_enabled, min_use_ema = self.resolve_preset_summary_option(entry.min)
@@ -2151,7 +2514,6 @@ class PlotLogsInteractiveApp:
                 missing_min.append(entry.y_column)
             if max_enabled and self.max_column_for(entry.y_column) is None:
                 missing_max.append(entry.y_column)
-            has_row_ema = entry.ema is not None and not self.is_histogram_column(entry.y_column)
             if std_use_ema and not has_row_ema:
                 std_use_ema = False
                 invalid_summary_ema.append(f"{entry.y_column}: std")
@@ -2175,6 +2537,7 @@ class PlotLogsInteractiveApp:
                 desired_max=max_enabled,
                 desired_max_ema=max_use_ema,
             )
+            self.update_row_ema_field(row, preserve_existing=True)
         status_parts = [f"Preset {preset.name!r} loaded."]
         if missing_std:
             status_parts.append(
@@ -2192,9 +2555,15 @@ class PlotLogsInteractiveApp:
             status_parts.append(
                 f"Missing max columns for: {', '.join(sorted(set(missing_max)))}."
             )
-        if invalid_ema:
+        if invalid_histogram_bins:
             status_parts.append(
-                f"EMA ignored for histogram columns: {', '.join(sorted(set(invalid_ema)))}."
+                "Histogram input must be 'nbins;pooling' with positive integers; ignored for: "
+                f"{', '.join(sorted(set(invalid_histogram_bins)))}."
+            )
+        if invalid_scalar_ema:
+            status_parts.append(
+                "Scalar EMA must be between 0 and 1; ignored for: "
+                f"{', '.join(sorted(set(invalid_scalar_ema)))}."
             )
         if invalid_summary_ema:
             status_parts.append(
@@ -2281,9 +2650,22 @@ class PlotLogsInteractiveApp:
     def apply_global_ema_to_rows(self, show_error: bool) -> None:
         raw_alpha = self.global_ema_var.get().strip()
         if raw_alpha == "":
+            cleared_count = 0
+            skipped_histogram_count = 0
             for row in self.plot_rows:
+                y_value = row.y_combo.get()
+                if y_value and self.is_histogram_column(y_value):
+                    skipped_histogram_count += 1
+                    continue
                 row.ema_var.set("")
-            self.set_status("Cleared EMA alpha for all rows.")
+                cleared_count += 1
+            if skipped_histogram_count:
+                self.set_status(
+                    "Cleared EMA alpha for "
+                    f"{cleared_count} rows (kept {skipped_histogram_count} histogram nbins;pooling)."
+                )
+            else:
+                self.set_status(f"Cleared EMA alpha for {cleared_count} rows.")
             return
         try:
             alpha = float(raw_alpha)
@@ -2489,9 +2871,22 @@ class PlotLogsInteractiveApp:
             return
 
         ema_mapping: dict[str, float] = {}
+        histogram_bin_counts: dict[str, int] = {}
+        histogram_pooling: dict[str, int] = {}
         ema_only_columns: set[str] = set()
         for index, row in enumerate(self.plot_rows, start=1):
+            y_value = row.y_combo.get()
             raw_ema = row.ema_var.get().strip()
+            if self.is_histogram_column(y_value):
+                parsed_histogram = self.parse_histogram_input(raw_ema, index)
+                if parsed_histogram is None:
+                    if raw_ema:
+                        return
+                    continue
+                bin_count, pooling = parsed_histogram
+                histogram_bin_counts[y_value] = bin_count
+                histogram_pooling[y_value] = pooling
+                continue
             if not raw_ema:
                 continue
             try:
@@ -2502,15 +2897,11 @@ class PlotLogsInteractiveApp:
             if not 0.0 < alpha < 1.0:
                 self.show_error(f"EMA alpha must be between 0 and 1 (row {index}).")
                 return
-            y_value = row.y_combo.get()
-            if self.is_histogram_column(y_value):
-                self.show_error(f"EMA is only supported for scalar plots (row {index}).")
-                return
             ema_mapping[y_value] = alpha
             if row.ema_only_var.get():
                 ema_only_columns.add(y_value)
         histogram_columns = [column for column in y_columns if self.is_histogram_column(column)]
-        histogram_specs: dict[str, tuple[str, str | None]] = {}
+        histogram_specs: dict[str, tuple[str, str | None, int | None, int]] = {}
         for column in histogram_columns:
             resolved = self.resolve_histogram_columns(column)
             if resolved is None:
@@ -2519,7 +2910,12 @@ class PlotLogsInteractiveApp:
                     f"Histogram column {column} needs {base}__histogram_freqs."
                 )
                 return
-            histogram_specs[column] = resolved
+            histogram_specs[column] = (
+                resolved[0],
+                resolved[1],
+                histogram_bin_counts.get(column),
+                histogram_pooling.get(column, 1),
+            )
 
         scalar_columns = [column for column in y_columns if column not in histogram_specs]
         scalar_column_set = set(scalar_columns)
@@ -2607,7 +3003,7 @@ class PlotLogsInteractiveApp:
                 return
 
         histogram_data: dict[str, list[HistogramSeries]] = {}
-        for column, (freqs_column, edges_column) in histogram_specs.items():
+        for column, (freqs_column, edges_column, target_bin_count, x_pooling) in histogram_specs.items():
             try:
                 histogram_data[column] = [
                     load_histogram_series(
@@ -2617,6 +3013,8 @@ class PlotLogsInteractiveApp:
                         freqs_column,
                         edges_column,
                         delimiter,
+                        target_bin_count=target_bin_count,
+                        x_pooling=x_pooling,
                     )
                     for path, label in zip(enabled_paths, labels, strict=True)
                 ]

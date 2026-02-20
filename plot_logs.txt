@@ -1,1 +1,0 @@
-python .\plot_logs.py .\runs\mat_nop_swarm_bots_bridge\2026-02-10_14-57-40\log.csv .\runs\mat_nop_swarm_bots_bridge\2026-02-08_22-49-56\log.csv --x timesteps --y ep_rew__mean expl_var learning_rate wm_loss_scaled__mean --std ep_rew__std _ _ wm_loss_scaled__std --ratios 3 1 1 1

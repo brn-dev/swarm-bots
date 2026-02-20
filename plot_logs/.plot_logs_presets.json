@@ -1,0 +1,289 @@
+{
+  "presets": [
+    {
+      "name": "Episode Stats",
+      "entries": [
+        {
+          "y_column": "ep_rew_ema",
+          "height": 2.0,
+          "ema": 0.01
+        },
+        {
+          "y_column": "ep_rew__mean",
+          "height": 3.0,
+          "ema": 0.02,
+          "std": true,
+          "min": "AS_EMA",
+          "max": "AS_EMA"
+        },
+        {
+          "y_column": "ep_len__mean",
+          "height": 1.0,
+          "ema": 0.02,
+          "std": true
+        }
+      ]
+    },
+    {
+      "name": "Reward Hist",
+      "entries": [
+        {
+          "y_column": "ep_rew_ema",
+          "height": 2.0,
+          "ema": 0.01
+        },
+        {
+          "y_column": "ep_rew__histogram_freqs",
+          "height": 3.0,
+          "nbins": 30,
+          "pooling": 20
+        },
+        {
+          "y_column": "ep_rew__mean",
+          "height": 1.0,
+          "ema": 0.02,
+          "std": true,
+          "min": "AS_EMA",
+          "max": "AS_EMA"
+        },
+        {
+          "y_column": "ep_len__mean",
+          "height": 1.0,
+          "ema": 0.02,
+          "std": true
+        }
+      ]
+    },
+    {
+      "name": "Actions",
+      "entries": [
+        {
+          "y_column": "ep_rew_ema",
+          "height": 2.0,
+          "ema": 0.02
+        },
+        {
+          "y_column": "act0__histogram_freqs",
+          "height": 3.0
+        },
+        {
+          "y_column": "act1__histogram_freqs",
+          "height": 1.0
+        },
+        {
+          "y_column": "act0__mean",
+          "height": 1.0,
+          "std": true
+        },
+        {
+          "y_column": "std0__mean",
+          "height": 1.0,
+          "std": true
+        },
+        {
+          "y_column": "act1__mean",
+          "height": 1.0,
+          "std": true
+        }
+      ]
+    },
+    {
+      "name": "PPO Metrics",
+      "entries": [
+        {
+          "y_column": "ep_rew_ema",
+          "height": 2.0,
+          "ema": 0.02
+        },
+        {
+          "y_column": "approx_kl__mean",
+          "height": 1.0,
+          "std": true
+        },
+        {
+          "y_column": "clip_frac__mean",
+          "height": 1.0,
+          "std": true
+        },
+        {
+          "y_column": "ratio__std",
+          "height": 1.0
+        },
+        {
+          "y_column": "expl_var",
+          "height": 1.0
+        },
+        {
+          "y_column": "learning_rate",
+          "height": 1.0
+        }
+      ]
+    },
+    {
+      "name": "PPO Losses",
+      "entries": [
+        {
+          "y_column": "ep_rew_ema",
+          "height": 2.0,
+          "ema": 0.02
+        },
+        {
+          "y_column": "act_loss__mean",
+          "height": 1.0,
+          "std": true
+        },
+        {
+          "y_column": "val_loss__mean",
+          "height": 1.0,
+          "std": true
+        },
+        {
+          "y_column": "ent_loss__mean",
+          "height": 1.0,
+          "std": true
+        },
+        {
+          "y_column": "grad_norm__mean",
+          "height": 1.0,
+          "std": true
+        },
+        {
+          "y_column": "grad_clip_frac",
+          "height": 1.0
+        },
+        {
+          "y_column": "learning_rate",
+          "height": 1.0
+        }
+      ]
+    },
+    {
+      "name": "PPO Full",
+      "entries": [
+        {
+          "y_column": "ep_rew_ema",
+          "height": 2.0,
+          "ema": 0.02
+        },
+        {
+          "y_column": "approx_kl__mean",
+          "height": 1.0,
+          "std": true
+        },
+        {
+          "y_column": "clip_frac__mean",
+          "height": 1.0,
+          "std": true
+        },
+        {
+          "y_column": "ratio__std",
+          "height": 1.0
+        },
+        {
+          "y_column": "expl_var",
+          "height": 1.0
+        },
+        {
+          "y_column": "val_loss__mean",
+          "height": 1.0,
+          "std": true
+        },
+        {
+          "y_column": "act_loss__mean",
+          "height": 1.0,
+          "std": true
+        },
+        {
+          "y_column": "ent_loss__mean",
+          "height": 1.0,
+          "std": true
+        },
+        {
+          "y_column": "grad_norm__mean",
+          "height": 1.0,
+          "std": true
+        },
+        {
+          "y_column": "grad_clip_frac",
+          "height": 1.0
+        },
+        {
+          "y_column": "learning_rate",
+          "height": 1.0
+        }
+      ]
+    },
+    {
+      "name": "NOP Losses",
+      "entries": [
+        {
+          "y_column": "ep_rew_ema",
+          "height": 2.0,
+          "ema": 0.02
+        },
+        {
+          "y_column": "scalar_loss__mean",
+          "height": 1.0,
+          "std": true
+        },
+        {
+          "y_column": "angle_loss__mean",
+          "height": 1.0,
+          "std": true
+        },
+        {
+          "y_column": "rot6d_loss__mean",
+          "height": 1.0,
+          "std": true
+        },
+        {
+          "y_column": "binary_loss__mean",
+          "height": 1.0,
+          "std": true
+        }
+      ]
+    },
+    {
+      "name": "Performance",
+      "entries": [
+        {
+          "y_column": "fps",
+          "height": 1.0,
+          "ema": 0.02
+        },
+        {
+          "y_column": "updates",
+          "height": 1.0
+        },
+        {
+          "y_column": "policy_forward_time__mean",
+          "height": 1.0,
+          "std": true
+        },
+        {
+          "y_column": "env_step_time__mean",
+          "height": 1.0,
+          "std": true
+        },
+        {
+          "y_column": "rollout_time",
+          "height": 1.0
+        },
+        {
+          "y_column": "sampling_time__mean",
+          "height": 1.0,
+          "std": true
+        },
+        {
+          "y_column": "update_time__mean",
+          "height": 1.0,
+          "std": true
+        },
+        {
+          "y_column": "train_time",
+          "height": 1.0
+        }
+      ]
+    }
+  ]
+}

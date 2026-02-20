@@ -32,12 +32,9 @@ from swarmbots.mj_env.swarm_bots_env import SwarmBotsEnv
 
 def make_env_fn(
         episode_length: int,
-        scenario_kwargs: dict[str, Any] | None = None,
         render_mode: str | None = None,
         first_episode_length: int | None = None
 ) -> Callable[[], SwarmBotsEnv]:
-    if scenario_kwargs is None:
-        scenario_kwargs = {}
 
     def _init() -> SwarmBotsEnv:
         scenario = default_wall(
@@ -68,7 +65,7 @@ def make_env_fn(
             ),
             # unit_start_locations='8:hourglass',
             first_wall_distance=2.0, # UniformDistParams(1.5, 2.5),
-            **scenario_kwargs
+            # units_without_connections_reward_weight=-0e-3,
         )
         return SwarmBotsEnv(
             scenario=scenario,
@@ -158,13 +155,10 @@ def main() -> None:
     run_dir = f"runs/mat_nop_swarm_bots_wall/{run_id}/"
     save_optimizer = True
 
-    scenario_kwargs = {
-    }
 
     env_fns = [
         make_env_fn(
             episode_length=episode_length,
-            scenario_kwargs=scenario_kwargs,
             render_mode=None,
             first_episode_length=int(i * episode_length / n_envs)
         )
@@ -192,7 +186,6 @@ def main() -> None:
         record_env = SyncVectorEnv([
             make_env_fn(
                 episode_length=episode_length,
-                scenario_kwargs=scenario_kwargs,
                 render_mode='rgb_array'
             )
         ])
@@ -323,7 +316,7 @@ def main() -> None:
             }
 
         clip_frac_stats: Optional[SummaryStatistics] = metrics.get('clip_frac', None)
-        if clip_frac_stats and clip_frac_stats.mean > 0.11:
+        if clip_frac_stats and clip_frac_stats.mean > 0.1:
             state['counter'] = 0
             state['warmup'] = False
             clip_frac = clip_frac_stats.mean
