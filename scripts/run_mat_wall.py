@@ -125,7 +125,7 @@ def main() -> None:
 
     # ===== LOAD =====
     load_path: str | None = None
-    # load_path = "runs/mat_swarm_bots_wall/2026-02-12_14-14-10/models/model_55513104_steps_stopped.pt"
+    # load_path = "../runs/mat_swarm_bots_wall/2026-02-12_14-14-10/models/model_55513104_steps_stopped.pt"
 
     # ===== DEVICE =====
     use_cuda = True and torch.cuda.is_available()
@@ -142,7 +142,7 @@ def main() -> None:
         run_id = load_path.split('/')[2]
         logger.info(f'{run_id = }')
 
-    run_dir = f"runs/mat_swarm_bots_wall/{run_id}/"
+    run_dir = f"../runs/mat_swarm_bots_wall/{run_id}/"
     save_optimizer = True
 
     scenario_kwargs = {
@@ -337,7 +337,7 @@ def main() -> None:
         clip_range=0.2,
         target_kl=0.04,
         max_grad_norm=10.0,
-        gsde_reset_mode=GSDEProbabilityResetMode(probability=1 / 6),
+        gsde_reset_mode=GSDEProbabilityResetMode(probability=1 / 4),
         ent_coef=1e-5,
         value_loss_fn=nn.SmoothL1Loss(),
         train_device=train_device,

@@ -97,19 +97,27 @@ class GSDEActionDist(ContinuousActionDist):
             self._exploration_batch_shape = batch_shape
 
     def reset_noise_masked(self, mask: torch.Tensor) -> None:
-        if self._exploration_matrices is None or self._exploration_matrices.shape != mask.shape:
-            self.reset_noise(mask.shape)
+        if mask.dtype != torch.bool:
+            raise ValueError(f"mask must have dtype bool, got {mask.dtype}")
+
+        expected_batch_shape = tuple(mask.shape)
+        if self._exploration_matrices is None or self._exploration_batch_shape != expected_batch_shape:
+            self.reset_noise(expected_batch_shape)
+            return
+
+        num_resets = int(mask.sum().item())
+        if num_resets == 0:
             return
 
         with torch.no_grad():
-            mask_flat = mask.ravel()
+            mask_flat = mask.to(self._exploration_matrices.device, dtype=torch.bool).reshape(-1)
             std_matrix = self._get_std_matrix(self.log_stds)
             noise = torch.randn(
-                (mask.sum().item(), self.latent_sde_dim, self.action_dim),
+                (num_resets, self.latent_sde_dim, self.action_dim),
                 device=std_matrix.device,
                 dtype=std_matrix.dtype,
             )
-            exploration_matrices_flat = self._exploration_matrices.view((-1, self.latent_sde_dim, self.action_dim))
+            exploration_matrices_flat = self._exploration_matrices.reshape(-1, self.latent_sde_dim, self.action_dim)
             exploration_matrices_flat[mask_flat] = noise * std_matrix
 
     def update_latent_features(self, latent_pi: torch.Tensor) -> Self:

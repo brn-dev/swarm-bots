@@ -35,8 +35,8 @@
         {
           "y_column": "ep_rew__histogram_freqs",
           "height": 3.0,
-          "nbins": 30,
-          "pooling": 20
+          "nbins": 50,
+          "pooling": 10
         },
         {
           "y_column": "ep_rew__mean",

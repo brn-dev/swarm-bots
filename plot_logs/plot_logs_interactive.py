@@ -29,6 +29,9 @@ import plot_logs
 STATE_PATH = Path(__file__).resolve().with_name(".plot_logs_recent_config.json")
 PRESETS_PATH = Path(__file__).resolve().with_name(".plot_logs_presets.json")
 
+"""
+        WARNING: 95+% vibe coded
+"""
 
 @dataclass(slots=True)
 class PlotRow:

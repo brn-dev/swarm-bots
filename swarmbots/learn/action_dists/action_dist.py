@@ -3,7 +3,6 @@ from typing import Callable, Optional, Self
 
 import torch
 import torch.distributions as torchdist
-from glfw import init
 from torch import nn
 
 ActionNetInitialization = Callable[[nn.Linear], None]

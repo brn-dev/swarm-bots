@@ -306,8 +306,8 @@ def collect_steps(
 
     initial_episode_count = len(buffer.episodes)
 
-    if n_steps < 0:
-        raise ValueError(f"n_steps must be >= 0, got {n_steps}")
+    if n_steps <= 0:
+        raise ValueError(f"n_steps must be > 0, got {n_steps}")
 
     transitions_collected = 0
     while transitions_collected < n_steps:

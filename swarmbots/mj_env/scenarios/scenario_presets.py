@@ -6,10 +6,14 @@ from swarmbots.mj_env.swarm.homogeneous_swarm import HomogeneousSwarm
 DEFAULT_KWARGS = {
     'friction': [2, 1e-2, 2e-4],
     'force_elliptic_cone': True,
-    'actuator_strength': 15.0,
-    'actuators_activation_reward_weight': -7e-3,
-    'units_without_connections_reward_weight': -2e-3,
-    'units_with_double_connection_reward_weight': -1e-3,
+    'actuator_strength': 10.0,
+    'actuators_activation_reward_weight': -5e-3,
+    'actuators_activation_reward_power': 2,
+    'actuators_activation_reward_threshold': 0.5,
+    'hinge_qvel_magnitude_reward_weight': -5e-4,
+    'hinge_qvel_magnitude_reward_threshold': 10.0,
+    'units_without_connections_reward_weight': -1e-3,
+    'units_with_double_connection_reward_weight': -5e-4,
     'movement_reward_weight': 0e-1,
     'height_reward_weight': 0e-4,
     'connectors_stayed_active_reward_weight': 0e-5,
@@ -48,7 +52,7 @@ def default_wall(
 ) -> ObstacleStreetScenario:
     scenario_kwargs = DEFAULT_KWARGS.copy()
     scenario_kwargs.update({
-        'wall_height': 0.15,
+        'wall_height': 0.20,
     })
     scenario_kwargs.update(kwargs)
     return ObstacleStreetScenario(

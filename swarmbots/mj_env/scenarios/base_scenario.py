@@ -28,6 +28,9 @@ class RewardWeights(TypedDict, total=False):
     guidance_reward_weight: float
     actuators_activation_reward_weight: float
     actuators_activation_reward_power: int
+    actuators_activation_reward_threshold: float
+    hinge_qvel_magnitude_reward_weight: float
+    hinge_qvel_magnitude_reward_threshold: float
     units_without_connections_reward_weight: float
     units_with_double_connection_reward_weight: float
     movement_reward_weight: float
@@ -73,6 +76,9 @@ class BaseScenario(abc.ABC):
             guidance_reward_weight: float,
             actuators_activation_reward_weight: float,
             actuators_activation_reward_power: int,
+            actuators_activation_reward_threshold: float,
+            hinge_qvel_magnitude_reward_weight: float,
+            hinge_qvel_magnitude_reward_threshold: float,
             units_without_connections_reward_weight: float,
             units_with_double_connection_reward_weight: float,
             movement_reward_weight: float,
@@ -121,6 +127,9 @@ class BaseScenario(abc.ABC):
             "guidance_reward_weight": guidance_reward_weight,
             "actuators_activation_reward_weight": actuators_activation_reward_weight,
             "actuators_activation_reward_power": actuators_activation_reward_power,
+            "actuators_activation_reward_threshold": actuators_activation_reward_threshold,
+            "hinge_qvel_magnitude_reward_weight": hinge_qvel_magnitude_reward_weight,
+            "hinge_qvel_magnitude_reward_threshold": hinge_qvel_magnitude_reward_threshold,
             "units_without_connections_reward_weight": units_without_connections_reward_weight,
             "units_with_double_connection_reward_weight": units_with_double_connection_reward_weight,
             "movement_reward_weight": movement_reward_weight,
@@ -713,8 +722,32 @@ class BaseScenario(abc.ABC):
         if actuators.size == 0:
             actuator_activation = 0.0
         else:
-            actuator_activation = np.power(np.abs(actuators), rw["actuators_activation_reward_power"]).mean()
+            actuator_magnitude = np.abs(actuators)
+            actuator_activation = np.power(
+                actuator_magnitude,
+                rw["actuators_activation_reward_power"],
+            )
+            activation_threshold = rw["actuators_activation_reward_threshold"]
+            if activation_threshold > 0:
+                threshold_mask = actuator_magnitude <= activation_threshold
+                actuator_activation[threshold_mask] = 0.0
+            actuator_activation = actuator_activation.mean()
         reward += actuator_activation * rw['actuators_activation_reward_weight']
+
+        unit_qvel = data.qvel[self._qvel_indices]
+        if active_units_mask is not None:
+            unit_qvel = unit_qvel[active_units_mask]
+        if unit_qvel.size == 0 or unit_qvel.shape[1] <= 6:
+            hinge_qvel_magnitude = 0.0
+        else:
+            hinge_qvel_magnitude = np.abs(unit_qvel[:, 6:])
+            hinge_qvel_threshold = rw["hinge_qvel_magnitude_reward_threshold"]
+            if hinge_qvel_threshold > 0:
+                threshold_mask = hinge_qvel_magnitude <= hinge_qvel_threshold
+                hinge_qvel_magnitude[threshold_mask] = 0.0
+            hinge_qvel_magnitude = float(hinge_qvel_magnitude.mean())
+        state["avg_hinge_qvel_magnitude"] = hinge_qvel_magnitude
+        reward += hinge_qvel_magnitude * rw["hinge_qvel_magnitude_reward_weight"]
 
         connection_mask = connections.get_is_active_mask()
         if active_units_mask is not None:
