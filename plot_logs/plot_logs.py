@@ -11,6 +11,9 @@ from typing import Iterable, Sequence
 import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
 
+"""
+        WARNING: 95+% vibe coded
+"""
 
 @dataclass(slots=True)
 class LogSeries:

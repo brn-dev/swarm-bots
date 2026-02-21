@@ -119,7 +119,15 @@ def format_summary_statistics(
     if stats_format.histogram and summary_statistics.histogram not in (None, NO_DATA):
         if representation:
             representation += ' '
-        representation += _format_histogram_blocks(summary_statistics.histogram.bin_frequencies)
+        display_bin_count: Optional[int]
+        if isinstance(stats_format.histogram, bool):
+            display_bin_count = None
+        else:
+            display_bin_count = stats_format.histogram
+        representation += _format_histogram_blocks(
+            summary_statistics.histogram.bin_frequencies,
+            n_bins=display_bin_count,
+        )
 
     return representation
 
@@ -227,7 +235,7 @@ def compute_summary_statistics(
 
     if make_histogram:
         summary_stats.histogram = _compute_histogram(
-            values,
+            values if isinstance(values, np.ndarray) else values.detach().cpu().numpy(),
             min_val=summary_stats.min_value, 
             max_val=summary_stats.max_value,
             n_bins=HISTOGRAM_DEFAULT_BINS if isinstance(make_histogram, bool) else make_histogram,
@@ -357,17 +365,27 @@ def _compute_standardized_moments(
 
     return skewness, kurtosis
 
-def _format_histogram_blocks(freqs: list[float]) -> str:
+def _format_histogram_blocks(freqs: list[float], n_bins: Optional[int] = None) -> str:
     if not freqs:
         return "[]"
 
-    max_freq = max(freqs)
+    frequencies = np.asarray(freqs, dtype=np.float64)
+    if n_bins is not None:
+        target_bins = max(1, int(n_bins))
+        if target_bins < frequencies.size:
+            source_edges = np.arange(frequencies.size + 1, dtype=np.float64)
+            source_cdf = np.concatenate(([0.0], np.cumsum(frequencies)))
+            target_edges = np.linspace(0.0, float(frequencies.size), target_bins + 1)
+            target_cdf = np.interp(target_edges, source_edges, source_cdf)
+            frequencies = np.diff(target_cdf)
+
+    max_freq = float(np.max(frequencies))
     if not np.isfinite(max_freq) or max_freq <= 0.0:
-        return "[" + (" " * len(freqs)) + "]"
+        return "[" + (" " * int(frequencies.size)) + "]"
 
     levels = len(HISTOGRAM_BLOCKS) - 1
     chars: list[str] = []
-    for f in freqs:
+    for f in frequencies:
         if not np.isfinite(f) or f <= 0.0:
             idx = 0
         else:

@@ -115,7 +115,7 @@ def main() -> None:
     load_path = "runs/mat_nop_swarm_bots_wall/2026-02-17_23-05-06/models/model_7231796_steps_stopped.pt"
     deterministic = False
     rollout_device = torch.device("cpu")
-    gsde_reset_mode = GSDEProbabilityResetMode(probability=1 / 6)
+    gsde_reset_mode = GSDEProbabilityResetMode(probability=1 / 4)
     gamma = 0.99
     scenario_kwargs: dict[str, Any] = {}
 

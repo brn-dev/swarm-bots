@@ -106,6 +106,7 @@ class PreConnectedUnitLocationsConfig:
     num_units: int
 
     num_unit_probs: Optional[dict[int, float]] = None
+    unconnected_prob: float = 0.0
 
     max_radius: float = 1e8
     z_pos: float = 0.0
@@ -156,7 +157,7 @@ class HomogeneousSwarm(BaseSwarm):
             leg_length: float = 0.2,
             leg_radius: float = 0.025,
             hinge_range: float = np.pi / 3,
-            hinge_armature: float = 0.003,
+            hinge_armature: float = 0.01,
             connection_torquescale: float = 50.0,
             randomize_unit_orientations: bool = False
     ) -> None:
@@ -190,6 +191,8 @@ class HomogeneousSwarm(BaseSwarm):
         elif isinstance(unit_start_locations, PreConnectedUnitLocationsConfig):
             self.num_units = unit_start_locations.num_units
             self.unit_start_locations = unit_start_locations
+            if not 0.0 <= unit_start_locations.unconnected_prob <= 1.0:
+                raise ValueError("unconnected_prob must be in [0.0, 1.0]")
             if unit_start_locations.num_unit_probs is not None:
                 counts = np.array(list(unit_start_locations.num_unit_probs.keys()), dtype=int)
                 probs = np.array(list(unit_start_locations.num_unit_probs.values()), dtype=float)
@@ -560,7 +563,8 @@ class HomogeneousSwarm(BaseSwarm):
             positions[locations_found] = pos2
             rot_mats[locations_found] = unit2_rot
             quats[locations_found] = mat_to_quat(unit2_rot)
-            connections.connect(unit1, conn1, locations_found, conn2, twist)
+            if random_config.unconnected_prob <= 0 or rng.random() >= random_config.unconnected_prob:
+                connections.connect(unit1, conn1, locations_found, conn2, twist)
 
             available_connectors[unit1].remove(conn1)
             available_connectors[locations_found].remove(conn2)

@@ -7,6 +7,8 @@ import torch
 import torch.nn as nn
 from loguru import logger
 
+from swarmbots.learn.action_dists.action_dist import ActionDist
+from swarmbots.learn.action_dists.bernoulli_action_dist import BernoulliActionDist
 from swarmbots.learn.algos.base_algorithm import BaseAlgorithm, LearningRate, _parse_bool
 from swarmbots.learn.algos.ppo.ppo_policy import BasePPOPolicy, PPOPolicy
 from swarmbots.learn.algos.ppo.ppo_rollout import PPORolloutState, collect_steps, collect_whole_episodes
@@ -104,6 +106,7 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerType]):
             agent_logprob_reduction: Optional[Literal["sum", "mean"]] = None,
             train_device: str | torch.device = "auto",
             rollout_device: str | torch.device = "cpu",
+            metrics_action_splitters: list[Callable[[torch.Tensor], dict[str, torch.Tensor]] | None] | None = None
     ):
         self.automatic_lr: AutomaticLearningRate | None = None
         self._auto_lr_enabled = False
@@ -139,6 +142,7 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerType]):
         self.value_loss_fn = value_loss_fn if value_loss_fn is not None else nn.MSELoss()
         self.max_grad_norm = max_grad_norm
         self.target_kl = target_kl
+
         self.gsde_reset_mode = gsde_reset_mode
         assert not policy.gsde_enabled or self.gsde_reset_mode is not None
         if agent_logprob_reduction not in (None, "sum", "mean"):
@@ -146,6 +150,12 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerType]):
         if agent_logprob_reduction is not None and not isinstance(policy, PPOPolicy):
             logger.warning('agent_logprob_reduction is only intended for single agent PPO')
         self.agent_logprob_reduction: Optional[Literal["sum", "mean"]] = agent_logprob_reduction
+
+        self.metrics_action_splitters: list[Callable[[torch.Tensor], dict[str, torch.Tensor]] | None]
+        if metrics_action_splitters is not None:
+            self.metrics_action_splitters = metrics_action_splitters
+        else:
+            self.metrics_action_splitters = [None] * len(self.policy.action_dist.distributions)
 
         self.train_device = as_device(train_device)
         self.rollout_device = as_device(rollout_device)
@@ -446,16 +456,46 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerType]):
 
             act_dim_sum = 0
             action_dims = self.policy.action_dist.action_dims
-            for i, dist in enumerate(self.policy.action_dist.distributions):
+            for i, (dist, act_splitter) in enumerate(zip(
+                    self.policy.action_dist.distributions,
+                    self.metrics_action_splitters
+            )):
+                dist: ActionDist
+                act_splitter: Callable[[torch.Tensor], dict[str, torch.Tensor]] | None
+
                 act_dim = action_dims[i]
                 actions = sampler.actions[..., act_dim_sum:act_dim_sum + act_dim]
                 act_dim_sum += act_dim
-                metrics[f'act{i}'] = compute_summary_statistics(actions)
+
+                hist_bins = 2 if isinstance(dist, BernoulliActionDist) else 20
+
+                metrics[f'act{i}'] = compute_summary_statistics(actions, make_histogram=hist_bins)
+
+                if act_splitter is not None:
+                    split_actions = act_splitter(actions)
+                    for key, sub_actions in split_actions.items():
+                        metrics[f'act{i}_{key}'] = compute_summary_statistics(sub_actions, make_histogram=hist_bins)
+
                 if hasattr(dist, "log_stds"):
+                    std_values = torch.exp(dist.log_stds)
                     metrics[f'std{i}'] = compute_summary_statistics(
-                        torch.exp(dist.log_stds), find_min=True, find_max=True,
-                        compute_skewness=True, compute_kurtosis=True
+                        std_values, find_min=True, find_max=True,
+                        compute_skewness=True, compute_kurtosis=True,
+                        make_histogram=hist_bins
                     )
+                    can_split_stds = not (std_values.ndim >= 1 and std_values.shape[-1] == 1 and act_dim > 1)
+                    if act_splitter is not None and can_split_stds:
+                        split_stds = act_splitter(std_values)
+                        for key, sub_stds in split_stds.items():
+                            metrics[f'std{i}_{key}'] = compute_summary_statistics(
+                                sub_stds,
+                                find_min=True,
+                                find_max=True,
+                                compute_skewness=True,
+                                compute_kurtosis=True,
+                                make_histogram=hist_bins,
+                            )
+
         metrics_timer.stop()
 
         return {
@@ -659,8 +699,8 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerType]):
             return True
         elif cmd in {"set_gsde_prob", "set_gsde_probability", "gsde_prob"}:
             probability = float(params)
-            if not (0.0 <= probability <= 1.0):
-                raise ValueError(f"gsde probability must be in [0, 1], got {probability}")
+            if not (0.0 < probability < 1.0):
+                raise ValueError(f"gsde probability must be in (0, 1), got {probability}")
             logger.warning(f"Setting gsde_reset_mode to probability={probability}")
             self.gsde_reset_mode = GSDEProbabilityResetMode(probability=probability)
             return True

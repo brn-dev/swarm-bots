@@ -1,5 +1,5 @@
 import abc
-from typing import Any, Literal
+from typing import Any, Literal, Callable
 
 import torch
 import torch.nn as nn
@@ -72,6 +72,7 @@ class PPOWM(PPO[PPOWMSamples, PPOWMSampler]):
             world_model_num_next_steps: int = 1,
             world_model_loss_coef: float = 1.0,
             world_model_target_tau: float | None = None,
+            metrics_action_splitters: list[Callable[[torch.Tensor], dict[str, torch.Tensor]] | None] | None = None
     ) -> None:
         if world_model_num_next_steps < 1:
             raise ValueError(f"world_model_num_next_steps must be >= 1, got {world_model_num_next_steps}")
@@ -97,6 +98,7 @@ class PPOWM(PPO[PPOWMSamples, PPOWMSampler]):
             agent_logprob_reduction=agent_logprob_reduction,
             train_device=train_device,
             rollout_device=rollout_device,
+            metrics_action_splitters=metrics_action_splitters,
         )
         self.world_model_num_next_steps = world_model_num_next_steps
         self.world_model_loss_coef = world_model_loss_coef

@@ -26,7 +26,7 @@ from swarmbots.learn.swarmbots_obs_indices import build_obs_indices
 from swarmbots.mj_env.scenarios.scenario_presets import default_wall
 from swarmbots.mj_env.swarm.homogeneous_swarm import HomogeneousSwarm, PoissonDiscUnitLocationsConfig, \
     PreConnectedUnitLocationsConfig
-from swarmbots.mj_env.swarm.unit_config import UNIT_CONFIG_TETRAHEDRON_YX, UnitConfig
+from swarmbots.mj_env.swarm.unit_config import UNIT_CONFIG_TETRAHEDRON_YX, UnitConfig, UNIT_CONFIG_TETRAHEDRON_ZX
 from swarmbots.mj_env.swarm_bots_env import SwarmBotsEnv
 
 
@@ -39,7 +39,7 @@ def make_env_fn(
     def _init() -> SwarmBotsEnv:
         scenario = default_wall(
             swarm=HomogeneousSwarm(
-                unit_config=UNIT_CONFIG_TETRAHEDRON_YX,
+                unit_config=UNIT_CONFIG_TETRAHEDRON_ZX,
                 # unit_start_locations=PoissonDiscUnitLocationsConfig(
                 #     num_units=4,
                 #     max_radius=1.5,
@@ -110,6 +110,13 @@ def wrap_vec_env(
     return env
 
 
+def split_actuator_joints(actions: torch.Tensor) -> dict[str, torch.Tensor]:
+    return {
+        'j0': actions[..., 0::2],
+        'j1': actions[..., 1::2],
+    }
+
+
 def main() -> None:
     logger.remove()
     logger.add(
@@ -135,7 +142,7 @@ def main() -> None:
 
     # ===== LOAD =====
     load_path: str | None = None
-    # load_path = "runs/mat_nop_swarm_bots_wall/2026-02-17_23-05-06/models/model_7231796_steps_stopped.pt"
+    # load_path = "../runs/mat_nop_swarm_bots_wall/2026-02-17_23-05-06/models/model_7231796_steps_stopped.pt"
 
     # ===== DEVICE =====
     use_cuda = True and torch.cuda.is_available()
@@ -152,7 +159,7 @@ def main() -> None:
         run_id = load_path.split('/')[2]
     logger.info(f'{run_id = }')
 
-    run_dir = f"runs/mat_nop_swarm_bots_wall/{run_id}/"
+    run_dir = f"../runs/mat_nop_swarm_bots_wall/{run_id}/"
     save_optimizer = True
 
 
@@ -280,7 +287,9 @@ def main() -> None:
 
     print("Initializing PPO Algorithm...")
 
-    initial_lr = 5e-5
+    warm_lr = 5e-5
+    warmup_iterations: int = 500
+    cold_lr = warm_lr / 50 if warmup_iterations > 0 else warm_lr
 
     def auto_lr_updater(
             old_lr: float,
@@ -292,9 +301,6 @@ def main() -> None:
             early_stop_epoch: Optional[int],
             metrics: dict[str, Any]
     ) -> AutomaticLearningRateUpdateResult:
-        warmup_iterations: int = 500
-        cold_lr = initial_lr / 50
-
         if early_stop_kl_div is not None and early_stop_kl_div > 0.1:
             state['counter'] = 0
             state['warmup'] = False
@@ -316,7 +322,7 @@ def main() -> None:
             }
 
         clip_frac_stats: Optional[SummaryStatistics] = metrics.get('clip_frac', None)
-        if clip_frac_stats and clip_frac_stats.mean > 0.1:
+        if clip_frac_stats and clip_frac_stats.mean > 0.08:
             state['counter'] = 0
             state['warmup'] = False
             clip_frac = clip_frac_stats.mean
@@ -330,7 +336,7 @@ def main() -> None:
         warmup: bool = state.get('warmup', warmup_iterations > 0) and n_iterations <= warmup_iterations
         state['warmup'] = warmup
         if warmup:
-            new_lr = cold_lr + (initial_lr - cold_lr) * n_iterations / warmup_iterations
+            new_lr = cold_lr + (warm_lr - cold_lr) * n_iterations / warmup_iterations
             return {
                 'new_lr': new_lr,
                 'msg': f'Warmup ({n_iterations}/{warmup_iterations})',
@@ -347,7 +353,7 @@ def main() -> None:
         return {'new_lr': None}
 
     auto_lr = AutomaticLearningRate(
-        initial_lr=initial_lr,
+        initial_lr=cold_lr,
         max_lr=1e-4,
         updater=auto_lr_updater
     )
@@ -364,7 +370,7 @@ def main() -> None:
         clip_range=0.2,
         target_kl=0.04,
         max_grad_norm=10.0,
-        gsde_reset_mode=GSDEProbabilityResetMode(probability=1 / 6),
+        gsde_reset_mode=GSDEProbabilityResetMode(probability=1 / 4),
         ent_coef=0e-5,
         value_loss_fn=nn.SmoothL1Loss(),
         train_device=train_device,
@@ -372,6 +378,7 @@ def main() -> None:
         world_model_num_next_steps=world_model_num_next_steps,
         world_model_loss_coef=world_model_loss_coef,
         world_model_target_tau=world_model_target_tau,
+        metrics_action_splitters=[split_actuator_joints, None],
     )
 
     if load_path:
@@ -396,8 +403,12 @@ def main() -> None:
             ('timesteps', '8', 'steps'),
             ('total_updates', '6', 'tot_upd'),
             ('act0', SummaryStatisticsFormat(histogram=10)),
-            ('act1', SummaryStatisticsFormat(histogram=2)),
+            ('act0_j0', SummaryStatisticsFormat(histogram=10)),
+            ('act0_j1', SummaryStatisticsFormat(histogram=10)),
             ('std0', SummaryStatisticsFormat(mean='.3f', std='.3f', min_value='.3f', max_value='.3f')),
+            ('std0_j0', SummaryStatisticsFormat(mean='.3f', std='.3f', min_value='.3f', max_value='.3f')),
+            ('std0_j1', SummaryStatisticsFormat(mean='.3f', std='.3f', min_value='.3f', max_value='.3f')),
+            ('act1', SummaryStatisticsFormat(histogram=2)),
             ('updates', '3', 'upd'),
             ('approx_kl', SummaryStatisticsFormat(mean='.3f', std='.3f', max_value='.3f')),
             ('clip_frac', None),
