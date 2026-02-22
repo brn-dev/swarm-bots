@@ -12,7 +12,7 @@ from swarmbots.mj_env.swarm.base_swarm import BaseSwarm
 from swarmbots.mj_env.swarm.swarm_config import SwarmConfig
 from swarmbots.mj_env.swarm.swarm_connections import SwarmConnections
 from swarmbots.mj_env.swarm.unit import init_unit
-from swarmbots.mj_env.swarm.unit_config import UnitConfig, UNIT_CONFIG_TETRAHEDRON_YX
+from swarmbots.mj_env.swarm.unit_config import UnitConfig, UNIT_CONFIG_TETRAHEDRON_YX, UNIT_CONFIG_TETRAHEDRON_ZX
 
 UNIT_START_LOCATION_PRESETS = {
     '4:diamond': [
@@ -79,6 +79,7 @@ T = TypeVar('T')
 Tuple2: TypeAlias = tuple[T, T]
 Tuple3: TypeAlias = tuple[T, T, T]
 Tuple2or3: TypeAlias = Tuple2 | Tuple3
+HingeJointParam: TypeAlias = float | tuple[float, float]
 
 def _normalize_tuple2or3(tup: Tuple2or3[T], default_val: T) -> Tuple3[T]:
     l = len(tup)
@@ -152,12 +153,14 @@ class HomogeneousSwarm(BaseSwarm):
             self,
             unit_start_locations: UnitStartLocations | str,
             unit_start_quats: list[tuple[float, float, float, float]] | None = None,
-            unit_config: UnitConfig = UNIT_CONFIG_TETRAHEDRON_YX,
+            unit_config: UnitConfig = UNIT_CONFIG_TETRAHEDRON_ZX,
             body_radius: float = 0.1,
             leg_length: float = 0.2,
             leg_radius: float = 0.025,
             hinge_range: float = np.pi / 3,
-            hinge_armature: float = 0.01,
+            hinge_armature: HingeJointParam = (0.0, 0.0),
+            hinge_damping: HingeJointParam = (0.0, 0.0),
+            hinge_frictionloss: HingeJointParam = (0.0, 0.0),
             connection_torquescale: float = 50.0,
             randomize_unit_orientations: bool = False
     ) -> None:
@@ -242,6 +245,8 @@ class HomogeneousSwarm(BaseSwarm):
         self.leg_radius = leg_radius
         self.hinge_range = hinge_range
         self.hinge_armature = hinge_armature
+        self.hinge_damping = hinge_damping
+        self.hinge_frictionloss = hinge_frictionloss
 
     @property
     def can_have_inactive_units(self) -> bool:
@@ -257,6 +262,8 @@ class HomogeneousSwarm(BaseSwarm):
             'leg_radius': self.leg_radius,
             'hinge_range': self.hinge_range,
             'hinge_armature': self.hinge_armature,
+            'hinge_damping': self.hinge_damping,
+            'hinge_frictionloss': self.hinge_frictionloss,
             'randomize_unit_orientations': self.randomize_unit_orientations,
         })
         return settings
@@ -305,6 +312,8 @@ class HomogeneousSwarm(BaseSwarm):
                 leg_radius=self.leg_radius,
                 hinge_range=self.hinge_range,
                 hinge_armature=self.hinge_armature,
+                hinge_damping=self.hinge_damping,
+                hinge_frictionloss=self.hinge_frictionloss,
                 unit_config=self.config.unit_config,
                 body_rgba=body_rgba,
             )

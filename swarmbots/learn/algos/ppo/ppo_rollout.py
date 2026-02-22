@@ -149,12 +149,12 @@ def _collect_rollout_step(
     dones = torch.logical_or(terminations, truncations)
 
     if "episode" in infos:
+        episode_stats = infos["episode"]
         for i, has_ep_info in enumerate(infos["_episode"]):
             if has_ep_info:
                 episode_info_buffers[i] = {
-                    'r': infos['episode']['r'][i],
-                    'l': infos['episode']['l'][i],
-                    't': infos['episode']['t'][i],
+                    key: values[i]
+                    for key, values in episode_stats.items()
                 }
 
     with timers.buffer_add_timer:

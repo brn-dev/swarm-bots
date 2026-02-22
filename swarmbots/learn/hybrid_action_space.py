@@ -15,7 +15,7 @@ class HybridActionSpace(Space[dict[str, Space[Any]]], typing.Mapping[str, Space[
 
     def __init__(
         self,
-        spaces: None | dict[str, Space] | Sequence[tuple[str, Space]] = None,
+        spaces: dict[str, Space] | Sequence[tuple[str, Space]],
         seed: int | np.random.Generator | None = None,
     ):
         if isinstance(spaces, OrderedDict):
@@ -29,6 +29,9 @@ class HybridActionSpace(Space[dict[str, Space[Any]]], typing.Mapping[str, Space[
                 f"Unexpected Dict space input, expecting dict, OrderedDict or Sequence, actual type: {type(spaces)}"
             )
 
+        if len(spaces) == 0:
+            raise ValueError("HybridActionSpace requires at least one sub-space.")
+
         self.n_spaces = len(spaces)
         self.space_map: OrderedDict[str, Space[Any]] = spaces
         self.key_order = list(self.space_map.keys())
@@ -37,7 +40,10 @@ class HybridActionSpace(Space[dict[str, Space[Any]]], typing.Mapping[str, Space[
         self.total_agent_action_dim = sum(self.agent_action_dims)
         self.n_agents = self.sub_spaces[0].shape[0]
         for sub_space in self.sub_spaces[1:]:
-            assert sub_space.shape[0] == self.n_agents
+            if sub_space.shape[0] != self.n_agents:
+                raise ValueError(
+                    f"All sub-spaces must share n_agents in shape[0]: expected {self.n_agents}, got {sub_space.shape[0]}"
+                )
         
         super().__init__(None, None, seed)
 
@@ -122,7 +128,7 @@ def get_agent_action_dim(space: Space) -> int:
 class VectorHybridActionSpace(HybridActionSpace):
     def __init__(
         self,
-        spaces: None | dict[str, Space] | Sequence[tuple[str, Space]] = None,
+        spaces: dict[str, Space] | Sequence[tuple[str, Space]],
         seed: int | np.random.Generator | None = None,
     ):
         if isinstance(spaces, OrderedDict):
@@ -136,6 +142,9 @@ class VectorHybridActionSpace(HybridActionSpace):
                 f"Unexpected Dict space input, expecting dict, OrderedDict or Sequence, actual type: {type(spaces)}"
             )
 
+        if len(spaces) == 0:
+            raise ValueError("VectorHybridActionSpace requires at least one sub-space.")
+
         self.n_spaces = len(spaces)
         self.space_map: OrderedDict[str, Space[Any]] = spaces
         self.key_order = list(self.space_map.keys())
@@ -148,8 +157,14 @@ class VectorHybridActionSpace(HybridActionSpace):
         self.n_envs = int(self.sub_spaces[0].shape[0])
         self.n_agents = int(self.sub_spaces[0].shape[1])
         for sub_space in self.sub_spaces[1:]:
-            assert int(sub_space.shape[0]) == self.n_envs
-            assert int(sub_space.shape[1]) == self.n_agents
+            if int(sub_space.shape[0]) != self.n_envs:
+                raise ValueError(
+                    f"All sub-spaces must share n_envs in shape[0]: expected {self.n_envs}, got {sub_space.shape[0]}"
+                )
+            if int(sub_space.shape[1]) != self.n_agents:
+                raise ValueError(
+                    f"All sub-spaces must share n_agents in shape[1]: expected {self.n_agents}, got {sub_space.shape[1]}"
+                )
 
         Space.__init__(self, None, None, seed)
 

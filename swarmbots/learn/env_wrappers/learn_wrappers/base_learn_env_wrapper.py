@@ -42,19 +42,31 @@ class BaseLearnEnvWrapper(VectorWrapper, Generic[ActSpace], abc.ABC):
             )
 
         obs_space = env.observation_space
-        if (
-            not isinstance(obs_space, spaces.Dict)
-            or 'local_obs' not in obs_space.keys()
-            or 'global_obs' not in obs_space.keys()
-        ):
+        if not isinstance(obs_space, spaces.Dict):
+            raise ValueError(f'Observation space must be a gymnasium.spaces.Dict, got {obs_space}')
+
+        required_obs_keys = {"local_obs", "global_obs", "hidden_vars"}
+        missing_obs_keys = required_obs_keys.difference(obs_space.keys())
+        if missing_obs_keys:
             raise ValueError(
-                'Observations space must be a dict containing "local_obs" and "global_obs", '
-                f'got {obs_space}'
+                f'Observation space is missing required keys {sorted(missing_obs_keys)}, got keys {list(obs_space.keys())}'
             )
+
         self._observation_space: spaces.Dict = obs_space
-        self.local_obs_dim = self._observation_space['local_obs'].shape[2]
-        self.global_obs_dim = self._observation_space['global_obs'].shape[1]
-        self.hidden_vars_dim = self._observation_space['hidden_vars'].shape[1]
+
+        local_obs_shape = self._observation_space['local_obs'].shape
+        if len(local_obs_shape) != 3:
+            raise ValueError(f"Expected local_obs shape (n_envs, n_agents, n_local_obs), got {local_obs_shape}")
+        global_obs_shape = self._observation_space['global_obs'].shape
+        if len(global_obs_shape) != 2:
+            raise ValueError(f"Expected global_obs shape (n_envs, n_global_obs), got {global_obs_shape}")
+        hidden_vars_shape = self._observation_space['hidden_vars'].shape
+        if len(hidden_vars_shape) != 2:
+            raise ValueError(f"Expected hidden_vars shape (n_envs, n_hidden_vars), got {hidden_vars_shape}")
+
+        self.local_obs_dim = local_obs_shape[2]
+        self.global_obs_dim = global_obs_shape[1]
+        self.hidden_vars_dim = hidden_vars_shape[1]
         self.has_agent_mask = "agent_mask" in self._observation_space.keys()
         if self.has_agent_mask:
             agent_mask_shape = self._observation_space["agent_mask"].shape
@@ -123,12 +135,13 @@ class BaseLearnEnvWrapper(VectorWrapper, Generic[ActSpace], abc.ABC):
     def _obs_to_torch(self, obs: NumpyObs) -> TorchObs:
         # local_obs: (n_envs, n_agents, n_local_obs)
         # global_obs: (n_envs, n_global_obs)
+        if "hidden_vars" not in obs:
+            raise ValueError("Expected observations to contain key 'hidden_vars'")
         obs_t: TorchObs = {
             "local_obs": torch.as_tensor(obs["local_obs"], device=self.device, dtype=self.obs_dtype),
             "global_obs": torch.as_tensor(obs["global_obs"], device=self.device, dtype=self.obs_dtype),
+            "hidden_vars": torch.as_tensor(obs["hidden_vars"], device=self.device, dtype=self.obs_dtype),
         }
-        if "hidden_vars" in obs:
-            obs_t["hidden_vars"] = torch.as_tensor(obs["hidden_vars"], device=self.device, dtype=self.obs_dtype)
         if "agent_mask" in obs and obs["agent_mask"] is not None:
             obs_t["agent_mask"] = torch.as_tensor(obs["agent_mask"], device=self.device, dtype=torch.bool)
         return obs_t
@@ -136,5 +149,4 @@ class BaseLearnEnvWrapper(VectorWrapper, Generic[ActSpace], abc.ABC):
     @abc.abstractmethod
     def _actions_to_env_dict(self, actions: torch.Tensor) -> dict[str, np.ndarray]:
         raise NotImplementedError()
-
 

@@ -17,6 +17,7 @@ from swarmbots.learn.algos.ppo.ppo import AutomaticLearningRate, AutomaticLearni
 from swarmbots.learn.env_wrappers.obs_normalization.feature_wise_obs_norm_wrapper import (
     FeatureWiseObsNormWrapper,
 )
+from swarmbots.learn.env_wrappers.progress_guidance_ep_stats_wrapper import ProgressGuidanceEpisodeStatsWrapper
 from swarmbots.learn.env_wrappers.learn_wrappers.swarm_bots_learn_env_wrapper import SwarmBotsLearnEnvWrapper
 from swarmbots.learn.env_wrappers.transition_obs_wrapper import TransitionObsWrapper
 from swarmbots.learn.gsde_reset import GSDEProbabilityResetMode
@@ -38,34 +39,7 @@ def make_env_fn(
 
     def _init() -> SwarmBotsEnv:
         scenario = default_wall(
-            swarm=HomogeneousSwarm(
-                unit_config=UNIT_CONFIG_TETRAHEDRON_ZX,
-                # unit_start_locations=PoissonDiscUnitLocationsConfig(
-                #     num_units=4,
-                #     max_radius=1.5,
-                #     num_unit_probs={
-                #         2: 1.0,
-                #         3: 1.0,
-                #         4: 1.0,
-                #         # 5: 1.0,
-                #     }
-                # ),
-                unit_start_locations=PreConnectedUnitLocationsConfig(
-                    num_units=4,
-                    num_unit_probs={
-                        2: 1.0,
-                        3: 1.0,
-                        4: 1.0,
-                        # 5: 1.0,
-                    },
-                    max_radius=1.5,
-                    z_pos=0.5,
-                ),
-                randomize_unit_orientations=True,
-            ),
-            # unit_start_locations='8:hourglass',
             first_wall_distance=2.0, # UniformDistParams(1.5, 2.5),
-            # units_without_connections_reward_weight=-0e-3,
         )
         return SwarmBotsEnv(
             scenario=scenario,
@@ -85,6 +59,7 @@ def wrap_vec_env(
         rollout_device: torch.device
 ) -> SwarmBotsLearnEnvWrapper:
     vector_env = RecordEpisodeStatistics(vector_env)
+    vector_env = ProgressGuidanceEpisodeStatsWrapper(vector_env)
     vector_env = FeatureWiseObsNormWrapper(
         vector_env,
         obs_key="local_obs",
@@ -133,8 +108,9 @@ def main() -> None:
     episode_length = 512
     total_timesteps = 100_000_000
     save_interval = 500
+    vf_coef = 10.0
+    world_model_loss_coef = 0.5
     world_model_num_next_steps = 3
-    world_model_loss_coef = 0.1
     world_model_target_tau = None
 
     # =====  ID  =====
@@ -237,13 +213,13 @@ def main() -> None:
         env=env,
         local_obs_encoder_hidden_dims=[256, 256],
         action_encoder_hidden_dims=[64],
-        d_model=128,
+        d_model=256,
         d_model_decoder=64,
-        nhead_encoder=2,
+        nhead_encoder=4,
         nhead_decoder=2,
         num_layers_encoder=2,
         num_layers_decoder=2,
-        dim_feedforward_encoder=256,
+        dim_feedforward_encoder=512,
         dim_feedforward_decoder=128,
         dropout=0.0,
         n_critic_local_projection_hidden_layers=1,
@@ -262,13 +238,13 @@ def main() -> None:
         bernoulli_initial_prob=0.75,
         max_agents=20,
         # NOP
-        wm_pre_transition_dims=[128],
-        d_model_transition_model=128,
-        nhead_transition_model=2,
+        wm_pre_transition_dims=[256],
+        d_model_transition_model=256,
+        nhead_transition_model=4,
         num_layers_transition_model=2,
-        dim_feedforward_transition_model=128,
-        transition_model_coembed_hidden_dims=[128],
-        wm_pre_predictors_dims=[128, 128],
+        dim_feedforward_transition_model=256,
+        transition_model_coembed_hidden_dims=[256],
+        wm_pre_predictors_dims=[256, 256],
         wm_scalar_predictor_hidden_dims=[],
         wm_angle_predictor_hidden_dims=[],
         wm_rot6d_predictor_hidden_dims=[],
@@ -288,8 +264,8 @@ def main() -> None:
     print("Initializing PPO Algorithm...")
 
     warm_lr = 5e-5
-    warmup_iterations: int = 500
-    cold_lr = warm_lr / 50 if warmup_iterations > 0 else warm_lr
+    warmup_iterations: int = 1000
+    cold_lr = warm_lr / 100 if warmup_iterations > 0 else warm_lr
 
     def auto_lr_updater(
             old_lr: float,
@@ -322,7 +298,7 @@ def main() -> None:
             }
 
         clip_frac_stats: Optional[SummaryStatistics] = metrics.get('clip_frac', None)
-        if clip_frac_stats and clip_frac_stats.mean > 0.08:
+        if clip_frac_stats and clip_frac_stats.mean > 0.12:
             state['counter'] = 0
             state['warmup'] = False
             clip_frac = clip_frac_stats.mean
@@ -370,8 +346,9 @@ def main() -> None:
         clip_range=0.2,
         target_kl=0.04,
         max_grad_norm=10.0,
-        gsde_reset_mode=GSDEProbabilityResetMode(probability=1 / 4),
+        gsde_reset_mode=GSDEProbabilityResetMode(probability=1/6),
         ent_coef=0e-5,
+        vf_coef=vf_coef,
         value_loss_fn=nn.SmoothL1Loss(),
         train_device=train_device,
         rollout_device=rollout_device,

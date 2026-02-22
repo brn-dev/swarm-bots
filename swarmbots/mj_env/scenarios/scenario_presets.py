@@ -1,24 +1,26 @@
+from typing import Any
+
 from swarmbots.mj_env.scenarios.bridge_scenario import BridgeScenario
 from swarmbots.mj_env.scenarios.obstacle_street_scenario import ObstacleStreetScenario
 from swarmbots.mj_env.swarm.base_swarm import BaseSwarm
-from swarmbots.mj_env.swarm.homogeneous_swarm import HomogeneousSwarm
+from swarmbots.mj_env.swarm.homogeneous_swarm import HomogeneousSwarm, PreConnectedUnitLocationsConfig
 
 DEFAULT_KWARGS = {
     'friction': [2, 1e-2, 2e-4],
     'force_elliptic_cone': True,
-    'actuator_strength': 10.0,
-    'actuators_activation_reward_weight': -5e-3,
+    'actuator_strength': 15.0,
+    'actuators_activation_reward_weight': -5e-2,
     'actuators_activation_reward_power': 2,
-    'actuators_activation_reward_threshold': 0.5,
-    'hinge_qvel_magnitude_reward_weight': -5e-4,
-    'hinge_qvel_magnitude_reward_threshold': 10.0,
-    'units_without_connections_reward_weight': -1e-3,
-    'units_with_double_connection_reward_weight': -5e-4,
+    'actuators_activation_reward_threshold': 0.6,
+    'hinge_qvel_magnitude_reward_weight': -1e-4,
+    'hinge_qvel_magnitude_reward_threshold': 8.0,
+    'units_without_connections_reward_weight': -6e-4,
+    'units_with_double_connection_reward_weight': -4e-4,
     'movement_reward_weight': 0e-1,
     'height_reward_weight': 0e-4,
     'connectors_stayed_active_reward_weight': 0e-5,
     'connectors_successfully_activated_reward_weight': 0e-3,
-    'connectors_unsuccessfully_activated_reward_weight': -1e-4,
+    'connectors_unsuccessfully_activated_reward_weight': -0e-5,
     'connectors_deactivated_reward_weight': 0e-3,
     'reset_settle_time': 1.0,
     'reset_settle_timestep_scale': 5,
@@ -35,18 +37,32 @@ def _resolve_swarm(
         return swarm
 
     if unit_start_locations is None:
-        unit_start_locations = '4:diamond'
+        unit_start_locations = PreConnectedUnitLocationsConfig(
+            num_units=4,
+            num_unit_probs={
+                2: 1.0,
+                3: 1.0,
+                4: 1.0,
+                # 5: 1.0,
+            },
+            max_radius=1.5,
+            unconnected_prob=0.1,
+            z_pos=0.5,
+        )
 
     return HomogeneousSwarm(
         unit_start_locations=unit_start_locations,
-        randomize_unit_orientations=randomize_unit_orientations
+        randomize_unit_orientations=randomize_unit_orientations,
+        hinge_armature=(0.03, 0.02),
+        hinge_damping=(0.5, 0.3),
+        hinge_frictionloss=(0.5, 0.3),
     )
 
 
 def default_wall(
         seed: int | None = None,
         swarm: BaseSwarm | None = None,
-        unit_start_locations: list[tuple[float, float, float]] | str | None = None,
+        unit_start_locations: list[tuple[float, float, float]] | str | Any | None = None,
         randomize_unit_orientations: bool = False,
         **kwargs
 ) -> ObstacleStreetScenario:

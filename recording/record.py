@@ -19,6 +19,7 @@ from swarmbots.learn.checkpointing import (
 from swarmbots.learn.env_wrappers.obs_normalization.feature_wise_obs_norm_wrapper import (
     FeatureWiseObsNormWrapper,
 )
+from swarmbots.learn.env_wrappers.progress_guidance_ep_stats_wrapper import ProgressGuidanceEpisodeStatsWrapper
 from swarmbots.learn.env_wrappers.learn_wrappers.swarm_bots_learn_env_wrapper import SwarmBotsLearnEnvWrapper
 from swarmbots.learn.env_wrappers.transition_obs_wrapper import TransitionObsWrapper
 from swarmbots.learn.gsde_reset import GSDEProbabilityResetMode
@@ -80,6 +81,7 @@ def wrap_vec_env(
     rollout_device: torch.device,
 ) -> SwarmBotsLearnEnvWrapper:
     vector_env = RecordEpisodeStatistics(vector_env)
+    vector_env = ProgressGuidanceEpisodeStatsWrapper(vector_env)
     vector_env = FeatureWiseObsNormWrapper(
         vector_env,
         obs_key="local_obs",
@@ -115,7 +117,7 @@ def main() -> None:
     load_path = "runs/mat_nop_swarm_bots_wall/2026-02-17_23-05-06/models/model_7231796_steps_stopped.pt"
     deterministic = False
     rollout_device = torch.device("cpu")
-    gsde_reset_mode = GSDEProbabilityResetMode(probability=1 / 4)
+    gsde_reset_mode = GSDEProbabilityResetMode(probability=1/6)
     gamma = 0.99
     scenario_kwargs: dict[str, Any] = {}
 

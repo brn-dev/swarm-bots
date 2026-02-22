@@ -177,7 +177,12 @@ class SwarmBotsEnv(gymnasium.Env):
         obs = self.scenario.get_obs(self.model, self.data, self.scenario_state, self.swarm_connections).copy()
         obs = self._shuffle_obs(obs)
 
-        info = self.scenario_state if self.return_scenario_state_as_infos else {}
+        if self.return_scenario_state_as_infos:
+            info: dict[str, Any] = dict(self.scenario_state)
+        else:
+            info = {}
+        info["progress_reward"] = float(self.scenario_state["progress_reward"])
+        info["guidance_reward"] = float(self.scenario_state["guidance_reward"])
 
         return obs, reward, terminated, truncated, info
 
