@@ -39,12 +39,16 @@
           "pooling": 10
         },
         {
-          "y_column": "ep_rew__mean",
-          "height": 1.0,
-          "ema": 0.02,
-          "std": true,
-          "min": "AS_EMA",
-          "max": "AS_EMA"
+          "y_column": "ep_progress_rew__histogram_freqs",
+          "height": 3.0,
+          "nbins": 50,
+          "pooling": 10
+        },
+        {
+          "y_column": "ep_guidance_rew__histogram_freqs",
+          "height": 3.0,
+          "nbins": 50,
+          "pooling": 10
         },
         {
           "y_column": "ep_len__mean",
@@ -64,21 +68,45 @@
         },
         {
           "y_column": "act0__histogram_freqs",
-          "height": 3.0
+          "height": 3.0,
+          "nbins": 30,
+          "pooling": 10
+        },
+        {
+          "y_column": "act0_j0__histogram_freqs",
+          "height": 3.0,
+          "nbins": 30,
+          "pooling": 10
+        },
+        {
+          "y_column": "act0_j1__histogram_freqs",
+          "height": 3.0,
+          "nbins": 30,
+          "pooling": 10
+        },
+        {
+          "y_column": "std0__histogram_freqs",
+          "height": 2.0,
+          "nbins": 30,
+          "pooling": 10
+        },
+        {
+          "y_column": "std0_j0__histogram_freqs",
+          "height": 2.0,
+          "nbins": 30,
+          "pooling": 10
+        },
+        {
+          "y_column": "std0_j1__histogram_freqs",
+          "height": 2.0,
+          "nbins": 30,
+          "pooling": 10
         },
         {
           "y_column": "act1__histogram_freqs",
-          "height": 1.0
-        },
-        {
-          "y_column": "act0__mean",
           "height": 1.0,
-          "std": true
-        },
-        {
-          "y_column": "std0__mean",
-          "height": 1.0,
-          "std": true
+          "nbins": 2,
+          "pooling": 10
         },
         {
           "y_column": "act1__mean",

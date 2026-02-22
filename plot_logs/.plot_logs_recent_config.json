@@ -40,14 +40,14 @@
       "group": "",
       "opacity": 1.0,
       "color": "",
-      "enabled": true
+      "enabled": false
     },
     {
       "path": "runs\\mat_nop_swarm_bots_wall\\2026-02-19_16-08-35\\log.csv",
       "group": "",
       "opacity": 1.0,
       "color": "",
-      "enabled": true
+      "enabled": false
     },
     {
       "path": "runs\\mat_nop_swarm_bots_wall\\2026-02-20_13-20-37\\log.csv",
@@ -68,14 +68,14 @@
       "group": "",
       "opacity": 1.0,
       "color": "",
-      "enabled": true
+      "enabled": false
     },
     {
       "path": "runs\\mat_nop_swarm_bots_wall\\2026-02-20_23-28-32\\log.csv",
       "group": "",
       "opacity": 1.0,
       "color": "",
-      "enabled": true
+      "enabled": false
     },
     {
       "path": "runs\\mat_nop_swarm_bots_wall\\2026-02-21_13-11-14\\log.csv",
@@ -86,6 +86,41 @@
     },
     {
       "path": "runs\\mat_nop_swarm_bots_wall\\2026-02-21_14-59-44\\log.csv",
+      "group": "",
+      "opacity": 1.0,
+      "color": "",
+      "enabled": false
+    },
+    {
+      "path": "runs\\mat_nop_swarm_bots_wall\\2026-02-21_15-49-56\\log.csv",
+      "group": "",
+      "opacity": 1.0,
+      "color": "",
+      "enabled": false
+    },
+    {
+      "path": "runs\\mat_nop_swarm_bots_wall\\2026-02-21_17-59-38\\log.csv",
+      "group": "",
+      "opacity": 1.0,
+      "color": "",
+      "enabled": false
+    },
+    {
+      "path": "runs\\mat_nop_swarm_bots_wall\\2026-02-21_21-19-10\\log.csv",
+      "group": "",
+      "opacity": 1.0,
+      "color": "",
+      "enabled": false
+    },
+    {
+      "path": "runs\\mat_nop_swarm_bots_wall\\2026-02-21_21-27-39\\log.csv",
+      "group": "",
+      "opacity": 1.0,
+      "color": "",
+      "enabled": true
+    },
+    {
+      "path": "runs\\mat_nop_swarm_bots_wall\\2026-02-21_21-59-12\\log.csv",
       "group": "",
       "opacity": 1.0,
       "color": "",
@@ -110,11 +145,25 @@
         "max_ema": false
       },
       {
-        "y": "ep_rew__mean",
+        "y": "ep_progress_rew__histogram_freqs",
         "height": "3",
-        "ema": "0.02",
+        "ema": "50;10",
         "ema_only": false,
-        "std": true,
+        "std": false,
+        "std_ema": false,
+        "skew": false,
+        "skew_ema": false,
+        "min": false,
+        "min_ema": false,
+        "max": false,
+        "max_ema": false
+      },
+      {
+        "y": "ep_guidance_rew__histogram_freqs",
+        "height": "3",
+        "ema": "50;10",
+        "ema_only": false,
+        "std": false,
         "std_ema": false,
         "skew": false,
         "skew_ema": false,

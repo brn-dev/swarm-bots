@@ -42,7 +42,7 @@ def copy_running_mean_std(src: Any, dst: Any) -> None:
     if dst.mean.shape != src.mean.shape:
         raise ValueError(f'{dst.mean.shape = } is not equal {src.mean.shape = }')
     if dst.var.shape != src.var.shape:
-        raise ValueError(f'{dst.mean.var = } is not equal {src.mean.var = }')
+        raise ValueError(f'{dst.var.shape = } is not equal {src.var.shape = }')
     dst.mean = src.mean.copy()
     dst.var = src.var.copy()
     dst.count = src.count
@@ -144,4 +144,3 @@ def freeze_env_normalization(env: Any) -> None:
         if hasattr(current_env, "update_running_mean"):
             current_env.update_running_mean = False
         current_env = current_env.env
-

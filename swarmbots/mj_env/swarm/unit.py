@@ -1,7 +1,16 @@
 import mujoco
+from typing import TypeAlias
 
 from swarmbots.mj_env.swarm.swarm_config import get_connector_suffix
 from swarmbots.mj_env.swarm.unit_config import UnitConfig, LimbConfig, LimbType
+
+HingeJointParam: TypeAlias = float | tuple[float, float]
+
+
+def _as_hinge_pair(value: HingeJointParam) -> tuple[float, float]:
+    if isinstance(value, tuple):
+        return value
+    return value, value
 
 
 def init_unit(
@@ -12,7 +21,9 @@ def init_unit(
     unit_config: UnitConfig,
     body_rgba=(0.75, 0, 0, 0.1),
     segment_1_ratio: float = 0.1,
-    hinge_armature: float = 0.0
+    hinge_armature: HingeJointParam = 0.0,
+    hinge_damping: HingeJointParam = 0.0,
+    hinge_frictionloss: HingeJointParam = 0.0,
 ) -> mujoco.MjsBody:
     spec = mujoco.MjSpec()
     spec.compiler.degree = False
@@ -27,6 +38,10 @@ def init_unit(
         size=[body_radius, 0, 0], # Sphere only uses first size param
         rgba=body_rgba
     )
+
+    hinge1_armature, hinge2_armature = _as_hinge_pair(hinge_armature)
+    hinge1_damping, hinge2_damping = _as_hinge_pair(hinge_damping)
+    hinge1_frictionloss, hinge2_frictionloss = _as_hinge_pair(hinge_frictionloss)
 
     for i, limb_config in enumerate(unit_config):
         hip_pos = body_radius * limb_config.vec
@@ -46,7 +61,12 @@ def init_unit(
             radius=leg_radius,
             hinge_range=hinge_range,
             segment_1_ratio=segment_1_ratio,
-            hinge_armature=hinge_armature,
+            hinge1_armature=hinge1_armature,
+            hinge2_armature=hinge2_armature,
+            hinge1_damping=hinge1_damping,
+            hinge2_damping=hinge2_damping,
+            hinge1_frictionloss=hinge1_frictionloss,
+            hinge2_frictionloss=hinge2_frictionloss,
         )
 
     return body
@@ -60,7 +80,12 @@ def _build_limb(
         radius: float,
         hinge_range: float,
         segment_1_ratio: float,
-        hinge_armature: float,
+        hinge1_armature: float,
+        hinge2_armature: float,
+        hinge1_damping: float,
+        hinge2_damping: float,
+        hinge1_frictionloss: float,
+        hinge2_frictionloss: float,
 ):
     rgba = tuple(limb_config.rgba)
 
@@ -73,7 +98,9 @@ def _build_limb(
             axis=[0, 1, 0],
             range=[-hinge_range, hinge_range],
             name=hinge1_name,
-            armature=hinge_armature,
+            armature=hinge1_armature,
+            damping=hinge1_damping,
+            frictionloss=hinge1_frictionloss,
         )
     elif limb_config.type == LimbType.zx:
         hinge1_name = f'-{limb_idx}-hinge1z'
@@ -81,7 +108,9 @@ def _build_limb(
             type=mujoco.mjtJoint.mjJNT_HINGE,
             axis=[0, 0, 1],
             name=hinge1_name,
-            armature=hinge_armature,
+            armature=hinge1_armature,
+            damping=hinge1_damping,
+            frictionloss=hinge1_frictionloss,
         )
     else:
         raise NotImplementedError(limb_config.type)
@@ -106,7 +135,9 @@ def _build_limb(
         axis=[1, 0, 0],
         range=[-hinge_range, hinge_range],
         name=hinge2_name,
-        armature=hinge_armature,
+        armature=hinge2_armature,
+        damping=hinge2_damping,
+        frictionloss=hinge2_frictionloss,
     )
 
     length2 = length * (1 - segment_1_ratio)

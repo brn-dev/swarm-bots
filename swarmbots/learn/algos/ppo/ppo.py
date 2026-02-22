@@ -328,15 +328,27 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerType]):
             [ep['r'] for ep in episode_infos],
             find_min=True, find_max=True,
             compute_skewness=True, compute_kurtosis=True,
-            make_histogram=50
+            make_histogram=30
         )
         ep_len = compute_summary_statistics(
             [ep['l'] for ep in episode_infos],
             find_min=True, find_max=True,
             compute_skewness=True, compute_kurtosis=True,
-            make_histogram=50
+            make_histogram=30
         )
         ep_time = compute_summary_statistics([ep['t'] for ep in episode_infos])
+        ep_progress_rew = compute_summary_statistics(
+            [ep['progress_reward'] for ep in episode_infos],
+            find_min=True, find_max=True,
+            compute_skewness=True, compute_kurtosis=True,
+            make_histogram=30
+        )
+        ep_guidance_rew = compute_summary_statistics(
+            [ep['guidance_reward'] for ep in episode_infos],
+            find_min=True, find_max=True,
+            compute_skewness=True, compute_kurtosis=True,
+            make_histogram=30
+        )
 
         if update_ema:
             for ep_info in episode_infos:
@@ -350,6 +362,8 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerType]):
             'ep_rew': ep_rew,
             'ep_len': ep_len,
             'ep_time': ep_time,
+            'ep_progress_rew': ep_progress_rew,
+            'ep_guidance_rew': ep_guidance_rew,
         }
         return metrics, total_steps_in_rollout
 

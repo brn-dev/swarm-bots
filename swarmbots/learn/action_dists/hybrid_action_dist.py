@@ -81,12 +81,19 @@ class HybridActionDistribution(ActionDist):
         self.action_space = action_space
         self.action_dims = action_space.agent_action_dims
         if isinstance(continuous_config, list):
+            if len(continuous_config) != action_space.n_spaces:
+                raise ValueError(
+                    f"Expected {action_space.n_spaces} continuous configs (one per action sub-space), "
+                    f"got {len(continuous_config)}."
+                )
             self.continuous_configs = continuous_config
         else:
             self.continuous_configs = [continuous_config] * action_space.n_spaces
 
         self.gsde_indices = [
-            i for i, (sub_space, config) in enumerate(zip(action_space.sub_spaces, self.continuous_configs))
+            i for i, (sub_space, config) in enumerate(
+                zip(action_space.sub_spaces, self.continuous_configs, strict=True)
+            )
             if isinstance(sub_space, spaces.Box) and isinstance(config, GSDEParams)
         ]
         self.has_gsde = len(self.gsde_indices) > 0
@@ -109,7 +116,7 @@ class HybridActionDistribution(ActionDist):
                 bernoulli_initial_prob=bernoulli_initial_prob,
             )
             for sub_space, sub_space_dim, cont_conf
-            in zip(action_space.sub_spaces, action_space.agent_action_dims, self.continuous_configs)
+            in zip(action_space.sub_spaces, action_space.agent_action_dims, self.continuous_configs, strict=True)
         ])
 
     def update_latent_features(self, latent_pi: torch.Tensor) -> Self:
@@ -199,8 +206,11 @@ def make_proba_distribution(
 ) -> ActionDist:
     if isinstance(action_space, spaces.Box):
         _assert_unit_box_range(action_space)
-        assert continuous_config is not None, ("Supply a ContinuousActionDistConfig (SquashedDiagParams | "
-                                               "PredictedStdParams | GSDEParams) for continuous actions")
+        if continuous_config is None:
+            raise ValueError(
+                "Supply a ContinuousActionDistConfig "
+                "(SquashedDiagParams | PredictedStdParams | GSDEParams) for continuous actions."
+            )
 
         if isinstance(continuous_config, SquashedDiagParams):
             return SquashedDiagGaussianActionDist(
@@ -238,6 +248,10 @@ def make_proba_distribution(
                 log_std_clamp_range=continuous_config.log_std_clamp_range,
                 action_net_initialization=action_net_initialization,
             )
+        raise TypeError(
+            "Unsupported continuous action config type for Box action space: "
+            f"{type(continuous_config)}"
+        )
     elif isinstance(action_space, spaces.MultiBinary):
         return BernoulliActionDist(
             latent_dim=latent_dim,
@@ -246,7 +260,7 @@ def make_proba_distribution(
             action_net_initialization=action_net_initialization,
         )
     else:
-        raise NotImplementedError
+        raise NotImplementedError(f"Unsupported action space type: {type(action_space)}")
 
 
 def _assert_unit_box_range(space: spaces.Box, atol: float = 1e-6) -> None:

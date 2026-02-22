@@ -15,11 +15,13 @@ class TestingSwarmBotsEnv(gymnasium.Env):
         n_global_obs: int,
         actuators_dim: int,
         connectors_dim: int,
+        n_hidden_vars: int = 0,
         max_steps: int = 100,
     ):
         self.n_agents = n_agents
         self.n_local_obs = n_local_obs
         self.n_global_obs = n_global_obs
+        self.n_hidden_vars = n_hidden_vars
         self.max_steps = max_steps
 
         self._step_count = 0
@@ -33,6 +35,11 @@ class TestingSwarmBotsEnv(gymnasium.Env):
             "global_obs": spaces.Box(
                 low=-np.inf, high=np.inf,
                 shape=(n_global_obs,),
+                dtype=np.float32
+            ),
+            "hidden_vars": spaces.Box(
+                low=-np.inf, high=np.inf,
+                shape=(n_hidden_vars,),
                 dtype=np.float32
             ),
         })
@@ -80,10 +87,16 @@ class TestingSwarmBotsEnv(gymnasium.Env):
             self._step_count, 
             dtype=np.float32
         )
+        hidden_vars = np.full(
+            (self.n_hidden_vars,),
+            self._step_count,
+            dtype=np.float32
+        )
 
         return {
             "local_obs": local_obs,
             "global_obs": global_obs,
+            "hidden_vars": hidden_vars,
         }
 
     def close(self) -> None:

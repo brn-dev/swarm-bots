@@ -1,0 +1,170 @@
+from __future__ import annotations
+
+import numpy as np
+from gymnasium.core import ActType, ObsType
+from gymnasium.logger import warn
+from gymnasium.vector.vector_env import (
+    ArrayType,
+    AutoresetMode,
+    VectorEnv,
+    VectorWrapper,
+)
+
+__all__ = ["ProgressGuidanceEpisodeStatsWrapper"]
+
+
+class ProgressGuidanceEpisodeStatsWrapper(VectorWrapper):
+    def __init__(
+            self,
+            env: VectorEnv,
+            progress_key: str = "progress_reward",
+            guidance_key: str = "guidance_reward",
+            stats_key: str = "episode",
+    ):
+        super().__init__(env)
+        self.progress_key = progress_key
+        self.guidance_key = guidance_key
+        self._stats_key = stats_key
+
+        if "autoreset_mode" not in self.env.metadata:
+            warn(
+                f"{self} is missing `autoreset_mode` tag in its metadata, therefore, "
+                "ProgressGuidanceEpisodeStatsWrapper assumes `AutoresetMode.NEXT_STEP`."
+            )
+        else:
+            assert self.env.metadata["autoreset_mode"] in {AutoresetMode.NEXT_STEP}
+
+        self.episode_progress_rewards = np.zeros((self.num_envs,), dtype=np.float64)
+        self.episode_guidance_rewards = np.zeros((self.num_envs,), dtype=np.float64)
+        self.prev_dones = np.zeros((self.num_envs,), dtype=bool)
+
+    def reset(
+            self,
+            seed: int | list[int] | None = None,
+            options: dict | None = None,
+    ) -> tuple[ObsType, dict]:
+        obs, info = super().reset(seed=seed, options=options)
+
+        if options is not None and "reset_mask" in options:
+            reset_mask = options["reset_mask"]
+            assert isinstance(reset_mask, np.ndarray), (
+                f"`options['reset_mask']` must be a numpy array, got {type(reset_mask)}"
+            )
+            assert reset_mask.shape == (self.num_envs,), (
+                f"`options['reset_mask']` must have shape ({self.num_envs},), got {reset_mask.shape}"
+            )
+            assert reset_mask.dtype == np.bool_, (
+                f"`options['reset_mask']` must have dtype np.bool_, got {reset_mask.dtype}"
+            )
+
+            self.episode_progress_rewards[reset_mask] = 0.0
+            self.episode_guidance_rewards[reset_mask] = 0.0
+            self.prev_dones[reset_mask] = False
+        else:
+            self.episode_progress_rewards[:] = 0.0
+            self.episode_guidance_rewards[:] = 0.0
+            self.prev_dones[:] = False
+
+        return obs, info
+
+    def step(
+            self,
+            actions: ActType,
+    ) -> tuple[ObsType, ArrayType, ArrayType, ArrayType, dict]:
+        observations, rewards, terminations, truncations, infos = self.env.step(actions)
+        assert isinstance(infos, dict), (
+            "`ProgressGuidanceEpisodeStatsWrapper` requires `info` type to be `dict`, "
+            f"got {type(infos)}."
+        )
+
+        self.episode_progress_rewards[self.prev_dones] = 0.0
+        self.episode_guidance_rewards[self.prev_dones] = 0.0
+        active_mask = np.logical_not(self.prev_dones)
+
+        progress_values = self._extract_step_values(infos, self.progress_key)
+        guidance_values = self._extract_step_values(infos, self.guidance_key)
+        if progress_values is not None:
+            self.episode_progress_rewards[active_mask] += progress_values[active_mask]
+        if guidance_values is not None:
+            self.episode_guidance_rewards[active_mask] += guidance_values[active_mask]
+
+        dones = np.logical_or(terminations, truncations)
+        self.prev_dones = dones
+
+        if np.any(dones):
+            self._inject_episode_stats(infos, dones)
+
+        return observations, rewards, terminations, truncations, infos
+
+    def _extract_step_values(
+            self,
+            infos: dict,
+            key: str,
+    ) -> np.ndarray | None:
+        if key not in infos:
+            return None
+
+        values = np.asarray(infos[key], dtype=np.float64)
+        if values.shape == ():
+            out = np.full((self.num_envs,), float(values), dtype=np.float64)
+        else:
+            out = values.reshape(-1)
+            if out.shape[0] != self.num_envs:
+                raise ValueError(
+                    f"Expected infos['{key}'] to have length {self.num_envs}, got shape {values.shape}"
+                )
+
+        mask_key = f"_{key}"
+        if mask_key not in infos:
+            return out
+
+        present_mask = np.asarray(infos[mask_key], dtype=bool).reshape(-1)
+        if present_mask.shape[0] != self.num_envs:
+            raise ValueError(
+                f"Expected infos['{mask_key}'] to have length {self.num_envs}, got shape {present_mask.shape}"
+            )
+        masked_out = np.zeros((self.num_envs,), dtype=np.float64)
+        masked_out[present_mask] = out[present_mask]
+        return masked_out
+
+    def _inject_episode_stats(
+            self,
+            infos: dict,
+            dones: np.ndarray,
+    ) -> None:
+        progress_sum = np.where(dones, self.episode_progress_rewards, 0.0)
+        guidance_sum = np.where(dones, self.episode_guidance_rewards, 0.0)
+
+        stats_mask_key = f"_{self._stats_key}"
+        if stats_mask_key in infos:
+            done_mask = np.asarray(infos[stats_mask_key], dtype=bool).reshape(-1)
+            if done_mask.shape[0] != self.num_envs:
+                raise ValueError(
+                    f"Expected infos['{stats_mask_key}'] to have length {self.num_envs}, got {done_mask.shape}"
+                )
+            if not np.array_equal(done_mask, dones):
+                raise ValueError(
+                    f"Expected infos['{stats_mask_key}'] to match computed dones, got mismatch."
+                )
+        else:
+            done_mask = dones
+            infos[stats_mask_key] = done_mask
+
+        if self._stats_key not in infos:
+            infos[self._stats_key] = {
+                self.progress_key: np.where(done_mask, progress_sum, 0.0),
+                self.guidance_key: np.where(done_mask, guidance_sum, 0.0),
+            }
+            return
+
+        stats = infos[self._stats_key]
+        if not isinstance(stats, dict):
+            raise ValueError(
+                f"Expected infos['{self._stats_key}'] to be a dict, got {type(stats)}"
+            )
+        if self.progress_key in stats or self.guidance_key in stats:
+            raise ValueError(
+                f"infos['{self._stats_key}'] already contains '{self.progress_key}' or '{self.guidance_key}'"
+            )
+        stats[self.progress_key] = np.where(done_mask, progress_sum, 0.0)
+        stats[self.guidance_key] = np.where(done_mask, guidance_sum, 0.0)

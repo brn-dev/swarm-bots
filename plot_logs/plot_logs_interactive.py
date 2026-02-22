@@ -433,6 +433,21 @@ def validate_histogram_edges(edges: Sequence[float]) -> None:
             raise ValueError("Histogram edges must be strictly increasing.")
 
 
+def ensure_strict_histogram_edges(edges: Sequence[float]) -> list[float]:
+    if len(edges) < 2:
+        raise ValueError("Histogram edges must contain at least two values.")
+    for left, right in zip(edges, edges[1:]):
+        if right < left:
+            raise ValueError("Histogram edges must be non-decreasing.")
+    repaired = [float(edges[0])]
+    for edge in edges[1:]:
+        value = float(edge)
+        if value <= repaired[-1]:
+            value = math.nextafter(repaired[-1], math.inf)
+        repaired.append(value)
+    return repaired
+
+
 def histogram_value_range(series_list: Sequence[HistogramSeries]) -> tuple[float, float]:
     min_value = math.inf
     max_value = -math.inf
@@ -469,12 +484,14 @@ def transpose_histogram(values: Sequence[Sequence[float]]) -> list[list[float]]:
 
 def normalize_histogram_edges(edges: Sequence[float], bin_count: int) -> list[float]:
     if len(edges) == bin_count + 1:
-        return list(edges)
-    if len(edges) == bin_count:
-        return build_edges_from_centers(edges)
-    raise ValueError(
-        f"Histogram edges length {len(edges)} does not match bins {bin_count}."
-    )
+        normalized = list(edges)
+    elif len(edges) == bin_count:
+        normalized = build_edges_from_centers(edges)
+    else:
+        raise ValueError(
+            f"Histogram edges length {len(edges)} does not match bins {bin_count}."
+        )
+    return ensure_strict_histogram_edges(normalized)
 
 
 def linear_edges_from_range(min_edge: float, max_edge: float, bin_count: int) -> list[float]:
