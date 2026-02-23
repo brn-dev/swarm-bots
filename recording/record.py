@@ -16,7 +16,7 @@ from swarmbots.learn.checkpointing import (
     freeze_env_normalization,
     load_checkpoint,
 )
-from swarmbots.learn.env_wrappers.obs_normalization.feature_wise_obs_norm_wrapper import (
+from swarmbots.learn.env_wrappers.feature_wise_obs_norm_wrapper import (
     FeatureWiseObsNormWrapper,
 )
 from swarmbots.learn.env_wrappers.progress_guidance_ep_stats_wrapper import ProgressGuidanceEpisodeStatsWrapper

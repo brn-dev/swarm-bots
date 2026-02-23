@@ -14,7 +14,7 @@ from swarmbots.learn.action_dists.hybrid_action_dist import GSDEParams
 from swarmbots.learn.algos.mat.mat_policy import MATPolicy
 from swarmbots.learn.algos.ppo.ppo import AutomaticLearningRate, AutomaticLearningRateUpdateResult, StepsRolloutMode, \
     PPO
-from swarmbots.learn.env_wrappers.obs_normalization.feature_wise_obs_norm_wrapper import (
+from swarmbots.learn.env_wrappers.feature_wise_obs_norm_wrapper import (
     FeatureWiseObsNormWrapper,
 )
 from swarmbots.learn.env_wrappers.progress_guidance_ep_stats_wrapper import ProgressGuidanceEpisodeStatsWrapper
@@ -118,6 +118,11 @@ def main() -> None:
     episode_length = 512
     total_timesteps = 100_000_000
     save_interval = 500
+    use_popart = False
+    popart_beta = 3e-4
+    popart_eps = 1e-5
+    popart_min_std = 1e-4
+    popart_init_sigma = 0.5
     world_model_num_next_steps = 3
     world_model_loss_coef = 0.1
     world_model_target_tau = None
@@ -250,6 +255,11 @@ def main() -> None:
         ),
         bernoulli_initial_prob=0.75,
         max_agents=20,
+        use_popart=use_popart,
+        popart_beta=popart_beta,
+        popart_eps=popart_eps,
+        popart_min_std=popart_min_std,
+        popart_init_sigma=popart_init_sigma,
     )
     print(policy)
 
@@ -344,6 +354,7 @@ def main() -> None:
         value_loss_fn=nn.SmoothL1Loss(),
         train_device=train_device,
         rollout_device=rollout_device,
+        use_popart=use_popart,
     )
 
     if load_path:
@@ -351,6 +362,28 @@ def main() -> None:
         ppo.load(load_path, recover_best_return_ema=False)
 
     print("Starting training...")
+    logging_console_keys: list[tuple[str, str | SummaryStatisticsFormat | None] | tuple[str, str | SummaryStatisticsFormat | None, str]] = [
+        ('iteration', '5', 'it'),
+        ('timesteps', '8', 'steps'),
+        ('total_updates', '6', 'tot_upd'),
+        ('act0', SummaryStatisticsFormat(histogram=10)),
+        ('act1', SummaryStatisticsFormat(histogram=2)),
+        ('std0', SummaryStatisticsFormat(mean='.3f', std='.3f', min_value='.3f', max_value='.3f')),
+        ('updates', '3', 'upd'),
+        ('approx_kl', SummaryStatisticsFormat(mean='.3f', std='.3f', max_value='.3f')),
+        ('clip_frac', None),
+        ('ratio', SummaryStatisticsFormat(mean='.3f', std='.3f', min_value='.1e', max_value='.3f')),
+        ('val_loss_scaled', None, 'val_loss'),
+        ('expl_var', '.3f'),
+        ('ep_rew', SummaryStatisticsFormat(mean=' .2f', std='.2f', max_value=' .2f', n='1')),
+        ('ep_rew_ema', ' .3f'),
+        ('best_ep_rew_ema', ' .3f', 'best_ema'),
+        ('fps', None),
+    ]
+    if use_popart:
+        logging_console_keys.insert(-4, ('popart_mu', '.3f', 'pa_mu'))
+        logging_console_keys.insert(-4, ('popart_sigma', '.3f', 'pa_sigma'))
+
     ppo.learn(
         max_total_timesteps=total_timesteps,
         run_dir=run_dir,
@@ -363,24 +396,7 @@ def main() -> None:
             'env_settings': env_settings,
             'script': Path(__file__).read_text(encoding='utf-8')
         },
-        logging_console_keys=[
-            ('iteration', '5', 'it'),
-            ('timesteps', '8', 'steps'),
-            ('total_updates', '6', 'tot_upd'),
-            ('act0', SummaryStatisticsFormat(histogram=10)),
-            ('act1', SummaryStatisticsFormat(histogram=2)),
-            ('std0', SummaryStatisticsFormat(mean='.3f', std='.3f', min_value='.3f', max_value='.3f')),
-            ('updates', '3', 'upd'),
-            ('approx_kl', SummaryStatisticsFormat(mean='.3f', std='.3f', max_value='.3f')),
-            ('clip_frac', None),
-            ('ratio', SummaryStatisticsFormat(mean='.3f', std='.3f', min_value='.1e', max_value='.3f')),
-            ('val_loss_scaled', None, 'val_loss'),
-            ('expl_var', '.3f'),
-            ('ep_rew', SummaryStatisticsFormat(mean=' .2f', std='.2f', max_value=' .2f', n='1')),
-            ('ep_rew_ema', ' .3f'),
-            ('best_ep_rew_ema', ' .3f', 'best_ema'),
-            ('fps', None),
-        ],
+        logging_console_keys=logging_console_keys,
         make_record_env=make_record_env
     )
 

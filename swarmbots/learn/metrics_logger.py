@@ -3,14 +3,14 @@ from collections.abc import Collection, Iterable
 import json
 from pathlib import Path
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Any
 import numpy as np
 from loguru import logger
 
 try:
     import wandb
     wandb_available = True
-except Exception as e:
+except Exception:
     wandb_available = False
 
 from swarmbots.learn.summary_statistics import (
@@ -22,6 +22,7 @@ from swarmbots.learn.summary_statistics import (
 )
 
 NEWLINE_KEY = '<newline>'
+ConsoleMetricFormat = str | SummaryStatisticsFormat | None
 
 class MetricsLogger:
     def __init__(
@@ -53,7 +54,7 @@ class MetricsLogger:
         self.file = None
         self.writer = None
         self._csv_fieldnames: list[str] | None = None
-        self._warned_csv_extra_keys = False
+        self._warned_missing_console_keys: set[str] = set()
 
         self._wandb_run = wandb_run
         self._wandb_managed_run = False
@@ -136,41 +137,72 @@ class MetricsLogger:
             else:
                 csv_metrics[k] = v
 
-        if self.file is None:
-            file_exists = self.file_path.exists()
-            self.file = open(self.file_path, mode='a', newline='', encoding="utf-8")
+        self._ensure_csv_writer(csv_metrics)
+        assert self._csv_fieldnames is not None
 
-            existing_fieldnames = self._read_csv_header_fieldnames() if file_exists else None
-            self._csv_fieldnames = existing_fieldnames if existing_fieldnames is not None else list(csv_metrics.keys())
-            self.writer = csv.DictWriter(
-                self.file,
-                fieldnames=self._csv_fieldnames,
+        new_fieldnames = [k for k in csv_metrics if k not in self._csv_fieldnames]
+        if new_fieldnames:
+            self._expand_csv_schema(new_fieldnames)
+
+        assert self.writer is not None
+        self.writer.writerow(csv_metrics)
+        self.file.flush()
+
+    def _ensure_csv_writer(self, csv_metrics: dict[str, Any]) -> None:
+        if self.file is not None:
+            return
+
+        file_exists = self.file_path.exists()
+        existing_fieldnames = self._read_csv_header_fieldnames() if file_exists else None
+        self._csv_fieldnames = (
+            existing_fieldnames if existing_fieldnames is not None else list(csv_metrics.keys())
+        )
+        self.file = open(self.file_path, mode='a', newline='', encoding="utf-8")
+        self.writer = csv.DictWriter(
+            self.file,
+            fieldnames=self._csv_fieldnames,
+            delimiter=';',
+            extrasaction="ignore",
+        )
+
+        if not file_exists or self.file_path.stat().st_size == 0:
+            self.writer.writeheader()
+            self.file.flush()
+
+    def _expand_csv_schema(self, new_fieldnames: list[str]) -> None:
+        assert self.file_path is not None
+        assert self._csv_fieldnames is not None
+
+        existing_rows: list[dict[str, Any]] = []
+        if self.file_path.exists() and self.file_path.stat().st_size > 0:
+            with open(self.file_path, mode='r', newline='', encoding='utf-8') as existing_file:
+                reader = csv.DictReader(existing_file, delimiter=';')
+                existing_rows = list(reader)
+
+        updated_fieldnames = [*self._csv_fieldnames, *new_fieldnames]
+        with open(self.file_path, mode='w', newline='', encoding='utf-8') as rewritten_file:
+            rewrite_writer = csv.DictWriter(
+                rewritten_file,
+                fieldnames=updated_fieldnames,
                 delimiter=';',
                 extrasaction="ignore",
             )
+            rewrite_writer.writeheader()
+            if existing_rows:
+                rewrite_writer.writerows(existing_rows)
 
-            if not file_exists:
-                self.writer.writeheader()
-            else:
-                extra_keys = set(csv_metrics.keys()) - set(self._csv_fieldnames)
-                if extra_keys and not self._warned_csv_extra_keys:
-                    self._warned_csv_extra_keys = True
-                    logger.warning(
-                        "MetricsLogger: ignoring new CSV metric keys not present in the header: "
-                        f"{sorted(extra_keys)}"
-                    )
-        else:
-            assert self._csv_fieldnames is not None
-            extra_keys = set(csv_metrics.keys()) - set(self._csv_fieldnames)
-            if extra_keys and not self._warned_csv_extra_keys:
-                self._warned_csv_extra_keys = True
-                logger.warning(
-                    "MetricsLogger: ignoring new CSV metric keys not present in the header: "
-                    f"{sorted(extra_keys)}"
-                )
-        
-        self.writer.writerow(csv_metrics)
-        self.file.flush()
+        if self.file is not None:
+            self.file.close()
+
+        self._csv_fieldnames = updated_fieldnames
+        self.file = open(self.file_path, mode='a', newline='', encoding='utf-8')
+        self.writer = csv.DictWriter(
+            self.file,
+            fieldnames=self._csv_fieldnames,
+            delimiter=';',
+            extrasaction="ignore",
+        )
+        logger.warning(f"MetricsLogger: extended CSV schema with keys: {new_fieldnames}")
 
     def _read_csv_header_fieldnames(self) -> list[str] | None:
         if self.file_path is None or not self.file_path.exists() or self.file_path.stat().st_size == 0:
@@ -197,7 +229,7 @@ class MetricsLogger:
             wandb_kwargs: dict[str, Any] | None,
     ) -> None:
         if not wandb_available:
-            logger.warning(f"wandb is not available ({e}); continuing without wandb logging.")
+            logger.warning(f"wandb is not available; continuing without wandb logging.")
             return
 
         init_kwargs: dict[str, Any] = dict(wandb_kwargs or {})
@@ -222,7 +254,7 @@ class MetricsLogger:
 
     def _log_to_wandb(self, metrics: dict[str, Any]) -> None:
         if not wandb_available:
-            logger.warning(f"wandb is not available ({e}); skipping wandb log.")
+            logger.warning(f"wandb is not available; skipping wandb log.")
             return
 
         metrics = {k: v for k, v in metrics.items() if v is not None}
@@ -294,10 +326,10 @@ class MetricsLogger:
     def _normalize_console_keys(
         self,
             console_keys: list[str] | list[
-                tuple[str, str | SummaryStatisticsFormat | None]
-                | tuple[str, str | SummaryStatisticsFormat | None, str]
+                tuple[str, ConsoleMetricFormat]
+                | tuple[str, ConsoleMetricFormat, str]
             ] | None = None
-    ) -> list[tuple[str, str | None, str]] | None:
+    ) -> list[tuple[str, ConsoleMetricFormat, str]] | None:
         if console_keys is None:
             return None
 
@@ -306,7 +338,7 @@ class MetricsLogger:
             return []
 
         if all(isinstance(item, str) for item in items):
-            key_specs: list[tuple[str, str | None, str]] = [(key, None, key) for key in items]
+            key_specs: list[tuple[str, ConsoleMetricFormat, str]] = [(key, None, key) for key in items]
             return key_specs
 
         if all(isinstance(item, tuple) and 2 <= len(item) <= 3 for item in items):
@@ -317,7 +349,7 @@ class MetricsLogger:
 
         raise TypeError(console_keys)
 
-    def _iter_console_metrics(self, metrics: dict[str, Any]) -> Iterable[tuple[str, Any, str | None]]:
+    def _iter_console_metrics(self, metrics: dict[str, Any]) -> Iterable[tuple[str, Any, ConsoleMetricFormat]]:
         if self._console_key_specs is None:
             for key, value in metrics.items():
                 yield key, value, None
@@ -327,9 +359,15 @@ class MetricsLogger:
             if key == NEWLINE_KEY:
                 yield key, fmt, None
             else:
-                yield alias, metrics[key], fmt
+                if key in metrics:
+                    yield alias, metrics[key], fmt
+                elif key not in self._warned_missing_console_keys:
+                    self._warned_missing_console_keys.add(key)
+                    logger.warning(
+                        f"MetricsLogger: console key '{key}' is missing in metrics and will be skipped."
+                    )
 
-    def _format_console_value(self, value: Any, fmt: str | SummaryStatisticsFormat | None) -> str:
+    def _format_console_value(self, value: Any, fmt: ConsoleMetricFormat) -> str:
 
         if isinstance(value, SummaryStatistics):
             assert fmt is None or isinstance(fmt, SummaryStatisticsFormat), 'supply a summary statistics format'
@@ -350,7 +388,7 @@ class MetricsLogger:
         return str(value)
 
     @staticmethod
-    def _replace_no_data(x: float | NoData, round_ndigits: Optional[int] = None) -> Optional[float]:
+    def _replace_no_data(x: float | NoData, round_ndigits: int | None = None) -> float | None:
         if x is NO_DATA:
             return None
         if round_ndigits is not None:

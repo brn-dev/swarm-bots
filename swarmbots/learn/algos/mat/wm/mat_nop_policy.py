@@ -39,6 +39,11 @@ class MATNOPPolicy(MATPolicy, NextObsPredMixin, PPOWMPolicyMixin):
             add_agent_embeddings_encoder: bool = True,
             add_agent_embeddings_decoder: bool = True,
             max_agents: int | None = None,
+            use_popart: bool = False,
+            popart_beta: float = 3e-4,
+            popart_eps: float = 1e-5,
+            popart_min_std: float = 1e-4,
+            popart_init_sigma: float = 1.0,
             d_model_transition_model: int = 128,
             nhead_transition_model: int = 4,
             num_layers_transition_model: int = 2,
@@ -88,6 +93,11 @@ class MATNOPPolicy(MATPolicy, NextObsPredMixin, PPOWMPolicyMixin):
             add_agent_embeddings_encoder=add_agent_embeddings_encoder,
             add_agent_embeddings_decoder=add_agent_embeddings_decoder,
             max_agents=max_agents,
+            use_popart=use_popart,
+            popart_beta=popart_beta,
+            popart_eps=popart_eps,
+            popart_min_std=popart_min_std,
+            popart_init_sigma=popart_init_sigma,
         )
 
         if not isinstance(scalar_loss_fn, nn.Module):

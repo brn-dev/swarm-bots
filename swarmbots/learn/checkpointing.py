@@ -6,7 +6,7 @@ from typing import Any, Optional
 import torch
 from loguru import logger
 
-from swarmbots.learn.env_wrappers.obs_normalization.feature_wise_obs_norm_wrapper import FeatureWiseObsNormWrapper
+from swarmbots.learn.env_wrappers.feature_wise_obs_norm_wrapper import FeatureWiseObsNormWrapper
 
 
 def load_checkpoint(path: str | pathlib.Path, map_location: Any | None = "cpu") -> Any:

@@ -9,12 +9,12 @@ DEFAULT_KWARGS = {
     'friction': [2, 1e-2, 2e-4],
     'force_elliptic_cone': True,
     'actuator_strength': 15.0,
-    'actuators_activation_reward_weight': -5e-2,
-    'actuators_activation_reward_power': 2,
-    'actuators_activation_reward_threshold': 0.6,
-    'hinge_qvel_magnitude_reward_weight': -1e-4,
+    'actuators_activation_reward_weight': -1e-2,
+    'actuators_activation_reward_power': 4,
+    'actuators_activation_reward_threshold': 0.7,
+    'hinge_qvel_magnitude_reward_weight': -2e-4,
     'hinge_qvel_magnitude_reward_threshold': 8.0,
-    'units_without_connections_reward_weight': -6e-4,
+    'units_without_connections_reward_weight': -5e-4,
     'units_with_double_connection_reward_weight': -4e-4,
     'movement_reward_weight': 0e-1,
     'height_reward_weight': 0e-4,
@@ -53,9 +53,9 @@ def _resolve_swarm(
     return HomogeneousSwarm(
         unit_start_locations=unit_start_locations,
         randomize_unit_orientations=randomize_unit_orientations,
-        hinge_armature=(0.03, 0.02),
-        hinge_damping=(0.5, 0.3),
-        hinge_frictionloss=(0.5, 0.3),
+        hinge_armature=(0.02, 0.015),
+        hinge_damping=(0.2, 0.15),
+        hinge_frictionloss=(0.2, 0.15),
     )
 
 

@@ -106,7 +106,8 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerType]):
             agent_logprob_reduction: Optional[Literal["sum", "mean"]] = None,
             train_device: str | torch.device = "auto",
             rollout_device: str | torch.device = "cpu",
-            metrics_action_splitters: list[Callable[[torch.Tensor], dict[str, torch.Tensor]] | None] | None = None
+            metrics_action_splitters: list[Callable[[torch.Tensor], dict[str, torch.Tensor]] | None] | None = None,
+            use_popart: bool = False,
     ):
         self.automatic_lr: AutomaticLearningRate | None = None
         self._auto_lr_enabled = False
@@ -142,6 +143,12 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerType]):
         self.value_loss_fn = value_loss_fn if value_loss_fn is not None else nn.MSELoss()
         self.max_grad_norm = max_grad_norm
         self.target_kl = target_kl
+        self.use_popart = bool(use_popart)
+        if self.use_popart and not self.policy.has_popart:
+            raise ValueError(
+                "use_popart=True, but policy.has_popart=False. "
+                "Enable PopArt in the policy/critic first."
+            )
 
         self.gsde_reset_mode = gsde_reset_mode
         assert not policy.gsde_enabled or self.gsde_reset_mode is not None
@@ -208,6 +215,7 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerType]):
             'target_kl': self.target_kl,
             'train_device': str(self.train_device),
             'rollout_device': str(self.rollout_device),
+            'use_popart': self.use_popart,
             'gsde_reset_mode': self._serialize_gsde_reset_mode(self.gsde_reset_mode),
             'agent_logprob_reduction': self.agent_logprob_reduction,
             'policy_num_params': self._policy_num_params,
@@ -243,8 +251,12 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerType]):
             values_pred = batch.values + torch.clamp(
                 values - batch.values, -self.clip_range_vf, self.clip_range_vf
             )
+        value_targets = batch.returns
+        if self.use_popart:
+            values_pred = self.policy.normalize_values(values_pred)
+            value_targets = self.policy.normalize_values(value_targets)
 
-        value_loss: torch.Tensor = self.value_loss_fn(values_pred, batch.returns)
+        value_loss: torch.Tensor = self.value_loss_fn(values_pred, value_targets)
 
         if entropy is None:
             entropy_loss = masked_mean(log_prob, valid_mask)
@@ -379,6 +391,9 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerType]):
         with PerformanceTimer() as sampler_init_timer:
             sampler = self._make_sampler(episodes)
 
+        if self.use_popart:
+            self.policy.update_value_normalizer(sampler.returns)
+
         y_pred = sampler.values.flatten()
         y_true = sampler.returns.flatten()
         var_y = torch.var(y_true)
@@ -467,6 +482,7 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerType]):
                 metrics=metrics,
             )
             metrics.update(auto_lr_metrics)
+            metrics.update(self.policy.get_value_normalizer_metrics())
 
             act_dim_sum = 0
             action_dims = self.policy.action_dist.action_dims

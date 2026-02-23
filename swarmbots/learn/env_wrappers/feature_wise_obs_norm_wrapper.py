@@ -25,7 +25,6 @@ class FeatureWiseObsNormWrapper(VectorObservationWrapper, gym.utils.RecordConstr
         scalar_feature_indices: list[int] | np.ndarray,
         quaternion_indices: list[int] | np.ndarray,
         eps: float = 1e-6,
-        per_agent: bool = False,
     ):
         gym.utils.RecordConstructorArgs.__init__(
             self,
@@ -33,7 +32,6 @@ class FeatureWiseObsNormWrapper(VectorObservationWrapper, gym.utils.RecordConstr
             scalar_feature_indices=scalar_feature_indices,
             quaternion_indices=quaternion_indices,
             eps=eps,
-            per_agent=per_agent,
         )
         VectorObservationWrapper.__init__(self, env)
 
@@ -72,7 +70,6 @@ class FeatureWiseObsNormWrapper(VectorObservationWrapper, gym.utils.RecordConstr
 
         self._eps = float(eps)
         self._update_running_mean = True
-        self._per_agent = bool(per_agent)
 
     @property
     def update_running_mean(self) -> bool:
@@ -114,8 +111,6 @@ class FeatureWiseObsNormWrapper(VectorObservationWrapper, gym.utils.RecordConstr
             if samples.ndim == 1:
                 return samples.reshape(1, -1)
             return samples.reshape(-1, samples.shape[-1])
-        if self._per_agent:
-            return samples
         if samples.ndim == 1:
             return samples.reshape(1, -1)
         return samples.reshape(-1, samples.shape[-1])

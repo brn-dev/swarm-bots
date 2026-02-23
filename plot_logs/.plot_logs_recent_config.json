@@ -117,10 +117,45 @@
       "group": "",
       "opacity": 1.0,
       "color": "",
-      "enabled": true
+      "enabled": false
     },
     {
       "path": "runs\\mat_nop_swarm_bots_wall\\2026-02-21_21-59-12\\log.csv",
+      "group": "",
+      "opacity": 1.0,
+      "color": "",
+      "enabled": false
+    },
+    {
+      "path": "runs\\mat_nop_swarm_bots_wall\\2026-02-22_15-53-52\\log.csv",
+      "group": "",
+      "opacity": 1.0,
+      "color": "",
+      "enabled": false
+    },
+    {
+      "path": "runs\\mat_nop_swarm_bots_wall\\2026-02-22_17-20-52\\log.csv",
+      "group": "",
+      "opacity": 1.0,
+      "color": "",
+      "enabled": false
+    },
+    {
+      "path": "runs\\mat_nop_swarm_bots_wall\\2026-02-22_20-41-44\\log.csv",
+      "group": "",
+      "opacity": 1.0,
+      "color": "",
+      "enabled": false
+    },
+    {
+      "path": "runs\\mat_nop_swarm_bots_wall\\2026-02-23_13-37-51\\log.csv",
+      "group": "",
+      "opacity": 1.0,
+      "color": "",
+      "enabled": true
+    },
+    {
+      "path": "runs\\mat_nop_swarm_bots_wall\\2026-02-23_18-13-41\\log.csv",
       "group": "",
       "opacity": 1.0,
       "color": "",
@@ -145,32 +180,18 @@
         "max_ema": false
       },
       {
-        "y": "ep_progress_rew__histogram_freqs",
+        "y": "ep_rew__mean",
         "height": "3",
-        "ema": "50;10",
+        "ema": "0.02",
         "ema_only": false,
-        "std": false,
+        "std": true,
         "std_ema": false,
         "skew": false,
         "skew_ema": false,
-        "min": false,
-        "min_ema": false,
-        "max": false,
-        "max_ema": false
-      },
-      {
-        "y": "ep_guidance_rew__histogram_freqs",
-        "height": "3",
-        "ema": "50;10",
-        "ema_only": false,
-        "std": false,
-        "std_ema": false,
-        "skew": false,
-        "skew_ema": false,
-        "min": false,
-        "min_ema": false,
-        "max": false,
-        "max_ema": false
+        "min": true,
+        "min_ema": true,
+        "max": true,
+        "max_ema": true
       },
       {
         "y": "ep_len__mean",
@@ -185,6 +206,227 @@
         "min_ema": false,
         "max": false,
         "max_ema": false
+      }
+    ]
+  },
+  "plot_tabs": {
+    "active": 1,
+    "tabs": [
+      {
+        "x": "timesteps",
+        "rows": [
+          {
+            "y": "ep_rew_ema",
+            "height": "2",
+            "ema": "0.01",
+            "ema_only": false,
+            "std": false,
+            "std_ema": false,
+            "skew": false,
+            "skew_ema": false,
+            "min": false,
+            "min_ema": false,
+            "max": false,
+            "max_ema": false
+          },
+          {
+            "y": "ep_rew__mean",
+            "height": "3",
+            "ema": "0.02",
+            "ema_only": false,
+            "std": true,
+            "std_ema": false,
+            "skew": false,
+            "skew_ema": false,
+            "min": true,
+            "min_ema": true,
+            "max": true,
+            "max_ema": true
+          },
+          {
+            "y": "ep_len__mean",
+            "height": "1",
+            "ema": "0.02",
+            "ema_only": false,
+            "std": true,
+            "std_ema": false,
+            "skew": false,
+            "skew_ema": false,
+            "min": false,
+            "min_ema": false,
+            "max": false,
+            "max_ema": false
+          }
+        ]
+      },
+      {
+        "x": "timesteps",
+        "rows": [
+          {
+            "y": "ep_rew_ema",
+            "height": "2",
+            "ema": "0.02",
+            "ema_only": false,
+            "std": false,
+            "std_ema": false,
+            "skew": false,
+            "skew_ema": false,
+            "min": false,
+            "min_ema": false,
+            "max": false,
+            "max_ema": false
+          },
+          {
+            "y": "act0_j0__histogram_freqs",
+            "height": "3",
+            "ema": "30;10",
+            "ema_only": false,
+            "std": false,
+            "std_ema": false,
+            "skew": false,
+            "skew_ema": false,
+            "min": false,
+            "min_ema": false,
+            "max": false,
+            "max_ema": false
+          },
+          {
+            "y": "act0_j1__histogram_freqs",
+            "height": "3",
+            "ema": "30;10",
+            "ema_only": false,
+            "std": false,
+            "std_ema": false,
+            "skew": false,
+            "skew_ema": false,
+            "min": false,
+            "min_ema": false,
+            "max": false,
+            "max_ema": false
+          }
+        ]
+      },
+      {
+        "x": "timesteps",
+        "rows": [
+          {
+            "y": "ep_rew_ema",
+            "height": "2",
+            "ema": "0.02",
+            "ema_only": false,
+            "std": false,
+            "std_ema": false,
+            "skew": false,
+            "skew_ema": false,
+            "min": false,
+            "min_ema": false,
+            "max": false,
+            "max_ema": false
+          },
+          {
+            "y": "std0_j0__histogram_freqs",
+            "height": "2",
+            "ema": "30;10",
+            "ema_only": false,
+            "std": false,
+            "std_ema": false,
+            "skew": false,
+            "skew_ema": false,
+            "min": false,
+            "min_ema": false,
+            "max": false,
+            "max_ema": false
+          },
+          {
+            "y": "std0_j1__histogram_freqs",
+            "height": "2",
+            "ema": "30;10",
+            "ema_only": false,
+            "std": false,
+            "std_ema": false,
+            "skew": false,
+            "skew_ema": false,
+            "min": false,
+            "min_ema": false,
+            "max": false,
+            "max_ema": false
+          }
+        ]
+      },
+      {
+        "x": "timesteps",
+        "rows": [
+          {
+            "y": "ep_rew_ema",
+            "height": "2",
+            "ema": "0.02",
+            "ema_only": false,
+            "std": false,
+            "std_ema": false,
+            "skew": false,
+            "skew_ema": false,
+            "min": false,
+            "min_ema": false,
+            "max": false,
+            "max_ema": false
+          },
+          {
+            "y": "scalar_loss__mean",
+            "height": "1",
+            "ema": "",
+            "ema_only": false,
+            "std": true,
+            "std_ema": false,
+            "skew": false,
+            "skew_ema": false,
+            "min": false,
+            "min_ema": false,
+            "max": false,
+            "max_ema": false
+          },
+          {
+            "y": "angle_loss__mean",
+            "height": "1",
+            "ema": "",
+            "ema_only": false,
+            "std": true,
+            "std_ema": false,
+            "skew": false,
+            "skew_ema": false,
+            "min": false,
+            "min_ema": false,
+            "max": false,
+            "max_ema": false
+          },
+          {
+            "y": "rot6d_loss__mean",
+            "height": "1",
+            "ema": "",
+            "ema_only": false,
+            "std": true,
+            "std_ema": false,
+            "skew": false,
+            "skew_ema": false,
+            "min": false,
+            "min_ema": false,
+            "max": false,
+            "max_ema": false
+          },
+          {
+            "y": "binary_loss__mean",
+            "height": "1",
+            "ema": "",
+            "ema_only": false,
+            "std": true,
+            "std_ema": false,
+            "skew": false,
+            "skew_ema": false,
+            "min": false,
+            "min_ema": false,
+            "max": false,
+            "max_ema": false
+          }
+        ]
       }
     ]
   },
