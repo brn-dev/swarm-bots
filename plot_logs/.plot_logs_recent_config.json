@@ -155,7 +155,7 @@
       "enabled": true
     },
     {
-      "path": "runs\\mat_nop_swarm_bots_wall\\2026-02-23_18-13-41\\log.csv",
+      "path": "runs\\mat_nop_swarm_bots_wall\\2026-02-23_18-19-03\\log.csv",
       "group": "",
       "opacity": 1.0,
       "color": "",
@@ -180,7 +180,21 @@
         "max_ema": false
       },
       {
-        "y": "ep_rew__mean",
+        "y": "ep_progress_rew__histogram_freqs",
+        "height": "3",
+        "ema": "50;10",
+        "ema_only": false,
+        "std": false,
+        "std_ema": false,
+        "skew": false,
+        "skew_ema": false,
+        "min": false,
+        "min_ema": false,
+        "max": false,
+        "max_ema": false
+      },
+      {
+        "y": "ep_progress_rew__mean",
         "height": "3",
         "ema": "0.02",
         "ema_only": false,
@@ -188,14 +202,28 @@
         "std_ema": false,
         "skew": false,
         "skew_ema": false,
-        "min": true,
-        "min_ema": true,
-        "max": true,
-        "max_ema": true
+        "min": false,
+        "min_ema": false,
+        "max": false,
+        "max_ema": false
       },
       {
-        "y": "ep_len__mean",
-        "height": "1",
+        "y": "ep_guidance_rew__histogram_freqs",
+        "height": "3",
+        "ema": "50;10",
+        "ema_only": false,
+        "std": false,
+        "std_ema": false,
+        "skew": false,
+        "skew_ema": false,
+        "min": false,
+        "min_ema": false,
+        "max": false,
+        "max_ema": false
+      },
+      {
+        "y": "ep_guidance_rew__mean",
+        "height": "3",
         "ema": "0.02",
         "ema_only": false,
         "std": true,
@@ -230,7 +258,21 @@
             "max_ema": false
           },
           {
-            "y": "ep_rew__mean",
+            "y": "ep_progress_rew__histogram_freqs",
+            "height": "3",
+            "ema": "50;10",
+            "ema_only": false,
+            "std": false,
+            "std_ema": false,
+            "skew": false,
+            "skew_ema": false,
+            "min": false,
+            "min_ema": false,
+            "max": false,
+            "max_ema": false
+          },
+          {
+            "y": "ep_progress_rew__mean",
             "height": "3",
             "ema": "0.02",
             "ema_only": false,
@@ -238,14 +280,28 @@
             "std_ema": false,
             "skew": false,
             "skew_ema": false,
-            "min": true,
-            "min_ema": true,
-            "max": true,
-            "max_ema": true
+            "min": false,
+            "min_ema": false,
+            "max": false,
+            "max_ema": false
           },
           {
-            "y": "ep_len__mean",
-            "height": "1",
+            "y": "ep_guidance_rew__histogram_freqs",
+            "height": "3",
+            "ema": "50;10",
+            "ema_only": false,
+            "std": false,
+            "std_ema": false,
+            "skew": false,
+            "skew_ema": false,
+            "min": false,
+            "min_ema": false,
+            "max": false,
+            "max_ema": false
+          },
+          {
+            "y": "ep_guidance_rew__mean",
+            "height": "3",
             "ema": "0.02",
             "ema_only": false,
             "std": true,
