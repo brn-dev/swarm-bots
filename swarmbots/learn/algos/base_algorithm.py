@@ -199,7 +199,8 @@ class BaseAlgorithm(abc.ABC):
 
                 current_return_ema = episode_return_ema.get()
                 self._last_return_ema = current_return_ema
-                if current_return_ema and self.n_total_iterations - learn_started_iterations >= MIN_ITERATIONS_FOR_BEST:
+                if (current_return_ema is not None and
+                        self.n_total_iterations - learn_started_iterations >= MIN_ITERATIONS_FOR_BEST):
                     best_return_ema, best_save_counter = self._maybe_save_best_ema_model(
                         best_models_dir=best_models_dir,
                         best_rotation_n=best_rotation_n,
@@ -546,7 +547,7 @@ class BaseAlgorithm(abc.ABC):
         try:
             self._command_log_path.parent.mkdir(parents=True, exist_ok=True)
             with self._command_log_path.open("a", encoding="utf-8") as f:
-                f.write(json.dumps(entry, default=str, indent=2) + "\n")
+                f.write(json.dumps(entry, default=str) + "\n")
         except OSError:
             logger.exception(f"Failed to append command log to {self._command_log_path.as_posix()}")
 

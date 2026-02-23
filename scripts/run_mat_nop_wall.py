@@ -1,4 +1,5 @@
 import sys
+import math
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -11,10 +12,11 @@ from loguru import logger
 from torch import nn
 
 from swarmbots.learn.action_dists.hybrid_action_dist import GSDEParams
+from swarmbots.learn.action_dists.gsde_action_dist import GSDEActionDist
 from swarmbots.learn.algos.mat.wm.mat_nop_policy import MATNOPPolicy
 from swarmbots.learn.algos.ppo.wm.ppo_wm import PPOWM
 from swarmbots.learn.algos.ppo.ppo import AutomaticLearningRate, AutomaticLearningRateUpdateResult, StepsRolloutMode
-from swarmbots.learn.env_wrappers.obs_normalization.feature_wise_obs_norm_wrapper import (
+from swarmbots.learn.env_wrappers.feature_wise_obs_norm_wrapper import (
     FeatureWiseObsNormWrapper,
 )
 from swarmbots.learn.env_wrappers.progress_guidance_ep_stats_wrapper import ProgressGuidanceEpisodeStatsWrapper
@@ -25,9 +27,6 @@ from swarmbots.learn.summary_statistics import SummaryStatisticsFormat, SummaryS
 from swarmbots.learn.obs_indices import ObsIndices
 from swarmbots.learn.swarmbots_obs_indices import build_obs_indices
 from swarmbots.mj_env.scenarios.scenario_presets import default_wall
-from swarmbots.mj_env.swarm.homogeneous_swarm import HomogeneousSwarm, PoissonDiscUnitLocationsConfig, \
-    PreConnectedUnitLocationsConfig
-from swarmbots.mj_env.swarm.unit_config import UNIT_CONFIG_TETRAHEDRON_YX, UnitConfig, UNIT_CONFIG_TETRAHEDRON_ZX
 from swarmbots.mj_env.swarm_bots_env import SwarmBotsEnv
 
 
@@ -92,6 +91,13 @@ def split_actuator_joints(actions: torch.Tensor) -> dict[str, torch.Tensor]:
     }
 
 
+def set_actuator_gsde_init_joint_stds(policy: MATNOPPolicy, joint0_std: float, joint1_std: float) -> None:
+    gsde_dist = next((dist for dist in policy.action_dist.distributions if isinstance(dist, GSDEActionDist)), None)
+    with torch.no_grad():
+        gsde_dist.log_stds[:, 0::2] = math.log(joint0_std)
+        gsde_dist.log_stds[:, 1::2] = math.log(joint1_std)
+
+
 def main() -> None:
     logger.remove()
     logger.add(
@@ -101,17 +107,22 @@ def main() -> None:
     )
 
     n_envs = 23
-    # unit_start_locations = [
-    #     (0.0, 0.0, 0.0),
-    #     (-0.6, 0, 0),
-    # ]
     episode_length = 512
     total_timesteps = 100_000_000
     save_interval = 500
-    vf_coef = 10.0
-    world_model_loss_coef = 0.5
+
+    use_popart = True
+    popart_beta = 5e-4
+    popart_init_sigma = 0.5
+
+    vf_coef = 2.0
+    world_model_loss_coef = 0.2
+
     world_model_num_next_steps = 3
     world_model_target_tau = None
+
+    gsde_init_std_joint0 = 0.1
+    gsde_init_std_joint1 = 0.15
 
     # =====  ID  =====
     run_id = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
@@ -237,6 +248,9 @@ def main() -> None:
         ),
         bernoulli_initial_prob=0.75,
         max_agents=20,
+        use_popart=use_popart,
+        popart_beta=popart_beta,
+        popart_init_sigma=popart_init_sigma,
         # NOP
         wm_pre_transition_dims=[256],
         d_model_transition_model=256,
@@ -258,6 +272,11 @@ def main() -> None:
         angle_loss_weight=1.0,
         rot6d_loss_weight=1.0,
         binary_loss_weight=1.0,
+    )
+    set_actuator_gsde_init_joint_stds(
+        policy=policy,
+        joint0_std=gsde_init_std_joint0,
+        joint1_std=gsde_init_std_joint1,
     )
     print(policy)
 
@@ -298,7 +317,7 @@ def main() -> None:
             }
 
         clip_frac_stats: Optional[SummaryStatistics] = metrics.get('clip_frac', None)
-        if clip_frac_stats and clip_frac_stats.mean > 0.12:
+        if clip_frac_stats and clip_frac_stats.mean > 0.1:
             state['counter'] = 0
             state['warmup'] = False
             clip_frac = clip_frac_stats.mean
@@ -352,6 +371,7 @@ def main() -> None:
         value_loss_fn=nn.SmoothL1Loss(),
         train_device=train_device,
         rollout_device=rollout_device,
+        use_popart=use_popart,
         world_model_num_next_steps=world_model_num_next_steps,
         world_model_loss_coef=world_model_loss_coef,
         world_model_target_tau=world_model_target_tau,
@@ -393,6 +413,8 @@ def main() -> None:
             ('wm_loss_scaled', None, 'wm_loss'),
             ('val_loss_scaled', None, 'val_loss'),
             ('expl_var', '.3f'),
+            ('popart_mu', '.3f', 'pa_mu'),
+            ('popart_sigma', '.3f', 'pa_sigma'),
             ('ep_rew', SummaryStatisticsFormat(mean=' .2f', std='.2f', max_value=' .2f', n='1')),
             ('ep_rew_ema', ' .3f'),
             ('best_ep_rew_ema', ' .3f', 'best_ema'),

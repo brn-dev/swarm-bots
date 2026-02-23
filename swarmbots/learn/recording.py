@@ -1,4 +1,5 @@
 import os
+from typing import Any
 
 import moviepy.video.io.ImageSequenceClip
 import numpy as np
@@ -9,6 +10,36 @@ from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import B
 from swarmbots.learn.gsde_reset import GSDEResetMode, GSDEIntervalResetMode, GSDEProbabilityResetMode
 from swarmbots.learn.summary_statistics import compute_summary_statistics, format_summary_statistics, \
     SummaryStatisticsFormat
+
+
+def _get_episode_stat(
+    infos: dict[str, Any],
+    *,
+    env_idx: int,
+    key: str,
+) -> float | None:
+    episode_stats = infos.get("episode")
+    if not isinstance(episode_stats, dict):
+        return None
+
+    episode_mask = infos.get("_episode")
+    if episode_mask is not None:
+        done_mask = np.asarray(episode_mask, dtype=bool).reshape(-1)
+        if env_idx >= done_mask.shape[0] or not bool(done_mask[env_idx]):
+            return None
+
+    values = episode_stats.get(key)
+    if values is None:
+        return None
+
+    values_array = np.asarray(values)
+    if values_array.shape == ():
+        return float(values_array)
+
+    flattened_values = values_array.reshape(-1)
+    if env_idx >= flattened_values.shape[0]:
+        return None
+    return float(flattened_values[env_idx])
 
 
 def _maybe_reset_gsde_noise(
@@ -80,6 +111,9 @@ def record_policy(
     for episode_idx in range(num_episodes):
         obs, _ = env.reset()
         frames = []
+        ep_rew = None
+        ep_progress_reward = None
+        ep_guidance_reward = None
                     
         try:
             first_frame = env.render()
@@ -130,16 +164,25 @@ def record_policy(
                     agent_mask=agent_mask,
                     deterministic=deterministic,
                 )
-                print(format_summary_statistics(compute_summary_statistics(actions[:, :, :8], make_histogram=True), SummaryStatisticsFormat(histogram=True)))
+                # print(format_summary_statistics(compute_summary_statistics(actions[:, :, :8], make_histogram=True), SummaryStatisticsFormat(histogram=True)))
             
-            obs, _, term, trunc, _ = env.step(actions)
+            obs, _, term, trunc, infos = env.step(actions)
             
             if term[0] or trunc[0]:
+                ep_rew = _get_episode_stat(infos, env_idx=0, key="r")
+                ep_progress_reward = _get_episode_stat(infos, env_idx=0, key="progress_reward")
+                ep_guidance_reward = _get_episode_stat(infos, env_idx=0, key="guidance_reward")
                 done = True
             
             step_cnt += 1
-            
-        print(f"Episode {episode_idx} finished after {step_cnt} steps.")
+
+        ep_rew_str = f"{ep_rew:.4f}" if ep_rew is not None else "n/a"
+        ep_progress_str = f"{ep_progress_reward:.4f}" if ep_progress_reward is not None else "n/a"
+        ep_guidance_str = f"{ep_guidance_reward:.4f}" if ep_guidance_reward is not None else "n/a"
+        print(
+            f"Episode {episode_idx} finished after {step_cnt} steps. "
+            f"ep_rew={ep_rew_str}, progress_reward={ep_progress_str}, guidance_reward={ep_guidance_str}"
+        )
 
         if frames:
             video_path = os.path.join(video_folder, f"{video_name_prefix}_ep_{episode_idx}.mp4")

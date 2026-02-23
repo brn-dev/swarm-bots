@@ -45,6 +45,11 @@ class MATPolicy(BasePPOPolicy):
             add_agent_embeddings_encoder: bool = True,
             add_agent_embeddings_decoder: bool = True,
             max_agents: int | None = None,
+            use_popart: bool = False,
+            popart_beta: float = 3e-4,
+            popart_eps: float = 1e-5,
+            popart_min_std: float = 1e-4,
+            popart_init_sigma: float = 1.0,
     ) -> None:
         super().__init__()
 
@@ -148,6 +153,11 @@ class MATPolicy(BasePPOPolicy):
             num_global_features=self.hidden_vars_dim,
             act_fn_cls=act_fn_cls,
             context_in_elements=True,
+            use_popart=use_popart,
+            popart_beta=popart_beta,
+            popart_eps=popart_eps,
+            popart_min_std=popart_min_std,
+            popart_init_sigma=popart_init_sigma,
         )
 
         serialized_continuous_config = serialize_continuous_action_dist_configs(continuous_config)
@@ -175,6 +185,11 @@ class MATPolicy(BasePPOPolicy):
             "local_obs_encoder_hidden_dims": local_obs_encoder_hidden_dims,
             "global_obs_encoder_hidden_dims": global_obs_encoder_hidden_dims,
             "action_encoder_hidden_dims": action_encoder_hidden_dims,
+            "use_popart": use_popart,
+            "popart_beta": popart_beta,
+            "popart_eps": popart_eps,
+            "popart_min_std": popart_min_std,
+            "popart_init_sigma": popart_init_sigma,
         }
 
     def get_hyper_parameters(self) -> dict[str, Any]:
@@ -355,3 +370,18 @@ class MATPolicy(BasePPOPolicy):
         if hidden_vars is None:
             raise ValueError("hidden_vars must be provided when hidden_vars_dim > 0")
         return self.critic(augmented_observations, hidden_vars, agent_mask=agent_mask)
+
+    @property
+    def has_popart(self) -> bool:
+        return getattr(self.critic, "has_popart", False)
+
+    def update_value_normalizer(self, targets: torch.Tensor) -> None:
+        if not self.has_popart:
+            return
+        self.critic.update_popart(targets)
+
+    def normalize_values(self, values: torch.Tensor) -> torch.Tensor:
+        return self.critic.normalize_values(values)
+
+    def get_value_normalizer_metrics(self) -> dict[str, float]:
+        return self.critic.get_popart_metrics()

@@ -747,6 +747,12 @@ class PlotLogsInteractiveApp:
         self.canvas: FigureCanvasTkAgg | None = None
         self.toolbar: NavigationToolbar2Tk | None = None
         self.updating_row_index_widgets = False
+        self.active_plot_tab_index = 0
+        self.plot_tab_payloads: list[dict[str, object] | None] = [None]
+        self.plot_tabs_frame: ttk.Frame | None = None
+        self.plot_tab_grid_column_count = 0
+        self.plot_tab_buttons: list[ttk.Button] = []
+        self.plot_add_tab_button: ttk.Button | None = None
 
         self.delimiter_var = tk.StringVar(value=";")
         self.auto_refresh_interval_var = tk.StringVar(value="0")
@@ -783,6 +789,7 @@ class PlotLogsInteractiveApp:
         self.root.bind_all("<KeyPress>", self.on_global_keypress, add=True)
         self.root.bind_all("<space>", self.on_spacebar, add=True)
         self.add_plot_row()
+        self.capture_current_plot_tab_payload()
 
     def _build_layout(self) -> None:
         controls_container = ttk.Frame(self.root)
@@ -970,8 +977,12 @@ class PlotLogsInteractiveApp:
         plots_frame.grid(row=2, column=0, sticky="ew", pady=(0, 8))
         plots_frame.columnconfigure(0, weight=1)
 
+        self.plot_tabs_frame = ttk.Frame(plots_frame)
+        self.plot_tabs_frame.grid(row=0, column=0, sticky="ew")
+        self.rebuild_plot_tab_controls()
+
         x_column_frame = ttk.Frame(plots_frame)
-        x_column_frame.grid(row=0, column=0, sticky="ew")
+        x_column_frame.grid(row=1, column=0, sticky="ew", pady=(6, 0))
         x_column_frame.columnconfigure(1, weight=1)
         ttk.Label(x_column_frame, text="X Column").grid(row=0, column=0, sticky="w")
         self.x_combo = ttk.Combobox(x_column_frame, state="disabled")
@@ -979,7 +990,7 @@ class PlotLogsInteractiveApp:
         self.bind_typeahead(self.x_combo, lambda: self.available_columns)
 
         self.plots_container = ttk.Frame(plots_frame)
-        self.plots_container.grid(row=1, column=0, sticky="ew", pady=(6, 0))
+        self.plots_container.grid(row=2, column=0, sticky="ew", pady=(6, 0))
         self.plots_container.columnconfigure(1, weight=1, minsize=100)
         self.plots_container.columnconfigure(2, weight=0)
         self.plots_container.columnconfigure(3, weight=0)
@@ -1010,7 +1021,7 @@ class PlotLogsInteractiveApp:
         ttk.Label(self.plots_container, text="").grid(row=0, column=8, sticky="w", padx=(6, 4))
 
         plots_buttons = ttk.Frame(plots_frame)
-        plots_buttons.grid(row=2, column=0, sticky="ew", pady=(6, 0))
+        plots_buttons.grid(row=3, column=0, sticky="ew", pady=(6, 0))
         plots_buttons.columnconfigure(0, weight=1, uniform="plots_buttons")
         plots_buttons.columnconfigure(1, weight=1, uniform="plots_buttons")
         plots_buttons.columnconfigure(2, weight=1, uniform="plots_buttons")
@@ -1064,9 +1075,9 @@ class PlotLogsInteractiveApp:
 
         if PLOT_PRESETS:
             presets_label = ttk.Label(plots_frame, text="Presets")
-            presets_label.grid(row=3, column=0, sticky="w", pady=(8, 0))
+            presets_label.grid(row=4, column=0, sticky="w", pady=(8, 0))
             presets_frame = ttk.Frame(plots_frame)
-            presets_frame.grid(row=4, column=0, sticky="ew", pady=(4, 0))
+            presets_frame.grid(row=5, column=0, sticky="ew", pady=(4, 0))
             preset_columns = 3
             for column in range(preset_columns):
                 presets_frame.columnconfigure(column, weight=1)
@@ -1200,7 +1211,7 @@ class PlotLogsInteractiveApp:
             self.path_enabled.pop(self.paths[index], None)
             del self.paths[index]
         self.refresh_file_list()
-        self.refresh_columns()
+        self.refresh_columns(preserve_state=True)
 
     def refresh_file_list(self) -> None:
         self.files_listbox.delete(0, tk.END)
@@ -1446,10 +1457,25 @@ class PlotLogsInteractiveApp:
             "rows": rows,
         }
 
+    def capture_current_plot_tab_payload(self) -> None:
+        if not self.plot_tab_payloads:
+            self.plot_tab_payloads = [None]
+            self.active_plot_tab_index = 0
+        self.plot_tab_payloads[self.active_plot_tab_index] = self.build_plot_payload()
+        self.refresh_plot_tab_buttons()
+
+    def build_plot_tabs_payload(self) -> dict[str, object]:
+        self.capture_current_plot_tab_payload()
+        return {
+            "active": self.active_plot_tab_index + 1,
+            "tabs": list(self.plot_tab_payloads),
+        }
+
     def build_config_payload(self) -> dict[str, object]:
         return {
             "paths": self.build_paths_payload(),
             "plots": self.build_plot_payload(),
+            "plot_tabs": self.build_plot_tabs_payload(),
             "auto_refresh_interval": self.auto_refresh_interval_var.get().strip(),
         }
 
@@ -1592,6 +1618,204 @@ class PlotLogsInteractiveApp:
                 missing_x = x_value
         return len(rows_payload), missing_columns, missing_x
 
+    def load_plot_tab_into_ui(self, tab_index: int) -> tuple[list[str], str | None]:
+        if tab_index < 0 or tab_index >= len(self.plot_tab_payloads):
+            raise ValueError("Invalid tab index.")
+        payload = self.plot_tab_payloads[tab_index]
+        if payload is None:
+            self.clear_plot_rows()
+            self.x_combo.set("")
+            return [], None
+        _row_count, missing_columns, missing_x = self.apply_plot_payload(payload)
+        return missing_columns, missing_x
+
+    def rebuild_plot_tab_controls(self) -> None:
+        if self.plot_tabs_frame is None:
+            return
+        for child in self.plot_tabs_frame.winfo_children():
+            child.destroy()
+        for column in range(self.plot_tab_grid_column_count):
+            self.plot_tabs_frame.columnconfigure(column, weight=0, uniform="")
+        self.plot_tab_buttons = []
+        tab_count = len(self.plot_tab_payloads)
+        for tab_index in range(tab_count):
+            self.plot_tabs_frame.columnconfigure(tab_index, weight=1, uniform="plot_tabs")
+            tab_button = ttk.Button(
+                self.plot_tabs_frame,
+                text=f"T{tab_index + 1}  X",
+                style="PlotTab.TButton",
+            )
+            tab_button.grid(
+                row=0,
+                column=tab_index,
+                sticky="ew",
+                padx=(0 if tab_index == 0 else 2, 0),
+            )
+            tab_button.bind(
+                "<ButtonRelease-1>",
+                lambda event, target=tab_index: self.on_plot_tab_button_click(event, target),
+                add=True,
+            )
+            self.plot_tab_buttons.append(tab_button)
+        plus_column = tab_count
+        self.plot_tabs_frame.columnconfigure(plus_column, weight=0, uniform="")
+        self.plot_add_tab_button = ttk.Button(
+            self.plot_tabs_frame,
+            text="+",
+            width=3,
+            command=self.add_plot_tab,
+            style="PlotTabAdd.TButton",
+        )
+        self.plot_add_tab_button.grid(row=0, column=plus_column, sticky="e", padx=(4, 0))
+        self.plot_tab_grid_column_count = plus_column + 1
+
+    def refresh_plot_tab_buttons(self) -> None:
+        tab_count = len(self.plot_tab_payloads)
+        for tab_index, button in enumerate(self.plot_tab_buttons):
+            payload = self.plot_tab_payloads[tab_index]
+            row_count = 0
+            if isinstance(payload, dict):
+                rows_payload = payload.get("rows")
+                if isinstance(rows_payload, list):
+                    row_count = len(rows_payload)
+            suffix = f" ({row_count})" if row_count else ""
+            style_name = (
+                "PlotTabActive.TButton"
+                if tab_index == self.active_plot_tab_index
+                else "PlotTab.TButton"
+            )
+            button.configure(text=f"T{tab_index + 1}{suffix}  X", style=style_name)
+
+    def on_plot_tab_button_click(self, event: tk.Event, tab_index: int) -> str:
+        widget = event.widget
+        if not isinstance(widget, ttk.Button):
+            return "break"
+        close_zone_width = 24
+        clicked_close_zone = event.x >= widget.winfo_width() - close_zone_width
+        if clicked_close_zone:
+            self.close_plot_tab(tab_index)
+        else:
+            self.on_plot_tab_selected(tab_index)
+        return "break"
+
+    def add_plot_tab(self) -> None:
+        self.capture_current_plot_tab_payload()
+        self.plot_tab_payloads.append(None)
+        self.active_plot_tab_index = len(self.plot_tab_payloads) - 1
+        self.rebuild_plot_tab_controls()
+        self.load_plot_tab_into_ui(self.active_plot_tab_index)
+        self.refresh_plot_tab_buttons()
+        self.set_status(f"Created T{self.active_plot_tab_index + 1}.")
+
+    def close_plot_tab(self, tab_index: int) -> None:
+        tab_count = len(self.plot_tab_payloads)
+        if tab_index < 0 or tab_index >= tab_count:
+            return
+        if tab_count <= 1:
+            self.set_status("Cannot close the last tab.")
+            return
+        self.capture_current_plot_tab_payload()
+        self.plot_tab_payloads.pop(tab_index)
+        active_tab_changed = False
+        if tab_index < self.active_plot_tab_index:
+            self.active_plot_tab_index -= 1
+        elif tab_index == self.active_plot_tab_index:
+            active_tab_changed = True
+            if self.active_plot_tab_index >= len(self.plot_tab_payloads):
+                self.active_plot_tab_index = len(self.plot_tab_payloads) - 1
+        self.rebuild_plot_tab_controls()
+        missing_columns: list[str] = []
+        missing_x: str | None = None
+        if active_tab_changed:
+            try:
+                missing_columns, missing_x = self.load_plot_tab_into_ui(self.active_plot_tab_index)
+            except ValueError as exc:
+                self.show_error(str(exc))
+                return
+        self.refresh_plot_tab_buttons()
+        status_parts = [f"Closed T{tab_index + 1}."]
+        if active_tab_changed:
+            status_parts.append(f"Now on T{self.active_plot_tab_index + 1}.")
+        if missing_columns:
+            unique_missing = ", ".join(sorted(set(missing_columns)))
+            status_parts.append(f"Missing plot columns: {unique_missing}.")
+        if missing_x:
+            status_parts.append(f"Missing X column: {missing_x}.")
+        self.set_status(" ".join(status_parts))
+
+    def on_plot_tab_selected(self, tab_index: int) -> None:
+        if tab_index < 0 or tab_index >= len(self.plot_tab_payloads):
+            return
+        if tab_index == self.active_plot_tab_index:
+            return
+        previous_index = self.active_plot_tab_index
+        self.capture_current_plot_tab_payload()
+        self.active_plot_tab_index = tab_index
+        try:
+            missing_columns, missing_x = self.load_plot_tab_into_ui(tab_index)
+        except ValueError as exc:
+            self.active_plot_tab_index = previous_index
+            self.refresh_plot_tab_buttons()
+            self.show_error(str(exc))
+            return
+        status_parts = [f"Switched to T{tab_index + 1}."]
+        if missing_columns:
+            unique_missing = ", ".join(sorted(set(missing_columns)))
+            status_parts.append(f"Missing plot columns: {unique_missing}.")
+        if missing_x:
+            status_parts.append(f"Missing X column: {missing_x}.")
+        self.refresh_plot_tab_buttons()
+        self.set_status(" ".join(status_parts))
+
+    def apply_plot_tabs_payload(self, payload: object) -> tuple[list[str], str | None]:
+        if not isinstance(payload, dict):
+            raise ValueError("Saved plot tab configuration is invalid.")
+        raw_tabs = payload.get("tabs")
+        if not isinstance(raw_tabs, list):
+            raise ValueError("Saved plot tab configuration is invalid.")
+        tab_payloads: list[dict[str, object] | None] = []
+        for tab_payload in raw_tabs:
+            if not isinstance(tab_payload, dict):
+                tab_payloads.append(None)
+                continue
+            rows_payload = tab_payload.get("rows")
+            if not isinstance(rows_payload, list):
+                tab_payloads.append(None)
+                continue
+            x_value = tab_payload.get("x")
+            tab_payloads.append({
+                "x": x_value if isinstance(x_value, str) else "",
+                "rows": rows_payload,
+            })
+        if not tab_payloads:
+            tab_payloads = [None]
+        active_index = 0
+        active_value = as_int_like(payload.get("active"))
+        if active_value is not None:
+            candidate_index = active_value - 1
+            if 0 <= candidate_index < len(tab_payloads):
+                active_index = candidate_index
+        self.plot_tab_payloads = tab_payloads
+        self.active_plot_tab_index = active_index
+        self.rebuild_plot_tab_controls()
+        missing_columns, missing_x = self.load_plot_tab_into_ui(active_index)
+        self.refresh_plot_tab_buttons()
+        return missing_columns, missing_x
+
+    def apply_plots_payload_from_config(self, payload: dict[str, object]) -> tuple[list[str], str | None]:
+        tab_payload = payload.get("plot_tabs")
+        if tab_payload is not None:
+            return self.apply_plot_tabs_payload(tab_payload)
+        plots_payload = payload.get("plots")
+        if plots_payload is None:
+            return [], None
+        _plot_count, missing_plot_columns, missing_x = self.apply_plot_payload(plots_payload)
+        self.plot_tab_payloads = [None]
+        self.active_plot_tab_index = 0
+        self.rebuild_plot_tab_controls()
+        self.capture_current_plot_tab_payload()
+        return missing_plot_columns, missing_x
+
     def loaded_paths_message(self, loaded_count: int, missing_count: int, label: str) -> str:
         label_capitalized = label[:1].upper() + label[1:] if label else label
         if loaded_count == 0:
@@ -1658,15 +1882,11 @@ class PlotLogsInteractiveApp:
             return
         missing_plot_columns: list[str] = []
         missing_x: str | None = None
-        plots_payload = payload.get("plots")
-        if plots_payload is not None:
-            try:
-                _plot_count, missing_plot_columns, missing_x = self.apply_plot_payload(
-                    plots_payload
-                )
-            except ValueError as exc:
-                self.show_error(str(exc))
-                return
+        try:
+            missing_plot_columns, missing_x = self.apply_plots_payload_from_config(payload)
+        except ValueError as exc:
+            self.show_error(str(exc))
+            return
         self.apply_auto_refresh_interval_payload(payload)
         status_parts = [
             self.loaded_paths_message(loaded_count, missing_count, "saved paths")
@@ -1711,15 +1931,11 @@ class PlotLogsInteractiveApp:
             return
         missing_plot_columns: list[str] = []
         missing_x: str | None = None
-        plots_payload = payload.get("plots")
-        if plots_payload is not None:
-            try:
-                _plot_count, missing_plot_columns, missing_x = self.apply_plot_payload(
-                    plots_payload
-                )
-            except ValueError as exc:
-                self.show_error(str(exc))
-                return
+        try:
+            missing_plot_columns, missing_x = self.apply_plots_payload_from_config(payload)
+        except ValueError as exc:
+            self.show_error(str(exc))
+            return
         self.apply_auto_refresh_interval_payload(payload)
         status_parts = [
             self.loaded_paths_message(loaded_count, missing_count, f"paths from {path.name}")
@@ -1979,17 +2195,9 @@ class PlotLogsInteractiveApp:
             and self.is_histogram_column(previous_y)
             and not self.is_histogram_column(current_y)
         )
-        transitioned_to_histogram = (
-            bool(previous_y)
-            and not self.is_histogram_column(previous_y)
-            and self.is_histogram_column(current_y)
-        )
         self.update_summary_checkboxes(row, preserve_existing=preserve_existing)
         if transitioned_from_histogram:
             row.ema_var.set("")
-        if transitioned_to_histogram:
-            row.ema_var.set("")
-            preserve_existing = False
         if not transitioned_from_histogram:
             self.update_row_ema_field(row, preserve_existing=preserve_existing)
         self.previous_y_by_row[id(row)] = current_y
@@ -2015,6 +2223,20 @@ class PlotLogsInteractiveApp:
             return None
         return bin_count, pooling
 
+    def parse_histogram_input_silent(self, raw_value: str) -> tuple[int, int] | None:
+        if not raw_value:
+            return None
+        parts = [part.strip() for part in raw_value.split(";")]
+        if len(parts) == 1:
+            parts.append("1")
+        if len(parts) != 2 or not parts[0] or not parts[1]:
+            return None
+        bin_count = self.parse_positive_int_silent(parts[0])
+        pooling = self.parse_positive_int_silent(parts[1])
+        if bin_count is None or pooling is None:
+            return None
+        return bin_count, pooling
+
     def parse_positive_int(self, raw_value: str, row_index: int) -> int | None:
         try:
             numeric_value = float(raw_value)
@@ -2027,6 +2249,15 @@ class PlotLogsInteractiveApp:
             self.show_error(
                 f"Histogram input must be 'nbins;pooling' with positive integers (row {row_index})."
             )
+            return None
+        return int(numeric_value)
+
+    def parse_positive_int_silent(self, raw_value: str) -> int | None:
+        try:
+            numeric_value = float(raw_value)
+        except ValueError:
+            return None
+        if numeric_value <= 0.0 or not numeric_value.is_integer():
             return None
         return int(numeric_value)
 
@@ -2056,9 +2287,16 @@ class PlotLogsInteractiveApp:
             return
         raw_value = row.ema_var.get().strip()
         if self.is_histogram_column(y_value):
-            if raw_value and preserve_existing:
-                return
             if raw_value:
+                parsed = self.parse_histogram_input_silent(raw_value)
+                if parsed is not None:
+                    bin_count, pooling = parsed
+                    row.ema_var.set(f"{bin_count};{pooling}")
+                    return
+                if preserve_existing:
+                    return
+                row.ema_var.set("")
+            elif preserve_existing:
                 return
             bin_count = self.infer_histogram_bin_count(y_value)
             if bin_count is not None:
@@ -2619,10 +2857,8 @@ class PlotLogsInteractiveApp:
         if clamped_target == current_index:
             self.refresh_row_labels()
             return
-        self.plot_rows[current_index], self.plot_rows[clamped_target] = (
-            self.plot_rows[clamped_target],
-            self.plot_rows[current_index],
-        )
+        moved_row = self.plot_rows.pop(current_index)
+        self.plot_rows.insert(clamped_target, moved_row)
         self.refresh_row_labels()
 
     def refresh_row_labels(self) -> None:
@@ -3471,6 +3707,63 @@ class PlotLogsInteractiveApp:
             foreground=[("active", palette["accent_fg"]), ("disabled", palette["disabled_fg"])],
         )
         style.configure(
+            "PlotTab.TButton",
+            background=palette["panel_bg"],
+            foreground=palette["fg"],
+            padding=(8, 5),
+        )
+        style.map(
+            "PlotTab.TButton",
+            background=[("active", palette["accent"]), ("disabled", palette["panel_bg"])],
+            foreground=[("active", palette["accent_fg"]), ("disabled", palette["disabled_fg"])],
+        )
+        style.configure(
+            "PlotTabActive.TButton",
+            background=palette["accent"],
+            foreground=palette["accent_fg"],
+            padding=(8, 5),
+            font=("TkDefaultFont", 9, "bold"),
+        )
+        style.map(
+            "PlotTabActive.TButton",
+            background=[("active", palette["accent"]), ("disabled", palette["panel_bg"])],
+            foreground=[("active", palette["accent_fg"]), ("disabled", palette["disabled_fg"])],
+        )
+        style.configure(
+            "PlotTabClose.TButton",
+            background=palette["panel_bg"],
+            foreground=palette["fg"],
+            padding=(4, 5),
+        )
+        style.map(
+            "PlotTabClose.TButton",
+            background=[("active", palette["accent"]), ("disabled", palette["panel_bg"])],
+            foreground=[("active", palette["accent_fg"]), ("disabled", palette["disabled_fg"])],
+        )
+        style.configure(
+            "PlotTabCloseActive.TButton",
+            background=palette["accent"],
+            foreground=palette["accent_fg"],
+            padding=(4, 5),
+            font=("TkDefaultFont", 9, "bold"),
+        )
+        style.map(
+            "PlotTabCloseActive.TButton",
+            background=[("active", palette["accent"]), ("disabled", palette["panel_bg"])],
+            foreground=[("active", palette["accent_fg"]), ("disabled", palette["disabled_fg"])],
+        )
+        style.configure(
+            "PlotTabAdd.TButton",
+            background=palette["panel_bg"],
+            foreground=palette["fg"],
+            padding=(8, 5),
+        )
+        style.map(
+            "PlotTabAdd.TButton",
+            background=[("active", palette["accent"]), ("disabled", palette["panel_bg"])],
+            foreground=[("active", palette["accent_fg"]), ("disabled", palette["disabled_fg"])],
+        )
+        style.configure(
             "TEntry",
             fieldbackground=palette["entry_bg"],
             foreground=palette["fg"],
@@ -3528,6 +3821,7 @@ class PlotLogsInteractiveApp:
         self.root.option_add("*TCombobox*Listbox.foreground", palette["fg"])
         self.root.option_add("*TCombobox*Listbox.selectBackground", palette["select_bg"])
         self.root.option_add("*TCombobox*Listbox.selectForeground", palette["select_fg"])
+        self.refresh_plot_tab_buttons()
         self.apply_toolbar_theme()
 
     def apply_toolbar_theme(self) -> None:

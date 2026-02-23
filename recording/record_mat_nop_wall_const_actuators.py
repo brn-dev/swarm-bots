@@ -11,7 +11,7 @@ from loguru import logger
 
 from swarmbots.learn.base_policy import BasePolicy
 from swarmbots.learn.env_wrappers.learn_wrappers.swarm_bots_learn_env_wrapper import SwarmBotsLearnEnvWrapper
-from swarmbots.learn.env_wrappers.obs_normalization.feature_wise_obs_norm_wrapper import FeatureWiseObsNormWrapper
+from swarmbots.learn.env_wrappers.feature_wise_obs_norm_wrapper import FeatureWiseObsNormWrapper
 from swarmbots.learn.env_wrappers.progress_guidance_ep_stats_wrapper import ProgressGuidanceEpisodeStatsWrapper
 from swarmbots.learn.env_wrappers.transition_obs_wrapper import TransitionObsWrapper
 from swarmbots.learn.obs_indices import ObsIndices

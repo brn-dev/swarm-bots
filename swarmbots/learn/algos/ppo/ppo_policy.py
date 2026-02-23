@@ -12,6 +12,7 @@ from swarmbots.learn.base_policy import BasePolicy
 from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
 from swarmbots.learn.nn_components.mlp import MLP
 from swarmbots.learn.nn_components.nn_init import init_linear_orthogonal, LinearInitialization
+from swarmbots.learn.nn_components.popart import PopArtLinear
 
 
 class BasePPOPolicy(BasePolicy, abc.ABC):
@@ -48,6 +49,19 @@ class BasePPOPolicy(BasePolicy, abc.ABC):
         :return: log_probs, entropies, values
         """
         raise NotImplementedError()
+
+    @property
+    def has_popart(self) -> bool:
+        return False
+
+    def update_value_normalizer(self, targets: torch.Tensor) -> None:
+        _ = targets
+
+    def normalize_values(self, values: torch.Tensor) -> torch.Tensor:
+        return values
+
+    def get_value_normalizer_metrics(self) -> dict[str, float]:
+        return {}
 
 
 class PPOActor(nn.Module):
@@ -94,7 +108,12 @@ class PPOCritic(nn.Module):
             global_obs_dim: int,
             hidden_dims: list[int],
             linear_init: LinearInitialization = init_linear_orthogonal,
-            act_fun_class = nn.Tanh
+            act_fun_class = nn.Tanh,
+            use_popart: bool = False,
+            popart_beta: float = 3e-4,
+            popart_eps: float = 1e-5,
+            popart_min_std: float = 1e-4,
+            popart_init_sigma: float = 1.0,
     ):
         super().__init__()
         self.n_agents = n_agents
@@ -102,14 +121,33 @@ class PPOCritic(nn.Module):
         self.global_obs_dim = global_obs_dim
         self.has_global_obs = global_obs_dim > 0
         self.hidden_dims = hidden_dims
+        self.use_popart = bool(use_popart)
 
-        self.mlp = MLP(
-            input_dim=local_obs_dim * n_agents + global_obs_dim,
-            hidden_dims=hidden_dims + [1],
-            end_with_act_fn=False,
-            linear_init=linear_init,
-            act_fn_cls=act_fun_class
-        )
+        value_head_input_dim = local_obs_dim * n_agents + global_obs_dim
+        if hidden_dims:
+            self.value_features: nn.Module = MLP(
+                input_dim=value_head_input_dim,
+                hidden_dims=hidden_dims,
+                end_with_act_fn=True,
+                linear_init=linear_init,
+                act_fn_cls=act_fun_class
+            )
+            value_head_input_dim = int(hidden_dims[-1])
+        else:
+            self.value_features = nn.Identity()
+
+        if self.use_popart:
+            self.value_head: nn.Module = PopArtLinear(
+                in_features=value_head_input_dim,
+                out_features=1,
+                beta=popart_beta,
+                eps=popart_eps,
+                min_std=popart_min_std,
+                init_sigma=popart_init_sigma,
+            )
+        else:
+            self.value_head = nn.Linear(value_head_input_dim, 1)
+            linear_init(self.value_head)
 
     def forward(
             self,
@@ -128,7 +166,31 @@ class PPOCritic(nn.Module):
         critic_input = torch.flatten(local_obs, start_dim=1)
         if self.has_global_obs:
             critic_input = torch.cat((critic_input, global_obs), dim=-1)
-        return self.mlp(critic_input).squeeze(dim=-1)
+        critic_features = self.value_features(critic_input)
+        return self.value_head(critic_features).squeeze(dim=-1)
+
+    @property
+    def has_popart(self) -> bool:
+        return isinstance(self.value_head, PopArtLinear)
+
+    def update_popart(self, targets: torch.Tensor) -> None:
+        if not isinstance(self.value_head, PopArtLinear):
+            raise RuntimeError("PopArt is not enabled for this PPOCritic")
+        self.value_head.update(targets)
+
+    def normalize_values(self, values: torch.Tensor) -> torch.Tensor:
+        if not isinstance(self.value_head, PopArtLinear):
+            return values
+        return self.value_head.normalize(values)
+
+    def get_popart_metrics(self) -> dict[str, float]:
+        if not isinstance(self.value_head, PopArtLinear):
+            return {}
+        sigma = self.value_head.sigma()
+        return {
+            "popart_mu": self.value_head.mu.mean().item(),
+            "popart_sigma": sigma.mean().item(),
+        }
 
 
 class PPOPolicy(BasePPOPolicy):
@@ -142,6 +204,11 @@ class PPOPolicy(BasePPOPolicy):
             act_fun_class = nn.Tanh,
             continuous_config: ContinuousActionDistConfig | list[ContinuousActionDistConfig | None] | None = None,
             bernoulli_initial_prob: float | None = None,
+            use_popart: bool = False,
+            popart_beta: float = 3e-4,
+            popart_eps: float = 1e-5,
+            popart_min_std: float = 1e-4,
+            popart_init_sigma: float = 1.0,
     ):
         super().__init__()
 
@@ -171,7 +238,12 @@ class PPOPolicy(BasePPOPolicy):
             local_obs_dim=env.local_obs_dim,
             global_obs_dim=env.global_obs_dim + self.hidden_vars_dim,
             hidden_dims=critic_hidden_dims,
-            act_fun_class=act_fun_class
+            act_fun_class=act_fun_class,
+            use_popart=use_popart,
+            popart_beta=popart_beta,
+            popart_eps=popart_eps,
+            popart_min_std=popart_min_std,
+            popart_init_sigma=popart_init_sigma,
         )
 
         self.hyper_parameters = {
@@ -181,6 +253,11 @@ class PPOPolicy(BasePPOPolicy):
             "act_fun_class": act_fun_class.__name__,
             "continuous_config": serialize_continuous_action_dist_configs(continuous_config),
             "bernoulli_initial_prob": bernoulli_initial_prob,
+            "use_popart": use_popart,
+            "popart_beta": popart_beta,
+            "popart_eps": popart_eps,
+            "popart_min_std": popart_min_std,
+            "popart_init_sigma": popart_init_sigma,
         }
 
     def get_hyper_parameters(self) -> dict[str, Any]:
@@ -258,3 +335,18 @@ class PPOPolicy(BasePPOPolicy):
         if global_obs.shape[-1] == 0:
             return hidden_vars
         return torch.cat((global_obs, hidden_vars), dim=-1)
+
+    @property
+    def has_popart(self) -> bool:
+        return getattr(self.critic, "has_popart", False)
+
+    def update_value_normalizer(self, targets: torch.Tensor) -> None:
+        if not self.has_popart:
+            return
+        self.critic.update_popart(targets)
+
+    def normalize_values(self, values: torch.Tensor) -> torch.Tensor:
+        return self.critic.normalize_values(values)
+
+    def get_value_normalizer_metrics(self) -> dict[str, float]:
+        return self.critic.get_popart_metrics()

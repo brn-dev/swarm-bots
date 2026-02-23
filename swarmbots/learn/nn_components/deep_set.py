@@ -7,6 +7,7 @@ from torch import nn
 
 from swarmbots.learn.nn_components.mlp import MLP
 from swarmbots.learn.nn_components.nn_init import LinearInitialization, init_linear_orthogonal
+from swarmbots.learn.nn_components.popart import PopArtLinear
 
 PoolMode = Literal["mean", "sum", "max"]
 
@@ -110,11 +111,17 @@ class DeepSetCritic(nn.Module):
         linear_init: LinearInitialization = init_linear_orthogonal,
         act_fn_cls: Callable[[], nn.Module] = nn.Tanh,
         context_in_elements: bool = False,
+        use_popart: bool = False,
+        popart_beta: float = 3e-4,
+        popart_eps: float = 1e-5,
+        popart_min_std: float = 1e-4,
+        popart_init_sigma: float = 1.0,
     ) -> None:
         super().__init__()
         self.num_local_features = int(num_local_features)
         self.num_global_features = int(num_global_features)
         self.context_in_elements = bool(context_in_elements)
+        self.use_popart = bool(use_popart)
 
         if self.context_in_elements and self.num_global_features == 0:
             raise ValueError("context_in_elements requires num_global_features > 0")
@@ -126,7 +133,7 @@ class DeepSetCritic(nn.Module):
             element_encoder: nn.Module = MLP(
                 input_dim=element_input_features,
                 hidden_dims=local_projection_hidden_dims,
-                end_with_act_fn=False,
+                end_with_act_fn=True,
                 linear_init=linear_init,
                 act_fn_cls=act_fn_cls,
             )
@@ -135,13 +142,36 @@ class DeepSetCritic(nn.Module):
             element_encoder = nn.Identity()
             pooled_dim = element_input_features
 
-        value_regressor = MLP(
-            input_dim=pooled_dim + context_features_after_pool,
-            hidden_dims=[*value_regressor_hidden_dims, 1],
-            end_with_act_fn=False,
-            linear_init=linear_init,
-            act_fn_cls=act_fn_cls,
-        )
+        value_regressor_input_dim = pooled_dim + context_features_after_pool
+        if value_regressor_hidden_dims:
+            value_regressor_trunk: nn.Module = MLP(
+                input_dim=value_regressor_input_dim,
+                hidden_dims=value_regressor_hidden_dims,
+                end_with_act_fn=True,
+                linear_init=linear_init,
+                act_fn_cls=act_fn_cls,
+            )
+            value_regressor_head_input_dim = int(value_regressor_hidden_dims[-1])
+        else:
+            value_regressor_trunk = nn.Identity()
+            value_regressor_head_input_dim = value_regressor_input_dim
+
+        if self.use_popart:
+            self.popart_head: PopArtLinear | None = PopArtLinear(
+                in_features=value_regressor_head_input_dim,
+                out_features=1,
+                beta=popart_beta,
+                eps=popart_eps,
+                min_std=popart_min_std,
+                init_sigma=popart_init_sigma,
+            )
+            value_regressor_head: nn.Module = self.popart_head
+        else:
+            self.popart_head = None
+            value_regressor_head = nn.Linear(value_regressor_head_input_dim, 1)
+            linear_init(value_regressor_head)
+
+        value_regressor = nn.Sequential(value_regressor_trunk, value_regressor_head)
 
         self.deepset = DeepSet(
             element_encoder=element_encoder,
@@ -160,3 +190,26 @@ class DeepSetCritic(nn.Module):
     ) -> torch.Tensor:
         context = global_features if self.num_global_features > 0 else None
         return self.deepset(local_features, context=context, element_mask=agent_mask).squeeze(dim=-1)
+
+    @property
+    def has_popart(self) -> bool:
+        return self.popart_head is not None
+
+    def update_popart(self, targets: torch.Tensor) -> None:
+        if self.popart_head is None:
+            raise RuntimeError("PopArt is not enabled for this DeepSetCritic")
+        self.popart_head.update(targets)
+
+    def normalize_values(self, values: torch.Tensor) -> torch.Tensor:
+        if self.popart_head is None:
+            return values
+        return self.popart_head.normalize(values)
+
+    def get_popart_metrics(self) -> dict[str, float]:
+        if self.popart_head is None:
+            return {}
+        sigma = self.popart_head.sigma()
+        return {
+            "popart_mu": self.popart_head.mu.mean().item(),
+            "popart_sigma": sigma.mean().item(),
+        }
