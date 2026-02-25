@@ -181,8 +181,8 @@ class SwarmBotsEnv(gymnasium.Env):
             info: dict[str, Any] = dict(self.scenario_state)
         else:
             info = {}
-        info["progress_reward"] = float(self.scenario_state["progress_reward"])
-        info["guidance_reward"] = float(self.scenario_state["guidance_reward"])
+        info["progress_reward"] = float(self.scenario_state["weighted_progress_reward"])
+        info["guidance_reward"] = float(self.scenario_state["weighted_guidance_reward"])
 
         return obs, reward, terminated, truncated, info
 
