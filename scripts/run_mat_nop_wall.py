@@ -106,23 +106,23 @@ def main() -> None:
         format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <5}</level> | <level>{message}</level>",
     )
 
-    n_envs = 23
+    n_envs = 31
     episode_length = 512
     total_timesteps = 100_000_000
     save_interval = 500
 
     use_popart = True
     popart_beta = 5e-4
-    popart_init_sigma = 0.5
+    popart_init_sigma = 0.65
 
-    vf_coef = 2.0
-    world_model_loss_coef = 0.2
+    vf_coef = 2.0 if use_popart else 0.5
+    world_model_loss_coef = 0.1
 
     world_model_num_next_steps = 3
     world_model_target_tau = None
 
-    gsde_init_std_joint0 = 0.1
-    gsde_init_std_joint1 = 0.15
+    gsde_init_std_joint0 = 0.15
+    gsde_init_std_joint1 = 0.25
 
     # =====  ID  =====
     run_id = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
@@ -282,9 +282,9 @@ def main() -> None:
 
     print("Initializing PPO Algorithm...")
 
-    warm_lr = 5e-5
+    warm_lr = 1e-5
     warmup_iterations: int = 1000
-    cold_lr = warm_lr / 100 if warmup_iterations > 0 else warm_lr
+    cold_lr = warm_lr / 500 if warmup_iterations > 0 else warm_lr
 
     def auto_lr_updater(
             old_lr: float,

@@ -1,6 +1,9 @@
 videos/
 runs/
 runs/*.-.zip
+MUJOCO_LOG.TXT
+scripts/MUJOCO_LOG.TXT
+plot_logs/.plot_logs_recent_config.json
 
 
 # Byte-compiled / optimized / DLL files

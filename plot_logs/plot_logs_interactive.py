@@ -1155,7 +1155,7 @@ class PlotLogsInteractiveApp:
             for path in added_paths:
                 self.path_enabled[path] = False
         self.refresh_file_list()
-        self.refresh_columns()
+        self.refresh_columns(preserve_state=True)
         if not added_paths:
             self.set_status(f"All CSV files in the selected {source_label} are already added.")
         elif len(added_paths) > 5:
@@ -1704,6 +1704,14 @@ class PlotLogsInteractiveApp:
         self.active_plot_tab_index = len(self.plot_tab_payloads) - 1
         self.rebuild_plot_tab_controls()
         self.load_plot_tab_into_ui(self.active_plot_tab_index)
+        if "timesteps" in self.available_columns:
+            self.x_combo.set("timesteps")
+        elif "iteration" in self.available_columns:
+            self.x_combo.set("iteration")
+        elif self.available_columns:
+            self.x_combo.set(self.available_columns[0])
+        else:
+            self.x_combo.set("")
         self.refresh_plot_tab_buttons()
         self.set_status(f"Created T{self.active_plot_tab_index + 1}.")
 
