@@ -195,6 +195,19 @@ class MATPolicy(BasePPOPolicy):
     def get_hyper_parameters(self) -> dict[str, Any]:
         return self.hyper_parameters
 
+    def get_grad_norms(self) -> dict[str, float]:
+        return {
+            "encoder": self._module_grad_norm(self.encoder),
+            "action_encoder": self._module_grad_norm(self.action_encoder),
+            "agent_embeddings_decoder": self._parameter_grad_norm(self.agent_embeddings_decoder),
+            "sos_token": self._parameter_grad_norm(self.sos_token),
+            "decoder": self._module_grad_norm(self.decoder),
+            "actor_head": self._module_grad_norm(self.actor_head),
+            "action_dist": self._module_grad_norm(self.action_dist),
+            "critic": self._module_grad_norm(self.critic),
+            "total": self._module_grad_norm(self),
+        }
+
     def _generate_actions(
         self,
         augmented_observations: torch.Tensor,

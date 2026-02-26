@@ -417,6 +417,10 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerType]):
         update_timings: list[float] = []
         update_timer = PerformanceTimer()
 
+        sub_grad_norms = MetricsLists[float]()
+        compute_grad_norms_timings: list[float] = []
+        compute_grad_norms_timer = PerformanceTimer()
+
         train_timer = PerformanceTimer().start()
         for epoch in range(self.n_epochs):
             sample_timer.start()
@@ -441,11 +445,18 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerType]):
 
                 self.optimizer.zero_grad()
                 loss.backward()
+
+                with compute_grad_norms_timer:
+                    sub_grad_norms.add(self.policy.get_grad_norms())
+                compute_grad_norms_timings.append(compute_grad_norms_timer.get_duration())
+
                 total_grad_norm = torch.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
                 total_grad_norm_f = float(total_grad_norm)
                 grad_norms.append(total_grad_norm_f)
+
                 if total_grad_norm_f > self.max_grad_norm:
                     n_grad_clipped += 1
+
                 self.optimizer.step()
                 self._after_optimizer_step()
 
@@ -464,9 +475,9 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerType]):
         metrics_timer = PerformanceTimer().start()
         with torch.no_grad():
             metrics: dict[str, Any] = {
-                **{k: compute_summary_statistics(
-                    v, find_min=True, find_max=True, compute_skewness=True, compute_kurtosis=True
-                ) for k, v in loss_metrics.get().items()},
+                **loss_metrics.compute_summary_statistics(
+                    find_min=True, find_max=True, compute_skewness=True, compute_kurtosis=True
+                ),
                 'updates': n_updates,
                 'total_updates': self.n_total_updates,
                 'expl_var': explained_var,
@@ -474,6 +485,11 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerType]):
                     grad_norms, find_max=True, find_min=True, compute_skewness=True, compute_kurtosis=True,
                 ) if grad_norms else 0.0,
                 'grad_clip_frac': (n_grad_clipped / len(grad_norms)) if grad_norms else 0.0,
+                **sub_grad_norms.compute_summary_statistics(find_min=True, find_max=True, prefix='grad_norm_'),
+                'total_compute_grad_norms_time': sum(compute_grad_norms_timings),
+                'compute_grad_norms_time': compute_summary_statistics(
+                    compute_grad_norms_timings, find_min=True, find_max=True
+                )
             }
 
             auto_lr_metrics = self._maybe_update_automatic_lr(

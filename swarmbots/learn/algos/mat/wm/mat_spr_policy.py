@@ -140,6 +140,19 @@ class MATSPRPolicy(MATPolicy, SPRMixin, PPOWMPolicyMixin):
             }
         )
 
+    def get_grad_norms(self) -> dict[str, float]:
+        grad_norms = super().get_grad_norms()
+        grad_norms.update(
+            {
+                "wm_transition_model": self._module_grad_norm(self.transition_model),
+                "wm_online_projection": self._module_grad_norm(self.online_projection),
+                "wm_predictor": self._module_grad_norm(self.predictor),
+                "wm_target_encoder": self._module_grad_norm(self.target_encoder),
+                "wm_target_projection": self._module_grad_norm(self.target_projection),
+            }
+        )
+        return grad_norms
+
     @property
     def online_encoder(self) -> nn.Module:
         return self.encoder
