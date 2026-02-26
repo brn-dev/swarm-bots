@@ -4,6 +4,7 @@ import ast
 import csv
 import json
 import math
+import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -924,6 +925,12 @@ class PlotLogsInteractiveApp:
             command=lambda: self.set_enabled_for_selection(False),
         )
         disable_button.grid(row=2, column=1, sticky="ew", pady=(4, 0))
+        plot_grad_norms_button = ttk.Button(
+            files_buttons,
+            text="Plot Grad Norms",
+            command=self.plot_grad_norms,
+        )
+        plot_grad_norms_button.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(6, 0))
 
         meta_frame = ttk.Frame(files_frame)
         meta_frame.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(8, 0))
@@ -1401,6 +1408,40 @@ class PlotLogsInteractiveApp:
 
     def enabled_paths(self) -> list[Path]:
         return [path for path in self.paths if self.path_enabled.get(path, True)]
+
+    def plot_grad_norms(self) -> None:
+        enabled_paths = self.enabled_paths()
+        if not self.paths:
+            self.show_error("No CSV files selected.")
+            return
+        if not enabled_paths:
+            self.show_error("Enable at least one CSV file to plot grad norms.")
+            return
+
+        script_path = Path(__file__).resolve().with_name("plot_grad_norms.py")
+        if not script_path.exists():
+            self.show_error(f"Grad norm plotting script not found: {script_path}")
+            return
+
+        delimiter = self.delimiter_var.get()
+        if len(delimiter) != 1:
+            self.show_error("Delimiter must be a single character.")
+            return
+
+        command = [
+            sys.executable,
+            str(script_path),
+            "--delimiter",
+            delimiter,
+            *[str(path) for path in enabled_paths],
+        ]
+
+        try:
+            subprocess.Popen(command, cwd=str(REPO_ROOT))
+        except OSError as exc:
+            self.show_error(f"Failed to launch grad norm plotter: {exc}")
+            return
+        self.set_status("Opened grad norm plotter for enabled CSV files.")
 
     def set_enabled_for_selection(self, enabled: bool) -> None:
         selected_indices = list(self.files_listbox.curselection())
