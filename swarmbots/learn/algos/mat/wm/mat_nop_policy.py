@@ -231,6 +231,21 @@ class MATNOPPolicy(MATPolicy, NextObsPredMixin, PPOWMPolicyMixin):
             }
         )
 
+    def get_grad_norms(self) -> dict[str, float]:
+        grad_norms = super().get_grad_norms()
+        grad_norms.update(
+            {
+                "wm_pre_transition_transform": self._module_grad_norm(self.pre_transition_transform),
+                "wm_transition_model": self._module_grad_norm(self.transition_model),
+                "wm_pre_predictors_transform": self._module_grad_norm(self.pre_predictors_transform),
+                "wm_local_scalars_predictor": self._module_grad_norm(self.local_scalars_predictor),
+                "wm_local_angles_predictor": self._module_grad_norm(self.local_angles_predictor),
+                "wm_local_rot6ds_predictor": self._module_grad_norm(self.local_rot6ds_predictor),
+                "wm_local_binaries_predictor": self._module_grad_norm(self.local_binaries_predictor),
+            }
+        )
+        return grad_norms
+
     def evaluate_actions_and_world_model(
             self,
             local_obs: torch.Tensor,

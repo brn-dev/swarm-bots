@@ -263,6 +263,14 @@ class PPOPolicy(BasePPOPolicy):
     def get_hyper_parameters(self) -> dict[str, Any]:
         return self.hyper_parameters
 
+    def get_grad_norms(self) -> dict[str, float]:
+        return {
+            "actor": self._module_grad_norm(self.actor),
+            "action_dist": self._module_grad_norm(self.action_dist),
+            "critic": self._module_grad_norm(self.critic),
+            "total": self._module_grad_norm(self),
+        }
+
     def forward(
             self,
             local_obs: torch.Tensor,

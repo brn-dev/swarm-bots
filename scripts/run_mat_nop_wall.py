@@ -122,7 +122,7 @@ def main() -> None:
     world_model_target_tau = None
 
     gsde_init_std_joint0 = 0.15
-    gsde_init_std_joint1 = 0.25
+    gsde_init_std_joint1 = 0.20
 
     # =====  ID  =====
     run_id = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
@@ -296,28 +296,28 @@ def main() -> None:
             early_stop_epoch: Optional[int],
             metrics: dict[str, Any]
     ) -> AutomaticLearningRateUpdateResult:
-        if early_stop_kl_div is not None and early_stop_kl_div > 0.1:
-            state['counter'] = 0
-            state['warmup'] = False
-            decay_factor = np.clip(0.9 - early_stop_kl_div, 0.4, 0.8)
-            return {
-                'new_lr': old_lr * decay_factor,
-                'msg': f'kl={early_stop_kl_div:.3f}',
-                'event': 'max_kl_hit'
-            }
-
         if early_stop_epoch is not None and early_stop_epoch < 2:
             state['counter'] = 0
             state['warmup'] = False
-            decay_factor = 0.9 if early_stop_epoch == 1 else 0.75
+            decay_factor = 0.95 if early_stop_epoch > 0 else 0.8
             return {
                 'new_lr': old_lr * decay_factor,
                 'msg': f'epoch={early_stop_epoch}',
                 'event': 'min_epoch_hit'
             }
 
+        if early_stop_kl_div is not None and early_stop_kl_div > 0.015:
+            state['counter'] = 0
+            state['warmup'] = False
+            decay_factor = np.clip(0.95 - early_stop_kl_div, 0.4, 0.95)
+            return {
+                'new_lr': old_lr * decay_factor,
+                'msg': f'kl={early_stop_kl_div:.3f}',
+                'event': 'max_kl_hit'
+            }
+
         clip_frac_stats: Optional[SummaryStatistics] = metrics.get('clip_frac', None)
-        if clip_frac_stats and clip_frac_stats.mean > 0.1:
+        if clip_frac_stats and clip_frac_stats.mean > 0.2:
             state['counter'] = 0
             state['warmup'] = False
             clip_frac = clip_frac_stats.mean
@@ -342,7 +342,7 @@ def main() -> None:
 
         if counter >= 2:
             state['counter'] = 0
-            return {'new_lr': old_lr * 1.2}
+            return {'new_lr': old_lr * 1.1}
 
         state['counter'] = counter
         return {'new_lr': None}
@@ -363,7 +363,7 @@ def main() -> None:
         gamma=gamma,
         gae_lambda=0.95,
         clip_range=0.2,
-        target_kl=0.04,
+        target_kl=0.01,
         max_grad_norm=10.0,
         gsde_reset_mode=GSDEProbabilityResetMode(probability=1/6),
         ent_coef=0e-5,
