@@ -234,12 +234,20 @@ def compute_summary_statistics(
             summary_stats.data = values.detach().cpu().numpy()
 
     if make_histogram:
-        summary_stats.histogram = _compute_histogram(
-            values if isinstance(values, np.ndarray) else values.detach().cpu().numpy(),
-            min_val=summary_stats.min_value, 
-            max_val=summary_stats.max_value,
-            n_bins=HISTOGRAM_DEFAULT_BINS if isinstance(make_histogram, bool) else make_histogram,
-        )
+        if summary_stats.std > 1e-6:
+            summary_stats.histogram = _compute_histogram(
+                values if isinstance(values, np.ndarray) else values.detach().cpu().numpy(),
+                min_val=summary_stats.min_value,
+                max_val=summary_stats.max_value,
+                n_bins=HISTOGRAM_DEFAULT_BINS if isinstance(make_histogram, bool) else make_histogram,
+            )
+        else:
+            summary_stats.histogram = _compute_histogram(
+                values if isinstance(values, np.ndarray) else values.detach().cpu().numpy(),
+                min_val=summary_stats.min_value,
+                max_val=summary_stats.max_value,
+                n_bins=1,
+            )
 
     return summary_stats
 
