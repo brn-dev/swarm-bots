@@ -129,7 +129,7 @@ def main() -> None:
 
     # ===== LOAD =====
     load_path: str | None = None
-    # load_path = "../runs/mat_nop_swarm_bots_wall/2026-02-26_13-35-23/models/model_48420770_steps_stopped.pt"
+    # load_path = "../runs/mat_nop_swarm_bots_wall/2026-02-26_13-35-23/models/model_57609483_steps.pt"
 
     # ===== DEVICE =====
     use_cuda = True and torch.cuda.is_available()
