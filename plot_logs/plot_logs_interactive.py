@@ -86,6 +86,7 @@ class PresetEntry:
     y_column: str
     height: float
     ema: float | None = None
+    ema_only: bool = False
     nbins: int | None = None
     pooling: int | None = None
     std: bool | AsEma = False
@@ -232,11 +233,17 @@ def parse_preset_entry(raw_entry: object, preset_name: str, entry_index: int) ->
         raise ValueError(
             f"Preset {preset_name!r} entry {y_column!r} has invalid 'height'."
         )
+    raw_ema_only = raw_entry.get("ema_only", False)
+    if not isinstance(raw_ema_only, bool):
+        raise ValueError(
+            f"Preset {preset_name!r} entry {y_column!r} field 'ema_only' must be true or false."
+        )
     ema, nbins, pooling = parse_preset_ema_fields(raw_entry, preset_name, y_column)
     return PresetEntry(
         y_column=y_column,
         height=float(height),
         ema=ema,
+        ema_only=raw_ema_only,
         nbins=nbins,
         pooling=pooling,
         std=parse_preset_summary_option(
@@ -2791,6 +2798,7 @@ class PlotLogsInteractiveApp:
         invalid_histogram_bins: list[str] = []
         invalid_scalar_ema: list[str] = []
         invalid_summary_ema: list[str] = []
+        invalid_ema_only: list[str] = []
         for row, entry in zip(self.plot_rows, preset.entries, strict=True):
             row.y_combo.set(entry.y_column)
             row.height_var.set(self.format_ratio(entry.height))
@@ -2818,6 +2826,9 @@ class PlotLogsInteractiveApp:
                     else:
                         row.ema_var.set(str(alpha))
                         has_row_ema = True
+            row.ema_only_var.set(entry.ema_only and has_row_ema)
+            if entry.ema_only and not has_row_ema:
+                invalid_ema_only.append(entry.y_column)
             std_enabled, std_use_ema = self.resolve_preset_summary_option(entry.std)
             skew_enabled, skew_use_ema = self.resolve_preset_summary_option(entry.skew)
             min_enabled, min_use_ema = self.resolve_preset_summary_option(entry.min)
@@ -2880,6 +2891,11 @@ class PlotLogsInteractiveApp:
             status_parts.append(
                 "Scalar EMA must be between 0 and 1; ignored for: "
                 f"{', '.join(sorted(set(invalid_scalar_ema)))}."
+            )
+        if invalid_ema_only:
+            status_parts.append(
+                "EMA-only requires a row EMA alpha; ignored for: "
+                f"{', '.join(sorted(set(invalid_ema_only)))}."
             )
         if invalid_summary_ema:
             status_parts.append(
