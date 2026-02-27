@@ -4,6 +4,7 @@ import ast
 import csv
 import json
 import math
+import os
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -1437,7 +1438,9 @@ class PlotLogsInteractiveApp:
         ]
 
         try:
-            subprocess.Popen(command, cwd=str(REPO_ROOT))
+            process_env = os.environ.copy()
+            process_env["MPLBACKEND"] = "TkAgg"
+            subprocess.Popen(command, cwd=str(REPO_ROOT), env=process_env)
         except OSError as exc:
             self.show_error(f"Failed to launch grad norm plotter: {exc}")
             return

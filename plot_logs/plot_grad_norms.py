@@ -9,7 +9,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Iterable
 
+import matplotlib
 import matplotlib.dates as mdates
+
+matplotlib.use("TkAgg")
 import matplotlib.pyplot as plt
 
 
