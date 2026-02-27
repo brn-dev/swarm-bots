@@ -297,7 +297,7 @@ def main() -> None:
             early_stop_epoch: Optional[int],
             metrics: dict[str, Any]
     ) -> AutomaticLearningRateUpdateResult:
-        if early_stop_epoch is not None and early_stop_epoch < 2:
+        if early_stop_epoch is not None and early_stop_epoch < 3:
             state['counter'] = 0
             state['warmup'] = False
             decay_factor = 0.95 if early_stop_epoch > 0 else 0.8
