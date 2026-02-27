@@ -398,17 +398,23 @@ def build_edges_from_centers(centers: Sequence[float]) -> list[float]:
 def exponential_moving_average(values: Sequence[float], alpha: float) -> list[float]:
     if not 0.0 < alpha < 1.0:
         raise ValueError("EMA alpha must be between 0 and 1.")
+    pre_exponential_samples = max(1, int(round(1.0 / alpha)))
     result: list[float] = []
-    prev = math.nan
+    ema_value = math.nan
+    pre_exponential_count = 0
+    pre_exponential_sum = 0.0
     for value in values:
         if math.isnan(value):
             result.append(math.nan)
             continue
-        if math.isnan(prev):
-            prev = value
-        else:
-            prev = alpha * value + (1.0 - alpha) * prev
-        result.append(prev)
+        if pre_exponential_count < pre_exponential_samples:
+            pre_exponential_count += 1
+            pre_exponential_sum += value
+            ema_value = pre_exponential_sum / pre_exponential_count
+            result.append(ema_value)
+            continue
+        ema_value = alpha * value + (1.0 - alpha) * ema_value
+        result.append(ema_value)
     return result
 
 
