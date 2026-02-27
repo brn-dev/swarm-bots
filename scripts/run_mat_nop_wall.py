@@ -307,7 +307,7 @@ def main() -> None:
                 'event': 'min_epoch_hit'
             }
 
-        if early_stop_kl_div is not None and early_stop_kl_div > 0.015:
+        if early_stop_kl_div is not None and early_stop_kl_div > 0.04:
             state['counter'] = 0
             state['warmup'] = False
             decay_factor = np.clip(0.95 - early_stop_kl_div, 0.4, 0.95)
@@ -364,7 +364,7 @@ def main() -> None:
         gamma=gamma,
         gae_lambda=0.95,
         clip_range=0.2,
-        target_kl=0.01,
+        target_kl=0.02,
         max_grad_norm=10.0,
         gsde_reset_mode=GSDEProbabilityResetMode(probability=1/6),
         ent_coef=0e-5,
