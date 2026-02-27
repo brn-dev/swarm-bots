@@ -23,6 +23,7 @@ from swarmbots.learn.summary_statistics import compute_summary_statistics
 from swarmbots.learn.torch_device import as_device
 
 TARGET_KL_MARGIN = 1.5
+COMPUTE_GRAD_NORMS_EVERY_N_UPDATES = 10
 
 AGENTS_DIM = 1
 
@@ -446,9 +447,11 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerType]):
                 self.optimizer.zero_grad()
                 loss.backward()
 
-                with compute_grad_norms_timer:
-                    sub_grad_norms.add(self.policy.get_grad_norms())
-                compute_grad_norms_timings.append(compute_grad_norms_timer.get_duration())
+                should_compute_grad_norms = n_updates % COMPUTE_GRAD_NORMS_EVERY_N_UPDATES == 0
+                if should_compute_grad_norms:
+                    with compute_grad_norms_timer:
+                        sub_grad_norms.add(self.policy.get_grad_norms())
+                    compute_grad_norms_timings.append(compute_grad_norms_timer.get_duration())
 
                 total_grad_norm = torch.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
                 total_grad_norm_f = float(total_grad_norm)
