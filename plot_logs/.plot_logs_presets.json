@@ -25,7 +25,7 @@
       ]
     },
     {
-      "name": "Reward Hist",
+      "name": "Reward Hists",
       "entries": [
         {
           "y_column": "ep_rew_ema",
@@ -33,28 +33,34 @@
           "ema": 0.01
         },
         {
-          "y_column": "ep_rew__histogram_freqs",
-          "height": 3.0,
-          "nbins": 50,
-          "pooling": 10
-        },
-        {
           "y_column": "ep_progress_rew__histogram_freqs",
           "height": 3.0,
           "nbins": 50,
-          "pooling": 10
+          "pooling": 15
+        },
+        {
+          "y_column": "ep_progress_rew__mean",
+          "height": 3.0,
+          "ema": 0.02,
+          "ema_only": true,
+          "std": true,
+          "min": true,
+          "max": true
         },
         {
           "y_column": "ep_guidance_rew__histogram_freqs",
           "height": 3.0,
           "nbins": 50,
-          "pooling": 10
+          "pooling": 15
         },
         {
-          "y_column": "ep_len__mean",
-          "height": 1.0,
+          "y_column": "ep_guidance_rew__mean",
+          "height": 3.0,
           "ema": 0.02,
-          "std": true
+          "ema_only": true,
+          "std": true,
+          "min": true,
+          "max": true
         }
       ]
     },
