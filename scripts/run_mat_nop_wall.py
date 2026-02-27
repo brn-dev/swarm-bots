@@ -38,7 +38,7 @@ def make_env_fn(
 
     def _init() -> SwarmBotsEnv:
         scenario = default_wall(
-            first_wall_distance=2.0, # UniformDistParams(1.5, 2.5),
+            first_wall_distance=1.0, # UniformDistParams(1.5, 2.5),
         )
         return SwarmBotsEnv(
             scenario=scenario,
@@ -307,7 +307,7 @@ def main() -> None:
                 'event': 'min_epoch_hit'
             }
 
-        if early_stop_kl_div is not None and early_stop_kl_div > 0.04:
+        if early_stop_kl_div is not None and early_stop_kl_div > 0.01:
             state['counter'] = 0
             state['warmup'] = False
             decay_factor = np.clip(0.95 - early_stop_kl_div, 0.4, 0.95)
@@ -318,7 +318,7 @@ def main() -> None:
             }
 
         clip_frac_stats: Optional[SummaryStatistics] = metrics.get('clip_frac', None)
-        if clip_frac_stats and clip_frac_stats.mean > 0.2:
+        if clip_frac_stats and clip_frac_stats.mean > 0.15:
             state['counter'] = 0
             state['warmup'] = False
             clip_frac = clip_frac_stats.mean
@@ -357,14 +357,14 @@ def main() -> None:
         policy=policy,
         env=env,
         learning_rate=auto_lr,
-        rollout_mode=StepsRolloutMode(4096),
+        rollout_mode=StepsRolloutMode(6144),
         max_episode_length=episode_length,
-        batch_size=512,
+        batch_size=2024,
         n_epochs=5,
         gamma=gamma,
         gae_lambda=0.95,
         clip_range=0.2,
-        target_kl=0.02,
+        target_kl=0.005,
         max_grad_norm=10.0,
         gsde_reset_mode=GSDEProbabilityResetMode(probability=1/6),
         ent_coef=0e-5,

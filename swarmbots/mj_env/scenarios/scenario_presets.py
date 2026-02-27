@@ -9,8 +9,8 @@ DEFAULT_KWARGS = {
     'friction': [2, 1e-2, 2e-4],
     'force_elliptic_cone': True,
     'actuator_strength': 15.0,
-    'guidance_reward_weight': 0.03,
-    'actuators_activation_reward_weight': -8e-3,
+    'guidance_reward_weight': 0.05,
+    'actuators_activation_reward_weight': -2e-4,
     'actuators_activation_reward_power': 4,
     'actuators_activation_reward_threshold': 0.75,
     'hinge_qvel_magnitude_reward_weight': -1e-4,
@@ -39,11 +39,11 @@ def _resolve_swarm(
 
     if unit_start_locations is None:
         unit_start_locations = PreConnectedUnitLocationsConfig(
-            num_units=4,
+            num_units=3,
             num_unit_probs={
                 2: 1.0,
                 3: 1.0,
-                4: 1.0,
+                # 4: 1.0,
                 # 5: 1.0,
             },
             max_radius=1.5,
