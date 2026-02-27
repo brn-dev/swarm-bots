@@ -88,6 +88,11 @@ class FeatureWiseObsNormWrapper(VectorObservationWrapper, gym.utils.RecordConstr
                 agent_mask = observations.get("agent_mask", None)
                 batch = self._prepare_batch(scalars, agent_mask)
                 if batch.size > 0:
+                    if batch.shape[-1] != self.obs_rms.mean.shape[-1]:
+                        raise ValueError(
+                            f'FeatureWiseObsNormWrapper("{self.obs_key}") batch width mismatch: '
+                            f"{batch.shape[-1]} != {self.obs_rms.mean.shape[-1]}"
+                        )
                     self.obs_rms.update(batch)
 
         if self.obs_rms is not None:
@@ -106,7 +111,12 @@ class FeatureWiseObsNormWrapper(VectorObservationWrapper, gym.utils.RecordConstr
         samples: np.ndarray,
         agent_mask: np.ndarray | None,
     ) -> np.ndarray:
-        if agent_mask is not None and samples.ndim >= 2 and agent_mask.shape == samples.shape[:2]:
+        if (
+            agent_mask is not None
+            and agent_mask.ndim == 2
+            and samples.ndim >= 3
+            and agent_mask.shape == samples.shape[:2]
+        ):
             samples = samples[agent_mask.astype(bool)]
             if samples.ndim == 1:
                 return samples.reshape(1, -1)
