@@ -106,7 +106,7 @@ def main() -> None:
         format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <5}</level> | <level>{message}</level>",
     )
 
-    n_envs = 31
+    n_envs = 41
     episode_length = 512
     total_timesteps = 100_000_000
     save_interval = 500
@@ -129,7 +129,7 @@ def main() -> None:
 
     # ===== LOAD =====
     load_path: str | None = None
-    # load_path = "../runs/mat_nop_swarm_bots_wall/2026-02-26_13-35-23/models/model_57609483_steps.pt"
+    load_path = "../runs/mat_nop_swarm_bots_wall/2026-02-27_22-14-09/models/model_32299490_steps_stopped.pt"
 
     # ===== DEVICE =====
     use_cuda = True and torch.cuda.is_available()

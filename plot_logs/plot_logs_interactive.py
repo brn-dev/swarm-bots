@@ -621,10 +621,13 @@ def load_histogram_series(
     values: list[list[float]] = []
     bin_edges: list[float] | None = None
     edges_status = "missing" if edges_column is None else "edges"
-    expected_bins: int | None = None
-    min_edge: float | None = None
-    max_edge: float | None = None
-    row_edges: list[list[float] | None] = []
+    source_rows: list[tuple[list[float] | None, list[float] | None]] = []
+    max_source_bin_count = 0
+    global_min_edge: float | None = None
+    global_max_edge: float | None = None
+    reference_edges: list[float] | None = None
+    saw_drifting_edges = False
+    saw_missing_row_edges = False
     with path.open(newline="") as handle:
         reader = csv.DictReader(handle, delimiter=delimiter)
         if reader.fieldnames is None:
@@ -650,71 +653,73 @@ def load_histogram_series(
                 )
             raw_freqs = row.get(freqs_column)
             if is_missing_histogram_cell(raw_freqs):
-                if expected_bins is None:
-                    continue
                 x_values.append(x_value)
-                values.append([0.0] * expected_bins)
-                if edges_column is not None:
-                    row_edges.append(None)
+                source_rows.append((None, None))
                 continue
             freqs = parse_histogram_list(raw_freqs, freqs_column, path, row_index)
-            if expected_bins is None:
-                expected_bins = len(freqs)
-            elif len(freqs) != expected_bins:
-                raise ValueError(
-                    f"Histogram bins changed in {path} column {freqs_column} at row {row_index}."
-                )
+            source_bin_count = len(freqs)
+            max_source_bin_count = max(max_source_bin_count, source_bin_count)
+            source_edges: list[float] | None = None
             if edges_column is not None:
                 raw_edges = row.get(edges_column)
                 if is_missing_histogram_cell(raw_edges):
-                    row_edges.append(None)
+                    source_edges = None
+                    saw_missing_row_edges = True
                 else:
                     edges = parse_histogram_list(raw_edges, edges_column, path, row_index)
-                    normalized = normalize_histogram_edges(edges, expected_bins)
+                    normalized = normalize_histogram_edges(edges, source_bin_count)
                     validate_histogram_edges(normalized)
-                    if bin_edges is None:
-                        bin_edges = normalized
-                    elif not histogram_edges_match(bin_edges, normalized):
-                        edges_status = "drifting"
-                    min_edge = normalized[0] if min_edge is None else min(min_edge, normalized[0])
-                    max_edge = normalized[-1] if max_edge is None else max(max_edge, normalized[-1])
-                    row_edges.append(normalized)
+                    source_edges = normalized
+                    if reference_edges is None:
+                        reference_edges = normalized
+                    elif not histogram_edges_match(reference_edges, normalized):
+                        saw_drifting_edges = True
             x_values.append(x_value)
-            values.append(freqs)
+            if source_edges is None and edges_column is None:
+                source_edges = [float(index) for index in range(source_bin_count + 1)]
+            if source_edges is not None:
+                global_min_edge = (
+                    source_edges[0]
+                    if global_min_edge is None
+                    else min(global_min_edge, source_edges[0])
+                )
+                global_max_edge = (
+                    source_edges[-1]
+                    if global_max_edge is None
+                    else max(global_max_edge, source_edges[-1])
+                )
+            source_rows.append((freqs, source_edges))
     if not x_values:
         raise ValueError(f"No histogram data in {path} for {freqs_column}.")
-    if edges_column is not None and edges_status == "drifting":
-        if expected_bins is None or min_edge is None or max_edge is None:
-            raise ValueError(f"Histogram edges missing in {path} for {freqs_column}.")
-        target_edges = linear_edges_from_range(min_edge, max_edge, expected_bins)
-        edges_status = "drifting-range"
-        if len(row_edges) != len(values):
-            raise ValueError(f"Histogram edges missing in {path} for {freqs_column}.")
-        rebinned_values: list[list[float]] = []
-        for freqs, source_edges in zip(values, row_edges, strict=True):
-            if source_edges is None:
-                rebinned_values.append([0.0] * expected_bins)
-                continue
-            rebinned_values.append(rebin_histogram_row(freqs, source_edges, target_edges))
-        values = rebinned_values
-        bin_edges = target_edges
-    if target_bin_count is not None and target_bin_count != len(values[0]):
-        source_bin_count = len(values[0])
-        source_edges = (
-            normalize_histogram_edges(bin_edges, source_bin_count)
-            if bin_edges is not None
-            else [float(index) for index in range(source_bin_count + 1)]
-        )
-        target_edges = linear_edges_from_range(
-            source_edges[0],
-            source_edges[-1],
-            target_bin_count,
-        )
-        values = [
-            rebin_histogram_row(freqs, source_edges, target_edges)
-            for freqs in values
-        ]
-        bin_edges = target_edges
+    if max_source_bin_count <= 0:
+        raise ValueError(f"No histogram data in {path} for {freqs_column}.")
+    resolved_target_bin_count = (
+        target_bin_count if target_bin_count is not None else max_source_bin_count
+    )
+    if global_min_edge is None or global_max_edge is None:
+        global_min_edge = 0.0
+        global_max_edge = float(max_source_bin_count)
+    target_edges = linear_edges_from_range(
+        global_min_edge,
+        global_max_edge,
+        resolved_target_bin_count,
+    )
+    values = []
+    for freqs, source_edges in source_rows:
+        if freqs is None or source_edges is None:
+            values.append([0.0] * resolved_target_bin_count)
+            continue
+        values.append(rebin_histogram_row(freqs, source_edges, target_edges))
+    bin_edges = target_edges
+    if edges_column is not None:
+        if saw_drifting_edges and saw_missing_row_edges:
+            edges_status = "drifting-missing"
+        elif saw_drifting_edges:
+            edges_status = "drifting-range"
+        elif saw_missing_row_edges:
+            edges_status = "missing"
+        else:
+            edges_status = "edges"
     if x_pooling <= 0:
         raise ValueError("Histogram pooling must be >= 1.")
     if x_pooling > 1:
