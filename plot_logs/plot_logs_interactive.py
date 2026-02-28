@@ -615,7 +615,13 @@ def load_histogram_series(
     delimiter: str,
     target_bin_count: int | None = None,
     x_pooling: int = 1,
+    from_index: int = 0,
+    to_index: int | None = None,
 ) -> HistogramSeries:
+    if from_index < 0:
+        raise ValueError("From must be >= 0.")
+    if to_index is not None and to_index < from_index:
+        raise ValueError("To must be >= From.")
     x_values: list[float] = []
     x_is_datetime: bool | None = None
     values: list[list[float]] = []
@@ -628,6 +634,7 @@ def load_histogram_series(
     reference_edges: list[float] | None = None
     saw_drifting_edges = False
     saw_missing_row_edges = False
+    valid_row_index = 0
     with path.open(newline="") as handle:
         reader = csv.DictReader(handle, delimiter=delimiter)
         if reader.fieldnames is None:
@@ -651,6 +658,12 @@ def load_histogram_series(
                 raise ValueError(
                     f"Mixed numeric and timestamp values in {path} column {x_column}."
                 )
+            if valid_row_index < from_index:
+                valid_row_index += 1
+                continue
+            if to_index is not None and valid_row_index > to_index:
+                continue
+            valid_row_index += 1
             raw_freqs = row.get(freqs_column)
             if is_missing_histogram_cell(raw_freqs):
                 x_values.append(x_value)
@@ -781,6 +794,8 @@ class PlotLogsInteractiveApp:
         self.global_ema_var = tk.StringVar()
         self.global_ema_only_var = tk.BooleanVar(value=False)
         self.group_var = tk.StringVar()
+        self.from_var = tk.StringVar(value="0")
+        self.to_var = tk.StringVar(value="")
         self.line_alpha_var = tk.DoubleVar(value=1.0)
         self.line_width_var = tk.DoubleVar(value=0.75)
         self.dark_mode_var = tk.BooleanVar(value=True)
@@ -1014,6 +1029,14 @@ class PlotLogsInteractiveApp:
         self.x_combo = ttk.Combobox(x_column_frame, state="disabled")
         self.x_combo.grid(row=0, column=1, sticky="ew", padx=(6, 0))
         self.bind_typeahead(self.x_combo, lambda: self.available_columns)
+        range_frame = ttk.Frame(x_column_frame)
+        range_frame.grid(row=1, column=1, sticky="w", padx=(6, 0), pady=(6, 0))
+        ttk.Label(x_column_frame, text="From").grid(row=1, column=0, sticky="w", pady=(6, 0))
+        from_entry = ttk.Entry(range_frame, textvariable=self.from_var, width=8)
+        from_entry.grid(row=0, column=0, sticky="w")
+        ttk.Label(range_frame, text="To").grid(row=0, column=1, sticky="w", padx=(8, 0))
+        to_entry = ttk.Entry(range_frame, textvariable=self.to_var, width=8)
+        to_entry.grid(row=0, column=2, sticky="w", padx=(6, 0))
 
         self.plots_container = ttk.Frame(plots_frame)
         self.plots_container.grid(row=2, column=0, sticky="ew", pady=(6, 0))
@@ -1516,6 +1539,8 @@ class PlotLogsInteractiveApp:
             rows.append(entry)
         return {
             "x": self.x_combo.get().strip(),
+            "from": self.from_var.get().strip(),
+            "to": self.to_var.get().strip(),
             "rows": rows,
         }
 
@@ -1605,6 +1630,8 @@ class PlotLogsInteractiveApp:
     def apply_plot_payload(self, payload: object) -> tuple[int, list[str], str | None]:
         if not isinstance(payload, dict):
             raise ValueError("Saved plot configuration is invalid.")
+        self.from_var.set("0")
+        self.to_var.set("")
         rows_payload = payload.get("rows")
         if rows_payload is None:
             return 0, [], None
@@ -1678,6 +1705,18 @@ class PlotLogsInteractiveApp:
                 self.x_combo.set(x_value)
             else:
                 missing_x = x_value
+        from_value = payload.get("from")
+        to_value = payload.get("to")
+        if from_value is None:
+            from_value = payload.get("skip")
+        if isinstance(from_value, (int, float)):
+            self.from_var.set(str(int(from_value)))
+        elif isinstance(from_value, str):
+            self.from_var.set(from_value.strip() or "0")
+        if isinstance(to_value, (int, float)):
+            self.to_var.set(str(int(to_value)))
+        elif isinstance(to_value, str):
+            self.to_var.set(to_value.strip())
         return len(rows_payload), missing_columns, missing_x
 
     def load_plot_tab_into_ui(self, tab_index: int) -> tuple[list[str], str | None]:
@@ -1687,6 +1726,8 @@ class PlotLogsInteractiveApp:
         if payload is None:
             self.clear_plot_rows()
             self.x_combo.set("")
+            self.from_var.set("0")
+            self.to_var.set("")
             return [], None
         _row_count, missing_columns, missing_x = self.apply_plot_payload(payload)
         return missing_columns, missing_x
@@ -1853,8 +1894,22 @@ class PlotLogsInteractiveApp:
                 tab_payloads.append(None)
                 continue
             x_value = tab_payload.get("x")
+            from_value = tab_payload.get("from")
+            to_value = tab_payload.get("to")
+            if from_value is None:
+                from_value = tab_payload.get("skip")
             tab_payloads.append({
                 "x": x_value if isinstance(x_value, str) else "",
+                "from": (
+                    str(int(from_value))
+                    if isinstance(from_value, (int, float))
+                    else (from_value if isinstance(from_value, str) else "0")
+                ),
+                "to": (
+                    str(int(to_value))
+                    if isinstance(to_value, (int, float))
+                    else (to_value if isinstance(to_value, str) else "")
+                ),
                 "rows": rows_payload,
             })
         if not tab_payloads:
@@ -3176,6 +3231,10 @@ class PlotLogsInteractiveApp:
         if not x_column:
             self.show_error("Pick an X column.")
             return
+        row_range = self.parse_row_range(show_error=True)
+        if row_range is None:
+            return
+        from_index, to_index = row_range
         missing_rows = [index for index, row in enumerate(self.plot_rows, start=1) if not row.y_combo.get()]
         if missing_rows:
             self.show_error("Every plot row needs a Y column selected.")
@@ -3329,6 +3388,8 @@ class PlotLogsInteractiveApp:
                         skew_mapping=skew_mapping,
                         min_mapping=min_mapping,
                         max_mapping=max_mapping,
+                        from_index=from_index,
+                        to_index=to_index,
                     )
                     for path, label in zip(enabled_paths, labels, strict=True)
                 ]
@@ -3350,6 +3411,8 @@ class PlotLogsInteractiveApp:
                         delimiter,
                         target_bin_count=target_bin_count,
                         x_pooling=x_pooling,
+                        from_index=from_index,
+                        to_index=to_index,
                     )
                     for path, label in zip(enabled_paths, labels, strict=True)
                 ]
@@ -3412,6 +3475,38 @@ class PlotLogsInteractiveApp:
                 self.show_error("Auto refresh interval must be >= 0.")
             return None
         return interval
+
+    def parse_row_range(self, show_error: bool) -> tuple[int, int | None] | None:
+        raw_from = self.from_var.get().strip()
+        raw_to = self.to_var.get().strip()
+        if not raw_from:
+            from_index = 0
+        else:
+            try:
+                from_index = int(raw_from)
+            except ValueError:
+                if show_error:
+                    self.show_error("From must be an integer >= 0.")
+                return None
+        if from_index < 0:
+            if show_error:
+                self.show_error("From must be an integer >= 0.")
+            return None
+        to_index: int | None
+        if not raw_to:
+            to_index = None
+        else:
+            try:
+                to_index = int(raw_to)
+            except ValueError:
+                if show_error:
+                    self.show_error("To must be an integer >= From.")
+                return None
+            if to_index < from_index:
+                if show_error:
+                    self.show_error("To must be an integer >= From.")
+                return None
+        return from_index, to_index
 
     def schedule_auto_refresh(self, interval_seconds: float | None = None) -> None:
         self.cancel_auto_refresh()
