@@ -84,6 +84,8 @@ class ObstacleStreetScenario(PayloadScenario):
             force_elliptic_cone: bool = False,
             progress_reward_weight: float = 1.0,
             guidance_reward_weight: float = 1.0,
+            wall_pass_reward_weight: float = 0.0,
+            wall_pass_margin: float = 0.0,
             actuators_activation_reward_weight: float = 0.0,
             actuators_activation_reward_power: int = 8,
             actuators_activation_reward_threshold: float = 0.0,
@@ -128,6 +130,8 @@ class ObstacleStreetScenario(PayloadScenario):
 
         self.opening_widths = opening_width if isinstance(opening_width, list) else [opening_width] * num_walls
         self.unusable_opening_offset = unusable_opening_offset
+        self.wall_pass_reward_weight = float(wall_pass_reward_weight)
+        self.wall_pass_margin = float(wall_pass_margin)
         min_inter_wall_distance = fodp_low(self.inter_wall_distance)
         if min_inter_wall_distance <= 1.0:
             raise ValueError(f"Expected inter_wall_distance.low > 1.0, got {min_inter_wall_distance}")
@@ -194,6 +198,8 @@ class ObstacleStreetScenario(PayloadScenario):
             'unusable_opening_offset': self.unusable_opening_offset,
             'street_width': self.street_width,
             'no_initial_ramp': self.no_initial_ramp,
+            'wall_pass_reward_weight': self.wall_pass_reward_weight,
+            'wall_pass_margin': self.wall_pass_margin,
         })
         return settings
 
@@ -272,13 +278,15 @@ class ObstacleStreetScenario(PayloadScenario):
         state, connections = super().reset_scenario(model, data)
 
         hidden_vars: list[float] = []
-        self.reset_walls_and_ramps(data, model, hidden_vars)
+        wall_y = self.reset_walls_and_ramps(data, model, hidden_vars)
         self.reset_poles(data, model, hidden_vars)
 
         mujoco.mj_forward(model, data)
 
         state['progress'] = self.compute_progress(data, state.get("units_active_mask"))
         state['hidden_vars'] = np.array(hidden_vars)
+        state['wall_y'] = wall_y
+        state['next_wall_for_unit'] = np.zeros(self.num_units, dtype=int)
 
         return state, connections
 
@@ -291,8 +299,14 @@ class ObstacleStreetScenario(PayloadScenario):
             hidden_vars.extend([x, y])
             data.mocap_pos[mocap_id] = [x, y, 0.0]
 
-    def reset_walls_and_ramps(self, data: mujoco.MjData, model: mujoco.MjModel, hidden_vars: list[float]):
+    def reset_walls_and_ramps(
+            self,
+            data: mujoco.MjData,
+            model: mujoco.MjModel,
+            hidden_vars: list[float]
+    ) -> np.ndarray:
         rng = self.rng
+        wall_y_values = np.zeros(self.num_walls, dtype=float)
 
         unusable_opening_offset = eval_fodp(self.unusable_opening_offset, rng)
 
@@ -301,6 +315,7 @@ class ObstacleStreetScenario(PayloadScenario):
             if i != 0:
                 wall_y += eval_fodp(self.inter_wall_distance, rng)
             hidden_vars.append(wall_y)
+            wall_y_values[i] = wall_y
 
             opening_width = eval_fodp(self.opening_widths[i], rng)
             hidden_vars.append(opening_width)
@@ -339,6 +354,8 @@ class ObstacleStreetScenario(PayloadScenario):
                     self.wall_heights[i] / 2 - 0.05,
                 ]
 
+        return wall_y_values
+
     def get_obs(
             self,
             model: mujoco.MjModel,
@@ -367,6 +384,77 @@ class ObstacleStreetScenario(PayloadScenario):
             return float(unit_positions[active_units_mask].mean())
 
         return float(data.xpos[self.payload_body_id, 1])
+
+    def _compute_wall_pass_reward(
+            self,
+            data: mujoco.MjData,
+            state: dict,
+    ) -> float:
+        wall_y = np.asarray(state.get("wall_y"), dtype=float)
+        next_wall_for_unit = np.asarray(state.get("next_wall_for_unit"), dtype=int)
+        if wall_y.size == 0 or next_wall_for_unit.shape != (self.num_units,):
+            state["num_walls_passed"] = 0
+            state["walls_passed_reward"] = 0.0
+            return 0.0
+
+        unit_y = np.asarray(data.qpos[self._qpos_indices[:, 1]], dtype=float)
+        units_active_mask = state.get("units_active_mask")
+        active_units_mask = None if units_active_mask is None else np.asarray(units_active_mask, dtype=bool)
+        active_units_count = self.num_units if active_units_mask is None else int(active_units_mask.sum())
+
+        num_walls_passed = 0
+        for unit_idx in range(self.num_units):
+            if active_units_mask is not None and not active_units_mask[unit_idx]:
+                continue
+            next_wall_idx = int(next_wall_for_unit[unit_idx])
+            while next_wall_idx < self.num_walls and unit_y[unit_idx] > wall_y[next_wall_idx] + self.wall_pass_margin:
+                next_wall_idx += 1
+                num_walls_passed += 1
+            next_wall_for_unit[unit_idx] = next_wall_idx
+
+        if active_units_count > 0:
+            walls_passed_reward = (num_walls_passed / active_units_count) * self.wall_pass_reward_weight
+        else:
+            walls_passed_reward = 0.0
+        state["next_wall_for_unit"] = next_wall_for_unit
+        state["num_walls_passed"] = num_walls_passed
+        state["walls_passed_reward"] = walls_passed_reward
+
+        return walls_passed_reward
+
+    def evaluate_step(
+            self,
+            action: SwarmActDict,
+            model: mujoco.MjModel,
+            data: mujoco.MjData,
+            state: dict,
+            connections: SwarmConnections
+    ) -> tuple[float, bool]:
+        units_active_mask = state.get("units_active_mask")
+        if units_active_mask is not None:
+            self._enforce_inactive_units_state(model, data, units_active_mask)
+
+        old_progress = state['progress']
+        new_progress = self.compute_progress(data, units_active_mask)
+        state['progress'] = new_progress
+
+        progress_reward = new_progress - old_progress
+        wall_pass_reward = self._compute_wall_pass_reward(data, state)
+        total_progress_reward = progress_reward + wall_pass_reward
+        state['progress_reward'] = total_progress_reward
+
+        guidance_reward = super().compute_guidance_reward(data, action, state, connections)
+        state['guidance_reward'] = guidance_reward
+
+        weighted_progress_reward = (
+            progress_reward * self.reward_weights['progress_reward_weight']
+            + wall_pass_reward
+        )
+        weighted_guidance_reward = guidance_reward * self.reward_weights['guidance_reward_weight']
+        state['weighted_progress_reward'] = weighted_progress_reward
+        state['weighted_guidance_reward'] = weighted_guidance_reward
+
+        return weighted_progress_reward + weighted_guidance_reward, False
 
 def sample_pole_xy(pole: PoleSpec, rng: np.random.Generator) -> tuple[float, float]:
     if isinstance(pole, PoleParams):

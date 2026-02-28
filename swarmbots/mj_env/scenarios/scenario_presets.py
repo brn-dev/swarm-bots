@@ -1,5 +1,7 @@
 from typing import Any
 
+import numpy as np
+
 from swarmbots.mj_env.scenarios.bridge_scenario import BridgeScenario
 from swarmbots.mj_env.scenarios.obstacle_street_scenario import ObstacleStreetScenario
 from swarmbots.mj_env.swarm.base_swarm import BaseSwarm
@@ -9,14 +11,14 @@ DEFAULT_KWARGS = {
     'friction': [2, 1e-2, 2e-4],
     'force_elliptic_cone': True,
     'actuator_strength': 15.0,
-    'guidance_reward_weight': 0.05,
-    'actuators_activation_reward_weight': -2e-4,
+    'guidance_reward_weight': 1.00,
+    'actuators_activation_reward_weight': -1e-4,
     'actuators_activation_reward_power': 4,
-    'actuators_activation_reward_threshold': 0.75,
-    'hinge_qvel_magnitude_reward_weight': -1e-4,
+    'actuators_activation_reward_threshold': 0.8,
+    'hinge_qvel_magnitude_reward_weight': -5e-6,
     'hinge_qvel_magnitude_reward_threshold': 8.0,
-    'units_without_connections_reward_weight': -8e-4,
-    'units_with_double_connection_reward_weight': -6e-4,
+    'units_without_connections_reward_weight': -5e-5,
+    'units_with_double_connection_reward_weight': -3e-5,
     'movement_reward_weight': 0e-1,
     'height_reward_weight': 0e-4,
     'connectors_stayed_active_reward_weight': 0e-5,
@@ -25,6 +27,10 @@ DEFAULT_KWARGS = {
     'connectors_deactivated_reward_weight': 0e-3,
     'reset_settle_time': 1.0,
     'reset_settle_timestep_scale': 5,
+}
+WALL_PASS_KWARGS = {
+    'wall_pass_reward_weight': 0.5,
+    'wall_pass_margin': 0.2,
 }
 
 def _resolve_swarm(
@@ -53,10 +59,15 @@ def _resolve_swarm(
 
     return HomogeneousSwarm(
         unit_start_locations=unit_start_locations,
-        randomize_unit_orientations=randomize_unit_orientations,
+        body_radius=0.1,
+        leg_length=0.2,
+        leg_radius=0.025,
+        hinge_range=np.pi / 3,
         hinge_armature=(0.02, 0.015),
         hinge_damping=(0.2, 0.15),
         hinge_frictionloss=(0.2, 0.15),
+        connection_torquescale=50.0,
+        randomize_unit_orientations=randomize_unit_orientations,
     )
 
 
@@ -68,6 +79,7 @@ def default_wall(
         **kwargs
 ) -> ObstacleStreetScenario:
     scenario_kwargs = DEFAULT_KWARGS.copy()
+    scenario_kwargs.update(WALL_PASS_KWARGS)
     scenario_kwargs.update({
         'wall_height': 0.20,
     })

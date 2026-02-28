@@ -106,9 +106,9 @@ def main() -> None:
         format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <5}</level> | <level>{message}</level>",
     )
 
-    n_envs = 41
+    n_envs = 61
     episode_length = 512
-    total_timesteps = 100_000_000
+    total_timesteps = 200_000_000
     save_interval = 500
 
     use_popart = True
@@ -129,7 +129,7 @@ def main() -> None:
 
     # ===== LOAD =====
     load_path: str | None = None
-    load_path = "../runs/mat_nop_swarm_bots_wall/2026-02-27_22-14-09/models/model_32299490_steps_stopped.pt"
+    # load_path = "../runs/mat_nop_swarm_bots_wall/2026-02-28_22-06-17/models/model_9514193_steps_stopped.pt"
 
     # ===== DEVICE =====
     use_cuda = True and torch.cuda.is_available()
@@ -283,8 +283,8 @@ def main() -> None:
 
     print("Initializing PPO Algorithm...")
 
-    warm_lr = 1e-5
-    warmup_iterations: int = 1000
+    warm_lr = 1e-4
+    warmup_iterations: int = 500
     cold_lr = warm_lr / 500 if warmup_iterations > 0 else warm_lr
 
     def auto_lr_updater(
@@ -297,7 +297,7 @@ def main() -> None:
             early_stop_epoch: Optional[int],
             metrics: dict[str, Any]
     ) -> AutomaticLearningRateUpdateResult:
-        if early_stop_epoch is not None and early_stop_epoch < 3:
+        if early_stop_epoch is not None and early_stop_epoch < 4:
             state['counter'] = 0
             state['warmup'] = False
             decay_factor = 0.95 if early_stop_epoch > 0 else 0.8
@@ -318,7 +318,7 @@ def main() -> None:
             }
 
         clip_frac_stats: Optional[SummaryStatistics] = metrics.get('clip_frac', None)
-        if clip_frac_stats and clip_frac_stats.mean > 0.15:
+        if clip_frac_stats and clip_frac_stats.mean > 0.175:
             state['counter'] = 0
             state['warmup'] = False
             clip_frac = clip_frac_stats.mean
@@ -359,7 +359,7 @@ def main() -> None:
         learning_rate=auto_lr,
         rollout_mode=StepsRolloutMode(8096),
         max_episode_length=episode_length,
-        batch_size=4048,
+        batch_size=8096,
         n_epochs=5,
         gamma=gamma,
         gae_lambda=0.95,

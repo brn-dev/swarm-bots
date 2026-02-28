@@ -221,7 +221,13 @@ def load_log(
     min_mapping: dict[str, str | None] | None = None,
     max_mapping: dict[str, str | None] | None = None,
     skew_mapping: dict[str, str | None] | None = None,
+    from_index: int = 0,
+    to_index: int | None = None,
 ) -> LogSeries:
+    if from_index < 0:
+        raise ValueError("From must be >= 0.")
+    if to_index is not None and to_index < from_index:
+        raise ValueError("To must be >= From.")
     x_values: list[float] = []
     x_is_datetime: bool | None = None
     y_values: dict[str, list[float]] = {column: [] for column in y_columns}
@@ -249,6 +255,7 @@ def load_log(
     y_max_values: dict[str, list[float]] = {
         column: [] for column in y_columns if resolved_max_mapping[column] is not None
     }
+    valid_row_index = 0
     with path.open(newline="") as handle:
         reader = csv.DictReader(handle, delimiter=delimiter)
         if reader.fieldnames is None:
@@ -277,6 +284,12 @@ def load_log(
                 raise ValueError(
                     f"Mixed numeric and timestamp values in {path} column {x_column}."
                 )
+            if valid_row_index < from_index:
+                valid_row_index += 1
+                continue
+            if to_index is not None and valid_row_index > to_index:
+                continue
+            valid_row_index += 1
             x_values.append(x_value)
             for column in y_columns:
                 y_values[column].append(
