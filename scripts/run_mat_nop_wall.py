@@ -121,8 +121,8 @@ def main() -> None:
     world_model_num_next_steps = 3
     world_model_target_tau = None
 
-    gsde_init_std_joint0 = 0.15
-    gsde_init_std_joint1 = 0.20
+    gsde_init_std_joint0 = 0.20
+    gsde_init_std_joint1 = 0.25
 
     # =====  ID  =====
     run_id = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
