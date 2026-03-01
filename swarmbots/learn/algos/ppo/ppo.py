@@ -24,6 +24,7 @@ from swarmbots.learn.torch_device import as_device
 
 TARGET_KL_MARGIN = 1.5
 COMPUTE_GRAD_NORMS_EVERY_N_UPDATES = 10
+COMPUTE_DETAILED_GRAD_NORMS_EVERY_N_ITERATIONS = 10
 
 AGENTS_DIM = 1
 
@@ -182,6 +183,7 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerType]):
 
         self._policy_num_params = sum(p.numel() for p in self.policy.parameters())
         self._policy_num_trainable_params = sum(p.numel() for p in self.policy.parameters() if p.requires_grad)
+        self._detailed_grad_norm_metric_keys: tuple[str, ...] = tuple(self.policy.get_grad_norms().keys())
 
         self.optimizer = torch.optim.Adam(self.policy.parameters(), lr=self.learning_rate)
 
@@ -418,9 +420,12 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerType]):
         update_timings: list[float] = []
         update_timer = PerformanceTimer()
 
-        sub_grad_norms = MetricsLists[float]()
+        detailed_grad_norms = MetricsLists[float]()
         compute_grad_norms_timings: list[float] = []
         compute_grad_norms_timer = PerformanceTimer()
+        compute_detailed_grad_norms_this_iteration = (
+            self.n_total_iterations % COMPUTE_DETAILED_GRAD_NORMS_EVERY_N_ITERATIONS == 0
+        )
 
         train_timer = PerformanceTimer().start()
         for epoch in range(self.n_epochs):
@@ -447,10 +452,13 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerType]):
                 self.optimizer.zero_grad()
                 loss.backward()
 
-                should_compute_grad_norms = n_updates % COMPUTE_GRAD_NORMS_EVERY_N_UPDATES == 0
+                should_compute_grad_norms = (
+                    compute_detailed_grad_norms_this_iteration
+                    and n_updates % COMPUTE_GRAD_NORMS_EVERY_N_UPDATES == 0
+                )
                 if should_compute_grad_norms:
                     with compute_grad_norms_timer:
-                        sub_grad_norms.add(self.policy.get_grad_norms())
+                        detailed_grad_norms.add(self.policy.get_grad_norms())
                     compute_grad_norms_timings.append(compute_grad_norms_timer.get_duration())
 
                 total_grad_norm = torch.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
@@ -475,6 +483,19 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerType]):
 
         self.n_total_updates += n_updates
 
+        detailed_grad_norm_metrics = detailed_grad_norms.compute_summary_statistics(
+            find_min=True,
+            find_max=True,
+            prefix='grad_norm_',
+        )
+        if detailed_grad_norm_metrics:
+            self._detailed_grad_norm_metric_keys = tuple(k.removeprefix('grad_norm_') for k in detailed_grad_norm_metrics)
+        else:
+            detailed_grad_norm_metrics = {
+                f'grad_norm_{key}': compute_summary_statistics([], find_min=True, find_max=True)
+                for key in self._detailed_grad_norm_metric_keys
+            }
+
         metrics_timer = PerformanceTimer().start()
         with torch.no_grad():
             metrics: dict[str, Any] = {
@@ -488,7 +509,7 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerType]):
                     grad_norms, find_max=True, find_min=True, compute_skewness=True, compute_kurtosis=True,
                 ) if grad_norms else 0.0,
                 'grad_clip_frac': (n_grad_clipped / len(grad_norms)) if grad_norms else 0.0,
-                **sub_grad_norms.compute_summary_statistics(find_min=True, find_max=True, prefix='grad_norm_'),
+                **detailed_grad_norm_metrics,
                 'total_compute_grad_norms_time': sum(compute_grad_norms_timings),
                 'compute_grad_norms_time': compute_summary_statistics(
                     compute_grad_norms_timings, find_min=True, find_max=True
