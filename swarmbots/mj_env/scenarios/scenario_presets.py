@@ -12,7 +12,7 @@ DEFAULT_KWARGS = {
     'force_elliptic_cone': True,
     'actuator_strength': 15.0,
     'guidance_reward_weight': 1.00,
-    'actuators_activation_reward_weight': -1e-4,
+    'actuators_activation_reward_weight': -5e-4,
     'actuators_activation_reward_power': 4,
     'actuators_activation_reward_threshold': 0.8,
     'hinge_qvel_magnitude_reward_weight': -5e-6,
