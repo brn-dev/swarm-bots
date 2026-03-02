@@ -23,8 +23,8 @@ from swarmbots.learn.summary_statistics import compute_summary_statistics
 from swarmbots.learn.torch_device import as_device
 
 TARGET_KL_MARGIN = 1.5
-COMPUTE_GRAD_NORMS_EVERY_N_UPDATES = 10
-COMPUTE_DETAILED_GRAD_NORMS_EVERY_N_ITERATIONS = 10
+COMPUTE_GRAD_NORMS_EVERY_N_UPDATES = 4
+COMPUTE_DETAILED_GRAD_NORMS_EVERY_N_ITERATIONS = 25
 
 AGENTS_DIM = 1
 
@@ -340,29 +340,17 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerType]):
         self.n_total_iterations += 1
 
         ep_rew = compute_summary_statistics(
-            [ep['r'] for ep in episode_infos],
-            find_min=True, find_max=True,
-            compute_skewness=True, compute_kurtosis=True,
-            make_histogram=30
+            [ep['r'] for ep in episode_infos], find_min=True, find_max=True, make_histogram=30
         )
         ep_len = compute_summary_statistics(
-            [ep['l'] for ep in episode_infos],
-            find_min=True, find_max=True,
-            compute_skewness=True, compute_kurtosis=True,
-            make_histogram=30
+            [ep['l'] for ep in episode_infos], find_min=True, find_max=True, make_histogram=30
         )
         ep_time = compute_summary_statistics([ep['t'] for ep in episode_infos])
         ep_progress_rew = compute_summary_statistics(
-            [ep['progress_reward'] for ep in episode_infos],
-            find_min=True, find_max=True,
-            compute_skewness=True, compute_kurtosis=True,
-            make_histogram=30
+            [ep['progress_reward'] for ep in episode_infos], find_min=True, find_max=True, make_histogram=30
         )
         ep_guidance_rew = compute_summary_statistics(
-            [ep['guidance_reward'] for ep in episode_infos],
-            find_min=True, find_max=True,
-            compute_skewness=True, compute_kurtosis=True,
-            make_histogram=30
+            [ep['guidance_reward'] for ep in episode_infos], find_min=True, find_max=True, make_histogram=30
         )
 
         if update_ema:
@@ -499,15 +487,11 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerType]):
         metrics_timer = PerformanceTimer().start()
         with torch.no_grad():
             metrics: dict[str, Any] = {
-                **loss_metrics.compute_summary_statistics(
-                    find_min=True, find_max=True, compute_skewness=True, compute_kurtosis=True
-                ),
+                **loss_metrics.compute_summary_statistics(find_min=True, find_max=True),
                 'updates': n_updates,
                 'total_updates': self.n_total_updates,
                 'expl_var': explained_var,
-                'grad_norm': compute_summary_statistics(
-                    grad_norms, find_max=True, find_min=True, compute_skewness=True, compute_kurtosis=True,
-                ) if grad_norms else 0.0,
+                'grad_norm': compute_summary_statistics(grad_norms, find_max=True, find_min=True) if grad_norms else 0.0,
                 'grad_clip_frac': (n_grad_clipped / len(grad_norms)) if grad_norms else 0.0,
                 **detailed_grad_norm_metrics,
                 'total_compute_grad_norms_time': sum(compute_grad_norms_timings),
@@ -549,21 +533,14 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerType]):
                 if hasattr(dist, "log_stds"):
                     std_values = torch.exp(dist.log_stds)
                     metrics[f'std{i}'] = compute_summary_statistics(
-                        std_values, find_min=True, find_max=True,
-                        compute_skewness=True, compute_kurtosis=True,
-                        make_histogram=hist_bins
+                        std_values, find_min=True, find_max=True, make_histogram=hist_bins
                     )
                     can_split_stds = not (std_values.ndim >= 1 and std_values.shape[-1] == 1 and act_dim > 1)
                     if act_splitter is not None and can_split_stds:
                         split_stds = act_splitter(std_values)
                         for key, sub_stds in split_stds.items():
                             metrics[f'std{i}_{key}'] = compute_summary_statistics(
-                                sub_stds,
-                                find_min=True,
-                                find_max=True,
-                                compute_skewness=True,
-                                compute_kurtosis=True,
-                                make_histogram=hist_bins,
+                                sub_stds, find_min=True, find_max=True, make_histogram=hist_bins
                             )
 
         metrics_timer.stop()
@@ -573,10 +550,10 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerType]):
             'to_train_device_time': to_train_device_timer.get_duration(),
             'sampler_init_time': sampler_init_timer.get_duration(),
             'sampling_time': compute_summary_statistics(
-                sampling_timings, find_min=True, find_max=True, compute_kurtosis=True, compute_skewness=True),
+                sampling_timings, find_min=True, find_max=True),
             'total_sampling_time': sum(sampling_timings),
             'update_time': compute_summary_statistics(
-                update_timings, find_min=True, find_max=True, compute_kurtosis=True, compute_skewness=True),
+                update_timings, find_min=True, find_max=True),
             'total_update_time': sum(update_timings),
             'metrics_time': metrics_timer.get_duration(),
             'train_time': train_timer.get_duration(),

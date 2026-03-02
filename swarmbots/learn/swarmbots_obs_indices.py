@@ -3,6 +3,15 @@ from typing import Any
 from swarmbots.learn.obs_indices import ObsIndices
 
 
+def _hinges_per_limb(limb_type: str) -> int:
+    name = limb_type.removeprefix("LimbType.")
+    if name in ("xy", "zx"):
+        return 2
+    if name == "xyz":
+        return 3
+    raise ValueError(f"Unsupported limb type: {limb_type}")
+
+
 def build_obs_indices(
     env_settings: dict[str, Any],
     local_obs_dim: int,
@@ -13,11 +22,12 @@ def build_obs_indices(
     quat_rot6d_representation = bool(scenario_settings.get("quat_rot6d_representation", False))
 
     swarm_config = scenario_settings["swarm"]["config"]
-    limbs_per_unit = len(swarm_config["unit_config"])
+    unit_config = swarm_config["unit_config"]
+    limbs_per_unit = len(unit_config)
     include_connectors_xpos_in_obs = bool(scenario_settings["include_connectors_xpos_in_obs"])
     include_connectors_xquat_in_obs = bool(scenario_settings["include_connectors_xquat_in_obs"])
 
-    num_hinges = limbs_per_unit * 2
+    num_hinges = sum(_hinges_per_limb(limb["type"]) for limb in unit_config)
     free_joint_rot_dim = 6 if quat_rot6d_representation else 4
     qpos_obs_dim = 3 + free_joint_rot_dim + 2 * num_hinges
     qvel_dim = 6 + num_hinges
@@ -32,7 +42,7 @@ def build_obs_indices(
     if local_obs_dim != expected_local_dim:
         raise ValueError(
             "Unexpected local_obs_dim for obs indices. "
-            f"{local_obs_dim=} {expected_local_dim=} {limbs_per_unit=}"
+            f"{local_obs_dim=} {expected_local_dim=} {limbs_per_unit=} {num_hinges=}"
         )
 
     connector_obs_offset = qpos_obs_dim + qvel_dim

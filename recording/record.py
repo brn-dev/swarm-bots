@@ -31,7 +31,7 @@ from swarmbots.mj_env.swarm.homogeneous_swarm import (
     HomogeneousSwarm,
     PreConnectedUnitLocationsConfig,
 )
-from swarmbots.mj_env.swarm.unit_config import UNIT_CONFIG_TETRAHEDRON_YX
+from swarmbots.mj_env.swarm.unit_config import UNIT_CONFIG_TETRAHEDRON_XY
 from swarmbots.mj_env.swarm_bots_env import SwarmBotsEnv
 
 
@@ -47,7 +47,7 @@ def make_env_fn(
     def _init() -> SwarmBotsEnv:
         scenario = default_wall(
             swarm=HomogeneousSwarm(
-                unit_config=UNIT_CONFIG_TETRAHEDRON_YX,
+                unit_config=UNIT_CONFIG_TETRAHEDRON_XY,
                 unit_start_locations=PreConnectedUnitLocationsConfig(
                     num_units=4,
                     num_unit_probs={

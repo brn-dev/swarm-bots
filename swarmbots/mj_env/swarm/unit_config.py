@@ -10,8 +10,9 @@ def _unit_vec(vec: list[int | float]) -> np.ndarray:
 
 
 class LimbType(int, enum.Enum):
-    yx = 0
+    xy = 0
     zx = 1
+    xyz = 2
 
 @dataclass
 class LimbConfig:
@@ -46,16 +47,16 @@ UNIT_CONFIG_TETRAHEDRON_ZX: UnitConfig = (
     LimbConfig('mmp', _unit_vec([-1, -1,  1]), LimbType.zx, (1, 1, 0, 1)),
 )
 
-UNIT_CONFIG_TETRAHEDRON_YX: UnitConfig = (
-    LimbConfig('ppp', _unit_vec([ 1,  1,  1]), LimbType.yx, (1, 0, 0, 1)),
-    LimbConfig('pmm', _unit_vec([ 1, -1, -1]), LimbType.yx, (0, 1, 0, 1)),
-    LimbConfig('mpm', _unit_vec([-1,  1, -1]), LimbType.yx, (0, 0, 1, 1)),
-    LimbConfig('mmp', _unit_vec([-1, -1,  1]), LimbType.yx, (1, 1, 0, 1)),
+UNIT_CONFIG_TETRAHEDRON_XY: UnitConfig = (
+    LimbConfig('ppp', _unit_vec([ 1,  1,  1]), LimbType.xy, (1, 0, 0, 1)),
+    LimbConfig('pmm', _unit_vec([ 1, -1, -1]), LimbType.xy, (0, 1, 0, 1)),
+    LimbConfig('mpm', _unit_vec([-1,  1, -1]), LimbType.xy, (0, 0, 1, 1)),
+    LimbConfig('mmp', _unit_vec([-1, -1,  1]), LimbType.xy, (1, 1, 0, 1)),
 )
 
-UNIT_CONFIG_TETRAHEDRON_ZX_YX_MIX: UnitConfig = (
-    LimbConfig('ppp', _unit_vec([ 1,  1,  1]), LimbType.zx, (1, 0, 0, 1)),
-    LimbConfig('pmm', _unit_vec([ 1, -1, -1]), LimbType.zx, (0, 1, 0, 1)),
-    LimbConfig('mpm', _unit_vec([-1,  1, -1]), LimbType.yx, (0, 0, 1, 1)),
-    LimbConfig('mmp', _unit_vec([-1, -1,  1]), LimbType.yx, (1, 1, 0, 1)),
+UNIT_CONFIG_TETRAHEDRON_XYZ: UnitConfig = (
+    LimbConfig('ppp', _unit_vec([ 1,  1,  1]), LimbType.xyz, (1, 0, 0, 1)),
+    LimbConfig('pmm', _unit_vec([ 1, -1, -1]), LimbType.xyz, (0, 1, 0, 1)),
+    LimbConfig('mpm', _unit_vec([-1,  1, -1]), LimbType.xyz, (0, 0, 1, 1)),
+    LimbConfig('mmp', _unit_vec([-1, -1,  1]), LimbType.xyz, (1, 1, 0, 1)),
 )
