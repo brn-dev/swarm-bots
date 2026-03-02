@@ -4,6 +4,7 @@ import numpy as np
 
 from swarmbots.mj_env.scenarios.bridge_scenario import BridgeScenario
 from swarmbots.mj_env.scenarios.obstacle_street_scenario import ObstacleStreetScenario
+from swarmbots.mj_env.scenarios.base_scenario import ActuatorsActivationRewardType
 from swarmbots.mj_env.swarm.base_swarm import BaseSwarm
 from swarmbots.mj_env.swarm.homogeneous_swarm import HomogeneousSwarm, PreConnectedUnitLocationsConfig
 from swarmbots.mj_env.swarm.unit_config import UNIT_CONFIG_TETRAHEDRON_XYZ
@@ -16,6 +17,8 @@ DEFAULT_KWARGS = {
     'actuators_activation_reward_weight': -1e-3,
     'actuators_activation_reward_power': 4,
     'actuators_activation_reward_threshold': 0.8,
+    'actuators_activation_reward_type': ActuatorsActivationRewardType.MONOMIAL,
+    'actuators_activation_reward_clip': 20.0,
     'hinge_qvel_magnitude_reward_weight': -5e-6,
     'hinge_qvel_magnitude_reward_threshold': 8.0,
     'units_without_connections_reward_weight': -5e-5,

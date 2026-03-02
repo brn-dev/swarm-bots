@@ -373,7 +373,7 @@ def main() -> None:
 
     auto_lr = AutomaticLearningRate(
         initial_lr=cold_lr,
-        max_lr=1e-4,
+        max_lr=3e-4,
         updater=auto_lr_updater
     )
     ppo = PPOWM(

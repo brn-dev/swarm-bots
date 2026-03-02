@@ -90,6 +90,7 @@ class BaseScenario(abc.ABC):
             actuators_activation_reward_power: int,
             actuators_activation_reward_threshold: float,
             actuators_activation_reward_type: ActuatorsActivationRewardType,
+            actuators_activation_reward_clip: float,
             hinge_qvel_magnitude_reward_weight: float,
             hinge_qvel_magnitude_reward_threshold: float,
             units_without_connections_reward_weight: float,
@@ -141,6 +142,8 @@ class BaseScenario(abc.ABC):
             "actuators_activation_reward_weight": actuators_activation_reward_weight,
             "actuators_activation_reward_power": actuators_activation_reward_power,
             "actuators_activation_reward_threshold": actuators_activation_reward_threshold,
+            "actuators_activation_reward_type": actuators_activation_reward_type,
+            "actuators_activation_reward_clip": actuators_activation_reward_clip,
             "hinge_qvel_magnitude_reward_weight": hinge_qvel_magnitude_reward_weight,
             "hinge_qvel_magnitude_reward_threshold": hinge_qvel_magnitude_reward_threshold,
             "units_without_connections_reward_weight": units_without_connections_reward_weight,
@@ -753,8 +756,9 @@ class BaseScenario(abc.ABC):
                     actuator_magnitude,
                     1 + rw["actuators_activation_reward_power"],  # +1 makes it more similar to monomial
                 )
-                actuator_activation = -np.log(1 - actuator_activation)
-                actuator_activation = np.clip(actuator_activation, 0, rw["actuators_activation_reward_clip"])
+                actuator_activation_reward_clip = rw["actuators_activation_reward_clip"]
+                actuator_activation = np.clip(actuator_activation, 0.0, 1.0 - np.exp(-actuator_activation_reward_clip))
+                actuator_activation = -np.log1p(-actuator_activation)
             else:
                 raise ValueError(actuators_activation_reward_type)
 
@@ -859,6 +863,13 @@ class BaseScenario(abc.ABC):
             for key, value in reward_weights.items():
                 if key == "actuators_activation_reward_power":
                     new_reward_weights[key] = int(value)
+                elif key == "actuators_activation_reward_type":
+                    if isinstance(value, ActuatorsActivationRewardType):
+                        new_reward_weights[key] = value
+                    elif isinstance(value, str):
+                        new_reward_weights[key] = ActuatorsActivationRewardType[value.upper()]
+                    else:
+                        new_reward_weights[key] = ActuatorsActivationRewardType(int(value))
                 else:
                     new_reward_weights[key] = float(value)
                 updated_keys.append(key)
