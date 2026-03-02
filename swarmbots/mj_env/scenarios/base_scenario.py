@@ -1,5 +1,6 @@
 import abc
 import math
+from enum import Enum
 from typing import Any, Iterable, TypedDict, Literal, NotRequired, Optional
 
 import mujoco
@@ -12,6 +13,10 @@ from swarmbots.learn.performance_timer import PerformanceTimer
 from swarmbots.mj_env.quat_rot6d import quat_to_rot6d
 from swarmbots.mj_env.swarm.base_swarm import BaseSwarm
 from swarmbots.mj_env.swarm.swarm_connections import SwarmConnections
+
+class ActuatorsActivationRewardType(Enum):
+    MONOMIAL = 1
+    LOG1M = 2
 
 class SwarmObsDict(TypedDict):
     local_obs: np.ndarray  # shape (n_unit, n_obs_per_unit)
@@ -26,15 +31,22 @@ class SwarmActDict(TypedDict):
 class RewardWeights(TypedDict, total=False):
     progress_reward_weight: float
     guidance_reward_weight: float
+
     actuators_activation_reward_weight: float
     actuators_activation_reward_power: int
     actuators_activation_reward_threshold: float
+    actuators_activation_reward_type: ActuatorsActivationRewardType
+    actuators_activation_reward_clip: float
+
     hinge_qvel_magnitude_reward_weight: float
     hinge_qvel_magnitude_reward_threshold: float
+
     units_without_connections_reward_weight: float
     units_with_double_connection_reward_weight: float
+
     movement_reward_weight: float
     height_reward_weight: float
+
     connectors_stayed_active_reward_weight: float
     connectors_successfully_activated_reward_weight: float
     connectors_unsuccessfully_activated_reward_weight: float
@@ -77,6 +89,7 @@ class BaseScenario(abc.ABC):
             actuators_activation_reward_weight: float,
             actuators_activation_reward_power: int,
             actuators_activation_reward_threshold: float,
+            actuators_activation_reward_type: ActuatorsActivationRewardType,
             hinge_qvel_magnitude_reward_weight: float,
             hinge_qvel_magnitude_reward_threshold: float,
             units_without_connections_reward_weight: float,
@@ -723,14 +736,28 @@ class BaseScenario(abc.ABC):
             actuator_activation = 0.0
         else:
             actuator_magnitude = np.abs(actuators)
-            actuator_activation = np.power(
-                actuator_magnitude,
-                rw["actuators_activation_reward_power"],
-            )
+
             activation_threshold = rw["actuators_activation_reward_threshold"]
             if activation_threshold > 0:
                 threshold_mask = actuator_magnitude <= activation_threshold
-                actuator_activation[threshold_mask] = 0.0
+                actuator_magnitude[threshold_mask] = 0.0
+
+            actuators_activation_reward_type = rw["actuators_activation_reward_type"]
+            if actuators_activation_reward_type == ActuatorsActivationRewardType.MONOMIAL:
+                actuator_activation = np.power(
+                    actuator_magnitude,
+                    rw["actuators_activation_reward_power"],
+                )
+            elif actuators_activation_reward_type == ActuatorsActivationRewardType.LOG1M:
+                actuator_activation = np.power(
+                    actuator_magnitude,
+                    1 + rw["actuators_activation_reward_power"],  # +1 makes it more similar to monomial
+                )
+                actuator_activation = -np.log(1 - actuator_activation)
+                actuator_activation = np.clip(actuator_activation, 0, rw["actuators_activation_reward_clip"])
+            else:
+                raise ValueError(actuators_activation_reward_type)
+
             actuator_activation = actuator_activation.mean()
         reward += actuator_activation * rw['actuators_activation_reward_weight']
 

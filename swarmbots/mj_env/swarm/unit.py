@@ -4,13 +4,36 @@ from typing import TypeAlias
 from swarmbots.mj_env.swarm.swarm_config import get_connector_suffix
 from swarmbots.mj_env.swarm.unit_config import UnitConfig, LimbConfig, LimbType
 
-HingeJointParam: TypeAlias = float | tuple[float, float]
+HingeJointParam: TypeAlias = float | tuple[float, ...]
 
 
-def _as_hinge_pair(value: HingeJointParam) -> tuple[float, float]:
+def _limb_joint_specs(limb_type: LimbType) -> tuple[tuple[str, tuple[float, float, float]], ...]:
+    if limb_type == LimbType.xy:
+        return (
+            ("hinge1x", (1.0, 0.0, 0.0)),
+            ("hinge2y", (0.0, 1.0, 0.0)),
+        )
+    if limb_type == LimbType.zx:
+        return (
+            ("hinge1z", (0.0, 0.0, 1.0)),
+            ("hinge2x", (1.0, 0.0, 0.0)),
+        )
+    if limb_type == LimbType.xyz:
+        return (
+            ("hinge1x", (1.0, 0.0, 0.0)),
+            ("hinge2y", (0.0, 1.0, 0.0)),
+            ("hinge3z", (0.0, 0.0, 1.0)),
+        )
+    raise NotImplementedError(limb_type)
+
+
+def _resolve_joint_params(value: HingeJointParam, n_joints: int) -> tuple[float, ...]:
     if isinstance(value, tuple):
+        if len(value) != n_joints:
+            raise ValueError()
         return value
-    return value, value
+    scalar = float(value)
+    return (scalar,) * n_joints
 
 
 def init_unit(
@@ -39,12 +62,12 @@ def init_unit(
         rgba=body_rgba
     )
 
-    hinge1_armature, hinge2_armature = _as_hinge_pair(hinge_armature)
-    hinge1_damping, hinge2_damping = _as_hinge_pair(hinge_damping)
-    hinge1_frictionloss, hinge2_frictionloss = _as_hinge_pair(hinge_frictionloss)
-
     for i, limb_config in enumerate(unit_config):
         hip_pos = body_radius * limb_config.vec
+        joint_specs = _limb_joint_specs(limb_config.type)
+        joint_armatures = _resolve_joint_params(hinge_armature, len(joint_specs))
+        joint_dampings = _resolve_joint_params(hinge_damping, len(joint_specs))
+        joint_frictionlosses = _resolve_joint_params(hinge_frictionloss, len(joint_specs))
 
         limb_root = body.add_body(
             name=f'-{i}-limb_root',
@@ -61,12 +84,10 @@ def init_unit(
             radius=leg_radius,
             hinge_range=hinge_range,
             segment_1_ratio=segment_1_ratio,
-            hinge1_armature=hinge1_armature,
-            hinge2_armature=hinge2_armature,
-            hinge1_damping=hinge1_damping,
-            hinge2_damping=hinge2_damping,
-            hinge1_frictionloss=hinge1_frictionloss,
-            hinge2_frictionloss=hinge2_frictionloss,
+            joint_specs=joint_specs,
+            joint_armatures=joint_armatures,
+            joint_dampings=joint_dampings,
+            joint_frictionlosses=joint_frictionlosses,
         )
 
     return body
@@ -80,77 +101,49 @@ def _build_limb(
         radius: float,
         hinge_range: float,
         segment_1_ratio: float,
-        hinge1_armature: float,
-        hinge2_armature: float,
-        hinge1_damping: float,
-        hinge2_damping: float,
-        hinge1_frictionloss: float,
-        hinge2_frictionloss: float,
+        joint_specs: tuple[tuple[str, tuple[float, float, float]], ...],
+        joint_armatures: tuple[float, ...],
+        joint_dampings: tuple[float, ...],
+        joint_frictionlosses: tuple[float, ...],
 ):
     rgba = tuple(limb_config.rgba)
+    if len(joint_specs) < 2:
+        raise ValueError(f"Expected at least 2 joints per limb, got {len(joint_specs)}")
 
-    first_segment = parent_body.add_body(name=limb_config.name)
+    segment_lengths = [length * segment_1_ratio]
+    remaining_length = length * (1 - segment_1_ratio)
+    segment_lengths.extend([remaining_length / (len(joint_specs) - 1)] * (len(joint_specs) - 1))
 
-    if limb_config.type == LimbType.yx:
-        hinge1_name = f'-{limb_idx}-hinge1y'
-        hinge1 = first_segment.add_joint(
+    hinge_names: list[str] = []
+    parent_segment = parent_body
+    tip_offset = 0.0
+
+    for joint_idx, ((joint_suffix, axis), seg_length) in enumerate(zip(joint_specs, segment_lengths, strict=True)):
+        segment_name = limb_config.name if joint_idx == 0 else f'-{limb_idx}-seg{joint_idx + 1}'
+        segment_body = parent_segment.add_body(name=segment_name, pos=[0, 0, tip_offset])
+        hinge_name = f'-{limb_idx}-{joint_suffix}'
+        segment_body.add_joint(
             type=mujoco.mjtJoint.mjJNT_HINGE,
-            axis=[0, 1, 0],
+            axis=list(axis),
             range=[-hinge_range, hinge_range],
-            name=hinge1_name,
-            armature=hinge1_armature,
-            damping=hinge1_damping,
-            frictionloss=hinge1_frictionloss,
+            name=hinge_name,
+            armature=joint_armatures[joint_idx],
+            damping=joint_dampings[joint_idx],
+            frictionloss=joint_frictionlosses[joint_idx],
         )
-    elif limb_config.type == LimbType.zx:
-        hinge1_name = f'-{limb_idx}-hinge1z'
-        hinge1 = first_segment.add_joint(
-            type=mujoco.mjtJoint.mjJNT_HINGE,
-            axis=[0, 0, 1],
-            name=hinge1_name,
-            armature=hinge1_armature,
-            damping=hinge1_damping,
-            frictionloss=hinge1_frictionloss,
+        segment_body.add_geom(
+            type=mujoco.mjtGeom.mjGEOM_CYLINDER,
+            fromto=[0, 0, 0, 0, 0, seg_length],
+            size=[radius, 0, 0],
+            rgba=rgba,
         )
-    else:
-        raise NotImplementedError(limb_config.type)
+        hinge_names.append(hinge_name)
+        parent_segment = segment_body
+        tip_offset = seg_length
 
-    length1 = length * segment_1_ratio
-
-    first_segment.add_geom(
-        type=mujoco.mjtGeom.mjGEOM_CYLINDER,
-        fromto=[0, 0, 0, 0, 0, length1],
-        size=[radius, 0, 0], # cylinder radius
-        rgba=rgba
-    )
-
-    second_segment = first_segment.add_body(
-        name=f'-{limb_idx}-seg2',
-        pos=[0, 0, length1]
-    )
-
-    hinge2_name = f'-{limb_idx}-hinge2x'
-    hinge2 = second_segment.add_joint(
-        type=mujoco.mjtJoint.mjJNT_HINGE,
-        axis=[1, 0, 0],
-        range=[-hinge_range, hinge_range],
-        name=hinge2_name,
-        armature=hinge2_armature,
-        damping=hinge2_damping,
-        frictionloss=hinge2_frictionloss,
-    )
-
-    length2 = length * (1 - segment_1_ratio)
-    second_segment.add_geom(
-        type=mujoco.mjtGeom.mjGEOM_CYLINDER,
-        fromto=[0, 0, 0, 0, 0, length2],
-        size=[radius, 0, 0],
-        rgba=rgba
-    )
-
-    connector: mujoco.MjsBody = second_segment.add_body(
+    connector: mujoco.MjsBody = parent_segment.add_body(
         name=get_connector_suffix(limb_idx),
-        pos=[0, 0, length2]
+        pos=[0, 0, tip_offset]
     )
     connector.add_geom(
         type=mujoco.mjtGeom.mjGEOM_CYLINDER,
@@ -159,13 +152,9 @@ def _build_limb(
         rgba=rgba
     )
 
-    spec.add_actuator(
-        target=hinge1_name,
-        trntype=mujoco.mjtTrn.mjTRN_JOINT,
-        name=f'-{limb_idx}-actuator0'
-    )
-    spec.add_actuator(
-        target=hinge2_name,
-        trntype=mujoco.mjtTrn.mjTRN_JOINT,
-        name=f'-{limb_idx}-actuator1'
-    )
+    for actuator_idx, hinge_name in enumerate(hinge_names):
+        spec.add_actuator(
+            target=hinge_name,
+            trntype=mujoco.mjtTrn.mjTRN_JOINT,
+            name=f'-{limb_idx}-actuator{actuator_idx}'
+        )

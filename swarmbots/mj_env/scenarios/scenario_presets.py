@@ -6,13 +6,14 @@ from swarmbots.mj_env.scenarios.bridge_scenario import BridgeScenario
 from swarmbots.mj_env.scenarios.obstacle_street_scenario import ObstacleStreetScenario
 from swarmbots.mj_env.swarm.base_swarm import BaseSwarm
 from swarmbots.mj_env.swarm.homogeneous_swarm import HomogeneousSwarm, PreConnectedUnitLocationsConfig
+from swarmbots.mj_env.swarm.unit_config import UNIT_CONFIG_TETRAHEDRON_XYZ
 
 DEFAULT_KWARGS = {
     'friction': [2, 1e-2, 2e-4],
     'force_elliptic_cone': True,
     'actuator_strength': 15.0,
     'guidance_reward_weight': 1.00,
-    'actuators_activation_reward_weight': -5e-4,
+    'actuators_activation_reward_weight': -1e-3,
     'actuators_activation_reward_power': 4,
     'actuators_activation_reward_threshold': 0.8,
     'hinge_qvel_magnitude_reward_weight': -5e-6,
@@ -37,6 +38,7 @@ def _resolve_swarm(
         swarm: BaseSwarm | None,
         unit_start_locations: list[tuple[float, float, float]] | str | None = None,
         randomize_unit_orientations: bool = False,
+        joints: str = 'xyz'
 ) -> BaseSwarm:
     assert swarm is None or unit_start_locations is None
 
@@ -57,15 +59,29 @@ def _resolve_swarm(
             z_pos=0.5,
         )
 
+    joint_configs = {
+        'zx': {
+            'unit_config': UNIT_CONFIG_TETRAHEDRON_XYZ,
+            'hinge_armature': (0.02, 0.015),
+            'hinge_damping': (0.2, 0.15),
+            'hinge_frictionloss': (0.2, 0.15),
+        },
+        'xyz': {
+            'unit_config': UNIT_CONFIG_TETRAHEDRON_XYZ,
+            'hinge_armature': (0.015, 0.015, 0.025),
+            'hinge_damping': (0.15, 0.15, 0.5),
+            'hinge_frictionloss': (0.15, 0.15, 0.5),
+        }
+
+    }
+
     return HomogeneousSwarm(
+        **joint_configs[joints],
         unit_start_locations=unit_start_locations,
         body_radius=0.1,
         leg_length=0.2,
         leg_radius=0.025,
         hinge_range=np.pi / 3,
-        hinge_armature=(0.02, 0.015),
-        hinge_damping=(0.2, 0.15),
-        hinge_frictionloss=(0.2, 0.15),
         connection_torquescale=50.0,
         randomize_unit_orientations=randomize_unit_orientations,
     )

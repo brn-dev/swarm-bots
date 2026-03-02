@@ -84,18 +84,26 @@ def wrap_vec_env(
     return env
 
 
-def split_actuator_joints(actions: torch.Tensor) -> dict[str, torch.Tensor]:
+def split_actuator_joints(actions: torch.Tensor, actuators_per_limb: int) -> dict[str, torch.Tensor]:
     return {
-        'j0': actions[..., 0::2],
-        'j1': actions[..., 1::2],
+        f'j{i}': actions[..., i::actuators_per_limb]
+        for i in range(actuators_per_limb)
     }
 
 
-def set_actuator_gsde_init_joint_stds(policy: MATNOPPolicy, joint0_std: float, joint1_std: float) -> None:
+def set_actuator_gsde_init_joint_stds(
+        policy: MATNOPPolicy,
+        actuators_per_limb: int,
+        joint_stds: list[float]
+) -> None:
+    if len(joint_stds) != actuators_per_limb:
+        raise ValueError()
+
     gsde_dist = next((dist for dist in policy.action_dist.distributions if isinstance(dist, GSDEActionDist)), None)
+
     with torch.no_grad():
-        gsde_dist.log_stds[:, 0::2] = math.log(joint0_std)
-        gsde_dist.log_stds[:, 1::2] = math.log(joint1_std)
+        for i, joint_std in enumerate(joint_stds):
+            gsde_dist.log_stds[:, i::actuators_per_limb] = math.log(joint_std)
 
 
 def main() -> None:
@@ -121,8 +129,7 @@ def main() -> None:
     world_model_num_next_steps = 3
     world_model_target_tau = None
 
-    gsde_init_std_joint0 = 0.20
-    gsde_init_std_joint1 = 0.25
+    gsde_init_stds = [0.25, 0.25, 0.15]
 
     # =====  ID  =====
     run_id = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
@@ -219,6 +226,12 @@ def main() -> None:
     print(f"global_obs_dim: {env.global_obs_dim}")
     print(f"actuators_dim: {env.actuators_dim}")
     print(f"connectors_dim: {env.connectors_dim}")
+    if env.connectors_dim <= 0 or env.actuators_dim % env.connectors_dim != 0:
+        raise ValueError(
+            f"Expected actuators_dim divisible by connectors_dim, got {env.actuators_dim=} {env.connectors_dim=}"
+        )
+    actuators_per_limb = env.actuators_dim // env.connectors_dim
+    print(f"actuators_per_limb: {actuators_per_limb}")
 
     print("Initializing Policy...")
     policy = MATNOPPolicy(
@@ -276,8 +289,8 @@ def main() -> None:
     )
     set_actuator_gsde_init_joint_stds(
         policy=policy,
-        joint0_std=gsde_init_std_joint0,
-        joint1_std=gsde_init_std_joint1,
+        actuators_per_limb=actuators_per_limb,
+        joint_stds=gsde_init_stds,
     )
     print(policy)
 
@@ -297,14 +310,14 @@ def main() -> None:
             early_stop_epoch: Optional[int],
             metrics: dict[str, Any]
     ) -> AutomaticLearningRateUpdateResult:
-        if early_stop_epoch is not None and early_stop_epoch < 4:
+        if early_stop_epoch is not None and early_stop_epoch == 0:
             state['counter'] = 0
             state['warmup'] = False
-            decay_factor = 0.95 if early_stop_epoch > 0 else 0.8
+            decay_factor = 0.75
             return {
                 'new_lr': old_lr * decay_factor,
                 'msg': f'epoch={early_stop_epoch}',
-                'event': 'min_epoch_hit'
+                'event': 'zero_epoch_hit'
             }
 
         if early_stop_kl_div is not None and early_stop_kl_div > 0.0125:
@@ -318,7 +331,7 @@ def main() -> None:
             }
 
         clip_frac_stats: Optional[SummaryStatistics] = metrics.get('clip_frac', None)
-        if clip_frac_stats and clip_frac_stats.mean > 0.175:
+        if clip_frac_stats and clip_frac_stats.mean > 0.19:
             state['counter'] = 0
             state['warmup'] = False
             clip_frac = clip_frac_stats.mean
@@ -327,6 +340,16 @@ def main() -> None:
                 'new_lr': old_lr * decay_factor,
                 'msg': f'{clip_frac=:.3f}',
                 'event': 'max_clip_frac_hit'
+            }
+
+        if early_stop_epoch is not None and early_stop_epoch < 4:
+            state['counter'] = 0
+            state['warmup'] = False
+            decay_factor = 0.95
+            return {
+                'new_lr': old_lr * decay_factor,
+                'msg': f'epoch={early_stop_epoch}',
+                'event': 'min_epoch_hit'
             }
 
         warmup: bool = state.get('warmup', warmup_iterations > 0) and n_iterations <= warmup_iterations
@@ -357,9 +380,9 @@ def main() -> None:
         policy=policy,
         env=env,
         learning_rate=auto_lr,
-        rollout_mode=StepsRolloutMode(8096),
+        rollout_mode=StepsRolloutMode(8096 * 2),
         max_episode_length=episode_length,
-        batch_size=8096,
+        batch_size=8096 * 2,
         n_epochs=5,
         gamma=gamma,
         gae_lambda=0.95,
@@ -376,7 +399,7 @@ def main() -> None:
         world_model_num_next_steps=world_model_num_next_steps,
         world_model_loss_coef=world_model_loss_coef,
         world_model_target_tau=world_model_target_tau,
-        metrics_action_splitters=[split_actuator_joints, None],
+        metrics_action_splitters=[lambda actions: split_actuator_joints(actions, actuators_per_limb), None],
     )
 
     if load_path:
@@ -384,6 +407,40 @@ def main() -> None:
         ppo.load(load_path, recover_best_return_ema=False, strict_load_state_dict=True)
 
     print("Starting training...")
+    logging_console_keys: list[tuple[str, str | SummaryStatisticsFormat | None] | tuple[str, str | SummaryStatisticsFormat | None, str]] = [
+        ('iteration', '5', 'it'),
+        ('timesteps', '8', 'steps'),
+        ('total_updates', '6', 'tot_upd'),
+        ('act0', SummaryStatisticsFormat(histogram=10)),
+    ]
+    logging_console_keys.extend(
+        (f'act0_j{i}', SummaryStatisticsFormat(histogram=10))
+        for i in range(actuators_per_limb)
+    )
+    logging_console_keys.append(
+        ('std0', SummaryStatisticsFormat(mean='.3f', std='.3f', min_value='.3f', max_value='.3f'))
+    )
+    logging_console_keys.extend(
+        (f'std0_j{i}', SummaryStatisticsFormat(mean='.3f', std='.3f', min_value='.3f', max_value='.3f'))
+        for i in range(actuators_per_limb)
+    )
+    logging_console_keys.extend([
+        ('act1', SummaryStatisticsFormat(histogram=2)),
+        ('updates', '3', 'upd'),
+        ('approx_kl', SummaryStatisticsFormat(mean='.3f', std='.3f', max_value='.3f')),
+        ('clip_frac', None),
+        ('ratio', SummaryStatisticsFormat(mean='.3f', std='.3f', min_value='.1e', max_value='.3f')),
+        ('wm_loss_scaled', None, 'wm_loss'),
+        ('val_loss_scaled', None, 'val_loss'),
+        ('expl_var', '.3f'),
+        ('popart_mu', '.3f', 'pa_mu'),
+        ('popart_sigma', '.3f', 'pa_sigma'),
+        ('ep_rew', SummaryStatisticsFormat(mean=' .2f', std='.2f', max_value=' .2f', n='1')),
+        ('ep_rew_ema', ' .3f'),
+        ('best_ep_rew_ema', ' .3f', 'best_ema'),
+        ('fps', None),
+    ])
+
     ppo.learn(
         max_total_timesteps=total_timesteps,
         run_dir=run_dir,
@@ -396,31 +453,7 @@ def main() -> None:
             'env_settings': env_settings,
             'script': Path(__file__).read_text(encoding='utf-8')
         },
-        logging_console_keys=[
-            ('iteration', '5', 'it'),
-            ('timesteps', '8', 'steps'),
-            ('total_updates', '6', 'tot_upd'),
-            ('act0', SummaryStatisticsFormat(histogram=10)),
-            ('act0_j0', SummaryStatisticsFormat(histogram=10)),
-            ('act0_j1', SummaryStatisticsFormat(histogram=10)),
-            ('std0', SummaryStatisticsFormat(mean='.3f', std='.3f', min_value='.3f', max_value='.3f')),
-            ('std0_j0', SummaryStatisticsFormat(mean='.3f', std='.3f', min_value='.3f', max_value='.3f')),
-            ('std0_j1', SummaryStatisticsFormat(mean='.3f', std='.3f', min_value='.3f', max_value='.3f')),
-            ('act1', SummaryStatisticsFormat(histogram=2)),
-            ('updates', '3', 'upd'),
-            ('approx_kl', SummaryStatisticsFormat(mean='.3f', std='.3f', max_value='.3f')),
-            ('clip_frac', None),
-            ('ratio', SummaryStatisticsFormat(mean='.3f', std='.3f', min_value='.1e', max_value='.3f')),
-            ('wm_loss_scaled', None, 'wm_loss'),
-            ('val_loss_scaled', None, 'val_loss'),
-            ('expl_var', '.3f'),
-            ('popart_mu', '.3f', 'pa_mu'),
-            ('popart_sigma', '.3f', 'pa_sigma'),
-            ('ep_rew', SummaryStatisticsFormat(mean=' .2f', std='.2f', max_value=' .2f', n='1')),
-            ('ep_rew_ema', ' .3f'),
-            ('best_ep_rew_ema', ' .3f', 'best_ema'),
-            ('fps', None),
-        ],
+        logging_console_keys=logging_console_keys,
         make_record_env=make_record_env
     )
 

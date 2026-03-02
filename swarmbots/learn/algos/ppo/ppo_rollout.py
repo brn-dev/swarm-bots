@@ -191,14 +191,11 @@ def _build_rollout_metrics(
     return {
         'env_reset_time': env_reset_time,
         'to_rollout_device_time': to_rollout_device_time,
-        'reset_noise_time': compute_summary_statistics(
-            timers.reset_noise_timings, find_min=True, find_max=True, compute_skewness=True, compute_kurtosis=True),
+        'reset_noise_time': compute_summary_statistics(timers.reset_noise_timings, find_min=True, find_max=True),
         'total_reset_noise_time': sum(timers.reset_noise_timings),
-        'policy_forward_time': compute_summary_statistics(
-            timers.policy_forward_timings, find_min=True, find_max=True, compute_skewness=True, compute_kurtosis=True),
+        'policy_forward_time': compute_summary_statistics(timers.policy_forward_timings, find_min=True, find_max=True),
         'total_policy_forward_time': sum(timers.policy_forward_timings),
-        'env_step_time': compute_summary_statistics(
-            timers.env_step_timings, find_min=True, find_max=True, compute_skewness=True, compute_kurtosis=True),
+        'env_step_time': compute_summary_statistics(timers.env_step_timings, find_min=True, find_max=True),
         'total_env_step_time': sum(timers.env_step_timings),
         'buffer_add_time': compute_summary_statistics(timers.buffer_add_timings),
         'total_buffer_add_time': sum(timers.buffer_add_timings),

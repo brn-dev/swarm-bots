@@ -12,7 +12,7 @@ from swarmbots.mj_env.swarm.base_swarm import BaseSwarm
 from swarmbots.mj_env.swarm.swarm_config import SwarmConfig
 from swarmbots.mj_env.swarm.swarm_connections import SwarmConnections
 from swarmbots.mj_env.swarm.unit import init_unit
-from swarmbots.mj_env.swarm.unit_config import UnitConfig, UNIT_CONFIG_TETRAHEDRON_YX, UNIT_CONFIG_TETRAHEDRON_ZX
+from swarmbots.mj_env.swarm.unit_config import UnitConfig, UNIT_CONFIG_TETRAHEDRON_XY, UNIT_CONFIG_TETRAHEDRON_ZX
 
 UNIT_START_LOCATION_PRESETS = {
     '4:diamond': [
@@ -79,7 +79,7 @@ T = TypeVar('T')
 Tuple2: TypeAlias = tuple[T, T]
 Tuple3: TypeAlias = tuple[T, T, T]
 Tuple2or3: TypeAlias = Tuple2 | Tuple3
-HingeJointParam: TypeAlias = float | tuple[float, float]
+HingeJointParam: TypeAlias = float | tuple[float, ...]
 
 def _normalize_tuple2or3(tup: Tuple2or3[T], default_val: T) -> Tuple3[T]:
     l = len(tup)
@@ -153,7 +153,7 @@ class HomogeneousSwarm(BaseSwarm):
             self,
             unit_start_locations: UnitStartLocations | str,
             unit_start_quats: list[tuple[float, float, float, float]] | None = None,
-            unit_config: UnitConfig = UNIT_CONFIG_TETRAHEDRON_ZX,
+            unit_config: UnitConfig = UNIT_CONFIG_TETRAHEDRON_XY,
             body_radius: float = 0.1,
             leg_length: float = 0.2,
             leg_radius: float = 0.025,

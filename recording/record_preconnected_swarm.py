@@ -10,7 +10,7 @@ import moviepy.video.io.ImageSequenceClip
 
 from swarmbots.mj_env.scenarios.scenario_presets import default_wall
 from swarmbots.mj_env.swarm.homogeneous_swarm import HomogeneousSwarm, PreConnectedUnitLocationsConfig
-from swarmbots.mj_env.swarm.unit_config import UNIT_CONFIG_TETRAHEDRON_YX
+from swarmbots.mj_env.swarm.unit_config import UNIT_CONFIG_TETRAHEDRON_XY
 from swarmbots.mj_env.swarm_bots_env import SwarmBotsEnv
 
 
@@ -42,7 +42,7 @@ def main() -> None:
     swarm = HomogeneousSwarm(
         unit_start_locations=PreConnectedUnitLocationsConfig(
             num_units=args.num_units,
-            unit_config=UNIT_CONFIG_TETRAHEDRON_YX,
+            unit_config=UNIT_CONFIG_TETRAHEDRON_XY,
             max_radius=args.max_radius,
             z_pos=args.z_pos,
             center=not args.no_center,
