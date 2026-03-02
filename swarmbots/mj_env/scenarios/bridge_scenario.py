@@ -8,7 +8,11 @@ from swarmbots.mj_env.float_or_dist_params import (
     FloatOrBoundedDistParams,
     eval_fodp,
 )
-from swarmbots.mj_env.scenarios.base_scenario import SwarmActDict, SwarmObsDict
+from swarmbots.mj_env.scenarios.base_scenario import (
+    ActuatorsActivationRewardType,
+    SwarmActDict,
+    SwarmObsDict,
+)
 from swarmbots.mj_env.scenarios.payload_scenario import PayloadScenario
 from swarmbots.mj_env.swarm.base_swarm import BaseSwarm
 from swarmbots.mj_env.swarm.homogeneous_swarm import HomogeneousSwarm
@@ -42,6 +46,8 @@ class BridgeScenario(PayloadScenario):
             actuators_activation_reward_weight: float = 0.0,
             actuators_activation_reward_power: int = 8,
             actuators_activation_reward_threshold: float = 0.0,
+            actuators_activation_reward_type: ActuatorsActivationRewardType = ActuatorsActivationRewardType.MONOMIAL,
+            actuators_activation_reward_clip: float = 20.0,
             hinge_qvel_magnitude_reward_weight: float = 0.0,
             hinge_qvel_magnitude_reward_threshold: float = 0.0,
             units_without_connections_reward_weight: float = 0.0,
@@ -108,6 +114,8 @@ class BridgeScenario(PayloadScenario):
             actuators_activation_reward_weight=actuators_activation_reward_weight,
             actuators_activation_reward_power=actuators_activation_reward_power,
             actuators_activation_reward_threshold=actuators_activation_reward_threshold,
+            actuators_activation_reward_type=actuators_activation_reward_type,
+            actuators_activation_reward_clip=actuators_activation_reward_clip,
             hinge_qvel_magnitude_reward_weight=hinge_qvel_magnitude_reward_weight,
             hinge_qvel_magnitude_reward_threshold=hinge_qvel_magnitude_reward_threshold,
             units_without_connections_reward_weight=units_without_connections_reward_weight,
