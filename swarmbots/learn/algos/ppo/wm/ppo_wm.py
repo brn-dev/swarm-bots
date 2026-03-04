@@ -6,7 +6,7 @@ import torch.nn as nn
 from loguru import logger
 
 from swarmbots.learn.algos.ppo.ppo import PPO, PPOLearningRate, PPORolloutMode, WholeEpisodesRolloutMode
-from swarmbots.learn.algos.ppo.ppo_policy import BasePPOPolicy
+from swarmbots.learn.algos.ppo.ppo_policy import BasePPOPolicy, LossDict, LossMetrics
 from swarmbots.learn.algos.ppo.ppo_rollout_buffer import PPOEpisode
 from swarmbots.learn.algos.ppo.wm.ppo_wm_sampler import PPOWMSampler, PPOWMSamples
 from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
@@ -28,9 +28,17 @@ class PPOWMPolicyMixin(abc.ABC):
             wm_agent_mask: torch.Tensor | None = None,
             wm_loss_agent_mask: torch.Tensor | None = None,
             hidden_vars: torch.Tensor | None = None,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, dict[str, Any]]:
+    ) -> tuple[
+        torch.Tensor,
+        torch.Tensor | None,
+        torch.Tensor,
+        dict[str, Any],
+        LossDict,
+        LossMetrics,
+    ]:
         """
-        :return: log_probs, entropies, values, world_model_loss, metrics
+        :return: log_probs, entropies, values, world_model_metrics, extra_losses, extra_loss_metrics
+        extra_losses must include key "world_model" (unscaled).
         """
         raise NotImplementedError()
 
@@ -116,7 +124,14 @@ class PPOWM(PPO[PPOWMSamples, PPOWMSampler]):
             self,
             batch: PPOWMSamples,
     ) -> tuple[torch.Tensor, float, dict[str, Any]]:
-        log_probs, entropies, values, world_model_loss, wm_loss_metrics = self.policy.evaluate_actions_and_world_model(
+        (
+            log_probs,
+            entropies,
+            values,
+            wm_loss_metrics,
+            extra_losses,
+            extra_loss_metrics,
+        ) = self.policy.evaluate_actions_and_world_model(
             local_obs=batch.local_obs,
             global_obs=batch.global_obs,
             actions=batch.actions,
@@ -129,17 +144,23 @@ class PPOWM(PPO[PPOWMSamples, PPOWMSampler]):
             hidden_vars=batch.hidden_vars,
         )
 
-        ppo_loss, approx_kl_div, metrics = self.compute_ppo_loss(
+        loss, approx_kl_div, metrics = self.compute_ppo_loss(
             batch=batch,
             entropies=entropies,
             log_probs=log_probs,
             values=values,
         )
 
-        loss = ppo_loss + self.world_model_loss_coef * world_model_loss
+        if "world_model" not in extra_losses:
+            raise ValueError('evaluate_actions_and_world_model must return "world_model" in extra_losses')
 
+        world_model_loss = extra_losses["world_model"]
+        extra_losses["world_model"] = self.world_model_loss_coef * world_model_loss
+
+        loss = loss + torch.stack(tuple(extra_losses.values())).sum()
+        metrics.update({f"{name}_loss_scaled": value.item() for name, value in extra_losses.items()})
+        metrics.update(extra_loss_metrics)
         metrics.update(wm_loss_metrics)
-
         metrics['wm_loss'] = world_model_loss.item()
         metrics['wm_loss_scaled'] = (self.world_model_loss_coef * world_model_loss).item()
 

@@ -15,14 +15,14 @@ DEFAULT_KWARGS = {
     'actuator_strength': 15.0,
     'guidance_reward_weight': 1.00,
     'actuators_activation_reward_weight': -1e-3,
-    'actuators_activation_reward_power': 4,
-    'actuators_activation_reward_threshold': 0.8,
+    'actuators_activation_reward_power': 10,
+    'actuators_activation_reward_threshold': 0.9,
     'actuators_activation_reward_type': ActuatorsActivationRewardType.MONOMIAL,
     'actuators_activation_reward_clip': 20.0,
-    'hinge_qvel_magnitude_reward_weight': -5e-6,
+    'hinge_qvel_magnitude_reward_weight': -1e-6,
     'hinge_qvel_magnitude_reward_threshold': 8.0,
-    'units_without_connections_reward_weight': -5e-5,
-    'units_with_double_connection_reward_weight': -3e-5,
+    'units_without_connections_reward_weight': -3e-4,
+    'units_with_double_connection_reward_weight': -2e-4,
     'movement_reward_weight': 0e-1,
     'height_reward_weight': 0e-4,
     'connectors_stayed_active_reward_weight': 0e-5,
@@ -34,7 +34,7 @@ DEFAULT_KWARGS = {
 }
 WALL_PASS_KWARGS = {
     'wall_pass_reward_weight': 0.5,
-    'wall_pass_margin': 0.2,
+    'wall_pass_margin': 0.3,
 }
 
 def _resolve_swarm(

@@ -32,6 +32,14 @@ class BasePolicy(nn.Module, abc.ABC):
     ) -> torch.Tensor:
         raise NotImplementedError()
 
+    @abc.abstractmethod
+    def update_loss_weights(self, **weights: float) -> None:
+        """
+        Updates weights for extra losses. If weights contains an unknown key, a ValueError is thrown
+        :param weights:
+        """
+        raise NotImplementedError()
+
     @staticmethod
     def _grad_norm_from_parameters(parameters: Iterable[nn.Parameter]) -> float:
         gradients = [parameter.grad for parameter in parameters if parameter.grad is not None]
@@ -50,3 +58,4 @@ class BasePolicy(nn.Module, abc.ABC):
         if parameter is None:
             return 0.0
         return cls._grad_norm_from_parameters((parameter,))
+

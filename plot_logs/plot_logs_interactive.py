@@ -474,6 +474,16 @@ def histogram_value_range(series_list: Sequence[HistogramSeries]) -> tuple[float
     return min_value, max_value
 
 
+def log_histogram_values(values: Sequence[Sequence[float]]) -> list[list[float]]:
+    return [
+        [
+            math.log(value + 0.005) if not math.isnan(value) else math.nan
+            for value in row
+        ]
+        for row in values
+    ]
+
+
 def resolve_histogram_edges(series: HistogramSeries) -> list[float]:
     bin_count = len(series.values[0])
     if series.bin_edges is None:
@@ -1047,7 +1057,7 @@ class PlotLogsInteractiveApp:
         ttk.Label(self.plots_container, text="Height").grid(row=0, column=2, sticky="w", padx=(6, 4))
         ttk.Label(
             self.plots_container,
-            text="EMA (only)\n/\nnbins;pool",
+            text="EMA (only)\n/\nnbins;pool\n(log)",
             justify="center",
             anchor="center",
         ).grid(
@@ -1737,6 +1747,11 @@ class PlotLogsInteractiveApp:
                 lambda event, target=tab_index: self.on_plot_tab_button_click(event, target),
                 add=True,
             )
+            tab_button.bind(
+                "<ButtonRelease-2>",
+                lambda event, target=tab_index: self.on_plot_tab_middle_click(event, target),
+                add=True,
+            )
             self.plot_tab_buttons.append(tab_button)
         plus_column = tab_count
         self.plot_tabs_frame.columnconfigure(plus_column, weight=0, uniform="")
@@ -1777,6 +1792,10 @@ class PlotLogsInteractiveApp:
             self.close_plot_tab(tab_index)
         else:
             self.on_plot_tab_selected(tab_index)
+        return "break"
+
+    def on_plot_tab_middle_click(self, _event: tk.Event, tab_index: int) -> str:
+        self.close_plot_tab(tab_index)
         return "break"
 
     def add_plot_tab(self) -> None:
@@ -2832,7 +2851,8 @@ class PlotLogsInteractiveApp:
             row.y_combo.set(entry.y_column)
             row.height_var.set(self.format_ratio(entry.height))
             has_row_ema = False
-            if self.is_histogram_column(entry.y_column):
+            is_histogram = self.is_histogram_column(entry.y_column)
+            if is_histogram:
                 if entry.nbins is None:
                     row.ema_var.set("")
                 else:
@@ -2855,8 +2875,8 @@ class PlotLogsInteractiveApp:
                     else:
                         row.ema_var.set(str(alpha))
                         has_row_ema = True
-            row.ema_only_var.set(entry.ema_only and has_row_ema)
-            if entry.ema_only and not has_row_ema:
+            row.ema_only_var.set(entry.ema_only if is_histogram else entry.ema_only and has_row_ema)
+            if entry.ema_only and not has_row_ema and not is_histogram:
                 invalid_ema_only.append(entry.y_column)
             std_enabled, std_use_ema = self.resolve_preset_summary_option(entry.std)
             min_enabled, min_use_ema = self.resolve_preset_summary_option(entry.min)
@@ -3213,6 +3233,8 @@ class PlotLogsInteractiveApp:
             y_value = row.y_combo.get()
             raw_ema = row.ema_var.get().strip()
             if self.is_histogram_column(y_value):
+                if row.ema_only_var.get():
+                    ema_only_columns.add(y_value)
                 parsed_histogram = self.parse_histogram_input(raw_ema, index)
                 if parsed_histogram is None:
                     if raw_ema:
@@ -3547,7 +3569,21 @@ class PlotLogsInteractiveApp:
         min_ema_columns = min_ema_columns or set()
         max_ema_columns = max_ema_columns or set()
         hist_ranges = {
-            column: histogram_value_range(series_list)
+            column: histogram_value_range(
+                series_list
+                if column not in ema_only_columns
+                else [
+                    HistogramSeries(
+                        label=series.label,
+                        x_values=series.x_values,
+                        x_is_datetime=series.x_is_datetime,
+                        bin_edges=series.bin_edges,
+                        values=log_histogram_values(series.values),
+                        edges_status=series.edges_status,
+                    )
+                    for series in series_list
+                ]
+            )
             for column, series_list in histogram_data.items()
         }
         hist_axes: dict[str, list[plt.Axes]] = {}
@@ -3671,7 +3707,12 @@ class PlotLogsInteractiveApp:
 
             x_edges = build_edges_from_centers(series.x_values)
             y_edges = resolve_histogram_edges(series)
-            values = transpose_histogram(series.values)
+            row_values = (
+                log_histogram_values(series.values)
+                if column in ema_only_columns
+                else series.values
+            )
+            values = transpose_histogram(row_values)
             vmin, vmax = hist_ranges[column]
             mesh = axis.pcolormesh(
                 x_edges,
@@ -3682,7 +3723,7 @@ class PlotLogsInteractiveApp:
                 vmin=vmin,
                 vmax=vmax,
             )
-            axis.set_ylabel(column)
+            axis.set_ylabel(f"{column} (log)" if column in ema_only_columns else column)
             if len(histogram_data[column]) > 1:
                 axis.set_title(series.label)
             hist_axes.setdefault(column, []).append(axis)
@@ -3702,7 +3743,8 @@ class PlotLogsInteractiveApp:
             first_scalar_axis.legend()
         for column, axes_for_column in hist_axes.items():
             mesh = hist_meshes[column]
-            figure.colorbar(mesh, ax=axes_for_column, pad=0.01)
+            colorbar = figure.colorbar(mesh, ax=axes_for_column, pad=0.01)
+            colorbar.set_label("log(freq)" if column in ema_only_columns else "freq")
         figure.tight_layout()
         return figure
 

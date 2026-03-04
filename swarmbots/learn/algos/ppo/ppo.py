@@ -1,5 +1,6 @@
 import abc
 import inspect
+import json
 from dataclasses import dataclass
 from typing import Optional, Any, Literal, TypeVar, Generic, Callable, Protocol, NotRequired, TypedDict
 
@@ -293,7 +294,7 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerType]):
             self,
             batch: PPOSamplesType,
     ) -> tuple[torch.Tensor, float, dict[str, Any]]:
-        log_probs, entropies, values = self.policy.evaluate_actions(
+        log_probs, entropies, values, extra_losses, extra_loss_metrics = self.policy.evaluate_actions(
             local_obs=batch.local_obs,
             global_obs=batch.global_obs,
             actions=batch.actions,
@@ -301,12 +302,19 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerType]):
             agent_mask=batch.agent_mask,
         )
 
-        return self.compute_ppo_loss(
+        loss, approx_kl_div, metrics = self.compute_ppo_loss(
             batch=batch,
             entropies=entropies,
             log_probs=log_probs,
             values=values,
         )
+
+        if extra_losses:
+            loss = loss + torch.stack(tuple(extra_losses.values())).sum()
+            metrics.update({f"{name}_loss_scaled": value.item() for name, value in extra_losses.items()})
+        metrics.update(extra_loss_metrics)
+
+        return loss, approx_kl_div, metrics
 
     def perform_iteration(
             self,
@@ -780,6 +788,20 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerType]):
             logger.warning(f"Setting gae_lambda to {gae_lambda}")
             self.gae_lambda = gae_lambda
             self.rollout_buffer.gae_lambda = gae_lambda
+            return True
+        elif cmd in {"set_extra_loss_weights", "set_loss_weights", "loss_weights"}:
+            parsed_weights = json.loads(params)
+            if not isinstance(parsed_weights, dict):
+                raise ValueError(
+                    "set_extra_loss_weights expects a JSON object, e.g. "
+                    "set_extra_loss_weights:{\"action_magnitude\":0.01}"
+                )
+            if not parsed_weights:
+                logger.warning("No extra loss weights provided.")
+                return False
+            weights = {str(key): float(value) for key, value in parsed_weights.items()}
+            logger.warning(f"Updating extra loss weights: {weights}")
+            self.policy.update_loss_weights(**weights)
             return True
         elif cmd in {"disable_auto_lr", "auto_lr_off", "disable_automatic_lr", "disable_auto_learning_rate"}:
             _ = params

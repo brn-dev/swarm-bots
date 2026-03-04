@@ -9,6 +9,7 @@ from gymnasium import spaces
 import swarmbots
 from swarmbots.learn.action_dists.action_dist import ActionDist, AGENT_ACTIONS_DIM, ActionNetInitialization
 from swarmbots.learn.action_dists.bernoulli_action_dist import BernoulliActionDist
+from swarmbots.learn.action_dists.continuous_action_dist import ContinuousActionDist
 from swarmbots.learn.action_dists.diag_gaussian_action_dist import DiagGaussianActionDist
 from swarmbots.learn.action_dists.gsde_action_dist import GSDEActionDist
 from swarmbots.learn.action_dists.predicted_std_action_dist import PredictedStdActionDist
@@ -182,6 +183,9 @@ class HybridActionDistribution(ActionDist):
             # noinspection PyTypeChecker
             gsde_dist: GSDEActionDist = self.distributions[idx]
             gsde_dist.reset_noise_masked(mask)
+
+    def get_unsquashed_action_means(self) -> list[torch.Tensor]:
+        return [dist.distribution.mean for dist in self.distributions if isinstance(dist, ContinuousActionDist)]
 
     def set_std(self, std: float) -> None:
         for dist in self.distributions:

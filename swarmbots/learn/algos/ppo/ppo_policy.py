@@ -1,5 +1,5 @@
 import abc
-from typing import Any
+from typing import Any, TypeAlias
 import torch
 from torch import nn
 
@@ -13,7 +13,10 @@ from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import B
 from swarmbots.learn.nn_components.mlp import MLP
 from swarmbots.learn.nn_components.nn_init import init_linear_orthogonal, LinearInitialization
 from swarmbots.learn.nn_components.popart import PopArtLinear
+from swarmbots.learn.masking import masked_mean
 
+LossDict: TypeAlias = dict[str, torch.Tensor]
+LossMetrics: TypeAlias = dict[str, Any]
 
 class BasePPOPolicy(BasePolicy, abc.ABC):
     action_dist: HybridActionDistribution
@@ -44,7 +47,7 @@ class BasePPOPolicy(BasePolicy, abc.ABC):
             actions: torch.Tensor,
             hidden_vars: torch.Tensor | None = None,
             agent_mask: torch.Tensor | None = None,
-    ) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor, LossDict, LossMetrics]:
         """
         :return: log_probs, entropies, values
         """
@@ -62,6 +65,25 @@ class BasePPOPolicy(BasePolicy, abc.ABC):
 
     def get_value_normalizer_metrics(self) -> dict[str, float]:
         return {}
+
+    def update_loss_weights(self, **weights: float) -> None:
+        if weights:
+            raise ValueError(f'Unknown weights given: {weights}')
+
+    @staticmethod
+    def _pop_loss_weight_alias(
+            weights: dict[str, float],
+            *,
+            aliases: tuple[str, ...],
+    ) -> tuple[str, float] | None:
+        matching_aliases = [alias for alias in aliases if alias in weights]
+        if not matching_aliases:
+            return None
+        if len(matching_aliases) > 1:
+            raise ValueError(f"Multiple aliases for the same loss weight are not allowed: {matching_aliases}")
+        alias = matching_aliases[0]
+        value = float(weights.pop(alias))
+        return alias, value
 
 
 class PPOActor(nn.Module):
@@ -209,6 +231,9 @@ class PPOPolicy(BasePPOPolicy):
             popart_eps: float = 1e-5,
             popart_min_std: float = 1e-4,
             popart_init_sigma: float = 1.0,
+            action_magnitude_loss_coef: float = 0.0,
+            action_magnitude_loss_threshold: float = 0.0,
+            action_magnitude_loss_power: int = 2,
     ):
         super().__init__()
 
@@ -217,6 +242,15 @@ class PPOPolicy(BasePPOPolicy):
         self.global_obs_dim = env.global_obs_dim
         self.hidden_vars_dim = env.hidden_vars_dim
         self.latent_pi_dim = latent_pi_dim_per_agent
+        if action_magnitude_loss_coef < 0:
+            raise ValueError(f"Expected action_magnitude_loss_coef >= 0, got {action_magnitude_loss_coef}")
+        if action_magnitude_loss_threshold < 0:
+            raise ValueError(f"Expected action_magnitude_loss_threshold >= 0, got {action_magnitude_loss_threshold}")
+        if action_magnitude_loss_power < 1:
+            raise ValueError(f"Expected action_magnitude_loss_power >= 1, got {action_magnitude_loss_power}")
+        self.action_magnitude_loss_coef = action_magnitude_loss_coef
+        self.action_magnitude_loss_threshold = action_magnitude_loss_threshold
+        self.action_magnitude_loss_power = action_magnitude_loss_power
 
         self.actor = PPOActor(
             n_agents=env.n_agents,
@@ -258,18 +292,13 @@ class PPOPolicy(BasePPOPolicy):
             "popart_eps": popart_eps,
             "popart_min_std": popart_min_std,
             "popart_init_sigma": popart_init_sigma,
+            "action_magnitude_loss_coef": action_magnitude_loss_coef,
+            "action_magnitude_loss_threshold": action_magnitude_loss_threshold,
+            "action_magnitude_loss_power": action_magnitude_loss_power,
         }
 
     def get_hyper_parameters(self) -> dict[str, Any]:
         return self.hyper_parameters
-
-    def get_grad_norms(self) -> dict[str, float]:
-        return {
-            "actor": self._module_grad_norm(self.actor),
-            "action_dist": self._module_grad_norm(self.action_dist),
-            "critic": self._module_grad_norm(self.critic),
-            "total": self._module_grad_norm(self),
-        }
 
     def forward(
             self,
@@ -294,16 +323,19 @@ class PPOPolicy(BasePPOPolicy):
             actions: torch.Tensor,
             hidden_vars: torch.Tensor | None = None,
             agent_mask: torch.Tensor | None = None,
-    ) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor, LossDict, LossMetrics]:
         local_obs = self._mask_local_obs(local_obs, agent_mask)
         latent_pi = self.actor(local_obs, global_obs)
+
         self.action_dist.update_latent_features(latent_pi)
         log_probs = self.action_dist.log_prob(actions)
         entropies = self.action_dist.entropy()
 
         critic_global_obs = self._build_critic_global_obs(global_obs, hidden_vars)
         values = self.critic(local_obs, critic_global_obs, agent_mask=agent_mask)
-        return log_probs, entropies, values
+
+        extra_losses, extra_loss_metrics = self._compute_extra_losses(agent_mask=agent_mask)
+        return log_probs, entropies, values, extra_losses, extra_loss_metrics
 
     def act(
             self,
@@ -358,3 +390,105 @@ class PPOPolicy(BasePPOPolicy):
 
     def get_value_normalizer_metrics(self) -> dict[str, float]:
         return self.critic.get_popart_metrics()
+
+    def get_grad_norms(self) -> dict[str, float]:
+        return {
+            "actor": self._module_grad_norm(self.actor),
+            "action_dist": self._module_grad_norm(self.action_dist),
+            "critic": self._module_grad_norm(self.critic),
+            "total": self._module_grad_norm(self),
+        }
+
+    def update_loss_weights(self, **weights: float) -> None:
+        if not weights:
+            return
+
+        remaining_weights = dict(weights)
+        action_magnitude_weight = self._pop_loss_weight_alias(
+            remaining_weights,
+            aliases=("action_magnitude_loss_coef", "action_magnitude"),
+        )
+        if action_magnitude_weight is not None:
+            alias, value = action_magnitude_weight
+            if value < 0:
+                raise ValueError(f"{alias} must be >= 0, got {value}")
+            self.action_magnitude_loss_coef = value
+            self.hyper_parameters["action_magnitude_loss_coef"] = value
+
+        super().update_loss_weights(**remaining_weights)
+
+    def _compute_extra_losses(
+            self,
+            *,
+            agent_mask: torch.Tensor | None,
+    ) -> tuple[LossDict, LossMetrics]:
+        return compute_action_magnitude_extra_losses(
+            action_means=self.action_dist.get_unsquashed_action_means(),
+            coef=self.action_magnitude_loss_coef,
+            threshold=self.action_magnitude_loss_threshold,
+            power=self.action_magnitude_loss_power,
+            agent_mask=agent_mask,
+        )
+
+
+def compute_action_magnitude_extra_losses(
+        *,
+        action_means: list[torch.Tensor],
+        coef: float,
+        threshold: float,
+        power: int,
+        agent_mask: torch.Tensor | None = None,
+) -> tuple[LossDict, LossMetrics]:
+    if coef <= 0:
+        return {}, {}
+    if not action_means:
+        return {}, {}
+
+    action_magnitude_loss = torch.stack(
+        [
+            compute_action_magnitude_loss(
+                action_means=action_mean,
+                threshold=threshold,
+                power=power,
+                agent_mask=agent_mask,
+            )
+            for action_mean in action_means
+        ]
+    ).sum()
+    scaled_action_magnitude_loss = coef * action_magnitude_loss
+
+    return (
+        {"action_magnitude": scaled_action_magnitude_loss},
+        {
+            "action_magnitude_loss": action_magnitude_loss.item(),
+            "action_magnitude_loss_scaled": scaled_action_magnitude_loss.item(),
+        },
+    )
+
+
+def compute_action_magnitude_loss(
+        action_means: torch.Tensor,
+        threshold: float,
+        power: int,
+        agent_mask: torch.Tensor | None = None,
+) -> torch.Tensor:
+    if action_means.ndim != 3:
+        raise ValueError(f"Expected action_means shape (B, N, A), got {tuple(action_means.shape)}")
+    if threshold < 0:
+        raise ValueError(f"Expected threshold >= 0, got {threshold}")
+    if power < 1:
+        raise ValueError(f"Expected power >= 1, got {power}")
+
+    if agent_mask is not None:
+        if agent_mask.dtype != torch.bool:
+            raise ValueError(f"Expected agent_mask dtype bool, got {agent_mask.dtype}")
+        if agent_mask.shape != action_means.shape[:2]:
+            raise ValueError(
+                f"Expected agent_mask shape {tuple(action_means.shape[:2])}, got {tuple(agent_mask.shape)}"
+            )
+        action_valid_mask = agent_mask.unsqueeze(-1).expand_as(action_means)
+    else:
+        action_valid_mask = None
+
+    excess_action_magnitude = torch.relu(action_means.abs() - threshold)
+    return masked_mean(excess_action_magnitude.pow(power), action_valid_mask)
