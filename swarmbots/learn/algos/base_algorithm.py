@@ -3,7 +3,9 @@ import json
 import pathlib
 import queue
 import threading
+import re
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional, Collection, Callable, Self
@@ -63,6 +65,8 @@ class BaseAlgorithm(abc.ABC):
         self._stop_save_optimizer: bool | None = None
         self._make_record_env: Callable[[], BaseLearnEnvWrapper] | None = None
         self._command_log_path: Path | None = None
+        self._pause_until_monotonic: float | None = None
+        self._pause_notice_logged: bool = False
 
     @abc.abstractmethod
     def get_hyper_parameters(self) -> dict[str, Any]:
@@ -458,6 +462,9 @@ class BaseAlgorithm(abc.ABC):
         elif cmd == 'record':
             self._cmd_record(params)
             return False
+        elif cmd == 'pause':
+            self._cmd_pause(params)
+            return False
         else:
             logger.error(f'Unknown command "{cmd}"')
             return False
@@ -487,21 +494,41 @@ class BaseAlgorithm(abc.ABC):
             run_dir: Path | None,
             extra_run_metadata: dict[str, Any] | None
     ) -> None:
-        hps_updated: bool = False
         while True:
-            try:
-                raw = self._command_queue.get_nowait()
-            except queue.Empty:
-                break
-            updated, updated_commands = self._execute_command_line(raw, extra_run_metadata)
-            if updated and updated_commands:
-                self._append_command_log(raw=raw, updated_commands=updated_commands)
-            hps_updated |= updated
+            hps_updated: bool = False
+            while True:
+                try:
+                    raw = self._command_queue.get_nowait()
+                except queue.Empty:
+                    break
+                updated, updated_commands = self._execute_command_line(raw, extra_run_metadata)
+                if updated and updated_commands:
+                    self._append_command_log(raw=raw, updated_commands=updated_commands)
+                hps_updated |= updated
 
-        if hps_updated:
-            self._latest_hp_update = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        if hps_updated and run_dir is not None:
-            self._write_run_metadata(run_dir, extra_run_metadata)
+            if hps_updated:
+                self._latest_hp_update = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+            if hps_updated and run_dir is not None:
+                self._write_run_metadata(run_dir, extra_run_metadata)
+
+            if self._stop_requested:
+                return
+
+            if self._pause_until_monotonic is None:
+                return
+
+            remaining = self._pause_until_monotonic - time.monotonic()
+            if remaining <= 0:
+                self._pause_until_monotonic = None
+                self._pause_notice_logged = False
+                logger.warning("Pause finished. Resuming training.")
+                return
+
+            if not self._pause_notice_logged:
+                logger.warning(f"Training paused for {_format_duration_seconds(remaining)}. Commands still accepted.")
+                self._pause_notice_logged = True
+
+            time.sleep(min(remaining, 0.25))
 
     def _execute_command_line(
             self,
@@ -601,6 +628,15 @@ class BaseAlgorithm(abc.ABC):
         self._stop_requested = True
         self._stop_should_save = save
         logger.warning(f"Stop requested (save={save}). Will stop before next iteration.")
+
+    def _cmd_pause(self, params: str) -> None:
+        seconds = _parse_duration_to_seconds(params)
+        if seconds <= 0:
+            raise ValueError("pause expects a positive duration, e.g. pause:90s or pause:1h30m10")
+
+        self._pause_until_monotonic = time.monotonic() + seconds
+        self._pause_notice_logged = False
+        logger.warning(f"Pausing training for {_format_duration_seconds(seconds)}")
 
     def _cmd_record(self, params: str) -> None:
         if self._make_record_env is None:
@@ -741,6 +777,56 @@ def _normalize_run_metadata_for_comparison(metadata: dict[str, Any] | None) -> d
     if metadata is None:
         return None
     return {k: v for k, v in metadata.items() if k not in _RUN_METADATA_VOLATILE_KEYS}
+
+
+_DURATION_PART_RE = re.compile(r"(?P<value>\d+(?:\.\d+)?)(?P<unit>[dhms])", re.IGNORECASE)
+
+
+def _parse_duration_to_seconds(params: str) -> float:
+    s = params.strip().lower().replace(" ", "")
+    if not s:
+        raise ValueError("Missing duration, e.g. pause:90s or pause:1h30m10")
+
+    total_seconds = 0.0
+    pos = 0
+    for match in _DURATION_PART_RE.finditer(s):
+        if match.start() != pos:
+            break
+        value = float(match.group("value"))
+        unit = match.group("unit")
+        factor = {"d": 86400.0, "h": 3600.0, "m": 60.0, "s": 1.0}[unit]
+        total_seconds += value * factor
+        pos = match.end()
+
+    trailing = s[pos:]
+    if trailing:
+        if total_seconds == 0.0 or not trailing.replace(".", "", 1).isdigit():
+            raise ValueError(
+                f"Invalid duration {params!r}. Expected formats like 90s, 10m, 1h30m, or 1h30m10"
+            )
+        total_seconds += float(trailing)
+
+    if total_seconds <= 0.0:
+        raise ValueError("Duration must be > 0")
+    return total_seconds
+
+
+def _format_duration_seconds(seconds: float) -> str:
+    total_seconds = max(0, int(round(seconds)))
+    days, rem = divmod(total_seconds, 86400)
+    hours, rem = divmod(rem, 3600)
+    minutes, secs = divmod(rem, 60)
+
+    parts: list[str] = []
+    if days:
+        parts.append(f"{days}d")
+    if hours:
+        parts.append(f"{hours}h")
+    if minutes:
+        parts.append(f"{minutes}m")
+    if secs or not parts:
+        parts.append(f"{secs}s")
+    return "".join(parts)
 
 
 def _start_command_prompt(cmd_q: queue.Queue[str]) -> bool:

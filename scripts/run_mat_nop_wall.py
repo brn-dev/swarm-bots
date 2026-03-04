@@ -114,7 +114,7 @@ def main() -> None:
         format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <5}</level> | <level>{message}</level>",
     )
 
-    n_envs = 61
+    n_envs = 71
     episode_length = 512
     total_timesteps = 200_000_000
     save_interval = 500
@@ -136,7 +136,7 @@ def main() -> None:
 
     # ===== LOAD =====
     load_path: str | None = None
-    # load_path = "../runs/mat_nop_swarm_bots_wall/2026-02-28_22-06-17/models/model_9514193_steps_stopped.pt"
+    # load_path = "../runs/mat_nop_swarm_bots_wall/2026-03-02_18-37-56/models/model_49785133_steps_stopped.pt"
 
     # ===== DEVICE =====
     use_cuda = True and torch.cuda.is_available()
@@ -265,6 +265,9 @@ def main() -> None:
         use_popart=use_popart,
         popart_beta=popart_beta,
         popart_init_sigma=popart_init_sigma,
+        action_magnitude_loss_coef=1e3,
+        action_magnitude_loss_threshold=np.atanh(0.7),
+        action_magnitude_loss_power=1,
         # NOP
         wm_pre_transition_dims=[256],
         d_model_transition_model=256,
@@ -411,14 +414,11 @@ def main() -> None:
         ('iteration', '5', 'it'),
         ('timesteps', '8', 'steps'),
         ('total_updates', '6', 'tot_upd'),
-        ('act0', SummaryStatisticsFormat(histogram=10)),
+        # ('act0', SummaryStatisticsFormat(histogram=10)),
     ]
     logging_console_keys.extend(
         (f'act0_j{i}', SummaryStatisticsFormat(histogram=10))
         for i in range(actuators_per_limb)
-    )
-    logging_console_keys.append(
-        ('std0', SummaryStatisticsFormat(mean='.3f', std='.3f', min_value='.3f', max_value='.3f'))
     )
     logging_console_keys.extend(
         (f'std0_j{i}', SummaryStatisticsFormat(mean='.3f', std='.3f', min_value='.3f', max_value='.3f'))

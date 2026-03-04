@@ -11,7 +11,12 @@ from swarmbots.learn.action_dists.hybrid_action_dist import (
 from swarmbots.learn.algos.mat.mat_decoder import MATDecoder
 from swarmbots.learn.algos.mat.mat_encoder import MATEncoder
 from swarmbots.learn.algos.ppo.ppo import AGENTS_DIM
-from swarmbots.learn.algos.ppo.ppo_policy import BasePPOPolicy
+from swarmbots.learn.algos.ppo.ppo_policy import (
+    BasePPOPolicy,
+    LossDict,
+    LossMetrics,
+    compute_action_magnitude_extra_losses,
+)
 from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
 from swarmbots.learn.nn_components.deep_set import DeepSetCritic
 from swarmbots.learn.nn_components.mlp import MLP
@@ -50,6 +55,9 @@ class MATPolicy(BasePPOPolicy):
             popart_eps: float = 1e-5,
             popart_min_std: float = 1e-4,
             popart_init_sigma: float = 1.0,
+            action_magnitude_loss_coef: float = 0.0,
+            action_magnitude_loss_threshold: float = 0.0,
+            action_magnitude_loss_power: int = 2,
     ) -> None:
         super().__init__()
 
@@ -63,6 +71,15 @@ class MATPolicy(BasePPOPolicy):
         self.global_obs_dim: int = env.global_obs_dim
         self.has_global_obs = env.global_obs_dim > 0
         self.hidden_vars_dim: int = env.hidden_vars_dim
+        if action_magnitude_loss_coef < 0:
+            raise ValueError(f"Expected action_magnitude_loss_coef >= 0, got {action_magnitude_loss_coef}")
+        if action_magnitude_loss_threshold < 0:
+            raise ValueError(f"Expected action_magnitude_loss_threshold >= 0, got {action_magnitude_loss_threshold}")
+        if action_magnitude_loss_power < 1:
+            raise ValueError(f"Expected action_magnitude_loss_power >= 1, got {action_magnitude_loss_power}")
+        self.action_magnitude_loss_coef = action_magnitude_loss_coef
+        self.action_magnitude_loss_threshold = action_magnitude_loss_threshold
+        self.action_magnitude_loss_power = action_magnitude_loss_power
 
         self.d_model_encoder = d_model
         self.d_model_decoder = d_model if d_model_decoder is None else d_model_decoder
@@ -190,23 +207,13 @@ class MATPolicy(BasePPOPolicy):
             "popart_eps": popart_eps,
             "popart_min_std": popart_min_std,
             "popart_init_sigma": popart_init_sigma,
+            "action_magnitude_loss_coef": action_magnitude_loss_coef,
+            "action_magnitude_loss_threshold": action_magnitude_loss_threshold,
+            "action_magnitude_loss_power": action_magnitude_loss_power,
         }
 
     def get_hyper_parameters(self) -> dict[str, Any]:
         return self.hyper_parameters
-
-    def get_grad_norms(self) -> dict[str, float]:
-        return {
-            "encoder": self._module_grad_norm(self.encoder),
-            "action_encoder": self._module_grad_norm(self.action_encoder),
-            "agent_embeddings_decoder": self._parameter_grad_norm(self.agent_embeddings_decoder),
-            "sos_token": self._parameter_grad_norm(self.sos_token),
-            "decoder": self._module_grad_norm(self.decoder),
-            "actor_head": self._module_grad_norm(self.actor_head),
-            "action_dist": self._module_grad_norm(self.action_dist),
-            "critic": self._module_grad_norm(self.critic),
-            "total": self._module_grad_norm(self),
-        }
 
     def _generate_actions(
         self,
@@ -283,8 +290,8 @@ class MATPolicy(BasePPOPolicy):
             actions: torch.Tensor,
             hidden_vars: torch.Tensor | None = None,
             agent_mask: torch.Tensor | None = None,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        augmented_observations, log_probs, entropies, values = self._evaluate_actions(
+    ) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor, LossDict, LossMetrics]:
+        _, log_probs, entropies, values, extra_losses, extra_loss_metrics = self._evaluate_actions(
             local_obs=local_obs,
             global_obs=global_obs,
             actions=actions,
@@ -292,7 +299,7 @@ class MATPolicy(BasePPOPolicy):
             agent_mask=agent_mask,
         )
 
-        return log_probs, entropies, values
+        return log_probs, entropies, values, extra_losses, extra_loss_metrics
 
     def _evaluate_actions(
             self,
@@ -301,7 +308,7 @@ class MATPolicy(BasePPOPolicy):
             actions: torch.Tensor,
             hidden_vars: torch.Tensor | None = None,
             agent_mask: torch.Tensor | None = None,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None, torch.Tensor, LossDict, LossMetrics]:
         self._validate_agent_mask(agent_mask, batch_size=local_obs.shape[0])
         augmented_observations = self.encoder(local_obs, global_obs, agent_mask=agent_mask)
         
@@ -328,7 +335,8 @@ class MATPolicy(BasePPOPolicy):
         entropies = self.action_dist.entropy()
 
         values = self._critic_with_hidden_vars(augmented_observations, hidden_vars, agent_mask=agent_mask)
-        return augmented_observations, log_probs, entropies, values
+        extra_losses, extra_loss_metrics = self._compute_extra_losses(agent_mask=agent_mask)
+        return augmented_observations, log_probs, entropies, values, extra_losses, extra_loss_metrics
 
     def act(
             self,
@@ -398,3 +406,47 @@ class MATPolicy(BasePPOPolicy):
 
     def get_value_normalizer_metrics(self) -> dict[str, float]:
         return self.critic.get_popart_metrics()
+
+    def get_grad_norms(self) -> dict[str, float]:
+        return {
+            "encoder": self._module_grad_norm(self.encoder),
+            "action_encoder": self._module_grad_norm(self.action_encoder),
+            "agent_embeddings_decoder": self._parameter_grad_norm(self.agent_embeddings_decoder),
+            "sos_token": self._parameter_grad_norm(self.sos_token),
+            "decoder": self._module_grad_norm(self.decoder),
+            "actor_head": self._module_grad_norm(self.actor_head),
+            "action_dist": self._module_grad_norm(self.action_dist),
+            "critic": self._module_grad_norm(self.critic),
+            "total": self._module_grad_norm(self),
+        }
+
+    def update_loss_weights(self, **weights: float) -> None:
+        if not weights:
+            return
+
+        remaining_weights = dict(weights)
+        action_magnitude_weight = self._pop_loss_weight_alias(
+            remaining_weights,
+            aliases=("action_magnitude_loss_coef", "action_magnitude"),
+        )
+        if action_magnitude_weight is not None:
+            alias, value = action_magnitude_weight
+            if value < 0:
+                raise ValueError(f"{alias} must be >= 0, got {value}")
+            self.action_magnitude_loss_coef = value
+            self.hyper_parameters["action_magnitude_loss_coef"] = value
+
+        super().update_loss_weights(**remaining_weights)
+
+    def _compute_extra_losses(
+            self,
+            *,
+            agent_mask: torch.Tensor | None,
+    ) -> tuple[LossDict, LossMetrics]:
+        return compute_action_magnitude_extra_losses(
+            action_means=self.action_dist.get_unsquashed_action_means(),
+            coef=self.action_magnitude_loss_coef,
+            threshold=self.action_magnitude_loss_threshold,
+            power=self.action_magnitude_loss_power,
+            agent_mask=agent_mask,
+        )

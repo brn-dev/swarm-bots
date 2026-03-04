@@ -44,6 +44,9 @@ class MATSPRPolicy(MATPolicy, SPRMixin, PPOWMPolicyMixin):
             popart_eps: float = 1e-5,
             popart_min_std: float = 1e-4,
             popart_init_sigma: float = 1.0,
+            action_magnitude_loss_coef: float = 0.0,
+            action_magnitude_loss_threshold: float = 0.0,
+            action_magnitude_loss_power: int = 2,
             d_model_transition_model: int = 128,
             nhead_transition_model: int = 4,
             num_layers_transition_model: int = 2,
@@ -53,7 +56,8 @@ class MATSPRPolicy(MATPolicy, SPRMixin, PPOWMPolicyMixin):
             transition_model_head_hidden_dims: list[int] | None = None,
             spr_projection_dims: list[int] | None = None,
             spr_predictor_hidden_dims: list[int] | None = None,
-            residual_predictor: bool = True
+            residual_predictor: bool = True,
+            spr_loss_weight: float = 1.0,
     ) -> None:
         super().__init__(
             env=env,
@@ -84,7 +88,13 @@ class MATSPRPolicy(MATPolicy, SPRMixin, PPOWMPolicyMixin):
             popart_eps=popart_eps,
             popart_min_std=popart_min_std,
             popart_init_sigma=popart_init_sigma,
+            action_magnitude_loss_coef=action_magnitude_loss_coef,
+            action_magnitude_loss_threshold=action_magnitude_loss_threshold,
+            action_magnitude_loss_power=action_magnitude_loss_power,
         )
+        if spr_loss_weight < 0:
+            raise ValueError(f"spr_loss_weight must be >= 0, got {spr_loss_weight}")
+        self.spr_loss_weight = spr_loss_weight
         if spr_projection_dims is None:
             projection_dims = [self.d_model_encoder]
         else:
@@ -137,6 +147,7 @@ class MATSPRPolicy(MATPolicy, SPRMixin, PPOWMPolicyMixin):
                 "transition_model_head_hidden_dims": transition_model_head_hidden_dims,
                 "spr_projection_dims": projection_dims,
                 "spr_predictor_hidden_dims": predictor_hidden_dims,
+                "spr_loss_weight": spr_loss_weight,
             }
         )
 
@@ -152,6 +163,24 @@ class MATSPRPolicy(MATPolicy, SPRMixin, PPOWMPolicyMixin):
             }
         )
         return grad_norms
+
+    def update_loss_weights(self, **weights: float) -> None:
+        if not weights:
+            return
+
+        remaining_weights = dict(weights)
+        spr_weight = self._pop_loss_weight_alias(
+            remaining_weights,
+            aliases=("spr_loss_weight", "spr_loss", "spr"),
+        )
+        if spr_weight is not None:
+            alias, value = spr_weight
+            if value < 0:
+                raise ValueError(f"{alias} must be >= 0, got {value}")
+            self.spr_loss_weight = value
+            self.hyper_parameters["spr_loss_weight"] = value
+
+        super().update_loss_weights(**remaining_weights)
 
     @property
     def online_encoder(self) -> nn.Module:
@@ -169,7 +198,14 @@ class MATSPRPolicy(MATPolicy, SPRMixin, PPOWMPolicyMixin):
             wm_agent_mask: torch.Tensor | None = None,
             wm_loss_agent_mask: torch.Tensor | None = None,
             hidden_vars: torch.Tensor | None = None,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, dict[str, Any]]:
+    ) -> tuple[
+        torch.Tensor,
+        torch.Tensor | None,
+        torch.Tensor,
+        dict[str, Any],
+        dict[str, torch.Tensor],
+        dict[str, Any],
+    ]:
         if actions.ndim == 4:
             policy_actions = actions[:, 0]
         else:
@@ -177,7 +213,7 @@ class MATSPRPolicy(MATPolicy, SPRMixin, PPOWMPolicyMixin):
         policy_local_obs = local_obs
         policy_global_obs = global_obs
 
-        augmented_observations, log_probs, entropies, values = self._evaluate_actions(
+        augmented_observations, log_probs, entropies, values, extra_losses, extra_loss_metrics = self._evaluate_actions(
             local_obs=policy_local_obs,
             global_obs=policy_global_obs,
             actions=policy_actions,
@@ -195,7 +231,21 @@ class MATSPRPolicy(MATPolicy, SPRMixin, PPOWMPolicyMixin):
             time_mask=next_validity_mask,
         )
 
-        return log_probs, entropies, values, spr_loss, {}
+        spr_loss_weighted = self.spr_loss_weight * spr_loss
+        merged_extra_losses = dict(extra_losses)
+        merged_extra_losses["world_model"] = spr_loss_weighted
+        merged_extra_loss_metrics = dict(extra_loss_metrics)
+        merged_extra_loss_metrics["spr_loss"] = spr_loss.item()
+        merged_extra_loss_metrics["spr_loss_weighted"] = spr_loss_weighted.item()
+
+        return (
+            log_probs,
+            entropies,
+            values,
+            {},
+            merged_extra_losses,
+            merged_extra_loss_metrics,
+        )
 
     def update_world_model_targets(self, tau: float) -> None:
         self.update_spr_targets(tau)

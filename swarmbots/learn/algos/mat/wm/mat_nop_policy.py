@@ -44,6 +44,9 @@ class MATNOPPolicy(MATPolicy, NextObsPredMixin, PPOWMPolicyMixin):
             popart_eps: float = 1e-5,
             popart_min_std: float = 1e-4,
             popart_init_sigma: float = 1.0,
+            action_magnitude_loss_coef: float = 0.0,
+            action_magnitude_loss_threshold: float = 0.0,
+            action_magnitude_loss_power: int = 2,
             d_model_transition_model: int = 128,
             nhead_transition_model: int = 4,
             num_layers_transition_model: int = 2,
@@ -98,6 +101,9 @@ class MATNOPPolicy(MATPolicy, NextObsPredMixin, PPOWMPolicyMixin):
             popart_eps=popart_eps,
             popart_min_std=popart_min_std,
             popart_init_sigma=popart_init_sigma,
+            action_magnitude_loss_coef=action_magnitude_loss_coef,
+            action_magnitude_loss_threshold=action_magnitude_loss_threshold,
+            action_magnitude_loss_power=action_magnitude_loss_power,
         )
 
         if not isinstance(scalar_loss_fn, nn.Module):
@@ -231,21 +237,6 @@ class MATNOPPolicy(MATPolicy, NextObsPredMixin, PPOWMPolicyMixin):
             }
         )
 
-    def get_grad_norms(self) -> dict[str, float]:
-        grad_norms = super().get_grad_norms()
-        grad_norms.update(
-            {
-                "wm_pre_transition_transform": self._module_grad_norm(self.pre_transition_transform),
-                "wm_transition_model": self._module_grad_norm(self.transition_model),
-                "wm_pre_predictors_transform": self._module_grad_norm(self.pre_predictors_transform),
-                "wm_local_scalars_predictor": self._module_grad_norm(self.local_scalars_predictor),
-                "wm_local_angles_predictor": self._module_grad_norm(self.local_angles_predictor),
-                "wm_local_rot6ds_predictor": self._module_grad_norm(self.local_rot6ds_predictor),
-                "wm_local_binaries_predictor": self._module_grad_norm(self.local_binaries_predictor),
-            }
-        )
-        return grad_norms
-
     def evaluate_actions_and_world_model(
             self,
             local_obs: torch.Tensor,
@@ -258,7 +249,14 @@ class MATNOPPolicy(MATPolicy, NextObsPredMixin, PPOWMPolicyMixin):
             wm_agent_mask: torch.Tensor | None = None,
             wm_loss_agent_mask: torch.Tensor | None = None,
             hidden_vars: torch.Tensor | None = None,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, dict[str, Any]]:
+    ) -> tuple[
+        torch.Tensor,
+        torch.Tensor | None,
+        torch.Tensor,
+        dict[str, Any],
+        dict[str, torch.Tensor],
+        dict[str, Any],
+    ]:
         if actions.ndim == 4:
             policy_actions = actions[:, 0]
         else:
@@ -266,7 +264,7 @@ class MATNOPPolicy(MATPolicy, NextObsPredMixin, PPOWMPolicyMixin):
         policy_local_obs = local_obs
         policy_global_obs = global_obs
 
-        augmented_observations, log_probs, entropies, values = self._evaluate_actions(
+        augmented_observations, log_probs, entropies, values, extra_losses, extra_loss_metrics = self._evaluate_actions(
             local_obs=policy_local_obs,
             global_obs=policy_global_obs,
             actions=policy_actions,
@@ -283,10 +281,87 @@ class MATNOPPolicy(MATPolicy, NextObsPredMixin, PPOWMPolicyMixin):
             time_mask=next_validity_mask,
         )
 
-        return log_probs, entropies, values, next_obs_pred_loss, nop_loss_metrics
+        merged_extra_losses = dict(extra_losses)
+        merged_extra_losses["world_model"] = next_obs_pred_loss
+
+        return (
+            log_probs,
+            entropies,
+            values,
+            nop_loss_metrics,
+            merged_extra_losses,
+            extra_loss_metrics,
+        )
 
     def update_world_model_targets(self, tau: float) -> None:
         pass
+
+    def get_grad_norms(self) -> dict[str, float]:
+        grad_norms = super().get_grad_norms()
+        grad_norms.update(
+            {
+                "wm_pre_transition_transform": self._module_grad_norm(self.pre_transition_transform),
+                "wm_transition_model": self._module_grad_norm(self.transition_model),
+                "wm_pre_predictors_transform": self._module_grad_norm(self.pre_predictors_transform),
+                "wm_local_scalars_predictor": self._module_grad_norm(self.local_scalars_predictor),
+                "wm_local_angles_predictor": self._module_grad_norm(self.local_angles_predictor),
+                "wm_local_rot6ds_predictor": self._module_grad_norm(self.local_rot6ds_predictor),
+                "wm_local_binaries_predictor": self._module_grad_norm(self.local_binaries_predictor),
+            }
+        )
+        return grad_norms
+
+    def update_loss_weights(self, **weights: float) -> None:
+        if not weights:
+            return
+
+        remaining_weights = dict(weights)
+
+        scalar_weight = self._pop_loss_weight_alias(
+            remaining_weights,
+            aliases=("scalar_loss_weight", "scalar"),
+        )
+        if scalar_weight is not None:
+            alias, value = scalar_weight
+            if value < 0:
+                raise ValueError(f"{alias} must be >= 0, got {value}")
+            self.scalar_loss_weight = value
+            self.hyper_parameters["scalar_loss_weight"] = value
+
+        angle_weight = self._pop_loss_weight_alias(
+            remaining_weights,
+            aliases=("angle_loss_weight", "angle"),
+        )
+        if angle_weight is not None:
+            alias, value = angle_weight
+            if value < 0:
+                raise ValueError(f"{alias} must be >= 0, got {value}")
+            self.angle_loss_weight = value
+            self.hyper_parameters["angle_loss_weight"] = value
+
+        rot6d_weight = self._pop_loss_weight_alias(
+            remaining_weights,
+            aliases=("rot6d_loss_weight", "rot6d"),
+        )
+        if rot6d_weight is not None:
+            alias, value = rot6d_weight
+            if value < 0:
+                raise ValueError(f"{alias} must be >= 0, got {value}")
+            self.rot6d_loss_weight = value
+            self.hyper_parameters["rot6d_loss_weight"] = value
+
+        binary_weight = self._pop_loss_weight_alias(
+            remaining_weights,
+            aliases=("binary_loss_weight", "binary"),
+        )
+        if binary_weight is not None:
+            alias, value = binary_weight
+            if value < 0:
+                raise ValueError(f"{alias} must be >= 0, got {value}")
+            self.binary_loss_weight = value
+            self.hyper_parameters["binary_loss_weight"] = value
+
+        super().update_loss_weights(**remaining_weights)
 
     @staticmethod
     def _build_predictor(
