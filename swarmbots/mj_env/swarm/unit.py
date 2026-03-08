@@ -30,7 +30,7 @@ def _limb_joint_specs(limb_type: LimbType) -> tuple[tuple[str, tuple[float, floa
 def _resolve_joint_params(value: HingeJointParam, n_joints: int) -> tuple[float, ...]:
     if isinstance(value, tuple):
         if len(value) != n_joints:
-            raise ValueError()
+            raise ValueError(len(value), n_joints)
         return value
     scalar = float(value)
     return (scalar,) * n_joints

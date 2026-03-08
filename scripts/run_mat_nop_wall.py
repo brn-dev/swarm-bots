@@ -117,7 +117,7 @@ def main() -> None:
     n_envs = 71
     episode_length = 512
     total_timesteps = 200_000_000
-    save_interval = 500
+    save_interval = 5000
 
     use_popart = True
     popart_beta = 5e-4
@@ -129,14 +129,15 @@ def main() -> None:
     world_model_num_next_steps = 3
     world_model_target_tau = None
 
-    gsde_init_stds = [0.25, 0.25, 0.15]
+    # gsde_init_stds = [0.25, 0.25, 0.15]
+    gsde_init_stds = [0.25, 0.30]
 
     # =====  ID  =====
     run_id = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
     # ===== LOAD =====
     load_path: str | None = None
-    # load_path = "../runs/mat_nop_swarm_bots_wall/2026-03-02_18-37-56/models/model_49785133_steps_stopped.pt"
+    # load_path = "../runs/mat_nop_swarm_bots_wall/2026-03-04_19-47-38/models/model_24957597_steps_stopped.pt"
 
     # ===== DEVICE =====
     use_cuda = True and torch.cuda.is_available()
@@ -233,19 +234,25 @@ def main() -> None:
     actuators_per_limb = env.actuators_dim // env.connectors_dim
     print(f"actuators_per_limb: {actuators_per_limb}")
 
+    enc_d_model = 256
+    dec_d_model = 64
+
+    enc_nhead = 4
+    dec_nhead = 2
+
     print("Initializing Policy...")
     policy = MATNOPPolicy(
         env=env,
-        local_obs_encoder_hidden_dims=[256, 256],
-        action_encoder_hidden_dims=[64],
-        d_model=256,
-        d_model_decoder=64,
-        nhead_encoder=4,
-        nhead_decoder=2,
+        local_obs_encoder_hidden_dims=[enc_d_model, enc_d_model],
+        action_encoder_hidden_dims=[dec_d_model],
+        d_model=enc_d_model,
+        d_model_decoder=dec_d_model,
+        nhead_encoder=enc_nhead,
+        nhead_decoder=dec_nhead,
         num_layers_encoder=2,
         num_layers_decoder=2,
-        dim_feedforward_encoder=512,
-        dim_feedforward_decoder=128,
+        dim_feedforward_encoder=enc_d_model * 2,
+        dim_feedforward_decoder=dec_d_model * 2,
         dropout=0.0,
         n_critic_local_projection_hidden_layers=1,
         n_critic_value_regressor_hidden_layers=1,
@@ -269,13 +276,13 @@ def main() -> None:
         action_magnitude_loss_threshold=np.atanh(0.7),
         action_magnitude_loss_power=1,
         # NOP
-        wm_pre_transition_dims=[256],
-        d_model_transition_model=256,
-        nhead_transition_model=4,
+        wm_pre_transition_dims=[enc_d_model],
+        d_model_transition_model=enc_d_model,
+        nhead_transition_model=enc_nhead,
         num_layers_transition_model=2,
-        dim_feedforward_transition_model=256,
-        transition_model_coembed_hidden_dims=[256],
-        wm_pre_predictors_dims=[256, 256],
+        dim_feedforward_transition_model=enc_d_model * 2,
+        transition_model_coembed_hidden_dims=[enc_d_model],
+        wm_pre_predictors_dims=[enc_d_model, enc_d_model],
         wm_scalar_predictor_hidden_dims=[],
         wm_angle_predictor_hidden_dims=[],
         wm_rot6d_predictor_hidden_dims=[],
@@ -300,8 +307,8 @@ def main() -> None:
     print("Initializing PPO Algorithm...")
 
     warm_lr = 1e-4
-    warmup_iterations: int = 500
-    cold_lr = warm_lr / 500 if warmup_iterations > 0 else warm_lr
+    warmup_iterations: int = 250
+    cold_lr = warm_lr / 200 if warmup_iterations > 0 else warm_lr
 
     def auto_lr_updater(
             old_lr: float,
@@ -379,13 +386,14 @@ def main() -> None:
         max_lr=3e-4,
         updater=auto_lr_updater
     )
+    rollout_samples = 4048
     ppo = PPOWM(
         policy=policy,
         env=env,
         learning_rate=auto_lr,
-        rollout_mode=StepsRolloutMode(8096 * 2),
+        rollout_mode=StepsRolloutMode(rollout_samples),
         max_episode_length=episode_length,
-        batch_size=8096 * 2,
+        batch_size=rollout_samples,
         n_epochs=5,
         gamma=gamma,
         gae_lambda=0.95,
