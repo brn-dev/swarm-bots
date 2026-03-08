@@ -465,6 +465,9 @@ class BaseAlgorithm(abc.ABC):
         elif cmd == 'pause':
             self._cmd_pause(params)
             return False
+        elif cmd in {'unpause', 'resume'}:
+            self._cmd_unpause(params)
+            return False
         else:
             logger.error(f'Unknown command "{cmd}"')
             return False
@@ -637,6 +640,16 @@ class BaseAlgorithm(abc.ABC):
         self._pause_until_monotonic = time.monotonic() + seconds
         self._pause_notice_logged = False
         logger.warning(f"Pausing training for {_format_duration_seconds(seconds)}")
+
+    def _cmd_unpause(self, params: str) -> None:
+        _ = params
+        if self._pause_until_monotonic is None:
+            logger.warning("Training is not paused.")
+            return
+
+        self._pause_until_monotonic = None
+        self._pause_notice_logged = False
+        logger.warning("Pause canceled. Resuming training.")
 
     def _cmd_record(self, params: str) -> None:
         if self._make_record_env is None:
