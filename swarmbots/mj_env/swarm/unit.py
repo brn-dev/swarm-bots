@@ -40,7 +40,7 @@ def init_unit(
     body_radius: float,
     leg_length: float,
     leg_radius: float,
-    hinge_range: float,
+    hinge_range: tuple[float | None, ...],
     unit_config: UnitConfig,
     body_rgba=(0.75, 0, 0, 0.1),
     segment_1_ratio: float = 0.1,
@@ -65,6 +65,7 @@ def init_unit(
     for i, limb_config in enumerate(unit_config):
         hip_pos = body_radius * limb_config.vec
         joint_specs = _limb_joint_specs(limb_config.type)
+        joint_ranges = tuple(r if r is not None else 0.0 for r in hinge_range)
         joint_armatures = _resolve_joint_params(hinge_armature, len(joint_specs))
         joint_dampings = _resolve_joint_params(hinge_damping, len(joint_specs))
         joint_frictionlosses = _resolve_joint_params(hinge_frictionloss, len(joint_specs))
@@ -82,8 +83,8 @@ def init_unit(
             limb_config=limb_config,
             length=leg_length,
             radius=leg_radius,
-            hinge_range=hinge_range,
-            segment_1_ratio=segment_1_ratio,
+            hinge_ranges=joint_ranges,
+            short_segment_ratio=segment_1_ratio,
             joint_specs=joint_specs,
             joint_armatures=joint_armatures,
             joint_dampings=joint_dampings,
@@ -99,8 +100,8 @@ def _build_limb(
         limb_config: LimbConfig,
         length: float,
         radius: float,
-        hinge_range: float,
-        segment_1_ratio: float,
+        hinge_ranges: tuple[float, ...],
+        short_segment_ratio: float,
         joint_specs: tuple[tuple[str, tuple[float, float, float]], ...],
         joint_armatures: tuple[float, ...],
         joint_dampings: tuple[float, ...],
@@ -110,8 +111,8 @@ def _build_limb(
     if len(joint_specs) < 2:
         raise ValueError(f"Expected at least 2 joints per limb, got {len(joint_specs)}")
 
-    segment_lengths = [length * segment_1_ratio]
-    remaining_length = length * (1 - segment_1_ratio)
+    segment_lengths = [length * short_segment_ratio]
+    remaining_length = length * (1 - short_segment_ratio)
     segment_lengths.extend([remaining_length / (len(joint_specs) - 1)] * (len(joint_specs) - 1))
 
     hinge_names: list[str] = []
@@ -125,7 +126,7 @@ def _build_limb(
         segment_body.add_joint(
             type=mujoco.mjtJoint.mjJNT_HINGE,
             axis=list(axis),
-            range=[-hinge_range, hinge_range],
+            range=[-hinge_ranges[joint_idx], hinge_ranges[joint_idx]],
             name=hinge_name,
             armature=joint_armatures[joint_idx],
             damping=joint_dampings[joint_idx],

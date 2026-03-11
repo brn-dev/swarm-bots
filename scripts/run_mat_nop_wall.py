@@ -11,7 +11,7 @@ from gymnasium.wrappers.vector import RecordEpisodeStatistics, NormalizeReward
 from loguru import logger
 from torch import nn
 
-from swarmbots.learn.action_dists.hybrid_action_dist import GSDEParams
+from swarmbots.learn.action_dists.hybrid_action_dist import GSDEParams, BimodalBetaParams
 from swarmbots.learn.action_dists.gsde_action_dist import GSDEActionDist
 from swarmbots.learn.algos.mat.wm.mat_nop_policy import MATNOPPolicy
 from swarmbots.learn.algos.ppo.wm.ppo_wm import PPOWM
@@ -258,15 +258,16 @@ def main() -> None:
         n_critic_value_regressor_hidden_layers=1,
         cross_attn_first=True,
         act_fn_cls=nn.GELU,
-        continuous_config=GSDEParams(
-            base_std=0.25,
-            latent_sde_dim=None,
-            std_learnable=True,
-            full_std=True,
-            sde_learn_features=False,
-            log_std_clamp_range=(-20.0, 2.0),
-            normalize_latent_sde_by_dim=True
-        ),
+        # continuous_config=GSDEParams(
+        #     base_std=0.25,
+        #     latent_sde_dim=None,
+        #     std_learnable=True,
+        #     full_std=True,
+        #     sde_learn_features=False,
+        #     log_std_clamp_range=(-20.0, 2.0),
+        #     normalize_latent_sde_by_dim=True
+        # ),
+        continuous_config=BimodalBetaParams(),
         bernoulli_initial_prob=0.75,
         max_agents=20,
         use_popart=use_popart,
@@ -383,10 +384,10 @@ def main() -> None:
 
     auto_lr = AutomaticLearningRate(
         initial_lr=cold_lr,
-        max_lr=3e-4,
+        max_lr=2e-4,
         updater=auto_lr_updater
     )
-    rollout_samples = 4048
+    rollout_samples = 4048 * 2
     ppo = PPOWM(
         policy=policy,
         env=env,
@@ -397,7 +398,7 @@ def main() -> None:
         n_epochs=5,
         gamma=gamma,
         gae_lambda=0.95,
-        clip_range=0.1,
+        clip_range=0.07,
         target_kl=0.007,
         max_grad_norm=10.0,
         gsde_reset_mode=GSDEProbabilityResetMode(probability=1/6),
