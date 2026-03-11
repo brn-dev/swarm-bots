@@ -7,8 +7,13 @@ import numpy as np
 from gymnasium import spaces
 
 import swarmbots
-from swarmbots.learn.action_dists.action_dist import ActionDist, AGENT_ACTIONS_DIM, ActionNetInitialization
+from swarmbots.learn.action_dists.action_dist import (
+    ActionDist,
+    AGENT_ACTIONS_DIM,
+    ActionNetInitialization,
+)
 from swarmbots.learn.action_dists.bernoulli_action_dist import BernoulliActionDist
+from swarmbots.learn.action_dists.bimodal_beta_action_dist import BimodalBetaActionDist
 from swarmbots.learn.action_dists.continuous_action_dist import ContinuousActionDist
 from swarmbots.learn.action_dists.diag_gaussian_action_dist import DiagGaussianActionDist
 from swarmbots.learn.action_dists.gsde_action_dist import GSDEActionDist
@@ -45,7 +50,11 @@ class GSDEParams:
     latent_sde_net_initialization: ActionNetInitialization = init_linear_orthogonal
     log_std_clamp_range: tuple[float, float] = (-20.0, 2.0)
 
-ContinuousActionDistConfig = SquashedDiagParams | PredictedStdParams | GSDEParams
+@dataclass(frozen=True)
+class BimodalBetaParams:
+    epsilon: float = 1e-6
+
+ContinuousActionDistConfig = SquashedDiagParams | PredictedStdParams | GSDEParams | BimodalBetaParams
 
 
 def serialize_continuous_action_dist_config(config: ContinuousActionDistConfig) -> dict[str, Any]:
@@ -213,7 +222,8 @@ def make_proba_distribution(
         if continuous_config is None:
             raise ValueError(
                 "Supply a ContinuousActionDistConfig "
-                "(SquashedDiagParams | PredictedStdParams | GSDEParams) for continuous actions."
+                "(SquashedDiagParams | PredictedStdParams | GSDEParams | BimodalBetaParams) "
+                "for continuous actions."
             )
 
         if isinstance(continuous_config, SquashedDiagParams):
@@ -251,6 +261,13 @@ def make_proba_distribution(
                 latent_sde_net_initialization=continuous_config.latent_sde_net_initialization,
                 log_std_clamp_range=continuous_config.log_std_clamp_range,
                 action_net_initialization=action_net_initialization,
+            )
+        elif isinstance(continuous_config, BimodalBetaParams):
+            return BimodalBetaActionDist(
+                latent_dim=latent_dim,
+                action_dim=action_space_dim,
+                action_net_initialization=action_net_initialization,
+                epsilon=continuous_config.epsilon,
             )
         raise TypeError(
             "Unsupported continuous action config type for Box action space: "

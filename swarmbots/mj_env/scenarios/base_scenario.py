@@ -478,13 +478,17 @@ class BaseScenario(abc.ABC):
             conn_xquat = conn_xquat.reshape((self.num_units, -1))
             obs_list.append(conn_xquat)
 
+        units_active_mask = state.get('units_active_mask')
+        active_units_count = self.num_units
+        if units_active_mask is not None:
+            active_units_count = int(np.asarray(units_active_mask, dtype=bool).sum())
+
         obs: SwarmObsDict = {
             'local_obs': np.concatenate(obs_list, axis=1),
             'global_obs': np.empty(0, dtype=float),
-            'hidden_vars': np.empty(0, dtype=float),
+            'hidden_vars': np.array([active_units_count], dtype=float),
         }
         if self.swarm.can_have_inactive_units:
-            units_active_mask = state['units_active_mask']
             if units_active_mask is None:
                 raise ValueError("units_active_mask must be set when can_have_inactive_units is True")
             obs['agent_mask'] = units_active_mask.copy()

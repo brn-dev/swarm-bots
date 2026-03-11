@@ -7,7 +7,8 @@ from swarmbots.mj_env.scenarios.obstacle_street_scenario import ObstacleStreetSc
 from swarmbots.mj_env.scenarios.base_scenario import ActuatorsActivationRewardType
 from swarmbots.mj_env.swarm.base_swarm import BaseSwarm
 from swarmbots.mj_env.swarm.homogeneous_swarm import HomogeneousSwarm, PreConnectedUnitLocationsConfig
-from swarmbots.mj_env.swarm.unit_config import UNIT_CONFIG_TETRAHEDRON_XYZ, UNIT_CONFIG_TETRAHEDRON_ZX
+from swarmbots.mj_env.swarm.unit_config import UNIT_CONFIG_TETRAHEDRON_XYZ, UNIT_CONFIG_TETRAHEDRON_ZX, \
+    UNIT_CONFIG_TETRAHEDRON_XY
 
 DEFAULT_KWARGS = {
     'friction': [2, 1e-2, 2e-4],
@@ -21,8 +22,8 @@ DEFAULT_KWARGS = {
     'actuators_activation_reward_clip': 20.0,
     'hinge_qvel_magnitude_reward_weight': -1e-6,
     'hinge_qvel_magnitude_reward_threshold': 8.0,
-    'units_without_connections_reward_weight': -2e-4,
-    'units_with_double_connection_reward_weight': -1e-4,
+    'units_without_connections_reward_weight': -5e-4,
+    'units_with_double_connection_reward_weight': -2e-4,
     'movement_reward_weight': 0e-1,
     'height_reward_weight': 0e-4,
     'connectors_stayed_active_reward_weight': 0e-5,
@@ -33,15 +34,15 @@ DEFAULT_KWARGS = {
     'reset_settle_timestep_scale': 5,
 }
 WALL_PASS_KWARGS = {
-    'wall_pass_reward_weight': 0.5,
-    'wall_pass_margin': 0.3,
+    'wall_pass_reward_weight': 5.0,
+    'wall_pass_margin': 0.25,
 }
 
 def _resolve_swarm(
         swarm: BaseSwarm | None,
         unit_start_locations: list[tuple[float, float, float]] | str | None = None,
         randomize_unit_orientations: bool = False,
-        joints: str = 'zx'
+        joints: str = 'xy'
 ) -> BaseSwarm:
     assert swarm is None or unit_start_locations is None
 
@@ -65,17 +66,25 @@ def _resolve_swarm(
     joint_configs = {
         'zx': {
             'unit_config': UNIT_CONFIG_TETRAHEDRON_ZX,
+            'hinge_range': (None, np.pi / 3),
             'hinge_armature': (0.02, 0.015),
             'hinge_damping': (0.2, 0.15),
             'hinge_frictionloss': (0.2, 0.15),
         },
+        'xy': {
+            'unit_config': UNIT_CONFIG_TETRAHEDRON_XY,
+            'hinge_range': (np.pi / 3, np.pi / 3),
+            'hinge_armature': (0.015, 0.015),
+            'hinge_damping': (0.15, 0.15),
+            'hinge_frictionloss': (0.15, 0.15),
+        },
         'xyz': {
             'unit_config': UNIT_CONFIG_TETRAHEDRON_XYZ,
-            'hinge_armature': (0.007, 0.007, 0.025),
-            'hinge_damping': (0.07, 0.07, 0.5),
-            'hinge_frictionloss': (0.07, 0.07, 0.5),
+            'hinge_range': (np.pi / 3, np.pi / 3, None),
+            'hinge_armature': (0.01, 0.01, 0.025),
+            'hinge_damping': (0.1, 0.1, 0.5),
+            'hinge_frictionloss': (0.1, 0.1, 0.5),
         }
-
     }
 
     return HomogeneousSwarm(
@@ -84,7 +93,6 @@ def _resolve_swarm(
         body_radius=0.1,
         leg_length=0.2,
         leg_radius=0.025,
-        hinge_range=np.pi / 3,
         connection_torquescale=50.0,
         randomize_unit_orientations=randomize_unit_orientations,
     )

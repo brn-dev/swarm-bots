@@ -157,7 +157,7 @@ class HomogeneousSwarm(BaseSwarm):
             body_radius: float = 0.1,
             leg_length: float = 0.2,
             leg_radius: float = 0.025,
-            hinge_range: float = np.pi / 3,
+            hinge_range: tuple[float | None, ...] = (np.pi / 3, np.pi / 3),
             hinge_armature: HingeJointParam = (0.0, 0.0),
             hinge_damping: HingeJointParam = (0.0, 0.0),
             hinge_frictionloss: HingeJointParam = (0.0, 0.0),
