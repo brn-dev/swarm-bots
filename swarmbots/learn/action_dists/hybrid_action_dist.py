@@ -1,3 +1,4 @@
+import math
 from dataclasses import asdict, dataclass
 from typing import Any, Optional, Self
 
@@ -19,6 +20,7 @@ from swarmbots.learn.action_dists.diag_gaussian_action_dist import DiagGaussianA
 from swarmbots.learn.action_dists.gsde_action_dist import GSDEActionDist
 from swarmbots.learn.action_dists.predicted_std_action_dist import PredictedStdActionDist
 from swarmbots.learn.action_dists.squashed_diag_gaussian_action_dist import SquashedDiagGaussianActionDist
+from swarmbots.learn.action_dists.trimodal_beta_action_dist import TrimodalBetaActionDist
 from swarmbots.learn.hybrid_action_space import HybridActionSpace
 from swarmbots.learn.nn_components.nn_init import init_linear_orthogonal
 
@@ -53,8 +55,20 @@ class GSDEParams:
 @dataclass(frozen=True)
 class BimodalBetaParams:
     epsilon: float = 1e-6
+    alphas: tuple[float, float] = (1.0 + math.log(2.0), 1.0 + math.log(2.0))
+    betas: tuple[float, float] = (1.0 + math.log(2.0), 1.0 + math.log(2.0))
 
-ContinuousActionDistConfig = SquashedDiagParams | PredictedStdParams | GSDEParams | BimodalBetaParams
+
+@dataclass(frozen=True)
+class TrimodalBetaParams:
+    epsilon: float = 1e-6
+    alphas: tuple[float, float, float] = (1.0 + math.log(2.0), 1.0 + math.log(2.0), 1.0 + math.log(2.0))
+    betas: tuple[float, float, float] = (1.0 + math.log(2.0), 1.0 + math.log(2.0), 1.0 + math.log(2.0))
+
+
+ContinuousActionDistConfig = (
+    SquashedDiagParams | PredictedStdParams | GSDEParams | BimodalBetaParams | TrimodalBetaParams
+)
 
 
 def serialize_continuous_action_dist_config(config: ContinuousActionDistConfig) -> dict[str, Any]:
@@ -222,7 +236,8 @@ def make_proba_distribution(
         if continuous_config is None:
             raise ValueError(
                 "Supply a ContinuousActionDistConfig "
-                "(SquashedDiagParams | PredictedStdParams | GSDEParams | BimodalBetaParams) "
+                "(SquashedDiagParams | PredictedStdParams | GSDEParams | "
+                "BimodalBetaParams | TrimodalBetaParams) "
                 "for continuous actions."
             )
 
@@ -268,6 +283,17 @@ def make_proba_distribution(
                 action_dim=action_space_dim,
                 action_net_initialization=action_net_initialization,
                 epsilon=continuous_config.epsilon,
+                alphas=continuous_config.alphas,
+                betas=continuous_config.betas,
+            )
+        elif isinstance(continuous_config, TrimodalBetaParams):
+            return TrimodalBetaActionDist(
+                latent_dim=latent_dim,
+                action_dim=action_space_dim,
+                action_net_initialization=action_net_initialization,
+                epsilon=continuous_config.epsilon,
+                alphas=continuous_config.alphas,
+                betas=continuous_config.betas,
             )
         raise TypeError(
             "Unsupported continuous action config type for Box action space: "

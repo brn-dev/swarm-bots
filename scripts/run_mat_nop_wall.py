@@ -11,7 +11,7 @@ from gymnasium.wrappers.vector import RecordEpisodeStatistics, NormalizeReward
 from loguru import logger
 from torch import nn
 
-from swarmbots.learn.action_dists.hybrid_action_dist import GSDEParams, BimodalBetaParams
+from swarmbots.learn.action_dists.hybrid_action_dist import GSDEParams, BimodalBetaParams, TrimodalBetaParams
 from swarmbots.learn.action_dists.gsde_action_dist import GSDEActionDist
 from swarmbots.learn.algos.mat.wm.mat_nop_policy import MATNOPPolicy
 from swarmbots.learn.algos.ppo.wm.ppo_wm import PPOWM
@@ -100,6 +100,10 @@ def set_actuator_gsde_init_joint_stds(
         raise ValueError()
 
     gsde_dist = next((dist for dist in policy.action_dist.distributions if isinstance(dist, GSDEActionDist)), None)
+
+    if gsde_dist is None:
+        logger.warning("No gSDE dist found, skipping log std init")
+        return
 
     with torch.no_grad():
         for i, joint_std in enumerate(joint_stds):
@@ -267,7 +271,14 @@ def main() -> None:
         #     log_std_clamp_range=(-20.0, 2.0),
         #     normalize_latent_sde_by_dim=True
         # ),
-        continuous_config=BimodalBetaParams(),
+        # continuous_config=BimodalBetaParams(
+        #     alphas=(2.0, 5.0),
+        #     betas=(5.0, 2.0)
+        # ),
+        continuous_config=TrimodalBetaParams(
+            alphas=(3.0, 10.0, 10.0),
+            betas=(10.0, 10.0, 3.0)
+        ),
         bernoulli_initial_prob=0.75,
         max_agents=20,
         use_popart=use_popart,
