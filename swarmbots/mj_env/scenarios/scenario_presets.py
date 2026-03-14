@@ -42,7 +42,7 @@ def _resolve_swarm(
         swarm: BaseSwarm | None,
         unit_start_locations: list[tuple[float, float, float]] | str | None = None,
         randomize_unit_orientations: bool = False,
-        joints: str = 'xy'
+        joints: str = 'zx'
 ) -> BaseSwarm:
     assert swarm is None or unit_start_locations is None
 
@@ -67,9 +67,9 @@ def _resolve_swarm(
         'zx': {
             'unit_config': UNIT_CONFIG_TETRAHEDRON_ZX,
             'hinge_range': (None, np.pi / 3),
-            'hinge_armature': (0.02, 0.015),
-            'hinge_damping': (0.2, 0.15),
-            'hinge_frictionloss': (0.2, 0.15),
+            'hinge_armature': (0.025, 0.015),
+            'hinge_damping': (0.3, 0.15),
+            'hinge_frictionloss': (0.3, 0.15),
         },
         'xy': {
             'unit_config': UNIT_CONFIG_TETRAHEDRON_XY,

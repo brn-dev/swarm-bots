@@ -57,22 +57,20 @@ def _maybe_reset_gsde_noise(
         raise RuntimeError("Policy reports gsde_enabled=True but gsde_reset_mode is None.")
 
     action_dist = getattr(policy, "action_dist", None)
-    if action_dist is None or not hasattr(action_dist, "reset_noise"):
-        raise RuntimeError("Policy reports gsde_enabled=True but has no action_dist.reset_noise().")
+    if action_dist is None or not hasattr(action_dist, "reset_temporal_correlations_on_step"):
+        raise RuntimeError(
+            "Policy reports gsde_enabled=True but has no action_dist.reset_temporal_correlations_on_step()."
+        )
 
     batch_shape = tuple(local_obs.shape[:-1])
     if isinstance(gsde_reset_mode, GSDEIntervalResetMode):
         if (rollout_step_idx % gsde_reset_mode.interval) == 0:
-            action_dist.reset_noise(batch_shape=batch_shape)
+            action_dist.reset_temporal_correlations_on_step(batch_shape=batch_shape)
         return
 
     if isinstance(gsde_reset_mode, GSDEProbabilityResetMode):
-        if not hasattr(action_dist, "reset_noise_masked"):
-            raise RuntimeError(
-                "GSDEProbabilityResetMode requires action_dist.reset_noise_masked(mask), but it's missing."
-            )
         mask = torch.empty(batch_shape, device=local_obs.device, dtype=torch.bool).bernoulli_(gsde_reset_mode.probability)
-        action_dist.reset_noise_masked(mask)
+        action_dist.reset_temporal_correlations_on_step(mask=mask)
         return
 
     raise TypeError(f"Unknown gsde_reset_mode type: {type(gsde_reset_mode)}")
@@ -110,6 +108,10 @@ def record_policy(
 
     for episode_idx in range(num_episodes):
         obs, _ = env.reset()
+        action_dist = getattr(policy, "action_dist", None)
+        if action_dist is not None and hasattr(action_dist, "reset_temporal_correlations_on_ep_start"):
+            episode_start_mask = torch.ones((env.num_envs,), device=device, dtype=torch.bool)
+            action_dist.reset_temporal_correlations_on_ep_start(episode_start_mask)
         frames = []
         ep_rew = None
         ep_progress_reward = None

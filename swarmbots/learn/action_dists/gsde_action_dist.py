@@ -7,13 +7,14 @@ from torch import nn
 
 from swarmbots.learn.action_dists.action_dist import ActionNetInitialization
 from swarmbots.learn.action_dists.continuous_action_dist import ContinuousActionDist
+from swarmbots.learn.action_dists.temporally_correlated_action_dist import TemporallyCorrelatedActionDist
 from swarmbots.learn.action_dists.tanh_bijector import TanhBijector
 from swarmbots.learn.nn_components.nn_init import init_linear_orthogonal
 
 LogStdNetInitialization = ActionNetInitialization
 
 
-class GSDEActionDist(ContinuousActionDist):
+class GSDEActionDist(ContinuousActionDist, TemporallyCorrelatedActionDist):
 
     def __init__(
             self,
@@ -119,6 +120,20 @@ class GSDEActionDist(ContinuousActionDist):
             )
             exploration_matrices_flat = self._exploration_matrices.reshape(-1, self.latent_sde_dim, self.action_dim)
             exploration_matrices_flat[mask_flat] = noise * std_matrix
+
+    def reset_on_ep_start(self, mask: torch.Tensor) -> None:
+        self.reset_noise_masked(mask)
+
+    def reset_on_step(
+            self,
+            mask: torch.Tensor | None = None,
+            batch_shape: tuple[int, ...] | None = None,
+    ) -> None:
+        if mask is not None:
+            self.reset_noise_masked(mask)
+            return
+        if batch_shape is not None:
+            self.reset_noise(batch_shape)
 
     def update_latent_features(self, latent_pi: torch.Tensor) -> Self:
         action_means = self.action_net(latent_pi)

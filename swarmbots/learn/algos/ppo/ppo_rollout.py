@@ -69,33 +69,40 @@ def _init_rollout_timers() -> _RolloutTimers:
     )
 
 
-def _maybe_reset_gsde_noise(
+def _build_gsde_step_reset_mask(
         *,
-        policy: BasePPOPolicy,
-        local_obs: torch.Tensor,
-        rollout_step_idx: int,
         gsde_enabled: bool,
         is_gsde_interval_reset_mode: bool,
         gsde_reset_interval: int,
         gsde_reset_prob: float,
+        rollout_step_idx: int,
+        batch_shape: tuple[int, ...],
         rollout_device: torch.device,
-        timers: _RolloutTimers,
-) -> None:
+) -> torch.Tensor | None:
     if not gsde_enabled:
-        return
-    batch_shape = tuple(local_obs.shape[:-1])
-    with timers.reset_noise_timer:
-        if is_gsde_interval_reset_mode:
-            if (rollout_step_idx % gsde_reset_interval) == 0:
-                policy.action_dist.reset_noise(batch_shape=batch_shape)
-        else:
-            mask = torch.empty(
-                batch_shape,
-                device=rollout_device,
-                dtype=torch.bool,
-            ).bernoulli_(gsde_reset_prob)
-            policy.action_dist.reset_noise_masked(mask)
-    timers.reset_noise_timings.append(timers.reset_noise_timer.get_duration())
+        return None
+    if is_gsde_interval_reset_mode:
+        if (rollout_step_idx % gsde_reset_interval) != 0:
+            return None
+        return torch.ones(batch_shape, device=rollout_device, dtype=torch.bool)
+    return torch.empty(
+        batch_shape,
+        device=rollout_device,
+        dtype=torch.bool,
+    ).bernoulli_(gsde_reset_prob)
+
+
+def _reset_temporal_correlations(
+        *,
+        policy: BasePPOPolicy,
+        episode_start_mask: torch.Tensor | None = None,
+        step_reset_mask: torch.Tensor | None = None,
+        batch_shape: tuple[int, ...] | None = None,
+) -> None:
+    if episode_start_mask is not None:
+        policy.action_dist.reset_temporal_correlations_on_ep_start(episode_start_mask)
+    if step_reset_mask is not None or batch_shape is not None:
+        policy.action_dist.reset_temporal_correlations_on_step(mask=step_reset_mask, batch_shape=batch_shape)
 
 
 def _collect_rollout_step(
@@ -120,17 +127,24 @@ def _collect_rollout_step(
     hidden_vars = obs["hidden_vars"]
     agent_mask = obs.get("agent_mask", None)
 
-    _maybe_reset_gsde_noise(
-        policy=policy,
-        local_obs=local_obs,
-        rollout_step_idx=rollout_step_idx,
+    batch_shape = tuple(local_obs.shape[:-1])
+    step_reset_mask = _build_gsde_step_reset_mask(
         gsde_enabled=gsde_enabled,
         is_gsde_interval_reset_mode=is_gsde_interval_reset_mode,
         gsde_reset_interval=gsde_reset_interval,
         gsde_reset_prob=gsde_reset_prob,
+        rollout_step_idx=rollout_step_idx,
+        batch_shape=batch_shape,
         rollout_device=buffer.rollout_device,
-        timers=timers,
     )
+    with timers.reset_noise_timer:
+        _reset_temporal_correlations(
+            policy=policy,
+            episode_start_mask=is_final,
+            step_reset_mask=step_reset_mask,
+            batch_shape=batch_shape if (gsde_enabled and is_gsde_interval_reset_mode and step_reset_mask is None) else None,
+        )
+    timers.reset_noise_timings.append(timers.reset_noise_timer.get_duration())
 
     with timers.policy_forward_timer:
         actions, log_probs, values = policy(
@@ -140,6 +154,7 @@ def _collect_rollout_step(
             agent_mask=agent_mask,
         )
     timers.policy_forward_timings.append(timers.policy_forward_timer.get_duration())
+    _reset_temporal_correlations(policy=policy, episode_start_mask=is_final)
 
     values = values.masked_fill(was_terminated, 0.0)
 
@@ -225,6 +240,8 @@ def collect_whole_episodes(
     with PerformanceTimer() as to_rollout_device_timer:
         policy.to(buffer.rollout_device)
         policy.eval()
+        initial_mask = torch.ones((buffer.n_envs,), dtype=torch.bool, device=buffer.rollout_device)
+        _reset_temporal_correlations(policy=policy, episode_start_mask=initial_mask)
 
     episode_infos: list[dict[str, Any]] = []
     episode_info_buffers: list[dict[str, Any] | None] = [None for _ in range(buffer.n_envs)]
@@ -297,6 +314,9 @@ def collect_steps(
     with PerformanceTimer() as to_rollout_device_timer:
         policy.to(buffer.rollout_device)
         policy.eval()
+        if rollout_state is None:
+            initial_mask = torch.ones((buffer.n_envs,), dtype=torch.bool, device=buffer.rollout_device)
+            _reset_temporal_correlations(policy=policy, episode_start_mask=initial_mask)
 
     episode_infos: list[dict[str, Any]] = []
     timers = _init_rollout_timers()
