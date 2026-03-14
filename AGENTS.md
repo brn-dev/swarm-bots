@@ -25,3 +25,4 @@ If you are unsure about how a specfic library works or how its API looks like, s
 ## Infos
 We are using python >= 3.11
 Don't care too much about backwards compatibility. It's better to implement something properly, just tell me if something breaks old stuff.
+See [gymnasium_autoreset.md](gymnasium_autoreset.md) for NEXT_STEP auto reset which we use. You often get confused here.

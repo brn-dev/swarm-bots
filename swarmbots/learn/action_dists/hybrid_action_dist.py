@@ -1,4 +1,3 @@
-import math
 from dataclasses import asdict, dataclass
 from typing import Any, Optional, Self
 
@@ -14,13 +13,14 @@ from swarmbots.learn.action_dists.action_dist import (
     ActionNetInitialization,
 )
 from swarmbots.learn.action_dists.bernoulli_action_dist import BernoulliActionDist
-from swarmbots.learn.action_dists.bimodal_beta_action_dist import BimodalBetaActionDist
 from swarmbots.learn.action_dists.continuous_action_dist import ContinuousActionDist
 from swarmbots.learn.action_dists.diag_gaussian_action_dist import DiagGaussianActionDist
 from swarmbots.learn.action_dists.gsde_action_dist import GSDEActionDist
+from swarmbots.learn.action_dists.beta_mixture_action_dist import BetaMixtureActionDist
+from swarmbots.learn.action_dists.sticky_beta_mixture_action_dist import StickyBetaMixtureActionDist
 from swarmbots.learn.action_dists.predicted_std_action_dist import PredictedStdActionDist
 from swarmbots.learn.action_dists.squashed_diag_gaussian_action_dist import SquashedDiagGaussianActionDist
-from swarmbots.learn.action_dists.trimodal_beta_action_dist import TrimodalBetaActionDist
+from swarmbots.learn.action_dists.temporally_correlated_action_dist import TemporallyCorrelatedActionDist
 from swarmbots.learn.hybrid_action_space import HybridActionSpace
 from swarmbots.learn.nn_components.nn_init import init_linear_orthogonal
 
@@ -53,21 +53,27 @@ class GSDEParams:
     log_std_clamp_range: tuple[float, float] = (-20.0, 2.0)
 
 @dataclass(frozen=True)
-class BimodalBetaParams:
+class BetaMixtureParams:
+    num_components: int
+    alphas: tuple[float, ...]
+    betas: tuple[float, ...]
     epsilon: float = 1e-6
-    alphas: tuple[float, float] = (1.0 + math.log(2.0), 1.0 + math.log(2.0))
-    betas: tuple[float, float] = (1.0 + math.log(2.0), 1.0 + math.log(2.0))
-
 
 @dataclass(frozen=True)
-class TrimodalBetaParams:
+class StickyBetaMixtureParams:
+    num_components: int
+    sticky_probability: float
+    alphas: tuple[float, ...]
+    betas: tuple[float, ...]
     epsilon: float = 1e-6
-    alphas: tuple[float, float, float] = (1.0 + math.log(2.0), 1.0 + math.log(2.0), 1.0 + math.log(2.0))
-    betas: tuple[float, float, float] = (1.0 + math.log(2.0), 1.0 + math.log(2.0), 1.0 + math.log(2.0))
 
 
 ContinuousActionDistConfig = (
-    SquashedDiagParams | PredictedStdParams | GSDEParams | BimodalBetaParams | TrimodalBetaParams
+        SquashedDiagParams
+        | PredictedStdParams
+        | GSDEParams
+        | BetaMixtureParams
+        | StickyBetaMixtureParams
 )
 
 
@@ -114,13 +120,13 @@ class HybridActionDistribution(ActionDist):
         else:
             self.continuous_configs = [continuous_config] * action_space.n_spaces
 
-        self.gsde_indices = [
+        gsde_indices = [
             i for i, (sub_space, config) in enumerate(
                 zip(action_space.sub_spaces, self.continuous_configs, strict=True)
             )
             if isinstance(sub_space, spaces.Box) and isinstance(config, GSDEParams)
         ]
-        self.has_gsde = len(self.gsde_indices) > 0
+        self.has_gsde = len(gsde_indices) > 0
 
         super().__init__(
             latent_dim=latent_dim,
@@ -195,17 +201,19 @@ class HybridActionDistribution(ActionDist):
             return None
         return torch.stack(entropies, dim=-1).sum(dim=-1)
 
-    def reset_noise(self, batch_shape: tuple[int, ...]) -> None:
-        for idx in self.gsde_indices:
-            # noinspection PyTypeChecker
-            gsde_dist: GSDEActionDist = self.distributions[idx]
-            gsde_dist.reset_noise(batch_shape)
+    def reset_temporal_correlations_on_ep_start(self, mask: torch.Tensor) -> None:
+        for dist in self.distributions:
+            if isinstance(dist, TemporallyCorrelatedActionDist):
+                dist.reset_on_ep_start(mask)
 
-    def reset_noise_masked(self, mask: torch.Tensor) -> None:
-        for idx in self.gsde_indices:
-            # noinspection PyTypeChecker
-            gsde_dist: GSDEActionDist = self.distributions[idx]
-            gsde_dist.reset_noise_masked(mask)
+    def reset_temporal_correlations_on_step(
+            self,
+            mask: torch.Tensor | None = None,
+            batch_shape: tuple[int, ...] | None = None,
+    ) -> None:
+        for dist in self.distributions:
+            if isinstance(dist, TemporallyCorrelatedActionDist):
+                dist.reset_on_step(mask=mask, batch_shape=batch_shape)
 
     def get_unsquashed_action_means(self) -> list[torch.Tensor]:
         return [dist.distribution.mean for dist in self.distributions if isinstance(dist, ContinuousActionDist)]
@@ -237,8 +245,7 @@ def make_proba_distribution(
             raise ValueError(
                 "Supply a ContinuousActionDistConfig "
                 "(SquashedDiagParams | PredictedStdParams | GSDEParams | "
-                "BimodalBetaParams | TrimodalBetaParams) "
-                "for continuous actions."
+                "BetaMixtureParams | StickyBetaMixtureParams) for continuous actions."
             )
 
         if isinstance(continuous_config, SquashedDiagParams):
@@ -277,20 +284,23 @@ def make_proba_distribution(
                 log_std_clamp_range=continuous_config.log_std_clamp_range,
                 action_net_initialization=action_net_initialization,
             )
-        elif isinstance(continuous_config, BimodalBetaParams):
-            return BimodalBetaActionDist(
+        elif isinstance(continuous_config, BetaMixtureParams):
+            return BetaMixtureActionDist(
                 latent_dim=latent_dim,
                 action_dim=action_space_dim,
+                num_components=continuous_config.num_components,
                 action_net_initialization=action_net_initialization,
                 epsilon=continuous_config.epsilon,
                 alphas=continuous_config.alphas,
                 betas=continuous_config.betas,
             )
-        elif isinstance(continuous_config, TrimodalBetaParams):
-            return TrimodalBetaActionDist(
+        elif isinstance(continuous_config, StickyBetaMixtureParams):
+            return StickyBetaMixtureActionDist(
                 latent_dim=latent_dim,
                 action_dim=action_space_dim,
+                num_components=continuous_config.num_components,
                 action_net_initialization=action_net_initialization,
+                sticky_probability=continuous_config.sticky_probability,
                 epsilon=continuous_config.epsilon,
                 alphas=continuous_config.alphas,
                 betas=continuous_config.betas,
