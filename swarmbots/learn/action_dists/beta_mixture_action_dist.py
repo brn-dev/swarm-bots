@@ -6,6 +6,7 @@ from torch import distributions as torchdist, nn
 from torch.nn import functional as F
 
 from swarmbots.learn.action_dists.action_dist import AGENT_ACTIONS_DIM, ActionDist, ActionNetInitialization
+from swarmbots.learn.losses import LossMetrics
 
 
 class BetaMixtureActionDist(ActionDist):
@@ -108,8 +109,8 @@ class BetaMixtureActionDist(ActionDist):
         log_prob_in_m1_1 = log_prob_in_01 + math.log(0.5)
         return log_prob_in_m1_1.sum(dim=AGENT_ACTIONS_DIM)
 
-    def entropy(self) -> Optional[torch.Tensor]:
-        return None
+    def compute_exploration_loss(self) -> tuple[Optional[torch.Tensor], LossMetrics]:
+        return None, {}
 
 
 def _inverse_softplus(value: float) -> float:

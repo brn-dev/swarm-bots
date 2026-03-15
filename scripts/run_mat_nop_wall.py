@@ -11,7 +11,7 @@ from gymnasium.wrappers.vector import RecordEpisodeStatistics, NormalizeReward
 from loguru import logger
 from torch import nn
 
-from swarmbots.learn.action_dists.hybrid_action_dist import GSDEParams, BetaMixtureParams
+from swarmbots.learn.action_dists.hybrid_action_dist import GSDEParams, BetaMixtureParams, BangZeroBangParams
 from swarmbots.learn.action_dists.gsde_action_dist import GSDEActionDist
 from swarmbots.learn.algos.mat.wm.mat_nop_policy import MATNOPPolicy
 from swarmbots.learn.algos.ppo.wm.ppo_wm import PPOWM
@@ -271,12 +271,15 @@ def main() -> None:
         #     log_std_clamp_range=(-20.0, 2.0),
         #     normalize_latent_sde_by_dim=True
         # ),
-        continuous_config=BetaMixtureParams(
-            num_components=3,
-            alphas=(3.0, 10.0, 10.0),
-            betas=(10.0, 10.0, 3.0)
+        # continuous_config=BetaMixtureParams(
+        #     num_components=3,
+        #     alphas=(3.0, 10.0, 10.0),
+        #     betas=(10.0, 10.0, 3.0)
+        # ),
+        continuous_config=BangZeroBangParams(
+            bang=0.85,
         ),
-        bernoulli_initial_prob=0.75,
+        bernoulli_initial_prob=0.7,
         max_agents=20,
         use_popart=use_popart,
         popart_beta=popart_beta,
