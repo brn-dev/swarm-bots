@@ -6,6 +6,7 @@ import torch.distributions as torchdist
 
 from swarmbots.learn.action_dists.action_dist import AGENT_ACTIONS_DIM, ActionNetInitialization
 from swarmbots.learn.action_dists.discrete_action_dist import DiscreteActionDist
+from swarmbots.learn.losses import LossMetrics
 from swarmbots.learn.nn_components.nn_init import init_linear_orthogonal
 
 
@@ -48,5 +49,5 @@ class BernoulliActionDist(DiscreteActionDist):
     def log_prob(self, actions: torch.Tensor) -> torch.Tensor:
         return self.distribution.log_prob(actions).sum(dim=AGENT_ACTIONS_DIM)
 
-    def entropy(self) -> Optional[torch.Tensor]:
-        return self.distribution.entropy().sum(dim=AGENT_ACTIONS_DIM)
+    def compute_exploration_loss(self) -> tuple[Optional[torch.Tensor], LossMetrics]:
+        return self.distribution.entropy().sum(dim=AGENT_ACTIONS_DIM), {}

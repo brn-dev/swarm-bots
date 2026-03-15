@@ -11,13 +11,9 @@ from swarmbots.learn.action_dists.hybrid_action_dist import (
 from swarmbots.learn.algos.mat.mat_decoder import MATDecoder
 from swarmbots.learn.algos.mat.mat_encoder import MATEncoder
 from swarmbots.learn.algos.ppo.ppo import AGENTS_DIM
-from swarmbots.learn.algos.ppo.ppo_policy import (
-    BasePPOPolicy,
-    LossDict,
-    LossMetrics,
-    compute_action_magnitude_extra_losses,
-)
+from swarmbots.learn.algos.ppo.ppo_policy import BasePPOPolicy
 from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
+from swarmbots.learn.losses import LossDict, LossMetrics
 from swarmbots.learn.nn_components.deep_set import DeepSetCritic
 from swarmbots.learn.nn_components.mlp import MLP
 from swarmbots.learn.nn_components.nn_init import init_linear_orthogonal
@@ -71,15 +67,6 @@ class MATPolicy(BasePPOPolicy):
         self.global_obs_dim: int = env.global_obs_dim
         self.has_global_obs = env.global_obs_dim > 0
         self.hidden_vars_dim: int = env.hidden_vars_dim
-        if action_magnitude_loss_coef < 0:
-            raise ValueError(f"Expected action_magnitude_loss_coef >= 0, got {action_magnitude_loss_coef}")
-        if action_magnitude_loss_threshold < 0:
-            raise ValueError(f"Expected action_magnitude_loss_threshold >= 0, got {action_magnitude_loss_threshold}")
-        if action_magnitude_loss_power < 1:
-            raise ValueError(f"Expected action_magnitude_loss_power >= 1, got {action_magnitude_loss_power}")
-        self.action_magnitude_loss_coef = action_magnitude_loss_coef
-        self.action_magnitude_loss_threshold = action_magnitude_loss_threshold
-        self.action_magnitude_loss_power = action_magnitude_loss_power
 
         self.d_model_encoder = d_model
         self.d_model_decoder = d_model if d_model_decoder is None else d_model_decoder
@@ -161,6 +148,9 @@ class MATPolicy(BasePPOPolicy):
             action_space=env.action_space,
             continuous_config=continuous_config,
             bernoulli_initial_prob=bernoulli_initial_prob,
+            action_magnitude_loss_coef=action_magnitude_loss_coef,
+            action_magnitude_loss_threshold=action_magnitude_loss_threshold,
+            action_magnitude_loss_power=action_magnitude_loss_power,
         )
 
         self.critic = DeepSetCritic(
@@ -332,10 +322,11 @@ class MATPolicy(BasePPOPolicy):
 
         self.action_dist.update_latent_features(latent_pi)
         log_probs = self.action_dist.log_prob(actions)
-        entropies = self.action_dist.entropy()
+        entropies, exploration_loss_metrics = self.action_dist.compute_exploration_loss()
 
         values = self._critic_with_hidden_vars(augmented_observations, hidden_vars, agent_mask=agent_mask)
-        extra_losses, extra_loss_metrics = self._compute_extra_losses(agent_mask=agent_mask)
+        extra_losses, extra_loss_metrics = self.action_dist.compute_extra_losses(agent_mask=agent_mask)
+        extra_loss_metrics = {**exploration_loss_metrics, **extra_loss_metrics}
         return augmented_observations, log_probs, entropies, values, extra_losses, extra_loss_metrics
 
     def act(
@@ -433,20 +424,7 @@ class MATPolicy(BasePPOPolicy):
             alias, value = action_magnitude_weight
             if value < 0:
                 raise ValueError(f"{alias} must be >= 0, got {value}")
-            self.action_magnitude_loss_coef = value
+            self.action_dist.action_magnitude_loss_coef = value
             self.hyper_parameters["action_magnitude_loss_coef"] = value
 
         super().update_loss_weights(**remaining_weights)
-
-    def _compute_extra_losses(
-            self,
-            *,
-            agent_mask: torch.Tensor | None,
-    ) -> tuple[LossDict, LossMetrics]:
-        return compute_action_magnitude_extra_losses(
-            action_means=self.action_dist.get_unsquashed_action_means(),
-            coef=self.action_magnitude_loss_coef,
-            threshold=self.action_magnitude_loss_threshold,
-            power=self.action_magnitude_loss_power,
-            agent_mask=agent_mask,
-        )

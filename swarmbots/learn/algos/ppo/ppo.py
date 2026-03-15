@@ -529,7 +529,7 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerType]):
                 actions = sampler.actions[..., act_dim_sum:act_dim_sum + act_dim]
                 act_dim_sum += act_dim
 
-                hist_bins = 2 if isinstance(dist, BernoulliActionDist) else 20
+                hist_bins = 2 if isinstance(dist, BernoulliActionDist) else 21
 
                 metrics[f'act{i}'] = compute_summary_statistics(actions, make_histogram=hist_bins)
 

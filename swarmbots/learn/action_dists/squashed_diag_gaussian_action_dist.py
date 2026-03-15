@@ -5,6 +5,7 @@ import torch
 from swarmbots.learn.action_dists.action_dist import ActionNetInitialization
 from swarmbots.learn.action_dists.diag_gaussian_action_dist import DiagGaussianActionDist
 from swarmbots.learn.action_dists.tanh_bijector import TanhBijector
+from swarmbots.learn.losses import LossMetrics
 from swarmbots.learn.nn_components.nn_init import init_linear_orthogonal
 
 
@@ -44,8 +45,8 @@ class SquashedDiagGaussianActionDist(DiagGaussianActionDist):
 
         return log_prob
 
-    def entropy(self) -> Optional[torch.Tensor]:
-        return None
+    def compute_exploration_loss(self) -> tuple[Optional[torch.Tensor], LossMetrics]:
+        return None, {}
 
     def sample(self, agent: int | None = None) -> torch.Tensor:
         self._last_gaussian_actions = super().sample()

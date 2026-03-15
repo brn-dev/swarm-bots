@@ -30,6 +30,12 @@ import plot_logs
 
 STATE_PATH = Path(__file__).resolve().with_name(".plot_logs_recent_config.json")
 PRESETS_PATH = Path(__file__).resolve().with_name(".plot_logs_presets.json")
+PATH_ORDER_MODES = (
+    "Added",
+    "Created (oldest first)",
+    "Created (newest first)",
+)
+DEFAULT_PATH_ORDER_MODE = PATH_ORDER_MODES[2]
 
 """
         WARNING: 95+% vibe coded
@@ -808,6 +814,12 @@ class PlotLogsInteractiveApp:
         self.file_color_var = tk.StringVar(value="")
         self.file_color_by_path: dict[Path, str] = {}
         self.path_enabled: dict[Path, bool] = {}
+        self.path_order_var = tk.StringVar(value=DEFAULT_PATH_ORDER_MODE)
+        self.path_added_order: dict[Path, int] = {}
+        self.path_added_order_counter = 0
+        self.csv_source_folder: Path | None = None
+        self.csv_source_folder_var = tk.StringVar(value="Source folder: (none)")
+        self.reload_folder_button: ttk.Button | None = None
         self.light_figure_palette = {
             "figure_face": matplotlib.rcParams["figure.facecolor"],
             "axes_face": matplotlib.rcParams["axes.facecolor"],
@@ -932,15 +944,36 @@ class PlotLogsInteractiveApp:
         files_frame.grid(row=1, column=0, sticky="ew", pady=(0, 8))
         files_frame.columnconfigure(0, weight=1)
 
+        source_folder_label = ttk.Label(
+            files_frame,
+            textvariable=self.csv_source_folder_var,
+            wraplength=240,
+            justify="left",
+        )
+        source_folder_label.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 8))
+
+        files_order_frame = ttk.Frame(files_frame)
+        files_order_frame.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(0, 6))
+        files_order_frame.columnconfigure(1, weight=1)
+        ttk.Label(files_order_frame, text="Order").grid(row=0, column=0, sticky="w")
+        files_order_combo = ttk.Combobox(
+            files_order_frame,
+            state="readonly",
+            values=PATH_ORDER_MODES,
+            textvariable=self.path_order_var,
+        )
+        files_order_combo.grid(row=0, column=1, sticky="ew", padx=(6, 0))
+        files_order_combo.bind("<<ComboboxSelected>>", self.on_path_order_change)
+
         self.files_listbox = tk.Listbox(files_frame, height=6, selectmode="extended")
-        self.files_listbox.grid(row=0, column=0, sticky="ew")
+        self.files_listbox.grid(row=2, column=0, sticky="ew")
         self.files_listbox.bind("<<ListboxSelect>>", self.on_file_selection)
         files_scrollbar = ttk.Scrollbar(files_frame, orient="vertical", command=self.files_listbox.yview)
-        files_scrollbar.grid(row=0, column=1, sticky="ns")
+        files_scrollbar.grid(row=2, column=1, sticky="ns")
         self.files_listbox.configure(yscrollcommand=files_scrollbar.set)
 
         files_buttons = ttk.Frame(files_frame)
-        files_buttons.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(6, 0))
+        files_buttons.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(6, 0))
         files_buttons.columnconfigure(0, weight=1, uniform="files_buttons")
         files_buttons.columnconfigure(1, weight=1, uniform="files_buttons")
         add_button = ttk.Button(files_buttons, text="Add CSV Files", command=self.add_files)
@@ -963,15 +996,22 @@ class PlotLogsInteractiveApp:
             command=lambda: self.set_enabled_for_selection(False),
         )
         disable_button.grid(row=2, column=1, sticky="ew", pady=(4, 0))
+        self.reload_folder_button = ttk.Button(
+            files_buttons,
+            text="Reload Folder CSVs",
+            command=self.reload_folder_csv_files,
+            state="disabled",
+        )
+        self.reload_folder_button.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(6, 0))
         plot_grad_norms_button = ttk.Button(
             files_buttons,
             text="Plot Grad Norms",
             command=self.plot_grad_norms,
         )
-        plot_grad_norms_button.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(6, 0))
+        plot_grad_norms_button.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(6, 0))
 
         meta_frame = ttk.Frame(files_frame)
-        meta_frame.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        meta_frame.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(8, 0))
         meta_frame.columnconfigure(1, weight=1)
 
         ttk.Label(meta_frame, text="Group").grid(row=0, column=0, sticky="w")
@@ -1192,6 +1232,8 @@ class PlotLogsInteractiveApp:
         for path in sorted(found_paths):
             if path not in self.paths:
                 self.paths.append(path)
+                self.path_added_order_counter += 1
+                self.path_added_order[path] = self.path_added_order_counter
                 added_paths.append(path)
             self.file_opacity_by_path.setdefault(path, 1.0)
             self.file_color_by_path.setdefault(path, "")
@@ -1207,6 +1249,73 @@ class PlotLogsInteractiveApp:
             self.set_status(f"Added {len(added_paths)} CSV files (disabled by default).")
         else:
             self.set_status(f"Added {len(added_paths)} CSV files.")
+
+    def list_csv_files_in_folder(self, root_path: Path) -> list[Path]:
+        return [
+            path.resolve()
+            for path in root_path.rglob("*.csv")
+            if path.is_file()
+        ]
+
+    def set_csv_source_folder(self, folder: Path | None) -> None:
+        self.csv_source_folder = folder
+        if folder is None:
+            self.csv_source_folder_var.set("Source folder: (none)")
+        else:
+            try:
+                folder_display = str(folder.relative_to(REPO_ROOT))
+            except ValueError:
+                folder_display = str(folder)
+            self.csv_source_folder_var.set(f"Source folder: {folder_display}")
+        if self.reload_folder_button is not None:
+            state = "normal" if folder is not None else "disabled"
+            self.reload_folder_button.configure(state=state)
+
+    def rebuild_added_order_from_paths(self) -> None:
+        for index, path in enumerate(self.paths, start=1):
+            self.path_added_order[path] = index
+        self.path_added_order_counter = len(self.paths)
+
+    def path_created_timestamp(self, path: Path) -> float | None:
+        try:
+            return path.stat().st_ctime
+        except OSError:
+            return None
+
+    def sort_paths_by_selected_order(self) -> None:
+        order_mode = self.path_order_var.get()
+        if order_mode == PATH_ORDER_MODES[0]:
+            self.paths.sort(key=lambda path: self.path_added_order.get(path, 0))
+            return
+        if order_mode == PATH_ORDER_MODES[1]:
+            def oldest_sort_key(path: Path) -> tuple[bool, float, int]:
+                created_at = self.path_created_timestamp(path)
+                return (
+                    created_at is None,
+                    created_at if created_at is not None else 0.0,
+                    self.path_added_order.get(path, 0),
+                )
+            self.paths.sort(
+                key=oldest_sort_key
+            )
+            return
+        if order_mode == PATH_ORDER_MODES[2]:
+            def newest_sort_key(path: Path) -> tuple[bool, float, int]:
+                created_at = self.path_created_timestamp(path)
+                return (
+                    created_at is None,
+                    -(created_at if created_at is not None else 0.0),
+                    self.path_added_order.get(path, 0),
+                )
+            self.paths.sort(
+                key=newest_sort_key
+            )
+            return
+        self.path_order_var.set(PATH_ORDER_MODES[0])
+        self.paths.sort(key=lambda path: self.path_added_order.get(path, 0))
+
+    def on_path_order_change(self, _event: tk.Event | None = None) -> None:
+        self.refresh_file_list()
 
     def add_files(self) -> None:
         choice = messagebox.askyesnocancel(
@@ -1238,27 +1347,45 @@ class PlotLogsInteractiveApp:
         if not directory:
             return
         root_path = Path(directory).resolve()
-        found_paths = [
-            path.resolve()
-            for path in root_path.rglob("*.csv")
-            if path.is_file()
-        ]
+        found_paths = self.list_csv_files_in_folder(root_path)
+        self.set_csv_source_folder(root_path)
         self.add_paths(found_paths, "folder")
+
+    def reload_folder_csv_files(self) -> None:
+        if self.csv_source_folder is None:
+            self.set_status("No source folder selected yet.")
+            return
+        if not self.csv_source_folder.is_dir():
+            self.show_error(f"Source folder not found: {self.csv_source_folder}")
+            self.set_csv_source_folder(None)
+            return
+        found_paths = self.list_csv_files_in_folder(self.csv_source_folder)
+        before_count = len(set(self.paths))
+        self.add_paths(found_paths, "folder")
+        added_count = len(set(self.paths)) - before_count
+        if added_count == 0 and found_paths:
+            self.set_status("No new CSV files found in the saved source folder.")
+        elif found_paths:
+            self.set_status(f"Reloaded folder and added {added_count} new CSV files.")
 
     def remove_selected_files(self) -> None:
         selected_indices = list(self.files_listbox.curselection())
         if not selected_indices:
             return
         for index in sorted(selected_indices, reverse=True):
+            self.path_added_order.pop(self.paths[index], None)
             self.path_groups.pop(self.paths[index], None)
             self.file_opacity_by_path.pop(self.paths[index], None)
             self.file_color_by_path.pop(self.paths[index], None)
             self.path_enabled.pop(self.paths[index], None)
             del self.paths[index]
+        if self.path_order_var.get() == PATH_ORDER_MODES[0]:
+            self.rebuild_added_order_from_paths()
         self.refresh_file_list()
         self.refresh_columns(preserve_state=True)
 
     def refresh_file_list(self) -> None:
+        self.sort_paths_by_selected_order()
         self.files_listbox.delete(0, tk.END)
         for path in self.paths:
             self.files_listbox.insert(tk.END, self.display_path(path))
@@ -1347,6 +1474,8 @@ class PlotLogsInteractiveApp:
                     )
                     selected_set.remove(index)
                     selected_set.add(index + 1)
+        if self.path_order_var.get() == PATH_ORDER_MODES[0]:
+            self.rebuild_added_order_from_paths()
         self.refresh_file_list()
         for index in sorted(selected_set):
             self.files_listbox.selection_set(index)
@@ -1553,11 +1682,19 @@ class PlotLogsInteractiveApp:
         }
 
     def build_config_payload(self) -> dict[str, object]:
+        source_folder: str | None = None
+        if self.csv_source_folder is not None:
+            try:
+                source_folder = str(self.csv_source_folder.relative_to(REPO_ROOT))
+            except ValueError:
+                source_folder = str(self.csv_source_folder)
         return {
             "paths": self.build_paths_payload(),
             "plots": self.build_plot_payload(),
             "plot_tabs": self.build_plot_tabs_payload(),
             "auto_refresh_interval": self.auto_refresh_interval_var.get().strip(),
+            "csv_source_folder": source_folder,
+            "path_order": self.path_order_var.get(),
         }
 
     def apply_auto_refresh_interval_payload(self, payload: dict[str, object]) -> None:
@@ -1566,6 +1703,27 @@ class PlotLogsInteractiveApp:
             self.auto_refresh_interval_var.set(str(interval_value))
         elif isinstance(interval_value, str):
             self.auto_refresh_interval_var.set(interval_value.strip() or "0")
+
+    def apply_path_order_payload(self, payload: dict[str, object]) -> None:
+        order_value = payload.get("path_order")
+        if isinstance(order_value, str) and order_value in PATH_ORDER_MODES:
+            self.path_order_var.set(order_value)
+        else:
+            self.path_order_var.set(DEFAULT_PATH_ORDER_MODE)
+
+    def apply_csv_source_folder_payload(self, payload: dict[str, object]) -> str | None:
+        raw_source_folder = payload.get("csv_source_folder")
+        if not isinstance(raw_source_folder, str) or not raw_source_folder.strip():
+            self.set_csv_source_folder(None)
+            return None
+        folder_candidate = Path(raw_source_folder)
+        if not folder_candidate.is_absolute():
+            folder_candidate = (REPO_ROOT / folder_candidate).resolve()
+        if not folder_candidate.is_dir():
+            self.set_csv_source_folder(None)
+            return raw_source_folder
+        self.set_csv_source_folder(folder_candidate)
+        return None
 
     def apply_paths_payload(self, payload: object) -> tuple[int, int]:
         if not isinstance(payload, list):
@@ -1617,6 +1775,8 @@ class PlotLogsInteractiveApp:
         self.file_opacity_by_path = loaded_opacities
         self.file_color_by_path = loaded_colors
         self.path_enabled = loaded_enabled
+        self.path_added_order = {path: index for index, path in enumerate(self.paths, start=1)}
+        self.path_added_order_counter = len(self.paths)
         self.refresh_file_list()
         self.refresh_columns()
         return len(loaded_paths), len(missing_paths)
@@ -1986,6 +2146,8 @@ class PlotLogsInteractiveApp:
             self.show_error(f"Failed to load saved paths: {exc}")
             return
         if isinstance(payload, list):
+            self.set_csv_source_folder(None)
+            self.path_order_var.set(DEFAULT_PATH_ORDER_MODE)
             try:
                 loaded_count, missing_count = self.apply_paths_payload(payload)
             except ValueError as exc:
@@ -2010,6 +2172,9 @@ class PlotLogsInteractiveApp:
             self.show_error(str(exc))
             return
         self.apply_auto_refresh_interval_payload(payload)
+        missing_source_folder = self.apply_csv_source_folder_payload(payload)
+        self.apply_path_order_payload(payload)
+        self.refresh_file_list()
         status_parts = [
             self.loaded_paths_message(loaded_count, missing_count, "saved paths")
         ]
@@ -2018,6 +2183,8 @@ class PlotLogsInteractiveApp:
             status_parts.append(f"Missing plot columns: {unique_missing}.")
         if missing_x:
             status_parts.append(f"Missing X column: {missing_x}.")
+        if missing_source_folder:
+            status_parts.append(f"Missing source folder: {missing_source_folder}.")
         self.set_status(" ".join(status_parts))
 
     def load_config_from_file(self) -> None:
@@ -2035,6 +2202,8 @@ class PlotLogsInteractiveApp:
             self.show_error(f"Failed to load CSV configuration: {exc}")
             return
         if isinstance(payload, list):
+            self.set_csv_source_folder(None)
+            self.path_order_var.set(DEFAULT_PATH_ORDER_MODE)
             try:
                 loaded_count, missing_count = self.apply_paths_payload(payload)
             except ValueError as exc:
@@ -2059,6 +2228,9 @@ class PlotLogsInteractiveApp:
             self.show_error(str(exc))
             return
         self.apply_auto_refresh_interval_payload(payload)
+        missing_source_folder = self.apply_csv_source_folder_payload(payload)
+        self.apply_path_order_payload(payload)
+        self.refresh_file_list()
         status_parts = [
             self.loaded_paths_message(loaded_count, missing_count, f"paths from {path.name}")
         ]
@@ -2067,6 +2239,8 @@ class PlotLogsInteractiveApp:
             status_parts.append(f"Missing plot columns: {unique_missing}.")
         if missing_x:
             status_parts.append(f"Missing X column: {missing_x}.")
+        if missing_source_folder:
+            status_parts.append(f"Missing source folder: {missing_source_folder}.")
         self.set_status(" ".join(status_parts))
 
     def refresh_columns(self, preserve_state: bool = False) -> None:

@@ -8,6 +8,7 @@ from torch import nn
 from swarmbots.learn.action_dists.action_dist import ActionNetInitialization
 from swarmbots.learn.action_dists.continuous_action_dist import ContinuousActionDist
 from swarmbots.learn.action_dists.tanh_bijector import TanhBijector
+from swarmbots.learn.losses import LossMetrics
 from swarmbots.learn.nn_components.nn_init import init_linear_orthogonal
 
 LogStdNetInitialization = ActionNetInitialization
@@ -87,11 +88,11 @@ class PredictedStdActionDist(ContinuousActionDist):
 
         return log_prob
 
-    def entropy(self) -> Optional[torch.Tensor]:
+    def compute_exploration_loss(self) -> tuple[Optional[torch.Tensor], LossMetrics]:
         if self.squash_output:
             # todo: implement entropy for squashed output
-            return None
-        return self.sum_action_dim(self.distribution.entropy())
+            return None, {}
+        return self.sum_action_dim(self.distribution.entropy()), {}
 
     def get_actions_with_log_probs(
             self,

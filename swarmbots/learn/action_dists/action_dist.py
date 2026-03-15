@@ -5,6 +5,8 @@ import torch
 import torch.distributions as torchdist
 from torch import nn
 
+from swarmbots.learn.losses import LossDict, LossMetrics
+
 ActionNetInitialization = Callable[[nn.Linear], None]
 
 AGENT_ACTIONS_DIM = -1
@@ -57,8 +59,16 @@ class ActionDist(nn.Module, abc.ABC):
         raise NotImplementedError
 
     @abc.abstractmethod
-    def entropy(self) -> Optional[torch.Tensor]:
+    def compute_exploration_loss(self) -> tuple[Optional[torch.Tensor], LossMetrics]:
         raise NotImplementedError
+
+    def compute_extra_losses(
+            self,
+            *,
+            agent_mask: torch.Tensor | None = None,
+    ) -> tuple[LossDict, LossMetrics]:
+        _ = agent_mask
+        return {}, {}
 
     def get_actions(self, deterministic: bool = False, agent: int | None = None) -> torch.Tensor:
         if deterministic:
@@ -74,6 +84,5 @@ class ActionDist(nn.Module, abc.ABC):
         actions = self.update_latent_features(latent_pi).get_actions(deterministic=deterministic, agent=agent)
         log_probs = self.log_prob(actions)
         return actions, log_probs
-
 
 

@@ -13,6 +13,7 @@ from swarmbots.learn.action_dists.action_dist import (
     ActionNetInitialization,
 )
 from swarmbots.learn.action_dists.bernoulli_action_dist import BernoulliActionDist
+from swarmbots.learn.action_dists.bang_zero_bang_action_dist import BangZeroBangActionDist
 from swarmbots.learn.action_dists.continuous_action_dist import ContinuousActionDist
 from swarmbots.learn.action_dists.diag_gaussian_action_dist import DiagGaussianActionDist
 from swarmbots.learn.action_dists.gsde_action_dist import GSDEActionDist
@@ -22,6 +23,8 @@ from swarmbots.learn.action_dists.predicted_std_action_dist import PredictedStdA
 from swarmbots.learn.action_dists.squashed_diag_gaussian_action_dist import SquashedDiagGaussianActionDist
 from swarmbots.learn.action_dists.temporally_correlated_action_dist import TemporallyCorrelatedActionDist
 from swarmbots.learn.hybrid_action_space import HybridActionSpace
+from swarmbots.learn.losses import LossDict, LossMetrics
+from swarmbots.learn.masking import masked_mean
 from swarmbots.learn.nn_components.nn_init import init_linear_orthogonal
 
 LogStdNetInitialization = ActionNetInitialization
@@ -68,12 +71,18 @@ class StickyBetaMixtureParams:
     epsilon: float = 1e-6
 
 
+@dataclass(frozen=True)
+class BangZeroBangParams:
+    bang: float = 1.0
+
+
 ContinuousActionDistConfig = (
         SquashedDiagParams
         | PredictedStdParams
         | GSDEParams
         | BetaMixtureParams
         | StickyBetaMixtureParams
+        | BangZeroBangParams
 )
 
 
@@ -107,6 +116,9 @@ class HybridActionDistribution(ActionDist):
             continuous_config: ContinuousActionDistConfig | list[ContinuousActionDistConfig | None] | None,
             bernoulli_initial_prob: float | None = None,
             action_net_initialization: ActionNetInitialization = init_linear_orthogonal,
+            action_magnitude_loss_coef: float = 0.0,
+            action_magnitude_loss_threshold: float = 0.0,
+            action_magnitude_loss_power: int = 2,
     ):
         self.action_space = action_space
         self.action_dims = action_space.agent_action_dims
@@ -127,6 +139,15 @@ class HybridActionDistribution(ActionDist):
             if isinstance(sub_space, spaces.Box) and isinstance(config, GSDEParams)
         ]
         self.has_gsde = len(gsde_indices) > 0
+        if action_magnitude_loss_coef < 0:
+            raise ValueError(f"Expected action_magnitude_loss_coef >= 0, got {action_magnitude_loss_coef}")
+        if action_magnitude_loss_threshold < 0:
+            raise ValueError(f"Expected action_magnitude_loss_threshold >= 0, got {action_magnitude_loss_threshold}")
+        if action_magnitude_loss_power < 1:
+            raise ValueError(f"Expected action_magnitude_loss_power >= 1, got {action_magnitude_loss_power}")
+        self.action_magnitude_loss_coef = action_magnitude_loss_coef
+        self.action_magnitude_loss_threshold = action_magnitude_loss_threshold
+        self.action_magnitude_loss_power = action_magnitude_loss_power
 
         super().__init__(
             latent_dim=latent_dim,
@@ -195,11 +216,31 @@ class HybridActionDistribution(ActionDist):
         log_probs = torch.stack(log_prob_parts, dim=-1).sum(dim=-1)
         return actions, log_probs
 
-    def entropy(self) -> Optional[torch.Tensor]:
-        entropies = [dist.entropy() for dist in self.distributions]
-        if any(e is None for e in entropies):
-            return None
-        return torch.stack(entropies, dim=-1).sum(dim=-1)
+    def compute_exploration_loss(self) -> tuple[Optional[torch.Tensor], LossMetrics]:
+        entropies_and_metrics = [dist.compute_exploration_loss() for dist in self.distributions]
+        entropies = [entropy for entropy, _ in entropies_and_metrics]
+        if any(entropy is None for entropy in entropies):
+            total_entropy = None
+        else:
+            total_entropy = torch.stack(entropies, dim=-1).sum(dim=-1)
+
+        metrics: LossMetrics = {}
+        for _, dist_metrics in entropies_and_metrics:
+            metrics.update(dist_metrics)
+        return total_entropy, metrics
+
+    def compute_extra_losses(
+            self,
+            *,
+            agent_mask: torch.Tensor | None = None,
+    ) -> tuple[LossDict, LossMetrics]:
+        return compute_action_magnitude_extra_losses(
+            action_means=self.get_unsquashed_action_means(),
+            coef=self.action_magnitude_loss_coef,
+            threshold=self.action_magnitude_loss_threshold,
+            power=self.action_magnitude_loss_power,
+            agent_mask=agent_mask,
+        )
 
     def reset_temporal_correlations_on_ep_start(self, mask: torch.Tensor) -> None:
         for dist in self.distributions:
@@ -231,6 +272,69 @@ class HybridActionDistribution(ActionDist):
                 scale_std(multiplier)
 
 
+def compute_action_magnitude_extra_losses(
+        *,
+        action_means: list[torch.Tensor],
+        coef: float,
+        threshold: float,
+        power: int,
+        agent_mask: torch.Tensor | None = None,
+) -> tuple[LossDict, LossMetrics]:
+    if coef <= 0:
+        return {}, {}
+    if not action_means:
+        return {}, {}
+
+    action_magnitude_loss = torch.stack(
+        [
+            compute_action_magnitude_loss(
+                action_means=action_mean,
+                threshold=threshold,
+                power=power,
+                agent_mask=agent_mask,
+            )
+            for action_mean in action_means
+        ]
+    ).sum()
+    scaled_action_magnitude_loss = coef * action_magnitude_loss
+
+    return (
+        {"action_magnitude": scaled_action_magnitude_loss},
+        {
+            "action_magnitude_loss": action_magnitude_loss.item(),
+            "action_magnitude_loss_scaled": scaled_action_magnitude_loss.item(),
+        },
+    )
+
+
+def compute_action_magnitude_loss(
+        action_means: torch.Tensor,
+        threshold: float,
+        power: int,
+        agent_mask: torch.Tensor | None = None,
+) -> torch.Tensor:
+    if action_means.ndim != 3:
+        raise ValueError(f"Expected action_means shape (B, N, A), got {tuple(action_means.shape)}")
+    if threshold < 0:
+        raise ValueError(f"Expected threshold >= 0, got {threshold}")
+    if power < 1:
+        raise ValueError(f"Expected power >= 1, got {power}")
+
+    if agent_mask is not None:
+        if agent_mask.dtype != torch.bool:
+            raise ValueError(f"Expected agent_mask dtype bool, got {agent_mask.dtype}")
+        if agent_mask.shape != action_means.shape[:2]:
+            raise ValueError(
+                f"Expected agent_mask shape {tuple(action_means.shape[:2])}, got {tuple(agent_mask.shape)}"
+            )
+        action_valid_mask = agent_mask.unsqueeze(-1).expand_as(action_means)
+    else:
+        action_valid_mask = None
+
+    excess_action_magnitude = torch.relu(action_means.abs() - threshold)
+    return masked_mean(excess_action_magnitude.pow(power), action_valid_mask)
+
+
 def make_proba_distribution(
         latent_dim: int,
         action_space: spaces.Space,
@@ -245,7 +349,8 @@ def make_proba_distribution(
             raise ValueError(
                 "Supply a ContinuousActionDistConfig "
                 "(SquashedDiagParams | PredictedStdParams | GSDEParams | "
-                "BetaMixtureParams | StickyBetaMixtureParams) for continuous actions."
+                "BetaMixtureParams | StickyBetaMixtureParams | BangZeroBangParams) "
+                "for continuous actions."
             )
 
         if isinstance(continuous_config, SquashedDiagParams):
@@ -304,6 +409,13 @@ def make_proba_distribution(
                 epsilon=continuous_config.epsilon,
                 alphas=continuous_config.alphas,
                 betas=continuous_config.betas,
+            )
+        elif isinstance(continuous_config, BangZeroBangParams):
+            return BangZeroBangActionDist(
+                latent_dim=latent_dim,
+                action_dim=action_space_dim,
+                bang=continuous_config.bang,
+                action_net_initialization=action_net_initialization,
             )
         raise TypeError(
             "Unsupported continuous action config type for Box action space: "

@@ -9,6 +9,7 @@ from swarmbots.learn.action_dists.action_dist import ActionNetInitialization
 from swarmbots.learn.action_dists.continuous_action_dist import ContinuousActionDist
 from swarmbots.learn.action_dists.temporally_correlated_action_dist import TemporallyCorrelatedActionDist
 from swarmbots.learn.action_dists.tanh_bijector import TanhBijector
+from swarmbots.learn.losses import LossMetrics
 from swarmbots.learn.nn_components.nn_init import init_linear_orthogonal
 
 LogStdNetInitialization = ActionNetInitialization
@@ -183,10 +184,10 @@ class GSDEActionDist(ContinuousActionDist, TemporallyCorrelatedActionDist):
         log_prob -= self.sum_action_dim(torch.log(1 - actions ** 2 + self.epsilon))
         return log_prob
 
-    def entropy(self) -> Optional[torch.Tensor]:
+    def compute_exploration_loss(self) -> tuple[Optional[torch.Tensor], LossMetrics]:
         if self.squash_output:
-            return None
-        return super().entropy()
+            return None, {}
+        return super().compute_exploration_loss()
 
     def get_actions_with_log_probs(
             self,

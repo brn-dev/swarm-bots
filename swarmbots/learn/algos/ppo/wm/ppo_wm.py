@@ -6,11 +6,12 @@ import torch.nn as nn
 from loguru import logger
 
 from swarmbots.learn.algos.ppo.ppo import PPO, PPOLearningRate, PPORolloutMode, WholeEpisodesRolloutMode
-from swarmbots.learn.algos.ppo.ppo_policy import BasePPOPolicy, LossDict, LossMetrics
+from swarmbots.learn.algos.ppo.ppo_policy import BasePPOPolicy
 from swarmbots.learn.algos.ppo.ppo_rollout_buffer import PPOEpisode
 from swarmbots.learn.algos.ppo.wm.ppo_wm_sampler import PPOWMSampler, PPOWMSamples
 from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
 from swarmbots.learn.gsde_reset import GSDEResetMode
+from swarmbots.learn.losses import LossDict, LossMetrics
 
 
 class PPOWMPolicyMixin(abc.ABC):

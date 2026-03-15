@@ -5,6 +5,7 @@ import torch
 import torch.distributions as torchdist
 
 from swarmbots.learn.action_dists.action_dist import AGENT_ACTIONS_DIM, ActionNetInitialization, ActionDist
+from swarmbots.learn.losses import LossMetrics
 
 
 class ContinuousActionDist(ActionDist, abc.ABC):
@@ -34,8 +35,8 @@ class ContinuousActionDist(ActionDist, abc.ABC):
     def log_prob(self, actions: torch.Tensor) -> torch.Tensor:
         return self.sum_action_dim(self.distribution.log_prob(actions))
 
-    def entropy(self) -> Optional[torch.Tensor]:
-        return self.sum_action_dim(self.distribution.entropy())
+    def compute_exploration_loss(self) -> tuple[Optional[torch.Tensor], LossMetrics]:
+        return self.sum_action_dim(self.distribution.entropy()), {}
 
     @staticmethod
     def sum_action_dim(tensor: torch.Tensor) -> torch.Tensor:
