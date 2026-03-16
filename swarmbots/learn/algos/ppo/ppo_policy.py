@@ -44,9 +44,9 @@ class BasePPOPolicy(BasePolicy, abc.ABC):
             actions: torch.Tensor,
             hidden_vars: torch.Tensor | None = None,
             agent_mask: torch.Tensor | None = None,
-    ) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor, LossDict, LossMetrics]:
+    ) -> tuple[torch.Tensor, torch.Tensor, LossDict, LossMetrics]:
         """
-        :return: log_probs, entropies, values
+        :return: log_probs, values, extra_losses, extra_loss_metrics
         """
         raise NotImplementedError()
 
@@ -223,14 +223,12 @@ class PPOPolicy(BasePPOPolicy):
             act_fun_class = nn.Tanh,
             continuous_config: ContinuousActionDistConfig | list[ContinuousActionDistConfig | None] | None = None,
             bernoulli_initial_prob: float | None = None,
+            bernoulli_ent_loss_coef: float = 0.0,
             use_popart: bool = False,
             popart_beta: float = 3e-4,
             popart_eps: float = 1e-5,
             popart_min_std: float = 1e-4,
             popart_init_sigma: float = 1.0,
-            action_magnitude_loss_coef: float = 0.0,
-            action_magnitude_loss_threshold: float = 0.0,
-            action_magnitude_loss_power: int = 2,
     ):
         super().__init__()
 
@@ -253,9 +251,7 @@ class PPOPolicy(BasePPOPolicy):
             action_space=env.action_space,
             continuous_config=continuous_config,
             bernoulli_initial_prob=bernoulli_initial_prob,
-            action_magnitude_loss_coef=action_magnitude_loss_coef,
-            action_magnitude_loss_threshold=action_magnitude_loss_threshold,
-            action_magnitude_loss_power=action_magnitude_loss_power,
+            bernoulli_ent_loss_coef=bernoulli_ent_loss_coef,
         )
 
         self.critic = PPOCritic(
@@ -278,14 +274,12 @@ class PPOPolicy(BasePPOPolicy):
             "act_fun_class": act_fun_class.__name__,
             "continuous_config": serialize_continuous_action_dist_configs(continuous_config),
             "bernoulli_initial_prob": bernoulli_initial_prob,
+            "bernoulli_ent_loss_coef": bernoulli_ent_loss_coef,
             "use_popart": use_popart,
             "popart_beta": popart_beta,
             "popart_eps": popart_eps,
             "popart_min_std": popart_min_std,
             "popart_init_sigma": popart_init_sigma,
-            "action_magnitude_loss_coef": action_magnitude_loss_coef,
-            "action_magnitude_loss_threshold": action_magnitude_loss_threshold,
-            "action_magnitude_loss_power": action_magnitude_loss_power,
         }
 
     def get_hyper_parameters(self) -> dict[str, Any]:
@@ -314,20 +308,18 @@ class PPOPolicy(BasePPOPolicy):
             actions: torch.Tensor,
             hidden_vars: torch.Tensor | None = None,
             agent_mask: torch.Tensor | None = None,
-    ) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor, LossDict, LossMetrics]:
+    ) -> tuple[torch.Tensor, torch.Tensor, LossDict, LossMetrics]:
         local_obs = self._mask_local_obs(local_obs, agent_mask)
         latent_pi = self.actor(local_obs, global_obs)
 
         self.action_dist.update_latent_features(latent_pi)
         log_probs = self.action_dist.log_prob(actions)
-        entropies, exploration_loss_metrics = self.action_dist.compute_exploration_loss()
 
         critic_global_obs = self._build_critic_global_obs(global_obs, hidden_vars)
         values = self.critic(local_obs, critic_global_obs, agent_mask=agent_mask)
 
         extra_losses, extra_loss_metrics = self.action_dist.compute_extra_losses(agent_mask=agent_mask)
-        extra_loss_metrics = {**exploration_loss_metrics, **extra_loss_metrics}
-        return log_probs, entropies, values, extra_losses, extra_loss_metrics
+        return log_probs, values, extra_losses, extra_loss_metrics
 
     def act(
             self,
@@ -404,7 +396,22 @@ class PPOPolicy(BasePPOPolicy):
             alias, value = action_magnitude_weight
             if value < 0:
                 raise ValueError(f"{alias} must be >= 0, got {value}")
-            self.action_dist.action_magnitude_loss_coef = value
-            self.hyper_parameters["action_magnitude_loss_coef"] = value
+            self.action_dist.set_action_magnitude_loss_coef(value)
+            self.hyper_parameters["continuous_config"] = serialize_continuous_action_dist_configs(
+                self.action_dist.continuous_configs
+            )
+
+        entropy_weight = self._pop_loss_weight_alias(
+            remaining_weights,
+            aliases=("ent_loss_coef", "entropy", "ent"),
+        )
+        if entropy_weight is not None:
+            alias, value = entropy_weight
+            if value < 0:
+                raise ValueError(f"{alias} must be >= 0, got {value}")
+            self.action_dist.set_all_ent_loss_coefs(value)
+            self.hyper_parameters["continuous_config"] = serialize_continuous_action_dist_configs(
+                self.action_dist.continuous_configs
+            )
 
         super().update_loss_weights(**remaining_weights)

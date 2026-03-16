@@ -5,7 +5,7 @@ import torch
 from swarmbots.learn.action_dists.action_dist import ActionNetInitialization
 from swarmbots.learn.action_dists.diag_gaussian_action_dist import DiagGaussianActionDist
 from swarmbots.learn.action_dists.tanh_bijector import TanhBijector
-from swarmbots.learn.losses import LossMetrics
+from swarmbots.learn.losses import LossDict, LossMetrics
 from swarmbots.learn.nn_components.nn_init import init_linear_orthogonal
 
 
@@ -20,6 +20,10 @@ class SquashedDiagGaussianActionDist(DiagGaussianActionDist):
             std_learnable: bool,
             epsilon: float = 1e-6,
             action_net_initialization: ActionNetInitialization = init_linear_orthogonal,
+            ent_loss_coef: float = 0.0,
+            action_magnitude_loss_coef: float = 0.0,
+            action_magnitude_loss_threshold: float = 0.0,
+            action_magnitude_loss_power: int = 2,
     ):
         super().__init__(
             latent_dim=latent_dim,
@@ -27,6 +31,10 @@ class SquashedDiagGaussianActionDist(DiagGaussianActionDist):
             std=std,
             std_learnable=std_learnable,
             action_net_initialization=action_net_initialization,
+            ent_loss_coef=ent_loss_coef,
+            action_magnitude_loss_coef=action_magnitude_loss_coef,
+            action_magnitude_loss_threshold=action_magnitude_loss_threshold,
+            action_magnitude_loss_power=action_magnitude_loss_power,
         )
 
         self.epsilon = epsilon
@@ -45,8 +53,17 @@ class SquashedDiagGaussianActionDist(DiagGaussianActionDist):
 
         return log_prob
 
-    def compute_exploration_loss(self) -> tuple[Optional[torch.Tensor], LossMetrics]:
-        return None, {}
+    def compute_extra_losses(
+            self,
+            *,
+            agent_mask: torch.Tensor | None = None,
+    ) -> tuple[LossDict, LossMetrics]:
+        action_magnitude_loss, action_magnitude_metrics = self.compute_action_magnitude_loss(
+            agent_mask=agent_mask
+        )
+        if action_magnitude_loss is None:
+            return {}, action_magnitude_metrics
+        return {"action_magnitude": action_magnitude_loss}, action_magnitude_metrics
 
     def sample(self, agent: int | None = None) -> torch.Tensor:
         self._last_gaussian_actions = super().sample()

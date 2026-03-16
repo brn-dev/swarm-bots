@@ -18,7 +18,7 @@ class ActionDist(nn.Module, abc.ABC):
             latent_dim: int,
             action_dim: int,
             action_net_initialization: ActionNetInitialization | None,
-            init_action_net: bool = True
+            init_action_net: bool = True,
     ):
         if init_action_net and action_net_initialization is None:
             raise ValueError('If init_action_net=True, then action_net_initialization must be given!')
@@ -58,10 +58,6 @@ class ActionDist(nn.Module, abc.ABC):
     def log_prob(self, actions: torch.Tensor) -> torch.Tensor:
         raise NotImplementedError
 
-    @abc.abstractmethod
-    def compute_exploration_loss(self) -> tuple[Optional[torch.Tensor], LossMetrics]:
-        raise NotImplementedError
-
     def compute_extra_losses(
             self,
             *,
@@ -85,4 +81,15 @@ class ActionDist(nn.Module, abc.ABC):
         log_probs = self.log_prob(actions)
         return actions, log_probs
 
-
+    @staticmethod
+    def validate_agent_mask(
+            agent_mask: torch.Tensor | None,
+            *,
+            expected_shape: tuple[int, ...],
+    ) -> None:
+        if agent_mask is None:
+            return
+        if agent_mask.dtype != torch.bool:
+            raise ValueError(f"Expected agent_mask dtype bool, got {agent_mask.dtype}")
+        if tuple(agent_mask.shape) != expected_shape:
+            raise ValueError(f"Expected agent_mask shape {expected_shape}, got {tuple(agent_mask.shape)}")

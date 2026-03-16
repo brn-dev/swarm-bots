@@ -44,9 +44,6 @@ class MATSPRPolicy(MATPolicy, SPRMixin, PPOWMPolicyMixin):
             popart_eps: float = 1e-5,
             popart_min_std: float = 1e-4,
             popart_init_sigma: float = 1.0,
-            action_magnitude_loss_coef: float = 0.0,
-            action_magnitude_loss_threshold: float = 0.0,
-            action_magnitude_loss_power: int = 2,
             d_model_transition_model: int = 128,
             nhead_transition_model: int = 4,
             num_layers_transition_model: int = 2,
@@ -88,9 +85,6 @@ class MATSPRPolicy(MATPolicy, SPRMixin, PPOWMPolicyMixin):
             popart_eps=popart_eps,
             popart_min_std=popart_min_std,
             popart_init_sigma=popart_init_sigma,
-            action_magnitude_loss_coef=action_magnitude_loss_coef,
-            action_magnitude_loss_threshold=action_magnitude_loss_threshold,
-            action_magnitude_loss_power=action_magnitude_loss_power,
         )
         if spr_loss_weight < 0:
             raise ValueError(f"spr_loss_weight must be >= 0, got {spr_loss_weight}")
@@ -200,7 +194,6 @@ class MATSPRPolicy(MATPolicy, SPRMixin, PPOWMPolicyMixin):
             hidden_vars: torch.Tensor | None = None,
     ) -> tuple[
         torch.Tensor,
-        torch.Tensor | None,
         torch.Tensor,
         dict[str, Any],
         dict[str, torch.Tensor],
@@ -213,7 +206,7 @@ class MATSPRPolicy(MATPolicy, SPRMixin, PPOWMPolicyMixin):
         policy_local_obs = local_obs
         policy_global_obs = global_obs
 
-        augmented_observations, log_probs, entropies, values, extra_losses, extra_loss_metrics = self._evaluate_actions(
+        augmented_observations, log_probs, values, extra_losses, extra_loss_metrics = self._evaluate_actions(
             local_obs=policy_local_obs,
             global_obs=policy_global_obs,
             actions=policy_actions,
@@ -240,7 +233,6 @@ class MATSPRPolicy(MATPolicy, SPRMixin, PPOWMPolicyMixin):
 
         return (
             log_probs,
-            entropies,
             values,
             {},
             merged_extra_losses,

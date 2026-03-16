@@ -9,7 +9,7 @@ from swarmbots.learn.action_dists.action_dist import ActionNetInitialization
 from swarmbots.learn.action_dists.continuous_action_dist import ContinuousActionDist
 from swarmbots.learn.action_dists.temporally_correlated_action_dist import TemporallyCorrelatedActionDist
 from swarmbots.learn.action_dists.tanh_bijector import TanhBijector
-from swarmbots.learn.losses import LossMetrics
+from swarmbots.learn.losses import LossDict, LossMetrics
 from swarmbots.learn.nn_components.nn_init import init_linear_orthogonal
 
 LogStdNetInitialization = ActionNetInitialization
@@ -32,6 +32,10 @@ class GSDEActionDist(ContinuousActionDist, TemporallyCorrelatedActionDist):
             action_net_initialization: ActionNetInitialization = init_linear_orthogonal,
             latent_sde_net_initialization: ActionNetInitialization = init_linear_orthogonal,
             log_std_clamp_range: tuple[float, float] = (-20.0, 2.0),
+            ent_loss_coef: float = 0.0,
+            action_magnitude_loss_coef: float = 0.0,
+            action_magnitude_loss_threshold: float = 0.0,
+            action_magnitude_loss_power: int = 2,
     ):
         assert latent_sde_dim is None or latent_sde_dim == latent_dim or sde_learn_features
 
@@ -39,6 +43,10 @@ class GSDEActionDist(ContinuousActionDist, TemporallyCorrelatedActionDist):
             latent_dim=latent_dim,
             action_dim=action_dim,
             action_net_initialization=action_net_initialization,
+            ent_loss_coef=ent_loss_coef,
+            action_magnitude_loss_coef=action_magnitude_loss_coef,
+            action_magnitude_loss_threshold=action_magnitude_loss_threshold,
+            action_magnitude_loss_power=action_magnitude_loss_power,
         )
 
         self.latent_sde_dim = latent_dim if latent_sde_dim is None else latent_sde_dim
@@ -184,10 +192,28 @@ class GSDEActionDist(ContinuousActionDist, TemporallyCorrelatedActionDist):
         log_prob -= self.sum_action_dim(torch.log(1 - actions ** 2 + self.epsilon))
         return log_prob
 
-    def compute_exploration_loss(self) -> tuple[Optional[torch.Tensor], LossMetrics]:
+    def compute_extra_losses(
+            self,
+            *,
+            agent_mask: torch.Tensor | None = None,
+    ) -> tuple[LossDict, LossMetrics]:
         if self.squash_output:
-            return None, {}
-        return super().compute_exploration_loss()
+            action_magnitude_loss, action_magnitude_metrics = self.compute_action_magnitude_loss(
+                agent_mask=agent_mask
+            )
+            if action_magnitude_loss is None:
+                return {}, action_magnitude_metrics
+            return {"action_magnitude": action_magnitude_loss}, action_magnitude_metrics
+        ent_loss, ent_loss_metrics = self.compute_entropy_loss(agent_mask=agent_mask)
+        action_magnitude_loss, action_magnitude_metrics = self.compute_action_magnitude_loss(
+            agent_mask=agent_mask
+        )
+        losses: LossDict = {}
+        if ent_loss is not None:
+            losses["exploration"] = ent_loss
+        if action_magnitude_loss is not None:
+            losses["action_magnitude"] = action_magnitude_loss
+        return losses, {**ent_loss_metrics, **action_magnitude_metrics}
 
     def get_actions_with_log_probs(
             self,

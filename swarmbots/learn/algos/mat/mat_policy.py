@@ -43,6 +43,7 @@ class MATPolicy(BasePPOPolicy):
             action_encoder_hidden_dims: list[int] | None = None,
             continuous_config: ContinuousActionDistConfig | list[ContinuousActionDistConfig | None] | None = None,
             bernoulli_initial_prob: float | None = None,
+            bernoulli_ent_loss_coef: float = 0.0,
             add_agent_embeddings_encoder: bool = True,
             add_agent_embeddings_decoder: bool = True,
             max_agents: int | None = None,
@@ -51,9 +52,6 @@ class MATPolicy(BasePPOPolicy):
             popart_eps: float = 1e-5,
             popart_min_std: float = 1e-4,
             popart_init_sigma: float = 1.0,
-            action_magnitude_loss_coef: float = 0.0,
-            action_magnitude_loss_threshold: float = 0.0,
-            action_magnitude_loss_power: int = 2,
     ) -> None:
         super().__init__()
 
@@ -148,9 +146,7 @@ class MATPolicy(BasePPOPolicy):
             action_space=env.action_space,
             continuous_config=continuous_config,
             bernoulli_initial_prob=bernoulli_initial_prob,
-            action_magnitude_loss_coef=action_magnitude_loss_coef,
-            action_magnitude_loss_threshold=action_magnitude_loss_threshold,
-            action_magnitude_loss_power=action_magnitude_loss_power,
+            bernoulli_ent_loss_coef=bernoulli_ent_loss_coef,
         )
 
         self.critic = DeepSetCritic(
@@ -186,6 +182,7 @@ class MATPolicy(BasePPOPolicy):
             "act_fn_cls": act_fn_cls.__name__,
             "continuous_config": serialized_continuous_config,
             "bernoulli_initial_prob": bernoulli_initial_prob,
+            "bernoulli_ent_loss_coef": bernoulli_ent_loss_coef,
             "add_agent_embeddings_encoder": add_agent_embeddings_encoder,
             "add_agent_embeddings_decoder": add_agent_embeddings_decoder,
             "max_agents": max_agents,
@@ -197,9 +194,6 @@ class MATPolicy(BasePPOPolicy):
             "popart_eps": popart_eps,
             "popart_min_std": popart_min_std,
             "popart_init_sigma": popart_init_sigma,
-            "action_magnitude_loss_coef": action_magnitude_loss_coef,
-            "action_magnitude_loss_threshold": action_magnitude_loss_threshold,
-            "action_magnitude_loss_power": action_magnitude_loss_power,
         }
 
     def get_hyper_parameters(self) -> dict[str, Any]:
@@ -280,8 +274,8 @@ class MATPolicy(BasePPOPolicy):
             actions: torch.Tensor,
             hidden_vars: torch.Tensor | None = None,
             agent_mask: torch.Tensor | None = None,
-    ) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor, LossDict, LossMetrics]:
-        _, log_probs, entropies, values, extra_losses, extra_loss_metrics = self._evaluate_actions(
+    ) -> tuple[torch.Tensor, torch.Tensor, LossDict, LossMetrics]:
+        _, log_probs, values, extra_losses, extra_loss_metrics = self._evaluate_actions(
             local_obs=local_obs,
             global_obs=global_obs,
             actions=actions,
@@ -289,7 +283,7 @@ class MATPolicy(BasePPOPolicy):
             agent_mask=agent_mask,
         )
 
-        return log_probs, entropies, values, extra_losses, extra_loss_metrics
+        return log_probs, values, extra_losses, extra_loss_metrics
 
     def _evaluate_actions(
             self,
@@ -298,7 +292,7 @@ class MATPolicy(BasePPOPolicy):
             actions: torch.Tensor,
             hidden_vars: torch.Tensor | None = None,
             agent_mask: torch.Tensor | None = None,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None, torch.Tensor, LossDict, LossMetrics]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, LossDict, LossMetrics]:
         self._validate_agent_mask(agent_mask, batch_size=local_obs.shape[0])
         augmented_observations = self.encoder(local_obs, global_obs, agent_mask=agent_mask)
         
@@ -322,12 +316,10 @@ class MATPolicy(BasePPOPolicy):
 
         self.action_dist.update_latent_features(latent_pi)
         log_probs = self.action_dist.log_prob(actions)
-        entropies, exploration_loss_metrics = self.action_dist.compute_exploration_loss()
 
         values = self._critic_with_hidden_vars(augmented_observations, hidden_vars, agent_mask=agent_mask)
         extra_losses, extra_loss_metrics = self.action_dist.compute_extra_losses(agent_mask=agent_mask)
-        extra_loss_metrics = {**exploration_loss_metrics, **extra_loss_metrics}
-        return augmented_observations, log_probs, entropies, values, extra_losses, extra_loss_metrics
+        return augmented_observations, log_probs, values, extra_losses, extra_loss_metrics
 
     def act(
             self,
@@ -424,7 +416,22 @@ class MATPolicy(BasePPOPolicy):
             alias, value = action_magnitude_weight
             if value < 0:
                 raise ValueError(f"{alias} must be >= 0, got {value}")
-            self.action_dist.action_magnitude_loss_coef = value
-            self.hyper_parameters["action_magnitude_loss_coef"] = value
+            self.action_dist.set_action_magnitude_loss_coef(value)
+            self.hyper_parameters["continuous_config"] = serialize_continuous_action_dist_configs(
+                self.action_dist.continuous_configs
+            )
+
+        entropy_weight = self._pop_loss_weight_alias(
+            remaining_weights,
+            aliases=("ent_loss_coef", "entropy", "ent"),
+        )
+        if entropy_weight is not None:
+            alias, value = entropy_weight
+            if value < 0:
+                raise ValueError(f"{alias} must be >= 0, got {value}")
+            self.action_dist.set_all_ent_loss_coefs(value)
+            self.hyper_parameters["continuous_config"] = serialize_continuous_action_dist_configs(
+                self.action_dist.continuous_configs
+            )
 
         super().update_loss_weights(**remaining_weights)

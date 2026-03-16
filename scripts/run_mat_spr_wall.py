@@ -357,7 +357,7 @@ def main() -> None:
         target_kl=0.04,
         max_grad_norm=10.0,
         gsde_reset_mode=GSDEProbabilityResetMode(probability=1/6),
-        ent_coef=1e-5,
+        mc_ent_coef=1e-5,
         value_loss_fn=nn.SmoothL1Loss(),
         train_device=train_device,
         rollout_device=rollout_device,
