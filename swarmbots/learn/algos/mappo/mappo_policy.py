@@ -5,7 +5,9 @@ from swarmbots.learn.action_dists.hybrid_action_dist import (
     HybridActionDistribution,
     ContinuousActionDistConfig,
     serialize_continuous_action_dist_configs,
+    serialize_bernoulli_config,
 )
+from swarmbots.learn.action_dists.bernoulli_action_dist import BernoulliConfig
 from swarmbots.learn.algos.mappo.mappo_actor import MAPPOActor
 from swarmbots.learn.algos.ppo.ppo import AGENTS_DIM
 from swarmbots.learn.algos.ppo.ppo_policy import PPOCritic, PPOPolicy
@@ -26,7 +28,7 @@ class MAPPOPolicy(PPOPolicy):
             critic_hidden_dims: list[int] | DeepSetCriticHiddenDims,
             act_fun_class = nn.Tanh,
             continuous_config: ContinuousActionDistConfig | list[ContinuousActionDistConfig | None] | None = None,
-            bernoulli_initial_prob: float | None = None,
+            bernoulli_config: BernoulliConfig | None = None,
     ):
         BasePolicy.__init__(self)
 
@@ -48,7 +50,7 @@ class MAPPOPolicy(PPOPolicy):
             latent_dim=latent_pi_dim_per_agent,
             action_space=env.action_space,
             continuous_config=continuous_config,
-            bernoulli_initial_prob=bernoulli_initial_prob,
+            bernoulli_config=bernoulli_config,
         )
 
         if isinstance(critic_hidden_dims, list):
@@ -76,7 +78,7 @@ class MAPPOPolicy(PPOPolicy):
             "latent_pi_dim_per_agent": latent_pi_dim_per_agent,
             "act_fun_class": act_fun_class.__name__,
             "continuous_config": serialize_continuous_action_dist_configs(continuous_config),
-            "bernoulli_initial_prob": bernoulli_initial_prob,
+            "bernoulli_config": serialize_bernoulli_config(bernoulli_config),
         }
 
     def get_hyper_parameters(self) -> dict[str, Any]:

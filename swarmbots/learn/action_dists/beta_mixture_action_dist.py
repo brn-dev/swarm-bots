@@ -1,4 +1,5 @@
 import math
+from dataclasses import dataclass
 from typing import Optional, Self
 
 import torch
@@ -6,6 +7,14 @@ from torch import distributions as torchdist, nn
 from torch.nn import functional as F
 
 from swarmbots.learn.action_dists.action_dist import AGENT_ACTIONS_DIM, ActionDist, ActionNetInitialization
+
+
+@dataclass(frozen=True)
+class BetaMixtureConfig:
+    num_components: int
+    alphas: tuple[float, ...]
+    betas: tuple[float, ...]
+    epsilon: float = 1e-6
 
 
 class BetaMixtureActionDist(ActionDist):

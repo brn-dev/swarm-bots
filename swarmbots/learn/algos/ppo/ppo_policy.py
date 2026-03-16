@@ -7,7 +7,9 @@ from swarmbots.learn.action_dists.hybrid_action_dist import (
     HybridActionDistribution,
     ContinuousActionDistConfig,
     serialize_continuous_action_dist_configs,
+    serialize_bernoulli_config,
 )
+from swarmbots.learn.action_dists.bernoulli_action_dist import BernoulliConfig
 from swarmbots.learn.base_policy import BasePolicy
 from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
 from swarmbots.learn.losses import LossDict, LossMetrics
@@ -222,8 +224,7 @@ class PPOPolicy(BasePPOPolicy):
             critic_hidden_dims: list[int],
             act_fun_class = nn.Tanh,
             continuous_config: ContinuousActionDistConfig | list[ContinuousActionDistConfig | None] | None = None,
-            bernoulli_initial_prob: float | None = None,
-            bernoulli_ent_loss_coef: float = 0.0,
+            bernoulli_config: BernoulliConfig | None = None,
             use_popart: bool = False,
             popart_beta: float = 3e-4,
             popart_eps: float = 1e-5,
@@ -250,8 +251,7 @@ class PPOPolicy(BasePPOPolicy):
             latent_dim=latent_pi_dim_per_agent,
             action_space=env.action_space,
             continuous_config=continuous_config,
-            bernoulli_initial_prob=bernoulli_initial_prob,
-            bernoulli_ent_loss_coef=bernoulli_ent_loss_coef,
+            bernoulli_config=bernoulli_config,
         )
 
         self.critic = PPOCritic(
@@ -273,8 +273,7 @@ class PPOPolicy(BasePPOPolicy):
             "latent_pi_dim_per_agent": latent_pi_dim_per_agent,
             "act_fun_class": act_fun_class.__name__,
             "continuous_config": serialize_continuous_action_dist_configs(continuous_config),
-            "bernoulli_initial_prob": bernoulli_initial_prob,
-            "bernoulli_ent_loss_coef": bernoulli_ent_loss_coef,
+            "bernoulli_config": serialize_bernoulli_config(bernoulli_config),
             "use_popart": use_popart,
             "popart_beta": popart_beta,
             "popart_eps": popart_eps,

@@ -7,7 +7,9 @@ from swarmbots.learn.action_dists.hybrid_action_dist import (
     HybridActionDistribution,
     ContinuousActionDistConfig,
     serialize_continuous_action_dist_configs,
+    serialize_bernoulli_config,
 )
+from swarmbots.learn.action_dists.bernoulli_action_dist import BernoulliConfig
 from swarmbots.learn.algos.mat.mat_decoder import MATDecoder
 from swarmbots.learn.algos.mat.mat_encoder import MATEncoder
 from swarmbots.learn.algos.ppo.ppo import AGENTS_DIM
@@ -42,8 +44,7 @@ class MATPolicy(BasePPOPolicy):
             global_obs_encoder_hidden_dims: list[int] | None = None,
             action_encoder_hidden_dims: list[int] | None = None,
             continuous_config: ContinuousActionDistConfig | list[ContinuousActionDistConfig | None] | None = None,
-            bernoulli_initial_prob: float | None = None,
-            bernoulli_ent_loss_coef: float = 0.0,
+            bernoulli_config: BernoulliConfig | None = None,
             add_agent_embeddings_encoder: bool = True,
             add_agent_embeddings_decoder: bool = True,
             max_agents: int | None = None,
@@ -145,8 +146,7 @@ class MATPolicy(BasePPOPolicy):
             latent_dim=latent_pi_dim,
             action_space=env.action_space,
             continuous_config=continuous_config,
-            bernoulli_initial_prob=bernoulli_initial_prob,
-            bernoulli_ent_loss_coef=bernoulli_ent_loss_coef,
+            bernoulli_config=bernoulli_config,
         )
 
         self.critic = DeepSetCritic(
@@ -181,8 +181,7 @@ class MATPolicy(BasePPOPolicy):
             "actor_head_hidden_dims": actor_head_hidden_dims,
             "act_fn_cls": act_fn_cls.__name__,
             "continuous_config": serialized_continuous_config,
-            "bernoulli_initial_prob": bernoulli_initial_prob,
-            "bernoulli_ent_loss_coef": bernoulli_ent_loss_coef,
+            "bernoulli_config": serialize_bernoulli_config(bernoulli_config),
             "add_agent_embeddings_encoder": add_agent_embeddings_encoder,
             "add_agent_embeddings_decoder": add_agent_embeddings_decoder,
             "max_agents": max_agents,

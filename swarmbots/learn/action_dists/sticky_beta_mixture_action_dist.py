@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from typing import Optional
 
 import torch
@@ -6,6 +7,15 @@ from torch.nn import functional as F
 from swarmbots.learn.action_dists.action_dist import ActionNetInitialization
 from swarmbots.learn.action_dists.beta_mixture_action_dist import BetaMixtureActionDist
 from swarmbots.learn.action_dists.temporally_correlated_action_dist import TemporallyCorrelatedActionDist
+
+
+@dataclass(frozen=True)
+class StickyBetaMixtureConfig:
+    num_components: int
+    sticky_probability: float
+    alphas: tuple[float, ...]
+    betas: tuple[float, ...]
+    epsilon: float = 1e-6
 
 
 class StickyBetaMixtureActionDist(BetaMixtureActionDist, TemporallyCorrelatedActionDist):

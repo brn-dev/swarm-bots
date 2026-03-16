@@ -11,7 +11,10 @@ from gymnasium.wrappers.vector import RecordEpisodeStatistics, NormalizeReward
 from loguru import logger
 from torch import nn
 
-from swarmbots.learn.action_dists.hybrid_action_dist import GSDEParams, BetaMixtureParams, BangZeroBangParams
+from swarmbots.learn.action_dists.beta_mixture_action_dist import BetaMixtureConfig
+from swarmbots.learn.action_dists.bang_zero_bang_action_dist import BangZeroBangConfig
+from swarmbots.learn.action_dists.bernoulli_action_dist import BernoulliConfig
+from swarmbots.learn.action_dists.gsde_action_dist import GSDEConfig
 from swarmbots.learn.action_dists.gsde_action_dist import GSDEActionDist
 from swarmbots.learn.algos.mat.wm.mat_nop_policy import MATNOPPolicy
 from swarmbots.learn.algos.ppo.wm.ppo_wm import PPOWM
@@ -262,7 +265,7 @@ def main() -> None:
         n_critic_value_regressor_hidden_layers=1,
         cross_attn_first=True,
         act_fn_cls=nn.GELU,
-        # continuous_config=GSDEParams(
+        # continuous_config=GSDEConfig(
         #     base_std=0.25,
         #     latent_sde_dim=None,
         #     std_learnable=True,
@@ -271,15 +274,15 @@ def main() -> None:
         #     log_std_clamp_range=(-20.0, 2.0),
         #     normalize_latent_sde_by_dim=True
         # ),
-        # continuous_config=BetaMixtureParams(
+        # continuous_config=BetaMixtureConfig(
         #     num_components=3,
         #     alphas=(3.0, 10.0, 10.0),
         #     betas=(10.0, 10.0, 3.0)
         # ),
-        continuous_config=BangZeroBangParams(
+        continuous_config=BangZeroBangConfig(
             bang=0.5,
         ),
-        bernoulli_initial_prob=0.7,
+        bernoulli_config=BernoulliConfig(initial_prob=0.7),
         max_agents=20,
         use_popart=use_popart,
         popart_beta=popart_beta,

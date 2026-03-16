@@ -3,6 +3,7 @@ from typing import Any
 import torch
 from torch import nn
 
+from swarmbots.learn.action_dists.bernoulli_action_dist import BernoulliConfig
 from swarmbots.learn.action_dists.hybrid_action_dist import ContinuousActionDistConfig
 from swarmbots.learn.algos.mat.mat_policy import MATPolicy
 from swarmbots.learn.algos.ppo.wm.ppo_wm import PPOWMPolicyMixin
@@ -35,7 +36,7 @@ class MATNOPPolicy(MATPolicy, NextObsPredMixin, PPOWMPolicyMixin):
             global_obs_encoder_hidden_dims: list[int] | None = None,
             action_encoder_hidden_dims: list[int] | None = None,
             continuous_config: ContinuousActionDistConfig | list[ContinuousActionDistConfig | None] | None = None,
-            bernoulli_initial_prob: float | None = None,
+            bernoulli_config: BernoulliConfig | None = None,
             add_agent_embeddings_encoder: bool = True,
             add_agent_embeddings_decoder: bool = True,
             max_agents: int | None = None,
@@ -89,7 +90,7 @@ class MATNOPPolicy(MATPolicy, NextObsPredMixin, PPOWMPolicyMixin):
             global_obs_encoder_hidden_dims=global_obs_encoder_hidden_dims,
             action_encoder_hidden_dims=action_encoder_hidden_dims,
             continuous_config=continuous_config,
-            bernoulli_initial_prob=bernoulli_initial_prob,
+            bernoulli_config=bernoulli_config,
             add_agent_embeddings_encoder=add_agent_embeddings_encoder,
             add_agent_embeddings_decoder=add_agent_embeddings_decoder,
             max_agents=max_agents,

@@ -1,4 +1,5 @@
 import math
+from dataclasses import dataclass
 from typing import Optional, Self
 
 import torch
@@ -12,6 +13,18 @@ from swarmbots.learn.losses import LossDict, LossMetrics
 from swarmbots.learn.nn_components.nn_init import init_linear_orthogonal
 
 LogStdNetInitialization = ActionNetInitialization
+
+
+@dataclass(frozen=True)
+class PredictedStdConfig:
+    base_std: float
+    epsilon: float = 1e-6
+    log_std_net_initialization: LogStdNetInitialization = init_linear_orthogonal
+    log_std_clamp_range: tuple[float, float] = (-20.0, 2.0)
+    ent_loss_coef: float = 0.0
+    action_magnitude_loss_coef: float = 0.0
+    action_magnitude_loss_threshold: float = 0.0
+    action_magnitude_loss_power: int = 2
 
 
 class PredictedStdActionDist(ContinuousActionDist):

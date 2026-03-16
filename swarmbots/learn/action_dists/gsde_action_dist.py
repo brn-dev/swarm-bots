@@ -1,4 +1,5 @@
 import math
+from dataclasses import dataclass
 from typing import Optional, Self
 
 import torch
@@ -13,6 +14,23 @@ from swarmbots.learn.losses import LossDict, LossMetrics
 from swarmbots.learn.nn_components.nn_init import init_linear_orthogonal
 
 LogStdNetInitialization = ActionNetInitialization
+
+
+@dataclass(frozen=True)
+class GSDEConfig:
+    base_std: float
+    latent_sde_dim: int | None = None
+    std_learnable: bool = True
+    normalize_latent_sde_by_dim: bool = True
+    epsilon: float = 1e-6
+    full_std: bool = True
+    sde_learn_features: bool = True
+    latent_sde_net_initialization: ActionNetInitialization = init_linear_orthogonal
+    log_std_clamp_range: tuple[float, float] = (-20.0, 2.0)
+    ent_loss_coef: float = 0.0
+    action_magnitude_loss_coef: float = 0.0
+    action_magnitude_loss_threshold: float = 0.0
+    action_magnitude_loss_power: int = 2
 
 
 class GSDEActionDist(ContinuousActionDist, TemporallyCorrelatedActionDist):
