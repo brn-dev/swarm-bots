@@ -277,16 +277,13 @@ def main() -> None:
         #     betas=(10.0, 10.0, 3.0)
         # ),
         continuous_config=BangZeroBangParams(
-            bang=0.85,
+            bang=0.5,
         ),
         bernoulli_initial_prob=0.7,
         max_agents=20,
         use_popart=use_popart,
         popart_beta=popart_beta,
         popart_init_sigma=popart_init_sigma,
-        action_magnitude_loss_coef=1e3,
-        action_magnitude_loss_threshold=np.atanh(0.7),
-        action_magnitude_loss_power=1,
         # NOP
         wm_pre_transition_dims=[enc_d_model],
         d_model_transition_model=enc_d_model,
@@ -413,7 +410,7 @@ def main() -> None:
         target_kl=0.007,
         max_grad_norm=10.0,
         gsde_reset_mode=GSDEProbabilityResetMode(probability=1/6),
-        ent_coef=0e-5,
+        mc_ent_coef=0e-5,
         vf_coef=vf_coef,
         value_loss_fn=nn.SmoothL1Loss(),
         train_device=train_device,
@@ -437,7 +434,7 @@ def main() -> None:
         # ('act0', SummaryStatisticsFormat(histogram=10)),
     ]
     logging_console_keys.extend(
-        (f'act0_j{i}', SummaryStatisticsFormat(histogram=10))
+        (f'act0_j{i}', SummaryStatisticsFormat(histogram=11))
         for i in range(actuators_per_limb)
     )
     logging_console_keys.extend(

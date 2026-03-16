@@ -6,7 +6,8 @@ import torch.distributions as torchdist
 
 from swarmbots.learn.action_dists.action_dist import AGENT_ACTIONS_DIM, ActionNetInitialization
 from swarmbots.learn.action_dists.discrete_action_dist import DiscreteActionDist
-from swarmbots.learn.losses import LossMetrics
+from swarmbots.learn.losses import LossDict, LossMetrics
+from swarmbots.learn.masking import masked_mean
 from swarmbots.learn.nn_components.nn_init import init_linear_orthogonal
 
 
@@ -18,12 +19,16 @@ class BernoulliActionDist(DiscreteActionDist):
             action_dim: int,
             action_net_initialization: ActionNetInitialization = init_linear_orthogonal,
             initial_prob: float | None = None,
+            ent_loss_coef: float = 0.0,
     ):
+        if ent_loss_coef < 0:
+            raise ValueError(f"ent_loss_coef must be >= 0, got {ent_loss_coef}")
         super().__init__(
             latent_dim=latent_dim,
             action_dim=action_dim,
             action_net_initialization=action_net_initialization,
         )
+        self.ent_loss_coef = ent_loss_coef
 
         self.distribution: Optional[torchdist.Bernoulli] = None
         if initial_prob is not None:
@@ -49,5 +54,22 @@ class BernoulliActionDist(DiscreteActionDist):
     def log_prob(self, actions: torch.Tensor) -> torch.Tensor:
         return self.distribution.log_prob(actions).sum(dim=AGENT_ACTIONS_DIM)
 
-    def compute_exploration_loss(self) -> tuple[Optional[torch.Tensor], LossMetrics]:
-        return self.distribution.entropy().sum(dim=AGENT_ACTIONS_DIM), {}
+    def compute_extra_losses(
+            self,
+            *,
+            agent_mask: torch.Tensor | None = None,
+    ) -> tuple[LossDict, LossMetrics]:
+        if self.ent_loss_coef <= 0:
+            return {}, {}
+        entropy_per_agent = self.distribution.entropy().sum(dim=AGENT_ACTIONS_DIM)
+        self.validate_agent_mask(agent_mask, expected_shape=tuple(entropy_per_agent.shape))
+        entropy_mean = masked_mean(entropy_per_agent, agent_mask)
+        return {"entropy": -self.ent_loss_coef * entropy_per_agent}, {
+            "ent_loss": (-entropy_mean).item(),
+            "ent_loss_scaled": (-self.ent_loss_coef * entropy_mean).item(),
+        }
+
+    def set_ent_loss_coef(self, value: float) -> None:
+        if value < 0:
+            raise ValueError(f"ent_loss_coef must be >= 0, got {value}")
+        self.ent_loss_coef = value

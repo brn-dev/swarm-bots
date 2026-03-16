@@ -31,14 +31,13 @@ class PPOWMPolicyMixin(abc.ABC):
             hidden_vars: torch.Tensor | None = None,
     ) -> tuple[
         torch.Tensor,
-        torch.Tensor | None,
         torch.Tensor,
         dict[str, Any],
         LossDict,
         LossMetrics,
     ]:
         """
-        :return: log_probs, entropies, values, world_model_metrics, extra_losses, extra_loss_metrics
+        :return: log_probs, values, world_model_metrics, extra_losses, extra_loss_metrics
         extra_losses must include key "world_model" (unscaled).
         """
         raise NotImplementedError()
@@ -69,7 +68,7 @@ class PPOWM(PPO[PPOWMSamples, PPOWMSampler]):
             clip_range: float = 0.2,
             clip_range_vf: float | None = None,
             normalize_advantage: bool = True,
-            ent_coef: float = 0.0,
+            mc_ent_coef: float = 0.0,
             vf_coef: float = 0.5,
             value_loss_fn: nn.Module | None = None,
             max_grad_norm: float = 2.0,
@@ -99,7 +98,7 @@ class PPOWM(PPO[PPOWMSamples, PPOWMSampler]):
             clip_range=clip_range,
             clip_range_vf=clip_range_vf,
             normalize_advantage=normalize_advantage,
-            ent_coef=ent_coef,
+            mc_ent_coef=mc_ent_coef,
             vf_coef=vf_coef,
             value_loss_fn=value_loss_fn,
             max_grad_norm=max_grad_norm,
@@ -127,7 +126,6 @@ class PPOWM(PPO[PPOWMSamples, PPOWMSampler]):
     ) -> tuple[torch.Tensor, float, dict[str, Any]]:
         (
             log_probs,
-            entropies,
             values,
             wm_loss_metrics,
             extra_losses,
@@ -147,7 +145,6 @@ class PPOWM(PPO[PPOWMSamples, PPOWMSampler]):
 
         loss, approx_kl_div, metrics = self.compute_ppo_loss(
             batch=batch,
-            entropies=entropies,
             log_probs=log_probs,
             values=values,
         )
@@ -158,8 +155,9 @@ class PPOWM(PPO[PPOWMSamples, PPOWMSampler]):
         world_model_loss = extra_losses["world_model"]
         extra_losses["world_model"] = self.world_model_loss_coef * world_model_loss
 
-        loss = loss + torch.stack(tuple(extra_losses.values())).sum()
-        metrics.update({f"{name}_loss_scaled": value.item() for name, value in extra_losses.items()})
+        reduced_extra_losses = self._reduce_extra_losses(batch, extra_losses)
+        loss = loss + torch.stack(tuple(reduced_extra_losses.values())).sum()
+        metrics.update({f"{name}_loss_scaled": value.item() for name, value in reduced_extra_losses.items()})
         metrics.update(extra_loss_metrics)
         metrics.update(wm_loss_metrics)
         metrics['wm_loss'] = world_model_loss.item()

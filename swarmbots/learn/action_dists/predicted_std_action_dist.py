@@ -8,7 +8,7 @@ from torch import nn
 from swarmbots.learn.action_dists.action_dist import ActionNetInitialization
 from swarmbots.learn.action_dists.continuous_action_dist import ContinuousActionDist
 from swarmbots.learn.action_dists.tanh_bijector import TanhBijector
-from swarmbots.learn.losses import LossMetrics
+from swarmbots.learn.losses import LossDict, LossMetrics
 from swarmbots.learn.nn_components.nn_init import init_linear_orthogonal
 
 LogStdNetInitialization = ActionNetInitialization
@@ -25,12 +25,20 @@ class PredictedStdActionDist(ContinuousActionDist):
             epsilon: float = 1e-6,
             action_net_initialization: ActionNetInitialization = init_linear_orthogonal,
             log_std_net_initialization: LogStdNetInitialization = init_linear_orthogonal,
-            log_std_clamp_range: tuple[float, float] = (-20.0, 2.0)
+            log_std_clamp_range: tuple[float, float] = (-20.0, 2.0),
+            ent_loss_coef: float = 0.0,
+            action_magnitude_loss_coef: float = 0.0,
+            action_magnitude_loss_threshold: float = 0.0,
+            action_magnitude_loss_power: int = 2,
     ):
         super().__init__(
             latent_dim=latent_dim,
             action_dim=action_dim,
             action_net_initialization=action_net_initialization,
+            ent_loss_coef=ent_loss_coef,
+            action_magnitude_loss_coef=action_magnitude_loss_coef,
+            action_magnitude_loss_threshold=action_magnitude_loss_threshold,
+            action_magnitude_loss_power=action_magnitude_loss_power,
         )
 
         self.log_std_net = nn.Linear(latent_dim, action_dim)
@@ -88,11 +96,28 @@ class PredictedStdActionDist(ContinuousActionDist):
 
         return log_prob
 
-    def compute_exploration_loss(self) -> tuple[Optional[torch.Tensor], LossMetrics]:
+    def compute_extra_losses(
+            self,
+            *,
+            agent_mask: torch.Tensor | None = None,
+    ) -> tuple[LossDict, LossMetrics]:
         if self.squash_output:
-            # todo: implement entropy for squashed output
-            return None, {}
-        return self.sum_action_dim(self.distribution.entropy()), {}
+            action_magnitude_loss, action_magnitude_metrics = self.compute_action_magnitude_loss(
+                agent_mask=agent_mask
+            )
+            if action_magnitude_loss is None:
+                return {}, action_magnitude_metrics
+            return {"action_magnitude": action_magnitude_loss}, action_magnitude_metrics
+        ent_loss, ent_loss_metrics = self.compute_entropy_loss(agent_mask=agent_mask)
+        action_magnitude_loss, action_magnitude_metrics = self.compute_action_magnitude_loss(
+            agent_mask=agent_mask
+        )
+        losses: LossDict = {}
+        if ent_loss is not None:
+            losses["entropy"] = ent_loss
+        if action_magnitude_loss is not None:
+            losses["action_magnitude"] = action_magnitude_loss
+        return losses, {**ent_loss_metrics, **action_magnitude_metrics}
 
     def get_actions_with_log_probs(
             self,

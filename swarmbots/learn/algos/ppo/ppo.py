@@ -100,7 +100,7 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerType]):
             clip_range: float = 0.2,
             clip_range_vf: Optional[float] = None,
             normalize_advantage: bool = True,
-            ent_coef: float = 0.0,
+            mc_ent_coef: float = 0.0,
             vf_coef: float = 0.5,
             value_loss_fn: nn.Module | None = None,
             max_grad_norm: float = 2.0,
@@ -141,7 +141,7 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerType]):
         self.clip_range = clip_range
         self.clip_range_vf = clip_range_vf
         self.normalize_advantage = normalize_advantage
-        self.ent_coef = ent_coef
+        self.mc_ent_coef = mc_ent_coef
         self.vf_coef = vf_coef
         self.value_loss_fn = value_loss_fn if value_loss_fn is not None else nn.MSELoss()
         self.max_grad_norm = max_grad_norm
@@ -212,7 +212,7 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerType]):
             'clip_range': self.clip_range,
             'clip_range_vf': self.clip_range_vf,
             'normalize_advantage': self.normalize_advantage,
-            'ent_coef': self.ent_coef,
+            'mc_ent_coef': self.mc_ent_coef,
             'vf_coef': self.vf_coef,
             'value_loss_fn': str(self.value_loss_fn),
             'max_grad_norm': self.max_grad_norm,
@@ -229,11 +229,10 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerType]):
     def compute_ppo_loss(
             self,
             batch: PPOSamples,
-            entropies: torch.Tensor,
             log_probs: torch.Tensor,
             values: torch.Tensor,
     ) -> tuple[torch.Tensor, float, dict[str, Any]]:
-        entropy, log_prob, old_log_prob = self.reduce_agents(batch, entropies, log_probs)
+        log_prob, old_log_prob = self.reduce_agents(batch, log_probs)
         valid_mask = self._build_agent_valid_mask(batch.agent_mask, log_prob)
 
         advantages = batch.advantages
@@ -262,15 +261,12 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerType]):
 
         value_loss: torch.Tensor = self.value_loss_fn(values_pred, value_targets)
 
-        if entropy is None:
-            entropy_loss = masked_mean(log_prob, valid_mask)
-        else:
-            entropy_loss = -masked_mean(entropy, valid_mask)
+        mc_entropy_loss = masked_mean(log_prob, valid_mask)
 
         value_loss_scaled = self.vf_coef * value_loss
-        entropy_loss_scaled = self.ent_coef * entropy_loss
+        mc_entropy_loss_scaled = self.mc_ent_coef * mc_entropy_loss
 
-        loss = policy_loss + entropy_loss_scaled + value_loss_scaled
+        loss = policy_loss + mc_entropy_loss_scaled + value_loss_scaled
 
         with torch.no_grad():
             log_ratio = log_prob - old_log_prob
@@ -279,8 +275,8 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerType]):
         clip_fraction = masked_mean((torch.abs(ratio - 1) > self.clip_range).float(), valid_mask).item()
         metrics = {
             'act_loss': policy_loss.item(),
-            'ent_loss': entropy_loss.item(),
-            'ent_loss_scaled': entropy_loss_scaled.item(),
+            'mc_ent_loss': mc_entropy_loss.item(),
+            'mc_ent_loss_scaled': mc_entropy_loss_scaled.item(),
             'val_loss': value_loss.item(),
             'val_loss_scaled': value_loss_scaled.item(),
             'approx_kl': approx_kl_div,
@@ -294,7 +290,7 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerType]):
             self,
             batch: PPOSamplesType,
     ) -> tuple[torch.Tensor, float, dict[str, Any]]:
-        log_probs, entropies, values, extra_losses, extra_loss_metrics = self.policy.evaluate_actions(
+        log_probs, values, extra_losses, extra_loss_metrics = self.policy.evaluate_actions(
             local_obs=batch.local_obs,
             global_obs=batch.global_obs,
             actions=batch.actions,
@@ -304,14 +300,14 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerType]):
 
         loss, approx_kl_div, metrics = self.compute_ppo_loss(
             batch=batch,
-            entropies=entropies,
             log_probs=log_probs,
             values=values,
         )
 
-        if extra_losses:
-            loss = loss + torch.stack(tuple(extra_losses.values())).sum()
-            metrics.update({f"{name}_loss_scaled": value.item() for name, value in extra_losses.items()})
+        reduced_extra_losses = self._reduce_extra_losses(batch, extra_losses)
+        if reduced_extra_losses:
+            loss = loss + torch.stack(tuple(reduced_extra_losses.values())).sum()
+            metrics.update({f"{name}_loss_scaled": value.item() for name, value in reduced_extra_losses.items()})
         metrics.update(extra_loss_metrics)
 
         return loss, approx_kl_div, metrics
@@ -629,9 +625,8 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerType]):
     def reduce_agents(
             self,
             batch: PPOSamples,
-            entropies: torch.Tensor | None,
             log_probs: torch.Tensor
-    ) -> tuple[torch.Tensor | None, torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         agent_mask = batch.agent_mask
         if agent_mask is not None:
             if agent_mask.dtype != torch.bool:
@@ -644,31 +639,74 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerType]):
         if self.agent_logprob_reduction is None:
             log_prob = log_probs
             old_log_prob = batch.log_probs
-            entropy = entropies
         elif self.agent_logprob_reduction == "sum":
             if agent_mask is None:
                 log_prob = log_probs.sum(dim=AGENTS_DIM)
                 old_log_prob = batch.log_probs.sum(dim=AGENTS_DIM)
-                entropy = entropies.sum(dim=AGENTS_DIM) if entropies is not None else None
             else:
                 mask_f = agent_mask.to(dtype=log_probs.dtype)
                 log_prob = (log_probs * mask_f).sum(dim=AGENTS_DIM)
                 old_log_prob = (batch.log_probs * mask_f).sum(dim=AGENTS_DIM)
-                entropy = (entropies * mask_f).sum(dim=AGENTS_DIM) if entropies is not None else None
         elif self.agent_logprob_reduction == "mean":
             if agent_mask is None:
                 log_prob = log_probs.mean(dim=AGENTS_DIM)
                 old_log_prob = batch.log_probs.mean(dim=AGENTS_DIM)
-                entropy = entropies.mean(dim=AGENTS_DIM) if entropies is not None else None
             else:
                 mask_f = agent_mask.to(dtype=log_probs.dtype)
                 denom = mask_f.sum(dim=AGENTS_DIM).clamp_min(1.0)
                 log_prob = (log_probs * mask_f).sum(dim=AGENTS_DIM) / denom
                 old_log_prob = (batch.log_probs * mask_f).sum(dim=AGENTS_DIM) / denom
-                entropy = (entropies * mask_f).sum(dim=AGENTS_DIM) / denom if entropies is not None else None
         else:
             raise ValueError(f"Unhandled {self.agent_logprob_reduction=}")
-        return entropy, log_prob, old_log_prob
+        return log_prob, old_log_prob
+
+    def _reduce_extra_losses(
+            self,
+            batch: PPOSamples,
+            extra_losses: dict[str, torch.Tensor],
+    ) -> dict[str, torch.Tensor]:
+        reduced_losses: dict[str, torch.Tensor] = {}
+        for name, value in extra_losses.items():
+            reduced_losses[name] = self._reduce_extra_loss_value(batch, value)
+        return reduced_losses
+
+    def _reduce_extra_loss_value(
+            self,
+            batch: PPOSamples,
+            value: torch.Tensor,
+    ) -> torch.Tensor:
+        if value.ndim == 0:
+            return value
+
+        if value.ndim == 2:
+            if value.shape != batch.log_probs.shape:
+                raise ValueError(
+                    f"Expected extra loss shape {tuple(batch.log_probs.shape)}, got {tuple(value.shape)}"
+                )
+            if self.agent_logprob_reduction is None:
+                reduced = value
+            elif self.agent_logprob_reduction == "sum":
+                if batch.agent_mask is None:
+                    reduced = value.sum(dim=AGENTS_DIM)
+                else:
+                    mask_f = batch.agent_mask.to(dtype=value.dtype)
+                    reduced = (value * mask_f).sum(dim=AGENTS_DIM)
+            elif self.agent_logprob_reduction == "mean":
+                if batch.agent_mask is None:
+                    reduced = value.mean(dim=AGENTS_DIM)
+                else:
+                    mask_f = batch.agent_mask.to(dtype=value.dtype)
+                    denom = mask_f.sum(dim=AGENTS_DIM).clamp_min(1.0)
+                    reduced = (value * mask_f).sum(dim=AGENTS_DIM) / denom
+            else:
+                raise ValueError(f"Unhandled {self.agent_logprob_reduction=}")
+        elif value.ndim == 1:
+            reduced = value
+        else:
+            raise ValueError(f"Unsupported extra loss ndim {value.ndim} for shape {tuple(value.shape)}")
+
+        valid_mask = self._build_agent_valid_mask(batch.agent_mask, reduced)
+        return masked_mean(reduced, valid_mask)
 
     @staticmethod
     def _build_agent_valid_mask(
@@ -730,10 +768,10 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerType]):
             logger.warning(f"Setting clip_range_vf to {clip_range_vf}")
             self.clip_range_vf = clip_range_vf
             return True
-        elif cmd == "set_ent_coef":
-            ent_coef = float(params)
-            logger.warning(f"Setting ent_coef to {ent_coef}")
-            self.ent_coef = ent_coef
+        elif cmd == "set_mc_ent_coef":
+            mc_ent_coef = float(params)
+            logger.warning(f"Setting mc_ent_coef to {mc_ent_coef}")
+            self.mc_ent_coef = mc_ent_coef
             return True
         elif cmd == "set_vf_coef":
             vf_coef = float(params)
