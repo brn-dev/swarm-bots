@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from typing import Optional, Self
 
 import torch
@@ -7,6 +8,17 @@ from swarmbots.learn.action_dists.diag_gaussian_action_dist import DiagGaussianA
 from swarmbots.learn.action_dists.tanh_bijector import TanhBijector
 from swarmbots.learn.losses import LossDict, LossMetrics
 from swarmbots.learn.nn_components.nn_init import init_linear_orthogonal
+
+
+@dataclass(frozen=True)
+class SquashedDiagGaussianConfig:
+    std: float
+    std_learnable: bool
+    epsilon: float = 1e-6
+    ent_loss_coef: float = 0.0
+    action_magnitude_loss_coef: float = 0.0
+    action_magnitude_loss_threshold: float = 0.0
+    action_magnitude_loss_power: int = 2
 
 
 # Inspired by

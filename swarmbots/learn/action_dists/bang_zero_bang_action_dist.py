@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from typing import Optional, Self
 
 import torch
@@ -8,6 +9,12 @@ from swarmbots.learn.action_dists.discrete_action_dist import DiscreteActionDist
 from swarmbots.learn.losses import LossDict, LossMetrics
 from swarmbots.learn.masking import masked_mean
 from swarmbots.learn.nn_components.nn_init import init_linear_orthogonal
+
+
+@dataclass(frozen=True)
+class BangZeroBangConfig:
+    bang: float = 1.0
+    ent_loss_coef: float = 0.0
 
 
 class BangZeroBangActionDist(DiscreteActionDist):

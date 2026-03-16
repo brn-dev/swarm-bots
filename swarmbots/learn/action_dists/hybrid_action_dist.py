@@ -1,4 +1,4 @@
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, replace
 from typing import Any, Self
 
 import torch
@@ -13,85 +13,34 @@ from swarmbots.learn.action_dists.action_dist import (
     ActionNetInitialization,
 )
 from swarmbots.learn.action_dists.bernoulli_action_dist import BernoulliActionDist
-from swarmbots.learn.action_dists.bang_zero_bang_action_dist import BangZeroBangActionDist
+from swarmbots.learn.action_dists.bernoulli_action_dist import BernoulliConfig
+from swarmbots.learn.action_dists.bang_zero_bang_action_dist import BangZeroBangActionDist, BangZeroBangConfig
 from swarmbots.learn.action_dists.continuous_action_dist import ContinuousActionDist
 from swarmbots.learn.action_dists.diag_gaussian_action_dist import DiagGaussianActionDist
-from swarmbots.learn.action_dists.gsde_action_dist import GSDEActionDist
-from swarmbots.learn.action_dists.beta_mixture_action_dist import BetaMixtureActionDist
-from swarmbots.learn.action_dists.sticky_beta_mixture_action_dist import StickyBetaMixtureActionDist
-from swarmbots.learn.action_dists.predicted_std_action_dist import PredictedStdActionDist
-from swarmbots.learn.action_dists.squashed_diag_gaussian_action_dist import SquashedDiagGaussianActionDist
+from swarmbots.learn.action_dists.gsde_action_dist import GSDEActionDist, GSDEConfig
+from swarmbots.learn.action_dists.beta_mixture_action_dist import BetaMixtureActionDist, BetaMixtureConfig
+from swarmbots.learn.action_dists.sticky_beta_mixture_action_dist import (
+    StickyBetaMixtureActionDist,
+    StickyBetaMixtureConfig,
+)
+from swarmbots.learn.action_dists.predicted_std_action_dist import PredictedStdActionDist, PredictedStdConfig
+from swarmbots.learn.action_dists.squashed_diag_gaussian_action_dist import (
+    SquashedDiagGaussianActionDist,
+    SquashedDiagGaussianConfig,
+)
 from swarmbots.learn.action_dists.temporally_correlated_action_dist import TemporallyCorrelatedActionDist
 from swarmbots.learn.hybrid_action_space import HybridActionSpace
 from swarmbots.learn.losses import LossDict, LossMetrics
 from swarmbots.learn.nn_components.nn_init import init_linear_orthogonal
 
-LogStdNetInitialization = ActionNetInitialization
-
-
-@dataclass(frozen=True)
-class SquashedDiagParams:
-    std: float
-    std_learnable: bool
-    epsilon: float = 1e-6
-    action_magnitude_loss_coef: float = 0.0
-    action_magnitude_loss_threshold: float = 0.0
-    action_magnitude_loss_power: int = 2
-
-@dataclass(frozen=True)
-class PredictedStdParams:
-    base_std: float
-    epsilon: float = 1e-6
-    log_std_net_initialization: LogStdNetInitialization = init_linear_orthogonal
-    log_std_clamp_range: tuple[float, float] = (-20.0, 2.0)
-    action_magnitude_loss_coef: float = 0.0
-    action_magnitude_loss_threshold: float = 0.0
-    action_magnitude_loss_power: int = 2
-
-@dataclass(frozen=True)
-class GSDEParams:
-    base_std: float
-    latent_sde_dim: int | None = None
-    std_learnable: bool = True
-    normalize_latent_sde_by_dim: bool = True
-    epsilon: float = 1e-6
-    full_std: bool = True
-    sde_learn_features: bool = True
-    latent_sde_net_initialization: ActionNetInitialization = init_linear_orthogonal
-    log_std_clamp_range: tuple[float, float] = (-20.0, 2.0)
-    action_magnitude_loss_coef: float = 0.0
-    action_magnitude_loss_threshold: float = 0.0
-    action_magnitude_loss_power: int = 2
-
-@dataclass(frozen=True)
-class BetaMixtureParams:
-    num_components: int
-    alphas: tuple[float, ...]
-    betas: tuple[float, ...]
-    epsilon: float = 1e-6
-
-@dataclass(frozen=True)
-class StickyBetaMixtureParams:
-    num_components: int
-    sticky_probability: float
-    alphas: tuple[float, ...]
-    betas: tuple[float, ...]
-    epsilon: float = 1e-6
-
-
-@dataclass(frozen=True)
-class BangZeroBangParams:
-    bang: float = 1.0
-    ent_loss_coef: float = 0.0
-
 
 ContinuousActionDistConfig = (
-        SquashedDiagParams
-        | PredictedStdParams
-        | GSDEParams
-        | BetaMixtureParams
-        | StickyBetaMixtureParams
-        | BangZeroBangParams
+        SquashedDiagGaussianConfig
+        | PredictedStdConfig
+        | GSDEConfig
+        | BetaMixtureConfig
+        | StickyBetaMixtureConfig
+        | BangZeroBangConfig
 )
 
 
@@ -116,6 +65,14 @@ def serialize_continuous_action_dist_configs(
     return serialize_continuous_action_dist_config(continuous_config)
 
 
+def serialize_bernoulli_config(
+        bernoulli_config: BernoulliConfig | None,
+) -> dict[str, Any] | None:
+    if bernoulli_config is None:
+        return None
+    return asdict(bernoulli_config)
+
+
 class HybridActionDistribution(ActionDist):
 
     def __init__(
@@ -123,8 +80,7 @@ class HybridActionDistribution(ActionDist):
             latent_dim: int,
             action_space: HybridActionSpace,
             continuous_config: ContinuousActionDistConfig | list[ContinuousActionDistConfig | None] | None,
-            bernoulli_initial_prob: float | None = None,
-            bernoulli_ent_loss_coef: float = 0.0,
+            bernoulli_config: BernoulliConfig | None = None,
             action_net_initialization: ActionNetInitialization = init_linear_orthogonal,
     ):
         self.action_space = action_space
@@ -138,12 +94,13 @@ class HybridActionDistribution(ActionDist):
             self.continuous_configs = continuous_config
         else:
             self.continuous_configs = [continuous_config] * action_space.n_spaces
+        self.bernoulli_config = bernoulli_config
 
         gsde_indices = [
             i for i, (sub_space, config) in enumerate(
                 zip(action_space.sub_spaces, self.continuous_configs, strict=True)
             )
-            if isinstance(sub_space, spaces.Box) and isinstance(config, GSDEParams)
+            if isinstance(sub_space, spaces.Box) and isinstance(config, GSDEConfig)
         ]
         self.has_gsde = len(gsde_indices) > 0
 
@@ -162,8 +119,7 @@ class HybridActionDistribution(ActionDist):
                 sub_space_dim,
                 action_net_initialization,
                 cont_conf,
-                bernoulli_initial_prob=bernoulli_initial_prob,
-                bernoulli_ent_loss_coef=bernoulli_ent_loss_coef,
+                bernoulli_config=bernoulli_config,
             )
             for sub_space, sub_space_dim, cont_conf
             in zip(action_space.sub_spaces, action_space.agent_action_dims, self.continuous_configs, strict=True)
@@ -271,7 +227,7 @@ class HybridActionDistribution(ActionDist):
             if isinstance(dist, ContinuousActionDist):
                 dist.set_action_magnitude_loss_coef(value)
         for idx, config in enumerate(self.continuous_configs):
-            if isinstance(config, (SquashedDiagParams, PredictedStdParams, GSDEParams)):
+            if isinstance(config, (SquashedDiagGaussianConfig, PredictedStdConfig, GSDEConfig)):
                 self.continuous_configs[idx] = replace(config, action_magnitude_loss_coef=value)
 
     def set_all_ent_loss_coefs(self, value: float) -> None:
@@ -285,10 +241,15 @@ class HybridActionDistribution(ActionDist):
             if isinstance(
                     config,
                     (
-                            BangZeroBangParams,
+                            SquashedDiagGaussianConfig,
+                            PredictedStdConfig,
+                            GSDEConfig,
+                            BangZeroBangConfig,
                     ),
             ):
                 self.continuous_configs[idx] = replace(config, ent_loss_coef=value)
+        if self.bernoulli_config is not None:
+            self.bernoulli_config = replace(self.bernoulli_config, ent_loss_coef=value)
 
 
 def make_proba_distribution(
@@ -297,20 +258,19 @@ def make_proba_distribution(
         action_space_dim: int,
         action_net_initialization: ActionNetInitialization,
         continuous_config: ContinuousActionDistConfig | None,
-        bernoulli_initial_prob: float | None = None,
-        bernoulli_ent_loss_coef: float = 0.0,
+        bernoulli_config: BernoulliConfig | None = None,
 ) -> ActionDist:
     if isinstance(action_space, spaces.Box):
         _assert_unit_box_range(action_space)
         if continuous_config is None:
             raise ValueError(
                 "Supply a ContinuousActionDistConfig "
-                "(SquashedDiagParams | PredictedStdParams | GSDEParams | "
-                "BetaMixtureParams | StickyBetaMixtureParams | BangZeroBangParams) "
+                "(SquashedDiagGaussianConfig | PredictedStdConfig | GSDEConfig | "
+                "BetaMixtureConfig | StickyBetaMixtureConfig | BangZeroBangConfig) "
                 "for continuous actions."
             )
 
-        if isinstance(continuous_config, SquashedDiagParams):
+        if isinstance(continuous_config, SquashedDiagGaussianConfig):
             return SquashedDiagGaussianActionDist(
                 latent_dim=latent_dim,
                 action_dim=action_space_dim,
@@ -322,7 +282,7 @@ def make_proba_distribution(
                 action_magnitude_loss_threshold=continuous_config.action_magnitude_loss_threshold,
                 action_magnitude_loss_power=continuous_config.action_magnitude_loss_power,
             )
-        elif isinstance(continuous_config, PredictedStdParams):
+        elif isinstance(continuous_config, PredictedStdConfig):
             return PredictedStdActionDist(
                 latent_dim=latent_dim,
                 action_dim=action_space_dim,
@@ -336,7 +296,7 @@ def make_proba_distribution(
                 action_magnitude_loss_threshold=continuous_config.action_magnitude_loss_threshold,
                 action_magnitude_loss_power=continuous_config.action_magnitude_loss_power,
             )
-        elif isinstance(continuous_config, GSDEParams):
+        elif isinstance(continuous_config, GSDEConfig):
             return GSDEActionDist(
                 latent_dim=latent_dim,
                 action_dim=action_space_dim,
@@ -355,7 +315,7 @@ def make_proba_distribution(
                 action_magnitude_loss_threshold=continuous_config.action_magnitude_loss_threshold,
                 action_magnitude_loss_power=continuous_config.action_magnitude_loss_power,
             )
-        elif isinstance(continuous_config, BetaMixtureParams):
+        elif isinstance(continuous_config, BetaMixtureConfig):
             return BetaMixtureActionDist(
                 latent_dim=latent_dim,
                 action_dim=action_space_dim,
@@ -365,7 +325,7 @@ def make_proba_distribution(
                 alphas=continuous_config.alphas,
                 betas=continuous_config.betas,
             )
-        elif isinstance(continuous_config, StickyBetaMixtureParams):
+        elif isinstance(continuous_config, StickyBetaMixtureConfig):
             return StickyBetaMixtureActionDist(
                 latent_dim=latent_dim,
                 action_dim=action_space_dim,
@@ -376,7 +336,7 @@ def make_proba_distribution(
                 alphas=continuous_config.alphas,
                 betas=continuous_config.betas,
             )
-        elif isinstance(continuous_config, BangZeroBangParams):
+        elif isinstance(continuous_config, BangZeroBangConfig):
             return BangZeroBangActionDist(
                 latent_dim=latent_dim,
                 action_dim=action_space_dim,
@@ -392,9 +352,9 @@ def make_proba_distribution(
         return BernoulliActionDist(
             latent_dim=latent_dim,
             action_dim=action_space_dim,
-            initial_prob=bernoulli_initial_prob,
+            initial_prob=bernoulli_config.initial_prob if bernoulli_config is not None else None,
             action_net_initialization=action_net_initialization,
-            ent_loss_coef=bernoulli_ent_loss_coef,
+            ent_loss_coef=bernoulli_config.ent_loss_coef if bernoulli_config is not None else 0.0,
         )
     else:
         raise NotImplementedError(f"Unsupported action space type: {type(action_space)}")

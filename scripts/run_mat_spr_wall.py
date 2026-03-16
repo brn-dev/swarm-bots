@@ -10,7 +10,8 @@ from gymnasium.wrappers.vector import RecordEpisodeStatistics, NormalizeReward
 from loguru import logger
 from torch import nn
 
-from swarmbots.learn.action_dists.hybrid_action_dist import GSDEParams
+from swarmbots.learn.action_dists.bernoulli_action_dist import BernoulliConfig
+from swarmbots.learn.action_dists.gsde_action_dist import GSDEConfig
 from swarmbots.learn.algos.mat.wm.mat_spr_policy import MATSPRPolicy
 from swarmbots.learn.algos.ppo.wm.ppo_wm import PPOWM
 from swarmbots.learn.algos.ppo.ppo import AutomaticLearningRate, AutomaticLearningRateUpdateResult, StepsRolloutMode
@@ -244,7 +245,7 @@ def main() -> None:
         n_critic_value_regressor_hidden_layers=1,
         cross_attn_first=True,
         act_fn_cls=nn.GELU,
-        continuous_config=GSDEParams(
+        continuous_config=GSDEConfig(
             base_std=0.25,
             latent_sde_dim=None,
             std_learnable=True,
@@ -253,7 +254,7 @@ def main() -> None:
             log_std_clamp_range=(-20.0, 2.0),
             normalize_latent_sde_by_dim=True
         ),
-        bernoulli_initial_prob=0.75,
+        bernoulli_config=BernoulliConfig(initial_prob=0.75),
         use_popart=use_popart,
         popart_beta=popart_beta,
         popart_eps=popart_eps,
