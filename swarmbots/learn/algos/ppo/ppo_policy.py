@@ -1,21 +1,66 @@
 import abc
+from dataclasses import dataclass, field
 from typing import Any
 import torch
 from torch import nn
 
 from swarmbots.learn.action_dists.hybrid_action_dist import (
     HybridActionDistribution,
-    ContinuousActionDistConfig,
+    ContinuousActionDistConfigInput,
     serialize_continuous_action_dist_configs,
     serialize_bernoulli_config,
 )
 from swarmbots.learn.action_dists.bernoulli_action_dist import BernoulliConfig
 from swarmbots.learn.base_policy import BasePolicy
 from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
+from swarmbots.learn.config_serialization import serialize_dataclass_config
 from swarmbots.learn.losses import LossDict, LossMetrics
 from swarmbots.learn.nn_components.mlp import MLP
 from swarmbots.learn.nn_components.nn_init import init_linear_orthogonal, LinearInitialization
 from swarmbots.learn.nn_components.popart import PopArtLinear
+
+
+@dataclass(frozen=True)
+class PopArtConfig:
+    beta: float = 3e-4
+    eps: float = 1e-5
+    min_std: float = 1e-4
+    init_sigma: float = 1.0
+
+
+@dataclass(frozen=True)
+class PPOActorConfig:
+    hidden_dims: list[int] = field(default_factory=list)
+    latent_pi_dim_per_agent: int = 64
+    act_fun_class: type[nn.Module] = nn.Tanh
+
+
+@dataclass(frozen=True)
+class PPOCriticConfig:
+    hidden_dims: list[int] = field(default_factory=list)
+    act_fun_class: type[nn.Module] = nn.Tanh
+    use_popart: bool = False
+    popart_config: PopArtConfig = field(default_factory=PopArtConfig)
+
+
+@dataclass(frozen=True)
+class PPOPolicyConfig:
+    actor_config: PPOActorConfig = field(default_factory=PPOActorConfig)
+    critic_config: PPOCriticConfig = field(default_factory=PPOCriticConfig)
+    continuous_config: ContinuousActionDistConfigInput = None
+    bernoulli_config: BernoulliConfig | None = None
+
+
+def serialize_popart_config(config: PopArtConfig) -> dict[str, float]:
+    return serialize_dataclass_config(config)
+
+
+def serialize_ppo_policy_config(config: PPOPolicyConfig) -> dict[str, Any]:
+    data = serialize_dataclass_config(config)
+    data["continuous_config"] = serialize_continuous_action_dist_configs(config.continuous_config)
+    data["bernoulli_config"] = serialize_bernoulli_config(config.bernoulli_config)
+    return data
+
 
 class BasePPOPolicy(BasePolicy, abc.ABC):
     action_dist: HybridActionDistribution
@@ -92,25 +137,25 @@ class PPOActor(nn.Module):
             n_agents: int,
             local_obs_dim: int,
             global_obs_dim: int,
-            hidden_dims: list[int],
-            latent_pi_dim_per_agent: int,
+            config: PPOActorConfig,
             linear_init: LinearInitialization = init_linear_orthogonal,
-            act_fun_class = nn.Tanh
+            act_fun_class: type[nn.Module] | None = None,
     ):
         super().__init__()
+        actor_act_fun_class = config.act_fun_class if act_fun_class is None else act_fun_class
         self.n_agents = n_agents
         self.local_obs_dim = local_obs_dim
         self.global_obs_dim = global_obs_dim
         self.has_global_obs = global_obs_dim > 0
-        self.hidden_dims = hidden_dims
-        self.latent_pi_dim = latent_pi_dim_per_agent
+        self.hidden_dims = config.hidden_dims
+        self.latent_pi_dim = config.latent_pi_dim_per_agent
 
         self.mlp = MLP(
             input_dim=local_obs_dim * n_agents + global_obs_dim,
-            hidden_dims=hidden_dims + [latent_pi_dim_per_agent * n_agents],
+            hidden_dims=[*config.hidden_dims, config.latent_pi_dim_per_agent * n_agents],
             end_with_act_fn=True,
             linear_init=linear_init,
-            act_fn_cls=act_fun_class
+            act_fn_cls=actor_act_fun_class
         )
 
     def forward(self, local_obs: torch.Tensor, global_obs: torch.Tensor) -> torch.Tensor:
@@ -127,33 +172,29 @@ class PPOCritic(nn.Module):
             n_agents: int,
             local_obs_dim: int,
             global_obs_dim: int,
-            hidden_dims: list[int],
+            config: PPOCriticConfig,
             linear_init: LinearInitialization = init_linear_orthogonal,
-            act_fun_class = nn.Tanh,
-            use_popart: bool = False,
-            popart_beta: float = 3e-4,
-            popart_eps: float = 1e-5,
-            popart_min_std: float = 1e-4,
-            popart_init_sigma: float = 1.0,
+            act_fun_class: type[nn.Module] | None = None,
     ):
         super().__init__()
+        critic_act_fun_class = config.act_fun_class if act_fun_class is None else act_fun_class
         self.n_agents = n_agents
         self.local_obs_dim = local_obs_dim
         self.global_obs_dim = global_obs_dim
         self.has_global_obs = global_obs_dim > 0
-        self.hidden_dims = hidden_dims
-        self.use_popart = bool(use_popart)
+        self.hidden_dims = config.hidden_dims
+        self.use_popart = bool(config.use_popart)
 
         value_head_input_dim = local_obs_dim * n_agents + global_obs_dim
-        if hidden_dims:
+        if config.hidden_dims:
             self.value_features: nn.Module = MLP(
                 input_dim=value_head_input_dim,
-                hidden_dims=hidden_dims,
+                hidden_dims=config.hidden_dims,
                 end_with_act_fn=True,
                 linear_init=linear_init,
-                act_fn_cls=act_fun_class
+                act_fn_cls=critic_act_fun_class
             )
-            value_head_input_dim = int(hidden_dims[-1])
+            value_head_input_dim = int(config.hidden_dims[-1])
         else:
             self.value_features = nn.Identity()
 
@@ -161,10 +202,10 @@ class PPOCritic(nn.Module):
             self.value_head: nn.Module = PopArtLinear(
                 in_features=value_head_input_dim,
                 out_features=1,
-                beta=popart_beta,
-                eps=popart_eps,
-                min_std=popart_min_std,
-                init_sigma=popart_init_sigma,
+                beta=config.popart_config.beta,
+                eps=config.popart_config.eps,
+                min_std=config.popart_config.min_std,
+                init_sigma=config.popart_config.init_sigma,
             )
         else:
             self.value_head = nn.Linear(value_head_input_dim, 1)
@@ -219,66 +260,39 @@ class PPOPolicy(BasePPOPolicy):
     def __init__(
             self,
             env: BaseLearnEnvWrapper,
-            actor_hidden_dims: list[int],
-            latent_pi_dim_per_agent: int,
-            critic_hidden_dims: list[int],
-            act_fun_class = nn.Tanh,
-            continuous_config: ContinuousActionDistConfig | list[ContinuousActionDistConfig | None] | None = None,
-            bernoulli_config: BernoulliConfig | None = None,
-            use_popart: bool = False,
-            popart_beta: float = 3e-4,
-            popart_eps: float = 1e-5,
-            popart_min_std: float = 1e-4,
-            popart_init_sigma: float = 1.0,
+            config: PPOPolicyConfig = PPOPolicyConfig(),
     ):
         super().__init__()
+        self.config = config
 
         self.n_agents = env.n_agents
         self.local_obs_dim = env.local_obs_dim
         self.global_obs_dim = env.global_obs_dim
         self.hidden_vars_dim = env.hidden_vars_dim
-        self.latent_pi_dim = latent_pi_dim_per_agent
+        self.latent_pi_dim = config.actor_config.latent_pi_dim_per_agent
 
         self.actor = PPOActor(
             n_agents=env.n_agents,
             local_obs_dim=env.local_obs_dim,
             global_obs_dim=env.global_obs_dim,
-            hidden_dims=actor_hidden_dims,
-            latent_pi_dim_per_agent=latent_pi_dim_per_agent,
-            act_fun_class=act_fun_class
+            config=config.actor_config,
         )
         self.action_dist = HybridActionDistribution(
-            latent_dim=latent_pi_dim_per_agent,
+            latent_dim=config.actor_config.latent_pi_dim_per_agent,
             action_space=env.action_space,
-            continuous_config=continuous_config,
-            bernoulli_config=bernoulli_config,
+            continuous_config=config.continuous_config,
+            bernoulli_config=config.bernoulli_config,
         )
 
         self.critic = PPOCritic(
             n_agents=env.n_agents,
             local_obs_dim=env.local_obs_dim,
             global_obs_dim=env.global_obs_dim + self.hidden_vars_dim,
-            hidden_dims=critic_hidden_dims,
-            act_fun_class=act_fun_class,
-            use_popart=use_popart,
-            popart_beta=popart_beta,
-            popart_eps=popart_eps,
-            popart_min_std=popart_min_std,
-            popart_init_sigma=popart_init_sigma,
+            config=config.critic_config,
         )
 
         self.hyper_parameters = {
-            "actor_hidden_dims": actor_hidden_dims,
-            "critic_hidden_dims": critic_hidden_dims,
-            "latent_pi_dim_per_agent": latent_pi_dim_per_agent,
-            "act_fun_class": act_fun_class.__name__,
-            "continuous_config": serialize_continuous_action_dist_configs(continuous_config),
-            "bernoulli_config": serialize_bernoulli_config(bernoulli_config),
-            "use_popart": use_popart,
-            "popart_beta": popart_beta,
-            "popart_eps": popart_eps,
-            "popart_min_std": popart_min_std,
-            "popart_init_sigma": popart_init_sigma,
+            "ppo_policy_config": serialize_ppo_policy_config(config),
         }
 
     def get_hyper_parameters(self) -> dict[str, Any]:
@@ -396,9 +410,7 @@ class PPOPolicy(BasePPOPolicy):
             if value < 0:
                 raise ValueError(f"{alias} must be >= 0, got {value}")
             self.action_dist.set_action_magnitude_loss_coef(value)
-            self.hyper_parameters["continuous_config"] = serialize_continuous_action_dist_configs(
-                self.action_dist.continuous_configs
-            )
+            self._set_serialized_continuous_config()
 
         entropy_weight = self._pop_loss_weight_alias(
             remaining_weights,
@@ -409,8 +421,16 @@ class PPOPolicy(BasePPOPolicy):
             if value < 0:
                 raise ValueError(f"{alias} must be >= 0, got {value}")
             self.action_dist.set_all_ent_loss_coefs(value)
-            self.hyper_parameters["continuous_config"] = serialize_continuous_action_dist_configs(
-                self.action_dist.continuous_configs
-            )
+            self._set_serialized_continuous_config()
 
         super().update_loss_weights(**remaining_weights)
+
+    def _set_serialized_continuous_config(self) -> None:
+        serialized = serialize_continuous_action_dist_configs(self.action_dist.continuous_configs)
+        if "ppo_policy_config" in self.hyper_parameters:
+            self.hyper_parameters["ppo_policy_config"]["continuous_config"] = serialized
+            return
+        if "mappo_policy_config" in self.hyper_parameters:
+            self.hyper_parameters["mappo_policy_config"]["continuous_config"] = serialized
+            return
+        self.hyper_parameters["continuous_config"] = serialized

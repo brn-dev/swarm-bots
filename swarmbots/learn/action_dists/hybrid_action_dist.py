@@ -1,5 +1,5 @@
-from dataclasses import asdict, replace
-from typing import Any, Self
+from dataclasses import replace
+from typing import Any, Mapping, Self, TypeAlias
 
 import torch
 from torch import nn
@@ -30,30 +30,33 @@ from swarmbots.learn.action_dists.squashed_diag_gaussian_action_dist import (
 )
 from swarmbots.learn.action_dists.temporally_correlated_action_dist import TemporallyCorrelatedActionDist
 from swarmbots.learn.hybrid_action_space import HybridActionSpace
+from swarmbots.learn.config_serialization import serialize_dataclass_config
 from swarmbots.learn.losses import LossDict, LossMetrics
 from swarmbots.learn.nn_components.nn_init import init_linear_orthogonal
 
 
-ContinuousActionDistConfig = (
-        SquashedDiagGaussianConfig
-        | PredictedStdConfig
-        | GSDEConfig
-        | BetaMixtureConfig
-        | StickyBetaMixtureConfig
-        | BangZeroBangConfig
+ContinuousActionDistConfig: TypeAlias = (
+    SquashedDiagGaussianConfig
+    | PredictedStdConfig
+    | GSDEConfig
+    | BetaMixtureConfig
+    | StickyBetaMixtureConfig
+    | BangZeroBangConfig
+)
+
+ContinuousActionDistConfigInput: TypeAlias = (
+    ContinuousActionDistConfig
+    | list[ContinuousActionDistConfig | None]
+    | None
 )
 
 
 def serialize_continuous_action_dist_config(config: ContinuousActionDistConfig) -> dict[str, Any]:
-    data = asdict(config)
-    for key in ("log_std_net_initialization", "latent_sde_net_initialization"):
-        if key in data and callable(data[key]):
-            data[key] = data[key].__name__
-    return data
+    return serialize_dataclass_config(config)
 
 
 def serialize_continuous_action_dist_configs(
-        continuous_config: ContinuousActionDistConfig | list[ContinuousActionDistConfig | None] | None,
+        continuous_config: ContinuousActionDistConfigInput,
 ) -> dict[str, Any] | list[dict[str, Any] | None] | None:
     if continuous_config is None:
         return None
@@ -70,7 +73,7 @@ def serialize_bernoulli_config(
 ) -> dict[str, Any] | None:
     if bernoulli_config is None:
         return None
-    return asdict(bernoulli_config)
+    return serialize_dataclass_config(bernoulli_config)
 
 
 class HybridActionDistribution(ActionDist):
@@ -79,7 +82,7 @@ class HybridActionDistribution(ActionDist):
             self,
             latent_dim: int,
             action_space: HybridActionSpace,
-            continuous_config: ContinuousActionDistConfig | list[ContinuousActionDistConfig | None] | None,
+            continuous_config: ContinuousActionDistConfigInput,
             bernoulli_config: BernoulliConfig | None = None,
             action_net_initialization: ActionNetInitialization = init_linear_orthogonal,
     ):
@@ -178,22 +181,11 @@ class HybridActionDistribution(ActionDist):
     ) -> tuple[LossDict, LossMetrics]:
         losses: LossDict = {}
         metrics: LossMetrics = {}
-        for dist in self.distributions:
+        for i, dist in enumerate(self.distributions):
             dist_losses, dist_metrics = dist.compute_extra_losses(agent_mask=agent_mask)
-            for loss_name, loss_value in dist_losses.items():
-                if loss_name in losses:
-                    losses[loss_name] = losses[loss_name] + loss_value
-                else:
-                    losses[loss_name] = loss_value
-            for metric_name, metric_value in dist_metrics.items():
-                if (
-                        metric_name in metrics
-                        and isinstance(metric_value, (int, float))
-                        and isinstance(metrics[metric_name], (int, float))
-                ):
-                    metrics[metric_name] = float(metrics[metric_name]) + float(metric_value)
-                else:
-                    metrics[metric_name] = metric_value
+            prefix = f"act{i}_"
+            losses.update(self._prefix_named_values(dist_losses, prefix=prefix))
+            metrics.update(self._prefix_named_values(dist_metrics, prefix=prefix))
         return losses, metrics
 
     def reset_temporal_correlations_on_ep_start(self, mask: torch.Tensor) -> None:
@@ -238,18 +230,19 @@ class HybridActionDistribution(ActionDist):
             if callable(set_ent_loss_coef):
                 set_ent_loss_coef(value)
         for idx, config in enumerate(self.continuous_configs):
-            if isinstance(
-                    config,
-                    (
-                            SquashedDiagGaussianConfig,
-                            PredictedStdConfig,
-                            GSDEConfig,
-                            BangZeroBangConfig,
-                    ),
-            ):
+            if isinstance(config, (SquashedDiagGaussianConfig, PredictedStdConfig, GSDEConfig, BangZeroBangConfig,)):
                 self.continuous_configs[idx] = replace(config, ent_loss_coef=value)
         if self.bernoulli_config is not None:
             self.bernoulli_config = replace(self.bernoulli_config, ent_loss_coef=value)
+
+
+    @staticmethod
+    def _prefix_named_values(
+            values: Mapping[str, Any],
+            *,
+            prefix: str,
+    ) -> dict[str, Any]:
+        return {f"{prefix}{name}": value for name, value in values.items()}
 
 
 def make_proba_distribution(

@@ -1,12 +1,40 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
 import torch
 from torch import nn
 
+from swarmbots.learn.config_serialization import serialize_dataclass_config
 from swarmbots.learn.nn_components.mlp import MLP
 from swarmbots.learn.nn_components.nn_init import init_linear_orthogonal
+
+
+@dataclass(frozen=True)
+class TransformerTransitionModelConfig:
+    n_agents: int
+    latent_dim: int
+    action_dim: int
+    d_model: int = 128
+    nhead: int = 4
+    num_layers: int = 2
+    dim_feedforward: int = 256
+    dropout: float = 0.0
+    act_fn_cls: type[nn.Module] = nn.ReLU
+    add_agent_embeddings: bool = True
+    predict_delta: bool = True
+    coembed_mlp_hidden_dims: list[int] | None = None
+    head_mlp_hidden_dims: list[int] | None = None
+    norm_first: bool = True
+    layer_norm_eps: float = 1e-5
+    enable_nested_tensor: bool = False
+
+
+def serialize_transformer_transition_model_config(
+        config: TransformerTransitionModelConfig,
+) -> dict[str, Any]:
+    return serialize_dataclass_config(config)
 
 
 class TransformerTransitionModel(nn.Module):
@@ -19,96 +47,63 @@ class TransformerTransitionModel(nn.Module):
 
     def __init__(
         self,
-        *,
-        n_agents: int,
-        latent_dim: int,
-        action_dim: int,
-        d_model: int = 128,
-        nhead: int = 4,
-        num_layers: int = 2,
-        dim_feedforward: int = 256,
-        dropout: float = 0.0,
-        act_fn_cls: type[nn.Module] = nn.ReLU,
-        add_agent_embeddings: bool = True,
-        predict_delta: bool = True,
-        coembed_mlp_hidden_dims: list[int] | None = None,
-        head_mlp_hidden_dims: list[int] | None = None,
-        norm_first: bool = True,
-        layer_norm_eps: float = 1e-5,
-        enable_nested_tensor: bool = False,
+        config: TransformerTransitionModelConfig,
     ) -> None:
         super().__init__()
-        self.n_agents = n_agents
-        self.latent_dim = latent_dim
-        self.action_dim = action_dim
-        self.d_model = d_model
-        self.predict_delta = predict_delta
+        self.n_agents = config.n_agents
+        self.latent_dim = config.latent_dim
+        self.action_dim = config.action_dim
+        self.d_model = config.d_model
+        self.predict_delta = config.predict_delta
 
-        in_dim = latent_dim + action_dim
-        if coembed_mlp_hidden_dims is None:
-            self.coembed: nn.Module = nn.Linear(in_dim, d_model)
+        in_dim = config.latent_dim + config.action_dim
+        if config.coembed_mlp_hidden_dims is None:
+            self.coembed: nn.Module = nn.Linear(in_dim, config.d_model)
             init_linear_orthogonal(self.coembed)
         else:
             self.coembed = MLP(
                 input_dim=in_dim,
-                hidden_dims=[*coembed_mlp_hidden_dims, d_model],
+                hidden_dims=[*config.coembed_mlp_hidden_dims, config.d_model],
                 end_with_act_fn=True,
                 linear_init=init_linear_orthogonal,
-                act_fn_cls=act_fn_cls,
+                act_fn_cls=config.act_fn_cls,
             )
 
         self.agent_embeddings: nn.Parameter | None = None
-        if add_agent_embeddings:
-            self.agent_embeddings = nn.Parameter(torch.zeros(1, n_agents, d_model), requires_grad=True)
+        if config.add_agent_embeddings:
+            self.agent_embeddings = nn.Parameter(torch.zeros(1, config.n_agents, config.d_model), requires_grad=True)
             nn.init.orthogonal_(self.agent_embeddings)
 
         self.encoder = nn.TransformerEncoder(
             encoder_layer=nn.TransformerEncoderLayer(
-                d_model=d_model,
-                nhead=nhead,
-                dim_feedforward=dim_feedforward,
-                dropout=dropout,
-                activation=act_fn_cls(),
-                layer_norm_eps=layer_norm_eps,
+                d_model=config.d_model,
+                nhead=config.nhead,
+                dim_feedforward=config.dim_feedforward,
+                dropout=config.dropout,
+                activation=config.act_fn_cls(),
+                layer_norm_eps=config.layer_norm_eps,
                 batch_first=True,
-                norm_first=norm_first,
+                norm_first=config.norm_first,
                 bias=True,
             ),
-            num_layers=num_layers,
-            norm=nn.LayerNorm(d_model, eps=layer_norm_eps),
-            enable_nested_tensor=enable_nested_tensor,
+            num_layers=config.num_layers,
+            norm=nn.LayerNorm(config.d_model, eps=config.layer_norm_eps),
+            enable_nested_tensor=config.enable_nested_tensor,
         )
 
-        if head_mlp_hidden_dims is None:
-            self.head: nn.Module = nn.Linear(d_model, latent_dim)
+        if config.head_mlp_hidden_dims is None:
+            self.head: nn.Module = nn.Linear(config.d_model, config.latent_dim)
             init_linear_orthogonal(self.head)
         else:
             self.head = MLP(
-                input_dim=d_model,
-                hidden_dims=[*head_mlp_hidden_dims, latent_dim],
+                input_dim=config.d_model,
+                hidden_dims=[*config.head_mlp_hidden_dims, config.latent_dim],
                 end_with_act_fn=False,
                 linear_init=init_linear_orthogonal,
-                act_fn_cls=act_fn_cls,
+                act_fn_cls=config.act_fn_cls,
             )
 
-        self.hyper_parameters: dict[str, Any] = {
-            "n_agents": n_agents,
-            "latent_dim": latent_dim,
-            "action_dim": action_dim,
-            "d_model": d_model,
-            "nhead": nhead,
-            "num_layers": num_layers,
-            "dim_feedforward": dim_feedforward,
-            "dropout": dropout,
-            "act_fn_cls": act_fn_cls.__name__,
-            "add_agent_embeddings": add_agent_embeddings,
-            "predict_delta": predict_delta,
-            "coembed_mlp_hidden_dims": coembed_mlp_hidden_dims,
-            "head_mlp_hidden_dims": head_mlp_hidden_dims,
-            "norm_first": norm_first,
-            "layer_norm_eps": layer_norm_eps,
-            "enable_nested_tensor": enable_nested_tensor,
-        }
+        self.hyper_parameters: dict[str, Any] = serialize_transformer_transition_model_config(config)
 
     def get_hyper_parameters(self) -> dict[str, Any]:
         return dict(self.hyper_parameters)

@@ -1,4 +1,4 @@
-from typing import Callable
+from dataclasses import dataclass
 
 import torch
 from torch import nn
@@ -6,23 +6,32 @@ from torch import nn
 from swarmbots.learn.nn_components.custom_transformer_decoder_layer import CustomTransformerDecoderLayer
 
 
+@dataclass(frozen=True)
+class MATDecoderConfig:
+    d_model: int | None = None
+    nhead: int = 4
+    num_layers: int = 2
+    dim_feedforward: int = 128
+    dropout: float = 0.0
+    cross_attn_first: bool = False
+    act_fn_cls: type[nn.Module] = nn.ReLU
+    norm_first: bool = True
+    layer_norm_eps: float = 1e-5
+    bias: bool = True
+    add_agent_embeddings: bool = True
+    action_encoder_hidden_dims: list[int] | None = None
+    actor_head_hidden_dims: list[int] | None = None
+
+
 class MATDecoder(nn.Module):
 
     def __init__(
             self,
+            config: MATDecoderConfig,
+            *,
             max_agents: int,
-            num_layers: int,
-            bias: bool,
-            norm_first: bool,
-            cross_attn_first: bool,
-            layer_norm_eps: float,
-            activation: Callable[[torch.Tensor], torch.Tensor],
-            dropout: float,
-            dim_feedforward: int,
-            nhead: int,
             d_model: int,
-            memory_d_model: int | None,
-            output_norm: nn.Module,
+            memory_d_model: int,
     ) -> None:
         super().__init__()
         self.max_agents = max_agents
@@ -31,18 +40,18 @@ class MATDecoder(nn.Module):
             decoder_layer=CustomTransformerDecoderLayer(
                 d_model=d_model,
                 memory_d_model=memory_d_model,
-                nhead=nhead,
-                dim_feedforward=dim_feedforward,
-                dropout=dropout,
-                activation=activation,
-                layer_norm_eps=layer_norm_eps,
+                nhead=config.nhead,
+                dim_feedforward=config.dim_feedforward,
+                dropout=config.dropout,
+                activation=config.act_fn_cls(),
+                layer_norm_eps=config.layer_norm_eps,
                 batch_first=True,
-                norm_first=norm_first,
-                cross_attn_first=cross_attn_first,
-                bias=bias,
+                norm_first=config.norm_first,
+                cross_attn_first=config.cross_attn_first,
+                bias=config.bias,
             ),
-            num_layers=num_layers,
-            norm=output_norm,
+            num_layers=config.num_layers,
+            norm=nn.LayerNorm(d_model),
         )
 
 

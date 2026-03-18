@@ -1,4 +1,5 @@
 import abc
+from dataclasses import dataclass
 from enum import Enum
 from typing import Optional, Any
 
@@ -12,6 +13,21 @@ from swarmbots.learn.masking import build_valid_mask, masked_mean, restrict_loss
 class PredictDeltaMode(Enum):
     PER_STEP_DELTA = 1
     INITIAL_DELTA = 2
+
+
+@dataclass(frozen=True)
+class NextObsPredConfig:
+    local_scalar_target_indices: Optional[list[int]] = None
+    local_angle_target_indices: Optional[list[int]] = None
+    local_rot6d_target_indices: Optional[list[int]] = None
+    local_binary_target_indices: Optional[list[int]] = None
+    scalar_loss_weight: float = 1.0
+    angle_loss_weight: float = 1.0
+    rot6d_loss_weight: float = 1.0
+    binary_loss_weight: float = 1.0
+    binary_target_ema_decay: float = 0.99
+    binary_target_ema_eps: float = 1e-4
+    predict_delta: Optional[PredictDeltaMode | bool] = PredictDeltaMode.PER_STEP_DELTA
 
 
 class NextObsPredMixin(abc.ABC):
@@ -46,30 +62,19 @@ class NextObsPredMixin(abc.ABC):
     def setup_next_obs_pred(
             self,
             transition_model: TransformerTransitionModel,
+            config: NextObsPredConfig,
             pre_transition_transform: Optional[nn.Module] = None,
             pre_predictors_transform: Optional[nn.Module] = None,
-            local_scalar_target_indices: Optional[list[int]] = None,
-            local_angle_target_indices: Optional[list[int]] = None,
-            local_rot6d_target_indices: Optional[list[int]] = None,
-            local_binary_target_indices: Optional[list[int]] = None,
             scalar_loss_fn: Optional[nn.Module] = None,
             local_scalars_predictor: Optional[nn.Module] = None,
             local_angles_predictor: Optional[nn.Module] = None,
             local_rot6ds_predictor: Optional[nn.Module] = None,
             local_binaries_predictor: Optional[nn.Module] = None,
-            scalar_loss_weight: float = 1.0,
-            angle_loss_weight: float = 1.0,
-            rot6d_loss_weight: float = 1.0,
-            binary_loss_weight: float = 1.0,
-            binary_target_ema_decay: float = 0.99,
-            binary_target_ema_eps: float = 1e-4,
-            predict_delta: Optional[PredictDeltaMode | bool] = PredictDeltaMode.PER_STEP_DELTA,
     ) -> None:
-
-        local_scalar_target_indices = self._normalize_indices(local_scalar_target_indices)
-        local_angle_target_indices = self._normalize_indices(local_angle_target_indices)
-        local_rot6d_target_indices = self._normalize_indices(local_rot6d_target_indices)
-        local_binary_target_indices = self._normalize_indices(local_binary_target_indices)
+        local_scalar_target_indices = self._normalize_indices(config.local_scalar_target_indices)
+        local_angle_target_indices = self._normalize_indices(config.local_angle_target_indices)
+        local_rot6d_target_indices = self._normalize_indices(config.local_rot6d_target_indices)
+        local_binary_target_indices = self._normalize_indices(config.local_binary_target_indices)
         local_angle_target_cos_indices = (
             [i + 1 for i in local_angle_target_indices] if local_angle_target_indices is not None else None
         )
@@ -106,16 +111,16 @@ class NextObsPredMixin(abc.ABC):
         self.local_rot6ds_predictor = local_rot6ds_predictor
         self.local_binaries_predictor = local_binaries_predictor
 
-        self.scalar_loss_weight = scalar_loss_weight
-        self.angle_loss_weight = angle_loss_weight
-        self.rot6d_loss_weight = rot6d_loss_weight
-        self.binary_loss_weight = binary_loss_weight
+        self.scalar_loss_weight = config.scalar_loss_weight
+        self.angle_loss_weight = config.angle_loss_weight
+        self.rot6d_loss_weight = config.rot6d_loss_weight
+        self.binary_loss_weight = config.binary_loss_weight
         
-        self.predict_delta_mode = self._normalize_predict_delta_mode(predict_delta)
+        self.predict_delta_mode = self._normalize_predict_delta_mode(config.predict_delta)
         self.predict_delta = self.predict_delta_mode is not None
 
-        self.binary_target_ema_decay = binary_target_ema_decay
-        self.binary_target_ema_eps = binary_target_ema_eps
+        self.binary_target_ema_decay = config.binary_target_ema_decay
+        self.binary_target_ema_eps = config.binary_target_ema_eps
 
         if local_binary_target_indices is not None:
             ema = torch.full((len(local_binary_target_indices),), 0.5)
