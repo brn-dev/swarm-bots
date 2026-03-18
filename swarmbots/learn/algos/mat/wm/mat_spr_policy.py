@@ -1,16 +1,42 @@
+from dataclasses import dataclass, field
 from typing import Any
 
 import torch
 from torch import nn
 
-from swarmbots.learn.action_dists.bernoulli_action_dist import BernoulliConfig
-from swarmbots.learn.action_dists.hybrid_action_dist import ContinuousActionDistConfig
 from swarmbots.learn.algos.mat.mat_policy import MATPolicy
+from swarmbots.learn.algos.mat.mat_policy import MATPolicyConfig
+from swarmbots.learn.algos.mat.mat_policy import serialize_mat_policy_config
 from swarmbots.learn.algos.ppo.wm.ppo_wm import PPOWMPolicyMixin
 from swarmbots.learn.algos.world_modeling.spr_mixin import SPRMixin
-from swarmbots.learn.algos.world_modeling.transformer_transition_model import TransformerTransitionModel
+from swarmbots.learn.algos.world_modeling.transformer_transition_model import (
+    TransformerTransitionModel,
+    TransformerTransitionModelConfig,
+    serialize_transformer_transition_model_config,
+)
 from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
 from swarmbots.learn.nn_components.mlp import MLP
+
+
+@dataclass(frozen=True)
+class MATSPRWorldModelConfig:
+    d_model_transition_model: int = 128
+    nhead_transition_model: int = 4
+    num_layers_transition_model: int = 2
+    dim_feedforward_transition_model: int = 256
+    add_agent_embeddings_transition_model: bool = False
+    transition_model_coembed_hidden_dims: list[int] | None = None
+    transition_model_head_hidden_dims: list[int] | None = None
+    spr_projection_dims: list[int] | None = None
+    spr_predictor_hidden_dims: list[int] | None = None
+    residual_predictor: bool = True
+    spr_loss_weight: float = 1.0
+
+
+@dataclass(frozen=True)
+class MATSPRPolicyConfig:
+    mat_policy_config: MATPolicyConfig = field(default_factory=MATPolicyConfig)
+    world_model_config: MATSPRWorldModelConfig = field(default_factory=MATSPRWorldModelConfig)
 
 
 class MATSPRPolicy(MATPolicy, SPRMixin, PPOWMPolicyMixin):
@@ -18,133 +44,79 @@ class MATSPRPolicy(MATPolicy, SPRMixin, PPOWMPolicyMixin):
     def __init__(
             self,
             env: BaseLearnEnvWrapper,
-            d_model: int = 64,
-            d_model_decoder: int | None = None,
-            nhead_encoder: int = 4,
-            nhead_decoder: int = 4,
-            num_layers_encoder: int = 2,
-            num_layers_decoder: int = 2,
-            dim_feedforward_encoder: int = 128,
-            dim_feedforward_decoder: int = 128,
-            dropout: float = 0.0,
-            cross_attn_first: bool = False,
-            n_critic_local_projection_hidden_layers: int = 1,
-            n_critic_value_regressor_hidden_layers: int = 2,
-            actor_head_hidden_dims: list[int] | None = None,
-            act_fn_cls: type[nn.Module] = nn.ReLU,
-            local_obs_encoder_hidden_dims: list[int] | None = None,
-            global_obs_encoder_hidden_dims: list[int] | None = None,
-            action_encoder_hidden_dims: list[int] | None = None,
-            continuous_config: ContinuousActionDistConfig | list[ContinuousActionDistConfig | None] | None = None,
-            bernoulli_config: BernoulliConfig | None = None,
-            add_agent_embeddings_encoder: bool = True,
-            add_agent_embeddings_decoder: bool = True,
-            max_agents: int | None = None,
-            use_popart: bool = False,
-            popart_beta: float = 3e-4,
-            popart_eps: float = 1e-5,
-            popart_min_std: float = 1e-4,
-            popart_init_sigma: float = 1.0,
-            d_model_transition_model: int = 128,
-            nhead_transition_model: int = 4,
-            num_layers_transition_model: int = 2,
-            dim_feedforward_transition_model: int = 256,
-            add_agent_embeddings_transition_model: bool = False,
-            transition_model_coembed_hidden_dims: list[int] | None = None,
-            transition_model_head_hidden_dims: list[int] | None = None,
-            spr_projection_dims: list[int] | None = None,
-            spr_predictor_hidden_dims: list[int] | None = None,
-            residual_predictor: bool = True,
-            spr_loss_weight: float = 1.0,
+            config: MATSPRPolicyConfig = MATSPRPolicyConfig(),
     ) -> None:
-        super().__init__(
-            env=env,
-            d_model=d_model,
-            d_model_decoder=d_model_decoder,
-            nhead_encoder=nhead_encoder,
-            nhead_decoder=nhead_decoder,
-            num_layers_encoder=num_layers_encoder,
-            num_layers_decoder=num_layers_decoder,
-            dim_feedforward_encoder=dim_feedforward_encoder,
-            dim_feedforward_decoder=dim_feedforward_decoder,
-            dropout=dropout,
-            cross_attn_first=cross_attn_first,
-            n_critic_local_projection_hidden_layers=n_critic_local_projection_hidden_layers,
-            n_critic_value_regressor_hidden_layers=n_critic_value_regressor_hidden_layers,
-            actor_head_hidden_dims=actor_head_hidden_dims,
-            act_fn_cls=act_fn_cls,
-            local_obs_encoder_hidden_dims=local_obs_encoder_hidden_dims,
-            global_obs_encoder_hidden_dims=global_obs_encoder_hidden_dims,
-            action_encoder_hidden_dims=action_encoder_hidden_dims,
-            continuous_config=continuous_config,
-            bernoulli_config=bernoulli_config,
-            add_agent_embeddings_encoder=add_agent_embeddings_encoder,
-            add_agent_embeddings_decoder=add_agent_embeddings_decoder,
-            max_agents=max_agents,
-            use_popart=use_popart,
-            popart_beta=popart_beta,
-            popart_eps=popart_eps,
-            popart_min_std=popart_min_std,
-            popart_init_sigma=popart_init_sigma,
-        )
-        if spr_loss_weight < 0:
-            raise ValueError(f"spr_loss_weight must be >= 0, got {spr_loss_weight}")
-        self.spr_loss_weight = spr_loss_weight
-        if spr_projection_dims is None:
+        super().__init__(env=env, config=config.mat_policy_config)
+        world_model_config = config.world_model_config
+        if world_model_config.spr_loss_weight < 0:
+            raise ValueError(f"spr_loss_weight must be >= 0, got {world_model_config.spr_loss_weight}")
+        self.spr_loss_weight = world_model_config.spr_loss_weight
+        if world_model_config.spr_projection_dims is None:
             projection_dims = [self.d_model_encoder]
         else:
-            projection_dims = spr_projection_dims
+            projection_dims = world_model_config.spr_projection_dims
 
-        if spr_predictor_hidden_dims is None:
+        if world_model_config.spr_predictor_hidden_dims is None:
             predictor_hidden_dims = [projection_dims[-1]]
         else:
-            predictor_hidden_dims = spr_predictor_hidden_dims + [projection_dims[-1]]
+            predictor_hidden_dims = world_model_config.spr_predictor_hidden_dims + [projection_dims[-1]]
 
         self.setup_spr(
-            transition_model=TransformerTransitionModel(
+            transition_model=TransformerTransitionModel(config=TransformerTransitionModelConfig(
                 n_agents=self.n_agents,
                 latent_dim=self.d_model_encoder,
                 action_dim=env.action_space.total_agent_action_dim,
-                d_model=d_model_transition_model,
-                nhead=nhead_transition_model,
-                num_layers=num_layers_transition_model,
-                dim_feedforward=dim_feedforward_transition_model,
-                dropout=dropout,
-                act_fn_cls=act_fn_cls,
-                add_agent_embeddings=add_agent_embeddings_transition_model,
+                d_model=world_model_config.d_model_transition_model,
+                nhead=world_model_config.nhead_transition_model,
+                num_layers=world_model_config.num_layers_transition_model,
+                dim_feedforward=world_model_config.dim_feedforward_transition_model,
+                dropout=config.mat_policy_config.dropout,
+                act_fn_cls=config.mat_policy_config.act_fn_cls,
+                add_agent_embeddings=world_model_config.add_agent_embeddings_transition_model,
                 predict_delta=True,
-                coembed_mlp_hidden_dims=transition_model_coembed_hidden_dims,
-                head_mlp_hidden_dims=transition_model_head_hidden_dims,
-            ),
+                coembed_mlp_hidden_dims=world_model_config.transition_model_coembed_hidden_dims,
+                head_mlp_hidden_dims=world_model_config.transition_model_head_hidden_dims,
+            )),
             projection=MLP(
                 input_dim=self.d_model_encoder,
                 hidden_dims=[*projection_dims],
                 end_with_act_fn=False,
-                act_fn_cls=act_fn_cls,
+                act_fn_cls=config.mat_policy_config.act_fn_cls,
             ),
             predictor=MLP(
                 input_dim=projection_dims[-1],
                 hidden_dims=[*predictor_hidden_dims],
                 end_with_act_fn=False,
-                act_fn_cls=act_fn_cls,
+                act_fn_cls=config.mat_policy_config.act_fn_cls,
             ),
-            residual_predictor=residual_predictor
+            residual_predictor=world_model_config.residual_predictor
         )
 
-        self.hyper_parameters.update(
-            {
-                "d_model_transition_model": d_model_transition_model,
-                "nhead_transition_model": nhead_transition_model,
-                "num_layers_transition_model": num_layers_transition_model,
-                "dim_feedforward_transition_model": dim_feedforward_transition_model,
-                "add_agent_embeddings_transition_model": add_agent_embeddings_transition_model,
-                "transition_model_coembed_hidden_dims": transition_model_coembed_hidden_dims,
-                "transition_model_head_hidden_dims": transition_model_head_hidden_dims,
+        transition_model_config = TransformerTransitionModelConfig(
+            n_agents=self.n_agents,
+            latent_dim=self.d_model_encoder,
+            action_dim=env.action_space.total_agent_action_dim,
+            d_model=world_model_config.d_model_transition_model,
+            nhead=world_model_config.nhead_transition_model,
+            num_layers=world_model_config.num_layers_transition_model,
+            dim_feedforward=world_model_config.dim_feedforward_transition_model,
+            dropout=config.mat_policy_config.dropout,
+            act_fn_cls=config.mat_policy_config.act_fn_cls,
+            add_agent_embeddings=world_model_config.add_agent_embeddings_transition_model,
+            predict_delta=True,
+            coembed_mlp_hidden_dims=world_model_config.transition_model_coembed_hidden_dims,
+            head_mlp_hidden_dims=world_model_config.transition_model_head_hidden_dims,
+        )
+        self.hyper_parameters["mat_spr_policy_config"] = {
+            "mat_policy_config": serialize_mat_policy_config(config.mat_policy_config),
+            "world_model_config": {
+                "transition_model_config": serialize_transformer_transition_model_config(transition_model_config),
                 "spr_projection_dims": projection_dims,
                 "spr_predictor_hidden_dims": predictor_hidden_dims,
-                "spr_loss_weight": spr_loss_weight,
-            }
-        )
+                "residual_predictor": world_model_config.residual_predictor,
+                "spr_loss_weight": world_model_config.spr_loss_weight,
+            },
+        }
 
     def get_grad_norms(self) -> dict[str, float]:
         grad_norms = super().get_grad_norms()
@@ -173,7 +145,7 @@ class MATSPRPolicy(MATPolicy, SPRMixin, PPOWMPolicyMixin):
             if value < 0:
                 raise ValueError(f"{alias} must be >= 0, got {value}")
             self.spr_loss_weight = value
-            self.hyper_parameters["spr_loss_weight"] = value
+            self.hyper_parameters["mat_spr_policy_config"]["world_model_config"]["spr_loss_weight"] = value
 
         super().update_loss_weights(**remaining_weights)
 

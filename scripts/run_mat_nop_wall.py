@@ -16,15 +16,22 @@ from swarmbots.learn.action_dists.bang_zero_bang_action_dist import BangZeroBang
 from swarmbots.learn.action_dists.bernoulli_action_dist import BernoulliConfig
 from swarmbots.learn.action_dists.gsde_action_dist import GSDEConfig
 from swarmbots.learn.action_dists.gsde_action_dist import GSDEActionDist
+from swarmbots.learn.algos.mat.mat_policy import MATPolicyConfig, MATCriticConfig
+from swarmbots.learn.algos.mat.mat_encoder import MATEncoderConfig
+from swarmbots.learn.algos.mat.mat_decoder import MATDecoderConfig
 from swarmbots.learn.algos.mat.wm.mat_nop_policy import MATNOPPolicy
+from swarmbots.learn.algos.mat.wm.mat_nop_policy import MATNOPPolicyConfig, MATNOPWorldModelConfig
 from swarmbots.learn.algos.ppo.wm.ppo_wm import PPOWM
 from swarmbots.learn.algos.ppo.ppo import AutomaticLearningRate, AutomaticLearningRateUpdateResult, StepsRolloutMode
+from swarmbots.learn.algos.ppo.ppo_policy import PopArtConfig
+from swarmbots.learn.algos.world_modeling.next_obs_pred_mixin import NextObsPredConfig
 from swarmbots.learn.env_wrappers.feature_wise_obs_norm_wrapper import (
     FeatureWiseObsNormWrapper,
 )
 from swarmbots.learn.env_wrappers.progress_guidance_ep_stats_wrapper import ProgressGuidanceEpisodeStatsWrapper
 from swarmbots.learn.env_wrappers.learn_wrappers.swarm_bots_learn_env_wrapper import SwarmBotsLearnEnvWrapper
 from swarmbots.learn.env_wrappers.transition_obs_wrapper import TransitionObsWrapper
+from swarmbots.learn.env_wrappers.worker_pool_async_vector_env import WorkerPoolAsyncVectorEnv
 from swarmbots.learn.gsde_reset import GSDEProbabilityResetMode
 from swarmbots.learn.summary_statistics import SummaryStatisticsFormat, SummaryStatistics
 from swarmbots.learn.obs_indices import ObsIndices
@@ -121,7 +128,9 @@ def main() -> None:
         format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <5}</level> | <level>{message}</level>",
     )
 
-    n_envs = 71
+    n_workers = 23
+    n_envs = n_workers * 5
+
     episode_length = 512
     total_timesteps = 200_000_000
     save_interval = 5000
@@ -209,7 +218,8 @@ def main() -> None:
 
     print('Creating vector env...')
     if sys.gettrace() is None:
-        vector_env = AsyncVectorEnv(env_fns)
+        # vector_env = AsyncVectorEnv(env_fns)
+        vector_env = WorkerPoolAsyncVectorEnv(env_fns, num_workers=n_workers )
     else:
         vector_env = SyncVectorEnv(env_fns[:1])
     print(f"Created {type(vector_env)} with {n_envs} environments.")
@@ -250,64 +260,83 @@ def main() -> None:
     print("Initializing Policy...")
     policy = MATNOPPolicy(
         env=env,
-        local_obs_encoder_hidden_dims=[enc_d_model, enc_d_model],
-        action_encoder_hidden_dims=[dec_d_model],
-        d_model=enc_d_model,
-        d_model_decoder=dec_d_model,
-        nhead_encoder=enc_nhead,
-        nhead_decoder=dec_nhead,
-        num_layers_encoder=2,
-        num_layers_decoder=2,
-        dim_feedforward_encoder=enc_d_model * 2,
-        dim_feedforward_decoder=dec_d_model * 2,
-        dropout=0.0,
-        n_critic_local_projection_hidden_layers=1,
-        n_critic_value_regressor_hidden_layers=1,
-        cross_attn_first=True,
-        act_fn_cls=nn.GELU,
-        # continuous_config=GSDEConfig(
-        #     base_std=0.25,
-        #     latent_sde_dim=None,
-        #     std_learnable=True,
-        #     full_std=True,
-        #     sde_learn_features=False,
-        #     log_std_clamp_range=(-20.0, 2.0),
-        #     normalize_latent_sde_by_dim=True
-        # ),
-        # continuous_config=BetaMixtureConfig(
-        #     num_components=3,
-        #     alphas=(3.0, 10.0, 10.0),
-        #     betas=(10.0, 10.0, 3.0)
-        # ),
-        continuous_config=BangZeroBangConfig(
-            bang=0.5,
+        config=MATNOPPolicyConfig(
+            mat_policy_config=MATPolicyConfig(
+                encoder_config=MATEncoderConfig(
+                    d_model=enc_d_model,
+                    nhead=enc_nhead,
+                    num_layers=2,
+                    dim_feedforward=enc_d_model * 2,
+                    local_obs_encoder_hidden_dims=[enc_d_model, enc_d_model],
+                ),
+                decoder_config=MATDecoderConfig(
+                    d_model=dec_d_model,
+                    nhead=dec_nhead,
+                    num_layers=2,
+                    dim_feedforward=dec_d_model * 2,
+                    action_encoder_hidden_dims=[dec_d_model],
+                    cross_attn_first=True,
+                ),
+                critic_config=MATCriticConfig(
+                    n_local_projection_hidden_layers=1,
+                    n_value_regressor_hidden_layers=1,
+                    use_popart=use_popart,
+                    popart_config=PopArtConfig(
+                        beta=popart_beta,
+                        init_sigma=popart_init_sigma,
+                    ),
+                ),
+                dropout=0.0,
+                act_fn_cls=nn.GELU,
+                # continuous_config=GSDEConfig(
+                #     base_std=0.25,
+                #     latent_sde_dim=None,
+                #     std_learnable=True,
+                #     full_std=True,
+                #     sde_learn_features=False,
+                #     log_std_clamp_range=(-20.0, 2.0),
+                #     normalize_latent_sde_by_dim=True
+                # ),
+                # continuous_config=BetaMixtureConfig(
+                #     num_components=3,
+                #     alphas=(3.0, 10.0, 10.0),
+                #     betas=(10.0, 10.0, 3.0)
+                # ),
+                continuous_config=BangZeroBangConfig(
+                    bang=0.5,
+                    ent_loss_coef=1e-3,
+                ),
+                bernoulli_config=BernoulliConfig(
+                    initial_prob=0.7,
+                    ent_loss_coef=1e-3,
+                ),
+                max_agents=20,
+            ),
+            world_model_config=MATNOPWorldModelConfig(
+                wm_pre_transition_dims=[enc_d_model],
+                d_model_transition_model=enc_d_model,
+                nhead_transition_model=enc_nhead,
+                num_layers_transition_model=2,
+                dim_feedforward_transition_model=enc_d_model * 2,
+                transition_model_coembed_hidden_dims=[enc_d_model],
+                wm_pre_predictors_dims=[enc_d_model, enc_d_model],
+                wm_scalar_predictor_hidden_dims=[],
+                wm_angle_predictor_hidden_dims=[],
+                wm_rot6d_predictor_hidden_dims=[],
+                wm_binary_predictor_hidden_dims=[],
+                scalar_loss_fn='smooth_l1',
+                next_obs_pred_config=NextObsPredConfig(
+                    local_scalar_target_indices=obs_indices.local_scalar_indices,
+                    local_angle_target_indices=obs_indices.local_angle_indices,
+                    local_rot6d_target_indices=obs_indices.local_rot6d_indices,
+                    local_binary_target_indices=obs_indices.local_binary_indices,
+                    scalar_loss_weight=1.0,
+                    angle_loss_weight=1.0,
+                    rot6d_loss_weight=1.0,
+                    binary_loss_weight=1.0,
+                ),
+            ),
         ),
-        bernoulli_config=BernoulliConfig(initial_prob=0.7),
-        max_agents=20,
-        use_popart=use_popart,
-        popart_beta=popart_beta,
-        popart_init_sigma=popart_init_sigma,
-        # NOP
-        wm_pre_transition_dims=[enc_d_model],
-        d_model_transition_model=enc_d_model,
-        nhead_transition_model=enc_nhead,
-        num_layers_transition_model=2,
-        dim_feedforward_transition_model=enc_d_model * 2,
-        transition_model_coembed_hidden_dims=[enc_d_model],
-        wm_pre_predictors_dims=[enc_d_model, enc_d_model],
-        wm_scalar_predictor_hidden_dims=[],
-        wm_angle_predictor_hidden_dims=[],
-        wm_rot6d_predictor_hidden_dims=[],
-        wm_binary_predictor_hidden_dims=[],
-        local_scalar_target_indices=obs_indices.local_scalar_indices,
-        local_angle_target_indices=obs_indices.local_angle_indices,
-        local_rot6d_target_indices=obs_indices.local_rot6d_indices,
-        local_binary_target_indices=obs_indices.local_binary_indices,
-        scalar_loss_fn='smooth_l1',
-        scalar_loss_weight=1.0,
-        angle_loss_weight=1.0,
-        rot6d_loss_weight=1.0,
-        binary_loss_weight=1.0,
     )
     set_actuator_gsde_init_joint_stds(
         policy=policy,

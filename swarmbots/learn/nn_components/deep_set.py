@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from typing import Callable, Literal, TypedDict
 
 import torch
@@ -92,6 +93,12 @@ class DeepSet(nn.Module):
 class DeepSetCriticHiddenDims(TypedDict):
     local_projection_hidden_dims: list[int]
     value_regressor_hidden_dims: list[int]
+
+
+@dataclass(frozen=True)
+class DeepSetCriticConfig:
+    local_projection_hidden_dims: list[int] = field(default_factory=list)
+    value_regressor_hidden_dims: list[int] = field(default_factory=list)
 
 
 class DeepSetCritic(nn.Module):

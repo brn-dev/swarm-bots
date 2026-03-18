@@ -13,8 +13,12 @@ from torch import nn
 from swarmbots.learn.action_dists.bernoulli_action_dist import BernoulliConfig
 from swarmbots.learn.action_dists.gsde_action_dist import GSDEConfig
 from swarmbots.learn.algos.mat.mat_policy import MATPolicy
+from swarmbots.learn.algos.mat.mat_policy import MATPolicyConfig, MATCriticConfig
+from swarmbots.learn.algos.mat.mat_encoder import MATEncoderConfig
+from swarmbots.learn.algos.mat.mat_decoder import MATDecoderConfig
 from swarmbots.learn.algos.ppo.ppo import AutomaticLearningRate, AutomaticLearningRateUpdateResult, StepsRolloutMode, \
     PPO
+from swarmbots.learn.algos.ppo.ppo_policy import PopArtConfig
 from swarmbots.learn.env_wrappers.feature_wise_obs_norm_wrapper import (
     FeatureWiseObsNormWrapper,
 )
@@ -230,37 +234,47 @@ def main() -> None:
     print("Initializing Policy...")
     policy = MATPolicy(
         env=env,
-        local_obs_encoder_hidden_dims=[256, 256],
-        action_encoder_hidden_dims=[64],
-        d_model=128,
-        d_model_decoder=64,
-        nhead_encoder=2,
-        nhead_decoder=2,
-        num_layers_encoder=2,
-        num_layers_decoder=2,
-        dim_feedforward_encoder=256,
-        dim_feedforward_decoder=128,
-        dropout=0.0,
-        n_critic_local_projection_hidden_layers=1,
-        n_critic_value_regressor_hidden_layers=1,
-        cross_attn_first=True,
-        act_fn_cls=nn.GELU,
-        continuous_config=GSDEConfig(
-            base_std=0.25,
-            latent_sde_dim=None,
-            std_learnable=True,
-            full_std=True,
-            sde_learn_features=False,
-            log_std_clamp_range=(-20.0, 2.0),
-            normalize_latent_sde_by_dim=True
+        config=MATPolicyConfig(
+            encoder_config=MATEncoderConfig(
+                d_model=128,
+                nhead=2,
+                num_layers=2,
+                dim_feedforward=256,
+                local_obs_encoder_hidden_dims=[256, 256],
+            ),
+            decoder_config=MATDecoderConfig(
+                d_model=64,
+                nhead=2,
+                num_layers=2,
+                dim_feedforward=128,
+                action_encoder_hidden_dims=[64],
+                cross_attn_first=True,
+            ),
+            critic_config=MATCriticConfig(
+                n_local_projection_hidden_layers=1,
+                n_value_regressor_hidden_layers=1,
+                use_popart=use_popart,
+                popart_config=PopArtConfig(
+                    beta=popart_beta,
+                    eps=popart_eps,
+                    min_std=popart_min_std,
+                    init_sigma=popart_init_sigma,
+                ),
+            ),
+            dropout=0.0,
+            act_fn_cls=nn.GELU,
+            continuous_config=GSDEConfig(
+                base_std=0.25,
+                latent_sde_dim=None,
+                std_learnable=True,
+                full_std=True,
+                sde_learn_features=False,
+                log_std_clamp_range=(-20.0, 2.0),
+                normalize_latent_sde_by_dim=True
+            ),
+            bernoulli_config=BernoulliConfig(initial_prob=0.75),
+            max_agents=20,
         ),
-        bernoulli_config=BernoulliConfig(initial_prob=0.75),
-        max_agents=20,
-        use_popart=use_popart,
-        popart_beta=popart_beta,
-        popart_eps=popart_eps,
-        popart_min_std=popart_min_std,
-        popart_init_sigma=popart_init_sigma,
     )
     print(policy)
 

@@ -1,16 +1,51 @@
+from dataclasses import dataclass, field
 from typing import Any
 
 import torch
 from torch import nn
 
-from swarmbots.learn.action_dists.bernoulli_action_dist import BernoulliConfig
-from swarmbots.learn.action_dists.hybrid_action_dist import ContinuousActionDistConfig
 from swarmbots.learn.algos.mat.mat_policy import MATPolicy
+from swarmbots.learn.algos.mat.mat_policy import MATPolicyConfig
+from swarmbots.learn.algos.mat.mat_policy import serialize_mat_policy_config
 from swarmbots.learn.algos.ppo.wm.ppo_wm import PPOWMPolicyMixin
-from swarmbots.learn.algos.world_modeling.next_obs_pred_mixin import NextObsPredMixin, PredictDeltaMode
-from swarmbots.learn.algos.world_modeling.transformer_transition_model import TransformerTransitionModel
+from swarmbots.learn.algos.world_modeling.next_obs_pred_mixin import (
+    NextObsPredMixin,
+    NextObsPredConfig,
+    PredictDeltaMode,
+)
+from swarmbots.learn.algos.world_modeling.transformer_transition_model import (
+    TransformerTransitionModel,
+    TransformerTransitionModelConfig,
+    serialize_transformer_transition_model_config,
+)
 from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
 from swarmbots.learn.nn_components.mlp import MLP
+
+
+@dataclass(frozen=True)
+class MATNOPWorldModelConfig:
+    d_model_transition_model: int = 128
+    nhead_transition_model: int = 4
+    num_layers_transition_model: int = 2
+    dim_feedforward_transition_model: int = 256
+    add_agent_embeddings_transition_model: bool = False
+    transition_model_coembed_hidden_dims: list[int] | None = None
+    transition_model_head_hidden_dims: list[int] | None = None
+    transition_model_predict_delta: bool = True
+    wm_pre_transition_dims: list[int] | None = None
+    wm_pre_predictors_dims: list[int] | None = None
+    wm_scalar_predictor_hidden_dims: list[int] | None = None
+    wm_angle_predictor_hidden_dims: list[int] | None = None
+    wm_rot6d_predictor_hidden_dims: list[int] | None = None
+    wm_binary_predictor_hidden_dims: list[int] | None = None
+    scalar_loss_fn: str | nn.Module | None = None
+    next_obs_pred_config: NextObsPredConfig = field(default_factory=NextObsPredConfig)
+
+
+@dataclass(frozen=True)
+class MATNOPPolicyConfig:
+    mat_policy_config: MATPolicyConfig = field(default_factory=MATPolicyConfig)
+    world_model_config: MATNOPWorldModelConfig = field(default_factory=MATNOPWorldModelConfig)
 
 
 class MATNOPPolicy(MATPolicy, NextObsPredMixin, PPOWMPolicyMixin):
@@ -18,91 +53,15 @@ class MATNOPPolicy(MATPolicy, NextObsPredMixin, PPOWMPolicyMixin):
     def __init__(
             self,
             env: BaseLearnEnvWrapper,
-            d_model: int = 64,
-            d_model_decoder: int | None = None,
-            nhead_encoder: int = 4,
-            nhead_decoder: int = 4,
-            num_layers_encoder: int = 2,
-            num_layers_decoder: int = 2,
-            dim_feedforward_encoder: int = 128,
-            dim_feedforward_decoder: int = 128,
-            dropout: float = 0.0,
-            cross_attn_first: bool = False,
-            n_critic_local_projection_hidden_layers: int = 1,
-            n_critic_value_regressor_hidden_layers: int = 2,
-            actor_head_hidden_dims: list[int] | None = None,
-            act_fn_cls: type[nn.Module] = nn.ReLU,
-            local_obs_encoder_hidden_dims: list[int] | None = None,
-            global_obs_encoder_hidden_dims: list[int] | None = None,
-            action_encoder_hidden_dims: list[int] | None = None,
-            continuous_config: ContinuousActionDistConfig | list[ContinuousActionDistConfig | None] | None = None,
-            bernoulli_config: BernoulliConfig | None = None,
-            add_agent_embeddings_encoder: bool = True,
-            add_agent_embeddings_decoder: bool = True,
-            max_agents: int | None = None,
-            use_popart: bool = False,
-            popart_beta: float = 3e-4,
-            popart_eps: float = 1e-5,
-            popart_min_std: float = 1e-4,
-            popart_init_sigma: float = 1.0,
-            d_model_transition_model: int = 128,
-            nhead_transition_model: int = 4,
-            num_layers_transition_model: int = 2,
-            dim_feedforward_transition_model: int = 256,
-            add_agent_embeddings_transition_model: bool = False,
-            transition_model_coembed_hidden_dims: list[int] | None = None,
-            transition_model_head_hidden_dims: list[int] | None = None,
-            transition_model_predict_delta: bool = True,
-            wm_pre_transition_dims: list[int] | None = None,
-            wm_pre_predictors_dims: list[int] | None = None,
-            wm_predict_delta: PredictDeltaMode | bool = True,
-            local_scalar_target_indices: list[int] | None = None,
-            local_angle_target_indices: list[int] | None = None,
-            local_rot6d_target_indices: list[int] | None = None,
-            local_binary_target_indices: list[int] | None = None,
-            wm_scalar_predictor_hidden_dims: list[int] | None = None,
-            wm_angle_predictor_hidden_dims: list[int] | None = None,
-            wm_rot6d_predictor_hidden_dims: list[int] | None = None,
-            wm_binary_predictor_hidden_dims: list[int] | None = None,
-            scalar_loss_fn: str | nn.Module | None = None,
-            scalar_loss_weight: float = 1.0,
-            angle_loss_weight: float = 1.0,
-            rot6d_loss_weight: float = 1.0,
-            binary_loss_weight: float = 1.0,
+            config: MATNOPPolicyConfig = MATNOPPolicyConfig(),
     ) -> None:
-        super().__init__(
-            env=env,
-            d_model=d_model,
-            d_model_decoder=d_model_decoder,
-            nhead_encoder=nhead_encoder,
-            nhead_decoder=nhead_decoder,
-            num_layers_encoder=num_layers_encoder,
-            num_layers_decoder=num_layers_decoder,
-            dim_feedforward_encoder=dim_feedforward_encoder,
-            dim_feedforward_decoder=dim_feedforward_decoder,
-            dropout=dropout,
-            cross_attn_first=cross_attn_first,
-            n_critic_local_projection_hidden_layers=n_critic_local_projection_hidden_layers,
-            n_critic_value_regressor_hidden_layers=n_critic_value_regressor_hidden_layers,
-            actor_head_hidden_dims=actor_head_hidden_dims,
-            act_fn_cls=act_fn_cls,
-            local_obs_encoder_hidden_dims=local_obs_encoder_hidden_dims,
-            global_obs_encoder_hidden_dims=global_obs_encoder_hidden_dims,
-            action_encoder_hidden_dims=action_encoder_hidden_dims,
-            continuous_config=continuous_config,
-            bernoulli_config=bernoulli_config,
-            add_agent_embeddings_encoder=add_agent_embeddings_encoder,
-            add_agent_embeddings_decoder=add_agent_embeddings_decoder,
-            max_agents=max_agents,
-            use_popart=use_popart,
-            popart_beta=popart_beta,
-            popart_eps=popart_eps,
-            popart_min_std=popart_min_std,
-            popart_init_sigma=popart_init_sigma,
-        )
+        super().__init__(env=env, config=config.mat_policy_config)
+        world_model_config = config.world_model_config
+        next_obs_pred_config = world_model_config.next_obs_pred_config
 
+        scalar_loss_fn = world_model_config.scalar_loss_fn
         if not isinstance(scalar_loss_fn, nn.Module):
-            scalar_loss_name = scalar_loss_fn or "mse"
+            scalar_loss_name = world_model_config.scalar_loss_fn or "mse"
             scalar_loss_name = scalar_loss_name.lower()
             if scalar_loss_name == "mse":
                 scalar_loss_fn = nn.MSELoss(reduction="none")
@@ -113,124 +72,123 @@ class MATNOPPolicy(MATPolicy, NextObsPredMixin, PPOWMPolicyMixin):
 
         pre_transition_transform = None
         wm_latent_dim = self.d_model_encoder
-        if wm_pre_transition_dims is not None and len(wm_pre_transition_dims) > 0:
+        if world_model_config.wm_pre_transition_dims is not None and len(world_model_config.wm_pre_transition_dims) > 0:
             pre_transition_transform = MLP(
                 input_dim=self.d_model_encoder,
-                hidden_dims=[*wm_pre_transition_dims],
+                hidden_dims=[*world_model_config.wm_pre_transition_dims],
                 end_with_act_fn=False,
-                act_fn_cls=act_fn_cls,
+                act_fn_cls=config.mat_policy_config.act_fn_cls,
             )
-            wm_latent_dim = wm_pre_transition_dims[-1]
+            wm_latent_dim = world_model_config.wm_pre_transition_dims[-1]
 
         pre_predictors_transform = None
         wm_pre_predictors_dim = wm_latent_dim
-        if wm_pre_predictors_dims is not None and len(wm_pre_predictors_dims) > 0:
+        if world_model_config.wm_pre_predictors_dims is not None and len(world_model_config.wm_pre_predictors_dims) > 0:
             pre_predictors_transform = MLP(
                 input_dim=wm_latent_dim,
-                hidden_dims=[*wm_pre_predictors_dims],
+                hidden_dims=[*world_model_config.wm_pre_predictors_dims],
                 end_with_act_fn=False,
-                act_fn_cls=act_fn_cls,
+                act_fn_cls=config.mat_policy_config.act_fn_cls,
             )
-            wm_pre_predictors_dim = wm_pre_predictors_dims[-1]
+            wm_pre_predictors_dim = world_model_config.wm_pre_predictors_dims[-1]
 
-        angle_output_multiplier = 1 if wm_predict_delta else 2
-        rot6d_output_multiplier = 3 if wm_predict_delta else 6
+        angle_output_multiplier = 1 if next_obs_pred_config.predict_delta else 2
+        rot6d_output_multiplier = 3 if next_obs_pred_config.predict_delta else 6
 
         local_scalars_predictor = self._build_predictor(
             input_dim=wm_pre_predictors_dim,
-            output_dim=len(local_scalar_target_indices) if local_scalar_target_indices is not None else 0,
-            hidden_dims=wm_scalar_predictor_hidden_dims,
-            act_fn_cls=act_fn_cls,
+            output_dim=(
+                len(next_obs_pred_config.local_scalar_target_indices)
+                if next_obs_pred_config.local_scalar_target_indices is not None
+                else 0
+            ),
+            hidden_dims=world_model_config.wm_scalar_predictor_hidden_dims,
+            act_fn_cls=config.mat_policy_config.act_fn_cls,
         )
         local_angles_predictor = self._build_predictor(
             input_dim=wm_pre_predictors_dim,
             output_dim=(
-                len(local_angle_target_indices) * angle_output_multiplier
-                if local_angle_target_indices is not None
+                len(next_obs_pred_config.local_angle_target_indices) * angle_output_multiplier
+                if next_obs_pred_config.local_angle_target_indices is not None
                 else 0
             ),
-            hidden_dims=wm_angle_predictor_hidden_dims,
-            act_fn_cls=act_fn_cls,
+            hidden_dims=world_model_config.wm_angle_predictor_hidden_dims,
+            act_fn_cls=config.mat_policy_config.act_fn_cls,
         )
         local_rot6ds_predictor = self._build_predictor(
             input_dim=wm_pre_predictors_dim,
             output_dim=(
-                len(local_rot6d_target_indices) * rot6d_output_multiplier
-                if local_rot6d_target_indices is not None
+                len(next_obs_pred_config.local_rot6d_target_indices) * rot6d_output_multiplier
+                if next_obs_pred_config.local_rot6d_target_indices is not None
                 else 0
             ),
-            hidden_dims=wm_rot6d_predictor_hidden_dims,
-            act_fn_cls=act_fn_cls,
+            hidden_dims=world_model_config.wm_rot6d_predictor_hidden_dims,
+            act_fn_cls=config.mat_policy_config.act_fn_cls,
         )
         local_binaries_predictor = self._build_predictor(
             input_dim=wm_pre_predictors_dim,
-            output_dim=len(local_binary_target_indices) if local_binary_target_indices is not None else 0,
-            hidden_dims=wm_binary_predictor_hidden_dims,
-            act_fn_cls=act_fn_cls,
+            output_dim=(
+                len(next_obs_pred_config.local_binary_target_indices)
+                if next_obs_pred_config.local_binary_target_indices is not None
+                else 0
+            ),
+            hidden_dims=world_model_config.wm_binary_predictor_hidden_dims,
+            act_fn_cls=config.mat_policy_config.act_fn_cls,
         )
 
+        transition_model_config = TransformerTransitionModelConfig(
+            n_agents=self.n_agents,
+            latent_dim=wm_latent_dim,
+            action_dim=env.action_space.total_agent_action_dim,
+            d_model=world_model_config.d_model_transition_model,
+            nhead=world_model_config.nhead_transition_model,
+            num_layers=world_model_config.num_layers_transition_model,
+            dim_feedforward=world_model_config.dim_feedforward_transition_model,
+            dropout=config.mat_policy_config.dropout,
+            act_fn_cls=config.mat_policy_config.act_fn_cls,
+            add_agent_embeddings=world_model_config.add_agent_embeddings_transition_model,
+            predict_delta=world_model_config.transition_model_predict_delta,
+            coembed_mlp_hidden_dims=world_model_config.transition_model_coembed_hidden_dims,
+            head_mlp_hidden_dims=world_model_config.transition_model_head_hidden_dims,
+        )
         self.setup_next_obs_pred(
-            transition_model=TransformerTransitionModel(
-                n_agents=self.n_agents,
-                latent_dim=wm_latent_dim,
-                action_dim=env.action_space.total_agent_action_dim,
-                d_model=d_model_transition_model,
-                nhead=nhead_transition_model,
-                num_layers=num_layers_transition_model,
-                dim_feedforward=dim_feedforward_transition_model,
-                dropout=dropout,
-                act_fn_cls=act_fn_cls,
-                add_agent_embeddings=add_agent_embeddings_transition_model,
-                predict_delta=transition_model_predict_delta,
-                coembed_mlp_hidden_dims=transition_model_coembed_hidden_dims,
-                head_mlp_hidden_dims=transition_model_head_hidden_dims,
-            ),
+            transition_model=TransformerTransitionModel(config=transition_model_config),
+            config=next_obs_pred_config,
             pre_transition_transform=pre_transition_transform,
             pre_predictors_transform=pre_predictors_transform,
-            local_scalar_target_indices=local_scalar_target_indices,
-            local_angle_target_indices=local_angle_target_indices,
-            local_rot6d_target_indices=local_rot6d_target_indices,
-            local_binary_target_indices=local_binary_target_indices,
             scalar_loss_fn=scalar_loss_fn,
             local_scalars_predictor=local_scalars_predictor,
             local_angles_predictor=local_angles_predictor,
             local_rot6ds_predictor=local_rot6ds_predictor,
             local_binaries_predictor=local_binaries_predictor,
-            scalar_loss_weight=scalar_loss_weight,
-            angle_loss_weight=angle_loss_weight,
-            rot6d_loss_weight=rot6d_loss_weight,
-            binary_loss_weight=binary_loss_weight,
-            predict_delta=wm_predict_delta,
         )
 
-        self.hyper_parameters.update(
-            {
-                "d_model_transition_model": d_model_transition_model,
-                "nhead_transition_model": nhead_transition_model,
-                "num_layers_transition_model": num_layers_transition_model,
-                "dim_feedforward_transition_model": dim_feedforward_transition_model,
-                "add_agent_embeddings_transition_model": add_agent_embeddings_transition_model,
-                "transition_model_coembed_hidden_dims": transition_model_coembed_hidden_dims,
-                "transition_model_head_hidden_dims": transition_model_head_hidden_dims,
-                "transition_model_predict_delta": transition_model_predict_delta,
-                "wm_pre_transition_dims": wm_pre_transition_dims,
-                "wm_pre_predictors_dims": wm_pre_predictors_dims,
-                "wm_predict_delta": wm_predict_delta,
-                "local_scalar_target_indices": local_scalar_target_indices,
-                "local_angle_target_indices": local_angle_target_indices,
-                "local_rot6d_target_indices": local_rot6d_target_indices,
-                "local_binary_target_indices": local_binary_target_indices,
-                "wm_scalar_predictor_hidden_dims": wm_scalar_predictor_hidden_dims,
-                "wm_angle_predictor_hidden_dims": wm_angle_predictor_hidden_dims,
-                "wm_rot6d_predictor_hidden_dims": wm_rot6d_predictor_hidden_dims,
-                "wm_binary_predictor_hidden_dims": wm_binary_predictor_hidden_dims,
-                "scalar_loss_fn": scalar_loss_fn,
-                "scalar_loss_weight": scalar_loss_weight,
-                "angle_loss_weight": angle_loss_weight,
-                "rot6d_loss_weight": rot6d_loss_weight,
-                "binary_loss_weight": binary_loss_weight,
-            }
-        )
+        self.hyper_parameters["mat_nop_policy_config"] = {
+            "mat_policy_config": serialize_mat_policy_config(config.mat_policy_config),
+            "world_model_config": {
+                "transition_model_config": serialize_transformer_transition_model_config(transition_model_config),
+                "wm_pre_transition_dims": world_model_config.wm_pre_transition_dims,
+                "wm_pre_predictors_dims": world_model_config.wm_pre_predictors_dims,
+                "wm_scalar_predictor_hidden_dims": world_model_config.wm_scalar_predictor_hidden_dims,
+                "wm_angle_predictor_hidden_dims": world_model_config.wm_angle_predictor_hidden_dims,
+                "wm_rot6d_predictor_hidden_dims": world_model_config.wm_rot6d_predictor_hidden_dims,
+                "wm_binary_predictor_hidden_dims": world_model_config.wm_binary_predictor_hidden_dims,
+                "scalar_loss_fn": str(scalar_loss_fn),
+                "next_obs_pred_config": {
+                    "local_scalar_target_indices": next_obs_pred_config.local_scalar_target_indices,
+                    "local_angle_target_indices": next_obs_pred_config.local_angle_target_indices,
+                    "local_rot6d_target_indices": next_obs_pred_config.local_rot6d_target_indices,
+                    "local_binary_target_indices": next_obs_pred_config.local_binary_target_indices,
+                    "scalar_loss_weight": next_obs_pred_config.scalar_loss_weight,
+                    "angle_loss_weight": next_obs_pred_config.angle_loss_weight,
+                    "rot6d_loss_weight": next_obs_pred_config.rot6d_loss_weight,
+                    "binary_loss_weight": next_obs_pred_config.binary_loss_weight,
+                    "binary_target_ema_decay": next_obs_pred_config.binary_target_ema_decay,
+                    "binary_target_ema_eps": next_obs_pred_config.binary_target_ema_eps,
+                    "predict_delta": str(next_obs_pred_config.predict_delta),
+                },
+            },
+        }
 
     def evaluate_actions_and_world_model(
             self,
@@ -319,7 +277,7 @@ class MATNOPPolicy(MATPolicy, NextObsPredMixin, PPOWMPolicyMixin):
             if value < 0:
                 raise ValueError(f"{alias} must be >= 0, got {value}")
             self.scalar_loss_weight = value
-            self.hyper_parameters["scalar_loss_weight"] = value
+            self.hyper_parameters["mat_nop_policy_config"]["world_model_config"]["next_obs_pred_config"]["scalar_loss_weight"] = value
 
         angle_weight = self._pop_loss_weight_alias(
             remaining_weights,
@@ -330,7 +288,7 @@ class MATNOPPolicy(MATPolicy, NextObsPredMixin, PPOWMPolicyMixin):
             if value < 0:
                 raise ValueError(f"{alias} must be >= 0, got {value}")
             self.angle_loss_weight = value
-            self.hyper_parameters["angle_loss_weight"] = value
+            self.hyper_parameters["mat_nop_policy_config"]["world_model_config"]["next_obs_pred_config"]["angle_loss_weight"] = value
 
         rot6d_weight = self._pop_loss_weight_alias(
             remaining_weights,
@@ -341,7 +299,7 @@ class MATNOPPolicy(MATPolicy, NextObsPredMixin, PPOWMPolicyMixin):
             if value < 0:
                 raise ValueError(f"{alias} must be >= 0, got {value}")
             self.rot6d_loss_weight = value
-            self.hyper_parameters["rot6d_loss_weight"] = value
+            self.hyper_parameters["mat_nop_policy_config"]["world_model_config"]["next_obs_pred_config"]["rot6d_loss_weight"] = value
 
         binary_weight = self._pop_loss_weight_alias(
             remaining_weights,
@@ -352,7 +310,7 @@ class MATNOPPolicy(MATPolicy, NextObsPredMixin, PPOWMPolicyMixin):
             if value < 0:
                 raise ValueError(f"{alias} must be >= 0, got {value}")
             self.binary_loss_weight = value
-            self.hyper_parameters["binary_loss_weight"] = value
+            self.hyper_parameters["mat_nop_policy_config"]["world_model_config"]["next_obs_pred_config"]["binary_loss_weight"] = value
 
         super().update_loss_weights(**remaining_weights)
 
