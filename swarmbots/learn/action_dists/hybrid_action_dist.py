@@ -20,6 +20,7 @@ from swarmbots.learn.action_dists.bang_zero_bang_action_dist import BangZeroBang
 from swarmbots.learn.action_dists.continuous_action_dist import ContinuousActionDist
 from swarmbots.learn.action_dists.diag_gaussian_action_dist import DiagGaussianActionDist
 from swarmbots.learn.action_dists.gsde_action_dist import GSDEActionDist, GSDEConfig
+from swarmbots.learn.action_dists.left_right_beta_action_dist import LeftRightBetaActionDist, LeftRightBetaConfig
 from swarmbots.learn.action_dists.beta_mixture_action_dist import BetaMixtureActionDist, BetaMixtureConfig
 from swarmbots.learn.action_dists.sticky_beta_mixture_action_dist import (
     StickyBetaMixtureActionDist,
@@ -43,6 +44,7 @@ ContinuousActionDistConfig: TypeAlias = (
     | GSDEConfig
     | BetaMixtureConfig
     | StickyBetaMixtureConfig
+    | LeftRightBetaConfig
     | BangZeroBangConfig
 )
 
@@ -249,7 +251,10 @@ class HybridActionDistribution(ActionDist):
             if callable(set_ent_loss_coef):
                 set_ent_loss_coef(value)
         for idx, config in enumerate(self.continuous_configs):
-            if isinstance(config, (SquashedDiagGaussianConfig, PredictedStdConfig, GSDEConfig, BangZeroBangConfig,)):
+            if isinstance(config,
+                          (SquashedDiagGaussianConfig, PredictedStdConfig, GSDEConfig,
+                           BangZeroBangConfig, LeftRightBetaConfig)
+            ):
                 self.continuous_configs[idx] = replace(config, ent_loss_coef=value)
         if self.bernoulli_config is not None:
             self.bernoulli_config = replace(self.bernoulli_config, ent_loss_coef=value)
@@ -269,7 +274,10 @@ class HybridActionDistribution(ActionDist):
         set_ent_loss_coef(value)
 
         config = self.continuous_configs[sub_dist_idx]
-        if isinstance(config, (SquashedDiagGaussianConfig, PredictedStdConfig, GSDEConfig, BangZeroBangConfig)):
+        if isinstance(config,
+                      (SquashedDiagGaussianConfig, PredictedStdConfig, GSDEConfig,
+                       BangZeroBangConfig, LeftRightBetaConfig)
+        ):
             self.continuous_configs[sub_dist_idx] = replace(config, ent_loss_coef=value)
 
 
@@ -329,7 +337,7 @@ def make_proba_distribution(
             raise ValueError(
                 "Supply a ContinuousActionDistConfig "
                 "(SquashedDiagGaussianConfig | PredictedStdConfig | GSDEConfig | "
-                "BetaMixtureConfig | StickyBetaMixtureConfig | BangZeroBangConfig) "
+                "BetaMixtureConfig | StickyBetaMixtureConfig | LeftRightBetaConfig | BangZeroBangConfig) "
                 "for continuous actions."
             )
 
@@ -398,6 +406,20 @@ def make_proba_distribution(
                 epsilon=continuous_config.epsilon,
                 alphas=continuous_config.alphas,
                 betas=continuous_config.betas,
+            )
+        elif isinstance(continuous_config, LeftRightBetaConfig):
+            return LeftRightBetaActionDist(
+                latent_dim=latent_dim,
+                action_dim=action_space_dim,
+                eps_c=continuous_config.eps_c,
+                action_net_initialization=action_net_initialization,
+                epsilon=continuous_config.epsilon,
+                left_alpha=continuous_config.left_alpha,
+                left_beta=continuous_config.left_beta,
+                right_alpha=continuous_config.right_alpha,
+                right_beta=continuous_config.right_beta,
+                ent_loss_coef=continuous_config.ent_loss_coef,
+                beta_ent_scale=continuous_config.beta_ent_scale,
             )
         elif isinstance(continuous_config, BangZeroBangConfig):
             return BangZeroBangActionDist(

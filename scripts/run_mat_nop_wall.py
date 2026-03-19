@@ -129,7 +129,7 @@ def main() -> None:
     )
 
     n_workers = 23
-    n_envs = n_workers * 5
+    n_envs = n_workers * 10
 
     episode_length = 512
     total_timesteps = 200_000_000
@@ -424,7 +424,7 @@ def main() -> None:
 
     auto_lr = AutomaticLearningRate(
         initial_lr=cold_lr,
-        max_lr=1e-3,
+        max_lr=5e-4,
         updater=auto_lr_updater
     )
     rollout_samples = 4048 * 2
