@@ -8,11 +8,10 @@ from swarmbots.learn.algos.mat.mat_policy import MATPolicy
 from swarmbots.learn.algos.mat.mat_policy import MATPolicyConfig
 from swarmbots.learn.algos.mat.mat_policy import serialize_mat_policy_config
 from swarmbots.learn.algos.ppo.wm.ppo_wm import PPOWMPolicyMixin
-from swarmbots.learn.algos.world_modeling.spr_mixin import SPRMixin
+from swarmbots.learn.algos.world_modeling.spr_mixin import SPRMixin, serialize_spr_world_model_config
 from swarmbots.learn.algos.world_modeling.transformer_transition_model import (
     TransformerTransitionModel,
     TransformerTransitionModelConfig,
-    serialize_transformer_transition_model_config,
 )
 from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
 from swarmbots.learn.nn_components.mlp import MLP
@@ -109,13 +108,13 @@ class MATSPRPolicy(MATPolicy, SPRMixin, PPOWMPolicyMixin):
         )
         self.hyper_parameters["mat_spr_policy_config"] = {
             "mat_policy_config": serialize_mat_policy_config(config.mat_policy_config),
-            "world_model_config": {
-                "transition_model_config": serialize_transformer_transition_model_config(transition_model_config),
-                "spr_projection_dims": projection_dims,
-                "spr_predictor_hidden_dims": predictor_hidden_dims,
-                "residual_predictor": world_model_config.residual_predictor,
-                "spr_loss_weight": world_model_config.spr_loss_weight,
-            },
+            "world_model_config": serialize_spr_world_model_config(
+                transition_model_config=transition_model_config,
+                spr_projection_dims=projection_dims,
+                spr_predictor_hidden_dims=predictor_hidden_dims,
+                residual_predictor=world_model_config.residual_predictor,
+                spr_loss_weight=world_model_config.spr_loss_weight,
+            ),
         }
 
     def get_grad_norms(self) -> dict[str, float]:

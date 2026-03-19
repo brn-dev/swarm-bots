@@ -11,6 +11,8 @@ from swarmbots.learn.action_dists.action_dist import (
     ActionDist,
     AGENT_ACTIONS_DIM,
     ActionNetInitialization,
+    ActionMetricsSplitter,
+    ActionMetricsSplitterInput,
 )
 from swarmbots.learn.action_dists.bernoulli_action_dist import BernoulliActionDist
 from swarmbots.learn.action_dists.bernoulli_action_dist import BernoulliConfig
@@ -188,6 +190,23 @@ class HybridActionDistribution(ActionDist):
             metrics.update(self._prefix_named_values(dist_metrics, prefix=prefix))
         return losses, metrics
 
+    def get_metrics(
+            self,
+            actions: torch.Tensor,
+            action_splitter: ActionMetricsSplitterInput = None,
+    ) -> dict[str, Any]:
+        splitters = self._resolve_action_splitters(action_splitter)
+        split_actions = torch.split(actions, self.action_dims, dim=AGENT_ACTIONS_DIM)
+
+        metrics: dict[str, Any] = {}
+        for i, (dist, dist_actions, dist_splitter) in enumerate(
+                zip(self.distributions, split_actions, splitters, strict=True)
+        ):
+            for metric_name, metric_value in dist.get_metrics(dist_actions, dist_splitter).items():
+                prefixed_name = self._prefix_distribution_metric_name(metric_name=metric_name, index=i)
+                metrics[prefixed_name] = metric_value
+        return metrics
+
     def reset_temporal_correlations_on_ep_start(self, mask: torch.Tensor) -> None:
         for dist in self.distributions:
             if isinstance(dist, TemporallyCorrelatedActionDist):
@@ -261,6 +280,39 @@ class HybridActionDistribution(ActionDist):
             prefix: str,
     ) -> dict[str, Any]:
         return {f"{prefix}{name}": value for name, value in values.items()}
+
+    def _resolve_action_splitters(
+            self,
+            action_splitter: ActionMetricsSplitterInput,
+    ) -> list[ActionMetricsSplitter | None]:
+        if action_splitter is None:
+            return [None] * len(self.distributions)
+        if callable(action_splitter):
+            return [action_splitter] * len(self.distributions)
+        if not isinstance(action_splitter, list):
+            raise TypeError(
+                f"action_splitter must be callable, list of callables, or None, got {type(action_splitter)}"
+            )
+        if len(action_splitter) != len(self.distributions):
+            raise ValueError(
+                f"Expected {len(self.distributions)} action splitters, got {len(action_splitter)}"
+            )
+        for splitter in action_splitter:
+            if splitter is not None and not callable(splitter):
+                raise TypeError(f"action_splitter list entries must be callable or None, got {type(splitter)}")
+        return action_splitter
+
+    @staticmethod
+    def _prefix_distribution_metric_name(metric_name: str, index: int) -> str:
+        if metric_name == "act":
+            return f"act{index}"
+        if metric_name.startswith("act_"):
+            return f"act{index}_{metric_name.removeprefix('act_')}"
+        if metric_name == "std":
+            return f"std{index}"
+        if metric_name.startswith("std_"):
+            return f"std{index}_{metric_name.removeprefix('std_')}"
+        return f"act{index}_{metric_name}"
 
 
 def make_proba_distribution(

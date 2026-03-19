@@ -1,9 +1,14 @@
 import abc
-from typing import Self
+from typing import Self, Any
 
 import torch
 
-from swarmbots.learn.action_dists.action_dist import ActionNetInitialization, ActionDist
+from swarmbots.learn.action_dists.action_dist import (
+    ActionNetInitialization,
+    ActionDist,
+    ActionMetricsSplitterInput,
+    compute_action_metrics,
+)
 
 
 class DiscreteActionDist(ActionDist, abc.ABC):
@@ -27,3 +32,17 @@ class DiscreteActionDist(ActionDist, abc.ABC):
     @abc.abstractmethod
     def update_distribution_params(self, action_logits: torch.Tensor) -> Self:
         raise NotImplementedError
+
+    def get_metrics(
+            self,
+            actions: torch.Tensor,
+            action_splitter: ActionMetricsSplitterInput = None,
+    ) -> dict[str, Any]:
+        return compute_action_metrics(
+            actions,
+            action_splitter,
+            hist_bins=self._get_metrics_hist_bins(),
+        )
+
+    def _get_metrics_hist_bins(self) -> int:
+        return 21

@@ -1,12 +1,20 @@
 import abc
-from typing import Optional, Self
+from typing import Optional, Self, Any
 
 import torch
 import torch.distributions as torchdist
 
-from swarmbots.learn.action_dists.action_dist import AGENT_ACTIONS_DIM, ActionNetInitialization, ActionDist
+from swarmbots.learn.action_dists.action_dist import (
+    AGENT_ACTIONS_DIM,
+    ActionNetInitialization,
+    ActionDist,
+    ActionMetricsSplitterInput,
+    compute_action_metrics,
+    resolve_action_metrics_splitter,
+)
 from swarmbots.learn.losses import LossDict, LossMetrics
 from swarmbots.learn.masking import masked_mean
+from swarmbots.learn.summary_statistics import compute_summary_statistics
 
 
 class ContinuousActionDist(ActionDist, abc.ABC):
@@ -89,6 +97,37 @@ class ContinuousActionDist(ActionDist, abc.ABC):
             "ent_loss": (-entropy_mean).item(),
             "ent_loss_scaled": (-self.ent_loss_coef * entropy_mean).item(),
         }
+
+
+    def get_metrics(
+            self,
+            actions: torch.Tensor,
+            action_splitter: ActionMetricsSplitterInput = None,
+    ) -> dict[str, Any]:
+        hist_bins = 21
+        splitter = resolve_action_metrics_splitter(action_splitter)
+        metrics = compute_action_metrics(actions, splitter, hist_bins=hist_bins)
+
+        if not hasattr(self, "log_stds"):
+            return metrics
+        log_stds = getattr(self, "log_stds")
+        if not isinstance(log_stds, torch.Tensor):
+            return metrics
+
+        std_values = torch.exp(log_stds)
+
+        can_split_stds = not (std_values.ndim >= 1 and std_values.shape[-1] == 1 and self.action_dim > 1)
+        if splitter is not None and can_split_stds:
+            for key, split_stds in splitter(std_values).items():
+                metrics[f"std_{key}"] = compute_summary_statistics(
+                    split_stds, find_min=True, find_max=True, make_histogram=hist_bins
+                )
+        else:
+            metrics["std"] = compute_summary_statistics(
+                std_values, find_min=True, find_max=True, make_histogram=hist_bins
+            )
+
+        return metrics
 
     @staticmethod
     def sum_action_dim(tensor: torch.Tensor) -> torch.Tensor:

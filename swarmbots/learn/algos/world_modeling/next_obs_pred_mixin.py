@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import abc
 from dataclasses import dataclass
 from enum import Enum
@@ -7,7 +9,11 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
-from swarmbots.learn.algos.world_modeling.transformer_transition_model import TransformerTransitionModel
+from swarmbots.learn.algos.world_modeling.transformer_transition_model import (
+    TransformerTransitionModel,
+    TransformerTransitionModelConfig,
+    serialize_transformer_transition_model_config,
+)
 from swarmbots.learn.masking import build_valid_mask, masked_mean, restrict_loss_agent_mask
 
 class PredictDeltaMode(Enum):
@@ -514,3 +520,45 @@ class NextObsPredMixin(abc.ABC):
         cos = torch.cos(angle)[..., None, None]
         eye = torch.eye(3, device=rotvec.device, dtype=rotvec.dtype).expand(*rotvec.shape[:-1], 3, 3)
         return eye + sin * k_mat + (1.0 - cos) * (k_mat @ k_mat)
+
+
+def serialize_next_obs_pred_config(config: NextObsPredConfig) -> dict[str, Any]:
+    return {
+        "local_scalar_target_indices": config.local_scalar_target_indices,
+        "local_angle_target_indices": config.local_angle_target_indices,
+        "local_rot6d_target_indices": config.local_rot6d_target_indices,
+        "local_binary_target_indices": config.local_binary_target_indices,
+        "scalar_loss_weight": config.scalar_loss_weight,
+        "angle_loss_weight": config.angle_loss_weight,
+        "rot6d_loss_weight": config.rot6d_loss_weight,
+        "binary_loss_weight": config.binary_loss_weight,
+        "binary_target_ema_decay": config.binary_target_ema_decay,
+        "binary_target_ema_eps": config.binary_target_ema_eps,
+        "predict_delta": str(config.predict_delta),
+    }
+
+
+def serialize_next_obs_pred_world_model_config(
+        *,
+        transition_model_config: TransformerTransitionModelConfig,
+        wm_pre_transition_dims: list[int] | None,
+        wm_pre_predictors_dims: list[int] | None,
+        wm_scalar_predictor_hidden_dims: list[int] | None,
+        wm_angle_predictor_hidden_dims: list[int] | None,
+        wm_rot6d_predictor_hidden_dims: list[int] | None,
+        wm_binary_predictor_hidden_dims: list[int] | None,
+        scalar_loss_fn: str | nn.Module | None,
+        next_obs_pred_config: NextObsPredConfig,
+) -> dict[str, Any]:
+    return {
+        "transition_model_config": serialize_transformer_transition_model_config(transition_model_config),
+        "wm_pre_transition_dims": wm_pre_transition_dims,
+        "wm_pre_predictors_dims": wm_pre_predictors_dims,
+        "wm_scalar_predictor_hidden_dims": wm_scalar_predictor_hidden_dims,
+        "wm_angle_predictor_hidden_dims": wm_angle_predictor_hidden_dims,
+        "wm_rot6d_predictor_hidden_dims": wm_rot6d_predictor_hidden_dims,
+        "wm_binary_predictor_hidden_dims": wm_binary_predictor_hidden_dims,
+        "scalar_loss_fn": str(scalar_loss_fn),
+        "next_obs_pred_config": serialize_next_obs_pred_config(next_obs_pred_config),
+    }
+

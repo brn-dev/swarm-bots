@@ -12,11 +12,11 @@ from swarmbots.learn.algos.world_modeling.next_obs_pred_mixin import (
     NextObsPredMixin,
     NextObsPredConfig,
     PredictDeltaMode,
+    serialize_next_obs_pred_world_model_config,
 )
 from swarmbots.learn.algos.world_modeling.transformer_transition_model import (
     TransformerTransitionModel,
     TransformerTransitionModelConfig,
-    serialize_transformer_transition_model_config,
 )
 from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
 from swarmbots.learn.nn_components.mlp import MLP
@@ -165,29 +165,17 @@ class MATNOPPolicy(MATPolicy, NextObsPredMixin, PPOWMPolicyMixin):
 
         self.hyper_parameters["mat_nop_policy_config"] = {
             "mat_policy_config": serialize_mat_policy_config(config.mat_policy_config),
-            "world_model_config": {
-                "transition_model_config": serialize_transformer_transition_model_config(transition_model_config),
-                "wm_pre_transition_dims": world_model_config.wm_pre_transition_dims,
-                "wm_pre_predictors_dims": world_model_config.wm_pre_predictors_dims,
-                "wm_scalar_predictor_hidden_dims": world_model_config.wm_scalar_predictor_hidden_dims,
-                "wm_angle_predictor_hidden_dims": world_model_config.wm_angle_predictor_hidden_dims,
-                "wm_rot6d_predictor_hidden_dims": world_model_config.wm_rot6d_predictor_hidden_dims,
-                "wm_binary_predictor_hidden_dims": world_model_config.wm_binary_predictor_hidden_dims,
-                "scalar_loss_fn": str(scalar_loss_fn),
-                "next_obs_pred_config": {
-                    "local_scalar_target_indices": next_obs_pred_config.local_scalar_target_indices,
-                    "local_angle_target_indices": next_obs_pred_config.local_angle_target_indices,
-                    "local_rot6d_target_indices": next_obs_pred_config.local_rot6d_target_indices,
-                    "local_binary_target_indices": next_obs_pred_config.local_binary_target_indices,
-                    "scalar_loss_weight": next_obs_pred_config.scalar_loss_weight,
-                    "angle_loss_weight": next_obs_pred_config.angle_loss_weight,
-                    "rot6d_loss_weight": next_obs_pred_config.rot6d_loss_weight,
-                    "binary_loss_weight": next_obs_pred_config.binary_loss_weight,
-                    "binary_target_ema_decay": next_obs_pred_config.binary_target_ema_decay,
-                    "binary_target_ema_eps": next_obs_pred_config.binary_target_ema_eps,
-                    "predict_delta": str(next_obs_pred_config.predict_delta),
-                },
-            },
+            "world_model_config": serialize_next_obs_pred_world_model_config(
+                transition_model_config=transition_model_config,
+                wm_pre_transition_dims=world_model_config.wm_pre_transition_dims,
+                wm_pre_predictors_dims=world_model_config.wm_pre_predictors_dims,
+                wm_scalar_predictor_hidden_dims=world_model_config.wm_scalar_predictor_hidden_dims,
+                wm_angle_predictor_hidden_dims=world_model_config.wm_angle_predictor_hidden_dims,
+                wm_rot6d_predictor_hidden_dims=world_model_config.wm_rot6d_predictor_hidden_dims,
+                wm_binary_predictor_hidden_dims=world_model_config.wm_binary_predictor_hidden_dims,
+                scalar_loss_fn=scalar_loss_fn,
+                next_obs_pred_config=next_obs_pred_config,
+            ),
         }
 
     def evaluate_actions_and_world_model(

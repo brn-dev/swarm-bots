@@ -1,12 +1,18 @@
 import math
 from dataclasses import dataclass
-from typing import Optional, Self
+from typing import Optional, Self, Any
 
 import torch
 from torch import distributions as torchdist, nn
 from torch.nn import functional as F
 
-from swarmbots.learn.action_dists.action_dist import AGENT_ACTIONS_DIM, ActionDist, ActionNetInitialization
+from swarmbots.learn.action_dists.action_dist import (
+    AGENT_ACTIONS_DIM,
+    ActionDist,
+    ActionNetInitialization,
+    ActionMetricsSplitterInput,
+    compute_action_metrics,
+)
 
 
 @dataclass(frozen=True)
@@ -70,15 +76,6 @@ class BetaMixtureActionDist(ActionDist):
         self.weight_logits: Optional[torch.Tensor] = None
         self.components: Optional[torchdist.Beta] = None
 
-    def _validate_shape_and_values(self, parameter_name: str, values: tuple[float, ...]) -> None:
-        if len(values) != self.num_components:
-            raise ValueError(
-                f"Expected {self.num_components} {parameter_name} values, got {len(values)}: {values}."
-            )
-        for value in values:
-            if value <= 1.0:
-                raise ValueError(f"All {parameter_name} values must be > 1.0, got {values}.")
-
     def update_latent_features(self, latent_pi: torch.Tensor) -> Self:
         raw = self.output_net(latent_pi).view(*latent_pi.shape[:-1], self.action_dim, self.num_components, 3)
         self.weight_logits = raw[..., 0]
@@ -116,6 +113,23 @@ class BetaMixtureActionDist(ActionDist):
         log_prob_in_01 = torch.logsumexp(log_weights + log_components, dim=-1)
         log_prob_in_m1_1 = log_prob_in_01 + math.log(0.5)
         return log_prob_in_m1_1.sum(dim=AGENT_ACTIONS_DIM)
+
+    def get_metrics(
+            self,
+            actions: torch.Tensor,
+            action_splitter: ActionMetricsSplitterInput = None,
+    ) -> dict[str, Any]:
+        return compute_action_metrics(actions, action_splitter, hist_bins=21)
+
+    def _validate_shape_and_values(self, parameter_name: str, values: tuple[float, ...]) -> None:
+        if len(values) != self.num_components:
+            raise ValueError(
+                f"Expected {self.num_components} {parameter_name} values, got {len(values)}: {values}."
+            )
+        for value in values:
+            if value <= 1.0:
+                raise ValueError(f"All {parameter_name} values must be > 1.0, got {values}.")
+
 
 def _inverse_softplus(value: float) -> float:
     return value + math.log(-math.expm1(-value))

@@ -168,7 +168,7 @@ class MATPolicy(BasePPOPolicy):
             popart_init_sigma=config.critic_config.popart_config.init_sigma,
         )
 
-        self.hyper_parameters = {
+        self.hyper_parameters: dict[str, Any] = {
             "mat_policy_config": serialize_mat_policy_config(config),
         }
 
