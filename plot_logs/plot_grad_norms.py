@@ -70,7 +70,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--pattern",
-        default=r"^grad_norm_.+__{stat}$",
+        default=r"^grad_norm(?:_.+)?__{stat}$",
         help=(
             "Regex used to select grad norm columns. "
             "Use '{stat}' as placeholder for --stat."
@@ -257,11 +257,17 @@ def plot_log_grouped(
     for axis, group_name in zip(axes, group_names, strict=True):
         for column in groups[group_name]:
             values = log.y_values[column]
+            valid_x_values = [x for x, y in zip(log.x_values, values, strict=True) if math.isfinite(y)]
+            valid_y_values = [y for y in values if math.isfinite(y)]
+            if not valid_x_values:
+                continue
             label = column.removesuffix(f"__{stat}")
-            axis.plot(log.x_values, values, label=label, linewidth=1.5)
+            axis.plot(valid_x_values, valid_y_values, label=label, linewidth=1.5)
         axis.set_ylabel(f"{group_name} ({stat})")
         axis.grid(alpha=0.3)
-        axis.legend(loc="upper right", fontsize=8, ncol=2)
+        handles, _ = axis.get_legend_handles_labels()
+        if handles:
+            axis.legend(loc="upper right", fontsize=8, ncol=2)
 
     if log.x_is_datetime:
         locator = mdates.AutoDateLocator()

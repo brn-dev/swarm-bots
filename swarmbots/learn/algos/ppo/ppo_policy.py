@@ -1,4 +1,5 @@
 import abc
+import re
 from dataclasses import dataclass, field
 from typing import Any
 import torch
@@ -64,6 +65,7 @@ def serialize_ppo_policy_config(config: PPOPolicyConfig) -> dict[str, Any]:
 
 class BasePPOPolicy(BasePolicy, abc.ABC):
     action_dist: HybridActionDistribution
+    _PER_ACTION_ENTROPY_WEIGHT_PATTERN = re.compile(r"^act(?P<idx>\d+)_(?P<alias>ent_loss_coef|entropy|ent)$")
 
     @property
     def gsde_enabled(self) -> bool:
@@ -128,6 +130,19 @@ class BasePPOPolicy(BasePolicy, abc.ABC):
         alias = matching_aliases[0]
         value = float(weights.pop(alias))
         return alias, value
+
+    def _pop_per_action_entropy_weights(self, weights: dict[str, float]) -> dict[int, float]:
+        updates: dict[int, float] = {}
+        for key in list(weights):
+            match = self._PER_ACTION_ENTROPY_WEIGHT_PATTERN.match(key)
+            if match is None:
+                continue
+
+            idx = int(match.group("idx"))
+            if idx in updates:
+                raise ValueError(f"Multiple entropy aliases for action index {idx} are not allowed")
+            updates[idx] = float(weights.pop(key))
+        return updates
 
 
 class PPOActor(nn.Module):
@@ -401,6 +416,13 @@ class PPOPolicy(BasePPOPolicy):
             return
 
         remaining_weights = dict(weights)
+        per_action_entropy_weights = self._pop_per_action_entropy_weights(remaining_weights)
+        for idx, value in per_action_entropy_weights.items():
+            if value < 0:
+                raise ValueError(f"act{idx}_ent_loss_coef must be >= 0, got {value}")
+            self.action_dist.set_sub_ent_loss_coef(idx, value)
+            self._set_serialized_continuous_config()
+
         action_magnitude_weight = self._pop_loss_weight_alias(
             remaining_weights,
             aliases=("action_magnitude_loss_coef", "action_magnitude"),

@@ -384,6 +384,15 @@ class MATPolicy(BasePPOPolicy):
             return
 
         remaining_weights = dict(weights)
+        per_action_entropy_weights = self._pop_per_action_entropy_weights(remaining_weights)
+        for idx, value in per_action_entropy_weights.items():
+            if value < 0:
+                raise ValueError(f"act{idx}_ent_loss_coef must be >= 0, got {value}")
+            self.action_dist.set_sub_ent_loss_coef(idx, value)
+            self.hyper_parameters["mat_policy_config"]["continuous_config"] = serialize_continuous_action_dist_configs(
+                self.action_dist.continuous_configs
+            )
+
         action_magnitude_weight = self._pop_loss_weight_alias(
             remaining_weights,
             aliases=("action_magnitude_loss_coef", "action_magnitude"),

@@ -424,7 +424,7 @@ def main() -> None:
 
     auto_lr = AutomaticLearningRate(
         initial_lr=cold_lr,
-        max_lr=2e-4,
+        max_lr=1e-3,
         updater=auto_lr_updater
     )
     rollout_samples = 4048 * 2
