@@ -228,7 +228,7 @@ class GSDEActionDist(ContinuousActionDist, TemporallyCorrelatedActionDist):
         )
         losses: LossDict = {}
         if ent_loss is not None:
-            losses["exploration"] = ent_loss
+            losses["entropy"] = ent_loss
         if action_magnitude_loss is not None:
             losses["action_magnitude"] = action_magnitude_loss
         return losses, {**ent_loss_metrics, **action_magnitude_metrics}

@@ -80,3 +80,6 @@ class BernoulliActionDist(DiscreteActionDist):
         if value < 0:
             raise ValueError(f"ent_loss_coef must be >= 0, got {value}")
         self.ent_loss_coef = value
+
+    def _get_metrics_hist_bins(self) -> int:
+        return 2
