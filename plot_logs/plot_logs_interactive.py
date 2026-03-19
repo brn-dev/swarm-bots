@@ -1893,7 +1893,7 @@ class PlotLogsInteractiveApp:
             self.plot_tabs_frame.columnconfigure(tab_index, weight=1, uniform="plot_tabs")
             tab_button = ttk.Button(
                 self.plot_tabs_frame,
-                text=f"T{tab_index + 1}  X",
+                text=f"T{tab_index + 1}",
                 style="PlotTab.TButton",
             )
             tab_button.grid(
@@ -1940,18 +1940,10 @@ class PlotLogsInteractiveApp:
                 if tab_index == self.active_plot_tab_index
                 else "PlotTab.TButton"
             )
-            button.configure(text=f"T{tab_index + 1}{suffix}  X", style=style_name)
+            button.configure(text=f"T{tab_index + 1}{suffix}", style=style_name)
 
-    def on_plot_tab_button_click(self, event: tk.Event, tab_index: int) -> str:
-        widget = event.widget
-        if not isinstance(widget, ttk.Button):
-            return "break"
-        close_zone_width = 24
-        clicked_close_zone = event.x >= widget.winfo_width() - close_zone_width
-        if clicked_close_zone:
-            self.close_plot_tab(tab_index)
-        else:
-            self.on_plot_tab_selected(tab_index)
+    def on_plot_tab_button_click(self, _event: tk.Event, tab_index: int) -> str:
+        self.on_plot_tab_selected(tab_index)
         return "break"
 
     def on_plot_tab_middle_click(self, _event: tk.Event, tab_index: int) -> str:
