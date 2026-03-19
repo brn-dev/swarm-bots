@@ -235,6 +235,24 @@ class HybridActionDistribution(ActionDist):
         if self.bernoulli_config is not None:
             self.bernoulli_config = replace(self.bernoulli_config, ent_loss_coef=value)
 
+    def set_sub_ent_loss_coef(self, sub_dist_idx: int, value: float) -> None:
+        if value < 0:
+            raise ValueError(f"ent_loss_coef must be >= 0, got {value}")
+        if not (0 <= sub_dist_idx < len(self.distributions)):
+            raise IndexError(
+                f"sub_dist_idx out of range [0, {len(self.distributions) - 1}], got {sub_dist_idx}"
+            )
+
+        dist = self.distributions[sub_dist_idx]
+        set_ent_loss_coef = getattr(dist, "set_ent_loss_coef", None)
+        if not callable(set_ent_loss_coef):
+            raise ValueError(f"Action sub-dist {sub_dist_idx} does not support entropy coefficient updates")
+        set_ent_loss_coef(value)
+
+        config = self.continuous_configs[sub_dist_idx]
+        if isinstance(config, (SquashedDiagGaussianConfig, PredictedStdConfig, GSDEConfig, BangZeroBangConfig)):
+            self.continuous_configs[sub_dist_idx] = replace(config, ent_loss_coef=value)
+
 
     @staticmethod
     def _prefix_named_values(

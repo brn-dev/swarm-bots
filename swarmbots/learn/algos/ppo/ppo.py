@@ -841,6 +841,15 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerType]):
             logger.warning(f"Updating extra loss weights: {weights}")
             self.policy.update_loss_weights(**weights)
             return True
+        elif cmd in {"set_act_ent_loss_coef", "set_sub_ent_loss_coef", "set_action_ent_loss_coef"}:
+            sub_dist_idx, value = self._parse_indexed_float_params(
+                params,
+                idx_keys=("act", "idx", "index", "sub_dist"),
+                value_keys=("value", "coef", "ent_loss_coef", "ent", "entropy"),
+            )
+            logger.warning(f"Setting entropy loss coef for action sub-dist {sub_dist_idx} to {value}")
+            self.policy.update_loss_weights(**{f"act{sub_dist_idx}_ent_loss_coef": value})
+            return True
         elif cmd in {"disable_auto_lr", "auto_lr_off", "disable_automatic_lr", "disable_auto_learning_rate"}:
             _ = params
             if self.automatic_lr is None:
@@ -932,3 +941,34 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerType]):
         except OSError as err:
             fn_dict['source'] = str(err)
         return fn_dict
+
+    @staticmethod
+    def _parse_indexed_float_params(
+            params: str,
+            *,
+            idx_keys: tuple[str, ...],
+            value_keys: tuple[str, ...],
+    ) -> tuple[int, float]:
+        parsed = None
+        try:
+            parsed = json.loads(params)
+        except json.JSONDecodeError:
+            parsed = None
+
+        if isinstance(parsed, dict):
+            idx_key = next((key for key in idx_keys if key in parsed), None)
+            value_key = next((key for key in value_keys if key in parsed), None)
+            if idx_key is None or value_key is None:
+                raise ValueError(
+                    f"Expected JSON keys {idx_keys} and {value_keys}, got {tuple(parsed.keys())}"
+                )
+            return int(parsed[idx_key]), float(parsed[value_key])
+
+        values = [part.strip() for part in params.split(",")]
+        if len(values) != 2:
+            raise ValueError(
+                "Expected params as '<index>,<value>' or JSON object, "
+                "e.g. set_act_ent_loss_coef:0,0.01 or "
+                "set_act_ent_loss_coef:{\"act\":0,\"value\":0.01}"
+            )
+        return int(values[0]), float(values[1])
