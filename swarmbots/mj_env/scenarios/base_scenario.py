@@ -369,7 +369,12 @@ class BaseScenario(abc.ABC):
             dtype=float,
         )
 
-    def reset_scenario(self, model: mujoco.MjModel, data: mujoco.MjData) -> tuple[dict, SwarmConnections]:
+    def reset_scenario(
+            self,
+            model: mujoco.MjModel,
+            data: mujoco.MjData,
+            settle: bool = True,
+    ) -> tuple[dict, SwarmConnections]:
         mujoco.mj_resetData(model, data)
 
         state = dict()
@@ -395,11 +400,12 @@ class BaseScenario(abc.ABC):
         state['unit_positions'] = data.qpos[self._qpos_indices[:, :3]].copy()
         state['units_active_mask'] = units_active_mask
 
-        self.settle_reset(
-            model=model,
-            data=data,
-            state=state,
-        )
+        if settle:
+            self.settle_reset(
+                model=model,
+                data=data,
+                state=state,
+            )
 
         return state, connections
 

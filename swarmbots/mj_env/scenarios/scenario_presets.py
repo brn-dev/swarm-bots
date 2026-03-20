@@ -31,8 +31,8 @@ DEFAULT_KWARGS = {
     'connectors_successfully_activated_reward_weight': 0e-3,
     'connectors_unsuccessfully_activated_reward_weight': -0e-5,
     'connectors_deactivated_reward_weight': 0e-3,
-    'reset_settle_time': 0.5,
-    'reset_settle_timestep_scale': 2,
+    'reset_settle_time': 1.0,
+    'reset_settle_timestep_scale': 3,
 }
 WALL_PASS_KWARGS = {
     'wall_pass_reward_weight': 5.0,
