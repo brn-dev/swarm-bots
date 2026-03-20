@@ -4,6 +4,7 @@ from typing import Any
 import torch
 from torch import nn
 
+from swarmbots.learn.action_dists.action_dist import ActionMetricsSplitterInput
 from swarmbots.learn.algos.mat.mat_policy import MATPolicy
 from swarmbots.learn.algos.mat.mat_policy import MATPolicyConfig
 from swarmbots.learn.algos.mat.mat_policy import serialize_mat_policy_config
@@ -190,6 +191,7 @@ class MATNOPPolicy(MATPolicy, NextObsPredMixin, PPOWMPolicyMixin):
             wm_agent_mask: torch.Tensor | None = None,
             wm_loss_agent_mask: torch.Tensor | None = None,
             hidden_vars: torch.Tensor | None = None,
+            action_splitter: ActionMetricsSplitterInput = None,
     ) -> tuple[
         torch.Tensor,
         torch.Tensor,
@@ -210,6 +212,7 @@ class MATNOPPolicy(MATPolicy, NextObsPredMixin, PPOWMPolicyMixin):
             actions=policy_actions,
             hidden_vars=hidden_vars,
             agent_mask=agent_mask,
+            action_splitter=action_splitter,
         )
         next_obs_pred_loss, nop_loss_metrics = self.compute_next_obs_pred_loss(
             local_latents=augmented_observations,

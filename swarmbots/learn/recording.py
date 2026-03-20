@@ -4,6 +4,8 @@ from typing import Any
 import moviepy.video.io.ImageSequenceClip
 import numpy as np
 import torch
+from gymnasium.wrappers.vector import NormalizeReward
+from PIL import Image, ImageDraw, ImageFont
 
 from swarmbots.learn.base_policy import BasePolicy
 from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
@@ -76,6 +78,64 @@ def _maybe_reset_gsde_noise(
     raise TypeError(f"Unknown gsde_reset_mode type: {type(gsde_reset_mode)}")
 
 
+def _extract_env_reward(reward: Any, *, env_idx: int = 0) -> float:
+    reward_array = np.asarray(reward)
+    if reward_array.shape == ():
+        return float(reward_array)
+    flattened = reward_array.reshape(-1)
+    if env_idx >= flattened.shape[0]:
+        raise IndexError(f"Reward does not contain env_idx={env_idx}.")
+    return float(flattened[env_idx])
+
+
+def _find_normalize_reward_wrapper(env: Any) -> NormalizeReward | None:
+    current_env = env
+    while hasattr(current_env, "env"):
+        if isinstance(current_env, NormalizeReward):
+            return current_env
+        current_env = current_env.env
+    return None
+
+
+def _extract_raw_env_reward(
+    reward: Any,
+    *,
+    env_idx: int,
+    normalize_reward_wrapper: NormalizeReward | None,
+) -> float:
+    reward_value = _extract_env_reward(reward, env_idx=env_idx)
+    if normalize_reward_wrapper is None:
+        return reward_value
+
+    denominator = float(np.sqrt(normalize_reward_wrapper.return_rms.var + normalize_reward_wrapper.epsilon))
+    return reward_value * denominator
+
+
+def _draw_accumulated_reward(frame: np.ndarray, accumulated_reward: float) -> np.ndarray:
+    if frame.ndim != 3 or frame.shape[2] < 3:
+        return frame
+
+    image = Image.fromarray(frame)
+    draw = ImageDraw.Draw(image, "RGBA")
+    font = ImageFont.load_default()
+    label = f"{accumulated_reward:.3f}"
+
+    left, top, right, bottom = draw.textbbox((0, 0), label, font=font)
+    text_width = right - left
+    text_height = bottom - top
+    margin = 8
+
+    x = image.width - text_width - margin
+    y = image.height - text_height - margin
+
+    draw.rectangle(
+        [(x - 6, y - 4), (x + text_width + 6, y + text_height + 4)],
+        fill=(0, 0, 0, 160),
+    )
+    draw.text((x, y), label, font=font, fill=(255, 255, 255, 255))
+    return np.asarray(image)
+
+
 def record_policy(
     env: BaseLearnEnvWrapper,
     policy: BasePolicy,
@@ -105,6 +165,7 @@ def record_policy(
     
     policy.eval()
     policy.to(device)
+    normalize_reward_wrapper = _find_normalize_reward_wrapper(env)
 
     for episode_idx in range(num_episodes):
         obs, _ = env.reset()
@@ -116,6 +177,7 @@ def record_policy(
         ep_rew = None
         ep_progress_reward = None
         ep_guidance_reward = None
+        accumulated_reward = 0.0
                     
         try:
             first_frame = env.render()
@@ -126,26 +188,12 @@ def record_policy(
         if first_frame is None:
             print("Environment render returned None. Make sure render_mode='rgb_array' is set.")
             return
+        frames.append(_draw_accumulated_reward(first_frame, accumulated_reward))
 
         done = False
         step_cnt = 0
         
         while not done:
-            frame = env.render()
-            
-            if isinstance(frame, (list, tuple)):
-                current_frame = frame[0]
-            elif isinstance(frame, np.ndarray):
-                if frame.ndim == 4:
-                    current_frame = frame[0]
-                else:
-                    current_frame = frame
-            else:
-                current_frame = frame
-
-            if current_frame is not None:
-                frames.append(current_frame)
-
             with torch.no_grad():
                 local_obs = obs['local_obs']
                 global_obs = obs['global_obs']
@@ -168,7 +216,25 @@ def record_policy(
                 )
                 # print(format_summary_statistics(compute_summary_statistics(actions[:, :, :8], make_histogram=True), SummaryStatisticsFormat(histogram=True)))
             
-            obs, _, term, trunc, infos = env.step(actions)
+            obs, reward, term, trunc, infos = env.step(actions)
+            accumulated_reward += _extract_raw_env_reward(
+                reward,
+                env_idx=0,
+                normalize_reward_wrapper=normalize_reward_wrapper,
+            )
+
+            frame = env.render()
+            if isinstance(frame, (list, tuple)):
+                current_frame = frame[0]
+            elif isinstance(frame, np.ndarray):
+                if frame.ndim == 4:
+                    current_frame = frame[0]
+                else:
+                    current_frame = frame
+            else:
+                current_frame = frame
+            if current_frame is not None:
+                frames.append(_draw_accumulated_reward(current_frame, accumulated_reward))
             
             if term[0] or trunc[0]:
                 ep_rew = _get_episode_stat(infos, env_idx=0, key="r")

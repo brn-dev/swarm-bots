@@ -963,6 +963,7 @@ class PlotLogsInteractiveApp:
             textvariable=self.path_order_var,
         )
         files_order_combo.grid(row=0, column=1, sticky="ew", padx=(6, 0))
+        self.disable_combobox_scroll_input(files_order_combo)
         files_order_combo.bind("<<ComboboxSelected>>", self.on_path_order_change)
 
         self.files_listbox = tk.Listbox(files_frame, height=6, selectmode="extended")

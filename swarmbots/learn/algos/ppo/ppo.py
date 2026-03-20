@@ -294,6 +294,7 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerType]):
             actions=batch.actions,
             hidden_vars=batch.hidden_vars,
             agent_mask=batch.agent_mask,
+            action_splitter=self.metrics_action_splitters,
         )
 
         loss, approx_kl_div, metrics = self.compute_ppo_loss(

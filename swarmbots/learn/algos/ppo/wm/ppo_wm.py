@@ -5,6 +5,7 @@ import torch
 import torch.nn as nn
 from loguru import logger
 
+from swarmbots.learn.action_dists.action_dist import ActionMetricsSplitterInput
 from swarmbots.learn.algos.ppo.ppo import PPO, PPOLearningRate, PPORolloutMode, WholeEpisodesRolloutMode
 from swarmbots.learn.algos.ppo.ppo_policy import BasePPOPolicy
 from swarmbots.learn.algos.ppo.ppo_rollout_buffer import PPOEpisode
@@ -29,6 +30,7 @@ class PPOWMPolicyMixin(abc.ABC):
             wm_agent_mask: torch.Tensor | None = None,
             wm_loss_agent_mask: torch.Tensor | None = None,
             hidden_vars: torch.Tensor | None = None,
+            action_splitter: ActionMetricsSplitterInput = None,
     ) -> tuple[
         torch.Tensor,
         torch.Tensor,
@@ -141,6 +143,7 @@ class PPOWM(PPO[PPOWMSamples, PPOWMSampler]):
             wm_agent_mask=batch.wm_agent_mask,
             wm_loss_agent_mask=batch.wm_loss_agent_mask,
             hidden_vars=batch.hidden_vars,
+            action_splitter=self.metrics_action_splitters,
         )
 
         loss, approx_kl_div, metrics = self.compute_ppo_loss(

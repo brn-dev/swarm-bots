@@ -182,11 +182,16 @@ class HybridActionDistribution(ActionDist):
             self,
             *,
             agent_mask: torch.Tensor | None = None,
+            action_splitter: ActionMetricsSplitterInput = None,
     ) -> tuple[LossDict, LossMetrics]:
         losses: LossDict = {}
         metrics: LossMetrics = {}
+        splitters = self._resolve_action_splitters(action_splitter)
         for i, dist in enumerate(self.distributions):
-            dist_losses, dist_metrics = dist.compute_extra_losses(agent_mask=agent_mask)
+            dist_losses, dist_metrics = dist.compute_extra_losses(
+                agent_mask=agent_mask,
+                action_splitter=splitters[i],
+            )
             prefix = f"act{i}_"
             losses.update(self._prefix_named_values(dist_losses, prefix=prefix))
             metrics.update(self._prefix_named_values(dist_metrics, prefix=prefix))

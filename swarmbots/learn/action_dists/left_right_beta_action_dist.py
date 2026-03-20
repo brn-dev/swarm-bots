@@ -11,6 +11,7 @@ from swarmbots.learn.action_dists.action_dist import (
     ActionDist,
     ActionMetricsSplitterInput,
     ActionNetInitialization,
+    compute_split_entropy_metrics,
     compute_action_metrics,
 )
 from swarmbots.learn.losses import LossDict, LossMetrics
@@ -170,31 +171,45 @@ class LeftRightBetaActionDist(ActionDist):
             self,
             *,
             agent_mask: torch.Tensor | None = None,
+            action_splitter: ActionMetricsSplitterInput = None,
     ) -> tuple[LossDict, LossMetrics]:
         if self.ent_loss_coef <= 0.0:
             return {}, {}
 
         weights = F.softmax(self.weight_logits, dim=-1)
 
-        categorical_entropy = self.categorical_dist.entropy().sum(dim=AGENT_ACTIONS_DIM)
-        weighted_beta_entropy = (
+        categorical_entropy_per_action = self.categorical_dist.entropy()
+        weighted_beta_entropy_per_action = (
                 weights[..., self._LEFT_INDEX] * self.left_beta_dist.entropy()
                 + weights[..., self._RIGHT_INDEX] * self.right_beta_dist.entropy()
-        ).sum(dim=AGENT_ACTIONS_DIM)
-        combined_entropy = categorical_entropy + self.beta_ent_scale * weighted_beta_entropy
+        )
+        combined_entropy_per_action = categorical_entropy_per_action + (
+            self.beta_ent_scale * weighted_beta_entropy_per_action
+        )
+        categorical_entropy = categorical_entropy_per_action.sum(dim=AGENT_ACTIONS_DIM)
+        weighted_beta_entropy = weighted_beta_entropy_per_action.sum(dim=AGENT_ACTIONS_DIM)
+        combined_entropy = combined_entropy_per_action.sum(dim=AGENT_ACTIONS_DIM)
         self.validate_agent_mask(agent_mask, expected_shape=tuple(categorical_entropy.shape))
 
-        categorical_entropy_mean = masked_mean(categorical_entropy, agent_mask)
-        beta_entropy_mean = masked_mean(weighted_beta_entropy, agent_mask)
-        combined_entropy_mean = masked_mean(combined_entropy, agent_mask)
-
         entropy_loss = -self.ent_loss_coef * combined_entropy
-        return {"entropy": entropy_loss}, {
-            "ent_loss_categorical": (-categorical_entropy_mean).item(),
-            "ent_loss_beta": (-beta_entropy_mean).item(),
-            "ent_loss_combined": (-combined_entropy_mean).item(),
-            "ent_loss_scaled": (-self.ent_loss_coef * combined_entropy_mean).item(),
-        }
+        with torch.no_grad():
+            categorical_entropy_mean = masked_mean(categorical_entropy, agent_mask)
+            beta_entropy_mean = masked_mean(weighted_beta_entropy, agent_mask)
+            combined_entropy_mean = masked_mean(combined_entropy, agent_mask)
+            metrics: LossMetrics = {
+                "ent_loss_categorical": (-categorical_entropy_mean).item(),
+                "ent_loss_beta": (-beta_entropy_mean).item(),
+                "ent_loss_combined": (-combined_entropy_mean).item(),
+                "ent_loss_scaled": (-self.ent_loss_coef * combined_entropy_mean).item(),
+            }
+            metrics.update(
+                compute_split_entropy_metrics(
+                    combined_entropy_per_action,
+                    action_splitter=action_splitter,
+                    agent_mask=agent_mask,
+                )
+            )
+        return {"entropy": entropy_loss}, metrics
 
     def set_ent_loss_coef(self, value: float) -> None:
         if value < 0.0:

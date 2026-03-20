@@ -4,6 +4,7 @@ from typing import Any, Optional
 import torch
 from torch import nn
 
+from swarmbots.learn.action_dists.action_dist import ActionMetricsSplitterInput
 from swarmbots.learn.action_dists.hybrid_action_dist import (
     HybridActionDistribution,
     ContinuousActionDistConfigInput,
@@ -250,6 +251,7 @@ class MATPolicy(BasePPOPolicy):
             actions: torch.Tensor,
             hidden_vars: torch.Tensor | None = None,
             agent_mask: torch.Tensor | None = None,
+            action_splitter: ActionMetricsSplitterInput = None,
     ) -> tuple[torch.Tensor, torch.Tensor, LossDict, LossMetrics]:
         _, log_probs, values, extra_losses, extra_loss_metrics = self._evaluate_actions(
             local_obs=local_obs,
@@ -257,6 +259,7 @@ class MATPolicy(BasePPOPolicy):
             actions=actions,
             hidden_vars=hidden_vars,
             agent_mask=agent_mask,
+            action_splitter=action_splitter,
         )
 
         return log_probs, values, extra_losses, extra_loss_metrics
@@ -268,6 +271,7 @@ class MATPolicy(BasePPOPolicy):
             actions: torch.Tensor,
             hidden_vars: torch.Tensor | None = None,
             agent_mask: torch.Tensor | None = None,
+            action_splitter: ActionMetricsSplitterInput = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, LossDict, LossMetrics]:
         self._validate_agent_mask(agent_mask, batch_size=local_obs.shape[0])
         augmented_observations = self.encoder(local_obs, global_obs, agent_mask=agent_mask)
@@ -294,7 +298,10 @@ class MATPolicy(BasePPOPolicy):
         log_probs = self.action_dist.log_prob(actions)
 
         values = self._critic_with_hidden_vars(augmented_observations, hidden_vars, agent_mask=agent_mask)
-        extra_losses, extra_loss_metrics = self.action_dist.compute_extra_losses(agent_mask=agent_mask)
+        extra_losses, extra_loss_metrics = self.action_dist.compute_extra_losses(
+            agent_mask=agent_mask,
+            action_splitter=action_splitter,
+        )
         return augmented_observations, log_probs, values, extra_losses, extra_loss_metrics
 
     def act(
