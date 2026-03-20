@@ -131,7 +131,7 @@ def main() -> None:
     n_workers = 23
     n_envs = n_workers * 10
 
-    episode_length = 512
+    episode_length = 1024
     total_timesteps = 200_000_000
     save_interval = 5000
 

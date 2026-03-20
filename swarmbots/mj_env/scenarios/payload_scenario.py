@@ -5,6 +5,7 @@ import mujoco
 import numpy as np
 from mujoco import MjsBody
 
+from swarmbots.mj_env.float_or_dist_params import FloatOrDistParams
 from swarmbots.mj_env.quat_rot6d import quat_to_rot6d
 from swarmbots.mj_env.scenarios.base_scenario import (
     ActuatorsActivationRewardType,
@@ -53,6 +54,8 @@ class PayloadScenario(BaseScenario, abc.ABC):
             quat_rot6d_representation: bool = True,
             reset_settle_time: int = 0,
             reset_settle_timestep_scale: float = 1.0,
+            swarm_start_x: FloatOrDistParams = 0.0,
+            swarm_start_y: FloatOrDistParams = 0.0,
             inactive_area_location: Iterable[float] | None = None,
             seed: int | None = None,
             _reset_in_init: bool = True,
@@ -95,6 +98,8 @@ class PayloadScenario(BaseScenario, abc.ABC):
             force_elliptic_cone=force_elliptic_cone,
             reset_settle_time=reset_settle_time,
             reset_settle_timestep_scale=reset_settle_timestep_scale,
+            swarm_start_x=swarm_start_x,
+            swarm_start_y=swarm_start_y,
             inactive_area_location=inactive_area_location,
             _reset_in_init=_reset_in_init
         )
@@ -147,6 +152,17 @@ class PayloadScenario(BaseScenario, abc.ABC):
             self.payload_body_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "Payload")
             if self.payload_body_id == -1:
                 raise RuntimeError("payload_type is set, but body 'Payload' was not found in the model")
+            payload_joint_adr = model.body_jntadr[self.payload_body_id]
+            payload_qpos_adr = model.jnt_qposadr[payload_joint_adr]
+            payload_dof_adr = model.jnt_dofadr[payload_joint_adr]
+            payload_pos = (
+                np.asarray(state["swarm_start_location"], dtype=float)
+                + np.asarray(self.payload_start_location_offset, dtype=float)
+            )
+            data.qpos[payload_qpos_adr:payload_qpos_adr + 3] = payload_pos
+            data.qpos[payload_qpos_adr + 3:payload_qpos_adr + 7] = [1, 0, 0, 0]
+            data.qvel[payload_dof_adr:payload_dof_adr + 6] = 0.0
+            mujoco.mj_forward(model, data)
 
         return state, connections
 

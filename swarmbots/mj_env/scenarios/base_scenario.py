@@ -10,6 +10,7 @@ from mujoco import MjsBody
 
 import swarmbots.mj_env.mujoco_utils as mj_utils
 from swarmbots.learn.performance_timer import PerformanceTimer
+from swarmbots.mj_env.float_or_dist_params import FloatOrDistParams, eval_fodp_2d
 from swarmbots.mj_env.quat_rot6d import quat_to_rot6d
 from swarmbots.mj_env.swarm.base_swarm import BaseSwarm
 from swarmbots.mj_env.swarm.swarm_connections import SwarmConnections
@@ -112,6 +113,8 @@ class BaseScenario(abc.ABC):
             force_elliptic_cone: bool,
             reset_settle_time: float,
             reset_settle_timestep_scale: float,
+            swarm_start_x: FloatOrDistParams,
+            swarm_start_y: FloatOrDistParams,
             inactive_area_location: Iterable[float] | None,
             seed: int | None,
             _reset_in_init: bool = True,
@@ -127,6 +130,8 @@ class BaseScenario(abc.ABC):
         self.connection_dist_threshold = connection_dist_threshold
         self.connection_angle_threshold = connection_angle_threshold
         self.disconnect_potential_threshold = disconnect_potential_threshold
+        self.swarm_start_x = swarm_start_x
+        self.swarm_start_y = swarm_start_y
         if reset_settle_time < 0:
             raise ValueError(f"Expected reset_settle_time >= 0, got {reset_settle_time}")
         self.reset_settle_time = reset_settle_time
@@ -239,6 +244,8 @@ class BaseScenario(abc.ABC):
             'connection_dist_threshold': self.connection_dist_threshold,
             'connection_angle_threshold': self.connection_angle_threshold,
             'disconnect_potential_threshold': self.disconnect_potential_threshold,
+            'swarm_start_x': self.swarm_start_x,
+            'swarm_start_y': self.swarm_start_y,
             'friction': self.friction,
             'force_elliptic_cone': self.force_elliptic_cone,
             'seed': self.seed,
@@ -355,18 +362,24 @@ class BaseScenario(abc.ABC):
         data = mujoco.MjData(model)
         return model, data
 
-    def get_swarm_start_location(self):
-        return np.array([0.0, 0.0, self.swarm.max_unit_extent * 1.1])
+    def get_swarm_start_location(self) -> np.ndarray:
+        start_xy = eval_fodp_2d((self.swarm_start_x, self.swarm_start_y), self.rng)
+        return np.array(
+            [start_xy[0], start_xy[1], self.swarm.max_unit_extent * 1.1],
+            dtype=float,
+        )
 
     def reset_scenario(self, model: mujoco.MjModel, data: mujoco.MjData) -> tuple[dict, SwarmConnections]:
         mujoco.mj_resetData(model, data)
 
         state = dict()
+        swarm_start_location = self.get_swarm_start_location()
+        state["swarm_start_location"] = swarm_start_location.copy()
         connections, units_active_mask = self.swarm.reset_swarm(
             model,
             data,
             self.rng,
-            self.get_swarm_start_location(),
+            swarm_start_location,
             self.inactive_unit_positions
         )
         if self.swarm.can_have_inactive_units:
