@@ -3,7 +3,7 @@ from typing import Optional, Self
 
 import torch
 
-from swarmbots.learn.action_dists.action_dist import ActionNetInitialization
+from swarmbots.learn.action_dists.action_dist import ActionMetricsSplitterInput, ActionNetInitialization
 from swarmbots.learn.action_dists.diag_gaussian_action_dist import DiagGaussianActionDist
 from swarmbots.learn.action_dists.tanh_bijector import TanhBijector
 from swarmbots.learn.losses import LossDict, LossMetrics
@@ -69,7 +69,9 @@ class SquashedDiagGaussianActionDist(DiagGaussianActionDist):
             self,
             *,
             agent_mask: torch.Tensor | None = None,
+            action_splitter: ActionMetricsSplitterInput = None,
     ) -> tuple[LossDict, LossMetrics]:
+        _ = action_splitter
         action_magnitude_loss, action_magnitude_metrics = self.compute_action_magnitude_loss(
             agent_mask=agent_mask
         )

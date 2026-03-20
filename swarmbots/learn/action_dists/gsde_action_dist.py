@@ -6,7 +6,7 @@ import torch
 import torch.distributions as torchdist
 from torch import nn
 
-from swarmbots.learn.action_dists.action_dist import ActionNetInitialization
+from swarmbots.learn.action_dists.action_dist import ActionMetricsSplitterInput, ActionNetInitialization
 from swarmbots.learn.action_dists.continuous_action_dist import ContinuousActionDist
 from swarmbots.learn.action_dists.temporally_correlated_action_dist import TemporallyCorrelatedActionDist
 from swarmbots.learn.action_dists.tanh_bijector import TanhBijector
@@ -214,15 +214,20 @@ class GSDEActionDist(ContinuousActionDist, TemporallyCorrelatedActionDist):
             self,
             *,
             agent_mask: torch.Tensor | None = None,
+            action_splitter: ActionMetricsSplitterInput = None,
     ) -> tuple[LossDict, LossMetrics]:
         if self.squash_output:
+            _ = action_splitter
             action_magnitude_loss, action_magnitude_metrics = self.compute_action_magnitude_loss(
                 agent_mask=agent_mask
             )
             if action_magnitude_loss is None:
                 return {}, action_magnitude_metrics
             return {"action_magnitude": action_magnitude_loss}, action_magnitude_metrics
-        ent_loss, ent_loss_metrics = self.compute_entropy_loss(agent_mask=agent_mask)
+        ent_loss, ent_loss_metrics = self.compute_entropy_loss(
+            agent_mask=agent_mask,
+            action_splitter=action_splitter,
+        )
         action_magnitude_loss, action_magnitude_metrics = self.compute_action_magnitude_loss(
             agent_mask=agent_mask
         )

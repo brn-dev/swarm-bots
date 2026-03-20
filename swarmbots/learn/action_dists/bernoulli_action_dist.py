@@ -5,7 +5,12 @@ from typing import Optional, Self
 import torch
 import torch.distributions as torchdist
 
-from swarmbots.learn.action_dists.action_dist import AGENT_ACTIONS_DIM, ActionNetInitialization
+from swarmbots.learn.action_dists.action_dist import (
+    AGENT_ACTIONS_DIM,
+    ActionMetricsSplitterInput,
+    ActionNetInitialization,
+    compute_split_entropy_metrics,
+)
 from swarmbots.learn.action_dists.discrete_action_dist import DiscreteActionDist
 from swarmbots.learn.losses import LossDict, LossMetrics
 from swarmbots.learn.masking import masked_mean
@@ -65,16 +70,28 @@ class BernoulliActionDist(DiscreteActionDist):
             self,
             *,
             agent_mask: torch.Tensor | None = None,
+            action_splitter: ActionMetricsSplitterInput = None,
     ) -> tuple[LossDict, LossMetrics]:
         if self.ent_loss_coef <= 0:
             return {}, {}
-        entropy_per_agent = self.distribution.entropy().sum(dim=AGENT_ACTIONS_DIM)
+        entropy_per_action = self.distribution.entropy()
+        entropy_per_agent = entropy_per_action.sum(dim=AGENT_ACTIONS_DIM)
         self.validate_agent_mask(agent_mask, expected_shape=tuple(entropy_per_agent.shape))
-        entropy_mean = masked_mean(entropy_per_agent, agent_mask)
-        return {"entropy": -self.ent_loss_coef * entropy_per_agent}, {
-            "ent_loss": (-entropy_mean).item(),
-            "ent_loss_scaled": (-self.ent_loss_coef * entropy_mean).item(),
-        }
+        entropy_loss = -self.ent_loss_coef * entropy_per_agent
+        with torch.no_grad():
+            entropy_mean = masked_mean(entropy_per_agent, agent_mask)
+            metrics: LossMetrics = {
+                "ent_loss": (-entropy_mean).item(),
+                "ent_loss_scaled": (-self.ent_loss_coef * entropy_mean).item(),
+            }
+            metrics.update(
+                compute_split_entropy_metrics(
+                    entropy_per_action,
+                    action_splitter=action_splitter,
+                    agent_mask=agent_mask,
+                )
+            )
+        return {"entropy": entropy_loss}, metrics
 
     def set_ent_loss_coef(self, value: float) -> None:
         if value < 0:

@@ -9,6 +9,7 @@ from swarmbots.learn.action_dists.action_dist import (
     ActionNetInitialization,
     ActionDist,
     ActionMetricsSplitterInput,
+    compute_split_entropy_metrics,
     compute_action_metrics,
     resolve_action_metrics_splitter,
 )
@@ -63,7 +64,9 @@ class ContinuousActionDist(ActionDist, abc.ABC):
             self,
             *,
             agent_mask: torch.Tensor | None = None,
+            action_splitter: ActionMetricsSplitterInput = None,
     ) -> tuple[LossDict, LossMetrics]:
+        _ = action_splitter
         action_magnitude_loss, action_magnitude_metrics = self.compute_action_magnitude_loss(
             agent_mask=agent_mask
         )
@@ -85,18 +88,28 @@ class ContinuousActionDist(ActionDist, abc.ABC):
             self,
             *,
             agent_mask: torch.Tensor | None = None,
+            action_splitter: ActionMetricsSplitterInput = None,
     ) -> tuple[Optional[torch.Tensor], LossMetrics]:
         if self.ent_loss_coef <= 0:
             return None, {}
-        entropy_per_agent = self.sum_action_dim(self.distribution.entropy())
+        entropy_per_action = self.distribution.entropy()
+        entropy_per_agent = self.sum_action_dim(entropy_per_action)
         self.validate_agent_mask(agent_mask, expected_shape=tuple(entropy_per_agent.shape))
-        entropy_valid_mask: torch.Tensor | None = agent_mask
-        entropy_mean = masked_mean(entropy_per_agent, entropy_valid_mask)
         entropy_loss_per_agent = -self.ent_loss_coef * entropy_per_agent
-        return entropy_loss_per_agent, {
-            "ent_loss": (-entropy_mean).item(),
-            "ent_loss_scaled": (-self.ent_loss_coef * entropy_mean).item(),
-        }
+        with torch.no_grad():
+            entropy_mean = masked_mean(entropy_per_agent, agent_mask)
+            metrics: LossMetrics = {
+                "ent_loss": (-entropy_mean).item(),
+                "ent_loss_scaled": (-self.ent_loss_coef * entropy_mean).item(),
+            }
+            metrics.update(
+                compute_split_entropy_metrics(
+                    entropy_per_action,
+                    action_splitter=action_splitter,
+                    agent_mask=agent_mask,
+                )
+            )
+        return entropy_loss_per_agent, metrics
 
 
     def get_metrics(

@@ -5,6 +5,7 @@ from typing import Any
 import torch
 from torch import nn
 
+from swarmbots.learn.action_dists.action_dist import ActionMetricsSplitterInput
 from swarmbots.learn.action_dists.hybrid_action_dist import (
     HybridActionDistribution,
     ContinuousActionDistConfigInput,
@@ -93,6 +94,7 @@ class BasePPOPolicy(BasePolicy, abc.ABC):
             actions: torch.Tensor,
             hidden_vars: torch.Tensor | None = None,
             agent_mask: torch.Tensor | None = None,
+            action_splitter: ActionMetricsSplitterInput = None,
     ) -> tuple[torch.Tensor, torch.Tensor, LossDict, LossMetrics]:
         """
         :return: log_probs, values, extra_losses, extra_loss_metrics
@@ -336,6 +338,7 @@ class PPOPolicy(BasePPOPolicy):
             actions: torch.Tensor,
             hidden_vars: torch.Tensor | None = None,
             agent_mask: torch.Tensor | None = None,
+            action_splitter: ActionMetricsSplitterInput = None,
     ) -> tuple[torch.Tensor, torch.Tensor, LossDict, LossMetrics]:
         local_obs = self._mask_local_obs(local_obs, agent_mask)
         latent_pi = self.actor(local_obs, global_obs)
@@ -346,7 +349,10 @@ class PPOPolicy(BasePPOPolicy):
         critic_global_obs = self._build_critic_global_obs(global_obs, hidden_vars)
         values = self.critic(local_obs, critic_global_obs, agent_mask=agent_mask)
 
-        extra_losses, extra_loss_metrics = self.action_dist.compute_extra_losses(agent_mask=agent_mask)
+        extra_losses, extra_loss_metrics = self.action_dist.compute_extra_losses(
+            agent_mask=agent_mask,
+            action_splitter=action_splitter,
+        )
         return log_probs, values, extra_losses, extra_loss_metrics
 
     def act(

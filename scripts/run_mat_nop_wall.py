@@ -65,6 +65,7 @@ def wrap_vec_env(
         vector_env: SyncVectorEnv | AsyncVectorEnv,
         obs_indices: ObsIndices,
         gamma: float,
+        use_popart: bool,
         rollout_device: torch.device
 ) -> SwarmBotsLearnEnvWrapper:
     vector_env = RecordEpisodeStatistics(vector_env)
@@ -88,7 +89,8 @@ def wrap_vec_env(
         quaternion_indices=obs_indices.hidden_vars_quaternion_indices,
     )
     vector_env = TransitionObsWrapper(vector_env)
-    vector_env = NormalizeReward(vector_env, gamma=gamma)
+    if not use_popart:
+        vector_env = NormalizeReward(vector_env, gamma=gamma)
 
     env = SwarmBotsLearnEnvWrapper(vector_env, device=rollout_device)
     return env
@@ -212,6 +214,7 @@ def main() -> None:
             vector_env=record_env,
             obs_indices=obs_indices,
             gamma=gamma,
+            use_popart=use_popart,
             rollout_device=rollout_device,
         )
         return record_env
@@ -235,6 +238,7 @@ def main() -> None:
         vector_env=vector_env,
         obs_indices=obs_indices,
         gamma=gamma,
+        use_popart=use_popart,
         rollout_device=rollout_device,
     )
 
