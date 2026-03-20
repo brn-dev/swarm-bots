@@ -226,8 +226,13 @@ class BridgeScenario(PayloadScenario):
 
         return spec
 
-    def reset_scenario(self, model: mujoco.MjModel, data: mujoco.MjData) -> tuple[dict, SwarmConnections]:
-        state, connections = super().reset_scenario(model, data)
+    def reset_scenario(
+            self,
+            model: mujoco.MjModel,
+            data: mujoco.MjData,
+            settle: bool = True,
+    ) -> tuple[dict, SwarmConnections]:
+        state, connections = super().reset_scenario(model, data, settle=settle)
 
         self.bridge_x = float(eval_fodp(self.bridge_x_param, self.rng))
 

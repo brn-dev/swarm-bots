@@ -287,14 +287,21 @@ class ObstacleStreetScenario(PayloadScenario):
 
         return spec
 
-    def reset_scenario(self, model: mujoco.MjModel, data: mujoco.MjData) -> tuple[dict, SwarmConnections]:
-        state, connections = super().reset_scenario(model, data)
+    def reset_scenario(
+            self,
+            model: mujoco.MjModel,
+            data: mujoco.MjData,
+            settle: bool = True,
+    ) -> tuple[dict, SwarmConnections]:
+        state, connections = super().reset_scenario(model, data, settle=False)
 
         hidden_vars: list[float] = []
         wall_y = self.reset_walls_and_ramps(data, model, hidden_vars)
         self.reset_poles(data, model, hidden_vars)
 
         mujoco.mj_forward(model, data)
+        if settle:
+            self.settle_reset(model, data, state)
 
         state['progress'] = self.compute_progress(data, state.get("units_active_mask"))
         state['hidden_vars'] = np.array(hidden_vars)

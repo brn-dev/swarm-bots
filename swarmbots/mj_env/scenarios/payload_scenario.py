@@ -143,8 +143,13 @@ class PayloadScenario(BaseScenario, abc.ABC):
             )
             payload_body.add_joint(type=mujoco.mjtJoint.mjJNT_FREE)
 
-    def reset_scenario(self, model: mujoco.MjModel, data: mujoco.MjData) -> tuple[dict, SwarmConnections]:
-        state, connections = super().reset_scenario(model, data)
+    def reset_scenario(
+            self,
+            model: mujoco.MjModel,
+            data: mujoco.MjData,
+            settle: bool = True,
+    ) -> tuple[dict, SwarmConnections]:
+        state, connections = super().reset_scenario(model, data, settle=settle)
 
         if self.payload_type is None:
             self.payload_body_id = -1
