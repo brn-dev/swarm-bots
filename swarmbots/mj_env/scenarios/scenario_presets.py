@@ -2,6 +2,7 @@ from typing import Any
 
 import numpy as np
 
+from swarmbots.mj_env.float_or_dist_params import UniformDistParams
 from swarmbots.mj_env.scenarios.bridge_scenario import BridgeScenario
 from swarmbots.mj_env.scenarios.obstacle_street_scenario import ObstacleStreetScenario
 from swarmbots.mj_env.scenarios.base_scenario import ActuatorsActivationRewardType
@@ -30,8 +31,8 @@ DEFAULT_KWARGS = {
     'connectors_successfully_activated_reward_weight': 0e-3,
     'connectors_unsuccessfully_activated_reward_weight': -0e-5,
     'connectors_deactivated_reward_weight': 0e-3,
-    'reset_settle_time': 1.0,
-    'reset_settle_timestep_scale': 5,
+    'reset_settle_time': 0.5,
+    'reset_settle_timestep_scale': 2,
 }
 WALL_PASS_KWARGS = {
     'wall_pass_reward_weight': 5.0,
@@ -109,6 +110,7 @@ def default_wall(
     scenario_kwargs.update(WALL_PASS_KWARGS)
     scenario_kwargs.update({
         'wall_height': 0.20,
+        'swarm_start_y': UniformDistParams(0.0, 0.75),
     })
     scenario_kwargs.update(kwargs)
     return ObstacleStreetScenario(

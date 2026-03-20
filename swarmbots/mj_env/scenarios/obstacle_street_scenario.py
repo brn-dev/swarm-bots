@@ -112,6 +112,8 @@ class ObstacleStreetScenario(PayloadScenario):
             quat_rot6d_representation: bool = True,
             reset_settle_time: float = 0,
             reset_settle_timestep_scale: float = 1.0,
+            swarm_start_x: FloatOrDistParams = 0.0,
+            swarm_start_y: FloatOrDistParams = 0.0,
             seed: int | None = None,
     ) -> None:
         self.poles: list[PoleSpec] = []
@@ -183,6 +185,8 @@ class ObstacleStreetScenario(PayloadScenario):
             force_elliptic_cone=force_elliptic_cone,
             reset_settle_time=reset_settle_time,
             reset_settle_timestep_scale=reset_settle_timestep_scale,
+            swarm_start_x=swarm_start_x,
+            swarm_start_y=swarm_start_y,
             inactive_area_location=[street_width * 2, 0, 0.1],
             _reset_in_init=False
         )
@@ -295,7 +299,11 @@ class ObstacleStreetScenario(PayloadScenario):
         state['progress'] = self.compute_progress(data, state.get("units_active_mask"))
         state['hidden_vars'] = np.array(hidden_vars)
         state['wall_y'] = wall_y
-        state['next_wall_for_unit'] = np.zeros(self.num_units, dtype=int)
+        unit_y = np.asarray(data.qpos[self._qpos_indices[:, 1]], dtype=float)
+        passed_walls_mask = unit_y[:, np.newaxis] > (wall_y[np.newaxis, :] + self.wall_pass_margin)
+        state['next_wall_for_unit'] = passed_walls_mask.sum(axis=1).astype(int)
+        state['num_walls_passed'] = 0
+        state['walls_passed_reward'] = 0.0
 
         return state, connections
 
