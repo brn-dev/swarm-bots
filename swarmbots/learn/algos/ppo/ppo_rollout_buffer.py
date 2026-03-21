@@ -27,6 +27,7 @@ class PPOEpisode:
     final_hidden_vars: MaybeTensor  # (n_hidden_vars)
     final_agent_mask: MaybeTensor  # (n_agents)
     final_value: MaybeTensor  # (1)
+    initial_previous_actions: MaybeTensor = None  # (n_agents, n_actions_per_agent)
 
     returns: MaybeTensor = None  # (n_steps)
     advantages: MaybeTensor = None  # (n_steps)
@@ -92,6 +93,10 @@ class PPOEpisodeAccumulator:
             (n_envs, max_episode_length, n_agents),
             dtype=storage_dtype, device=storage_device
         )
+        self.initial_previous_actions = torch.zeros(
+            (n_envs, n_agents, n_agent_actions),
+            dtype=storage_dtype, device=storage_device
+        )
         self.rewards = torch.zeros(
             (n_envs, max_episode_length),
             dtype=storage_dtype, device=storage_device
@@ -116,11 +121,19 @@ class PPOEpisodeAccumulator:
             rewards: torch.Tensor,
             log_probs: torch.Tensor,
             values: torch.Tensor,
+            previous_actions: MaybeTensor,
             is_final: torch.Tensor,
     ) -> Iterator[PPOEpisode]:
         active_env_indices = torch.where(torch.logical_not(is_final))[0]
         if len(active_env_indices) > 0:
             step_indices = self.step[active_env_indices]
+            new_episode_mask = step_indices == 0
+            new_episode_env_indices = active_env_indices[new_episode_mask]
+            if len(new_episode_env_indices) > 0:
+                if previous_actions is None:
+                    self.initial_previous_actions[new_episode_env_indices].zero_()
+                else:
+                    self.initial_previous_actions[new_episode_env_indices] = previous_actions[new_episode_env_indices]
             self.local_obs[active_env_indices, step_indices] = local_obs[active_env_indices]
             self.global_obs[active_env_indices, step_indices] = global_obs[active_env_indices]
             self.hidden_vars[active_env_indices, step_indices] = hidden_vars[active_env_indices]
@@ -137,6 +150,7 @@ class PPOEpisodeAccumulator:
         for final_env_idx in final_env_indices.tolist():
             step = int(self.step[final_env_idx].item())
             if step == 0:
+                self.initial_previous_actions[final_env_idx].zero_()
                 self.step[final_env_idx] = 0
                 continue
             yield self.construct_episode(
@@ -147,6 +161,7 @@ class PPOEpisodeAccumulator:
                 final_agent_mask=None if agent_mask is None else agent_mask[final_env_idx],
                 final_value=values[final_env_idx],
             )
+            self.initial_previous_actions[final_env_idx].zero_()
             self.step[final_env_idx] = 0
 
     def construct_episode(
@@ -174,9 +189,11 @@ class PPOEpisodeAccumulator:
             final_hidden_vars=final_hidden_vars.clone(),
             final_agent_mask=None if final_agent_mask is None else final_agent_mask.clone(),
             final_value=final_value.clone(),
+            initial_previous_actions=self.initial_previous_actions[env].clone(),
         )
 
     def reset(self) -> None:
+        self.initial_previous_actions.zero_()
         self.step[:] = 0
 
 
@@ -247,6 +264,7 @@ class PPORolloutBuffer:
             rewards: torch.Tensor,
             log_probs: torch.Tensor,
             values: torch.Tensor,
+            previous_actions: MaybeTensor,
             is_final: torch.Tensor,
     ) -> None:
         new_episodes = self.accumulator.add(
@@ -258,6 +276,7 @@ class PPORolloutBuffer:
             rewards=rewards,
             log_probs=log_probs,
             values=values,
+            previous_actions=previous_actions,
             is_final=is_final,
         )
         for new_ep in new_episodes:
@@ -310,6 +329,10 @@ class PPORolloutBuffer:
                 final_hidden_vars=ep.final_hidden_vars.to(device=self.train_device, dtype=self.train_dtype),
                 final_agent_mask=None if ep.final_agent_mask is None else ep.final_agent_mask.to(device=self.train_device),
                 final_value=ep.final_value.to(device=self.train_device, dtype=self.train_dtype),
+                initial_previous_actions=(
+                    None if ep.initial_previous_actions is None
+                    else ep.initial_previous_actions.to(device=self.train_device, dtype=self.train_dtype)
+                ),
                 returns=ep.returns.to(device=self.train_device, dtype=self.train_dtype),
                 advantages=ep.advantages.to(device=self.train_device, dtype=self.train_dtype),
             )
@@ -353,7 +376,7 @@ class PPOSampler(BaseSampler[PPOSamplesType]):
             self.agent_mask = torch.concatenate(tuple(ep.agent_mask for ep in episodes), dim=0)
         if requires_previous_actions:
             previous_actions_per_episode = tuple(
-                torch.cat((torch.zeros_like(ep.actions[:1]), ep.actions[:-1]), dim=0)
+                torch.cat((ep.initial_previous_actions.unsqueeze(0), ep.actions[:-1]), dim=0)
                 for ep in episodes
             )
             self.previous_actions = torch.concatenate(previous_actions_per_episode, dim=0)

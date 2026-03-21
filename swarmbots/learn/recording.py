@@ -181,6 +181,13 @@ def record_policy(
 
     for episode_idx in range(num_episodes):
         obs, _ = env.reset()
+        previous_actions: torch.Tensor | None = None
+        if policy.requires_previous_actions():
+            previous_actions = torch.zeros(
+                (env.num_envs, env.n_agents, env.action_space.total_agent_action_dim),
+                dtype=obs["local_obs"].dtype,
+                device=obs["local_obs"].device,
+            )
         action_dist = getattr(policy, "action_dist", None)
         if action_dist is not None and hasattr(action_dist, "reset_temporal_correlations_on_ep_start"):
             episode_start_mask = torch.ones((env.num_envs,), device=device, dtype=torch.bool)
@@ -224,6 +231,7 @@ def record_policy(
                     global_obs,
                     hidden_vars=hidden_vars,
                     agent_mask=agent_mask,
+                    previous_actions=previous_actions,
                     deterministic=deterministic,
                 )
                 # print(format_summary_statistics(compute_summary_statistics(actions[:, :, :8], make_histogram=True), SummaryStatisticsFormat(histogram=True)))
@@ -244,6 +252,9 @@ def record_policy(
                 ep_progress_reward = _get_episode_stat(infos, env_idx=0, key="progress_reward")
                 ep_guidance_reward = _get_episode_stat(infos, env_idx=0, key="guidance_reward")
                 done = True
+            if previous_actions is not None:
+                done_mask = torch.logical_or(term, trunc).unsqueeze(-1).unsqueeze(-1)
+                previous_actions = actions.detach().masked_fill(done_mask, 0.0)
             
             step_cnt += 1
 
