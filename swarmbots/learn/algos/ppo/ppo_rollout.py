@@ -183,7 +183,6 @@ def _collect_rollout_step(
             global_obs=global_obs,
             hidden_vars=hidden_vars,
             agent_mask=agent_mask,
-            previous_actions=previous_actions,
             actions=actions,
             rewards=rewards,
             log_probs=log_probs,
@@ -199,7 +198,9 @@ def _collect_rollout_step(
             episode_infos.append(buffered_info)
             episode_info_buffers[env_idx] = None
 
-    next_previous_actions = actions.detach() if previous_actions is not None else None
+    next_previous_actions: torch.Tensor | None = None
+    if previous_actions is not None:
+        next_previous_actions = actions.detach().masked_fill(is_final.unsqueeze(-1).unsqueeze(-1), 0.0)
     return new_obs, dones, terminations, next_previous_actions, rollout_step_idx + 1
 
 
