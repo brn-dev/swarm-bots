@@ -79,6 +79,7 @@ class BasePPOPolicy(BasePolicy, abc.ABC):
             global_obs: torch.Tensor,
             hidden_vars: torch.Tensor | None = None,
             agent_mask: torch.Tensor | None = None,
+            previous_actions: torch.Tensor | None = None,
             deterministic: bool = False
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
@@ -94,6 +95,7 @@ class BasePPOPolicy(BasePolicy, abc.ABC):
             actions: torch.Tensor,
             hidden_vars: torch.Tensor | None = None,
             agent_mask: torch.Tensor | None = None,
+            previous_actions: torch.Tensor | None = None,
             action_splitter: ActionMetricsSplitterInput = None,
     ) -> tuple[torch.Tensor, torch.Tensor, LossDict, LossMetrics]:
         """
@@ -315,17 +317,25 @@ class PPOPolicy(BasePPOPolicy):
     def get_hyper_parameters(self) -> dict[str, Any]:
         return self.hyper_parameters
 
+    def requires_previous_actions(self) -> bool:
+        return self.action_dist.requires_previous_actions()
+
     def forward(
             self,
             local_obs: torch.Tensor,
             global_obs: torch.Tensor,
             hidden_vars: torch.Tensor | None = None,
             agent_mask: torch.Tensor | None = None,
+            previous_actions: torch.Tensor | None = None,
             deterministic: bool = False
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         local_obs = self._mask_local_obs(local_obs, agent_mask)
         latent_pi = self.actor(local_obs, global_obs)
-        actions, log_probs = self.action_dist.get_actions_with_log_probs(latent_pi, deterministic)
+        actions, log_probs = self.action_dist.get_actions_with_log_probs(
+            latent_pi,
+            deterministic,
+            previous_actions=previous_actions,
+        )
 
         critic_global_obs = self._build_critic_global_obs(global_obs, hidden_vars)
         values = self.critic(local_obs, critic_global_obs, agent_mask=agent_mask)
@@ -338,13 +348,14 @@ class PPOPolicy(BasePPOPolicy):
             actions: torch.Tensor,
             hidden_vars: torch.Tensor | None = None,
             agent_mask: torch.Tensor | None = None,
+            previous_actions: torch.Tensor | None = None,
             action_splitter: ActionMetricsSplitterInput = None,
     ) -> tuple[torch.Tensor, torch.Tensor, LossDict, LossMetrics]:
         local_obs = self._mask_local_obs(local_obs, agent_mask)
         latent_pi = self.actor(local_obs, global_obs)
 
         self.action_dist.update_latent_features(latent_pi)
-        log_probs = self.action_dist.log_prob(actions)
+        log_probs = self.action_dist.log_prob(actions, previous_actions=previous_actions)
 
         critic_global_obs = self._build_critic_global_obs(global_obs, hidden_vars)
         values = self.critic(local_obs, critic_global_obs, agent_mask=agent_mask)
@@ -361,11 +372,15 @@ class PPOPolicy(BasePPOPolicy):
             global_obs: torch.Tensor,
             hidden_vars: torch.Tensor | None = None,
             agent_mask: torch.Tensor | None = None,
+            previous_actions: torch.Tensor | None = None,
             deterministic: bool = False
     ) -> torch.Tensor:
         local_obs = self._mask_local_obs(local_obs, agent_mask)
         latent_pi = self.actor(local_obs, global_obs)
-        actions = self.action_dist.update_latent_features(latent_pi).get_actions(deterministic)
+        actions = self.action_dist.update_latent_features(latent_pi).get_actions(
+            deterministic=deterministic,
+            previous_actions=previous_actions,
+        )
         return actions
 
     @staticmethod

@@ -53,15 +53,23 @@ class ActionDist(nn.Module, abc.ABC):
         raise NotImplementedError
 
     @abc.abstractmethod
-    def sample(self, agent: int | None = None) -> torch.Tensor:
+    def sample(
+            self,
+            agent: int | None = None,
+            previous_actions: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         raise NotImplementedError
 
     @abc.abstractmethod
-    def mode(self) -> torch.Tensor:
+    def mode(self, previous_actions: torch.Tensor | None = None) -> torch.Tensor:
         raise NotImplementedError
 
     @abc.abstractmethod
-    def log_prob(self, actions: torch.Tensor) -> torch.Tensor:
+    def log_prob(
+            self,
+            actions: torch.Tensor,
+            previous_actions: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         raise NotImplementedError
 
     def compute_extra_losses(
@@ -73,6 +81,9 @@ class ActionDist(nn.Module, abc.ABC):
         _ = (agent_mask, action_splitter)
         return {}, {}
 
+    def requires_previous_actions(self) -> bool:
+        return False
+
     @abc.abstractmethod
     def get_metrics(
             self,
@@ -81,19 +92,29 @@ class ActionDist(nn.Module, abc.ABC):
     ) -> dict[str, Any]:
         raise NotImplementedError
 
-    def get_actions(self, deterministic: bool = False, agent: int | None = None) -> torch.Tensor:
+    def get_actions(
+            self,
+            deterministic: bool = False,
+            agent: int | None = None,
+            previous_actions: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         if deterministic:
-            return self.mode()
-        return self.sample(agent=agent)
+            return self.mode(previous_actions=previous_actions)
+        return self.sample(agent=agent, previous_actions=previous_actions)
 
     def get_actions_with_log_probs(
             self,
             latent_pi: torch.Tensor,
             deterministic: bool = False,
             agent: int | None = None,
+            previous_actions: torch.Tensor | None = None,
     ):
-        actions = self.update_latent_features(latent_pi).get_actions(deterministic=deterministic, agent=agent)
-        log_probs = self.log_prob(actions)
+        actions = self.update_latent_features(latent_pi).get_actions(
+            deterministic=deterministic,
+            agent=agent,
+            previous_actions=previous_actions,
+        )
+        log_probs = self.log_prob(actions, previous_actions=previous_actions)
         return actions, log_probs
 
     @staticmethod

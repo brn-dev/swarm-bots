@@ -56,7 +56,12 @@ class SquashedDiagGaussianActionDist(DiagGaussianActionDist):
         super().update_latent_features(latent_pi)
         return self
 
-    def log_prob(self, actions: torch.Tensor, gaussian_actions: Optional[torch.Tensor] = None) -> torch.Tensor:
+    def log_prob(
+            self,
+            actions: torch.Tensor,
+            previous_actions: torch.Tensor | None = None,
+            gaussian_actions: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
         if gaussian_actions is None:
             gaussian_actions = TanhBijector.inverse(actions)
 
@@ -79,11 +84,15 @@ class SquashedDiagGaussianActionDist(DiagGaussianActionDist):
             return {}, action_magnitude_metrics
         return {"action_magnitude": action_magnitude_loss}, action_magnitude_metrics
 
-    def sample(self, agent: int | None = None) -> torch.Tensor:
+    def sample(
+            self,
+            agent: int | None = None,
+            previous_actions: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         self._last_gaussian_actions = super().sample()
         return torch.tanh(self._last_gaussian_actions)
 
-    def mode(self) -> torch.Tensor:
+    def mode(self, previous_actions: torch.Tensor | None = None) -> torch.Tensor:
         self._last_gaussian_actions = super().mode()
         return torch.tanh(self._last_gaussian_actions)
 
@@ -92,9 +101,14 @@ class SquashedDiagGaussianActionDist(DiagGaussianActionDist):
             latent_pi: torch.Tensor,
             deterministic: bool = False,
             agent: int | None = None,
+            previous_actions: torch.Tensor | None = None,
     ):
         # get_actions calls sample() or mode(), both of which set _last_gaussian_actions
         # --> prevents squashing and unsquashing which can lead to numerical instability
-        actions = self.update_latent_features(latent_pi).get_actions(deterministic=deterministic, agent=agent)
-        log_probs = self.log_prob(actions, self._last_gaussian_actions)
+        actions = self.update_latent_features(latent_pi).get_actions(
+            deterministic=deterministic,
+            agent=agent,
+            previous_actions=previous_actions,
+        )
+        log_probs = self.log_prob(actions, gaussian_actions=self._last_gaussian_actions)
         return actions, log_probs

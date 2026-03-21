@@ -114,8 +114,11 @@ class LeftRightBetaActionDist(ActionDist):
         self.right_beta_dist = torchdist.Beta(concentration1=right_alpha, concentration0=right_beta)
         return self
 
-    def sample(self, agent: int | None = None) -> torch.Tensor:
-        _ = agent
+    def sample(
+            self,
+            agent: int | None = None,
+            previous_actions: torch.Tensor | None = None,
+    ) -> torch.Tensor:
 
         component_indices = self.categorical_dist.sample()
         left_01 = self.left_beta_dist.sample()
@@ -130,7 +133,7 @@ class LeftRightBetaActionDist(ActionDist):
         sampled_actions = torch.where(component_indices == self._RIGHT_INDEX, right_actions, sampled_actions)
         return sampled_actions
 
-    def mode(self) -> torch.Tensor:
+    def mode(self, previous_actions: torch.Tensor | None = None) -> torch.Tensor:
         weights = F.softmax(self.weight_logits, dim=-1)
 
         left_mean = -1.0 + self.interval_width * self.left_beta_dist.mean
@@ -140,7 +143,11 @@ class LeftRightBetaActionDist(ActionDist):
                 + weights[..., self._RIGHT_INDEX] * right_mean
         )
 
-    def log_prob(self, actions: torch.Tensor) -> torch.Tensor:
+    def log_prob(
+            self,
+            actions: torch.Tensor,
+            previous_actions: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         log_weights = F.log_softmax(self.weight_logits, dim=-1)
         left_mask = actions < -self.eps_c
         right_mask = actions > self.eps_c

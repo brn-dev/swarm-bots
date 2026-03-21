@@ -57,7 +57,11 @@ class ContinuousActionDist(ActionDist, abc.ABC):
     def update_distribution_params(self, means: torch.Tensor, log_stds: torch.Tensor) -> Self:
         raise NotImplementedError
 
-    def log_prob(self, actions: torch.Tensor) -> torch.Tensor:
+    def log_prob(
+            self,
+            actions: torch.Tensor,
+            previous_actions: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         return self.sum_action_dim(self.distribution.log_prob(actions))
 
     def compute_extra_losses(

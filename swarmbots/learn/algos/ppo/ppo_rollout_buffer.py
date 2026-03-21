@@ -18,6 +18,7 @@ class PPOEpisode:
     global_obs: torch.Tensor  # (n_steps, n_global_obs)
     hidden_vars: torch.Tensor  # (n_steps, n_hidden_vars)
     agent_mask: MaybeTensor  # (n_steps, n_agents)
+    previous_actions: MaybeTensor  # (n_steps, n_agents, n_actions_per_agent)
     actions: torch.Tensor  # (n_steps, n_agents, n_actions_per_agent)
     rewards: MaybeTensor  # (n_steps)
     log_probs: torch.Tensor  # (n_steps, n_agents)
@@ -66,6 +67,7 @@ class PPOEpisodeAccumulator:
             hidden_vars_shape: tuple[int, ...],
             n_agent_actions: int,
             has_agent_mask: bool,
+            has_previous_actions: bool,
             storage_device: torch.device | str,
             storage_dtype: torch.dtype
     ):
@@ -89,6 +91,10 @@ class PPOEpisodeAccumulator:
             (n_envs, max_episode_length, n_agents, n_agent_actions),
             dtype=storage_dtype, device=storage_device
         )
+        self.previous_actions: MaybeTensor = torch.zeros(
+            (n_envs, max_episode_length, n_agents, n_agent_actions),
+            dtype=storage_dtype, device=storage_device
+        ) if has_previous_actions else None
         self.log_probs = torch.zeros(
             (n_envs, max_episode_length, n_agents),
             dtype=storage_dtype, device=storage_device
@@ -113,6 +119,7 @@ class PPOEpisodeAccumulator:
             global_obs: torch.Tensor,
             hidden_vars: torch.Tensor,
             agent_mask: MaybeTensor,
+            previous_actions: MaybeTensor,
             actions: torch.Tensor,
             rewards: torch.Tensor,
             log_probs: torch.Tensor,
@@ -127,6 +134,10 @@ class PPOEpisodeAccumulator:
             self.hidden_vars[active_env_indices, step_indices] = hidden_vars[active_env_indices]
             if agent_mask is not None:
                 self.agent_mask[active_env_indices, step_indices] = agent_mask[active_env_indices]
+            if self.previous_actions is not None:
+                if previous_actions is None:
+                    raise ValueError("previous_actions must be provided when enabled in the rollout buffer")
+                self.previous_actions[active_env_indices, step_indices] = previous_actions[active_env_indices]
             self.actions[active_env_indices, step_indices] = actions[active_env_indices]
             self.rewards[active_env_indices, step_indices] = rewards[active_env_indices]
             self.log_probs[active_env_indices, step_indices] = log_probs[active_env_indices]
@@ -166,6 +177,7 @@ class PPOEpisodeAccumulator:
             global_obs=self.global_obs[env, :step].clone(),
             hidden_vars=self.hidden_vars[env, :step].clone(),
             agent_mask=agent_mask,
+            previous_actions=None if self.previous_actions is None else self.previous_actions[env, :step].clone(),
             actions=self.actions[env, :step].clone(),
             rewards=self.rewards[env, :step].clone(),
             log_probs=self.log_probs[env, :step].clone(),
@@ -190,6 +202,7 @@ class PPORolloutBuffer:
             action_space: VectorHybridActionSpace,
             gamma: float,
             gae_lambda: float,
+            collect_previous_actions: bool = False,
             rollout_device: torch.device | str = 'cpu',
             rollout_dtype: torch.dtype = torch.float32,
             train_device: torch.device | str = 'auto',
@@ -215,6 +228,7 @@ class PPORolloutBuffer:
 
         assert action_space.n_agents == self.n_agents
         self.n_agent_actions = action_space.total_agent_action_dim
+        self.collect_previous_actions = bool(collect_previous_actions)
 
         self.gamma = gamma
         self.gae_lambda = gae_lambda
@@ -234,6 +248,7 @@ class PPORolloutBuffer:
             hidden_vars_shape=self.hidden_vars_shape,
             n_agent_actions=self.n_agent_actions,
             has_agent_mask=self.has_agent_mask,
+            has_previous_actions=self.collect_previous_actions,
             storage_device=self.rollout_device,
             storage_dtype=self.rollout_dtype,
         )
@@ -244,6 +259,7 @@ class PPORolloutBuffer:
             global_obs: torch.Tensor,
             hidden_vars: torch.Tensor,
             agent_mask: MaybeTensor,
+            previous_actions: MaybeTensor,
             actions: torch.Tensor,
             rewards: torch.Tensor,
             log_probs: torch.Tensor,
@@ -255,6 +271,7 @@ class PPORolloutBuffer:
             global_obs=global_obs,
             hidden_vars=hidden_vars,
             agent_mask=agent_mask,
+            previous_actions=previous_actions,
             actions=actions,
             rewards=rewards,
             log_probs=log_probs,
@@ -302,6 +319,11 @@ class PPORolloutBuffer:
                 global_obs=ep.global_obs.to(device=self.train_device, dtype=self.train_dtype),
                 hidden_vars=ep.hidden_vars.to(device=self.train_device, dtype=self.train_dtype),
                 agent_mask=None if ep.agent_mask is None else ep.agent_mask.to(device=self.train_device),
+                previous_actions=(
+                    None
+                    if ep.previous_actions is None
+                    else ep.previous_actions.to(device=self.train_device, dtype=self.train_dtype)
+                ),
                 actions=ep.actions.to(device=self.train_device, dtype=self.train_dtype),
                 rewards=ep.rewards.to(device=self.train_device, dtype=self.train_dtype),
                 log_probs=ep.log_probs.to(device=self.train_device, dtype=self.train_dtype),
@@ -325,6 +347,7 @@ class PPOSamples:
     global_obs: torch.Tensor
     hidden_vars: torch.Tensor
     agent_mask: MaybeTensor
+    previous_actions: MaybeTensor
     actions: torch.Tensor
     log_probs: torch.Tensor
     values: torch.Tensor
@@ -350,6 +373,14 @@ class PPOSampler(BaseSampler[PPOSamplesType]):
             self.agent_mask = None
         else:
             self.agent_mask = torch.concatenate(tuple(ep.agent_mask for ep in episodes), dim=0)
+        has_previous_actions = any(ep.previous_actions is not None for ep in episodes)
+        has_missing_previous_actions = any(ep.previous_actions is None for ep in episodes)
+        if has_previous_actions and has_missing_previous_actions:
+            raise ValueError("previous_actions must be provided for all episodes or none")
+        if has_missing_previous_actions:
+            self.previous_actions = None
+        else:
+            self.previous_actions = torch.concatenate(tuple(ep.previous_actions for ep in episodes), dim=0)
         self.actions = torch.concatenate(tuple(ep.actions for ep in episodes), dim=0)
         self.log_probs = torch.concatenate(tuple(ep.log_probs for ep in episodes), dim=0)
         self.values = torch.concatenate(tuple(ep.values for ep in episodes), dim=0)
@@ -364,6 +395,7 @@ class PPOSampler(BaseSampler[PPOSamplesType]):
             global_obs=self.global_obs[batch_indices],
             hidden_vars=self.hidden_vars[batch_indices],
             agent_mask=None if self.agent_mask is None else self.agent_mask[batch_indices],
+            previous_actions=None if self.previous_actions is None else self.previous_actions[batch_indices],
             actions=self.actions[batch_indices],
             log_probs=self.log_probs[batch_indices],
             values=self.values[batch_indices],

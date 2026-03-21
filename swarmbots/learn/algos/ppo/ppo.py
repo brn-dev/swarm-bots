@@ -174,6 +174,7 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerType]):
             action_space=env.action_space,
             gamma=gamma,
             gae_lambda=gae_lambda,
+            collect_previous_actions=policy.requires_previous_actions(),
             rollout_device=self.rollout_device,
             rollout_dtype=torch.float32,
             train_device=self.train_device,
@@ -294,6 +295,7 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerType]):
             actions=batch.actions,
             hidden_vars=batch.hidden_vars,
             agent_mask=batch.agent_mask,
+            previous_actions=batch.previous_actions,
             action_splitter=self.metrics_action_splitters,
         )
 

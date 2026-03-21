@@ -165,6 +165,7 @@ class MATSPRPolicy(MATPolicy, SPRMixin, PPOWMPolicyMixin):
             wm_agent_mask: torch.Tensor | None = None,
             wm_loss_agent_mask: torch.Tensor | None = None,
             hidden_vars: torch.Tensor | None = None,
+            previous_actions: torch.Tensor | None = None,
             action_splitter: ActionMetricsSplitterInput = None,
     ) -> tuple[
         torch.Tensor,
@@ -186,6 +187,7 @@ class MATSPRPolicy(MATPolicy, SPRMixin, PPOWMPolicyMixin):
             actions=policy_actions,
             hidden_vars=hidden_vars,
             agent_mask=agent_mask,
+            previous_actions=previous_actions,
             action_splitter=action_splitter,
         )
 

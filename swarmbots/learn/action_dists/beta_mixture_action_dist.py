@@ -88,7 +88,11 @@ class BetaMixtureActionDist(ActionDist):
         if self.weight_logits is None or self.components is None:
             raise RuntimeError("Distribution parameters are not initialized. Call update_latent_features first.")
 
-    def sample(self, agent: int | None = None) -> torch.Tensor:
+    def sample(
+            self,
+            agent: int | None = None,
+            previous_actions: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         self._assert_ready()
         weights = F.softmax(self.weight_logits, dim=-1)
         component_indices = torch.multinomial(
@@ -99,13 +103,17 @@ class BetaMixtureActionDist(ActionDist):
         sampled_in_01 = torch.gather(sampled_components, dim=-1, index=component_indices.unsqueeze(-1)).squeeze(-1)
         return 2.0 * sampled_in_01 - 1.0
 
-    def mode(self) -> torch.Tensor:
+    def mode(self, previous_actions: torch.Tensor | None = None) -> torch.Tensor:
         self._assert_ready()
         weights = F.softmax(self.weight_logits, dim=-1)
         mean_in_01 = (weights * self.components.mean).sum(dim=-1)
         return 2.0 * mean_in_01 - 1.0
 
-    def log_prob(self, actions: torch.Tensor) -> torch.Tensor:
+    def log_prob(
+            self,
+            actions: torch.Tensor,
+            previous_actions: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         self._assert_ready()
         actions_in_01 = ((actions + 1.0) * 0.5).clamp(self.epsilon, 1.0 - self.epsilon)
         log_components = self.components.log_prob(actions_in_01.unsqueeze(-1))

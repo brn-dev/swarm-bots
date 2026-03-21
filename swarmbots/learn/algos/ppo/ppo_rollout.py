@@ -16,6 +16,7 @@ class PPORolloutState:
     obs: dict[str, torch.Tensor]
     is_final: torch.Tensor
     was_terminated: torch.Tensor
+    previous_actions: torch.Tensor | None
     rollout_step_idx: int
     pending_episode_infos: list[dict[str, Any] | None]
 
@@ -113,6 +114,7 @@ def _collect_rollout_step(
         obs: dict[str, torch.Tensor],
         is_final: torch.Tensor,
         was_terminated: torch.Tensor,
+        previous_actions: torch.Tensor | None,
         rollout_step_idx: int,
         timers: _RolloutTimers,
         episode_infos: list[dict[str, Any]],
@@ -121,11 +123,13 @@ def _collect_rollout_step(
         is_gsde_interval_reset_mode: bool,
         gsde_reset_interval: int,
         gsde_reset_prob: float,
-) -> tuple[dict[str, torch.Tensor], torch.Tensor, torch.Tensor, int]:
+) -> tuple[dict[str, torch.Tensor], torch.Tensor, torch.Tensor, torch.Tensor | None, int]:
     local_obs = obs['local_obs']
     global_obs = obs['global_obs']
     hidden_vars = obs["hidden_vars"]
     agent_mask = obs.get("agent_mask", None)
+    if previous_actions is not None:
+        previous_actions = previous_actions.masked_fill(is_final.unsqueeze(-1).unsqueeze(-1), 0.0)
 
     batch_shape = tuple(local_obs.shape[:-1])
     step_reset_mask = _build_gsde_step_reset_mask(
@@ -152,6 +156,7 @@ def _collect_rollout_step(
             global_obs,
             hidden_vars=hidden_vars,
             agent_mask=agent_mask,
+            previous_actions=previous_actions,
         )
     timers.policy_forward_timings.append(timers.policy_forward_timer.get_duration())
     _reset_temporal_correlations(policy=policy, episode_start_mask=is_final)
@@ -178,6 +183,7 @@ def _collect_rollout_step(
             global_obs=global_obs,
             hidden_vars=hidden_vars,
             agent_mask=agent_mask,
+            previous_actions=previous_actions,
             actions=actions,
             rewards=rewards,
             log_probs=log_probs,
@@ -193,7 +199,8 @@ def _collect_rollout_step(
             episode_infos.append(buffered_info)
             episode_info_buffers[env_idx] = None
 
-    return new_obs, dones, terminations, rollout_step_idx + 1
+    next_previous_actions = actions.detach() if previous_actions is not None else None
+    return new_obs, dones, terminations, next_previous_actions, rollout_step_idx + 1
 
 
 def _build_rollout_metrics(
@@ -236,6 +243,13 @@ def collect_whole_episodes(
         obs, info = env.reset()
     is_final = torch.zeros((buffer.n_envs,), dtype=torch.bool, device=buffer.rollout_device)
     was_terminated = torch.zeros((buffer.n_envs,), dtype=torch.bool, device=buffer.rollout_device)
+    previous_actions: torch.Tensor | None = None
+    if policy.requires_previous_actions():
+        previous_actions = torch.zeros(
+            (buffer.n_envs, buffer.n_agents, buffer.n_agent_actions),
+            dtype=buffer.rollout_dtype,
+            device=buffer.rollout_device,
+        )
 
     with PerformanceTimer() as to_rollout_device_timer:
         policy.to(buffer.rollout_device)
@@ -250,13 +264,14 @@ def collect_whole_episodes(
     timers = _init_rollout_timers()
 
     while len(buffer.episodes) < n_episodes:
-        obs, is_final, was_terminated, rollout_step_idx = _collect_rollout_step(
+        obs, is_final, was_terminated, previous_actions, rollout_step_idx = _collect_rollout_step(
             env=env,
             policy=policy,
             buffer=buffer,
             obs=obs,
             is_final=is_final,
             was_terminated=was_terminated,
+            previous_actions=previous_actions,
             rollout_step_idx=rollout_step_idx,
             timers=timers,
             episode_infos=episode_infos,
@@ -302,12 +317,20 @@ def collect_steps(
         env_reset_time = env_reset_timer.get_duration()
         is_final = torch.zeros((buffer.n_envs,), dtype=torch.bool, device=buffer.rollout_device)
         was_terminated = torch.zeros((buffer.n_envs,), dtype=torch.bool, device=buffer.rollout_device)
+        previous_actions: torch.Tensor | None = None
+        if policy.requires_previous_actions():
+            previous_actions = torch.zeros(
+                (buffer.n_envs, buffer.n_agents, buffer.n_agent_actions),
+                dtype=buffer.rollout_dtype,
+                device=buffer.rollout_device,
+            )
         rollout_step_idx = 0
         episode_info_buffers: list[dict[str, Any] | None] = [None for _ in range(buffer.n_envs)]
     else:
         obs = rollout_state.obs
         is_final = rollout_state.is_final
         was_terminated = rollout_state.was_terminated
+        previous_actions = rollout_state.previous_actions
         rollout_step_idx = rollout_state.rollout_step_idx
         episode_info_buffers = rollout_state.pending_episode_infos
 
@@ -329,13 +352,14 @@ def collect_steps(
     transitions_collected = 0
     while transitions_collected < n_steps:
         transitions_collected += int(torch.count_nonzero(torch.logical_not(is_final)).item())
-        obs, is_final, was_terminated, rollout_step_idx = _collect_rollout_step(
+        obs, is_final, was_terminated, previous_actions, rollout_step_idx = _collect_rollout_step(
             env=env,
             policy=policy,
             buffer=buffer,
             obs=obs,
             is_final=is_final,
             was_terminated=was_terminated,
+            previous_actions=previous_actions,
             rollout_step_idx=rollout_step_idx,
             timers=timers,
             episode_infos=episode_infos,
@@ -357,11 +381,15 @@ def collect_steps(
     global_obs = obs["global_obs"]
     hidden_vars = obs["hidden_vars"]
     agent_mask = obs.get("agent_mask", None)
+    previous_actions_for_value: torch.Tensor | None = None
+    if previous_actions is not None:
+        previous_actions_for_value = previous_actions.masked_fill(is_final.unsqueeze(-1).unsqueeze(-1), 0.0)
     _, _, final_values = policy(
         local_obs,
         global_obs,
         hidden_vars=hidden_vars,
         agent_mask=agent_mask,
+        previous_actions=previous_actions_for_value,
         deterministic=True,
     )
     final_values = final_values.masked_fill(was_terminated, 0.0)
@@ -385,6 +413,7 @@ def collect_steps(
         obs=obs,
         is_final=is_final,
         was_terminated=was_terminated,
+        previous_actions=previous_actions,
         rollout_step_idx=rollout_step_idx,
         pending_episode_infos=episode_info_buffers,
     )
