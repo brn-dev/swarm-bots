@@ -187,6 +187,7 @@ def _collect_rollout_step(
             rewards=rewards,
             log_probs=log_probs,
             values=values,
+            previous_actions=previous_actions,
             is_final=is_final,
         )
     timers.buffer_add_timings.append(timers.buffer_add_timer.get_duration())
