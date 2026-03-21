@@ -120,7 +120,8 @@ class PPOWM(PPO[PPOWMSamples, PPOWMSampler]):
     def _make_sampler(self, episodes: list[PPOEpisode]) -> PPOWMSampler:
         return PPOWMSampler(
             episodes=episodes,
-            num_next_steps=self.world_model_num_next_steps
+            num_next_steps=self.world_model_num_next_steps,
+            requires_previous_actions=self.policy.requires_previous_actions(),
         )
 
     def compute_loss(

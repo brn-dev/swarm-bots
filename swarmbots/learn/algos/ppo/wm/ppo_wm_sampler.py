@@ -22,10 +22,14 @@ class PPOWMSampler(PPOSampler[PPOWMSamples]):
             self,
             episodes: list[PPOEpisode],
             num_next_steps: int,
+            requires_previous_actions: bool = False,
     ):
         if num_next_steps < 1:
             raise ValueError(f'num_next_steps must be >= 1, got {num_next_steps}')
-        super().__init__(episodes)
+        super().__init__(
+            episodes=episodes,
+            requires_previous_actions=requires_previous_actions,
+        )
         
         multi_step_actions_list = []
         next_local_obs_list = []

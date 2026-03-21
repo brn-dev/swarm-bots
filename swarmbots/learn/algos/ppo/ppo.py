@@ -174,7 +174,6 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerType]):
             action_space=env.action_space,
             gamma=gamma,
             gae_lambda=gae_lambda,
-            collect_previous_actions=policy.requires_previous_actions(),
             rollout_device=self.rollout_device,
             rollout_dtype=torch.float32,
             train_device=self.train_device,
@@ -376,7 +375,10 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerType]):
         return metrics, total_steps_in_rollout
 
     def _make_sampler(self, episodes: list[PPOEpisode]) -> PPOSamplerType:
-        return PPOSampler[PPOSamplesType](episodes)
+        return PPOSampler[PPOSamplesType](
+            episodes=episodes,
+            requires_previous_actions=self.policy.requires_previous_actions(),
+        )
 
     def train(self, episodes: list[PPOEpisode]) -> dict[str, Any]:
         with PerformanceTimer() as to_train_device_timer:
