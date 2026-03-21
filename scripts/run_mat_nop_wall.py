@@ -16,6 +16,7 @@ from swarmbots.learn.action_dists.bang_zero_bang_action_dist import BangZeroBang
 from swarmbots.learn.action_dists.bernoulli_action_dist import BernoulliConfig
 from swarmbots.learn.action_dists.gsde_action_dist import GSDEConfig
 from swarmbots.learn.action_dists.gsde_action_dist import GSDEActionDist
+from swarmbots.learn.action_dists.sticky_bang_zero_bang_action_dist import StickyBangZeroBangConfig
 from swarmbots.learn.algos.mat.mat_policy import MATPolicyConfig, MATCriticConfig
 from swarmbots.learn.algos.mat.mat_encoder import MATEncoderConfig
 from swarmbots.learn.algos.mat.mat_decoder import MATDecoderConfig
@@ -306,9 +307,10 @@ def main() -> None:
                 #     alphas=(3.0, 10.0, 10.0),
                 #     betas=(10.0, 10.0, 3.0)
                 # ),
-                continuous_config=BangZeroBangConfig(
+                continuous_config=StickyBangZeroBangConfig(
                     bang=0.5,
                     ent_loss_coef=2e-3,
+                    stickiness=0.65,
                 ),
                 bernoulli_config=BernoulliConfig(
                     initial_prob=0.7,
