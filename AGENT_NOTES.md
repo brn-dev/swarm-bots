@@ -94,3 +94,4 @@ Agents shall use this file to make notes for future instances. Write down import
 ## Action Dist Gotcha
 - In `make_proba_distribution(...)` (`swarmbots/learn/action_dists/hybrid_action_dist.py`), check subclass configs before base configs.
 - `StickyBangZeroBangConfig` subclasses `BangZeroBangConfig`; if `BangZeroBangConfig` is checked first, sticky config will incorrectly instantiate `BangZeroBangActionDist` and stickiness is silently disabled.
+- PPO rollout boundary nuance (`NEXT_STEP`): transitions at `is_final=True` are skipped from buffer. In `ppo_rollout.py`, `next_previous_actions` is masked with `is_final` so skipped boundary actions are not carried into the next stored transition's previous-action context.
