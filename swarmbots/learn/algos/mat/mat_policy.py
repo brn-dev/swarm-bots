@@ -176,11 +176,15 @@ class MATPolicy(BasePPOPolicy):
     def get_hyper_parameters(self) -> dict[str, Any]:
         return self.hyper_parameters
 
+    def requires_previous_actions(self) -> bool:
+        return self.action_dist.requires_previous_actions()
+
     def _generate_actions(
         self,
         augmented_observations: torch.Tensor,
         batch_size: int,
         agent_mask: torch.Tensor | None = None,
+        previous_actions: torch.Tensor | None = None,
         deterministic: bool = False,
         return_log_probs: bool = False
     ) -> tuple[torch.Tensor, Optional[torch.Tensor]]:
@@ -204,10 +208,21 @@ class MATPolicy(BasePPOPolicy):
             latent_pi = self.actor_head(out[:, -1:, :])
 
             if return_log_probs:
-                action, log_prob = self.action_dist.get_actions_with_log_probs(latent_pi, deterministic, agent=i)
+                previous_action_i = None if previous_actions is None else previous_actions[:, i:i + 1, :]
+                action, log_prob = self.action_dist.get_actions_with_log_probs(
+                    latent_pi,
+                    deterministic,
+                    agent=i,
+                    previous_actions=previous_action_i,
+                )
                 log_probs_list.append(log_prob)
             else:
-                action = self.action_dist.update_latent_features(latent_pi).get_actions(deterministic, agent=i)
+                previous_action_i = None if previous_actions is None else previous_actions[:, i:i + 1, :]
+                action = self.action_dist.update_latent_features(latent_pi).get_actions(
+                    deterministic=deterministic,
+                    agent=i,
+                    previous_actions=previous_action_i,
+                )
 
             actions_list.append(action)
 
@@ -228,6 +243,7 @@ class MATPolicy(BasePPOPolicy):
             global_obs: torch.Tensor,
             hidden_vars: torch.Tensor | None = None,
             agent_mask: torch.Tensor | None = None,
+            previous_actions: torch.Tensor | None = None,
             deterministic: bool = False
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
 
@@ -237,6 +253,7 @@ class MATPolicy(BasePPOPolicy):
             augmented_observations=augmented_observations,
             batch_size=local_obs.shape[0],
             agent_mask=agent_mask,
+            previous_actions=previous_actions,
             deterministic=deterministic,
             return_log_probs=True,
         )
@@ -251,6 +268,7 @@ class MATPolicy(BasePPOPolicy):
             actions: torch.Tensor,
             hidden_vars: torch.Tensor | None = None,
             agent_mask: torch.Tensor | None = None,
+            previous_actions: torch.Tensor | None = None,
             action_splitter: ActionMetricsSplitterInput = None,
     ) -> tuple[torch.Tensor, torch.Tensor, LossDict, LossMetrics]:
         _, log_probs, values, extra_losses, extra_loss_metrics = self._evaluate_actions(
@@ -259,6 +277,7 @@ class MATPolicy(BasePPOPolicy):
             actions=actions,
             hidden_vars=hidden_vars,
             agent_mask=agent_mask,
+            previous_actions=previous_actions,
             action_splitter=action_splitter,
         )
 
@@ -271,6 +290,7 @@ class MATPolicy(BasePPOPolicy):
             actions: torch.Tensor,
             hidden_vars: torch.Tensor | None = None,
             agent_mask: torch.Tensor | None = None,
+            previous_actions: torch.Tensor | None = None,
             action_splitter: ActionMetricsSplitterInput = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, LossDict, LossMetrics]:
         self._validate_agent_mask(agent_mask, batch_size=local_obs.shape[0])
@@ -295,7 +315,7 @@ class MATPolicy(BasePPOPolicy):
         ))
 
         self.action_dist.update_latent_features(latent_pi)
-        log_probs = self.action_dist.log_prob(actions)
+        log_probs = self.action_dist.log_prob(actions, previous_actions=previous_actions)
 
         values = self._critic_with_hidden_vars(augmented_observations, hidden_vars, agent_mask=agent_mask)
         extra_losses, extra_loss_metrics = self.action_dist.compute_extra_losses(
@@ -310,6 +330,7 @@ class MATPolicy(BasePPOPolicy):
             global_obs: torch.Tensor,
             hidden_vars: torch.Tensor | None = None,
             agent_mask: torch.Tensor | None = None,
+            previous_actions: torch.Tensor | None = None,
             deterministic: bool = False
     ) -> torch.Tensor:
         self._validate_agent_mask(agent_mask, batch_size=local_obs.shape[0])
@@ -318,6 +339,7 @@ class MATPolicy(BasePPOPolicy):
             augmented_observations=augmented_observations,
             batch_size=local_obs.shape[0],
             agent_mask=agent_mask,
+            previous_actions=previous_actions,
             deterministic=deterministic,
             return_log_probs=False,
         )

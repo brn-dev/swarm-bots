@@ -57,13 +57,21 @@ class BernoulliActionDist(DiscreteActionDist):
         self.distribution = torchdist.Bernoulli(logits=action_logits)
         return self
 
-    def sample(self, agent: int | None = None) -> torch.Tensor:
+    def sample(
+            self,
+            agent: int | None = None,
+            previous_actions: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         return self.distribution.sample()
 
-    def mode(self) -> torch.Tensor:
+    def mode(self, previous_actions: torch.Tensor | None = None) -> torch.Tensor:
         return torch.round(self.distribution.probs)
 
-    def log_prob(self, actions: torch.Tensor) -> torch.Tensor:
+    def log_prob(
+            self,
+            actions: torch.Tensor,
+            previous_actions: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         return self.distribution.log_prob(actions).sum(dim=AGENT_ACTIONS_DIM)
 
     def compute_extra_losses(

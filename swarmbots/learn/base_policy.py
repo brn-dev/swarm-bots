@@ -28,6 +28,7 @@ class BasePolicy(nn.Module, abc.ABC):
             global_obs: torch.Tensor,
             hidden_vars: torch.Tensor | None = None,
             agent_mask: torch.Tensor | None = None,
+            previous_actions: torch.Tensor | None = None,
             deterministic: bool = False
     ) -> torch.Tensor:
         raise NotImplementedError()
@@ -38,6 +39,10 @@ class BasePolicy(nn.Module, abc.ABC):
         Updates weights for extra losses. If weights contains an unknown key, a ValueError is thrown
         :param weights:
         """
+        raise NotImplementedError()
+
+    @abc.abstractmethod
+    def requires_previous_actions(self) -> bool:
         raise NotImplementedError()
 
     @staticmethod
@@ -58,4 +63,3 @@ class BasePolicy(nn.Module, abc.ABC):
         if parameter is None:
             return 0.0
         return cls._grad_norm_from_parameters((parameter,))
-

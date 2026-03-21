@@ -136,6 +136,18 @@ def _draw_accumulated_reward(frame: np.ndarray, accumulated_reward: float) -> np
     return np.asarray(image)
 
 
+def _extract_render_frame(frame: Any) -> np.ndarray | None:
+    if isinstance(frame, (list, tuple)):
+        if len(frame) == 0:
+            return None
+        return _extract_render_frame(frame[0])
+    if isinstance(frame, np.ndarray):
+        if frame.ndim == 4:
+            return frame[0]
+        return frame
+    return None
+
+
 def record_policy(
     env: BaseLearnEnvWrapper,
     policy: BasePolicy,
@@ -180,7 +192,7 @@ def record_policy(
         accumulated_reward = 0.0
                     
         try:
-            first_frame = env.render()
+            first_frame = _extract_render_frame(env.render())
         except Exception as e:
             print(f"Warning: Could not render environment. Error: {e}")
             first_frame = None
@@ -223,16 +235,7 @@ def record_policy(
                 normalize_reward_wrapper=normalize_reward_wrapper,
             )
 
-            frame = env.render()
-            if isinstance(frame, (list, tuple)):
-                current_frame = frame[0]
-            elif isinstance(frame, np.ndarray):
-                if frame.ndim == 4:
-                    current_frame = frame[0]
-                else:
-                    current_frame = frame
-            else:
-                current_frame = frame
+            current_frame = _extract_render_frame(env.render())
             if current_frame is not None:
                 frames.append(_draw_accumulated_reward(current_frame, accumulated_reward))
             

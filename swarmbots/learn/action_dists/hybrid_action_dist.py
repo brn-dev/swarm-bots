@@ -22,10 +22,6 @@ from swarmbots.learn.action_dists.diag_gaussian_action_dist import DiagGaussianA
 from swarmbots.learn.action_dists.gsde_action_dist import GSDEActionDist, GSDEConfig
 from swarmbots.learn.action_dists.left_right_beta_action_dist import LeftRightBetaActionDist, LeftRightBetaConfig
 from swarmbots.learn.action_dists.beta_mixture_action_dist import BetaMixtureActionDist, BetaMixtureConfig
-from swarmbots.learn.action_dists.sticky_beta_mixture_action_dist import (
-    StickyBetaMixtureActionDist,
-    StickyBetaMixtureConfig,
-)
 from swarmbots.learn.action_dists.predicted_std_action_dist import PredictedStdActionDist, PredictedStdConfig
 from swarmbots.learn.action_dists.squashed_diag_gaussian_action_dist import (
     SquashedDiagGaussianActionDist,
@@ -43,7 +39,6 @@ ContinuousActionDistConfig: TypeAlias = (
     | PredictedStdConfig
     | GSDEConfig
     | BetaMixtureConfig
-    | StickyBetaMixtureConfig
     | LeftRightBetaConfig
     | BangZeroBangConfig
 )
@@ -137,22 +132,62 @@ class HybridActionDistribution(ActionDist):
             dist.update_latent_features(latent_pi)
         return self
 
-    def sample(self, agent: int | None = None) -> torch.Tensor:
+    def requires_previous_actions(self) -> bool:
+        return any(dist.requires_previous_actions() for dist in self.distributions)
+
+    def sample(
+            self,
+            agent: int | None = None,
+            previous_actions: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        split_previous_actions: tuple[torch.Tensor | None, ...]
+        if previous_actions is None:
+            split_previous_actions = (None,) * len(self.distributions)
+        else:
+            split_previous_actions = torch.split(previous_actions, self.action_dims, dim=AGENT_ACTIONS_DIM)
         actions: list[torch.Tensor] = []
-        for dist in self.distributions:
+        for dist, previous_action in zip(self.distributions, split_previous_actions, strict=True):
             if isinstance(dist, GSDEActionDist):
-                actions.append(dist.sample(agent=agent))
+                actions.append(dist.sample(agent=agent, previous_actions=previous_action))
             else:
-                actions.append(dist.sample())
+                actions.append(dist.sample(previous_actions=previous_action))
         return torch.cat(actions, dim=AGENT_ACTIONS_DIM)
 
-    def mode(self) -> torch.Tensor:
-        return torch.cat([dist.mode() for dist in self.distributions], dim=AGENT_ACTIONS_DIM)
+    def mode(self, previous_actions: torch.Tensor | None = None) -> torch.Tensor:
+        split_previous_actions: tuple[torch.Tensor | None, ...]
+        if previous_actions is None:
+            split_previous_actions = (None,) * len(self.distributions)
+        else:
+            split_previous_actions = torch.split(previous_actions, self.action_dims, dim=AGENT_ACTIONS_DIM)
+        return torch.cat(
+            [
+                dist.mode(previous_actions=previous_action)
+                for dist, previous_action in zip(self.distributions, split_previous_actions, strict=True)
+            ],
+            dim=AGENT_ACTIONS_DIM,
+        )
 
-    def log_prob(self, actions: torch.Tensor) -> torch.Tensor:
+    def log_prob(
+            self,
+            actions: torch.Tensor,
+            previous_actions: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         split_actions = torch.split(actions, self.action_dims, dim=AGENT_ACTIONS_DIM)
+        split_previous_actions: tuple[torch.Tensor | None, ...]
+        if previous_actions is None:
+            split_previous_actions = (None,) * len(self.distributions)
+        else:
+            split_previous_actions = torch.split(previous_actions, self.action_dims, dim=AGENT_ACTIONS_DIM)
         return torch.stack(
-            [dist.log_prob(action) for dist, action in zip(self.distributions, split_actions, strict=True)],
+            [
+                dist.log_prob(action, previous_action)
+                for dist, action, previous_action in zip(
+                    self.distributions,
+                    split_actions,
+                    split_previous_actions,
+                    strict=True,
+                )
+            ],
             dim=-1
         ).sum(dim=-1)
 
@@ -161,15 +196,22 @@ class HybridActionDistribution(ActionDist):
             latent_pi: torch.Tensor,
             deterministic: bool = False,
             agent: int | None = None,
+            previous_actions: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         actions_parts: list[torch.Tensor] = []
         log_prob_parts: list[torch.Tensor] = []
+        split_previous_actions: tuple[torch.Tensor | None, ...]
+        if previous_actions is None:
+            split_previous_actions = (None,) * len(self.distributions)
+        else:
+            split_previous_actions = torch.split(previous_actions, self.action_dims, dim=AGENT_ACTIONS_DIM)
 
-        for dist in self.distributions:
+        for dist, previous_action in zip(self.distributions, split_previous_actions, strict=True):
             action_part, log_prob_part = dist.get_actions_with_log_probs(
                 latent_pi=latent_pi,
                 deterministic=deterministic,
                 agent=agent,
+                previous_actions=previous_action,
             )
             actions_parts.append(action_part)
             log_prob_parts.append(log_prob_part)
@@ -342,7 +384,7 @@ def make_proba_distribution(
             raise ValueError(
                 "Supply a ContinuousActionDistConfig "
                 "(SquashedDiagGaussianConfig | PredictedStdConfig | GSDEConfig | "
-                "BetaMixtureConfig | StickyBetaMixtureConfig | LeftRightBetaConfig | BangZeroBangConfig) "
+                "BetaMixtureConfig | LeftRightBetaConfig | BangZeroBangConfig) "
                 "for continuous actions."
             )
 
@@ -397,17 +439,6 @@ def make_proba_distribution(
                 action_dim=action_space_dim,
                 num_components=continuous_config.num_components,
                 action_net_initialization=action_net_initialization,
-                epsilon=continuous_config.epsilon,
-                alphas=continuous_config.alphas,
-                betas=continuous_config.betas,
-            )
-        elif isinstance(continuous_config, StickyBetaMixtureConfig):
-            return StickyBetaMixtureActionDist(
-                latent_dim=latent_dim,
-                action_dim=action_space_dim,
-                num_components=continuous_config.num_components,
-                action_net_initialization=action_net_initialization,
-                sticky_probability=continuous_config.sticky_probability,
                 epsilon=continuous_config.epsilon,
                 alphas=continuous_config.alphas,
                 betas=continuous_config.betas,

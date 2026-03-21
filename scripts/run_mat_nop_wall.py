@@ -133,7 +133,7 @@ def main() -> None:
     n_workers = 23
     n_envs = n_workers * 10
 
-    episode_length = 1024
+    episode_length = 512
     total_timesteps = 200_000_000
     save_interval = 5000
 
@@ -308,7 +308,7 @@ def main() -> None:
                 # ),
                 continuous_config=BangZeroBangConfig(
                     bang=0.5,
-                    ent_loss_coef=1e-3,
+                    ent_loss_coef=2e-3,
                 ),
                 bernoulli_config=BernoulliConfig(
                     initial_prob=0.7,
@@ -444,7 +444,7 @@ def main() -> None:
         gae_lambda=0.95,
         clip_range=0.07,
         target_kl=0.007,
-        max_grad_norm=10.0,
+        max_grad_norm=0.5,
         gsde_reset_mode=GSDEProbabilityResetMode(probability=1/6),
         mc_ent_coef=0e-5,
         vf_coef=vf_coef,

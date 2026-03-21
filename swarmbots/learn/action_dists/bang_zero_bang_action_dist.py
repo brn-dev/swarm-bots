@@ -53,15 +53,23 @@ class BangZeroBangActionDist(DiscreteActionDist):
         self.distribution = torchdist.Categorical(logits=reshaped_logits)
         return self
 
-    def sample(self, agent: int | None = None) -> torch.Tensor:
+    def sample(
+            self,
+            agent: int | None = None,
+            previous_actions: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         sampled_indices = self.distribution.sample()
         return self._indices_to_actions(sampled_indices)
 
-    def mode(self) -> torch.Tensor:
+    def mode(self, previous_actions: torch.Tensor | None = None) -> torch.Tensor:
         greedy_indices = self.distribution.probs.argmax(dim=-1)
         return self._indices_to_actions(greedy_indices)
 
-    def log_prob(self, actions: torch.Tensor) -> torch.Tensor:
+    def log_prob(
+            self,
+            actions: torch.Tensor,
+            previous_actions: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         action_indices = self._actions_to_indices(actions)
         return self.distribution.log_prob(action_indices).sum(dim=AGENT_ACTIONS_DIM)
 
