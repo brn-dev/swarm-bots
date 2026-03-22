@@ -8,8 +8,8 @@ from swarmbots.learn.action_dists.action_dist import ActionMetricsSplitterInput
 from swarmbots.learn.action_dists.hybrid_action_dist import (
     HybridActionDistribution,
     ContinuousActionDistConfigInput,
-    serialize_continuous_action_dist_configs,
-    serialize_bernoulli_config,
+    continuous_config_to_dicts,
+    bernoulli_config_to_dict,
 )
 from swarmbots.learn.action_dists.bernoulli_action_dist import BernoulliConfig
 from swarmbots.learn.algos.mat.mat_decoder import MATDecoder
@@ -17,13 +17,13 @@ from swarmbots.learn.algos.mat.mat_decoder import MATDecoderConfig
 from swarmbots.learn.algos.mat.mat_encoder import MATEncoder
 from swarmbots.learn.algos.mat.mat_encoder import MATEncoderConfig
 from swarmbots.learn.algos.ppo.ppo import AGENTS_DIM
-from swarmbots.learn.algos.ppo.ppo_policy import BasePPOPolicy, PopArtConfig, serialize_popart_config
-from swarmbots.learn.config_serialization import serialize_dataclass_config
+from swarmbots.learn.algos.ppo.ppo_policy import BasePPOPolicy, PopArtConfig
 from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
 from swarmbots.learn.losses import LossDict, LossMetrics
 from swarmbots.learn.nn_components.deep_set import DeepSetCritic
 from swarmbots.learn.nn_components.mlp import MLP
 from swarmbots.learn.nn_components.nn_init import init_linear_orthogonal
+from swarmbots.learn.serialization_utils import serialize_dataclass, serialize_value
 
 
 @dataclass(frozen=True)
@@ -46,14 +46,6 @@ class MATPolicyConfig:
     max_agents: int | None = None
 
 
-def serialize_mat_policy_config(config: MATPolicyConfig) -> dict[str, Any]:
-    data = serialize_dataclass_config(config)
-    data["critic_config"]["popart_config"] = serialize_popart_config(config.critic_config.popart_config)
-    data["continuous_config"] = serialize_continuous_action_dist_configs(config.continuous_config)
-    data["bernoulli_config"] = serialize_bernoulli_config(config.bernoulli_config)
-    return data
-
-
 class MATPolicy(BasePPOPolicy):
 
     def __init__(
@@ -62,6 +54,7 @@ class MATPolicy(BasePPOPolicy):
             config: MATPolicyConfig = MATPolicyConfig(),
     ) -> None:
         super().__init__()
+        self.config = config
 
         self.n_agents: int = env.n_agents
         self.max_agents = self.n_agents if config.max_agents is None else config.max_agents
@@ -73,6 +66,8 @@ class MATPolicy(BasePPOPolicy):
         self.global_obs_dim: int = env.global_obs_dim
         self.has_global_obs = env.global_obs_dim > 0
         self.hidden_vars_dim: int = env.hidden_vars_dim
+        self.act_fn_cls = config.act_fn_cls
+        self.dropout = config.dropout
 
         self.d_model_encoder = config.encoder_config.d_model
         self.d_model_decoder = (
@@ -87,6 +82,7 @@ class MATPolicy(BasePPOPolicy):
             act_fn_cls=config.act_fn_cls,
             dropout=config.dropout,
         )
+        self.encoder_config = encoder_config
         self.encoder = MATEncoder(
             config=encoder_config,
             max_agents=self.max_agents,
@@ -125,6 +121,7 @@ class MATPolicy(BasePPOPolicy):
             act_fn_cls=config.act_fn_cls,
             dropout=config.dropout,
         )
+        self.decoder_config = decoder_config
         self.decoder = MATDecoder(
             config=decoder_config,
             max_agents=self.max_agents,
@@ -169,12 +166,19 @@ class MATPolicy(BasePPOPolicy):
             popart_init_sigma=config.critic_config.popart_config.init_sigma,
         )
 
-        self.hyper_parameters: dict[str, Any] = {
-            "mat_policy_config": serialize_mat_policy_config(config),
-        }
-
     def get_hyper_parameters(self) -> dict[str, Any]:
-        return self.hyper_parameters
+        return {
+            "mat_policy_config": {
+                "encoder_config": serialize_dataclass(self.encoder_config),
+                "decoder_config": serialize_dataclass(self.decoder_config),
+                "critic_config": serialize_dataclass(self.config.critic_config),
+                "act_fn_cls": serialize_value(self.act_fn_cls),
+                "dropout": self.dropout,
+                "continuous_config": continuous_config_to_dicts(self.action_dist.continuous_configs),
+                "bernoulli_config": bernoulli_config_to_dict(self.action_dist.bernoulli_config),
+                "max_agents": self.max_agents,
+            }
+        }
 
     def requires_previous_actions(self) -> bool:
         return self.action_dist.requires_previous_actions()
@@ -418,9 +422,6 @@ class MATPolicy(BasePPOPolicy):
             if value < 0:
                 raise ValueError(f"act{idx}_ent_loss_coef must be >= 0, got {value}")
             self.action_dist.set_sub_ent_loss_coef(idx, value)
-            self.hyper_parameters["mat_policy_config"]["continuous_config"] = serialize_continuous_action_dist_configs(
-                self.action_dist.continuous_configs
-            )
 
         action_magnitude_weight = self._pop_loss_weight_alias(
             remaining_weights,
@@ -431,9 +432,6 @@ class MATPolicy(BasePPOPolicy):
             if value < 0:
                 raise ValueError(f"{alias} must be >= 0, got {value}")
             self.action_dist.set_action_magnitude_loss_coef(value)
-            self.hyper_parameters["mat_policy_config"]["continuous_config"] = serialize_continuous_action_dist_configs(
-                self.action_dist.continuous_configs
-            )
 
         entropy_weight = self._pop_loss_weight_alias(
             remaining_weights,
@@ -444,8 +442,5 @@ class MATPolicy(BasePPOPolicy):
             if value < 0:
                 raise ValueError(f"{alias} must be >= 0, got {value}")
             self.action_dist.set_all_ent_loss_coefs(value)
-            self.hyper_parameters["mat_policy_config"]["continuous_config"] = serialize_continuous_action_dist_configs(
-                self.action_dist.continuous_configs
-            )
 
         super().update_loss_weights(**remaining_weights)

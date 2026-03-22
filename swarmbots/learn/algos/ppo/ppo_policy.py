@@ -9,17 +9,17 @@ from swarmbots.learn.action_dists.action_dist import ActionMetricsSplitterInput
 from swarmbots.learn.action_dists.hybrid_action_dist import (
     HybridActionDistribution,
     ContinuousActionDistConfigInput,
-    serialize_continuous_action_dist_configs,
-    serialize_bernoulli_config,
+    continuous_config_to_dicts,
+    bernoulli_config_to_dict,
 )
 from swarmbots.learn.action_dists.bernoulli_action_dist import BernoulliConfig
 from swarmbots.learn.base_policy import BasePolicy
 from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
-from swarmbots.learn.config_serialization import serialize_dataclass_config
 from swarmbots.learn.losses import LossDict, LossMetrics
 from swarmbots.learn.nn_components.mlp import MLP
 from swarmbots.learn.nn_components.nn_init import init_linear_orthogonal, LinearInitialization
 from swarmbots.learn.nn_components.popart import PopArtLinear
+from swarmbots.learn.serialization_utils import serialize_dataclass
 
 
 @dataclass(frozen=True)
@@ -51,17 +51,6 @@ class PPOPolicyConfig:
     critic_config: PPOCriticConfig = field(default_factory=PPOCriticConfig)
     continuous_config: ContinuousActionDistConfigInput = None
     bernoulli_config: BernoulliConfig | None = None
-
-
-def serialize_popart_config(config: PopArtConfig) -> dict[str, float]:
-    return serialize_dataclass_config(config)
-
-
-def serialize_ppo_policy_config(config: PPOPolicyConfig) -> dict[str, Any]:
-    data = serialize_dataclass_config(config)
-    data["continuous_config"] = serialize_continuous_action_dist_configs(config.continuous_config)
-    data["bernoulli_config"] = serialize_bernoulli_config(config.bernoulli_config)
-    return data
 
 
 class BasePPOPolicy(BasePolicy, abc.ABC):
@@ -120,6 +109,17 @@ class BasePPOPolicy(BasePolicy, abc.ABC):
         if weights:
             raise ValueError(f'Unknown weights given: {weights}')
 
+    def set_action_stickiness(
+            self,
+            value: float,
+            *,
+            sub_dist_idx: int | None = None,
+    ) -> None:
+        if sub_dist_idx is None:
+            self.action_dist.set_all_stickiness(value)
+        else:
+            self.action_dist.set_sub_stickiness(sub_dist_idx, value)
+
     @staticmethod
     def _pop_loss_weight_alias(
             weights: dict[str, float],
@@ -166,8 +166,9 @@ class PPOActor(nn.Module):
         self.local_obs_dim = local_obs_dim
         self.global_obs_dim = global_obs_dim
         self.has_global_obs = global_obs_dim > 0
-        self.hidden_dims = config.hidden_dims
+        self.hidden_dims = list(config.hidden_dims)
         self.latent_pi_dim = config.latent_pi_dim_per_agent
+        self.act_fun_class = actor_act_fun_class
 
         self.mlp = MLP(
             input_dim=local_obs_dim * n_agents + global_obs_dim,
@@ -201,8 +202,10 @@ class PPOCritic(nn.Module):
         self.local_obs_dim = local_obs_dim
         self.global_obs_dim = global_obs_dim
         self.has_global_obs = global_obs_dim > 0
-        self.hidden_dims = config.hidden_dims
+        self.hidden_dims = list(config.hidden_dims)
+        self.act_fun_class = critic_act_fun_class
         self.use_popart = bool(config.use_popart)
+        self.popart_config = config.popart_config
 
         value_head_input_dim = local_obs_dim * n_agents + global_obs_dim
         if config.hidden_dims:
@@ -310,12 +313,15 @@ class PPOPolicy(BasePPOPolicy):
             config=config.critic_config,
         )
 
-        self.hyper_parameters = {
-            "ppo_policy_config": serialize_ppo_policy_config(config),
-        }
-
     def get_hyper_parameters(self) -> dict[str, Any]:
-        return self.hyper_parameters
+        return {
+            "ppo_policy_config": {
+                "actor_config": serialize_dataclass(self.config.actor_config),
+                "critic_config": serialize_dataclass(self.config.critic_config),
+                "continuous_config": continuous_config_to_dicts(self.action_dist.continuous_configs),
+                "bernoulli_config": bernoulli_config_to_dict(self.action_dist.bernoulli_config),
+            }
+        }
 
     def requires_previous_actions(self) -> bool:
         return self.action_dist.requires_previous_actions()
@@ -442,7 +448,6 @@ class PPOPolicy(BasePPOPolicy):
             if value < 0:
                 raise ValueError(f"act{idx}_ent_loss_coef must be >= 0, got {value}")
             self.action_dist.set_sub_ent_loss_coef(idx, value)
-            self._set_serialized_continuous_config()
 
         action_magnitude_weight = self._pop_loss_weight_alias(
             remaining_weights,
@@ -453,7 +458,6 @@ class PPOPolicy(BasePPOPolicy):
             if value < 0:
                 raise ValueError(f"{alias} must be >= 0, got {value}")
             self.action_dist.set_action_magnitude_loss_coef(value)
-            self._set_serialized_continuous_config()
 
         entropy_weight = self._pop_loss_weight_alias(
             remaining_weights,
@@ -464,16 +468,5 @@ class PPOPolicy(BasePPOPolicy):
             if value < 0:
                 raise ValueError(f"{alias} must be >= 0, got {value}")
             self.action_dist.set_all_ent_loss_coefs(value)
-            self._set_serialized_continuous_config()
 
         super().update_loss_weights(**remaining_weights)
-
-    def _set_serialized_continuous_config(self) -> None:
-        serialized = serialize_continuous_action_dist_configs(self.action_dist.continuous_configs)
-        if "ppo_policy_config" in self.hyper_parameters:
-            self.hyper_parameters["ppo_policy_config"]["continuous_config"] = serialized
-            return
-        if "mappo_policy_config" in self.hyper_parameters:
-            self.hyper_parameters["mappo_policy_config"]["continuous_config"] = serialized
-            return
-        self.hyper_parameters["continuous_config"] = serialized

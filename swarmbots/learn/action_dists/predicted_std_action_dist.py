@@ -1,6 +1,6 @@
 import math
 from dataclasses import dataclass
-from typing import Optional, Self
+from typing import Optional, Self, Any
 
 import torch
 import torch.distributions as torchdist
@@ -175,3 +175,17 @@ class PredictedStdActionDist(ContinuousActionDist):
         if multiplier <= 0:
             raise ValueError(f"multiplier must be > 0, got {multiplier}")
         self.base_log_std += math.log(multiplier)
+
+    def get_hyper_parameters(self) -> dict[str, Any]:
+        return {
+            **super().get_hyper_parameters(),
+            "base_std": math.exp(self.base_log_std),
+            "squash_output": self.squash_output,
+            "epsilon": self.epsilon,
+            "log_std_clamp_range": list(self.log_std_clamp_range),
+            "log_std_net_initialization": (
+                self.log_std_net_initialization.__name__
+                if hasattr(self.log_std_net_initialization, "__name__")
+                else str(self.log_std_net_initialization)
+            ),
+        }

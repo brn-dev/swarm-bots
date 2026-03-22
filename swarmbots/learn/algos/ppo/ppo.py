@@ -1,5 +1,4 @@
 import abc
-import inspect
 import json
 from dataclasses import dataclass
 from typing import Optional, Any, Literal, TypeVar, Generic, Callable, Protocol, NotRequired, TypedDict
@@ -18,6 +17,8 @@ from swarmbots.learn.gsde_reset import GSDEResetMode, GSDEIntervalResetMode, GSD
 from swarmbots.learn.masking import masked_mean
 from swarmbots.learn.metrics_list import MetricsLists
 from swarmbots.learn.performance_timer import PerformanceTimer
+from swarmbots.learn.serialization_utils import serialize_fn
+from swarmbots.schedulers import SchedulerManager
 from swarmbots.learn.summary_statistics import compute_summary_statistics
 from swarmbots.learn.torch_device import as_device
 
@@ -109,6 +110,7 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerType]):
             rollout_device: str | torch.device = "cpu",
             metrics_action_splitters: list[Callable[[torch.Tensor], dict[str, torch.Tensor]] | None] | None = None,
             use_popart: bool = False,
+            scheduler_manager: SchedulerManager | None = None,
     ):
         self.automatic_lr: AutomaticLearningRate | None = None
         self._auto_lr_enabled = False
@@ -167,6 +169,7 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerType]):
 
         self.train_device = as_device(train_device)
         self.rollout_device = as_device(rollout_device)
+        self.scheduler_manager = scheduler_manager
 
         self.rollout_buffer = PPORolloutBuffer(
             max_episode_length=max_episode_length,
@@ -195,7 +198,7 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerType]):
                 "enabled": self._auto_lr_enabled,
                 "initial_lr": self.automatic_lr.initial_lr,
                 "max_lr": self.automatic_lr.max_lr,
-                "updater": self._serialize_fn(self.automatic_lr.updater),
+                "updater": serialize_fn(self.automatic_lr.updater),
             }
 
         return {
@@ -222,6 +225,7 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerType]):
             'agent_logprob_reduction': self.agent_logprob_reduction,
             'policy_num_params': self._policy_num_params,
             'policy_num_trainable_params': self._policy_num_trainable_params,
+            "schedulers": None if self.scheduler_manager is None else self.scheduler_manager.serialize(),
         }
 
     def compute_ppo_loss(
@@ -520,6 +524,7 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerType]):
                     action_splitter=self.metrics_action_splitters,
                 )
             )
+            metrics.update(self._maybe_apply_schedulers(metrics))
 
         metrics_timer.stop()
 
@@ -592,6 +597,36 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerType]):
             return {"auto_lr_event": update_event or "lr_decay", "auto_lr": new_lr}
 
         return {"auto_lr_event": update_event, "auto_lr": self.learning_rate}
+
+    def _maybe_apply_schedulers(self, metrics: dict[str, Any]) -> dict[str, Any]:
+        if self.scheduler_manager is None:
+            return {}
+
+        scheduler_metrics: dict[str, Any] = {}
+        for result in self.scheduler_manager.step(
+            n_iterations=self.n_total_iterations,
+            n_model_updates=self.n_total_updates,
+            n_timesteps=self.n_total_timesteps,
+            metrics=metrics,
+        ):
+            metric_prefix = f"scheduler_{result.name}"
+            scheduler_metrics[f"{metric_prefix}_value"] = result.new_value
+            scheduler_metrics[f"{metric_prefix}_event"] = result.event
+            scheduler_metrics[f"{metric_prefix}_updated"] = result.updated
+
+            if not result.updated:
+                continue
+
+            if result.msg is None:
+                logger.warning(
+                    f"Scheduler '{result.name}' updated value {result.old_value:.6g} -> {result.new_value:.6g}"
+                )
+            else:
+                logger.warning(
+                    f"Scheduler '{result.name}' updated value {result.old_value:.6g} -> "
+                    f"{result.new_value:.6g}: {result.msg}"
+                )
+        return scheduler_metrics
 
     def _after_optimizer_step(self) -> None:
         pass
@@ -904,17 +939,6 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerType]):
         if isinstance(mode, GSDEProbabilityResetMode):
             return {"mode": "probability", "probability": mode.probability}
         return {"mode": type(mode).__name__}
-
-    @staticmethod
-    def _serialize_fn(fn: Callable) -> dict[str, str]:
-        fn_dict = {
-            'repr': str(fn)
-        }
-        try:
-            fn_dict['source'] = inspect.getsource(fn)
-        except OSError as err:
-            fn_dict['source'] = str(err)
-        return fn_dict
 
     @staticmethod
     def _parse_indexed_float_params(

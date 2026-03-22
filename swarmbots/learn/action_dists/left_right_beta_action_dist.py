@@ -235,6 +235,16 @@ class LeftRightBetaActionDist(ActionDist):
     ) -> dict[str, Any]:
         return compute_action_metrics(actions, action_splitter, hist_bins=21)
 
+    def get_hyper_parameters(self) -> dict[str, Any]:
+        return {
+            **super().get_hyper_parameters(),
+            "eps_c": self.eps_c,
+            "epsilon": self.epsilon,
+            "ent_loss_coef": self.ent_loss_coef,
+            "beta_ent_scale": self.beta_ent_scale,
+            "interval_width": self.interval_width,
+        }
+
 
 def _inverse_softplus(value: float) -> float:
     return value + math.log(-math.expm1(-value))

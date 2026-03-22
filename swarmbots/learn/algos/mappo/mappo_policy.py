@@ -5,17 +5,17 @@ from torch import nn
 from swarmbots.learn.action_dists.hybrid_action_dist import (
     HybridActionDistribution,
     ContinuousActionDistConfigInput,
-    serialize_continuous_action_dist_configs,
-    serialize_bernoulli_config,
+    continuous_config_to_dicts,
+    bernoulli_config_to_dict,
 )
 from swarmbots.learn.action_dists.bernoulli_action_dist import BernoulliConfig
 from swarmbots.learn.algos.mappo.mappo_actor import MAPPOActor, MAPPOActorConfig
 from swarmbots.learn.algos.ppo.ppo import AGENTS_DIM
 from swarmbots.learn.algos.ppo.ppo_policy import PPOCritic, PPOPolicy, PPOCriticConfig
 from swarmbots.learn.base_policy import BasePolicy
-from swarmbots.learn.config_serialization import serialize_dataclass_config
 from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
 from swarmbots.learn.nn_components.deep_set import DeepSetCritic, DeepSetCriticConfig
+from swarmbots.learn.serialization_utils import serialize_dataclass
 
 MAPPOCritic = PPOCritic
 
@@ -33,13 +33,6 @@ class MAPPOPolicyConfig:
     critic_config: MAPPOCriticConfig = field(default_factory=MAPPOCriticConfig)
     continuous_config: ContinuousActionDistConfigInput = None
     bernoulli_config: BernoulliConfig | None = None
-
-
-def serialize_mappo_policy_config(config: MAPPOPolicyConfig) -> dict[str, Any]:
-    data = serialize_dataclass_config(config)
-    data["continuous_config"] = serialize_continuous_action_dist_configs(config.continuous_config)
-    data["bernoulli_config"] = serialize_bernoulli_config(config.bernoulli_config)
-    return data
 
 
 class MAPPOPolicy(PPOPolicy):
@@ -92,9 +85,12 @@ class MAPPOPolicy(PPOPolicy):
                 act_fn_cls=config.critic_config.act_fun_class,
             )
 
-        self.hyper_parameters = {
-            "mappo_policy_config": serialize_mappo_policy_config(config),
-        }
-
     def get_hyper_parameters(self) -> dict[str, Any]:
-        return self.hyper_parameters
+        return {
+            "mappo_policy_config": {
+                "actor_config": serialize_dataclass(self.config.actor_config),
+                "critic_config": serialize_dataclass(self.config.critic_config),
+                "continuous_config": continuous_config_to_dicts(self.action_dist.continuous_configs),
+                "bernoulli_config": bernoulli_config_to_dict(self.action_dist.bernoulli_config),
+            }
+        }

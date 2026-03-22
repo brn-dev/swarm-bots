@@ -16,7 +16,10 @@ from swarmbots.learn.action_dists.bang_zero_bang_action_dist import BangZeroBang
 from swarmbots.learn.action_dists.bernoulli_action_dist import BernoulliConfig
 from swarmbots.learn.action_dists.gsde_action_dist import GSDEConfig
 from swarmbots.learn.action_dists.gsde_action_dist import GSDEActionDist
-from swarmbots.learn.action_dists.sticky_bang_zero_bang_action_dist import StickyBangZeroBangConfig
+from swarmbots.learn.action_dists.sticky_bang_zero_bang_action_dist import (
+    StickyBangZeroBangConfig,
+    StickyBangZeroBangActionDist,
+)
 from swarmbots.learn.algos.mat.mat_policy import MATPolicyConfig, MATCriticConfig
 from swarmbots.learn.algos.mat.mat_encoder import MATEncoderConfig
 from swarmbots.learn.algos.mat.mat_decoder import MATDecoderConfig
@@ -39,6 +42,7 @@ from swarmbots.learn.obs_indices import ObsIndices
 from swarmbots.learn.swarmbots_obs_indices import build_obs_indices
 from swarmbots.mj_env.scenarios.scenario_presets import default_wall
 from swarmbots.mj_env.swarm_bots_env import SwarmBotsEnv
+from swarmbots.schedulers import ScheduleResult, ScheduledHyperParameter, SchedulerManager
 
 
 def make_env_fn(
@@ -147,6 +151,10 @@ def main() -> None:
 
     world_model_num_next_steps = 3
     world_model_target_tau = None
+
+    initial_stickiness = 0.65
+    final_stickiness = 0.01
+    stickiness_anneal_steps = int(total_timesteps * 0.45)
 
     # gsde_init_stds = [0.25, 0.25, 0.15]
     gsde_init_stds = [0.25, 0.30]
@@ -309,8 +317,8 @@ def main() -> None:
                 # ),
                 continuous_config=StickyBangZeroBangConfig(
                     bang=0.5,
-                    ent_loss_coef=2e-3,
-                    stickiness=0.65,
+                    ent_loss_coef=1e-3,
+                    stickiness=initial_stickiness,
                 ),
                 bernoulli_config=BernoulliConfig(
                     initial_prob=0.7,
@@ -433,6 +441,40 @@ def main() -> None:
         max_lr=5e-4,
         updater=auto_lr_updater
     )
+
+    def get_act0_stickiness() -> float:
+        action_dist = policy.action_dist.distributions[0]
+        if not isinstance(action_dist, StickyBangZeroBangActionDist):
+            raise TypeError(f"Expected StickyBangZeroBangActionDist at index 0, got {type(action_dist)}")
+        return float(action_dist.stickiness)
+
+    def stickiness_scheduler(
+            old_value: float,
+            state: dict[str, Any],
+            n_iterations: int,
+            n_model_updates: int,
+            n_timesteps: int,
+            metrics: dict[str, Any],
+    ) -> ScheduleResult:
+        if stickiness_anneal_steps <= 0:
+            target = final_stickiness
+        else:
+            progress = min(float(n_timesteps) / float(stickiness_anneal_steps), 1.0)
+            target = initial_stickiness + (final_stickiness - initial_stickiness) * progress
+
+        if abs(target - old_value) < 1e-6:
+            return {"new_value": None, "event": "hold"}
+        return {"new_value": target, "event": "anneal"}
+
+    scheduler_manager = SchedulerManager([
+        ScheduledHyperParameter(
+            name="act0_stickiness",
+            scheduler=stickiness_scheduler,
+            get_value=get_act0_stickiness,
+            apply=lambda new_value: policy.set_action_stickiness(new_value, sub_dist_idx=0),
+        )
+    ])
+
     rollout_samples = 4048 * 2
     ppo = PPOWM(
         policy=policy,
@@ -458,6 +500,7 @@ def main() -> None:
         world_model_loss_coef=world_model_loss_coef,
         world_model_target_tau=world_model_target_tau,
         metrics_action_splitters=[lambda actions: split_actuator_joints(actions, actuators_per_limb), None],
+        scheduler_manager=scheduler_manager,
     )
 
     if load_path:

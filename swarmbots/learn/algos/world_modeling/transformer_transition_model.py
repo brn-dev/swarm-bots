@@ -6,7 +6,6 @@ from typing import Any
 import torch
 from torch import nn
 
-from swarmbots.learn.config_serialization import serialize_dataclass_config
 from swarmbots.learn.nn_components.mlp import MLP
 from swarmbots.learn.nn_components.nn_init import init_linear_orthogonal
 
@@ -30,13 +29,6 @@ class TransformerTransitionModelConfig:
     layer_norm_eps: float = 1e-5
     enable_nested_tensor: bool = False
 
-
-def serialize_transformer_transition_model_config(
-        config: TransformerTransitionModelConfig,
-) -> dict[str, Any]:
-    return serialize_dataclass_config(config)
-
-
 class TransformerTransitionModel(nn.Module):
     """
     Multi-agent transition model predicting next local latents z_{t+1} from (z_t, a_t).
@@ -54,7 +46,18 @@ class TransformerTransitionModel(nn.Module):
         self.latent_dim = config.latent_dim
         self.action_dim = config.action_dim
         self.d_model = config.d_model
+        self.nhead = config.nhead
+        self.num_layers = config.num_layers
+        self.dim_feedforward = config.dim_feedforward
+        self.dropout = config.dropout
+        self.act_fn_cls = config.act_fn_cls
+        self.add_agent_embeddings = config.add_agent_embeddings
         self.predict_delta = config.predict_delta
+        self.coembed_mlp_hidden_dims = config.coembed_mlp_hidden_dims
+        self.head_mlp_hidden_dims = config.head_mlp_hidden_dims
+        self.norm_first = config.norm_first
+        self.layer_norm_eps = config.layer_norm_eps
+        self.enable_nested_tensor = config.enable_nested_tensor
 
         in_dim = config.latent_dim + config.action_dim
         if config.coembed_mlp_hidden_dims is None:
@@ -103,10 +106,25 @@ class TransformerTransitionModel(nn.Module):
                 act_fn_cls=config.act_fn_cls,
             )
 
-        self.hyper_parameters: dict[str, Any] = serialize_transformer_transition_model_config(config)
-
     def get_hyper_parameters(self) -> dict[str, Any]:
-        return dict(self.hyper_parameters)
+        return {
+            "n_agents": self.n_agents,
+            "latent_dim": self.latent_dim,
+            "action_dim": self.action_dim,
+            "d_model": self.d_model,
+            "nhead": self.nhead,
+            "num_layers": self.num_layers,
+            "dim_feedforward": self.dim_feedforward,
+            "dropout": self.dropout,
+            "act_fn_cls": str(self.act_fn_cls),
+            "add_agent_embeddings": self.add_agent_embeddings,
+            "predict_delta": self.predict_delta,
+            "coembed_mlp_hidden_dims": self.coembed_mlp_hidden_dims,
+            "head_mlp_hidden_dims": self.head_mlp_hidden_dims,
+            "norm_first": self.norm_first,
+            "layer_norm_eps": self.layer_norm_eps,
+            "enable_nested_tensor": self.enable_nested_tensor,
+        }
 
     def forward(self, z_t: torch.Tensor, a_t: torch.Tensor, agent_mask: torch.Tensor | None = None) -> torch.Tensor:
         """

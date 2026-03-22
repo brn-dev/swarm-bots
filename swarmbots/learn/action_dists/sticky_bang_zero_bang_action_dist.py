@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 import math
+from typing import Any
 
 import torch
 import torch.nn.functional as F
@@ -29,9 +30,6 @@ class StickyBangZeroBangActionDist(BangZeroBangActionDist):
             action_net_initialization: ActionNetInitialization = init_linear_orthogonal,
             ent_loss_coef: float = 0.0,
     ) -> None:
-        if not (0.0 <= stickiness < 1.0):
-            raise ValueError(f"stickiness must be in [0, 1), got {stickiness}.")
-
         super().__init__(
             latent_dim=latent_dim,
             action_dim=action_dim,
@@ -39,10 +37,11 @@ class StickyBangZeroBangActionDist(BangZeroBangActionDist):
             action_net_initialization=action_net_initialization,
             ent_loss_coef=ent_loss_coef,
         )
-        self.stickiness = stickiness
         self.zero_sticky = zero_sticky
-        self._log_stickiness = math.log(stickiness) if stickiness > 0.0 else float("-inf")
-        self._log_one_minus_stickiness = math.log1p(-stickiness)
+        self.stickiness = 0.0
+        self._log_stickiness = float("-inf")
+        self._log_one_minus_stickiness = 0.0
+        self.set_stickiness(stickiness)
 
     def requires_previous_actions(self) -> bool:
         return self.stickiness > 0.0
@@ -115,3 +114,17 @@ class StickyBangZeroBangActionDist(BangZeroBangActionDist):
         if self.zero_sticky:
             return torch.ones_like(previous_indices, dtype=torch.bool)
         return previous_indices != 1
+
+    def set_stickiness(self, stickiness: float) -> None:
+        if not (0.0 <= stickiness < 1.0):
+            raise ValueError(f"stickiness must be in [0, 1), got {stickiness}.")
+        self.stickiness = float(stickiness)
+        self._log_stickiness = math.log(self.stickiness) if self.stickiness > 0.0 else float("-inf")
+        self._log_one_minus_stickiness = math.log1p(-self.stickiness)
+
+    def get_hyper_parameters(self) -> dict[str, Any]:
+        return {
+            **super().get_hyper_parameters(),
+            "stickiness": self.stickiness,
+            "zero_sticky": self.zero_sticky,
+        }

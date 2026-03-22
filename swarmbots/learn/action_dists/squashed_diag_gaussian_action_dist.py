@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Optional, Self
+from typing import Optional, Self, Any
 
 import torch
 
@@ -112,3 +112,10 @@ class SquashedDiagGaussianActionDist(DiagGaussianActionDist):
         )
         log_probs = self.log_prob(actions, gaussian_actions=self._last_gaussian_actions)
         return actions, log_probs
+
+    def get_hyper_parameters(self) -> dict[str, Any]:
+        return {
+            **super().get_hyper_parameters(),
+            "epsilon": self.epsilon,
+            "squash_output": True,
+        }

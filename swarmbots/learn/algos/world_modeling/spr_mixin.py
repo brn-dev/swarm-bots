@@ -1,6 +1,5 @@
 import abc
 import copy
-from typing import Any
 
 import torch
 from torch import nn
@@ -8,30 +7,10 @@ from torch.nn import functional as F
 
 from swarmbots.learn.algos.world_modeling.transformer_transition_model import (
     TransformerTransitionModel,
-    TransformerTransitionModelConfig,
-    serialize_transformer_transition_model_config,
 )
 from swarmbots.learn.masking import build_valid_mask, masked_mean, restrict_loss_agent_mask
 from swarmbots.learn.nn_components.residual import Residual
 from swarmbots.learn.polyak_update import polyak_update
-
-
-def serialize_spr_world_model_config(
-        *,
-        transition_model_config: TransformerTransitionModelConfig,
-        spr_projection_dims: list[int],
-        spr_predictor_hidden_dims: list[int],
-        residual_predictor: bool,
-        spr_loss_weight: float,
-) -> dict[str, Any]:
-    return {
-        "transition_model_config": serialize_transformer_transition_model_config(transition_model_config),
-        "spr_projection_dims": spr_projection_dims,
-        "spr_predictor_hidden_dims": spr_predictor_hidden_dims,
-        "residual_predictor": residual_predictor,
-        "spr_loss_weight": spr_loss_weight,
-    }
-
 
 class SPRMixin(abc.ABC):
 

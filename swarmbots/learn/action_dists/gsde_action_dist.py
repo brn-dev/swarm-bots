@@ -1,6 +1,6 @@
 import math
 from dataclasses import dataclass
-from typing import Optional, Self
+from typing import Optional, Self, Any
 
 import torch
 import torch.distributions as torchdist
@@ -283,3 +283,21 @@ class GSDEActionDist(ContinuousActionDist, TemporallyCorrelatedActionDist):
             return torch.exp(log_stds)
         else:
             return torch.exp(log_stds).expand(self.latent_sde_dim, self.action_dim)
+
+    def get_hyper_parameters(self) -> dict[str, Any]:
+        std_matrix = self._get_std_matrix(self.log_stds.detach())
+        return {
+            **super().get_hyper_parameters(),
+            "latent_sde_dim": self.latent_sde_dim,
+            "std_learnable": self.std_learnable,
+            "normalize_latent_sde_by_dim": self.normalize_latent_sde_by_dim,
+            "full_std": self.full_std,
+            "sde_learn_features": self.sde_learn_features,
+            "squash_output": self.squash_output,
+            "epsilon": self.epsilon,
+            "log_std_clamp_range": list(self.log_std_clamp_range),
+            "std_mean": float(std_matrix.mean().item()),
+            "std_min": float(std_matrix.min().item()),
+            "std_max": float(std_matrix.max().item()),
+            "has_active_noise": self._exploration_matrices is not None,
+        }

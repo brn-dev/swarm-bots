@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Optional, Self
+from typing import Optional, Self, Any
 
 import torch
 from torch import distributions as torchdist
@@ -110,3 +110,11 @@ class BangZeroBangActionDist(DiscreteActionDist):
 
     def _indices_to_actions(self, indices: torch.Tensor) -> torch.Tensor:
         return (indices.to(dtype=torch.float32) - 1.0) * self.bang
+
+    def get_hyper_parameters(self) -> dict[str, Any]:
+        return {
+            **super().get_hyper_parameters(),
+            "agent_action_dim": self.agent_action_dim,
+            "bang": self.bang,
+            "ent_loss_coef": self.ent_loss_coef,
+        }

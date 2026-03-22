@@ -13,6 +13,7 @@ from swarmbots.learn.algos.ppo.wm.ppo_wm_sampler import PPOWMSampler, PPOWMSampl
 from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
 from swarmbots.learn.gsde_reset import GSDEResetMode
 from swarmbots.learn.losses import LossDict, LossMetrics
+from swarmbots.schedulers import SchedulerManager
 
 
 class PPOWMPolicyMixin(abc.ABC):
@@ -85,6 +86,7 @@ class PPOWM(PPO[PPOWMSamples, PPOWMSampler]):
             world_model_target_tau: float | None = None,
             metrics_action_splitters: list[Callable[[torch.Tensor], dict[str, torch.Tensor]] | None] | None = None,
             use_popart: bool = False,
+            scheduler_manager: SchedulerManager | None = None,
     ) -> None:
         if world_model_num_next_steps < 1:
             raise ValueError(f"world_model_num_next_steps must be >= 1, got {world_model_num_next_steps}")
@@ -112,6 +114,7 @@ class PPOWM(PPO[PPOWMSamples, PPOWMSampler]):
             rollout_device=rollout_device,
             use_popart=use_popart,
             metrics_action_splitters=metrics_action_splitters,
+            scheduler_manager=scheduler_manager,
         )
         self.world_model_num_next_steps = world_model_num_next_steps
         self.world_model_loss_coef = world_model_loss_coef

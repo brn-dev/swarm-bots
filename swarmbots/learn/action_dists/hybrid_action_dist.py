@@ -33,9 +33,9 @@ from swarmbots.learn.action_dists.sticky_bang_zero_bang_action_dist import (
 )
 from swarmbots.learn.action_dists.temporally_correlated_action_dist import TemporallyCorrelatedActionDist
 from swarmbots.learn.hybrid_action_space import HybridActionSpace
-from swarmbots.learn.config_serialization import serialize_dataclass_config
 from swarmbots.learn.losses import LossDict, LossMetrics
 from swarmbots.learn.nn_components.nn_init import init_linear_orthogonal
+from swarmbots.learn.serialization_utils import serialize_dataclass
 
 
 ContinuousActionDistConfig: TypeAlias = (
@@ -55,29 +55,25 @@ ContinuousActionDistConfigInput: TypeAlias = (
 )
 
 
-def serialize_continuous_action_dist_config(config: ContinuousActionDistConfig) -> dict[str, Any]:
-    return serialize_dataclass_config(config)
-
-
-def serialize_continuous_action_dist_configs(
+def continuous_config_to_dicts(
         continuous_config: ContinuousActionDistConfigInput,
 ) -> dict[str, Any] | list[dict[str, Any] | None] | None:
     if continuous_config is None:
         return None
     if isinstance(continuous_config, list):
         return [
-            serialize_continuous_action_dist_config(cc) if cc is not None else None
+            serialize_dataclass(cc) if cc is not None else None
             for cc in continuous_config
         ]
-    return serialize_continuous_action_dist_config(continuous_config)
+    return serialize_dataclass(continuous_config)
 
 
-def serialize_bernoulli_config(
+def bernoulli_config_to_dict(
         bernoulli_config: BernoulliConfig | None,
 ) -> dict[str, Any] | None:
     if bernoulli_config is None:
         return None
-    return serialize_dataclass_config(bernoulli_config)
+    return serialize_dataclass(bernoulli_config)
 
 
 class HybridActionDistribution(ActionDist):
@@ -139,6 +135,16 @@ class HybridActionDistribution(ActionDist):
 
     def requires_previous_actions(self) -> bool:
         return any(dist.requires_previous_actions() for dist in self.distributions)
+
+    def get_hyper_parameters(self) -> dict[str, Any]:
+        return {
+            **super().get_hyper_parameters(),
+            "action_dims": list(self.action_dims),
+            "has_gsde": self.has_gsde,
+            "continuous_config": continuous_config_to_dicts(self.continuous_configs),
+            "bernoulli_config": bernoulli_config_to_dict(self.bernoulli_config),
+            "sub_distributions": [dist.get_hyper_parameters() for dist in self.distributions],
+        }
 
     def sample(
             self,
@@ -332,6 +338,29 @@ class HybridActionDistribution(ActionDist):
         ):
             self.continuous_configs[sub_dist_idx] = replace(config, ent_loss_coef=value)
 
+    def set_all_stickiness(self, value: float) -> None:
+        for idx, dist in enumerate(self.distributions):
+            if not isinstance(dist, StickyBangZeroBangActionDist):
+                continue
+            dist.set_stickiness(value)
+            config = self.continuous_configs[idx]
+            if isinstance(config, StickyBangZeroBangConfig):
+                self.continuous_configs[idx] = replace(config, stickiness=value)
+
+    def set_sub_stickiness(self, sub_dist_idx: int, value: float) -> None:
+        if not (0 <= sub_dist_idx < len(self.distributions)):
+            raise IndexError(
+                f"sub_dist_idx out of range [0, {len(self.distributions) - 1}], got {sub_dist_idx}"
+            )
+
+        dist = self.distributions[sub_dist_idx]
+        if not isinstance(dist, StickyBangZeroBangActionDist):
+            raise ValueError(f"Action sub-dist {sub_dist_idx} does not support stickiness updates")
+
+        dist.set_stickiness(value)
+        config = self.continuous_configs[sub_dist_idx]
+        if isinstance(config, StickyBangZeroBangConfig):
+            self.continuous_configs[sub_dist_idx] = replace(config, stickiness=value)
 
     @staticmethod
     def _prefix_named_values(
