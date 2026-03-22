@@ -1,5 +1,5 @@
 import math
-from typing import Optional, Self
+from typing import Optional, Self, Any
 
 import torch
 import torch.distributions as torchdist
@@ -88,3 +88,15 @@ class DiagGaussianActionDist(ContinuousActionDist):
         if action_magnitude_loss is not None:
             losses["action_magnitude"] = action_magnitude_loss
         return losses, {**ent_loss_metrics, **action_magnitude_metrics}
+
+    def get_hyper_parameters(self) -> dict[str, Any]:
+        std_tensor = torch.exp(self.log_stds.detach())
+        if std_tensor.numel() == 1:
+            std_value: float | list[float] = float(std_tensor.item())
+        else:
+            std_value = std_tensor.cpu().tolist()
+        return {
+            **super().get_hyper_parameters(),
+            "std_learnable": self.std_learnable,
+            "std": std_value,
+        }

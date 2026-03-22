@@ -84,6 +84,24 @@ class ActionDist(nn.Module, abc.ABC):
     def requires_previous_actions(self) -> bool:
         return False
 
+    def get_hyper_parameters(self) -> dict[str, Any]:
+        return {
+            "type": type(self).__name__,
+            "latent_dim": self.latent_dim,
+            "action_dim": self.action_dim,
+            "requires_previous_actions": self.requires_previous_actions(),
+            "action_net_type": type(self.action_net).__name__ if self.action_net is not None else None,
+            "action_net_initialization": (
+                self.action_net_initialization.__name__
+                if (self.action_net_initialization is not None and hasattr(self.action_net_initialization, "__name__"))
+                else (
+                    str(self.action_net_initialization)
+                    if self.action_net_initialization is not None
+                    else None
+                )
+            ),
+        }
+
     @abc.abstractmethod
     def get_metrics(
             self,

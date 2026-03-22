@@ -1,6 +1,6 @@
 import math
 from dataclasses import dataclass
-from typing import Optional, Self
+from typing import Optional, Self, Any
 
 import torch
 import torch.distributions as torchdist
@@ -108,3 +108,9 @@ class BernoulliActionDist(DiscreteActionDist):
 
     def _get_metrics_hist_bins(self) -> int:
         return 2
+
+    def get_hyper_parameters(self) -> dict[str, Any]:
+        return {
+            **super().get_hyper_parameters(),
+            "ent_loss_coef": self.ent_loss_coef,
+        }

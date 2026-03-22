@@ -99,3 +99,29 @@ Agents shall use this file to make notes for future instances. Write down import
 - `PPOEpisodeAccumulator.add(...)` now receives `previous_actions` from rollout and captures it when `step == 0` for an env. This fixes step-based rollouts where a chunk can start mid true environment episode.
 - Recording path nuance: `record_policy(...)` (`swarmbots/learn/recording.py`) must pass and update `previous_actions` when `policy.requires_previous_actions()` is true (e.g., `StickyBangZeroBangActionDist` with `stickiness > 0`), and mask to zeros on done envs. Missing this causes `ValueError: previous_actions is required when stickiness > 0`.
 - Recording init gotcha: do not use `env.n_agent_actions` in `record_policy(...)`; wrapped env chains (e.g. via `TransitionObsWrapper`) may not expose it. Use `env.action_space.total_agent_action_dim`.
+- `ActionDist` has a base `get_hyper_parameters()` that auto-serializes simple runtime attrs.
+- `HybridActionDistribution` and concrete dists now override `get_hyper_parameters()` for explicit runtime HP snapshots.
+- `ActionDist.get_hyper_parameters()` is an abstract API; use `_base_hyper_parameters()` inside concrete dists for shared core fields.
+
+## Scheduler Notes
+- Generic scheduling infra now lives in `swarmbots/schedulers.py`:
+- `ScheduledHyperParameter` = `{name, scheduler, get_value, apply, state}`.
+- `SchedulerManager.step(...)` calls each scheduler with counters/metrics and applies requested updates.
+- PPO integration: `PPO`/`PPOWM` accept `scheduler_manager`; schedulers run once per training iteration in `train()` and emit metrics:
+- `scheduler_<name>_value`, `scheduler_<name>_event`, `scheduler_<name>_updated`.
+- Callable serialization helper lives in `swarmbots/learn/serialization_utils.py` (`serialize_fn`), and is shared by PPO automatic-LR metadata + scheduler metadata serialization.
+- Sticky action dist updates:
+- `StickyBangZeroBangActionDist` now has `set_stickiness(...)` (updates cached log values too).
+- `HybridActionDistribution` exposes `set_sub_stickiness(...)` and `set_all_stickiness(...)`, and keeps `continuous_configs` synced.
+- Policy API:
+- `BasePPOPolicy.set_action_stickiness(value, sub_dist_idx=None)` is the common setter used by schedulers.
+- `get_hyper_parameters()` now reads runtime values from attributes/action_dist directly (no config-sync helper).
+
+## Config / Hyperparameter Refactor
+- Config dataclasses are now treated as initialization inputs only; runtime values are owned by module attributes.
+- `self.hyper_parameters` caches were removed from `swarmbots/learn` policies/world-model modules.
+- `get_hyper_parameters()` now computes from live attributes at call-time (especially action-dist/runtime loss weights), so command/scheduler changes are reflected without mutating config dicts.
+- World-model policies (`MATNOPPolicy`, `MATSPRPolicy`) now override `get_hyper_parameters()` and include runtime world-model weights there.
+- All `serialize_*_config` helpers were removed; hyperparameter dicts are now composed directly from attributes.
+- `swarmbots/learn/config_serialization.py` was removed (no longer used).
+- Dataclass hyperparameter serialization now lives in `swarmbots/learn/serialization_utils.py` (`serialize_dataclass`, `serialize_value`) and is reused by PPO/MAPPO/MAT policies plus hybrid action-dist config serialization.

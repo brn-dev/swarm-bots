@@ -138,6 +138,13 @@ class BetaMixtureActionDist(ActionDist):
             if value <= 1.0:
                 raise ValueError(f"All {parameter_name} values must be > 1.0, got {values}.")
 
+    def get_hyper_parameters(self) -> dict[str, Any]:
+        return {
+            **super().get_hyper_parameters(),
+            "num_components": self.num_components,
+            "epsilon": self.epsilon,
+        }
+
 
 def _inverse_softplus(value: float) -> float:
     return value + math.log(-math.expm1(-value))
