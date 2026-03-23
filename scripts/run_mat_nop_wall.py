@@ -16,6 +16,7 @@ from swarmbots.learn.action_dists.bang_zero_bang_action_dist import BangZeroBang
 from swarmbots.learn.action_dists.bernoulli_action_dist import BernoulliConfig
 from swarmbots.learn.action_dists.gsde_action_dist import GSDEConfig
 from swarmbots.learn.action_dists.gsde_action_dist import GSDEActionDist
+from swarmbots.learn.action_dists.left_right_beta_action_dist import LeftRightBetaConfig
 from swarmbots.learn.action_dists.sticky_bang_zero_bang_action_dist import (
     StickyBangZeroBangConfig,
     StickyBangZeroBangActionDist,
@@ -40,6 +41,7 @@ from swarmbots.learn.gsde_reset import GSDEProbabilityResetMode
 from swarmbots.learn.summary_statistics import SummaryStatisticsFormat, SummaryStatistics
 from swarmbots.learn.obs_indices import ObsIndices
 from swarmbots.learn.swarmbots_obs_indices import build_obs_indices
+from swarmbots.mj_env.scenarios import scenario_presets
 from swarmbots.mj_env.scenarios.scenario_presets import default_wall
 from swarmbots.mj_env.swarm_bots_env import SwarmBotsEnv
 from swarmbots.schedulers import ScheduleResult, ScheduledHyperParameter, SchedulerManager
@@ -315,10 +317,16 @@ def main() -> None:
                 #     alphas=(3.0, 10.0, 10.0),
                 #     betas=(10.0, 10.0, 3.0)
                 # ),
-                continuous_config=StickyBangZeroBangConfig(
-                    bang=0.5,
-                    ent_loss_coef=1e-3,
-                    stickiness=initial_stickiness,
+                # continuous_config=StickyBangZeroBangConfig(
+                #     bang=0.5,
+                #     ent_loss_coef=1e-3,
+                #     stickiness=initial_stickiness,
+                # ),
+                continuous_config=LeftRightBetaConfig(
+                    eps_c=1e-3,
+                    initial_zero_prob=0.01,
+                    ent_loss_coef=3e-3,
+                    beta_ent_scale=0.5,
                 ),
                 bernoulli_config=BernoulliConfig(
                     initial_prob=0.7,
@@ -442,12 +450,6 @@ def main() -> None:
         updater=auto_lr_updater
     )
 
-    def get_act0_stickiness() -> float:
-        action_dist = policy.action_dist.distributions[0]
-        if not isinstance(action_dist, StickyBangZeroBangActionDist):
-            raise TypeError(f"Expected StickyBangZeroBangActionDist at index 0, got {type(action_dist)}")
-        return float(action_dist.stickiness)
-
     def stickiness_scheduler(
             old_value: float,
             state: dict[str, Any],
@@ -466,14 +468,27 @@ def main() -> None:
             return {"new_value": None, "event": "hold"}
         return {"new_value": target, "event": "anneal"}
 
-    scheduler_manager = SchedulerManager([
-        ScheduledHyperParameter(
-            name="act0_stickiness",
-            scheduler=stickiness_scheduler,
-            get_value=get_act0_stickiness,
-            apply=lambda new_value: policy.set_action_stickiness(new_value, sub_dist_idx=0),
+    scheduler_manager: SchedulerManager | None = None
+    if isinstance(policy.action_dist.distributions[0], StickyBangZeroBangActionDist):
+        def get_act0_stickiness() -> float:
+            action_dist = policy.action_dist.distributions[0]
+            if not isinstance(action_dist, StickyBangZeroBangActionDist):
+                raise TypeError(f"Expected StickyBangZeroBangActionDist at index 0, got {type(action_dist)}")
+            return float(action_dist.stickiness)
+
+        scheduler_manager = SchedulerManager([
+            ScheduledHyperParameter(
+                name="act0_stickiness",
+                scheduler=stickiness_scheduler,
+                get_value=get_act0_stickiness,
+                apply=lambda new_value: policy.set_action_stickiness(new_value, sub_dist_idx=0),
+            )
+        ])
+    else:
+        act0_dist_type = type(policy.action_dist.distributions[0]) if policy.action_dist.distributions else None
+        logger.warning(
+            f"Skipping act0_stickiness scheduler: action dist[0] is {act0_dist_type}"
         )
-    ])
 
     rollout_samples = 4048 * 2
     ppo = PPOWM(
@@ -549,7 +564,8 @@ def main() -> None:
         extra_run_metadata={
             'load_path': load_path,
             'env_settings': env_settings,
-            'script': Path(__file__).read_text(encoding='utf-8')
+            'script': Path(__file__).read_text(encoding='utf-8'),
+            'script_scenario_presets': Path(scenario_presets.__file__).read_text(encoding='utf-8'),
         },
         logging_console_keys=logging_console_keys,
         make_record_env=make_record_env

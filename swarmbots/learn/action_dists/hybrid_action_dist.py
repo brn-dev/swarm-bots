@@ -484,6 +484,7 @@ def make_proba_distribution(
                 action_dim=action_space_dim,
                 eps_c=continuous_config.eps_c,
                 action_net_initialization=action_net_initialization,
+                initial_zero_prob=continuous_config.initial_zero_prob,
                 epsilon=continuous_config.epsilon,
                 left_alpha=continuous_config.left_alpha,
                 left_beta=continuous_config.left_beta,
