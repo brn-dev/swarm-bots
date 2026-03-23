@@ -21,6 +21,7 @@ from swarmbots.learn.masking import masked_mean
 @dataclass(frozen=True)
 class LeftRightBetaConfig:
     eps_c: float
+    initial_zero_prob: float | None = None
     epsilon: float = 1e-6
     left_alpha: float = 1.0 + math.log(2.0)
     left_beta: float = 1.0 + math.log(2.0)
@@ -44,6 +45,7 @@ class LeftRightBetaActionDist(ActionDist):
             action_dim: int,
             eps_c: float,
             action_net_initialization: ActionNetInitialization | None,
+            initial_zero_prob: float | None = None,
             epsilon: float = 1e-6,
             left_alpha: float = 1.0 + math.log(2.0),
             left_beta: float = 1.0 + math.log(2.0),
@@ -67,6 +69,10 @@ class LeftRightBetaActionDist(ActionDist):
             raise ValueError(f"ent_loss_coef must be >= 0, got {ent_loss_coef}")
         if beta_ent_scale < 0.0:
             raise ValueError(f"beta_ent_scale must be >= 0, got {beta_ent_scale}")
+        if initial_zero_prob is not None and not (0.0 < initial_zero_prob < 1.0):
+            raise ValueError(
+                f"initial_zero_prob must be strictly between 0 and 1, got {initial_zero_prob}"
+            )
 
         for name, value in (
                 ("left_alpha", left_alpha),
@@ -81,6 +87,7 @@ class LeftRightBetaActionDist(ActionDist):
         self.epsilon = epsilon
         self.ent_loss_coef = ent_loss_coef
         self.beta_ent_scale = beta_ent_scale
+        self.initial_zero_prob = initial_zero_prob
         self.interval_width = 1.0 - eps_c
         self.log_interval_jacobian = math.log(1.0 / self.interval_width)
         self.middle_log_density = -math.log(2.0 * eps_c)
@@ -91,6 +98,11 @@ class LeftRightBetaActionDist(ActionDist):
 
         with torch.no_grad():
             bias = self.output_net.bias.view(action_dim, self._OUTPUTS_PER_ACTION)
+            if initial_zero_prob is not None:
+                outer_prob = (1.0 - initial_zero_prob) / 2.0
+                bias[:, self._LEFT_INDEX] = math.log(outer_prob)
+                bias[:, self._MIDDLE_INDEX] = math.log(initial_zero_prob)
+                bias[:, self._RIGHT_INDEX] = math.log(outer_prob)
             bias[:, 3] = _inverse_softplus(left_alpha - 1.0)
             bias[:, 4] = _inverse_softplus(left_beta - 1.0)
             bias[:, 5] = _inverse_softplus(right_alpha - 1.0)
@@ -242,6 +254,7 @@ class LeftRightBetaActionDist(ActionDist):
             "epsilon": self.epsilon,
             "ent_loss_coef": self.ent_loss_coef,
             "beta_ent_scale": self.beta_ent_scale,
+            "initial_zero_prob": self.initial_zero_prob,
             "interval_width": self.interval_width,
         }
 
