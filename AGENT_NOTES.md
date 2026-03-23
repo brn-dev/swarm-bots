@@ -125,3 +125,6 @@ Agents shall use this file to make notes for future instances. Write down import
 - All `serialize_*_config` helpers were removed; hyperparameter dicts are now composed directly from attributes.
 - `swarmbots/learn/config_serialization.py` was removed (no longer used).
 - Dataclass hyperparameter serialization now lives in `swarmbots/learn/serialization_utils.py` (`serialize_dataclass`, `serialize_value`) and is reused by PPO/MAPPO/MAT policies plus hybrid action-dist config serialization.
+- World-model hyperparameter snapshots now live with the world-model components:
+- `TransformerTransitionModel.get_hyper_parameters()` serializes via `to_config()`.
+- `NextObsPredMixin.get_next_obs_pred_hyper_parameters(...)` and `SPRMixin.get_spr_hyper_parameters(...)` collect runtime world-model settings, but policy-specific architecture metadata is passed in by the policy; do not store that metadata on the mixins.
