@@ -59,6 +59,9 @@ class MATSPRPolicy(MATPolicy, SPRMixin, PPOWMPolicyMixin):
             predictor_hidden_dims = [projection_dims[-1]]
         else:
             predictor_hidden_dims = world_model_config.spr_predictor_hidden_dims + [projection_dims[-1]]
+        self._spr_projection_dims = projection_dims
+        self._spr_predictor_hidden_dims = predictor_hidden_dims
+        self._spr_residual_predictor = world_model_config.residual_predictor
 
         self.setup_spr(
             transition_model=TransformerTransitionModel(config=TransformerTransitionModelConfig(
@@ -88,28 +91,8 @@ class MATSPRPolicy(MATPolicy, SPRMixin, PPOWMPolicyMixin):
                 end_with_act_fn=False,
                 act_fn_cls=config.mat_policy_config.act_fn_cls,
             ),
-            residual_predictor=world_model_config.residual_predictor
+            residual_predictor=world_model_config.residual_predictor,
         )
-
-        transition_model_config = TransformerTransitionModelConfig(
-            n_agents=self.n_agents,
-            latent_dim=self.d_model_encoder,
-            action_dim=env.action_space.total_agent_action_dim,
-            d_model=world_model_config.d_model_transition_model,
-            nhead=world_model_config.nhead_transition_model,
-            num_layers=world_model_config.num_layers_transition_model,
-            dim_feedforward=world_model_config.dim_feedforward_transition_model,
-            dropout=config.mat_policy_config.dropout,
-            act_fn_cls=config.mat_policy_config.act_fn_cls,
-            add_agent_embeddings=world_model_config.add_agent_embeddings_transition_model,
-            predict_delta=True,
-            coembed_mlp_hidden_dims=world_model_config.transition_model_coembed_hidden_dims,
-            head_mlp_hidden_dims=world_model_config.transition_model_head_hidden_dims,
-        )
-        self._spr_transition_model_config = transition_model_config
-        self._spr_projection_dims = projection_dims
-        self._spr_predictor_hidden_dims = predictor_hidden_dims
-        self._spr_residual_predictor = world_model_config.residual_predictor
 
     def get_hyper_parameters(self) -> dict[str, Any]:
         base_hparams = super().get_hyper_parameters()
@@ -117,30 +100,11 @@ class MATSPRPolicy(MATPolicy, SPRMixin, PPOWMPolicyMixin):
             **base_hparams,
             "mat_spr_policy_config": {
                 "mat_policy_config": base_hparams["mat_policy_config"],
-                "world_model_config": {
-                    "transition_model_config": {
-                        "n_agents": self._spr_transition_model_config.n_agents,
-                        "latent_dim": self._spr_transition_model_config.latent_dim,
-                        "action_dim": self._spr_transition_model_config.action_dim,
-                        "d_model": self._spr_transition_model_config.d_model,
-                        "nhead": self._spr_transition_model_config.nhead,
-                        "num_layers": self._spr_transition_model_config.num_layers,
-                        "dim_feedforward": self._spr_transition_model_config.dim_feedforward,
-                        "dropout": self._spr_transition_model_config.dropout,
-                        "act_fn_cls": str(self._spr_transition_model_config.act_fn_cls),
-                        "add_agent_embeddings": self._spr_transition_model_config.add_agent_embeddings,
-                        "predict_delta": self._spr_transition_model_config.predict_delta,
-                        "coembed_mlp_hidden_dims": self._spr_transition_model_config.coembed_mlp_hidden_dims,
-                        "head_mlp_hidden_dims": self._spr_transition_model_config.head_mlp_hidden_dims,
-                        "norm_first": self._spr_transition_model_config.norm_first,
-                        "layer_norm_eps": self._spr_transition_model_config.layer_norm_eps,
-                        "enable_nested_tensor": self._spr_transition_model_config.enable_nested_tensor,
-                    },
-                    "spr_projection_dims": self._spr_projection_dims,
-                    "spr_predictor_hidden_dims": self._spr_predictor_hidden_dims,
-                    "residual_predictor": self._spr_residual_predictor,
-                    "spr_loss_weight": self.spr_loss_weight,
-                },
+                "world_model_config": self.get_spr_hyper_parameters(
+                    projection_dims=self._spr_projection_dims,
+                    predictor_hidden_dims=self._spr_predictor_hidden_dims,
+                    residual_predictor=self._spr_residual_predictor,
+                ),
             },
         }
 

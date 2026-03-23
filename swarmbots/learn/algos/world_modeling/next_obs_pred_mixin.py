@@ -13,6 +13,7 @@ from swarmbots.learn.algos.world_modeling.transformer_transition_model import (
     TransformerTransitionModel,
 )
 from swarmbots.learn.masking import build_valid_mask, masked_mean, restrict_loss_agent_mask
+from swarmbots.learn.serialization_utils import serialize_value
 
 class PredictDeltaMode(Enum):
     PER_STEP_DELTA = 1
@@ -134,6 +135,40 @@ class NextObsPredMixin(abc.ABC):
                 self.binary_target_ema = ema
         else:
             self.binary_target_ema = None
+
+    def get_next_obs_pred_hyper_parameters(
+            self,
+            *,
+            pre_transition_dims: Optional[list[int]] = None,
+            pre_predictors_dims: Optional[list[int]] = None,
+            scalar_predictor_hidden_dims: Optional[list[int]] = None,
+            angle_predictor_hidden_dims: Optional[list[int]] = None,
+            rot6d_predictor_hidden_dims: Optional[list[int]] = None,
+            binary_predictor_hidden_dims: Optional[list[int]] = None,
+    ) -> dict[str, Any]:
+        return {
+            "transition_model_config": self.transition_model.get_hyper_parameters(),
+            "wm_pre_transition_dims": self._copy_optional_list(pre_transition_dims),
+            "wm_pre_predictors_dims": self._copy_optional_list(pre_predictors_dims),
+            "wm_scalar_predictor_hidden_dims": self._copy_optional_list(scalar_predictor_hidden_dims),
+            "wm_angle_predictor_hidden_dims": self._copy_optional_list(angle_predictor_hidden_dims),
+            "wm_rot6d_predictor_hidden_dims": self._copy_optional_list(rot6d_predictor_hidden_dims),
+            "wm_binary_predictor_hidden_dims": self._copy_optional_list(binary_predictor_hidden_dims),
+            "scalar_loss_fn": serialize_value(self.scalar_loss_fn),
+            "next_obs_pred_config": {
+                "local_scalar_target_indices": self._copy_optional_list(self.local_scalar_target_indices),
+                "local_angle_target_indices": self._copy_optional_list(self.local_angle_target_sin_indices),
+                "local_rot6d_target_indices": self._copy_optional_list(self.local_rot6d_target_indices),
+                "local_binary_target_indices": self._copy_optional_list(self.local_binary_target_indices),
+                "scalar_loss_weight": self.scalar_loss_weight,
+                "angle_loss_weight": self.angle_loss_weight,
+                "rot6d_loss_weight": self.rot6d_loss_weight,
+                "binary_loss_weight": self.binary_loss_weight,
+                "binary_target_ema_decay": self.binary_target_ema_decay,
+                "binary_target_ema_eps": self.binary_target_ema_eps,
+                "predict_delta": serialize_value(self.predict_delta_mode),
+            },
+        }
 
 
     def compute_scalar_loss(
@@ -367,6 +402,12 @@ class NextObsPredMixin(abc.ABC):
         if len(indices) == 0:
             return None
         return list(indices)
+
+    @staticmethod
+    def _copy_optional_list(values: Optional[list[int]]) -> Optional[list[int]]:
+        if values is None:
+            return None
+        return list(values)
 
     @staticmethod
     def _normalize_predict_delta_mode(

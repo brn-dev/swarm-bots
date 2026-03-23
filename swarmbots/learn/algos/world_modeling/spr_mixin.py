@@ -1,5 +1,6 @@
 import abc
 import copy
+from typing import Any
 
 import torch
 from torch import nn
@@ -12,6 +13,7 @@ from swarmbots.learn.masking import build_valid_mask, masked_mean, restrict_loss
 from swarmbots.learn.nn_components.residual import Residual
 from swarmbots.learn.polyak_update import polyak_update
 
+
 class SPRMixin(abc.ABC):
 
     target_encoder: nn.Module
@@ -19,6 +21,7 @@ class SPRMixin(abc.ABC):
     online_projection: nn.Module
     target_projection: nn.Module
     predictor: nn.Module
+    spr_loss_weight: float
 
     @property
     @abc.abstractmethod
@@ -30,7 +33,7 @@ class SPRMixin(abc.ABC):
             transition_model: TransformerTransitionModel,
             projection: nn.Module,
             predictor: nn.Module,
-            residual_predictor: bool = True
+            residual_predictor: bool = True,
     ) -> None:
         self.target_encoder = copy.deepcopy(self.online_encoder)
         self.target_encoder.requires_grad_(False)
@@ -48,6 +51,21 @@ class SPRMixin(abc.ABC):
             self.predictor = Residual(predictor)
         else:
             self.predictor = predictor
+
+    def get_spr_hyper_parameters(
+            self,
+            *,
+            projection_dims: list[int],
+            predictor_hidden_dims: list[int],
+            residual_predictor: bool,
+    ) -> dict[str, Any]:
+        return {
+            "transition_model_config": self.transition_model.get_hyper_parameters(),
+            "spr_projection_dims": list(projection_dims),
+            "spr_predictor_hidden_dims": list(predictor_hidden_dims),
+            "residual_predictor": residual_predictor,
+            "spr_loss_weight": self.spr_loss_weight,
+        }
 
     @torch.no_grad()
     def update_spr_targets(self, tau: float) -> None:

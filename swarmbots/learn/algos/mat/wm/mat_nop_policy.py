@@ -150,7 +150,6 @@ class MATNOPPolicy(MATPolicy, NextObsPredMixin, PPOWMPolicyMixin):
             coembed_mlp_hidden_dims=world_model_config.transition_model_coembed_hidden_dims,
             head_mlp_hidden_dims=world_model_config.transition_model_head_hidden_dims,
         )
-        self._wm_transition_model_config = transition_model_config
         self._wm_pre_transition_dims = world_model_config.wm_pre_transition_dims
         self._wm_pre_predictors_dims = world_model_config.wm_pre_predictors_dims
         self._wm_scalar_predictor_hidden_dims = world_model_config.wm_scalar_predictor_hidden_dims
@@ -175,46 +174,14 @@ class MATNOPPolicy(MATPolicy, NextObsPredMixin, PPOWMPolicyMixin):
             **base_hparams,
             "mat_nop_policy_config": {
                 "mat_policy_config": base_hparams["mat_policy_config"],
-                "world_model_config": {
-                    "transition_model_config": {
-                        "n_agents": self._wm_transition_model_config.n_agents,
-                        "latent_dim": self._wm_transition_model_config.latent_dim,
-                        "action_dim": self._wm_transition_model_config.action_dim,
-                        "d_model": self._wm_transition_model_config.d_model,
-                        "nhead": self._wm_transition_model_config.nhead,
-                        "num_layers": self._wm_transition_model_config.num_layers,
-                        "dim_feedforward": self._wm_transition_model_config.dim_feedforward,
-                        "dropout": self._wm_transition_model_config.dropout,
-                        "act_fn_cls": str(self._wm_transition_model_config.act_fn_cls),
-                        "add_agent_embeddings": self._wm_transition_model_config.add_agent_embeddings,
-                        "predict_delta": self._wm_transition_model_config.predict_delta,
-                        "coembed_mlp_hidden_dims": self._wm_transition_model_config.coembed_mlp_hidden_dims,
-                        "head_mlp_hidden_dims": self._wm_transition_model_config.head_mlp_hidden_dims,
-                        "norm_first": self._wm_transition_model_config.norm_first,
-                        "layer_norm_eps": self._wm_transition_model_config.layer_norm_eps,
-                        "enable_nested_tensor": self._wm_transition_model_config.enable_nested_tensor,
-                    },
-                    "wm_pre_transition_dims": self._wm_pre_transition_dims,
-                    "wm_pre_predictors_dims": self._wm_pre_predictors_dims,
-                    "wm_scalar_predictor_hidden_dims": self._wm_scalar_predictor_hidden_dims,
-                    "wm_angle_predictor_hidden_dims": self._wm_angle_predictor_hidden_dims,
-                    "wm_rot6d_predictor_hidden_dims": self._wm_rot6d_predictor_hidden_dims,
-                    "wm_binary_predictor_hidden_dims": self._wm_binary_predictor_hidden_dims,
-                    "scalar_loss_fn": str(self.scalar_loss_fn),
-                    "next_obs_pred_config": {
-                        "local_scalar_target_indices": self.local_scalar_target_indices,
-                        "local_angle_target_indices": self.local_angle_target_sin_indices,
-                        "local_rot6d_target_indices": self.local_rot6d_target_indices,
-                        "local_binary_target_indices": self.local_binary_target_indices,
-                        "scalar_loss_weight": self.scalar_loss_weight,
-                        "angle_loss_weight": self.angle_loss_weight,
-                        "rot6d_loss_weight": self.rot6d_loss_weight,
-                        "binary_loss_weight": self.binary_loss_weight,
-                        "binary_target_ema_decay": self.binary_target_ema_decay,
-                        "binary_target_ema_eps": self.binary_target_ema_eps,
-                        "predict_delta": None if self.predict_delta_mode is None else self.predict_delta_mode.name,
-                    },
-                },
+                "world_model_config": self.get_next_obs_pred_hyper_parameters(
+                    pre_transition_dims=self._wm_pre_transition_dims,
+                    pre_predictors_dims=self._wm_pre_predictors_dims,
+                    scalar_predictor_hidden_dims=self._wm_scalar_predictor_hidden_dims,
+                    angle_predictor_hidden_dims=self._wm_angle_predictor_hidden_dims,
+                    rot6d_predictor_hidden_dims=self._wm_rot6d_predictor_hidden_dims,
+                    binary_predictor_hidden_dims=self._wm_binary_predictor_hidden_dims,
+                ),
             },
         }
 
