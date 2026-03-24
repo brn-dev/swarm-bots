@@ -21,6 +21,10 @@ from swarmbots.learn.action_dists.continuous_action_dist import ContinuousAction
 from swarmbots.learn.action_dists.diag_gaussian_action_dist import DiagGaussianActionDist
 from swarmbots.learn.action_dists.gsde_action_dist import GSDEActionDist, GSDEConfig
 from swarmbots.learn.action_dists.left_right_beta_action_dist import LeftRightBetaActionDist, LeftRightBetaConfig
+from swarmbots.learn.action_dists.left_middle_right_beta_action_dist import (
+    LeftMiddleRightBetaActionDist,
+    LeftMiddleRightBetaConfig,
+)
 from swarmbots.learn.action_dists.beta_mixture_action_dist import BetaMixtureActionDist, BetaMixtureConfig
 from swarmbots.learn.action_dists.predicted_std_action_dist import PredictedStdActionDist, PredictedStdConfig
 from swarmbots.learn.action_dists.squashed_diag_gaussian_action_dist import (
@@ -44,6 +48,7 @@ ContinuousActionDistConfig: TypeAlias = (
     | GSDEConfig
     | BetaMixtureConfig
     | LeftRightBetaConfig
+    | LeftMiddleRightBetaConfig
     | BangZeroBangConfig
     | StickyBangZeroBangConfig
 )
@@ -311,7 +316,8 @@ class HybridActionDistribution(ActionDist):
         for idx, config in enumerate(self.continuous_configs):
             if isinstance(config,
                           (SquashedDiagGaussianConfig, PredictedStdConfig, GSDEConfig,
-                           BangZeroBangConfig, StickyBangZeroBangConfig, LeftRightBetaConfig)
+                           BangZeroBangConfig, StickyBangZeroBangConfig, LeftRightBetaConfig,
+                           LeftMiddleRightBetaConfig)
             ):
                 self.continuous_configs[idx] = replace(config, ent_loss_coef=value)
         if self.bernoulli_config is not None:
@@ -334,7 +340,8 @@ class HybridActionDistribution(ActionDist):
         config = self.continuous_configs[sub_dist_idx]
         if isinstance(config,
                       (SquashedDiagGaussianConfig, PredictedStdConfig, GSDEConfig,
-                       BangZeroBangConfig, StickyBangZeroBangConfig, LeftRightBetaConfig)
+                       BangZeroBangConfig, StickyBangZeroBangConfig, LeftRightBetaConfig,
+                       LeftMiddleRightBetaConfig)
         ):
             self.continuous_configs[sub_dist_idx] = replace(config, ent_loss_coef=value)
 
@@ -418,7 +425,7 @@ def make_proba_distribution(
             raise ValueError(
                 "Supply a ContinuousActionDistConfig "
                 "(SquashedDiagGaussianConfig | PredictedStdConfig | GSDEConfig | "
-                "BetaMixtureConfig | LeftRightBetaConfig | BangZeroBangConfig | "
+                "BetaMixtureConfig | LeftRightBetaConfig | LeftMiddleRightBetaConfig | BangZeroBangConfig | "
                 "StickyBangZeroBangConfig) "
                 "for continuous actions."
             )
@@ -482,9 +489,23 @@ def make_proba_distribution(
             return LeftRightBetaActionDist(
                 latent_dim=latent_dim,
                 action_dim=action_space_dim,
+                action_net_initialization=action_net_initialization,
+                initial_right_prob=continuous_config.initial_right_prob,
+                epsilon=continuous_config.epsilon,
+                left_alpha=continuous_config.left_alpha,
+                left_beta=continuous_config.left_beta,
+                right_alpha=continuous_config.right_alpha,
+                right_beta=continuous_config.right_beta,
+                ent_loss_coef=continuous_config.ent_loss_coef,
+                beta_ent_scale=continuous_config.beta_ent_scale,
+            )
+        elif isinstance(continuous_config, LeftMiddleRightBetaConfig):
+            return LeftMiddleRightBetaActionDist(
+                latent_dim=latent_dim,
+                action_dim=action_space_dim,
                 eps_c=continuous_config.eps_c,
                 action_net_initialization=action_net_initialization,
-                initial_zero_prob=continuous_config.initial_zero_prob,
+                initial_middle_prob=continuous_config.initial_middle_prob,
                 epsilon=continuous_config.epsilon,
                 left_alpha=continuous_config.left_alpha,
                 left_beta=continuous_config.left_beta,
