@@ -323,10 +323,8 @@ def main() -> None:
                 #     stickiness=initial_stickiness,
                 # ),
                 continuous_config=LeftRightBetaConfig(
-                    eps_c=1e-3,
-                    initial_zero_prob=0.01,
                     ent_loss_coef=3e-3,
-                    beta_ent_scale=0.5,
+                    beta_ent_scale=0.75,
                 ),
                 bernoulli_config=BernoulliConfig(
                     initial_prob=0.7,

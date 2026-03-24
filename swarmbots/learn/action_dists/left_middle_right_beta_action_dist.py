@@ -19,8 +19,9 @@ from swarmbots.learn.masking import masked_mean
 
 
 @dataclass(frozen=True)
-class LeftRightBetaConfig:
-    initial_right_prob: float | None = None
+class LeftMiddleRightBetaConfig:
+    eps_c: float
+    initial_middle_prob: float | None = None
     epsilon: float = 1e-6
     left_alpha: float = 1.0 + math.log(2.0)
     left_beta: float = 1.0 + math.log(2.0)
@@ -30,19 +31,21 @@ class LeftRightBetaConfig:
     beta_ent_scale: float = 1.0
 
 
-class LeftRightBetaActionDist(ActionDist):
-    _N_MIXTURE_COMPONENTS = 2
-    _OUTPUTS_PER_ACTION = 6
+class LeftMiddleRightBetaActionDist(ActionDist):
+    _N_MIXTURE_COMPONENTS = 3
+    _OUTPUTS_PER_ACTION = 7
 
     _LEFT_INDEX = 0
-    _RIGHT_INDEX = 1
+    _MIDDLE_INDEX = 1
+    _RIGHT_INDEX = 2
 
     def __init__(
             self,
             latent_dim: int,
             action_dim: int,
+            eps_c: float,
             action_net_initialization: ActionNetInitialization | None,
-            initial_right_prob: float | None = None,
+            initial_middle_prob: float | None = None,
             epsilon: float = 1e-6,
             left_alpha: float = 1.0 + math.log(2.0),
             left_beta: float = 1.0 + math.log(2.0),
@@ -58,15 +61,17 @@ class LeftRightBetaActionDist(ActionDist):
             init_action_net=False,
         )
 
+        if not (0.0 < eps_c < 1.0):
+            raise ValueError(f"eps_c must be in (0, 1), got {eps_c}")
         if epsilon <= 0.0:
             raise ValueError(f"epsilon must be > 0, got {epsilon}")
         if ent_loss_coef < 0.0:
             raise ValueError(f"ent_loss_coef must be >= 0, got {ent_loss_coef}")
         if beta_ent_scale < 0.0:
             raise ValueError(f"beta_ent_scale must be >= 0, got {beta_ent_scale}")
-        if initial_right_prob is not None and not (0.0 < initial_right_prob < 1.0):
+        if initial_middle_prob is not None and not (0.0 < initial_middle_prob < 1.0):
             raise ValueError(
-                f"initial_right_prob must be strictly between 0 and 1, got {initial_right_prob}"
+                f"initial_middle_prob must be strictly between 0 and 1, got {initial_middle_prob}"
             )
 
         for name, value in (
@@ -78,11 +83,14 @@ class LeftRightBetaActionDist(ActionDist):
             if value <= 1.0:
                 raise ValueError(f"{name} must be > 1.0, got {value}")
 
+        self.eps_c = eps_c
         self.epsilon = epsilon
         self.ent_loss_coef = ent_loss_coef
         self.beta_ent_scale = beta_ent_scale
-        self.initial_right_prob = initial_right_prob
-        self.log_interval_jacobian = 0.0
+        self.initial_middle_prob = initial_middle_prob
+        self.interval_width = 1.0 - eps_c
+        self.log_interval_jacobian = math.log(1.0 / self.interval_width)
+        self.middle_log_density = -math.log(2.0 * eps_c)
 
         self.output_net = nn.Linear(latent_dim, action_dim * self._OUTPUTS_PER_ACTION)
         if action_net_initialization is not None:
@@ -90,13 +98,15 @@ class LeftRightBetaActionDist(ActionDist):
 
         with torch.no_grad():
             bias = self.output_net.bias.view(action_dim, self._OUTPUTS_PER_ACTION)
-            if initial_right_prob is not None:
-                bias[:, self._LEFT_INDEX] = math.log(1.0 - initial_right_prob)
-                bias[:, self._RIGHT_INDEX] = math.log(initial_right_prob)
-            bias[:, 2] = _inverse_softplus(left_alpha - 1.0)
-            bias[:, 3] = _inverse_softplus(left_beta - 1.0)
-            bias[:, 4] = _inverse_softplus(right_alpha - 1.0)
-            bias[:, 5] = _inverse_softplus(right_beta - 1.0)
+            if initial_middle_prob is not None:
+                outer_prob = (1.0 - initial_middle_prob) / 2.0
+                bias[:, self._LEFT_INDEX] = math.log(outer_prob)
+                bias[:, self._MIDDLE_INDEX] = math.log(initial_middle_prob)
+                bias[:, self._RIGHT_INDEX] = math.log(outer_prob)
+            bias[:, 3] = _inverse_softplus(left_alpha - 1.0)
+            bias[:, 4] = _inverse_softplus(left_beta - 1.0)
+            bias[:, 5] = _inverse_softplus(right_alpha - 1.0)
+            bias[:, 6] = _inverse_softplus(right_beta - 1.0)
 
         self.weight_logits: Optional[torch.Tensor] = None
         self.categorical_dist: Optional[torchdist.Categorical] = None
@@ -108,10 +118,10 @@ class LeftRightBetaActionDist(ActionDist):
         self.weight_logits = raw[..., :self._N_MIXTURE_COMPONENTS]
         self.categorical_dist = torchdist.Categorical(logits=self.weight_logits)
 
-        left_alpha = 1.0 + F.softplus(raw[..., 2])
-        left_beta = 1.0 + F.softplus(raw[..., 3])
-        right_alpha = 1.0 + F.softplus(raw[..., 4])
-        right_beta = 1.0 + F.softplus(raw[..., 5])
+        left_alpha = 1.0 + F.softplus(raw[..., 3])
+        left_beta = 1.0 + F.softplus(raw[..., 4])
+        right_alpha = 1.0 + F.softplus(raw[..., 5])
+        right_beta = 1.0 + F.softplus(raw[..., 6])
         self.left_beta_dist = torchdist.Beta(concentration1=left_alpha, concentration0=left_beta)
         self.right_beta_dist = torchdist.Beta(concentration1=right_alpha, concentration0=right_beta)
         return self
@@ -121,23 +131,24 @@ class LeftRightBetaActionDist(ActionDist):
             agent: int | None = None,
             previous_actions: torch.Tensor | None = None,
     ) -> torch.Tensor:
-
         component_indices = self.categorical_dist.sample()
         left_01 = self.left_beta_dist.sample()
         right_01 = self.right_beta_dist.sample()
+        middle_actions = torch.empty_like(left_01).uniform_(-self.eps_c, self.eps_c)
 
-        left_actions = -1.0 + left_01
-        right_actions = right_01
+        left_actions = -1.0 + self.interval_width * left_01
+        right_actions = self.eps_c + self.interval_width * right_01
 
-        sampled_actions = right_actions
+        sampled_actions = middle_actions
         sampled_actions = torch.where(component_indices == self._LEFT_INDEX, left_actions, sampled_actions)
+        sampled_actions = torch.where(component_indices == self._RIGHT_INDEX, right_actions, sampled_actions)
         return sampled_actions
 
     def mode(self, previous_actions: torch.Tensor | None = None) -> torch.Tensor:
         weights = F.softmax(self.weight_logits, dim=-1)
 
-        left_mean = -1.0 + self.left_beta_dist.mean
-        right_mean = self.right_beta_dist.mean
+        left_mean = -1.0 + self.interval_width * self.left_beta_dist.mean
+        right_mean = self.eps_c + self.interval_width * self.right_beta_dist.mean
         return (
                 weights[..., self._LEFT_INDEX] * left_mean
                 + weights[..., self._RIGHT_INDEX] * right_mean
@@ -149,36 +160,29 @@ class LeftRightBetaActionDist(ActionDist):
             previous_actions: torch.Tensor | None = None,
     ) -> torch.Tensor:
         log_weights = F.log_softmax(self.weight_logits, dim=-1)
-        left_mask = actions < 0.0
-        right_mask = actions >= 0.0
-        finite_mask = left_mask | right_mask
+        left_mask = actions < -self.eps_c
+        right_mask = actions > self.eps_c
 
-        left_01 = (actions + 1.0).clamp(self.epsilon, 1.0 - self.epsilon)
-        right_01 = actions.clamp(self.epsilon, 1.0 - self.epsilon)
+        left_01 = ((actions + 1.0) / self.interval_width).clamp(self.epsilon, 1.0 - self.epsilon)
+        right_01 = ((actions - self.eps_c) / self.interval_width).clamp(self.epsilon, 1.0 - self.epsilon)
 
         left_log_prob = (
                 log_weights[..., self._LEFT_INDEX]
                 + self.left_beta_dist.log_prob(left_01)
                 + self.log_interval_jacobian
         )
+        middle_log_prob = log_weights[..., self._MIDDLE_INDEX] + self.middle_log_density
         right_log_prob = (
                 log_weights[..., self._RIGHT_INDEX]
                 + self.right_beta_dist.log_prob(right_01)
                 + self.log_interval_jacobian
         )
-        neg_inf = torch.full_like(left_log_prob, float("-inf"))
-        left_log_prob = torch.where(left_mask, left_log_prob, neg_inf)
-        right_log_prob = torch.where(right_mask, right_log_prob, neg_inf)
 
-        stacked = torch.stack(
-            (
-                left_log_prob,
-                right_log_prob,
-            ),
-            dim=-1,
+        log_prob_per_action = torch.where(
+            left_mask,
+            left_log_prob,
+            torch.where(right_mask, right_log_prob, middle_log_prob),
         )
-        log_prob_per_action = torch.logsumexp(stacked, dim=-1)
-        log_prob_per_action = torch.where(finite_mask, log_prob_per_action, neg_inf)
         return log_prob_per_action.sum(dim=AGENT_ACTIONS_DIM)
 
     def compute_extra_losses(
@@ -245,10 +249,12 @@ class LeftRightBetaActionDist(ActionDist):
     def get_hyper_parameters(self) -> dict[str, Any]:
         return {
             **super().get_hyper_parameters(),
+            "eps_c": self.eps_c,
             "epsilon": self.epsilon,
             "ent_loss_coef": self.ent_loss_coef,
             "beta_ent_scale": self.beta_ent_scale,
-            "initial_right_prob": self.initial_right_prob,
+            "initial_middle_prob": self.initial_middle_prob,
+            "interval_width": self.interval_width,
         }
 
 
