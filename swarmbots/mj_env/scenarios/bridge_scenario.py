@@ -249,7 +249,7 @@ class BridgeScenario(PayloadScenario):
         mujoco.mj_forward(model, data)
 
         state["progress"] = self.compute_progress(data, state.get("units_active_mask"))
-        state["hidden_vars"] = np.array([self.bridge_x], dtype=float)
+        state["hidden_global_vars"] = np.array([self.bridge_x], dtype=float)
         state["fell_off_bridge"] = False
 
         return state, connections
@@ -262,7 +262,7 @@ class BridgeScenario(PayloadScenario):
             connections: SwarmConnections,
     ) -> SwarmObsDict:
         obs = super().get_obs(model, data, state, connections)
-        obs["hidden_vars"] = state["hidden_vars"].copy()
+        obs["hidden_global_vars"] = state["hidden_global_vars"].copy()
         return obs
 
     def compute_progress(

@@ -65,7 +65,8 @@ class MATPolicy(BasePPOPolicy):
         self.local_obs_dim: int = env.local_obs_dim
         self.global_obs_dim: int = env.global_obs_dim
         self.has_global_obs = env.global_obs_dim > 0
-        self.hidden_vars_dim: int = env.hidden_vars_dim
+        self.hidden_local_vars_dim: int = env.hidden_local_vars_dim
+        self.hidden_global_vars_dim: int = env.hidden_global_vars_dim
         self.act_fn_cls = config.act_fn_cls
         self.dropout = config.dropout
 
@@ -153,10 +154,10 @@ class MATPolicy(BasePPOPolicy):
         )
 
         self.critic = DeepSetCritic(
-            num_local_features=self.d_model_encoder,
+            num_local_features=self.d_model_encoder + self.hidden_local_vars_dim,
             local_projection_hidden_dims=[self.d_model_encoder] * config.critic_config.n_local_projection_hidden_layers,
             value_regressor_hidden_dims=[self.d_model_encoder] * config.critic_config.n_value_regressor_hidden_layers,
-            num_global_features=self.hidden_vars_dim,
+            num_global_features=self.hidden_global_vars_dim,
             act_fn_cls=config.act_fn_cls,
             context_in_elements=True,
             use_popart=config.critic_config.use_popart,
@@ -245,7 +246,8 @@ class MATPolicy(BasePPOPolicy):
             self,
             local_obs: torch.Tensor,
             global_obs: torch.Tensor,
-            hidden_vars: torch.Tensor | None = None,
+            hidden_local_vars: torch.Tensor | None = None,
+            hidden_global_vars: torch.Tensor | None = None,
             agent_mask: torch.Tensor | None = None,
             previous_actions: torch.Tensor | None = None,
             deterministic: bool = False
@@ -261,7 +263,12 @@ class MATPolicy(BasePPOPolicy):
             deterministic=deterministic,
             return_log_probs=True,
         )
-        values = self._critic_with_hidden_vars(augmented_observations, hidden_vars, agent_mask=agent_mask)
+        values = self._critic_with_hidden_vars(
+            augmented_observations,
+            hidden_local_vars,
+            hidden_global_vars,
+            agent_mask=agent_mask,
+        )
 
         return actions, log_probs, values
 
@@ -270,7 +277,8 @@ class MATPolicy(BasePPOPolicy):
             local_obs: torch.Tensor,
             global_obs: torch.Tensor,
             actions: torch.Tensor,
-            hidden_vars: torch.Tensor | None = None,
+            hidden_local_vars: torch.Tensor | None = None,
+            hidden_global_vars: torch.Tensor | None = None,
             agent_mask: torch.Tensor | None = None,
             previous_actions: torch.Tensor | None = None,
             action_splitter: ActionMetricsSplitterInput = None,
@@ -279,7 +287,8 @@ class MATPolicy(BasePPOPolicy):
             local_obs=local_obs,
             global_obs=global_obs,
             actions=actions,
-            hidden_vars=hidden_vars,
+            hidden_local_vars=hidden_local_vars,
+            hidden_global_vars=hidden_global_vars,
             agent_mask=agent_mask,
             previous_actions=previous_actions,
             action_splitter=action_splitter,
@@ -292,7 +301,8 @@ class MATPolicy(BasePPOPolicy):
             local_obs: torch.Tensor,
             global_obs: torch.Tensor,
             actions: torch.Tensor,
-            hidden_vars: torch.Tensor | None = None,
+            hidden_local_vars: torch.Tensor | None = None,
+            hidden_global_vars: torch.Tensor | None = None,
             agent_mask: torch.Tensor | None = None,
             previous_actions: torch.Tensor | None = None,
             action_splitter: ActionMetricsSplitterInput = None,
@@ -321,7 +331,12 @@ class MATPolicy(BasePPOPolicy):
         self.action_dist.update_latent_features(latent_pi)
         log_probs = self.action_dist.log_prob(actions, previous_actions=previous_actions)
 
-        values = self._critic_with_hidden_vars(augmented_observations, hidden_vars, agent_mask=agent_mask)
+        values = self._critic_with_hidden_vars(
+            augmented_observations,
+            hidden_local_vars,
+            hidden_global_vars,
+            agent_mask=agent_mask,
+        )
         extra_losses, extra_loss_metrics = self.action_dist.compute_extra_losses(
             agent_mask=agent_mask,
             action_splitter=action_splitter,
@@ -332,11 +347,14 @@ class MATPolicy(BasePPOPolicy):
             self,
             local_obs: torch.Tensor,
             global_obs: torch.Tensor,
-            hidden_vars: torch.Tensor | None = None,
+            hidden_local_vars: torch.Tensor | None = None,
+            hidden_global_vars: torch.Tensor | None = None,
             agent_mask: torch.Tensor | None = None,
             previous_actions: torch.Tensor | None = None,
             deterministic: bool = False
     ) -> torch.Tensor:
+        _ = hidden_local_vars
+        _ = hidden_global_vars
         self._validate_agent_mask(agent_mask, batch_size=local_obs.shape[0])
         augmented_observations = self.encoder(local_obs, global_obs, agent_mask=agent_mask)
         actions, _ = self._generate_actions(
@@ -375,14 +393,21 @@ class MATPolicy(BasePPOPolicy):
     def _critic_with_hidden_vars(
             self,
             augmented_observations: torch.Tensor,
-            hidden_vars: torch.Tensor | None,
+            hidden_local_vars: torch.Tensor | None,
+            hidden_global_vars: torch.Tensor | None,
             agent_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        if self.hidden_vars_dim <= 0:
-            return self.critic(augmented_observations, agent_mask=agent_mask)
-        if hidden_vars is None:
-            raise ValueError("hidden_vars must be provided when hidden_vars_dim > 0")
-        return self.critic(augmented_observations, hidden_vars, agent_mask=agent_mask)
+        critic_local_obs = augmented_observations
+        if self.hidden_local_vars_dim > 0:
+            if hidden_local_vars is None:
+                raise ValueError("hidden_local_vars must be provided when hidden_local_vars_dim > 0")
+            critic_local_obs = torch.cat((augmented_observations, hidden_local_vars), dim=-1)
+
+        if self.hidden_global_vars_dim <= 0:
+            return self.critic(critic_local_obs, agent_mask=agent_mask)
+        if hidden_global_vars is None:
+            raise ValueError("hidden_global_vars must be provided when hidden_global_vars_dim > 0")
+        return self.critic(critic_local_obs, hidden_global_vars, agent_mask=agent_mask)
 
     @property
     def has_popart(self) -> bool:

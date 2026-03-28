@@ -66,7 +66,8 @@ class BasePPOPolicy(BasePolicy, abc.ABC):
             self,
             local_obs: torch.Tensor,
             global_obs: torch.Tensor,
-            hidden_vars: torch.Tensor | None = None,
+            hidden_local_vars: torch.Tensor | None = None,
+            hidden_global_vars: torch.Tensor | None = None,
             agent_mask: torch.Tensor | None = None,
             previous_actions: torch.Tensor | None = None,
             deterministic: bool = False
@@ -82,7 +83,8 @@ class BasePPOPolicy(BasePolicy, abc.ABC):
             local_obs: torch.Tensor,
             global_obs: torch.Tensor,
             actions: torch.Tensor,
-            hidden_vars: torch.Tensor | None = None,
+            hidden_local_vars: torch.Tensor | None = None,
+            hidden_global_vars: torch.Tensor | None = None,
             agent_mask: torch.Tensor | None = None,
             previous_actions: torch.Tensor | None = None,
             action_splitter: ActionMetricsSplitterInput = None,
@@ -290,7 +292,8 @@ class PPOPolicy(BasePPOPolicy):
         self.n_agents = env.n_agents
         self.local_obs_dim = env.local_obs_dim
         self.global_obs_dim = env.global_obs_dim
-        self.hidden_vars_dim = env.hidden_vars_dim
+        self.hidden_local_vars_dim = env.hidden_local_vars_dim
+        self.hidden_global_vars_dim = env.hidden_global_vars_dim
         self.latent_pi_dim = config.actor_config.latent_pi_dim_per_agent
 
         self.actor = PPOActor(
@@ -308,8 +311,8 @@ class PPOPolicy(BasePPOPolicy):
 
         self.critic = PPOCritic(
             n_agents=env.n_agents,
-            local_obs_dim=env.local_obs_dim,
-            global_obs_dim=env.global_obs_dim + self.hidden_vars_dim,
+            local_obs_dim=env.local_obs_dim + self.hidden_local_vars_dim,
+            global_obs_dim=env.global_obs_dim + self.hidden_global_vars_dim,
             config=config.critic_config,
         )
 
@@ -330,7 +333,8 @@ class PPOPolicy(BasePPOPolicy):
             self,
             local_obs: torch.Tensor,
             global_obs: torch.Tensor,
-            hidden_vars: torch.Tensor | None = None,
+            hidden_local_vars: torch.Tensor | None = None,
+            hidden_global_vars: torch.Tensor | None = None,
             agent_mask: torch.Tensor | None = None,
             previous_actions: torch.Tensor | None = None,
             deterministic: bool = False
@@ -343,8 +347,9 @@ class PPOPolicy(BasePPOPolicy):
             previous_actions=previous_actions,
         )
 
-        critic_global_obs = self._build_critic_global_obs(global_obs, hidden_vars)
-        values = self.critic(local_obs, critic_global_obs, agent_mask=agent_mask)
+        critic_local_obs = self._build_critic_local_obs(local_obs, hidden_local_vars)
+        critic_global_obs = self._build_critic_global_obs(global_obs, hidden_global_vars)
+        values = self.critic(critic_local_obs, critic_global_obs, agent_mask=agent_mask)
         return actions, log_probs, values
 
     def evaluate_actions(
@@ -352,7 +357,8 @@ class PPOPolicy(BasePPOPolicy):
             local_obs: torch.Tensor,
             global_obs: torch.Tensor,
             actions: torch.Tensor,
-            hidden_vars: torch.Tensor | None = None,
+            hidden_local_vars: torch.Tensor | None = None,
+            hidden_global_vars: torch.Tensor | None = None,
             agent_mask: torch.Tensor | None = None,
             previous_actions: torch.Tensor | None = None,
             action_splitter: ActionMetricsSplitterInput = None,
@@ -363,8 +369,9 @@ class PPOPolicy(BasePPOPolicy):
         self.action_dist.update_latent_features(latent_pi)
         log_probs = self.action_dist.log_prob(actions, previous_actions=previous_actions)
 
-        critic_global_obs = self._build_critic_global_obs(global_obs, hidden_vars)
-        values = self.critic(local_obs, critic_global_obs, agent_mask=agent_mask)
+        critic_local_obs = self._build_critic_local_obs(local_obs, hidden_local_vars)
+        critic_global_obs = self._build_critic_global_obs(global_obs, hidden_global_vars)
+        values = self.critic(critic_local_obs, critic_global_obs, agent_mask=agent_mask)
 
         extra_losses, extra_loss_metrics = self.action_dist.compute_extra_losses(
             agent_mask=agent_mask,
@@ -376,11 +383,14 @@ class PPOPolicy(BasePPOPolicy):
             self,
             local_obs: torch.Tensor,
             global_obs: torch.Tensor,
-            hidden_vars: torch.Tensor | None = None,
+            hidden_local_vars: torch.Tensor | None = None,
+            hidden_global_vars: torch.Tensor | None = None,
             agent_mask: torch.Tensor | None = None,
             previous_actions: torch.Tensor | None = None,
             deterministic: bool = False
     ) -> torch.Tensor:
+        _ = hidden_local_vars
+        _ = hidden_global_vars
         local_obs = self._mask_local_obs(local_obs, agent_mask)
         latent_pi = self.actor(local_obs, global_obs)
         actions = self.action_dist.update_latent_features(latent_pi).get_actions(
@@ -405,15 +415,29 @@ class PPOPolicy(BasePPOPolicy):
         return local_obs * agent_mask.to(dtype=local_obs.dtype).unsqueeze(-1)
 
     @staticmethod
+    def _build_critic_local_obs(
+            local_obs: torch.Tensor,
+            hidden_local_vars: torch.Tensor | None,
+    ) -> torch.Tensor:
+        if hidden_local_vars is None or hidden_local_vars.shape[-1] == 0:
+            return local_obs
+        if local_obs.shape[:2] != hidden_local_vars.shape[:2]:
+            raise ValueError(
+                "Expected local_obs and hidden_local_vars to match in first two dims, "
+                f"got {tuple(local_obs.shape)} and {tuple(hidden_local_vars.shape)}"
+            )
+        return torch.cat((local_obs, hidden_local_vars), dim=-1)
+
+    @staticmethod
     def _build_critic_global_obs(
             global_obs: torch.Tensor,
-            hidden_vars: torch.Tensor | None
+            hidden_global_vars: torch.Tensor | None
     ) -> torch.Tensor:
-        if hidden_vars is None or hidden_vars.shape[-1] == 0:
+        if hidden_global_vars is None or hidden_global_vars.shape[-1] == 0:
             return global_obs
         if global_obs.shape[-1] == 0:
-            return hidden_vars
-        return torch.cat((global_obs, hidden_vars), dim=-1)
+            return hidden_global_vars
+        return torch.cat((global_obs, hidden_global_vars), dim=-1)
 
     @property
     def has_popart(self) -> bool:

@@ -22,7 +22,8 @@ class ActuatorsActivationRewardType(Enum):
 class SwarmObsDict(TypedDict):
     local_obs: np.ndarray  # shape (n_unit, n_obs_per_unit)
     global_obs: np.ndarray  # shape (n_global_features,)
-    hidden_vars: np.ndarray  # shape (n_hidden_vars,)
+    hidden_local_vars: np.ndarray  # shape (n_unit, n_hidden_local_vars)
+    hidden_global_vars: np.ndarray  # shape (n_hidden_global_vars,)
     agent_mask: NotRequired[Optional[np.ndarray]]  # shape (n_unit,), type bool
 
 class SwarmActDict(TypedDict):
@@ -505,7 +506,8 @@ class BaseScenario(abc.ABC):
         obs: SwarmObsDict = {
             'local_obs': np.concatenate(obs_list, axis=1),
             'global_obs': np.empty(0, dtype=float),
-            'hidden_vars': np.array([active_units_count], dtype=float),
+            'hidden_local_vars': np.zeros((self.num_units, 0), dtype=float),
+            'hidden_global_vars': np.array([active_units_count], dtype=float),
         }
         if self.swarm.can_have_inactive_units:
             if units_active_mask is None:
@@ -568,8 +570,11 @@ class BaseScenario(abc.ABC):
             'global_obs': spaces.Box(
                 low=-np.inf, high=np.inf, shape=obs['global_obs'].shape, dtype=np.float32
             ),
-            'hidden_vars': spaces.Box(
-                low=-np.inf, high=np.inf, shape=obs['hidden_vars'].shape, dtype=np.float32
+            'hidden_local_vars': spaces.Box(
+                low=-np.inf, high=np.inf, shape=obs['hidden_local_vars'].shape, dtype=np.float32
+            ),
+            'hidden_global_vars': spaces.Box(
+                low=-np.inf, high=np.inf, shape=obs['hidden_global_vars'].shape, dtype=np.float32
             ),
         })
         if self.swarm.can_have_inactive_units:

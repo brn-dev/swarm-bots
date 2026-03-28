@@ -86,9 +86,13 @@ class SwarmBotsEnv(gymnasium.Env):
                 self.observation_space["local_obs"].shape,
                 dtype=self.observation_space["local_obs"].dtype,
             ),
-            "hidden_vars": np.zeros(
-                self.observation_space["hidden_vars"].shape,
-                dtype=self.observation_space["hidden_vars"].dtype,
+            "hidden_local_vars": np.zeros(
+                self.observation_space["hidden_local_vars"].shape,
+                dtype=self.observation_space["hidden_local_vars"].dtype,
+            ),
+            "hidden_global_vars": np.zeros(
+                self.observation_space["hidden_global_vars"].shape,
+                dtype=self.observation_space["hidden_global_vars"].dtype,
             ),
         }
         if "agent_mask" in self.observation_space.keys() and self.observation_space["agent_mask"] is not None:
@@ -259,7 +263,8 @@ class SwarmBotsEnv(gymnasium.Env):
         shuffled: SwarmObsDict = {
             "local_obs": obs["local_obs"][self._agent_permutation],
             "global_obs": obs["global_obs"],
-            "hidden_vars": obs["hidden_vars"],
+            "hidden_local_vars": obs["hidden_local_vars"][self._agent_permutation],
+            "hidden_global_vars": obs["hidden_global_vars"],
         }
         if "agent_mask" in obs:
             agent_mask = obs["agent_mask"]

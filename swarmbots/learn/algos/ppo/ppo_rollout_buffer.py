@@ -15,7 +15,8 @@ MaybeTensor = Optional[torch.Tensor]
 class PPOEpisode:
     local_obs: torch.Tensor  # (n_steps, n_agents, n_local_obs)
     global_obs: torch.Tensor  # (n_steps, n_global_obs)
-    hidden_vars: torch.Tensor  # (n_steps, n_hidden_vars)
+    hidden_local_vars: torch.Tensor  # (n_steps, n_agents, n_hidden_local_vars)
+    hidden_global_vars: torch.Tensor  # (n_steps, n_hidden_global_vars)
     agent_mask: MaybeTensor  # (n_steps, n_agents)
     actions: torch.Tensor  # (n_steps, n_agents, n_actions_per_agent)
     rewards: MaybeTensor  # (n_steps)
@@ -24,7 +25,8 @@ class PPOEpisode:
 
     final_local_obs: MaybeTensor  # (n_agents, n_local_obs)
     final_global_obs: MaybeTensor  # (n_global_obs)
-    final_hidden_vars: MaybeTensor  # (n_hidden_vars)
+    final_hidden_local_vars: MaybeTensor  # (n_agents, n_hidden_local_vars)
+    final_hidden_global_vars: MaybeTensor  # (n_hidden_global_vars)
     final_agent_mask: MaybeTensor  # (n_agents)
     final_value: MaybeTensor  # (1)
     initial_previous_actions: MaybeTensor = None  # (n_agents, n_actions_per_agent)
@@ -63,7 +65,8 @@ class PPOEpisodeAccumulator:
             n_agents: int,
             agent_obs_shape: tuple[int, ...],
             global_obs_shape: tuple[int, ...],
-            hidden_vars_shape: tuple[int, ...],
+            hidden_local_vars_shape: tuple[int, ...],
+            hidden_global_vars_shape: tuple[int, ...],
             n_agent_actions: int,
             has_agent_mask: bool,
             storage_device: torch.device | str,
@@ -77,8 +80,12 @@ class PPOEpisodeAccumulator:
             (n_envs, max_episode_length, *global_obs_shape),
             dtype=storage_dtype, device=storage_device
         )
-        self.hidden_vars = torch.zeros(
-            (n_envs, max_episode_length, *hidden_vars_shape),
+        self.hidden_local_vars = torch.zeros(
+            (n_envs, max_episode_length, n_agents, *hidden_local_vars_shape),
+            dtype=storage_dtype, device=storage_device
+        )
+        self.hidden_global_vars = torch.zeros(
+            (n_envs, max_episode_length, *hidden_global_vars_shape),
             dtype=storage_dtype, device=storage_device
         )
         self.agent_mask: MaybeTensor = torch.zeros(
@@ -115,7 +122,8 @@ class PPOEpisodeAccumulator:
             self,
             local_obs: torch.Tensor,
             global_obs: torch.Tensor,
-            hidden_vars: torch.Tensor,
+            hidden_local_vars: torch.Tensor,
+            hidden_global_vars: torch.Tensor,
             agent_mask: MaybeTensor,
             actions: torch.Tensor,
             rewards: torch.Tensor,
@@ -136,7 +144,8 @@ class PPOEpisodeAccumulator:
                     self.initial_previous_actions[new_episode_env_indices] = previous_actions[new_episode_env_indices]
             self.local_obs[active_env_indices, step_indices] = local_obs[active_env_indices]
             self.global_obs[active_env_indices, step_indices] = global_obs[active_env_indices]
-            self.hidden_vars[active_env_indices, step_indices] = hidden_vars[active_env_indices]
+            self.hidden_local_vars[active_env_indices, step_indices] = hidden_local_vars[active_env_indices]
+            self.hidden_global_vars[active_env_indices, step_indices] = hidden_global_vars[active_env_indices]
             if agent_mask is not None:
                 self.agent_mask[active_env_indices, step_indices] = agent_mask[active_env_indices]
             self.actions[active_env_indices, step_indices] = actions[active_env_indices]
@@ -157,7 +166,8 @@ class PPOEpisodeAccumulator:
                 final_env_idx,
                 final_local_obs=local_obs[final_env_idx],
                 final_global_obs=global_obs[final_env_idx],
-                final_hidden_vars=hidden_vars[final_env_idx],
+                final_hidden_local_vars=hidden_local_vars[final_env_idx],
+                final_hidden_global_vars=hidden_global_vars[final_env_idx],
                 final_agent_mask=None if agent_mask is None else agent_mask[final_env_idx],
                 final_value=values[final_env_idx],
             )
@@ -169,7 +179,8 @@ class PPOEpisodeAccumulator:
             env: int,
             final_local_obs: torch.Tensor,
             final_global_obs: torch.Tensor,
-            final_hidden_vars: torch.Tensor,
+            final_hidden_local_vars: torch.Tensor,
+            final_hidden_global_vars: torch.Tensor,
             final_agent_mask: MaybeTensor,
             final_value: torch.Tensor,
     ) -> PPOEpisode:
@@ -178,7 +189,8 @@ class PPOEpisodeAccumulator:
         return PPOEpisode(
             local_obs=self.local_obs[env, :step].clone(),
             global_obs=self.global_obs[env, :step].clone(),
-            hidden_vars=self.hidden_vars[env, :step].clone(),
+            hidden_local_vars=self.hidden_local_vars[env, :step].clone(),
+            hidden_global_vars=self.hidden_global_vars[env, :step].clone(),
             agent_mask=agent_mask,
             actions=self.actions[env, :step].clone(),
             rewards=self.rewards[env, :step].clone(),
@@ -186,7 +198,8 @@ class PPOEpisodeAccumulator:
             values=self.values[env, :step].clone(),
             final_local_obs=final_local_obs.clone(),
             final_global_obs=final_global_obs.clone(),
-            final_hidden_vars=final_hidden_vars.clone(),
+            final_hidden_local_vars=final_hidden_local_vars.clone(),
+            final_hidden_global_vars=final_hidden_global_vars.clone(),
             final_agent_mask=None if final_agent_mask is None else final_agent_mask.clone(),
             final_value=final_value.clone(),
             initial_previous_actions=self.initial_previous_actions[env].clone(),
@@ -223,8 +236,10 @@ class PPORolloutBuffer:
 
         self.global_obs_space = observation_space['global_obs']
         self.global_obs_shape = self.global_obs_space.shape[1:]
-        self.hidden_vars_space = observation_space['hidden_vars']
-        self.hidden_vars_shape = self.hidden_vars_space.shape[1:]
+        self.hidden_local_vars_space = observation_space['hidden_local_vars']
+        self.hidden_local_vars_shape = self.hidden_local_vars_space.shape[2:]
+        self.hidden_global_vars_space = observation_space['hidden_global_vars']
+        self.hidden_global_vars_shape = self.hidden_global_vars_space.shape[1:]
         self.has_agent_mask = 'agent_mask' in observation_space.keys() and observation_space['agent_mask'] is not None
 
         self.n_envs = self.local_obs_space.shape[0]
@@ -247,7 +262,8 @@ class PPORolloutBuffer:
             n_agents=self.n_agents,
             agent_obs_shape=self.agent_obs_shape,
             global_obs_shape=self.global_obs_shape,
-            hidden_vars_shape=self.hidden_vars_shape,
+            hidden_local_vars_shape=self.hidden_local_vars_shape,
+            hidden_global_vars_shape=self.hidden_global_vars_shape,
             n_agent_actions=self.n_agent_actions,
             has_agent_mask=self.has_agent_mask,
             storage_device=self.rollout_device,
@@ -258,7 +274,8 @@ class PPORolloutBuffer:
             self,
             local_obs: torch.Tensor,
             global_obs: torch.Tensor,
-            hidden_vars: torch.Tensor,
+            hidden_local_vars: torch.Tensor,
+            hidden_global_vars: torch.Tensor,
             agent_mask: MaybeTensor,
             actions: torch.Tensor,
             rewards: torch.Tensor,
@@ -270,7 +287,8 @@ class PPORolloutBuffer:
         new_episodes = self.accumulator.add(
             local_obs=local_obs,
             global_obs=global_obs,
-            hidden_vars=hidden_vars,
+            hidden_local_vars=hidden_local_vars,
+            hidden_global_vars=hidden_global_vars,
             agent_mask=agent_mask,
             actions=actions,
             rewards=rewards,
@@ -305,7 +323,8 @@ class PPORolloutBuffer:
                 env=env_idx,
                 final_local_obs=final_obs["local_obs"][env_idx],
                 final_global_obs=final_obs["global_obs"][env_idx],
-                final_hidden_vars=final_obs["hidden_vars"][env_idx],
+                final_hidden_local_vars=final_obs["hidden_local_vars"][env_idx],
+                final_hidden_global_vars=final_obs["hidden_global_vars"][env_idx],
                 final_agent_mask=None if final_agent_mask is None else final_agent_mask[env_idx],
                 final_value=final_values[env_idx],
             )
@@ -318,7 +337,8 @@ class PPORolloutBuffer:
             PPOEpisode(
                 local_obs=ep.local_obs.to(device=self.train_device, dtype=self.train_dtype),
                 global_obs=ep.global_obs.to(device=self.train_device, dtype=self.train_dtype),
-                hidden_vars=ep.hidden_vars.to(device=self.train_device, dtype=self.train_dtype),
+                hidden_local_vars=ep.hidden_local_vars.to(device=self.train_device, dtype=self.train_dtype),
+                hidden_global_vars=ep.hidden_global_vars.to(device=self.train_device, dtype=self.train_dtype),
                 agent_mask=None if ep.agent_mask is None else ep.agent_mask.to(device=self.train_device),
                 actions=ep.actions.to(device=self.train_device, dtype=self.train_dtype),
                 rewards=ep.rewards.to(device=self.train_device, dtype=self.train_dtype),
@@ -326,7 +346,8 @@ class PPORolloutBuffer:
                 values=ep.values.to(device=self.train_device, dtype=self.train_dtype),
                 final_local_obs=ep.final_local_obs.to(device=self.train_device, dtype=self.train_dtype),
                 final_global_obs=ep.final_global_obs.to(device=self.train_device, dtype=self.train_dtype),
-                final_hidden_vars=ep.final_hidden_vars.to(device=self.train_device, dtype=self.train_dtype),
+                final_hidden_local_vars=ep.final_hidden_local_vars.to(device=self.train_device, dtype=self.train_dtype),
+                final_hidden_global_vars=ep.final_hidden_global_vars.to(device=self.train_device, dtype=self.train_dtype),
                 final_agent_mask=None if ep.final_agent_mask is None else ep.final_agent_mask.to(device=self.train_device),
                 final_value=ep.final_value.to(device=self.train_device, dtype=self.train_dtype),
                 initial_previous_actions=(
@@ -345,7 +366,8 @@ class PPORolloutBuffer:
 class PPOSamples:
     local_obs: torch.Tensor
     global_obs: torch.Tensor
-    hidden_vars: torch.Tensor
+    hidden_local_vars: torch.Tensor
+    hidden_global_vars: torch.Tensor
     agent_mask: MaybeTensor
     previous_actions: MaybeTensor
     actions: torch.Tensor
@@ -365,7 +387,8 @@ class PPOSampler(BaseSampler[PPOSamplesType]):
     ):
         self.local_obs = torch.concatenate(tuple(ep.local_obs for ep in episodes), dim=0)
         self.global_obs = torch.concatenate(tuple(ep.global_obs for ep in episodes), dim=0)
-        self.hidden_vars = torch.concatenate(tuple(ep.hidden_vars for ep in episodes), dim=0)
+        self.hidden_local_vars = torch.concatenate(tuple(ep.hidden_local_vars for ep in episodes), dim=0)
+        self.hidden_global_vars = torch.concatenate(tuple(ep.hidden_global_vars for ep in episodes), dim=0)
         has_agent_mask = any(ep.agent_mask is not None for ep in episodes)
         has_missing_agent_mask = any(ep.agent_mask is None for ep in episodes)
         if has_agent_mask and has_missing_agent_mask:
@@ -394,7 +417,8 @@ class PPOSampler(BaseSampler[PPOSamplesType]):
         return PPOSamples(
             local_obs=self.local_obs[batch_indices],
             global_obs=self.global_obs[batch_indices],
-            hidden_vars=self.hidden_vars[batch_indices],
+            hidden_local_vars=self.hidden_local_vars[batch_indices],
+            hidden_global_vars=self.hidden_global_vars[batch_indices],
             agent_mask=None if self.agent_mask is None else self.agent_mask[batch_indices],
             previous_actions=None if self.previous_actions is None else self.previous_actions[batch_indices],
             actions=self.actions[batch_indices],

@@ -48,7 +48,8 @@ class MAPPOPolicy(PPOPolicy):
         self.n_agents = env.n_agents
         self.local_obs_dim = env.local_obs_dim
         self.global_obs_dim = env.global_obs_dim
-        self.hidden_vars_dim = env.hidden_vars_dim
+        self.hidden_local_vars_dim = env.hidden_local_vars_dim
+        self.hidden_global_vars_dim = env.hidden_global_vars_dim
         self.latent_pi_dim = config.actor_config.latent_pi_dim
 
         self.actor = MAPPOActor(
@@ -67,8 +68,8 @@ class MAPPOPolicy(PPOPolicy):
         if config.critic_config.deep_set_config is None:
             self.critic = MAPPOCritic(
                 n_agents=env.n_agents,
-                local_obs_dim=env.local_obs_dim,
-                global_obs_dim=env.global_obs_dim + self.hidden_vars_dim,
+                local_obs_dim=env.local_obs_dim + self.hidden_local_vars_dim,
+                global_obs_dim=env.global_obs_dim + self.hidden_global_vars_dim,
                 config=PPOCriticConfig(
                     hidden_dims=config.critic_config.mlp_hidden_dims or [],
                     act_fun_class=config.critic_config.act_fun_class,
@@ -76,10 +77,10 @@ class MAPPOPolicy(PPOPolicy):
             )
         else:
             self.critic = DeepSetCritic(
-                num_local_features=env.local_obs_dim,
+                num_local_features=env.local_obs_dim + self.hidden_local_vars_dim,
                 local_projection_hidden_dims=config.critic_config.deep_set_config.local_projection_hidden_dims,
                 value_regressor_hidden_dims=config.critic_config.deep_set_config.value_regressor_hidden_dims,
-                num_global_features=env.global_obs_dim + self.hidden_vars_dim,
+                num_global_features=env.global_obs_dim + self.hidden_global_vars_dim,
                 set_dim=AGENTS_DIM,
                 pool_mode="mean",
                 act_fn_cls=config.critic_config.act_fun_class,

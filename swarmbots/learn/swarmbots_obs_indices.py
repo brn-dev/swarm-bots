@@ -16,7 +16,8 @@ def build_obs_indices(
     env_settings: dict[str, Any],
     local_obs_dim: int,
     global_obs_dim: int,
-    hidden_vars_dim: int,
+    hidden_local_vars_dim: int,
+    hidden_global_vars_dim: int,
 ) -> ObsIndices:
     scenario_settings = env_settings["scenario"]
     quat_rot6d_representation = bool(scenario_settings.get("quat_rot6d_representation", False))
@@ -80,8 +81,12 @@ def build_obs_indices(
         global_scalar_indices = []
         global_quaternion_indices = []
 
-    hidden_vars_scalar_indices = list(range(hidden_vars_dim))
-    hidden_vars_quaternion_indices: list[int] = []
+    # hidden_local_vars are currently used for per-unit binary threshold flags in wall scenarios.
+    # Keep them unnormalized.
+    hidden_local_vars_scalar_indices: list[int] = []
+    hidden_local_vars_quaternion_indices: list[int] = []
+    hidden_global_vars_scalar_indices = list(range(hidden_global_vars_dim))
+    hidden_global_vars_quaternion_indices: list[int] = []
 
     hinge_sin_start = 3 + free_joint_rot_dim
     local_angle_indices = list(range(hinge_sin_start, hinge_sin_start + 2 * num_hinges, 2))
@@ -103,6 +108,8 @@ def build_obs_indices(
         local_quaternion_indices=local_quaternion_indices,
         global_scalar_indices=global_scalar_indices,
         global_quaternion_indices=global_quaternion_indices,
-        hidden_vars_scalar_indices=hidden_vars_scalar_indices,
-        hidden_vars_quaternion_indices=hidden_vars_quaternion_indices,
+        hidden_local_vars_scalar_indices=hidden_local_vars_scalar_indices,
+        hidden_local_vars_quaternion_indices=hidden_local_vars_quaternion_indices,
+        hidden_global_vars_scalar_indices=hidden_global_vars_scalar_indices,
+        hidden_global_vars_quaternion_indices=hidden_global_vars_quaternion_indices,
     )

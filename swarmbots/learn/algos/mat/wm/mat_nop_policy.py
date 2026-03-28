@@ -75,7 +75,7 @@ class MATNOPPolicy(MATPolicy, NextObsPredMixin, PPOWMPolicyMixin):
             pre_transition_transform = MLP(
                 input_dim=self.d_model_encoder,
                 hidden_dims=[*world_model_config.wm_pre_transition_dims],
-                end_with_act_fn=False,
+                end_with_act_fn=True,
                 act_fn_cls=config.mat_policy_config.act_fn_cls,
             )
             wm_latent_dim = world_model_config.wm_pre_transition_dims[-1]
@@ -86,7 +86,7 @@ class MATNOPPolicy(MATPolicy, NextObsPredMixin, PPOWMPolicyMixin):
             pre_predictors_transform = MLP(
                 input_dim=wm_latent_dim,
                 hidden_dims=[*world_model_config.wm_pre_predictors_dims],
-                end_with_act_fn=False,
+                end_with_act_fn=True,
                 act_fn_cls=config.mat_policy_config.act_fn_cls,
             )
             wm_pre_predictors_dim = world_model_config.wm_pre_predictors_dims[-1]
@@ -196,7 +196,8 @@ class MATNOPPolicy(MATPolicy, NextObsPredMixin, PPOWMPolicyMixin):
             agent_mask: torch.Tensor | None = None,
             wm_agent_mask: torch.Tensor | None = None,
             wm_loss_agent_mask: torch.Tensor | None = None,
-            hidden_vars: torch.Tensor | None = None,
+            hidden_local_vars: torch.Tensor | None = None,
+            hidden_global_vars: torch.Tensor | None = None,
             previous_actions: torch.Tensor | None = None,
             action_splitter: ActionMetricsSplitterInput = None,
     ) -> tuple[
@@ -217,7 +218,8 @@ class MATNOPPolicy(MATPolicy, NextObsPredMixin, PPOWMPolicyMixin):
             local_obs=policy_local_obs,
             global_obs=policy_global_obs,
             actions=policy_actions,
-            hidden_vars=hidden_vars,
+            hidden_local_vars=hidden_local_vars,
+            hidden_global_vars=hidden_global_vars,
             agent_mask=agent_mask,
             previous_actions=previous_actions,
             action_splitter=action_splitter,
