@@ -250,16 +250,22 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerType]):
         policy_loss_2 = advantages * torch.clamp(ratio, 1 - self.clip_range, 1 + self.clip_range)
         policy_loss = -masked_mean(torch.min(policy_loss_1, policy_loss_2), valid_mask)
 
-        if self.clip_range_vf is None:
-            values_pred = values
-        else:
-            values_pred = batch.values + torch.clamp(
-                values - batch.values, -self.clip_range_vf, self.clip_range_vf
-            )
         value_targets = batch.returns
+        new_values = values
+
         if self.use_popart:
-            values_pred = self.policy.normalize_values(values_pred)
             value_targets = self.policy.normalize_values(value_targets)
+            new_values = self.policy.normalize_values(new_values)
+
+        if self.clip_range_vf is None:
+            values_pred = new_values
+        else:
+            old_values = batch.values
+            if self.use_popart:
+                old_values = self.policy.normalize_values(old_values)
+            values_pred = old_values + torch.clamp(
+                new_values - old_values, -self.clip_range_vf, self.clip_range_vf
+            )
 
         value_loss: torch.Tensor = self.value_loss_fn(values_pred, value_targets)
 

@@ -150,8 +150,6 @@ class LeftRightBetaActionDist(ActionDist):
     ) -> torch.Tensor:
         log_weights = F.log_softmax(self.weight_logits, dim=-1)
         left_mask = actions < 0.0
-        right_mask = actions >= 0.0
-        finite_mask = left_mask | right_mask
 
         left_01 = (actions + 1.0).clamp(self.epsilon, 1.0 - self.epsilon)
         right_01 = actions.clamp(self.epsilon, 1.0 - self.epsilon)
@@ -166,19 +164,7 @@ class LeftRightBetaActionDist(ActionDist):
                 + self.right_beta_dist.log_prob(right_01)
                 + self.log_interval_jacobian
         )
-        neg_inf = torch.full_like(left_log_prob, float("-inf"))
-        left_log_prob = torch.where(left_mask, left_log_prob, neg_inf)
-        right_log_prob = torch.where(right_mask, right_log_prob, neg_inf)
-
-        stacked = torch.stack(
-            (
-                left_log_prob,
-                right_log_prob,
-            ),
-            dim=-1,
-        )
-        log_prob_per_action = torch.logsumexp(stacked, dim=-1)
-        log_prob_per_action = torch.where(finite_mask, log_prob_per_action, neg_inf)
+        log_prob_per_action = torch.where(left_mask, left_log_prob, right_log_prob)
         return log_prob_per_action.sum(dim=AGENT_ACTIONS_DIM)
 
     def compute_extra_losses(

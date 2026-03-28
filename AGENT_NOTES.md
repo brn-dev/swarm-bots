@@ -31,6 +31,7 @@ Agents shall use this file to make notes for future instances. Write down import
 - Agent shuffling is supported; preserve the shuffle/unshuffle pairing if touching that path.
 - Unstable MuJoCo simulation is converted into a terminal transition with fallback observations/reward and `info["error"] = "simulation_unstable"`.
 - Scenario presets such as `default_wall` and `default_bridge` are the canonical constructors used by training scripts.
+- In `ObstacleStreetScenario`, wall-pass reward is normalized by both active unit count and number of configured `wall_pass_thresholds`, so adding thresholds does not increase total per-wall reward.
 
 ## Swarm / Agent Notes
 - `HomogeneousSwarm` supports preset layouts, explicit coordinates, and generated layouts such as Poisson-disc / pre-connected / random-wiggle.

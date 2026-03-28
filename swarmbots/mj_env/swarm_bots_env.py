@@ -33,11 +33,14 @@ class SwarmBotsEnv(gymnasium.Env):
         scene_option: MjvOption = None,
         simulation_unstable_reward: float = -1.0,
         return_scenario_state_as_infos: bool = False,
-        first_episode_length: int | None = None
+        first_episode_length: int | None = None,
+        reset_retry_count: int = 3,
     ):
         if first_episode_length is not None and first_episode_length > episode_length:
             raise ValueError(f'first_episode_length can not be longer than episode_length '
                              f'({episode_length}), got {first_episode_length}')
+        if reset_retry_count <= 0:
+            raise ValueError(f"Expected reset_retry_count > 0, got {reset_retry_count}")
 
         self.action_repeat = action_repeat
         self.episode_length = episode_length
@@ -49,6 +52,7 @@ class SwarmBotsEnv(gymnasium.Env):
         self.scene_option = scene_option
         self.simulation_unstable_reward = simulation_unstable_reward
         self.return_scenario_state_as_infos = return_scenario_state_as_infos
+        self.reset_retry_count = reset_retry_count
 
         self.first_episode_length = first_episode_length
         self.is_first_episode = True
@@ -119,7 +123,18 @@ class SwarmBotsEnv(gymnasium.Env):
     ) -> tuple[SwarmObsDict, dict[str, Any]]:
         super().reset(seed=seed)
         self.current_step = 0
-        self.scenario_state, self.swarm_connections = self.scenario.reset_scenario(self.model, self.data)
+
+        last_error: mujoco.FatalError | None = None
+        for _ in range(self.reset_retry_count):
+            try:
+                self.scenario_state, self.swarm_connections = self.scenario.reset_scenario(self.model, self.data)
+                last_error = None
+                break
+            except mujoco.FatalError as error:
+                last_error = error
+
+        if last_error is not None:
+            raise last_error
 
         self._reset_agent_permutation()
         obs = self.scenario.get_obs(self.model, self.data, self.scenario_state, self.swarm_connections)

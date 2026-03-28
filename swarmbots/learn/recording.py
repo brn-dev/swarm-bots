@@ -79,6 +79,8 @@ def _maybe_reset_gsde_noise(
 
 
 def _extract_env_reward(reward: Any, *, env_idx: int = 0) -> float:
+    if isinstance(reward, torch.Tensor):
+        reward = reward.cpu()
     reward_array = np.asarray(reward)
     if reward_array.shape == ():
         return float(reward_array)

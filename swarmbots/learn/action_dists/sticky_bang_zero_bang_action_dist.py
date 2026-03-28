@@ -10,6 +10,7 @@ from swarmbots.learn.action_dists.bang_zero_bang_action_dist import (
     BangZeroBangActionDist,
     BangZeroBangConfig,
 )
+from swarmbots.learn.action_dists.sticky_action_dist import StickyActionDist
 from swarmbots.learn.nn_components.nn_init import init_linear_orthogonal
 
 
@@ -19,7 +20,7 @@ class StickyBangZeroBangConfig(BangZeroBangConfig):
     zero_sticky: bool = False
 
 
-class StickyBangZeroBangActionDist(BangZeroBangActionDist):
+class StickyBangZeroBangActionDist(BangZeroBangActionDist, StickyActionDist):
     def __init__(
             self,
             latent_dim: int,
@@ -39,7 +40,7 @@ class StickyBangZeroBangActionDist(BangZeroBangActionDist):
         )
         self.zero_sticky = zero_sticky
         self.stickiness = 0.0
-        self._log_stickiness = float("-inf")
+        self._log_stickiness = None
         self._log_one_minus_stickiness = 0.0
         self.set_stickiness(stickiness)
 
@@ -119,8 +120,11 @@ class StickyBangZeroBangActionDist(BangZeroBangActionDist):
         if not (0.0 <= stickiness < 1.0):
             raise ValueError(f"stickiness must be in [0, 1), got {stickiness}.")
         self.stickiness = float(stickiness)
-        self._log_stickiness = math.log(self.stickiness) if self.stickiness > 0.0 else float("-inf")
+        self._log_stickiness = math.log(self.stickiness) if self.stickiness > 0.0 else None
         self._log_one_minus_stickiness = math.log1p(-self.stickiness)
+
+    def get_stickiness(self) -> float:
+        return self.stickiness
 
     def get_hyper_parameters(self) -> dict[str, Any]:
         return {

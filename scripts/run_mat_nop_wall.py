@@ -17,10 +17,11 @@ from swarmbots.learn.action_dists.bernoulli_action_dist import BernoulliConfig
 from swarmbots.learn.action_dists.gsde_action_dist import GSDEConfig
 from swarmbots.learn.action_dists.gsde_action_dist import GSDEActionDist
 from swarmbots.learn.action_dists.left_right_beta_action_dist import LeftRightBetaConfig
+from swarmbots.learn.action_dists.sticky_action_dist import StickyActionDist
 from swarmbots.learn.action_dists.sticky_bang_zero_bang_action_dist import (
     StickyBangZeroBangConfig,
-    StickyBangZeroBangActionDist,
 )
+from swarmbots.learn.action_dists.sticky_left_right_beta_action_dist import StickyLeftRightBetaConfig
 from swarmbots.learn.algos.mat.mat_policy import MATPolicyConfig, MATCriticConfig
 from swarmbots.learn.algos.mat.mat_encoder import MATEncoderConfig
 from swarmbots.learn.algos.mat.mat_decoder import MATDecoderConfig
@@ -43,12 +44,19 @@ from swarmbots.learn.obs_indices import ObsIndices
 from swarmbots.learn.swarmbots_obs_indices import build_obs_indices
 from swarmbots.mj_env.scenarios import scenario_presets
 from swarmbots.mj_env.scenarios.scenario_presets import default_wall
+from swarmbots.mj_env.swarm.homogeneous_swarm import PreConnectedUnitLocationsConfig
 from swarmbots.mj_env.swarm_bots_env import SwarmBotsEnv
-from swarmbots.schedulers import ScheduleResult, ScheduledHyperParameter, SchedulerManager
+from swarmbots.schedulers import (
+    LinearScheduler,
+    ScheduleUnit,
+    ScheduledHyperParameter,
+    SchedulerManager,
+)
 
 
 def make_env_fn(
         episode_length: int,
+        unit_start_locations: PreConnectedUnitLocationsConfig | None = None,
         render_mode: str | None = None,
         first_episode_length: int | None = None
 ) -> Callable[[], SwarmBotsEnv]:
@@ -56,6 +64,7 @@ def make_env_fn(
     def _init() -> SwarmBotsEnv:
         scenario = default_wall(
             first_wall_distance=1.0, # UniformDistParams(1.5, 2.5),
+            unit_start_locations=unit_start_locations,
         )
         return SwarmBotsEnv(
             scenario=scenario,
@@ -66,6 +75,23 @@ def make_env_fn(
         )
 
     return _init
+
+
+def make_preconnected_unit_start_locations(pool_seeds: tuple[int, ...] | None) -> PreConnectedUnitLocationsConfig:
+    return PreConnectedUnitLocationsConfig(
+        num_units=5,
+        num_unit_probs={
+            # 2: 0.5,
+            # 3: 0.5,
+            4: 1.0,
+            5: 1.0,
+            # 6: 1.0,
+        },
+        max_radius=1.5,
+        unconnected_prob=0.02,
+        z_pos=0.5,
+        pool_seeds=pool_seeds,
+    )
 
 
 def wrap_vec_env(
@@ -138,7 +164,7 @@ def main() -> None:
     )
 
     n_workers = 23
-    n_envs = n_workers * 10
+    n_envs = n_workers * 15
 
     episode_length = 512
     total_timesteps = 200_000_000
@@ -154,9 +180,9 @@ def main() -> None:
     world_model_num_next_steps = 3
     world_model_target_tau = None
 
-    initial_stickiness = 0.65
-    final_stickiness = 0.01
-    stickiness_anneal_steps = int(total_timesteps * 0.45)
+    initial_stickiness = 0.25
+    final_stickiness = 0.0
+    stickiness_anneal_steps = int(total_timesteps * 0.15)
 
     # gsde_init_stds = [0.25, 0.25, 0.15]
     gsde_init_stds = [0.25, 0.30]
@@ -166,11 +192,12 @@ def main() -> None:
 
     # ===== LOAD =====
     load_path: str | None = None
-    # load_path = "../runs/mat_nop_swarm_bots_wall/2026-03-04_19-47-38/models/model_24957597_steps_stopped.pt"
+    # load_path = "../runs/mat_nop_swarm_bots_wall/2026-03-27_15-29-09/models/model_3740430_steps_stopped.pt"
 
     # ===== DEVICE =====
     use_cuda = True and torch.cuda.is_available()
-    rollout_device = torch.device("cpu")
+    use_cuda_rollout = True and torch.cuda.is_available()
+    rollout_device = torch.device("cuda" if use_cuda_rollout else "cpu")
     train_device = torch.device("cuda" if use_cuda else "cpu")
 
     logger.info(f'{rollout_device = }')
@@ -187,10 +214,14 @@ def main() -> None:
     run_dir = f"../runs/mat_nop_swarm_bots_wall/{run_id}/"
     save_optimizer = True
 
+    swarm_seed_pool = tuple(range(42_000, 42_005))
+    unit_start_locations = make_preconnected_unit_start_locations(swarm_seed_pool)
+    logger.info(f"swarm_seed_pool: {len(swarm_seed_pool)} ")
 
     env_fns = [
         make_env_fn(
             episode_length=episode_length,
+            unit_start_locations=unit_start_locations,
             render_mode=None,
             first_episode_length=int(i * episode_length / n_envs)
         )
@@ -218,6 +249,7 @@ def main() -> None:
         record_env = SyncVectorEnv([
             make_env_fn(
                 episode_length=episode_length,
+                unit_start_locations=unit_start_locations,
                 render_mode='rgb_array'
             )
         ])
@@ -266,8 +298,10 @@ def main() -> None:
     actuators_per_limb = env.actuators_dim // env.connectors_dim
     print(f"actuators_per_limb: {actuators_per_limb}")
 
-    enc_d_model = 256
-    dec_d_model = 64
+    enc_d_model = 384
+    dec_d_model = 128
+
+    transition_model_d_model = 256
 
     enc_nhead = 4
     dec_nhead = 2
@@ -322,8 +356,9 @@ def main() -> None:
                 #     ent_loss_coef=1e-3,
                 #     stickiness=initial_stickiness,
                 # ),
-                continuous_config=LeftRightBetaConfig(
-                    ent_loss_coef=3e-3,
+                continuous_config=StickyLeftRightBetaConfig(
+                    stickiness=initial_stickiness,
+                    ent_loss_coef=1e-3,
                     beta_ent_scale=0.75,
                 ),
                 bernoulli_config=BernoulliConfig(
@@ -334,12 +369,12 @@ def main() -> None:
             ),
             world_model_config=MATNOPWorldModelConfig(
                 wm_pre_transition_dims=[enc_d_model],
-                d_model_transition_model=enc_d_model,
+                d_model_transition_model=transition_model_d_model,
                 nhead_transition_model=enc_nhead,
                 num_layers_transition_model=2,
-                dim_feedforward_transition_model=enc_d_model * 2,
-                transition_model_coembed_hidden_dims=[enc_d_model],
-                wm_pre_predictors_dims=[enc_d_model, enc_d_model],
+                dim_feedforward_transition_model=transition_model_d_model * 2,
+                transition_model_coembed_hidden_dims=[transition_model_d_model],
+                wm_pre_predictors_dims=[transition_model_d_model, transition_model_d_model],
                 wm_scalar_predictor_hidden_dims=[],
                 wm_angle_predictor_hidden_dims=[],
                 wm_rot6d_predictor_hidden_dims=[],
@@ -416,7 +451,9 @@ def main() -> None:
         if early_stop_epoch is not None and early_stop_epoch < 4:
             state['counter'] = 0
             state['warmup'] = False
-            decay_factor = 0.95
+            decay_factor = {
+                1: 0.8, 2: 0.85, 3: 0.9,
+            }[early_stop_epoch]
             return {
                 'new_lr': old_lr * decay_factor,
                 'msg': f'epoch={early_stop_epoch}',
@@ -444,51 +481,35 @@ def main() -> None:
 
     auto_lr = AutomaticLearningRate(
         initial_lr=cold_lr,
-        max_lr=5e-4,
+        max_lr=8e-4,
         updater=auto_lr_updater
     )
 
-    def stickiness_scheduler(
-            old_value: float,
-            state: dict[str, Any],
-            n_iterations: int,
-            n_model_updates: int,
-            n_timesteps: int,
-            metrics: dict[str, Any],
-    ) -> ScheduleResult:
-        if stickiness_anneal_steps <= 0:
-            target = final_stickiness
-        else:
-            progress = min(float(n_timesteps) / float(stickiness_anneal_steps), 1.0)
-            target = initial_stickiness + (final_stickiness - initial_stickiness) * progress
-
-        if abs(target - old_value) < 1e-6:
-            return {"new_value": None, "event": "hold"}
-        return {"new_value": target, "event": "anneal"}
-
     scheduler_manager: SchedulerManager | None = None
-    if isinstance(policy.action_dist.distributions[0], StickyBangZeroBangActionDist):
-        def get_act0_stickiness() -> float:
-            action_dist = policy.action_dist.distributions[0]
-            if not isinstance(action_dist, StickyBangZeroBangActionDist):
-                raise TypeError(f"Expected StickyBangZeroBangActionDist at index 0, got {type(action_dist)}")
-            return float(action_dist.stickiness)
-
+    continuous_dist = policy.action_dist.distributions[0]
+    if isinstance(continuous_dist, StickyActionDist):
+        sticky_dist: StickyActionDist = continuous_dist
         scheduler_manager = SchedulerManager([
             ScheduledHyperParameter(
                 name="act0_stickiness",
-                scheduler=stickiness_scheduler,
-                get_value=get_act0_stickiness,
-                apply=lambda new_value: policy.set_action_stickiness(new_value, sub_dist_idx=0),
+                scheduler=LinearScheduler(
+                    unit=ScheduleUnit.TIMESTEPS,
+                    duration=stickiness_anneal_steps,
+                    start_value=initial_stickiness,
+                    final_value=final_stickiness,
+                    name="act0_stickiness",
+                ),
+                get_value=lambda: sticky_dist.get_stickiness(),
+                apply=lambda new_value: sticky_dist.set_stickiness(new_value),
             )
         ])
     else:
-        act0_dist_type = type(policy.action_dist.distributions[0]) if policy.action_dist.distributions else None
+        act0_dist_type = type(continuous_dist) if policy.action_dist.distributions else None
         logger.warning(
             f"Skipping act0_stickiness scheduler: action dist[0] is {act0_dist_type}"
         )
 
-    rollout_samples = 4048 * 2
+    rollout_samples = int(4048 * 0.75)
     ppo = PPOWM(
         policy=policy,
         env=env,
@@ -501,11 +522,12 @@ def main() -> None:
         gae_lambda=0.95,
         clip_range=0.07,
         target_kl=0.007,
-        max_grad_norm=0.5,
+        max_grad_norm=2.0,
         gsde_reset_mode=GSDEProbabilityResetMode(probability=1/6),
         mc_ent_coef=0e-5,
         vf_coef=vf_coef,
-        value_loss_fn=nn.SmoothL1Loss(),
+        # value_loss_fn=nn.SmoothL1Loss(),
+        value_loss_fn=nn.MSELoss(),
         train_device=train_device,
         rollout_device=rollout_device,
         use_popart=use_popart,
