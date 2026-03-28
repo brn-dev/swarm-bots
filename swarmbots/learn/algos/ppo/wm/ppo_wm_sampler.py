@@ -164,7 +164,8 @@ class PPOWMSampler(PPOSampler[PPOWMSamples]):
         return PPOWMSamples(
             local_obs=self.local_obs[batch_indices],
             global_obs=self.global_obs[batch_indices],
-            hidden_vars=self.hidden_vars[batch_indices],
+            hidden_local_vars=self.hidden_local_vars[batch_indices],
+            hidden_global_vars=self.hidden_global_vars[batch_indices],
             agent_mask=None if self.agent_mask is None else self.agent_mask[batch_indices],
             previous_actions=None if self.previous_actions is None else self.previous_actions[batch_indices],
             actions=self.multi_step_actions[batch_indices],

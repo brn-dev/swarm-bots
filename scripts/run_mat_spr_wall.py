@@ -97,9 +97,15 @@ def wrap_vec_env(
     )
     vector_env = FeatureWiseObsNormWrapper(
         vector_env,
-        obs_key="hidden_vars",
-        scalar_feature_indices=obs_indices.hidden_vars_scalar_indices,
-        quaternion_indices=obs_indices.hidden_vars_quaternion_indices,
+        obs_key="hidden_local_vars",
+        scalar_feature_indices=obs_indices.hidden_local_vars_scalar_indices,
+        quaternion_indices=obs_indices.hidden_local_vars_quaternion_indices,
+    )
+    vector_env = FeatureWiseObsNormWrapper(
+        vector_env,
+        obs_key="hidden_global_vars",
+        scalar_feature_indices=obs_indices.hidden_global_vars_scalar_indices,
+        quaternion_indices=obs_indices.hidden_global_vars_quaternion_indices,
     )
     vector_env = TransitionObsWrapper(vector_env)
     vector_env = NormalizeReward(vector_env, gamma=gamma)
@@ -176,7 +182,8 @@ def main() -> None:
     env_settings = dummy_env.get_settings()
     local_obs_dim = int(dummy_env.observation_space["local_obs"].shape[-1])
     global_obs_dim = int(dummy_env.observation_space["global_obs"].shape[-1])
-    hidden_vars_dim = int(dummy_env.observation_space["hidden_vars"].shape[-1])
+    hidden_local_vars_dim = int(dummy_env.observation_space["hidden_local_vars"].shape[-1])
+    hidden_global_vars_dim = int(dummy_env.observation_space["hidden_global_vars"].shape[-1])
     dummy_env.close()
     del dummy_env
     print("Env settings captured.")
@@ -185,7 +192,8 @@ def main() -> None:
         env_settings=env_settings,
         local_obs_dim=local_obs_dim,
         global_obs_dim=global_obs_dim,
-        hidden_vars_dim=hidden_vars_dim,
+        hidden_local_vars_dim=hidden_local_vars_dim,
+        hidden_global_vars_dim=hidden_global_vars_dim,
     )
 
     def make_record_env() -> SwarmBotsLearnEnvWrapper:

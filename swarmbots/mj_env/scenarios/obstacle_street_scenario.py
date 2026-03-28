@@ -297,41 +297,46 @@ class ObstacleStreetScenario(PayloadScenario):
     ) -> tuple[dict, SwarmConnections]:
         state, connections = super().reset_scenario(model, data, settle=False)
 
-        hidden_vars: list[float] = []
-        wall_y = self.reset_walls_and_ramps(data, model, hidden_vars)
-        self.reset_poles(data, model, hidden_vars)
+        hidden_global_vars: list[float] = []
+        wall_y = self.reset_walls_and_ramps(data, model, hidden_global_vars)
+        self.reset_poles(data, model, hidden_global_vars)
 
         mujoco.mj_forward(model, data)
         if settle:
             self.settle_reset(model, data, state)
 
         state['progress'] = self.compute_progress(data, state.get("units_active_mask"))
-        state['hidden_vars'] = np.array(hidden_vars)
+        state['hidden_global_vars'] = np.array(hidden_global_vars, dtype=float)
         state['wall_y'] = wall_y
         wall_pass_absolute_thresholds = self._compute_wall_pass_thresholds(wall_y)
         state['wall_pass_absolute_thresholds'] = wall_pass_absolute_thresholds
         unit_y = np.asarray(data.qpos[self._qpos_indices[:, 1]], dtype=float)
-        passed_thresholds_mask = unit_y[:, np.newaxis] > wall_pass_absolute_thresholds[np.newaxis, :]
+        passed_thresholds_mask = (
+            unit_y[:, np.newaxis] > wall_pass_absolute_thresholds[np.newaxis, :]
+            if wall_pass_absolute_thresholds.size > 0
+            else np.zeros((self.num_units, 0), dtype=bool)
+        )
+        state['passed_thresholds_mask'] = passed_thresholds_mask
         state['next_threshold_for_unit'] = passed_thresholds_mask.sum(axis=1).astype(int)
         state['num_walls_passed'] = 0
         state['walls_passed_reward'] = 0.0
 
         return state, connections
 
-    def reset_poles(self, data: mujoco.MjData, model: mujoco.MjModel, hidden_vars: list[float]) -> None:
+    def reset_poles(self, data: mujoco.MjData, model: mujoco.MjModel, hidden_global_vars: list[float]) -> None:
         rng = self.rng
         for i, pole in enumerate(self.poles):
             pole_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, f'Pole_{i}')
             mocap_id = model.body_mocapid[pole_id]
             x, y = sample_pole_xy(pole, rng)
-            hidden_vars.extend([x, y])
+            hidden_global_vars.extend([x, y])
             data.mocap_pos[mocap_id] = [x, y, 0.0]
 
     def reset_walls_and_ramps(
             self,
             data: mujoco.MjData,
             model: mujoco.MjModel,
-            hidden_vars: list[float]
+            hidden_global_vars: list[float]
     ) -> np.ndarray:
         rng = self.rng
         wall_y_values = np.zeros(self.num_walls, dtype=float)
@@ -342,18 +347,18 @@ class ObstacleStreetScenario(PayloadScenario):
         for i in range(self.num_walls):
             if i != 0:
                 wall_y += eval_fodp(self.inter_wall_distance, rng)
-            hidden_vars.append(wall_y)
+            hidden_global_vars.append(wall_y)
             wall_y_values[i] = wall_y
 
             opening_width = eval_fodp(self.opening_widths[i], rng)
-            hidden_vars.append(opening_width)
+            hidden_global_vars.append(opening_width)
 
             opening_x = (rng.random() - 0.5) * 2 * (
                     self.side_wall_x
                     - opening_width / 2
                     + unusable_opening_offset)  # small chance that there is no usable opening
                                                 # -> must use ramp to continue
-            hidden_vars.append(opening_x)
+            hidden_global_vars.append(opening_x)
 
             first_wall_end_x = opening_x - opening_width / 2
             wall_left_pos_x = first_wall_end_x - (self.wall_fixed_width / 2)
@@ -372,7 +377,7 @@ class ObstacleStreetScenario(PayloadScenario):
 
             if i > 0 or not self.no_initial_ramp:
                 ramp_x = (rng.random() - 0.5) * 2 * self.ramp_range_x
-                hidden_vars.append(ramp_x)
+                hidden_global_vars.append(ramp_x)
 
                 ramp_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, f'Ramp_{i}')
                 mocap_id = model.body_mocapid[ramp_id]
@@ -393,7 +398,8 @@ class ObstacleStreetScenario(PayloadScenario):
     ) -> SwarmObsDict:
         obs = super().get_obs(model, data, state, connections)
 
-        obs['hidden_vars'] = state['hidden_vars'].copy()
+        obs['hidden_global_vars'] = state['hidden_global_vars'].copy()
+        obs['hidden_local_vars'] = np.asarray(state['passed_thresholds_mask'], dtype=float).copy()
 
         return obs
 
@@ -449,6 +455,13 @@ class ObstacleStreetScenario(PayloadScenario):
         else:
             walls_passed_reward = 0.0
         state["next_threshold_for_unit"] = next_threshold_for_unit
+        if wall_pass_absolute_thresholds.size > 0:
+            unit_threshold_indices = np.arange(wall_pass_absolute_thresholds.size, dtype=int)
+            state["passed_thresholds_mask"] = (
+                unit_threshold_indices[np.newaxis, :] < next_threshold_for_unit[:, np.newaxis]
+            )
+        else:
+            state["passed_thresholds_mask"] = np.zeros((self.num_units, 0), dtype=bool)
         state["num_walls_passed"] = num_walls_passed
         state["walls_passed_reward"] = walls_passed_reward
 

@@ -78,9 +78,15 @@ def wrap_vec_env(
     )
     vector_env = FeatureWiseObsNormWrapper(
         vector_env,
-        obs_key="hidden_vars",
-        scalar_feature_indices=obs_indices.hidden_vars_scalar_indices,
-        quaternion_indices=obs_indices.hidden_vars_quaternion_indices,
+        obs_key="hidden_local_vars",
+        scalar_feature_indices=obs_indices.hidden_local_vars_scalar_indices,
+        quaternion_indices=obs_indices.hidden_local_vars_quaternion_indices,
+    )
+    vector_env = FeatureWiseObsNormWrapper(
+        vector_env,
+        obs_key="hidden_global_vars",
+        scalar_feature_indices=obs_indices.hidden_global_vars_scalar_indices,
+        quaternion_indices=obs_indices.hidden_global_vars_quaternion_indices,
     )
     vector_env = TransitionObsWrapper(vector_env)
     vector_env = NormalizeReward(vector_env, gamma=gamma)
@@ -116,10 +122,15 @@ class ConstantActuatorsPolicy(BasePolicy):
         self,
         local_obs: torch.Tensor,
         global_obs: torch.Tensor,
-        hidden_vars: torch.Tensor | None = None,
+        hidden_local_vars: torch.Tensor | None = None,
+        hidden_global_vars: torch.Tensor | None = None,
         agent_mask: torch.Tensor | None = None,
+        previous_actions: torch.Tensor | None = None,
         deterministic: bool = False,
     ) -> torch.Tensor:
+        _ = hidden_local_vars
+        _ = hidden_global_vars
+        _ = previous_actions
         n_envs, n_agents = local_obs.shape[:2]
         actuators = torch.full(
             (n_envs, n_agents, self.actuators_dim),
@@ -162,14 +173,16 @@ def main() -> None:
     env_settings = dummy_env.get_settings()
     local_obs_dim = int(dummy_env.observation_space["local_obs"].shape[-1])
     global_obs_dim = int(dummy_env.observation_space["global_obs"].shape[-1])
-    hidden_vars_dim = int(dummy_env.observation_space["hidden_vars"].shape[-1])
+    hidden_local_vars_dim = int(dummy_env.observation_space["hidden_local_vars"].shape[-1])
+    hidden_global_vars_dim = int(dummy_env.observation_space["hidden_global_vars"].shape[-1])
     dummy_env.close()
 
     obs_indices = build_obs_indices(
         env_settings=env_settings,
         local_obs_dim=local_obs_dim,
         global_obs_dim=global_obs_dim,
-        hidden_vars_dim=hidden_vars_dim,
+        hidden_local_vars_dim=hidden_local_vars_dim,
+        hidden_global_vars_dim=hidden_global_vars_dim,
     )
 
     record_env_fn = make_env_fn(

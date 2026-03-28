@@ -26,7 +26,8 @@ class BasePolicy(nn.Module, abc.ABC):
             self,
             local_obs: torch.Tensor,
             global_obs: torch.Tensor,
-            hidden_vars: torch.Tensor | None = None,
+            hidden_local_vars: torch.Tensor | None = None,
+            hidden_global_vars: torch.Tensor | None = None,
             agent_mask: torch.Tensor | None = None,
             previous_actions: torch.Tensor | None = None,
             deterministic: bool = False

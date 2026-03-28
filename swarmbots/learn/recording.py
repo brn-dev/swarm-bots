@@ -218,7 +218,8 @@ def record_policy(
             with torch.no_grad():
                 local_obs = obs['local_obs']
                 global_obs = obs['global_obs']
-                hidden_vars = obs["hidden_vars"]
+                hidden_local_vars = obs["hidden_local_vars"]
+                hidden_global_vars = obs["hidden_global_vars"]
                 agent_mask = obs.get("agent_mask", None)
                 
                 _maybe_reset_gsde_noise(
@@ -231,7 +232,8 @@ def record_policy(
                 actions = policy.act(
                     local_obs,
                     global_obs,
-                    hidden_vars=hidden_vars,
+                    hidden_local_vars=hidden_local_vars,
+                    hidden_global_vars=hidden_global_vars,
                     agent_mask=agent_mask,
                     previous_actions=previous_actions,
                     deterministic=deterministic,

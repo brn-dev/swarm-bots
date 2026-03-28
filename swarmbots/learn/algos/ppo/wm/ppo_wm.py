@@ -30,7 +30,8 @@ class PPOWMPolicyMixin(abc.ABC):
             agent_mask: torch.Tensor | None = None,
             wm_agent_mask: torch.Tensor | None = None,
             wm_loss_agent_mask: torch.Tensor | None = None,
-            hidden_vars: torch.Tensor | None = None,
+            hidden_local_vars: torch.Tensor | None = None,
+            hidden_global_vars: torch.Tensor | None = None,
             previous_actions: torch.Tensor | None = None,
             action_splitter: ActionMetricsSplitterInput = None,
     ) -> tuple[
@@ -148,7 +149,8 @@ class PPOWM(PPO[PPOWMSamples, PPOWMSampler]):
             agent_mask=batch.agent_mask,
             wm_agent_mask=batch.wm_agent_mask,
             wm_loss_agent_mask=batch.wm_loss_agent_mask,
-            hidden_vars=batch.hidden_vars,
+            hidden_local_vars=batch.hidden_local_vars,
+            hidden_global_vars=batch.hidden_global_vars,
             action_splitter=self.metrics_action_splitters,
         )
 

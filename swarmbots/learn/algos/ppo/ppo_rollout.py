@@ -126,7 +126,8 @@ def _collect_rollout_step(
 ) -> tuple[dict[str, torch.Tensor], torch.Tensor, torch.Tensor, torch.Tensor | None, int]:
     local_obs = obs['local_obs']
     global_obs = obs['global_obs']
-    hidden_vars = obs["hidden_vars"]
+    hidden_local_vars = obs["hidden_local_vars"]
+    hidden_global_vars = obs["hidden_global_vars"]
     agent_mask = obs.get("agent_mask", None)
     if previous_actions is not None:
         previous_actions = previous_actions.masked_fill(is_final.unsqueeze(-1).unsqueeze(-1), 0.0)
@@ -154,7 +155,8 @@ def _collect_rollout_step(
         actions, log_probs, values = policy(
             local_obs,
             global_obs,
-            hidden_vars=hidden_vars,
+            hidden_local_vars=hidden_local_vars,
+            hidden_global_vars=hidden_global_vars,
             agent_mask=agent_mask,
             previous_actions=previous_actions,
         )
@@ -181,7 +183,8 @@ def _collect_rollout_step(
         buffer.add(
             local_obs=local_obs,
             global_obs=global_obs,
-            hidden_vars=hidden_vars,
+            hidden_local_vars=hidden_local_vars,
+            hidden_global_vars=hidden_global_vars,
             agent_mask=agent_mask,
             actions=actions,
             rewards=rewards,
@@ -381,7 +384,8 @@ def collect_steps(
 
     local_obs = obs["local_obs"]
     global_obs = obs["global_obs"]
-    hidden_vars = obs["hidden_vars"]
+    hidden_local_vars = obs["hidden_local_vars"]
+    hidden_global_vars = obs["hidden_global_vars"]
     agent_mask = obs.get("agent_mask", None)
     previous_actions_for_value: torch.Tensor | None = None
     if previous_actions is not None:
@@ -389,7 +393,8 @@ def collect_steps(
     _, _, final_values = policy(
         local_obs,
         global_obs,
-        hidden_vars=hidden_vars,
+        hidden_local_vars=hidden_local_vars,
+        hidden_global_vars=hidden_global_vars,
         agent_mask=agent_mask,
         previous_actions=previous_actions_for_value,
         deterministic=True,
