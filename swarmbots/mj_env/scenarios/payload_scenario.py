@@ -52,7 +52,7 @@ class PayloadScenario(BaseScenario, abc.ABC):
             include_connectors_xpos_in_obs: bool = True,
             include_connectors_xquat_in_obs: bool = False,
             quat_rot6d_representation: bool = True,
-            reset_settle_time: int = 0,
+            reset_settle_time: float = 0,
             reset_settle_timestep_scale: float = 1.0,
             swarm_start_x: FloatOrDistParams = 0.0,
             swarm_start_y: FloatOrDistParams = 0.0,

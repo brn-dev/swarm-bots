@@ -90,7 +90,7 @@ class ObstacleStreetScenario(PayloadScenario):
             progress_reward_weight: float = 1.0,
             guidance_reward_weight: float = 1.0,
             wall_pass_reward_weight: float = 0.0,
-            wall_pass_margin: float = 0.0,
+            wall_pass_thresholds: list[float] | None = None,
             actuators_activation_reward_weight: float = 0.0,
             actuators_activation_reward_power: int = 8,
             actuators_activation_reward_threshold: float = 0.0,
@@ -140,7 +140,9 @@ class ObstacleStreetScenario(PayloadScenario):
         self.opening_widths = opening_width if isinstance(opening_width, list) else [opening_width] * num_walls
         self.unusable_opening_offset = unusable_opening_offset
         self.wall_pass_reward_weight = float(wall_pass_reward_weight)
-        self.wall_pass_margin = float(wall_pass_margin)
+        if wall_pass_thresholds is None:
+            wall_pass_thresholds = [0.0]
+        self.wall_pass_thresholds = np.sort(wall_pass_thresholds)
         min_inter_wall_distance = fodp_low(self.inter_wall_distance)
         if min_inter_wall_distance <= 1.0:
             raise ValueError(f"Expected inter_wall_distance.low > 1.0, got {min_inter_wall_distance}")
@@ -212,7 +214,7 @@ class ObstacleStreetScenario(PayloadScenario):
             'street_width': self.street_width,
             'no_initial_ramp': self.no_initial_ramp,
             'wall_pass_reward_weight': self.wall_pass_reward_weight,
-            'wall_pass_margin': self.wall_pass_margin,
+            'wall_pass_thresholds': self.wall_pass_thresholds.tolist(),
         })
         return settings
 
@@ -306,9 +308,11 @@ class ObstacleStreetScenario(PayloadScenario):
         state['progress'] = self.compute_progress(data, state.get("units_active_mask"))
         state['hidden_vars'] = np.array(hidden_vars)
         state['wall_y'] = wall_y
+        wall_pass_absolute_thresholds = self._compute_wall_pass_thresholds(wall_y)
+        state['wall_pass_absolute_thresholds'] = wall_pass_absolute_thresholds
         unit_y = np.asarray(data.qpos[self._qpos_indices[:, 1]], dtype=float)
-        passed_walls_mask = unit_y[:, np.newaxis] > (wall_y[np.newaxis, :] + self.wall_pass_margin)
-        state['next_wall_for_unit'] = passed_walls_mask.sum(axis=1).astype(int)
+        passed_thresholds_mask = unit_y[:, np.newaxis] > wall_pass_absolute_thresholds[np.newaxis, :]
+        state['next_threshold_for_unit'] = passed_thresholds_mask.sum(axis=1).astype(int)
         state['num_walls_passed'] = 0
         state['walls_passed_reward'] = 0.0
 
@@ -414,9 +418,9 @@ class ObstacleStreetScenario(PayloadScenario):
             data: mujoco.MjData,
             state: dict,
     ) -> float:
-        wall_y = np.asarray(state.get("wall_y"), dtype=float)
-        next_wall_for_unit = np.asarray(state.get("next_wall_for_unit"), dtype=int)
-        if wall_y.size == 0 or next_wall_for_unit.shape != (self.num_units,):
+        wall_pass_absolute_thresholds = np.asarray(state.get("wall_pass_absolute_thresholds"), dtype=float)
+        next_threshold_for_unit = np.asarray(state.get("next_threshold_for_unit"), dtype=int)
+        if wall_pass_absolute_thresholds.size == 0 or next_threshold_for_unit.shape != (self.num_units,):
             state["num_walls_passed"] = 0
             state["walls_passed_reward"] = 0.0
             return 0.0
@@ -425,22 +429,26 @@ class ObstacleStreetScenario(PayloadScenario):
         units_active_mask = state.get("units_active_mask")
         active_units_mask = None if units_active_mask is None else np.asarray(units_active_mask, dtype=bool)
         active_units_count = self.num_units if active_units_mask is None else int(active_units_mask.sum())
+        thresholds_per_wall = int(self.wall_pass_thresholds.size)
 
         num_walls_passed = 0
         for unit_idx in range(self.num_units):
             if active_units_mask is not None and not active_units_mask[unit_idx]:
                 continue
-            next_wall_idx = int(next_wall_for_unit[unit_idx])
-            while next_wall_idx < self.num_walls and unit_y[unit_idx] > wall_y[next_wall_idx] + self.wall_pass_margin:
-                next_wall_idx += 1
+            next_threshold_idx = int(next_threshold_for_unit[unit_idx])
+            while (next_threshold_idx < wall_pass_absolute_thresholds.size
+                   and unit_y[unit_idx] > wall_pass_absolute_thresholds[next_threshold_idx]):
+                next_threshold_idx += 1
                 num_walls_passed += 1
-            next_wall_for_unit[unit_idx] = next_wall_idx
+            next_threshold_for_unit[unit_idx] = next_threshold_idx
 
-        if active_units_count > 0:
-            walls_passed_reward = (num_walls_passed / active_units_count) * self.wall_pass_reward_weight
+        if active_units_count > 0 and thresholds_per_wall > 0:
+            walls_passed_reward = (
+                num_walls_passed / (active_units_count * thresholds_per_wall)
+            ) * self.wall_pass_reward_weight
         else:
             walls_passed_reward = 0.0
-        state["next_wall_for_unit"] = next_wall_for_unit
+        state["next_threshold_for_unit"] = next_threshold_for_unit
         state["num_walls_passed"] = num_walls_passed
         state["walls_passed_reward"] = walls_passed_reward
 
@@ -479,6 +487,12 @@ class ObstacleStreetScenario(PayloadScenario):
         state['weighted_guidance_reward'] = weighted_guidance_reward
 
         return weighted_progress_reward + weighted_guidance_reward, False
+
+    def _compute_wall_pass_thresholds(self, wall_y: np.ndarray) -> np.ndarray:
+        if wall_y.size == 0:
+            return np.asarray([], dtype=float)
+        wall_thresholds = wall_y[:, np.newaxis] + self.wall_pass_thresholds[np.newaxis, :]
+        return np.sort(wall_thresholds.reshape(-1))
 
 def sample_pole_xy(pole: PoleSpec, rng: np.random.Generator) -> tuple[float, float]:
     if isinstance(pole, PoleParams):

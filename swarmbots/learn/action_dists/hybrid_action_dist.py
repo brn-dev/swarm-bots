@@ -25,6 +25,14 @@ from swarmbots.learn.action_dists.left_middle_right_beta_action_dist import (
     LeftMiddleRightBetaActionDist,
     LeftMiddleRightBetaConfig,
 )
+from swarmbots.learn.action_dists.sticky_left_right_beta_action_dist import (
+    StickyLeftRightBetaActionDist,
+    StickyLeftRightBetaConfig,
+)
+from swarmbots.learn.action_dists.sticky_left_middle_right_beta_action_dist import (
+    StickyLeftMiddleRightBetaActionDist,
+    StickyLeftMiddleRightBetaConfig,
+)
 from swarmbots.learn.action_dists.beta_mixture_action_dist import BetaMixtureActionDist, BetaMixtureConfig
 from swarmbots.learn.action_dists.predicted_std_action_dist import PredictedStdActionDist, PredictedStdConfig
 from swarmbots.learn.action_dists.squashed_diag_gaussian_action_dist import (
@@ -35,6 +43,7 @@ from swarmbots.learn.action_dists.sticky_bang_zero_bang_action_dist import (
     StickyBangZeroBangActionDist,
     StickyBangZeroBangConfig,
 )
+from swarmbots.learn.action_dists.sticky_action_dist import StickyActionDist
 from swarmbots.learn.action_dists.temporally_correlated_action_dist import TemporallyCorrelatedActionDist
 from swarmbots.learn.hybrid_action_space import HybridActionSpace
 from swarmbots.learn.losses import LossDict, LossMetrics
@@ -47,6 +56,8 @@ ContinuousActionDistConfig: TypeAlias = (
     | PredictedStdConfig
     | GSDEConfig
     | BetaMixtureConfig
+    | StickyLeftRightBetaConfig
+    | StickyLeftMiddleRightBetaConfig
     | LeftRightBetaConfig
     | LeftMiddleRightBetaConfig
     | BangZeroBangConfig
@@ -346,13 +357,10 @@ class HybridActionDistribution(ActionDist):
             self.continuous_configs[sub_dist_idx] = replace(config, ent_loss_coef=value)
 
     def set_all_stickiness(self, value: float) -> None:
-        for idx, dist in enumerate(self.distributions):
-            if not isinstance(dist, StickyBangZeroBangActionDist):
+        for dist in self.distributions:
+            if not isinstance(dist, StickyActionDist):
                 continue
             dist.set_stickiness(value)
-            config = self.continuous_configs[idx]
-            if isinstance(config, StickyBangZeroBangConfig):
-                self.continuous_configs[idx] = replace(config, stickiness=value)
 
     def set_sub_stickiness(self, sub_dist_idx: int, value: float) -> None:
         if not (0 <= sub_dist_idx < len(self.distributions)):
@@ -361,13 +369,10 @@ class HybridActionDistribution(ActionDist):
             )
 
         dist = self.distributions[sub_dist_idx]
-        if not isinstance(dist, StickyBangZeroBangActionDist):
+        if not isinstance(dist, StickyActionDist):
             raise ValueError(f"Action sub-dist {sub_dist_idx} does not support stickiness updates")
 
         dist.set_stickiness(value)
-        config = self.continuous_configs[sub_dist_idx]
-        if isinstance(config, StickyBangZeroBangConfig):
-            self.continuous_configs[sub_dist_idx] = replace(config, stickiness=value)
 
     @staticmethod
     def _prefix_named_values(
@@ -425,8 +430,8 @@ def make_proba_distribution(
             raise ValueError(
                 "Supply a ContinuousActionDistConfig "
                 "(SquashedDiagGaussianConfig | PredictedStdConfig | GSDEConfig | "
-                "BetaMixtureConfig | LeftRightBetaConfig | LeftMiddleRightBetaConfig | BangZeroBangConfig | "
-                "StickyBangZeroBangConfig) "
+                "BetaMixtureConfig | StickyLeftRightBetaConfig | StickyLeftMiddleRightBetaConfig | "
+                "LeftRightBetaConfig | LeftMiddleRightBetaConfig | BangZeroBangConfig | StickyBangZeroBangConfig) "
                 "for continuous actions."
             )
 
@@ -485,6 +490,21 @@ def make_proba_distribution(
                 alphas=continuous_config.alphas,
                 betas=continuous_config.betas,
             )
+        elif isinstance(continuous_config, StickyLeftRightBetaConfig):
+            return StickyLeftRightBetaActionDist(
+                latent_dim=latent_dim,
+                action_dim=action_space_dim,
+                action_net_initialization=action_net_initialization,
+                initial_right_prob=continuous_config.initial_right_prob,
+                epsilon=continuous_config.epsilon,
+                left_alpha=continuous_config.left_alpha,
+                left_beta=continuous_config.left_beta,
+                right_alpha=continuous_config.right_alpha,
+                right_beta=continuous_config.right_beta,
+                ent_loss_coef=continuous_config.ent_loss_coef,
+                beta_ent_scale=continuous_config.beta_ent_scale,
+                stickiness=continuous_config.stickiness,
+            )
         elif isinstance(continuous_config, LeftRightBetaConfig):
             return LeftRightBetaActionDist(
                 latent_dim=latent_dim,
@@ -498,6 +518,23 @@ def make_proba_distribution(
                 right_beta=continuous_config.right_beta,
                 ent_loss_coef=continuous_config.ent_loss_coef,
                 beta_ent_scale=continuous_config.beta_ent_scale,
+            )
+        elif isinstance(continuous_config, StickyLeftMiddleRightBetaConfig):
+            return StickyLeftMiddleRightBetaActionDist(
+                latent_dim=latent_dim,
+                action_dim=action_space_dim,
+                eps_c=continuous_config.eps_c,
+                action_net_initialization=action_net_initialization,
+                initial_middle_prob=continuous_config.initial_middle_prob,
+                epsilon=continuous_config.epsilon,
+                left_alpha=continuous_config.left_alpha,
+                left_beta=continuous_config.left_beta,
+                right_alpha=continuous_config.right_alpha,
+                right_beta=continuous_config.right_beta,
+                ent_loss_coef=continuous_config.ent_loss_coef,
+                beta_ent_scale=continuous_config.beta_ent_scale,
+                stickiness=continuous_config.stickiness,
+                middle_sticky=continuous_config.middle_sticky,
             )
         elif isinstance(continuous_config, LeftMiddleRightBetaConfig):
             return LeftMiddleRightBetaActionDist(

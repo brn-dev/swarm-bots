@@ -161,8 +161,12 @@ class ChainableScheduler(abc.ABC):
     def __init__(
             self,
             unit: ScheduleUnit,
+            name: Optional[str]
     ):
         self.unit = unit
+
+        self.name = name
+        self.name_prefix = name + "-" if name else ""
 
     def __call__(
             self,
@@ -252,16 +256,27 @@ class LinearScheduler(ChainableScheduler):
             unit: ScheduleUnit,
             duration: int,
             start_value: float,
-            end_value: float
+            final_value: float,
+            name: Optional[str] = None
     ):
-        super().__init__(unit=unit)
+        super().__init__(unit=unit, name=name)
 
         self.duration = duration
         self.start_value = start_value
-        self.final_value = end_value
+        self.final_value = final_value
 
     def get_duration(self) -> int:
         return self.duration
+
+    def __repr__(self) -> str:
+        return (
+            f"{self.__class__.__name__}("
+            f"unit={self.unit.name}, "
+            f"duration={self.duration}, "
+            f"start_value={self.start_value}, "
+            f"final_value={self.final_value}, "
+            f"name={self.name!r})"
+        )
 
     def schedule(
             self,
@@ -277,5 +292,5 @@ class LinearScheduler(ChainableScheduler):
             new_value = self.start_value + (self.final_value - self.start_value) * progress
 
         if abs(new_value - old_value) < 1e-6:
-            return {"new_value": None, "event": "hold"}
-        return {"new_value": new_value, "event": "linear"}
+            return {"new_value": None, "event": self.name_prefix + "hold"}
+        return {"new_value": new_value, "event": self.name_prefix + "linear"}

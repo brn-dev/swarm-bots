@@ -11,7 +11,7 @@ def serialize_fn(fn: Callable) -> dict[str, str]:
     }
     try:
         fn_dict["source"] = inspect.getsource(fn)
-    except OSError as err:
+    except (OSError, TypeError) as err:
         fn_dict["source"] = str(err)
     return fn_dict
 

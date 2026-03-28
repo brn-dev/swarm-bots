@@ -35,8 +35,8 @@ DEFAULT_KWARGS = {
     'reset_settle_timestep_scale': 3,
 }
 WALL_PASS_KWARGS = {
-    'wall_pass_reward_weight': 5.0,
-    'wall_pass_margin': 0.25,
+    'wall_pass_reward_weight': 10.0,
+    'wall_pass_thresholds': [-0.1, 0.1, 0.3, 0.5],
 }
 
 def _resolve_swarm(
@@ -52,15 +52,16 @@ def _resolve_swarm(
 
     if unit_start_locations is None:
         unit_start_locations = PreConnectedUnitLocationsConfig(
-            num_units=3,
+            num_units=6,
             num_unit_probs={
-                2: 1.0,
-                3: 1.0,
-                # 4: 1.0,
-                # 5: 1.0,
+                2: 0.5,
+                3: 0.5,
+                4: 1.0,
+                5: 1.0,
+                6: 1.0,
             },
             max_radius=1.5,
-            unconnected_prob=0.1,
+            unconnected_prob=0.03,
             z_pos=0.5,
         )
 
@@ -110,7 +111,9 @@ def default_wall(
     scenario_kwargs.update(WALL_PASS_KWARGS)
     scenario_kwargs.update({
         'wall_height': 0.20,
-        'swarm_start_y': UniformDistParams(0.0, 0.75),
+        # 'swarm_start_y': UniformDistParams(0.0, 0.75),
+        # 'swarm_start_y': 0.7,
+        'swarm_start_y': UniformDistParams(0.5, 0.75),
     })
     scenario_kwargs.update(kwargs)
     return ObstacleStreetScenario(

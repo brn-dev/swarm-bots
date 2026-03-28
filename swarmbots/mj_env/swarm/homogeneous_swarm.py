@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Optional, TypeVar, TypeAlias
+from typing import Collection, Optional, TypeVar, TypeAlias
 
 import mujoco
 import numpy as np
@@ -113,6 +113,8 @@ class PreConnectedUnitLocationsConfig:
     z_pos: float = 0.0
     center: bool = True
 
+    pool_seeds: Optional[Collection[int]] = None
+
 @dataclass
 class RandomWiggleUnitLocationsConfig:
     num_units: int
@@ -213,6 +215,13 @@ class HomogeneousSwarm(BaseSwarm):
                 probs = probs / probs_sum
                 unit_start_locations.num_unit_probs = dict(zip(counts.tolist(), probs.tolist()))
                 self._can_have_inactive_units = True
+            if unit_start_locations.pool_seeds is not None:
+                pool_seeds = tuple(sorted(set(unit_start_locations.pool_seeds)))
+                if not pool_seeds:
+                    raise ValueError("pool_seeds must contain at least one seed when provided")
+                if any(isinstance(seed, bool) or not isinstance(seed, (int, np.integer)) for seed in pool_seeds):
+                    raise ValueError("pool_seeds must only contain integer seeds")
+                unit_start_locations.pool_seeds = tuple(int(seed) for seed in pool_seeds)
         elif isinstance(unit_start_locations, RandomWiggleUnitLocationsConfig):
             self.num_units = unit_start_locations.num_units
             self.unit_start_locations = unit_start_locations
@@ -470,6 +479,10 @@ class HomogeneousSwarm(BaseSwarm):
         unit_config = self.config.unit_config
         num_units = random_config.num_units
         max_radius = random_config.max_radius
+
+        if random_config.pool_seeds is not None:
+            seed = int(rng.choice(random_config.pool_seeds))
+            rng = np.random.default_rng(seed)
 
         if force_full or random_config.num_unit_probs is None:
             num_active_units = num_units
