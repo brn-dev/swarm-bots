@@ -104,6 +104,23 @@ class MATv2Policy(BasePPOPolicy[PPOSamples]):
             hidden_dims=config.decoder_config.context_encoder_hidden_dims,
             act_fn_cls=config.act_fn_cls,
         )
+        memory_hidden_dims = config.decoder_config.memory_encoder_hidden_dims
+        if memory_hidden_dims is None:
+            if self.d_model_encoder != self.d_model_decoder:
+                raise ValueError(
+                    "memory_encoder_hidden_dims=None means identity memory encoder, "
+                    f"but encoder/decoder dims differ ({self.d_model_encoder} != {self.d_model_decoder}). "
+                    "Set memory_encoder_hidden_dims=[] for a single linear projection "
+                    "or provide hidden dims for an MLP."
+                )
+            self.memory_encoder = nn.Identity()
+        else:
+            self.memory_encoder = self._build_token_encoder(
+                input_dim=self.d_model_encoder,
+                output_dim=self.d_model_decoder,
+                hidden_dims=memory_hidden_dims,
+                act_fn_cls=config.act_fn_cls,
+            )
 
         decoder_config = replace(
             config.decoder_config,
@@ -225,6 +242,7 @@ class MATv2Policy(BasePPOPolicy[PPOSamples]):
     ) -> tuple[torch.Tensor, Optional[torch.Tensor]]:
         self._validate_agent_mask(agent_mask, batch_size=batch_size)
         query_tokens = self._encode_query_tokens(augmented_observations)
+        memory_tokens = self._encode_memory_tokens(augmented_observations)
 
         actions_list: list[torch.Tensor] = []
         log_probs_list: list[torch.Tensor] = []
@@ -241,8 +259,12 @@ class MATv2Policy(BasePPOPolicy[PPOSamples]):
             out = self.decoder.forward_step(
                 context_tokens=context_tokens,
                 query_token=query_token_i,
+                memory_tokens=memory_tokens,
+                query_prefix_tokens=query_tokens[:, :i, :],
                 context_mask=context_mask,
+                query_prefix_mask=None if agent_mask is None else agent_mask[:, :i],
                 query_mask=query_mask_i,
+                memory_mask=agent_mask,
             )
             latent_pi = self.actor_head(out)
 
@@ -321,10 +343,17 @@ class MATv2Policy(BasePPOPolicy[PPOSamples]):
         self._validate_agent_mask(agent_mask, batch_size=local_obs.shape[0])
         augmented_observations = self.encoder(local_obs, global_obs, agent_mask=agent_mask)
         query_tokens = self._encode_query_tokens(augmented_observations)
+        memory_tokens = self._encode_memory_tokens(augmented_observations)
         context_tokens = self._encode_context_tokens(augmented_observations, actions)
 
         latent_pi = self.actor_head(
-            self.decoder(query_tokens=query_tokens, context_tokens=context_tokens, agent_mask=agent_mask)
+            self.decoder(
+                query_tokens=query_tokens,
+                context_tokens=context_tokens,
+                memory_tokens=memory_tokens,
+                agent_mask=agent_mask,
+                memory_mask=agent_mask,
+            )
         )
 
         self.action_dist.update_latent_features(latent_pi)
@@ -432,6 +461,7 @@ class MATv2Policy(BasePPOPolicy[PPOSamples]):
             "encoder": self._module_grad_norm(self.encoder),
             "query_encoder": self._module_grad_norm(self.query_encoder),
             "context_encoder": self._module_grad_norm(self.context_encoder),
+            "memory_encoder": self._module_grad_norm(self.memory_encoder),
             "agent_embeddings_decoder": self._parameter_grad_norm(self.agent_embeddings_decoder),
             "decoder": self._module_grad_norm(self.decoder),
             "actor_head": self._module_grad_norm(self.actor_head),
@@ -492,3 +522,9 @@ class MATv2Policy(BasePPOPolicy[PPOSamples]):
             linear_init=init_linear_orthogonal,
             act_fn_cls=act_fn_cls,
         )
+
+    def _encode_memory_tokens(
+            self,
+            augmented_observations: torch.Tensor,
+    ) -> torch.Tensor:
+        return self.memory_encoder(augmented_observations)
