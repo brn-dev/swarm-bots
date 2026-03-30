@@ -16,7 +16,7 @@ from swarmbots.learn.action_dists.sticky_action_dist import StickyActionDist
 from swarmbots.learn.action_dists.sticky_left_right_beta_action_dist import StickyLeftRightBetaConfig
 from swarmbots.learn.algos.mat.mat_policy import MATCriticConfig
 from swarmbots.learn.algos.mat.mat_encoder import MATEncoderConfig
-from swarmbots.learn.algos.mat_v2.mat_v2_decoder import MATv2DecoderConfig
+from swarmbots.learn.algos.mat_v2.mat_v2_decoder import MATv2DecoderConfig, MATv2DecoderSelfAttentionMode
 from swarmbots.learn.algos.mat_v2.mat_v2_policy import MATv2Policy, MATv2PolicyConfig
 from swarmbots.learn.algos.ppo.base_ppo_policy import BasePPOPolicy
 from swarmbots.learn.algos.world_modeling.next_obs_pred_ppo_wrapper import NextObsPredWrapper, NOPWorldModelConfig
@@ -323,6 +323,8 @@ def main() -> None:
                 dim_feedforward=dec_d_model * 2,
                 query_encoder_hidden_dims=[dec_d_model],
                 context_encoder_hidden_dims=[dec_d_model],
+                memory_encoder_hidden_dims=[],
+                self_attention_mode=MATv2DecoderSelfAttentionMode.FULL_AUTOREGRESSIVE
             ),
             critic_config=MATCriticConfig(
                 n_local_projection_hidden_layers=2,

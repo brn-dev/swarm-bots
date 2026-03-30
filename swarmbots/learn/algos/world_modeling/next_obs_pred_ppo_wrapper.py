@@ -7,6 +7,7 @@ from torch import nn
 from swarmbots.learn.action_dists.action_dist import ActionMetricsSplitterInput
 from swarmbots.learn.action_dists.hybrid_action_dist import HybridActionDistribution
 from swarmbots.learn.algos.mat.mat_policy import MATPolicy
+from swarmbots.learn.algos.mat_v2.mat_v2_policy import MATv2Policy
 from swarmbots.learn.algos.ppo.base_ppo_policy import BasePPOPolicy
 from swarmbots.learn.algos.ppo.ppo_rollout_buffer import PPOEpisode
 from swarmbots.learn.algos.ppo.wm.ppo_wm_sampler import PPOWMSampler, PPOWMSamples
@@ -45,7 +46,7 @@ class NextObsPredWrapper(BasePPOPolicy[PPOWMSamples], NextObsPredMixin):
 
     def __init__(
             self,
-            policy: MATPolicy,
+            policy: BasePPOPolicy,
             *,
             world_model_config: NOPWorldModelConfig,
     ) -> None:
