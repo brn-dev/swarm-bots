@@ -8,7 +8,8 @@ import torch.nn as nn
 from loguru import logger
 
 from swarmbots.learn.algos.base_algorithm import BaseAlgorithm, LearningRate, _parse_bool
-from swarmbots.learn.algos.ppo.ppo_policy import BasePPOPolicy, PPOPolicy
+from swarmbots.learn.algos.ppo.ppo_policy import PPOPolicy
+from swarmbots.learn.algos.ppo.base_ppo_policy import BasePPOPolicy
 from swarmbots.learn.algos.ppo.ppo_rollout import PPORolloutState, collect_steps, collect_whole_episodes
 from swarmbots.learn.algos.ppo.ppo_rollout_buffer import PPOEpisode, PPORolloutBuffer, PPOSampler, PPOSamples
 from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
@@ -299,13 +300,7 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerType]):
             batch: PPOSamplesType,
     ) -> tuple[torch.Tensor, float, dict[str, Any]]:
         log_probs, values, extra_losses, extra_loss_metrics = self.policy.evaluate_actions(
-            local_obs=batch.local_obs,
-            global_obs=batch.global_obs,
-            actions=batch.actions,
-            hidden_local_vars=batch.hidden_local_vars,
-            hidden_global_vars=batch.hidden_global_vars,
-            agent_mask=batch.agent_mask,
-            previous_actions=batch.previous_actions,
+            batch=batch,
             action_splitter=self.metrics_action_splitters,
         )
 
@@ -385,12 +380,6 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerType]):
         }
         return metrics, total_steps_in_rollout
 
-    def _make_sampler(self, episodes: list[PPOEpisode]) -> PPOSamplerType:
-        return PPOSampler[PPOSamplesType](
-            episodes=episodes,
-            requires_previous_actions=self.policy.requires_previous_actions(),
-        )
-
     def train(self, episodes: list[PPOEpisode]) -> dict[str, Any]:
         with PerformanceTimer() as to_train_device_timer:
             self.policy.train()
@@ -398,7 +387,7 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerType]):
             self.value_loss_fn.to(self.train_device)
 
         with PerformanceTimer() as sampler_init_timer:
-            sampler = self._make_sampler(episodes)
+            sampler = self.policy.make_sampler(episodes)
 
         if self.use_popart:
             self.policy.update_value_normalizer(sampler.returns)
@@ -636,7 +625,7 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerType]):
         return scheduler_metrics
 
     def _after_optimizer_step(self) -> None:
-        pass
+        self.policy.after_optimizer_step()
 
     def reduce_agents(
             self,
@@ -856,6 +845,38 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerType]):
             weights = {str(key): float(value) for key, value in parsed_weights.items()}
             logger.warning(f"Updating extra loss weights: {weights}")
             self.policy.update_loss_weights(**weights)
+            return True
+        elif cmd in {"set_wm_loss_coef", "set_world_model_loss_coef", "wm_loss_coef"}:
+            coef = float(params)
+            logger.warning(f"Setting world_model_loss_coef to {coef}")
+            self.policy.update_loss_weights(world_model_loss_coef=coef)
+            return True
+        elif cmd in {"set_wm_num_next_steps", "set_world_model_num_next_steps", "wm_num_next_steps"}:
+            num_next_steps = int(params)
+            if num_next_steps < 1:
+                raise ValueError(f"world_model_num_next_steps must be >= 1, got {num_next_steps}")
+            if not hasattr(self.policy, "world_model_num_next_steps"):
+                raise ValueError(
+                    "Policy does not expose world_model_num_next_steps; cannot configure world-model sampler horizon."
+                )
+            logger.warning(f"Setting world_model_num_next_steps to {num_next_steps}")
+            setattr(self.policy, "world_model_num_next_steps", num_next_steps)
+            return True
+        elif cmd in {"set_wm_target_tau", "set_world_model_target_tau", "wm_target_tau"}:
+            param = params.strip().lower()
+            if param in {"none", "null", ""}:
+                tau: float | None = None
+                logger.warning("Disabling world_model_target_tau")
+            else:
+                tau = float(params)
+                if not (0.0 < tau <= 1.0):
+                    raise ValueError(f"world_model_target_tau must be in (0, 1], got {tau}")
+                logger.warning(f"Setting world_model_target_tau to {tau}")
+            if not hasattr(self.policy, "world_model_target_tau"):
+                raise ValueError(
+                    "Policy does not expose world_model_target_tau; cannot configure target-network update rate."
+                )
+            setattr(self.policy, "world_model_target_tau", tau)
             return True
         elif cmd in {"set_act_ent_loss_coef", "set_sub_ent_loss_coef", "set_action_ent_loss_coef"}:
             sub_dist_idx, value = self._parse_indexed_float_params(

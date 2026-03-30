@@ -17,7 +17,7 @@ Agents shall use this file to make notes for future instances. Write down import
 - `TransitionObsWrapper`
 - `NormalizeReward` (not used together with PopArt)
 - `SwarmBotsLearnEnvWrapper`
-- PPO then collects rollouts, updates the policy, and may also train a world model (`PPOWM`).
+- PPO then collects rollouts and updates the policy (WM losses are added by policy wrappers).
 
 ## Hard Invariants
 - Vector env autoreset mode must stay `NEXT_STEP` end-to-end. Rollout logic depends on it.
@@ -55,8 +55,30 @@ Agents shall use this file to make notes for future instances. Write down import
 ## Runtime Hyperparameters / Scheduling
 - Runtime hyperparameters are owned by live module attributes, not by mutating config dataclasses after init.
 - `get_hyper_parameters()` should report live runtime values.
-- Generic scheduler infrastructure lives in `swarmbots/schedulers.py` and is integrated into PPO/PPOWM.
+- Generic scheduler infrastructure lives in `swarmbots/schedulers.py` and is integrated into PPO.
 - Shared serialization helpers live in `swarmbots/learn/serialization_utils.py`.
+
+## PPO / WM Refactor Notes (2026-03)
+- Policies now own sampler creation via `BasePPOPolicy.make_sampler(...)`; `PPO.train()` always calls `policy.make_sampler(episodes)`.
+- `PPO.evaluate_actions` paths now consume a sample-batch object (`PPOSamples` / `PPOWMSamples`) instead of separate tensors.
+- Common helper: `BasePPOPolicy._policy_actions(...)` converts batch actions from `(B, N, A)` or `(B, T, N, A)` to policy-step actions `(B, N, A)`.
+- World-model composition is wrapper-first:
+- `NextObsPredWrapper` and `SPRWrapper` are the primary WM integration points; MAT WM integration is done via wrapper constructors.
+- `world_model_num_next_steps` belongs to WM wrappers / WM policy configs, not `MATPolicyConfig`.
+- MAT-specific WM inheritance policies and MAT WM factory modules were removed.
+- MAT integration now lives directly in wrapper constructors:
+- Build a `MATPolicy(...)`, then pass it to `NextObsPredWrapper(..., world_model_config=NOPWorldModelConfig(...))`
+- Build a `MATPolicy(...)`, then pass it to `SPRWrapper(..., world_model_config=SPRWorldModelConfig(...))`
+- Wrapper constructors now use a single world-model configuration path (no duplicated per-field init args in parallel to config dataclasses).
+- `world_model_config` is required (non-optional) for both wrappers.
+- `world_model_num_next_steps` now lives in `NOPWorldModelConfig` / `SPRWorldModelConfig`.
+- Wrapper config names are backend-agnostic: `NOPWorldModelConfig` / `SPRWorldModelConfig`.
+- `PPOWM` was removed; use base `PPO` with WM wrappers.
+- WM loss scaling and metrics (`wm_loss`, `wm_loss_scaled`) are produced in wrappers via `evaluate_actions(...)`.
+- `world_model_loss_coef` and `world_model_target_tau` live in wrapper configs (`NOPWorldModelConfig` / `SPRWorldModelConfig`).
+- `PPO` now routes WM runtime commands (`set_wm_loss_coef`, `set_wm_num_next_steps`, `set_wm_target_tau`) to policy state.
+- `BasePPOPolicy.after_optimizer_step()` exists as a default no-op hook.
+- `PPO._after_optimizer_step()` calls `policy.after_optimizer_step()` directly; SPR uses this to update EMA targets.
 
 ## Version Note
 - `AGENTS.md` says Python `>=3.11`, but `pyproject.toml` currently declares `>=3.13`. Check this first if setup behaves oddly.

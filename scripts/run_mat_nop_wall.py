@@ -22,13 +22,12 @@ from swarmbots.learn.action_dists.sticky_bang_zero_bang_action_dist import (
     StickyBangZeroBangConfig,
 )
 from swarmbots.learn.action_dists.sticky_left_right_beta_action_dist import StickyLeftRightBetaConfig
-from swarmbots.learn.algos.mat.mat_policy import MATPolicyConfig, MATCriticConfig
+from swarmbots.learn.algos.mat.mat_policy import MATPolicy, MATPolicyConfig, MATCriticConfig
 from swarmbots.learn.algos.mat.mat_encoder import MATEncoderConfig
 from swarmbots.learn.algos.mat.mat_decoder import MATDecoderConfig
-from swarmbots.learn.algos.mat.wm.mat_nop_policy import MATNOPPolicy
-from swarmbots.learn.algos.mat.wm.mat_nop_policy import MATNOPPolicyConfig, MATNOPWorldModelConfig
-from swarmbots.learn.algos.ppo.wm.ppo_wm import PPOWM
-from swarmbots.learn.algos.ppo.ppo import AutomaticLearningRate, AutomaticLearningRateUpdateResult, StepsRolloutMode
+from swarmbots.learn.algos.ppo.base_ppo_policy import BasePPOPolicy
+from swarmbots.learn.algos.world_modeling.next_obs_pred_ppo_wrapper import NextObsPredWrapper, NOPWorldModelConfig
+from swarmbots.learn.algos.ppo.ppo import AutomaticLearningRate, AutomaticLearningRateUpdateResult, StepsRolloutMode, PPO
 from swarmbots.learn.algos.ppo.ppo_policy import PopArtConfig
 from swarmbots.learn.algos.world_modeling.next_obs_pred_mixin import NextObsPredConfig
 from swarmbots.learn.env_wrappers.feature_wise_obs_norm_wrapper import (
@@ -143,7 +142,7 @@ def split_actuator_joints(actions: torch.Tensor, actuators_per_limb: int) -> dic
 
 
 def set_actuator_gsde_init_joint_stds(
-        policy: MATNOPPolicy,
+        policy: BasePPOPolicy,
         actuators_per_limb: int,
         joint_stds: list[float]
 ) -> None:
@@ -184,7 +183,6 @@ def main() -> None:
     world_model_loss_coef = 0.1
 
     world_model_num_next_steps = 3
-    world_model_target_tau = None
 
     initial_stickiness = 0.25
     final_stickiness = 0.0
@@ -198,7 +196,7 @@ def main() -> None:
 
     # ===== LOAD =====
     load_path: str | None = None
-    # load_path = "../runs/mat_nop_swarm_bots_wall/2026-03-27_15-29-09/models/model_3740430_steps_stopped.pt"
+    # load_path = "../runs/mat_nop_swarm_bots_wall/2026-03-29_01-08-59/models/model_77792876_steps_stopped.pt"
 
     # ===== DEVICE =====
     use_cuda = True and torch.cuda.is_available()
@@ -315,89 +313,92 @@ def main() -> None:
     dec_nhead = 2
 
     print("Initializing Policy...")
-    policy = MATNOPPolicy(
+    mat_policy = MATPolicy(
         env=env,
-        config=MATNOPPolicyConfig(
-            mat_policy_config=MATPolicyConfig(
-                encoder_config=MATEncoderConfig(
-                    d_model=enc_d_model,
-                    nhead=enc_nhead,
-                    num_layers=2,
-                    dim_feedforward=enc_d_model * 2,
-                    local_obs_encoder_hidden_dims=[enc_d_model, enc_d_model],
-                ),
-                decoder_config=MATDecoderConfig(
-                    d_model=dec_d_model,
-                    nhead=dec_nhead,
-                    num_layers=2,
-                    dim_feedforward=dec_d_model * 2,
-                    action_encoder_hidden_dims=[dec_d_model],
-                    cross_attn_first=True,
-                ),
-                critic_config=MATCriticConfig(
-                    n_local_projection_hidden_layers=2,
-                    n_value_regressor_hidden_layers=1,
-                    use_popart=use_popart,
-                    popart_config=PopArtConfig(
-                        beta=popart_beta,
-                        init_sigma=popart_init_sigma,
-                    ),
-                ),
-                dropout=0.0,
-                act_fn_cls=nn.GELU,
-                # continuous_config=GSDEConfig(
-                #     base_std=0.25,
-                #     latent_sde_dim=None,
-                #     std_learnable=True,
-                #     full_std=True,
-                #     sde_learn_features=False,
-                #     log_std_clamp_range=(-20.0, 2.0),
-                #     normalize_latent_sde_by_dim=True
-                # ),
-                # continuous_config=BetaMixtureConfig(
-                #     num_components=3,
-                #     alphas=(3.0, 10.0, 10.0),
-                #     betas=(10.0, 10.0, 3.0)
-                # ),
-                # continuous_config=StickyBangZeroBangConfig(
-                #     bang=0.5,
-                #     ent_loss_coef=1e-3,
-                #     stickiness=initial_stickiness,
-                # ),
-                continuous_config=StickyLeftRightBetaConfig(
-                    stickiness=initial_stickiness,
-                    ent_loss_coef=1e-3,
-                    beta_ent_scale=0.75,
-                ),
-                bernoulli_config=BernoulliConfig(
-                    initial_prob=0.7,
-                    ent_loss_coef=1e-3,
-                ),
-                max_agents=20,
+        config=MATPolicyConfig(
+            encoder_config=MATEncoderConfig(
+                d_model=enc_d_model,
+                nhead=enc_nhead,
+                num_layers=2,
+                dim_feedforward=enc_d_model * 2,
+                local_obs_encoder_hidden_dims=[enc_d_model, enc_d_model],
             ),
-            world_model_config=MATNOPWorldModelConfig(
-                wm_pre_transition_dims=[enc_d_model],
-                d_model_transition_model=transition_model_d_model,
-                nhead_transition_model=enc_nhead,
-                num_layers_transition_model=2,
-                dim_feedforward_transition_model=transition_model_d_model * 2,
-                transition_model_coembed_hidden_dims=[transition_model_d_model],
-                wm_pre_predictors_dims=[transition_model_d_model, transition_model_d_model],
-                wm_scalar_predictor_hidden_dims=[],
-                wm_angle_predictor_hidden_dims=[],
-                wm_rot6d_predictor_hidden_dims=[],
-                wm_binary_predictor_hidden_dims=[],
-                scalar_loss_fn='smooth_l1',
-                next_obs_pred_config=NextObsPredConfig(
-                    local_scalar_target_indices=obs_indices.local_scalar_indices,
-                    local_angle_target_indices=obs_indices.local_angle_indices,
-                    local_rot6d_target_indices=obs_indices.local_rot6d_indices,
-                    local_binary_target_indices=obs_indices.local_binary_indices,
-                    scalar_loss_weight=1.0,
-                    angle_loss_weight=1.0,
-                    rot6d_loss_weight=1.0,
-                    binary_loss_weight=1.0,
+            decoder_config=MATDecoderConfig(
+                d_model=dec_d_model,
+                nhead=dec_nhead,
+                num_layers=2,
+                dim_feedforward=dec_d_model * 2,
+                action_encoder_hidden_dims=[dec_d_model],
+                cross_attn_first=True,
+            ),
+            critic_config=MATCriticConfig(
+                n_local_projection_hidden_layers=2,
+                n_value_regressor_hidden_layers=1,
+                use_popart=use_popart,
+                popart_config=PopArtConfig(
+                    beta=popart_beta,
+                    init_sigma=popart_init_sigma,
                 ),
+            ),
+            dropout=0.0,
+            act_fn_cls=nn.GELU,
+            # continuous_config=GSDEConfig(
+            #     base_std=0.25,
+            #     latent_sde_dim=None,
+            #     std_learnable=True,
+            #     full_std=True,
+            #     sde_learn_features=False,
+            #     log_std_clamp_range=(-20.0, 2.0),
+            #     normalize_latent_sde_by_dim=True
+            # ),
+            # continuous_config=BetaMixtureConfig(
+            #     num_components=3,
+            #     alphas=(3.0, 10.0, 10.0),
+            #     betas=(10.0, 10.0, 3.0)
+            # ),
+            # continuous_config=StickyBangZeroBangConfig(
+            #     bang=0.5,
+            #     ent_loss_coef=1e-3,
+            #     stickiness=initial_stickiness,
+            # ),
+            continuous_config=StickyLeftRightBetaConfig(
+                stickiness=initial_stickiness,
+                ent_loss_coef=1e-3,
+                beta_ent_scale=0.75,
+            ),
+            bernoulli_config=BernoulliConfig(
+                initial_prob=0.7,
+                ent_loss_coef=1e-3,
+            ),
+            max_agents=20,
+        ),
+    )
+    policy = NextObsPredWrapper(
+        policy=mat_policy,
+        world_model_config=NOPWorldModelConfig(
+            world_model_num_next_steps=world_model_num_next_steps,
+            world_model_loss_coef=world_model_loss_coef,
+            wm_pre_transition_dims=[enc_d_model],
+            d_model_transition_model=transition_model_d_model,
+            nhead_transition_model=enc_nhead,
+            num_layers_transition_model=2,
+            dim_feedforward_transition_model=transition_model_d_model * 2,
+            transition_model_coembed_hidden_dims=[transition_model_d_model],
+            wm_pre_predictors_dims=[transition_model_d_model, transition_model_d_model],
+            wm_scalar_predictor_hidden_dims=[],
+            wm_angle_predictor_hidden_dims=[],
+            wm_rot6d_predictor_hidden_dims=[],
+            wm_binary_predictor_hidden_dims=[],
+            scalar_loss_fn='smooth_l1',
+            next_obs_pred_config=NextObsPredConfig(
+                local_scalar_target_indices=obs_indices.local_scalar_indices,
+                local_angle_target_indices=obs_indices.local_angle_indices,
+                local_rot6d_target_indices=obs_indices.local_rot6d_indices,
+                local_binary_target_indices=obs_indices.local_binary_indices,
+                scalar_loss_weight=1.0,
+                angle_loss_weight=1.0,
+                rot6d_loss_weight=1.0,
+                binary_loss_weight=1.0,
             ),
         ),
     )
@@ -518,7 +519,7 @@ def main() -> None:
         )
 
     rollout_samples = int(4048 * 0.75)
-    ppo = PPOWM(
+    ppo = PPO(
         policy=policy,
         env=env,
         learning_rate=auto_lr,
@@ -539,9 +540,6 @@ def main() -> None:
         train_device=train_device,
         rollout_device=rollout_device,
         use_popart=use_popart,
-        world_model_num_next_steps=world_model_num_next_steps,
-        world_model_loss_coef=world_model_loss_coef,
-        world_model_target_tau=world_model_target_tau,
         metrics_action_splitters=[lambda actions: split_actuator_joints(actions, actuators_per_limb), None],
         scheduler_manager=scheduler_manager,
     )
