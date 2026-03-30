@@ -2,32 +2,24 @@ import sys
 import math
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Callable
 
-import numpy as np
 import torch
 from gymnasium.vector import SyncVectorEnv, AsyncVectorEnv
 from gymnasium.wrappers.vector import RecordEpisodeStatistics, NormalizeReward
 from loguru import logger
 from torch import nn
 
-from swarmbots.learn.action_dists.beta_mixture_action_dist import BetaMixtureConfig
-from swarmbots.learn.action_dists.bang_zero_bang_action_dist import BangZeroBangConfig
 from swarmbots.learn.action_dists.bernoulli_action_dist import BernoulliConfig
-from swarmbots.learn.action_dists.gsde_action_dist import GSDEConfig
 from swarmbots.learn.action_dists.gsde_action_dist import GSDEActionDist
-from swarmbots.learn.action_dists.left_right_beta_action_dist import LeftRightBetaConfig
 from swarmbots.learn.action_dists.sticky_action_dist import StickyActionDist
-from swarmbots.learn.action_dists.sticky_bang_zero_bang_action_dist import (
-    StickyBangZeroBangConfig,
-)
 from swarmbots.learn.action_dists.sticky_left_right_beta_action_dist import StickyLeftRightBetaConfig
 from swarmbots.learn.algos.mat.mat_policy import MATPolicy, MATPolicyConfig, MATCriticConfig
 from swarmbots.learn.algos.mat.mat_encoder import MATEncoderConfig
 from swarmbots.learn.algos.mat.mat_decoder import MATDecoderConfig
 from swarmbots.learn.algos.ppo.base_ppo_policy import BasePPOPolicy
 from swarmbots.learn.algos.world_modeling.next_obs_pred_ppo_wrapper import NextObsPredWrapper, NOPWorldModelConfig
-from swarmbots.learn.algos.ppo.ppo import AutomaticLearningRate, AutomaticLearningRateUpdateResult, StepsRolloutMode, PPO
+from swarmbots.learn.algos.ppo.ppo import AutomaticLearningRate, StepsRolloutMode, PPO
 from swarmbots.learn.algos.ppo.ppo_policy import PopArtConfig
 from swarmbots.learn.algos.world_modeling.next_obs_pred_mixin import NextObsPredConfig
 from swarmbots.learn.env_wrappers.feature_wise_obs_norm_wrapper import (
@@ -38,19 +30,19 @@ from swarmbots.learn.env_wrappers.learn_wrappers.swarm_bots_learn_env_wrapper im
 from swarmbots.learn.env_wrappers.transition_obs_wrapper import TransitionObsWrapper
 from swarmbots.learn.env_wrappers.worker_pool_async_vector_env import WorkerPoolAsyncVectorEnv
 from swarmbots.learn.gsde_reset import GSDEProbabilityResetMode
-from swarmbots.learn.summary_statistics import SummaryStatisticsFormat, SummaryStatistics
+from swarmbots.learn.summary_statistics import SummaryStatisticsFormat
 from swarmbots.learn.obs_indices import ObsIndices
 from swarmbots.learn.swarmbots_obs_indices import build_obs_indices
 from swarmbots.mj_env.scenarios import scenario_presets
 from swarmbots.mj_env.scenarios.scenario_presets import default_wall
 from swarmbots.mj_env.swarm.homogeneous_swarm import PreConnectedUnitLocationsConfig
 from swarmbots.mj_env.swarm_bots_env import SwarmBotsEnv
-from swarmbots.schedulers import (
-    LinearScheduler,
-    ScheduleUnit,
+from swarmbots.learn.scheduling.schedulers import (
     ScheduledHyperParameter,
-    SchedulerManager,
+    SchedulerManager, ScheduleUnit,
 )
+from swarmbots.learn.scheduling.linear_scheduler import LinearScheduler
+from swarmbots.learn.scheduling.auto_lr_updater import make_auto_lr_updater
 
 
 def make_env_fn(
@@ -415,83 +407,14 @@ def main() -> None:
     warmup_iterations: int = 250
     cold_lr = warm_lr / 200 if warmup_iterations > 0 else warm_lr
 
-    def auto_lr_updater(
-            old_lr: float,
-            state: dict[str, Any],
-            n_iterations: int,
-            n_model_updates: int,
-            n_timesteps: int,
-            early_stop_kl_div: Optional[float],
-            early_stop_epoch: Optional[int],
-            metrics: dict[str, Any]
-    ) -> AutomaticLearningRateUpdateResult:
-        if early_stop_epoch is not None and early_stop_epoch == 0:
-            state['counter'] = 0
-            state['warmup'] = False
-            decay_factor = 0.75
-            return {
-                'new_lr': old_lr * decay_factor,
-                'msg': f'epoch={early_stop_epoch}',
-                'event': 'zero_epoch_hit'
-            }
-
-        if early_stop_kl_div is not None and early_stop_kl_div > 0.0125:
-            state['counter'] = 0
-            state['warmup'] = False
-            decay_factor = np.clip(0.95 - early_stop_kl_div, 0.4, 0.95)
-            return {
-                'new_lr': old_lr * decay_factor,
-                'msg': f'kl={early_stop_kl_div:.3f}',
-                'event': 'max_kl_hit'
-            }
-
-        clip_frac_stats: Optional[SummaryStatistics] = metrics.get('clip_frac', None)
-        if clip_frac_stats and clip_frac_stats.mean > 0.19:
-            state['counter'] = 0
-            state['warmup'] = False
-            clip_frac = clip_frac_stats.mean
-            decay_factor = np.clip(1 - clip_frac, 0.5, 0.9)
-            return {
-                'new_lr': old_lr * decay_factor,
-                'msg': f'{clip_frac=:.3f}',
-                'event': 'max_clip_frac_hit'
-            }
-
-        if early_stop_epoch is not None and early_stop_epoch < 4:
-            state['counter'] = 0
-            state['warmup'] = False
-            decay_factor = {
-                1: 0.8, 2: 0.85, 3: 0.9,
-            }[early_stop_epoch]
-            return {
-                'new_lr': old_lr * decay_factor,
-                'msg': f'epoch={early_stop_epoch}',
-                'event': 'min_epoch_hit'
-            }
-
-        warmup: bool = state.get('warmup', warmup_iterations > 0) and n_iterations <= warmup_iterations
-        state['warmup'] = warmup
-        if warmup:
-            new_lr = cold_lr + (warm_lr - cold_lr) * n_iterations / warmup_iterations
-            return {
-                'new_lr': new_lr,
-                'msg': f'Warmup ({n_iterations}/{warmup_iterations})',
-                'event': 'warmup'
-            }
-
-        counter = state.get('counter', 0) + 1
-
-        if counter >= 2:
-            state['counter'] = 0
-            return {'new_lr': old_lr * 1.1}
-
-        state['counter'] = counter
-        return {'new_lr': None}
-
     auto_lr = AutomaticLearningRate(
         initial_lr=cold_lr,
         max_lr=8e-4,
-        updater=auto_lr_updater
+        updater=make_auto_lr_updater(
+            warmup_iterations=warmup_iterations,
+            cold_lr=cold_lr,
+            warm_lr=warm_lr,
+        )
     )
 
     scheduler_manager: SchedulerManager | None = None

@@ -18,7 +18,6 @@ class MATEncoderConfig:
     norm_first: bool = True
     layer_norm_eps: float = 1e-5
     bias: bool = True
-    enable_nested_tensor: bool = False
     add_agent_embeddings: bool = True
     local_obs_encoder_hidden_dims: list[int] | None = None
     global_obs_encoder_hidden_dims: list[int] | None = None
@@ -82,7 +81,7 @@ class MATEncoder(nn.Module):
             ),
             num_layers=config.num_layers,
             norm=nn.LayerNorm(config.d_model),
-            enable_nested_tensor=config.enable_nested_tensor,
+            enable_nested_tensor=not config.norm_first,
         )
 
         self.agent_embeddings: nn.Parameter | None = None

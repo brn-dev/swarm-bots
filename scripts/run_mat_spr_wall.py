@@ -1,9 +1,8 @@
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Callable
 
-import numpy as np
 import torch
 from gymnasium.vector import SyncVectorEnv, AsyncVectorEnv
 from gymnasium.wrappers.vector import RecordEpisodeStatistics, NormalizeReward
@@ -16,7 +15,7 @@ from swarmbots.learn.algos.mat.mat_policy import MATPolicy, MATPolicyConfig, MAT
 from swarmbots.learn.algos.mat.mat_encoder import MATEncoderConfig
 from swarmbots.learn.algos.mat.mat_decoder import MATDecoderConfig
 from swarmbots.learn.algos.world_modeling.spr_ppo_wrapper import SPRWrapper, SPRWorldModelConfig
-from swarmbots.learn.algos.ppo.ppo import AutomaticLearningRate, AutomaticLearningRateUpdateResult, StepsRolloutMode, PPO
+from swarmbots.learn.algos.ppo.ppo import AutomaticLearningRate, StepsRolloutMode, PPO
 from swarmbots.learn.algos.ppo.ppo_policy import PopArtConfig
 from swarmbots.learn.env_wrappers.feature_wise_obs_norm_wrapper import (
     FeatureWiseObsNormWrapper,
@@ -25,12 +24,13 @@ from swarmbots.learn.env_wrappers.progress_guidance_ep_stats_wrapper import Prog
 from swarmbots.learn.env_wrappers.learn_wrappers.swarm_bots_learn_env_wrapper import SwarmBotsLearnEnvWrapper
 from swarmbots.learn.env_wrappers.transition_obs_wrapper import TransitionObsWrapper
 from swarmbots.learn.gsde_reset import GSDEProbabilityResetMode
-from swarmbots.learn.summary_statistics import SummaryStatisticsFormat, SummaryStatistics
+from swarmbots.learn.summary_statistics import SummaryStatisticsFormat
 from swarmbots.learn.obs_indices import ObsIndices
 from swarmbots.learn.swarmbots_obs_indices import build_obs_indices
 from swarmbots.mj_env.scenarios.scenario_presets import default_wall
 from swarmbots.mj_env.swarm.homogeneous_swarm import HomogeneousSwarm, PoissonDiscUnitLocationsConfig
 from swarmbots.mj_env.swarm_bots_env import SwarmBotsEnv
+from swarmbots.learn.scheduling.auto_lr_updater import make_auto_lr_updater
 
 
 def make_env_fn(
@@ -303,74 +303,16 @@ def main() -> None:
 
     initial_lr = 1e-4
 
-    def auto_lr_updater(
-            old_lr: float,
-            state: dict[str, Any],
-            n_iterations: int,
-            n_model_updates: int,
-            n_timesteps: int,
-            early_stop_kl_div: Optional[float],
-            early_stop_epoch: Optional[int],
-            metrics: dict[str, Any]
-    ) -> AutomaticLearningRateUpdateResult:
-        warmup_iterations: int = 250
-        cold_lr = initial_lr / 50
-
-        if early_stop_kl_div is not None and early_stop_kl_div > 0.1:
-            state['counter'] = 0
-            state['warmup'] = False
-            decay_factor = np.clip(0.9 - early_stop_kl_div, 0.4, 0.8)
-            return {
-                'new_lr': old_lr * decay_factor,
-                'msg': f'kl={early_stop_kl_div:.3f}',
-                'event': 'max_kl_hit'
-            }
-
-        if early_stop_epoch is not None and early_stop_epoch < 2:
-            state['counter'] = 0
-            state['warmup'] = False
-            decay_factor = 0.9 if early_stop_epoch == 1 else 0.75
-            return {
-                'new_lr': old_lr * decay_factor,
-                'msg': f'epoch={early_stop_epoch}',
-                'event': 'min_epoch_hit'
-            }
-
-        clip_frac_stats: Optional[SummaryStatistics] = metrics.get('clip_frac', None)
-        if clip_frac_stats and clip_frac_stats.mean > 0.2:
-            state['counter'] = 0
-            state['warmup'] = False
-            clip_frac = clip_frac_stats.mean
-            decay_factor = np.clip(1.1 - clip_frac, 0.5, 0.9)
-            return {
-                'new_lr': old_lr * decay_factor,
-                'msg': f'{clip_frac=:.3f}',
-                'event': 'max_clip_frac_hit'
-            }
-
-        warmup: bool = state.get('warmup', warmup_iterations > 0) and n_iterations <= warmup_iterations
-        state['warmup'] = warmup
-        if warmup:
-            new_lr = cold_lr + (initial_lr - cold_lr) * n_iterations / warmup_iterations
-            return {
-                'new_lr': new_lr,
-                'msg': f'Warmup ({n_iterations}/{warmup_iterations})',
-                'event': 'warmup'
-            }
-
-        counter = state.get('counter', 0) + 1
-
-        if counter >= 2:
-            state['counter'] = 0
-            return {'new_lr': old_lr * 1.3}
-
-        state['counter'] = counter
-        return {'new_lr': None}
-
+    warmup_iterations: int = 250
+    cold_lr = initial_lr / 50
     auto_lr = AutomaticLearningRate(
         initial_lr=initial_lr,
         max_lr=2e-4,
-        updater=auto_lr_updater
+        updater=make_auto_lr_updater(
+            warmup_iterations=warmup_iterations,
+            cold_lr=cold_lr,
+            warm_lr=initial_lr,
+        )
     )
     ppo = PPO(
         policy=policy,
