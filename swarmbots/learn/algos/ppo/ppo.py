@@ -19,7 +19,7 @@ from swarmbots.learn.masking import masked_mean
 from swarmbots.learn.metrics_list import MetricsLists
 from swarmbots.learn.performance_timer import PerformanceTimer
 from swarmbots.learn.serialization_utils import serialize_fn
-from swarmbots.schedulers import SchedulerManager
+from swarmbots.learn.scheduling.schedulers import SchedulerManager
 from swarmbots.learn.summary_statistics import compute_summary_statistics
 from swarmbots.learn.torch_device import as_device
 

@@ -3,87 +3,106 @@
 Agents shall use this file to make notes for future instances. Write down important concepts, code architectures, etc. so future agents will have an easier time navigating the code base. KEEP THIS!
 
 ## TL;DR Architecture
-- Two main layers:
-- `swarmbots/mj_env`: MuJoCo environment, scenarios, swarm generation.
-- `swarmbots/learn`: RL/training stack (PPO/MAT, action distributions, wrappers, rollout buffer, logging, checkpoints).
-- Main training entrypoints are in `scripts/`, especially `run_mat_*`.
+- Main layers:
+- `swarmbots/mj_env`: MuJoCo env, scenarios, swarm generation.
+- `swarmbots/learn`: RL/training stack (PPO/MAT, action dists, wrappers, rollout/samplers, checkpoints, logging).
+- Main entrypoints are `scripts/run_mat_*.py` (use these as reference, not old files under `recording/`).
 
 ## Training Flow
-- Training scripts build a `SwarmBotsEnv` factory, vectorize it (`AsyncVectorEnv` or `WorkerPoolAsyncVectorEnv`), then wrap it for learning.
+- Script builds `SwarmBotsEnv` constructors and vectorizes (`AsyncVectorEnv` or `WorkerPoolAsyncVectorEnv`).
 - Typical wrapper chain:
 - `RecordEpisodeStatistics`
 - `ProgressGuidanceEpisodeStatsWrapper`
-- `FeatureWiseObsNormWrapper`
+- `FeatureWiseObsNormWrapper` (for local/global/hidden obs groups)
 - `TransitionObsWrapper`
-- `NormalizeReward` (not used together with PopArt)
+- `NormalizeReward` (skip when using PopArt)
 - `SwarmBotsLearnEnvWrapper`
-- PPO then collects rollouts and updates the policy (WM losses are added by policy wrappers).
+- `PPO.perform_iteration()` collects rollouts (`collect_whole_episodes` or `collect_steps`) and then trains.
+
+## Core Class Structure (Current)
+- Algorithm hierarchy:
+- `BaseAlgorithm` -> `PPO`
+- `PPO.train()` always uses `sampler = policy.make_sampler(episodes)`.
+- `PPO.compute_loss()` always calls `policy.evaluate_actions(batch=...)`.
+
+- Policy hierarchy:
+- `BasePolicy` -> `BasePPOPolicy[Samples]`
+- `BasePPOPolicy` defines the PPO-facing interface:
+- `forward(...)`
+- `_evaluate_actions(batch, ...)` / `evaluate_actions(batch, ...)`
+- `make_sampler(episodes)`
+- `after_optimizer_step()` hook (default no-op)
+- Concrete policies:
+- `PPOPolicy`: MLP actor + MLP/PopArt critic.
+- `MATPolicy`: encoder/decoder transformer policy + DeepSet critic.
+- World-model composition is wrapper-first (not separate PPO algo classes):
+- `NextObsPredWrapper(BasePPOPolicy[PPOWMSamples], NextObsPredMixin)`
+- `SPRWrapper(BasePPOPolicy[PPOWMSamples], SPRMixin)`
+- Wrappers delegate action/value to wrapped `MATPolicy` and add WM losses in `evaluate_actions(...)`.
+- `BasePPOPolicy._policy_actions(...)` normalizes action batch shape from `(B,N,A)` or `(B,T,N,A)` to `(B,N,A)` for policy eval.
+
+- Rollout/sampler structure:
+- `PPORolloutBuffer` builds `PPOEpisode` objects and computes GAE.
+- `PPOSampler` flattens episodes into `PPOSamples`.
+- `PPOWMSampler` extends `PPOSampler` with multi-step windows and returns `PPOWMSamples` (next obs, validity masks, WM masks).
+
+- Action distribution structure:
+- `HybridActionSpace` / `VectorHybridActionSpace` define sub-spaces and `total_agent_action_dim`.
+- `HybridActionDistribution` is a container of per-subspace `ActionDist`s created by `make_proba_distribution(...)`.
+- It handles split/concat, aggregate `log_prob`, prefixed metrics/losses (`act0_*`, `act1_*`, ...), entropy/stickiness runtime updates.
+- Important factory gotcha: check subclass configs before base configs (`StickyBangZeroBangConfig` before `BangZeroBangConfig`).
+
+## World-Model Integration
+- `PPOWM` is gone; use base `PPO` with WM policy wrappers.
+- WM configs live on wrappers:
+- `NOPWorldModelConfig` for `NextObsPredWrapper`
+- `SPRWorldModelConfig` for `SPRWrapper`
+- `world_model_config` is required in both wrappers.
+- `world_model_num_next_steps` belongs to WM wrapper state/config, not `MATPolicyConfig`.
+- PPO runtime commands route to policy/wrapper state:
+- `set_wm_loss_coef`
+- `set_wm_num_next_steps`
+- `set_wm_target_tau`
+- SPR target encoder updates run through `PPO._after_optimizer_step()` -> `policy.after_optimizer_step()`.
 
 ## Hard Invariants
-- Vector env autoreset mode must stay `NEXT_STEP` end-to-end. Rollout logic depends on it.
-- Learn-side observations are dict-based and must provide `local_obs`, `global_obs`, and optionally `hidden_vars` / `agent_mask`.
-- MAT currently expects `agent_mask` to be a contiguous true-prefix with the first agent active.
-- If observation layout changes, update `build_obs_indices(...)` first. World-model losses and normalization rely on it.
-- Wrapper order/class changes can break checkpoint restore because env state loading is intentionally strict.
+- Vector env autoreset must be `NEXT_STEP` end-to-end.
+- Learn-side obs must include `local_obs`, `global_obs`, `hidden_local_vars`, `hidden_global_vars`; `agent_mask` optional but supported.
+- `MATPolicy` currently requires `agent_mask` as contiguous true-prefix, and agent 0 must be active.
+- If observation layout changes, update `build_obs_indices(...)` first (WM targets + normalization depend on it).
+- Wrapper order/class changes can break env-state restore because checkpoint env-state matching is strict by wrapper class/order (and `obs_key` for feature-normalization wrappers).
 
 ## Environment / Scenario Notes
-- `SwarmBotsEnv` delegates most environment logic to scenario classes.
-- Agent shuffling is supported; preserve the shuffle/unshuffle pairing if touching that path.
-- Unstable MuJoCo simulation is converted into a terminal transition with fallback observations/reward and `info["error"] = "simulation_unstable"`.
-- Scenario presets such as `default_wall` and `default_bridge` are the canonical constructors used by training scripts.
-- In `ObstacleStreetScenario`, wall-pass reward is normalized by both active unit count and number of configured `wall_pass_thresholds`, so adding thresholds does not increase total per-wall reward.
+- `SwarmBotsEnv` delegates most behavior to scenario classes.
+- Agent shuffling path must preserve shuffle/unshuffle pairing.
+- Unstable MuJoCo simulation is converted to terminal transition with fallback obs/reward and `info["error"] = "simulation_unstable"`.
+- Canonical scenario constructors in scripts are preset-based (`default_wall`, `default_bridge`).
+- `ObstacleStreetScenario` wall-pass reward is normalized by active unit count and threshold count; adding thresholds should not inflate total wall reward.
 
-## Swarm / Agent Notes
-- `HomogeneousSwarm` supports preset layouts, explicit coordinates, and generated layouts such as Poisson-disc / pre-connected / random-wiggle.
-- Inactive units are supported via `num_unit_probs`; the mask is propagated through `agent_mask`.
-- Base scenario logic keeps inactive units physically out of the active area.
+## Swarm Notes
+- `HomogeneousSwarm` supports preset layouts, explicit coordinates, Poisson-disc/pre-connected/random-wiggle generation.
+- Inactive units are controlled by `num_unit_probs`; this propagates through `agent_mask`.
+- Base scenario logic keeps inactive units physically out of active area.
 
-## Checkpoints / Runtime Controls
-- Checkpoints include policy state, optional optimizer state, wrapper normalization state, and training counters.
-- Interactive runtime commands exist during `learn()` (for example learning-rate, reward-weight, save, record, pause/stop controls) and are logged to `command_log.jsonl`.
-
-## Logging / Analysis
-- Training metrics go to `log.csv` using `;` as delimiter.
-- `plot_logs/` contains plotting and run-metadata comparison utilities.
+## Runtime, Checkpoints, Logging
+- Runtime hyperparameters are live attributes; mutating config dataclasses after init does nothing.
+- `get_hyper_parameters()` should report current live values.
+- Checkpoints include policy state, optional optimizer state, env wrapper normalization state, and training counters.
+- Interactive commands in `learn()` support lr/loss/reward/save/record/pause/stop, and updates are persisted to `command_log.jsonl`.
+- Generic schedulers are in `swarmbots/schedulers.py` and integrated via `SchedulerManager` in PPO.
+- Training logs go to `log.csv` with `;` delimiter.
+- Plot tooling is in `plot_logs/`.
 
 ## Known Gotchas
-- Treat `scripts/run_mat_*.py` as the current reference. Some files under `recording/` are stale relative to current APIs.
-- `make_proba_distribution(...)` in `swarmbots/learn/action_dists/hybrid_action_dist.py` must check subclass configs before base configs; `StickyBangZeroBangConfig` is a subclass of `BangZeroBangConfig`.
-- Recording / rollout paths for sticky action distributions must propagate `previous_actions`; zeroing only on done envs is the important behavior.
-- Use `env.action_space.total_agent_action_dim` instead of `env.n_agent_actions` in wrapped recording code.
-
-## Runtime Hyperparameters / Scheduling
-- Runtime hyperparameters are owned by live module attributes, not by mutating config dataclasses after init.
-- `get_hyper_parameters()` should report live runtime values.
-- Generic scheduler infrastructure lives in `swarmbots/schedulers.py` and is integrated into PPO.
-- Shared serialization helpers live in `swarmbots/learn/serialization_utils.py`.
-
-## PPO / WM Refactor Notes (2026-03)
-- Policies now own sampler creation via `BasePPOPolicy.make_sampler(...)`; `PPO.train()` always calls `policy.make_sampler(episodes)`.
-- `PPO.evaluate_actions` paths now consume a sample-batch object (`PPOSamples` / `PPOWMSamples`) instead of separate tensors.
-- Common helper: `BasePPOPolicy._policy_actions(...)` converts batch actions from `(B, N, A)` or `(B, T, N, A)` to policy-step actions `(B, N, A)`.
-- World-model composition is wrapper-first:
-- `NextObsPredWrapper` and `SPRWrapper` are the primary WM integration points; MAT WM integration is done via wrapper constructors.
-- `world_model_num_next_steps` belongs to WM wrappers / WM policy configs, not `MATPolicyConfig`.
-- MAT-specific WM inheritance policies and MAT WM factory modules were removed.
-- MAT integration now lives directly in wrapper constructors:
-- Build a `MATPolicy(...)`, then pass it to `NextObsPredWrapper(..., world_model_config=NOPWorldModelConfig(...))`
-- Build a `MATPolicy(...)`, then pass it to `SPRWrapper(..., world_model_config=SPRWorldModelConfig(...))`
-- Wrapper constructors now use a single world-model configuration path (no duplicated per-field init args in parallel to config dataclasses).
-- `world_model_config` is required (non-optional) for both wrappers.
-- `world_model_num_next_steps` now lives in `NOPWorldModelConfig` / `SPRWorldModelConfig`.
-- Wrapper config names are backend-agnostic: `NOPWorldModelConfig` / `SPRWorldModelConfig`.
-- `PPOWM` was removed; use base `PPO` with WM wrappers.
-- WM loss scaling and metrics (`wm_loss`, `wm_loss_scaled`) are produced in wrappers via `evaluate_actions(...)`.
-- `world_model_loss_coef` and `world_model_target_tau` live in wrapper configs (`NOPWorldModelConfig` / `SPRWorldModelConfig`).
-- `PPO` now routes WM runtime commands (`set_wm_loss_coef`, `set_wm_num_next_steps`, `set_wm_target_tau`) to policy state.
-- `BasePPOPolicy.after_optimizer_step()` exists as a default no-op hook.
-- `PPO._after_optimizer_step()` calls `policy.after_optimizer_step()` directly; SPR uses this to update EMA targets.
+- Recording + rollout paths for sticky/temporally correlated action dists must carry `previous_actions`; reset to zero only for done envs.
+- In recording/wrappers, use `env.action_space.total_agent_action_dim` instead of `env.n_agent_actions`.
+- `scripts/run_mat_v2_nop_wall.py` uses `MATv2Policy` with `NextObsPredWrapper`; most other training scripts still use `swarmbots/learn/algos/mat`.
+- TransformerEncoder nested-tensor mode is now derived from `norm_first` (`enable_nested_tensor = not norm_first`) in MAT/MATv2/transition-model codepaths to avoid PyTorch warnings when `norm_first=True`.
 
 ## Version Note
-- `AGENTS.md` says Python `>=3.11`, but `pyproject.toml` currently declares `>=3.13`. Check this first if setup behaves oddly.
+- `AGENTS.md` says Python `>=3.11`, but `pyproject.toml` currently requires `>=3.13`.
 
 ## Practical Guidance
-- If you change observation composition: update `build_obs_indices(...)`, then verify normalization and transition-wrapper expectations.
-- If you change wrappers or vector env behavior: re-check `NEXT_STEP` autoreset assumptions and checkpoint restore.
-- For new training scripts, start from the latest `scripts/run_mat_nop_wall.py` pattern.
+- For new training work, start from the latest `scripts/run_mat_nop_wall.py` / `scripts/run_mat_nop_bridge.py` patterns.
+- If you change wrappers/vector-env behavior, re-check `NEXT_STEP` assumptions and checkpoint restore.
+- If you change observation composition, verify `build_obs_indices(...)`, normalization wrappers, and WM target configs together.

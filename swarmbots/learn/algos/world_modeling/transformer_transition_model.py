@@ -27,7 +27,6 @@ class TransformerTransitionModelConfig:
     head_mlp_hidden_dims: list[int] | None = None
     norm_first: bool = True
     layer_norm_eps: float = 1e-5
-    enable_nested_tensor: bool = False
 
 class TransformerTransitionModel(nn.Module):
     """
@@ -57,7 +56,7 @@ class TransformerTransitionModel(nn.Module):
         self.head_mlp_hidden_dims = config.head_mlp_hidden_dims
         self.norm_first = config.norm_first
         self.layer_norm_eps = config.layer_norm_eps
-        self.enable_nested_tensor = config.enable_nested_tensor
+        self.enable_nested_tensor = not config.norm_first
 
         in_dim = config.latent_dim + config.action_dim
         if config.coembed_mlp_hidden_dims is None:
@@ -91,7 +90,7 @@ class TransformerTransitionModel(nn.Module):
             ),
             num_layers=config.num_layers,
             norm=nn.LayerNorm(config.d_model, eps=config.layer_norm_eps),
-            enable_nested_tensor=config.enable_nested_tensor,
+            enable_nested_tensor=self.enable_nested_tensor,
         )
 
         if config.head_mlp_hidden_dims is None:
