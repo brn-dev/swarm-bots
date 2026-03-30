@@ -1,5 +1,3 @@
-import abc
-import re
 from dataclasses import dataclass, field
 from typing import Any
 import torch
@@ -13,7 +11,8 @@ from swarmbots.learn.action_dists.hybrid_action_dist import (
     bernoulli_config_to_dict,
 )
 from swarmbots.learn.action_dists.bernoulli_action_dist import BernoulliConfig
-from swarmbots.learn.base_policy import BasePolicy
+from swarmbots.learn.algos.ppo.base_ppo_policy import BasePPOPolicy
+from swarmbots.learn.algos.ppo.ppo_rollout_buffer import PPOEpisode, PPOSampler, PPOSamples
 from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
 from swarmbots.learn.losses import LossDict, LossMetrics
 from swarmbots.learn.nn_components.mlp import MLP
@@ -51,104 +50,6 @@ class PPOPolicyConfig:
     critic_config: PPOCriticConfig = field(default_factory=PPOCriticConfig)
     continuous_config: ContinuousActionDistConfigInput = None
     bernoulli_config: BernoulliConfig | None = None
-
-
-class BasePPOPolicy(BasePolicy, abc.ABC):
-    action_dist: HybridActionDistribution
-    _PER_ACTION_ENTROPY_WEIGHT_PATTERN = re.compile(r"^act(?P<idx>\d+)_(?P<alias>ent_loss_coef|entropy|ent)$")
-
-    @property
-    def gsde_enabled(self) -> bool:
-        return self.action_dist.has_gsde
-
-    @abc.abstractmethod
-    def forward(
-            self,
-            local_obs: torch.Tensor,
-            global_obs: torch.Tensor,
-            hidden_local_vars: torch.Tensor | None = None,
-            hidden_global_vars: torch.Tensor | None = None,
-            agent_mask: torch.Tensor | None = None,
-            previous_actions: torch.Tensor | None = None,
-            deterministic: bool = False
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """
-        :return: return actions, log_probs, values
-        """
-        raise NotImplementedError()
-
-    @abc.abstractmethod
-    def evaluate_actions(
-            self,
-            local_obs: torch.Tensor,
-            global_obs: torch.Tensor,
-            actions: torch.Tensor,
-            hidden_local_vars: torch.Tensor | None = None,
-            hidden_global_vars: torch.Tensor | None = None,
-            agent_mask: torch.Tensor | None = None,
-            previous_actions: torch.Tensor | None = None,
-            action_splitter: ActionMetricsSplitterInput = None,
-    ) -> tuple[torch.Tensor, torch.Tensor, LossDict, LossMetrics]:
-        """
-        :return: log_probs, values, extra_losses, extra_loss_metrics
-        """
-        raise NotImplementedError()
-
-    @property
-    def has_popart(self) -> bool:
-        return False
-
-    def update_value_normalizer(self, targets: torch.Tensor) -> None:
-        _ = targets
-
-    def normalize_values(self, values: torch.Tensor) -> torch.Tensor:
-        return values
-
-    def get_value_normalizer_metrics(self) -> dict[str, float]:
-        return {}
-
-    def update_loss_weights(self, **weights: float) -> None:
-        if weights:
-            raise ValueError(f'Unknown weights given: {weights}')
-
-    def set_action_stickiness(
-            self,
-            value: float,
-            *,
-            sub_dist_idx: int | None = None,
-    ) -> None:
-        if sub_dist_idx is None:
-            self.action_dist.set_all_stickiness(value)
-        else:
-            self.action_dist.set_sub_stickiness(sub_dist_idx, value)
-
-    @staticmethod
-    def _pop_loss_weight_alias(
-            weights: dict[str, float],
-            *,
-            aliases: tuple[str, ...],
-    ) -> tuple[str, float] | None:
-        matching_aliases = [alias for alias in aliases if alias in weights]
-        if not matching_aliases:
-            return None
-        if len(matching_aliases) > 1:
-            raise ValueError(f"Multiple aliases for the same loss weight are not allowed: {matching_aliases}")
-        alias = matching_aliases[0]
-        value = float(weights.pop(alias))
-        return alias, value
-
-    def _pop_per_action_entropy_weights(self, weights: dict[str, float]) -> dict[int, float]:
-        updates: dict[int, float] = {}
-        for key in list(weights):
-            match = self._PER_ACTION_ENTROPY_WEIGHT_PATTERN.match(key)
-            if match is None:
-                continue
-
-            idx = int(match.group("idx"))
-            if idx in updates:
-                raise ValueError(f"Multiple entropy aliases for action index {idx} are not allowed")
-            updates[idx] = float(weights.pop(key))
-        return updates
 
 
 class PPOActor(nn.Module):
@@ -279,7 +180,7 @@ class PPOCritic(nn.Module):
         }
 
 
-class PPOPolicy(BasePPOPolicy):
+class PPOPolicy(BasePPOPolicy[PPOSamples]):
 
     def __init__(
             self,
@@ -352,17 +253,19 @@ class PPOPolicy(BasePPOPolicy):
         values = self.critic(critic_local_obs, critic_global_obs, agent_mask=agent_mask)
         return actions, log_probs, values
 
-    def evaluate_actions(
+    def _evaluate_actions(
             self,
-            local_obs: torch.Tensor,
-            global_obs: torch.Tensor,
-            actions: torch.Tensor,
-            hidden_local_vars: torch.Tensor | None = None,
-            hidden_global_vars: torch.Tensor | None = None,
-            agent_mask: torch.Tensor | None = None,
-            previous_actions: torch.Tensor | None = None,
+            batch: PPOSamples,
             action_splitter: ActionMetricsSplitterInput = None,
-    ) -> tuple[torch.Tensor, torch.Tensor, LossDict, LossMetrics]:
+    ) -> tuple[torch.Tensor, torch.Tensor, LossDict, LossMetrics, torch.Tensor]:
+        local_obs = batch.local_obs
+        global_obs = batch.global_obs
+        hidden_local_vars = batch.hidden_local_vars
+        hidden_global_vars = batch.hidden_global_vars
+        agent_mask = batch.agent_mask
+        previous_actions = batch.previous_actions
+        actions = self._policy_actions(batch.actions)
+
         local_obs = self._mask_local_obs(local_obs, agent_mask)
         latent_pi = self.actor(local_obs, global_obs)
 
@@ -377,7 +280,7 @@ class PPOPolicy(BasePPOPolicy):
             agent_mask=agent_mask,
             action_splitter=action_splitter,
         )
-        return log_probs, values, extra_losses, extra_loss_metrics
+        return log_probs, values, extra_losses, extra_loss_metrics, latent_pi
 
     def act(
             self,
@@ -398,6 +301,12 @@ class PPOPolicy(BasePPOPolicy):
             previous_actions=previous_actions,
         )
         return actions
+
+    def make_sampler(self, episodes: list[PPOEpisode]) -> PPOSampler[PPOSamples]:
+        return PPOSampler(
+            episodes=episodes,
+            requires_previous_actions=self.requires_previous_actions(),
+        )
 
     @staticmethod
     def _mask_local_obs(

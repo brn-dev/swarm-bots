@@ -134,9 +134,6 @@ def main() -> None:
     popart_eps = 1e-5
     popart_min_std = 1e-4
     popart_init_sigma = 0.5
-    world_model_num_next_steps = 3
-    world_model_loss_coef = 0.1
-    world_model_target_tau = None
 
     # =====  ID  =====
     run_id = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")

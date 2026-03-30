@@ -3,7 +3,7 @@ from typing import Any
 
 import torch
 
-from swarmbots.learn.algos.ppo.ppo_policy import BasePPOPolicy
+from swarmbots.learn.algos.ppo.base_ppo_policy import BasePPOPolicy
 from swarmbots.learn.algos.ppo.ppo_rollout_buffer import PPOEpisode, PPORolloutBuffer
 from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
 from swarmbots.learn.performance_timer import PerformanceTimer

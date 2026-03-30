@@ -17,7 +17,9 @@ from swarmbots.learn.algos.mat.mat_decoder import MATDecoderConfig
 from swarmbots.learn.algos.mat.mat_encoder import MATEncoder
 from swarmbots.learn.algos.mat.mat_encoder import MATEncoderConfig
 from swarmbots.learn.algos.ppo.ppo import AGENTS_DIM
-from swarmbots.learn.algos.ppo.ppo_policy import BasePPOPolicy, PopArtConfig
+from swarmbots.learn.algos.ppo.ppo_policy import PopArtConfig
+from swarmbots.learn.algos.ppo.base_ppo_policy import BasePPOPolicy
+from swarmbots.learn.algos.ppo.ppo_rollout_buffer import PPOEpisode, PPOSampler, PPOSamples
 from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
 from swarmbots.learn.losses import LossDict, LossMetrics
 from swarmbots.learn.nn_components.deep_set import DeepSetCritic
@@ -46,7 +48,7 @@ class MATPolicyConfig:
     max_agents: int | None = None
 
 
-class MATPolicy(BasePPOPolicy):
+class MATPolicy(BasePPOPolicy[PPOSamples]):
 
     def __init__(
             self,
@@ -272,44 +274,22 @@ class MATPolicy(BasePPOPolicy):
 
         return actions, log_probs, values
 
-    def evaluate_actions(
-            self,
-            local_obs: torch.Tensor,
-            global_obs: torch.Tensor,
-            actions: torch.Tensor,
-            hidden_local_vars: torch.Tensor | None = None,
-            hidden_global_vars: torch.Tensor | None = None,
-            agent_mask: torch.Tensor | None = None,
-            previous_actions: torch.Tensor | None = None,
-            action_splitter: ActionMetricsSplitterInput = None,
-    ) -> tuple[torch.Tensor, torch.Tensor, LossDict, LossMetrics]:
-        _, log_probs, values, extra_losses, extra_loss_metrics = self._evaluate_actions(
-            local_obs=local_obs,
-            global_obs=global_obs,
-            actions=actions,
-            hidden_local_vars=hidden_local_vars,
-            hidden_global_vars=hidden_global_vars,
-            agent_mask=agent_mask,
-            previous_actions=previous_actions,
-            action_splitter=action_splitter,
-        )
-
-        return log_probs, values, extra_losses, extra_loss_metrics
-
     def _evaluate_actions(
             self,
-            local_obs: torch.Tensor,
-            global_obs: torch.Tensor,
-            actions: torch.Tensor,
-            hidden_local_vars: torch.Tensor | None = None,
-            hidden_global_vars: torch.Tensor | None = None,
-            agent_mask: torch.Tensor | None = None,
-            previous_actions: torch.Tensor | None = None,
+            batch: PPOSamples,
             action_splitter: ActionMetricsSplitterInput = None,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, LossDict, LossMetrics]:
+    ) -> tuple[torch.Tensor, torch.Tensor, LossDict, LossMetrics, torch.Tensor]:
+        local_obs = batch.local_obs
+        global_obs = batch.global_obs
+        hidden_local_vars = batch.hidden_local_vars
+        hidden_global_vars = batch.hidden_global_vars
+        agent_mask = batch.agent_mask
+        previous_actions = batch.previous_actions
+        actions = self._policy_actions(batch.actions)
+
         self._validate_agent_mask(agent_mask, batch_size=local_obs.shape[0])
         augmented_observations = self.encoder(local_obs, global_obs, agent_mask=agent_mask)
-        
+
         action_embeddings = self.action_encoder(actions[:, :-1, :])
         if self.agent_embeddings_decoder is not None:
             if action_embeddings.shape[1] > self.agent_embeddings_decoder.shape[1]:
@@ -319,9 +299,9 @@ class MATPolicy(BasePPOPolicy):
                 )
             action_embeddings = action_embeddings + self.agent_embeddings_decoder[:, :action_embeddings.shape[1], :]
         sos_expanded = self.sos_token.expand(actions.shape[0], 1, -1)
-        
+
         shifted_actions = torch.cat([sos_expanded, action_embeddings], dim=1)
-        
+
         latent_pi = self.actor_head(self.decoder(
             action_embeddings=shifted_actions,
             augmented_observations=augmented_observations,
@@ -341,7 +321,7 @@ class MATPolicy(BasePPOPolicy):
             agent_mask=agent_mask,
             action_splitter=action_splitter,
         )
-        return augmented_observations, log_probs, values, extra_losses, extra_loss_metrics
+        return log_probs, values, extra_losses, extra_loss_metrics, augmented_observations
 
     def act(
             self,
@@ -366,6 +346,13 @@ class MATPolicy(BasePPOPolicy):
             return_log_probs=False,
         )
         return actions
+
+    def make_sampler(self, episodes: list[PPOEpisode]) -> PPOSampler[PPOSamples]:
+        return PPOSampler(
+            episodes=episodes,
+            requires_previous_actions=self.requires_previous_actions(),
+        )
+
 
     def _validate_agent_mask(
             self,
