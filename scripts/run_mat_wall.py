@@ -282,6 +282,7 @@ def main() -> None:
         ),
     )
     print(policy)
+    print(f"learnable_params: {policy.num_parameters():,}")
 
     print("Initializing PPO Algorithm...")
 

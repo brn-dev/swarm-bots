@@ -104,23 +104,19 @@ class MATv2Policy(BasePPOPolicy[PPOSamples]):
             hidden_dims=config.decoder_config.context_encoder_hidden_dims,
             act_fn_cls=config.act_fn_cls,
         )
-        memory_hidden_dims = config.decoder_config.memory_encoder_hidden_dims
-        if memory_hidden_dims is None:
-            if self.d_model_encoder != self.d_model_decoder:
-                raise ValueError(
-                    "memory_encoder_hidden_dims=None means identity memory encoder, "
-                    f"but encoder/decoder dims differ ({self.d_model_encoder} != {self.d_model_decoder}). "
-                    "Set memory_encoder_hidden_dims=[] for a single linear projection "
-                    "or provide hidden dims for an MLP."
-                )
+        memory_dims = config.decoder_config.memory_dims
+        if memory_dims is None:
             self.memory_encoder = nn.Identity()
+            self.memory_d_model = self.d_model_encoder
         else:
-            self.memory_encoder = self._build_token_encoder(
+            if len(memory_dims) == 0:
+                raise ValueError("decoder_config.memory_dims must be None or contain at least one dimension")
+            self.memory_encoder = self._build_encoder_from_dims(
                 input_dim=self.d_model_encoder,
-                output_dim=self.d_model_decoder,
-                hidden_dims=memory_hidden_dims,
+                dims=memory_dims,
                 act_fn_cls=config.act_fn_cls,
             )
+            self.memory_d_model = memory_dims[-1]
 
         decoder_config = replace(
             config.decoder_config,
@@ -132,7 +128,7 @@ class MATv2Policy(BasePPOPolicy[PPOSamples]):
         self.decoder = MATv2Decoder(
             config=decoder_config,
             max_agents=self.max_agents,
-            d_model=self.d_model_decoder,
+            memory_d_model=self.memory_d_model,
         )
 
         if (
@@ -200,10 +196,6 @@ class MATv2Policy(BasePPOPolicy[PPOSamples]):
             return tokens
 
         end_agent_idx = start_agent_idx + tokens.shape[1]
-        if end_agent_idx > self.max_agents:
-            raise ValueError(
-                f"Expected token range to end <= {self.max_agents}, got {end_agent_idx}"
-            )
         return tokens + self.agent_embeddings_decoder[:, start_agent_idx:end_agent_idx, :]
 
     def _encode_context_tokens(
@@ -213,21 +205,12 @@ class MATv2Policy(BasePPOPolicy[PPOSamples]):
             *,
             start_agent_idx: int = 0,
     ) -> torch.Tensor:
-        if augmented_observations.shape[:2] != actions.shape[:2]:
-            raise ValueError(
-                "Expected augmented_observations and actions to match in first two dims, "
-                f"got {tuple(augmented_observations.shape)} and {tuple(actions.shape)}"
-            )
         context_input = torch.cat((augmented_observations, actions), dim=-1)
         tokens = self.context_encoder(context_input)
         if self.agent_embeddings_decoder is None:
             return tokens
 
         end_agent_idx = start_agent_idx + tokens.shape[1]
-        if end_agent_idx > self.max_agents:
-            raise ValueError(
-                f"Expected token range to end <= {self.max_agents}, got {end_agent_idx}"
-            )
         return tokens + self.agent_embeddings_decoder[:, start_agent_idx:end_agent_idx, :]
 
     def _generate_actions(
@@ -240,7 +223,6 @@ class MATv2Policy(BasePPOPolicy[PPOSamples]):
             deterministic: bool = False,
             return_log_probs: bool = False,
     ) -> tuple[torch.Tensor, Optional[torch.Tensor]]:
-        self._validate_agent_mask(agent_mask, batch_size=batch_size)
         query_tokens = self._encode_query_tokens(augmented_observations)
         memory_tokens = self._encode_memory_tokens(augmented_observations)
 
@@ -309,7 +291,6 @@ class MATv2Policy(BasePPOPolicy[PPOSamples]):
             previous_actions: torch.Tensor | None = None,
             deterministic: bool = False,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        self._validate_agent_mask(agent_mask, batch_size=local_obs.shape[0])
         augmented_observations = self.encoder(local_obs, global_obs, agent_mask=agent_mask)
         actions, log_probs = self._generate_actions(
             augmented_observations=augmented_observations,
@@ -340,7 +321,6 @@ class MATv2Policy(BasePPOPolicy[PPOSamples]):
         previous_actions = batch.previous_actions
         actions = self._policy_actions(batch.actions)
 
-        self._validate_agent_mask(agent_mask, batch_size=local_obs.shape[0])
         augmented_observations = self.encoder(local_obs, global_obs, agent_mask=agent_mask)
         query_tokens = self._encode_query_tokens(augmented_observations)
         memory_tokens = self._encode_memory_tokens(augmented_observations)
@@ -383,7 +363,6 @@ class MATv2Policy(BasePPOPolicy[PPOSamples]):
     ) -> torch.Tensor:
         _ = hidden_local_vars
         _ = hidden_global_vars
-        self._validate_agent_mask(agent_mask, batch_size=local_obs.shape[0])
         augmented_observations = self.encoder(local_obs, global_obs, agent_mask=agent_mask)
         actions, _ = self._generate_actions(
             augmented_observations=augmented_observations,
@@ -400,27 +379,6 @@ class MATv2Policy(BasePPOPolicy[PPOSamples]):
             episodes=episodes,
             requires_previous_actions=self.requires_previous_actions(),
         )
-
-    def _validate_agent_mask(
-            self,
-            agent_mask: torch.Tensor | None,
-            *,
-            batch_size: int,
-    ) -> None:
-        if agent_mask is None:
-            return
-        if agent_mask.dtype != torch.bool:
-            raise ValueError(f"Expected agent_mask dtype bool, got {agent_mask.dtype}")
-        if agent_mask.ndim != 2:
-            raise ValueError(f"Expected agent_mask shape (B, N), got {tuple(agent_mask.shape)}")
-        expected_shape = (batch_size, self.n_agents)
-        if agent_mask.shape != expected_shape:
-            raise ValueError(f"Expected agent_mask shape {expected_shape}, got {tuple(agent_mask.shape)}")
-        if not agent_mask[:, 0].all():
-            raise ValueError("agent_mask must start with True for every batch entry")
-        mask_int = agent_mask.to(torch.int8)
-        if not torch.all(mask_int[:, 1:] <= mask_int[:, :-1]):
-            raise ValueError("agent_mask must be a True-prefix/False-suffix for every batch entry")
 
     def _critic_with_hidden_vars(
             self,
@@ -515,9 +473,22 @@ class MATv2Policy(BasePPOPolicy[PPOSamples]):
             linear = nn.Linear(input_dim, output_dim)
             init_linear_orthogonal(linear)
             return linear
+        return MATv2Policy._build_encoder_from_dims(
+            input_dim=input_dim,
+            dims=[*hidden_dims, output_dim],
+            act_fn_cls=act_fn_cls,
+        )
+
+    @staticmethod
+    def _build_encoder_from_dims(
+            *,
+            input_dim: int,
+            dims: list[int],
+            act_fn_cls: type[nn.Module],
+    ) -> nn.Module:
         return MLP(
             input_dim=input_dim,
-            hidden_dims=[*hidden_dims, output_dim],
+            hidden_dims=dims,
             end_with_act_fn=False,
             linear_init=init_linear_orthogonal,
             act_fn_cls=act_fn_cls,

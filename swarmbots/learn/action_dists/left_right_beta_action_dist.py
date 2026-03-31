@@ -1,5 +1,5 @@
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Optional, Self
 
 import torch
@@ -11,11 +11,25 @@ from swarmbots.learn.action_dists.action_dist import (
     ActionDist,
     ActionMetricsSplitterInput,
     ActionNetInitialization,
-    compute_split_entropy_metrics,
     compute_action_metrics,
+    resolve_action_metrics_splitter,
+)
+from swarmbots.learn.action_dists.entropy_utils import (
+    AgentActionsReduction,
+    EntropyLossConfig,
+    compute_ent_loss,
+    compute_ent_metrics,
 )
 from swarmbots.learn.losses import LossDict, LossMetrics
 from swarmbots.learn.masking import masked_mean
+from swarmbots.learn.serialization_utils import serialize_dataclass
+
+
+def _default_entropy_loss_config() -> EntropyLossConfig:
+    return EntropyLossConfig(
+        agent_actions_reduction=AgentActionsReduction.SUM,
+        metrics_reduction=AgentActionsReduction.SUM,
+    )
 
 
 @dataclass(frozen=True)
@@ -28,6 +42,7 @@ class LeftRightBetaConfig:
     right_beta: float = 1.0 + math.log(2.0)
     ent_loss_coef: float = 0.0
     beta_ent_scale: float = 1.0
+    ent_loss_config: EntropyLossConfig = field(default_factory=_default_entropy_loss_config)
 
 
 class LeftRightBetaActionDist(ActionDist):
@@ -50,6 +65,7 @@ class LeftRightBetaActionDist(ActionDist):
             right_beta: float = 1.0 + math.log(2.0),
             ent_loss_coef: float = 0.0,
             beta_ent_scale: float = 1.0,
+            ent_loss_config: EntropyLossConfig | None = None,
     ) -> None:
         super().__init__(
             latent_dim=latent_dim,
@@ -81,6 +97,7 @@ class LeftRightBetaActionDist(ActionDist):
         self.epsilon = epsilon
         self.ent_loss_coef = ent_loss_coef
         self.beta_ent_scale = beta_ent_scale
+        self.ent_loss_config = ent_loss_config if ent_loss_config is not None else _default_entropy_loss_config()
         self.initial_right_prob = initial_right_prob
         self.log_interval_jacobian = 0.0
 
@@ -186,29 +203,33 @@ class LeftRightBetaActionDist(ActionDist):
         combined_entropy_per_action = categorical_entropy_per_action + (
             self.beta_ent_scale * weighted_beta_entropy_per_action
         )
-        categorical_entropy = categorical_entropy_per_action.sum(dim=AGENT_ACTIONS_DIM)
-        weighted_beta_entropy = weighted_beta_entropy_per_action.sum(dim=AGENT_ACTIONS_DIM)
-        combined_entropy = combined_entropy_per_action.sum(dim=AGENT_ACTIONS_DIM)
-        self.validate_agent_mask(agent_mask, expected_shape=tuple(categorical_entropy.shape))
 
-        entropy_loss = -self.ent_loss_coef * combined_entropy
-        with torch.no_grad():
-            categorical_entropy_mean = masked_mean(categorical_entropy, agent_mask)
-            beta_entropy_mean = masked_mean(weighted_beta_entropy, agent_mask)
-            combined_entropy_mean = masked_mean(combined_entropy, agent_mask)
-            metrics: LossMetrics = {
-                "ent_loss_categorical": (-categorical_entropy_mean).item(),
-                "ent_loss_beta": (-beta_entropy_mean).item(),
-                "ent_loss_combined": (-combined_entropy_mean).item(),
-                "ent_loss_scaled": (-self.ent_loss_coef * combined_entropy_mean).item(),
-            }
-            metrics.update(
-                compute_split_entropy_metrics(
-                    combined_entropy_per_action,
-                    action_splitter=action_splitter,
-                    agent_mask=agent_mask,
-                )
-            )
+        combined_ent_loss = compute_ent_loss(
+            config=self.ent_loss_config,
+            entropy_per_action=combined_entropy_per_action,
+        )
+        entropy_loss = self.ent_loss_coef * combined_ent_loss
+
+        action_metrics_splitter = resolve_action_metrics_splitter(action_splitter)
+
+        categorical_ent_metrics = compute_ent_metrics(
+            config=self.ent_loss_config,
+            entropy_per_action=categorical_entropy_per_action,
+            agent_mask=agent_mask,
+            metrics_action_splitter=action_metrics_splitter,
+            name='ent_categorical'
+        )
+        beta_ent_metrics = compute_ent_metrics(
+            config=self.ent_loss_config,
+            entropy_per_action=weighted_beta_entropy_per_action,
+            agent_mask=agent_mask,
+            metrics_action_splitter=action_metrics_splitter,
+            name='ent_beta'
+        )
+        metrics = {
+            **categorical_ent_metrics,
+            **beta_ent_metrics,
+        }
         return {"entropy": entropy_loss}, metrics
 
     def set_ent_loss_coef(self, value: float) -> None:
@@ -235,6 +256,7 @@ class LeftRightBetaActionDist(ActionDist):
             "ent_loss_coef": self.ent_loss_coef,
             "beta_ent_scale": self.beta_ent_scale,
             "initial_right_prob": self.initial_right_prob,
+            "ent_loss_config": serialize_dataclass(self.ent_loss_config),
         }
 
 

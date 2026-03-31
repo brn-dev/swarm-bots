@@ -64,3 +64,8 @@ class BasePolicy(nn.Module, abc.ABC):
         if parameter is None:
             return 0.0
         return cls._grad_norm_from_parameters((parameter,))
+
+    def num_parameters(self, learnable_only: bool = True) -> int:
+        if learnable_only:
+            return sum(parameter.numel() for parameter in self.parameters() if parameter.requires_grad)
+        return sum(parameter.numel() for parameter in self.parameters())

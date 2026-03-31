@@ -111,10 +111,6 @@ class MATEncoder(nn.Module):
 
         src_key_padding_mask = None
         if agent_mask is not None:
-            if agent_mask.shape != local_obs.shape[:2]:
-                raise ValueError(
-                    f"Expected agent_mask shape {tuple(local_obs.shape[:2])}, got {tuple(agent_mask.shape)}"
-                )
             src_key_padding_mask = ~agent_mask
 
         augmented_observations = self.encoder(local_embeddings, src_key_padding_mask=src_key_padding_mask)

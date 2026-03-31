@@ -6,7 +6,6 @@ from torch import nn
 
 from swarmbots.learn.action_dists.action_dist import ActionMetricsSplitterInput
 from swarmbots.learn.action_dists.hybrid_action_dist import HybridActionDistribution
-from swarmbots.learn.algos.mat.mat_policy import MATPolicy
 from swarmbots.learn.algos.ppo.base_ppo_policy import BasePPOPolicy
 from swarmbots.learn.algos.ppo.ppo_rollout_buffer import PPOEpisode
 from swarmbots.learn.algos.ppo.wm.ppo_wm_sampler import PPOWMSampler, PPOWMSamples
@@ -21,9 +20,15 @@ from swarmbots.learn.nn_components.mlp import MLP
 
 @dataclass(frozen=True)
 class SPRWorldModelConfig:
+    n_agents: int
+    local_latent_dim: int
+    action_dim: int
     world_model_num_next_steps: int = 1
     world_model_loss_coef: float = 1.0
     world_model_target_tau: float | None = None
+    act_fn_cls: type[nn.Module] = nn.ReLU
+    transition_model_dropout: float = 0.0
+    online_encoder_attr: str = "encoder"
     d_model_transition_model: int = 128
     nhead_transition_model: int = 4
     num_layers_transition_model: int = 2
@@ -41,7 +46,7 @@ class SPRWrapper(BasePPOPolicy[PPOWMSamples], SPRMixin):
 
     def __init__(
             self,
-            policy: MATPolicy,
+            policy: BasePPOPolicy,
             *,
             world_model_config: SPRWorldModelConfig,
     ) -> None:
@@ -50,6 +55,12 @@ class SPRWrapper(BasePPOPolicy[PPOWMSamples], SPRMixin):
             raise ValueError(
                 f"world_model_num_next_steps must be >= 1, got {world_model_config.world_model_num_next_steps}"
             )
+        if world_model_config.n_agents < 1:
+            raise ValueError(f"n_agents must be >= 1, got {world_model_config.n_agents}")
+        if world_model_config.local_latent_dim < 1:
+            raise ValueError(f"local_latent_dim must be >= 1, got {world_model_config.local_latent_dim}")
+        if world_model_config.action_dim < 1:
+            raise ValueError(f"action_dim must be >= 1, got {world_model_config.action_dim}")
         if world_model_config.world_model_loss_coef < 0:
             raise ValueError(f"world_model_loss_coef must be >= 0, got {world_model_config.world_model_loss_coef}")
         if (
@@ -59,9 +70,18 @@ class SPRWrapper(BasePPOPolicy[PPOWMSamples], SPRMixin):
             raise ValueError(
                 f"world_model_target_tau must be in (0, 1], got {world_model_config.world_model_target_tau}"
             )
+        if not (0.0 <= world_model_config.transition_model_dropout < 1.0):
+            raise ValueError(
+                "transition_model_dropout must be in [0, 1), "
+                f"got {world_model_config.transition_model_dropout}"
+            )
+        if not world_model_config.online_encoder_attr:
+            raise ValueError("online_encoder_attr must be a non-empty attribute path")
         if world_model_config.spr_loss_weight < 0:
             raise ValueError(f"spr_loss_weight must be >= 0, got {world_model_config.spr_loss_weight}")
         self.policy = policy
+        self._online_encoder_attr = world_model_config.online_encoder_attr
+        _ = self.online_encoder
         self.world_model_num_next_steps = int(world_model_config.world_model_num_next_steps)
         self._setup_world_model_from_config(world_model_config)
 
@@ -84,7 +104,19 @@ class SPRWrapper(BasePPOPolicy[PPOWMSamples], SPRMixin):
 
     @property
     def online_encoder(self) -> nn.Module:
-        return self.policy.encoder
+        current: Any = self.policy
+        for attr_name in self._online_encoder_attr.split("."):
+            if not hasattr(current, attr_name):
+                raise ValueError(
+                    f"Could not resolve online encoder attribute path "
+                    f"{self._online_encoder_attr!r} on policy {type(self.policy).__name__}"
+                )
+            current = getattr(current, attr_name)
+        if not isinstance(current, nn.Module):
+            raise TypeError(
+                f"Expected online encoder at {self._online_encoder_attr!r} to be nn.Module, got {type(current).__name__}"
+            )
+        return current
 
     def forward(
             self,
@@ -178,6 +210,12 @@ class SPRWrapper(BasePPOPolicy[PPOWMSamples], SPRMixin):
                 "world_model_num_next_steps": self.world_model_num_next_steps,
                 "world_model_loss_coef": self.world_model_loss_coef,
                 "world_model_target_tau": self.world_model_target_tau,
+                "n_agents": self._wm_n_agents,
+                "local_latent_dim": self._wm_local_latent_dim,
+                "action_dim": self._wm_action_dim,
+                "act_fn_cls": str(self._wm_act_fn_cls),
+                "transition_model_dropout": self._wm_transition_model_dropout,
+                "online_encoder_attr": self._online_encoder_attr,
                 "world_model_config": self.get_spr_hyper_parameters(
                     projection_dims=projection_dims,
                     predictor_hidden_dims=predictor_hidden_dims,
@@ -249,13 +287,17 @@ class SPRWrapper(BasePPOPolicy[PPOWMSamples], SPRMixin):
         self.policy.update_loss_weights(**remaining_weights)
 
     def _setup_world_model_from_config(self, world_model_config: SPRWorldModelConfig) -> None:
-        mat_policy = self.policy
         self.world_model_loss_coef = float(world_model_config.world_model_loss_coef)
         self.world_model_target_tau = world_model_config.world_model_target_tau
         self.spr_loss_weight = float(world_model_config.spr_loss_weight)
+        self._wm_n_agents = int(world_model_config.n_agents)
+        self._wm_local_latent_dim = int(world_model_config.local_latent_dim)
+        self._wm_action_dim = int(world_model_config.action_dim)
+        self._wm_act_fn_cls = world_model_config.act_fn_cls
+        self._wm_transition_model_dropout = float(world_model_config.transition_model_dropout)
 
         if world_model_config.spr_projection_dims is None:
-            projection_dims = [mat_policy.d_model_encoder]
+            projection_dims = [self._wm_local_latent_dim]
         else:
             projection_dims = list(world_model_config.spr_projection_dims)
 
@@ -270,31 +312,31 @@ class SPRWrapper(BasePPOPolicy[PPOWMSamples], SPRMixin):
 
         self.setup_spr(
             transition_model=TransformerTransitionModel(config=TransformerTransitionModelConfig(
-                n_agents=mat_policy.n_agents,
-                latent_dim=mat_policy.d_model_encoder,
-                action_dim=mat_policy.action_dist.action_space.total_agent_action_dim,
+                n_agents=self._wm_n_agents,
+                latent_dim=self._wm_local_latent_dim,
+                action_dim=self._wm_action_dim,
                 d_model=world_model_config.d_model_transition_model,
                 nhead=world_model_config.nhead_transition_model,
                 num_layers=world_model_config.num_layers_transition_model,
                 dim_feedforward=world_model_config.dim_feedforward_transition_model,
-                dropout=mat_policy.dropout,
-                act_fn_cls=mat_policy.act_fn_cls,
+                dropout=self._wm_transition_model_dropout,
+                act_fn_cls=self._wm_act_fn_cls,
                 add_agent_embeddings=world_model_config.add_agent_embeddings_transition_model,
                 predict_delta=True,
                 coembed_mlp_hidden_dims=world_model_config.transition_model_coembed_hidden_dims,
                 head_mlp_hidden_dims=world_model_config.transition_model_head_hidden_dims,
             )),
             projection=MLP(
-                input_dim=mat_policy.d_model_encoder,
+                input_dim=self._wm_local_latent_dim,
                 hidden_dims=[*projection_dims],
                 end_with_act_fn=False,
-                act_fn_cls=mat_policy.act_fn_cls,
+                act_fn_cls=self._wm_act_fn_cls,
             ),
             predictor=MLP(
                 input_dim=projection_dims[-1],
                 hidden_dims=[*predictor_hidden_dims],
                 end_with_act_fn=False,
-                act_fn_cls=mat_policy.act_fn_cls,
+                act_fn_cls=self._wm_act_fn_cls,
             ),
             residual_predictor=world_model_config.residual_predictor,
         )

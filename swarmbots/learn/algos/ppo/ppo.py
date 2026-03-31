@@ -184,8 +184,8 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerType]):
             train_dtype=torch.float32,
         )
 
-        self._policy_num_params = sum(p.numel() for p in self.policy.parameters())
-        self._policy_num_trainable_params = sum(p.numel() for p in self.policy.parameters() if p.requires_grad)
+        self._policy_num_params = self.policy.num_parameters(learnable_only=False)
+        self._policy_num_trainable_params = self.policy.num_parameters()
         self._detailed_grad_norm_metric_keys: tuple[str, ...] = tuple(self.policy.get_grad_norms().keys())
 
         self.optimizer = torch.optim.Adam(self.policy.parameters(), lr=self.learning_rate)

@@ -368,8 +368,13 @@ def main() -> None:
     policy = NextObsPredWrapper(
         policy=mat_policy,
         world_model_config=NOPWorldModelConfig(
+            n_agents=env.n_agents,
+            local_latent_dim=enc_d_model,
+            action_dim=env.action_space.total_agent_action_dim,
             world_model_num_next_steps=world_model_num_next_steps,
             world_model_loss_coef=world_model_loss_coef,
+            act_fn_cls=nn.GELU,
+            transition_model_dropout=0.0,
             wm_pre_transition_dims=[enc_d_model],
             d_model_transition_model=transition_model_d_model,
             nhead_transition_model=enc_nhead,
@@ -400,6 +405,7 @@ def main() -> None:
         joint_stds=gsde_init_stds,
     )
     print(policy)
+    print(f"learnable_params: {policy.num_parameters():,}")
 
     print("Initializing PPO Algorithm...")
 
