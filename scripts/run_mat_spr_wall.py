@@ -285,9 +285,15 @@ def main() -> None:
     policy = SPRWrapper(
         policy=mat_policy,
         world_model_config=SPRWorldModelConfig(
+            n_agents=env.n_agents,
+            local_latent_dim=128,
+            action_dim=env.action_space.total_agent_action_dim,
             world_model_num_next_steps=world_model_num_next_steps,
             world_model_loss_coef=world_model_loss_coef,
             world_model_target_tau=world_model_target_tau,
+            act_fn_cls=nn.GELU,
+            transition_model_dropout=0.0,
+            online_encoder_attr="encoder",
             d_model_transition_model=128,
             nhead_transition_model=2,
             num_layers_transition_model=2,
@@ -298,6 +304,7 @@ def main() -> None:
         ),
     )
     print(policy)
+    print(f"learnable_params: {policy.num_parameters():,}")
 
     print("Initializing PPO Algorithm...")
 

@@ -199,7 +199,7 @@ class MATPolicy(BasePPOPolicy[PPOSamples]):
         Autoregressively generate actions based on augmented observations (encoder output)
         :return: (actions, Optional[log_probs])
         """
-        self._validate_agent_mask(agent_mask, batch_size=batch_size)
+        self._validate_agent_mask(agent_mask)
         actions_list = []
         log_probs_list = []
 
@@ -255,7 +255,7 @@ class MATPolicy(BasePPOPolicy[PPOSamples]):
             deterministic: bool = False
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
 
-        self._validate_agent_mask(agent_mask, batch_size=local_obs.shape[0])
+        self._validate_agent_mask(agent_mask)
         augmented_observations = self.encoder(local_obs, global_obs, agent_mask=agent_mask)
         actions, log_probs = self._generate_actions(
             augmented_observations=augmented_observations,
@@ -287,16 +287,11 @@ class MATPolicy(BasePPOPolicy[PPOSamples]):
         previous_actions = batch.previous_actions
         actions = self._policy_actions(batch.actions)
 
-        self._validate_agent_mask(agent_mask, batch_size=local_obs.shape[0])
+        self._validate_agent_mask(agent_mask)
         augmented_observations = self.encoder(local_obs, global_obs, agent_mask=agent_mask)
 
         action_embeddings = self.action_encoder(actions[:, :-1, :])
         if self.agent_embeddings_decoder is not None:
-            if action_embeddings.shape[1] > self.agent_embeddings_decoder.shape[1]:
-                raise ValueError(
-                    "Expected actions second dim to be <= "
-                    f"{self.agent_embeddings_decoder.shape[1] + 1}, got {actions.shape[1]}"
-                )
             action_embeddings = action_embeddings + self.agent_embeddings_decoder[:, :action_embeddings.shape[1], :]
         sos_expanded = self.sos_token.expand(actions.shape[0], 1, -1)
 
@@ -335,7 +330,7 @@ class MATPolicy(BasePPOPolicy[PPOSamples]):
     ) -> torch.Tensor:
         _ = hidden_local_vars
         _ = hidden_global_vars
-        self._validate_agent_mask(agent_mask, batch_size=local_obs.shape[0])
+        self._validate_agent_mask(agent_mask)
         augmented_observations = self.encoder(local_obs, global_obs, agent_mask=agent_mask)
         actions, _ = self._generate_actions(
             augmented_observations=augmented_observations,
@@ -357,18 +352,9 @@ class MATPolicy(BasePPOPolicy[PPOSamples]):
     def _validate_agent_mask(
             self,
             agent_mask: torch.Tensor | None,
-            *,
-            batch_size: int,
     ) -> None:
         if agent_mask is None:
             return
-        if agent_mask.dtype != torch.bool:
-            raise ValueError(f"Expected agent_mask dtype bool, got {agent_mask.dtype}")
-        if agent_mask.ndim != 2:
-            raise ValueError(f"Expected agent_mask shape (B, N), got {tuple(agent_mask.shape)}")
-        expected_shape = (batch_size, self.n_agents)
-        if agent_mask.shape != expected_shape:
-            raise ValueError(f"Expected agent_mask shape {expected_shape}, got {tuple(agent_mask.shape)}")
         # MAT decoder uses agent embeddings as identity + autoregressive position, so active agents must be contiguous.
         # This is intentional for this version of MAT.
         if not agent_mask[:, 0].all():

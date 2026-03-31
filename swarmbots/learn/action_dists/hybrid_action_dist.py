@@ -503,6 +503,7 @@ def make_proba_distribution(
                 right_beta=continuous_config.right_beta,
                 ent_loss_coef=continuous_config.ent_loss_coef,
                 beta_ent_scale=continuous_config.beta_ent_scale,
+                ent_loss_config=continuous_config.ent_loss_config,
                 stickiness=continuous_config.stickiness,
             )
         elif isinstance(continuous_config, LeftRightBetaConfig):
@@ -518,6 +519,7 @@ def make_proba_distribution(
                 right_beta=continuous_config.right_beta,
                 ent_loss_coef=continuous_config.ent_loss_coef,
                 beta_ent_scale=continuous_config.beta_ent_scale,
+                ent_loss_config=continuous_config.ent_loss_config,
             )
         elif isinstance(continuous_config, StickyLeftMiddleRightBetaConfig):
             return StickyLeftMiddleRightBetaActionDist(

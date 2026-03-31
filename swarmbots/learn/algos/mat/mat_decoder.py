@@ -64,11 +64,6 @@ class MATDecoder(nn.Module):
         augmented_observations: torch.Tensor,
         agent_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        if action_embeddings.shape[0] != augmented_observations.shape[0]:
-            raise ValueError(
-                "Expected local_embeddings and augmented_observations to share batch size, "
-                f"got {action_embeddings.shape[0]} and {augmented_observations.shape[0]}"
-            )
         n_agents = augmented_observations.shape[1]
         if n_agents > self.max_agents:
             raise ValueError(
@@ -82,13 +77,6 @@ class MATDecoder(nn.Module):
         tgt_key_padding_mask = None
         memory_key_padding_mask = None
         if agent_mask is not None:
-            if agent_mask.dtype != torch.bool:
-                raise ValueError(f"Expected agent_mask dtype bool, got {agent_mask.dtype}")
-            expected_mask_shape = (action_embeddings.shape[0], n_agents)
-            if agent_mask.shape != expected_mask_shape:
-                raise ValueError(
-                    f"Expected agent_mask shape {expected_mask_shape}, got {tuple(agent_mask.shape)}"
-                )
             tgt_key_padding_mask = ~agent_mask[:, :seq_len]
             memory_key_padding_mask = ~agent_mask
 

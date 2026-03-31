@@ -418,7 +418,7 @@ class NextObsPredMixin(abc.ABC):
         if isinstance(predict_delta, PredictDeltaMode):
             return predict_delta
         if predict_delta is True:
-            return PredictDeltaMode.INITIAL_DELTA
+            return PredictDeltaMode.PER_STEP_DELTA
         raise ValueError(f"Unsupported predict_delta value: {predict_delta!r}")
 
     @staticmethod

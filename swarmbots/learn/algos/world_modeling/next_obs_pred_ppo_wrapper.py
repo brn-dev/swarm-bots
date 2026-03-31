@@ -6,8 +6,6 @@ from torch import nn
 
 from swarmbots.learn.action_dists.action_dist import ActionMetricsSplitterInput
 from swarmbots.learn.action_dists.hybrid_action_dist import HybridActionDistribution
-from swarmbots.learn.algos.mat.mat_policy import MATPolicy
-from swarmbots.learn.algos.mat_v2.mat_v2_policy import MATv2Policy
 from swarmbots.learn.algos.ppo.base_ppo_policy import BasePPOPolicy
 from swarmbots.learn.algos.ppo.ppo_rollout_buffer import PPOEpisode
 from swarmbots.learn.algos.ppo.wm.ppo_wm_sampler import PPOWMSampler, PPOWMSamples
@@ -22,8 +20,13 @@ from swarmbots.learn.nn_components.mlp import MLP
 
 @dataclass(frozen=True)
 class NOPWorldModelConfig:
+    n_agents: int
+    local_latent_dim: int
+    action_dim: int
     world_model_num_next_steps: int = 1
     world_model_loss_coef: float = 1.0
+    act_fn_cls: type[nn.Module] = nn.ReLU
+    transition_model_dropout: float = 0.0
     d_model_transition_model: int = 128
     nhead_transition_model: int = 4
     num_layers_transition_model: int = 2
@@ -55,8 +58,19 @@ class NextObsPredWrapper(BasePPOPolicy[PPOWMSamples], NextObsPredMixin):
             raise ValueError(
                 f"world_model_num_next_steps must be >= 1, got {world_model_config.world_model_num_next_steps}"
             )
+        if world_model_config.n_agents < 1:
+            raise ValueError(f"n_agents must be >= 1, got {world_model_config.n_agents}")
+        if world_model_config.local_latent_dim < 1:
+            raise ValueError(f"local_latent_dim must be >= 1, got {world_model_config.local_latent_dim}")
+        if world_model_config.action_dim < 1:
+            raise ValueError(f"action_dim must be >= 1, got {world_model_config.action_dim}")
         if world_model_config.world_model_loss_coef < 0:
             raise ValueError(f"world_model_loss_coef must be >= 0, got {world_model_config.world_model_loss_coef}")
+        if not (0.0 <= world_model_config.transition_model_dropout < 1.0):
+            raise ValueError(
+                "transition_model_dropout must be in [0, 1), "
+                f"got {world_model_config.transition_model_dropout}"
+            )
         self.policy = policy
         self.world_model_num_next_steps = int(world_model_config.world_model_num_next_steps)
         self._setup_world_model_from_config(world_model_config)
@@ -148,6 +162,11 @@ class NextObsPredWrapper(BasePPOPolicy[PPOWMSamples], NextObsPredMixin):
             "next_obs_pred_wrapper": {
                 "world_model_num_next_steps": self.world_model_num_next_steps,
                 "world_model_loss_coef": self.world_model_loss_coef,
+                "n_agents": self._wm_n_agents,
+                "local_latent_dim": self._wm_local_latent_dim,
+                "action_dim": self._wm_action_dim,
+                "act_fn_cls": str(self._wm_act_fn_cls),
+                "transition_model_dropout": self._wm_transition_model_dropout,
                 "world_model_config": self.get_next_obs_pred_hyper_parameters(
                     pre_transition_dims=self._wm_pre_transition_dims,
                     pre_predictors_dims=self._wm_pre_predictors_dims,
@@ -256,46 +275,38 @@ class NextObsPredWrapper(BasePPOPolicy[PPOWMSamples], NextObsPredMixin):
         self.policy.update_loss_weights(**remaining_weights)
 
     def _setup_world_model_from_config(self, world_model_config: NOPWorldModelConfig) -> None:
-        mat_policy = self.policy
         next_obs_pred_config = world_model_config.next_obs_pred_config
         self.world_model_loss_coef = float(world_model_config.world_model_loss_coef)
-        self._wm_pre_transition_dims = (
-            None if world_model_config.wm_pre_transition_dims is None else list(world_model_config.wm_pre_transition_dims)
+        self._wm_n_agents = int(world_model_config.n_agents)
+        self._wm_local_latent_dim = int(world_model_config.local_latent_dim)
+        self._wm_action_dim = int(world_model_config.action_dim)
+        self._wm_act_fn_cls = world_model_config.act_fn_cls
+        self._wm_transition_model_dropout = float(world_model_config.transition_model_dropout)
+        self._wm_pre_transition_dims = self._copy_optional_list(world_model_config.wm_pre_transition_dims)
+        self._wm_pre_predictors_dims = self._copy_optional_list(world_model_config.wm_pre_predictors_dims)
+        self._wm_scalar_predictor_hidden_dims = self._copy_optional_list(
+            world_model_config.wm_scalar_predictor_hidden_dims
         )
-        self._wm_pre_predictors_dims = (
-            None if world_model_config.wm_pre_predictors_dims is None else list(world_model_config.wm_pre_predictors_dims)
+        self._wm_angle_predictor_hidden_dims = self._copy_optional_list(
+            world_model_config.wm_angle_predictor_hidden_dims
         )
-        self._wm_scalar_predictor_hidden_dims = (
-            None
-            if world_model_config.wm_scalar_predictor_hidden_dims is None
-            else list(world_model_config.wm_scalar_predictor_hidden_dims)
+        self._wm_rot6d_predictor_hidden_dims = self._copy_optional_list(
+            world_model_config.wm_rot6d_predictor_hidden_dims
         )
-        self._wm_angle_predictor_hidden_dims = (
-            None
-            if world_model_config.wm_angle_predictor_hidden_dims is None
-            else list(world_model_config.wm_angle_predictor_hidden_dims)
-        )
-        self._wm_rot6d_predictor_hidden_dims = (
-            None
-            if world_model_config.wm_rot6d_predictor_hidden_dims is None
-            else list(world_model_config.wm_rot6d_predictor_hidden_dims)
-        )
-        self._wm_binary_predictor_hidden_dims = (
-            None
-            if world_model_config.wm_binary_predictor_hidden_dims is None
-            else list(world_model_config.wm_binary_predictor_hidden_dims)
+        self._wm_binary_predictor_hidden_dims = self._copy_optional_list(
+            world_model_config.wm_binary_predictor_hidden_dims
         )
 
         scalar_loss_fn = self._resolve_scalar_loss_fn(world_model_config.scalar_loss_fn)
 
         pre_transition_transform = None
-        wm_latent_dim = mat_policy.d_model_encoder
+        wm_latent_dim = self._wm_local_latent_dim
         if world_model_config.wm_pre_transition_dims:
             pre_transition_transform = MLP(
-                input_dim=mat_policy.d_model_encoder,
+                input_dim=self._wm_local_latent_dim,
                 hidden_dims=[*world_model_config.wm_pre_transition_dims],
                 end_with_act_fn=True,
-                act_fn_cls=mat_policy.act_fn_cls,
+                act_fn_cls=self._wm_act_fn_cls,
             )
             wm_latent_dim = world_model_config.wm_pre_transition_dims[-1]
 
@@ -306,7 +317,7 @@ class NextObsPredWrapper(BasePPOPolicy[PPOWMSamples], NextObsPredMixin):
                 input_dim=wm_latent_dim,
                 hidden_dims=[*world_model_config.wm_pre_predictors_dims],
                 end_with_act_fn=True,
-                act_fn_cls=mat_policy.act_fn_cls,
+                act_fn_cls=self._wm_act_fn_cls,
             )
             wm_pre_predictors_dim = world_model_config.wm_pre_predictors_dims[-1]
 
@@ -321,7 +332,7 @@ class NextObsPredWrapper(BasePPOPolicy[PPOWMSamples], NextObsPredMixin):
                 else 0
             ),
             hidden_dims=world_model_config.wm_scalar_predictor_hidden_dims,
-            act_fn_cls=mat_policy.act_fn_cls,
+            act_fn_cls=self._wm_act_fn_cls,
         )
         local_angles_predictor = _build_predictor(
             input_dim=wm_pre_predictors_dim,
@@ -331,7 +342,7 @@ class NextObsPredWrapper(BasePPOPolicy[PPOWMSamples], NextObsPredMixin):
                 else 0
             ),
             hidden_dims=world_model_config.wm_angle_predictor_hidden_dims,
-            act_fn_cls=mat_policy.act_fn_cls,
+            act_fn_cls=self._wm_act_fn_cls,
         )
         local_rot6ds_predictor = _build_predictor(
             input_dim=wm_pre_predictors_dim,
@@ -341,7 +352,7 @@ class NextObsPredWrapper(BasePPOPolicy[PPOWMSamples], NextObsPredMixin):
                 else 0
             ),
             hidden_dims=world_model_config.wm_rot6d_predictor_hidden_dims,
-            act_fn_cls=mat_policy.act_fn_cls,
+            act_fn_cls=self._wm_act_fn_cls,
         )
         local_binaries_predictor = _build_predictor(
             input_dim=wm_pre_predictors_dim,
@@ -351,19 +362,19 @@ class NextObsPredWrapper(BasePPOPolicy[PPOWMSamples], NextObsPredMixin):
                 else 0
             ),
             hidden_dims=world_model_config.wm_binary_predictor_hidden_dims,
-            act_fn_cls=mat_policy.act_fn_cls,
+            act_fn_cls=self._wm_act_fn_cls,
         )
 
         transition_model_config = TransformerTransitionModelConfig(
-            n_agents=mat_policy.n_agents,
+            n_agents=self._wm_n_agents,
             latent_dim=wm_latent_dim,
-            action_dim=mat_policy.action_dist.action_space.total_agent_action_dim,
+            action_dim=self._wm_action_dim,
             d_model=world_model_config.d_model_transition_model,
             nhead=world_model_config.nhead_transition_model,
             num_layers=world_model_config.num_layers_transition_model,
             dim_feedforward=world_model_config.dim_feedforward_transition_model,
-            dropout=mat_policy.dropout,
-            act_fn_cls=mat_policy.act_fn_cls,
+            dropout=self._wm_transition_model_dropout,
+            act_fn_cls=self._wm_act_fn_cls,
             add_agent_embeddings=world_model_config.add_agent_embeddings_transition_model,
             predict_delta=world_model_config.transition_model_predict_delta,
             coembed_mlp_hidden_dims=world_model_config.transition_model_coembed_hidden_dims,

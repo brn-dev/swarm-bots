@@ -11,6 +11,7 @@ from loguru import logger
 from torch import nn
 
 from swarmbots.learn.action_dists.bernoulli_action_dist import BernoulliConfig
+from swarmbots.learn.action_dists.entropy_utils import EntropyLossConfig, AgentActionsReduction
 from swarmbots.learn.action_dists.gsde_action_dist import GSDEActionDist
 from swarmbots.learn.action_dists.sticky_action_dist import StickyActionDist
 from swarmbots.learn.action_dists.sticky_left_right_beta_action_dist import StickyLeftRightBetaConfig
@@ -321,9 +322,9 @@ def main() -> None:
                 nhead=dec_nhead,
                 num_layers=2,
                 dim_feedforward=dec_d_model * 2,
-                query_encoder_hidden_dims=[dec_d_model],
-                context_encoder_hidden_dims=[dec_d_model],
-                memory_encoder_hidden_dims=[],
+                query_encoder_hidden_dims=[2 * dec_d_model],
+                context_encoder_hidden_dims=[2 * dec_d_model],
+                memory_dims=None,
                 self_attention_mode=MATv2DecoderSelfAttentionMode.FULL_AUTOREGRESSIVE
             ),
             critic_config=MATCriticConfig(
@@ -360,6 +361,10 @@ def main() -> None:
                 stickiness=initial_stickiness,
                 ent_loss_coef=1e-3,
                 beta_ent_scale=0.75,
+                ent_loss_config=EntropyLossConfig(
+                    agent_actions_reduction=AgentActionsReduction.SUM,
+                    metrics_reduction=AgentActionsReduction.SUM,
+                ),
             ),
             bernoulli_config=BernoulliConfig(
                 initial_prob=0.7,
@@ -371,8 +376,13 @@ def main() -> None:
     policy = NextObsPredWrapper(
         policy=mat_policy,
         world_model_config=NOPWorldModelConfig(
+            n_agents=env.n_agents,
+            local_latent_dim=enc_d_model,
+            action_dim=env.action_space.total_agent_action_dim,
             world_model_num_next_steps=world_model_num_next_steps,
             world_model_loss_coef=world_model_loss_coef,
+            act_fn_cls=nn.GELU,
+            transition_model_dropout=0.0,
             wm_pre_transition_dims=[enc_d_model],
             d_model_transition_model=transition_model_d_model,
             nhead_transition_model=enc_nhead,
@@ -403,12 +413,13 @@ def main() -> None:
         joint_stds=gsde_init_stds,
     )
     print(policy)
+    print(f"learnable_params: {policy.num_parameters():,}")
 
     print("Initializing PPO Algorithm...")
 
     warm_lr = 1e-4
-    warmup_iterations: int = 250
-    cold_lr = warm_lr / 200 if warmup_iterations > 0 else warm_lr
+    warmup_iterations: int = 100
+    cold_lr = warm_lr * 5e-3 if warmup_iterations > 0 else warm_lr
 
     auto_lr = AutomaticLearningRate(
         initial_lr=cold_lr,
@@ -444,7 +455,7 @@ def main() -> None:
             f"Skipping act0_stickiness scheduler: action dist[0] is {act0_dist_type}"
         )
 
-    rollout_samples = int(4048 * 0.75)
+    rollout_samples = int(4048 * 0.5)
     ppo = PPO(
         policy=policy,
         env=env,
@@ -452,7 +463,7 @@ def main() -> None:
         rollout_mode=StepsRolloutMode(rollout_samples),
         max_episode_length=episode_length,
         batch_size=rollout_samples,
-        n_epochs=5,
+        n_epochs=8,
         gamma=gamma,
         gae_lambda=0.95,
         clip_range=0.07,
