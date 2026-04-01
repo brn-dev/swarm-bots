@@ -6,7 +6,9 @@ Agents shall use this file to make notes for future instances. Write down import
 - Main layers:
 - `swarmbots/mj_env`: MuJoCo env, scenarios, swarm generation.
 - `swarmbots/learn`: RL/training stack (PPO/MAT, action dists, wrappers, rollout/samplers, checkpoints, logging).
-- Main entrypoints are `scripts/run_mat_*.py` (use these as reference, not old files under `recording/`).
+- Canonical training reference is `scripts/run_mat_nop_wall.py`.
+- Other `scripts/run_mat_*.py` files can be intentionally stale; do not assume they match the current MAT API.
+- `recording/record.py` is also stale relative to the current MAT setup.
 
 ## Training Flow
 - Script builds `SwarmBotsEnv` constructors and vectorizes (`AsyncVectorEnv` or `WorkerPoolAsyncVectorEnv`).
@@ -64,6 +66,7 @@ Agents shall use this file to make notes for future instances. Write down import
 - `set_wm_num_next_steps`
 - `set_wm_target_tau`
 - SPR target encoder updates run through `PPO._after_optimizer_step()` -> `policy.after_optimizer_step()`.
+- Current wall training setup wraps `MATPolicy` with `NextObsPredWrapper`; it does not use a separate MAT-specific WM policy class anymore.
 
 ## Hard Invariants
 - Vector env autoreset must be `NEXT_STEP` end-to-end.
@@ -89,20 +92,15 @@ Agents shall use this file to make notes for future instances. Write down import
 - `get_hyper_parameters()` should report current live values.
 - Checkpoints include policy state, optional optimizer state, env wrapper normalization state, and training counters.
 - Interactive commands in `learn()` support lr/loss/reward/save/record/pause/stop, and updates are persisted to `command_log.jsonl`.
-- Generic schedulers are in `swarmbots/schedulers.py` and integrated via `SchedulerManager` in PPO.
+- Generic schedulers are under `swarmbots/learn/scheduling/` and integrated via `SchedulerManager` in PPO.
 - Training logs go to `log.csv` with `;` delimiter.
 - Plot tooling is in `plot_logs/`.
-
-## Known Gotchas
-- Recording + rollout paths for sticky/temporally correlated action dists must carry `previous_actions`; reset to zero only for done envs.
-- In recording/wrappers, use `env.action_space.total_agent_action_dim` instead of `env.n_agent_actions`.
-- `scripts/run_mat_v2_nop_wall.py` uses `MATv2Policy` with `NextObsPredWrapper`; most other training scripts still use `swarmbots/learn/algos/mat`.
-- TransformerEncoder nested-tensor mode is now derived from `norm_first` (`enable_nested_tensor = not norm_first`) in MAT/MATv2/transition-model codepaths to avoid PyTorch warnings when `norm_first=True`.
+- Current wall script logs per-joint continuous action stats via `metrics_action_splitters` and drives sticky-action annealing through `SchedulerManager`.
 
 ## Version Note
 - `AGENTS.md` says Python `>=3.11`, but `pyproject.toml` currently requires `>=3.13`.
 
 ## Practical Guidance
-- For new training work, start from the latest `scripts/run_mat_nop_wall.py` / `scripts/run_mat_nop_bridge.py` patterns.
+- For new training work, start from `scripts/run_mat_nop_wall.py`, not the other MAT scripts.
 - If you change wrappers/vector-env behavior, re-check `NEXT_STEP` assumptions and checkpoint restore.
 - If you change observation composition, verify `build_obs_indices(...)`, normalization wrappers, and WM target configs together.

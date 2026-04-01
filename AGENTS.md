@@ -6,7 +6,7 @@ At the start of a conversation, before doing any analysis, planning, or code cha
 This is required for every new chat, without exception.
 
 ## Notes
-Use `AGENT_NOTES.md` to write down notes about the code base so future instances will have it easier. If you update the code structure or add new features, make sure to keep the notes updated.
+Use `AGENT_NOTES.md` to write down notes about the code base so future instances will have it easier. If you update the code structure or add new features, make sure to keep the notes updated.  Only note down important stuff, not simply a summary of what you did. If only minor changes were done (that do not contain someting like a gotcha), leave the notes as is.
 
 ## Comments 
 
