@@ -1,7 +1,7 @@
 import torch
 
 from swarmbots.learn.algos.ppo.ppo_rollout_buffer import PPOEpisode
-from swarmbots.learn.algos.ppo.wm.ppo_wm_sampler import PPOWMSampler
+from swarmbots.learn.algos.world_modeling.ppo_wm_sampler import PPOWMSampler
 
 
 def _make_episode(
