@@ -46,6 +46,7 @@ class MetadataDiffInteractiveApp:
 
         self.left_path_var = tk.StringVar(value=str(default_left) if default_left else "")
         self.right_path_var = tk.StringVar(value=str(default_right) if default_right else "")
+        self.show_full_file_var = tk.BooleanVar(value=False)
         self.status_var = tk.StringVar(
             value="Pick two metadata JSON files, then press Compare."
         )
@@ -85,7 +86,7 @@ class MetadataDiffInteractiveApp:
 
         action_row = ttk.Frame(controls)
         action_row.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(10, 0))
-        action_row.columnconfigure(4, weight=1)
+        action_row.columnconfigure(5, weight=1)
 
         compare_button = ttk.Button(action_row, text="Compare", command=self.compare_files)
         compare_button.grid(row=0, column=0, padx=(0, 8))
@@ -97,12 +98,20 @@ class MetadataDiffInteractiveApp:
         clear_button = ttk.Button(action_row, text="Clear", command=self.clear_diff)
         clear_button.grid(row=0, column=2, padx=(0, 8))
 
+        full_file_checkbox = ttk.Checkbutton(
+            action_row,
+            text="Show full file",
+            variable=self.show_full_file_var,
+            command=self._on_toggle_show_full_file,
+        )
+        full_file_checkbox.grid(row=0, column=3, padx=(0, 12))
+
         if not HAS_DND:
             dnd_note = ttk.Label(
                 action_row,
                 text="Drag-and-drop disabled: install tkinterdnd2 for file dropping.",
             )
-            dnd_note.grid(row=0, column=3, sticky="w")
+            dnd_note.grid(row=0, column=4, sticky="w")
 
         status_label = ttk.Label(controls, textvariable=self.status_var, wraplength=1080)
         status_label.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(8, 0))
@@ -245,6 +254,11 @@ class MetadataDiffInteractiveApp:
             ignored.add("script")
         return ignored
 
+    def _on_toggle_show_full_file(self) -> None:
+        if not self.left_path_var.get().strip() or not self.right_path_var.get().strip():
+            return
+        self.compare_files()
+
     def clear_diff(self) -> None:
         if self.diff_text is None:
             return
@@ -272,6 +286,7 @@ class MetadataDiffInteractiveApp:
                 left_payload=left_filtered,
                 right_payload=right_filtered,
                 context=self.context_lines,
+                show_full_file=self.show_full_file_var.get(),
             )
         except ValueError as exc:
             self._render_error(str(exc))

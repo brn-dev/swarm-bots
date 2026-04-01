@@ -122,16 +122,20 @@ def build_diff_lines(
     left_payload: Any,
     right_payload: Any,
     context: int,
+    show_full_file: bool = False,
 ) -> list[str]:
     left_lines = canonical_json_lines(left_payload)
     right_lines = canonical_json_lines(right_payload)
+    effective_context = (
+        max(len(left_lines), len(right_lines)) if show_full_file else context
+    )
     return list(
         difflib.unified_diff(
             left_lines,
             right_lines,
             fromfile=str(left_path),
             tofile=str(right_path),
-            n=context,
+            n=effective_context,
             lineterm="",
         )
     )
