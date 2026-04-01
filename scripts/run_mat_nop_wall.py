@@ -298,13 +298,13 @@ def main() -> None:
     actuators_per_limb = env.actuators_dim // env.connectors_dim
     print(f"actuators_per_limb: {actuators_per_limb}")
 
-    enc_d_model = 192
-    dec_d_model = 64
-    transition_model_d_model = 128
+    enc_d_model = 256
+    dec_d_model = 96
+    transition_model_d_model = 192
 
-    enc_nhead = 3
+    enc_nhead = 4
     dec_nhead = 2
-    transition_model_nhead = 2
+    transition_model_nhead = 4
 
     print("Initializing Policy...")
     mat_policy = MATPolicy(
@@ -459,7 +459,7 @@ def main() -> None:
             f"Skipping act0_stickiness scheduler: action dist[0] is {act0_dist_type}"
         )
 
-    rollout_samples = int(4048)
+    rollout_samples = int(4048 * 0.75)
     ppo = PPO(
         policy=policy,
         env=env,
@@ -467,7 +467,7 @@ def main() -> None:
         rollout_mode=StepsRolloutMode(rollout_samples),
         max_episode_length=episode_length,
         batch_size=rollout_samples,
-        n_epochs=8,
+        n_epochs=6,
         gamma=gamma,
         gae_lambda=0.95,
         clip_range=0.07,
