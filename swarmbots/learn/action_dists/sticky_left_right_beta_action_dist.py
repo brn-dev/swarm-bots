@@ -34,7 +34,8 @@ class StickyLeftRightBetaActionDist(LeftRightBetaActionDist, StickyActionDist):
             right_beta: float = 1.0 + math.log(2.0),
             ent_loss_coef: float = 0.0,
             beta_ent_scale: float = 1.0,
-            ent_loss_config: EntropyLossConfig | None = None,
+            categorical_ent_loss_config: EntropyLossConfig | None = None,
+            beta_ent_loss_config: EntropyLossConfig | None = None,
             stickiness: float = 0.0,
     ) -> None:
         super().__init__(
@@ -49,7 +50,8 @@ class StickyLeftRightBetaActionDist(LeftRightBetaActionDist, StickyActionDist):
             right_beta=right_beta,
             ent_loss_coef=ent_loss_coef,
             beta_ent_scale=beta_ent_scale,
-            ent_loss_config=ent_loss_config,
+            categorical_ent_loss_config=categorical_ent_loss_config,
+            beta_ent_loss_config=beta_ent_loss_config,
         )
         self.stickiness = 0.0
         self.set_stickiness(stickiness)

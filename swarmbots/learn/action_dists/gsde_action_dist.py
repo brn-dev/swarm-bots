@@ -1,5 +1,5 @@
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional, Self, Any
 
 import torch
@@ -8,6 +8,7 @@ from torch import nn
 
 from swarmbots.learn.action_dists.action_dist import ActionMetricsSplitterInput, ActionNetInitialization
 from swarmbots.learn.action_dists.continuous_action_dist import ContinuousActionDist
+from swarmbots.learn.action_dists.entropy_utils import EntropyLossConfig
 from swarmbots.learn.action_dists.temporally_correlated_action_dist import TemporallyCorrelatedActionDist
 from swarmbots.learn.action_dists.tanh_bijector import TanhBijector
 from swarmbots.learn.losses import LossDict, LossMetrics
@@ -28,6 +29,7 @@ class GSDEConfig:
     latent_sde_net_initialization: ActionNetInitialization = init_linear_orthogonal
     log_std_clamp_range: tuple[float, float] = (-20.0, 2.0)
     ent_loss_coef: float = 0.0
+    ent_loss_config: EntropyLossConfig = field(default_factory=EntropyLossConfig)
     action_magnitude_loss_coef: float = 0.0
     action_magnitude_loss_threshold: float = 0.0
     action_magnitude_loss_power: int = 2
@@ -51,6 +53,7 @@ class GSDEActionDist(ContinuousActionDist, TemporallyCorrelatedActionDist):
             latent_sde_net_initialization: ActionNetInitialization = init_linear_orthogonal,
             log_std_clamp_range: tuple[float, float] = (-20.0, 2.0),
             ent_loss_coef: float = 0.0,
+            ent_loss_config: EntropyLossConfig | None = None,
             action_magnitude_loss_coef: float = 0.0,
             action_magnitude_loss_threshold: float = 0.0,
             action_magnitude_loss_power: int = 2,
@@ -62,6 +65,7 @@ class GSDEActionDist(ContinuousActionDist, TemporallyCorrelatedActionDist):
             action_dim=action_dim,
             action_net_initialization=action_net_initialization,
             ent_loss_coef=ent_loss_coef,
+            ent_loss_config=ent_loss_config,
             action_magnitude_loss_coef=action_magnitude_loss_coef,
             action_magnitude_loss_threshold=action_magnitude_loss_threshold,
             action_magnitude_loss_power=action_magnitude_loss_power,

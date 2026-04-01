@@ -7,6 +7,7 @@ import torch.nn.functional as F
 from torch import distributions as torchdist
 
 from swarmbots.learn.action_dists.action_dist import AGENT_ACTIONS_DIM, ActionNetInitialization
+from swarmbots.learn.action_dists.entropy_utils import EntropyLossConfig
 from swarmbots.learn.action_dists.left_middle_right_beta_action_dist import (
     LeftMiddleRightBetaActionDist,
     LeftMiddleRightBetaConfig,
@@ -35,6 +36,8 @@ class StickyLeftMiddleRightBetaActionDist(LeftMiddleRightBetaActionDist, StickyA
             right_beta: float = 1.0 + math.log(2.0),
             ent_loss_coef: float = 0.0,
             beta_ent_scale: float = 1.0,
+            categorical_ent_loss_config: EntropyLossConfig | None = None,
+            beta_ent_loss_config: EntropyLossConfig | None = None,
             stickiness: float = 0.0,
             middle_sticky: bool = False,
     ) -> None:
@@ -51,6 +54,8 @@ class StickyLeftMiddleRightBetaActionDist(LeftMiddleRightBetaActionDist, StickyA
             right_beta=right_beta,
             ent_loss_coef=ent_loss_coef,
             beta_ent_scale=beta_ent_scale,
+            categorical_ent_loss_config=categorical_ent_loss_config,
+            beta_ent_loss_config=beta_ent_loss_config,
         )
         self.middle_sticky = middle_sticky
         self.stickiness = 0.0

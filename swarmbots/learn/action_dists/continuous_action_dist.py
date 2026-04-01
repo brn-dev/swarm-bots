@@ -9,12 +9,17 @@ from swarmbots.learn.action_dists.action_dist import (
     ActionNetInitialization,
     ActionDist,
     ActionMetricsSplitterInput,
-    compute_split_entropy_metrics,
     compute_action_metrics,
     resolve_action_metrics_splitter,
 )
+from swarmbots.learn.action_dists.entropy_utils import (
+    EntropyLossConfig,
+    compute_ent_loss,
+    compute_ent_metrics,
+)
 from swarmbots.learn.losses import LossDict, LossMetrics
 from swarmbots.learn.masking import masked_mean
+from swarmbots.learn.serialization_utils import serialize_dataclass
 from swarmbots.learn.summary_statistics import compute_summary_statistics
 
 
@@ -26,6 +31,7 @@ class ContinuousActionDist(ActionDist, abc.ABC):
             action_dim: int,
             action_net_initialization: ActionNetInitialization,
             ent_loss_coef: float = 0.0,
+            ent_loss_config: EntropyLossConfig | None = None,
             action_magnitude_loss_coef: float = 0.0,
             action_magnitude_loss_threshold: float = 0.0,
             action_magnitude_loss_power: int = 2,
@@ -43,6 +49,7 @@ class ContinuousActionDist(ActionDist, abc.ABC):
             power=action_magnitude_loss_power,
         )
         self.ent_loss_coef = ent_loss_coef
+        self.ent_loss_config = ent_loss_config if ent_loss_config is not None else EntropyLossConfig()
         self.action_magnitude_loss_coef = action_magnitude_loss_coef
         self.action_magnitude_loss_threshold = action_magnitude_loss_threshold
         self.action_magnitude_loss_power = action_magnitude_loss_power
@@ -97,23 +104,28 @@ class ContinuousActionDist(ActionDist, abc.ABC):
         if self.ent_loss_coef <= 0:
             return None, {}
         entropy_per_action = self.distribution.entropy()
-        entropy_per_agent = self.sum_action_dim(entropy_per_action)
-        self.validate_agent_mask(agent_mask, expected_shape=tuple(entropy_per_agent.shape))
-        entropy_loss_per_agent = -self.ent_loss_coef * entropy_per_agent
-        with torch.no_grad():
-            entropy_mean = masked_mean(entropy_per_agent, agent_mask)
-            metrics: LossMetrics = {
-                "ent_loss": (-entropy_mean).item(),
-                "ent_loss_scaled": (-self.ent_loss_coef * entropy_mean).item(),
-            }
-            metrics.update(
-                compute_split_entropy_metrics(
-                    entropy_per_action,
-                    action_splitter=action_splitter,
-                    agent_mask=agent_mask,
-                )
-            )
+        entropy_loss_per_agent = self.ent_loss_coef * compute_ent_loss(
+            config=self.ent_loss_config,
+            entropy_per_action=entropy_per_action,
+        )
+        metrics = compute_ent_metrics(
+            config=self.ent_loss_config,
+            entropy_per_action=entropy_per_action,
+            agent_mask=agent_mask,
+            metrics_action_splitter=resolve_action_metrics_splitter(action_splitter),
+            name="ent",
+        )
         return entropy_loss_per_agent, metrics
+
+    def get_hyper_parameters(self) -> dict[str, Any]:
+        return {
+            **super().get_hyper_parameters(),
+            "ent_loss_coef": self.ent_loss_coef,
+            "ent_loss_config": serialize_dataclass(self.ent_loss_config),
+            "action_magnitude_loss_coef": self.action_magnitude_loss_coef,
+            "action_magnitude_loss_threshold": self.action_magnitude_loss_threshold,
+            "action_magnitude_loss_power": self.action_magnitude_loss_power,
+        }
 
 
     def get_metrics(
@@ -148,7 +160,7 @@ class ContinuousActionDist(ActionDist, abc.ABC):
 
     @staticmethod
     def sum_action_dim(tensor: torch.Tensor) -> torch.Tensor:
-        return tensor.sum(dim=AGENT_ACTIONS_DIM)
+        return tensor.sum(dim=-1)
 
     def set_action_magnitude_loss_coef(self, value: float) -> None:
         self._validate_action_magnitude_loss_params(

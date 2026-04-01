@@ -1,5 +1,5 @@
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional, Self, Any
 
 import torch
@@ -9,18 +9,24 @@ from swarmbots.learn.action_dists.action_dist import (
     AGENT_ACTIONS_DIM,
     ActionMetricsSplitterInput,
     ActionNetInitialization,
-    compute_split_entropy_metrics,
+    resolve_action_metrics_splitter,
 )
 from swarmbots.learn.action_dists.discrete_action_dist import DiscreteActionDist
+from swarmbots.learn.action_dists.entropy_utils import (
+    EntropyLossConfig,
+    compute_ent_loss,
+    compute_ent_metrics,
+)
 from swarmbots.learn.losses import LossDict, LossMetrics
-from swarmbots.learn.masking import masked_mean
 from swarmbots.learn.nn_components.nn_init import init_linear_orthogonal
+from swarmbots.learn.serialization_utils import serialize_dataclass
 
 
 @dataclass(frozen=True)
 class BernoulliConfig:
     initial_prob: float | None = None
     ent_loss_coef: float = 0.0
+    ent_loss_config: EntropyLossConfig = field(default_factory=EntropyLossConfig)
 
 
 class BernoulliActionDist(DiscreteActionDist):
@@ -32,6 +38,7 @@ class BernoulliActionDist(DiscreteActionDist):
             action_net_initialization: ActionNetInitialization = init_linear_orthogonal,
             initial_prob: float | None = None,
             ent_loss_coef: float = 0.0,
+            ent_loss_config: EntropyLossConfig | None = None,
     ):
         if ent_loss_coef < 0:
             raise ValueError(f"ent_loss_coef must be >= 0, got {ent_loss_coef}")
@@ -40,7 +47,9 @@ class BernoulliActionDist(DiscreteActionDist):
             action_dim=action_dim,
             action_net_initialization=action_net_initialization,
         )
+        self.initial_prob = initial_prob
         self.ent_loss_coef = ent_loss_coef
+        self.ent_loss_config = ent_loss_config if ent_loss_config is not None else EntropyLossConfig()
 
         self.distribution: Optional[torchdist.Bernoulli] = None
         if initial_prob is not None:
@@ -83,22 +92,17 @@ class BernoulliActionDist(DiscreteActionDist):
         if self.ent_loss_coef <= 0:
             return {}, {}
         entropy_per_action = self.distribution.entropy()
-        entropy_per_agent = entropy_per_action.sum(dim=AGENT_ACTIONS_DIM)
-        self.validate_agent_mask(agent_mask, expected_shape=tuple(entropy_per_agent.shape))
-        entropy_loss = -self.ent_loss_coef * entropy_per_agent
-        with torch.no_grad():
-            entropy_mean = masked_mean(entropy_per_agent, agent_mask)
-            metrics: LossMetrics = {
-                "ent_loss": (-entropy_mean).item(),
-                "ent_loss_scaled": (-self.ent_loss_coef * entropy_mean).item(),
-            }
-            metrics.update(
-                compute_split_entropy_metrics(
-                    entropy_per_action,
-                    action_splitter=action_splitter,
-                    agent_mask=agent_mask,
-                )
-            )
+        entropy_loss = self.ent_loss_coef * compute_ent_loss(
+            config=self.ent_loss_config,
+            entropy_per_action=entropy_per_action,
+        )
+        metrics = compute_ent_metrics(
+            config=self.ent_loss_config,
+            entropy_per_action=entropy_per_action,
+            agent_mask=agent_mask,
+            metrics_action_splitter=resolve_action_metrics_splitter(action_splitter),
+            name="ent",
+        )
         return {"entropy": entropy_loss}, metrics
 
     def set_ent_loss_coef(self, value: float) -> None:
@@ -112,5 +116,7 @@ class BernoulliActionDist(DiscreteActionDist):
     def get_hyper_parameters(self) -> dict[str, Any]:
         return {
             **super().get_hyper_parameters(),
+            "initial_prob": self.initial_prob,
             "ent_loss_coef": self.ent_loss_coef,
+            "ent_loss_config": serialize_dataclass(self.ent_loss_config),
         }

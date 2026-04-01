@@ -10,6 +10,7 @@ from swarmbots.learn.action_dists.bang_zero_bang_action_dist import (
     BangZeroBangActionDist,
     BangZeroBangConfig,
 )
+from swarmbots.learn.action_dists.entropy_utils import EntropyLossConfig
 from swarmbots.learn.action_dists.sticky_action_dist import StickyActionDist
 from swarmbots.learn.nn_components.nn_init import init_linear_orthogonal
 
@@ -30,6 +31,7 @@ class StickyBangZeroBangActionDist(BangZeroBangActionDist, StickyActionDist):
             zero_sticky: bool = False,
             action_net_initialization: ActionNetInitialization = init_linear_orthogonal,
             ent_loss_coef: float = 0.0,
+            ent_loss_config: EntropyLossConfig | None = None,
     ) -> None:
         super().__init__(
             latent_dim=latent_dim,
@@ -37,6 +39,7 @@ class StickyBangZeroBangActionDist(BangZeroBangActionDist, StickyActionDist):
             bang=bang,
             action_net_initialization=action_net_initialization,
             ent_loss_coef=ent_loss_coef,
+            ent_loss_config=ent_loss_config,
         )
         self.zero_sticky = zero_sticky
         self.stickiness = 0.0

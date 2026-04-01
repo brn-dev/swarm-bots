@@ -184,31 +184,3 @@ def compute_action_metrics(
         for key, split_actions in splitter(actions).items():
             metrics[f"act_{key}"] = compute_summary_statistics(split_actions, make_histogram=hist_bins)
     return metrics
-
-
-def compute_split_entropy_metrics(
-        entropy_per_action: torch.Tensor,
-        *,
-        action_splitter: ActionMetricsSplitterInput,
-        agent_mask: torch.Tensor | None = None,
-) -> dict[str, float]:
-    splitter = resolve_action_metrics_splitter(action_splitter)
-    if splitter is None:
-        return {}
-
-    metrics: dict[str, float] = {}
-    with torch.no_grad():
-        for key, split_entropy in splitter(entropy_per_action).items():
-            if split_entropy.ndim == entropy_per_action.ndim:
-                split_entropy_per_agent = split_entropy.sum(dim=AGENT_ACTIONS_DIM)
-            elif split_entropy.ndim == entropy_per_action.ndim - 1:
-                split_entropy_per_agent = split_entropy
-            else:
-                raise ValueError(
-                    "split entropy must return tensors with either the same rank as entropy_per_action "
-                    f"or one rank less. Got split {key!r} shape {tuple(split_entropy.shape)} "
-                    f"for entropy shape {tuple(entropy_per_action.shape)}."
-                )
-            split_entropy_mean = masked_mean(split_entropy_per_agent, agent_mask)
-            metrics[f"ent_loss_{key}"] = (-split_entropy_mean).item()
-    return metrics

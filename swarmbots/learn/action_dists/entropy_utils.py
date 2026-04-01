@@ -33,7 +33,6 @@ class EntropyLossConfig:
 
     metrics_reduction: Optional[AgentActionsReduction] = AgentActionsReduction.MEAN  # reduction for the metrics
 
-
 def compute_ent_loss(
         config: EntropyLossConfig,
         entropy_per_action: torch.Tensor,
@@ -88,19 +87,30 @@ def _compute_loss_per_agent(
         reduction_timing: ReductionTiming,
         loss_transform: Callable[[torch.Tensor], torch.Tensor] | None,
 ) -> torch.Tensor:
-    if max_entropy is None:
-        loss_per_agent = -_reduce_actions(entropy_per_action, reduction)
-    elif reduction_timing == ReductionTiming.PRE:
+    if reduction_timing == ReductionTiming.PRE:
         reduced_entropy = _reduce_actions(entropy_per_action, reduction)
-        loss_per_agent = torch.relu(max_entropy - reduced_entropy)
+        if max_entropy is None:
+            loss_per_agent = -reduced_entropy
+        else:
+            loss_per_agent = torch.relu(max_entropy - reduced_entropy)
+
+        if loss_transform is not None:
+            loss_per_agent = loss_transform(loss_per_agent)
+
     elif reduction_timing == ReductionTiming.POST:
-        per_action_hinge = torch.relu(max_entropy - entropy_per_action)
-        loss_per_agent = _reduce_actions(per_action_hinge, reduction)
+        if max_entropy is None:
+            loss_per_action = -entropy_per_action
+        else:
+            loss_per_action = torch.relu(max_entropy - entropy_per_action)
+
+        if loss_transform is not None:
+            loss_per_action = loss_transform(loss_per_action)
+
+        loss_per_agent = _reduce_actions(loss_per_action, reduction)
+
     else:
         raise ValueError(f"Unhandled reduction_timing={reduction_timing}")
 
-    if loss_transform is not None:
-        loss_per_agent = loss_transform(loss_per_agent)
     return loss_per_agent
 
 

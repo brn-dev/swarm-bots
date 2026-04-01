@@ -163,7 +163,7 @@ def main() -> None:
     )
 
     n_workers = 23
-    n_envs = n_workers * 15
+    n_envs = n_workers * 12
 
     episode_length = 512
     total_timesteps = 200_000_000
@@ -298,13 +298,13 @@ def main() -> None:
     actuators_per_limb = env.actuators_dim // env.connectors_dim
     print(f"actuators_per_limb: {actuators_per_limb}")
 
-    enc_d_model = 384
-    dec_d_model = 128
+    enc_d_model = 192
+    dec_d_model = 64
+    transition_model_d_model = 128
 
-    transition_model_d_model = 256
-
-    enc_nhead = 4
+    enc_nhead = 3
     dec_nhead = 2
+    transition_model_nhead = 2
 
     print("Initializing Policy...")
     mat_policy = MATv2Policy(
@@ -361,9 +361,13 @@ def main() -> None:
                 stickiness=initial_stickiness,
                 ent_loss_coef=1e-3,
                 beta_ent_scale=0.75,
-                ent_loss_config=EntropyLossConfig(
+                categorical_ent_loss_config=EntropyLossConfig(
                     agent_actions_reduction=AgentActionsReduction.SUM,
-                    metrics_reduction=AgentActionsReduction.SUM,
+                    metrics_reduction=AgentActionsReduction.MEAN,
+                ),
+                beta_ent_loss_config=EntropyLossConfig(
+                    agent_actions_reduction=AgentActionsReduction.SUM,
+                    metrics_reduction=AgentActionsReduction.MEAN,
                 ),
             ),
             bernoulli_config=BernoulliConfig(
@@ -385,7 +389,7 @@ def main() -> None:
             transition_model_dropout=0.0,
             wm_pre_transition_dims=[enc_d_model],
             d_model_transition_model=transition_model_d_model,
-            nhead_transition_model=enc_nhead,
+            nhead_transition_model=transition_model_nhead,
             num_layers_transition_model=2,
             dim_feedforward_transition_model=transition_model_d_model * 2,
             transition_model_coembed_hidden_dims=[transition_model_d_model],
@@ -455,7 +459,7 @@ def main() -> None:
             f"Skipping act0_stickiness scheduler: action dist[0] is {act0_dist_type}"
         )
 
-    rollout_samples = int(4048 * 0.5)
+    rollout_samples = int(4048)
     ppo = PPO(
         policy=policy,
         env=env,
