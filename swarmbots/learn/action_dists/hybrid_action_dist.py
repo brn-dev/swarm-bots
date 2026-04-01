@@ -443,6 +443,8 @@ def make_proba_distribution(
                 std_learnable=continuous_config.std_learnable,
                 epsilon=continuous_config.epsilon,
                 action_net_initialization=action_net_initialization,
+                ent_loss_coef=continuous_config.ent_loss_coef,
+                ent_loss_config=continuous_config.ent_loss_config,
                 action_magnitude_loss_coef=continuous_config.action_magnitude_loss_coef,
                 action_magnitude_loss_threshold=continuous_config.action_magnitude_loss_threshold,
                 action_magnitude_loss_power=continuous_config.action_magnitude_loss_power,
@@ -457,6 +459,8 @@ def make_proba_distribution(
                 log_std_net_initialization=continuous_config.log_std_net_initialization,
                 log_std_clamp_range=continuous_config.log_std_clamp_range,
                 squash_output=True,
+                ent_loss_coef=continuous_config.ent_loss_coef,
+                ent_loss_config=continuous_config.ent_loss_config,
                 action_magnitude_loss_coef=continuous_config.action_magnitude_loss_coef,
                 action_magnitude_loss_threshold=continuous_config.action_magnitude_loss_threshold,
                 action_magnitude_loss_power=continuous_config.action_magnitude_loss_power,
@@ -476,6 +480,8 @@ def make_proba_distribution(
                 latent_sde_net_initialization=continuous_config.latent_sde_net_initialization,
                 log_std_clamp_range=continuous_config.log_std_clamp_range,
                 action_net_initialization=action_net_initialization,
+                ent_loss_coef=continuous_config.ent_loss_coef,
+                ent_loss_config=continuous_config.ent_loss_config,
                 action_magnitude_loss_coef=continuous_config.action_magnitude_loss_coef,
                 action_magnitude_loss_threshold=continuous_config.action_magnitude_loss_threshold,
                 action_magnitude_loss_power=continuous_config.action_magnitude_loss_power,
@@ -503,7 +509,8 @@ def make_proba_distribution(
                 right_beta=continuous_config.right_beta,
                 ent_loss_coef=continuous_config.ent_loss_coef,
                 beta_ent_scale=continuous_config.beta_ent_scale,
-                ent_loss_config=continuous_config.ent_loss_config,
+                categorical_ent_loss_config=continuous_config.categorical_ent_loss_config,
+                beta_ent_loss_config=continuous_config.beta_ent_loss_config,
                 stickiness=continuous_config.stickiness,
             )
         elif isinstance(continuous_config, LeftRightBetaConfig):
@@ -519,7 +526,8 @@ def make_proba_distribution(
                 right_beta=continuous_config.right_beta,
                 ent_loss_coef=continuous_config.ent_loss_coef,
                 beta_ent_scale=continuous_config.beta_ent_scale,
-                ent_loss_config=continuous_config.ent_loss_config,
+                categorical_ent_loss_config=continuous_config.categorical_ent_loss_config,
+                beta_ent_loss_config=continuous_config.beta_ent_loss_config,
             )
         elif isinstance(continuous_config, StickyLeftMiddleRightBetaConfig):
             return StickyLeftMiddleRightBetaActionDist(
@@ -535,6 +543,8 @@ def make_proba_distribution(
                 right_beta=continuous_config.right_beta,
                 ent_loss_coef=continuous_config.ent_loss_coef,
                 beta_ent_scale=continuous_config.beta_ent_scale,
+                categorical_ent_loss_config=continuous_config.categorical_ent_loss_config,
+                beta_ent_loss_config=continuous_config.beta_ent_loss_config,
                 stickiness=continuous_config.stickiness,
                 middle_sticky=continuous_config.middle_sticky,
             )
@@ -552,6 +562,8 @@ def make_proba_distribution(
                 right_beta=continuous_config.right_beta,
                 ent_loss_coef=continuous_config.ent_loss_coef,
                 beta_ent_scale=continuous_config.beta_ent_scale,
+                categorical_ent_loss_config=continuous_config.categorical_ent_loss_config,
+                beta_ent_loss_config=continuous_config.beta_ent_loss_config,
             )
         elif isinstance(continuous_config, StickyBangZeroBangConfig):
             return StickyBangZeroBangActionDist(
@@ -562,6 +574,7 @@ def make_proba_distribution(
                 zero_sticky=continuous_config.zero_sticky,
                 action_net_initialization=action_net_initialization,
                 ent_loss_coef=continuous_config.ent_loss_coef,
+                ent_loss_config=continuous_config.ent_loss_config,
             )
         elif isinstance(continuous_config, BangZeroBangConfig):
             return BangZeroBangActionDist(
@@ -570,6 +583,7 @@ def make_proba_distribution(
                 bang=continuous_config.bang,
                 action_net_initialization=action_net_initialization,
                 ent_loss_coef=continuous_config.ent_loss_coef,
+                ent_loss_config=continuous_config.ent_loss_config,
             )
         raise TypeError(
             "Unsupported continuous action config type for Box action space: "
@@ -582,6 +596,7 @@ def make_proba_distribution(
             initial_prob=bernoulli_config.initial_prob if bernoulli_config is not None else None,
             action_net_initialization=action_net_initialization,
             ent_loss_coef=bernoulli_config.ent_loss_coef if bernoulli_config is not None else 0.0,
+            ent_loss_config=bernoulli_config.ent_loss_config if bernoulli_config is not None else None,
         )
     else:
         raise NotImplementedError(f"Unsupported action space type: {type(action_space)}")

@@ -1,10 +1,11 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional, Self, Any
 
 import torch
 
 from swarmbots.learn.action_dists.action_dist import ActionMetricsSplitterInput, ActionNetInitialization
 from swarmbots.learn.action_dists.diag_gaussian_action_dist import DiagGaussianActionDist
+from swarmbots.learn.action_dists.entropy_utils import EntropyLossConfig
 from swarmbots.learn.action_dists.tanh_bijector import TanhBijector
 from swarmbots.learn.losses import LossDict, LossMetrics
 from swarmbots.learn.nn_components.nn_init import init_linear_orthogonal
@@ -16,6 +17,7 @@ class SquashedDiagGaussianConfig:
     std_learnable: bool
     epsilon: float = 1e-6
     ent_loss_coef: float = 0.0
+    ent_loss_config: EntropyLossConfig = field(default_factory=EntropyLossConfig)
     action_magnitude_loss_coef: float = 0.0
     action_magnitude_loss_threshold: float = 0.0
     action_magnitude_loss_power: int = 2
@@ -33,6 +35,7 @@ class SquashedDiagGaussianActionDist(DiagGaussianActionDist):
             epsilon: float = 1e-6,
             action_net_initialization: ActionNetInitialization = init_linear_orthogonal,
             ent_loss_coef: float = 0.0,
+            ent_loss_config: EntropyLossConfig | None = None,
             action_magnitude_loss_coef: float = 0.0,
             action_magnitude_loss_threshold: float = 0.0,
             action_magnitude_loss_power: int = 2,
@@ -44,6 +47,7 @@ class SquashedDiagGaussianActionDist(DiagGaussianActionDist):
             std_learnable=std_learnable,
             action_net_initialization=action_net_initialization,
             ent_loss_coef=ent_loss_coef,
+            ent_loss_config=ent_loss_config,
             action_magnitude_loss_coef=action_magnitude_loss_coef,
             action_magnitude_loss_threshold=action_magnitude_loss_threshold,
             action_magnitude_loss_power=action_magnitude_loss_power,
