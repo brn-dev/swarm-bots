@@ -11,12 +11,14 @@ from loguru import logger
 from torch import nn
 
 from swarmbots.learn.action_dists.bernoulli_action_dist import BernoulliConfig
+from swarmbots.learn.action_dists.entropy_utils import EntropyLossConfig, AgentActionsReduction
 from swarmbots.learn.action_dists.gsde_action_dist import GSDEActionDist
 from swarmbots.learn.action_dists.sticky_action_dist import StickyActionDist
 from swarmbots.learn.action_dists.sticky_left_right_beta_action_dist import StickyLeftRightBetaConfig
-from swarmbots.learn.algos.mat.mat_policy import MATPolicy, MATPolicyConfig, MATCriticConfig
+from swarmbots.learn.algos.mat.mat_policy import MATCriticConfig
 from swarmbots.learn.algos.mat.mat_encoder import MATEncoderConfig
-from swarmbots.learn.algos.mat.mat_decoder import MATDecoderConfig
+from swarmbots.learn.algos.mat.mat_decoder import MATDecoderConfig, MATDecoderSelfAttentionMode
+from swarmbots.learn.algos.mat.mat_policy import MATPolicy, MATPolicyConfig
 from swarmbots.learn.algos.ppo.base_ppo_policy import BasePPOPolicy
 from swarmbots.learn.algos.world_modeling.next_obs_pred_ppo_wrapper import NextObsPredWrapper, NOPWorldModelConfig
 from swarmbots.learn.algos.ppo.ppo import AutomaticLearningRate, StepsRolloutMode, PPO
@@ -161,7 +163,7 @@ def main() -> None:
     )
 
     n_workers = 23
-    n_envs = n_workers * 15
+    n_envs = n_workers * 12
 
     episode_length = 512
     total_timesteps = 200_000_000
@@ -296,13 +298,13 @@ def main() -> None:
     actuators_per_limb = env.actuators_dim // env.connectors_dim
     print(f"actuators_per_limb: {actuators_per_limb}")
 
-    enc_d_model = 384
-    dec_d_model = 128
+    enc_d_model = 192
+    dec_d_model = 64
+    transition_model_d_model = 128
 
-    transition_model_d_model = 256
-
-    enc_nhead = 4
+    enc_nhead = 3
     dec_nhead = 2
+    transition_model_nhead = 2
 
     print("Initializing Policy...")
     mat_policy = MATPolicy(
@@ -320,8 +322,10 @@ def main() -> None:
                 nhead=dec_nhead,
                 num_layers=2,
                 dim_feedforward=dec_d_model * 2,
-                action_encoder_hidden_dims=[dec_d_model],
-                cross_attn_first=True,
+                query_encoder_hidden_dims=[2 * dec_d_model],
+                context_encoder_hidden_dims=[2 * dec_d_model],
+                memory_dims=None,
+                self_attention_mode=MATDecoderSelfAttentionMode.FULL_AUTOREGRESSIVE
             ),
             critic_config=MATCriticConfig(
                 n_local_projection_hidden_layers=2,
@@ -357,6 +361,14 @@ def main() -> None:
                 stickiness=initial_stickiness,
                 ent_loss_coef=1e-3,
                 beta_ent_scale=0.75,
+                categorical_ent_loss_config=EntropyLossConfig(
+                    agent_actions_reduction=AgentActionsReduction.SUM,
+                    metrics_reduction=AgentActionsReduction.MEAN,
+                ),
+                beta_ent_loss_config=EntropyLossConfig(
+                    agent_actions_reduction=AgentActionsReduction.SUM,
+                    metrics_reduction=AgentActionsReduction.MEAN,
+                ),
             ),
             bernoulli_config=BernoulliConfig(
                 initial_prob=0.7,
@@ -377,7 +389,7 @@ def main() -> None:
             transition_model_dropout=0.0,
             wm_pre_transition_dims=[enc_d_model],
             d_model_transition_model=transition_model_d_model,
-            nhead_transition_model=enc_nhead,
+            nhead_transition_model=transition_model_nhead,
             num_layers_transition_model=2,
             dim_feedforward_transition_model=transition_model_d_model * 2,
             transition_model_coembed_hidden_dims=[transition_model_d_model],
@@ -410,8 +422,8 @@ def main() -> None:
     print("Initializing PPO Algorithm...")
 
     warm_lr = 1e-4
-    warmup_iterations: int = 250
-    cold_lr = warm_lr / 200 if warmup_iterations > 0 else warm_lr
+    warmup_iterations: int = 100
+    cold_lr = warm_lr * 5e-3 if warmup_iterations > 0 else warm_lr
 
     auto_lr = AutomaticLearningRate(
         initial_lr=cold_lr,
@@ -447,7 +459,7 @@ def main() -> None:
             f"Skipping act0_stickiness scheduler: action dist[0] is {act0_dist_type}"
         )
 
-    rollout_samples = int(4048 * 0.75)
+    rollout_samples = int(4048)
     ppo = PPO(
         policy=policy,
         env=env,
@@ -455,7 +467,7 @@ def main() -> None:
         rollout_mode=StepsRolloutMode(rollout_samples),
         max_episode_length=episode_length,
         batch_size=rollout_samples,
-        n_epochs=5,
+        n_epochs=8,
         gamma=gamma,
         gae_lambda=0.95,
         clip_range=0.07,
