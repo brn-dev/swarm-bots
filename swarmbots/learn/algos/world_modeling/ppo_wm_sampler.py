@@ -1,8 +1,11 @@
 from dataclasses import dataclass
+from typing import TypeVar
 
 import torch
 
-from swarmbots.learn.algos.ppo.ppo_rollout_buffer import PPOSampler, PPOEpisode, PPOSamples
+from swarmbots.learn.algos.ppo.ppo_rollout_buffer import PPOEpisode
+from swarmbots.learn.algos.ppo.ppo_sampler import PPOSamples, PPOSampler, PPOSamplerConfig
+from swarmbots.learn.algos.world_modeling.wm_sampler_helper import build_wm_episode_windows
 
 
 @dataclass
@@ -15,19 +18,28 @@ class PPOWMSamples(PPOSamples):
     wm_agent_mask: torch.Tensor | None  # shape (batch, n_next_steps, n_agents)
     wm_loss_agent_mask: torch.Tensor | None  # shape (batch, n_next_steps, n_agents)
 
+@dataclass(frozen=True)
+class PPOWMSamplerConfig(PPOSamplerConfig):
+    num_next_steps: int
 
-class PPOWMSampler(PPOSampler[PPOWMSamples]):
+
+PPOWMSamplesType = TypeVar('PPOSamplesType', bound=PPOWMSamples, covariant=True)
+PPOWMSamplerConfigType = TypeVar('PPOSamplerConfigType', bound=PPOWMSamplerConfig, covariant=True)
+
+class PPOWMSampler(PPOSampler[PPOWMSamples, PPOWMSamplerConfigType]):
 
     def __init__(
             self,
             episodes: list[PPOEpisode],
-            num_next_steps: int,
+            config: PPOWMSamplerConfigType,
             requires_previous_actions: bool = False,
     ):
+        num_next_steps = config.num_next_steps
         if num_next_steps < 1:
             raise ValueError(f'num_next_steps must be >= 1, got {num_next_steps}')
         super().__init__(
             episodes=episodes,
+            config=config,
             requires_previous_actions=requires_previous_actions,
         )
         
@@ -39,115 +51,22 @@ class PPOWMSampler(PPOSampler[PPOWMSamples]):
         wm_loss_agent_mask_list: list[torch.Tensor] = []
         has_agent_mask = self.agent_mask is not None
 
-        padding_len = num_next_steps - 1
-
         for ep in episodes:
-            num_steps = ep.local_obs.shape[0]
-            assert ep.final_local_obs is not None
-            assert ep.final_global_obs is not None
-            assert ep.actions.shape[0] == num_steps
-            if has_agent_mask and ep.final_agent_mask is None:
-                raise ValueError("final_agent_mask must be provided when agent_mask is enabled")
-
-            next_obs = torch.cat([ep.local_obs[1:], ep.final_local_obs.unsqueeze(0)], dim=0)
-            next_global_obs = torch.cat([ep.global_obs[1:], ep.final_global_obs.unsqueeze(0)], dim=0)
-            wm_agent_mask: torch.Tensor | None = None
-            wm_loss_agent_mask: torch.Tensor | None = None
+            episode_windows = build_wm_episode_windows(
+                ep,
+                num_next_steps=num_next_steps,
+            )
+            multi_step_actions_list.append(episode_windows.multi_step_actions)
+            next_local_obs_list.append(episode_windows.next_local_obs)
+            next_validity_mask_list.append(episode_windows.next_validity_mask)
+            next_global_obs_list.append(episode_windows.next_global_obs)
             if has_agent_mask:
-                if ep.agent_mask is None:
-                    raise ValueError("agent_mask must be provided when agent_mask is enabled")
-                wm_agent_mask = ep.agent_mask
-                wm_loss_agent_mask = torch.cat(
-                    [ep.agent_mask[1:], ep.final_agent_mask.unsqueeze(0)],
-                    dim=0,
-                )
-            
-            if padding_len > 0:
-                padding = torch.zeros(
-                    (padding_len, *next_obs.shape[1:]),
-                    dtype=next_obs.dtype,
-                    device=next_obs.device
-                )
-                padded_obs = torch.cat([next_obs, padding], dim=0)
-                global_padding = torch.zeros(
-                    (padding_len, *next_global_obs.shape[1:]),
-                    dtype=next_global_obs.dtype,
-                    device=next_global_obs.device,
-                )
-                padded_global_obs = torch.cat([next_global_obs, global_padding], dim=0)
-                padded_wm_agent_mask: torch.Tensor | None = None
-                padded_wm_loss_agent_mask: torch.Tensor | None = None
-                if has_agent_mask:
-                    if wm_agent_mask is None:
-                        raise ValueError("wm_agent_mask must be set when agent_mask is enabled")
-                    if wm_loss_agent_mask is None:
-                        raise ValueError("wm_loss_agent_mask must be set when agent_mask is enabled")
-                    wm_agent_mask_padding = torch.ones(
-                        (padding_len, *wm_agent_mask.shape[1:]),
-                        dtype=wm_agent_mask.dtype,
-                        device=wm_agent_mask.device,
-                    )
-                    padded_wm_agent_mask = torch.cat([wm_agent_mask, wm_agent_mask_padding], dim=0)
-                    agent_mask_padding = torch.ones(
-                        (padding_len, *wm_loss_agent_mask.shape[1:]),
-                        dtype=wm_loss_agent_mask.dtype,
-                        device=wm_loss_agent_mask.device,
-                    )
-                    padded_wm_loss_agent_mask = torch.cat([wm_loss_agent_mask, agent_mask_padding], dim=0)
-            else:
-                padded_obs = next_obs
-                padded_global_obs = next_global_obs
-                padded_wm_agent_mask = None
-                padded_wm_loss_agent_mask = None
-                if has_agent_mask:
-                    if wm_agent_mask is None:
-                        raise ValueError("wm_agent_mask must be set when agent_mask is enabled")
-                    if wm_loss_agent_mask is None:
-                        raise ValueError("wm_loss_agent_mask must be set when agent_mask is enabled")
-                    padded_wm_agent_mask = wm_agent_mask
-                    padded_wm_loss_agent_mask = wm_loss_agent_mask
-
-            windows = padded_obs.unfold(0, num_next_steps, 1)[:num_steps]  # (T, N, F, k)
-            
-            ep_next_obs = windows.permute(0, 3, 1, 2)  # (T, k, N, F)
-            next_local_obs_list.append(ep_next_obs)
-            
-            global_windows = padded_global_obs.unfold(0, num_next_steps, 1)[:num_steps]  # (T, G, k)
-            ep_next_global_obs = global_windows.permute(0, 2, 1)  # (T, k, G)
-            next_global_obs_list.append(ep_next_global_obs)
-            if has_agent_mask:
-                if padded_wm_agent_mask is None:
-                    raise ValueError("padded_wm_agent_mask must be set when agent_mask is enabled")
-                if padded_wm_loss_agent_mask is None:
-                    raise ValueError("padded_wm_loss_agent_mask must be set when agent_mask is enabled")
-                wm_agent_mask_windows = padded_wm_agent_mask.unfold(0, num_next_steps, 1)[:num_steps]  # (T, N, k)
-                wm_agent_mask_list.append(wm_agent_mask_windows.permute(0, 2, 1))  # (T, k, N)
-                wm_loss_agent_mask_windows = padded_wm_loss_agent_mask.unfold(0, num_next_steps, 1)[:num_steps]  # (T, N, k)
-                wm_loss_agent_mask_list.append(wm_loss_agent_mask_windows.permute(0, 2, 1))  # (T, k, N)
-
-            if padding_len > 0:
-                action_padding = torch.zeros(
-                    (padding_len, *ep.actions.shape[1:]),
-                    dtype=ep.actions.dtype,
-                    device=ep.actions.device,
-                )
-                padded_actions = torch.cat([ep.actions, action_padding], dim=0)
-            else:
-                padded_actions = ep.actions
-
-            action_windows = padded_actions.unfold(0, num_next_steps, 1)  # (T_out, N, A, k)
-            ep_multi_step_actions = action_windows[:num_steps].permute(0, 3, 1, 2)  # (T, k, N, A)
-            multi_step_actions_list.append(ep_multi_step_actions)
-            
-            validity = torch.ones(next_obs.shape[0], dtype=torch.bool, device=next_obs.device)
-            if padding_len > 0:
-                validity_padding = torch.zeros(padding_len, dtype=torch.bool, device=next_obs.device)
-                padded_validity = torch.cat([validity, validity_padding], dim=0)
-            else:
-                padded_validity = validity
-                
-            validity_windows = padded_validity.unfold(0, num_next_steps, 1)[:num_steps]  # (T, k)
-            next_validity_mask_list.append(validity_windows)
+                if episode_windows.wm_agent_mask is None:
+                    raise ValueError("wm_agent_mask must be set when agent_mask is enabled")
+                if episode_windows.wm_loss_agent_mask is None:
+                    raise ValueError("wm_loss_agent_mask must be set when agent_mask is enabled")
+                wm_agent_mask_list.append(episode_windows.wm_agent_mask)
+                wm_loss_agent_mask_list.append(episode_windows.wm_loss_agent_mask)
 
         self.multi_step_actions = torch.cat(multi_step_actions_list, dim=0).contiguous()
         self.next_local_obs = torch.cat(next_local_obs_list, dim=0).contiguous()

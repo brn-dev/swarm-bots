@@ -8,7 +8,8 @@ from swarmbots.learn.action_dists.action_dist import ActionMetricsSplitterInput
 from swarmbots.learn.action_dists.hybrid_action_dist import HybridActionDistribution
 from swarmbots.learn.algos.ppo.base_ppo_policy import BasePPOPolicy
 from swarmbots.learn.algos.ppo.ppo_rollout_buffer import PPOEpisode
-from swarmbots.learn.algos.world_modeling.ppo_wm_sampler import PPOWMSampler, PPOWMSamples
+from swarmbots.learn.algos.ppo.ppo_sampler import PPOSamples, PPOSamplerConfig
+from swarmbots.learn.algos.world_modeling.ppo_wm_sampler import PPOWMSampler, PPOWMSamples, PPOWMSamplerConfig
 from swarmbots.learn.algos.world_modeling.next_obs_pred_mixin import NextObsPredConfig, NextObsPredMixin
 from swarmbots.learn.algos.world_modeling.transformer_transition_model import (
     TransformerTransitionModel,
@@ -23,7 +24,6 @@ class NOPWorldModelConfig:
     n_agents: int
     local_latent_dim: int
     action_dim: int
-    world_model_num_next_steps: int = 1
     world_model_loss_coef: float = 1.0
     act_fn_cls: type[nn.Module] = nn.ReLU
     transition_model_dropout: float = 0.0
@@ -45,19 +45,15 @@ class NOPWorldModelConfig:
     next_obs_pred_config: NextObsPredConfig = field(default_factory=NextObsPredConfig)
 
 
-class NextObsPredWrapper(BasePPOPolicy[PPOWMSamples], NextObsPredMixin):
+class NextObsPredWrapper(BasePPOPolicy[PPOWMSamples, PPOWMSamplerConfig], NextObsPredMixin):
 
     def __init__(
             self,
-            policy: BasePPOPolicy,
+            policy: BasePPOPolicy[PPOSamples, PPOSamplerConfig],
             *,
             world_model_config: NOPWorldModelConfig,
     ) -> None:
         super().__init__()
-        if world_model_config.world_model_num_next_steps < 1:
-            raise ValueError(
-                f"world_model_num_next_steps must be >= 1, got {world_model_config.world_model_num_next_steps}"
-            )
         if world_model_config.n_agents < 1:
             raise ValueError(f"n_agents must be >= 1, got {world_model_config.n_agents}")
         if world_model_config.local_latent_dim < 1:
@@ -72,7 +68,6 @@ class NextObsPredWrapper(BasePPOPolicy[PPOWMSamples], NextObsPredMixin):
                 f"got {world_model_config.transition_model_dropout}"
             )
         self.policy = policy
-        self.world_model_num_next_steps = int(world_model_config.world_model_num_next_steps)
         self._setup_world_model_from_config(world_model_config)
 
     @property
@@ -149,10 +144,14 @@ class NextObsPredWrapper(BasePPOPolicy[PPOWMSamples], NextObsPredMixin):
         merged_extra_loss_metrics["wm_loss_scaled"] = world_model_loss_scaled.item()
         return log_probs, values, merged_extra_losses, merged_extra_loss_metrics
 
-    def make_sampler(self, episodes: list[PPOEpisode]) -> PPOWMSampler:
+    def make_sampler(
+            self,
+            episodes: list[PPOEpisode],
+            config: PPOWMSamplerConfig,
+    ) -> PPOWMSampler:
         return PPOWMSampler(
             episodes=episodes,
-            num_next_steps=self.world_model_num_next_steps,
+            config=config,
             requires_previous_actions=self.requires_previous_actions(),
         )
 
@@ -160,7 +159,6 @@ class NextObsPredWrapper(BasePPOPolicy[PPOWMSamples], NextObsPredMixin):
         return {
             **self.policy.get_hyper_parameters(),
             "next_obs_pred_wrapper": {
-                "world_model_num_next_steps": self.world_model_num_next_steps,
                 "world_model_loss_coef": self.world_model_loss_coef,
                 "n_agents": self._wm_n_agents,
                 "local_latent_dim": self._wm_local_latent_dim,

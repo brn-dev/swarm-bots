@@ -28,18 +28,18 @@ Agents shall use this file to make notes for future instances. Write down import
 - `PPO.compute_loss()` always calls `policy.evaluate_actions(batch=...)`.
 
 - Policy hierarchy:
-- `BasePolicy` -> `BasePPOPolicy[Samples]`
+- `BasePolicy` -> `BasePPOPolicy[Samples, SamplerConfig]`
 - `BasePPOPolicy` defines the PPO-facing interface:
 - `forward(...)`
 - `_evaluate_actions(batch, ...)` / `evaluate_actions(batch, ...)`
-- `make_sampler(episodes)`
+- `make_sampler(episodes, config)`
 - `after_optimizer_step()` hook (default no-op)
 - Concrete policies:
 - `PPOPolicy`: MLP actor + MLP/PopArt critic.
 - `MATPolicy`: encoder/decoder transformer policy + DeepSet critic.
 - World-model composition is wrapper-first (not separate PPO algo classes):
-- `NextObsPredWrapper(BasePPOPolicy[PPOWMSamples], NextObsPredMixin)`
-- `SPRWrapper(BasePPOPolicy[PPOWMSamples], SPRMixin)`
+- `NextObsPredWrapper(BasePPOPolicy[PPOWMSamples, PPOWMSamplerConfig], NextObsPredMixin)`
+- `SPRWrapper(BasePPOPolicy[PPOWMSamples, PPOWMSamplerConfig], SPRMixin)`
 - Wrappers delegate action/value to wrapped `MATPolicy` and add WM losses in `evaluate_actions(...)`.
 - `BasePPOPolicy._policy_actions(...)` normalizes action batch shape from `(B,N,A)` or `(B,T,N,A)` to `(B,N,A)` for policy eval.
 
@@ -47,6 +47,8 @@ Agents shall use this file to make notes for future instances. Write down import
 - `PPORolloutBuffer` builds `PPOEpisode` objects and computes GAE.
 - `PPOSampler` flattens episodes into `PPOSamples`.
 - `PPOWMSampler` extends `PPOSampler` with multi-step windows and returns `PPOWMSamples` (next obs, validity masks, WM masks).
+- Shared WM target construction now lives in `swarmbots/learn/algos/world_modeling/wm_sampler_helper.py`; use it for both flat and recurrent WM samplers so next-obs windows, shifted masks, and padding stay identical.
+- `RPPOWMSampler` in `swarmbots/learn/algos/r_mat/r_ppo_wm_sampler.py` chunks `PPOEpisode` segments into fixed-length right-padded sequences with `time_mask`; unlike flat `PPOWMSamples`, it keeps current PPO `actions` separate from multi-step `wm_actions`.
 
 - Action distribution structure:
 - `HybridActionSpace` / `VectorHybridActionSpace` define sub-spaces and `total_agent_action_dim`.
@@ -102,5 +104,6 @@ Agents shall use this file to make notes for future instances. Write down import
 
 ## Practical Guidance
 - For new training work, start from `scripts/run_mat_nop_wall.py`, not the other MAT scripts.
+- `scripts/run_mat_nop_wall.py` currently assumes `cwd == scripts/` for relative paths like `../runs/...`; launcher wrappers should add repo root to `PYTHONPATH` instead of switching cwd to repo root.
 - If you change wrappers/vector-env behavior, re-check `NEXT_STEP` assumptions and checkpoint restore.
 - If you change observation composition, verify `build_obs_indices(...)`, normalization wrappers, and WM target configs together.

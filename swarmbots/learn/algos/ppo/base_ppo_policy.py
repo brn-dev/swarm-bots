@@ -6,14 +6,16 @@ import torch
 
 from swarmbots.learn.action_dists.action_dist import ActionMetricsSplitterInput
 from swarmbots.learn.action_dists.hybrid_action_dist import HybridActionDistribution
-from swarmbots.learn.algos.ppo.ppo_rollout_buffer import PPOSamples, PPOSampler, PPOEpisode
+from swarmbots.learn.algos.ppo.ppo_rollout_buffer import PPOEpisode
+from swarmbots.learn.algos.ppo.ppo_sampler import PPOSamples, PPOSampler, PPOSamplerConfig
 from swarmbots.learn.base_policy import BasePolicy
 from swarmbots.learn.losses import LossDict, LossMetrics
 
 PPOSamplesType = TypeVar('PPOSamplesType', bound=PPOSamples)
+PPOSamplerConfigType = TypeVar('PPOSamplerConfigType', bound=PPOSamplerConfig)
 
 
-class BasePPOPolicy(BasePolicy, Generic[PPOSamplesType], abc.ABC):
+class BasePPOPolicy(BasePolicy, Generic[PPOSamplesType, PPOSamplerConfigType], abc.ABC):
     action_dist: HybridActionDistribution
     _PER_ACTION_ENTROPY_WEIGHT_PATTERN = re.compile(r"^act(?P<idx>\d+)_(?P<alias>ent_loss_coef|entropy|ent)$")
 
@@ -60,7 +62,11 @@ class BasePPOPolicy(BasePolicy, Generic[PPOSamplesType], abc.ABC):
         return log_probs, values, extra_losses, extra_loss_metrics
 
     @abc.abstractmethod
-    def make_sampler(self, episodes: list[PPOEpisode]) -> PPOSampler[PPOSamplesType]:
+    def make_sampler(
+            self,
+            episodes: list[PPOEpisode],
+            config: PPOSamplerConfigType,
+    ) -> PPOSampler[PPOSamplesType, PPOSamplerConfigType]:
         raise NotImplementedError()
 
     def after_optimizer_step(self) -> None:

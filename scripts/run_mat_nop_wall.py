@@ -22,6 +22,7 @@ from swarmbots.learn.algos.mat.mat_policy import MATPolicy, MATPolicyConfig
 from swarmbots.learn.algos.ppo.base_ppo_policy import BasePPOPolicy
 from swarmbots.learn.algos.world_modeling.next_obs_pred_ppo_wrapper import NextObsPredWrapper, NOPWorldModelConfig
 from swarmbots.learn.algos.ppo.ppo import AutomaticLearningRate, StepsRolloutMode, PPO
+from swarmbots.learn.algos.world_modeling.ppo_wm_sampler import PPOWMSamplerConfig
 from swarmbots.learn.algos.ppo.ppo_policy import PopArtConfig
 from swarmbots.learn.algos.world_modeling.next_obs_pred_mixin import NextObsPredConfig
 from swarmbots.learn.env_wrappers.feature_wise_obs_norm_wrapper import (
@@ -136,7 +137,7 @@ def split_actuator_joints(actions: torch.Tensor, actuators_per_limb: int) -> dic
 
 
 def set_actuator_gsde_init_joint_stds(
-        policy: BasePPOPolicy,
+        policy: BasePPOPolicy[Any, Any],
         actuators_per_limb: int,
         joint_stds: list[float]
 ) -> None:
@@ -383,7 +384,6 @@ def main() -> None:
             n_agents=env.n_agents,
             local_latent_dim=enc_d_model,
             action_dim=env.action_space.total_agent_action_dim,
-            world_model_num_next_steps=world_model_num_next_steps,
             world_model_loss_coef=world_model_loss_coef,
             act_fn_cls=nn.GELU,
             transition_model_dropout=0.0,
@@ -422,7 +422,7 @@ def main() -> None:
     print("Initializing PPO Algorithm...")
 
     warm_lr = 1e-4
-    warmup_iterations: int = 100
+    warmup_iterations: int = 200
     cold_lr = warm_lr * 5e-3 if warmup_iterations > 0 else warm_lr
 
     auto_lr = AutomaticLearningRate(
@@ -466,7 +466,10 @@ def main() -> None:
         learning_rate=auto_lr,
         rollout_mode=StepsRolloutMode(rollout_samples),
         max_episode_length=episode_length,
-        batch_size=rollout_samples,
+        sampler_config=PPOWMSamplerConfig(
+            batch_size=rollout_samples,
+            num_next_steps=world_model_num_next_steps,
+        ),
         n_epochs=6,
         gamma=gamma,
         gae_lambda=0.95,

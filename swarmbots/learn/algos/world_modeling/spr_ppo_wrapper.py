@@ -8,7 +8,8 @@ from swarmbots.learn.action_dists.action_dist import ActionMetricsSplitterInput
 from swarmbots.learn.action_dists.hybrid_action_dist import HybridActionDistribution
 from swarmbots.learn.algos.ppo.base_ppo_policy import BasePPOPolicy
 from swarmbots.learn.algos.ppo.ppo_rollout_buffer import PPOEpisode
-from swarmbots.learn.algos.world_modeling.ppo_wm_sampler import PPOWMSampler, PPOWMSamples
+from swarmbots.learn.algos.ppo.ppo_sampler import PPOSamples, PPOSamplerConfig
+from swarmbots.learn.algos.world_modeling.ppo_wm_sampler import PPOWMSampler, PPOWMSamples, PPOWMSamplerConfig
 from swarmbots.learn.algos.world_modeling.spr_mixin import SPRMixin
 from swarmbots.learn.algos.world_modeling.transformer_transition_model import (
     TransformerTransitionModel,
@@ -23,7 +24,6 @@ class SPRWorldModelConfig:
     n_agents: int
     local_latent_dim: int
     action_dim: int
-    world_model_num_next_steps: int = 1
     world_model_loss_coef: float = 1.0
     world_model_target_tau: float | None = None
     act_fn_cls: type[nn.Module] = nn.ReLU
@@ -42,19 +42,15 @@ class SPRWorldModelConfig:
     spr_loss_weight: float = 1.0
 
 
-class SPRWrapper(BasePPOPolicy[PPOWMSamples], SPRMixin):
+class SPRWrapper(BasePPOPolicy[PPOWMSamples, PPOWMSamplerConfig], SPRMixin):
 
     def __init__(
             self,
-            policy: BasePPOPolicy,
+            policy: BasePPOPolicy[PPOSamples, PPOSamplerConfig],
             *,
             world_model_config: SPRWorldModelConfig,
     ) -> None:
         super().__init__()
-        if world_model_config.world_model_num_next_steps < 1:
-            raise ValueError(
-                f"world_model_num_next_steps must be >= 1, got {world_model_config.world_model_num_next_steps}"
-            )
         if world_model_config.n_agents < 1:
             raise ValueError(f"n_agents must be >= 1, got {world_model_config.n_agents}")
         if world_model_config.local_latent_dim < 1:
@@ -82,7 +78,6 @@ class SPRWrapper(BasePPOPolicy[PPOWMSamples], SPRMixin):
         self.policy = policy
         self._online_encoder_attr = world_model_config.online_encoder_attr
         _ = self.online_encoder
-        self.world_model_num_next_steps = int(world_model_config.world_model_num_next_steps)
         self._setup_world_model_from_config(world_model_config)
 
     @property
@@ -193,10 +188,14 @@ class SPRWrapper(BasePPOPolicy[PPOWMSamples], SPRMixin):
             return
         self.update_spr_targets(tau)
 
-    def make_sampler(self, episodes: list[PPOEpisode]) -> PPOWMSampler:
+    def make_sampler(
+            self,
+            episodes: list[PPOEpisode],
+            config: PPOWMSamplerConfig,
+    ) -> PPOWMSampler:
         return PPOWMSampler(
             episodes=episodes,
-            num_next_steps=self.world_model_num_next_steps,
+            config=config,
             requires_previous_actions=self.requires_previous_actions(),
         )
 
@@ -207,7 +206,6 @@ class SPRWrapper(BasePPOPolicy[PPOWMSamples], SPRMixin):
         return {
             **self.policy.get_hyper_parameters(),
             "spr_wrapper": {
-                "world_model_num_next_steps": self.world_model_num_next_steps,
                 "world_model_loss_coef": self.world_model_loss_coef,
                 "world_model_target_tau": self.world_model_target_tau,
                 "n_agents": self._wm_n_agents,

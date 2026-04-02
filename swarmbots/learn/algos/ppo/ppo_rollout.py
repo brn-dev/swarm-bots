@@ -34,7 +34,7 @@ class _RolloutTimers:
 
 
 def _parse_gsde_reset_mode(
-        policy: BasePPOPolicy,
+        policy: BasePPOPolicy[Any, Any],
         gsde_reset_mode: GSDEResetMode | None,
 ) -> tuple[bool, bool, int, float]:
     assert not policy.gsde_enabled or gsde_reset_mode is not None
@@ -95,7 +95,7 @@ def _build_gsde_step_reset_mask(
 
 def _reset_temporal_correlations(
         *,
-        policy: BasePPOPolicy,
+        policy: BasePPOPolicy[Any, Any],
         episode_start_mask: torch.Tensor | None = None,
         step_reset_mask: torch.Tensor | None = None,
         batch_shape: tuple[int, ...] | None = None,
@@ -109,7 +109,7 @@ def _reset_temporal_correlations(
 def _collect_rollout_step(
         *,
         env: BaseLearnEnvWrapper,
-        policy: BasePPOPolicy,
+        policy: BasePPOPolicy[Any, Any],
         buffer: PPORolloutBuffer,
         obs: dict[str, torch.Tensor],
         is_final: torch.Tensor,
@@ -233,7 +233,7 @@ def _build_rollout_metrics(
 @torch.no_grad()
 def collect_whole_episodes(
         env: BaseLearnEnvWrapper,
-        policy: BasePPOPolicy,
+        policy: BasePPOPolicy[Any, Any],
         buffer: PPORolloutBuffer,
         n_episodes: int,
         gsde_reset_mode: GSDEResetMode | None = None,
@@ -302,7 +302,7 @@ def collect_whole_episodes(
 @torch.no_grad()
 def collect_steps(
         env: BaseLearnEnvWrapper,
-        policy: BasePPOPolicy,
+        policy: BasePPOPolicy[Any, Any],
         buffer: PPORolloutBuffer,
         n_steps: int,
         rollout_state: PPORolloutState | None = None,

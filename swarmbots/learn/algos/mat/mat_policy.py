@@ -17,7 +17,8 @@ from swarmbots.learn.algos.mat.mat_decoder import MATDecoder, MATDecoderConfig
 from swarmbots.learn.algos.ppo.base_ppo_policy import BasePPOPolicy
 from swarmbots.learn.algos.ppo.ppo import AGENTS_DIM
 from swarmbots.learn.algos.ppo.ppo_policy import PopArtConfig
-from swarmbots.learn.algos.ppo.ppo_rollout_buffer import PPOEpisode, PPOSampler, PPOSamples
+from swarmbots.learn.algos.ppo.ppo_rollout_buffer import PPOEpisode
+from swarmbots.learn.algos.ppo.ppo_sampler import PPOSamples, PPOSampler, PPOSamplerConfig
 from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
 from swarmbots.learn.losses import LossDict, LossMetrics
 from swarmbots.learn.nn_components.deep_set import DeepSetCritic
@@ -45,7 +46,7 @@ class MATPolicyConfig:
     max_agents: int | None = None
 
 
-class MATPolicy(BasePPOPolicy[PPOSamples]):
+class MATPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
 
     def __init__(
             self,
@@ -381,9 +382,14 @@ class MATPolicy(BasePPOPolicy[PPOSamples]):
         )
         return actions
 
-    def make_sampler(self, episodes: list[PPOEpisode]) -> PPOSampler[PPOSamples]:
+    def make_sampler(
+            self,
+            episodes: list[PPOEpisode],
+            config: PPOSamplerConfig,
+    ) -> PPOSampler:
         return PPOSampler(
             episodes=episodes,
+            config=config,
             requires_previous_actions=self.requires_previous_actions(),
         )
 
