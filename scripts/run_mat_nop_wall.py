@@ -167,7 +167,7 @@ def main() -> None:
     n_envs = n_workers * 12
 
     episode_length = 512
-    total_timesteps = 200_000_000
+    total_timesteps = 70_000_000
     save_interval = 5000
 
     use_popart = True
