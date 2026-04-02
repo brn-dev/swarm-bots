@@ -1,20 +1,33 @@
 import abc
+from dataclasses import dataclass
 from typing import TypeVar, Generic, Generator, Any
 
 import torch
 
+
+@dataclass(frozen=True)
+class BaseSamplerConfig:
+    batch_size: int
+
+
 SamplesType = TypeVar('SamplesType', covariant=True)
+SamplerConfigType = TypeVar('SamplerConfigType', covariant=True, bound=BaseSamplerConfig)
 
-class BaseSampler(Generic[SamplesType], abc.ABC):
 
-    def __init__(self, n_samples: int):
+class BaseSampler(Generic[SamplesType, SamplerConfigType], abc.ABC):
+
+    def __init__(self, config: SamplerConfigType, n_samples: int):
+        if config.batch_size <= 0:
+            raise ValueError(f"batch_size must be > 0, got {config.batch_size}")
+        self.config = config
         self.n_samples = n_samples
 
     @abc.abstractmethod
     def _fetch_samples(self, batch_indices: torch.Tensor) -> SamplesType:
         raise NotImplementedError()
 
-    def sample(self, batch_size: int, drop_last: bool = True) -> Generator[SamplesType, Any, None]:
+    def sample(self, drop_last: bool = True) -> Generator[SamplesType, Any, None]:
+        batch_size = self.config.batch_size
         indices = torch.randperm(self.n_samples)
 
         for start_idx in range(0, self.n_samples, batch_size):

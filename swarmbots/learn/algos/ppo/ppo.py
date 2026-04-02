@@ -1,7 +1,7 @@
 import abc
 import json
-from dataclasses import dataclass
-from typing import Optional, Any, Literal, TypeVar, Generic, Callable, Protocol, NotRequired, TypedDict
+from dataclasses import dataclass, replace
+from typing import Optional, Any, Literal, TypeVar, Generic, Callable, Protocol, NotRequired, TypedDict, cast
 
 import torch
 import torch.nn as nn
@@ -11,14 +11,16 @@ from swarmbots.learn.algos.base_algorithm import BaseAlgorithm, LearningRate, _p
 from swarmbots.learn.algos.ppo.ppo_policy import PPOPolicy
 from swarmbots.learn.algos.ppo.base_ppo_policy import BasePPOPolicy
 from swarmbots.learn.algos.ppo.ppo_rollout import PPORolloutState, collect_steps, collect_whole_episodes
-from swarmbots.learn.algos.ppo.ppo_rollout_buffer import PPOEpisode, PPORolloutBuffer, PPOSampler, PPOSamples
+from swarmbots.learn.algos.ppo.ppo_rollout_buffer import PPOEpisode, PPORolloutBuffer
+from swarmbots.learn.algos.ppo.ppo_sampler import PPOSamples, PPOSamplerConfig
+from swarmbots.learn.algos.world_modeling.ppo_wm_sampler import PPOWMSamplerConfig
 from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
 from swarmbots.learn.exponential_moving_average import ExponentialMovingAverage
 from swarmbots.learn.gsde_reset import GSDEResetMode, GSDEIntervalResetMode, GSDEProbabilityResetMode
 from swarmbots.learn.masking import masked_mean
 from swarmbots.learn.metrics_list import MetricsLists
 from swarmbots.learn.performance_timer import PerformanceTimer
-from swarmbots.learn.serialization_utils import serialize_fn
+from swarmbots.learn.serialization_utils import serialize_dataclass, serialize_fn
 from swarmbots.learn.scheduling.schedulers import SchedulerManager
 from swarmbots.learn.summary_statistics import compute_summary_statistics
 from swarmbots.learn.torch_device import as_device
@@ -78,22 +80,22 @@ class StepsRolloutMode(PPORolloutMode):
 
 
 PPOSamplesType = TypeVar('PPOSamplesType', bound=PPOSamples)
-PPOSamplerType = TypeVar('PPOSamplerType', bound=PPOSampler)
+PPOSamplerConfigType = TypeVar('PPOSamplerConfigType', bound=PPOSamplerConfig)
 
 # based on https://github.com/DLR-RM/stable-baselines3/blob/master/stable_baselines3/ppo/ppo.py
-class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerType]):
+class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
 
-    policy: BasePPOPolicy
+    policy: BasePPOPolicy[PPOSamplesType, PPOSamplerConfigType]
     learning_rate: float
 
     def __init__(
             self,
-            policy: BasePPOPolicy,
+            policy: BasePPOPolicy[PPOSamplesType, PPOSamplerConfigType],
             env: BaseLearnEnvWrapper,
             learning_rate: PPOLearningRate = 3e-4,
             rollout_mode: PPORolloutMode = WholeEpisodesRolloutMode(6),
             max_episode_length: int = 1000,
-            batch_size: int = 64,
+            sampler_config: PPOSamplerConfigType | None = None,
             n_epochs: int = 10,
             gamma: float = 0.99,
             gae_lambda: float = 0.95,
@@ -135,7 +137,9 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerType]):
         self.rollout_mode = rollout_mode
         self._rollout_state: PPORolloutState | None = None
         self.max_episode_length = max_episode_length
-        self.batch_size = batch_size
+        if sampler_config is None:
+            sampler_config = cast(PPOSamplerConfigType, PPOSamplerConfig(batch_size=64))
+        self.sampler_config = sampler_config
         self.n_epochs = n_epochs
         self.gamma = gamma
         self.gae_lambda = gae_lambda
@@ -207,7 +211,7 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerType]):
             'automatic_learning_rate': auto_lr,
             'rollout_mode': self._serialize_rollout_mode(self.rollout_mode),
             'max_episode_length': self.max_episode_length,
-            'batch_size': self.batch_size,
+            'sampler_config': serialize_dataclass(self.sampler_config),
             'n_epochs': self.n_epochs,
             'gamma': self.gamma,
             'gae_lambda': self.gae_lambda,
@@ -387,7 +391,7 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerType]):
             self.value_loss_fn.to(self.train_device)
 
         with PerformanceTimer() as sampler_init_timer:
-            sampler = self.policy.make_sampler(episodes)
+            sampler = self.policy.make_sampler(episodes, config=self.sampler_config)
 
         if self.use_popart:
             self.policy.update_value_normalizer(sampler.returns)
@@ -425,7 +429,7 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerType]):
         train_timer = PerformanceTimer().start()
         for epoch in range(self.n_epochs):
             sample_timer.start()
-            for i, batch in enumerate(sampler.sample(self.batch_size)):
+            for i, batch in enumerate(sampler.sample()):
                 sampling_timings.append(sample_timer.stop().get_duration())
 
                 update_timer.start()
@@ -626,6 +630,16 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerType]):
 
     def _after_optimizer_step(self) -> None:
         self.policy.after_optimizer_step()
+
+    @property
+    def batch_size(self) -> int:
+        return self.sampler_config.batch_size
+
+    @batch_size.setter
+    def batch_size(self, value: int) -> None:
+        if value <= 0:
+            raise ValueError(f"batch_size must be > 0, got {value}")
+        self.sampler_config = replace(self.sampler_config, batch_size=value)
 
     def reduce_agents(
             self,
@@ -855,12 +869,12 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerType]):
             num_next_steps = int(params)
             if num_next_steps < 1:
                 raise ValueError(f"world_model_num_next_steps must be >= 1, got {num_next_steps}")
-            if not hasattr(self.policy, "world_model_num_next_steps"):
+            if not isinstance(self.sampler_config, PPOWMSamplerConfig):
                 raise ValueError(
-                    "Policy does not expose world_model_num_next_steps; cannot configure world-model sampler horizon."
+                    "Current sampler_config does not expose num_next_steps; cannot configure world-model sampler horizon."
                 )
             logger.warning(f"Setting world_model_num_next_steps to {num_next_steps}")
-            setattr(self.policy, "world_model_num_next_steps", num_next_steps)
+            self.sampler_config = replace(self.sampler_config, num_next_steps=num_next_steps)
             return True
         elif cmd in {"set_wm_target_tau", "set_world_model_target_tau", "wm_target_tau"}:
             param = params.strip().lower()

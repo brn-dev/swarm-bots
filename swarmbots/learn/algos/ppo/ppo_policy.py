@@ -12,7 +12,8 @@ from swarmbots.learn.action_dists.hybrid_action_dist import (
 )
 from swarmbots.learn.action_dists.bernoulli_action_dist import BernoulliConfig
 from swarmbots.learn.algos.ppo.base_ppo_policy import BasePPOPolicy
-from swarmbots.learn.algos.ppo.ppo_rollout_buffer import PPOEpisode, PPOSampler, PPOSamples
+from swarmbots.learn.algos.ppo.ppo_rollout_buffer import PPOEpisode
+from swarmbots.learn.algos.ppo.ppo_sampler import PPOSamples, PPOSampler, PPOSamplerConfig
 from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
 from swarmbots.learn.losses import LossDict, LossMetrics
 from swarmbots.learn.nn_components.mlp import MLP
@@ -180,7 +181,7 @@ class PPOCritic(nn.Module):
         }
 
 
-class PPOPolicy(BasePPOPolicy[PPOSamples]):
+class PPOPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
 
     def __init__(
             self,
@@ -302,9 +303,14 @@ class PPOPolicy(BasePPOPolicy[PPOSamples]):
         )
         return actions
 
-    def make_sampler(self, episodes: list[PPOEpisode]) -> PPOSampler[PPOSamples]:
+    def make_sampler(
+            self,
+            episodes: list[PPOEpisode],
+            config: PPOSamplerConfig,
+    ) -> PPOSampler:
         return PPOSampler(
             episodes=episodes,
+            config=config,
             requires_previous_actions=self.requires_previous_actions(),
         )
 
