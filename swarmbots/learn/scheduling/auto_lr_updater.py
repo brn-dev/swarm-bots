@@ -3,13 +3,23 @@ from typing import Any, Optional
 import numpy as np
 
 from swarmbots.learn.algos.ppo.ppo import AutomaticLearningRateUpdateResult, AutomaticLearningRateUpdater
+from swarmbots.learn.scheduling.scheduler_factory import SchedulerFactoryConfig, make_scheduler
+from swarmbots.learn.scheduling.schedulers import ScheduleUnit
 from swarmbots.learn.summary_statistics import SummaryStatistics
 
+
 def make_auto_lr_updater(
-    warmup_iterations: int,
-    cold_lr: float,
-    warm_lr: float,
+        warm_scheduler_config: SchedulerFactoryConfig | None = None,
 ) -> AutomaticLearningRateUpdater:
+    if warm_scheduler_config is not None and warm_scheduler_config.unit != ScheduleUnit.ITERATIONS:
+        raise ValueError(
+            "make_auto_lr_updater only supports warm_scheduler_config.unit == "
+            f"{ScheduleUnit.ITERATIONS.name}, got {warm_scheduler_config.unit.name}"
+        )
+
+    warmup_scheduler = None if warm_scheduler_config is None else make_scheduler(warm_scheduler_config)
+    warmup_duration = None if warm_scheduler_config is None else warm_scheduler_config.duration
+
     def auto_lr_updater(
             old_lr: float,
             state: dict[str, Any],
@@ -64,13 +74,39 @@ def make_auto_lr_updater(
                 'event': 'min_epoch_hit'
             }
 
-        warmup: bool = state.get('warmup', warmup_iterations > 0) and n_iterations <= warmup_iterations
+        warmup_unit = None if warm_scheduler_config is None else warm_scheduler_config.unit
+        warmup_step = None
+        if warmup_unit is not None:
+            warmup_step = ScheduleUnit.get(
+                unit=warmup_unit,
+                n_iterations=n_iterations,
+                n_model_updates=n_model_updates,
+                n_timesteps=n_timesteps,
+            )
+
+        warmup: bool = (
+            state.get('warmup', warmup_scheduler is not None)
+            and warmup_scheduler is not None
+            and warmup_duration is not None
+            and warmup_step is not None
+            and warmup_step <= warmup_duration
+        )
         state['warmup'] = warmup
         if warmup:
-            new_lr = cold_lr + (warm_lr - cold_lr) * n_iterations / warmup_iterations
+            if warmup_scheduler is None:
+                raise RuntimeError("warmup_scheduler must be configured when warmup is enabled")
+            schedule_result = warmup_scheduler(
+                old_value=old_lr,
+                state=state,
+                n_iterations=n_iterations,
+                n_model_updates=n_model_updates,
+                n_timesteps=n_timesteps,
+                metrics=metrics,
+            )
+            new_lr = old_lr if schedule_result['new_value'] is None else schedule_result['new_value']
             return {
                 'new_lr': new_lr,
-                'msg': f'Warmup ({n_iterations}/{warmup_iterations})',
+                'msg': f'Warmup ({warmup_step}/{warmup_duration} {warmup_unit.name.lower()})',
                 'event': 'warmup'
             }
 

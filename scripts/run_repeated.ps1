@@ -1,18 +1,56 @@
 param(
+    [Parameter(Mandatory = $true, Position = 0)]
+    [string]$ScriptPath,
+    [Parameter(Position = 1)]
     [int]$Runs = 5,
     [string]$PythonExecutable = "python",
     [int]$DelaySeconds = 0,
+    [Parameter(ValueFromRemainingArguments = $true)]
     [string[]]$ScriptArgs = @()
 )
 
+Set-StrictMode -Version Latest
+$ErrorActionPreference = "Stop"
+
+function Resolve-TrainingScriptPath {
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$RequestedPath,
+        [Parameter(Mandatory = $true)]
+        [string[]]$BaseDirectories
+    )
+
+    if ([System.IO.Path]::IsPathRooted($RequestedPath)) {
+        if (-not (Test-Path -LiteralPath $RequestedPath -PathType Leaf)) {
+            throw "Training script not found: $RequestedPath"
+        }
+
+        return (Resolve-Path -LiteralPath $RequestedPath).Path
+    }
+
+    foreach ($baseDirectory in $BaseDirectories) {
+        $candidatePath = Join-Path $baseDirectory $RequestedPath
+        if (Test-Path -LiteralPath $candidatePath -PathType Leaf) {
+            return (Resolve-Path -LiteralPath $candidatePath).Path
+        }
+    }
+
+    throw "Training script not found: $RequestedPath"
+}
+
 $repoRoot = Split-Path -Parent $PSScriptRoot
-$trainingScript = Join-Path $PSScriptRoot "run_mat_nop_wall.py"
+$trainingScript = Resolve-TrainingScriptPath -RequestedPath $ScriptPath -BaseDirectories @(
+    (Get-Location).Path,
+    $repoRoot,
+    $PSScriptRoot
+)
 $failedRuns = @()
 $originalPythonPath = $env:PYTHONPATH
 
 for ($runIndex = 1; $runIndex -le $Runs; $runIndex++) {
     $startedAt = Get-Date
-    Write-Host ("[{0}/{1}] Starting run_mat_nop_wall.py at {2}" -f $runIndex, $Runs, $startedAt.ToString("s"))
+    Write-Host ("[{0}/{1}] Starting {2} at {3}" -f $runIndex, $Runs, $trainingScript, $startedAt.ToString("s"))
 
     if ([string]::IsNullOrWhiteSpace($originalPythonPath)) {
         $env:PYTHONPATH = $repoRoot
