@@ -1,8 +1,13 @@
 import abc
+from dataclasses import dataclass
 from typing import Optional, Any
 
 from swarmbots.learn.scheduling.schedulers import ScheduleResult, ScheduleUnit
 
+
+@dataclass(frozen=True)
+class SchedulerConfig:
+    unit: ScheduleUnit
 
 class ChainableScheduler(abc.ABC):
 
@@ -31,8 +36,10 @@ class ChainableScheduler(abc.ABC):
             n_model_updates=n_model_updates,
             n_timesteps=n_timesteps
         )
+        duration = self.get_duration()
+        progress = 1.0 if duration <= 0 else t / duration
         return self.schedule(
-            progress=t / self.get_duration(),
+            progress=progress,
             old_value=old_value,
             state=state,
             metrics=metrics,

@@ -33,6 +33,7 @@ from swarmbots.learn.env_wrappers.learn_wrappers.swarm_bots_learn_env_wrapper im
 from swarmbots.learn.env_wrappers.transition_obs_wrapper import TransitionObsWrapper
 from swarmbots.learn.env_wrappers.worker_pool_async_vector_env import WorkerPoolAsyncVectorEnv
 from swarmbots.learn.gsde_reset import GSDEProbabilityResetMode
+from swarmbots.learn.scheduling.cosine_scheduler import CosineSchedulerConfig
 from swarmbots.learn.summary_statistics import SummaryStatisticsFormat
 from swarmbots.learn.obs_indices import ObsIndices
 from swarmbots.learn.swarmbots_obs_indices import build_obs_indices
@@ -44,7 +45,7 @@ from swarmbots.learn.scheduling.schedulers import (
     ScheduledHyperParameter,
     SchedulerManager, ScheduleUnit,
 )
-from swarmbots.learn.scheduling.linear_scheduler import LinearScheduler
+from swarmbots.learn.scheduling.linear_scheduler import LinearScheduler, LinearSchedulerConfig
 from swarmbots.learn.scheduling.auto_lr_updater import make_auto_lr_updater
 
 
@@ -429,9 +430,12 @@ def main() -> None:
         initial_lr=cold_lr,
         max_lr=8e-4,
         updater=make_auto_lr_updater(
-            warmup_iterations=warmup_iterations,
-            cold_lr=cold_lr,
-            warm_lr=warm_lr,
+            warm_scheduler_config=CosineSchedulerConfig(
+                unit=ScheduleUnit.ITERATIONS,
+                duration=warmup_iterations,
+                start_value=cold_lr,
+                final_value=warm_lr,
+            ) if warmup_iterations > 0 else None,
         )
     )
 
