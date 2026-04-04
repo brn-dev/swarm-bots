@@ -10,26 +10,26 @@ from swarmbots.learn.base_sampler import BaseSampler
 
 @dataclass
 class RPPOWMSamples:
-    local_obs: torch.Tensor
-    global_obs: torch.Tensor
-    hidden_local_vars: torch.Tensor
-    hidden_global_vars: torch.Tensor
-    agent_mask: MaybeTensor
-    previous_actions: MaybeTensor
-    actions: torch.Tensor
-    wm_actions: torch.Tensor
-    log_probs: torch.Tensor
-    values: torch.Tensor
-    returns: torch.Tensor
-    advantages: torch.Tensor
-    time_mask: torch.Tensor
-    segment_starts: torch.Tensor
+    local_obs: torch.Tensor  # (batch, sequence_length, n_agents, n_local_obs_features)
+    global_obs: torch.Tensor  # (batch, sequence_length, n_global_obs_features)
+    hidden_local_vars: torch.Tensor  # (batch, sequence_length, n_agents, n_hidden_local_vars)
+    hidden_global_vars: torch.Tensor  # (batch, sequence_length, n_hidden_global_vars)
+    agent_mask: MaybeTensor  # (batch, sequence_length, n_agents)
+    previous_actions: MaybeTensor  # (batch, sequence_length, n_agents, n_actions)
+    actions: torch.Tensor  # (batch, sequence_length, n_agents, n_actions)
+    wm_actions: torch.Tensor  # (batch, sequence_length, n_next_steps, n_agents, n_actions)
+    log_probs: torch.Tensor  # (batch, sequence_length, n_agents)
+    values: torch.Tensor  # (batch, sequence_length)
+    returns: torch.Tensor  # (batch, sequence_length)
+    advantages: torch.Tensor  # (batch, sequence_length)
+    time_mask: torch.Tensor  # (batch, sequence_length)
+    segment_starts: torch.Tensor  # (batch,)
 
-    next_local_obs: torch.Tensor
-    next_validity_mask: torch.Tensor
-    next_global_obs: torch.Tensor
-    wm_agent_mask: torch.Tensor | None
-    wm_loss_agent_mask: torch.Tensor | None
+    next_local_obs: torch.Tensor  # (batch, sequence_length, n_next_steps, n_agents, n_local_obs_features)
+    next_validity_mask: torch.Tensor  # (batch, sequence_length, n_next_steps)
+    next_global_obs: torch.Tensor  # (batch, sequence_length, n_next_steps, n_global_obs_features)
+    wm_agent_mask: MaybeTensor  # (batch, sequence_length, n_next_steps, n_agents)
+    wm_loss_agent_mask: MaybeTensor  # (batch, sequence_length, n_next_steps, n_agents)
 
 
 @dataclass(frozen=True)

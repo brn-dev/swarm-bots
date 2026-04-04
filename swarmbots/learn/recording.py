@@ -271,7 +271,10 @@ def record_policy(
         )
 
         if frames:
-            video_path = os.path.join(video_folder, f"{video_name_prefix}_ep_{episode_idx}.mp4")
+            video_path = os.path.join(
+                video_folder,
+                f"{video_name_prefix}_ep_{episode_idx}-ep_rew={ep_rew_str}.mp4",
+            )
             try:
                 clip = moviepy.video.io.ImageSequenceClip.ImageSequenceClip(frames, fps=fps)
                 clip.write_videofile(video_path, logger=None)

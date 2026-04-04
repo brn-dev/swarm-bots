@@ -2,7 +2,7 @@ from dataclasses import dataclass
 
 import torch
 
-from swarmbots.learn.algos.ppo.ppo_rollout_buffer import PPOEpisode
+from swarmbots.learn.algos.ppo.ppo_rollout_buffer import MaybeTensor, PPOEpisode
 
 
 @dataclass(slots=True)
@@ -11,8 +11,8 @@ class WMEpisodeWindows:
     next_local_obs: torch.Tensor
     next_validity_mask: torch.Tensor
     next_global_obs: torch.Tensor
-    wm_agent_mask: torch.Tensor | None
-    wm_loss_agent_mask: torch.Tensor | None
+    wm_agent_mask: MaybeTensor
+    wm_loss_agent_mask: MaybeTensor
 
 
 def pad_time_axis(
@@ -64,8 +64,8 @@ def build_wm_episode_windows(
     next_local_obs = torch.cat((episode.local_obs[1:], episode.final_local_obs.unsqueeze(0)), dim=0)
     next_global_obs = torch.cat((episode.global_obs[1:], episode.final_global_obs.unsqueeze(0)), dim=0)
 
-    wm_agent_mask: torch.Tensor | None = None
-    wm_loss_agent_mask: torch.Tensor | None = None
+    wm_agent_mask: MaybeTensor = None
+    wm_loss_agent_mask: MaybeTensor = None
     if has_agent_mask:
         assert episode.agent_mask is not None
         assert episode.final_agent_mask is not None
@@ -85,8 +85,8 @@ def build_wm_episode_windows(
         pad_value=False,
     )
 
-    padded_wm_agent_mask: torch.Tensor | None = None
-    padded_wm_loss_agent_mask: torch.Tensor | None = None
+    padded_wm_agent_mask: MaybeTensor = None
+    padded_wm_loss_agent_mask: MaybeTensor = None
     if has_agent_mask:
         assert wm_agent_mask is not None
         assert wm_loss_agent_mask is not None
