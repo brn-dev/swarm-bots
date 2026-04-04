@@ -16,7 +16,7 @@ Do NOT write simple comments that simple describe the next lines/the next few li
 do_something() 
 ```
 
-Only write comments when something is non-obvious!
+Only write comments when something is non-obvious or explains a decision!
 
 ## Coding style
 * write clean but simple code
@@ -29,10 +29,10 @@ Only write comments when something is non-obvious!
 ## Guidance
 If you are unsure about how a specfic library works or how its API looks like, search the web. 
 
-Don't care too much about backwards compatibility. It's better to implement something properly, just tell me if something breaks old stuff.
+Don't care too much about backwards compatibility. It's better to implement something properly, just tell me if something breaks old stuff.  
+  
 See [gymnasium_autoreset.md](gymnasium_autoreset.md) for NEXT_STEP auto reset which we use. You often get confused here.
-
 See `gymnasium_autoreset.md` or `swarmbots.learn.env_wrappers.worker_pool_async_vector_env` about how next-step auto-reset works.
 
 ## Infos
-We are using python >= 3.11, am planning to upgrade to 3.13 soon.  
+We are using python 3.11, am planning to upgrade to 3.13 soon.  

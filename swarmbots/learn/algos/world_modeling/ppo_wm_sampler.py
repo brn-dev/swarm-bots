@@ -3,7 +3,7 @@ from typing import TypeVar
 
 import torch
 
-from swarmbots.learn.algos.ppo.ppo_rollout_buffer import PPOEpisode
+from swarmbots.learn.algos.ppo.ppo_rollout_buffer import MaybeTensor, PPOEpisode
 from swarmbots.learn.algos.ppo.ppo_sampler import PPOSamples, PPOSampler, PPOSamplerConfig
 from swarmbots.learn.algos.world_modeling.wm_sampler_helper import build_wm_episode_windows
 
@@ -15,8 +15,8 @@ class PPOWMSamples(PPOSamples):
     next_local_obs: torch.Tensor  # shape (batch, n_next_steps, n_agents, n_obs_features)
     next_validity_mask: torch.Tensor  # shape (batch, n_next_steps)
     next_global_obs: torch.Tensor  # shape (batch, n_next_steps, n_global_obs_features)
-    wm_agent_mask: torch.Tensor | None  # shape (batch, n_next_steps, n_agents)
-    wm_loss_agent_mask: torch.Tensor | None  # shape (batch, n_next_steps, n_agents)
+    wm_agent_mask: MaybeTensor  # shape (batch, n_next_steps, n_agents)
+    wm_loss_agent_mask: MaybeTensor  # shape (batch, n_next_steps, n_agents)
 
 @dataclass(frozen=True)
 class PPOWMSamplerConfig(PPOSamplerConfig):
