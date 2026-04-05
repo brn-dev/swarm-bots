@@ -251,7 +251,7 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
 
         ratio = torch.exp(log_prob - old_log_prob)
 
-        if ratio.ndim == 2 and advantages.ndim == 1:
+        while ratio.ndim > advantages.ndim:
             advantages = advantages.unsqueeze(-1)
 
         policy_loss_1 = advantages * ratio
@@ -289,6 +289,7 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
             approx_kl_div = masked_mean((torch.exp(log_ratio) - 1) - log_ratio, valid_mask).item()
 
         clip_fraction = masked_mean((torch.abs(ratio - 1) > self.clip_range).float(), valid_mask).item()
+        ratio_for_metrics = ratio if valid_mask is None else ratio[valid_mask]
         metrics = {
             'act_loss': policy_loss.item(),
             'mc_ent_loss': mc_entropy_loss.item(),
@@ -297,7 +298,7 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
             'val_loss_scaled': value_loss_scaled.item(),
             'approx_kl': approx_kl_div,
             'clip_frac': clip_fraction,
-            'ratio': compute_summary_statistics(ratio, find_min=True, find_max=True),
+            'ratio': compute_summary_statistics(ratio_for_metrics, find_min=True, find_max=True),
         }
 
         return loss, approx_kl_div, metrics
@@ -521,9 +522,10 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
             )
             metrics.update(auto_lr_metrics)
             metrics.update(self.policy.get_value_normalizer_metrics())
+            actions_for_metrics = self._get_action_metrics_actions(sampler)
             metrics.update(
                 self.policy.action_dist.get_metrics(
-                    actions=sampler.actions,
+                    actions=actions_for_metrics,
                     action_splitter=self.metrics_action_splitters,
                 )
             )
@@ -833,6 +835,34 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
         if loss_time_mask is not None:
             return loss_time_mask
         return getattr(batch, "time_mask", None)
+
+    @classmethod
+    def _get_action_metrics_actions(
+            cls,
+            batch: PPOSamples,
+    ) -> torch.Tensor:
+        actions = batch.actions
+        if actions.ndim < 2:
+            return actions
+
+        valid_mask = cls._build_action_metrics_valid_mask(batch)
+        if valid_mask is None:
+            return actions.reshape(-1, actions.shape[-1])
+        return actions[valid_mask]
+
+    @classmethod
+    def _build_action_metrics_valid_mask(
+            cls,
+            batch: PPOSamples,
+    ) -> torch.Tensor | None:
+        agent_mask = batch.agent_mask
+        time_mask = cls._get_loss_time_mask(batch)
+
+        valid_mask = agent_mask
+        if time_mask is not None:
+            time_agent_mask = time_mask.unsqueeze(-1)
+            valid_mask = time_agent_mask if valid_mask is None else valid_mask & time_agent_mask
+        return valid_mask
 
     def _execute_command(
             self,
