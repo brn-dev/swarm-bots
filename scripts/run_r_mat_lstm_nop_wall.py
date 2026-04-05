@@ -16,14 +16,15 @@ from swarmbots.learn.action_dists.gsde_action_dist import GSDEActionDist
 from swarmbots.learn.action_dists.sticky_action_dist import StickyActionDist
 from swarmbots.learn.action_dists.sticky_left_right_beta_action_dist import StickyLeftRightBetaConfig
 from swarmbots.learn.algos.mat.mat_policy import MATCriticConfig
-from swarmbots.learn.algos.mat.mat_encoder import MATEncoderConfig
 from swarmbots.learn.algos.mat.mat_decoder import MATDecoderConfig, MATDecoderSelfAttentionMode
-from swarmbots.learn.algos.mat.mat_policy import MATPolicy, MATPolicyConfig
 from swarmbots.learn.algos.ppo.base_ppo_policy import BasePPOPolicy
-from swarmbots.learn.algos.world_modeling.next_obs_pred_ppo_wrapper import NextObsPredWrapper, NOPWorldModelConfig
 from swarmbots.learn.algos.ppo.ppo import AutomaticLearningRate, StepsRolloutMode, PPO
-from swarmbots.learn.algos.world_modeling.ppo_wm_sampler import PPOWMSamplerConfig
 from swarmbots.learn.algos.ppo.ppo_policy import PopArtConfig
+from swarmbots.learn.algos.r_mat.r_mat_encoder import RMATEncoderConfig
+from swarmbots.learn.algos.r_mat.r_mat_policy import RMATPolicy, RMATPolicyConfig
+from swarmbots.learn.algos.r_mat.r_ppo_wm_sampler import RPPOWMSamplerConfig
+from swarmbots.learn.algos.r_mat.temporal_sequence_model import LSTMTemporalSequenceModelConfig
+from swarmbots.learn.algos.world_modeling.next_obs_pred_ppo_wrapper import NextObsPredWrapper, NOPWorldModelConfig
 from swarmbots.learn.algos.world_modeling.next_obs_pred_mixin import NextObsPredConfig
 from swarmbots.learn.env_wrappers.feature_wise_obs_norm_wrapper import (
     FeatureWiseObsNormWrapper,
@@ -45,7 +46,7 @@ from swarmbots.learn.scheduling.schedulers import (
     ScheduledHyperParameter,
     SchedulerManager, ScheduleUnit,
 )
-from swarmbots.learn.scheduling.linear_scheduler import LinearScheduler, LinearSchedulerConfig
+from swarmbots.learn.scheduling.linear_scheduler import LinearScheduler
 from swarmbots.learn.scheduling.auto_lr_updater import make_auto_lr_updater
 
 
@@ -168,7 +169,7 @@ def main() -> None:
     n_envs = n_workers * 12
 
     episode_length = 512
-    total_timesteps = 70_000_000
+    total_timesteps = 100_000_000
     save_interval = 5000
 
     use_popart = True
@@ -192,16 +193,18 @@ def main() -> None:
 
     # ===== LOAD =====
     load_path: str | None = None
-    # load_path = "../runs/mat_nop_swarm_bots_wall/2026-03-29_01-08-59/models/model_77792876_steps_stopped.pt"
+    # load_path = "../runs/r_mat_lstm_nop_swarm_bots_wall/2026-03-29_01-08-59/models/model_77792876_steps_stopped.pt"
 
     # ===== DEVICE =====
     use_cuda = True and torch.cuda.is_available()
     use_cuda_rollout = True and torch.cuda.is_available()
     rollout_device = torch.device("cuda" if use_cuda_rollout else "cpu")
     train_device = torch.device("cuda" if use_cuda else "cpu")
+    record_device = torch.device("cpu")
 
     logger.info(f'{rollout_device = }')
     logger.info(f'{train_device = }')
+    logger.info(f'{record_device = }')
 
     if load_path is not None:
         if not load_path.endswith('.pt'):
@@ -211,7 +214,7 @@ def main() -> None:
         run_id = load_path.split('/')[3]
     logger.info(f'{run_id = }')
 
-    run_dir = f"../runs/mat_nop_swarm_bots_wall/{run_id}/"
+    run_dir = f"../runs/r_mat_lstm_nop_swarm_bots_wall/{run_id}/"
     save_optimizer = True
 
     swarm_seed_pool = tuple(range(42_000, 42_005))
@@ -303,21 +306,27 @@ def main() -> None:
     enc_d_model = 256
     dec_d_model = 96
     transition_model_d_model = 192
+    sequence_length = 32
+    burn_in_length = 8
 
     enc_nhead = 4
     dec_nhead = 2
     transition_model_nhead = 4
 
     print("Initializing Policy...")
-    mat_policy = MATPolicy(
+    r_mat_policy = RMATPolicy(
         env=env,
-        config=MATPolicyConfig(
-            encoder_config=MATEncoderConfig(
+        config=RMATPolicyConfig(
+            encoder_config=RMATEncoderConfig(
                 d_model=enc_d_model,
                 nhead=enc_nhead,
                 num_layers=2,
                 dim_feedforward=enc_d_model * 2,
                 local_obs_encoder_hidden_dims=[enc_d_model, enc_d_model],
+                temporal_model_config=LSTMTemporalSequenceModelConfig(
+                    num_layers=1,
+                    dropout=0.0,
+                ),
             ),
             decoder_config=MATDecoderConfig(
                 d_model=dec_d_model,
@@ -380,7 +389,7 @@ def main() -> None:
         ),
     )
     policy = NextObsPredWrapper(
-        policy=mat_policy,
+        policy=r_mat_policy,
         world_model_config=NOPWorldModelConfig(
             n_agents=env.n_agents,
             local_latent_dim=enc_d_model,
@@ -464,15 +473,18 @@ def main() -> None:
         )
 
     rollout_samples = int(4048 * 0.75)
+    sampler_batch_size = max(1, rollout_samples // (sequence_length - burn_in_length))
     ppo = PPO(
         policy=policy,
         env=env,
         learning_rate=auto_lr,
         rollout_mode=StepsRolloutMode(rollout_samples),
         max_episode_length=episode_length,
-        sampler_config=PPOWMSamplerConfig(
-            batch_size=rollout_samples,
+        sampler_config=RPPOWMSamplerConfig(
+            batch_size=sampler_batch_size,
             num_next_steps=world_model_num_next_steps,
+            sequence_length=sequence_length,
+            burn_in_length=burn_in_length,
         ),
         n_epochs=6,
         gamma=gamma,
@@ -487,6 +499,7 @@ def main() -> None:
         value_loss_fn=nn.MSELoss(),
         train_device=train_device,
         rollout_device=rollout_device,
+        record_device=record_device,
         use_popart=use_popart,
         metrics_action_splitters=[lambda actions: split_actuator_joints(actions, actuators_per_limb), None],
         scheduler_manager=scheduler_manager,
@@ -505,10 +518,6 @@ def main() -> None:
     ]
     logging_console_keys.extend(
         (f'act0_j{i}', SummaryStatisticsFormat(histogram=11))
-        for i in range(actuators_per_limb)
-    )
-    logging_console_keys.extend(
-        (f'std0_j{i}', SummaryStatisticsFormat(mean='.3f', std='.3f', min_value='.3f', max_value='.3f'))
         for i in range(actuators_per_limb)
     )
     logging_console_keys.extend([

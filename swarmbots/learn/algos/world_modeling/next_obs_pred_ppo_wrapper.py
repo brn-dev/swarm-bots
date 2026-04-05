@@ -9,6 +9,7 @@ from swarmbots.learn.action_dists.hybrid_action_dist import HybridActionDistribu
 from swarmbots.learn.algos.ppo.base_ppo_policy import BasePPOPolicy
 from swarmbots.learn.algos.ppo.ppo_rollout_buffer import PPOEpisode
 from swarmbots.learn.algos.ppo.ppo_sampler import PPOSamples, PPOSamplerConfig
+from swarmbots.learn.algos.world_modeling.base_wm_sampler import BaseWMSampler
 from swarmbots.learn.algos.world_modeling.ppo_wm_sampler import PPOWMSampler, PPOWMSamples, PPOWMSamplerConfig
 from swarmbots.learn.algos.world_modeling.next_obs_pred_mixin import NextObsPredConfig, NextObsPredMixin
 from swarmbots.learn.algos.world_modeling.transformer_transition_model import (
@@ -129,7 +130,7 @@ class NextObsPredWrapper(BasePPOPolicy[PPOWMSamples, PPOWMSamplerConfig], NextOb
         next_obs_pred_loss, nop_loss_metrics = self.compute_next_obs_pred_loss(
             local_latents=local_latents,
             next_local_obs=batch.next_local_obs,
-            actions=batch.actions,
+            actions=batch.actions if not hasattr(batch, "wm_actions") else batch.wm_actions,
             local_obs=batch.local_obs,
             agent_mask=batch.wm_agent_mask,
             loss_agent_mask=batch.wm_loss_agent_mask,
@@ -148,12 +149,17 @@ class NextObsPredWrapper(BasePPOPolicy[PPOWMSamples, PPOWMSamplerConfig], NextOb
             self,
             episodes: list[PPOEpisode],
             config: PPOWMSamplerConfig,
-    ) -> PPOWMSampler:
-        return PPOWMSampler(
-            episodes=episodes,
-            config=config,
-            requires_previous_actions=self.requires_previous_actions(),
-        )
+    ) -> BaseWMSampler[Any, PPOWMSamplerConfig]:
+        if type(config) is PPOWMSamplerConfig:
+            return PPOWMSampler(
+                episodes=episodes,
+                config=config,
+                requires_previous_actions=self.requires_previous_actions(),
+            )
+        sampler = self.policy.make_sampler(episodes=episodes, config=config)
+        if not isinstance(sampler, BaseWMSampler):
+            raise ValueError('Policy does not create a WM Sampler!')
+        return sampler
 
     def get_hyper_parameters(self) -> dict[str, Any]:
         return {

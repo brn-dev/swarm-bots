@@ -12,6 +12,7 @@ from torch.nn import functional as F
 from swarmbots.learn.algos.world_modeling.transformer_transition_model import (
     TransformerTransitionModel,
 )
+from swarmbots.learn.algos.world_modeling.wm_recurrent_batch import flatten_recurrent_wm_batch
 from swarmbots.learn.masking import build_valid_mask, masked_mean, restrict_loss_agent_mask
 from swarmbots.learn.serialization_utils import serialize_value
 
@@ -306,8 +307,23 @@ class NextObsPredMixin(abc.ABC):
             loss_agent_mask: torch.Tensor | None = None,
             time_mask: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, dict[str, Any]]:
-        if local_latents.ndim != 3:
-            raise ValueError(f"Expected online_local_latents shape (B, N, D), got {tuple(local_latents.shape)}")
+        (
+            local_latents,
+            next_local_obs,
+            actions,
+            local_obs,
+            agent_mask,
+            loss_agent_mask,
+            time_mask,
+        ) = self._flatten_recurrent_next_obs_pred_inputs(
+            local_latents=local_latents,
+            next_local_obs=next_local_obs,
+            actions=actions,
+            local_obs=local_obs,
+            agent_mask=agent_mask,
+            loss_agent_mask=loss_agent_mask,
+            time_mask=time_mask,
+        )
 
         local_latents = self.pre_transition_transform(local_latents)
 
@@ -394,6 +410,41 @@ class NextObsPredMixin(abc.ABC):
             raise ValueError("No next-observation prediction targets configured")
 
         return torch.stack(present_losses).sum(), metrics
+
+    @staticmethod
+    def _flatten_recurrent_next_obs_pred_inputs(
+            *,
+            local_latents: torch.Tensor,
+            next_local_obs: torch.Tensor,
+            actions: torch.Tensor,
+            local_obs: torch.Tensor | None,
+            agent_mask: torch.Tensor | None,
+            loss_agent_mask: torch.Tensor | None,
+            time_mask: torch.Tensor | None,
+    ) -> tuple[
+        torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor | None,
+        torch.Tensor | None, torch.Tensor | None, torch.Tensor | None,
+    ]:
+        flattened = flatten_recurrent_wm_batch(
+            local_latents=local_latents,
+            next_local_obs=next_local_obs,
+            actions=actions,
+            local_obs=local_obs,
+            agent_mask=agent_mask,
+            loss_agent_mask=loss_agent_mask,
+            time_mask=time_mask,
+        )
+        if flattened is None:
+            return local_latents, next_local_obs, actions, local_obs, agent_mask, loss_agent_mask, time_mask
+        return (
+            flattened.local_latents,
+            flattened.next_local_obs,
+            flattened.actions,
+            flattened.local_obs,
+            flattened.agent_mask,
+            flattened.loss_agent_mask,
+            flattened.time_mask,
+        )
 
     @staticmethod
     def _normalize_indices(indices: Optional[list[int]]) -> Optional[list[int]]:

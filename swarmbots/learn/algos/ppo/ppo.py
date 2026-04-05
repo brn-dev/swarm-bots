@@ -111,6 +111,7 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
             agent_logprob_reduction: Optional[Literal["sum", "mean"]] = None,
             train_device: str | torch.device = "auto",
             rollout_device: str | torch.device = "cpu",
+            record_device: str | torch.device | None = None,
             metrics_action_splitters: list[Callable[[torch.Tensor], dict[str, torch.Tensor]] | None] | None = None,
             use_popart: bool = False,
             scheduler_manager: SchedulerManager | None = None,
@@ -174,6 +175,7 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
 
         self.train_device = as_device(train_device)
         self.rollout_device = as_device(rollout_device)
+        self.record_device = self.rollout_device if record_device is None else as_device(record_device)
         self.scheduler_manager = scheduler_manager
 
         self.rollout_buffer = PPORolloutBuffer(
@@ -225,6 +227,7 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
             'target_kl': self.target_kl,
             'train_device': str(self.train_device),
             'rollout_device': str(self.rollout_device),
+            'record_device': str(self.record_device),
             'use_popart': self.use_popart,
             'gsde_reset_mode': self._serialize_gsde_reset_mode(self.gsde_reset_mode),
             'agent_logprob_reduction': self.agent_logprob_reduction,
