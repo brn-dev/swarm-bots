@@ -190,6 +190,9 @@ def record_policy(
                 dtype=obs["local_obs"].dtype,
                 device=obs["local_obs"].device,
             )
+        policy.reset_temporal_state(
+            episode_start_mask=torch.ones((env.num_envs,), device=device, dtype=torch.bool)
+        )
         action_dist = getattr(policy, "action_dist", None)
         if action_dist is not None and hasattr(action_dist, "reset_temporal_correlations_on_ep_start"):
             episode_start_mask = torch.ones((env.num_envs,), device=device, dtype=torch.bool)

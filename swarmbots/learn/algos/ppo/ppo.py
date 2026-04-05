@@ -240,11 +240,11 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
             values: torch.Tensor,
     ) -> tuple[torch.Tensor, float, dict[str, Any]]:
         log_prob, old_log_prob = self.reduce_agents(batch, log_probs)
-        valid_mask = self._build_agent_valid_mask(batch.agent_mask, log_prob)
+        valid_mask = self._build_batch_valid_mask(batch, log_prob)
 
         advantages = batch.advantages
-        if self.normalize_advantage and len(advantages) > 1:
-            advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+        if self.normalize_advantage and advantages.numel() > 1:
+            advantages = self._normalize_advantages(batch, advantages)
 
         ratio = torch.exp(log_prob - old_log_prob)
 
@@ -655,26 +655,27 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
                     f"Expected agent_mask shape {tuple(log_probs.shape)}, got {tuple(agent_mask.shape)}"
                 )
 
+        agent_dim = log_probs.ndim - 1
         if self.agent_logprob_reduction is None:
             log_prob = log_probs
             old_log_prob = batch.log_probs
         elif self.agent_logprob_reduction == "sum":
             if agent_mask is None:
-                log_prob = log_probs.sum(dim=AGENTS_DIM)
-                old_log_prob = batch.log_probs.sum(dim=AGENTS_DIM)
+                log_prob = log_probs.sum(dim=agent_dim)
+                old_log_prob = batch.log_probs.sum(dim=agent_dim)
             else:
                 mask_f = agent_mask.to(dtype=log_probs.dtype)
-                log_prob = (log_probs * mask_f).sum(dim=AGENTS_DIM)
-                old_log_prob = (batch.log_probs * mask_f).sum(dim=AGENTS_DIM)
+                log_prob = (log_probs * mask_f).sum(dim=agent_dim)
+                old_log_prob = (batch.log_probs * mask_f).sum(dim=agent_dim)
         elif self.agent_logprob_reduction == "mean":
             if agent_mask is None:
-                log_prob = log_probs.mean(dim=AGENTS_DIM)
-                old_log_prob = batch.log_probs.mean(dim=AGENTS_DIM)
+                log_prob = log_probs.mean(dim=agent_dim)
+                old_log_prob = batch.log_probs.mean(dim=agent_dim)
             else:
                 mask_f = agent_mask.to(dtype=log_probs.dtype)
-                denom = mask_f.sum(dim=AGENTS_DIM).clamp_min(1.0)
-                log_prob = (log_probs * mask_f).sum(dim=AGENTS_DIM) / denom
-                old_log_prob = (batch.log_probs * mask_f).sum(dim=AGENTS_DIM) / denom
+                denom = mask_f.sum(dim=agent_dim).clamp_min(1.0)
+                log_prob = (log_probs * mask_f).sum(dim=agent_dim) / denom
+                old_log_prob = (batch.log_probs * mask_f).sum(dim=agent_dim) / denom
         else:
             raise ValueError(f"Unhandled {self.agent_logprob_reduction=}")
         return log_prob, old_log_prob
@@ -697,7 +698,7 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
         if value.ndim == 0:
             return value
 
-        if value.ndim == 2:
+        if value.ndim == batch.log_probs.ndim:
             if value.shape != batch.log_probs.shape:
                 raise ValueError(
                     f"Expected extra loss shape {tuple(batch.log_probs.shape)}, got {tuple(value.shape)}"
@@ -706,26 +707,53 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
                 reduced = value
             elif self.agent_logprob_reduction == "sum":
                 if batch.agent_mask is None:
-                    reduced = value.sum(dim=AGENTS_DIM)
+                    reduced = value.sum(dim=value.ndim - 1)
                 else:
                     mask_f = batch.agent_mask.to(dtype=value.dtype)
-                    reduced = (value * mask_f).sum(dim=AGENTS_DIM)
+                    reduced = (value * mask_f).sum(dim=value.ndim - 1)
             elif self.agent_logprob_reduction == "mean":
                 if batch.agent_mask is None:
-                    reduced = value.mean(dim=AGENTS_DIM)
+                    reduced = value.mean(dim=value.ndim - 1)
                 else:
                     mask_f = batch.agent_mask.to(dtype=value.dtype)
-                    denom = mask_f.sum(dim=AGENTS_DIM).clamp_min(1.0)
-                    reduced = (value * mask_f).sum(dim=AGENTS_DIM) / denom
+                    denom = mask_f.sum(dim=value.ndim - 1).clamp_min(1.0)
+                    reduced = (value * mask_f).sum(dim=value.ndim - 1) / denom
             else:
                 raise ValueError(f"Unhandled {self.agent_logprob_reduction=}")
-        elif value.ndim == 1:
+        elif value.ndim == batch.log_probs.ndim - 1:
             reduced = value
         else:
             raise ValueError(f"Unsupported extra loss ndim {value.ndim} for shape {tuple(value.shape)}")
 
-        valid_mask = self._build_agent_valid_mask(batch.agent_mask, reduced)
+        valid_mask = self._build_batch_valid_mask(batch, reduced)
         return masked_mean(reduced, valid_mask)
+
+    def _build_batch_valid_mask(
+            self,
+            batch: PPOSamples,
+            target: torch.Tensor,
+    ) -> torch.Tensor | None:
+        return self._combine_valid_masks(
+            agent_mask=batch.agent_mask,
+            time_mask=self._get_loss_time_mask(batch),
+            target=target,
+        )
+
+    @classmethod
+    def _combine_valid_masks(
+            cls,
+            *,
+            agent_mask: torch.Tensor | None,
+            time_mask: torch.Tensor | None,
+            target: torch.Tensor,
+    ) -> torch.Tensor | None:
+        valid_mask = cls._build_agent_valid_mask(agent_mask, target)
+        time_valid_mask = cls._build_time_valid_mask(time_mask, target)
+        if valid_mask is None:
+            return time_valid_mask
+        if time_valid_mask is None:
+            return valid_mask
+        return valid_mask & time_valid_mask
 
     @staticmethod
     def _build_agent_valid_mask(
@@ -734,19 +762,74 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
     ) -> torch.Tensor | None:
         if agent_mask is None:
             return None
-        if target.ndim == 2:
+        if agent_mask.dtype != torch.bool:
+            raise ValueError(f"Expected agent_mask dtype bool, got {agent_mask.dtype}")
+        if agent_mask.ndim == target.ndim:
             if agent_mask.shape != target.shape:
                 raise ValueError(
                     f"Expected agent_mask shape {tuple(target.shape)}, got {tuple(agent_mask.shape)}"
                 )
             return agent_mask
-        if target.ndim == 1:
-            if agent_mask.ndim != 2 or agent_mask.shape[0] != target.shape[0]:
+        if agent_mask.ndim == target.ndim + 1:
+            if agent_mask.shape[:-1] != target.shape:
                 raise ValueError(
-                    f"Expected agent_mask shape (B, N) with B={target.shape[0]}, got {tuple(agent_mask.shape)}"
+                    f"Expected agent_mask prefix shape {tuple(target.shape)}, got {tuple(agent_mask.shape)}"
                 )
-            return agent_mask.any(dim=AGENTS_DIM)
-        raise ValueError(f"Unsupported target ndim for agent mask: {target.ndim}")
+            return agent_mask.any(dim=-1)
+        raise ValueError(
+            f"Unsupported agent_mask ndim {agent_mask.ndim} for target ndim {target.ndim}"
+        )
+
+    @staticmethod
+    def _build_time_valid_mask(
+            time_mask: torch.Tensor | None,
+            target: torch.Tensor,
+    ) -> torch.Tensor | None:
+        if time_mask is None:
+            return None
+        if time_mask.dtype != torch.bool:
+            raise ValueError(f"Expected time_mask dtype bool, got {time_mask.dtype}")
+        if time_mask.ndim == target.ndim:
+            if time_mask.shape != target.shape:
+                raise ValueError(
+                    f"Expected time_mask shape {tuple(target.shape)}, got {tuple(time_mask.shape)}"
+                )
+            return time_mask
+        if time_mask.ndim + 1 == target.ndim:
+            if time_mask.shape != target.shape[:-1]:
+                raise ValueError(
+                    f"Expected time_mask shape {tuple(target.shape[:-1])}, got {tuple(time_mask.shape)}"
+                )
+            return time_mask.unsqueeze(-1).expand_as(target)
+        raise ValueError(
+            f"Unsupported time_mask ndim {time_mask.ndim} for target ndim {target.ndim}"
+        )
+
+    def _normalize_advantages(
+            self,
+            batch: PPOSamples,
+            advantages: torch.Tensor,
+    ) -> torch.Tensor:
+        step_valid_mask = self._build_time_valid_mask(self._get_loss_time_mask(batch), advantages)
+        if step_valid_mask is None:
+            return (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+
+        valid_f = step_valid_mask.to(dtype=advantages.dtype)
+        num_valid = int(valid_f.sum().item())
+        if num_valid <= 1:
+            return advantages
+
+        mean = (advantages * valid_f).sum() / valid_f.sum()
+        variance = ((advantages - mean) ** 2 * valid_f).sum() / valid_f.sum()
+        normalized = (advantages - mean) / torch.sqrt(variance + 1e-8)
+        return torch.where(step_valid_mask, normalized, torch.zeros_like(normalized))
+
+    @staticmethod
+    def _get_loss_time_mask(batch: PPOSamples) -> torch.Tensor | None:
+        loss_time_mask = getattr(batch, "loss_time_mask", None)
+        if loss_time_mask is not None:
+            return loss_time_mask
+        return getattr(batch, "time_mask", None)
 
     def _execute_command(
             self,

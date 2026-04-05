@@ -37,6 +37,7 @@ Agents shall use this file to make notes for future instances. Write down import
 - Concrete policies:
 - `PPOPolicy`: MLP actor + MLP/PopArt critic.
 - `MATPolicy`: encoder/decoder transformer policy + DeepSet critic.
+- `RMATPolicy`: `MATPolicy` decoder/critic with `RMATEncoder` (per-layer agent-axis transformer + time-axis sequence model). Rollout-time temporal state lives inside the policy. Under `NEXT_STEP`, terminal observations must be encoded with the pre-reset state; reset only after that forward pass so the next episode's first observation sees the reset. Step-rollout bootstrap value passes must snapshot/restore RMAT temporal state so the live rollout state is not advanced twice on the same observation.
 - World-model composition is wrapper-first (not separate PPO algo classes):
 - `NextObsPredWrapper(BasePPOPolicy[PPOWMSamples, PPOWMSamplerConfig], NextObsPredMixin)`
 - `SPRWrapper(BasePPOPolicy[PPOWMSamples, PPOWMSamplerConfig], SPRMixin)`
@@ -49,6 +50,8 @@ Agents shall use this file to make notes for future instances. Write down import
 - `PPOWMSampler` extends `PPOSampler` with multi-step windows and returns `PPOWMSamples` (next obs, validity masks, WM masks).
 - Shared WM target construction now lives in `swarmbots/learn/algos/world_modeling/wm_sampler_helper.py`; use it for both flat and recurrent WM samplers so next-obs windows, shifted masks, and padding stay identical.
 - `RPPOWMSampler` in `swarmbots/learn/algos/r_mat/r_ppo_wm_sampler.py` chunks `PPOEpisode` segments into fixed-length right-padded sequences with `time_mask`; unlike flat `PPOWMSamples`, it keeps current PPO `actions` separate from multi-step `wm_actions`.
+- `RPPOWMSampler` now also supports burn-in via `burn_in_length`; it emits overlapping windows plus `loss_time_mask` so burn-in steps update recurrent state but do not contribute to PPO loss.
+- PPO loss/reduction code now understands recurrent `loss_time_mask` (falling back to `time_mask`), so padded or burn-in `(B,T,...)` slices are ignored for policy loss, metrics, and extra-loss reduction.
 
 - Action distribution structure:
 - `HybridActionSpace` / `VectorHybridActionSpace` define sub-spaces and `total_agent_action_dim`.
@@ -74,6 +77,7 @@ Agents shall use this file to make notes for future instances. Write down import
 - Vector env autoreset must be `NEXT_STEP` end-to-end.
 - Learn-side obs must include `local_obs`, `global_obs`, `hidden_local_vars`, `hidden_global_vars`; `agent_mask` optional but supported.
 - `MATPolicy` currently requires `agent_mask` as contiguous true-prefix, and agent 0 must be active.
+- `RMATPolicy` currently trains with zero-initialized recurrent state plus sampler burn-in windows, not stored rollout hidden states. That is an approximation, but much better than zero-init with non-overlapping chunks. Strict TBPTT / exact rollout-state replay still is not implemented.
 - If observation layout changes, update `build_obs_indices(...)` first (WM targets + normalization depend on it).
 - Wrapper order/class changes can break env-state restore because checkpoint env-state matching is strict by wrapper class/order (and `obs_key` for feature-normalization wrappers).
 
