@@ -161,6 +161,7 @@ def _collect_rollout_step(
             previous_actions=previous_actions,
         )
     timers.policy_forward_timings.append(timers.policy_forward_timer.get_duration())
+    policy.reset_temporal_state(episode_start_mask=is_final)
     _reset_temporal_correlations(policy=policy, episode_start_mask=is_final)
 
     values = values.masked_fill(was_terminated, 0.0)
@@ -260,6 +261,7 @@ def collect_whole_episodes(
         policy.to(buffer.rollout_device)
         policy.eval()
         initial_mask = torch.ones((buffer.n_envs,), dtype=torch.bool, device=buffer.rollout_device)
+        policy.reset_temporal_state(episode_start_mask=initial_mask)
         _reset_temporal_correlations(policy=policy, episode_start_mask=initial_mask)
 
     episode_infos: list[dict[str, Any]] = []
@@ -344,6 +346,7 @@ def collect_steps(
         policy.eval()
         if rollout_state is None:
             initial_mask = torch.ones((buffer.n_envs,), dtype=torch.bool, device=buffer.rollout_device)
+            policy.reset_temporal_state(episode_start_mask=initial_mask)
             _reset_temporal_correlations(policy=policy, episode_start_mask=initial_mask)
 
     episode_infos: list[dict[str, Any]] = []
@@ -390,15 +393,19 @@ def collect_steps(
     previous_actions_for_value: torch.Tensor | None = None
     if previous_actions is not None:
         previous_actions_for_value = previous_actions.masked_fill(is_final.unsqueeze(-1).unsqueeze(-1), 0.0)
-    _, _, final_values = policy(
-        local_obs,
-        global_obs,
-        hidden_local_vars=hidden_local_vars,
-        hidden_global_vars=hidden_global_vars,
-        agent_mask=agent_mask,
-        previous_actions=previous_actions_for_value,
-        deterministic=True,
-    )
+    temporal_state_snapshot = policy.get_temporal_state_snapshot()
+    try:
+        _, _, final_values = policy(
+            local_obs,
+            global_obs,
+            hidden_local_vars=hidden_local_vars,
+            hidden_global_vars=hidden_global_vars,
+            agent_mask=agent_mask,
+            previous_actions=previous_actions_for_value,
+            deterministic=True,
+        )
+    finally:
+        policy.restore_temporal_state_snapshot(temporal_state_snapshot)
     final_values = final_values.masked_fill(was_terminated, 0.0)
 
     with PerformanceTimer() as buffer_get_whole_episodes_timer:

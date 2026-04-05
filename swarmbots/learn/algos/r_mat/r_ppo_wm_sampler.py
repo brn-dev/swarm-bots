@@ -23,6 +23,7 @@ class RPPOWMSamples:
     returns: torch.Tensor  # (batch, sequence_length)
     advantages: torch.Tensor  # (batch, sequence_length)
     time_mask: torch.Tensor  # (batch, sequence_length)
+    loss_time_mask: torch.Tensor  # (batch, sequence_length)
     segment_starts: torch.Tensor  # (batch,)
 
     next_local_obs: torch.Tensor  # (batch, sequence_length, n_next_steps, n_agents, n_local_obs_features)
@@ -35,6 +36,7 @@ class RPPOWMSamples:
 @dataclass(frozen=True)
 class RPPOWMSamplerConfig(PPOWMSamplerConfig):
     sequence_length: int
+    burn_in_length: int = 0
 
 
 class RPPOWMSampler(BaseSampler[RPPOWMSamples, RPPOWMSamplerConfig]):
@@ -47,6 +49,12 @@ class RPPOWMSampler(BaseSampler[RPPOWMSamples, RPPOWMSamplerConfig]):
     ):
         if config.sequence_length < 1:
             raise ValueError(f"sequence_length must be >= 1, got {config.sequence_length}")
+        if config.burn_in_length < 0:
+            raise ValueError(f"burn_in_length must be >= 0, got {config.burn_in_length}")
+        if config.burn_in_length >= config.sequence_length:
+            raise ValueError(
+                f"burn_in_length must be < sequence_length, got {config.burn_in_length} >= {config.sequence_length}"
+            )
         if config.num_next_steps < 1:
             raise ValueError(f"num_next_steps must be >= 1, got {config.num_next_steps}")
 
@@ -68,6 +76,7 @@ class RPPOWMSampler(BaseSampler[RPPOWMSamples, RPPOWMSamplerConfig]):
         returns_chunks: list[torch.Tensor] = []
         advantages_chunks: list[torch.Tensor] = []
         time_mask_chunks: list[torch.Tensor] = []
+        loss_time_mask_chunks: list[torch.Tensor] = []
         segment_start_chunks: list[torch.Tensor] = []
         next_local_obs_chunks: list[torch.Tensor] = []
         next_validity_mask_chunks: list[torch.Tensor] = []
@@ -76,6 +85,8 @@ class RPPOWMSampler(BaseSampler[RPPOWMSamples, RPPOWMSamplerConfig]):
         wm_loss_agent_mask_chunks: list[torch.Tensor] = []
 
         sequence_length = config.sequence_length
+        burn_in_length = config.burn_in_length
+        train_length = sequence_length - burn_in_length
 
         for episode in episodes:
             num_steps = int(episode.local_obs.shape[0])
@@ -88,11 +99,22 @@ class RPPOWMSampler(BaseSampler[RPPOWMSamples, RPPOWMSamplerConfig]):
             )
             previous_actions = _build_previous_actions(episode) if requires_previous_actions else None
 
-            for start_idx in range(0, num_steps, sequence_length):
+            train_start_idx = 0
+            while train_start_idx < num_steps:
+                start_idx = 0 if train_start_idx == 0 else train_start_idx - burn_in_length
                 chunk_length = min(sequence_length, num_steps - start_idx)
+                loss_start_idx = train_start_idx - start_idx
                 time_mask_chunks.append(_build_time_mask(chunk_length, sequence_length, episode.local_obs.device))
+                loss_time_mask_chunks.append(
+                    _build_loss_time_mask(
+                        chunk_length=chunk_length,
+                        sequence_length=sequence_length,
+                        loss_start_idx=loss_start_idx,
+                        device=episode.local_obs.device,
+                    )
+                )
                 segment_start_chunks.append(
-                    torch.tensor(start_idx == 0, dtype=torch.bool, device=episode.local_obs.device)
+                    torch.tensor(train_start_idx == 0, dtype=torch.bool, device=episode.local_obs.device)
                 )
 
                 local_obs_chunks.append(_slice_time_chunk(episode.local_obs, start_idx, sequence_length, pad_value=0))
@@ -147,6 +169,10 @@ class RPPOWMSampler(BaseSampler[RPPOWMSamples, RPPOWMSamplerConfig]):
                     previous_actions_chunks.append(
                         _slice_time_chunk(previous_actions, start_idx, sequence_length, pad_value=0)
                     )
+                if train_start_idx == 0:
+                    train_start_idx = chunk_length
+                else:
+                    train_start_idx += train_length
 
         if not local_obs_chunks:
             raise ValueError("RPPOWMSampler requires at least one non-empty episode segment")
@@ -167,6 +193,7 @@ class RPPOWMSampler(BaseSampler[RPPOWMSamples, RPPOWMSamplerConfig]):
         self.returns = torch.stack(returns_chunks, dim=0).contiguous()
         self.advantages = torch.stack(advantages_chunks, dim=0).contiguous()
         self.time_mask = torch.stack(time_mask_chunks, dim=0).contiguous()
+        self.loss_time_mask = torch.stack(loss_time_mask_chunks, dim=0).contiguous()
         self.segment_starts = torch.stack(segment_start_chunks, dim=0).contiguous()
         self.next_local_obs = torch.stack(next_local_obs_chunks, dim=0).contiguous()
         self.next_validity_mask = torch.stack(next_validity_mask_chunks, dim=0).contiguous()
@@ -193,6 +220,7 @@ class RPPOWMSampler(BaseSampler[RPPOWMSamples, RPPOWMSamplerConfig]):
             returns=self.returns[batch_indices],
             advantages=self.advantages[batch_indices],
             time_mask=self.time_mask[batch_indices],
+            loss_time_mask=self.loss_time_mask[batch_indices],
             segment_starts=self.segment_starts[batch_indices],
             next_local_obs=self.next_local_obs[batch_indices],
             next_validity_mask=self.next_validity_mask[batch_indices],
@@ -215,6 +243,18 @@ def _build_time_mask(
 ) -> torch.Tensor:
     mask = torch.zeros(sequence_length, dtype=torch.bool, device=device)
     mask[:chunk_length] = True
+    return mask
+
+
+def _build_loss_time_mask(
+        *,
+        chunk_length: int,
+        sequence_length: int,
+        loss_start_idx: int,
+        device: torch.device,
+) -> torch.Tensor:
+    mask = torch.zeros(sequence_length, dtype=torch.bool, device=device)
+    mask[loss_start_idx:chunk_length] = True
     return mask
 
 

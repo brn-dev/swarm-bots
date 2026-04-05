@@ -1,0 +1,368 @@
+from dataclasses import dataclass, field, replace
+
+import torch
+
+from swarmbots.learn.action_dists.action_dist import ActionMetricsSplitterInput
+from swarmbots.learn.algos.mat.mat_policy import MATPolicy, MATPolicyConfig
+from swarmbots.learn.algos.r_mat.r_mat_encoder import RMATEncoder, RMATEncoderConfig, RMATEncoderState
+from swarmbots.learn.algos.r_mat.r_ppo_wm_sampler import RPPOWMSamples, RPPOWMSampler, RPPOWMSamplerConfig
+from swarmbots.learn.algos.ppo.ppo_rollout_buffer import PPOEpisode
+from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
+from swarmbots.learn.losses import LossDict, LossMetrics
+
+
+@dataclass(frozen=True)
+class RMATPolicyConfig(MATPolicyConfig):
+    encoder_config: RMATEncoderConfig = field(default_factory=RMATEncoderConfig)
+
+
+class RMATPolicy(MATPolicy):
+
+    def __init__(
+            self,
+            env: BaseLearnEnvWrapper,
+            config: RMATPolicyConfig = RMATPolicyConfig(),
+    ) -> None:
+        super().__init__(env=env, config=config)
+        self.config = config
+        self.encoder_config = replace(
+            config.encoder_config,
+            d_model=self.d_model_encoder,
+            act_fn_cls=config.act_fn_cls,
+            dropout=config.dropout,
+        )
+        self.encoder = RMATEncoder(
+            config=self.encoder_config,
+            max_agents=self.max_agents,
+            local_obs_dim=self.local_obs_dim,
+            global_obs_dim=self.global_obs_dim,
+        )
+        self._rollout_encoder_state: RMATEncoderState | None = None
+        self._rollout_state_batch_size: int | None = None
+        self._pending_episode_start_mask: torch.Tensor | None = None
+
+    def forward(
+            self,
+            local_obs: torch.Tensor,
+            global_obs: torch.Tensor,
+            hidden_local_vars: torch.Tensor | None = None,
+            hidden_global_vars: torch.Tensor | None = None,
+            agent_mask: torch.Tensor | None = None,
+            previous_actions: torch.Tensor | None = None,
+            deterministic: bool = False,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        batch_size = local_obs.shape[0]
+        augmented_observations = self._encode_rollout_observations(
+            local_obs=local_obs,
+            global_obs=global_obs,
+            agent_mask=agent_mask,
+        )
+        actions, log_probs = self._generate_actions(
+            augmented_observations=augmented_observations,
+            batch_size=batch_size,
+            agent_mask=agent_mask,
+            previous_actions=previous_actions,
+            deterministic=deterministic,
+            return_log_probs=True,
+        )
+        values = self._critic_with_hidden_vars(
+            augmented_observations,
+            hidden_local_vars,
+            hidden_global_vars,
+            agent_mask=agent_mask,
+        )
+        return actions, log_probs, values
+
+    def _evaluate_actions(
+            self,
+            batch: RPPOWMSamples,
+            action_splitter: ActionMetricsSplitterInput = None,
+    ) -> tuple[torch.Tensor, torch.Tensor, LossDict, LossMetrics, torch.Tensor]:
+        local_obs = batch.local_obs
+        batch_size, sequence_length, n_agents, _local_obs_dim = local_obs.shape
+        augmented_observations, _ = self.encoder(
+            local_obs,
+            batch.global_obs,
+            agent_mask=batch.agent_mask,
+            time_mask=batch.time_mask,
+        )
+
+        flat_batch_size = batch_size * sequence_length
+        flat_augmented_observations = augmented_observations.reshape(flat_batch_size, n_agents, self.d_model_encoder)
+        flat_agent_mask = None if batch.agent_mask is None else batch.agent_mask.reshape(flat_batch_size, n_agents)
+        flat_valid_agent_mask = _flatten_time_agent_mask(
+            agent_mask=batch.agent_mask,
+            time_mask=batch.time_mask,
+            n_agents=n_agents,
+        )
+        flat_loss_agent_mask = _flatten_time_agent_mask(
+            agent_mask=batch.agent_mask,
+            time_mask=batch.loss_time_mask,
+            n_agents=n_agents,
+        )
+        flat_previous_actions = (
+            None
+            if batch.previous_actions is None
+            else batch.previous_actions.reshape(flat_batch_size, n_agents, self.agent_action_dim)
+        )
+        flat_actions = batch.actions.reshape(flat_batch_size, n_agents, self.agent_action_dim)
+
+        query_tokens = self._encode_query_tokens(flat_augmented_observations)
+        memory_tokens = self._encode_memory_tokens(flat_augmented_observations)
+        context_tokens = self._encode_context_tokens(flat_augmented_observations, flat_actions)
+
+        latent_pi = self.actor_head(
+            self.decoder(
+                query_tokens=query_tokens,
+                context_tokens=context_tokens,
+                memory_tokens=memory_tokens,
+                agent_mask=flat_agent_mask,
+                memory_mask=flat_agent_mask,
+            )
+        )
+
+        self.action_dist.update_latent_features(latent_pi)
+        flat_log_probs = self.action_dist.log_prob(flat_actions, previous_actions=flat_previous_actions)
+        if flat_valid_agent_mask is not None:
+            flat_log_probs = flat_log_probs.masked_fill(~flat_valid_agent_mask, 0.0)
+
+        flat_values = self._critic_with_hidden_vars(
+            flat_augmented_observations,
+            batch.hidden_local_vars.reshape(flat_batch_size, n_agents, self.hidden_local_vars_dim),
+            batch.hidden_global_vars.reshape(flat_batch_size, self.hidden_global_vars_dim),
+            agent_mask=flat_agent_mask,
+        )
+        flat_time_mask = batch.time_mask.reshape(flat_batch_size)
+        flat_values = flat_values.masked_fill(~flat_time_mask, 0.0)
+
+        extra_losses, extra_loss_metrics = self.action_dist.compute_extra_losses(
+            agent_mask=flat_loss_agent_mask,
+            action_splitter=action_splitter,
+        )
+        reshaped_extra_losses = _reshape_extra_losses(
+            extra_losses=extra_losses,
+            batch_size=batch_size,
+            sequence_length=sequence_length,
+            n_agents=n_agents,
+            loss_time_mask=batch.loss_time_mask,
+            loss_agent_mask=flat_loss_agent_mask,
+        )
+
+        return (
+            flat_log_probs.reshape(batch_size, sequence_length, n_agents),
+            flat_values.reshape(batch_size, sequence_length),
+            reshaped_extra_losses,
+            extra_loss_metrics,
+            augmented_observations,
+        )
+
+    def act(
+            self,
+            local_obs: torch.Tensor,
+            global_obs: torch.Tensor,
+            hidden_local_vars: torch.Tensor | None = None,
+            hidden_global_vars: torch.Tensor | None = None,
+            agent_mask: torch.Tensor | None = None,
+            previous_actions: torch.Tensor | None = None,
+            deterministic: bool = False,
+    ) -> torch.Tensor:
+        _ = hidden_local_vars
+        _ = hidden_global_vars
+        augmented_observations = self._encode_rollout_observations(
+            local_obs=local_obs,
+            global_obs=global_obs,
+            agent_mask=agent_mask,
+        )
+        actions, _ = self._generate_actions(
+            augmented_observations=augmented_observations,
+            batch_size=local_obs.shape[0],
+            agent_mask=agent_mask,
+            previous_actions=previous_actions,
+            deterministic=deterministic,
+            return_log_probs=False,
+        )
+        return actions
+
+    def make_sampler(
+            self,
+            episodes: list[PPOEpisode],
+            config: RPPOWMSamplerConfig,
+    ) -> RPPOWMSampler:
+        return RPPOWMSampler(
+            episodes=episodes,
+            config=config,
+            requires_previous_actions=self.requires_previous_actions(),
+        )
+
+    def reset_temporal_state(
+            self,
+            episode_start_mask: torch.Tensor | None = None,
+    ) -> None:
+        if episode_start_mask is None:
+            self._rollout_encoder_state = None
+            self._rollout_state_batch_size = None
+            self._pending_episode_start_mask = None
+            return
+
+        if episode_start_mask.ndim != 1:
+            raise ValueError(
+                f"Expected episode_start_mask shape (B,), got {tuple(episode_start_mask.shape)}"
+            )
+        if episode_start_mask.dtype != torch.bool:
+            raise ValueError(f"Expected episode_start_mask dtype bool, got {episode_start_mask.dtype}")
+
+        if self._pending_episode_start_mask is None:
+            self._pending_episode_start_mask = episode_start_mask.clone()
+            return
+        self._pending_episode_start_mask = self._pending_episode_start_mask | episode_start_mask
+
+    def get_temporal_state_snapshot(self) -> tuple[RMATEncoderState | None, int | None, torch.Tensor | None]:
+        return (
+            None if self._rollout_encoder_state is None else _clone_temporal_state(self._rollout_encoder_state),
+            self._rollout_state_batch_size,
+            None if self._pending_episode_start_mask is None else self._pending_episode_start_mask.clone(),
+        )
+
+    def restore_temporal_state_snapshot(
+            self,
+            snapshot: tuple[RMATEncoderState | None, int | None, torch.Tensor | None],
+    ) -> None:
+        encoder_state, state_batch_size, pending_episode_start_mask = snapshot
+        self._rollout_encoder_state = (
+            None if encoder_state is None else _clone_temporal_state(encoder_state)
+        )
+        self._rollout_state_batch_size = state_batch_size
+        self._pending_episode_start_mask = (
+            None if pending_episode_start_mask is None else pending_episode_start_mask.clone()
+        )
+
+    def _get_rollout_encoder_state(
+            self,
+            *,
+            batch_size: int,
+            device: torch.device,
+            dtype: torch.dtype,
+    ) -> RMATEncoderState:
+        required_state_batch_size = batch_size * self.n_agents
+        if self._rollout_state_batch_size != required_state_batch_size:
+            self._rollout_encoder_state = None
+            self._rollout_state_batch_size = required_state_batch_size
+
+        if self._rollout_encoder_state is None:
+            return self.encoder.initial_state(
+                batch_size=required_state_batch_size,
+                device=device,
+                dtype=dtype,
+            )
+        return _move_temporal_state(self._rollout_encoder_state, device=device, dtype=dtype)
+
+    def _encode_rollout_observations(
+            self,
+            *,
+            local_obs: torch.Tensor,
+            global_obs: torch.Tensor,
+            agent_mask: torch.Tensor | None,
+    ) -> torch.Tensor:
+        batch_size = local_obs.shape[0]
+        rollout_state = self._get_rollout_encoder_state(
+            batch_size=batch_size,
+            device=local_obs.device,
+            dtype=local_obs.dtype,
+        )
+        augmented_observations, next_state = self.encoder(
+            local_obs,
+            global_obs,
+            agent_mask=agent_mask,
+            initial_state=rollout_state,
+            reset_mask=self._consume_pending_reset_mask(batch_size=batch_size, device=local_obs.device),
+        )
+        self._rollout_encoder_state = next_state
+        self._rollout_state_batch_size = batch_size * self.n_agents
+        return augmented_observations
+
+    def _consume_pending_reset_mask(
+            self,
+            *,
+            batch_size: int,
+            device: torch.device,
+    ) -> torch.Tensor | None:
+        if self._pending_episode_start_mask is None:
+            return None
+        reset_mask = self._pending_episode_start_mask.to(device=device)
+        self._pending_episode_start_mask = None
+        return reset_mask
+
+
+def _flatten_time_agent_mask(
+        *,
+        agent_mask: torch.Tensor | None,
+        time_mask: torch.Tensor,
+        n_agents: int,
+) -> torch.Tensor:
+    if agent_mask is None:
+        return time_mask.unsqueeze(-1).expand(*time_mask.shape, n_agents).reshape(-1, n_agents)
+    return (agent_mask & time_mask.unsqueeze(-1)).reshape(-1, n_agents)
+
+
+def _reshape_extra_losses(
+        *,
+        extra_losses: LossDict,
+        batch_size: int,
+        sequence_length: int,
+        n_agents: int,
+        loss_time_mask: torch.Tensor,
+        loss_agent_mask: torch.Tensor,
+) -> LossDict:
+    reshaped_losses: LossDict = {}
+    flat_loss_time_mask = loss_time_mask.reshape(batch_size * sequence_length)
+    for name, value in extra_losses.items():
+        if value.ndim == 2 and value.shape == (batch_size * sequence_length, n_agents):
+            reshaped_value = value.masked_fill(~loss_agent_mask, 0.0)
+            reshaped_losses[name] = reshaped_value.reshape(batch_size, sequence_length, n_agents)
+            continue
+        if value.ndim == 1 and value.shape == (batch_size * sequence_length,):
+            reshaped_value = value.masked_fill(~flat_loss_time_mask, 0.0)
+            reshaped_losses[name] = reshaped_value.reshape(batch_size, sequence_length)
+            continue
+        reshaped_losses[name] = value
+    return reshaped_losses
+
+
+def _move_temporal_state(
+        state: RMATEncoderState,
+        *,
+        device: torch.device,
+        dtype: torch.dtype,
+) -> RMATEncoderState:
+    return [_move_temporal_state_item(item, device=device, dtype=dtype) for item in state]
+
+
+def _clone_temporal_state(state: RMATEncoderState) -> RMATEncoderState:
+    return [_clone_temporal_state_item(item) for item in state]
+
+
+def _move_temporal_state_item(
+        item,
+        *,
+        device: torch.device,
+        dtype: torch.dtype,
+):
+    if torch.is_tensor(item):
+        if item.is_floating_point():
+            return item.to(device=device, dtype=dtype)
+        return item.to(device=device)
+    if isinstance(item, tuple):
+        return tuple(_move_temporal_state_item(value, device=device, dtype=dtype) for value in item)
+    if isinstance(item, list):
+        return [_move_temporal_state_item(value, device=device, dtype=dtype) for value in item]
+    return item
+
+
+def _clone_temporal_state_item(item):
+    if torch.is_tensor(item):
+        return item.clone()
+    if isinstance(item, tuple):
+        return tuple(_clone_temporal_state_item(value) for value in item)
+    if isinstance(item, list):
+        return [_clone_temporal_state_item(value) for value in item]
+    return item

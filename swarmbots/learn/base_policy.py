@@ -46,6 +46,18 @@ class BasePolicy(nn.Module, abc.ABC):
     def requires_previous_actions(self) -> bool:
         raise NotImplementedError()
 
+    def reset_temporal_state(
+            self,
+            episode_start_mask: torch.Tensor | None = None,
+    ) -> None:
+        _ = episode_start_mask
+
+    def get_temporal_state_snapshot(self) -> Any:
+        return None
+
+    def restore_temporal_state_snapshot(self, snapshot: Any) -> None:
+        _ = snapshot
+
     @staticmethod
     def _grad_norm_from_parameters(parameters: Iterable[nn.Parameter]) -> float:
         gradients = [parameter.grad for parameter in parameters if parameter.grad is not None]

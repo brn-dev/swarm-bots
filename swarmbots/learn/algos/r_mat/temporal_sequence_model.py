@@ -113,7 +113,7 @@ class LSTMTemporalSequenceModel(TemporalSequenceModel):
                 dtype=inputs.dtype,
             )
         else:
-            hidden_state, cell_state = self._validate_state(initial_state, batch_size=batch_size)
+            hidden_state, cell_state = initial_state
 
         outputs: list[torch.Tensor] = []
         zero_output = inputs.new_zeros((batch_size, 1, self.hidden_dim))
@@ -163,13 +163,3 @@ class LSTMTemporalSequenceModel(TemporalSequenceModel):
         if mask.dtype != torch.bool:
             raise ValueError(f"Expected {name} dtype torch.bool, got {mask.dtype}")
         return mask
-
-    def _validate_state(
-            self,
-            state: LSTMTemporalModelState,
-            *,
-            batch_size: int,
-    ) -> LSTMTemporalModelState:
-        if len(state) != 2:
-            raise ValueError("LSTM state must contain hidden state and cell state")
-        return state

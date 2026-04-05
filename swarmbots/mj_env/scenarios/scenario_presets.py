@@ -35,7 +35,7 @@ DEFAULT_KWARGS = {
     'reset_settle_timestep_scale': 3,
 }
 WALL_PASS_KWARGS = {
-    'wall_pass_reward_weight': 10.0,
+    'wall_pass_reward_weight': 5.0,
     'wall_pass_thresholds': [-0.1, 0.1, 0.3, 0.5],
 }
 
