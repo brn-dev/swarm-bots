@@ -3,6 +3,7 @@ from dataclasses import dataclass
 import torch
 
 from swarmbots.learn.algos.ppo.ppo_rollout_buffer import MaybeTensor, PPOEpisode
+from swarmbots.learn.algos.world_modeling.base_wm_sampler import BaseWMSampler
 from swarmbots.learn.algos.world_modeling.ppo_wm_sampler import PPOWMSamplerConfig
 from swarmbots.learn.algos.world_modeling.wm_sampler_helper import build_wm_episode_windows, pad_time_axis
 from swarmbots.learn.base_sampler import BaseSampler
@@ -39,7 +40,10 @@ class RPPOWMSamplerConfig(PPOWMSamplerConfig):
     burn_in_length: int = 0
 
 
-class RPPOWMSampler(BaseSampler[RPPOWMSamples, RPPOWMSamplerConfig]):
+class RPPOWMSampler(
+    BaseSampler[RPPOWMSamples, RPPOWMSamplerConfig],
+    BaseWMSampler[RPPOWMSamples, RPPOWMSamplerConfig],
+):
 
     def __init__(
             self,

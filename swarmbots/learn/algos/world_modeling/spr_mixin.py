@@ -9,6 +9,7 @@ from torch.nn import functional as F
 from swarmbots.learn.algos.world_modeling.transformer_transition_model import (
     TransformerTransitionModel,
 )
+from swarmbots.learn.algos.world_modeling.wm_recurrent_batch import flatten_recurrent_wm_batch
 from swarmbots.learn.masking import build_valid_mask, masked_mean, restrict_loss_agent_mask
 from swarmbots.learn.nn_components.residual import Residual
 from swarmbots.learn.polyak_update import polyak_update
@@ -101,8 +102,23 @@ class SPRMixin(abc.ABC):
             loss_agent_mask: torch.Tensor | None = None,
             time_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        if online_local_latents.ndim != 3:
-            raise ValueError(f"Expected online_local_latents shape (B, N, D), got {tuple(online_local_latents.shape)}")
+        flattened = flatten_recurrent_wm_batch(
+            local_latents=online_local_latents,
+            next_local_obs=next_local_obs,
+            next_global_obs=next_global_obs,
+            actions=actions,
+            agent_mask=agent_mask,
+            loss_agent_mask=loss_agent_mask,
+            time_mask=time_mask,
+        )
+        if flattened is not None:
+            online_local_latents = flattened.local_latents
+            next_local_obs = flattened.next_local_obs
+            next_global_obs = flattened.next_global_obs
+            actions = flattened.actions
+            agent_mask = flattened.agent_mask
+            loss_agent_mask = flattened.loss_agent_mask
+            time_mask = flattened.time_mask
 
         if actions.ndim == 3:
             online_next_latents = self.transition_model(online_local_latents, actions, agent_mask=agent_mask)
@@ -131,21 +147,7 @@ class SPRMixin(abc.ABC):
                 time_mask=None,
             )
 
-        if actions.ndim != 4:
-            raise ValueError(
-                f"Expected actions shape (B, N, A) or (B, T, N, A), got {tuple(actions.shape)}"
-            )
-
         b, t, n, _a = actions.shape
-        if online_local_latents.shape[0] != b or online_local_latents.shape[1] != n:
-            raise ValueError(
-                f"Expected online_local_latents shape (B, N, D)=({b}, {n}, D), got {tuple(online_local_latents.shape)}"
-            )
-        if next_local_obs.ndim != 4 or next_local_obs.shape[:3] != (b, t, n):
-            raise ValueError(
-                f"Expected local_obs shape (B, T, N, F)=({b}, {t}, {n}, F), got {tuple(next_local_obs.shape)}"
-            )
-
         z_preds = self.transition_model.predict_n_steps(online_local_latents, actions, agent_mask=agent_mask)
         online_next_projections = self.online_projection(z_preds)
         predictions = self.predictor(online_next_projections)
@@ -155,9 +157,11 @@ class SPRMixin(abc.ABC):
             agent_mask=agent_mask,
         )
 
+        if next_global_obs is None:
+            raise ValueError("next_global_obs is required for SPR")
         if next_global_obs.ndim == 2:
             next_global_obs = next_global_obs[:, None, :].expand(b, t, -1)
-        if next_global_obs.ndim != 3 or next_global_obs.shape[:2] != (b, t):
+        if next_global_obs.ndim != 3:
             raise ValueError(f"Expected global_obs shape (B, G) or (B, T, G), got {tuple(next_global_obs.shape)}")
 
         local_flat = next_local_obs.reshape(b * t, n, -1)

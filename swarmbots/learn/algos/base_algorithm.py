@@ -680,12 +680,13 @@ class BaseAlgorithm(abc.ABC):
             folder = Path(str(video_folder))
 
 
-        device = getattr(self, "rollout_device", torch.device("cpu"))
+        device = getattr(self, "record_device", getattr(self, "rollout_device", torch.device("cpu")))
         gsde_reset_mode = getattr(self, "gsde_reset_mode", None)
         record_env: BaseLearnEnvWrapper | None = None
 
         try:
             record_env = self._make_record_env()
+            record_env.device = device
             apply_env_state(record_env, capture_env_state(self.env))
             freeze_env_normalization(record_env)
             first_frame = record_env.render()

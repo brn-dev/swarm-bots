@@ -5,6 +5,7 @@ import torch
 
 from swarmbots.learn.algos.ppo.ppo_rollout_buffer import MaybeTensor, PPOEpisode
 from swarmbots.learn.algos.ppo.ppo_sampler import PPOSamples, PPOSampler, PPOSamplerConfig
+from swarmbots.learn.algos.world_modeling.base_wm_sampler import BaseWMSampler
 from swarmbots.learn.algos.world_modeling.wm_sampler_helper import build_wm_episode_windows
 
 
@@ -26,7 +27,10 @@ class PPOWMSamplerConfig(PPOSamplerConfig):
 PPOWMSamplesType = TypeVar('PPOSamplesType', bound=PPOWMSamples, covariant=True)
 PPOWMSamplerConfigType = TypeVar('PPOSamplerConfigType', bound=PPOWMSamplerConfig, covariant=True)
 
-class PPOWMSampler(PPOSampler[PPOWMSamples, PPOWMSamplerConfigType]):
+class PPOWMSampler(
+    PPOSampler[PPOWMSamples, PPOWMSamplerConfigType],
+    BaseWMSampler[PPOWMSamples, PPOWMSamplerConfigType],
+):
 
     def __init__(
             self,

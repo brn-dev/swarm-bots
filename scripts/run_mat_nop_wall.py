@@ -168,7 +168,7 @@ def main() -> None:
     n_envs = n_workers * 12
 
     episode_length = 512
-    total_timesteps = 70_000_000
+    total_timesteps = 100_000_000
     save_interval = 5000
 
     use_popart = True
@@ -199,9 +199,11 @@ def main() -> None:
     use_cuda_rollout = True and torch.cuda.is_available()
     rollout_device = torch.device("cuda" if use_cuda_rollout else "cpu")
     train_device = torch.device("cuda" if use_cuda else "cpu")
+    record_device = torch.device("cpu")
 
     logger.info(f'{rollout_device = }')
     logger.info(f'{train_device = }')
+    logger.info(f'{record_device = }')
 
     if load_path is not None:
         if not load_path.endswith('.pt'):
@@ -487,6 +489,7 @@ def main() -> None:
         value_loss_fn=nn.MSELoss(),
         train_device=train_device,
         rollout_device=rollout_device,
+        record_device=record_device,
         use_popart=use_popart,
         metrics_action_splitters=[lambda actions: split_actuator_joints(actions, actuators_per_limb), None],
         scheduler_manager=scheduler_manager,
