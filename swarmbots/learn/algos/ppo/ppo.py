@@ -11,7 +11,7 @@ from swarmbots.learn.algos.base_algorithm import BaseAlgorithm, LearningRate, _p
 from swarmbots.learn.algos.ppo.ppo_policy import PPOPolicy
 from swarmbots.learn.algos.ppo.base_ppo_policy import BasePPOPolicy
 from swarmbots.learn.algos.ppo.ppo_rollout import PPORolloutState, collect_steps, collect_whole_episodes
-from swarmbots.learn.algos.ppo.ppo_rollout_buffer import PPOEpisode, PPORolloutBuffer
+from swarmbots.learn.algos.ppo.ppo_rollout_buffer import PPOEpisodeSegment, PPORolloutBuffer
 from swarmbots.learn.algos.ppo.ppo_sampler import PPOSamples, PPOSamplerConfig
 from swarmbots.learn.algos.world_modeling.ppo_wm_sampler import PPOWMSamplerConfig
 from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
@@ -388,7 +388,7 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
         }
         return metrics, total_steps_in_rollout
 
-    def train(self, episodes: list[PPOEpisode]) -> dict[str, Any]:
+    def train(self, episodes: list[PPOEpisodeSegment]) -> dict[str, Any]:
         with PerformanceTimer() as to_train_device_timer:
             self.policy.train()
             self.policy.to(self.train_device)

@@ -7,7 +7,7 @@ from torch import nn
 from swarmbots.learn.action_dists.action_dist import ActionMetricsSplitterInput
 from swarmbots.learn.action_dists.hybrid_action_dist import HybridActionDistribution
 from swarmbots.learn.algos.ppo.base_ppo_policy import BasePPOPolicy
-from swarmbots.learn.algos.ppo.ppo_rollout_buffer import PPOEpisode
+from swarmbots.learn.algos.ppo.ppo_rollout_buffer import PPOEpisodeSegment
 from swarmbots.learn.algos.ppo.ppo_sampler import PPOSamples, PPOSamplerConfig
 from swarmbots.learn.algos.world_modeling.base_wm_sampler import BaseWMSampler
 from swarmbots.learn.algos.world_modeling.ppo_wm_sampler import PPOWMSampler, PPOWMSamples, PPOWMSamplerConfig
@@ -191,7 +191,7 @@ class SPRWrapper(BasePPOPolicy[PPOWMSamples, PPOWMSamplerConfig], SPRMixin):
 
     def make_sampler(
             self,
-            episodes: list[PPOEpisode],
+            episodes: list[PPOEpisodeSegment],
             config: PPOWMSamplerConfig,
     ) -> BaseWMSampler[Any, PPOWMSamplerConfig]:
         if type(config) is PPOWMSamplerConfig:

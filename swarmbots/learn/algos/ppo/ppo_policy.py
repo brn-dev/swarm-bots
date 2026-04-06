@@ -12,7 +12,7 @@ from swarmbots.learn.action_dists.hybrid_action_dist import (
 )
 from swarmbots.learn.action_dists.bernoulli_action_dist import BernoulliConfig
 from swarmbots.learn.algos.ppo.base_ppo_policy import BasePPOPolicy
-from swarmbots.learn.algos.ppo.ppo_rollout_buffer import PPOEpisode
+from swarmbots.learn.algos.ppo.ppo_rollout_buffer import PPOEpisodeSegment
 from swarmbots.learn.algos.ppo.ppo_sampler import PPOSamples, PPOSampler, PPOSamplerConfig
 from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
 from swarmbots.learn.losses import LossDict, LossMetrics
@@ -305,7 +305,7 @@ class PPOPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
 
     def make_sampler(
             self,
-            episodes: list[PPOEpisode],
+            episodes: list[PPOEpisodeSegment],
             config: PPOSamplerConfig,
     ) -> PPOSampler:
         return PPOSampler(

@@ -166,7 +166,7 @@ def main() -> None:
     )
 
     n_workers = 23
-    n_envs = n_workers * 12
+    n_envs = n_workers * 4
 
     episode_length = 512
     total_timesteps = 100_000_000
@@ -473,7 +473,7 @@ def main() -> None:
         )
 
     rollout_samples = int(4048 * 0.75)
-    sampler_batch_size = max(1, rollout_samples // (sequence_length - burn_in_length))
+    sampler_batch_size = 32
     ppo = PPO(
         policy=policy,
         env=env,

@@ -4,7 +4,7 @@ from typing import Any
 import torch
 
 from swarmbots.learn.algos.ppo.base_ppo_policy import BasePPOPolicy
-from swarmbots.learn.algos.ppo.ppo_rollout_buffer import PPOEpisode, PPORolloutBuffer
+from swarmbots.learn.algos.ppo.ppo_rollout_buffer import PPOEpisodeSegment, PPORolloutBuffer
 from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
 from swarmbots.learn.performance_timer import PerformanceTimer
 from swarmbots.learn.gsde_reset import GSDEResetMode, GSDEIntervalResetMode, GSDEProbabilityResetMode
@@ -14,6 +14,7 @@ from swarmbots.learn.summary_statistics import compute_summary_statistics
 @dataclass(slots=True)
 class PPORolloutState:
     obs: dict[str, torch.Tensor]
+    episode_start_mask: torch.Tensor
     is_final: torch.Tensor
     was_terminated: torch.Tensor
     previous_actions: torch.Tensor | None
@@ -112,6 +113,7 @@ def _collect_rollout_step(
         policy: BasePPOPolicy[Any, Any],
         buffer: PPORolloutBuffer,
         obs: dict[str, torch.Tensor],
+        episode_start_mask: torch.Tensor,
         is_final: torch.Tensor,
         was_terminated: torch.Tensor,
         previous_actions: torch.Tensor | None,
@@ -123,7 +125,7 @@ def _collect_rollout_step(
         is_gsde_interval_reset_mode: bool,
         gsde_reset_interval: int,
         gsde_reset_prob: float,
-) -> tuple[dict[str, torch.Tensor], torch.Tensor, torch.Tensor, torch.Tensor | None, int]:
+) -> tuple[dict[str, torch.Tensor], torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor | None, int]:
     local_obs = obs['local_obs']
     global_obs = obs['global_obs']
     hidden_local_vars = obs["hidden_local_vars"]
@@ -192,6 +194,7 @@ def _collect_rollout_step(
             log_probs=log_probs,
             values=values,
             previous_actions=previous_actions,
+            episode_start_mask=episode_start_mask,
             is_final=is_final,
         )
     timers.buffer_add_timings.append(timers.buffer_add_timer.get_duration())
@@ -206,7 +209,7 @@ def _collect_rollout_step(
     next_previous_actions: torch.Tensor | None = None
     if previous_actions is not None:
         next_previous_actions = actions.detach().masked_fill(is_final.unsqueeze(-1).unsqueeze(-1), 0.0)
-    return new_obs, dones, terminations, next_previous_actions, rollout_step_idx + 1
+    return new_obs, is_final, dones, terminations, next_previous_actions, rollout_step_idx + 1
 
 
 def _build_rollout_metrics(
@@ -238,7 +241,7 @@ def collect_whole_episodes(
         buffer: PPORolloutBuffer,
         n_episodes: int,
         gsde_reset_mode: GSDEResetMode | None = None,
-) -> tuple[list[PPOEpisode], list[dict[str, Any]], dict[str, Any]]:
+) -> tuple[list[PPOEpisodeSegment], list[dict[str, Any]], dict[str, Any]]:
     gsde_enabled, is_gsde_interval_reset_mode, gsde_reset_interval, gsde_reset_prob = _parse_gsde_reset_mode(
         policy,
         gsde_reset_mode,
@@ -247,6 +250,7 @@ def collect_whole_episodes(
     buffer.reset()
     with PerformanceTimer() as env_reset_timer:
         obs, info = env.reset()
+    episode_start_mask = torch.ones((buffer.n_envs,), dtype=torch.bool, device=buffer.rollout_device)
     is_final = torch.zeros((buffer.n_envs,), dtype=torch.bool, device=buffer.rollout_device)
     was_terminated = torch.zeros((buffer.n_envs,), dtype=torch.bool, device=buffer.rollout_device)
     previous_actions: torch.Tensor | None = None
@@ -271,11 +275,12 @@ def collect_whole_episodes(
     timers = _init_rollout_timers()
 
     while len(buffer.episodes) < n_episodes:
-        obs, is_final, was_terminated, previous_actions, rollout_step_idx = _collect_rollout_step(
+        obs, episode_start_mask, is_final, was_terminated, previous_actions, rollout_step_idx = _collect_rollout_step(
             env=env,
             policy=policy,
             buffer=buffer,
             obs=obs,
+            episode_start_mask=episode_start_mask,
             is_final=is_final,
             was_terminated=was_terminated,
             previous_actions=previous_actions,
@@ -309,7 +314,7 @@ def collect_steps(
         n_steps: int,
         rollout_state: PPORolloutState | None = None,
         gsde_reset_mode: GSDEResetMode | None = None,
-) -> tuple[list[PPOEpisode], list[dict[str, Any]], dict[str, Any], PPORolloutState]:
+) -> tuple[list[PPOEpisodeSegment], list[dict[str, Any]], dict[str, Any], PPORolloutState]:
     gsde_enabled, is_gsde_interval_reset_mode, gsde_reset_interval, gsde_reset_prob = _parse_gsde_reset_mode(
         policy,
         gsde_reset_mode,
@@ -322,6 +327,7 @@ def collect_steps(
         with PerformanceTimer() as env_reset_timer:
             obs, info = env.reset()
         env_reset_time = env_reset_timer.get_duration()
+        episode_start_mask = torch.ones((buffer.n_envs,), dtype=torch.bool, device=buffer.rollout_device)
         is_final = torch.zeros((buffer.n_envs,), dtype=torch.bool, device=buffer.rollout_device)
         was_terminated = torch.zeros((buffer.n_envs,), dtype=torch.bool, device=buffer.rollout_device)
         previous_actions: torch.Tensor | None = None
@@ -335,6 +341,7 @@ def collect_steps(
         episode_info_buffers: list[dict[str, Any] | None] = [None for _ in range(buffer.n_envs)]
     else:
         obs = rollout_state.obs
+        episode_start_mask = rollout_state.episode_start_mask
         is_final = rollout_state.is_final
         was_terminated = rollout_state.was_terminated
         previous_actions = rollout_state.previous_actions
@@ -360,11 +367,12 @@ def collect_steps(
     transitions_collected = 0
     while transitions_collected < n_steps:
         transitions_collected += int(torch.count_nonzero(torch.logical_not(is_final)).item())
-        obs, is_final, was_terminated, previous_actions, rollout_step_idx = _collect_rollout_step(
+        obs, episode_start_mask, is_final, was_terminated, previous_actions, rollout_step_idx = _collect_rollout_step(
             env=env,
             policy=policy,
             buffer=buffer,
             obs=obs,
+            episode_start_mask=episode_start_mask,
             is_final=is_final,
             was_terminated=was_terminated,
             previous_actions=previous_actions,
@@ -425,6 +433,7 @@ def collect_steps(
     )
     new_state = PPORolloutState(
         obs=obs,
+        episode_start_mask=episode_start_mask,
         is_final=is_final,
         was_terminated=was_terminated,
         previous_actions=previous_actions,

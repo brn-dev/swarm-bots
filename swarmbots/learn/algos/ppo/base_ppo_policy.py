@@ -6,7 +6,7 @@ import torch
 
 from swarmbots.learn.action_dists.action_dist import ActionMetricsSplitterInput
 from swarmbots.learn.action_dists.hybrid_action_dist import HybridActionDistribution
-from swarmbots.learn.algos.ppo.ppo_rollout_buffer import PPOEpisode
+from swarmbots.learn.algos.ppo.ppo_rollout_buffer import PPOEpisodeSegment
 from swarmbots.learn.algos.ppo.ppo_sampler import PPOSamples, PPOSampler, PPOSamplerConfig
 from swarmbots.learn.base_policy import BasePolicy
 from swarmbots.learn.losses import LossDict, LossMetrics
@@ -64,7 +64,7 @@ class BasePPOPolicy(BasePolicy, Generic[PPOSamplesType, PPOSamplerConfigType], a
     @abc.abstractmethod
     def make_sampler(
             self,
-            episodes: list[PPOEpisode],
+            episodes: list[PPOEpisodeSegment],
             config: PPOSamplerConfigType,
     ) -> PPOSampler[PPOSamplesType, PPOSamplerConfigType]:
         raise NotImplementedError()

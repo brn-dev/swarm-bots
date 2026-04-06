@@ -6,7 +6,7 @@ from swarmbots.learn.action_dists.action_dist import ActionMetricsSplitterInput
 from swarmbots.learn.algos.mat.mat_policy import MATPolicy, MATPolicyConfig
 from swarmbots.learn.algos.r_mat.r_mat_encoder import RMATEncoder, RMATEncoderConfig, RMATEncoderState
 from swarmbots.learn.algos.r_mat.r_ppo_wm_sampler import RPPOWMSamples, RPPOWMSampler, RPPOWMSamplerConfig
-from swarmbots.learn.algos.ppo.ppo_rollout_buffer import PPOEpisode
+from swarmbots.learn.algos.ppo.ppo_rollout_buffer import PPOEpisodeSegment
 from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
 from swarmbots.learn.losses import LossDict, LossMetrics
 
@@ -185,7 +185,7 @@ class RMATPolicy(MATPolicy):
 
     def make_sampler(
             self,
-            episodes: list[PPOEpisode],
+            episodes: list[PPOEpisodeSegment],
             config: RPPOWMSamplerConfig,
     ) -> RPPOWMSampler:
         return RPPOWMSampler(

@@ -50,10 +50,11 @@ Agents shall use this file to make notes for future instances. Write down import
 
 - Rollout/sampler structure:
 - `PPORolloutBuffer` builds `PPOEpisode` objects and computes GAE.
+- `collect_steps()` can emit partial `PPOEpisode`s that start mid true env episode. `PPOEpisode.is_true_episode_start` is explicit rollout bookkeeping for this; do not infer it from chunk index or `initial_previous_actions`.
 - `PPOSampler` flattens episodes into `PPOSamples`.
 - `PPOWMSampler` extends `PPOSampler` with multi-step windows and returns `PPOWMSamples` (next obs, validity masks, WM masks).
 - Shared WM target construction now lives in `swarmbots/learn/algos/world_modeling/wm_sampler_helper.py`; use it for both flat and recurrent WM samplers so next-obs windows, shifted masks, and padding stay identical.
-- `RPPOWMSampler` in `swarmbots/learn/algos/r_mat/r_ppo_wm_sampler.py` chunks `PPOEpisode` segments into fixed-length right-padded sequences with `time_mask`; unlike flat `PPOWMSamples`, it keeps current PPO `actions` separate from multi-step `wm_actions`.
+- `RPPOWMSampler` in `swarmbots/learn/algos/r_mat/r_ppo_wm_sampler.py` chunks `PPOEpisode` segments into fixed-length right-padded sequences with `time_mask`; unlike flat `PPOWMSamples`, it keeps current PPO `actions` separate from multi-step `wm_actions`. Its `is_true_episode_start` flag only means the chunk begins at a true env episode boundary, not merely the start of a partial rollout segment.
 - `RPPOWMSampler` now also supports burn-in via `burn_in_length`; it emits overlapping windows plus `loss_time_mask` so burn-in steps update recurrent state but do not contribute to PPO loss.
 - PPO loss/reduction code now understands recurrent `loss_time_mask` (falling back to `time_mask`), so padded or burn-in `(B,T,...)` slices are ignored for policy loss, metrics, and extra-loss reduction.
 

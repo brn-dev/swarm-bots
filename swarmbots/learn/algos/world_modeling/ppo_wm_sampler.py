@@ -3,7 +3,7 @@ from typing import TypeVar
 
 import torch
 
-from swarmbots.learn.algos.ppo.ppo_rollout_buffer import MaybeTensor, PPOEpisode
+from swarmbots.learn.algos.ppo.ppo_rollout_buffer import MaybeTensor, PPOEpisodeSegment
 from swarmbots.learn.algos.ppo.ppo_sampler import PPOSamples, PPOSampler, PPOSamplerConfig
 from swarmbots.learn.algos.world_modeling.base_wm_sampler import BaseWMSampler
 from swarmbots.learn.algos.world_modeling.wm_sampler_helper import build_wm_episode_windows
@@ -34,7 +34,7 @@ class PPOWMSampler(
 
     def __init__(
             self,
-            episodes: list[PPOEpisode],
+            episodes: list[PPOEpisodeSegment],
             config: PPOWMSamplerConfigType,
             requires_previous_actions: bool = False,
     ):
