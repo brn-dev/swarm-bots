@@ -2,7 +2,7 @@ from dataclasses import dataclass
 
 import torch
 
-from swarmbots.learn.algos.ppo.ppo_rollout_buffer import MaybeTensor, PPOEpisode
+from swarmbots.learn.algos.ppo.ppo_rollout_buffer import MaybeTensor, PPOEpisodeSegment
 
 
 @dataclass(slots=True)
@@ -36,7 +36,7 @@ def pad_time_axis(
 
 
 def build_wm_episode_windows(
-        episode: PPOEpisode,
+        episode: PPOEpisodeSegment,
         *,
         num_next_steps: int,
 ) -> WMEpisodeWindows:

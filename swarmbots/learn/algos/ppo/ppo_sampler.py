@@ -3,7 +3,7 @@ from typing import TypeVar
 
 import torch
 
-from swarmbots.learn.algos.ppo.ppo_rollout_buffer import MaybeTensor, PPOEpisode
+from swarmbots.learn.algos.ppo.ppo_rollout_buffer import MaybeTensor, PPOEpisodeSegment
 from swarmbots.learn.base_sampler import BaseSampler, BaseSamplerConfig
 
 
@@ -35,7 +35,7 @@ class PPOSampler(BaseSampler[PPOSamplesType, PPOSamplerConfigType]):
 
     def __init__(
             self,
-            episodes: list[PPOEpisode],
+            episodes: list[PPOEpisodeSegment],
             config: PPOSamplerConfigType,
             requires_previous_actions: bool = False,
     ):

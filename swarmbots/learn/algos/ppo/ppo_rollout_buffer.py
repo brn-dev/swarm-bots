@@ -11,7 +11,7 @@ MaybeTensor = Optional[torch.Tensor]
 
 
 @dataclass
-class PPOEpisode:
+class PPOEpisodeSegment:
     local_obs: torch.Tensor  # (n_steps, n_agents, n_local_obs)
     global_obs: torch.Tensor  # (n_steps, n_global_obs)
     hidden_local_vars: torch.Tensor  # (n_steps, n_agents, n_hidden_local_vars)
@@ -29,6 +29,7 @@ class PPOEpisode:
     final_agent_mask: MaybeTensor  # (n_agents)
     final_value: MaybeTensor  # (1)
     initial_previous_actions: MaybeTensor = None  # (n_agents, n_actions_per_agent)
+    is_true_episode_start: bool = True
 
     returns: MaybeTensor = None  # (n_steps)
     advantages: MaybeTensor = None  # (n_steps)
@@ -103,6 +104,11 @@ class PPOEpisodeAccumulator:
             (n_envs, n_agents, n_agent_actions),
             dtype=storage_dtype, device=storage_device
         )
+        self.is_true_episode_start = torch.zeros(
+            n_envs,
+            dtype=torch.bool,
+            device=storage_device,
+        )
         self.rewards = torch.zeros(
             (n_envs, max_episode_length),
             dtype=storage_dtype, device=storage_device
@@ -129,8 +135,9 @@ class PPOEpisodeAccumulator:
             log_probs: torch.Tensor,
             values: torch.Tensor,
             previous_actions: MaybeTensor,
+            episode_start_mask: torch.Tensor,
             is_final: torch.Tensor,
-    ) -> Iterator[PPOEpisode]:
+    ) -> Iterator[PPOEpisodeSegment]:
         active_env_indices = torch.where(torch.logical_not(is_final))[0]
         if len(active_env_indices) > 0:
             step_indices = self.step[active_env_indices]
@@ -141,6 +148,7 @@ class PPOEpisodeAccumulator:
                     self.initial_previous_actions[new_episode_env_indices].zero_()
                 else:
                     self.initial_previous_actions[new_episode_env_indices] = previous_actions[new_episode_env_indices]
+                self.is_true_episode_start[new_episode_env_indices] = episode_start_mask[new_episode_env_indices]
             self.local_obs[active_env_indices, step_indices] = local_obs[active_env_indices]
             self.global_obs[active_env_indices, step_indices] = global_obs[active_env_indices]
             self.hidden_local_vars[active_env_indices, step_indices] = hidden_local_vars[active_env_indices]
@@ -159,6 +167,7 @@ class PPOEpisodeAccumulator:
             step = int(self.step[final_env_idx].item())
             if step == 0:
                 self.initial_previous_actions[final_env_idx].zero_()
+                self.is_true_episode_start[final_env_idx] = False
                 self.step[final_env_idx] = 0
                 continue
             yield self.construct_episode(
@@ -171,6 +180,7 @@ class PPOEpisodeAccumulator:
                 final_value=values[final_env_idx],
             )
             self.initial_previous_actions[final_env_idx].zero_()
+            self.is_true_episode_start[final_env_idx] = False
             self.step[final_env_idx] = 0
 
     def construct_episode(
@@ -182,10 +192,10 @@ class PPOEpisodeAccumulator:
             final_hidden_global_vars: torch.Tensor,
             final_agent_mask: MaybeTensor,
             final_value: torch.Tensor,
-    ) -> PPOEpisode:
+    ) -> PPOEpisodeSegment:
         step = int(self.step[env].item())
         agent_mask = None if self.agent_mask is None else self.agent_mask[env, :step].clone()
-        return PPOEpisode(
+        return PPOEpisodeSegment(
             local_obs=self.local_obs[env, :step].clone(),
             global_obs=self.global_obs[env, :step].clone(),
             hidden_local_vars=self.hidden_local_vars[env, :step].clone(),
@@ -202,10 +212,12 @@ class PPOEpisodeAccumulator:
             final_agent_mask=None if final_agent_mask is None else final_agent_mask.clone(),
             final_value=final_value.clone(),
             initial_previous_actions=self.initial_previous_actions[env].clone(),
+            is_true_episode_start=bool(self.is_true_episode_start[env].item()),
         )
 
     def reset(self) -> None:
         self.initial_previous_actions.zero_()
+        self.is_true_episode_start.zero_()
         self.step[:] = 0
 
 
@@ -281,6 +293,7 @@ class PPORolloutBuffer:
             log_probs: torch.Tensor,
             values: torch.Tensor,
             previous_actions: MaybeTensor,
+            episode_start_mask: torch.Tensor,
             is_final: torch.Tensor,
     ) -> None:
         new_episodes = self.accumulator.add(
@@ -294,6 +307,7 @@ class PPORolloutBuffer:
             log_probs=log_probs,
             values=values,
             previous_actions=previous_actions,
+            episode_start_mask=episode_start_mask,
             is_final=is_final,
         )
         for new_ep in new_episodes:
@@ -304,16 +318,16 @@ class PPORolloutBuffer:
         self.accumulator.reset()
         self.episodes = []
 
-    def get_whole_episodes(self) -> list[PPOEpisode]:
+    def get_whole_episodes(self) -> list[PPOEpisodeSegment]:
         return self._episodes_to_train_dev(self.episodes)
 
     def dump_partial_episodes(
             self,
             final_obs: dict[str, torch.Tensor],
             final_values: torch.Tensor,
-    ) -> list[PPOEpisode]:
+    ) -> list[PPOEpisodeSegment]:
         final_agent_mask = final_obs.get("agent_mask", None)
-        partial_episodes: list[PPOEpisode] = []
+        partial_episodes: list[PPOEpisodeSegment] = []
         for env_idx in range(self.n_envs):
             step = int(self.accumulator.step[env_idx].item())
             if step == 0:
@@ -331,9 +345,9 @@ class PPORolloutBuffer:
             partial_episodes.append(episode)
         return self._episodes_to_train_dev(partial_episodes)
 
-    def _episodes_to_train_dev(self, episodes: list[PPOEpisode]) -> list[PPOEpisode]:
+    def _episodes_to_train_dev(self, episodes: list[PPOEpisodeSegment]) -> list[PPOEpisodeSegment]:
         return [
-            PPOEpisode(
+            PPOEpisodeSegment(
                 local_obs=ep.local_obs.to(device=self.train_device, dtype=self.train_dtype),
                 global_obs=ep.global_obs.to(device=self.train_device, dtype=self.train_dtype),
                 hidden_local_vars=ep.hidden_local_vars.to(device=self.train_device, dtype=self.train_dtype),
@@ -353,11 +367,11 @@ class PPORolloutBuffer:
                     None if ep.initial_previous_actions is None
                     else ep.initial_previous_actions.to(device=self.train_device, dtype=self.train_dtype)
                 ),
+                is_true_episode_start=ep.is_true_episode_start,
                 returns=ep.returns.to(device=self.train_device, dtype=self.train_dtype),
                 advantages=ep.advantages.to(device=self.train_device, dtype=self.train_dtype),
             )
             for ep in episodes
         ]
-
 
 

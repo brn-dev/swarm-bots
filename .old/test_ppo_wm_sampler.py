@@ -1,6 +1,6 @@
 import torch
 
-from swarmbots.learn.algos.ppo.ppo_rollout_buffer import PPOEpisode
+from swarmbots.learn.algos.ppo.ppo_rollout_buffer import PPOEpisodeSegment
 from swarmbots.learn.algos.world_modeling.ppo_wm_sampler import PPOWMSampler
 
 
@@ -12,7 +12,7 @@ def _make_episode(
     n_global_obs_features: int,
     n_actions: int,
     base: int,
-) -> PPOEpisode:
+) -> PPOEpisodeSegment:
     local_obs = (
         torch.arange(base, base + num_steps * n_agents * n_local_obs_features, dtype=torch.float32)
         .reshape(num_steps, n_agents, n_local_obs_features)
@@ -43,7 +43,7 @@ def _make_episode(
         .clone()
     )
 
-    return PPOEpisode(
+    return PPOEpisodeSegment(
         local_obs=local_obs,
         global_obs=global_obs,
         actions=actions,
