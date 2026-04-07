@@ -149,7 +149,8 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
         self.normalize_advantage = normalize_advantage
         self.mc_ent_coef = mc_ent_coef
         self.vf_coef = vf_coef
-        self.value_loss_fn = value_loss_fn if value_loss_fn is not None else nn.MSELoss()
+        self.value_loss_fn = value_loss_fn if value_loss_fn is not None else nn.MSELoss(reduction="none")
+        self._validate_value_loss_fn(self.value_loss_fn)
         self.max_grad_norm = max_grad_norm
         self.target_kl = target_kl
         self.use_popart = bool(use_popart)
@@ -275,7 +276,12 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
                 new_values - old_values, -self.clip_range_vf, self.clip_range_vf
             )
 
-        value_loss: torch.Tensor = self.value_loss_fn(values_pred, value_targets)
+        value_valid_mask = self._build_batch_valid_mask(batch, value_targets)
+        value_loss = self._compute_masked_value_loss(
+            values_pred=values_pred,
+            value_targets=value_targets,
+            valid_mask=value_valid_mask,
+        )
 
         mc_entropy_loss = masked_mean(log_prob, valid_mask)
 
@@ -302,6 +308,39 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
         }
 
         return loss, approx_kl_div, metrics
+
+    def _compute_masked_value_loss(
+            self,
+            *,
+            values_pred: torch.Tensor,
+            value_targets: torch.Tensor,
+            valid_mask: torch.Tensor | None,
+    ) -> torch.Tensor:
+        value_loss = self.value_loss_fn(values_pred, value_targets)
+        if value_loss.shape != value_targets.shape:
+            raise ValueError(
+                f"Expected value loss shape {tuple(value_targets.shape)}, got {tuple(value_loss.shape)}"
+            )
+        return masked_mean(value_loss, valid_mask)
+
+    @staticmethod
+    def _validate_value_loss_fn(value_loss_fn: nn.Module) -> None:
+        reduction = getattr(value_loss_fn, "reduction", None)
+        if reduction != "none":
+            raise ValueError(
+                "value_loss_fn must expose reduction='none' so PPO can apply masks; "
+                "for example use nn.MSELoss(reduction='none')"
+            )
+
+    def _select_valid_value_items(
+            self,
+            batch: Any,
+            values: torch.Tensor,
+    ) -> torch.Tensor:
+        valid_mask = self._build_batch_valid_mask(batch, values)
+        if valid_mask is None:
+            return values.flatten()
+        return values[valid_mask]
 
     def compute_loss(
             self,
@@ -397,12 +436,16 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
         with PerformanceTimer() as sampler_init_timer:
             sampler = self.policy.make_sampler(episodes, config=self.sampler_config)
 
-        if self.use_popart:
-            self.policy.update_value_normalizer(sampler.returns)
+        valid_returns = self._select_valid_value_items(sampler, sampler.returns)
+        if self.use_popart and valid_returns.numel() > 0:
+            self.policy.update_value_normalizer(valid_returns)
 
-        y_pred = sampler.values.flatten()
-        y_true = sampler.returns.flatten()
-        var_y = torch.var(y_true)
+        y_pred = self._select_valid_value_items(sampler, sampler.values)
+        y_true = valid_returns
+        if y_true.numel() > 1:
+            var_y = torch.var(y_true)
+        else:
+            var_y = y_true.new_tensor(float("nan"))
         if not torch.isnan(var_y) and var_y > 1e-8:
             explained_var = (1 - torch.var(y_true - y_pred) / var_y).item()
         else:
@@ -740,7 +783,7 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
     ) -> torch.Tensor | None:
         return self._combine_valid_masks(
             agent_mask=batch.agent_mask,
-            time_mask=self._get_loss_time_mask(batch),
+            time_mask=self._get_time_loss_mask(batch),
             target=target,
         )
 
@@ -815,7 +858,7 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
             batch: PPOSamples,
             advantages: torch.Tensor,
     ) -> torch.Tensor:
-        step_valid_mask = self._build_time_valid_mask(self._get_loss_time_mask(batch), advantages)
+        step_valid_mask = self._build_time_valid_mask(self._get_time_loss_mask(batch), advantages)
         if step_valid_mask is None:
             return (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
@@ -830,10 +873,10 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
         return torch.where(step_valid_mask, normalized, torch.zeros_like(normalized))
 
     @staticmethod
-    def _get_loss_time_mask(batch: PPOSamples) -> torch.Tensor | None:
-        loss_time_mask = getattr(batch, "loss_time_mask", None)
-        if loss_time_mask is not None:
-            return loss_time_mask
+    def _get_time_loss_mask(batch: PPOSamples) -> torch.Tensor | None:
+        time_loss_mask = getattr(batch, "time_loss_mask", None)
+        if time_loss_mask is not None:
+            return time_loss_mask
         return getattr(batch, "time_mask", None)
 
     @classmethod
@@ -856,7 +899,7 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
             batch: PPOSamples,
     ) -> torch.Tensor | None:
         agent_mask = batch.agent_mask
-        time_mask = cls._get_loss_time_mask(batch)
+        time_mask = cls._get_time_loss_mask(batch)
 
         valid_mask = agent_mask
         if time_mask is not None:

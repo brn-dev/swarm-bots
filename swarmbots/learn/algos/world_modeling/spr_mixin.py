@@ -133,10 +133,12 @@ class SPRMixin(abc.ABC):
             with torch.no_grad():
                 self.target_encoder.eval()
                 self.target_projection.eval()
-                target_local_latents = self.target_encoder(
-                    local_obs=next_local_obs,
-                    global_obs=next_global_obs,
-                    agent_mask=effective_loss_agent_mask,
+                target_local_latents = self._extract_encoder_latents(
+                    self.target_encoder(
+                        local_obs=next_local_obs,
+                        global_obs=next_global_obs,
+                        agent_mask=effective_loss_agent_mask,
+                    )
                 )
                 target_projections = self.target_projection(target_local_latents)
 
@@ -181,10 +183,12 @@ class SPRMixin(abc.ABC):
                     f"Expected loss_agent_mask ndim 2 or 3, got {effective_loss_agent_mask.ndim}"
                 )
 
-            z_targets = self.target_encoder(
-                local_obs=local_flat,
-                global_obs=global_flat,
-                agent_mask=flat_agent_mask,
+            z_targets = self._extract_encoder_latents(
+                self.target_encoder(
+                    local_obs=local_flat,
+                    global_obs=global_flat,
+                    agent_mask=flat_agent_mask,
+                )
             ).reshape(b, t, n, -1)
             target_projections = self.target_projection(z_targets)
 
@@ -195,5 +199,13 @@ class SPRMixin(abc.ABC):
             time_mask=time_mask,
         )
 
-
+    @staticmethod
+    def _extract_encoder_latents(encoder_output: torch.Tensor | tuple[Any, ...]) -> torch.Tensor:
+        if torch.is_tensor(encoder_output):
+            return encoder_output
+        if isinstance(encoder_output, tuple) and encoder_output and torch.is_tensor(encoder_output[0]):
+            return encoder_output[0]
+        raise TypeError(
+            f"Expected encoder output tensor or tuple starting with tensor, got {type(encoder_output).__name__}"
+        )
 
