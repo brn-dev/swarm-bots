@@ -43,7 +43,9 @@ Agents shall use this file to make notes for future instances. Write down import
 - `SPRWrapper(BasePPOPolicy[PPOWMSamples, PPOWMSamplerConfig], SPRMixin)`
 - Wrappers delegate action/value to wrapped `MATPolicy` and add WM losses in `evaluate_actions(...)`.
 - Important recurrent gotcha: WM wrappers must delegate `make_sampler(...)` to the wrapped policy. If a wrapper hardcodes `PPOWMSampler`, RMAT silently falls back to flat samples and crashes/misbehaves.
+- Important recurrent gotcha: WM wrappers must also delegate temporal-state hooks (`reset_temporal_state`, snapshot/restore, and `after_optimizer_step`) to the wrapped policy. Otherwise wrapped RMAT loses NEXT_STEP reset handling and step-rollout bootstrap snapshot/restore.
 - `NextObsPredMixin.compute_next_obs_pred_loss(...)` now flattens recurrent RMAT batches `(B, S, ...) -> (B*S, ...)`; recurrent NOP uses `RPPOWMSamples.wm_actions`, not the PPO current-step `actions`.
+- `SPRWrapper` intentionally rejects `RMATPolicy`; recurrent SPR target latents would need history-aware target encoding, which is not implemented.
 - WM sampler runtime checks should use `BaseWMSampler`, not concrete `PPOWMSampler`; recurrent RMAT uses `RPPOWMSampler`, which is a different class but still a valid WM sampler.
 - Shared recurrent WM flattening now lives in `swarmbots/learn/algos/world_modeling/wm_recurrent_batch.py`; use that for both NOP and SPR instead of duplicating `(B, S, ...) -> (B*S, ...)` logic.
 - `BasePPOPolicy._policy_actions(...)` normalizes action batch shape from `(B,N,A)` or `(B,T,N,A)` to `(B,N,A)` for policy eval.
@@ -54,9 +56,11 @@ Agents shall use this file to make notes for future instances. Write down import
 - `PPOSampler` flattens episodes into `PPOSamples`.
 - `PPOWMSampler` extends `PPOSampler` with multi-step windows and returns `PPOWMSamples` (next obs, validity masks, WM masks).
 - Shared WM target construction now lives in `swarmbots/learn/algos/world_modeling/wm_sampler_helper.py`; use it for both flat and recurrent WM samplers so next-obs windows, shifted masks, and padding stay identical.
-- `RPPOWMSampler` in `swarmbots/learn/algos/r_mat/r_ppo_wm_sampler.py` chunks `PPOEpisode` segments into fixed-length right-padded sequences with `time_mask`; unlike flat `PPOWMSamples`, it keeps current PPO `actions` separate from multi-step `wm_actions`. Its `is_true_episode_start` flag only means the chunk begins at a true env episode boundary, not merely the start of a partial rollout segment.
-- `RPPOWMSampler` now also supports burn-in via `burn_in_length`; it emits overlapping windows plus `loss_time_mask` so burn-in steps update recurrent state but do not contribute to PPO loss.
-- PPO loss/reduction code now understands recurrent `loss_time_mask` (falling back to `time_mask`), so padded or burn-in `(B,T,...)` slices are ignored for policy loss, metrics, and extra-loss reduction.
+- WM samples expose PPO current-step `actions` separately from multi-step `wm_actions`; wrappers must use `wm_actions` for WM losses, never guess from `actions`.
+- `RPPOWMSampler` in `swarmbots/learn/algos/r_mat/r_ppo_wm_sampler.py` chunks `PPOEpisode` segments into fixed-length right-padded sequences with `time_mask`. Its `is_true_episode_start` flag only means the chunk begins at a true env episode boundary, not merely the start of a partial rollout segment.
+- `RPPOWMSampler` supports burn-in via `burn_in_length`; it emits overlapping windows plus `time_loss_mask` so burn-in steps update recurrent state but do not contribute to PPO loss.
+- PPO loss/reduction code understands recurrent `time_loss_mask` (falling back to `time_mask`), so padded or burn-in `(B,T,...)` slices are ignored for policy loss, critic loss, metrics, and extra-loss reduction. PPO `value_loss_fn` must expose `reduction="none"` so masking can happen centrally.
+- Recurrent WM wrappers must combine `wm_target_time_mask` with `time_loss_mask`, otherwise burn-in roots still train WM losses.
 
 - Action distribution structure:
 - `HybridActionSpace` / `VectorHybridActionSpace` define sub-spaces and `total_agent_action_dim`.

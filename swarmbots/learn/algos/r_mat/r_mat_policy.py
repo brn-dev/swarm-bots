@@ -97,7 +97,7 @@ class RMATPolicy(MATPolicy):
         )
         flat_loss_agent_mask = _flatten_time_agent_mask(
             agent_mask=batch.agent_mask,
-            time_mask=batch.loss_time_mask,
+            time_mask=batch.time_loss_mask,
             n_agents=n_agents,
         )
         flat_previous_actions = (
@@ -144,7 +144,7 @@ class RMATPolicy(MATPolicy):
             batch_size=batch_size,
             sequence_length=sequence_length,
             n_agents=n_agents,
-            loss_time_mask=batch.loss_time_mask,
+            time_loss_mask=batch.time_loss_mask,
             loss_agent_mask=flat_loss_agent_mask,
         )
 
@@ -310,18 +310,18 @@ def _reshape_extra_losses(
         batch_size: int,
         sequence_length: int,
         n_agents: int,
-        loss_time_mask: torch.Tensor,
+        time_loss_mask: torch.Tensor,
         loss_agent_mask: torch.Tensor,
 ) -> LossDict:
     reshaped_losses: LossDict = {}
-    flat_loss_time_mask = loss_time_mask.reshape(batch_size * sequence_length)
+    flat_time_loss_mask = time_loss_mask.reshape(batch_size * sequence_length)
     for name, value in extra_losses.items():
         if value.ndim == 2 and value.shape == (batch_size * sequence_length, n_agents):
             reshaped_value = value.masked_fill(~loss_agent_mask, 0.0)
             reshaped_losses[name] = reshaped_value.reshape(batch_size, sequence_length, n_agents)
             continue
         if value.ndim == 1 and value.shape == (batch_size * sequence_length,):
-            reshaped_value = value.masked_fill(~flat_loss_time_mask, 0.0)
+            reshaped_value = value.masked_fill(~flat_time_loss_mask, 0.0)
             reshaped_losses[name] = reshaped_value.reshape(batch_size, sequence_length)
             continue
         reshaped_losses[name] = value

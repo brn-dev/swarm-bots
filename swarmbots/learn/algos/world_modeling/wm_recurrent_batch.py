@@ -102,6 +102,30 @@ def flatten_recurrent_wm_batch(
     )
 
 
+def build_wm_target_time_mask(
+        *,
+        wm_target_time_mask: torch.Tensor | None,
+        time_loss_mask: torch.Tensor | None,
+) -> torch.Tensor | None:
+    if wm_target_time_mask is None or time_loss_mask is None:
+        return wm_target_time_mask
+    if wm_target_time_mask.dtype != torch.bool:
+        raise ValueError(f"Expected wm_target_time_mask dtype torch.bool, got {wm_target_time_mask.dtype}")
+    if time_loss_mask.dtype != torch.bool:
+        raise ValueError(f"Expected time_loss_mask dtype torch.bool, got {time_loss_mask.dtype}")
+    if wm_target_time_mask.ndim != time_loss_mask.ndim + 1:
+        raise ValueError(
+            f"Expected wm_target_time_mask ndim {time_loss_mask.ndim + 1}, "
+            f"got {wm_target_time_mask.ndim}"
+        )
+    if wm_target_time_mask.shape[:-1] != time_loss_mask.shape:
+        raise ValueError(
+            f"Expected wm_target_time_mask prefix shape {tuple(time_loss_mask.shape)}, "
+            f"got {tuple(wm_target_time_mask.shape[:-1])}"
+        )
+    return wm_target_time_mask & time_loss_mask.unsqueeze(-1)
+
+
 def _flatten_recurrent_mask(
         *,
         mask: torch.Tensor | None,

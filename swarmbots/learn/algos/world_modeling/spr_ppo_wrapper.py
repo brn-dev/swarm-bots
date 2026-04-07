@@ -9,6 +9,7 @@ from swarmbots.learn.action_dists.hybrid_action_dist import HybridActionDistribu
 from swarmbots.learn.algos.ppo.base_ppo_policy import BasePPOPolicy
 from swarmbots.learn.algos.ppo.ppo_rollout_buffer import PPOEpisodeSegment
 from swarmbots.learn.algos.ppo.ppo_sampler import PPOSamples, PPOSamplerConfig
+from swarmbots.learn.algos.r_mat.r_mat_policy import RMATPolicy
 from swarmbots.learn.algos.world_modeling.base_wm_sampler import BaseWMSampler
 from swarmbots.learn.algos.world_modeling.ppo_wm_sampler import PPOWMSampler, PPOWMSamples, PPOWMSamplerConfig
 from swarmbots.learn.algos.world_modeling.spr_mixin import SPRMixin
@@ -16,6 +17,7 @@ from swarmbots.learn.algos.world_modeling.transformer_transition_model import (
     TransformerTransitionModel,
     TransformerTransitionModelConfig,
 )
+from swarmbots.learn.algos.world_modeling.wm_recurrent_batch import build_wm_target_time_mask
 from swarmbots.learn.losses import LossDict, LossMetrics
 from swarmbots.learn.nn_components.mlp import MLP
 
@@ -76,6 +78,11 @@ class SPRWrapper(BasePPOPolicy[PPOWMSamples, PPOWMSamplerConfig], SPRMixin):
             raise ValueError("online_encoder_attr must be a non-empty attribute path")
         if world_model_config.spr_loss_weight < 0:
             raise ValueError(f"spr_loss_weight must be >= 0, got {world_model_config.spr_loss_weight}")
+        if _contains_rmat_policy(policy):
+            raise ValueError(
+                "SPRWrapper does not support RMATPolicy. "
+                "SPR target latents currently ignore recurrent history, so use NextObsPredWrapper with RMAT instead."
+            )
         self.policy = policy
         self._online_encoder_attr = world_model_config.online_encoder_attr
         _ = self.online_encoder
@@ -97,6 +104,18 @@ class SPRWrapper(BasePPOPolicy[PPOWMSamples, PPOWMSamplerConfig], SPRMixin):
 
     def get_value_normalizer_metrics(self) -> dict[str, float]:
         return self.policy.get_value_normalizer_metrics()
+
+    def reset_temporal_state(
+            self,
+            episode_start_mask: torch.Tensor | None = None,
+    ) -> None:
+        self.policy.reset_temporal_state(episode_start_mask=episode_start_mask)
+
+    def get_temporal_state_snapshot(self) -> Any:
+        return self.policy.get_temporal_state_snapshot()
+
+    def restore_temporal_state_snapshot(self, snapshot: Any) -> None:
+        self.policy.restore_temporal_state_snapshot(snapshot)
 
     @property
     def online_encoder(self) -> nn.Module:
@@ -158,14 +177,18 @@ class SPRWrapper(BasePPOPolicy[PPOWMSamples, PPOWMSamplerConfig], SPRMixin):
             batch=batch,
             action_splitter=action_splitter,
         )
+        wm_target_time_mask = build_wm_target_time_mask(
+            wm_target_time_mask=batch.wm_target_time_mask,
+            time_loss_mask=getattr(batch, "time_loss_mask", None),
+        )
         spr_loss = self.compute_spr_loss(
             online_local_latents=local_latents,
             next_local_obs=batch.next_local_obs,
             next_global_obs=batch.next_global_obs,
-            actions=batch.actions if not hasattr(batch, "wm_actions") else batch.wm_actions,
+            actions=batch.wm_actions,
             agent_mask=batch.wm_agent_mask,
             loss_agent_mask=batch.wm_loss_agent_mask,
-            time_mask=batch.next_validity_mask,
+            time_mask=wm_target_time_mask,
         )
         spr_loss_weighted = self.spr_loss_weight * spr_loss
         world_model_loss_scaled = self.world_model_loss_coef * spr_loss_weighted
@@ -184,6 +207,7 @@ class SPRWrapper(BasePPOPolicy[PPOWMSamples, PPOWMSamplerConfig], SPRMixin):
         )
 
     def after_optimizer_step(self) -> None:
+        self.policy.after_optimizer_step()
         tau = self.world_model_target_tau
         if tau is None:
             return
@@ -344,3 +368,16 @@ class SPRWrapper(BasePPOPolicy[PPOWMSamples, PPOWMSamplerConfig], SPRMixin):
             ),
             residual_predictor=world_model_config.residual_predictor,
         )
+
+
+def _contains_rmat_policy(policy: BasePPOPolicy[Any, Any]) -> bool:
+    current: Any = policy
+    seen_ids: set[int] = set()
+    while True:
+        if isinstance(current, RMATPolicy):
+            return True
+        current_id = id(current)
+        if current_id in seen_ids or not hasattr(current, "policy"):
+            return False
+        seen_ids.add(current_id)
+        current = current.policy

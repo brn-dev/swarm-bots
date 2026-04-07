@@ -3,14 +3,14 @@ from dataclasses import dataclass
 import torch
 
 from swarmbots.learn.algos.ppo.ppo_rollout_buffer import MaybeTensor, PPOEpisodeSegment
-from swarmbots.learn.algos.world_modeling.base_wm_sampler import BaseWMSampler
+from swarmbots.learn.algos.world_modeling.base_wm_sampler import BaseWMSampler, BaseWMSamples
 from swarmbots.learn.algos.world_modeling.ppo_wm_sampler import PPOWMSamplerConfig
 from swarmbots.learn.algos.world_modeling.wm_sampler_helper import build_wm_episode_windows, pad_time_axis
 from swarmbots.learn.base_sampler import BaseSampler
 
 
 @dataclass
-class RPPOWMSamples:
+class RPPOWMSamples(BaseWMSamples):
     local_obs: torch.Tensor  # (batch, sequence_length, n_agents, n_local_obs_features)
     global_obs: torch.Tensor  # (batch, sequence_length, n_global_obs_features)
     hidden_local_vars: torch.Tensor  # (batch, sequence_length, n_agents, n_hidden_local_vars)
@@ -24,11 +24,11 @@ class RPPOWMSamples:
     returns: torch.Tensor  # (batch, sequence_length)
     advantages: torch.Tensor  # (batch, sequence_length)
     time_mask: torch.Tensor  # (batch, sequence_length)
-    loss_time_mask: torch.Tensor  # (batch, sequence_length)
+    time_loss_mask: torch.Tensor  # (batch, sequence_length)
     is_true_episode_start: torch.Tensor  # (batch,)
 
     next_local_obs: torch.Tensor  # (batch, sequence_length, n_next_steps, n_agents, n_local_obs_features)
-    next_validity_mask: torch.Tensor  # (batch, sequence_length, n_next_steps)
+    wm_target_time_mask: torch.Tensor  # (batch, sequence_length, n_next_steps)
     next_global_obs: torch.Tensor  # (batch, sequence_length, n_next_steps, n_global_obs_features)
     wm_agent_mask: MaybeTensor  # (batch, sequence_length, n_next_steps, n_agents)
     wm_loss_agent_mask: MaybeTensor  # (batch, sequence_length, n_next_steps, n_agents)
@@ -80,10 +80,10 @@ class RPPOWMSampler(
         returns_chunks: list[torch.Tensor] = []
         advantages_chunks: list[torch.Tensor] = []
         time_mask_chunks: list[torch.Tensor] = []
-        loss_time_mask_chunks: list[torch.Tensor] = []
+        time_loss_mask_chunks: list[torch.Tensor] = []
         is_true_episode_start_chunks: list[torch.Tensor] = []
         next_local_obs_chunks: list[torch.Tensor] = []
-        next_validity_mask_chunks: list[torch.Tensor] = []
+        wm_target_time_mask_chunks: list[torch.Tensor] = []
         next_global_obs_chunks: list[torch.Tensor] = []
         wm_agent_mask_chunks: list[torch.Tensor] = []
         wm_loss_agent_mask_chunks: list[torch.Tensor] = []
@@ -107,10 +107,15 @@ class RPPOWMSampler(
             while train_start_idx < num_steps:
                 start_idx = 0 if train_start_idx == 0 else train_start_idx - burn_in_length
                 chunk_length = min(sequence_length, num_steps - start_idx)
-                loss_start_idx = train_start_idx - start_idx
-                time_mask_chunks.append(_build_time_mask(chunk_length, sequence_length, episode.local_obs.device))
-                loss_time_mask_chunks.append(
-                    _build_loss_time_mask(
+                if train_start_idx == 0 and not episode.is_true_episode_start:
+                    loss_start_idx = min(chunk_length, burn_in_length)
+                else:
+                    loss_start_idx = train_start_idx - start_idx
+                time_mask_chunks.append(
+                    _build_time_mask(chunk_length, sequence_length, episode.local_obs.device)
+                )
+                time_loss_mask_chunks.append(
+                    _build_time_loss_mask(
                         chunk_length=chunk_length,
                         sequence_length=sequence_length,
                         loss_start_idx=loss_start_idx,
@@ -144,8 +149,13 @@ class RPPOWMSampler(
                 next_local_obs_chunks.append(
                     _slice_time_chunk(episode_windows.next_local_obs, start_idx, sequence_length, pad_value=0)
                 )
-                next_validity_mask_chunks.append(
-                    _slice_time_chunk(episode_windows.next_validity_mask, start_idx, sequence_length, pad_value=False)
+                wm_target_time_mask_chunks.append(
+                    _slice_time_chunk(
+                        episode_windows.wm_target_time_mask,
+                        start_idx,
+                        sequence_length,
+                        pad_value=False,
+                    )
                 )
                 next_global_obs_chunks.append(
                     _slice_time_chunk(episode_windows.next_global_obs, start_idx, sequence_length, pad_value=0)
@@ -201,10 +211,10 @@ class RPPOWMSampler(
         self.returns = torch.stack(returns_chunks, dim=0).contiguous()
         self.advantages = torch.stack(advantages_chunks, dim=0).contiguous()
         self.time_mask = torch.stack(time_mask_chunks, dim=0).contiguous()
-        self.loss_time_mask = torch.stack(loss_time_mask_chunks, dim=0).contiguous()
+        self.time_loss_mask = torch.stack(time_loss_mask_chunks, dim=0).contiguous()
         self.is_true_episode_start = torch.stack(is_true_episode_start_chunks, dim=0).contiguous()
         self.next_local_obs = torch.stack(next_local_obs_chunks, dim=0).contiguous()
-        self.next_validity_mask = torch.stack(next_validity_mask_chunks, dim=0).contiguous()
+        self.wm_target_time_mask = torch.stack(wm_target_time_mask_chunks, dim=0).contiguous()
         self.next_global_obs = torch.stack(next_global_obs_chunks, dim=0).contiguous()
         self.wm_agent_mask = torch.stack(wm_agent_mask_chunks, dim=0).contiguous() if has_agent_mask else None
         self.wm_loss_agent_mask = (
@@ -228,10 +238,10 @@ class RPPOWMSampler(
             returns=self.returns[batch_indices],
             advantages=self.advantages[batch_indices],
             time_mask=self.time_mask[batch_indices],
-            loss_time_mask=self.loss_time_mask[batch_indices],
+            time_loss_mask=self.time_loss_mask[batch_indices],
             is_true_episode_start=self.is_true_episode_start[batch_indices],
             next_local_obs=self.next_local_obs[batch_indices],
-            next_validity_mask=self.next_validity_mask[batch_indices],
+            wm_target_time_mask=self.wm_target_time_mask[batch_indices],
             next_global_obs=self.next_global_obs[batch_indices],
             wm_agent_mask=None if self.wm_agent_mask is None else self.wm_agent_mask[batch_indices],
             wm_loss_agent_mask=None if self.wm_loss_agent_mask is None else self.wm_loss_agent_mask[batch_indices],
@@ -254,7 +264,7 @@ def _build_time_mask(
     return mask
 
 
-def _build_loss_time_mask(
+def _build_time_loss_mask(
         *,
         chunk_length: int,
         sequence_length: int,

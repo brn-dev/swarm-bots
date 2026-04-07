@@ -16,6 +16,7 @@ from swarmbots.learn.algos.world_modeling.transformer_transition_model import (
     TransformerTransitionModel,
     TransformerTransitionModelConfig,
 )
+from swarmbots.learn.algos.world_modeling.wm_recurrent_batch import build_wm_target_time_mask
 from swarmbots.learn.losses import LossDict, LossMetrics
 from swarmbots.learn.nn_components.mlp import MLP
 
@@ -88,6 +89,18 @@ class NextObsPredWrapper(BasePPOPolicy[PPOWMSamples, PPOWMSamplerConfig], NextOb
     def get_value_normalizer_metrics(self) -> dict[str, float]:
         return self.policy.get_value_normalizer_metrics()
 
+    def reset_temporal_state(
+            self,
+            episode_start_mask: torch.Tensor | None = None,
+    ) -> None:
+        self.policy.reset_temporal_state(episode_start_mask=episode_start_mask)
+
+    def get_temporal_state_snapshot(self) -> Any:
+        return self.policy.get_temporal_state_snapshot()
+
+    def restore_temporal_state_snapshot(self, snapshot: Any) -> None:
+        self.policy.restore_temporal_state_snapshot(snapshot)
+
     def forward(
             self,
             local_obs: torch.Tensor,
@@ -127,14 +140,18 @@ class NextObsPredWrapper(BasePPOPolicy[PPOWMSamples, PPOWMSamplerConfig], NextOb
             batch=batch,
             action_splitter=action_splitter,
         )
+        wm_target_time_mask = build_wm_target_time_mask(
+            wm_target_time_mask=batch.wm_target_time_mask,
+            time_loss_mask=getattr(batch, "time_loss_mask", None),
+        )
         next_obs_pred_loss, nop_loss_metrics = self.compute_next_obs_pred_loss(
             local_latents=local_latents,
             next_local_obs=batch.next_local_obs,
-            actions=batch.actions if not hasattr(batch, "wm_actions") else batch.wm_actions,
+            actions=batch.wm_actions,
             local_obs=batch.local_obs,
             agent_mask=batch.wm_agent_mask,
             loss_agent_mask=batch.wm_loss_agent_mask,
-            time_mask=batch.next_validity_mask,
+            time_mask=wm_target_time_mask,
         )
         world_model_loss_scaled = self.world_model_loss_coef * next_obs_pred_loss
         merged_extra_losses = dict(extra_losses)
@@ -160,6 +177,9 @@ class NextObsPredWrapper(BasePPOPolicy[PPOWMSamples, PPOWMSamplerConfig], NextOb
         if not isinstance(sampler, BaseWMSampler):
             raise ValueError('Policy does not create a WM Sampler!')
         return sampler
+
+    def after_optimizer_step(self) -> None:
+        self.policy.after_optimizer_step()
 
     def get_hyper_parameters(self) -> dict[str, Any]:
         return {

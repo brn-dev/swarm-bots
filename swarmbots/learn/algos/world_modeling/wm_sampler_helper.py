@@ -9,7 +9,7 @@ from swarmbots.learn.algos.ppo.ppo_rollout_buffer import MaybeTensor, PPOEpisode
 class WMEpisodeWindows:
     multi_step_actions: torch.Tensor
     next_local_obs: torch.Tensor
-    next_validity_mask: torch.Tensor
+    wm_target_time_mask: torch.Tensor
     next_global_obs: torch.Tensor
     wm_agent_mask: MaybeTensor
     wm_loss_agent_mask: MaybeTensor
@@ -96,7 +96,7 @@ def build_wm_episode_windows(
     return WMEpisodeWindows(
         multi_step_actions=_build_time_windows(padded_actions, window_size=num_next_steps, num_steps=num_steps),
         next_local_obs=_build_time_windows(padded_next_local_obs, window_size=num_next_steps, num_steps=num_steps),
-        next_validity_mask=_build_time_windows(padded_validity, window_size=num_next_steps, num_steps=num_steps),
+        wm_target_time_mask=_build_time_windows(padded_validity, window_size=num_next_steps, num_steps=num_steps),
         next_global_obs=_build_time_windows(padded_next_global_obs, window_size=num_next_steps, num_steps=num_steps),
         wm_agent_mask=(
             None
