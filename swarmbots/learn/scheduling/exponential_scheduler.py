@@ -64,6 +64,6 @@ class ExponentialScheduler(ChainableScheduler):
 
             new_value = self.start_value + (self.final_value - self.start_value) * interpolation
 
-        if abs(new_value - old_value) < 1e-6:
+        if abs(new_value - old_value) < 1e-8:
             return {"new_value": None, "event": self.name_prefix + "hold"}
         return {"new_value": new_value, "event": self.name_prefix + "exponential"}
