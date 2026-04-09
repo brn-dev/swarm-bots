@@ -54,6 +54,6 @@ class LinearScheduler(ChainableScheduler):
             progress = min(progress, 1.0)
             new_value = self.start_value + (self.final_value - self.start_value) * progress
 
-        if abs(new_value - old_value) < 1e-6:
+        if abs(new_value - old_value) < 1e-8:
             return {"new_value": None, "event": self.name_prefix + "hold"}
         return {"new_value": new_value, "event": self.name_prefix + "linear"}
