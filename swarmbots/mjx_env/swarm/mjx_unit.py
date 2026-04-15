@@ -115,8 +115,8 @@ def _build_limb(
     hinge_names: list[str] = []
     parent_segment = parent_body
     tip_offset = 0.0
-    for joint_idx, (((joint_suffix, axis), seg_length), segment_name) in enumerate(
-        zip(zip(joint_specs, segment_lengths, strict=True), segment_names, strict=True)
+    for joint_idx, ((joint_suffix, axis), seg_length, segment_name) in enumerate(
+        zip(joint_specs, segment_lengths, segment_names, strict=True)
     ):
         segment_body = parent_segment.add_body(name=segment_name, pos=[0, 0, tip_offset])
         hinge_name = f"-{limb_idx}-{joint_suffix}"

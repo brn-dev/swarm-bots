@@ -1,6 +1,5 @@
 import abc
 import math
-from enum import Enum
 from typing import Any, Iterable, TypedDict, Literal, NotRequired, Optional
 
 import mujoco
@@ -14,10 +13,6 @@ from swarmbots.mj_env.float_or_dist_params import FloatOrDistParams, eval_fodp_2
 from swarmbots.mj_env.quat_rot6d import quat_to_rot6d
 from swarmbots.mj_env.swarm.base_swarm import BaseSwarm
 from swarmbots.mj_env.swarm.swarm_connections import SwarmConnections
-
-class ActuatorsActivationRewardType(Enum):
-    MONOMIAL = 1
-    LOG1M = 2
 
 class SwarmObsDict(TypedDict):
     local_obs: np.ndarray  # shape (n_unit, n_obs_per_unit)
@@ -34,25 +29,7 @@ class RewardWeights(TypedDict, total=False):
     progress_reward_weight: float
     guidance_reward_weight: float
 
-    actuators_activation_reward_weight: float
-    actuators_activation_reward_power: int
-    actuators_activation_reward_threshold: float
-    actuators_activation_reward_type: ActuatorsActivationRewardType
-    actuators_activation_reward_clip: float
-
-    hinge_qvel_magnitude_reward_weight: float
-    hinge_qvel_magnitude_reward_threshold: float
-
     units_without_connections_reward_weight: float
-    units_with_double_connection_reward_weight: float
-
-    movement_reward_weight: float
-    height_reward_weight: float
-
-    connectors_stayed_active_reward_weight: float
-    connectors_successfully_activated_reward_weight: float
-    connectors_unsuccessfully_activated_reward_weight: float
-    connectors_deactivated_reward_weight: float
 
 class RewardWeightsUpdateResult(TypedDict):
     ok: bool
@@ -88,22 +65,7 @@ class BaseScenario(abc.ABC):
             actuator_strength: float,
             progress_reward_weight: float,
             guidance_reward_weight: float,
-            actuators_activation_reward_weight: float,
-            actuators_activation_reward_power: int,
-            actuators_activation_reward_threshold: float,
-            actuators_activation_reward_type: ActuatorsActivationRewardType,
-            actuators_activation_reward_clip: float,
-            hinge_qvel_magnitude_reward_weight: float,
-            hinge_qvel_magnitude_reward_threshold: float,
             units_without_connections_reward_weight: float,
-            units_with_double_connection_reward_weight: float,
-            movement_reward_weight: float,
-            height_reward_weight: float,
-            connectors_stayed_active_reward_weight: float,
-            connectors_successfully_activated_reward_weight: float,
-            connectors_unsuccessfully_activated_reward_weight: float,
-            connectors_deactivated_reward_weight: float,
-            average_connectors_reward: bool,
             include_connectors_xpos_in_obs: bool,
             include_connectors_xquat_in_obs: bool,
             quat_rot6d_representation: bool,
@@ -126,7 +88,6 @@ class BaseScenario(abc.ABC):
         self.swarm = swarm
         self.num_units = swarm.config.num_units
         self.limbs_per_unit = swarm.config.limbs_per_unit
-        self.num_connectors = self.num_units * self.limbs_per_unit
         self.actuator_strength = actuator_strength
         self.connection_dist_threshold = connection_dist_threshold
         self.connection_angle_threshold = connection_angle_threshold
@@ -145,23 +106,8 @@ class BaseScenario(abc.ABC):
         self.reward_weights: RewardWeights = {
             "progress_reward_weight": progress_reward_weight,
             "guidance_reward_weight": guidance_reward_weight,
-            "actuators_activation_reward_weight": actuators_activation_reward_weight,
-            "actuators_activation_reward_power": actuators_activation_reward_power,
-            "actuators_activation_reward_threshold": actuators_activation_reward_threshold,
-            "actuators_activation_reward_type": actuators_activation_reward_type,
-            "actuators_activation_reward_clip": actuators_activation_reward_clip,
-            "hinge_qvel_magnitude_reward_weight": hinge_qvel_magnitude_reward_weight,
-            "hinge_qvel_magnitude_reward_threshold": hinge_qvel_magnitude_reward_threshold,
             "units_without_connections_reward_weight": units_without_connections_reward_weight,
-            "units_with_double_connection_reward_weight": units_with_double_connection_reward_weight,
-            "movement_reward_weight": movement_reward_weight,
-            "height_reward_weight": height_reward_weight,
-            "connectors_stayed_active_reward_weight": connectors_stayed_active_reward_weight,
-            "connectors_successfully_activated_reward_weight": connectors_successfully_activated_reward_weight,
-            "connectors_unsuccessfully_activated_reward_weight": connectors_unsuccessfully_activated_reward_weight,
-            "connectors_deactivated_reward_weight": connectors_deactivated_reward_weight,
         }
-        self.average_connectors_reward = average_connectors_reward
         self.include_connectors_xpos_in_obs = include_connectors_xpos_in_obs
         self.include_connectors_xquat_in_obs = include_connectors_xquat_in_obs
         self.quat_rot6d_representation = quat_rot6d_representation
@@ -238,7 +184,6 @@ class BaseScenario(abc.ABC):
             'swarm': self.swarm.get_settings(),
             'actuator_strength': self.actuator_strength,
             'reward_weights': dict(self.reward_weights),
-            'average_connectors_reward': self.average_connectors_reward,
             'include_connectors_xpos_in_obs': self.include_connectors_xpos_in_obs,
             'include_connectors_xquat_in_obs': self.include_connectors_xquat_in_obs,
             'quat_rot6d_representation': self.quat_rot6d_representation,
@@ -398,7 +343,6 @@ class BaseScenario(abc.ABC):
         for (u1, c1, u2, c2), angle in zip(*connections.get_active_connections()):
             self._activate_equality_constraint(model, data, u1, c1, u2, c2, angle)
 
-        state['unit_positions'] = data.qpos[self._qpos_indices[:, :3]].copy()
         state['units_active_mask'] = units_active_mask
 
         if settle:
@@ -432,8 +376,6 @@ class BaseScenario(abc.ABC):
         finally:
             if model.opt.timestep != original_timestep:
                 model.opt.timestep = original_timestep
-
-        state["unit_positions"] = data.qpos[self._qpos_indices[:, :3]].copy()
         if "progress" in state:
             state["progress"] = self.compute_progress(data, state.get("units_active_mask"))
 
@@ -536,29 +478,22 @@ class BaseScenario(abc.ABC):
             connectors_action[~agent_mask] = False
 
         currently_active_mask = connections.get_is_active_mask()
-
-        stayed_active_mask = np.logical_and(connectors_action, currently_active_mask)
         newly_activated_mask = np.logical_and(connectors_action, np.logical_not(currently_active_mask))
         newly_deactivated_mask = np.logical_and(np.logical_not(connectors_action), currently_active_mask)
 
-        state['num_connectors_stayed_active'] = stayed_active_mask.sum()
-
-        num_connectors_successfully_activated, num_connectors_unsuccessfully_activated = self.try_connect(
+        self.try_connect(
             model,
             data,
             connections,
             newly_activated_mask
         )
-        state['num_connectors_successfully_activated'] = num_connectors_successfully_activated
-        state['num_connectors_unsuccessfully_activated'] = num_connectors_unsuccessfully_activated
 
         deactivation_mask = connections.update_disconnect_potentials(
             currently_active_mask,
             newly_deactivated_mask,
             self.disconnect_potential_threshold
         )
-        num_connectors_deactivated = self.disconnect(data, connections, deactivation_mask)
-        state['num_connectors_deactivated'] = num_connectors_deactivated
+        self.disconnect(data, connections, deactivation_mask)
 
 
     def get_obs_space(self):
@@ -601,7 +536,7 @@ class BaseScenario(abc.ABC):
             data: mujoco.MjData,
             connections: SwarmConnections,
             newly_activated_mask: np.ndarray
-    ) -> tuple[int, int]:
+    ) -> None:
         """
         Considers newly activated connectors (those that are not connected but are activated by the policy) and connects
         the closest pairs if the following criteria are fulfilled:
@@ -609,96 +544,75 @@ class BaseScenario(abc.ABC):
         * They are below a certain threshold in distance
         * Their z-axes are anti-aligned up to a threshold - meaning they face each other
         * They are in front of each other (positive relative z-distance)
-        :return: num_connectors_successful, num_connectors_unsuccessful
         """
-        activated_indices = np.stack(np.where(newly_activated_mask)).T
-        activated_indices = np.concatenate((
-            np.arange(len(activated_indices))[:, np.newaxis],
-            activated_indices
-        ), axis=-1)
-        unused = np.ones(len(activated_indices), dtype=bool)
+        activated_units, activated_connectors = np.nonzero(newly_activated_mask)
+        num_activated = len(activated_units)
+        if num_activated < 2:
+            return
 
-        num_successful = 0
+        body_ids = self._connector_body_indices[activated_units, activated_connectors]
+        positions = data.xpos[body_ids]
+        connector_mats = data.xmat[body_ids].reshape(num_activated, 3, 3)
+        x_axes = connector_mats[:, :, 0]
+        y_axes = connector_mats[:, :, 1]
+        z_axes = connector_mats[:, :, 2]
 
-        for i, unit1, conn1 in activated_indices:
+        unused = np.ones(num_activated, dtype=bool)
+        distance_threshold_sq = self.connection_dist_threshold ** 2
+
+        for i in range(num_activated - 1):
             if not unused[i]:
                 continue
 
-            available_connectors = activated_indices[i + 1:][unused[i + 1:]]
-            available_connectors = available_connectors[available_connectors[:, 1] != unit1]
+            unit1 = int(activated_units[i])
+            conn1 = int(activated_connectors[i])
 
-            if len(available_connectors) == 0:
+            candidate_mask = unused[i + 1:] & (activated_units[i + 1:] != unit1)
+            if not candidate_mask.any():
                 continue
 
-            body_id1 = self._connector_body_indices[unit1, conn1]
-
-            available_xpos = data.xpos[self._connector_body_indices[
-                available_connectors[:, 1], available_connectors[:, 2]
-            ]]
-
-            pos1 = data.xpos[body_id1]
-
-            available_dist = np.linalg.norm(available_xpos - pos1, axis=1)
-            available_close_enough_indices = np.arange(len(available_connectors))[
-                available_dist < self.connection_dist_threshold
-            ]
-
-            if len(available_close_enough_indices) == 0:
+            candidate_indices = np.flatnonzero(candidate_mask) + i + 1
+            rel_pos = positions[candidate_indices] - positions[i]
+            dist_sq = np.einsum("ij,ij->i", rel_pos, rel_pos)
+            close_enough_mask = dist_sq < distance_threshold_sq
+            if not close_enough_mask.any():
                 continue
 
-            available_connectors = available_connectors[available_close_enough_indices]
-            available_xpos = available_xpos[available_close_enough_indices]
-            available_dist = available_dist[available_close_enough_indices]
+            candidate_indices = candidate_indices[close_enough_mask]
+            rel_pos = rel_pos[close_enough_mask]
+            dist_sq = dist_sq[close_enough_mask]
 
-            closest_to_farthest_order = np.argsort(available_dist)
+            closest_to_farthest_order = np.argsort(dist_sq)
+            candidate_indices = candidate_indices[closest_to_farthest_order]
+            rel_pos = rel_pos[closest_to_farthest_order]
 
-            available_connectors = available_connectors[closest_to_farthest_order]
-            available_xpos = available_xpos[closest_to_farthest_order]
+            z1 = z_axes[i]
+            is_anti_aligned = z_axes[candidate_indices] @ z1 <= self.connection_angle_threshold
+            is_in_front = rel_pos @ z1 >= 0.0
+            valid_candidates = np.flatnonzero(is_anti_aligned & is_in_front)
+            if valid_candidates.size == 0:
+                continue
 
-            for (j, unit2, conn2), pos2 in zip(available_connectors, available_xpos):
-                body_id2 = self._connector_body_indices[unit2, conn2]
+            j = int(candidate_indices[valid_candidates[0]])
+            unit2 = int(activated_units[j])
+            conn2 = int(activated_connectors[j])
 
-                mat1 = data.xmat[body_id1].reshape(3, 3)
-                mat2 = data.xmat[body_id2].reshape(3, 3)
+            x1 = x_axes[i]
+            y1 = y_axes[i]
+            x2 = x_axes[j]
+            twist = float(np.arctan2(np.dot(x2, y1), np.dot(x2, x1)))
 
-                z1 = mat1[:, 2]
-                z2 = mat2[:, 2]
+            connections.connect(unit1, conn1, unit2, conn2, twist)
+            self._activate_equality_constraint(model, data, unit1, conn1, unit2, conn2, twist)
 
-                # Orientation Check (Anti-aligned)
-                if np.dot(z1, z2) > self.connection_angle_threshold:
-                    continue
-
-                # "In Front" Check
-                rel_pos = pos2 - pos1
-                if np.dot(rel_pos, z1) < 0:
-                    continue
-
-                x1 = mat1[:, 0]
-                y1 = mat1[:, 1]
-                x2 = mat2[:, 0]
-
-                twist = np.arctan2(np.dot(x2, y1), np.dot(x2, x1))
-                
-                connections.connect(unit1, conn1, unit2, conn2, twist)
-
-                self._activate_equality_constraint(model, data, unit1, conn1, unit2, conn2, twist)
-
-                unused[j] = False
-                num_successful += 1
-                break
-
-        num_connectors_successful = num_successful * 2
-        num_connectors_unsuccessful = len(activated_indices) - num_connectors_successful
-
-        return num_connectors_successful, num_connectors_unsuccessful
+            unused[j] = False
 
     def disconnect(
             self,
             data: mujoco.MjData,
             connections: SwarmConnections,
             deactivation_mask: np.ndarray,
-    ):
-        num_disconnected = 0
+    ) -> None:
         already_disconnected = np.zeros((self.num_units, self.limbs_per_unit), dtype=bool)
 
         disconnect_indices = np.stack(np.where(deactivation_mask)).T
@@ -712,10 +626,6 @@ class BaseScenario(abc.ABC):
             already_disconnected[other_unit, other_connector] = True
 
             self._deactivate_equality_constraint(data, unit, connector, other_unit, other_connector)
-
-            num_disconnected += 2
-
-        return num_disconnected
 
     def _activate_equality_constraint(
             self,
@@ -760,54 +670,6 @@ class BaseScenario(abc.ABC):
         active_units_mask = None if units_active_mask is None else np.asarray(units_active_mask, dtype=bool)
         active_units_count = self.num_units if active_units_mask is None else int(active_units_mask.sum())
 
-        actuators = np.asarray(action['actuators'], dtype=float)
-        if active_units_mask is not None:
-            actuators = actuators[active_units_mask]
-        if actuators.size == 0:
-            actuator_activation = 0.0
-        else:
-            actuator_magnitude = np.abs(actuators)
-
-            activation_threshold = rw["actuators_activation_reward_threshold"]
-            if activation_threshold > 0:
-                threshold_mask = actuator_magnitude <= activation_threshold
-                actuator_magnitude[threshold_mask] = 0.0
-
-            actuators_activation_reward_type = rw["actuators_activation_reward_type"]
-            if actuators_activation_reward_type == ActuatorsActivationRewardType.MONOMIAL:
-                actuator_activation = np.power(
-                    actuator_magnitude,
-                    rw["actuators_activation_reward_power"],
-                )
-            elif actuators_activation_reward_type == ActuatorsActivationRewardType.LOG1M:
-                actuator_activation = np.power(
-                    actuator_magnitude,
-                    1 + rw["actuators_activation_reward_power"],  # +1 makes it more similar to monomial
-                )
-                actuator_activation_reward_clip = rw["actuators_activation_reward_clip"]
-                actuator_activation = np.clip(actuator_activation, 0.0, 1.0 - np.exp(-actuator_activation_reward_clip))
-                actuator_activation = -np.log1p(-actuator_activation)
-            else:
-                raise ValueError(actuators_activation_reward_type)
-
-            actuator_activation = actuator_activation.mean()
-        reward += actuator_activation * rw['actuators_activation_reward_weight']
-
-        unit_qvel = data.qvel[self._qvel_indices]
-        if active_units_mask is not None:
-            unit_qvel = unit_qvel[active_units_mask]
-        if unit_qvel.size == 0 or unit_qvel.shape[1] <= 6:
-            hinge_qvel_magnitude = 0.0
-        else:
-            hinge_qvel_magnitude = np.abs(unit_qvel[:, 6:])
-            hinge_qvel_threshold = rw["hinge_qvel_magnitude_reward_threshold"]
-            if hinge_qvel_threshold > 0:
-                threshold_mask = hinge_qvel_magnitude <= hinge_qvel_threshold
-                hinge_qvel_magnitude[threshold_mask] = 0.0
-            hinge_qvel_magnitude = float(hinge_qvel_magnitude.mean())
-        state["avg_hinge_qvel_magnitude"] = hinge_qvel_magnitude
-        reward += hinge_qvel_magnitude * rw["hinge_qvel_magnitude_reward_weight"]
-
         connection_mask = connections.get_is_active_mask()
         if active_units_mask is not None:
             connection_mask = connection_mask[active_units_mask]
@@ -819,58 +681,6 @@ class BaseScenario(abc.ABC):
             num_units_without_connections / active_units_count if active_units_count > 0 else 0.0
         )
         reward += units_without_connections_ratio * rw['units_without_connections_reward_weight']
-
-        connection_targets = connections.connections[:, :, 0]
-        if active_units_mask is not None:
-            connection_targets = connection_targets[active_units_mask]
-        if connection_targets.size == 0:
-            num_units_with_double_connection = 0
-        else:
-            sorted_targets = np.sort(connection_targets, axis=1)
-            double_connected_mask = (
-                (sorted_targets[:, 1:] == sorted_targets[:, :-1])
-                & (sorted_targets[:, 1:] != -1)
-            )
-            num_units_with_double_connection = int(double_connected_mask.any(axis=1).sum())
-        state['num_units_with_double_connection'] = num_units_with_double_connection
-        reward += num_units_with_double_connection * rw['units_with_double_connection_reward_weight']
-
-        prev_unit_positions = state['unit_positions']
-        unit_positions = data.qpos[self._qpos_indices[:, :3]].copy()
-        state['unit_positions'] = unit_positions
-        if active_units_mask is not None:
-            prev_unit_positions = prev_unit_positions[active_units_mask]
-            unit_positions_active = unit_positions[active_units_mask]
-        else:
-            unit_positions_active = unit_positions
-        if unit_positions_active.shape[0] == 0:
-            avg_movement = 0.0
-            avg_height = 0.0
-        else:
-            avg_movement = np.linalg.norm(unit_positions_active - prev_unit_positions, axis=1).mean()
-            avg_height = unit_positions_active[:, 2].mean()
-        state['avg_movement'] = avg_movement
-        reward += avg_movement * rw['movement_reward_weight']
-
-        state['avg_height'] = avg_height
-        reward += avg_height * rw['height_reward_weight']
-
-        connectors_reward = 0.0
-        connectors_reward += state['num_connectors_stayed_active'] * rw['connectors_stayed_active_reward_weight']
-        connectors_reward += state['num_connectors_successfully_activated'] * rw['connectors_successfully_activated_reward_weight']
-        connectors_reward += state['num_connectors_unsuccessfully_activated'] * rw['connectors_unsuccessfully_activated_reward_weight']
-        connectors_reward += state['num_connectors_deactivated'] * rw['connectors_deactivated_reward_weight']
-
-        if self.average_connectors_reward:
-            connector_denominator = self.num_connectors
-            if active_units_mask is not None:
-                connector_denominator = int(active_units_count * self.limbs_per_unit)
-            if connector_denominator > 0:
-                connectors_reward /= connector_denominator
-            else:
-                connectors_reward = 0.0
-
-        reward += connectors_reward
 
         return reward
 
@@ -889,17 +699,7 @@ class BaseScenario(abc.ABC):
         new_reward_weights = dict(self.reward_weights)
         try:
             for key, value in reward_weights.items():
-                if key == "actuators_activation_reward_power":
-                    new_reward_weights[key] = int(value)
-                elif key == "actuators_activation_reward_type":
-                    if isinstance(value, ActuatorsActivationRewardType):
-                        new_reward_weights[key] = value
-                    elif isinstance(value, str):
-                        new_reward_weights[key] = ActuatorsActivationRewardType[value.upper()]
-                    else:
-                        new_reward_weights[key] = ActuatorsActivationRewardType(int(value))
-                else:
-                    new_reward_weights[key] = float(value)
+                new_reward_weights[key] = float(value)
                 updated_keys.append(key)
         except Exception as e:
             return {

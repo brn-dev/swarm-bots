@@ -159,6 +159,9 @@ class HomogeneousSwarm(BaseSwarm):
             body_radius: float = 0.1,
             leg_length: float = 0.2,
             leg_radius: float = 0.025,
+            segment_1_ratio: float = 0.1,
+            minimal_contacts: bool = True,
+            use_cylinders: bool = False,
             hinge_range: tuple[float | None, ...] = (np.pi / 3, np.pi / 3),
             hinge_armature: HingeJointParam = (0.0, 0.0),
             hinge_damping: HingeJointParam = (0.0, 0.0),
@@ -252,6 +255,9 @@ class HomogeneousSwarm(BaseSwarm):
         self.body_radius = body_radius
         self.leg_length = leg_length
         self.leg_radius = leg_radius
+        self.segment_1_ratio = segment_1_ratio
+        self.minimal_contacts = minimal_contacts
+        self.use_cylinders = use_cylinders
         self.hinge_range = hinge_range
         self.hinge_armature = hinge_armature
         self.hinge_damping = hinge_damping
@@ -269,6 +275,9 @@ class HomogeneousSwarm(BaseSwarm):
             'body_radius': self.body_radius,
             'leg_length': self.leg_length,
             'leg_radius': self.leg_radius,
+            'segment_1_ratio': self.segment_1_ratio,
+            'minimal_contacts': self.minimal_contacts,
+            'use_cylinders': self.use_cylinders,
             'hinge_range': self.hinge_range,
             'hinge_armature': self.hinge_armature,
             'hinge_damping': self.hinge_damping,
@@ -319,6 +328,9 @@ class HomogeneousSwarm(BaseSwarm):
                 body_radius=self.body_radius,
                 leg_length=self.leg_length,
                 leg_radius=self.leg_radius,
+                segment_1_ratio=self.segment_1_ratio,
+                minimal_contacts=self.minimal_contacts,
+                use_cylinders=self.use_cylinders,
                 hinge_range=self.hinge_range,
                 hinge_armature=self.hinge_armature,
                 hinge_damping=self.hinge_damping,
