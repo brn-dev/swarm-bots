@@ -156,11 +156,6 @@ class MjxBaseScenario(abc.ABC):
         actuator_strength: float,
         progress_reward_weight: float,
         guidance_reward_weight: float,
-        actuators_activation_reward_weight: float,
-        actuators_activation_reward_power: int,
-        actuators_activation_reward_threshold: float,
-        actuators_activation_reward_type: MjxActuatorsActivationRewardType,
-        actuators_activation_reward_clip: float,
         hinge_qvel_magnitude_reward_weight: float,
         hinge_qvel_magnitude_reward_threshold: float,
         units_without_connections_reward_weight: float,
@@ -215,11 +210,6 @@ class MjxBaseScenario(abc.ABC):
         self.reward_weights = {
             "progress_reward_weight": float(progress_reward_weight),
             "guidance_reward_weight": float(guidance_reward_weight),
-            "actuators_activation_reward_weight": float(actuators_activation_reward_weight),
-            "actuators_activation_reward_power": int(actuators_activation_reward_power),
-            "actuators_activation_reward_threshold": float(actuators_activation_reward_threshold),
-            "actuators_activation_reward_type": actuators_activation_reward_type,
-            "actuators_activation_reward_clip": float(actuators_activation_reward_clip),
             "hinge_qvel_magnitude_reward_weight": float(hinge_qvel_magnitude_reward_weight),
             "hinge_qvel_magnitude_reward_threshold": float(hinge_qvel_magnitude_reward_threshold),
             "units_without_connections_reward_weight": float(units_without_connections_reward_weight),
@@ -604,22 +594,6 @@ class MjxBaseScenario(abc.ABC):
         active_f = active.astype(jnp.float32)
         active_count = jnp.maximum(jnp.sum(active_f), 1.0)
         reward = jnp.array(0.0, dtype=jnp.float32)
-
-        actuators = jnp.abs(jnp.asarray(action["actuators"], dtype=jnp.float32))
-        actuators = jnp.where(active[:, None], actuators, 0.0)
-        threshold = rw["actuators_activation_reward_threshold"]
-        actuators = jnp.where(actuators <= threshold, 0.0, actuators)
-        if rw["actuators_activation_reward_type"] == MjxActuatorsActivationRewardType.MONOMIAL:
-            activation = actuators ** rw["actuators_activation_reward_power"]
-        elif rw["actuators_activation_reward_type"] == MjxActuatorsActivationRewardType.LOG1M:
-            activation = actuators ** (1 + rw["actuators_activation_reward_power"])
-            clip = rw["actuators_activation_reward_clip"]
-            activation = jnp.clip(activation, 0.0, 1.0 - jnp.exp(-clip))
-            activation = -jnp.log1p(-activation)
-        else:
-            raise ValueError(rw["actuators_activation_reward_type"])
-        actuator_denom = jnp.maximum(active_count * max(action["actuators"].shape[-1], 1), 1.0)
-        reward += jnp.sum(activation) / actuator_denom * rw["actuators_activation_reward_weight"]
 
         qvel = state.data.qvel[self.indices.qvel_indices]
         if qvel.shape[1] > 6:

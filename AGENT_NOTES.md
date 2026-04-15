@@ -95,6 +95,7 @@ Agents shall use this file to make notes for future instances. Write down import
 - Agent shuffling path must preserve shuffle/unshuffle pairing.
 - Unstable MuJoCo simulation is converted to terminal transition with fallback obs/reward and `info["error"] = "simulation_unstable"`.
 - Canonical scenario constructors in scripts are preset-based (`default_wall`, `default_bridge`).
+- MuJoCo scenario reward plumbing is now stripped down: `swarmbots/mj_env/scenarios/base_scenario.py` only keeps `progress_reward_weight`, `guidance_reward_weight`, and `units_without_connections_reward_weight`. The old hinge-qvel, double-connection, actuator-activation, movement/height, and connector reward knobs were removed there, but the separate MJX scenario stack still has its own broader reward API.
 - `ObstacleStreetScenario` wall-pass reward is normalized by active unit count and threshold count; adding thresholds should not inflate total wall reward.
 - `swarmbots/mjx_env` is a separate MJX implementation with `Mjx*` classes. It uses static MuJoCo models, capsule limb/connector/pole geoms, pure JAX env state, and batched execution through `jax.vmap`.
 - MJX connector weld twists are quantized: every possible connector pair has 4 precompiled weld equality constraints by default and runtime connection state only updates `data.eq_active`; do not mutate `model.eq_data` during MJX steps.
@@ -109,6 +110,7 @@ Agents shall use this file to make notes for future instances. Write down import
 - `HomogeneousSwarm` supports preset layouts, explicit coordinates, Poisson-disc/pre-connected/random-wiggle generation.
 - Inactive units are controlled by `num_unit_probs`; this propagates through `agent_mask`.
 - Base scenario logic keeps inactive units physically out of active area.
+- MuJoCo `HomogeneousSwarm` now exposes `segment_1_ratio`, `minimal_contacts`, and `use_cylinders`; in `swarmbots/mj_env/swarm/unit.py`, `minimal_contacts=True` disables collisions on the short first limb segments and connector tips and adds same-unit excludes between long segments / main body, while `use_cylinders=False` switches limb and connector geoms to capsules.
 
 ## Runtime, Checkpoints, Logging
 - Runtime hyperparameters are live attributes; mutating config dataclasses after init does nothing.

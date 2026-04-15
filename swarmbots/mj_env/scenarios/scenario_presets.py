@@ -5,7 +5,6 @@ import numpy as np
 from swarmbots.mj_env.float_or_dist_params import UniformDistParams
 from swarmbots.mj_env.scenarios.bridge_scenario import BridgeScenario
 from swarmbots.mj_env.scenarios.obstacle_street_scenario import ObstacleStreetScenario
-from swarmbots.mj_env.scenarios.base_scenario import ActuatorsActivationRewardType
 from swarmbots.mj_env.swarm.base_swarm import BaseSwarm
 from swarmbots.mj_env.swarm.homogeneous_swarm import HomogeneousSwarm, PreConnectedUnitLocationsConfig
 from swarmbots.mj_env.swarm.unit_config import UNIT_CONFIG_TETRAHEDRON_XYZ, UNIT_CONFIG_TETRAHEDRON_ZX, \
@@ -16,21 +15,7 @@ DEFAULT_KWARGS = {
     'force_elliptic_cone': True,
     'actuator_strength': 15.0,
     'guidance_reward_weight': 1.00,
-    'actuators_activation_reward_weight': -1e-3,
-    'actuators_activation_reward_power': 10,
-    'actuators_activation_reward_threshold': 0.9,
-    'actuators_activation_reward_type': ActuatorsActivationRewardType.MONOMIAL,
-    'actuators_activation_reward_clip': 20.0,
-    'hinge_qvel_magnitude_reward_weight': -1e-6,
-    'hinge_qvel_magnitude_reward_threshold': 8.0,
     'units_without_connections_reward_weight': -1e-5,
-    'units_with_double_connection_reward_weight': -2e-4,
-    'movement_reward_weight': 0e-1,
-    'height_reward_weight': 0e-4,
-    'connectors_stayed_active_reward_weight': 0e-5,
-    'connectors_successfully_activated_reward_weight': 0e-3,
-    'connectors_unsuccessfully_activated_reward_weight': -0e-5,
-    'connectors_deactivated_reward_weight': 0e-3,
     'reset_settle_time': 1.0,
     'reset_settle_timestep_scale': 3,
 }

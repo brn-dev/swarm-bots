@@ -27,6 +27,14 @@ def _limb_joint_specs(limb_type: LimbType) -> tuple[tuple[str, tuple[float, floa
     raise NotImplementedError(limb_type)
 
 
+def get_limb_segment_names(limb_idx: int, limb_config: LimbConfig) -> tuple[str, ...]:
+    joint_specs = _limb_joint_specs(limb_config.type)
+    return tuple(
+        limb_config.name if joint_idx == 0 else f"-{limb_idx}-seg{joint_idx + 1}"
+        for joint_idx in range(len(joint_specs))
+    )
+
+
 def _resolve_joint_params(value: HingeJointParam, n_joints: int) -> tuple[float, ...]:
     if isinstance(value, tuple):
         if len(value) != n_joints:
@@ -47,7 +55,12 @@ def init_unit(
     hinge_armature: HingeJointParam = 0.0,
     hinge_damping: HingeJointParam = 0.0,
     hinge_frictionloss: HingeJointParam = 0.0,
+    minimal_contacts: bool = True,  # makes short limb segments and tips non-collidable and excludes long limb segments from the same unit from collision
+    use_cylinders: bool = False,  # if false, uses capsules instead of cylinders
 ) -> mujoco.MjsBody:
+    if not 0.0 < segment_1_ratio < 1.0:
+        raise ValueError(f"Expected segment_1_ratio in (0, 1), got {segment_1_ratio}")
+
     spec = mujoco.MjSpec()
     spec.compiler.degree = False
 
@@ -89,9 +102,33 @@ def init_unit(
             joint_armatures=joint_armatures,
             joint_dampings=joint_dampings,
             joint_frictionlosses=joint_frictionlosses,
+            minimal_contacts=minimal_contacts,
+            use_cylinders=use_cylinders,
         )
 
+    if minimal_contacts:
+        _add_same_unit_long_segment_excludes(spec, unit_config)
+
     return body
+
+
+def _add_same_unit_long_segment_excludes(spec: mujoco.MjSpec, unit_config: UnitConfig) -> None:
+    main_body_name = "-main_body"
+    long_segment_body_names: list[str] = []
+    for limb_idx, limb_config in enumerate(unit_config):
+        long_segment_body_names.extend(get_limb_segment_names(limb_idx, limb_config)[1:])
+
+    for long_segment_body_name in long_segment_body_names:
+        exclude = spec.add_exclude()
+        exclude.bodyname1 = main_body_name
+        exclude.bodyname2 = long_segment_body_name
+
+    for body_idx1, body_name1 in enumerate(long_segment_body_names[:-1]):
+        for body_name2 in long_segment_body_names[body_idx1 + 1:]:
+            exclude = spec.add_exclude()
+            exclude.bodyname1 = body_name1
+            exclude.bodyname2 = body_name2
+
 
 def _build_limb(
         spec: mujoco.MjSpec,
@@ -106,6 +143,8 @@ def _build_limb(
         joint_armatures: tuple[float, ...],
         joint_dampings: tuple[float, ...],
         joint_frictionlosses: tuple[float, ...],
+        minimal_contacts: bool,
+        use_cylinders: bool,
 ):
     rgba = tuple(limb_config.rgba)
     if len(joint_specs) < 2:
@@ -114,13 +153,16 @@ def _build_limb(
     segment_lengths = [length * short_segment_ratio]
     remaining_length = length * (1 - short_segment_ratio)
     segment_lengths.extend([remaining_length / (len(joint_specs) - 1)] * (len(joint_specs) - 1))
+    segment_names = get_limb_segment_names(limb_idx, limb_config)
+    geom_type = mujoco.mjtGeom.mjGEOM_CYLINDER if use_cylinders else mujoco.mjtGeom.mjGEOM_CAPSULE
 
     hinge_names: list[str] = []
     parent_segment = parent_body
     tip_offset = 0.0
 
-    for joint_idx, ((joint_suffix, axis), seg_length) in enumerate(zip(joint_specs, segment_lengths, strict=True)):
-        segment_name = limb_config.name if joint_idx == 0 else f'-{limb_idx}-seg{joint_idx + 1}'
+    for joint_idx, ((joint_suffix, axis), seg_length, segment_name) in enumerate(
+            zip(joint_specs, segment_lengths, segment_names, strict=True)
+    ):
         segment_body = parent_segment.add_body(name=segment_name, pos=[0, 0, tip_offset])
         hinge_name = f'-{limb_idx}-{joint_suffix}'
         segment_body.add_joint(
@@ -132,11 +174,15 @@ def _build_limb(
             damping=joint_dampings[joint_idx],
             frictionloss=joint_frictionlosses[joint_idx],
         )
+        geom_kwargs: dict[str, int] = {}
+        if minimal_contacts and joint_idx == 0:
+            geom_kwargs = {"contype": 0, "conaffinity": 0}
         segment_body.add_geom(
-            type=mujoco.mjtGeom.mjGEOM_CYLINDER,
+            type=geom_type,
             fromto=[0, 0, 0, 0, 0, seg_length],
             size=[radius, 0, 0],
             rgba=rgba,
+            **geom_kwargs,
         )
         hinge_names.append(hinge_name)
         parent_segment = segment_body
@@ -146,11 +192,15 @@ def _build_limb(
         name=get_connector_suffix(limb_idx),
         pos=[0, 0, tip_offset]
     )
+    connector_geom_kwargs: dict[str, int] = {}
+    if minimal_contacts:
+        connector_geom_kwargs = {"contype": 0, "conaffinity": 0}
     connector.add_geom(
-        type=mujoco.mjtGeom.mjGEOM_CYLINDER,
-        fromto=[0, 0, 0, 0, 0, -length * 0.05],
-        size=[radius * 1.1, 0, 0],
-        rgba=rgba
+        type=geom_type,
+        fromto=[0, 0, 0, 0, 0, -length * 0.02],
+        size=[radius * 1.05, 0, 0],
+        rgba=rgba,
+        **connector_geom_kwargs,
     )
 
     for actuator_idx, hinge_name in enumerate(hinge_names):

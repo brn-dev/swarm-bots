@@ -46,6 +46,7 @@ class MjxHomogeneousSwarm(MjxBaseSwarm):
         body_radius: float = 0.1,
         leg_length: float = 0.2,
         leg_radius: float = 0.025,
+        segment_1_ratio: float = 0.1,
         hinge_range: tuple[float | None, ...] = (np.pi / 3, np.pi / 3),
         hinge_armature: MjxHingeJointParam = (0.0, 0.0),
         hinge_damping: MjxHingeJointParam = (0.0, 0.0),
@@ -78,6 +79,7 @@ class MjxHomogeneousSwarm(MjxBaseSwarm):
         self.body_radius = float(body_radius)
         self.leg_length = float(leg_length)
         self.leg_radius = float(leg_radius)
+        self.segment_1_ratio = float(segment_1_ratio)
         self.hinge_range = hinge_range
         self.hinge_armature = hinge_armature
         self.hinge_damping = hinge_damping
@@ -105,6 +107,7 @@ class MjxHomogeneousSwarm(MjxBaseSwarm):
                 "body_radius": self.body_radius,
                 "leg_length": self.leg_length,
                 "leg_radius": self.leg_radius,
+                "segment_1_ratio": self.segment_1_ratio,
                 "hinge_range": self.hinge_range,
                 "hinge_armature": self.hinge_armature,
                 "hinge_damping": self.hinge_damping,
@@ -126,6 +129,7 @@ class MjxHomogeneousSwarm(MjxBaseSwarm):
                 body_radius=self.body_radius,
                 leg_length=self.leg_length,
                 leg_radius=self.leg_radius,
+                segment_1_ratio=self.segment_1_ratio,
                 hinge_range=self.hinge_range,
                 hinge_armature=self.hinge_armature,
                 hinge_damping=self.hinge_damping,
