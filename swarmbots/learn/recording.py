@@ -4,14 +4,15 @@ from typing import Any
 import moviepy.video.io.ImageSequenceClip
 import numpy as np
 import torch
-from gymnasium.wrappers.vector import NormalizeReward
 from PIL import Image, ImageDraw, ImageFont
 
 from swarmbots.learn.base_policy import BasePolicy
 from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
+from swarmbots.learn.env_wrappers.torch_normalize_reward_wrapper import TorchNormalizeRewardWrapper
 from swarmbots.learn.gsde_reset import GSDEResetMode, GSDEIntervalResetMode, GSDEProbabilityResetMode
 from swarmbots.learn.summary_statistics import compute_summary_statistics, format_summary_statistics, \
     SummaryStatisticsFormat
+from swarmbots.learn.tensor_conversion import to_numpy_array
 
 
 def _get_episode_stat(
@@ -26,7 +27,7 @@ def _get_episode_stat(
 
     episode_mask = infos.get("_episode")
     if episode_mask is not None:
-        done_mask = np.asarray(episode_mask, dtype=bool).reshape(-1)
+        done_mask = to_numpy_array(episode_mask, dtype=bool).reshape(-1)
         if env_idx >= done_mask.shape[0] or not bool(done_mask[env_idx]):
             return None
 
@@ -34,7 +35,7 @@ def _get_episode_stat(
     if values is None:
         return None
 
-    values_array = np.asarray(values)
+    values_array = to_numpy_array(values)
     if values_array.shape == ():
         return float(values_array)
 
@@ -79,9 +80,7 @@ def _maybe_reset_gsde_noise(
 
 
 def _extract_env_reward(reward: Any, *, env_idx: int = 0) -> float:
-    if isinstance(reward, torch.Tensor):
-        reward = reward.cpu()
-    reward_array = np.asarray(reward)
+    reward_array = to_numpy_array(reward)
     if reward_array.shape == ():
         return float(reward_array)
     flattened = reward_array.reshape(-1)
@@ -90,10 +89,10 @@ def _extract_env_reward(reward: Any, *, env_idx: int = 0) -> float:
     return float(flattened[env_idx])
 
 
-def _find_normalize_reward_wrapper(env: Any) -> NormalizeReward | None:
+def _find_normalize_reward_wrapper(env: Any) -> TorchNormalizeRewardWrapper | None:
     current_env = env
     while hasattr(current_env, "env"):
-        if isinstance(current_env, NormalizeReward):
+        if isinstance(current_env, TorchNormalizeRewardWrapper):
             return current_env
         current_env = current_env.env
     return None
@@ -103,13 +102,18 @@ def _extract_raw_env_reward(
     reward: Any,
     *,
     env_idx: int,
-    normalize_reward_wrapper: NormalizeReward | None,
+    normalize_reward_wrapper: TorchNormalizeRewardWrapper | None,
 ) -> float:
     reward_value = _extract_env_reward(reward, env_idx=env_idx)
     if normalize_reward_wrapper is None:
         return reward_value
 
-    denominator = float(np.sqrt(normalize_reward_wrapper.return_rms.var + normalize_reward_wrapper.epsilon))
+    denominator = float(
+        torch.sqrt(
+            normalize_reward_wrapper.return_rms.var.to(device="cpu", dtype=torch.float64)
+            + normalize_reward_wrapper.epsilon
+        ).item()
+    )
     return reward_value * denominator
 
 

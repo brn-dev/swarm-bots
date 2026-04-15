@@ -6,12 +6,14 @@ import numpy as np
 from gymnasium import spaces
 from gymnasium.vector import AutoresetMode, VectorEnv
 
+from swarmbots.learn.tensor_conversion import to_numpy_array
 from swarmbots.mjx_env.mjx_swarm_bots_env import MjxBatchedSwarmBotsEnv, MjxSwarmBotsEnv
 from swarmbots.mjx_env.types import MjxEnvState, MjxObsDict
 
 
 class MjxGymVectorEnv(VectorEnv):
     metadata = {"autoreset_mode": AutoresetMode.NEXT_STEP}
+    action_backend = "jax"
 
     def __init__(
         self,
@@ -55,15 +57,15 @@ class MjxGymVectorEnv(VectorEnv):
         *,
         seed: int | list[int | None] | None = None,
         options: dict[str, Any] | None = None,
-    ) -> tuple[dict[str, np.ndarray], dict[str, Any]]:
+    ) -> tuple[MjxObsDict, dict[str, Any]]:
         reset_mask = _normalize_reset_mask(options=options, num_envs=self.num_envs)
         obs = self._reset_states(reset_mask=reset_mask, seed=seed)
-        return _obs_to_numpy(obs), {}
+        return obs, {}
 
     def step(
         self,
-        actions: dict[str, np.ndarray],
-    ) -> tuple[dict[str, np.ndarray], np.ndarray, np.ndarray, np.ndarray, dict[str, np.ndarray]]:
+        actions: dict[str, Any],
+    ) -> tuple[MjxObsDict, jax.Array, jax.Array, jax.Array, dict[str, jax.Array]]:
         if self._states is None:
             raise RuntimeError("reset() must be called before step().")
 
@@ -80,19 +82,19 @@ class MjxGymVectorEnv(VectorEnv):
             action_jax,
             jnp.asarray(reset_mask),
         )
-        rewards_np = np.array(jax.device_get(rewards), dtype=np.float32, copy=True)
-        term_np = np.array(jax.device_get(terminations), dtype=bool, copy=True)
-        trunc_np = np.array(jax.device_get(truncations), dtype=bool, copy=True)
-        self._autoreset_envs = np.logical_or(term_np, trunc_np)
+        self._autoreset_envs = np.logical_or(
+            to_numpy_array(terminations, dtype=bool),
+            to_numpy_array(truncations, dtype=bool),
+        )
         infos = {
-            "progress_reward": np.array(jax.device_get(info.progress_reward), dtype=np.float32, copy=True),
-            "_progress_reward": np.ones((self.num_envs,), dtype=bool),
-            "guidance_reward": np.array(jax.device_get(info.guidance_reward), dtype=np.float32, copy=True),
-            "_guidance_reward": np.ones((self.num_envs,), dtype=bool),
-            "simulation_unstable": np.array(jax.device_get(info.simulation_unstable), dtype=bool, copy=True),
-            "_simulation_unstable": np.ones((self.num_envs,), dtype=bool),
+            "progress_reward": info.progress_reward,
+            "_progress_reward": jnp.ones((self.num_envs,), dtype=bool),
+            "guidance_reward": info.guidance_reward,
+            "_guidance_reward": jnp.ones((self.num_envs,), dtype=bool),
+            "simulation_unstable": info.simulation_unstable,
+            "_simulation_unstable": jnp.ones((self.num_envs,), dtype=bool),
         }
-        return _obs_to_numpy(obs), rewards_np, term_np, trunc_np, infos
+        return obs, rewards, terminations, truncations, infos
 
     def close_extras(self, **kwargs: Any) -> None:
         _ = kwargs
@@ -140,12 +142,6 @@ class MjxGymVectorEnv(VectorEnv):
 
         self._autoreset_envs[reset_mask] = False
         return obs
-
-
-def _obs_to_numpy(obs: MjxObsDict) -> dict[str, np.ndarray]:
-    return {key: np.array(jax.device_get(value), copy=True) for key, value in obs.items()}
-
-
 def _normalize_reset_mask(options: dict[str, Any] | None, num_envs: int) -> np.ndarray:
     reset_mask = None if options is None else options.get("reset_mask")
     if reset_mask is None:

@@ -6,7 +6,6 @@ from typing import Any, Callable
 
 import torch
 from gymnasium.vector import SyncVectorEnv, AsyncVectorEnv
-from gymnasium.wrappers.vector import RecordEpisodeStatistics, NormalizeReward
 from loguru import logger
 from torch import nn
 
@@ -25,12 +24,15 @@ from swarmbots.learn.algos.ppo.ppo import AutomaticLearningRate, StepsRolloutMod
 from swarmbots.learn.algos.world_modeling.ppo_wm_sampler import PPOWMSamplerConfig
 from swarmbots.learn.algos.ppo.ppo_policy import PopArtConfig
 from swarmbots.learn.algos.world_modeling.next_obs_pred_mixin import NextObsPredConfig
-from swarmbots.learn.env_wrappers.feature_wise_obs_norm_wrapper import (
-    FeatureWiseObsNormWrapper,
-)
-from swarmbots.learn.env_wrappers.progress_guidance_ep_stats_wrapper import ProgressGuidanceEpisodeStatsWrapper
+from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
 from swarmbots.learn.env_wrappers.learn_wrappers.swarm_bots_learn_env_wrapper import SwarmBotsLearnEnvWrapper
-from swarmbots.learn.env_wrappers.transition_obs_wrapper import TransitionObsWrapper
+from swarmbots.learn.env_wrappers.torch_feature_wise_obs_norm_wrapper import TorchFeatureWiseObsNormWrapper
+from swarmbots.learn.env_wrappers.torch_normalize_reward_wrapper import TorchNormalizeRewardWrapper
+from swarmbots.learn.env_wrappers.torch_progress_guidance_ep_stats_wrapper import (
+    TorchProgressGuidanceEpisodeStatsWrapper,
+)
+from swarmbots.learn.env_wrappers.torch_record_episode_statistics_wrapper import TorchRecordEpisodeStatisticsWrapper
+from swarmbots.learn.env_wrappers.torch_transition_obs_wrapper import TorchTransitionObsWrapper
 from swarmbots.learn.env_wrappers.worker_pool_async_vector_env import WorkerPoolAsyncVectorEnv
 from swarmbots.learn.gsde_reset import GSDEProbabilityResetMode
 from swarmbots.learn.scheduling.cosine_scheduler import CosineSchedulerConfig
@@ -95,38 +97,37 @@ def wrap_vec_env(
         gamma: float,
         use_popart: bool,
         rollout_device: torch.device
-) -> SwarmBotsLearnEnvWrapper:
-    vector_env = RecordEpisodeStatistics(vector_env)
-    vector_env = ProgressGuidanceEpisodeStatsWrapper(vector_env)
-    vector_env = FeatureWiseObsNormWrapper(
-        vector_env,
+) -> BaseLearnEnvWrapper:
+    env: BaseLearnEnvWrapper = SwarmBotsLearnEnvWrapper(vector_env, device=rollout_device)
+    env = TorchRecordEpisodeStatisticsWrapper(env)
+    env = TorchProgressGuidanceEpisodeStatsWrapper(env)
+    env = TorchFeatureWiseObsNormWrapper(
+        env,
         obs_key="local_obs",
         scalar_feature_indices=obs_indices.local_scalar_indices,
         quaternion_indices=obs_indices.local_quaternion_indices,
     )
-    vector_env = FeatureWiseObsNormWrapper(
-        vector_env,
+    env = TorchFeatureWiseObsNormWrapper(
+        env,
         obs_key="global_obs",
         scalar_feature_indices=obs_indices.global_scalar_indices,
         quaternion_indices=obs_indices.global_quaternion_indices,
     )
-    vector_env = FeatureWiseObsNormWrapper(
-        vector_env,
+    env = TorchFeatureWiseObsNormWrapper(
+        env,
         obs_key="hidden_local_vars",
         scalar_feature_indices=obs_indices.hidden_local_vars_scalar_indices,
         quaternion_indices=obs_indices.hidden_local_vars_quaternion_indices,
     )
-    vector_env = FeatureWiseObsNormWrapper(
-        vector_env,
+    env = TorchFeatureWiseObsNormWrapper(
+        env,
         obs_key="hidden_global_vars",
         scalar_feature_indices=obs_indices.hidden_global_vars_scalar_indices,
         quaternion_indices=obs_indices.hidden_global_vars_quaternion_indices,
     )
-    vector_env = TransitionObsWrapper(vector_env)
+    env = TorchTransitionObsWrapper(env)
     if not use_popart:
-        vector_env = NormalizeReward(vector_env, gamma=gamma)
-
-    env = SwarmBotsLearnEnvWrapper(vector_env, device=rollout_device)
+        env = TorchNormalizeRewardWrapper(env, gamma=gamma)
     return env
 
 
@@ -262,7 +263,7 @@ def main() -> None:
             obs_indices=obs_indices,
             gamma=gamma,
             use_popart=use_popart,
-            rollout_device=rollout_device,
+            rollout_device=record_device,
         )
         return record_env
 
