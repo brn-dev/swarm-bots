@@ -96,6 +96,14 @@ Agents shall use this file to make notes for future instances. Write down import
 - Unstable MuJoCo simulation is converted to terminal transition with fallback obs/reward and `info["error"] = "simulation_unstable"`.
 - Canonical scenario constructors in scripts are preset-based (`default_wall`, `default_bridge`).
 - `ObstacleStreetScenario` wall-pass reward is normalized by active unit count and threshold count; adding thresholds should not inflate total wall reward.
+- `swarmbots/mjx_env` is a separate MJX implementation with `Mjx*` classes. It uses static MuJoCo models, capsule limb/connector/pole geoms, pure JAX env state, and batched execution through `jax.vmap`.
+- MJX connector weld twists are quantized: every possible connector pair has 4 precompiled weld equality constraints by default and runtime connection state only updates `data.eq_active`; do not mutate `model.eq_data` during MJX steps.
+- MJX reset uses a precomputed reset pool selected by JAX PRNG. The MJX presets intentionally default `reset_settle_time=0.0`; single-env MJX settle/reset is too slow and any warmup should be batched explicitly.
+- MJX connector geoms are visual/non-collidable. The first short limb segment on every limb is also non-collidable, while long limb segments stay collidable except for same-unit self-collisions added via body excludes in `MjxBaseScenario.create_scenario_spec()`. MJX base scenarios also inject `max_geom_pairs` and `max_contact_points` numerics as `num_units * limbs_per_unit * 3`. If you want non-elliptic cones in MJX wall runs, setting `force_elliptic_cone=False` is not enough by itself: keep sliding friction below `HIGH_FRICTION_SLIDING_THRESHOLD` or `_configure_model()` auto-switches back to elliptic.
+- In `MjxObstacleStreetScenario`, the long side boundary walls are visual-only/non-collidable in MJX. The collidable obstacle walls and ramps remain collidable.
+- `FeatureWiseObsNormWrapper` is copy-on-write for the configured obs key; it must not mutate incoming observation arrays. `MjxGymVectorEnv` adapts the batched MJX env to the existing Gymnasium vector/PPO wrapper stack. `scripts/run_mjx_mat_nop_wall.py` uses this adapter, not `WorkerPoolAsyncVectorEnv`.
+- `MjxGymVectorEnv` must match `NEXT_STEP` semantics exactly: on the call after a done, reset only those slots while still stepping the live envs in the same `step()` call. Do not short-circuit and return early for the whole batch.
+- MJX scenarios accept `mjx_impl` (`None`, `"jax"`, `"warp"`, etc.) and pass it to `mjx.put_model`. `scripts/run_mjx_mat_nop_wall.py` defaults `MJX_IMPL = None`; use `"warp"` only in a Linux/WSL CUDA JAX environment with NVIDIA Warp installed (`warp-lang`, exposed as the `warp` optional dependency).
 
 ## Swarm Notes
 - `HomogeneousSwarm` supports preset layouts, explicit coordinates, Poisson-disc/pre-connected/random-wiggle generation.

@@ -95,16 +95,22 @@ class FeatureWiseObsNormWrapper(VectorObservationWrapper, gym.utils.RecordConstr
                         )
                     self.obs_rms.update(batch)
 
+        if self.obs_rms is None and self._quaternion_slices.size == 0:
+            return observations
+
+        normalized_obs = np.array(obs, copy=True)
         if self.obs_rms is not None:
-            scalars = obs[..., self._scalar_indices]
-            obs[..., self._scalar_indices] = (scalars - self.obs_rms.mean) / np.sqrt(
+            scalars = normalized_obs[..., self._scalar_indices]
+            normalized_obs[..., self._scalar_indices] = (scalars - self.obs_rms.mean) / np.sqrt(
                 self.obs_rms.var + self._eps
             )
 
         if self._quaternion_slices.size > 0:
-            self._normalize_quaternion_signs(obs, self._quaternion_slices)
+            self._normalize_quaternion_signs(normalized_obs, self._quaternion_slices)
 
-        return observations
+        normalized_observations = dict(observations)
+        normalized_observations[self.obs_key] = normalized_obs
+        return normalized_observations
 
     def _prepare_batch(
         self,

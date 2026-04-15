@@ -3,14 +3,16 @@ name = "swarm-bots"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
-requires-python = ">=3.13"
+requires-python = ">=3.12"
 dependencies = [
     "gymnasium",
     "ipython",
+    "jax",
     "loguru",
     "matplotlib",
     "moviepy",
-    "mujoco",
+    "mujoco>=3.1",
+    "mujoco-mjx>=3.1",
     "numpy",
     "torch",
 ]
@@ -18,3 +20,8 @@ dependencies = [
 [project.optional-dependencies]
 prompt = ["prompt-toolkit"]
 wandb = ["wandb"]
+warp = ["warp-lang"]
+
+[tool.setuptools.packages.find]
+include = ["swarmbots*"]
+exclude = ["runs*", "runs_synced*", "videos*", "recording*", "plot_logs*", "scripts*"]
