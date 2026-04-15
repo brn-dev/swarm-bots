@@ -7,6 +7,7 @@ from gymnasium.vector import VectorEnv
 
 from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
 from swarmbots.learn.hybrid_action_space import VectorHybridActionSpace
+from swarmbots.learn.tensor_conversion import to_backend_array
 
 
 class VectorSwarmBotsActionSpace(VectorHybridActionSpace):
@@ -57,13 +58,22 @@ class SwarmBotsLearnEnvWrapper(BaseLearnEnvWrapper):
 
         self.actuators_dim = action_space['actuators'].shape[2]
         self.connectors_dim = action_space['connectors'].shape[2]
+        self.action_backend = str(getattr(env, "action_backend", "numpy")).lower()
 
-    def _actions_to_env_dict(self, actions: torch.Tensor) -> dict[str, np.ndarray]:
+    def _actions_to_env_dict(self, actions: torch.Tensor) -> dict[str, object]:
         if actions.ndim == 2:
             actions = actions.unsqueeze(0)
-        actions = actions.detach().to("cpu")
-        actuators = actions[..., :self.actuators_dim].numpy().astype(np.float32, copy=False)
-        connectors = actions[..., self.actuators_dim:].numpy().astype(bool, copy=False)
+        actions = actions.detach()
+        actuators = to_backend_array(
+            actions[..., :self.actuators_dim],
+            backend=self.action_backend,
+            dtype=np.float32 if self.action_backend == "numpy" else None,
+        )
+        connectors = to_backend_array(
+            actions[..., self.actuators_dim:] > 0.5,
+            backend=self.action_backend,
+            dtype=np.bool_ if self.action_backend == "numpy" else None,
+        )
 
         return {"actuators": actuators, "connectors": connectors}
 

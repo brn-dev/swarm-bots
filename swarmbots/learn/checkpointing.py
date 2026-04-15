@@ -3,10 +3,14 @@
 import pathlib
 from typing import Any, Optional
 
+import numpy as np
 import torch
 from loguru import logger
 
 from swarmbots.learn.env_wrappers.feature_wise_obs_norm_wrapper import FeatureWiseObsNormWrapper
+from swarmbots.learn.env_wrappers.torch_feature_wise_obs_norm_wrapper import TorchFeatureWiseObsNormWrapper
+from swarmbots.learn.env_wrappers.torch_normalize_reward_wrapper import TorchNormalizeRewardWrapper
+from swarmbots.learn.torch_device import as_device
 
 
 def load_checkpoint(path: str | pathlib.Path, map_location: Any | None = "cpu") -> Any:
@@ -39,13 +43,19 @@ def extract_env_state(checkpoint: Any) -> Optional[list[dict[str, Any]]]:
 
 
 def copy_running_mean_std(src: Any, dst: Any) -> None:
-    if dst.mean.shape != src.mean.shape:
+    if tuple(dst.mean.shape) != tuple(src.mean.shape):
         raise ValueError(f'{dst.mean.shape = } is not equal {src.mean.shape = }')
-    if dst.var.shape != src.var.shape:
+    if tuple(dst.var.shape) != tuple(src.var.shape):
         raise ValueError(f'{dst.var.shape = } is not equal {src.var.shape = }')
-    dst.mean = src.mean.copy()
-    dst.var = src.var.copy()
-    dst.count = src.count
+    if isinstance(dst.mean, torch.Tensor):
+        dst.mean = torch.as_tensor(src.mean, device=dst.mean.device, dtype=dst.mean.dtype).clone()
+        dst.var = torch.as_tensor(src.var, device=dst.var.device, dtype=dst.var.dtype).clone()
+        dst.count = torch.as_tensor(src.count, device=dst.count.device, dtype=dst.count.dtype).clone()
+        return
+
+    dst.mean = np.asarray(src.mean).copy()
+    dst.var = np.asarray(src.var).copy()
+    dst.count = float(torch.as_tensor(src.count, device="cpu", dtype=torch.float64).item())
 
 
 def iter_running_mean_std(env: Any) -> list[tuple[str, Any]]:
@@ -61,13 +71,22 @@ def iter_running_mean_std(env: Any) -> list[tuple[str, Any]]:
             rms_entries.append((attr_name, value))
     return rms_entries
 
+
+def _wrapper_class_aliases(env: Any) -> tuple[str, ...]:
+    current_class = type(env).__name__
+    if isinstance(env, TorchFeatureWiseObsNormWrapper):
+        return current_class, "FeatureWiseObsNormWrapper"
+    if isinstance(env, TorchNormalizeRewardWrapper):
+        return current_class, "NormalizeReward"
+    return (current_class,)
+
 def capture_env_state(env: Any) -> list[dict[str, Any]]:
     env_state: list[dict[str, Any]] = []
     current_env = env
     while hasattr(current_env, "env"):
         wrapper_state: dict[str, Any] = {}
 
-        if isinstance(current_env, FeatureWiseObsNormWrapper):
+        if isinstance(current_env, (FeatureWiseObsNormWrapper, TorchFeatureWiseObsNormWrapper)):
             wrapper_state['obs_key'] = current_env.obs_key
 
         for attr_name, value in iter_running_mean_std(current_env):
@@ -92,16 +111,16 @@ def apply_env_state(env: Any, env_state: Optional[list[dict[str, Any]]]) -> None
         rms_entries = dict(iter_running_mean_std(current_env))
         has_rms = bool(rms_entries)
         if has_rms:
-            current_class = type(current_env).__name__
+            current_classes = _wrapper_class_aliases(current_env)
             match_idx = None
             has_rms_key = lambda state: any(key.endswith("_rms") for key in state)
             candidates = [
                 i
                 for i in range(search_start_idx, len(env_state))
-                if env_state[i].get("wrapper_class") == current_class and has_rms_key(env_state[i])
+                if env_state[i].get("wrapper_class") in current_classes and has_rms_key(env_state[i])
             ]
             if candidates:
-                if isinstance(current_env, FeatureWiseObsNormWrapper):
+                if isinstance(current_env, (FeatureWiseObsNormWrapper, TorchFeatureWiseObsNormWrapper)):
                     for i in candidates:
                         if env_state[i].get("obs_key") == current_env.obs_key:
                             match_idx = i
@@ -119,14 +138,14 @@ def apply_env_state(env: Any, env_state: Optional[list[dict[str, Any]]]) -> None
             if match_idx is None:
                 # Hard fail so we avoid easy to overlook errors
                 raise ValueError(
-                    f"No saved env_state entry for wrapper {current_class}; normalization stats not restored for it."
+                    f"No saved env_state entry for wrapper {current_classes[0]}; normalization stats not restored for it."
                 )
             else:
                 saved_state = env_state[match_idx]
-                if saved_state.get("wrapper_class") != current_class:
+                if saved_state.get("wrapper_class") not in current_classes:
                     logger.warning(
                         f"Wrapper type mismatch during env_state apply: "
-                        f"{saved_state.get('wrapper_class')} vs {current_class}"
+                        f"{saved_state.get('wrapper_class')} vs {current_classes[0]}"
                     )
 
                 for attr_name, saved_value in saved_state.items():
@@ -143,4 +162,18 @@ def freeze_env_normalization(env: Any) -> None:
     while hasattr(current_env, "env"):
         if hasattr(current_env, "update_running_mean"):
             current_env.update_running_mean = False
+        current_env = current_env.env
+
+
+def move_env_to_device(env: Any, device: torch.device | str) -> None:
+    target_device = as_device(device)
+    current_env = env
+    while True:
+        if hasattr(current_env, "set_device"):
+            current_env.set_device(target_device)
+        elif hasattr(current_env, "device"):
+            current_env.device = target_device
+
+        if not hasattr(current_env, "env"):
+            break
         current_env = current_env.env

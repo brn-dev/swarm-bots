@@ -4,16 +4,16 @@ import abc
 import itertools
 from typing import Any, TypeAlias, TypeVar, Generic
 
-import numpy as np
 import torch
 from gymnasium import spaces
 from gymnasium.vector import AutoresetMode, VectorEnv, VectorWrapper
 
 from swarmbots.learn.hybrid_action_space import VectorHybridActionSpace
+from swarmbots.learn.tensor_conversion import normalize_reset_mask_options, to_torch_tensor
 from swarmbots.learn.torch_device import as_device
 
 TorchObs: TypeAlias = dict[str, torch.Tensor]
-NumpyObs: TypeAlias = dict[str, np.ndarray]
+ArrayObs: TypeAlias = dict[str, Any]
 
 ActSpace = TypeVar('ActSpace', bound=VectorHybridActionSpace)
 
@@ -121,6 +121,10 @@ class BaseLearnEnvWrapper(VectorWrapper, Generic[ActSpace], abc.ABC):
         return self._action_space
 
     def reset(self, **kwargs) -> tuple[TorchObs, dict[str, Any]]:
+        options = normalize_reset_mask_options(kwargs.get("options", None), num_envs=self._n_envs)
+        if options is not kwargs.get("options", None):
+            kwargs = dict(kwargs)
+            kwargs["options"] = options
         obs, info = self.env.reset(**kwargs)
         return self._obs_to_torch(obs), info
 
@@ -131,9 +135,9 @@ class BaseLearnEnvWrapper(VectorWrapper, Generic[ActSpace], abc.ABC):
         obs, rewards, terminations, truncations, infos = self.env.step(action_dict)
 
         obs_t = self._obs_to_torch(obs)
-        rewards_t = torch.as_tensor(rewards, device=self.device, dtype=self.reward_dtype).reshape(self._n_envs)
-        term_t = torch.as_tensor(terminations, device=self.device, dtype=torch.bool).reshape(self._n_envs)
-        trunc_t = torch.as_tensor(truncations, device=self.device, dtype=torch.bool).reshape(self._n_envs)
+        rewards_t = to_torch_tensor(rewards, device=self.device, dtype=self.reward_dtype).reshape(self._n_envs)
+        term_t = to_torch_tensor(terminations, device=self.device, dtype=torch.bool).reshape(self._n_envs)
+        trunc_t = to_torch_tensor(truncations, device=self.device, dtype=torch.bool).reshape(self._n_envs)
 
         return obs_t, rewards_t, term_t, trunc_t, infos
 
@@ -147,17 +151,20 @@ class BaseLearnEnvWrapper(VectorWrapper, Generic[ActSpace], abc.ABC):
     def unwrapped(self) -> Any:
         return getattr(self.env, "unwrapped", self.env)
 
-    def _obs_to_torch(self, obs: NumpyObs) -> TorchObs:
+    def set_device(self, device: torch.device | str) -> None:
+        self.device = as_device(device)
+
+    def _obs_to_torch(self, obs: ArrayObs) -> TorchObs:
         obs_t: TorchObs = {
-            "local_obs": torch.as_tensor(obs["local_obs"], device=self.device, dtype=self.obs_dtype),
-            "global_obs": torch.as_tensor(obs["global_obs"], device=self.device, dtype=self.obs_dtype),
-            "hidden_local_vars": torch.as_tensor(obs["hidden_local_vars"], device=self.device, dtype=self.obs_dtype),
-            "hidden_global_vars": torch.as_tensor(obs["hidden_global_vars"], device=self.device, dtype=self.obs_dtype),
+            "local_obs": to_torch_tensor(obs["local_obs"], device=self.device, dtype=self.obs_dtype),
+            "global_obs": to_torch_tensor(obs["global_obs"], device=self.device, dtype=self.obs_dtype),
+            "hidden_local_vars": to_torch_tensor(obs["hidden_local_vars"], device=self.device, dtype=self.obs_dtype),
+            "hidden_global_vars": to_torch_tensor(obs["hidden_global_vars"], device=self.device, dtype=self.obs_dtype),
         }
         if "agent_mask" in obs and obs["agent_mask"] is not None:
-            obs_t["agent_mask"] = torch.as_tensor(obs["agent_mask"], device=self.device, dtype=torch.bool)
+            obs_t["agent_mask"] = to_torch_tensor(obs["agent_mask"], device=self.device, dtype=torch.bool)
         return obs_t
 
     @abc.abstractmethod
-    def _actions_to_env_dict(self, actions: torch.Tensor) -> dict[str, np.ndarray]:
+    def _actions_to_env_dict(self, actions: torch.Tensor) -> dict[str, Any]:
         raise NotImplementedError()

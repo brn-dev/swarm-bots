@@ -13,12 +13,12 @@ Agents shall use this file to make notes for future instances. Write down import
 ## Training Flow
 - Script builds `SwarmBotsEnv` constructors and vectorizes (`AsyncVectorEnv` or `WorkerPoolAsyncVectorEnv`).
 - Typical wrapper chain:
-- `RecordEpisodeStatistics`
-- `ProgressGuidanceEpisodeStatsWrapper`
-- `FeatureWiseObsNormWrapper` (for local/global/hidden obs groups)
-- `TransitionObsWrapper`
-- `NormalizeReward` (skip when using PopArt)
-- `SwarmBotsLearnEnvWrapper`
+- `SwarmBotsLearnEnvWrapper` (tensor/device boundary)
+- `TorchRecordEpisodeStatisticsWrapper`
+- `TorchProgressGuidanceEpisodeStatsWrapper`
+- `TorchFeatureWiseObsNormWrapper` (for local/global/hidden obs groups)
+- `TorchTransitionObsWrapper`
+- `TorchNormalizeRewardWrapper` (skip when using PopArt)
 - `PPO.perform_iteration()` collects rollouts (`collect_whole_episodes` or `collect_steps`) and then trains.
 
 ## Core Class Structure (Current)
@@ -103,6 +103,9 @@ Agents shall use this file to make notes for future instances. Write down import
 - MJX connector geoms are visual/non-collidable. The first short limb segment on every limb is also non-collidable, while long limb segments stay collidable except for same-unit self-collisions added via body excludes in `MjxBaseScenario.create_scenario_spec()`. MJX base scenarios also inject `max_geom_pairs` and `max_contact_points` numerics as `num_units * limbs_per_unit * 3`. If you want non-elliptic cones in MJX wall runs, setting `force_elliptic_cone=False` is not enough by itself: keep sliding friction below `HIGH_FRICTION_SLIDING_THRESHOLD` or `_configure_model()` auto-switches back to elliptic.
 - In `MjxObstacleStreetScenario`, the long side boundary walls are visual-only/non-collidable in MJX. The collidable obstacle walls and ramps remain collidable.
 - `FeatureWiseObsNormWrapper` is copy-on-write for the configured obs key; it must not mutate incoming observation arrays. `MjxGymVectorEnv` adapts the batched MJX env to the existing Gymnasium vector/PPO wrapper stack. `scripts/run_mjx_mat_nop_wall.py` uses this adapter, not `WorkerPoolAsyncVectorEnv`.
+- The canonical learn-side wrappers are now torch-side (`Torch*Wrapper` classes). `SwarmBotsLearnEnvWrapper` is the only generic conversion boundary; wrappers above it must stay tensor-native so MJX/JAX/Warp outputs do not get forced through NumPy first.
+- `SwarmBotsLearnEnvWrapper` now also owns the action conversion boundary. It reads `env.action_backend` (`"numpy"` by default, `"jax"` in `MjxGymVectorEnv`, `"warp"` available for future direct Warp envs) and converts policy actions to that backend. Torch->JAX and torch->Warp use DLPack / framework interop so device actions do not bounce through host NumPy.
+- `MjxGymVectorEnv` now returns raw JAX arrays/pytrees instead of host NumPy copies. The boundary conversion in `BaseLearnEnvWrapper` handles NumPy, torch, and objects exposing `__dlpack__` (JAX device arrays).
 - `MjxGymVectorEnv` must match `NEXT_STEP` semantics exactly: on the call after a done, reset only those slots while still stepping the live envs in the same `step()` call. Do not short-circuit and return early for the whole batch.
 - MJX scenarios accept `mjx_impl` (`None`, `"jax"`, `"warp"`, etc.) and pass it to `mjx.put_model`. `scripts/run_mjx_mat_nop_wall.py` defaults `MJX_IMPL = None`; use `"warp"` only in a Linux/WSL CUDA JAX environment with NVIDIA Warp installed (`warp-lang`, exposed as the `warp` optional dependency).
 
@@ -129,4 +132,5 @@ Agents shall use this file to make notes for future instances. Write down import
 - For new training work, start from `scripts/run_mat_nop_wall.py`, not the other MAT scripts.
 - `scripts/run_mat_nop_wall.py` currently assumes `cwd == scripts/` for relative paths like `../runs/...`; launcher wrappers should add repo root to `PYTHONPATH` instead of switching cwd to repo root.
 - If you change wrappers/vector-env behavior, re-check `NEXT_STEP` assumptions and checkpoint restore.
+- Checkpoint env-state restore now has aliases for old NumPy/Gym normalization wrapper names (`FeatureWiseObsNormWrapper`, `NormalizeReward`) to the new torch-side normalization wrappers, so old checkpoints can still restore running stats into the new wrapper chain.
 - If you change observation composition, verify `build_obs_indices(...)`, normalization wrappers, and WM target configs together.
