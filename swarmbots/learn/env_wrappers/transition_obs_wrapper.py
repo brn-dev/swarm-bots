@@ -30,11 +30,11 @@ class TransitionObsWrapper(VectorWrapper, gym.utils.RecordConstructorArgs):
         if "autoreset_mode" not in self.env.metadata:
             warn(
                 f"{self} is missing `autoreset_mode` data. Assuming that the vector environment follows the "
-                f"`NextStep` autoreset api or autoreset is disabled. Read https://farama.org/Vector-Autoreset-Mode "
+                f"`SameStep` autoreset api. Read https://farama.org/Vector-Autoreset-Mode "
                 "for more details."
             )
         else:
-            assert self.env.metadata["autoreset_mode"] in {AutoresetMode.NEXT_STEP}
+            assert self.env.metadata["autoreset_mode"] in {AutoresetMode.SAME_STEP}
 
         if not isinstance(self.env.single_observation_space, spaces.Dict):
             raise ValueError(f"Expected Dict observation space, got {type(self.env.single_observation_space)}")
@@ -212,4 +212,3 @@ class TransitionObsWrapper(VectorWrapper, gym.utils.RecordConstructorArgs):
         if shape is None or len(shape) < 2:
             raise ValueError(f"Unsupported action space for transition wrapper: {single_action_space}")
         return int(shape[-1])
-

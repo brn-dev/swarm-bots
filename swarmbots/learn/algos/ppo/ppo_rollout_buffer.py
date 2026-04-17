@@ -136,52 +136,48 @@ class PPOEpisodeAccumulator:
             values: torch.Tensor,
             previous_actions: MaybeTensor,
             episode_start_mask: torch.Tensor,
-            is_final: torch.Tensor,
+            bootstrap_obs: dict[str, torch.Tensor],
+            bootstrap_values: torch.Tensor,
+            dones: torch.Tensor,
     ) -> Iterator[PPOEpisodeSegment]:
-        active_env_indices = torch.where(torch.logical_not(is_final))[0]
-        if len(active_env_indices) > 0:
-            step_indices = self.step[active_env_indices]
-            new_episode_mask = step_indices == 0
-            new_episode_env_indices = active_env_indices[new_episode_mask]
-            if len(new_episode_env_indices) > 0:
-                if previous_actions is None:
-                    self.initial_previous_actions[new_episode_env_indices].zero_()
-                else:
-                    self.initial_previous_actions[new_episode_env_indices] = previous_actions[new_episode_env_indices]
-                self.is_true_episode_start[new_episode_env_indices] = episode_start_mask[new_episode_env_indices]
-            self.local_obs[active_env_indices, step_indices] = local_obs[active_env_indices]
-            self.global_obs[active_env_indices, step_indices] = global_obs[active_env_indices]
-            self.hidden_local_vars[active_env_indices, step_indices] = hidden_local_vars[active_env_indices]
-            self.hidden_global_vars[active_env_indices, step_indices] = hidden_global_vars[active_env_indices]
-            if agent_mask is not None:
-                self.agent_mask[active_env_indices, step_indices] = agent_mask[active_env_indices]
-            self.actions[active_env_indices, step_indices] = actions[active_env_indices]
-            self.rewards[active_env_indices, step_indices] = rewards[active_env_indices]
-            self.log_probs[active_env_indices, step_indices] = log_probs[active_env_indices]
-            self.values[active_env_indices, step_indices] = values[active_env_indices]
+        env_indices = torch.arange(self.step.shape[0], device=self.step.device)
+        step_indices = self.step
+        new_episode_env_indices = torch.where(step_indices == 0)[0]
+        if len(new_episode_env_indices) > 0:
+            if previous_actions is None:
+                self.initial_previous_actions[new_episode_env_indices].zero_()
+            else:
+                self.initial_previous_actions[new_episode_env_indices] = previous_actions[new_episode_env_indices]
+            self.is_true_episode_start[new_episode_env_indices] = episode_start_mask[new_episode_env_indices]
 
-            self.step[active_env_indices] += 1
+        self.local_obs[env_indices, step_indices] = local_obs
+        self.global_obs[env_indices, step_indices] = global_obs
+        self.hidden_local_vars[env_indices, step_indices] = hidden_local_vars
+        self.hidden_global_vars[env_indices, step_indices] = hidden_global_vars
+        if agent_mask is not None:
+            self.agent_mask[env_indices, step_indices] = agent_mask
+        self.actions[env_indices, step_indices] = actions
+        self.rewards[env_indices, step_indices] = rewards
+        self.log_probs[env_indices, step_indices] = log_probs
+        self.values[env_indices, step_indices] = values
 
-        final_env_indices = torch.where(is_final)[0]
-        for final_env_idx in final_env_indices.tolist():
-            step = int(self.step[final_env_idx].item())
-            if step == 0:
-                self.initial_previous_actions[final_env_idx].zero_()
-                self.is_true_episode_start[final_env_idx] = False
-                self.step[final_env_idx] = 0
-                continue
+        self.step += 1
+
+        bootstrap_agent_mask = bootstrap_obs.get("agent_mask", None)
+        done_env_indices = torch.where(dones)[0]
+        for done_env_idx in done_env_indices.tolist():
             yield self.construct_episode(
-                final_env_idx,
-                final_local_obs=local_obs[final_env_idx],
-                final_global_obs=global_obs[final_env_idx],
-                final_hidden_local_vars=hidden_local_vars[final_env_idx],
-                final_hidden_global_vars=hidden_global_vars[final_env_idx],
-                final_agent_mask=None if agent_mask is None else agent_mask[final_env_idx],
-                final_value=values[final_env_idx],
+                done_env_idx,
+                final_local_obs=bootstrap_obs["local_obs"][done_env_idx],
+                final_global_obs=bootstrap_obs["global_obs"][done_env_idx],
+                final_hidden_local_vars=bootstrap_obs["hidden_local_vars"][done_env_idx],
+                final_hidden_global_vars=bootstrap_obs["hidden_global_vars"][done_env_idx],
+                final_agent_mask=None if bootstrap_agent_mask is None else bootstrap_agent_mask[done_env_idx],
+                final_value=bootstrap_values[done_env_idx],
             )
-            self.initial_previous_actions[final_env_idx].zero_()
-            self.is_true_episode_start[final_env_idx] = False
-            self.step[final_env_idx] = 0
+            self.initial_previous_actions[done_env_idx].zero_()
+            self.is_true_episode_start[done_env_idx] = False
+            self.step[done_env_idx] = 0
 
     def construct_episode(
             self,
@@ -294,7 +290,9 @@ class PPORolloutBuffer:
             values: torch.Tensor,
             previous_actions: MaybeTensor,
             episode_start_mask: torch.Tensor,
-            is_final: torch.Tensor,
+            bootstrap_obs: dict[str, torch.Tensor],
+            bootstrap_values: torch.Tensor,
+            dones: torch.Tensor,
     ) -> None:
         new_episodes = self.accumulator.add(
             local_obs=local_obs,
@@ -308,7 +306,9 @@ class PPORolloutBuffer:
             values=values,
             previous_actions=previous_actions,
             episode_start_mask=episode_start_mask,
-            is_final=is_final,
+            bootstrap_obs=bootstrap_obs,
+            bootstrap_values=bootstrap_values,
+            dones=dones,
         )
         for new_ep in new_episodes:
             new_ep.compute_gae(self.gamma, self.gae_lambda)

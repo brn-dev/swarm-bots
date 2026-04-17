@@ -11,8 +11,8 @@ from swarmbots.mj_env.swarm.unit_config import UNIT_CONFIG_TETRAHEDRON_XYZ, UNIT
     UNIT_CONFIG_TETRAHEDRON_XY
 
 DEFAULT_KWARGS = {
-    'friction': [2, 1e-2, 2e-4],
-    'force_elliptic_cone': True,
+    'friction': [1.25, 7e-3, 1.25e-4],
+    'force_elliptic_cone': False,
     'actuator_strength': 15.0,
     'guidance_reward_weight': 1.00,
     'units_without_connections_reward_weight': -1e-5,
@@ -28,11 +28,14 @@ def _resolve_swarm(
         swarm: BaseSwarm | None,
         unit_start_locations: list[tuple[float, float, float]] | str | None = None,
         randomize_unit_orientations: bool = False,
+        quantize_connection_twist: int | None = None,
         joints: str = 'zx'
 ) -> BaseSwarm:
     assert swarm is None or unit_start_locations is None
 
     if swarm is not None:
+        if quantize_connection_twist is not None:
+            raise ValueError("quantize_connection_twist can only be used when presets construct the swarm")
         return swarm
 
     if unit_start_locations is None:
@@ -81,6 +84,7 @@ def _resolve_swarm(
         leg_length=0.2,
         leg_radius=0.025,
         connection_torquescale=50.0,
+        quantize_connection_twist=quantize_connection_twist,
         randomize_unit_orientations=randomize_unit_orientations,
     )
 
@@ -90,6 +94,7 @@ def default_wall(
         swarm: BaseSwarm | None = None,
         unit_start_locations: list[tuple[float, float, float]] | str | Any | None = None,
         randomize_unit_orientations: bool = False,
+        quantize_connection_twist: int | None = None,
         **kwargs
 ) -> ObstacleStreetScenario:
     scenario_kwargs = DEFAULT_KWARGS.copy()
@@ -102,7 +107,12 @@ def default_wall(
     })
     scenario_kwargs.update(kwargs)
     return ObstacleStreetScenario(
-        swarm=_resolve_swarm(swarm, unit_start_locations, randomize_unit_orientations),
+        swarm=_resolve_swarm(
+            swarm,
+            unit_start_locations,
+            randomize_unit_orientations,
+            quantize_connection_twist,
+        ),
         payload_type=None,
         num_walls=1,
         opening_width=0.01,
@@ -116,6 +126,7 @@ def default_bridge(
         swarm: BaseSwarm | None = None,
         unit_start_locations: list[tuple[float, float, float]] | str | None = None,
         randomize_unit_orientations: bool = False,
+        quantize_connection_twist: int | None = None,
         **kwargs
 ) -> BridgeScenario:
     scenario_kwargs = DEFAULT_KWARGS.copy()
@@ -124,7 +135,12 @@ def default_bridge(
     })
     scenario_kwargs.update(kwargs)
     return BridgeScenario(
-        swarm=_resolve_swarm(swarm, unit_start_locations, randomize_unit_orientations),
+        swarm=_resolve_swarm(
+            swarm,
+            unit_start_locations,
+            randomize_unit_orientations,
+            quantize_connection_twist,
+        ),
         payload_type=None,
         **scenario_kwargs,
         seed=seed,

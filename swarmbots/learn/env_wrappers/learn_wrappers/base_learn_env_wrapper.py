@@ -35,10 +35,11 @@ class BaseLearnEnvWrapper(VectorWrapper, Generic[ActSpace], abc.ABC):
         self.reward_dtype = reward_dtype
 
         autoreset_mode = env.metadata.get("autoreset_mode", None)
-        if not autoreset_mode == AutoresetMode.NEXT_STEP:
+        if autoreset_mode != AutoresetMode.SAME_STEP:
             raise ValueError(
-                "SwarmBotsLearnVectorEnv requires VectorEnv autoreset_mode=NEXT_STEP "
-                f"(got autoreset_mode={autoreset_mode!r}). The rollout buffer accumulator is designed for NEXT_STEP."
+                "SwarmBotsLearnVectorEnv requires VectorEnv autoreset_mode=SAME_STEP "
+                f"(got autoreset_mode={autoreset_mode!r}). The rollout pipeline expects terminal observations in "
+                "infos['final_obs'] and immediate same-step resets."
             )
 
         obs_space = env.observation_space
