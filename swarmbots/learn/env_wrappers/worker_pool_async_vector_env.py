@@ -104,7 +104,7 @@ class WorkerPoolAsyncVectorEnv(VectorEnv):
             | None
         ) = None,
         observation_mode: str | Space = "same",
-        autoreset_mode: str | AutoresetMode = AutoresetMode.NEXT_STEP,
+        autoreset_mode: str | AutoresetMode = AutoresetMode.SAME_STEP,
     ):
         """Vectorized environment that runs multiple environments in parallel.
 
@@ -152,6 +152,8 @@ class WorkerPoolAsyncVectorEnv(VectorEnv):
             if isinstance(autoreset_mode, AutoresetMode)
             else AutoresetMode(autoreset_mode)
         )
+        if self.autoreset_mode == AutoresetMode.NEXT_STEP:
+            raise ValueError("WorkerPoolAsyncVectorEnv no longer supports autoreset_mode=NEXT_STEP. Use SAME_STEP.")
 
         self.num_envs = len(env_fns)
         if self.num_envs <= 0:
@@ -833,16 +835,7 @@ def _async_worker_pool(
                 step_results: list[tuple[int, Any, Any, Any, Any, dict[str, Any]]] = []
                 for env_index, action in data:
                     env = envs[env_index]
-                    if autoreset_mode == AutoresetMode.NEXT_STEP:
-                        if autoreset_flags[env_index]:
-                            observation, info = env.reset()
-                            reward, terminated, truncated = 0, False, False
-                        else:
-                            observation, reward, terminated, truncated, info = env.step(
-                                action
-                            )
-                        autoreset_flags[env_index] = terminated or truncated
-                    elif autoreset_mode == AutoresetMode.SAME_STEP:
+                    if autoreset_mode == AutoresetMode.SAME_STEP:
                         observation, reward, terminated, truncated, info = env.step(
                             action
                         )

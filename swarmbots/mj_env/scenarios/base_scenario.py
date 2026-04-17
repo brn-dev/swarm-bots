@@ -146,16 +146,24 @@ class BaseScenario(abc.ABC):
                     self.dummy_model, mujoco.mjtObj.mjOBJ_BODY, conn_body_name
                 )
 
-        self._eq_indices = np.full((num_units, num_connectors, num_units, num_connectors), -1, dtype=int)
+        num_eq_variants = self.swarm.config.num_connection_eq_variants
+        self._eq_indices = np.full(
+            (num_units, num_connectors, num_units, num_connectors, num_eq_variants),
+            -1,
+            dtype=int,
+        )
 
         for u1 in range(num_units - 1):
             for u2 in range(u1 + 1, num_units):
                 for c1 in range(num_connectors):
                     for c2 in range(num_connectors):
-                        eq_name = self.swarm.config.get_eq_name(u1, c1, u2, c2)
-                        eq_id = mujoco.mj_name2id(self.dummy_model, mujoco.mjtObj.mjOBJ_EQUALITY, eq_name)
-                        self._eq_indices[u1, c1, u2, c2] = eq_id
-                        self._eq_indices[u2, c2, u1, c1] = eq_id
+                        for twist_idx in range(num_eq_variants):
+                            eq_name = self.swarm.config.get_eq_variant_name(u1, c1, u2, c2, twist_idx)
+                            eq_id = mujoco.mj_name2id(self.dummy_model, mujoco.mjtObj.mjOBJ_EQUALITY, eq_name)
+                            if eq_id == -1:
+                                raise ValueError(f"Equality constraint {eq_name} not found")
+                            self._eq_indices[u1, c1, u2, c2, twist_idx] = eq_id
+                            self._eq_indices[u2, c2, u1, c1, twist_idx] = eq_id
 
         self._unit_body_ids: list[np.ndarray] = []
         self._unit_geom_ids: list[np.ndarray] = []
@@ -637,9 +645,13 @@ class BaseScenario(abc.ABC):
             conn2: int,
             twist: float
     ):
-        eq_idx = self._eq_indices[unit1, conn1, unit2, conn2]
-        if eq_idx == -1:
-            raise ValueError(f'Equality constraint {unit1}-{conn1}_{unit2}-{conn2} not found')
+        if self.swarm.config.uses_quantized_connection_twist:
+            twist_idx = self.swarm.config.get_nearest_connection_twist_index(twist)
+            eq_idx = self._eq_indices[unit1, conn1, unit2, conn2, twist_idx]
+            data.eq_active[eq_idx] = 1
+            return
+
+        eq_idx = self._eq_indices[unit1, conn1, unit2, conn2, 0]
         data.eq_active[eq_idx] = 1
         mj_utils.apply_twist(model, eq_idx, twist)
 
@@ -651,9 +663,12 @@ class BaseScenario(abc.ABC):
             unit2: int,
             conn2: int
     ):
-        eq_idx = self._eq_indices[unit1, conn1, unit2, conn2]
-        if eq_idx == -1:
-            raise ValueError(f'Equality constraint {unit1}-{conn1}_{unit2}-{conn2} not found')
+        if self.swarm.config.uses_quantized_connection_twist:
+            eq_indices = self._eq_indices[unit1, conn1, unit2, conn2]
+            data.eq_active[eq_indices] = 0
+            return
+
+        eq_idx = self._eq_indices[unit1, conn1, unit2, conn2, 0]
         data.eq_active[eq_idx] = 0
 
     def compute_guidance_reward(

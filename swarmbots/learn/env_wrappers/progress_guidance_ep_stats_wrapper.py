@@ -29,10 +29,10 @@ class ProgressGuidanceEpisodeStatsWrapper(VectorWrapper):
         if "autoreset_mode" not in self.env.metadata:
             warn(
                 f"{self} is missing `autoreset_mode` tag in its metadata, therefore, "
-                "ProgressGuidanceEpisodeStatsWrapper assumes `AutoresetMode.NEXT_STEP`."
+                "ProgressGuidanceEpisodeStatsWrapper assumes `AutoresetMode.SAME_STEP`."
             )
         else:
-            assert self.env.metadata["autoreset_mode"] in {AutoresetMode.NEXT_STEP}
+            assert self.env.metadata["autoreset_mode"] in {AutoresetMode.SAME_STEP}
 
         self.episode_progress_rewards = np.zeros((self.num_envs,), dtype=np.float64)
         self.episode_guidance_rewards = np.zeros((self.num_envs,), dtype=np.float64)

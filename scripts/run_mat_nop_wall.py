@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 import torch
-from gymnasium.vector import SyncVectorEnv, AsyncVectorEnv
+from gymnasium.vector import SyncVectorEnv, AsyncVectorEnv, AutoresetMode
 from loguru import logger
 from torch import nn
 
@@ -257,7 +257,7 @@ def main() -> None:
                 unit_start_locations=unit_start_locations,
                 render_mode='rgb_array'
             )
-        ])
+        ], autoreset_mode=AutoresetMode.SAME_STEP)
         record_env = wrap_vec_env(
             vector_env=record_env,
             obs_indices=obs_indices,
@@ -270,9 +270,13 @@ def main() -> None:
     print('Creating vector env...')
     if sys.gettrace() is None:
         # vector_env = AsyncVectorEnv(env_fns)
-        vector_env = WorkerPoolAsyncVectorEnv(env_fns, num_workers=n_workers )
+        vector_env = WorkerPoolAsyncVectorEnv(
+            env_fns,
+            num_workers=n_workers,
+            autoreset_mode=AutoresetMode.SAME_STEP,
+        )
     else:
-        vector_env = SyncVectorEnv(env_fns[:1])
+        vector_env = SyncVectorEnv(env_fns[:1], autoreset_mode=AutoresetMode.SAME_STEP)
     print(f"Created {type(vector_env)} with {n_envs} environments.")
 
     if isinstance(vector_env, SyncVectorEnv):

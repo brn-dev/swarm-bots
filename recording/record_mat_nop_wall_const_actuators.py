@@ -5,7 +5,7 @@ import sys
 from typing import Any, Callable
 
 import torch
-from gymnasium.vector import SyncVectorEnv
+from gymnasium.vector import SyncVectorEnv, AutoresetMode
 from gymnasium.wrappers.vector import NormalizeReward, RecordEpisodeStatistics
 from loguru import logger
 
@@ -191,7 +191,7 @@ def main() -> None:
         camera=args.camera,
         render_mode="rgb_array",
     )
-    record_vector_env = SyncVectorEnv([record_env_fn])
+    record_vector_env = SyncVectorEnv([record_env_fn], autoreset_mode=AutoresetMode.SAME_STEP)
     record_env = wrap_vec_env(
         vector_env=record_vector_env,
         obs_indices=obs_indices,

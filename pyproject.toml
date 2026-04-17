@@ -12,7 +12,6 @@ dependencies = [
     "matplotlib",
     "moviepy",
     "mujoco>=3.1",
-    "mujoco-mjx>=3.1",
     "numpy",
     "torch",
 ]

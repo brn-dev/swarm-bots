@@ -167,6 +167,7 @@ class HomogeneousSwarm(BaseSwarm):
             hinge_damping: HingeJointParam = (0.0, 0.0),
             hinge_frictionloss: HingeJointParam = (0.0, 0.0),
             connection_torquescale: float = 50.0,
+            quantize_connection_twist: Optional[int] = None,
             randomize_unit_orientations: bool = False
     ) -> None:
         assert unit_start_quats is None or not randomize_unit_orientations
@@ -248,6 +249,7 @@ class HomogeneousSwarm(BaseSwarm):
                 num_units=self.num_units,
                 unit_config=unit_config,
                 connection_torquescale=connection_torquescale,
+                quantize_connection_twist=quantize_connection_twist,
             ),
             max_unit_extent=body_radius + leg_length
         )

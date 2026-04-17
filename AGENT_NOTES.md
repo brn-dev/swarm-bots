@@ -37,13 +37,13 @@ Agents shall use this file to make notes for future instances. Write down import
 - Concrete policies:
 - `PPOPolicy`: MLP actor + MLP/PopArt critic.
 - `MATPolicy`: encoder/decoder transformer policy + DeepSet critic.
-- `RMATPolicy`: `MATPolicy` decoder/critic with `RMATEncoder` (per-layer agent-axis transformer + time-axis sequence model). Rollout-time temporal state lives inside the policy. Under `NEXT_STEP`, terminal observations must be encoded with the pre-reset state; reset only after that forward pass so the next episode's first observation sees the reset. Step-rollout bootstrap value passes must snapshot/restore RMAT temporal state so the live rollout state is not advanced twice on the same observation.
+- `RMATPolicy`: `MATPolicy` decoder/critic with `RMATEncoder` (per-layer agent-axis transformer + time-axis sequence model). Rollout-time temporal state lives inside the policy. Under the current `SAME_STEP` pipeline, reset masks are queued after a done step and consumed on the next episode's first observation. Step-rollout bootstrap value passes still snapshot/restore RMAT temporal state so the live rollout state is not advanced twice on bootstrap observations.
 - World-model composition is wrapper-first (not separate PPO algo classes):
 - `NextObsPredWrapper(BasePPOPolicy[PPOWMSamples, PPOWMSamplerConfig], NextObsPredMixin)`
 - `SPRWrapper(BasePPOPolicy[PPOWMSamples, PPOWMSamplerConfig], SPRMixin)`
 - Wrappers delegate action/value to wrapped `MATPolicy` and add WM losses in `evaluate_actions(...)`.
 - Important recurrent gotcha: WM wrappers must delegate `make_sampler(...)` to the wrapped policy. If a wrapper hardcodes `PPOWMSampler`, RMAT silently falls back to flat samples and crashes/misbehaves.
-- Important recurrent gotcha: WM wrappers must also delegate temporal-state hooks (`reset_temporal_state`, snapshot/restore, and `after_optimizer_step`) to the wrapped policy. Otherwise wrapped RMAT loses NEXT_STEP reset handling and step-rollout bootstrap snapshot/restore.
+- Important recurrent gotcha: WM wrappers must also delegate temporal-state hooks (`reset_temporal_state`, snapshot/restore, and `after_optimizer_step`) to the wrapped policy. Otherwise wrapped RMAT loses SAME_STEP episode-boundary resets and step-rollout bootstrap snapshot/restore.
 - `NextObsPredMixin.compute_next_obs_pred_loss(...)` now flattens recurrent RMAT batches `(B, S, ...) -> (B*S, ...)`; recurrent NOP uses `RPPOWMSamples.wm_actions`, not the PPO current-step `actions`.
 - `SPRWrapper` intentionally rejects `RMATPolicy`; recurrent SPR target latents would need history-aware target encoding, which is not implemented.
 - WM sampler runtime checks should use `BaseWMSampler`, not concrete `PPOWMSampler`; recurrent RMAT uses `RPPOWMSampler`, which is a different class but still a valid WM sampler.
@@ -52,6 +52,8 @@ Agents shall use this file to make notes for future instances. Write down import
 
 - Rollout/sampler structure:
 - `PPORolloutBuffer` builds `PPOEpisode` objects and computes GAE.
+- PPO rollout is now `SAME_STEP`: every env step is stored immediately, done environments are finalized on that same step, and truncated/terminated bootstrap observations come from `infos["final_obs"]`, not the reset observation batch.
+- Raw Gymnasium same-step env infos for done steps arrive under `infos["final_info"]`; rollout code must unwrap episode stats from there when they were not injected by later wrappers.
 - `collect_steps()` can emit partial `PPOEpisode`s that start mid true env episode. `PPOEpisode.is_true_episode_start` is explicit rollout bookkeeping for this; do not infer it from chunk index or `initial_previous_actions`.
 - `PPOSampler` flattens episodes into `PPOSamples`.
 - `PPOWMSampler` extends `PPOSampler` with multi-step windows and returns `PPOWMSamples` (next obs, validity masks, WM masks).
@@ -83,7 +85,7 @@ Agents shall use this file to make notes for future instances. Write down import
 - Current wall training setup wraps `MATPolicy` with `NextObsPredWrapper`; it does not use a separate MAT-specific WM policy class anymore.
 
 ## Hard Invariants
-- Vector env autoreset must be `NEXT_STEP` end-to-end.
+- Vector env autoreset must be `SAME_STEP` end-to-end.
 - Learn-side obs must include `local_obs`, `global_obs`, `hidden_local_vars`, `hidden_global_vars`; `agent_mask` optional but supported.
 - `MATPolicy` currently requires `agent_mask` as contiguous true-prefix, and agent 0 must be active.
 - `RMATPolicy` currently trains with zero-initialized recurrent state plus sampler burn-in windows, not stored rollout hidden states. That is an approximation, but much better than zero-init with non-overlapping chunks. Strict TBPTT / exact rollout-state replay still is not implemented.
@@ -95,19 +97,13 @@ Agents shall use this file to make notes for future instances. Write down import
 - Agent shuffling path must preserve shuffle/unshuffle pairing.
 - Unstable MuJoCo simulation is converted to terminal transition with fallback obs/reward and `info["error"] = "simulation_unstable"`.
 - Canonical scenario constructors in scripts are preset-based (`default_wall`, `default_bridge`).
-- MuJoCo scenario reward plumbing is now stripped down: `swarmbots/mj_env/scenarios/base_scenario.py` only keeps `progress_reward_weight`, `guidance_reward_weight`, and `units_without_connections_reward_weight`. The old hinge-qvel, double-connection, actuator-activation, movement/height, and connector reward knobs were removed there, but the separate MJX scenario stack still has its own broader reward API.
+- MuJoCo scenario reward plumbing is now stripped down: `swarmbots/mj_env/scenarios/base_scenario.py` only keeps `progress_reward_weight`, `guidance_reward_weight`, and `units_without_connections_reward_weight`. The old hinge-qvel, double-connection, actuator-activation, movement/height, and connector reward knobs were removed there.
+- `HomogeneousSwarm(..., quantize_connection_twist=N)` prebuilds `N` weld equalities per connector pair with evenly spaced twists; `BaseScenario` then activates the nearest prebuilt constraint by toggling `data.eq_active` only. With `None`, legacy behavior remains and the single weld constraint's twist is still written into `model.eq_data` at activation time.
 - `ObstacleStreetScenario` wall-pass reward is normalized by active unit count and threshold count; adding thresholds should not inflate total wall reward.
-- `swarmbots/mjx_env` is a separate MJX implementation with `Mjx*` classes. It uses static MuJoCo models, capsule limb/connector/pole geoms, pure JAX env state, and batched execution through `jax.vmap`.
-- MJX connector weld twists are quantized: every possible connector pair has 4 precompiled weld equality constraints by default and runtime connection state only updates `data.eq_active`; do not mutate `model.eq_data` during MJX steps.
-- MJX reset uses a precomputed reset pool selected by JAX PRNG. The MJX presets intentionally default `reset_settle_time=0.0`; single-env MJX settle/reset is too slow and any warmup should be batched explicitly.
-- MJX connector geoms are visual/non-collidable. The first short limb segment on every limb is also non-collidable, while long limb segments stay collidable except for same-unit self-collisions added via body excludes in `MjxBaseScenario.create_scenario_spec()`. MJX base scenarios also inject `max_geom_pairs` and `max_contact_points` numerics as `num_units * limbs_per_unit * 3`. If you want non-elliptic cones in MJX wall runs, setting `force_elliptic_cone=False` is not enough by itself: keep sliding friction below `HIGH_FRICTION_SLIDING_THRESHOLD` or `_configure_model()` auto-switches back to elliptic.
-- In `MjxObstacleStreetScenario`, the long side boundary walls are visual-only/non-collidable in MJX. The collidable obstacle walls and ramps remain collidable.
-- `FeatureWiseObsNormWrapper` is copy-on-write for the configured obs key; it must not mutate incoming observation arrays. `MjxGymVectorEnv` adapts the batched MJX env to the existing Gymnasium vector/PPO wrapper stack. `scripts/run_mjx_mat_nop_wall.py` uses this adapter, not `WorkerPoolAsyncVectorEnv`.
-- The canonical learn-side wrappers are now torch-side (`Torch*Wrapper` classes). `SwarmBotsLearnEnvWrapper` is the only generic conversion boundary; wrappers above it must stay tensor-native so MJX/JAX/Warp outputs do not get forced through NumPy first.
-- `SwarmBotsLearnEnvWrapper` now also owns the action conversion boundary. It reads `env.action_backend` (`"numpy"` by default, `"jax"` in `MjxGymVectorEnv`, `"warp"` available for future direct Warp envs) and converts policy actions to that backend. Torch->JAX and torch->Warp use DLPack / framework interop so device actions do not bounce through host NumPy.
-- `MjxGymVectorEnv` now returns raw JAX arrays/pytrees instead of host NumPy copies. The boundary conversion in `BaseLearnEnvWrapper` handles NumPy, torch, and objects exposing `__dlpack__` (JAX device arrays).
-- `MjxGymVectorEnv` must match `NEXT_STEP` semantics exactly: on the call after a done, reset only those slots while still stepping the live envs in the same `step()` call. Do not short-circuit and return early for the whole batch.
-- MJX scenarios accept `mjx_impl` (`None`, `"jax"`, `"warp"`, etc.) and pass it to `mjx.put_model`. `scripts/run_mjx_mat_nop_wall.py` defaults `MJX_IMPL = None`; use `"warp"` only in a Linux/WSL CUDA JAX environment with NVIDIA Warp installed (`warp-lang`, exposed as the `warp` optional dependency).
+- `FeatureWiseObsNormWrapper` is copy-on-write for the configured obs key; it must not mutate incoming observation arrays.
+- The canonical learn-side wrappers are now torch-side (`Torch*Wrapper` classes). `SwarmBotsLearnEnvWrapper` is the only generic conversion boundary; wrappers above it must stay tensor-native so device-native env outputs do not get forced through NumPy first.
+- `SwarmBotsLearnEnvWrapper` now also owns the action conversion boundary. It reads `env.action_backend` and converts policy actions to that backend. Torch interop for non-NumPy backends uses DLPack-style zero-copy paths where available so device actions do not bounce through host NumPy.
+- `BaseLearnEnvWrapper` handles NumPy, torch, and objects exposing `__dlpack__`.
 
 ## Swarm Notes
 - `HomogeneousSwarm` supports preset layouts, explicit coordinates, Poisson-disc/pre-connected/random-wiggle generation.
@@ -131,6 +127,6 @@ Agents shall use this file to make notes for future instances. Write down import
 ## Practical Guidance
 - For new training work, start from `scripts/run_mat_nop_wall.py`, not the other MAT scripts.
 - `scripts/run_mat_nop_wall.py` currently assumes `cwd == scripts/` for relative paths like `../runs/...`; launcher wrappers should add repo root to `PYTHONPATH` instead of switching cwd to repo root.
-- If you change wrappers/vector-env behavior, re-check `NEXT_STEP` assumptions and checkpoint restore.
+- If you change wrappers/vector-env behavior, re-check `SAME_STEP` `final_obs` handling and checkpoint restore.
 - Checkpoint env-state restore now has aliases for old NumPy/Gym normalization wrapper names (`FeatureWiseObsNormWrapper`, `NormalizeReward`) to the new torch-side normalization wrappers, so old checkpoints can still restore running stats into the new wrapper chain.
 - If you change observation composition, verify `build_obs_indices(...)`, normalization wrappers, and WM target configs together.
