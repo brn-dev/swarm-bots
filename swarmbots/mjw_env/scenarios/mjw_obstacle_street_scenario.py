@@ -10,6 +10,7 @@ from gymnasium import spaces
 from gymnasium.vector.utils import batch_space
 
 from swarmbots.mj_env.float_or_dist_params import FloatOrBoundedDistParams, FloatOrDistParams, fodp_low
+from swarmbots.mjw_env.scenarios.base_mjw_scenario import MJWRuntimeBindings
 from swarmbots.mjw_env.swarm.mjw_homogeneous_swarm import MJWHomogeneousSwarm
 
 
@@ -214,3 +215,8 @@ class MJWObstacleStreetScenario:
 
     def get_batched_action_space(self, num_envs: int) -> spaces.Dict:
         return batch_space(self.get_single_action_space(), n=num_envs)
+
+    def create_runtime(self, *, bindings: MJWRuntimeBindings) -> Any:
+        from swarmbots.mjw_env.scenarios.mjw_obstacle_street_runtime import ObstacleStreetMJWScenarioRuntime
+
+        return ObstacleStreetMJWScenarioRuntime(scenario=self, bindings=bindings)

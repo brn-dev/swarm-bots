@@ -95,6 +95,7 @@ class WorkerPoolAsyncVectorEnv(VectorEnv):
         num_workers: int | None = None,
         shared_memory: bool = True,
         copy: bool = True,
+        check_spaces: bool = False,
         context: str | None = None,
         daemon: bool = True,
         worker: (
@@ -116,6 +117,9 @@ class WorkerPoolAsyncVectorEnv(VectorEnv):
                 shared variables. This can improve the efficiency if the observations are large (e.g. images).
             copy: If ``True``, then the :meth:`AsyncVectorEnv.reset` and :meth:`AsyncVectorEnv.step` methods
                 return a copy of the observations.
+            check_spaces: If ``True``, synchronously validates that all worker env spaces match at startup.
+                This blocks constructor return until all worker envs are created. Keep this ``False`` to minimize
+                vector-env creation latency when you know env spaces are homogeneous.
             context: Context for `multiprocessing`. If ``None``, then the default context is used.
             daemon: If ``True``, then subprocesses have ``daemon`` flag turned on; that is, they will quit if
                 the head process quits. However, ``daemon=True`` prevents subprocesses to spawn children,
@@ -143,6 +147,7 @@ class WorkerPoolAsyncVectorEnv(VectorEnv):
         self.env_fns = env_fns
         self.shared_memory = shared_memory
         self.copy = copy
+        self.check_spaces = check_spaces
         self.context = context
         self.daemon = daemon
         self.worker = worker
@@ -266,7 +271,8 @@ class WorkerPoolAsyncVectorEnv(VectorEnv):
                 child_pipe.close()
 
         self._state = AsyncState.DEFAULT
-        self._check_spaces()
+        if self.check_spaces:
+            self._check_spaces()
 
     @property
     def np_random_seed(self) -> tuple[int, ...]:
