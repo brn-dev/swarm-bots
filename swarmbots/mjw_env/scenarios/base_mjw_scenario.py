@@ -91,6 +91,14 @@ class MJWStepResult:
     info: dict[str, torch.Tensor]
 
 
+@dataclass(slots=True)
+class MJWRecordingCameraConfig:
+    lookat: tuple[float, float, float]
+    distance: float
+    azimuth: float
+    elevation: float
+
+
 class BaseMJWScenario(Protocol):
     swarm: MJWHomogeneousSwarm
     actuator_strength: float
@@ -111,6 +119,7 @@ class BaseMJWScenario(Protocol):
     def get_single_action_space(self) -> spaces.Dict: ...
     def get_batched_observation_space(self, num_envs: int) -> spaces.Dict: ...
     def get_batched_action_space(self, num_envs: int) -> spaces.Dict: ...
+    def get_default_recording_camera_config(self) -> MJWRecordingCameraConfig | None: ...
     def create_runtime(self, *, bindings: MJWRuntimeBindings) -> "BaseMJWScenarioRuntime": ...
 
 

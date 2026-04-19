@@ -3,6 +3,7 @@ from __future__ import annotations
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 import math
+from pathlib import Path
 from typing import Any
 
 import mujoco_warp as mjw
@@ -15,6 +16,7 @@ from swarmbots.mjw_env.mjw_kernels import (
     compute_best_connection_candidates,
     gather_connector_frames,
 )
+from swarmbots.mjw_env.mjw_live_recording import MJWLiveEpisodeRecorder, MJWRecordingConfig, MJWWorldSnapshot
 from swarmbots.mjw_env.mjw_model_metadata import MJWModelMetadata, build_model_metadata
 from swarmbots.mjw_env.mjw_torch_quat import quat_to_rot6d_torch
 from swarmbots.mjw_env.mjw_torch_utils import to_device_bool_tensor
@@ -68,6 +70,8 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
         episode_length: int = 500,
         action_repeat: int = 15,
         first_episode_length: int | None = None,
+        first_episode_lengths: list[int] | torch.Tensor | None = None,
+        settle_initial_reset: bool = False,
         simulation_unstable_reward: float = -1.0,
         device: str | torch.device = "cuda",
         nconmax: int | None = None,
@@ -76,6 +80,8 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
         super().__init__()
         wp.init()
 
+        if first_episode_length is not None and first_episode_lengths is not None:
+            raise ValueError("Pass only one of first_episode_length or first_episode_lengths")
         if first_episode_length is not None and first_episode_length > episode_length:
             raise ValueError(
                 f"first_episode_length can not be longer than episode_length ({episode_length}), got {first_episode_length}"
@@ -93,6 +99,8 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
         self.num_envs = int(num_envs)
         self.episode_length = int(episode_length)
         self.first_episode_length = first_episode_length
+        self.first_episode_lengths = first_episode_lengths
+        self.settle_initial_reset = bool(settle_initial_reset)
         self.action_repeat = int(action_repeat)
         self.simulation_unstable_reward = float(simulation_unstable_reward)
         self.render_mode = None
@@ -205,7 +213,24 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
         )
         self._episode_length_limit = torch.full((self.num_envs,), self.episode_length, device=self.device, dtype=torch.int64)
         self._first_episode_length_limit = None
-        if self.first_episode_length is not None:
+        if self.first_episode_lengths is not None:
+            first_episode_length_limit = torch.as_tensor(
+                self.first_episode_lengths,
+                device=self.device,
+                dtype=torch.int64,
+            ).reshape(-1)
+            if tuple(first_episode_length_limit.shape) != (self.num_envs,):
+                raise ValueError(
+                    f"Expected first_episode_lengths shape ({self.num_envs},), got {tuple(first_episode_length_limit.shape)}"
+                )
+            if torch.any(first_episode_length_limit < 0):
+                raise ValueError("first_episode_lengths must be >= 0")
+            if torch.any(first_episode_length_limit > self.episode_length):
+                raise ValueError(
+                    f"first_episode_lengths can not be longer than episode_length ({self.episode_length})"
+                )
+            self._first_episode_length_limit = first_episode_length_limit
+        elif self.first_episode_length is not None:
             self._first_episode_length_limit = torch.full(
                 (self.num_envs,),
                 int(self.first_episode_length),
@@ -293,6 +318,8 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
         self._use_settled_resets = float(self.scenario.reset_settle_time) > 0.0
         self._settle_executor: ThreadPoolExecutor | None = None
         self._pending_settled_reset: _PendingSettledReset | None = None
+        self._live_episode_recorder = MJWLiveEpisodeRecorder(scenario=self.scenario)
+        self._initial_settled_reset_done = False
         if self._use_settled_resets:
             self._settle_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="mjw-reset-settle")
 
@@ -318,10 +345,21 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
             if options is None or "reset_mask" not in options
             else to_device_bool_tensor(options["reset_mask"], device=self.device, expected_shape=(self.num_envs,))
         )
-        self._reset_worlds(reset_mask)
+        if self._should_use_initial_settled_reset(reset_mask):
+            self._reset_worlds_with_settled_snapshots(reset_mask)
+            self._initial_settled_reset_done = True
+        else:
+            self._reset_worlds(reset_mask)
+        if self._live_episode_recorder.is_active():
+            reset_world_idx = torch.nonzero(reset_mask, as_tuple=False).flatten()
+            self._live_episode_recorder.on_episode_starts(
+                world_idx=reset_world_idx.detach().cpu().numpy(),
+                snapshots_by_world=self._capture_world_snapshots(reset_world_idx),
+            )
         return self._build_obs(), {}
 
     def close(self) -> None:
+        self._live_episode_recorder.close()
         if self._settle_executor is not None:
             self._settle_executor.shutdown(wait=True, cancel_futures=True)
             self._settle_executor = None
@@ -366,15 +404,71 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
 
         obs = self._build_obs()
         obs = self._apply_error_obs(obs, unstable_mask)
+        if self._live_episode_recorder.is_active():
+            active_world_idx = self._live_episode_recorder.active_world_indices()
+            if active_world_idx.size > 0:
+                active_world_idx_t = torch.as_tensor(active_world_idx, device=self.device, dtype=torch.long)
+                stable_active_world_idx = active_world_idx_t[stable_mask[active_world_idx_t]]
+                self._live_episode_recorder.record_step(
+                    rewards=rewards.detach().cpu().numpy(),
+                    dones=dones.detach().cpu().numpy(),
+                    unstable_mask=unstable_mask.detach().cpu().numpy(),
+                    snapshots_by_world=self._capture_world_snapshots(stable_active_world_idx),
+                )
 
         if torch.any(dones):
             infos["final_obs"] = {key: value.clone() for key, value in obs.items()}
             infos["_final_obs"] = dones.clone()
             self.is_first_episode[dones] = False
             self._reset_done_worlds(dones)
+            if self._live_episode_recorder.is_active():
+                done_world_idx = torch.nonzero(dones, as_tuple=False).flatten()
+                self._live_episode_recorder.on_episode_starts(
+                    world_idx=done_world_idx.detach().cpu().numpy(),
+                    snapshots_by_world=self._capture_world_snapshots(done_world_idx),
+                )
             obs = self._build_obs()
 
         return obs, rewards, terminations, truncations, infos
+
+    def start_video_recording(
+        self,
+        *,
+        video_folder: str,
+        video_name_prefix: str,
+        num_episodes: int = 5,
+        max_parallel_episodes: int = 4,
+        fps: int = 20,
+        fps_mode: str = "compensate_stride",
+        frame_stride: int = 4,
+        width: int = 640,
+        height: int = 480,
+        camera: int | str = -1,
+    ) -> None:
+        config = MJWRecordingConfig(
+            video_folder=Path(video_folder),
+            video_name_prefix=video_name_prefix,
+            num_episodes=int(num_episodes),
+            max_parallel_episodes=int(max_parallel_episodes),
+            fps=int(fps),
+            fps_mode=str(fps_mode),
+            frame_stride=int(frame_stride),
+            width=int(width),
+            height=int(height),
+            camera=camera,
+        )
+        episode_start_world_idx = torch.nonzero(self.current_step == 0, as_tuple=False).flatten()
+        self._live_episode_recorder.start(
+            config=config,
+            episode_start_world_idx=episode_start_world_idx.detach().cpu().numpy(),
+            snapshots_by_world=self._capture_world_snapshots(episode_start_world_idx),
+        )
+
+    def supports_live_recording(self) -> bool:
+        return True
+
+    def get_video_recording_status(self) -> dict[str, Any]:
+        return self._live_episode_recorder.get_status()
 
     def _build_pool_eq_active(self) -> torch.Tensor:
         pool_eq_active = torch.zeros(
@@ -482,6 +576,29 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
             world_idx=world_idx,
             reset_batch=self._scenario_runtime.sample_reset_batch(n_reset=int(world_idx.numel()), rng=self._rng),
         )
+
+    def _reset_worlds_with_settled_snapshots(self, reset_mask: torch.Tensor) -> None:
+        world_idx = torch.nonzero(reset_mask, as_tuple=False).flatten()
+        if world_idx.numel() == 0:
+            return
+
+        logger.warning(
+            f"Running initial settled reset for {int(world_idx.numel())} MJW env(s). "
+            f"This increases startup latency but gives settled initial states."
+        )
+        reset_batch = self._scenario_runtime.sample_reset_batch(n_reset=int(world_idx.numel()), rng=self._rng)
+        specs = self._scenario_runtime.build_cpu_reset_specs(reset_batch=reset_batch)
+        snapshots = self._scenario_runtime.settle_cpu_reset_specs(specs=specs)
+        self._scenario_runtime.apply_settled_reset_batch(world_idx=world_idx, snapshots=snapshots)
+
+    def _should_use_initial_settled_reset(self, reset_mask: torch.Tensor) -> bool:
+        if self._initial_settled_reset_done:
+            return False
+        if not self.settle_initial_reset:
+            return False
+        if not self._use_settled_resets:
+            return False
+        return bool(torch.all(reset_mask))
 
     def _apply_actions(self, *, actuators: torch.Tensor, connectors: torch.Tensor) -> None:
         actuators = actuators.masked_fill(~self.units_active_mask.unsqueeze(-1), 0.0)
@@ -651,3 +768,27 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
         obs["hidden_local_vars"][unstable_world_idx] = 0.0
         obs["hidden_global_vars"][unstable_world_idx] = 0.0
         return obs
+
+    def _capture_world_snapshots(self, world_idx: torch.Tensor) -> dict[int, MJWWorldSnapshot]:
+        if world_idx.numel() == 0:
+            return {}
+
+        world_idx_cpu = world_idx.detach().to(device="cpu", dtype=torch.long)
+        qpos = self._qpos[world_idx].detach().cpu().numpy().copy()
+        qvel = self._qvel[world_idx].detach().cpu().numpy().copy()
+        eq_active = self._eq_active[world_idx].detach().cpu().numpy().copy()
+        mocap_pos = self._mocap_pos[world_idx].detach().cpu().numpy().copy()
+        mocap_quat = self._mocap_quat[world_idx].detach().cpu().numpy().copy()
+        times = self._time[world_idx].detach().cpu().numpy().copy()
+
+        return {
+            int(world): MJWWorldSnapshot(
+                qpos=qpos[i],
+                qvel=qvel[i],
+                eq_active=eq_active[i],
+                mocap_pos=mocap_pos[i],
+                mocap_quat=mocap_quat[i],
+                time=float(times[i]),
+            )
+            for i, world in enumerate(world_idx_cpu.tolist())
+        }

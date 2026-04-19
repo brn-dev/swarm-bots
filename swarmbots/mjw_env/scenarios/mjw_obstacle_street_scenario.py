@@ -10,7 +10,7 @@ from gymnasium import spaces
 from gymnasium.vector.utils import batch_space
 
 from swarmbots.mj_env.float_or_dist_params import FloatOrBoundedDistParams, FloatOrDistParams, fodp_low
-from swarmbots.mjw_env.scenarios.base_mjw_scenario import MJWRuntimeBindings
+from swarmbots.mjw_env.scenarios.base_mjw_scenario import MJWRuntimeBindings, MJWRecordingCameraConfig
 from swarmbots.mjw_env.swarm.mjw_homogeneous_swarm import MJWHomogeneousSwarm
 
 
@@ -105,6 +105,19 @@ class MJWObstacleStreetScenario:
             "wall_pass_reward_weight": self.wall_pass_reward_weight,
             "wall_pass_thresholds": list(self.wall_pass_thresholds),
         }
+
+    def get_default_recording_camera_config(self) -> MJWRecordingCameraConfig | None:
+        first_wall_distance = self.first_wall_distance if isinstance(self.first_wall_distance, (int, float)) else 1.0
+        max_wall_height = max(float(height) for height in self.wall_heights)
+        lookat_y = max(0.75, min(float(first_wall_distance) * 0.9, float(first_wall_distance) + 0.5))
+        lookat_z = max(0.35, max_wall_height * 1.25)
+        distance = max(3.0, min(8.0, self.street_width * 0.45 + self.swarm.max_unit_extent * 1.5))
+        return MJWRecordingCameraConfig(
+            lookat=(0.0, lookat_y, lookat_z),
+            distance=distance,
+            azimuth=180.0,
+            elevation=-35.0,
+        )
 
     def build_model(self) -> mujoco.MjModel:
         spec = mujoco.MjSpec()

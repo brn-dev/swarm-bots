@@ -60,7 +60,10 @@ class SwarmBotsEnv(gymnasium.Env):
         self.current_step = 0
 
         self.scenario = scenario
-        self.model, self.data = self.scenario.build()
+        # BaseScenario already compiles a model/data pair to derive indices and spaces.
+        # Reusing that pair here avoids recompiling the same MuJoCo scene for every env.
+        self.model = self.scenario.dummy_model
+        self.data = self.scenario.dummy_data
 
         self.scenario_state: dict | None = None
         self.swarm_connections: SwarmConnections | None = None
