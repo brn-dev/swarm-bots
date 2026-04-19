@@ -1,54 +1,14 @@
+from __future__ import annotations
+
 import sys
 import math
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
-import torch
-from gymnasium.vector import SyncVectorEnv, AsyncVectorEnv, AutoresetMode
-from loguru import logger
-from torch import nn
-
-from swarmbots.learn.action_dists.bernoulli_action_dist import BernoulliConfig
-from swarmbots.learn.action_dists.entropy_utils import EntropyLossConfig, AgentActionsReduction
-from swarmbots.learn.action_dists.gsde_action_dist import GSDEActionDist
-from swarmbots.learn.action_dists.sticky_action_dist import StickyActionDist
-from swarmbots.learn.action_dists.sticky_left_right_beta_action_dist import StickyLeftRightBetaConfig
-from swarmbots.learn.algos.mat.mat_policy import MATCriticConfig
-from swarmbots.learn.algos.mat.mat_encoder import MATEncoderConfig
-from swarmbots.learn.algos.mat.mat_decoder import MATDecoderConfig, MATDecoderSelfAttentionMode
-from swarmbots.learn.algos.mat.mat_policy import MATPolicy, MATPolicyConfig
-from swarmbots.learn.algos.ppo.base_ppo_policy import BasePPOPolicy
-from swarmbots.learn.algos.world_modeling.next_obs_pred_ppo_wrapper import NextObsPredWrapper, NOPWorldModelConfig
-from swarmbots.learn.algos.ppo.ppo import AutomaticLearningRate, StepsRolloutMode, PPO
-from swarmbots.learn.algos.world_modeling.ppo_wm_sampler import PPOWMSamplerConfig
-from swarmbots.learn.algos.ppo.ppo_policy import PopArtConfig
-from swarmbots.learn.algos.world_modeling.next_obs_pred_mixin import NextObsPredConfig
-from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
-from swarmbots.learn.env_wrappers.learn_wrappers.swarm_bots_learn_env_wrapper import SwarmBotsLearnEnvWrapper
-from swarmbots.learn.env_wrappers.torch_feature_wise_obs_norm_wrapper import TorchFeatureWiseObsNormWrapper
-from swarmbots.learn.env_wrappers.torch_normalize_reward_wrapper import TorchNormalizeRewardWrapper
-from swarmbots.learn.env_wrappers.torch_progress_guidance_ep_stats_wrapper import (
-    TorchProgressGuidanceEpisodeStatsWrapper,
-)
-from swarmbots.learn.env_wrappers.torch_record_episode_statistics_wrapper import TorchRecordEpisodeStatisticsWrapper
-from swarmbots.learn.env_wrappers.torch_transition_obs_wrapper import TorchTransitionObsWrapper
-from swarmbots.learn.env_wrappers.worker_pool_async_vector_env import WorkerPoolAsyncVectorEnv
-from swarmbots.learn.gsde_reset import GSDEProbabilityResetMode
-from swarmbots.learn.scheduling.cosine_scheduler import CosineSchedulerConfig
-from swarmbots.learn.summary_statistics import SummaryStatisticsFormat
-from swarmbots.learn.obs_indices import ObsIndices
-from swarmbots.learn.swarmbots_obs_indices import build_obs_indices
-from swarmbots.mj_env.scenarios import scenario_presets
 from swarmbots.mj_env.scenarios.scenario_presets import default_wall
 from swarmbots.mj_env.swarm.homogeneous_swarm import PreConnectedUnitLocationsConfig
 from swarmbots.mj_env.swarm_bots_env import SwarmBotsEnv
-from swarmbots.learn.scheduling.schedulers import (
-    ScheduledHyperParameter,
-    SchedulerManager, ScheduleUnit,
-)
-from swarmbots.learn.scheduling.linear_scheduler import LinearScheduler, LinearSchedulerConfig
-from swarmbots.learn.scheduling.auto_lr_updater import make_auto_lr_updater
 
 
 def make_env_fn(
@@ -93,13 +53,22 @@ def make_preconnected_unit_start_locations(pool_seeds: tuple[int, ...] | None) -
 
 
 def wrap_vec_env(
-        vector_env: SyncVectorEnv | AsyncVectorEnv,
-        obs_indices: ObsIndices,
+        vector_env: Any,
+        obs_indices: Any,
         gamma: float,
         use_popart: bool,
-        rollout_device: torch.device
-) -> BaseLearnEnvWrapper:
-    env: BaseLearnEnvWrapper = SwarmBotsLearnEnvWrapper(vector_env, device=rollout_device)
+        rollout_device: Any,
+) -> Any:
+    from swarmbots.learn.env_wrappers.learn_wrappers.swarm_bots_learn_env_wrapper import SwarmBotsLearnEnvWrapper
+    from swarmbots.learn.env_wrappers.torch_feature_wise_obs_norm_wrapper import TorchFeatureWiseObsNormWrapper
+    from swarmbots.learn.env_wrappers.torch_normalize_reward_wrapper import TorchNormalizeRewardWrapper
+    from swarmbots.learn.env_wrappers.torch_progress_guidance_ep_stats_wrapper import (
+        TorchProgressGuidanceEpisodeStatsWrapper,
+    )
+    from swarmbots.learn.env_wrappers.torch_record_episode_statistics_wrapper import TorchRecordEpisodeStatisticsWrapper
+    from swarmbots.learn.env_wrappers.torch_transition_obs_wrapper import TorchTransitionObsWrapper
+
+    env = SwarmBotsLearnEnvWrapper(vector_env, device=rollout_device)
     env = TorchRecordEpisodeStatisticsWrapper(env)
     env = TorchProgressGuidanceEpisodeStatsWrapper(env)
     env = TorchFeatureWiseObsNormWrapper(
@@ -132,7 +101,7 @@ def wrap_vec_env(
     return env
 
 
-def split_actuator_joints(actions: torch.Tensor, actuators_per_limb: int) -> dict[str, torch.Tensor]:
+def split_actuator_joints(actions: Any, actuators_per_limb: int) -> dict[str, Any]:
     return {
         f'j{i}': actions[..., i::actuators_per_limb]
         for i in range(actuators_per_limb)
@@ -140,10 +109,15 @@ def split_actuator_joints(actions: torch.Tensor, actuators_per_limb: int) -> dic
 
 
 def set_actuator_gsde_init_joint_stds(
-        policy: BasePPOPolicy[Any, Any],
+        policy: Any,
         actuators_per_limb: int,
         joint_stds: list[float]
 ) -> None:
+    import torch
+    from loguru import logger
+
+    from swarmbots.learn.action_dists.gsde_action_dist import GSDEActionDist
+
     if len(joint_stds) != actuators_per_limb:
         raise ValueError()
 
@@ -159,6 +133,33 @@ def set_actuator_gsde_init_joint_stds(
 
 
 def main() -> None:
+    import torch
+    from gymnasium.vector import SyncVectorEnv, AutoresetMode
+    from loguru import logger
+    from torch import nn
+
+    from swarmbots.learn.action_dists.bernoulli_action_dist import BernoulliConfig
+    from swarmbots.learn.action_dists.entropy_utils import EntropyLossConfig, AgentActionsReduction
+    from swarmbots.learn.action_dists.sticky_action_dist import StickyActionDist
+    from swarmbots.learn.action_dists.sticky_left_right_beta_action_dist import StickyLeftRightBetaConfig
+    from swarmbots.learn.algos.mat.mat_decoder import MATDecoderConfig, MATDecoderSelfAttentionMode
+    from swarmbots.learn.algos.mat.mat_encoder import MATEncoderConfig
+    from swarmbots.learn.algos.mat.mat_policy import MATCriticConfig, MATPolicy, MATPolicyConfig
+    from swarmbots.learn.algos.ppo.ppo import AutomaticLearningRate, StepsRolloutMode, PPO
+    from swarmbots.learn.algos.ppo.ppo_policy import PopArtConfig
+    from swarmbots.learn.algos.world_modeling.next_obs_pred_mixin import NextObsPredConfig
+    from swarmbots.learn.algos.world_modeling.next_obs_pred_ppo_wrapper import NextObsPredWrapper, NOPWorldModelConfig
+    from swarmbots.learn.algos.world_modeling.ppo_wm_sampler import PPOWMSamplerConfig
+    from swarmbots.learn.env_wrappers.worker_pool_async_vector_env import WorkerPoolAsyncVectorEnv
+    from swarmbots.learn.gsde_reset import GSDEProbabilityResetMode
+    from swarmbots.learn.scheduling.auto_lr_updater import make_auto_lr_updater
+    from swarmbots.learn.scheduling.cosine_scheduler import CosineSchedulerConfig
+    from swarmbots.learn.scheduling.linear_scheduler import LinearScheduler
+    from swarmbots.learn.scheduling.schedulers import ScheduledHyperParameter, SchedulerManager, ScheduleUnit
+    from swarmbots.learn.summary_statistics import SummaryStatisticsFormat
+    from swarmbots.learn.swarmbots_obs_indices import build_obs_indices
+    from swarmbots.mj_env.scenarios import scenario_presets
+
     logger.remove()
     logger.add(
         sys.stderr,
@@ -251,6 +252,7 @@ def main() -> None:
         hidden_global_vars_dim=hidden_global_vars_dim,
     )
 
+    from swarmbots.learn.env_wrappers.learn_wrappers.swarm_bots_learn_env_wrapper import SwarmBotsLearnEnvWrapper
     def make_record_env() -> SwarmBotsLearnEnvWrapper:
         record_env = SyncVectorEnv([
             make_env_fn(
@@ -268,7 +270,7 @@ def main() -> None:
         )
         return record_env
 
-    print('Creating vector env...')
+    print(f'Creating vector env (n={n_envs})...')
     if sys.gettrace() is None:
         # vector_env = AsyncVectorEnv(env_fns)
         vector_env = WorkerPoolAsyncVectorEnv(

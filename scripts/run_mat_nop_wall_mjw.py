@@ -54,6 +54,8 @@ def make_vector_env(
     num_envs: int,
     unit_start_locations: MJWPreConnectedUnitLocationsConfig | None = None,
     first_episode_length: int | None = None,
+    first_episode_lengths: list[int] | None = None,
+    settle_initial_reset: bool = False,
     device: torch.device,
 ) -> MJWSwarmBotsVectorEnv:
     scenario = default_wall(
@@ -66,6 +68,8 @@ def make_vector_env(
         num_envs=num_envs,
         episode_length=episode_length,
         first_episode_length=first_episode_length,
+        first_episode_lengths=first_episode_lengths,
+        settle_initial_reset=settle_initial_reset,
         device=device,
     )
 
@@ -81,10 +85,8 @@ def main() -> None:
     if not torch.cuda.is_available():
         raise RuntimeError("run_mat_nop_wall_mjw.py requires CUDA.")
 
-    debug_mode = sys.gettrace() is not None
-
     rollout_samples = int(4048 * 0.75)
-    n_envs = 1 if debug_mode else int(4048 * 0.75)
+    n_envs = 512
 
     episode_length = 512
     total_timesteps = 100_000_000
@@ -115,8 +117,12 @@ def main() -> None:
     logger.info(f"{rollout_device = }")
     logger.info(f"{train_device = }")
     logger.info("MJW wall training uses one batched GPU env directly; worker-pool vectorization is disabled.")
-    logger.info("MJW wall training currently has no render backend; recording is disabled in this script.")
-    logger.info("MJW env supports only one shared first_episode_length; per-env first-episode staggering is disabled.")
+    logger.info(
+        "MJW wall training supports live exact-state recording via the `record` command "
+        "(for example: record:{\"episodes\":8,\"parallel\":4,\"frame_stride\":4})."
+    )
+    logger.info("MJW env uses per-env first-episode staggering so episode ends are spread across time from startup.")
+    logger.info("MJW env also settles all worlds once on the initial reset, which increases startup latency.")
 
     if load_path is not None:
         if not load_path.endswith(".pt"):
@@ -132,12 +138,15 @@ def main() -> None:
     swarm_seed_pool = tuple(range(42_000, 42_005))
     unit_start_locations = make_preconnected_unit_start_locations(swarm_seed_pool)
     logger.info(f"swarm_seed_pool: {len(swarm_seed_pool)}")
+    first_episode_lengths = [int((i + 1) * episode_length / n_envs) for i in range(n_envs)]
 
     print("Creating MJW vector env...")
     vector_env = make_vector_env(
         episode_length=episode_length,
         num_envs=n_envs,
         unit_start_locations=unit_start_locations,
+        first_episode_lengths=first_episode_lengths,
+        settle_initial_reset=True,
         device=rollout_device,
     )
     print(f"Created {type(vector_env)} with {n_envs} environments.")
@@ -400,7 +409,7 @@ def main() -> None:
             "env_settings": env_settings,
             "script": Path(__file__).read_text(encoding="utf-8"),
             "script_scenario_presets": Path(mjw_scenario_presets.__file__).read_text(encoding="utf-8"),
-            "recording_enabled": False,
+            "recording_enabled": "live_mjw_exact_state",
         },
         logging_console_keys=logging_console_keys,
     )

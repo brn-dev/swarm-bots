@@ -462,6 +462,9 @@ class BaseAlgorithm(abc.ABC):
         elif cmd == 'record':
             self._cmd_record(params)
             return False
+        elif cmd in {'record_status', 'record_progress', 'recording_status', 'recording_progress'}:
+            self._cmd_record_status(params)
+            return False
         elif cmd == 'pause':
             self._cmd_pause(params)
             return False
@@ -652,24 +655,35 @@ class BaseAlgorithm(abc.ABC):
         logger.warning("Pause canceled. Resuming training.")
 
     def _cmd_record(self, params: str) -> None:
-        if self._make_record_env is None:
-            raise ValueError(f"{self._make_record_env} is None")
-
         config = _parse_params_maybe_json(params)
         if isinstance(config, dict):
             num_episodes = int(config.get("episodes", 3))
             deterministic = _parse_bool(config.get("deterministic", False))
             fps = int(config.get("fps", 30))
+            fps_mode = str(config.get("fps_mode", "compensate_stride"))
             prefix = str(config.get("prefix", f"record_{self.n_total_timesteps}"))
             video_folder = config.get("folder", None)
+            max_parallel_episodes = int(config.get("parallel", config.get("max_parallel", min(num_episodes, 4))))
+            frame_stride = int(config.get("frame_stride", 4))
+            width = int(config.get("width", 640))
+            height = int(config.get("height", 480))
+            camera = config.get("camera", -1)
+            live = _parse_bool(config.get("live", True))
         else:
             num_episodes = 3
             if params.strip():
                 num_episodes = int(params)
             deterministic = False
             fps = 30
+            fps_mode = "compensate_stride"
             prefix = f"record_{self.n_total_timesteps}"
             video_folder = None
+            max_parallel_episodes = min(num_episodes, 10)
+            frame_stride = 1
+            width = 640
+            height = 480
+            camera = -1
+            live = True
 
         if video_folder is None:
             if self._active_run_dir is not None:
@@ -679,6 +693,32 @@ class BaseAlgorithm(abc.ABC):
         else:
             folder = Path(str(video_folder))
 
+        live_record_fn = getattr(self.env.unwrapped, "start_video_recording", None)
+        if live and callable(live_record_fn):
+            if deterministic:
+                logger.warning("Ignoring deterministic=... for live MJW recording; episodes come from the current training rollout.")
+            live_record_fn(
+                video_folder=str(folder),
+                video_name_prefix=prefix,
+                num_episodes=num_episodes,
+                max_parallel_episodes=max_parallel_episodes,
+                fps=fps,
+                fps_mode=fps_mode,
+                frame_stride=frame_stride,
+                width=width,
+                height=height,
+                camera=camera,
+            )
+            logger.warning(
+                f"Started live recording of {num_episodes} episode(s) to {folder.as_posix()} "
+                f"(parallel={max_parallel_episodes}, frame_stride={frame_stride}, fps={fps}, fps_mode={fps_mode})"
+            )
+            return
+
+        if self._make_record_env is None:
+            raise ValueError(
+                "record is unavailable: env has no live recording support and make_record_env is None"
+            )
 
         device = getattr(self, "record_device", getattr(self, "rollout_device", torch.device("cpu")))
         gsde_reset_mode = getattr(self, "gsde_reset_mode", None)
@@ -713,6 +753,35 @@ class BaseAlgorithm(abc.ABC):
         finally:
             if record_env is not None:
                 record_env.close()
+
+    def _cmd_record_status(self, params: str) -> None:
+        _ = params
+        get_status_fn = getattr(self.env.unwrapped, "get_video_recording_status", None)
+        if callable(get_status_fn):
+            logger.info({"recording": get_status_fn(), "recording_mode": "live_env"})
+            return
+
+        if self._make_record_env is not None:
+            logger.info(
+                {
+                    "recording": {
+                        "active": False,
+                        "message": "This env uses the legacy separate record-env flow. No live recording session exists.",
+                    },
+                    "recording_mode": "separate_record_env",
+                }
+            )
+            return
+
+        logger.info(
+            {
+                "recording": {
+                    "active": False,
+                    "message": "Recording is not configured for this run.",
+                },
+                "recording_mode": "unavailable",
+            }
+        )
 
     def _cmd_show_reward_weights(self, params: str) -> None:
         _ = params
