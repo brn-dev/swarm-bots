@@ -83,23 +83,22 @@ class TorchRecordEpisodeStatisticsWrapper(TorchEnvWrapper):
             torch.zeros_like(self.episode_start_times),
         )
 
-        done_mask_np = dones.detach().cpu().numpy()
         stats_mask_key = f"_{self._stats_key}"
         if stats_mask_key in infos:
-            existing_done_mask = np.asarray(infos[stats_mask_key], dtype=bool).reshape(-1)
-            if existing_done_mask.shape != (self._n_envs,):
+            existing_done_mask = to_torch_tensor(infos[stats_mask_key], device=self.device, dtype=torch.bool).reshape(-1)
+            if tuple(existing_done_mask.shape) != (self._n_envs,):
                 raise ValueError(
-                    f"Expected infos['{stats_mask_key}'] shape ({self._n_envs},), got {existing_done_mask.shape}"
+                    f"Expected infos['{stats_mask_key}'] shape ({self._n_envs},), got {tuple(existing_done_mask.shape)}"
                 )
-            if not np.array_equal(existing_done_mask, done_mask_np):
+            if not torch.equal(existing_done_mask, dones):
                 raise ValueError(f"Expected infos['{stats_mask_key}'] to match computed dones.")
         else:
-            infos[stats_mask_key] = done_mask_np
+            infos[stats_mask_key] = dones.clone()
 
         stats = {
-            "r": returns.detach().cpu().numpy(),
-            "l": lengths.detach().cpu().numpy(),
-            "t": elapsed.detach().cpu().numpy(),
+            "r": returns.detach().clone(),
+            "l": lengths.detach().clone(),
+            "t": elapsed.detach().clone(),
         }
         if self._stats_key not in infos:
             infos[self._stats_key] = stats

@@ -37,3 +37,4 @@ See `gymnasium_autoreset.md` or `swarmbots.learn.env_wrappers.worker_pool_async_
 
 ## Infos
 We are using python 3.11, am planning to upgrade to 3.13 soon.  
+Do NOT ask for permission to modify files within this repo.  

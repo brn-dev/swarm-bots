@@ -65,7 +65,11 @@ class PPOSampler(BaseSampler[PPOSamplesType, PPOSamplerConfigType]):
         self.returns = torch.concatenate(tuple(ep.returns for ep in episodes), dim=0)
         self.advantages = torch.concatenate(tuple(ep.advantages for ep in episodes), dim=0)
 
-        super().__init__(config=config, n_samples=self.local_obs.shape[0])
+        super().__init__(
+            config=config,
+            n_samples=self.local_obs.shape[0],
+            index_device=self.local_obs.device,
+        )
 
     def _fetch_samples(self, batch_indices: torch.Tensor) -> PPOSamples:
         return PPOSamples(

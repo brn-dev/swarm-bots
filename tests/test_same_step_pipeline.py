@@ -11,6 +11,8 @@ from swarmbots.learn.algos.ppo.base_ppo_policy import BasePPOPolicy
 from swarmbots.learn.algos.ppo.ppo_rollout import collect_steps, collect_whole_episodes
 from swarmbots.learn.algos.ppo.ppo_rollout_buffer import PPORolloutBuffer, PPOEpisodeSegment
 from swarmbots.learn.algos.ppo.ppo_sampler import PPOSampler, PPOSamplerConfig
+from swarmbots.learn.env_wrappers.torch_feature_wise_obs_norm_wrapper import TorchFeatureWiseObsNormWrapper
+from swarmbots.learn.env_wrappers.torch_transition_obs_wrapper import TorchTransitionObsWrapper
 from swarmbots.learn.env_wrappers.learn_wrappers.swarm_bots_learn_env_wrapper import SwarmBotsLearnEnvWrapper
 from swarmbots.learn.testing_env import TestingSwarmBotsEnv
 
@@ -263,6 +265,26 @@ def _make_single_env(max_steps: int = 2) -> SwarmBotsLearnEnvWrapper:
         autoreset_mode=AutoresetMode.SAME_STEP,
     )
     return SwarmBotsLearnEnvWrapper(vector_env)
+
+
+def _make_transition_wrapped_env(max_steps: int = 2) -> SwarmBotsLearnEnvWrapper:
+    env = _make_single_env(max_steps=max_steps)
+    env = TorchFeatureWiseObsNormWrapper(env, obs_key="local_obs", scalar_feature_indices=[], quaternion_indices=[])
+    env = TorchFeatureWiseObsNormWrapper(env, obs_key="global_obs", scalar_feature_indices=[], quaternion_indices=[])
+    env = TorchFeatureWiseObsNormWrapper(
+        env,
+        obs_key="hidden_local_vars",
+        scalar_feature_indices=[],
+        quaternion_indices=[],
+    )
+    env = TorchFeatureWiseObsNormWrapper(
+        env,
+        obs_key="hidden_global_vars",
+        scalar_feature_indices=[],
+        quaternion_indices=[],
+    )
+    env = TorchTransitionObsWrapper(env)
+    return env
 
 
 def _make_scripted_env(*configs: tuple[int, tuple[int, ...], str]) -> SwarmBotsLearnEnvWrapper:
@@ -617,6 +639,27 @@ class SameStepPipelineTests(unittest.TestCase):
                 )
         finally:
             proxy.close()
+
+    def test_collect_steps_handles_final_obs_through_torch_wrapper_chain(self) -> None:
+        env = _make_transition_wrapped_env(max_steps=2)
+        try:
+            policy = _ConstantValuePolicy(action_dim=env.action_space.total_agent_action_dim)
+            buffer = _make_buffer(env)
+            episodes, _episode_infos, _metrics, rollout_state = collect_steps(
+                env=env,
+                policy=policy,
+                buffer=buffer,
+                n_steps=2,
+            )
+
+            self.assertEqual(len(episodes), 1)
+            episode = episodes[0]
+            self.assertEqual(episode.final_local_obs.shape[-1], env.local_obs_dim)
+            self.assertEqual(episode.final_global_obs.shape[-1], env.global_obs_dim)
+            self.assertEqual(rollout_state.obs["local_obs"].shape[-1], env.local_obs_dim)
+            self.assertEqual(_first_obs_value(episode.final_local_obs), 2.0)
+        finally:
+            env.close()
 
     def test_collect_steps_raises_when_final_obs_mask_mismatches_dones(self) -> None:
         env = _make_scripted_env((1, (2,), "truncate"))

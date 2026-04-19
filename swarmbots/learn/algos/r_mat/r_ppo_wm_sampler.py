@@ -221,7 +221,11 @@ class RPPOWMSampler(
             torch.stack(wm_loss_agent_mask_chunks, dim=0).contiguous() if has_agent_mask else None
         )
 
-        super().__init__(config=config, n_samples=self.local_obs.shape[0])
+        super().__init__(
+            config=config,
+            n_samples=self.local_obs.shape[0],
+            index_device=self.local_obs.device,
+        )
 
     def _fetch_samples(self, batch_indices: torch.Tensor) -> RPPOWMSamples:
         return RPPOWMSamples(

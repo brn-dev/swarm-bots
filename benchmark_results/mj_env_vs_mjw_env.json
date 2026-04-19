@@ -1,0 +1,75 @@
+{
+  "created_at": "2026-04-19T00:48:57",
+  "args": {
+    "backends": [
+      "mj_env",
+      "mjw_env"
+    ],
+    "num_envs": [
+      256,
+      2048
+    ],
+    "mj_workers": 23,
+    "warmup_steps": 64,
+    "steps": 256,
+    "reset_repeats": 8,
+    "action_pool_size": 16,
+    "episode_length": 100000,
+    "connector_prob": 0.15,
+    "seed": 1234,
+    "json_out": "benchmark_results\\mj_env_vs_mjw_env.json"
+  },
+  "results": [
+    {
+      "backend": "mj_env",
+      "num_envs": 256,
+      "create_seconds": 57.327891799999634,
+      "reset_repeats": 8,
+      "reset_seconds": 1.5902147999995577,
+      "reset_envs_per_second": 1287.8763296634954,
+      "measured_steps": 256,
+      "step_seconds": 5.346810500000174,
+      "step_envs_per_second": 12257.026876115746,
+      "done_count": 0,
+      "mj_workers": 23,
+      "device": "cpu"
+    },
+    {
+      "backend": "mjw_env",
+      "num_envs": 256,
+      "create_seconds": 1.040276000000631,
+      "reset_repeats": 8,
+      "reset_seconds": 0.1323222999999416,
+      "reset_envs_per_second": 15477.36095881725,
+      "measured_steps": 256,
+      "step_seconds": 7.455088099999557,
+      "step_envs_per_second": 8790.77471934958,
+      "done_count": 0,
+      "mj_workers": null,
+      "device": "cuda"
+    },
+    {
+      "backend": "mjw_env",
+      "num_envs": 2048,
+      "create_seconds": 0.2344410000005155,
+      "reset_repeats": 8,
+      "reset_seconds": 0.12219670000013139,
+      "reset_envs_per_second": 134078.90720438753,
+      "measured_steps": 256,
+      "step_seconds": 22.705480899999202,
+      "step_envs_per_second": 23090.812403802396,
+      "done_count": 0,
+      "mj_workers": null,
+      "device": "cuda"
+    }
+  ],
+  "failures": [
+    {
+      "backend": "mj_env",
+      "num_envs": 2048,
+      "phase": "benchmark",
+      "error_type": "BrokenPipeError",
+      "error": "[WinError 232] The pipe is being closed"
+    }
+  ]
+}

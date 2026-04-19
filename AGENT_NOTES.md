@@ -5,6 +5,7 @@ Agents shall use this file to make notes for future instances. Write down import
 ## TL;DR Architecture
 - Main layers:
 - `swarmbots/mj_env`: MuJoCo env, scenarios, swarm generation.
+- `swarmbots/mjw_env`: MJWarp batched GPU env path for wall training. Current scope is intentionally narrower than `mj_env`: obstacle-street wall scenario only, preconnected swarm pool only, quantized twists only, minimal contacts only, capsules only.
 - `swarmbots/learn`: RL/training stack (PPO/MAT, action dists, wrappers, rollout/samplers, checkpoints, logging).
 - Canonical training reference is `scripts/run_mat_nop_wall.py`.
 - Other `scripts/run_mat_*.py` files can be intentionally stale; do not assume they match the current MAT API.
@@ -54,6 +55,7 @@ Agents shall use this file to make notes for future instances. Write down import
 - `PPORolloutBuffer` builds `PPOEpisode` objects and computes GAE.
 - PPO rollout is now `SAME_STEP`: every env step is stored immediately, done environments are finalized on that same step, and truncated/terminated bootstrap observations come from `infos["final_obs"]`, not the reset observation batch.
 - Raw Gymnasium same-step env infos for done steps arrive under `infos["final_info"]`; rollout code must unwrap episode stats from there when they were not injected by later wrappers.
+- Same-step `infos["final_obs"]` must be transformed through the learn-side observation wrappers too. `TorchFeatureWiseObsNormWrapper` has to normalize `final_obs` without updating RMS twice, and `TorchTransitionObsWrapper` has to stack transition features onto single-env `final_obs` entries before PPO bootstrap uses them.
 - `collect_steps()` can emit partial `PPOEpisode`s that start mid true env episode. `PPOEpisode.is_true_episode_start` is explicit rollout bookkeeping for this; do not infer it from chunk index or `initial_previous_actions`.
 - `PPOSampler` flattens episodes into `PPOSamples`.
 - `PPOWMSampler` extends `PPOSampler` with multi-step windows and returns `PPOWMSamples` (next obs, validity masks, WM masks).
@@ -98,6 +100,16 @@ Agents shall use this file to make notes for future instances. Write down import
 - Unstable MuJoCo simulation is converted to terminal transition with fallback obs/reward and `info["error"] = "simulation_unstable"`.
 - Canonical scenario constructors in scripts are preset-based (`default_wall`, `default_bridge`).
 - MuJoCo scenario reward plumbing is now stripped down: `swarmbots/mj_env/scenarios/base_scenario.py` only keeps `progress_reward_weight`, `guidance_reward_weight`, and `units_without_connections_reward_weight`. The old hinge-qvel, double-connection, actuator-activation, movement/height, and connector reward knobs were removed there.
+- `swarmbots/mjw_env/mjw_swarm_bots_vector_env.py` is a `gymnasium.vector.VectorEnv`, not a single-env API. It keeps one MJWarp model plus batched `Data` on GPU and exposes `action_backend="torch"` so the learn wrapper sends GPU torch tensors directly.
+- MJW resets are now direct in-place writes into the live batched `Data` plus a single `mjw.forward()`. There is no reset-settling path anymore; `mjw_env/scenarios/mjw_scenario_presets.py` sets `reset_settle_time=0.0` by default and those scenario fields are effectively inert for the MJW backend.
+- Hot-path MJW connector matching now lives in `swarmbots/mjw_env/mjw_kernels.py`: Warp kernels handle per-connector candidate search and reset pose writes, while disconnect application stays batched torch indexing on GPU. The connector matching policy is mutual-nearest activation among newly activated connectors, not the old Python greedy scan from `mj_env`.
+- MJW Warp kernels should use dedicated `int32` metadata/index tensors (`connector_body_indices`, `connector_unit_idx`, `unit_qpos_adr`, transient reset world/pool ids). Keep the torch-side state/index tensors as `int64` only where PyTorch advanced indexing actually needs it. Mixing `int64` throughout the Warp kernels causes codegen friction and worse GPU code.
+- MJW connector matching precomputes per-step connector frames (`position`, `x/y/z` axes) into `vec3` work buffers before running the candidate-search kernel. Re-reading `xmat` inside the candidate inner loop is much worse.
+- The MJW env hot path now reuses GPU scratch buffers for `local_obs`, hidden-local threshold observations, and disconnect updates. Avoid reintroducing `torch.any(...)` Python branches or rebuilding `torch.arange(...)`/`torch.cat(...)` tensors every step in `mjw_swarm_bots_vector_env.py`.
+- PPO sampler minibatch indices should be created on the same device as the stored sample tensors. CPU `torch.randperm(...)` plus CUDA tensor indexing technically works, but it keeps minibatch selection host-driven and adds avoidable sync overhead.
+- PPO rollout bootstrap extraction now accepts `infos["final_obs"]` as a dict of batched tensors in addition to Gym's legacy object-array style. That change was made for the MJW env to avoid host-side per-env observation packing on done steps.
+- The torch-side wrapper chain now preserves tensor-native SAME_STEP infos for the MJW path: `final_obs`, `_final_obs`, `_episode`, and episode stats stay as torch tensors through `TorchEnvWrapper` / `TorchTransitionObsWrapper` / episode-stat wrappers. Legacy Gym object-array `final_obs` is still supported for the old `mj_env` vector env path.
+- `swarmbots/learn/tensor_conversion.py` no longer has explicit Warp-array support. The learn-side boundary expects torch / NumPy / generic DLPack-capable objects; the MJW env already exposes torch tensors, so passing raw Warp arrays into the learn wrappers is no longer a supported path.
 - `HomogeneousSwarm(..., quantize_connection_twist=N)` prebuilds `N` weld equalities per connector pair with evenly spaced twists; `BaseScenario` then activates the nearest prebuilt constraint by toggling `data.eq_active` only. With `None`, legacy behavior remains and the single weld constraint's twist is still written into `model.eq_data` at activation time.
 - `ObstacleStreetScenario` wall-pass reward is normalized by active unit count and threshold count; adding thresholds should not inflate total wall reward.
 - `FeatureWiseObsNormWrapper` is copy-on-write for the configured obs key; it must not mutate incoming observation arrays.
@@ -126,6 +138,10 @@ Agents shall use this file to make notes for future instances. Write down import
 
 ## Practical Guidance
 - For new training work, start from `scripts/run_mat_nop_wall.py`, not the other MAT scripts.
+- `scripts/run_mat_nop_wall_mjw.py` is the MJWarp wall-training entrypoint. It uses one batched `MJWSwarmBotsVectorEnv` directly on CUDA, disables recording because MJW has no render path yet, and does not support the old per-env first-episode staggering trick from the worker-pool script.
+- CPU wall-training scripts now construct `WorkerPoolAsyncVectorEnv(..., copy=False)`. That avoids a parent-process `deepcopy(self.observations)` on every vector `step_wait/reset_wait`, which was throttling `mj_env` throughput on one core.
+- `scripts/benchmarks/benchmark_mj_env_vs_mjw_env.py` benchmarks raw wall-env throughput for `mj_env` vs `mjw_env` without PPO overhead. It times create/reset/step throughput, synchronizes CUDA correctly for MJW, and keeps running when one backend/startup case fails.
+- On the current Windows workstation, `mj_env` with `WorkerPoolAsyncVectorEnv(num_workers=23)` failed to start at `2048` envs because worker processes hit MuJoCo memory allocation failures during env construction. `mjw_env` at `2048` envs did run.
 - `scripts/run_mat_nop_wall.py` currently assumes `cwd == scripts/` for relative paths like `../runs/...`; launcher wrappers should add repo root to `PYTHONPATH` instead of switching cwd to repo root.
 - If you change wrappers/vector-env behavior, re-check `SAME_STEP` `final_obs` handling and checkpoint restore.
 - Checkpoint env-state restore now has aliases for old NumPy/Gym normalization wrapper names (`FeatureWiseObsNormWrapper`, `NormalizeReward`) to the new torch-side normalization wrappers, so old checkpoints can still restore running stats into the new wrapper chain.

@@ -110,26 +110,25 @@ class TorchProgressGuidanceEpisodeStatsWrapper(TorchEnvWrapper):
         progress_sum = torch.where(dones, self.episode_progress_rewards, torch.zeros_like(self.episode_progress_rewards))
         guidance_sum = torch.where(dones, self.episode_guidance_rewards, torch.zeros_like(self.episode_guidance_rewards))
 
-        done_mask_np = dones.detach().cpu().numpy()
         stats_mask_key = f"_{self._stats_key}"
         if stats_mask_key in infos:
-            existing_done_mask = np.asarray(infos[stats_mask_key], dtype=bool).reshape(-1)
-            if existing_done_mask.shape != (self._n_envs,):
+            existing_done_mask = to_torch_tensor(infos[stats_mask_key], device=self.device, dtype=torch.bool).reshape(-1)
+            if tuple(existing_done_mask.shape) != (self._n_envs,):
                 raise ValueError(
-                    f"Expected infos['{stats_mask_key}'] length {self._n_envs}, got {existing_done_mask.shape}"
+                    f"Expected infos['{stats_mask_key}'] length {self._n_envs}, got {tuple(existing_done_mask.shape)}"
                 )
-            if not np.array_equal(existing_done_mask, done_mask_np):
+            if not torch.equal(existing_done_mask, dones):
                 raise ValueError(f"Expected infos['{stats_mask_key}'] to match computed dones.")
         else:
-            infos[stats_mask_key] = done_mask_np
+            infos[stats_mask_key] = dones.clone()
 
-        progress_np = progress_sum.detach().cpu().numpy()
-        guidance_np = guidance_sum.detach().cpu().numpy()
+        progress_values = progress_sum.detach().clone()
+        guidance_values = guidance_sum.detach().clone()
 
         if self._stats_key not in infos:
             infos[self._stats_key] = {
-                self.progress_key: progress_np,
-                self.guidance_key: guidance_np,
+                self.progress_key: progress_values,
+                self.guidance_key: guidance_values,
             }
             return
 
@@ -140,5 +139,5 @@ class TorchProgressGuidanceEpisodeStatsWrapper(TorchEnvWrapper):
             raise ValueError(
                 f"infos['{self._stats_key}'] already contains '{self.progress_key}' or '{self.guidance_key}'"
             )
-        stats[self.progress_key] = progress_np
-        stats[self.guidance_key] = guidance_np
+        stats[self.progress_key] = progress_values
+        stats[self.guidance_key] = guidance_values
