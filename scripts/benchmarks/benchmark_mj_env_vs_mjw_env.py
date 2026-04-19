@@ -127,12 +127,16 @@ def create_mj_env(config: BenchmarkConfig) -> WorkerPoolAsyncVectorEnv:
         )
         for _ in range(config.num_envs)
     ]
-    return WorkerPoolAsyncVectorEnv(
+    print("Creating async vector env (MJ)")
+    env = WorkerPoolAsyncVectorEnv(
         env_fns,
         num_workers=config.mj_workers,
         autoreset_mode=AutoresetMode.SAME_STEP,
         copy=config.mj_copy,
     )
+    print("Async vector env created")
+
+    return env
 
 
 def create_mjw_env(config: BenchmarkConfig) -> MJWSwarmBotsVectorEnv:
@@ -410,17 +414,26 @@ def parse_args() -> argparse.Namespace:
         "--backends",
         nargs="+",
         choices=["mj_env", "mjw_env"],
-        default=["mjw_env"],
+        default=["mj_env", "mjw_env"],
         help="Benchmarked backends.",
     )
     parser.add_argument(
         "--num-envs",
         nargs="+",
         type=int,
-        default=[256, 2048, 16384],
+        default=[128, 256, 512],
         help="Vector-env sizes to benchmark.",
     )
     parser.add_argument("--mj-workers", type=int, default=23, help="Worker count for mj_env.")
+    parser.add_argument(
+        "--mj-max-num-envs",
+        type=int,
+        default=256,
+        help=(
+            "Only run mj_env for --num-envs values <= this threshold. "
+            "If omitted, defaults to the lowest requested --num-envs."
+        ),
+    )
     parser.add_argument(
         "--mj-copy",
         choices=["true", "false"],
@@ -453,6 +466,8 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--num-envs values must be positive.")
     if args.mj_workers <= 0:
         raise ValueError("--mj-workers must be positive.")
+    if args.mj_max_num_envs is not None and args.mj_max_num_envs <= 0:
+        raise ValueError("--mj-max-num-envs must be positive.")
     if args.warmup_steps < 0 or args.steps <= 0 or args.reset_repeats <= 0 or args.action_pool_size <= 0:
         raise ValueError("warmup/steps/reset-repeats/action-pool-size must be positive, with warmup >= 0.")
     if not 0.0 <= args.connector_prob <= 1.0:
@@ -476,11 +491,18 @@ def main() -> None:
 
     args = parse_args()
     validate_args(args)
+    mj_max_num_envs = args.mj_max_num_envs if args.mj_max_num_envs is not None else min(args.num_envs)
 
     results: list[BenchmarkResult] = []
     failures: list[BenchmarkFailure] = []
     for num_envs in args.num_envs:
         for backend in args.backends:
+            if backend == "mj_env" and num_envs > mj_max_num_envs:
+                logger.info(
+                    f"Skipping {backend} for num_envs={num_envs}. "
+                    f"mj_env is only benchmarked for num_envs <= {mj_max_num_envs}."
+                )
+                continue
             config = BenchmarkConfig(
                 num_envs=num_envs,
                 warmup_steps=args.warmup_steps,
@@ -511,7 +533,12 @@ def main() -> None:
                 )
                 logger.error(f"Benchmark failed for {backend} with num_envs={num_envs}: {format_failure_message(error)}")
 
-    print_results_table(results, failures, requested_env_counts=args.num_envs)
+    requested_env_counts_for_speedup = (
+        sorted(num_envs for num_envs in args.num_envs if num_envs <= mj_max_num_envs)
+        if "mj_env" in args.backends and "mjw_env" in args.backends
+        else []
+    )
+    print_results_table(results, failures, requested_env_counts=requested_env_counts_for_speedup)
 
     if args.json_out is not None:
         args.json_out.parent.mkdir(parents=True, exist_ok=True)

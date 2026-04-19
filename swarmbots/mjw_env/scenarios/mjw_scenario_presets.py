@@ -17,8 +17,8 @@ DEFAULT_KWARGS = {
     "progress_reward_weight": 1.0,
     "guidance_reward_weight": 1.0,
     "units_without_connections_reward_weight": -1e-5,
-    "reset_settle_time": 0.0,
-    "reset_settle_timestep_scale": 1.0,
+    "reset_settle_time": 1.0,
+    "reset_settle_timestep_scale": 3,
 }
 WALL_PASS_KWARGS = {
     "wall_pass_reward_weight": 5.0,

@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 import mujoco
 import numpy as np
 
 import swarmbots.mj_env.mujoco_utils as mj_utils
-from swarmbots.mjw_env.scenarios.mjw_obstacle_street_scenario import MJWObstacleStreetScenario
 
 
 @dataclass
@@ -18,12 +18,9 @@ class MJWModelMetadata:
     eq_indices: np.ndarray
     unit_qpos_adr: np.ndarray
     unit_dof_adr: np.ndarray
-    wall_left_mocap_ids: np.ndarray
-    wall_right_mocap_ids: np.ndarray
-    ramp_mocap_ids: np.ndarray
 
 
-def build_model_metadata(model: mujoco.MjModel, scenario: MJWObstacleStreetScenario) -> MJWModelMetadata:
+def build_model_metadata(model: mujoco.MjModel, scenario: Any) -> MJWModelMetadata:
     unit_prefixes = scenario.swarm.config.unit_prefixes
     qpos_indices = np.asarray(
         [mj_utils.qpos_indices_for_prefix(model, prefix) for prefix in unit_prefixes],
@@ -81,18 +78,6 @@ def build_model_metadata(model: mujoco.MjModel, scenario: MJWObstacleStreetScena
         unit_qpos_adr[unit_idx] = model.jnt_qposadr[jnt_adr]
         unit_dof_adr[unit_idx] = model.jnt_dofadr[jnt_adr]
 
-    wall_left_mocap_ids = np.zeros((scenario.num_walls,), dtype=np.int64)
-    wall_right_mocap_ids = np.zeros((scenario.num_walls,), dtype=np.int64)
-    ramp_ids: list[int] = []
-    for wall_idx in range(scenario.num_walls):
-        left_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, f"Wall_{wall_idx}_Left")
-        right_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, f"Wall_{wall_idx}_Right")
-        wall_left_mocap_ids[wall_idx] = model.body_mocapid[left_id]
-        wall_right_mocap_ids[wall_idx] = model.body_mocapid[right_id]
-        if wall_idx > 0 or not scenario.no_initial_ramp:
-            ramp_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, f"Ramp_{wall_idx}")
-            ramp_ids.append(int(model.body_mocapid[ramp_id]))
-
     return MJWModelMetadata(
         qpos_indices=qpos_indices,
         qvel_indices=qvel_indices,
@@ -101,7 +86,4 @@ def build_model_metadata(model: mujoco.MjModel, scenario: MJWObstacleStreetScena
         eq_indices=eq_indices,
         unit_qpos_adr=unit_qpos_adr,
         unit_dof_adr=unit_dof_adr,
-        wall_left_mocap_ids=wall_left_mocap_ids,
-        wall_right_mocap_ids=wall_right_mocap_ids,
-        ramp_mocap_ids=np.asarray(ramp_ids, dtype=np.int64),
     )

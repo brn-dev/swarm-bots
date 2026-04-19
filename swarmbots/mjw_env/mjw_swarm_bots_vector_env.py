@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from concurrent.futures import Future, ThreadPoolExecutor
+from dataclasses import dataclass
 import math
 from typing import Any
 
@@ -7,16 +9,16 @@ import mujoco_warp as mjw
 import torch
 import warp as wp
 from gymnasium.vector import AutoresetMode, VectorEnv
+from loguru import logger
 
 from swarmbots.mjw_env.mjw_kernels import (
-    apply_reset_unit_pose,
     compute_best_connection_candidates,
     gather_connector_frames,
 )
 from swarmbots.mjw_env.mjw_model_metadata import MJWModelMetadata, build_model_metadata
 from swarmbots.mjw_env.mjw_torch_quat import quat_to_rot6d_torch
-from swarmbots.mjw_env.mjw_torch_utils import masked_mean, sample_float_or_bounded_dist, sample_float_or_dist, to_device_bool_tensor
-from swarmbots.mjw_env.scenarios.mjw_obstacle_street_scenario import MJWObstacleStreetScenario
+from swarmbots.mjw_env.mjw_torch_utils import to_device_bool_tensor
+from swarmbots.mjw_env.scenarios.base_mjw_scenario import BaseMJWScenario, MJWRuntimeBindings
 from swarmbots.mjw_env.swarm.mjw_homogeneous_swarm import MJWSwarmPool
 
 
@@ -47,13 +49,20 @@ def _capture_step_graph(model: Any, data: Any, nstep: int) -> Any | None:
             mjw.step(model, data)
     return capture.graph
 
+@dataclass(slots=True)
+class _PendingSettledReset:
+    world_idx: torch.Tensor
+    sampled_batch: Any
+    future: Future[list[Any]]
+    used: bool = False
+
 
 class MJWSwarmBotsVectorEnv(VectorEnv):
     metadata = {"autoreset_mode": AutoresetMode.SAME_STEP, "render_modes": []}
 
     def __init__(
         self,
-        scenario: MJWObstacleStreetScenario,
+        scenario: BaseMJWScenario,
         *,
         num_envs: int,
         episode_length: int = 500,
@@ -99,7 +108,6 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
         self._n_total_connectors = self._n_agents * self._n_connectors
         self._n_actuators = int(self.single_action_space["actuators"].shape[1])
         self._n_twists = len(self.scenario.swarm.config.connection_twist_values)
-        self._wall_thresholds_per_wall = len(self.scenario.wall_pass_thresholds)
 
         self._host_model = scenario.build_model()
         self._metadata: MJWModelMetadata = build_model_metadata(self._host_model, scenario)
@@ -146,9 +154,6 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
         self._unit_qpos_adr = torch.as_tensor(self._metadata.unit_qpos_adr, device=self.device, dtype=torch.long)
         self._unit_qpos_adr_i32 = self._unit_qpos_adr.to(dtype=torch.int32)
         self._unit_dof_adr = torch.as_tensor(self._metadata.unit_dof_adr, device=self.device, dtype=torch.long)
-        self._wall_left_mocap_ids = torch.as_tensor(self._metadata.wall_left_mocap_ids, device=self.device, dtype=torch.long)
-        self._wall_right_mocap_ids = torch.as_tensor(self._metadata.wall_right_mocap_ids, device=self.device, dtype=torch.long)
-        self._ramp_mocap_ids = torch.as_tensor(self._metadata.ramp_mocap_ids, device=self.device, dtype=torch.long)
         self._connector_unit_idx = torch.arange(self._n_agents, device=self.device, dtype=torch.long).repeat_interleave(
             self._n_connectors
         )
@@ -160,8 +165,6 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
         self._flat_connector_idx_i32 = self._flat_connector_idx.to(dtype=torch.int32)
         self._unit_indices = torch.arange(self._n_agents, device=self.device, dtype=torch.long).view(1, -1, 1)
         self._connector_indices = torch.arange(self._n_connectors, device=self.device, dtype=torch.long).view(1, 1, -1)
-        self._threshold_values = torch.as_tensor(scenario.wall_pass_thresholds, device=self.device, dtype=torch.float32)
-        self._threshold_index = torch.arange(scenario.total_thresholds, device=self.device, dtype=torch.long)
         self._twist_values = torch.as_tensor(scenario.swarm.config.connection_twist_values, device=self.device, dtype=torch.float32)
         self._distance_threshold_sq = float(self.scenario.connection_dist_threshold) ** 2
         self._twist_step = 2.0 * math.pi / self._n_twists
@@ -184,23 +187,6 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
 
         self.current_step = torch.zeros((self.num_envs,), device=self.device, dtype=torch.int64)
         self.is_first_episode = torch.ones((self.num_envs,), device=self.device, dtype=torch.bool)
-        self.progress = torch.zeros((self.num_envs,), device=self.device, dtype=torch.float32)
-        self.hidden_global_vars = torch.zeros(
-            (self.num_envs, int(self.single_observation_space["hidden_global_vars"].shape[0])),
-            device=self.device,
-            dtype=torch.float32,
-        )
-        self.passed_thresholds_mask = torch.zeros(
-            (self.num_envs, self._n_agents, scenario.total_thresholds),
-            device=self.device,
-            dtype=torch.bool,
-        )
-        self.next_threshold_for_unit = torch.zeros((self.num_envs, self._n_agents), device=self.device, dtype=torch.long)
-        self.wall_pass_absolute_thresholds = torch.zeros(
-            (self.num_envs, scenario.total_thresholds),
-            device=self.device,
-            dtype=torch.float32,
-        )
         self._best_partner_idx = torch.full((self.num_envs, self._n_total_connectors), -1, device=self.device, dtype=torch.int32)
         self._best_twist_idx = torch.full_like(self._best_partner_idx, -1)
         self._connector_positions = torch.empty(
@@ -211,8 +197,6 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
         self._connector_x_axis = torch.empty_like(self._connector_positions)
         self._connector_y_axis = torch.empty_like(self._connector_positions)
         self._connector_z_axis = torch.empty_like(self._connector_positions)
-        self._global_obs = torch.empty((self.num_envs, 0), device=self.device, dtype=torch.float32)
-        self._hidden_local_obs = torch.zeros_like(self.passed_thresholds_mask, dtype=torch.float32)
         self._disconnect_update = torch.empty_like(self.disconnect_potentials)
         self._local_obs = torch.empty(
             (self.num_envs, *self.single_observation_space["local_obs"].shape),
@@ -230,6 +214,8 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
             )
 
         self._physics_graph = _capture_step_graph(self._model, self._data, self.action_repeat) if self.device.type == "cuda" else None
+        if self._physics_graph is None and self.device.type == "cuda":
+            logger.warning("Physics CUDA graph could not be captured")
 
         free_joint_rot_dim = 6 if self.scenario.quat_rot6d_representation else 4
         num_hinges = self._qvel_indices.shape[1] - 6
@@ -260,8 +246,55 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
         self._connector_y_axis_wp = wp.from_torch(self._connector_y_axis, dtype=wp.vec3)
         self._connector_z_axis_wp = wp.from_torch(self._connector_z_axis, dtype=wp.vec3)
 
+        self._runtime_bindings = MJWRuntimeBindings(
+            device=self.device,
+            wp_device=self._wp_device,
+            num_envs=self.num_envs,
+            model=self._model,
+            data=self._data,
+            metadata=self._metadata,
+            pool=self._pool,
+            pool_eq_active=self._pool_eq_active,
+            inactive_unit_positions=self._inactive_unit_positions,
+            qpos=self._qpos,
+            qvel=self._qvel,
+            ctrl=self._ctrl,
+            eq_active=self._eq_active,
+            mocap_pos=self._mocap_pos,
+            mocap_quat=self._mocap_quat,
+            xpos=self._xpos,
+            xquat=self._xquat,
+            xmat=self._xmat,
+            time=self._time,
+            qacc_warmstart=self._qacc_warmstart,
+            act=self._act,
+            units_active_mask=self.units_active_mask,
+            partner_unit=self.partner_unit,
+            partner_connector=self.partner_connector,
+            connection_twist_idx=self.connection_twist_idx,
+            disconnect_potentials=self.disconnect_potentials,
+            current_step=self.current_step,
+            is_first_episode=self.is_first_episode,
+            base_qpos=self._base_qpos,
+            base_mocap_pos=self._base_mocap_pos,
+            base_mocap_quat=self._base_mocap_quat,
+            unit_qpos_adr=self._unit_qpos_adr,
+            qpos_wp=self._qpos_wp,
+            pool_active_mask_wp=self._pool_active_mask_wp,
+            pool_positions_wp=self._pool_positions_wp,
+            pool_quats_wp=self._pool_quats_wp,
+            inactive_unit_positions_wp=self._inactive_unit_positions_wp,
+            unit_qpos_adr_wp=self._unit_qpos_adr_wp,
+        )
+        self._scenario_runtime = self.scenario.create_runtime(bindings=self._runtime_bindings)
+
         self._rng = torch.Generator(device=self.device)
         self._rng.manual_seed(42 if scenario.seed is None else int(scenario.seed))
+        self._use_settled_resets = float(self.scenario.reset_settle_time) > 0.0
+        self._settle_executor: ThreadPoolExecutor | None = None
+        self._pending_settled_reset: _PendingSettledReset | None = None
+        if self._use_settled_resets:
+            self._settle_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="mjw-reset-settle")
 
     def get_settings(self) -> dict[str, Any]:
         return {
@@ -279,6 +312,7 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
     ) -> tuple[dict[str, torch.Tensor], dict[str, Any]]:
         if seed is not None:
             self._rng.manual_seed(int(seed))
+        self._discard_pending_settled_reset()
         reset_mask = (
             torch.ones((self.num_envs,), device=self.device, dtype=torch.bool)
             if options is None or "reset_mask" not in options
@@ -288,6 +322,10 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
         return self._build_obs(), {}
 
     def close(self) -> None:
+        if self._settle_executor is not None:
+            self._settle_executor.shutdown(wait=True, cancel_futures=True)
+            self._settle_executor = None
+        self._pending_settled_reset = None
         return None
 
     def step(
@@ -301,42 +339,39 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
         if connectors.shape != (self.num_envs, self._n_agents, self._n_connectors):
             raise ValueError(f"Unexpected connectors shape {tuple(connectors.shape)}")
 
+        trunc_limit = self._get_current_truncation_limit()
+        self._cleanup_pending_settled_reset()
+        if self._use_settled_resets:
+            self._maybe_start_settled_reset_prefetch(self.current_step + 1 >= trunc_limit)
+
         self._apply_actions(actuators=actuators, connectors=connectors)
         self._run_physics()
 
         unstable_mask = torch.isnan(self._qpos).any(dim=1) | torch.isnan(self._qvel).any(dim=1)
         stable_mask = ~unstable_mask
 
-        progress_reward = self._update_progress_rewards(stable_mask)
-        guidance_reward = self._compute_guidance_reward()
-        rewards = progress_reward + guidance_reward
-
         terminations = unstable_mask.clone()
-        rewards[unstable_mask] = self.simulation_unstable_reward
-        progress_reward[unstable_mask] = 0.0
-        guidance_reward[unstable_mask] = 0.0
 
         self.current_step[stable_mask] += 1
-        if self._first_episode_length_limit is None:
-            trunc_limit = self._episode_length_limit
-        else:
-            trunc_limit = torch.where(self.is_first_episode, self._first_episode_length_limit, self._episode_length_limit)
         truncations = stable_mask & (self.current_step >= trunc_limit)
         dones = terminations | truncations
 
+        step_result = self._scenario_runtime.compute_step_rewards(stable_mask=stable_mask)
+        rewards = step_result.reward
+        infos: dict[str, Any] = dict(step_result.info)
+
+        rewards[unstable_mask] = self.simulation_unstable_reward
+        for value in infos.values():
+            value[unstable_mask] = 0.0
+
         obs = self._build_obs()
         obs = self._apply_error_obs(obs, unstable_mask)
-
-        infos: dict[str, Any] = {
-            "progress_reward": progress_reward,
-            "guidance_reward": guidance_reward,
-        }
 
         if torch.any(dones):
             infos["final_obs"] = {key: value.clone() for key, value in obs.items()}
             infos["_final_obs"] = dones.clone()
             self.is_first_episode[dones] = False
-            self._reset_worlds(dones)
+            self._reset_done_worlds(dones)
             obs = self._build_obs()
 
         return obs, rewards, terminations, truncations, infos
@@ -370,163 +405,83 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
         for _ in range(self.action_repeat):
             mjw.step(self._model, self._data)
 
+    def _get_current_truncation_limit(self) -> torch.Tensor:
+        if self._first_episode_length_limit is None:
+            return self._episode_length_limit
+        return torch.where(self.is_first_episode, self._first_episode_length_limit, self._episode_length_limit)
+
+    def _cleanup_pending_settled_reset(self) -> None:
+        pending = self._pending_settled_reset
+        if pending is None or not pending.used or not pending.future.done():
+            return
+        pending.future.result()
+        self._pending_settled_reset = None
+
+    def _discard_pending_settled_reset(self) -> None:
+        pending = self._pending_settled_reset
+        if pending is None:
+            return
+        if not pending.future.done():
+            pending.future.cancel()
+        self._pending_settled_reset = None
+
+    def _maybe_start_settled_reset_prefetch(self, truncation_mask: torch.Tensor) -> None:
+        if not self._use_settled_resets or self._settle_executor is None:
+            return
+        pending = self._pending_settled_reset
+        if pending is not None:
+            return
+
+        world_idx = torch.nonzero(truncation_mask, as_tuple=False).flatten()
+        if world_idx.numel() == 0:
+            return
+
+        sampled_batch = self._scenario_runtime.sample_reset_batch(n_reset=int(world_idx.numel()), rng=self._rng)
+        specs = self._scenario_runtime.build_cpu_reset_specs(reset_batch=sampled_batch)
+        future = self._settle_executor.submit(self._scenario_runtime.settle_cpu_reset_specs, specs=specs)
+        self._pending_settled_reset = _PendingSettledReset(
+            world_idx=world_idx,
+            sampled_batch=sampled_batch,
+            future=future,
+        )
+
+    def _reset_done_worlds(self, done_mask: torch.Tensor) -> None:
+        remaining_done = done_mask.clone()
+        pending = self._pending_settled_reset
+        if pending is not None and not pending.used:
+            pending_done_mask = done_mask[pending.world_idx]
+            if torch.any(pending_done_mask):
+                pending_world_idx = pending.world_idx[pending_done_mask]
+                if pending.future.done():
+                    snapshots = pending.future.result()
+                    selected_indices = torch.nonzero(pending_done_mask, as_tuple=False).flatten().tolist()
+                    self._scenario_runtime.apply_settled_reset_batch(
+                        world_idx=pending_world_idx,
+                        snapshots=[snapshots[idx] for idx in selected_indices],
+                    )
+                    self._pending_settled_reset = None
+                else:
+                    self._scenario_runtime.apply_reset_batch(
+                        world_idx=pending_world_idx,
+                        reset_batch=self._scenario_runtime.select_reset_batch(
+                            reset_batch=pending.sampled_batch,
+                            mask=pending_done_mask,
+                        ),
+                    )
+                    pending.used = True
+                remaining_done[pending_world_idx] = False
+
+        if torch.any(remaining_done):
+            self._reset_worlds(remaining_done)
+
     def _reset_worlds(self, reset_mask: torch.Tensor) -> None:
         world_idx = torch.nonzero(reset_mask, as_tuple=False).flatten()
         if world_idx.numel() == 0:
             return
-
-        pool_idx = torch.randint(self._pool.size, (world_idx.numel(),), device=self.device, generator=self._rng)
-        world_idx_i32 = world_idx.to(dtype=torch.int32)
-        pool_idx_i32 = pool_idx.to(dtype=torch.int32)
-        swarm_start = self._sample_swarm_start(world_idx.numel())
-
-        self._qpos[world_idx] = self._base_qpos
-        self._qvel[world_idx] = 0.0
-        if self._ctrl.numel() > 0:
-            self._ctrl[world_idx] = 0.0
-        if self._qacc_warmstart.numel() > 0:
-            self._qacc_warmstart[world_idx] = 0.0
-        if self._act.numel() > 0:
-            self._act[world_idx] = 0.0
-        if self._eq_active.numel() > 0:
-            self._eq_active[world_idx] = self._pool_eq_active[pool_idx]
-        if self._mocap_pos.numel() > 0:
-            self._mocap_pos[world_idx] = self._base_mocap_pos
-        if self._mocap_quat.numel() > 0:
-            self._mocap_quat[world_idx] = self._base_mocap_quat
-        self._time[world_idx] = 0.0
-
-        wp.launch(
-            kernel=apply_reset_unit_pose,
-            dim=(int(world_idx.numel()), self._n_agents),
-            inputs=[
-                wp.from_torch(world_idx_i32),
-                wp.from_torch(pool_idx_i32),
-                self._pool_active_mask_wp,
-                self._pool_positions_wp,
-                self._pool_quats_wp,
-                self._inactive_unit_positions_wp,
-                wp.from_torch(swarm_start, dtype=wp.vec3),
-                self._unit_qpos_adr_wp,
-            ],
-            outputs=[self._qpos_wp],
-            device=self._wp_device,
+        self._scenario_runtime.apply_reset_batch(
+            world_idx=world_idx,
+            reset_batch=self._scenario_runtime.sample_reset_batch(n_reset=int(world_idx.numel()), rng=self._rng),
         )
-
-        hidden_global_vars, wall_pass_thresholds = self._sample_wall_configuration(world_idx)
-        mjw.forward(self._model, self._data)
-
-        self.units_active_mask[world_idx] = self._pool.active_mask[pool_idx]
-        self.partner_unit[world_idx] = self._pool.partner_unit[pool_idx].clamp(min=-1)
-        self.partner_connector[world_idx] = self._pool.partner_connector[pool_idx].clamp(min=-1)
-        self.connection_twist_idx[world_idx] = self._pool.twist_idx[pool_idx]
-        self.disconnect_potentials[world_idx] = 0.0
-        self.hidden_global_vars[world_idx] = hidden_global_vars
-        self.wall_pass_absolute_thresholds[world_idx] = wall_pass_thresholds
-        self.current_step[world_idx] = 0
-
-        unit_y = self._get_unit_y()[world_idx]
-        total_passed = (unit_y.unsqueeze(-1) > wall_pass_thresholds.unsqueeze(1)).sum(dim=-1)
-        self.progress[world_idx] = masked_mean(unit_y, self.units_active_mask[world_idx], dim=1)
-        self.next_threshold_for_unit[world_idx] = total_passed
-        self.passed_thresholds_mask[world_idx] = self._threshold_index.view(1, 1, -1) < total_passed.unsqueeze(-1)
-        self._hidden_local_obs[world_idx] = self.passed_thresholds_mask[world_idx].to(dtype=torch.float32)
-
-    def _sample_swarm_start(self, n_reset: int) -> torch.Tensor:
-        swarm_start_x = sample_float_or_dist(
-            self.scenario.swarm_start_x,
-            shape=(n_reset,),
-            device=self.device,
-            generator=self._rng,
-        )
-        swarm_start_y = sample_float_or_dist(
-            self.scenario.swarm_start_y,
-            shape=(n_reset,),
-            device=self.device,
-            generator=self._rng,
-        )
-        return torch.stack(
-            (
-                swarm_start_x,
-                swarm_start_y,
-                torch.full(
-                    (n_reset,),
-                    self.scenario.swarm.max_unit_extent * 1.1,
-                    device=self.device,
-                    dtype=torch.float32,
-                ),
-            ),
-            dim=-1,
-        )
-
-    def _sample_wall_configuration(self, world_idx: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        n_reset = int(world_idx.numel())
-        hidden_global = torch.zeros((n_reset, self.hidden_global_vars.shape[1]), device=self.device, dtype=torch.float32)
-        wall_pass_thresholds = torch.zeros((n_reset, self.scenario.total_thresholds), device=self.device, dtype=torch.float32)
-        unusable_opening_offset = sample_float_or_dist(
-            self.scenario.unusable_opening_offset,
-            shape=(n_reset,),
-            device=self.device,
-            generator=self._rng,
-        )
-
-        current_wall_y = sample_float_or_dist(
-            self.scenario.first_wall_distance,
-            shape=(n_reset,),
-            device=self.device,
-            generator=self._rng,
-        )
-        hidden_col = 0
-        ramp_idx = 0
-        for wall_idx in range(self.scenario.num_walls):
-            if wall_idx != 0:
-                current_wall_y = current_wall_y + sample_float_or_bounded_dist(
-                    self.scenario.inter_wall_distance,
-                    shape=(n_reset,),
-                    device=self.device,
-                    generator=self._rng,
-                )
-            opening_width = sample_float_or_dist(
-                self.scenario.opening_widths[wall_idx],
-                shape=(n_reset,),
-                device=self.device,
-                generator=self._rng,
-            )
-            opening_range = self.scenario.side_wall_x - (opening_width / 2.0) + unusable_opening_offset
-            opening_x = (torch.rand((n_reset,), device=self.device, generator=self._rng) * 2.0 - 1.0) * opening_range
-
-            hidden_global[:, hidden_col] = current_wall_y
-            hidden_global[:, hidden_col + 1] = opening_width
-            hidden_global[:, hidden_col + 2] = opening_x
-            hidden_col += 3
-
-            wall_left_pos_x = opening_x - (opening_width / 2.0) - 12.5
-            wall_right_pos_x = opening_x + (opening_width / 2.0) + 12.5
-            left_mocap_id = int(self._metadata.wall_left_mocap_ids[wall_idx])
-            right_mocap_id = int(self._metadata.wall_right_mocap_ids[wall_idx])
-            self._mocap_pos[world_idx, left_mocap_id, 0] = wall_left_pos_x
-            self._mocap_pos[world_idx, left_mocap_id, 1] = current_wall_y
-            self._mocap_pos[world_idx, left_mocap_id, 2] = 0.0
-            self._mocap_pos[world_idx, right_mocap_id, 0] = wall_right_pos_x
-            self._mocap_pos[world_idx, right_mocap_id, 1] = current_wall_y
-            self._mocap_pos[world_idx, right_mocap_id, 2] = 0.0
-
-            start = wall_idx * self._wall_thresholds_per_wall
-            stop = start + self._wall_thresholds_per_wall
-            wall_pass_thresholds[:, start:stop] = current_wall_y.unsqueeze(-1) + self._threshold_values.unsqueeze(0)
-
-            if wall_idx > 0 or not self.scenario.no_initial_ramp:
-                ramp_x = (torch.rand((n_reset,), device=self.device, generator=self._rng) * 2.0 - 1.0) * self.scenario.ramp_range_x
-                hidden_global[:, hidden_col] = ramp_x
-                hidden_col += 1
-                mocap_id = int(self._metadata.ramp_mocap_ids[ramp_idx])
-                self._mocap_pos[world_idx, mocap_id, 0] = ramp_x
-                self._mocap_pos[world_idx, mocap_id, 1] = current_wall_y - (self.scenario.ramp_distances_to_wall[wall_idx] / 2.0)
-                self._mocap_pos[world_idx, mocap_id, 2] = (self.scenario.wall_heights[wall_idx] / 2.0) - 0.05
-                ramp_idx += 1
-
-        wall_pass_thresholds, _ = torch.sort(wall_pass_thresholds, dim=-1)
-        return hidden_global, wall_pass_thresholds
 
     def _apply_actions(self, *, actuators: torch.Tensor, connectors: torch.Tensor) -> None:
         actuators = actuators.masked_fill(~self.units_active_mask.unsqueeze(-1), 0.0)
@@ -649,49 +604,6 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
         self.connection_twist_idx[world_idx, unit2, connector2] = -1
         self.disconnect_potentials[world_idx, unit2, connector2] = 0.0
 
-    def _get_unit_y(self) -> torch.Tensor:
-        return self._qpos[:, self._unit_qpos_adr + 1]
-
-    def _compute_progress(self) -> torch.Tensor:
-        return masked_mean(self._get_unit_y(), self.units_active_mask, dim=1)
-
-    def _update_progress_rewards(self, stable_mask: torch.Tensor) -> torch.Tensor:
-        unit_y = self._get_unit_y()
-        safe_unit_y = torch.where(stable_mask.unsqueeze(1), unit_y, torch.zeros_like(unit_y))
-        new_progress = masked_mean(safe_unit_y, self.units_active_mask, dim=1)
-        progress_delta = new_progress - self.progress
-        self.progress[stable_mask] = new_progress[stable_mask]
-
-        wall_pass_reward = torch.zeros((self.num_envs,), device=self.device, dtype=torch.float32)
-        if self.scenario.total_thresholds > 0:
-            total_passed = (safe_unit_y.unsqueeze(-1) > self.wall_pass_absolute_thresholds.unsqueeze(1)).sum(dim=-1)
-            delta_passed = torch.clamp(total_passed - self.next_threshold_for_unit, min=0)
-            delta_passed = delta_passed * self.units_active_mask.to(dtype=delta_passed.dtype)
-            active_units_count = self.units_active_mask.sum(dim=-1)
-            denom = active_units_count * max(self._wall_thresholds_per_wall, 1)
-            valid = stable_mask & (denom > 0)
-            wall_pass_reward[valid] = (
-                delta_passed.sum(dim=-1)[valid].to(dtype=torch.float32)
-                / denom[valid].to(dtype=torch.float32)
-            ) * float(self.scenario.wall_pass_reward_weight)
-            self.next_threshold_for_unit[stable_mask] = total_passed[stable_mask]
-            self.passed_thresholds_mask[stable_mask] = self._threshold_index.view(1, 1, -1) < total_passed[stable_mask].unsqueeze(-1)
-            self._hidden_local_obs[stable_mask] = self.passed_thresholds_mask[stable_mask].to(dtype=torch.float32)
-
-        return progress_delta * float(self.scenario.progress_reward_weight) + wall_pass_reward
-
-    def _compute_guidance_reward(self) -> torch.Tensor:
-        connection_mask = self.partner_unit >= 0
-        units_without_connections = (~connection_mask).all(dim=-1) & self.units_active_mask
-        active_units_count = self.units_active_mask.sum(dim=-1)
-        reward = torch.zeros((self.num_envs,), device=self.device, dtype=torch.float32)
-        valid = active_units_count > 0
-        reward[valid] = (
-            units_without_connections.sum(dim=-1)[valid].to(dtype=torch.float32)
-            / active_units_count[valid].to(dtype=torch.float32)
-        ) * float(self.scenario.units_without_connections_reward_weight)
-        return reward * float(self.scenario.guidance_reward_weight)
-
     def _build_obs(self) -> dict[str, torch.Tensor]:
         local_obs = self._local_obs
         qpos = self._qpos[:, self._qpos_flat_indices].reshape(self.num_envs, self._n_agents, -1)
@@ -726,9 +638,9 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
             )
         return {
             "local_obs": local_obs,
-            "global_obs": self._global_obs,
-            "hidden_local_vars": self._hidden_local_obs,
-            "hidden_global_vars": self.hidden_global_vars,
+            "global_obs": self._scenario_runtime.global_obs,
+            "hidden_local_vars": self._scenario_runtime.hidden_local_obs,
+            "hidden_global_vars": self._scenario_runtime.hidden_global_obs,
             "agent_mask": self.units_active_mask,
         }
 
