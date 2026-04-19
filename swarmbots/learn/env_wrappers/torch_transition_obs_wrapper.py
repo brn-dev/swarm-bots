@@ -8,6 +8,7 @@ from gymnasium import spaces
 
 from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper, TorchObs
 from swarmbots.learn.env_wrappers.learn_wrappers.torch_env_wrapper import TorchEnvWrapper
+from swarmbots.learn.tensor_conversion import to_torch_tensor
 
 
 class TorchTransitionObsWrapper(TorchEnvWrapper):
@@ -63,21 +64,24 @@ class TorchTransitionObsWrapper(TorchEnvWrapper):
     ) -> tuple[TorchObs, torch.Tensor, torch.Tensor, torch.Tensor, dict[str, Any]]:
         prev_local = self._prev_local
         prev_actions = self._actions_to_features(actions, dtype=prev_local.dtype)
-        if torch.any(self._prev_dones):
-            prev_actions = prev_actions.clone()
-            prev_actions[self._prev_dones] = 0
+        prev_actions = prev_actions.masked_fill(self._prev_dones.view(self._n_envs, 1, 1), 0)
         prev_global = self._prev_global if self._has_global_obs else None
 
         obs, rewards, terminations, truncations, infos = self.env.step(actions)
+        infos = self._transform_infos_with_transition_state(
+            infos=infos,
+            prev_local=prev_local,
+            prev_actions=prev_actions,
+            prev_global=prev_global,
+        )
         self._prev_local = obs["local_obs"].clone()
         if self._has_global_obs and self._prev_global is not None and "global_obs" in obs:
             self._prev_global = obs["global_obs"].clone()
 
         dones = torch.logical_or(terminations, truncations)
-        if torch.any(dones):
-            self._prev_local[dones] = 0
-            if self._has_global_obs and self._prev_global is not None:
-                self._prev_global[dones] = 0
+        self._prev_local.masked_fill_(dones.view(self._n_envs, 1, 1), 0)
+        if self._has_global_obs and self._prev_global is not None:
+            self._prev_global.masked_fill_(dones.view(self._n_envs, 1), 0)
         self._prev_dones = dones
 
         stacked_obs = self._stack_obs(obs, prev_local=prev_local, prev_actions=prev_actions, prev_global=prev_global)
@@ -143,3 +147,54 @@ class TorchTransitionObsWrapper(TorchEnvWrapper):
         if actions.ndim == 2:
             actions = actions.unsqueeze(0)
         return actions.to(device=self.device, dtype=dtype)
+
+    def _transform_infos_with_transition_state(
+        self,
+        *,
+        infos: dict[str, Any],
+        prev_local: torch.Tensor,
+        prev_actions: torch.Tensor,
+        prev_global: torch.Tensor | None,
+    ) -> dict[str, Any]:
+        if "final_obs" not in infos or "_final_obs" not in infos:
+            return infos
+
+        final_obs_mask = to_torch_tensor(infos["_final_obs"], device=self.device, dtype=torch.bool).reshape(self._n_envs)
+
+        transformed_infos = dict(infos)
+        transformed_infos["_final_obs"] = final_obs_mask
+
+        final_obs_value = infos["final_obs"]
+        if isinstance(final_obs_value, dict):
+            final_obs = self._obs_to_torch(final_obs_value)
+            stacked_final_obs = self._stack_obs(
+                final_obs,
+                prev_local=prev_local,
+                prev_actions=prev_actions,
+                prev_global=prev_global,
+            )
+            transformed_infos["final_obs"] = {
+                key: value.detach().clone()
+                for key, value in stacked_final_obs.items()
+            }
+            return transformed_infos
+
+        final_obs_entries = np.asarray(final_obs_value, dtype=object).copy()
+        for env_idx in torch.nonzero(final_obs_mask, as_tuple=False).flatten().tolist():
+            final_obs = {
+                key: value.unsqueeze(0)
+                for key, value in self._obs_to_torch(final_obs_entries[env_idx]).items()
+            }
+            stacked_final_obs = self._stack_obs(
+                final_obs,
+                prev_local=prev_local[env_idx:env_idx + 1],
+                prev_actions=prev_actions[env_idx:env_idx + 1],
+                prev_global=None if prev_global is None else prev_global[env_idx:env_idx + 1],
+            )
+            final_obs_entries[env_idx] = {
+                key: value.squeeze(0).detach().clone()
+                for key, value in stacked_final_obs.items()
+            }
+
+        transformed_infos["final_obs"] = final_obs_entries
+        return transformed_infos

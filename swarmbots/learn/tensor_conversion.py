@@ -11,10 +11,6 @@ from swarmbots.learn.torch_device import as_device
 _JAX_IMPORT_FAILED = False
 _JAX_MODULE: Any | None = None
 _JAX_NUMPY_MODULE: Any | None = None
-_WARP_IMPORT_FAILED = False
-_WARP_MODULE: Any | None = None
-_WARP_INITIALIZED = False
-_WARP_ARRAY_TYPE: type[Any] | None = None
 
 
 def _get_jax_modules() -> tuple[Any, Any]:
@@ -36,48 +32,6 @@ def _get_jax_modules() -> tuple[Any, Any]:
     return jax, jnp
 
 
-def _try_get_warp_module() -> Any | None:
-    global _WARP_IMPORT_FAILED, _WARP_MODULE
-    if _WARP_MODULE is not None:
-        return _WARP_MODULE
-    if _WARP_IMPORT_FAILED:
-        return None
-
-    try:
-        import warp as wp
-    except ImportError:
-        _WARP_IMPORT_FAILED = True
-        return None
-
-    _WARP_MODULE = wp
-    return _WARP_MODULE
-
-
-def _get_warp_module() -> Any:
-    global _WARP_INITIALIZED, _WARP_ARRAY_TYPE
-    warp_module = _try_get_warp_module()
-    if warp_module is None:
-        raise RuntimeError("Warp backend requested, but Warp is not installed")
-
-    if not _WARP_INITIALIZED:
-        warp_module.init()
-        _WARP_INITIALIZED = True
-        _WARP_ARRAY_TYPE = warp_module.array
-
-    return warp_module
-
-
-def _is_warp_array(value: Any) -> bool:
-    if _WARP_ARRAY_TYPE is not None:
-        return isinstance(value, _WARP_ARRAY_TYPE)
-
-    wp = _try_get_warp_module()
-    if wp is None:
-        return False
-
-    return isinstance(value, wp.array)
-
-
 def to_torch_tensor(
     value: Any,
     *,
@@ -87,10 +41,6 @@ def to_torch_tensor(
     target_device = as_device(device)
     if isinstance(value, torch.Tensor):
         return value.to(device=target_device, dtype=dtype if dtype is not None else value.dtype)
-
-    if _is_warp_array(value):
-        tensor = _get_warp_module().to_torch(value)
-        return tensor.to(device=target_device, dtype=dtype if dtype is not None else tensor.dtype)
 
     if hasattr(value, "__dlpack__"):
         try:
@@ -109,9 +59,6 @@ def to_numpy_array(value: Any, *, dtype: np.dtype | type | None = None) -> np.nd
         return value.astype(dtype, copy=False) if dtype is not None else value
     if isinstance(value, torch.Tensor):
         array = value.detach().cpu().numpy()
-        return array.astype(dtype, copy=False) if dtype is not None else array
-    if _is_warp_array(value):
-        array = _get_warp_module().to_torch(value).detach().cpu().numpy()
         return array.astype(dtype, copy=False) if dtype is not None else array
     if hasattr(value, "__dlpack__"):
         try:
@@ -153,20 +100,6 @@ def to_backend_array(
             return array
 
         return jnp.asarray(value, dtype=dtype)
-
-    if normalized_backend == "warp":
-        wp = _get_warp_module()
-
-        if isinstance(value, torch.Tensor):
-            tensor = value.detach()
-            if not tensor.is_contiguous():
-                tensor = tensor.contiguous()
-            return wp.from_torch(tensor)
-
-        if hasattr(value, "__dlpack__"):
-            return wp.from_dlpack(value)
-
-        return wp.array(value, dtype=dtype)
 
     raise ValueError(f"Unsupported backend: {backend}")
 

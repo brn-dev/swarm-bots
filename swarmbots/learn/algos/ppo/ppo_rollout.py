@@ -10,6 +10,7 @@ from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import B
 from swarmbots.learn.gsde_reset import GSDEResetMode, GSDEIntervalResetMode, GSDEProbabilityResetMode
 from swarmbots.learn.performance_timer import PerformanceTimer
 from swarmbots.learn.summary_statistics import compute_summary_statistics
+from swarmbots.learn.tensor_conversion import to_torch_tensor
 
 
 @dataclass(slots=True)
@@ -123,17 +124,20 @@ def _append_episode_infos(
     if not isinstance(episode_stats, dict):
         raise ValueError(f"Expected infos['episode'] to be a dict, got {type(episode_stats)}")
 
-    done_mask = dones.detach().cpu().numpy()
-    episode_mask = np.asarray(info_source.get("_episode", done_mask), dtype=bool).reshape(-1)
-    if episode_mask.shape != done_mask.shape:
-        raise ValueError(f"Expected infos['_episode'] shape {done_mask.shape}, got {episode_mask.shape}")
-    if not np.array_equal(episode_mask, done_mask):
+    episode_mask = to_torch_tensor(
+        info_source.get("_episode", dones),
+        device=dones.device,
+        dtype=torch.bool,
+    ).reshape(-1)
+    if tuple(episode_mask.shape) != tuple(dones.shape):
+        raise ValueError(f"Expected infos['_episode'] shape {tuple(dones.shape)}, got {tuple(episode_mask.shape)}")
+    if not torch.equal(episode_mask, dones):
         raise ValueError("Expected infos['_episode'] to match computed dones.")
 
-    for env_idx in np.flatnonzero(episode_mask):
+    for env_idx in torch.nonzero(episode_mask, as_tuple=False).flatten().tolist():
         episode_infos.append(
             {
-                key: values[env_idx]
+                key: _to_python_episode_stat(values[env_idx])
                 for key, values in episode_stats.items()
                 if not key.startswith("_")
             }
@@ -153,17 +157,25 @@ def _extract_bootstrap_obs(
     if "final_obs" not in infos or "_final_obs" not in infos:
         raise ValueError("SAME_STEP rollouts require infos['final_obs'] and infos['_final_obs'] for done environments.")
 
-    done_mask = dones.detach().cpu().numpy()
-    final_obs_mask = np.asarray(infos["_final_obs"], dtype=bool).reshape(-1)
-    if final_obs_mask.shape != done_mask.shape:
-        raise ValueError(f"Expected infos['_final_obs'] shape {done_mask.shape}, got {final_obs_mask.shape}")
-    if not np.array_equal(final_obs_mask, done_mask):
+    final_obs_mask = to_torch_tensor(infos["_final_obs"], device=dones.device, dtype=torch.bool).reshape(-1)
+    if tuple(final_obs_mask.shape) != tuple(dones.shape):
+        raise ValueError(f"Expected infos['_final_obs'] shape {tuple(dones.shape)}, got {tuple(final_obs_mask.shape)}")
+    if not torch.equal(final_obs_mask, dones):
         raise ValueError("Expected infos['_final_obs'] to match computed dones.")
 
     bootstrap_obs = {key: value.clone() for key, value in next_obs.items()}
-    final_obs_entries = np.asarray(infos["final_obs"], dtype=object).reshape(-1)
+    final_obs_value = infos["final_obs"]
+    if isinstance(final_obs_value, dict):
+        final_obs = env._obs_to_torch(final_obs_value)
+        for key, value in final_obs.items():
+            bootstrap_obs[key][final_obs_mask] = value[final_obs_mask]
+        if "agent_mask" in bootstrap_obs and "agent_mask" not in final_obs:
+            raise ValueError("Expected final_obs to contain 'agent_mask' when the observation space includes it.")
+        return bootstrap_obs
 
-    for env_idx in np.flatnonzero(final_obs_mask):
+    final_obs_entries = np.asarray(final_obs_value, dtype=object).reshape(-1)
+
+    for env_idx in torch.nonzero(final_obs_mask, as_tuple=False).flatten().tolist():
         final_obs = env._obs_to_torch(final_obs_entries[env_idx])
         for key, value in final_obs.items():
             bootstrap_obs[key][env_idx] = value
@@ -171,6 +183,16 @@ def _extract_bootstrap_obs(
             raise ValueError("Expected final_obs to contain 'agent_mask' when the observation space includes it.")
 
     return bootstrap_obs
+
+
+def _to_python_episode_stat(value: Any) -> Any:
+    if isinstance(value, torch.Tensor):
+        if value.numel() == 1:
+            return value.item()
+        return value.detach().cpu().numpy()
+    if isinstance(value, np.ndarray) and value.size == 1:
+        return value.item()
+    return value
 
 
 def _evaluate_values(

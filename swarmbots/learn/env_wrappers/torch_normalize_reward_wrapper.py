@@ -53,7 +53,7 @@ class TorchNormalizeRewardWrapper(TorchEnvWrapper):
         active_mask = ~self.prev_dones
         self.returns[active_mask] = self.gamma * self.returns[active_mask] + rewards[active_mask].to(torch.float64)
 
-        if self._update_running_mean and torch.any(active_mask):
+        if self._update_running_mean:
             self.return_rms.update(self.returns[active_mask])
 
         rewards = rewards / torch.sqrt(self.return_rms.var.to(device=rewards.device, dtype=rewards.dtype) + self.epsilon)

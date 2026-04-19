@@ -62,6 +62,7 @@ def make_env_fn(
         scenario = default_wall(
             first_wall_distance=1.0, # UniformDistParams(1.5, 2.5),
             unit_start_locations=unit_start_locations,
+            quantize_connection_twist=8,
         )
         return SwarmBotsEnv(
             scenario=scenario,
@@ -274,6 +275,7 @@ def main() -> None:
             env_fns,
             num_workers=n_workers,
             autoreset_mode=AutoresetMode.SAME_STEP,
+            copy=False,
         )
     else:
         vector_env = SyncVectorEnv(env_fns[:1], autoreset_mode=AutoresetMode.SAME_STEP)

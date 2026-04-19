@@ -85,6 +85,17 @@ class TorchFeatureWiseObsNormWrapper(TorchEnvWrapper):
         normalized_observations[self.obs_key] = normalized_obs
         return normalized_observations
 
+    def _transform_infos(self, infos: dict[str, Any]) -> dict[str, Any]:
+        if "final_obs" not in infos or "_final_obs" not in infos:
+            return infos
+
+        old_update_running_mean = self._update_running_mean
+        self._update_running_mean = False
+        try:
+            return super()._transform_infos(infos)
+        finally:
+            self._update_running_mean = old_update_running_mean
+
     def set_device(self, device: torch.device | str) -> None:
         if self.obs_rms is not None:
             self.obs_rms.to(device)

@@ -274,6 +274,7 @@ def main() -> None:
             env_fns,
             num_workers=n_workers,
             autoreset_mode=AutoresetMode.SAME_STEP,
+            copy=False,
         )
     else:
         vector_env = SyncVectorEnv(env_fns[:1], autoreset_mode=AutoresetMode.SAME_STEP)
