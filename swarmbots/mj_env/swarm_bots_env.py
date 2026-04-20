@@ -1,3 +1,4 @@
+from copy import deepcopy
 from typing import Any, SupportsFloat, Literal, Iterable
 
 import gymnasium
@@ -131,6 +132,8 @@ class SwarmBotsEnv(gymnasium.Env):
         options: dict[str, Any] | None = None,
     ) -> tuple[SwarmObsDict, dict[str, Any]]:
         super().reset(seed=seed)
+        if seed is not None:
+            self.scenario.rng = np.random.default_rng(seed)
         self.current_step = 0
 
         last_error: mujoco.FatalError | None = None
@@ -251,6 +254,20 @@ class SwarmBotsEnv(gymnasium.Env):
     def close(self):
         if self._renderer is not None:
             self._renderer.close()
+
+    def clone_for_worker_pool(self) -> "SwarmBotsEnv":
+        """Clone an already-built env without rebuilding the underlying scenario."""
+        clone = object.__new__(type(self))
+        for attr_name, attr_value in self.__dict__.items():
+            if attr_name in {"scenario", "model", "data", "_renderer"}:
+                continue
+            clone.__dict__[attr_name] = deepcopy(attr_value)
+
+        clone.scenario = self.scenario.clone_for_worker_pool()
+        clone.model = clone.scenario.dummy_model
+        clone.data = clone.scenario.dummy_data
+        clone._renderer = None
+        return clone
 
     def _reset_agent_permutation(self) -> None:
         if not self.shuffle_agents:

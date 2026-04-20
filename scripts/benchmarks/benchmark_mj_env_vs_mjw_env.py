@@ -6,10 +6,9 @@ import sys
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Callable, Literal
+from typing import TYPE_CHECKING, Any, Callable, Literal
 
 import numpy as np
-import torch
 from gymnasium.vector import AutoresetMode
 from loguru import logger
 
@@ -17,13 +16,16 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from swarmbots.learn.env_wrappers.worker_pool_async_vector_env import WorkerPoolAsyncVectorEnv
 from swarmbots.mj_env.scenarios.scenario_presets import default_wall as default_mj_wall
 from swarmbots.mj_env.swarm.homogeneous_swarm import PreConnectedUnitLocationsConfig
 from swarmbots.mj_env.swarm_bots_env import SwarmBotsEnv
-from swarmbots.mjw_env import MJWSwarmBotsVectorEnv
-from swarmbots.mjw_env.scenarios.mjw_scenario_presets import default_wall as default_mjw_wall
-from swarmbots.mjw_env.swarm.mjw_homogeneous_swarm import MJWPreConnectedUnitLocationsConfig
+
+if TYPE_CHECKING:
+    import torch
+
+    from swarmbots.learn.env_wrappers.worker_pool_async_vector_env import WorkerPoolAsyncVectorEnv
+    from swarmbots.mjw_env import MJWSwarmBotsVectorEnv
+    from swarmbots.mjw_env.swarm.mjw_homogeneous_swarm import MJWPreConnectedUnitLocationsConfig
 
 
 BackendName = Literal["mj_env", "mjw_env"]
@@ -83,7 +85,9 @@ def make_mj_unit_start_locations(pool_seeds: tuple[int, ...]) -> PreConnectedUni
     )
 
 
-def make_mjw_unit_start_locations(pool_seeds: tuple[int, ...]) -> MJWPreConnectedUnitLocationsConfig:
+def make_mjw_unit_start_locations(pool_seeds: tuple[int, ...]) -> "MJWPreConnectedUnitLocationsConfig":
+    from swarmbots.mjw_env.swarm.mjw_homogeneous_swarm import MJWPreConnectedUnitLocationsConfig
+
     return MJWPreConnectedUnitLocationsConfig(
         num_units=5,
         num_unit_probs={
@@ -118,7 +122,9 @@ def make_mj_env_fn(
     return _init
 
 
-def create_mj_env(config: BenchmarkConfig) -> WorkerPoolAsyncVectorEnv:
+def create_mj_env(config: BenchmarkConfig) -> "WorkerPoolAsyncVectorEnv":
+    from swarmbots.learn.env_wrappers.worker_pool_async_vector_env import WorkerPoolAsyncVectorEnv
+
     unit_start_locations = make_mj_unit_start_locations(pool_seeds=tuple(range(42_000, 42_005)))
     env_fns = [
         make_mj_env_fn(
@@ -131,6 +137,7 @@ def create_mj_env(config: BenchmarkConfig) -> WorkerPoolAsyncVectorEnv:
     env = WorkerPoolAsyncVectorEnv(
         env_fns,
         num_workers=config.mj_workers,
+        env_clone_group_keys=["benchmark_mj_wall_env"] * config.num_envs,
         autoreset_mode=AutoresetMode.SAME_STEP,
         copy=config.mj_copy,
     )
@@ -139,7 +146,12 @@ def create_mj_env(config: BenchmarkConfig) -> WorkerPoolAsyncVectorEnv:
     return env
 
 
-def create_mjw_env(config: BenchmarkConfig) -> MJWSwarmBotsVectorEnv:
+def create_mjw_env(config: BenchmarkConfig) -> "MJWSwarmBotsVectorEnv":
+    import torch
+
+    from swarmbots.mjw_env import MJWSwarmBotsVectorEnv
+    from swarmbots.mjw_env.scenarios.mjw_scenario_presets import default_wall as default_mjw_wall
+
     if not torch.cuda.is_available():
         raise RuntimeError("mjw_env benchmark requires CUDA.")
 
@@ -157,12 +169,16 @@ def create_mjw_env(config: BenchmarkConfig) -> MJWSwarmBotsVectorEnv:
 
 
 def synchronize_env(env: Any) -> None:
+    import torch
+
     device = getattr(env, "device", None)
     if isinstance(device, torch.device) and device.type == "cuda":
         torch.cuda.synchronize(device)
 
 
-def count_true(values: np.ndarray | torch.Tensor) -> int:
+def count_true(values: Any) -> int:
+    import torch
+
     if isinstance(values, torch.Tensor):
         return int(values.sum().item())
     return int(np.asarray(values, dtype=np.int64).sum())
@@ -199,8 +215,10 @@ def build_torch_action_pool(
     pool_size: int,
     connector_prob: float,
     seed: int,
-    device: torch.device,
-) -> list[dict[str, torch.Tensor]]:
+    device: "torch.device",
+) -> list[dict[str, "torch.Tensor"]]:
+    import torch
+
     generator = torch.Generator(device=device)
     generator.manual_seed(seed)
     return [

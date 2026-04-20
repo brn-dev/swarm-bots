@@ -93,6 +93,7 @@ class WorkerPoolAsyncVectorEnv(VectorEnv):
         self,
         env_fns: Sequence[Callable[[], Env]],
         num_workers: int | None = None,
+        env_clone_group_keys: Sequence[object | None] | None = None,
         shared_memory: bool = True,
         copy: bool = True,
         check_spaces: bool = False,
@@ -100,7 +101,16 @@ class WorkerPoolAsyncVectorEnv(VectorEnv):
         daemon: bool = True,
         worker: (
             Callable[
-                [int, list[tuple[int, Callable[[], Env]]], Connection, Connection, bool, Queue, AutoresetMode,], None,
+                [
+                    int,
+                    list[tuple[int, object | None, Callable[[], Env]]],
+                    Connection,
+                    Connection,
+                    bool,
+                    Queue,
+                    AutoresetMode,
+                ],
+                None,
             ]
             | None
         ) = None,
@@ -113,6 +123,10 @@ class WorkerPoolAsyncVectorEnv(VectorEnv):
             env_fns: Functions that create the environments.
             num_workers: Number of subprocess workers. Each worker can host multiple environments.
                 If ``None``, one worker per environment is used (old behavior).
+            env_clone_group_keys: Optional per-env clone-group keys. Envs that share the same non-``None`` key
+                within one worker may be instantiated by cloning a worker-local prototype env via
+                ``env.clone_for_worker_pool()`` instead of rerunning the constructor. Use this only when the grouped
+                constructors are intentionally equivalent apart from identity.
             shared_memory: If ``True``, then the observations from the worker processes are communicated back through
                 shared variables. This can improve the efficiency if the observations are large (e.g. images).
             copy: If ``True``, then the :meth:`AsyncVectorEnv.reset` and :meth:`AsyncVectorEnv.step` methods
@@ -126,6 +140,7 @@ class WorkerPoolAsyncVectorEnv(VectorEnv):
                 so for some environments you may want to have it set to ``False``.
             worker: If set, then use that worker in a subprocess instead of a default pooled worker.
                 The worker receives ``(worker_index, env_constructors, child_pipe, parent_pipe, shared_memory, error_queue, autoreset_mode)``.
+                ``env_constructors`` entries are ``(env_index, env_clone_group_key, env_fn)``.
                 Can be useful to override some inner vector env logic, for instance, how resets on termination or truncation are handled.
             observation_mode: Defines how environment observation spaces should be batched. 'same' defines that there should be ``n`` copies of identical spaces.
                 'different' defines that there can be multiple observation spaces with different parameters though requires the same shape and dtype,
@@ -163,6 +178,26 @@ class WorkerPoolAsyncVectorEnv(VectorEnv):
         self.num_envs = len(env_fns)
         if self.num_envs <= 0:
             raise ValueError("`env_fns` must contain at least one environment factory.")
+        if env_clone_group_keys is not None and len(env_clone_group_keys) != self.num_envs:
+            raise ValueError(
+                f"`env_clone_group_keys` length must match num_envs={self.num_envs}, "
+                f"got {len(env_clone_group_keys)}."
+            )
+        if env_clone_group_keys is not None:
+            for key in env_clone_group_keys:
+                if key is None:
+                    continue
+                try:
+                    hash(key)
+                except TypeError as error:
+                    raise TypeError(
+                        "`env_clone_group_keys` entries must be hashable or None."
+                    ) from error
+        self.env_clone_group_keys = (
+            tuple(env_clone_group_keys)
+            if env_clone_group_keys is not None
+            else tuple(None for _ in range(self.num_envs))
+        )
         requested_num_workers = self.num_envs if num_workers is None else num_workers
         if requested_num_workers <= 0:
             raise ValueError(
@@ -246,7 +281,11 @@ class WorkerPoolAsyncVectorEnv(VectorEnv):
             for worker_idx, assigned_env_indices in enumerate(self.worker_env_indices):
                 parent_pipe, child_pipe = ctx.Pipe()
                 worker_env_fns = [
-                    (env_idx, CloudpickleWrapper(self.env_fns[env_idx]))
+                    (
+                        env_idx,
+                        self.env_clone_group_keys[env_idx],
+                        CloudpickleWrapper(self.env_fns[env_idx]),
+                    )
                     for env_idx in assigned_env_indices
                 ]
                 process = ctx.Process(
@@ -794,14 +833,32 @@ class WorkerPoolAsyncVectorEnv(VectorEnv):
 
 def _async_worker_pool(
     worker_index: int,
-    env_constructors: list[tuple[int, Callable[[], Env]]],
+    env_constructors: list[tuple[int, object | None, Callable[[], Env]]],
     pipe: Connection,
     parent_pipe: Connection,
     shared_memory: SynchronizedArray | dict[str, Any] | tuple[Any, ...],
     error_queue: Queue,
     autoreset_mode: AutoresetMode,
 ):
-    envs = {env_index: env_fn() for env_index, env_fn in env_constructors}
+    envs: dict[int, Env] = {}
+    prototype_envs_by_key: dict[object, Env] = {}
+    for env_index, clone_group_key, env_fn in env_constructors:
+        prototype_env = (
+            prototype_envs_by_key.get(clone_group_key)
+            if clone_group_key is not None
+            else None
+        )
+        if prototype_env is not None and hasattr(prototype_env, "clone_for_worker_pool"):
+            env = prototype_env.clone_for_worker_pool()
+        else:
+            env = env_fn()
+            if (
+                clone_group_key is not None
+                and clone_group_key not in prototype_envs_by_key
+                and hasattr(env, "clone_for_worker_pool")
+            ):
+                prototype_envs_by_key[clone_group_key] = env
+        envs[env_index] = env
     observation_spaces = {
         env_index: env.observation_space for env_index, env in envs.items()
     }
