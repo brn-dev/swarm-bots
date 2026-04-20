@@ -62,6 +62,8 @@ class BaseScenario(abc.ABC):
     def __init__(
         self,
             swarm: BaseSwarm,
+            timestep: float,
+            action_repeat: int,
             actuator_strength: float,
             progress_reward_weight: float,
             guidance_reward_weight: float,
@@ -88,6 +90,12 @@ class BaseScenario(abc.ABC):
         self.swarm = swarm
         self.num_units = swarm.config.num_units
         self.limbs_per_unit = swarm.config.limbs_per_unit
+        self.timestep = float(timestep)
+        if self.timestep <= 0.0:
+            raise ValueError(f"Expected timestep > 0, got {self.timestep}")
+        self.action_repeat = int(action_repeat)
+        if self.action_repeat <= 0:
+            raise ValueError(f"Expected action_repeat > 0, got {self.action_repeat}")
         self.actuator_strength = actuator_strength
         self.connection_dist_threshold = connection_dist_threshold
         self.connection_angle_threshold = connection_angle_threshold
@@ -190,6 +198,8 @@ class BaseScenario(abc.ABC):
     def get_settings(self) -> dict[str, Any]:
         return {
             'swarm': self.swarm.get_settings(),
+            'timestep': self.timestep,
+            'action_repeat': self.action_repeat,
             'actuator_strength': self.actuator_strength,
             'reward_weights': dict(self.reward_weights),
             'include_connectors_xpos_in_obs': self.include_connectors_xpos_in_obs,
@@ -306,6 +316,7 @@ class BaseScenario(abc.ABC):
             
     def build(self) -> tuple[mujoco.MjModel, mujoco.MjData]:
         model = self.spec.compile()
+        model.opt.timestep = self.timestep
         if self.friction is not None:
             model.geom_friction[:] = np.asarray(self.friction, dtype=float)
 

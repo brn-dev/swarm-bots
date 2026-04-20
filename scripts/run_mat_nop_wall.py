@@ -6,6 +6,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
+import swarmbots.mj_env.scenarios.scenario_presets as mj_scenario_presets
 from swarmbots.mj_env.scenarios.scenario_presets import default_wall
 from swarmbots.mj_env.swarm.homogeneous_swarm import PreConnectedUnitLocationsConfig
 from swarmbots.mj_env.swarm_bots_env import SwarmBotsEnv
@@ -15,7 +16,9 @@ def make_env_fn(
         episode_length: int,
         unit_start_locations: PreConnectedUnitLocationsConfig | None = None,
         render_mode: str | None = None,
-        first_episode_length: int | None = None
+        first_episode_length: int | None = None,
+        timestep: float = mj_scenario_presets.DEFAULT_KWARGS["timestep"],
+        action_repeat: int = mj_scenario_presets.DEFAULT_KWARGS["action_repeat"],
 ) -> Callable[[], SwarmBotsEnv]:
 
     def _init() -> SwarmBotsEnv:
@@ -23,6 +26,8 @@ def make_env_fn(
             first_wall_distance=1.0, # UniformDistParams(1.5, 2.5),
             unit_start_locations=unit_start_locations,
             quantize_connection_twist=8,
+            timestep=timestep,
+            action_repeat=action_repeat,
         )
         return SwarmBotsEnv(
             scenario=scenario,

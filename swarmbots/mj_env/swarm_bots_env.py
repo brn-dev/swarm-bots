@@ -24,7 +24,6 @@ class SwarmBotsEnv(gymnasium.Env):
         self,
         scenario: BaseScenario,
         episode_length: int = 500,
-        action_repeat: int = 15,
         shuffle_agents: bool = False,
         render_mode: str | None = None,
         width: int = 640,
@@ -42,7 +41,6 @@ class SwarmBotsEnv(gymnasium.Env):
         if reset_retry_count <= 0:
             raise ValueError(f"Expected reset_retry_count > 0, got {reset_retry_count}")
 
-        self.action_repeat = action_repeat
         self.episode_length = episode_length
         self.shuffle_agents = shuffle_agents
         self.render_mode = render_mode
@@ -106,6 +104,10 @@ class SwarmBotsEnv(gymnasium.Env):
 
         self._agent_permutation: np.ndarray | None = None
         self._inv_agent_permutation: np.ndarray | None = None
+
+    @property
+    def action_repeat(self) -> int:
+        return self.scenario.action_repeat
 
     def get_settings(self):
         return {
