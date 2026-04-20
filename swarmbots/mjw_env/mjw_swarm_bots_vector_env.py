@@ -51,6 +51,15 @@ def _capture_step_graph(model: Any, data: Any, nstep: int) -> Any | None:
             mjw.step(model, data)
     return capture.graph
 
+
+def _default_nconmax(*, num_units: int, num_total_connectors: int) -> int:
+    return max(32, num_total_connectors + (2 * num_units))
+
+
+def _default_njmax(*, num_units: int, nconmax: int) -> int:
+    return max(160, (5 * nconmax) + (2 * num_units))
+
+
 @dataclass(slots=True)
 class _PendingSettledReset:
     world_idx: torch.Tensor
@@ -68,7 +77,6 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
         *,
         num_envs: int,
         episode_length: int = 500,
-        action_repeat: int = 15,
         first_episode_length: int | None = None,
         first_episode_lengths: list[int] | torch.Tensor | None = None,
         settle_initial_reset: bool = False,
@@ -101,7 +109,7 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
         self.first_episode_length = first_episode_length
         self.first_episode_lengths = first_episode_lengths
         self.settle_initial_reset = bool(settle_initial_reset)
-        self.action_repeat = int(action_repeat)
+        self.action_repeat = int(scenario.action_repeat)
         self.simulation_unstable_reward = float(simulation_unstable_reward)
         self.render_mode = None
         self.action_backend = "torch"
@@ -120,14 +128,26 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
         self._host_model = scenario.build_model()
         self._metadata: MJWModelMetadata = build_model_metadata(self._host_model, scenario)
 
-        default_nconmax = max(128, self._n_total_connectors * 8)
-        default_njmax = max(512, int(self._host_model.nv * 8 + default_nconmax * 6))
+        resolved_nconmax = _default_nconmax(
+            num_units=self._n_agents,
+            num_total_connectors=self._n_total_connectors,
+        ) if nconmax is None else int(nconmax)
+        resolved_njmax = _default_njmax(
+            num_units=self._n_agents,
+            nconmax=resolved_nconmax,
+        ) if njmax is None else int(njmax)
+        if resolved_nconmax <= 0:
+            raise ValueError(f"Expected nconmax > 0, got {resolved_nconmax}")
+        if resolved_njmax <= 0:
+            raise ValueError(f"Expected njmax > 0, got {resolved_njmax}")
+        self._nconmax = resolved_nconmax
+        self._njmax = resolved_njmax
         self._model = mjw.put_model(self._host_model)
         self._data = mjw.make_data(
             self._host_model,
             nworld=self.num_envs,
-            nconmax=default_nconmax if nconmax is None else nconmax,
-            njmax=default_njmax if njmax is None else njmax,
+            nconmax=self._nconmax,
+            njmax=self._njmax,
         )
 
         self._qpos = wp.to_torch(self._data.qpos)
@@ -329,6 +349,10 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
             "episode_length": self.episode_length,
             "action_repeat": self.action_repeat,
             "simulation_unstable_reward": self.simulation_unstable_reward,
+            "physics_workspace_caps": {
+                "nconmax": self._nconmax,
+                "njmax": self._njmax,
+            },
         }
 
     def reset(
@@ -582,14 +606,12 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
         if world_idx.numel() == 0:
             return
 
-        logger.warning(
-            f"Running initial settled reset for {int(world_idx.numel())} MJW env(s). "
-            f"This increases startup latency but gives settled initial states."
-        )
+        logger.warning(f"Running initial settled reset for {int(world_idx.numel())} MJW envs.")
         reset_batch = self._scenario_runtime.sample_reset_batch(n_reset=int(world_idx.numel()), rng=self._rng)
         specs = self._scenario_runtime.build_cpu_reset_specs(reset_batch=reset_batch)
         snapshots = self._scenario_runtime.settle_cpu_reset_specs(specs=specs)
         self._scenario_runtime.apply_settled_reset_batch(world_idx=world_idx, snapshots=snapshots)
+        logger.warning(f"Envs settled.")
 
     def _should_use_initial_settled_reset(self, reset_mask: torch.Tensor) -> bool:
         if self._initial_settled_reset_done:

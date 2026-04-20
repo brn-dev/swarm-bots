@@ -4,12 +4,12 @@ from typing import Any
 import moviepy.video.io.ImageSequenceClip
 import numpy as np
 import torch
-from PIL import Image, ImageDraw, ImageFont
 
 from swarmbots.learn.base_policy import BasePolicy
 from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
 from swarmbots.learn.env_wrappers.torch_normalize_reward_wrapper import TorchNormalizeRewardWrapper
 from swarmbots.learn.gsde_reset import GSDEResetMode, GSDEIntervalResetMode, GSDEProbabilityResetMode
+from swarmbots.recording_overlay import draw_accumulated_reward
 from swarmbots.learn.summary_statistics import compute_summary_statistics, format_summary_statistics, \
     SummaryStatisticsFormat
 from swarmbots.learn.tensor_conversion import to_numpy_array
@@ -117,31 +117,6 @@ def _extract_raw_env_reward(
     return reward_value * denominator
 
 
-def _draw_accumulated_reward(frame: np.ndarray, accumulated_reward: float) -> np.ndarray:
-    if frame.ndim != 3 or frame.shape[2] < 3:
-        return frame
-
-    image = Image.fromarray(frame)
-    draw = ImageDraw.Draw(image, "RGBA")
-    font = ImageFont.load_default()
-    label = f"{accumulated_reward:.3f}"
-
-    left, top, right, bottom = draw.textbbox((0, 0), label, font=font)
-    text_width = right - left
-    text_height = bottom - top
-    margin = 8
-
-    x = image.width - text_width - margin
-    y = image.height - text_height - margin
-
-    draw.rectangle(
-        [(x - 6, y - 4), (x + text_width + 6, y + text_height + 4)],
-        fill=(0, 0, 0, 160),
-    )
-    draw.text((x, y), label, font=font, fill=(255, 255, 255, 255))
-    return np.asarray(image)
-
-
 def _extract_render_frame(frame: Any) -> np.ndarray | None:
     if isinstance(frame, (list, tuple)):
         if len(frame) == 0:
@@ -216,7 +191,7 @@ def record_policy(
         if first_frame is None:
             print("Environment render returned None. Make sure render_mode='rgb_array' is set.")
             return
-        frames.append(_draw_accumulated_reward(first_frame, accumulated_reward))
+        frames.append(draw_accumulated_reward(first_frame, accumulated_reward))
 
         done = False
         step_cnt = 0
@@ -256,7 +231,7 @@ def record_policy(
 
             current_frame = _extract_render_frame(env.render())
             if current_frame is not None:
-                frames.append(_draw_accumulated_reward(current_frame, accumulated_reward))
+                frames.append(draw_accumulated_reward(current_frame, accumulated_reward))
             
             if term[0] or trunc[0]:
                 ep_rew = _get_episode_stat(infos, env_idx=0, key="r")

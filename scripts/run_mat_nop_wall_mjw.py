@@ -56,12 +56,16 @@ def make_vector_env(
     first_episode_length: int | None = None,
     first_episode_lengths: list[int] | None = None,
     settle_initial_reset: bool = False,
+    timestep: float = mjw_scenario_presets.DEFAULT_KWARGS["timestep"],
+    action_repeat: int = mjw_scenario_presets.DEFAULT_KWARGS["action_repeat"],
     device: torch.device,
 ) -> MJWSwarmBotsVectorEnv:
     scenario = default_wall(
         first_wall_distance=1.0,
         unit_start_locations=unit_start_locations,
         quantize_connection_twist=8,
+        timestep=timestep,
+        action_repeat=action_repeat,
     )
     return MJWSwarmBotsVectorEnv(
         scenario=scenario,
