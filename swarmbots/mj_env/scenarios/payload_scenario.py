@@ -21,6 +21,8 @@ class PayloadScenario(BaseScenario, abc.ABC):
             self,
             swarm: BaseSwarm,
             payload_type: None | str,
+            timestep: float = 0.002,
+            action_repeat: int = 15,
             payload_size: Iterable[float] = (0.2, 0.2, 0.2),
             payload_mass: float = 5.0,
             payload_start_location_offset: Iterable[float] = (0, 1, 0),
@@ -52,6 +54,8 @@ class PayloadScenario(BaseScenario, abc.ABC):
 
         super().__init__(
             swarm=swarm,
+            timestep=timestep,
+            action_repeat=action_repeat,
             actuator_strength=actuator_strength,
             progress_reward_weight=progress_reward_weight,
             guidance_reward_weight=guidance_reward_weight,

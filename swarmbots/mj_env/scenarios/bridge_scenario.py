@@ -23,6 +23,8 @@ class BridgeScenario(PayloadScenario):
             self,
             swarm: BaseSwarm,
             payload_type: None | str,
+            timestep: float = 0.002,
+            action_repeat: int = 15,
             payload_size: Iterable[float] = (0.2, 0.2, 0.2),
             payload_mass: float = 5.0,
             payload_start_location_offset: Iterable[float] = (0, 1, 0),
@@ -89,6 +91,8 @@ class BridgeScenario(PayloadScenario):
         super().__init__(
             swarm=swarm,
             payload_type=payload_type,
+            timestep=timestep,
+            action_repeat=action_repeat,
             payload_size=payload_size,
             payload_mass=payload_mass,
             payload_start_location_offset=payload_start_location_offset,

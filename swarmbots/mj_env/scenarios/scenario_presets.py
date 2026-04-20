@@ -11,6 +11,8 @@ from swarmbots.mj_env.swarm.unit_config import UNIT_CONFIG_TETRAHEDRON_XYZ, UNIT
     UNIT_CONFIG_TETRAHEDRON_XY
 
 DEFAULT_KWARGS = {
+    'timestep': 0.002,
+    'action_repeat': 15,
     'friction': [1.25, 7e-3, 1.25e-4],
     'force_elliptic_cone': False,
     'actuator_strength': 15.0,
