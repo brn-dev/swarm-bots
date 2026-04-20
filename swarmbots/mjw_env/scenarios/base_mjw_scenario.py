@@ -88,7 +88,7 @@ class MJWCommonSettledSnapshot:
 @dataclass(slots=True)
 class MJWStepResult:
     reward: torch.Tensor
-    info: dict[str, torch.Tensor]
+    info: dict[str, Any]
 
 
 @dataclass(slots=True)

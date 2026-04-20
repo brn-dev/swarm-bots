@@ -252,6 +252,10 @@ class BaseScenario(abc.ABC):
         weighted_guidance_reward = guidance_reward * self.reward_weights['guidance_reward_weight']
         state['weighted_progress_reward'] = weighted_progress_reward
         state['weighted_guidance_reward'] = weighted_guidance_reward
+        state['reward_terms'] = {
+            'progress': weighted_progress_reward,
+            'guidance': weighted_guidance_reward,
+        }
 
         return weighted_progress_reward + weighted_guidance_reward, False
 

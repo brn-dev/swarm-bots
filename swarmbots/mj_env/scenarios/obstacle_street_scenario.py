@@ -464,9 +464,16 @@ class ObstacleStreetScenario(PayloadScenario):
             progress_reward * self.reward_weights['progress_reward_weight']
             + wall_pass_reward
         )
+        weighted_forward_progress_reward = progress_reward * self.reward_weights['progress_reward_weight']
         weighted_guidance_reward = guidance_reward * self.reward_weights['guidance_reward_weight']
         state['weighted_progress_reward'] = weighted_progress_reward
+        state['weighted_forward_progress_reward'] = weighted_forward_progress_reward
+        state['wall_pass_reward'] = wall_pass_reward
         state['weighted_guidance_reward'] = weighted_guidance_reward
+        state['reward_terms'] = {
+            'progress': weighted_forward_progress_reward,
+            'wall': wall_pass_reward,
+        }
 
         return weighted_progress_reward + weighted_guidance_reward, False
 

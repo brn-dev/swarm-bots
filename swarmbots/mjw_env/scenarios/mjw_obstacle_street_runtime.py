@@ -262,6 +262,7 @@ class ObstacleStreetMJWScenarioRuntime(BaseMJWScenarioRuntime):
             total_passed = (safe_unit_y.unsqueeze(-1) > self.wall_pass_absolute_thresholds.unsqueeze(1)).sum(dim=-1)
             delta_passed = torch.clamp(total_passed - self.next_threshold_for_unit, min=0)
             delta_passed = delta_passed * self.bindings.units_active_mask.to(dtype=delta_passed.dtype)
+            latched_thresholds = self.next_threshold_for_unit + delta_passed
             active_units_count = self.bindings.units_active_mask.sum(dim=-1)
             denom = active_units_count * max(self._wall_thresholds_per_wall, 1)
             valid = stable_mask & (denom > 0)
@@ -269,11 +270,14 @@ class ObstacleStreetMJWScenarioRuntime(BaseMJWScenarioRuntime):
                 delta_passed.sum(dim=-1)[valid].to(dtype=torch.float32)
                 / denom[valid].to(dtype=torch.float32)
             ) * float(self.scenario.wall_pass_reward_weight)
-            self.next_threshold_for_unit[stable_mask] = total_passed[stable_mask]
-            self.passed_thresholds_mask[stable_mask] = self._threshold_index_torch.view(1, 1, -1) < total_passed[stable_mask].unsqueeze(-1)
+            self.next_threshold_for_unit[stable_mask] = latched_thresholds[stable_mask]
+            self.passed_thresholds_mask[stable_mask] = (
+                self._threshold_index_torch.view(1, 1, -1) < latched_thresholds[stable_mask].unsqueeze(-1)
+            )
             self._hidden_local_obs[stable_mask] = self.passed_thresholds_mask[stable_mask].to(dtype=torch.float32)
 
-        progress_reward = progress_delta * float(self.scenario.progress_reward_weight) + wall_pass_reward
+        forward_progress_reward = progress_delta * float(self.scenario.progress_reward_weight)
+        progress_reward = forward_progress_reward + wall_pass_reward
 
         connection_mask = self.bindings.partner_unit >= 0
         units_without_connections = (~connection_mask).all(dim=-1) & self.bindings.units_active_mask
@@ -290,7 +294,13 @@ class ObstacleStreetMJWScenarioRuntime(BaseMJWScenarioRuntime):
             reward=progress_reward + guidance_reward,
             info={
                 "progress_reward": progress_reward,
+                "forward_progress_reward": forward_progress_reward,
+                "wall_pass_reward": wall_pass_reward,
                 "guidance_reward": guidance_reward,
+                "reward_terms": {
+                    "progress": forward_progress_reward,
+                    "wall": wall_pass_reward,
+                },
             },
         )
 

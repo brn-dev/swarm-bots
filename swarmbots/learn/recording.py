@@ -89,6 +89,17 @@ def _extract_env_reward(reward: Any, *, env_idx: int = 0) -> float:
     return float(flattened[env_idx])
 
 
+def _extract_reward_terms(infos: dict[str, Any], *, env_idx: int) -> dict[str, float]:
+    reward_terms = infos.get("reward_terms")
+    if not isinstance(reward_terms, dict):
+        return {}
+
+    extracted: dict[str, float] = {}
+    for label, values in reward_terms.items():
+        extracted[str(label)] = _extract_env_reward(values, env_idx=env_idx)
+    return extracted
+
+
 def _find_normalize_reward_wrapper(env: Any) -> TorchNormalizeRewardWrapper | None:
     current_env = env
     while hasattr(current_env, "env"):
@@ -181,6 +192,7 @@ def record_policy(
         ep_progress_reward = None
         ep_guidance_reward = None
         accumulated_reward = 0.0
+        accumulated_reward_terms: dict[str, float] = {}
                     
         try:
             first_frame = _extract_render_frame(env.render())
@@ -191,7 +203,13 @@ def record_policy(
         if first_frame is None:
             print("Environment render returned None. Make sure render_mode='rgb_array' is set.")
             return
-        frames.append(draw_accumulated_reward(first_frame, accumulated_reward))
+        frames.append(
+            draw_accumulated_reward(
+                first_frame,
+                accumulated_reward,
+                accumulated_reward_terms=accumulated_reward_terms,
+            )
+        )
 
         done = False
         step_cnt = 0
@@ -228,10 +246,18 @@ def record_policy(
                 env_idx=0,
                 normalize_reward_wrapper=normalize_reward_wrapper,
             )
+            for label, value in _extract_reward_terms(infos, env_idx=0).items():
+                accumulated_reward_terms[label] = accumulated_reward_terms.get(label, 0.0) + value
 
             current_frame = _extract_render_frame(env.render())
             if current_frame is not None:
-                frames.append(draw_accumulated_reward(current_frame, accumulated_reward))
+                frames.append(
+                    draw_accumulated_reward(
+                        current_frame,
+                        accumulated_reward,
+                        accumulated_reward_terms=accumulated_reward_terms,
+                    )
+                )
             
             if term[0] or trunc[0]:
                 ep_rew = _get_episode_stat(infos, env_idx=0, key="r")

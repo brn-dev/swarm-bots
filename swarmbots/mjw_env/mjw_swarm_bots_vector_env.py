@@ -22,6 +22,7 @@ from swarmbots.mjw_env.mjw_torch_quat import quat_to_rot6d_torch
 from swarmbots.mjw_env.mjw_torch_utils import to_device_bool_tensor
 from swarmbots.mjw_env.scenarios.base_mjw_scenario import BaseMJWScenario, MJWRuntimeBindings
 from swarmbots.mjw_env.swarm.mjw_homogeneous_swarm import MJWSwarmPool
+from swarmbots.learn.tensor_conversion import to_numpy_array
 
 
 def _build_inactive_unit_positions(
@@ -41,6 +42,14 @@ def _build_inactive_unit_positions(
     positions[:, :2] -= positions[:, :2].mean(dim=0, keepdim=True)
     positions += torch.tensor(inactive_area_location, device=device, dtype=torch.float32)
     return positions
+
+
+def _mask_info_values(info_value: Any, unstable_mask: torch.Tensor) -> None:
+    if isinstance(info_value, dict):
+        for nested_value in info_value.values():
+            _mask_info_values(nested_value, unstable_mask)
+        return
+    info_value[unstable_mask] = 0.0
 
 
 def _capture_step_graph(model: Any, data: Any, nstep: int) -> Any | None:
@@ -424,7 +433,7 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
 
         rewards[unstable_mask] = self.simulation_unstable_reward
         for value in infos.values():
-            value[unstable_mask] = 0.0
+            _mask_info_values(value, unstable_mask)
 
         obs = self._build_obs()
         obs = self._apply_error_obs(obs, unstable_mask)
@@ -435,6 +444,14 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
                 stable_active_world_idx = active_world_idx_t[stable_mask[active_world_idx_t]]
                 self._live_episode_recorder.record_step(
                     rewards=rewards.detach().cpu().numpy(),
+                    reward_terms=(
+                        {
+                            label: to_numpy_array(values)
+                            for label, values in infos["reward_terms"].items()
+                        }
+                        if "reward_terms" in infos
+                        else None
+                    ),
                     dones=dones.detach().cpu().numpy(),
                     unstable_mask=unstable_mask.detach().cpu().numpy(),
                     snapshots_by_world=self._capture_world_snapshots(stable_active_world_idx),
