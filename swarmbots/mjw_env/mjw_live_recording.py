@@ -45,6 +45,7 @@ class _EpisodeSlot:
     episode_idx: int
     frames: list[np.ndarray] = field(default_factory=list)
     accumulated_reward: float = 0.0
+    accumulated_reward_terms: dict[str, float] = field(default_factory=dict)
     step_count: int = 0
     unstable: bool = False
 
@@ -162,6 +163,7 @@ class MJWLiveEpisodeRecorder:
                     "step_count": int(slot.step_count),
                     "frames_captured": int(len(slot.frames)),
                     "accumulated_reward": float(slot.accumulated_reward),
+                    "accumulated_reward_terms": dict(slot.accumulated_reward_terms),
                 }
                 for slot in active_slots
             ],
@@ -202,6 +204,7 @@ class MJWLiveEpisodeRecorder:
                 draw_accumulated_reward(
                     self._render_snapshot(render_slot_idx=render_slot_idx, snapshot=snapshot),
                     slot.accumulated_reward,
+                    accumulated_reward_terms=slot.accumulated_reward_terms,
                 )
             )
             self._active_slots_by_world[int(raw_world_idx)] = slot
@@ -215,6 +218,7 @@ class MJWLiveEpisodeRecorder:
         self,
         *,
         rewards: np.ndarray,
+        reward_terms: dict[str, np.ndarray] | None,
         dones: np.ndarray,
         unstable_mask: np.ndarray,
         snapshots_by_world: dict[int, MJWWorldSnapshot],
@@ -224,6 +228,9 @@ class MJWLiveEpisodeRecorder:
 
         for world_idx, slot in list(self._active_slots_by_world.items()):
             slot.accumulated_reward += float(rewards[world_idx])
+            if reward_terms is not None:
+                for label, values in reward_terms.items():
+                    slot.accumulated_reward_terms[label] = slot.accumulated_reward_terms.get(label, 0.0) + float(values[world_idx])
             slot.step_count += 1
 
             done = bool(dones[world_idx])
@@ -237,6 +244,7 @@ class MJWLiveEpisodeRecorder:
                         draw_accumulated_reward(
                             self._render_snapshot(render_slot_idx=slot.render_slot_idx, snapshot=snapshot),
                             slot.accumulated_reward,
+                            accumulated_reward_terms=slot.accumulated_reward_terms,
                         )
                     )
 
