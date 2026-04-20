@@ -30,6 +30,8 @@ def _hinges_per_limb(unit_config: tuple[object, ...]) -> int:
 @dataclass
 class MJWObstacleStreetScenario:
     swarm: MJWHomogeneousSwarm
+    timestep: float
+    action_repeat: int
     actuator_strength: float
     progress_reward_weight: float
     guidance_reward_weight: float
@@ -60,6 +62,10 @@ class MJWObstacleStreetScenario:
     def __post_init__(self) -> None:
         if self.include_connectors_xquat_in_obs:
             raise ValueError("MJWObstacleStreetScenario currently does not support connector quats in observations")
+        if self.timestep <= 0.0:
+            raise ValueError(f"Expected timestep > 0, got {self.timestep}")
+        if self.action_repeat <= 0:
+            raise ValueError(f"Expected action_repeat > 0, got {self.action_repeat}")
         self.wall_heights = self.wall_height if isinstance(self.wall_height, list) else [self.wall_height] * self.num_walls
         self.opening_widths = self.opening_width if isinstance(self.opening_width, list) else [self.opening_width] * self.num_walls
         self.side_wall_x = self.street_width / 2.0
@@ -75,6 +81,8 @@ class MJWObstacleStreetScenario:
     def get_settings(self) -> dict[str, Any]:
         return {
             "swarm": self.swarm.get_settings(),
+            "timestep": self.timestep,
+            "action_repeat": self.action_repeat,
             "actuator_strength": self.actuator_strength,
             "reward_weights": {
                 "progress_reward_weight": self.progress_reward_weight,
@@ -175,6 +183,7 @@ class MJWObstacleStreetScenario:
                 )
 
         model = spec.compile()
+        model.opt.timestep = float(self.timestep)
         if self.friction is not None:
             if isinstance(self.friction, (int, float)):
                 friction = np.asarray([float(self.friction), 0.005, 0.0001], dtype=float)

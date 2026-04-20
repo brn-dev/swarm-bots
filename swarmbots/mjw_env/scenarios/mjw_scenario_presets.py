@@ -12,6 +12,8 @@ from swarmbots.mjw_env.scenarios.mjw_obstacle_street_scenario import MJWObstacle
 from swarmbots.mjw_env.swarm.mjw_homogeneous_swarm import MJWHomogeneousSwarm, MJWPreConnectedUnitLocationsConfig
 
 DEFAULT_KWARGS = {
+    "timestep": 0.003,
+    "action_repeat": 10,
     "friction": [1.25, 7e-3, 1.25e-4],
     "actuator_strength": 15.0,
     "progress_reward_weight": 1.0,

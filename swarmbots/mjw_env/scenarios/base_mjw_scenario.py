@@ -101,6 +101,7 @@ class MJWRecordingCameraConfig:
 
 class BaseMJWScenario(Protocol):
     swarm: MJWHomogeneousSwarm
+    action_repeat: int
     actuator_strength: float
     include_connectors_xpos_in_obs: bool
     include_connectors_xquat_in_obs: bool

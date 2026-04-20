@@ -11,6 +11,7 @@ import numpy as np
 from loguru import logger
 
 from swarmbots.mjw_env.scenarios.base_mjw_scenario import BaseMJWScenario, MJWRecordingCameraConfig
+from swarmbots.recording_overlay import draw_accumulated_reward
 
 
 @dataclass(slots=True)
@@ -197,7 +198,12 @@ class MJWLiveEpisodeRecorder:
                 world_idx=int(raw_world_idx),
                 episode_idx=episode_idx,
             )
-            slot.frames.append(self._render_snapshot(render_slot_idx=render_slot_idx, snapshot=snapshot))
+            slot.frames.append(
+                draw_accumulated_reward(
+                    self._render_snapshot(render_slot_idx=render_slot_idx, snapshot=snapshot),
+                    slot.accumulated_reward,
+                )
+            )
             self._active_slots_by_world[int(raw_world_idx)] = slot
             self._episodes_started += 1
 
@@ -227,7 +233,12 @@ class MJWLiveEpisodeRecorder:
             if should_capture_frame and not unstable:
                 snapshot = snapshots_by_world.get(world_idx)
                 if snapshot is not None:
-                    slot.frames.append(self._render_snapshot(render_slot_idx=slot.render_slot_idx, snapshot=snapshot))
+                    slot.frames.append(
+                        draw_accumulated_reward(
+                            self._render_snapshot(render_slot_idx=slot.render_slot_idx, snapshot=snapshot),
+                            slot.accumulated_reward,
+                        )
+                    )
 
             if done:
                 slot.unstable = unstable
