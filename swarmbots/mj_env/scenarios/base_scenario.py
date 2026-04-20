@@ -1,5 +1,6 @@
 import abc
 import math
+from copy import deepcopy
 from typing import Any, Iterable, TypedDict, Literal, NotRequired, Optional
 
 import mujoco
@@ -217,6 +218,27 @@ class BaseScenario(abc.ABC):
             'reset_settle_timestep_scale': self.reset_settle_timestep_scale,
             'inactive_area_location': self.inactive_area_location,
         }
+
+    def clone_for_worker_pool(self) -> "BaseScenario":
+        """Clone a fully-built scenario without recompiling its MuJoCo spec."""
+        clone = object.__new__(type(self))
+        for attr_name, attr_value in self.__dict__.items():
+            if attr_name in {"rng", "spec", "dummy_model", "dummy_data"}:
+                continue
+            clone.__dict__[attr_name] = deepcopy(attr_value)
+
+        clone_seed = int(
+            self.rng.integers(
+                low=0,
+                high=np.iinfo(np.uint64).max,
+                dtype=np.uint64,
+            )
+        )
+        clone.rng = np.random.default_rng(clone_seed)
+        clone.spec = None
+        clone.dummy_model = deepcopy(self.dummy_model)
+        clone.dummy_data = deepcopy(self.dummy_data)
+        return clone
 
     def get_reward_weights(self) -> RewardWeights:
         return self.reward_weights
