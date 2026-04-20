@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import sys
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any
 
+import mujoco_warp as mjw
 import torch
 from loguru import logger
 
@@ -29,6 +31,8 @@ class BenchmarkConfig:
     episode_length: int
     connector_prob: float
     seed: int
+    compile_reward_kernel: bool
+    reward_kernel_compile_mode: str
 
 
 @dataclass(frozen=True)
@@ -39,6 +43,24 @@ class ModeResult:
     step_seconds: float
     step_envs_per_second: float
     done_count: int | None
+
+
+@dataclass(slots=True)
+class PhysicsBranchSnapshot:
+    qpos: torch.Tensor
+    qvel: torch.Tensor
+    ctrl: torch.Tensor
+    eq_active: torch.Tensor
+    mocap_pos: torch.Tensor
+    mocap_quat: torch.Tensor
+    time_values: torch.Tensor
+    qacc_warmstart: torch.Tensor
+    act: torch.Tensor
+    units_active_mask: torch.Tensor
+    partner_unit: torch.Tensor
+    partner_connector: torch.Tensor
+    connection_twist_idx: torch.Tensor
+    disconnect_potentials: torch.Tensor
 
 
 def make_mjw_unit_start_locations(pool_seeds: tuple[int, ...]) -> MJWPreConnectedUnitLocationsConfig:
@@ -62,6 +84,8 @@ def create_env(config: BenchmarkConfig) -> MJWSwarmBotsVectorEnv:
         first_wall_distance=1.0,
         unit_start_locations=make_mjw_unit_start_locations(pool_seeds=tuple(range(52_000, 52_005))),
         quantize_connection_twist=8,
+        compile_reward_kernel=config.compile_reward_kernel,
+        reward_kernel_compile_mode=config.reward_kernel_compile_mode,
     )
     return MJWSwarmBotsVectorEnv(
         scenario=scenario,
@@ -104,6 +128,7 @@ def apply_actuators_only(env: MJWSwarmBotsVectorEnv, actuators: torch.Tensor) ->
 def measure_full_step(
     *,
     env: MJWSwarmBotsVectorEnv,
+    mode: str,
     action_pool: list[dict[str, torch.Tensor]],
     warmup_steps: int,
     measured_steps: int,
@@ -122,7 +147,7 @@ def measure_full_step(
     synchronize_env(env)
     elapsed = time.perf_counter() - start
     return ModeResult(
-        mode="full_step",
+        mode=mode,
         num_envs=env.num_envs,
         measured_steps=measured_steps,
         step_seconds=elapsed,
@@ -131,34 +156,122 @@ def measure_full_step(
     )
 
 
-def measure_physics_only_step(
+def capture_physics_branch_snapshot(env: MJWSwarmBotsVectorEnv) -> PhysicsBranchSnapshot:
+    return PhysicsBranchSnapshot(
+        qpos=env._qpos.clone(),
+        qvel=env._qvel.clone(),
+        ctrl=env._ctrl.clone(),
+        eq_active=env._eq_active.clone(),
+        mocap_pos=env._mocap_pos.clone(),
+        mocap_quat=env._mocap_quat.clone(),
+        time_values=env._time.clone(),
+        qacc_warmstart=env._qacc_warmstart.clone(),
+        act=env._act.clone(),
+        units_active_mask=env.units_active_mask.clone(),
+        partner_unit=env.partner_unit.clone(),
+        partner_connector=env.partner_connector.clone(),
+        connection_twist_idx=env.connection_twist_idx.clone(),
+        disconnect_potentials=env.disconnect_potentials.clone(),
+    )
+
+
+def restore_physics_branch_snapshot(env: MJWSwarmBotsVectorEnv, snapshot: PhysicsBranchSnapshot) -> None:
+    env._qpos.copy_(snapshot.qpos)
+    env._qvel.copy_(snapshot.qvel)
+    env._ctrl.copy_(snapshot.ctrl)
+    env._eq_active.copy_(snapshot.eq_active)
+    env._mocap_pos.copy_(snapshot.mocap_pos)
+    env._mocap_quat.copy_(snapshot.mocap_quat)
+    env._time.copy_(snapshot.time_values)
+    env._qacc_warmstart.copy_(snapshot.qacc_warmstart)
+    env._act.copy_(snapshot.act)
+    env.units_active_mask.copy_(snapshot.units_active_mask)
+    env.partner_unit.copy_(snapshot.partner_unit)
+    env.partner_connector.copy_(snapshot.partner_connector)
+    env.connection_twist_idx.copy_(snapshot.connection_twist_idx)
+    env.disconnect_potentials.copy_(snapshot.disconnect_potentials)
+    mjw.forward(env._model, env._data)
+
+
+def time_physics_branch(
     *,
     env: MJWSwarmBotsVectorEnv,
+    snapshot: PhysicsBranchSnapshot,
+    action: dict[str, torch.Tensor],
+    with_connectors: bool,
+) -> float:
+    restore_physics_branch_snapshot(env, snapshot)
+    synchronize_env(env)
+    start = time.perf_counter()
+    if with_connectors:
+        env._apply_actions(
+            actuators=action["actuators"],
+            connectors=action["connectors"],
+        )
+    else:
+        apply_actuators_only(env, action["actuators"])
+    env._run_physics()
+    synchronize_env(env)
+    return time.perf_counter() - start
+
+
+def measure_connector_branch_steps(
+    *,
+    source_env: MJWSwarmBotsVectorEnv,
+    branch_env: MJWSwarmBotsVectorEnv,
     action_pool: list[dict[str, torch.Tensor]],
     warmup_steps: int,
     measured_steps: int,
     seed: int,
-) -> ModeResult:
-    env.reset(seed=seed)
-    for step_idx in range(warmup_steps):
-        apply_actuators_only(env, action_pool[step_idx % len(action_pool)]["actuators"])
-        env._run_physics()
+) -> list[ModeResult]:
+    source_env.reset(seed=seed)
+    branch_env.reset(seed=seed + 1)
 
-    synchronize_env(env)
-    start = time.perf_counter()
+    for step_idx in range(warmup_steps):
+        action = action_pool[step_idx % len(action_pool)]
+        snapshot = capture_physics_branch_snapshot(source_env)
+        time_physics_branch(env=branch_env, snapshot=snapshot, action=action, with_connectors=False)
+        time_physics_branch(env=branch_env, snapshot=snapshot, action=action, with_connectors=True)
+        source_env.step(action)
+
+    actuators_only_elapsed = 0.0
+    connectors_elapsed = 0.0
     for step_idx in range(measured_steps):
-        apply_actuators_only(env, action_pool[step_idx % len(action_pool)]["actuators"])
-        env._run_physics()
-    synchronize_env(env)
-    elapsed = time.perf_counter() - start
-    return ModeResult(
-        mode="physics_only",
-        num_envs=env.num_envs,
-        measured_steps=measured_steps,
-        step_seconds=elapsed,
-        step_envs_per_second=(measured_steps * env.num_envs) / elapsed,
-        done_count=None,
-    )
+        action = action_pool[(warmup_steps + step_idx) % len(action_pool)]
+        snapshot = capture_physics_branch_snapshot(source_env)
+        actuators_only_elapsed += time_physics_branch(
+            env=branch_env,
+            snapshot=snapshot,
+            action=action,
+            with_connectors=False,
+        )
+        connectors_elapsed += time_physics_branch(
+            env=branch_env,
+            snapshot=snapshot,
+            action=action,
+            with_connectors=True,
+        )
+        source_env.step(action)
+
+    total_env_steps = measured_steps * source_env.num_envs
+    return [
+        ModeResult(
+            mode="physics_actuators_only_snapshot",
+            num_envs=source_env.num_envs,
+            measured_steps=measured_steps,
+            step_seconds=actuators_only_elapsed,
+            step_envs_per_second=total_env_steps / actuators_only_elapsed,
+            done_count=None,
+        ),
+        ModeResult(
+            mode="physics_with_connectors_snapshot",
+            num_envs=source_env.num_envs,
+            measured_steps=measured_steps,
+            step_seconds=connectors_elapsed,
+            step_envs_per_second=total_env_steps / connectors_elapsed,
+            done_count=None,
+        ),
+    ]
 
 
 def print_results(results: list[ModeResult]) -> None:
@@ -180,7 +293,15 @@ def print_results(results: list[ModeResult]) -> None:
     for row in rows:
         print(" | ".join(value.ljust(widths[idx]) for idx, value in enumerate(row)))
 
-    summary_headers = ["envs", "physics_only/full_step", "full_step_loss_pct"]
+    summary_headers = [
+        "envs",
+        "compiled/eager",
+        "compiled_gain_pct",
+        "conn/act_only",
+        "conn_gain_pct",
+        "conn/eager",
+        "conn/compiled",
+    ]
     summary_rows: list[list[str]] = []
     num_envs_values = sorted({result.num_envs for result in results})
     for num_envs in num_envs_values:
@@ -189,17 +310,39 @@ def print_results(results: list[ModeResult]) -> None:
             for result in results
             if result.num_envs == num_envs
         }
-        if "full_step" not in per_mode or "physics_only" not in per_mode:
+        eager_result = per_mode.get("full_step_eager")
+        compiled_result = per_mode.get("full_step_compiled")
+        actuators_only_result = per_mode.get("physics_actuators_only_snapshot")
+        connectors_result = per_mode.get("physics_with_connectors_snapshot")
+        if actuators_only_result is None or connectors_result is None:
             continue
-        full_eps = per_mode["full_step"].step_envs_per_second
-        physics_eps = per_mode["physics_only"].step_envs_per_second
-        speed_ratio = physics_eps / full_eps
-        throughput_loss_pct = (1.0 - (full_eps / physics_eps)) * 100.0
+
+        compiled_vs_eager = "-"
+        compiled_gain_pct = "-"
+        connectors_vs_actuators_only = (
+            connectors_result.step_envs_per_second / actuators_only_result.step_envs_per_second
+        )
+        connector_gain_pct = f"{(connectors_vs_actuators_only - 1.0) * 100.0:.1f}%"
+        connectors_vs_eager = "-"
+        connectors_vs_compiled = "-"
+        if eager_result is not None:
+            connectors_vs_eager = f"{connectors_result.step_envs_per_second / eager_result.step_envs_per_second:.2f}x"
+        if compiled_result is not None:
+            connectors_vs_compiled = f"{connectors_result.step_envs_per_second / compiled_result.step_envs_per_second:.2f}x"
+        if eager_result is not None and compiled_result is not None:
+            compiled_ratio = compiled_result.step_envs_per_second / eager_result.step_envs_per_second
+            compiled_vs_eager = f"{compiled_ratio:.2f}x"
+            compiled_gain_pct = f"{(compiled_ratio - 1.0) * 100.0:.1f}%"
+
         summary_rows.append(
             [
                 str(num_envs),
-                f"{speed_ratio:.2f}x",
-                f"{throughput_loss_pct:.1f}%",
+                compiled_vs_eager,
+                compiled_gain_pct,
+                f"{connectors_vs_actuators_only:.2f}x",
+                connector_gain_pct,
+                connectors_vs_eager,
+                connectors_vs_compiled,
             ]
         )
 
@@ -219,13 +362,13 @@ def print_results(results: list[ModeResult]) -> None:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Benchmark MJW full step throughput vs physics-only stepping throughput.",
+        description="Benchmark MJW full-step throughput and snapshot-based connector-step overhead.",
     )
     parser.add_argument(
         "--num-envs",
         nargs="+",
         type=int,
-        default=[128, 256, 512, 1024],
+        default=[256, 512, 1024],
         help="Vector-env sizes to benchmark.",
     )
     parser.add_argument("--warmup-steps", type=int, default=64, help="Warmup steps per mode.")
@@ -244,6 +387,22 @@ def parse_args() -> argparse.Namespace:
         help="Connector activation probability in full-step mode action pool.",
     )
     parser.add_argument("--seed", type=int, default=1234, help="Base RNG seed.")
+    parser.add_argument(
+        "--compile-reward-kernel",
+        action="store_true",
+        help="Benchmark the compiled full-step mode instead of the eager full-step mode.",
+    )
+    parser.add_argument(
+        "--benchmark-both-full-step-modes",
+        action="store_true",
+        help="Benchmark both eager and compiled full-step modes in the same run.",
+    )
+    parser.add_argument(
+        "--reward-kernel-compile-mode",
+        type=str,
+        default="default",
+        help="torch.compile mode for the reward kernel when a compiled full-step variant is benchmarked.",
+    )
     parser.add_argument("--json-out", type=Path, default=None, help="Optional path for machine-readable output.")
     return parser.parse_args()
 
@@ -255,6 +414,53 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError("warmup/steps/action-pool-size must be positive, with warmup >= 0.")
     if not 0.0 <= args.connector_prob <= 1.0:
         raise ValueError("--connector-prob must be in [0, 1].")
+    needs_compiled_full_step = args.compile_reward_kernel or args.benchmark_both_full_step_modes
+    if needs_compiled_full_step and not hasattr(torch, "compile"):
+        raise ValueError("Compiled full-step benchmarking requires torch.compile support.")
+    if needs_compiled_full_step and importlib.util.find_spec("triton") is None:
+        raise ValueError(
+            "Compiled full-step benchmarking requires a working Triton install. "
+            "On native Windows that usually means installing triton-windows, not triton."
+        )
+
+
+def benchmark_full_step_variant(
+    *,
+    config: BenchmarkConfig,
+    mode: str,
+    compile_reward_kernel: bool,
+) -> ModeResult:
+    env = create_env(replace(config, compile_reward_kernel=compile_reward_kernel))
+    try:
+        action_pool = build_action_pool(env, config)
+        return measure_full_step(
+            env=env,
+            mode=mode,
+            action_pool=action_pool,
+            warmup_steps=config.warmup_steps,
+            measured_steps=config.measured_steps,
+            seed=config.seed,
+        )
+    finally:
+        env.close()
+
+
+def benchmark_connector_snapshot_branches(config: BenchmarkConfig) -> list[ModeResult]:
+    source_env = create_env(replace(config, compile_reward_kernel=False))
+    branch_env = create_env(replace(config, compile_reward_kernel=False))
+    try:
+        action_pool = build_action_pool(source_env, config)
+        return measure_connector_branch_steps(
+            source_env=source_env,
+            branch_env=branch_env,
+            action_pool=action_pool,
+            warmup_steps=config.warmup_steps,
+            measured_steps=config.measured_steps,
+            seed=config.seed + 77_000,
+        )
+    finally:
+        branch_env.close()
+        source_env.close()
 
 
 def main() -> None:
@@ -277,35 +483,35 @@ def main() -> None:
             episode_length=args.episode_length,
             connector_prob=args.connector_prob,
             seed=args.seed,
+            compile_reward_kernel=bool(args.compile_reward_kernel),
+            reward_kernel_compile_mode=str(args.reward_kernel_compile_mode),
         )
+        full_step_variants: list[tuple[str, bool]]
+        if args.benchmark_both_full_step_modes:
+            full_step_variants = [
+                ("full_step_eager", False),
+                ("full_step_compiled", True),
+            ]
+        elif config.compile_reward_kernel:
+            full_step_variants = [("full_step_compiled", True)]
+        else:
+            full_step_variants = [("full_step_eager", False)]
 
         logger.info(
             f"Benchmarking MJW overhead at num_envs={config.num_envs}, "
-            f"warmup_steps={config.warmup_steps}, measured_steps={config.measured_steps}"
+            f"warmup_steps={config.warmup_steps}, measured_steps={config.measured_steps}, "
+            f"full_step_variants={[mode for mode, _ in full_step_variants]}, "
+            f"reward_kernel_compile_mode={config.reward_kernel_compile_mode!r}"
         )
-        env = create_env(config)
-        try:
-            action_pool = build_action_pool(env, config)
+        for mode, compile_reward_kernel in full_step_variants:
             results.append(
-                measure_full_step(
-                    env=env,
-                    action_pool=action_pool,
-                    warmup_steps=config.warmup_steps,
-                    measured_steps=config.measured_steps,
-                    seed=config.seed,
+                benchmark_full_step_variant(
+                    config=config,
+                    mode=mode,
+                    compile_reward_kernel=compile_reward_kernel,
                 )
             )
-            results.append(
-                measure_physics_only_step(
-                    env=env,
-                    action_pool=action_pool,
-                    warmup_steps=config.warmup_steps,
-                    measured_steps=config.measured_steps,
-                    seed=config.seed + 77_000,
-                )
-            )
-        finally:
-            env.close()
+        results.extend(benchmark_connector_snapshot_branches(config))
 
     print_results(results)
 

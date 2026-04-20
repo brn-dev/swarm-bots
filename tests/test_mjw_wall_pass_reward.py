@@ -4,7 +4,10 @@ from types import SimpleNamespace
 
 import torch
 
-from swarmbots.mjw_env.scenarios.mjw_obstacle_street_runtime import ObstacleStreetMJWScenarioRuntime
+from swarmbots.mjw_env.scenarios.mjw_obstacle_street_runtime import (
+    ObstacleStreetMJWScenarioRuntime,
+    _compute_obstacle_street_reward_kernel,
+)
 
 
 def _make_runtime() -> ObstacleStreetMJWScenarioRuntime:
@@ -29,6 +32,7 @@ def _make_runtime() -> ObstacleStreetMJWScenarioRuntime:
     runtime._hidden_local_obs = torch.zeros((1, 1, 1), device=device, dtype=torch.float32)
     runtime._threshold_index_torch = torch.arange(1, device=device, dtype=torch.long)
     runtime._wall_thresholds_per_wall = 1
+    runtime._reward_kernel = _compute_obstacle_street_reward_kernel
     return runtime
 
 

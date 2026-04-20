@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import shutil
+import sys
+from typing import Callable
 
 import mujoco
 import mujoco_warp as mjw
@@ -41,6 +44,71 @@ class ObstacleStreetSettledSnapshot:
     progress: float
     next_threshold_for_unit: np.ndarray
     passed_thresholds_mask: np.ndarray
+
+
+def _compute_obstacle_street_reward_kernel(
+    unit_y: torch.Tensor,
+    stable_mask: torch.Tensor,
+    units_active_mask: torch.Tensor,
+    partner_unit: torch.Tensor,
+    wall_pass_absolute_thresholds: torch.Tensor,
+    next_threshold_for_unit: torch.Tensor,
+    progress: torch.Tensor,
+    threshold_index_torch: torch.Tensor,
+    progress_reward_weight: float,
+    wall_pass_reward_weight: float,
+    wall_thresholds_per_wall: int,
+    units_without_connections_reward_weight: float,
+    guidance_reward_weight: float,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    safe_unit_y = torch.where(stable_mask.unsqueeze(1), unit_y, torch.zeros_like(unit_y))
+    new_progress = masked_mean(safe_unit_y, units_active_mask, dim=1)
+    progress_delta = new_progress - progress
+
+    wall_pass_reward = torch.zeros_like(progress, dtype=torch.float32)
+    latched_thresholds = next_threshold_for_unit
+    if wall_pass_absolute_thresholds.shape[1] > 0:
+        total_passed = (safe_unit_y.unsqueeze(-1) > wall_pass_absolute_thresholds.unsqueeze(1)).sum(dim=-1)
+        delta_passed = torch.clamp(total_passed - next_threshold_for_unit, min=0)
+        delta_passed = delta_passed * units_active_mask.to(dtype=delta_passed.dtype)
+        latched_thresholds = next_threshold_for_unit + delta_passed
+
+        active_units_count = units_active_mask.sum(dim=-1)
+        denom = active_units_count * max(wall_thresholds_per_wall, 1)
+        valid = stable_mask & (denom > 0)
+        wall_pass_reward = torch.where(
+            valid,
+            (
+                delta_passed.sum(dim=-1).to(dtype=torch.float32)
+                / denom.to(dtype=torch.float32)
+            ) * float(wall_pass_reward_weight),
+            torch.zeros_like(progress, dtype=torch.float32),
+        )
+
+    passed_thresholds_mask = threshold_index_torch.view(1, 1, -1) < latched_thresholds.unsqueeze(-1)
+    forward_progress_reward = progress_delta * float(progress_reward_weight)
+
+    connection_mask = partner_unit >= 0
+    units_without_connections = (~connection_mask).all(dim=-1) & units_active_mask
+    active_units_count = units_active_mask.sum(dim=-1)
+    guidance_reward = torch.where(
+        active_units_count > 0,
+        (
+            units_without_connections.sum(dim=-1).to(dtype=torch.float32)
+            / active_units_count.to(dtype=torch.float32)
+        ) * float(units_without_connections_reward_weight),
+        torch.zeros_like(progress, dtype=torch.float32),
+    )
+    guidance_reward *= float(guidance_reward_weight)
+
+    return (
+        new_progress,
+        forward_progress_reward,
+        wall_pass_reward,
+        guidance_reward,
+        latched_thresholds,
+        passed_thresholds_mask,
+    )
 
 
 class _ObstacleStreetCPUResetSettler(BaseMJWCPUResetSettler):
@@ -158,6 +226,21 @@ class ObstacleStreetMJWScenarioRuntime(BaseMJWScenarioRuntime):
             bindings=bindings,
             threshold_index=self._threshold_index_np,
         )
+        self._reward_kernel: Callable[..., tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]]
+        self._reward_kernel = _compute_obstacle_street_reward_kernel
+        if scenario.compile_reward_kernel:
+            if not hasattr(torch, "compile"):
+                raise RuntimeError("compile_reward_kernel=True requires torch.compile support.")
+            if sys.platform == "win32" and shutil.which("cl") is None:
+                raise RuntimeError(
+                    "compile_reward_kernel=True on this Windows setup requires cl.exe on PATH for torch.compile."
+                )
+            self._reward_kernel = torch.compile(
+                self._reward_kernel,
+                mode=scenario.reward_kernel_compile_mode,
+                fullgraph=False,
+                dynamic=False,
+            )
         self._wall_left_mocap_ids = self._cpu_settler.wall_left_mocap_ids
         self._wall_right_mocap_ids = self._cpu_settler.wall_right_mocap_ids
         self._ramp_mocap_ids = self._cpu_settler.ramp_mocap_ids
@@ -252,43 +335,26 @@ class ObstacleStreetMJWScenarioRuntime(BaseMJWScenarioRuntime):
 
     def compute_step_rewards(self, *, stable_mask: torch.Tensor) -> MJWStepResult:
         unit_y = self._get_unit_y()
-        safe_unit_y = torch.where(stable_mask.unsqueeze(1), unit_y, torch.zeros_like(unit_y))
-        new_progress = masked_mean(safe_unit_y, self.bindings.units_active_mask, dim=1)
-        progress_delta = new_progress - self.progress
+        new_progress, forward_progress_reward, wall_pass_reward, guidance_reward, latched_thresholds, passed_thresholds_mask = self._reward_kernel(
+            unit_y,
+            stable_mask,
+            self.bindings.units_active_mask,
+            self.bindings.partner_unit,
+            self.wall_pass_absolute_thresholds,
+            self.next_threshold_for_unit,
+            self.progress,
+            self._threshold_index_torch,
+            float(self.scenario.progress_reward_weight),
+            float(self.scenario.wall_pass_reward_weight),
+            int(self._wall_thresholds_per_wall),
+            float(self.scenario.units_without_connections_reward_weight),
+            float(self.scenario.guidance_reward_weight),
+        )
         self.progress[stable_mask] = new_progress[stable_mask]
-
-        wall_pass_reward = torch.zeros((self.bindings.num_envs,), device=self.bindings.device, dtype=torch.float32)
-        if self.wall_pass_absolute_thresholds.shape[1] > 0:
-            total_passed = (safe_unit_y.unsqueeze(-1) > self.wall_pass_absolute_thresholds.unsqueeze(1)).sum(dim=-1)
-            delta_passed = torch.clamp(total_passed - self.next_threshold_for_unit, min=0)
-            delta_passed = delta_passed * self.bindings.units_active_mask.to(dtype=delta_passed.dtype)
-            latched_thresholds = self.next_threshold_for_unit + delta_passed
-            active_units_count = self.bindings.units_active_mask.sum(dim=-1)
-            denom = active_units_count * max(self._wall_thresholds_per_wall, 1)
-            valid = stable_mask & (denom > 0)
-            wall_pass_reward[valid] = (
-                delta_passed.sum(dim=-1)[valid].to(dtype=torch.float32)
-                / denom[valid].to(dtype=torch.float32)
-            ) * float(self.scenario.wall_pass_reward_weight)
-            self.next_threshold_for_unit[stable_mask] = latched_thresholds[stable_mask]
-            self.passed_thresholds_mask[stable_mask] = (
-                self._threshold_index_torch.view(1, 1, -1) < latched_thresholds[stable_mask].unsqueeze(-1)
-            )
-            self._hidden_local_obs[stable_mask] = self.passed_thresholds_mask[stable_mask].to(dtype=torch.float32)
-
-        forward_progress_reward = progress_delta * float(self.scenario.progress_reward_weight)
+        self.next_threshold_for_unit[stable_mask] = latched_thresholds[stable_mask]
+        self.passed_thresholds_mask[stable_mask] = passed_thresholds_mask[stable_mask]
+        self._hidden_local_obs[stable_mask] = self.passed_thresholds_mask[stable_mask].to(dtype=torch.float32)
         progress_reward = forward_progress_reward + wall_pass_reward
-
-        connection_mask = self.bindings.partner_unit >= 0
-        units_without_connections = (~connection_mask).all(dim=-1) & self.bindings.units_active_mask
-        active_units_count = self.bindings.units_active_mask.sum(dim=-1)
-        guidance_reward = torch.zeros((self.bindings.num_envs,), device=self.bindings.device, dtype=torch.float32)
-        valid_active = active_units_count > 0
-        guidance_reward[valid_active] = (
-            units_without_connections.sum(dim=-1)[valid_active].to(dtype=torch.float32)
-            / active_units_count[valid_active].to(dtype=torch.float32)
-        ) * float(self.scenario.units_without_connections_reward_weight)
-        guidance_reward *= float(self.scenario.guidance_reward_weight)
 
         return MJWStepResult(
             reward=progress_reward + guidance_reward,
