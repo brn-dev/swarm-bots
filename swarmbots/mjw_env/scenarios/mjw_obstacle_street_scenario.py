@@ -58,6 +58,8 @@ class MJWObstacleStreetScenario:
     wall_pass_reward_weight: float
     wall_pass_thresholds: list[float]
     seed: int | None = None
+    compile_reward_kernel: bool = False
+    reward_kernel_compile_mode: str = "default"
 
     def __post_init__(self) -> None:
         if self.include_connectors_xquat_in_obs:
@@ -112,6 +114,8 @@ class MJWObstacleStreetScenario:
             "no_initial_ramp": self.no_initial_ramp,
             "wall_pass_reward_weight": self.wall_pass_reward_weight,
             "wall_pass_thresholds": list(self.wall_pass_thresholds),
+            "compile_reward_kernel": self.compile_reward_kernel,
+            "reward_kernel_compile_mode": self.reward_kernel_compile_mode,
         }
 
     def get_default_recording_camera_config(self) -> MJWRecordingCameraConfig | None:

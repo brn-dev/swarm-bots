@@ -1,6 +1,11 @@
 from __future__ import annotations
 
+import importlib.util
+import shutil
+import sys
+
 import numpy as np
+import torch
 
 from swarmbots.mj_env.float_or_dist_params import UniformDistParams
 from swarmbots.mj_env.swarm.unit_config import (
@@ -26,6 +31,16 @@ WALL_PASS_KWARGS = {
     "wall_pass_reward_weight": 5.0,
     "wall_pass_thresholds": [-0.1, 0.1, 0.3, 0.5],
 }
+
+
+def should_compile_reward_kernel_by_default() -> bool:
+    if not hasattr(torch, "compile"):
+        return False
+    if importlib.util.find_spec("triton") is None:
+        return False
+    if sys.platform == "win32" and shutil.which("cl") is None:
+        return False
+    return True
 
 
 def _resolve_swarm(
@@ -110,6 +125,8 @@ def default_wall(
             "no_initial_ramp": True,
             "wall_height": 0.20,
             "swarm_start_y": UniformDistParams(0.5, 0.75),
+            "compile_reward_kernel": should_compile_reward_kernel_by_default(),
+            "reward_kernel_compile_mode": "default",
         }
     )
     scenario_kwargs.update(kwargs)

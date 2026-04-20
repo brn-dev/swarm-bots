@@ -58,14 +58,23 @@ def make_vector_env(
     settle_initial_reset: bool = False,
     timestep: float = mjw_scenario_presets.DEFAULT_KWARGS["timestep"],
     action_repeat: int = mjw_scenario_presets.DEFAULT_KWARGS["action_repeat"],
+    compile_reward_kernel: bool | None = None,
+    reward_kernel_compile_mode: str = "default",
     device: torch.device,
 ) -> MJWSwarmBotsVectorEnv:
+    compile_reward_kernel = (
+        mjw_scenario_presets.should_compile_reward_kernel_by_default()
+        if compile_reward_kernel is None
+        else bool(compile_reward_kernel)
+    )
     scenario = default_wall(
         first_wall_distance=1.0,
         unit_start_locations=unit_start_locations,
         quantize_connection_twist=8,
         timestep=timestep,
         action_repeat=action_repeat,
+        compile_reward_kernel=compile_reward_kernel,
+        reward_kernel_compile_mode=reward_kernel_compile_mode,
     )
     return MJWSwarmBotsVectorEnv(
         scenario=scenario,
