@@ -42,13 +42,13 @@ class StickyBangZeroBangActionDist(BangZeroBangActionDist, StickyActionDist):
             ent_loss_config=ent_loss_config,
         )
         self.zero_sticky = zero_sticky
-        self.stickiness = 0.0
-        self._log_stickiness = None
-        self._log_one_minus_stickiness = 0.0
+        self._init_stickiness_buffer()
+        self.register_buffer("_log_stickiness", torch.tensor(float("-inf"), dtype=torch.float32))
+        self.register_buffer("_log_one_minus_stickiness", torch.tensor(0.0, dtype=torch.float32))
         self.set_stickiness(stickiness)
 
     def requires_previous_actions(self) -> bool:
-        return self.stickiness > 0.0
+        return self.get_stickiness() > 0.0
 
     def sample(
             self,
@@ -57,15 +57,15 @@ class StickyBangZeroBangActionDist(BangZeroBangActionDist, StickyActionDist):
     ) -> torch.Tensor:
         _ = agent
         sampled_indices = self.distribution.sample()
-        if self.stickiness <= 0.0:
-            return self._indices_to_actions(sampled_indices)
-
         if previous_actions is None:
-            raise ValueError("previous_actions is required when stickiness > 0.")
+            if self.get_stickiness() > 0.0:
+                raise ValueError("previous_actions is required when stickiness > 0.")
+            return self._indices_to_actions(sampled_indices)
 
         previous_indices = self._actions_to_indices(previous_actions)
         can_stick = self._sticky_mask(previous_indices)
-        should_stick = can_stick & (torch.rand_like(sampled_indices, dtype=torch.float32) < self.stickiness)
+        stickiness = self._stickiness_tensor(dtype=torch.float32, device=sampled_indices.device)
+        should_stick = can_stick & (torch.rand_like(sampled_indices, dtype=torch.float32) < stickiness)
         final_indices = torch.where(should_stick, previous_indices, sampled_indices)
         return self._indices_to_actions(final_indices)
 
@@ -81,18 +81,22 @@ class StickyBangZeroBangActionDist(BangZeroBangActionDist, StickyActionDist):
     ) -> torch.Tensor:
         action_indices = self._actions_to_indices(actions)
         base_log_prob = self.distribution.log_prob(action_indices)
-        if self.stickiness <= 0.0:
-            return base_log_prob.sum(dim=AGENT_ACTIONS_DIM)
-
         if previous_actions is None:
-            raise ValueError("previous_actions is required when stickiness > 0.")
+            if self.get_stickiness() > 0.0:
+                raise ValueError("previous_actions is required when stickiness > 0.")
+            return base_log_prob.sum(dim=AGENT_ACTIONS_DIM)
 
         previous_indices = self._actions_to_indices(previous_actions)
         can_stick = self._sticky_mask(previous_indices)
-        sticky_log_prob = base_log_prob + self._log_one_minus_stickiness
+        log_one_minus_stickiness = self._log_one_minus_stickiness.to(
+            device=base_log_prob.device,
+            dtype=base_log_prob.dtype,
+        )
+        log_stickiness = self._log_stickiness.to(device=base_log_prob.device, dtype=base_log_prob.dtype)
+        sticky_log_prob = base_log_prob + log_one_minus_stickiness
         sticky_log_prob = torch.where(
             action_indices == previous_indices,
-            torch.logaddexp(sticky_log_prob, sticky_log_prob.new_tensor(self._log_stickiness)),
+            torch.logaddexp(sticky_log_prob, log_stickiness),
             sticky_log_prob,
         )
 
@@ -101,17 +105,16 @@ class StickyBangZeroBangActionDist(BangZeroBangActionDist, StickyActionDist):
 
     def _effective_probs(self, previous_actions: torch.Tensor | None) -> torch.Tensor:
         base_probs = self.distribution.probs
-        if self.stickiness <= 0.0:
-            return base_probs
-
         if previous_actions is None:
-            raise ValueError("previous_actions is required when stickiness > 0.")
+            if self.get_stickiness() > 0.0:
+                raise ValueError("previous_actions is required when stickiness > 0.")
+            return base_probs
 
         previous_indices = self._actions_to_indices(previous_actions)
         sticky_mask = self._sticky_mask(previous_indices).unsqueeze(-1)
         previous_one_hot = F.one_hot(previous_indices, num_classes=3).to(dtype=base_probs.dtype)
-
-        sticky_probs = (1.0 - self.stickiness) * base_probs + self.stickiness * previous_one_hot
+        stickiness = self._stickiness_tensor(dtype=base_probs.dtype, device=base_probs.device)
+        sticky_probs = torch.lerp(base_probs, previous_one_hot, stickiness)
         return torch.where(sticky_mask, sticky_probs, base_probs)
 
     def _sticky_mask(self, previous_indices: torch.Tensor) -> torch.Tensor:
@@ -122,16 +125,16 @@ class StickyBangZeroBangActionDist(BangZeroBangActionDist, StickyActionDist):
     def set_stickiness(self, stickiness: float) -> None:
         if not (0.0 <= stickiness < 1.0):
             raise ValueError(f"stickiness must be in [0, 1), got {stickiness}.")
-        self.stickiness = float(stickiness)
-        self._log_stickiness = math.log(self.stickiness) if self.stickiness > 0.0 else None
-        self._log_one_minus_stickiness = math.log1p(-self.stickiness)
+        self._set_stickiness_buffer(stickiness)
+        self._log_stickiness.fill_(math.log(stickiness) if stickiness > 0.0 else float("-inf"))
+        self._log_one_minus_stickiness.fill_(math.log1p(-stickiness))
 
     def get_stickiness(self) -> float:
-        return self.stickiness
+        return float(self._stickiness.item())
 
     def get_hyper_parameters(self) -> dict[str, Any]:
         return {
             **super().get_hyper_parameters(),
-            "stickiness": self.stickiness,
+            "stickiness": self.get_stickiness(),
             "zero_sticky": self.zero_sticky,
         }

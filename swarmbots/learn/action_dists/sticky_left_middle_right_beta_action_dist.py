@@ -58,11 +58,11 @@ class StickyLeftMiddleRightBetaActionDist(LeftMiddleRightBetaActionDist, StickyA
             beta_ent_loss_config=beta_ent_loss_config,
         )
         self.middle_sticky = middle_sticky
-        self.stickiness = 0.0
+        self._init_stickiness_buffer()
         self.set_stickiness(stickiness)
 
     def requires_previous_actions(self) -> bool:
-        return self.stickiness > 0.0
+        return self.get_stickiness() > 0.0
 
     def sample(
             self,
@@ -126,15 +126,16 @@ class StickyLeftMiddleRightBetaActionDist(LeftMiddleRightBetaActionDist, StickyA
 
     def _effective_probs(self, previous_actions: torch.Tensor | None) -> torch.Tensor:
         base_probs = F.softmax(self.weight_logits, dim=-1)
-        if self.stickiness <= 0.0:
-            return base_probs
         if previous_actions is None:
-            raise ValueError("previous_actions is required when stickiness > 0.")
+            if self.get_stickiness() > 0.0:
+                raise ValueError("previous_actions is required when stickiness > 0.")
+            return base_probs
 
         previous_indices = self._actions_to_indices(previous_actions)
         sticky_mask = self._sticky_mask(previous_indices).unsqueeze(-1)
         previous_one_hot = F.one_hot(previous_indices, num_classes=self._N_MIXTURE_COMPONENTS).to(dtype=base_probs.dtype)
-        sticky_probs = (1.0 - self.stickiness) * base_probs + self.stickiness * previous_one_hot
+        stickiness = self._stickiness_tensor(dtype=base_probs.dtype, device=base_probs.device)
+        sticky_probs = torch.lerp(base_probs, previous_one_hot, stickiness)
         return torch.where(sticky_mask, sticky_probs, base_probs)
 
     def _actions_to_indices(self, actions: torch.Tensor) -> torch.Tensor:
@@ -149,17 +150,9 @@ class StickyLeftMiddleRightBetaActionDist(LeftMiddleRightBetaActionDist, StickyA
             return torch.ones_like(previous_indices, dtype=torch.bool)
         return previous_indices != self._MIDDLE_INDEX
 
-    def set_stickiness(self, stickiness: float) -> None:
-        if not (0.0 <= stickiness < 1.0):
-            raise ValueError(f"stickiness must be in [0, 1), got {stickiness}.")
-        self.stickiness = float(stickiness)
-
-    def get_stickiness(self) -> float:
-        return self.stickiness
-
     def get_hyper_parameters(self) -> dict[str, Any]:
         return {
             **super().get_hyper_parameters(),
-            "stickiness": self.stickiness,
+            "stickiness": self.get_stickiness(),
             "middle_sticky": self.middle_sticky,
         }

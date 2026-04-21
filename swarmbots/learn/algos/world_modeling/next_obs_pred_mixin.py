@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import abc
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
 from typing import Optional, Any
@@ -39,6 +40,13 @@ class NextObsPredConfig:
 class NextObsPredMixin(abc.ABC):
     pre_transition_transform: nn.Module
     transition_model: TransformerTransitionModel
+    _compute_next_obs_pred_loss_fn: Callable[..., tuple[
+        torch.Tensor,
+        torch.Tensor | None,
+        torch.Tensor | None,
+        torch.Tensor | None,
+        torch.Tensor | None,
+    ]]
 
     local_scalar_target_indices: Optional[list[int]]
     local_angle_target_sin_indices: Optional[list[int]]
@@ -136,6 +144,7 @@ class NextObsPredMixin(abc.ABC):
                 self.binary_target_ema = ema
         else:
             self.binary_target_ema = None
+        self._compute_next_obs_pred_loss_fn = self._compute_next_obs_pred_loss_impl
 
     def get_next_obs_pred_hyper_parameters(
             self,
@@ -307,6 +316,50 @@ class NextObsPredMixin(abc.ABC):
             loss_agent_mask: torch.Tensor | None = None,
             time_mask: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, dict[str, Any]]:
+        total_loss, scalar_loss, angle_loss, rot6d_loss, binary_loss = self._compute_next_obs_pred_loss_fn(
+            local_latents=local_latents,
+            next_local_obs=next_local_obs,
+            actions=actions,
+            local_obs=local_obs,
+            agent_mask=agent_mask,
+            loss_agent_mask=loss_agent_mask,
+            time_mask=time_mask,
+        )
+        metrics: dict[str, Any] = {}
+        if scalar_loss is not None:
+            scalar_loss_scaled = scalar_loss * self.scalar_loss_weight
+            metrics["scalar_loss"] = scalar_loss.item()
+            metrics["scalar_loss_scaled"] = scalar_loss_scaled.item()
+        if angle_loss is not None:
+            angle_loss_scaled = angle_loss * self.angle_loss_weight
+            metrics["angle_loss"] = angle_loss.item()
+            metrics["angle_loss_scaled"] = angle_loss_scaled.item()
+        if rot6d_loss is not None:
+            rot6d_loss_scaled = rot6d_loss * self.rot6d_loss_weight
+            metrics["rot6d_loss"] = rot6d_loss.item()
+            metrics["rot6d_loss_scaled"] = rot6d_loss_scaled.item()
+        if binary_loss is not None:
+            binary_loss_scaled = binary_loss * self.binary_loss_weight
+            metrics["binary_loss"] = binary_loss.item()
+            metrics["binary_loss_scaled"] = binary_loss_scaled.item()
+        return total_loss, metrics
+
+    def _compute_next_obs_pred_loss_impl(
+            self,
+            local_latents: torch.Tensor,
+            next_local_obs: torch.Tensor,
+            actions: torch.Tensor,
+            local_obs: torch.Tensor | None = None,
+            agent_mask: torch.Tensor | None = None,
+            loss_agent_mask: torch.Tensor | None = None,
+            time_mask: torch.Tensor | None = None,
+    ) -> tuple[
+        torch.Tensor,
+        torch.Tensor | None,
+        torch.Tensor | None,
+        torch.Tensor | None,
+        torch.Tensor | None,
+    ]:
         (
             local_latents,
             next_local_obs,
@@ -354,62 +407,43 @@ class NextObsPredMixin(abc.ABC):
             time_mask=time_mask,
         )
 
-        losses = []
-        metrics: dict[str, Any] = {}
-
         scalar_loss = self.compute_scalar_loss(
             latent_preds=latent_preds,
             next_local_obs=next_local_obs,
             valid_mask=valid_mask,
             base_local_obs=base_local_obs,
         )
-        if scalar_loss is not None:
-            scalar_loss_scaled = scalar_loss * self.scalar_loss_weight
-            losses.append(scalar_loss_scaled)
-            metrics["scalar_loss"] = scalar_loss.item()
-            metrics["scalar_loss_scaled"] = scalar_loss_scaled.item()
-
         angle_loss = self.compute_angle_loss(
             latent_preds=latent_preds,
             next_local_obs=next_local_obs,
             valid_mask=valid_mask,
             base_local_obs=base_local_obs,
         )
-        if angle_loss is not None:
-            angle_loss_scaled = angle_loss * self.angle_loss_weight
-            losses.append(angle_loss_scaled)
-            metrics["angle_loss"] = angle_loss.item()
-            metrics["angle_loss_scaled"] = angle_loss_scaled.item()
-
         rot6d_loss = self.compute_rot6d_loss(
             latent_preds=latent_preds,
             next_local_obs=next_local_obs,
             valid_mask=valid_mask,
             base_local_obs=base_local_obs,
         )
-        if rot6d_loss is not None:
-            rot6d_loss_scaled = rot6d_loss * self.rot6d_loss_weight
-            losses.append(rot6d_loss_scaled)
-            metrics["rot6d_loss"] = rot6d_loss.item()
-            metrics["rot6d_loss_scaled"] = rot6d_loss_scaled.item()
-
         binary_loss = self.compute_binary_loss(
             latent_preds=latent_preds,
             next_local_obs=next_local_obs,
             valid_mask=valid_mask,
             base_local_obs=base_local_obs,
         )
-        if binary_loss is not None:
-            binary_loss_scaled = binary_loss * self.binary_loss_weight
-            losses.append(binary_loss_scaled)
-            metrics["binary_loss"] = binary_loss.item()
-            metrics["binary_loss_scaled"] = binary_loss_scaled.item()
-
-        present_losses = losses
-        if not present_losses:
+        if scalar_loss is None and angle_loss is None and rot6d_loss is None and binary_loss is None:
             raise ValueError("No next-observation prediction targets configured")
 
-        return torch.stack(present_losses).sum(), metrics
+        total_loss = latent_preds.new_zeros(())
+        if scalar_loss is not None:
+            total_loss = total_loss + scalar_loss * self.scalar_loss_weight
+        if angle_loss is not None:
+            total_loss = total_loss + angle_loss * self.angle_loss_weight
+        if rot6d_loss is not None:
+            total_loss = total_loss + rot6d_loss * self.rot6d_loss_weight
+        if binary_loss is not None:
+            total_loss = total_loss + binary_loss * self.binary_loss_weight
+        return total_loss, scalar_loss, angle_loss, rot6d_loss, binary_loss
 
     @staticmethod
     def _flatten_recurrent_next_obs_pred_inputs(

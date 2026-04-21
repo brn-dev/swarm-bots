@@ -127,6 +127,7 @@ def main() -> None:
 
     compile_policy_modules = True
     policy_compile_mode = "default"
+    compile_world_model_modules = True
 
     run_id = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
@@ -158,7 +159,7 @@ def main() -> None:
     run_dir = f"../runs/mat_nop_swarm_bots_wall_mjw/{run_id}/"
     save_optimizer = True
 
-    swarm_seed_pool = tuple(range(42_000, 42_005))
+    swarm_seed_pool = tuple(range(42_000, 42_050))
     unit_start_locations = make_preconnected_unit_start_locations(swarm_seed_pool)
     logger.info(f"swarm_seed_pool: {len(swarm_seed_pool)}")
     first_episode_lengths = [int((i + 1) * episode_length / n_envs) for i in range(n_envs)]
@@ -288,6 +289,8 @@ def main() -> None:
             local_latent_dim=enc_d_model,
             action_dim=env.action_space.total_agent_action_dim,
             world_model_loss_coef=world_model_loss_coef,
+            compile_modules=compile_world_model_modules,
+            compile_mode=policy_compile_mode,
             act_fn_cls=nn.GELU,
             transition_model_dropout=0.0,
             wm_pre_transition_dims=[enc_d_model],
