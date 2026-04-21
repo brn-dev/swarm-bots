@@ -153,6 +153,10 @@ class HybridActionDistribution(ActionDist):
         return any(dist.requires_previous_actions() for dist in self.distributions)
 
     @property
+    def sampling_depends_on_agent(self) -> bool:
+        return any(dist.sampling_depends_on_agent for dist in self.distributions)
+
+    @property
     def compile_friendly(self) -> bool:
         return all(dist.compile_friendly for dist in self.distributions)
 
@@ -238,12 +242,19 @@ class HybridActionDistribution(ActionDist):
             split_previous_actions = torch.split(previous_actions, self.action_dims, dim=AGENT_ACTIONS_DIM)
 
         for dist, previous_action in zip(self.distributions, split_previous_actions, strict=True):
-            action_part, log_prob_part = dist.get_actions_with_log_probs(
-                latent_pi=latent_pi,
-                deterministic=deterministic,
-                agent=agent,
-                previous_actions=previous_action,
-            )
+            if dist.sampling_depends_on_agent:
+                action_part, log_prob_part = dist.get_actions_with_log_probs(
+                    latent_pi=latent_pi,
+                    deterministic=deterministic,
+                    agent=agent,
+                    previous_actions=previous_action,
+                )
+            else:
+                action_part, log_prob_part = dist.get_actions_with_log_probs(
+                    latent_pi=latent_pi,
+                    deterministic=deterministic,
+                    previous_actions=previous_action,
+                )
             actions_parts.append(action_part)
             log_prob_parts.append(log_prob_part)
 

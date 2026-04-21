@@ -204,14 +204,13 @@ def _evaluate_values(
 ) -> torch.Tensor:
     temporal_state_snapshot = policy.get_temporal_state_snapshot()
     try:
-        _, _, values = policy(
-            obs["local_obs"],
-            obs["global_obs"],
+        values = policy.predict_values(
+            local_obs=obs["local_obs"],
+            global_obs=obs["global_obs"],
             hidden_local_vars=obs["hidden_local_vars"],
             hidden_global_vars=obs["hidden_global_vars"],
             agent_mask=obs.get("agent_mask", None),
             previous_actions=previous_actions,
-            deterministic=True,
         )
     finally:
         policy.restore_temporal_state_snapshot(temporal_state_snapshot)

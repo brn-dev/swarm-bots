@@ -153,6 +153,24 @@ class SPRWrapper(BasePPOPolicy[PPOWMSamples, PPOWMSamplerConfig], SPRMixin):
             deterministic=deterministic,
         )
 
+    def predict_values(
+            self,
+            local_obs: torch.Tensor,
+            global_obs: torch.Tensor,
+            hidden_local_vars: torch.Tensor | None = None,
+            hidden_global_vars: torch.Tensor | None = None,
+            agent_mask: torch.Tensor | None = None,
+            previous_actions: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        return self.policy.predict_values(
+            local_obs=local_obs,
+            global_obs=global_obs,
+            hidden_local_vars=hidden_local_vars,
+            hidden_global_vars=hidden_global_vars,
+            agent_mask=agent_mask,
+            previous_actions=previous_actions,
+        )
+
     def _evaluate_actions(
             self,
             batch: PPOWMSamples,

@@ -12,6 +12,13 @@ from swarmbots.mj_env.swarm.homogeneous_swarm import PreConnectedUnitLocationsCo
 from swarmbots.mj_env.swarm_bots_env import SwarmBotsEnv
 
 
+def configure_float32_matmul_precision() -> None:
+    import torch
+
+    if torch.cuda.is_available():
+        torch.set_float32_matmul_precision("high")
+
+
 def make_env_fn(
         episode_length: int,
         unit_start_locations: PreConnectedUnitLocationsConfig | None = None,
@@ -171,6 +178,7 @@ def main() -> None:
         colorize=True,
         format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <5}</level> | <level>{message}</level>",
     )
+    configure_float32_matmul_precision()
 
     n_workers = 23
     n_envs = n_workers * 12

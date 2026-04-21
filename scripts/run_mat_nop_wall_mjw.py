@@ -9,6 +9,7 @@ from torch import nn
 from run_mat_nop_wall import wrap_vec_env, split_actuator_joints, set_actuator_gsde_init_joint_stds
 from swarmbots.learn.action_dists.bernoulli_action_dist import BernoulliConfig
 from swarmbots.learn.action_dists.entropy_utils import EntropyLossConfig, AgentActionsReduction
+from swarmbots.learn.action_dists.left_right_beta_action_dist import LeftRightBetaConfig
 from swarmbots.learn.action_dists.sticky_action_dist import StickyActionDist
 from swarmbots.learn.action_dists.sticky_left_right_beta_action_dist import StickyLeftRightBetaConfig
 from swarmbots.learn.algos.mat.mat_policy import MATCriticConfig
@@ -32,6 +33,11 @@ from swarmbots.mjw_env import MJWSwarmBotsVectorEnv
 import swarmbots.mjw_env.scenarios.mjw_scenario_presets as mjw_scenario_presets
 from swarmbots.mjw_env.scenarios.mjw_scenario_presets import default_wall
 from swarmbots.mjw_env.swarm.mjw_homogeneous_swarm import MJWPreConnectedUnitLocationsConfig
+
+
+def configure_float32_matmul_precision() -> None:
+    if torch.cuda.is_available():
+        torch.set_float32_matmul_precision("high")
 
 
 def make_preconnected_unit_start_locations(pool_seeds: tuple[int, ...] | None) -> MJWPreConnectedUnitLocationsConfig:
@@ -94,6 +100,7 @@ def main() -> None:
         colorize=True,
         format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <5}</level> | <level>{message}</level>",
     )
+    configure_float32_matmul_precision()
 
     if not torch.cuda.is_available():
         raise RuntimeError("run_mat_nop_wall_mjw.py requires CUDA.")
@@ -116,9 +123,10 @@ def main() -> None:
     initial_stickiness = 0.25
     final_stickiness = 0.0
     stickiness_anneal_steps = int(total_timesteps * 0.15)
+    gsde_init_stds = [0.25, 0.30]
+
     compile_policy_modules = True
     policy_compile_mode = "default"
-    gsde_init_stds = [0.25, 0.30]
 
     run_id = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
@@ -239,8 +247,20 @@ def main() -> None:
             ),
             dropout=0.0,
             act_fn_cls=nn.GELU,
-            continuous_config=StickyLeftRightBetaConfig(
-                stickiness=initial_stickiness,
+            # continuous_config=StickyLeftRightBetaConfig(
+            #     stickiness=initial_stickiness,
+            #     ent_loss_coef=1e-3,
+            #     beta_ent_scale=0.75,
+            #     categorical_ent_loss_config=EntropyLossConfig(
+            #         agent_actions_reduction=AgentActionsReduction.SUM,
+            #         metrics_reduction=AgentActionsReduction.MEAN,
+            #     ),
+            #     beta_ent_loss_config=EntropyLossConfig(
+            #         agent_actions_reduction=AgentActionsReduction.SUM,
+            #         metrics_reduction=AgentActionsReduction.MEAN,
+            #     ),
+            # ),
+            continuous_config=LeftRightBetaConfig(
                 ent_loss_coef=1e-3,
                 beta_ent_scale=0.75,
                 categorical_ent_loss_config=EntropyLossConfig(

@@ -40,6 +40,18 @@ class BasePPOPolicy(BasePolicy, Generic[PPOSamplesType, PPOSamplerConfigType], a
         raise NotImplementedError()
 
     @abc.abstractmethod
+    def predict_values(
+            self,
+            local_obs: torch.Tensor,
+            global_obs: torch.Tensor,
+            hidden_local_vars: torch.Tensor | None = None,
+            hidden_global_vars: torch.Tensor | None = None,
+            agent_mask: torch.Tensor | None = None,
+            previous_actions: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        raise NotImplementedError()
+
+    @abc.abstractmethod
     def _evaluate_actions(
             self,
             batch: PPOSamplesType,

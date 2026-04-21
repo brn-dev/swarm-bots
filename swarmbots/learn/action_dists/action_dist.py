@@ -85,6 +85,10 @@ class ActionDist(nn.Module, abc.ABC):
         return False
 
     @property
+    def sampling_depends_on_agent(self) -> bool:
+        return False
+
+    @property
     def compile_friendly(self) -> bool:
         return False
 
