@@ -1,6 +1,7 @@
 from dataclasses import dataclass, field, replace
 
 import torch
+from torch import nn
 
 from swarmbots.learn.action_dists.action_dist import ActionMetricsSplitterInput
 from swarmbots.learn.algos.mat.mat_policy import MATPolicy, MATPolicyConfig
@@ -18,28 +19,34 @@ class RMATPolicyConfig(MATPolicyConfig):
 
 class RMATPolicy(MATPolicy):
 
+    encoder_config: RMATEncoderConfig
+
     def __init__(
             self,
             env: BaseLearnEnvWrapper,
             config: RMATPolicyConfig = RMATPolicyConfig(),
     ) -> None:
         super().__init__(env=env, config=config)
-        self.config = config
-        self.encoder_config = replace(
-            config.encoder_config,
+        self._rollout_encoder_state: RMATEncoderState | None = None
+        self._rollout_state_batch_size: int | None = None
+        self._pending_episode_start_mask: torch.Tensor | None = None
+
+    def _build_encoder_config(self) -> RMATEncoderConfig:
+        # noinspection PyTypeChecker
+        return replace(
+            self.config.encoder_config,
             d_model=self.d_model_encoder,
-            act_fn_cls=config.act_fn_cls,
-            dropout=config.dropout,
+            act_fn_cls=self.config.act_fn_cls,
+            dropout=self.config.dropout,
         )
-        self.encoder = RMATEncoder(
+
+    def _build_encoder(self) -> nn.Module:
+        return RMATEncoder(
             config=self.encoder_config,
             max_agents=self.max_agents,
             local_obs_dim=self.local_obs_dim,
             global_obs_dim=self.global_obs_dim,
         )
-        self._rollout_encoder_state: RMATEncoderState | None = None
-        self._rollout_state_batch_size: int | None = None
-        self._pending_episode_start_mask: torch.Tensor | None = None
 
     def forward(
             self,

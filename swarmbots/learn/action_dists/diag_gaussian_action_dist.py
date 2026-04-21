@@ -103,3 +103,7 @@ class DiagGaussianActionDist(ContinuousActionDist):
             "std_learnable": self.std_learnable,
             "std": std_value,
         }
+
+    @property
+    def compile_friendly(self) -> bool:
+        return True

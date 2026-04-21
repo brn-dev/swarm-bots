@@ -305,3 +305,7 @@ class GSDEActionDist(ContinuousActionDist, TemporallyCorrelatedActionDist):
             "std_max": float(std_matrix.max().item()),
             "has_active_noise": self._exploration_matrices is not None,
         }
+
+    @property
+    def compile_friendly(self) -> bool:
+        return False

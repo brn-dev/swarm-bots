@@ -84,12 +84,17 @@ class ActionDist(nn.Module, abc.ABC):
     def requires_previous_actions(self) -> bool:
         return False
 
+    @property
+    def compile_friendly(self) -> bool:
+        return False
+
     def get_hyper_parameters(self) -> dict[str, Any]:
         return {
             "type": type(self).__name__,
             "latent_dim": self.latent_dim,
             "action_dim": self.action_dim,
             "requires_previous_actions": self.requires_previous_actions(),
+            "compile_friendly": self.compile_friendly,
             "action_net_type": type(self.action_net).__name__ if self.action_net is not None else None,
             "action_net_initialization": (
                 self.action_net_initialization.__name__

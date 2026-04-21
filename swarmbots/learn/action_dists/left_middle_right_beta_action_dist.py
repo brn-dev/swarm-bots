@@ -270,6 +270,10 @@ class LeftMiddleRightBetaActionDist(ActionDist):
             raise ValueError(f"beta_ent_scale must be >= 0, got {value}")
         self.beta_ent_scale = value
 
+    @property
+    def compile_friendly(self) -> bool:
+        return True
+
     def get_metrics(
             self,
             actions: torch.Tensor,

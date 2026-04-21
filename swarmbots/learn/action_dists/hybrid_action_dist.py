@@ -152,6 +152,10 @@ class HybridActionDistribution(ActionDist):
     def requires_previous_actions(self) -> bool:
         return any(dist.requires_previous_actions() for dist in self.distributions)
 
+    @property
+    def compile_friendly(self) -> bool:
+        return all(dist.compile_friendly for dist in self.distributions)
+
     def get_hyper_parameters(self) -> dict[str, Any]:
         return {
             **super().get_hyper_parameters(),

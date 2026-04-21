@@ -116,6 +116,8 @@ def main() -> None:
     initial_stickiness = 0.25
     final_stickiness = 0.0
     stickiness_anneal_steps = int(total_timesteps * 0.15)
+    compile_policy_modules = True
+    policy_compile_mode = "default"
     gsde_init_stds = [0.25, 0.30]
 
     run_id = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
@@ -255,6 +257,8 @@ def main() -> None:
                 ent_loss_coef=1e-3,
             ),
             max_agents=20,
+            compile_modules=compile_policy_modules,
+            compile_mode=policy_compile_mode,
         ),
     )
     policy = NextObsPredWrapper(
