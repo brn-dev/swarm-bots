@@ -315,21 +315,22 @@ class MATPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
                 query_mask=query_mask_i,
                 memory_mask=agent_mask,
             )
-            latent_pi = self.actor_head(out)
+            latent_pi = self.actor_head(out).contiguous()
+            sample_agent_idx = i if self.action_dist.sampling_depends_on_agent else None
 
             previous_action_i = None if previous_actions is None else previous_actions[:, i:i + 1, :]
             if return_log_probs:
                 action, log_prob = self.action_dist.get_actions_with_log_probs(
                     latent_pi,
                     deterministic,
-                    agent=i,
+                    agent=sample_agent_idx,
                     previous_actions=previous_action_i,
                 )
                 log_probs_list.append(log_prob)
             else:
                 action = self.action_dist.update_latent_features(latent_pi).get_actions(
                     deterministic=deterministic,
-                    agent=i,
+                    agent=sample_agent_idx,
                     previous_actions=previous_action_i,
                 )
             actions_list.append(action)
@@ -408,6 +409,24 @@ class MATPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
         )
         return log_probs, values, extra_losses, extra_loss_metrics, augmented_observations
 
+    def predict_values(
+            self,
+            local_obs: torch.Tensor,
+            global_obs: torch.Tensor,
+            hidden_local_vars: torch.Tensor | None = None,
+            hidden_global_vars: torch.Tensor | None = None,
+            agent_mask: torch.Tensor | None = None,
+            previous_actions: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        _ = previous_actions
+        augmented_observations = self.encoder(local_obs, global_obs, agent_mask=agent_mask)
+        return self._critic_with_hidden_vars(
+            augmented_observations,
+            hidden_local_vars,
+            hidden_global_vars,
+            agent_mask=agent_mask,
+        )
+
     def _evaluate_latent_and_values(
             self,
             *,
@@ -449,7 +468,7 @@ class MATPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
                 agent_mask=agent_mask,
                 memory_mask=agent_mask,
             )
-        )
+        ).contiguous()
         values = self._critic_with_hidden_vars(
             augmented_observations,
             hidden_local_vars,

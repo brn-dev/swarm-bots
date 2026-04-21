@@ -283,6 +283,21 @@ class PPOPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
         )
         return log_probs, values, extra_losses, extra_loss_metrics, latent_pi
 
+    def predict_values(
+            self,
+            local_obs: torch.Tensor,
+            global_obs: torch.Tensor,
+            hidden_local_vars: torch.Tensor | None = None,
+            hidden_global_vars: torch.Tensor | None = None,
+            agent_mask: torch.Tensor | None = None,
+            previous_actions: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        _ = previous_actions
+        local_obs = self._mask_local_obs(local_obs, agent_mask)
+        critic_local_obs = self._build_critic_local_obs(local_obs, hidden_local_vars)
+        critic_global_obs = self._build_critic_global_obs(global_obs, hidden_global_vars)
+        return self.critic(critic_local_obs, critic_global_obs, agent_mask=agent_mask)
+
     def act(
             self,
             local_obs: torch.Tensor,

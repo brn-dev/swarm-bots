@@ -30,6 +30,11 @@ from swarmbots.learn.env_wrappers.learn_wrappers.swarm_bots_learn_env_wrapper im
 from swarmbots.learn.testing_env import TestingSwarmBotsEnv
 
 
+def configure_float32_matmul_precision() -> None:
+    if torch.cuda.is_available():
+        torch.set_float32_matmul_precision("high")
+
+
 @dataclass(frozen=True)
 class BenchmarkConfig:
     device: str
@@ -574,6 +579,7 @@ def main() -> None:
         colorize=True,
         format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <5}</level> | <level>{message}</level>",
     )
+    configure_float32_matmul_precision()
 
     config, selected_case_names = parse_args()
     device = torch.device(config.device)

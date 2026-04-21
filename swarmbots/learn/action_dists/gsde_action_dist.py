@@ -309,3 +309,7 @@ class GSDEActionDist(ContinuousActionDist, TemporallyCorrelatedActionDist):
     @property
     def compile_friendly(self) -> bool:
         return False
+
+    @property
+    def sampling_depends_on_agent(self) -> bool:
+        return True

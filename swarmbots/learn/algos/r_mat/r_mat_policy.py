@@ -163,6 +163,28 @@ class RMATPolicy(MATPolicy):
             augmented_observations,
         )
 
+    def predict_values(
+            self,
+            local_obs: torch.Tensor,
+            global_obs: torch.Tensor,
+            hidden_local_vars: torch.Tensor | None = None,
+            hidden_global_vars: torch.Tensor | None = None,
+            agent_mask: torch.Tensor | None = None,
+            previous_actions: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        _ = previous_actions
+        augmented_observations = self._encode_rollout_observations(
+            local_obs=local_obs,
+            global_obs=global_obs,
+            agent_mask=agent_mask,
+        )
+        return self._critic_with_hidden_vars(
+            augmented_observations,
+            hidden_local_vars,
+            hidden_global_vars,
+            agent_mask=agent_mask,
+        )
+
     def act(
             self,
             local_obs: torch.Tensor,
