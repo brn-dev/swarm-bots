@@ -201,6 +201,7 @@ def main() -> None:
     stickiness_anneal_steps = int(total_timesteps * 0.15)
     compile_policy_modules = True
     policy_compile_mode = "default"
+    compile_world_model_modules = True
 
     # gsde_init_stds = [0.25, 0.25, 0.15]
     gsde_init_stds = [0.25, 0.30]
@@ -414,6 +415,8 @@ def main() -> None:
             local_latent_dim=enc_d_model,
             action_dim=env.action_space.total_agent_action_dim,
             world_model_loss_coef=world_model_loss_coef,
+            compile_modules=compile_world_model_modules,
+            compile_mode=policy_compile_mode,
             act_fn_cls=nn.GELU,
             transition_model_dropout=0.0,
             wm_pre_transition_dims=[enc_d_model],

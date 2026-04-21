@@ -21,7 +21,7 @@ DEFAULT_KWARGS = {
     "action_repeat": 15,
     "friction": [1.25, 7e-3, 1.25e-4],
     "actuator_strength": 15.0,
-    "progress_reward_weight": 1.0,
+    "progress_reward_weight": 0.2,
     "guidance_reward_weight": 1.0,
     "units_without_connections_reward_weight": -1e-5,
     "reset_settle_time": 1.0,
@@ -124,7 +124,7 @@ def default_wall(
             "street_width": 10.0,
             "no_initial_ramp": True,
             "wall_height": 0.20,
-            "swarm_start_y": UniformDistParams(0.5, 0.75),
+            "swarm_start_y": UniformDistParams(0.3, 0.75),
             "compile_reward_kernel": should_compile_reward_kernel_by_default(),
             "reward_kernel_compile_mode": "default",
         }

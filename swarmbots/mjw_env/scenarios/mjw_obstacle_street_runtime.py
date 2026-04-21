@@ -60,7 +60,7 @@ def _compute_obstacle_street_reward_kernel(
     wall_thresholds_per_wall: int,
     units_without_connections_reward_weight: float,
     guidance_reward_weight: float,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     safe_unit_y = torch.where(stable_mask.unsqueeze(1), unit_y, torch.zeros_like(unit_y))
     new_progress = masked_mean(safe_unit_y, units_active_mask, dim=1)
     progress_delta = new_progress - progress

@@ -16,6 +16,7 @@ DEFAULT_KWARGS = {
     'friction': [1.25, 7e-3, 1.25e-4],
     'force_elliptic_cone': False,
     'actuator_strength': 15.0,
+    'progress_reward_weight': 0.2,
     'guidance_reward_weight': 1.00,
     'units_without_connections_reward_weight': -1e-5,
     'reset_settle_time': 1.0,
@@ -105,7 +106,7 @@ def default_wall(
         'wall_height': 0.20,
         # 'swarm_start_y': UniformDistParams(0.0, 0.75),
         # 'swarm_start_y': 0.7,
-        'swarm_start_y': UniformDistParams(0.5, 0.75),
+        'swarm_start_y': UniformDistParams(0.3, 0.75),
     })
     scenario_kwargs.update(kwargs)
     return ObstacleStreetScenario(

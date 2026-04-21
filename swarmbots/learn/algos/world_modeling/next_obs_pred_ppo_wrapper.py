@@ -1,4 +1,7 @@
+from collections.abc import Callable
 from dataclasses import dataclass, field
+import shutil
+import sys
 from typing import Any
 
 import torch
@@ -27,6 +30,8 @@ class NOPWorldModelConfig:
     local_latent_dim: int
     action_dim: int
     world_model_loss_coef: float = 1.0
+    compile_modules: bool = False
+    compile_mode: str = "default"
     act_fn_cls: type[nn.Module] = nn.ReLU
     transition_model_dropout: float = 0.0
     d_model_transition_model: int = 128
@@ -69,6 +74,8 @@ class NextObsPredWrapper(BasePPOPolicy[PPOWMSamples, PPOWMSamplerConfig], NextOb
                 "transition_model_dropout must be in [0, 1), "
                 f"got {world_model_config.transition_model_dropout}"
             )
+        if world_model_config.compile_modules:
+            _ensure_torch_compile_available(compile_mode=world_model_config.compile_mode)
         self.policy = policy
         self._setup_world_model_from_config(world_model_config)
 
@@ -204,6 +211,8 @@ class NextObsPredWrapper(BasePPOPolicy[PPOWMSamples, PPOWMSamplerConfig], NextOb
             **self.policy.get_hyper_parameters(),
             "next_obs_pred_wrapper": {
                 "world_model_loss_coef": self.world_model_loss_coef,
+                "compile_modules": self._wm_compile_modules,
+                "compile_mode": self._wm_compile_mode,
                 "n_agents": self._wm_n_agents,
                 "local_latent_dim": self._wm_local_latent_dim,
                 "action_dim": self._wm_action_dim,
@@ -319,6 +328,8 @@ class NextObsPredWrapper(BasePPOPolicy[PPOWMSamples, PPOWMSamplerConfig], NextOb
     def _setup_world_model_from_config(self, world_model_config: NOPWorldModelConfig) -> None:
         next_obs_pred_config = world_model_config.next_obs_pred_config
         self.world_model_loss_coef = float(world_model_config.world_model_loss_coef)
+        self._wm_compile_modules = world_model_config.compile_modules
+        self._wm_compile_mode = world_model_config.compile_mode
         self._wm_n_agents = int(world_model_config.n_agents)
         self._wm_local_latent_dim = int(world_model_config.local_latent_dim)
         self._wm_action_dim = int(world_model_config.action_dim)
@@ -433,6 +444,48 @@ class NextObsPredWrapper(BasePPOPolicy[PPOWMSamples, PPOWMSamplerConfig], NextOb
             local_rot6ds_predictor=local_rot6ds_predictor,
             local_binaries_predictor=local_binaries_predictor,
         )
+        self._apply_optional_compile()
+
+    def _apply_optional_compile(self) -> None:
+        if not self._wm_compile_modules:
+            return
+
+        self.pre_transition_transform = self._compile_module(self.pre_transition_transform)
+        self.transition_model = self._compile_module(self.transition_model)
+        self.pre_predictors_transform = self._compile_module(self.pre_predictors_transform)
+        if self.local_scalars_predictor is not None:
+            self.local_scalars_predictor = self._compile_module(self.local_scalars_predictor)
+        if self.local_angles_predictor is not None:
+            self.local_angles_predictor = self._compile_module(self.local_angles_predictor)
+        if self.local_rot6ds_predictor is not None:
+            self.local_rot6ds_predictor = self._compile_module(self.local_rot6ds_predictor)
+        if self.local_binaries_predictor is not None:
+            self.local_binaries_predictor = self._compile_module(self.local_binaries_predictor)
+        self._compute_next_obs_pred_loss_fn = self._compile_callable(self._compute_next_obs_pred_loss_impl)
+
+    def _compile_module(
+            self,
+            module: nn.Module,
+    ) -> nn.Module:
+        if isinstance(module, nn.Identity):
+            return module
+        return torch.compile(
+            module,
+            mode=self._wm_compile_mode,
+            fullgraph=False,
+            dynamic=False,
+        )
+
+    def _compile_callable(
+            self,
+            fn: Callable[..., Any],
+    ) -> Callable[..., Any]:
+        return torch.compile(
+            fn,
+            mode=self._wm_compile_mode,
+            fullgraph=False,
+            dynamic=False,
+        )
 
     @staticmethod
     def _resolve_scalar_loss_fn(scalar_loss_fn: str | nn.Module | None) -> nn.Module:
@@ -460,3 +513,14 @@ def _build_predictor(
         end_with_act_fn=False,
         act_fn_cls=act_fn_cls,
     )
+
+
+def _ensure_torch_compile_available(*, compile_mode: str) -> None:
+    if not hasattr(torch, "compile"):
+        raise RuntimeError("NOPWorldModelConfig.compile_modules=True requires torch.compile support.")
+    if sys.platform == "win32" and shutil.which("cl") is None:
+        raise RuntimeError(
+            "NOPWorldModelConfig.compile_modules=True on this Windows setup requires cl.exe on PATH for torch.compile."
+        )
+    if not compile_mode:
+        raise ValueError("NOPWorldModelConfig.compile_mode must be a non-empty string when compile_modules=True.")
