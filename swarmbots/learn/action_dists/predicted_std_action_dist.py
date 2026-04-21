@@ -193,3 +193,7 @@ class PredictedStdActionDist(ContinuousActionDist):
                 else str(self.log_std_net_initialization)
             ),
         }
+
+    @property
+    def compile_friendly(self) -> bool:
+        return False

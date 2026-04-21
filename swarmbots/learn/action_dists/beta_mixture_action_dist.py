@@ -138,6 +138,10 @@ class BetaMixtureActionDist(ActionDist):
             if value <= 1.0:
                 raise ValueError(f"All {parameter_name} values must be > 1.0, got {values}.")
 
+    @property
+    def compile_friendly(self) -> bool:
+        return True
+
     def get_hyper_parameters(self) -> dict[str, Any]:
         return {
             **super().get_hyper_parameters(),

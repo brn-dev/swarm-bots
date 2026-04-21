@@ -110,6 +110,10 @@ class BernoulliActionDist(DiscreteActionDist):
             raise ValueError(f"ent_loss_coef must be >= 0, got {value}")
         self.ent_loss_coef = value
 
+    @property
+    def compile_friendly(self) -> bool:
+        return True
+
     def _get_metrics_hist_bins(self) -> int:
         return 2
 

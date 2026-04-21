@@ -1,4 +1,7 @@
+from collections.abc import Callable
 from dataclasses import dataclass, field, replace
+import shutil
+import sys
 from typing import Any, Optional
 
 import torch
@@ -44,6 +47,19 @@ class MATPolicyConfig:
     continuous_config: ContinuousActionDistConfigInput = None
     bernoulli_config: BernoulliConfig | None = None
     max_agents: int | None = None
+    compile_modules: bool = False
+    compile_mode: str = "default"
+
+
+def _ensure_torch_compile_available(*, compile_mode: str) -> None:
+    if not hasattr(torch, "compile"):
+        raise RuntimeError("MATPolicyConfig.compile_modules=True requires torch.compile support.")
+    if sys.platform == "win32" and shutil.which("cl") is None:
+        raise RuntimeError(
+            "MATPolicyConfig.compile_modules=True on this Windows setup requires cl.exe on PATH for torch.compile."
+        )
+    if not compile_mode:
+        raise ValueError("MATPolicyConfig.compile_mode must be a non-empty string when compile_modules=True.")
 
 
 class MATPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
@@ -78,19 +94,8 @@ class MATPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
             else config.decoder_config.d_model
         )
 
-        encoder_config = replace(
-            config.encoder_config,
-            d_model=self.d_model_encoder,
-            act_fn_cls=config.act_fn_cls,
-            dropout=config.dropout,
-        )
-        self.encoder_config = encoder_config
-        self.encoder = MATEncoder(
-            config=encoder_config,
-            max_agents=self.max_agents,
-            local_obs_dim=self.local_obs_dim,
-            global_obs_dim=self.global_obs_dim,
-        )
+        self.encoder_config = self._build_encoder_config()
+        self.encoder = self._build_encoder()
 
         self.agent_embeddings_decoder: nn.Parameter | None = None
         if config.decoder_config.add_agent_embeddings:
@@ -155,12 +160,7 @@ class MATPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
             self.actor_head = nn.Identity()
             latent_pi_dim = self.d_model_decoder
 
-        self.action_dist = HybridActionDistribution(
-            latent_dim=latent_pi_dim,
-            action_space=env.action_space,
-            continuous_config=config.continuous_config,
-            bernoulli_config=config.bernoulli_config,
-        )
+        self.action_dist = self._build_action_dist(env=env, latent_pi_dim=latent_pi_dim)
 
         self.critic = DeepSetCritic(
             num_local_features=self.d_model_encoder + self.hidden_local_vars_dim,
@@ -175,6 +175,43 @@ class MATPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
             popart_min_std=config.critic_config.popart_config.min_std,
             popart_init_sigma=config.critic_config.popart_config.init_sigma,
         )
+        self._generate_actions_fn: Callable[..., tuple[torch.Tensor, Optional[torch.Tensor]]] = self._generate_actions_impl
+        self._evaluate_latent_and_values_fn: Callable[..., tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = (
+            self._evaluate_latent_and_values_impl
+        )
+        self._evaluate_actions_core_fn: Callable[..., tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = (
+            self._evaluate_actions_core_impl
+        )
+        self._apply_optional_compile()
+
+    def _build_encoder_config(self) -> MATEncoderConfig:
+        return replace(
+            self.config.encoder_config,
+            d_model=self.d_model_encoder,
+            act_fn_cls=self.config.act_fn_cls,
+            dropout=self.config.dropout,
+        )
+
+    def _build_encoder(self) -> nn.Module:
+        return MATEncoder(
+            config=self.encoder_config,
+            max_agents=self.max_agents,
+            local_obs_dim=self.local_obs_dim,
+            global_obs_dim=self.global_obs_dim,
+        )
+
+    def _build_action_dist(
+            self,
+            *,
+            env: BaseLearnEnvWrapper,
+            latent_pi_dim: int,
+    ) -> HybridActionDistribution:
+        return HybridActionDistribution(
+            latent_dim=latent_pi_dim,
+            action_space=env.action_space,
+            continuous_config=self.config.continuous_config,
+            bernoulli_config=self.config.bernoulli_config,
+        )
 
     def get_hyper_parameters(self) -> dict[str, Any]:
         return {
@@ -187,6 +224,9 @@ class MATPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
                 "continuous_config": continuous_config_to_dicts(self.action_dist.continuous_configs),
                 "bernoulli_config": bernoulli_config_to_dict(self.action_dist.bernoulli_config),
                 "max_agents": self.max_agents,
+                "compile_modules": self.config.compile_modules,
+                "compile_mode": self.config.compile_mode,
+                "action_dist_compile_friendly": self.action_dist.compile_friendly,
             }
         }
 
@@ -222,6 +262,25 @@ class MATPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
         return tokens + self.agent_embeddings_decoder[:, start_agent_idx:end_agent_idx, :]
 
     def _generate_actions(
+            self,
+            augmented_observations: torch.Tensor,
+            *,
+            batch_size: int,
+            agent_mask: torch.Tensor | None = None,
+            previous_actions: torch.Tensor | None = None,
+            deterministic: bool = False,
+            return_log_probs: bool = False,
+    ) -> tuple[torch.Tensor, Optional[torch.Tensor]]:
+        return self._generate_actions_fn(
+            augmented_observations=augmented_observations,
+            batch_size=batch_size,
+            agent_mask=agent_mask,
+            previous_actions=previous_actions,
+            deterministic=deterministic,
+            return_log_probs=return_log_probs,
+        )
+
+    def _generate_actions_impl(
             self,
             augmented_observations: torch.Tensor,
             *,
@@ -321,19 +380,67 @@ class MATPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
             batch: PPOSamples,
             action_splitter: ActionMetricsSplitterInput = None,
     ) -> tuple[torch.Tensor, torch.Tensor, LossDict, LossMetrics, torch.Tensor]:
-        local_obs = batch.local_obs
-        global_obs = batch.global_obs
-        hidden_local_vars = batch.hidden_local_vars
-        hidden_global_vars = batch.hidden_global_vars
-        agent_mask = batch.agent_mask
-        previous_actions = batch.previous_actions
         actions = self._policy_actions(batch.actions)
+        if self.action_dist.compile_friendly:
+            log_probs, values, augmented_observations = self._evaluate_actions_core(
+                local_obs=batch.local_obs,
+                global_obs=batch.global_obs,
+                hidden_local_vars=batch.hidden_local_vars,
+                hidden_global_vars=batch.hidden_global_vars,
+                agent_mask=batch.agent_mask,
+                previous_actions=batch.previous_actions,
+                actions=actions,
+            )
+        else:
+            latent_pi, values, augmented_observations = self._evaluate_latent_and_values(
+                local_obs=batch.local_obs,
+                global_obs=batch.global_obs,
+                hidden_local_vars=batch.hidden_local_vars,
+                hidden_global_vars=batch.hidden_global_vars,
+                agent_mask=batch.agent_mask,
+                actions=actions,
+            )
+            self.action_dist.update_latent_features(latent_pi)
+            log_probs = self.action_dist.log_prob(actions, previous_actions=batch.previous_actions)
+        extra_losses, extra_loss_metrics = self.action_dist.compute_extra_losses(
+            agent_mask=batch.agent_mask,
+            action_splitter=action_splitter,
+        )
+        return log_probs, values, extra_losses, extra_loss_metrics, augmented_observations
 
+    def _evaluate_latent_and_values(
+            self,
+            *,
+            local_obs: torch.Tensor,
+            global_obs: torch.Tensor,
+            hidden_local_vars: torch.Tensor | None,
+            hidden_global_vars: torch.Tensor | None,
+            agent_mask: torch.Tensor | None,
+            actions: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        return self._evaluate_latent_and_values_fn(
+            local_obs=local_obs,
+            global_obs=global_obs,
+            hidden_local_vars=hidden_local_vars,
+            hidden_global_vars=hidden_global_vars,
+            agent_mask=agent_mask,
+            actions=actions,
+        )
+
+    def _evaluate_latent_and_values_impl(
+            self,
+            *,
+            local_obs: torch.Tensor,
+            global_obs: torch.Tensor,
+            hidden_local_vars: torch.Tensor | None,
+            hidden_global_vars: torch.Tensor | None,
+            agent_mask: torch.Tensor | None,
+            actions: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         augmented_observations = self.encoder(local_obs, global_obs, agent_mask=agent_mask)
         query_tokens = self._encode_query_tokens(augmented_observations)
         memory_tokens = self._encode_memory_tokens(augmented_observations)
         context_tokens = self._encode_context_tokens(augmented_observations, actions)
-
         latent_pi = self.actor_head(
             self.decoder(
                 query_tokens=query_tokens,
@@ -343,21 +450,57 @@ class MATPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
                 memory_mask=agent_mask,
             )
         )
-
-        self.action_dist.update_latent_features(latent_pi)
-        log_probs = self.action_dist.log_prob(actions, previous_actions=previous_actions)
-
         values = self._critic_with_hidden_vars(
             augmented_observations,
             hidden_local_vars,
             hidden_global_vars,
             agent_mask=agent_mask,
         )
-        extra_losses, extra_loss_metrics = self.action_dist.compute_extra_losses(
+        return latent_pi, values, augmented_observations
+
+    def _evaluate_actions_core(
+            self,
+            *,
+            local_obs: torch.Tensor,
+            global_obs: torch.Tensor,
+            hidden_local_vars: torch.Tensor | None,
+            hidden_global_vars: torch.Tensor | None,
+            agent_mask: torch.Tensor | None,
+            previous_actions: torch.Tensor | None,
+            actions: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        return self._evaluate_actions_core_fn(
+            local_obs=local_obs,
+            global_obs=global_obs,
+            hidden_local_vars=hidden_local_vars,
+            hidden_global_vars=hidden_global_vars,
             agent_mask=agent_mask,
-            action_splitter=action_splitter,
+            previous_actions=previous_actions,
+            actions=actions,
         )
-        return log_probs, values, extra_losses, extra_loss_metrics, augmented_observations
+
+    def _evaluate_actions_core_impl(
+            self,
+            *,
+            local_obs: torch.Tensor,
+            global_obs: torch.Tensor,
+            hidden_local_vars: torch.Tensor | None,
+            hidden_global_vars: torch.Tensor | None,
+            agent_mask: torch.Tensor | None,
+            previous_actions: torch.Tensor | None,
+            actions: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        latent_pi, values, augmented_observations = self._evaluate_latent_and_values_impl(
+            local_obs=local_obs,
+            global_obs=global_obs,
+            hidden_local_vars=hidden_local_vars,
+            hidden_global_vars=hidden_global_vars,
+            agent_mask=agent_mask,
+            actions=actions,
+        )
+        self.action_dist.update_latent_features(latent_pi)
+        log_probs = self.action_dist.log_prob(actions, previous_actions=previous_actions)
+        return log_probs, values, augmented_observations
 
     def act(
             self,
@@ -512,3 +655,45 @@ class MATPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
             augmented_observations: torch.Tensor,
     ) -> torch.Tensor:
         return self.memory_encoder(augmented_observations)
+
+    def _apply_optional_compile(self) -> None:
+        if not self.config.compile_modules:
+            return
+
+        _ensure_torch_compile_available(compile_mode=self.config.compile_mode)
+
+        self.encoder = self._compile_module(self.encoder)
+        self.query_encoder = self._compile_module(self.query_encoder)
+        self.context_encoder = self._compile_module(self.context_encoder)
+        self.memory_encoder = self._compile_module(self.memory_encoder)
+        self.decoder = self._compile_module(self.decoder)
+        self.actor_head = self._compile_module(self.actor_head)
+        self.critic = self._compile_module(self.critic)
+        self._evaluate_latent_and_values_fn = self._compile_callable(self._evaluate_latent_and_values_impl)
+        if self.action_dist.compile_friendly:
+            self._generate_actions_fn = self._compile_callable(self._generate_actions_impl)
+            self._evaluate_actions_core_fn = self._compile_callable(self._evaluate_actions_core_impl)
+
+    def _compile_module(
+            self,
+            module: nn.Module,
+    ) -> nn.Module:
+        if isinstance(module, nn.Identity):
+            return module
+        return torch.compile(
+            module,
+            mode=self.config.compile_mode,
+            fullgraph=False,
+            dynamic=False,
+        )
+
+    def _compile_callable(
+            self,
+            fn: Callable[..., Any],
+    ) -> Callable[..., Any]:
+        return torch.compile(
+            fn,
+            mode=self.config.compile_mode,
+            fullgraph=False,
+            dynamic=False,
+        )

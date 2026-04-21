@@ -123,3 +123,7 @@ class SquashedDiagGaussianActionDist(DiagGaussianActionDist):
             "epsilon": self.epsilon,
             "squash_output": True,
         }
+
+    @property
+    def compile_friendly(self) -> bool:
+        return False

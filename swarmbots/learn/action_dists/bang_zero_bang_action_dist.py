@@ -108,6 +108,10 @@ class BangZeroBangActionDist(DiscreteActionDist):
             raise ValueError(f"ent_loss_coef must be >= 0, got {value}")
         self.ent_loss_coef = value
 
+    @property
+    def compile_friendly(self) -> bool:
+        return True
+
     def _actions_to_indices(self, actions: torch.Tensor) -> torch.Tensor:
         return (actions / self.bang).round().to(dtype=torch.long).add(1).clamp_(0, 2)
 

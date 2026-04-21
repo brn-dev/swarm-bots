@@ -439,14 +439,14 @@ def parse_args() -> argparse.Namespace:
         "--num-envs",
         nargs="+",
         type=int,
-        default=[128, 256, 512],
+        default=[512, 1024, 2048],
         help="Vector-env sizes to benchmark.",
     )
     parser.add_argument("--mj-workers", type=int, default=23, help="Worker count for mj_env.")
     parser.add_argument(
         "--mj-max-num-envs",
         type=int,
-        default=256,
+        default=1024,
         help=(
             "Only run mj_env for --num-envs values <= this threshold. "
             "If omitted, defaults to the lowest requested --num-envs."
@@ -459,7 +459,7 @@ def parse_args() -> argparse.Namespace:
         help="Whether mj_env should deepcopy batched observations in the parent process.",
     )
     parser.add_argument("--warmup-steps", type=int, default=64, help="Warmup steps before timing step throughput.")
-    parser.add_argument("--steps", type=int, default=256, help="Measured steps for throughput.")
+    parser.add_argument("--steps", type=int, default=1024, help="Measured steps for throughput.")
     parser.add_argument("--reset-repeats", type=int, default=8, help="Number of full-reset timing iterations.")
     parser.add_argument("--action-pool-size", type=int, default=16, help="Number of prebuilt random actions to cycle.")
     parser.add_argument(
