@@ -56,11 +56,12 @@ def _compute_obstacle_street_reward_kernel(
     progress: torch.Tensor,
     threshold_index_torch: torch.Tensor,
     progress_reward_weight: float,
+    forward_reward_weight: float,
     wall_pass_reward_weight: float,
     wall_thresholds_per_wall: int,
     units_without_connections_reward_weight: float,
     guidance_reward_weight: float,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     safe_unit_y = torch.where(stable_mask.unsqueeze(1), unit_y, torch.zeros_like(unit_y))
     new_progress = masked_mean(safe_unit_y, units_active_mask, dim=1)
     progress_delta = new_progress - progress
@@ -86,7 +87,10 @@ def _compute_obstacle_street_reward_kernel(
         )
 
     passed_thresholds_mask = threshold_index_torch.view(1, 1, -1) < latched_thresholds.unsqueeze(-1)
-    forward_reward = progress_delta * float(progress_reward_weight)
+    forward_component_reward = progress_delta * float(forward_reward_weight)
+    progress_reward = (forward_component_reward + wall_pass_reward) * float(progress_reward_weight)
+    forward_reward = forward_component_reward * float(progress_reward_weight)
+    wall_pass_reward = wall_pass_reward * float(progress_reward_weight)
 
     connection_mask = partner_unit >= 0
     units_without_connections = (~connection_mask).all(dim=-1) & units_active_mask
@@ -103,6 +107,7 @@ def _compute_obstacle_street_reward_kernel(
 
     return (
         new_progress,
+        progress_reward,
         forward_reward,
         wall_pass_reward,
         guidance_reward,
@@ -335,7 +340,15 @@ class ObstacleStreetMJWScenarioRuntime(BaseMJWScenarioRuntime):
 
     def compute_step_rewards(self, *, stable_mask: torch.Tensor) -> MJWStepResult:
         unit_y = self._get_unit_y()
-        new_progress, forward_reward, wall_pass_reward, guidance_reward, latched_thresholds, passed_thresholds_mask = self._reward_kernel(
+        (
+            new_progress,
+            progress_reward,
+            forward_reward,
+            wall_pass_reward,
+            guidance_reward,
+            latched_thresholds,
+            passed_thresholds_mask,
+        ) = self._reward_kernel(
             unit_y,
             stable_mask,
             self.bindings.units_active_mask,
@@ -345,6 +358,7 @@ class ObstacleStreetMJWScenarioRuntime(BaseMJWScenarioRuntime):
             self.progress,
             self._threshold_index_torch,
             float(self.scenario.progress_reward_weight),
+            float(self.scenario.forward_reward_weight),
             float(self.scenario.wall_pass_reward_weight),
             int(self._wall_thresholds_per_wall),
             float(self.scenario.units_without_connections_reward_weight),
@@ -354,7 +368,6 @@ class ObstacleStreetMJWScenarioRuntime(BaseMJWScenarioRuntime):
         self.next_threshold_for_unit[stable_mask] = latched_thresholds[stable_mask]
         self.passed_thresholds_mask[stable_mask] = passed_thresholds_mask[stable_mask]
         self._hidden_local_obs[stable_mask] = self.passed_thresholds_mask[stable_mask].to(dtype=torch.float32)
-        progress_reward = forward_reward + wall_pass_reward
 
         return MJWStepResult(
             reward=progress_reward + guidance_reward,

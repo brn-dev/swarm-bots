@@ -20,7 +20,8 @@ def _make_runtime() -> ObstacleStreetMJWScenarioRuntime:
         partner_unit=torch.tensor([[-1]], device=device, dtype=torch.long),
     )
     runtime.scenario = SimpleNamespace(
-        progress_reward_weight=0.0,
+        progress_reward_weight=0.5,
+        forward_reward_weight=0.0,
         wall_pass_reward_weight=4.0,
         units_without_connections_reward_weight=0.0,
         guidance_reward_weight=1.0,
@@ -42,7 +43,8 @@ def test_wall_pass_reward_is_only_issued_once_per_threshold() -> None:
 
     runtime._get_unit_y = lambda: torch.tensor([[0.6]], dtype=torch.float32)
     first = runtime.compute_step_rewards(stable_mask=stable_mask)
-    assert float(first.info["wall_pass_reward"][0]) == 4.0
+    assert float(first.info["wall_pass_reward"][0]) == 2.0
+    assert float(first.info["progress_reward"][0]) == 2.0
     assert float(first.info["forward_reward"][0]) == 0.0
     assert float(first.info["forward_progress_reward"][0]) == 0.0
     assert int(runtime.next_threshold_for_unit[0, 0]) == 1

@@ -40,50 +40,17 @@ def configure_float32_matmul_precision() -> None:
         torch.set_float32_matmul_precision("high")
 
 
-def make_preconnected_unit_start_locations(pool_seeds: tuple[int, ...] | None) -> MJWPreConnectedUnitLocationsConfig:
-    return MJWPreConnectedUnitLocationsConfig(
-        num_units=5,
-        num_unit_probs={
-            4: 1.0,
-            5: 1.0,
-        },
-        max_radius=1.5,
-        unconnected_prob=0.02,
-        z_pos=0.5,
-        pool_seeds=pool_seeds,
-    )
-
-
 def make_vector_env(
     *,
     episode_length: int,
     num_envs: int,
-    unit_start_locations: MJWPreConnectedUnitLocationsConfig | None = None,
     first_episode_length: int | None = None,
     first_episode_lengths: list[int] | None = None,
     settle_initial_reset: bool = False,
-    timestep: float = mjw_scenario_presets.DEFAULT_KWARGS["timestep"],
-    action_repeat: int = mjw_scenario_presets.DEFAULT_KWARGS["action_repeat"],
-    compile_reward_kernel: bool | None = None,
-    reward_kernel_compile_mode: str = "default",
     device: torch.device,
 ) -> MJWSwarmBotsVectorEnv:
-    compile_reward_kernel = (
-        mjw_scenario_presets.should_compile_reward_kernel_by_default()
-        if compile_reward_kernel is None
-        else bool(compile_reward_kernel)
-    )
-    scenario = default_wall(
-        first_wall_distance=1.0,
-        unit_start_locations=unit_start_locations,
-        quantize_connection_twist=8,
-        timestep=timestep,
-        action_repeat=action_repeat,
-        compile_reward_kernel=compile_reward_kernel,
-        reward_kernel_compile_mode=reward_kernel_compile_mode,
-    )
     return MJWSwarmBotsVectorEnv(
-        scenario=scenario,
+        scenario=default_wall(),
         num_envs=num_envs,
         episode_length=episode_length,
         first_episode_length=first_episode_length,
@@ -159,16 +126,12 @@ def main() -> None:
     run_dir = f"../runs/mat_nop_swarm_bots_wall_mjw/{run_id}/"
     save_optimizer = True
 
-    swarm_seed_pool = tuple(range(42_000, 42_050))
-    unit_start_locations = make_preconnected_unit_start_locations(swarm_seed_pool)
-    logger.info(f"swarm_seed_pool: {len(swarm_seed_pool)}")
     first_episode_lengths = [int((i + 1) * episode_length / n_envs) for i in range(n_envs)]
 
     print("Creating MJW vector env...")
     vector_env = make_vector_env(
         episode_length=episode_length,
         num_envs=n_envs,
-        unit_start_locations=unit_start_locations,
         first_episode_lengths=first_episode_lengths,
         settle_initial_reset=True,
         device=rollout_device,
@@ -265,20 +228,20 @@ def main() -> None:
                 ent_loss_coef=5e-3,
                 beta_ent_scale=0.75,
                 categorical_ent_loss_config=EntropyLossConfig(
-                    max_entropy=0.58,
+                    max_entropy=0.5,
                     # loss_transform=lambda x: x**2,
                     agent_actions_reduction=AgentActionsReduction.SUM,
                     metrics_reduction=AgentActionsReduction.MEAN,
                 ),
                 beta_ent_loss_config=EntropyLossConfig(
-                    max_entropy=-0.75,
+                    max_entropy=-0.35,
                     # loss_transform=lambda x: x**2,
                     agent_actions_reduction=AgentActionsReduction.SUM,
                     metrics_reduction=AgentActionsReduction.MEAN,
                 ),
             ),
             bernoulli_config=BernoulliConfig(
-                initial_prob=0.7,
+                initial_prob=0.75,
                 ent_loss_coef=1e-3,
                 ent_loss_config=EntropyLossConfig(
                     agent_actions_reduction=AgentActionsReduction.SUM,

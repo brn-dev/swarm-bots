@@ -10,7 +10,7 @@ from gymnasium import spaces
 from gymnasium.vector.utils import batch_space
 
 from swarmbots.mj_env.float_or_dist_params import FloatOrBoundedDistParams, FloatOrDistParams, fodp_low
-from swarmbots.mjw_env.scenarios.base_mjw_scenario import MJWRuntimeBindings, MJWRecordingCameraConfig
+from swarmbots.mjw_env.scenarios.base_mjw_scenario import BaseMJWScenario, MJWRuntimeBindings, MJWRecordingCameraConfig
 from swarmbots.mjw_env.swarm.mjw_homogeneous_swarm import MJWHomogeneousSwarm
 
 
@@ -28,12 +28,13 @@ def _hinges_per_limb(unit_config: tuple[object, ...]) -> int:
 
 
 @dataclass
-class MJWObstacleStreetScenario:
+class MJWObstacleStreetScenario(BaseMJWScenario):
     swarm: MJWHomogeneousSwarm
     timestep: float
     action_repeat: int
     actuator_strength: float
     progress_reward_weight: float
+    forward_reward_weight: float
     guidance_reward_weight: float
     units_without_connections_reward_weight: float
     include_connectors_xpos_in_obs: bool
@@ -112,6 +113,7 @@ class MJWObstacleStreetScenario:
             "unusable_opening_offset": self.unusable_opening_offset,
             "street_width": self.street_width,
             "no_initial_ramp": self.no_initial_ramp,
+            "forward_reward_weight": self.forward_reward_weight,
             "wall_pass_reward_weight": self.wall_pass_reward_weight,
             "wall_pass_thresholds": list(self.wall_pass_thresholds),
             "compile_reward_kernel": self.compile_reward_kernel,

@@ -215,8 +215,9 @@ class SwarmBotsEnv(gymnasium.Env):
         if weighted_forward_reward is not None:
             info["forward_reward"] = float(weighted_forward_reward)
             info["forward_progress_reward"] = float(weighted_forward_reward)
-        if "wall_pass_reward" in self.scenario_state:
-            info["wall_pass_reward"] = float(self.scenario_state["wall_pass_reward"])
+        weighted_wall_pass_reward = self.scenario_state.get("weighted_wall_pass_reward")
+        if weighted_wall_pass_reward is not None:
+            info["wall_pass_reward"] = float(weighted_wall_pass_reward)
         info["guidance_reward"] = float(self.scenario_state["weighted_guidance_reward"])
         reward_terms = self.scenario_state.get("reward_terms")
         if isinstance(reward_terms, dict):
