@@ -21,13 +21,14 @@ DEFAULT_KWARGS = {
     "action_repeat": 10,
     "friction": [1.25, 7e-3, 1.25e-4],
     "actuator_strength": 12.0,
-    "progress_reward_weight": 0.2,
+    "progress_reward_weight": 1.0,
     "guidance_reward_weight": 1.0,
     "units_without_connections_reward_weight": -1e-5,
     "reset_settle_time": 1.0,
     "reset_settle_timestep_scale": 3,
 }
 WALL_PASS_KWARGS = {
+    "forward_reward_weight": 0.2,
     "wall_pass_reward_weight": 5.0,
     "wall_pass_thresholds": [-0.1, 0.1, 0.3, 0.5],
 }
@@ -54,11 +55,15 @@ def _resolve_swarm(
         return swarm
     if unit_start_locations is None:
         unit_start_locations = MJWPreConnectedUnitLocationsConfig(
-            num_units=6,
-            num_unit_probs={2: 0.5, 3: 0.5, 4: 1.0, 5: 1.0, 6: 1.0},
+            num_units=5,
+            num_unit_probs={
+                4: 1.0,
+                5: 1.0,
+            },
             max_radius=1.5,
-            unconnected_prob=0.03,
+            unconnected_prob=0.02,
             z_pos=0.5,
+            pool_seeds=tuple(range(42_000, 42_032)),
         )
 
     joint_configs = {
@@ -101,7 +106,7 @@ def default_wall(
     seed: int | None = None,
     swarm: MJWHomogeneousSwarm | None = None,
     unit_start_locations: MJWPreConnectedUnitLocationsConfig | None = None,
-    quantize_connection_twist: int = 16,
+    quantize_connection_twist: int = 8,
     joints: str = "zx",
     **kwargs: object,
 ) -> MJWObstacleStreetScenario:
@@ -124,7 +129,7 @@ def default_wall(
             "street_width": 10.0,
             "no_initial_ramp": True,
             "wall_height": 0.20,
-            "swarm_start_y": UniformDistParams(0.3, 0.75),
+            "swarm_start_y": UniformDistParams(0.4, 0.75),
             "compile_reward_kernel": should_compile_reward_kernel_by_default(),
             "reward_kernel_compile_mode": "default",
         }

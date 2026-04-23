@@ -16,13 +16,14 @@ DEFAULT_KWARGS = {
     'friction': [1.25, 7e-3, 1.25e-4],
     'force_elliptic_cone': False,
     'actuator_strength': 15.0,
-    'progress_reward_weight': 0.2,
+    'progress_reward_weight': 1.0,
     'guidance_reward_weight': 1.00,
     'units_without_connections_reward_weight': -1e-5,
     'reset_settle_time': 1.0,
     'reset_settle_timestep_scale': 3,
 }
 WALL_PASS_KWARGS = {
+    'forward_reward_weight': 0.2,
     'wall_pass_reward_weight': 5.0,
     'wall_pass_thresholds': [-0.1, 0.1, 0.3, 0.5],
 }

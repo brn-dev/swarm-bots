@@ -89,6 +89,7 @@ class ObstacleStreetScenario(PayloadScenario):
             friction: float | Iterable[float] | None = None,
             force_elliptic_cone: bool = False,
             progress_reward_weight: float = 1.0,
+            forward_reward_weight: float = 1.0,
             guidance_reward_weight: float = 1.0,
             wall_pass_reward_weight: float = 0.0,
             wall_pass_thresholds: list[float] | None = None,
@@ -125,6 +126,7 @@ class ObstacleStreetScenario(PayloadScenario):
 
         self.opening_widths = opening_width if isinstance(opening_width, list) else [opening_width] * num_walls
         self.unusable_opening_offset = unusable_opening_offset
+        self.forward_reward_weight = float(forward_reward_weight)
         self.wall_pass_reward_weight = float(wall_pass_reward_weight)
         if wall_pass_thresholds is None:
             wall_pass_thresholds = [0.0]
@@ -186,6 +188,7 @@ class ObstacleStreetScenario(PayloadScenario):
             'unusable_opening_offset': self.unusable_opening_offset,
             'street_width': self.street_width,
             'no_initial_ramp': self.no_initial_ramp,
+            'forward_reward_weight': self.forward_reward_weight,
             'wall_pass_reward_weight': self.wall_pass_reward_weight,
             'wall_pass_thresholds': self.wall_pass_thresholds.tolist(),
         })
@@ -435,7 +438,7 @@ class ObstacleStreetScenario(PayloadScenario):
 
         forward_reward = new_progress - old_progress
         wall_pass_reward = self._compute_wall_pass_reward(data, state)
-        progress_reward = forward_reward + wall_pass_reward
+        progress_reward = forward_reward * self.forward_reward_weight + wall_pass_reward
 
         state['forward_reward'] = forward_reward
         state['progress_reward'] = progress_reward
@@ -457,23 +460,24 @@ class ObstacleStreetScenario(PayloadScenario):
         self.compute_progress_reward(data, state)
         forward_reward = state['forward_reward']
         wall_pass_reward = state['wall_pass_reward']
+        progress_reward = state['progress_reward']
 
         guidance_reward = super().compute_guidance_reward(data, action, state, connections)
         state['guidance_reward'] = guidance_reward
 
-        weighted_progress_reward = (
-            forward_reward * self.reward_weights['progress_reward_weight']
-            + wall_pass_reward
-        )
-        weighted_forward_reward = forward_reward * self.reward_weights['progress_reward_weight']
+        progress_reward_weight = self.reward_weights['progress_reward_weight']
+        weighted_progress_reward = progress_reward * progress_reward_weight
+        weighted_forward_reward = forward_reward * self.forward_reward_weight * progress_reward_weight
+        weighted_wall_pass_reward = wall_pass_reward * progress_reward_weight
         weighted_guidance_reward = guidance_reward * self.reward_weights['guidance_reward_weight']
         state['weighted_progress_reward'] = weighted_progress_reward
         state['weighted_forward_reward'] = weighted_forward_reward
         state['weighted_forward_progress_reward'] = weighted_forward_reward
+        state['weighted_wall_pass_reward'] = weighted_wall_pass_reward
         state['weighted_guidance_reward'] = weighted_guidance_reward
         state['reward_terms'] = {
             'forward': weighted_forward_reward,
-            'wall': wall_pass_reward,
+            'wall': weighted_wall_pass_reward,
             'guidance': weighted_guidance_reward,
         }
 
