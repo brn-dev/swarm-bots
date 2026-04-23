@@ -86,7 +86,7 @@ def _compute_obstacle_street_reward_kernel(
         )
 
     passed_thresholds_mask = threshold_index_torch.view(1, 1, -1) < latched_thresholds.unsqueeze(-1)
-    forward_progress_reward = progress_delta * float(progress_reward_weight)
+    forward_reward = progress_delta * float(progress_reward_weight)
 
     connection_mask = partner_unit >= 0
     units_without_connections = (~connection_mask).all(dim=-1) & units_active_mask
@@ -103,7 +103,7 @@ def _compute_obstacle_street_reward_kernel(
 
     return (
         new_progress,
-        forward_progress_reward,
+        forward_reward,
         wall_pass_reward,
         guidance_reward,
         latched_thresholds,
@@ -335,7 +335,7 @@ class ObstacleStreetMJWScenarioRuntime(BaseMJWScenarioRuntime):
 
     def compute_step_rewards(self, *, stable_mask: torch.Tensor) -> MJWStepResult:
         unit_y = self._get_unit_y()
-        new_progress, forward_progress_reward, wall_pass_reward, guidance_reward, latched_thresholds, passed_thresholds_mask = self._reward_kernel(
+        new_progress, forward_reward, wall_pass_reward, guidance_reward, latched_thresholds, passed_thresholds_mask = self._reward_kernel(
             unit_y,
             stable_mask,
             self.bindings.units_active_mask,
@@ -354,18 +354,20 @@ class ObstacleStreetMJWScenarioRuntime(BaseMJWScenarioRuntime):
         self.next_threshold_for_unit[stable_mask] = latched_thresholds[stable_mask]
         self.passed_thresholds_mask[stable_mask] = passed_thresholds_mask[stable_mask]
         self._hidden_local_obs[stable_mask] = self.passed_thresholds_mask[stable_mask].to(dtype=torch.float32)
-        progress_reward = forward_progress_reward + wall_pass_reward
+        progress_reward = forward_reward + wall_pass_reward
 
         return MJWStepResult(
             reward=progress_reward + guidance_reward,
             info={
                 "progress_reward": progress_reward,
-                "forward_progress_reward": forward_progress_reward,
+                "forward_reward": forward_reward,
+                "forward_progress_reward": forward_reward,
                 "wall_pass_reward": wall_pass_reward,
                 "guidance_reward": guidance_reward,
                 "reward_terms": {
-                    "progress": forward_progress_reward,
+                    "forward": forward_reward,
                     "wall": wall_pass_reward,
+                    "guidance": guidance_reward,
                 },
             },
         )

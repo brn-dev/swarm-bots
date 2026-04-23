@@ -49,3 +49,16 @@ class MJWSwarmConfig:
 
     def get_eq_variant_name(self, unit1: int, conn1: int, unit2: int, conn2: int, twist_idx: int) -> str:
         return f"{self.get_eq_name(unit1, conn1, unit2, conn2)}_twist{twist_idx}"
+
+    def get_nearest_connection_twist_index(self, twist: float) -> int:
+        angle_delta = np.arctan2(
+            np.sin(float(twist) - self.connection_twist_values),
+            np.cos(float(twist) - self.connection_twist_values),
+        )
+        return int(np.argmin(np.abs(angle_delta)))
+
+    def sample_connection_twist_index(self, rng: np.random.Generator) -> int:
+        return int(rng.integers(len(self.connection_twist_values)))
+
+    def sample_connection_twist(self, rng: np.random.Generator) -> float:
+        return float(self.connection_twist_values[self.sample_connection_twist_index(rng)])

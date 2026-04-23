@@ -278,7 +278,7 @@ class ObstacleStreetScenario(PayloadScenario):
         if settle:
             self.settle_reset(model, data, state)
 
-        state['progress'] = self.compute_progress(data, state.get("units_active_mask"))
+        state['progress'] = self._compute_progress_baseline(data, state.get("units_active_mask"))
         state['hidden_global_vars'] = np.array(hidden_global_vars, dtype=float)
         state['wall_y'] = wall_y
         wall_pass_absolute_thresholds = self._compute_wall_pass_thresholds(wall_y)
@@ -376,22 +376,6 @@ class ObstacleStreetScenario(PayloadScenario):
 
         return obs
 
-    def compute_progress(
-            self,
-            data: mujoco.MjData,
-            units_active_mask: np.ndarray | None,
-    ) -> float:
-        if self.payload_type is None:
-            unit_positions = data.qpos[self._qpos_indices[:, 1]]
-            if units_active_mask is None:
-                return float(unit_positions.mean())
-            active_units_mask = np.asarray(units_active_mask, dtype=bool)
-            if not active_units_mask.any():
-                return 0.0
-            return float(unit_positions[active_units_mask].mean())
-
-        return float(data.xpos[self.payload_body_id, 1])
-
     def _compute_wall_pass_reward(
             self,
             data: mujoco.MjData,
@@ -440,6 +424,24 @@ class ObstacleStreetScenario(PayloadScenario):
 
         return walls_passed_reward
 
+    def compute_progress_reward(
+            self,
+            data: mujoco.MjData,
+            state: dict,
+    ) -> float:
+        old_progress = state["progress"]
+        new_progress = self._compute_progress_baseline(data, state.get("units_active_mask"))
+        state["progress"] = new_progress
+
+        forward_reward = new_progress - old_progress
+        wall_pass_reward = self._compute_wall_pass_reward(data, state)
+        progress_reward = forward_reward + wall_pass_reward
+
+        state['forward_reward'] = forward_reward
+        state['progress_reward'] = progress_reward
+        state['wall_pass_reward'] = wall_pass_reward
+        return progress_reward
+
     def evaluate_step(
             self,
             action: SwarmActDict,
@@ -452,31 +454,27 @@ class ObstacleStreetScenario(PayloadScenario):
         if units_active_mask is not None:
             self._enforce_inactive_units_state(model, data, units_active_mask)
 
-        old_progress = state['progress']
-        new_progress = self.compute_progress(data, units_active_mask)
-        state['progress'] = new_progress
-
-        progress_reward = new_progress - old_progress
-        wall_pass_reward = self._compute_wall_pass_reward(data, state)
-        total_progress_reward = progress_reward + wall_pass_reward
-        state['progress_reward'] = total_progress_reward
+        self.compute_progress_reward(data, state)
+        forward_reward = state['forward_reward']
+        wall_pass_reward = state['wall_pass_reward']
 
         guidance_reward = super().compute_guidance_reward(data, action, state, connections)
         state['guidance_reward'] = guidance_reward
 
         weighted_progress_reward = (
-            progress_reward * self.reward_weights['progress_reward_weight']
+            forward_reward * self.reward_weights['progress_reward_weight']
             + wall_pass_reward
         )
-        weighted_forward_progress_reward = progress_reward * self.reward_weights['progress_reward_weight']
+        weighted_forward_reward = forward_reward * self.reward_weights['progress_reward_weight']
         weighted_guidance_reward = guidance_reward * self.reward_weights['guidance_reward_weight']
         state['weighted_progress_reward'] = weighted_progress_reward
-        state['weighted_forward_progress_reward'] = weighted_forward_progress_reward
-        state['wall_pass_reward'] = wall_pass_reward
+        state['weighted_forward_reward'] = weighted_forward_reward
+        state['weighted_forward_progress_reward'] = weighted_forward_reward
         state['weighted_guidance_reward'] = weighted_guidance_reward
         state['reward_terms'] = {
-            'progress': weighted_forward_progress_reward,
+            'forward': weighted_forward_reward,
             'wall': wall_pass_reward,
+            'guidance': weighted_guidance_reward,
         }
 
         return weighted_progress_reward + weighted_guidance_reward, False

@@ -221,7 +221,7 @@ class BridgeScenario(PayloadScenario):
 
         mujoco.mj_forward(model, data)
 
-        state["progress"] = self.compute_progress(data, state.get("units_active_mask"))
+        state["progress"] = self._compute_progress_baseline(data, state.get("units_active_mask"))
         state["hidden_global_vars"] = np.array([self.bridge_x], dtype=float)
         state["fell_off_bridge"] = False
 
@@ -238,20 +238,18 @@ class BridgeScenario(PayloadScenario):
         obs["hidden_global_vars"] = state["hidden_global_vars"].copy()
         return obs
 
-    def compute_progress(
+    def compute_progress_reward(
             self,
             data: mujoco.MjData,
-            units_active_mask: np.ndarray | None,
+            state: dict,
     ) -> float:
-        if self.payload_type is None:
-            unit_positions = data.qpos[self._qpos_indices[:, 1]]
-            if units_active_mask is None:
-                return float(unit_positions.mean())
-            active_units_mask = np.asarray(units_active_mask, dtype=bool)
-            if not active_units_mask.any():
-                return 0.0
-            return float(unit_positions[active_units_mask].mean())
-        return float(data.xpos[self.payload_body_id, 1])
+        old_progress = state["progress"]
+        new_progress = self._compute_progress_baseline(data, state.get("units_active_mask"))
+        state["progress"] = new_progress
+
+        progress_reward = new_progress - old_progress
+        state["progress_reward"] = progress_reward
+        return progress_reward
 
     def evaluate_step(
             self,

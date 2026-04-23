@@ -248,10 +248,10 @@ class BaseScenario(abc.ABC):
         raise NotImplementedError()
 
     @abc.abstractmethod
-    def compute_progress(
+    def compute_progress_reward(
             self,
             data: mujoco.MjData,
-            units_active_mask: np.ndarray | None,
+            state: dict,
     ) -> float:
         raise NotImplementedError()
 
@@ -270,12 +270,7 @@ class BaseScenario(abc.ABC):
         if units_active_mask is not None:
             self._enforce_inactive_units_state(model, data, units_active_mask)
 
-        old_progress = state['progress']
-        new_progress = self.compute_progress(data, state.get("units_active_mask"))
-        state['progress'] = new_progress
-
-        progress_reward = new_progress - old_progress
-        state['progress_reward'] = progress_reward
+        progress_reward = self.compute_progress_reward(data, state)
 
         guidance_reward = self.compute_guidance_reward(data, action, state, connections)
         state['guidance_reward'] = guidance_reward
@@ -421,8 +416,6 @@ class BaseScenario(abc.ABC):
         finally:
             if model.opt.timestep != original_timestep:
                 model.opt.timestep = original_timestep
-        if "progress" in state:
-            state["progress"] = self.compute_progress(data, state.get("units_active_mask"))
 
     def get_obs(
             self,

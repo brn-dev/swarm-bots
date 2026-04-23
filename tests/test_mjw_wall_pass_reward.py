@@ -43,6 +43,8 @@ def test_wall_pass_reward_is_only_issued_once_per_threshold() -> None:
     runtime._get_unit_y = lambda: torch.tensor([[0.6]], dtype=torch.float32)
     first = runtime.compute_step_rewards(stable_mask=stable_mask)
     assert float(first.info["wall_pass_reward"][0]) == 4.0
+    assert float(first.info["forward_reward"][0]) == 0.0
+    assert float(first.info["forward_progress_reward"][0]) == 0.0
     assert int(runtime.next_threshold_for_unit[0, 0]) == 1
 
     runtime._get_unit_y = lambda: torch.tensor([[0.4]], dtype=torch.float32)

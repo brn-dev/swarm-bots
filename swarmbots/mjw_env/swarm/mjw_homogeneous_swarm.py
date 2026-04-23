@@ -306,7 +306,8 @@ class MJWHomogeneousSwarm:
                         raise RuntimeError("Failed to generate collision-free preconnected swarm")
                     continue
 
-            twist = float(rng.random() * 2.0 * np.pi)
+            sampled_twist_idx = self.config.sample_connection_twist_index(rng)
+            twist = float(self.config.connection_twist_values[sampled_twist_idx])
             x1 = conn1_rot[:, 0]
             y1 = conn1_rot[:, 1]
             x2 = np.cos(twist) * x1 + np.sin(twist) * y1
@@ -321,22 +322,12 @@ class MJWHomogeneousSwarm:
             quats[locations_found] = mat_to_quat(unit2_rot)
 
             if random_config.unconnected_prob <= 0.0 or rng.random() >= random_config.unconnected_prob:
-                nearest_twist_idx = int(
-                    np.argmin(
-                        np.abs(
-                            np.arctan2(
-                                np.sin(twist - self.config.connection_twist_values),
-                                np.cos(twist - self.config.connection_twist_values),
-                            )
-                        )
-                    )
-                )
                 partner_unit[unit1, conn1] = locations_found
                 partner_connector[unit1, conn1] = conn2
-                twist_idx[unit1, conn1] = nearest_twist_idx
+                twist_idx[unit1, conn1] = sampled_twist_idx
                 partner_unit[locations_found, conn2] = unit1
                 partner_connector[locations_found, conn2] = conn1
-                twist_idx[locations_found, conn2] = nearest_twist_idx
+                twist_idx[locations_found, conn2] = sampled_twist_idx
 
             available_connectors[unit1].remove(conn1)
             available_connectors[locations_found].remove(conn2)
