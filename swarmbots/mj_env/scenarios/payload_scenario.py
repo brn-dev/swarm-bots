@@ -160,3 +160,19 @@ class PayloadScenario(BaseScenario, abc.ABC):
             obs['global_obs'] = np.concatenate([data.xpos[self.payload_body_id], payload_quat])
 
         return obs
+
+    def _compute_progress_baseline(
+            self,
+            data: mujoco.MjData,
+            units_active_mask: np.ndarray | None,
+    ) -> float:
+        if self.payload_type is None:
+            unit_positions = data.qpos[self._qpos_indices[:, 1]]
+            if units_active_mask is None:
+                return float(unit_positions.mean())
+            active_units_mask = np.asarray(units_active_mask, dtype=bool)
+            if not active_units_mask.any():
+                return 0.0
+            return float(unit_positions[active_units_mask].mean())
+
+        return float(data.xpos[self.payload_body_id, 1])

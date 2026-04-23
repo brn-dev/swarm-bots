@@ -335,6 +335,10 @@ def read_columns(path: Path, delimiter: str) -> list[str]:
     return columns
 
 
+def sort_columns_by_name(columns: Sequence[str]) -> list[str]:
+    return sorted(columns, key=str.casefold)
+
+
 def resolve_common_columns(paths: Sequence[Path], delimiter: str) -> tuple[list[str], bool]:
     columns_by_path = [read_columns(path, delimiter) for path in paths]
     base_columns = columns_by_path[0]
@@ -345,8 +349,7 @@ def resolve_common_columns(paths: Sequence[Path], delimiter: str) -> tuple[list[
         intersection &= set(columns)
     if not intersection:
         return [], mismatch
-    ordered = [column for column in base_columns if column in intersection]
-    return ordered, mismatch
+    return sort_columns_by_name(intersection), mismatch
 
 
 def parse_histogram_list(

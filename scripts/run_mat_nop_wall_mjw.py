@@ -262,13 +262,17 @@ def main() -> None:
             #     ),
             # ),
             continuous_config=LeftRightBetaConfig(
-                ent_loss_coef=1e-3,
+                ent_loss_coef=5e-3,
                 beta_ent_scale=0.75,
                 categorical_ent_loss_config=EntropyLossConfig(
+                    max_entropy=0.58,
+                    # loss_transform=lambda x: x**2,
                     agent_actions_reduction=AgentActionsReduction.SUM,
                     metrics_reduction=AgentActionsReduction.MEAN,
                 ),
                 beta_ent_loss_config=EntropyLossConfig(
+                    max_entropy=-0.75,
+                    # loss_transform=lambda x: x**2,
                     agent_actions_reduction=AgentActionsReduction.SUM,
                     metrics_reduction=AgentActionsReduction.MEAN,
                 ),
@@ -276,6 +280,10 @@ def main() -> None:
             bernoulli_config=BernoulliConfig(
                 initial_prob=0.7,
                 ent_loss_coef=1e-3,
+                ent_loss_config=EntropyLossConfig(
+                    agent_actions_reduction=AgentActionsReduction.SUM,
+                    metrics_reduction=AgentActionsReduction.MEAN,
+                ),
             ),
             max_agents=20,
             compile_modules=compile_policy_modules,

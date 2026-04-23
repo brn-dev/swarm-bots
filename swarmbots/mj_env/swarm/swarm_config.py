@@ -90,5 +90,11 @@ class SwarmConfig:
         )
         return int(np.argmin(np.abs(angle_delta)))
 
+    def sample_connection_twist(self, rng: np.random.Generator) -> float:
+        if not self.uses_quantized_connection_twist:
+            return float(rng.random() * 2.0 * np.pi)
+        twist_idx = int(rng.integers(len(self.connection_twist_values)))
+        return float(self.connection_twist_values[twist_idx])
+
 
 

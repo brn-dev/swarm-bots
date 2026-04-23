@@ -318,6 +318,51 @@
           "height": 1.0
         }
       ]
+    },
+    {
+      "name": "Entropies",
+      "x_column": "timesteps",
+      "entries": [
+        {
+          "y_column": "ep_rew_ema",
+          "height": 1.0
+        },
+        {
+          "y_column": "act0_ent_beta_j0__mean",
+          "height": 1.0,
+          "std": true
+        },
+        {
+          "y_column": "act0_ent_beta_j1__mean",
+          "height": 1.0,
+          "std": true
+        },
+        {
+          "y_column": "act0_ent_categorical_j0__mean",
+          "height": 1.0,
+          "std": true
+        },
+        {
+          "y_column": "act0_ent_categorical_j1__mean",
+          "height": 1.0,
+          "std": true
+        },
+        {
+          "y_column": "act0_entropy_loss_scaled__mean",
+          "height": 1.0,
+          "std": true
+        },
+        {
+          "y_column": "act1_ent__mean",
+          "height": 1.0,
+          "std": true
+        },
+        {
+          "y_column": "act1_entropy_loss_scaled__mean",
+          "height": 1.0,
+          "std": true
+        }
+      ]
     }
   ]
 }

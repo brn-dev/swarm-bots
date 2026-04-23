@@ -584,7 +584,7 @@ class HomogeneousSwarm(BaseSwarm):
                         )
                     continue
 
-            twist = rng.random() * 2 * np.pi
+            twist = self.config.sample_connection_twist(rng)
             x1 = conn1_rot[:, 0]
             y1 = conn1_rot[:, 1]
 
