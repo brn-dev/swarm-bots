@@ -21,6 +21,7 @@ DEFAULT_KWARGS = {
     'units_without_connections_reward_weight': -1e-5,
     'reset_settle_time': 1.0,
     'reset_settle_timestep_scale': 3,
+    'randomize_initial_swarm_z_rotation': False,
 }
 WALL_PASS_KWARGS = {
     'forward_reward_weight': 0.2,

@@ -26,9 +26,10 @@ DEFAULT_KWARGS = {
     "units_without_connections_reward_weight": -1e-5,
     "reset_settle_time": 1.0,
     "reset_settle_timestep_scale": 3,
+    "randomize_initial_swarm_z_rotation": False,
 }
 WALL_PASS_KWARGS = {
-    "forward_reward_weight": 0.2,
+    "forward_reward_weight": 1.0,  # 0.2,
     "wall_pass_reward_weight": 5.0,
     "wall_pass_thresholds": [-0.1, 0.1, 0.3, 0.5],
 }
@@ -63,7 +64,7 @@ def _resolve_swarm(
             max_radius=1.5,
             unconnected_prob=0.02,
             z_pos=0.5,
-            pool_seeds=tuple(range(42_000, 42_032)),
+            pool_seeds=tuple(range(42_000, 42_005)),
         )
 
     joint_configs = {

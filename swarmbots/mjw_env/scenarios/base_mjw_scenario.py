@@ -63,12 +63,14 @@ class MJWRuntimeBindings:
 class MJWCommonResetBatch:
     pool_idx: torch.Tensor
     swarm_start: torch.Tensor
+    initial_z_rotation: torch.Tensor
 
 
 @dataclass(slots=True)
 class MJWCommonResetSpec:
     pool_idx: int
     swarm_start: np.ndarray
+    initial_z_rotation: float
 
 
 @dataclass(slots=True)
@@ -113,6 +115,7 @@ class BaseMJWScenario(Protocol):
     reset_settle_timestep_scale: float
     swarm_start_x: Any
     swarm_start_y: Any
+    randomize_initial_swarm_z_rotation: bool
 
     def get_settings(self) -> dict[str, Any]: ...
     def build_model(self) -> mujoco.MjModel: ...
@@ -176,6 +179,7 @@ class BaseMJWScenarioRuntime(abc.ABC):
         return MJWCommonResetBatch(
             pool_idx=torch.randint(self.bindings.pool.size, (n_reset,), device=self.bindings.device, generator=rng),
             swarm_start=self._sample_swarm_start(n_reset=n_reset, rng=rng),
+            initial_z_rotation=self._sample_initial_z_rotation(n_reset=n_reset, rng=rng),
         )
 
     def _select_common_reset_batch(
@@ -187,6 +191,7 @@ class BaseMJWScenarioRuntime(abc.ABC):
         return MJWCommonResetBatch(
             pool_idx=common_reset_batch.pool_idx[mask],
             swarm_start=common_reset_batch.swarm_start[mask],
+            initial_z_rotation=common_reset_batch.initial_z_rotation[mask],
         )
 
     def _apply_common_reset_batch(self, *, world_idx: torch.Tensor, common_reset_batch: MJWCommonResetBatch) -> None:
@@ -221,6 +226,7 @@ class BaseMJWScenarioRuntime(abc.ABC):
                 bindings.pool_quats_wp,
                 bindings.inactive_unit_positions_wp,
                 wp.from_torch(common_reset_batch.swarm_start, dtype=wp.vec3),
+                wp.from_torch(common_reset_batch.initial_z_rotation, dtype=wp.float32),
                 bindings.unit_qpos_adr_wp,
             ],
             outputs=[bindings.qpos_wp],
@@ -237,10 +243,12 @@ class BaseMJWScenarioRuntime(abc.ABC):
     def _build_common_reset_specs(self, *, common_reset_batch: MJWCommonResetBatch) -> list[MJWCommonResetSpec]:
         pool_idx = common_reset_batch.pool_idx.detach().cpu().numpy()
         swarm_start = common_reset_batch.swarm_start.detach().cpu().numpy()
+        initial_z_rotation = common_reset_batch.initial_z_rotation.detach().cpu().numpy()
         return [
             MJWCommonResetSpec(
                 pool_idx=int(pool_idx[i]),
                 swarm_start=swarm_start[i].copy(),
+                initial_z_rotation=float(initial_z_rotation[i]),
             )
             for i in range(pool_idx.shape[0])
         ]
@@ -341,6 +349,11 @@ class BaseMJWScenarioRuntime(abc.ABC):
             dim=-1,
         )
 
+    def _sample_initial_z_rotation(self, *, n_reset: int, rng: torch.Generator) -> torch.Tensor:
+        if not self.scenario.randomize_initial_swarm_z_rotation:
+            return torch.zeros((n_reset,), device=self.bindings.device, dtype=torch.float32)
+        return torch.rand((n_reset,), device=self.bindings.device, dtype=torch.float32, generator=rng) * (2.0 * math.pi)
+
 
 class BaseMJWCPUResetSettler(abc.ABC):
     def __init__(self, *, scenario: BaseMJWScenario, bindings: MJWRuntimeBindings) -> None:
@@ -381,10 +394,29 @@ class BaseMJWCPUResetSettler(abc.ABC):
         data.time = 0.0
 
         active_mask = self._pool_active_mask[common_reset_spec.pool_idx]
+        angle = float(common_reset_spec.initial_z_rotation)
+        rotate_swarm = angle != 0.0
+        if rotate_swarm:
+            cos_angle = math.cos(angle)
+            sin_angle = math.sin(angle)
+            yaw_quat = np.array([math.cos(angle / 2.0), 0.0, 0.0, math.sin(angle / 2.0)], dtype=np.float64)
         for unit_idx, qpos_adr in enumerate(self.bindings.metadata.unit_qpos_adr):
             if active_mask[unit_idx]:
-                data.qpos[qpos_adr : qpos_adr + 3] = self._pool_positions[common_reset_spec.pool_idx, unit_idx] + common_reset_spec.swarm_start
-                data.qpos[qpos_adr + 3 : qpos_adr + 7] = self._pool_quats[common_reset_spec.pool_idx, unit_idx]
+                local_pos = self._pool_positions[common_reset_spec.pool_idx, unit_idx]
+                if rotate_swarm:
+                    data.qpos[qpos_adr] = common_reset_spec.swarm_start[0] + cos_angle * local_pos[0] - sin_angle * local_pos[1]
+                    data.qpos[qpos_adr + 1] = common_reset_spec.swarm_start[1] + sin_angle * local_pos[0] + cos_angle * local_pos[1]
+                    data.qpos[qpos_adr + 2] = common_reset_spec.swarm_start[2] + local_pos[2]
+                    rotated_quat = np.empty(4, dtype=np.float64)
+                    mujoco.mju_mulQuat(
+                        rotated_quat,
+                        yaw_quat,
+                        self._pool_quats[common_reset_spec.pool_idx, unit_idx].astype(np.float64),
+                    )
+                    data.qpos[qpos_adr + 3 : qpos_adr + 7] = rotated_quat
+                else:
+                    data.qpos[qpos_adr : qpos_adr + 3] = local_pos + common_reset_spec.swarm_start
+                    data.qpos[qpos_adr + 3 : qpos_adr + 7] = self._pool_quats[common_reset_spec.pool_idx, unit_idx]
             else:
                 data.qpos[qpos_adr : qpos_adr + 3] = self._inactive_unit_positions[unit_idx]
                 data.qpos[qpos_adr + 3 : qpos_adr + 7] = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
