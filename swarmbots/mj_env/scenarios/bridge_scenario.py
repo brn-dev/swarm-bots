@@ -50,6 +50,7 @@ class BridgeScenario(PayloadScenario):
             quat_rot6d_representation: bool = True,
             reset_settle_time: int = 0,
             reset_settle_timestep_scale: float = 1.0,
+            randomize_initial_swarm_z_rotation: bool = False,
             seed: int | None = None,
     ) -> None:
         self.street_width = float(street_width)
@@ -111,6 +112,7 @@ class BridgeScenario(PayloadScenario):
             force_elliptic_cone=force_elliptic_cone,
             reset_settle_time=reset_settle_time,
             reset_settle_timestep_scale=reset_settle_timestep_scale,
+            randomize_initial_swarm_z_rotation=randomize_initial_swarm_z_rotation,
             inactive_area_location=[-street_width * 1.5, 0, 0.1],
             _reset_in_init=False,
         )

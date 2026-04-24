@@ -142,6 +142,7 @@ Agents shall use this file to make notes for future instances. Write down import
 - `HomogeneousSwarm` supports preset layouts, explicit coordinates, Poisson-disc/pre-connected/random-wiggle generation.
 - Inactive units are controlled by `num_unit_probs`; this propagates through `agent_mask`.
 - Base scenario logic keeps inactive units physically out of active area.
+- CPU/MJW scenarios expose optional `randomize_initial_swarm_z_rotation` (`bool`, default `False`). When enabled, each reset samples a full-circle yaw and applies it as a rigid rotation to active unit poses before settling. In MJW the sampled yaw lives in the common reset batch/spec as `initial_z_rotation`; keep direct GPU resets and CPU-settled reset snapshots applying the same value.
 - MuJoCo `HomogeneousSwarm` now exposes `segment_1_ratio`, `minimal_contacts`, and `use_cylinders`; in `swarmbots/mj_env/swarm/unit.py`, `minimal_contacts=True` disables collisions on the short first limb segments and connector tips and adds same-unit excludes between long segments / main body, while `use_cylinders=False` switches limb and connector geoms to capsules.
 
 ## Runtime, Checkpoints, Logging

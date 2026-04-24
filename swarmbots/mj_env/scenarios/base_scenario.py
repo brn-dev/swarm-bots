@@ -81,6 +81,7 @@ class BaseScenario(abc.ABC):
             reset_settle_timestep_scale: float,
             swarm_start_x: FloatOrDistParams,
             swarm_start_y: FloatOrDistParams,
+            randomize_initial_swarm_z_rotation: bool,
             inactive_area_location: Iterable[float] | None,
             seed: int | None,
             _reset_in_init: bool = True,
@@ -103,6 +104,7 @@ class BaseScenario(abc.ABC):
         self.disconnect_potential_threshold = disconnect_potential_threshold
         self.swarm_start_x = swarm_start_x
         self.swarm_start_y = swarm_start_y
+        self.randomize_initial_swarm_z_rotation = bool(randomize_initial_swarm_z_rotation)
         if reset_settle_time < 0:
             raise ValueError(f"Expected reset_settle_time >= 0, got {reset_settle_time}")
         self.reset_settle_time = reset_settle_time
@@ -211,6 +213,7 @@ class BaseScenario(abc.ABC):
             'disconnect_potential_threshold': self.disconnect_potential_threshold,
             'swarm_start_x': self.swarm_start_x,
             'swarm_start_y': self.swarm_start_y,
+            'randomize_initial_swarm_z_rotation': self.randomize_initial_swarm_z_rotation,
             'friction': self.friction,
             'force_elliptic_cone': self.force_elliptic_cone,
             'seed': self.seed,
@@ -373,6 +376,14 @@ class BaseScenario(abc.ABC):
             swarm_start_location,
             self.inactive_unit_positions
         )
+        initial_swarm_z_rotation = self._sample_initial_swarm_z_rotation()
+        state["initial_swarm_z_rotation"] = initial_swarm_z_rotation
+        self._apply_initial_swarm_z_rotation(
+            data=data,
+            units_active_mask=units_active_mask,
+            swarm_start_location=swarm_start_location,
+            angle=initial_swarm_z_rotation,
+        )
         if self.swarm.can_have_inactive_units:
             if units_active_mask is None:
                 units_active_mask = np.ones(self.num_units, dtype=bool)
@@ -393,6 +404,45 @@ class BaseScenario(abc.ABC):
             )
 
         return state, connections
+
+    def _sample_initial_swarm_z_rotation(self) -> float:
+        if not self.randomize_initial_swarm_z_rotation:
+            return 0.0
+        return float(self.rng.uniform(0.0, 2.0 * math.pi))
+
+    def _apply_initial_swarm_z_rotation(
+            self,
+            *,
+            data: mujoco.MjData,
+            units_active_mask: np.ndarray | None,
+            swarm_start_location: np.ndarray,
+            angle: float,
+    ) -> None:
+        if angle == 0.0:
+            return
+
+        active_mask = (
+            np.ones(self.num_units, dtype=bool)
+            if units_active_mask is None
+            else units_active_mask
+        )
+        cos_angle = math.cos(angle)
+        sin_angle = math.sin(angle)
+        yaw_quat = np.array([math.cos(angle / 2.0), 0.0, 0.0, math.sin(angle / 2.0)], dtype=float)
+
+        for unit_idx, is_active in enumerate(active_mask):
+            if not is_active:
+                continue
+            qpos_indices = self._qpos_indices[unit_idx]
+            pos_indices = qpos_indices[:3]
+            pos_offset = data.qpos[pos_indices] - swarm_start_location
+            data.qpos[pos_indices[0]] = swarm_start_location[0] + cos_angle * pos_offset[0] - sin_angle * pos_offset[1]
+            data.qpos[pos_indices[1]] = swarm_start_location[1] + sin_angle * pos_offset[0] + cos_angle * pos_offset[1]
+
+            quat_indices = qpos_indices[3:7]
+            rotated_quat = np.empty(4, dtype=float)
+            mujoco.mju_mulQuat(rotated_quat, yaw_quat, data.qpos[quat_indices].copy())
+            data.qpos[quat_indices] = rotated_quat
 
     def settle_reset(
             self,

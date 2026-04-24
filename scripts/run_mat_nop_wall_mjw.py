@@ -72,7 +72,7 @@ def main() -> None:
     if not torch.cuda.is_available():
         raise RuntimeError("run_mat_nop_wall_mjw.py requires CUDA.")
 
-    rollout_samples = int(4048 * 0.75)
+    rollout_samples = int(4048 * 1.0)
     n_envs = 512
 
     episode_length = 512
@@ -211,35 +211,35 @@ def main() -> None:
             ),
             dropout=0.0,
             act_fn_cls=nn.GELU,
-            # continuous_config=StickyLeftRightBetaConfig(
-            #     stickiness=initial_stickiness,
-            #     ent_loss_coef=1e-3,
-            #     beta_ent_scale=0.75,
-            #     categorical_ent_loss_config=EntropyLossConfig(
-            #         agent_actions_reduction=AgentActionsReduction.SUM,
-            #         metrics_reduction=AgentActionsReduction.MEAN,
-            #     ),
-            #     beta_ent_loss_config=EntropyLossConfig(
-            #         agent_actions_reduction=AgentActionsReduction.SUM,
-            #         metrics_reduction=AgentActionsReduction.MEAN,
-            #     ),
-            # ),
-            continuous_config=LeftRightBetaConfig(
-                ent_loss_coef=5e-3,
+            continuous_config=StickyLeftRightBetaConfig(
+                stickiness=initial_stickiness,
+                ent_loss_coef=1e-3,
                 beta_ent_scale=0.75,
                 categorical_ent_loss_config=EntropyLossConfig(
-                    max_entropy=0.5,
-                    # loss_transform=lambda x: x**2,
                     agent_actions_reduction=AgentActionsReduction.SUM,
                     metrics_reduction=AgentActionsReduction.MEAN,
                 ),
                 beta_ent_loss_config=EntropyLossConfig(
-                    max_entropy=-0.35,
-                    # loss_transform=lambda x: x**2,
                     agent_actions_reduction=AgentActionsReduction.SUM,
                     metrics_reduction=AgentActionsReduction.MEAN,
                 ),
             ),
+            # continuous_config=LeftRightBetaConfig(
+            #     ent_loss_coef=1e-3,
+            #     beta_ent_scale=1.0,
+            #     categorical_ent_loss_config=EntropyLossConfig(
+            #         # max_entropy=0.5,
+            #         # loss_transform=lambda x: x**2,
+            #         agent_actions_reduction=AgentActionsReduction.SUM,
+            #         metrics_reduction=AgentActionsReduction.MEAN,
+            #     ),
+            #     beta_ent_loss_config=EntropyLossConfig(
+            #         # max_entropy=-0.35,
+            #         # loss_transform=lambda x: x**2,
+            #         agent_actions_reduction=AgentActionsReduction.SUM,
+            #         metrics_reduction=AgentActionsReduction.MEAN,
+            #     ),
+            # ),
             bernoulli_config=BernoulliConfig(
                 initial_prob=0.75,
                 ent_loss_coef=1e-3,
@@ -351,7 +351,7 @@ def main() -> None:
             batch_size=rollout_samples,
             num_next_steps=world_model_num_next_steps,
         ),
-        n_epochs=6,
+        n_epochs=8,
         gamma=gamma,
         gae_lambda=0.95,
         clip_range=0.07,

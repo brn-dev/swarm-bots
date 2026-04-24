@@ -61,6 +61,7 @@ class MJWObstacleStreetScenario(BaseMJWScenario):
     seed: int | None = None
     compile_reward_kernel: bool = False
     reward_kernel_compile_mode: str = "default"
+    randomize_initial_swarm_z_rotation: bool = False
 
     def __post_init__(self) -> None:
         if self.include_connectors_xquat_in_obs:
@@ -100,6 +101,7 @@ class MJWObstacleStreetScenario(BaseMJWScenario):
             "disconnect_potential_threshold": self.disconnect_potential_threshold,
             "swarm_start_x": self.swarm_start_x,
             "swarm_start_y": self.swarm_start_y,
+            "randomize_initial_swarm_z_rotation": self.randomize_initial_swarm_z_rotation,
             "friction": self.friction,
             "seed": self.seed,
             "reset_settle_time": self.reset_settle_time,

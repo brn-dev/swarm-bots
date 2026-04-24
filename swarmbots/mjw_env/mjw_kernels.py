@@ -27,6 +27,7 @@ def apply_reset_unit_pose(
     pool_quats: wp.array(dtype=wp.float32, ndim=3),
     inactive_positions: wp.array(dtype=wp.vec3, ndim=1),
     swarm_start: wp.array(dtype=wp.vec3, ndim=1),
+    initial_z_rotation: wp.array(dtype=wp.float32, ndim=1),
     unit_qpos_adr: wp.array(dtype=wp.int32, ndim=1),
     qpos: wp.array(dtype=wp.float32, ndim=2),
 ):
@@ -43,14 +44,40 @@ def apply_reset_unit_pose(
     qpos_adr_6 = qpos_adr + 6
 
     if active_mask[pool_sample_idx, unit_idx]:
-        unit_pos = pool_positions[pool_sample_idx, unit_idx] + swarm_start[reset_slot]
-        qpos[env_idx, qpos_adr] = unit_pos[0]
-        qpos[env_idx, qpos_adr_1] = unit_pos[1]
-        qpos[env_idx, qpos_adr_2] = unit_pos[2]
-        qpos[env_idx, qpos_adr_3] = pool_quats[pool_sample_idx, unit_idx, 0]
-        qpos[env_idx, qpos_adr_4] = pool_quats[pool_sample_idx, unit_idx, 1]
-        qpos[env_idx, qpos_adr_5] = pool_quats[pool_sample_idx, unit_idx, 2]
-        qpos[env_idx, qpos_adr_6] = pool_quats[pool_sample_idx, unit_idx, 3]
+        angle = initial_z_rotation[reset_slot]
+        local_pos = pool_positions[pool_sample_idx, unit_idx]
+        reset_start = swarm_start[reset_slot]
+        if angle == 0.0:
+            unit_pos = local_pos + reset_start
+            qpos[env_idx, qpos_adr] = unit_pos[0]
+            qpos[env_idx, qpos_adr_1] = unit_pos[1]
+            qpos[env_idx, qpos_adr_2] = unit_pos[2]
+            qpos[env_idx, qpos_adr_3] = pool_quats[pool_sample_idx, unit_idx, 0]
+            qpos[env_idx, qpos_adr_4] = pool_quats[pool_sample_idx, unit_idx, 1]
+            qpos[env_idx, qpos_adr_5] = pool_quats[pool_sample_idx, unit_idx, 2]
+            qpos[env_idx, qpos_adr_6] = pool_quats[pool_sample_idx, unit_idx, 3]
+        else:
+            cos_angle = wp.cos(angle)
+            sin_angle = wp.sin(angle)
+            unit_pos = wp.vec3(
+                reset_start[0] + cos_angle * local_pos[0] - sin_angle * local_pos[1],
+                reset_start[1] + sin_angle * local_pos[0] + cos_angle * local_pos[1],
+                reset_start[2] + local_pos[2],
+            )
+            qpos[env_idx, qpos_adr] = unit_pos[0]
+            qpos[env_idx, qpos_adr_1] = unit_pos[1]
+            qpos[env_idx, qpos_adr_2] = unit_pos[2]
+            quat_w = pool_quats[pool_sample_idx, unit_idx, 0]
+            quat_x = pool_quats[pool_sample_idx, unit_idx, 1]
+            quat_y = pool_quats[pool_sample_idx, unit_idx, 2]
+            quat_z = pool_quats[pool_sample_idx, unit_idx, 3]
+            half_angle = 0.5 * angle
+            yaw_w = wp.cos(half_angle)
+            yaw_z = wp.sin(half_angle)
+            qpos[env_idx, qpos_adr_3] = yaw_w * quat_w - yaw_z * quat_z
+            qpos[env_idx, qpos_adr_4] = yaw_w * quat_x - yaw_z * quat_y
+            qpos[env_idx, qpos_adr_5] = yaw_w * quat_y + yaw_z * quat_x
+            qpos[env_idx, qpos_adr_6] = yaw_w * quat_z + yaw_z * quat_w
     else:
         inactive_pos = inactive_positions[unit_idx]
         qpos[env_idx, qpos_adr] = inactive_pos[0]

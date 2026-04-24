@@ -42,6 +42,7 @@ class PayloadScenario(BaseScenario, abc.ABC):
             reset_settle_timestep_scale: float = 1.0,
             swarm_start_x: FloatOrDistParams = 0.0,
             swarm_start_y: FloatOrDistParams = 0.0,
+            randomize_initial_swarm_z_rotation: bool = False,
             inactive_area_location: Iterable[float] | None = None,
             seed: int | None = None,
             _reset_in_init: bool = True,
@@ -73,6 +74,7 @@ class PayloadScenario(BaseScenario, abc.ABC):
             reset_settle_timestep_scale=reset_settle_timestep_scale,
             swarm_start_x=swarm_start_x,
             swarm_start_y=swarm_start_y,
+            randomize_initial_swarm_z_rotation=randomize_initial_swarm_z_rotation,
             inactive_area_location=inactive_area_location,
             _reset_in_init=_reset_in_init
         )
