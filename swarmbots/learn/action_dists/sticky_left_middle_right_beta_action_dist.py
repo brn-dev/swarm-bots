@@ -62,7 +62,7 @@ class StickyLeftMiddleRightBetaActionDist(LeftMiddleRightBetaActionDist, StickyA
         self.set_stickiness(stickiness)
 
     def requires_previous_actions(self) -> bool:
-        return self.get_stickiness() > 0.0
+        return True
 
     def sample(
             self,
@@ -127,9 +127,7 @@ class StickyLeftMiddleRightBetaActionDist(LeftMiddleRightBetaActionDist, StickyA
     def _effective_probs(self, previous_actions: torch.Tensor | None) -> torch.Tensor:
         base_probs = F.softmax(self.weight_logits, dim=-1)
         if previous_actions is None:
-            if self.get_stickiness() > 0.0:
-                raise ValueError("previous_actions is required when stickiness > 0.")
-            return base_probs
+            raise ValueError("StickyLeftMiddleRightBetaActionDist requires previous_actions.")
 
         previous_indices = self._actions_to_indices(previous_actions)
         sticky_mask = self._sticky_mask(previous_indices).unsqueeze(-1)
