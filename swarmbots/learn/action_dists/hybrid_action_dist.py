@@ -181,7 +181,8 @@ class HybridActionDistribution(ActionDist):
         else:
             split_previous_actions = torch.split(previous_actions, self.action_dims, dim=AGENT_ACTIONS_DIM)
         actions: list[torch.Tensor] = []
-        for dist, previous_action in zip(self.distributions, split_previous_actions, strict=True):
+        for idx, dist in enumerate(self.distributions):
+            previous_action = split_previous_actions[idx]
             if isinstance(dist, GSDEActionDist):
                 actions.append(dist.sample(agent=agent, previous_actions=previous_action))
             else:
@@ -194,13 +195,10 @@ class HybridActionDistribution(ActionDist):
             split_previous_actions = (None,) * len(self.distributions)
         else:
             split_previous_actions = torch.split(previous_actions, self.action_dims, dim=AGENT_ACTIONS_DIM)
-        return torch.cat(
-            [
-                dist.mode(previous_actions=previous_action)
-                for dist, previous_action in zip(self.distributions, split_previous_actions, strict=True)
-            ],
-            dim=AGENT_ACTIONS_DIM,
-        )
+        actions: list[torch.Tensor] = []
+        for idx, dist in enumerate(self.distributions):
+            actions.append(dist.mode(previous_actions=split_previous_actions[idx]))
+        return torch.cat(actions, dim=AGENT_ACTIONS_DIM)
 
     def log_prob(
             self,
@@ -213,18 +211,10 @@ class HybridActionDistribution(ActionDist):
             split_previous_actions = (None,) * len(self.distributions)
         else:
             split_previous_actions = torch.split(previous_actions, self.action_dims, dim=AGENT_ACTIONS_DIM)
-        return torch.stack(
-            [
-                dist.log_prob(action, previous_action)
-                for dist, action, previous_action in zip(
-                    self.distributions,
-                    split_actions,
-                    split_previous_actions,
-                    strict=True,
-                )
-            ],
-            dim=-1
-        ).sum(dim=-1)
+        log_prob_parts: list[torch.Tensor] = []
+        for idx, dist in enumerate(self.distributions):
+            log_prob_parts.append(dist.log_prob(split_actions[idx], split_previous_actions[idx]))
+        return torch.stack(log_prob_parts, dim=-1).sum(dim=-1)
 
     def get_actions_with_log_probs(
             self,
@@ -241,7 +231,8 @@ class HybridActionDistribution(ActionDist):
         else:
             split_previous_actions = torch.split(previous_actions, self.action_dims, dim=AGENT_ACTIONS_DIM)
 
-        for dist, previous_action in zip(self.distributions, split_previous_actions, strict=True):
+        for idx, dist in enumerate(self.distributions):
+            previous_action = split_previous_actions[idx]
             if dist.sampling_depends_on_agent:
                 action_part, log_prob_part = dist.get_actions_with_log_probs(
                     latent_pi=latent_pi,

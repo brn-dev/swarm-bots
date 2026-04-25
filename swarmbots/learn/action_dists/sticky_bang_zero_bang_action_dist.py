@@ -48,7 +48,7 @@ class StickyBangZeroBangActionDist(BangZeroBangActionDist, StickyActionDist):
         self.set_stickiness(stickiness)
 
     def requires_previous_actions(self) -> bool:
-        return self.get_stickiness() > 0.0
+        return True
 
     def sample(
             self,
@@ -58,9 +58,7 @@ class StickyBangZeroBangActionDist(BangZeroBangActionDist, StickyActionDist):
         _ = agent
         sampled_indices = self.distribution.sample()
         if previous_actions is None:
-            if self.get_stickiness() > 0.0:
-                raise ValueError("previous_actions is required when stickiness > 0.")
-            return self._indices_to_actions(sampled_indices)
+            raise ValueError("StickyBangZeroBangActionDist requires previous_actions.")
 
         previous_indices = self._actions_to_indices(previous_actions)
         can_stick = self._sticky_mask(previous_indices)
@@ -82,9 +80,7 @@ class StickyBangZeroBangActionDist(BangZeroBangActionDist, StickyActionDist):
         action_indices = self._actions_to_indices(actions)
         base_log_prob = self.distribution.log_prob(action_indices)
         if previous_actions is None:
-            if self.get_stickiness() > 0.0:
-                raise ValueError("previous_actions is required when stickiness > 0.")
-            return base_log_prob.sum(dim=AGENT_ACTIONS_DIM)
+            raise ValueError("StickyBangZeroBangActionDist requires previous_actions.")
 
         previous_indices = self._actions_to_indices(previous_actions)
         can_stick = self._sticky_mask(previous_indices)
@@ -106,9 +102,7 @@ class StickyBangZeroBangActionDist(BangZeroBangActionDist, StickyActionDist):
     def _effective_probs(self, previous_actions: torch.Tensor | None) -> torch.Tensor:
         base_probs = self.distribution.probs
         if previous_actions is None:
-            if self.get_stickiness() > 0.0:
-                raise ValueError("previous_actions is required when stickiness > 0.")
-            return base_probs
+            raise ValueError("StickyBangZeroBangActionDist requires previous_actions.")
 
         previous_indices = self._actions_to_indices(previous_actions)
         sticky_mask = self._sticky_mask(previous_indices).unsqueeze(-1)
