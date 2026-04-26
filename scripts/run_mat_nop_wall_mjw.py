@@ -76,8 +76,8 @@ def main() -> None:
     n_envs = 512
 
     episode_length = 512
-    total_timesteps = 100_000_000
-    save_interval = 5000
+    total_timesteps = 300_000_000
+    save_interval = 10000
 
     use_popart = True
     popart_beta = 5e-4
@@ -89,7 +89,7 @@ def main() -> None:
 
     initial_stickiness = 0.25
     final_stickiness = 0.0
-    stickiness_anneal_steps = int(total_timesteps * 0.15)
+    stickiness_anneal_steps = 15_000_000
     gsde_init_stds = [0.25, 0.30]
 
     compile_policy_modules = True
