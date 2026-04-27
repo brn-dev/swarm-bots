@@ -358,11 +358,24 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
             "episode_length": self.episode_length,
             "action_repeat": self.action_repeat,
             "simulation_unstable_reward": self.simulation_unstable_reward,
+            "swarm_pool": {
+                "pool_size": self.get_swarm_pool_size(),
+                "active_pool_size": self.get_active_swarm_pool_size(),
+            },
             "physics_workspace_caps": {
                 "nconmax": self._nconmax,
                 "njmax": self._njmax,
             },
         }
+
+    def get_swarm_pool_size(self) -> int:
+        return self.scenario.swarm.get_pool_size()
+
+    def get_active_swarm_pool_size(self) -> int:
+        return self.scenario.swarm.get_active_pool_size()
+
+    def set_active_swarm_pool_size(self, active_pool_size: int) -> int:
+        return int(self.scenario.swarm.set_active_pool_size(active_pool_size))
 
     def reset(
         self,

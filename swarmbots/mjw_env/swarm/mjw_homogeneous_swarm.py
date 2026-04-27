@@ -23,8 +23,7 @@ class MJWPreConnectedUnitLocationsConfig:
     z_pos: float = 0.0
     center: bool = True
     pool_seeds: Collection[int] | None = None
-    pool_size: int | None = None
-    pool_seed_start: int = 42_000
+    active_pool_size: int | None = None
 
     def __post_init__(self) -> None:
         if not 0.0 <= self.unconnected_prob <= 1.0:
@@ -34,10 +33,13 @@ class MJWPreConnectedUnitLocationsConfig:
             if not pool_seeds:
                 raise ValueError("pool_seeds must not be empty")
             self.pool_seeds = pool_seeds
-        if self.pool_size is None and self.pool_seeds is None:
-            self.pool_size = 256
-        if self.pool_size is not None and self.pool_size <= 0:
-            raise ValueError(f"Expected pool_size > 0, got {self.pool_size}")
+        if self.pool_seeds is None:
+            raise ValueError("MJW preconnected swarms require explicit pool_seeds.")
+        pool_size = self.get_pool_size()
+        if self.active_pool_size is None:
+            self.active_pool_size = pool_size
+        if self.active_pool_size < 1 or self.active_pool_size > pool_size:
+            raise ValueError(f"active_pool_size must be in [1, {pool_size}], got {self.active_pool_size}")
         if self.num_unit_probs is not None:
             counts = np.asarray(list(self.num_unit_probs.keys()), dtype=int)
             probs = np.asarray(list(self.num_unit_probs.values()), dtype=float)
@@ -52,6 +54,11 @@ class MJWPreConnectedUnitLocationsConfig:
                 raise ValueError("num_unit_probs must sum to a positive value")
             probs = probs / probs_sum
             self.num_unit_probs = dict(zip(counts.tolist(), probs.tolist(), strict=True))
+
+    def get_pool_size(self) -> int:
+        if self.pool_seeds is not None:
+            return len(self.pool_seeds)
+        raise ValueError("Expected explicit pool_seeds for MJW preconnected swarms.")
 
 
 @dataclass
@@ -123,6 +130,22 @@ class MJWHomogeneousSwarm:
             "hinge_frictionloss": self.hinge_frictionloss,
         }
 
+    def get_pool_size(self) -> int:
+        return self.unit_start_locations.get_pool_size()
+
+    def get_active_pool_size(self) -> int:
+        return self.unit_start_locations.active_pool_size
+
+    def set_active_pool_size(self, active_pool_size: int) -> int:
+        pool_size = self.get_pool_size()
+        if active_pool_size < 1 or active_pool_size > pool_size:
+            raise ValueError(f"active_pool_size must be in [1, {pool_size}], got {active_pool_size}")
+        self.unit_start_locations.active_pool_size = int(active_pool_size)
+        return int(self.unit_start_locations.active_pool_size)
+
+    def get_active_pool_seeds(self) -> tuple[int, ...]:
+        return self._resolve_pool_seeds()[:self.get_active_pool_size()]
+
     def create_swarm_spec(self, *, seed: int | None = None) -> mujoco.MjSpec:
         rng = np.random.default_rng(42 if seed is None else seed)
         positions, quats, _partner_unit, _partner_connector, _twist_idx = self._generate_preconnected_sample(
@@ -161,14 +184,7 @@ class MJWHomogeneousSwarm:
         return spec
 
     def build_pool(self, *, device: torch.device) -> MJWSwarmPool:
-        pool_seeds = (
-            tuple(self.unit_start_locations.pool_seeds)
-            if self.unit_start_locations.pool_seeds is not None
-            else tuple(
-                self.unit_start_locations.pool_seed_start + i
-                for i in range(int(self.unit_start_locations.pool_size))
-            )
-        )
+        pool_seeds = self._resolve_pool_seeds()
 
         positions_list: list[np.ndarray] = []
         quats_list: list[np.ndarray] = []
@@ -199,6 +215,11 @@ class MJWHomogeneousSwarm:
             partner_connector=partner_connector,
             twist_idx=twist_idx,
         )
+
+    def _resolve_pool_seeds(self) -> tuple[int, ...]:
+        if self.unit_start_locations.pool_seeds is not None:
+            return tuple(int(seed) for seed in self.unit_start_locations.pool_seeds)
+        raise ValueError("Expected explicit pool_seeds for MJW preconnected swarms.")
 
     def _add_eq_constraints(self, spec: mujoco.MjSpec) -> None:
         for unit1 in range(self.config.num_units - 1):

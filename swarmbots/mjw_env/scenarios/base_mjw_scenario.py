@@ -176,8 +176,9 @@ class BaseMJWScenarioRuntime(abc.ABC):
         raise NotImplementedError
 
     def _sample_common_reset_batch(self, *, n_reset: int, rng: torch.Generator) -> MJWCommonResetBatch:
+        active_pool_size = self.scenario.swarm.get_active_pool_size()
         return MJWCommonResetBatch(
-            pool_idx=torch.randint(self.bindings.pool.size, (n_reset,), device=self.bindings.device, generator=rng),
+            pool_idx=torch.randint(active_pool_size, (n_reset,), device=self.bindings.device, generator=rng),
             swarm_start=self._sample_swarm_start(n_reset=n_reset, rng=rng),
             initial_z_rotation=self._sample_initial_z_rotation(n_reset=n_reset, rng=rng),
         )
