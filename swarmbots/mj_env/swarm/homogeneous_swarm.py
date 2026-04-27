@@ -114,6 +114,7 @@ class PreConnectedUnitLocationsConfig:
     center: bool = True
 
     pool_seeds: Optional[Collection[int]] = None
+    active_pool_size: int | None = None
 
 @dataclass
 class RandomWiggleUnitLocationsConfig:
@@ -226,6 +227,13 @@ class HomogeneousSwarm(BaseSwarm):
                 if any(isinstance(seed, bool) or not isinstance(seed, (int, np.integer)) for seed in pool_seeds):
                     raise ValueError("pool_seeds must only contain integer seeds")
                 unit_start_locations.pool_seeds = tuple(int(seed) for seed in pool_seeds)
+            if unit_start_locations.pool_seeds is not None:
+                resolved_pool_size = self._get_pool_size()
+                if unit_start_locations.active_pool_size is None:
+                    unit_start_locations.active_pool_size = resolved_pool_size
+                self._validate_active_pool_size(unit_start_locations.active_pool_size)
+            elif unit_start_locations.active_pool_size is not None:
+                raise ValueError("active_pool_size requires pool_seeds for a fixed precomputed pool.")
         elif isinstance(unit_start_locations, RandomWiggleUnitLocationsConfig):
             self.num_units = unit_start_locations.num_units
             self.unit_start_locations = unit_start_locations
@@ -287,6 +295,51 @@ class HomogeneousSwarm(BaseSwarm):
             'randomize_unit_orientations': self.randomize_unit_orientations,
         })
         return settings
+
+    def has_fixed_pool(self) -> bool:
+        return isinstance(self.unit_start_locations, PreConnectedUnitLocationsConfig) and (
+            self.unit_start_locations.pool_seeds is not None
+        )
+
+    def get_pool_size(self) -> int | None:
+        if not self.has_fixed_pool():
+            return None
+        return self._get_pool_size()
+
+    def get_active_pool_size(self) -> int | None:
+        if not self.has_fixed_pool():
+            return None
+        return int(self.unit_start_locations.active_pool_size)
+
+    def set_active_pool_size(self, active_pool_size: int) -> int:
+        if not self.has_fixed_pool():
+            raise ValueError("This swarm does not use a fixed precomputed pool.")
+        self._validate_active_pool_size(active_pool_size)
+        self.unit_start_locations.active_pool_size = int(active_pool_size)
+        return int(self.unit_start_locations.active_pool_size)
+
+    def get_active_pool_seeds(self) -> tuple[int, ...] | None:
+        if not self.has_fixed_pool():
+            return None
+        active_pool_size = self.unit_start_locations.active_pool_size
+        return self._resolve_pool_seeds()[:active_pool_size]
+
+    def _get_pool_size(self) -> int:
+        pool_seeds = self.unit_start_locations.pool_seeds
+        if pool_seeds is not None:
+            return len(pool_seeds)
+        raise ValueError("Expected pool_seeds to be configured for a fixed precomputed pool.")
+
+    def _resolve_pool_seeds(self) -> tuple[int, ...]:
+        pool_seeds = self.unit_start_locations.pool_seeds
+        if pool_seeds is not None:
+            return tuple(int(seed) for seed in pool_seeds)
+        raise ValueError("Expected pool_seeds to be configured for a fixed precomputed pool.")
+
+    def _validate_active_pool_size(self, active_pool_size: int) -> None:
+        pool_size = self._get_pool_size()
+        if active_pool_size < 1 or active_pool_size > pool_size:
+            raise ValueError(f"active_pool_size must be in [1, {pool_size}], got {active_pool_size}")
 
     def _create_swarm_spec(self, rng: np.random.Generator | None = None) -> mujoco.MjSpec:
         spec = mujoco.MjSpec()
@@ -494,8 +547,9 @@ class HomogeneousSwarm(BaseSwarm):
         num_units = random_config.num_units
         max_radius = random_config.max_radius
 
-        if random_config.pool_seeds is not None:
-            seed = int(rng.choice(random_config.pool_seeds))
+        active_pool_seeds = self.get_active_pool_seeds()
+        if active_pool_seeds is not None:
+            seed = int(rng.choice(active_pool_seeds))
             rng = np.random.default_rng(seed)
 
         if force_full or random_config.num_unit_probs is None:

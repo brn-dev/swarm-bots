@@ -117,6 +117,10 @@ class SwarmBotsEnv(gymnasium.Env):
             'action_repeat': self.action_repeat,
             'shuffle_agents': self.shuffle_agents,
             'simulation_unstable_reward': self.simulation_unstable_reward,
+            'swarm_pool': {
+                'pool_size': self.get_swarm_pool_size(),
+                'active_pool_size': self.get_active_swarm_pool_size(),
+            },
         }
 
     def update_reward_weights(self, reward_weights: RewardWeights) -> RewardWeightsUpdateResult:
@@ -124,6 +128,24 @@ class SwarmBotsEnv(gymnasium.Env):
 
     def get_reward_weights(self) -> RewardWeights:
         return self.scenario.get_reward_weights()
+
+    def get_swarm_pool_size(self) -> int | None:
+        get_pool_size = getattr(self.scenario.swarm, "get_pool_size", None)
+        if not callable(get_pool_size):
+            return None
+        return get_pool_size()
+
+    def get_active_swarm_pool_size(self) -> int | None:
+        get_active_pool_size = getattr(self.scenario.swarm, "get_active_pool_size", None)
+        if not callable(get_active_pool_size):
+            return None
+        return get_active_pool_size()
+
+    def set_active_swarm_pool_size(self, active_pool_size: int) -> int:
+        set_active_pool_size = getattr(self.scenario.swarm, "set_active_pool_size", None)
+        if not callable(set_active_pool_size):
+            raise ValueError("Scenario swarm does not support a fixed starting-configuration pool.")
+        return int(set_active_pool_size(active_pool_size))
 
     def reset(
         self,
