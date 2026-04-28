@@ -158,12 +158,15 @@ def set_actuator_gsde_init_joint_stds(
 
 
 def main() -> None:
+    from swarmbots.learn.torch_logging import enable_torch_compile_logging
+
     logger.remove()
     logger.add(
         sys.stderr,
         colorize=True,
         format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <5}</level> | <level>{message}</level>",
     )
+    enable_torch_compile_logging()
 
     n_workers = 23
     n_envs = n_workers * 4

@@ -57,13 +57,15 @@ def _compute_obstacle_street_reward_kernel(
     threshold_index_torch: torch.Tensor,
     progress_reward_weight: float,
     forward_reward_weight: float,
+    forward_reward_max_y: float,
     wall_pass_reward_weight: float,
     wall_thresholds_per_wall: int,
     units_without_connections_reward_weight: float,
     guidance_reward_weight: float,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     safe_unit_y = torch.where(stable_mask.unsqueeze(1), unit_y, torch.zeros_like(unit_y))
-    new_progress = masked_mean(safe_unit_y, units_active_mask, dim=1)
+    capped_unit_y = torch.clamp(safe_unit_y, max=float(forward_reward_max_y))
+    new_progress = masked_mean(capped_unit_y, units_active_mask, dim=1)
     progress_delta = new_progress - progress
 
     wall_pass_reward = torch.zeros_like(progress, dtype=torch.float32)
@@ -149,7 +151,11 @@ class _ObstacleStreetCPUResetSettler(BaseMJWCPUResetSettler):
             total_passed = np.zeros((active_mask.shape[0],), dtype=np.int64)
             passed_thresholds_mask = np.zeros((active_mask.shape[0], 0), dtype=bool)
 
-        progress = float(unit_y[active_mask].mean()) if active_mask.any() else 0.0
+        progress = _compute_forward_progress_baseline_np(
+            unit_y=unit_y,
+            active_mask=active_mask,
+            forward_reward_max_y=self.scenario.forward_reward_max_y,
+        )
         return ObstacleStreetSettledSnapshot(
             common=self._build_common_snapshot(common_reset_spec=spec.common),
             hidden_global_vars=spec.hidden_global_vars.copy(),
@@ -231,7 +237,10 @@ class ObstacleStreetMJWScenarioRuntime(BaseMJWScenarioRuntime):
             bindings=bindings,
             threshold_index=self._threshold_index_np,
         )
-        self._reward_kernel: Callable[..., tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]]
+        self._reward_kernel: Callable[
+            ...,
+            tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor],
+        ]
         self._reward_kernel = _compute_obstacle_street_reward_kernel
         if scenario.compile_reward_kernel:
             if not hasattr(torch, "compile"):
@@ -287,7 +296,11 @@ class ObstacleStreetMJWScenarioRuntime(BaseMJWScenarioRuntime):
 
         unit_y = self._get_unit_y()[world_idx]
         total_passed = (unit_y.unsqueeze(-1) > reset_batch.wall_pass_thresholds.unsqueeze(1)).sum(dim=-1)
-        self.progress[world_idx] = masked_mean(unit_y, self.bindings.units_active_mask[world_idx], dim=1)
+        self.progress[world_idx] = _compute_forward_progress_baseline_torch(
+            unit_y=unit_y,
+            active_mask=self.bindings.units_active_mask[world_idx],
+            forward_reward_max_y=self.scenario.forward_reward_max_y,
+        )
         self.next_threshold_for_unit[world_idx] = total_passed
         self.passed_thresholds_mask[world_idx] = self._threshold_index_torch.view(1, 1, -1) < total_passed.unsqueeze(-1)
         self._hidden_local_obs[world_idx] = self.passed_thresholds_mask[world_idx].to(dtype=torch.float32)
@@ -359,6 +372,7 @@ class ObstacleStreetMJWScenarioRuntime(BaseMJWScenarioRuntime):
             self._threshold_index_torch,
             float(self.scenario.progress_reward_weight),
             float(self.scenario.forward_reward_weight),
+            float("inf") if self.scenario.forward_reward_max_y is None else float(self.scenario.forward_reward_max_y),
             float(self.scenario.wall_pass_reward_weight),
             int(self._wall_thresholds_per_wall),
             float(self.scenario.units_without_connections_reward_weight),
@@ -478,3 +492,30 @@ class ObstacleStreetMJWScenarioRuntime(BaseMJWScenarioRuntime):
                 self.bindings.mocap_pos[world_idx, mocap_id, 1] = wall_y - (self.scenario.ramp_distances_to_wall[wall_idx] / 2.0)
                 self.bindings.mocap_pos[world_idx, mocap_id, 2] = (self.scenario.wall_heights[wall_idx] / 2.0) - 0.05
                 ramp_idx += 1
+
+
+def _compute_forward_progress_baseline_np(
+    *,
+    unit_y: np.ndarray,
+    active_mask: np.ndarray,
+    forward_reward_max_y: float | None,
+) -> float:
+    capped_unit_y = np.asarray(unit_y, dtype=float)
+    if forward_reward_max_y is not None:
+        capped_unit_y = np.minimum(capped_unit_y, forward_reward_max_y)
+    active_units_mask = np.asarray(active_mask, dtype=bool)
+    if not active_units_mask.any():
+        return 0.0
+    return float(capped_unit_y[active_units_mask].mean())
+
+
+def _compute_forward_progress_baseline_torch(
+    *,
+    unit_y: torch.Tensor,
+    active_mask: torch.Tensor,
+    forward_reward_max_y: float | None,
+) -> torch.Tensor:
+    capped_unit_y = unit_y
+    if forward_reward_max_y is not None:
+        capped_unit_y = torch.clamp(capped_unit_y, max=float(forward_reward_max_y))
+    return masked_mean(capped_unit_y, active_mask, dim=1)

@@ -58,6 +58,7 @@ class MJWObstacleStreetScenario(BaseMJWScenario):
     no_initial_ramp: bool
     wall_pass_reward_weight: float
     wall_pass_thresholds: list[float]
+    forward_reward_max_y: float | None = None
     seed: int | None = None
     compile_reward_kernel: bool = False
     reward_kernel_compile_mode: str = "default"
@@ -70,6 +71,8 @@ class MJWObstacleStreetScenario(BaseMJWScenario):
             raise ValueError(f"Expected timestep > 0, got {self.timestep}")
         if self.action_repeat <= 0:
             raise ValueError(f"Expected action_repeat > 0, got {self.action_repeat}")
+        if self.forward_reward_max_y is not None:
+            self.forward_reward_max_y = float(self.forward_reward_max_y)
         self.wall_heights = self.wall_height if isinstance(self.wall_height, list) else [self.wall_height] * self.num_walls
         self.opening_widths = self.opening_width if isinstance(self.opening_width, list) else [self.opening_width] * self.num_walls
         self.side_wall_x = self.street_width / 2.0
@@ -116,6 +119,7 @@ class MJWObstacleStreetScenario(BaseMJWScenario):
             "street_width": self.street_width,
             "no_initial_ramp": self.no_initial_ramp,
             "forward_reward_weight": self.forward_reward_weight,
+            "forward_reward_max_y": self.forward_reward_max_y,
             "wall_pass_reward_weight": self.wall_pass_reward_weight,
             "wall_pass_thresholds": list(self.wall_pass_thresholds),
             "compile_reward_kernel": self.compile_reward_kernel,

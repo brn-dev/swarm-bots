@@ -500,12 +500,15 @@ def format_failure_message(error: Exception) -> str:
 
 
 def main() -> None:
+    from swarmbots.learn.torch_logging import enable_torch_compile_logging
+
     logger.remove()
     logger.add(
         sys.stderr,
         colorize=True,
         format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <5}</level> | <level>{message}</level>",
     )
+    enable_torch_compile_logging()
 
     args = parse_args()
     validate_args(args)

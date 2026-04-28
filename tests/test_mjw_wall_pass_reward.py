@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
 import torch
 
 from swarmbots.mjw_env.scenarios.mjw_obstacle_street_runtime import (
@@ -22,6 +23,7 @@ def _make_runtime() -> ObstacleStreetMJWScenarioRuntime:
     runtime.scenario = SimpleNamespace(
         progress_reward_weight=0.5,
         forward_reward_weight=0.0,
+        forward_reward_max_y=None,
         wall_pass_reward_weight=4.0,
         units_without_connections_reward_weight=0.0,
         guidance_reward_weight=1.0,
@@ -58,3 +60,21 @@ def test_wall_pass_reward_is_only_issued_once_per_threshold() -> None:
     recross = runtime.compute_step_rewards(stable_mask=stable_mask)
     assert float(recross.info["wall_pass_reward"][0]) == 0.0
     assert int(runtime.next_threshold_for_unit[0, 0]) == 1
+
+
+def test_forward_reward_cap_stops_progress_reward_beyond_max_y() -> None:
+    runtime = _make_runtime()
+    runtime.scenario.progress_reward_weight = 1.0
+    runtime.scenario.forward_reward_weight = 1.0
+    runtime.scenario.forward_reward_max_y = 0.5
+    runtime.scenario.wall_pass_reward_weight = 0.0
+    runtime.progress[0] = 0.45
+    stable_mask = torch.tensor([True], dtype=torch.bool)
+
+    runtime._get_unit_y = lambda: torch.tensor([[0.7]], dtype=torch.float32)
+    first = runtime.compute_step_rewards(stable_mask=stable_mask)
+    assert float(first.info["forward_reward"][0]) == pytest.approx(0.05)
+
+    runtime._get_unit_y = lambda: torch.tensor([[0.9]], dtype=torch.float32)
+    second = runtime.compute_step_rewards(stable_mask=stable_mask)
+    assert float(second.info["forward_reward"][0]) == pytest.approx(0.0)

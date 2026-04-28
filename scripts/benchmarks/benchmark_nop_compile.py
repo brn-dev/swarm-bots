@@ -635,12 +635,15 @@ def parse_args() -> tuple[BenchmarkConfig, list[str]]:
 
 
 def main() -> None:
+    from swarmbots.learn.torch_logging import enable_torch_compile_logging
+
     logger.remove()
     logger.add(
         sys.stderr,
         colorize=True,
         format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <5}</level> | <level>{message}</level>",
     )
+    enable_torch_compile_logging()
     configure_float32_matmul_precision()
 
     config, selected_case_names = parse_args()
