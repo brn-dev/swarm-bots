@@ -3,7 +3,6 @@ from typing import Any, Iterable, Literal
 
 import mujoco
 import numpy as np
-from mujoco import MjsBody
 
 from swarmbots.mj_env.float_or_dist_params import FloatOrDistParams, eval_fodp, fodp_low, FloatOrBoundedDistParams
 from swarmbots.mj_env.scenarios.base_scenario import (
@@ -11,10 +10,7 @@ from swarmbots.mj_env.scenarios.base_scenario import (
     SwarmActDict,
     SwarmObsDict,
 )
-from swarmbots.mj_env.quat_rot6d import quat_to_rot6d
-from swarmbots.mj_env.scenarios.payload_scenario import PayloadScenario
 from swarmbots.mj_env.swarm.base_swarm import BaseSwarm
-from swarmbots.mj_env.swarm.homogeneous_swarm import HomogeneousSwarm
 from swarmbots.mj_env.swarm.swarm_connections import SwarmConnections
 
 
@@ -60,17 +56,13 @@ class CorrelatedPoleParams:
 PoleSpec = PoleParams | CorrelatedPoleParams
 
 
-class ObstacleStreetScenario(PayloadScenario):
+class ObstacleStreetScenario(BaseScenario):
 
     def __init__(
             self,
             swarm: BaseSwarm,
-            payload_type: None | str,
             timestep: float = 0.002,
             action_repeat: int = 15,
-            payload_size: Iterable[float] = (0.2, 0.2, 0.2),
-            payload_mass: float = 5.0,
-            payload_start_location_offset: Iterable[float] = (0, 1, 0),
             poles: Iterable[PoleSpec | tuple[FloatOrDistParams, FloatOrDistParams]] = (),
             pole_radius: float = 0.1,
             pole_height: float = 1.0,
@@ -144,12 +136,8 @@ class ObstacleStreetScenario(PayloadScenario):
 
         super().__init__(
             swarm=swarm,
-            payload_type=payload_type,
             timestep=timestep,
             action_repeat=action_repeat,
-            payload_size=payload_size,
-            payload_mass=payload_mass,
-            payload_start_location_offset=payload_start_location_offset,
             actuator_strength=actuator_strength,
             progress_reward_weight=progress_reward_weight,
             guidance_reward_weight=guidance_reward_weight,
@@ -177,10 +165,6 @@ class ObstacleStreetScenario(PayloadScenario):
     def get_settings(self) -> dict[str, Any]:
         settings = super().get_settings()
         settings.update({
-            'payload_type': self.payload_type,
-            'payload_size': self.payload_size,
-            'payload_mass': self.payload_mass,
-            'payload_start_location_offset': self.payload_start_location_offset,
             'poles': self.poles,
             'pole_radius': self.pole_radius,
             'pole_height': self.pole_height,
@@ -265,8 +249,6 @@ class ObstacleStreetScenario(PayloadScenario):
                     size=[1, self.ramp_length * 1.2 / 2, 0.1],
                     rgba=[0.5, 0.5, 0.6, 1],
                 )
-
-        self._maybe_add_payload_spec(spec)
 
         return spec
 
@@ -499,12 +481,6 @@ class ObstacleStreetScenario(PayloadScenario):
             data: mujoco.MjData,
             units_active_mask: np.ndarray | None,
     ) -> float:
-        if self.payload_type is not None:
-            progress = float(data.xpos[self.payload_body_id, 1])
-            if self.forward_reward_max_y is not None:
-                progress = min(progress, self.forward_reward_max_y)
-            return progress
-
         unit_y = np.asarray(data.qpos[self._qpos_indices[:, 1]], dtype=float)
         if self.forward_reward_max_y is not None:
             unit_y = np.minimum(unit_y, self.forward_reward_max_y)

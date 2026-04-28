@@ -64,22 +64,8 @@ def build_obs_indices(
                 connectors_xquat_offset + 4 * i for i in range(limbs_per_unit)
             )
 
-    if scenario_settings.get("payload_type") is not None:
-        expected_global_obs_dim = 3 + free_joint_rot_dim
-        if global_obs_dim < expected_global_obs_dim:
-            raise ValueError(
-                "Expected global_obs to include payload pos+rotation when payload_type is set. "
-                f"{global_obs_dim=}"
-            )
-        if quat_rot6d_representation:
-            global_scalar_indices = list(range(expected_global_obs_dim))
-            global_quaternion_indices: list[int] = []
-        else:
-            global_scalar_indices = list(range(3))
-            global_quaternion_indices = [3]
-    else:
-        global_scalar_indices = []
-        global_quaternion_indices = []
+    global_scalar_indices = []
+    global_quaternion_indices = []
 
     # hidden_local_vars are currently used for per-unit binary threshold flags in wall scenarios.
     # Keep them unnormalized.

@@ -9,7 +9,6 @@ from swarmbots.mj_env.scenarios.obstacle_street_scenario import ObstacleStreetSc
 
 def test_forward_reward_cap_is_applied_per_unit_in_mj_env() -> None:
     scenario = object.__new__(ObstacleStreetScenario)
-    scenario.payload_type = None
     scenario.forward_reward_weight = 1.0
     scenario.forward_reward_max_y = 1.0
     scenario._qpos_indices = np.array([[0, 0], [1, 1]], dtype=int)

@@ -5,29 +5,25 @@ import numpy as np
 
 from swarmbots.mj_env.float_or_dist_params import (
     BoundedDistParams,
+    FloatOrDistParams,
     FloatOrBoundedDistParams,
     eval_fodp,
 )
 from swarmbots.mj_env.scenarios.base_scenario import (
+    BaseScenario,
     SwarmActDict,
     SwarmObsDict,
 )
-from swarmbots.mj_env.scenarios.payload_scenario import PayloadScenario
 from swarmbots.mj_env.swarm.base_swarm import BaseSwarm
-from swarmbots.mj_env.swarm.homogeneous_swarm import HomogeneousSwarm
 from swarmbots.mj_env.swarm.swarm_connections import SwarmConnections
 
 
-class BridgeScenario(PayloadScenario):
+class BridgeScenario(BaseScenario):
     def __init__(
             self,
             swarm: BaseSwarm,
-            payload_type: None | str,
             timestep: float = 0.002,
             action_repeat: int = 15,
-            payload_size: Iterable[float] = (0.2, 0.2, 0.2),
-            payload_mass: float = 5.0,
-            payload_start_location_offset: Iterable[float] = (0, 1, 0),
             street_width: float = 6.0,
             bridge_width: float = 1.0,
             bridge_length: float = 4.0,
@@ -50,6 +46,8 @@ class BridgeScenario(PayloadScenario):
             quat_rot6d_representation: bool = True,
             reset_settle_time: int = 0,
             reset_settle_timestep_scale: float = 1.0,
+            swarm_start_x: FloatOrDistParams = 0.0,
+            swarm_start_y: FloatOrDistParams = 0.0,
             randomize_initial_swarm_z_rotation: bool = False,
             seed: int | None = None,
     ) -> None:
@@ -91,12 +89,8 @@ class BridgeScenario(PayloadScenario):
 
         super().__init__(
             swarm=swarm,
-            payload_type=payload_type,
             timestep=timestep,
             action_repeat=action_repeat,
-            payload_size=payload_size,
-            payload_mass=payload_mass,
-            payload_start_location_offset=payload_start_location_offset,
             actuator_strength=actuator_strength,
             progress_reward_weight=progress_reward_weight,
             guidance_reward_weight=guidance_reward_weight,
@@ -112,6 +106,8 @@ class BridgeScenario(PayloadScenario):
             force_elliptic_cone=force_elliptic_cone,
             reset_settle_time=reset_settle_time,
             reset_settle_timestep_scale=reset_settle_timestep_scale,
+            swarm_start_x=swarm_start_x,
+            swarm_start_y=swarm_start_y,
             randomize_initial_swarm_z_rotation=randomize_initial_swarm_z_rotation,
             inactive_area_location=[-street_width * 1.5, 0, 0.1],
             _reset_in_init=False,
@@ -137,10 +133,6 @@ class BridgeScenario(PayloadScenario):
     def get_settings(self) -> dict[str, Any]:
         settings = super().get_settings()
         settings.update({
-            "payload_type": self.payload_type,
-            "payload_size": self.payload_size,
-            "payload_mass": self.payload_mass,
-            "payload_start_location_offset": self.payload_start_location_offset,
             "street_width": self.street_width,
             "bridge_width": self.bridge_width,
             "bridge_length": self.bridge_length,
@@ -196,8 +188,6 @@ class BridgeScenario(PayloadScenario):
             size=[self.bridge_width / 2.0, self.bridge_length / 2.0, self.platform_height / 2.0],
             rgba=[0.7, 0.6, 0.3, 1],
         )
-
-        self._maybe_add_payload_spec(spec)
 
         return spec
 
@@ -286,13 +276,22 @@ class BridgeScenario(PayloadScenario):
         if self._z_pos_below_threshold(units_pos_z):
             return True
 
-        if self.payload_type is None:
-            return False
-
-        payload_pos_z = data.xpos[self.payload_body_id, 2]
-        return self._z_pos_below_threshold(np.atleast_1d(payload_pos_z))
+        return False
 
     def _z_pos_below_threshold(self, z_pos: np.ndarray) -> bool:
         if z_pos.size == 0:
             return False
         return bool(np.any(z_pos < self.fall_z_threshold))
+
+    def _compute_progress_baseline(
+            self,
+            data: mujoco.MjData,
+            units_active_mask: np.ndarray | None,
+    ) -> float:
+        unit_positions = data.qpos[self._qpos_indices[:, 1]]
+        if units_active_mask is None:
+            return float(unit_positions.mean())
+        active_units_mask = np.asarray(units_active_mask, dtype=bool)
+        if not active_units_mask.any():
+            return 0.0
+        return float(unit_positions[active_units_mask].mean())
