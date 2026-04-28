@@ -109,7 +109,6 @@ class MJWObstacleStreetScenario(BaseMJWScenario):
             "seed": self.seed,
             "reset_settle_time": self.reset_settle_time,
             "reset_settle_timestep_scale": self.reset_settle_timestep_scale,
-            "payload_type": None,
             "num_walls": self.num_walls,
             "wall_heights": list(self.wall_heights),
             "inter_wall_distance": self.inter_wall_distance,

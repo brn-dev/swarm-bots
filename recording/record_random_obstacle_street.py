@@ -43,7 +43,6 @@ def main() -> None:
 
     scenario = ObstacleStreetScenario(
         swarm=swarm,
-        payload_type=None,
         seed=args.seed,
         num_walls=args.num_walls,
         no_initial_ramp=False,

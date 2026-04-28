@@ -118,7 +118,6 @@ def default_wall(
             randomize_unit_orientations,
             quantize_connection_twist,
         ),
-        payload_type=None,
         num_walls=1,
         opening_width=0.01,
         **scenario_kwargs,
@@ -146,7 +145,6 @@ def default_bridge(
             randomize_unit_orientations,
             quantize_connection_twist,
         ),
-        payload_type=None,
         **scenario_kwargs,
         seed=seed,
     )
