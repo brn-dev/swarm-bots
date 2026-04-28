@@ -304,12 +304,15 @@ def validate_args(args: argparse.Namespace) -> tuple[list[CadenceSpec], CadenceS
 
 
 def main() -> None:
+    from swarmbots.learn.torch_logging import enable_torch_compile_logging
+
     logger.remove()
     logger.add(
         sys.stderr,
         colorize=True,
         format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <5}</level> | <level>{message}</level>",
     )
+    enable_torch_compile_logging()
 
     args = parse_args()
     cadence_specs, baseline = validate_args(args)

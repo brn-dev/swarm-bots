@@ -90,6 +90,7 @@ class ObstacleStreetScenario(PayloadScenario):
             force_elliptic_cone: bool = False,
             progress_reward_weight: float = 1.0,
             forward_reward_weight: float = 1.0,
+            forward_reward_max_y: float | None = None,
             guidance_reward_weight: float = 1.0,
             wall_pass_reward_weight: float = 0.0,
             wall_pass_thresholds: list[float] | None = None,
@@ -128,6 +129,7 @@ class ObstacleStreetScenario(PayloadScenario):
         self.opening_widths = opening_width if isinstance(opening_width, list) else [opening_width] * num_walls
         self.unusable_opening_offset = unusable_opening_offset
         self.forward_reward_weight = float(forward_reward_weight)
+        self.forward_reward_max_y = None if forward_reward_max_y is None else float(forward_reward_max_y)
         self.wall_pass_reward_weight = float(wall_pass_reward_weight)
         if wall_pass_thresholds is None:
             wall_pass_thresholds = [0.0]
@@ -191,6 +193,7 @@ class ObstacleStreetScenario(PayloadScenario):
             'street_width': self.street_width,
             'no_initial_ramp': self.no_initial_ramp,
             'forward_reward_weight': self.forward_reward_weight,
+            'forward_reward_max_y': self.forward_reward_max_y,
             'wall_pass_reward_weight': self.wall_pass_reward_weight,
             'wall_pass_thresholds': self.wall_pass_thresholds.tolist(),
         })
@@ -283,7 +286,7 @@ class ObstacleStreetScenario(PayloadScenario):
         if settle:
             self.settle_reset(model, data, state)
 
-        state['progress'] = self._compute_progress_baseline(data, state.get("units_active_mask"))
+        state['progress'] = self._compute_forward_progress_baseline(data, state.get("units_active_mask"))
         state['hidden_global_vars'] = np.array(hidden_global_vars, dtype=float)
         state['wall_y'] = wall_y
         wall_pass_absolute_thresholds = self._compute_wall_pass_thresholds(wall_y)
@@ -435,7 +438,7 @@ class ObstacleStreetScenario(PayloadScenario):
             state: dict,
     ) -> float:
         old_progress = state["progress"]
-        new_progress = self._compute_progress_baseline(data, state.get("units_active_mask"))
+        new_progress = self._compute_forward_progress_baseline(data, state.get("units_active_mask"))
         state["progress"] = new_progress
 
         forward_reward = new_progress - old_progress
@@ -490,6 +493,27 @@ class ObstacleStreetScenario(PayloadScenario):
             return np.asarray([], dtype=float)
         wall_thresholds = wall_y[:, np.newaxis] + self.wall_pass_thresholds[np.newaxis, :]
         return np.sort(wall_thresholds.reshape(-1))
+
+    def _compute_forward_progress_baseline(
+            self,
+            data: mujoco.MjData,
+            units_active_mask: np.ndarray | None,
+    ) -> float:
+        if self.payload_type is not None:
+            progress = float(data.xpos[self.payload_body_id, 1])
+            if self.forward_reward_max_y is not None:
+                progress = min(progress, self.forward_reward_max_y)
+            return progress
+
+        unit_y = np.asarray(data.qpos[self._qpos_indices[:, 1]], dtype=float)
+        if self.forward_reward_max_y is not None:
+            unit_y = np.minimum(unit_y, self.forward_reward_max_y)
+        if units_active_mask is None:
+            return float(unit_y.mean())
+        active_units_mask = np.asarray(units_active_mask, dtype=bool)
+        if not active_units_mask.any():
+            return 0.0
+        return float(unit_y[active_units_mask].mean())
 
 def sample_pole_xy(pole: PoleSpec, rng: np.random.Generator) -> tuple[float, float]:
     if isinstance(pole, PoleParams):

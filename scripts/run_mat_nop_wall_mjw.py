@@ -61,12 +61,15 @@ def make_vector_env(
 
 
 def main() -> None:
+    from swarmbots.learn.torch_logging import enable_torch_compile_logging
+
     logger.remove()
     logger.add(
         sys.stderr,
         colorize=True,
         format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <5}</level> | <level>{message}</level>",
     )
+    enable_torch_compile_logging()
     configure_float32_matmul_precision()
 
     if not torch.cuda.is_available():
@@ -76,7 +79,7 @@ def main() -> None:
     n_envs = 512
 
     episode_length = 512
-    total_timesteps = 300_000_000
+    total_timesteps = 200_000_000
     save_interval = 10000
 
     use_popart = True
@@ -241,7 +244,7 @@ def main() -> None:
             #     ),
             # ),
             bernoulli_config=BernoulliConfig(
-                initial_prob=0.75,
+                initial_prob=0.8,
                 ent_loss_coef=1e-3,
                 ent_loss_config=EntropyLossConfig(
                     agent_actions_reduction=AgentActionsReduction.SUM,

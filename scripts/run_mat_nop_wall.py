@@ -150,6 +150,7 @@ def main() -> None:
     from loguru import logger
     from torch import nn
 
+    from swarmbots.learn.torch_logging import enable_torch_compile_logging
     from swarmbots.learn.action_dists.bernoulli_action_dist import BernoulliConfig
     from swarmbots.learn.action_dists.entropy_utils import EntropyLossConfig, AgentActionsReduction
     from swarmbots.learn.action_dists.sticky_action_dist import StickyActionDist
@@ -178,6 +179,7 @@ def main() -> None:
         colorize=True,
         format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <5}</level> | <level>{message}</level>",
     )
+    enable_torch_compile_logging()
     configure_float32_matmul_precision()
 
     n_workers = 23
