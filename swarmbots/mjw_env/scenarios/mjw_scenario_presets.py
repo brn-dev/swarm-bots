@@ -30,7 +30,7 @@ DEFAULT_KWARGS = {
 }
 WALL_PASS_REWARD_KWARGS = {
     "forward_reward_weight": 1.0,
-    "forward_reward_max_y": 0.5,
+    "forward_reward_max_y": 1.5,
     "wall_pass_reward_weight": 10.0,
     "wall_pass_thresholds": [-0.1, 0.1, 0.3, 0.5],
 }
