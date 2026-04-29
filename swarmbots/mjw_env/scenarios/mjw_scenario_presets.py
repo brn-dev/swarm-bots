@@ -28,9 +28,10 @@ DEFAULT_KWARGS = {
     "reset_settle_timestep_scale": 3,
     "randomize_initial_swarm_z_rotation": False,
 }
-WALL_PASS_KWARGS = {
-    "forward_reward_weight": 1.0,  # 0.2,
-    "wall_pass_reward_weight": 5.0,
+WALL_PASS_REWARD_KWARGS = {
+    "forward_reward_weight": 1.0,
+    "forward_reward_max_y": 0.5,
+    "wall_pass_reward_weight": 10.0,
     "wall_pass_thresholds": [-0.1, 0.1, 0.3, 0.5],
 }
 
@@ -112,7 +113,7 @@ def default_wall(
     **kwargs: object,
 ) -> MJWObstacleStreetScenario:
     scenario_kwargs = dict(DEFAULT_KWARGS)
-    scenario_kwargs.update(WALL_PASS_KWARGS)
+    scenario_kwargs.update(WALL_PASS_REWARD_KWARGS)
     scenario_kwargs.update(
         {
             "num_walls": 1,
