@@ -5,7 +5,11 @@ import torch
 from swarmbots.learn.algos.ppo.ppo_rollout_buffer import MaybeTensor, PPOEpisodeSegment
 from swarmbots.learn.algos.world_modeling.base_wm_sampler import BaseWMSampler, BaseWMSamples
 from swarmbots.learn.algos.world_modeling.ppo_wm_sampler import PPOWMSamplerConfig
-from swarmbots.learn.algos.world_modeling.wm_sampler_helper import build_wm_episode_windows, pad_time_axis
+from swarmbots.learn.algos.world_modeling.wm_sampler_helper import (
+    build_wm_episode_windows,
+    ensure_wm_window_helper_compile_available,
+    pad_time_axis,
+)
 from swarmbots.learn.base_sampler import BaseSampler
 
 
@@ -61,6 +65,10 @@ class RPPOWMSampler(
             )
         if config.num_next_steps < 1:
             raise ValueError(f"num_next_steps must be >= 1, got {config.num_next_steps}")
+        if config.compile_wm_window_helper:
+            ensure_wm_window_helper_compile_available(
+                compile_mode=config.wm_window_helper_compile_mode,
+            )
 
         has_agent_mask = any(ep.agent_mask is not None for ep in episodes)
         has_missing_agent_mask = any(ep.agent_mask is None for ep in episodes)
@@ -100,6 +108,8 @@ class RPPOWMSampler(
             episode_windows = build_wm_episode_windows(
                 episode,
                 num_next_steps=config.num_next_steps,
+                compile_modules=config.compile_wm_window_helper,
+                compile_mode=config.wm_window_helper_compile_mode,
             )
             previous_actions = _build_previous_actions(episode) if requires_previous_actions else None
 
