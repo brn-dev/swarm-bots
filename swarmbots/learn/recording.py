@@ -9,9 +9,7 @@ from swarmbots.learn.base_policy import BasePolicy
 from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
 from swarmbots.learn.env_wrappers.torch_normalize_reward_wrapper import TorchNormalizeRewardWrapper
 from swarmbots.learn.gsde_reset import GSDEResetMode, GSDEIntervalResetMode, GSDEProbabilityResetMode
-from swarmbots.recording_overlay import draw_accumulated_reward
-from swarmbots.learn.summary_statistics import compute_summary_statistics, format_summary_statistics, \
-    SummaryStatisticsFormat
+from swarmbots.utils.recording_overlay import draw_accumulated_reward
 from swarmbots.learn.tensor_conversion import to_numpy_array
 
 

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from typing import Any
 
 import numpy as np
@@ -12,8 +14,8 @@ from swarmbots.mj_env.swarm.unit_config import UNIT_CONFIG_TETRAHEDRON_XYZ, UNIT
     UNIT_CONFIG_TETRAHEDRON_XY
 
 DEFAULT_KWARGS = {
-    'timestep': 0.002,
-    'action_repeat': 15,
+    'timestep': 0.003,
+    'action_repeat': 10,
     'friction': [1.25, 7e-3, 1.25e-4],
     'force_elliptic_cone': False,
     'actuator_strength': 15.0,
@@ -24,12 +26,13 @@ DEFAULT_KWARGS = {
     'reset_settle_timestep_scale': 3,
     'randomize_initial_swarm_z_rotation': False,
 }
-WALL_PASS_KWARGS = {
-    'forward_reward_weight': 0.2,
-    'wall_pass_reward_weight': 5.0,
+WALL_PASS_REWARD_KWARGS = {
+    'forward_reward_weight': 1.0,
+    'forward_reward_max_y': 1.5,
+    'wall_pass_reward_weight': 10.0,
     'wall_pass_thresholds': [-0.1, 0.1, 0.3, 0.5],
 }
-PAYLOAD_PLANE_KWARGS = {
+PAYLOAD_PLANE_REWARD_KWARGS = {
     'forward_reward_weight': 1.0,
     'payload_centering_penalty_weight': 1.0,
     'payload_centering_penalty_power': 1.0,
@@ -37,7 +40,7 @@ PAYLOAD_PLANE_KWARGS = {
     'payload_mass': 1.0,
     'payload_offset_x': 0.0,
     'payload_offset_y': 0.75,
-    'swarm_start_y': 0.0,
+    'forward_reward_max_y': None,
 }
 
 def _resolve_swarm(
@@ -56,17 +59,15 @@ def _resolve_swarm(
 
     if unit_start_locations is None:
         unit_start_locations = PreConnectedUnitLocationsConfig(
-            num_units=6,
+            num_units=5,
             num_unit_probs={
-                2: 0.5,
-                3: 0.5,
                 4: 1.0,
                 5: 1.0,
-                6: 1.0,
             },
             max_radius=1.5,
-            unconnected_prob=0.03,
+            unconnected_prob=0.02,
             z_pos=0.5,
+            pool_seeds=tuple(range(42_000, 42_050)),
         )
 
     joint_configs = {
@@ -110,16 +111,29 @@ def default_wall(
         swarm: BaseSwarm | None = None,
         unit_start_locations: list[tuple[float, float, float]] | str | Any | None = None,
         randomize_unit_orientations: bool = False,
-        quantize_connection_twist: int | None = None,
+        quantize_connection_twist: int | None = 8,
+        joints: str = 'zx',
         **kwargs
 ) -> ObstacleStreetScenario:
     scenario_kwargs = DEFAULT_KWARGS.copy()
-    scenario_kwargs.update(WALL_PASS_KWARGS)
+    scenario_kwargs.update(WALL_PASS_REWARD_KWARGS)
     scenario_kwargs.update({
+        'num_walls': 1,
+        'opening_width': 0.01,
+        'connection_dist_threshold': 0.1,
+        'connection_angle_threshold': -0.5,
+        'disconnect_potential_threshold': 5.0,
+        'include_connectors_xpos_in_obs': True,
+        'include_connectors_xquat_in_obs': False,
+        'quat_rot6d_representation': True,
+        'swarm_start_x': 0.0,
+        'first_wall_distance': 1.0,
+        'inter_wall_distance': 4.0,
+        'unusable_opening_offset': 2.0,
+        'street_width': 10.0,
+        'no_initial_ramp': True,
         'wall_height': 0.20,
-        # 'swarm_start_y': UniformDistParams(0.0, 0.75),
-        # 'swarm_start_y': 0.7,
-        'swarm_start_y': UniformDistParams(0.3, 0.75),
+        'swarm_start_y': UniformDistParams(0.25, 0.75),
     })
     scenario_kwargs.update(kwargs)
     return ObstacleStreetScenario(
@@ -128,9 +142,8 @@ def default_wall(
             unit_start_locations,
             randomize_unit_orientations,
             quantize_connection_twist,
+            joints=joints,
         ),
-        num_walls=1,
-        opening_width=0.01,
         **scenario_kwargs,
         seed=seed,
     )
@@ -166,11 +179,23 @@ def default_payload_plane(
         swarm: BaseSwarm | None = None,
         unit_start_locations: list[tuple[float, float, float]] | str | Any | None = None,
         randomize_unit_orientations: bool = False,
-        quantize_connection_twist: int | None = None,
+        quantize_connection_twist: int | None = 8,
+        joints: str = 'zx',
         **kwargs
 ) -> PayloadPlaneScenario:
     scenario_kwargs = DEFAULT_KWARGS.copy()
-    scenario_kwargs.update(PAYLOAD_PLANE_KWARGS)
+    scenario_kwargs.update(PAYLOAD_PLANE_REWARD_KWARGS)
+    scenario_kwargs.update({
+        'plane_size': 100.0,
+        'connection_dist_threshold': 0.1,
+        'connection_angle_threshold': -0.5,
+        'disconnect_potential_threshold': 5.0,
+        'include_connectors_xpos_in_obs': True,
+        'include_connectors_xquat_in_obs': False,
+        'quat_rot6d_representation': True,
+        'swarm_start_x': 0.0,
+        'swarm_start_y': 0.0,
+    })
     scenario_kwargs.update(kwargs)
     return PayloadPlaneScenario(
         swarm=_resolve_swarm(
@@ -178,6 +203,7 @@ def default_payload_plane(
             unit_start_locations,
             randomize_unit_orientations,
             quantize_connection_twist,
+            joints=joints,
         ),
         **scenario_kwargs,
         seed=seed,

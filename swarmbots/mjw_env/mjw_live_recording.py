@@ -11,7 +11,7 @@ import numpy as np
 from loguru import logger
 
 from swarmbots.mjw_env.scenarios.base_mjw_scenario import BaseMJWScenario, MJWRecordingCameraConfig
-from swarmbots.recording_overlay import draw_accumulated_reward
+from swarmbots.utils.recording_overlay import draw_accumulated_reward
 
 
 @dataclass(slots=True)
