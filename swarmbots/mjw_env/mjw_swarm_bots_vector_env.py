@@ -136,6 +136,7 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
 
         self._host_model = scenario.build_model()
         self._metadata: MJWModelMetadata = build_model_metadata(self._host_model, scenario)
+        self._scenario_runtime_metadata = self.scenario.build_runtime_metadata(host_model=self._host_model)
 
         resolved_nconmax = _default_nconmax(
             num_units=self._n_agents,
@@ -212,7 +213,7 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
         self._inactive_unit_positions = _build_inactive_unit_positions(
             num_units=self._n_agents,
             max_unit_extent=scenario.swarm.max_unit_extent,
-            inactive_area_location=(scenario.street_width * 2.0, 0.0, 0.1),
+            inactive_area_location=tuple(float(v) for v in scenario.inactive_area_location),
             device=self.device,
         )
 
@@ -340,7 +341,10 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
             inactive_unit_positions_wp=self._inactive_unit_positions_wp,
             unit_qpos_adr_wp=self._unit_qpos_adr_wp,
         )
-        self._scenario_runtime = self.scenario.create_runtime(bindings=self._runtime_bindings)
+        self._scenario_runtime = self.scenario.create_runtime(
+            bindings=self._runtime_bindings,
+            runtime_metadata=self._scenario_runtime_metadata,
+        )
 
         self._rng = torch.Generator(device=self.device)
         self._rng.manual_seed(42 if scenario.seed is None else int(scenario.seed))

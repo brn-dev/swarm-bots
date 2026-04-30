@@ -1,5 +1,6 @@
 import abc
 import json
+import math
 from dataclasses import dataclass, replace
 from typing import Optional, Any, Literal, TypeVar, Generic, Callable, Protocol, NotRequired, TypedDict, cast
 
@@ -179,8 +180,13 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
         self.record_device = self.rollout_device if record_device is None else as_device(record_device)
         self.scheduler_manager = scheduler_manager
 
+        self.rollout_buffer_max_episode_length = self._resolve_rollout_buffer_max_episode_length(
+            rollout_mode=self.rollout_mode,
+            max_episode_length=self.max_episode_length,
+            n_envs=env.action_space.n_envs,
+        )
         self.rollout_buffer = PPORolloutBuffer(
-            max_episode_length=max_episode_length,
+            max_episode_length=self.rollout_buffer_max_episode_length,
             observation_space=env.observation_space,
             action_space=env.action_space,
             gamma=gamma,
@@ -214,6 +220,7 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
             'automatic_learning_rate': auto_lr,
             'rollout_mode': self._serialize_rollout_mode(self.rollout_mode),
             'max_episode_length': self.max_episode_length,
+            'rollout_buffer_max_episode_length': self.rollout_buffer_max_episode_length,
             'sampler_config': serialize_dataclass(self.sampler_config),
             'n_epochs': self.n_epochs,
             'gamma': self.gamma,
@@ -1140,6 +1147,23 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
         if isinstance(mode, GSDEProbabilityResetMode):
             return {"mode": "probability", "probability": mode.probability}
         return {"mode": type(mode).__name__}
+
+    @staticmethod
+    def _resolve_rollout_buffer_max_episode_length(
+            *,
+            rollout_mode: PPORolloutMode,
+            max_episode_length: int,
+            n_envs: int,
+    ) -> int:
+        if max_episode_length <= 0:
+            raise ValueError(f"max_episode_length must be > 0, got {max_episode_length}")
+        if n_envs <= 0:
+            raise ValueError(f"n_envs must be > 0, got {n_envs}")
+        if isinstance(rollout_mode, WholeEpisodesRolloutMode):
+            return max_episode_length
+        if isinstance(rollout_mode, StepsRolloutMode):
+            return min(max_episode_length, math.ceil(rollout_mode.n_steps_per_rollout / n_envs))
+        raise TypeError(f"Unknown rollout_mode type: {type(rollout_mode)}")
 
     @staticmethod
     def _parse_indexed_float_params(

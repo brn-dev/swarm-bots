@@ -339,6 +339,7 @@ def main() -> None:
         sampler_config=PPOWMSamplerConfig(
             batch_size=rollout_samples,
             num_next_steps=world_model_num_next_steps,
+            compile_wm_window_helper=True,
         ),
         n_epochs=8,
         gamma=gamma,

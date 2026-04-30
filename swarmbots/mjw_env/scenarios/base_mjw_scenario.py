@@ -105,6 +105,7 @@ class BaseMJWScenario(Protocol):
     swarm: MJWHomogeneousSwarm
     action_repeat: int
     actuator_strength: float
+    inactive_area_location: tuple[float, float, float]
     include_connectors_xpos_in_obs: bool
     include_connectors_xquat_in_obs: bool
     quat_rot6d_representation: bool
@@ -124,13 +125,26 @@ class BaseMJWScenario(Protocol):
     def get_batched_observation_space(self, num_envs: int) -> spaces.Dict: ...
     def get_batched_action_space(self, num_envs: int) -> spaces.Dict: ...
     def get_default_recording_camera_config(self) -> MJWRecordingCameraConfig | None: ...
-    def create_runtime(self, *, bindings: MJWRuntimeBindings) -> "BaseMJWScenarioRuntime": ...
+    def build_runtime_metadata(self, *, host_model: mujoco.MjModel) -> Any: ...
+    def create_runtime(
+        self,
+        *,
+        bindings: MJWRuntimeBindings,
+        runtime_metadata: Any,
+    ) -> "BaseMJWScenarioRuntime": ...
 
 
 class BaseMJWScenarioRuntime(abc.ABC):
-    def __init__(self, *, scenario: BaseMJWScenario, bindings: MJWRuntimeBindings) -> None:
+    def __init__(
+        self,
+        *,
+        scenario: BaseMJWScenario,
+        bindings: MJWRuntimeBindings,
+        runtime_metadata: Any = None,
+    ) -> None:
         self.scenario = scenario
         self.bindings = bindings
+        self.runtime_metadata = runtime_metadata
 
     @property
     @abc.abstractmethod

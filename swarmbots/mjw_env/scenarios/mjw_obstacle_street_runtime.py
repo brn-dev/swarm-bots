@@ -209,8 +209,14 @@ class _ObstacleStreetCPUResetSettler(BaseMJWCPUResetSettler):
 
 
 class ObstacleStreetMJWScenarioRuntime(BaseMJWScenarioRuntime):
-    def __init__(self, *, scenario: "MJWObstacleStreetScenario", bindings: MJWRuntimeBindings) -> None:
-        super().__init__(scenario=scenario, bindings=bindings)
+    def __init__(
+        self,
+        *,
+        scenario: "MJWObstacleStreetScenario",
+        bindings: MJWRuntimeBindings,
+        runtime_metadata: None = None,
+    ) -> None:
+        super().__init__(scenario=scenario, bindings=bindings, runtime_metadata=runtime_metadata)
         hidden_global_dim = int(scenario.get_single_observation_space()["hidden_global_vars"].shape[0])
         total_thresholds = scenario.total_thresholds
         self._global_obs = torch.empty((bindings.num_envs, 0), device=bindings.device, dtype=torch.float32)
