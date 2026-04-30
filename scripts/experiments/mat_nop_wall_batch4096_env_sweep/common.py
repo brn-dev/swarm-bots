@@ -1,33 +1,79 @@
 from __future__ import annotations
 
-import sys
 import math
+import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
+from gymnasium.vector import AutoresetMode, SyncVectorEnv
+import torch
+from loguru import logger
+from torch import nn
+
+REPO_ROOT = Path(__file__).resolve().parents[3]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
 import swarmbots.mj_env.scenarios.scenario_presets as mj_scenario_presets
+from swarmbots.learn.action_dists.bernoulli_action_dist import BernoulliConfig
+from swarmbots.learn.action_dists.entropy_utils import EntropyLossConfig, AgentActionsReduction
+from swarmbots.learn.action_dists.sticky_action_dist import StickyActionDist
+from swarmbots.learn.action_dists.sticky_left_right_beta_action_dist import StickyLeftRightBetaConfig
+from swarmbots.learn.algos.mat.mat_decoder import MATDecoderConfig, MATDecoderSelfAttentionMode
+from swarmbots.learn.algos.mat.mat_encoder import MATEncoderConfig
+from swarmbots.learn.algos.mat.mat_policy import MATCriticConfig, MATPolicy, MATPolicyConfig
+from swarmbots.learn.algos.ppo.ppo import AutomaticLearningRate, PPO, StepsRolloutMode
+from swarmbots.learn.algos.ppo.ppo_policy import PopArtConfig
+from swarmbots.learn.algos.world_modeling.next_obs_pred_mixin import NextObsPredConfig
+from swarmbots.learn.algos.world_modeling.next_obs_pred_ppo_wrapper import NOPWorldModelConfig, NextObsPredWrapper
+from swarmbots.learn.algos.world_modeling.ppo_wm_sampler import PPOWMSamplerConfig
+from swarmbots.learn.env_wrappers.worker_pool_async_vector_env import WorkerPoolAsyncVectorEnv
+from swarmbots.learn.gsde_reset import GSDEProbabilityResetMode
+from swarmbots.learn.obs_indices import ObsIndices
+from swarmbots.learn.scheduling.auto_lr_updater import make_auto_lr_updater
+from swarmbots.learn.scheduling.cosine_scheduler import CosineSchedulerConfig
+from swarmbots.learn.scheduling.linear_scheduler import LinearScheduler
+from swarmbots.learn.scheduling.schedulers import ScheduledHyperParameter, SchedulerManager, ScheduleUnit
+from swarmbots.learn.summary_statistics import SummaryStatisticsFormat
+from swarmbots.learn.swarmbots_obs_indices import build_obs_indices
 from swarmbots.mj_env.scenarios.scenario_presets import default_wall
+from swarmbots.mj_env.swarm.homogeneous_swarm import PreConnectedUnitLocationsConfig
 from swarmbots.mj_env.swarm_bots_env import SwarmBotsEnv
 
 
 def configure_float32_matmul_precision() -> None:
-    import torch
-
     if torch.cuda.is_available():
         torch.set_float32_matmul_precision("high")
 
 
-def make_env_fn(
-        episode_length: int,
-        render_mode: str | None = None,
-        first_episode_length: int | None = None,
-        timestep: float = mj_scenario_presets.DEFAULT_KWARGS["timestep"],
-        action_repeat: int = mj_scenario_presets.DEFAULT_KWARGS["action_repeat"],
-) -> Callable[[], SwarmBotsEnv]:
+def make_preconnected_unit_start_locations(pool_seeds: tuple[int, ...]) -> PreConnectedUnitLocationsConfig:
+    return PreConnectedUnitLocationsConfig(
+        num_units=5,
+        num_unit_probs={
+            4: 1.0,
+            5: 1.0,
+        },
+        max_radius=1.5,
+        unconnected_prob=0.02,
+        z_pos=0.5,
+        pool_seeds=pool_seeds,
+    )
 
+
+def make_env_fn(
+    *,
+    episode_length: int,
+    unit_start_locations: PreConnectedUnitLocationsConfig,
+    render_mode: str | None = None,
+    first_episode_length: int | None = None,
+    timestep: float = mj_scenario_presets.DEFAULT_KWARGS["timestep"],
+    action_repeat: int = mj_scenario_presets.DEFAULT_KWARGS["action_repeat"],
+) -> Callable[[], SwarmBotsEnv]:
     def _init() -> SwarmBotsEnv:
         scenario = default_wall(
+            first_wall_distance=1.0,
+            unit_start_locations=unit_start_locations,
             quantize_connection_twist=8,
             timestep=timestep,
             action_repeat=action_repeat,
@@ -42,12 +88,14 @@ def make_env_fn(
 
     return _init
 
+
 def wrap_vec_env(
-        vector_env: Any,
-        obs_indices: Any,
-        gamma: float,
-        use_popart: bool,
-        rollout_device: Any,
+    *,
+    vector_env: Any,
+    obs_indices: ObsIndices,
+    gamma: float,
+    use_popart: bool,
+    rollout_device: torch.device,
 ) -> Any:
     from swarmbots.learn.env_wrappers.learn_wrappers.swarm_bots_learn_env_wrapper import SwarmBotsLearnEnvWrapper
     from swarmbots.learn.env_wrappers.torch_feature_wise_obs_norm_wrapper import TorchFeatureWiseObsNormWrapper
@@ -92,20 +140,15 @@ def wrap_vec_env(
 
 
 def split_actuator_joints(actions: Any, actuators_per_limb: int) -> dict[str, Any]:
-    return {
-        f'j{i}': actions[..., i::actuators_per_limb]
-        for i in range(actuators_per_limb)
-    }
+    return {f"j{i}": actions[..., i::actuators_per_limb] for i in range(actuators_per_limb)}
 
 
 def set_actuator_gsde_init_joint_stds(
-        policy: Any,
-        actuators_per_limb: int,
-        joint_stds: list[float]
+    *,
+    policy: Any,
+    actuators_per_limb: int,
+    joint_stds: list[float],
 ) -> None:
-    import torch
-    from loguru import logger
-
     from swarmbots.learn.action_dists.gsde_action_dist import GSDEActionDist
 
     if len(joint_stds) != actuators_per_limb:
@@ -122,34 +165,11 @@ def set_actuator_gsde_init_joint_stds(
             gsde_dist.log_stds[:, i::actuators_per_limb] = math.log(joint_std)
 
 
-def main() -> None:
-    import torch
-    from gymnasium.vector import SyncVectorEnv, AutoresetMode
-    from loguru import logger
-    from torch import nn
-
+def run_experiment(*, num_envs: int, rollout_samples: int, variant_name: str, entrypoint_path: Path) -> None:
     from swarmbots.learn.torch_logging import enable_torch_compile_logging
-    from swarmbots.learn.action_dists.bernoulli_action_dist import BernoulliConfig
-    from swarmbots.learn.action_dists.entropy_utils import EntropyLossConfig, AgentActionsReduction
-    from swarmbots.learn.action_dists.sticky_action_dist import StickyActionDist
-    from swarmbots.learn.action_dists.sticky_left_right_beta_action_dist import StickyLeftRightBetaConfig
-    from swarmbots.learn.algos.mat.mat_decoder import MATDecoderConfig, MATDecoderSelfAttentionMode
-    from swarmbots.learn.algos.mat.mat_encoder import MATEncoderConfig
-    from swarmbots.learn.algos.mat.mat_policy import MATCriticConfig, MATPolicy, MATPolicyConfig
-    from swarmbots.learn.algos.ppo.ppo import AutomaticLearningRate, StepsRolloutMode, PPO
-    from swarmbots.learn.algos.ppo.ppo_policy import PopArtConfig
-    from swarmbots.learn.algos.world_modeling.next_obs_pred_mixin import NextObsPredConfig
-    from swarmbots.learn.algos.world_modeling.next_obs_pred_ppo_wrapper import NextObsPredWrapper, NOPWorldModelConfig
-    from swarmbots.learn.algos.world_modeling.ppo_wm_sampler import PPOWMSamplerConfig
-    from swarmbots.learn.env_wrappers.worker_pool_async_vector_env import WorkerPoolAsyncVectorEnv
-    from swarmbots.learn.gsde_reset import GSDEProbabilityResetMode
-    from swarmbots.learn.scheduling.auto_lr_updater import make_auto_lr_updater
-    from swarmbots.learn.scheduling.cosine_scheduler import CosineSchedulerConfig
-    from swarmbots.learn.scheduling.linear_scheduler import LinearScheduler
-    from swarmbots.learn.scheduling.schedulers import ScheduledHyperParameter, SchedulerManager, ScheduleUnit
-    from swarmbots.learn.summary_statistics import SummaryStatisticsFormat
-    from swarmbots.learn.swarmbots_obs_indices import build_obs_indices
-    from swarmbots.mj_env.scenarios import scenario_presets
+
+    if rollout_samples % num_envs != 0:
+        raise ValueError(f"Expected rollout_samples divisible by num_envs, got {rollout_samples=} {num_envs=}")
 
     logger.remove()
     logger.add(
@@ -160,9 +180,9 @@ def main() -> None:
     enable_torch_compile_logging()
     configure_float32_matmul_precision()
 
-    n_workers = 23
-    n_envs = n_workers * 12
+    steps_per_env = rollout_samples // num_envs
 
+    n_workers = 23
     episode_length = 512
     total_timesteps = 200_000_000
     save_interval = 10000
@@ -173,55 +193,58 @@ def main() -> None:
 
     vf_coef = 2.0 if use_popart else 0.5
     world_model_loss_coef = 0.1
-
     world_model_num_next_steps = 3
 
     initial_stickiness = 0.25
     final_stickiness = 0.0
     stickiness_anneal_steps = 15_000_000
+    gsde_init_stds = [0.25, 0.30]
+
     compile_policy_modules = True
     policy_compile_mode = "default"
     compile_world_model_modules = True
 
-    # gsde_init_stds = [0.25, 0.25, 0.15]
-    gsde_init_stds = [0.25, 0.30]
-
-    # =====  ID  =====
     run_id = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-
-    # ===== LOAD =====
     load_path: str | None = None
-    # load_path = "../runs/mat_nop_swarm_bots_wall/2026-03-29_01-08-59/models/model_77792876_steps_stopped.pt"
 
-    # ===== DEVICE =====
-    use_cuda = True and torch.cuda.is_available()
-    use_cuda_rollout = True and torch.cuda.is_available()
-    rollout_device = torch.device("cuda" if use_cuda_rollout else "cpu")
+    use_cuda = torch.cuda.is_available()
+    rollout_device = torch.device("cuda" if use_cuda else "cpu")
     train_device = torch.device("cuda" if use_cuda else "cpu")
     record_device = torch.device("cpu")
 
-    logger.info(f'{rollout_device = }')
-    logger.info(f'{train_device = }')
-    logger.info(f'{record_device = }')
+    logger.info(f"{rollout_device = }")
+    logger.info(f"{train_device = }")
+    logger.info(f"{record_device = }")
+    logger.info(
+        f"Batch sweep variant {variant_name}: mj_env with {num_envs} envs x {steps_per_env} steps/env = {rollout_samples}"
+    )
+    logger.info(
+        "CPU wall training uses WorkerPoolAsyncVectorEnv with SAME_STEP autoreset, copy=False, and worker-local env cloning."
+    )
 
     if load_path is not None:
-        if not load_path.endswith('.pt'):
-            logger.error('load_path is missing .pt')
+        if not load_path.endswith(".pt"):
+            logger.error("load_path is missing .pt")
             raise ValueError()
-        logger.info(f'{load_path = }')
-        run_id = load_path.split('/')[3]
-    logger.info(f'{run_id = }')
+        logger.info(f"{load_path = }")
+        run_id = load_path.split("/")[3]
+    logger.info(f"{run_id = }")
 
-    run_dir = f"../runs/mat_nop_swarm_bots_wall/{run_id}/"
+    run_dir = REPO_ROOT / "runs" / "mat_nop_swarm_bots_wall_batch4096_env_sweep" / variant_name / run_id
     save_optimizer = True
+
+    swarm_seed_pool = tuple(range(42_000, 42_005))
+    unit_start_locations = make_preconnected_unit_start_locations(swarm_seed_pool)
+    logger.info(f"swarm_seed_pool: {len(swarm_seed_pool)}")
 
     env_fns = [
         make_env_fn(
             episode_length=episode_length,
+            unit_start_locations=unit_start_locations,
             render_mode=None,
-            first_episode_length=int(i * episode_length / n_envs)
+            first_episode_length=int(i * episode_length / num_envs),
         )
-        for i in range(1, n_envs + 1)
+        for i in range(1, num_envs + 1)
     ]
 
     print("Creating dummy env for capturing settings...")
@@ -232,10 +255,9 @@ def main() -> None:
     hidden_local_vars_dim = int(dummy_env.observation_space["hidden_local_vars"].shape[-1])
     hidden_global_vars_dim = int(dummy_env.observation_space["hidden_global_vars"].shape[-1])
     dummy_env.close()
-    del dummy_env
     print("Env settings captured.")
 
-    obs_indices = build_obs_indices(
+    obs_indices: ObsIndices = build_obs_indices(
         env_settings=env_settings,
         local_obs_dim=local_obs_dim,
         global_obs_dim=global_obs_dim,
@@ -243,39 +265,19 @@ def main() -> None:
         hidden_global_vars_dim=hidden_global_vars_dim,
     )
 
-    from swarmbots.learn.env_wrappers.learn_wrappers.swarm_bots_learn_env_wrapper import SwarmBotsLearnEnvWrapper
-    def make_record_env() -> SwarmBotsLearnEnvWrapper:
-        record_env = SyncVectorEnv([
-            make_env_fn(
-                episode_length=episode_length,
-                render_mode='rgb_array'
-            )
-        ], autoreset_mode=AutoresetMode.SAME_STEP)
-        record_env = wrap_vec_env(
-            vector_env=record_env,
-            obs_indices=obs_indices,
-            gamma=gamma,
-            use_popart=use_popart,
-            rollout_device=record_device,
-        )
-        return record_env
-
-    print(f'Creating vector env (n={n_envs})...')
+    print(f"Creating vector env (n={num_envs})...")
     if sys.gettrace() is None:
-        # vector_env = AsyncVectorEnv(env_fns)
         vector_env = WorkerPoolAsyncVectorEnv(
             env_fns,
             num_workers=n_workers,
+            env_clone_group_keys=["wall_batch4096_env_sweep"] * num_envs,
             autoreset_mode=AutoresetMode.SAME_STEP,
             copy=False,
         )
     else:
-        vector_env = SyncVectorEnv(env_fns[:1], autoreset_mode=AutoresetMode.SAME_STEP)
-    print(f"Created {type(vector_env)} with {n_envs} environments.")
-
-    if isinstance(vector_env, SyncVectorEnv):
-        for _ in range(10):
-            logger.warning('USING SYNC VECTOR ENV')
+        logger.warning("Debugger detected, falling back to SyncVectorEnv with one environment.")
+        vector_env = SyncVectorEnv([env_fns[0]], autoreset_mode=AutoresetMode.SAME_STEP)
+    print(f"Created {type(vector_env)} with {num_envs} environments.")
 
     gamma = 0.99
 
@@ -288,7 +290,7 @@ def main() -> None:
         rollout_device=rollout_device,
     )
 
-    print(f"Environment initialized.")
+    print("Environment initialized.")
     print(f"n_agents: {env.n_agents}")
     print(f"local_obs_dim: {env.local_obs_dim}")
     print(f"global_obs_dim: {env.global_obs_dim}")
@@ -328,7 +330,7 @@ def main() -> None:
                 query_encoder_hidden_dims=[2 * dec_d_model],
                 context_encoder_hidden_dims=[2 * dec_d_model],
                 memory_dims=None,
-                self_attention_mode=MATDecoderSelfAttentionMode.FULL_AUTOREGRESSIVE
+                self_attention_mode=MATDecoderSelfAttentionMode.FULL_AUTOREGRESSIVE,
             ),
             critic_config=MATCriticConfig(
                 n_local_projection_hidden_layers=2,
@@ -341,25 +343,6 @@ def main() -> None:
             ),
             dropout=0.0,
             act_fn_cls=nn.GELU,
-            # continuous_config=GSDEConfig(
-            #     base_std=0.25,
-            #     latent_sde_dim=None,
-            #     std_learnable=True,
-            #     full_std=True,
-            #     sde_learn_features=False,
-            #     log_std_clamp_range=(-20.0, 2.0),
-            #     normalize_latent_sde_by_dim=True
-            # ),
-            # continuous_config=BetaMixtureConfig(
-            #     num_components=3,
-            #     alphas=(3.0, 10.0, 10.0),
-            #     betas=(10.0, 10.0, 3.0)
-            # ),
-            # continuous_config=StickyBangZeroBangConfig(
-            #     bang=0.5,
-            #     ent_loss_coef=1e-3,
-            #     stickiness=initial_stickiness,
-            # ),
             continuous_config=StickyLeftRightBetaConfig(
                 stickiness=initial_stickiness,
                 ent_loss_coef=1e-3,
@@ -408,7 +391,7 @@ def main() -> None:
             wm_angle_predictor_hidden_dims=[],
             wm_rot6d_predictor_hidden_dims=[],
             wm_binary_predictor_hidden_dims=[],
-            scalar_loss_fn='smooth_l1',
+            scalar_loss_fn="smooth_l1",
             next_obs_pred_config=NextObsPredConfig(
                 local_scalar_target_indices=obs_indices.local_scalar_indices,
                 local_angle_target_indices=obs_indices.local_angle_indices,
@@ -432,7 +415,7 @@ def main() -> None:
     print("Initializing PPO Algorithm...")
 
     warm_lr = 1e-4
-    warmup_iterations: int = 200
+    warmup_iterations = 200
     cold_lr = warm_lr * 5e-3 if warmup_iterations > 0 else warm_lr
 
     auto_lr = AutomaticLearningRate(
@@ -444,35 +427,36 @@ def main() -> None:
                 duration=warmup_iterations,
                 start_value=cold_lr,
                 final_value=warm_lr,
-            ) if warmup_iterations > 0 else None,
-        )
+            )
+            if warmup_iterations > 0
+            else None,
+        ),
     )
 
     scheduler_manager: SchedulerManager | None = None
     continuous_dist = policy.action_dist.distributions[0]
     if isinstance(continuous_dist, StickyActionDist):
         sticky_dist: StickyActionDist = continuous_dist
-        scheduler_manager = SchedulerManager([
-            ScheduledHyperParameter(
-                name="act0_stickiness",
-                scheduler=LinearScheduler(
-                    unit=ScheduleUnit.TIMESTEPS,
-                    duration=stickiness_anneal_steps,
-                    start_value=initial_stickiness,
-                    final_value=final_stickiness,
+        scheduler_manager = SchedulerManager(
+            [
+                ScheduledHyperParameter(
                     name="act0_stickiness",
-                ),
-                get_value=lambda: sticky_dist.get_stickiness(),
-                apply=lambda new_value: sticky_dist.set_stickiness(new_value),
-            )
-        ])
+                    scheduler=LinearScheduler(
+                        unit=ScheduleUnit.TIMESTEPS,
+                        duration=stickiness_anneal_steps,
+                        start_value=initial_stickiness,
+                        final_value=final_stickiness,
+                        name="act0_stickiness",
+                    ),
+                    get_value=lambda: sticky_dist.get_stickiness(),
+                    apply=lambda new_value: sticky_dist.set_stickiness(new_value),
+                )
+            ]
+        )
     else:
         act0_dist_type = type(continuous_dist) if policy.action_dist.distributions else None
-        logger.warning(
-            f"Skipping act0_stickiness scheduler: action dist[0] is {act0_dist_type}"
-        )
+        logger.warning(f"Skipping act0_stickiness scheduler: action dist[0] is {act0_dist_type}")
 
-    rollout_samples = int(4048 * 1.0)
     ppo = PPO(
         policy=policy,
         env=env,
@@ -490,10 +474,9 @@ def main() -> None:
         clip_range=0.07,
         target_kl=0.007,
         max_grad_norm=2.0,
-        gsde_reset_mode=GSDEProbabilityResetMode(probability=1/6),
+        gsde_reset_mode=GSDEProbabilityResetMode(probability=1 / 6),
         mc_ent_coef=0e-5,
         vf_coef=vf_coef,
-        # value_loss_fn=nn.SmoothL1Loss(reduction="none"),
         value_loss_fn=nn.MSELoss(reduction="none"),
         train_device=train_device,
         rollout_device=rollout_device,
@@ -508,58 +491,62 @@ def main() -> None:
         ppo.load(load_path, recover_best_return_ema=False, strict_load_state_dict=True)
 
     print("Starting training...")
-    logging_console_keys: list[tuple[str, str | SummaryStatisticsFormat | None] | tuple[str, str | SummaryStatisticsFormat | None, str]] = [
-        ('iteration', '5', 'it'),
-        ('timesteps', '8', 'steps'),
-        ('total_updates', '6', 'tot_upd'),
-        # ('act0', SummaryStatisticsFormat(histogram=10)),
+    logging_console_keys: list[
+        tuple[str, str | SummaryStatisticsFormat | None] | tuple[str, str | SummaryStatisticsFormat | None, str]
+    ] = [
+        ("iteration", "5", "it"),
+        ("timesteps", "8", "steps"),
+        ("total_updates", "6", "tot_upd"),
     ]
+    logging_console_keys.extend((f"act0_j{i}", SummaryStatisticsFormat(histogram=11)) for i in range(actuators_per_limb))
     logging_console_keys.extend(
-        (f'act0_j{i}', SummaryStatisticsFormat(histogram=11))
+        (f"std0_j{i}", SummaryStatisticsFormat(mean=".3f", std=".3f", min_value=".3f", max_value=".3f"))
         for i in range(actuators_per_limb)
     )
     logging_console_keys.extend(
-        (f'std0_j{i}', SummaryStatisticsFormat(mean='.3f', std='.3f', min_value='.3f', max_value='.3f'))
-        for i in range(actuators_per_limb)
+        [
+            ("act1", SummaryStatisticsFormat(histogram=2)),
+            ("updates", "3", "upd"),
+            ("approx_kl", SummaryStatisticsFormat(mean=".3f", std=".3f", max_value=".3f")),
+            ("clip_frac", None),
+            ("ratio", SummaryStatisticsFormat(mean=".3f", std=".3f", min_value=".1e", max_value=".3f")),
+            ("wm_loss_scaled", None, "wm_loss"),
+            ("val_loss_scaled", None, "val_loss"),
+            ("expl_var", ".3f"),
+            ("popart_mu", ".3f", "pa_mu"),
+            ("popart_sigma", ".3f", "pa_sigma"),
+            ("ep_rew", SummaryStatisticsFormat(mean=" .2f", std=".2f", max_value=" .2f", n="1")),
+            ("ep_rew_ema", " .3f"),
+            ("best_ep_rew_ema", " .3f", "best_ema"),
+            ("fps", None),
+        ]
     )
-    logging_console_keys.extend([
-        ('act1', SummaryStatisticsFormat(histogram=2)),
-        ('updates', '3', 'upd'),
-        ('approx_kl', SummaryStatisticsFormat(mean='.3f', std='.3f', max_value='.3f')),
-        ('clip_frac', None),
-        ('ratio', SummaryStatisticsFormat(mean='.3f', std='.3f', min_value='.1e', max_value='.3f')),
-        ('wm_loss_scaled', None, 'wm_loss'),
-        ('val_loss_scaled', None, 'val_loss'),
-        ('expl_var', '.3f'),
-        ('popart_mu', '.3f', 'pa_mu'),
-        ('popart_sigma', '.3f', 'pa_sigma'),
-        ('ep_rew', SummaryStatisticsFormat(mean=' .2f', std='.2f', max_value=' .2f', n='1')),
-        ('ep_rew_ema', ' .3f'),
-        ('best_ep_rew_ema', ' .3f', 'best_ema'),
-        ('fps', None),
-    ])
 
     ppo.learn(
         max_total_timesteps=total_timesteps,
-        run_dir=run_dir,
+        run_dir=str(run_dir),
         log_interval=1,
         save_interval=save_interval,
         save_optimizer=save_optimizer,
         best_rotation_n=3,
         extra_run_metadata={
-            'load_path': load_path,
-            'env_settings': env_settings,
-            'script': Path(__file__).read_text(encoding='utf-8'),
-            'script_scenario_presets': Path(scenario_presets.__file__).read_text(encoding='utf-8'),
+            "load_path": load_path,
+            "env_settings": env_settings,
+            "script": entrypoint_path.read_text(encoding="utf-8"),
+            "shared_experiment_script": Path(__file__).read_text(encoding="utf-8"),
+            "base_script": (REPO_ROOT / "scripts" / "run_mat_nop_wall.py").read_text(encoding="utf-8"),
+            "script_scenario_presets": Path(mj_scenario_presets.__file__).read_text(encoding="utf-8"),
+            "backend": "mj_env",
+            "rollout_samples": rollout_samples,
+            "num_envs": num_envs,
+            "steps_per_env": steps_per_env,
+            "variant_name": variant_name,
+            "n_workers": n_workers,
+            "copy": False,
         },
         logging_console_keys=logging_console_keys,
-        make_record_env=make_record_env
     )
 
     print("Training Finished.")
-
     env.close()
 
-
-if __name__ == "__main__":
-    main()

@@ -439,7 +439,7 @@ def parse_args() -> argparse.Namespace:
         "--num-envs",
         nargs="+",
         type=int,
-        default=[512, 1024, 2048],
+        default=[32, 128, 512],
         help="Vector-env sizes to benchmark.",
     )
     parser.add_argument("--mj-workers", type=int, default=23, help="Worker count for mj_env.")
