@@ -72,6 +72,7 @@ class PPOEpisodeAccumulator:
             storage_device: torch.device | str,
             storage_dtype: torch.dtype
     ):
+        self.max_episode_length = max_episode_length
         self.local_obs = torch.zeros(
             (n_envs, max_episode_length, n_agents, *agent_obs_shape),
             dtype=storage_dtype, device=storage_device

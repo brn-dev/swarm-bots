@@ -14,6 +14,7 @@ from swarmbots.mj_env.swarm.unit_config import (
     UNIT_CONFIG_TETRAHEDRON_ZX,
 )
 from swarmbots.mjw_env.scenarios.mjw_obstacle_street_scenario import MJWObstacleStreetScenario
+from swarmbots.mjw_env.scenarios.mjw_payload_plane_scenario import MJWPayloadPlaneScenario
 from swarmbots.mjw_env.swarm.mjw_homogeneous_swarm import MJWHomogeneousSwarm, MJWPreConnectedUnitLocationsConfig
 
 DEFAULT_KWARGS = {
@@ -33,6 +34,16 @@ WALL_PASS_REWARD_KWARGS = {
     "forward_reward_max_y": 1.5,
     "wall_pass_reward_weight": 10.0,
     "wall_pass_thresholds": [-0.1, 0.1, 0.3, 0.5],
+}
+PAYLOAD_PLANE_REWARD_KWARGS = {
+    "forward_reward_weight": 1.0,
+    "payload_centering_penalty_weight": 1.0,
+    "payload_centering_penalty_power": 1.0,
+    "payload_radius": 0.2,
+    "payload_mass": 1.0,
+    "payload_offset_x": 0.0,
+    "payload_offset_y": 0.75,
+    "forward_reward_max_y": None,
 }
 
 
@@ -138,6 +149,45 @@ def default_wall(
     )
     scenario_kwargs.update(kwargs)
     return MJWObstacleStreetScenario(
+        swarm=_resolve_swarm(
+            swarm=swarm,
+            unit_start_locations=unit_start_locations,
+            quantize_connection_twist=quantize_connection_twist,
+            joints=joints,
+        ),
+        seed=seed,
+        **scenario_kwargs,
+    )
+
+
+def default_payload_plane(
+    *,
+    seed: int | None = None,
+    swarm: MJWHomogeneousSwarm | None = None,
+    unit_start_locations: MJWPreConnectedUnitLocationsConfig | None = None,
+    quantize_connection_twist: int = 8,
+    joints: str = "zx",
+    **kwargs: object,
+) -> MJWPayloadPlaneScenario:
+    scenario_kwargs = dict(DEFAULT_KWARGS)
+    scenario_kwargs.update(PAYLOAD_PLANE_REWARD_KWARGS)
+    scenario_kwargs.update(
+        {
+            "plane_size": 100.0,
+            "connection_dist_threshold": 0.1,
+            "connection_angle_threshold": -0.5,
+            "disconnect_potential_threshold": 5.0,
+            "include_connectors_xpos_in_obs": True,
+            "include_connectors_xquat_in_obs": False,
+            "quat_rot6d_representation": True,
+            "swarm_start_x": 0.0,
+            "swarm_start_y": 0.0,
+            "compile_reward_kernel": should_compile_reward_kernel_by_default(),
+            "reward_kernel_compile_mode": "default",
+        }
+    )
+    scenario_kwargs.update(kwargs)
+    return MJWPayloadPlaneScenario(
         swarm=_resolve_swarm(
             swarm=swarm,
             unit_start_locations=unit_start_locations,

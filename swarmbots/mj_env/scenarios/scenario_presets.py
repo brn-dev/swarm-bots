@@ -5,6 +5,7 @@ import numpy as np
 from swarmbots.mj_env.float_or_dist_params import UniformDistParams
 from swarmbots.mj_env.scenarios.bridge_scenario import BridgeScenario
 from swarmbots.mj_env.scenarios.obstacle_street_scenario import ObstacleStreetScenario
+from swarmbots.mj_env.scenarios.payload_plane_scenario import PayloadPlaneScenario
 from swarmbots.mj_env.swarm.base_swarm import BaseSwarm
 from swarmbots.mj_env.swarm.homogeneous_swarm import HomogeneousSwarm, PreConnectedUnitLocationsConfig
 from swarmbots.mj_env.swarm.unit_config import UNIT_CONFIG_TETRAHEDRON_XYZ, UNIT_CONFIG_TETRAHEDRON_ZX, \
@@ -27,6 +28,16 @@ WALL_PASS_KWARGS = {
     'forward_reward_weight': 0.2,
     'wall_pass_reward_weight': 5.0,
     'wall_pass_thresholds': [-0.1, 0.1, 0.3, 0.5],
+}
+PAYLOAD_PLANE_KWARGS = {
+    'forward_reward_weight': 1.0,
+    'payload_centering_penalty_weight': 1.0,
+    'payload_centering_penalty_power': 1.0,
+    'payload_radius': 0.2,
+    'payload_mass': 1.0,
+    'payload_offset_x': 0.0,
+    'payload_offset_y': 0.75,
+    'swarm_start_y': 0.0,
 }
 
 def _resolve_swarm(
@@ -139,6 +150,29 @@ def default_bridge(
     })
     scenario_kwargs.update(kwargs)
     return BridgeScenario(
+        swarm=_resolve_swarm(
+            swarm,
+            unit_start_locations,
+            randomize_unit_orientations,
+            quantize_connection_twist,
+        ),
+        **scenario_kwargs,
+        seed=seed,
+    )
+
+
+def default_payload_plane(
+        seed: int | None = None,
+        swarm: BaseSwarm | None = None,
+        unit_start_locations: list[tuple[float, float, float]] | str | Any | None = None,
+        randomize_unit_orientations: bool = False,
+        quantize_connection_twist: int | None = None,
+        **kwargs
+) -> PayloadPlaneScenario:
+    scenario_kwargs = DEFAULT_KWARGS.copy()
+    scenario_kwargs.update(PAYLOAD_PLANE_KWARGS)
+    scenario_kwargs.update(kwargs)
+    return PayloadPlaneScenario(
         swarm=_resolve_swarm(
             swarm,
             unit_start_locations,
