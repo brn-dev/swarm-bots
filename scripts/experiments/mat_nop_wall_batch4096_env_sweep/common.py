@@ -184,7 +184,7 @@ def run_experiment(*, num_envs: int, rollout_samples: int, variant_name: str, en
 
     n_workers = 23
     episode_length = 512
-    total_timesteps = 200_000_000
+    total_timesteps = 100_000_000
     save_interval = 10000
 
     use_popart = True
