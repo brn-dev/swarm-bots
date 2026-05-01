@@ -1,7 +1,9 @@
 import csv
 from collections.abc import Collection, Iterable
+import gzip
 import json
 from pathlib import Path
+import shutil
 from datetime import datetime, timezone
 from typing import Any
 import numpy as np
@@ -319,6 +321,30 @@ class MetricsLogger:
             finally:
                 self._wandb_run = None
                 self._wandb_managed_run = False
+
+    def compress_persisted_log(self) -> Path | None:
+        if self.file_path is None or not self.file_path.exists():
+            return None
+
+        gz_path = self.file_path.with_suffix(f"{self.file_path.suffix}.gz")
+        tmp_gz_path = gz_path.with_suffix(f"{gz_path.suffix}.tmp")
+
+        try:
+            with self.file_path.open("rb") as src, gzip.open(tmp_gz_path, "wb") as dst:
+                shutil.copyfileobj(src, dst)
+            tmp_gz_path.replace(gz_path)
+            self.file_path.unlink()
+        except OSError:
+            logger.exception(f"Failed to compress metrics log {self.file_path.as_posix()}")
+            try:
+                if tmp_gz_path.exists():
+                    tmp_gz_path.unlink()
+            except OSError:
+                logger.exception(f"Failed to remove temporary compressed log {tmp_gz_path.as_posix()}")
+            return None
+
+        logger.info(f"Compressed metrics log to {gz_path.as_posix()}")
+        return gz_path
 
     def __del__(self) -> None:
         self.close()
