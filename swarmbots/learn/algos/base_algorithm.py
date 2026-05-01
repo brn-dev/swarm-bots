@@ -120,6 +120,7 @@ class BaseAlgorithm(abc.ABC):
             wandb_kwargs: dict[str, Any] | None = None,
             logging_ignore_keys_for_persistence: list[str] | None = None,
             logging_console_keys: Collection[str] | Collection[tuple[str, str | None]] | None = None,
+            compress_metrics_log_on_exit: bool = False,
             enable_command_prompt: bool = True,
             make_record_env: Callable[[], BaseLearnEnvWrapper] | None = None,
     ) -> Self:
@@ -183,6 +184,7 @@ class BaseAlgorithm(abc.ABC):
         self._last_return_ema = None
         self._make_record_env = make_record_env
         self._command_log_path = None if run_dir is None else (run_dir / "command_log.jsonl")
+        should_compress_metrics_log = False
 
         try:
             if enable_command_prompt:
@@ -258,8 +260,12 @@ class BaseAlgorithm(abc.ABC):
             if self._make_record_env is not None:
                 self._cmd_record('')
 
+            should_compress_metrics_log = compress_metrics_log_on_exit
+
         finally:
             metric_logger.close()
+            if should_compress_metrics_log:
+                metric_logger.compress_persisted_log()
             self._active_run_dir = None
             self._active_extra_run_metadata = None
             self._active_save_optimizer = True

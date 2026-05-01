@@ -162,6 +162,7 @@ Agents shall use this file to make notes for future instances. Write down import
 - Interactive commands in `learn()` support lr/loss/reward/save/record/pause/stop, and updates are persisted to `command_log.jsonl`.
 - Generic schedulers are under `swarmbots/learn/scheduling/` and integrated via `SchedulerManager` in PPO.
 - Training logs go to `log.csv` with `;` delimiter.
+- `BaseAlgorithm.learn(..., compress_metrics_log_on_exit=True)` now optionally gzips `log.csv` to `log.csv.gz` on graceful run exit (normal max-step finish or `stop`), then deletes the plain CSV. Default stays off.
 - Plot tooling is in `plot_logs/`.
 - Plot tooling now reads compressed logs in memory too: plain `.csv`, `.zip` (expects exactly one CSV inside or a uniquely preferred `log.csv`), plus `.gz/.bz2/.xz`. Do not extract archives to temp files just to inspect or plot logs.
 - Current wall script logs per-joint continuous action stats via `metrics_action_splitters` and drives sticky-action annealing through `SchedulerManager`.
