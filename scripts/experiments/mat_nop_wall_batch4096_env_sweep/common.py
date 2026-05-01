@@ -270,7 +270,6 @@ def run_experiment(*, num_envs: int, rollout_samples: int, variant_name: str, en
         vector_env = WorkerPoolAsyncVectorEnv(
             env_fns,
             num_workers=n_workers,
-            env_clone_group_keys=["wall_batch4096_env_sweep"] * num_envs,
             autoreset_mode=AutoresetMode.SAME_STEP,
             copy=False,
         )
@@ -549,4 +548,3 @@ def run_experiment(*, num_envs: int, rollout_samples: int, variant_name: str, en
 
     print("Training Finished.")
     env.close()
-

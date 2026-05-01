@@ -323,7 +323,7 @@ PLOT_PRESETS: tuple[PlotPreset, ...] = load_plot_presets_safe(PRESETS_PATH)
 
 
 def read_columns(path: Path, delimiter: str) -> list[str]:
-    with path.open(newline="") as handle:
+    with plot_logs.open_log_text(path, newline="") as handle:
         reader = csv.reader(handle, delimiter=delimiter)
         try:
             header = next(reader)
@@ -648,7 +648,7 @@ def load_histogram_series(
     saw_drifting_edges = False
     saw_missing_row_edges = False
     valid_row_index = 0
-    with path.open(newline="") as handle:
+    with plot_logs.open_log_text(path, newline="") as handle:
         reader = csv.DictReader(handle, delimiter=delimiter)
         if reader.fieldnames is None:
             raise ValueError(f"{path} has no header row")
@@ -803,7 +803,7 @@ class PlotLogsInteractiveApp:
         self.delimiter_var = tk.StringVar(value=";")
         self.auto_refresh_interval_var = tk.StringVar(value="0")
         self.title_var = tk.StringVar()
-        self.status_var = tk.StringVar(value="Select CSV files to begin.")
+        self.status_var = tk.StringVar(value="Select log files to begin.")
         self.global_ema_var = tk.StringVar()
         self.global_ema_only_var = tk.BooleanVar(value=False)
         self.group_var = tk.StringVar()
@@ -1230,7 +1230,7 @@ class PlotLogsInteractiveApp:
 
     def add_paths(self, found_paths: Sequence[Path], source_label: str) -> None:
         if not found_paths:
-            self.set_status(f"No CSV files found in the selected {source_label}.")
+            self.set_status(f"No supported log files found in the selected {source_label}.")
             return
         added_paths: list[Path] = []
         for path in sorted(found_paths):
@@ -1248,17 +1248,17 @@ class PlotLogsInteractiveApp:
         self.refresh_file_list()
         self.refresh_columns(preserve_state=True)
         if not added_paths:
-            self.set_status(f"All CSV files in the selected {source_label} are already added.")
+            self.set_status(f"All supported log files in the selected {source_label} are already added.")
         elif len(added_paths) > 5:
-            self.set_status(f"Added {len(added_paths)} CSV files (disabled by default).")
+            self.set_status(f"Added {len(added_paths)} log files (disabled by default).")
         else:
-            self.set_status(f"Added {len(added_paths)} CSV files.")
+            self.set_status(f"Added {len(added_paths)} log files.")
 
     def list_csv_files_in_folder(self, root_path: Path) -> list[Path]:
         return [
             path.resolve()
-            for path in root_path.rglob("*.csv")
-            if path.is_file()
+            for path in root_path.rglob("*")
+            if plot_logs.is_supported_log_path(path)
         ]
 
     def set_csv_source_folder(self, folder: Path | None) -> None:
@@ -1324,28 +1324,33 @@ class PlotLogsInteractiveApp:
     def add_files(self) -> None:
         choice = messagebox.askyesnocancel(
             "Add CSV Files",
-            "Choose source:\nYes = pick CSV files\nNo = pick a folder",
+            "Choose source:\nYes = pick log files\nNo = pick a folder",
             parent=self.root,
         )
         if choice is None:
             return
         if choice:
             selected_paths = filedialog.askopenfilenames(
-                title="Select CSV files",
+                title="Select log files",
                 initialdir=str(REPO_ROOT),
-                filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
+                filetypes=[
+                    ("Supported log files", ("*.csv", "*.zip", "*.gz", "*.bz2", "*.xz")),
+                    ("CSV files", "*.csv"),
+                    ("ZIP archives", "*.zip"),
+                    ("All files", "*.*"),
+                ],
             )
             if not selected_paths:
                 return
             found_paths = [
                 Path(path).resolve()
                 for path in selected_paths
-                if Path(path).is_file() and Path(path).suffix.lower() == ".csv"
+                if plot_logs.is_supported_log_path(Path(path))
             ]
             self.add_paths(found_paths, "files")
             return
         directory = filedialog.askdirectory(
-            title="Select folder containing CSV files",
+            title="Select folder containing log files",
             initialdir=str(REPO_ROOT),
         )
         if not directory:
@@ -1368,9 +1373,9 @@ class PlotLogsInteractiveApp:
         self.add_paths(found_paths, "folder")
         added_count = len(set(self.paths)) - before_count
         if added_count == 0 and found_paths:
-            self.set_status("No new CSV files found in the saved source folder.")
+            self.set_status("No new log files found in the saved source folder.")
         elif found_paths:
-            self.set_status(f"Reloaded folder and added {added_count} new CSV files.")
+            self.set_status(f"Reloaded folder and added {added_count} new log files.")
 
     def remove_selected_files(self) -> None:
         selected_indices = list(self.files_listbox.curselection())
@@ -1583,10 +1588,10 @@ class PlotLogsInteractiveApp:
     def plot_grad_norms(self) -> None:
         enabled_paths = self.enabled_paths()
         if not self.paths:
-            self.show_error("No CSV files selected.")
+            self.show_error("No log files selected.")
             return
         if not enabled_paths:
-            self.show_error("Enable at least one CSV file to plot grad norms.")
+            self.show_error("Enable at least one log file to plot grad norms.")
             return
 
         script_path = Path(__file__).resolve().with_name("plot_grad_norms.py")
@@ -1614,7 +1619,7 @@ class PlotLogsInteractiveApp:
         except OSError as exc:
             self.show_error(f"Failed to launch grad norm plotter: {exc}")
             return
-        self.set_status("Opened grad norm plotter for enabled CSV files.")
+        self.set_status("Opened grad norm plotter for enabled log files.")
 
     def set_enabled_for_selection(self, enabled: bool) -> None:
         selected_indices = list(self.files_listbox.curselection())
@@ -2244,12 +2249,12 @@ class PlotLogsInteractiveApp:
         if not self.paths:
             self.available_columns = []
             self.update_column_options(preserve_state=preserve_state)
-            self.set_status("Select CSV files to load columns.")
+            self.set_status("Select log files to load columns.")
             return
         if not enabled_paths:
             self.available_columns = []
             self.update_column_options(preserve_state=preserve_state)
-            self.set_status("Enable at least one CSV file to load columns.")
+            self.set_status("Enable at least one log file to load columns.")
             return
         delimiter = self.delimiter_var.get()
         if len(delimiter) != 1:
@@ -2625,7 +2630,7 @@ class PlotLogsInteractiveApp:
         inferred: int | None = None
         for path in enabled_paths:
             try:
-                with path.open(newline="") as handle:
+                with plot_logs.open_log_text(path, newline="") as handle:
                     reader = csv.DictReader(handle, delimiter=delimiter)
                     if reader.fieldnames is None or freqs_column not in reader.fieldnames:
                         continue
@@ -2645,7 +2650,7 @@ class PlotLogsInteractiveApp:
                         except ValueError:
                             continue
                         break
-            except OSError:
+            except (OSError, ValueError):
                 continue
             if inferred is not None:
                 break
@@ -3347,10 +3352,10 @@ class PlotLogsInteractiveApp:
             return
         enabled_paths = self.enabled_paths()
         if not self.paths:
-            self.show_error("No CSV files selected.")
+            self.show_error("No log files selected.")
             return
         if not enabled_paths:
-            self.show_error("Enable at least one CSV file to plot.")
+            self.show_error("Enable at least one log file to plot.")
             return
         delimiter = self.delimiter_var.get()
         if len(delimiter) != 1:
@@ -3626,7 +3631,7 @@ class PlotLogsInteractiveApp:
         return from_index, to_index
 
     def csv_data_row_count(self, path: Path, delimiter: str) -> int:
-        with path.open(newline="") as handle:
+        with plot_logs.open_log_text(path, newline="") as handle:
             reader = csv.reader(handle, delimiter=delimiter)
             try:
                 next(reader)
@@ -3640,7 +3645,7 @@ class PlotLogsInteractiveApp:
         for path in enabled_paths:
             try:
                 entry_count = self.csv_data_row_count(path, delimiter)
-            except (OSError, csv.Error) as exc:
+            except (OSError, ValueError, csv.Error) as exc:
                 self.show_error(f"Failed to read {path}: {exc}")
                 return False
             if min_entry_count is None or entry_count < min_entry_count:
