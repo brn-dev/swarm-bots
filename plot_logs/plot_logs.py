@@ -2,11 +2,17 @@ from __future__ import annotations
 
 import argparse
 import csv
+import gzip
+import io
+import bz2
+import lzma
 import math
 from datetime import datetime
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Sequence
+from typing import Iterable, Iterator, Sequence, TextIO
+from contextlib import contextmanager
+from zipfile import BadZipFile, ZipFile, ZipInfo
 
 import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
@@ -25,6 +31,74 @@ class LogSeries:
     y_skew_values: dict[str, list[float]]
     y_min_values: dict[str, list[float]]
     y_max_values: dict[str, list[float]]
+
+
+SUPPORTED_LOG_SUFFIXES: tuple[str, ...] = (
+    ".csv",
+    ".zip",
+    ".gz",
+    ".bz2",
+    ".xz",
+)
+
+
+def is_supported_log_path(path: Path) -> bool:
+    if not path.is_file():
+        return False
+    return path.suffix.lower() in SUPPORTED_LOG_SUFFIXES
+
+
+def resolve_zip_csv_member(path: Path, archive: ZipFile) -> ZipInfo:
+    csv_members = [
+        info
+        for info in archive.infolist()
+        if not info.is_dir() and Path(info.filename).suffix.lower() == ".csv"
+    ]
+    if not csv_members:
+        raise ValueError(f"{path} does not contain a CSV file.")
+    if len(csv_members) == 1:
+        return csv_members[0]
+    preferred_members = [
+        info for info in csv_members if Path(info.filename).name.casefold() == "log.csv"
+    ]
+    if len(preferred_members) == 1:
+        return preferred_members[0]
+    member_names = ", ".join(info.filename for info in csv_members[:3])
+    if len(csv_members) > 3:
+        member_names = f"{member_names}, ..."
+    raise ValueError(
+        f"{path} contains multiple CSV files ({member_names}). Keep one CSV in the archive "
+        f"or name the desired file log.csv."
+    )
+
+
+@contextmanager
+def open_log_text(path: Path, newline: str | None = None) -> Iterator[TextIO]:
+    suffix = path.suffix.lower()
+    if suffix == ".zip":
+        try:
+            with ZipFile(path) as archive:
+                member = resolve_zip_csv_member(path, archive)
+                with archive.open(member, mode="r") as raw_handle:
+                    with io.TextIOWrapper(raw_handle, newline=newline) as text_handle:
+                        yield text_handle
+            return
+        except BadZipFile as exc:
+            raise ValueError(f"{path} is not a valid zip archive.") from exc
+    if suffix == ".gz":
+        with gzip.open(path, mode="rt", newline=newline) as handle:
+            yield handle
+        return
+    if suffix == ".bz2":
+        with bz2.open(path, mode="rt", newline=newline) as handle:
+            yield handle
+        return
+    if suffix == ".xz":
+        with lzma.open(path, mode="rt", newline=newline) as handle:
+            yield handle
+        return
+    with path.open(mode="r", newline=newline) as handle:
+        yield handle
 
 
 def parse_args() -> argparse.Namespace:
@@ -256,7 +330,7 @@ def load_log(
         column: [] for column in y_columns if resolved_max_mapping[column] is not None
     }
     valid_row_index = 0
-    with path.open(newline="") as handle:
+    with open_log_text(path, newline="") as handle:
         reader = csv.DictReader(handle, delimiter=delimiter)
         if reader.fieldnames is None:
             raise ValueError(f"{path} has no header row")

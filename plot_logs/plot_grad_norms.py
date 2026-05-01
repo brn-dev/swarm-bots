@@ -15,6 +15,8 @@ import matplotlib.dates as mdates
 matplotlib.use("TkAgg")
 import matplotlib.pyplot as plt
 
+import plot_logs
+
 
 @dataclass(slots=True)
 class GradNormLog:
@@ -37,7 +39,7 @@ DEFAULT_X_CANDIDATES: tuple[str, ...] = (
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Plot grad norm timeseries from one or more semicolon-delimited csv log files. "
+            "Plot grad norm timeseries from one or more semicolon-delimited log files. "
             "Each input file gets its own figure."
         )
     )
@@ -45,7 +47,7 @@ def parse_args() -> argparse.Namespace:
         "paths",
         nargs="+",
         type=Path,
-        help="One or more csv log files.",
+        help="One or more csv or compressed log files.",
     )
     parser.add_argument(
         "--stat",
@@ -170,7 +172,7 @@ def load_log(
     delimiter: str,
 ) -> GradNormLog:
     regex = re.compile(column_pattern.format(stat=re.escape(stat)))
-    with path.open(newline="", encoding="utf-8") as handle:
+    with plot_logs.open_log_text(path, newline="") as handle:
         reader = csv.DictReader(handle, delimiter=delimiter)
         if reader.fieldnames is None:
             raise ValueError(f"{path} has no header row")
