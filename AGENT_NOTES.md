@@ -171,7 +171,9 @@ Agents shall use this file to make notes for future instances. Write down import
 - Gymnasium vector env info packing adds boolean `_key` masks for every info key, including nested dicts like `info["reward_terms"]`. Recording/overlay code that iterates nested reward-term dicts must ignore underscore-prefixed entries such as `_forward`, `_wall`, `_guidance`; those are presence masks, not rewards.
 
 ## Version Note
-- `AGENTS.md` says Python `>=3.11`, but `pyproject.toml` currently requires `>=3.13`.
+- `AGENTS.md` still says Python `>=3.11`, but `pyproject.toml` / `.python-version` now target Python `3.13`.
+- Packaging split in `pyproject.toml`: base runtime deps are the core env/training stack; MJWarp lives under extras (`mjw` / `warp`), plotting under `plot`, and local tooling/tests under `[dependency-groups].dev`.
+- `pyproject.toml` now uses `uv` package sources so `torch` resolves from PyTorch's CUDA 12.8 wheel index on Linux/Windows. That is `uv`-specific behavior; plain `pip install .` does not honor `[tool.uv.sources]`.
 
 ## Practical Guidance
 - For new training work, start from `scripts/run_mat_nop_wall.py`, not the other MAT scripts.

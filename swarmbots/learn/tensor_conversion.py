@@ -8,30 +8,6 @@ from torch.utils import dlpack
 
 from swarmbots.learn.torch_device import as_device
 
-_JAX_IMPORT_FAILED = False
-_JAX_MODULE: Any | None = None
-_JAX_NUMPY_MODULE: Any | None = None
-
-
-def _get_jax_modules() -> tuple[Any, Any]:
-    global _JAX_IMPORT_FAILED, _JAX_MODULE, _JAX_NUMPY_MODULE
-    if _JAX_MODULE is not None and _JAX_NUMPY_MODULE is not None:
-        return _JAX_MODULE, _JAX_NUMPY_MODULE
-    if _JAX_IMPORT_FAILED:
-        raise RuntimeError("JAX backend requested, but JAX is not installed")
-
-    try:
-        import jax
-        import jax.numpy as jnp
-    except ImportError as exc:
-        _JAX_IMPORT_FAILED = True
-        raise RuntimeError("JAX backend requested, but JAX is not installed") from exc
-
-    _JAX_MODULE = jax
-    _JAX_NUMPY_MODULE = jnp
-    return jax, jnp
-
-
 def to_torch_tensor(
     value: Any,
     *,
@@ -81,25 +57,6 @@ def to_backend_array(
         return to_numpy_array(value, dtype=dtype)
     if normalized_backend == "torch":
         return to_torch_tensor(value, device=value.device if isinstance(value, torch.Tensor) else "cpu", dtype=dtype)
-    if normalized_backend == "jax":
-        jax, jnp = _get_jax_modules()
-
-        if isinstance(value, torch.Tensor):
-            tensor = value.detach()
-            if not tensor.is_contiguous():
-                tensor = tensor.contiguous()
-            array = jax.dlpack.from_dlpack(tensor)
-            if dtype is not None:
-                array = array.astype(dtype)
-            return array
-
-        if hasattr(value, "__dlpack__"):
-            array = jax.dlpack.from_dlpack(value)
-            if dtype is not None:
-                array = array.astype(dtype)
-            return array
-
-        return jnp.asarray(value, dtype=dtype)
 
     raise ValueError(f"Unsupported backend: {backend}")
 
