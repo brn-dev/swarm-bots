@@ -34,6 +34,7 @@ MIN_ITERATIONS_FOR_EMA = 5
 MIN_ITERATIONS_FOR_BEST = 50
 
 LearningRate = float | list[float] | dict[str, float]
+LearnIterationHook = Callable[["BaseAlgorithm", dict[str, Any], int], None]
 
 
 class BaseAlgorithm(abc.ABC):
@@ -123,6 +124,7 @@ class BaseAlgorithm(abc.ABC):
             compress_metrics_log_on_exit: bool = False,
             enable_command_prompt: bool = True,
             make_record_env: Callable[[], BaseLearnEnvWrapper] | None = None,
+            post_iteration_hooks: Collection[LearnIterationHook] | None = None,
     ) -> Self:
         assert (
                 (max_total_timesteps is not None and max_total_timesteps > 0 and additional_timesteps is None)
@@ -203,6 +205,10 @@ class BaseAlgorithm(abc.ABC):
                 )
                 iter_duration = iter_timer.stop().get_duration()
 
+                if post_iteration_hooks is not None:
+                    for hook in post_iteration_hooks:
+                        hook(self, metrics, rollout_steps)
+
                 current_return_ema = episode_return_ema.get()
                 self._last_return_ema = current_return_ema
                 if (current_return_ema is not None and
@@ -256,9 +262,6 @@ class BaseAlgorithm(abc.ABC):
                         return_ema=episode_return_ema.get()
                     )
                     logger.log("SAVE", f"Saved {suffix} model to {save_path.as_posix()}")
-
-            if self._make_record_env is not None:
-                self._cmd_record('')
 
             should_compress_metrics_log = compress_metrics_log_on_exit
 
@@ -726,7 +729,17 @@ class BaseAlgorithm(abc.ABC):
                 "record is unavailable: env has no live recording support and make_record_env is None"
             )
 
-        device = getattr(self, "record_device", getattr(self, "rollout_device", torch.device("cpu")))
+        requested_device = getattr(self, "record_device", getattr(self, "rollout_device", torch.device("cpu")))
+        policy_device = _infer_module_device(self.policy)
+        if policy_device is not None and requested_device != policy_device and _policy_uses_compiled_modules(self.policy):
+            logger.warning(
+                "Overriding record_device from "
+                f"{requested_device} to {policy_device} because compiled policy recording across devices "
+                "would trigger recompiles or backend compile failures."
+            )
+            device = policy_device
+        else:
+            device = requested_device
         gsde_reset_mode = getattr(self, "gsde_reset_mode", None)
         record_env: BaseLearnEnvWrapper | None = None
 
@@ -845,6 +858,26 @@ def _parse_step_from_metadata_filename(path: Path) -> int | None:
     if not step_str.isdigit():
         return None
     return int(step_str)
+
+
+def _infer_module_device(module: torch.nn.Module) -> torch.device | None:
+    try:
+        first_parameter = next(module.parameters())
+    except StopIteration:
+        return None
+    return first_parameter.device
+
+
+def _policy_uses_compiled_modules(policy: BasePolicy) -> bool:
+    config = getattr(policy, "config", None)
+    if config is not None and bool(getattr(config, "compile_modules", False)):
+        return True
+
+    inner_policy = getattr(policy, "policy", None)
+    if inner_policy is not None and _policy_uses_compiled_modules(inner_policy):
+        return True
+
+    return bool(getattr(policy, "_wm_compile_modules", False))
 
 def _read_metadata_json(path: Path) -> dict[str, Any] | None:
     try:

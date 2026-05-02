@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import math
 import sys
 from datetime import datetime
@@ -165,6 +166,82 @@ def set_actuator_gsde_init_joint_stds(
             gsde_dist.log_stds[:, i::actuators_per_limb] = math.log(joint_std)
 
 
+def make_record_env_fn(
+    *,
+    episode_length: int,
+    unit_start_locations: PreConnectedUnitLocationsConfig,
+    obs_indices: ObsIndices,
+    gamma: float,
+    use_popart: bool,
+    record_device: torch.device,
+    timestep: float,
+    action_repeat: int,
+) -> Callable[[], Any]:
+    from swarmbots.learn.env_wrappers.learn_wrappers.swarm_bots_learn_env_wrapper import SwarmBotsLearnEnvWrapper
+
+    def _make_record_env() -> SwarmBotsLearnEnvWrapper:
+        record_env = SyncVectorEnv(
+            [
+                make_env_fn(
+                    episode_length=episode_length,
+                    unit_start_locations=unit_start_locations,
+                    render_mode="rgb_array",
+                    timestep=timestep,
+                    action_repeat=action_repeat,
+                )
+            ],
+            autoreset_mode=AutoresetMode.SAME_STEP,
+        )
+        return wrap_vec_env(
+            vector_env=record_env,
+            obs_indices=obs_indices,
+            gamma=gamma,
+            use_popart=use_popart,
+            rollout_device=record_device,
+        )
+
+    return _make_record_env
+
+
+def install_scheduled_recordings(
+    *,
+    ppo: PPO[Any, Any],
+    total_timesteps: int,
+    num_episodes: int = 10,
+) -> tuple[list[int], Callable[[Any, dict[str, Any], int], None]]:
+    fractions = (0.0, 0.25, 0.5, 0.75, 1.0)
+    pending_milestones: list[tuple[float, int]] = []
+    current_timesteps = int(ppo.n_total_timesteps)
+    seen_targets: set[int] = set()
+    for fraction in fractions:
+        target_timesteps = max(1, int(total_timesteps * fraction))
+        if target_timesteps in seen_targets or target_timesteps <= current_timesteps:
+            continue
+        seen_targets.add(target_timesteps)
+        pending_milestones.append((fraction, target_timesteps))
+
+    scheduled_timesteps = [target_timesteps for _, target_timesteps in pending_milestones]
+
+    def scheduled_recording_hook(
+        algorithm: Any,
+        metrics: dict[str, Any],
+        rollout_steps: int,
+    ) -> None:
+        _ = metrics, rollout_steps
+        while pending_milestones and algorithm.n_total_timesteps >= pending_milestones[0][1]:
+            fraction, _target_timesteps = pending_milestones.pop(0)
+            actual_timesteps = algorithm.n_total_timesteps
+            prefix = f"record_{int(round(fraction * 100)):03d}pct_{actual_timesteps}_steps"
+            n_eps = num_episodes if fraction > 0 else 3
+            algorithm.execute_command(
+                "record",
+                json.dumps({"episodes": n_eps, "prefix": prefix}),
+                extra_run_metadata=None,
+            )
+
+    return scheduled_timesteps, scheduled_recording_hook
+
+
 def run_experiment(*, num_envs: int, rollout_samples: int, variant_name: str, entrypoint_path: Path) -> None:
     from swarmbots.learn.torch_logging import enable_torch_compile_logging
 
@@ -179,6 +256,9 @@ def run_experiment(*, num_envs: int, rollout_samples: int, variant_name: str, en
     )
     enable_torch_compile_logging()
     configure_float32_matmul_precision()
+
+    timestep = mj_scenario_presets.DEFAULT_KWARGS["timestep"]
+    action_repeat = mj_scenario_presets.DEFAULT_KWARGS["action_repeat"]
 
     steps_per_env = rollout_samples // num_envs
 
@@ -243,6 +323,8 @@ def run_experiment(*, num_envs: int, rollout_samples: int, variant_name: str, en
             unit_start_locations=unit_start_locations,
             render_mode=None,
             first_episode_length=int(i * episode_length / num_envs),
+            timestep=timestep,
+            action_repeat=action_repeat,
         )
         for i in range(1, num_envs + 1)
     ]
@@ -279,6 +361,16 @@ def run_experiment(*, num_envs: int, rollout_samples: int, variant_name: str, en
     print(f"Created {type(vector_env)} with {num_envs} environments.")
 
     gamma = 0.99
+    make_record_env = make_record_env_fn(
+        episode_length=episode_length,
+        unit_start_locations=unit_start_locations,
+        obs_indices=obs_indices,
+        gamma=gamma,
+        use_popart=use_popart,
+        record_device=record_device,
+        timestep=timestep,
+        action_repeat=action_repeat,
+    )
 
     print("Wrapping...")
     env = wrap_vec_env(
@@ -489,6 +581,13 @@ def run_experiment(*, num_envs: int, rollout_samples: int, variant_name: str, en
         logger.info(f"Loading model from {load_path}")
         ppo.load(load_path, recover_best_return_ema=False, strict_load_state_dict=True)
 
+    record_milestones, scheduled_recording_hook = install_scheduled_recordings(
+        ppo=ppo,
+        total_timesteps=total_timesteps,
+        num_episodes=10,
+    )
+    logger.info(f"Scheduled 10-episode recordings at total timesteps: {record_milestones}")
+
     print("Starting training...")
     logging_console_keys: list[
         tuple[str, str | SummaryStatisticsFormat | None] | tuple[str, str | SummaryStatisticsFormat | None, str]
@@ -542,8 +641,11 @@ def run_experiment(*, num_envs: int, rollout_samples: int, variant_name: str, en
             "variant_name": variant_name,
             "n_workers": n_workers,
             "copy": False,
+            "scheduled_recordings": record_milestones,
         },
         logging_console_keys=logging_console_keys,
+        make_record_env=make_record_env,
+        post_iteration_hooks=[scheduled_recording_hook],
     )
 
     print("Training Finished.")
