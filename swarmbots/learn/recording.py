@@ -94,6 +94,8 @@ def _extract_reward_terms(infos: dict[str, Any], *, env_idx: int) -> dict[str, f
 
     extracted: dict[str, float] = {}
     for label, values in reward_terms.items():
+        if str(label).startswith("_"):
+            continue
         extracted[str(label)] = _extract_env_reward(values, env_idx=env_idx)
     return extracted
 

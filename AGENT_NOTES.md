@@ -160,12 +160,15 @@ Agents shall use this file to make notes for future instances. Write down import
 - `get_hyper_parameters()` should report current live values.
 - Checkpoints include policy state, optional optimizer state, env wrapper normalization state, and training counters.
 - Interactive commands in `learn()` support lr/loss/reward/save/record/pause/stop, and updates are persisted to `command_log.jsonl`.
+- `BaseAlgorithm.learn(...)` now also supports `post_iteration_hooks`, called after each `perform_iteration()` with `(algorithm, metrics, rollout_steps)`. Use that seam for one-shot side effects tied to training progress; do not abuse `SchedulerManager` for non-numeric actions like recording.
+- Separate `record` runs built from `make_record_env` should keep the record env on the compiled policy's active device. For MAT/NOP with `compile_modules=True`, forcing recording to CPU while the policy is compiled on CUDA can trigger a second CPU Inductor compile during `record_policy(...)` and fail on Windows.
 - Generic schedulers are under `swarmbots/learn/scheduling/` and integrated via `SchedulerManager` in PPO.
 - Training logs go to `log.csv` with `;` delimiter.
 - `BaseAlgorithm.learn(..., compress_metrics_log_on_exit=True)` now optionally gzips `log.csv` to `log.csv.gz` on graceful run exit (normal max-step finish or `stop`), then deletes the plain CSV. Default stays off.
 - Plot tooling is in `plot_logs/`.
 - Plot tooling now reads compressed logs in memory too: plain `.csv`, `.zip` (expects exactly one CSV inside or a uniquely preferred `log.csv`), plus `.gz/.bz2/.xz`. Do not extract archives to temp files just to inspect or plot logs.
 - Current wall script logs per-joint continuous action stats via `metrics_action_splitters` and drives sticky-action annealing through `SchedulerManager`.
+- Gymnasium vector env info packing adds boolean `_key` masks for every info key, including nested dicts like `info["reward_terms"]`. Recording/overlay code that iterates nested reward-term dicts must ignore underscore-prefixed entries such as `_forward`, `_wall`, `_guidance`; those are presence masks, not rewards.
 
 ## Version Note
 - `AGENTS.md` says Python `>=3.11`, but `pyproject.toml` currently requires `>=3.13`.
@@ -192,6 +195,7 @@ Agents shall use this file to make notes for future instances. Write down import
 - `scripts/benchmarks/benchmark_mjw_physics_cadence_sweep.py` benchmarks MJW throughput over explicit `(timestep, action_repeat)` pairs and reports unstable terminations plus resolved workspace caps. Use that for constant-ish env-step-duration cadence sweeps such as `0.002x15`, `0.003x10`, `0.004x8`, `0.005x6`.
 - `scripts/benchmarks/benchmark_mjw_settled_resets.py` benchmarks slowdown from non-initial MJW settled resets by comparing `reset_settle_time=0` vs `>0` at short episode lengths, with `settle_initial_reset=False` so startup settle cost is intentionally excluded.
 - `scripts/benchmarks/benchmark_mat_compile.py` benchmarks MAT rollout/training forward speed with `compile_modules` on/off and compares the same sticky-beta + Bernoulli action-dist stack in two exposures: normal compile-friendly vs a benchmark-only top-level wrapper that forces `compile_friendly=False` without changing the actual sub-dists.
+- `scripts/benchmarks/benchmark_mat_action_cpu_vs_gpu.py` benchmarks `MATPolicy.act()` only, using synthetic wall-shaped observations and treating `num_envs` as the action batch size. Use it when you want CPU-vs-CUDA action-computation throughput without env stepping, rollout buffering, or critic/log-prob overhead.
 - `scripts/benchmarks/benchmark_nop_compile.py` benchmarks `NextObsPredWrapper` compile speedups separately from MAT: it measures both the internal NOP loss core (`_compute_next_obs_pred_loss_fn`) and full `evaluate_actions()` under four cases (`policy_compile_modules` on/off crossed with `NOPWorldModelConfig.compile_modules` on/off). Use that before attributing full PPO training speed changes to NOP compile alone.
 - `scripts/benchmarks/benchmark_ppo_wm_sampler.py` compares the old flat WM sampler's per-episode serial window construction against the current grouped batched implementation using a reference copy of the old constructor. It benchmarks fixed-length, bucketed-length, and ragged-length episode mixes, with and without agent masks.
 - `scripts/benchmarks/benchmark_ppo_wm_sampler.py` should default to the sampler workload implied by `scripts/run_mat_nop_wall_mjw.py`, not the env's true episode length: `StepsRolloutMode(4048)` with `n_envs=512` means flat WM sampler inputs are mostly rollout segments of length `8`, while the true env `episode_length` is `512`.
