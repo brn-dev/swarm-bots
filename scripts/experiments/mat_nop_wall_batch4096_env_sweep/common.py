@@ -91,6 +91,10 @@ def make_env_fn(
     return _init
 
 
+def make_first_episode_length(*, env_index: int, num_envs: int, episode_length: int) -> int:
+    return max(1, int(env_index * episode_length / num_envs))
+
+
 def wrap_vec_env(
     *,
     vector_env: Any,
@@ -323,7 +327,11 @@ def run_experiment(*, num_envs: int, rollout_samples: int, variant_name: str, en
             episode_length=episode_length,
             unit_start_locations=unit_start_locations,
             render_mode=None,
-            first_episode_length=int(i * episode_length / num_envs),
+            first_episode_length=make_first_episode_length(
+                env_index=i,
+                num_envs=num_envs,
+                episode_length=episode_length,
+            ),
             timestep=timestep,
             action_repeat=action_repeat,
         )
