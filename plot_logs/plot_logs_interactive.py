@@ -820,9 +820,10 @@ class PlotLogsInteractiveApp:
         self.path_order_var = tk.StringVar(value=DEFAULT_PATH_ORDER_MODE)
         self.path_added_order: dict[Path, int] = {}
         self.path_added_order_counter = 0
-        self.csv_source_folder: Path | None = None
-        self.csv_source_folder_var = tk.StringVar(value="Source folder: (none)")
+        self.csv_source_folders: list[Path] = []
+        self.csv_source_folder_var = tk.StringVar(value="Source folders: (none)")
         self.reload_folder_button: ttk.Button | None = None
+        self.clear_source_folders_button: ttk.Button | None = None
         self.light_figure_palette = {
             "figure_face": matplotlib.rcParams["figure.facecolor"],
             "axes_face": matplotlib.rcParams["axes.facecolor"],
@@ -1002,17 +1003,24 @@ class PlotLogsInteractiveApp:
         disable_button.grid(row=2, column=1, sticky="ew", pady=(4, 0))
         self.reload_folder_button = ttk.Button(
             files_buttons,
-            text="Reload Folder CSVs",
-            command=self.reload_folder_csv_files,
+            text="Reload Source Folders",
+            command=self.reload_source_folder_csv_files,
             state="disabled",
         )
         self.reload_folder_button.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(6, 0))
+        self.clear_source_folders_button = ttk.Button(
+            files_buttons,
+            text="Clear Source Folders",
+            command=lambda: self.set_csv_source_folders([]),
+            state="disabled",
+        )
+        self.clear_source_folders_button.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(6, 0))
         plot_grad_norms_button = ttk.Button(
             files_buttons,
             text="Plot Grad Norms",
             command=self.plot_grad_norms,
         )
-        plot_grad_norms_button.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(6, 0))
+        plot_grad_norms_button.grid(row=5, column=0, columnspan=2, sticky="ew", pady=(6, 0))
 
         meta_frame = ttk.Frame(files_frame)
         meta_frame.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(8, 0))
@@ -1261,19 +1269,52 @@ class PlotLogsInteractiveApp:
             if plot_logs.is_supported_log_path(path)
         ]
 
-    def set_csv_source_folder(self, folder: Path | None) -> None:
-        self.csv_source_folder = folder
-        if folder is None:
-            self.csv_source_folder_var.set("Source folder: (none)")
+    def list_csv_files_in_folders(self, root_paths: Sequence[Path]) -> list[Path]:
+        found_paths: list[Path] = []
+        seen_paths: set[Path] = set()
+        for root_path in root_paths:
+            for path in self.list_csv_files_in_folder(root_path):
+                if path in seen_paths:
+                    continue
+                seen_paths.add(path)
+                found_paths.append(path)
+        return found_paths
+
+    def display_folder_path(self, folder: Path) -> str:
+        try:
+            return str(folder.relative_to(REPO_ROOT))
+        except ValueError:
+            return str(folder)
+
+    def set_csv_source_folders(self, folders: Sequence[Path]) -> None:
+        unique_folders: list[Path] = []
+        seen_folders: set[Path] = set()
+        for folder in folders:
+            resolved_folder = folder.resolve()
+            if resolved_folder in seen_folders:
+                continue
+            seen_folders.add(resolved_folder)
+            unique_folders.append(resolved_folder)
+        self.csv_source_folders = unique_folders
+        if not unique_folders:
+            self.csv_source_folder_var.set("Source folders: (none)")
+        elif len(unique_folders) == 1:
+            self.csv_source_folder_var.set(
+                f"Source folder: {self.display_folder_path(unique_folders[0])}"
+            )
         else:
-            try:
-                folder_display = str(folder.relative_to(REPO_ROOT))
-            except ValueError:
-                folder_display = str(folder)
-            self.csv_source_folder_var.set(f"Source folder: {folder_display}")
+            folder_lines = "\n".join(self.display_folder_path(folder) for folder in unique_folders)
+            self.csv_source_folder_var.set(
+                f"Source folders ({len(unique_folders)}):\n{folder_lines}"
+            )
+        state = "normal" if unique_folders else "disabled"
         if self.reload_folder_button is not None:
-            state = "normal" if folder is not None else "disabled"
             self.reload_folder_button.configure(state=state)
+        if self.clear_source_folders_button is not None:
+            self.clear_source_folders_button.configure(state=state)
+
+    def add_csv_source_folder(self, folder: Path) -> None:
+        self.set_csv_source_folders([*self.csv_source_folders, folder])
 
     def rebuild_added_order_from_paths(self) -> None:
         for index, path in enumerate(self.paths, start=1):
@@ -1324,7 +1365,7 @@ class PlotLogsInteractiveApp:
     def add_files(self) -> None:
         choice = messagebox.askyesnocancel(
             "Add CSV Files",
-            "Choose source:\nYes = pick log files\nNo = pick a folder",
+            "Choose source:\nYes = pick log files\nNo = add a source folder",
             parent=self.root,
         )
         if choice is None:
@@ -1350,32 +1391,49 @@ class PlotLogsInteractiveApp:
             self.add_paths(found_paths, "files")
             return
         directory = filedialog.askdirectory(
-            title="Select folder containing log files",
+            title="Select source folder containing log files",
             initialdir=str(REPO_ROOT),
         )
         if not directory:
             return
         root_path = Path(directory).resolve()
         found_paths = self.list_csv_files_in_folder(root_path)
-        self.set_csv_source_folder(root_path)
+        self.add_csv_source_folder(root_path)
         self.add_paths(found_paths, "folder")
 
-    def reload_folder_csv_files(self) -> None:
-        if self.csv_source_folder is None:
-            self.set_status("No source folder selected yet.")
-            return
-        if not self.csv_source_folder.is_dir():
-            self.show_error(f"Source folder not found: {self.csv_source_folder}")
-            self.set_csv_source_folder(None)
-            return
-        found_paths = self.list_csv_files_in_folder(self.csv_source_folder)
+    def scan_source_folders(self, source_label: str, update_status: bool) -> int | None:
+        if not self.csv_source_folders:
+            if update_status:
+                self.set_status("No source folders selected yet.")
+            return None
+        valid_folders: list[Path] = []
+        missing_folders: list[Path] = []
+        for folder in self.csv_source_folders:
+            if folder.is_dir():
+                valid_folders.append(folder)
+            else:
+                missing_folders.append(folder)
+        if missing_folders:
+            self.set_csv_source_folders(valid_folders)
+            missing_display = "\n".join(str(folder) for folder in missing_folders)
+            self.show_error(f"Source folders not found:\n{missing_display}")
+            if not valid_folders:
+                return None
+        found_paths = self.list_csv_files_in_folders(valid_folders)
+        if not found_paths and not update_status:
+            return 0
         before_count = len(set(self.paths))
-        self.add_paths(found_paths, "folder")
-        added_count = len(set(self.paths)) - before_count
-        if added_count == 0 and found_paths:
-            self.set_status("No new log files found in the saved source folder.")
-        elif found_paths:
-            self.set_status(f"Reloaded folder and added {added_count} new log files.")
+        self.add_paths(found_paths, source_label)
+        return len(set(self.paths)) - before_count
+
+    def reload_source_folder_csv_files(self) -> None:
+        added_count = self.scan_source_folders("source folders", update_status=True)
+        if added_count is None:
+            return
+        if added_count == 0:
+            self.set_status("No new log files found in the source folders.")
+        else:
+            self.set_status(f"Reloaded source folders and added {added_count} new log files.")
 
     def remove_selected_files(self) -> None:
         selected_indices = list(self.files_listbox.curselection())
@@ -1690,19 +1748,24 @@ class PlotLogsInteractiveApp:
             "tabs": list(self.plot_tab_payloads),
         }
 
-    def build_config_payload(self) -> dict[str, object]:
-        source_folder: str | None = None
-        if self.csv_source_folder is not None:
+    def build_source_folders_payload(self) -> list[str]:
+        source_folders: list[str] = []
+        for folder in self.csv_source_folders:
             try:
-                source_folder = str(self.csv_source_folder.relative_to(REPO_ROOT))
+                source_folders.append(str(folder.relative_to(REPO_ROOT)))
             except ValueError:
-                source_folder = str(self.csv_source_folder)
+                source_folders.append(str(folder))
+        return source_folders
+
+    def build_config_payload(self) -> dict[str, object]:
+        source_folders = self.build_source_folders_payload()
         return {
             "paths": self.build_paths_payload(),
             "plots": self.build_plot_payload(),
             "plot_tabs": self.build_plot_tabs_payload(),
             "auto_refresh_interval": self.auto_refresh_interval_var.get().strip(),
-            "csv_source_folder": source_folder,
+            "csv_source_folders": source_folders,
+            "csv_source_folder": source_folders[0] if source_folders else None,
             "path_order": self.path_order_var.get(),
         }
 
@@ -1720,19 +1783,36 @@ class PlotLogsInteractiveApp:
         else:
             self.path_order_var.set(DEFAULT_PATH_ORDER_MODE)
 
-    def apply_csv_source_folder_payload(self, payload: dict[str, object]) -> str | None:
-        raw_source_folder = payload.get("csv_source_folder")
-        if not isinstance(raw_source_folder, str) or not raw_source_folder.strip():
-            self.set_csv_source_folder(None)
-            return None
-        folder_candidate = Path(raw_source_folder)
-        if not folder_candidate.is_absolute():
-            folder_candidate = (REPO_ROOT / folder_candidate).resolve()
-        if not folder_candidate.is_dir():
-            self.set_csv_source_folder(None)
-            return raw_source_folder
-        self.set_csv_source_folder(folder_candidate)
-        return None
+    def apply_csv_source_folder_payload(self, payload: dict[str, object]) -> list[str]:
+        raw_source_folders = payload.get("csv_source_folders")
+        if isinstance(raw_source_folders, list):
+            folder_values = [
+                raw_folder.strip()
+                for raw_folder in raw_source_folders
+                if isinstance(raw_folder, str) and raw_folder.strip()
+            ]
+        else:
+            raw_source_folder = payload.get("csv_source_folder")
+            folder_values = (
+                [raw_source_folder.strip()]
+                if isinstance(raw_source_folder, str) and raw_source_folder.strip()
+                else []
+            )
+        if not folder_values:
+            self.set_csv_source_folders([])
+            return []
+        loaded_folders: list[Path] = []
+        missing_folders: list[str] = []
+        for folder_value in folder_values:
+            folder_candidate = Path(folder_value)
+            if not folder_candidate.is_absolute():
+                folder_candidate = (REPO_ROOT / folder_candidate).resolve()
+            if folder_candidate.is_dir():
+                loaded_folders.append(folder_candidate)
+            else:
+                missing_folders.append(folder_value)
+        self.set_csv_source_folders(loaded_folders)
+        return missing_folders
 
     def apply_paths_payload(self, payload: object) -> tuple[int, int]:
         if not isinstance(payload, list):
@@ -2147,7 +2227,7 @@ class PlotLogsInteractiveApp:
             self.show_error(f"Failed to load saved paths: {exc}")
             return
         if isinstance(payload, list):
-            self.set_csv_source_folder(None)
+            self.set_csv_source_folders([])
             self.path_order_var.set(DEFAULT_PATH_ORDER_MODE)
             try:
                 loaded_count, missing_count = self.apply_paths_payload(payload)
@@ -2173,7 +2253,7 @@ class PlotLogsInteractiveApp:
             self.show_error(str(exc))
             return
         self.apply_auto_refresh_interval_payload(payload)
-        missing_source_folder = self.apply_csv_source_folder_payload(payload)
+        missing_source_folders = self.apply_csv_source_folder_payload(payload)
         self.apply_path_order_payload(payload)
         self.refresh_file_list()
         status_parts = [
@@ -2184,8 +2264,10 @@ class PlotLogsInteractiveApp:
             status_parts.append(f"Missing plot columns: {unique_missing}.")
         if missing_x:
             status_parts.append(f"Missing X column: {missing_x}.")
-        if missing_source_folder:
-            status_parts.append(f"Missing source folder: {missing_source_folder}.")
+        if missing_source_folders:
+            status_parts.append(
+                f"Missing source folders: {', '.join(missing_source_folders)}."
+            )
         self.set_status(" ".join(status_parts))
 
     def load_config_from_file(self) -> None:
@@ -2203,7 +2285,7 @@ class PlotLogsInteractiveApp:
             self.show_error(f"Failed to load CSV configuration: {exc}")
             return
         if isinstance(payload, list):
-            self.set_csv_source_folder(None)
+            self.set_csv_source_folders([])
             self.path_order_var.set(DEFAULT_PATH_ORDER_MODE)
             try:
                 loaded_count, missing_count = self.apply_paths_payload(payload)
@@ -2229,7 +2311,7 @@ class PlotLogsInteractiveApp:
             self.show_error(str(exc))
             return
         self.apply_auto_refresh_interval_payload(payload)
-        missing_source_folder = self.apply_csv_source_folder_payload(payload)
+        missing_source_folders = self.apply_csv_source_folder_payload(payload)
         self.apply_path_order_payload(payload)
         self.refresh_file_list()
         status_parts = [
@@ -2240,8 +2322,10 @@ class PlotLogsInteractiveApp:
             status_parts.append(f"Missing plot columns: {unique_missing}.")
         if missing_x:
             status_parts.append(f"Missing X column: {missing_x}.")
-        if missing_source_folder:
-            status_parts.append(f"Missing source folder: {missing_source_folder}.")
+        if missing_source_folders:
+            status_parts.append(
+                f"Missing source folders: {', '.join(missing_source_folders)}."
+            )
         self.set_status(" ".join(status_parts))
 
     def refresh_columns(self, preserve_state: bool = False) -> None:
@@ -3350,6 +3434,7 @@ class PlotLogsInteractiveApp:
         auto_refresh_interval = self.parse_auto_refresh_interval(show_error=True)
         if auto_refresh_interval is None:
             return
+        self.scan_source_folders("source folders", update_status=False)
         enabled_paths = self.enabled_paths()
         if not self.paths:
             self.show_error("No log files selected.")
