@@ -143,6 +143,7 @@ def main() -> None:
     from swarmbots.learn.algos.world_modeling.ppo_wm_sampler import PPOWMSamplerConfig
     from swarmbots.learn.env_wrappers.worker_pool_async_vector_env import WorkerPoolAsyncVectorEnv
     from swarmbots.learn.gsde_reset import GSDEProbabilityResetMode
+    from swarmbots.learn.discord_notifications import run_with_discord_notification
     from swarmbots.learn.scheduling.auto_lr_updater import make_auto_lr_updater
     from swarmbots.learn.scheduling.cosine_scheduler import CosineSchedulerConfig
     from swarmbots.learn.scheduling.linear_scheduler import LinearScheduler
@@ -539,21 +540,27 @@ def main() -> None:
         ('fps', None),
     ])
 
-    ppo.learn(
-        max_total_timesteps=total_timesteps,
+    run_with_discord_notification(
+        run_name=f"mat_nop_wall/{run_id}",
         run_dir=run_dir,
-        log_interval=1,
-        save_interval=save_interval,
-        save_optimizer=save_optimizer,
-        best_rotation_n=3,
-        extra_run_metadata={
-            'load_path': load_path,
-            'env_settings': env_settings,
-            'script': Path(__file__).read_text(encoding='utf-8'),
-            'script_scenario_presets': Path(scenario_presets.__file__).read_text(encoding='utf-8'),
-        },
-        logging_console_keys=logging_console_keys,
-        make_record_env=make_record_env
+        total_timesteps=total_timesteps,
+        algorithm=ppo,
+        run=lambda: ppo.learn(
+            max_total_timesteps=total_timesteps,
+            run_dir=run_dir,
+            log_interval=1,
+            save_interval=save_interval,
+            save_optimizer=save_optimizer,
+            best_rotation_n=3,
+            extra_run_metadata={
+                'load_path': load_path,
+                'env_settings': env_settings,
+                'script': Path(__file__).read_text(encoding='utf-8'),
+                'script_scenario_presets': Path(scenario_presets.__file__).read_text(encoding='utf-8'),
+            },
+            logging_console_keys=logging_console_keys,
+            make_record_env=make_record_env
+        ),
     )
 
     print("Training Finished.")
