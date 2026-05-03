@@ -237,29 +237,31 @@ class MATPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
             self,
             augmented_observations: torch.Tensor,
             *,
-            start_agent_idx: int = 0,
+            agent_embeddings: torch.Tensor | None = None,
     ) -> torch.Tensor:
         tokens = self.query_encoder(augmented_observations)
+        if agent_embeddings is not None:
+            return tokens + agent_embeddings
         if self.agent_embeddings_decoder is None:
             return tokens
 
-        end_agent_idx = start_agent_idx + tokens.shape[1]
-        return tokens + self.agent_embeddings_decoder[:, start_agent_idx:end_agent_idx, :]
+        return tokens + self.agent_embeddings_decoder[:, :tokens.shape[1], :]
 
     def _encode_context_tokens(
             self,
             augmented_observations: torch.Tensor,
             actions: torch.Tensor,
             *,
-            start_agent_idx: int = 0,
+            agent_embeddings: torch.Tensor | None = None,
     ) -> torch.Tensor:
         context_input = torch.cat((augmented_observations, actions), dim=-1)
         tokens = self.context_encoder(context_input)
+        if agent_embeddings is not None:
+            return tokens + agent_embeddings
         if self.agent_embeddings_decoder is None:
             return tokens
 
-        end_agent_idx = start_agent_idx + tokens.shape[1]
-        return tokens + self.agent_embeddings_decoder[:, start_agent_idx:end_agent_idx, :]
+        return tokens + self.agent_embeddings_decoder[:, :tokens.shape[1], :]
 
     def _generate_actions(
             self,
@@ -335,10 +337,15 @@ class MATPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
                 )
             actions_list.append(action)
 
+            agent_embeddings_i = (
+                None
+                if self.agent_embeddings_decoder is None
+                else self.agent_embeddings_decoder[:, i:i + 1, :]
+            )
             context_token_i = self._encode_context_tokens(
                 augmented_observations[:, i:i + 1, :],
                 action,
-                start_agent_idx=i,
+                agent_embeddings=agent_embeddings_i,
             )
             context_tokens = torch.cat((context_tokens, context_token_i), dim=AGENTS_DIM)
             if context_mask is not None:
