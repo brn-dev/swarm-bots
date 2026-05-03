@@ -29,6 +29,7 @@ from swarmbots.learn.algos.ppo.ppo_policy import PopArtConfig
 from swarmbots.learn.algos.world_modeling.next_obs_pred_mixin import NextObsPredConfig
 from swarmbots.learn.algos.world_modeling.next_obs_pred_ppo_wrapper import NOPWorldModelConfig, NextObsPredWrapper
 from swarmbots.learn.algos.world_modeling.ppo_wm_sampler import PPOWMSamplerConfig
+from swarmbots.learn.discord_notifications import run_with_discord_notification
 from swarmbots.learn.env_wrappers.worker_pool_async_vector_env import WorkerPoolAsyncVectorEnv
 from swarmbots.learn.gsde_reset import GSDEProbabilityResetMode
 from swarmbots.learn.obs_indices import ObsIndices
@@ -620,32 +621,38 @@ def run_experiment(*, num_envs: int, rollout_samples: int, variant_name: str, en
         ]
     )
 
-    ppo.learn(
-        max_total_timesteps=total_timesteps,
+    run_with_discord_notification(
+        run_name=f"mat_nop_wall_batch4096_env_sweep/{variant_name}/{run_id}",
         run_dir=str(run_dir),
-        log_interval=1,
-        save_interval=save_interval,
-        save_optimizer=save_optimizer,
-        best_rotation_n=3,
-        extra_run_metadata={
-            "load_path": load_path,
-            "env_settings": env_settings,
-            "script": entrypoint_path.read_text(encoding="utf-8"),
-            "shared_experiment_script": Path(__file__).read_text(encoding="utf-8"),
-            "base_script": (REPO_ROOT / "scripts" / "run_mat_nop_wall.py").read_text(encoding="utf-8"),
-            "script_scenario_presets": Path(mj_scenario_presets.__file__).read_text(encoding="utf-8"),
-            "backend": "mj_env",
-            "rollout_samples": rollout_samples,
-            "num_envs": num_envs,
-            "steps_per_env": steps_per_env,
-            "variant_name": variant_name,
-            "n_workers": n_workers,
-            "copy": False,
-            "scheduled_recordings": record_milestones,
-        },
-        logging_console_keys=logging_console_keys,
-        make_record_env=make_record_env,
-        post_iteration_hooks=[scheduled_recording_hook],
+        total_timesteps=total_timesteps,
+        algorithm=ppo,
+        run=lambda: ppo.learn(
+            max_total_timesteps=total_timesteps,
+            run_dir=str(run_dir),
+            log_interval=1,
+            save_interval=save_interval,
+            save_optimizer=save_optimizer,
+            best_rotation_n=3,
+            extra_run_metadata={
+                "load_path": load_path,
+                "env_settings": env_settings,
+                "script": entrypoint_path.read_text(encoding="utf-8"),
+                "shared_experiment_script": Path(__file__).read_text(encoding="utf-8"),
+                "base_script": (REPO_ROOT / "scripts" / "run_mat_nop_wall.py").read_text(encoding="utf-8"),
+                "script_scenario_presets": Path(mj_scenario_presets.__file__).read_text(encoding="utf-8"),
+                "backend": "mj_env",
+                "rollout_samples": rollout_samples,
+                "num_envs": num_envs,
+                "steps_per_env": steps_per_env,
+                "variant_name": variant_name,
+                "n_workers": n_workers,
+                "copy": False,
+                "scheduled_recordings": record_milestones,
+            },
+            logging_console_keys=logging_console_keys,
+            make_record_env=make_record_env,
+            post_iteration_hooks=[scheduled_recording_hook],
+        ),
     )
 
     print("Training Finished.")
