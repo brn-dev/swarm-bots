@@ -12,36 +12,16 @@ from swarmbots.mj_env.swarm.base_swarm import BaseSwarm
 from swarmbots.mj_env.swarm.homogeneous_swarm import HomogeneousSwarm, PreConnectedUnitLocationsConfig
 from swarmbots.mj_env.swarm.unit_config import UNIT_CONFIG_TETRAHEDRON_XYZ, UNIT_CONFIG_TETRAHEDRON_ZX, \
     UNIT_CONFIG_TETRAHEDRON_XY
+from swarmbots.scenario_presets_kwargs import (
+    COMMON_SCENARIO_KWARGS,
+    PAYLOAD_PLANE_REWARD_KWARGS as SHARED_PAYLOAD_PLANE_REWARD_KWARGS,
+    WALL_PASS_REWARD_KWARGS as SHARED_WALL_PASS_REWARD_KWARGS,
+    make_scenario_kwargs,
+)
 
-DEFAULT_KWARGS = {
-    'timestep': 0.003,
-    'action_repeat': 10,
-    'friction': [1.25, 7e-3, 1.25e-4],
-    'force_elliptic_cone': False,
-    'actuator_strength': 15.0,
-    'progress_reward_weight': 1.0,
-    'guidance_reward_weight': 1.00,
-    'units_without_connections_reward_weight': -1e-5,
-    'reset_settle_time': 1.0,
-    'reset_settle_timestep_scale': 3,
-    'randomize_initial_swarm_z_rotation': False,
-}
-WALL_PASS_REWARD_KWARGS = {
-    'forward_reward_weight': 1.0,
-    'forward_reward_max_y': 1.5,
-    'wall_pass_reward_weight': 10.0,
-    'wall_pass_thresholds': [-0.1, 0.1, 0.3, 0.5],
-}
-PAYLOAD_PLANE_REWARD_KWARGS = {
-    'forward_reward_weight': 1.0,
-    'payload_centering_penalty_weight': 1.0,
-    'payload_centering_penalty_power': 1.0,
-    'payload_radius': 0.2,
-    'payload_mass': 1.0,
-    'payload_offset_x': 0.0,
-    'payload_offset_y': 0.75,
-    'forward_reward_max_y': None,
-}
+DEFAULT_KWARGS = make_scenario_kwargs(COMMON_SCENARIO_KWARGS, {"force_elliptic_cone": False})
+WALL_PASS_REWARD_KWARGS = make_scenario_kwargs(SHARED_WALL_PASS_REWARD_KWARGS)
+PAYLOAD_PLANE_REWARD_KWARGS = make_scenario_kwargs(SHARED_PAYLOAD_PLANE_REWARD_KWARGS)
 
 def _resolve_swarm(
         swarm: BaseSwarm | None,
@@ -115,8 +95,7 @@ def default_wall(
         joints: str = 'zx',
         **kwargs
 ) -> ObstacleStreetScenario:
-    scenario_kwargs = DEFAULT_KWARGS.copy()
-    scenario_kwargs.update(WALL_PASS_REWARD_KWARGS)
+    scenario_kwargs = make_scenario_kwargs(DEFAULT_KWARGS, WALL_PASS_REWARD_KWARGS)
     scenario_kwargs.update({
         'num_walls': 1,
         'opening_width': 0.01,
@@ -157,7 +136,7 @@ def default_bridge(
         quantize_connection_twist: int | None = None,
         **kwargs
 ) -> BridgeScenario:
-    scenario_kwargs = DEFAULT_KWARGS.copy()
+    scenario_kwargs = make_scenario_kwargs(DEFAULT_KWARGS)
     scenario_kwargs.update({
         'fell_off_bridge_reward': -2.0,
     })
@@ -183,8 +162,7 @@ def default_payload_plane(
         joints: str = 'zx',
         **kwargs
 ) -> PayloadPlaneScenario:
-    scenario_kwargs = DEFAULT_KWARGS.copy()
-    scenario_kwargs.update(PAYLOAD_PLANE_REWARD_KWARGS)
+    scenario_kwargs = make_scenario_kwargs(DEFAULT_KWARGS, PAYLOAD_PLANE_REWARD_KWARGS)
     scenario_kwargs.update({
         'plane_size': 100.0,
         'connection_dist_threshold': 0.1,

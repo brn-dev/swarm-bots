@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Any, Iterable
+from typing import Any, Iterable, Literal
 
 import mujoco
 import numpy as np
@@ -13,6 +13,8 @@ import swarmbots.mj_env.mujoco_utils as mj_utils
 from swarmbots.mj_env.float_or_dist_params import FloatOrDistParams
 from swarmbots.mjw_env.scenarios.base_mjw_scenario import BaseMJWScenario, MJWRecordingCameraConfig, MJWRuntimeBindings
 from swarmbots.mjw_env.swarm.mjw_homogeneous_swarm import MJWHomogeneousSwarm
+
+PayloadShape = Literal["sphere", "box", "capsule"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,12 +57,14 @@ class MJWPayloadPlaneScenario(BaseMJWScenario):
     swarm_start_x: FloatOrDistParams
     swarm_start_y: FloatOrDistParams
     plane_size: float
+    payload_shape: PayloadShape
     payload_radius: float
     payload_mass: float
     payload_offset_x: FloatOrDistParams
     payload_offset_y: FloatOrDistParams
     payload_centering_penalty_weight: float
     payload_centering_penalty_power: float
+    payload_centering_tolerance: float
     forward_reward_max_y: float | None = None
     seed: int | None = None
     compile_reward_kernel: bool = False
@@ -77,6 +81,10 @@ class MJWPayloadPlaneScenario(BaseMJWScenario):
         self.plane_size = float(self.plane_size)
         if self.plane_size <= 0.0:
             raise ValueError(f"Expected plane_size > 0, got {self.plane_size}")
+        if self.payload_shape not in ("sphere", "box", "capsule"):
+            raise ValueError(
+                f"Expected payload_shape to be 'sphere', 'box', or 'capsule', got {self.payload_shape!r}"
+            )
         self.payload_radius = float(self.payload_radius)
         if self.payload_radius <= 0.0:
             raise ValueError(f"Expected payload_radius > 0, got {self.payload_radius}")
@@ -93,6 +101,11 @@ class MJWPayloadPlaneScenario(BaseMJWScenario):
         if self.payload_centering_penalty_power <= 0.0:
             raise ValueError(
                 f"Expected payload_centering_penalty_power > 0, got {self.payload_centering_penalty_power}"
+            )
+        self.payload_centering_tolerance = float(self.payload_centering_tolerance)
+        if self.payload_centering_tolerance < 0.0:
+            raise ValueError(
+                f"Expected payload_centering_tolerance >= 0, got {self.payload_centering_tolerance}"
             )
         if self.forward_reward_max_y is not None:
             self.forward_reward_max_y = float(self.forward_reward_max_y)
@@ -123,12 +136,14 @@ class MJWPayloadPlaneScenario(BaseMJWScenario):
             "reset_settle_time": self.reset_settle_time,
             "reset_settle_timestep_scale": self.reset_settle_timestep_scale,
             "plane_size": self.plane_size,
+            "payload_shape": self.payload_shape,
             "payload_radius": self.payload_radius,
             "payload_mass": self.payload_mass,
             "payload_offset_x": self.payload_offset_x,
             "payload_offset_y": self.payload_offset_y,
             "payload_centering_penalty_weight": self.payload_centering_penalty_weight,
             "payload_centering_penalty_power": self.payload_centering_penalty_power,
+            "payload_centering_tolerance": self.payload_centering_tolerance,
             "forward_reward_weight": self.forward_reward_weight,
             "forward_reward_max_y": self.forward_reward_max_y,
             "compile_reward_kernel": self.compile_reward_kernel,
@@ -137,9 +152,9 @@ class MJWPayloadPlaneScenario(BaseMJWScenario):
 
     def get_default_recording_camera_config(self) -> MJWRecordingCameraConfig | None:
         payload_offset_y = self.payload_offset_y if isinstance(self.payload_offset_y, (int, float)) else 0.75
-        distance = max(3.0, min(8.0, self.swarm.max_unit_extent * 6.0))
+        distance = max(8.0, min(14.0, self.swarm.max_unit_extent * 10.0 + self.payload_radius * 4.0))
         return MJWRecordingCameraConfig(
-            lookat=(0.0, float(payload_offset_y) * 0.75, max(0.35, self.payload_radius * 3.0)),
+            lookat=(0.0, float(payload_offset_y), max(0.5, self.payload_radius * 4.0)),
             distance=distance,
             azimuth=180.0,
             elevation=-35.0,
@@ -164,12 +179,7 @@ class MJWPayloadPlaneScenario(BaseMJWScenario):
 
         payload_body = worldbody.add_body(name="Payload", pos=[0, 0, self.payload_radius])
         payload_body.add_freejoint(name="Payload_freejoint")
-        payload_body.add_geom(
-            type=mujoco.mjtGeom.mjGEOM_SPHERE,
-            size=[self.payload_radius, 0, 0],
-            mass=self.payload_mass,
-            rgba=[0.92, 0.72, 0.18, 1.0],
-        )
+        self._add_payload_geom(payload_body)
 
         model = spec.compile()
         model.opt.timestep = float(self.timestep)
@@ -180,6 +190,33 @@ class MJWPayloadPlaneScenario(BaseMJWScenario):
                 friction = np.asarray(tuple(float(v) for v in self.friction), dtype=float)
             model.geom_friction[:] = friction
         return model
+
+    def _add_payload_geom(self, payload_body: mujoco.MjsBody) -> None:
+        geom_kwargs: dict[str, Any] = {
+            "mass": self.payload_mass,
+            "rgba": [0.92, 0.72, 0.18, 1.0],
+        }
+        if self.payload_shape == "sphere":
+            payload_body.add_geom(
+                type=mujoco.mjtGeom.mjGEOM_SPHERE,
+                size=[self.payload_radius, 0, 0],
+                **geom_kwargs,
+            )
+        elif self.payload_shape == "box":
+            payload_body.add_geom(
+                type=mujoco.mjtGeom.mjGEOM_BOX,
+                size=[self.payload_radius, self.payload_radius, self.payload_radius],
+                **geom_kwargs,
+            )
+        elif self.payload_shape == "capsule":
+            payload_body.add_geom(
+                type=mujoco.mjtGeom.mjGEOM_CAPSULE,
+                fromto=[-self.payload_radius, 0, 0, self.payload_radius, 0, 0],
+                size=[self.payload_radius, 0, 0],
+                **geom_kwargs,
+            )
+        else:
+            raise AssertionError(f"Unhandled payload_shape: {self.payload_shape}")
 
     def get_single_observation_space(self) -> spaces.Dict:
         limbs_per_unit = self.swarm.config.limbs_per_unit

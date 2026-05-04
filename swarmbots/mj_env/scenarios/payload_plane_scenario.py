@@ -1,4 +1,4 @@
-from typing import Any, Iterable
+from typing import Any, Iterable, Literal
 
 import mujoco
 import numpy as np
@@ -9,6 +9,8 @@ from swarmbots.mj_env.scenarios.base_scenario import BaseScenario, SwarmActDict,
 from swarmbots.mj_env.swarm.base_swarm import BaseSwarm
 from swarmbots.mj_env.swarm.swarm_connections import SwarmConnections
 
+PayloadShape = Literal["sphere", "box", "capsule"]
+
 
 class PayloadPlaneScenario(BaseScenario):
     def __init__(
@@ -17,6 +19,7 @@ class PayloadPlaneScenario(BaseScenario):
         timestep: float = 0.002,
         action_repeat: int = 15,
         plane_size: float = 100.0,
+        payload_shape: PayloadShape = "sphere",
         payload_radius: float = 0.2,
         payload_mass: float = 1.0,
         payload_offset_x: FloatOrDistParams = 0.0,
@@ -32,6 +35,7 @@ class PayloadPlaneScenario(BaseScenario):
         forward_reward_max_y: float | None = None,
         payload_centering_penalty_weight: float = 1.0,
         payload_centering_penalty_power: float = 1.0,
+        payload_centering_tolerance: float = 0.0,
         guidance_reward_weight: float = 1.0,
         units_without_connections_reward_weight: float = 0.0,
         include_connectors_xpos_in_obs: bool = True,
@@ -48,6 +52,11 @@ class PayloadPlaneScenario(BaseScenario):
         if self.plane_size <= 0.0:
             raise ValueError(f"Expected plane_size > 0, got {self.plane_size}")
 
+        self.payload_shape: PayloadShape = payload_shape
+        if self.payload_shape not in ("sphere", "box", "capsule"):
+            raise ValueError(
+                f"Expected payload_shape to be 'sphere', 'box', or 'capsule', got {self.payload_shape!r}"
+            )
         self.payload_radius = float(payload_radius)
         if self.payload_radius <= 0.0:
             raise ValueError(f"Expected payload_radius > 0, got {self.payload_radius}")
@@ -69,6 +78,11 @@ class PayloadPlaneScenario(BaseScenario):
         if self.payload_centering_penalty_power <= 0.0:
             raise ValueError(
                 f"Expected payload_centering_penalty_power > 0, got {self.payload_centering_penalty_power}"
+            )
+        self.payload_centering_tolerance = float(payload_centering_tolerance)
+        if self.payload_centering_tolerance < 0.0:
+            raise ValueError(
+                f"Expected payload_centering_tolerance >= 0, got {self.payload_centering_tolerance}"
             )
 
         super().__init__(
@@ -109,6 +123,7 @@ class PayloadPlaneScenario(BaseScenario):
         settings.update(
             {
                 "plane_size": self.plane_size,
+                "payload_shape": self.payload_shape,
                 "payload_radius": self.payload_radius,
                 "payload_mass": self.payload_mass,
                 "payload_offset_x": self.payload_offset_x,
@@ -117,6 +132,7 @@ class PayloadPlaneScenario(BaseScenario):
                 "forward_reward_max_y": self.forward_reward_max_y,
                 "payload_centering_penalty_weight": self.payload_centering_penalty_weight,
                 "payload_centering_penalty_power": self.payload_centering_penalty_power,
+                "payload_centering_tolerance": self.payload_centering_tolerance,
             }
         )
         return settings
@@ -137,14 +153,36 @@ class PayloadPlaneScenario(BaseScenario):
 
         payload_body = worldbody.add_body(name="Payload", pos=[0, 0, self.payload_radius])
         payload_body.add_freejoint(name="Payload_freejoint")
-        payload_body.add_geom(
-            type=mujoco.mjtGeom.mjGEOM_SPHERE,
-            size=[self.payload_radius, 0, 0],
-            mass=self.payload_mass,
-            rgba=[0.92, 0.72, 0.18, 1.0],
-        )
+        self._add_payload_geom(payload_body)
 
         return spec
+
+    def _add_payload_geom(self, payload_body: mujoco.MjsBody) -> None:
+        geom_kwargs: dict[str, Any] = {
+            "mass": self.payload_mass,
+            "rgba": [0.92, 0.72, 0.18, 1.0],
+        }
+        if self.payload_shape == "sphere":
+            payload_body.add_geom(
+                type=mujoco.mjtGeom.mjGEOM_SPHERE,
+                size=[self.payload_radius, 0, 0],
+                **geom_kwargs,
+            )
+        elif self.payload_shape == "box":
+            payload_body.add_geom(
+                type=mujoco.mjtGeom.mjGEOM_BOX,
+                size=[self.payload_radius, self.payload_radius, self.payload_radius],
+                **geom_kwargs,
+            )
+        elif self.payload_shape == "capsule":
+            payload_body.add_geom(
+                type=mujoco.mjtGeom.mjGEOM_CAPSULE,
+                fromto=[-self.payload_radius, 0, 0, self.payload_radius, 0, 0],
+                size=[self.payload_radius, 0, 0],
+                **geom_kwargs,
+            )
+        else:
+            raise AssertionError(f"Unhandled payload_shape: {self.payload_shape}")
 
     def reset_scenario(
         self,
@@ -254,7 +292,7 @@ class PayloadPlaneScenario(BaseScenario):
     def _compute_payload_x_penalty(self, data: mujoco.MjData) -> float:
         if self.payload_centering_penalty_weight == 0.0:
             return 0.0
-        payload_x = abs(float(self._get_payload_position(data)[0]))
+        payload_x = max(abs(float(self._get_payload_position(data)[0])) - self.payload_centering_tolerance, 0.0)
         penalty_magnitude = payload_x ** self.payload_centering_penalty_power
         return -penalty_magnitude * self.payload_centering_penalty_weight
 
