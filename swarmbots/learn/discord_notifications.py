@@ -12,6 +12,7 @@ from loguru import logger
 
 DISCORD_WEBHOOK_ENV_VAR = "SWARMBOTS_DISCORD_WEBHOOK_URL"
 DISCORD_CONTENT_LIMIT = 2000
+DISCORD_USER_AGENT = "swarm-bots-training-notifier/0.1"
 T = TypeVar("T")
 
 
@@ -46,10 +47,10 @@ def notify_training_run_finished(
         total_timesteps: int,
         algorithm: Any,
         error: BaseException | None,
-) -> None:
+) -> bool:
     webhook_url = os.environ.get(DISCORD_WEBHOOK_ENV_VAR)
     if not webhook_url:
-        return
+        return False
 
     status = _get_run_status(
         current_timesteps=int(algorithm.n_total_timesteps),
@@ -64,23 +65,39 @@ def notify_training_run_finished(
         algorithm=algorithm,
         error=error,
     )
-    send_discord_message(content=content, webhook_url=webhook_url)
+    return send_discord_message(content=content, webhook_url=webhook_url)
 
 
-def send_discord_message(*, content: str, webhook_url: str) -> None:
+def send_discord_message(*, content: str, webhook_url: str) -> bool:
     payload = json.dumps({"content": content[:DISCORD_CONTENT_LIMIT]}).encode("utf-8")
     request = urllib.request.Request(
         webhook_url,
         data=payload,
-        headers={"Content-Type": "application/json"},
+        headers={
+            "Content-Type": "application/json",
+            "User-Agent": DISCORD_USER_AGENT,
+        },
         method="POST",
     )
 
     try:
         with urllib.request.urlopen(request, timeout=10) as response:
             response.read()
-    except (OSError, urllib.error.HTTPError, urllib.error.URLError):
-        logger.exception("Failed to send Discord notification")
+    except urllib.error.HTTPError as exc:
+        response_body = exc.read().decode("utf-8", errors="replace").strip()
+        message = f"Failed to send Discord notification: HTTP {exc.code} {exc.reason}"
+        if response_body:
+            message = f"{message}: {response_body[:500]}"
+        logger.error(message)
+        return False
+    except urllib.error.URLError as exc:
+        logger.error(f"Failed to send Discord notification: {exc.reason}")
+        return False
+    except OSError as exc:
+        logger.error(f"Failed to send Discord notification: {type(exc).__name__}: {exc}")
+        return False
+
+    return True
 
 
 def _get_run_status(
