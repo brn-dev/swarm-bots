@@ -168,7 +168,7 @@ class MATPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
             value_regressor_hidden_dims=[self.d_model_encoder] * config.critic_config.n_value_regressor_hidden_layers,
             num_global_features=self.hidden_global_vars_dim,
             act_fn_cls=config.act_fn_cls,
-            context_in_elements=True,
+            context_in_elements=self.hidden_global_vars_dim > 0,
             use_popart=config.critic_config.use_popart,
             popart_beta=config.critic_config.popart_config.beta,
             popart_eps=config.critic_config.popart_config.eps,

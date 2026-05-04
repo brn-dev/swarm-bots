@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import mujoco
 import numpy as np
 import torch
 
@@ -16,6 +17,7 @@ from swarmbots.mjw_env.scenarios.mjw_payload_plane_runtime import (
     _compute_payload_plane_reward_kernel,
 )
 from swarmbots.mjw_env.scenarios.mjw_scenario_presets import default_payload_plane as default_mjw_payload_plane
+from swarmbots.scenario_presets_kwargs import PAYLOAD_PLANE_REWARD_KWARGS
 
 
 def test_payload_plane_reward_uses_payload_progress_and_x_penalty_in_mj_env() -> None:
@@ -24,6 +26,7 @@ def test_payload_plane_reward_uses_payload_progress_and_x_penalty_in_mj_env() ->
     scenario.forward_reward_max_y = None
     scenario.payload_centering_penalty_weight = 0.5
     scenario.payload_centering_penalty_power = 2.0
+    scenario.payload_centering_tolerance = 0.0
     scenario._payload_qpos_indices = np.arange(7, dtype=int)
 
     state = {"progress": 1.0}
@@ -34,6 +37,20 @@ def test_payload_plane_reward_uses_payload_progress_and_x_penalty_in_mj_env() ->
     assert np.isclose(state["forward_reward"], 0.4)
     assert np.isclose(state["payload_x_penalty"], -(0.3 ** 2) * 0.5)
     assert np.isclose(reward, (0.4 * 1.5) - ((0.3 ** 2) * 0.5))
+
+
+def test_payload_plane_x_penalty_uses_tolerance_in_mj_env() -> None:
+    scenario = object.__new__(PayloadPlaneScenario)
+    scenario.payload_centering_penalty_weight = 0.5
+    scenario.payload_centering_penalty_power = 2.0
+    scenario.payload_centering_tolerance = 0.1
+    scenario._payload_qpos_indices = np.arange(7, dtype=int)
+
+    inside_tolerance = SimpleNamespace(qpos=np.array([0.08, 1.4, 0.2, 1.0, 0.0, 0.0, 0.0], dtype=float))
+    outside_tolerance = SimpleNamespace(qpos=np.array([0.3, 1.4, 0.2, 1.0, 0.0, 0.0, 0.0], dtype=float))
+
+    assert np.isclose(scenario._compute_payload_x_penalty(inside_tolerance), 0.0)
+    assert np.isclose(scenario._compute_payload_x_penalty(outside_tolerance), -((0.3 - 0.1) ** 2) * 0.5)
 
 
 def test_payload_plane_reset_exposes_payload_position_as_global_obs_in_mj_env() -> None:
@@ -58,6 +75,7 @@ def test_payload_plane_forward_reward_cap_is_applied_in_mj_env() -> None:
     scenario.forward_reward_max_y = 0.5
     scenario.payload_centering_penalty_weight = 0.0
     scenario.payload_centering_penalty_power = 1.0
+    scenario.payload_centering_tolerance = 0.0
     scenario._payload_qpos_indices = np.arange(7, dtype=int)
 
     state = {"progress": 0.45}
@@ -77,6 +95,7 @@ def test_payload_plane_evaluate_step_reports_weighted_reward_terms_in_mj_env() -
     scenario.forward_reward_max_y = None
     scenario.payload_centering_penalty_weight = 0.5
     scenario.payload_centering_penalty_power = 1.0
+    scenario.payload_centering_tolerance = 0.0
     scenario.reward_weights = {
         "progress_reward_weight": 3.0,
         "guidance_reward_weight": 4.0,
@@ -147,6 +166,7 @@ def test_payload_plane_reward_uses_payload_progress_and_x_penalty_in_mjw_runtime
         forward_reward_max_y=None,
         payload_centering_penalty_weight=0.5,
         payload_centering_penalty_power=2.0,
+        payload_centering_tolerance=0.0,
         units_without_connections_reward_weight=0.0,
         guidance_reward_weight=1.0,
     )
@@ -163,6 +183,36 @@ def test_payload_plane_reward_uses_payload_progress_and_x_penalty_in_mjw_runtime
     assert np.isclose(float(runtime.progress[0]), 1.4)
 
 
+def test_payload_plane_x_penalty_uses_tolerance_in_mjw_runtime() -> None:
+    payload_position = torch.tensor([[0.08, 1.0, 0.2], [0.3, 1.0, 0.2]], dtype=torch.float32)
+    stable_mask = torch.tensor([True, True], dtype=torch.bool)
+    units_active_mask = torch.tensor([[True], [True]], dtype=torch.bool)
+    partner_unit = torch.tensor([[[-1]], [[-1]]], dtype=torch.long)
+    progress = torch.tensor([1.0, 1.0], dtype=torch.float32)
+
+    _new_progress, progress_reward, forward_reward, payload_x_penalty, _guidance_reward = (
+        _compute_payload_plane_reward_kernel(
+            payload_position,
+            stable_mask,
+            units_active_mask,
+            partner_unit,
+            progress,
+            1.0,
+            1.0,
+            float("inf"),
+            0.5,
+            2.0,
+            0.1,
+            0.0,
+            1.0,
+        )
+    )
+
+    assert torch.allclose(forward_reward, torch.zeros_like(forward_reward))
+    assert torch.allclose(payload_x_penalty, torch.tensor([0.0, -((0.3 - 0.1) ** 2) * 0.5]))
+    assert torch.allclose(progress_reward, payload_x_penalty)
+
+
 def test_payload_plane_forward_reward_cap_is_applied_in_mjw_runtime() -> None:
     runtime = object.__new__(PayloadPlaneMJWScenarioRuntime)
     device = torch.device("cpu")
@@ -176,6 +226,7 @@ def test_payload_plane_forward_reward_cap_is_applied_in_mjw_runtime() -> None:
         forward_reward_max_y=0.5,
         payload_centering_penalty_weight=0.0,
         payload_centering_penalty_power=1.0,
+        payload_centering_tolerance=0.0,
         units_without_connections_reward_weight=0.0,
         guidance_reward_weight=1.0,
     )
@@ -223,8 +274,53 @@ def test_payload_plane_presets_expose_payload_global_obs_in_both_backends() -> N
 
     assert mj_scenario.get_obs_space()["global_obs"].shape == (3,)
     assert mj_scenario.get_obs_space()["hidden_global_vars"].shape == (0,)
+    assert np.isclose(
+        mj_scenario.payload_centering_penalty_weight,
+        PAYLOAD_PLANE_REWARD_KWARGS["payload_centering_penalty_weight"],
+    )
+    assert np.isclose(
+        mj_scenario.payload_centering_tolerance,
+        PAYLOAD_PLANE_REWARD_KWARGS["payload_centering_tolerance"],
+    )
+    assert mj_scenario.payload_shape == PAYLOAD_PLANE_REWARD_KWARGS["payload_shape"]
     assert mjw_scenario.get_single_observation_space()["global_obs"].shape == (3,)
     assert mjw_scenario.get_single_observation_space()["hidden_global_vars"].shape == (0,)
+    assert np.isclose(
+        mjw_scenario.payload_centering_penalty_weight,
+        PAYLOAD_PLANE_REWARD_KWARGS["payload_centering_penalty_weight"],
+    )
+    assert np.isclose(
+        mjw_scenario.payload_centering_tolerance,
+        PAYLOAD_PLANE_REWARD_KWARGS["payload_centering_tolerance"],
+    )
+    assert mjw_scenario.payload_shape == PAYLOAD_PLANE_REWARD_KWARGS["payload_shape"]
+
+
+def test_payload_plane_shape_selects_payload_geom_type_in_both_backends() -> None:
+    expected_types = {
+        "sphere": mujoco.mjtGeom.mjGEOM_SPHERE,
+        "box": mujoco.mjtGeom.mjGEOM_BOX,
+        "capsule": mujoco.mjtGeom.mjGEOM_CAPSULE,
+    }
+
+    for payload_shape, expected_type in expected_types.items():
+        mj_scenario = default_mj_payload_plane(reset_settle_time=0.0, payload_shape=payload_shape)
+        mjw_scenario = default_mjw_payload_plane(payload_shape=payload_shape)
+
+        assert _payload_geom_type(mj_scenario.dummy_model) == expected_type
+        assert _payload_geom_type(mjw_scenario.build_model()) == expected_type
+
+
+def test_payload_plane_mjw_recording_camera_is_farther_than_old_tight_default() -> None:
+    scenario = default_mjw_payload_plane()
+
+    camera_config = scenario.get_default_recording_camera_config()
+    old_distance = max(3.0, min(8.0, scenario.swarm.max_unit_extent * 6.0))
+
+    assert camera_config is not None
+    assert camera_config.distance > old_distance
+    assert camera_config.distance >= 6.0
+    assert camera_config.lookat[1] == scenario.payload_offset_y
 
 
 def test_payload_plane_mjw_runtime_metadata_hook_owns_payload_indices() -> None:
@@ -238,3 +334,11 @@ def test_payload_plane_mjw_runtime_metadata_hook_owns_payload_indices() -> None:
     assert runtime_metadata.payload_qpos_indices.shape == (7,)
     assert runtime_metadata.payload_qpos_indices.dtype == np.int64
     assert not hasattr(generic_metadata, "payload_qpos_indices")
+
+
+def _payload_geom_type(model: mujoco.MjModel) -> int:
+    payload_body_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "Payload")
+    assert payload_body_id >= 0
+    payload_geom_ids = np.flatnonzero(model.geom_bodyid == payload_body_id)
+    assert payload_geom_ids.shape == (1,)
+    return int(model.geom_type[int(payload_geom_ids[0])])

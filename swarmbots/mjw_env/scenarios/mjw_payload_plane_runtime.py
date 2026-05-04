@@ -54,6 +54,7 @@ def _compute_payload_plane_reward_kernel(
     forward_reward_max_y: float,
     payload_centering_penalty_weight: float,
     payload_centering_penalty_power: float,
+    payload_centering_tolerance: float,
     units_without_connections_reward_weight: float,
     guidance_reward_weight: float,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -63,10 +64,14 @@ def _compute_payload_plane_reward_kernel(
     progress_delta = new_progress - progress
 
     forward_component_reward = progress_delta * float(forward_reward_weight)
+    centered_payload_x = torch.clamp(
+        torch.abs(safe_payload_x) - float(payload_centering_tolerance),
+        min=0.0,
+    )
     if float(payload_centering_penalty_power) == 1.0:
-        penalty_magnitude = torch.abs(safe_payload_x)
+        penalty_magnitude = centered_payload_x
     else:
-        penalty_magnitude = torch.abs(safe_payload_x).pow(float(payload_centering_penalty_power))
+        penalty_magnitude = centered_payload_x.pow(float(payload_centering_penalty_power))
     payload_x_penalty = -penalty_magnitude * float(payload_centering_penalty_weight)
 
     progress_reward = (forward_component_reward + payload_x_penalty) * float(progress_reward_weight)
@@ -246,6 +251,7 @@ class PayloadPlaneMJWScenarioRuntime(BaseMJWScenarioRuntime):
             float("inf") if self.scenario.forward_reward_max_y is None else float(self.scenario.forward_reward_max_y),
             float(self.scenario.payload_centering_penalty_weight),
             float(self.scenario.payload_centering_penalty_power),
+            float(self.scenario.payload_centering_tolerance),
             float(self.scenario.units_without_connections_reward_weight),
             float(self.scenario.guidance_reward_weight),
         )
