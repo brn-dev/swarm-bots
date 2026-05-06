@@ -6,14 +6,17 @@ import numpy as np
 
 from swarmbots.mj_env.float_or_dist_params import UniformDistParams
 from swarmbots.mj_env.scenarios.bridge_scenario import BridgeScenario
+from swarmbots.mj_env.scenarios.move_to_scenario import MoveToScenario
 from swarmbots.mj_env.scenarios.obstacle_street_scenario import ObstacleStreetScenario
 from swarmbots.mj_env.scenarios.payload_plane_scenario import PayloadPlaneScenario
 from swarmbots.mj_env.swarm.base_swarm import BaseSwarm
 from swarmbots.mj_env.swarm.homogeneous_swarm import HomogeneousSwarm, PreConnectedUnitLocationsConfig
 from swarmbots.mj_env.swarm.unit_config import UNIT_CONFIG_TETRAHEDRON_XYZ, UNIT_CONFIG_TETRAHEDRON_ZX, \
     UNIT_CONFIG_TETRAHEDRON_XY
+from swarmbots.move_to_goal_config import RelativePolarGoalConfig
 from swarmbots.scenario_presets_kwargs import (
     COMMON_SCENARIO_KWARGS,
+    MOVE_TO_REWARD_KWARGS as SHARED_MOVE_TO_REWARD_KWARGS,
     PAYLOAD_PLANE_REWARD_KWARGS as SHARED_PAYLOAD_PLANE_REWARD_KWARGS,
     WALL_PASS_REWARD_KWARGS as SHARED_WALL_PASS_REWARD_KWARGS,
     make_scenario_kwargs,
@@ -22,6 +25,7 @@ from swarmbots.scenario_presets_kwargs import (
 DEFAULT_KWARGS = make_scenario_kwargs(COMMON_SCENARIO_KWARGS, {"force_elliptic_cone": False})
 WALL_PASS_REWARD_KWARGS = make_scenario_kwargs(SHARED_WALL_PASS_REWARD_KWARGS)
 PAYLOAD_PLANE_REWARD_KWARGS = make_scenario_kwargs(SHARED_PAYLOAD_PLANE_REWARD_KWARGS)
+MOVE_TO_REWARD_KWARGS = make_scenario_kwargs(SHARED_MOVE_TO_REWARD_KWARGS)
 
 def _resolve_swarm(
         swarm: BaseSwarm | None,
@@ -176,6 +180,45 @@ def default_payload_plane(
     })
     scenario_kwargs.update(kwargs)
     return PayloadPlaneScenario(
+        swarm=_resolve_swarm(
+            swarm,
+            unit_start_locations,
+            randomize_unit_orientations,
+            quantize_connection_twist,
+            joints=joints,
+        ),
+        **scenario_kwargs,
+        seed=seed,
+    )
+
+
+def default_move_to(
+        seed: int | None = None,
+        swarm: BaseSwarm | None = None,
+        unit_start_locations: list[tuple[float, float, float]] | str | Any | None = None,
+        randomize_unit_orientations: bool = False,
+        quantize_connection_twist: int | None = 8,
+        joints: str = 'zx',
+        **kwargs
+) -> MoveToScenario:
+    scenario_kwargs = make_scenario_kwargs(DEFAULT_KWARGS, MOVE_TO_REWARD_KWARGS)
+    scenario_kwargs.update({
+        'plane_size': 100.0,
+        'connection_dist_threshold': 0.1,
+        'connection_angle_threshold': -0.5,
+        'disconnect_potential_threshold': 5.0,
+        'include_connectors_xpos_in_obs': True,
+        'include_connectors_xquat_in_obs': False,
+        'quat_rot6d_representation': True,
+        'swarm_start_x': 0.0,
+        'swarm_start_y': 0.0,
+        'goal': RelativePolarGoalConfig(
+            distance=UniformDistParams(2.0, 4.0),
+            angle=UniformDistParams(0.0, 2.0 * np.pi),
+        ),
+    })
+    scenario_kwargs.update(kwargs)
+    return MoveToScenario(
         swarm=_resolve_swarm(
             swarm,
             unit_start_locations,

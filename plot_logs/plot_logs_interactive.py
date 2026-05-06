@@ -32,10 +32,11 @@ STATE_PATH = Path(__file__).resolve().with_name(".plot_logs_recent_config.json")
 PRESETS_PATH = Path(__file__).resolve().with_name(".plot_logs_presets.json")
 PATH_ORDER_MODES = (
     "Added",
+    "Full path (A-Z)",
     "Created (oldest first)",
     "Created (newest first)",
 )
-DEFAULT_PATH_ORDER_MODE = PATH_ORDER_MODES[2]
+DEFAULT_PATH_ORDER_MODE = PATH_ORDER_MODES[3]
 
 """
         WARNING: 95+% vibe coded
@@ -823,6 +824,7 @@ class PlotLogsInteractiveApp:
         self.csv_source_folders: list[Path] = []
         self.csv_source_folder_var = tk.StringVar(value="Source folders: (none)")
         self.reload_folder_button: ttk.Button | None = None
+        self.remove_source_folders_button: ttk.Button | None = None
         self.clear_source_folders_button: ttk.Button | None = None
         self.light_figure_palette = {
             "figure_face": matplotlib.rcParams["figure.facecolor"],
@@ -1007,7 +1009,14 @@ class PlotLogsInteractiveApp:
             command=self.reload_source_folder_csv_files,
             state="disabled",
         )
-        self.reload_folder_button.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(6, 0))
+        self.reload_folder_button.grid(row=3, column=0, sticky="ew", padx=(0, 4), pady=(6, 0))
+        self.remove_source_folders_button = ttk.Button(
+            files_buttons,
+            text="Remove Source Folder",
+            command=self.remove_source_folders,
+            state="disabled",
+        )
+        self.remove_source_folders_button.grid(row=3, column=1, sticky="ew", pady=(6, 0))
         self.clear_source_folders_button = ttk.Button(
             files_buttons,
             text="Clear Source Folders",
@@ -1310,11 +1319,67 @@ class PlotLogsInteractiveApp:
         state = "normal" if unique_folders else "disabled"
         if self.reload_folder_button is not None:
             self.reload_folder_button.configure(state=state)
+        if self.remove_source_folders_button is not None:
+            self.remove_source_folders_button.configure(state=state)
         if self.clear_source_folders_button is not None:
             self.clear_source_folders_button.configure(state=state)
 
     def add_csv_source_folder(self, folder: Path) -> None:
         self.set_csv_source_folders([*self.csv_source_folders, folder])
+
+    def remove_source_folders(self) -> None:
+        if not self.csv_source_folders:
+            self.set_status("No source folders selected yet.")
+            return
+
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Remove Source Folders")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        dialog.columnconfigure(0, weight=1)
+        dialog.rowconfigure(0, weight=1)
+
+        folder_listbox = tk.Listbox(dialog, height=8, selectmode="extended")
+        folder_listbox.grid(row=0, column=0, sticky="nsew", padx=(8, 0), pady=8)
+        scrollbar = ttk.Scrollbar(dialog, orient="vertical", command=folder_listbox.yview)
+        scrollbar.grid(row=0, column=1, sticky="ns", padx=(0, 8), pady=8)
+        folder_listbox.configure(yscrollcommand=scrollbar.set)
+        for folder in self.csv_source_folders:
+            folder_listbox.insert(tk.END, self.display_folder_path(folder))
+
+        buttons_frame = ttk.Frame(dialog)
+        buttons_frame.grid(row=1, column=0, columnspan=2, sticky="ew", padx=8, pady=(0, 8))
+        buttons_frame.columnconfigure(0, weight=1)
+        buttons_frame.columnconfigure(1, weight=1)
+
+        def remove_selected() -> None:
+            selected_indices = set(folder_listbox.curselection())
+            if not selected_indices:
+                self.set_status("Select at least one source folder to remove.")
+                return
+            remaining_folders = [
+                folder
+                for index, folder in enumerate(self.csv_source_folders)
+                if index not in selected_indices
+            ]
+            removed_count = len(self.csv_source_folders) - len(remaining_folders)
+            self.set_csv_source_folders(remaining_folders)
+            plural = "" if removed_count == 1 else "s"
+            self.set_status(f"Removed {removed_count} source folder{plural}.")
+            dialog.destroy()
+
+        remove_button = ttk.Button(
+            buttons_frame,
+            text="Remove Selected",
+            command=remove_selected,
+        )
+        remove_button.grid(row=0, column=0, sticky="ew", padx=(0, 4))
+        cancel_button = ttk.Button(buttons_frame, text="Cancel", command=dialog.destroy)
+        cancel_button.grid(row=0, column=1, sticky="ew")
+        folder_listbox.bind("<Double-Button-1>", lambda _event: remove_selected())
+        dialog.bind("<Delete>", lambda _event: remove_selected())
+        dialog.bind("<Escape>", lambda _event: dialog.destroy())
+        folder_listbox.focus_set()
 
     def rebuild_added_order_from_paths(self) -> None:
         for index, path in enumerate(self.paths, start=1):
@@ -1327,12 +1392,23 @@ class PlotLogsInteractiveApp:
         except OSError:
             return None
 
+    def sort_path_text(self, path: Path) -> str:
+        return str(path).casefold()
+
     def sort_paths_by_selected_order(self) -> None:
         order_mode = self.path_order_var.get()
         if order_mode == PATH_ORDER_MODES[0]:
             self.paths.sort(key=lambda path: self.path_added_order.get(path, 0))
             return
         if order_mode == PATH_ORDER_MODES[1]:
+            self.paths.sort(
+                key=lambda path: (
+                    self.sort_path_text(path),
+                    self.path_added_order.get(path, 0),
+                )
+            )
+            return
+        if order_mode == PATH_ORDER_MODES[2]:
             def oldest_sort_key(path: Path) -> tuple[bool, float, int]:
                 created_at = self.path_created_timestamp(path)
                 return (
@@ -1344,7 +1420,7 @@ class PlotLogsInteractiveApp:
                 key=oldest_sort_key
             )
             return
-        if order_mode == PATH_ORDER_MODES[2]:
+        if order_mode == PATH_ORDER_MODES[3]:
             def newest_sort_key(path: Path) -> tuple[bool, float, int]:
                 created_at = self.path_created_timestamp(path)
                 return (
@@ -1780,6 +1856,8 @@ class PlotLogsInteractiveApp:
         order_value = payload.get("path_order")
         if isinstance(order_value, str) and order_value in PATH_ORDER_MODES:
             self.path_order_var.set(order_value)
+        elif order_value in {"Path (A-Z)", "Name (A-Z)"}:
+            self.path_order_var.set("Full path (A-Z)")
         else:
             self.path_order_var.set(DEFAULT_PATH_ORDER_MODE)
 
@@ -3415,6 +3493,13 @@ class PlotLogsInteractiveApp:
             for path, label in zip(paths, labels, strict=True)
         ]
 
+    def labels_with_groups(self, paths: Sequence[Path], labels: Sequence[str]) -> list[str]:
+        grouped_labels: list[str] = []
+        for path, label in zip(paths, labels, strict=True):
+            group = self.path_groups.get(path, "")
+            grouped_labels.append(f"{group}: {label}" if group else label)
+        return grouped_labels
+
     def group_color_map(self, group_keys: Sequence[str]) -> dict[str, str]:
         colors = plt.rcParams["axes.prop_cycle"].by_key().get("color", [])
         if not colors:
@@ -3580,7 +3665,10 @@ class PlotLogsInteractiveApp:
                         return
                     max_ema_columns.add(y_value)
 
-        labels = plot_logs.build_labels(enabled_paths, None)
+        labels = self.labels_with_groups(
+            enabled_paths,
+            plot_logs.build_labels(enabled_paths, None),
+        )
         file_opacities = [self.opacity_for_path(path) for path in enabled_paths]
         file_colors = [self.file_color_by_path.get(path, "") for path in enabled_paths]
         group_keys: list[str] | None = None
