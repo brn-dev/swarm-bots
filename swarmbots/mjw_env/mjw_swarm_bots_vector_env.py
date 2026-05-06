@@ -438,15 +438,19 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
         unstable_mask = torch.isnan(self._qpos).any(dim=1) | torch.isnan(self._qvel).any(dim=1)
         stable_mask = ~unstable_mask
 
-        terminations = unstable_mask.clone()
-
         self.current_step[stable_mask] += 1
-        truncations = stable_mask & (self.current_step >= trunc_limit)
-        dones = terminations | truncations
 
         step_result = self._scenario_runtime.compute_step_rewards(stable_mask=stable_mask)
         rewards = step_result.reward
         infos: dict[str, Any] = dict(step_result.info)
+        scenario_terminations = (
+            torch.zeros_like(unstable_mask)
+            if step_result.terminations is None
+            else step_result.terminations & stable_mask
+        )
+        terminations = unstable_mask | scenario_terminations
+        truncations = stable_mask & ~scenario_terminations & (self.current_step >= trunc_limit)
+        dones = terminations | truncations
 
         rewards[unstable_mask] = self.simulation_unstable_reward
         for value in infos.values():

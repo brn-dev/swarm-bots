@@ -74,8 +74,9 @@ def main() -> None:
     if not torch.cuda.is_available():
         raise RuntimeError("run_mat_nop_payload_mjw.py requires CUDA.")
 
-    rollout_samples = int(4048 * 1.0)
-    n_envs = 512
+    n_envs = 1024
+    rollout_steps_per_env = 4
+    rollout_samples = n_envs * rollout_steps_per_env
 
     episode_length = 512
     total_timesteps = 200_000_000

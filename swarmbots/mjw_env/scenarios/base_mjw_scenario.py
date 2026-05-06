@@ -91,6 +91,7 @@ class MJWCommonSettledSnapshot:
 class MJWStepResult:
     reward: torch.Tensor
     info: dict[str, Any]
+    terminations: torch.Tensor | None = None
 
 
 @dataclass(slots=True)

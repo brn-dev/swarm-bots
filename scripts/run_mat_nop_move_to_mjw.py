@@ -6,10 +6,9 @@ import torch
 from loguru import logger
 from torch import nn
 
-from run_mat_nop_wall import wrap_vec_env, split_actuator_joints, set_actuator_gsde_init_joint_stds
+from run_mat_nop_move_to import wrap_vec_env, split_actuator_joints, set_actuator_gsde_init_joint_stds
 from swarmbots.learn.action_dists.bernoulli_action_dist import BernoulliConfig
 from swarmbots.learn.action_dists.entropy_utils import EntropyLossConfig, AgentActionsReduction
-from swarmbots.learn.action_dists.left_right_beta_action_dist import LeftRightBetaConfig
 from swarmbots.learn.action_dists.sticky_action_dist import StickyActionDist
 from swarmbots.learn.action_dists.sticky_left_right_beta_action_dist import StickyLeftRightBetaConfig
 from swarmbots.learn.algos.mat.mat_policy import MATCriticConfig
@@ -32,8 +31,7 @@ from swarmbots.learn.summary_statistics import SummaryStatisticsFormat
 from swarmbots.learn.swarmbots_obs_indices import build_obs_indices
 from swarmbots.mjw_env import MJWSwarmBotsVectorEnv
 import swarmbots.mjw_env.scenarios.mjw_scenario_presets as mjw_scenario_presets
-from swarmbots.mjw_env.scenarios.mjw_scenario_presets import default_wall
-from swarmbots.mjw_env.swarm.mjw_homogeneous_swarm import MJWPreConnectedUnitLocationsConfig
+from swarmbots.mjw_env.scenarios.mjw_scenario_presets import default_move_to
 
 
 def configure_float32_matmul_precision() -> None:
@@ -51,7 +49,7 @@ def make_vector_env(
     device: torch.device,
 ) -> MJWSwarmBotsVectorEnv:
     return MJWSwarmBotsVectorEnv(
-        scenario=default_wall(),
+        scenario=default_move_to(visualize_goal=True),
         num_envs=num_envs,
         episode_length=episode_length,
         first_episode_length=first_episode_length,
@@ -74,7 +72,7 @@ def main() -> None:
     configure_float32_matmul_precision()
 
     if not torch.cuda.is_available():
-        raise RuntimeError("run_mat_nop_wall_mjw.py requires CUDA.")
+        raise RuntimeError("run_mat_nop_move_to_mjw.py requires CUDA.")
 
     n_envs = 1024
     rollout_steps_per_env = 4
@@ -104,7 +102,7 @@ def main() -> None:
     run_id = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
     load_path: str | None = None
-    # load_path = "../runs/mat_nop_swarm_bots_wall_mjw/2026-04-18_00-00-00/models/model_123456_steps_stopped.pt"
+    # load_path = "../runs/mat_nop_swarm_bots_move_to_mjw/2026-04-18_00-00-00/models/model_123456_steps_stopped.pt"
 
     rollout_device = torch.device("cuda")
     train_device = torch.device("cuda")
@@ -112,9 +110,9 @@ def main() -> None:
 
     logger.info(f"{rollout_device = }")
     logger.info(f"{train_device = }")
-    logger.info("MJW wall training uses one batched GPU env directly; worker-pool vectorization is disabled.")
+    logger.info("MJW move-to training uses one batched GPU env directly; worker-pool vectorization is disabled.")
     logger.info(
-        "MJW wall training supports live exact-state recording via the `record` command "
+        "MJW move-to training supports live exact-state recording via the `record` command "
         "(for example: record:{\"episodes\":8,\"parallel\":4,\"frame_stride\":4})."
     )
     logger.info("MJW env uses per-env first-episode staggering so episode ends are spread across time from startup.")
@@ -128,7 +126,7 @@ def main() -> None:
         run_id = load_path.split("/")[3]
     logger.info(f"{run_id = }")
 
-    run_dir = f"../runs/mat_nop_swarm_bots_wall_mjw/{run_id}/"
+    run_dir = f"../runs/mat_nop_swarm_bots_move_to_mjw/{run_id}/"
     save_optimizer = True
 
     first_episode_lengths = [int((i + 1) * episode_length / n_envs) for i in range(n_envs)]
@@ -401,7 +399,7 @@ def main() -> None:
     )
 
     run_with_discord_notification(
-        run_name=f"mat_nop_wall_mjw/{run_id}",
+        run_name=f"mat_nop_move_to_mjw/{run_id}",
         run_dir=run_dir,
         total_timesteps=total_timesteps,
         algorithm=ppo,

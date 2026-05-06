@@ -162,7 +162,8 @@ def main() -> None:
     configure_float32_matmul_precision()
 
     n_workers = 23
-    n_envs = n_workers * 12
+    n_envs = 1024
+    rollout_steps_per_env = 4
 
     episode_length = 512
     total_timesteps = 200_000_000
@@ -473,7 +474,7 @@ def main() -> None:
             f"Skipping act0_stickiness scheduler: action dist[0] is {act0_dist_type}"
         )
 
-    rollout_samples = int(4048 * 1.0)
+    rollout_samples = n_envs * rollout_steps_per_env
     ppo = PPO(
         policy=policy,
         env=env,

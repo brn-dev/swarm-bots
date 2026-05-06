@@ -22,13 +22,13 @@ from swarmbots.learn.algos.world_modeling.ppo_wm_sampler import PPOWMSampler, PP
 from swarmbots.learn.algos.world_modeling.wm_sampler_helper import build_wm_episode_windows
 
 # Default workload aligned with scripts/run_mat_nop_wall_mjw.py.
-# That training setup uses StepsRolloutMode(4048) with n_envs=512, so the flat sampler
-# mostly sees PPOEpisodeSegment lengths of 8 rollout steps per env, not true episode_length=512.
+# That training setup uses StepsRolloutMode(4096) with n_envs=1024, so the flat sampler
+# mostly sees PPOEpisodeSegment lengths of 4 rollout steps per env, not true episode_length=512.
 DEFAULT_DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-DEFAULT_NUM_EPISODES = 512
-DEFAULT_MAX_SEGMENT_LENGTH = 8
+DEFAULT_NUM_EPISODES = 1024
+DEFAULT_MAX_SEGMENT_LENGTH = 4
 DEFAULT_NUM_NEXT_STEPS = 3
-DEFAULT_BATCH_SIZE = 4048
+DEFAULT_BATCH_SIZE = 4096
 DEFAULT_N_AGENTS = 5
 DEFAULT_LOCAL_OBS_DIM = 154
 DEFAULT_GLOBAL_OBS_DIM = 0

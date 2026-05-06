@@ -8,15 +8,18 @@ import numpy as np
 from gymnasium import spaces
 from gymnasium.vector.utils import batch_space
 
-from swarmbots.mj_env.float_or_dist_params import BoundedDistParams, FloatOrDistParams
+from swarmbots.mj_env.float_or_dist_params import (
+    BoundedDistParams,
+    FloatOrBoundedDistParams,
+    FloatOrDistParams,
+)
 from swarmbots.mjw_env.scenarios.base_mjw_scenario import BaseMJWScenario, MJWRecordingCameraConfig, MJWRuntimeBindings
 from swarmbots.mjw_env.swarm.mjw_homogeneous_swarm import MJWHomogeneousSwarm
-from swarmbots.move_to_goal_config import AbsoluteGoalConfig, MoveToGoalConfig, RelativePolarGoalConfig
 
 
 @dataclass(frozen=True, slots=True)
-class MJWMoveToRuntimeMetadata:
-    goal_mocap_id: int
+class MJWBridgeRuntimeMetadata:
+    bridge_mocap_id: int
 
 
 def _hinges_per_limb(unit_config: tuple[object, ...]) -> int:
@@ -33,13 +36,12 @@ def _hinges_per_limb(unit_config: tuple[object, ...]) -> int:
 
 
 @dataclass
-class MJWMoveToScenario(BaseMJWScenario):
+class MJWBridgeScenario(BaseMJWScenario):
     swarm: MJWHomogeneousSwarm
     timestep: float
     action_repeat: int
     actuator_strength: float
     progress_reward_weight: float
-    forward_reward_weight: float
     guidance_reward_weight: float
     units_without_connections_reward_weight: float
     include_connectors_xpos_in_obs: bool
@@ -53,10 +55,14 @@ class MJWMoveToScenario(BaseMJWScenario):
     reset_settle_timestep_scale: float
     swarm_start_x: FloatOrDistParams
     swarm_start_y: FloatOrDistParams
-    plane_size: float
-    goal: MoveToGoalConfig
-    goal_radius: float
-    visualize_goal: bool = False
+    street_width: float
+    bridge_width: float
+    bridge_length: float
+    bridge_x: FloatOrBoundedDistParams
+    platform_length: float
+    platform_height: float
+    fall_z_threshold: float
+    fell_off_bridge_reward: float
     seed: int | None = None
     compile_reward_kernel: bool = False
     reward_kernel_compile_mode: str = "default"
@@ -64,19 +70,53 @@ class MJWMoveToScenario(BaseMJWScenario):
 
     def __post_init__(self) -> None:
         if self.include_connectors_xquat_in_obs:
-            raise ValueError("MJWMoveToScenario currently does not support connector quats in observations")
+            raise ValueError("MJWBridgeScenario currently does not support connector quats in observations")
         if self.timestep <= 0.0:
             raise ValueError(f"Expected timestep > 0, got {self.timestep}")
         if self.action_repeat <= 0:
             raise ValueError(f"Expected action_repeat > 0, got {self.action_repeat}")
-        self.plane_size = float(self.plane_size)
-        if self.plane_size <= 0.0:
-            raise ValueError(f"Expected plane_size > 0, got {self.plane_size}")
-        self.goal_radius = float(self.goal_radius)
-        if self.goal_radius < 0.0:
-            raise ValueError(f"Expected goal_radius >= 0, got {self.goal_radius}")
-        self.forward_reward_weight = float(self.forward_reward_weight)
-        self.inactive_area_location = (50.0, 0.0, 0.1)
+        self.street_width = float(self.street_width)
+        self.bridge_width = float(self.bridge_width)
+        self.bridge_length = float(self.bridge_length)
+        self.platform_length = float(self.platform_length)
+        self.platform_height = float(self.platform_height)
+        self.fall_z_threshold = float(self.fall_z_threshold)
+        self.fell_off_bridge_reward = float(self.fell_off_bridge_reward)
+        if self.street_width <= 0.0:
+            raise ValueError(f"Expected street_width > 0, got {self.street_width}")
+        if self.bridge_width <= 0.0:
+            raise ValueError(f"Expected bridge_width > 0, got {self.bridge_width}")
+        if self.bridge_width >= self.street_width:
+            raise ValueError(f"Expected bridge_width < street_width, got {self.bridge_width} >= {self.street_width}")
+        if self.bridge_length <= 0.0:
+            raise ValueError(f"Expected bridge_length > 0, got {self.bridge_length}")
+        if self.platform_length <= 0.0:
+            raise ValueError(f"Expected platform_length > 0, got {self.platform_length}")
+        if self.platform_height <= 0.0:
+            raise ValueError(f"Expected platform_height > 0, got {self.platform_height}")
+
+        self.side_wall_x = self.street_width / 2.0
+        self.platform1_min_y = -50.0
+        self.platform1_max_y = self.platform_length / 2.0
+        self.platform1_center_y = (self.platform1_min_y + self.platform1_max_y) / 2.0
+        self.platform1_half_length = (self.platform1_max_y - self.platform1_min_y) / 2.0
+        self.platform2_center_y = self.platform_length + self.bridge_length
+        self.bridge_center_y = (self.platform_length / 2.0) + (self.bridge_length / 2.0)
+        self.inactive_area_location = (-self.street_width * 1.5, 0.0, 0.1)
+        self._validate_bridge_x()
+
+    def _validate_bridge_x(self) -> None:
+        min_x = -self.side_wall_x + (self.bridge_width / 2.0)
+        max_x = self.side_wall_x - (self.bridge_width / 2.0)
+        if isinstance(self.bridge_x, BoundedDistParams):
+            if self.bridge_x.low < min_x or self.bridge_x.high > max_x:
+                raise ValueError(f"Expected bridge_x bounds within [{min_x}, {max_x}], got {self.bridge_x}")
+            return
+        if not isinstance(self.bridge_x, (int, float)):
+            raise TypeError(f"Expected bridge_x to be float or BoundedDistParams, got {self.bridge_x!r}")
+        bridge_x = float(self.bridge_x)
+        if bridge_x < min_x or bridge_x > max_x:
+            raise ValueError(f"Expected bridge_x within [{min_x}, {max_x}], got {bridge_x}")
 
     def get_settings(self) -> dict[str, Any]:
         return {
@@ -102,66 +142,71 @@ class MJWMoveToScenario(BaseMJWScenario):
             "seed": self.seed,
             "reset_settle_time": self.reset_settle_time,
             "reset_settle_timestep_scale": self.reset_settle_timestep_scale,
-            "plane_size": self.plane_size,
-            "goal": self.goal,
-            "goal_radius": self.goal_radius,
-            "visualize_goal": self.visualize_goal,
-            "forward_reward_weight": self.forward_reward_weight,
+            "street_width": self.street_width,
+            "bridge_width": self.bridge_width,
+            "bridge_length": self.bridge_length,
+            "bridge_x": self.bridge_x,
+            "platform_length": self.platform_length,
+            "platform_height": self.platform_height,
+            "fall_z_threshold": self.fall_z_threshold,
+            "fell_off_bridge_reward": self.fell_off_bridge_reward,
             "compile_reward_kernel": self.compile_reward_kernel,
             "reward_kernel_compile_mode": self.reward_kernel_compile_mode,
         }
 
     def get_default_recording_camera_config(self) -> MJWRecordingCameraConfig | None:
-        if isinstance(self.goal, AbsoluteGoalConfig):
-            goal_y = self.goal.y if isinstance(self.goal.y, (int, float)) else 3.0
-            lookat_y = float(goal_y) * 0.5
-            distance = abs(float(goal_y)) + self.swarm.max_unit_extent * 4.0
-        else:
-            lookat_y = 0.0
-            distance = self._recording_distance_for_relative_goal(self.goal)
         return MJWRecordingCameraConfig(
-            lookat=(0.0, lookat_y, 0.7),
-            distance=max(5.0, min(12.0, distance)),
+            lookat=(0.0, self.bridge_center_y, max(0.35, self.platform_height * 2.5)),
+            distance=max(5.0, min(12.0, self.bridge_length + self.swarm.max_unit_extent * 4.0)),
             azimuth=180.0,
             elevation=-35.0,
         )
-
-    def _recording_distance_for_relative_goal(self, goal: RelativePolarGoalConfig) -> float:
-        if isinstance(goal.distance, (float, int)):
-            max_goal_distance = abs(float(goal.distance))
-        elif isinstance(goal.distance, BoundedDistParams):
-            max_goal_distance = max(abs(float(goal.distance.low)), abs(float(goal.distance.high)))
-        else:
-            max_goal_distance = 3.0
-        return max_goal_distance + self.swarm.max_unit_extent * 4.0
 
     def build_model(self) -> mujoco.MjModel:
         spec = mujoco.MjSpec()
         spec.compiler.degree = 0
         worldbody = spec.worldbody
 
-        worldbody.add_geom(
-            type=mujoco.mjtGeom.mjGEOM_PLANE,
-            size=[self.plane_size, self.plane_size, 0.1],
-            rgba=[0.2, 0.3, 0.4, 1.0],
-            pos=[0, 0, 0],
-        )
         worldbody.add_light(pos=[0, 0, 100], dir=[0, 0, -1])
         worldbody.add_light(pos=[0, 100, 100], dir=[-1, -1, -1])
+        worldbody.add_geom(
+            type=mujoco.mjtGeom.mjGEOM_BOX,
+            size=[0.1, 100, 5],
+            rgba=[0.3, 0.4, 0.5, 0.1],
+            pos=[self.side_wall_x, 0, 0],
+        )
+        worldbody.add_geom(
+            type=mujoco.mjtGeom.mjGEOM_BOX,
+            size=[0.1, 100, 5],
+            rgba=[0.3, 0.4, 0.5, 0.1],
+            pos=[-self.side_wall_x, 0, 0],
+        )
+
+        platform_top_z = 0.0
+        platform_center_z = platform_top_z - (self.platform_height / 2.0)
+        platform_rgba = [0.45, 0.45, 0.5, 1.0]
+        worldbody.add_geom(
+            type=mujoco.mjtGeom.mjGEOM_BOX,
+            size=[self.street_width / 2.0, self.platform1_half_length, self.platform_height / 2.0],
+            rgba=platform_rgba,
+            pos=[0, self.platform1_center_y, platform_center_z],
+        )
+        worldbody.add_geom(
+            type=mujoco.mjtGeom.mjGEOM_BOX,
+            size=[self.street_width / 2.0, self.platform_length / 2.0, self.platform_height / 2.0],
+            rgba=platform_rgba,
+            pos=[0, self.platform2_center_y, platform_center_z],
+        )
 
         swarm_site = worldbody.add_site(pos=[0, 0, 0], name="swarm_site")
         spec.attach(self.swarm.create_swarm_spec(seed=self.seed), "", site=swarm_site)
 
-        goal_body = worldbody.add_body(name="Goal", mocap=True, pos=[0, 0, 0])
-        if self.visualize_goal:
-            goal_body.add_geom(
-                type=mujoco.mjtGeom.mjGEOM_CYLINDER,
-                fromto=[0, 0, 0.005, 0, 0, 0.035],
-                size=[max(self.goal_radius, 0.01), 0, 0],
-                rgba=[0.1, 0.95, 0.35, 0.8],
-                contype=0,
-                conaffinity=0,
-            )
+        bridge_body = worldbody.add_body(name="Bridge", mocap=True, pos=[0, 0, 0])
+        bridge_body.add_geom(
+            type=mujoco.mjtGeom.mjGEOM_BOX,
+            size=[self.bridge_width / 2.0, self.bridge_length / 2.0, self.platform_height / 2.0],
+            rgba=[0.7, 0.6, 0.3, 1.0],
+        )
 
         model = spec.compile()
         model.opt.timestep = float(self.timestep)
@@ -184,10 +229,20 @@ class MJWMoveToScenario(BaseMJWScenario):
         local_obs_dim = qpos_obs_dim + qvel_dim + connector_obs_dim + connectors_xpos_dim
         return spaces.Dict(
             {
-                "local_obs": spaces.Box(low=-np.inf, high=np.inf, shape=(self.swarm.num_units, local_obs_dim), dtype=np.float32),
-                "global_obs": spaces.Box(low=-np.inf, high=np.inf, shape=(2,), dtype=np.float32),
-                "hidden_local_vars": spaces.Box(low=-np.inf, high=np.inf, shape=(self.swarm.num_units, 0), dtype=np.float32),
-                "hidden_global_vars": spaces.Box(low=-np.inf, high=np.inf, shape=(0,), dtype=np.float32),
+                "local_obs": spaces.Box(
+                    low=-np.inf,
+                    high=np.inf,
+                    shape=(self.swarm.num_units, local_obs_dim),
+                    dtype=np.float32,
+                ),
+                "global_obs": spaces.Box(low=-np.inf, high=np.inf, shape=(0,), dtype=np.float32),
+                "hidden_local_vars": spaces.Box(
+                    low=-np.inf,
+                    high=np.inf,
+                    shape=(self.swarm.num_units, 0),
+                    dtype=np.float32,
+                ),
+                "hidden_global_vars": spaces.Box(low=-np.inf, high=np.inf, shape=(1,), dtype=np.float32),
                 "agent_mask": spaces.MultiBinary((self.swarm.num_units,)),
             }
         )
@@ -212,16 +267,16 @@ class MJWMoveToScenario(BaseMJWScenario):
     def get_batched_action_space(self, num_envs: int) -> spaces.Dict:
         return batch_space(self.get_single_action_space(), n=num_envs)
 
-    def build_runtime_metadata(self, *, host_model: mujoco.MjModel) -> MJWMoveToRuntimeMetadata:
-        goal_body_id = mujoco.mj_name2id(host_model, mujoco.mjtObj.mjOBJ_BODY, "Goal")
-        if goal_body_id < 0:
-            raise ValueError("Goal body not found in MoveTo model.")
-        return MJWMoveToRuntimeMetadata(goal_mocap_id=int(host_model.body_mocapid[goal_body_id]))
+    def build_runtime_metadata(self, *, host_model: mujoco.MjModel) -> MJWBridgeRuntimeMetadata:
+        bridge_body_id = mujoco.mj_name2id(host_model, mujoco.mjtObj.mjOBJ_BODY, "Bridge")
+        if bridge_body_id < 0:
+            raise ValueError("Bridge body not found in bridge model.")
+        return MJWBridgeRuntimeMetadata(bridge_mocap_id=int(host_model.body_mocapid[bridge_body_id]))
 
     def create_runtime(self, *, bindings: MJWRuntimeBindings, runtime_metadata: Any) -> Any:
-        from swarmbots.mjw_env.scenarios.mjw_move_to_runtime import MoveToMJWScenarioRuntime
+        from swarmbots.mjw_env.scenarios.mjw_bridge_runtime import BridgeMJWScenarioRuntime
 
-        return MoveToMJWScenarioRuntime(
+        return BridgeMJWScenarioRuntime(
             scenario=self,
             bindings=bindings,
             runtime_metadata=runtime_metadata,

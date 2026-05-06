@@ -16,6 +16,7 @@ from swarmbots.mj_env.swarm.unit_config import UNIT_CONFIG_TETRAHEDRON_XYZ, UNIT
 from swarmbots.move_to_goal_config import RelativePolarGoalConfig
 from swarmbots.scenario_presets_kwargs import (
     COMMON_SCENARIO_KWARGS,
+    BRIDGE_REWARD_KWARGS as SHARED_BRIDGE_REWARD_KWARGS,
     MOVE_TO_REWARD_KWARGS as SHARED_MOVE_TO_REWARD_KWARGS,
     PAYLOAD_PLANE_REWARD_KWARGS as SHARED_PAYLOAD_PLANE_REWARD_KWARGS,
     WALL_PASS_REWARD_KWARGS as SHARED_WALL_PASS_REWARD_KWARGS,
@@ -24,6 +25,7 @@ from swarmbots.scenario_presets_kwargs import (
 
 DEFAULT_KWARGS = make_scenario_kwargs(COMMON_SCENARIO_KWARGS, {"force_elliptic_cone": False})
 WALL_PASS_REWARD_KWARGS = make_scenario_kwargs(SHARED_WALL_PASS_REWARD_KWARGS)
+BRIDGE_REWARD_KWARGS = make_scenario_kwargs(SHARED_BRIDGE_REWARD_KWARGS)
 PAYLOAD_PLANE_REWARD_KWARGS = make_scenario_kwargs(SHARED_PAYLOAD_PLANE_REWARD_KWARGS)
 MOVE_TO_REWARD_KWARGS = make_scenario_kwargs(SHARED_MOVE_TO_REWARD_KWARGS)
 
@@ -140,10 +142,7 @@ def default_bridge(
         quantize_connection_twist: int | None = None,
         **kwargs
 ) -> BridgeScenario:
-    scenario_kwargs = make_scenario_kwargs(DEFAULT_KWARGS)
-    scenario_kwargs.update({
-        'fell_off_bridge_reward': -2.0,
-    })
+    scenario_kwargs = make_scenario_kwargs(DEFAULT_KWARGS, BRIDGE_REWARD_KWARGS)
     scenario_kwargs.update(kwargs)
     return BridgeScenario(
         swarm=_resolve_swarm(
