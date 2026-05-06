@@ -36,6 +36,11 @@ PAYLOAD_PLANE_REWARD_KWARGS: dict[str, object] = {
     "forward_reward_max_y": None,
 }
 
+MOVE_TO_REWARD_KWARGS: dict[str, object] = {
+    "forward_reward_weight": 1.0,
+    "goal_radius": 0.25,
+}
+
 
 def make_scenario_kwargs(*parts: Mapping[str, object]) -> dict[str, object]:
     merged: dict[str, object] = {}
