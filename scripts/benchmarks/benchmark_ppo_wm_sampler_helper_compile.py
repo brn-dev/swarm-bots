@@ -27,8 +27,8 @@ from swarmbots.learn.torch_logging import enable_torch_compile_logging
 
 # Defaults aligned with scripts/run_mat_nop_wall_mjw.py.
 DEFAULT_DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-DEFAULT_NUM_LENGTH_BUCKETS = 8
-DEFAULT_TOTAL_EPISODES = 512
+DEFAULT_NUM_LENGTH_BUCKETS = 4
+DEFAULT_TOTAL_EPISODES = 1024
 DEFAULT_EPISODES_PER_LENGTH = DEFAULT_TOTAL_EPISODES // DEFAULT_NUM_LENGTH_BUCKETS
 DEFAULT_NUM_NEXT_STEPS = 3
 DEFAULT_N_AGENTS = 5
@@ -451,7 +451,7 @@ def parse_args() -> tuple[BenchmarkConfig, Path | None]:
         description=(
             "Benchmark the actual WM helper public path "
             "build_wm_episode_windows_batch(..., compile_modules=False/True) "
-            "for fixed lengths and mixed 1..8 length sequences."
+            f"for fixed lengths and mixed 1..{DEFAULT_NUM_LENGTH_BUCKETS} length sequences."
         )
     )
     parser.add_argument("--device", type=str, default=DEFAULT_DEVICE)

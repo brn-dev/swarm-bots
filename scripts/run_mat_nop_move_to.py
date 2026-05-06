@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 import swarmbots.mj_env.scenarios.scenario_presets as mj_scenario_presets
-from swarmbots.mj_env.scenarios.scenario_presets import default_wall
+from swarmbots.mj_env.scenarios.scenario_presets import default_move_to
 from swarmbots.mj_env.swarm_bots_env import SwarmBotsEnv
 
 
@@ -27,10 +27,11 @@ def make_env_fn(
 ) -> Callable[[], SwarmBotsEnv]:
 
     def _init() -> SwarmBotsEnv:
-        scenario = default_wall(
+        scenario = default_move_to(
             quantize_connection_twist=8,
             timestep=timestep,
             action_repeat=action_repeat,
+            visualize_goal=True,
         )
         return SwarmBotsEnv(
             scenario=scenario,
@@ -193,7 +194,7 @@ def main() -> None:
 
     # ===== LOAD =====
     load_path: str | None = None
-    # load_path = "../runs/mat_nop_swarm_bots_wall/2026-03-29_01-08-59/models/model_77792876_steps_stopped.pt"
+    # load_path = "../runs/mat_nop_swarm_bots_move_to/2026-03-29_01-08-59/models/model_77792876_steps_stopped.pt"
 
     # ===== DEVICE =====
     use_cuda = True and torch.cuda.is_available()
@@ -214,7 +215,7 @@ def main() -> None:
         run_id = load_path.split('/')[3]
     logger.info(f'{run_id = }')
 
-    run_dir = f"../runs/mat_nop_swarm_bots_wall/{run_id}/"
+    run_dir = f"../runs/mat_nop_swarm_bots_move_to/{run_id}/"
     save_optimizer = True
 
     env_fns = [
@@ -542,7 +543,7 @@ def main() -> None:
     ])
 
     run_with_discord_notification(
-        run_name=f"mat_nop_wall/{run_id}",
+        run_name=f"mat_nop_move_to/{run_id}",
         run_dir=run_dir,
         total_timesteps=total_timesteps,
         algorithm=ppo,

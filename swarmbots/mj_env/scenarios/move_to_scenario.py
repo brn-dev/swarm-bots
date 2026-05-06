@@ -19,6 +19,7 @@ class MoveToScenario(BaseScenario):
         plane_size: float = 100.0,
         goal: MoveToGoalConfig = AbsoluteGoalConfig(),
         goal_radius: float = 0.25,
+        visualize_goal: bool = False,
         actuator_strength: float = 8.0,
         connection_dist_threshold: float = 0.1,
         connection_angle_threshold: float = -0.5,
@@ -47,6 +48,7 @@ class MoveToScenario(BaseScenario):
         self.goal_radius = float(goal_radius)
         if self.goal_radius < 0.0:
             raise ValueError(f"Expected goal_radius >= 0, got {self.goal_radius}")
+        self.visualize_goal = bool(visualize_goal)
 
         self.forward_reward_weight = float(forward_reward_weight)
 
@@ -82,6 +84,7 @@ class MoveToScenario(BaseScenario):
                 "plane_size": self.plane_size,
                 "goal": self.goal,
                 "goal_radius": self.goal_radius,
+                "visualize_goal": self.visualize_goal,
                 "forward_reward_weight": self.forward_reward_weight,
             }
         )
@@ -102,14 +105,15 @@ class MoveToScenario(BaseScenario):
         worldbody.add_light(pos=[0, 100, 100], dir=[-1, -1, -1])
 
         goal_body = worldbody.add_body(name="Goal", mocap=True, pos=[0, 0, 0])
-        goal_body.add_geom(
-            type=mujoco.mjtGeom.mjGEOM_CYLINDER,
-            fromto=[0, 0, 0.005, 0, 0, 0.025],
-            size=[max(self.goal_radius, 0.01), 0, 0],
-            rgba=[0.1, 0.9, 0.35, 0.35],
-            contype=0,
-            conaffinity=0,
-        )
+        if self.visualize_goal:
+            goal_body.add_geom(
+                type=mujoco.mjtGeom.mjGEOM_CYLINDER,
+                fromto=[0, 0, 0.005, 0, 0, 0.035],
+                size=[max(self.goal_radius, 0.01), 0, 0],
+                rgba=[0.1, 0.95, 0.35, 0.8],
+                contype=0,
+                conaffinity=0,
+            )
         return spec
 
     def reset_scenario(

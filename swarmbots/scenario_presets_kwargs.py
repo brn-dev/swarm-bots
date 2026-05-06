@@ -23,6 +23,10 @@ WALL_PASS_REWARD_KWARGS: dict[str, object] = {
     "wall_pass_thresholds": [-0.1, 0.1, 0.3, 0.5],
 }
 
+BRIDGE_REWARD_KWARGS: dict[str, object] = {
+    "fell_off_bridge_reward": -2.0,
+}
+
 PAYLOAD_PLANE_REWARD_KWARGS: dict[str, object] = {
     "forward_reward_weight": 1.0,
     "payload_centering_penalty_weight": 0.05,
