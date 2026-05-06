@@ -36,6 +36,19 @@ DEFAULT_FINAL_LOSS_COLUMNS: tuple[str, ...] = (
     "rot6d_loss_scaled__mean",
     "binary_loss_scaled__mean",
 )
+GROUP_PALETTE: tuple[str, ...] = (
+    "#0072B2",
+    "#E69F00",
+    "#009E73",
+    "#D55E00",
+    "#CC79A7",
+    "#56B4E9",
+    "#F0E442",
+    "#000000",
+)
+INDIVIDUAL_RUN_LINE_WIDTH = 0.85
+INDIVIDUAL_RUN_ALPHA = 0.55
+GROUP_LINE_WIDTH = 1.8
 
 
 @dataclass(slots=True)
@@ -238,16 +251,18 @@ def group_label(group: ExperimentGroup) -> str:
 
 
 def group_colors(groups: Sequence[ExperimentGroup]) -> dict[str, tuple[float, float, float, float]]:
-    cmap = plt.get_cmap("tab20")
+    fallback_cmap = plt.get_cmap("tab10")
     return {
-        group.name: cmap(index % cmap.N)
+        group.name: matplotlib.colors.to_rgba(
+            GROUP_PALETTE[index] if index < len(GROUP_PALETTE) else fallback_cmap(index % fallback_cmap.N)
+        )
         for index, group in enumerate(groups)
     }
 
 
 def add_group_legend(axis: Axes, groups: Sequence[ExperimentGroup], colors: dict[str, tuple[float, float, float, float]]) -> None:
     handles = [
-        Line2D([0], [0], color=colors[group.name], lw=2.5, label=group_label(group))
+        Line2D([0], [0], color=colors[group.name], lw=GROUP_LINE_WIDTH, label=group_label(group))
         for group in groups
     ]
     axis.legend(handles=handles, loc="best")
@@ -272,7 +287,13 @@ def plot_individual_ep_rew_ema(
     for group in groups:
         color = colors[group.name]
         for run in group.runs:
-            axis.plot(run.x_values, run.series[EP_REW_EMA_COLUMN], color=color, alpha=0.65, linewidth=1.8)
+            axis.plot(
+                run.x_values,
+                run.series[EP_REW_EMA_COLUMN],
+                color=color,
+                alpha=INDIVIDUAL_RUN_ALPHA,
+                linewidth=INDIVIDUAL_RUN_LINE_WIDTH,
+            )
 
     axis.set_title("Episode Reward EMA Per Run")
     axis.set_xlabel(x_column)
@@ -297,13 +318,19 @@ def plot_individual_ep_rew_mean_std(
         for run in group.runs:
             mean_values = run.series[EP_REW_MEAN_COLUMN]
             std_values = run.series[EP_REW_STD_COLUMN]
-            axis.plot(run.x_values, mean_values, color=color, alpha=0.65, linewidth=1.7)
+            axis.plot(
+                run.x_values,
+                mean_values,
+                color=color,
+                alpha=INDIVIDUAL_RUN_ALPHA,
+                linewidth=INDIVIDUAL_RUN_LINE_WIDTH,
+            )
             axis.fill_between(
                 run.x_values,
                 mean_values - std_values,
                 mean_values + std_values,
                 color=color,
-                alpha=0.08,
+                alpha=0.045,
                 linewidth=0,
             )
 
@@ -333,6 +360,27 @@ def finite_interp(x_source: np.ndarray, y_source: np.ndarray, x_target: np.ndarr
     return result
 
 
+def nan_mean(values: np.ndarray, axis: int) -> np.ndarray:
+    finite_mask = np.isfinite(values)
+    counts = finite_mask.sum(axis=axis)
+    totals = np.where(finite_mask, values, 0.0).sum(axis=axis)
+    return np.divide(totals, counts, out=np.full_like(totals, np.nan, dtype=float), where=counts > 0)
+
+
+def nan_std(values: np.ndarray, mean_values: np.ndarray, axis: int) -> np.ndarray:
+    finite_mask = np.isfinite(values)
+    expanded_mean = np.expand_dims(mean_values, axis=axis)
+    counts = finite_mask.sum(axis=axis)
+    squared_deltas = np.where(finite_mask, np.square(values - expanded_mean), 0.0).sum(axis=axis)
+    variance = np.divide(
+        squared_deltas,
+        counts,
+        out=np.full_like(squared_deltas, np.nan, dtype=float),
+        where=counts > 0,
+    )
+    return np.sqrt(variance)
+
+
 def common_group_x_values(runs: Sequence[ExperimentRunLog]) -> np.ndarray:
     min_x = max(float(np.nanmin(run.x_values)) for run in runs)
     max_x = min(float(np.nanmax(run.x_values)) for run in runs)
@@ -358,10 +406,57 @@ def group_mean_and_std(runs: Sequence[ExperimentRunLog]) -> tuple[np.ndarray, np
         finite_interp(run.x_values, run.series[EP_REW_STD_COLUMN], x_values)
         for run in runs
     ])
-    group_mean = np.nanmean(run_means, axis=0)
-    pooled_second_moment = np.nanmean(np.square(run_stds) + np.square(run_means), axis=0)
+    group_mean = nan_mean(run_means, axis=0)
+    pooled_second_moment = nan_mean(np.square(run_stds) + np.square(run_means), axis=0)
     group_std = np.sqrt(np.maximum(pooled_second_moment - np.square(group_mean), 0.0))
     return x_values, group_mean, group_std
+
+
+def group_ema_mean_and_std(runs: Sequence[ExperimentRunLog]) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    x_values = common_group_x_values(runs)
+    if x_values.size == 0:
+        return x_values, x_values, x_values
+
+    run_emas = np.vstack([
+        finite_interp(run.x_values, run.series[EP_REW_EMA_COLUMN], x_values)
+        for run in runs
+    ])
+    mean_values = nan_mean(run_emas, axis=0)
+    return x_values, mean_values, nan_std(run_emas, mean_values, axis=0)
+
+
+def plot_group_ep_rew_ema(
+    groups: Sequence[ExperimentGroup],
+    output_dir: Path,
+    *,
+    x_column: str,
+    dpi: int,
+) -> Path:
+    colors = group_colors(groups)
+    figure, axis = plt.subplots(figsize=(16, 9))
+    for group in groups:
+        x_values, mean_values, std_values = group_ema_mean_and_std(group.runs)
+        if x_values.size == 0:
+            continue
+        color = colors[group.name]
+        axis.plot(x_values, mean_values, color=color, linewidth=GROUP_LINE_WIDTH, label=group_label(group))
+        if len(group.runs) > 1:
+            axis.fill_between(
+                x_values,
+                mean_values - std_values,
+                mean_values + std_values,
+                color=color,
+                alpha=0.12,
+                linewidth=0,
+            )
+
+    axis.set_title("Episode Reward EMA By Group")
+    axis.set_xlabel(x_column)
+    axis.set_ylabel(EP_REW_EMA_COLUMN)
+    axis.grid(alpha=0.25)
+    axis.legend(loc="best")
+    figure.tight_layout()
+    return save_figure(figure, output_dir / "ep_rew_ema_grouped.png", dpi=dpi)
 
 
 def plot_group_ep_rew_mean_std(
@@ -378,13 +473,13 @@ def plot_group_ep_rew_mean_std(
         if x_values.size == 0:
             continue
         color = colors[group.name]
-        axis.plot(x_values, mean_values, color=color, linewidth=2.6, label=group_label(group))
+        axis.plot(x_values, mean_values, color=color, linewidth=GROUP_LINE_WIDTH, label=group_label(group))
         axis.fill_between(
             x_values,
             mean_values - std_values,
             mean_values + std_values,
             color=color,
-            alpha=0.16,
+            alpha=0.12,
             linewidth=0,
         )
 
@@ -480,6 +575,7 @@ def plot_experiment_results(
     output_paths = [
         plot_individual_ep_rew_ema(groups, output_dir, x_column=x_column, dpi=dpi),
         plot_individual_ep_rew_mean_std(groups, output_dir, x_column=x_column, dpi=dpi),
+        plot_group_ep_rew_ema(groups, output_dir, x_column=x_column, dpi=dpi),
         plot_group_ep_rew_mean_std(groups, output_dir, x_column=x_column, dpi=dpi),
     ]
     final_losses_path = plot_final_losses(groups, output_dir, dpi=dpi)
