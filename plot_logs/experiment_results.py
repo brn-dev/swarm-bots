@@ -381,20 +381,18 @@ def nan_std(values: np.ndarray, mean_values: np.ndarray, axis: int) -> np.ndarra
     return np.sqrt(variance)
 
 
-def common_group_x_values(runs: Sequence[ExperimentRunLog]) -> np.ndarray:
-    min_x = max(float(np.nanmin(run.x_values)) for run in runs)
-    max_x = min(float(np.nanmax(run.x_values)) for run in runs)
+def group_x_values(runs: Sequence[ExperimentRunLog]) -> np.ndarray:
     values = sorted({
         float(value)
         for run in runs
         for value in run.x_values
-        if np.isfinite(value) and min_x <= value <= max_x
+        if np.isfinite(value)
     })
     return np.asarray(values, dtype=float)
 
 
 def group_mean_and_std(runs: Sequence[ExperimentRunLog]) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    x_values = common_group_x_values(runs)
+    x_values = group_x_values(runs)
     if x_values.size == 0:
         return x_values, x_values, x_values
 
@@ -413,7 +411,7 @@ def group_mean_and_std(runs: Sequence[ExperimentRunLog]) -> tuple[np.ndarray, np
 
 
 def group_ema_mean_and_std(runs: Sequence[ExperimentRunLog]) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    x_values = common_group_x_values(runs)
+    x_values = group_x_values(runs)
     if x_values.size == 0:
         return x_values, x_values, x_values
 
