@@ -14,7 +14,7 @@ from swarmbots.mjw_env.scenarios.mjw_bridge_runtime import (
 )
 from swarmbots.mjw_env.scenarios.mjw_bridge_scenario import MJWBridgeRuntimeMetadata
 from swarmbots.mjw_env.scenarios.mjw_scenario_presets import default_bridge as default_mjw_bridge
-from swarmbots.scenario_presets_kwargs import BRIDGE_REWARD_KWARGS
+from swarmbots.scenario_presets_kwargs import BRIDGE_SCENARIO_KWARGS
 
 
 def test_bridge_presets_expose_bridge_x_as_hidden_global_obs_in_both_backends() -> None:
@@ -25,10 +25,10 @@ def test_bridge_presets_expose_bridge_x_as_hidden_global_obs_in_both_backends() 
 
     assert mj_obs["global_obs"].shape == (0,)
     assert mj_obs["hidden_global_vars"].shape == (1,)
-    assert mj_scenario.fell_off_bridge_reward == BRIDGE_REWARD_KWARGS["fell_off_bridge_reward"]
+    assert mj_scenario.fell_off_bridge_reward == BRIDGE_SCENARIO_KWARGS["fell_off_bridge_reward"]
     assert mjw_scenario.get_single_observation_space()["global_obs"].shape == (0,)
     assert mjw_scenario.get_single_observation_space()["hidden_global_vars"].shape == (1,)
-    assert mjw_scenario.fell_off_bridge_reward == BRIDGE_REWARD_KWARGS["fell_off_bridge_reward"]
+    assert mjw_scenario.fell_off_bridge_reward == BRIDGE_SCENARIO_KWARGS["fell_off_bridge_reward"]
 
 
 def test_bridge_mjw_runtime_metadata_hook_owns_bridge_mocap_id() -> None:
