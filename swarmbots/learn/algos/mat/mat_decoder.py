@@ -74,6 +74,9 @@ class MATDecoder(nn.Module):
                 self_attention_mode=config.self_attention_mode,
             ),
         )
+        self.parallel_attention_mask_is_causal = (
+            config.self_attention_mode is MATDecoderSelfAttentionMode.FULL_AUTOREGRESSIVE
+        )
         causal_mask = torch.triu(
             torch.ones(self.max_agents + 1, self.max_agents + 1, dtype=torch.bool),
             diagonal=1,
@@ -154,6 +157,7 @@ class MATDecoder(nn.Module):
             tgt_mask=attention_mask,
             tgt_key_padding_mask=target_key_padding_mask,
             memory_key_padding_mask=memory_key_padding_mask,
+            tgt_is_causal=self.parallel_attention_mask_is_causal,
         )
         return decoder_output[:, 0::2, :]
 
@@ -190,6 +194,7 @@ class MATDecoder(nn.Module):
             sequence = torch.cat((context_tokens, query_token), dim=1)
             seq_len = sequence.shape[1]
             attention_mask = self.step_causal_mask[:seq_len, :seq_len]
+        attention_mask_is_causal = self.parallel_attention_mask_is_causal or not use_interleaved_prefix
 
         target_key_padding_mask = None
         if context_mask is not None or query_mask is not None:
@@ -226,5 +231,6 @@ class MATDecoder(nn.Module):
             tgt_mask=attention_mask,
             tgt_key_padding_mask=target_key_padding_mask,
             memory_key_padding_mask=memory_key_padding_mask,
+            tgt_is_causal=attention_mask_is_causal,
         )
         return decoder_output[:, -1:, :]
