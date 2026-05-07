@@ -81,7 +81,7 @@ def main() -> None:
     rollout_samples = n_envs * rollout_steps_per_env
 
     episode_length = 512
-    total_timesteps = 200_000_000
+    total_timesteps = 100_000_000
     save_interval = 10000
 
     use_popart = True
