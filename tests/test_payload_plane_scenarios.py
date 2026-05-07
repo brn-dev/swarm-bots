@@ -17,7 +17,7 @@ from swarmbots.mjw_env.scenarios.mjw_payload_plane_runtime import (
     _compute_payload_plane_reward_kernel,
 )
 from swarmbots.mjw_env.scenarios.mjw_scenario_presets import default_payload_plane as default_mjw_payload_plane
-from swarmbots.scenario_presets_kwargs import PAYLOAD_PLANE_REWARD_KWARGS
+from swarmbots.scenario_presets_kwargs import PAYLOAD_PLANE_SCENARIO_KWARGS
 
 
 def test_payload_plane_reward_uses_payload_progress_and_x_penalty_in_mj_env() -> None:
@@ -276,24 +276,24 @@ def test_payload_plane_presets_expose_payload_global_obs_in_both_backends() -> N
     assert mj_scenario.get_obs_space()["hidden_global_vars"].shape == (0,)
     assert np.isclose(
         mj_scenario.payload_centering_penalty_weight,
-        PAYLOAD_PLANE_REWARD_KWARGS["payload_centering_penalty_weight"],
+        PAYLOAD_PLANE_SCENARIO_KWARGS["payload_centering_penalty_weight"],
     )
     assert np.isclose(
         mj_scenario.payload_centering_tolerance,
-        PAYLOAD_PLANE_REWARD_KWARGS["payload_centering_tolerance"],
+        PAYLOAD_PLANE_SCENARIO_KWARGS["payload_centering_tolerance"],
     )
-    assert mj_scenario.payload_shape == PAYLOAD_PLANE_REWARD_KWARGS["payload_shape"]
+    assert mj_scenario.payload_shape == PAYLOAD_PLANE_SCENARIO_KWARGS["payload_shape"]
     assert mjw_scenario.get_single_observation_space()["global_obs"].shape == (3,)
     assert mjw_scenario.get_single_observation_space()["hidden_global_vars"].shape == (0,)
     assert np.isclose(
         mjw_scenario.payload_centering_penalty_weight,
-        PAYLOAD_PLANE_REWARD_KWARGS["payload_centering_penalty_weight"],
+        PAYLOAD_PLANE_SCENARIO_KWARGS["payload_centering_penalty_weight"],
     )
     assert np.isclose(
         mjw_scenario.payload_centering_tolerance,
-        PAYLOAD_PLANE_REWARD_KWARGS["payload_centering_tolerance"],
+        PAYLOAD_PLANE_SCENARIO_KWARGS["payload_centering_tolerance"],
     )
-    assert mjw_scenario.payload_shape == PAYLOAD_PLANE_REWARD_KWARGS["payload_shape"]
+    assert mjw_scenario.payload_shape == PAYLOAD_PLANE_SCENARIO_KWARGS["payload_shape"]
 
 
 def test_payload_plane_shape_selects_payload_geom_type_in_both_backends() -> None:

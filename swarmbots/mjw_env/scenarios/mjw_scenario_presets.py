@@ -7,7 +7,6 @@ import sys
 import numpy as np
 import torch
 
-from swarmbots.mj_env.float_or_dist_params import UniformDistParams
 from swarmbots.mj_env.swarm.unit_config import (
     UNIT_CONFIG_TETRAHEDRON_XY,
     UNIT_CONFIG_TETRAHEDRON_XYZ,
@@ -18,21 +17,20 @@ from swarmbots.mjw_env.scenarios.mjw_move_to_scenario import MJWMoveToScenario
 from swarmbots.mjw_env.scenarios.mjw_obstacle_street_scenario import MJWObstacleStreetScenario
 from swarmbots.mjw_env.scenarios.mjw_payload_plane_scenario import MJWPayloadPlaneScenario
 from swarmbots.mjw_env.swarm.mjw_homogeneous_swarm import MJWHomogeneousSwarm, MJWPreConnectedUnitLocationsConfig
-from swarmbots.move_to_goal_config import RelativePolarGoalConfig
 from swarmbots.scenario_presets_kwargs import (
+    BRIDGE_SCENARIO_KWARGS as SHARED_BRIDGE_SCENARIO_KWARGS,
     COMMON_SCENARIO_KWARGS,
-    BRIDGE_REWARD_KWARGS as SHARED_BRIDGE_REWARD_KWARGS,
-    MOVE_TO_REWARD_KWARGS as SHARED_MOVE_TO_REWARD_KWARGS,
-    PAYLOAD_PLANE_REWARD_KWARGS as SHARED_PAYLOAD_PLANE_REWARD_KWARGS,
-    WALL_PASS_REWARD_KWARGS as SHARED_WALL_PASS_REWARD_KWARGS,
+    MOVE_TO_SCENARIO_KWARGS as SHARED_MOVE_TO_SCENARIO_KWARGS,
+    PAYLOAD_PLANE_SCENARIO_KWARGS as SHARED_PAYLOAD_PLANE_SCENARIO_KWARGS,
+    WALL_SCENARIO_KWARGS as SHARED_WALL_SCENARIO_KWARGS,
     make_scenario_kwargs,
 )
 
 DEFAULT_KWARGS = make_scenario_kwargs(COMMON_SCENARIO_KWARGS)
-WALL_PASS_REWARD_KWARGS = make_scenario_kwargs(SHARED_WALL_PASS_REWARD_KWARGS)
-BRIDGE_REWARD_KWARGS = make_scenario_kwargs(SHARED_BRIDGE_REWARD_KWARGS)
-PAYLOAD_PLANE_REWARD_KWARGS = make_scenario_kwargs(SHARED_PAYLOAD_PLANE_REWARD_KWARGS)
-MOVE_TO_REWARD_KWARGS = make_scenario_kwargs(SHARED_MOVE_TO_REWARD_KWARGS)
+WALL_SCENARIO_KWARGS = make_scenario_kwargs(SHARED_WALL_SCENARIO_KWARGS)
+BRIDGE_SCENARIO_KWARGS = make_scenario_kwargs(SHARED_BRIDGE_SCENARIO_KWARGS)
+PAYLOAD_PLANE_SCENARIO_KWARGS = make_scenario_kwargs(SHARED_PAYLOAD_PLANE_SCENARIO_KWARGS)
+MOVE_TO_SCENARIO_KWARGS = make_scenario_kwargs(SHARED_MOVE_TO_SCENARIO_KWARGS)
 
 
 def should_compile_reward_kernel_by_default() -> bool:
@@ -111,25 +109,9 @@ def default_wall(
     joints: str = "zx",
     **kwargs: object,
 ) -> MJWObstacleStreetScenario:
-    scenario_kwargs = make_scenario_kwargs(DEFAULT_KWARGS, WALL_PASS_REWARD_KWARGS)
+    scenario_kwargs = make_scenario_kwargs(DEFAULT_KWARGS, WALL_SCENARIO_KWARGS)
     scenario_kwargs.update(
         {
-            "num_walls": 1,
-            "opening_width": 0.01,
-            "connection_dist_threshold": 0.1,
-            "connection_angle_threshold": -0.5,
-            "disconnect_potential_threshold": 5.0,
-            "include_connectors_xpos_in_obs": True,
-            "include_connectors_xquat_in_obs": False,
-            "quat_rot6d_representation": True,
-            "swarm_start_x": 0.0,
-            "first_wall_distance": 1.0,
-            "inter_wall_distance": 4.0,
-            "unusable_opening_offset": 2.0,
-            "street_width": 10.0,
-            "no_initial_ramp": True,
-            "wall_height": 0.20,
-            "swarm_start_y": UniformDistParams(0.25, 0.75),
             "compile_reward_kernel": should_compile_reward_kernel_by_default(),
             "reward_kernel_compile_mode": "default",
         }
@@ -156,24 +138,9 @@ def default_bridge(
     joints: str = "zx",
     **kwargs: object,
 ) -> MJWBridgeScenario:
-    scenario_kwargs = make_scenario_kwargs(DEFAULT_KWARGS, BRIDGE_REWARD_KWARGS)
+    scenario_kwargs = make_scenario_kwargs(DEFAULT_KWARGS, BRIDGE_SCENARIO_KWARGS)
     scenario_kwargs.update(
         {
-            "street_width": 6.0,
-            "bridge_width": 1.0,
-            "bridge_length": 4.0,
-            "bridge_x": 0.0,
-            "platform_length": 4.0,
-            "platform_height": 0.2,
-            "fall_z_threshold": -1.0,
-            "connection_dist_threshold": 0.1,
-            "connection_angle_threshold": -0.5,
-            "disconnect_potential_threshold": 5.0,
-            "include_connectors_xpos_in_obs": True,
-            "include_connectors_xquat_in_obs": False,
-            "quat_rot6d_representation": True,
-            "swarm_start_x": 0.0,
-            "swarm_start_y": 0.0,
             "compile_reward_kernel": should_compile_reward_kernel_by_default(),
             "reward_kernel_compile_mode": "default",
         }
@@ -200,18 +167,9 @@ def default_payload_plane(
     joints: str = "zx",
     **kwargs: object,
 ) -> MJWPayloadPlaneScenario:
-    scenario_kwargs = make_scenario_kwargs(DEFAULT_KWARGS, PAYLOAD_PLANE_REWARD_KWARGS)
+    scenario_kwargs = make_scenario_kwargs(DEFAULT_KWARGS, PAYLOAD_PLANE_SCENARIO_KWARGS)
     scenario_kwargs.update(
         {
-            "plane_size": 100.0,
-            "connection_dist_threshold": 0.1,
-            "connection_angle_threshold": -0.5,
-            "disconnect_potential_threshold": 5.0,
-            "include_connectors_xpos_in_obs": True,
-            "include_connectors_xquat_in_obs": False,
-            "quat_rot6d_representation": True,
-            "swarm_start_x": 0.0,
-            "swarm_start_y": 0.0,
             "compile_reward_kernel": should_compile_reward_kernel_by_default(),
             "reward_kernel_compile_mode": "default",
         }
@@ -238,22 +196,9 @@ def default_move_to(
     joints: str = "zx",
     **kwargs: object,
 ) -> MJWMoveToScenario:
-    scenario_kwargs = make_scenario_kwargs(DEFAULT_KWARGS, MOVE_TO_REWARD_KWARGS)
+    scenario_kwargs = make_scenario_kwargs(DEFAULT_KWARGS, MOVE_TO_SCENARIO_KWARGS)
     scenario_kwargs.update(
         {
-            "plane_size": 100.0,
-            "connection_dist_threshold": 0.1,
-            "connection_angle_threshold": -0.5,
-            "disconnect_potential_threshold": 5.0,
-            "include_connectors_xpos_in_obs": True,
-            "include_connectors_xquat_in_obs": False,
-            "quat_rot6d_representation": True,
-            "swarm_start_x": 0.0,
-            "swarm_start_y": 0.0,
-            "goal": RelativePolarGoalConfig(
-                distance=UniformDistParams(2.0, 4.0),
-                angle=UniformDistParams(0.0, 2.0 * np.pi),
-            ),
             "compile_reward_kernel": should_compile_reward_kernel_by_default(),
             "reward_kernel_compile_mode": "default",
         }
