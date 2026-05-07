@@ -21,7 +21,7 @@ from swarmbots.mjw_env.scenarios.base_mjw_scenario import (
     MJWStepResult,
 )
 from swarmbots.mjw_env.scenarios.mjw_move_to_scenario import MJWMoveToRuntimeMetadata
-from swarmbots.move_to_goal_config import AbsoluteGoalConfig, RelativePolarGoalConfig
+from swarmbots.scenario_presets.move_to_goal_config import AbsoluteGoalConfig, RelativePolarGoalConfig
 
 
 @dataclass(slots=True)

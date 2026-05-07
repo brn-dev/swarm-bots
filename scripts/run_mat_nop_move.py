@@ -10,6 +10,7 @@ import swarmbots.mj_env.scenarios.scenario_presets as mj_scenario_presets
 from swarmbots.mj_env.scenarios.scenario_presets import default_move_to
 from swarmbots.mj_env.swarm_bots_env import SwarmBotsEnv
 from swarmbots.utils.recording_schedule import DEFAULT_RECORDING_SCHEDULE, install_scheduled_recordings
+from swarmbots.utils.run_paths import get_run_id_from_checkpoint_path, make_run_dir
 
 
 def configure_float32_matmul_precision() -> None:
@@ -194,8 +195,8 @@ def main() -> None:
     run_id = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
     # ===== LOAD =====
-    load_path: str | None = None
-    # load_path = "../runs/mat_nop_swarm_bots_move/2026-03-29_01-08-59/models/model_77792876_steps_stopped.pt"
+    load_path: str | Path | None = None
+    # load_path = make_run_dir("mat_nop_swarm_bots_move", "2026-03-29_01-08-59") / "models" / "model_77792876_steps_stopped.pt"
 
     # ===== DEVICE =====
     use_cuda = True and torch.cuda.is_available()
@@ -209,14 +210,14 @@ def main() -> None:
     logger.info(f'{record_device = }')
 
     if load_path is not None:
-        if not load_path.endswith('.pt'):
+        if Path(load_path).suffix != '.pt':
             logger.error('load_path is missing .pt')
             raise ValueError()
         logger.info(f'{load_path = }')
-        run_id = load_path.split('/')[3]
+        run_id = get_run_id_from_checkpoint_path(load_path)
     logger.info(f'{run_id = }')
 
-    run_dir = f"../runs/mat_nop_swarm_bots_move/{run_id}/"
+    run_dir = make_run_dir("mat_nop_swarm_bots_move", run_id)
     save_optimizer = True
 
     env_fns = [

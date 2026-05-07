@@ -11,7 +11,7 @@ from gymnasium.vector.utils import batch_space
 from swarmbots.mj_env.float_or_dist_params import BoundedDistParams, FloatOrDistParams
 from swarmbots.mjw_env.scenarios.base_mjw_scenario import BaseMJWScenario, MJWRecordingCameraConfig, MJWRuntimeBindings
 from swarmbots.mjw_env.swarm.mjw_homogeneous_swarm import MJWHomogeneousSwarm
-from swarmbots.move_to_goal_config import AbsoluteGoalConfig, MoveToGoalConfig, RelativePolarGoalConfig
+from swarmbots.scenario_presets.move_to_goal_config import AbsoluteGoalConfig, MoveToGoalConfig, RelativePolarGoalConfig
 
 
 @dataclass(frozen=True, slots=True)
@@ -115,13 +115,13 @@ class MJWMoveToScenario(BaseMJWScenario):
         if isinstance(self.goal, AbsoluteGoalConfig):
             goal_y = self.goal.y if isinstance(self.goal.y, (int, float)) else 3.0
             lookat_y = float(goal_y) * 0.5
-            distance = abs(float(goal_y)) + self.swarm.max_unit_extent * 4.0
+            distance = abs(float(goal_y)) + self.swarm.max_unit_extent * 6.0
         else:
             lookat_y = 0.0
             distance = self._recording_distance_for_relative_goal(self.goal)
         return MJWRecordingCameraConfig(
             lookat=(0.0, lookat_y, 0.7),
-            distance=max(5.0, min(12.0, distance)),
+            distance=max(7.0, min(16.0, distance)),
             azimuth=180.0,
             elevation=-35.0,
         )
@@ -133,7 +133,7 @@ class MJWMoveToScenario(BaseMJWScenario):
             max_goal_distance = max(abs(float(goal.distance.low)), abs(float(goal.distance.high)))
         else:
             max_goal_distance = 3.0
-        return max_goal_distance + self.swarm.max_unit_extent * 4.0
+        return max_goal_distance + self.swarm.max_unit_extent * 6.0
 
     def build_model(self) -> mujoco.MjModel:
         spec = mujoco.MjSpec()

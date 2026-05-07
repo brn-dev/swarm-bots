@@ -7,7 +7,7 @@ from swarmbots.mj_env.float_or_dist_params import FloatOrDistParams
 from swarmbots.mj_env.scenarios.base_scenario import BaseScenario, SwarmActDict, SwarmObsDict
 from swarmbots.mj_env.swarm.base_swarm import BaseSwarm
 from swarmbots.mj_env.swarm.swarm_connections import SwarmConnections
-from swarmbots.move_to_goal_config import AbsoluteGoalConfig, MoveToGoalConfig, sample_move_to_goal_position
+from swarmbots.scenario_presets.move_to_goal_config import AbsoluteGoalConfig, MoveToGoalConfig, sample_move_to_goal_position
 
 
 class MoveToScenario(BaseScenario):

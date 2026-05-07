@@ -5,7 +5,7 @@ from collections.abc import Mapping
 from copy import deepcopy
 
 from swarmbots.mj_env.float_or_dist_params import UniformDistParams
-from swarmbots.move_to_goal_config import RelativePolarGoalConfig
+from swarmbots.scenario_presets.move_to_goal_config import RelativePolarGoalConfig
 
 COMMON_SCENARIO_KWARGS: dict[str, object] = {
     "timestep": 0.003,

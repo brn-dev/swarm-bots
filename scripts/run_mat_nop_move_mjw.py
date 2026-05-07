@@ -30,6 +30,7 @@ from swarmbots.learn.scheduling.schedulers import ScheduledHyperParameter, Sched
 from swarmbots.learn.summary_statistics import SummaryStatisticsFormat
 from swarmbots.learn.swarmbots_obs_indices import build_obs_indices
 from swarmbots.utils.recording_schedule import DEFAULT_LIVE_RECORDING_SCHEDULE, install_scheduled_recordings
+from swarmbots.utils.run_paths import get_run_id_from_checkpoint_path, make_run_dir
 from swarmbots.mjw_env import MJWSwarmBotsVectorEnv
 import swarmbots.mjw_env.scenarios.mjw_scenario_presets as mjw_scenario_presets
 from swarmbots.mjw_env.scenarios.mjw_scenario_presets import default_move_to
@@ -102,8 +103,8 @@ def main() -> None:
 
     run_id = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
-    load_path: str | None = None
-    # load_path = "../runs/mat_nop_swarm_bots_move_mjw/2026-04-18_00-00-00/models/model_123456_steps_stopped.pt"
+    load_path: str | Path | None = None
+    # load_path = make_run_dir("mat_nop_swarm_bots_move_mjw", "2026-04-18_00-00-00") / "models" / "model_123456_steps_stopped.pt"
 
     rollout_device = torch.device("cuda")
     train_device = torch.device("cuda")
@@ -120,14 +121,14 @@ def main() -> None:
     logger.info("MJW env also settles all worlds once on the initial reset, which increases startup latency.")
 
     if load_path is not None:
-        if not load_path.endswith(".pt"):
+        if Path(load_path).suffix != ".pt":
             logger.error("load_path is missing .pt")
             raise ValueError()
         logger.info(f"{load_path = }")
-        run_id = load_path.split("/")[3]
+        run_id = get_run_id_from_checkpoint_path(load_path)
     logger.info(f"{run_id = }")
 
-    run_dir = f"../runs/mat_nop_swarm_bots_move_mjw/{run_id}/"
+    run_dir = make_run_dir("mat_nop_swarm_bots_move_mjw", run_id)
     save_optimizer = True
 
     first_episode_lengths = [int((i + 1) * episode_length / n_envs) for i in range(n_envs)]

@@ -17,7 +17,7 @@ from swarmbots.mjw_env.scenarios.mjw_payload_plane_runtime import (
     _compute_payload_plane_reward_kernel,
 )
 from swarmbots.mjw_env.scenarios.mjw_scenario_presets import default_payload_plane as default_mjw_payload_plane
-from swarmbots.scenario_presets_kwargs import PAYLOAD_PLANE_SCENARIO_KWARGS
+from swarmbots.scenario_presets.scenario_presets_kwargs import PAYLOAD_PLANE_SCENARIO_KWARGS
 
 
 def test_payload_plane_reward_uses_payload_progress_and_x_penalty_in_mj_env() -> None:
