@@ -169,7 +169,7 @@ def main() -> None:
     rollout_steps_per_env = 4
 
     episode_length = 512
-    total_timesteps = 200_000_000
+    total_timesteps = 100_000_000
     save_interval = 10000
 
     use_popart = True
