@@ -30,6 +30,7 @@ from swarmbots.learn.scheduling.linear_scheduler import LinearScheduler
 from swarmbots.learn.scheduling.schedulers import ScheduledHyperParameter, SchedulerManager, ScheduleUnit
 from swarmbots.learn.summary_statistics import SummaryStatisticsFormat
 from swarmbots.learn.swarmbots_obs_indices import build_obs_indices
+from swarmbots.utils.recording_schedule import DEFAULT_LIVE_RECORDING_SCHEDULE, install_scheduled_recordings
 from swarmbots.mjw_env import MJWSwarmBotsVectorEnv
 import swarmbots.mjw_env.scenarios.mjw_scenario_presets as mjw_scenario_presets
 from swarmbots.mjw_env.scenarios.mjw_scenario_presets import default_wall
@@ -365,6 +366,12 @@ def main() -> None:
         logger.info(f"Loading model from {load_path}")
         ppo.load(load_path, recover_best_return_ema=False, strict_load_state_dict=True)
 
+    scheduled_recording_hook = install_scheduled_recordings(
+        algorithm=ppo,
+        total_timesteps=total_timesteps,
+        schedule=DEFAULT_LIVE_RECORDING_SCHEDULE,
+    )
+
     print("Starting training...")
     logging_console_keys: list[
         tuple[str, str | SummaryStatisticsFormat | None] | tuple[str, str | SummaryStatisticsFormat | None, str]
@@ -420,6 +427,7 @@ def main() -> None:
                 "recording_enabled": "live_mjw_exact_state",
             },
             logging_console_keys=logging_console_keys,
+            post_iteration_hooks=[scheduled_recording_hook],
         ),
     )
 

@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-import json
 import math
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Mapping, TypedDict
+from typing import Any, Callable
 
 from gymnasium.vector import AutoresetMode, SyncVectorEnv
 import torch
@@ -42,12 +41,7 @@ from swarmbots.learn.swarmbots_obs_indices import build_obs_indices
 from swarmbots.mj_env.scenarios.scenario_presets import default_wall
 from swarmbots.mj_env.swarm.homogeneous_swarm import PreConnectedUnitLocationsConfig
 from swarmbots.mj_env.swarm_bots_env import SwarmBotsEnv
-
-
-class ScheduledRecordingInfo(TypedDict):
-    percentage: float
-    timesteps: int
-    episodes: int
+from swarmbots.utils.recording_schedule import DEFAULT_RECORDING_SCHEDULE, install_scheduled_recordings
 
 
 def configure_float32_matmul_precision() -> None:
@@ -212,62 +206,6 @@ def make_record_env_fn(
         )
 
     return _make_record_env
-
-
-def format_recording_percentage(percentage: float) -> str:
-    if float(percentage).is_integer():
-        return f"{int(percentage):03d}"
-    return str(percentage).rstrip("0").rstrip(".").replace(".", "p")
-
-
-def install_scheduled_recordings(
-    *,
-    ppo: PPO[Any, Any],
-    total_timesteps: int,
-    schedule: Mapping[float, int],
-) -> tuple[list[ScheduledRecordingInfo], Callable[[Any, dict[str, Any], int], None]]:
-    pending_milestones: list[tuple[float, int, int]] = []
-    current_timesteps = int(ppo.n_total_timesteps)
-    seen_targets: set[int] = set()
-    for percentage, num_episodes in sorted(schedule.items()):
-        if percentage < 0 or percentage > 100:
-            raise ValueError(f"Recording percentage must be in [0, 100], got {percentage}")
-        if num_episodes <= 0:
-            raise ValueError(f"Scheduled recording episode count must be positive, got {num_episodes}")
-
-        target_timesteps = max(1, int(total_timesteps * percentage / 100))
-        if target_timesteps in seen_targets or target_timesteps <= current_timesteps:
-            continue
-        seen_targets.add(target_timesteps)
-        pending_milestones.append((percentage, target_timesteps, num_episodes))
-
-    scheduled_recordings = [
-        ScheduledRecordingInfo(
-            percentage=percentage,
-            timesteps=target_timesteps,
-            episodes=num_episodes,
-        )
-        for percentage, target_timesteps, num_episodes in pending_milestones
-    ]
-
-    def scheduled_recording_hook(
-        algorithm: Any,
-        metrics: dict[str, Any],
-        rollout_steps: int,
-    ) -> None:
-        _ = metrics, rollout_steps
-        while pending_milestones and algorithm.n_total_timesteps >= pending_milestones[0][1]:
-            percentage, _target_timesteps, num_recording_episodes = pending_milestones.pop(0)
-            actual_timesteps = algorithm.n_total_timesteps
-            percentage_label = format_recording_percentage(percentage)
-            prefix = f"record_{percentage_label}pct_{actual_timesteps}_steps"
-            algorithm.execute_command(
-                "record",
-                json.dumps({"episodes": num_recording_episodes, "prefix": prefix}),
-                extra_run_metadata=None,
-            )
-
-    return scheduled_recordings, scheduled_recording_hook
 
 
 def run_experiment(*, num_envs: int, rollout_samples: int, variant_name: str, entrypoint_path: Path) -> None:
@@ -613,18 +551,11 @@ def run_experiment(*, num_envs: int, rollout_samples: int, variant_name: str, en
         logger.info(f"Loading model from {load_path}")
         ppo.load(load_path, recover_best_return_ema=False, strict_load_state_dict=True)
 
-    scheduled_recordings, scheduled_recording_hook = install_scheduled_recordings(
-        ppo=ppo,
+    scheduled_recording_hook = install_scheduled_recordings(
+        algorithm=ppo,
         total_timesteps=total_timesteps,
-        schedule={
-            25: 5,
-            50: 5,
-            75: 5,
-            90: 5,
-            100: 5,  # warning: when using this in a mjw env, 100 doesn't work since it uses live recording - choose 95
-        },
+        schedule=DEFAULT_RECORDING_SCHEDULE,
     )
-    logger.info(f"Scheduled recordings: {scheduled_recordings}")
 
     print("Starting training...")
     logging_console_keys: list[
@@ -684,7 +615,6 @@ def run_experiment(*, num_envs: int, rollout_samples: int, variant_name: str, en
                 "variant_name": variant_name,
                 "n_workers": n_workers,
                 "copy": False,
-                "scheduled_recordings": scheduled_recordings,
             },
             logging_console_keys=logging_console_keys,
             make_record_env=make_record_env,
