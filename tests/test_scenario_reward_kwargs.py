@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from swarmbots.mj_env.scenarios import scenario_presets
 from swarmbots.mjw_env.scenarios import mjw_scenario_presets
-from swarmbots.scenario_presets_kwargs import (
+from swarmbots.scenario_presets.scenario_presets_kwargs import (
     BRIDGE_SCENARIO_KWARGS,
     COMMON_SCENARIO_KWARGS,
     MOVE_TO_SCENARIO_KWARGS,

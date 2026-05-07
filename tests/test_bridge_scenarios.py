@@ -14,7 +14,7 @@ from swarmbots.mjw_env.scenarios.mjw_bridge_runtime import (
 )
 from swarmbots.mjw_env.scenarios.mjw_bridge_scenario import MJWBridgeRuntimeMetadata
 from swarmbots.mjw_env.scenarios.mjw_scenario_presets import default_bridge as default_mjw_bridge
-from swarmbots.scenario_presets_kwargs import BRIDGE_SCENARIO_KWARGS
+from swarmbots.scenario_presets.scenario_presets_kwargs import BRIDGE_SCENARIO_KWARGS
 
 
 def test_bridge_presets_expose_bridge_x_as_hidden_global_obs_in_both_backends() -> None:

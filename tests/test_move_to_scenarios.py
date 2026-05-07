@@ -5,7 +5,7 @@ import numpy as np
 from swarmbots.mj_env.float_or_dist_params import UniformDistParams
 from swarmbots.mj_env.scenarios.scenario_presets import default_move_to as default_mj_move_to
 from swarmbots.mjw_env.scenarios.mjw_scenario_presets import default_move_to as default_mjw_move_to
-from swarmbots.move_to_goal_config import AbsoluteGoalConfig, RelativePolarGoalConfig
+from swarmbots.scenario_presets.move_to_goal_config import AbsoluteGoalConfig, RelativePolarGoalConfig
 
 
 def test_move_to_presets_sample_goal_positions_by_default() -> None:

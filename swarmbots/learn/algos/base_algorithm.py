@@ -673,7 +673,7 @@ class BaseAlgorithm(abc.ABC):
             prefix = str(config.get("prefix", f"record_{self.n_total_timesteps}"))
             video_folder = config.get("folder", None)
             max_parallel_episodes = int(config.get("parallel", config.get("max_parallel", min(num_episodes, 4))))
-            frame_stride = int(config.get("frame_stride", 4))
+            frame_stride = int(config.get("frame_stride", 1))
             width = int(config.get("width", 640))
             height = int(config.get("height", 480))
             camera = config.get("camera", -1)

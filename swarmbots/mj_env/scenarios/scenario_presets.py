@@ -12,7 +12,7 @@ from swarmbots.mj_env.swarm.base_swarm import BaseSwarm
 from swarmbots.mj_env.swarm.homogeneous_swarm import HomogeneousSwarm, PreConnectedUnitLocationsConfig
 from swarmbots.mj_env.swarm.unit_config import UNIT_CONFIG_TETRAHEDRON_XYZ, UNIT_CONFIG_TETRAHEDRON_ZX, \
     UNIT_CONFIG_TETRAHEDRON_XY
-from swarmbots.scenario_presets_kwargs import (
+from swarmbots.scenario_presets.scenario_presets_kwargs import (
     BRIDGE_SCENARIO_KWARGS as SHARED_BRIDGE_SCENARIO_KWARGS,
     COMMON_SCENARIO_KWARGS,
     MOVE_TO_SCENARIO_KWARGS as SHARED_MOVE_TO_SCENARIO_KWARGS,

@@ -17,7 +17,7 @@ from swarmbots.mjw_env.scenarios.mjw_move_to_scenario import MJWMoveToScenario
 from swarmbots.mjw_env.scenarios.mjw_obstacle_street_scenario import MJWObstacleStreetScenario
 from swarmbots.mjw_env.scenarios.mjw_payload_plane_scenario import MJWPayloadPlaneScenario
 from swarmbots.mjw_env.swarm.mjw_homogeneous_swarm import MJWHomogeneousSwarm, MJWPreConnectedUnitLocationsConfig
-from swarmbots.scenario_presets_kwargs import (
+from swarmbots.scenario_presets.scenario_presets_kwargs import (
     BRIDGE_SCENARIO_KWARGS as SHARED_BRIDGE_SCENARIO_KWARGS,
     COMMON_SCENARIO_KWARGS,
     MOVE_TO_SCENARIO_KWARGS as SHARED_MOVE_TO_SCENARIO_KWARGS,

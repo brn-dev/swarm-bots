@@ -502,7 +502,7 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
         max_parallel_episodes: int = 4,
         fps: int = 20,
         fps_mode: str = "compensate_stride",
-        frame_stride: int = 4,
+        frame_stride: int = 1,
         width: int = 640,
         height: int = 480,
         camera: int | str = -1,
