@@ -21,21 +21,7 @@ from plot_logs.plot_logs import is_supported_log_path, open_log_text, parse_scal
 
 DEFAULT_X_COLUMN = "timesteps"
 EP_REW_EMA_COLUMN = "ep_rew_ema"
-EP_REW_MEAN_COLUMN = "ep_rew__mean"
-EP_REW_STD_COLUMN = "ep_rew__std"
 DEFAULT_DPI = 300
-DEFAULT_FINAL_LOSS_COLUMNS: tuple[str, ...] = (
-    "act_loss__mean",
-    "val_loss__mean",
-    "val_loss_scaled__mean",
-    "world_model_loss_scaled__mean",
-    "wm_loss__mean",
-    "wm_loss_scaled__mean",
-    "scalar_loss_scaled__mean",
-    "angle_loss_scaled__mean",
-    "rot6d_loss_scaled__mean",
-    "binary_loss_scaled__mean",
-)
 GROUP_PALETTE: tuple[str, ...] = (
     "#0072B2",
     "#E69F00",
@@ -58,7 +44,6 @@ class ExperimentRunLog:
     path: Path
     x_values: np.ndarray
     series: dict[str, np.ndarray]
-    final_values: dict[str, float]
 
 
 @dataclass(slots=True)
@@ -76,7 +61,7 @@ class ExperimentPlotResult:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Plot grouped experiment return curves and final losses from an experiment run folder. "
+            "Plot grouped and individual experiment return EMA curves from an experiment run folder. "
             "The expected layout is EXPERIMENT_RUN_DIR/GROUP/RUN/log.csv[.gz|.bz2|.xz|.zip]."
         )
     )
@@ -162,10 +147,9 @@ def load_experiment_run_log(
     run_name: str,
     x_column: str,
     return_columns: Sequence[str],
-    final_loss_columns: Sequence[str],
 ) -> ExperimentRunLog:
     x_values: list[float] = []
-    series: dict[str, list[float]] = {column: [] for column in (*return_columns, *final_loss_columns)}
+    series: dict[str, list[float]] = {column: [] for column in return_columns}
     with open_log_text(path, newline="") as handle:
         reader = csv.DictReader(handle, delimiter=";")
         if reader.fieldnames is None:
@@ -175,9 +159,6 @@ def load_experiment_run_log(
         if missing_return_columns:
             missing = ", ".join(missing_return_columns)
             raise ValueError(f"Missing required columns in {path}: {missing}")
-
-        available_loss_columns = [column for column in final_loss_columns if column in reader.fieldnames]
-        series = {column: [] for column in (*return_columns, *available_loss_columns)}
 
         for row_index, row in enumerate(reader, start=2):
             x_value, _x_is_datetime = parse_x_value(row.get(x_column), x_column, path, row_index)
@@ -191,20 +172,12 @@ def load_experiment_run_log(
         raise ValueError(f"{path} contains no usable rows")
 
     arrays = {column: np.asarray(values, dtype=float) for column, values in series.items()}
-    final_values = {
-        column: float(finite_values[-1])
-        for column, values in arrays.items()
-        if column in final_loss_columns
-        for finite_values in [values[np.isfinite(values)]]
-        if finite_values.size > 0
-    }
     return ExperimentRunLog(
         group_name=group_name,
         run_name=run_name,
         path=path,
         x_values=np.asarray(x_values, dtype=float),
         series=arrays,
-        final_values=final_values,
     )
 
 
@@ -213,7 +186,6 @@ def load_experiment_groups(
     *,
     group_order: Sequence[str] | None = None,
     x_column: str = DEFAULT_X_COLUMN,
-    final_loss_columns: Sequence[str] = DEFAULT_FINAL_LOSS_COLUMNS,
 ) -> list[ExperimentGroup]:
     experiment_run_dir = experiment_run_dir.expanduser().resolve()
     if not experiment_run_dir.is_dir():
@@ -228,7 +200,7 @@ def load_experiment_groups(
     if not grouped_logs:
         raise ValueError(f"No run logs found under {experiment_run_dir}")
 
-    return_columns = (EP_REW_EMA_COLUMN, EP_REW_MEAN_COLUMN, EP_REW_STD_COLUMN)
+    return_columns = (EP_REW_EMA_COLUMN,)
     groups: list[ExperimentGroup] = []
     for group_name in ordered_group_names(grouped_logs, group_order):
         runs = [
@@ -238,7 +210,6 @@ def load_experiment_groups(
                 run_name=run_name,
                 x_column=x_column,
                 return_columns=return_columns,
-                final_loss_columns=final_loss_columns,
             )
             for run_name, path in grouped_logs[group_name]
         ]
@@ -304,45 +275,6 @@ def plot_individual_ep_rew_ema(
     return save_figure(figure, output_dir / "ep_rew_ema_individual_runs.png", dpi=dpi)
 
 
-def plot_individual_ep_rew_mean_std(
-    groups: Sequence[ExperimentGroup],
-    output_dir: Path,
-    *,
-    x_column: str,
-    dpi: int,
-) -> Path:
-    colors = group_colors(groups)
-    figure, axis = plt.subplots(figsize=(16, 9))
-    for group in groups:
-        color = colors[group.name]
-        for run in group.runs:
-            mean_values = run.series[EP_REW_MEAN_COLUMN]
-            std_values = run.series[EP_REW_STD_COLUMN]
-            axis.plot(
-                run.x_values,
-                mean_values,
-                color=color,
-                alpha=INDIVIDUAL_RUN_ALPHA,
-                linewidth=INDIVIDUAL_RUN_LINE_WIDTH,
-            )
-            axis.fill_between(
-                run.x_values,
-                mean_values - std_values,
-                mean_values + std_values,
-                color=color,
-                alpha=0.045,
-                linewidth=0,
-            )
-
-    axis.set_title("Episode Reward Mean +/- Std Per Run")
-    axis.set_xlabel(x_column)
-    axis.set_ylabel(EP_REW_MEAN_COLUMN)
-    axis.grid(alpha=0.25)
-    add_group_legend(axis, groups, colors)
-    figure.tight_layout()
-    return save_figure(figure, output_dir / "ep_rew_mean_std_individual_runs.png", dpi=dpi)
-
-
 def finite_interp(x_source: np.ndarray, y_source: np.ndarray, x_target: np.ndarray) -> np.ndarray:
     finite_mask = np.isfinite(x_source) & np.isfinite(y_source)
     if finite_mask.sum() < 2:
@@ -389,25 +321,6 @@ def group_x_values(runs: Sequence[ExperimentRunLog]) -> np.ndarray:
         if np.isfinite(value)
     })
     return np.asarray(values, dtype=float)
-
-
-def group_mean_and_std(runs: Sequence[ExperimentRunLog]) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    x_values = group_x_values(runs)
-    if x_values.size == 0:
-        return x_values, x_values, x_values
-
-    run_means = np.vstack([
-        finite_interp(run.x_values, run.series[EP_REW_MEAN_COLUMN], x_values)
-        for run in runs
-    ])
-    run_stds = np.vstack([
-        finite_interp(run.x_values, run.series[EP_REW_STD_COLUMN], x_values)
-        for run in runs
-    ])
-    group_mean = nan_mean(run_means, axis=0)
-    pooled_second_moment = nan_mean(np.square(run_stds) + np.square(run_means), axis=0)
-    group_std = np.sqrt(np.maximum(pooled_second_moment - np.square(group_mean), 0.0))
-    return x_values, group_mean, group_std
 
 
 def group_ema_mean_and_std(runs: Sequence[ExperimentRunLog]) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -457,105 +370,6 @@ def plot_group_ep_rew_ema(
     return save_figure(figure, output_dir / "ep_rew_ema_grouped.png", dpi=dpi)
 
 
-def plot_group_ep_rew_mean_std(
-    groups: Sequence[ExperimentGroup],
-    output_dir: Path,
-    *,
-    x_column: str,
-    dpi: int,
-) -> Path:
-    colors = group_colors(groups)
-    figure, axis = plt.subplots(figsize=(16, 9))
-    for group in groups:
-        x_values, mean_values, std_values = group_mean_and_std(group.runs)
-        if x_values.size == 0:
-            continue
-        color = colors[group.name]
-        axis.plot(x_values, mean_values, color=color, linewidth=GROUP_LINE_WIDTH, label=group_label(group))
-        axis.fill_between(
-            x_values,
-            mean_values - std_values,
-            mean_values + std_values,
-            color=color,
-            alpha=0.12,
-            linewidth=0,
-        )
-
-    axis.set_title("Episode Reward Mean +/- Std By Group")
-    axis.set_xlabel(x_column)
-    axis.set_ylabel(EP_REW_MEAN_COLUMN)
-    axis.grid(alpha=0.25)
-    axis.legend(loc="best")
-    figure.tight_layout()
-    return save_figure(figure, output_dir / "ep_rew_mean_std_grouped.png", dpi=dpi)
-
-
-def available_final_loss_columns(groups: Sequence[ExperimentGroup]) -> list[str]:
-    available = {
-        column
-        for group in groups
-        for run in group.runs
-        for column in run.final_values
-    }
-    return [column for column in DEFAULT_FINAL_LOSS_COLUMNS if column in available]
-
-
-def plot_final_losses(
-    groups: Sequence[ExperimentGroup],
-    output_dir: Path,
-    *,
-    dpi: int,
-) -> Path | None:
-    columns = available_final_loss_columns(groups)
-    if not columns:
-        return None
-
-    ncols = 2 if len(columns) > 1 else 1
-    nrows = math.ceil(len(columns) / ncols)
-    figure, axes_array = plt.subplots(nrows=nrows, ncols=ncols, figsize=(8 * ncols, 4.5 * nrows), squeeze=False)
-    axes = list(axes_array.ravel())
-    colors = group_colors(groups)
-    x_positions = np.arange(len(groups), dtype=float)
-    x_labels = [group_label(group) for group in groups]
-
-    for axis, column in zip(axes, columns, strict=False):
-        for group_index, group in enumerate(groups):
-            values = np.asarray(
-                [run.final_values[column] for run in group.runs if column in run.final_values],
-                dtype=float,
-            )
-            if values.size == 0:
-                continue
-            offsets = np.linspace(-0.16, 0.16, values.size) if values.size > 1 else np.asarray([0.0])
-            axis.scatter(
-                np.full(values.shape, x_positions[group_index]) + offsets,
-                values,
-                color=colors[group.name],
-                alpha=0.75,
-                s=35,
-            )
-            axis.scatter(
-                [x_positions[group_index]],
-                [float(np.nanmean(values))],
-                color=colors[group.name],
-                edgecolor="black",
-                linewidth=0.8,
-                marker="D",
-                s=55,
-                zorder=3,
-            )
-        axis.set_title(column)
-        axis.set_xticks(x_positions, x_labels, rotation=25, ha="right")
-        axis.grid(axis="y", alpha=0.25)
-
-    for axis in axes[len(columns):]:
-        axis.set_visible(False)
-
-    figure.suptitle("Final Loss Values By Group")
-    figure.tight_layout()
-    return save_figure(figure, output_dir / "final_losses_by_group.png", dpi=dpi)
-
-
 def plot_experiment_results(
     experiment_run_dir: Path,
     output_dir: Path,
@@ -572,13 +386,8 @@ def plot_experiment_results(
     output_dir = output_dir.expanduser().resolve()
     output_paths = [
         plot_individual_ep_rew_ema(groups, output_dir, x_column=x_column, dpi=dpi),
-        plot_individual_ep_rew_mean_std(groups, output_dir, x_column=x_column, dpi=dpi),
         plot_group_ep_rew_ema(groups, output_dir, x_column=x_column, dpi=dpi),
-        plot_group_ep_rew_mean_std(groups, output_dir, x_column=x_column, dpi=dpi),
     ]
-    final_losses_path = plot_final_losses(groups, output_dir, dpi=dpi)
-    if final_losses_path is not None:
-        output_paths.append(final_losses_path)
     return ExperimentPlotResult(groups=groups, output_paths=output_paths)
 
 
