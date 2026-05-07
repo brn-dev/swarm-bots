@@ -9,6 +9,7 @@ from typing import Any, Callable
 import swarmbots.mj_env.scenarios.scenario_presets as mj_scenario_presets
 from swarmbots.mj_env.scenarios.scenario_presets import default_move_to
 from swarmbots.mj_env.swarm_bots_env import SwarmBotsEnv
+from swarmbots.utils.recording_schedule import DEFAULT_RECORDING_SCHEDULE, install_scheduled_recordings
 
 
 def configure_float32_matmul_precision() -> None:
@@ -194,7 +195,7 @@ def main() -> None:
 
     # ===== LOAD =====
     load_path: str | None = None
-    # load_path = "../runs/mat_nop_swarm_bots_move_to/2026-03-29_01-08-59/models/model_77792876_steps_stopped.pt"
+    # load_path = "../runs/mat_nop_swarm_bots_move/2026-03-29_01-08-59/models/model_77792876_steps_stopped.pt"
 
     # ===== DEVICE =====
     use_cuda = True and torch.cuda.is_available()
@@ -215,7 +216,7 @@ def main() -> None:
         run_id = load_path.split('/')[3]
     logger.info(f'{run_id = }')
 
-    run_dir = f"../runs/mat_nop_swarm_bots_move_to/{run_id}/"
+    run_dir = f"../runs/mat_nop_swarm_bots_move/{run_id}/"
     save_optimizer = True
 
     env_fns = [
@@ -510,6 +511,12 @@ def main() -> None:
         logger.info(f"Loading model from {load_path}")
         ppo.load(load_path, recover_best_return_ema=False, strict_load_state_dict=True)
 
+    scheduled_recording_hook = install_scheduled_recordings(
+        algorithm=ppo,
+        total_timesteps=total_timesteps,
+        schedule=DEFAULT_RECORDING_SCHEDULE,
+    )
+
     print("Starting training...")
     logging_console_keys: list[tuple[str, str | SummaryStatisticsFormat | None] | tuple[str, str | SummaryStatisticsFormat | None, str]] = [
         ('iteration', '5', 'it'),
@@ -543,7 +550,7 @@ def main() -> None:
     ])
 
     run_with_discord_notification(
-        run_name=f"mat_nop_move_to/{run_id}",
+        run_name=f"mat_nop_move/{run_id}",
         run_dir=run_dir,
         total_timesteps=total_timesteps,
         algorithm=ppo,
@@ -561,7 +568,8 @@ def main() -> None:
                 'script_scenario_presets': Path(scenario_presets.__file__).read_text(encoding='utf-8'),
             },
             logging_console_keys=logging_console_keys,
-            make_record_env=make_record_env
+            make_record_env=make_record_env,
+            post_iteration_hooks=[scheduled_recording_hook],
         ),
     )
 

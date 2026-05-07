@@ -9,6 +9,7 @@ from typing import Any, Callable
 import swarmbots.mj_env.scenarios.scenario_presets as mj_scenario_presets
 from swarmbots.mj_env.scenarios.scenario_presets import default_payload_plane
 from swarmbots.mj_env.swarm_bots_env import SwarmBotsEnv
+from swarmbots.utils.recording_schedule import DEFAULT_RECORDING_SCHEDULE, install_scheduled_recordings
 
 
 def configure_float32_matmul_precision() -> None:
@@ -509,6 +510,12 @@ def main() -> None:
         logger.info(f"Loading model from {load_path}")
         ppo.load(load_path, recover_best_return_ema=False, strict_load_state_dict=True)
 
+    scheduled_recording_hook = install_scheduled_recordings(
+        algorithm=ppo,
+        total_timesteps=total_timesteps,
+        schedule=DEFAULT_RECORDING_SCHEDULE,
+    )
+
     print("Starting training...")
     logging_console_keys: list[tuple[str, str | SummaryStatisticsFormat | None] | tuple[str, str | SummaryStatisticsFormat | None, str]] = [
         ('iteration', '5', 'it'),
@@ -560,7 +567,8 @@ def main() -> None:
                 'script_scenario_presets': Path(scenario_presets.__file__).read_text(encoding='utf-8'),
             },
             logging_console_keys=logging_console_keys,
-            make_record_env=make_record_env
+            make_record_env=make_record_env,
+            post_iteration_hooks=[scheduled_recording_hook],
         ),
     )
 
