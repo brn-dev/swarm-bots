@@ -479,7 +479,11 @@ def collect_steps(
         completed_episodes = buffer.get_whole_episodes()[initial_episode_count:]
     buffer_get_whole_episodes_time = buffer_get_whole_episodes_timer.get_duration()
     with PerformanceTimer() as buffer_dump_partial_episodes_timer:
-        partial_episodes = buffer.dump_partial_episodes(final_obs=obs, final_values=final_values)
+        partial_episodes = buffer.dump_partial_episodes(
+            final_obs=obs,
+            final_values=final_values,
+            clone_tensors=False,
+        )
     buffer_get_whole_episodes_time += buffer_dump_partial_episodes_timer.get_duration()
 
     episodes = completed_episodes + partial_episodes

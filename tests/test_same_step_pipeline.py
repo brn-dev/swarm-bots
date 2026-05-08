@@ -505,6 +505,10 @@ class SameStepPipelineTests(unittest.TestCase):
                 buffer=buffer,
                 n_steps=2,
             )
+            self.assertEqual(len(first_episodes), 1)
+            self.assertTrue(first_episodes[0].is_true_episode_start)
+            self.assertTrue(torch.allclose(_to_cpu(first_episodes[0].initial_previous_actions), torch.zeros((2, 2))))
+
             resumed_episodes, _episode_infos, _metrics, _next_state = collect_steps(
                 env=env,
                 policy=policy,
@@ -513,9 +517,6 @@ class SameStepPipelineTests(unittest.TestCase):
                 rollout_state=rollout_state,
             )
 
-            self.assertEqual(len(first_episodes), 1)
-            self.assertTrue(first_episodes[0].is_true_episode_start)
-            self.assertTrue(torch.allclose(_to_cpu(first_episodes[0].initial_previous_actions), torch.zeros((2, 2))))
             self.assertEqual(len(resumed_episodes), 1)
             resumed_episode = resumed_episodes[0]
             self.assertFalse(resumed_episode.is_true_episode_start)
