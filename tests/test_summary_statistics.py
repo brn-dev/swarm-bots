@@ -29,6 +29,24 @@ class SummaryStatisticsTests(unittest.TestCase):
         self.assertIsNone(stats.data)
         self.assertIsNotNone(stats.histogram)
 
+    def test_torch_histogram_uses_tensor_values_without_retaining_data(self) -> None:
+        stats = compute_summary_statistics(torch.tensor([0.0, 1.0, 2.0, 3.0]), make_histogram=2)
+
+        assert stats is not None
+        assert stats.histogram is not None
+        self.assertIsNone(stats.data)
+        self.assertEqual(stats.histogram.bin_frequencies, [0.5, 0.5])
+        self.assertEqual(stats.histogram.bin_edges, [0.0, 1.5, 3.0])
+
+    def test_single_value_torch_histogram_has_bounds(self) -> None:
+        stats = compute_summary_statistics(torch.tensor([2.0]), make_histogram=3)
+
+        assert stats is not None
+        assert stats.histogram is not None
+        self.assertEqual(stats.min_value, 2.0)
+        self.assertEqual(stats.max_value, 2.0)
+        self.assertEqual(stats.histogram.bin_frequencies, [1.0])
+
     def test_metrics_lists_does_not_keep_data_by_default(self) -> None:
         metrics = MetricsLists[float]()
         metrics.add({"loss": 1.0})
