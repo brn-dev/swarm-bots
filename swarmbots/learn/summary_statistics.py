@@ -191,8 +191,8 @@ def compute_summary_statistics(
             std=0.0,
             skewness=0.0 if compute_skewness else None,
             kurtosis=0.0 if compute_kurtosis else None,
-            min_value=mean if find_min else None,
-            max_value=mean if find_max else None,
+            min_value=mean if find_min or make_histogram else None,
+            max_value=mean if find_max or make_histogram else None,
         )
         if make_histogram:
             summary_stats.histogram = _compute_histogram(
@@ -236,14 +236,14 @@ def compute_summary_statistics(
     if make_histogram:
         if summary_stats.std > 1e-6:
             summary_stats.histogram = _compute_histogram(
-                values if isinstance(values, np.ndarray) else values.detach().cpu().numpy(),
+                values,
                 min_val=summary_stats.min_value,
                 max_val=summary_stats.max_value,
                 n_bins=HISTOGRAM_DEFAULT_BINS if isinstance(make_histogram, bool) else make_histogram,
             )
         else:
             summary_stats.histogram = _compute_histogram(
-                values if isinstance(values, np.ndarray) else values.detach().cpu().numpy(),
+                values,
                 min_val=summary_stats.min_value,
                 max_val=summary_stats.max_value,
                 n_bins=1,
@@ -311,12 +311,13 @@ def compute_histogram(stats: SummaryStatistics, n_bins: int = HISTOGRAM_DEFAULT_
 
 
 def _compute_histogram(
-    values: np.ndarray,
+    values: np.ndarray | torch.Tensor,
     min_val: float, 
     max_val: float, 
     n_bins: int = HISTOGRAM_DEFAULT_BINS
 ) -> Histogram:
-    if values.size == 0:
+    values_size = values.size if isinstance(values, np.ndarray) else values.numel()
+    if values_size == 0:
         return Histogram(bin_frequencies=[0.0], bin_edges=[0.0, 1.0])
 
     if min_val == max_val:
@@ -326,6 +327,28 @@ def _compute_histogram(
         return Histogram(bin_frequencies=[1.0], bin_edges=[float(low), float(high)])
 
     bin_count = int(max(1, n_bins))
+    if isinstance(values, torch.Tensor):
+        histogram_values = values.detach()
+        if not histogram_values.is_floating_point():
+            histogram_values = histogram_values.to(dtype=torch.float32)
+
+        counts = torch.histc(histogram_values, bins=bin_count, min=float(min_val), max=float(max_val))
+        counts_np = counts.to(device="cpu", dtype=torch.float64).numpy()
+        total = float(counts_np.sum())
+        frequencies = (counts_np / total) if total > 0.0 else np.zeros_like(counts_np, dtype=np.float64)
+        edges = torch.linspace(
+            float(min_val),
+            float(max_val),
+            bin_count + 1,
+            device=counts.device,
+            dtype=torch.float64,
+        ).cpu().numpy()
+
+        return Histogram(
+            bin_frequencies=[float(x) for x in frequencies.tolist()],
+            bin_edges=[float(x) for x in edges.tolist()],
+        )
+
     counts, edges = np.histogram(values, bins=bin_count, range=(min_val, max_val))
     total = float(counts.sum())
     frequencies = (counts.astype(np.float64) / total) if total > 0.0 else np.zeros_like(counts, dtype=np.float64)
