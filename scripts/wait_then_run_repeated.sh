@@ -19,7 +19,7 @@ Options:
   --gpu INDEX             GPU index for nvidia-smi. Defaults to 0.
   --stable-for SECONDS    Required continuous availability. Defaults to 300.
   --check-interval SECONDS
-                          Seconds between VRAM checks. Defaults to 10.
+                          Seconds between VRAM checks. Defaults to 30.
   --python PYTHON         Python executable passed to run_repeated.sh.
                           Defaults to "python".
   --delay SECONDS         Delay between repeated runs. Defaults to 0.
@@ -179,7 +179,7 @@ fi
 
 gpu_index=0
 stable_for_seconds=300
-check_interval_seconds=10
+check_interval_seconds=30
 python_executable=python
 delay_seconds=0
 use_lock=1
