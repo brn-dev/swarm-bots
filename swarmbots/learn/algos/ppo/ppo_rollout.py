@@ -445,7 +445,6 @@ def collect_steps(
 
     episode_infos: list[dict[str, Any]] = []
     timers = _init_rollout_timers()
-    initial_episode_count = len(buffer.episodes)
 
     if n_steps <= 0:
         raise ValueError(f"n_steps must be > 0, got {n_steps}")
@@ -476,7 +475,7 @@ def collect_steps(
     )
 
     with PerformanceTimer() as buffer_get_whole_episodes_timer:
-        completed_episodes = buffer.get_whole_episodes()[initial_episode_count:]
+        completed_episodes = buffer.get_whole_episodes()
     buffer_get_whole_episodes_time = buffer_get_whole_episodes_timer.get_duration()
     with PerformanceTimer() as buffer_dump_partial_episodes_timer:
         partial_episodes = buffer.dump_partial_episodes(
