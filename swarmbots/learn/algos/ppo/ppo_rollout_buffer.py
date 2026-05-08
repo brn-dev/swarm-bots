@@ -189,26 +189,30 @@ class PPOEpisodeAccumulator:
             final_hidden_global_vars: torch.Tensor,
             final_agent_mask: MaybeTensor,
             final_value: torch.Tensor,
+            clone_tensors: bool = True,
     ) -> PPOEpisodeSegment:
         step = int(self.step[env].item())
-        agent_mask = None if self.agent_mask is None else self.agent_mask[env, :step].clone()
+        def maybe_clone(tensor: torch.Tensor) -> torch.Tensor:
+            return tensor.clone() if clone_tensors else tensor
+
+        agent_mask = None if self.agent_mask is None else maybe_clone(self.agent_mask[env, :step])
         return PPOEpisodeSegment(
-            local_obs=self.local_obs[env, :step].clone(),
-            global_obs=self.global_obs[env, :step].clone(),
-            hidden_local_vars=self.hidden_local_vars[env, :step].clone(),
-            hidden_global_vars=self.hidden_global_vars[env, :step].clone(),
+            local_obs=maybe_clone(self.local_obs[env, :step]),
+            global_obs=maybe_clone(self.global_obs[env, :step]),
+            hidden_local_vars=maybe_clone(self.hidden_local_vars[env, :step]),
+            hidden_global_vars=maybe_clone(self.hidden_global_vars[env, :step]),
             agent_mask=agent_mask,
-            actions=self.actions[env, :step].clone(),
-            rewards=self.rewards[env, :step].clone(),
-            log_probs=self.log_probs[env, :step].clone(),
-            values=self.values[env, :step].clone(),
-            final_local_obs=final_local_obs.clone(),
-            final_global_obs=final_global_obs.clone(),
-            final_hidden_local_vars=final_hidden_local_vars.clone(),
-            final_hidden_global_vars=final_hidden_global_vars.clone(),
-            final_agent_mask=None if final_agent_mask is None else final_agent_mask.clone(),
-            final_value=final_value.clone(),
-            initial_previous_actions=self.initial_previous_actions[env].clone(),
+            actions=maybe_clone(self.actions[env, :step]),
+            rewards=maybe_clone(self.rewards[env, :step]),
+            log_probs=maybe_clone(self.log_probs[env, :step]),
+            values=maybe_clone(self.values[env, :step]),
+            final_local_obs=maybe_clone(final_local_obs),
+            final_global_obs=maybe_clone(final_global_obs),
+            final_hidden_local_vars=maybe_clone(final_hidden_local_vars),
+            final_hidden_global_vars=maybe_clone(final_hidden_global_vars),
+            final_agent_mask=None if final_agent_mask is None else maybe_clone(final_agent_mask),
+            final_value=maybe_clone(final_value),
+            initial_previous_actions=maybe_clone(self.initial_previous_actions[env]),
             is_true_episode_start=bool(self.is_true_episode_start[env].item()),
         )
 
@@ -326,6 +330,7 @@ class PPORolloutBuffer:
             self,
             final_obs: dict[str, torch.Tensor],
             final_values: torch.Tensor,
+            clone_tensors: bool = True,
     ) -> list[PPOEpisodeSegment]:
         final_agent_mask = final_obs.get("agent_mask", None)
         partial_episodes: list[PPOEpisodeSegment] = []
@@ -341,6 +346,7 @@ class PPORolloutBuffer:
                 final_hidden_global_vars=final_obs["hidden_global_vars"][env_idx],
                 final_agent_mask=None if final_agent_mask is None else final_agent_mask[env_idx],
                 final_value=final_values[env_idx],
+                clone_tensors=clone_tensors,
             )
             episode.compute_gae(self.gamma, self.gae_lambda)
             partial_episodes.append(episode)
