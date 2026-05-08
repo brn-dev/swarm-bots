@@ -442,6 +442,8 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
 
         with PerformanceTimer() as sampler_init_timer:
             sampler = self.policy.make_sampler(episodes, config=self.sampler_config)
+        episodes.clear()
+        self.rollout_buffer.episodes.clear()
 
         valid_returns = self._select_valid_value_items(sampler, sampler.returns)
         if self.use_popart and valid_returns.numel() > 0:
