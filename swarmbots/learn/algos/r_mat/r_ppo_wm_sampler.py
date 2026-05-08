@@ -38,7 +38,7 @@ class RPPOWMSamples(BaseWMSamples):
     wm_loss_agent_mask: MaybeTensor  # (batch, sequence_length, n_next_steps, n_agents)
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class RPPOWMSamplerConfig(PPOWMSamplerConfig):
     sequence_length: int
     burn_in_length: int = 0

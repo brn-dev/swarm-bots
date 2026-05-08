@@ -230,7 +230,7 @@ class MJWPayloadPlaneScenario(BaseMJWScenario):
         return spaces.Dict(
             {
                 "local_obs": spaces.Box(low=-np.inf, high=np.inf, shape=(self.swarm.num_units, local_obs_dim), dtype=np.float32),
-                "global_obs": spaces.Box(low=-np.inf, high=np.inf, shape=(3,), dtype=np.float32),
+                "global_obs": spaces.Box(low=-np.inf, high=np.inf, shape=(9,), dtype=np.float32),
                 "hidden_local_vars": spaces.Box(low=-np.inf, high=np.inf, shape=(self.swarm.num_units, 0), dtype=np.float32),
                 "hidden_global_vars": spaces.Box(low=-np.inf, high=np.inf, shape=(0,), dtype=np.float32),
                 "agent_mask": spaces.MultiBinary((self.swarm.num_units,)),

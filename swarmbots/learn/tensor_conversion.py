@@ -25,7 +25,8 @@ def to_torch_tensor(
                 tensor = tensor.to(device=target_device, dtype=dtype if dtype is not None else tensor.dtype)
             return tensor
         except Exception:
-            pass
+            if hasattr(value, "__array__"):
+                return torch.as_tensor(np.asarray(value), device=target_device, dtype=dtype)
 
     return torch.as_tensor(value, device=target_device, dtype=dtype)
 
