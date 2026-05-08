@@ -35,6 +35,9 @@ GROUP_PALETTE: tuple[str, ...] = (
 INDIVIDUAL_RUN_LINE_WIDTH = 0.8
 INDIVIDUAL_RUN_ALPHA = 0.9
 GROUP_LINE_WIDTH = 1.0
+THEORETICAL_MAXIMUM_LINE_WIDTH = 1.0
+THEORETICAL_MAXIMUM_COLOR = "#444444"
+THEORETICAL_MAXIMUM_LABEL = "Theoretical maximum"
 
 
 @dataclass(slots=True)
@@ -92,6 +95,12 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=DEFAULT_DPI,
         help=f"PNG DPI. Defaults to {DEFAULT_DPI}.",
+    )
+    parser.add_argument(
+        "--theoretical-maximum",
+        type=float,
+        default=None,
+        help="Optional horizontal theoretical maximum line to draw on generated plots.",
     )
     return parser.parse_args()
 
@@ -231,11 +240,31 @@ def group_colors(groups: Sequence[ExperimentGroup]) -> dict[str, tuple[float, fl
     }
 
 
-def add_group_legend(axis: Axes, groups: Sequence[ExperimentGroup], colors: dict[str, tuple[float, float, float, float]]) -> None:
+def add_theoretical_maximum_line(axis: Axes, value: float | None) -> Line2D | None:
+    if value is None:
+        return None
+    return axis.axhline(
+        value,
+        color=THEORETICAL_MAXIMUM_COLOR,
+        linestyle="--",
+        linewidth=THEORETICAL_MAXIMUM_LINE_WIDTH,
+        label=THEORETICAL_MAXIMUM_LABEL,
+    )
+
+
+def add_group_legend(
+    axis: Axes,
+    groups: Sequence[ExperimentGroup],
+    colors: dict[str, tuple[float, float, float, float]],
+    *,
+    theoretical_maximum_line: Line2D | None = None,
+) -> None:
     handles = [
         Line2D([0], [0], color=colors[group.name], lw=GROUP_LINE_WIDTH, label=group_label(group))
         for group in groups
     ]
+    if theoretical_maximum_line is not None:
+        handles.append(theoretical_maximum_line)
     axis.legend(handles=handles, loc="best")
 
 
@@ -252,6 +281,7 @@ def plot_individual_ep_rew_ema(
     *,
     x_column: str,
     dpi: int,
+    theoretical_maximum: float | None = None,
 ) -> Path:
     colors = group_colors(groups)
     figure, axis = plt.subplots(figsize=(16, 9))
@@ -270,7 +300,8 @@ def plot_individual_ep_rew_ema(
     axis.set_xlabel(x_column)
     axis.set_ylabel(EP_REW_EMA_COLUMN)
     axis.grid(alpha=0.25)
-    add_group_legend(axis, groups, colors)
+    theoretical_maximum_line = add_theoretical_maximum_line(axis, theoretical_maximum)
+    add_group_legend(axis, groups, colors, theoretical_maximum_line=theoretical_maximum_line)
     figure.tight_layout()
     return save_figure(figure, output_dir / "ep_rew_ema_individual_runs.png", dpi=dpi)
 
@@ -342,6 +373,7 @@ def plot_group_ep_rew_ema(
     *,
     x_column: str,
     dpi: int,
+    theoretical_maximum: float | None = None,
 ) -> Path:
     colors = group_colors(groups)
     figure, axis = plt.subplots(figsize=(16, 9))
@@ -365,6 +397,7 @@ def plot_group_ep_rew_ema(
     axis.set_xlabel(x_column)
     axis.set_ylabel(EP_REW_EMA_COLUMN)
     axis.grid(alpha=0.25)
+    add_theoretical_maximum_line(axis, theoretical_maximum)
     axis.legend(loc="best")
     figure.tight_layout()
     return save_figure(figure, output_dir / "ep_rew_ema_grouped.png", dpi=dpi)
@@ -377,6 +410,7 @@ def plot_experiment_results(
     group_order: Sequence[str] | None = None,
     x_column: str = DEFAULT_X_COLUMN,
     dpi: int = DEFAULT_DPI,
+    theoretical_maximum: float | None = None,
 ) -> ExperimentPlotResult:
     groups = load_experiment_groups(
         experiment_run_dir,
@@ -385,8 +419,20 @@ def plot_experiment_results(
     )
     output_dir = output_dir.expanduser().resolve()
     output_paths = [
-        plot_individual_ep_rew_ema(groups, output_dir, x_column=x_column, dpi=dpi),
-        plot_group_ep_rew_ema(groups, output_dir, x_column=x_column, dpi=dpi),
+        plot_individual_ep_rew_ema(
+            groups,
+            output_dir,
+            x_column=x_column,
+            dpi=dpi,
+            theoretical_maximum=theoretical_maximum,
+        ),
+        plot_group_ep_rew_ema(
+            groups,
+            output_dir,
+            x_column=x_column,
+            dpi=dpi,
+            theoretical_maximum=theoretical_maximum,
+        ),
     ]
     return ExperimentPlotResult(groups=groups, output_paths=output_paths)
 
@@ -399,6 +445,7 @@ def main() -> int:
         group_order=args.group_order,
         x_column=args.x_column,
         dpi=args.dpi,
+        theoretical_maximum=args.theoretical_maximum,
     )
     for output_path in result.output_paths:
         print(output_path)

@@ -19,6 +19,7 @@ GROUP_ORDER = (
     "1024x4",
     "2048x2",
 )
+THEORETICAL_MAXIMUM = 11.0
 
 
 def main() -> int:
@@ -26,6 +27,7 @@ def main() -> int:
         EXPERIMENT_RUN_DIR,
         OUTPUT_DIR,
         group_order=GROUP_ORDER,
+        theoretical_maximum=THEORETICAL_MAXIMUM,
     )
     for output_path in result.output_paths:
         print(output_path)
