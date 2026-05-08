@@ -5,6 +5,7 @@ import numpy as np
 
 import swarmbots.mj_env.mujoco_utils as mj_utils
 from swarmbots.mj_env.float_or_dist_params import FloatOrDistParams, eval_fodp
+from swarmbots.mj_env.quat_rot6d import quat_to_rot6d
 from swarmbots.mj_env.scenarios.base_scenario import BaseScenario, SwarmActDict, SwarmObsDict
 from swarmbots.mj_env.swarm.base_swarm import BaseSwarm
 from swarmbots.mj_env.swarm.swarm_connections import SwarmConnections
@@ -207,7 +208,7 @@ class PayloadPlaneScenario(BaseScenario):
         connections: SwarmConnections,
     ) -> SwarmObsDict:
         obs = super().get_obs(model, data, state, connections)
-        obs["global_obs"] = self._get_payload_position(data).copy()
+        obs["global_obs"] = self._get_payload_obs(data)
         obs["hidden_global_vars"] = np.zeros((0,), dtype=float)
         return obs
 
@@ -298,3 +299,16 @@ class PayloadPlaneScenario(BaseScenario):
 
     def _get_payload_position(self, data: mujoco.MjData) -> np.ndarray:
         return np.asarray(data.qpos[self._payload_qpos_indices[:3]], dtype=float)
+
+    def _get_payload_orientation_rot6d(self, data: mujoco.MjData) -> np.ndarray:
+        payload_quat = np.asarray(data.qpos[self._payload_qpos_indices[3:7]], dtype=float)
+        return quat_to_rot6d(payload_quat, axis=-1)
+
+    def _get_payload_obs(self, data: mujoco.MjData) -> np.ndarray:
+        return np.concatenate(
+            (
+                self._get_payload_position(data),
+                self._get_payload_orientation_rot6d(data),
+            ),
+            axis=0,
+        )

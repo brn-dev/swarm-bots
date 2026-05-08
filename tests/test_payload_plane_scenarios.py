@@ -53,7 +53,7 @@ def test_payload_plane_x_penalty_uses_tolerance_in_mj_env() -> None:
     assert np.isclose(scenario._compute_payload_x_penalty(outside_tolerance), -((0.3 - 0.1) ** 2) * 0.5)
 
 
-def test_payload_plane_reset_exposes_payload_position_as_global_obs_in_mj_env() -> None:
+def test_payload_plane_reset_exposes_payload_pose_as_global_obs_in_mj_env() -> None:
     scenario = default_mj_payload_plane(
         reset_settle_time=0.0,
         swarm_start_x=0.25,
@@ -64,7 +64,10 @@ def test_payload_plane_reset_exposes_payload_position_as_global_obs_in_mj_env() 
     env = SwarmBotsEnv(scenario=scenario, episode_length=8)
     obs, _ = env.reset(seed=123)
 
-    assert np.allclose(obs["global_obs"], np.array([0.65, 0.7, 0.2], dtype=float))
+    assert np.allclose(
+        obs["global_obs"],
+        np.array([0.65, 0.7, 0.2, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0], dtype=float),
+    )
     assert obs["hidden_global_vars"].shape == (0,)
     env.close()
 
@@ -156,9 +159,11 @@ def test_payload_plane_step_exposes_payload_reward_terms_in_mj_env() -> None:
 def test_payload_plane_reward_uses_payload_progress_and_x_penalty_in_mjw_runtime() -> None:
     runtime = object.__new__(PayloadPlaneMJWScenarioRuntime)
     device = torch.device("cpu")
+    payload_qpos = torch.tensor([[0.3, 1.4, 0.2, 1.0, 0.0, 0.0, 0.0]], device=device, dtype=torch.float32)
     runtime.bindings = SimpleNamespace(
         units_active_mask=torch.tensor([[True]], device=device, dtype=torch.bool),
         partner_unit=torch.tensor([[[-1]]], device=device, dtype=torch.long),
+        qpos=payload_qpos,
     )
     runtime.scenario = SimpleNamespace(
         progress_reward_weight=1.0,
@@ -171,9 +176,10 @@ def test_payload_plane_reward_uses_payload_progress_and_x_penalty_in_mjw_runtime
         guidance_reward_weight=1.0,
     )
     runtime.payload_position = torch.zeros((1, 3), device=device, dtype=torch.float32)
+    runtime._global_obs = torch.zeros((1, 9), device=device, dtype=torch.float32)
+    runtime._payload_qpos_indices = torch.arange(7, device=device, dtype=torch.long)
     runtime.progress = torch.tensor([1.0], device=device, dtype=torch.float32)
     runtime._reward_kernel = _compute_payload_plane_reward_kernel
-    runtime._get_payload_position = lambda: torch.tensor([[0.3, 1.4, 0.2]], device=device, dtype=torch.float32)
 
     result = runtime.compute_step_rewards(stable_mask=torch.tensor([True], device=device, dtype=torch.bool))
 
@@ -216,9 +222,11 @@ def test_payload_plane_x_penalty_uses_tolerance_in_mjw_runtime() -> None:
 def test_payload_plane_forward_reward_cap_is_applied_in_mjw_runtime() -> None:
     runtime = object.__new__(PayloadPlaneMJWScenarioRuntime)
     device = torch.device("cpu")
+    payload_qpos = torch.tensor([[0.1, 0.7, 0.2, 1.0, 0.0, 0.0, 0.0]], device=device, dtype=torch.float32)
     runtime.bindings = SimpleNamespace(
         units_active_mask=torch.tensor([[True]], device=device, dtype=torch.bool),
         partner_unit=torch.tensor([[[-1]]], device=device, dtype=torch.long),
+        qpos=payload_qpos,
     )
     runtime.scenario = SimpleNamespace(
         progress_reward_weight=1.0,
@@ -231,14 +239,15 @@ def test_payload_plane_forward_reward_cap_is_applied_in_mjw_runtime() -> None:
         guidance_reward_weight=1.0,
     )
     runtime.payload_position = torch.zeros((1, 3), device=device, dtype=torch.float32)
+    runtime._global_obs = torch.zeros((1, 9), device=device, dtype=torch.float32)
+    runtime._payload_qpos_indices = torch.arange(7, device=device, dtype=torch.long)
     runtime.progress = torch.tensor([0.45], device=device, dtype=torch.float32)
     runtime._reward_kernel = _compute_payload_plane_reward_kernel
 
-    runtime._get_payload_position = lambda: torch.tensor([[0.1, 0.7, 0.2]], device=device, dtype=torch.float32)
     first = runtime.compute_step_rewards(stable_mask=torch.tensor([True], device=device, dtype=torch.bool))
     assert np.isclose(float(first.info["forward_reward"][0]), 0.05)
 
-    runtime._get_payload_position = lambda: torch.tensor([[0.1, 0.9, 0.2]], device=device, dtype=torch.float32)
+    runtime.bindings.qpos[:, :3] = torch.tensor([[0.1, 0.9, 0.2]], device=device, dtype=torch.float32)
     second = runtime.compute_step_rewards(stable_mask=torch.tensor([True], device=device, dtype=torch.bool))
     assert np.isclose(float(second.info["forward_reward"][0]), 0.0)
     assert np.isclose(float(runtime.progress[0]), 0.5)
@@ -268,11 +277,11 @@ def test_payload_plane_mjw_reset_sampling_respects_offsets_and_height() -> None:
     assert torch.allclose(payload_position, expected)
 
 
-def test_payload_plane_presets_expose_payload_global_obs_in_both_backends() -> None:
+def test_payload_plane_presets_expose_payload_pose_global_obs_in_both_backends() -> None:
     mj_scenario = default_mj_payload_plane(reset_settle_time=0.0)
     mjw_scenario = default_mjw_payload_plane()
 
-    assert mj_scenario.get_obs_space()["global_obs"].shape == (3,)
+    assert mj_scenario.get_obs_space()["global_obs"].shape == (9,)
     assert mj_scenario.get_obs_space()["hidden_global_vars"].shape == (0,)
     assert np.isclose(
         mj_scenario.payload_centering_penalty_weight,
@@ -283,7 +292,7 @@ def test_payload_plane_presets_expose_payload_global_obs_in_both_backends() -> N
         PAYLOAD_PLANE_SCENARIO_KWARGS["payload_centering_tolerance"],
     )
     assert mj_scenario.payload_shape == PAYLOAD_PLANE_SCENARIO_KWARGS["payload_shape"]
-    assert mjw_scenario.get_single_observation_space()["global_obs"].shape == (3,)
+    assert mjw_scenario.get_single_observation_space()["global_obs"].shape == (9,)
     assert mjw_scenario.get_single_observation_space()["hidden_global_vars"].shape == (0,)
     assert np.isclose(
         mjw_scenario.payload_centering_penalty_weight,

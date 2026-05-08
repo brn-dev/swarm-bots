@@ -11,6 +11,7 @@ import numpy as np
 import torch
 
 import swarmbots.mj_env.mujoco_utils as mj_utils
+from swarmbots.mjw_env.mjw_torch_quat import quat_to_rot6d_torch
 from swarmbots.mjw_env.mjw_torch_utils import sample_float_or_dist
 from swarmbots.mjw_env.scenarios.base_mjw_scenario import (
     BaseMJWCPUResetSettler,
@@ -140,6 +141,7 @@ class PayloadPlaneMJWScenarioRuntime(BaseMJWScenarioRuntime):
             raise ValueError("PayloadPlaneMJWScenarioRuntime requires payload_qpos_indices in runtime metadata.")
 
         self.payload_position = torch.zeros((bindings.num_envs, 3), device=bindings.device, dtype=torch.float32)
+        self._global_obs = torch.zeros((bindings.num_envs, 9), device=bindings.device, dtype=torch.float32)
         self._hidden_local_obs = torch.zeros((bindings.num_envs, scenario.swarm.num_units, 0), device=bindings.device, dtype=torch.float32)
         self._hidden_global_obs = torch.zeros((bindings.num_envs, 0), device=bindings.device, dtype=torch.float32)
         self.progress = torch.zeros((bindings.num_envs,), device=bindings.device, dtype=torch.float32)
@@ -169,7 +171,7 @@ class PayloadPlaneMJWScenarioRuntime(BaseMJWScenarioRuntime):
 
     @property
     def global_obs(self) -> torch.Tensor:
-        return self.payload_position
+        return self._global_obs
 
     @property
     def hidden_local_obs(self) -> torch.Tensor:
@@ -197,7 +199,7 @@ class PayloadPlaneMJWScenarioRuntime(BaseMJWScenarioRuntime):
         self._apply_payload_position(world_idx=world_idx, payload_position=reset_batch.payload_position)
         mjw.forward(self.bindings.model, self.bindings.data)
 
-        self.payload_position[world_idx] = reset_batch.payload_position
+        self._update_payload_obs(world_idx=world_idx)
         self.progress[world_idx] = _compute_payload_progress_baseline_torch(
             payload_y=reset_batch.payload_position[:, 1],
             forward_reward_max_y=self.scenario.forward_reward_max_y,
@@ -224,6 +226,7 @@ class PayloadPlaneMJWScenarioRuntime(BaseMJWScenarioRuntime):
             device=self.bindings.device,
             dtype=self.payload_position.dtype,
         )
+        self._update_payload_obs(world_idx=world_idx)
         self.progress[world_idx] = torch.as_tensor(
             [snapshot.progress for snapshot in snapshots],
             device=self.bindings.device,
@@ -234,6 +237,7 @@ class PayloadPlaneMJWScenarioRuntime(BaseMJWScenarioRuntime):
     def compute_step_rewards(self, *, stable_mask: torch.Tensor) -> MJWStepResult:
         current_payload_position = self._get_payload_position()
         self.payload_position[:] = current_payload_position
+        self._update_payload_obs()
         (
             new_progress,
             progress_reward,
@@ -316,6 +320,24 @@ class PayloadPlaneMJWScenarioRuntime(BaseMJWScenarioRuntime):
 
     def _get_payload_position(self) -> torch.Tensor:
         return self.bindings.qpos[:, self._payload_qpos_indices[:3]]
+
+    def _get_payload_orientation_rot6d(self) -> torch.Tensor:
+        return quat_to_rot6d_torch(self.bindings.qpos[:, self._payload_qpos_indices[3:7]])
+
+    def _update_payload_obs(self, *, world_idx: torch.Tensor | None = None) -> None:
+        if world_idx is None:
+            payload_position = self._get_payload_position()
+            payload_rot6d = self._get_payload_orientation_rot6d()
+            self.payload_position[:] = payload_position
+            self._global_obs[:, :3] = payload_position
+            self._global_obs[:, 3:] = payload_rot6d
+            return
+
+        payload_position = self.bindings.qpos[world_idx.unsqueeze(1), self._payload_qpos_indices[:3].unsqueeze(0)]
+        payload_quat = self.bindings.qpos[world_idx.unsqueeze(1), self._payload_qpos_indices[3:7].unsqueeze(0)]
+        self.payload_position[world_idx] = payload_position
+        self._global_obs[world_idx, :3] = payload_position
+        self._global_obs[world_idx, 3:] = quat_to_rot6d_torch(payload_quat)
 
 
 def _compute_payload_progress_baseline_np(*, payload_y: float, forward_reward_max_y: float | None) -> float:
