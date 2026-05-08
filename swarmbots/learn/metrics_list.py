@@ -24,7 +24,7 @@ class MetricsLists(Generic[T]):
             make_histogram: bool | int = False,
             compute_skewness: bool = False,
             compute_kurtosis: bool = False,
-            keep_data: bool = True,
+            keep_data: bool = False,
             prefix: str | None = None
     ):
 

@@ -145,7 +145,7 @@ def compute_summary_statistics(
         make_histogram: bool | int = False,
         compute_skewness: bool = False,
         compute_kurtosis: bool = False,
-        keep_data: bool = True,
+        keep_data: bool = False,
 ) -> Optional[SummaryStatistics]:
     values: np.ndarray | torch.Tensor
     if isinstance(arr, list):
@@ -258,7 +258,7 @@ def maybe_compute_summary_statistics(
         make_histogram: bool | int = False,
         compute_skewness: bool = False,
         compute_kurtosis: bool = False,
-        keep_data: bool = True,
+        keep_data: bool = False,
 ) -> Optional[SummaryStatistics]:
     if is_summary_statistics(x):
         if make_histogram and x.histogram in (None, NO_DATA) and x.data is not None:
