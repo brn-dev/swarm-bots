@@ -536,23 +536,19 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
 
         self.n_total_updates += n_updates
 
-        detailed_grad_norm_metrics = detailed_grad_norms.compute_summary_statistics(
-            find_min=True,
-            find_max=True,
-            prefix='grad_norm_',
-        )
+        detailed_grad_norm_metrics = detailed_grad_norms.compute_summary_statistics(prefix='grad_norm_',)
         if detailed_grad_norm_metrics:
             self._detailed_grad_norm_metric_keys = tuple(k.removeprefix('grad_norm_') for k in detailed_grad_norm_metrics)
         else:
             detailed_grad_norm_metrics = {
-                f'grad_norm_{key}': compute_summary_statistics([], find_min=True, find_max=True)
+                f'grad_norm_{key}': compute_summary_statistics([])
                 for key in self._detailed_grad_norm_metric_keys
             }
 
         metrics_timer = PerformanceTimer().start()
         with torch.no_grad():
             metrics: dict[str, Any] = {
-                **loss_metrics.compute_summary_statistics(find_min=True, find_max=True),
+                **loss_metrics.compute_summary_statistics(),
                 'updates': n_updates,
                 'total_updates': self.n_total_updates,
                 'expl_var': explained_var,
@@ -560,9 +556,7 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
                 'grad_clip_frac': (n_grad_clipped / len(grad_norms)) if grad_norms else 0.0,
                 **detailed_grad_norm_metrics,
                 'total_compute_grad_norms_time': sum(compute_grad_norms_timings),
-                'compute_grad_norms_time': compute_summary_statistics(
-                    compute_grad_norms_timings, find_min=True, find_max=True
-                )
+                'compute_grad_norms_time': compute_summary_statistics(compute_grad_norms_timings)
             }
 
             auto_lr_metrics = self._maybe_update_automatic_lr(
@@ -587,11 +581,9 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
             **metrics,
             'to_train_device_time': to_train_device_timer.get_duration(),
             'sampler_init_time': sampler_init_timer.get_duration(),
-            'sampling_time': compute_summary_statistics(
-                sampling_timings, find_min=True, find_max=True),
+            'sampling_time': compute_summary_statistics(sampling_timings),
             'total_sampling_time': sum(sampling_timings),
-            'update_time': compute_summary_statistics(
-                update_timings, find_min=True, find_max=True),
+            'update_time': compute_summary_statistics(update_timings),
             'total_update_time': sum(update_timings),
             'metrics_time': metrics_timer.get_duration(),
             'train_time': train_timer.get_duration(),

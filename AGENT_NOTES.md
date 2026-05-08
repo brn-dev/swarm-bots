@@ -176,6 +176,7 @@ Agents shall use this file to make notes for future instances. Write down import
 - Separate `record` runs built from `make_record_env` should keep the record env on the compiled policy's active device. For MAT/NOP with `compile_modules=True`, forcing recording to CPU while the policy is compiled on CUDA can trigger a second CPU Inductor compile during `record_policy(...)` and fail on Windows.
 - Generic schedulers are under `swarmbots/learn/scheduling/` and integrated via `SchedulerManager` in PPO.
 - Training logs go to `log.csv` with `;` delimiter.
+- `SummaryStatistics` helpers default to `keep_data=False`; metrics keep aggregate values and precomputed histograms but do not retain raw sample arrays unless a caller opts in. This avoids large host copies / wandb raw histograms for normal logging.
 - `BaseAlgorithm.learn(..., compress_metrics_log_on_exit=True)` now optionally gzips `log.csv` to `log.csv.gz` on graceful run exit (normal max-step finish or `stop`), then deletes the plain CSV. Default stays off.
 - Canonical wall training scripts and the 4096 env-sweep experiment send an optional Discord webhook notification when `ppo.learn(...)` exits or raises. Set `SWARMBOTS_DISCORD_WEBHOOK_URL`; implementation lives in `swarmbots/learn/discord_notifications.py` and uses only stdlib `urllib`.
 - Plot tooling is in `plot_logs/`.
