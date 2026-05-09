@@ -1,5 +1,6 @@
 from typing import Any
 
+from swarmbots.learn.env_wrappers.move_to_payload_global_obs_adapter import PAYLOAD_GLOBAL_OBS_ADAPTER_NAME
 from swarmbots.learn.obs_indices import ObsIndices
 
 
@@ -10,6 +11,28 @@ def _hinges_per_limb(limb_type: str) -> int:
     if name == "xyz":
         return 3
     raise ValueError(f"Unsupported limb type: {limb_type}")
+
+
+def _global_scalar_indices(scenario_settings: dict[str, Any], global_obs_dim: int) -> list[int]:
+    if global_obs_dim == 0:
+        return []
+
+    if scenario_settings.get("global_obs_adapter") == PAYLOAD_GLOBAL_OBS_ADAPTER_NAME:
+        if global_obs_dim != 9:
+            raise ValueError(f"Unexpected adapted move-to global_obs_dim for obs indices: {global_obs_dim}")
+        return [0, 1, 2]
+
+    if "payload_shape" in scenario_settings:
+        if global_obs_dim != 9:
+            raise ValueError(f"Unexpected payload global_obs_dim for obs indices: {global_obs_dim}")
+        return [0, 1, 2]
+
+    if "goal" in scenario_settings:
+        if global_obs_dim != 2:
+            raise ValueError(f"Unexpected move-to global_obs_dim for obs indices: {global_obs_dim}")
+        return [0, 1]
+
+    raise ValueError(f"Unsupported non-empty global_obs layout for obs indices: {global_obs_dim}")
 
 
 def build_obs_indices(
@@ -64,7 +87,7 @@ def build_obs_indices(
                 connectors_xquat_offset + 4 * i for i in range(limbs_per_unit)
             )
 
-    global_scalar_indices = []
+    global_scalar_indices = _global_scalar_indices(scenario_settings, global_obs_dim)
     global_quaternion_indices = []
 
     # hidden_local_vars are currently used for per-unit binary threshold flags in wall scenarios.
