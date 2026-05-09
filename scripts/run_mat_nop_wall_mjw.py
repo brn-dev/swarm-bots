@@ -81,6 +81,7 @@ def main() -> None:
     n_envs = 1024
     rollout_steps_per_env = 4
     rollout_samples = n_envs * rollout_steps_per_env
+    virtual_mini_batches = 1
 
     episode_length = 512
     total_timesteps = 100_000_000
@@ -361,6 +362,7 @@ def main() -> None:
         use_popart=use_popart,
         metrics_action_splitters=[lambda actions: split_actuator_joints(actions, actuators_per_limb), None],
         scheduler_manager=scheduler_manager,
+        virtual_mini_batches=virtual_mini_batches,
     )
 
     if load_path:
@@ -426,6 +428,7 @@ def main() -> None:
                 "script": Path(__file__).read_text(encoding="utf-8"),
                 "script_scenario_presets": Path(mjw_scenario_presets.__file__).read_text(encoding="utf-8"),
                 "recording_enabled": "live_mjw_exact_state",
+                "virtual_mini_batches": virtual_mini_batches,
             },
             logging_console_keys=logging_console_keys,
             post_iteration_hooks=[scheduled_recording_hook],

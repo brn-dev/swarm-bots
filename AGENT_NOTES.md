@@ -84,6 +84,7 @@ Agents shall use this file to make notes for future instances. Write down import
 - `RPPOWMSampler` in `swarmbots/learn/algos/r_mat/r_ppo_wm_sampler.py` chunks `PPOEpisode` segments into fixed-length right-padded sequences with `time_mask`. Its `is_true_episode_start` flag only means the chunk begins at a true env episode boundary, not merely the start of a partial rollout segment.
 - `RPPOWMSampler` supports burn-in via `burn_in_length`; it emits overlapping windows plus `time_loss_mask` so burn-in steps update recurrent state but do not contribute to PPO loss.
 - PPO loss/reduction code understands recurrent `time_loss_mask` (falling back to `time_mask`), so padded or burn-in `(B,T,...)` slices are ignored for policy loss, critic loss, metrics, and extra-loss reduction. PPO `value_loss_fn` must expose `reduction="none"` so masking can happen centrally.
+- PPO supports `virtual_mini_batches > 1` for gradient accumulation inside one logical sampler batch. The sampler `batch_size` remains the effective PPO batch size; advantages are normalized once on that full logical batch and then the dataclass batch is split on dim 0 for forward/backward passes. `batch_size` must be divisible by `virtual_mini_batches`.
 - Recurrent WM wrappers must combine `wm_target_time_mask` with `time_loss_mask`, otherwise burn-in roots still train WM losses.
 
 - Action distribution structure:

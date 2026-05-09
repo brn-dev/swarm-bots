@@ -141,7 +141,14 @@ def set_actuator_gsde_init_joint_stds(
             gsde_dist.log_stds[:, i::actuators_per_limb] = math.log(joint_std)
 
 
-def run_experiment(*, num_envs: int, rollout_steps_per_env: int, variant_name: str, entrypoint_path: Path) -> None:
+def run_experiment(
+        *,
+        num_envs: int,
+        rollout_steps_per_env: int,
+        variant_name: str,
+        entrypoint_path: Path,
+        virtual_mini_batches: int = 1,
+) -> None:
     from swarmbots.learn.torch_logging import enable_torch_compile_logging
 
     logger.remove()
@@ -157,6 +164,11 @@ def run_experiment(*, num_envs: int, rollout_steps_per_env: int, variant_name: s
         raise RuntimeError("MJW batch env sweep requires CUDA.")
 
     rollout_samples = num_envs * rollout_steps_per_env
+    if rollout_samples % virtual_mini_batches != 0:
+        raise ValueError(
+            f"Expected rollout_samples divisible by virtual_mini_batches, got "
+            f"{rollout_samples=} {virtual_mini_batches=}"
+        )
 
     episode_length = 512
     total_timesteps = 100_000_000
@@ -190,7 +202,8 @@ def run_experiment(*, num_envs: int, rollout_steps_per_env: int, variant_name: s
     logger.info(f"{train_device = }")
     logger.info(
         f"MJW batch env sweep variant {variant_name}: "
-        f"{num_envs} envs x {rollout_steps_per_env} steps/env = {rollout_samples}"
+        f"{num_envs} envs x {rollout_steps_per_env} steps/env = {rollout_samples}, "
+        f"virtual_mini_batches={virtual_mini_batches}"
     )
     logger.info("MJW wall training uses one batched GPU env directly; worker-pool vectorization is disabled.")
     logger.info(
@@ -437,6 +450,7 @@ def run_experiment(*, num_envs: int, rollout_steps_per_env: int, variant_name: s
         use_popart=use_popart,
         metrics_action_splitters=[lambda actions: split_actuator_joints(actions, actuators_per_limb), None],
         scheduler_manager=scheduler_manager,
+        virtual_mini_batches=virtual_mini_batches,
     )
 
     if load_path:
@@ -504,6 +518,7 @@ def run_experiment(*, num_envs: int, rollout_steps_per_env: int, variant_name: s
                 "recording_enabled": "live_mjw_exact_state",
                 "rollout_samples": rollout_samples,
                 "rollout_steps_per_env": rollout_steps_per_env,
+                "virtual_mini_batches": virtual_mini_batches,
                 "num_envs": num_envs,
                 "variant_name": variant_name,
                 "settle_initial_reset": True,
