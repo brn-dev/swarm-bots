@@ -556,6 +556,7 @@ def main() -> None:
     compile_policy_modules = True
     policy_compile_mode = "default"
     compile_world_model_modules = True
+    pretrain_recording_schedule = {95: 10}
 
     rollout_device = torch.device("cuda")
     train_device = torch.device("cuda")
@@ -601,7 +602,7 @@ def main() -> None:
             move_recording_hook = install_scheduled_recordings(
                 algorithm=move_ppo,
                 total_timesteps=move_to_pretrain_timesteps,
-                schedule=DEFAULT_LIVE_RECORDING_SCHEDULE,
+                schedule=pretrain_recording_schedule,
             )
             move_ppo.learn(
                 max_total_timesteps=move_to_pretrain_timesteps,
