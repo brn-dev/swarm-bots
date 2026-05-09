@@ -333,7 +333,7 @@ done
 
 cleanup_lock
 
-"$run_repeated_script" "$script_path" "$runs" \
+sh "$run_repeated_script" "$script_path" "$runs" \
     --python "$python_executable" \
     --delay "$delay_seconds" \
     -- "$@"
