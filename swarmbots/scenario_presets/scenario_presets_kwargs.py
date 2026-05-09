@@ -63,6 +63,8 @@ PAYLOAD_PLANE_SCENARIO_KWARGS: dict[str, object] = {
     "swarm_start_x": 0.0,
     "swarm_start_y": 0.0,
     "forward_reward_weight": 10.0,
+    "towards_payload_reward_weight": 1.0,
+    "towards_payload_goal_radius": 0.5,
     "payload_centering_penalty_weight": 0.05,
     "payload_centering_penalty_power": 1.0,
     "payload_centering_tolerance": 0.5,

@@ -12,7 +12,7 @@ import torch
 
 import swarmbots.mj_env.mujoco_utils as mj_utils
 from swarmbots.mjw_env.mjw_torch_quat import quat_to_rot6d_torch
-from swarmbots.mjw_env.mjw_torch_utils import sample_float_or_dist
+from swarmbots.mjw_env.mjw_torch_utils import masked_mean, sample_float_or_dist
 from swarmbots.mjw_env.scenarios.base_mjw_scenario import (
     BaseMJWCPUResetSettler,
     BaseMJWScenarioRuntime,
@@ -42,29 +42,54 @@ class PayloadPlaneSettledSnapshot:
     common: MJWCommonSettledSnapshot
     payload_position: np.ndarray
     progress: float
+    towards_payload_progress: float
 
 
 def _compute_payload_plane_reward_kernel(
+    unit_xy: torch.Tensor,
     payload_position: torch.Tensor,
     stable_mask: torch.Tensor,
     units_active_mask: torch.Tensor,
     partner_unit: torch.Tensor,
     progress: torch.Tensor,
+    towards_payload_progress: torch.Tensor,
     progress_reward_weight: float,
     forward_reward_weight: float,
     forward_reward_max_y: float,
+    payload_radius: float,
+    towards_payload_reward_weight: float,
+    towards_payload_goal_radius: float,
     payload_centering_penalty_weight: float,
     payload_centering_penalty_power: float,
     payload_centering_tolerance: float,
     units_without_connections_reward_weight: float,
     guidance_reward_weight: float,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+) -> tuple[
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+]:
+    safe_unit_xy = torch.where(stable_mask.view(-1, 1, 1), unit_xy, torch.zeros_like(unit_xy))
     safe_payload_x = torch.where(stable_mask, payload_position[:, 0], torch.zeros_like(progress))
     safe_payload_y = torch.where(stable_mask, payload_position[:, 1], torch.zeros_like(progress))
     new_progress = torch.clamp(safe_payload_y, max=float(forward_reward_max_y))
     progress_delta = new_progress - progress
 
     forward_component_reward = progress_delta * float(forward_reward_weight)
+    virtual_goal_position = torch.stack((safe_payload_x, safe_payload_y - float(payload_radius)), dim=-1)
+    new_towards_payload_progress = _compute_towards_payload_progress_baseline_torch(
+        unit_xy=safe_unit_xy,
+        virtual_goal_position=virtual_goal_position,
+        units_active_mask=units_active_mask,
+        goal_radius=towards_payload_goal_radius,
+    )
+    towards_payload_reward = (
+        new_towards_payload_progress - towards_payload_progress
+    ) * float(towards_payload_reward_weight)
     centered_payload_x = torch.clamp(
         torch.abs(safe_payload_x) - float(payload_centering_tolerance),
         min=0.0,
@@ -75,8 +100,11 @@ def _compute_payload_plane_reward_kernel(
         penalty_magnitude = centered_payload_x.pow(float(payload_centering_penalty_power))
     payload_x_penalty = -penalty_magnitude * float(payload_centering_penalty_weight)
 
-    progress_reward = (forward_component_reward + payload_x_penalty) * float(progress_reward_weight)
+    progress_reward = (forward_component_reward + towards_payload_reward + payload_x_penalty) * float(
+        progress_reward_weight
+    )
     forward_reward = forward_component_reward * float(progress_reward_weight)
+    towards_payload_reward = towards_payload_reward * float(progress_reward_weight)
     payload_x_penalty = payload_x_penalty * float(progress_reward_weight)
 
     connection_mask = partner_unit >= 0
@@ -92,7 +120,15 @@ def _compute_payload_plane_reward_kernel(
     )
     guidance_reward *= float(guidance_reward_weight)
 
-    return new_progress, progress_reward, forward_reward, payload_x_penalty, guidance_reward
+    return (
+        new_progress,
+        new_towards_payload_progress,
+        progress_reward,
+        forward_reward,
+        towards_payload_reward,
+        payload_x_penalty,
+        guidance_reward,
+    )
 
 
 class _PayloadPlaneCPUResetSettler(BaseMJWCPUResetSettler):
@@ -113,14 +149,30 @@ class _PayloadPlaneCPUResetSettler(BaseMJWCPUResetSettler):
         self._settle_physics()
 
         payload_position = np.asarray(self.data.qpos[self._payload_qpos_indices[:3]], dtype=np.float64).copy()
+        unit_xy = np.stack(
+            (
+                self.data.qpos[self.bindings.metadata.unit_qpos_adr],
+                self.data.qpos[self.bindings.metadata.unit_qpos_adr + 1],
+            ),
+            axis=-1,
+        )
+        active_mask = self._pool_active_mask[spec.common.pool_idx]
         progress = _compute_payload_progress_baseline_np(
             payload_y=float(payload_position[1]),
             forward_reward_max_y=self.scenario.forward_reward_max_y,
+        )
+        towards_payload_progress = _compute_towards_payload_progress_baseline_np(
+            unit_xy=unit_xy,
+            payload_position=payload_position,
+            active_mask=active_mask,
+            payload_radius=self.scenario.payload_radius,
+            goal_radius=self.scenario.towards_payload_goal_radius,
         )
         return PayloadPlaneSettledSnapshot(
             common=self._build_common_snapshot(common_reset_spec=spec.common),
             payload_position=payload_position,
             progress=progress,
+            towards_payload_progress=towards_payload_progress,
         )
 
     def _apply_payload_position(self, *, payload_position: np.ndarray) -> None:
@@ -142,18 +194,25 @@ class PayloadPlaneMJWScenarioRuntime(BaseMJWScenarioRuntime):
 
         self.payload_position = torch.zeros((bindings.num_envs, 3), device=bindings.device, dtype=torch.float32)
         self._global_obs = torch.zeros((bindings.num_envs, 9), device=bindings.device, dtype=torch.float32)
-        self._hidden_local_obs = torch.zeros((bindings.num_envs, scenario.swarm.num_units, 0), device=bindings.device, dtype=torch.float32)
+        self._hidden_local_obs = torch.zeros(
+            (bindings.num_envs, scenario.swarm.num_units, 0),
+            device=bindings.device,
+            dtype=torch.float32,
+        )
         self._hidden_global_obs = torch.zeros((bindings.num_envs, 0), device=bindings.device, dtype=torch.float32)
         self.progress = torch.zeros((bindings.num_envs,), device=bindings.device, dtype=torch.float32)
+        self.towards_payload_progress = torch.zeros((bindings.num_envs,), device=bindings.device, dtype=torch.float32)
         self._payload_qpos_indices = torch.as_tensor(
             runtime_metadata.payload_qpos_indices,
             device=bindings.device,
             dtype=torch.long,
         )
+        self._unit_qpos_adr = torch.as_tensor(bindings.metadata.unit_qpos_adr, device=bindings.device, dtype=torch.long)
+        self._xy_offsets = torch.tensor([0, 1], device=bindings.device, dtype=torch.long)
         self._cpu_settler = _PayloadPlaneCPUResetSettler(scenario=scenario, bindings=bindings)
         self._reward_kernel: Callable[
             ...,
-            tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor],
+            tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor],
         ] = _compute_payload_plane_reward_kernel
         if scenario.compile_reward_kernel:
             if not hasattr(torch, "compile"):
@@ -204,6 +263,12 @@ class PayloadPlaneMJWScenarioRuntime(BaseMJWScenarioRuntime):
             payload_y=reset_batch.payload_position[:, 1],
             forward_reward_max_y=self.scenario.forward_reward_max_y,
         )
+        self.towards_payload_progress[world_idx] = _compute_towards_payload_progress_baseline_torch(
+            unit_xy=self._get_unit_xy()[world_idx],
+            virtual_goal_position=self._virtual_goal_position(reset_batch.payload_position),
+            units_active_mask=self.bindings.units_active_mask[world_idx],
+            goal_radius=self.scenario.towards_payload_goal_radius,
+        )
 
     def build_cpu_reset_specs(self, *, reset_batch: PayloadPlaneResetBatch) -> list[PayloadPlaneResetSpec]:
         common_specs = self._build_common_reset_specs(common_reset_batch=reset_batch.common)
@@ -219,8 +284,16 @@ class PayloadPlaneMJWScenarioRuntime(BaseMJWScenarioRuntime):
     def settle_cpu_reset_specs(self, *, specs: list[PayloadPlaneResetSpec]) -> list[PayloadPlaneSettledSnapshot]:
         return self._cpu_settler.settle_batch(specs=specs)
 
-    def apply_settled_reset_batch(self, *, world_idx: torch.Tensor, snapshots: list[PayloadPlaneSettledSnapshot]) -> None:
-        self._apply_common_settled_snapshot_batch(world_idx=world_idx, snapshots=[snapshot.common for snapshot in snapshots])
+    def apply_settled_reset_batch(
+        self,
+        *,
+        world_idx: torch.Tensor,
+        snapshots: list[PayloadPlaneSettledSnapshot],
+    ) -> None:
+        self._apply_common_settled_snapshot_batch(
+            world_idx=world_idx,
+            snapshots=[snapshot.common for snapshot in snapshots],
+        )
         self.payload_position[world_idx] = torch.as_tensor(
             np.stack([snapshot.payload_position for snapshot in snapshots]),
             device=self.bindings.device,
@@ -232,6 +305,11 @@ class PayloadPlaneMJWScenarioRuntime(BaseMJWScenarioRuntime):
             device=self.bindings.device,
             dtype=self.progress.dtype,
         )
+        self.towards_payload_progress[world_idx] = torch.as_tensor(
+            [snapshot.towards_payload_progress for snapshot in snapshots],
+            device=self.bindings.device,
+            dtype=self.towards_payload_progress.dtype,
+        )
         mjw.forward(self.bindings.model, self.bindings.data)
 
     def compute_step_rewards(self, *, stable_mask: torch.Tensor) -> MJWStepResult:
@@ -240,19 +318,26 @@ class PayloadPlaneMJWScenarioRuntime(BaseMJWScenarioRuntime):
         self._update_payload_obs()
         (
             new_progress,
+            new_towards_payload_progress,
             progress_reward,
             forward_reward,
+            towards_payload_reward,
             payload_x_penalty,
             guidance_reward,
         ) = self._reward_kernel(
+            self._get_unit_xy(),
             current_payload_position,
             stable_mask,
             self.bindings.units_active_mask,
             self.bindings.partner_unit,
             self.progress,
+            self.towards_payload_progress,
             float(self.scenario.progress_reward_weight),
             float(self.scenario.forward_reward_weight),
             float("inf") if self.scenario.forward_reward_max_y is None else float(self.scenario.forward_reward_max_y),
+            float(self.scenario.payload_radius),
+            float(self.scenario.towards_payload_reward_weight),
+            float(self.scenario.towards_payload_goal_radius),
             float(self.scenario.payload_centering_penalty_weight),
             float(self.scenario.payload_centering_penalty_power),
             float(self.scenario.payload_centering_tolerance),
@@ -260,6 +345,7 @@ class PayloadPlaneMJWScenarioRuntime(BaseMJWScenarioRuntime):
             float(self.scenario.guidance_reward_weight),
         )
         self.progress[stable_mask] = new_progress[stable_mask]
+        self.towards_payload_progress[stable_mask] = new_towards_payload_progress[stable_mask]
 
         return MJWStepResult(
             reward=progress_reward + guidance_reward,
@@ -267,10 +353,12 @@ class PayloadPlaneMJWScenarioRuntime(BaseMJWScenarioRuntime):
                 "progress_reward": progress_reward,
                 "forward_reward": forward_reward,
                 "forward_progress_reward": forward_reward,
+                "towards_payload_reward": towards_payload_reward,
                 "payload_x_penalty": payload_x_penalty,
                 "guidance_reward": guidance_reward,
                 "reward_terms": {
                     "forward": forward_reward,
+                    "towards_payload": towards_payload_reward,
                     "payload_x": payload_x_penalty,
                     "guidance": guidance_reward,
                 },
@@ -321,6 +409,18 @@ class PayloadPlaneMJWScenarioRuntime(BaseMJWScenarioRuntime):
     def _get_payload_position(self) -> torch.Tensor:
         return self.bindings.qpos[:, self._payload_qpos_indices[:3]]
 
+    def _get_unit_xy(self) -> torch.Tensor:
+        return self.bindings.qpos[:, self._unit_qpos_adr[:, None] + self._xy_offsets[None, :]]
+
+    def _virtual_goal_position(self, payload_position: torch.Tensor) -> torch.Tensor:
+        return torch.stack(
+            (
+                payload_position[:, 0],
+                payload_position[:, 1] - float(self.scenario.payload_radius),
+            ),
+            dim=-1,
+        )
+
     def _get_payload_orientation_rot6d(self) -> torch.Tensor:
         return quat_to_rot6d_torch(self.bindings.qpos[:, self._payload_qpos_indices[3:7]])
 
@@ -354,3 +454,34 @@ def _compute_payload_progress_baseline_torch(
     if forward_reward_max_y is not None:
         return torch.clamp(payload_y, max=float(forward_reward_max_y))
     return payload_y
+
+
+def _compute_towards_payload_progress_baseline_np(
+    *,
+    unit_xy: np.ndarray,
+    payload_position: np.ndarray,
+    active_mask: np.ndarray,
+    payload_radius: float,
+    goal_radius: float,
+) -> float:
+    virtual_goal_position = np.asarray(payload_position[:2], dtype=np.float64).copy()
+    virtual_goal_position[1] -= float(payload_radius)
+    distance_to_goal = np.linalg.norm(unit_xy - virtual_goal_position[np.newaxis, :], axis=1)
+    remaining_distance = np.maximum(distance_to_goal - float(goal_radius), 0.0)
+    active_units_count = int(np.asarray(active_mask, dtype=bool).sum())
+    if active_units_count == 0:
+        return 0.0
+    return -float(remaining_distance[np.asarray(active_mask, dtype=bool)].mean())
+
+
+def _compute_towards_payload_progress_baseline_torch(
+    *,
+    unit_xy: torch.Tensor,
+    virtual_goal_position: torch.Tensor,
+    units_active_mask: torch.Tensor,
+    goal_radius: float,
+) -> torch.Tensor:
+    delta = unit_xy - virtual_goal_position.unsqueeze(1)
+    distance_to_goal = torch.sqrt((delta * delta).sum(dim=-1))
+    remaining_distance = torch.clamp(distance_to_goal - float(goal_radius), min=0.0)
+    return -masked_mean(remaining_distance, units_active_mask, dim=1)
