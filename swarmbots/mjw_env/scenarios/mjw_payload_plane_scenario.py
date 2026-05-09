@@ -70,6 +70,8 @@ class MJWPayloadPlaneScenario(BaseMJWScenario):
     compile_reward_kernel: bool = False
     reward_kernel_compile_mode: str = "default"
     randomize_initial_swarm_z_rotation: bool = False
+    physics_nconmax: int | None = None
+    physics_njmax: int | None = 200
 
     def __post_init__(self) -> None:
         if self.include_connectors_xquat_in_obs:
@@ -109,6 +111,10 @@ class MJWPayloadPlaneScenario(BaseMJWScenario):
             )
         if self.forward_reward_max_y is not None:
             self.forward_reward_max_y = float(self.forward_reward_max_y)
+        if self.physics_nconmax is not None and self.physics_nconmax <= 0:
+            raise ValueError(f"Expected physics_nconmax > 0, got {self.physics_nconmax}")
+        if self.physics_njmax is not None and self.physics_njmax <= 0:
+            raise ValueError(f"Expected physics_njmax > 0, got {self.physics_njmax}")
         self.inactive_area_location = (50.0, 0.0, 0.1)
 
     def get_settings(self) -> dict[str, Any]:
@@ -148,6 +154,8 @@ class MJWPayloadPlaneScenario(BaseMJWScenario):
             "forward_reward_max_y": self.forward_reward_max_y,
             "compile_reward_kernel": self.compile_reward_kernel,
             "reward_kernel_compile_mode": self.reward_kernel_compile_mode,
+            "physics_nconmax": self.physics_nconmax,
+            "physics_njmax": self.physics_njmax,
         }
 
     def get_default_recording_camera_config(self) -> MJWRecordingCameraConfig | None:

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import contextvars
 import json
 import os
+import threading
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -15,6 +17,13 @@ DISCORD_CONTENT_LIMIT = 2000
 DISCORD_USER_AGENT = "swarm-bots-training-notifier/0.1"
 T = TypeVar("T")
 
+_mjw_nefc_overflow_notification_lock = threading.Lock()
+_mjw_nefc_overflow_notification_keys: set[str] = set()
+_current_run_name: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "swarmbots_discord_current_run_name",
+    default=None,
+)
+
 
 def run_with_discord_notification(
         *,
@@ -25,19 +34,23 @@ def run_with_discord_notification(
         run: Callable[[], T],
 ) -> T:
     error: BaseException | None = None
+    current_run_name_token = _current_run_name.set(run_name)
     try:
         return run()
     except BaseException as exc:
         error = exc
         raise
     finally:
-        notify_training_run_finished(
-            run_name=run_name,
-            run_dir=run_dir,
-            total_timesteps=total_timesteps,
-            algorithm=algorithm,
-            error=error,
-        )
+        try:
+            notify_training_run_finished(
+                run_name=run_name,
+                run_dir=run_dir,
+                total_timesteps=total_timesteps,
+                algorithm=algorithm,
+                error=error,
+            )
+        finally:
+            _current_run_name.reset(current_run_name_token)
 
 
 def notify_training_run_finished(
@@ -98,6 +111,36 @@ def send_discord_message(*, content: str, webhook_url: str) -> bool:
         return False
 
     return True
+
+
+def notify_mjw_nefc_overflow_once(
+        *,
+        scenario_name: str,
+        num_envs: int,
+        nconmax: int,
+        njmax: int,
+        required_njmax: int,
+) -> bool:
+    webhook_url = os.environ.get(DISCORD_WEBHOOK_ENV_VAR)
+    if not webhook_url:
+        return False
+
+    run_name = _current_run_name.get()
+    notification_key = run_name if run_name is not None else f"unscoped:{scenario_name}"
+
+    with _mjw_nefc_overflow_notification_lock:
+        if notification_key in _mjw_nefc_overflow_notification_keys:
+            return False
+        _mjw_nefc_overflow_notification_keys.add(notification_key)
+
+    lines = [
+        f"MJW warning: nefc overflow - please increase njmax to {required_njmax}",
+        f"run: {run_name or 'unknown'}",
+        f"scenario: {scenario_name}",
+        f"current caps: nconmax={nconmax}, njmax={njmax}, num_envs={num_envs}",
+    ]
+    content = "\n".join(lines)
+    return send_discord_message(content=content, webhook_url=webhook_url)
 
 
 def _get_run_status(
