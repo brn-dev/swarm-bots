@@ -302,12 +302,6 @@ def make_scheduler_manager(
     )
 
 
-def set_stickiness(policy: NextObsPredWrapper, value: float) -> None:
-    continuous_dist = policy.action_dist.distributions[0]
-    if isinstance(continuous_dist, StickyActionDist):
-        continuous_dist.set_stickiness(value)
-
-
 def build_ppo(
     *,
     env: Any,
@@ -556,7 +550,8 @@ def main() -> None:
     world_model_num_next_steps = 3
     initial_stickiness = 0.25
     final_stickiness = 0.0
-    stickiness_anneal_steps = 15_000_000
+    pretrain_stickiness_anneal_steps = 10_000_000
+    payload_stickiness = 0.0
     gsde_init_stds = [0.25, 0.30]
     compile_policy_modules = True
     policy_compile_mode = "default"
@@ -589,7 +584,7 @@ def main() -> None:
             world_model_num_next_steps=world_model_num_next_steps,
             initial_stickiness=initial_stickiness,
             final_stickiness=final_stickiness,
-            stickiness_anneal_steps=stickiness_anneal_steps,
+            stickiness_anneal_steps=pretrain_stickiness_anneal_steps,
             gsde_init_stds=gsde_init_stds,
             compile_policy_modules=compile_policy_modules,
             compile_world_model_modules=compile_world_model_modules,
@@ -633,6 +628,11 @@ def main() -> None:
             move_env.close()
 
         logger.info(f"Starting payload phase from transfer checkpoint {transfer_checkpoint_path}.")
+        move_phase_timesteps = int(move_ppo.n_total_timesteps)
+        logger.info(
+            "Starting payload phase with stickiness fixed at zero after pretraining anneal: "
+            f"{move_phase_timesteps=}, {pretrain_stickiness_anneal_steps=}, {payload_stickiness=:.6f}."
+        )
         payload_env, payload_env_settings, payload_ppo, payload_actuators_per_limb = build_phase(
             vector_env=make_payload_vector_env(
                 episode_length=episode_length,
@@ -648,9 +648,9 @@ def main() -> None:
             vf_coef=vf_coef,
             world_model_loss_coef=world_model_loss_coef,
             world_model_num_next_steps=world_model_num_next_steps,
-            initial_stickiness=initial_stickiness,
-            final_stickiness=final_stickiness,
-            stickiness_anneal_steps=stickiness_anneal_steps,
+            initial_stickiness=payload_stickiness,
+            final_stickiness=payload_stickiness,
+            stickiness_anneal_steps=0,
             gsde_init_stds=gsde_init_stds,
             compile_policy_modules=compile_policy_modules,
             compile_world_model_modules=compile_world_model_modules,
@@ -669,7 +669,6 @@ def main() -> None:
                 checkpoint_path=transfer_checkpoint_path,
                 map_location=train_device,
             )
-            set_stickiness(payload_ppo.policy, initial_stickiness)
 
             payload_recording_hook = install_scheduled_recordings(
                 algorithm=payload_ppo,
