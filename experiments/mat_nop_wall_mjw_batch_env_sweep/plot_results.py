@@ -17,7 +17,7 @@ GROUP_ORDER = (
     "2048x4",
     "1024x8",
 )
-THEORETICAL_MAXIMUM = 11.0
+THEORETICAL_MAXIMUM = 10.5
 
 
 def main() -> int:
