@@ -22,6 +22,7 @@ from swarmbots.mjw_env.mjw_torch_quat import quat_to_rot6d_torch
 from swarmbots.mjw_env.mjw_torch_utils import to_device_bool_tensor
 from swarmbots.mjw_env.scenarios.base_mjw_scenario import BaseMJWScenario, MJWRuntimeBindings
 from swarmbots.mjw_env.swarm.mjw_homogeneous_swarm import MJWSwarmPool
+from swarmbots.learn.discord_notifications import notify_mjw_nefc_overflow_once
 from swarmbots.learn.tensor_conversion import to_numpy_array
 
 
@@ -69,6 +70,19 @@ def _default_njmax(*, num_units: int, nconmax: int) -> int:
     return max(160, (5 * nconmax) + (2 * num_units))
 
 
+def _resolve_workspace_cap(
+    *,
+    explicit_value: int | None,
+    scenario_value: int | None,
+    fallback_value: int,
+) -> int:
+    if explicit_value is not None:
+        return int(explicit_value)
+    if scenario_value is not None:
+        return int(scenario_value)
+    return int(fallback_value)
+
+
 @dataclass(slots=True)
 class _PendingSettledReset:
     world_idx: torch.Tensor
@@ -93,6 +107,7 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
         device: str | torch.device = "cuda",
         nconmax: int | None = None,
         njmax: int | None = None,
+        nefc_overflow_check_interval_steps: int = 128,
     ) -> None:
         super().__init__()
         wp.init()
@@ -105,6 +120,11 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
             )
         if num_envs <= 0:
             raise ValueError(f"Expected num_envs > 0, got {num_envs}")
+        if nefc_overflow_check_interval_steps <= 0:
+            raise ValueError(
+                "nefc_overflow_check_interval_steps must be > 0, "
+                f"got {nefc_overflow_check_interval_steps}"
+            )
 
         self.device = torch.device(device)
         if self.device.type == "cuda":
@@ -122,6 +142,7 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
         self.simulation_unstable_reward = float(simulation_unstable_reward)
         self.render_mode = None
         self.action_backend = "torch"
+        self._nefc_overflow_check_interval_steps = int(nefc_overflow_check_interval_steps)
 
         self.single_observation_space = scenario.get_single_observation_space()
         self.single_action_space = scenario.get_single_action_space()
@@ -138,14 +159,26 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
         self._metadata: MJWModelMetadata = build_model_metadata(self._host_model, scenario)
         self._scenario_runtime_metadata = self.scenario.build_runtime_metadata(host_model=self._host_model)
 
-        resolved_nconmax = _default_nconmax(
+        scenario_nconmax = getattr(scenario, "physics_nconmax", None)
+        scenario_njmax = getattr(scenario, "physics_njmax", None)
+        default_nconmax = _default_nconmax(
             num_units=self._n_agents,
             num_total_connectors=self._n_total_connectors,
-        ) if nconmax is None else int(nconmax)
-        resolved_njmax = _default_njmax(
+        )
+        resolved_nconmax = _resolve_workspace_cap(
+            explicit_value=nconmax,
+            scenario_value=scenario_nconmax,
+            fallback_value=default_nconmax,
+        )
+        default_njmax = _default_njmax(
             num_units=self._n_agents,
             nconmax=resolved_nconmax,
-        ) if njmax is None else int(njmax)
+        )
+        resolved_njmax = _resolve_workspace_cap(
+            explicit_value=njmax,
+            scenario_value=scenario_njmax,
+            fallback_value=default_njmax,
+        )
         if resolved_nconmax <= 0:
             raise ValueError(f"Expected nconmax > 0, got {resolved_nconmax}")
         if resolved_njmax <= 0:
@@ -170,6 +203,7 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
         self._xquat = wp.to_torch(self._data.xquat)
         self._xmat = wp.to_torch(self._data.xmat)
         self._time = wp.to_torch(self._data.time)
+        self._nefc = wp.to_torch(self._data.nefc)
         self._qacc_warmstart = wp.to_torch(self._data.qacc_warmstart)
         self._act = wp.to_torch(self._data.act)
 
@@ -353,6 +387,9 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
         self._pending_settled_reset: _PendingSettledReset | None = None
         self._live_episode_recorder = MJWLiveEpisodeRecorder(scenario=self.scenario)
         self._initial_settled_reset_done = False
+        self._nefc_overflow_notification_checked = False
+        self._max_nefc_since_overflow_check = torch.zeros((), device=self.device, dtype=self._nefc.dtype)
+        self._steps_since_nefc_overflow_check = 0
         if self._use_settled_resets:
             self._settle_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="mjw-reset-settle")
 
@@ -409,6 +446,8 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
         return self._build_obs(), {}
 
     def close(self) -> None:
+        if hasattr(self, "_max_nefc_since_overflow_check"):
+            self._maybe_notify_nefc_overflow()
         self._live_episode_recorder.close()
         if self._settle_executor is not None:
             self._settle_executor.shutdown(wait=True, cancel_futures=True)
@@ -434,6 +473,10 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
 
         self._apply_actions(actuators=actuators, connectors=connectors)
         self._run_physics()
+        self._update_max_nefc_since_overflow_check()
+        self._steps_since_nefc_overflow_check += 1
+        if self._steps_since_nefc_overflow_check >= self._nefc_overflow_check_interval_steps:
+            self._maybe_notify_nefc_overflow()
 
         unstable_mask = torch.isnan(self._qpos).any(dim=1) | torch.isnan(self._qvel).any(dim=1)
         stable_mask = ~unstable_mask
@@ -560,6 +603,37 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
             return
         for _ in range(self.action_repeat):
             mjw.step(self._model, self._data)
+
+    def _update_max_nefc_since_overflow_check(self) -> None:
+        if self._nefc_overflow_notification_checked:
+            return
+        torch.maximum(
+            self._max_nefc_since_overflow_check,
+            self._nefc.max(),
+            out=self._max_nefc_since_overflow_check,
+        )
+
+    def _maybe_notify_nefc_overflow(self) -> None:
+        if self._nefc_overflow_notification_checked:
+            return
+
+        required_njmax = int(self._max_nefc_since_overflow_check.item())
+        self._steps_since_nefc_overflow_check = 0
+        if required_njmax <= self._njmax:
+            self._max_nefc_since_overflow_check.zero_()
+            return
+
+        self._nefc_overflow_notification_checked = True
+        logger.warning(
+            f"MJW nefc overflow detected: current njmax={self._njmax}, observed nefc={required_njmax}."
+        )
+        notify_mjw_nefc_overflow_once(
+            scenario_name=type(self.scenario).__name__,
+            num_envs=self.num_envs,
+            nconmax=self._nconmax,
+            njmax=self._njmax,
+            required_njmax=required_njmax,
+        )
 
     def _get_current_truncation_limit(self) -> torch.Tensor:
         if self._first_episode_length_limit is None:
