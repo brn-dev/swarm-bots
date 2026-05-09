@@ -5,6 +5,7 @@ from torch import nn
 
 from swarmbots.learn.algos.ppo.ppo import PPO
 from swarmbots.learn.algos.ppo.ppo_sampler import PPOSamples
+from swarmbots.learn.metrics_list import MetricsLists
 
 
 def _make_samples() -> PPOSamples:
@@ -34,6 +35,55 @@ def _ppo_with_reduction(agent_logprob_reduction: str | None) -> PPO:
     ppo.agent_logprob_reduction = agent_logprob_reduction
     ppo.value_loss_fn = nn.MSELoss(reduction="none")
     return ppo
+
+
+class _LinearEvalPolicy(nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.weight = nn.Parameter(torch.tensor(0.1))
+
+    def evaluate_actions(
+            self,
+            batch: PPOSamples,
+            action_splitter: object = None,
+    ) -> tuple[torch.Tensor, torch.Tensor, dict[str, torch.Tensor], dict[str, float]]:
+        _ = action_splitter
+        x = batch.local_obs[:, 0, 0]
+        log_probs = self.weight * x
+        values = torch.zeros_like(batch.values)
+        return log_probs, values, {}, {}
+
+
+def _ppo_for_virtual_gradient(policy: _LinearEvalPolicy, *, virtual_mini_batches: int = 1) -> PPO:
+    ppo = _ppo_with_reduction(None)
+    ppo.policy = policy
+    ppo.metrics_action_splitters = []
+    ppo.normalize_advantage = True
+    ppo.virtual_mini_batches = virtual_mini_batches
+    ppo.clip_range = 100.0
+    ppo.clip_range_vf = None
+    ppo.use_popart = False
+    ppo.vf_coef = 0.0
+    ppo.mc_ent_coef = 0.0
+    ppo.optimizer = torch.optim.SGD(policy.parameters(), lr=0.1)
+    return ppo
+
+
+def _make_flat_samples() -> PPOSamples:
+    batch_size = 4
+    return PPOSamples(
+        local_obs=torch.arange(batch_size, dtype=torch.float32).reshape(batch_size, 1, 1),
+        global_obs=torch.empty(batch_size, 0),
+        hidden_local_vars=torch.empty(batch_size, 1, 0),
+        hidden_global_vars=torch.empty(batch_size, 0),
+        agent_mask=None,
+        previous_actions=None,
+        actions=torch.zeros(batch_size, 1, 1),
+        log_probs=torch.zeros(batch_size),
+        values=torch.zeros(batch_size),
+        returns=torch.zeros(batch_size),
+        advantages=torch.tensor([1.0, 2.0, 4.0, 8.0]),
+    )
 
 
 class PPOMaskingTests(unittest.TestCase):
@@ -146,6 +196,38 @@ class PPOMaskingTests(unittest.TestCase):
         )
 
         self.assertTrue(torch.equal(loss, torch.tensor(2.5)))
+
+    def test_virtual_batch_split_preserves_sample_type_and_slices_fields(self) -> None:
+        batch = _make_flat_samples()
+
+        chunks = PPO._split_batch(batch, n_chunks=2)
+
+        self.assertEqual(len(chunks), 2)
+        self.assertIsInstance(chunks[0], PPOSamples)
+        self.assertTrue(torch.equal(chunks[0].advantages, torch.tensor([1.0, 2.0])))
+        self.assertTrue(torch.equal(chunks[1].advantages, torch.tensor([4.0, 8.0])))
+        self.assertIsNone(chunks[0].agent_mask)
+
+    def test_virtual_batch_gradient_matches_full_batch_with_global_advantage_normalization(self) -> None:
+        batch = _make_flat_samples()
+
+        full_policy = _LinearEvalPolicy()
+        full_ppo = _ppo_for_virtual_gradient(full_policy)
+        full_loss, _, _ = full_ppo.compute_loss(batch)
+        full_loss.backward()
+        full_grad = full_policy.weight.grad.detach().clone()
+
+        virtual_policy = _LinearEvalPolicy()
+        virtual_ppo = _ppo_for_virtual_gradient(virtual_policy, virtual_mini_batches=2)
+        virtual_ppo._compute_virtual_batch_gradients(
+            batch=batch,
+            epoch=0,
+            batch_idx=0,
+            loss_metrics=MetricsLists[float](),
+        )
+        virtual_grad = virtual_policy.weight.grad.detach().clone()
+
+        self.assertTrue(torch.allclose(virtual_grad, full_grad))
 
 
 if __name__ == "__main__":
