@@ -234,3 +234,4 @@ Agents shall use this file to make notes for future instances. Write down import
 - If you change wrappers/vector-env behavior, re-check `SAME_STEP` `final_obs` handling and checkpoint restore.
 - Checkpoint env-state restore now has aliases for old NumPy/Gym normalization wrapper names (`FeatureWiseObsNormWrapper`, `NormalizeReward`) to the new torch-side normalization wrappers, so old checkpoints can still restore running stats into the new wrapper chain.
 - If you change observation composition, verify `build_obs_indices(...)`, normalization wrappers, and WM target configs together.
+- `scripts/analyze_wall_settled_reset_score.py` estimates how much weighted progress reward remains after settled resets in the default wall scenario. It samples paired settled/unsettled reset seeds using the regular 50-entry preconnected swarm pool and reports remaining forward/wall score plus wall score forfeited by milestones already passed during settling.
