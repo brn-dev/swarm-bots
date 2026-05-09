@@ -24,6 +24,7 @@ def test_payload_plane_reward_uses_payload_progress_and_x_penalty_in_mj_env() ->
     scenario = object.__new__(PayloadPlaneScenario)
     scenario.forward_reward_weight = 1.5
     scenario.forward_reward_max_y = None
+    scenario.towards_payload_reward_weight = 0.0
     scenario.payload_centering_penalty_weight = 0.5
     scenario.payload_centering_penalty_power = 2.0
     scenario.payload_centering_tolerance = 0.0
@@ -66,7 +67,7 @@ def test_payload_plane_reset_exposes_payload_pose_as_global_obs_in_mj_env() -> N
 
     assert np.allclose(
         obs["global_obs"],
-        np.array([0.65, 0.7, 0.2, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0], dtype=float),
+        np.array([0.65, 0.7, 0.3, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0], dtype=float),
     )
     assert obs["hidden_global_vars"].shape == (0,)
     env.close()
@@ -76,6 +77,7 @@ def test_payload_plane_forward_reward_cap_is_applied_in_mj_env() -> None:
     scenario = object.__new__(PayloadPlaneScenario)
     scenario.forward_reward_weight = 1.0
     scenario.forward_reward_max_y = 0.5
+    scenario.towards_payload_reward_weight = 0.0
     scenario.payload_centering_penalty_weight = 0.0
     scenario.payload_centering_penalty_power = 1.0
     scenario.payload_centering_tolerance = 0.0
@@ -96,6 +98,7 @@ def test_payload_plane_evaluate_step_reports_weighted_reward_terms_in_mj_env() -
     scenario.num_units = 1
     scenario.forward_reward_weight = 2.0
     scenario.forward_reward_max_y = None
+    scenario.towards_payload_reward_weight = 0.0
     scenario.payload_centering_penalty_weight = 0.5
     scenario.payload_centering_penalty_power = 1.0
     scenario.payload_centering_tolerance = 0.0
@@ -123,10 +126,12 @@ def test_payload_plane_evaluate_step_reports_weighted_reward_terms_in_mj_env() -
 
     assert not terminated
     assert np.isclose(state["weighted_forward_reward"], 1.8)
+    assert np.isclose(state["weighted_towards_payload_reward"], 0.0)
     assert np.isclose(state["weighted_payload_x_penalty"], -0.6)
     assert np.isclose(state["weighted_guidance_reward"], 0.0)
     assert np.isclose(state["weighted_progress_reward"], 1.2)
     assert np.isclose(state["reward_terms"]["forward"], 1.8)
+    assert np.isclose(state["reward_terms"]["towards_payload"], 0.0)
     assert np.isclose(state["reward_terms"]["payload_x"], -0.6)
     assert np.isclose(state["reward_terms"]["guidance"], 0.0)
     assert np.isclose(reward, 1.2)
@@ -151,9 +156,45 @@ def test_payload_plane_step_exposes_payload_reward_terms_in_mj_env() -> None:
     assert not truncated
     assert np.isfinite(float(reward))
     assert "payload_x" in info["reward_terms"]
+    assert "towards_payload" in info["reward_terms"]
     assert "forward_reward" in info
     assert "guidance_reward" in info
     env.close()
+
+
+def test_payload_plane_towards_payload_reward_uses_virtual_goal_radius_in_mj_env() -> None:
+    scenario = object.__new__(PayloadPlaneScenario)
+    scenario.payload_radius = 0.3
+    scenario.towards_payload_goal_radius = 0.2
+    scenario.towards_payload_reward_weight = 2.0
+    scenario._payload_qpos_indices = np.arange(7, dtype=int)
+    scenario._qpos_indices = np.array([[7, 8]], dtype=int)
+
+    state = {
+        "towards_payload_progress": -0.5,
+        "units_active_mask": np.array([True], dtype=bool),
+    }
+    data = SimpleNamespace(
+        qpos=np.array(
+            [
+                0.0,
+                1.3,
+                0.2,
+                1.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.8,
+            ],
+            dtype=float,
+        )
+    )
+
+    reward = scenario._compute_towards_payload_reward(data, state)
+
+    assert np.isclose(state["towards_payload_progress"], -0.0)
+    assert np.isclose(reward, 1.0)
 
 
 def test_payload_plane_reward_uses_payload_progress_and_x_penalty_in_mjw_runtime() -> None:
@@ -169,6 +210,9 @@ def test_payload_plane_reward_uses_payload_progress_and_x_penalty_in_mjw_runtime
         progress_reward_weight=1.0,
         forward_reward_weight=1.5,
         forward_reward_max_y=None,
+        payload_radius=0.2,
+        towards_payload_reward_weight=0.0,
+        towards_payload_goal_radius=0.2,
         payload_centering_penalty_weight=0.5,
         payload_centering_penalty_power=2.0,
         payload_centering_tolerance=0.0,
@@ -178,7 +222,10 @@ def test_payload_plane_reward_uses_payload_progress_and_x_penalty_in_mjw_runtime
     runtime.payload_position = torch.zeros((1, 3), device=device, dtype=torch.float32)
     runtime._global_obs = torch.zeros((1, 9), device=device, dtype=torch.float32)
     runtime._payload_qpos_indices = torch.arange(7, device=device, dtype=torch.long)
+    runtime._unit_qpos_adr = torch.tensor([0], device=device, dtype=torch.long)
+    runtime._xy_offsets = torch.tensor([0, 1], device=device, dtype=torch.long)
     runtime.progress = torch.tensor([1.0], device=device, dtype=torch.float32)
+    runtime.towards_payload_progress = torch.tensor([0.0], device=device, dtype=torch.float32)
     runtime._reward_kernel = _compute_payload_plane_reward_kernel
 
     result = runtime.compute_step_rewards(stable_mask=torch.tensor([True], device=device, dtype=torch.bool))
@@ -196,27 +243,84 @@ def test_payload_plane_x_penalty_uses_tolerance_in_mjw_runtime() -> None:
     partner_unit = torch.tensor([[[-1]], [[-1]]], dtype=torch.long)
     progress = torch.tensor([1.0, 1.0], dtype=torch.float32)
 
-    _new_progress, progress_reward, forward_reward, payload_x_penalty, _guidance_reward = (
-        _compute_payload_plane_reward_kernel(
-            payload_position,
-            stable_mask,
-            units_active_mask,
-            partner_unit,
-            progress,
-            1.0,
-            1.0,
-            float("inf"),
-            0.5,
-            2.0,
-            0.1,
-            0.0,
-            1.0,
-        )
+    (
+        _new_progress,
+        _new_towards_payload_progress,
+        progress_reward,
+        forward_reward,
+        towards_payload_reward,
+        payload_x_penalty,
+        _guidance_reward,
+    ) = _compute_payload_plane_reward_kernel(
+        torch.zeros((2, 1, 2), dtype=torch.float32),
+        payload_position,
+        stable_mask,
+        units_active_mask,
+        partner_unit,
+        progress,
+        torch.zeros_like(progress),
+        1.0,
+        1.0,
+        float("inf"),
+        0.2,
+        0.0,
+        0.2,
+        0.5,
+        2.0,
+        0.1,
+        0.0,
+        1.0,
     )
 
     assert torch.allclose(forward_reward, torch.zeros_like(forward_reward))
+    assert torch.allclose(towards_payload_reward, torch.zeros_like(towards_payload_reward))
     assert torch.allclose(payload_x_penalty, torch.tensor([0.0, -((0.3 - 0.1) ** 2) * 0.5]))
     assert torch.allclose(progress_reward, payload_x_penalty)
+
+
+def test_payload_plane_towards_payload_reward_uses_virtual_goal_radius_in_mjw_runtime() -> None:
+    unit_xy = torch.tensor([[[0.0, 0.8]]], dtype=torch.float32)
+    payload_position = torch.tensor([[0.0, 1.3, 0.2]], dtype=torch.float32)
+    stable_mask = torch.tensor([True], dtype=torch.bool)
+    units_active_mask = torch.tensor([[True]], dtype=torch.bool)
+    partner_unit = torch.tensor([[[-1]]], dtype=torch.long)
+    progress = torch.tensor([1.3], dtype=torch.float32)
+    towards_payload_progress = torch.tensor([-0.5], dtype=torch.float32)
+
+    (
+        _new_progress,
+        new_towards_payload_progress,
+        progress_reward,
+        forward_reward,
+        towards_payload_reward,
+        payload_x_penalty,
+        _guidance_reward,
+    ) = _compute_payload_plane_reward_kernel(
+        unit_xy,
+        payload_position,
+        stable_mask,
+        units_active_mask,
+        partner_unit,
+        progress,
+        towards_payload_progress,
+        3.0,
+        1.0,
+        float("inf"),
+        0.3,
+        2.0,
+        0.2,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        1.0,
+    )
+
+    assert torch.allclose(new_towards_payload_progress, torch.tensor([-0.0]))
+    assert torch.allclose(towards_payload_reward, torch.tensor([3.0]))
+    assert torch.allclose(forward_reward, torch.zeros_like(forward_reward))
+    assert torch.allclose(payload_x_penalty, torch.zeros_like(payload_x_penalty))
+    assert torch.allclose(progress_reward, torch.tensor([3.0]))
 
 
 def test_payload_plane_forward_reward_cap_is_applied_in_mjw_runtime() -> None:
@@ -232,6 +336,9 @@ def test_payload_plane_forward_reward_cap_is_applied_in_mjw_runtime() -> None:
         progress_reward_weight=1.0,
         forward_reward_weight=1.0,
         forward_reward_max_y=0.5,
+        payload_radius=0.2,
+        towards_payload_reward_weight=0.0,
+        towards_payload_goal_radius=0.2,
         payload_centering_penalty_weight=0.0,
         payload_centering_penalty_power=1.0,
         payload_centering_tolerance=0.0,
@@ -241,7 +348,10 @@ def test_payload_plane_forward_reward_cap_is_applied_in_mjw_runtime() -> None:
     runtime.payload_position = torch.zeros((1, 3), device=device, dtype=torch.float32)
     runtime._global_obs = torch.zeros((1, 9), device=device, dtype=torch.float32)
     runtime._payload_qpos_indices = torch.arange(7, device=device, dtype=torch.long)
+    runtime._unit_qpos_adr = torch.tensor([0], device=device, dtype=torch.long)
+    runtime._xy_offsets = torch.tensor([0, 1], device=device, dtype=torch.long)
     runtime.progress = torch.tensor([0.45], device=device, dtype=torch.float32)
+    runtime.towards_payload_progress = torch.tensor([0.0], device=device, dtype=torch.float32)
     runtime._reward_kernel = _compute_payload_plane_reward_kernel
 
     first = runtime.compute_step_rewards(stable_mask=torch.tensor([True], device=device, dtype=torch.bool))
@@ -291,6 +401,14 @@ def test_payload_plane_presets_expose_payload_pose_global_obs_in_both_backends()
         mj_scenario.payload_centering_tolerance,
         PAYLOAD_PLANE_SCENARIO_KWARGS["payload_centering_tolerance"],
     )
+    assert np.isclose(
+        mj_scenario.towards_payload_reward_weight,
+        PAYLOAD_PLANE_SCENARIO_KWARGS["towards_payload_reward_weight"],
+    )
+    assert np.isclose(
+        mj_scenario.towards_payload_goal_radius,
+        PAYLOAD_PLANE_SCENARIO_KWARGS["towards_payload_goal_radius"],
+    )
     assert mj_scenario.payload_shape == PAYLOAD_PLANE_SCENARIO_KWARGS["payload_shape"]
     assert mjw_scenario.get_single_observation_space()["global_obs"].shape == (9,)
     assert mjw_scenario.get_single_observation_space()["hidden_global_vars"].shape == (0,)
@@ -301,6 +419,14 @@ def test_payload_plane_presets_expose_payload_pose_global_obs_in_both_backends()
     assert np.isclose(
         mjw_scenario.payload_centering_tolerance,
         PAYLOAD_PLANE_SCENARIO_KWARGS["payload_centering_tolerance"],
+    )
+    assert np.isclose(
+        mjw_scenario.towards_payload_reward_weight,
+        PAYLOAD_PLANE_SCENARIO_KWARGS["towards_payload_reward_weight"],
+    )
+    assert np.isclose(
+        mjw_scenario.towards_payload_goal_radius,
+        PAYLOAD_PLANE_SCENARIO_KWARGS["towards_payload_goal_radius"],
     )
     assert mjw_scenario.payload_shape == PAYLOAD_PLANE_SCENARIO_KWARGS["payload_shape"]
 

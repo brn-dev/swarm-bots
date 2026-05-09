@@ -34,6 +34,8 @@ class PayloadPlaneScenario(BaseScenario):
         progress_reward_weight: float = 1.0,
         forward_reward_weight: float = 1.0,
         forward_reward_max_y: float | None = None,
+        towards_payload_reward_weight: float = 1.0,
+        towards_payload_goal_radius: float | None = None,
         payload_centering_penalty_weight: float = 1.0,
         payload_centering_penalty_power: float = 1.0,
         payload_centering_tolerance: float = 0.0,
@@ -69,6 +71,12 @@ class PayloadPlaneScenario(BaseScenario):
 
         self.forward_reward_weight = float(forward_reward_weight)
         self.forward_reward_max_y = None if forward_reward_max_y is None else float(forward_reward_max_y)
+        self.towards_payload_reward_weight = float(towards_payload_reward_weight)
+        self.towards_payload_goal_radius = (
+            self.payload_radius if towards_payload_goal_radius is None else float(towards_payload_goal_radius)
+        )
+        if self.towards_payload_goal_radius < 0.0:
+            raise ValueError(f"Expected towards_payload_goal_radius >= 0, got {self.towards_payload_goal_radius}")
         self.payload_centering_penalty_weight = float(payload_centering_penalty_weight)
         if self.payload_centering_penalty_weight < 0.0:
             raise ValueError(
@@ -131,6 +139,8 @@ class PayloadPlaneScenario(BaseScenario):
                 "payload_offset_y": self.payload_offset_y,
                 "forward_reward_weight": self.forward_reward_weight,
                 "forward_reward_max_y": self.forward_reward_max_y,
+                "towards_payload_reward_weight": self.towards_payload_reward_weight,
+                "towards_payload_goal_radius": self.towards_payload_goal_radius,
                 "payload_centering_penalty_weight": self.payload_centering_penalty_weight,
                 "payload_centering_penalty_power": self.payload_centering_penalty_power,
                 "payload_centering_tolerance": self.payload_centering_tolerance,
@@ -198,6 +208,7 @@ class PayloadPlaneScenario(BaseScenario):
             self.settle_reset(model, data, state)
 
         state["progress"] = self._compute_payload_progress_baseline(data)
+        state["towards_payload_progress"] = self._compute_towards_payload_progress_baseline(data, state)
         return state, connections
 
     def get_obs(
@@ -222,10 +233,12 @@ class PayloadPlaneScenario(BaseScenario):
         state["progress"] = new_progress
 
         forward_reward = new_progress - old_progress
+        towards_payload_reward = self._compute_towards_payload_reward(data, state)
         payload_x_penalty = self._compute_payload_x_penalty(data)
-        progress_reward = (forward_reward * self.forward_reward_weight) + payload_x_penalty
+        progress_reward = (forward_reward * self.forward_reward_weight) + towards_payload_reward + payload_x_penalty
 
         state["forward_reward"] = forward_reward
+        state["towards_payload_reward"] = towards_payload_reward
         state["payload_x_penalty"] = payload_x_penalty
         state["progress_reward"] = progress_reward
         return progress_reward
@@ -244,6 +257,7 @@ class PayloadPlaneScenario(BaseScenario):
 
         self.compute_progress_reward(data, state)
         forward_reward = state["forward_reward"]
+        towards_payload_reward = state["towards_payload_reward"]
         payload_x_penalty = state["payload_x_penalty"]
         progress_reward = state["progress_reward"]
 
@@ -253,15 +267,18 @@ class PayloadPlaneScenario(BaseScenario):
         progress_reward_weight = self.reward_weights["progress_reward_weight"]
         weighted_progress_reward = progress_reward * progress_reward_weight
         weighted_forward_reward = forward_reward * self.forward_reward_weight * progress_reward_weight
+        weighted_towards_payload_reward = towards_payload_reward * progress_reward_weight
         weighted_payload_x_penalty = payload_x_penalty * progress_reward_weight
         weighted_guidance_reward = guidance_reward * self.reward_weights["guidance_reward_weight"]
         state["weighted_progress_reward"] = weighted_progress_reward
         state["weighted_forward_reward"] = weighted_forward_reward
         state["weighted_forward_progress_reward"] = weighted_forward_reward
+        state["weighted_towards_payload_reward"] = weighted_towards_payload_reward
         state["weighted_payload_x_penalty"] = weighted_payload_x_penalty
         state["weighted_guidance_reward"] = weighted_guidance_reward
         state["reward_terms"] = {
             "forward": weighted_forward_reward,
+            "towards_payload": weighted_towards_payload_reward,
             "payload_x": weighted_payload_x_penalty,
             "guidance": weighted_guidance_reward,
         }
@@ -289,6 +306,33 @@ class PayloadPlaneScenario(BaseScenario):
         if self.forward_reward_max_y is not None:
             payload_y = min(payload_y, self.forward_reward_max_y)
         return payload_y
+
+    def _compute_towards_payload_reward(self, data: mujoco.MjData, state: dict) -> float:
+        if self.towards_payload_reward_weight == 0.0:
+            return 0.0
+
+        old_progress = state["towards_payload_progress"]
+        new_progress = self._compute_towards_payload_progress_baseline(data, state)
+        state["towards_payload_progress"] = new_progress
+        return (new_progress - old_progress) * self.towards_payload_reward_weight
+
+    def _compute_towards_payload_progress_baseline(self, data: mujoco.MjData, state: dict) -> float:
+        payload_position = self._get_payload_position(data)
+        virtual_goal_position = np.asarray(payload_position[:2], dtype=float).copy()
+        virtual_goal_position[1] -= self.payload_radius
+        unit_xy = np.asarray(data.qpos[self._qpos_indices[:, :2]], dtype=float)
+        distance_to_goal = np.linalg.norm(unit_xy - virtual_goal_position[np.newaxis, :], axis=1)
+        remaining_distance = np.maximum(distance_to_goal - self.towards_payload_goal_radius, 0.0)
+
+        units_active_mask = state.get("units_active_mask")
+        if units_active_mask is None:
+            return -float(remaining_distance.mean())
+
+        active_mask = np.asarray(units_active_mask, dtype=bool)
+        active_units_count = int(active_mask.sum())
+        if active_units_count == 0:
+            return 0.0
+        return -float(remaining_distance[active_mask].mean())
 
     def _compute_payload_x_penalty(self, data: mujoco.MjData) -> float:
         if self.payload_centering_penalty_weight == 0.0:

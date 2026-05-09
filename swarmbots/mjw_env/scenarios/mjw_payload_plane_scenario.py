@@ -66,6 +66,8 @@ class MJWPayloadPlaneScenario(BaseMJWScenario):
     payload_centering_penalty_power: float
     payload_centering_tolerance: float
     forward_reward_max_y: float | None = None
+    towards_payload_reward_weight: float = 1.0
+    towards_payload_goal_radius: float | None = None
     seed: int | None = None
     compile_reward_kernel: bool = False
     reward_kernel_compile_mode: str = "default"
@@ -111,6 +113,12 @@ class MJWPayloadPlaneScenario(BaseMJWScenario):
             )
         if self.forward_reward_max_y is not None:
             self.forward_reward_max_y = float(self.forward_reward_max_y)
+        self.towards_payload_reward_weight = float(self.towards_payload_reward_weight)
+        self.towards_payload_goal_radius = (
+            self.payload_radius if self.towards_payload_goal_radius is None else float(self.towards_payload_goal_radius)
+        )
+        if self.towards_payload_goal_radius < 0.0:
+            raise ValueError(f"Expected towards_payload_goal_radius >= 0, got {self.towards_payload_goal_radius}")
         if self.physics_nconmax is not None and self.physics_nconmax <= 0:
             raise ValueError(f"Expected physics_nconmax > 0, got {self.physics_nconmax}")
         if self.physics_njmax is not None and self.physics_njmax <= 0:
@@ -152,6 +160,8 @@ class MJWPayloadPlaneScenario(BaseMJWScenario):
             "payload_centering_tolerance": self.payload_centering_tolerance,
             "forward_reward_weight": self.forward_reward_weight,
             "forward_reward_max_y": self.forward_reward_max_y,
+            "towards_payload_reward_weight": self.towards_payload_reward_weight,
+            "towards_payload_goal_radius": self.towards_payload_goal_radius,
             "compile_reward_kernel": self.compile_reward_kernel,
             "reward_kernel_compile_mode": self.reward_kernel_compile_mode,
             "physics_nconmax": self.physics_nconmax,
