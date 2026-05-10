@@ -270,6 +270,35 @@ class _EnvProxy:
         return getattr(self.env, item)
 
 
+class _ObsReuseProxy:
+    def __init__(self, env: SwarmBotsLearnEnvWrapper) -> None:
+        self.env = env
+        self._shared_obs: dict[str, torch.Tensor] | None = None
+
+    def reset(self, **kwargs):
+        obs, info = self.env.reset(**kwargs)
+        self._shared_obs = obs
+        return obs, info
+
+    def step(self, actions):
+        next_obs, rewards, terminations, truncations, infos = self.env.step(actions)
+        if self._shared_obs is None:
+            raise AssertionError("reset() must be called before step()")
+
+        for key, value in next_obs.items():
+            self._shared_obs[key].copy_(value)
+        return self._shared_obs, rewards, terminations, truncations, infos
+
+    def close(self) -> None:
+        self.env.close()
+
+    def _obs_to_torch(self, obs):
+        return self.env._obs_to_torch(obs)
+
+    def __getattr__(self, item: str):
+        return getattr(self.env, item)
+
+
 def _to_cpu(tensor: torch.Tensor) -> torch.Tensor:
     return tensor.detach().cpu()
 
@@ -794,6 +823,26 @@ class SameStepPipelineTests(unittest.TestCase):
             self.assertEqual(episodes[0].local_obs.shape[0], 2)
             self.assertTrue(episodes[0].is_true_episode_start)
             self.assertFalse(bool(rollout_state.episode_start_mask[0].item()))
+        finally:
+            env.close()
+
+    def test_collect_steps_snapshots_obs_before_step_when_env_reuses_buffers(self) -> None:
+        base_env = _make_scripted_env((1, (2,), "truncate"))
+        env = _ObsReuseProxy(base_env)
+        try:
+            policy = _ConstantValuePolicy(action_dim=env.action_space.total_agent_action_dim)
+            buffer = _make_buffer(env)
+            episodes, _episode_infos, _metrics, _rollout_state = collect_steps(
+                env=env,
+                policy=policy,
+                buffer=buffer,
+                n_steps=2,
+            )
+
+            self.assertEqual(len(episodes), 1)
+            episode = episodes[0]
+            self.assertTrue(torch.equal(_to_cpu(episode.local_obs[:, 0, 0]), torch.tensor([1100.0, 1101.0])))
+            self.assertEqual(_first_obs_value(episode.final_local_obs), 1102.0)
         finally:
             env.close()
 

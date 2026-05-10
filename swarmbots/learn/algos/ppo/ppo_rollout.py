@@ -220,6 +220,10 @@ def _evaluate_values(
     return values.masked_fill(terminated_mask, 0.0)
 
 
+def _snapshot_obs(obs: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+    return {key: value.clone() for key, value in obs.items()}
+
+
 def _collect_rollout_step(
         *,
         env: BaseLearnEnvWrapper,
@@ -236,7 +240,8 @@ def _collect_rollout_step(
         gsde_reset_interval: int,
         gsde_reset_prob: float,
 ) -> tuple[dict[str, torch.Tensor], torch.Tensor, torch.Tensor | None, int]:
-    local_obs = obs["local_obs"]
+    obs_snapshot = _snapshot_obs(obs)
+    local_obs = obs_snapshot["local_obs"]
     batch_shape = tuple(local_obs.shape[:-1])
     step_reset_mask = _build_gsde_step_reset_mask(
         gsde_enabled=gsde_enabled,
@@ -260,11 +265,11 @@ def _collect_rollout_step(
 
     with timers.policy_forward_timer:
         actions, log_probs, values = policy(
-            obs["local_obs"],
-            obs["global_obs"],
-            hidden_local_vars=obs["hidden_local_vars"],
-            hidden_global_vars=obs["hidden_global_vars"],
-            agent_mask=obs.get("agent_mask", None),
+            obs_snapshot["local_obs"],
+            obs_snapshot["global_obs"],
+            hidden_local_vars=obs_snapshot["hidden_local_vars"],
+            hidden_global_vars=obs_snapshot["hidden_global_vars"],
+            agent_mask=obs_snapshot.get("agent_mask", None),
             previous_actions=previous_actions,
         )
     timers.policy_forward_timings.append(timers.policy_forward_timer.get_duration())
@@ -295,11 +300,11 @@ def _collect_rollout_step(
 
     with timers.buffer_add_timer:
         buffer.add(
-            local_obs=obs["local_obs"],
-            global_obs=obs["global_obs"],
-            hidden_local_vars=obs["hidden_local_vars"],
-            hidden_global_vars=obs["hidden_global_vars"],
-            agent_mask=obs.get("agent_mask", None),
+            local_obs=obs_snapshot["local_obs"],
+            global_obs=obs_snapshot["global_obs"],
+            hidden_local_vars=obs_snapshot["hidden_local_vars"],
+            hidden_global_vars=obs_snapshot["hidden_global_vars"],
+            agent_mask=obs_snapshot.get("agent_mask", None),
             actions=actions,
             rewards=rewards,
             log_probs=log_probs,
