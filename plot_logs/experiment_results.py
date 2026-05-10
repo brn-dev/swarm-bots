@@ -5,7 +5,7 @@ import csv
 import math
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Sequence
+from typing import Iterable, Mapping, Sequence
 
 import matplotlib
 import numpy as np
@@ -52,6 +52,7 @@ class ExperimentRunLog:
 @dataclass(slots=True)
 class ExperimentGroup:
     name: str
+    display_name: str
     runs: list[ExperimentRunLog]
 
 
@@ -138,6 +139,26 @@ def iter_group_log_files(group_dir: Path) -> Iterable[tuple[str, Path]]:
             yield run_dir.name, log_path
 
 
+def iter_source_log_files(source_path: Path) -> Iterable[tuple[str, Path]]:
+    if source_path.is_file():
+        if not is_supported_log_path(source_path):
+            raise ValueError(f"Unsupported log path: {source_path}")
+        yield source_path.parent.name, source_path
+        return
+
+    if not source_path.is_dir():
+        raise FileNotFoundError(source_path)
+
+    yield from iter_group_log_files(source_path)
+
+
+def resolve_source_path(source_path: Path, *, experiment_run_dir: Path) -> Path:
+    expanded_path = source_path.expanduser()
+    if expanded_path.is_absolute():
+        return expanded_path.resolve()
+    return (experiment_run_dir / expanded_path).resolve()
+
+
 def ordered_group_names(discovered_names: Iterable[str], group_order: Sequence[str] | None) -> list[str]:
     discovered = set(discovered_names)
     ordered: list[str] = []
@@ -195,6 +216,8 @@ def load_experiment_groups(
     *,
     group_order: Sequence[str] | None = None,
     x_column: str = DEFAULT_X_COLUMN,
+    display_name_overrides: Mapping[str, str] | None = None,
+    extra_group_sources: Mapping[str, Sequence[Path]] | None = None,
 ) -> list[ExperimentGroup]:
     experiment_run_dir = experiment_run_dir.expanduser().resolve()
     if not experiment_run_dir.is_dir():
@@ -206,8 +229,32 @@ def load_experiment_groups(
         if run_logs:
             grouped_logs[group_dir.name] = run_logs
 
+    if extra_group_sources is not None:
+        for group_name, source_paths in extra_group_sources.items():
+            group_logs = grouped_logs.setdefault(group_name, [])
+            initial_group_log_count = len(group_logs)
+            seen_log_paths = {path.resolve() for _run_name, path in group_logs}
+            for source_path in source_paths:
+                resolved_source_path = resolve_source_path(source_path, experiment_run_dir=experiment_run_dir)
+                for run_name, log_path in iter_source_log_files(resolved_source_path):
+                    resolved_log_path = log_path.resolve()
+                    if resolved_log_path in seen_log_paths:
+                        continue
+                    group_logs.append((run_name, log_path))
+                    seen_log_paths.add(resolved_log_path)
+            if len(group_logs) == initial_group_log_count == 0:
+                grouped_logs.pop(group_name, None)
+                continue
+            group_logs.sort(key=lambda item: (item[0], item[1].as_posix()))
+
     if not grouped_logs:
         raise ValueError(f"No run logs found under {experiment_run_dir}")
+
+    if display_name_overrides is not None:
+        unknown_names = sorted(name for name in display_name_overrides if name not in grouped_logs)
+        if unknown_names:
+            unknown_names_display = ", ".join(unknown_names)
+            raise ValueError(f"display_name_overrides contains unknown group names: {unknown_names_display}")
 
     return_columns = (EP_REW_EMA_COLUMN,)
     groups: list[ExperimentGroup] = []
@@ -222,12 +269,20 @@ def load_experiment_groups(
             )
             for run_name, path in grouped_logs[group_name]
         ]
-        groups.append(ExperimentGroup(name=group_name, runs=runs))
+        groups.append(
+            ExperimentGroup(
+                name=group_name,
+                display_name=display_name_overrides.get(group_name, group_name)
+                if display_name_overrides is not None
+                else group_name,
+                runs=runs,
+            )
+        )
     return groups
 
 
 def group_label(group: ExperimentGroup) -> str:
-    return f"{group.name} (n={len(group.runs)})"
+    return f"{group.display_name} (n={len(group.runs)})"
 
 
 def group_colors(groups: Sequence[ExperimentGroup]) -> dict[str, tuple[float, float, float, float]]:
@@ -411,11 +466,15 @@ def plot_experiment_results(
     x_column: str = DEFAULT_X_COLUMN,
     dpi: int = DEFAULT_DPI,
     theoretical_maximum: float | None = None,
+    display_name_overrides: Mapping[str, str] | None = None,
+    extra_group_sources: Mapping[str, Sequence[Path]] | None = None,
 ) -> ExperimentPlotResult:
     groups = load_experiment_groups(
         experiment_run_dir,
         group_order=group_order,
         x_column=x_column,
+        display_name_overrides=display_name_overrides,
+        extra_group_sources=extra_group_sources,
     )
     output_dir = output_dir.expanduser().resolve()
     output_paths = [

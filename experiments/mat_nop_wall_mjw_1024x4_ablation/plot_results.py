@@ -18,6 +18,17 @@ GROUP_ORDER = (
     "lr_beta_nop",
     "sticky_lr_beta_no_nop",
 )
+DISPLAY_NAME_OVERRIDES = {
+    "sticky_lr_beta_nop": "Sticky L/R Beta + NOP",
+    "gsde_nop": "gSDE + NOP",
+    "lr_beta_nop": "L/R Beta + NOP",
+    "sticky_lr_beta_no_nop": "Sticky L/R Beta, no NOP",
+}
+EXTRA_GROUP_SOURCES = {
+    "sticky_lr_beta_nop": (
+        REPO_ROOT / "runs" / "mat_nop_swarm_bots_wall_mjw_batch_env_sweep" / "1024x4",
+    ),
+}
 THEORETICAL_MAXIMUM = 10.5
 
 
@@ -27,6 +38,8 @@ def main() -> int:
         OUTPUT_DIR,
         group_order=GROUP_ORDER,
         theoretical_maximum=THEORETICAL_MAXIMUM,
+        display_name_overrides=DISPLAY_NAME_OVERRIDES,
+        extra_group_sources=EXTRA_GROUP_SOURCES,
     )
     for output_path in result.output_paths:
         print(output_path)
