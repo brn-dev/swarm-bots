@@ -10,14 +10,13 @@ if str(REPO_ROOT) not in sys.path:
 from plot_logs.experiment_results import plot_experiment_results
 
 
-EXPERIMENT_RUN_DIR = REPO_ROOT / "runs" / "mat_nop_swarm_bots_wall_mjw_batch_env_sweep"
+EXPERIMENT_RUN_DIR = REPO_ROOT / "runs" / "mat_nop_swarm_bots_wall_mjw_1024x4_ablation"
 OUTPUT_DIR = Path(__file__).resolve().parent / "results"
 GROUP_ORDER = (
-    "1024x4",
-    "2048x4",
-    "1024x8",
-    "4096x4_virtual2",
-    "4096x4x12",
+    "sticky_lr_beta_nop",
+    "gsde_nop",
+    "lr_beta_nop",
+    "sticky_lr_beta_no_nop",
 )
 THEORETICAL_MAXIMUM = 10.5
 
