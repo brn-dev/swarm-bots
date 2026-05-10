@@ -25,6 +25,7 @@ Agents use this file for durable codebase notes. Keep only architecture, invaria
 - `PPO.train()` always uses `policy.make_sampler(episodes)`.
 - `PPO.compute_loss()` always uses `policy.evaluate_actions(batch=...)`.
 - `MATPolicy` is the main transformer policy; `PPOPolicy` is the plain MLP policy.
+- `MATOrigPolicy` is the reference-style MAT variant. Its actor uses the original shifted-action decoder pattern (masked self-attention over previous-agent actions, then masked attention with encoder reps as queries), but its critic pools encoder-side per-agent values down to one scalar so PPO still fits the local pipeline.
 - World-model integration is wrapper-first, not algorithm-specific:
   - `NextObsPredWrapper(BasePPOPolicy, NextObsPredMixin)`
   - `SPRWrapper(BasePPOPolicy, SPRMixin)`
@@ -38,6 +39,9 @@ Agents use this file for durable codebase notes. Keep only architecture, invaria
 - PPO rollout bootstrap should use a value-only path, not full `policy(..., deterministic=True)`.
 - Mutable scheduler-driven action-dist scalars must live in tensors/buffers, not Python floats.
 - For sticky distributions, keep `requires_previous_actions()` structurally stable even when stickiness anneals to `0`.
+- `MATPolicy` and `MATOrigPolicy` both assume `agent_mask` is a contiguous true-prefix. `MATOrigPolicy` depends on that structurally because it shifts previous-agent actions by index.
+- `MATOrigPolicy` now has the same compile toggles as `MATPolicy`; full action-generation/eval callables only compile when the wrapped action distributions are compile-friendly.
+- `MATOrigPolicy` rollout and `evaluate_actions()` must both zero log-probs for inactive agents. If only rollout masks them, PPO comparisons become misleading and can look like a KL bug.
 
 ## Recurrent / WM Gotchas
 - `RMATPolicy` keeps rollout-time temporal state inside the policy.
@@ -55,6 +59,7 @@ Agents use this file for durable codebase notes. Keep only architecture, invaria
 - Done-step bootstrap observations come from `infos["final_obs"]`, not the reset observation batch.
 - Raw Gymnasium done-step stats may arrive under `infos["final_info"]`; rollout code must unwrap them when later wrappers did not inject stats.
 - Learn-side wrappers must transform `final_obs` too. `TorchFeatureWiseObsNormWrapper` must not update RMS twice, and `TorchTransitionObsWrapper` must stack transition features onto single-env `final_obs`.
+- Env observations are semantic step outputs, not immutable storage. Async/shared-memory vector envs, GPU envs, and wrappers with `copy=False` may reuse/mutate backing buffers after the next env call. Anything persisted across `env.step()` boundaries (rollout storage, delayed bootstrap/final-obs handling, debugging probes) must snapshot at the consumer boundary.
 - `collect_steps()` may emit rollout segments that start mid true episode. Use `PPOEpisode.is_true_episode_start`; do not infer from chunk position.
 - Step-rollout accumulator capacity is bounded by rollout segment length, not true env episode length.
 

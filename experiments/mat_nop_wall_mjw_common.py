@@ -24,6 +24,9 @@ from swarmbots.learn.action_dists.sticky_left_right_beta_action_dist import Stic
 from swarmbots.learn.algos.mat.mat_decoder import MATDecoderConfig, MATDecoderSelfAttentionMode
 from swarmbots.learn.algos.mat.mat_encoder import MATEncoderConfig
 from swarmbots.learn.algos.mat.mat_policy import MATCriticConfig, MATPolicy, MATPolicyConfig
+from swarmbots.learn.algos.mat_orig.mat_orig_decoder import MATOrigDecoderConfig
+from swarmbots.learn.algos.mat_orig.mat_orig_encoder import MATOrigEncoderConfig
+from swarmbots.learn.algos.mat_orig.mat_orig_policy import MATOrigCriticConfig, MATOrigPolicy, MATOrigPolicyConfig
 from swarmbots.learn.algos.ppo.ppo import AutomaticLearningRate, PPO, StepsRolloutMode
 from swarmbots.learn.algos.ppo.ppo_policy import PopArtConfig
 from swarmbots.learn.algos.ppo.ppo_sampler import PPOSamplerConfig
@@ -45,6 +48,7 @@ from swarmbots.utils.recording_schedule import DEFAULT_LIVE_RECORDING_SCHEDULE, 
 from swarmbots.utils.run_paths import get_run_id_from_checkpoint_path
 
 ContinuousActionDistVariant = Literal["sticky_lr_beta", "lr_beta", "gsde"]
+PolicyVariant = Literal["mat", "mat_orig"]
 
 
 def configure_float32_matmul_precision() -> None:
@@ -201,6 +205,7 @@ def run_experiment(
         virtual_mini_batches: int = 1,
         n_epochs: int = 8,
         continuous_action_dist: ContinuousActionDistVariant = "sticky_lr_beta",
+        policy_variant: PolicyVariant = "mat",
         use_nop: bool = True,
         experiment_run_name: str = "mat_nop_swarm_bots_wall_mjw_batch_env_sweep",
 ) -> None:
@@ -255,12 +260,15 @@ def run_experiment(
 
     logger.info(f"{rollout_device = }")
     logger.info(f"{train_device = }")
-    logger.info(
+    variant_log_message = (
         f"MJW batch env sweep variant {variant_name}: "
         f"{num_envs} envs x {rollout_steps_per_env} steps/env = {rollout_samples}, "
         f"virtual_mini_batches={virtual_mini_batches}, n_epochs={n_epochs}, "
         f"continuous_action_dist={continuous_action_dist}, use_nop={use_nop}"
     )
+    if policy_variant != "mat":
+        variant_log_message = f"{variant_log_message}, policy_variant={policy_variant}"
+    logger.info(variant_log_message)
     logger.info("MJW wall training uses one batched GPU env directly; worker-pool vectorization is disabled.")
     logger.info(
         "MJW wall training supports live exact-state recording via the `record` command "
@@ -334,59 +342,26 @@ def run_experiment(
     transition_model_nhead = 4
 
     print("Initializing Policy...")
-    mat_policy = MATPolicy(
+    base_policy = _make_base_policy(
         env=env,
-        config=MATPolicyConfig(
-            encoder_config=MATEncoderConfig(
-                d_model=enc_d_model,
-                nhead=enc_nhead,
-                num_layers=2,
-                dim_feedforward=enc_d_model * 2,
-                local_obs_encoder_hidden_dims=[enc_d_model, enc_d_model],
-            ),
-            decoder_config=MATDecoderConfig(
-                d_model=dec_d_model,
-                nhead=dec_nhead,
-                num_layers=2,
-                dim_feedforward=dec_d_model * 2,
-                query_encoder_hidden_dims=[2 * dec_d_model],
-                context_encoder_hidden_dims=[2 * dec_d_model],
-                memory_dims=None,
-                self_attention_mode=MATDecoderSelfAttentionMode.FULL_AUTOREGRESSIVE,
-            ),
-            critic_config=MATCriticConfig(
-                n_local_projection_hidden_layers=2,
-                n_value_regressor_hidden_layers=1,
-                use_popart=use_popart,
-                popart_config=PopArtConfig(
-                    beta=popart_beta,
-                    init_sigma=popart_init_sigma,
-                ),
-            ),
-            dropout=0.0,
-            act_fn_cls=nn.GELU,
-            continuous_config=make_continuous_config(
-                variant=continuous_action_dist,
-                initial_stickiness=initial_stickiness,
-                gsde_init_stds=gsde_init_stds,
-            ),
-            bernoulli_config=BernoulliConfig(
-                initial_prob=0.8,
-                ent_loss_coef=1e-3,
-                ent_loss_config=EntropyLossConfig(
-                    agent_actions_reduction=AgentActionsReduction.SUM,
-                    metrics_reduction=AgentActionsReduction.MEAN,
-                ),
-            ),
-            max_agents=20,
-            compile_modules=compile_policy_modules,
-            compile_mode=policy_compile_mode,
-        ),
+        policy_variant=policy_variant,
+        enc_d_model=enc_d_model,
+        enc_nhead=enc_nhead,
+        dec_d_model=dec_d_model,
+        dec_nhead=dec_nhead,
+        use_popart=use_popart,
+        popart_beta=popart_beta,
+        popart_init_sigma=popart_init_sigma,
+        compile_policy_modules=compile_policy_modules,
+        policy_compile_mode=policy_compile_mode,
+        continuous_action_dist=continuous_action_dist,
+        initial_stickiness=initial_stickiness,
+        gsde_init_stds=gsde_init_stds,
     )
-    policy = mat_policy
+    policy = base_policy
     if use_nop:
         policy = NextObsPredWrapper(
-            policy=mat_policy,
+            policy=base_policy,
             world_model_config=NOPWorldModelConfig(
                 n_agents=env.n_agents,
                 local_latent_dim=enc_d_model,
@@ -550,6 +525,29 @@ def run_experiment(
         ]
     )
 
+    extra_run_metadata = {
+        "load_path": load_path,
+        "env_settings": env_settings,
+        "script": entrypoint_path.read_text(encoding="utf-8"),
+        "shared_experiment_script": Path(__file__).read_text(encoding="utf-8"),
+        "base_script": (REPO_ROOT / "scripts" / "run_mat_nop_wall_mjw.py").read_text(encoding="utf-8"),
+        "script_scenario_presets": Path(mjw_scenario_presets.__file__).read_text(encoding="utf-8"),
+        "backend": "mjw_env",
+        "recording_enabled": "live_mjw_exact_state",
+        "rollout_samples": rollout_samples,
+        "rollout_steps_per_env": rollout_steps_per_env,
+        "virtual_mini_batches": virtual_mini_batches,
+        "n_epochs": n_epochs,
+        "num_envs": num_envs,
+        "variant_name": variant_name,
+        "continuous_action_dist": continuous_action_dist,
+        "use_nop": use_nop,
+        "experiment_run_name": experiment_run_name,
+        "settle_initial_reset": True,
+    }
+    if policy_variant != "mat":
+        extra_run_metadata["policy_variant"] = policy_variant
+
     run_with_discord_notification(
         run_name=f"{experiment_run_name}/{variant_name}/{run_id}",
         run_dir=str(run_dir),
@@ -562,26 +560,7 @@ def run_experiment(
             save_interval=save_interval,
             save_optimizer=save_optimizer,
             best_rotation_n=3,
-            extra_run_metadata={
-                "load_path": load_path,
-                "env_settings": env_settings,
-                "script": entrypoint_path.read_text(encoding="utf-8"),
-                "shared_experiment_script": Path(__file__).read_text(encoding="utf-8"),
-                "base_script": (REPO_ROOT / "scripts" / "run_mat_nop_wall_mjw.py").read_text(encoding="utf-8"),
-                "script_scenario_presets": Path(mjw_scenario_presets.__file__).read_text(encoding="utf-8"),
-                "backend": "mjw_env",
-                "recording_enabled": "live_mjw_exact_state",
-                "rollout_samples": rollout_samples,
-                "rollout_steps_per_env": rollout_steps_per_env,
-                "virtual_mini_batches": virtual_mini_batches,
-                "n_epochs": n_epochs,
-                "num_envs": num_envs,
-                "variant_name": variant_name,
-                "continuous_action_dist": continuous_action_dist,
-                "use_nop": use_nop,
-                "experiment_run_name": experiment_run_name,
-                "settle_initial_reset": True,
-            },
+            extra_run_metadata=extra_run_metadata,
             logging_console_keys=logging_console_keys,
             post_iteration_hooks=[scheduled_recording_hook],
         ),
@@ -589,3 +568,106 @@ def run_experiment(
 
     print("Training Finished.")
     env.close()
+
+
+def _make_base_policy(
+        *,
+        env: Any,
+        policy_variant: PolicyVariant,
+        enc_d_model: int,
+        enc_nhead: int,
+        dec_d_model: int,
+        dec_nhead: int,
+        use_popart: bool,
+        popart_beta: float,
+        popart_init_sigma: float,
+        compile_policy_modules: bool,
+        policy_compile_mode: str,
+        continuous_action_dist: ContinuousActionDistVariant,
+        initial_stickiness: float,
+        gsde_init_stds: list[float],
+) -> MATPolicy | MATOrigPolicy:
+    continuous_config = make_continuous_config(
+        variant=continuous_action_dist,
+        initial_stickiness=initial_stickiness,
+        gsde_init_stds=gsde_init_stds,
+    )
+    bernoulli_config = BernoulliConfig(
+        initial_prob=0.8,
+        ent_loss_coef=1e-3,
+        ent_loss_config=EntropyLossConfig(
+            agent_actions_reduction=AgentActionsReduction.SUM,
+            metrics_reduction=AgentActionsReduction.MEAN,
+        ),
+    )
+    popart_config = PopArtConfig(
+        beta=popart_beta,
+        init_sigma=popart_init_sigma,
+    )
+
+    if policy_variant == "mat":
+        return MATPolicy(
+            env=env,
+            config=MATPolicyConfig(
+                encoder_config=MATEncoderConfig(
+                    d_model=enc_d_model,
+                    nhead=enc_nhead,
+                    num_layers=2,
+                    dim_feedforward=enc_d_model * 2,
+                    local_obs_encoder_hidden_dims=[enc_d_model, enc_d_model],
+                ),
+                decoder_config=MATDecoderConfig(
+                    d_model=dec_d_model,
+                    nhead=dec_nhead,
+                    num_layers=2,
+                    dim_feedforward=dec_d_model * 2,
+                    query_encoder_hidden_dims=[2 * dec_d_model],
+                    context_encoder_hidden_dims=[2 * dec_d_model],
+                    memory_dims=None,
+                    self_attention_mode=MATDecoderSelfAttentionMode.FULL_AUTOREGRESSIVE,
+                ),
+                critic_config=MATCriticConfig(
+                    n_local_projection_hidden_layers=2,
+                    n_value_regressor_hidden_layers=1,
+                    use_popart=use_popart,
+                    popart_config=popart_config,
+                ),
+                dropout=0.0,
+                act_fn_cls=nn.GELU,
+                continuous_config=continuous_config,
+                bernoulli_config=bernoulli_config,
+                max_agents=20,
+                compile_modules=compile_policy_modules,
+                compile_mode=policy_compile_mode,
+            ),
+        )
+
+    if policy_variant == "mat_orig":
+        return MATOrigPolicy(
+            env=env,
+            config=MATOrigPolicyConfig(
+                encoder_config=MATOrigEncoderConfig(
+                    d_model=enc_d_model,
+                    nhead=enc_nhead,
+                    num_layers=2,
+                ),
+                decoder_config=MATOrigDecoderConfig(
+                    d_model=enc_d_model,
+                    nhead=enc_nhead,
+                    num_layers=2,
+                    latent_pi_dim=enc_d_model,
+                ),
+                critic_config=MATOrigCriticConfig(
+                    use_popart=use_popart,
+                    popart_config=popart_config,
+                    pool_mode="mean",
+                ),
+                continuous_config=continuous_config,
+                bernoulli_config=bernoulli_config,
+                max_agents=20,
+                compile_modules=compile_policy_modules,
+                compile_mode=policy_compile_mode,
+            ),
+        )
+
+    raise ValueError(f"Unknown policy_variant: {policy_variant}")
