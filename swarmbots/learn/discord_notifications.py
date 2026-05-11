@@ -169,10 +169,10 @@ def _format_training_run_finished_message(
 ) -> str:
     lines = [
         f"{run_name} {status}",
-        f"run_dir: {Path(run_dir).as_posix()}",
+        # f"run_dir: {Path(run_dir).as_posix()}",
         f"timesteps: {algorithm.n_total_timesteps:,} / {total_timesteps:,}",
-        f"iterations: {algorithm.n_total_iterations:,}",
-        f"updates: {algorithm.n_total_updates:,}",
+#         f"iterations: {algorithm.n_total_iterations:,}",
+#         f"updates: {algorithm.n_total_updates:,}",
     ]
     best_return_ema = getattr(algorithm, "_best_return_ema", None)
     if best_return_ema is not None:
