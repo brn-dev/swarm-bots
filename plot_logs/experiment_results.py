@@ -250,11 +250,11 @@ def load_experiment_groups(
     if not grouped_logs:
         raise ValueError(f"No run logs found under {experiment_run_dir}")
 
-    if display_name_overrides is not None:
-        unknown_names = sorted(name for name in display_name_overrides if name not in grouped_logs)
-        if unknown_names:
-            unknown_names_display = ", ".join(unknown_names)
-            raise ValueError(f"display_name_overrides contains unknown group names: {unknown_names_display}")
+    # if display_name_overrides is not None:
+    #     unknown_names = sorted(name for name in display_name_overrides if name not in grouped_logs)
+    #     if unknown_names:
+    #         unknown_names_display = ", ".join(unknown_names)
+    #         raise ValueError(f"display_name_overrides contains unknown group names: {unknown_names_display}")
 
     return_columns = (EP_REW_EMA_COLUMN,)
     groups: list[ExperimentGroup] = []
