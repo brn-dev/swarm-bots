@@ -36,7 +36,7 @@ class RewardIndicatorWallScenario(ObstacleStreetScenario):
                 spec,
                 name=f"RewardWallPassThreshold_{threshold_idx}",
                 size=[self.side_wall_x, 0.016, 0.25],
-                rgba=[1.0, 0.0, 0.0, 0.5],
+                rgba=[0.35, 0.0, 0.45, 1.0],
             )
 
     @staticmethod
