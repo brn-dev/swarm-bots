@@ -24,11 +24,11 @@ DISPLAY_NAME_OVERRIDES = {
     "lr_beta_nop": "L/R Beta + NOP",
     "sticky_lr_beta_no_nop": "Sticky L/R Beta, no NOP",
 }
-# EXTRA_GROUP_SOURCES = {
-#     "sticky_lr_beta_nop": (
-#         REPO_ROOT / "runs" / ".buggy" / "mat_nop_swarm_bots_wall_mjw_batch_env_sweep" / "1024x4",
-#     ),
-# }
+EXTRA_GROUP_SOURCES = {
+    "sticky_lr_beta_nop": (
+        REPO_ROOT / "runs" / ".buggy" / "mat_nop_swarm_bots_wall_mjw_batch_env_sweep" / "1024x4",
+    ),
+}
 THEORETICAL_MAXIMUM = 10.5
 
 
