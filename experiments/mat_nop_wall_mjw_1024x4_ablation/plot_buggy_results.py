@@ -39,7 +39,7 @@ def main() -> int:
         group_order=GROUP_ORDER,
         theoretical_maximum=THEORETICAL_MAXIMUM,
         display_name_overrides=DISPLAY_NAME_OVERRIDES,
-#         extra_group_sources=EXTRA_GROUP_SOURCES,
+        extra_group_sources=EXTRA_GROUP_SOURCES,
     )
     for output_path in result.output_paths:
         print(output_path)
