@@ -111,6 +111,42 @@ class ObsIndicesTests(unittest.TestCase):
         self.assertEqual(obs_indices.global_scalar_indices, [0, 1, 2])
         self.assertEqual(obs_indices.global_quaternion_indices, [])
 
+    def test_move_to_dual_payload_adapter_normalizes_both_payload_positions(self) -> None:
+        obs_indices = build_obs_indices(
+            env_settings=_env_settings(
+                unit_types=["xy"],
+                include_connectors_xpos_in_obs=True,
+                include_connectors_xquat_in_obs=False,
+                quat_rot6d_representation=True,
+                scenario_overrides={"global_obs_adapter": "move_to_dual_payload", "num_payloads": 2},
+            ),
+            local_obs_dim=29,
+            global_obs_dim=18,
+            hidden_local_vars_dim=0,
+            hidden_global_vars_dim=0,
+        )
+
+        self.assertEqual(obs_indices.global_scalar_indices, [0, 1, 2, 9, 10, 11])
+        self.assertEqual(obs_indices.global_quaternion_indices, [])
+
+    def test_dual_payload_global_obs_normalizes_both_payload_positions(self) -> None:
+        obs_indices = build_obs_indices(
+            env_settings=_env_settings(
+                unit_types=["xy"],
+                include_connectors_xpos_in_obs=True,
+                include_connectors_xquat_in_obs=False,
+                quat_rot6d_representation=True,
+                scenario_overrides={"payload_shape": "box", "num_payloads": 2},
+            ),
+            local_obs_dim=29,
+            global_obs_dim=18,
+            hidden_local_vars_dim=0,
+            hidden_global_vars_dim=0,
+        )
+
+        self.assertEqual(obs_indices.global_scalar_indices, [0, 1, 2, 9, 10, 11])
+        self.assertEqual(obs_indices.global_quaternion_indices, [])
+
     def test_unknown_non_empty_global_obs_layout_must_be_added_explicitly(self) -> None:
         with self.assertRaisesRegex(ValueError, "Unsupported non-empty global_obs layout"):
             build_obs_indices(

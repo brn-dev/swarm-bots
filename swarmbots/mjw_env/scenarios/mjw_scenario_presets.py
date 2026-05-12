@@ -13,6 +13,7 @@ from swarmbots.mj_env.swarm.unit_config import (
     UNIT_CONFIG_TETRAHEDRON_ZX,
 )
 from swarmbots.mjw_env.scenarios.mjw_bridge_scenario import MJWBridgeScenario
+from swarmbots.mjw_env.scenarios.mjw_dual_payload_plane_scenario import MJWDualPayloadPlaneScenario
 from swarmbots.mjw_env.scenarios.mjw_move_to_scenario import MJWMoveToScenario
 from swarmbots.mjw_env.scenarios.mjw_obstacle_street_scenario import MJWObstacleStreetScenario
 from swarmbots.mjw_env.scenarios.mjw_payload_plane_scenario import MJWPayloadPlaneScenario
@@ -20,6 +21,7 @@ from swarmbots.mjw_env.swarm.mjw_homogeneous_swarm import MJWHomogeneousSwarm, M
 from swarmbots.scenario_presets.scenario_presets_kwargs import (
     BRIDGE_SCENARIO_KWARGS as SHARED_BRIDGE_SCENARIO_KWARGS,
     COMMON_SCENARIO_KWARGS,
+    DUAL_PAYLOAD_PLANE_SCENARIO_KWARGS as SHARED_DUAL_PAYLOAD_PLANE_SCENARIO_KWARGS,
     MOVE_TO_SCENARIO_KWARGS as SHARED_MOVE_TO_SCENARIO_KWARGS,
     PAYLOAD_PLANE_SCENARIO_KWARGS as SHARED_PAYLOAD_PLANE_SCENARIO_KWARGS,
     WALL_SCENARIO_KWARGS as SHARED_WALL_SCENARIO_KWARGS,
@@ -30,6 +32,7 @@ DEFAULT_KWARGS = make_scenario_kwargs(COMMON_SCENARIO_KWARGS)
 WALL_SCENARIO_KWARGS = make_scenario_kwargs(SHARED_WALL_SCENARIO_KWARGS)
 BRIDGE_SCENARIO_KWARGS = make_scenario_kwargs(SHARED_BRIDGE_SCENARIO_KWARGS)
 PAYLOAD_PLANE_SCENARIO_KWARGS = make_scenario_kwargs(SHARED_PAYLOAD_PLANE_SCENARIO_KWARGS)
+DUAL_PAYLOAD_PLANE_SCENARIO_KWARGS = make_scenario_kwargs(SHARED_DUAL_PAYLOAD_PLANE_SCENARIO_KWARGS)
 MOVE_TO_SCENARIO_KWARGS = make_scenario_kwargs(SHARED_MOVE_TO_SCENARIO_KWARGS)
 
 
@@ -176,6 +179,35 @@ def default_payload_plane(
     )
     scenario_kwargs.update(kwargs)
     return MJWPayloadPlaneScenario(
+        swarm=_resolve_swarm(
+            swarm=swarm,
+            unit_start_locations=unit_start_locations,
+            quantize_connection_twist=quantize_connection_twist,
+            joints=joints,
+        ),
+        seed=seed,
+        **scenario_kwargs,
+    )
+
+
+def default_dual_payload_plane(
+    *,
+    seed: int | None = None,
+    swarm: MJWHomogeneousSwarm | None = None,
+    unit_start_locations: MJWPreConnectedUnitLocationsConfig | None = None,
+    quantize_connection_twist: int = 8,
+    joints: str = "zx",
+    **kwargs: object,
+) -> MJWDualPayloadPlaneScenario:
+    scenario_kwargs = make_scenario_kwargs(DEFAULT_KWARGS, DUAL_PAYLOAD_PLANE_SCENARIO_KWARGS)
+    scenario_kwargs.update(
+        {
+            "compile_reward_kernel": should_compile_reward_kernel_by_default(),
+            "reward_kernel_compile_mode": "default",
+        }
+    )
+    scenario_kwargs.update(kwargs)
+    return MJWDualPayloadPlaneScenario(
         swarm=_resolve_swarm(
             swarm=swarm,
             unit_start_locations=unit_start_locations,

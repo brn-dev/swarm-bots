@@ -79,10 +79,14 @@ Agents use this file for durable codebase notes. Keep only architecture, invaria
 - `BaseScenario` no longer has a generic `compute_progress(...)`; scenarios own both reset baselines and per-step progress deltas.
 - Dedicated scenario pairs now exist on both backends:
   - payload: `PayloadPlaneScenario` / `MJWPayloadPlaneScenario`
+  - dual payload: `DualPayloadPlaneScenario` / `MJWDualPayloadPlaneScenario`
   - move-to: `MoveToScenario` / `MJWMoveToScenario`
   - bridge: MJW also has `MJWBridgeScenario`
 - Payload `global_obs` is `(x, y, z, rot6d)`. Move-to `global_obs` is absolute goal `(x, y)`.
+- Dual-payload `global_obs` is two payload poses concatenated: `(payload0 x,y,z,rot6d, payload1 x,y,z,rot6d)`.
+- Dual-payload forward reward is summed individual payload y progress plus lagging-payload progress (`min` y); towards-payload reward stores one progress value per payload based on the nearest `ceil(num_units / 3)` active units to that payload.
 - `MoveToPayloadGlobalObsAdapter` in `scripts/run_mat_nop_move_to_payload_mjw.py` expands move-to goals into payload-shaped global obs so normalization/checkpoint state stays compatible.
+- `MoveToDualPayloadGlobalObsAdapter` / `scripts/run_mat_nop_move_to_dual_payload_mjw.py` do the same for dual-payload transfer by duplicating the move-to goal into both payload-pose slots.
 - Move-to pretraining intentionally anneals sticky actions to zero and keeps them at zero for the payload phase.
 - Shared mirrored scenario kwargs belong in `swarmbots/scenario_presets/scenario_presets_kwargs.py`.
 - Payload supports `"sphere"`, `"box"`, and `"capsule"` shapes; presets default to `"box"` to avoid trivial rolling.
