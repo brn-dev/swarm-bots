@@ -42,6 +42,7 @@ class DualPayloadPlaneScenario(PayloadPlaneScenario):
         progress_reward_weight: float = 1.0,
         forward_reward_weight: float = 1.0,
         forward_reward_max_y: float | None = None,
+        lagging_payload_weight: float = 0.75,
         towards_payload_reward_weight: float = 1.0,
         towards_payload_goal_radius: float | None = None,
         payload_centering_penalty_weight: float = 1.0,
@@ -79,6 +80,9 @@ class DualPayloadPlaneScenario(PayloadPlaneScenario):
 
         self.forward_reward_weight = float(forward_reward_weight)
         self.forward_reward_max_y = None if forward_reward_max_y is None else float(forward_reward_max_y)
+        self.lagging_payload_weight = float(lagging_payload_weight)
+        if not 0.0 <= self.lagging_payload_weight <= 1.0:
+            raise ValueError(f"Expected lagging_payload_weight in [0, 1], got {self.lagging_payload_weight}")
         self.towards_payload_reward_weight = float(towards_payload_reward_weight)
         self.towards_payload_goal_radius = (
             self.payload_radius if towards_payload_goal_radius is None else float(towards_payload_goal_radius)
@@ -150,6 +154,7 @@ class DualPayloadPlaneScenario(PayloadPlaneScenario):
                 "num_payloads": 2,
                 "scenario_type": "dual_payload_plane",
                 "towards_payload_units_per_payload": self.towards_payload_units_per_payload,
+                "lagging_payload_weight": self.lagging_payload_weight,
             }
         )
         return settings
@@ -184,8 +189,13 @@ class DualPayloadPlaneScenario(PayloadPlaneScenario):
         state["back_payload_progress"] = new_back_payload_progress
         state["progress"] = float(new_payload_progress.sum() + new_back_payload_progress)
 
-        forward_reward = float((new_payload_progress - old_payload_progress).sum())
-        forward_reward += new_back_payload_progress - old_back_payload_progress
+        payload_progress_delta = new_payload_progress - old_payload_progress
+        back_progress_delta = new_back_payload_progress - old_back_payload_progress
+        num_payloads = float(payload_progress_delta.shape[0])
+        forward_reward = float(
+            ((1.0 - self.lagging_payload_weight) * payload_progress_delta.sum())
+            + (self.lagging_payload_weight * num_payloads * back_progress_delta)
+        )
         towards_payload_reward = self._compute_towards_payload_reward(data, state)
         payload_x_penalty = self._compute_payload_x_penalty(data)
         progress_reward = (forward_reward * self.forward_reward_weight) + towards_payload_reward + payload_x_penalty

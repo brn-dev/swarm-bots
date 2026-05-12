@@ -201,10 +201,11 @@ def test_payload_plane_towards_payload_reward_uses_virtual_goal_radius_in_mj_env
     assert np.isclose(reward, 1.0)
 
 
-def test_dual_payload_plane_forward_reward_adds_individual_and_back_payload_progress_in_mj_env() -> None:
+def test_dual_payload_plane_forward_reward_blends_individual_and_lagging_payload_progress_in_mj_env() -> None:
     scenario = object.__new__(DualPayloadPlaneScenario)
     scenario.forward_reward_weight = 2.0
     scenario.forward_reward_max_y = None
+    scenario.lagging_payload_weight = 0.75
     scenario.towards_payload_reward_weight = 0.0
     scenario.payload_centering_penalty_weight = 0.5
     scenario.payload_centering_penalty_power = 1.0
@@ -232,9 +233,9 @@ def test_dual_payload_plane_forward_reward_adds_individual_and_back_payload_prog
 
     reward = scenario.compute_progress_reward(data, state)
 
-    assert np.isclose(state["forward_reward"], 0.7)
+    assert np.isclose(state["forward_reward"], 0.425)
     assert np.isclose(state["payload_x_penalty"], -0.25)
-    assert np.isclose(reward, (0.7 * 2.0) - 0.25)
+    assert np.isclose(reward, (0.425 * 2.0) - 0.25)
 
 
 def test_dual_payload_plane_towards_payload_reward_uses_nearest_units_per_payload_in_mj_env() -> None:
@@ -463,6 +464,7 @@ def test_dual_payload_plane_reward_kernel_combines_forward_terms_in_mjw_runtime(
         progress_reward_weight=1.0,
         forward_reward_weight=2.0,
         forward_reward_max_y=float("inf"),
+        lagging_payload_weight=0.75,
         payload_radius=0.2,
         towards_payload_reward_weight=0.0,
         towards_payload_goal_radius=0.2,
@@ -476,10 +478,10 @@ def test_dual_payload_plane_reward_kernel_combines_forward_terms_in_mjw_runtime(
 
     assert torch.allclose(new_payload_progress, torch.tensor([[1.4, 1.2]]))
     assert torch.allclose(new_back_payload_progress, torch.tensor([1.2]))
-    assert torch.allclose(forward_reward, torch.tensor([1.4]))
+    assert torch.allclose(forward_reward, torch.tensor([0.85]))
     assert torch.allclose(towards_payload_reward, torch.zeros_like(towards_payload_reward))
     assert torch.allclose(payload_x_penalty, torch.tensor([-0.25]))
-    assert torch.allclose(progress_reward, torch.tensor([1.15]))
+    assert torch.allclose(progress_reward, torch.tensor([0.6]))
 
 
 def test_dual_payload_plane_towards_reward_kernel_uses_nearest_units_per_payload_in_mjw_runtime() -> None:
@@ -504,6 +506,7 @@ def test_dual_payload_plane_towards_reward_kernel_uses_nearest_units_per_payload
         progress_reward_weight=3.0,
         forward_reward_weight=1.0,
         forward_reward_max_y=float("inf"),
+        lagging_payload_weight=0.75,
         payload_radius=0.3,
         towards_payload_reward_weight=2.0,
         towards_payload_goal_radius=0.0,
