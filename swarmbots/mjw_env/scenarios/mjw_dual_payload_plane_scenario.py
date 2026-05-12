@@ -19,10 +19,15 @@ from swarmbots.mjw_env.scenarios.mjw_payload_plane_scenario import (
 
 @dataclass
 class MJWDualPayloadPlaneScenario(MJWPayloadPlaneScenario):
+    lagging_payload_weight: float = 0.75
+
     def __post_init__(self) -> None:
         self.payload_offset_x = _as_payload_pair(self.payload_offset_x)
         self.payload_offset_y = _as_payload_pair(self.payload_offset_y)
         super().__post_init__()
+        self.lagging_payload_weight = float(self.lagging_payload_weight)
+        if not 0.0 <= self.lagging_payload_weight <= 1.0:
+            raise ValueError(f"Expected lagging_payload_weight in [0, 1], got {self.lagging_payload_weight}")
         self.towards_payload_units_per_payload = max(1, math.ceil(self.swarm.num_units / 3))
 
     def get_settings(self) -> dict[str, Any]:
@@ -32,6 +37,7 @@ class MJWDualPayloadPlaneScenario(MJWPayloadPlaneScenario):
                 "num_payloads": 2,
                 "scenario_type": "dual_payload_plane",
                 "towards_payload_units_per_payload": self.towards_payload_units_per_payload,
+                "lagging_payload_weight": self.lagging_payload_weight,
             }
         )
         return settings

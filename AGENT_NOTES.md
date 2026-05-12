@@ -84,7 +84,7 @@ Agents use this file for durable codebase notes. Keep only architecture, invaria
   - bridge: MJW also has `MJWBridgeScenario`
 - Payload `global_obs` is `(x, y, z, rot6d)`. Move-to `global_obs` is absolute goal `(x, y)`.
 - Dual-payload `global_obs` is two payload poses concatenated: `(payload0 x,y,z,rot6d, payload1 x,y,z,rot6d)`.
-- Dual-payload forward reward is summed individual payload y progress plus lagging-payload progress (`min` y); towards-payload reward stores one progress value per payload based on the nearest `ceil(num_units / 3)` active units to that payload.
+- Dual-payload forward reward blends summed individual payload y progress with lagging-payload progress (`min` y) via `lagging_payload_weight` (default `0.75`), scaling the lagging term by payload count so both sides are comparable; towards-payload reward stores one progress value per payload based on the nearest `ceil(num_units / 3)` active units to that payload.
 - `MoveToPayloadGlobalObsAdapter` in `scripts/run_mat_nop_move_to_payload_mjw.py` expands move-to goals into payload-shaped global obs so normalization/checkpoint state stays compatible.
 - `MoveToDualPayloadGlobalObsAdapter` / `scripts/run_mat_nop_move_to_dual_payload_mjw.py` do the same for dual-payload transfer by duplicating the move-to goal into both payload-pose slots.
 - Move-to pretraining intentionally anneals sticky actions to zero and keeps them at zero for the payload phase.

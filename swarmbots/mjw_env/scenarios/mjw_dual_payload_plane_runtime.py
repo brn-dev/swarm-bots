@@ -58,6 +58,7 @@ def _compute_dual_payload_plane_reward_kernel(
     progress_reward_weight: float,
     forward_reward_weight: float,
     forward_reward_max_y: float,
+    lagging_payload_weight: float,
     payload_radius: float,
     towards_payload_reward_weight: float,
     towards_payload_goal_radius: float,
@@ -85,8 +86,13 @@ def _compute_dual_payload_plane_reward_kernel(
     new_back_payload_progress = new_payload_progress.min(dim=1).values
     payload_progress_delta = new_payload_progress - payload_progress
     back_progress_delta = new_back_payload_progress - back_payload_progress
+    num_payloads = float(payload_progress_delta.shape[1])
+    blended_forward_delta = (
+        ((1.0 - float(lagging_payload_weight)) * payload_progress_delta.sum(dim=1))
+        + (float(lagging_payload_weight) * num_payloads * back_progress_delta)
+    )
 
-    forward_component_reward = (payload_progress_delta.sum(dim=1) + back_progress_delta) * float(forward_reward_weight)
+    forward_component_reward = blended_forward_delta * float(forward_reward_weight)
     virtual_goal_position = torch.stack(
         (safe_payload_x, safe_payload_y - float(payload_radius)),
         dim=-1,
@@ -393,6 +399,7 @@ class DualPayloadPlaneMJWScenarioRuntime(BaseMJWScenarioRuntime):
             float(self.scenario.progress_reward_weight),
             float(self.scenario.forward_reward_weight),
             float("inf") if self.scenario.forward_reward_max_y is None else float(self.scenario.forward_reward_max_y),
+            float(self.scenario.lagging_payload_weight),
             float(self.scenario.payload_radius),
             float(self.scenario.towards_payload_reward_weight),
             float(self.scenario.towards_payload_goal_radius),
