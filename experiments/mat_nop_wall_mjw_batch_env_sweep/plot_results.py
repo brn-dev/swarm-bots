@@ -15,6 +15,7 @@ OUTPUT_DIR = Path(__file__).resolve().parent / "results"
 GROUP_ORDER = (
     "1024x4",
     "2048x4",
+    "2048x4x16",
     "1024x8",
     "4096x4_virtual2",
     "4096x4x12",
