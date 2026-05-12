@@ -413,6 +413,7 @@ def run_experiment(
         initial_lr=cold_lr,
         max_lr=8e-4,
         updater=make_auto_lr_updater(
+            early_stop_epoch_decay_limit=math.ceil(n_epochs / 2),
             warm_scheduler_config=CosineSchedulerConfig(
                 unit=ScheduleUnit.ITERATIONS,
                 duration=warmup_iterations,

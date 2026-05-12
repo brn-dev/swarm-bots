@@ -8,8 +8,15 @@ from swarmbots.learn.scheduling.schedulers import ScheduleUnit
 from swarmbots.learn.summary_statistics import SummaryStatistics
 
 
+EARLY_STOP_EPOCH_DECAY_FACTORS = {
+    1: 0.8,
+    2: 0.85,
+}
+
+
 def make_auto_lr_updater(
         warm_scheduler_config: SchedulerFactoryConfig | None = None,
+        early_stop_epoch_decay_limit: int = 4
 ) -> AutomaticLearningRateUpdater:
     if warm_scheduler_config is not None and warm_scheduler_config.unit != ScheduleUnit.ITERATIONS:
         raise ValueError(
@@ -62,12 +69,10 @@ def make_auto_lr_updater(
                 'event': 'max_clip_frac_hit'
             }
 
-        if early_stop_epoch is not None and early_stop_epoch < 4:
+        if early_stop_epoch is not None and early_stop_epoch < early_stop_epoch_decay_limit:
             state['counter'] = 0
             state['warmup'] = False
-            decay_factor = {
-                1: 0.8, 2: 0.85, 3: 0.9,
-            }[early_stop_epoch]
+            decay_factor = EARLY_STOP_EPOCH_DECAY_FACTORS.get(early_stop_epoch, 0.9)
             return {
                 'new_lr': old_lr * decay_factor,
                 'msg': f'epoch={early_stop_epoch}',
