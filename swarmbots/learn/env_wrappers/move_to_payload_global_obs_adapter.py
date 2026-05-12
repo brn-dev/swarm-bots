@@ -10,6 +10,7 @@ from gymnasium.vector import VectorEnv, VectorWrapper
 
 
 PAYLOAD_GLOBAL_OBS_ADAPTER_NAME = "move_to_payload"
+DUAL_PAYLOAD_GLOBAL_OBS_ADAPTER_NAME = "move_to_dual_payload"
 
 
 class MoveToPayloadGlobalObsAdapter(VectorWrapper):
@@ -106,3 +107,28 @@ class MoveToPayloadGlobalObsAdapter(VectorWrapper):
         payload_global_obs_array[..., 3] = 1.0
         payload_global_obs_array[..., 7] = 1.0
         return payload_global_obs_array
+
+
+class MoveToDualPayloadGlobalObsAdapter(MoveToPayloadGlobalObsAdapter):
+    def __init__(
+        self,
+        env: VectorEnv,
+        *,
+        payload_z: float,
+    ) -> None:
+        super().__init__(env, payload_z=payload_z)
+        self.single_observation_space = self._replace_global_obs_space(env.single_observation_space, shape=(18,))
+        self.observation_space = self._replace_global_obs_space(env.observation_space, shape=(self.num_envs, 18))
+
+    def get_settings(self) -> dict[str, Any]:
+        settings = super().get_settings()
+        scenario_settings = settings.setdefault("scenario", {})
+        scenario_settings["global_obs_adapter"] = DUAL_PAYLOAD_GLOBAL_OBS_ADAPTER_NAME
+        scenario_settings["num_payloads"] = 2
+        return settings
+
+    def _payload_like_global_obs(self, move_to_global_obs: Any) -> Any:
+        single_payload_obs = super()._payload_like_global_obs(move_to_global_obs)
+        if isinstance(single_payload_obs, torch.Tensor):
+            return torch.cat((single_payload_obs, single_payload_obs), dim=-1)
+        return np.concatenate((single_payload_obs, single_payload_obs), axis=-1)

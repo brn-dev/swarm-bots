@@ -1,6 +1,9 @@
 from typing import Any
 
-from swarmbots.learn.env_wrappers.move_to_payload_global_obs_adapter import PAYLOAD_GLOBAL_OBS_ADAPTER_NAME
+from swarmbots.learn.env_wrappers.move_to_payload_global_obs_adapter import (
+    DUAL_PAYLOAD_GLOBAL_OBS_ADAPTER_NAME,
+    PAYLOAD_GLOBAL_OBS_ADAPTER_NAME,
+)
 from swarmbots.learn.obs_indices import ObsIndices
 
 
@@ -22,9 +25,17 @@ def _global_scalar_indices(scenario_settings: dict[str, Any], global_obs_dim: in
             raise ValueError(f"Unexpected adapted move-to global_obs_dim for obs indices: {global_obs_dim}")
         return [0, 1, 2]
 
+    if scenario_settings.get("global_obs_adapter") == DUAL_PAYLOAD_GLOBAL_OBS_ADAPTER_NAME:
+        if global_obs_dim != 18:
+            raise ValueError(f"Unexpected adapted move-to dual-payload global_obs_dim for obs indices: {global_obs_dim}")
+        return [0, 1, 2, 9, 10, 11]
+
     if "payload_shape" in scenario_settings:
-        if global_obs_dim != 9:
+        expected_global_obs_dim = 18 if scenario_settings.get("num_payloads") == 2 else 9
+        if global_obs_dim != expected_global_obs_dim:
             raise ValueError(f"Unexpected payload global_obs_dim for obs indices: {global_obs_dim}")
+        if expected_global_obs_dim == 18:
+            return [0, 1, 2, 9, 10, 11]
         return [0, 1, 2]
 
     if "goal" in scenario_settings:

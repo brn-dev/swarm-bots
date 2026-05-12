@@ -5,6 +5,7 @@ from typing import Any
 import numpy as np
 
 from swarmbots.mj_env.scenarios.bridge_scenario import BridgeScenario
+from swarmbots.mj_env.scenarios.dual_payload_plane_scenario import DualPayloadPlaneScenario
 from swarmbots.mj_env.scenarios.move_to_scenario import MoveToScenario
 from swarmbots.mj_env.scenarios.obstacle_street_scenario import ObstacleStreetScenario
 from swarmbots.mj_env.scenarios.payload_plane_scenario import PayloadPlaneScenario
@@ -15,6 +16,7 @@ from swarmbots.mj_env.swarm.unit_config import UNIT_CONFIG_TETRAHEDRON_XYZ, UNIT
 from swarmbots.scenario_presets.scenario_presets_kwargs import (
     BRIDGE_SCENARIO_KWARGS as SHARED_BRIDGE_SCENARIO_KWARGS,
     COMMON_SCENARIO_KWARGS,
+    DUAL_PAYLOAD_PLANE_SCENARIO_KWARGS as SHARED_DUAL_PAYLOAD_PLANE_SCENARIO_KWARGS,
     MOVE_TO_SCENARIO_KWARGS as SHARED_MOVE_TO_SCENARIO_KWARGS,
     PAYLOAD_PLANE_SCENARIO_KWARGS as SHARED_PAYLOAD_PLANE_SCENARIO_KWARGS,
     WALL_SCENARIO_KWARGS as SHARED_WALL_SCENARIO_KWARGS,
@@ -25,6 +27,7 @@ DEFAULT_KWARGS = make_scenario_kwargs(COMMON_SCENARIO_KWARGS, {"force_elliptic_c
 WALL_SCENARIO_KWARGS = make_scenario_kwargs(SHARED_WALL_SCENARIO_KWARGS)
 BRIDGE_SCENARIO_KWARGS = make_scenario_kwargs(SHARED_BRIDGE_SCENARIO_KWARGS)
 PAYLOAD_PLANE_SCENARIO_KWARGS = make_scenario_kwargs(SHARED_PAYLOAD_PLANE_SCENARIO_KWARGS)
+DUAL_PAYLOAD_PLANE_SCENARIO_KWARGS = make_scenario_kwargs(SHARED_DUAL_PAYLOAD_PLANE_SCENARIO_KWARGS)
 MOVE_TO_SCENARIO_KWARGS = make_scenario_kwargs(SHARED_MOVE_TO_SCENARIO_KWARGS)
 
 def _resolve_swarm(
@@ -148,6 +151,30 @@ def default_payload_plane(
     scenario_kwargs = make_scenario_kwargs(DEFAULT_KWARGS, PAYLOAD_PLANE_SCENARIO_KWARGS)
     scenario_kwargs.update(kwargs)
     return PayloadPlaneScenario(
+        swarm=_resolve_swarm(
+            swarm,
+            unit_start_locations,
+            randomize_unit_orientations,
+            quantize_connection_twist,
+            joints=joints,
+        ),
+        **scenario_kwargs,
+        seed=seed,
+    )
+
+
+def default_dual_payload_plane(
+        seed: int | None = None,
+        swarm: BaseSwarm | None = None,
+        unit_start_locations: list[tuple[float, float, float]] | str | Any | None = None,
+        randomize_unit_orientations: bool = False,
+        quantize_connection_twist: int | None = 8,
+        joints: str = 'zx',
+        **kwargs
+) -> DualPayloadPlaneScenario:
+    scenario_kwargs = make_scenario_kwargs(DEFAULT_KWARGS, DUAL_PAYLOAD_PLANE_SCENARIO_KWARGS)
+    scenario_kwargs.update(kwargs)
+    return DualPayloadPlaneScenario(
         swarm=_resolve_swarm(
             swarm,
             unit_start_locations,
