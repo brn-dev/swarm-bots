@@ -49,6 +49,7 @@ import swarmbots.mjw_env.scenarios.mjw_scenario_presets as mjw_scenario_presets
 
 
 CRITIC_STATE_PREFIXES = ("policy.critic.",)
+MJW_CCD_ITERATIONS = 48
 
 
 class SequentialRunProgress:
@@ -110,6 +111,7 @@ def make_move_to_vector_env(
         first_episode_lengths=first_episode_lengths,
         settle_initial_reset=settle_initial_reset,
         device=device,
+        ccd_iterations=MJW_CCD_ITERATIONS,
     )
     return MoveToDualPayloadGlobalObsAdapter(
         vector_env,
@@ -132,6 +134,7 @@ def make_payload_vector_env(
         first_episode_lengths=first_episode_lengths,
         settle_initial_reset=settle_initial_reset,
         device=device,
+        ccd_iterations=MJW_CCD_ITERATIONS,
     )
 
 
