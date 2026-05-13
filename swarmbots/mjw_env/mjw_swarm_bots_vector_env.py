@@ -107,6 +107,7 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
         device: str | torch.device = "cuda",
         nconmax: int | None = None,
         njmax: int | None = None,
+        ccd_iterations: int | None = None,
         nefc_overflow_check_interval_steps: int = 128,
     ) -> None:
         super().__init__()
@@ -125,6 +126,8 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
                 "nefc_overflow_check_interval_steps must be > 0, "
                 f"got {nefc_overflow_check_interval_steps}"
             )
+        if ccd_iterations is not None and ccd_iterations <= 0:
+            raise ValueError(f"Expected ccd_iterations > 0, got {ccd_iterations}")
 
         self.device = torch.device(device)
         if self.device.type == "cuda":
@@ -156,6 +159,9 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
         self._n_twists = len(self.scenario.swarm.config.connection_twist_values)
 
         self._host_model = scenario.build_model()
+        if ccd_iterations is not None:
+            self._host_model.opt.ccd_iterations = int(ccd_iterations)
+        self._ccd_iterations = int(self._host_model.opt.ccd_iterations)
         self._metadata: MJWModelMetadata = build_model_metadata(self._host_model, scenario)
         self._scenario_runtime_metadata = self.scenario.build_runtime_metadata(host_model=self._host_model)
 
@@ -406,6 +412,9 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
             "physics_workspace_caps": {
                 "nconmax": self._nconmax,
                 "njmax": self._njmax,
+            },
+            "physics_options": {
+                "ccd_iterations": self._ccd_iterations,
             },
         }
 

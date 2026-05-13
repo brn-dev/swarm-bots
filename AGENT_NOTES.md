@@ -106,7 +106,8 @@ Agents use this file for durable codebase notes. Keep only architecture, invaria
 - Scenario-specific MJW logic belongs in scenario runtime classes, not in `mjw_swarm_bots_vector_env.py`.
 - MJW scenario metadata goes through `scenario.build_runtime_metadata(...)`; keep `MJWModelMetadata` generic, not scenario-specific.
 - Scenario-owned terminations flow through `MJWStepResult.terminations`.
-- Workspace defaults must stay lean. Current default sizing is `nconmax = max(24, total_connectors + 2*num_units)` and `njmax = max(160, 5*nconmax + 2*num_units)`.
+- Workspace defaults must stay lean. Current default sizing is `nconmax = max(32, total_connectors + 2*num_units)` and `njmax = max(160, 5*nconmax + 4*num_units)`.
+- `MJWSwarmBotsVectorEnv(ccd_iterations=...)` sets `model.opt.ccd_iterations` before `mujoco_warp.put_model(...)`; use this for box/convex-heavy MJW runs that print CCD iteration warnings.
 - Reset behavior has three paths: direct reset, optional one-shot `settle_initial_reset`, and CPU-settled prefetch for predicted truncations.
 - Hot-path connector matching is kernelized in `swarmbots/mjw_env/mjw_kernels.py`; keep Warp-side metadata/index tensors `int32` unless PyTorch indexing forces `int64`.
 - Keep hot-path GPU scratch buffers reused. Avoid rebuilding tensors or adding Python-side branching back into the step path.
