@@ -12,6 +12,7 @@ class BaseSamplerConfig:
 
 SamplesType = TypeVar('SamplesType', covariant=True)
 SamplerConfigType = TypeVar('SamplerConfigType', covariant=True, bound=BaseSamplerConfig)
+BatchIndices = torch.Tensor | slice
 
 
 class BaseSampler(Generic[SamplesType, SamplerConfigType], abc.ABC):
@@ -30,11 +31,19 @@ class BaseSampler(Generic[SamplesType, SamplerConfigType], abc.ABC):
         self.index_device = None if index_device is None else torch.device(index_device)
 
     @abc.abstractmethod
-    def _fetch_samples(self, batch_indices: torch.Tensor) -> SamplesType:
+    def _fetch_samples(self, batch_indices: BatchIndices) -> SamplesType:
         raise NotImplementedError()
+
+    def _fetch_all_samples(self) -> SamplesType:
+        return self._fetch_samples(slice(None))
 
     def sample(self, drop_last: bool = True) -> Generator[SamplesType, Any, None]:
         batch_size = self.config.batch_size
+
+        if batch_size == self.n_samples:
+            yield self._fetch_all_samples()
+            return
+
         indices = torch.randperm(self.n_samples, device=self.index_device)
 
         for start_idx in range(0, self.n_samples, batch_size):

@@ -10,6 +10,7 @@ from swarmbots.learn.algos.world_modeling.wm_sampler_helper import (
     build_wm_episode_windows_batch,
     ensure_wm_window_helper_compile_available,
 )
+from swarmbots.learn.base_sampler import BatchIndices
 
 
 @dataclass
@@ -134,7 +135,7 @@ class PPOWMSampler(
                 self.wm_agent_mask[flat_batch_indices] = episode_windows.wm_agent_mask.flatten(0, 1)
                 self.wm_loss_agent_mask[flat_batch_indices] = episode_windows.wm_loss_agent_mask.flatten(0, 1)
 
-    def _fetch_samples(self, batch_indices: torch.Tensor) -> PPOWMSamples:
+    def _fetch_samples(self, batch_indices: BatchIndices) -> PPOWMSamples:
         return PPOWMSamples(
             local_obs=self.local_obs[batch_indices],
             global_obs=self.global_obs[batch_indices],
