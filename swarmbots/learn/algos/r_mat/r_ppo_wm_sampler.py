@@ -10,7 +10,7 @@ from swarmbots.learn.algos.world_modeling.wm_sampler_helper import (
     ensure_wm_window_helper_compile_available,
     pad_time_axis,
 )
-from swarmbots.learn.base_sampler import BaseSampler
+from swarmbots.learn.base_sampler import BaseSampler, BatchIndices
 
 
 @dataclass
@@ -237,7 +237,7 @@ class RPPOWMSampler(
             index_device=self.local_obs.device,
         )
 
-    def _fetch_samples(self, batch_indices: torch.Tensor) -> RPPOWMSamples:
+    def _fetch_samples(self, batch_indices: BatchIndices) -> RPPOWMSamples:
         return RPPOWMSamples(
             local_obs=self.local_obs[batch_indices],
             global_obs=self.global_obs[batch_indices],

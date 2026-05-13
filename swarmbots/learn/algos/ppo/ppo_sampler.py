@@ -4,7 +4,7 @@ from typing import TypeVar
 import torch
 
 from swarmbots.learn.algos.ppo.ppo_rollout_buffer import MaybeTensor, PPOEpisodeSegment
-from swarmbots.learn.base_sampler import BaseSampler, BaseSamplerConfig
+from swarmbots.learn.base_sampler import BaseSampler, BaseSamplerConfig, BatchIndices
 
 
 @dataclass
@@ -71,7 +71,7 @@ class PPOSampler(BaseSampler[PPOSamplesType, PPOSamplerConfigType]):
             index_device=self.local_obs.device,
         )
 
-    def _fetch_samples(self, batch_indices: torch.Tensor) -> PPOSamples:
+    def _fetch_samples(self, batch_indices: BatchIndices) -> PPOSamples:
         return PPOSamples(
             local_obs=self.local_obs[batch_indices],
             global_obs=self.global_obs[batch_indices],
