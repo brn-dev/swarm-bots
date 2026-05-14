@@ -131,6 +131,7 @@ Agents use this file for durable codebase notes. Keep only architecture, invaria
   - `scripts/run_mat_nop_wall_mjw.py`
   - `scripts/run_mat_nop_payload*.py`
   - `scripts/run_mat_nop_move*.py`
+- `experiments/mat_nop_wall_mjw_1024x4_ablation/scripts/` contains the MJW 1024x4 ablation launchers; MAT-specific ablation knobs are plumbed through `experiments/mat_nop_wall_mjw_common.py`.
 - Scenario cadence is scenario-owned on both backends. Do not pass or stash a separate env-level `action_repeat`.
 - MJW live recording records exact live MJW episodes by copying selected world state into CPU MuJoCo render slots. Do not try to replay MJW actions in plain `mj_env`.
 - Recording camera defaults should stay scenario-owned.
