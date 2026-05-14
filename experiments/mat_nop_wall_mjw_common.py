@@ -207,6 +207,8 @@ def run_experiment(
         n_epochs: int = 8,
         continuous_action_dist: ContinuousActionDistVariant = "sticky_lr_beta",
         policy_variant: PolicyVariant = "mat",
+        mat_add_agent_embeddings: bool = True,
+        mat_decoder_self_attention_mode: MATDecoderSelfAttentionMode = MATDecoderSelfAttentionMode.FULL_AUTOREGRESSIVE,
         use_nop: bool = True,
         experiment_run_name: str = "mat_nop_swarm_bots_wall_mjw_batch_env_sweep",
 ) -> None:
@@ -265,7 +267,9 @@ def run_experiment(
         f"MJW batch env sweep variant {variant_name}: "
         f"{num_envs} envs x {rollout_steps_per_env} steps/env = {rollout_samples}, "
         f"virtual_mini_batches={virtual_mini_batches}, n_epochs={n_epochs}, "
-        f"continuous_action_dist={continuous_action_dist}, use_nop={use_nop}"
+        f"continuous_action_dist={continuous_action_dist}, use_nop={use_nop}, "
+        f"mat_add_agent_embeddings={mat_add_agent_embeddings}, "
+        f"mat_decoder_self_attention_mode={mat_decoder_self_attention_mode.name}"
     )
     if policy_variant != "mat":
         variant_log_message = f"{variant_log_message}, policy_variant={policy_variant}"
@@ -358,6 +362,8 @@ def run_experiment(
         continuous_action_dist=continuous_action_dist,
         initial_stickiness=initial_stickiness,
         gsde_init_stds=gsde_init_stds,
+        mat_add_agent_embeddings=mat_add_agent_embeddings,
+        mat_decoder_self_attention_mode=mat_decoder_self_attention_mode,
     )
     policy = base_policy
     if use_nop:
@@ -544,6 +550,8 @@ def run_experiment(
         "variant_name": variant_name,
         "continuous_action_dist": continuous_action_dist,
         "use_nop": use_nop,
+        "mat_add_agent_embeddings": mat_add_agent_embeddings,
+        "mat_decoder_self_attention_mode": mat_decoder_self_attention_mode.name,
         "experiment_run_name": experiment_run_name,
         "settle_initial_reset": True,
     }
@@ -588,6 +596,8 @@ def _make_base_policy(
         continuous_action_dist: ContinuousActionDistVariant,
         initial_stickiness: float,
         gsde_init_stds: list[float],
+        mat_add_agent_embeddings: bool,
+        mat_decoder_self_attention_mode: MATDecoderSelfAttentionMode,
 ) -> MATPolicy | MATDecPolicy | MATOrigPolicy:
     continuous_config = make_continuous_config(
         variant=continuous_action_dist,
@@ -616,6 +626,7 @@ def _make_base_policy(
                     nhead=enc_nhead,
                     num_layers=2,
                     dim_feedforward=enc_d_model * 2,
+                    add_agent_embeddings=mat_add_agent_embeddings,
                     local_obs_encoder_hidden_dims=[enc_d_model, enc_d_model],
                 ),
                 decoder_config=MATDecoderConfig(
@@ -623,10 +634,11 @@ def _make_base_policy(
                     nhead=dec_nhead,
                     num_layers=2,
                     dim_feedforward=dec_d_model * 2,
+                    add_agent_embeddings=mat_add_agent_embeddings,
                     query_encoder_hidden_dims=[2 * dec_d_model],
                     context_encoder_hidden_dims=[2 * dec_d_model],
                     memory_dims=None,
-                    self_attention_mode=MATDecoderSelfAttentionMode.FULL_AUTOREGRESSIVE,
+                    self_attention_mode=mat_decoder_self_attention_mode,
                 ),
                 critic_config=MATCriticConfig(
                     n_local_projection_hidden_layers=2,
@@ -653,6 +665,7 @@ def _make_base_policy(
                     nhead=enc_nhead,
                     num_layers=2,
                     dim_feedforward=enc_d_model * 2,
+                    add_agent_embeddings=mat_add_agent_embeddings,
                     local_obs_encoder_hidden_dims=[enc_d_model, enc_d_model],
                 ),
                 critic_config=MATCriticConfig(
