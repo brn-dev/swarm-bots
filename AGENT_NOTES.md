@@ -25,6 +25,7 @@ Agents use this file for durable codebase notes. Keep only architecture, invaria
 - `PPO.train()` always uses `policy.make_sampler(episodes)`.
 - `PPO.compute_loss()` always uses `policy.evaluate_actions(batch=...)`.
 - `MATPolicy` is the main transformer policy; `PPOPolicy` is the plain MLP policy.
+- `MATDecPolicy` is the decoderless MAT variant: MAT encoder plus direct per-agent action head from augmented observations. Despite the name, it intentionally has no MAT decoder.
 - `MATOrigPolicy` is the reference-style MAT variant. Its actor uses the original shifted-action decoder pattern (masked self-attention over previous-agent actions, then masked attention with encoder reps as queries), but its critic pools encoder-side per-agent values down to one scalar so PPO still fits the local pipeline.
 - World-model integration is wrapper-first, not algorithm-specific:
   - `NextObsPredWrapper(BasePPOPolicy, NextObsPredMixin)`

@@ -21,6 +21,7 @@ from swarmbots.learn.action_dists.gsde_action_dist import GSDEConfig
 from swarmbots.learn.action_dists.left_right_beta_action_dist import LeftRightBetaConfig
 from swarmbots.learn.action_dists.sticky_action_dist import StickyActionDist
 from swarmbots.learn.action_dists.sticky_left_right_beta_action_dist import StickyLeftRightBetaConfig
+from swarmbots.learn.algos.mat.mat_dec_policy import MATDecPolicy, MATDecPolicyConfig
 from swarmbots.learn.algos.mat.mat_decoder import MATDecoderConfig, MATDecoderSelfAttentionMode
 from swarmbots.learn.algos.mat.mat_encoder import MATEncoderConfig
 from swarmbots.learn.algos.mat.mat_policy import MATCriticConfig, MATPolicy, MATPolicyConfig
@@ -48,7 +49,7 @@ from swarmbots.utils.recording_schedule import DEFAULT_LIVE_RECORDING_SCHEDULE, 
 from swarmbots.utils.run_paths import get_run_id_from_checkpoint_path
 
 ContinuousActionDistVariant = Literal["sticky_lr_beta", "lr_beta", "gsde"]
-PolicyVariant = Literal["mat", "mat_orig"]
+PolicyVariant = Literal["mat", "mat_dec", "mat_orig"]
 
 
 def configure_float32_matmul_precision() -> None:
@@ -587,7 +588,7 @@ def _make_base_policy(
         continuous_action_dist: ContinuousActionDistVariant,
         initial_stickiness: float,
         gsde_init_stds: list[float],
-) -> MATPolicy | MATOrigPolicy:
+) -> MATPolicy | MATDecPolicy | MATOrigPolicy:
     continuous_config = make_continuous_config(
         variant=continuous_action_dist,
         initial_stickiness=initial_stickiness,
@@ -633,6 +634,34 @@ def _make_base_policy(
                     use_popart=use_popart,
                     popart_config=popart_config,
                 ),
+                dropout=0.0,
+                act_fn_cls=nn.GELU,
+                continuous_config=continuous_config,
+                bernoulli_config=bernoulli_config,
+                max_agents=20,
+                compile_modules=compile_policy_modules,
+                compile_mode=policy_compile_mode,
+            ),
+        )
+
+    if policy_variant == "mat_dec":
+        return MATDecPolicy(
+            env=env,
+            config=MATDecPolicyConfig(
+                encoder_config=MATEncoderConfig(
+                    d_model=enc_d_model,
+                    nhead=enc_nhead,
+                    num_layers=2,
+                    dim_feedforward=enc_d_model * 2,
+                    local_obs_encoder_hidden_dims=[enc_d_model, enc_d_model],
+                ),
+                critic_config=MATCriticConfig(
+                    n_local_projection_hidden_layers=2,
+                    n_value_regressor_hidden_layers=1,
+                    use_popart=use_popart,
+                    popart_config=popart_config,
+                ),
+                actor_head_hidden_dims=[dec_d_model],
                 dropout=0.0,
                 act_fn_cls=nn.GELU,
                 continuous_config=continuous_config,
