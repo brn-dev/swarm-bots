@@ -3,6 +3,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+from torch import nn
+
 REPO_ROOT = Path(__file__).resolve().parents[3]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
@@ -22,6 +24,7 @@ def run_ablation(
         policy_variant: PolicyVariant = "mat",
         mat_add_agent_embeddings: bool = True,
         mat_decoder_self_attention_mode: MATDecoderSelfAttentionMode = MATDecoderSelfAttentionMode.FULL_AUTOREGRESSIVE,
+        act_fn_cls: type[nn.Module] = nn.GELU,
         use_nop: bool = True,
 ) -> None:
     run_experiment(
@@ -33,6 +36,7 @@ def run_ablation(
         policy_variant=policy_variant,
         mat_add_agent_embeddings=mat_add_agent_embeddings,
         mat_decoder_self_attention_mode=mat_decoder_self_attention_mode,
+        act_fn_cls=act_fn_cls,
         use_nop=use_nop,
         experiment_run_name=EXPERIMENT_RUN_NAME,
     )
