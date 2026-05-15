@@ -5,7 +5,7 @@ from typing import Any, Callable, Mapping
 
 
 DEFAULT_RECORDING_SCHEDULE: dict[float, int] = {
-    25: 5,
+    # 25: 5,
     50: 5,
     75: 5,
     90: 5,
@@ -13,7 +13,7 @@ DEFAULT_RECORDING_SCHEDULE: dict[float, int] = {
 }
 
 DEFAULT_LIVE_RECORDING_SCHEDULE: dict[float, int] = {
-    25: 5,
+    # 25: 5,
     50: 5,
     75: 5,
     90: 5,
