@@ -235,7 +235,7 @@ def run_experiment(
 
     episode_length = 512
     total_timesteps = 100_000_000
-    save_interval = 10000
+    save_interval = None
 
     use_popart = True
     popart_beta = 5e-4
@@ -569,7 +569,7 @@ def run_experiment(
             log_interval=1,
             save_interval=save_interval,
             save_optimizer=save_optimizer,
-            best_rotation_n=3,
+            best_rotation_n=1,
             extra_run_metadata=extra_run_metadata,
             logging_console_keys=logging_console_keys,
             post_iteration_hooks=[scheduled_recording_hook],
