@@ -538,7 +538,7 @@ def main() -> None:
 
     move_to_pretrain_timesteps = 20_000_000
     payload_timesteps = 100_000_000
-    save_interval = 10000
+    save_interval = None
     save_optimizer = True
 
     gamma = 0.99
@@ -610,7 +610,7 @@ def main() -> None:
                 log_interval=1,
                 save_interval=save_interval,
                 save_optimizer=save_optimizer,
-                best_rotation_n=3,
+                best_rotation_n=1,
                 extra_run_metadata={
                     "phase": "move_to_pretrain",
                     "env_settings": move_env_settings,
@@ -682,7 +682,7 @@ def main() -> None:
                 log_interval=1,
                 save_interval=save_interval,
                 save_optimizer=save_optimizer,
-                best_rotation_n=3,
+                best_rotation_n=1,
                 extra_run_metadata={
                     "phase": "payload",
                     "transfer_checkpoint_path": transfer_checkpoint_path,
