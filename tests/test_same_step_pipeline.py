@@ -14,6 +14,7 @@ from swarmbots.learn.algos.ppo.ppo_sampler import PPOSampler, PPOSamplerConfig
 from swarmbots.learn.env_wrappers.torch_feature_wise_obs_norm_wrapper import TorchFeatureWiseObsNormWrapper
 from swarmbots.learn.env_wrappers.torch_transition_obs_wrapper import TorchTransitionObsWrapper
 from swarmbots.learn.env_wrappers.learn_wrappers.swarm_bots_learn_env_wrapper import SwarmBotsLearnEnvWrapper
+from swarmbots.learn.gsde_reset import GSDEIntervalResetMode, GSDEProbabilityResetMode
 from swarmbots.learn.testing_env import TestingSwarmBotsEnv
 
 
@@ -30,6 +31,24 @@ class _DummyActionDist:
     ) -> None:
         _ = mask
         _ = batch_shape
+
+
+class _SpyGSDEActionDist:
+    has_gsde = True
+
+    def __init__(self) -> None:
+        self.episode_resets: list[torch.Tensor] = []
+        self.step_resets: list[tuple[torch.Tensor | None, tuple[int, ...] | None]] = []
+
+    def reset_temporal_correlations_on_ep_start(self, mask: torch.Tensor) -> None:
+        self.episode_resets.append(mask.clone())
+
+    def reset_temporal_correlations_on_step(
+            self,
+            mask: torch.Tensor | None = None,
+            batch_shape: tuple[int, ...] | None = None,
+    ) -> None:
+        self.step_resets.append((None if mask is None else mask.clone(), batch_shape))
 
 
 class _BaseTestPolicy(BasePPOPolicy[PPOSampler, PPOSamplerConfig]):
@@ -823,6 +842,94 @@ class SameStepPipelineTests(unittest.TestCase):
             self.assertEqual(episodes[0].local_obs.shape[0], 2)
             self.assertTrue(episodes[0].is_true_episode_start)
             self.assertFalse(bool(rollout_state.episode_start_mask[0].item()))
+        finally:
+            env.close()
+
+    def test_gsde_interval_reset_does_not_reset_on_non_interval_steps(self) -> None:
+        env = _make_single_env(max_steps=10)
+        try:
+            policy = _ConstantValuePolicy(action_dim=env.action_space.total_agent_action_dim)
+            action_dist = _SpyGSDEActionDist()
+            policy.action_dist = action_dist
+            buffer = _make_buffer(env)
+
+            collect_steps(
+                env=env,
+                policy=policy,
+                buffer=buffer,
+                n_steps=4,
+                gsde_reset_mode=GSDEIntervalResetMode(interval=3),
+            )
+
+            self.assertEqual(len(action_dist.step_resets), 2)
+            for reset_mask, batch_shape in action_dist.step_resets:
+                self.assertIsNone(batch_shape)
+                self.assertIsNotNone(reset_mask)
+                self.assertEqual(tuple(reset_mask.shape), (1, 2))
+                self.assertTrue(bool(reset_mask.all().item()))
+        finally:
+            env.close()
+
+    def test_gsde_probability_reset_passes_agent_masks_without_batch_shape(self) -> None:
+        env = _make_scripted_env(
+            (1, (3,), "truncate"),
+            (2, (4,), "truncate"),
+        )
+        try:
+            torch.manual_seed(1234)
+            policy = _ConstantValuePolicy(action_dim=env.action_space.total_agent_action_dim)
+            action_dist = _SpyGSDEActionDist()
+            policy.action_dist = action_dist
+            buffer = _make_buffer(env)
+
+            collect_steps(
+                env=env,
+                policy=policy,
+                buffer=buffer,
+                n_steps=6,
+                gsde_reset_mode=GSDEProbabilityResetMode(probability=0.5),
+            )
+
+            self.assertEqual(len(action_dist.step_resets), 3)
+            for reset_mask, batch_shape in action_dist.step_resets:
+                self.assertIsNone(batch_shape)
+                self.assertIsNotNone(reset_mask)
+                self.assertEqual(reset_mask.dtype, torch.bool)
+                self.assertEqual(tuple(reset_mask.shape), (2, 2))
+            self.assertTrue(all(tuple(mask.shape) == (2,) for mask in action_dist.episode_resets))
+            self.assertTrue(any(bool(mask.any().item()) for mask in action_dist.episode_resets[1:]))
+        finally:
+            env.close()
+
+    def test_gsde_rollout_state_resume_keeps_interval_cadence(self) -> None:
+        env = _make_single_env(max_steps=10)
+        try:
+            policy = _ConstantValuePolicy(action_dim=env.action_space.total_agent_action_dim)
+            action_dist = _SpyGSDEActionDist()
+            policy.action_dist = action_dist
+            buffer = _make_buffer(env)
+
+            _episodes, _episode_infos, _metrics, rollout_state = collect_steps(
+                env=env,
+                policy=policy,
+                buffer=buffer,
+                n_steps=3,
+                gsde_reset_mode=GSDEIntervalResetMode(interval=2),
+            )
+            collect_steps(
+                env=env,
+                policy=policy,
+                buffer=buffer,
+                n_steps=2,
+                rollout_state=rollout_state,
+                gsde_reset_mode=GSDEIntervalResetMode(interval=2),
+            )
+
+            self.assertEqual(len(action_dist.step_resets), 3)
+            for reset_mask, batch_shape in action_dist.step_resets:
+                self.assertIsNone(batch_shape)
+                self.assertIsNotNone(reset_mask)
+                self.assertEqual(tuple(reset_mask.shape), (1, 2))
         finally:
             env.close()
 

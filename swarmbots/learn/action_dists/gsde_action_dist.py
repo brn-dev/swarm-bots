@@ -132,6 +132,7 @@ class GSDEActionDist(ContinuousActionDist, TemporallyCorrelatedActionDist):
         if mask.dtype != torch.bool:
             raise ValueError(f"mask must have dtype bool, got {mask.dtype}")
 
+        mask = self._expand_reset_mask(mask)
         expected_batch_shape = tuple(mask.shape)
         if self._exploration_matrices is None or self._exploration_batch_shape != expected_batch_shape:
             self.reset_noise(expected_batch_shape)
@@ -229,14 +230,6 @@ class GSDEActionDist(ContinuousActionDist, TemporallyCorrelatedActionDist):
             agent_mask: torch.Tensor | None = None,
             action_splitter: ActionMetricsSplitterInput = None,
     ) -> tuple[LossDict, LossMetrics]:
-        if self.squash_output:
-            _ = action_splitter
-            action_magnitude_loss, action_magnitude_metrics = self.compute_action_magnitude_loss(
-                agent_mask=agent_mask
-            )
-            if action_magnitude_loss is None:
-                return {}, action_magnitude_metrics
-            return {"action_magnitude": action_magnitude_loss}, action_magnitude_metrics
         ent_loss, ent_loss_metrics = self.compute_entropy_loss(
             agent_mask=agent_mask,
             action_splitter=action_splitter,
@@ -287,6 +280,29 @@ class GSDEActionDist(ContinuousActionDist, TemporallyCorrelatedActionDist):
             return torch.exp(log_stds)
         else:
             return torch.exp(log_stds).expand(self.latent_sde_dim, self.action_dim)
+
+    def _expand_reset_mask(self, mask: torch.Tensor) -> torch.Tensor:
+        if self._exploration_batch_shape is None:
+            return mask
+
+        expected_batch_shape = self._exploration_batch_shape
+        mask_shape = tuple(mask.shape)
+        if mask_shape == expected_batch_shape:
+            return mask
+        if not self._mask_shape_is_prefix(mask_shape, expected_batch_shape):
+            return mask
+
+        expanded_mask = mask
+        for _ in range(len(expected_batch_shape) - mask.ndim):
+            expanded_mask = expanded_mask.unsqueeze(-1)
+        return expanded_mask.expand(expected_batch_shape)
+
+    @staticmethod
+    def _mask_shape_is_prefix(mask_shape: tuple[int, ...], expected_shape: tuple[int, ...]) -> bool:
+        return (
+            len(mask_shape) < len(expected_shape)
+            and mask_shape == expected_shape[:len(mask_shape)]
+        )
 
     def get_hyper_parameters(self) -> dict[str, Any]:
         std_matrix = self._get_std_matrix(self.log_stds.detach())

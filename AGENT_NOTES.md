@@ -40,6 +40,7 @@ Agents use this file for durable codebase notes. Keep only architecture, invaria
 - PPO rollout bootstrap should use a value-only path, not full `policy(..., deterministic=True)`.
 - Mutable scheduler-driven action-dist scalars must live in tensors/buffers, not Python floats.
 - For sticky distributions, keep `requires_previous_actions()` structurally stable even when stickiness anneals to `0`.
+- gSDE rollout noise is per `(env, agent)`, while episode-start masks are env-only. `GSDEActionDist` expands prefix masks across trailing batch dims; squashed gSDE entropy regularization uses the pre-squash Gaussian entropy proxy; interval reset mode must not call step reset on non-interval steps.
 - `MATPolicy` and `MATOrigPolicy` both assume `agent_mask` is a contiguous true-prefix. `MATOrigPolicy` depends on that structurally because it shifts previous-agent actions by index.
 - `MATOrigPolicy` now has the same compile toggles as `MATPolicy`; full action-generation/eval callables only compile when the wrapped action distributions are compile-friendly.
 - `MATOrigPolicy` rollout and `evaluate_actions()` must both zero log-probs for inactive agents. If only rollout masks them, PPO comparisons become misleading and can look like a KL bug.

@@ -259,7 +259,6 @@ def _collect_rollout_step(
             policy=policy,
             episode_start_mask=episode_start_mask,
             step_reset_mask=step_reset_mask,
-            batch_shape=batch_shape if (gsde_enabled and is_gsde_interval_reset_mode and step_reset_mask is None) else None,
         )
     timers.reset_noise_timings.append(timers.reset_noise_timer.get_duration())
 
