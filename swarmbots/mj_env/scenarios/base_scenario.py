@@ -351,6 +351,9 @@ class BaseScenario(abc.ABC):
         data = mujoco.MjData(model)
         return model, data
 
+    def add_render_geoms(self, scene: mujoco.MjvScene) -> None:
+        return
+
     def get_swarm_start_location(self) -> np.ndarray:
         start_xy = eval_fodp_2d((self.swarm_start_x, self.swarm_start_y), self.rng)
         return np.array(

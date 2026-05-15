@@ -9,6 +9,7 @@ from swarmbots.mj_env.quat_rot6d import quat_to_rot6d
 from swarmbots.mj_env.scenarios.base_scenario import BaseScenario, SwarmActDict, SwarmObsDict
 from swarmbots.mj_env.swarm.base_swarm import BaseSwarm
 from swarmbots.mj_env.swarm.swarm_connections import SwarmConnections
+from swarmbots.utils.mujoco_render_geoms import add_payload_centering_boundary_geoms
 
 PayloadShape = Literal["sphere", "box", "capsule"]
 
@@ -194,6 +195,15 @@ class PayloadPlaneScenario(BaseScenario):
             )
         else:
             raise AssertionError(f"Unhandled payload_shape: {self.payload_shape}")
+
+    def add_render_geoms(self, scene: mujoco.MjvScene) -> None:
+        if self.payload_centering_penalty_weight == 0.0:
+            return
+        add_payload_centering_boundary_geoms(
+            scene,
+            tolerance=self.payload_centering_tolerance,
+            half_length=self.plane_size,
+        )
 
     def reset_scenario(
         self,

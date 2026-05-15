@@ -13,6 +13,7 @@ import swarmbots.mj_env.mujoco_utils as mj_utils
 from swarmbots.mj_env.float_or_dist_params import FloatOrDistParams
 from swarmbots.mjw_env.scenarios.base_mjw_scenario import BaseMJWScenario, MJWRecordingCameraConfig, MJWRuntimeBindings
 from swarmbots.mjw_env.swarm.mjw_homogeneous_swarm import MJWHomogeneousSwarm
+from swarmbots.utils.mujoco_render_geoms import add_payload_centering_boundary_geoms
 
 PayloadShape = Literal["sphere", "box", "capsule"]
 
@@ -235,6 +236,15 @@ class MJWPayloadPlaneScenario(BaseMJWScenario):
             )
         else:
             raise AssertionError(f"Unhandled payload_shape: {self.payload_shape}")
+
+    def add_render_geoms(self, scene: mujoco.MjvScene) -> None:
+        if self.payload_centering_penalty_weight == 0.0:
+            return
+        add_payload_centering_boundary_geoms(
+            scene,
+            tolerance=self.payload_centering_tolerance,
+            half_length=self.plane_size,
+        )
 
     def get_single_observation_space(self) -> spaces.Dict:
         limbs_per_unit = self.swarm.config.limbs_per_unit
