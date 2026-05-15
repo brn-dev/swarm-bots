@@ -79,6 +79,7 @@ Agents use this file for durable codebase notes. Keep only architecture, invaria
 - `SwarmBotsEnv` delegates most behavior to scenario classes.
 - Reward info exposed in `info` should be weighted values only. Keep raw reward components internal.
 - `BaseScenario` no longer has a generic `compute_progress(...)`; scenarios own both reset baselines and per-step progress deltas.
+- Scenarios can add visual-only render overlays through `BaseScenario.add_render_geoms(scene)` on CPU env renders, and MJW live recording calls matching scenario methods opportunistically; these append `MjvScene` geoms after `Renderer.update_scene()` and must not be used for physics/model geometry.
 - Dedicated scenario pairs now exist on both backends:
   - payload: `PayloadPlaneScenario` / `MJWPayloadPlaneScenario`
   - dual payload: `DualPayloadPlaneScenario` / `MJWDualPayloadPlaneScenario`

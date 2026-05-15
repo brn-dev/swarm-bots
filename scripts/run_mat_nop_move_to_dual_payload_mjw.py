@@ -49,7 +49,7 @@ import swarmbots.mjw_env.scenarios.mjw_scenario_presets as mjw_scenario_presets
 
 
 CRITIC_STATE_PREFIXES = ("policy.critic.",)
-MJW_CCD_ITERATIONS = 48
+MJW_CCD_ITERATIONS = 64
 
 
 class SequentialRunProgress:

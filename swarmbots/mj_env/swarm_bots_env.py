@@ -271,6 +271,8 @@ class SwarmBotsEnv(gymnasium.Env):
 
         for camera in self.cameras:
             self._renderer.update_scene(self.data, camera=camera, scene_option=scene_option)
+            if self.render_mode != "depth_array":
+                self.scenario.add_render_geoms(self._renderer.scene)
             frames.append(self._renderer.render())
 
         if self.render_mode == "depth_array":

@@ -289,6 +289,9 @@ class MJWLiveEpisodeRecorder:
         data.time = snapshot.time
         mujoco.mj_forward(self._model, data)
         render_slot.renderer.update_scene(data, camera=render_slot.camera)
+        add_render_geoms = getattr(self._scenario, "add_render_geoms", None)
+        if callable(add_render_geoms):
+            add_render_geoms(render_slot.renderer.scene)
         return np.asarray(render_slot.renderer.render()).copy()
 
     def _finalize_episode(self, *, world_idx: int) -> None:
