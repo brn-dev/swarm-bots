@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import sys
+from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal
@@ -39,6 +40,7 @@ from swarmbots.learn.algos.world_modeling.ppo_wm_sampler import PPOWMSamplerConf
 from swarmbots.learn.discord_notifications import run_with_discord_notification
 from swarmbots.learn.gsde_reset import GSDEProbabilityResetMode
 from swarmbots.learn.nn_components.activations import ActivationFactory, activation_factory_name
+from swarmbots.learn.nn_components.nn_init import DEFAULT_ORTHOGONAL_GAIN
 from swarmbots.learn.obs_indices import ObsIndices
 from swarmbots.learn.scheduling.auto_lr_updater import make_auto_lr_updater
 from swarmbots.learn.scheduling.cosine_scheduler import CosineSchedulerConfig
@@ -53,6 +55,31 @@ from swarmbots.utils.run_paths import get_run_id_from_checkpoint_path
 
 ContinuousActionDistVariant = Literal["sticky_lr_beta", "lr_beta", "beta", "gsde", "squashed_diag_gaussian"]
 PolicyVariant = Literal["mat", "mat_dec", "mat_orig"]
+
+
+@dataclass(frozen=True)
+class MATInitGains:
+    obs_encoder: float = DEFAULT_ORTHOGONAL_GAIN
+    obs_encoder_projection: float | None = None
+    encoder_transformer_ff: float | None = None
+    decoder_token_encoder: float = DEFAULT_ORTHOGONAL_GAIN
+    decoder_token_encoder_projection: float | None = None
+    decoder_transformer_ff: float | None = None
+    actor_head: float = DEFAULT_ORTHOGONAL_GAIN
+    action_net: float = DEFAULT_ORTHOGONAL_GAIN
+    critic_local_projection: float = DEFAULT_ORTHOGONAL_GAIN
+    critic_value_regressor: float = DEFAULT_ORTHOGONAL_GAIN
+    critic_value_head: float = DEFAULT_ORTHOGONAL_GAIN
+
+
+@dataclass(frozen=True)
+class NOPInitGains:
+    pre_transition: float = DEFAULT_ORTHOGONAL_GAIN
+    transition_coembed: float = DEFAULT_ORTHOGONAL_GAIN
+    transition_transformer_ff: float | None = None
+    transition_head: float = DEFAULT_ORTHOGONAL_GAIN
+    pre_predictors: float = DEFAULT_ORTHOGONAL_GAIN
+    predictors: float = DEFAULT_ORTHOGONAL_GAIN
 
 
 def configure_float32_matmul_precision() -> None:
@@ -228,6 +255,8 @@ def run_experiment(
         mat_add_agent_embeddings: bool = True,
         mat_decoder_self_attention_mode: MATDecoderSelfAttentionMode = MATDecoderSelfAttentionMode.FULL_AUTOREGRESSIVE,
         act_fn_cls: ActivationFactory = nn.GELU,
+        mat_init_gains: MATInitGains = MATInitGains(),
+        nop_init_gains: NOPInitGains = NOPInitGains(),
         use_nop: bool = True,
         experiment_run_name: str = "mat_nop_swarm_bots_wall_mjw_batch_env_sweep",
 ) -> None:
@@ -288,6 +317,7 @@ def run_experiment(
         f"virtual_mini_batches={virtual_mini_batches}, n_epochs={n_epochs}, "
         f"continuous_action_dist={continuous_action_dist}, use_nop={use_nop}, "
         f"act_fn_cls={activation_factory_name(act_fn_cls)}, "
+        f"mat_init_gains={mat_init_gains}, nop_init_gains={nop_init_gains}, "
         f"mat_add_agent_embeddings={mat_add_agent_embeddings}, "
         f"mat_decoder_self_attention_mode={mat_decoder_self_attention_mode.name}"
     )
@@ -385,6 +415,7 @@ def run_experiment(
         mat_add_agent_embeddings=mat_add_agent_embeddings,
         mat_decoder_self_attention_mode=mat_decoder_self_attention_mode,
         act_fn_cls=act_fn_cls,
+        mat_init_gains=mat_init_gains,
     )
     policy = base_policy
     if use_nop:
@@ -398,6 +429,12 @@ def run_experiment(
                 compile_modules=compile_world_model_modules,
                 compile_mode=policy_compile_mode,
                 act_fn_cls=act_fn_cls,
+                wm_pre_transition_init_gain=nop_init_gains.pre_transition,
+                transition_model_coembed_init_gain=nop_init_gains.transition_coembed,
+                transition_model_transformer_ff_init_gain=nop_init_gains.transition_transformer_ff,
+                transition_model_head_init_gain=nop_init_gains.transition_head,
+                wm_pre_predictors_init_gain=nop_init_gains.pre_predictors,
+                wm_predictor_init_gain=nop_init_gains.predictors,
                 transition_model_dropout=0.0,
                 wm_pre_transition_dims=[enc_d_model],
                 d_model_transition_model=transition_model_d_model,
@@ -572,6 +609,8 @@ def run_experiment(
         "continuous_action_dist": continuous_action_dist,
         "use_nop": use_nop,
         "act_fn_cls": activation_factory_name(act_fn_cls),
+        "mat_init_gains": asdict(mat_init_gains),
+        "nop_init_gains": asdict(nop_init_gains),
         "mat_add_agent_embeddings": mat_add_agent_embeddings,
         "mat_decoder_self_attention_mode": mat_decoder_self_attention_mode.name,
         "experiment_run_name": experiment_run_name,
@@ -621,6 +660,7 @@ def _make_base_policy(
         mat_add_agent_embeddings: bool,
         mat_decoder_self_attention_mode: MATDecoderSelfAttentionMode,
         act_fn_cls: ActivationFactory,
+        mat_init_gains: MATInitGains,
 ) -> MATPolicy | MATDecPolicy | MATOrigPolicy:
     continuous_config = make_continuous_config(
         variant=continuous_action_dist,
@@ -650,6 +690,9 @@ def _make_base_policy(
                     num_layers=2,
                     dim_feedforward=enc_d_model * 2,
                     add_agent_embeddings=mat_add_agent_embeddings,
+                    linear_init_gain=mat_init_gains.obs_encoder,
+                    linear_projection_init_gain=mat_init_gains.obs_encoder_projection,
+                    transformer_ff_init_gain=mat_init_gains.encoder_transformer_ff,
                     local_obs_encoder_hidden_dims=[enc_d_model, enc_d_model],
                 ),
                 decoder_config=MATDecoderConfig(
@@ -658,6 +701,10 @@ def _make_base_policy(
                     num_layers=2,
                     dim_feedforward=dec_d_model * 2,
                     add_agent_embeddings=mat_add_agent_embeddings,
+                    token_encoder_init_gain=mat_init_gains.decoder_token_encoder,
+                    token_encoder_projection_init_gain=mat_init_gains.decoder_token_encoder_projection,
+                    transformer_ff_init_gain=mat_init_gains.decoder_transformer_ff,
+                    actor_head_init_gain=mat_init_gains.actor_head,
                     query_encoder_hidden_dims=[2 * dec_d_model],
                     context_encoder_hidden_dims=[2 * dec_d_model],
                     memory_dims=None,
@@ -668,6 +715,9 @@ def _make_base_policy(
                     n_value_regressor_hidden_layers=1,
                     use_popart=use_popart,
                     popart_config=popart_config,
+                    local_projection_init_gain=mat_init_gains.critic_local_projection,
+                    value_regressor_init_gain=mat_init_gains.critic_value_regressor,
+                    value_head_init_gain=mat_init_gains.critic_value_head,
                 ),
                 dropout=0.0,
                 act_fn_cls=act_fn_cls,
@@ -676,6 +726,7 @@ def _make_base_policy(
                 max_agents=20,
                 compile_modules=compile_policy_modules,
                 compile_mode=policy_compile_mode,
+                action_net_init_gain=mat_init_gains.action_net,
             ),
         )
 
@@ -689,6 +740,9 @@ def _make_base_policy(
                     num_layers=2,
                     dim_feedforward=enc_d_model * 2,
                     add_agent_embeddings=mat_add_agent_embeddings,
+                    linear_init_gain=mat_init_gains.obs_encoder,
+                    linear_projection_init_gain=mat_init_gains.obs_encoder_projection,
+                    transformer_ff_init_gain=mat_init_gains.encoder_transformer_ff,
                     local_obs_encoder_hidden_dims=[enc_d_model, enc_d_model],
                 ),
                 critic_config=MATCriticConfig(
@@ -696,6 +750,9 @@ def _make_base_policy(
                     n_value_regressor_hidden_layers=1,
                     use_popart=use_popart,
                     popart_config=popart_config,
+                    local_projection_init_gain=mat_init_gains.critic_local_projection,
+                    value_regressor_init_gain=mat_init_gains.critic_value_regressor,
+                    value_head_init_gain=mat_init_gains.critic_value_head,
                 ),
                 actor_head_hidden_dims=[dec_d_model],
                 dropout=0.0,
@@ -705,6 +762,8 @@ def _make_base_policy(
                 max_agents=20,
                 compile_modules=compile_policy_modules,
                 compile_mode=policy_compile_mode,
+                actor_head_init_gain=mat_init_gains.actor_head,
+                action_net_init_gain=mat_init_gains.action_net,
             ),
         )
 

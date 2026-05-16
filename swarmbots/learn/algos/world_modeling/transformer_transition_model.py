@@ -8,7 +8,11 @@ from torch import nn
 
 from swarmbots.learn.nn_components.activations import ActivationFactory, make_activation
 from swarmbots.learn.nn_components.mlp import MLP
-from swarmbots.learn.nn_components.nn_init import init_linear_orthogonal
+from swarmbots.learn.nn_components.nn_init import (
+    DEFAULT_ORTHOGONAL_GAIN,
+    init_transformer_feedforward,
+    make_init_linear_orthogonal,
+)
 
 
 @dataclass(frozen=True)
@@ -26,6 +30,9 @@ class TransformerTransitionModelConfig:
     predict_delta: bool = True
     coembed_mlp_hidden_dims: list[int] | None = None
     head_mlp_hidden_dims: list[int] | None = None
+    coembed_init_gain: float = DEFAULT_ORTHOGONAL_GAIN
+    head_init_gain: float = DEFAULT_ORTHOGONAL_GAIN
+    transformer_ff_init_gain: float | None = None
     norm_first: bool = True
     layer_norm_eps: float = 1e-5
 
@@ -55,20 +62,24 @@ class TransformerTransitionModel(nn.Module):
         self.predict_delta = config.predict_delta
         self.coembed_mlp_hidden_dims = config.coembed_mlp_hidden_dims
         self.head_mlp_hidden_dims = config.head_mlp_hidden_dims
+        self.coembed_init_gain = config.coembed_init_gain
+        self.head_init_gain = config.head_init_gain
+        self.transformer_ff_init_gain = config.transformer_ff_init_gain
         self.norm_first = config.norm_first
         self.layer_norm_eps = config.layer_norm_eps
         self.enable_nested_tensor = not config.norm_first
 
         in_dim = config.latent_dim + config.action_dim
+        coembed_linear_init = make_init_linear_orthogonal(config.coembed_init_gain)
         if config.coembed_mlp_hidden_dims is None:
             self.coembed: nn.Module = nn.Linear(in_dim, config.d_model)
-            init_linear_orthogonal(self.coembed)
+            coembed_linear_init(self.coembed)
         else:
             self.coembed = MLP(
                 input_dim=in_dim,
                 hidden_dims=[*config.coembed_mlp_hidden_dims, config.d_model],
                 end_with_act_fn=True,
-                linear_init=init_linear_orthogonal,
+                linear_init=coembed_linear_init,
                 act_fn_cls=config.act_fn_cls,
             )
 
@@ -77,32 +88,37 @@ class TransformerTransitionModel(nn.Module):
             self.agent_embeddings = nn.Parameter(torch.zeros(1, config.n_agents, config.d_model), requires_grad=True)
             nn.init.orthogonal_(self.agent_embeddings)
 
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=config.d_model,
+            nhead=config.nhead,
+            dim_feedforward=config.dim_feedforward,
+            dropout=config.dropout,
+            activation=make_activation(config.act_fn_cls, num_features=config.dim_feedforward),
+            layer_norm_eps=config.layer_norm_eps,
+            batch_first=True,
+            norm_first=config.norm_first,
+            bias=True,
+        )
+        if config.transformer_ff_init_gain is not None:
+            init_transformer_feedforward(encoder_layer, gain=config.transformer_ff_init_gain)
+
         self.encoder = nn.TransformerEncoder(
-            encoder_layer=nn.TransformerEncoderLayer(
-                d_model=config.d_model,
-                nhead=config.nhead,
-                dim_feedforward=config.dim_feedforward,
-                dropout=config.dropout,
-                activation=make_activation(config.act_fn_cls, num_features=config.dim_feedforward),
-                layer_norm_eps=config.layer_norm_eps,
-                batch_first=True,
-                norm_first=config.norm_first,
-                bias=True,
-            ),
+            encoder_layer=encoder_layer,
             num_layers=config.num_layers,
             norm=nn.LayerNorm(config.d_model, eps=config.layer_norm_eps),
             enable_nested_tensor=self.enable_nested_tensor,
         )
 
+        head_linear_init = make_init_linear_orthogonal(config.head_init_gain)
         if config.head_mlp_hidden_dims is None:
             self.head: nn.Module = nn.Linear(config.d_model, config.latent_dim)
-            init_linear_orthogonal(self.head)
+            head_linear_init(self.head)
         else:
             self.head = MLP(
                 input_dim=config.d_model,
                 hidden_dims=[*config.head_mlp_hidden_dims, config.latent_dim],
                 end_with_act_fn=False,
-                linear_init=init_linear_orthogonal,
+                linear_init=head_linear_init,
                 act_fn_cls=config.act_fn_cls,
             )
 
@@ -121,6 +137,9 @@ class TransformerTransitionModel(nn.Module):
             "predict_delta": self.predict_delta,
             "coembed_mlp_hidden_dims": self.coembed_mlp_hidden_dims,
             "head_mlp_hidden_dims": self.head_mlp_hidden_dims,
+            "coembed_init_gain": self.coembed_init_gain,
+            "head_init_gain": self.head_init_gain,
+            "transformer_ff_init_gain": self.transformer_ff_init_gain,
             "norm_first": self.norm_first,
             "layer_norm_eps": self.layer_norm_eps,
             "enable_nested_tensor": self.enable_nested_tensor,

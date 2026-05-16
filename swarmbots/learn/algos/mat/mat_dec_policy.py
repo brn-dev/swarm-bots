@@ -23,7 +23,7 @@ from swarmbots.learn.losses import LossDict, LossMetrics
 from swarmbots.learn.nn_components.activations import ActivationFactory
 from swarmbots.learn.nn_components.deep_set import DeepSetCritic
 from swarmbots.learn.nn_components.mlp import MLP
-from swarmbots.learn.nn_components.nn_init import init_linear_orthogonal
+from swarmbots.learn.nn_components.nn_init import DEFAULT_ORTHOGONAL_GAIN, make_init_linear_orthogonal
 from swarmbots.learn.serialization_utils import serialize_dataclass, serialize_value
 
 
@@ -39,6 +39,8 @@ class MATDecPolicyConfig:
     max_agents: int | None = None
     compile_modules: bool = False
     compile_mode: str = "default"
+    actor_head_init_gain: float = DEFAULT_ORTHOGONAL_GAIN
+    action_net_init_gain: float = DEFAULT_ORTHOGONAL_GAIN
 
 
 class MATDecPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
@@ -85,7 +87,7 @@ class MATDecPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
                 input_dim=self.d_model_encoder,
                 hidden_dims=config.actor_head_hidden_dims,
                 end_with_act_fn=True,
-                linear_init=init_linear_orthogonal,
+                linear_init=make_init_linear_orthogonal(config.actor_head_init_gain),
                 act_fn_cls=config.act_fn_cls,
             )
             latent_pi_dim = config.actor_head_hidden_dims[-1]
@@ -98,6 +100,7 @@ class MATDecPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
             action_space=env.action_space,
             continuous_config=config.continuous_config,
             bernoulli_config=config.bernoulli_config,
+            action_net_initialization=make_init_linear_orthogonal(config.action_net_init_gain),
         )
 
         self.critic = DeepSetCritic(
@@ -107,6 +110,9 @@ class MATDecPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
             num_global_features=self.hidden_global_vars_dim,
             act_fn_cls=config.act_fn_cls,
             context_in_elements=self.hidden_global_vars_dim > 0,
+            local_projection_linear_init_gain=config.critic_config.local_projection_init_gain,
+            value_regressor_linear_init_gain=config.critic_config.value_regressor_init_gain,
+            value_head_linear_init_gain=config.critic_config.value_head_init_gain,
             use_popart=config.critic_config.use_popart,
             popart_beta=config.critic_config.popart_config.beta,
             popart_eps=config.critic_config.popart_config.eps,

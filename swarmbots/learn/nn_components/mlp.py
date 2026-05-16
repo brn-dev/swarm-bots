@@ -13,6 +13,7 @@ class MLP(nn.Sequential):
             end_with_act_fn: bool,
             start_with_act_fn: bool = False,
             linear_init: LinearInitialization = init_linear_orthogonal,
+            final_linear_init: LinearInitialization | None = None,
             act_fn_cls: ActivationFactory = nn.Tanh,
     ):
         assert len(hidden_dims) > 0
@@ -30,7 +31,11 @@ class MLP(nn.Sequential):
 
         for i in range(n_layers):
             linear = nn.Linear(dims[i], dims[i + 1])
-            linear_init(linear)
+            is_final_without_activation = i == n_layers - 1 and not end_with_act_fn
+            if is_final_without_activation and final_linear_init is not None:
+                final_linear_init(linear)
+            else:
+                linear_init(linear)
             modules.append(linear)
 
             if i < n_layers - 1 or end_with_act_fn:

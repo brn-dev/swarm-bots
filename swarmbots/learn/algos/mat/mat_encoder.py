@@ -4,7 +4,11 @@ import torch
 from torch import nn
 
 from swarmbots.learn.nn_components.activations import ActivationFactory, make_activation
-from swarmbots.learn.nn_components.nn_init import init_linear_orthogonal
+from swarmbots.learn.nn_components.nn_init import (
+    DEFAULT_ORTHOGONAL_GAIN,
+    init_transformer_feedforward,
+    make_init_linear_orthogonal,
+)
 from swarmbots.learn.nn_components.mlp import MLP
 
 
@@ -20,6 +24,9 @@ class MATEncoderConfig:
     layer_norm_eps: float = 1e-5
     bias: bool = True
     add_agent_embeddings: bool = True
+    linear_init_gain: float = DEFAULT_ORTHOGONAL_GAIN
+    linear_projection_init_gain: float | None = None
+    transformer_ff_init_gain: float | None = None
     local_obs_encoder_hidden_dims: list[int] | None = None
     global_obs_encoder_hidden_dims: list[int] | None = None
 
@@ -40,46 +47,58 @@ class MATEncoder(nn.Module):
         self.has_global_obs: bool = global_obs_dim > 0
         self.add_agent_embeddings = config.add_agent_embeddings
         self.max_agents = max_agents
+        linear_init = make_init_linear_orthogonal(config.linear_init_gain)
+        projection_linear_init = (
+            linear_init
+            if config.linear_projection_init_gain is None
+            else make_init_linear_orthogonal(config.linear_projection_init_gain)
+        )
 
         if config.local_obs_encoder_hidden_dims is None or len(config.local_obs_encoder_hidden_dims) == 0:
             self.local_obs_encoder = nn.Linear(self.local_obs_dim, config.d_model)
-            init_linear_orthogonal(self.local_obs_encoder)
+            projection_linear_init(self.local_obs_encoder)
         else:
             self.local_obs_encoder = MLP(
                 input_dim=self.local_obs_dim,
                 hidden_dims=[*config.local_obs_encoder_hidden_dims, config.d_model],
                 end_with_act_fn=False,
-                linear_init=init_linear_orthogonal,
+                linear_init=linear_init,
+                final_linear_init=projection_linear_init,
                 act_fn_cls=config.act_fn_cls,
             )
 
         if self.has_global_obs:
             if config.global_obs_encoder_hidden_dims is None or len(config.global_obs_encoder_hidden_dims) == 0:
                 self.global_obs_encoder = nn.Linear(self.global_obs_dim, config.d_model)
-                init_linear_orthogonal(self.global_obs_encoder)
+                projection_linear_init(self.global_obs_encoder)
             else:
                 self.global_obs_encoder = MLP(
                     input_dim=self.global_obs_dim,
                     hidden_dims=[*config.global_obs_encoder_hidden_dims, config.d_model],
                     end_with_act_fn=False,
-                    linear_init=init_linear_orthogonal,
+                    linear_init=linear_init,
+                    final_linear_init=projection_linear_init,
                     act_fn_cls=config.act_fn_cls,
                 )
         else:
             self.global_obs_encoder = None
 
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=config.d_model,
+            nhead=config.nhead,
+            dim_feedforward=config.dim_feedforward,
+            dropout=config.dropout,
+            activation=make_activation(config.act_fn_cls, num_features=config.dim_feedforward),
+            layer_norm_eps=config.layer_norm_eps,
+            batch_first=True,
+            norm_first=config.norm_first,
+            bias=config.bias,
+        )
+        if config.transformer_ff_init_gain is not None:
+            init_transformer_feedforward(encoder_layer, gain=config.transformer_ff_init_gain)
+
         self.encoder = nn.TransformerEncoder(
-            encoder_layer=nn.TransformerEncoderLayer(
-                d_model=config.d_model,
-                nhead=config.nhead,
-                dim_feedforward=config.dim_feedforward,
-                dropout=config.dropout,
-                activation=make_activation(config.act_fn_cls, num_features=config.dim_feedforward),
-                layer_norm_eps=config.layer_norm_eps,
-                batch_first=True,
-                norm_first=config.norm_first,
-                bias=config.bias,
-            ),
+            encoder_layer=encoder_layer,
             num_layers=config.num_layers,
             norm=nn.LayerNorm(config.d_model),
             enable_nested_tensor=not config.norm_first,

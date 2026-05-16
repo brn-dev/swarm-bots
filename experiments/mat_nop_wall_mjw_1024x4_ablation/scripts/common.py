@@ -12,7 +12,13 @@ if str(REPO_ROOT) not in sys.path:
 from swarmbots.learn.algos.mat.mat_decoder import MATDecoderSelfAttentionMode
 from swarmbots.learn.nn_components.activations import ActivationFactory
 
-from experiments.mat_nop_wall_mjw_common import ContinuousActionDistVariant, PolicyVariant, run_experiment
+from experiments.mat_nop_wall_mjw_common import (
+    ContinuousActionDistVariant,
+    MATInitGains,
+    NOPInitGains,
+    PolicyVariant,
+    run_experiment,
+)
 
 EXPERIMENT_RUN_NAME = "mat_nop_swarm_bots_wall_mjw_1024x4_ablation"
 
@@ -26,6 +32,8 @@ def run_ablation(
         mat_add_agent_embeddings: bool = True,
         mat_decoder_self_attention_mode: MATDecoderSelfAttentionMode = MATDecoderSelfAttentionMode.FULL_AUTOREGRESSIVE,
         act_fn_cls: ActivationFactory = nn.GELU,
+        mat_init_gains: MATInitGains = MATInitGains(),
+        nop_init_gains: NOPInitGains = NOPInitGains(),
         use_nop: bool = True,
 ) -> None:
     run_experiment(
@@ -38,6 +46,8 @@ def run_ablation(
         mat_add_agent_embeddings=mat_add_agent_embeddings,
         mat_decoder_self_attention_mode=mat_decoder_self_attention_mode,
         act_fn_cls=act_fn_cls,
+        mat_init_gains=mat_init_gains,
+        nop_init_gains=nop_init_gains,
         use_nop=use_nop,
         experiment_run_name=EXPERIMENT_RUN_NAME,
     )

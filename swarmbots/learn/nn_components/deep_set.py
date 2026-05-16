@@ -8,7 +8,12 @@ from torch import nn
 
 from swarmbots.learn.nn_components.activations import ActivationFactory
 from swarmbots.learn.nn_components.mlp import MLP
-from swarmbots.learn.nn_components.nn_init import LinearInitialization, init_linear_orthogonal
+from swarmbots.learn.nn_components.nn_init import (
+    DEFAULT_ORTHOGONAL_GAIN,
+    LinearInitialization,
+    init_linear_orthogonal,
+    make_init_linear_orthogonal,
+)
 from swarmbots.learn.nn_components.popart import PopArtLinear
 
 PoolMode = Literal["mean", "sum", "max"]
@@ -117,6 +122,9 @@ class DeepSetCritic(nn.Module):
         set_dim: int = 1,
         pool_mode: PoolMode = "mean",
         linear_init: LinearInitialization = init_linear_orthogonal,
+        local_projection_linear_init_gain: float = DEFAULT_ORTHOGONAL_GAIN,
+        value_regressor_linear_init_gain: float = DEFAULT_ORTHOGONAL_GAIN,
+        value_head_linear_init_gain: float = DEFAULT_ORTHOGONAL_GAIN,
         act_fn_cls: ActivationFactory = nn.Tanh,
         context_in_elements: bool = False,
         use_popart: bool = False,
@@ -134,6 +142,15 @@ class DeepSetCritic(nn.Module):
         if self.context_in_elements and self.num_global_features == 0:
             raise ValueError("context_in_elements requires num_global_features > 0")
 
+        if linear_init is init_linear_orthogonal:
+            local_projection_linear_init = make_init_linear_orthogonal(local_projection_linear_init_gain)
+            value_regressor_linear_init = make_init_linear_orthogonal(value_regressor_linear_init_gain)
+            value_head_linear_init = make_init_linear_orthogonal(value_head_linear_init_gain)
+        else:
+            local_projection_linear_init = linear_init
+            value_regressor_linear_init = linear_init
+            value_head_linear_init = linear_init
+
         element_input_features = self.num_local_features + (self.num_global_features if self.context_in_elements else 0)
         context_features_after_pool = 0 if self.context_in_elements else self.num_global_features
 
@@ -142,7 +159,7 @@ class DeepSetCritic(nn.Module):
                 input_dim=element_input_features,
                 hidden_dims=local_projection_hidden_dims,
                 end_with_act_fn=True,
-                linear_init=linear_init,
+                linear_init=local_projection_linear_init,
                 act_fn_cls=act_fn_cls,
             )
             pooled_dim = int(local_projection_hidden_dims[-1])
@@ -156,7 +173,7 @@ class DeepSetCritic(nn.Module):
                 input_dim=value_regressor_input_dim,
                 hidden_dims=value_regressor_hidden_dims,
                 end_with_act_fn=True,
-                linear_init=linear_init,
+                linear_init=value_regressor_linear_init,
                 act_fn_cls=act_fn_cls,
             )
             value_regressor_head_input_dim = int(value_regressor_hidden_dims[-1])
@@ -177,7 +194,7 @@ class DeepSetCritic(nn.Module):
         else:
             self.popart_head = None
             value_regressor_head = nn.Linear(value_regressor_head_input_dim, 1)
-            linear_init(value_regressor_head)
+            value_head_linear_init(value_regressor_head)
 
         value_regressor = nn.Sequential(value_regressor_trunk, value_regressor_head)
 
