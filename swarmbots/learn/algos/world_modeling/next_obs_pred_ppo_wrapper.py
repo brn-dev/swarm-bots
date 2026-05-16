@@ -234,6 +234,9 @@ class NextObsPredWrapper(BasePPOPolicy[PPOWMSamples, PPOWMSamplerConfig], NextOb
                     rot6d_predictor_hidden_dims=self._wm_rot6d_predictor_hidden_dims,
                     binary_predictor_hidden_dims=self._wm_binary_predictor_hidden_dims,
                 ),
+                "wm_pre_transition_init_gain": self._wm_pre_transition_init_gain,
+                "wm_pre_predictors_init_gain": self._wm_pre_predictors_init_gain,
+                "wm_predictor_init_gain": self._wm_predictor_init_gain,
             },
         }
 
@@ -345,6 +348,9 @@ class NextObsPredWrapper(BasePPOPolicy[PPOWMSamples, PPOWMSamplerConfig], NextOb
         self._wm_transition_model_dropout = float(world_model_config.transition_model_dropout)
         self._wm_pre_transition_dims = self._copy_optional_list(world_model_config.wm_pre_transition_dims)
         self._wm_pre_predictors_dims = self._copy_optional_list(world_model_config.wm_pre_predictors_dims)
+        self._wm_pre_transition_init_gain = float(world_model_config.wm_pre_transition_init_gain)
+        self._wm_pre_predictors_init_gain = float(world_model_config.wm_pre_predictors_init_gain)
+        self._wm_predictor_init_gain = float(world_model_config.wm_predictor_init_gain)
         self._wm_scalar_predictor_hidden_dims = self._copy_optional_list(
             world_model_config.wm_scalar_predictor_hidden_dims
         )

@@ -6,7 +6,7 @@ from torch import nn
 
 from swarmbots.learn.nn_components.custom_transformer_decoder_layer import CustomTransformerDecoderLayer
 from swarmbots.learn.nn_components.activations import ActivationFactory, make_activation
-from swarmbots.learn.nn_components.nn_init import DEFAULT_ORTHOGONAL_GAIN
+from swarmbots.learn.nn_components.nn_init import DEFAULT_ORTHOGONAL_GAIN, reinitialize_transformer_stack
 
 
 class MATDecoderSelfAttentionMode(Enum):
@@ -68,11 +68,15 @@ class MATDecoder(nn.Module):
                 batch_first=True,
                 norm_first=config.norm_first,
                 bias=config.bias,
-                feedforward_init_gain=config.transformer_ff_init_gain,
             ),
             num_layers=config.num_layers,
             norm=nn.LayerNorm(self.d_model),
         )
+        if config.transformer_ff_init_gain is not None:
+            reinitialize_transformer_stack(
+                self.decoder,
+                feedforward_init_gain=config.transformer_ff_init_gain,
+            )
 
         self.register_buffer(
             "parallel_attention_mask",

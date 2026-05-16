@@ -6,8 +6,8 @@ from torch import nn
 from swarmbots.learn.nn_components.activations import ActivationFactory, make_activation
 from swarmbots.learn.nn_components.nn_init import (
     DEFAULT_ORTHOGONAL_GAIN,
-    init_transformer_feedforward,
     make_init_linear_orthogonal,
+    reinitialize_transformer_stack,
 )
 from swarmbots.learn.nn_components.mlp import MLP
 
@@ -94,15 +94,17 @@ class MATEncoder(nn.Module):
             norm_first=config.norm_first,
             bias=config.bias,
         )
-        if config.transformer_ff_init_gain is not None:
-            init_transformer_feedforward(encoder_layer, gain=config.transformer_ff_init_gain)
-
         self.encoder = nn.TransformerEncoder(
             encoder_layer=encoder_layer,
             num_layers=config.num_layers,
             norm=nn.LayerNorm(config.d_model),
             enable_nested_tensor=not config.norm_first,
         )
+        if config.transformer_ff_init_gain is not None:
+            reinitialize_transformer_stack(
+                self.encoder,
+                feedforward_init_gain=config.transformer_ff_init_gain,
+            )
 
         self.agent_embeddings: nn.Parameter | None = None
         if self.add_agent_embeddings:

@@ -46,6 +46,7 @@ Agents use this file for durable codebase notes. Keep only architecture, invaria
 - `MATPolicy` and `MATOrigPolicy` both assume `agent_mask` is a contiguous true-prefix. `MATOrigPolicy` depends on that structurally because it shifts previous-agent actions by index.
 - `MATOrigPolicy` now has the same compile toggles as `MATPolicy`; full action-generation/eval callables only compile when the wrapped action distributions are compile-friendly.
 - `MATOrigPolicy` rollout and `evaluate_actions()` must both zero log-probs for inactive agents. If only rollout masks them, PPO comparisons become misleading and can look like a KL bug.
+- `nn.TransformerEncoder` / `nn.TransformerDecoder` clone prototype layers with identical initial parameters. Defaults intentionally preserve this old behavior; MAT/RMAT/NOP only call `reinitialize_transformer_stack(...)` when a non-`None` transformer FF init gain opts into proper init.
 
 ## Recurrent / WM Gotchas
 - `RMATPolicy` keeps rollout-time temporal state inside the policy.

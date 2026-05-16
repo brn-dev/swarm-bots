@@ -5,6 +5,7 @@ from common import MATInitGains, NOPInitGains, run_ablation
 
 def main() -> None:
     hidden_init_gain = 1.5
+    transformer_stack_init_gain = 1.5
     output_init_gain = 0.01
 
     run_ablation(
@@ -13,10 +14,10 @@ def main() -> None:
         mat_init_gains=MATInitGains(
             obs_encoder=hidden_init_gain,
             obs_encoder_projection=1.0,
-            encoder_transformer_ff=hidden_init_gain,
+            encoder_transformer_ff=transformer_stack_init_gain,
             decoder_token_encoder=hidden_init_gain,
             decoder_token_encoder_projection=1.0,
-            decoder_transformer_ff=hidden_init_gain,
+            decoder_transformer_ff=transformer_stack_init_gain,
             actor_head=hidden_init_gain,
             action_net=output_init_gain,
             critic_local_projection=hidden_init_gain,
@@ -26,7 +27,7 @@ def main() -> None:
         nop_init_gains=NOPInitGains(
             pre_transition=hidden_init_gain,
             transition_coembed=hidden_init_gain,
-            transition_transformer_ff=hidden_init_gain,
+            transition_transformer_ff=transformer_stack_init_gain,
             transition_head=output_init_gain,
             pre_predictors=hidden_init_gain,
             predictors=output_init_gain,

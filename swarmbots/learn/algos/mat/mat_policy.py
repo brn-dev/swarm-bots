@@ -241,6 +241,7 @@ class MATPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
                 "max_agents": self.max_agents,
                 "compile_modules": self.config.compile_modules,
                 "compile_mode": self.config.compile_mode,
+                "action_net_init_gain": self.config.action_net_init_gain,
                 "action_dist_compile_friendly": self.action_dist.compile_friendly,
             }
         }
