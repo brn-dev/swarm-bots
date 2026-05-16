@@ -80,13 +80,19 @@ class SquashedDiagGaussianActionDist(DiagGaussianActionDist):
             agent_mask: torch.Tensor | None = None,
             action_splitter: ActionMetricsSplitterInput = None,
     ) -> tuple[LossDict, LossMetrics]:
-        _ = action_splitter
+        ent_loss, ent_loss_metrics = self.compute_entropy_loss(
+            agent_mask=agent_mask,
+            action_splitter=action_splitter,
+        )
         action_magnitude_loss, action_magnitude_metrics = self.compute_action_magnitude_loss(
             agent_mask=agent_mask
         )
-        if action_magnitude_loss is None:
-            return {}, action_magnitude_metrics
-        return {"action_magnitude": action_magnitude_loss}, action_magnitude_metrics
+        losses: LossDict = {}
+        if ent_loss is not None:
+            losses["entropy"] = ent_loss
+        if action_magnitude_loss is not None:
+            losses["action_magnitude"] = action_magnitude_loss
+        return losses, {**ent_loss_metrics, **action_magnitude_metrics}
 
     def sample(
             self,
