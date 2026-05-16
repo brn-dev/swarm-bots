@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Callable, Literal, TypedDict
+from typing import Literal, TypedDict
 
 import torch
 from torch import nn
 
+from swarmbots.learn.nn_components.activations import ActivationFactory
 from swarmbots.learn.nn_components.mlp import MLP
 from swarmbots.learn.nn_components.nn_init import LinearInitialization, init_linear_orthogonal
 from swarmbots.learn.nn_components.popart import PopArtLinear
@@ -116,7 +117,7 @@ class DeepSetCritic(nn.Module):
         set_dim: int = 1,
         pool_mode: PoolMode = "mean",
         linear_init: LinearInitialization = init_linear_orthogonal,
-        act_fn_cls: Callable[[], nn.Module] = nn.Tanh,
+        act_fn_cls: ActivationFactory = nn.Tanh,
         context_in_elements: bool = False,
         use_popart: bool = False,
         popart_beta: float = 3e-4,

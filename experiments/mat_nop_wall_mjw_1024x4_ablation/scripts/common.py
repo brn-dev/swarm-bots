@@ -10,6 +10,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from swarmbots.learn.algos.mat.mat_decoder import MATDecoderSelfAttentionMode
+from swarmbots.learn.nn_components.activations import ActivationFactory
 
 from experiments.mat_nop_wall_mjw_common import ContinuousActionDistVariant, PolicyVariant, run_experiment
 
@@ -24,7 +25,7 @@ def run_ablation(
         policy_variant: PolicyVariant = "mat",
         mat_add_agent_embeddings: bool = True,
         mat_decoder_self_attention_mode: MATDecoderSelfAttentionMode = MATDecoderSelfAttentionMode.FULL_AUTOREGRESSIVE,
-        act_fn_cls: type[nn.Module] = nn.GELU,
+        act_fn_cls: ActivationFactory = nn.GELU,
         use_nop: bool = True,
 ) -> None:
     run_experiment(

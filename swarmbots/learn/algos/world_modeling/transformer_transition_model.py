@@ -6,6 +6,7 @@ from typing import Any
 import torch
 from torch import nn
 
+from swarmbots.learn.nn_components.activations import ActivationFactory, make_activation
 from swarmbots.learn.nn_components.mlp import MLP
 from swarmbots.learn.nn_components.nn_init import init_linear_orthogonal
 
@@ -20,7 +21,7 @@ class TransformerTransitionModelConfig:
     num_layers: int = 2
     dim_feedforward: int = 256
     dropout: float = 0.0
-    act_fn_cls: type[nn.Module] = nn.ReLU
+    act_fn_cls: ActivationFactory = nn.ReLU
     add_agent_embeddings: bool = True
     predict_delta: bool = True
     coembed_mlp_hidden_dims: list[int] | None = None
@@ -82,7 +83,7 @@ class TransformerTransitionModel(nn.Module):
                 nhead=config.nhead,
                 dim_feedforward=config.dim_feedforward,
                 dropout=config.dropout,
-                activation=config.act_fn_cls(),
+                activation=make_activation(config.act_fn_cls, num_features=config.dim_feedforward),
                 layer_norm_eps=config.layer_norm_eps,
                 batch_first=True,
                 norm_first=config.norm_first,

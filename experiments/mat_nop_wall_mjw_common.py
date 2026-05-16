@@ -38,6 +38,7 @@ from swarmbots.learn.algos.world_modeling.next_obs_pred_ppo_wrapper import NOPWo
 from swarmbots.learn.algos.world_modeling.ppo_wm_sampler import PPOWMSamplerConfig
 from swarmbots.learn.discord_notifications import run_with_discord_notification
 from swarmbots.learn.gsde_reset import GSDEProbabilityResetMode
+from swarmbots.learn.nn_components.activations import ActivationFactory, activation_factory_name
 from swarmbots.learn.obs_indices import ObsIndices
 from swarmbots.learn.scheduling.auto_lr_updater import make_auto_lr_updater
 from swarmbots.learn.scheduling.cosine_scheduler import CosineSchedulerConfig
@@ -226,7 +227,7 @@ def run_experiment(
         policy_variant: PolicyVariant = "mat",
         mat_add_agent_embeddings: bool = True,
         mat_decoder_self_attention_mode: MATDecoderSelfAttentionMode = MATDecoderSelfAttentionMode.FULL_AUTOREGRESSIVE,
-        act_fn_cls: type[nn.Module] = nn.GELU,
+        act_fn_cls: ActivationFactory = nn.GELU,
         use_nop: bool = True,
         experiment_run_name: str = "mat_nop_swarm_bots_wall_mjw_batch_env_sweep",
 ) -> None:
@@ -286,7 +287,7 @@ def run_experiment(
         f"{num_envs} envs x {rollout_steps_per_env} steps/env = {rollout_samples}, "
         f"virtual_mini_batches={virtual_mini_batches}, n_epochs={n_epochs}, "
         f"continuous_action_dist={continuous_action_dist}, use_nop={use_nop}, "
-        f"act_fn_cls={act_fn_cls.__module__}.{act_fn_cls.__qualname__}, "
+        f"act_fn_cls={activation_factory_name(act_fn_cls)}, "
         f"mat_add_agent_embeddings={mat_add_agent_embeddings}, "
         f"mat_decoder_self_attention_mode={mat_decoder_self_attention_mode.name}"
     )
@@ -570,7 +571,7 @@ def run_experiment(
         "variant_name": variant_name,
         "continuous_action_dist": continuous_action_dist,
         "use_nop": use_nop,
-        "act_fn_cls": f"{act_fn_cls.__module__}.{act_fn_cls.__qualname__}",
+        "act_fn_cls": activation_factory_name(act_fn_cls),
         "mat_add_agent_embeddings": mat_add_agent_embeddings,
         "mat_decoder_self_attention_mode": mat_decoder_self_attention_mode.name,
         "experiment_run_name": experiment_run_name,
@@ -619,7 +620,7 @@ def _make_base_policy(
         gsde_init_stds: list[float],
         mat_add_agent_embeddings: bool,
         mat_decoder_self_attention_mode: MATDecoderSelfAttentionMode,
-        act_fn_cls: type[nn.Module],
+        act_fn_cls: ActivationFactory,
 ) -> MATPolicy | MATDecPolicy | MATOrigPolicy:
     continuous_config = make_continuous_config(
         variant=continuous_action_dist,

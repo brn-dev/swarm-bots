@@ -11,6 +11,7 @@ from swarmbots.learn.algos.r_mat.temporal_sequence_model import (
     TemporalModelState,
     TemporalSequenceModel,
 )
+from swarmbots.learn.nn_components.activations import make_activation
 from swarmbots.learn.nn_components.mlp import MLP
 from swarmbots.learn.nn_components.nn_init import init_linear_orthogonal
 
@@ -37,7 +38,7 @@ class _RMATBlock(nn.Module):
                 nhead=config.nhead,
                 dim_feedforward=config.dim_feedforward,
                 dropout=config.dropout,
-                activation=config.act_fn_cls(),
+                activation=make_activation(config.act_fn_cls, num_features=config.dim_feedforward),
                 layer_norm_eps=config.layer_norm_eps,
                 batch_first=True,
                 norm_first=config.norm_first,

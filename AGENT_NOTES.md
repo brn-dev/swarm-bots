@@ -137,6 +137,7 @@ Agents use this file for durable codebase notes. Keep only architecture, invaria
   - `scripts/run_mat_nop_move*.py`
 - `experiments/mat_nop_wall_mjw_1024x4_ablation/scripts/` contains the MJW 1024x4 ablation launchers; MAT-specific ablation knobs are plumbed through `experiments/mat_nop_wall_mjw_common.py`.
 - `experiments/mat_nop_wall_mjw_common.py` accepts `act_fn_cls` for MAT/MATDec policy MLPs/transformers and the optional NOP world model; reusable activation modules live in `swarmbots/learn/nn_components/activations.py`.
+- `SignedSquaredLeakyRelu(..., NegativeSlopeMode.PER_FEATURE, num_features=...)` requires an explicit feature count to avoid forward-time parameter materialization under `torch.compile`; use `SignedSquaredLeakyReluFactory` through `make_activation(...)` in generic `act_fn_cls` paths so MLP/transformer builders pass the correct feature width.
 - Scenario cadence is scenario-owned on both backends. Do not pass or stash a separate env-level `action_repeat`.
 - MJW live recording records exact live MJW episodes by copying selected world state into CPU MuJoCo render slots. Do not try to replay MJW actions in plain `mj_env`.
 - Recording camera defaults should stay scenario-owned.

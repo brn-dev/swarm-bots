@@ -3,6 +3,7 @@ from dataclasses import dataclass
 import torch
 from torch import nn
 
+from swarmbots.learn.nn_components.activations import ActivationFactory, make_activation
 from swarmbots.learn.nn_components.nn_init import init_linear_orthogonal
 from swarmbots.learn.nn_components.mlp import MLP
 
@@ -14,7 +15,7 @@ class MATEncoderConfig:
     num_layers: int = 2
     dim_feedforward: int = 128
     dropout: float = 0.0
-    act_fn_cls: type[nn.Module] = nn.ReLU
+    act_fn_cls: ActivationFactory = nn.ReLU
     norm_first: bool = True
     layer_norm_eps: float = 1e-5
     bias: bool = True
@@ -73,7 +74,7 @@ class MATEncoder(nn.Module):
                 nhead=config.nhead,
                 dim_feedforward=config.dim_feedforward,
                 dropout=config.dropout,
-                activation=config.act_fn_cls(),
+                activation=make_activation(config.act_fn_cls, num_features=config.dim_feedforward),
                 layer_norm_eps=config.layer_norm_eps,
                 batch_first=True,
                 norm_first=config.norm_first,
