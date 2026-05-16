@@ -128,14 +128,6 @@ class PredictedStdActionDist(ContinuousActionDist):
             agent_mask: torch.Tensor | None = None,
             action_splitter: ActionMetricsSplitterInput = None,
     ) -> tuple[LossDict, LossMetrics]:
-        if self.squash_output:
-            _ = action_splitter
-            action_magnitude_loss, action_magnitude_metrics = self.compute_action_magnitude_loss(
-                agent_mask=agent_mask
-            )
-            if action_magnitude_loss is None:
-                return {}, action_magnitude_metrics
-            return {"action_magnitude": action_magnitude_loss}, action_magnitude_metrics
         ent_loss, ent_loss_metrics = self.compute_entropy_loss(
             agent_mask=agent_mask,
             action_splitter=action_splitter,

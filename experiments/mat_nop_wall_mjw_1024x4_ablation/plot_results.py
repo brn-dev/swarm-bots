@@ -16,12 +16,16 @@ GROUP_ORDER = (
     "sticky_lr_beta_nop",
     "gsde_nop",
     "lr_beta_nop",
+    "beta_nop",
+    "squashed_diag_gaussian_nop",
     "sticky_lr_beta_no_nop",
 )
 DISPLAY_NAME_OVERRIDES = {
     "sticky_lr_beta_nop": "Sticky L/R Beta + NOP",
     "gsde_nop": "gSDE + NOP",
     "lr_beta_nop": "L/R Beta + NOP",
+    "beta_nop": "Beta + NOP",
+    "squashed_diag_gaussian_nop": "Squashed Diag Gaussian + NOP",
     "sticky_lr_beta_no_nop": "Sticky L/R Beta, no NOP",
 }
 EXTRA_GROUP_SOURCES = {

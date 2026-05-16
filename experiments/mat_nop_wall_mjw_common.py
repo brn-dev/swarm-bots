@@ -15,12 +15,14 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 import swarmbots.mjw_env.scenarios.mjw_scenario_presets as mjw_scenario_presets
+from swarmbots.learn.action_dists.beta_action_dist import BetaConfig
 from swarmbots.learn.action_dists.bernoulli_action_dist import BernoulliConfig
 from swarmbots.learn.action_dists.entropy_utils import AgentActionsReduction, EntropyLossConfig
 from swarmbots.learn.action_dists.gsde_action_dist import GSDEConfig
 from swarmbots.learn.action_dists.left_right_beta_action_dist import LeftRightBetaConfig
 from swarmbots.learn.action_dists.sticky_action_dist import StickyActionDist
 from swarmbots.learn.action_dists.sticky_left_right_beta_action_dist import StickyLeftRightBetaConfig
+from swarmbots.learn.action_dists.squashed_diag_gaussian_action_dist import SquashedDiagGaussianConfig
 from swarmbots.learn.algos.mat.mat_dec_policy import MATDecPolicy, MATDecPolicyConfig
 from swarmbots.learn.algos.mat.mat_decoder import MATDecoderConfig, MATDecoderSelfAttentionMode
 from swarmbots.learn.algos.mat.mat_encoder import MATEncoderConfig
@@ -48,7 +50,7 @@ from swarmbots.mjw_env.scenarios.mjw_scenario_presets import default_wall
 from swarmbots.utils.recording_schedule import DEFAULT_LIVE_RECORDING_SCHEDULE, install_scheduled_recordings
 from swarmbots.utils.run_paths import get_run_id_from_checkpoint_path
 
-ContinuousActionDistVariant = Literal["sticky_lr_beta", "lr_beta", "gsde"]
+ContinuousActionDistVariant = Literal["sticky_lr_beta", "lr_beta", "beta", "gsde", "squashed_diag_gaussian"]
 PolicyVariant = Literal["mat", "mat_dec", "mat_orig"]
 
 
@@ -163,7 +165,7 @@ def make_continuous_config(
         variant: ContinuousActionDistVariant,
         initial_stickiness: float,
         gsde_init_stds: list[float],
-) -> StickyLeftRightBetaConfig | LeftRightBetaConfig | GSDEConfig:
+) -> StickyLeftRightBetaConfig | LeftRightBetaConfig | BetaConfig | GSDEConfig | SquashedDiagGaussianConfig:
     if variant == "sticky_lr_beta":
         return StickyLeftRightBetaConfig(
             stickiness=initial_stickiness,
@@ -179,6 +181,11 @@ def make_continuous_config(
             categorical_ent_loss_config=make_lr_beta_entropy_config(),
             beta_ent_loss_config=make_lr_beta_entropy_config(),
         )
+    if variant == "beta":
+        return BetaConfig(
+            ent_loss_coef=1e-3,
+            ent_loss_config=make_lr_beta_entropy_config(),
+        )
     if variant == "gsde":
         return GSDEConfig(
             base_std=gsde_init_stds[0],
@@ -188,6 +195,16 @@ def make_continuous_config(
             sde_learn_features=False,
             normalize_latent_sde_by_dim=True,
             log_std_clamp_range=(-20.0, 2.0),
+            ent_loss_coef=1e-3,
+            ent_loss_config=EntropyLossConfig(
+                agent_actions_reduction=AgentActionsReduction.SUM,
+                metrics_reduction=AgentActionsReduction.MEAN,
+            ),
+        )
+    if variant == "squashed_diag_gaussian":
+        return SquashedDiagGaussianConfig(
+            std=gsde_init_stds[0],
+            std_learnable=True,
             ent_loss_coef=1e-3,
             ent_loss_config=EntropyLossConfig(
                 agent_actions_reduction=AgentActionsReduction.SUM,
