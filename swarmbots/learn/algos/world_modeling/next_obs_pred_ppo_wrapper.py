@@ -21,6 +21,7 @@ from swarmbots.learn.algos.world_modeling.transformer_transition_model import (
 )
 from swarmbots.learn.algos.world_modeling.wm_recurrent_batch import build_wm_target_time_mask
 from swarmbots.learn.losses import LossDict, LossMetrics
+from swarmbots.learn.nn_components.activations import ActivationFactory
 from swarmbots.learn.nn_components.mlp import MLP
 
 
@@ -32,7 +33,7 @@ class NOPWorldModelConfig:
     world_model_loss_coef: float = 1.0
     compile_modules: bool = False
     compile_mode: str = "default"
-    act_fn_cls: type[nn.Module] = nn.ReLU
+    act_fn_cls: ActivationFactory = nn.ReLU
     transition_model_dropout: float = 0.0
     d_model_transition_model: int = 128
     nhead_transition_model: int = 4
@@ -503,7 +504,7 @@ def _build_predictor(
         input_dim: int,
         output_dim: int,
         hidden_dims: list[int] | None,
-        act_fn_cls: type[nn.Module],
+        act_fn_cls: ActivationFactory,
 ) -> nn.Module | None:
     if output_dim <= 0:
         return None

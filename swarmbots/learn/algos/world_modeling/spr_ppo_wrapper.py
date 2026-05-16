@@ -19,6 +19,7 @@ from swarmbots.learn.algos.world_modeling.transformer_transition_model import (
 )
 from swarmbots.learn.algos.world_modeling.wm_recurrent_batch import build_wm_target_time_mask
 from swarmbots.learn.losses import LossDict, LossMetrics
+from swarmbots.learn.nn_components.activations import ActivationFactory
 from swarmbots.learn.nn_components.mlp import MLP
 
 
@@ -29,7 +30,7 @@ class SPRWorldModelConfig:
     action_dim: int
     world_model_loss_coef: float = 1.0
     world_model_target_tau: float | None = None
-    act_fn_cls: type[nn.Module] = nn.ReLU
+    act_fn_cls: ActivationFactory = nn.ReLU
     transition_model_dropout: float = 0.0
     online_encoder_attr: str = "encoder"
     d_model_transition_model: int = 128

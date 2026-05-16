@@ -24,6 +24,7 @@ from swarmbots.learn.algos.ppo.ppo_rollout_buffer import PPOEpisodeSegment
 from swarmbots.learn.algos.ppo.ppo_sampler import PPOSamples, PPOSampler, PPOSamplerConfig
 from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
 from swarmbots.learn.losses import LossDict, LossMetrics
+from swarmbots.learn.nn_components.activations import ActivationFactory
 from swarmbots.learn.nn_components.deep_set import DeepSetCritic
 from swarmbots.learn.nn_components.mlp import MLP
 from swarmbots.learn.nn_components.nn_init import init_linear_orthogonal
@@ -42,7 +43,7 @@ class MATPolicyConfig:
     encoder_config: MATEncoderConfig = field(default_factory=MATEncoderConfig)
     decoder_config: MATDecoderConfig = field(default_factory=MATDecoderConfig)
     critic_config: MATCriticConfig = field(default_factory=MATCriticConfig)
-    act_fn_cls: type[nn.Module] = nn.ReLU
+    act_fn_cls: ActivationFactory = nn.ReLU
     dropout: float = 0.0
     continuous_config: ContinuousActionDistConfigInput = None
     bernoulli_config: BernoulliConfig | None = None
@@ -649,7 +650,7 @@ class MATPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
             input_dim: int,
             output_dim: int,
             hidden_dims: list[int] | None,
-            act_fn_cls: type[nn.Module],
+            act_fn_cls: ActivationFactory,
     ) -> nn.Module:
         if hidden_dims is None or len(hidden_dims) == 0:
             linear = nn.Linear(input_dim, output_dim)
@@ -666,7 +667,7 @@ class MATPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
             *,
             input_dim: int,
             dims: list[int],
-            act_fn_cls: type[nn.Module],
+            act_fn_cls: ActivationFactory,
     ) -> nn.Module:
         return MLP(
             input_dim=input_dim,

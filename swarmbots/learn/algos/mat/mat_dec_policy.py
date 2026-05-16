@@ -20,6 +20,7 @@ from swarmbots.learn.algos.ppo.ppo_rollout_buffer import PPOEpisodeSegment
 from swarmbots.learn.algos.ppo.ppo_sampler import PPOSamples, PPOSampler, PPOSamplerConfig
 from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
 from swarmbots.learn.losses import LossDict, LossMetrics
+from swarmbots.learn.nn_components.activations import ActivationFactory
 from swarmbots.learn.nn_components.deep_set import DeepSetCritic
 from swarmbots.learn.nn_components.mlp import MLP
 from swarmbots.learn.nn_components.nn_init import init_linear_orthogonal
@@ -31,7 +32,7 @@ class MATDecPolicyConfig:
     encoder_config: MATEncoderConfig = field(default_factory=MATEncoderConfig)
     critic_config: MATCriticConfig = field(default_factory=MATCriticConfig)
     actor_head_hidden_dims: list[int] | None = None
-    act_fn_cls: type[nn.Module] = nn.ReLU
+    act_fn_cls: ActivationFactory = nn.ReLU
     dropout: float = 0.0
     continuous_config: ContinuousActionDistConfigInput = None
     bernoulli_config: BernoulliConfig | None = None

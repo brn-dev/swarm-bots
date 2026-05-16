@@ -1,5 +1,6 @@
 from torch import nn
 
+from swarmbots.learn.nn_components.activations import ActivationFactory, make_activation
 from swarmbots.learn.nn_components.nn_init import LinearInitialization, init_linear_orthogonal
 
 
@@ -12,7 +13,7 @@ class MLP(nn.Sequential):
             end_with_act_fn: bool,
             start_with_act_fn: bool = False,
             linear_init: LinearInitialization = init_linear_orthogonal,
-            act_fn_cls=nn.Tanh,
+            act_fn_cls: ActivationFactory = nn.Tanh,
     ):
         assert len(hidden_dims) > 0
 
@@ -25,7 +26,7 @@ class MLP(nn.Sequential):
         modules: list[nn.Module] = []
 
         if start_with_act_fn:
-            modules.append(act_fn_cls())
+            modules.append(make_activation(act_fn_cls, num_features=input_dim))
 
         for i in range(n_layers):
             linear = nn.Linear(dims[i], dims[i + 1])
@@ -33,6 +34,6 @@ class MLP(nn.Sequential):
             modules.append(linear)
 
             if i < n_layers - 1 or end_with_act_fn:
-                modules.append(act_fn_cls())
+                modules.append(make_activation(act_fn_cls, num_features=dims[i + 1]))
 
         super().__init__(*modules)
