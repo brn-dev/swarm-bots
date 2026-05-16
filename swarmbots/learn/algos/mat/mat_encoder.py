@@ -29,6 +29,8 @@ class MATEncoderConfig:
     transformer_ff_init_gain: float | None = None
     local_obs_encoder_hidden_dims: list[int] | None = None
     global_obs_encoder_hidden_dims: list[int] | None = None
+    normalize_obs_inputs: bool = False
+    normalize_tokens: bool = False
 
 
 class MATEncoder(nn.Module):
@@ -47,6 +49,13 @@ class MATEncoder(nn.Module):
         self.has_global_obs: bool = global_obs_dim > 0
         self.add_agent_embeddings = config.add_agent_embeddings
         self.max_agents = max_agents
+        self.local_obs_input_norm = nn.LayerNorm(local_obs_dim) if config.normalize_obs_inputs else nn.Identity()
+        self.global_obs_input_norm = (
+            nn.LayerNorm(global_obs_dim)
+            if config.normalize_obs_inputs and self.has_global_obs
+            else nn.Identity()
+        )
+        self.token_norm = nn.LayerNorm(config.d_model) if config.normalize_tokens else nn.Identity()
         linear_init = make_init_linear_orthogonal(config.linear_init_gain)
         projection_linear_init = (
             linear_init
@@ -122,14 +131,17 @@ class MATEncoder(nn.Module):
         n_agents = local_obs.shape[1]
         if n_agents > self.max_agents:
             raise ValueError(f"Expected local_obs second dim <= {self.max_agents}, got {n_agents}")
+        local_obs = self.local_obs_input_norm(local_obs)
         local_embeddings = self.local_obs_encoder(local_obs)
         if self.agent_embeddings is not None:
             local_embeddings = local_embeddings + self.agent_embeddings[:, :n_agents, :]
 
         if self.has_global_obs:
+            global_obs = self.global_obs_input_norm(global_obs)
             global_embeddings = self.global_obs_encoder(global_obs)
             expanded_global_embeddings = global_embeddings.unsqueeze(1).expand(-1, n_agents, -1)
             local_embeddings = local_embeddings + expanded_global_embeddings
+        local_embeddings = self.token_norm(local_embeddings)
 
         src_key_padding_mask = None
         if agent_mask is not None:

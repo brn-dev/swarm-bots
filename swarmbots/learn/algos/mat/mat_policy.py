@@ -109,6 +109,11 @@ class MATPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
             )
             nn.init.orthogonal_(self.agent_embeddings_decoder)
 
+        self.query_input_norm = (
+            nn.LayerNorm(self.d_model_encoder)
+            if config.decoder_config.normalize_query_input
+            else nn.Identity()
+        )
         self.query_encoder = self._build_token_encoder(
             input_dim=self.d_model_encoder,
             output_dim=self.d_model_decoder,
@@ -117,7 +122,17 @@ class MATPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
             linear_init_gain=config.decoder_config.token_encoder_init_gain,
             projection_init_gain=config.decoder_config.token_encoder_projection_init_gain,
         )
+        self.query_token_norm = (
+            nn.LayerNorm(self.d_model_decoder)
+            if config.decoder_config.normalize_query_tokens
+            else nn.Identity()
+        )
 
+        self.context_input_norm = (
+            nn.LayerNorm(self.d_model_encoder + self.agent_action_dim)
+            if config.decoder_config.normalize_context_input
+            else nn.Identity()
+        )
         self.context_encoder = self._build_token_encoder(
             input_dim=self.d_model_encoder + self.agent_action_dim,
             output_dim=self.d_model_decoder,
@@ -125,6 +140,16 @@ class MATPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
             act_fn_cls=config.act_fn_cls,
             linear_init_gain=config.decoder_config.token_encoder_init_gain,
             projection_init_gain=config.decoder_config.token_encoder_projection_init_gain,
+        )
+        self.context_token_norm = (
+            nn.LayerNorm(self.d_model_decoder)
+            if config.decoder_config.normalize_context_tokens
+            else nn.Identity()
+        )
+        self.memory_input_norm = (
+            nn.LayerNorm(self.d_model_encoder)
+            if config.decoder_config.normalize_memory_input
+            else nn.Identity()
         )
         memory_dims = config.decoder_config.memory_dims
         if memory_dims is None:
@@ -141,6 +166,11 @@ class MATPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
                 projection_init_gain=config.decoder_config.token_encoder_projection_init_gain,
             )
             self.memory_d_model = memory_dims[-1]
+        self.memory_token_norm = (
+            nn.LayerNorm(self.memory_d_model)
+            if config.decoder_config.normalize_memory_tokens
+            else nn.Identity()
+        )
 
         decoder_config = replace(
             config.decoder_config,
@@ -170,6 +200,11 @@ class MATPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
         else:
             self.actor_head = nn.Identity()
             latent_pi_dim = self.d_model_decoder
+        self.actor_head_input_norm = (
+            nn.LayerNorm(self.d_model_decoder)
+            if config.decoder_config.normalize_actor_head_input
+            else nn.Identity()
+        )
 
         self.action_dist = self._build_action_dist(env=env, latent_pi_dim=latent_pi_dim)
 
@@ -255,13 +290,13 @@ class MATPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
             *,
             agent_embeddings: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        tokens = self.query_encoder(augmented_observations)
+        tokens = self.query_encoder(self.query_input_norm(augmented_observations))
         if agent_embeddings is not None:
-            return tokens + agent_embeddings
-        if self.agent_embeddings_decoder is None:
-            return tokens
+            return self.query_token_norm(tokens + agent_embeddings)
+        if self.agent_embeddings_decoder is not None:
+            tokens = tokens + self.agent_embeddings_decoder[:, :tokens.shape[1], :]
 
-        return tokens + self.agent_embeddings_decoder[:, :tokens.shape[1], :]
+        return self.query_token_norm(tokens)
 
     def _encode_context_tokens(
             self,
@@ -271,13 +306,13 @@ class MATPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
             agent_embeddings: torch.Tensor | None = None,
     ) -> torch.Tensor:
         context_input = torch.cat((augmented_observations, actions), dim=-1)
-        tokens = self.context_encoder(context_input)
+        tokens = self.context_encoder(self.context_input_norm(context_input))
         if agent_embeddings is not None:
-            return tokens + agent_embeddings
-        if self.agent_embeddings_decoder is None:
-            return tokens
+            return self.context_token_norm(tokens + agent_embeddings)
+        if self.agent_embeddings_decoder is not None:
+            tokens = tokens + self.agent_embeddings_decoder[:, :tokens.shape[1], :]
 
-        return tokens + self.agent_embeddings_decoder[:, :tokens.shape[1], :]
+        return self.context_token_norm(tokens)
 
     def _generate_actions(
             self,
@@ -333,7 +368,7 @@ class MATPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
                 query_mask=query_mask_i,
                 memory_mask=agent_mask,
             )
-            latent_pi = self.actor_head(out).contiguous()
+            latent_pi = self.actor_head(self.actor_head_input_norm(out)).contiguous()
             sample_agent_idx = i if self.action_dist.sampling_depends_on_agent else None
 
             previous_action_i = None if previous_actions is None else previous_actions[:, i:i + 1, :]
@@ -483,15 +518,14 @@ class MATPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
         query_tokens = self._encode_query_tokens(augmented_observations)
         memory_tokens = self._encode_memory_tokens(augmented_observations)
         context_tokens = self._encode_context_tokens(augmented_observations, actions)
-        latent_pi = self.actor_head(
-            self.decoder(
-                query_tokens=query_tokens,
-                context_tokens=context_tokens,
-                memory_tokens=memory_tokens,
-                agent_mask=agent_mask,
-                memory_mask=agent_mask,
-            )
-        ).contiguous()
+        decoder_output = self.decoder(
+            query_tokens=query_tokens,
+            context_tokens=context_tokens,
+            memory_tokens=memory_tokens,
+            agent_mask=agent_mask,
+            memory_mask=agent_mask,
+        )
+        latent_pi = self.actor_head(self.actor_head_input_norm(decoder_output)).contiguous()
         values = self._critic_with_hidden_vars(
             augmented_observations,
             hidden_local_vars,
@@ -615,11 +649,18 @@ class MATPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
     def get_grad_norms(self) -> dict[str, float]:
         return {
             "encoder": self._module_grad_norm(self.encoder),
+            "query_input_norm": self._module_grad_norm(self.query_input_norm),
             "query_encoder": self._module_grad_norm(self.query_encoder),
+            "query_token_norm": self._module_grad_norm(self.query_token_norm),
+            "context_input_norm": self._module_grad_norm(self.context_input_norm),
             "context_encoder": self._module_grad_norm(self.context_encoder),
+            "context_token_norm": self._module_grad_norm(self.context_token_norm),
+            "memory_input_norm": self._module_grad_norm(self.memory_input_norm),
             "memory_encoder": self._module_grad_norm(self.memory_encoder),
+            "memory_token_norm": self._module_grad_norm(self.memory_token_norm),
             "agent_embeddings_decoder": self._parameter_grad_norm(self.agent_embeddings_decoder),
             "decoder": self._module_grad_norm(self.decoder),
+            "actor_head_input_norm": self._module_grad_norm(self.actor_head_input_norm),
             "actor_head": self._module_grad_norm(self.actor_head),
             "action_dist": self._module_grad_norm(self.action_dist),
             "critic": self._module_grad_norm(self.critic),
@@ -715,7 +756,7 @@ class MATPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
             self,
             augmented_observations: torch.Tensor,
     ) -> torch.Tensor:
-        return self.memory_encoder(augmented_observations)
+        return self.memory_token_norm(self.memory_encoder(self.memory_input_norm(augmented_observations)))
 
     def _apply_optional_compile(self) -> None:
         if not self.config.compile_modules:
@@ -724,10 +765,17 @@ class MATPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
         _ensure_torch_compile_available(compile_mode=self.config.compile_mode)
 
         self.encoder = self._compile_module(self.encoder)
+        self.query_input_norm = self._compile_module(self.query_input_norm)
         self.query_encoder = self._compile_module(self.query_encoder)
+        self.query_token_norm = self._compile_module(self.query_token_norm)
+        self.context_input_norm = self._compile_module(self.context_input_norm)
         self.context_encoder = self._compile_module(self.context_encoder)
+        self.context_token_norm = self._compile_module(self.context_token_norm)
+        self.memory_input_norm = self._compile_module(self.memory_input_norm)
         self.memory_encoder = self._compile_module(self.memory_encoder)
+        self.memory_token_norm = self._compile_module(self.memory_token_norm)
         self.decoder = self._compile_module(self.decoder)
+        self.actor_head_input_norm = self._compile_module(self.actor_head_input_norm)
         self.actor_head = self._compile_module(self.actor_head)
         self.critic = self._compile_module(self.critic)
         self._evaluate_latent_and_values_fn = self._compile_callable(self._evaluate_latent_and_values_impl)

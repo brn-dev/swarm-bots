@@ -629,6 +629,21 @@ class SameStepPipelineTests(unittest.TestCase):
         finally:
             env.close()
 
+    def test_transition_obs_can_normalize_previous_binary_actions(self) -> None:
+        env = _make_single_env(max_steps=3)
+        env = TorchTransitionObsWrapper(env, normalize_prev_binary_actions=True)
+        try:
+            obs, _ = env.reset()
+            torch.testing.assert_close(obs["local_obs"][0, :, 3:5], torch.zeros((2, 2)))
+
+            actions = torch.tensor([[[0.25, 1.0], [-0.5, 0.0]]], dtype=torch.float32)
+            obs, _, _, _, _ = env.step(actions)
+
+            expected_prev_actions = torch.tensor([[0.25, 1.0], [-0.5, -1.0]], dtype=torch.float32)
+            torch.testing.assert_close(obs["local_obs"][0, :, 3:5], expected_prev_actions)
+        finally:
+            env.close()
+
     def test_collect_steps_preserves_agent_mask_from_final_obs(self) -> None:
         env = _make_agent_mask_env((1, (2,), "truncate"))
         try:
