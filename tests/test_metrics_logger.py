@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 
 import torch
+from loguru import logger
 
 from swarmbots.learn.algos.base_algorithm import BaseAlgorithm
 from swarmbots.learn.base_policy import BasePolicy
@@ -142,6 +143,40 @@ class MetricsLoggerTests(unittest.TestCase):
 
             self.assertFalse((run_dir / "log.csv").exists())
             self.assertTrue((run_dir / "log.csv.gz").exists())
+
+    def test_show_run_path_command_logs_active_run_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            run_dir = Path(tmp_dir)
+            algo = _DummyAlgorithm(policy=_DummyPolicy(), env=_DummyEnv(), learning_rate=1e-3)
+            algo._active_run_dir = run_dir
+            messages: list[str] = []
+            sink_id = logger.add(lambda message: messages.append(str(message)), format="{message}")
+
+            try:
+                updated = algo.execute_command("show_run_path", "", None)
+            finally:
+                logger.remove(sink_id)
+
+            self.assertFalse(updated)
+            log_output = "".join(messages)
+            self.assertIn(run_dir.resolve().as_posix(), log_output)
+            self.assertIn(run_dir.name, log_output)
+
+    def test_show_id_alias_logs_active_run_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            run_dir = Path(tmp_dir)
+            algo = _DummyAlgorithm(policy=_DummyPolicy(), env=_DummyEnv(), learning_rate=1e-3)
+            algo._active_run_dir = run_dir
+            messages: list[str] = []
+            sink_id = logger.add(lambda message: messages.append(str(message)), format="{message}")
+
+            try:
+                updated = algo.execute_command("show_id", "", None)
+            finally:
+                logger.remove(sink_id)
+
+            self.assertFalse(updated)
+            self.assertIn(run_dir.resolve().as_posix(), "".join(messages))
 
 
 if __name__ == "__main__":

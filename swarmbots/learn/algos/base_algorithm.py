@@ -451,6 +451,9 @@ class BaseAlgorithm(abc.ABC):
         if cmd == 'show_hps':
             logger.info(self.get_hyper_parameters())
             return False
+        elif cmd in {"show_run_path", "show_id"}:
+            self._cmd_show_run_path(params)
+            return False
         elif cmd in {"show_reward_weights", "show_rw"}:
             self._cmd_show_reward_weights(params)
             return False
@@ -592,6 +595,15 @@ class BaseAlgorithm(abc.ABC):
                 f.write(json.dumps(entry, default=str) + "\n")
         except OSError:
             logger.exception(f"Failed to append command log to {self._command_log_path.as_posix()}")
+
+    def _cmd_show_run_path(self, params: str) -> None:
+        _ = params
+        if self._active_run_dir is None:
+            logger.info({"run_path": None, "run_id": None})
+            return
+
+        run_dir = self._active_run_dir.resolve()
+        logger.info({"run_path": run_dir.as_posix(), "run_id": run_dir.name})
 
     def _cmd_save(self, params: str) -> None:
         config = _parse_params_maybe_json(params)
