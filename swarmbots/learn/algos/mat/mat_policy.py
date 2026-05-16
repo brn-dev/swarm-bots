@@ -27,7 +27,7 @@ from swarmbots.learn.losses import LossDict, LossMetrics
 from swarmbots.learn.nn_components.activations import ActivationFactory
 from swarmbots.learn.nn_components.deep_set import DeepSetCritic
 from swarmbots.learn.nn_components.mlp import MLP
-from swarmbots.learn.nn_components.nn_init import init_linear_orthogonal
+from swarmbots.learn.nn_components.nn_init import DEFAULT_ORTHOGONAL_GAIN, make_init_linear_orthogonal
 from swarmbots.learn.serialization_utils import serialize_dataclass, serialize_value
 
 
@@ -37,6 +37,9 @@ class MATCriticConfig:
     n_value_regressor_hidden_layers: int = 2
     use_popart: bool = False
     popart_config: PopArtConfig = field(default_factory=PopArtConfig)
+    local_projection_init_gain: float = DEFAULT_ORTHOGONAL_GAIN
+    value_regressor_init_gain: float = DEFAULT_ORTHOGONAL_GAIN
+    value_head_init_gain: float = DEFAULT_ORTHOGONAL_GAIN
 
 @dataclass(frozen=True)
 class MATPolicyConfig:
@@ -50,6 +53,7 @@ class MATPolicyConfig:
     max_agents: int | None = None
     compile_modules: bool = False
     compile_mode: str = "default"
+    action_net_init_gain: float = DEFAULT_ORTHOGONAL_GAIN
 
 
 def _ensure_torch_compile_available(*, compile_mode: str) -> None:
@@ -110,6 +114,8 @@ class MATPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
             output_dim=self.d_model_decoder,
             hidden_dims=config.decoder_config.query_encoder_hidden_dims,
             act_fn_cls=config.act_fn_cls,
+            linear_init_gain=config.decoder_config.token_encoder_init_gain,
+            projection_init_gain=config.decoder_config.token_encoder_projection_init_gain,
         )
 
         self.context_encoder = self._build_token_encoder(
@@ -117,6 +123,8 @@ class MATPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
             output_dim=self.d_model_decoder,
             hidden_dims=config.decoder_config.context_encoder_hidden_dims,
             act_fn_cls=config.act_fn_cls,
+            linear_init_gain=config.decoder_config.token_encoder_init_gain,
+            projection_init_gain=config.decoder_config.token_encoder_projection_init_gain,
         )
         memory_dims = config.decoder_config.memory_dims
         if memory_dims is None:
@@ -129,6 +137,8 @@ class MATPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
                 input_dim=self.d_model_encoder,
                 dims=memory_dims,
                 act_fn_cls=config.act_fn_cls,
+                linear_init_gain=config.decoder_config.token_encoder_init_gain,
+                projection_init_gain=config.decoder_config.token_encoder_projection_init_gain,
             )
             self.memory_d_model = memory_dims[-1]
 
@@ -153,7 +163,7 @@ class MATPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
                 input_dim=self.d_model_decoder,
                 hidden_dims=config.decoder_config.actor_head_hidden_dims,
                 end_with_act_fn=True,
-                linear_init=init_linear_orthogonal,
+                linear_init=make_init_linear_orthogonal(config.decoder_config.actor_head_init_gain),
                 act_fn_cls=config.act_fn_cls,
             )
             latent_pi_dim = config.decoder_config.actor_head_hidden_dims[-1]
@@ -170,6 +180,9 @@ class MATPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
             num_global_features=self.hidden_global_vars_dim,
             act_fn_cls=config.act_fn_cls,
             context_in_elements=self.hidden_global_vars_dim > 0,
+            local_projection_linear_init_gain=config.critic_config.local_projection_init_gain,
+            value_regressor_linear_init_gain=config.critic_config.value_regressor_init_gain,
+            value_head_linear_init_gain=config.critic_config.value_head_init_gain,
             use_popart=config.critic_config.use_popart,
             popart_beta=config.critic_config.popart_config.beta,
             popart_eps=config.critic_config.popart_config.eps,
@@ -212,6 +225,7 @@ class MATPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
             action_space=env.action_space,
             continuous_config=self.config.continuous_config,
             bernoulli_config=self.config.bernoulli_config,
+            action_net_initialization=make_init_linear_orthogonal(self.config.action_net_init_gain),
         )
 
     def get_hyper_parameters(self) -> dict[str, Any]:
@@ -651,15 +665,25 @@ class MATPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
             output_dim: int,
             hidden_dims: list[int] | None,
             act_fn_cls: ActivationFactory,
+            linear_init_gain: float,
+            projection_init_gain: float | None,
     ) -> nn.Module:
+        linear_init = make_init_linear_orthogonal(linear_init_gain)
+        projection_linear_init = (
+            linear_init
+            if projection_init_gain is None
+            else make_init_linear_orthogonal(projection_init_gain)
+        )
         if hidden_dims is None or len(hidden_dims) == 0:
             linear = nn.Linear(input_dim, output_dim)
-            init_linear_orthogonal(linear)
+            projection_linear_init(linear)
             return linear
         return MATPolicy._build_encoder_from_dims(
             input_dim=input_dim,
             dims=[*hidden_dims, output_dim],
             act_fn_cls=act_fn_cls,
+            linear_init_gain=linear_init_gain,
+            projection_init_gain=projection_init_gain,
         )
 
     @staticmethod
@@ -668,12 +692,21 @@ class MATPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
             input_dim: int,
             dims: list[int],
             act_fn_cls: ActivationFactory,
+            linear_init_gain: float,
+            projection_init_gain: float | None,
     ) -> nn.Module:
+        linear_init = make_init_linear_orthogonal(linear_init_gain)
+        projection_linear_init = (
+            linear_init
+            if projection_init_gain is None
+            else make_init_linear_orthogonal(projection_init_gain)
+        )
         return MLP(
             input_dim=input_dim,
             hidden_dims=dims,
             end_with_act_fn=False,
-            linear_init=init_linear_orthogonal,
+            linear_init=linear_init,
+            final_linear_init=projection_linear_init,
             act_fn_cls=act_fn_cls,
         )
 

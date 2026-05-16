@@ -3,6 +3,8 @@ from typing import Callable, Optional
 import torch.nn.functional as F
 from torch import nn, Tensor
 
+from swarmbots.learn.nn_components.nn_init import init_transformer_feedforward
+
 
 class CustomTransformerDecoderLayer(nn.TransformerDecoderLayer):
 
@@ -20,6 +22,7 @@ class CustomTransformerDecoderLayer(nn.TransformerDecoderLayer):
         batch_first: bool = False,
         norm_first: bool = False,
         cross_attn_first: bool = False,
+        feedforward_init_gain: float | None = None,
         bias: bool = True,
         device=None,
         dtype=None,
@@ -49,6 +52,8 @@ class CustomTransformerDecoderLayer(nn.TransformerDecoderLayer):
         self.linear1 = nn.Linear(d_model, dim_feedforward, bias=bias, **factory_kwargs)
         self.dropout = nn.Dropout(dropout)
         self.linear2 = nn.Linear(dim_feedforward, d_model, bias=bias, **factory_kwargs)
+        if feedforward_init_gain is not None:
+            init_transformer_feedforward(self, gain=feedforward_init_gain)
 
         self.norm_first = norm_first
         self.norm1 = nn.LayerNorm(d_model, eps=layer_norm_eps, bias=bias, **factory_kwargs)

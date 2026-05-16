@@ -23,6 +23,7 @@ from swarmbots.learn.algos.world_modeling.wm_recurrent_batch import build_wm_tar
 from swarmbots.learn.losses import LossDict, LossMetrics
 from swarmbots.learn.nn_components.activations import ActivationFactory
 from swarmbots.learn.nn_components.mlp import MLP
+from swarmbots.learn.nn_components.nn_init import DEFAULT_ORTHOGONAL_GAIN, make_init_linear_orthogonal
 
 
 @dataclass(frozen=True)
@@ -49,6 +50,12 @@ class NOPWorldModelConfig:
     wm_angle_predictor_hidden_dims: list[int] | None = None
     wm_rot6d_predictor_hidden_dims: list[int] | None = None
     wm_binary_predictor_hidden_dims: list[int] | None = None
+    wm_pre_transition_init_gain: float = DEFAULT_ORTHOGONAL_GAIN
+    wm_pre_predictors_init_gain: float = DEFAULT_ORTHOGONAL_GAIN
+    wm_predictor_init_gain: float = DEFAULT_ORTHOGONAL_GAIN
+    transition_model_coembed_init_gain: float = DEFAULT_ORTHOGONAL_GAIN
+    transition_model_head_init_gain: float = DEFAULT_ORTHOGONAL_GAIN
+    transition_model_transformer_ff_init_gain: float | None = None
     scalar_loss_fn: str | nn.Module | None = None
     next_obs_pred_config: NextObsPredConfig = field(default_factory=NextObsPredConfig)
 
@@ -360,6 +367,7 @@ class NextObsPredWrapper(BasePPOPolicy[PPOWMSamples, PPOWMSamplerConfig], NextOb
                 input_dim=self._wm_local_latent_dim,
                 hidden_dims=[*world_model_config.wm_pre_transition_dims],
                 end_with_act_fn=True,
+                linear_init=make_init_linear_orthogonal(world_model_config.wm_pre_transition_init_gain),
                 act_fn_cls=self._wm_act_fn_cls,
             )
             wm_latent_dim = world_model_config.wm_pre_transition_dims[-1]
@@ -371,6 +379,7 @@ class NextObsPredWrapper(BasePPOPolicy[PPOWMSamples, PPOWMSamplerConfig], NextOb
                 input_dim=wm_latent_dim,
                 hidden_dims=[*world_model_config.wm_pre_predictors_dims],
                 end_with_act_fn=True,
+                linear_init=make_init_linear_orthogonal(world_model_config.wm_pre_predictors_init_gain),
                 act_fn_cls=self._wm_act_fn_cls,
             )
             wm_pre_predictors_dim = world_model_config.wm_pre_predictors_dims[-1]
@@ -387,6 +396,7 @@ class NextObsPredWrapper(BasePPOPolicy[PPOWMSamples, PPOWMSamplerConfig], NextOb
             ),
             hidden_dims=world_model_config.wm_scalar_predictor_hidden_dims,
             act_fn_cls=self._wm_act_fn_cls,
+            linear_init_gain=world_model_config.wm_predictor_init_gain,
         )
         local_angles_predictor = _build_predictor(
             input_dim=wm_pre_predictors_dim,
@@ -397,6 +407,7 @@ class NextObsPredWrapper(BasePPOPolicy[PPOWMSamples, PPOWMSamplerConfig], NextOb
             ),
             hidden_dims=world_model_config.wm_angle_predictor_hidden_dims,
             act_fn_cls=self._wm_act_fn_cls,
+            linear_init_gain=world_model_config.wm_predictor_init_gain,
         )
         local_rot6ds_predictor = _build_predictor(
             input_dim=wm_pre_predictors_dim,
@@ -407,6 +418,7 @@ class NextObsPredWrapper(BasePPOPolicy[PPOWMSamples, PPOWMSamplerConfig], NextOb
             ),
             hidden_dims=world_model_config.wm_rot6d_predictor_hidden_dims,
             act_fn_cls=self._wm_act_fn_cls,
+            linear_init_gain=world_model_config.wm_predictor_init_gain,
         )
         local_binaries_predictor = _build_predictor(
             input_dim=wm_pre_predictors_dim,
@@ -417,6 +429,7 @@ class NextObsPredWrapper(BasePPOPolicy[PPOWMSamples, PPOWMSamplerConfig], NextOb
             ),
             hidden_dims=world_model_config.wm_binary_predictor_hidden_dims,
             act_fn_cls=self._wm_act_fn_cls,
+            linear_init_gain=world_model_config.wm_predictor_init_gain,
         )
 
         transition_model_config = TransformerTransitionModelConfig(
@@ -433,6 +446,9 @@ class NextObsPredWrapper(BasePPOPolicy[PPOWMSamples, PPOWMSamplerConfig], NextOb
             predict_delta=world_model_config.transition_model_predict_delta,
             coembed_mlp_hidden_dims=world_model_config.transition_model_coembed_hidden_dims,
             head_mlp_hidden_dims=world_model_config.transition_model_head_hidden_dims,
+            coembed_init_gain=world_model_config.transition_model_coembed_init_gain,
+            head_init_gain=world_model_config.transition_model_head_init_gain,
+            transformer_ff_init_gain=world_model_config.transition_model_transformer_ff_init_gain,
         )
         self.setup_next_obs_pred(
             transition_model=TransformerTransitionModel(config=transition_model_config),
@@ -505,6 +521,7 @@ def _build_predictor(
         output_dim: int,
         hidden_dims: list[int] | None,
         act_fn_cls: ActivationFactory,
+        linear_init_gain: float = DEFAULT_ORTHOGONAL_GAIN,
 ) -> nn.Module | None:
     if output_dim <= 0:
         return None
@@ -512,6 +529,7 @@ def _build_predictor(
         input_dim=input_dim,
         hidden_dims=[*(hidden_dims or []), output_dim] if hidden_dims else [output_dim],
         end_with_act_fn=False,
+        linear_init=make_init_linear_orthogonal(linear_init_gain),
         act_fn_cls=act_fn_cls,
     )
 
