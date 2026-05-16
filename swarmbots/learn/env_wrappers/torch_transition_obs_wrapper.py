@@ -12,16 +12,23 @@ from swarmbots.learn.tensor_conversion import to_torch_tensor
 
 
 class TorchTransitionObsWrapper(TorchEnvWrapper):
-    def __init__(self, env: BaseLearnEnvWrapper, new_obs_first: bool = True) -> None:
+    def __init__(
+        self,
+        env: BaseLearnEnvWrapper,
+        new_obs_first: bool = True,
+        normalize_prev_binary_actions: bool = False,
+    ) -> None:
         super().__init__(env)
         if "local_obs" not in self.observation_space.spaces:
             raise ValueError('Expected "local_obs" key in observation space')
 
         self.new_obs_first = new_obs_first
+        self.normalize_prev_binary_actions = bool(normalize_prev_binary_actions)
         local_space: spaces.Box = self.observation_space["local_obs"]  # type: ignore[assignment]
         self._n_agents, self._n_local_obs = map(int, local_space.shape[1:])
         self._has_global_obs = "global_obs" in self.observation_space.spaces
         self._n_action_features = int(self.action_space.total_agent_action_dim)
+        self._prev_action_binary_indices = self._build_binary_action_indices()
         self._observation_space = self._with_transition_obs_space(self.observation_space)
         self.local_obs_dim = int(self._observation_space["local_obs"].shape[-1])
         if self._has_global_obs:
@@ -146,7 +153,21 @@ class TorchTransitionObsWrapper(TorchEnvWrapper):
     def _actions_to_features(self, actions: torch.Tensor, *, dtype: torch.dtype) -> torch.Tensor:
         if actions.ndim == 2:
             actions = actions.unsqueeze(0)
-        return actions.to(device=self.device, dtype=dtype)
+        features = actions.to(device=self.device, dtype=dtype)
+        if self.normalize_prev_binary_actions and self._prev_action_binary_indices.numel() > 0:
+            features = features.clone()
+            binary_indices = self._prev_action_binary_indices.to(device=features.device)
+            features[..., binary_indices] = features[..., binary_indices] * 2.0 - 1.0
+        return features
+
+    def _build_binary_action_indices(self) -> torch.Tensor:
+        indices: list[int] = []
+        offset = 0
+        for sub_space, action_dim in zip(self.action_space.sub_spaces, self.action_space.agent_action_dims, strict=True):
+            if isinstance(sub_space, spaces.MultiBinary):
+                indices.extend(range(offset, offset + action_dim))
+            offset += action_dim
+        return torch.as_tensor(indices, dtype=torch.long)
 
     def _transform_infos_with_transition_state(
         self,

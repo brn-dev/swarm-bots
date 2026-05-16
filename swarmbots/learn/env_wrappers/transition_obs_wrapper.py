@@ -21,11 +21,21 @@ class TransitionObsWrapper(VectorWrapper, gym.utils.RecordConstructorArgs):
     Designed for SwarmBots-style dict observations in a VectorEnv.
     """
 
-    def __init__(self, env: VectorEnv, new_obs_first: bool = True):
-        gym.utils.RecordConstructorArgs.__init__(self, new_obs_first=new_obs_first)
+    def __init__(
+        self,
+        env: VectorEnv,
+        new_obs_first: bool = True,
+        normalize_prev_binary_actions: bool = False,
+    ) -> None:
+        gym.utils.RecordConstructorArgs.__init__(
+            self,
+            new_obs_first=new_obs_first,
+            normalize_prev_binary_actions=normalize_prev_binary_actions,
+        )
         VectorWrapper.__init__(self, env)
 
         self.new_obs_first = new_obs_first
+        self.normalize_prev_binary_actions = bool(normalize_prev_binary_actions)
 
         if "autoreset_mode" not in self.env.metadata:
             warn(
@@ -51,6 +61,7 @@ class TransitionObsWrapper(VectorWrapper, gym.utils.RecordConstructorArgs):
         self._action_keys: tuple[str, ...] | None = None
         if isinstance(self.env.action_space, spaces.Dict):
             self._action_keys = tuple(self.env.action_space.spaces.keys())
+        self._prev_action_binary_indices = self._build_binary_action_indices(self.env.single_action_space)
 
         self._single_observation_space = self._with_transition_obs_space(self.env.single_observation_space)
         self._observation_space = self._with_transition_obs_space(self.env.observation_space, is_vector=True)
@@ -191,14 +202,16 @@ class TransitionObsWrapper(VectorWrapper, gym.utils.RecordConstructorArgs):
                 if part.ndim == 2:
                     part = part[..., None]
                 parts.append(part.astype(dtype, copy=False))
-            return np.concatenate(parts, axis=-1)
+            return self._normalize_binary_action_features(np.concatenate(parts, axis=-1))
 
         arr = np.asarray(actions)
         if arr.ndim == 2:
             arr = arr[..., None]
-        return arr.astype(dtype, copy=False)
+        features = arr.astype(dtype, copy=False)
+        return self._normalize_binary_action_features(features)
 
-    def _infer_per_agent_action_dim(self, single_action_space: spaces.Space) -> int:
+    @staticmethod
+    def _infer_per_agent_action_dim(single_action_space: spaces.Space) -> int:
         if isinstance(single_action_space, spaces.Dict):
             dim = 0
             for space in single_action_space.spaces.values():
@@ -212,3 +225,27 @@ class TransitionObsWrapper(VectorWrapper, gym.utils.RecordConstructorArgs):
         if shape is None or len(shape) < 2:
             raise ValueError(f"Unsupported action space for transition wrapper: {single_action_space}")
         return int(shape[-1])
+
+    def _normalize_binary_action_features(self, features: np.ndarray) -> np.ndarray:
+        if not self.normalize_prev_binary_actions or self._prev_action_binary_indices.size == 0:
+            return features
+        normalized = features.copy()
+        normalized[..., self._prev_action_binary_indices] = (
+            normalized[..., self._prev_action_binary_indices] * 2.0 - 1.0
+        )
+        return normalized
+
+    @staticmethod
+    def _build_binary_action_indices(single_action_space: spaces.Space) -> np.ndarray:
+        indices: list[int] = []
+        offset = 0
+        if isinstance(single_action_space, spaces.Dict):
+            action_spaces = single_action_space.spaces.values()
+        else:
+            action_spaces = (single_action_space,)
+        for space in action_spaces:
+            action_dim = TransitionObsWrapper._infer_per_agent_action_dim(space)
+            if isinstance(space, spaces.MultiBinary):
+                indices.extend(range(offset, offset + action_dim))
+            offset += action_dim
+        return np.asarray(indices, dtype=np.int64)

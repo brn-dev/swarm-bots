@@ -140,6 +140,13 @@ class RMATEncoder(nn.Module):
         self.add_agent_embeddings = config.add_agent_embeddings
         self.max_agents = max_agents
         self.d_model = config.d_model
+        self.local_obs_input_norm = nn.LayerNorm(local_obs_dim) if config.normalize_obs_inputs else nn.Identity()
+        self.global_obs_input_norm = (
+            nn.LayerNorm(global_obs_dim)
+            if config.normalize_obs_inputs and self.has_global_obs
+            else nn.Identity()
+        )
+        self.token_norm = nn.LayerNorm(config.d_model) if config.normalize_tokens else nn.Identity()
         linear_init = make_init_linear_orthogonal(config.linear_init_gain)
         projection_linear_init = (
             linear_init
@@ -222,13 +229,16 @@ class RMATEncoder(nn.Module):
         )
         batch_size, sequence_length, n_agents, _ = local_obs.shape
 
+        local_obs = self.local_obs_input_norm(local_obs)
         embeddings = self.local_obs_encoder(local_obs)
         if self.agent_embeddings is not None:
             embeddings = embeddings + self.agent_embeddings[:, :n_agents, :].unsqueeze(1)
 
         if self.has_global_obs:
+            global_obs = self.global_obs_input_norm(global_obs)
             global_embeddings = self.global_obs_encoder(global_obs)
             embeddings = embeddings + global_embeddings.unsqueeze(2)
+        embeddings = self.token_norm(embeddings)
 
         valid_agent_time_mask = _combine_agent_time_mask(
             agent_mask=agent_mask,

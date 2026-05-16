@@ -15,6 +15,7 @@ from swarmbots.learn.nn_components.activations import ActivationFactory
 from experiments.mat_nop_wall_mjw_common import (
     ContinuousActionDistVariant,
     MATInitGains,
+    MATNormalizationConfig,
     NOPInitGains,
     PolicyVariant,
     run_experiment,
@@ -34,6 +35,7 @@ def run_ablation(
         act_fn_cls: ActivationFactory = nn.GELU,
         mat_init_gains: MATInitGains = MATInitGains(),
         nop_init_gains: NOPInitGains = NOPInitGains(),
+        mat_normalization: MATNormalizationConfig = MATNormalizationConfig(),
         use_nop: bool = True,
 ) -> None:
     run_experiment(
@@ -48,6 +50,7 @@ def run_ablation(
         act_fn_cls=act_fn_cls,
         mat_init_gains=mat_init_gains,
         nop_init_gains=nop_init_gains,
+        mat_normalization=mat_normalization,
         use_nop=use_nop,
         experiment_run_name=EXPERIMENT_RUN_NAME,
     )

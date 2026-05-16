@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from common import MATInitGains, NOPInitGains, run_ablation
+from common import MATInitGains, MATNormalizationConfig, NOPInitGains, run_ablation
 
 
 def main() -> None:
@@ -31,6 +31,18 @@ def main() -> None:
             transition_head=output_init_gain,
             pre_predictors=hidden_init_gain,
             predictors=output_init_gain,
+        ),
+        mat_normalization=MATNormalizationConfig(
+            normalize_obs_inputs=True,
+            normalize_encoder_tokens=True,
+            normalize_query_input=True,
+            normalize_context_input=True,
+            normalize_memory_input=True,
+            normalize_query_tokens=True,
+            normalize_context_tokens=True,
+            normalize_memory_tokens=True,
+            normalize_actor_head_input=True,
+            normalize_prev_binary_actions=True,
         ),
     )
 

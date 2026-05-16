@@ -102,6 +102,7 @@ def wrap_vec_env(
     gamma: float,
     use_popart: bool,
     rollout_device: torch.device,
+    normalize_prev_binary_actions: bool = False,
 ) -> Any:
     from swarmbots.learn.env_wrappers.learn_wrappers.swarm_bots_learn_env_wrapper import SwarmBotsLearnEnvWrapper
     from swarmbots.learn.env_wrappers.torch_feature_wise_obs_norm_wrapper import TorchFeatureWiseObsNormWrapper
@@ -139,7 +140,7 @@ def wrap_vec_env(
         scalar_feature_indices=obs_indices.hidden_global_vars_scalar_indices,
         quaternion_indices=obs_indices.hidden_global_vars_quaternion_indices,
     )
-    env = TorchTransitionObsWrapper(env)
+    env = TorchTransitionObsWrapper(env, normalize_prev_binary_actions=normalize_prev_binary_actions)
     if not use_popart:
         env = TorchNormalizeRewardWrapper(env, gamma=gamma)
     return env

@@ -82,6 +82,20 @@ class NOPInitGains:
     predictors: float = DEFAULT_ORTHOGONAL_GAIN
 
 
+@dataclass(frozen=True)
+class MATNormalizationConfig:
+    normalize_obs_inputs: bool = False
+    normalize_encoder_tokens: bool = False
+    normalize_query_input: bool = False
+    normalize_context_input: bool = False
+    normalize_memory_input: bool = False
+    normalize_query_tokens: bool = False
+    normalize_context_tokens: bool = False
+    normalize_memory_tokens: bool = False
+    normalize_actor_head_input: bool = False
+    normalize_prev_binary_actions: bool = False
+
+
 def configure_float32_matmul_precision() -> None:
     if torch.cuda.is_available():
         torch.set_float32_matmul_precision("high")
@@ -112,6 +126,7 @@ def wrap_vec_env(
     gamma: float,
     use_popart: bool,
     rollout_device: torch.device,
+    normalize_prev_binary_actions: bool = False,
 ) -> Any:
     from swarmbots.learn.env_wrappers.learn_wrappers.swarm_bots_learn_env_wrapper import SwarmBotsLearnEnvWrapper
     from swarmbots.learn.env_wrappers.torch_feature_wise_obs_norm_wrapper import TorchFeatureWiseObsNormWrapper
@@ -149,7 +164,7 @@ def wrap_vec_env(
         scalar_feature_indices=obs_indices.hidden_global_vars_scalar_indices,
         quaternion_indices=obs_indices.hidden_global_vars_quaternion_indices,
     )
-    env = TorchTransitionObsWrapper(env)
+    env = TorchTransitionObsWrapper(env, normalize_prev_binary_actions=normalize_prev_binary_actions)
     if not use_popart:
         env = TorchNormalizeRewardWrapper(env, gamma=gamma)
     return env
@@ -257,6 +272,7 @@ def run_experiment(
         act_fn_cls: ActivationFactory = nn.GELU,
         mat_init_gains: MATInitGains = MATInitGains(),
         nop_init_gains: NOPInitGains = NOPInitGains(),
+        mat_normalization: MATNormalizationConfig = MATNormalizationConfig(),
         use_nop: bool = True,
         experiment_run_name: str = "mat_nop_swarm_bots_wall_mjw_batch_env_sweep",
 ) -> None:
@@ -318,6 +334,7 @@ def run_experiment(
         f"continuous_action_dist={continuous_action_dist}, use_nop={use_nop}, "
         f"act_fn_cls={activation_factory_name(act_fn_cls)}, "
         f"mat_init_gains={mat_init_gains}, nop_init_gains={nop_init_gains}, "
+        f"mat_normalization={mat_normalization}, "
         f"mat_add_agent_embeddings={mat_add_agent_embeddings}, "
         f"mat_decoder_self_attention_mode={mat_decoder_self_attention_mode.name}"
     )
@@ -373,6 +390,7 @@ def run_experiment(
         gamma=gamma,
         use_popart=use_popart,
         rollout_device=rollout_device,
+        normalize_prev_binary_actions=mat_normalization.normalize_prev_binary_actions,
     )
 
     print("Environment initialized.")
@@ -416,6 +434,7 @@ def run_experiment(
         mat_decoder_self_attention_mode=mat_decoder_self_attention_mode,
         act_fn_cls=act_fn_cls,
         mat_init_gains=mat_init_gains,
+        mat_normalization=mat_normalization,
     )
     policy = base_policy
     if use_nop:
@@ -611,6 +630,7 @@ def run_experiment(
         "act_fn_cls": activation_factory_name(act_fn_cls),
         "mat_init_gains": asdict(mat_init_gains),
         "nop_init_gains": asdict(nop_init_gains),
+        "mat_normalization": asdict(mat_normalization),
         "mat_add_agent_embeddings": mat_add_agent_embeddings,
         "mat_decoder_self_attention_mode": mat_decoder_self_attention_mode.name,
         "experiment_run_name": experiment_run_name,
@@ -661,6 +681,7 @@ def _make_base_policy(
         mat_decoder_self_attention_mode: MATDecoderSelfAttentionMode,
         act_fn_cls: ActivationFactory,
         mat_init_gains: MATInitGains,
+        mat_normalization: MATNormalizationConfig,
 ) -> MATPolicy | MATDecPolicy | MATOrigPolicy:
     continuous_config = make_continuous_config(
         variant=continuous_action_dist,
@@ -694,6 +715,8 @@ def _make_base_policy(
                     linear_projection_init_gain=mat_init_gains.obs_encoder_projection,
                     transformer_ff_init_gain=mat_init_gains.encoder_transformer_ff,
                     local_obs_encoder_hidden_dims=[enc_d_model, enc_d_model],
+                    normalize_obs_inputs=mat_normalization.normalize_obs_inputs,
+                    normalize_tokens=mat_normalization.normalize_encoder_tokens,
                 ),
                 decoder_config=MATDecoderConfig(
                     d_model=dec_d_model,
@@ -709,6 +732,13 @@ def _make_base_policy(
                     context_encoder_hidden_dims=[2 * dec_d_model],
                     memory_dims=None,
                     self_attention_mode=mat_decoder_self_attention_mode,
+                    normalize_query_input=mat_normalization.normalize_query_input,
+                    normalize_context_input=mat_normalization.normalize_context_input,
+                    normalize_memory_input=mat_normalization.normalize_memory_input,
+                    normalize_query_tokens=mat_normalization.normalize_query_tokens,
+                    normalize_context_tokens=mat_normalization.normalize_context_tokens,
+                    normalize_memory_tokens=mat_normalization.normalize_memory_tokens,
+                    normalize_actor_head_input=mat_normalization.normalize_actor_head_input,
                 ),
                 critic_config=MATCriticConfig(
                     n_local_projection_hidden_layers=2,
@@ -744,6 +774,8 @@ def _make_base_policy(
                     linear_projection_init_gain=mat_init_gains.obs_encoder_projection,
                     transformer_ff_init_gain=mat_init_gains.encoder_transformer_ff,
                     local_obs_encoder_hidden_dims=[enc_d_model, enc_d_model],
+                    normalize_obs_inputs=mat_normalization.normalize_obs_inputs,
+                    normalize_tokens=mat_normalization.normalize_encoder_tokens,
                 ),
                 critic_config=MATCriticConfig(
                     n_local_projection_hidden_layers=2,

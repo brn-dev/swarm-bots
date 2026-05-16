@@ -37,6 +37,13 @@ class MATDecoderConfig:
     memory_dims: list[int] | None = None
     actor_head_hidden_dims: list[int] | None = None
     self_attention_mode: MATDecoderSelfAttentionMode = MATDecoderSelfAttentionMode.FULL_AUTOREGRESSIVE
+    normalize_query_input: bool = False
+    normalize_context_input: bool = False
+    normalize_memory_input: bool = False
+    normalize_query_tokens: bool = False
+    normalize_context_tokens: bool = False
+    normalize_memory_tokens: bool = False
+    normalize_actor_head_input: bool = False
 
 
 class MATDecoder(nn.Module):
