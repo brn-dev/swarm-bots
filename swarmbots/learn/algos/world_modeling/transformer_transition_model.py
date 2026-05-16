@@ -10,8 +10,8 @@ from swarmbots.learn.nn_components.activations import ActivationFactory, make_ac
 from swarmbots.learn.nn_components.mlp import MLP
 from swarmbots.learn.nn_components.nn_init import (
     DEFAULT_ORTHOGONAL_GAIN,
-    init_transformer_feedforward,
     make_init_linear_orthogonal,
+    reinitialize_transformer_stack,
 )
 
 
@@ -99,15 +99,17 @@ class TransformerTransitionModel(nn.Module):
             norm_first=config.norm_first,
             bias=True,
         )
-        if config.transformer_ff_init_gain is not None:
-            init_transformer_feedforward(encoder_layer, gain=config.transformer_ff_init_gain)
-
         self.encoder = nn.TransformerEncoder(
             encoder_layer=encoder_layer,
             num_layers=config.num_layers,
             norm=nn.LayerNorm(config.d_model, eps=config.layer_norm_eps),
             enable_nested_tensor=self.enable_nested_tensor,
         )
+        if config.transformer_ff_init_gain is not None:
+            reinitialize_transformer_stack(
+                self.encoder,
+                feedforward_init_gain=config.transformer_ff_init_gain,
+            )
 
         head_linear_init = make_init_linear_orthogonal(config.head_init_gain)
         if config.head_mlp_hidden_dims is None:

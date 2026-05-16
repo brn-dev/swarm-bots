@@ -13,7 +13,10 @@ from swarmbots.learn.algos.r_mat.temporal_sequence_model import (
 )
 from swarmbots.learn.nn_components.activations import make_activation
 from swarmbots.learn.nn_components.mlp import MLP
-from swarmbots.learn.nn_components.nn_init import init_linear_orthogonal
+from swarmbots.learn.nn_components.nn_init import (
+    make_init_linear_orthogonal,
+    reinitialize_transformer_stack,
+)
 
 RMATEncoderState = list[TemporalModelState]
 
@@ -48,6 +51,11 @@ class _RMATBlock(nn.Module):
             norm=nn.LayerNorm(config.d_model),
             enable_nested_tensor=not config.norm_first,
         )
+        if config.transformer_ff_init_gain is not None:
+            reinitialize_transformer_stack(
+                self.inter_agent_attention_encoder,
+                feedforward_init_gain=config.transformer_ff_init_gain,
+            )
         self.temporal_model = config.temporal_model_cls(
             hidden_dim=config.d_model,
             config=config.temporal_model_config,
@@ -132,18 +140,25 @@ class RMATEncoder(nn.Module):
         self.add_agent_embeddings = config.add_agent_embeddings
         self.max_agents = max_agents
         self.d_model = config.d_model
+        linear_init = make_init_linear_orthogonal(config.linear_init_gain)
+        projection_linear_init = (
+            linear_init
+            if config.linear_projection_init_gain is None
+            else make_init_linear_orthogonal(config.linear_projection_init_gain)
+        )
 
         if config.local_obs_encoder_hidden_dims:
             self.local_obs_encoder = MLP(
                 input_dim=self.local_obs_dim,
                 hidden_dims=[*config.local_obs_encoder_hidden_dims, config.d_model],
                 end_with_act_fn=False,
-                linear_init=init_linear_orthogonal,
+                linear_init=linear_init,
+                final_linear_init=projection_linear_init,
                 act_fn_cls=config.act_fn_cls,
             )
         else:
             self.local_obs_encoder = nn.Linear(self.local_obs_dim, config.d_model)
-            init_linear_orthogonal(self.local_obs_encoder)
+            projection_linear_init(self.local_obs_encoder)
 
         if self.has_global_obs:
             if config.global_obs_encoder_hidden_dims:
@@ -151,12 +166,13 @@ class RMATEncoder(nn.Module):
                     input_dim=self.global_obs_dim,
                     hidden_dims=[*config.global_obs_encoder_hidden_dims, config.d_model],
                     end_with_act_fn=False,
-                    linear_init=init_linear_orthogonal,
+                    linear_init=linear_init,
+                    final_linear_init=projection_linear_init,
                     act_fn_cls=config.act_fn_cls,
                 )
             else:
                 self.global_obs_encoder = nn.Linear(self.global_obs_dim, config.d_model)
-                init_linear_orthogonal(self.global_obs_encoder)
+                projection_linear_init(self.global_obs_encoder)
         else:
             self.global_obs_encoder = None
 
