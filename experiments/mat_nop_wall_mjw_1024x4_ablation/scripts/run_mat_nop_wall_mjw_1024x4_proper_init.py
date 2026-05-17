@@ -36,7 +36,7 @@ def main() -> None:
             normalize_obs_inputs=False,
             normalize_encoder_tokens=True,
             normalize_query_input=True,
-            normalize_context_input=True,
+            normalize_context_input=False,
             normalize_memory_input=True,
             normalize_query_tokens=True,
             normalize_context_tokens=True,

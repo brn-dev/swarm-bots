@@ -35,14 +35,14 @@ def main() -> None:
         mat_normalization=MATNormalizationConfig(
             normalize_obs_inputs=False,
             normalize_encoder_tokens=True,
-            normalize_query_input=True,
-            normalize_context_input=True,
-            normalize_memory_input=True,
+            normalize_query_input=False,
+            normalize_context_input=False,
+            normalize_memory_input=False,
             normalize_query_tokens=True,
             normalize_context_tokens=True,
             normalize_memory_tokens=True,
-            normalize_actor_head_input=True,
-            normalize_prev_binary_actions=True,
+            normalize_actor_head_input=False,
+            normalize_prev_binary_actions=False,
         ),
     )
 
