@@ -17,6 +17,7 @@ class PopArtLinear(nn.Module):
             min_std: float = 1e-4,
             init_mu: float = 0.0,
             init_sigma: float = 1.0,
+            init_gain: float = 1.0,
             device: torch.device | None = None,
             dtype: torch.dtype | None = None,
     ) -> None:
@@ -28,6 +29,7 @@ class PopArtLinear(nn.Module):
         self.beta = float(beta)
         self.eps = float(eps)
         self.min_std = float(min_std)
+        self.init_gain = float(init_gain)
 
         self.weight = nn.Parameter(torch.empty((self.out_features, self.in_features), **factory_kwargs))
         if bias:
@@ -43,7 +45,7 @@ class PopArtLinear(nn.Module):
         self.reset_parameters()
 
     def reset_parameters(self) -> None:
-        nn.init.orthogonal_(self.weight)
+        nn.init.orthogonal_(self.weight, gain=self.init_gain)
         if self.bias is not None:
             nn.init.zeros_(self.bias)
 
@@ -57,6 +59,7 @@ class PopArtLinear(nn.Module):
             min_std: float = 1e-4,
             init_mu: float = 0.0,
             init_sigma: float = 1.0,
+            init_gain: float = 1.0,
     ) -> PopArtLinear:
         layer = cls(
             in_features=linear.in_features,
@@ -67,6 +70,7 @@ class PopArtLinear(nn.Module):
             min_std=min_std,
             init_mu=init_mu,
             init_sigma=init_sigma,
+            init_gain=init_gain,
             device=linear.weight.device,
             dtype=linear.weight.dtype,
         )
