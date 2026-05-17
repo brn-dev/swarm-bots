@@ -33,7 +33,7 @@ def main() -> None:
             predictors=output_init_gain,
         ),
         mat_normalization=MATNormalizationConfig(
-            normalize_obs_inputs=True,
+            normalize_obs_inputs=False,
             normalize_encoder_tokens=True,
             normalize_query_input=True,
             normalize_context_input=True,
