@@ -1,15 +1,52 @@
 from pathlib import Path
 
-from common import run_ablation
+from common import MATInitGains, MATNormalizationConfig, NOPInitGains, run_ablation
 from swarmbots.learn.nn_components.activations import NegativeSlopeMode, SignedSquaredLeakyReluFactory
 
 
 def main() -> None:
+    hidden_init_gain = 1.0
+    transformer_stack_init_gain = 1.0
+    output_init_gain = 0.01
+
     run_ablation(
         variant_name="sticky_lr_beta_nop_signed_squared_leaky_relu_global",
         entrypoint_path=Path(__file__).resolve(),
         act_fn_cls=SignedSquaredLeakyReluFactory(
             negative_slope_mode=NegativeSlopeMode.GLOBAL,
+        ),
+        mat_init_gains=MATInitGains(
+            obs_encoder=hidden_init_gain,
+            obs_encoder_projection=1.0,
+            encoder_transformer_ff=transformer_stack_init_gain,
+            decoder_token_encoder=hidden_init_gain,
+            decoder_token_encoder_projection=1.0,
+            decoder_transformer_ff=transformer_stack_init_gain,
+            actor_head=hidden_init_gain,
+            action_net=output_init_gain,
+            critic_local_projection=hidden_init_gain,
+            critic_value_regressor=hidden_init_gain,
+            critic_value_head=output_init_gain,
+        ),
+        nop_init_gains=NOPInitGains(
+            pre_transition=hidden_init_gain,
+            transition_coembed=hidden_init_gain,
+            transition_transformer_ff=transformer_stack_init_gain,
+            transition_head=output_init_gain,
+            pre_predictors=hidden_init_gain,
+            predictors=output_init_gain,
+        ),
+        mat_normalization=MATNormalizationConfig(
+            normalize_obs_inputs=False,
+            normalize_encoder_tokens=True,
+            normalize_query_input=True,
+            normalize_context_input=True,
+            normalize_memory_input=True,
+            normalize_query_tokens=True,
+            normalize_context_tokens=True,
+            normalize_memory_tokens=True,
+            normalize_actor_head_input=True,
+            normalize_prev_binary_actions=True,
         ),
     )
 

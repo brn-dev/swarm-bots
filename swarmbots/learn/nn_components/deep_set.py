@@ -189,6 +189,7 @@ class DeepSetCritic(nn.Module):
                 eps=popart_eps,
                 min_std=popart_min_std,
                 init_sigma=popart_init_sigma,
+                init_gain=value_head_linear_init_gain,
             )
             value_regressor_head: nn.Module = self.popart_head
         else:
