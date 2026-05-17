@@ -174,6 +174,10 @@ def _format_training_run_finished_message(
 #         f"iterations: {algorithm.n_total_iterations:,}",
 #         f"updates: {algorithm.n_total_updates:,}",
     ]
+    last_return_ema = getattr(algorithm, "_last_return_ema", None)
+    if last_return_ema is not None:
+        lines.append(f"final_ep_rew_ema: {last_return_ema:.6g}")
+
     best_return_ema = getattr(algorithm, "_best_return_ema", None)
     if best_return_ema is not None:
         lines.append(f"best_ep_rew_ema: {best_return_ema:.6g}")
