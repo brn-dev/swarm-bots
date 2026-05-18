@@ -20,6 +20,11 @@ GROUP_ORDER = (
     "4096x4_virtual2",
     "4096x4x12",
 )
+EXTRA_GROUP_SOURCES = {
+    "1024x4": (
+        REPO_ROOT / "runs" / "mat_nop_swarm_bots_wall_mjw_1024x4_ablation" / "sticky_lr_beta_nop",
+    ),
+}
 THEORETICAL_MAXIMUM = 10.5
 
 
@@ -29,6 +34,7 @@ def main() -> int:
         OUTPUT_DIR,
         group_order=GROUP_ORDER,
         theoretical_maximum=THEORETICAL_MAXIMUM,
+        extra_group_sources=EXTRA_GROUP_SOURCES,
     )
     for output_path in result.output_paths:
         print(output_path)
