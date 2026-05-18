@@ -25,7 +25,6 @@ class SwarmBotsEnv(gymnasium.Env):
         self,
         scenario: BaseScenario,
         episode_length: int = 500,
-        shuffle_agents: bool = False,
         render_mode: str | None = None,
         width: int = 640,
         height: int = 480,
@@ -43,7 +42,6 @@ class SwarmBotsEnv(gymnasium.Env):
             raise ValueError(f"Expected reset_retry_count > 0, got {reset_retry_count}")
 
         self.episode_length = episode_length
-        self.shuffle_agents = shuffle_agents
         self.render_mode = render_mode
         self.width = width
         self.height = height
@@ -103,9 +101,6 @@ class SwarmBotsEnv(gymnasium.Env):
                 dtype=bool,
             )
 
-        self._agent_permutation: np.ndarray | None = None
-        self._inv_agent_permutation: np.ndarray | None = None
-
     @property
     def action_repeat(self) -> int:
         return self.scenario.action_repeat
@@ -115,7 +110,6 @@ class SwarmBotsEnv(gymnasium.Env):
             'scenario': self.scenario.get_settings(),
             'episode_length': self.episode_length,
             'action_repeat': self.action_repeat,
-            'shuffle_agents': self.shuffle_agents,
             'simulation_unstable_reward': self.simulation_unstable_reward,
             'swarm_pool': {
                 'pool_size': self.get_swarm_pool_size(),
@@ -170,19 +164,16 @@ class SwarmBotsEnv(gymnasium.Env):
         if last_error is not None:
             raise last_error
 
-        self._reset_agent_permutation()
         obs = self.scenario.get_obs(self.model, self.data, self.scenario_state, self.swarm_connections)
-        obs = self._shuffle_obs(obs)
         return obs, {}
 
     def step(
         self, action: SwarmActDict
     ) -> tuple[SwarmObsDict, SupportsFloat, bool, bool, dict[str, Any]]:
-        action_unshuffled = self._unshuffle_action(action)
         self.scenario.apply_action(
             model=self.model,
             data=self.data,
-            action=action_unshuffled,
+            action=action,
             state=self.scenario_state,
             connections=self.swarm_connections,
         )
@@ -198,7 +189,6 @@ class SwarmBotsEnv(gymnasium.Env):
                 units_active_mask = self.scenario_state.get("units_active_mask")
                 if units_active_mask is not None:
                     err_obs["agent_mask"] = np.asarray(units_active_mask, dtype=bool).copy()
-            err_obs = self._shuffle_obs(err_obs)
             return (
                 err_obs,
                 self.simulation_unstable_reward,
@@ -208,7 +198,7 @@ class SwarmBotsEnv(gymnasium.Env):
             )
 
         reward, terminated = self.scenario.evaluate_step(
-            action_unshuffled, self.model, self.data, self.scenario_state, self.swarm_connections
+            action, self.model, self.data, self.scenario_state, self.swarm_connections
         )
 
         self.current_step += 1
@@ -224,7 +214,6 @@ class SwarmBotsEnv(gymnasium.Env):
             self.render()
 
         obs = self.scenario.get_obs(self.model, self.data, self.scenario_state, self.swarm_connections).copy()
-        obs = self._shuffle_obs(obs)
 
         if self.return_scenario_state_as_infos:
             info: dict[str, Any] = dict(self.scenario_state)
@@ -297,46 +286,3 @@ class SwarmBotsEnv(gymnasium.Env):
         clone.data = clone.scenario.dummy_data
         clone._renderer = None
         return clone
-
-    def _reset_agent_permutation(self) -> None:
-        if not self.shuffle_agents:
-            self._agent_permutation = None
-            self._inv_agent_permutation = None
-            return
-
-        num_units = self.scenario.swarm.config.num_units
-        units_active_mask = None if self.scenario_state is None else self.scenario_state.get("units_active_mask", None)
-        if units_active_mask is None:
-            permutation = np.asarray(self.np_random.permutation(num_units), dtype=int)
-        else:
-            active_indices = np.flatnonzero(np.asarray(units_active_mask, dtype=bool))
-            permutation = np.arange(num_units, dtype=int)
-            if active_indices.size > 1:
-                shuffled_active = np.asarray(self.np_random.permutation(active_indices), dtype=int)
-                permutation[active_indices] = shuffled_active
-        self._agent_permutation = permutation
-        self._inv_agent_permutation = np.argsort(permutation)
-
-    def _shuffle_obs(self, obs: SwarmObsDict) -> SwarmObsDict:
-        if not self.shuffle_agents:
-            return obs
-        assert self._agent_permutation is not None
-        shuffled: SwarmObsDict = {
-            "local_obs": obs["local_obs"][self._agent_permutation],
-            "global_obs": obs["global_obs"],
-            "hidden_local_vars": obs["hidden_local_vars"][self._agent_permutation],
-            "hidden_global_vars": obs["hidden_global_vars"],
-        }
-        if "agent_mask" in obs:
-            agent_mask = obs["agent_mask"]
-            shuffled["agent_mask"] = None if agent_mask is None else agent_mask[self._agent_permutation]
-        return shuffled
-
-    def _unshuffle_action(self, action: SwarmActDict) -> SwarmActDict:
-        if not self.shuffle_agents:
-            return action
-        assert self._inv_agent_permutation is not None
-        return {
-            "actuators": action["actuators"][self._inv_agent_permutation],
-            "connectors": action["connectors"][self._inv_agent_permutation],
-        }

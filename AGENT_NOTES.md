@@ -65,6 +65,7 @@ Agents use this file for durable codebase notes. Keep only architecture, invaria
 - Done-step bootstrap observations come from `infos["final_obs"]`, not the reset observation batch.
 - Raw Gymnasium done-step stats may arrive under `infos["final_info"]`; rollout code must unwrap them when later wrappers did not inject stats.
 - Learn-side wrappers must transform `final_obs` too. `TorchFeatureWiseObsNormWrapper` must not update RMS twice, and `TorchTransitionObsWrapper` must stack transition features onto single-env `final_obs`.
+- Agent-order randomization is learn-wrapper-owned via `TorchShuffleAgentsWrapper`, not env-owned. On SAME_STEP autoreset it must shuffle `final_obs` with the terminal episode's old permutation, then resample done env permutations before shuffling the returned reset obs. Use `preserve_inactive_prefix_structure=True` when MAT's contiguous active-agent prefix invariant matters.
 - Env observations are semantic step outputs, not immutable storage. Async/shared-memory vector envs, GPU envs, and wrappers with `copy=False` may reuse/mutate backing buffers after the next env call. Anything persisted across `env.step()` boundaries (rollout storage, delayed bootstrap/final-obs handling, debugging probes) must snapshot at the consumer boundary.
 - `collect_steps()` may emit rollout segments that start mid true episode. Use `PPOEpisode.is_true_episode_start`; do not infer from chunk position.
 - Step-rollout accumulator capacity is bounded by rollout segment length, not true env episode length.
