@@ -11,6 +11,7 @@ from gymnasium.vector import AutoresetMode, SyncVectorEnv
 
 from swarmbots.learn.env_wrappers.learn_wrappers.swarm_bots_learn_env_wrapper import SwarmBotsLearnEnvWrapper
 from swarmbots.learn.env_wrappers.torch_shuffle_agents_wrapper import TorchShuffleAgentsWrapper
+from swarmbots.learn.env_wrappers.torch_transition_obs_wrapper import TorchTransitionObsWrapper
 
 
 class _AgentIdEnv(gymnasium.Env):
@@ -72,6 +73,24 @@ class _AgentIdEnv(gymnasium.Env):
         }
 
 
+class _FirstEpisodeLengthAgentIdEnv(_AgentIdEnv):
+    def __init__(self, *, first_episode_length: int, later_episode_length: int, **kwargs: Any) -> None:
+        super().__init__(max_steps=first_episode_length, **kwargs)
+        self._first_episode_length = int(first_episode_length)
+        self._later_episode_length = int(later_episode_length)
+        self._reset_count = 0
+
+    def reset(
+        self,
+        *,
+        seed: int | None = None,
+        options: dict[str, Any] | None = None,
+    ) -> tuple[dict[str, np.ndarray], dict[str, Any]]:
+        self.max_steps = self._first_episode_length if self._reset_count == 0 else self._later_episode_length
+        self._reset_count += 1
+        return super().reset(seed=seed, options=options)
+
+
 def _make_env(
     *,
     max_steps: int = 2,
@@ -98,6 +117,47 @@ def _make_env(
         ),
         raw_envs,
     )
+
+
+def _transition_action_from_current_obs(obs: dict[str, torch.Tensor]) -> torch.Tensor:
+    return torch.cat(
+        (
+            obs["local_obs"][..., :1],
+            torch.zeros((*obs["local_obs"].shape[:2], 1), dtype=obs["local_obs"].dtype, device=obs["local_obs"].device),
+        ),
+        dim=-1,
+    )
+
+
+def _assert_transition_parts(
+    test_case: unittest.TestCase,
+    obs: dict[str, torch.Tensor],
+    *,
+    current_local: torch.Tensor,
+    prev_actions: torch.Tensor,
+    prev_local: torch.Tensor,
+    current_global: torch.Tensor,
+    prev_global: torch.Tensor,
+    new_obs_first: bool = True,
+) -> None:
+    if new_obs_first:
+        actual_current_local = obs["local_obs"][..., :1]
+        actual_prev_actions = obs["local_obs"][..., 1:3]
+        actual_prev_local = obs["local_obs"][..., 3:4]
+        actual_current_global = obs["global_obs"][..., :1]
+        actual_prev_global = obs["global_obs"][..., 1:2]
+    else:
+        actual_prev_local = obs["local_obs"][..., :1]
+        actual_prev_actions = obs["local_obs"][..., 1:3]
+        actual_current_local = obs["local_obs"][..., 3:4]
+        actual_prev_global = obs["global_obs"][..., :1]
+        actual_current_global = obs["global_obs"][..., 1:2]
+
+    test_case.assertTrue(torch.equal(actual_current_local, current_local))
+    test_case.assertTrue(torch.equal(actual_prev_actions, prev_actions))
+    test_case.assertTrue(torch.equal(actual_prev_local, prev_local))
+    test_case.assertTrue(torch.equal(actual_current_global, current_global))
+    test_case.assertTrue(torch.equal(actual_prev_global, prev_global))
 
 
 class TorchShuffleAgentsWrapperTests(unittest.TestCase):
@@ -222,6 +282,279 @@ class TorchShuffleAgentsWrapperTests(unittest.TestCase):
             final_obs = infos["final_obs"][0]
             self.assertTrue(torch.equal(final_obs["local_obs"][:, 0] - 10.0, obs["local_obs"][0, :, 0]))
             self.assertTrue(torch.equal(final_obs["hidden_local_vars"][:, 0] - 10.0, obs["hidden_local_vars"][0, :, 0]))
+        finally:
+            env.close()
+
+    def test_transition_obs_zeroes_reset_obs_state_after_shuffle_resamples_done_envs(self) -> None:
+        shuffled_env, _raw_envs = _make_env(max_steps=1)
+        env = TorchTransitionObsWrapper(shuffled_env)
+        try:
+            obs, _info = env.reset()
+            actions = torch.cat(
+                (
+                    obs["local_obs"][..., :1],
+                    torch.zeros((1, env.n_agents, 1), dtype=obs["local_obs"].dtype),
+                ),
+                dim=-1,
+            )
+
+            next_obs, _rewards, _terminations, truncations, infos = env.step(actions)
+
+            self.assertTrue(bool(truncations[0].item()))
+            self.assertTrue(torch.equal(next_obs["local_obs"][0, :, 1:3], torch.zeros((env.n_agents, 2))))
+            self.assertTrue(torch.equal(next_obs["local_obs"][0, :, 3], torch.zeros((env.n_agents,))))
+            self.assertTrue(torch.equal(infos["final_obs"][0]["local_obs"][:, 1], obs["local_obs"][0, :, 0]))
+            self.assertTrue(torch.equal(infos["final_obs"][0]["local_obs"][:, 3], obs["local_obs"][0, :, 0]))
+        finally:
+            env.close()
+
+    def test_transition_obs_carries_history_on_non_done_step_with_shuffle(self) -> None:
+        shuffled_env, _raw_envs = _make_env(max_steps=3)
+        env = TorchTransitionObsWrapper(shuffled_env)
+        try:
+            obs, _info = env.reset()
+            actions = _transition_action_from_current_obs(obs)
+
+            next_obs, _rewards, _terminations, truncations, infos = env.step(actions)
+
+            self.assertFalse(bool(truncations[0].item()))
+            if "_final_obs" in infos:
+                self.assertFalse(bool(torch.as_tensor(infos["_final_obs"])[0].item()))
+            _assert_transition_parts(
+                self,
+                next_obs,
+                current_local=obs["local_obs"][..., :1] + 10.0,
+                prev_actions=actions,
+                prev_local=obs["local_obs"][..., :1],
+                current_global=obs["global_obs"][..., :1] + 1.0,
+                prev_global=obs["global_obs"][..., :1],
+            )
+        finally:
+            env.close()
+
+    def test_transition_obs_false_new_obs_first_layout_handles_same_step_reset(self) -> None:
+        shuffled_env, _raw_envs = _make_env(max_steps=1)
+        env = TorchTransitionObsWrapper(shuffled_env, new_obs_first=False)
+        try:
+            obs, _info = env.reset()
+            current_local = obs["local_obs"][..., 3:4]
+            actions = torch.cat(
+                (
+                    current_local,
+                    torch.zeros((1, env.n_agents, 1), dtype=obs["local_obs"].dtype),
+                ),
+                dim=-1,
+            )
+
+            reset_obs, _rewards, _terminations, truncations, infos = env.step(actions)
+
+            self.assertTrue(bool(truncations[0].item()))
+            _assert_transition_parts(
+                self,
+                reset_obs,
+                current_local=reset_obs["local_obs"][..., 3:4],
+                prev_actions=torch.zeros((1, env.n_agents, 2)),
+                prev_local=torch.zeros((1, env.n_agents, 1)),
+                current_global=reset_obs["global_obs"][..., 1:2],
+                prev_global=torch.zeros((1, 1)),
+                new_obs_first=False,
+            )
+            _assert_transition_parts(
+                self,
+                {
+                    "local_obs": infos["final_obs"][0]["local_obs"].unsqueeze(0),
+                    "global_obs": infos["final_obs"][0]["global_obs"].unsqueeze(0),
+                },
+                current_local=current_local + 10.0,
+                prev_actions=actions,
+                prev_local=current_local,
+                current_global=obs["global_obs"][..., 1:2] + 1.0,
+                prev_global=obs["global_obs"][..., 1:2],
+                new_obs_first=False,
+            )
+        finally:
+            env.close()
+
+    def test_transition_obs_normalizes_binary_prev_actions_in_final_obs_but_zeroes_reset_obs(self) -> None:
+        shuffled_env, _raw_envs = _make_env(max_steps=1)
+        env = TorchTransitionObsWrapper(shuffled_env, normalize_prev_binary_actions=True)
+        try:
+            obs, _info = env.reset()
+            actions = torch.cat(
+                (
+                    obs["local_obs"][..., :1] * 0.25,
+                    torch.zeros((1, env.n_agents, 1), dtype=obs["local_obs"].dtype),
+                ),
+                dim=-1,
+            )
+            actions[..., 1] = torch.tensor([[1.0, 0.0, 1.0, 0.0, 1.0]])
+
+            reset_obs, _rewards, _terminations, truncations, infos = env.step(actions)
+
+            self.assertTrue(bool(truncations[0].item()))
+            self.assertTrue(torch.equal(reset_obs["local_obs"][0, :, 1:3], torch.zeros((env.n_agents, 2))))
+            expected_final_prev_actions = actions.clone()
+            expected_final_prev_actions[..., 1] = expected_final_prev_actions[..., 1] * 2.0 - 1.0
+            self.assertTrue(torch.equal(infos["final_obs"][0]["local_obs"][:, 1:3], expected_final_prev_actions[0]))
+        finally:
+            env.close()
+
+    def test_transition_obs_accepts_two_dimensional_single_env_actions(self) -> None:
+        shuffled_env, _raw_envs = _make_env(max_steps=3)
+        env = TorchTransitionObsWrapper(shuffled_env)
+        try:
+            obs, _info = env.reset()
+            actions = _transition_action_from_current_obs(obs)[0]
+
+            next_obs, _rewards, _terminations, truncations, _infos = env.step(actions)
+
+            self.assertFalse(bool(truncations[0].item()))
+            self.assertTrue(torch.equal(next_obs["local_obs"][0, :, 1:3], actions))
+            self.assertTrue(torch.equal(next_obs["local_obs"][0, :, 3], obs["local_obs"][0, :, 0]))
+        finally:
+            env.close()
+
+    def test_transition_obs_simultaneous_same_step_dones_reset_all_returned_histories(self) -> None:
+        shuffled_env, _raw_envs = _make_env(max_steps=1, n_envs=3)
+        env = TorchTransitionObsWrapper(shuffled_env)
+        try:
+            obs, _info = env.reset()
+            actions = _transition_action_from_current_obs(obs)
+
+            reset_obs, _rewards, _terminations, truncations, infos = env.step(actions)
+
+            self.assertTrue(torch.equal(truncations.cpu(), torch.tensor([True, True, True])))
+            self.assertTrue(torch.equal(reset_obs["local_obs"][..., 1:3], torch.zeros((3, env.n_agents, 2))))
+            self.assertTrue(torch.equal(reset_obs["local_obs"][..., 3], torch.zeros((3, env.n_agents))))
+            self.assertTrue(torch.equal(reset_obs["global_obs"][..., 1], torch.zeros((3,))))
+            final_obs_entries = infos["final_obs"]
+            for env_idx in range(3):
+                self.assertTrue(
+                    torch.equal(final_obs_entries[env_idx]["local_obs"][:, 1:3], actions[env_idx])
+                )
+                self.assertTrue(
+                    torch.equal(final_obs_entries[env_idx]["local_obs"][:, 3], obs["local_obs"][env_idx, :, 0])
+                )
+        finally:
+            env.close()
+
+    def test_transition_obs_unrestricted_shuffle_same_step_reset_keeps_final_old_order_and_reset_zeroed(self) -> None:
+        shuffled_env, _raw_envs = _make_env(
+            max_steps=1,
+            n_agents=8,
+            active_agents=3,
+            preserve_inactive_prefix_structure=False,
+            seed=123,
+        )
+        env = TorchTransitionObsWrapper(shuffled_env)
+        try:
+            obs, _info = env.reset()
+            actions = _transition_action_from_current_obs(obs)
+
+            reset_obs, _rewards, _terminations, truncations, infos = env.step(actions)
+
+            self.assertTrue(bool(truncations[0].item()))
+            self.assertFalse(torch.equal(reset_obs["agent_mask"], obs["agent_mask"]))
+            self.assertTrue(torch.equal(reset_obs["local_obs"][0, :, 1:3], torch.zeros((env.n_agents, 2))))
+            self.assertTrue(torch.equal(reset_obs["local_obs"][0, :, 3], torch.zeros((env.n_agents,))))
+            self.assertTrue(torch.equal(infos["final_obs"][0]["local_obs"][:, 1:3], actions[0]))
+            self.assertTrue(torch.equal(infos["final_obs"][0]["local_obs"][:, 3], obs["local_obs"][0, :, 0]))
+        finally:
+            env.close()
+
+    def test_transition_obs_repeated_one_step_episodes_zero_each_reset_but_chain_next_episode_state(self) -> None:
+        raw_env = _FirstEpisodeLengthAgentIdEnv(first_episode_length=1, later_episode_length=1)
+        vector_env = SyncVectorEnv([lambda: raw_env], autoreset_mode=AutoresetMode.SAME_STEP)
+        shuffled_env = TorchShuffleAgentsWrapper(
+            SwarmBotsLearnEnvWrapper(vector_env),
+            preserve_inactive_prefix_structure=True,
+            seed=123,
+        )
+        env = TorchTransitionObsWrapper(shuffled_env)
+        try:
+            obs, _info = env.reset()
+            for _ in range(3):
+                actions = _transition_action_from_current_obs(obs)
+                reset_obs, _rewards, _terminations, truncations, infos = env.step(actions)
+
+                self.assertTrue(bool(truncations[0].item()))
+                self.assertTrue(torch.equal(reset_obs["local_obs"][0, :, 1:3], torch.zeros((env.n_agents, 2))))
+                self.assertTrue(torch.equal(reset_obs["local_obs"][0, :, 3], torch.zeros((env.n_agents,))))
+                self.assertTrue(torch.equal(infos["final_obs"][0]["local_obs"][:, 1:3], actions[0]))
+                self.assertTrue(torch.equal(infos["final_obs"][0]["local_obs"][:, 3], obs["local_obs"][0, :, 0]))
+                obs = reset_obs
+        finally:
+            env.close()
+
+    def test_transition_obs_zeroes_only_done_envs_after_partial_shuffle_reset(self) -> None:
+        raw_envs = [
+            _AgentIdEnv(max_steps=1),
+            _AgentIdEnv(max_steps=3),
+        ]
+        vector_env = SyncVectorEnv(
+            [lambda raw_env=raw_env: raw_env for raw_env in raw_envs],
+            autoreset_mode=AutoresetMode.SAME_STEP,
+        )
+        shuffled_env = TorchShuffleAgentsWrapper(
+            SwarmBotsLearnEnvWrapper(vector_env),
+            preserve_inactive_prefix_structure=True,
+            seed=123,
+        )
+        env = TorchTransitionObsWrapper(shuffled_env)
+        try:
+            obs, _info = env.reset()
+            actions = torch.cat(
+                (
+                    obs["local_obs"][..., :1],
+                    torch.zeros((2, env.n_agents, 1), dtype=obs["local_obs"].dtype),
+                ),
+                dim=-1,
+            )
+
+            next_obs, _rewards, _terminations, truncations, infos = env.step(actions)
+
+            self.assertTrue(torch.equal(truncations.cpu(), torch.tensor([True, False])))
+            self.assertTrue(torch.equal(next_obs["local_obs"][0, :, 1:3], torch.zeros((env.n_agents, 2))))
+            self.assertTrue(torch.equal(next_obs["local_obs"][0, :, 3], torch.zeros((env.n_agents,))))
+            self.assertTrue(torch.equal(next_obs["global_obs"][0, 1:], torch.zeros((1,))))
+            self.assertTrue(torch.equal(next_obs["local_obs"][1, :, 1], obs["local_obs"][1, :, 0]))
+            self.assertTrue(torch.equal(next_obs["local_obs"][1, :, 3], obs["local_obs"][1, :, 0]))
+            self.assertTrue(torch.equal(next_obs["global_obs"][1, 1:], obs["global_obs"][1, :1]))
+            self.assertTrue(torch.equal(infos["final_obs"][0]["local_obs"][:, 1], obs["local_obs"][0, :, 0]))
+            self.assertTrue(torch.equal(infos["final_obs"][0]["local_obs"][:, 3], obs["local_obs"][0, :, 0]))
+        finally:
+            env.close()
+
+    def test_transition_obs_keeps_reset_obs_as_state_for_step_after_same_step_reset(self) -> None:
+        raw_env = _FirstEpisodeLengthAgentIdEnv(first_episode_length=1, later_episode_length=3)
+        vector_env = SyncVectorEnv([lambda: raw_env], autoreset_mode=AutoresetMode.SAME_STEP)
+        shuffled_env = TorchShuffleAgentsWrapper(
+            SwarmBotsLearnEnvWrapper(vector_env),
+            preserve_inactive_prefix_structure=True,
+            seed=123,
+        )
+        env = TorchTransitionObsWrapper(shuffled_env)
+        try:
+            obs, _info = env.reset()
+            terminal_actions = torch.zeros((1, env.n_agents, env.action_space.total_agent_action_dim))
+            reset_obs, _rewards, _terminations, truncations, _infos = env.step(terminal_actions)
+            self.assertTrue(bool(truncations[0].item()))
+            self.assertTrue(torch.equal(reset_obs["local_obs"][0, :, 1:3], torch.zeros((env.n_agents, 2))))
+            self.assertTrue(torch.equal(reset_obs["local_obs"][0, :, 3], torch.zeros((env.n_agents,))))
+
+            reset_current_local = reset_obs["local_obs"][..., :1]
+            first_new_episode_actions = torch.cat(
+                (
+                    reset_current_local,
+                    torch.zeros((1, env.n_agents, 1), dtype=reset_obs["local_obs"].dtype),
+                ),
+                dim=-1,
+            )
+            next_obs, _rewards, _terminations, truncations, _infos = env.step(first_new_episode_actions)
+
+            self.assertFalse(bool(truncations[0].item()))
+            self.assertTrue(torch.equal(next_obs["local_obs"][0, :, 1], reset_obs["local_obs"][0, :, 0]))
+            self.assertTrue(torch.equal(next_obs["local_obs"][0, :, 3], reset_obs["local_obs"][0, :, 0]))
         finally:
             env.close()
 

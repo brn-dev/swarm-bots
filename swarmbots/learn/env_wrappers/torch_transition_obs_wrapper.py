@@ -39,30 +39,56 @@ class TorchTransitionObsWrapper(TorchEnvWrapper):
             device=self.device,
             dtype=torch.float32,
         )
+        current_prev_actions = torch.zeros(
+            (self._n_envs, self._n_agents, self._n_action_features),
+            device=self.device,
+            dtype=torch.float32,
+        )
+        self._current_prev_local = torch.zeros_like(self._prev_local)
+        self._current_prev_actions = current_prev_actions
         self._prev_global: torch.Tensor | None = None
+        self._current_prev_global: torch.Tensor | None = None
         if self._has_global_obs:
             global_obs_dim = int(self.env.observation_space["global_obs"].shape[-1])
             self._prev_global = torch.zeros((self._n_envs, global_obs_dim), device=self.device, dtype=torch.float32)
-        self._prev_dones = torch.zeros((self._n_envs,), device=self.device, dtype=torch.bool)
+            self._current_prev_global = torch.zeros_like(self._prev_global)
 
     def reset(self, **kwargs: Any) -> tuple[TorchObs, dict[str, Any]]:
+        reset_mask = self._extract_reset_mask(kwargs)
+        old_current_prev_local = self._current_prev_local
+        old_current_prev_actions = self._current_prev_actions
+        old_current_prev_global = self._current_prev_global
+
         obs, info = self.env.reset(**kwargs)
         local = obs["local_obs"]
-        self._prev_local = local.clone()
-        self._prev_dones.zero_()
+        if reset_mask is None:
+            reset_mask = torch.ones((self._n_envs,), device=self.device, dtype=torch.bool)
+
+        self._prev_local = self._prev_local.clone()
+        self._current_prev_local = self._current_prev_local.clone()
+        self._current_prev_actions = self._current_prev_actions.clone()
+        self._prev_local[reset_mask] = local[reset_mask]
+        self._current_prev_local[reset_mask] = 0.0
+        self._current_prev_actions[reset_mask] = 0.0
+
+        prev_local = old_current_prev_local.masked_fill(reset_mask.view(self._n_envs, 1, 1), 0)
+        prev_actions = old_current_prev_actions.masked_fill(reset_mask.view(self._n_envs, 1, 1), 0)
 
         prev_global = None
         if self._has_global_obs and "global_obs" in obs:
             global_obs = obs["global_obs"]
-            self._prev_global = global_obs.clone()
-            prev_global = torch.zeros_like(global_obs)
-
-        prev_local = torch.zeros_like(local)
-        prev_actions = torch.zeros(
-            (self._n_envs, self._n_agents, self._n_action_features),
-            device=local.device,
-            dtype=local.dtype,
-        )
+            if self._prev_global is None:
+                self._prev_global = torch.zeros_like(global_obs)
+            if self._current_prev_global is None:
+                self._current_prev_global = torch.zeros_like(global_obs)
+            self._prev_global = self._prev_global.clone()
+            self._current_prev_global = self._current_prev_global.clone()
+            self._prev_global[reset_mask] = global_obs[reset_mask]
+            self._current_prev_global[reset_mask] = 0.0
+            if old_current_prev_global is None:
+                prev_global = torch.zeros_like(global_obs)
+            else:
+                prev_global = old_current_prev_global.masked_fill(reset_mask.view(self._n_envs, 1), 0)
         return self._stack_obs(obs, prev_local=prev_local, prev_actions=prev_actions, prev_global=prev_global), info
 
     def step(
@@ -71,7 +97,6 @@ class TorchTransitionObsWrapper(TorchEnvWrapper):
     ) -> tuple[TorchObs, torch.Tensor, torch.Tensor, torch.Tensor, dict[str, Any]]:
         prev_local = self._prev_local
         prev_actions = self._actions_to_features(actions, dtype=prev_local.dtype)
-        prev_actions = prev_actions.masked_fill(self._prev_dones.view(self._n_envs, 1, 1), 0)
         prev_global = self._prev_global if self._has_global_obs else None
 
         obs, rewards, terminations, truncations, infos = self.env.step(actions)
@@ -81,26 +106,46 @@ class TorchTransitionObsWrapper(TorchEnvWrapper):
             prev_actions=prev_actions,
             prev_global=prev_global,
         )
+        dones = torch.logical_or(terminations, truncations)
+
+        obs_prev_local = prev_local.masked_fill(dones.view(self._n_envs, 1, 1), 0)
+        obs_prev_actions = prev_actions.masked_fill(dones.view(self._n_envs, 1, 1), 0)
+        obs_prev_global = prev_global
+        if obs_prev_global is not None:
+            obs_prev_global = obs_prev_global.masked_fill(dones.view(self._n_envs, 1), 0)
+
         self._prev_local = obs["local_obs"].clone()
+        self._current_prev_local = obs_prev_local.clone()
+        self._current_prev_actions = obs_prev_actions.clone()
         if self._has_global_obs and self._prev_global is not None and "global_obs" in obs:
             self._prev_global = obs["global_obs"].clone()
+            if obs_prev_global is not None:
+                self._current_prev_global = obs_prev_global.clone()
 
-        dones = torch.logical_or(terminations, truncations)
-        self._prev_local.masked_fill_(dones.view(self._n_envs, 1, 1), 0)
-        if self._has_global_obs and self._prev_global is not None:
-            self._prev_global.masked_fill_(dones.view(self._n_envs, 1), 0)
-        self._prev_dones = dones
-
-        stacked_obs = self._stack_obs(obs, prev_local=prev_local, prev_actions=prev_actions, prev_global=prev_global)
+        stacked_obs = self._stack_obs(
+            obs,
+            prev_local=obs_prev_local,
+            prev_actions=obs_prev_actions,
+            prev_global=obs_prev_global,
+        )
         return stacked_obs, rewards, terminations, truncations, infos
 
     def set_device(self, device: torch.device | str) -> None:
         new_device = torch.device(device)
         self._prev_local = self._prev_local.to(new_device)
+        self._current_prev_local = self._current_prev_local.to(new_device)
+        self._current_prev_actions = self._current_prev_actions.to(new_device)
         if self._prev_global is not None:
             self._prev_global = self._prev_global.to(new_device)
-        self._prev_dones = self._prev_dones.to(new_device)
+        if self._current_prev_global is not None:
+            self._current_prev_global = self._current_prev_global.to(new_device)
         super().set_device(new_device)
+
+    def _extract_reset_mask(self, kwargs: dict[str, Any]) -> torch.Tensor | None:
+        options = kwargs.get("options", None)
+        if not isinstance(options, dict) or "reset_mask" not in options:
+            return None
+        return to_torch_tensor(options["reset_mask"], device=self.device, dtype=torch.bool).reshape(self._n_envs)
 
     def _with_transition_obs_space(self, obs_space: spaces.Dict) -> spaces.Dict:
         new_spaces: dict[str, spaces.Space] = dict(obs_space.spaces)

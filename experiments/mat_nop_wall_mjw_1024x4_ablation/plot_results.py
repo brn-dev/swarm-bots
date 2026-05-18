@@ -19,6 +19,7 @@ GROUP_ORDER = (
     "beta_nop",
     "squashed_diag_gaussian_nop",
     "sticky_lr_beta_nop_shuffle_agents",
+    "sticky_lr_beta_nop_shuffle_agents_preserve_prefix",
     "sticky_lr_beta_no_nop",
 )
 DISPLAY_NAME_OVERRIDES = {
@@ -28,6 +29,9 @@ DISPLAY_NAME_OVERRIDES = {
     "beta_nop": "Beta + NOP",
     "squashed_diag_gaussian_nop": "Squashed Diag Gaussian + NOP",
     "sticky_lr_beta_nop_shuffle_agents": "Sticky L/R Beta + NOP, shuffled agents",
+    "sticky_lr_beta_nop_shuffle_agents_preserve_prefix": (
+        "Sticky L/R Beta + NOP, shuffled active-prefix agents"
+    ),
     "sticky_lr_beta_no_nop": "Sticky L/R Beta, no NOP",
 }
 EXTRA_GROUP_SOURCES = {

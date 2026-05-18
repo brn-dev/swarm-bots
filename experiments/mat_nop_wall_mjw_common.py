@@ -449,6 +449,7 @@ def run_experiment(
         act_fn_cls=act_fn_cls,
         mat_init_gains=mat_init_gains,
         mat_normalization=mat_normalization,
+        assume_agent_mask_is_active_prefix=not shuffle_agents or preserve_inactive_prefix_structure,
     )
     policy = base_policy
     if use_nop:
@@ -698,6 +699,7 @@ def _make_base_policy(
         act_fn_cls: ActivationFactory,
         mat_init_gains: MATInitGains,
         mat_normalization: MATNormalizationConfig,
+        assume_agent_mask_is_active_prefix: bool,
 ) -> MATPolicy | MATDecPolicy | MATOrigPolicy:
     continuous_config = make_continuous_config(
         variant=continuous_action_dist,
@@ -755,6 +757,7 @@ def _make_base_policy(
                     normalize_context_tokens=mat_normalization.normalize_context_tokens,
                     normalize_memory_tokens=mat_normalization.normalize_memory_tokens,
                     normalize_actor_head_input=mat_normalization.normalize_actor_head_input,
+                    assume_agent_mask_is_active_prefix=assume_agent_mask_is_active_prefix,
                 ),
                 critic_config=MATCriticConfig(
                     n_local_projection_hidden_layers=2,
