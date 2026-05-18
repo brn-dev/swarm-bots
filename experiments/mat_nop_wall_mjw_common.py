@@ -40,7 +40,6 @@ from swarmbots.learn.algos.world_modeling.ppo_wm_sampler import PPOWMSamplerConf
 from swarmbots.learn.discord_notifications import run_with_discord_notification
 from swarmbots.learn.gsde_reset import GSDEProbabilityResetMode
 from swarmbots.learn.nn_components.activations import ActivationFactory, activation_factory_name
-from swarmbots.learn.nn_components.nn_init import DEFAULT_ORTHOGONAL_GAIN
 from swarmbots.learn.obs_indices import ObsIndices
 from swarmbots.learn.scheduling.auto_lr_updater import make_auto_lr_updater
 from swarmbots.learn.scheduling.cosine_scheduler import CosineSchedulerConfig
@@ -59,27 +58,27 @@ PolicyVariant = Literal["mat", "mat_dec", "mat_orig"]
 
 @dataclass(frozen=True)
 class MATInitGains:
-    obs_encoder: float = DEFAULT_ORTHOGONAL_GAIN
-    obs_encoder_projection: float | None = None
-    encoder_transformer_ff: float | None = None
-    decoder_token_encoder: float = DEFAULT_ORTHOGONAL_GAIN
-    decoder_token_encoder_projection: float | None = None
-    decoder_transformer_ff: float | None = None
-    actor_head: float = DEFAULT_ORTHOGONAL_GAIN
-    action_net: float = DEFAULT_ORTHOGONAL_GAIN
-    critic_local_projection: float = DEFAULT_ORTHOGONAL_GAIN
-    critic_value_regressor: float = DEFAULT_ORTHOGONAL_GAIN
-    critic_value_head: float = DEFAULT_ORTHOGONAL_GAIN
+    obs_encoder: float = 1.0
+    obs_encoder_projection: float | None = 1.0
+    encoder_transformer_ff: float | None = 1.0
+    decoder_token_encoder: float = 1.0
+    decoder_token_encoder_projection: float | None = 1.0
+    decoder_transformer_ff: float | None = 1.0
+    actor_head: float = 1.0
+    action_net: float = 0.01
+    critic_local_projection: float = 1.0
+    critic_value_regressor: float = 1.0
+    critic_value_head: float = 1.0
 
 
 @dataclass(frozen=True)
 class NOPInitGains:
-    pre_transition: float = DEFAULT_ORTHOGONAL_GAIN
-    transition_coembed: float = DEFAULT_ORTHOGONAL_GAIN
-    transition_transformer_ff: float | None = None
-    transition_head: float = DEFAULT_ORTHOGONAL_GAIN
-    pre_predictors: float = DEFAULT_ORTHOGONAL_GAIN
-    predictors: float = DEFAULT_ORTHOGONAL_GAIN
+    pre_transition: float = 1.0
+    transition_coembed: float = 1.0
+    transition_transformer_ff: float | None = 1.0
+    transition_head: float = 0.01
+    pre_predictors: float = 1.0
+    predictors: float = 0.01
 
 
 @dataclass(frozen=True)
