@@ -101,6 +101,22 @@ class ProgressGuidanceEpisodeStatsWrapper(VectorWrapper):
             infos: dict,
             key: str,
     ) -> np.ndarray | None:
+        values = self._extract_values_from_info_dict(infos, key)
+        final_values, final_mask = self._extract_final_step_values(infos, key)
+        if final_values is None:
+            return values
+        if values is None:
+            values = np.zeros((self.num_envs,), dtype=np.float64)
+        else:
+            values = values.copy()
+        values[final_mask] = final_values[final_mask]
+        return values
+
+    def _extract_values_from_info_dict(
+            self,
+            infos: dict,
+            key: str,
+    ) -> np.ndarray | None:
         if key not in infos:
             return None
 
@@ -126,6 +142,29 @@ class ProgressGuidanceEpisodeStatsWrapper(VectorWrapper):
         masked_out = np.zeros((self.num_envs,), dtype=np.float64)
         masked_out[present_mask] = out[present_mask]
         return masked_out
+
+    def _extract_final_step_values(
+            self,
+            infos: dict,
+            key: str,
+    ) -> tuple[np.ndarray | None, np.ndarray]:
+        final_info = infos.get("final_info", None)
+        if not isinstance(final_info, dict):
+            return None, np.zeros((self.num_envs,), dtype=bool)
+
+        values = self._extract_values_from_info_dict(final_info, key)
+        if values is None:
+            return None, np.zeros((self.num_envs,), dtype=bool)
+
+        if "_final_info" in infos:
+            final_mask = np.asarray(infos["_final_info"], dtype=bool).reshape(-1)
+            if final_mask.shape[0] != self.num_envs:
+                raise ValueError(
+                    f"Expected infos['_final_info'] to have length {self.num_envs}, got {final_mask.shape}"
+                )
+        else:
+            final_mask = np.ones((self.num_envs,), dtype=bool)
+        return values, final_mask
 
     def _inject_episode_stats(
             self,
