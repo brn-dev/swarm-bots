@@ -27,7 +27,7 @@ from swarmbots.learn.losses import LossDict, LossMetrics
 from swarmbots.learn.nn_components.activations import ActivationFactory
 from swarmbots.learn.nn_components.deep_set import DeepSetCritic
 from swarmbots.learn.nn_components.mlp import MLP
-from swarmbots.learn.nn_components.nn_init import DEFAULT_ORTHOGONAL_GAIN, make_init_linear_orthogonal
+from swarmbots.learn.nn_components.nn_init import make_init_linear_orthogonal
 from swarmbots.learn.serialization_utils import serialize_dataclass, serialize_value
 
 
@@ -37,9 +37,9 @@ class MATCriticConfig:
     n_value_regressor_hidden_layers: int = 2
     use_popart: bool = False
     popart_config: PopArtConfig = field(default_factory=PopArtConfig)
-    local_projection_init_gain: float = DEFAULT_ORTHOGONAL_GAIN
-    value_regressor_init_gain: float = DEFAULT_ORTHOGONAL_GAIN
-    value_head_init_gain: float = DEFAULT_ORTHOGONAL_GAIN
+    local_projection_init_gain: float = 1.0
+    value_regressor_init_gain: float = 1.0
+    value_head_init_gain: float = 1.0
 
 @dataclass(frozen=True)
 class MATPolicyConfig:
@@ -53,7 +53,7 @@ class MATPolicyConfig:
     max_agents: int | None = None
     compile_modules: bool = False
     compile_mode: str = "default"
-    action_net_init_gain: float = DEFAULT_ORTHOGONAL_GAIN
+    action_net_init_gain: float = 0.01
 
 
 def _ensure_torch_compile_available(*, compile_mode: str) -> None:

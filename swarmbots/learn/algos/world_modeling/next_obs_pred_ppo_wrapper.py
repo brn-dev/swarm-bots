@@ -23,7 +23,7 @@ from swarmbots.learn.algos.world_modeling.wm_recurrent_batch import build_wm_tar
 from swarmbots.learn.losses import LossDict, LossMetrics
 from swarmbots.learn.nn_components.activations import ActivationFactory
 from swarmbots.learn.nn_components.mlp import MLP
-from swarmbots.learn.nn_components.nn_init import DEFAULT_ORTHOGONAL_GAIN, make_init_linear_orthogonal
+from swarmbots.learn.nn_components.nn_init import make_init_linear_orthogonal
 
 
 @dataclass(frozen=True)
@@ -50,12 +50,12 @@ class NOPWorldModelConfig:
     wm_angle_predictor_hidden_dims: list[int] | None = None
     wm_rot6d_predictor_hidden_dims: list[int] | None = None
     wm_binary_predictor_hidden_dims: list[int] | None = None
-    wm_pre_transition_init_gain: float = DEFAULT_ORTHOGONAL_GAIN
-    wm_pre_predictors_init_gain: float = DEFAULT_ORTHOGONAL_GAIN
-    wm_predictor_init_gain: float = DEFAULT_ORTHOGONAL_GAIN
-    transition_model_coembed_init_gain: float = DEFAULT_ORTHOGONAL_GAIN
-    transition_model_head_init_gain: float = DEFAULT_ORTHOGONAL_GAIN
-    transition_model_transformer_ff_init_gain: float | None = None
+    wm_pre_transition_init_gain: float = 1.0
+    wm_pre_predictors_init_gain: float = 1.0
+    wm_predictor_init_gain: float = 0.01
+    transition_model_coembed_init_gain: float = 1.0
+    transition_model_head_init_gain: float = 0.01
+    transition_model_transformer_ff_init_gain: float | None = 1.0
     scalar_loss_fn: str | nn.Module | None = None
     next_obs_pred_config: NextObsPredConfig = field(default_factory=NextObsPredConfig)
 
@@ -527,7 +527,7 @@ def _build_predictor(
         output_dim: int,
         hidden_dims: list[int] | None,
         act_fn_cls: ActivationFactory,
-        linear_init_gain: float = DEFAULT_ORTHOGONAL_GAIN,
+        linear_init_gain: float = 0.01,
 ) -> nn.Module | None:
     if output_dim <= 0:
         return None

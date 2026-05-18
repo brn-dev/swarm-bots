@@ -5,7 +5,6 @@ from torch import nn
 
 from swarmbots.learn.nn_components.activations import ActivationFactory, make_activation
 from swarmbots.learn.nn_components.nn_init import (
-    DEFAULT_ORTHOGONAL_GAIN,
     make_init_linear_orthogonal,
     reinitialize_transformer_stack,
 )
@@ -24,9 +23,9 @@ class MATEncoderConfig:
     layer_norm_eps: float = 1e-5
     bias: bool = True
     add_agent_embeddings: bool = True
-    linear_init_gain: float = DEFAULT_ORTHOGONAL_GAIN
-    linear_projection_init_gain: float | None = None
-    transformer_ff_init_gain: float | None = None
+    linear_init_gain: float = 1.0
+    linear_projection_init_gain: float | None = 1.0
+    transformer_ff_init_gain: float | None = 1.0
     local_obs_encoder_hidden_dims: list[int] | None = None
     global_obs_encoder_hidden_dims: list[int] | None = None
     normalize_obs_inputs: bool = False

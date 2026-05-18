@@ -23,7 +23,7 @@ from swarmbots.learn.losses import LossDict, LossMetrics
 from swarmbots.learn.nn_components.activations import ActivationFactory
 from swarmbots.learn.nn_components.deep_set import DeepSetCritic
 from swarmbots.learn.nn_components.mlp import MLP
-from swarmbots.learn.nn_components.nn_init import DEFAULT_ORTHOGONAL_GAIN, make_init_linear_orthogonal
+from swarmbots.learn.nn_components.nn_init import make_init_linear_orthogonal
 from swarmbots.learn.serialization_utils import serialize_dataclass, serialize_value
 
 
@@ -39,8 +39,8 @@ class MATDecPolicyConfig:
     max_agents: int | None = None
     compile_modules: bool = False
     compile_mode: str = "default"
-    actor_head_init_gain: float = DEFAULT_ORTHOGONAL_GAIN
-    action_net_init_gain: float = DEFAULT_ORTHOGONAL_GAIN
+    actor_head_init_gain: float = 1.0
+    action_net_init_gain: float = 0.01
 
 
 class MATDecPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):

@@ -6,7 +6,7 @@ from torch import nn
 
 from swarmbots.learn.nn_components.custom_transformer_decoder_layer import CustomTransformerDecoderLayer
 from swarmbots.learn.nn_components.activations import ActivationFactory, make_activation
-from swarmbots.learn.nn_components.nn_init import DEFAULT_ORTHOGONAL_GAIN, reinitialize_transformer_stack
+from swarmbots.learn.nn_components.nn_init import reinitialize_transformer_stack
 
 
 class MATDecoderSelfAttentionMode(Enum):
@@ -28,10 +28,10 @@ class MATDecoderConfig:
     layer_norm_eps: float = 1e-5
     bias: bool = True
     add_agent_embeddings: bool = True
-    token_encoder_init_gain: float = DEFAULT_ORTHOGONAL_GAIN
-    token_encoder_projection_init_gain: float | None = None
-    actor_head_init_gain: float = DEFAULT_ORTHOGONAL_GAIN
-    transformer_ff_init_gain: float | None = None
+    token_encoder_init_gain: float = 1.0
+    token_encoder_projection_init_gain: float | None = 1.0
+    actor_head_init_gain: float = 1.0
+    transformer_ff_init_gain: float | None = 1.0
     query_encoder_hidden_dims: list[int] | None = None
     context_encoder_hidden_dims: list[int] | None = None
     memory_dims: list[int] | None = None
