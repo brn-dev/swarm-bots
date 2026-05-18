@@ -37,6 +37,8 @@ def run_ablation(
         nop_init_gains: NOPInitGains = NOPInitGains(),
         mat_normalization: MATNormalizationConfig = MATNormalizationConfig(),
         use_nop: bool = True,
+        shuffle_agents: bool = False,
+        preserve_inactive_prefix_structure: bool = False,
 ) -> None:
     run_experiment(
         num_envs=1024,
@@ -52,5 +54,7 @@ def run_ablation(
         nop_init_gains=nop_init_gains,
         mat_normalization=mat_normalization,
         use_nop=use_nop,
+        shuffle_agents=shuffle_agents,
+        preserve_inactive_prefix_structure=preserve_inactive_prefix_structure,
         experiment_run_name=EXPERIMENT_RUN_NAME,
     )

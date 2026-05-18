@@ -127,6 +127,8 @@ def wrap_vec_env(
     use_popart: bool,
     rollout_device: torch.device,
     normalize_prev_binary_actions: bool = False,
+    shuffle_agents: bool = False,
+    preserve_inactive_prefix_structure: bool = False,
 ) -> Any:
     from swarmbots.learn.env_wrappers.learn_wrappers.swarm_bots_learn_env_wrapper import SwarmBotsLearnEnvWrapper
     from swarmbots.learn.env_wrappers.torch_feature_wise_obs_norm_wrapper import TorchFeatureWiseObsNormWrapper
@@ -135,9 +137,15 @@ def wrap_vec_env(
         TorchProgressGuidanceEpisodeStatsWrapper,
     )
     from swarmbots.learn.env_wrappers.torch_record_episode_statistics_wrapper import TorchRecordEpisodeStatisticsWrapper
+    from swarmbots.learn.env_wrappers.torch_shuffle_agents_wrapper import TorchShuffleAgentsWrapper
     from swarmbots.learn.env_wrappers.torch_transition_obs_wrapper import TorchTransitionObsWrapper
 
     env = SwarmBotsLearnEnvWrapper(vector_env, device=rollout_device)
+    if shuffle_agents:
+        env = TorchShuffleAgentsWrapper(
+            env,
+            preserve_inactive_prefix_structure=preserve_inactive_prefix_structure,
+        )
     env = TorchRecordEpisodeStatisticsWrapper(env)
     env = TorchProgressGuidanceEpisodeStatsWrapper(env)
     env = TorchFeatureWiseObsNormWrapper(
@@ -274,6 +282,8 @@ def run_experiment(
         nop_init_gains: NOPInitGains = NOPInitGains(),
         mat_normalization: MATNormalizationConfig = MATNormalizationConfig(),
         use_nop: bool = True,
+        shuffle_agents: bool = False,
+        preserve_inactive_prefix_structure: bool = False,
         experiment_run_name: str = "mat_nop_swarm_bots_wall_mjw_batch_env_sweep",
 ) -> None:
     from swarmbots.learn.torch_logging import enable_torch_compile_logging
@@ -336,7 +346,9 @@ def run_experiment(
         f"mat_init_gains={mat_init_gains}, nop_init_gains={nop_init_gains}, "
         f"mat_normalization={mat_normalization}, "
         f"mat_add_agent_embeddings={mat_add_agent_embeddings}, "
-        f"mat_decoder_self_attention_mode={mat_decoder_self_attention_mode.name}"
+        f"mat_decoder_self_attention_mode={mat_decoder_self_attention_mode.name}, "
+        f"shuffle_agents={shuffle_agents}, "
+        f"preserve_inactive_prefix_structure={preserve_inactive_prefix_structure}"
     )
     if policy_variant != "mat":
         variant_log_message = f"{variant_log_message}, policy_variant={policy_variant}"
@@ -391,6 +403,8 @@ def run_experiment(
         use_popart=use_popart,
         rollout_device=rollout_device,
         normalize_prev_binary_actions=mat_normalization.normalize_prev_binary_actions,
+        shuffle_agents=shuffle_agents,
+        preserve_inactive_prefix_structure=preserve_inactive_prefix_structure,
     )
 
     print("Environment initialized.")
@@ -633,6 +647,8 @@ def run_experiment(
         "mat_normalization": asdict(mat_normalization),
         "mat_add_agent_embeddings": mat_add_agent_embeddings,
         "mat_decoder_self_attention_mode": mat_decoder_self_attention_mode.name,
+        "shuffle_agents": shuffle_agents,
+        "preserve_inactive_prefix_structure": preserve_inactive_prefix_structure,
         "experiment_run_name": experiment_run_name,
         "settle_initial_reset": True,
     }
