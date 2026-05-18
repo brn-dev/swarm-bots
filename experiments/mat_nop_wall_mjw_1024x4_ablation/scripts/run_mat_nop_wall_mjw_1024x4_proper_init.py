@@ -1,11 +1,13 @@
 from pathlib import Path
 
+from torch import nn
+
 from common import MATInitGains, MATNormalizationConfig, NOPInitGains, run_ablation
 
 
 def main() -> None:
-    hidden_init_gain = 1.5
-    transformer_stack_init_gain = 1.5
+    hidden_init_gain = nn.init.calculate_gain("relu")
+    transformer_stack_init_gain = nn.init.calculate_gain("relu")
     output_init_gain = 0.01
 
     run_ablation(
