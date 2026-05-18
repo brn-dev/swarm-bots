@@ -12,6 +12,9 @@ from swarmbots.learn.algos.ppo.ppo_rollout import collect_steps, collect_whole_e
 from swarmbots.learn.algos.ppo.ppo_rollout_buffer import PPORolloutBuffer, PPOEpisodeSegment
 from swarmbots.learn.algos.ppo.ppo_sampler import PPOSampler, PPOSamplerConfig
 from swarmbots.learn.env_wrappers.torch_feature_wise_obs_norm_wrapper import TorchFeatureWiseObsNormWrapper
+from swarmbots.learn.env_wrappers.torch_normalize_reward_wrapper import TorchNormalizeRewardWrapper
+from swarmbots.learn.env_wrappers.torch_progress_guidance_ep_stats_wrapper import TorchProgressGuidanceEpisodeStatsWrapper
+from swarmbots.learn.env_wrappers.torch_record_episode_statistics_wrapper import TorchRecordEpisodeStatisticsWrapper
 from swarmbots.learn.env_wrappers.torch_transition_obs_wrapper import TorchTransitionObsWrapper
 from swarmbots.learn.env_wrappers.learn_wrappers.swarm_bots_learn_env_wrapper import SwarmBotsLearnEnvWrapper
 from swarmbots.learn.gsde_reset import GSDEIntervalResetMode, GSDEProbabilityResetMode
@@ -267,6 +270,18 @@ class _AgentMaskRolloutEnv(_ScriptedRolloutEnv):
         return obs
 
 
+class _RewardInfoRolloutEnv(_ScriptedRolloutEnv):
+    def step(
+            self,
+            action: dict[str, np.ndarray],
+    ) -> tuple[dict[str, np.ndarray], float, bool, bool, dict[str, Any]]:
+        obs, reward, terminated, truncated, info = super().step(action)
+        info.pop("episode", None)
+        info["progress_reward"] = np.float64(self.env_id + self.step_count)
+        info["guidance_reward"] = np.float64(10 * self.env_id + self.step_count)
+        return obs, reward, terminated, truncated, info
+
+
 class _EnvProxy:
     def __init__(self, env: SwarmBotsLearnEnvWrapper, mutate_step_infos) -> None:
         self.env = env
@@ -384,6 +399,21 @@ def _make_agent_mask_env(*configs: tuple[int, tuple[int, ...], str]) -> SwarmBot
     return SwarmBotsLearnEnvWrapper(vector_env)
 
 
+def _make_reward_info_env(*configs: tuple[int, tuple[int, ...], str]) -> SwarmBotsLearnEnvWrapper:
+    vector_env = SyncVectorEnv(
+        [
+            (lambda env_id=env_id, done_steps=done_steps, done_mode=done_mode: _RewardInfoRolloutEnv(
+                env_id=env_id,
+                done_steps=done_steps,
+                done_mode=done_mode,
+            ))
+            for env_id, done_steps, done_mode in configs
+        ],
+        autoreset_mode=AutoresetMode.SAME_STEP,
+    )
+    return SwarmBotsLearnEnvWrapper(vector_env)
+
+
 def _make_buffer(env: SwarmBotsLearnEnvWrapper) -> PPORolloutBuffer:
     return PPORolloutBuffer(
         max_episode_length=8,
@@ -394,6 +424,47 @@ def _make_buffer(env: SwarmBotsLearnEnvWrapper) -> PPORolloutBuffer:
         rollout_device="cpu",
         train_device="cpu",
     )
+
+
+def _transition_actions_from_local(obs: dict[str, torch.Tensor], *, scale: float = 1.0) -> torch.Tensor:
+    return torch.cat(
+        (
+            obs["local_obs"][..., :1] * scale,
+            torch.zeros((*obs["local_obs"].shape[:2], 1), dtype=obs["local_obs"].dtype, device=obs["local_obs"].device),
+        ),
+        dim=-1,
+    )
+
+
+def _assert_transition_obs_parts(
+        test_case: unittest.TestCase,
+        obs: dict[str, torch.Tensor],
+        *,
+        current_local: torch.Tensor,
+        prev_actions: torch.Tensor,
+        prev_local: torch.Tensor,
+        current_global: torch.Tensor,
+        prev_global: torch.Tensor,
+        new_obs_first: bool = True,
+) -> None:
+    if new_obs_first:
+        actual_current_local = obs["local_obs"][..., :3]
+        actual_prev_actions = obs["local_obs"][..., 3:5]
+        actual_prev_local = obs["local_obs"][..., 5:8]
+        actual_current_global = obs["global_obs"][..., :2]
+        actual_prev_global = obs["global_obs"][..., 2:4]
+    else:
+        actual_prev_local = obs["local_obs"][..., :3]
+        actual_prev_actions = obs["local_obs"][..., 3:5]
+        actual_current_local = obs["local_obs"][..., 5:8]
+        actual_prev_global = obs["global_obs"][..., :2]
+        actual_current_global = obs["global_obs"][..., 2:4]
+
+    torch.testing.assert_close(actual_current_local, current_local)
+    torch.testing.assert_close(actual_prev_actions, prev_actions)
+    torch.testing.assert_close(actual_prev_local, prev_local)
+    torch.testing.assert_close(actual_current_global, current_global)
+    torch.testing.assert_close(actual_prev_global, prev_global)
 
 
 class SameStepPipelineTests(unittest.TestCase):
@@ -641,6 +712,240 @@ class SameStepPipelineTests(unittest.TestCase):
 
             expected_prev_actions = torch.tensor([[0.25, 1.0], [-0.5, -1.0]], dtype=torch.float32)
             torch.testing.assert_close(obs["local_obs"][0, :, 3:5], expected_prev_actions)
+        finally:
+            env.close()
+
+    def test_transition_obs_non_shuffle_reset_starts_with_zero_history(self) -> None:
+        env = TorchTransitionObsWrapper(_make_scripted_env((1, (99,), "truncate")))
+        try:
+            obs, _info = env.reset()
+
+            _assert_transition_obs_parts(
+                self,
+                obs,
+                current_local=torch.full((1, 2, 3), 1100.0),
+                prev_actions=torch.zeros((1, 2, 2)),
+                prev_local=torch.zeros((1, 2, 3)),
+                current_global=torch.tensor([[1100.0, 1100.5]]),
+                prev_global=torch.zeros((1, 2)),
+            )
+        finally:
+            env.close()
+
+    def test_transition_obs_non_shuffle_non_done_step_carries_previous_obs_and_actions(self) -> None:
+        env = TorchTransitionObsWrapper(_make_scripted_env((1, (99,), "truncate")))
+        try:
+            obs, _info = env.reset()
+            actions = torch.tensor([[[0.25, 1.0], [-0.5, 0.0]]], dtype=torch.float32)
+
+            next_obs, _rewards, terminations, truncations, infos = env.step(actions)
+
+            self.assertFalse(bool(terminations[0].item()))
+            self.assertFalse(bool(truncations[0].item()))
+            if "_final_obs" in infos:
+                self.assertFalse(bool(torch.as_tensor(infos["_final_obs"])[0].item()))
+            _assert_transition_obs_parts(
+                self,
+                next_obs,
+                current_local=torch.full((1, 2, 3), 1101.0),
+                prev_actions=actions,
+                prev_local=obs["local_obs"][..., :3],
+                current_global=torch.tensor([[1101.0, 1101.5]]),
+                prev_global=obs["global_obs"][..., :2],
+            )
+        finally:
+            env.close()
+
+    def test_transition_obs_non_shuffle_same_step_done_zeroes_reset_obs_but_not_final_obs(self) -> None:
+        env = TorchTransitionObsWrapper(_make_scripted_env((1, (1,), "truncate")))
+        try:
+            obs, _info = env.reset()
+            actions = torch.tensor([[[0.25, 1.0], [-0.5, 0.0]]], dtype=torch.float32)
+
+            reset_obs, _rewards, _terminations, truncations, infos = env.step(actions)
+
+            self.assertTrue(bool(truncations[0].item()))
+            _assert_transition_obs_parts(
+                self,
+                reset_obs,
+                current_local=torch.full((1, 2, 3), 1200.0),
+                prev_actions=torch.zeros((1, 2, 2)),
+                prev_local=torch.zeros((1, 2, 3)),
+                current_global=torch.tensor([[1200.0, 1200.5]]),
+                prev_global=torch.zeros((1, 2)),
+            )
+            _assert_transition_obs_parts(
+                self,
+                {
+                    "local_obs": infos["final_obs"][0]["local_obs"].unsqueeze(0),
+                    "global_obs": infos["final_obs"][0]["global_obs"].unsqueeze(0),
+                },
+                current_local=torch.full((1, 2, 3), 1101.0),
+                prev_actions=actions,
+                prev_local=obs["local_obs"][..., :3],
+                current_global=torch.tensor([[1101.0, 1101.5]]),
+                prev_global=obs["global_obs"][..., :2],
+            )
+        finally:
+            env.close()
+
+    def test_transition_obs_non_shuffle_false_new_obs_first_preserves_done_layout(self) -> None:
+        env = TorchTransitionObsWrapper(_make_scripted_env((1, (1,), "truncate")), new_obs_first=False)
+        try:
+            obs, _info = env.reset()
+            actions = torch.tensor([[[0.25, 1.0], [-0.5, 0.0]]], dtype=torch.float32)
+
+            reset_obs, _rewards, _terminations, truncations, infos = env.step(actions)
+
+            self.assertTrue(bool(truncations[0].item()))
+            _assert_transition_obs_parts(
+                self,
+                reset_obs,
+                current_local=torch.full((1, 2, 3), 1200.0),
+                prev_actions=torch.zeros((1, 2, 2)),
+                prev_local=torch.zeros((1, 2, 3)),
+                current_global=torch.tensor([[1200.0, 1200.5]]),
+                prev_global=torch.zeros((1, 2)),
+                new_obs_first=False,
+            )
+            _assert_transition_obs_parts(
+                self,
+                {
+                    "local_obs": infos["final_obs"][0]["local_obs"].unsqueeze(0),
+                    "global_obs": infos["final_obs"][0]["global_obs"].unsqueeze(0),
+                },
+                current_local=torch.full((1, 2, 3), 1101.0),
+                prev_actions=actions,
+                prev_local=obs["local_obs"][..., 5:8],
+                current_global=torch.tensor([[1101.0, 1101.5]]),
+                prev_global=obs["global_obs"][..., 2:4],
+                new_obs_first=False,
+            )
+        finally:
+            env.close()
+
+    def test_transition_obs_non_shuffle_explicit_partial_reset_preserves_unreset_history(self) -> None:
+        env = TorchTransitionObsWrapper(_make_scripted_env(
+            (1, (99,), "truncate"),
+            (2, (99,), "truncate"),
+        ))
+        try:
+            obs, _info = env.reset()
+            first_actions = _transition_actions_from_local(obs, scale=0.01)
+            first_next_obs, _rewards, _terminations, truncations, _infos = env.step(first_actions)
+            self.assertTrue(torch.equal(truncations.cpu(), torch.tensor([False, False])))
+
+            second_actions = _transition_actions_from_local(first_next_obs, scale=0.01)
+            second_next_obs, _rewards, _terminations, truncations, _infos = env.step(second_actions)
+            self.assertTrue(torch.equal(truncations.cpu(), torch.tensor([False, False])))
+
+            partial_reset_obs, _info = env.reset(options={"reset_mask": np.array([True, False])})
+
+            _assert_transition_obs_parts(
+                self,
+                partial_reset_obs,
+                current_local=torch.stack((
+                    torch.full((2, 3), 1200.0),
+                    torch.full((2, 3), 2102.0),
+                )).to(torch.float32),
+                prev_actions=torch.stack((
+                    torch.zeros((2, 2)),
+                    second_actions[1],
+                )).to(torch.float32),
+                prev_local=torch.stack((
+                    torch.zeros((2, 3)),
+                    first_next_obs["local_obs"][1, :, :3],
+                )).to(torch.float32),
+                current_global=torch.tensor([[1200.0, 1200.5], [2102.0, 2102.5]]),
+                prev_global=torch.stack((
+                    torch.zeros((2,)),
+                    first_next_obs["global_obs"][1, :2],
+                )).to(torch.float32),
+            )
+
+            third_actions = _transition_actions_from_local(partial_reset_obs, scale=0.01)
+            third_next_obs, _rewards, _terminations, truncations, _infos = env.step(third_actions)
+
+            self.assertTrue(torch.equal(truncations.cpu(), torch.tensor([False, False])))
+            _assert_transition_obs_parts(
+                self,
+                third_next_obs,
+                current_local=torch.stack((
+                    torch.full((2, 3), 1201.0),
+                    torch.full((2, 3), 2103.0),
+                )).to(torch.float32),
+                prev_actions=third_actions,
+                prev_local=partial_reset_obs["local_obs"][..., :3],
+                current_global=torch.tensor([[1201.0, 1201.5], [2103.0, 2103.5]]),
+                prev_global=partial_reset_obs["global_obs"][..., :2],
+            )
+
+            _ = second_next_obs
+        finally:
+            env.close()
+
+    def test_full_non_shuffle_wrapper_chain_preserves_same_step_final_obs_and_stats(self) -> None:
+        env: SwarmBotsLearnEnvWrapper = _make_reward_info_env(
+            (1, (2,), "truncate"),
+            (2, (3,), "truncate"),
+        )
+        env = TorchRecordEpisodeStatisticsWrapper(env)
+        env = TorchProgressGuidanceEpisodeStatsWrapper(env)
+        env = TorchFeatureWiseObsNormWrapper(env, obs_key="local_obs", scalar_feature_indices=[], quaternion_indices=[])
+        env = TorchFeatureWiseObsNormWrapper(env, obs_key="global_obs", scalar_feature_indices=[], quaternion_indices=[])
+        env = TorchTransitionObsWrapper(env)
+        env = TorchNormalizeRewardWrapper(env, gamma=1.0)
+        env.update_running_mean = False
+        try:
+            obs, _info = env.reset()
+            first_actions = _transition_actions_from_local(obs, scale=0.01)
+            first_next_obs, rewards, _terminations, truncations, _infos = env.step(first_actions)
+            self.assertTrue(torch.isfinite(rewards).all())
+            self.assertTrue(torch.equal(truncations.cpu(), torch.tensor([False, False])))
+
+            second_actions = _transition_actions_from_local(first_next_obs, scale=0.01)
+            reset_obs, rewards, _terminations, truncations, infos = env.step(second_actions)
+
+            self.assertTrue(torch.isfinite(rewards).all())
+            self.assertTrue(torch.equal(truncations.cpu(), torch.tensor([True, False])))
+            _assert_transition_obs_parts(
+                self,
+                reset_obs,
+                current_local=torch.stack((
+                    torch.full((2, 3), 1200.0),
+                    torch.full((2, 3), 2102.0),
+                )).to(torch.float32),
+                prev_actions=torch.stack((
+                    torch.zeros((2, 2)),
+                    second_actions[1],
+                )).to(torch.float32),
+                prev_local=torch.stack((
+                    torch.zeros((2, 3)),
+                    first_next_obs["local_obs"][1, :, :3],
+                )).to(torch.float32),
+                current_global=torch.tensor([[1200.0, 1200.5], [2102.0, 2102.5]]),
+                prev_global=torch.stack((
+                    torch.zeros((2,)),
+                    first_next_obs["global_obs"][1, :2],
+                )).to(torch.float32),
+            )
+            _assert_transition_obs_parts(
+                self,
+                {
+                    "local_obs": infos["final_obs"][0]["local_obs"].unsqueeze(0),
+                    "global_obs": infos["final_obs"][0]["global_obs"].unsqueeze(0),
+                },
+                current_local=torch.full((1, 2, 3), 1102.0),
+                prev_actions=second_actions[0:1],
+                prev_local=first_next_obs["local_obs"][0:1, :, :3],
+                current_global=torch.tensor([[1102.0, 1102.5]]),
+                prev_global=first_next_obs["global_obs"][0:1, :2],
+            )
+            self.assertTrue(torch.equal(torch.as_tensor(infos["_episode"]).cpu(), torch.tensor([True, False])))
+            self.assertEqual(float(infos["episode"]["r"][0].item()), 23.0)
+            self.assertEqual(int(infos["episode"]["l"][0].item()), 2)
+            self.assertEqual(float(infos["episode"]["progress_reward"][0].item()), 5.0)
+            self.assertEqual(float(infos["episode"]["guidance_reward"][0].item()), 23.0)
         finally:
             env.close()
 

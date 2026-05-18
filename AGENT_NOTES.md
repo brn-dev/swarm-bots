@@ -65,14 +65,14 @@ Agents use this file for durable codebase notes. Keep only architecture, invaria
 - Done-step bootstrap observations come from `infos["final_obs"]`, not the reset observation batch.
 - Raw Gymnasium done-step stats may arrive under `infos["final_info"]`; rollout code must unwrap them when later wrappers did not inject stats.
 - Learn-side wrappers must transform `final_obs` too. `TorchFeatureWiseObsNormWrapper` must not update RMS twice, and `TorchTransitionObsWrapper` must stack transition features onto single-env `final_obs`.
-- Agent-order randomization is learn-wrapper-owned via `TorchShuffleAgentsWrapper`, not env-owned. On SAME_STEP autoreset it must shuffle `final_obs` with the terminal episode's old permutation, then resample done env permutations before shuffling the returned reset obs. Use `preserve_inactive_prefix_structure=True` when MAT's contiguous active-agent prefix invariant matters.
+- Agent-order randomization is learn-wrapper-owned via `TorchShuffleAgentsWrapper`, not env-owned. On SAME_STEP autoreset it must shuffle `final_obs` with the terminal episode's old permutation, then resample done env permutations before shuffling the returned reset obs. `TorchTransitionObsWrapper` must zero previous-transition features on returned reset obs while preserving terminal previous-transition features in `final_obs`.
 - Env observations are semantic step outputs, not immutable storage. Async/shared-memory vector envs, GPU envs, and wrappers with `copy=False` may reuse/mutate backing buffers after the next env call. Anything persisted across `env.step()` boundaries (rollout storage, delayed bootstrap/final-obs handling, debugging probes) must snapshot at the consumer boundary.
 - `collect_steps()` may emit rollout segments that start mid true episode. Use `PPOEpisode.is_true_episode_start`; do not infer from chunk position.
 - Step-rollout accumulator capacity is bounded by rollout segment length, not true env episode length.
 
 ## Observation / Wrapper Invariants
 - Learn-side obs must contain `local_obs`, `global_obs`, `hidden_local_vars`, `hidden_global_vars`; `agent_mask` is optional but supported.
-- `MATPolicy` currently assumes a contiguous true-prefix `agent_mask`, and agent 0 must be active.
+- `MATPolicy` supports arbitrary inactive positions in `agent_mask` as long as each batch row has at least one active agent; set `MATDecoderConfig.assume_agent_mask_is_active_prefix=True` for the cheap contiguous-active-prefix path. PPO masks inactive-agent losses/reductions. `MATOrigPolicy` still requires a contiguous true-prefix mask because of its shifted-action decoder.
 - If observation layout changes, update `build_obs_indices(...)` first. WM targets and normalization depend on it.
 - Keep `_global_scalar_indices(...)` in sync with every non-empty `global_obs` layout.
 - `Torch*Wrapper` classes are the canonical learn-side wrappers. `SwarmBotsLearnEnvWrapper` is the only generic conversion boundary.

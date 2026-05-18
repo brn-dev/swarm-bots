@@ -44,6 +44,7 @@ class MATDecoderConfig:
     normalize_context_tokens: bool = False
     normalize_memory_tokens: bool = False
     normalize_actor_head_input: bool = False
+    assume_agent_mask_is_active_prefix: bool = True
 
 
 class MATDecoder(nn.Module):
@@ -62,6 +63,8 @@ class MATDecoder(nn.Module):
         self.d_model = config.d_model
         self.memory_d_model = memory_d_model
         self.self_attention_mode = config.self_attention_mode
+        self.nhead = config.nhead
+        self.assume_agent_mask_is_active_prefix = config.assume_agent_mask_is_active_prefix
 
         self.decoder = nn.TransformerDecoder(
             decoder_layer=CustomTransformerDecoderLayer(
@@ -158,12 +161,20 @@ class MATDecoder(nn.Module):
             query_tokens.shape[0], n_agents * 2, query_tokens.shape[-1]
         )
         attention_mask = self.parallel_attention_mask[: n_agents * 2, : n_agents * 2]
+        attention_mask_is_causal = self.parallel_attention_mask_is_causal
 
         target_key_padding_mask = None
         if agent_mask is not None:
             target_key_padding_mask = torch.stack((~agent_mask, ~agent_mask), dim=2).reshape(
                 agent_mask.shape[0], n_agents * 2
             )
+            if not self.assume_agent_mask_is_active_prefix:
+                attention_mask = self._mask_inactive_target_keys(
+                    attention_mask=attention_mask,
+                    target_key_padding_mask=target_key_padding_mask,
+                )
+                target_key_padding_mask = None
+                attention_mask_is_causal = False
 
         memory_key_padding_mask = None
         if memory_mask is not None:
@@ -175,7 +186,7 @@ class MATDecoder(nn.Module):
             tgt_mask=attention_mask,
             tgt_key_padding_mask=target_key_padding_mask,
             memory_key_padding_mask=memory_key_padding_mask,
-            tgt_is_causal=self.parallel_attention_mask_is_causal,
+            tgt_is_causal=attention_mask_is_causal,
         )
         return decoder_output[:, 0::2, :]
 
@@ -238,6 +249,8 @@ class MATDecoder(nn.Module):
             else:
                 combined_mask = torch.cat((context_mask, query_mask.unsqueeze(1)), dim=1)
             target_key_padding_mask = ~combined_mask
+            if not self.assume_agent_mask_is_active_prefix:
+                target_key_padding_mask = self._ensure_step_has_target_key(target_key_padding_mask)
 
         memory_key_padding_mask = None
         if memory_mask is not None:
@@ -252,3 +265,24 @@ class MATDecoder(nn.Module):
             tgt_is_causal=attention_mask_is_causal,
         )
         return decoder_output[:, -1:, :]
+
+    @staticmethod
+    def _ensure_step_has_target_key(target_key_padding_mask: torch.Tensor) -> torch.Tensor:
+        all_targets_masked = target_key_padding_mask.all(dim=1)
+        safe_mask = target_key_padding_mask.clone()
+        safe_mask[:, 0] = safe_mask[:, 0] & ~all_targets_masked
+        return safe_mask
+
+    def _mask_inactive_target_keys(
+        self,
+        *,
+        attention_mask: torch.Tensor,
+        target_key_padding_mask: torch.Tensor,
+    ) -> torch.Tensor:
+        batch_size = int(target_key_padding_mask.shape[0])
+        seq_len = int(target_key_padding_mask.shape[1])
+        combined_mask = attention_mask.unsqueeze(0) | target_key_padding_mask.unsqueeze(1)
+        all_keys_masked = combined_mask.all(dim=2)
+        diagonal = torch.eye(seq_len, dtype=torch.bool, device=combined_mask.device).unsqueeze(0)
+        combined_mask = combined_mask & ~(all_keys_masked.unsqueeze(2) & diagonal)
+        return combined_mask.repeat_interleave(self.nhead, dim=0).reshape(batch_size * self.nhead, seq_len, seq_len)
