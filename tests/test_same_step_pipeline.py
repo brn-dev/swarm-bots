@@ -880,7 +880,6 @@ class SameStepPipelineTests(unittest.TestCase):
                 prev_global=partial_reset_obs["global_obs"][..., :2],
             )
 
-            _ = second_next_obs
         finally:
             env.close()
 

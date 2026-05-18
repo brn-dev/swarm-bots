@@ -84,6 +84,18 @@ class TorchProgressGuidanceEpisodeStatsWrapper(TorchEnvWrapper):
         return to_torch_tensor(options["reset_mask"], device=self.device, dtype=torch.bool).reshape(self._n_envs)
 
     def _extract_step_values(self, infos: dict[str, Any], key: str) -> torch.Tensor | None:
+        values = self._extract_values_from_info_dict(infos, key)
+        final_values, final_mask = self._extract_final_step_values(infos, key)
+        if final_values is None:
+            return values
+        if values is None:
+            values = torch.zeros((self._n_envs,), device=self.device, dtype=torch.float64)
+        else:
+            values = values.clone()
+        values[final_mask] = final_values[final_mask]
+        return values
+
+    def _extract_values_from_info_dict(self, infos: dict[str, Any], key: str) -> torch.Tensor | None:
         if key not in infos:
             return None
 
@@ -105,6 +117,29 @@ class TorchProgressGuidanceEpisodeStatsWrapper(TorchEnvWrapper):
         masked_values = torch.zeros((self._n_envs,), device=self.device, dtype=torch.float64)
         masked_values[present_mask] = values[present_mask]
         return masked_values
+
+    def _extract_final_step_values(
+        self,
+        infos: dict[str, Any],
+        key: str,
+    ) -> tuple[torch.Tensor | None, torch.Tensor]:
+        final_info = infos.get("final_info", None)
+        if not isinstance(final_info, dict):
+            return None, torch.zeros((self._n_envs,), device=self.device, dtype=torch.bool)
+
+        values = self._extract_values_from_info_dict(final_info, key)
+        if values is None:
+            return None, torch.zeros((self._n_envs,), device=self.device, dtype=torch.bool)
+
+        if "_final_info" in infos:
+            final_mask = to_torch_tensor(infos["_final_info"], device=self.device, dtype=torch.bool).reshape(-1)
+            if final_mask.shape[0] != self._n_envs:
+                raise ValueError(
+                    f"Expected infos['_final_info'] length {self._n_envs}, got shape {tuple(final_mask.shape)}"
+                )
+        else:
+            final_mask = torch.ones((self._n_envs,), device=self.device, dtype=torch.bool)
+        return values, final_mask
 
     def _inject_episode_stats(self, *, infos: dict[str, Any], dones: torch.Tensor) -> None:
         progress_sum = torch.where(dones, self.episode_progress_rewards, torch.zeros_like(self.episode_progress_rewards))
