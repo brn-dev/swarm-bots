@@ -88,6 +88,17 @@ class _DummyAlgorithm(BaseAlgorithm):
         return {"metric": 1.0, "total_updates": self.n_total_updates}, 1
 
 
+class _ReturnEmaAlgorithm(_DummyAlgorithm):
+    def perform_iteration(self, episode_return_ema, update_ema: bool) -> tuple[dict[str, float], int]:
+        if update_ema:
+            for _ in range(100):
+                episode_return_ema.update(15.0)
+        self.n_total_iterations += 1
+        self.n_total_updates += 1
+        self.n_total_timesteps += 1
+        return {"metric": 1.0, "total_updates": self.n_total_updates}, 1
+
+
 class MetricsLoggerTests(unittest.TestCase):
     def test_compress_persisted_log_replaces_csv_with_gzip(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -143,6 +154,18 @@ class MetricsLoggerTests(unittest.TestCase):
 
             self.assertFalse((run_dir / "log.csv").exists())
             self.assertTrue((run_dir / "log.csv.gz").exists())
+
+    def test_learn_keeps_final_return_ema_after_cleanup(self) -> None:
+        algo = _ReturnEmaAlgorithm(policy=_DummyPolicy(), env=_DummyEnv(), learning_rate=1e-3)
+
+        algo.learn(
+            max_total_timesteps=6,
+            save_optimizer=False,
+            enable_command_prompt=False,
+        )
+
+        self.assertIsNone(algo._last_return_ema)
+        self.assertEqual(algo._final_return_ema, 15.0)
 
     def test_show_run_path_command_logs_active_run_path(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
