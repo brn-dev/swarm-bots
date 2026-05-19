@@ -59,6 +59,7 @@ class BaseAlgorithm(abc.ABC):
         self._active_extra_run_metadata: dict[str, Any] | None = None
         self._active_save_optimizer: bool = True
         self._last_return_ema: float | None = None
+        self._final_return_ema: float | None = None
         self._best_return_ema: float | None = None
         self._latest_hp_update: str | None = None
         self._stop_requested = False
@@ -184,6 +185,7 @@ class BaseAlgorithm(abc.ABC):
         self._stop_should_save = True
         self._stop_save_optimizer = None
         self._last_return_ema = None
+        self._final_return_ema = None
         self._make_record_env = make_record_env
         self._command_log_path = None if run_dir is None else (run_dir / "command_log.jsonl")
         should_compress_metrics_log = False
@@ -266,6 +268,7 @@ class BaseAlgorithm(abc.ABC):
             should_compress_metrics_log = compress_metrics_log_on_exit
 
         finally:
+            self._final_return_ema = self._last_return_ema
             metric_logger.close()
             if should_compress_metrics_log:
                 metric_logger.compress_persisted_log()
