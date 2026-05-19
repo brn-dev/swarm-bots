@@ -132,6 +132,7 @@ Agents use this file for durable codebase notes. Keep only architecture, invaria
 - Logs use `log.csv` with `;` delimiter. Optional graceful-exit compression writes `log.csv.gz`.
 - Plot tooling in `plot_logs/` reads plain `.csv` plus `.zip`, `.gz`, `.bz2`, and `.xz` directly.
 - Gymnasium vector-info packing adds boolean `_key` masks for every info field, including nested reward-term dicts. Ignore underscore-prefixed entries when rendering reward overlays.
+- `scripts/run_repeated.sh` registers active runs under `.run/run_repeated`; `scripts/stop_run_repeated.sh` creates the matching stop token so the runner finishes the current run and skips remaining runs. `wait_then_run_repeated.sh` can pass an explicit token path via `--stop-file`.
 
 ## Practical Guidance
 - For new training work, start from:

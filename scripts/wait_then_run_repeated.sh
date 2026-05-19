@@ -23,6 +23,7 @@ Options:
   --python PYTHON         Python executable passed to run_repeated.sh.
                           Defaults to "python".
   --delay SECONDS         Delay between repeated runs. Defaults to 0.
+  --stop-file PATH        Stop-request file passed to run_repeated.sh.
   --lock-dir PATH         Lock directory for serializing the VRAM wait/start
                           decision. Defaults to a per-GPU directory under
                           ${TMPDIR:-/tmp}.
@@ -182,6 +183,7 @@ stable_for_seconds=300
 check_interval_seconds=30
 python_executable=python
 delay_seconds=0
+stop_file=
 use_lock=1
 lock_dir=
 
@@ -241,6 +243,14 @@ while [ $# -gt 0 ]; do
                 exit 1
             fi
             delay_seconds=$2
+            shift 2
+            ;;
+        --stop-file)
+            if [ $# -lt 2 ]; then
+                printf 'Missing value for --stop-file\n' >&2
+                exit 1
+            fi
+            stop_file=$2
             shift 2
             ;;
         --lock-dir)
@@ -333,7 +343,15 @@ done
 
 cleanup_lock
 
-sh "$run_repeated_script" "$script_path" "$runs" \
-    --python "$python_executable" \
-    --delay "$delay_seconds" \
-    -- "$@"
+if [ -n "$stop_file" ]; then
+    sh "$run_repeated_script" "$script_path" "$runs" \
+        --python "$python_executable" \
+        --delay "$delay_seconds" \
+        --stop-file "$stop_file" \
+        -- "$@"
+else
+    sh "$run_repeated_script" "$script_path" "$runs" \
+        --python "$python_executable" \
+        --delay "$delay_seconds" \
+        -- "$@"
+fi
