@@ -1,12 +1,8 @@
 ## General
 Be blunt. If you think my request is flawed, tell me what's wrong and suggest something better. If you are unsure about something, ask.
 
-## Mandatory startup rule
-At the start of a conversation, before doing any analysis, planning, or code changes, always read `AGENT_NOTES.md` first.
-This is required for every new chat, without exception.
-
 ## Notes
-Use `AGENT_NOTES.md` to write down notes about the code base so future instances will have it easier. If you update the code structure or add new features, make sure to keep the notes updated.  Only note down important stuff, not simply a summary of what you did. If only minor changes were done (that do not contain someting like a gotcha), leave the notes as is.
+Use `AGENT_NOTES.md` to write down important notes about the code base so future instances will have it easier. If you update the code structure or add new features, make sure to keep the notes updated.  Only note down important stuff, not simply a summary of what you did. If only minor changes were done (that do not contain someting like a gotcha), leave the notes as is.
 
 ## Comments 
 

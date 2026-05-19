@@ -4,7 +4,7 @@ set -eu
 
 usage() {
     cat <<'EOF'
-Usage: run_repeated.sh SCRIPT_PATH [RUNS] [--python PYTHON] [--delay SECONDS] [-- SCRIPT_ARGS...]
+Usage: run_repeated.sh SCRIPT_PATH [RUNS] [--python PYTHON] [--delay SECONDS] [--stop-file PATH] [-- SCRIPT_ARGS...]
 
 Arguments:
   SCRIPT_PATH         Training script path. Relative paths are resolved against:
@@ -14,6 +14,8 @@ Arguments:
 Options:
   --python PYTHON     Python executable to use. Defaults to "python".
   --delay SECONDS     Delay between runs. Defaults to 0.
+  --stop-file PATH    Stop-request file. Defaults to a managed per-process
+                      file used by scripts/stop_run_repeated.sh.
   --help              Show this help text.
 
 Any arguments after `--` are forwarded to the training script.
@@ -68,6 +70,15 @@ resolve_training_script_path() {
     exit 1
 }
 
+cleanup_control_file() {
+    if [ -n "${active_control_file:-}" ]; then
+        rm -f -- "$active_control_file"
+    fi
+    if [ -n "${stop_file:-}" ]; then
+        rm -f -- "$stop_file"
+    fi
+}
+
 if [ $# -eq 0 ]; then
     usage >&2
     exit 1
@@ -77,6 +88,7 @@ script_path=
 runs=5
 python_executable=python
 delay_seconds=0
+stop_file=
 
 if [ "$1" = "--help" ]; then
     usage
@@ -113,6 +125,14 @@ while [ $# -gt 0 ]; do
             delay_seconds=$2
             shift 2
             ;;
+        --stop-file)
+            if [ $# -lt 2 ]; then
+                printf 'Missing value for --stop-file\n' >&2
+                exit 1
+            fi
+            stop_file=$2
+            shift 2
+            ;;
         --help)
             usage
             exit 0
@@ -142,9 +162,19 @@ repo_root=$(
 )
 current_dir=$(pwd)
 training_script=$(resolve_training_script_path "$script_path" "$current_dir" "$repo_root" "$script_dir")
+control_dir=${SWARMBOTS_RUN_REPEATED_DIR:-$repo_root/.run/run_repeated}
+if [ -z "$stop_file" ]; then
+    stop_file=$control_dir/$$.stop
+fi
+stop_file_dir=$(dirname -- "$stop_file")
+mkdir -p -- "$control_dir" "$stop_file_dir"
+rm -f -- "$stop_file"
+active_control_file=$control_dir/$$.control
 original_pythonpath=${PYTHONPATH-}
 failed_runs=
 has_failures=0
+stop_requested=0
+completed_runs=0
 run_index=1
 
 case "$(uname -s 2>/dev/null || printf unknown)" in
@@ -155,6 +185,18 @@ case "$(uname -s 2>/dev/null || printf unknown)" in
         pythonpath_separator=':'
         ;;
 esac
+
+{
+    printf '%s\n' "$stop_file"
+    printf '%s\n' "$training_script"
+    printf '%s\n' "$runs"
+    printf '%s\n' "$(date '+%Y-%m-%dT%H:%M:%S')"
+} > "$active_control_file"
+trap cleanup_control_file EXIT
+trap 'cleanup_control_file; exit 130' INT
+trap 'cleanup_control_file; exit 143' TERM
+
+printf 'To stop after the current run finishes, run: %s/stop_run_repeated.sh\n\n' "$script_dir"
 
 while [ "$run_index" -le "$runs" ]; do
     started_at=$(date '+%Y-%m-%dT%H:%M:%S')
@@ -186,6 +228,14 @@ while [ "$run_index" -le "$runs" ]; do
         printf '[%s/%s] Failed with exit code %s at %s\n' "$run_index" "$runs" "$exit_code" "$finished_at" >&2
     fi
 
+    completed_runs=$run_index
+
+    if [ -f "$stop_file" ]; then
+        stop_requested=1
+        printf 'Stop requested via %s; not starting further runs.\n' "$stop_file"
+        break
+    fi
+
     if [ "$run_index" -lt "$runs" ] && [ "$delay_seconds" -gt 0 ]; then
         sleep "$delay_seconds"
     fi
@@ -194,10 +244,18 @@ while [ "$run_index" -le "$runs" ]; do
 done
 
 if [ "$has_failures" -ne 0 ]; then
+    if [ "$stop_requested" -ne 0 ]; then
+        printf '\nStopped after %s of %s requested runs.\n' "$completed_runs" "$runs"
+    fi
     printf '\nFailed runs:\n'
     printf 'Run\tExitCode\tStartedAt\tFinishedAt\n'
     printf '%s' "$failed_runs"
     exit 1
+fi
+
+if [ "$stop_requested" -ne 0 ]; then
+    printf '\nStopped after %s of %s requested runs. Completed runs finished successfully.\n' "$completed_runs" "$runs"
+    exit 0
 fi
 
 printf '\nAll %s runs finished successfully.\n' "$runs"

@@ -1,5 +1,6 @@
 import abc
 import json
+import os
 import pathlib
 import queue
 import threading
@@ -457,6 +458,9 @@ class BaseAlgorithm(abc.ABC):
         elif cmd in {"show_run_path", "show_id"}:
             self._cmd_show_run_path(params)
             return False
+        elif cmd in {"pid", "show_pid"}:
+            self._cmd_show_pid(params)
+            return False
         elif cmd in {"show_reward_weights", "show_rw"}:
             self._cmd_show_reward_weights(params)
             return False
@@ -607,6 +611,10 @@ class BaseAlgorithm(abc.ABC):
 
         run_dir = self._active_run_dir.resolve()
         logger.info({"run_path": run_dir.as_posix(), "run_id": run_dir.name})
+
+    def _cmd_show_pid(self, params: str) -> None:
+        _ = params
+        logger.info({"pid": os.getpid()})
 
     def _cmd_save(self, params: str) -> None:
         config = _parse_params_maybe_json(params)
