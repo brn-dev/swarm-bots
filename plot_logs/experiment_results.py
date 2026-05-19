@@ -236,6 +236,8 @@ def load_experiment_groups(
             seen_log_paths = {path.resolve() for _run_name, path in group_logs}
             for source_path in source_paths:
                 resolved_source_path = resolve_source_path(source_path, experiment_run_dir=experiment_run_dir)
+                if not resolved_source_path.exists():
+                    continue
                 for run_name, log_path in iter_source_log_files(resolved_source_path):
                     resolved_log_path = log_path.resolve()
                     if resolved_log_path in seen_log_paths:

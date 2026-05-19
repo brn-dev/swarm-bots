@@ -68,7 +68,7 @@ class MATInitGains:
     action_net: float = 0.01
     critic_local_projection: float = 1.0
     critic_value_regressor: float = 1.0
-    critic_value_head: float = 1.0
+    critic_value_head: float = 0.01
 
 
 @dataclass(frozen=True)

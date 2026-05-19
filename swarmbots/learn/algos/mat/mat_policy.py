@@ -39,7 +39,7 @@ class MATCriticConfig:
     popart_config: PopArtConfig = field(default_factory=PopArtConfig)
     local_projection_init_gain: float = 1.0
     value_regressor_init_gain: float = 1.0
-    value_head_init_gain: float = 1.0
+    value_head_init_gain: float = 0.01
 
 @dataclass(frozen=True)
 class MATPolicyConfig:
