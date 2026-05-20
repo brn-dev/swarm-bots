@@ -22,6 +22,7 @@ from plot_logs.plot_logs import is_supported_log_path, open_log_text, parse_scal
 DEFAULT_X_COLUMN = "timesteps"
 EP_REW_EMA_COLUMN = "ep_rew_ema"
 DEFAULT_DPI = 300
+DEFAULT_RUN_LENGTH_LIMIT = 100_000_000
 GROUP_PALETTE: tuple[str, ...] = (
     "#0072B2",
     "#E69F00",
@@ -34,6 +35,8 @@ GROUP_PALETTE: tuple[str, ...] = (
 )
 INDIVIDUAL_RUN_LINE_WIDTH = 0.8
 INDIVIDUAL_RUN_ALPHA = 0.9
+SHORT_RUN_MARKER_SIZE = 24
+SHORT_RUN_MARKER_EDGE_WIDTH = 0.6
 GROUP_LINE_WIDTH = 1.0
 THEORETICAL_MAXIMUM_LINE_WIDTH = 1.0
 THEORETICAL_MAXIMUM_COLOR = "#444444"
@@ -102,6 +105,12 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=None,
         help="Optional horizontal theoretical maximum line to draw on generated plots.",
+    )
+    parser.add_argument(
+        "--run-length-limit",
+        type=int,
+        default=DEFAULT_RUN_LENGTH_LIMIT,
+        help=f"Expected individual run length. Defaults to {DEFAULT_RUN_LENGTH_LIMIT}.",
     )
     return parser.parse_args()
 
@@ -332,6 +341,16 @@ def save_figure(figure: Figure, output_path: Path, *, dpi: int) -> Path:
     return output_path
 
 
+def final_finite_run_point(run: ExperimentRunLog, column: str) -> tuple[float, float] | None:
+    y_values = run.series[column]
+    finite_mask = np.isfinite(run.x_values) & np.isfinite(y_values)
+    finite_indices = np.flatnonzero(finite_mask)
+    if finite_indices.size == 0:
+        return None
+    final_index = int(finite_indices[-1])
+    return float(run.x_values[final_index]), float(y_values[final_index])
+
+
 def plot_individual_ep_rew_ema(
     groups: Sequence[ExperimentGroup],
     output_dir: Path,
@@ -339,9 +358,11 @@ def plot_individual_ep_rew_ema(
     x_column: str,
     dpi: int,
     theoretical_maximum: float | None = None,
+    run_length_limit: int = DEFAULT_RUN_LENGTH_LIMIT,
 ) -> Path:
     colors = group_colors(groups)
     figure, axis = plt.subplots(figsize=(16, 9))
+    short_run_threshold = 0.99 * run_length_limit
     for group in groups:
         color = colors[group.name]
         for run in group.runs:
@@ -352,6 +373,17 @@ def plot_individual_ep_rew_ema(
                 alpha=INDIVIDUAL_RUN_ALPHA,
                 linewidth=INDIVIDUAL_RUN_LINE_WIDTH,
             )
+            if run.x_values[-1] < short_run_threshold:
+                final_point = final_finite_run_point(run, EP_REW_EMA_COLUMN)
+                if final_point is not None:
+                    axis.scatter(
+                        *final_point,
+                        color=color,
+                        edgecolors="black",
+                        linewidths=SHORT_RUN_MARKER_EDGE_WIDTH,
+                        s=SHORT_RUN_MARKER_SIZE,
+                        zorder=3,
+                    )
 
     axis.set_title("Episode Reward EMA Per Run")
     axis.set_xlabel(x_column)
@@ -468,6 +500,7 @@ def plot_experiment_results(
     x_column: str = DEFAULT_X_COLUMN,
     dpi: int = DEFAULT_DPI,
     theoretical_maximum: float | None = None,
+    run_length_limit: int = DEFAULT_RUN_LENGTH_LIMIT,
     display_name_overrides: Mapping[str, str] | None = None,
     extra_group_sources: Mapping[str, Sequence[Path]] | None = None,
 ) -> ExperimentPlotResult:
@@ -486,6 +519,7 @@ def plot_experiment_results(
             x_column=x_column,
             dpi=dpi,
             theoretical_maximum=theoretical_maximum,
+            run_length_limit=run_length_limit,
         ),
         plot_group_ep_rew_ema(
             groups,
@@ -507,6 +541,7 @@ def main() -> int:
         x_column=args.x_column,
         dpi=args.dpi,
         theoretical_maximum=args.theoretical_maximum,
+        run_length_limit=args.run_length_limit,
     )
     for output_path in result.output_paths:
         print(output_path)
