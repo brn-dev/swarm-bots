@@ -92,6 +92,7 @@ Keep only durable architecture notes and gotchas. Prefer deleting stale detail o
 - `SwarmBotsEnv.reset(seed=...)` must reseed `scenario.rng`; reset sampling does not use Gymnasium `env.np_random`.
 - On Windows, workers re-import the script top-level module. Keep heavy PPO/torch/MJW imports out of top level unless env construction needs them.
 - Recording camera defaults should stay scenario-owned. For compiled MAT/NOP, record envs should stay on the policy's active device.
+- Remote `brn@server2026` SSH works through WSL (`wsl ssh brn@server2026 ...`); Windows `ssh` may hang or fail auth. Remote runs live under `~/git/swarm-bots/runs`.
 
 ## Version And Install
 
