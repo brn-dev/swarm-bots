@@ -24,6 +24,39 @@ from experiments.mat_nop_wall_mjw_common import (
 EXPERIMENT_RUN_NAME = "mat_nop_swarm_bots_wall_mjw_1024x4_ablation"
 
 
+def make_mat_hidden_init_gains(
+        gain: float,
+        *,
+        projection_gain: float | None = None,
+) -> MATInitGains:
+    effective_projection_gain = gain if projection_gain is None else projection_gain
+    return MATInitGains(
+        obs_encoder=gain,
+        obs_encoder_projection=effective_projection_gain,
+        encoder_transformer_ff=gain,
+        decoder_token_encoder=gain,
+        decoder_token_encoder_projection=effective_projection_gain,
+        decoder_transformer_ff=gain,
+        actor_head=gain,
+        critic_local_projection=effective_projection_gain,
+        critic_value_regressor=gain,
+    )
+
+
+def make_nop_hidden_init_gains(
+        gain: float,
+        *,
+        projection_gain: float | None = None,
+) -> NOPInitGains:
+    effective_projection_gain = gain if projection_gain is None else projection_gain
+    return NOPInitGains(
+        pre_transition=gain,
+        transition_coembed=effective_projection_gain,
+        transition_transformer_ff=gain,
+        pre_predictors=gain,
+    )
+
+
 def run_ablation(
         *,
         variant_name: str,
