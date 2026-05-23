@@ -107,9 +107,10 @@ def make_vector_env(
     first_episode_lengths: list[int] | None,
     settle_initial_reset: bool,
     device: torch.device,
+    scenario_kwargs: dict[str, object] | None = None,
 ) -> MJWSwarmBotsVectorEnv:
     return MJWSwarmBotsVectorEnv(
-        scenario=default_wall(),
+        scenario=default_wall(**({} if scenario_kwargs is None else scenario_kwargs)),
         num_envs=num_envs,
         episode_length=episode_length,
         first_episode_lengths=first_episode_lengths,
@@ -284,6 +285,7 @@ def run_experiment(
         shuffle_agents: bool = False,
         preserve_inactive_prefix_structure: bool = False,
         experiment_run_name: str = "mat_nop_swarm_bots_wall_mjw_batch_env_sweep",
+        scenario_kwargs: dict[str, object] | None = None,
 ) -> None:
     from swarmbots.learn.torch_logging import enable_torch_compile_logging
 
@@ -347,7 +349,8 @@ def run_experiment(
         f"mat_add_agent_embeddings={mat_add_agent_embeddings}, "
         f"mat_decoder_self_attention_mode={mat_decoder_self_attention_mode.name}, "
         f"shuffle_agents={shuffle_agents}, "
-        f"preserve_inactive_prefix_structure={preserve_inactive_prefix_structure}"
+        f"preserve_inactive_prefix_structure={preserve_inactive_prefix_structure}, "
+        f"scenario_kwargs={scenario_kwargs}"
     )
     if policy_variant != "mat":
         variant_log_message = f"{variant_log_message}, policy_variant={policy_variant}"
@@ -380,6 +383,7 @@ def run_experiment(
         first_episode_lengths=first_episode_lengths,
         settle_initial_reset=True,
         device=rollout_device,
+        scenario_kwargs=scenario_kwargs,
     )
     print(f"Created {type(vector_env)} with {num_envs} environments.")
 
@@ -651,6 +655,7 @@ def run_experiment(
         "preserve_inactive_prefix_structure": preserve_inactive_prefix_structure,
         "experiment_run_name": experiment_run_name,
         "settle_initial_reset": True,
+        "scenario_kwargs": scenario_kwargs,
     }
     if policy_variant != "mat":
         extra_run_metadata["policy_variant"] = policy_variant

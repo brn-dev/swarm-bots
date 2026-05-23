@@ -17,6 +17,7 @@ GROUP_ORDER = (
     "gsde_nop",
     "beta_nop",
     "squashed_diag_gaussian_nop",
+    "lr_beta_nop_wall_pass_skew_2",
     "lr_beta_nop_shuffle_agents",
     "lr_beta_nop_shuffle_agents_preserve_prefix",
     "lr_beta_no_nop",
@@ -26,6 +27,7 @@ DISPLAY_NAME_OVERRIDES = {
     "gsde_nop": "gSDE + NOP",
     "beta_nop": "Beta + NOP",
     "squashed_diag_gaussian_nop": "Squashed Diag Gaussian + NOP",
+    "lr_beta_nop_wall_pass_skew_2": "L/R Beta + NOP, wall-pass skew 2",
     "lr_beta_nop_shuffle_agents": "L/R Beta + NOP, shuffled agents",
     "lr_beta_nop_shuffle_agents_preserve_prefix": (
         "L/R Beta + NOP, shuffled active-prefix agents"

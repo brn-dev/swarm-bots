@@ -72,6 +72,7 @@ def run_ablation(
         use_nop: bool = True,
         shuffle_agents: bool = False,
         preserve_inactive_prefix_structure: bool = False,
+        scenario_kwargs: dict[str, object] | None = None,
 ) -> None:
     run_experiment(
         num_envs=1024,
@@ -90,4 +91,5 @@ def run_ablation(
         shuffle_agents=shuffle_agents,
         preserve_inactive_prefix_structure=preserve_inactive_prefix_structure,
         experiment_run_name=EXPERIMENT_RUN_NAME,
+        scenario_kwargs=scenario_kwargs,
     )

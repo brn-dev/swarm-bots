@@ -7,34 +7,49 @@ import torch
 
 from swarmbots.mjw_env.scenarios.mjw_obstacle_street_runtime import (
     ObstacleStreetMJWScenarioRuntime,
+    _build_wall_pass_rank_weights,
     _compute_obstacle_street_reward_kernel,
 )
 
 
-def _make_runtime() -> ObstacleStreetMJWScenarioRuntime:
+def _make_runtime(
+    *,
+    num_units: int = 1,
+    wall_pass_reward_skew: float = 0.0,
+    wall_pass_reward_weight: float = 4.0,
+    wall_pass_absolute_thresholds: list[float] | None = None,
+    units_active_mask: list[bool] | None = None,
+) -> ObstacleStreetMJWScenarioRuntime:
     runtime = object.__new__(ObstacleStreetMJWScenarioRuntime)
     device = torch.device("cpu")
+    thresholds = [0.5] if wall_pass_absolute_thresholds is None else wall_pass_absolute_thresholds
     runtime.bindings = SimpleNamespace(
         num_envs=1,
         device=device,
-        units_active_mask=torch.tensor([[True]], device=device, dtype=torch.bool),
-        partner_unit=torch.tensor([[-1]], device=device, dtype=torch.long),
+        units_active_mask=torch.ones((1, num_units), device=device, dtype=torch.bool)
+        if units_active_mask is None
+        else torch.tensor([units_active_mask], device=device, dtype=torch.bool),
+        partner_unit=torch.full((1, num_units), -1, device=device, dtype=torch.long),
     )
     runtime.scenario = SimpleNamespace(
         progress_reward_weight=0.5,
         forward_reward_weight=0.0,
         forward_reward_max_y=None,
-        wall_pass_reward_weight=4.0,
+        wall_pass_reward_weight=wall_pass_reward_weight,
+        wall_pass_reward_skew=wall_pass_reward_skew,
         units_without_connections_reward_weight=0.0,
         guidance_reward_weight=1.0,
     )
     runtime.progress = torch.zeros((1,), device=device, dtype=torch.float32)
-    runtime.wall_pass_absolute_thresholds = torch.tensor([[0.5]], device=device, dtype=torch.float32)
-    runtime.next_threshold_for_unit = torch.zeros((1, 1), device=device, dtype=torch.long)
-    runtime.passed_thresholds_mask = torch.zeros((1, 1, 1), device=device, dtype=torch.bool)
-    runtime._hidden_local_obs = torch.zeros((1, 1, 1), device=device, dtype=torch.float32)
-    runtime._threshold_index_torch = torch.arange(1, device=device, dtype=torch.long)
-    runtime._wall_thresholds_per_wall = 1
+    runtime.wall_pass_absolute_thresholds = torch.tensor([thresholds], device=device, dtype=torch.float32)
+    runtime.next_threshold_for_unit = torch.zeros((1, num_units), device=device, dtype=torch.long)
+    runtime.passed_thresholds_mask = torch.zeros((1, num_units, len(thresholds)), device=device, dtype=torch.bool)
+    runtime._hidden_local_obs = torch.zeros((1, num_units, len(thresholds)), device=device, dtype=torch.float32)
+    runtime._threshold_index_torch = torch.arange(len(thresholds), device=device, dtype=torch.long)
+    runtime._unit_rank_torch = torch.arange(1, num_units + 1, device=device, dtype=torch.long)
+    runtime._wall_pass_rank_weights = torch.zeros((num_units + 1, num_units), device=device, dtype=torch.float32)
+    runtime._wall_pass_rank_weights_skew = None
+    runtime._wall_thresholds_per_wall = len(thresholds)
     runtime._reward_kernel = _compute_obstacle_street_reward_kernel
     return runtime
 
@@ -78,3 +93,129 @@ def test_forward_reward_cap_stops_progress_reward_beyond_max_y() -> None:
     runtime._get_unit_y = lambda: torch.tensor([[0.9]], dtype=torch.float32)
     second = runtime.compute_step_rewards(stable_mask=stable_mask)
     assert float(second.info["forward_reward"][0]) == pytest.approx(0.0)
+
+
+def test_default_wall_pass_reward_skew_keeps_equal_rank_rewards() -> None:
+    runtime = _make_runtime(num_units=3)
+    runtime.scenario.progress_reward_weight = 1.0
+    runtime.scenario.wall_pass_reward_weight = 3.0
+    stable_mask = torch.tensor([True], dtype=torch.bool)
+
+    runtime._get_unit_y = lambda: torch.tensor([[0.6, 0.0, 0.0]], dtype=torch.float32)
+    first = runtime.compute_step_rewards(stable_mask=stable_mask)
+    assert float(first.info["wall_pass_reward"][0]) == pytest.approx(1.0)
+
+    runtime._get_unit_y = lambda: torch.tensor([[0.6, 0.6, 0.6]], dtype=torch.float32)
+    remaining = runtime.compute_step_rewards(stable_mask=stable_mask)
+    assert float(remaining.info["wall_pass_reward"][0]) == pytest.approx(2.0)
+
+
+def test_wall_pass_reward_skew_pays_later_crossing_ranks_more_without_changing_total() -> None:
+    runtime = _make_runtime(num_units=3, wall_pass_reward_skew=1.0, wall_pass_reward_weight=3.0)
+    runtime.scenario.progress_reward_weight = 1.0
+    stable_mask = torch.tensor([True], dtype=torch.bool)
+
+    runtime._get_unit_y = lambda: torch.tensor([[0.6, 0.0, 0.0]], dtype=torch.float32)
+    first = runtime.compute_step_rewards(stable_mask=stable_mask)
+    assert float(first.info["wall_pass_reward"][0]) == pytest.approx(0.5)
+
+    runtime._get_unit_y = lambda: torch.tensor([[0.6, 0.6, 0.0]], dtype=torch.float32)
+    second = runtime.compute_step_rewards(stable_mask=stable_mask)
+    assert float(second.info["wall_pass_reward"][0]) == pytest.approx(1.0)
+
+    runtime._get_unit_y = lambda: torch.tensor([[0.6, 0.6, 0.6]], dtype=torch.float32)
+    third = runtime.compute_step_rewards(stable_mask=stable_mask)
+    assert float(third.info["wall_pass_reward"][0]) == pytest.approx(1.5)
+    total_reward = first.info["wall_pass_reward"][0] + second.info["wall_pass_reward"][0] + third.info["wall_pass_reward"][0]
+    assert float(total_reward) == pytest.approx(3.0)
+
+
+def test_wall_pass_reward_skew_handles_simultaneous_crossings() -> None:
+    runtime = _make_runtime(num_units=3, wall_pass_reward_skew=1.0, wall_pass_reward_weight=3.0)
+    runtime.scenario.progress_reward_weight = 1.0
+    stable_mask = torch.tensor([True], dtype=torch.bool)
+
+    runtime._get_unit_y = lambda: torch.tensor([[0.6, 0.6, 0.0]], dtype=torch.float32)
+    first_two = runtime.compute_step_rewards(stable_mask=stable_mask)
+    assert float(first_two.info["wall_pass_reward"][0]) == pytest.approx(1.5)
+
+    runtime._get_unit_y = lambda: torch.tensor([[0.6, 0.6, 0.6]], dtype=torch.float32)
+    last = runtime.compute_step_rewards(stable_mask=stable_mask)
+    assert float(last.info["wall_pass_reward"][0]) == pytest.approx(1.5)
+    assert float(first_two.info["wall_pass_reward"][0] + last.info["wall_pass_reward"][0]) == pytest.approx(3.0)
+
+
+def test_wall_pass_reward_skew_handles_multiple_thresholds() -> None:
+    runtime = _make_runtime(
+        num_units=3,
+        wall_pass_reward_skew=1.0,
+        wall_pass_reward_weight=3.0,
+        wall_pass_absolute_thresholds=[0.5, 1.0],
+    )
+    runtime.scenario.progress_reward_weight = 1.0
+    stable_mask = torch.tensor([True], dtype=torch.bool)
+
+    runtime._get_unit_y = lambda: torch.tensor([[1.1, 0.0, 0.0]], dtype=torch.float32)
+    first_unit_both_thresholds = runtime.compute_step_rewards(stable_mask=stable_mask)
+    assert float(first_unit_both_thresholds.info["wall_pass_reward"][0]) == pytest.approx(0.5)
+
+    runtime._get_unit_y = lambda: torch.tensor([[1.1, 0.6, 0.0]], dtype=torch.float32)
+    second_unit_first_threshold = runtime.compute_step_rewards(stable_mask=stable_mask)
+    assert float(second_unit_first_threshold.info["wall_pass_reward"][0]) == pytest.approx(0.5)
+
+    runtime._get_unit_y = lambda: torch.tensor([[1.1, 1.1, 1.1]], dtype=torch.float32)
+    remaining_crossings = runtime.compute_step_rewards(stable_mask=stable_mask)
+    assert float(remaining_crossings.info["wall_pass_reward"][0]) == pytest.approx(2.0)
+
+    total_reward = (
+        first_unit_both_thresholds.info["wall_pass_reward"][0]
+        + second_unit_first_threshold.info["wall_pass_reward"][0]
+        + remaining_crossings.info["wall_pass_reward"][0]
+    )
+    assert float(total_reward) == pytest.approx(3.0)
+
+
+def test_wall_pass_reward_skew_ignores_inactive_units() -> None:
+    runtime = _make_runtime(
+        num_units=3,
+        wall_pass_reward_skew=1.0,
+        wall_pass_reward_weight=2.0,
+        units_active_mask=[True, False, True],
+    )
+    runtime.scenario.progress_reward_weight = 1.0
+    stable_mask = torch.tensor([True], dtype=torch.bool)
+
+    runtime._get_unit_y = lambda: torch.tensor([[0.6, 0.6, 0.0]], dtype=torch.float32)
+    inactive_and_first_active = runtime.compute_step_rewards(stable_mask=stable_mask)
+    assert float(inactive_and_first_active.info["wall_pass_reward"][0]) == pytest.approx(2.0 / 3.0)
+
+    runtime._get_unit_y = lambda: torch.tensor([[0.6, 0.6, 0.6]], dtype=torch.float32)
+    last_active = runtime.compute_step_rewards(stable_mask=stable_mask)
+    assert float(last_active.info["wall_pass_reward"][0]) == pytest.approx(4.0 / 3.0)
+    assert float(inactive_and_first_active.info["wall_pass_reward"][0] + last_active.info["wall_pass_reward"][0]) == pytest.approx(2.0)
+    assert runtime.next_threshold_for_unit.tolist() == [[1, 0, 1]]
+
+
+def test_wall_pass_rank_weights_are_precomputed_by_active_count() -> None:
+    weights = _build_wall_pass_rank_weights(max_units=3, skew=1.0, device=torch.device("cpu"))
+
+    assert weights[0].tolist() == pytest.approx([0.0, 0.0, 0.0])
+    assert weights[1].tolist() == pytest.approx([1.0, 0.0, 0.0])
+    assert weights[2].tolist() == pytest.approx([2.0 / 3.0, 4.0 / 3.0, 0.0])
+    assert weights[3].tolist() == pytest.approx([0.5, 1.0, 1.5])
+
+
+def test_wall_pass_rank_weight_cache_rebuilds_only_when_skew_changes() -> None:
+    runtime = _make_runtime(num_units=3, wall_pass_reward_skew=1.0)
+
+    first = runtime._get_wall_pass_rank_weights(1.0).clone()
+    assert runtime._wall_pass_rank_weights_skew == 1.0
+
+    second = runtime._get_wall_pass_rank_weights(1.0).clone()
+    assert torch.allclose(second, first)
+    assert runtime._wall_pass_rank_weights_skew == 1.0
+
+    third = runtime._get_wall_pass_rank_weights(2.0).clone()
+    assert runtime._wall_pass_rank_weights_skew == 2.0
+    assert third[3].tolist() == pytest.approx([3.0 / 14.0, 12.0 / 14.0, 27.0 / 14.0])
+    assert not torch.allclose(third, first)

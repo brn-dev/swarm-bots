@@ -56,6 +56,16 @@ class CorrelatedPoleParams:
 PoleSpec = PoleParams | CorrelatedPoleParams
 
 
+def _wall_pass_rank_weights(active_units_count: int, skew: float) -> np.ndarray:
+    if active_units_count <= 0:
+        return np.zeros((0,), dtype=float)
+    ranks = np.arange(1, active_units_count + 1, dtype=float)
+    if skew == 0.0:
+        return np.ones_like(ranks)
+    unnormalized = np.power(ranks / float(active_units_count), float(skew))
+    return unnormalized * (float(active_units_count) / float(unnormalized.sum()))
+
+
 class ObstacleStreetScenario(BaseScenario):
 
     def __init__(
@@ -85,6 +95,7 @@ class ObstacleStreetScenario(BaseScenario):
             forward_reward_max_y: float | None = None,
             guidance_reward_weight: float = 1.0,
             wall_pass_reward_weight: float = 0.0,
+            wall_pass_reward_skew: float = 0.0,
             wall_pass_thresholds: list[float] | None = None,
             units_without_connections_reward_weight: float = 0.0,
             include_connectors_xpos_in_obs: bool = True,
@@ -123,6 +134,7 @@ class ObstacleStreetScenario(BaseScenario):
         self.forward_reward_weight = float(forward_reward_weight)
         self.forward_reward_max_y = None if forward_reward_max_y is None else float(forward_reward_max_y)
         self.wall_pass_reward_weight = float(wall_pass_reward_weight)
+        self.wall_pass_reward_skew = float(wall_pass_reward_skew)
         if wall_pass_thresholds is None:
             wall_pass_thresholds = [0.0]
         self.wall_pass_thresholds = np.sort(wall_pass_thresholds)
@@ -179,6 +191,7 @@ class ObstacleStreetScenario(BaseScenario):
             'forward_reward_weight': self.forward_reward_weight,
             'forward_reward_max_y': self.forward_reward_max_y,
             'wall_pass_reward_weight': self.wall_pass_reward_weight,
+            'wall_pass_reward_skew': self.wall_pass_reward_skew,
             'wall_pass_thresholds': self.wall_pass_thresholds.tolist(),
         })
         return settings
@@ -385,19 +398,36 @@ class ObstacleStreetScenario(BaseScenario):
         thresholds_per_wall = int(self.wall_pass_thresholds.size)
 
         num_walls_passed = 0
+        wall_pass_reward_units = 0.0
+        if self.wall_pass_reward_skew != 0.0:
+            thresholds_passed_by_active_units = np.zeros(wall_pass_absolute_thresholds.size, dtype=int)
+            if active_units_count > 0:
+                active_next_thresholds = (
+                    next_threshold_for_unit if active_units_mask is None else next_threshold_for_unit[active_units_mask]
+                )
+                for next_threshold_idx in active_next_thresholds:
+                    thresholds_passed_by_active_units[:int(next_threshold_idx)] += 1
+            rank_weights = _wall_pass_rank_weights(active_units_count, self.wall_pass_reward_skew)
+
         for unit_idx in range(self.num_units):
             if active_units_mask is not None and not active_units_mask[unit_idx]:
                 continue
             next_threshold_idx = int(next_threshold_for_unit[unit_idx])
             while (next_threshold_idx < wall_pass_absolute_thresholds.size
                    and unit_y[unit_idx] > wall_pass_absolute_thresholds[next_threshold_idx]):
+                if self.wall_pass_reward_skew == 0.0:
+                    wall_pass_reward_units += 1.0
+                else:
+                    next_rank = thresholds_passed_by_active_units[next_threshold_idx]
+                    wall_pass_reward_units += float(rank_weights[next_rank])
+                    thresholds_passed_by_active_units[next_threshold_idx] = next_rank + 1
                 next_threshold_idx += 1
                 num_walls_passed += 1
             next_threshold_for_unit[unit_idx] = next_threshold_idx
 
         if active_units_count > 0 and thresholds_per_wall > 0:
             walls_passed_reward = (
-                num_walls_passed / (active_units_count * thresholds_per_wall)
+                wall_pass_reward_units / (active_units_count * thresholds_per_wall)
             ) * self.wall_pass_reward_weight
         else:
             walls_passed_reward = 0.0
