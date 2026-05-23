@@ -58,6 +58,7 @@ class MJWObstacleStreetScenario(BaseMJWScenario):
     no_initial_ramp: bool
     wall_pass_reward_weight: float
     wall_pass_thresholds: list[float]
+    wall_pass_reward_skew: float = 0.0
     forward_reward_max_y: float | None = None
     seed: int | None = None
     compile_reward_kernel: bool = False
@@ -121,6 +122,7 @@ class MJWObstacleStreetScenario(BaseMJWScenario):
             "forward_reward_weight": self.forward_reward_weight,
             "forward_reward_max_y": self.forward_reward_max_y,
             "wall_pass_reward_weight": self.wall_pass_reward_weight,
+            "wall_pass_reward_skew": self.wall_pass_reward_skew,
             "wall_pass_thresholds": list(self.wall_pass_thresholds),
             "compile_reward_kernel": self.compile_reward_kernel,
             "reward_kernel_compile_mode": self.reward_kernel_compile_mode,

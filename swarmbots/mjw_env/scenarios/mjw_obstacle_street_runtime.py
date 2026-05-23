@@ -46,6 +46,18 @@ class ObstacleStreetSettledSnapshot:
     passed_thresholds_mask: np.ndarray
 
 
+def _build_wall_pass_rank_weights(*, max_units: int, skew: float, device: torch.device) -> torch.Tensor:
+    rank_weights = torch.zeros((max_units + 1, max_units), device=device, dtype=torch.float32)
+    ranks = torch.arange(1, max_units + 1, device=device, dtype=torch.float32)
+    for active_units_count in range(1, max_units + 1):
+        active_ranks = ranks[:active_units_count]
+        unnormalized = torch.pow(active_ranks / float(active_units_count), float(skew))
+        rank_weights[active_units_count, :active_units_count] = (
+            unnormalized * (float(active_units_count) / unnormalized.sum())
+        )
+    return rank_weights
+
+
 def _compute_obstacle_street_reward_kernel(
     unit_y: torch.Tensor,
     stable_mask: torch.Tensor,
@@ -55,10 +67,13 @@ def _compute_obstacle_street_reward_kernel(
     next_threshold_for_unit: torch.Tensor,
     progress: torch.Tensor,
     threshold_index_torch: torch.Tensor,
+    unit_rank_torch: torch.Tensor,
+    wall_pass_rank_weights: torch.Tensor,
     progress_reward_weight: float,
     forward_reward_weight: float,
     forward_reward_max_y: float,
     wall_pass_reward_weight: float,
+    wall_pass_reward_skew: float,
     wall_thresholds_per_wall: int,
     units_without_connections_reward_weight: float,
     guidance_reward_weight: float,
@@ -77,12 +92,28 @@ def _compute_obstacle_street_reward_kernel(
         latched_thresholds = next_threshold_for_unit + delta_passed
 
         active_units_count = units_active_mask.sum(dim=-1)
+        if wall_pass_reward_skew == 0.0:
+            crossed_rank_weight_sum = delta_passed.sum(dim=-1).to(dtype=torch.float32)
+        else:
+            rank_weights = wall_pass_rank_weights[active_units_count]
+            threshold_indices = threshold_index_torch.view(1, 1, -1)
+            previous_passed_count = (
+                (next_threshold_for_unit.unsqueeze(-1) > threshold_indices) & units_active_mask.unsqueeze(-1)
+            ).sum(dim=1)
+            new_passed_count = (
+                (latched_thresholds.unsqueeze(-1) > threshold_indices) & units_active_mask.unsqueeze(-1)
+            ).sum(dim=1)
+            crossed_rank_mask = (
+                (unit_rank_torch.view(1, 1, -1) > previous_passed_count.unsqueeze(-1))
+                & (unit_rank_torch.view(1, 1, -1) <= new_passed_count.unsqueeze(-1))
+            )
+            crossed_rank_weight_sum = (rank_weights.unsqueeze(1) * crossed_rank_mask.to(dtype=torch.float32)).sum(dim=(1, 2))
         denom = active_units_count * max(wall_thresholds_per_wall, 1)
         valid = stable_mask & (denom > 0)
         wall_pass_reward = torch.where(
             valid,
             (
-                delta_passed.sum(dim=-1).to(dtype=torch.float32)
+                crossed_rank_weight_sum
                 / denom.to(dtype=torch.float32)
             ) * float(wall_pass_reward_weight),
             torch.zeros_like(progress, dtype=torch.float32),
@@ -236,6 +267,13 @@ class ObstacleStreetMJWScenarioRuntime(BaseMJWScenarioRuntime):
         self.progress = torch.zeros((bindings.num_envs,), device=bindings.device, dtype=torch.float32)
         self._threshold_values = torch.as_tensor(scenario.wall_pass_thresholds, device=bindings.device, dtype=torch.float32)
         self._threshold_index_torch = torch.arange(total_thresholds, device=bindings.device, dtype=torch.long)
+        self._unit_rank_torch = torch.arange(1, scenario.swarm.num_units + 1, device=bindings.device, dtype=torch.long)
+        self._wall_pass_rank_weights = torch.zeros(
+            (scenario.swarm.num_units + 1, scenario.swarm.num_units),
+            device=bindings.device,
+            dtype=torch.float32,
+        )
+        self._wall_pass_rank_weights_skew: float | None = None
         self._threshold_index_np = np.arange(total_thresholds, dtype=np.int64)
         self._wall_thresholds_per_wall = len(scenario.wall_pass_thresholds)
         self._cpu_settler = _ObstacleStreetCPUResetSettler(
@@ -359,6 +397,12 @@ class ObstacleStreetMJWScenarioRuntime(BaseMJWScenarioRuntime):
 
     def compute_step_rewards(self, *, stable_mask: torch.Tensor) -> MJWStepResult:
         unit_y = self._get_unit_y()
+        wall_pass_reward_skew = float(self.scenario.wall_pass_reward_skew)
+        wall_pass_rank_weights = (
+            self._wall_pass_rank_weights
+            if wall_pass_reward_skew == 0.0
+            else self._get_wall_pass_rank_weights(wall_pass_reward_skew)
+        )
         (
             new_progress,
             progress_reward,
@@ -376,10 +420,13 @@ class ObstacleStreetMJWScenarioRuntime(BaseMJWScenarioRuntime):
             self.next_threshold_for_unit,
             self.progress,
             self._threshold_index_torch,
+            self._unit_rank_torch,
+            wall_pass_rank_weights,
             float(self.scenario.progress_reward_weight),
             float(self.scenario.forward_reward_weight),
             float("inf") if self.scenario.forward_reward_max_y is None else float(self.scenario.forward_reward_max_y),
             float(self.scenario.wall_pass_reward_weight),
+            wall_pass_reward_skew,
             int(self._wall_thresholds_per_wall),
             float(self.scenario.units_without_connections_reward_weight),
             float(self.scenario.guidance_reward_weight),
@@ -407,6 +454,26 @@ class ObstacleStreetMJWScenarioRuntime(BaseMJWScenarioRuntime):
 
     def _get_unit_y(self) -> torch.Tensor:
         return self.bindings.qpos[:, self.bindings.unit_qpos_adr + 1]
+
+    def _get_wall_pass_rank_weights(self, skew: float) -> torch.Tensor:
+        if not hasattr(self, "_wall_pass_rank_weights"):
+            max_units = int(self._unit_rank_torch.numel())
+            self._wall_pass_rank_weights = torch.zeros(
+                (max_units + 1, max_units),
+                device=self.bindings.device,
+                dtype=torch.float32,
+            )
+            self._wall_pass_rank_weights_skew = None
+        if skew != 0.0 and self._wall_pass_rank_weights_skew != skew:
+            self._wall_pass_rank_weights.copy_(
+                _build_wall_pass_rank_weights(
+                    max_units=int(self._unit_rank_torch.numel()),
+                    skew=skew,
+                    device=self.bindings.device,
+                )
+            )
+            self._wall_pass_rank_weights_skew = skew
+        return self._wall_pass_rank_weights
 
     def _sample_wall_configuration_values(
         self,

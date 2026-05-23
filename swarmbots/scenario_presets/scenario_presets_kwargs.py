@@ -42,6 +42,7 @@ WALL_SCENARIO_KWARGS: dict[str, object] = {
     "forward_reward_weight": 1.0,
     "forward_reward_max_y": 1.5,
     "wall_pass_reward_weight": 10.0,
+    "wall_pass_reward_skew": 0.0,
     "wall_pass_thresholds": [-0.1, 0.1, 0.3, 0.5],
 }
 

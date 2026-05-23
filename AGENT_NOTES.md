@@ -60,7 +60,7 @@ Keep only durable architecture notes and gotchas. Prefer deleting stale detail o
 - Move-to payload transfer adapters expand goals into payload-shaped global obs for normalization/checkpoint compatibility.
 - Shared mirrored scenario kwargs belong in `swarmbots/scenario_presets/scenario_presets_kwargs.py`.
 - Payload presets default to `"box"` to avoid trivial rolling.
-- Wall-pass reward stays normalized by active unit and threshold counts. `forward_reward_max_y` must not affect threshold crossing.
+- Wall-pass reward stays normalized by active unit and threshold counts. Optional `wall_pass_reward_skew` changes crossing-rank payout but preserves the all-active-units total. `forward_reward_max_y` must not affect threshold crossing.
 - Fixed preconnected swarm pools support runtime `active_pool_size` curriculum on CPU and MJW.
 - Random swarm z rotation must carry sampled yaw through all MJW reset paths.
 - Twist quantization prebuilds weld equalities and toggles `data.eq_active`; preconnected generation must sample quantized twist values.
