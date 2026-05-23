@@ -51,9 +51,6 @@ def main() -> None:
     vf_coef = 2.0 if use_popart else 0.5
     world_model_loss_coef = 0.1
     world_model_num_next_steps = 3
-    initial_stickiness = 0.25
-    final_stickiness = 0.0
-    stickiness_anneal_steps = 15_000_000
     gsde_init_stds = [0.25, 0.30]
     compile_policy_modules = True
     policy_compile_mode = "default"
@@ -88,9 +85,6 @@ def main() -> None:
         vf_coef=vf_coef,
         world_model_loss_coef=world_model_loss_coef,
         world_model_num_next_steps=world_model_num_next_steps,
-        initial_stickiness=initial_stickiness,
-        final_stickiness=final_stickiness,
-        stickiness_anneal_steps=stickiness_anneal_steps,
         gsde_init_stds=gsde_init_stds,
         compile_policy_modules=compile_policy_modules,
         compile_world_model_modules=compile_world_model_modules,

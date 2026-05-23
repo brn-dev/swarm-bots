@@ -36,6 +36,7 @@ Keep only durable architecture notes and gotchas. Prefer deleting stale detail o
 - Keep actor latents contiguous before action dists. Pass `tgt_is_causal` explicitly to `nn.TransformerDecoder`.
 - `ActionDist.compile_friendly` gates MAT compile coverage. Mutable action-dist scalars must be tensors/buffers, not Python floats.
 - Sticky dists must keep `requires_previous_actions()` structurally stable even when annealed to zero.
+- Default MAT/NOP training scripts use non-sticky `LeftRightBetaConfig`; opt into `sticky_lr_beta` only for comparison runs.
 - Squashed Gaussian/gSDE entropy uses pre-squash Gaussian entropy proxies. `BetaActionDist` maps `[0, 1]` samples to repo-standard `[-1, 1]`.
 - Transformer encoder/decoder layers clone identical prototype params unless explicitly reinitialized via configured transformer FF init gain.
 

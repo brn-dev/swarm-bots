@@ -13,8 +13,7 @@ from torch import nn
 from run_mat_nop_payload import wrap_vec_env, split_actuator_joints, set_actuator_gsde_init_joint_stds
 from swarmbots.learn.action_dists.bernoulli_action_dist import BernoulliConfig
 from swarmbots.learn.action_dists.entropy_utils import EntropyLossConfig, AgentActionsReduction
-from swarmbots.learn.action_dists.sticky_action_dist import StickyActionDist
-from swarmbots.learn.action_dists.sticky_left_right_beta_action_dist import StickyLeftRightBetaConfig
+from swarmbots.learn.action_dists.left_right_beta_action_dist import LeftRightBetaConfig
 from swarmbots.learn.algos.mat.mat_decoder import MATDecoderConfig, MATDecoderSelfAttentionMode
 from swarmbots.learn.algos.mat.mat_encoder import MATEncoderConfig
 from swarmbots.learn.algos.mat.mat_policy import MATCriticConfig, MATPolicy, MATPolicyConfig
@@ -35,8 +34,7 @@ from swarmbots.learn.gsde_reset import GSDEProbabilityResetMode
 from swarmbots.learn.obs_indices import ObsIndices
 from swarmbots.learn.scheduling.auto_lr_updater import make_auto_lr_updater
 from swarmbots.learn.scheduling.cosine_scheduler import CosineSchedulerConfig
-from swarmbots.learn.scheduling.linear_scheduler import LinearScheduler
-from swarmbots.learn.scheduling.schedulers import ScheduledHyperParameter, SchedulerManager, ScheduleUnit
+from swarmbots.learn.scheduling.schedulers import ScheduleUnit
 from swarmbots.learn.summary_statistics import SummaryStatisticsFormat
 from swarmbots.learn.swarmbots_obs_indices import build_obs_indices
 from swarmbots.mjw_env import MJWSwarmBotsVectorEnv
@@ -169,7 +167,6 @@ def build_policy(
     use_popart: bool,
     popart_beta: float,
     popart_init_sigma: float,
-    initial_stickiness: float,
     compile_policy_modules: bool,
     compile_world_model_modules: bool,
     policy_compile_mode: str,
@@ -209,8 +206,7 @@ def build_policy(
             ),
             dropout=0.0,
             act_fn_cls=nn.GELU,
-            continuous_config=StickyLeftRightBetaConfig(
-                stickiness=initial_stickiness,
+            continuous_config=LeftRightBetaConfig(
                 ent_loss_coef=1e-3,
                 beta_ent_scale=0.75,
                 categorical_ent_loss_config=EntropyLossConfig(
@@ -272,38 +268,6 @@ def build_policy(
     )
 
 
-def make_scheduler_manager(
-    *,
-    policy: NextObsPredWrapper,
-    initial_stickiness: float,
-    final_stickiness: float,
-    stickiness_anneal_steps: int,
-) -> SchedulerManager | None:
-    continuous_dist = policy.action_dist.distributions[0]
-    if not isinstance(continuous_dist, StickyActionDist):
-        act0_dist_type = type(continuous_dist) if policy.action_dist.distributions else None
-        logger.warning(f"Skipping act0_stickiness scheduler: action dist[0] is {act0_dist_type}")
-        return None
-
-    sticky_dist: StickyActionDist = continuous_dist
-    return SchedulerManager(
-        [
-            ScheduledHyperParameter(
-                name="act0_stickiness",
-                scheduler=LinearScheduler(
-                    unit=ScheduleUnit.TIMESTEPS,
-                    duration=stickiness_anneal_steps,
-                    start_value=initial_stickiness,
-                    final_value=final_stickiness,
-                    name="act0_stickiness",
-                ),
-                get_value=lambda: sticky_dist.get_stickiness(),
-                apply=lambda new_value: sticky_dist.set_stickiness(new_value),
-            )
-        ]
-    )
-
-
 def build_ppo(
     *,
     env: Any,
@@ -315,9 +279,6 @@ def build_ppo(
     use_popart: bool,
     vf_coef: float,
     world_model_num_next_steps: int,
-    initial_stickiness: float,
-    final_stickiness: float,
-    stickiness_anneal_steps: int,
     rollout_device: torch.device,
     train_device: torch.device,
     record_device: torch.device,
@@ -365,12 +326,7 @@ def build_ppo(
         record_device=record_device,
         use_popart=use_popart,
         metrics_action_splitters=[lambda actions: split_actuator_joints(actions, actuators_per_limb), None],
-        scheduler_manager=make_scheduler_manager(
-            policy=policy,
-            initial_stickiness=initial_stickiness,
-            final_stickiness=final_stickiness,
-            stickiness_anneal_steps=stickiness_anneal_steps,
-        ),
+        scheduler_manager=None,
     )
 
 
@@ -454,9 +410,6 @@ def build_phase(
     vf_coef: float,
     world_model_loss_coef: float,
     world_model_num_next_steps: int,
-    initial_stickiness: float,
-    final_stickiness: float,
-    stickiness_anneal_steps: int,
     gsde_init_stds: list[float],
     compile_policy_modules: bool,
     compile_world_model_modules: bool,
@@ -483,7 +436,6 @@ def build_phase(
         use_popart=use_popart,
         popart_beta=popart_beta,
         popart_init_sigma=popart_init_sigma,
-        initial_stickiness=initial_stickiness,
         compile_policy_modules=compile_policy_modules,
         compile_world_model_modules=compile_world_model_modules,
         policy_compile_mode=policy_compile_mode,
@@ -507,9 +459,6 @@ def build_phase(
         use_popart=use_popart,
         vf_coef=vf_coef,
         world_model_num_next_steps=world_model_num_next_steps,
-        initial_stickiness=initial_stickiness,
-        final_stickiness=final_stickiness,
-        stickiness_anneal_steps=stickiness_anneal_steps,
         rollout_device=rollout_device,
         train_device=train_device,
         record_device=record_device,
@@ -550,10 +499,6 @@ def main() -> None:
     vf_coef = 2.0 if use_popart else 0.5
     world_model_loss_coef = 0.1
     world_model_num_next_steps = 3
-    initial_stickiness = 0.25
-    final_stickiness = 0.0
-    pretrain_stickiness_anneal_steps = 10_000_000
-    payload_stickiness = 0.0
     gsde_init_stds = [0.25, 0.30]
     compile_policy_modules = True
     policy_compile_mode = "default"
@@ -585,9 +530,6 @@ def main() -> None:
             vf_coef=vf_coef,
             world_model_loss_coef=world_model_loss_coef,
             world_model_num_next_steps=world_model_num_next_steps,
-            initial_stickiness=initial_stickiness,
-            final_stickiness=final_stickiness,
-            stickiness_anneal_steps=pretrain_stickiness_anneal_steps,
             gsde_init_stds=gsde_init_stds,
             compile_policy_modules=compile_policy_modules,
             compile_world_model_modules=compile_world_model_modules,
@@ -631,11 +573,6 @@ def main() -> None:
             move_env.close()
 
         logger.info(f"Starting dual-payload phase from transfer checkpoint {transfer_checkpoint_path}.")
-        move_phase_timesteps = int(move_ppo.n_total_timesteps)
-        logger.info(
-            "Starting dual-payload phase with stickiness fixed at zero after pretraining anneal: "
-            f"{move_phase_timesteps=}, {pretrain_stickiness_anneal_steps=}, {payload_stickiness=:.6f}."
-        )
         payload_env, payload_env_settings, payload_ppo, payload_actuators_per_limb = build_phase(
             vector_env=make_payload_vector_env(
                 episode_length=episode_length,
@@ -651,9 +588,6 @@ def main() -> None:
             vf_coef=vf_coef,
             world_model_loss_coef=world_model_loss_coef,
             world_model_num_next_steps=world_model_num_next_steps,
-            initial_stickiness=payload_stickiness,
-            final_stickiness=payload_stickiness,
-            stickiness_anneal_steps=0,
             gsde_init_stds=gsde_init_stds,
             compile_policy_modules=compile_policy_modules,
             compile_world_model_modules=compile_world_model_modules,

@@ -19,7 +19,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from swarmbots.learn.action_dists.bernoulli_action_dist import BernoulliConfig
 from swarmbots.learn.action_dists.entropy_utils import AgentActionsReduction, EntropyLossConfig
-from swarmbots.learn.action_dists.sticky_left_right_beta_action_dist import StickyLeftRightBetaConfig
+from swarmbots.learn.action_dists.left_right_beta_action_dist import LeftRightBetaConfig
 from swarmbots.learn.algos.mat.mat_decoder import MATDecoderConfig, MATDecoderSelfAttentionMode
 from swarmbots.learn.algos.mat.mat_encoder import MATEncoderConfig
 from swarmbots.learn.algos.mat.mat_policy import MATCriticConfig, MATPolicy, MATPolicyConfig
@@ -177,8 +177,7 @@ def build_policy_config(config: BenchmarkConfig, *, compile_modules: bool) -> MA
         ),
         dropout=0.0,
         act_fn_cls=nn.GELU,
-        continuous_config=StickyLeftRightBetaConfig(
-            stickiness=0.25,
+        continuous_config=LeftRightBetaConfig(
             ent_loss_coef=1e-3,
             beta_ent_scale=0.75,
             categorical_ent_loss_config=EntropyLossConfig(
