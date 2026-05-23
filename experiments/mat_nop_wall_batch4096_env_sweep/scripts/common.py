@@ -18,8 +18,7 @@ if str(REPO_ROOT) not in sys.path:
 import swarmbots.mj_env.scenarios.scenario_presets as mj_scenario_presets
 from swarmbots.learn.action_dists.bernoulli_action_dist import BernoulliConfig
 from swarmbots.learn.action_dists.entropy_utils import EntropyLossConfig, AgentActionsReduction
-from swarmbots.learn.action_dists.sticky_action_dist import StickyActionDist
-from swarmbots.learn.action_dists.sticky_left_right_beta_action_dist import StickyLeftRightBetaConfig
+from swarmbots.learn.action_dists.left_right_beta_action_dist import LeftRightBetaConfig
 from swarmbots.learn.algos.mat.mat_decoder import MATDecoderConfig, MATDecoderSelfAttentionMode
 from swarmbots.learn.algos.mat.mat_encoder import MATEncoderConfig
 from swarmbots.learn.algos.mat.mat_policy import MATCriticConfig, MATPolicy, MATPolicyConfig
@@ -34,8 +33,7 @@ from swarmbots.learn.gsde_reset import GSDEProbabilityResetMode
 from swarmbots.learn.obs_indices import ObsIndices
 from swarmbots.learn.scheduling.auto_lr_updater import make_auto_lr_updater
 from swarmbots.learn.scheduling.cosine_scheduler import CosineSchedulerConfig
-from swarmbots.learn.scheduling.linear_scheduler import LinearScheduler
-from swarmbots.learn.scheduling.schedulers import ScheduledHyperParameter, SchedulerManager, ScheduleUnit
+from swarmbots.learn.scheduling.schedulers import ScheduleUnit
 from swarmbots.learn.summary_statistics import SummaryStatisticsFormat
 from swarmbots.learn.swarmbots_obs_indices import build_obs_indices
 from swarmbots.mj_env.scenarios.scenario_presets import default_wall
@@ -242,9 +240,6 @@ def run_experiment(*, num_envs: int, rollout_samples: int, variant_name: str, en
     world_model_loss_coef = 0.1
     world_model_num_next_steps = 3
 
-    initial_stickiness = 0.25
-    final_stickiness = 0.0
-    stickiness_anneal_steps = 15_000_000
     gsde_init_stds = [0.25, 0.30]
 
     compile_policy_modules = True
@@ -405,8 +400,7 @@ def run_experiment(*, num_envs: int, rollout_samples: int, variant_name: str, en
             ),
             dropout=0.0,
             act_fn_cls=nn.GELU,
-            continuous_config=StickyLeftRightBetaConfig(
-                stickiness=initial_stickiness,
+            continuous_config=LeftRightBetaConfig(
                 ent_loss_coef=1e-3,
                 beta_ent_scale=0.75,
                 categorical_ent_loss_config=EntropyLossConfig(
@@ -495,30 +489,6 @@ def run_experiment(*, num_envs: int, rollout_samples: int, variant_name: str, en
         ),
     )
 
-    scheduler_manager: SchedulerManager | None = None
-    continuous_dist = policy.action_dist.distributions[0]
-    if isinstance(continuous_dist, StickyActionDist):
-        sticky_dist: StickyActionDist = continuous_dist
-        scheduler_manager = SchedulerManager(
-            [
-                ScheduledHyperParameter(
-                    name="act0_stickiness",
-                    scheduler=LinearScheduler(
-                        unit=ScheduleUnit.TIMESTEPS,
-                        duration=stickiness_anneal_steps,
-                        start_value=initial_stickiness,
-                        final_value=final_stickiness,
-                        name="act0_stickiness",
-                    ),
-                    get_value=lambda: sticky_dist.get_stickiness(),
-                    apply=lambda new_value: sticky_dist.set_stickiness(new_value),
-                )
-            ]
-        )
-    else:
-        act0_dist_type = type(continuous_dist) if policy.action_dist.distributions else None
-        logger.warning(f"Skipping act0_stickiness scheduler: action dist[0] is {act0_dist_type}")
-
     ppo = PPO(
         policy=policy,
         env=env,
@@ -545,7 +515,7 @@ def run_experiment(*, num_envs: int, rollout_samples: int, variant_name: str, en
         record_device=record_device,
         use_popart=use_popart,
         metrics_action_splitters=[lambda actions: split_actuator_joints(actions, actuators_per_limb), None],
-        scheduler_manager=scheduler_manager,
+        scheduler_manager=None,
     )
 
     if load_path:

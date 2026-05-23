@@ -61,7 +61,7 @@ def run_ablation(
         *,
         variant_name: str,
         entrypoint_path: Path,
-        continuous_action_dist: ContinuousActionDistVariant = "sticky_lr_beta",
+        continuous_action_dist: ContinuousActionDistVariant = "lr_beta",
         policy_variant: PolicyVariant = "mat",
         mat_add_agent_embeddings: bool = True,
         mat_decoder_self_attention_mode: MATDecoderSelfAttentionMode = MATDecoderSelfAttentionMode.FULL_AUTOREGRESSIVE,

@@ -22,7 +22,7 @@ GROUP_ORDER = (
 )
 EXTRA_GROUP_SOURCES = {
     "1024x4": (
-        REPO_ROOT / "runs" / "mat_nop_swarm_bots_wall_mjw_1024x4_ablation" / "sticky_lr_beta_nop",
+        REPO_ROOT / "runs" / "mat_nop_swarm_bots_wall_mjw_1024x4_ablation" / "lr_beta_nop",
     ),
 }
 THEORETICAL_MAXIMUM = 10.5

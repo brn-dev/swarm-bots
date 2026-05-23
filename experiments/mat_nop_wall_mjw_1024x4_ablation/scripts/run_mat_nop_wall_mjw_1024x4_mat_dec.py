@@ -5,7 +5,7 @@ from common import run_ablation
 
 def main() -> None:
     run_ablation(
-        variant_name="sticky_lr_beta_nop_mat_dec",
+        variant_name="lr_beta_nop_mat_dec",
         entrypoint_path=Path(__file__).resolve(),
         policy_variant="mat_dec",
     )

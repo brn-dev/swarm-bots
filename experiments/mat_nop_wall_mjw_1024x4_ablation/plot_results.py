@@ -13,29 +13,27 @@ from plot_logs.experiment_results import plot_experiment_results
 EXPERIMENT_RUN_DIR = REPO_ROOT / "runs" / "mat_nop_swarm_bots_wall_mjw_1024x4_ablation"
 OUTPUT_DIR = Path(__file__).resolve().parent / "results"
 GROUP_ORDER = (
-    "sticky_lr_beta_nop",
-    "gsde_nop",
     "lr_beta_nop",
+    "gsde_nop",
     "beta_nop",
     "squashed_diag_gaussian_nop",
-    "sticky_lr_beta_nop_shuffle_agents",
-    "sticky_lr_beta_nop_shuffle_agents_preserve_prefix",
-    "sticky_lr_beta_no_nop",
+    "lr_beta_nop_shuffle_agents",
+    "lr_beta_nop_shuffle_agents_preserve_prefix",
+    "lr_beta_no_nop",
 )
 DISPLAY_NAME_OVERRIDES = {
-    "sticky_lr_beta_nop": "Sticky L/R Beta + NOP",
-    "gsde_nop": "gSDE + NOP",
     "lr_beta_nop": "L/R Beta + NOP",
+    "gsde_nop": "gSDE + NOP",
     "beta_nop": "Beta + NOP",
     "squashed_diag_gaussian_nop": "Squashed Diag Gaussian + NOP",
-    "sticky_lr_beta_nop_shuffle_agents": "Sticky L/R Beta + NOP, shuffled agents",
-    "sticky_lr_beta_nop_shuffle_agents_preserve_prefix": (
-        "Sticky L/R Beta + NOP, shuffled active-prefix agents"
+    "lr_beta_nop_shuffle_agents": "L/R Beta + NOP, shuffled agents",
+    "lr_beta_nop_shuffle_agents_preserve_prefix": (
+        "L/R Beta + NOP, shuffled active-prefix agents"
     ),
-    "sticky_lr_beta_no_nop": "Sticky L/R Beta, no NOP",
+    "lr_beta_no_nop": "L/R Beta, no NOP",
 }
 EXTRA_GROUP_SOURCES = {
-    "sticky_lr_beta_nop": (
+    "lr_beta_nop": (
         REPO_ROOT / "runs" / "mat_nop_swarm_bots_wall_mjw_batch_env_sweep" / "1024x4",
     ),
 }

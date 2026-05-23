@@ -5,7 +5,7 @@ from common import run_ablation
 
 def main() -> None:
     run_ablation(
-        variant_name="sticky_lr_beta_nop_no_agent_embeddings",
+        variant_name="lr_beta_nop_no_agent_embeddings",
         entrypoint_path=Path(__file__).resolve(),
         mat_add_agent_embeddings=False,
     )

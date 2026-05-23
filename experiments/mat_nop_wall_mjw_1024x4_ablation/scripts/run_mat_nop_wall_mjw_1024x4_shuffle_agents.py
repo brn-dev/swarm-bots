@@ -5,7 +5,7 @@ from common import run_ablation
 
 def main() -> None:
     run_ablation(
-        variant_name="sticky_lr_beta_nop_shuffle_agents",
+        variant_name="lr_beta_nop_shuffle_agents",
         entrypoint_path=Path(__file__).resolve(),
         shuffle_agents=True,
         preserve_inactive_prefix_structure=False,

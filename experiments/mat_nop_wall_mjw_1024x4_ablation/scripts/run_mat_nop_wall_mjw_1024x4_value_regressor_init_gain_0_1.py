@@ -5,7 +5,7 @@ from common import MATInitGains, run_ablation
 
 def main() -> None:
     run_ablation(
-        variant_name="sticky_lr_beta_nop_value_regressor_init_gain_0_1",
+        variant_name="lr_beta_nop_value_regressor_init_gain_0_1",
         entrypoint_path=Path(__file__).resolve(),
         mat_init_gains=MATInitGains(critic_value_regressor=0.1),
     )

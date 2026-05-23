@@ -5,7 +5,7 @@ from common import make_mat_hidden_init_gains, make_nop_hidden_init_gains, run_a
 
 def main() -> None:
     run_ablation(
-        variant_name="sticky_lr_beta_nop_init_gain_0_1_projections_1",
+        variant_name="lr_beta_nop_init_gain_0_1_projections_1",
         entrypoint_path=Path(__file__).resolve(),
         mat_init_gains=make_mat_hidden_init_gains(0.1, projection_gain=1.0),
         nop_init_gains=make_nop_hidden_init_gains(0.1, projection_gain=1.0),

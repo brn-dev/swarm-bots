@@ -272,7 +272,7 @@ def run_experiment(
         entrypoint_path: Path,
         virtual_mini_batches: int = 1,
         n_epochs: int = 8,
-        continuous_action_dist: ContinuousActionDistVariant = "sticky_lr_beta",
+        continuous_action_dist: ContinuousActionDistVariant = "lr_beta",
         policy_variant: PolicyVariant = "mat",
         mat_add_agent_embeddings: bool = True,
         mat_decoder_self_attention_mode: MATDecoderSelfAttentionMode = MATDecoderSelfAttentionMode.FULL_AUTOREGRESSIVE,
@@ -525,7 +525,7 @@ def run_experiment(
 
     scheduler_manager: SchedulerManager | None = None
     continuous_dist = policy.action_dist.distributions[0]
-    if isinstance(continuous_dist, StickyActionDist):
+    if continuous_action_dist == "sticky_lr_beta" and isinstance(continuous_dist, StickyActionDist):
         sticky_dist: StickyActionDist = continuous_dist
         scheduler_manager = SchedulerManager(
             [
@@ -543,7 +543,7 @@ def run_experiment(
                 )
             ]
         )
-    else:
+    elif continuous_action_dist == "sticky_lr_beta":
         act0_dist_type = type(continuous_dist) if policy.action_dist.distributions else None
         logger.warning(f"Skipping act0_stickiness scheduler: action dist[0] is {act0_dist_type}")
 
