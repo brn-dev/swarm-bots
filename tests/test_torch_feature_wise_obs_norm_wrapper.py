@@ -10,21 +10,37 @@ from swarmbots.learn.testing_env import TestingSwarmBotsEnv
 from swarmbots.learn.torch_running_mean_std import TorchRunningMeanStd
 
 
+class _OffsetLocalObsTestingEnv(TestingSwarmBotsEnv):
+    def __init__(self, *args, local_obs_offset: float, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._local_obs_offset = float(local_obs_offset)
+
+    def _get_obs(self) -> dict[str, np.ndarray]:
+        obs = super()._get_obs()
+        obs["local_obs"] = obs["local_obs"] + self._local_obs_offset
+        return obs
+
+
 def _make_env(
     *,
     n_envs: int = 2,
     n_agents: int = 3,
     n_local_obs: int = 7,
     n_global_obs: int = 1,
+    max_steps: int = 100,
+    local_obs_offset: float = 0.0,
 ) -> SwarmBotsLearnEnvWrapper:
+    env_cls = TestingSwarmBotsEnv if local_obs_offset == 0.0 else _OffsetLocalObsTestingEnv
     vector_env = SyncVectorEnv(
         [
-            lambda: TestingSwarmBotsEnv(
+            lambda: env_cls(
                 n_agents,
                 n_local_obs,
                 n_global_obs,
                 actuators_dim=1,
                 connectors_dim=1,
+                max_steps=max_steps,
+                **({} if local_obs_offset == 0.0 else {"local_obs_offset": local_obs_offset}),
             )
             for _ in range(n_envs)
         ],
@@ -47,15 +63,6 @@ def _obs(
     if agent_mask is not None:
         observations["agent_mask"] = agent_mask
     return observations
-
-
-def _single_env_final_obs(local_obs: np.ndarray) -> dict[str, np.ndarray]:
-    return {
-        "local_obs": local_obs.astype(np.float32),
-        "global_obs": np.zeros((1,), dtype=np.float32),
-        "hidden_local_vars": np.zeros((local_obs.shape[0], 0), dtype=np.float32),
-        "hidden_global_vars": np.zeros((0,), dtype=np.float32),
-    }
 
 
 class TorchFeatureWiseObsNormWrapperTests(unittest.TestCase):
@@ -115,47 +122,38 @@ class TorchFeatureWiseObsNormWrapperTests(unittest.TestCase):
         finally:
             env.close()
 
-    def test_final_obs_is_normalized_without_updating_running_stats(self) -> None:
-        env = _make_env(n_agents=2, n_local_obs=2)
+    def test_same_step_final_obs_is_normalized_without_updating_running_stats(self) -> None:
+        env = _make_env(n_envs=1, n_agents=2, n_local_obs=2, max_steps=1, local_obs_offset=2.0)
         try:
             wrapper = TorchFeatureWiseObsNormWrapper(
                 env,
                 obs_key="local_obs",
                 scalar_feature_indices=[0],
                 quaternion_indices=[],
-                eps=0.0,
+                eps=1.0,
             )
             wrapper.obs_rms = TorchRunningMeanStd(shape=(1,), initial_count=0.0)
-            live_obs = _obs(
-                local_obs=torch.tensor(
-                    [
-                        [[0.0, 0.0], [2.0, 0.0]],
-                        [[4.0, 0.0], [6.0, 0.0]],
-                    ],
-                    dtype=torch.float32,
-                )
-            )
-            wrapper.observations(live_obs)
+
+            reset_obs, _info = wrapper.reset()
             assert wrapper.obs_rms is not None
-            count_before = wrapper.obs_rms.count.clone()
+            torch.testing.assert_close(wrapper.obs_rms.count, torch.tensor(2.0, dtype=torch.float64))
 
-            final_obs = np.empty((2,), dtype=object)
-            final_obs[0] = _single_env_final_obs(np.array([[13.0, 0.0], [-7.0, 0.0]], dtype=np.float32))
-            final_obs[1] = _single_env_final_obs(np.array([[1000.0, 0.0], [1001.0, 0.0]], dtype=np.float32))
-            transformed = wrapper._transform_infos(
-                {
-                    "final_obs": final_obs,
-                    "_final_obs": np.array([True, False]),
-                }
+            actions = torch.zeros(
+                (1, wrapper.n_agents, wrapper.action_space.total_agent_action_dim),
+                dtype=torch.float32,
             )
+            same_step_reset_obs, _rewards, _terminations, truncations, infos = wrapper.step(actions)
 
-            torch.testing.assert_close(wrapper.obs_rms.count, count_before)
+            self.assertTrue(bool(truncations[0].item()))
+            expected_reset_obs = torch.tensor([[[0.0, 2.0], [0.0, 2.0]]], dtype=torch.float32)
+            torch.testing.assert_close(reset_obs["local_obs"], expected_reset_obs)
+            torch.testing.assert_close(same_step_reset_obs["local_obs"], expected_reset_obs)
+            torch.testing.assert_close(wrapper.obs_rms.count, torch.tensor(4.0, dtype=torch.float64))
             self.assertTrue(wrapper.update_running_mean)
-            transformed_final_obs = transformed["final_obs"]
+            transformed_final_obs = infos["final_obs"]
             self.assertIsInstance(transformed_final_obs[0]["local_obs"], torch.Tensor)
-            self.assertIsInstance(transformed_final_obs[1]["local_obs"], np.ndarray)
             expected = torch.tensor(
-                [[10.0 / np.sqrt(5.0), 0.0], [-10.0 / np.sqrt(5.0), 0.0]],
+                [[1.0, 3.0], [1.0, 3.0]],
                 dtype=torch.float32,
             )
             torch.testing.assert_close(transformed_final_obs[0]["local_obs"], expected)

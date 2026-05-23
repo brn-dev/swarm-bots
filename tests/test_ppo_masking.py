@@ -54,6 +54,24 @@ class _LinearEvalPolicy(nn.Module):
         return log_probs, values, {}, {}
 
 
+class _MaskedGradientPolicy(nn.Module):
+    def __init__(self, batch: PPOSamples) -> None:
+        super().__init__()
+        self.log_prob_delta = nn.Parameter(torch.zeros_like(batch.log_probs))
+        self.value_delta = nn.Parameter(
+            torch.arange(batch.values.numel(), dtype=torch.float32).reshape_as(batch.values) + 1.0
+        )
+
+    def evaluate_actions(
+            self,
+            batch: PPOSamples,
+            action_splitter: object = None,
+    ) -> tuple[torch.Tensor, torch.Tensor, dict[str, torch.Tensor], dict[str, float]]:
+        _ = batch
+        _ = action_splitter
+        return self.log_prob_delta, self.value_delta, {}, {}
+
+
 def _ppo_for_virtual_gradient(policy: _LinearEvalPolicy, *, virtual_mini_batches: int = 1) -> PPO:
     ppo = _ppo_with_reduction(None)
     ppo.policy = policy
@@ -87,6 +105,32 @@ def _make_flat_samples() -> PPOSamples:
 
 
 class PPOMaskingTests(unittest.TestCase):
+    def test_compute_loss_does_not_backpropagate_through_masked_agents_or_burn_in_steps(self) -> None:
+        batch = _make_samples()
+        batch.time_mask = torch.ones(2, 3, dtype=torch.bool)
+        batch.time_loss_mask = torch.tensor([
+            [True, False, True],
+            [False, True, True],
+        ])
+        policy = _MaskedGradientPolicy(batch)
+        ppo = _ppo_with_reduction(None)
+        ppo.policy = policy
+        ppo.metrics_action_splitters = []
+        ppo.normalize_advantage = False
+        ppo.clip_range = 100.0
+        ppo.clip_range_vf = None
+        ppo.use_popart = False
+        ppo.vf_coef = 1.0
+        ppo.mc_ent_coef = 0.0
+
+        loss, _approx_kl, _metrics = ppo.compute_loss(batch)
+        loss.backward()
+
+        expected_log_prob_grad_mask = batch.agent_mask & batch.time_loss_mask.unsqueeze(-1)
+        expected_value_grad_mask = batch.agent_mask.any(dim=-1) & batch.time_loss_mask
+        self.assertTrue(torch.equal(policy.log_prob_delta.grad != 0.0, expected_log_prob_grad_mask))
+        self.assertTrue(torch.equal(policy.value_delta.grad != 0.0, expected_value_grad_mask))
+
     def test_time_loss_mask_takes_precedence_over_time_mask_for_valid_items(self) -> None:
         batch = _make_samples()
         batch.time_mask = torch.tensor([
