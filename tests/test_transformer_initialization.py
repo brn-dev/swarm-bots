@@ -11,7 +11,7 @@ from swarmbots.learn.algos.world_modeling.transformer_transition_model import (
 )
 
 
-def test_mat_encoder_keeps_default_cloned_transformer_initialization() -> None:
+def test_mat_encoder_default_reinitializes_cloned_transformer_layers() -> None:
     torch.manual_seed(123)
     encoder = MATEncoder(
         MATEncoderConfig(
@@ -19,6 +19,27 @@ def test_mat_encoder_keeps_default_cloned_transformer_initialization() -> None:
             nhead=2,
             num_layers=2,
             dim_feedforward=16,
+        ),
+        max_agents=4,
+        local_obs_dim=5,
+        global_obs_dim=0,
+    )
+
+    first_layer = encoder.encoder.layers[0]
+    second_layer = encoder.encoder.layers[1]
+    assert not torch.equal(first_layer.self_attn.in_proj_weight, second_layer.self_attn.in_proj_weight)
+    assert not torch.equal(first_layer.linear1.weight, second_layer.linear1.weight)
+
+
+def test_mat_encoder_can_keep_cloned_transformer_initialization() -> None:
+    torch.manual_seed(123)
+    encoder = MATEncoder(
+        MATEncoderConfig(
+            d_model=8,
+            nhead=2,
+            num_layers=2,
+            dim_feedforward=16,
+            transformer_ff_init_gain=None,
         ),
         max_agents=4,
         local_obs_dim=5,
@@ -60,7 +81,7 @@ def test_mat_encoder_proper_init_reinitializes_cloned_transformer_layers() -> No
     )
 
 
-def test_transition_model_keeps_default_cloned_transformer_initialization() -> None:
+def test_transition_model_default_reinitializes_cloned_transformer_layers() -> None:
     torch.manual_seed(123)
     model = TransformerTransitionModel(
         TransformerTransitionModelConfig(
@@ -72,6 +93,28 @@ def test_transition_model_keeps_default_cloned_transformer_initialization() -> N
             num_layers=2,
             dim_feedforward=16,
             act_fn_cls=nn.GELU,
+        )
+    )
+
+    first_layer = model.encoder.layers[0]
+    second_layer = model.encoder.layers[1]
+    assert not torch.equal(first_layer.self_attn.in_proj_weight, second_layer.self_attn.in_proj_weight)
+    assert not torch.equal(first_layer.linear1.weight, second_layer.linear1.weight)
+
+
+def test_transition_model_can_keep_cloned_transformer_initialization() -> None:
+    torch.manual_seed(123)
+    model = TransformerTransitionModel(
+        TransformerTransitionModelConfig(
+            n_agents=4,
+            latent_dim=8,
+            action_dim=3,
+            d_model=8,
+            nhead=2,
+            num_layers=2,
+            dim_feedforward=16,
+            act_fn_cls=nn.GELU,
+            transformer_ff_init_gain=None,
         )
     )
 

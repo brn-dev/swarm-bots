@@ -6,68 +6,52 @@ from swarmbots.learn.algos.world_modeling.transformer_transition_model import (
     TransformerTransitionModel,
     TransformerTransitionModelConfig,
 )
+from swarmbots.learn.nn_components.activations import (
+    ParameterLearnMode,
+    SignedSquaredLeakyRelu,
+    SignedSquaredLeakyReluFactory,
+)
 from swarmbots.learn.nn_components.mlp import MLP
-from swarmbots.learn.nn_components.nn_init import LinearInitialization, init_linear_orthogonal
 
 
-class LegacyMLP(nn.Sequential):
-
-    def __init__(
-            self,
-            input_dim: int,
-            hidden_dims: list[int],
-            end_with_act_fn: bool,
-            start_with_act_fn: bool = False,
-            linear_init: LinearInitialization = init_linear_orthogonal,
-            act_fn_cls=nn.Tanh,
-    ) -> None:
-        dims = [input_dim, *hidden_dims]
-        n_layers = len(dims) - 1
-
-        modules: list[nn.Module] = []
-        if start_with_act_fn:
-            modules.append(act_fn_cls())
-
-        for i in range(n_layers):
-            linear = nn.Linear(dims[i], dims[i + 1])
-            linear_init(linear)
-            modules.append(linear)
-
-            if i < n_layers - 1 or end_with_act_fn:
-                modules.append(act_fn_cls())
-
-        super().__init__(*modules)
+def _fill_linear_with_ones(linear: nn.Linear) -> nn.Linear:
+    nn.init.ones_(linear.weight)
+    nn.init.zeros_(linear.bias)
+    return linear
 
 
-def test_mlp_with_regular_activation_class_matches_legacy_construction() -> None:
-    torch.manual_seed(123)
-    current_mlp = MLP(
-        input_dim=4,
-        hidden_dims=[7, 3],
+def test_mlp_uses_regular_activation_class_between_linear_layers() -> None:
+    mlp = MLP(
+        input_dim=2,
+        hidden_dims=[2, 1],
+        end_with_act_fn=False,
+        start_with_act_fn=True,
+        linear_init=_fill_linear_with_ones,
+        act_fn_cls=nn.ReLU,
+    )
+    x = torch.tensor([[-2.0, 3.0], [4.0, -5.0]])
+
+    output = mlp(x)
+
+    torch.testing.assert_close(output, torch.tensor([[6.0], [8.0]]))
+
+
+def test_mlp_passes_feature_counts_to_feature_aware_activation_factories() -> None:
+    mlp = MLP(
+        input_dim=3,
+        hidden_dims=[5, 2],
         end_with_act_fn=True,
         start_with_act_fn=True,
-        act_fn_cls=nn.GELU,
+        act_fn_cls=SignedSquaredLeakyReluFactory(negative_slope_mode=ParameterLearnMode.PER_FEATURE),
     )
 
-    torch.manual_seed(123)
-    legacy_mlp = LegacyMLP(
-        input_dim=4,
-        hidden_dims=[7, 3],
-        end_with_act_fn=True,
-        start_with_act_fn=True,
-        act_fn_cls=nn.GELU,
-    )
+    activations = [module for module in mlp.modules() if isinstance(module, SignedSquaredLeakyRelu)]
 
-    assert [type(module) for module in current_mlp] == [type(module) for module in legacy_mlp]
-    assert current_mlp.state_dict().keys() == legacy_mlp.state_dict().keys()
-    for key, current_value in current_mlp.state_dict().items():
-        torch.testing.assert_close(current_value, legacy_mlp.state_dict()[key])
-
-    x = torch.randn(5, 4)
-    torch.testing.assert_close(current_mlp(x), legacy_mlp(x))
+    assert [tuple(activation.negative_slope.shape) for activation in activations] == [(3,), (5,), (2,)]
+    assert mlp(torch.randn(4, 3)).shape == (4, 2)
 
 
-def test_mat_encoder_keeps_regular_transformer_activation_class() -> None:
+def test_mat_encoder_accepts_regular_transformer_activation_class() -> None:
     encoder = MATEncoder(
         MATEncoderConfig(
             d_model=8,
@@ -81,14 +65,14 @@ def test_mat_encoder_keeps_regular_transformer_activation_class() -> None:
         global_obs_dim=0,
     )
 
-    activation = encoder.encoder.layers[0].activation
-    assert isinstance(activation, nn.GELU)
-
     out = encoder(torch.randn(2, 3, 5), torch.empty(2, 0))
+
+    assert isinstance(encoder.encoder.layers[0].activation, nn.GELU)
     assert out.shape == (2, 3, 8)
+    assert torch.isfinite(out).all()
 
 
-def test_transition_model_keeps_regular_transformer_and_mlp_activation_classes() -> None:
+def test_transition_model_accepts_regular_transformer_and_mlp_activation_classes() -> None:
     model = TransformerTransitionModel(
         TransformerTransitionModelConfig(
             n_agents=3,
@@ -104,9 +88,10 @@ def test_transition_model_keeps_regular_transformer_and_mlp_activation_classes()
         )
     )
 
+    out = model(torch.randn(2, 3, 8), torch.randn(2, 3, 2))
+
     assert isinstance(model.encoder.layers[0].activation, nn.GELU)
     assert any(isinstance(module, nn.GELU) for module in model.coembed.modules())
     assert any(isinstance(module, nn.GELU) for module in model.head.modules())
-
-    out = model(torch.randn(2, 3, 8), torch.randn(2, 3, 2))
     assert out.shape == (2, 3, 8)
+    assert torch.isfinite(out).all()

@@ -173,6 +173,64 @@ class _PreviousActionPolicy(_BaseTestPolicy):
         return True
 
 
+class _ValueOnlyBootstrapPolicy(_BaseTestPolicy):
+    def __init__(self, action_dim: int) -> None:
+        super().__init__(action_dim=action_dim)
+        self.forward_calls = 0
+        self.predict_value_calls = 0
+        self.temporal_state = 0
+
+    def forward(
+            self,
+            local_obs: torch.Tensor,
+            global_obs: torch.Tensor,
+            hidden_local_vars: torch.Tensor | None = None,
+            hidden_global_vars: torch.Tensor | None = None,
+            agent_mask: torch.Tensor | None = None,
+            previous_actions: torch.Tensor | None = None,
+            deterministic: bool = False,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        _ = global_obs
+        _ = hidden_local_vars
+        _ = hidden_global_vars
+        _ = agent_mask
+        _ = previous_actions
+        _ = deterministic
+        self.forward_calls += 1
+        batch_size, n_agents, _ = local_obs.shape
+        actions = torch.zeros((batch_size, n_agents, self._action_dim), device=local_obs.device, dtype=local_obs.dtype)
+        log_probs = torch.zeros((batch_size, n_agents), device=local_obs.device, dtype=local_obs.dtype)
+        values = torch.full((batch_size,), -1234.0, device=local_obs.device, dtype=local_obs.dtype)
+        return actions, log_probs, values
+
+    def predict_values(
+            self,
+            local_obs: torch.Tensor,
+            global_obs: torch.Tensor,
+            hidden_local_vars: torch.Tensor | None = None,
+            hidden_global_vars: torch.Tensor | None = None,
+            agent_mask: torch.Tensor | None = None,
+            previous_actions: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        _ = global_obs
+        _ = hidden_local_vars
+        _ = hidden_global_vars
+        _ = agent_mask
+        _ = previous_actions
+        self.predict_value_calls += 1
+        self.temporal_state += 1
+        return local_obs[..., 0].mean(dim=1) + 0.5
+
+    def get_temporal_state_snapshot(self) -> int:
+        return self.temporal_state
+
+    def restore_temporal_state_snapshot(self, snapshot: int) -> None:
+        self.temporal_state = snapshot
+
+    def requires_previous_actions(self) -> bool:
+        return False
+
+
 class _ScriptedRolloutEnv(gymnasium.Env):
     metadata = {}
 
@@ -499,6 +557,27 @@ class SameStepPipelineTests(unittest.TestCase):
             self.assertTrue(torch.allclose(_to_cpu(episode.final_value), torch.tensor(2.0)))
             self.assertTrue(bool(rollout_state.episode_start_mask[0].item()))
             self.assertTrue(torch.all(_to_cpu(rollout_state.obs["local_obs"][0, :, 0]) == 0.0))
+        finally:
+            env.close()
+
+    def test_collect_steps_uses_value_only_path_for_bootstrap_values(self) -> None:
+        env = _make_single_env(max_steps=2)
+        try:
+            policy = _ValueOnlyBootstrapPolicy(action_dim=env.action_space.total_agent_action_dim)
+            buffer = _make_buffer(env)
+
+            episodes, _episode_infos, _metrics, _rollout_state = collect_steps(
+                env=env,
+                policy=policy,
+                buffer=buffer,
+                n_steps=2,
+            )
+
+            self.assertEqual(len(episodes), 1)
+            self.assertEqual(float(_to_cpu(episodes[0].final_value).item()), 2.5)
+            self.assertEqual(policy.forward_calls, 2)
+            self.assertGreaterEqual(policy.predict_value_calls, 2)
+            self.assertEqual(policy.temporal_state, 0)
         finally:
             env.close()
 
