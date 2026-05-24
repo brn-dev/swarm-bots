@@ -15,7 +15,7 @@ Options:
   --python PYTHON     Python executable to use. Defaults to "python".
   --delay SECONDS     Delay between runs. Defaults to 0.
   --stop-file PATH    Stop-request file. Defaults to a managed per-process
-                      file used by scripts/stop_run_repeated.sh.
+                      file used by scripts/utils/stop_run_repeated.sh.
   --help              Show this help text.
 
 Any arguments after `--` are forwarded to the training script.
@@ -157,11 +157,12 @@ script_dir=$(
     pwd
 )
 repo_root=$(
-    cd -- "$script_dir/.."
+    cd -- "$script_dir/../.."
     pwd
 )
+scripts_root=$repo_root/scripts
 current_dir=$(pwd)
-training_script=$(resolve_training_script_path "$script_path" "$current_dir" "$repo_root" "$script_dir")
+training_script=$(resolve_training_script_path "$script_path" "$current_dir" "$repo_root" "$scripts_root" "$script_dir")
 control_dir=${SWARMBOTS_RUN_REPEATED_DIR:-$repo_root/.run/run_repeated}
 if [ -z "$stop_file" ]; then
     stop_file=$control_dir/$$.stop
@@ -210,7 +211,7 @@ while [ "$run_index" -le "$runs" ]; do
 
     if (
         export PYTHONPATH=$pythonpath_value
-        cd -- "$script_dir"
+        cd -- "$scripts_root"
         "$python_executable" "$training_script" "$@"
     ); then
         exit_code=0

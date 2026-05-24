@@ -7,7 +7,7 @@ usage() {
 Usage: wait_then_run_repeated.sh REQUIRED_FREE_VRAM SCRIPT_PATH [RUNS] [OPTIONS] [-- SCRIPT_ARGS...]
 
 Wait until the selected GPU has enough free VRAM for a stable period, then call
-scripts/run_repeated.sh.
+scripts/utils/run_repeated.sh.
 
 Arguments:
   REQUIRED_FREE_VRAM  Required free VRAM. Plain numbers are MiB. Supported

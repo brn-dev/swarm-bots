@@ -87,7 +87,7 @@ Keep only durable architecture notes and gotchas. Prefer deleting stale detail o
 - Use `BaseAlgorithm.learn(..., post_iteration_hooks=...)` for one-shot side effects.
 - Logs use `log.csv` with `;` delimiter. Plot tooling reads `.csv`, `.zip`, `.gz`, `.bz2`, `.xz`.
 - Gymnasium vector-info packing adds boolean `_key` masks for every info field. Ignore underscore-prefixed entries in reward overlays.
-- `scripts/run_repeated.sh` registers under `.run/run_repeated`; `scripts/stop_run_repeated.sh` creates the stop token.
+- `scripts/utils/run_repeated.sh` registers under `.run/run_repeated`; `scripts/utils/show_run_repeated.sh` lists active registrations; `scripts/utils/stop_run_repeated.sh` creates the stop token.
 - Activation factories with `ParameterLearnMode.PER_FEATURE` need explicit feature counts; use `make_activation(...)` in generic `act_fn_cls` paths.
 - MAT/NOP `proper_init_1`: hidden/projection/transformer-FF gains `1.0`, output/action/value/prediction heads `0.01`.
 - Plain `SquaredReLU` with default tiny MLP init can collapse MAT/NOP feature scales and critic gradients.
