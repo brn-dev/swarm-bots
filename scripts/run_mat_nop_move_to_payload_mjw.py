@@ -47,6 +47,12 @@ import swarmbots.mjw_env.scenarios.mjw_scenario_presets as mjw_scenario_presets
 
 
 CRITIC_STATE_PREFIXES = ("policy.critic.",)
+OPTIONAL_TRANSFER_STATE_PREFIXES = (
+    *CRITIC_STATE_PREFIXES,
+    "global_pool_encoder.",
+    "global_scalars_predictor.",
+    "global_rot6ds_predictor.",
+)
 
 
 class SequentialRunProgress:
@@ -173,6 +179,7 @@ def build_policy(
     dec_d_model: int,
     transition_model_d_model: int,
 ) -> NextObsPredWrapper:
+    predict_global_obs = bool(obs_indices.global_rot6d_indices)
     mat_policy = MATPolicy(
         env=env,
         config=MATPolicyConfig(
@@ -251,16 +258,23 @@ def build_policy(
             wm_angle_predictor_hidden_dims=[],
             wm_rot6d_predictor_hidden_dims=[],
             wm_binary_predictor_hidden_dims=[],
+            wm_global_pool_hidden_dims=[transition_model_d_model] if predict_global_obs else None,
+            wm_global_scalar_predictor_hidden_dims=[] if predict_global_obs else None,
+            wm_global_rot6d_predictor_hidden_dims=[] if predict_global_obs else None,
             scalar_loss_fn="smooth_l1",
             next_obs_pred_config=NextObsPredConfig(
                 local_scalar_target_indices=obs_indices.local_scalar_indices,
                 local_angle_target_indices=obs_indices.local_angle_indices,
                 local_rot6d_target_indices=obs_indices.local_rot6d_indices,
                 local_binary_target_indices=obs_indices.local_binary_indices,
+                global_scalar_target_indices=obs_indices.global_scalar_indices if predict_global_obs else None,
+                global_rot6d_target_indices=obs_indices.global_rot6d_indices if predict_global_obs else None,
                 scalar_loss_weight=1.0,
                 angle_loss_weight=1.0,
                 rot6d_loss_weight=1.0,
                 binary_loss_weight=1.0,
+                global_scalar_loss_weight=1.0,
+                global_rot6d_loss_weight=1.0,
             ),
         ),
     )
@@ -347,7 +361,7 @@ def load_transfer_checkpoint(
     non_critic_missing_keys = [
         key
         for key in missing_keys
-        if not key.startswith(CRITIC_STATE_PREFIXES)
+        if not key.startswith(OPTIONAL_TRANSFER_STATE_PREFIXES)
     ]
     if unexpected_keys or non_critic_missing_keys:
         raise RuntimeError(
@@ -358,7 +372,7 @@ def load_transfer_checkpoint(
     apply_env_state(env, extract_env_state(checkpoint))
     logger.info(
         f"Loaded transfer checkpoint {checkpoint_path}; "
-        f"transferred {len(transferred_state)} tensors and reset {len(missing_keys)} critic tensors."
+        f"transferred {len(transferred_state)} tensors and initialized {len(missing_keys)} unmatched tensors."
     )
 
 
@@ -620,7 +634,7 @@ def main() -> None:
                 extra_run_metadata={
                     "phase": "payload",
                     "transfer_checkpoint_path": transfer_checkpoint_path,
-                    "reset_transfer_state_prefixes": CRITIC_STATE_PREFIXES,
+                    "reset_transfer_state_prefixes": OPTIONAL_TRANSFER_STATE_PREFIXES,
                     "env_settings": payload_env_settings,
                     "script": Path(__file__).read_text(encoding="utf-8"),
                     "script_scenario_presets": Path(mjw_scenario_presets.__file__).read_text(encoding="utf-8"),

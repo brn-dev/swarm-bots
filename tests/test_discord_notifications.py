@@ -23,6 +23,7 @@ class DiscordNotificationTests(unittest.TestCase):
             error=None,
         )
 
+        self.assertIn("machine: ", message)
         self.assertIn("final_ep_rew_ema: 12.5", message)
         self.assertIn("best_ep_rew_ema: 13", message)
 

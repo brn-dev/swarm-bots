@@ -48,6 +48,7 @@ Keep only durable architecture notes and gotchas. Prefer deleting stale detail o
 - WM wrappers must delegate sampler, temporal-state hooks, and `after_optimizer_step()` to the wrapped policy. Flat WM samplers break RMAT.
 - `SPRWrapper` does not support `RMATPolicy`.
 - WM losses use `wm_actions`, not PPO current-step `actions`; recurrent WM losses use `time_loss_mask`.
+- NOP global-observation prediction is optional. It is enabled by explicit global scalar/rot6d target indices and pools predicted agent latents across active agents before global heads; local-only configs should not allocate or require global NOP heads/tensors.
 - Shared recurrent WM flattening: `swarmbots/learn/algos/world_modeling/wm_recurrent_batch.py`.
 
 ## Scenarios And Swarms
@@ -58,6 +59,7 @@ Keep only durable architecture notes and gotchas. Prefer deleting stale detail o
 - Render overlays are visual-only via `BaseScenario.add_render_geoms(scene)` after `Renderer.update_scene()`; do not use them for physics/model geometry.
 - Payload `global_obs`: `(x, y, z, rot6d)`. Dual-payload: two payload poses. Move-to: absolute goal `(x, y)`.
 - Move-to payload transfer adapters expand goals into payload-shaped global obs for normalization/checkpoint compatibility.
+- Real payload layouts expose `global_rot6d_indices` for NOP global targets; move-to payload adapters intentionally keep global rot6d target indices empty.
 - Shared mirrored scenario kwargs belong in `swarmbots/scenario_presets/scenario_presets_kwargs.py`.
 - Payload presets default to `"box"` to avoid trivial rolling.
 - Wall-pass reward stays normalized by active unit and threshold counts. Optional `wall_pass_reward_skew` changes crossing-rank payout but preserves the all-active-units total. `forward_reward_max_y` must not affect threshold crossing.

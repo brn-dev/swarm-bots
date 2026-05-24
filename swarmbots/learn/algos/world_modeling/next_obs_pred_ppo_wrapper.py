@@ -50,6 +50,9 @@ class NOPWorldModelConfig:
     wm_angle_predictor_hidden_dims: list[int] | None = None
     wm_rot6d_predictor_hidden_dims: list[int] | None = None
     wm_binary_predictor_hidden_dims: list[int] | None = None
+    wm_global_pool_hidden_dims: list[int] | None = None
+    wm_global_scalar_predictor_hidden_dims: list[int] | None = None
+    wm_global_rot6d_predictor_hidden_dims: list[int] | None = None
     wm_pre_transition_init_gain: float = 1.0
     wm_pre_predictors_init_gain: float = 1.0
     wm_predictor_init_gain: float = 0.01
@@ -177,15 +180,19 @@ class NextObsPredWrapper(BasePPOPolicy[PPOWMSamples, PPOWMSamplerConfig], NextOb
             wm_target_time_mask=batch.wm_target_time_mask,
             time_loss_mask=getattr(batch, "time_loss_mask", None),
         )
-        next_obs_pred_loss, nop_loss_metrics = self.compute_next_obs_pred_loss(
-            local_latents=local_latents,
-            next_local_obs=batch.next_local_obs,
-            actions=batch.wm_actions,
-            local_obs=batch.local_obs,
-            agent_mask=batch.wm_agent_mask,
-            loss_agent_mask=batch.wm_loss_agent_mask,
-            time_mask=wm_target_time_mask,
-        )
+        next_obs_pred_kwargs = {
+            "local_latents": local_latents,
+            "next_local_obs": batch.next_local_obs,
+            "actions": batch.wm_actions,
+            "local_obs": batch.local_obs,
+            "agent_mask": batch.wm_agent_mask,
+            "loss_agent_mask": batch.wm_loss_agent_mask,
+            "time_mask": wm_target_time_mask,
+        }
+        if self.has_global_next_obs_pred_targets:
+            next_obs_pred_kwargs["next_global_obs"] = batch.next_global_obs
+            next_obs_pred_kwargs["global_obs"] = batch.global_obs
+        next_obs_pred_loss, nop_loss_metrics = self.compute_next_obs_pred_loss(**next_obs_pred_kwargs)
         world_model_loss_scaled = self.world_model_loss_coef * next_obs_pred_loss
         merged_extra_losses = dict(extra_losses)
         merged_extra_losses["world_model"] = world_model_loss_scaled
@@ -233,6 +240,9 @@ class NextObsPredWrapper(BasePPOPolicy[PPOWMSamples, PPOWMSamplerConfig], NextOb
                     angle_predictor_hidden_dims=self._wm_angle_predictor_hidden_dims,
                     rot6d_predictor_hidden_dims=self._wm_rot6d_predictor_hidden_dims,
                     binary_predictor_hidden_dims=self._wm_binary_predictor_hidden_dims,
+                    global_pool_hidden_dims=self._wm_global_pool_hidden_dims,
+                    global_scalar_predictor_hidden_dims=self._wm_global_scalar_predictor_hidden_dims,
+                    global_rot6d_predictor_hidden_dims=self._wm_global_rot6d_predictor_hidden_dims,
                 ),
                 "wm_pre_transition_init_gain": self._wm_pre_transition_init_gain,
                 "wm_pre_predictors_init_gain": self._wm_pre_predictors_init_gain,
@@ -251,6 +261,9 @@ class NextObsPredWrapper(BasePPOPolicy[PPOWMSamples, PPOWMSamplerConfig], NextOb
                 "wm_local_angles_predictor": self._module_grad_norm(self.local_angles_predictor),
                 "wm_local_rot6ds_predictor": self._module_grad_norm(self.local_rot6ds_predictor),
                 "wm_local_binaries_predictor": self._module_grad_norm(self.local_binaries_predictor),
+                "wm_global_pool_encoder": self._module_grad_norm(self.global_pool_encoder),
+                "wm_global_scalars_predictor": self._module_grad_norm(self.global_scalars_predictor),
+                "wm_global_rot6ds_predictor": self._module_grad_norm(self.global_rot6ds_predictor),
             }
         )
         return grad_norms
@@ -324,6 +337,26 @@ class NextObsPredWrapper(BasePPOPolicy[PPOWMSamples, PPOWMSamplerConfig], NextOb
                 raise ValueError(f"{alias} must be >= 0, got {value}")
             self.binary_loss_weight = value
 
+        global_scalar_weight = self._pop_loss_weight_alias(
+            remaining_weights,
+            aliases=("global_scalar_loss_weight", "global_scalar"),
+        )
+        if global_scalar_weight is not None:
+            alias, value = global_scalar_weight
+            if value < 0:
+                raise ValueError(f"{alias} must be >= 0, got {value}")
+            self.global_scalar_loss_weight = value
+
+        global_rot6d_weight = self._pop_loss_weight_alias(
+            remaining_weights,
+            aliases=("global_rot6d_loss_weight", "global_rot6d"),
+        )
+        if global_rot6d_weight is not None:
+            alias, value = global_rot6d_weight
+            if value < 0:
+                raise ValueError(f"{alias} must be >= 0, got {value}")
+            self.global_rot6d_loss_weight = value
+
         world_model_weight = self._pop_loss_weight_alias(
             remaining_weights,
             aliases=("world_model_loss_coef", "wm_loss_coef"),
@@ -362,6 +395,13 @@ class NextObsPredWrapper(BasePPOPolicy[PPOWMSamples, PPOWMSamplerConfig], NextOb
         )
         self._wm_binary_predictor_hidden_dims = self._copy_optional_list(
             world_model_config.wm_binary_predictor_hidden_dims
+        )
+        self._wm_global_pool_hidden_dims = self._copy_optional_list(world_model_config.wm_global_pool_hidden_dims)
+        self._wm_global_scalar_predictor_hidden_dims = self._copy_optional_list(
+            world_model_config.wm_global_scalar_predictor_hidden_dims
+        )
+        self._wm_global_rot6d_predictor_hidden_dims = self._copy_optional_list(
+            world_model_config.wm_global_rot6d_predictor_hidden_dims
         )
 
         scalar_loss_fn = self._resolve_scalar_loss_fn(world_model_config.scalar_loss_fn)
@@ -437,6 +477,43 @@ class NextObsPredWrapper(BasePPOPolicy[PPOWMSamples, PPOWMSamplerConfig], NextOb
             act_fn_cls=self._wm_act_fn_cls,
             linear_init_gain=world_model_config.wm_predictor_init_gain,
         )
+        has_global_targets = (
+            bool(next_obs_pred_config.global_scalar_target_indices)
+            or bool(next_obs_pred_config.global_rot6d_target_indices)
+        )
+        global_pool_encoder = None
+        global_predictor_input_dim = wm_pre_predictors_dim
+        if has_global_targets and world_model_config.wm_global_pool_hidden_dims:
+            global_pool_encoder = MLP(
+                input_dim=wm_pre_predictors_dim,
+                hidden_dims=[*world_model_config.wm_global_pool_hidden_dims],
+                end_with_act_fn=True,
+                linear_init=make_init_linear_orthogonal(world_model_config.wm_pre_predictors_init_gain),
+                act_fn_cls=self._wm_act_fn_cls,
+            )
+            global_predictor_input_dim = world_model_config.wm_global_pool_hidden_dims[-1]
+        global_scalars_predictor = _build_predictor(
+            input_dim=global_predictor_input_dim,
+            output_dim=(
+                len(next_obs_pred_config.global_scalar_target_indices)
+                if next_obs_pred_config.global_scalar_target_indices is not None
+                else 0
+            ),
+            hidden_dims=world_model_config.wm_global_scalar_predictor_hidden_dims,
+            act_fn_cls=self._wm_act_fn_cls,
+            linear_init_gain=world_model_config.wm_predictor_init_gain,
+        )
+        global_rot6ds_predictor = _build_predictor(
+            input_dim=global_predictor_input_dim,
+            output_dim=(
+                len(next_obs_pred_config.global_rot6d_target_indices) * rot6d_output_multiplier
+                if next_obs_pred_config.global_rot6d_target_indices is not None
+                else 0
+            ),
+            hidden_dims=world_model_config.wm_global_rot6d_predictor_hidden_dims,
+            act_fn_cls=self._wm_act_fn_cls,
+            linear_init_gain=world_model_config.wm_predictor_init_gain,
+        )
 
         transition_model_config = TransformerTransitionModelConfig(
             n_agents=self._wm_n_agents,
@@ -466,6 +543,9 @@ class NextObsPredWrapper(BasePPOPolicy[PPOWMSamples, PPOWMSamplerConfig], NextOb
             local_angles_predictor=local_angles_predictor,
             local_rot6ds_predictor=local_rot6ds_predictor,
             local_binaries_predictor=local_binaries_predictor,
+            global_pool_encoder=global_pool_encoder,
+            global_scalars_predictor=global_scalars_predictor,
+            global_rot6ds_predictor=global_rot6ds_predictor,
         )
         self._apply_optional_compile()
 
@@ -484,6 +564,12 @@ class NextObsPredWrapper(BasePPOPolicy[PPOWMSamples, PPOWMSamplerConfig], NextOb
             self.local_rot6ds_predictor = self._compile_module(self.local_rot6ds_predictor)
         if self.local_binaries_predictor is not None:
             self.local_binaries_predictor = self._compile_module(self.local_binaries_predictor)
+        if self.global_pool_encoder is not None:
+            self.global_pool_encoder = self._compile_module(self.global_pool_encoder)
+        if self.global_scalars_predictor is not None:
+            self.global_scalars_predictor = self._compile_module(self.global_scalars_predictor)
+        if self.global_rot6ds_predictor is not None:
+            self.global_rot6ds_predictor = self._compile_module(self.global_rot6ds_predictor)
         self._compute_next_obs_pred_loss_fn = self._compile_callable(self._compute_next_obs_pred_loss_impl)
 
     def _compile_module(

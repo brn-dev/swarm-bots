@@ -46,6 +46,25 @@ def _global_scalar_indices(scenario_settings: dict[str, Any], global_obs_dim: in
     raise ValueError(f"Unsupported non-empty global_obs layout for obs indices: {global_obs_dim}")
 
 
+def _global_rot6d_indices(scenario_settings: dict[str, Any], global_obs_dim: int) -> list[int]:
+    if global_obs_dim == 0:
+        return []
+    if scenario_settings.get("global_obs_adapter") in (
+        PAYLOAD_GLOBAL_OBS_ADAPTER_NAME,
+        DUAL_PAYLOAD_GLOBAL_OBS_ADAPTER_NAME,
+    ):
+        return []
+    if "payload_shape" not in scenario_settings:
+        return []
+
+    expected_global_obs_dim = 18 if scenario_settings.get("num_payloads") == 2 else 9
+    if global_obs_dim != expected_global_obs_dim:
+        raise ValueError(f"Unexpected payload global_obs_dim for obs indices: {global_obs_dim}")
+    if expected_global_obs_dim == 18:
+        return [3, 12]
+    return [3]
+
+
 def build_obs_indices(
     env_settings: dict[str, Any],
     local_obs_dim: int,
@@ -99,6 +118,7 @@ def build_obs_indices(
             )
 
     global_scalar_indices = _global_scalar_indices(scenario_settings, global_obs_dim)
+    global_rot6d_indices = _global_rot6d_indices(scenario_settings, global_obs_dim)
     global_quaternion_indices = []
 
     # hidden_local_vars are currently used for per-unit binary threshold flags in wall scenarios.
@@ -127,6 +147,7 @@ def build_obs_indices(
         local_binary_indices=local_binary_indices,
         local_quaternion_indices=local_quaternion_indices,
         global_scalar_indices=global_scalar_indices,
+        global_rot6d_indices=global_rot6d_indices,
         global_quaternion_indices=global_quaternion_indices,
         hidden_local_vars_scalar_indices=hidden_local_vars_scalar_indices,
         hidden_local_vars_quaternion_indices=hidden_local_vars_quaternion_indices,
