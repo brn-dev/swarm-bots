@@ -41,6 +41,33 @@ cleanup_stale_control_files() {
     done
 }
 
+print_control_file() {
+    control_file=$1
+
+    pid=$(basename -- "$control_file" .control)
+    stop_file=$(sed -n '1p' "$control_file")
+    training_script=$(sed -n '2p' "$control_file")
+    runs=$(sed -n '3p' "$control_file")
+    started_at=$(sed -n '4p' "$control_file")
+    stop_requested=no
+    if [ -n "$stop_file" ] && [ -f "$stop_file" ]; then
+        stop_requested=yes
+    fi
+
+    printf '  %s' "$pid"
+    if [ -n "$started_at" ]; then
+        printf ' started=%s' "$started_at"
+    fi
+    if [ -n "$runs" ]; then
+        printf ' runs=%s' "$runs"
+    fi
+    printf ' stop_requested=%s' "$stop_requested"
+    if [ -n "$training_script" ]; then
+        printf ' script=%s' "$training_script"
+    fi
+    printf '\n'
+}
+
 request_stop_for_pid() {
     target_pid=$1
     control_file=$control_dir/$target_pid.control
@@ -72,7 +99,7 @@ script_dir=$(
     pwd
 )
 repo_root=$(
-    cd -- "$script_dir/.."
+    cd -- "$script_dir/../.."
     pwd
 )
 control_dir=${SWARMBOTS_RUN_REPEATED_DIR:-$repo_root/.run/run_repeated}
@@ -184,15 +211,6 @@ for control_file in "$control_dir"/*.control; do
         continue
     fi
 
-    training_script=$(sed -n '2p' "$control_file")
-    started_at=$(sed -n '4p' "$control_file")
-    printf '  %s' "$pid" >&2
-    if [ -n "$started_at" ]; then
-        printf ' started=%s' "$started_at" >&2
-    fi
-    if [ -n "$training_script" ]; then
-        printf ' script=%s' "$training_script" >&2
-    fi
-    printf '\n' >&2
+    print_control_file "$control_file" >&2
 done
 exit 1
