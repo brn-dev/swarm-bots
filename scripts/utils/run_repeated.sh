@@ -72,11 +72,22 @@ resolve_training_script_path() {
 
 cleanup_control_file() {
     if [ -n "${active_control_file:-}" ]; then
-        rm -f -- "$active_control_file"
+        rm -f -- "$active_control_file" "$active_control_file.tmp"
     fi
     if [ -n "${stop_file:-}" ]; then
         rm -f -- "$stop_file"
     fi
+}
+
+write_control_file() {
+    {
+        printf '%s\n' "$stop_file"
+        printf '%s\n' "$training_script"
+        printf '%s\n' "$runs"
+        printf '%s\n' "$runner_started_at"
+        printf '%s\n' "$completed_runs"
+    } > "$active_control_file.tmp"
+    mv -f -- "$active_control_file.tmp" "$active_control_file"
 }
 
 if [ $# -eq 0 ]; then
@@ -177,6 +188,7 @@ has_failures=0
 stop_requested=0
 completed_runs=0
 run_index=1
+runner_started_at=$(date '+%Y-%m-%dT%H:%M:%S')
 
 case "$(uname -s 2>/dev/null || printf unknown)" in
     CYGWIN*|MINGW*|MSYS*)
@@ -187,12 +199,7 @@ case "$(uname -s 2>/dev/null || printf unknown)" in
         ;;
 esac
 
-{
-    printf '%s\n' "$stop_file"
-    printf '%s\n' "$training_script"
-    printf '%s\n' "$runs"
-    printf '%s\n' "$(date '+%Y-%m-%dT%H:%M:%S')"
-} > "$active_control_file"
+write_control_file
 trap cleanup_control_file EXIT
 trap 'cleanup_control_file; exit 130' INT
 trap 'cleanup_control_file; exit 143' TERM
@@ -230,6 +237,7 @@ while [ "$run_index" -le "$runs" ]; do
     fi
 
     completed_runs=$run_index
+    write_control_file
 
     if [ -f "$stop_file" ]; then
         stop_requested=1
