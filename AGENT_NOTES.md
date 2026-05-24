@@ -86,6 +86,7 @@ Keep only durable architecture notes and gotchas. Prefer deleting stale detail o
 - Checkpoints include policy state, optional optimizer state, env-wrapper normalization state, and training counters.
 - Use `BaseAlgorithm.learn(..., post_iteration_hooks=...)` for one-shot side effects.
 - Logs use `log.csv` with `;` delimiter. Plot tooling reads `.csv`, `.zip`, `.gz`, `.bz2`, `.xz`.
+- `plot_logs.experiment_results.plot_experiment_results()` supports `extra_plot_selections` for additional subset plots without duplicating experiment-specific plotting code.
 - Gymnasium vector-info packing adds boolean `_key` masks for every info field. Ignore underscore-prefixed entries in reward overlays.
 - `scripts/utils/run_repeated.sh` registers under `.run/run_repeated`; `scripts/utils/show_run_repeated.sh` lists active registrations; `scripts/utils/stop_run_repeated.sh` creates the stop token.
 - Activation factories with `ParameterLearnMode.PER_FEATURE` need explicit feature counts; use `make_activation(...)` in generic `act_fn_cls` paths.
