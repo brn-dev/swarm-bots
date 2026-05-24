@@ -65,6 +65,14 @@ class ExperimentPlotResult:
     output_paths: list[Path]
 
 
+@dataclass(frozen=True, slots=True)
+class ExperimentPlotSelection:
+    name: str
+    group_names: tuple[str, ...]
+    title_suffix: str | None = None
+    required_group_names: tuple[str, ...] = ()
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
@@ -306,6 +314,14 @@ def group_colors(groups: Sequence[ExperimentGroup]) -> dict[str, tuple[float, fl
     }
 
 
+def selected_groups_by_name(
+    groups: Sequence[ExperimentGroup],
+    group_names: Sequence[str],
+) -> list[ExperimentGroup]:
+    groups_by_name = {group.name: group for group in groups}
+    return [groups_by_name[name] for name in group_names if name in groups_by_name]
+
+
 def add_theoretical_maximum_line(axis: Axes, value: float | None) -> Line2D | None:
     if value is None:
         return None
@@ -359,8 +375,11 @@ def plot_individual_ep_rew_ema(
     dpi: int,
     theoretical_maximum: float | None = None,
     run_length_limit: int = DEFAULT_RUN_LENGTH_LIMIT,
+    output_name: str = "ep_rew_ema_individual_runs.png",
+    title: str = "Episode Reward EMA Per Run",
+    colors: dict[str, tuple[float, float, float, float]] | None = None,
 ) -> Path:
-    colors = group_colors(groups)
+    colors = group_colors(groups) if colors is None else colors
     figure, axis = plt.subplots(figsize=(16, 9))
     short_run_threshold = 0.99 * run_length_limit
     for group in groups:
@@ -385,14 +404,14 @@ def plot_individual_ep_rew_ema(
                         zorder=3,
                     )
 
-    axis.set_title("Episode Reward EMA Per Run")
+    axis.set_title(title)
     axis.set_xlabel(x_column)
     axis.set_ylabel(EP_REW_EMA_COLUMN)
     axis.grid(alpha=0.25)
     theoretical_maximum_line = add_theoretical_maximum_line(axis, theoretical_maximum)
     add_group_legend(axis, groups, colors, theoretical_maximum_line=theoretical_maximum_line)
     figure.tight_layout()
-    return save_figure(figure, output_dir / "ep_rew_ema_individual_runs.png", dpi=dpi)
+    return save_figure(figure, output_dir / output_name, dpi=dpi)
 
 
 def finite_interp(x_source: np.ndarray, y_source: np.ndarray, x_target: np.ndarray) -> np.ndarray:
@@ -463,8 +482,11 @@ def plot_group_ep_rew_ema(
     x_column: str,
     dpi: int,
     theoretical_maximum: float | None = None,
+    output_name: str = "ep_rew_ema_grouped.png",
+    title: str = "Episode Reward EMA By Group",
+    colors: dict[str, tuple[float, float, float, float]] | None = None,
 ) -> Path:
-    colors = group_colors(groups)
+    colors = group_colors(groups) if colors is None else colors
     figure, axis = plt.subplots(figsize=(16, 9))
     for group in groups:
         x_values, mean_values, std_values = group_ema_mean_and_std(group.runs)
@@ -482,14 +504,59 @@ def plot_group_ep_rew_ema(
                 linewidth=0,
             )
 
-    axis.set_title("Episode Reward EMA By Group")
+    axis.set_title(title)
     axis.set_xlabel(x_column)
     axis.set_ylabel(EP_REW_EMA_COLUMN)
     axis.grid(alpha=0.25)
     add_theoretical_maximum_line(axis, theoretical_maximum)
     axis.legend(loc="best")
     figure.tight_layout()
-    return save_figure(figure, output_dir / "ep_rew_ema_grouped.png", dpi=dpi)
+    return save_figure(figure, output_dir / output_name, dpi=dpi)
+
+
+def plot_experiment_selection(
+    *,
+    selection: ExperimentPlotSelection,
+    groups: Sequence[ExperimentGroup],
+    output_dir: Path,
+    x_column: str,
+    dpi: int,
+    theoretical_maximum: float | None,
+    run_length_limit: int,
+    colors: dict[str, tuple[float, float, float, float]],
+) -> list[Path]:
+    selected_groups = selected_groups_by_name(groups, selection.group_names)
+    selected_group_names = {group.name for group in selected_groups}
+    if any(group_name not in selected_group_names for group_name in selection.required_group_names):
+        return []
+    if len(selected_groups) < 2:
+        return []
+
+    title_suffix = f" - {selection.title_suffix or selection.name.replace('_', ' ').title()}"
+    output_stem = f"ep_rew_ema_{selection.name}"
+    return [
+        plot_individual_ep_rew_ema(
+            selected_groups,
+            output_dir,
+            x_column=x_column,
+            dpi=dpi,
+            theoretical_maximum=theoretical_maximum,
+            run_length_limit=run_length_limit,
+            output_name=f"{output_stem}_individual_runs.png",
+            title=f"Episode Reward EMA Per Run{title_suffix}",
+            colors=colors,
+        ),
+        plot_group_ep_rew_ema(
+            selected_groups,
+            output_dir,
+            x_column=x_column,
+            dpi=dpi,
+            theoretical_maximum=theoretical_maximum,
+            output_name=f"{output_stem}_grouped.png",
+            title=f"Episode Reward EMA By Group{title_suffix}",
+            colors=colors,
+        ),
+    ]
 
 
 def plot_experiment_results(
@@ -503,6 +570,7 @@ def plot_experiment_results(
     run_length_limit: int = DEFAULT_RUN_LENGTH_LIMIT,
     display_name_overrides: Mapping[str, str] | None = None,
     extra_group_sources: Mapping[str, Sequence[Path]] | None = None,
+    extra_plot_selections: Sequence[ExperimentPlotSelection] | None = None,
 ) -> ExperimentPlotResult:
     groups = load_experiment_groups(
         experiment_run_dir,
@@ -512,6 +580,7 @@ def plot_experiment_results(
         extra_group_sources=extra_group_sources,
     )
     output_dir = output_dir.expanduser().resolve()
+    colors = group_colors(groups)
     output_paths = [
         plot_individual_ep_rew_ema(
             groups,
@@ -520,6 +589,7 @@ def plot_experiment_results(
             dpi=dpi,
             theoretical_maximum=theoretical_maximum,
             run_length_limit=run_length_limit,
+            colors=colors,
         ),
         plot_group_ep_rew_ema(
             groups,
@@ -527,8 +597,23 @@ def plot_experiment_results(
             x_column=x_column,
             dpi=dpi,
             theoretical_maximum=theoretical_maximum,
+            colors=colors,
         ),
     ]
+    if extra_plot_selections is not None:
+        for selection in extra_plot_selections:
+            output_paths.extend(
+                plot_experiment_selection(
+                    selection=selection,
+                    groups=groups,
+                    output_dir=output_dir,
+                    x_column=x_column,
+                    dpi=dpi,
+                    theoretical_maximum=theoretical_maximum,
+                    run_length_limit=run_length_limit,
+                    colors=colors,
+                )
+            )
     return ExperimentPlotResult(groups=groups, output_paths=output_paths)
 
 
