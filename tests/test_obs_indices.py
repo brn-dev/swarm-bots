@@ -73,6 +73,7 @@ class ObsIndicesTests(unittest.TestCase):
         self.assertEqual(obs_indices.local_quaternion_indices, [])
         self.assertEqual(obs_indices.local_binary_indices, [30, 35])
         self.assertEqual(obs_indices.global_scalar_indices, [])
+        self.assertEqual(obs_indices.global_rot6d_indices, [])
         self.assertEqual(obs_indices.hidden_global_vars_scalar_indices, [0])
 
     def test_move_to_goal_global_obs_is_treated_as_scalars(self) -> None:
@@ -91,6 +92,7 @@ class ObsIndicesTests(unittest.TestCase):
         )
 
         self.assertEqual(obs_indices.global_scalar_indices, [0, 1])
+        self.assertEqual(obs_indices.global_rot6d_indices, [])
         self.assertEqual(obs_indices.global_quaternion_indices, [])
 
     def test_payload_global_obs_only_normalizes_position_not_rot6d_orientation(self) -> None:
@@ -109,6 +111,7 @@ class ObsIndicesTests(unittest.TestCase):
         )
 
         self.assertEqual(obs_indices.global_scalar_indices, [0, 1, 2])
+        self.assertEqual(obs_indices.global_rot6d_indices, [3])
         self.assertEqual(obs_indices.global_quaternion_indices, [])
 
     def test_move_to_dual_payload_adapter_normalizes_both_payload_positions(self) -> None:
@@ -127,6 +130,7 @@ class ObsIndicesTests(unittest.TestCase):
         )
 
         self.assertEqual(obs_indices.global_scalar_indices, [0, 1, 2, 9, 10, 11])
+        self.assertEqual(obs_indices.global_rot6d_indices, [])
         self.assertEqual(obs_indices.global_quaternion_indices, [])
 
     def test_dual_payload_global_obs_normalizes_both_payload_positions(self) -> None:
@@ -145,6 +149,7 @@ class ObsIndicesTests(unittest.TestCase):
         )
 
         self.assertEqual(obs_indices.global_scalar_indices, [0, 1, 2, 9, 10, 11])
+        self.assertEqual(obs_indices.global_rot6d_indices, [3, 12])
         self.assertEqual(obs_indices.global_quaternion_indices, [])
 
     def test_unknown_non_empty_global_obs_layout_must_be_added_explicitly(self) -> None:

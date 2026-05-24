@@ -178,6 +178,7 @@ def main() -> None:
     enc_nhead = 4
     dec_nhead = 2
     transition_model_nhead = 4
+    predict_global_obs = bool(obs_indices.global_rot6d_indices)
 
     print("Initializing Policy...")
     mat_policy = MATPolicy(
@@ -260,16 +261,23 @@ def main() -> None:
             wm_angle_predictor_hidden_dims=[],
             wm_rot6d_predictor_hidden_dims=[],
             wm_binary_predictor_hidden_dims=[],
+            wm_global_pool_hidden_dims=[transition_model_d_model] if predict_global_obs else None,
+            wm_global_scalar_predictor_hidden_dims=[] if predict_global_obs else None,
+            wm_global_rot6d_predictor_hidden_dims=[] if predict_global_obs else None,
             scalar_loss_fn="smooth_l1",
             next_obs_pred_config=NextObsPredConfig(
                 local_scalar_target_indices=obs_indices.local_scalar_indices,
                 local_angle_target_indices=obs_indices.local_angle_indices,
                 local_rot6d_target_indices=obs_indices.local_rot6d_indices,
                 local_binary_target_indices=obs_indices.local_binary_indices,
+                global_scalar_target_indices=obs_indices.global_scalar_indices if predict_global_obs else None,
+                global_rot6d_target_indices=obs_indices.global_rot6d_indices if predict_global_obs else None,
                 scalar_loss_weight=1.0,
                 angle_loss_weight=1.0,
                 rot6d_loss_weight=1.0,
                 binary_loss_weight=1.0,
+                global_scalar_loss_weight=1.0,
+                global_rot6d_loss_weight=1.0,
             ),
         ),
     )

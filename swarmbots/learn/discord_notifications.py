@@ -3,6 +3,7 @@ from __future__ import annotations
 import contextvars
 import json
 import os
+import socket
 import threading
 import urllib.error
 import urllib.request
@@ -135,6 +136,7 @@ def notify_mjw_nefc_overflow_once(
 
     lines = [
         f"MJW warning: nefc overflow - please increase njmax to {required_njmax}",
+        f"machine: {_get_machine_name()}",
         f"run: {run_name or 'unknown'}",
         f"scenario: {scenario_name}",
         f"current caps: nconmax={nconmax}, njmax={njmax}, num_envs={num_envs}",
@@ -158,6 +160,10 @@ def _get_run_status(
     return "finished"
 
 
+def _get_machine_name() -> str:
+    return socket.gethostname()
+
+
 def _format_training_run_finished_message(
         *,
         run_name: str,
@@ -169,6 +175,7 @@ def _format_training_run_finished_message(
 ) -> str:
     lines = [
         f"{run_name} {status}",
+        f"machine: {_get_machine_name()}",
         # f"run_dir: {Path(run_dir).as_posix()}",
         f"timesteps: {algorithm.n_total_timesteps:,} / {total_timesteps:,}",
 #         f"iterations: {algorithm.n_total_iterations:,}",
