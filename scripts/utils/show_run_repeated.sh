@@ -47,6 +47,7 @@ print_control_file() {
     training_script=$(sed -n '2p' "$control_file")
     runs=$(sed -n '3p' "$control_file")
     started_at=$(sed -n '4p' "$control_file")
+    completed_runs=$(sed -n '5p' "$control_file")
     stop_requested=no
     if [ -n "$stop_file" ] && [ -f "$stop_file" ]; then
         stop_requested=yes
@@ -58,6 +59,11 @@ print_control_file() {
     fi
     if [ -n "$runs" ]; then
         printf ' runs=%s' "$runs"
+        if [ -n "$completed_runs" ]; then
+            printf ' completed=%s/%s' "$completed_runs" "$runs"
+        else
+            printf ' completed=?/%s' "$runs"
+        fi
     fi
     printf ' stop_requested=%s' "$stop_requested"
     if [ -n "$training_script" ]; then
