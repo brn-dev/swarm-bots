@@ -12,7 +12,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from swarmbots.learn.discord_notifications import DISCORD_WEBHOOK_ENV_VAR, send_discord_message
+from swarmbots.learn.discord_notifications import DISCORD_WEBHOOK_ENV_VAR, send_discord_message, _get_machine_name
 
 
 def parse_args() -> argparse.Namespace:
@@ -34,7 +34,7 @@ def default_message() -> str:
     timestamp = datetime.now().astimezone().isoformat(timespec="seconds")
     return "\n".join([
         "swarm-bots Discord notification test",
-        f"machine: {socket.gethostname()}",
+        f"machine: {_get_machine_name()}",
         f"time: {timestamp}",
     ])
 
