@@ -1,7 +1,9 @@
 import gzip
+import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import torch
 from loguru import logger
@@ -138,6 +140,34 @@ class MetricsLoggerTests(unittest.TestCase):
 
             self.assertTrue((run_dir / "log.csv").exists())
             self.assertFalse((run_dir / "log.csv.gz").exists())
+
+    def test_run_metadata_includes_machine_specs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            run_dir = Path(tmp_dir)
+            algo = _DummyAlgorithm(policy=_DummyPolicy(), env=_DummyEnv(), learning_rate=1e-3)
+            machine_specs = {
+                "machine_name": "test-machine",
+                "cpu": {"name": "test-cpu"},
+                "memory": {"total_bytes": 123},
+                "gpus": [{"index": 0, "name": "test-gpu"}],
+            }
+
+            with mock.patch(
+                    "swarmbots.learn.algos.base_algorithm.collect_machine_specs",
+                    return_value=machine_specs,
+            ):
+                algo.learn(
+                    max_total_timesteps=1,
+                    run_dir=run_dir,
+                    save_optimizer=False,
+                    compress_metrics_log_on_exit=False,
+                    enable_command_prompt=False,
+                )
+
+            metadata_path = run_dir / "run_metadata_0.json"
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+
+            self.assertEqual(metadata["machine_specs"], machine_specs)
 
     def test_learn_compresses_csv_when_compression_flag_is_enabled(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
