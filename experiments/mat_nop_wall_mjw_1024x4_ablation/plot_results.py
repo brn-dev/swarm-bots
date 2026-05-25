@@ -78,6 +78,7 @@ VARIANT_FAMILY_SELECTIONS = (
         ),
         title_suffix="Action Distribution Variants",
         required_group_names=(BASELINE_GROUP,),
+        output_subdir="selections",
     ),
     ExperimentPlotSelection(
         name="lr_beta_ablation_variants",
@@ -91,6 +92,7 @@ VARIANT_FAMILY_SELECTIONS = (
         ),
         title_suffix="L/R Beta Ablation Variants",
         required_group_names=(BASELINE_GROUP,),
+        output_subdir="selections",
     ),
     ExperimentPlotSelection(
         name="shuffle_variants",
@@ -101,6 +103,7 @@ VARIANT_FAMILY_SELECTIONS = (
         ),
         title_suffix="Shuffle Variants",
         required_group_names=(BASELINE_GROUP,),
+        output_subdir="selections",
     ),
     ExperimentPlotSelection(
         name="nop_ablation",
@@ -110,6 +113,7 @@ VARIANT_FAMILY_SELECTIONS = (
         ),
         title_suffix="NOP Ablation",
         required_group_names=(BASELINE_GROUP,),
+        output_subdir="selections",
     ),
     ExperimentPlotSelection(
         name="initialization_variants",
@@ -123,6 +127,7 @@ VARIANT_FAMILY_SELECTIONS = (
         ),
         title_suffix="Initialization Variants",
         required_group_names=(BASELINE_GROUP,),
+        output_subdir="selections",
     ),
     ExperimentPlotSelection(
         name="context_agent_embedding_variants",
@@ -134,6 +139,7 @@ VARIANT_FAMILY_SELECTIONS = (
         ),
         title_suffix="Context-Only And Agent Embedding Variants",
         required_group_names=(BASELINE_GROUP,),
+        output_subdir="selections",
     ),
 )
 EXTRA_PLOT_SELECTIONS = tuple(
@@ -145,6 +151,7 @@ EXTRA_PLOT_SELECTIONS = tuple(
             f"{DISPLAY_NAME_OVERRIDES.get(variant_group, variant_group)}"
         ),
         required_group_names=(BASELINE_GROUP,),
+        output_subdir="pairwise",
     )
     for variant_group in PAIRWISE_VARIANT_GROUPS
 ) + VARIANT_FAMILY_SELECTIONS

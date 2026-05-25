@@ -71,6 +71,7 @@ class ExperimentPlotSelection:
     group_names: tuple[str, ...]
     title_suffix: str | None = None
     required_group_names: tuple[str, ...] = ()
+    output_subdir: str | None = None
 
 
 def parse_args() -> argparse.Namespace:
@@ -532,12 +533,16 @@ def plot_experiment_selection(
     if len(selected_groups) < 2:
         return []
 
+    selection_output_dir = output_dir
+    if selection.output_subdir is not None:
+        selection_output_dir /= selection.output_subdir
+
     title_suffix = f" - {selection.title_suffix or selection.name.replace('_', ' ').title()}"
     output_stem = f"ep_rew_ema_{selection.name}"
     return [
         plot_individual_ep_rew_ema(
             selected_groups,
-            output_dir,
+            selection_output_dir,
             x_column=x_column,
             dpi=dpi,
             theoretical_maximum=theoretical_maximum,
@@ -548,7 +553,7 @@ def plot_experiment_selection(
         ),
         plot_group_ep_rew_ema(
             selected_groups,
-            output_dir,
+            selection_output_dir,
             x_column=x_column,
             dpi=dpi,
             theoretical_maximum=theoretical_maximum,
