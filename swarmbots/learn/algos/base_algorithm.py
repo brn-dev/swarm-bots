@@ -27,6 +27,7 @@ from swarmbots.learn.exponential_moving_average import ExponentialMovingAverage,
 from swarmbots.learn.metrics_logger import MetricsLogger
 from swarmbots.learn.performance_timer import PerformanceTimer
 from swarmbots.learn.recording import record_policy
+from swarmbots.utils.machine_specs import collect_machine_specs
 
 
 
@@ -152,7 +153,10 @@ class BaseAlgorithm(abc.ABC):
 
         wandb_config: dict[str, Any] | None = None
         if wandb_project is not None:
-            wandb_config = {"hyper_parameters": self.get_hyper_parameters()}
+            wandb_config = {
+                "hyper_parameters": self.get_hyper_parameters(),
+                "machine_specs": collect_machine_specs(),
+            }
             if extra_run_metadata:
                 wandb_config["extra_run_metadata"] = json.loads(json.dumps(extra_run_metadata, default=str))
             if run_dir is not None:
@@ -300,6 +304,7 @@ class BaseAlgorithm(abc.ABC):
         }
         if extra_run_metadata:
             metadata.update(extra_run_metadata)
+        metadata["machine_specs"] = collect_machine_specs()
         metadata["iterations"] = self.n_total_iterations
         metadata["updates"] = self.n_total_updates
         metadata["timesteps"] = self.n_total_timesteps

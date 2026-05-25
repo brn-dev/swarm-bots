@@ -83,6 +83,7 @@ Keep only durable architecture notes and gotchas. Prefer deleting stale detail o
 ## Runtime
 
 - Runtime hyperparameters are live attributes. Mutating config dataclasses after init does nothing.
+- Run metadata includes cached machine specs from `swarmbots.utils.machine_specs`; keep hardware/run-environment additions centralized there.
 - Checkpoints include policy state, optional optimizer state, env-wrapper normalization state, and training counters.
 - Use `BaseAlgorithm.learn(..., post_iteration_hooks=...)` for one-shot side effects.
 - Logs use `log.csv` with `;` delimiter. Plot tooling reads `.csv`, `.zip`, `.gz`, `.bz2`, `.xz`.
