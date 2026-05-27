@@ -3,9 +3,12 @@ from __future__ import annotations
 import math
 from collections.abc import Mapping
 from copy import deepcopy
+from typing import Literal
 
 from swarmbots.mj_env.float_or_dist_params import UniformDistParams
 from swarmbots.scenario_presets.move_to_goal_config import RelativePolarGoalConfig
+
+Difficulty = Literal['easy', 'medium', 'hard']
 
 COMMON_SCENARIO_KWARGS: dict[str, object] = {
     "timestep": 0.003,
@@ -46,6 +49,38 @@ WALL_SCENARIO_KWARGS: dict[str, object] = {
     "wall_pass_thresholds": [-0.1, 0.1, 0.3, 0.5],
 }
 
+WALL_DIFFICULTY_UPDATES: dict[Difficulty, dict[str, object]] = {
+    "easy": {
+        "wall_height": 0.25,
+    },
+    "medium": {
+        "wall_height": 0.5,
+    },
+    "hard": {
+        "wall_height": 1.0,
+    },
+}
+
+
+def wall_scenario_difficulty_update(difficulty: Difficulty | None) -> dict[str, object]:
+    if difficulty is None:
+        return {}
+    if difficulty in WALL_DIFFICULTY_UPDATES:
+        return WALL_DIFFICULTY_UPDATES[difficulty].copy()
+    raise ValueError(f'Unknown difficulty "{difficulty}"')
+
+
+def wall_scenario_kwargs_with_difficulty(difficulty: Difficulty | None) -> dict[str, object]:
+    kwargs = WALL_SCENARIO_KWARGS.copy()
+    kwargs.update(wall_scenario_difficulty_update(difficulty))
+    return kwargs
+
+
+EASY_WALL_SCENARIO_KWARGS = wall_scenario_kwargs_with_difficulty("easy")
+MEDIUM_WALL_SCENARIO_KWARGS = wall_scenario_kwargs_with_difficulty("medium")
+HARD_WALL_SCENARIO_KWARGS = wall_scenario_kwargs_with_difficulty("hard")
+
+
 BRIDGE_SCENARIO_KWARGS: dict[str, object] = {
     "street_width": 6.0,
     "bridge_width": 1.0,
@@ -65,7 +100,7 @@ CLIMB_SCENARIO_KWARGS: dict[str, object] = {
     "swarm_start_y": 0.0,
     "cuboid_size_x": 3.0,
     "cuboid_size_y": 3.0,
-    "cuboid_size_z": 0.5,
+    "cuboid_size_z": 0.3,
     "cuboid_center_x": 0.0,
     "cuboid_center_y": 3.5,
     "horizontal_goal_radius": 0.3,

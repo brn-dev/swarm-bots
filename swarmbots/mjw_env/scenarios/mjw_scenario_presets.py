@@ -23,15 +23,23 @@ from swarmbots.scenario_presets.scenario_presets_kwargs import (
     BRIDGE_SCENARIO_KWARGS as SHARED_BRIDGE_SCENARIO_KWARGS,
     CLIMB_SCENARIO_KWARGS as SHARED_CLIMB_SCENARIO_KWARGS,
     COMMON_SCENARIO_KWARGS,
+    Difficulty,
     DUAL_PAYLOAD_PLANE_SCENARIO_KWARGS as SHARED_DUAL_PAYLOAD_PLANE_SCENARIO_KWARGS,
+    EASY_WALL_SCENARIO_KWARGS as SHARED_EASY_WALL_SCENARIO_KWARGS,
+    HARD_WALL_SCENARIO_KWARGS as SHARED_HARD_WALL_SCENARIO_KWARGS,
+    MEDIUM_WALL_SCENARIO_KWARGS as SHARED_MEDIUM_WALL_SCENARIO_KWARGS,
     MOVE_TO_SCENARIO_KWARGS as SHARED_MOVE_TO_SCENARIO_KWARGS,
     PAYLOAD_PLANE_SCENARIO_KWARGS as SHARED_PAYLOAD_PLANE_SCENARIO_KWARGS,
     WALL_SCENARIO_KWARGS as SHARED_WALL_SCENARIO_KWARGS,
     make_scenario_kwargs,
+    wall_scenario_kwargs_with_difficulty,
 )
 
 DEFAULT_KWARGS = make_scenario_kwargs(COMMON_SCENARIO_KWARGS)
 WALL_SCENARIO_KWARGS = make_scenario_kwargs(SHARED_WALL_SCENARIO_KWARGS)
+EASY_WALL_SCENARIO_KWARGS = make_scenario_kwargs(SHARED_EASY_WALL_SCENARIO_KWARGS)
+MEDIUM_WALL_SCENARIO_KWARGS = make_scenario_kwargs(SHARED_MEDIUM_WALL_SCENARIO_KWARGS)
+HARD_WALL_SCENARIO_KWARGS = make_scenario_kwargs(SHARED_HARD_WALL_SCENARIO_KWARGS)
 BRIDGE_SCENARIO_KWARGS = make_scenario_kwargs(SHARED_BRIDGE_SCENARIO_KWARGS)
 CLIMB_SCENARIO_KWARGS = make_scenario_kwargs(SHARED_CLIMB_SCENARIO_KWARGS)
 PAYLOAD_PLANE_SCENARIO_KWARGS = make_scenario_kwargs(SHARED_PAYLOAD_PLANE_SCENARIO_KWARGS)
@@ -113,9 +121,10 @@ def default_wall(
     unit_start_locations: MJWPreConnectedUnitLocationsConfig | None = None,
     quantize_connection_twist: int = 8,
     joints: str = "zx",
+    difficulty: Difficulty | None = None,
     **kwargs: object,
 ) -> MJWObstacleStreetScenario:
-    scenario_kwargs = make_scenario_kwargs(DEFAULT_KWARGS, WALL_SCENARIO_KWARGS)
+    scenario_kwargs = make_scenario_kwargs(DEFAULT_KWARGS, wall_scenario_kwargs_with_difficulty(difficulty))
     scenario_kwargs.update(
         {
             "compile_reward_kernel": should_compile_reward_kernel_by_default(),
@@ -133,6 +142,18 @@ def default_wall(
         seed=seed,
         **scenario_kwargs,
     )
+
+
+def easy_wall(**kwargs: object) -> MJWObstacleStreetScenario:
+    return default_wall(difficulty="easy", **kwargs)
+
+
+def medium_wall(**kwargs: object) -> MJWObstacleStreetScenario:
+    return default_wall(difficulty="medium", **kwargs)
+
+
+def hard_wall(**kwargs: object) -> MJWObstacleStreetScenario:
+    return default_wall(difficulty="hard", **kwargs)
 
 
 def default_bridge(
