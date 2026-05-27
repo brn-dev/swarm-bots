@@ -59,6 +59,23 @@ BRIDGE_SCENARIO_KWARGS: dict[str, object] = {
     "fell_off_bridge_reward": -2.0,
 }
 
+CLIMB_SCENARIO_KWARGS: dict[str, object] = {
+    "plane_size": 100.0,
+    "swarm_start_x": 0.0,
+    "swarm_start_y": 0.0,
+    "cuboid_size_x": 3.0,
+    "cuboid_size_y": 3.0,
+    "cuboid_size_z": 0.5,
+    "cuboid_center_x": 0.0,
+    "cuboid_center_y": 3.5,
+    "horizontal_goal_radius": 0.3,
+    "height_goal_radius": 0.1,
+    "goal_height_offset": None,
+    "horizontal_reward_weight": 10.0,
+    "height_reward_weight": 10.0,
+    "visualize_goal": True,
+}
+
 PAYLOAD_PLANE_SCENARIO_KWARGS: dict[str, object] = {
     "plane_size": 100.0,
     "swarm_start_x": 0.0,

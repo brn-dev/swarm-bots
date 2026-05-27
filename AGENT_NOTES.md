@@ -58,6 +58,7 @@ Keep only durable architecture notes and gotchas. Prefer deleting stale detail o
 - Scenarios own reset baselines and per-step progress deltas; no generic `BaseScenario.compute_progress(...)`.
 - Render overlays are visual-only via `BaseScenario.add_render_geoms(scene)` after `Renderer.update_scene()`; do not use them for physics/model geometry.
 - Payload `global_obs`: `(x, y, z, rot6d)`. Dual-payload: two payload poses. Move-to: absolute goal `(x, y)`.
+- Climb `global_obs`: top-face center goal `(x, y, z)` for a static cuboid obstacle; z defaults to cuboid top plus `swarm.max_unit_extent / 2`, reward terms split into horizontal `(x, y)` goal-distance progress and `height`, with separate horizontal/height goal radii.
 - Move-to payload transfer adapters expand goals into payload-shaped global obs for normalization/checkpoint compatibility.
 - Real payload layouts expose `global_rot6d_indices` for NOP global targets; move-to payload adapters intentionally keep global rot6d target indices empty.
 - Shared mirrored scenario kwargs belong in `swarmbots/scenario_presets/scenario_presets_kwargs.py`.
