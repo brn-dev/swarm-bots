@@ -1,0 +1,1 @@
+CLIMB_GOAL_XYZ_GLOBAL_OBS_LAYOUT = "climb_goal_xyz"

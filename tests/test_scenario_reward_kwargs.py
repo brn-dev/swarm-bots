@@ -4,6 +4,7 @@ from swarmbots.mj_env.scenarios import scenario_presets
 from swarmbots.mjw_env.scenarios import mjw_scenario_presets
 from swarmbots.scenario_presets.scenario_presets_kwargs import (
     BRIDGE_SCENARIO_KWARGS,
+    CLIMB_SCENARIO_KWARGS,
     COMMON_SCENARIO_KWARGS,
     MOVE_TO_SCENARIO_KWARGS,
     PAYLOAD_PLANE_SCENARIO_KWARGS,
@@ -27,6 +28,11 @@ def test_mj_and_mjw_wall_scenario_kwargs_use_shared_defaults() -> None:
 def test_mj_and_mjw_bridge_scenario_kwargs_use_shared_defaults() -> None:
     assert scenario_presets.BRIDGE_SCENARIO_KWARGS == BRIDGE_SCENARIO_KWARGS
     assert mjw_scenario_presets.BRIDGE_SCENARIO_KWARGS == BRIDGE_SCENARIO_KWARGS
+
+
+def test_mj_and_mjw_climb_scenario_kwargs_use_shared_defaults() -> None:
+    assert scenario_presets.CLIMB_SCENARIO_KWARGS == CLIMB_SCENARIO_KWARGS
+    assert mjw_scenario_presets.CLIMB_SCENARIO_KWARGS == CLIMB_SCENARIO_KWARGS
 
 
 def test_mj_and_mjw_payload_scenario_kwargs_use_shared_defaults() -> None:
