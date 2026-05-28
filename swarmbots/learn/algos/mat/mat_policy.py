@@ -172,18 +172,9 @@ class MATPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
             else nn.Identity()
         )
 
-        decoder_config = replace(
-            config.decoder_config,
-            d_model=self.d_model_decoder,
-            act_fn_cls=config.act_fn_cls,
-            dropout=config.dropout,
-        )
+        decoder_config = self._build_decoder_config()
         self.decoder_config = decoder_config
-        self.decoder = MATDecoder(
-            config=decoder_config,
-            max_agents=self.max_agents,
-            memory_d_model=self.memory_d_model,
-        )
+        self.decoder = self._build_decoder(decoder_config)
 
         if (
             config.decoder_config.actor_head_hidden_dims is not None
@@ -247,6 +238,24 @@ class MATPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
             max_agents=self.max_agents,
             local_obs_dim=self.local_obs_dim,
             global_obs_dim=self.global_obs_dim,
+        )
+
+    def _build_decoder_config(self) -> MATDecoderConfig:
+        return replace(
+            self.config.decoder_config,
+            d_model=self.d_model_decoder,
+            act_fn_cls=self.config.act_fn_cls,
+            dropout=self.config.dropout,
+        )
+
+    def _build_decoder(
+            self,
+            decoder_config: MATDecoderConfig,
+    ) -> nn.Module:
+        return MATDecoder(
+            config=decoder_config,
+            max_agents=self.max_agents,
+            memory_d_model=self.memory_d_model,
         )
 
     def _build_action_dist(
