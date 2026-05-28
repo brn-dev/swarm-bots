@@ -7,7 +7,7 @@ from pathlib import Path
 import torch
 from loguru import logger
 
-from run_mat_nop_move_to_dual_payload_mjw import (
+from run_mat_qcs_nop_move_to_dual_payload_mjw import (
     build_phase,
     configure_float32_matmul_precision,
     logging_console_keys,
@@ -33,7 +33,7 @@ def main() -> None:
     configure_float32_matmul_precision()
 
     if not torch.cuda.is_available():
-        raise RuntimeError("run_mat_nop_dual_payload_mjw.py requires CUDA.")
+        raise RuntimeError("run_mat_qcs_nop_dual_payload_mjw.py requires CUDA.")
 
     n_envs = 1024
     rollout_steps_per_env = 4
@@ -67,7 +67,7 @@ def main() -> None:
             raise ValueError(f"load_path must point to a .pt checkpoint, got {load_path!r}")
         run_id = get_run_id_from_checkpoint_path(load_path)
 
-    run_dir = make_run_dir("mat_nop_swarm_bots_dual_payload_mjw", run_id)
+    run_dir = make_run_dir("mat_qcs_nop_swarm_bots_dual_payload_mjw", run_id)
     first_episode_lengths = [int((i + 1) * episode_length / n_envs) for i in range(n_envs)]
 
     env, env_settings, ppo, actuators_per_limb = build_phase(
@@ -108,7 +108,7 @@ def main() -> None:
 
     try:
         run_with_discord_notification(
-            run_name=f"mat_nop_dual_payload_mjw/{run_id}",
+            run_name=f"mat_qcs_nop_dual_payload_mjw/{run_id}",
             run_dir=run_dir,
             total_timesteps=total_timesteps,
             algorithm=ppo,

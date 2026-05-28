@@ -14,7 +14,7 @@ from swarmbots.learn.action_dists.hybrid_action_dist import (
     continuous_config_to_dicts,
 )
 from swarmbots.learn.algos.mat.mat_encoder import MATEncoder, MATEncoderConfig
-from swarmbots.learn.algos.mat.mat_policy import MATCriticConfig, _ensure_torch_compile_available
+from swarmbots.learn.algos.mat_qcs.mat_qcs_policy import MATQCSCriticConfig, _ensure_torch_compile_available
 from swarmbots.learn.algos.ppo.base_ppo_policy import BasePPOPolicy
 from swarmbots.learn.algos.ppo.ppo_rollout_buffer import PPOEpisodeSegment
 from swarmbots.learn.algos.ppo.ppo_sampler import PPOSamples, PPOSampler, PPOSamplerConfig
@@ -30,7 +30,7 @@ from swarmbots.learn.serialization_utils import serialize_dataclass, serialize_v
 @dataclass(frozen=True)
 class MATDecPolicyConfig:
     encoder_config: MATEncoderConfig = field(default_factory=MATEncoderConfig)
-    critic_config: MATCriticConfig = field(default_factory=MATCriticConfig)
+    critic_config: MATQCSCriticConfig = field(default_factory=MATQCSCriticConfig)
     actor_head_hidden_dims: list[int] | None = None
     act_fn_cls: ActivationFactory = nn.ReLU
     dropout: float = 0.0

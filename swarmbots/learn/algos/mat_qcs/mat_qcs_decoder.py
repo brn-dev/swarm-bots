@@ -9,7 +9,7 @@ from swarmbots.learn.nn_components.activations import ActivationFactory, make_ac
 from swarmbots.learn.nn_components.nn_init import reinitialize_transformer_stack
 
 
-class MATDecoderSelfAttentionMode(Enum):
+class MATQCSDecoderSelfAttentionMode(Enum):
     FULL_AUTOREGRESSIVE = 1
     PREVIOUS_AGENTS = 2  # c_i can not attend to q_i, only to q_<i and c_<i
     CONTEXT_TOKENS_ONLY = 3  # only context tokens can be attended to
@@ -17,7 +17,7 @@ class MATDecoderSelfAttentionMode(Enum):
 
 
 @dataclass(frozen=True)
-class MATDecoderConfig:
+class MATQCSDecoderConfig:
     d_model: int | None = None
     nhead: int = 4
     num_layers: int = 2
@@ -36,7 +36,7 @@ class MATDecoderConfig:
     context_encoder_hidden_dims: list[int] | None = None
     memory_dims: list[int] | None = None
     actor_head_hidden_dims: list[int] | None = None
-    self_attention_mode: MATDecoderSelfAttentionMode = MATDecoderSelfAttentionMode.FULL_AUTOREGRESSIVE
+    self_attention_mode: MATQCSDecoderSelfAttentionMode = MATQCSDecoderSelfAttentionMode.FULL_AUTOREGRESSIVE
     normalize_query_input: bool = False
     normalize_context_input: bool = False
     normalize_memory_input: bool = False
@@ -47,18 +47,18 @@ class MATDecoderConfig:
     assume_agent_mask_is_active_prefix: bool = True
 
 
-class MATDecoder(nn.Module):
+class MATQCSDecoder(nn.Module):
 
     def __init__(
             self,
-            config: MATDecoderConfig,
+            config: MATQCSDecoderConfig,
             *,
             max_agents: int,
             memory_d_model: int,
     ) -> None:
         super().__init__()
         if config.d_model is None:
-            raise ValueError("MATDecoderConfig.d_model must be set before constructing MATDecoder")
+            raise ValueError("MATQCSDecoderConfig.d_model must be set before constructing MATQCSDecoder")
         self.max_agents = max_agents
         self.d_model = config.d_model
         self.memory_d_model = memory_d_model
@@ -96,7 +96,7 @@ class MATDecoder(nn.Module):
             ),
         )
         self.parallel_attention_mask_is_causal = (
-            config.self_attention_mode is MATDecoderSelfAttentionMode.FULL_AUTOREGRESSIVE
+            config.self_attention_mode is MATQCSDecoderSelfAttentionMode.FULL_AUTOREGRESSIVE
         )
         causal_mask = torch.triu(
             torch.ones(self.max_agents + 1, self.max_agents + 1, dtype=torch.bool),
@@ -108,9 +108,9 @@ class MATDecoder(nn.Module):
     def _build_parallel_attention_mask(
             *,
             max_agents: int,
-            self_attention_mode: MATDecoderSelfAttentionMode,
+            self_attention_mode: MATQCSDecoderSelfAttentionMode,
     ) -> torch.Tensor:
-        if self_attention_mode is MATDecoderSelfAttentionMode.FULL_AUTOREGRESSIVE:
+        if self_attention_mode is MATQCSDecoderSelfAttentionMode.FULL_AUTOREGRESSIVE:
             seq_len = max_agents * 2
             return torch.triu(torch.ones(seq_len, seq_len, dtype=torch.bool), diagonal=1)
 
@@ -129,16 +129,16 @@ class MATDecoder(nn.Module):
             attention_mask[query_idx, past_contexts] = False
             attention_mask[context_idx, past_contexts] = False
 
-            if self_attention_mode is MATDecoderSelfAttentionMode.CONTEXT_TOKENS_ONLY:
+            if self_attention_mode is MATQCSDecoderSelfAttentionMode.CONTEXT_TOKENS_ONLY:
                 continue
-            if self_attention_mode is MATDecoderSelfAttentionMode.PREVIOUS_AGENTS:
+            if self_attention_mode is MATQCSDecoderSelfAttentionMode.PREVIOUS_AGENTS:
                 past_queries = torch.arange(0, query_idx, 2)
                 attention_mask[query_idx, past_queries] = False
                 attention_mask[context_idx, past_queries] = False
                 continue
             raise ValueError(f"Unsupported self_attention_mode: {self_attention_mode}")
 
-        if self_attention_mode is MATDecoderSelfAttentionMode.PREVIOUS_AGENTS:
+        if self_attention_mode is MATQCSDecoderSelfAttentionMode.PREVIOUS_AGENTS:
             context_rows = torch.arange(1, seq_len, 2)
             same_agent_query_cols = context_rows - 1
             attention_mask[context_rows, same_agent_query_cols] = True
@@ -207,7 +207,7 @@ class MATDecoder(nn.Module):
                 f"Expected memory_tokens second dim <= {self.max_agents}, got {memory_tokens.shape[1]}"
             )
 
-        use_interleaved_prefix = self.self_attention_mode is not MATDecoderSelfAttentionMode.CONTEXT_TOKENS_ONLY
+        use_interleaved_prefix = self.self_attention_mode is not MATQCSDecoderSelfAttentionMode.CONTEXT_TOKENS_ONLY
         if use_interleaved_prefix:
             if query_prefix_tokens is None:
                 raise ValueError(

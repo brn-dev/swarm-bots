@@ -29,7 +29,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--gamma", type=float, default=0.99)
     parser.add_argument("--camera", type=int, default=0)
     parser.add_argument("--video-folder", type=str, default="videos")
-    parser.add_argument("--video-prefix", type=str, default="mat_nop_wall_actuators_one")
+    parser.add_argument("--video-prefix", type=str, default="mat_qcs_nop_wall_actuators_one")
     parser.add_argument("--actuator-value", type=float, default=0.75)
     parser.add_argument("--connector-value", type=int, choices=(0, 1), default=1)
     parser.add_argument("--first-wall-distance", type=float, default=2.0)

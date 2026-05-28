@@ -25,7 +25,7 @@ from swarmbots.learn.algos.world_modeling.wm_sampler_helper import (
 from swarmbots.learn.torch_logging import enable_torch_compile_logging
 
 
-# Defaults aligned with scripts/run_mat_nop_wall_mjw.py.
+# Defaults aligned with scripts/run_mat_qcs_nop_wall_mjw.py.
 DEFAULT_DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 DEFAULT_NUM_LENGTH_BUCKETS = 4
 DEFAULT_TOTAL_EPISODES = 1024

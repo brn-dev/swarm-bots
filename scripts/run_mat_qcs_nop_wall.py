@@ -135,9 +135,9 @@ def main() -> None:
     from swarmbots.learn.action_dists.bernoulli_action_dist import BernoulliConfig
     from swarmbots.learn.action_dists.entropy_utils import EntropyLossConfig, AgentActionsReduction
     from swarmbots.learn.action_dists.left_right_beta_action_dist import LeftRightBetaConfig
-    from swarmbots.learn.algos.mat.mat_decoder import MATDecoderConfig, MATDecoderSelfAttentionMode
+    from swarmbots.learn.algos.mat_qcs.mat_qcs_decoder import MATQCSDecoderConfig, MATQCSDecoderSelfAttentionMode
     from swarmbots.learn.algos.mat.mat_encoder import MATEncoderConfig
-    from swarmbots.learn.algos.mat.mat_policy import MATCriticConfig, MATPolicy, MATPolicyConfig
+    from swarmbots.learn.algos.mat_qcs.mat_qcs_policy import MATQCSCriticConfig, MATQCSPolicy, MATQCSPolicyConfig
     from swarmbots.learn.algos.ppo.ppo import AutomaticLearningRate, StepsRolloutMode, PPO
     from swarmbots.learn.algos.ppo.ppo_policy import PopArtConfig
     from swarmbots.learn.algos.world_modeling.next_obs_pred_mixin import NextObsPredConfig
@@ -191,7 +191,7 @@ def main() -> None:
 
     # ===== LOAD =====
     load_path: str | Path | None = None
-    # load_path = make_run_dir("mat_nop_swarm_bots_wall", "2026-03-29_01-08-59") / "models" / "model_77792876_steps_stopped.pt"
+    # load_path = make_run_dir("mat_qcs_nop_swarm_bots_wall", "2026-03-29_01-08-59") / "models" / "model_77792876_steps_stopped.pt"
 
     # ===== DEVICE =====
     use_cuda = True and torch.cuda.is_available()
@@ -212,7 +212,7 @@ def main() -> None:
         run_id = get_run_id_from_checkpoint_path(load_path)
     logger.info(f'{run_id = }')
 
-    run_dir = make_run_dir("mat_nop_swarm_bots_wall", run_id)
+    run_dir = make_run_dir("mat_qcs_nop_swarm_bots_wall", run_id)
     save_optimizer = True
 
     env_fns = [
@@ -310,9 +310,9 @@ def main() -> None:
     transition_model_nhead = 4
 
     print("Initializing Policy...")
-    mat_policy = MATPolicy(
+    mat_qcs_policy = MATQCSPolicy(
         env=env,
-        config=MATPolicyConfig(
+        config=MATQCSPolicyConfig(
             encoder_config=MATEncoderConfig(
                 d_model=enc_d_model,
                 nhead=enc_nhead,
@@ -320,7 +320,7 @@ def main() -> None:
                 dim_feedforward=enc_d_model * 2,
                 local_obs_encoder_hidden_dims=[enc_d_model, enc_d_model],
             ),
-            decoder_config=MATDecoderConfig(
+            decoder_config=MATQCSDecoderConfig(
                 d_model=dec_d_model,
                 nhead=dec_nhead,
                 num_layers=2,
@@ -328,9 +328,9 @@ def main() -> None:
                 query_encoder_hidden_dims=[2 * dec_d_model],
                 context_encoder_hidden_dims=[2 * dec_d_model],
                 memory_dims=None,
-                self_attention_mode=MATDecoderSelfAttentionMode.FULL_AUTOREGRESSIVE
+                self_attention_mode=MATQCSDecoderSelfAttentionMode.FULL_AUTOREGRESSIVE
             ),
-            critic_config=MATCriticConfig(
+            critic_config=MATQCSCriticConfig(
                 n_local_projection_hidden_layers=2,
                 n_value_regressor_hidden_layers=1,
                 use_popart=use_popart,
@@ -381,7 +381,7 @@ def main() -> None:
         ),
     )
     policy = NextObsPredWrapper(
-        policy=mat_policy,
+        policy=mat_qcs_policy,
         world_model_config=NOPWorldModelConfig(
             n_agents=env.n_agents,
             local_latent_dim=enc_d_model,
@@ -516,7 +516,7 @@ def main() -> None:
     ])
 
     run_with_discord_notification(
-        run_name=f"mat_nop_wall/{run_id}",
+        run_name=f"mat_qcs_nop_wall/{run_id}",
         run_dir=run_dir,
         total_timesteps=total_timesteps,
         algorithm=ppo,

@@ -16,7 +16,7 @@ from swarmbots.learn.action_dists.hybrid_action_dist import (
     bernoulli_config_to_dict,
 )
 from swarmbots.learn.algos.mat.mat_encoder import MATEncoder, MATEncoderConfig
-from swarmbots.learn.algos.mat.mat_decoder import MATDecoder, MATDecoderConfig
+from swarmbots.learn.algos.mat_qcs.mat_qcs_decoder import MATQCSDecoder, MATQCSDecoderConfig
 from swarmbots.learn.algos.ppo.base_ppo_policy import BasePPOPolicy
 from swarmbots.learn.algos.ppo.ppo import AGENTS_DIM
 from swarmbots.learn.algos.ppo.ppo_policy import PopArtConfig
@@ -32,7 +32,7 @@ from swarmbots.learn.serialization_utils import serialize_dataclass, serialize_v
 
 
 @dataclass(frozen=True)
-class MATCriticConfig:
+class MATQCSCriticConfig:
     n_local_projection_hidden_layers: int = 1
     n_value_regressor_hidden_layers: int = 2
     use_popart: bool = False
@@ -42,10 +42,10 @@ class MATCriticConfig:
     value_head_init_gain: float = 0.01
 
 @dataclass(frozen=True)
-class MATPolicyConfig:
+class MATQCSPolicyConfig:
     encoder_config: MATEncoderConfig = field(default_factory=MATEncoderConfig)
-    decoder_config: MATDecoderConfig = field(default_factory=MATDecoderConfig)
-    critic_config: MATCriticConfig = field(default_factory=MATCriticConfig)
+    decoder_config: MATQCSDecoderConfig = field(default_factory=MATQCSDecoderConfig)
+    critic_config: MATQCSCriticConfig = field(default_factory=MATQCSCriticConfig)
     act_fn_cls: ActivationFactory = nn.ReLU
     dropout: float = 0.0
     continuous_config: ContinuousActionDistConfigInput = None
@@ -58,21 +58,21 @@ class MATPolicyConfig:
 
 def _ensure_torch_compile_available(*, compile_mode: str) -> None:
     if not hasattr(torch, "compile"):
-        raise RuntimeError("MATPolicyConfig.compile_modules=True requires torch.compile support.")
+        raise RuntimeError("MATQCSPolicyConfig.compile_modules=True requires torch.compile support.")
     if sys.platform == "win32" and shutil.which("cl") is None:
         raise RuntimeError(
-            "MATPolicyConfig.compile_modules=True on this Windows setup requires cl.exe on PATH for torch.compile."
+            "MATQCSPolicyConfig.compile_modules=True on this Windows setup requires cl.exe on PATH for torch.compile."
         )
     if not compile_mode:
-        raise ValueError("MATPolicyConfig.compile_mode must be a non-empty string when compile_modules=True.")
+        raise ValueError("MATQCSPolicyConfig.compile_mode must be a non-empty string when compile_modules=True.")
 
 
-class MATPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
+class MATQCSPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
 
     def __init__(
             self,
             env: BaseLearnEnvWrapper,
-            config: MATPolicyConfig = MATPolicyConfig(),
+            config: MATQCSPolicyConfig = MATQCSPolicyConfig(),
     ) -> None:
         super().__init__()
         self.config = config
@@ -240,7 +240,7 @@ class MATPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
             global_obs_dim=self.global_obs_dim,
         )
 
-    def _build_decoder_config(self) -> MATDecoderConfig:
+    def _build_decoder_config(self) -> MATQCSDecoderConfig:
         return replace(
             self.config.decoder_config,
             d_model=self.d_model_decoder,
@@ -250,9 +250,9 @@ class MATPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
 
     def _build_decoder(
             self,
-            decoder_config: MATDecoderConfig,
+            decoder_config: MATQCSDecoderConfig,
     ) -> nn.Module:
-        return MATDecoder(
+        return MATQCSDecoder(
             config=decoder_config,
             max_agents=self.max_agents,
             memory_d_model=self.memory_d_model,
@@ -274,7 +274,7 @@ class MATPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
 
     def get_hyper_parameters(self) -> dict[str, Any]:
         return {
-            "mat_policy_config": {
+            "mat_qcs_policy_config": {
                 "encoder_config": serialize_dataclass(self.encoder_config),
                 "decoder_config": serialize_dataclass(self.decoder_config),
                 "critic_config": serialize_dataclass(self.config.critic_config),
@@ -729,7 +729,7 @@ class MATPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
             linear = nn.Linear(input_dim, output_dim)
             projection_linear_init(linear)
             return linear
-        return MATPolicy._build_encoder_from_dims(
+        return MATQCSPolicy._build_encoder_from_dims(
             input_dim=input_dim,
             dims=[*hidden_dims, output_dim],
             act_fn_cls=act_fn_cls,

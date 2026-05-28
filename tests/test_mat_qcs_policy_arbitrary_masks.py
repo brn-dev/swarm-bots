@@ -3,9 +3,9 @@ from gymnasium import spaces
 
 from swarmbots.learn.action_dists.bernoulli_action_dist import BernoulliConfig
 from swarmbots.learn.action_dists.sticky_left_right_beta_action_dist import StickyLeftRightBetaConfig
-from swarmbots.learn.algos.mat.mat_decoder import MATDecoderConfig
+from swarmbots.learn.algos.mat_qcs.mat_qcs_decoder import MATQCSDecoderConfig
 from swarmbots.learn.algos.mat.mat_encoder import MATEncoderConfig
-from swarmbots.learn.algos.mat.mat_policy import MATPolicy, MATPolicyConfig
+from swarmbots.learn.algos.mat_qcs.mat_qcs_policy import MATQCSPolicy, MATQCSPolicyConfig
 from swarmbots.learn.hybrid_action_space import HybridActionSpace
 
 
@@ -23,17 +23,17 @@ class _DummyMATEnv:
     )
 
 
-def _make_policy(*, assume_agent_mask_is_active_prefix: bool = False) -> MATPolicy:
-    return MATPolicy(
+def _make_policy(*, assume_agent_mask_is_active_prefix: bool = False) -> MATQCSPolicy:
+    return MATQCSPolicy(
         env=_DummyMATEnv(),
-        config=MATPolicyConfig(
+        config=MATQCSPolicyConfig(
             encoder_config=MATEncoderConfig(
                 d_model=16,
                 nhead=4,
                 num_layers=1,
                 dim_feedforward=32,
             ),
-            decoder_config=MATDecoderConfig(
+            decoder_config=MATQCSDecoderConfig(
                 d_model=16,
                 nhead=4,
                 num_layers=1,

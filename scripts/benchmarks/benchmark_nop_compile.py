@@ -20,9 +20,9 @@ if str(REPO_ROOT) not in sys.path:
 from swarmbots.learn.action_dists.bernoulli_action_dist import BernoulliConfig
 from swarmbots.learn.action_dists.entropy_utils import AgentActionsReduction, EntropyLossConfig
 from swarmbots.learn.action_dists.left_right_beta_action_dist import LeftRightBetaConfig
-from swarmbots.learn.algos.mat.mat_decoder import MATDecoderConfig, MATDecoderSelfAttentionMode
+from swarmbots.learn.algos.mat_qcs.mat_qcs_decoder import MATQCSDecoderConfig, MATQCSDecoderSelfAttentionMode
 from swarmbots.learn.algos.mat.mat_encoder import MATEncoderConfig
-from swarmbots.learn.algos.mat.mat_policy import MATCriticConfig, MATPolicy, MATPolicyConfig
+from swarmbots.learn.algos.mat_qcs.mat_qcs_policy import MATQCSCriticConfig, MATQCSPolicy, MATQCSPolicyConfig
 from swarmbots.learn.algos.ppo.ppo_policy import PopArtConfig
 from swarmbots.learn.algos.world_modeling.next_obs_pred_mixin import NextObsPredConfig
 from swarmbots.learn.algos.world_modeling.next_obs_pred_ppo_wrapper import NOPWorldModelConfig, NextObsPredWrapper
@@ -146,8 +146,8 @@ def make_env(config: BenchmarkConfig) -> SwarmBotsLearnEnvWrapper:
     return SwarmBotsLearnEnvWrapper(vector_env, device=torch.device(config.device))
 
 
-def build_policy_config(config: BenchmarkConfig, *, compile_modules: bool) -> MATPolicyConfig:
-    return MATPolicyConfig(
+def build_policy_config(config: BenchmarkConfig, *, compile_modules: bool) -> MATQCSPolicyConfig:
+    return MATQCSPolicyConfig(
         encoder_config=MATEncoderConfig(
             d_model=config.encoder_d_model,
             nhead=config.encoder_nhead,
@@ -156,7 +156,7 @@ def build_policy_config(config: BenchmarkConfig, *, compile_modules: bool) -> MA
             local_obs_encoder_hidden_dims=[config.encoder_d_model, config.encoder_d_model],
             global_obs_encoder_hidden_dims=[config.encoder_d_model],
         ),
-        decoder_config=MATDecoderConfig(
+        decoder_config=MATQCSDecoderConfig(
             d_model=config.decoder_d_model,
             nhead=config.decoder_nhead,
             num_layers=config.decoder_layers,
@@ -164,9 +164,9 @@ def build_policy_config(config: BenchmarkConfig, *, compile_modules: bool) -> MA
             query_encoder_hidden_dims=[config.decoder_d_model * 2],
             context_encoder_hidden_dims=[config.decoder_d_model * 2],
             memory_dims=None,
-            self_attention_mode=MATDecoderSelfAttentionMode.FULL_AUTOREGRESSIVE,
+            self_attention_mode=MATQCSDecoderSelfAttentionMode.FULL_AUTOREGRESSIVE,
         ),
-        critic_config=MATCriticConfig(
+        critic_config=MATQCSCriticConfig(
             n_local_projection_hidden_layers=2,
             n_value_regressor_hidden_layers=1,
             use_popart=True,
@@ -468,12 +468,12 @@ def run_case(
     seed_everything(config.seed, device=device)
 
     start = time.perf_counter()
-    mat_policy = MATPolicy(
+    mat_qcs_policy = MATQCSPolicy(
         env=env,
         config=build_policy_config(config, compile_modules=case.policy_compile_modules),
     )
     policy = NextObsPredWrapper(
-        policy=mat_policy,
+        policy=mat_qcs_policy,
         world_model_config=build_world_model_config(
             config,
             action_dim=env.action_space.total_agent_action_dim,
@@ -515,7 +515,7 @@ def run_case(
     )
 
     del policy
-    del mat_policy
+    del mat_qcs_policy
     gc.collect()
     if device.type == "cuda":
         torch.cuda.empty_cache()

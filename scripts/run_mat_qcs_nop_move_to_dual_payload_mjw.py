@@ -10,13 +10,13 @@ from gymnasium.vector import VectorEnv
 from loguru import logger
 from torch import nn
 
-from run_mat_nop_payload import wrap_vec_env, split_actuator_joints, set_actuator_gsde_init_joint_stds
+from run_mat_qcs_nop_payload import wrap_vec_env, split_actuator_joints, set_actuator_gsde_init_joint_stds
 from swarmbots.learn.action_dists.bernoulli_action_dist import BernoulliConfig
 from swarmbots.learn.action_dists.entropy_utils import EntropyLossConfig, AgentActionsReduction
 from swarmbots.learn.action_dists.left_right_beta_action_dist import LeftRightBetaConfig
-from swarmbots.learn.algos.mat.mat_decoder import MATDecoderConfig, MATDecoderSelfAttentionMode
+from swarmbots.learn.algos.mat_qcs.mat_qcs_decoder import MATQCSDecoderConfig, MATQCSDecoderSelfAttentionMode
 from swarmbots.learn.algos.mat.mat_encoder import MATEncoderConfig
-from swarmbots.learn.algos.mat.mat_policy import MATCriticConfig, MATPolicy, MATPolicyConfig
+from swarmbots.learn.algos.mat_qcs.mat_qcs_policy import MATQCSCriticConfig, MATQCSPolicy, MATQCSPolicyConfig
 from swarmbots.learn.algos.ppo.ppo import AutomaticLearningRate, PPO, StepsRolloutMode
 from swarmbots.learn.algos.ppo.ppo_policy import PopArtConfig
 from swarmbots.learn.algos.world_modeling.next_obs_pred_mixin import NextObsPredConfig
@@ -29,7 +29,7 @@ from swarmbots.learn.checkpointing import (
     load_checkpoint,
 )
 from swarmbots.learn.discord_notifications import run_with_discord_notification
-from swarmbots.learn.env_wrappers.move_to_payload_global_obs_adapter import MoveToPayloadGlobalObsAdapter
+from swarmbots.learn.env_wrappers.move_to_payload_global_obs_adapter import MoveToDualPayloadGlobalObsAdapter
 from swarmbots.learn.gsde_reset import GSDEProbabilityResetMode
 from swarmbots.learn.obs_indices import ObsIndices
 from swarmbots.learn.scheduling.auto_lr_updater import make_auto_lr_updater
@@ -38,8 +38,8 @@ from swarmbots.learn.scheduling.schedulers import ScheduleUnit
 from swarmbots.learn.summary_statistics import SummaryStatisticsFormat
 from swarmbots.learn.swarmbots_obs_indices import build_obs_indices
 from swarmbots.mjw_env import MJWSwarmBotsVectorEnv
-from swarmbots.mjw_env.scenarios.mjw_scenario_presets import default_move_to, default_payload_plane
-from swarmbots.scenario_presets.scenario_presets_kwargs import PAYLOAD_PLANE_SCENARIO_KWARGS
+from swarmbots.mjw_env.scenarios.mjw_scenario_presets import default_dual_payload_plane, default_move_to
+from swarmbots.scenario_presets.scenario_presets_kwargs import DUAL_PAYLOAD_PLANE_SCENARIO_KWARGS
 from swarmbots.utils.recording_schedule import DEFAULT_LIVE_RECORDING_SCHEDULE, install_scheduled_recordings
 from swarmbots.utils.run_paths import make_run_dir
 
@@ -53,6 +53,7 @@ OPTIONAL_TRANSFER_STATE_PREFIXES = (
     "global_scalars_predictor.",
     "global_rot6ds_predictor.",
 )
+MJW_CCD_ITERATIONS = 128
 
 
 class SequentialRunProgress:
@@ -115,9 +116,9 @@ def make_move_to_vector_env(
         settle_initial_reset=settle_initial_reset,
         device=device,
     )
-    return MoveToPayloadGlobalObsAdapter(
+    return MoveToDualPayloadGlobalObsAdapter(
         vector_env,
-        payload_z=float(PAYLOAD_PLANE_SCENARIO_KWARGS["payload_radius"]),
+        payload_z=float(DUAL_PAYLOAD_PLANE_SCENARIO_KWARGS["payload_radius"]),
     )
 
 
@@ -130,12 +131,13 @@ def make_payload_vector_env(
     device: torch.device,
 ) -> MJWSwarmBotsVectorEnv:
     return MJWSwarmBotsVectorEnv(
-        scenario=default_payload_plane(),
+        scenario=default_dual_payload_plane(),
         num_envs=num_envs,
         episode_length=episode_length,
         first_episode_lengths=first_episode_lengths,
         settle_initial_reset=settle_initial_reset,
         device=device,
+        ccd_iterations=MJW_CCD_ITERATIONS,
     )
 
 
@@ -180,9 +182,9 @@ def build_policy(
     transition_model_d_model: int,
 ) -> NextObsPredWrapper:
     predict_global_obs = bool(obs_indices.global_rot6d_indices)
-    mat_policy = MATPolicy(
+    mat_qcs_policy = MATQCSPolicy(
         env=env,
-        config=MATPolicyConfig(
+        config=MATQCSPolicyConfig(
             encoder_config=MATEncoderConfig(
                 d_model=enc_d_model,
                 nhead=4,
@@ -190,7 +192,7 @@ def build_policy(
                 dim_feedforward=enc_d_model * 2,
                 local_obs_encoder_hidden_dims=[enc_d_model, enc_d_model],
             ),
-            decoder_config=MATDecoderConfig(
+            decoder_config=MATQCSDecoderConfig(
                 d_model=dec_d_model,
                 nhead=2,
                 num_layers=2,
@@ -198,9 +200,9 @@ def build_policy(
                 query_encoder_hidden_dims=[2 * dec_d_model],
                 context_encoder_hidden_dims=[2 * dec_d_model],
                 memory_dims=None,
-                self_attention_mode=MATDecoderSelfAttentionMode.FULL_AUTOREGRESSIVE,
+                self_attention_mode=MATQCSDecoderSelfAttentionMode.FULL_AUTOREGRESSIVE,
             ),
-            critic_config=MATCriticConfig(
+            critic_config=MATQCSCriticConfig(
                 n_local_projection_hidden_layers=2,
                 n_value_regressor_hidden_layers=1,
                 use_popart=use_popart,
@@ -237,7 +239,7 @@ def build_policy(
         ),
     )
     return NextObsPredWrapper(
-        policy=mat_policy,
+        policy=mat_qcs_policy,
         world_model_config=NOPWorldModelConfig(
             n_agents=env.n_agents,
             local_latent_dim=enc_d_model,
@@ -365,7 +367,7 @@ def load_transfer_checkpoint(
     ]
     if unexpected_keys or non_critic_missing_keys:
         raise RuntimeError(
-            "Transfer checkpoint did not match the payload policy. "
+            "Transfer checkpoint did not match the dual-payload policy. "
             f"{non_critic_missing_keys = }, {unexpected_keys = }"
         )
 
@@ -492,7 +494,7 @@ def main() -> None:
     configure_float32_matmul_precision()
 
     if not torch.cuda.is_available():
-        raise RuntimeError("run_mat_nop_move_to_payload_mjw.py requires CUDA.")
+        raise RuntimeError("run_mat_qcs_nop_move_to_dual_payload_mjw.py requires CUDA.")
 
     n_envs = 1024
     rollout_steps_per_env = 4
@@ -521,12 +523,12 @@ def main() -> None:
     train_device = torch.device("cuda")
     record_device = torch.device("cuda")
     run_id = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    run_dir = make_run_dir("mat_nop_swarm_bots_move_to_payload_mjw", run_id)
+    run_dir = make_run_dir("mat_qcs_nop_swarm_bots_move_to_dual_payload_mjw", run_id)
     first_episode_lengths = [int((i + 1) * episode_length / n_envs) for i in range(n_envs)]
     progress = SequentialRunProgress()
 
     def run() -> None:
-        logger.info("Starting move-to pretrain with payload-shaped global observations.")
+        logger.info("Starting move-to pretrain with dual-payload-shaped global observations.")
         move_env, move_env_settings, move_ppo, move_actuators_per_limb = build_phase(
             vector_env=make_move_to_vector_env(
                 episode_length=episode_length,
@@ -584,7 +586,7 @@ def main() -> None:
         finally:
             move_env.close()
 
-        logger.info(f"Starting payload phase from transfer checkpoint {transfer_checkpoint_path}.")
+        logger.info(f"Starting dual-payload phase from transfer checkpoint {transfer_checkpoint_path}.")
         payload_env, payload_env_settings, payload_ppo, payload_actuators_per_limb = build_phase(
             vector_env=make_payload_vector_env(
                 episode_length=episode_length,
@@ -626,13 +628,13 @@ def main() -> None:
             )
             payload_ppo.learn(
                 max_total_timesteps=payload_timesteps,
-                run_dir=run_dir / "payload",
+                run_dir=run_dir / "dual_payload",
                 log_interval=1,
                 save_interval=save_interval,
                 save_optimizer=save_optimizer,
                 best_rotation_n=1,
                 extra_run_metadata={
-                    "phase": "payload",
+                    "phase": "dual_payload",
                     "transfer_checkpoint_path": transfer_checkpoint_path,
                     "reset_transfer_state_prefixes": OPTIONAL_TRANSFER_STATE_PREFIXES,
                     "env_settings": payload_env_settings,
@@ -648,7 +650,7 @@ def main() -> None:
             payload_env.close()
 
     run_with_discord_notification(
-        run_name=f"mat_nop_move_to_payload_mjw/{run_id}",
+        run_name=f"mat_qcs_nop_move_to_dual_payload_mjw/{run_id}",
         run_dir=run_dir,
         total_timesteps=move_to_pretrain_timesteps + payload_timesteps,
         algorithm=progress,

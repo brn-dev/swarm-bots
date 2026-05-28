@@ -21,9 +21,9 @@ from swarmbots.learn.action_dists.bernoulli_action_dist import BernoulliConfig
 from swarmbots.learn.action_dists.entropy_utils import AgentActionsReduction, EntropyLossConfig
 from swarmbots.learn.action_dists.hybrid_action_dist import HybridActionDistribution
 from swarmbots.learn.action_dists.left_right_beta_action_dist import LeftRightBetaConfig
-from swarmbots.learn.algos.mat.mat_decoder import MATDecoderConfig, MATDecoderSelfAttentionMode
+from swarmbots.learn.algos.mat_qcs.mat_qcs_decoder import MATQCSDecoderConfig, MATQCSDecoderSelfAttentionMode
 from swarmbots.learn.algos.mat.mat_encoder import MATEncoderConfig
-from swarmbots.learn.algos.mat.mat_policy import MATCriticConfig, MATPolicy, MATPolicyConfig
+from swarmbots.learn.algos.mat_qcs.mat_qcs_policy import MATQCSCriticConfig, MATQCSPolicy, MATQCSPolicyConfig
 from swarmbots.learn.algos.ppo.ppo_policy import PopArtConfig
 from swarmbots.learn.algos.ppo.ppo_sampler import PPOSamples
 from swarmbots.learn.env_wrappers.learn_wrappers.swarm_bots_learn_env_wrapper import SwarmBotsLearnEnvWrapper
@@ -101,12 +101,12 @@ class NonCompileFriendlyHybridActionDistribution(HybridActionDistribution):
         return False
 
 
-class BenchmarkMATPolicy(MATPolicy):
+class BenchmarkMATQCSPolicy(MATQCSPolicy):
     def __init__(
             self,
             *,
             env: SwarmBotsLearnEnvWrapper,
-            config: MATPolicyConfig,
+            config: MATQCSPolicyConfig,
             expose_compile_friendly: bool,
     ) -> None:
         self._expose_compile_friendly = bool(expose_compile_friendly)
@@ -174,8 +174,8 @@ def make_env(config: BenchmarkConfig) -> SwarmBotsLearnEnvWrapper:
     return SwarmBotsLearnEnvWrapper(vector_env, device=torch.device(config.device))
 
 
-def build_policy_config(config: BenchmarkConfig, *, compile_modules: bool) -> MATPolicyConfig:
-    return MATPolicyConfig(
+def build_policy_config(config: BenchmarkConfig, *, compile_modules: bool) -> MATQCSPolicyConfig:
+    return MATQCSPolicyConfig(
         encoder_config=MATEncoderConfig(
             d_model=config.encoder_d_model,
             nhead=config.encoder_nhead,
@@ -184,7 +184,7 @@ def build_policy_config(config: BenchmarkConfig, *, compile_modules: bool) -> MA
             local_obs_encoder_hidden_dims=[config.encoder_d_model, config.encoder_d_model],
             global_obs_encoder_hidden_dims=[config.encoder_d_model],
         ),
-        decoder_config=MATDecoderConfig(
+        decoder_config=MATQCSDecoderConfig(
             d_model=config.decoder_d_model,
             nhead=config.decoder_nhead,
             num_layers=config.decoder_layers,
@@ -192,9 +192,9 @@ def build_policy_config(config: BenchmarkConfig, *, compile_modules: bool) -> MA
             query_encoder_hidden_dims=[config.decoder_d_model * 2],
             context_encoder_hidden_dims=[config.decoder_d_model * 2],
             memory_dims=None,
-            self_attention_mode=MATDecoderSelfAttentionMode.FULL_AUTOREGRESSIVE,
+            self_attention_mode=MATQCSDecoderSelfAttentionMode.FULL_AUTOREGRESSIVE,
         ),
-        critic_config=MATCriticConfig(
+        critic_config=MATQCSCriticConfig(
             n_local_projection_hidden_layers=2,
             n_value_regressor_hidden_layers=1,
             use_popart=True,
@@ -325,7 +325,7 @@ def build_train_samples(config: BenchmarkConfig, *, device: torch.device) -> PPO
 
 def time_rollout_forward(
         *,
-        policy: BenchmarkMATPolicy,
+        policy: BenchmarkMATQCSPolicy,
         inputs: RolloutInputs,
         warmup_iters: int,
         measured_iters: int,
@@ -379,7 +379,7 @@ def time_rollout_forward(
 
 def time_evaluate_actions(
         *,
-        policy: BenchmarkMATPolicy,
+        policy: BenchmarkMATQCSPolicy,
         batch: PPOSamples,
         warmup_iters: int,
         measured_iters: int,
@@ -419,7 +419,7 @@ def run_case(
     seed_everything(config.seed, device=device)
 
     start = time.perf_counter()
-    policy = BenchmarkMATPolicy(
+    policy = BenchmarkMATQCSPolicy(
         env=env,
         config=build_policy_config(config, compile_modules=case.compile_modules),
         expose_compile_friendly=case.expose_compile_friendly,
@@ -500,7 +500,7 @@ def parse_args() -> tuple[BenchmarkConfig, list[str]]:
 
     parser = argparse.ArgumentParser(
         description=(
-            "Benchmark MAT policy torch.compile speedups with the same action distribution exposed as "
+            "Benchmark MAT-QCS policy torch.compile speedups with the same action distribution exposed as "
             "compile-friendly or forced non-compile-friendly."
         )
     )
@@ -585,7 +585,7 @@ def main() -> None:
 
     config, selected_case_names = parse_args()
     device = torch.device(config.device)
-    logger.info("Running MAT compile benchmark with config: {}", config)
+    logger.info("Running MAT-QCS compile benchmark with config: {}", config)
 
     env = make_env(config)
     seed_everything(config.seed, device=device)

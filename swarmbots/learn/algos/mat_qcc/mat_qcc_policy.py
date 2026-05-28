@@ -2,17 +2,17 @@ from dataclasses import dataclass, field, replace
 
 from torch import nn
 
-from swarmbots.learn.algos.mat.mat_policy import MATPolicy, MATPolicyConfig
+from swarmbots.learn.algos.mat_qcs.mat_qcs_policy import MATQCSPolicy, MATQCSPolicyConfig
 from swarmbots.learn.algos.mat_qcc.mat_qcc_decoder import MATQCCDecoder, MATQCCDecoderConfig
 from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
 
 
 @dataclass(frozen=True)
-class MATQCCPolicyConfig(MATPolicyConfig):
+class MATQCCPolicyConfig(MATQCSPolicyConfig):
     decoder_config: MATQCCDecoderConfig = field(default_factory=MATQCCDecoderConfig)
 
 
-class MATQCCPolicy(MATPolicy):
+class MATQCCPolicy(MATQCSPolicy):
 
     def __init__(
             self,
@@ -23,7 +23,7 @@ class MATQCCPolicy(MATPolicy):
 
     def get_hyper_parameters(self) -> dict[str, object]:
         return {
-            "mat_qcc_policy_config": super().get_hyper_parameters()["mat_policy_config"],
+            "mat_qcc_policy_config": super().get_hyper_parameters()["mat_qcs_policy_config"],
         }
 
     def _build_decoder_config(self) -> MATQCCDecoderConfig:

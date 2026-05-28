@@ -2,16 +2,16 @@ from collections.abc import Callable
 
 import torch
 
-from swarmbots.learn.algos.mat.mat_decoder import MATDecoder, MATDecoderConfig, MATDecoderSelfAttentionMode
+from swarmbots.learn.algos.mat_qcs.mat_qcs_decoder import MATQCSDecoder, MATQCSDecoderConfig, MATQCSDecoderSelfAttentionMode
 
 
 def _make_decoder(
-        self_attention_mode: MATDecoderSelfAttentionMode,
+        self_attention_mode: MATQCSDecoderSelfAttentionMode,
         *,
         assume_agent_mask_is_active_prefix: bool = True,
-) -> MATDecoder:
-    return MATDecoder(
-        config=MATDecoderConfig(
+) -> MATQCSDecoder:
+    return MATQCSDecoder(
+        config=MATQCSDecoderConfig(
             d_model=8,
             nhead=2,
             num_layers=1,
@@ -25,8 +25,8 @@ def _make_decoder(
 
 
 def _make_decoder_pair(
-        self_attention_mode: MATDecoderSelfAttentionMode,
-) -> tuple[MATDecoder, MATDecoder]:
+        self_attention_mode: MATQCSDecoderSelfAttentionMode,
+) -> tuple[MATQCSDecoder, MATQCSDecoder]:
     cheap_decoder = _make_decoder(
         self_attention_mode,
         assume_agent_mask_is_active_prefix=True,
@@ -69,9 +69,9 @@ def test_parallel_decoder_passes_explicit_causal_hint(monkeypatch) -> None:
     agent_mask = torch.ones(2, 4, dtype=torch.bool)
 
     for self_attention_mode, expected_hint in (
-            (MATDecoderSelfAttentionMode.FULL_AUTOREGRESSIVE, True),
-            (MATDecoderSelfAttentionMode.PREVIOUS_AGENTS, False),
-            (MATDecoderSelfAttentionMode.CONTEXT_TOKENS_ONLY, False),
+            (MATQCSDecoderSelfAttentionMode.FULL_AUTOREGRESSIVE, True),
+            (MATQCSDecoderSelfAttentionMode.PREVIOUS_AGENTS, False),
+            (MATQCSDecoderSelfAttentionMode.CONTEXT_TOKENS_ONLY, False),
     ):
         decoder = _make_decoder(self_attention_mode)
         decoder(
@@ -93,9 +93,9 @@ def test_step_decoder_passes_explicit_causal_hint(monkeypatch) -> None:
     agent_mask = torch.ones(2, 4, dtype=torch.bool)
 
     for self_attention_mode, expected_hint in (
-            (MATDecoderSelfAttentionMode.FULL_AUTOREGRESSIVE, True),
-            (MATDecoderSelfAttentionMode.PREVIOUS_AGENTS, False),
-            (MATDecoderSelfAttentionMode.CONTEXT_TOKENS_ONLY, True),
+            (MATQCSDecoderSelfAttentionMode.FULL_AUTOREGRESSIVE, True),
+            (MATQCSDecoderSelfAttentionMode.PREVIOUS_AGENTS, False),
+            (MATQCSDecoderSelfAttentionMode.CONTEXT_TOKENS_ONLY, True),
     ):
         decoder = _make_decoder(self_attention_mode)
         decoder.forward_step(
@@ -113,7 +113,7 @@ def test_step_decoder_passes_explicit_causal_hint(monkeypatch) -> None:
 
 def test_arbitrary_mask_parallel_decoder_avoids_inactive_slot_zero_nan() -> None:
     decoder = _make_decoder(
-        MATDecoderSelfAttentionMode.FULL_AUTOREGRESSIVE,
+        MATQCSDecoderSelfAttentionMode.FULL_AUTOREGRESSIVE,
         assume_agent_mask_is_active_prefix=False,
     )
     query_tokens = torch.randn(2, 4, 8)
@@ -140,7 +140,7 @@ def test_arbitrary_mask_parallel_decoder_avoids_inactive_slot_zero_nan() -> None
 def test_prefix_mask_parallel_decoder_uses_cheap_causal_mask(monkeypatch) -> None:
     causal_hints = _record_causal_hints(monkeypatch)
     decoder = _make_decoder(
-        MATDecoderSelfAttentionMode.FULL_AUTOREGRESSIVE,
+        MATQCSDecoderSelfAttentionMode.FULL_AUTOREGRESSIVE,
         assume_agent_mask_is_active_prefix=True,
     )
     query_tokens = torch.randn(2, 4, 8)
@@ -177,7 +177,7 @@ def test_arbitrary_parallel_decoder_matches_cheap_decoder_for_prefix_masks() -> 
         ]
     )
 
-    for self_attention_mode in MATDecoderSelfAttentionMode:
+    for self_attention_mode in MATQCSDecoderSelfAttentionMode:
         cheap_decoder, arbitrary_decoder = _make_decoder_pair(self_attention_mode)
         with torch.no_grad():
             cheap_output = cheap_decoder(
@@ -212,7 +212,7 @@ def test_arbitrary_step_decoder_matches_cheap_decoder_for_prefix_masks() -> None
         ]
     )
 
-    for self_attention_mode in MATDecoderSelfAttentionMode:
+    for self_attention_mode in MATQCSDecoderSelfAttentionMode:
         cheap_decoder, arbitrary_decoder = _make_decoder_pair(self_attention_mode)
         with torch.no_grad():
             cheap_output = cheap_decoder.forward_step(
@@ -253,7 +253,7 @@ def test_arbitrary_step_decoder_avoids_inactive_current_query_nan() -> None:
     )
     query_mask = torch.tensor([False, False])
 
-    for self_attention_mode in MATDecoderSelfAttentionMode:
+    for self_attention_mode in MATQCSDecoderSelfAttentionMode:
         decoder = _make_decoder(
             self_attention_mode,
             assume_agent_mask_is_active_prefix=False,

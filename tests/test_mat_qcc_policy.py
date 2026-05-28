@@ -112,4 +112,4 @@ def test_qcc_policy_uses_qcc_hyperparameter_key() -> None:
     hyper_parameters = policy.get_hyper_parameters()
 
     assert "mat_qcc_policy_config" in hyper_parameters
-    assert "mat_policy_config" not in hyper_parameters
+    assert "mat_qcs_policy_config" not in hyper_parameters
