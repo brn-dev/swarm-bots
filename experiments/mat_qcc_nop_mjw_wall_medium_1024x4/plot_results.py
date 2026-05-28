@@ -19,12 +19,12 @@ GROUP_ORDER = (
     "mat_orig",
 )
 DISPLAY_NAME_OVERRIDES = {
-    "mat_qcc": "MAT-QCC + NOP, no agent embeddings, MJW wall medium, 1024x4",
-    "mat_qcs_full_causal": "MAT-QCS full causal + NOP, MJW wall medium, 1024x4",
+    "mat_qcc": "MAT-QCC + NOP",
+    "mat_qcs_full_causal": "MAT-QCS full causal + NOP",
     "mat_qcs_context_tokens_only": (
-        "MAT-QCS context tokens only + NOP, MJW wall medium, 1024x4"
+        "MAT-QCS context tokens only + NOP"
     ),
-    "mat_orig": "MAT-Orig + NOP, MJW wall medium, 1024x4",
+    "mat_orig": "MAT-Orig + NOP",
 }
 THEORETICAL_MAXIMUM = 10.5
 
