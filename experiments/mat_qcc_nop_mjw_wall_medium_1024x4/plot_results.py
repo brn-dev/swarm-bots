@@ -14,15 +14,17 @@ EXPERIMENT_RUN_DIR = REPO_ROOT / "runs" / "mat_qcc_nop_mjw_wall_medium_1024x4"
 OUTPUT_DIR = Path(__file__).resolve().parent / "results"
 GROUP_ORDER = (
     "baseline",
-    "mat_qcs_context_tokens_only_no_agent_embeddings",
+    "mat_qcs_full_causal",
+    "mat_qcs_context_tokens_only",
     "mat_orig",
 )
 DISPLAY_NAME_OVERRIDES = {
     "baseline": "MAT-QCC + NOP, no agent embeddings, MJW wall medium, 1024x4",
-    "mat_qcs_context_tokens_only_no_agent_embeddings": (
-        "MAT-QCS context tokens only + NOP, no agent embeddings, MJW wall medium, 1024x4"
+    "mat_qcs_full_causal": "MAT-QCS full causal + NOP, MJW wall medium, 1024x4",
+    "mat_qcs_context_tokens_only": (
+        "MAT-QCS context tokens only + NOP, MJW wall medium, 1024x4"
     ),
-    "mat_orig": "MAT-Orig + NOP, no agent embeddings, MJW wall medium, 1024x4",
+    "mat_orig": "MAT-Orig + NOP, MJW wall medium, 1024x4",
 }
 THEORETICAL_MAXIMUM = 10.5
 

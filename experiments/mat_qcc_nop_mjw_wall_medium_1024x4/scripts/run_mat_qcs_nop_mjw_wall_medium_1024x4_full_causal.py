@@ -6,10 +6,10 @@ from swarmbots.learn.algos.mat_qcs.mat_qcs_decoder import MATQCSDecoderSelfAtten
 
 def main() -> None:
     run_experiment(
-        variant_name="mat_qcs_context_tokens_only_no_agent_embeddings",
+        variant_name="mat_qcs_full_causal",
         entrypoint_path=Path(__file__).resolve(),
         policy_variant="mat_qcs",
-        mat_decoder_self_attention_mode=MATQCSDecoderSelfAttentionMode.CONTEXT_TOKENS_ONLY,
+        mat_decoder_self_attention_mode=MATQCSDecoderSelfAttentionMode.FULL_CAUSAL,
     )
 
 
