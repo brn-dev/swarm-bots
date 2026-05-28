@@ -18,7 +18,7 @@ class MATQCCDecoderConfig:
     norm_first: bool = True
     layer_norm_eps: float = 1e-5
     bias: bool = True
-    add_agent_embeddings: bool = True
+    add_agent_embeddings: bool = False
     token_encoder_init_gain: float = 1.0
     token_encoder_projection_init_gain: float | None = 1.0
     actor_head_init_gain: float = 1.0

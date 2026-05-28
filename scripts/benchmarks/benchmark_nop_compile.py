@@ -164,7 +164,7 @@ def build_policy_config(config: BenchmarkConfig, *, compile_modules: bool) -> MA
             query_encoder_hidden_dims=[config.decoder_d_model * 2],
             context_encoder_hidden_dims=[config.decoder_d_model * 2],
             memory_dims=None,
-            self_attention_mode=MATQCSDecoderSelfAttentionMode.FULL_AUTOREGRESSIVE,
+            self_attention_mode=MATQCSDecoderSelfAttentionMode.FULL_CAUSAL,
         ),
         critic_config=MATQCSCriticConfig(
             n_local_projection_hidden_layers=2,

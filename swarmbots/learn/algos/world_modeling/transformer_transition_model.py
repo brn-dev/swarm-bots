@@ -25,7 +25,7 @@ class TransformerTransitionModelConfig:
     dim_feedforward: int = 256
     dropout: float = 0.0
     act_fn_cls: ActivationFactory = nn.ReLU
-    add_agent_embeddings: bool = True
+    add_agent_embeddings: bool = False
     predict_delta: bool = True
     coembed_mlp_hidden_dims: list[int] | None = None
     head_mlp_hidden_dims: list[int] | None = None

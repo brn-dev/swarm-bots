@@ -30,7 +30,7 @@ Keep only durable architecture notes and gotchas. Prefer deleting stale detail o
 - `PPO.train()` uses `policy.make_sampler(episodes)`; `PPO.compute_loss()` uses `policy.evaluate_actions(batch=...)`.
 - `MATQCSPolicy` is the main transformer policy; `PPOPolicy` is the plain MLP policy.
 - `MATDecPolicy` is decoderless despite the name.
-- `MATQCCPolicy` lives in `swarmbots.learn.algos.mat_qcc`; its decoder keeps query and context streams separate, but reforms context tokens at every layer before later queries attend to them, so it is not state-dict compatible with `MATQCSDecoder`'s interleaved `CONTEXT_TOKENS_ONLY` implementation. `MATQCCDecoderConfig.assume_agent_mask_is_active_prefix=True` uses the prefix-mask fast path; set it `False` for arbitrary inactive positions.
+- `MATQCCPolicy` lives in `swarmbots.learn.algos.mat_qcc`; its decoder keeps query and context streams separate, but reforms context tokens at every layer before later queries attend to them, so it is not state-dict compatible with `MATQCSDecoder`'s interleaved `CONTEXT_TOKENS_ONLY` implementation. `MATQCCDecoderConfig.assume_agent_mask_is_active_prefix=True` uses the prefix-mask fast path; set it `False` for arbitrary inactive positions. Shared MJW wall experiments support `policy_variant="mat_qcc"`.
 - `MATOrigPolicy` uses shifted previous-agent actions, so it requires contiguous true-prefix `agent_mask`. It must zero inactive-agent log-probs in rollout and `evaluate_actions()`.
 - `MATQCSPolicy` supports arbitrary inactive positions if every row has at least one active agent; `MATQCSDecoderConfig.assume_agent_mask_is_active_prefix=True` enables the cheap prefix path.
 - For MAT-family customization, override `_build_encoder*()` / `_build_action_dist(...)`; do not mutate fields after `super().__init__()`.
@@ -50,6 +50,7 @@ Keep only durable architecture notes and gotchas. Prefer deleting stale detail o
 - `SPRWrapper` does not support `RMATQCSPolicy`.
 - WM losses use `wm_actions`, not PPO current-step `actions`; recurrent WM losses use `time_loss_mask`.
 - NOP global-observation prediction is optional. It is enabled by explicit global scalar/rot6d target indices and pools predicted agent latents across active agents before global heads; local-only configs should not allocate or require global NOP heads/tensors.
+- `NOPWorldModelConfig.add_agent_embeddings_transition_model` defaults to `False`. Legacy NOP experiment configs that need old behavior set it explicitly to `True`; no-agent-embedding experiments leave it `False`.
 - Shared recurrent WM flattening: `swarmbots/learn/algos/world_modeling/wm_recurrent_batch.py`.
 
 ## Scenarios And Swarms

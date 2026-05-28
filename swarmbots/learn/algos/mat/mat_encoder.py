@@ -22,7 +22,7 @@ class MATEncoderConfig:
     norm_first: bool = True
     layer_norm_eps: float = 1e-5
     bias: bool = True
-    add_agent_embeddings: bool = True
+    add_agent_embeddings: bool = False
     linear_init_gain: float = 1.0
     linear_projection_init_gain: float | None = 1.0
     transformer_ff_init_gain: float | None = 1.0
