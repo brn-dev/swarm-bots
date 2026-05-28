@@ -6,7 +6,7 @@ from swarmbots.learn.nn_components.activations import SquaredReLU
 
 def main() -> None:
     run_ablation(
-        variant_name="lr_beta_nop_squared_relu",
+        variant_name="sign_magnitude_beta_nop_squared_relu",
         entrypoint_path=Path(__file__).resolve(),
         act_fn_cls=SquaredReLU,
     )

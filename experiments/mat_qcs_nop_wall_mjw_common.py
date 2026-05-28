@@ -20,9 +20,9 @@ from swarmbots.learn.action_dists.beta_action_dist import BetaConfig
 from swarmbots.learn.action_dists.bernoulli_action_dist import BernoulliConfig
 from swarmbots.learn.action_dists.entropy_utils import AgentActionsReduction, EntropyLossConfig
 from swarmbots.learn.action_dists.gsde_action_dist import GSDEConfig
-from swarmbots.learn.action_dists.left_right_beta_action_dist import LeftRightBetaConfig
+from swarmbots.learn.action_dists.sign_magnitude_beta_action_dist import SignMagnitudeBetaConfig
 from swarmbots.learn.action_dists.sticky_action_dist import StickyActionDist
-from swarmbots.learn.action_dists.sticky_left_right_beta_action_dist import StickyLeftRightBetaConfig
+from swarmbots.learn.action_dists.sticky_sign_magnitude_beta_action_dist import StickySignMagnitudeBetaConfig
 from swarmbots.learn.action_dists.squashed_diag_gaussian_action_dist import SquashedDiagGaussianConfig
 from swarmbots.learn.algos.mat.mat_dec_policy import MATDecPolicy, MATDecPolicyConfig
 from swarmbots.learn.algos.mat_qcs.mat_qcs_decoder import MATQCSDecoderConfig, MATQCSDecoderSelfAttentionMode
@@ -52,7 +52,7 @@ from swarmbots.mjw_env.scenarios.mjw_scenario_presets import default_wall
 from swarmbots.utils.recording_schedule import DEFAULT_LIVE_RECORDING_SCHEDULE, install_scheduled_recordings
 from swarmbots.utils.run_paths import get_run_id_from_checkpoint_path
 
-ContinuousActionDistVariant = Literal["sticky_lr_beta", "lr_beta", "beta", "gsde", "squashed_diag_gaussian"]
+ContinuousActionDistVariant = Literal["sticky_sign_magnitude_beta", "sign_magnitude_beta", "beta", "gsde", "squashed_diag_gaussian"]
 PolicyVariant = Literal["mat_qcs", "mat_dec", "mat_orig"]
 
 
@@ -204,7 +204,7 @@ def set_actuator_gsde_init_joint_stds(
             gsde_dist.log_stds[:, i::actuators_per_limb] = math.log(joint_std)
 
 
-def make_lr_beta_entropy_config() -> EntropyLossConfig:
+def make_sign_magnitude_beta_entropy_config() -> EntropyLossConfig:
     return EntropyLossConfig(
         agent_actions_reduction=AgentActionsReduction.SUM,
         metrics_reduction=AgentActionsReduction.MEAN,
@@ -216,26 +216,26 @@ def make_continuous_config(
         variant: ContinuousActionDistVariant,
         initial_stickiness: float,
         gsde_init_stds: list[float],
-) -> StickyLeftRightBetaConfig | LeftRightBetaConfig | BetaConfig | GSDEConfig | SquashedDiagGaussianConfig:
-    if variant == "sticky_lr_beta":
-        return StickyLeftRightBetaConfig(
+) -> StickySignMagnitudeBetaConfig | SignMagnitudeBetaConfig | BetaConfig | GSDEConfig | SquashedDiagGaussianConfig:
+    if variant == "sticky_sign_magnitude_beta":
+        return StickySignMagnitudeBetaConfig(
             stickiness=initial_stickiness,
             ent_loss_coef=1e-3,
             beta_ent_scale=0.75,
-            categorical_ent_loss_config=make_lr_beta_entropy_config(),
-            beta_ent_loss_config=make_lr_beta_entropy_config(),
+            categorical_ent_loss_config=make_sign_magnitude_beta_entropy_config(),
+            beta_ent_loss_config=make_sign_magnitude_beta_entropy_config(),
         )
-    if variant == "lr_beta":
-        return LeftRightBetaConfig(
+    if variant == "sign_magnitude_beta":
+        return SignMagnitudeBetaConfig(
             ent_loss_coef=1e-3,
             beta_ent_scale=0.75,
-            categorical_ent_loss_config=make_lr_beta_entropy_config(),
-            beta_ent_loss_config=make_lr_beta_entropy_config(),
+            categorical_ent_loss_config=make_sign_magnitude_beta_entropy_config(),
+            beta_ent_loss_config=make_sign_magnitude_beta_entropy_config(),
         )
     if variant == "beta":
         return BetaConfig(
             ent_loss_coef=1e-3,
-            ent_loss_config=make_lr_beta_entropy_config(),
+            ent_loss_config=make_sign_magnitude_beta_entropy_config(),
         )
     if variant == "gsde":
         return GSDEConfig(
@@ -273,7 +273,7 @@ def run_experiment(
         entrypoint_path: Path,
         virtual_mini_batches: int = 1,
         n_epochs: int = 8,
-        continuous_action_dist: ContinuousActionDistVariant = "lr_beta",
+        continuous_action_dist: ContinuousActionDistVariant = "sign_magnitude_beta",
         policy_variant: PolicyVariant = "mat_qcs",
         mat_add_agent_embeddings: bool = True,
         mat_decoder_self_attention_mode: MATQCSDecoderSelfAttentionMode = MATQCSDecoderSelfAttentionMode.FULL_AUTOREGRESSIVE,
@@ -529,7 +529,7 @@ def run_experiment(
 
     scheduler_manager: SchedulerManager | None = None
     continuous_dist = policy.action_dist.distributions[0]
-    if continuous_action_dist == "sticky_lr_beta" and isinstance(continuous_dist, StickyActionDist):
+    if continuous_action_dist == "sticky_sign_magnitude_beta" and isinstance(continuous_dist, StickyActionDist):
         sticky_dist: StickyActionDist = continuous_dist
         scheduler_manager = SchedulerManager(
             [
@@ -547,7 +547,7 @@ def run_experiment(
                 )
             ]
         )
-    elif continuous_action_dist == "sticky_lr_beta":
+    elif continuous_action_dist == "sticky_sign_magnitude_beta":
         act0_dist_type = type(continuous_dist) if policy.action_dist.distributions else None
         logger.warning(f"Skipping act0_stickiness scheduler: action dist[0] is {act0_dist_type}")
 

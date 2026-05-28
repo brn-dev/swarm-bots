@@ -18,7 +18,7 @@ if str(REPO_ROOT) not in sys.path:
 import swarmbots.mj_env.scenarios.scenario_presets as mj_scenario_presets
 from swarmbots.learn.action_dists.bernoulli_action_dist import BernoulliConfig
 from swarmbots.learn.action_dists.entropy_utils import EntropyLossConfig, AgentActionsReduction
-from swarmbots.learn.action_dists.left_right_beta_action_dist import LeftRightBetaConfig
+from swarmbots.learn.action_dists.sign_magnitude_beta_action_dist import SignMagnitudeBetaConfig
 from swarmbots.learn.algos.mat_qcs.mat_qcs_decoder import MATQCSDecoderConfig, MATQCSDecoderSelfAttentionMode
 from swarmbots.learn.algos.mat.mat_encoder import MATEncoderConfig
 from swarmbots.learn.algos.mat_qcs.mat_qcs_policy import MATQCSCriticConfig, MATQCSPolicy, MATQCSPolicyConfig
@@ -400,7 +400,7 @@ def run_experiment(*, num_envs: int, rollout_samples: int, variant_name: str, en
             ),
             dropout=0.0,
             act_fn_cls=nn.GELU,
-            continuous_config=LeftRightBetaConfig(
+            continuous_config=SignMagnitudeBetaConfig(
                 ent_loss_coef=1e-3,
                 beta_ent_scale=0.75,
                 categorical_ent_loss_config=EntropyLossConfig(

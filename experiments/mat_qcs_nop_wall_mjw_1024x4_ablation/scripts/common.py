@@ -61,7 +61,7 @@ def run_ablation(
         *,
         variant_name: str,
         entrypoint_path: Path,
-        continuous_action_dist: ContinuousActionDistVariant = "lr_beta",
+        continuous_action_dist: ContinuousActionDistVariant = "sign_magnitude_beta",
         policy_variant: PolicyVariant = "mat_qcs",
         mat_add_agent_embeddings: bool = True,
         mat_decoder_self_attention_mode: MATQCSDecoderSelfAttentionMode = MATQCSDecoderSelfAttentionMode.FULL_AUTOREGRESSIVE,

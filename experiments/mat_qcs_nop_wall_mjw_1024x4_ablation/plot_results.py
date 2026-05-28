@@ -16,53 +16,53 @@ EXPERIMENT_RUN_DIR_CANDIDATES = (
     RUNS_DIR / "mat_nop_swarm_bots_wall_mjw_1024x4_ablation",
 )
 OUTPUT_DIR = Path(__file__).resolve().parent / "results"
-BASELINE_GROUP = "lr_beta_nop"
+BASELINE_GROUP = "sign_magnitude_beta_nop"
 GROUP_ORDER = (
     BASELINE_GROUP,
     "gsde_nop",
     "beta_nop",
     "squashed_diag_gaussian_nop",
-    "lr_beta_nop_wall_pass_skew_2",
-    "lr_beta_nop_shuffle_agents",
-    "lr_beta_nop_shuffle_agents_preserve_prefix",
-    "lr_beta_no_nop",
-    "sticky_lr_beta_nop_squared_relu",
-    "lr_beta_nop_init_gain_0_01",
-    "lr_beta_nop_init_gain_0_01_projections_1",
-    "lr_beta_nop_init_gain_0_1",
-    "lr_beta_nop_init_gain_0_1_projections_1",
-    "lr_beta_nop_value_regressor_init_gain_0_1",
-    "lr_beta_nop_context_tokens_only",
-    "lr_beta_nop_no_agent_embeddings",
-    "lr_beta_nop_context_tokens_only_no_agent_embeddings",
+    "sign_magnitude_beta_nop_wall_pass_skew_2",
+    "sign_magnitude_beta_nop_shuffle_agents",
+    "sign_magnitude_beta_nop_shuffle_agents_preserve_prefix",
+    "sign_magnitude_beta_no_nop",
+    "sticky_sign_magnitude_beta_nop_squared_relu",
+    "sign_magnitude_beta_nop_init_gain_0_01",
+    "sign_magnitude_beta_nop_init_gain_0_01_projections_1",
+    "sign_magnitude_beta_nop_init_gain_0_1",
+    "sign_magnitude_beta_nop_init_gain_0_1_projections_1",
+    "sign_magnitude_beta_nop_value_regressor_init_gain_0_1",
+    "sign_magnitude_beta_nop_context_tokens_only",
+    "sign_magnitude_beta_nop_no_agent_embeddings",
+    "sign_magnitude_beta_nop_context_tokens_only_no_agent_embeddings",
 )
 DISPLAY_NAME_OVERRIDES = {
-    BASELINE_GROUP: "L/R Beta + NOP",
+    BASELINE_GROUP: "Sign-Magnitude Beta + NOP",
     "gsde_nop": "gSDE + NOP",
     "beta_nop": "Beta + NOP",
     "squashed_diag_gaussian_nop": "Squashed Diag Gaussian + NOP",
-    "lr_beta_nop_wall_pass_skew_2": "L/R Beta + NOP, wall-pass skew 2",
-    "lr_beta_nop_shuffle_agents": "L/R Beta + NOP, shuffled agents",
-    "lr_beta_nop_shuffle_agents_preserve_prefix": (
-        "L/R Beta + NOP, shuffled active-prefix agents"
+    "sign_magnitude_beta_nop_wall_pass_skew_2": "Sign-Magnitude Beta + NOP, wall-pass skew 2",
+    "sign_magnitude_beta_nop_shuffle_agents": "Sign-Magnitude Beta + NOP, shuffled agents",
+    "sign_magnitude_beta_nop_shuffle_agents_preserve_prefix": (
+        "Sign-Magnitude Beta + NOP, shuffled active-prefix agents"
     ),
-    "lr_beta_no_nop": "L/R Beta, no NOP",
-    "sticky_lr_beta_nop_squared_relu": "Sticky L/R Beta + NOP, Squared ReLU",
-    "lr_beta_nop_init_gain_0_01": "L/R Beta + NOP, hidden init gain 0.01",
-    "lr_beta_nop_init_gain_0_01_projections_1": (
-        "L/R Beta + NOP, hidden init gain 0.01, projections 1.0"
+    "sign_magnitude_beta_no_nop": "Sign-Magnitude Beta, no NOP",
+    "sticky_sign_magnitude_beta_nop_squared_relu": "Sticky Sign-Magnitude Beta + NOP, Squared ReLU",
+    "sign_magnitude_beta_nop_init_gain_0_01": "Sign-Magnitude Beta + NOP, hidden init gain 0.01",
+    "sign_magnitude_beta_nop_init_gain_0_01_projections_1": (
+        "Sign-Magnitude Beta + NOP, hidden init gain 0.01, projections 1.0"
     ),
-    "lr_beta_nop_init_gain_0_1": "L/R Beta + NOP, hidden init gain 0.1",
-    "lr_beta_nop_init_gain_0_1_projections_1": (
-        "L/R Beta + NOP, hidden init gain 0.1, projections 1.0"
+    "sign_magnitude_beta_nop_init_gain_0_1": "Sign-Magnitude Beta + NOP, hidden init gain 0.1",
+    "sign_magnitude_beta_nop_init_gain_0_1_projections_1": (
+        "Sign-Magnitude Beta + NOP, hidden init gain 0.1, projections 1.0"
     ),
-    "lr_beta_nop_value_regressor_init_gain_0_1": (
-        "L/R Beta + NOP, value regressor init gain 0.1"
+    "sign_magnitude_beta_nop_value_regressor_init_gain_0_1": (
+        "Sign-Magnitude Beta + NOP, value regressor init gain 0.1"
     ),
-    "lr_beta_nop_context_tokens_only": "L/R Beta + NOP, context tokens only",
-    "lr_beta_nop_no_agent_embeddings": "L/R Beta + NOP, no agent embeddings",
-    "lr_beta_nop_context_tokens_only_no_agent_embeddings": (
-        "L/R Beta + NOP, context tokens only, no agent embeddings"
+    "sign_magnitude_beta_nop_context_tokens_only": "Sign-Magnitude Beta + NOP, context tokens only",
+    "sign_magnitude_beta_nop_no_agent_embeddings": "Sign-Magnitude Beta + NOP, no agent embeddings",
+    "sign_magnitude_beta_nop_context_tokens_only_no_agent_embeddings": (
+        "Sign-Magnitude Beta + NOP, context tokens only, no agent embeddings"
     ),
 }
 PAIRWISE_VARIANT_GROUPS = tuple(group_name for group_name in GROUP_ORDER if group_name != BASELINE_GROUP)
@@ -80,16 +80,16 @@ VARIANT_FAMILY_SELECTIONS = (
         output_subdir="selections",
     ),
     ExperimentPlotSelection(
-        name="lr_beta_ablation_variants",
+        name="sign_magnitude_beta_ablation_variants",
         group_names=(
             BASELINE_GROUP,
-            "lr_beta_nop_wall_pass_skew_2",
-            "lr_beta_nop_shuffle_agents",
-            "lr_beta_nop_shuffle_agents_preserve_prefix",
-            "lr_beta_no_nop",
-            "sticky_lr_beta_nop_squared_relu",
+            "sign_magnitude_beta_nop_wall_pass_skew_2",
+            "sign_magnitude_beta_nop_shuffle_agents",
+            "sign_magnitude_beta_nop_shuffle_agents_preserve_prefix",
+            "sign_magnitude_beta_no_nop",
+            "sticky_sign_magnitude_beta_nop_squared_relu",
         ),
-        title_suffix="L/R Beta Ablation Variants",
+        title_suffix="Sign-Magnitude Beta Ablation Variants",
         required_group_names=(BASELINE_GROUP,),
         output_subdir="selections",
     ),
@@ -97,8 +97,8 @@ VARIANT_FAMILY_SELECTIONS = (
         name="shuffle_variants",
         group_names=(
             BASELINE_GROUP,
-            "lr_beta_nop_shuffle_agents",
-            "lr_beta_nop_shuffle_agents_preserve_prefix",
+            "sign_magnitude_beta_nop_shuffle_agents",
+            "sign_magnitude_beta_nop_shuffle_agents_preserve_prefix",
         ),
         title_suffix="Shuffle Variants",
         required_group_names=(BASELINE_GROUP,),
@@ -108,7 +108,7 @@ VARIANT_FAMILY_SELECTIONS = (
         name="nop_ablation",
         group_names=(
             BASELINE_GROUP,
-            "lr_beta_no_nop",
+            "sign_magnitude_beta_no_nop",
         ),
         title_suffix="NOP Ablation",
         required_group_names=(BASELINE_GROUP,),
@@ -118,11 +118,11 @@ VARIANT_FAMILY_SELECTIONS = (
         name="initialization_variants",
         group_names=(
             BASELINE_GROUP,
-            "lr_beta_nop_init_gain_0_01",
-            "lr_beta_nop_init_gain_0_01_projections_1",
-            "lr_beta_nop_init_gain_0_1",
-            "lr_beta_nop_init_gain_0_1_projections_1",
-            "lr_beta_nop_value_regressor_init_gain_0_1",
+            "sign_magnitude_beta_nop_init_gain_0_01",
+            "sign_magnitude_beta_nop_init_gain_0_01_projections_1",
+            "sign_magnitude_beta_nop_init_gain_0_1",
+            "sign_magnitude_beta_nop_init_gain_0_1_projections_1",
+            "sign_magnitude_beta_nop_value_regressor_init_gain_0_1",
         ),
         title_suffix="Initialization Variants",
         required_group_names=(BASELINE_GROUP,),
@@ -132,9 +132,9 @@ VARIANT_FAMILY_SELECTIONS = (
         name="context_agent_embedding_variants",
         group_names=(
             BASELINE_GROUP,
-            "lr_beta_nop_context_tokens_only",
-            "lr_beta_nop_no_agent_embeddings",
-            "lr_beta_nop_context_tokens_only_no_agent_embeddings",
+            "sign_magnitude_beta_nop_context_tokens_only",
+            "sign_magnitude_beta_nop_no_agent_embeddings",
+            "sign_magnitude_beta_nop_context_tokens_only_no_agent_embeddings",
         ),
         title_suffix="Context-Only And Agent Embedding Variants",
         required_group_names=(BASELINE_GROUP,),
@@ -166,9 +166,28 @@ def first_existing_dir(paths: tuple[Path, ...]) -> Path:
     raise NotADirectoryError(f"No experiment run dir found. Checked:\n{candidate_paths}")
 
 
+def legacy_group_name(group_name: str) -> str:
+    return (
+        group_name
+        .replace("sticky_sign_magnitude_beta", "sticky_lr_beta")
+        .replace("sign_magnitude_beta", "lr_beta")
+    )
+
+
+def group_source_names(group_name: str) -> tuple[str, ...]:
+    legacy_name = legacy_group_name(group_name)
+    if legacy_name == group_name:
+        return (group_name,)
+    return (group_name, legacy_name)
+
+
 def build_extra_group_sources() -> dict[str, tuple[Path, ...]]:
     sources = {
-        group_name: tuple(run_dir / group_name for run_dir in EXPERIMENT_RUN_DIR_CANDIDATES)
+        group_name: tuple(
+            run_dir / source_name
+            for run_dir in EXPERIMENT_RUN_DIR_CANDIDATES
+            for source_name in group_source_names(group_name)
+        )
         for group_name in GROUP_ORDER
     }
     sources[BASELINE_GROUP] += (
