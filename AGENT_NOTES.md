@@ -30,6 +30,7 @@ Keep only durable architecture notes and gotchas. Prefer deleting stale detail o
 - `PPO.train()` uses `policy.make_sampler(episodes)`; `PPO.compute_loss()` uses `policy.evaluate_actions(batch=...)`.
 - `MATPolicy` is the main transformer policy; `PPOPolicy` is the plain MLP policy.
 - `MATDecPolicy` is decoderless despite the name.
+- `MATQCCPolicy` lives in `swarmbots.learn.algos.mat_qcc`; its decoder keeps query and context streams separate, but reforms context tokens at every layer before later queries attend to them, so it is not state-dict compatible with `MATDecoder`'s interleaved `CONTEXT_TOKENS_ONLY` implementation. `MATQCCDecoderConfig.assume_agent_mask_is_active_prefix=True` uses the prefix-mask fast path; set it `False` for arbitrary inactive positions.
 - `MATOrigPolicy` uses shifted previous-agent actions, so it requires contiguous true-prefix `agent_mask`. It must zero inactive-agent log-probs in rollout and `evaluate_actions()`.
 - `MATPolicy` supports arbitrary inactive positions if every row has at least one active agent; `MATDecoderConfig.assume_agent_mask_is_active_prefix=True` enables the cheap prefix path.
 - For MAT-family customization, override `_build_encoder*()` / `_build_action_dist(...)`; do not mutate fields after `super().__init__()`.
