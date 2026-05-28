@@ -4,7 +4,7 @@ import torch
 from torch import nn
 
 from swarmbots.learn.action_dists.action_dist import ActionMetricsSplitterInput
-from swarmbots.learn.algos.mat.mat_policy import MATPolicy, MATPolicyConfig
+from swarmbots.learn.algos.mat_qcs.mat_qcs_policy import MATQCSPolicy, MATQCSPolicyConfig
 from swarmbots.learn.algos.r_mat.r_mat_encoder import RMATEncoder, RMATEncoderConfig, RMATEncoderState
 from swarmbots.learn.algos.r_mat.r_ppo_wm_sampler import RPPOWMSamples, RPPOWMSampler, RPPOWMSamplerConfig
 from swarmbots.learn.algos.ppo.ppo_rollout_buffer import PPOEpisodeSegment
@@ -13,18 +13,18 @@ from swarmbots.learn.losses import LossDict, LossMetrics
 
 
 @dataclass(frozen=True)
-class RMATPolicyConfig(MATPolicyConfig):
+class RMATQCSPolicyConfig(MATQCSPolicyConfig):
     encoder_config: RMATEncoderConfig = field(default_factory=RMATEncoderConfig)
 
 
-class RMATPolicy(MATPolicy):
+class RMATQCSPolicy(MATQCSPolicy):
 
     encoder_config: RMATEncoderConfig
 
     def __init__(
             self,
             env: BaseLearnEnvWrapper,
-            config: RMATPolicyConfig = RMATPolicyConfig(),
+            config: RMATQCSPolicyConfig = RMATQCSPolicyConfig(),
     ) -> None:
         super().__init__(env=env, config=config)
         self._rollout_encoder_state: RMATEncoderState | None = None

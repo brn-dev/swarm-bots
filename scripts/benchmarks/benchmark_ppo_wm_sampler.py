@@ -21,7 +21,7 @@ from swarmbots.learn.algos.world_modeling.base_wm_sampler import BaseWMSampler
 from swarmbots.learn.algos.world_modeling.ppo_wm_sampler import PPOWMSampler, PPOWMSamplerConfig
 from swarmbots.learn.algos.world_modeling.wm_sampler_helper import build_wm_episode_windows
 
-# Default workload aligned with scripts/run_mat_nop_wall_mjw.py.
+# Default workload aligned with scripts/run_mat_qcs_nop_wall_mjw.py.
 # That training setup uses StepsRolloutMode(4096) with n_envs=1024, so the flat sampler
 # mostly sees PPOEpisodeSegment lengths of 4 rollout steps per env, not true episode_length=512.
 DEFAULT_DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
@@ -421,7 +421,7 @@ def parse_args() -> tuple[BenchmarkConfig, list[str], Path | None]:
         default=DEFAULT_MAX_SEGMENT_LENGTH,
         help=(
             "Maximum PPOEpisodeSegment length fed into the sampler. "
-            "The default matches run_mat_nop_wall_mjw.py step-rollout segments, not the true env episode length."
+            "The default matches run_mat_qcs_nop_wall_mjw.py step-rollout segments, not the true env episode length."
         ),
     )
     parser.add_argument("--num-next-steps", type=int, default=DEFAULT_NUM_NEXT_STEPS)

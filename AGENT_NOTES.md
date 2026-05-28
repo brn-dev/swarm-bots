@@ -7,8 +7,8 @@ Keep only durable architecture notes and gotchas. Prefer deleting stale detail o
 - `swarmbots/mj_env`: CPU MuJoCo envs/scenarios/swarm generation.
 - `swarmbots/mjw_env`: MJWarp batched GPU envs.
 - `swarmbots/learn`: PPO/MAT, action dists, wrappers, rollout, checkpoints, logging.
-- Main training entrypoint: `scripts/run_mat_nop_wall.py`. Other `scripts/run_mat_*.py` and `recording/record.py` may be stale.
-- New training scripts should usually start from `scripts/run_mat_nop_wall*.py`, `scripts/run_mat_nop_payload*.py`, or `scripts/run_mat_nop_move*.py`.
+- Main training entrypoint: `scripts/run_mat_qcs_nop_wall.py`. Other `scripts/run_mat_*.py` and `recording/record.py` may be stale.
+- New training scripts should usually start from `scripts/run_mat_qcs_nop_wall*.py`, `scripts/run_mat_qcs_nop_payload*.py`, or `scripts/run_mat_qcs_nop_move*.py`.
 
 ## Wrappers And Autoreset
 
@@ -28,26 +28,26 @@ Keep only durable architecture notes and gotchas. Prefer deleting stale detail o
 - `collect_steps()` chunks may start mid-episode. Use `PPOEpisode.is_true_episode_start`; do not infer from chunk position.
 - Rollout bootstrap should use a value-only path, not full deterministic action generation.
 - `PPO.train()` uses `policy.make_sampler(episodes)`; `PPO.compute_loss()` uses `policy.evaluate_actions(batch=...)`.
-- `MATPolicy` is the main transformer policy; `PPOPolicy` is the plain MLP policy.
+- `MATQCSPolicy` is the main transformer policy; `PPOPolicy` is the plain MLP policy.
 - `MATDecPolicy` is decoderless despite the name.
-- `MATQCCPolicy` lives in `swarmbots.learn.algos.mat_qcc`; its decoder keeps query and context streams separate, but reforms context tokens at every layer before later queries attend to them, so it is not state-dict compatible with `MATDecoder`'s interleaved `CONTEXT_TOKENS_ONLY` implementation. `MATQCCDecoderConfig.assume_agent_mask_is_active_prefix=True` uses the prefix-mask fast path; set it `False` for arbitrary inactive positions.
+- `MATQCCPolicy` lives in `swarmbots.learn.algos.mat_qcc`; its decoder keeps query and context streams separate, but reforms context tokens at every layer before later queries attend to them, so it is not state-dict compatible with `MATQCSDecoder`'s interleaved `CONTEXT_TOKENS_ONLY` implementation. `MATQCCDecoderConfig.assume_agent_mask_is_active_prefix=True` uses the prefix-mask fast path; set it `False` for arbitrary inactive positions.
 - `MATOrigPolicy` uses shifted previous-agent actions, so it requires contiguous true-prefix `agent_mask`. It must zero inactive-agent log-probs in rollout and `evaluate_actions()`.
-- `MATPolicy` supports arbitrary inactive positions if every row has at least one active agent; `MATDecoderConfig.assume_agent_mask_is_active_prefix=True` enables the cheap prefix path.
+- `MATQCSPolicy` supports arbitrary inactive positions if every row has at least one active agent; `MATQCSDecoderConfig.assume_agent_mask_is_active_prefix=True` enables the cheap prefix path.
 - For MAT-family customization, override `_build_encoder*()` / `_build_action_dist(...)`; do not mutate fields after `super().__init__()`.
 - Keep actor latents contiguous before action dists. Pass `tgt_is_causal` explicitly to `nn.TransformerDecoder`.
 - `ActionDist.compile_friendly` gates MAT compile coverage. Mutable action-dist scalars must be tensors/buffers, not Python floats.
 - Sticky dists must keep `requires_previous_actions()` structurally stable even when annealed to zero.
-- Default MAT/NOP training scripts use non-sticky `LeftRightBetaConfig`; opt into `sticky_lr_beta` only for comparison runs.
+- Default MAT-QCS/NOP training scripts use non-sticky `LeftRightBetaConfig`; opt into `sticky_lr_beta` only for comparison runs.
 - Squashed Gaussian/gSDE entropy uses pre-squash Gaussian entropy proxies. `BetaActionDist` maps `[0, 1]` samples to repo-standard `[-1, 1]`.
 - Transformer encoder/decoder layers clone identical prototype params unless explicitly reinitialized via configured transformer FF init gain.
 
 ## Recurrent And World Models
 
-- `RMATPolicy` stores rollout temporal state inside the policy. Under SAME_STEP, reset masks are queued after done and consumed on the next episode's first obs.
+- `RMATQCSPolicy` stores rollout temporal state inside the policy. Under SAME_STEP, reset masks are queued after done and consumed on the next episode's first obs.
 - Step-rollout bootstrap must snapshot/restore RMAT state. RMAT training uses zero-init plus burn-in, not exact rollout hidden-state replay.
 - WM integration is policy-wrapper based: `NextObsPredWrapper` / `SPRWrapper`.
 - WM wrappers must delegate sampler, temporal-state hooks, and `after_optimizer_step()` to the wrapped policy. Flat WM samplers break RMAT.
-- `SPRWrapper` does not support `RMATPolicy`.
+- `SPRWrapper` does not support `RMATQCSPolicy`.
 - WM losses use `wm_actions`, not PPO current-step `actions`; recurrent WM losses use `time_loss_mask`.
 - NOP global-observation prediction is optional. It is enabled by explicit global scalar/rot6d target indices and pools predicted agent latents across active agents before global heads; local-only configs should not allocate or require global NOP heads/tensors.
 - Shared recurrent WM flattening: `swarmbots/learn/algos/world_modeling/wm_recurrent_batch.py`.
@@ -93,12 +93,12 @@ Keep only durable architecture notes and gotchas. Prefer deleting stale detail o
 - Gymnasium vector-info packing adds boolean `_key` masks for every info field. Ignore underscore-prefixed entries in reward overlays.
 - `scripts/utils/run_repeated.sh` registers under `.run/run_repeated`; `scripts/utils/show_run_repeated.sh` lists active registrations; `scripts/utils/stop_run_repeated.sh` creates the stop token.
 - Activation factories with `ParameterLearnMode.PER_FEATURE` need explicit feature counts; use `make_activation(...)` in generic `act_fn_cls` paths.
-- MAT/NOP `proper_init_1`: hidden/projection/transformer-FF gains `1.0`, output/action/value/prediction heads `0.01`.
-- Plain `SquaredReLU` with default tiny MLP init can collapse MAT/NOP feature scales and critic gradients.
+- MAT-QCS/NOP `proper_init_1`: hidden/projection/transformer-FF gains `1.0`, output/action/value/prediction heads `0.01`.
+- Plain `SquaredReLU` with default tiny MLP init can collapse MAT-QCS/NOP feature scales and critic gradients.
 - CPU wall training should use `WorkerPoolAsyncVectorEnv(..., copy=False)`. Do not clone envs whose constructors differ in per-env state like `first_episode_length`.
 - `SwarmBotsEnv.reset(seed=...)` must reseed `scenario.rng`; reset sampling does not use Gymnasium `env.np_random`.
 - On Windows, workers re-import the script top-level module. Keep heavy PPO/torch/MJW imports out of top level unless env construction needs them.
-- Recording camera defaults should stay scenario-owned. For compiled MAT/NOP, record envs should stay on the policy's active device.
+- Recording camera defaults should stay scenario-owned. For compiled MAT-QCS/NOP, record envs should stay on the policy's active device.
 - Remote `brn@server2026` SSH works through WSL (`wsl ssh brn@server2026 ...`); Windows `ssh` may hang or fail auth. Remote runs live under `~/git/swarm-bots/runs`.
 
 ## Version And Install

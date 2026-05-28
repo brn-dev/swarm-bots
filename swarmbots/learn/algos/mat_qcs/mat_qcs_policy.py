@@ -1,5 +1,7 @@
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
+import shutil
+import sys
 from typing import Any, Optional
 
 import torch
@@ -8,14 +10,16 @@ from torch import nn
 from swarmbots.learn.action_dists.action_dist import ActionMetricsSplitterInput
 from swarmbots.learn.action_dists.bernoulli_action_dist import BernoulliConfig
 from swarmbots.learn.action_dists.hybrid_action_dist import (
-    ContinuousActionDistConfigInput,
     HybridActionDistribution,
-    bernoulli_config_to_dict,
+    ContinuousActionDistConfigInput,
     continuous_config_to_dicts,
+    bernoulli_config_to_dict,
 )
 from swarmbots.learn.algos.mat.mat_encoder import MATEncoder, MATEncoderConfig
-from swarmbots.learn.algos.mat_qcs.mat_qcs_policy import MATQCSCriticConfig, _ensure_torch_compile_available
+from swarmbots.learn.algos.mat_qcs.mat_qcs_decoder import MATQCSDecoder, MATQCSDecoderConfig
 from swarmbots.learn.algos.ppo.base_ppo_policy import BasePPOPolicy
+from swarmbots.learn.algos.ppo.ppo import AGENTS_DIM
+from swarmbots.learn.algos.ppo.ppo_policy import PopArtConfig
 from swarmbots.learn.algos.ppo.ppo_rollout_buffer import PPOEpisodeSegment
 from swarmbots.learn.algos.ppo.ppo_sampler import PPOSamples, PPOSampler, PPOSamplerConfig
 from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
@@ -28,10 +32,20 @@ from swarmbots.learn.serialization_utils import serialize_dataclass, serialize_v
 
 
 @dataclass(frozen=True)
-class MATDecPolicyConfig:
+class MATQCSCriticConfig:
+    n_local_projection_hidden_layers: int = 1
+    n_value_regressor_hidden_layers: int = 2
+    use_popart: bool = False
+    popart_config: PopArtConfig = field(default_factory=PopArtConfig)
+    local_projection_init_gain: float = 1.0
+    value_regressor_init_gain: float = 1.0
+    value_head_init_gain: float = 0.01
+
+@dataclass(frozen=True)
+class MATQCSPolicyConfig:
     encoder_config: MATEncoderConfig = field(default_factory=MATEncoderConfig)
+    decoder_config: MATQCSDecoderConfig = field(default_factory=MATQCSDecoderConfig)
     critic_config: MATQCSCriticConfig = field(default_factory=MATQCSCriticConfig)
-    actor_head_hidden_dims: list[int] | None = None
     act_fn_cls: ActivationFactory = nn.ReLU
     dropout: float = 0.0
     continuous_config: ContinuousActionDistConfigInput = None
@@ -39,16 +53,26 @@ class MATDecPolicyConfig:
     max_agents: int | None = None
     compile_modules: bool = False
     compile_mode: str = "default"
-    actor_head_init_gain: float = 1.0
     action_net_init_gain: float = 0.01
 
 
-class MATDecPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
+def _ensure_torch_compile_available(*, compile_mode: str) -> None:
+    if not hasattr(torch, "compile"):
+        raise RuntimeError("MATQCSPolicyConfig.compile_modules=True requires torch.compile support.")
+    if sys.platform == "win32" and shutil.which("cl") is None:
+        raise RuntimeError(
+            "MATQCSPolicyConfig.compile_modules=True on this Windows setup requires cl.exe on PATH for torch.compile."
+        )
+    if not compile_mode:
+        raise ValueError("MATQCSPolicyConfig.compile_mode must be a non-empty string when compile_modules=True.")
+
+
+class MATQCSPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
 
     def __init__(
             self,
             env: BaseLearnEnvWrapper,
-            config: MATDecPolicyConfig = MATDecPolicyConfig(),
+            config: MATQCSPolicyConfig = MATQCSPolicyConfig(),
     ) -> None:
         super().__init__()
         self.config = config
@@ -69,39 +93,111 @@ class MATDecPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
         self.agent_action_dim = env.action_space.total_agent_action_dim
 
         self.d_model_encoder = config.encoder_config.d_model
-        self.encoder_config = replace(
-            config.encoder_config,
-            d_model=self.d_model_encoder,
-            act_fn_cls=config.act_fn_cls,
-            dropout=config.dropout,
-        )
-        self.encoder = MATEncoder(
-            config=self.encoder_config,
-            max_agents=self.max_agents,
-            local_obs_dim=self.local_obs_dim,
-            global_obs_dim=self.global_obs_dim,
+        self.d_model_decoder = (
+            config.encoder_config.d_model
+            if config.decoder_config.d_model is None
+            else config.decoder_config.d_model
         )
 
-        if config.actor_head_hidden_dims is not None and len(config.actor_head_hidden_dims) > 0:
-            self.actor_head = MLP(
+        self.encoder_config = self._build_encoder_config()
+        self.encoder = self._build_encoder()
+
+        self.agent_embeddings_decoder: nn.Parameter | None = None
+        if config.decoder_config.add_agent_embeddings:
+            self.agent_embeddings_decoder = nn.Parameter(
+                torch.zeros(1, self.max_agents, self.d_model_decoder), requires_grad=True
+            )
+            nn.init.orthogonal_(self.agent_embeddings_decoder)
+
+        self.query_input_norm = (
+            nn.LayerNorm(self.d_model_encoder)
+            if config.decoder_config.normalize_query_input
+            else nn.Identity()
+        )
+        self.query_encoder = self._build_token_encoder(
+            input_dim=self.d_model_encoder,
+            output_dim=self.d_model_decoder,
+            hidden_dims=config.decoder_config.query_encoder_hidden_dims,
+            act_fn_cls=config.act_fn_cls,
+            linear_init_gain=config.decoder_config.token_encoder_init_gain,
+            projection_init_gain=config.decoder_config.token_encoder_projection_init_gain,
+        )
+        self.query_token_norm = (
+            nn.LayerNorm(self.d_model_decoder)
+            if config.decoder_config.normalize_query_tokens
+            else nn.Identity()
+        )
+
+        self.context_input_norm = (
+            nn.LayerNorm(self.d_model_encoder + self.agent_action_dim)
+            if config.decoder_config.normalize_context_input
+            else nn.Identity()
+        )
+        self.context_encoder = self._build_token_encoder(
+            input_dim=self.d_model_encoder + self.agent_action_dim,
+            output_dim=self.d_model_decoder,
+            hidden_dims=config.decoder_config.context_encoder_hidden_dims,
+            act_fn_cls=config.act_fn_cls,
+            linear_init_gain=config.decoder_config.token_encoder_init_gain,
+            projection_init_gain=config.decoder_config.token_encoder_projection_init_gain,
+        )
+        self.context_token_norm = (
+            nn.LayerNorm(self.d_model_decoder)
+            if config.decoder_config.normalize_context_tokens
+            else nn.Identity()
+        )
+        self.memory_input_norm = (
+            nn.LayerNorm(self.d_model_encoder)
+            if config.decoder_config.normalize_memory_input
+            else nn.Identity()
+        )
+        memory_dims = config.decoder_config.memory_dims
+        if memory_dims is None:
+            self.memory_encoder = nn.Identity()
+            self.memory_d_model = self.d_model_encoder
+        else:
+            if len(memory_dims) == 0:
+                raise ValueError("decoder_config.memory_dims must be None or contain at least one dimension")
+            self.memory_encoder = self._build_encoder_from_dims(
                 input_dim=self.d_model_encoder,
-                hidden_dims=config.actor_head_hidden_dims,
+                dims=memory_dims,
+                act_fn_cls=config.act_fn_cls,
+                linear_init_gain=config.decoder_config.token_encoder_init_gain,
+                projection_init_gain=config.decoder_config.token_encoder_projection_init_gain,
+            )
+            self.memory_d_model = memory_dims[-1]
+        self.memory_token_norm = (
+            nn.LayerNorm(self.memory_d_model)
+            if config.decoder_config.normalize_memory_tokens
+            else nn.Identity()
+        )
+
+        decoder_config = self._build_decoder_config()
+        self.decoder_config = decoder_config
+        self.decoder = self._build_decoder(decoder_config)
+
+        if (
+            config.decoder_config.actor_head_hidden_dims is not None
+            and len(config.decoder_config.actor_head_hidden_dims) > 0
+        ):
+            self.actor_head = MLP(
+                input_dim=self.d_model_decoder,
+                hidden_dims=config.decoder_config.actor_head_hidden_dims,
                 end_with_act_fn=True,
-                linear_init=make_init_linear_orthogonal(config.actor_head_init_gain),
+                linear_init=make_init_linear_orthogonal(config.decoder_config.actor_head_init_gain),
                 act_fn_cls=config.act_fn_cls,
             )
-            latent_pi_dim = config.actor_head_hidden_dims[-1]
+            latent_pi_dim = config.decoder_config.actor_head_hidden_dims[-1]
         else:
             self.actor_head = nn.Identity()
-            latent_pi_dim = self.d_model_encoder
-
-        self.action_dist = HybridActionDistribution(
-            latent_dim=latent_pi_dim,
-            action_space=env.action_space,
-            continuous_config=config.continuous_config,
-            bernoulli_config=config.bernoulli_config,
-            action_net_initialization=make_init_linear_orthogonal(config.action_net_init_gain),
+            latent_pi_dim = self.d_model_decoder
+        self.actor_head_input_norm = (
+            nn.LayerNorm(self.d_model_decoder)
+            if config.decoder_config.normalize_actor_head_input
+            else nn.Identity()
         )
+
+        self.action_dist = self._build_action_dist(env=env, latent_pi_dim=latent_pi_dim)
 
         self.critic = DeepSetCritic(
             num_local_features=self.d_model_encoder + self.hidden_local_vars_dim,
@@ -119,7 +215,6 @@ class MATDecPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
             popart_min_std=config.critic_config.popart_config.min_std,
             popart_init_sigma=config.critic_config.popart_config.init_sigma,
         )
-
         self._generate_actions_fn: Callable[..., tuple[torch.Tensor, Optional[torch.Tensor]]] = self._generate_actions_impl
         self._evaluate_latent_and_values_fn: Callable[..., tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = (
             self._evaluate_latent_and_values_impl
@@ -129,12 +224,60 @@ class MATDecPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
         )
         self._apply_optional_compile()
 
+    def _build_encoder_config(self) -> MATEncoderConfig:
+        return replace(
+            self.config.encoder_config,
+            d_model=self.d_model_encoder,
+            act_fn_cls=self.config.act_fn_cls,
+            dropout=self.config.dropout,
+        )
+
+    def _build_encoder(self) -> nn.Module:
+        return MATEncoder(
+            config=self.encoder_config,
+            max_agents=self.max_agents,
+            local_obs_dim=self.local_obs_dim,
+            global_obs_dim=self.global_obs_dim,
+        )
+
+    def _build_decoder_config(self) -> MATQCSDecoderConfig:
+        return replace(
+            self.config.decoder_config,
+            d_model=self.d_model_decoder,
+            act_fn_cls=self.config.act_fn_cls,
+            dropout=self.config.dropout,
+        )
+
+    def _build_decoder(
+            self,
+            decoder_config: MATQCSDecoderConfig,
+    ) -> nn.Module:
+        return MATQCSDecoder(
+            config=decoder_config,
+            max_agents=self.max_agents,
+            memory_d_model=self.memory_d_model,
+        )
+
+    def _build_action_dist(
+            self,
+            *,
+            env: BaseLearnEnvWrapper,
+            latent_pi_dim: int,
+    ) -> HybridActionDistribution:
+        return HybridActionDistribution(
+            latent_dim=latent_pi_dim,
+            action_space=env.action_space,
+            continuous_config=self.config.continuous_config,
+            bernoulli_config=self.config.bernoulli_config,
+            action_net_initialization=make_init_linear_orthogonal(self.config.action_net_init_gain),
+        )
+
     def get_hyper_parameters(self) -> dict[str, Any]:
         return {
-            "mat_dec_policy_config": {
+            "mat_qcs_policy_config": {
                 "encoder_config": serialize_dataclass(self.encoder_config),
+                "decoder_config": serialize_dataclass(self.decoder_config),
                 "critic_config": serialize_dataclass(self.config.critic_config),
-                "actor_head_hidden_dims": self.config.actor_head_hidden_dims,
                 "act_fn_cls": serialize_value(self.act_fn_cls),
                 "dropout": self.dropout,
                 "continuous_config": continuous_config_to_dicts(self.action_dist.continuous_configs),
@@ -142,7 +285,6 @@ class MATDecPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
                 "max_agents": self.max_agents,
                 "compile_modules": self.config.compile_modules,
                 "compile_mode": self.config.compile_mode,
-                "actor_head_init_gain": self.config.actor_head_init_gain,
                 "action_net_init_gain": self.config.action_net_init_gain,
                 "action_dist_compile_friendly": self.action_dist.compile_friendly,
             }
@@ -150,6 +292,129 @@ class MATDecPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
 
     def requires_previous_actions(self) -> bool:
         return self.action_dist.requires_previous_actions()
+
+    def _encode_query_tokens(
+            self,
+            augmented_observations: torch.Tensor,
+            *,
+            agent_embeddings: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        tokens = self.query_encoder(self.query_input_norm(augmented_observations))
+        if agent_embeddings is not None:
+            return self.query_token_norm(tokens + agent_embeddings)
+        if self.agent_embeddings_decoder is not None:
+            tokens = tokens + self.agent_embeddings_decoder[:, :tokens.shape[1], :]
+
+        return self.query_token_norm(tokens)
+
+    def _encode_context_tokens(
+            self,
+            augmented_observations: torch.Tensor,
+            actions: torch.Tensor,
+            *,
+            agent_embeddings: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        context_input = torch.cat((augmented_observations, actions), dim=-1)
+        tokens = self.context_encoder(self.context_input_norm(context_input))
+        if agent_embeddings is not None:
+            return self.context_token_norm(tokens + agent_embeddings)
+        if self.agent_embeddings_decoder is not None:
+            tokens = tokens + self.agent_embeddings_decoder[:, :tokens.shape[1], :]
+
+        return self.context_token_norm(tokens)
+
+    def _generate_actions(
+            self,
+            augmented_observations: torch.Tensor,
+            *,
+            batch_size: int,
+            agent_mask: torch.Tensor | None = None,
+            previous_actions: torch.Tensor | None = None,
+            deterministic: bool = False,
+            return_log_probs: bool = False,
+    ) -> tuple[torch.Tensor, Optional[torch.Tensor]]:
+        return self._generate_actions_fn(
+            augmented_observations=augmented_observations,
+            batch_size=batch_size,
+            agent_mask=agent_mask,
+            previous_actions=previous_actions,
+            deterministic=deterministic,
+            return_log_probs=return_log_probs,
+        )
+
+    def _generate_actions_impl(
+            self,
+            augmented_observations: torch.Tensor,
+            *,
+            batch_size: int,
+            agent_mask: torch.Tensor | None = None,
+            previous_actions: torch.Tensor | None = None,
+            deterministic: bool = False,
+            return_log_probs: bool = False,
+    ) -> tuple[torch.Tensor, Optional[torch.Tensor]]:
+        query_tokens = self._encode_query_tokens(augmented_observations)
+        memory_tokens = self._encode_memory_tokens(augmented_observations)
+
+        actions_list: list[torch.Tensor] = []
+        log_probs_list: list[torch.Tensor] = []
+        context_tokens = query_tokens.new_zeros((batch_size, 0, self.d_model_decoder))
+        context_mask: torch.Tensor | None
+        if agent_mask is None:
+            context_mask = None
+        else:
+            context_mask = agent_mask[:, :0]
+
+        for i in range(self.n_agents):
+            query_token_i = query_tokens[:, i:i + 1, :]
+            query_mask_i = None if agent_mask is None else agent_mask[:, i]
+            out = self.decoder.forward_step(
+                context_tokens=context_tokens,
+                query_token=query_token_i,
+                memory_tokens=memory_tokens,
+                query_prefix_tokens=query_tokens[:, :i, :],
+                context_mask=context_mask,
+                query_prefix_mask=None if agent_mask is None else agent_mask[:, :i],
+                query_mask=query_mask_i,
+                memory_mask=agent_mask,
+            )
+            latent_pi = self.actor_head(self.actor_head_input_norm(out)).contiguous()
+            sample_agent_idx = i if self.action_dist.sampling_depends_on_agent else None
+
+            previous_action_i = None if previous_actions is None else previous_actions[:, i:i + 1, :]
+            if return_log_probs:
+                action, log_prob = self.action_dist.get_actions_with_log_probs(
+                    latent_pi,
+                    deterministic,
+                    agent=sample_agent_idx,
+                    previous_actions=previous_action_i,
+                )
+                log_probs_list.append(log_prob)
+            else:
+                action = self.action_dist.update_latent_features(latent_pi).get_actions(
+                    deterministic=deterministic,
+                    agent=sample_agent_idx,
+                    previous_actions=previous_action_i,
+                )
+            actions_list.append(action)
+
+            agent_embeddings_i = (
+                None
+                if self.agent_embeddings_decoder is None
+                else self.agent_embeddings_decoder[:, i:i + 1, :]
+            )
+            context_token_i = self._encode_context_tokens(
+                augmented_observations[:, i:i + 1, :],
+                action,
+                agent_embeddings=agent_embeddings_i,
+            )
+            context_tokens = torch.cat((context_tokens, context_token_i), dim=AGENTS_DIM)
+            if context_mask is not None:
+                context_mask = torch.cat((context_mask, agent_mask[:, i:i + 1]), dim=AGENTS_DIM)
+
+        actions = torch.cat(actions_list, dim=AGENTS_DIM)
+        if return_log_probs:
+            return actions, torch.cat(log_probs_list, dim=AGENTS_DIM)
+        return actions, None
 
     def forward(
             self,
@@ -164,6 +429,7 @@ class MATDecPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
         augmented_observations = self.encoder(local_obs, global_obs, agent_mask=agent_mask)
         actions, log_probs = self._generate_actions(
             augmented_observations=augmented_observations,
+            batch_size=local_obs.shape[0],
             agent_mask=agent_mask,
             previous_actions=previous_actions,
             deterministic=deterministic,
@@ -176,47 +442,6 @@ class MATDecPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
             agent_mask=agent_mask,
         )
         return actions, log_probs, values
-
-    def _generate_actions(
-            self,
-            *,
-            augmented_observations: torch.Tensor,
-            agent_mask: torch.Tensor | None,
-            previous_actions: torch.Tensor | None,
-            deterministic: bool,
-            return_log_probs: bool,
-    ) -> tuple[torch.Tensor, Optional[torch.Tensor]]:
-        return self._generate_actions_fn(
-            augmented_observations=augmented_observations,
-            agent_mask=agent_mask,
-            previous_actions=previous_actions,
-            deterministic=deterministic,
-            return_log_probs=return_log_probs,
-        )
-
-    def _generate_actions_impl(
-            self,
-            *,
-            augmented_observations: torch.Tensor,
-            agent_mask: torch.Tensor | None,
-            previous_actions: torch.Tensor | None,
-            deterministic: bool,
-            return_log_probs: bool,
-    ) -> tuple[torch.Tensor, Optional[torch.Tensor]]:
-        latent_pi = self.actor_head(augmented_observations).contiguous()
-        if return_log_probs:
-            actions, log_probs = self.action_dist.get_actions_with_log_probs(
-                latent_pi,
-                deterministic=deterministic,
-                previous_actions=previous_actions,
-            )
-            return self._mask_actions(actions, agent_mask), self._mask_log_probs(log_probs, agent_mask)
-
-        actions = self.action_dist.update_latent_features(latent_pi).get_actions(
-            deterministic=deterministic,
-            previous_actions=previous_actions,
-        )
-        return self._mask_actions(actions, agent_mask), None
 
     def _evaluate_actions(
             self,
@@ -241,11 +466,10 @@ class MATDecPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
                 hidden_local_vars=batch.hidden_local_vars,
                 hidden_global_vars=batch.hidden_global_vars,
                 agent_mask=batch.agent_mask,
+                actions=actions,
             )
             self.action_dist.update_latent_features(latent_pi)
             log_probs = self.action_dist.log_prob(actions, previous_actions=batch.previous_actions)
-            log_probs = self._mask_log_probs(log_probs, batch.agent_mask)
-
         extra_losses, extra_loss_metrics = self.action_dist.compute_extra_losses(
             agent_mask=batch.agent_mask,
             action_splitter=action_splitter,
@@ -278,6 +502,7 @@ class MATDecPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
             hidden_local_vars: torch.Tensor | None,
             hidden_global_vars: torch.Tensor | None,
             agent_mask: torch.Tensor | None,
+            actions: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         return self._evaluate_latent_and_values_fn(
             local_obs=local_obs,
@@ -285,6 +510,7 @@ class MATDecPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
             hidden_local_vars=hidden_local_vars,
             hidden_global_vars=hidden_global_vars,
             agent_mask=agent_mask,
+            actions=actions,
         )
 
     def _evaluate_latent_and_values_impl(
@@ -295,9 +521,20 @@ class MATDecPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
             hidden_local_vars: torch.Tensor | None,
             hidden_global_vars: torch.Tensor | None,
             agent_mask: torch.Tensor | None,
+            actions: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         augmented_observations = self.encoder(local_obs, global_obs, agent_mask=agent_mask)
-        latent_pi = self.actor_head(augmented_observations).contiguous()
+        query_tokens = self._encode_query_tokens(augmented_observations)
+        memory_tokens = self._encode_memory_tokens(augmented_observations)
+        context_tokens = self._encode_context_tokens(augmented_observations, actions)
+        decoder_output = self.decoder(
+            query_tokens=query_tokens,
+            context_tokens=context_tokens,
+            memory_tokens=memory_tokens,
+            agent_mask=agent_mask,
+            memory_mask=agent_mask,
+        )
+        latent_pi = self.actor_head(self.actor_head_input_norm(decoder_output)).contiguous()
         values = self._critic_with_hidden_vars(
             augmented_observations,
             hidden_local_vars,
@@ -344,10 +581,11 @@ class MATDecPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
             hidden_local_vars=hidden_local_vars,
             hidden_global_vars=hidden_global_vars,
             agent_mask=agent_mask,
+            actions=actions,
         )
         self.action_dist.update_latent_features(latent_pi)
         log_probs = self.action_dist.log_prob(actions, previous_actions=previous_actions)
-        return self._mask_log_probs(log_probs, agent_mask), values, augmented_observations
+        return log_probs, values, augmented_observations
 
     def act(
             self,
@@ -364,6 +602,7 @@ class MATDecPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
         augmented_observations = self.encoder(local_obs, global_obs, agent_mask=agent_mask)
         actions, _ = self._generate_actions(
             augmented_observations=augmented_observations,
+            batch_size=local_obs.shape[0],
             agent_mask=agent_mask,
             previous_actions=previous_actions,
             deterministic=deterministic,
@@ -419,6 +658,18 @@ class MATDecPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
     def get_grad_norms(self) -> dict[str, float]:
         return {
             "encoder": self._module_grad_norm(self.encoder),
+            "query_input_norm": self._module_grad_norm(self.query_input_norm),
+            "query_encoder": self._module_grad_norm(self.query_encoder),
+            "query_token_norm": self._module_grad_norm(self.query_token_norm),
+            "context_input_norm": self._module_grad_norm(self.context_input_norm),
+            "context_encoder": self._module_grad_norm(self.context_encoder),
+            "context_token_norm": self._module_grad_norm(self.context_token_norm),
+            "memory_input_norm": self._module_grad_norm(self.memory_input_norm),
+            "memory_encoder": self._module_grad_norm(self.memory_encoder),
+            "memory_token_norm": self._module_grad_norm(self.memory_token_norm),
+            "agent_embeddings_decoder": self._parameter_grad_norm(self.agent_embeddings_decoder),
+            "decoder": self._module_grad_norm(self.decoder),
+            "actor_head_input_norm": self._module_grad_norm(self.actor_head_input_norm),
             "actor_head": self._module_grad_norm(self.actor_head),
             "action_dist": self._module_grad_norm(self.action_dist),
             "critic": self._module_grad_norm(self.critic),
@@ -458,6 +709,64 @@ class MATDecPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
 
         super().update_loss_weights(**remaining_weights)
 
+    @staticmethod
+    def _build_token_encoder(
+            *,
+            input_dim: int,
+            output_dim: int,
+            hidden_dims: list[int] | None,
+            act_fn_cls: ActivationFactory,
+            linear_init_gain: float,
+            projection_init_gain: float | None,
+    ) -> nn.Module:
+        linear_init = make_init_linear_orthogonal(linear_init_gain)
+        projection_linear_init = (
+            linear_init
+            if projection_init_gain is None
+            else make_init_linear_orthogonal(projection_init_gain)
+        )
+        if hidden_dims is None or len(hidden_dims) == 0:
+            linear = nn.Linear(input_dim, output_dim)
+            projection_linear_init(linear)
+            return linear
+        return MATQCSPolicy._build_encoder_from_dims(
+            input_dim=input_dim,
+            dims=[*hidden_dims, output_dim],
+            act_fn_cls=act_fn_cls,
+            linear_init_gain=linear_init_gain,
+            projection_init_gain=projection_init_gain,
+        )
+
+    @staticmethod
+    def _build_encoder_from_dims(
+            *,
+            input_dim: int,
+            dims: list[int],
+            act_fn_cls: ActivationFactory,
+            linear_init_gain: float,
+            projection_init_gain: float | None,
+    ) -> nn.Module:
+        linear_init = make_init_linear_orthogonal(linear_init_gain)
+        projection_linear_init = (
+            linear_init
+            if projection_init_gain is None
+            else make_init_linear_orthogonal(projection_init_gain)
+        )
+        return MLP(
+            input_dim=input_dim,
+            hidden_dims=dims,
+            end_with_act_fn=False,
+            linear_init=linear_init,
+            final_linear_init=projection_linear_init,
+            act_fn_cls=act_fn_cls,
+        )
+
+    def _encode_memory_tokens(
+            self,
+            augmented_observations: torch.Tensor,
+    ) -> torch.Tensor:
+        return self.memory_token_norm(self.memory_encoder(self.memory_input_norm(augmented_observations)))
+
     def _apply_optional_compile(self) -> None:
         if not self.config.compile_modules:
             return
@@ -465,6 +774,17 @@ class MATDecPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
         _ensure_torch_compile_available(compile_mode=self.config.compile_mode)
 
         self.encoder = self._compile_module(self.encoder)
+        self.query_input_norm = self._compile_module(self.query_input_norm)
+        self.query_encoder = self._compile_module(self.query_encoder)
+        self.query_token_norm = self._compile_module(self.query_token_norm)
+        self.context_input_norm = self._compile_module(self.context_input_norm)
+        self.context_encoder = self._compile_module(self.context_encoder)
+        self.context_token_norm = self._compile_module(self.context_token_norm)
+        self.memory_input_norm = self._compile_module(self.memory_input_norm)
+        self.memory_encoder = self._compile_module(self.memory_encoder)
+        self.memory_token_norm = self._compile_module(self.memory_token_norm)
+        self.decoder = self._compile_module(self.decoder)
+        self.actor_head_input_norm = self._compile_module(self.actor_head_input_norm)
         self.actor_head = self._compile_module(self.actor_head)
         self.critic = self._compile_module(self.critic)
         self._evaluate_latent_and_values_fn = self._compile_callable(self._evaluate_latent_and_values_impl)
@@ -495,15 +815,3 @@ class MATDecPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
             fullgraph=False,
             dynamic=False,
         )
-
-    @staticmethod
-    def _mask_actions(actions: torch.Tensor, agent_mask: torch.Tensor | None) -> torch.Tensor:
-        if agent_mask is None:
-            return actions
-        return actions.masked_fill(~agent_mask.unsqueeze(-1), 0.0)
-
-    @staticmethod
-    def _mask_log_probs(log_probs: torch.Tensor, agent_mask: torch.Tensor | None) -> torch.Tensor:
-        if agent_mask is None:
-            return log_probs
-        return log_probs.masked_fill(~agent_mask, 0.0)
