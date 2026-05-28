@@ -10,7 +10,11 @@ if str(REPO_ROOT) not in sys.path:
 from plot_logs.experiment_results import ExperimentPlotSelection, plot_experiment_results
 
 
-EXPERIMENT_RUN_DIR = REPO_ROOT / "runs" / "mat_qcs_nop_swarm_bots_wall_mjw_1024x4_ablation"
+RUNS_DIR = REPO_ROOT / "runs"
+EXPERIMENT_RUN_DIR_CANDIDATES = (
+    RUNS_DIR / "mat_qcs_nop_swarm_bots_wall_mjw_1024x4_ablation",
+    RUNS_DIR / "mat_nop_swarm_bots_wall_mjw_1024x4_ablation",
+)
 OUTPUT_DIR = Path(__file__).resolve().parent / "results"
 BASELINE_GROUP = "lr_beta_nop"
 GROUP_ORDER = (
@@ -59,11 +63,6 @@ DISPLAY_NAME_OVERRIDES = {
     "lr_beta_nop_no_agent_embeddings": "L/R Beta + NOP, no agent embeddings",
     "lr_beta_nop_context_tokens_only_no_agent_embeddings": (
         "L/R Beta + NOP, context tokens only, no agent embeddings"
-    ),
-}
-EXTRA_GROUP_SOURCES = {
-    BASELINE_GROUP: (
-        REPO_ROOT / "runs" / "mat_qcs_nop_swarm_bots_wall_mjw_batch_env_sweep" / "1024x4",
     ),
 }
 PAIRWISE_VARIANT_GROUPS = tuple(group_name for group_name in GROUP_ORDER if group_name != BASELINE_GROUP)
@@ -156,6 +155,31 @@ EXTRA_PLOT_SELECTIONS = tuple(
     for variant_group in PAIRWISE_VARIANT_GROUPS
 ) + VARIANT_FAMILY_SELECTIONS
 THEORETICAL_MAXIMUM = 10.5
+
+
+def first_existing_dir(paths: tuple[Path, ...]) -> Path:
+    for path in paths:
+        if path.is_dir():
+            return path
+
+    candidate_paths = "\n".join(f"- {path}" for path in paths)
+    raise NotADirectoryError(f"No experiment run dir found. Checked:\n{candidate_paths}")
+
+
+def build_extra_group_sources() -> dict[str, tuple[Path, ...]]:
+    sources = {
+        group_name: tuple(run_dir / group_name for run_dir in EXPERIMENT_RUN_DIR_CANDIDATES)
+        for group_name in GROUP_ORDER
+    }
+    sources[BASELINE_GROUP] += (
+        RUNS_DIR / "mat_qcs_nop_swarm_bots_wall_mjw_batch_env_sweep" / "1024x4",
+        RUNS_DIR / "mat_nop_swarm_bots_wall_mjw",
+    )
+    return sources
+
+
+EXPERIMENT_RUN_DIR = first_existing_dir(EXPERIMENT_RUN_DIR_CANDIDATES)
+EXTRA_GROUP_SOURCES = build_extra_group_sources()
 
 
 def main() -> int:
