@@ -12,7 +12,7 @@ if str(REPO_ROOT) not in sys.path:
 from swarmbots.learn.algos.mat_qcs.mat_qcs_decoder import MATQCSDecoderSelfAttentionMode
 from swarmbots.learn.nn_components.activations import ActivationFactory
 
-from experiments.mat_qcs_nop_wall_mjw_common import (
+from experiments.mat_nop_mjw_wall_common import (
     ContinuousActionDistVariant,
     MATInitGains,
     MATNormalizationConfig,
@@ -64,7 +64,7 @@ def run_ablation(
         continuous_action_dist: ContinuousActionDistVariant = "sign_magnitude_beta",
         policy_variant: PolicyVariant = "mat_qcs",
         mat_add_agent_embeddings: bool = True,
-        mat_decoder_self_attention_mode: MATQCSDecoderSelfAttentionMode = MATQCSDecoderSelfAttentionMode.FULL_AUTOREGRESSIVE,
+        mat_decoder_self_attention_mode: MATQCSDecoderSelfAttentionMode = MATQCSDecoderSelfAttentionMode.FULL_CAUSAL,
         act_fn_cls: ActivationFactory = nn.GELU,
         mat_init_gains: MATInitGains = MATInitGains(),
         nop_init_gains: NOPInitGains = NOPInitGains(),
@@ -88,6 +88,7 @@ def run_ablation(
         nop_init_gains=nop_init_gains,
         mat_normalization=mat_normalization,
         use_nop=use_nop,
+        nop_add_agent_embeddings_transition_model=True,
         shuffle_agents=shuffle_agents,
         preserve_inactive_prefix_structure=preserve_inactive_prefix_structure,
         experiment_run_name=EXPERIMENT_RUN_NAME,

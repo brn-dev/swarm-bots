@@ -25,6 +25,8 @@ from swarmbots.learn.action_dists.sticky_action_dist import StickyActionDist
 from swarmbots.learn.action_dists.sticky_sign_magnitude_beta_action_dist import StickySignMagnitudeBetaConfig
 from swarmbots.learn.action_dists.squashed_diag_gaussian_action_dist import SquashedDiagGaussianConfig
 from swarmbots.learn.algos.mat.mat_dec_policy import MATDecPolicy, MATDecPolicyConfig
+from swarmbots.learn.algos.mat_qcc.mat_qcc_decoder import MATQCCDecoderConfig
+from swarmbots.learn.algos.mat_qcc.mat_qcc_policy import MATQCCPolicy, MATQCCPolicyConfig
 from swarmbots.learn.algos.mat_qcs.mat_qcs_decoder import MATQCSDecoderConfig, MATQCSDecoderSelfAttentionMode
 from swarmbots.learn.algos.mat.mat_encoder import MATEncoderConfig
 from swarmbots.learn.algos.mat_qcs.mat_qcs_policy import MATQCSCriticConfig, MATQCSPolicy, MATQCSPolicyConfig
@@ -53,7 +55,7 @@ from swarmbots.utils.recording_schedule import DEFAULT_LIVE_RECORDING_SCHEDULE, 
 from swarmbots.utils.run_paths import get_run_id_from_checkpoint_path
 
 ContinuousActionDistVariant = Literal["sticky_sign_magnitude_beta", "sign_magnitude_beta", "beta", "gsde", "squashed_diag_gaussian"]
-PolicyVariant = Literal["mat_qcs", "mat_dec", "mat_orig"]
+PolicyVariant = Literal["mat_qcs", "mat_qcc", "mat_dec", "mat_orig"]
 
 
 @dataclass(frozen=True)
@@ -275,13 +277,14 @@ def run_experiment(
         n_epochs: int = 8,
         continuous_action_dist: ContinuousActionDistVariant = "sign_magnitude_beta",
         policy_variant: PolicyVariant = "mat_qcs",
-        mat_add_agent_embeddings: bool = True,
-        mat_decoder_self_attention_mode: MATQCSDecoderSelfAttentionMode = MATQCSDecoderSelfAttentionMode.FULL_AUTOREGRESSIVE,
+        mat_add_agent_embeddings: bool = False,
+        mat_decoder_self_attention_mode: MATQCSDecoderSelfAttentionMode = MATQCSDecoderSelfAttentionMode.FULL_CAUSAL,
         act_fn_cls: ActivationFactory = nn.GELU,
         mat_init_gains: MATInitGains = MATInitGains(),
         nop_init_gains: NOPInitGains = NOPInitGains(),
         mat_normalization: MATNormalizationConfig = MATNormalizationConfig(),
         use_nop: bool = True,
+        nop_add_agent_embeddings_transition_model: bool = False,
         shuffle_agents: bool = False,
         preserve_inactive_prefix_structure: bool = False,
         experiment_run_name: str = "mat_qcs_nop_swarm_bots_wall_mjw_batch_env_sweep",
@@ -338,16 +341,22 @@ def run_experiment(
 
     logger.info(f"{rollout_device = }")
     logger.info(f"{train_device = }")
+    mat_decoder_self_attention_mode_metadata = (
+        mat_decoder_self_attention_mode.name
+        if policy_variant == "mat_qcs"
+        else None
+    )
     variant_log_message = (
         f"MJW batch env sweep variant {variant_name}: "
         f"{num_envs} envs x {rollout_steps_per_env} steps/env = {rollout_samples}, "
         f"virtual_mini_batches={virtual_mini_batches}, n_epochs={n_epochs}, "
         f"continuous_action_dist={continuous_action_dist}, use_nop={use_nop}, "
+        f"nop_add_agent_embeddings_transition_model={nop_add_agent_embeddings_transition_model}, "
         f"act_fn_cls={activation_factory_name(act_fn_cls)}, "
         f"mat_init_gains={mat_init_gains}, nop_init_gains={nop_init_gains}, "
         f"mat_normalization={mat_normalization}, "
         f"mat_add_agent_embeddings={mat_add_agent_embeddings}, "
-        f"mat_decoder_self_attention_mode={mat_decoder_self_attention_mode.name}, "
+        f"mat_decoder_self_attention_mode={mat_decoder_self_attention_mode_metadata}, "
         f"shuffle_agents={shuffle_agents}, "
         f"preserve_inactive_prefix_structure={preserve_inactive_prefix_structure}, "
         f"scenario_kwargs={scenario_kwargs}"
@@ -478,6 +487,7 @@ def run_experiment(
                 nhead_transition_model=transition_model_nhead,
                 num_layers_transition_model=2,
                 dim_feedforward_transition_model=transition_model_d_model * 2,
+                add_agent_embeddings_transition_model=nop_add_agent_embeddings_transition_model,
                 transition_model_coembed_hidden_dims=[transition_model_d_model],
                 wm_pre_predictors_dims=[transition_model_d_model, transition_model_d_model],
                 wm_scalar_predictor_hidden_dims=[],
@@ -645,12 +655,13 @@ def run_experiment(
         "variant_name": variant_name,
         "continuous_action_dist": continuous_action_dist,
         "use_nop": use_nop,
+        "nop_add_agent_embeddings_transition_model": nop_add_agent_embeddings_transition_model,
         "act_fn_cls": activation_factory_name(act_fn_cls),
         "mat_init_gains": asdict(mat_init_gains),
         "nop_init_gains": asdict(nop_init_gains),
         "mat_normalization": asdict(mat_normalization),
         "mat_add_agent_embeddings": mat_add_agent_embeddings,
-        "mat_decoder_self_attention_mode": mat_decoder_self_attention_mode.name,
+        "mat_decoder_self_attention_mode": mat_decoder_self_attention_mode_metadata,
         "shuffle_agents": shuffle_agents,
         "preserve_inactive_prefix_structure": preserve_inactive_prefix_structure,
         "experiment_run_name": experiment_run_name,
@@ -704,7 +715,7 @@ def _make_base_policy(
         mat_init_gains: MATInitGains,
         mat_normalization: MATNormalizationConfig,
         assume_agent_mask_is_active_prefix: bool,
-) -> MATQCSPolicy | MATDecPolicy | MATOrigPolicy:
+) -> MATQCSPolicy | MATQCCPolicy | MATDecPolicy | MATOrigPolicy:
     continuous_config = make_continuous_config(
         variant=continuous_action_dist,
         initial_stickiness=initial_stickiness,
@@ -722,24 +733,34 @@ def _make_base_policy(
         beta=popart_beta,
         init_sigma=popart_init_sigma,
     )
+    mat_encoder_config = MATEncoderConfig(
+        d_model=enc_d_model,
+        nhead=enc_nhead,
+        num_layers=2,
+        dim_feedforward=enc_d_model * 2,
+        add_agent_embeddings=mat_add_agent_embeddings,
+        linear_init_gain=mat_init_gains.obs_encoder,
+        linear_projection_init_gain=mat_init_gains.obs_encoder_projection,
+        transformer_ff_init_gain=mat_init_gains.encoder_transformer_ff,
+        local_obs_encoder_hidden_dims=[enc_d_model, enc_d_model],
+        normalize_obs_inputs=mat_normalization.normalize_obs_inputs,
+        normalize_tokens=mat_normalization.normalize_encoder_tokens,
+    )
+    mat_qcs_critic_config = MATQCSCriticConfig(
+        n_local_projection_hidden_layers=2,
+        n_value_regressor_hidden_layers=1,
+        use_popart=use_popart,
+        popart_config=popart_config,
+        local_projection_init_gain=mat_init_gains.critic_local_projection,
+        value_regressor_init_gain=mat_init_gains.critic_value_regressor,
+        value_head_init_gain=mat_init_gains.critic_value_head,
+    )
 
     if policy_variant == "mat_qcs":
         return MATQCSPolicy(
             env=env,
             config=MATQCSPolicyConfig(
-                encoder_config=MATEncoderConfig(
-                    d_model=enc_d_model,
-                    nhead=enc_nhead,
-                    num_layers=2,
-                    dim_feedforward=enc_d_model * 2,
-                    add_agent_embeddings=mat_add_agent_embeddings,
-                    linear_init_gain=mat_init_gains.obs_encoder,
-                    linear_projection_init_gain=mat_init_gains.obs_encoder_projection,
-                    transformer_ff_init_gain=mat_init_gains.encoder_transformer_ff,
-                    local_obs_encoder_hidden_dims=[enc_d_model, enc_d_model],
-                    normalize_obs_inputs=mat_normalization.normalize_obs_inputs,
-                    normalize_tokens=mat_normalization.normalize_encoder_tokens,
-                ),
+                encoder_config=mat_encoder_config,
                 decoder_config=MATQCSDecoderConfig(
                     d_model=dec_d_model,
                     nhead=dec_nhead,
@@ -763,15 +784,46 @@ def _make_base_policy(
                     normalize_actor_head_input=mat_normalization.normalize_actor_head_input,
                     assume_agent_mask_is_active_prefix=assume_agent_mask_is_active_prefix,
                 ),
-                critic_config=MATQCSCriticConfig(
-                    n_local_projection_hidden_layers=2,
-                    n_value_regressor_hidden_layers=1,
-                    use_popart=use_popart,
-                    popart_config=popart_config,
-                    local_projection_init_gain=mat_init_gains.critic_local_projection,
-                    value_regressor_init_gain=mat_init_gains.critic_value_regressor,
-                    value_head_init_gain=mat_init_gains.critic_value_head,
+                critic_config=mat_qcs_critic_config,
+                dropout=0.0,
+                act_fn_cls=act_fn_cls,
+                continuous_config=continuous_config,
+                bernoulli_config=bernoulli_config,
+                max_agents=20,
+                compile_modules=compile_policy_modules,
+                compile_mode=policy_compile_mode,
+                action_net_init_gain=mat_init_gains.action_net,
+            ),
+        )
+
+    if policy_variant == "mat_qcc":
+        return MATQCCPolicy(
+            env=env,
+            config=MATQCCPolicyConfig(
+                encoder_config=mat_encoder_config,
+                decoder_config=MATQCCDecoderConfig(
+                    d_model=dec_d_model,
+                    nhead=dec_nhead,
+                    num_layers=2,
+                    dim_feedforward=dec_d_model * 2,
+                    add_agent_embeddings=mat_add_agent_embeddings,
+                    token_encoder_init_gain=mat_init_gains.decoder_token_encoder,
+                    token_encoder_projection_init_gain=mat_init_gains.decoder_token_encoder_projection,
+                    transformer_ff_init_gain=mat_init_gains.decoder_transformer_ff,
+                    actor_head_init_gain=mat_init_gains.actor_head,
+                    query_encoder_hidden_dims=[2 * dec_d_model],
+                    context_encoder_hidden_dims=[2 * dec_d_model],
+                    memory_dims=None,
+                    normalize_query_input=mat_normalization.normalize_query_input,
+                    normalize_context_input=mat_normalization.normalize_context_input,
+                    normalize_memory_input=mat_normalization.normalize_memory_input,
+                    normalize_query_tokens=mat_normalization.normalize_query_tokens,
+                    normalize_context_tokens=mat_normalization.normalize_context_tokens,
+                    normalize_memory_tokens=mat_normalization.normalize_memory_tokens,
+                    normalize_actor_head_input=mat_normalization.normalize_actor_head_input,
+                    assume_agent_mask_is_active_prefix=assume_agent_mask_is_active_prefix,
                 ),
+                critic_config=mat_qcs_critic_config,
                 dropout=0.0,
                 act_fn_cls=act_fn_cls,
                 continuous_config=continuous_config,
@@ -787,28 +839,8 @@ def _make_base_policy(
         return MATDecPolicy(
             env=env,
             config=MATDecPolicyConfig(
-                encoder_config=MATEncoderConfig(
-                    d_model=enc_d_model,
-                    nhead=enc_nhead,
-                    num_layers=2,
-                    dim_feedforward=enc_d_model * 2,
-                    add_agent_embeddings=mat_add_agent_embeddings,
-                    linear_init_gain=mat_init_gains.obs_encoder,
-                    linear_projection_init_gain=mat_init_gains.obs_encoder_projection,
-                    transformer_ff_init_gain=mat_init_gains.encoder_transformer_ff,
-                    local_obs_encoder_hidden_dims=[enc_d_model, enc_d_model],
-                    normalize_obs_inputs=mat_normalization.normalize_obs_inputs,
-                    normalize_tokens=mat_normalization.normalize_encoder_tokens,
-                ),
-                critic_config=MATQCSCriticConfig(
-                    n_local_projection_hidden_layers=2,
-                    n_value_regressor_hidden_layers=1,
-                    use_popart=use_popart,
-                    popart_config=popart_config,
-                    local_projection_init_gain=mat_init_gains.critic_local_projection,
-                    value_regressor_init_gain=mat_init_gains.critic_value_regressor,
-                    value_head_init_gain=mat_init_gains.critic_value_head,
-                ),
+                encoder_config=mat_encoder_config,
+                critic_config=mat_qcs_critic_config,
                 actor_head_hidden_dims=[dec_d_model],
                 dropout=0.0,
                 act_fn_cls=act_fn_cls,

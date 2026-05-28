@@ -10,7 +10,7 @@ from swarmbots.learn.nn_components.nn_init import reinitialize_transformer_stack
 
 
 class MATQCSDecoderSelfAttentionMode(Enum):
-    FULL_AUTOREGRESSIVE = 1
+    FULL_CAUSAL = 1
     PREVIOUS_AGENTS = 2  # c_i can not attend to q_i, only to q_<i and c_<i
     CONTEXT_TOKENS_ONLY = 3  # only context tokens can be attended to
 
@@ -27,7 +27,7 @@ class MATQCSDecoderConfig:
     norm_first: bool = True
     layer_norm_eps: float = 1e-5
     bias: bool = True
-    add_agent_embeddings: bool = True
+    add_agent_embeddings: bool = False
     token_encoder_init_gain: float = 1.0
     token_encoder_projection_init_gain: float | None = 1.0
     actor_head_init_gain: float = 1.0
@@ -36,7 +36,7 @@ class MATQCSDecoderConfig:
     context_encoder_hidden_dims: list[int] | None = None
     memory_dims: list[int] | None = None
     actor_head_hidden_dims: list[int] | None = None
-    self_attention_mode: MATQCSDecoderSelfAttentionMode = MATQCSDecoderSelfAttentionMode.FULL_AUTOREGRESSIVE
+    self_attention_mode: MATQCSDecoderSelfAttentionMode = MATQCSDecoderSelfAttentionMode.FULL_CAUSAL
     normalize_query_input: bool = False
     normalize_context_input: bool = False
     normalize_memory_input: bool = False
@@ -96,7 +96,7 @@ class MATQCSDecoder(nn.Module):
             ),
         )
         self.parallel_attention_mask_is_causal = (
-            config.self_attention_mode is MATQCSDecoderSelfAttentionMode.FULL_AUTOREGRESSIVE
+            config.self_attention_mode is MATQCSDecoderSelfAttentionMode.FULL_CAUSAL
         )
         causal_mask = torch.triu(
             torch.ones(self.max_agents + 1, self.max_agents + 1, dtype=torch.bool),
@@ -110,7 +110,7 @@ class MATQCSDecoder(nn.Module):
             max_agents: int,
             self_attention_mode: MATQCSDecoderSelfAttentionMode,
     ) -> torch.Tensor:
-        if self_attention_mode is MATQCSDecoderSelfAttentionMode.FULL_AUTOREGRESSIVE:
+        if self_attention_mode is MATQCSDecoderSelfAttentionMode.FULL_CAUSAL:
             seq_len = max_agents * 2
             return torch.triu(torch.ones(seq_len, seq_len, dtype=torch.bool), diagonal=1)
 

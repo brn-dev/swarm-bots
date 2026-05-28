@@ -190,6 +190,7 @@ def build_policy(
                 nhead=4,
                 num_layers=2,
                 dim_feedforward=enc_d_model * 2,
+                add_agent_embeddings=True,
                 local_obs_encoder_hidden_dims=[enc_d_model, enc_d_model],
             ),
             decoder_config=MATQCSDecoderConfig(
@@ -197,10 +198,11 @@ def build_policy(
                 nhead=2,
                 num_layers=2,
                 dim_feedforward=dec_d_model * 2,
+                add_agent_embeddings=True,
                 query_encoder_hidden_dims=[2 * dec_d_model],
                 context_encoder_hidden_dims=[2 * dec_d_model],
                 memory_dims=None,
-                self_attention_mode=MATQCSDecoderSelfAttentionMode.FULL_AUTOREGRESSIVE,
+                self_attention_mode=MATQCSDecoderSelfAttentionMode.FULL_CAUSAL,
             ),
             critic_config=MATQCSCriticConfig(
                 n_local_projection_hidden_layers=2,
@@ -254,6 +256,7 @@ def build_policy(
             nhead_transition_model=4,
             num_layers_transition_model=2,
             dim_feedforward_transition_model=transition_model_d_model * 2,
+            add_agent_embeddings_transition_model=True,
             transition_model_coembed_hidden_dims=[transition_model_d_model],
             wm_pre_predictors_dims=[transition_model_d_model, transition_model_d_model],
             wm_scalar_predictor_hidden_dims=[],
