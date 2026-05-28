@@ -2,7 +2,7 @@ import torch
 from gymnasium import spaces
 
 from swarmbots.learn.action_dists.bernoulli_action_dist import BernoulliConfig
-from swarmbots.learn.action_dists.sticky_left_right_beta_action_dist import StickyLeftRightBetaConfig
+from swarmbots.learn.action_dists.sticky_sign_magnitude_beta_action_dist import StickySignMagnitudeBetaConfig
 from swarmbots.learn.algos.mat.mat_encoder import MATEncoderConfig
 from swarmbots.learn.algos.mat_qcc.mat_qcc_decoder import MATQCCDecoderConfig
 from swarmbots.learn.algos.mat_qcc.mat_qcc_policy import MATQCCPolicy, MATQCCPolicyConfig
@@ -43,7 +43,7 @@ def _make_policy(*, assume_agent_mask_is_active_prefix: bool = False) -> MATQCCP
                 memory_dims=None,
                 assume_agent_mask_is_active_prefix=assume_agent_mask_is_active_prefix,
             ),
-            continuous_config=StickyLeftRightBetaConfig(stickiness=0.25),
+            continuous_config=StickySignMagnitudeBetaConfig(stickiness=0.25),
             bernoulli_config=BernoulliConfig(initial_prob=0.5),
             max_agents=8,
             compile_modules=False,

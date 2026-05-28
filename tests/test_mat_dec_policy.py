@@ -2,7 +2,7 @@ import torch
 from gymnasium import spaces
 
 from swarmbots.learn.action_dists.bernoulli_action_dist import BernoulliConfig
-from swarmbots.learn.action_dists.sticky_left_right_beta_action_dist import StickyLeftRightBetaConfig
+from swarmbots.learn.action_dists.sticky_sign_magnitude_beta_action_dist import StickySignMagnitudeBetaConfig
 from swarmbots.learn.algos.mat.mat_dec_policy import MATDecPolicy, MATDecPolicyConfig
 from swarmbots.learn.algos.mat.mat_encoder import MATEncoderConfig
 from swarmbots.learn.hybrid_action_space import HybridActionSpace
@@ -33,7 +33,7 @@ def _make_policy() -> MATDecPolicy:
                 dim_feedforward=32,
             ),
             actor_head_hidden_dims=[16],
-            continuous_config=StickyLeftRightBetaConfig(stickiness=0.25),
+            continuous_config=StickySignMagnitudeBetaConfig(stickiness=0.25),
             bernoulli_config=BernoulliConfig(initial_prob=0.5),
             max_agents=8,
         ),

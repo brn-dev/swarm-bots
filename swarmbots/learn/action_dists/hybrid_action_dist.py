@@ -21,14 +21,14 @@ from swarmbots.learn.action_dists.bang_zero_bang_action_dist import BangZeroBang
 from swarmbots.learn.action_dists.continuous_action_dist import ContinuousActionDist
 from swarmbots.learn.action_dists.diag_gaussian_action_dist import DiagGaussianActionDist
 from swarmbots.learn.action_dists.gsde_action_dist import GSDEActionDist, GSDEConfig
-from swarmbots.learn.action_dists.left_right_beta_action_dist import LeftRightBetaActionDist, LeftRightBetaConfig
+from swarmbots.learn.action_dists.sign_magnitude_beta_action_dist import SignMagnitudeBetaActionDist, SignMagnitudeBetaConfig
 from swarmbots.learn.action_dists.left_middle_right_beta_action_dist import (
     LeftMiddleRightBetaActionDist,
     LeftMiddleRightBetaConfig,
 )
-from swarmbots.learn.action_dists.sticky_left_right_beta_action_dist import (
-    StickyLeftRightBetaActionDist,
-    StickyLeftRightBetaConfig,
+from swarmbots.learn.action_dists.sticky_sign_magnitude_beta_action_dist import (
+    StickySignMagnitudeBetaActionDist,
+    StickySignMagnitudeBetaConfig,
 )
 from swarmbots.learn.action_dists.sticky_left_middle_right_beta_action_dist import (
     StickyLeftMiddleRightBetaActionDist,
@@ -58,9 +58,9 @@ ContinuousActionDistConfig: TypeAlias = (
     | GSDEConfig
     | BetaConfig
     | BetaMixtureConfig
-    | StickyLeftRightBetaConfig
+    | StickySignMagnitudeBetaConfig
     | StickyLeftMiddleRightBetaConfig
-    | LeftRightBetaConfig
+    | SignMagnitudeBetaConfig
     | LeftMiddleRightBetaConfig
     | BangZeroBangConfig
     | StickyBangZeroBangConfig
@@ -335,7 +335,7 @@ class HybridActionDistribution(ActionDist):
         for idx, config in enumerate(self.continuous_configs):
             if isinstance(config,
                           (SquashedDiagGaussianConfig, PredictedStdConfig, GSDEConfig,
-                           BetaConfig, BangZeroBangConfig, StickyBangZeroBangConfig, LeftRightBetaConfig,
+                           BetaConfig, BangZeroBangConfig, StickyBangZeroBangConfig, SignMagnitudeBetaConfig,
                            LeftMiddleRightBetaConfig)
             ):
                 self.continuous_configs[idx] = replace(config, ent_loss_coef=value)
@@ -359,7 +359,7 @@ class HybridActionDistribution(ActionDist):
         config = self.continuous_configs[sub_dist_idx]
         if isinstance(config,
                       (SquashedDiagGaussianConfig, PredictedStdConfig, GSDEConfig,
-                       BetaConfig, BangZeroBangConfig, StickyBangZeroBangConfig, LeftRightBetaConfig,
+                       BetaConfig, BangZeroBangConfig, StickyBangZeroBangConfig, SignMagnitudeBetaConfig,
                        LeftMiddleRightBetaConfig)
         ):
             self.continuous_configs[sub_dist_idx] = replace(config, ent_loss_coef=value)
@@ -438,8 +438,8 @@ def make_proba_distribution(
             raise ValueError(
                 "Supply a ContinuousActionDistConfig "
                 "(SquashedDiagGaussianConfig | PredictedStdConfig | GSDEConfig | "
-                "BetaConfig | BetaMixtureConfig | StickyLeftRightBetaConfig | StickyLeftMiddleRightBetaConfig | "
-                "LeftRightBetaConfig | LeftMiddleRightBetaConfig | BangZeroBangConfig | StickyBangZeroBangConfig) "
+                "BetaConfig | BetaMixtureConfig | StickySignMagnitudeBetaConfig | StickyLeftMiddleRightBetaConfig | "
+                "SignMagnitudeBetaConfig | LeftMiddleRightBetaConfig | BangZeroBangConfig | StickyBangZeroBangConfig) "
                 "for continuous actions."
             )
 
@@ -515,34 +515,34 @@ def make_proba_distribution(
                 alphas=continuous_config.alphas,
                 betas=continuous_config.betas,
             )
-        elif isinstance(continuous_config, StickyLeftRightBetaConfig):
-            return StickyLeftRightBetaActionDist(
+        elif isinstance(continuous_config, StickySignMagnitudeBetaConfig):
+            return StickySignMagnitudeBetaActionDist(
                 latent_dim=latent_dim,
                 action_dim=action_space_dim,
                 action_net_initialization=action_net_initialization,
-                initial_right_prob=continuous_config.initial_right_prob,
+                initial_positive_prob=continuous_config.initial_positive_prob,
                 epsilon=continuous_config.epsilon,
-                left_alpha=continuous_config.left_alpha,
-                left_beta=continuous_config.left_beta,
-                right_alpha=continuous_config.right_alpha,
-                right_beta=continuous_config.right_beta,
+                negative_alpha=continuous_config.negative_alpha,
+                negative_beta=continuous_config.negative_beta,
+                positive_alpha=continuous_config.positive_alpha,
+                positive_beta=continuous_config.positive_beta,
                 ent_loss_coef=continuous_config.ent_loss_coef,
                 beta_ent_scale=continuous_config.beta_ent_scale,
                 categorical_ent_loss_config=continuous_config.categorical_ent_loss_config,
                 beta_ent_loss_config=continuous_config.beta_ent_loss_config,
                 stickiness=continuous_config.stickiness,
             )
-        elif isinstance(continuous_config, LeftRightBetaConfig):
-            return LeftRightBetaActionDist(
+        elif isinstance(continuous_config, SignMagnitudeBetaConfig):
+            return SignMagnitudeBetaActionDist(
                 latent_dim=latent_dim,
                 action_dim=action_space_dim,
                 action_net_initialization=action_net_initialization,
-                initial_right_prob=continuous_config.initial_right_prob,
+                initial_positive_prob=continuous_config.initial_positive_prob,
                 epsilon=continuous_config.epsilon,
-                left_alpha=continuous_config.left_alpha,
-                left_beta=continuous_config.left_beta,
-                right_alpha=continuous_config.right_alpha,
-                right_beta=continuous_config.right_beta,
+                negative_alpha=continuous_config.negative_alpha,
+                negative_beta=continuous_config.negative_beta,
+                positive_alpha=continuous_config.positive_alpha,
+                positive_beta=continuous_config.positive_beta,
                 ent_loss_coef=continuous_config.ent_loss_coef,
                 beta_ent_scale=continuous_config.beta_ent_scale,
                 categorical_ent_loss_config=continuous_config.categorical_ent_loss_config,

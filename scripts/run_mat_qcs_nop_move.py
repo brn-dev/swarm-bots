@@ -135,7 +135,7 @@ def main() -> None:
     from swarmbots.learn.torch_logging import enable_torch_compile_logging
     from swarmbots.learn.action_dists.bernoulli_action_dist import BernoulliConfig
     from swarmbots.learn.action_dists.entropy_utils import EntropyLossConfig, AgentActionsReduction
-    from swarmbots.learn.action_dists.left_right_beta_action_dist import LeftRightBetaConfig
+    from swarmbots.learn.action_dists.sign_magnitude_beta_action_dist import SignMagnitudeBetaConfig
     from swarmbots.learn.algos.mat_qcs.mat_qcs_decoder import MATQCSDecoderConfig, MATQCSDecoderSelfAttentionMode
     from swarmbots.learn.algos.mat.mat_encoder import MATEncoderConfig
     from swarmbots.learn.algos.mat_qcs.mat_qcs_policy import MATQCSCriticConfig, MATQCSPolicy, MATQCSPolicyConfig
@@ -356,7 +356,7 @@ def main() -> None:
             #     alphas=(3.0, 10.0, 10.0),
             #     betas=(10.0, 10.0, 3.0)
             # ),
-            continuous_config=LeftRightBetaConfig(
+            continuous_config=SignMagnitudeBetaConfig(
                 ent_loss_coef=1e-3,
                 beta_ent_scale=0.75,
                 categorical_ent_loss_config=EntropyLossConfig(

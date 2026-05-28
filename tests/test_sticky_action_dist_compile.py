@@ -3,7 +3,7 @@ from gymnasium import spaces
 
 from swarmbots.learn.action_dists.bernoulli_action_dist import BernoulliConfig
 from swarmbots.learn.action_dists.hybrid_action_dist import HybridActionDistribution
-from swarmbots.learn.action_dists.sticky_left_right_beta_action_dist import StickyLeftRightBetaConfig
+from swarmbots.learn.action_dists.sticky_sign_magnitude_beta_action_dist import StickySignMagnitudeBetaConfig
 from swarmbots.learn.hybrid_action_space import HybridActionSpace
 
 
@@ -17,7 +17,7 @@ def _make_hybrid_dist(stickiness: float = 0.25) -> HybridActionDistribution:
     return HybridActionDistribution(
         latent_dim=8,
         action_space=action_space,
-        continuous_config=StickyLeftRightBetaConfig(stickiness=stickiness),
+        continuous_config=StickySignMagnitudeBetaConfig(stickiness=stickiness),
         bernoulli_config=BernoulliConfig(initial_prob=0.5),
     )
 

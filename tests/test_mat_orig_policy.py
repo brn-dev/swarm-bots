@@ -2,7 +2,7 @@ import torch
 from gymnasium import spaces
 
 from swarmbots.learn.action_dists.bernoulli_action_dist import BernoulliConfig
-from swarmbots.learn.action_dists.sticky_left_right_beta_action_dist import StickyLeftRightBetaConfig
+from swarmbots.learn.action_dists.sticky_sign_magnitude_beta_action_dist import StickySignMagnitudeBetaConfig
 from swarmbots.learn.algos.mat_orig.mat_orig_decoder import MATOrigDecoderConfig
 from swarmbots.learn.algos.mat_orig.mat_orig_encoder import MATOrigEncoderConfig
 from swarmbots.learn.algos.mat_orig.mat_orig_policy import MATOrigPolicy, MATOrigPolicyConfig
@@ -38,7 +38,7 @@ def _make_policy() -> MATOrigPolicy:
                 num_layers=1,
                 latent_pi_dim=16,
             ),
-            continuous_config=StickyLeftRightBetaConfig(stickiness=0.25),
+            continuous_config=StickySignMagnitudeBetaConfig(stickiness=0.25),
             bernoulli_config=BernoulliConfig(initial_prob=0.5),
         ),
     )
