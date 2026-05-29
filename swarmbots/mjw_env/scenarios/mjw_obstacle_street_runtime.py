@@ -209,7 +209,7 @@ def _compute_obstacle_street_reward_kernel(
     connection_mask = partner_unit >= 0
     units_without_connections = (~connection_mask).all(dim=-1) & units_active_mask
     active_units_count = units_active_mask.sum(dim=-1)
-    guidance_reward = torch.where(
+    units_without_connections_reward = torch.where(
         active_units_count > 0,
         (
             units_without_connections.sum(dim=-1).to(dtype=torch.float32)
@@ -217,7 +217,7 @@ def _compute_obstacle_street_reward_kernel(
         ) * float(units_without_connections_reward_weight),
         torch.zeros_like(progress, dtype=torch.float32),
     )
-    guidance_reward *= float(guidance_reward_weight)
+    units_without_connections_reward *= float(guidance_reward_weight)
 
     return (
         new_progress,
@@ -225,7 +225,7 @@ def _compute_obstacle_street_reward_kernel(
         forward_reward,
         wall_pass_reward,
         wall_climb_reward,
-        guidance_reward,
+        units_without_connections_reward,
         latched_thresholds,
         new_wall_climb_potential,
         passed_thresholds_mask,
@@ -572,7 +572,7 @@ class ObstacleStreetMJWScenarioRuntime(BaseMJWScenarioRuntime):
             forward_reward,
             wall_pass_reward,
             wall_climb_reward,
-            guidance_reward,
+            units_without_connections_reward,
             latched_thresholds,
             wall_climb_potential,
             passed_thresholds_mask,
@@ -611,19 +611,20 @@ class ObstacleStreetMJWScenarioRuntime(BaseMJWScenarioRuntime):
         self._hidden_local_obs[stable_mask] = self.passed_thresholds_mask[stable_mask].to(dtype=torch.float32)
 
         return MJWStepResult(
-            reward=progress_reward + guidance_reward,
+            reward=progress_reward + units_without_connections_reward,
             info={
                 "progress_reward": progress_reward,
                 "forward_reward": forward_reward,
                 "forward_progress_reward": forward_reward,
                 "wall_pass_reward": wall_pass_reward,
                 "wall_climb_reward": wall_climb_reward,
-                "guidance_reward": guidance_reward,
+                "units_without_connections_reward": units_without_connections_reward,
+                "guidance_reward": units_without_connections_reward,
                 "reward_terms": {
                     "forward": forward_reward,
                     "wall": wall_pass_reward,
                     "climb": wall_climb_reward,
-                    "guidance": guidance_reward,
+                    "units_without_connections": units_without_connections_reward,
                 },
             },
         )

@@ -555,29 +555,33 @@ class ObstacleStreetScenario(BaseScenario):
         wall_climb_reward = state['wall_climb_reward']
         progress_reward = state['progress_reward']
 
-        guidance_reward = super().compute_guidance_reward(data, action, state, connections)
-        state['guidance_reward'] = guidance_reward
+        units_without_connections_reward = super().compute_guidance_reward(data, action, state, connections)
+        state['units_without_connections_reward'] = units_without_connections_reward
+        state['guidance_reward'] = units_without_connections_reward
 
         progress_reward_weight = self.reward_weights['progress_reward_weight']
         weighted_progress_reward = progress_reward * progress_reward_weight
         weighted_forward_reward = forward_reward * self.forward_reward_weight * progress_reward_weight
         weighted_wall_pass_reward = wall_pass_reward * progress_reward_weight
         weighted_wall_climb_reward = wall_climb_reward * progress_reward_weight
-        weighted_guidance_reward = guidance_reward * self.reward_weights['guidance_reward_weight']
+        weighted_units_without_connections_reward = (
+            units_without_connections_reward * self.reward_weights['guidance_reward_weight']
+        )
         state['weighted_progress_reward'] = weighted_progress_reward
         state['weighted_forward_reward'] = weighted_forward_reward
         state['weighted_forward_progress_reward'] = weighted_forward_reward
         state['weighted_wall_pass_reward'] = weighted_wall_pass_reward
         state['weighted_wall_climb_reward'] = weighted_wall_climb_reward
-        state['weighted_guidance_reward'] = weighted_guidance_reward
+        state['weighted_units_without_connections_reward'] = weighted_units_without_connections_reward
+        state['weighted_guidance_reward'] = weighted_units_without_connections_reward
         state['reward_terms'] = {
             'forward': weighted_forward_reward,
             'wall': weighted_wall_pass_reward,
             'climb': weighted_wall_climb_reward,
-            'guidance': weighted_guidance_reward,
+            'units_without_connections': weighted_units_without_connections_reward,
         }
 
-        return weighted_progress_reward + weighted_guidance_reward, False
+        return weighted_progress_reward + weighted_units_without_connections_reward, False
 
     def _compute_wall_pass_thresholds(self, wall_y: np.ndarray) -> np.ndarray:
         if wall_y.size == 0:
