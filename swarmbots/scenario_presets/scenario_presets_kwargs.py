@@ -55,24 +55,20 @@ WALL_DIFFICULTY_UPDATES: dict[Difficulty, dict[str, object]] = {
     },
     "medium": {
         "wall_height": 0.4,
+        "wall_pass_reward_skew": 1.0,
+        "wall_pass_thresholds": [-0.1, 0.1, 0.3],
     },
     "hard": {
         "wall_height": 0.8,
+        "wall_pass_reward_skew": 1.0,
+        "wall_pass_thresholds": [-0.1, 0.1, 0.3],
     },
 }
 
-
-def wall_scenario_difficulty_update(difficulty: Difficulty | None) -> dict[str, object]:
-    if difficulty is None:
-        return {}
-    if difficulty in WALL_DIFFICULTY_UPDATES:
-        return WALL_DIFFICULTY_UPDATES[difficulty].copy()
-    raise ValueError(f'Unknown difficulty "{difficulty}"')
-
-
 def wall_scenario_kwargs_with_difficulty(difficulty: Difficulty | None) -> dict[str, object]:
     kwargs = WALL_SCENARIO_KWARGS.copy()
-    kwargs.update(wall_scenario_difficulty_update(difficulty))
+    if difficulty is not None:
+        kwargs.update(WALL_DIFFICULTY_UPDATES[difficulty])
     return kwargs
 
 
