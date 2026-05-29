@@ -498,18 +498,16 @@ class ObstacleStreetScenario(BaseScenario):
         current_potential = self._compute_wall_climb_potential(data, state)
         if previous_potential.shape != current_potential.shape:
             previous_potential = np.zeros_like(current_potential)
-        new_potential = np.maximum(previous_potential, current_potential)
-        state["wall_climb_potential"] = new_potential
+        state["wall_climb_potential"] = current_potential
 
         units_active_mask = state.get("units_active_mask")
         if units_active_mask is None:
-            active_units_count = self.num_units
-            climb_delta = float((new_potential - previous_potential).sum(axis=1).mean())
+            climb_delta = float((current_potential - previous_potential).sum(axis=1).mean())
         else:
             active_mask = np.asarray(units_active_mask, dtype=bool)
             active_units_count = int(active_mask.sum())
             climb_delta = (
-                float((new_potential[active_mask] - previous_potential[active_mask]).sum(axis=1).mean())
+                float((current_potential[active_mask] - previous_potential[active_mask]).sum(axis=1).mean())
                 if active_units_count > 0
                 else 0.0
             )

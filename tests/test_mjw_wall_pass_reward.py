@@ -219,3 +219,30 @@ def test_wall_pass_rank_weight_cache_rebuilds_only_when_skew_changes() -> None:
     assert runtime._wall_pass_rank_weights_skew == 2.0
     assert third[3].tolist() == pytest.approx([3.0 / 14.0, 12.0 / 14.0, 27.0 / 14.0])
     assert not torch.allclose(third, first)
+
+
+def test_wall_climb_reward_uses_signed_potential_delta_so_retry_is_rewarded_in_mjw() -> None:
+    runtime = _make_runtime()
+    runtime.scenario.progress_reward_weight = 1.0
+    runtime.scenario.wall_pass_reward_weight = 0.0
+    runtime.scenario.wall_climb_reward_weight = 5.0
+    runtime.scenario.wall_climb_reward_distance = 0.5
+    runtime.scenario.swarm = SimpleNamespace(body_radius=0.1)
+    runtime.wall_y_by_wall = torch.tensor([[1.0]], dtype=torch.float32)
+    runtime._wall_heights = torch.tensor([0.4], dtype=torch.float32)
+    runtime.wall_climb_potential = torch.zeros((1, 1, 1), dtype=torch.float32)
+    stable_mask = torch.tensor([True], dtype=torch.bool)
+
+    runtime._get_unit_y = lambda: torch.tensor([[0.75]], dtype=torch.float32)
+    runtime._get_unit_z = lambda: torch.tensor([[0.25]], dtype=torch.float32)
+    climb = runtime.compute_step_rewards(stable_mask=stable_mask)
+
+    runtime._get_unit_z = lambda: torch.tensor([[0.1]], dtype=torch.float32)
+    fall = runtime.compute_step_rewards(stable_mask=stable_mask)
+
+    runtime._get_unit_z = lambda: torch.tensor([[0.25]], dtype=torch.float32)
+    retry = runtime.compute_step_rewards(stable_mask=stable_mask)
+
+    assert float(climb.info["wall_climb_reward"][0]) == pytest.approx(1.25)
+    assert float(fall.info["wall_climb_reward"][0]) == pytest.approx(-1.25)
+    assert float(retry.info["wall_climb_reward"][0]) == pytest.approx(1.25)
