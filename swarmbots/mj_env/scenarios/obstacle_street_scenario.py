@@ -475,6 +475,7 @@ class ObstacleStreetScenario(BaseScenario):
             approach,
             0.0,
         )
+        approach = np.sqrt(approach)
         unit_ground_z = float(getattr(self.swarm, "body_radius", 0.1))
         target_lift = np.maximum(np.asarray(self.wall_heights, dtype=float) - unit_ground_z, 1e-6)
         height = np.clip((unit_z[:, np.newaxis] - unit_ground_z) / target_lift[np.newaxis, :], 0.0, 1.0)

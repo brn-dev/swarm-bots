@@ -57,14 +57,19 @@ WALL_DIFFICULTY_UPDATES: dict[Difficulty, dict[str, object]] = {
     },
     "medium": {
         "wall_height": 0.4,
+        "swarm_start_y": UniformDistParams(0.25, 0.5),
         "wall_pass_reward_skew": 1.0,
-        "wall_pass_thresholds": [-0.1, 0.1, 0.3],
+        "wall_pass_reward_weight": 5.0,
+        "wall_pass_thresholds": [0.3],
         "wall_climb_reward_weight": 5.0,
     },
     "hard": {
         "wall_height": 0.8,
+        "swarm_start_y": UniformDistParams(0.25, 0.5),
         "wall_pass_reward_skew": 1.0,
-        "wall_pass_thresholds": [-0.1, 0.1, 0.3],
+        "wall_pass_reward_weight": 5.0,
+        "wall_pass_thresholds": [0.3],
+        "wall_climb_reward_weight": 5.0,
     },
 }
 

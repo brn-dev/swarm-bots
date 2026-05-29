@@ -86,6 +86,7 @@ def _compute_wall_climb_potential_torch(
         approach,
         torch.zeros_like(approach),
     )
+    approach = torch.sqrt(approach)
     target_lift = torch.clamp(wall_heights - float(unit_ground_z), min=1e-6)
     height = torch.clamp(
         (safe_unit_z.unsqueeze(-1) - float(unit_ground_z)) / target_lift.view(1, 1, -1),
@@ -779,6 +780,7 @@ def _compute_wall_climb_potential_np(
         approach,
         0.0,
     )
+    approach = np.sqrt(approach)
     target_lift = np.maximum(wall_heights - float(unit_ground_z), 1e-6)
     height = np.clip(
         (unit_z[:, np.newaxis] - float(unit_ground_z)) / target_lift[np.newaxis, :],
