@@ -26,7 +26,7 @@ DISPLAY_NAME_OVERRIDES = {
     ),
     "mat_orig": "MAT-Orig + NOP",
 }
-THEORETICAL_MAXIMUM = 10.5
+THEORETICAL_MAXIMUM = None
 
 
 def main() -> int:
