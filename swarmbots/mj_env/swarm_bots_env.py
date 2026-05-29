@@ -229,6 +229,9 @@ class SwarmBotsEnv(gymnasium.Env):
         weighted_wall_pass_reward = self.scenario_state.get("weighted_wall_pass_reward")
         if weighted_wall_pass_reward is not None:
             info["wall_pass_reward"] = float(weighted_wall_pass_reward)
+        weighted_wall_climb_reward = self.scenario_state.get("weighted_wall_climb_reward")
+        if weighted_wall_climb_reward is not None:
+            info["wall_climb_reward"] = float(weighted_wall_climb_reward)
         info["guidance_reward"] = float(self.scenario_state["weighted_guidance_reward"])
         reward_terms = self.scenario_state.get("reward_terms")
         if isinstance(reward_terms, dict):
