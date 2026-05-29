@@ -190,8 +190,12 @@ def _compute_obstacle_street_reward_kernel(
             wall_climb_reward_distance=wall_climb_reward_distance,
             unit_ground_z=unit_ground_z,
         )
-        new_wall_climb_potential = torch.maximum(wall_climb_potential, current_wall_climb_potential)
-        wall_climb_delta = new_wall_climb_potential - wall_climb_potential
+        new_wall_climb_potential = current_wall_climb_potential
+        wall_climb_delta = torch.where(
+            stable_mask.view(-1, 1, 1),
+            current_wall_climb_potential - wall_climb_potential,
+            torch.zeros_like(wall_climb_potential),
+        )
         wall_climb_reward = (
             masked_mean(wall_climb_delta.sum(dim=-1), units_active_mask, dim=1)
             * float(wall_climb_reward_weight)

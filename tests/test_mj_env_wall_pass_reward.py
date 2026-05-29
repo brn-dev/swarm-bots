@@ -45,6 +45,22 @@ def _make_data(unit_y: list[float]) -> SimpleNamespace:
     return SimpleNamespace(qpos=qpos)
 
 
+def _make_wall_climb_scenario() -> ObstacleStreetScenario:
+    scenario = object.__new__(ObstacleStreetScenario)
+    scenario.num_units = 1
+    scenario.num_walls = 1
+    scenario.wall_climb_reward_weight = 5.0
+    scenario.wall_climb_reward_distance = 0.5
+    scenario.wall_heights = [0.4]
+    scenario.swarm = SimpleNamespace(body_radius=0.1)
+    scenario._qpos_indices = np.asarray([[0, 1, 2]], dtype=np.int64)
+    return scenario
+
+
+def _make_wall_climb_data(*, unit_y: float, unit_z: float) -> SimpleNamespace:
+    return SimpleNamespace(qpos=np.asarray([0.0, unit_y, unit_z], dtype=float))
+
+
 def _unit_y_for_passed_count(*, passed_count: int, thresholds: np.ndarray) -> float:
     if passed_count <= 0:
         return float(thresholds[0] - 0.25)
@@ -271,3 +287,20 @@ def test_wall_pass_reward_handles_no_active_units() -> None:
     assert state["num_walls_passed"] == 0
     assert state["next_threshold_for_unit"].tolist() == [0, 0, 0]
     assert state["passed_thresholds_mask"].tolist() == [[False], [False], [False]]
+
+
+def test_wall_climb_reward_uses_signed_potential_delta_so_retry_is_rewarded() -> None:
+    scenario = _make_wall_climb_scenario()
+    state: dict[str, object] = {
+        "wall_y": np.asarray([1.0], dtype=float),
+        "wall_climb_potential": np.zeros((1, 1), dtype=np.float32),
+        "units_active_mask": np.asarray([True], dtype=bool),
+    }
+
+    climb = scenario._compute_wall_climb_reward(_make_wall_climb_data(unit_y=0.75, unit_z=0.25), state)
+    fall = scenario._compute_wall_climb_reward(_make_wall_climb_data(unit_y=0.75, unit_z=0.1), state)
+    retry = scenario._compute_wall_climb_reward(_make_wall_climb_data(unit_y=0.75, unit_z=0.25), state)
+
+    assert climb == pytest.approx(1.25)
+    assert fall == pytest.approx(-1.25)
+    assert retry == pytest.approx(1.25)
