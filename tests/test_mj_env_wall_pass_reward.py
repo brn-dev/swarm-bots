@@ -304,3 +304,38 @@ def test_wall_climb_reward_uses_signed_potential_delta_so_retry_is_rewarded() ->
     assert climb == pytest.approx(1.25)
     assert fall == pytest.approx(-1.25)
     assert retry == pytest.approx(1.25)
+
+
+def test_units_without_connections_reward_is_named_explicitly_in_cpu_scenario_state() -> None:
+    scenario = _make_scenario(wall_pass_reward_skew=0.0, wall_pass_reward_weight=0.0, num_units=2)
+    scenario.forward_reward_weight = 0.0
+    scenario.forward_reward_max_y = None
+    scenario.wall_climb_reward_weight = 0.0
+    scenario.reward_weights = {
+        "progress_reward_weight": 1.0,
+        "guidance_reward_weight": 2.0,
+        "units_without_connections_reward_weight": -0.25,
+    }
+    state: dict[str, object] = {
+        "progress": 0.0,
+        "wall_pass_absolute_thresholds": np.asarray([], dtype=float),
+        "next_threshold_for_unit": np.zeros((2,), dtype=int),
+    }
+    connections = SimpleNamespace(get_is_active_mask=lambda: np.zeros((2, 1), dtype=bool))
+
+    reward, done = scenario.evaluate_step(
+        action={},
+        model=None,
+        data=_make_data([0.0, 0.0]),
+        state=state,
+        connections=connections,
+    )
+
+    assert done is False
+    assert reward == pytest.approx(-0.5)
+    assert state["units_without_connections_reward"] == pytest.approx(-0.25)
+    assert state["guidance_reward"] == pytest.approx(-0.25)
+    assert state["weighted_units_without_connections_reward"] == pytest.approx(-0.5)
+    assert state["weighted_guidance_reward"] == pytest.approx(-0.5)
+    assert state["reward_terms"]["units_without_connections"] == pytest.approx(-0.5)
+    assert "guidance" not in state["reward_terms"]

@@ -95,6 +95,20 @@ def test_forward_reward_cap_stops_progress_reward_beyond_max_y() -> None:
     assert float(second.info["forward_reward"][0]) == pytest.approx(0.0)
 
 
+def test_units_without_connections_reward_is_named_explicitly_in_mjw_info() -> None:
+    runtime = _make_runtime(num_units=2)
+    runtime.scenario.units_without_connections_reward_weight = -0.25
+    stable_mask = torch.tensor([True], dtype=torch.bool)
+
+    runtime._get_unit_y = lambda: torch.tensor([[0.0, 0.0]], dtype=torch.float32)
+    result = runtime.compute_step_rewards(stable_mask=stable_mask)
+
+    assert float(result.info["units_without_connections_reward"][0]) == pytest.approx(-0.25)
+    assert float(result.info["guidance_reward"][0]) == pytest.approx(-0.25)
+    assert float(result.info["reward_terms"]["units_without_connections"][0]) == pytest.approx(-0.25)
+    assert "guidance" not in result.info["reward_terms"]
+
+
 def test_default_wall_pass_reward_skew_keeps_equal_rank_rewards() -> None:
     runtime = _make_runtime(num_units=3)
     runtime.scenario.progress_reward_weight = 1.0
