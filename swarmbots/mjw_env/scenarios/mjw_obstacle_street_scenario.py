@@ -62,6 +62,9 @@ class MJWObstacleStreetScenario(BaseMJWScenario):
     wall_climb_reward_weight: float = 0.0
     wall_climb_reward_distance: float = 0.45
     forward_reward_max_y: float | None = None
+    forward_reward_wall_boost_factor: float = 1.0
+    forward_reward_wall_boost_distance: float | None = None
+    forward_reward_wall_boost_height_margin: float | None = None
     seed: int | None = None
     compile_reward_kernel: bool = False
     reward_kernel_compile_mode: str = "default"
@@ -76,6 +79,24 @@ class MJWObstacleStreetScenario(BaseMJWScenario):
             raise ValueError(f"Expected action_repeat > 0, got {self.action_repeat}")
         if self.forward_reward_max_y is not None:
             self.forward_reward_max_y = float(self.forward_reward_max_y)
+        self.forward_reward_wall_boost_factor = float(self.forward_reward_wall_boost_factor)
+        if self.forward_reward_wall_boost_factor < 1.0:
+            raise ValueError(
+                f"Expected forward_reward_wall_boost_factor >= 1.0, got {self.forward_reward_wall_boost_factor}"
+            )
+        if self.forward_reward_wall_boost_distance is not None:
+            self.forward_reward_wall_boost_distance = float(self.forward_reward_wall_boost_distance)
+            if self.forward_reward_wall_boost_distance <= 0.0:
+                raise ValueError(
+                    f"Expected forward_reward_wall_boost_distance > 0, got {self.forward_reward_wall_boost_distance}"
+                )
+        if self.forward_reward_wall_boost_height_margin is not None:
+            self.forward_reward_wall_boost_height_margin = float(self.forward_reward_wall_boost_height_margin)
+            if self.forward_reward_wall_boost_height_margin < 0.0:
+                raise ValueError(
+                    "Expected forward_reward_wall_boost_height_margin >= 0, "
+                    f"got {self.forward_reward_wall_boost_height_margin}"
+                )
         self.wall_climb_reward_weight = float(self.wall_climb_reward_weight)
         self.wall_climb_reward_distance = float(self.wall_climb_reward_distance)
         if self.wall_climb_reward_distance <= 0.0:
@@ -127,6 +148,9 @@ class MJWObstacleStreetScenario(BaseMJWScenario):
             "no_initial_ramp": self.no_initial_ramp,
             "forward_reward_weight": self.forward_reward_weight,
             "forward_reward_max_y": self.forward_reward_max_y,
+            "forward_reward_wall_boost_factor": self.forward_reward_wall_boost_factor,
+            "forward_reward_wall_boost_distance": self.forward_reward_wall_boost_distance,
+            "forward_reward_wall_boost_height_margin": self.forward_reward_wall_boost_height_margin,
             "wall_pass_reward_weight": self.wall_pass_reward_weight,
             "wall_pass_reward_skew": self.wall_pass_reward_skew,
             "wall_pass_thresholds": list(self.wall_pass_thresholds),
