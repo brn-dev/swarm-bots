@@ -301,9 +301,31 @@ def test_wall_climb_reward_uses_signed_potential_delta_so_retry_is_rewarded() ->
     fall = scenario._compute_wall_climb_reward(_make_wall_climb_data(unit_y=0.75, unit_z=0.1), state)
     retry = scenario._compute_wall_climb_reward(_make_wall_climb_data(unit_y=0.75, unit_z=0.25), state)
 
-    assert climb == pytest.approx(1.25)
-    assert fall == pytest.approx(-1.25)
-    assert retry == pytest.approx(1.25)
+    expected_reward = 5.0 * np.sqrt(0.5) * 0.5
+    assert climb == pytest.approx(expected_reward)
+    assert fall == pytest.approx(-expected_reward)
+    assert retry == pytest.approx(expected_reward)
+
+
+def test_wall_climb_reward_latches_after_crossing_wall_y_without_penalty_or_retry_reward() -> None:
+    scenario = _make_wall_climb_scenario()
+    state: dict[str, object] = {
+        "wall_y": np.asarray([1.0], dtype=float),
+        "wall_climb_potential": np.zeros((1, 1), dtype=np.float32),
+        "wall_climb_done_mask": np.zeros((1, 1), dtype=bool),
+        "units_active_mask": np.asarray([True], dtype=bool),
+    }
+
+    climb = scenario._compute_wall_climb_reward(_make_wall_climb_data(unit_y=0.75, unit_z=0.25), state)
+    cross_wall_y = scenario._compute_wall_climb_reward(_make_wall_climb_data(unit_y=1.01, unit_z=0.25), state)
+    retry_after_backtracking = scenario._compute_wall_climb_reward(_make_wall_climb_data(unit_y=0.75, unit_z=0.25), state)
+
+    expected_reward = 5.0 * np.sqrt(0.5) * 0.5
+    assert climb == pytest.approx(expected_reward)
+    assert cross_wall_y == pytest.approx(0.0)
+    assert retry_after_backtracking == pytest.approx(0.0)
+    assert state["wall_climb_done_mask"].tolist() == [[True]]
+    assert state["wall_climb_potential"].tolist() == [[0.0]]
 
 
 def test_units_without_connections_reward_is_named_explicitly_in_cpu_scenario_state() -> None:

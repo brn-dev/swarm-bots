@@ -71,7 +71,8 @@ Keep only durable architecture notes and gotchas. Prefer deleting stale detail o
 - Activation factories with `ParameterLearnMode.PER_FEATURE` need explicit feature counts; use `make_activation(...)` in generic `act_fn_cls` paths.
 - MAT-QCS/NOP `proper_init_1`: hidden/projection/transformer-FF gains `1.0`, output/action/value/prediction heads `0.01`.
 - CPU wall training should use `WorkerPoolAsyncVectorEnv(..., copy=False)`. Do not clone envs whose constructors differ in per-env state like `first_episode_length`.
-- Medium wall presets enable `wall_climb_reward`: it tracks signed per-unit height-potential deltas in the approach band before each wall, using `sqrt(approach)` so the reward engages earlier; falls, backing away, or leaving the band can pay the shaping reward back.
+- Medium wall presets enable `wall_climb_reward`: it tracks signed per-unit height-potential deltas in the approach band before each wall, using `sqrt(approach)` so the reward engages earlier; falls, backing away, or leaving the band can pay the shaping reward back. After a unit first crosses a wall's `wall_y`, that unit-wall climb potential is latched done, the crossing-induced potential drop is forgiven, and retries/backtracking for that wall no longer receive climb reward.
+- Obstacle-street `forward_reward_wall_boost_factor` multiplies only positive per-unit forward deltas near/above a wall when the unit center is at least `wall_height + margin`; default margin is `swarm.body_radius`, and factor `1.0` disables it.
 - `SwarmBotsEnv.reset(seed=...)` must reseed `scenario.rng`; reset sampling does not use Gymnasium `env.np_random`.
 - On Windows, workers re-import the script top-level module. Keep heavy PPO/torch/MJW imports out of top level unless env construction needs them.
 - Remote `brn@server2026` SSH works through WSL (`wsl ssh brn@server2026 ...`); Remote runs live under `~/git/swarm-bots/runs`. Use these to inspect live logs.
