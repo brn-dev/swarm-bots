@@ -42,6 +42,7 @@ def _make_runtime(
         wall_pass_reward_skew=wall_pass_reward_skew,
         wall_climb_reward_weight=0.0,
         wall_climb_reward_distance=0.5,
+        potential_reward_discount_factor=1.0,
         units_without_connections_reward_weight=0.0,
         guidance_reward_weight=1.0,
     )
@@ -111,8 +112,8 @@ def test_wall_height_forward_reward_boost_applies_per_high_unit_in_mjw() -> None
     runtime.scenario.forward_reward_wall_boost_distance = 0.5
     runtime.scenario.forward_reward_wall_boost_height_margin = 0.1
     runtime.scenario.swarm = SimpleNamespace(body_radius=0.1)
-    runtime.progress[0] = 0.6
-    runtime.forward_progress_unit_y[0] = torch.tensor([0.6, 0.6], dtype=torch.float32)
+    runtime.progress[0] = 1.2
+    runtime.forward_progress_unit_y[0] = torch.tensor([1.8, 0.6], dtype=torch.float32)
     runtime.wall_y_by_wall = torch.tensor([[1.0]], dtype=torch.float32)
     runtime._wall_heights = torch.tensor([0.4], dtype=torch.float32)
     stable_mask = torch.tensor([True], dtype=torch.bool)
@@ -122,6 +123,49 @@ def test_wall_height_forward_reward_boost_applies_per_high_unit_in_mjw() -> None
     result = runtime.compute_step_rewards(stable_mask=stable_mask)
 
     assert float(result.info["forward_reward"][0]) == pytest.approx(0.2)
+
+
+def test_wall_height_forward_reward_boost_penalizes_backtracking_symmetrically_in_mjw() -> None:
+    runtime = _make_runtime(num_units=1, wall_pass_reward_weight=0.0)
+    runtime.scenario.progress_reward_weight = 1.0
+    runtime.scenario.forward_reward_weight = 1.0
+    runtime.scenario.forward_reward_wall_boost_factor = 3.0
+    runtime.scenario.forward_reward_wall_boost_distance = 0.5
+    runtime.scenario.forward_reward_wall_boost_height_margin = 0.1
+    runtime.scenario.swarm = SimpleNamespace(body_radius=0.1)
+    runtime.progress[0] = 2.1
+    runtime.forward_progress_unit_y[0] = torch.tensor([2.1], dtype=torch.float32)
+    runtime.wall_y_by_wall = torch.tensor([[1.0]], dtype=torch.float32)
+    runtime._wall_heights = torch.tensor([0.4], dtype=torch.float32)
+    stable_mask = torch.tensor([True], dtype=torch.bool)
+
+    runtime._get_unit_y = lambda: torch.tensor([[0.6]], dtype=torch.float32)
+    runtime._get_unit_z = lambda: torch.tensor([[0.5]], dtype=torch.float32)
+    backtrack = runtime.compute_step_rewards(stable_mask=stable_mask)
+
+    runtime._get_unit_y = lambda: torch.tensor([[0.7]], dtype=torch.float32)
+    retry = runtime.compute_step_rewards(stable_mask=stable_mask)
+
+    assert float(backtrack.info["forward_reward"][0]) == pytest.approx(-0.3)
+    assert float(retry.info["forward_reward"][0]) == pytest.approx(0.3)
+    assert float(backtrack.info["forward_reward"][0] + retry.info["forward_reward"][0]) == pytest.approx(0.0)
+
+
+def test_forward_reward_applies_discount_factor_to_current_potential_in_mjw() -> None:
+    runtime = _make_runtime(num_units=1, wall_pass_reward_weight=0.0)
+    runtime.scenario.progress_reward_weight = 1.0
+    runtime.scenario.forward_reward_weight = 1.0
+    runtime.scenario.potential_reward_discount_factor = 0.9
+    runtime.progress[0] = 1.0
+    runtime.forward_progress_unit_y[0] = torch.tensor([1.0], dtype=torch.float32)
+    stable_mask = torch.tensor([True], dtype=torch.bool)
+
+    runtime._get_unit_y = lambda: torch.tensor([[2.0]], dtype=torch.float32)
+    result = runtime.compute_step_rewards(stable_mask=stable_mask)
+
+    assert float(result.info["forward_reward"][0]) == pytest.approx(0.8)
+    assert float(result.info["progress_reward"][0]) == pytest.approx(0.8)
+    assert float(runtime.progress[0]) == pytest.approx(2.0)
 
 
 def test_units_without_connections_reward_is_named_explicitly_in_mjw_info() -> None:
@@ -274,6 +318,7 @@ def test_wall_climb_reward_uses_signed_potential_delta_so_retry_is_rewarded_in_m
     runtime.wall_y_by_wall = torch.tensor([[1.0]], dtype=torch.float32)
     runtime._wall_heights = torch.tensor([0.4], dtype=torch.float32)
     runtime.wall_climb_potential = torch.zeros((1, 1, 1), dtype=torch.float32)
+    runtime.wall_climb_done_mask = torch.zeros((1, 1, 1), dtype=torch.bool)
     stable_mask = torch.tensor([True], dtype=torch.bool)
 
     runtime._get_unit_y = lambda: torch.tensor([[0.75]], dtype=torch.float32)
@@ -290,6 +335,36 @@ def test_wall_climb_reward_uses_signed_potential_delta_so_retry_is_rewarded_in_m
     assert float(climb.info["wall_climb_reward"][0]) == pytest.approx(expected_reward)
     assert float(fall.info["wall_climb_reward"][0]) == pytest.approx(-expected_reward)
     assert float(retry.info["wall_climb_reward"][0]) == pytest.approx(expected_reward)
+
+
+def test_wall_climb_reward_applies_discount_factor_to_current_potential_in_mjw() -> None:
+    runtime = _make_runtime()
+    runtime.scenario.progress_reward_weight = 1.0
+    runtime.scenario.wall_pass_reward_weight = 0.0
+    runtime.scenario.wall_climb_reward_weight = 5.0
+    runtime.scenario.wall_climb_reward_distance = 0.5
+    runtime.scenario.potential_reward_discount_factor = 0.9
+    runtime.scenario.swarm = SimpleNamespace(body_radius=0.1)
+    runtime.wall_y_by_wall = torch.tensor([[1.0]], dtype=torch.float32)
+    runtime._wall_heights = torch.tensor([0.4], dtype=torch.float32)
+    runtime.wall_climb_potential = torch.zeros((1, 1, 1), dtype=torch.float32)
+    runtime.wall_climb_done_mask = torch.zeros((1, 1, 1), dtype=torch.bool)
+    stable_mask = torch.tensor([True], dtype=torch.bool)
+
+    runtime._get_unit_y = lambda: torch.tensor([[0.75]], dtype=torch.float32)
+    runtime._get_unit_z = lambda: torch.tensor([[0.25]], dtype=torch.float32)
+    climb = runtime.compute_step_rewards(stable_mask=stable_mask)
+
+    runtime._get_unit_z = lambda: torch.tensor([[0.1]], dtype=torch.float32)
+    fall = runtime.compute_step_rewards(stable_mask=stable_mask)
+
+    runtime._get_unit_z = lambda: torch.tensor([[0.25]], dtype=torch.float32)
+    retry = runtime.compute_step_rewards(stable_mask=stable_mask)
+
+    potential = (0.5 ** 0.5) * 0.5
+    assert float(climb.info["wall_climb_reward"][0]) == pytest.approx(5.0 * 0.9 * potential)
+    assert float(fall.info["wall_climb_reward"][0]) == pytest.approx(-5.0 * potential)
+    assert float(retry.info["wall_climb_reward"][0]) == pytest.approx(5.0 * 0.9 * potential)
 
 
 def test_wall_climb_reward_latches_after_crossing_wall_y_without_penalty_or_retry_reward_in_mjw() -> None:

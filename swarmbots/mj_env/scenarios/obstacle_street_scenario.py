@@ -102,6 +102,7 @@ class ObstacleStreetScenario(BaseScenario):
             wall_pass_thresholds: list[float] | None = None,
             wall_climb_reward_weight: float = 0.0,
             wall_climb_reward_distance: float = 0.45,
+            potential_reward_discount_factor: float = 1.0,
             units_without_connections_reward_weight: float = 0.0,
             include_connectors_xpos_in_obs: bool = True,
             include_connectors_xquat_in_obs: bool = False,
@@ -187,6 +188,7 @@ class ObstacleStreetScenario(BaseScenario):
             progress_reward_weight=progress_reward_weight,
             guidance_reward_weight=guidance_reward_weight,
             units_without_connections_reward_weight=units_without_connections_reward_weight,
+            potential_reward_discount_factor=potential_reward_discount_factor,
             seed=seed,
             include_connectors_xpos_in_obs=include_connectors_xpos_in_obs,
             include_connectors_xquat_in_obs=include_connectors_xquat_in_obs,
@@ -319,9 +321,6 @@ class ObstacleStreetScenario(BaseScenario):
         if settle:
             self.settle_reset(model, data, state)
 
-        forward_progress_unit_y = self._compute_forward_progress_unit_y(data)
-        state['progress'] = self._mean_active_forward_progress(forward_progress_unit_y, state.get("units_active_mask"))
-        state['forward_progress_unit_y'] = forward_progress_unit_y
         state['hidden_global_vars'] = np.array(hidden_global_vars, dtype=float)
         state['wall_y'] = wall_y
         unit_y = np.asarray(data.qpos[self._qpos_indices[:, 1]], dtype=float)
@@ -346,6 +345,9 @@ class ObstacleStreetScenario(BaseScenario):
         state['next_threshold_for_unit'] = passed_thresholds_mask.sum(axis=1).astype(int)
         state['num_walls_passed'] = 0
         state['walls_passed_reward'] = 0.0
+        forward_progress_unit_y = self._compute_forward_reward_unit_potential(data, state)
+        state['progress'] = self._mean_active_forward_progress(forward_progress_unit_y, state.get("units_active_mask"))
+        state['forward_progress_unit_y'] = forward_progress_unit_y
 
         return state, connections
 
@@ -562,7 +564,9 @@ class ObstacleStreetScenario(BaseScenario):
         newly_done_mask = crossed_wall_y_mask & ~previous_done_mask
         done_mask = previous_done_mask | newly_done_mask
         current_potential = np.where(done_mask, 0.0, current_potential).astype(np.float32, copy=False)
-        wall_climb_delta_by_wall = current_potential - previous_potential
+        wall_climb_delta_by_wall = (
+            self.potential_reward_delta(current_potential, previous_potential)
+        )
         wall_climb_delta_by_wall = np.where(
             newly_done_mask & (wall_climb_delta_by_wall < 0.0),
             0.0,
@@ -593,17 +597,16 @@ class ObstacleStreetScenario(BaseScenario):
             state: dict,
     ) -> float:
         old_progress = state["progress"]
-        current_unit_y = self._compute_forward_progress_unit_y(data)
+        current_unit_y = self._compute_forward_reward_unit_potential(data, state)
         new_progress = self._mean_active_forward_progress(current_unit_y, state.get("units_active_mask"))
         state["progress"] = new_progress
 
         previous_unit_y = np.asarray(state.get("forward_progress_unit_y"), dtype=float)
         if previous_unit_y.shape == current_unit_y.shape:
-            unit_forward_delta = current_unit_y - previous_unit_y
-            unit_forward_delta = self._apply_forward_reward_wall_boost(unit_forward_delta, data, state)
+            unit_forward_delta = self.potential_reward_delta(current_unit_y, previous_unit_y)
             forward_reward = self._mean_active_forward_delta(unit_forward_delta, state.get("units_active_mask"))
         else:
-            forward_reward = new_progress - old_progress
+            forward_reward = self.potential_reward_delta(new_progress, old_progress)
         state["forward_progress_unit_y"] = current_unit_y
         wall_pass_reward = self._compute_wall_pass_reward(data, state)
         wall_climb_reward = self._compute_wall_climb_reward(data, state)
@@ -681,6 +684,14 @@ class ObstacleStreetScenario(BaseScenario):
             unit_y = np.minimum(unit_y, self.forward_reward_max_y)
         return unit_y
 
+    def _compute_forward_reward_unit_potential(
+            self,
+            data: mujoco.MjData,
+            state: dict,
+    ) -> np.ndarray:
+        unit_y = self._compute_forward_progress_unit_y(data)
+        return self._apply_forward_reward_wall_boost_to_potential(unit_y, data, state)
+
     def _mean_active_forward_progress(
             self,
             unit_y: np.ndarray,
@@ -705,19 +716,19 @@ class ObstacleStreetScenario(BaseScenario):
             return 0.0
         return float(unit_forward_delta[active_units_mask].mean())
 
-    def _apply_forward_reward_wall_boost(
+    def _apply_forward_reward_wall_boost_to_potential(
             self,
-            unit_forward_delta: np.ndarray,
+            unit_forward_potential: np.ndarray,
             data: mujoco.MjData,
             state: dict,
     ) -> np.ndarray:
         boost_factor = float(getattr(self, "forward_reward_wall_boost_factor", 1.0))
         if boost_factor == 1.0:
-            return unit_forward_delta
+            return unit_forward_potential
 
         wall_y_by_wall = np.asarray(state.get("wall_y"), dtype=float)
         if wall_y_by_wall.size == 0:
-            return unit_forward_delta
+            return unit_forward_potential
 
         qpos_indices = np.asarray(self._qpos_indices)
         unit_y = np.asarray(data.qpos[qpos_indices[:, 1]], dtype=float)
@@ -731,7 +742,7 @@ class ObstacleStreetScenario(BaseScenario):
             height_margin=self._forward_reward_wall_boost_height_margin(),
             wall_half_thickness=0.1,
         )
-        return np.where((unit_forward_delta > 0.0) & boost_mask, unit_forward_delta * boost_factor, unit_forward_delta)
+        return np.where(boost_mask, unit_forward_potential * boost_factor, unit_forward_potential)
 
     def _forward_reward_wall_boost_distance(self) -> float:
         configured = getattr(self, "forward_reward_wall_boost_distance", None)

@@ -45,12 +45,13 @@ def _make_data(unit_y: list[float]) -> SimpleNamespace:
     return SimpleNamespace(qpos=qpos)
 
 
-def _make_wall_climb_scenario() -> ObstacleStreetScenario:
+def _make_wall_climb_scenario(*, potential_reward_discount_factor: float = 1.0) -> ObstacleStreetScenario:
     scenario = object.__new__(ObstacleStreetScenario)
     scenario.num_units = 1
     scenario.num_walls = 1
     scenario.wall_climb_reward_weight = 5.0
     scenario.wall_climb_reward_distance = 0.5
+    scenario.potential_reward_discount_factor = potential_reward_discount_factor
     scenario.wall_heights = [0.4]
     scenario.swarm = SimpleNamespace(body_radius=0.1)
     scenario._qpos_indices = np.asarray([[0, 1, 2]], dtype=np.int64)
@@ -305,6 +306,48 @@ def test_wall_climb_reward_uses_signed_potential_delta_so_retry_is_rewarded() ->
     assert climb == pytest.approx(expected_reward)
     assert fall == pytest.approx(-expected_reward)
     assert retry == pytest.approx(expected_reward)
+
+
+def test_wall_climb_reward_applies_discount_factor_to_current_potential() -> None:
+    discount_factor = 0.9
+    scenario = _make_wall_climb_scenario(potential_reward_discount_factor=discount_factor)
+    state: dict[str, object] = {
+        "wall_y": np.asarray([1.0], dtype=float),
+        "wall_climb_potential": np.zeros((1, 1), dtype=np.float32),
+        "units_active_mask": np.asarray([True], dtype=bool),
+    }
+
+    climb = scenario._compute_wall_climb_reward(_make_wall_climb_data(unit_y=0.75, unit_z=0.25), state)
+    fall = scenario._compute_wall_climb_reward(_make_wall_climb_data(unit_y=0.75, unit_z=0.1), state)
+    retry = scenario._compute_wall_climb_reward(_make_wall_climb_data(unit_y=0.75, unit_z=0.25), state)
+
+    potential = np.sqrt(0.5) * 0.5
+    assert climb == pytest.approx(5.0 * discount_factor * potential)
+    assert fall == pytest.approx(-5.0 * potential)
+    assert retry == pytest.approx(5.0 * discount_factor * potential)
+
+
+def test_forward_reward_applies_discount_factor_to_current_potential() -> None:
+    scenario = _make_scenario(wall_pass_reward_skew=0.0, wall_pass_reward_weight=0.0, num_units=1)
+    scenario.forward_reward_weight = 1.0
+    scenario.forward_reward_max_y = None
+    scenario.forward_reward_wall_boost_factor = 1.0
+    scenario.wall_climb_reward_weight = 0.0
+    scenario.potential_reward_discount_factor = 0.9
+    scenario._qpos_indices = np.asarray([[0, 1, 2]], dtype=np.int64)
+    state: dict[str, object] = {
+        "progress": 1.0,
+        "forward_progress_unit_y": np.asarray([1.0], dtype=float),
+        "wall_pass_absolute_thresholds": np.asarray([], dtype=float),
+        "next_threshold_for_unit": np.zeros((1,), dtype=int),
+        "units_active_mask": np.asarray([True], dtype=bool),
+    }
+
+    reward = scenario.compute_progress_reward(_make_wall_climb_data(unit_y=2.0, unit_z=0.1), state)
+
+    assert reward == pytest.approx(0.8)
+    assert state["forward_reward"] == pytest.approx(0.8)
+    assert state["progress"] == pytest.approx(2.0)
 
 
 def test_wall_climb_reward_latches_after_crossing_wall_y_without_penalty_or_retry_reward() -> None:

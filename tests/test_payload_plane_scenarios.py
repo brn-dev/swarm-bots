@@ -97,6 +97,26 @@ def test_payload_plane_forward_reward_cap_is_applied_in_mj_env() -> None:
     assert np.isclose(state["progress"], 0.5)
 
 
+def test_payload_plane_forward_reward_applies_discount_factor_in_mj_env() -> None:
+    scenario = object.__new__(PayloadPlaneScenario)
+    scenario.forward_reward_weight = 1.5
+    scenario.forward_reward_max_y = None
+    scenario.towards_payload_reward_weight = 0.0
+    scenario.payload_centering_penalty_weight = 0.0
+    scenario.payload_centering_penalty_power = 1.0
+    scenario.payload_centering_tolerance = 0.0
+    scenario.potential_reward_discount_factor = 0.9
+    scenario._payload_qpos_indices = np.arange(7, dtype=int)
+
+    state = {"progress": 1.0}
+    data = SimpleNamespace(qpos=np.array([0.0, 1.4, 0.2, 1.0, 0.0, 0.0, 0.0], dtype=float))
+
+    reward = scenario.compute_progress_reward(data, state)
+
+    assert np.isclose(state["forward_reward"], 0.26)
+    assert np.isclose(reward, 0.26 * 1.5)
+
+
 def test_payload_plane_evaluate_step_reports_weighted_reward_terms_in_mj_env() -> None:
     scenario = object.__new__(PayloadPlaneScenario)
     scenario.num_units = 1
@@ -289,6 +309,7 @@ def test_payload_plane_reward_uses_payload_progress_and_x_penalty_in_mjw_runtime
         progress_reward_weight=1.0,
         forward_reward_weight=1.5,
         forward_reward_max_y=None,
+        potential_reward_discount_factor=1.0,
         payload_radius=0.2,
         towards_payload_reward_weight=0.0,
         towards_payload_goal_radius=0.2,
@@ -341,6 +362,7 @@ def test_payload_plane_x_penalty_uses_tolerance_in_mjw_runtime() -> None:
         1.0,
         1.0,
         float("inf"),
+        1.0,
         0.2,
         0.0,
         0.2,
@@ -385,6 +407,7 @@ def test_payload_plane_towards_payload_reward_uses_virtual_goal_radius_in_mjw_ru
         3.0,
         1.0,
         float("inf"),
+        1.0,
         0.3,
         2.0,
         0.2,
@@ -415,6 +438,7 @@ def test_payload_plane_forward_reward_cap_is_applied_in_mjw_runtime() -> None:
         progress_reward_weight=1.0,
         forward_reward_weight=1.0,
         forward_reward_max_y=0.5,
+        potential_reward_discount_factor=1.0,
         payload_radius=0.2,
         towards_payload_reward_weight=0.0,
         towards_payload_goal_radius=0.2,
@@ -442,6 +466,43 @@ def test_payload_plane_forward_reward_cap_is_applied_in_mjw_runtime() -> None:
     assert np.isclose(float(runtime.progress[0]), 0.5)
 
 
+def test_payload_plane_forward_reward_applies_discount_factor_in_mjw_runtime() -> None:
+    progress = torch.tensor([1.0], dtype=torch.float32)
+
+    (
+        _new_progress,
+        _new_towards_payload_progress,
+        progress_reward,
+        forward_reward,
+        _towards_payload_reward,
+        _payload_x_penalty,
+        _guidance_reward,
+    ) = _compute_payload_plane_reward_kernel(
+        unit_xy=torch.zeros((1, 1, 2), dtype=torch.float32),
+        payload_position=torch.tensor([[0.0, 1.4, 0.2]], dtype=torch.float32),
+        stable_mask=torch.tensor([True], dtype=torch.bool),
+        units_active_mask=torch.tensor([[True]], dtype=torch.bool),
+        partner_unit=torch.zeros((1, 1, 1), dtype=torch.long),
+        progress=progress,
+        towards_payload_progress=torch.zeros_like(progress),
+        progress_reward_weight=1.0,
+        forward_reward_weight=1.5,
+        forward_reward_max_y=float("inf"),
+        potential_reward_discount_factor=0.9,
+        payload_radius=0.2,
+        towards_payload_reward_weight=0.0,
+        towards_payload_goal_radius=0.2,
+        payload_centering_penalty_weight=0.0,
+        payload_centering_penalty_power=1.0,
+        payload_centering_tolerance=0.0,
+        units_without_connections_reward_weight=0.0,
+        guidance_reward_weight=1.0,
+    )
+
+    assert torch.allclose(forward_reward, torch.tensor([0.39]))
+    assert torch.allclose(progress_reward, torch.tensor([0.39]))
+
+
 def test_dual_payload_plane_reward_kernel_combines_forward_terms_in_mjw_runtime() -> None:
     (
         new_payload_progress,
@@ -464,6 +525,7 @@ def test_dual_payload_plane_reward_kernel_combines_forward_terms_in_mjw_runtime(
         progress_reward_weight=1.0,
         forward_reward_weight=2.0,
         forward_reward_max_y=float("inf"),
+        potential_reward_discount_factor=1.0,
         lagging_payload_weight=0.75,
         payload_radius=0.2,
         towards_payload_reward_weight=0.0,
@@ -506,6 +568,7 @@ def test_dual_payload_plane_towards_reward_kernel_uses_nearest_units_per_payload
         progress_reward_weight=3.0,
         forward_reward_weight=1.0,
         forward_reward_max_y=float("inf"),
+        potential_reward_discount_factor=1.0,
         lagging_payload_weight=0.75,
         payload_radius=0.3,
         towards_payload_reward_weight=2.0,

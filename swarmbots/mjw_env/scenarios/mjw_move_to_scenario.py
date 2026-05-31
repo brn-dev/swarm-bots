@@ -42,6 +42,7 @@ class MJWMoveToScenario(BaseMJWScenario):
     forward_reward_weight: float
     guidance_reward_weight: float
     units_without_connections_reward_weight: float
+    potential_reward_discount_factor: float
     include_connectors_xpos_in_obs: bool
     include_connectors_xquat_in_obs: bool
     quat_rot6d_representation: bool
@@ -76,6 +77,7 @@ class MJWMoveToScenario(BaseMJWScenario):
         if self.goal_radius < 0.0:
             raise ValueError(f"Expected goal_radius >= 0, got {self.goal_radius}")
         self.forward_reward_weight = float(self.forward_reward_weight)
+        self.potential_reward_discount_factor = float(self.potential_reward_discount_factor)
         self.inactive_area_location = (50.0, 0.0, 0.1)
 
     def get_settings(self) -> dict[str, Any]:
@@ -89,6 +91,7 @@ class MJWMoveToScenario(BaseMJWScenario):
                 "guidance_reward_weight": self.guidance_reward_weight,
                 "units_without_connections_reward_weight": self.units_without_connections_reward_weight,
             },
+            "potential_reward_discount_factor": self.potential_reward_discount_factor,
             "include_connectors_xpos_in_obs": self.include_connectors_xpos_in_obs,
             "include_connectors_xquat_in_obs": self.include_connectors_xquat_in_obs,
             "quat_rot6d_representation": self.quat_rot6d_representation,

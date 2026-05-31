@@ -44,6 +44,7 @@ class MJWBridgeScenario(BaseMJWScenario):
     progress_reward_weight: float
     guidance_reward_weight: float
     units_without_connections_reward_weight: float
+    potential_reward_discount_factor: float
     include_connectors_xpos_in_obs: bool
     include_connectors_xquat_in_obs: bool
     quat_rot6d_representation: bool
@@ -82,6 +83,7 @@ class MJWBridgeScenario(BaseMJWScenario):
         self.platform_height = float(self.platform_height)
         self.fall_z_threshold = float(self.fall_z_threshold)
         self.fell_off_bridge_reward = float(self.fell_off_bridge_reward)
+        self.potential_reward_discount_factor = float(self.potential_reward_discount_factor)
         if self.street_width <= 0.0:
             raise ValueError(f"Expected street_width > 0, got {self.street_width}")
         if self.bridge_width <= 0.0:
@@ -129,6 +131,7 @@ class MJWBridgeScenario(BaseMJWScenario):
                 "guidance_reward_weight": self.guidance_reward_weight,
                 "units_without_connections_reward_weight": self.units_without_connections_reward_weight,
             },
+            "potential_reward_discount_factor": self.potential_reward_discount_factor,
             "include_connectors_xpos_in_obs": self.include_connectors_xpos_in_obs,
             "include_connectors_xquat_in_obs": self.include_connectors_xquat_in_obs,
             "quat_rot6d_representation": self.quat_rot6d_representation,

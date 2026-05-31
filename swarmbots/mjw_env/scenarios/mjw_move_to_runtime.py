@@ -53,6 +53,7 @@ def _compute_move_to_reward_kernel(
     goal_radius: float,
     progress_reward_weight: float,
     forward_reward_weight: float,
+    potential_reward_discount_factor: float,
     units_without_connections_reward_weight: float,
     guidance_reward_weight: float,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -63,7 +64,9 @@ def _compute_move_to_reward_kernel(
         units_active_mask=units_active_mask,
         goal_radius=goal_radius,
     )
-    forward_component_reward = (new_progress - progress) * float(forward_reward_weight)
+    forward_component_reward = (
+        (new_progress * float(potential_reward_discount_factor)) - progress
+    ) * float(forward_reward_weight)
     progress_reward = forward_component_reward * float(progress_reward_weight)
 
     connection_mask = partner_unit >= 0
@@ -249,6 +252,7 @@ class MoveToMJWScenarioRuntime(BaseMJWScenarioRuntime):
             float(self.scenario.goal_radius),
             float(self.scenario.progress_reward_weight),
             float(self.scenario.forward_reward_weight),
+            float(self.scenario.potential_reward_discount_factor),
             float(self.scenario.units_without_connections_reward_weight),
             float(self.scenario.guidance_reward_weight),
         )

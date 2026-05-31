@@ -69,6 +69,7 @@ class BaseScenario(abc.ABC):
             progress_reward_weight: float,
             guidance_reward_weight: float,
             units_without_connections_reward_weight: float,
+            potential_reward_discount_factor: float,
             include_connectors_xpos_in_obs: bool,
             include_connectors_xquat_in_obs: bool,
             quat_rot6d_representation: bool,
@@ -119,6 +120,7 @@ class BaseScenario(abc.ABC):
             "guidance_reward_weight": guidance_reward_weight,
             "units_without_connections_reward_weight": units_without_connections_reward_weight,
         }
+        self.potential_reward_discount_factor = float(potential_reward_discount_factor)
         self.include_connectors_xpos_in_obs = include_connectors_xpos_in_obs
         self.include_connectors_xquat_in_obs = include_connectors_xquat_in_obs
         self.quat_rot6d_representation = quat_rot6d_representation
@@ -220,7 +222,12 @@ class BaseScenario(abc.ABC):
             'reset_settle_time': self.reset_settle_time,
             'reset_settle_timestep_scale': self.reset_settle_timestep_scale,
             'inactive_area_location': self.inactive_area_location,
+            'potential_reward_discount_factor': self.potential_reward_discount_factor,
         }
+
+    def potential_reward_delta(self, current_potential: Any, previous_potential: Any) -> Any:
+        discount_factor = float(getattr(self, "potential_reward_discount_factor", 1.0))
+        return (discount_factor * current_potential) - previous_potential
 
     def clone_for_worker_pool(self) -> "BaseScenario":
         """Clone a fully-built scenario without recompiling its MuJoCo spec."""

@@ -125,6 +125,7 @@ def test_climb_mjw_reward_kernel_exposes_horizontal_and_height_rewards() -> None
         2.0,
         10.0,
         3.0,
+        1.0,
         -0.25,
         3.0,
     )

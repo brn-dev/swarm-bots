@@ -82,6 +82,7 @@ def test_bridge_mjw_reward_kernel_adds_fall_penalty_and_termination() -> None:
             -1.0,
             -2.0,
             0.5,
+            1.0,
             -0.25,
             2.0,
         )

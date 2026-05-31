@@ -35,6 +35,10 @@ def test_mj_and_mjw_wall_difficulty_kwargs_use_shared_defaults() -> None:
     assert mjw_scenario_presets.EASY_WALL_SCENARIO_KWARGS == EASY_WALL_SCENARIO_KWARGS
     assert mjw_scenario_presets.MEDIUM_WALL_SCENARIO_KWARGS == MEDIUM_WALL_SCENARIO_KWARGS
     assert mjw_scenario_presets.HARD_WALL_SCENARIO_KWARGS == HARD_WALL_SCENARIO_KWARGS
+    assert COMMON_SCENARIO_KWARGS["potential_reward_discount_factor"] == 1.0
+    assert MEDIUM_WALL_SCENARIO_KWARGS["potential_reward_discount_factor"] == 0.99
+    assert MEDIUM_WALL_SCENARIO_KWARGS["forward_reward_wall_boost_factor"] == 3.0
+    assert HARD_WALL_SCENARIO_KWARGS["forward_reward_wall_boost_factor"] == 3.0
 
 
 def test_mj_and_mjw_bridge_scenario_kwargs_use_shared_defaults() -> None:
