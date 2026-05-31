@@ -52,12 +52,15 @@ def _compute_bridge_reward_kernel(
     fall_z_threshold: float,
     fell_off_bridge_reward_value: float,
     progress_reward_weight: float,
+    potential_reward_discount_factor: float,
     units_without_connections_reward_weight: float,
     guidance_reward_weight: float,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     safe_unit_y = torch.where(stable_mask.unsqueeze(1), unit_y, torch.zeros_like(unit_y))
     new_progress = masked_mean(safe_unit_y, units_active_mask, dim=1)
-    progress_reward = (new_progress - progress) * float(progress_reward_weight)
+    progress_reward = (
+        (new_progress * float(potential_reward_discount_factor)) - progress
+    ) * float(progress_reward_weight)
 
     active_below_threshold = (unit_z < float(fall_z_threshold)) & units_active_mask
     fell_off_bridge = active_below_threshold.any(dim=1) & stable_mask
@@ -251,6 +254,7 @@ class BridgeMJWScenarioRuntime(BaseMJWScenarioRuntime):
             float(self.scenario.fall_z_threshold),
             float(self.scenario.fell_off_bridge_reward),
             float(self.scenario.progress_reward_weight),
+            float(self.scenario.potential_reward_discount_factor),
             float(self.scenario.units_without_connections_reward_weight),
             float(self.scenario.guidance_reward_weight),
         )

@@ -46,6 +46,7 @@ class MJWPayloadPlaneScenario(BaseMJWScenario):
     forward_reward_weight: float
     guidance_reward_weight: float
     units_without_connections_reward_weight: float
+    potential_reward_discount_factor: float
     include_connectors_xpos_in_obs: bool
     include_connectors_xquat_in_obs: bool
     quat_rot6d_representation: bool
@@ -114,6 +115,7 @@ class MJWPayloadPlaneScenario(BaseMJWScenario):
             )
         if self.forward_reward_max_y is not None:
             self.forward_reward_max_y = float(self.forward_reward_max_y)
+        self.potential_reward_discount_factor = float(self.potential_reward_discount_factor)
         self.towards_payload_reward_weight = float(self.towards_payload_reward_weight)
         self.towards_payload_goal_radius = (
             self.payload_radius if self.towards_payload_goal_radius is None else float(self.towards_payload_goal_radius)
@@ -137,6 +139,7 @@ class MJWPayloadPlaneScenario(BaseMJWScenario):
                 "guidance_reward_weight": self.guidance_reward_weight,
                 "units_without_connections_reward_weight": self.units_without_connections_reward_weight,
             },
+            "potential_reward_discount_factor": self.potential_reward_discount_factor,
             "include_connectors_xpos_in_obs": self.include_connectors_xpos_in_obs,
             "include_connectors_xquat_in_obs": self.include_connectors_xquat_in_obs,
             "quat_rot6d_representation": self.quat_rot6d_representation,

@@ -58,6 +58,7 @@ def _compute_dual_payload_plane_reward_kernel(
     progress_reward_weight: float,
     forward_reward_weight: float,
     forward_reward_max_y: float,
+    potential_reward_discount_factor: float,
     lagging_payload_weight: float,
     payload_radius: float,
     towards_payload_reward_weight: float,
@@ -84,8 +85,8 @@ def _compute_dual_payload_plane_reward_kernel(
     safe_payload_y = safe_payload_position[:, :, 1]
     new_payload_progress = torch.clamp(safe_payload_y, max=float(forward_reward_max_y))
     new_back_payload_progress = new_payload_progress.min(dim=1).values
-    payload_progress_delta = new_payload_progress - payload_progress
-    back_progress_delta = new_back_payload_progress - back_payload_progress
+    payload_progress_delta = (new_payload_progress * float(potential_reward_discount_factor)) - payload_progress
+    back_progress_delta = (new_back_payload_progress * float(potential_reward_discount_factor)) - back_payload_progress
     num_payloads = float(payload_progress_delta.shape[1])
     blended_forward_delta = (
         ((1.0 - float(lagging_payload_weight)) * payload_progress_delta.sum(dim=1))
@@ -104,7 +105,9 @@ def _compute_dual_payload_plane_reward_kernel(
         goal_radius=towards_payload_goal_radius,
         units_per_payload=towards_payload_units_per_payload,
     )
-    towards_payload_reward = (new_towards_payload_progress - towards_payload_progress).sum(dim=1)
+    towards_payload_reward = (
+        (new_towards_payload_progress * float(potential_reward_discount_factor)) - towards_payload_progress
+    ).sum(dim=1)
     towards_payload_reward *= float(towards_payload_reward_weight)
 
     centered_payload_x = torch.clamp(
@@ -399,6 +402,7 @@ class DualPayloadPlaneMJWScenarioRuntime(BaseMJWScenarioRuntime):
             float(self.scenario.progress_reward_weight),
             float(self.scenario.forward_reward_weight),
             float("inf") if self.scenario.forward_reward_max_y is None else float(self.scenario.forward_reward_max_y),
+            float(self.scenario.potential_reward_discount_factor),
             float(self.scenario.lagging_payload_weight),
             float(self.scenario.payload_radius),
             float(self.scenario.towards_payload_reward_weight),

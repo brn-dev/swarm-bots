@@ -42,6 +42,7 @@ def _compute_climb_reward_kernel(
     progress_reward_weight: float,
     horizontal_reward_weight: float,
     height_reward_weight: float,
+    potential_reward_discount_factor: float,
     units_without_connections_reward_weight: float,
     guidance_reward_weight: float,
 ) -> tuple[
@@ -66,8 +67,12 @@ def _compute_climb_reward_kernel(
         goal_radius=height_goal_radius,
         axis=2,
     )
-    horizontal_reward = (new_horizontal_progress - horizontal_progress) * float(horizontal_reward_weight)
-    height_reward = (new_height_progress - height_progress) * float(height_reward_weight)
+    horizontal_reward = (
+        (new_horizontal_progress * float(potential_reward_discount_factor)) - horizontal_progress
+    ) * float(horizontal_reward_weight)
+    height_reward = (
+        (new_height_progress * float(potential_reward_discount_factor)) - height_progress
+    ) * float(height_reward_weight)
     progress_reward = (horizontal_reward + height_reward) * float(progress_reward_weight)
 
     connection_mask = partner_unit >= 0
@@ -270,6 +275,7 @@ class ClimbMJWScenarioRuntime(BaseMJWScenarioRuntime):
             float(self.scenario.progress_reward_weight),
             float(self.scenario.horizontal_reward_weight),
             float(self.scenario.height_reward_weight),
+            float(self.scenario.potential_reward_discount_factor),
             float(self.scenario.units_without_connections_reward_weight),
             float(self.scenario.guidance_reward_weight),
         )

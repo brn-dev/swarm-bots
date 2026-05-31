@@ -39,6 +39,7 @@ class ClimbScenario(BaseScenario):
         height_reward_weight: float = 1.0,
         guidance_reward_weight: float = 1.0,
         units_without_connections_reward_weight: float = 0.0,
+        potential_reward_discount_factor: float = 1.0,
         include_connectors_xpos_in_obs: bool = True,
         include_connectors_xquat_in_obs: bool = False,
         quat_rot6d_representation: bool = True,
@@ -92,6 +93,7 @@ class ClimbScenario(BaseScenario):
             progress_reward_weight=progress_reward_weight,
             guidance_reward_weight=guidance_reward_weight,
             units_without_connections_reward_weight=units_without_connections_reward_weight,
+            potential_reward_discount_factor=potential_reward_discount_factor,
             seed=seed,
             include_connectors_xpos_in_obs=include_connectors_xpos_in_obs,
             include_connectors_xquat_in_obs=include_connectors_xquat_in_obs,
@@ -214,8 +216,14 @@ class ClimbScenario(BaseScenario):
         )
         state["height_progress"] = new_height_progress
 
-        horizontal_reward = (new_horizontal_progress - old_horizontal_progress) * self.horizontal_reward_weight
-        height_reward = (new_height_progress - old_height_progress) * self.height_reward_weight
+        horizontal_reward = (
+            self.potential_reward_delta(new_horizontal_progress, old_horizontal_progress)
+            * self.horizontal_reward_weight
+        )
+        height_reward = (
+            self.potential_reward_delta(new_height_progress, old_height_progress)
+            * self.height_reward_weight
+        )
         progress_reward = horizontal_reward + height_reward
 
         state["progress"] = new_horizontal_progress + new_height_progress

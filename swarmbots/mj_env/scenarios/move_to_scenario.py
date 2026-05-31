@@ -30,6 +30,7 @@ class MoveToScenario(BaseScenario):
         forward_reward_weight: float = 1.0,
         guidance_reward_weight: float = 1.0,
         units_without_connections_reward_weight: float = 0.0,
+        potential_reward_discount_factor: float = 1.0,
         include_connectors_xpos_in_obs: bool = True,
         include_connectors_xquat_in_obs: bool = False,
         quat_rot6d_representation: bool = True,
@@ -60,6 +61,7 @@ class MoveToScenario(BaseScenario):
             progress_reward_weight=progress_reward_weight,
             guidance_reward_weight=guidance_reward_weight,
             units_without_connections_reward_weight=units_without_connections_reward_weight,
+            potential_reward_discount_factor=potential_reward_discount_factor,
             seed=seed,
             include_connectors_xpos_in_obs=include_connectors_xpos_in_obs,
             include_connectors_xquat_in_obs=include_connectors_xquat_in_obs,
@@ -162,7 +164,7 @@ class MoveToScenario(BaseScenario):
         )
         state["progress"] = new_progress
 
-        forward_reward = (new_progress - old_progress) * self.forward_reward_weight
+        forward_reward = self.potential_reward_delta(new_progress, old_progress) * self.forward_reward_weight
         state["forward_reward"] = forward_reward
         state["progress_reward"] = forward_reward
         return forward_reward

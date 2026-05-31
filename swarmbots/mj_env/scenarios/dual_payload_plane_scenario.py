@@ -50,6 +50,7 @@ class DualPayloadPlaneScenario(PayloadPlaneScenario):
         payload_centering_tolerance: float = 0.0,
         guidance_reward_weight: float = 1.0,
         units_without_connections_reward_weight: float = 0.0,
+        potential_reward_discount_factor: float = 1.0,
         include_connectors_xpos_in_obs: bool = True,
         include_connectors_xquat_in_obs: bool = False,
         quat_rot6d_representation: bool = True,
@@ -115,6 +116,7 @@ class DualPayloadPlaneScenario(PayloadPlaneScenario):
             progress_reward_weight=progress_reward_weight,
             guidance_reward_weight=guidance_reward_weight,
             units_without_connections_reward_weight=units_without_connections_reward_weight,
+            potential_reward_discount_factor=potential_reward_discount_factor,
             seed=seed,
             include_connectors_xpos_in_obs=include_connectors_xpos_in_obs,
             include_connectors_xquat_in_obs=include_connectors_xquat_in_obs,
@@ -189,8 +191,8 @@ class DualPayloadPlaneScenario(PayloadPlaneScenario):
         state["back_payload_progress"] = new_back_payload_progress
         state["progress"] = float(new_payload_progress.sum() + new_back_payload_progress)
 
-        payload_progress_delta = new_payload_progress - old_payload_progress
-        back_progress_delta = new_back_payload_progress - old_back_payload_progress
+        payload_progress_delta = self.potential_reward_delta(new_payload_progress, old_payload_progress)
+        back_progress_delta = self.potential_reward_delta(new_back_payload_progress, old_back_payload_progress)
         num_payloads = float(payload_progress_delta.shape[0])
         forward_reward = float(
             ((1.0 - self.lagging_payload_weight) * payload_progress_delta.sum())
@@ -269,7 +271,7 @@ class DualPayloadPlaneScenario(PayloadPlaneScenario):
         old_progress = np.asarray(state["towards_payload_progress"], dtype=float)
         new_progress = self._compute_towards_payload_progress_baseline(data, state)
         state["towards_payload_progress"] = new_progress
-        return float((new_progress - old_progress).sum() * self.towards_payload_reward_weight)
+        return float(self.potential_reward_delta(new_progress, old_progress).sum() * self.towards_payload_reward_weight)
 
     def _compute_towards_payload_progress_baseline(self, data: mujoco.MjData, state: dict) -> np.ndarray:
         payload_positions = self._get_payload_positions(data)

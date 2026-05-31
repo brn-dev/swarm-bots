@@ -56,6 +56,7 @@ def _compute_payload_plane_reward_kernel(
     progress_reward_weight: float,
     forward_reward_weight: float,
     forward_reward_max_y: float,
+    potential_reward_discount_factor: float,
     payload_radius: float,
     towards_payload_reward_weight: float,
     towards_payload_goal_radius: float,
@@ -77,7 +78,7 @@ def _compute_payload_plane_reward_kernel(
     safe_payload_x = torch.where(stable_mask, payload_position[:, 0], torch.zeros_like(progress))
     safe_payload_y = torch.where(stable_mask, payload_position[:, 1], torch.zeros_like(progress))
     new_progress = torch.clamp(safe_payload_y, max=float(forward_reward_max_y))
-    progress_delta = new_progress - progress
+    progress_delta = (new_progress * float(potential_reward_discount_factor)) - progress
 
     forward_component_reward = progress_delta * float(forward_reward_weight)
     virtual_goal_position = torch.stack((safe_payload_x, safe_payload_y - float(payload_radius)), dim=-1)
@@ -88,7 +89,7 @@ def _compute_payload_plane_reward_kernel(
         goal_radius=towards_payload_goal_radius,
     )
     towards_payload_reward = (
-        new_towards_payload_progress - towards_payload_progress
+        (new_towards_payload_progress * float(potential_reward_discount_factor)) - towards_payload_progress
     ) * float(towards_payload_reward_weight)
     centered_payload_x = torch.clamp(
         torch.abs(safe_payload_x) - float(payload_centering_tolerance),
@@ -335,6 +336,7 @@ class PayloadPlaneMJWScenarioRuntime(BaseMJWScenarioRuntime):
             float(self.scenario.progress_reward_weight),
             float(self.scenario.forward_reward_weight),
             float("inf") if self.scenario.forward_reward_max_y is None else float(self.scenario.forward_reward_max_y),
+            float(self.scenario.potential_reward_discount_factor),
             float(self.scenario.payload_radius),
             float(self.scenario.towards_payload_reward_weight),
             float(self.scenario.towards_payload_goal_radius),

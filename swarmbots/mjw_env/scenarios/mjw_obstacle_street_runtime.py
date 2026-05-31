@@ -121,6 +121,25 @@ def _compute_forward_reward_wall_boost_mask_torch(
     return (near_wall & high_enough).any(dim=-1)
 
 
+def _compute_forward_reward_wall_boost_mask_np(
+    *,
+    unit_y: np.ndarray,
+    unit_z: np.ndarray,
+    wall_y_by_wall: np.ndarray,
+    wall_heights: np.ndarray,
+    boost_distance: float,
+    height_margin: float,
+    wall_half_thickness: float,
+) -> np.ndarray:
+    if wall_y_by_wall.size == 0:
+        return np.zeros_like(unit_y, dtype=bool)
+
+    distance_to_wall = wall_y_by_wall[np.newaxis, :] - unit_y[:, np.newaxis]
+    near_wall = (distance_to_wall >= -float(wall_half_thickness)) & (distance_to_wall <= float(boost_distance))
+    high_enough = unit_z[:, np.newaxis] >= (wall_heights[np.newaxis, :] + float(height_margin))
+    return (near_wall & high_enough).any(axis=-1)
+
+
 def _compute_wall_climb_done_mask_torch(
     *,
     unit_y: torch.Tensor,
@@ -161,6 +180,7 @@ def _compute_obstacle_street_reward_kernel(
     wall_thresholds_per_wall: int,
     wall_climb_reward_weight: float,
     wall_climb_reward_distance: float,
+    potential_reward_discount_factor: float,
     forward_reward_wall_boost_factor: float,
     forward_reward_wall_boost_distance: float,
     forward_reward_wall_boost_height_margin: float,
@@ -182,11 +202,11 @@ def _compute_obstacle_street_reward_kernel(
 ]:
     safe_unit_y = torch.where(stable_mask.unsqueeze(1), unit_y, torch.zeros_like(unit_y))
     capped_unit_y = torch.clamp(safe_unit_y, max=float(forward_reward_max_y))
-    new_progress = masked_mean(capped_unit_y, units_active_mask, dim=1)
     if forward_reward_wall_boost_factor == 1.0:
-        progress_delta = new_progress - progress
+        forward_progress_unit_potential = capped_unit_y
+        new_progress = masked_mean(forward_progress_unit_potential, units_active_mask, dim=1)
+        progress_delta = (new_progress * float(potential_reward_discount_factor)) - progress
     else:
-        unit_forward_delta = capped_unit_y - forward_progress_unit_y
         boost_mask = _compute_forward_reward_wall_boost_mask_torch(
             unit_y=unit_y,
             unit_z=unit_z,
@@ -197,11 +217,15 @@ def _compute_obstacle_street_reward_kernel(
             height_margin=forward_reward_wall_boost_height_margin,
             wall_half_thickness=0.1,
         )
-        unit_forward_delta = torch.where(
-            (unit_forward_delta > 0.0) & boost_mask,
-            unit_forward_delta * float(forward_reward_wall_boost_factor),
-            unit_forward_delta,
+        forward_progress_unit_potential = torch.where(
+            boost_mask,
+            capped_unit_y * float(forward_reward_wall_boost_factor),
+            capped_unit_y,
         )
+        unit_forward_delta = (
+            forward_progress_unit_potential * float(potential_reward_discount_factor)
+        ) - forward_progress_unit_y
+        new_progress = masked_mean(forward_progress_unit_potential, units_active_mask, dim=1)
         progress_delta = masked_mean(unit_forward_delta, units_active_mask, dim=1)
 
     wall_pass_reward = torch.zeros_like(progress, dtype=torch.float32)
@@ -276,7 +300,7 @@ def _compute_obstacle_street_reward_kernel(
         )
         wall_climb_delta = torch.where(
             stable_mask.view(-1, 1, 1),
-            new_wall_climb_potential - wall_climb_potential,
+            (new_wall_climb_potential * float(potential_reward_discount_factor)) - wall_climb_potential,
             torch.zeros_like(wall_climb_potential),
         )
         wall_climb_delta = torch.where(
@@ -317,7 +341,7 @@ def _compute_obstacle_street_reward_kernel(
         new_wall_climb_potential,
         new_wall_climb_done_mask,
         passed_thresholds_mask,
-        capped_unit_y,
+        forward_progress_unit_potential,
     )
 
 
@@ -355,24 +379,43 @@ class _ObstacleStreetCPUResetSettler(BaseMJWCPUResetSettler):
             total_passed = np.zeros((active_mask.shape[0],), dtype=np.int64)
             passed_thresholds_mask = np.zeros((active_mask.shape[0], 0), dtype=bool)
 
-        progress = _compute_forward_progress_baseline_np(
-            unit_y=unit_y,
-            active_mask=active_mask,
-            forward_reward_max_y=self.scenario.forward_reward_max_y,
-        )
+        wall_y_by_wall = _extract_wall_y_by_wall_np(
+            hidden_global_vars=spec.hidden_global_vars[np.newaxis, :],
+            num_walls=self.scenario.num_walls,
+            no_initial_ramp=self.scenario.no_initial_ramp,
+        )[0]
         forward_progress_unit_y = _compute_forward_progress_unit_y_np(
             unit_y=unit_y,
             forward_reward_max_y=self.scenario.forward_reward_max_y,
+        )
+        boost_distance = (
+            float(self.scenario.forward_reward_wall_boost_distance)
+            if self.scenario.forward_reward_wall_boost_distance is not None
+            else float(self.scenario.wall_climb_reward_distance)
+        )
+        height_margin = (
+            float(self.scenario.forward_reward_wall_boost_height_margin)
+            if self.scenario.forward_reward_wall_boost_height_margin is not None
+            else float(self.scenario.swarm.body_radius)
+        )
+        forward_progress_unit_y = _apply_forward_reward_wall_boost_to_potential_np(
+            unit_y=unit_y,
+            unit_z=unit_z,
+            forward_progress_unit_y=forward_progress_unit_y,
+            wall_y_by_wall=wall_y_by_wall,
+            wall_heights=np.asarray(self.scenario.wall_heights, dtype=float),
+            forward_reward_wall_boost_factor=float(self.scenario.forward_reward_wall_boost_factor),
+            boost_distance=boost_distance,
+            height_margin=height_margin,
+        )
+        progress = _mean_active_forward_progress_np(
+            forward_progress_unit_y=forward_progress_unit_y,
+            active_mask=active_mask,
         )
         if self.scenario.wall_climb_reward_weight == 0.0:
             wall_climb_potential = np.zeros((active_mask.shape[0], self.scenario.num_walls), dtype=np.float32)
             wall_climb_done_mask = np.zeros((active_mask.shape[0], self.scenario.num_walls), dtype=bool)
         else:
-            wall_y_by_wall = _extract_wall_y_by_wall_np(
-                hidden_global_vars=spec.hidden_global_vars[np.newaxis, :],
-                num_walls=self.scenario.num_walls,
-                no_initial_ramp=self.scenario.no_initial_ramp,
-            )[0]
             wall_climb_done_mask = (unit_y[:, np.newaxis] > wall_y_by_wall[np.newaxis, :]) & active_mask[:, np.newaxis]
             wall_climb_potential = _compute_wall_climb_potential_np(
                 unit_y=unit_y,
@@ -572,21 +615,41 @@ class ObstacleStreetMJWScenarioRuntime(BaseMJWScenarioRuntime):
         self.wall_pass_absolute_thresholds[world_idx] = reset_batch.wall_pass_thresholds
 
         unit_y = self._get_unit_y()[world_idx]
+        unit_z = self._get_unit_z()[world_idx]
         total_passed = (unit_y.unsqueeze(-1) > reset_batch.wall_pass_thresholds.unsqueeze(1)).sum(dim=-1)
-        self.progress[world_idx] = _compute_forward_progress_baseline_torch(
-            unit_y=unit_y,
-            active_mask=self.bindings.units_active_mask[world_idx],
-            forward_reward_max_y=self.scenario.forward_reward_max_y,
-        )
-        self.forward_progress_unit_y[world_idx] = _compute_forward_progress_unit_y_torch(
+        forward_progress_unit_y = _compute_forward_progress_unit_y_torch(
             unit_y=unit_y,
             forward_reward_max_y=self.scenario.forward_reward_max_y,
         )
+        forward_progress_unit_y = _apply_forward_reward_wall_boost_to_potential_torch(
+            unit_y=unit_y,
+            unit_z=unit_z,
+            stable_mask=torch.ones((unit_y.shape[0],), device=unit_y.device, dtype=torch.bool),
+            forward_progress_unit_y=forward_progress_unit_y,
+            wall_y_by_wall=self.wall_y_by_wall[world_idx],
+            wall_heights=self._wall_heights,
+            forward_reward_wall_boost_factor=float(self.scenario.forward_reward_wall_boost_factor),
+            boost_distance=(
+                float(self.scenario.forward_reward_wall_boost_distance)
+                if self.scenario.forward_reward_wall_boost_distance is not None
+                else float(self.scenario.wall_climb_reward_distance)
+            ),
+            height_margin=(
+                float(self.scenario.forward_reward_wall_boost_height_margin)
+                if self.scenario.forward_reward_wall_boost_height_margin is not None
+                else float(self.scenario.swarm.body_radius)
+            ),
+        )
+        self.progress[world_idx] = masked_mean(
+            forward_progress_unit_y,
+            self.bindings.units_active_mask[world_idx],
+            dim=1,
+        )
+        self.forward_progress_unit_y[world_idx] = forward_progress_unit_y
         if self.scenario.wall_climb_reward_weight == 0.0:
             self.wall_climb_potential[world_idx] = 0.0
             self.wall_climb_done_mask[world_idx] = False
         else:
-            unit_z = self._get_unit_z()[world_idx]
             self.wall_climb_done_mask[world_idx] = (
                 (unit_y.unsqueeze(-1) > self.wall_y_by_wall[world_idx].unsqueeze(1))
                 & self.bindings.units_active_mask[world_idx].unsqueeze(-1)
@@ -745,6 +808,7 @@ class ObstacleStreetMJWScenarioRuntime(BaseMJWScenarioRuntime):
             int(self._wall_thresholds_per_wall),
             wall_climb_reward_weight,
             wall_climb_reward_distance,
+            float(getattr(self.scenario, "potential_reward_discount_factor", 1.0)),
             forward_reward_wall_boost_factor,
             forward_reward_wall_boost_distance,
             forward_reward_wall_boost_height_margin,
@@ -913,11 +977,48 @@ def _compute_forward_progress_baseline_np(
     return float(capped_unit_y[active_units_mask].mean())
 
 
+def _mean_active_forward_progress_np(*, forward_progress_unit_y: np.ndarray, active_mask: np.ndarray) -> float:
+    active_units_mask = np.asarray(active_mask, dtype=bool)
+    if not active_units_mask.any():
+        return 0.0
+    return float(forward_progress_unit_y[active_units_mask].mean())
+
+
 def _compute_forward_progress_unit_y_np(*, unit_y: np.ndarray, forward_reward_max_y: float | None) -> np.ndarray:
     capped_unit_y = np.asarray(unit_y, dtype=float)
     if forward_reward_max_y is not None:
         capped_unit_y = np.minimum(capped_unit_y, forward_reward_max_y)
     return capped_unit_y.astype(np.float32, copy=False)
+
+
+def _apply_forward_reward_wall_boost_to_potential_np(
+    *,
+    unit_y: np.ndarray,
+    unit_z: np.ndarray,
+    forward_progress_unit_y: np.ndarray,
+    wall_y_by_wall: np.ndarray,
+    wall_heights: np.ndarray,
+    forward_reward_wall_boost_factor: float,
+    boost_distance: float,
+    height_margin: float,
+) -> np.ndarray:
+    if forward_reward_wall_boost_factor == 1.0:
+        return forward_progress_unit_y
+
+    boost_mask = _compute_forward_reward_wall_boost_mask_np(
+        unit_y=unit_y,
+        unit_z=unit_z,
+        wall_y_by_wall=wall_y_by_wall,
+        wall_heights=wall_heights,
+        boost_distance=boost_distance,
+        height_margin=height_margin,
+        wall_half_thickness=0.1,
+    )
+    return np.where(
+        boost_mask,
+        forward_progress_unit_y * float(forward_reward_wall_boost_factor),
+        forward_progress_unit_y,
+    ).astype(np.float32, copy=False)
 
 
 def _compute_wall_climb_potential_np(
@@ -965,6 +1066,38 @@ def _compute_forward_progress_unit_y_torch(*, unit_y: torch.Tensor, forward_rewa
     if forward_reward_max_y is None:
         return unit_y
     return torch.clamp(unit_y, max=float(forward_reward_max_y))
+
+
+def _apply_forward_reward_wall_boost_to_potential_torch(
+    *,
+    unit_y: torch.Tensor,
+    unit_z: torch.Tensor,
+    stable_mask: torch.Tensor,
+    forward_progress_unit_y: torch.Tensor,
+    wall_y_by_wall: torch.Tensor,
+    wall_heights: torch.Tensor,
+    forward_reward_wall_boost_factor: float,
+    boost_distance: float,
+    height_margin: float,
+) -> torch.Tensor:
+    if forward_reward_wall_boost_factor == 1.0:
+        return forward_progress_unit_y
+
+    boost_mask = _compute_forward_reward_wall_boost_mask_torch(
+        unit_y=unit_y,
+        unit_z=unit_z,
+        stable_mask=stable_mask,
+        wall_y_by_wall=wall_y_by_wall,
+        wall_heights=wall_heights,
+        boost_distance=boost_distance,
+        height_margin=height_margin,
+        wall_half_thickness=0.1,
+    )
+    return torch.where(
+        boost_mask,
+        forward_progress_unit_y * float(forward_reward_wall_boost_factor),
+        forward_progress_unit_y,
+    )
 
 
 def _extract_wall_y_by_wall_np(
