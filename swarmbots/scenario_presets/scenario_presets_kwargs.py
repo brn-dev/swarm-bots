@@ -64,7 +64,7 @@ WALL_DIFFICULTY_UPDATES: dict[Difficulty, dict[str, object]] = {
         "wall_pass_reward_weight": 5.0,
         "wall_pass_reward_skew": 4.0,
         "wall_pass_thresholds": [0.2, 0.4],
-        "units_without_connections_reward_weight": -2e-3,
+        "units_without_connections_reward_weight": -4e-3,
     },
     "hard": {
         "wall_height": 0.8,
@@ -74,7 +74,7 @@ WALL_DIFFICULTY_UPDATES: dict[Difficulty, dict[str, object]] = {
         "wall_pass_reward_weight": 5.0,
         "wall_pass_reward_skew": 4.0,
         "wall_pass_thresholds": [0.2, 0.4],
-        "units_without_connections_reward_weight": -2e-3,
+        "units_without_connections_reward_weight": -4e-3,
     },
 }
 
