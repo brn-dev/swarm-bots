@@ -67,7 +67,7 @@ def _default_nconmax(*, num_units: int, num_total_connectors: int) -> int:
 
 
 def _default_njmax(*, num_units: int, nconmax: int) -> int:
-    return max(160, (5 * nconmax) + (8 * num_units))
+    return max(160, (5 * nconmax) + (10 * num_units))
 
 
 def _resolve_workspace_cap(
