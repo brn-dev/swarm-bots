@@ -433,7 +433,7 @@ def run_experiment(
 
     enc_d_model = 256
     dec_d_model = 128
-    transition_model_d_model = 192
+    transition_model_d_model = 128
 
     enc_nhead = 4
     dec_nhead = 2
