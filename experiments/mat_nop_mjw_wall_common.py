@@ -31,7 +31,6 @@ from swarmbots.learn.algos.mat_qcs.mat_qcs_decoder import MATQCSDecoderConfig, M
 from swarmbots.learn.algos.mat.mat_encoder import MATEncoderConfig
 from swarmbots.learn.algos.mat_qcs.mat_qcs_policy import MATQCSCriticConfig, MATQCSPolicy, MATQCSPolicyConfig
 from swarmbots.learn.algos.mat_orig.mat_orig_decoder import MATOrigDecoderConfig
-from swarmbots.learn.algos.mat_orig.mat_orig_encoder import MATOrigEncoderConfig
 from swarmbots.learn.algos.mat_orig.mat_orig_policy import MATOrigCriticConfig, MATOrigPolicy, MATOrigPolicyConfig
 from swarmbots.learn.algos.ppo.ppo import AutomaticLearningRate, PPO, StepsRolloutMode
 from swarmbots.learn.algos.ppo.ppo_policy import PopArtConfig
@@ -433,7 +432,7 @@ def run_experiment(
     print(f"actuators_per_limb: {actuators_per_limb}")
 
     enc_d_model = 256
-    dec_d_model = 96
+    dec_d_model = 192
     transition_model_d_model = 192
 
     enc_nhead = 4
@@ -738,6 +737,7 @@ def _make_base_policy(
         nhead=enc_nhead,
         num_layers=2,
         dim_feedforward=enc_d_model * 2,
+        act_fn_cls=act_fn_cls,
         add_agent_embeddings=mat_add_agent_embeddings,
         linear_init_gain=mat_init_gains.obs_encoder,
         linear_projection_init_gain=mat_init_gains.obs_encoder_projection,
@@ -771,8 +771,8 @@ def _make_base_policy(
                     token_encoder_projection_init_gain=mat_init_gains.decoder_token_encoder_projection,
                     transformer_ff_init_gain=mat_init_gains.decoder_transformer_ff,
                     actor_head_init_gain=mat_init_gains.actor_head,
-                    query_encoder_hidden_dims=[2 * dec_d_model],
-                    context_encoder_hidden_dims=[2 * dec_d_model],
+                    query_encoder_hidden_dims=[dec_d_model],
+                    context_encoder_hidden_dims=[dec_d_model],
                     memory_dims=None,
                     self_attention_mode=mat_decoder_self_attention_mode,
                     normalize_query_input=mat_normalization.normalize_query_input,
@@ -811,8 +811,8 @@ def _make_base_policy(
                     token_encoder_projection_init_gain=mat_init_gains.decoder_token_encoder_projection,
                     transformer_ff_init_gain=mat_init_gains.decoder_transformer_ff,
                     actor_head_init_gain=mat_init_gains.actor_head,
-                    query_encoder_hidden_dims=[2 * dec_d_model],
-                    context_encoder_hidden_dims=[2 * dec_d_model],
+                    query_encoder_hidden_dims=[dec_d_model],
+                    context_encoder_hidden_dims=[dec_d_model],
                     memory_dims=None,
                     normalize_query_input=mat_normalization.normalize_query_input,
                     normalize_context_input=mat_normalization.normalize_context_input,
@@ -858,27 +858,30 @@ def _make_base_policy(
         return MATOrigPolicy(
             env=env,
             config=MATOrigPolicyConfig(
-                encoder_config=MATOrigEncoderConfig(
-                    d_model=enc_d_model,
-                    nhead=enc_nhead,
-                    num_layers=2,
-                ),
+                encoder_config=mat_encoder_config,
                 decoder_config=MATOrigDecoderConfig(
-                    d_model=enc_d_model,
-                    nhead=enc_nhead,
+                    d_model=dec_d_model,
+                    nhead=dec_nhead,
                     num_layers=2,
-                    latent_pi_dim=enc_d_model,
+                    latent_pi_dim=dec_d_model,
                 ),
                 critic_config=MATOrigCriticConfig(
                     use_popart=use_popart,
                     popart_config=popart_config,
                     pool_mode="mean",
+                    value_head_hidden_dims=[enc_d_model, enc_d_model],
                 ),
                 continuous_config=continuous_config,
                 bernoulli_config=bernoulli_config,
                 max_agents=20,
                 compile_modules=compile_policy_modules,
                 compile_mode=policy_compile_mode,
+                encoder_decoder_projection_init_gain=(
+                    mat_init_gains.decoder_token_encoder
+                    if mat_init_gains.decoder_token_encoder_projection is None
+                    else mat_init_gains.decoder_token_encoder_projection
+                ),
+                action_net_init_gain=mat_init_gains.action_net,
             ),
         )
 

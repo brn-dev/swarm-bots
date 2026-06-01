@@ -34,7 +34,7 @@ class NOPWorldModelConfig:
     world_model_loss_coef: float = 1.0
     compile_modules: bool = False
     compile_mode: str = "default"
-    act_fn_cls: ActivationFactory = nn.ReLU
+    act_fn_cls: ActivationFactory = nn.GELU
     transition_model_dropout: float = 0.0
     d_model_transition_model: int = 128
     nhead_transition_model: int = 4

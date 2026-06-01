@@ -14,7 +14,7 @@ class MATQCCDecoderConfig:
     num_layers: int = 2
     dim_feedforward: int = 128
     dropout: float = 0.0
-    act_fn_cls: ActivationFactory = nn.ReLU
+    act_fn_cls: ActivationFactory = nn.GELU
     norm_first: bool = True
     layer_norm_eps: float = 1e-5
     bias: bool = True

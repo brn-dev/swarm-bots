@@ -46,7 +46,7 @@ class MATQCSPolicyConfig:
     encoder_config: MATEncoderConfig = field(default_factory=MATEncoderConfig)
     decoder_config: MATQCSDecoderConfig = field(default_factory=MATQCSDecoderConfig)
     critic_config: MATQCSCriticConfig = field(default_factory=MATQCSCriticConfig)
-    act_fn_cls: ActivationFactory = nn.ReLU
+    act_fn_cls: ActivationFactory = nn.GELU
     dropout: float = 0.0
     continuous_config: ContinuousActionDistConfigInput = None
     bernoulli_config: BernoulliConfig | None = None

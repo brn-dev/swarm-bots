@@ -39,6 +39,7 @@ def _make_policy() -> MATQCSPolicy:
                 nhead=4,
                 num_layers=1,
                 dim_feedforward=32,
+                add_agent_embeddings=True,
                 query_encoder_hidden_dims=[32],
                 context_encoder_hidden_dims=[32],
                 memory_dims=None,
