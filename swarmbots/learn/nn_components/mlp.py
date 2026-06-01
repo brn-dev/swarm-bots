@@ -31,8 +31,8 @@ class MLP(nn.Sequential):
 
         for i in range(n_layers):
             linear = nn.Linear(dims[i], dims[i + 1])
-            is_final_without_activation = i == n_layers - 1 and not end_with_act_fn
-            if is_final_without_activation and final_linear_init is not None:
+            is_final_layer = i == n_layers - 1
+            if is_final_layer and final_linear_init is not None:
                 final_linear_init(linear)
             else:
                 linear_init(linear)

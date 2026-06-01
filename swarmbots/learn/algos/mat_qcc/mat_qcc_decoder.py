@@ -27,6 +27,7 @@ class MATQCCDecoderConfig:
     context_encoder_hidden_dims: list[int] | None = None
     memory_dims: list[int] | None = None
     actor_head_hidden_dims: list[int] | None = None
+    token_encoder_end_with_act_fn: bool = False
     normalize_query_input: bool = False
     normalize_context_input: bool = False
     normalize_memory_input: bool = False

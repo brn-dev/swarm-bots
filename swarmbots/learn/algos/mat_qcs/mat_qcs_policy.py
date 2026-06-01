@@ -121,6 +121,7 @@ class MATQCSPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
             act_fn_cls=config.act_fn_cls,
             linear_init_gain=config.decoder_config.token_encoder_init_gain,
             projection_init_gain=config.decoder_config.token_encoder_projection_init_gain,
+            end_with_act_fn=config.decoder_config.token_encoder_end_with_act_fn,
         )
         self.query_token_norm = (
             nn.LayerNorm(self.d_model_decoder)
@@ -140,6 +141,7 @@ class MATQCSPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
             act_fn_cls=config.act_fn_cls,
             linear_init_gain=config.decoder_config.token_encoder_init_gain,
             projection_init_gain=config.decoder_config.token_encoder_projection_init_gain,
+            end_with_act_fn=config.decoder_config.token_encoder_end_with_act_fn,
         )
         self.context_token_norm = (
             nn.LayerNorm(self.d_model_decoder)
@@ -164,6 +166,7 @@ class MATQCSPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
                 act_fn_cls=config.act_fn_cls,
                 linear_init_gain=config.decoder_config.token_encoder_init_gain,
                 projection_init_gain=config.decoder_config.token_encoder_projection_init_gain,
+                end_with_act_fn=config.decoder_config.token_encoder_end_with_act_fn,
             )
             self.memory_d_model = memory_dims[-1]
         self.memory_token_norm = (
@@ -718,6 +721,7 @@ class MATQCSPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
             act_fn_cls: ActivationFactory,
             linear_init_gain: float,
             projection_init_gain: float | None,
+            end_with_act_fn: bool,
     ) -> nn.Module:
         linear_init = make_init_linear_orthogonal(linear_init_gain)
         projection_linear_init = (
@@ -728,6 +732,8 @@ class MATQCSPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
         if hidden_dims is None or len(hidden_dims) == 0:
             linear = nn.Linear(input_dim, output_dim)
             projection_linear_init(linear)
+            if end_with_act_fn:
+                return nn.Sequential(linear, make_activation(act_fn_cls, num_features=output_dim))
             return linear
         return MATQCSPolicy._build_encoder_from_dims(
             input_dim=input_dim,
@@ -735,6 +741,7 @@ class MATQCSPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
             act_fn_cls=act_fn_cls,
             linear_init_gain=linear_init_gain,
             projection_init_gain=projection_init_gain,
+            end_with_act_fn=end_with_act_fn,
         )
 
     @staticmethod
@@ -745,6 +752,7 @@ class MATQCSPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
             act_fn_cls: ActivationFactory,
             linear_init_gain: float,
             projection_init_gain: float | None,
+            end_with_act_fn: bool,
     ) -> nn.Module:
         linear_init = make_init_linear_orthogonal(linear_init_gain)
         projection_linear_init = (
@@ -755,7 +763,7 @@ class MATQCSPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
         return MLP(
             input_dim=input_dim,
             hidden_dims=dims,
-            end_with_act_fn=False,
+            end_with_act_fn=end_with_act_fn,
             linear_init=linear_init,
             final_linear_init=projection_linear_init,
             act_fn_cls=act_fn_cls,
