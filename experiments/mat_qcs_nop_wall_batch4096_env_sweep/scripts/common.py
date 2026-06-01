@@ -379,6 +379,7 @@ def run_experiment(*, num_envs: int, rollout_samples: int, variant_name: str, en
                 dim_feedforward=enc_d_model * 2,
                 add_agent_embeddings=True,
                 local_obs_encoder_hidden_dims=[enc_d_model, enc_d_model],
+                global_obs_encoder_hidden_dims=[enc_d_model],
             ),
             decoder_config=MATQCSDecoderConfig(
                 d_model=dec_d_model,

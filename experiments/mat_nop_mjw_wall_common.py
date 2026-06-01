@@ -743,6 +743,7 @@ def _make_base_policy(
         linear_projection_init_gain=mat_init_gains.obs_encoder_projection,
         transformer_ff_init_gain=mat_init_gains.encoder_transformer_ff,
         local_obs_encoder_hidden_dims=[enc_d_model, enc_d_model],
+        global_obs_encoder_hidden_dims=[enc_d_model],
         normalize_obs_inputs=mat_normalization.normalize_obs_inputs,
         normalize_tokens=mat_normalization.normalize_encoder_tokens,
     )
