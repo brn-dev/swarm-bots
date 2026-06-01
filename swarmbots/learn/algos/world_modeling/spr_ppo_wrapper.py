@@ -30,7 +30,7 @@ class SPRWorldModelConfig:
     action_dim: int
     world_model_loss_coef: float = 1.0
     world_model_target_tau: float | None = None
-    act_fn_cls: ActivationFactory = nn.ReLU
+    act_fn_cls: ActivationFactory = nn.GELU
     transition_model_dropout: float = 0.0
     online_encoder_attr: str = "encoder"
     d_model_transition_model: int = 128

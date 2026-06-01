@@ -1,10 +1,11 @@
 import torch
+import torch.nn as nn
 from gymnasium import spaces
 
 from swarmbots.learn.action_dists.bernoulli_action_dist import BernoulliConfig
 from swarmbots.learn.action_dists.sticky_sign_magnitude_beta_action_dist import StickySignMagnitudeBetaConfig
+from swarmbots.learn.algos.mat.mat_encoder import MATEncoderConfig
 from swarmbots.learn.algos.mat_orig.mat_orig_decoder import MATOrigDecoderConfig
-from swarmbots.learn.algos.mat_orig.mat_orig_encoder import MATOrigEncoderConfig
 from swarmbots.learn.algos.mat_orig.mat_orig_policy import MATOrigPolicy, MATOrigPolicyConfig
 from swarmbots.learn.hybrid_action_space import HybridActionSpace
 
@@ -23,20 +24,27 @@ class _DummyMATOrigEnv:
     )
 
 
-def _make_policy() -> MATOrigPolicy:
+def _make_policy(
+        *,
+        encoder_d_model: int = 16,
+        decoder_d_model: int = 16,
+) -> MATOrigPolicy:
     return MATOrigPolicy(
         env=_DummyMATOrigEnv(),
         config=MATOrigPolicyConfig(
-            encoder_config=MATOrigEncoderConfig(
-                d_model=16,
+            encoder_config=MATEncoderConfig(
+                d_model=encoder_d_model,
                 nhead=4,
                 num_layers=1,
+                dim_feedforward=2 * encoder_d_model,
+                act_fn_cls=nn.GELU,
+                local_obs_encoder_hidden_dims=[encoder_d_model, encoder_d_model],
             ),
             decoder_config=MATOrigDecoderConfig(
-                d_model=16,
+                d_model=decoder_d_model,
                 nhead=4,
                 num_layers=1,
-                latent_pi_dim=16,
+                latent_pi_dim=decoder_d_model,
             ),
             continuous_config=StickySignMagnitudeBetaConfig(stickiness=0.25),
             bernoulli_config=BernoulliConfig(initial_prob=0.5),
@@ -143,6 +151,42 @@ def test_forward_and_value_paths_match_pipeline_shapes() -> None:
     assert predicted_values.shape == (batch_size,)
     assert torch.allclose(values, predicted_values, rtol=0.0, atol=1e-6)
     assert torch.equal(actions[~agent_mask], torch.zeros_like(actions[~agent_mask]))
+
+
+def test_forward_supports_different_encoder_and_decoder_dims() -> None:
+    policy = _make_policy(encoder_d_model=32, decoder_d_model=16)
+    torch.manual_seed(3)
+    assert any(isinstance(module, nn.GELU) for module in policy.encoder.modules())
+
+    batch_size = 2
+    local_obs = torch.randn(batch_size, _DummyMATOrigEnv.n_agents, _DummyMATOrigEnv.local_obs_dim)
+    global_obs = torch.randn(batch_size, _DummyMATOrigEnv.global_obs_dim)
+    hidden_local_vars = torch.randn(batch_size, _DummyMATOrigEnv.n_agents, _DummyMATOrigEnv.hidden_local_vars_dim)
+    hidden_global_vars = torch.randn(batch_size, _DummyMATOrigEnv.hidden_global_vars_dim)
+    agent_mask = torch.tensor([[True, True, True, False], [True, True, True, True]])
+    previous_actions = torch.zeros(
+        batch_size,
+        _DummyMATOrigEnv.n_agents,
+        _DummyMATOrigEnv.action_space.total_agent_action_dim,
+    )
+
+    actions, log_probs, values = policy(
+        local_obs=local_obs,
+        global_obs=global_obs,
+        hidden_local_vars=hidden_local_vars,
+        hidden_global_vars=hidden_global_vars,
+        agent_mask=agent_mask,
+        previous_actions=previous_actions,
+        deterministic=True,
+    )
+
+    assert actions.shape == (
+        batch_size,
+        _DummyMATOrigEnv.n_agents,
+        _DummyMATOrigEnv.action_space.total_agent_action_dim,
+    )
+    assert log_probs.shape == (batch_size, _DummyMATOrigEnv.n_agents)
+    assert values.shape == (batch_size,)
 
 
 def test_evaluate_actions_matches_rollout_log_probs_for_masked_agents() -> None:

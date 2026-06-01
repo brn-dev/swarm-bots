@@ -17,7 +17,7 @@ class CustomTransformerDecoderLayer(nn.TransformerDecoderLayer):
         nhead: int=1,
         dim_feedforward: int = 2048,
         dropout: float = 0.1,
-        activation: Callable[[Tensor], Tensor] = F.relu,
+        activation: Callable[[Tensor], Tensor] = nn.GELU(),
         layer_norm_eps: float = 1e-5,
         batch_first: bool = False,
         norm_first: bool = False,

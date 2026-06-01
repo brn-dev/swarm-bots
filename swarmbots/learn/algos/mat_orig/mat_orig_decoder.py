@@ -77,6 +77,7 @@ class MATOrigDecoder(nn.Module):
     ) -> None:
         super().__init__()
         self.max_agents = max_agents
+        self.d_model = config.d_model
         self.action_input_dim = action_input_dim
         self.latent_pi_dim = config.d_model if config.latent_pi_dim is None else config.latent_pi_dim
 

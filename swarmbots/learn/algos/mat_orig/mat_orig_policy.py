@@ -15,8 +15,9 @@ from swarmbots.learn.action_dists.hybrid_action_dist import (
     bernoulli_config_to_dict,
     continuous_config_to_dicts,
 )
+from swarmbots.learn.algos.mat.mat_encoder import MATEncoder, MATEncoderConfig
 from swarmbots.learn.algos.mat_orig.mat_orig_decoder import MATOrigDecoder, MATOrigDecoderConfig
-from swarmbots.learn.algos.mat_orig.mat_orig_encoder import MATOrigEncoder, MATOrigEncoderConfig, _init_linear
+from swarmbots.learn.algos.mat_orig.mat_orig_encoder import _init_linear
 from swarmbots.learn.algos.ppo.base_ppo_policy import BasePPOPolicy
 from swarmbots.learn.algos.ppo.ppo_policy import PopArtConfig
 from swarmbots.learn.algos.ppo.ppo_rollout_buffer import PPOEpisodeSegment
@@ -24,6 +25,7 @@ from swarmbots.learn.algos.ppo.ppo_sampler import PPOSamples, PPOSampler, PPOSam
 from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
 from swarmbots.learn.losses import LossDict, LossMetrics
 from swarmbots.learn.nn_components.popart import PopArtLinear
+from swarmbots.learn.nn_components.nn_init import make_init_linear_orthogonal
 from swarmbots.learn.serialization_utils import serialize_dataclass
 
 
@@ -65,6 +67,7 @@ class MATOrigCritic(nn.Module):
             use_popart: bool,
             popart_config: PopArtConfig,
             pool_mode: Literal["mean", "sum"],
+            value_head_hidden_dims: list[int] | None = None,
     ) -> None:
         super().__init__()
         self.hidden_local_vars_dim = hidden_local_vars_dim
@@ -72,12 +75,20 @@ class MATOrigCritic(nn.Module):
         self.pool_mode = pool_mode
 
         per_agent_input_dim = encoder_dim + hidden_local_vars_dim + hidden_global_vars_dim
-        self.value_head = nn.Sequential(
+        value_head_layers: list[nn.Module] = [
             _init_linear(nn.Linear(per_agent_input_dim, encoder_dim), activate=True),
             nn.GELU(),
             nn.LayerNorm(encoder_dim),
-            _init_linear(nn.Linear(encoder_dim, 1)),
-        )
+        ]
+        head_input_dim = encoder_dim
+        for hidden_dim in [] if value_head_hidden_dims is None else value_head_hidden_dims:
+            value_head_layers.extend([
+                _init_linear(nn.Linear(head_input_dim, hidden_dim), activate=True),
+                nn.GELU(),
+            ])
+            head_input_dim = hidden_dim
+        value_head_layers.append(_init_linear(nn.Linear(head_input_dim, 1)))
+        self.value_head = nn.Sequential(*value_head_layers)
 
         self.popart_head: PopArtLinear | None
         if use_popart:
@@ -146,11 +157,12 @@ class MATOrigCriticConfig:
     use_popart: bool = False
     popart_config: PopArtConfig = field(default_factory=PopArtConfig)
     pool_mode: Literal["mean", "sum"] = "mean"
+    value_head_hidden_dims: list[int] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
 class MATOrigPolicyConfig:
-    encoder_config: MATOrigEncoderConfig = field(default_factory=MATOrigEncoderConfig)
+    encoder_config: MATEncoderConfig = field(default_factory=MATEncoderConfig)
     decoder_config: MATOrigDecoderConfig = field(default_factory=MATOrigDecoderConfig)
     critic_config: MATOrigCriticConfig = field(default_factory=MATOrigCriticConfig)
     continuous_config: ContinuousActionDistConfigInput = None
@@ -158,6 +170,8 @@ class MATOrigPolicyConfig:
     max_agents: int | None = None
     compile_modules: bool = False
     compile_mode: str = "default"
+    encoder_decoder_projection_init_gain: float = 1.0
+    action_net_init_gain: float = 0.01
 
 
 def _ensure_torch_compile_available(*, compile_mode: str) -> None:
@@ -192,7 +206,7 @@ class MATOrigPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
         self.hidden_global_vars_dim = env.hidden_global_vars_dim
         self.agent_action_dim = env.action_space.total_agent_action_dim
 
-        self.encoder = MATOrigEncoder(
+        self.encoder = MATEncoder(
             config=config.encoder_config,
             max_agents=self.max_agents,
             local_obs_dim=self.local_obs_dim,
@@ -203,11 +217,18 @@ class MATOrigPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
             max_agents=self.max_agents,
             action_input_dim=self.agent_action_dim,
         )
+        if config.encoder_config.d_model == self.decoder.d_model:
+            self.encoder_decoder_projection: nn.Module = nn.Identity()
+        else:
+            encoder_decoder_projection = nn.Linear(config.encoder_config.d_model, self.decoder.d_model)
+            make_init_linear_orthogonal(config.encoder_decoder_projection_init_gain)(encoder_decoder_projection)
+            self.encoder_decoder_projection = encoder_decoder_projection
         self.action_dist = HybridActionDistribution(
             latent_dim=self.decoder.latent_pi_dim,
             action_space=env.action_space,
             continuous_config=config.continuous_config,
             bernoulli_config=config.bernoulli_config,
+            action_net_initialization=make_init_linear_orthogonal(config.action_net_init_gain),
         )
         self.critic = MATOrigCritic(
             encoder_dim=config.encoder_config.d_model,
@@ -216,6 +237,7 @@ class MATOrigPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
             use_popart=config.critic_config.use_popart,
             popart_config=config.critic_config.popart_config,
             pool_mode=config.critic_config.pool_mode,
+            value_head_hidden_dims=config.critic_config.value_head_hidden_dims,
         )
         self._generate_actions_fn: Callable[..., tuple[torch.Tensor, Optional[torch.Tensor]]] = self._generate_actions_impl
         self._evaluate_latent_and_values_fn: Callable[..., tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = (
@@ -237,6 +259,8 @@ class MATOrigPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
                 "max_agents": self.max_agents,
                 "compile_modules": self.config.compile_modules,
                 "compile_mode": self.config.compile_mode,
+                "encoder_decoder_projection_init_gain": self.config.encoder_decoder_projection_init_gain,
+                "action_net_init_gain": self.config.action_net_init_gain,
                 "action_dist_compile_friendly": self.action_dist.compile_friendly,
             }
         }
@@ -256,8 +280,9 @@ class MATOrigPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         self._validate_agent_mask(agent_mask, batch_size=local_obs.shape[0], n_agents=local_obs.shape[1])
         encoder_rep = self.encoder(local_obs, global_obs, agent_mask=agent_mask)
+        decoder_obs_rep = self._project_encoder_rep_for_decoder(encoder_rep)
         actions, log_probs = self._generate_actions(
-            encoder_rep=encoder_rep,
+            decoder_obs_rep=decoder_obs_rep,
             agent_mask=agent_mask,
             previous_actions=previous_actions,
             deterministic=deterministic,
@@ -340,8 +365,9 @@ class MATOrigPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
         _ = hidden_global_vars
         self._validate_agent_mask(agent_mask, batch_size=local_obs.shape[0], n_agents=local_obs.shape[1])
         encoder_rep = self.encoder(local_obs, global_obs, agent_mask=agent_mask)
+        decoder_obs_rep = self._project_encoder_rep_for_decoder(encoder_rep)
         actions, _ = self._generate_actions(
-            encoder_rep=encoder_rep,
+            decoder_obs_rep=decoder_obs_rep,
             agent_mask=agent_mask,
             previous_actions=previous_actions,
             deterministic=deterministic,
@@ -368,7 +394,14 @@ class MATOrigPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
             agent_mask: torch.Tensor | None,
     ) -> torch.Tensor:
         shifted_actions = self._build_shifted_actions(actions, agent_mask=agent_mask)
-        return self.decoder(shifted_actions, encoder_rep, agent_mask=agent_mask)
+        decoder_obs_rep = self._project_encoder_rep_for_decoder(encoder_rep)
+        return self.decoder(shifted_actions, decoder_obs_rep, agent_mask=agent_mask)
+
+    def _project_encoder_rep_for_decoder(
+            self,
+            encoder_rep: torch.Tensor,
+    ) -> torch.Tensor:
+        return self.encoder_decoder_projection(encoder_rep)
 
     def _evaluate_latent_and_values(
             self,
@@ -495,14 +528,14 @@ class MATOrigPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
     def _generate_actions(
             self,
             *,
-            encoder_rep: torch.Tensor,
+            decoder_obs_rep: torch.Tensor,
             agent_mask: torch.Tensor | None,
             previous_actions: torch.Tensor | None,
             deterministic: bool,
             return_log_probs: bool,
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
         return self._generate_actions_fn(
-            encoder_rep=encoder_rep,
+            decoder_obs_rep=decoder_obs_rep,
             agent_mask=agent_mask,
             previous_actions=previous_actions,
             deterministic=deterministic,
@@ -512,19 +545,21 @@ class MATOrigPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
     def _generate_actions_impl(
             self,
             *,
-            encoder_rep: torch.Tensor,
+            decoder_obs_rep: torch.Tensor,
             agent_mask: torch.Tensor | None,
             previous_actions: torch.Tensor | None,
             deterministic: bool,
             return_log_probs: bool,
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
-        batch_size = encoder_rep.shape[0]
-        shifted_actions = encoder_rep.new_zeros((batch_size, self.n_agents, self.agent_action_dim))
-        output_actions = encoder_rep.new_zeros((batch_size, self.n_agents, self.agent_action_dim))
-        output_log_probs = encoder_rep.new_zeros((batch_size, self.n_agents)) if return_log_probs else None
+        batch_size = decoder_obs_rep.shape[0]
+        shifted_actions = decoder_obs_rep.new_zeros((batch_size, self.n_agents, self.agent_action_dim))
+        output_actions = decoder_obs_rep.new_zeros((batch_size, self.n_agents, self.agent_action_dim))
+        output_log_probs = decoder_obs_rep.new_zeros((batch_size, self.n_agents)) if return_log_probs else None
 
         for agent_idx in range(self.n_agents):
-            latent_pi = self.decoder(shifted_actions, encoder_rep, agent_mask=agent_mask)[:, agent_idx:agent_idx + 1, :]
+            latent_pi = self.decoder(shifted_actions, decoder_obs_rep, agent_mask=agent_mask)[
+                :, agent_idx:agent_idx + 1, :
+            ]
             sample_agent_idx = agent_idx if self.action_dist.sampling_depends_on_agent else None
             previous_action_i = None if previous_actions is None else previous_actions[:, agent_idx:agent_idx + 1, :]
 
@@ -571,6 +606,7 @@ class MATOrigPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
     def get_grad_norms(self) -> dict[str, float]:
         return {
             "encoder": self._module_grad_norm(self.encoder),
+            "encoder_decoder_projection": self._module_grad_norm(self.encoder_decoder_projection),
             "decoder": self._module_grad_norm(self.decoder),
             "action_dist": self._module_grad_norm(self.action_dist),
             "critic": self._module_grad_norm(self.critic),
@@ -617,6 +653,7 @@ class MATOrigPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
         _ensure_torch_compile_available(compile_mode=self.config.compile_mode)
 
         self.encoder = self._compile_module(self.encoder)
+        self.encoder_decoder_projection = self._compile_module(self.encoder_decoder_projection)
         self.decoder = self._compile_module(self.decoder)
         self.critic = self._compile_module(self.critic)
         self._evaluate_latent_and_values_fn = self._compile_callable(self._evaluate_latent_and_values_impl)
@@ -628,6 +665,8 @@ class MATOrigPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
             self,
             module: nn.Module,
     ) -> nn.Module:
+        if isinstance(module, nn.Identity):
+            return module
         return torch.compile(
             module,
             mode=self.config.compile_mode,
