@@ -437,7 +437,7 @@ def run_experiment(
 
     enc_nhead = 4
     dec_nhead = 2
-    transition_model_nhead = 4
+    transition_model_nhead = 2
 
     print("Initializing Policy...")
     base_policy = _make_base_policy(
