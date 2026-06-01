@@ -32,7 +32,7 @@ from swarmbots.utils.machine_specs import collect_machine_specs
 
 
 
-MIN_ITERATIONS_FOR_EMA = 150
+MIN_ITERATIONS_FOR_EMA = 10
 MIN_ITERATIONS_FOR_BEST = 200
 
 LearningRate = float | list[float] | dict[str, float]
