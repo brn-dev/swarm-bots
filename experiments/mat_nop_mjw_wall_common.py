@@ -431,9 +431,9 @@ def run_experiment(
     actuators_per_limb = env.actuators_dim // env.connectors_dim
     print(f"actuators_per_limb: {actuators_per_limb}")
 
-    enc_d_model = 256
+    enc_d_model = 192
     dec_d_model = 128
-    transition_model_d_model = 192
+    transition_model_d_model = 128
 
     enc_nhead = 4
     dec_nhead = 2
