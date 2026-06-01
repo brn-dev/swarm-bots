@@ -40,7 +40,6 @@ class MJWRecordingConfig:
 
 @dataclass(slots=True)
 class _EpisodeSlot:
-    render_slot_idx: int
     world_idx: int
     episode_idx: int
     frames: list[np.ndarray] = field(default_factory=list)
@@ -51,7 +50,7 @@ class _EpisodeSlot:
 
 
 @dataclass(slots=True)
-class _RenderSlot:
+class _RenderContext:
     data: mujoco.MjData
     renderer: mujoco.Renderer
     camera: int | str | mujoco.MjvCamera
@@ -67,9 +66,8 @@ class MJWLiveEpisodeRecorder:
         self._scenario = scenario
         self._model = scenario.build_model()
         self._config: MJWRecordingConfig | None = None
-        self._render_slots: list[_RenderSlot] = []
+        self._render_context: _RenderContext | None = None
         self._active_slots_by_world: dict[int, _EpisodeSlot] = {}
-        self._available_render_slot_indices: list[int] = []
         self._episodes_started = 0
         self._episodes_completed = 0
         self._writer_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="mjw-video-write")
@@ -100,21 +98,17 @@ class MJWLiveEpisodeRecorder:
 
         config.video_folder.mkdir(parents=True, exist_ok=True)
         self._cleanup_writer_futures()
-        self._close_render_slots()
+        self._close_render_context()
 
         self._config = config
         self._episodes_started = 0
         self._episodes_completed = 0
         self._active_slots_by_world.clear()
-        self._render_slots = [
-            _RenderSlot(
-                data=mujoco.MjData(self._model),
-                renderer=mujoco.Renderer(self._model, height=config.height, width=config.width),
-                camera=self._build_camera(config.camera),
-            )
-            for _ in range(config.max_parallel_episodes)
-        ]
-        self._available_render_slot_indices = list(range(config.max_parallel_episodes))
+        self._render_context = _RenderContext(
+            data=mujoco.MjData(self._model),
+            renderer=mujoco.Renderer(self._model, height=config.height, width=config.width),
+            camera=self._build_camera(config.camera),
+        )
 
         self.on_episode_starts(
             world_idx=episode_start_world_idx,
@@ -168,7 +162,7 @@ class MJWLiveEpisodeRecorder:
                 for slot in active_slots
             ],
             "active_worlds": [int(slot.world_idx) for slot in active_slots],
-            "available_render_slots": int(len(self._available_render_slot_indices)),
+            "available_render_slots": int(max(self._config.max_parallel_episodes - len(active_slots), 0)),
             "writer_jobs_pending": int(len(self._writer_futures)),
         }
 
@@ -184,7 +178,7 @@ class MJWLiveEpisodeRecorder:
         for raw_world_idx in np.asarray(world_idx, dtype=np.int64).tolist():
             if self._episodes_started >= self._config.num_episodes:
                 break
-            if not self._available_render_slot_indices:
+            if len(self._active_slots_by_world) >= self._config.max_parallel_episodes:
                 break
             if raw_world_idx in self._active_slots_by_world:
                 continue
@@ -193,16 +187,14 @@ class MJWLiveEpisodeRecorder:
             if snapshot is None:
                 continue
 
-            render_slot_idx = self._available_render_slot_indices.pop(0)
             episode_idx = self._episodes_started
             slot = _EpisodeSlot(
-                render_slot_idx=render_slot_idx,
                 world_idx=int(raw_world_idx),
                 episode_idx=episode_idx,
             )
             slot.frames.append(
                 draw_accumulated_reward(
-                    self._render_snapshot(render_slot_idx=render_slot_idx, snapshot=snapshot),
+                    self._render_snapshot(snapshot=snapshot),
                     slot.accumulated_reward,
                     accumulated_reward_terms=slot.accumulated_reward_terms,
                 )
@@ -242,7 +234,7 @@ class MJWLiveEpisodeRecorder:
                 if snapshot is not None:
                     slot.frames.append(
                         draw_accumulated_reward(
-                            self._render_snapshot(render_slot_idx=slot.render_slot_idx, snapshot=snapshot),
+                            self._render_snapshot(snapshot=snapshot),
                             slot.accumulated_reward,
                             accumulated_reward_terms=slot.accumulated_reward_terms,
                         )
@@ -256,9 +248,8 @@ class MJWLiveEpisodeRecorder:
         if self._active_slots_by_world:
             logger.warning(f"Dropping {len(self._active_slots_by_world)} incomplete MJW recording episode(s) on close.")
         self._active_slots_by_world.clear()
-        self._available_render_slot_indices.clear()
         self._config = None
-        self._close_render_slots()
+        self._close_render_context()
         self._cleanup_writer_futures(wait=True)
         self._writer_executor.shutdown(wait=True, cancel_futures=False)
 
@@ -275,9 +266,12 @@ class MJWLiveEpisodeRecorder:
         free_camera.elevation = float(camera_config.elevation)
         return free_camera
 
-    def _render_snapshot(self, *, render_slot_idx: int, snapshot: MJWWorldSnapshot) -> np.ndarray:
-        render_slot = self._render_slots[render_slot_idx]
-        data = render_slot.data
+    def _render_snapshot(self, *, snapshot: MJWWorldSnapshot) -> np.ndarray:
+        render_context = self._render_context
+        if render_context is None:
+            raise RuntimeError("MJW live recording is not active.")
+
+        data = render_context.data
         data.qpos[:] = snapshot.qpos
         data.qvel[:] = snapshot.qvel
         if data.eq_active.size > 0:
@@ -288,19 +282,17 @@ class MJWLiveEpisodeRecorder:
             data.mocap_quat[:] = snapshot.mocap_quat
         data.time = snapshot.time
         mujoco.mj_forward(self._model, data)
-        render_slot.renderer.update_scene(data, camera=render_slot.camera)
+        render_context.renderer.update_scene(data, camera=render_context.camera)
         add_render_geoms = getattr(self._scenario, "add_render_geoms", None)
         if callable(add_render_geoms):
-            add_render_geoms(render_slot.renderer.scene)
-        return np.asarray(render_slot.renderer.render()).copy()
+            add_render_geoms(render_context.renderer.scene)
+        return np.asarray(render_context.renderer.render()).copy()
 
     def _finalize_episode(self, *, world_idx: int) -> None:
         if self._config is None:
             return
 
         slot = self._active_slots_by_world.pop(world_idx)
-        self._available_render_slot_indices.append(slot.render_slot_idx)
-        self._available_render_slot_indices.sort()
         self._episodes_completed += 1
 
         suffix = "_unstable" if slot.unstable else ""
@@ -337,10 +329,11 @@ class MJWLiveEpisodeRecorder:
             remaining_futures.append(future)
         self._writer_futures = remaining_futures
 
-    def _close_render_slots(self) -> None:
-        for render_slot in self._render_slots:
-            render_slot.renderer.close()
-        self._render_slots = []
+    def _close_render_context(self) -> None:
+        render_context = self._render_context
+        if render_context is not None:
+            render_context.renderer.close()
+            self._render_context = None
 
     @staticmethod
     def _effective_fps(config: MJWRecordingConfig) -> int:
