@@ -55,7 +55,7 @@ WALL_SCENARIO_KWARGS: dict[str, object] = {
 
 WALL_DIFFICULTY_UPDATES: dict[Difficulty, dict[str, object]] = {
     "easy": {
-        "wall_height": 0.2,
+        "wall_height": 0.25,
     },
     "medium": {
         "wall_height": 0.4,
