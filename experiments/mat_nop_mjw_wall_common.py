@@ -27,13 +27,15 @@ from swarmbots.learn.action_dists.squashed_diag_gaussian_action_dist import Squa
 from swarmbots.learn.algos.mat.mat_dec_policy import MATDecPolicy, MATDecPolicyConfig
 from swarmbots.learn.algos.mat_qcc.mat_qcc_decoder import MATQCCDecoderConfig
 from swarmbots.learn.algos.mat_qcc.mat_qcc_policy import MATQCCPolicy, MATQCCPolicyConfig
+from swarmbots.learn.algos.mappo.mappo_actor import MAPPOActorConfig
+from swarmbots.learn.algos.mappo.mappo_policy import MAPPOCriticConfig, MAPPOPolicy, MAPPOPolicyConfig
 from swarmbots.learn.algos.mat_qcs.mat_qcs_decoder import MATQCSDecoderConfig, MATQCSDecoderSelfAttentionMode
 from swarmbots.learn.algos.mat.mat_encoder import MATEncoderConfig
 from swarmbots.learn.algos.mat_qcs.mat_qcs_policy import MATQCSCriticConfig, MATQCSPolicy, MATQCSPolicyConfig
 from swarmbots.learn.algos.mat_orig.mat_orig_decoder import MATOrigDecoderConfig
 from swarmbots.learn.algos.mat_orig.mat_orig_policy import MATOrigCriticConfig, MATOrigPolicy, MATOrigPolicyConfig
 from swarmbots.learn.algos.ppo.ppo import AutomaticLearningRate, PPO, StepsRolloutMode
-from swarmbots.learn.algos.ppo.ppo_policy import PopArtConfig
+from swarmbots.learn.algos.ppo.ppo_policy import PPOActorConfig, PPOCriticConfig, PPOPolicy, PPOPolicyConfig, PopArtConfig
 from swarmbots.learn.algos.ppo.ppo_sampler import PPOSamplerConfig
 from swarmbots.learn.algos.world_modeling.next_obs_pred_mixin import NextObsPredConfig
 from swarmbots.learn.algos.world_modeling.next_obs_pred_ppo_wrapper import NOPWorldModelConfig, NextObsPredWrapper
@@ -48,13 +50,14 @@ from swarmbots.learn.scheduling.linear_scheduler import LinearScheduler
 from swarmbots.learn.scheduling.schedulers import ScheduledHyperParameter, SchedulerManager, ScheduleUnit
 from swarmbots.learn.summary_statistics import SummaryStatisticsFormat
 from swarmbots.learn.swarmbots_obs_indices import build_obs_indices
+from swarmbots.learn.nn_components.deep_set import DeepSetCriticConfig
 from swarmbots.mjw_env import MJWSwarmBotsVectorEnv
 from swarmbots.mjw_env.scenarios.mjw_scenario_presets import default_wall
 from swarmbots.utils.recording_schedule import DEFAULT_LIVE_RECORDING_SCHEDULE, install_scheduled_recordings
 from swarmbots.utils.run_paths import get_run_id_from_checkpoint_path
 
 ContinuousActionDistVariant = Literal["sticky_sign_magnitude_beta", "sign_magnitude_beta", "beta", "gsde", "squashed_diag_gaussian"]
-PolicyVariant = Literal["mat_qcs", "mat_qcc", "mat_dec", "mat_orig"]
+PolicyVariant = Literal["mat_qcs", "mat_qcc", "mat_dec", "mat_orig", "ppo", "mappo"]
 
 
 @dataclass(frozen=True)
@@ -462,13 +465,14 @@ def run_experiment(
         mat_normalization=mat_normalization,
         assume_agent_mask_is_active_prefix=not shuffle_agents or preserve_inactive_prefix_structure,
     )
+    policy_local_latent_dim = int(getattr(base_policy, "local_latent_dim", enc_d_model))
     policy = base_policy
     if use_nop:
         policy = NextObsPredWrapper(
             policy=base_policy,
             world_model_config=NOPWorldModelConfig(
                 n_agents=env.n_agents,
-                local_latent_dim=enc_d_model,
+                local_latent_dim=policy_local_latent_dim,
                 action_dim=env.action_space.total_agent_action_dim,
                 world_model_loss_coef=world_model_loss_coef,
                 compile_modules=compile_world_model_modules,
@@ -481,7 +485,7 @@ def run_experiment(
                 wm_pre_predictors_init_gain=nop_init_gains.pre_predictors,
                 wm_predictor_init_gain=nop_init_gains.predictors,
                 transition_model_dropout=0.0,
-                wm_pre_transition_dims=[enc_d_model],
+                wm_pre_transition_dims=[policy_local_latent_dim],
                 d_model_transition_model=transition_model_d_model,
                 nhead_transition_model=transition_model_nhead,
                 num_layers_transition_model=2,
@@ -714,7 +718,7 @@ def _make_base_policy(
         mat_init_gains: MATInitGains,
         mat_normalization: MATNormalizationConfig,
         assume_agent_mask_is_active_prefix: bool,
-) -> MATQCSPolicy | MATQCCPolicy | MATDecPolicy | MATOrigPolicy:
+) -> PPOPolicy | MAPPOPolicy | MATQCSPolicy | MATQCCPolicy | MATDecPolicy | MATOrigPolicy:
     continuous_config = make_continuous_config(
         variant=continuous_action_dist,
         initial_stickiness=initial_stickiness,
@@ -747,6 +751,50 @@ def _make_base_policy(
         normalize_obs_inputs=mat_normalization.normalize_obs_inputs,
         normalize_tokens=mat_normalization.normalize_encoder_tokens,
     )
+
+    if policy_variant == "ppo":
+        return PPOPolicy(
+            env=env,
+            config=PPOPolicyConfig(
+                actor_config=PPOActorConfig(
+                    hidden_dims=[512, 384, 256, 256],
+                    shared_encoder_latent_dim_per_agent=192,
+                    actor_head_hidden_dims=[128],
+                    latent_pi_dim_per_agent=96,
+                    act_fun_class=act_fn_cls,
+                ),
+                critic_config=PPOCriticConfig(
+                    hidden_dims=[256, 256],
+                    act_fun_class=act_fn_cls,
+                ),
+                continuous_config=continuous_config,
+                bernoulli_config=bernoulli_config,
+            ),
+        )
+
+    if policy_variant == "mappo":
+        return MAPPOPolicy(
+            env=env,
+            config=MAPPOPolicyConfig(
+                actor_config=MAPPOActorConfig(
+                    hidden_dims=[768, 512, 512, 384],
+                    shared_encoder_latent_dim=256,
+                    actor_head_hidden_dims=[128],
+                    latent_pi_dim=128,
+                    act_fun_class=act_fn_cls,
+                ),
+                critic_config=MAPPOCriticConfig(
+                    deep_set_config=DeepSetCriticConfig(
+                        local_projection_hidden_dims=[256, 128],
+                        value_regressor_hidden_dims=[256, 128],
+                    ),
+                    act_fun_class=act_fn_cls,
+                ),
+                continuous_config=continuous_config,
+                bernoulli_config=bernoulli_config,
+            ),
+        )
+
     mat_qcs_critic_config = MATQCSCriticConfig(
         n_local_projection_hidden_layers=2,
         n_value_regressor_hidden_layers=1,
