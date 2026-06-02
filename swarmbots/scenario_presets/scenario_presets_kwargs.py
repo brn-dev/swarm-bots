@@ -55,9 +55,20 @@ WALL_SCENARIO_KWARGS: dict[str, object] = {
 
 WALL_DIFFICULTY_UPDATES: dict[Difficulty, dict[str, object]] = {
     "easy": {
-        "wall_height": 0.25,
+        "wall_height": 0.2,
     },
     "medium": {
+        "wall_height": 0.3,
+        "swarm_start_y": UniformDistParams(0.25, 0.75),
+        "forward_reward_weight": 2.0,
+        "forward_reward_wall_boost_factor": 2.0,
+        "wall_climb_reward_weight": 4.0,
+        "wall_pass_reward_weight": 5.0,
+        "wall_pass_reward_skew": 4.0,
+        "wall_pass_thresholds": [0.2, 0.4],
+        "units_without_connections_reward_weight": -3e-3,
+    },
+    "hard": {
         "wall_height": 0.4,
         "swarm_start_y": UniformDistParams(0.25, 0.75),
         "forward_reward_weight": 2.0,
@@ -66,18 +77,7 @@ WALL_DIFFICULTY_UPDATES: dict[Difficulty, dict[str, object]] = {
         "wall_pass_reward_weight": 5.0,
         "wall_pass_reward_skew": 4.0,
         "wall_pass_thresholds": [0.2, 0.4],
-        "units_without_connections_reward_weight": -4e-3,
-    },
-    "hard": {
-        "wall_height": 0.8,
-        "swarm_start_y": UniformDistParams(0.25, 0.75),
-        "forward_reward_weight": 2.0,
-        "forward_reward_wall_boost_factor": 2.0,
-        "wall_climb_reward_weight": 4.0,
-        "wall_pass_reward_weight": 5.0,
-        "wall_pass_reward_skew": 4.0,
-        "wall_pass_thresholds": [0.2, 0.4],
-        "units_without_connections_reward_weight": -4e-3,
+        "units_without_connections_reward_weight": -3e-3,
     },
 }
 
