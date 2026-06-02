@@ -590,6 +590,7 @@ def run_experiment(
         rollout_device=rollout_device,
         record_device=record_device,
         use_popart=use_popart,
+        agent_logprob_reduction="sum" if policy_variant == "ppo" else None,
         metrics_action_splitters=[lambda actions: split_actuator_joints(actions, actuators_per_limb), None],
         scheduler_manager=scheduler_manager,
         virtual_mini_batches=virtual_mini_batches,
