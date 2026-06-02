@@ -71,6 +71,19 @@ def test_ppo_policy_initializes_internal_layers_and_heads_with_expected_gains() 
     _assert_orthogonal_gain(policy.critic.value_head, 0.01)
 
 
+def test_ppo_policy_exposes_popart_when_enabled_in_critic_config() -> None:
+    policy = PPOPolicy(
+        env=_DummyLearnEnv(),
+        config=PPOPolicyConfig(
+            critic_config=PPOCriticConfig(
+                use_popart=True,
+            ),
+        ),
+    )
+
+    assert policy.has_popart
+
+
 def test_mappo_policy_initializes_internal_layers_and_heads_with_expected_gains() -> None:
     torch.manual_seed(0)
     policy = MAPPOPolicy(
@@ -104,3 +117,20 @@ def test_mappo_policy_initializes_internal_layers_and_heads_with_expected_gains(
     _assert_orthogonal_gain(critic_local_projection_linears[0], 1.0)
     _assert_orthogonal_gain(critic_value_regressor_linears[0], 1.0)
     _assert_orthogonal_gain(policy.critic.deepset.set_decoder[1], 0.01)
+
+
+def test_mappo_policy_exposes_popart_when_enabled_in_critic_config() -> None:
+    policy = MAPPOPolicy(
+        env=_DummyLearnEnv(),
+        config=MAPPOPolicyConfig(
+            critic_config=MAPPOCriticConfig(
+                deep_set_config=DeepSetCriticConfig(
+                    local_projection_hidden_dims=[10],
+                    value_regressor_hidden_dims=[10],
+                ),
+                use_popart=True,
+            ),
+        ),
+    )
+
+    assert policy.has_popart
