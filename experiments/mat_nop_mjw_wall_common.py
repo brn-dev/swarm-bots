@@ -353,6 +353,7 @@ def run_experiment(
         f"{num_envs} envs x {rollout_steps_per_env} steps/env = {rollout_samples}, "
         f"virtual_mini_batches={virtual_mini_batches}, n_epochs={n_epochs}, "
         f"continuous_action_dist={continuous_action_dist}, use_nop={use_nop}, "
+        f"compile_policy_modules={compile_policy_modules}, policy_compile_mode={policy_compile_mode}, "
         f"nop_add_agent_embeddings_transition_model={nop_add_agent_embeddings_transition_model}, "
         f"act_fn_cls={activation_factory_name(act_fn_cls)}, "
         f"mat_init_gains={mat_init_gains}, nop_init_gains={nop_init_gains}, "
@@ -770,6 +771,8 @@ def _make_base_policy(
                 ),
                 continuous_config=continuous_config,
                 bernoulli_config=bernoulli_config,
+                compile_modules=compile_policy_modules,
+                compile_mode=policy_compile_mode,
             ),
         )
 
@@ -794,6 +797,8 @@ def _make_base_policy(
                 ),
                 continuous_config=continuous_config,
                 bernoulli_config=bernoulli_config,
+                compile_modules=compile_policy_modules,
+                compile_mode=policy_compile_mode,
             ),
         )
 

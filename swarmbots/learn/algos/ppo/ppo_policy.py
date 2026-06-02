@@ -1,5 +1,7 @@
 from dataclasses import dataclass, field
 from typing import Any
+import shutil
+import sys
 import torch
 from torch import nn
 
@@ -55,6 +57,8 @@ class PPOPolicyConfig:
     critic_config: PPOCriticConfig = field(default_factory=PPOCriticConfig)
     continuous_config: ContinuousActionDistConfigInput = None
     bernoulli_config: BernoulliConfig | None = None
+    compile_modules: bool = False
+    compile_mode: str = "default"
 
 
 class PPOSharedEncoder(nn.Module):
@@ -266,6 +270,7 @@ class PPOPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
             global_obs_dim=self.hidden_global_vars_dim,
             config=config.critic_config,
         )
+        self._apply_optional_compile()
 
     def get_hyper_parameters(self) -> dict[str, Any]:
         return {
@@ -274,6 +279,8 @@ class PPOPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
                 "critic_config": serialize_dataclass(self.config.critic_config),
                 "continuous_config": continuous_config_to_dicts(self.action_dist.continuous_configs),
                 "bernoulli_config": bernoulli_config_to_dict(self.action_dist.bernoulli_config),
+                "compile_modules": self.config.compile_modules,
+                "compile_mode": self.config.compile_mode,
             }
         }
 
@@ -442,6 +449,37 @@ class PPOPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
             "critic": self._module_grad_norm(self.critic),
             "total": self._module_grad_norm(self),
         }
+
+    def _apply_optional_compile(self) -> None:
+        if not self.config.compile_modules:
+            return
+
+        self._ensure_torch_compile_available()
+
+        self.shared_encoder = self._compile_module(self.shared_encoder)
+        self.actor = self._compile_module(self.actor)
+        self.critic = self._compile_module(self.critic)
+
+    def _compile_module(self, module: nn.Module) -> nn.Module:
+        if isinstance(module, nn.Identity):
+            return module
+        return torch.compile(
+            module,
+            mode=self.config.compile_mode,
+            fullgraph=False,
+            dynamic=False,
+        )
+
+    @staticmethod
+    def _ensure_torch_compile_available() -> None:
+        if not hasattr(torch, "compile"):
+            raise RuntimeError("PPOPolicyConfig.compile_modules=True requires torch.compile support.")
+        if sys.platform == "win32" and shutil.which("cl") is None:
+            raise RuntimeError(
+                "PPOPolicyConfig.compile_modules=True on this Windows setup requires cl.exe on PATH for torch.compile."
+            )
+        if not callable(torch.compile):
+            raise RuntimeError("torch.compile is not callable in this environment.")
 
     def update_loss_weights(self, **weights: float) -> None:
         if not weights:
