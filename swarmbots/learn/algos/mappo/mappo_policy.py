@@ -25,6 +25,9 @@ class MAPPOCriticConfig:
     mlp_hidden_dims: list[int] | None = field(default_factory=list)
     deep_set_config: DeepSetCriticConfig | None = None
     act_fun_class: type[nn.Module] = nn.Tanh
+    local_projection_init_gain: float = 1.0
+    value_regressor_init_gain: float = 1.0
+    value_head_init_gain: float = 0.01
 
 
 @dataclass(frozen=True)
@@ -82,6 +85,7 @@ class MAPPOPolicy(PPOPolicy):
                 config=PPOCriticConfig(
                     hidden_dims=config.critic_config.mlp_hidden_dims or [],
                     act_fun_class=config.critic_config.act_fun_class,
+                    value_head_init_gain=config.critic_config.value_head_init_gain,
                 ),
             )
         else:
@@ -92,6 +96,9 @@ class MAPPOPolicy(PPOPolicy):
                 num_global_features=self.hidden_global_vars_dim,
                 set_dim=AGENTS_DIM,
                 pool_mode="mean",
+                local_projection_linear_init_gain=config.critic_config.local_projection_init_gain,
+                value_regressor_linear_init_gain=config.critic_config.value_regressor_init_gain,
+                value_head_linear_init_gain=config.critic_config.value_head_init_gain,
                 act_fn_cls=config.critic_config.act_fun_class,
             )
 

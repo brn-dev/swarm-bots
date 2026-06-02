@@ -17,7 +17,7 @@ from swarmbots.learn.algos.ppo.ppo_sampler import PPOSamples, PPOSampler, PPOSam
 from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
 from swarmbots.learn.losses import LossDict, LossMetrics
 from swarmbots.learn.nn_components.mlp import MLP
-from swarmbots.learn.nn_components.nn_init import init_linear_orthogonal, LinearInitialization
+from swarmbots.learn.nn_components.nn_init import LinearInitialization, init_linear_orthogonal, make_init_linear_orthogonal
 from swarmbots.learn.nn_components.popart import PopArtLinear
 from swarmbots.learn.serialization_utils import serialize_dataclass
 
@@ -37,6 +37,7 @@ class PPOActorConfig:
     actor_head_hidden_dims: list[int] = field(default_factory=list)
     latent_pi_dim_per_agent: int = 64
     act_fun_class: type[nn.Module] = nn.Tanh
+    actor_head_init_gain: float = 0.01
 
 
 @dataclass(frozen=True)
@@ -45,6 +46,7 @@ class PPOCriticConfig:
     act_fun_class: type[nn.Module] = nn.Tanh
     use_popart: bool = False
     popart_config: PopArtConfig = field(default_factory=PopArtConfig)
+    value_head_init_gain: float = 0.01
 
 
 @dataclass(frozen=True)
@@ -116,6 +118,7 @@ class PPOActor(nn.Module):
             hidden_dims=[*config.actor_head_hidden_dims, config.latent_pi_dim_per_agent],
             end_with_act_fn=True,
             linear_init=linear_init,
+            final_linear_init=make_init_linear_orthogonal(config.actor_head_init_gain),
             act_fn_cls=actor_act_fun_class,
         )
 
@@ -166,10 +169,11 @@ class PPOCritic(nn.Module):
                 eps=config.popart_config.eps,
                 min_std=config.popart_config.min_std,
                 init_sigma=config.popart_config.init_sigma,
+                init_gain=config.value_head_init_gain,
             )
         else:
             self.value_head = nn.Linear(value_head_input_dim, 1)
-            linear_init(self.value_head)
+            make_init_linear_orthogonal(config.value_head_init_gain)(self.value_head)
 
     def forward(
             self,

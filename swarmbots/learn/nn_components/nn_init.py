@@ -3,7 +3,7 @@ from typing import Callable
 from torch import nn
 
 LinearInitialization = Callable[[nn.Linear], nn.Linear]
-DEFAULT_ORTHOGONAL_GAIN = 0.01
+DEFAULT_ORTHOGONAL_GAIN = 1.0
 
 
 def init_linear_orthogonal(module: nn.Linear, gain: float = DEFAULT_ORTHOGONAL_GAIN) -> nn.Linear:
