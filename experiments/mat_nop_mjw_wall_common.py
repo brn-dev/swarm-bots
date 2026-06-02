@@ -766,6 +766,7 @@ def _make_base_policy(
                 critic_config=PPOCriticConfig(
                     hidden_dims=[256, 256],
                     act_fun_class=act_fn_cls,
+                    use_popart=use_popart,
                 ),
                 continuous_config=continuous_config,
                 bernoulli_config=bernoulli_config,
@@ -789,6 +790,7 @@ def _make_base_policy(
                         value_regressor_hidden_dims=[256, 128],
                     ),
                     act_fun_class=act_fn_cls,
+                    use_popart=use_popart,
                 ),
                 continuous_config=continuous_config,
                 bernoulli_config=bernoulli_config,
