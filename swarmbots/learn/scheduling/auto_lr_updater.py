@@ -16,7 +16,8 @@ EARLY_STOP_EPOCH_DECAY_FACTORS = {
 
 def make_auto_lr_updater(
         warm_scheduler_config: SchedulerFactoryConfig | None = None,
-        early_stop_epoch_decay_limit: int = 4
+        early_stop_epoch_decay_limit: int = 4,
+        max_kl_div: float = 0.0125,
 ) -> AutomaticLearningRateUpdater:
     if warm_scheduler_config is not None and warm_scheduler_config.unit != ScheduleUnit.ITERATIONS:
         raise ValueError(
@@ -47,10 +48,10 @@ def make_auto_lr_updater(
                 'event': 'zero_epoch_hit'
             }
 
-        if early_stop_kl_div is not None and early_stop_kl_div > 0.0125:
+        if early_stop_kl_div is not None and early_stop_kl_div > max_kl_div:
             state['counter'] = 0
             state['warmup'] = False
-            decay_factor = np.clip(0.95 - early_stop_kl_div, 0.4, 0.95)
+            decay_factor = np.clip(0.9 - early_stop_kl_div * 20, 0.4, 0.9)
             return {
                 'new_lr': old_lr * decay_factor,
                 'msg': f'kl={early_stop_kl_div:.3f}',

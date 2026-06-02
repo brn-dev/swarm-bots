@@ -524,12 +524,15 @@ def run_experiment(
     warm_lr = 1e-4
     warmup_iterations = 200
     cold_lr = warm_lr * 5e-3 if warmup_iterations > 0 else warm_lr
+    clip_range = 0.05
+    target_kl = 0.0025
 
     auto_lr = AutomaticLearningRate(
         initial_lr=cold_lr,
         max_lr=8e-4,
         updater=make_auto_lr_updater(
             early_stop_epoch_decay_limit=math.ceil(n_epochs / 2),
+            max_kl_div=target_kl * 2.0,
             warm_scheduler_config=CosineSchedulerConfig(
                 unit=ScheduleUnit.ITERATIONS,
                 duration=warmup_iterations,
@@ -579,8 +582,8 @@ def run_experiment(
         n_epochs=n_epochs,
         gamma=gamma,
         gae_lambda=0.95,
-        clip_range=0.07,
-        target_kl=0.007,
+        clip_range=clip_range,
+        target_kl=target_kl,
         max_grad_norm=2.0,
         gsde_reset_mode=GSDEProbabilityResetMode(probability=1 / 6),
         mc_ent_coef=0e-5,
