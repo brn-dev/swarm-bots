@@ -1,6 +1,7 @@
 import abc
 import json
 import math
+from collections.abc import Mapping
 from dataclasses import dataclass, fields, is_dataclass, replace
 from typing import Optional, Any, Literal, TypeVar, Generic, Callable, Protocol, NotRequired, TypedDict, cast
 
@@ -117,6 +118,7 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
             use_popart: bool = False,
             scheduler_manager: SchedulerManager | None = None,
             virtual_mini_batches: int = 1,
+            parameter_lr_multipliers: Mapping[str, float] | None = None,
     ):
         self.automatic_lr: AutomaticLearningRate | None = None
         self._auto_lr_enabled = False
@@ -187,6 +189,7 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
         self.rollout_device = as_device(rollout_device)
         self.record_device = self.rollout_device if record_device is None else as_device(record_device)
         self.scheduler_manager = scheduler_manager
+        self.parameter_lr_multipliers = self._normalize_parameter_lr_multipliers(parameter_lr_multipliers)
 
         self.rollout_buffer_max_episode_length = self._resolve_rollout_buffer_max_episode_length(
             rollout_mode=self.rollout_mode,
@@ -209,7 +212,10 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
         self._policy_num_trainable_params = self.policy.num_parameters()
         self._detailed_grad_norm_metric_keys: tuple[str, ...] = tuple(self.policy.get_grad_norms().keys())
 
-        self.optimizer = torch.optim.Adam(self.policy.parameters(), lr=self.learning_rate)
+        self.optimizer = torch.optim.Adam(
+            self._make_optimizer_param_groups(self.learning_rate),
+            lr=self.learning_rate,
+        )
 
     def get_hyper_parameters(self) -> dict[str, Any]:
         auto_lr: dict[str, Any] | None
@@ -225,6 +231,7 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
 
         return {
             'learning_rate': self.learning_rate,
+            'parameter_lr_multipliers': self.parameter_lr_multipliers,
             'automatic_learning_rate': auto_lr,
             'rollout_mode': self._serialize_rollout_mode(self.rollout_mode),
             'max_episode_length': self.max_episode_length,
@@ -1242,7 +1249,8 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
         self.optimizer.load_state_dict(state_dict)
         self._move_optimizer_state_to_device(self.train_device)
         try:
-            lr = float(self.optimizer.param_groups[0]["lr"])
+            param_group = self.optimizer.param_groups[0]
+            lr = float(param_group["lr"]) / float(param_group.get("lr_multiplier", 1.0))
         except (KeyError, IndexError, TypeError, ValueError):
             return
         self.learning_rate = lr
@@ -1256,7 +1264,81 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
     def _apply_learning_rate(self, lr: LearningRate) -> None:
         assert isinstance(lr, float)
         for param_group in self.optimizer.param_groups:
-            param_group["lr"] = lr
+            lr_multiplier = float(param_group.get("lr_multiplier", 1.0))
+            param_group["lr"] = lr * lr_multiplier
+
+    @staticmethod
+    def _normalize_parameter_lr_multipliers(
+            parameter_lr_multipliers: Mapping[str, float] | None,
+    ) -> dict[str, float]:
+        if not parameter_lr_multipliers:
+            return {}
+
+        normalized: dict[str, float] = {}
+        for raw_prefix, raw_multiplier in parameter_lr_multipliers.items():
+            prefix = raw_prefix.strip(".")
+            multiplier = float(raw_multiplier)
+            if not prefix:
+                raise ValueError("Parameter LR multiplier prefixes must not be empty.")
+            if multiplier <= 0:
+                raise ValueError(f"Parameter LR multiplier for {prefix!r} must be > 0, got {multiplier}.")
+            if multiplier == 1.0:
+                continue
+            normalized[prefix] = multiplier
+        return normalized
+
+    def _make_optimizer_param_groups(self, base_lr: float) -> Any:
+        if not self.parameter_lr_multipliers:
+            return self.policy.parameters()
+
+        param_groups: dict[float, list[torch.nn.Parameter]] = {}
+        matched_prefixes: set[str] = set()
+        group_names: dict[float, set[str]] = {}
+        for name, param in self.policy.named_parameters():
+            lr_multiplier, prefix = self._resolve_parameter_lr_multiplier(name)
+            param_groups.setdefault(lr_multiplier, []).append(param)
+            group_names.setdefault(lr_multiplier, set()).add(prefix or "default")
+            if prefix is not None:
+                matched_prefixes.add(prefix)
+
+        unmatched_prefixes = sorted(set(self.parameter_lr_multipliers) - matched_prefixes)
+        if unmatched_prefixes:
+            logger.warning(f"Parameter LR multiplier prefixes did not match any parameters: {unmatched_prefixes}")
+
+        return [
+            {
+                "params": params,
+                "lr": base_lr * lr_multiplier,
+                "lr_multiplier": lr_multiplier,
+                "name": "+".join(sorted(group_names[lr_multiplier])),
+            }
+            for lr_multiplier, params in sorted(
+                param_groups.items(),
+                key=lambda item: (item[0] != 1.0, item[0]),
+            )
+        ]
+
+    def _resolve_parameter_lr_multiplier(self, parameter_name: str) -> tuple[float, str | None]:
+        best_prefix: str | None = None
+        best_multiplier = 1.0
+        for prefix, multiplier in self.parameter_lr_multipliers.items():
+            if self._parameter_name_matches_prefix(parameter_name, prefix) and (
+                    best_prefix is None or len(prefix) > len(best_prefix)
+            ):
+                best_prefix = prefix
+                best_multiplier = multiplier
+        return best_multiplier, best_prefix
+
+    @staticmethod
+    def _parameter_name_matches_prefix(parameter_name: str, prefix: str) -> bool:
+        name_parts = parameter_name.split(".")
+        prefix_parts = prefix.split(".")
+        if len(prefix_parts) > len(name_parts):
+            return False
+        for start_idx in range(len(name_parts) - len(prefix_parts) + 1):
+            if name_parts[start_idx:start_idx + len(prefix_parts)] == prefix_parts:
+                return True
+        return False
 
     @staticmethod
     def _serialize_rollout_mode(rollout_mode: PPORolloutMode) -> dict[str, Any]:

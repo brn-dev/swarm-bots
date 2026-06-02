@@ -289,6 +289,8 @@ def run_experiment(
         nop_add_agent_embeddings_transition_model: bool = False,
         shuffle_agents: bool = False,
         preserve_inactive_prefix_structure: bool = False,
+        mat_decoder_lr_multiplier: float = 1.0,
+        mat_query_context_lr_multiplier: float = 1.0,
         experiment_run_name: str = "mat_qcs_nop_swarm_bots_wall_mjw_batch_env_sweep",
         scenario_kwargs: dict[str, object] | None = None,
 ) -> None:
@@ -568,6 +570,11 @@ def run_experiment(
         act0_dist_type = type(continuous_dist) if policy.action_dist.distributions else None
         logger.warning(f"Skipping act0_stickiness scheduler: action dist[0] is {act0_dist_type}")
 
+    parameter_lr_multipliers = _make_mat_parameter_lr_multipliers(
+        policy_variant=policy_variant,
+        decoder_lr_multiplier=mat_decoder_lr_multiplier,
+        query_context_lr_multiplier=mat_query_context_lr_multiplier,
+    )
     ppo = PPO(
         policy=policy,
         env=env,
@@ -597,6 +604,7 @@ def run_experiment(
         metrics_action_splitters=[lambda actions: split_actuator_joints(actions, actuators_per_limb), None],
         scheduler_manager=scheduler_manager,
         virtual_mini_batches=virtual_mini_batches,
+        parameter_lr_multipliers=parameter_lr_multipliers,
     )
 
     if load_path:
@@ -670,6 +678,9 @@ def run_experiment(
         "mat_normalization": asdict(mat_normalization),
         "mat_add_agent_embeddings": mat_add_agent_embeddings,
         "mat_decoder_self_attention_mode": mat_decoder_self_attention_mode_metadata,
+        "mat_decoder_lr_multiplier": mat_decoder_lr_multiplier,
+        "mat_query_context_lr_multiplier": mat_query_context_lr_multiplier,
+        "parameter_lr_multipliers": parameter_lr_multipliers,
         "shuffle_agents": shuffle_agents,
         "preserve_inactive_prefix_structure": preserve_inactive_prefix_structure,
         "experiment_run_name": experiment_run_name,
@@ -699,6 +710,36 @@ def run_experiment(
 
     print("Training Finished.")
     env.close()
+
+
+def _make_mat_parameter_lr_multipliers(
+        *,
+        policy_variant: PolicyVariant,
+        decoder_lr_multiplier: float,
+        query_context_lr_multiplier: float,
+) -> dict[str, float]:
+    parameter_lr_multipliers: dict[str, float] = {}
+    if decoder_lr_multiplier != 1.0:
+        if policy_variant in {"mat_qcs", "mat_qcc", "mat_orig"}:
+            parameter_lr_multipliers["decoder"] = decoder_lr_multiplier
+        else:
+            logger.warning(f"Ignoring decoder LR multiplier for policy_variant={policy_variant!r}")
+
+    if query_context_lr_multiplier != 1.0:
+        if policy_variant in {"mat_qcs", "mat_qcc"}:
+            for prefix in (
+                    "query_input_norm",
+                    "query_encoder",
+                    "query_token_norm",
+                    "context_input_norm",
+                    "context_encoder",
+                    "context_token_norm",
+            ):
+                parameter_lr_multipliers[prefix] = query_context_lr_multiplier
+        else:
+            logger.warning(f"Ignoring query/context LR multiplier for policy_variant={policy_variant!r}")
+
+    return parameter_lr_multipliers
 
 
 def _make_base_policy(
