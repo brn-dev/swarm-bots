@@ -33,6 +33,8 @@ class PopArtConfig:
 @dataclass(frozen=True)
 class PPOActorConfig:
     hidden_dims: list[int] = field(default_factory=list)
+    shared_encoder_latent_dim_per_agent: int | None = None
+    actor_head_hidden_dims: list[int] = field(default_factory=list)
     latent_pi_dim_per_agent: int = 64
     act_fun_class: type[nn.Module] = nn.Tanh
 
@@ -53,7 +55,7 @@ class PPOPolicyConfig:
     bernoulli_config: BernoulliConfig | None = None
 
 
-class PPOActor(nn.Module):
+class PPOSharedEncoder(nn.Module):
 
     def __init__(
             self,
@@ -65,28 +67,60 @@ class PPOActor(nn.Module):
             act_fun_class: type[nn.Module] | None = None,
     ):
         super().__init__()
-        actor_act_fun_class = config.act_fun_class if act_fun_class is None else act_fun_class
+        encoder_act_fun_class = config.act_fun_class if act_fun_class is None else act_fun_class
         self.n_agents = n_agents
         self.local_obs_dim = local_obs_dim
         self.global_obs_dim = global_obs_dim
         self.has_global_obs = global_obs_dim > 0
         self.hidden_dims = list(config.hidden_dims)
-        self.latent_pi_dim = config.latent_pi_dim_per_agent
-        self.act_fun_class = actor_act_fun_class
+        self.local_latent_dim = (
+            config.latent_pi_dim_per_agent
+            if config.shared_encoder_latent_dim_per_agent is None
+            else config.shared_encoder_latent_dim_per_agent
+        )
+        self.act_fun_class = encoder_act_fun_class
 
         self.mlp = MLP(
             input_dim=local_obs_dim * n_agents + global_obs_dim,
-            hidden_dims=[*config.hidden_dims, config.latent_pi_dim_per_agent * n_agents],
+            hidden_dims=[*config.hidden_dims, self.local_latent_dim * n_agents],
             end_with_act_fn=True,
             linear_init=linear_init,
-            act_fn_cls=actor_act_fun_class
+            act_fn_cls=encoder_act_fun_class
         )
 
     def forward(self, local_obs: torch.Tensor, global_obs: torch.Tensor) -> torch.Tensor:
-        actor_input = torch.flatten(local_obs, start_dim=1)
+        encoder_input = torch.flatten(local_obs, start_dim=1)
         if self.has_global_obs:
-            actor_input = torch.cat((actor_input, global_obs), dim=-1)
-        return self.mlp(actor_input).view((local_obs.shape[0], self.n_agents, self.latent_pi_dim))
+            encoder_input = torch.cat((encoder_input, global_obs), dim=-1)
+        return self.mlp(encoder_input).view((local_obs.shape[0], self.n_agents, self.local_latent_dim))
+
+
+class PPOActor(nn.Module):
+
+    def __init__(
+            self,
+            local_latent_dim: int,
+            config: PPOActorConfig,
+            linear_init: LinearInitialization = init_linear_orthogonal,
+            act_fun_class: type[nn.Module] | None = None,
+    ):
+        super().__init__()
+        actor_act_fun_class = config.act_fun_class if act_fun_class is None else act_fun_class
+        self.local_latent_dim = local_latent_dim
+        self.latent_pi_dim = config.latent_pi_dim_per_agent
+        self.hidden_dims = list(config.actor_head_hidden_dims)
+        self.act_fun_class = actor_act_fun_class
+
+        self.mlp = MLP(
+            input_dim=local_latent_dim,
+            hidden_dims=[*config.actor_head_hidden_dims, config.latent_pi_dim_per_agent],
+            end_with_act_fn=True,
+            linear_init=linear_init,
+            act_fn_cls=actor_act_fun_class,
+        )
+
+    def forward(self, local_latents: torch.Tensor) -> torch.Tensor:
+        return self.mlp(local_latents)
 
 
 class PPOCritic(nn.Module):
@@ -140,7 +174,7 @@ class PPOCritic(nn.Module):
     def forward(
             self,
             local_obs: torch.Tensor,
-            global_obs: torch.Tensor,
+            global_obs: torch.Tensor | None = None,
             agent_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
         if agent_mask is not None:
@@ -153,6 +187,8 @@ class PPOCritic(nn.Module):
             local_obs = local_obs * agent_mask.to(dtype=local_obs.dtype).unsqueeze(-1)
         critic_input = torch.flatten(local_obs, start_dim=1)
         if self.has_global_obs:
+            if global_obs is None:
+                raise ValueError("global_obs is required when PPOCritic has global features")
             critic_input = torch.cat((critic_input, global_obs), dim=-1)
         critic_features = self.value_features(critic_input)
         return self.value_head(critic_features).squeeze(dim=-1)
@@ -197,11 +233,20 @@ class PPOPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
         self.hidden_local_vars_dim = env.hidden_local_vars_dim
         self.hidden_global_vars_dim = env.hidden_global_vars_dim
         self.latent_pi_dim = config.actor_config.latent_pi_dim_per_agent
+        self.local_latent_dim = (
+            config.actor_config.latent_pi_dim_per_agent
+            if config.actor_config.shared_encoder_latent_dim_per_agent is None
+            else config.actor_config.shared_encoder_latent_dim_per_agent
+        )
 
-        self.actor = PPOActor(
+        self.shared_encoder = PPOSharedEncoder(
             n_agents=env.n_agents,
             local_obs_dim=env.local_obs_dim,
             global_obs_dim=env.global_obs_dim,
+            config=config.actor_config,
+        )
+        self.actor = PPOActor(
+            local_latent_dim=self.local_latent_dim,
             config=config.actor_config,
         )
         self.action_dist = HybridActionDistribution(
@@ -213,8 +258,8 @@ class PPOPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
 
         self.critic = PPOCritic(
             n_agents=env.n_agents,
-            local_obs_dim=env.local_obs_dim + self.hidden_local_vars_dim,
-            global_obs_dim=env.global_obs_dim + self.hidden_global_vars_dim,
+            local_obs_dim=self.local_latent_dim + self.hidden_local_vars_dim,
+            global_obs_dim=self.hidden_global_vars_dim,
             config=config.critic_config,
         )
 
@@ -242,15 +287,16 @@ class PPOPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
             deterministic: bool = False
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         local_obs = self._mask_local_obs(local_obs, agent_mask)
-        latent_pi = self.actor(local_obs, global_obs)
+        local_latents = self.shared_encoder(local_obs, global_obs)
+        latent_pi = self.actor(local_latents)
         actions, log_probs = self.action_dist.get_actions_with_log_probs(
             latent_pi,
             deterministic,
             previous_actions=previous_actions,
         )
 
-        critic_local_obs = self._build_critic_local_obs(local_obs, hidden_local_vars)
-        critic_global_obs = self._build_critic_global_obs(global_obs, hidden_global_vars)
+        critic_local_obs = self._build_critic_local_obs(local_latents, hidden_local_vars)
+        critic_global_obs = self._build_critic_global_obs(hidden_global_vars)
         values = self.critic(critic_local_obs, critic_global_obs, agent_mask=agent_mask)
         return actions, log_probs, values
 
@@ -268,20 +314,21 @@ class PPOPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
         actions = self._policy_actions(batch.actions)
 
         local_obs = self._mask_local_obs(local_obs, agent_mask)
-        latent_pi = self.actor(local_obs, global_obs)
+        local_latents = self.shared_encoder(local_obs, global_obs)
+        latent_pi = self.actor(local_latents)
 
         self.action_dist.update_latent_features(latent_pi)
         log_probs = self.action_dist.log_prob(actions, previous_actions=previous_actions)
 
-        critic_local_obs = self._build_critic_local_obs(local_obs, hidden_local_vars)
-        critic_global_obs = self._build_critic_global_obs(global_obs, hidden_global_vars)
+        critic_local_obs = self._build_critic_local_obs(local_latents, hidden_local_vars)
+        critic_global_obs = self._build_critic_global_obs(hidden_global_vars)
         values = self.critic(critic_local_obs, critic_global_obs, agent_mask=agent_mask)
 
         extra_losses, extra_loss_metrics = self.action_dist.compute_extra_losses(
             agent_mask=agent_mask,
             action_splitter=action_splitter,
         )
-        return log_probs, values, extra_losses, extra_loss_metrics, latent_pi
+        return log_probs, values, extra_losses, extra_loss_metrics, local_latents
 
     def predict_values(
             self,
@@ -294,8 +341,9 @@ class PPOPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
     ) -> torch.Tensor:
         _ = previous_actions
         local_obs = self._mask_local_obs(local_obs, agent_mask)
-        critic_local_obs = self._build_critic_local_obs(local_obs, hidden_local_vars)
-        critic_global_obs = self._build_critic_global_obs(global_obs, hidden_global_vars)
+        local_latents = self.shared_encoder(local_obs, global_obs)
+        critic_local_obs = self._build_critic_local_obs(local_latents, hidden_local_vars)
+        critic_global_obs = self._build_critic_global_obs(hidden_global_vars)
         return self.critic(critic_local_obs, critic_global_obs, agent_mask=agent_mask)
 
     def act(
@@ -311,7 +359,8 @@ class PPOPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
         _ = hidden_local_vars
         _ = hidden_global_vars
         local_obs = self._mask_local_obs(local_obs, agent_mask)
-        latent_pi = self.actor(local_obs, global_obs)
+        local_latents = self.shared_encoder(local_obs, global_obs)
+        latent_pi = self.actor(local_latents)
         actions = self.action_dist.update_latent_features(latent_pi).get_actions(
             deterministic=deterministic,
             previous_actions=previous_actions,
@@ -360,14 +409,11 @@ class PPOPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
 
     @staticmethod
     def _build_critic_global_obs(
-            global_obs: torch.Tensor,
             hidden_global_vars: torch.Tensor | None
-    ) -> torch.Tensor:
+    ) -> torch.Tensor | None:
         if hidden_global_vars is None or hidden_global_vars.shape[-1] == 0:
-            return global_obs
-        if global_obs.shape[-1] == 0:
-            return hidden_global_vars
-        return torch.cat((global_obs, hidden_global_vars), dim=-1)
+            return None
+        return hidden_global_vars
 
     @property
     def has_popart(self) -> bool:
@@ -386,6 +432,7 @@ class PPOPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
 
     def get_grad_norms(self) -> dict[str, float]:
         return {
+            "shared_encoder": self._module_grad_norm(self.shared_encoder),
             "actor": self._module_grad_norm(self.actor),
             "action_dist": self._module_grad_norm(self.action_dist),
             "critic": self._module_grad_norm(self.critic),
