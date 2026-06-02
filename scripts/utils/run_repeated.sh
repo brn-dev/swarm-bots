@@ -90,6 +90,44 @@ write_control_file() {
     mv -f -- "$active_control_file.tmp" "$active_control_file"
 }
 
+send_completion_notification() {
+    if [ -z "${SWARMBOTS_DISCORD_WEBHOOK_URL:-}" ]; then
+        return 0
+    fi
+
+    machine_name=$(hostname 2>/dev/null || uname -n)
+
+    if [ "$has_failures" -ne 0 ]; then
+        notification_status=failed
+        notification_summary="Some repeated runs failed."
+    elif [ "$stop_requested" -ne 0 ]; then
+        notification_status=stopped
+        notification_summary="Repeated runs stopped before finishing every requested run."
+    else
+        notification_status=finished
+        notification_summary="All repeated runs finished successfully."
+    fi
+
+    notification_message=$(
+        cat <<EOF
+run_repeated $notification_status
+machine: $machine_name
+script: $training_script
+runs: $runs
+completed_runs: $completed_runs
+$notification_summary
+EOF
+    )
+
+    if [ "$has_failures" -ne 0 ]; then
+        notification_message=$(printf '%s\nfailed runs:\n%s' "$notification_message" "$failed_runs")
+    fi
+
+    if ! "$python_executable" "$repo_root/scripts/utils/send_discord_notification.py" --message "$notification_message" >/dev/null; then
+        printf 'Failed to send Discord completion notification.\n' >&2
+    fi
+}
+
 if [ $# -eq 0 ]; then
     usage >&2
     exit 1
@@ -259,13 +297,16 @@ if [ "$has_failures" -ne 0 ]; then
     printf '\nFailed runs:\n'
     printf 'Run\tExitCode\tStartedAt\tFinishedAt\n'
     printf '%s' "$failed_runs"
+    send_completion_notification
     exit 1
 fi
 
 if [ "$stop_requested" -ne 0 ]; then
     printf '\nStopped after %s of %s requested runs. Completed runs finished successfully.\n' "$completed_runs" "$runs"
+    send_completion_notification
     exit 0
 fi
 
 printf '\nAll %s runs finished successfully.\n' "$runs"
+send_completion_notification
 exit 0
