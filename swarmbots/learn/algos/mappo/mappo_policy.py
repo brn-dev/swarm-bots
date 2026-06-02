@@ -37,6 +37,8 @@ class MAPPOPolicyConfig:
     critic_config: MAPPOCriticConfig = field(default_factory=MAPPOCriticConfig)
     continuous_config: ContinuousActionDistConfigInput = None
     bernoulli_config: BernoulliConfig | None = None
+    compile_modules: bool = False
+    compile_mode: str = "default"
 
 
 class MAPPOPolicy(PPOPolicy):
@@ -104,6 +106,7 @@ class MAPPOPolicy(PPOPolicy):
                 value_head_linear_init_gain=config.critic_config.value_head_init_gain,
                 act_fn_cls=config.critic_config.act_fun_class,
             )
+        self._apply_optional_compile()
 
     def get_hyper_parameters(self) -> dict[str, Any]:
         return {
@@ -112,5 +115,7 @@ class MAPPOPolicy(PPOPolicy):
                 "critic_config": serialize_dataclass(self.config.critic_config),
                 "continuous_config": continuous_config_to_dicts(self.action_dist.continuous_configs),
                 "bernoulli_config": bernoulli_config_to_dict(self.action_dist.bernoulli_config),
+                "compile_modules": self.config.compile_modules,
+                "compile_mode": self.config.compile_mode,
             }
         }
