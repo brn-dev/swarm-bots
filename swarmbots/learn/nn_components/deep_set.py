@@ -124,7 +124,7 @@ class DeepSetCritic(nn.Module):
         linear_init: LinearInitialization = init_linear_orthogonal,
         local_projection_linear_init_gain: float = DEFAULT_ORTHOGONAL_GAIN,
         value_regressor_linear_init_gain: float = DEFAULT_ORTHOGONAL_GAIN,
-        value_head_linear_init_gain: float = DEFAULT_ORTHOGONAL_GAIN,
+        value_head_linear_init_gain: float = 0.01,
         act_fn_cls: ActivationFactory = nn.Tanh,
         context_in_elements: bool = False,
         use_popart: bool = False,

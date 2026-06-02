@@ -4,7 +4,7 @@ import torch
 from torch import nn
 
 from swarmbots.learn.nn_components.mlp import MLP
-from swarmbots.learn.nn_components.nn_init import LinearInitialization, init_linear_orthogonal
+from swarmbots.learn.nn_components.nn_init import LinearInitialization, init_linear_orthogonal, make_init_linear_orthogonal
 
 
 @dataclass(frozen=True)
@@ -14,6 +14,7 @@ class MAPPOActorConfig:
     actor_head_hidden_dims: list[int] = field(default_factory=list)
     latent_pi_dim: int = 64
     act_fun_class: type[nn.Module] = nn.Tanh
+    actor_head_init_gain: float = 0.01
 
 
 class MAPPOSharedEncoder(nn.Module):
@@ -77,6 +78,7 @@ class MAPPOActor(nn.Module):
             hidden_dims=[*config.actor_head_hidden_dims, config.latent_pi_dim],
             end_with_act_fn=True,
             linear_init=linear_init,
+            final_linear_init=make_init_linear_orthogonal(config.actor_head_init_gain),
             act_fn_cls=actor_act_fun_class,
         )
 
