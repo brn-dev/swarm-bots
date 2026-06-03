@@ -527,7 +527,7 @@ def run_experiment(
     warmup_iterations = 200
     cold_lr = warm_lr * 5e-3 if warmup_iterations > 0 else warm_lr
     clip_range = 0.05
-    target_kl = 0.0015
+    target_kl = 0.002
 
     auto_lr = AutomaticLearningRate(
         initial_lr=cold_lr,
