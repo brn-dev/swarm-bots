@@ -14,6 +14,7 @@ dependencies = [
     "moviepy",
     "mujoco>=3.1",
     "numpy",
+    "pandas",
     "pillow",
     "torch",
 ]
