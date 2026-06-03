@@ -51,7 +51,7 @@ def make_auto_lr_updater(
         if early_stop_kl_div is not None and early_stop_kl_div > max_kl_div:
             state['counter'] = 0
             state['warmup'] = False
-            decay_factor = np.clip(0.9 - early_stop_kl_div * 20, 0.4, 0.9)
+            decay_factor = np.clip(0.9 - early_stop_kl_div * 50, 0.4, 0.9)
             return {
                 'new_lr': old_lr * decay_factor,
                 'msg': f'kl={early_stop_kl_div:.3f}',
