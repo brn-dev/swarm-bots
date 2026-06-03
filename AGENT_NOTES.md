@@ -78,7 +78,7 @@ Keep only durable architecture notes and gotchas. Prefer deleting stale detail o
 - Obstacle-street `forward_reward_wall_boost_factor` multiplies the per-unit forward potential near/above a wall when the unit center is at least `wall_height + margin`; default margin is `swarm.body_radius`, and factor `1.0` disables it. Do not boost only positive deltas, or wall-edge backtracking can farm reward.
 - `SwarmBotsEnv.reset(seed=...)` must reseed `scenario.rng`; reset sampling does not use Gymnasium `env.np_random`.
 - On Windows, workers re-import the script top-level module. Keep heavy PPO/torch/MJW imports out of top level unless env construction needs them.
-- Remote `brn@server2026` SSH works through WSL (`wsl ssh brn@server2026 ...`); Remote runs live under `~/git/swarm-bots/runs`. Use these to inspect live logs.
+- Remote run logs are reachable directly from Windows over `\\\\server2026\\swarm-bots\\runs`; prefer that path for reading `log.csv` files instead of the WSL SSH route.
 
 ## Version And Install
 
