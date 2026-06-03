@@ -527,14 +527,14 @@ def run_experiment(
     warmup_iterations = 200
     cold_lr = warm_lr * 5e-3 if warmup_iterations > 0 else warm_lr
     clip_range = 0.05
-    target_kl = 0.001
+    target_kl = 0.0015
 
     auto_lr = AutomaticLearningRate(
         initial_lr=cold_lr,
         max_lr=8e-4,
         updater=make_auto_lr_updater(
             early_stop_epoch_decay_limit=math.ceil(n_epochs / 2),
-            max_kl_div=target_kl * 1.75,
+            max_kl_div=target_kl * 1.5,
             warm_scheduler_config=CosineSchedulerConfig(
                 unit=ScheduleUnit.ITERATIONS,
                 duration=warmup_iterations,
