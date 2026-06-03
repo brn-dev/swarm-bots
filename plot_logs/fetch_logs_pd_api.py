@@ -179,6 +179,12 @@ def _read_log_frame(
     return select_log_frame(frame, rows=rows)
 
 
+def _read_log_columns(path: Path, *, delimiter: str) -> list[str]:
+    with open_log_text(path, newline="") as handle:
+        frame = pd.read_csv(handle, sep=delimiter, nrows=0)
+    return list(frame.columns)
+
+
 def select_log_frame(
     frame: pd.DataFrame,
     *,
@@ -225,6 +231,28 @@ def fetch_log_frames(
         for path in paths
     ]
     return frames
+
+
+def list_log_columns(
+    path_or_paths: PathInput,
+    *,
+    delimiter: str = DEFAULT_DELIMITER,
+    per_source: bool = False,
+) -> list[str] | dict[Path, list[str]]:
+    paths = _normalize_paths(path_or_paths)
+    columns_by_path = {path: _read_log_columns(path, delimiter=delimiter) for path in paths}
+    if per_source:
+        return columns_by_path
+
+    seen_columns: set[str] = set()
+    ordered_columns: list[str] = []
+    for path in paths:
+        for column in columns_by_path[path]:
+            if column in seen_columns:
+                continue
+            seen_columns.add(column)
+            ordered_columns.append(column)
+    return ordered_columns
 
 
 def _fetch_single_log_frame(
