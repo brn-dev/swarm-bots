@@ -289,8 +289,8 @@ def run_experiment(
         nop_add_agent_embeddings_transition_model: bool = False,
         shuffle_agents: bool = False,
         preserve_inactive_prefix_structure: bool = False,
-        mat_decoder_lr_multiplier: float = 0.2,
-        mat_query_context_lr_multiplier: float = 0.2,
+        mat_decoder_lr_multiplier: float = 0.25,
+        mat_query_context_lr_multiplier: float = 0.25,
         experiment_run_name: str = "mat_qcs_nop_swarm_bots_wall_mjw_batch_env_sweep",
         scenario_kwargs: dict[str, object] | None = None,
 ) -> None:
@@ -527,14 +527,14 @@ def run_experiment(
     warmup_iterations = 200
     cold_lr = warm_lr * 5e-3 if warmup_iterations > 0 else warm_lr
     clip_range = 0.05
-    target_kl = 0.0015
+    target_kl = 0.002
 
     auto_lr = AutomaticLearningRate(
         initial_lr=cold_lr,
         max_lr=8e-4,
         updater=make_auto_lr_updater(
-            early_stop_epoch_decay_limit=math.ceil(n_epochs / 2),
-            max_kl_div=target_kl * 1.5,
+            early_stop_epoch_decay_limit=math.ceil(n_epochs * 0.75),
+            max_kl_div=target_kl * 1.55,
             warm_scheduler_config=CosineSchedulerConfig(
                 unit=ScheduleUnit.ITERATIONS,
                 duration=warmup_iterations,
