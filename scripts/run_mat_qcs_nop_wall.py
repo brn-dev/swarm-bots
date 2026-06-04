@@ -167,6 +167,7 @@ def main() -> None:
     rollout_steps_per_env = 4
 
     episode_length = 512
+    rollout_warmup_steps_per_env = episode_length
     total_timesteps = 100_000_000
     save_interval = None
 
@@ -452,6 +453,7 @@ def main() -> None:
         env=env,
         learning_rate=auto_lr,
         rollout_mode=StepsRolloutMode(rollout_samples),
+        rollout_warmup_steps_per_env=rollout_warmup_steps_per_env,
         max_episode_length=episode_length,
         sampler_config=PPOWMSamplerConfig(
             batch_size=rollout_samples,

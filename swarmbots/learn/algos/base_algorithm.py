@@ -105,6 +105,9 @@ class BaseAlgorithm(abc.ABC):
         """
         raise NotImplementedError()
 
+    def _before_learn_loop(self) -> None:
+        pass
+
     def learn(
             self,
             max_total_timesteps: int | None = None,
@@ -200,6 +203,8 @@ class BaseAlgorithm(abc.ABC):
         try:
             if enable_command_prompt:
                 self._maybe_start_command_prompt()
+
+            self._before_learn_loop()
 
             while self.n_total_timesteps < max_total_timesteps:
                 if enable_command_prompt:

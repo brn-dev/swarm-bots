@@ -160,6 +160,30 @@ class PPORolloutBufferSizingTests(unittest.TestCase):
         finally:
             env.close()
 
+    def test_rollout_warmup_advances_state_without_training_counters_or_buffer(self) -> None:
+        env = _make_env(n_envs=4)
+        try:
+            policy = _DummyPolicy(action_dim=env.action_space.total_agent_action_dim)
+            algo = PPO(
+                policy=policy,
+                env=env,
+                rollout_mode=StepsRolloutMode(8),
+                max_episode_length=32,
+                rollout_warmup_steps_per_env=3,
+            )
+
+            algo._before_learn_loop()
+
+            self.assertEqual(algo.n_total_timesteps, 0)
+            self.assertEqual(algo.n_total_iterations, 0)
+            self.assertEqual(len(algo.rollout_buffer.episodes), 0)
+            self.assertEqual(int(algo.rollout_buffer.accumulator.step.sum().item()), 0)
+            self.assertIsNotNone(algo._rollout_state)
+            assert algo._rollout_state is not None
+            self.assertEqual(algo._rollout_state.rollout_step_idx, 3)
+        finally:
+            env.close()
+
 
 if __name__ == "__main__":
     unittest.main()

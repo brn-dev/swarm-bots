@@ -12,7 +12,12 @@ from loguru import logger
 from swarmbots.learn.algos.base_algorithm import BaseAlgorithm, LearningRate, _parse_bool
 from swarmbots.learn.algos.ppo.ppo_policy import PPOPolicy
 from swarmbots.learn.algos.ppo.base_ppo_policy import BasePPOPolicy
-from swarmbots.learn.algos.ppo.ppo_rollout import PPORolloutState, collect_steps, collect_whole_episodes
+from swarmbots.learn.algos.ppo.ppo_rollout import (
+    PPORolloutState,
+    collect_steps,
+    collect_whole_episodes,
+    warmup_rollout_steps,
+)
 from swarmbots.learn.algos.ppo.ppo_rollout_buffer import PPOEpisodeSegment, PPORolloutBuffer
 from swarmbots.learn.algos.ppo.ppo_sampler import PPOSamples, PPOSamplerConfig
 from swarmbots.learn.algos.world_modeling.ppo_wm_sampler import PPOWMSamplerConfig
@@ -119,6 +124,7 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
             scheduler_manager: SchedulerManager | None = None,
             virtual_mini_batches: int = 1,
             parameter_lr_multipliers: Mapping[str, float] | None = None,
+            rollout_warmup_steps_per_env: int = 0,
     ):
         self.automatic_lr: AutomaticLearningRate | None = None
         self._auto_lr_enabled = False
@@ -141,6 +147,14 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
         self.learning_rate = initial_lr
         self.rollout_mode = rollout_mode
         self._rollout_state: PPORolloutState | None = None
+        self.rollout_warmup_steps_per_env = int(rollout_warmup_steps_per_env)
+        if self.rollout_warmup_steps_per_env < 0:
+            raise ValueError(
+                f"rollout_warmup_steps_per_env must be >= 0, got {self.rollout_warmup_steps_per_env}"
+            )
+        if self.rollout_warmup_steps_per_env > 0 and not isinstance(self.rollout_mode, StepsRolloutMode):
+            raise ValueError("rollout_warmup_steps_per_env is only supported with StepsRolloutMode.")
+        self._rollout_warmup_done = self.rollout_warmup_steps_per_env == 0
         self.max_episode_length = max_episode_length
         if sampler_config is None:
             sampler_config = cast(PPOSamplerConfigType, PPOSamplerConfig(batch_size=64))
@@ -234,6 +248,7 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
             'parameter_lr_multipliers': self.parameter_lr_multipliers,
             'automatic_learning_rate': auto_lr,
             'rollout_mode': self._serialize_rollout_mode(self.rollout_mode),
+            'rollout_warmup_steps_per_env': self.rollout_warmup_steps_per_env,
             'max_episode_length': self.max_episode_length,
             'rollout_buffer_max_episode_length': self.rollout_buffer_max_episode_length,
             'sampler_config': serialize_dataclass(self.sampler_config),
@@ -366,6 +381,32 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
         if valid_mask is None:
             return values.flatten()
         return values[valid_mask]
+
+    def _before_learn_loop(self) -> None:
+        if self._rollout_warmup_done:
+            return
+        if self._rollout_state is not None:
+            self._rollout_warmup_done = True
+            return
+        if not isinstance(self.rollout_mode, StepsRolloutMode):
+            raise ValueError("rollout_warmup_steps_per_env is only supported with StepsRolloutMode.")
+
+        warmup_transitions = self.rollout_warmup_steps_per_env * self.rollout_buffer.n_envs
+        logger.info(
+            f"Running rollout warmup for {self.rollout_warmup_steps_per_env} vector steps "
+            f"({warmup_transitions} transitions) without training."
+        )
+        with PerformanceTimer() as warmup_timer:
+            self._rollout_state = warmup_rollout_steps(
+                env=self.env,
+                policy=self.policy,
+                n_steps=warmup_transitions,
+                rollout_state=None,
+                gsde_reset_mode=self.gsde_reset_mode,
+            )
+        self.rollout_buffer.reset()
+        self._rollout_warmup_done = True
+        logger.info(f"Finished rollout warmup in {warmup_timer.get_duration():.2f}s.")
 
     def compute_loss(
             self,

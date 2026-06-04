@@ -25,6 +25,7 @@ Keep only durable architecture notes and gotchas. Prefer deleting stale detail o
 ## Rollout, PPO, MAT
 
 - `collect_steps()` chunks may start mid-episode. Use `PPOEpisode.is_true_episode_start`; do not infer from chunk position.
+- PPO `rollout_warmup_steps_per_env` runs a bufferless startup rollout for `n_envs * steps_per_env` transitions, keeps only `PPORolloutState`, and does not increment timesteps/iterations or emit episode metrics.
 - Rollout bootstrap should use a value-only path, not full deterministic action generation.
 - `MATQCSPolicy` is the main transformer policy; `PPOPolicy` is the plain MLP policy; `MATDecPolicy` is decoderless despite the name.
 - MAT variants:
