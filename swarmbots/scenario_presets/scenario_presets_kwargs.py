@@ -44,7 +44,7 @@ WALL_SCENARIO_KWARGS: dict[str, object] = {
     "no_initial_ramp": True,
     "wall_height": 0.20,
     "forward_reward_weight": 1.0,
-    "forward_reward_max_y": 100.0,
+    "forward_reward_max_y": 2.0,
     "forward_reward_wall_boost_factor": 1.0,
     "wall_pass_reward_weight": 10.0,
     "wall_pass_reward_skew": 0.0,
