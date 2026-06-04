@@ -1,8 +1,10 @@
+import csv
 import gzip
 import json
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Any
 from unittest import mock
 
 import torch
@@ -10,6 +12,7 @@ from loguru import logger
 
 from swarmbots.learn.algos.base_algorithm import BaseAlgorithm
 from swarmbots.learn.base_policy import BasePolicy
+from swarmbots.learn.exponential_moving_average import ExponentialMovingAverage
 from swarmbots.learn.metrics_logger import MetricsLogger
 
 
@@ -81,8 +84,14 @@ class _DummyAlgorithm(BaseAlgorithm):
     def _apply_learning_rate(self, lr: float) -> None:
         _ = lr
 
-    def perform_iteration(self, episode_return_ema, update_ema: bool) -> tuple[dict[str, float], int]:
+    def perform_iteration(
+            self,
+            episode_return_ema: ExponentialMovingAverage,
+            episode_success_rate_ema: ExponentialMovingAverage,
+            update_ema: bool,
+    ) -> tuple[dict[str, Any], int]:
         _ = episode_return_ema
+        _ = episode_success_rate_ema
         _ = update_ema
         self.n_total_iterations += 1
         self.n_total_updates += 1
@@ -91,10 +100,33 @@ class _DummyAlgorithm(BaseAlgorithm):
 
 
 class _ReturnEmaAlgorithm(_DummyAlgorithm):
-    def perform_iteration(self, episode_return_ema, update_ema: bool) -> tuple[dict[str, float], int]:
+    def perform_iteration(
+            self,
+            episode_return_ema: ExponentialMovingAverage,
+            episode_success_rate_ema: ExponentialMovingAverage,
+            update_ema: bool,
+    ) -> tuple[dict[str, Any], int]:
+        _ = episode_success_rate_ema
         if update_ema:
             for _ in range(100):
                 episode_return_ema.update(15.0)
+        self.n_total_iterations += 1
+        self.n_total_updates += 1
+        self.n_total_timesteps += 1
+        return {"metric": 1.0, "total_updates": self.n_total_updates}, 1
+
+
+class _SuccessRateEmaAlgorithm(_DummyAlgorithm):
+    def perform_iteration(
+            self,
+            episode_return_ema: ExponentialMovingAverage,
+            episode_success_rate_ema: ExponentialMovingAverage,
+            update_ema: bool,
+    ) -> tuple[dict[str, Any], int]:
+        if update_ema:
+            for success in (1.0, 0.0) * 50:
+                episode_return_ema.update(0.0)
+                episode_success_rate_ema.update(success)
         self.n_total_iterations += 1
         self.n_total_updates += 1
         self.n_total_timesteps += 1
@@ -189,13 +221,31 @@ class MetricsLoggerTests(unittest.TestCase):
         algo = _ReturnEmaAlgorithm(policy=_DummyPolicy(), env=_DummyEnv(), learning_rate=1e-3)
 
         algo.learn(
-            max_total_timesteps=6,
+            max_total_timesteps=12,
             save_optimizer=False,
             enable_command_prompt=False,
         )
 
         self.assertIsNone(algo._last_return_ema)
         self.assertEqual(algo._final_return_ema, 15.0)
+
+    def test_learn_logs_success_rate_ema(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            run_dir = Path(tmp_dir)
+            algo = _SuccessRateEmaAlgorithm(policy=_DummyPolicy(), env=_DummyEnv(), learning_rate=1e-3)
+
+            algo.learn(
+                max_total_timesteps=11,
+                run_dir=run_dir,
+                save_optimizer=False,
+                enable_command_prompt=False,
+            )
+
+            with (run_dir / "log.csv").open(newline="", encoding="utf-8") as log_file:
+                rows = list(csv.DictReader(log_file, delimiter=";"))
+
+            self.assertIn("ep_success_rate_ema", rows[-1])
+            self.assertEqual(float(rows[-1]["ep_success_rate_ema"]), 50.0)
 
     def test_show_run_path_command_logs_active_run_path(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

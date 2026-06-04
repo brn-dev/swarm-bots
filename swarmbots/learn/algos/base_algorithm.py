@@ -97,6 +97,7 @@ class BaseAlgorithm(abc.ABC):
     def perform_iteration(
             self,
             episode_return_ema: ExponentialMovingAverage,
+            episode_success_rate_ema: ExponentialMovingAverage,
             update_ema: bool,
     ) -> tuple[dict[str, Any], int]:
         """
@@ -180,6 +181,7 @@ class BaseAlgorithm(abc.ABC):
             console_keys=logging_console_keys,
         )
         episode_return_ema = HybridEMA(alpha=episode_return_ema_alpha)
+        episode_success_rate_ema = HybridEMA(alpha=episode_return_ema_alpha)
         best_return_ema: float | None = self._best_return_ema
         best_save_counter = 0
 
@@ -208,6 +210,7 @@ class BaseAlgorithm(abc.ABC):
                 iter_timer = PerformanceTimer().start()
                 metrics, rollout_steps = self.perform_iteration(
                     episode_return_ema,
+                    episode_success_rate_ema,
                     update_ema=self.n_total_iterations >= MIN_ITERATIONS_FOR_EMA
                 )
                 iter_duration = iter_timer.stop().get_duration()
@@ -217,6 +220,10 @@ class BaseAlgorithm(abc.ABC):
                         hook(self, metrics, rollout_steps)
 
                 current_return_ema = episode_return_ema.get()
+                current_success_rate_ema = episode_success_rate_ema.get()
+                current_success_rate_ema_percent = (
+                    None if current_success_rate_ema is None else 100.0 * current_success_rate_ema
+                )
                 self._last_return_ema = current_return_ema
                 if (current_return_ema is not None and
                         self.n_total_iterations - learn_started_iterations >= MIN_ITERATIONS_FOR_BEST):
@@ -241,6 +248,7 @@ class BaseAlgorithm(abc.ABC):
                         'learning_rate': self.learning_rate,
                         **metrics,
                         'ep_rew_ema': current_return_ema,
+                        'ep_success_rate_ema': current_success_rate_ema_percent,
                         'best_ep_rew_ema': best_return_ema,
                         'fps': fps,
                     })

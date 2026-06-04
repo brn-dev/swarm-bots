@@ -21,6 +21,7 @@ from plot_logs.plot_logs import is_supported_log_path, open_log_text, parse_scal
 
 DEFAULT_X_COLUMN = "timesteps"
 EP_REW_EMA_COLUMN = "ep_rew_ema"
+EP_SUCCESS_RATE_EMA_COLUMN = "ep_success_rate_ema"
 DEFAULT_DPI = 300
 DEFAULT_RUN_LENGTH_LIMIT = 100_000_000
 GROUP_PALETTE: tuple[str, ...] = (
@@ -72,6 +73,32 @@ class ExperimentPlotSelection:
     title_suffix: str | None = None
     required_group_names: tuple[str, ...] = ()
     output_subdir: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class MetricPlotSpec:
+    column: str
+    output_stem: str
+    title: str
+    ylabel: str
+
+
+RETURN_EMA_PLOT = MetricPlotSpec(
+    column=EP_REW_EMA_COLUMN,
+    output_stem="ep_rew_ema",
+    title="Episode Reward EMA",
+    ylabel=EP_REW_EMA_COLUMN,
+)
+SUCCESS_RATE_EMA_PLOT = MetricPlotSpec(
+    column=EP_SUCCESS_RATE_EMA_COLUMN,
+    output_stem=EP_SUCCESS_RATE_EMA_COLUMN,
+    title="Episode Success Rate EMA",
+    ylabel="Success rate (%)",
+)
+PLOT_SPECS: tuple[MetricPlotSpec, ...] = (
+    RETURN_EMA_PLOT,
+    SUCCESS_RATE_EMA_PLOT,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -195,6 +222,7 @@ def load_experiment_run_log(
     run_name: str,
     x_column: str,
     return_columns: Sequence[str],
+    optional_return_columns: Sequence[str] = (),
 ) -> ExperimentRunLog:
     x_values: list[float] = []
     series: dict[str, list[float]] = {column: [] for column in return_columns}
@@ -207,6 +235,10 @@ def load_experiment_run_log(
         if missing_return_columns:
             missing = ", ".join(missing_return_columns)
             raise ValueError(f"Missing required columns in {path}: {missing}")
+        present_optional_return_columns = [column for column in optional_return_columns if column in reader.fieldnames]
+        missing_optional_return_columns = [column for column in optional_return_columns if column not in reader.fieldnames]
+        for column in present_optional_return_columns:
+            series[column] = []
 
         for row_index, row in enumerate(reader, start=2):
             x_value, _x_is_datetime = parse_x_value(row.get(x_column), x_column, path, row_index)
@@ -215,6 +247,10 @@ def load_experiment_run_log(
             x_values.append(x_value)
             for column in series:
                 series[column].append(parse_scalar(row.get(column), column, path, row_index))
+
+    if missing_optional_return_columns:
+        for column in missing_optional_return_columns:
+            series[column] = [float("nan")] * len(x_values)
 
     if not x_values:
         raise ValueError(f"{path} contains no usable rows")
@@ -277,6 +313,7 @@ def load_experiment_groups(
     #         raise ValueError(f"display_name_overrides contains unknown group names: {unknown_names_display}")
 
     return_columns = (EP_REW_EMA_COLUMN,)
+    optional_return_columns = (EP_SUCCESS_RATE_EMA_COLUMN,)
     groups: list[ExperimentGroup] = []
     for group_name in ordered_group_names(grouped_logs, group_order):
         runs = [
@@ -286,6 +323,7 @@ def load_experiment_groups(
                 run_name=run_name,
                 x_column=x_column,
                 return_columns=return_columns,
+                optional_return_columns=optional_return_columns,
             )
             for run_name, path in grouped_logs[group_name]
         ]
@@ -368,7 +406,15 @@ def final_finite_run_point(run: ExperimentRunLog, column: str) -> tuple[float, f
     return float(run.x_values[final_index]), float(y_values[final_index])
 
 
-def plot_individual_ep_rew_ema(
+def metric_has_finite_values(groups: Sequence[ExperimentGroup], column: str) -> bool:
+    return any(
+        np.isfinite(run.series[column]).any()
+        for group in groups
+        for run in group.runs
+    )
+
+
+def plot_individual_metric(
     groups: Sequence[ExperimentGroup],
     output_dir: Path,
     *,
@@ -376,8 +422,9 @@ def plot_individual_ep_rew_ema(
     dpi: int,
     theoretical_maximum: float | None = None,
     run_length_limit: int = DEFAULT_RUN_LENGTH_LIMIT,
-    output_name: str = "ep_rew_ema_individual_runs.png",
-    title: str = "Episode Reward EMA Per Run",
+    metric: MetricPlotSpec,
+    output_name: str | None = None,
+    title: str | None = None,
     colors: dict[str, tuple[float, float, float, float]] | None = None,
 ) -> Path:
     colors = group_colors(groups) if colors is None else colors
@@ -388,13 +435,13 @@ def plot_individual_ep_rew_ema(
         for run in group.runs:
             axis.plot(
                 run.x_values,
-                run.series[EP_REW_EMA_COLUMN],
+                run.series[metric.column],
                 color=color,
                 alpha=INDIVIDUAL_RUN_ALPHA,
                 linewidth=INDIVIDUAL_RUN_LINE_WIDTH,
             )
             if run.x_values[-1] < short_run_threshold:
-                final_point = final_finite_run_point(run, EP_REW_EMA_COLUMN)
+                final_point = final_finite_run_point(run, metric.column)
                 if final_point is not None:
                     axis.scatter(
                         *final_point,
@@ -405,14 +452,15 @@ def plot_individual_ep_rew_ema(
                         zorder=3,
                     )
 
-    axis.set_title(title)
+    axis.set_title(title or f"{metric.title} Per Run")
     axis.set_xlabel(x_column)
-    axis.set_ylabel(EP_REW_EMA_COLUMN)
+    axis.set_ylabel(metric.ylabel)
     axis.grid(alpha=0.25)
     theoretical_maximum_line = add_theoretical_maximum_line(axis, theoretical_maximum)
     add_group_legend(axis, groups, colors, theoretical_maximum_line=theoretical_maximum_line)
     figure.tight_layout()
-    return save_figure(figure, output_dir / output_name, dpi=dpi)
+    resolved_output_name = output_name or f"{metric.output_stem}_individual_runs.png"
+    return save_figure(figure, output_dir / resolved_output_name, dpi=dpi)
 
 
 def finite_interp(x_source: np.ndarray, y_source: np.ndarray, x_target: np.ndarray) -> np.ndarray:
@@ -463,34 +511,39 @@ def group_x_values(runs: Sequence[ExperimentRunLog]) -> np.ndarray:
     return np.asarray(values, dtype=float)
 
 
-def group_ema_mean_and_std(runs: Sequence[ExperimentRunLog]) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+def group_metric_mean_and_std(
+    runs: Sequence[ExperimentRunLog],
+    *,
+    column: str,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     x_values = group_x_values(runs)
     if x_values.size == 0:
         return x_values, x_values, x_values
 
     run_emas = np.vstack([
-        finite_interp(run.x_values, run.series[EP_REW_EMA_COLUMN], x_values)
+        finite_interp(run.x_values, run.series[column], x_values)
         for run in runs
     ])
     mean_values = nan_mean(run_emas, axis=0)
     return x_values, mean_values, nan_std(run_emas, mean_values, axis=0)
 
 
-def plot_group_ep_rew_ema(
+def plot_group_metric(
     groups: Sequence[ExperimentGroup],
     output_dir: Path,
     *,
     x_column: str,
     dpi: int,
     theoretical_maximum: float | None = None,
-    output_name: str = "ep_rew_ema_grouped.png",
-    title: str = "Episode Reward EMA By Group",
+    metric: MetricPlotSpec,
+    output_name: str | None = None,
+    title: str | None = None,
     colors: dict[str, tuple[float, float, float, float]] | None = None,
 ) -> Path:
     colors = group_colors(groups) if colors is None else colors
     figure, axis = plt.subplots(figsize=(16, 9))
     for group in groups:
-        x_values, mean_values, std_values = group_ema_mean_and_std(group.runs)
+        x_values, mean_values, std_values = group_metric_mean_and_std(group.runs, column=metric.column)
         if x_values.size == 0:
             continue
         color = colors[group.name]
@@ -505,14 +558,15 @@ def plot_group_ep_rew_ema(
                 linewidth=0,
             )
 
-    axis.set_title(title)
+    axis.set_title(title or f"{metric.title} By Group")
     axis.set_xlabel(x_column)
-    axis.set_ylabel(EP_REW_EMA_COLUMN)
+    axis.set_ylabel(metric.ylabel)
     axis.grid(alpha=0.25)
     add_theoretical_maximum_line(axis, theoretical_maximum)
     axis.legend(loc="best")
     figure.tight_layout()
-    return save_figure(figure, output_dir / output_name, dpi=dpi)
+    resolved_output_name = output_name or f"{metric.output_stem}_grouped.png"
+    return save_figure(figure, output_dir / resolved_output_name, dpi=dpi)
 
 
 def plot_experiment_selection(
@@ -538,30 +592,37 @@ def plot_experiment_selection(
         selection_output_dir /= selection.output_subdir
 
     title_suffix = f" - {selection.title_suffix or selection.name.replace('_', ' ').title()}"
-    output_stem = f"ep_rew_ema_{selection.name}"
-    return [
-        plot_individual_ep_rew_ema(
-            selected_groups,
-            selection_output_dir,
-            x_column=x_column,
-            dpi=dpi,
-            theoretical_maximum=theoretical_maximum,
-            run_length_limit=run_length_limit,
-            output_name=f"{output_stem}_individual_runs.png",
-            title=f"Episode Reward EMA Per Run{title_suffix}",
-            colors=colors,
-        ),
-        plot_group_ep_rew_ema(
-            selected_groups,
-            selection_output_dir,
-            x_column=x_column,
-            dpi=dpi,
-            theoretical_maximum=theoretical_maximum,
-            output_name=f"{output_stem}_grouped.png",
-            title=f"Episode Reward EMA By Group{title_suffix}",
-            colors=colors,
-        ),
-    ]
+    output_paths: list[Path] = []
+    for metric in PLOT_SPECS:
+        if not metric_has_finite_values(selected_groups, metric.column):
+            continue
+        output_stem = f"{metric.output_stem}_{selection.name}"
+        output_paths.extend([
+            plot_individual_metric(
+                selected_groups,
+                selection_output_dir,
+                x_column=x_column,
+                dpi=dpi,
+                theoretical_maximum=theoretical_maximum,
+                run_length_limit=run_length_limit,
+                metric=metric,
+                output_name=f"{output_stem}_individual_runs.png",
+                title=f"{metric.title} Per Run{title_suffix}",
+                colors=colors,
+            ),
+            plot_group_metric(
+                selected_groups,
+                selection_output_dir,
+                x_column=x_column,
+                dpi=dpi,
+                theoretical_maximum=theoretical_maximum,
+                metric=metric,
+                output_name=f"{output_stem}_grouped.png",
+                title=f"{metric.title} By Group{title_suffix}",
+                colors=colors,
+            ),
+        ])
+    return output_paths
 
 
 def plot_experiment_results(
@@ -586,25 +647,31 @@ def plot_experiment_results(
     )
     output_dir = output_dir.expanduser().resolve()
     colors = group_colors(groups)
-    output_paths = [
-        plot_individual_ep_rew_ema(
-            groups,
-            output_dir,
-            x_column=x_column,
-            dpi=dpi,
-            theoretical_maximum=theoretical_maximum,
-            run_length_limit=run_length_limit,
-            colors=colors,
-        ),
-        plot_group_ep_rew_ema(
-            groups,
-            output_dir,
-            x_column=x_column,
-            dpi=dpi,
-            theoretical_maximum=theoretical_maximum,
-            colors=colors,
-        ),
-    ]
+    output_paths: list[Path] = []
+    for metric in PLOT_SPECS:
+        if not metric_has_finite_values(groups, metric.column):
+            continue
+        output_paths.extend([
+            plot_individual_metric(
+                groups,
+                output_dir,
+                x_column=x_column,
+                dpi=dpi,
+                theoretical_maximum=theoretical_maximum,
+                run_length_limit=run_length_limit,
+                metric=metric,
+                colors=colors,
+            ),
+            plot_group_metric(
+                groups,
+                output_dir,
+                x_column=x_column,
+                dpi=dpi,
+                theoretical_maximum=theoretical_maximum,
+                metric=metric,
+                colors=colors,
+            ),
+        ])
     if extra_plot_selections is not None:
         for selection in extra_plot_selections:
             output_paths.extend(
