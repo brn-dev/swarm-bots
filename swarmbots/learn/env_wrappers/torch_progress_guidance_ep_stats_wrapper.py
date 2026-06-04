@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from typing import Any
 
-import numpy as np
 import torch
 
 from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper, TorchObs
@@ -18,11 +17,13 @@ class TorchProgressGuidanceEpisodeStatsWrapper(TorchEnvWrapper):
         env: BaseLearnEnvWrapper,
         progress_key: str = "progress_reward",
         guidance_key: str = "guidance_reward",
+        success_key: str = "success",
         stats_key: str = "episode",
     ) -> None:
         super().__init__(env)
         self.progress_key = progress_key
         self.guidance_key = guidance_key
+        self.success_key = success_key
         self._stats_key = stats_key
         self.episode_progress_rewards = torch.zeros((self._n_envs,), device=self.device, dtype=torch.float64)
         self.episode_guidance_rewards = torch.zeros((self._n_envs,), device=self.device, dtype=torch.float64)
@@ -99,24 +100,78 @@ class TorchProgressGuidanceEpisodeStatsWrapper(TorchEnvWrapper):
         if key not in infos:
             return None
 
-        values = to_torch_tensor(infos[key], device=self.device, dtype=torch.float64).reshape(-1)
-        if values.shape[0] == 1:
-            values = values.expand(self._n_envs)
-        elif values.shape[0] != self._n_envs:
-            raise ValueError(f"Expected infos['{key}'] length {self._n_envs}, got shape {tuple(values.shape)}")
-
         mask_key = f"_{key}"
-        if mask_key not in infos:
+        present_mask = None
+        if mask_key in infos:
+            present_mask = to_torch_tensor(infos[mask_key], device=self.device, dtype=torch.bool).reshape(-1)
+            if present_mask.shape[0] != self._n_envs:
+                raise ValueError(
+                    f"Expected infos['{mask_key}'] length {self._n_envs}, got shape {tuple(present_mask.shape)}"
+                )
+
+        values = self._info_values_to_tensor(infos[key], key=key, present_mask=present_mask)
+        if present_mask is None:
             return values
 
-        present_mask = to_torch_tensor(infos[mask_key], device=self.device, dtype=torch.bool).reshape(-1)
-        if present_mask.shape[0] != self._n_envs:
-            raise ValueError(
-                f"Expected infos['{mask_key}'] length {self._n_envs}, got shape {tuple(present_mask.shape)}"
-            )
         masked_values = torch.zeros((self._n_envs,), device=self.device, dtype=torch.float64)
-        masked_values[present_mask] = values[present_mask]
+        if torch.any(present_mask):
+            masked_values[present_mask] = values[present_mask]
         return masked_values
+
+    def _info_values_to_tensor(
+        self,
+        raw_values: Any,
+        *,
+        key: str,
+        present_mask: torch.Tensor | None,
+    ) -> torch.Tensor:
+        try:
+            values = to_torch_tensor(raw_values, device=self.device, dtype=torch.float64).reshape(-1)
+        except (BufferError, TypeError, ValueError):
+            return self._masked_info_entries_to_tensor(raw_values, key=key, present_mask=present_mask)
+
+        if values.shape[0] == 1:
+            return values.expand(self._n_envs)
+        if values.shape[0] != self._n_envs:
+            raise ValueError(f"Expected infos['{key}'] length {self._n_envs}, got shape {tuple(values.shape)}")
+        return values
+
+    def _masked_info_entries_to_tensor(
+        self,
+        raw_values: Any,
+        *,
+        key: str,
+        present_mask: torch.Tensor | None,
+    ) -> torch.Tensor:
+        entries = self._flatten_info_entries(raw_values)
+        if len(entries) == 1:
+            if present_mask is not None and not torch.any(present_mask):
+                return torch.zeros((self._n_envs,), device=self.device, dtype=torch.float64)
+            return to_torch_tensor(entries, device=self.device, dtype=torch.float64).reshape(-1).expand(self._n_envs)
+        if len(entries) != self._n_envs:
+            raise ValueError(f"Expected infos['{key}'] length {self._n_envs}, got length {len(entries)}")
+        if present_mask is None:
+            return to_torch_tensor(entries, device=self.device, dtype=torch.float64).reshape(-1)
+
+        values = torch.zeros((self._n_envs,), device=self.device, dtype=torch.float64)
+        present_indices = torch.nonzero(present_mask, as_tuple=False).flatten().tolist()
+        if present_indices:
+            present_values = [entries[index] for index in present_indices]
+            values[present_mask] = to_torch_tensor(present_values, device=self.device, dtype=torch.float64).reshape(-1)
+        return values
+
+    @staticmethod
+    def _flatten_info_entries(raw_values: Any) -> list[Any]:
+        if hasattr(raw_values, "reshape") and not isinstance(raw_values, torch.Tensor):
+            try:
+                flat_values = raw_values.reshape(-1)
+                return [flat_values[index] for index in range(len(flat_values))]
+            except (TypeError, ValueError, AttributeError):
+                pass
+        try:
+            return list(raw_values)
+        except TypeError:
+            return [raw_values]
 
     def _extract_final_step_values(
         self,
@@ -144,6 +199,11 @@ class TorchProgressGuidanceEpisodeStatsWrapper(TorchEnvWrapper):
     def _inject_episode_stats(self, *, infos: dict[str, Any], dones: torch.Tensor) -> None:
         progress_sum = torch.where(dones, self.episode_progress_rewards, torch.zeros_like(self.episode_progress_rewards))
         guidance_sum = torch.where(dones, self.episode_guidance_rewards, torch.zeros_like(self.episode_guidance_rewards))
+        success_values = self._extract_step_values(infos, self.success_key)
+        if success_values is None:
+            success_stats = None
+        else:
+            success_stats = torch.where(dones, success_values, torch.zeros_like(success_values))
 
         stats_mask_key = f"_{self._stats_key}"
         if stats_mask_key in infos:
@@ -161,18 +221,26 @@ class TorchProgressGuidanceEpisodeStatsWrapper(TorchEnvWrapper):
         guidance_values = guidance_sum.detach().clone()
 
         if self._stats_key not in infos:
-            infos[self._stats_key] = {
+            episode_stats = {
                 self.progress_key: progress_values,
                 self.guidance_key: guidance_values,
             }
+            if success_stats is not None:
+                episode_stats[self.success_key] = success_stats.detach().clone()
+            infos[self._stats_key] = episode_stats
             return
 
         stats = infos[self._stats_key]
         if not isinstance(stats, dict):
             raise ValueError(f"Expected infos['{self._stats_key}'] to be dict, got {type(stats)}")
-        if self.progress_key in stats or self.guidance_key in stats:
+        keys_to_inject = [self.progress_key, self.guidance_key]
+        if success_stats is not None:
+            keys_to_inject.append(self.success_key)
+        if any(key in stats for key in keys_to_inject):
             raise ValueError(
-                f"infos['{self._stats_key}'] already contains '{self.progress_key}' or '{self.guidance_key}'"
+                f"infos['{self._stats_key}'] already contains one of {keys_to_inject}"
             )
         stats[self.progress_key] = progress_values
         stats[self.guidance_key] = guidance_values
+        if success_stats is not None:
+            stats[self.success_key] = success_stats.detach().clone()

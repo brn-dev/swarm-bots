@@ -329,8 +329,9 @@ def _build_rollout_metrics(
         to_rollout_device_time: float,
         timers: _RolloutTimers,
         buffer_get_whole_episodes_time: float,
+        episode_infos: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    return {
+    metrics = {
         "env_reset_time": env_reset_time,
         "to_rollout_device_time": to_rollout_device_time,
         "reset_noise_time": compute_summary_statistics(timers.reset_noise_timings),
@@ -343,6 +344,10 @@ def _build_rollout_metrics(
         "total_buffer_add_time": sum(timers.buffer_add_timings),
         "buffer_get_whole_episodes_time": buffer_get_whole_episodes_time,
     }
+    success_values = [float(ep_info["success"]) for ep_info in episode_infos if "success" in ep_info]
+    if success_values:
+        metrics["ep_success_rate"] = 100.0 * (sum(success_values) / len(success_values))
+    return metrics
 
 
 @torch.no_grad()
@@ -403,6 +408,7 @@ def collect_whole_episodes(
         to_rollout_device_time=to_rollout_device_timer.get_duration(),
         timers=timers,
         buffer_get_whole_episodes_time=buffer_get_whole_episodes_timer.get_duration(),
+        episode_infos=episode_infos,
     )
     return episodes, episode_infos, metrics
 
@@ -496,6 +502,7 @@ def collect_steps(
         to_rollout_device_time=to_rollout_device_timer.get_duration(),
         timers=timers,
         buffer_get_whole_episodes_time=buffer_get_whole_episodes_time,
+        episode_infos=episode_infos,
     )
     new_state = PPORolloutState(
         obs=obs,

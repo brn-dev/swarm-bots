@@ -19,11 +19,13 @@ class ProgressGuidanceEpisodeStatsWrapper(VectorWrapper):
             env: VectorEnv,
             progress_key: str = "progress_reward",
             guidance_key: str = "guidance_reward",
+            success_key: str = "success",
             stats_key: str = "episode",
     ):
         super().__init__(env)
         self.progress_key = progress_key
         self.guidance_key = guidance_key
+        self.success_key = success_key
         self._stats_key = stats_key
 
         if "autoreset_mode" not in self.env.metadata:
@@ -120,17 +122,17 @@ class ProgressGuidanceEpisodeStatsWrapper(VectorWrapper):
         if key not in infos:
             return None
 
-        values = np.asarray(infos[key], dtype=np.float64)
-        if values.shape == ():
-            out = np.full((self.num_envs,), float(values), dtype=np.float64)
+        mask_key = f"_{key}"
+        raw_values = np.asarray(infos[key], dtype=np.float64)
+        if raw_values.shape == ():
+            out = np.full((self.num_envs,), raw_values.item(), dtype=np.float64)
         else:
-            out = values.reshape(-1)
+            out = raw_values.reshape(-1)
             if out.shape[0] != self.num_envs:
                 raise ValueError(
-                    f"Expected infos['{key}'] to have length {self.num_envs}, got shape {values.shape}"
+                    f"Expected infos['{key}'] to have length {self.num_envs}, got shape {raw_values.shape}"
                 )
 
-        mask_key = f"_{key}"
         if mask_key not in infos:
             return out
 
@@ -140,7 +142,8 @@ class ProgressGuidanceEpisodeStatsWrapper(VectorWrapper):
                 f"Expected infos['{mask_key}'] to have length {self.num_envs}, got shape {present_mask.shape}"
             )
         masked_out = np.zeros((self.num_envs,), dtype=np.float64)
-        masked_out[present_mask] = out[present_mask]
+        if np.any(present_mask):
+            masked_out[present_mask] = out[present_mask]
         return masked_out
 
     def _extract_final_step_values(
@@ -173,6 +176,11 @@ class ProgressGuidanceEpisodeStatsWrapper(VectorWrapper):
     ) -> None:
         progress_sum = np.where(dones, self.episode_progress_rewards, 0.0)
         guidance_sum = np.where(dones, self.episode_guidance_rewards, 0.0)
+        success_values = self._extract_step_values(infos, self.success_key)
+        if success_values is None:
+            success_stats = None
+        else:
+            success_stats = np.where(dones, success_values, 0.0)
 
         stats_mask_key = f"_{self._stats_key}"
         if stats_mask_key in infos:
@@ -190,10 +198,13 @@ class ProgressGuidanceEpisodeStatsWrapper(VectorWrapper):
             infos[stats_mask_key] = done_mask
 
         if self._stats_key not in infos:
-            infos[self._stats_key] = {
+            episode_stats = {
                 self.progress_key: np.where(done_mask, progress_sum, 0.0),
                 self.guidance_key: np.where(done_mask, guidance_sum, 0.0),
             }
+            if success_stats is not None:
+                episode_stats[self.success_key] = success_stats
+            infos[self._stats_key] = episode_stats
             return
 
         stats = infos[self._stats_key]
@@ -201,9 +212,14 @@ class ProgressGuidanceEpisodeStatsWrapper(VectorWrapper):
             raise ValueError(
                 f"Expected infos['{self._stats_key}'] to be a dict, got {type(stats)}"
             )
-        if self.progress_key in stats or self.guidance_key in stats:
+        keys_to_inject = [self.progress_key, self.guidance_key]
+        if success_stats is not None:
+            keys_to_inject.append(self.success_key)
+        if any(key in stats for key in keys_to_inject):
             raise ValueError(
-                f"infos['{self._stats_key}'] already contains '{self.progress_key}' or '{self.guidance_key}'"
+                f"infos['{self._stats_key}'] already contains one of {keys_to_inject}"
             )
         stats[self.progress_key] = np.where(done_mask, progress_sum, 0.0)
         stats[self.guidance_key] = np.where(done_mask, guidance_sum, 0.0)
+        if success_stats is not None:
+            stats[self.success_key] = success_stats
