@@ -224,6 +224,46 @@ def _snapshot_obs(obs: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
     return {key: value.clone() for key, value in obs.items()}
 
 
+def _initial_previous_actions(
+        *,
+        policy: BasePPOPolicy[Any, Any],
+        obs: dict[str, torch.Tensor],
+        n_agent_actions: int,
+) -> torch.Tensor | None:
+    if not policy.requires_previous_actions():
+        return None
+
+    local_obs = obs["local_obs"]
+    n_envs, n_agents = local_obs.shape[:2]
+    return torch.zeros(
+        (n_envs, n_agents, n_agent_actions),
+        dtype=local_obs.dtype,
+        device=local_obs.device,
+    )
+
+
+def _reset_rollout_state(
+        *,
+        env: BaseLearnEnvWrapper,
+        policy: BasePPOPolicy[Any, Any],
+        n_agent_actions: int,
+) -> PPORolloutState:
+    obs, _info = env.reset()
+    local_obs = obs["local_obs"]
+    episode_start_mask = torch.ones((local_obs.shape[0],), dtype=torch.bool, device=local_obs.device)
+    previous_actions = _initial_previous_actions(
+        policy=policy,
+        obs=obs,
+        n_agent_actions=n_agent_actions,
+    )
+    return PPORolloutState(
+        obs=obs,
+        episode_start_mask=episode_start_mask,
+        previous_actions=previous_actions,
+        rollout_step_idx=0,
+    )
+
+
 def _collect_rollout_step(
         *,
         env: BaseLearnEnvWrapper,
@@ -323,6 +363,60 @@ def _collect_rollout_step(
     return next_obs, dones, next_previous_actions, rollout_step_idx + 1
 
 
+def _warmup_rollout_step(
+        *,
+        env: BaseLearnEnvWrapper,
+        policy: BasePPOPolicy[Any, Any],
+        obs: dict[str, torch.Tensor],
+        episode_start_mask: torch.Tensor,
+        previous_actions: torch.Tensor | None,
+        rollout_step_idx: int,
+        gsde_enabled: bool,
+        is_gsde_interval_reset_mode: bool,
+        gsde_reset_interval: int,
+        gsde_reset_prob: float,
+) -> tuple[dict[str, torch.Tensor], torch.Tensor, torch.Tensor | None, int]:
+    local_obs = obs["local_obs"]
+    batch_shape = tuple(local_obs.shape[:-1])
+    step_reset_mask = _build_gsde_step_reset_mask(
+        gsde_enabled=gsde_enabled,
+        is_gsde_interval_reset_mode=is_gsde_interval_reset_mode,
+        gsde_reset_interval=gsde_reset_interval,
+        gsde_reset_prob=gsde_reset_prob,
+        rollout_step_idx=rollout_step_idx,
+        batch_shape=batch_shape,
+        rollout_device=local_obs.device,
+    )
+
+    policy.reset_temporal_state(episode_start_mask=episode_start_mask)
+    _reset_temporal_correlations(
+        policy=policy,
+        episode_start_mask=episode_start_mask,
+        step_reset_mask=step_reset_mask,
+    )
+
+    actions, _log_probs, _values = policy(
+        local_obs,
+        obs["global_obs"],
+        hidden_local_vars=obs["hidden_local_vars"],
+        hidden_global_vars=obs["hidden_global_vars"],
+        agent_mask=obs.get("agent_mask", None),
+        previous_actions=previous_actions,
+    )
+
+    next_obs, _rewards, terminations, truncations, _infos = env.step(actions)
+    dones = torch.logical_or(terminations, truncations)
+
+    policy.reset_temporal_state(episode_start_mask=dones)
+    _reset_temporal_correlations(policy=policy, episode_start_mask=dones)
+
+    next_previous_actions: torch.Tensor | None = None
+    if previous_actions is not None:
+        next_previous_actions = actions.detach().masked_fill(dones.unsqueeze(-1).unsqueeze(-1), 0.0)
+
+    return next_obs, dones, next_previous_actions, rollout_step_idx + 1
+
+
 def _build_rollout_metrics(
         *,
         env_reset_time: float,
@@ -348,6 +442,61 @@ def _build_rollout_metrics(
     if success_values:
         metrics["ep_success_rate"] = 100.0 * (sum(success_values) / len(success_values))
     return metrics
+
+
+@torch.no_grad()
+def warmup_rollout_steps(
+        env: BaseLearnEnvWrapper,
+        policy: BasePPOPolicy[Any, Any],
+        n_steps: int,
+        rollout_state: PPORolloutState | None = None,
+        gsde_reset_mode: GSDEResetMode | None = None,
+) -> PPORolloutState:
+    if n_steps <= 0:
+        raise ValueError(f"n_steps must be > 0, got {n_steps}")
+
+    gsde_enabled, is_gsde_interval_reset_mode, gsde_reset_interval, gsde_reset_prob = _parse_gsde_reset_mode(
+        policy,
+        gsde_reset_mode,
+    )
+
+    if rollout_state is None:
+        rollout_state = _reset_rollout_state(
+            env=env,
+            policy=policy,
+            n_agent_actions=env.action_space.total_agent_action_dim,
+        )
+
+    obs = rollout_state.obs
+    episode_start_mask = rollout_state.episode_start_mask
+    previous_actions = rollout_state.previous_actions
+    rollout_step_idx = rollout_state.rollout_step_idx
+
+    policy.to(obs["local_obs"].device)
+    policy.eval()
+
+    transitions_collected = 0
+    while transitions_collected < n_steps:
+        transitions_collected += obs["local_obs"].shape[0]
+        obs, episode_start_mask, previous_actions, rollout_step_idx = _warmup_rollout_step(
+            env=env,
+            policy=policy,
+            obs=obs,
+            episode_start_mask=episode_start_mask,
+            previous_actions=previous_actions,
+            rollout_step_idx=rollout_step_idx,
+            gsde_enabled=gsde_enabled,
+            is_gsde_interval_reset_mode=is_gsde_interval_reset_mode,
+            gsde_reset_interval=gsde_reset_interval,
+            gsde_reset_prob=gsde_reset_prob,
+        )
+
+    return PPORolloutState(
+        obs=obs,
+        episode_start_mask=episode_start_mask,
+        previous_actions=previous_actions,
+        rollout_step_idx=rollout_step_idx,
+    )
 
 
 @torch.no_grad()
