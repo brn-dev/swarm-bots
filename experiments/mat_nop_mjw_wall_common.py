@@ -652,7 +652,7 @@ def run_experiment(
             ("ep_rew", SummaryStatisticsFormat(mean=" .2f", std=".2f", max_value=" .2f", n="1")),
             ("ep_rew_ema", " .3f"),
             ("best_ep_rew_ema", " .3f", "best_ema"),
-            ("ep_success_rate_ema", "4.1f", "success_pct_ema"),
+            ("ep_success_rate_ema", "5.2f", "success_pct_ema"),
             ("fps", None),
         ]
     )
