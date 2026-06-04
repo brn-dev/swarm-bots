@@ -49,8 +49,8 @@ WALL_SCENARIO_KWARGS: dict[str, object] = {
     "wall_pass_reward_weight": 10.0,
     "wall_pass_reward_skew": 0.0,
     "wall_pass_thresholds": [-0.1, 0.1, 0.3, 0.5],
-    "wall_success_threshold": None,
-    "wall_success_reward": 0.0,
+    "wall_success_threshold": 1.0,
+    "wall_success_reward": 5.0,
     "wall_climb_reward_weight": 0.0,
     "wall_climb_reward_distance": 0.45,
 }
@@ -68,7 +68,6 @@ WALL_DIFFICULTY_UPDATES: dict[Difficulty, dict[str, object]] = {
         "wall_pass_reward_weight": 5.0,
         "wall_pass_reward_skew": 4.0,
         "wall_pass_thresholds": [0.2, 0.4],
-        "wall_success_threshold": 1.0,
         "units_without_connections_reward_weight": -3e-3,
     },
     "hard": {
@@ -80,7 +79,6 @@ WALL_DIFFICULTY_UPDATES: dict[Difficulty, dict[str, object]] = {
         "wall_pass_reward_weight": 5.0,
         "wall_pass_reward_skew": 4.0,
         "wall_pass_thresholds": [0.2, 0.4],
-        "wall_success_threshold": 1.0,
         "units_without_connections_reward_weight": -3e-3,
     },
 }
