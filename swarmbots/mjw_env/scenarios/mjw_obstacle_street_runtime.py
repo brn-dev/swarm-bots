@@ -824,25 +824,51 @@ class ObstacleStreetMJWScenarioRuntime(BaseMJWScenarioRuntime):
         self.next_threshold_for_unit[stable_mask] = latched_thresholds[stable_mask]
         self.passed_thresholds_mask[stable_mask] = passed_thresholds_mask[stable_mask]
         self._hidden_local_obs[stable_mask] = self.passed_thresholds_mask[stable_mask].to(dtype=torch.float32)
+        success_terminations = self._compute_wall_success_terminations(unit_y=unit_y, stable_mask=stable_mask)
+        wall_success_reward = success_terminations.to(dtype=progress_reward.dtype) * (
+            float(self.scenario.wall_success_reward) * float(self.scenario.progress_reward_weight)
+        )
+        progress_reward = progress_reward + wall_success_reward
 
         return MJWStepResult(
             reward=progress_reward + units_without_connections_reward,
             info={
+                "success": success_terminations,
                 "progress_reward": progress_reward,
                 "forward_reward": forward_reward,
                 "forward_progress_reward": forward_reward,
                 "wall_pass_reward": wall_pass_reward,
                 "wall_climb_reward": wall_climb_reward,
+                "wall_success_reward": wall_success_reward,
                 "units_without_connections_reward": units_without_connections_reward,
                 "guidance_reward": units_without_connections_reward,
                 "reward_terms": {
                     "forward": forward_reward,
                     "wall": wall_pass_reward,
                     "climb": wall_climb_reward,
+                    "success": wall_success_reward,
                     "units_without_connections": units_without_connections_reward,
                 },
             },
+            terminations=success_terminations,
         )
+
+    def _compute_wall_success_terminations(
+        self,
+        *,
+        unit_y: torch.Tensor,
+        stable_mask: torch.Tensor,
+    ) -> torch.Tensor:
+        wall_success_threshold = getattr(self.scenario, "wall_success_threshold", None)
+        if wall_success_threshold is None or self.wall_y_by_wall.shape[1] == 0:
+            return torch.zeros_like(stable_mask)
+
+        success_y_by_wall = self.wall_y_by_wall + float(wall_success_threshold)
+        unit_past_all_walls = (unit_y.unsqueeze(-1) > success_y_by_wall.unsqueeze(1)).all(dim=-1)
+        active_mask = self.bindings.units_active_mask
+        active_units_count = active_mask.sum(dim=-1)
+        active_units_success = torch.where(active_mask, unit_past_all_walls, torch.ones_like(unit_past_all_walls))
+        return stable_mask & (active_units_count > 0) & active_units_success.all(dim=-1)
 
     def _get_unit_y(self) -> torch.Tensor:
         return self.bindings.qpos[:, self.bindings.unit_qpos_adr + 1]

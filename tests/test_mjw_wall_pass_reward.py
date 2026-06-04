@@ -40,6 +40,8 @@ def _make_runtime(
         forward_reward_wall_boost_height_margin=None,
         wall_pass_reward_weight=wall_pass_reward_weight,
         wall_pass_reward_skew=wall_pass_reward_skew,
+        wall_success_threshold=None,
+        wall_success_reward=0.0,
         wall_climb_reward_weight=0.0,
         wall_climb_reward_distance=0.5,
         potential_reward_discount_factor=1.0,
@@ -281,6 +283,56 @@ def test_wall_pass_reward_skew_ignores_inactive_units() -> None:
     assert float(last_active.info["wall_pass_reward"][0]) == pytest.approx(4.0 / 3.0)
     assert float(inactive_and_first_active.info["wall_pass_reward"][0] + last_active.info["wall_pass_reward"][0]) == pytest.approx(2.0)
     assert runtime.next_threshold_for_unit.tolist() == [[1, 0, 1]]
+
+
+def test_wall_success_termination_uses_separate_threshold_for_active_units_in_mjw() -> None:
+    runtime = _make_runtime(num_units=3, wall_pass_reward_weight=0.0, units_active_mask=[True, False, True])
+    runtime.scenario.wall_success_threshold = 1.0
+    runtime.wall_y_by_wall = torch.tensor([[1.0]], dtype=torch.float32)
+    stable_mask = torch.tensor([True], dtype=torch.bool)
+
+    runtime._get_unit_y = lambda: torch.tensor([[2.01, 0.0, 1.99]], dtype=torch.float32)
+    not_done = runtime.compute_step_rewards(stable_mask=stable_mask)
+
+    runtime._get_unit_y = lambda: torch.tensor([[2.01, 0.0, 2.01]], dtype=torch.float32)
+    done = runtime.compute_step_rewards(stable_mask=stable_mask)
+
+    assert not bool(not_done.terminations[0])
+    assert not bool(not_done.info["success"][0])
+    assert bool(done.terminations[0])
+    assert bool(done.info["success"][0])
+
+
+def test_wall_success_termination_requires_at_least_one_active_unit_in_mjw() -> None:
+    runtime = _make_runtime(num_units=3, wall_pass_reward_weight=0.0, units_active_mask=[False, False, False])
+    runtime.scenario.wall_success_threshold = 1.0
+    runtime.wall_y_by_wall = torch.tensor([[1.0]], dtype=torch.float32)
+    stable_mask = torch.tensor([True], dtype=torch.bool)
+
+    runtime._get_unit_y = lambda: torch.tensor([[2.01, 2.01, 2.01]], dtype=torch.float32)
+    result = runtime.compute_step_rewards(stable_mask=stable_mask)
+
+    assert not bool(result.terminations[0])
+    assert not bool(result.info["success"][0])
+
+
+def test_wall_success_reward_is_added_once_to_weighted_progress_reward_in_mjw() -> None:
+    runtime = _make_runtime(num_units=2, wall_pass_reward_weight=0.0, units_active_mask=[True, True])
+    runtime.scenario.progress_reward_weight = 2.0
+    runtime.scenario.wall_success_threshold = 1.0
+    runtime.scenario.wall_success_reward = 3.0
+    runtime.wall_y_by_wall = torch.tensor([[1.0]], dtype=torch.float32)
+    stable_mask = torch.tensor([True], dtype=torch.bool)
+
+    runtime._get_unit_y = lambda: torch.tensor([[2.01, 2.01]], dtype=torch.float32)
+    result = runtime.compute_step_rewards(stable_mask=stable_mask)
+
+    assert bool(result.terminations[0])
+    assert bool(result.info["success"][0])
+    assert float(result.info["wall_success_reward"][0]) == pytest.approx(6.0)
+    assert float(result.info["reward_terms"]["success"][0]) == pytest.approx(6.0)
+    assert float(result.info["progress_reward"][0]) == pytest.approx(6.0)
+    assert float(result.reward[0]) == pytest.approx(6.0)
 
 
 def test_wall_pass_rank_weights_are_precomputed_by_active_count() -> None:

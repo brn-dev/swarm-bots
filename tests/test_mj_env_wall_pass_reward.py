@@ -21,6 +21,8 @@ def _make_scenario(
     scenario.wall_pass_thresholds = np.asarray([0.0] if wall_pass_thresholds is None else wall_pass_thresholds, dtype=float)
     scenario.wall_pass_reward_weight = wall_pass_reward_weight
     scenario.wall_pass_reward_skew = wall_pass_reward_skew
+    scenario.wall_success_threshold = None
+    scenario.wall_success_reward = 0.0
     scenario._qpos_indices = np.asarray([[2 * unit_idx, (2 * unit_idx) + 1] for unit_idx in range(num_units)], dtype=np.int64)
     return scenario
 
@@ -288,6 +290,73 @@ def test_wall_pass_reward_handles_no_active_units() -> None:
     assert state["num_walls_passed"] == 0
     assert state["next_threshold_for_unit"].tolist() == [0, 0, 0]
     assert state["passed_thresholds_mask"].tolist() == [[False], [False], [False]]
+
+
+def test_wall_success_termination_uses_separate_threshold_for_active_units() -> None:
+    scenario = _make_scenario(wall_pass_reward_skew=0.0, wall_pass_reward_weight=0.0)
+    scenario.wall_success_threshold = 1.0
+    state: dict[str, object] = {
+        "wall_y": np.asarray([1.0], dtype=float),
+        "units_active_mask": np.asarray([True, False, True], dtype=bool),
+    }
+
+    not_done = scenario._compute_wall_success_termination(_make_data([2.01, 0.0, 1.99]), state)
+    done = scenario._compute_wall_success_termination(_make_data([2.01, 0.0, 2.01]), state)
+
+    assert not_done is False
+    assert done is True
+    assert state["success"] is True
+
+
+def test_wall_success_termination_requires_at_least_one_active_unit() -> None:
+    scenario = _make_scenario(wall_pass_reward_skew=0.0, wall_pass_reward_weight=0.0)
+    scenario.wall_success_threshold = 1.0
+    state: dict[str, object] = {
+        "wall_y": np.asarray([1.0], dtype=float),
+        "units_active_mask": np.asarray([False, False, False], dtype=bool),
+    }
+
+    done = scenario._compute_wall_success_termination(_make_data([2.01, 2.01, 2.01]), state)
+
+    assert done is False
+    assert state["success"] is False
+
+
+def test_wall_success_reward_is_added_once_to_weighted_progress_reward() -> None:
+    scenario = _make_scenario(wall_pass_reward_skew=0.0, wall_pass_reward_weight=0.0, num_units=2)
+    scenario.forward_reward_weight = 0.0
+    scenario.forward_reward_max_y = None
+    scenario.wall_climb_reward_weight = 0.0
+    scenario.wall_success_threshold = 1.0
+    scenario.wall_success_reward = 3.0
+    scenario.reward_weights = {
+        "progress_reward_weight": 2.0,
+        "guidance_reward_weight": 1.0,
+        "units_without_connections_reward_weight": 0.0,
+    }
+    state: dict[str, object] = {
+        "progress": 0.0,
+        "wall_y": np.asarray([1.0], dtype=float),
+        "wall_pass_absolute_thresholds": np.asarray([], dtype=float),
+        "next_threshold_for_unit": np.zeros((2,), dtype=int),
+        "units_active_mask": np.asarray([True, True], dtype=bool),
+    }
+    connections = SimpleNamespace(get_is_active_mask=lambda: np.zeros((2, 1), dtype=bool))
+
+    reward, done = scenario.evaluate_step(
+        action={},
+        model=None,
+        data=_make_data([2.01, 2.01]),
+        state=state,
+        connections=connections,
+    )
+
+    assert done is True
+    assert state["wall_success_reward"] == pytest.approx(3.0)
+    assert state["weighted_wall_success_reward"] == pytest.approx(6.0)
+    assert state["reward_terms"]["success"] == pytest.approx(6.0)
+    assert state["weighted_progress_reward"] == pytest.approx(6.0)
+    assert reward == pytest.approx(6.0)
 
 
 def test_wall_climb_reward_uses_signed_potential_delta_so_retry_is_rewarded() -> None:

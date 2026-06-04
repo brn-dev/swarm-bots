@@ -472,6 +472,30 @@ def _make_reward_info_env(*configs: tuple[int, tuple[int, ...], str]) -> SwarmBo
     return SwarmBotsLearnEnvWrapper(vector_env)
 
 
+def _make_full_non_shuffle_wrapper_chain(*configs: tuple[int, tuple[int, ...], str]) -> SwarmBotsLearnEnvWrapper:
+    env: SwarmBotsLearnEnvWrapper = _make_reward_info_env(*configs)
+    env = TorchRecordEpisodeStatisticsWrapper(env)
+    env = TorchProgressGuidanceEpisodeStatsWrapper(env)
+    env = TorchFeatureWiseObsNormWrapper(env, obs_key="local_obs", scalar_feature_indices=[], quaternion_indices=[])
+    env = TorchFeatureWiseObsNormWrapper(env, obs_key="global_obs", scalar_feature_indices=[], quaternion_indices=[])
+    env = TorchFeatureWiseObsNormWrapper(
+        env,
+        obs_key="hidden_local_vars",
+        scalar_feature_indices=[],
+        quaternion_indices=[],
+    )
+    env = TorchFeatureWiseObsNormWrapper(
+        env,
+        obs_key="hidden_global_vars",
+        scalar_feature_indices=[],
+        quaternion_indices=[],
+    )
+    env = TorchTransitionObsWrapper(env)
+    env = TorchNormalizeRewardWrapper(env, gamma=1.0)
+    env.update_running_mean = False
+    return env
+
+
 def _make_buffer(env: SwarmBotsLearnEnvWrapper) -> PPORolloutBuffer:
     return PPORolloutBuffer(
         max_episode_length=8,
@@ -963,17 +987,10 @@ class SameStepPipelineTests(unittest.TestCase):
             env.close()
 
     def test_full_non_shuffle_wrapper_chain_preserves_same_step_final_obs_and_stats(self) -> None:
-        env: SwarmBotsLearnEnvWrapper = _make_reward_info_env(
+        env = _make_full_non_shuffle_wrapper_chain(
             (1, (2,), "truncate"),
             (2, (3,), "truncate"),
         )
-        env = TorchRecordEpisodeStatisticsWrapper(env)
-        env = TorchProgressGuidanceEpisodeStatsWrapper(env)
-        env = TorchFeatureWiseObsNormWrapper(env, obs_key="local_obs", scalar_feature_indices=[], quaternion_indices=[])
-        env = TorchFeatureWiseObsNormWrapper(env, obs_key="global_obs", scalar_feature_indices=[], quaternion_indices=[])
-        env = TorchTransitionObsWrapper(env)
-        env = TorchNormalizeRewardWrapper(env, gamma=1.0)
-        env.update_running_mean = False
         try:
             obs, _info = env.reset()
             first_actions = _transition_actions_from_local(obs, scale=0.01)
@@ -1024,6 +1041,61 @@ class SameStepPipelineTests(unittest.TestCase):
             self.assertEqual(int(infos["episode"]["l"][0].item()), 2)
             self.assertEqual(float(infos["episode"]["progress_reward"][0].item()), 5.0)
             self.assertEqual(float(infos["episode"]["guidance_reward"][0].item()), 23.0)
+        finally:
+            env.close()
+
+    def test_collect_steps_full_non_shuffle_wrapper_chain_bootstraps_truncations_but_not_terminations(self) -> None:
+        env = _make_full_non_shuffle_wrapper_chain(
+            (1, (2,), "truncate"),
+            (2, (2,), "terminate"),
+        )
+        try:
+            policy = _ConstantValuePolicy(action_dim=env.action_space.total_agent_action_dim)
+            buffer = _make_buffer(env)
+
+            episodes, episode_infos, _metrics, rollout_state = collect_steps(
+                env=env,
+                policy=policy,
+                buffer=buffer,
+                n_steps=4,
+            )
+
+            self.assertEqual(len(episodes), 2)
+            truncated_episode, terminated_episode = episodes
+
+            _assert_transition_obs_parts(
+                self,
+                {
+                    "local_obs": truncated_episode.final_local_obs.unsqueeze(0),
+                    "global_obs": truncated_episode.final_global_obs.unsqueeze(0),
+                },
+                current_local=torch.full((1, 2, 3), 1102.0),
+                prev_actions=torch.zeros((1, 2, 2)),
+                prev_local=torch.full((1, 2, 3), 1101.0),
+                current_global=torch.tensor([[1102.0, 1102.5]]),
+                prev_global=torch.tensor([[1101.0, 1101.5]]),
+            )
+            _assert_transition_obs_parts(
+                self,
+                {
+                    "local_obs": terminated_episode.final_local_obs.unsqueeze(0),
+                    "global_obs": terminated_episode.final_global_obs.unsqueeze(0),
+                },
+                current_local=torch.full((1, 2, 3), 2102.0),
+                prev_actions=torch.zeros((1, 2, 2)),
+                prev_local=torch.full((1, 2, 3), 2101.0),
+                current_global=torch.tensor([[2102.0, 2102.5]]),
+                prev_global=torch.tensor([[2101.0, 2101.5]]),
+            )
+
+            self.assertEqual(float(_to_cpu(truncated_episode.final_value).item()), 1102.0)
+            self.assertEqual(float(_to_cpu(terminated_episode.final_value).item()), 0.0)
+            self.assertEqual(float(_to_cpu(truncated_episode.returns[-1]).item()), 1114.0)
+            self.assertEqual(float(_to_cpu(terminated_episode.returns[-1]).item()), 22.0)
+            self.assertEqual([info["env_marker"] for info in episode_infos], [np.float64(102.0), np.float64(202.0)])
+            self.assertTrue(torch.equal(_to_cpu(rollout_state.episode_start_mask), torch.tensor([True, True])))
+            self.assertEqual(_first_obs_value(rollout_state.obs["local_obs"][0]), 1200.0)
+            self.assertEqual(_first_obs_value(rollout_state.obs["local_obs"][1]), 2200.0)
         finally:
             env.close()
 
