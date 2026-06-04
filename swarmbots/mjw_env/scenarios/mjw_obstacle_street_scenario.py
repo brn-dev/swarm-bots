@@ -60,6 +60,8 @@ class MJWObstacleStreetScenario(BaseMJWScenario):
     wall_pass_reward_weight: float
     wall_pass_thresholds: list[float]
     wall_pass_reward_skew: float = 0.0
+    wall_success_threshold: float | None = None
+    wall_success_reward: float = 0.0
     wall_climb_reward_weight: float = 0.0
     wall_climb_reward_distance: float = 0.45
     forward_reward_max_y: float | None = None
@@ -101,8 +103,13 @@ class MJWObstacleStreetScenario(BaseMJWScenario):
                 )
         self.wall_climb_reward_weight = float(self.wall_climb_reward_weight)
         self.wall_climb_reward_distance = float(self.wall_climb_reward_distance)
+        self.wall_success_reward = float(self.wall_success_reward)
         if self.wall_climb_reward_distance <= 0.0:
             raise ValueError(f"Expected wall_climb_reward_distance > 0, got {self.wall_climb_reward_distance}")
+        if self.wall_success_threshold is not None:
+            self.wall_success_threshold = float(self.wall_success_threshold)
+            if self.wall_success_threshold <= 0.0:
+                raise ValueError(f"Expected wall_success_threshold > 0, got {self.wall_success_threshold}")
         self.wall_heights = self.wall_height if isinstance(self.wall_height, list) else [self.wall_height] * self.num_walls
         self.opening_widths = self.opening_width if isinstance(self.opening_width, list) else [self.opening_width] * self.num_walls
         self.side_wall_x = self.street_width / 2.0
@@ -157,6 +164,8 @@ class MJWObstacleStreetScenario(BaseMJWScenario):
             "wall_pass_reward_weight": self.wall_pass_reward_weight,
             "wall_pass_reward_skew": self.wall_pass_reward_skew,
             "wall_pass_thresholds": list(self.wall_pass_thresholds),
+            "wall_success_threshold": self.wall_success_threshold,
+            "wall_success_reward": self.wall_success_reward,
             "wall_climb_reward_weight": self.wall_climb_reward_weight,
             "wall_climb_reward_distance": self.wall_climb_reward_distance,
             "compile_reward_kernel": self.compile_reward_kernel,

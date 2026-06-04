@@ -100,6 +100,8 @@ class ObstacleStreetScenario(BaseScenario):
             wall_pass_reward_weight: float = 0.0,
             wall_pass_reward_skew: float = 0.0,
             wall_pass_thresholds: list[float] | None = None,
+            wall_success_threshold: float | None = None,
+            wall_success_reward: float = 0.0,
             wall_climb_reward_weight: float = 0.0,
             wall_climb_reward_distance: float = 0.45,
             potential_reward_discount_factor: float = 1.0,
@@ -172,6 +174,10 @@ class ObstacleStreetScenario(BaseScenario):
         if wall_pass_thresholds is None:
             wall_pass_thresholds = [0.0]
         self.wall_pass_thresholds = np.sort(wall_pass_thresholds)
+        self.wall_success_threshold = None if wall_success_threshold is None else float(wall_success_threshold)
+        self.wall_success_reward = float(wall_success_reward)
+        if self.wall_success_threshold is not None and self.wall_success_threshold <= 0.0:
+            raise ValueError(f"Expected wall_success_threshold > 0, got {self.wall_success_threshold}")
         min_inter_wall_distance = fodp_low(self.inter_wall_distance)
         if min_inter_wall_distance <= 1.0:
             raise ValueError(f"Expected inter_wall_distance.low > 1.0, got {min_inter_wall_distance}")
@@ -231,6 +237,8 @@ class ObstacleStreetScenario(BaseScenario):
             'wall_pass_reward_weight': self.wall_pass_reward_weight,
             'wall_pass_reward_skew': self.wall_pass_reward_skew,
             'wall_pass_thresholds': self.wall_pass_thresholds.tolist(),
+            'wall_success_threshold': self.wall_success_threshold,
+            'wall_success_reward': self.wall_success_reward,
             'wall_climb_reward_weight': self.wall_climb_reward_weight,
             'wall_climb_reward_distance': self.wall_climb_reward_distance,
         })
@@ -496,6 +504,31 @@ class ObstacleStreetScenario(BaseScenario):
 
         return walls_passed_reward
 
+    def _compute_wall_success_termination(
+            self,
+            data: mujoco.MjData,
+            state: dict,
+    ) -> bool:
+        if self.wall_success_threshold is None:
+            state["success"] = False
+            return False
+
+        wall_y_by_wall = np.asarray(state.get("wall_y"), dtype=float)
+        if wall_y_by_wall.size == 0:
+            state["success"] = False
+            return False
+
+        unit_y = np.asarray(data.qpos[self._qpos_indices[:, 1]], dtype=float)
+        unit_past_all_walls = (unit_y[:, np.newaxis] > (wall_y_by_wall + self.wall_success_threshold)).all(axis=1)
+        units_active_mask = state.get("units_active_mask")
+        if units_active_mask is None:
+            success = bool(unit_past_all_walls.all())
+        else:
+            active_units_mask = np.asarray(units_active_mask, dtype=bool)
+            success = bool(active_units_mask.any() and unit_past_all_walls[active_units_mask].all())
+        state["success"] = success
+        return success
+
     def _compute_wall_climb_potential(
             self,
             data: mujoco.MjData,
@@ -634,7 +667,11 @@ class ObstacleStreetScenario(BaseScenario):
         forward_reward = state['forward_reward']
         wall_pass_reward = state['wall_pass_reward']
         wall_climb_reward = state['wall_climb_reward']
-        progress_reward = state['progress_reward']
+        terminated = self._compute_wall_success_termination(data, state)
+        wall_success_reward = self.wall_success_reward if terminated else 0.0
+        progress_reward = state['progress_reward'] + wall_success_reward
+        state['progress_reward'] = progress_reward
+        state['wall_success_reward'] = wall_success_reward
 
         units_without_connections_reward = super().compute_guidance_reward(data, action, state, connections)
         state['units_without_connections_reward'] = units_without_connections_reward
@@ -645,6 +682,7 @@ class ObstacleStreetScenario(BaseScenario):
         weighted_forward_reward = forward_reward * self.forward_reward_weight * progress_reward_weight
         weighted_wall_pass_reward = wall_pass_reward * progress_reward_weight
         weighted_wall_climb_reward = wall_climb_reward * progress_reward_weight
+        weighted_wall_success_reward = wall_success_reward * progress_reward_weight
         weighted_units_without_connections_reward = (
             units_without_connections_reward * self.reward_weights['guidance_reward_weight']
         )
@@ -653,16 +691,17 @@ class ObstacleStreetScenario(BaseScenario):
         state['weighted_forward_progress_reward'] = weighted_forward_reward
         state['weighted_wall_pass_reward'] = weighted_wall_pass_reward
         state['weighted_wall_climb_reward'] = weighted_wall_climb_reward
+        state['weighted_wall_success_reward'] = weighted_wall_success_reward
         state['weighted_units_without_connections_reward'] = weighted_units_without_connections_reward
         state['weighted_guidance_reward'] = weighted_units_without_connections_reward
         state['reward_terms'] = {
             'forward': weighted_forward_reward,
             'wall': weighted_wall_pass_reward,
             'climb': weighted_wall_climb_reward,
+            'success': weighted_wall_success_reward,
             'units_without_connections': weighted_units_without_connections_reward,
         }
-
-        return weighted_progress_reward + weighted_units_without_connections_reward, False
+        return weighted_progress_reward + weighted_units_without_connections_reward, terminated
 
     def _compute_wall_pass_thresholds(self, wall_y: np.ndarray) -> np.ndarray:
         if wall_y.size == 0:
