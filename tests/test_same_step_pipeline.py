@@ -11,6 +11,7 @@ from swarmbots.learn.algos.ppo.base_ppo_policy import BasePPOPolicy
 from swarmbots.learn.algos.ppo.ppo_rollout import collect_steps, collect_whole_episodes
 from swarmbots.learn.algos.ppo.ppo_rollout_buffer import PPORolloutBuffer, PPOEpisodeSegment
 from swarmbots.learn.algos.ppo.ppo_sampler import PPOSampler, PPOSamplerConfig
+from swarmbots.learn.env_wrappers.progress_guidance_ep_stats_wrapper import ProgressGuidanceEpisodeStatsWrapper
 from swarmbots.learn.env_wrappers.torch_feature_wise_obs_norm_wrapper import TorchFeatureWiseObsNormWrapper
 from swarmbots.learn.env_wrappers.torch_normalize_reward_wrapper import TorchNormalizeRewardWrapper
 from swarmbots.learn.env_wrappers.torch_progress_guidance_ep_stats_wrapper import TorchProgressGuidanceEpisodeStatsWrapper
@@ -337,6 +338,7 @@ class _RewardInfoRolloutEnv(_ScriptedRolloutEnv):
         info.pop("episode", None)
         info["progress_reward"] = np.float64(self.env_id + self.step_count)
         info["guidance_reward"] = np.float64(10 * self.env_id + self.step_count)
+        info["success"] = np.bool_(terminated)
         return obs, reward, terminated, truncated, info
 
 
@@ -560,6 +562,48 @@ class SameStepPipelineTests(unittest.TestCase):
                 SwarmBotsLearnEnvWrapper(vector_env)
         finally:
             vector_env.close()
+
+    def test_progress_guidance_masks_scalar_info_values(self) -> None:
+        vector_env = SyncVectorEnv(
+            [
+                lambda: _ScriptedRolloutEnv(env_id=1, done_steps=(2,), done_mode="terminate"),
+                lambda: _ScriptedRolloutEnv(env_id=2, done_steps=(2,), done_mode="truncate"),
+            ],
+            autoreset_mode=AutoresetMode.SAME_STEP,
+        )
+        env = ProgressGuidanceEpisodeStatsWrapper(vector_env)
+        try:
+            values = env._extract_values_from_info_dict(
+                {"success": np.bool_(True), "_success": np.array([True, False])},
+                "success",
+            )
+            np.testing.assert_array_equal(values, np.array([1.0, 0.0]))
+        finally:
+            env.close()
+
+    def test_torch_progress_guidance_accepts_torch_info_values(self) -> None:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        env = TorchProgressGuidanceEpisodeStatsWrapper(
+            _make_scripted_env(
+                (1, (2,), "terminate"),
+                (2, (2,), "truncate"),
+                (3, (2,), "terminate"),
+            )
+        )
+        env.device = device
+        try:
+            values = env._extract_values_from_info_dict(
+                {
+                    "success": torch.tensor(True, device=device),
+                    "_success": torch.tensor([False, True, False], device=device),
+                },
+                "success",
+            )
+
+            self.assertEqual(values.device.type, device.type)
+            self.assertTrue(torch.equal(values.cpu(), torch.tensor([0.0, 1.0, 0.0], dtype=torch.float64)))
+        finally:
+            env.close()
 
     def test_collect_steps_uses_final_obs_for_truncation_bootstrap(self) -> None:
         env = _make_single_env(max_steps=2)
@@ -1041,6 +1085,7 @@ class SameStepPipelineTests(unittest.TestCase):
             self.assertEqual(int(infos["episode"]["l"][0].item()), 2)
             self.assertEqual(float(infos["episode"]["progress_reward"][0].item()), 5.0)
             self.assertEqual(float(infos["episode"]["guidance_reward"][0].item()), 23.0)
+            self.assertFalse(bool(infos["episode"]["success"][0].item()))
         finally:
             env.close()
 
@@ -1097,12 +1142,15 @@ class SameStepPipelineTests(unittest.TestCase):
             self.assertEqual(episode_infos[0]["l"], 2)
             self.assertEqual(episode_infos[0]["progress_reward"], 5.0)
             self.assertEqual(episode_infos[0]["guidance_reward"], 23.0)
+            self.assertFalse(bool(episode_infos[0]["success"]))
             self.assertIn("t", episode_infos[0])
             self.assertEqual(episode_infos[1]["r"], 43.0)
             self.assertEqual(episode_infos[1]["l"], 2)
             self.assertEqual(episode_infos[1]["progress_reward"], 7.0)
             self.assertEqual(episode_infos[1]["guidance_reward"], 43.0)
+            self.assertTrue(bool(episode_infos[1]["success"]))
             self.assertIn("t", episode_infos[1])
+            self.assertEqual(_metrics["ep_success_rate"], 50.0)
             self.assertTrue(torch.equal(_to_cpu(rollout_state.episode_start_mask), torch.tensor([True, True])))
             self.assertEqual(_first_obs_value(rollout_state.obs["local_obs"][0]), 1200.0)
             self.assertEqual(_first_obs_value(rollout_state.obs["local_obs"][1]), 2200.0)
