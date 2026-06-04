@@ -194,13 +194,19 @@ class PayloadPlaneMJWScenarioRuntime(BaseMJWScenarioRuntime):
             raise ValueError("PayloadPlaneMJWScenarioRuntime requires payload_qpos_indices in runtime metadata.")
 
         self.payload_position = torch.zeros((bindings.num_envs, 3), device=bindings.device, dtype=torch.float32)
-        self._global_obs = torch.zeros((bindings.num_envs, 9), device=bindings.device, dtype=torch.float32)
+        global_obs_dim = 9 if scenario.payload_pos_observable else 0
+        hidden_global_obs_dim = 0 if scenario.payload_pos_observable else 9
+        self._global_obs = torch.zeros((bindings.num_envs, global_obs_dim), device=bindings.device, dtype=torch.float32)
         self._hidden_local_obs = torch.zeros(
             (bindings.num_envs, scenario.swarm.num_units, 0),
             device=bindings.device,
             dtype=torch.float32,
         )
-        self._hidden_global_obs = torch.zeros((bindings.num_envs, 0), device=bindings.device, dtype=torch.float32)
+        self._hidden_global_obs = torch.zeros(
+            (bindings.num_envs, hidden_global_obs_dim),
+            device=bindings.device,
+            dtype=torch.float32,
+        )
         self.progress = torch.zeros((bindings.num_envs,), device=bindings.device, dtype=torch.float32)
         self.towards_payload_progress = torch.zeros((bindings.num_envs,), device=bindings.device, dtype=torch.float32)
         self._payload_qpos_indices = torch.as_tensor(
@@ -426,20 +432,26 @@ class PayloadPlaneMJWScenarioRuntime(BaseMJWScenarioRuntime):
     def _get_payload_orientation_rot6d(self) -> torch.Tensor:
         return quat_to_rot6d_torch(self.bindings.qpos[:, self._payload_qpos_indices[3:7]])
 
+    def _payload_obs_target(self) -> torch.Tensor:
+        if self.scenario.payload_pos_observable:
+            return self._global_obs
+        return self._hidden_global_obs
+
     def _update_payload_obs(self, *, world_idx: torch.Tensor | None = None) -> None:
+        payload_obs = self._payload_obs_target()
         if world_idx is None:
             payload_position = self._get_payload_position()
             payload_rot6d = self._get_payload_orientation_rot6d()
             self.payload_position[:] = payload_position
-            self._global_obs[:, :3] = payload_position
-            self._global_obs[:, 3:] = payload_rot6d
+            payload_obs[:, :3] = payload_position
+            payload_obs[:, 3:] = payload_rot6d
             return
 
         payload_position = self.bindings.qpos[world_idx.unsqueeze(1), self._payload_qpos_indices[:3].unsqueeze(0)]
         payload_quat = self.bindings.qpos[world_idx.unsqueeze(1), self._payload_qpos_indices[3:7].unsqueeze(0)]
         self.payload_position[world_idx] = payload_position
-        self._global_obs[world_idx, :3] = payload_position
-        self._global_obs[world_idx, 3:] = quat_to_rot6d_torch(payload_quat)
+        payload_obs[world_idx, :3] = payload_position
+        payload_obs[world_idx, 3:] = quat_to_rot6d_torch(payload_quat)
 
 
 def _compute_payload_progress_baseline_np(*, payload_y: float, forward_reward_max_y: float | None) -> float:
