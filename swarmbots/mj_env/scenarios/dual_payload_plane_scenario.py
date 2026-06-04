@@ -33,6 +33,7 @@ class DualPayloadPlaneScenario(PayloadPlaneScenario):
         payload_mass: float = 1.0,
         payload_offset_x: FloatOrDistParams | Iterable[FloatOrDistParams] = (-0.45, 0.45),
         payload_offset_y: FloatOrDistParams | Iterable[FloatOrDistParams] = (0.75, 0.75),
+        payload_pos_observable: bool = True,
         actuator_strength: float = 8.0,
         connection_dist_threshold: float = 0.1,
         connection_angle_threshold: float = -0.5,
@@ -78,6 +79,7 @@ class DualPayloadPlaneScenario(PayloadPlaneScenario):
             raise ValueError(f"Expected payload_mass > 0, got {self.payload_mass}")
         self.payload_offset_x = _as_payload_pair(payload_offset_x)
         self.payload_offset_y = _as_payload_pair(payload_offset_y)
+        self.payload_pos_observable = bool(payload_pos_observable)
 
         self.forward_reward_weight = float(forward_reward_weight)
         self.forward_reward_max_y = None if forward_reward_max_y is None else float(forward_reward_max_y)

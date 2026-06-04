@@ -227,13 +227,19 @@ class DualPayloadPlaneMJWScenarioRuntime(BaseMJWScenarioRuntime):
             raise ValueError("DualPayloadPlaneMJWScenarioRuntime requires two free-joint payload qpos index rows.")
 
         self.payload_position = torch.zeros((bindings.num_envs, 2, 3), device=bindings.device, dtype=torch.float32)
-        self._global_obs = torch.zeros((bindings.num_envs, 18), device=bindings.device, dtype=torch.float32)
+        global_obs_dim = 18 if scenario.payload_pos_observable else 0
+        hidden_global_obs_dim = 0 if scenario.payload_pos_observable else 18
+        self._global_obs = torch.zeros((bindings.num_envs, global_obs_dim), device=bindings.device, dtype=torch.float32)
         self._hidden_local_obs = torch.zeros(
             (bindings.num_envs, scenario.swarm.num_units, 0),
             device=bindings.device,
             dtype=torch.float32,
         )
-        self._hidden_global_obs = torch.zeros((bindings.num_envs, 0), device=bindings.device, dtype=torch.float32)
+        self._hidden_global_obs = torch.zeros(
+            (bindings.num_envs, hidden_global_obs_dim),
+            device=bindings.device,
+            dtype=torch.float32,
+        )
         self.payload_progress = torch.zeros((bindings.num_envs, 2), device=bindings.device, dtype=torch.float32)
         self.back_payload_progress = torch.zeros((bindings.num_envs,), device=bindings.device, dtype=torch.float32)
         self.towards_payload_progress = torch.zeros(
@@ -520,13 +526,19 @@ class DualPayloadPlaneMJWScenarioRuntime(BaseMJWScenarioRuntime):
             dim=1,
         )
 
+    def _payload_obs_target(self) -> torch.Tensor:
+        if self.scenario.payload_pos_observable:
+            return self._global_obs
+        return self._hidden_global_obs
+
     def _update_payload_obs(self, *, world_idx: torch.Tensor | None = None) -> None:
+        payload_obs = self._payload_obs_target()
         if world_idx is None:
             payload_position = self._get_payload_position()
             payload_rot6d = self._get_payload_orientation_rot6d()
             self.payload_position[:] = payload_position
-            self._global_obs[:, :9] = torch.cat((payload_position[:, 0], payload_rot6d[:, 0]), dim=-1)
-            self._global_obs[:, 9:] = torch.cat((payload_position[:, 1], payload_rot6d[:, 1]), dim=-1)
+            payload_obs[:, :9] = torch.cat((payload_position[:, 0], payload_rot6d[:, 0]), dim=-1)
+            payload_obs[:, 9:] = torch.cat((payload_position[:, 1], payload_rot6d[:, 1]), dim=-1)
             return
 
         payload_position = torch.stack(
@@ -548,8 +560,8 @@ class DualPayloadPlaneMJWScenarioRuntime(BaseMJWScenarioRuntime):
             dim=1,
         )
         self.payload_position[world_idx] = payload_position
-        self._global_obs[world_idx, :9] = torch.cat((payload_position[:, 0], payload_rot6d[:, 0]), dim=-1)
-        self._global_obs[world_idx, 9:] = torch.cat((payload_position[:, 1], payload_rot6d[:, 1]), dim=-1)
+        payload_obs[world_idx, :9] = torch.cat((payload_position[:, 0], payload_rot6d[:, 0]), dim=-1)
+        payload_obs[world_idx, 9:] = torch.cat((payload_position[:, 1], payload_rot6d[:, 1]), dim=-1)
 
 
 def _compute_dual_payload_progress_baseline_np(

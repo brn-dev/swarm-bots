@@ -67,6 +67,7 @@ class MJWPayloadPlaneScenario(BaseMJWScenario):
     payload_centering_penalty_weight: float
     payload_centering_penalty_power: float
     payload_centering_tolerance: float
+    payload_pos_observable: bool = True
     forward_reward_max_y: float | None = None
     towards_payload_reward_weight: float = 1.0
     towards_payload_goal_radius: float | None = None
@@ -97,6 +98,7 @@ class MJWPayloadPlaneScenario(BaseMJWScenario):
         self.payload_mass = float(self.payload_mass)
         if self.payload_mass <= 0.0:
             raise ValueError(f"Expected payload_mass > 0, got {self.payload_mass}")
+        self.payload_pos_observable = bool(self.payload_pos_observable)
         self.payload_centering_penalty_weight = float(self.payload_centering_penalty_weight)
         if self.payload_centering_penalty_weight < 0.0:
             raise ValueError(
@@ -159,6 +161,7 @@ class MJWPayloadPlaneScenario(BaseMJWScenario):
             "payload_mass": self.payload_mass,
             "payload_offset_x": self.payload_offset_x,
             "payload_offset_y": self.payload_offset_y,
+            "payload_pos_observable": self.payload_pos_observable,
             "payload_centering_penalty_weight": self.payload_centering_penalty_weight,
             "payload_centering_penalty_power": self.payload_centering_penalty_power,
             "payload_centering_tolerance": self.payload_centering_tolerance,
@@ -258,12 +261,14 @@ class MJWPayloadPlaneScenario(BaseMJWScenario):
         connector_obs_dim = limbs_per_unit * 5
         connectors_xpos_dim = limbs_per_unit * 3 if self.include_connectors_xpos_in_obs else 0
         local_obs_dim = qpos_obs_dim + qvel_dim + connector_obs_dim + connectors_xpos_dim
+        global_obs_dim = 9 if self.payload_pos_observable else 0
+        hidden_global_vars_dim = 0 if self.payload_pos_observable else 9
         return spaces.Dict(
             {
                 "local_obs": spaces.Box(low=-np.inf, high=np.inf, shape=(self.swarm.num_units, local_obs_dim), dtype=np.float32),
-                "global_obs": spaces.Box(low=-np.inf, high=np.inf, shape=(9,), dtype=np.float32),
+                "global_obs": spaces.Box(low=-np.inf, high=np.inf, shape=(global_obs_dim,), dtype=np.float32),
                 "hidden_local_vars": spaces.Box(low=-np.inf, high=np.inf, shape=(self.swarm.num_units, 0), dtype=np.float32),
-                "hidden_global_vars": spaces.Box(low=-np.inf, high=np.inf, shape=(0,), dtype=np.float32),
+                "hidden_global_vars": spaces.Box(low=-np.inf, high=np.inf, shape=(hidden_global_vars_dim,), dtype=np.float32),
                 "agent_mask": spaces.MultiBinary((self.swarm.num_units,)),
             }
         )

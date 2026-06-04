@@ -152,6 +152,30 @@ class ObsIndicesTests(unittest.TestCase):
         self.assertEqual(obs_indices.global_rot6d_indices, [3, 12])
         self.assertEqual(obs_indices.global_quaternion_indices, [])
 
+    def test_hidden_dual_payload_pose_only_normalizes_positions(self) -> None:
+        obs_indices = build_obs_indices(
+            env_settings=_env_settings(
+                unit_types=["xy"],
+                include_connectors_xpos_in_obs=True,
+                include_connectors_xquat_in_obs=False,
+                quat_rot6d_representation=True,
+                scenario_overrides={
+                    "payload_shape": "box",
+                    "num_payloads": 2,
+                    "payload_pos_observable": False,
+                },
+            ),
+            local_obs_dim=29,
+            global_obs_dim=0,
+            hidden_local_vars_dim=0,
+            hidden_global_vars_dim=18,
+        )
+
+        self.assertEqual(obs_indices.global_scalar_indices, [])
+        self.assertEqual(obs_indices.global_rot6d_indices, [])
+        self.assertEqual(obs_indices.hidden_global_vars_scalar_indices, [0, 1, 2, 9, 10, 11])
+        self.assertEqual(obs_indices.hidden_global_vars_quaternion_indices, [])
+
     def test_unknown_non_empty_global_obs_layout_must_be_added_explicitly(self) -> None:
         with self.assertRaisesRegex(ValueError, "Unsupported non-empty global_obs layout"):
             build_obs_indices(

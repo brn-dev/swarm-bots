@@ -71,6 +71,21 @@ def _global_rot6d_indices(scenario_settings: dict[str, Any], global_obs_dim: int
     return [3]
 
 
+def _hidden_global_scalar_indices(scenario_settings: dict[str, Any], hidden_global_vars_dim: int) -> list[int]:
+    if hidden_global_vars_dim == 0:
+        return []
+    if "payload_shape" in scenario_settings and not scenario_settings.get("payload_pos_observable", True):
+        expected_hidden_global_vars_dim = 18 if scenario_settings.get("num_payloads") == 2 else 9
+        if hidden_global_vars_dim != expected_hidden_global_vars_dim:
+            raise ValueError(
+                f"Unexpected hidden payload global vars dim for obs indices: {hidden_global_vars_dim}"
+            )
+        if expected_hidden_global_vars_dim == 18:
+            return [0, 1, 2, 9, 10, 11]
+        return [0, 1, 2]
+    return list(range(hidden_global_vars_dim))
+
+
 def build_obs_indices(
     env_settings: dict[str, Any],
     local_obs_dim: int,
@@ -131,7 +146,7 @@ def build_obs_indices(
     # Keep them unnormalized.
     hidden_local_vars_scalar_indices: list[int] = []
     hidden_local_vars_quaternion_indices: list[int] = []
-    hidden_global_vars_scalar_indices = list(range(hidden_global_vars_dim))
+    hidden_global_vars_scalar_indices = _hidden_global_scalar_indices(scenario_settings, hidden_global_vars_dim)
     hidden_global_vars_quaternion_indices: list[int] = []
 
     hinge_sin_start = 3 + free_joint_rot_dim

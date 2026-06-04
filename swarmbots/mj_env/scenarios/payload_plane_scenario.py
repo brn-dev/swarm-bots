@@ -26,6 +26,7 @@ class PayloadPlaneScenario(BaseScenario):
         payload_mass: float = 1.0,
         payload_offset_x: FloatOrDistParams = 0.0,
         payload_offset_y: FloatOrDistParams = 0.75,
+        payload_pos_observable: bool = True,
         actuator_strength: float = 8.0,
         connection_dist_threshold: float = 0.1,
         connection_angle_threshold: float = -0.5,
@@ -70,6 +71,7 @@ class PayloadPlaneScenario(BaseScenario):
             raise ValueError(f"Expected payload_mass > 0, got {self.payload_mass}")
         self.payload_offset_x = payload_offset_x
         self.payload_offset_y = payload_offset_y
+        self.payload_pos_observable = bool(payload_pos_observable)
 
         self.forward_reward_weight = float(forward_reward_weight)
         self.forward_reward_max_y = None if forward_reward_max_y is None else float(forward_reward_max_y)
@@ -140,6 +142,7 @@ class PayloadPlaneScenario(BaseScenario):
                 "payload_mass": self.payload_mass,
                 "payload_offset_x": self.payload_offset_x,
                 "payload_offset_y": self.payload_offset_y,
+                "payload_pos_observable": self.payload_pos_observable,
                 "forward_reward_weight": self.forward_reward_weight,
                 "forward_reward_max_y": self.forward_reward_max_y,
                 "towards_payload_reward_weight": self.towards_payload_reward_weight,
@@ -231,8 +234,13 @@ class PayloadPlaneScenario(BaseScenario):
         connections: SwarmConnections,
     ) -> SwarmObsDict:
         obs = super().get_obs(model, data, state, connections)
-        obs["global_obs"] = self._get_payload_obs(data)
-        obs["hidden_global_vars"] = np.zeros((0,), dtype=float)
+        payload_obs = self._get_payload_obs(data)
+        if self.payload_pos_observable:
+            obs["global_obs"] = payload_obs
+            obs["hidden_global_vars"] = np.zeros((0,), dtype=float)
+        else:
+            obs["global_obs"] = np.zeros((0,), dtype=float)
+            obs["hidden_global_vars"] = payload_obs
         return obs
 
     def compute_progress_reward(

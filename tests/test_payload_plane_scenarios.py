@@ -13,7 +13,10 @@ from swarmbots.mj_env.scenarios.scenario_presets import default_dual_payload_pla
 from swarmbots.mj_env.swarm_bots_env import SwarmBotsEnv
 from swarmbots.mjw_env.mjw_model_metadata import build_model_metadata
 from swarmbots.mjw_env.scenarios.base_mjw_scenario import MJWCommonResetBatch
-from swarmbots.mjw_env.scenarios.mjw_dual_payload_plane_runtime import _compute_dual_payload_plane_reward_kernel
+from swarmbots.mjw_env.scenarios.mjw_dual_payload_plane_runtime import (
+    DualPayloadPlaneMJWScenarioRuntime,
+    _compute_dual_payload_plane_reward_kernel,
+)
 from swarmbots.mjw_env.scenarios.mjw_payload_plane_scenario import MJWPayloadPlaneRuntimeMetadata
 from swarmbots.mjw_env.scenarios.mjw_payload_plane_runtime import (
     PayloadPlaneMJWScenarioRuntime,
@@ -661,11 +664,88 @@ def test_dual_payload_plane_presets_expose_two_payload_poses_in_global_obs() -> 
     mjw_scenario = default_mjw_dual_payload_plane(compile_reward_kernel=False)
 
     assert mj_scenario.get_obs_space()["global_obs"].shape == (18,)
+    assert mj_scenario.get_obs_space()["hidden_global_vars"].shape == (0,)
+    assert mj_scenario.get_settings()["payload_pos_observable"]
     assert mj_scenario.get_settings()["num_payloads"] == 2
     assert mj_scenario.towards_payload_units_per_payload == 2
     assert mjw_scenario.get_single_observation_space()["global_obs"].shape == (18,)
+    assert mjw_scenario.get_single_observation_space()["hidden_global_vars"].shape == (0,)
+    assert mjw_scenario.get_settings()["payload_pos_observable"]
     assert mjw_scenario.get_settings()["num_payloads"] == 2
     assert mjw_scenario.towards_payload_units_per_payload == 2
+
+
+def test_dual_payload_plane_payload_pose_can_be_hidden_in_mj_env() -> None:
+    scenario = default_mj_dual_payload_plane(
+        reset_settle_time=0.0,
+        swarm_start_x=0.25,
+        swarm_start_y=-0.5,
+        payload_offset_x=(-0.4, 0.6),
+        payload_offset_y=(1.2, 1.4),
+        payload_pos_observable=False,
+    )
+    state, connections = scenario.reset_scenario(scenario.dummy_model, scenario.dummy_data, settle=False)
+    obs = scenario.get_obs(scenario.dummy_model, scenario.dummy_data, state, connections)
+
+    expected_payload_obs = np.array(
+        [
+            -0.15, 0.7, scenario.payload_radius, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0,
+            0.85, 0.9, scenario.payload_radius, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0,
+        ],
+        dtype=float,
+    )
+    assert obs["global_obs"].shape == (0,)
+    assert obs["hidden_global_vars"].shape == (18,)
+    assert np.allclose(obs["hidden_global_vars"], expected_payload_obs)
+    assert scenario.get_obs_space()["global_obs"].shape == (0,)
+    assert scenario.get_obs_space()["hidden_global_vars"].shape == (18,)
+
+
+def test_dual_payload_plane_payload_pose_can_be_hidden_in_mjw_space_and_runtime() -> None:
+    scenario = default_mjw_dual_payload_plane(
+        compile_reward_kernel=False,
+        payload_pos_observable=False,
+    )
+    obs_space = scenario.get_single_observation_space()
+
+    assert obs_space["global_obs"].shape == (0,)
+    assert obs_space["hidden_global_vars"].shape == (18,)
+    assert not scenario.get_settings()["payload_pos_observable"]
+
+    runtime = object.__new__(DualPayloadPlaneMJWScenarioRuntime)
+    device = torch.device("cpu")
+    runtime.scenario = SimpleNamespace(payload_pos_observable=False)
+    runtime.bindings = SimpleNamespace(
+        qpos=torch.tensor(
+            [[
+                -0.15, 0.7, 0.3, 1.0, 0.0, 0.0, 0.0,
+                0.85, 0.9, 0.3, 1.0, 0.0, 0.0, 0.0,
+            ]],
+            device=device,
+            dtype=torch.float32,
+        ),
+    )
+    runtime.payload_position = torch.zeros((1, 2, 3), device=device, dtype=torch.float32)
+    runtime._global_obs = torch.zeros((1, 0), device=device, dtype=torch.float32)
+    runtime._hidden_global_obs = torch.zeros((1, 18), device=device, dtype=torch.float32)
+    runtime._payload_qpos_indices = torch.tensor(
+        [list(range(7)), list(range(7, 14))],
+        device=device,
+        dtype=torch.long,
+    )
+
+    runtime._update_payload_obs()
+
+    expected_payload_obs = torch.tensor(
+        [[
+            -0.15, 0.7, 0.3, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0,
+            0.85, 0.9, 0.3, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0,
+        ]],
+        device=device,
+        dtype=torch.float32,
+    )
+    assert runtime._global_obs.shape == (1, 0)
+    assert torch.allclose(runtime._hidden_global_obs, expected_payload_obs)
 
 
 def test_payload_plane_shape_selects_payload_geom_type_in_both_backends() -> None:

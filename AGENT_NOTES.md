@@ -52,8 +52,6 @@ Keep only durable architecture notes and gotchas. Prefer deleting stale detail o
 - Scenarios own reset baselines and per-step progress deltas; no generic `BaseScenario.compute_progress(...)`.
 - Render overlays are visual-only via `BaseScenario.add_render_geoms(scene)` after `Renderer.update_scene()`; do not use them for physics/model geometry.
 - Key `global_obs` layouts: payload `(x, y, z, rot6d)`, dual-payload two payload poses, move-to absolute goal `(x, y)`, climb top-face center goal `(x, y, z)`.
-- Move-to payload transfer adapters expand goals into payload-shaped global obs for normalization/checkpoint compatibility. They intentionally keep global rot6d target indices empty.
-- Random swarm z rotation must carry sampled yaw through all MJW reset paths.
 
 ## MJW
 
