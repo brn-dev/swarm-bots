@@ -385,6 +385,9 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
     def _before_learn_loop(self) -> None:
         if self._rollout_warmup_done:
             return
+        if self.n_total_timesteps > 0 or self.n_total_iterations > 0 or self.n_total_updates > 0:
+            self._rollout_warmup_done = True
+            return
         if self._rollout_state is not None:
             self._rollout_warmup_done = True
             return
