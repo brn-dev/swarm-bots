@@ -675,7 +675,7 @@ def run_experiment(
         [
             ("act1", SummaryStatisticsFormat(histogram=2)),
             ("updates", "3", "upd"),
-            ("approx_kl", SummaryStatisticsFormat(mean=".3f", std=".3f", max_value=".3f")),
+            ("approx_kl", SummaryStatisticsFormat(mean=".2e", std=".2e")),
             ("clip_frac", None),
             ("ratio", SummaryStatisticsFormat(mean=".3f", std=".3f", min_value=".1e", max_value=".3f")),
         ]
