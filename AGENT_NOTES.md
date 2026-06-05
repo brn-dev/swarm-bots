@@ -59,7 +59,7 @@ Keep only durable architecture notes and gotchas. Prefer deleting stale detail o
 - Scenario-specific MJW logic belongs in scenario runtime classes, not `mjw_swarm_bots_vector_env.py`.
 - MJW scenario metadata goes through `scenario.build_runtime_metadata(...)`; keep `MJWModelMetadata` generic.
 - Scenario terminations flow through `MJWStepResult.terminations`.
-- Reset paths: direct, one-shot `settle_initial_reset`, CPU-settled prefetch for predicted truncations.
+- Reset paths: direct, one-shot `settle_initial_reset`, and a background CPU-settled snapshot buffer. MJW samples reset specs on the main thread and settles them in the executor; done-world resets consume ready snapshots and only block on buffer misses.
 - Hot-path connector matching is kernelized in `swarmbots/mjw_env/mjw_kernels.py`; keep Warp indices `int32` unless PyTorch indexing forces `int64`.
 - Reuse GPU scratch buffers. Avoid rebuilding tensors or Python branching in the MJW step path.
 - Live MJW recording uses one shared `mujoco.Renderer`; `max_parallel_episodes` only caps concurrent episodes and should not multiply renderer VRAM.

@@ -145,6 +145,7 @@ PAYLOAD_PLANE_SCENARIO_KWARGS: dict[str, object] = {
 
 DUAL_PAYLOAD_PLANE_SCENARIO_KWARGS: dict[str, object] = {
     **PAYLOAD_PLANE_SCENARIO_KWARGS,
+    "payload_centering_tolerance": 0.75,
     "payload_offset_x": (-0.35, 0.35),
     "payload_offset_y": (1.2, 1.2),
     "lagging_payload_weight": 0.75,

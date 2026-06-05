@@ -1,7 +1,7 @@
 from __future__ import annotations
 
+from collections import deque
 from concurrent.futures import Future, ThreadPoolExecutor
-from dataclasses import dataclass
 import math
 from pathlib import Path
 from typing import Any
@@ -83,12 +83,84 @@ def _resolve_workspace_cap(
     return int(fallback_value)
 
 
-@dataclass(slots=True)
-class _PendingSettledReset:
-    world_idx: torch.Tensor
-    sampled_batch: Any
-    future: Future[list[Any]]
-    used: bool = False
+class _SettledResetSnapshotBuffer:
+    def __init__(
+        self,
+        *,
+        scenario_runtime: Any,
+        rng: torch.Generator,
+        executor: ThreadPoolExecutor,
+        capacity: int,
+        batch_size: int,
+    ) -> None:
+        if capacity <= 0:
+            raise ValueError(f"Expected capacity > 0, got {capacity}")
+        if batch_size <= 0:
+            raise ValueError(f"Expected batch_size > 0, got {batch_size}")
+
+        self._scenario_runtime = scenario_runtime
+        self._rng = rng
+        self._executor = executor
+        self._capacity = int(capacity)
+        self._batch_size = int(batch_size)
+        self._snapshots: deque[Any] = deque()
+        self._future: Future[list[Any]] | None = None
+
+    @property
+    def capacity(self) -> int:
+        return self._capacity
+
+    @property
+    def batch_size(self) -> int:
+        return self._batch_size
+
+    def ready_count(self) -> int:
+        self.drain_ready()
+        return len(self._snapshots)
+
+    def drain_ready(self) -> None:
+        future = self._future
+        if future is None or not future.done():
+            return
+        self._snapshots.extend(future.result())
+        self._future = None
+
+    def fill_async(self) -> None:
+        if self._future is not None or len(self._snapshots) >= self._capacity:
+            return
+
+        n_reset = min(self._batch_size, self._capacity - len(self._snapshots))
+        reset_batch = self._scenario_runtime.sample_reset_batch(n_reset=n_reset, rng=self._rng)
+        specs = self._scenario_runtime.build_cpu_reset_specs(reset_batch=reset_batch)
+        self._future = self._executor.submit(self._scenario_runtime.settle_cpu_reset_specs, specs=specs)
+
+    def take(self, n_snapshots: int) -> list[Any]:
+        if n_snapshots <= 0:
+            return []
+
+        self.drain_ready()
+        if len(self._snapshots) < n_snapshots and self._future is not None:
+            self._snapshots.extend(self._future.result())
+            self._future = None
+
+        if len(self._snapshots) < n_snapshots:
+            missing = n_snapshots - len(self._snapshots)
+            reset_batch = self._scenario_runtime.sample_reset_batch(n_reset=missing, rng=self._rng)
+            specs = self._scenario_runtime.build_cpu_reset_specs(reset_batch=reset_batch)
+            self._snapshots.extend(self._scenario_runtime.settle_cpu_reset_specs(specs=specs))
+
+        snapshots = [self._snapshots.popleft() for _ in range(n_snapshots)]
+        self.fill_async()
+        return snapshots
+
+    def clear(self, *, wait: bool) -> None:
+        self._snapshots.clear()
+        future = self._future
+        if future is None:
+            return
+        if wait or not future.cancel():
+            future.result()
+        self._future = None
 
 
 class MJWSwarmBotsVectorEnv(VectorEnv):
@@ -103,6 +175,8 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
         first_episode_length: int | None = None,
         first_episode_lengths: list[int] | torch.Tensor | None = None,
         settle_initial_reset: bool = False,
+        settled_reset_buffer_size: int | None = None,
+        settled_reset_batch_size: int | None = None,
         simulation_unstable_reward: float = -1.0,
         device: str | torch.device = "cuda",
         nconmax: int | None = None,
@@ -128,6 +202,10 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
             )
         if ccd_iterations is not None and ccd_iterations <= 0:
             raise ValueError(f"Expected ccd_iterations > 0, got {ccd_iterations}")
+        if settled_reset_buffer_size is not None and settled_reset_buffer_size < 0:
+            raise ValueError(f"Expected settled_reset_buffer_size >= 0, got {settled_reset_buffer_size}")
+        if settled_reset_batch_size is not None and settled_reset_batch_size <= 0:
+            raise ValueError(f"Expected settled_reset_batch_size > 0, got {settled_reset_batch_size}")
 
         self.device = torch.device(device)
         if self.device.type == "cuda":
@@ -141,6 +219,8 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
         self.first_episode_length = first_episode_length
         self.first_episode_lengths = first_episode_lengths
         self.settle_initial_reset = bool(settle_initial_reset)
+        self.settled_reset_buffer_size = settled_reset_buffer_size
+        self.settled_reset_batch_size = settled_reset_batch_size
         self.action_repeat = int(scenario.action_repeat)
         self.simulation_unstable_reward = float(simulation_unstable_reward)
         self.render_mode = None
@@ -390,14 +470,32 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
         self._rng.manual_seed(42 if scenario.seed is None else int(scenario.seed))
         self._use_settled_resets = float(self.scenario.reset_settle_time) > 0.0
         self._settle_executor: ThreadPoolExecutor | None = None
-        self._pending_settled_reset: _PendingSettledReset | None = None
+        self._settled_reset_buffer: _SettledResetSnapshotBuffer | None = None
         self._live_episode_recorder = MJWLiveEpisodeRecorder(scenario=self.scenario)
         self._initial_settled_reset_done = False
         self._nefc_overflow_notification_checked = False
         self._max_nefc_since_overflow_check = torch.zeros((), device=self.device, dtype=self._nefc.dtype)
         self._steps_since_nefc_overflow_check = 0
         if self._use_settled_resets:
-            self._settle_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="mjw-reset-settle")
+            resolved_buffer_size = (
+                self.num_envs // 32
+                if self.settled_reset_buffer_size is None
+                else int(self.settled_reset_buffer_size)
+            )
+            if resolved_buffer_size > 0:
+                self._settle_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="mjw-reset-settle")
+                resolved_batch_size = (
+                    resolved_buffer_size
+                    if self.settled_reset_batch_size is None
+                    else min(int(self.settled_reset_batch_size), resolved_buffer_size)
+                )
+                self._settled_reset_buffer = _SettledResetSnapshotBuffer(
+                    scenario_runtime=self._scenario_runtime,
+                    rng=self._rng,
+                    executor=self._settle_executor,
+                    capacity=resolved_buffer_size,
+                    batch_size=resolved_batch_size,
+                )
 
     def get_settings(self) -> dict[str, Any]:
         return {
@@ -416,6 +514,15 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
             "physics_options": {
                 "ccd_iterations": self._ccd_iterations,
             },
+            "settled_reset_buffer": (
+                {
+                    "capacity": self._settled_reset_buffer.capacity,
+                    "batch_size": self._settled_reset_buffer.batch_size,
+                    "ready": self._settled_reset_buffer.ready_count(),
+                }
+                if self._settled_reset_buffer is not None
+                else None
+            ),
         }
 
     def get_swarm_pool_size(self) -> int:
@@ -434,8 +541,9 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
         options: dict[str, Any] | None = None,
     ) -> tuple[dict[str, torch.Tensor], dict[str, Any]]:
         if seed is not None:
+            if self._settled_reset_buffer is not None:
+                self._settled_reset_buffer.clear(wait=True)
             self._rng.manual_seed(int(seed))
-        self._discard_pending_settled_reset()
         reset_mask = (
             torch.ones((self.num_envs,), device=self.device, dtype=torch.bool)
             if options is None or "reset_mask" not in options
@@ -452,16 +560,19 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
                 world_idx=reset_world_idx.detach().cpu().numpy(),
                 snapshots_by_world=self._capture_world_snapshots(reset_world_idx),
             )
+        self._refill_settled_reset_buffer()
         return self._build_obs(), {}
 
     def close(self) -> None:
         if hasattr(self, "_max_nefc_since_overflow_check"):
             self._maybe_notify_nefc_overflow()
         self._live_episode_recorder.close()
+        if self._settled_reset_buffer is not None:
+            self._settled_reset_buffer.clear(wait=False)
+            self._settled_reset_buffer = None
         if self._settle_executor is not None:
             self._settle_executor.shutdown(wait=True, cancel_futures=True)
             self._settle_executor = None
-        self._pending_settled_reset = None
         return None
 
     def step(
@@ -475,10 +586,7 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
         if connectors.shape != (self.num_envs, self._n_agents, self._n_connectors):
             raise ValueError(f"Unexpected connectors shape {tuple(connectors.shape)}")
 
-        trunc_limit = self._get_current_truncation_limit()
-        self._cleanup_pending_settled_reset()
-        if self._use_settled_resets:
-            self._maybe_start_settled_reset_prefetch(self.current_step + 1 >= trunc_limit)
+        self._refill_settled_reset_buffer()
 
         self._apply_actions(actuators=actuators, connectors=connectors)
         self._run_physics()
@@ -649,74 +757,19 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
             return self._episode_length_limit
         return torch.where(self.is_first_episode, self._first_episode_length_limit, self._episode_length_limit)
 
-    def _cleanup_pending_settled_reset(self) -> None:
-        pending = self._pending_settled_reset
-        if pending is None or not pending.used or not pending.future.done():
+    def _refill_settled_reset_buffer(self) -> None:
+        if self._settled_reset_buffer is None:
             return
-        pending.future.result()
-        self._pending_settled_reset = None
-
-    def _discard_pending_settled_reset(self) -> None:
-        pending = self._pending_settled_reset
-        if pending is None:
-            return
-        if not pending.future.done():
-            pending.future.cancel()
-        self._pending_settled_reset = None
-
-    def _maybe_start_settled_reset_prefetch(self, truncation_mask: torch.Tensor) -> None:
-        if not self._use_settled_resets or self._settle_executor is None:
-            return
-        pending = self._pending_settled_reset
-        if pending is not None:
-            return
-
-        world_idx = torch.nonzero(truncation_mask, as_tuple=False).flatten()
-        if world_idx.numel() == 0:
-            return
-
-        sampled_batch = self._scenario_runtime.sample_reset_batch(n_reset=int(world_idx.numel()), rng=self._rng)
-        specs = self._scenario_runtime.build_cpu_reset_specs(reset_batch=sampled_batch)
-        future = self._settle_executor.submit(self._scenario_runtime.settle_cpu_reset_specs, specs=specs)
-        self._pending_settled_reset = _PendingSettledReset(
-            world_idx=world_idx,
-            sampled_batch=sampled_batch,
-            future=future,
-        )
+        self._settled_reset_buffer.drain_ready()
+        self._settled_reset_buffer.fill_async()
 
     def _reset_done_worlds(self, done_mask: torch.Tensor) -> None:
-        remaining_done = done_mask.clone()
-        pending = self._pending_settled_reset
-        if pending is not None and not pending.used:
-            pending_done_mask = done_mask[pending.world_idx]
-            if torch.any(pending_done_mask):
-                pending_world_idx = pending.world_idx[pending_done_mask]
-                if self._use_settled_resets:
-                    snapshots = pending.future.result()
-                    selected_indices = torch.nonzero(pending_done_mask, as_tuple=False).flatten().tolist()
-                    self._scenario_runtime.apply_settled_reset_batch(
-                        world_idx=pending_world_idx,
-                        snapshots=[snapshots[idx] for idx in selected_indices],
-                    )
-                    self._pending_settled_reset = None
-                else:
-                    self._scenario_runtime.apply_reset_batch(
-                        world_idx=pending_world_idx,
-                        reset_batch=self._scenario_runtime.select_reset_batch(
-                            reset_batch=pending.sampled_batch,
-                            mask=pending_done_mask,
-                        ),
-                    )
-                    pending.used = True
-                remaining_done[pending_world_idx] = False
-
-        if torch.any(remaining_done):
-            if self._use_settled_resets:
-                self._reset_world_indices_with_settled_snapshots(
-                    torch.nonzero(remaining_done, as_tuple=False).flatten()
-                )
-            else:
-                self._reset_worlds(remaining_done)
+        if not torch.any(done_mask):
+            return
+        if self._use_settled_resets:
+            self._reset_world_indices_with_settled_snapshots(torch.nonzero(done_mask, as_tuple=False).flatten())
+        else:
+            self._reset_worlds(done_mask)
 
     def _reset_worlds(self, reset_mask: torch.Tensor) -> None:
         world_idx = torch.nonzero(reset_mask, as_tuple=False).flatten()
@@ -740,9 +793,12 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
         if world_idx.numel() == 0:
             return
 
-        reset_batch = self._scenario_runtime.sample_reset_batch(n_reset=int(world_idx.numel()), rng=self._rng)
-        specs = self._scenario_runtime.build_cpu_reset_specs(reset_batch=reset_batch)
-        snapshots = self._scenario_runtime.settle_cpu_reset_specs(specs=specs)
+        if self._settled_reset_buffer is not None:
+            snapshots = self._settled_reset_buffer.take(int(world_idx.numel()))
+        else:
+            reset_batch = self._scenario_runtime.sample_reset_batch(n_reset=int(world_idx.numel()), rng=self._rng)
+            specs = self._scenario_runtime.build_cpu_reset_specs(reset_batch=reset_batch)
+            snapshots = self._scenario_runtime.settle_cpu_reset_specs(specs=specs)
         self._scenario_runtime.apply_settled_reset_batch(world_idx=world_idx, snapshots=snapshots)
 
     def _should_use_initial_settled_reset(self, reset_mask: torch.Tensor) -> bool:
