@@ -143,6 +143,24 @@ PAYLOAD_PLANE_SCENARIO_KWARGS: dict[str, object] = {
     "forward_reward_max_y": None,
 }
 
+PAYLOAD_STEP_SCENARIO_KWARGS: dict[str, object] = {
+    **PAYLOAD_PLANE_SCENARIO_KWARGS,
+    "payload_shape": "box",
+    "payload_radius": 0.25,
+    "payload_mass": 2.0,
+    "payload_offset_y": 0.9,
+    "forward_reward_max_y": 3.2,
+    "step_start_y": 1.5,
+    "step_length": 3.0,
+    "step_width": 4.0,
+    "step_height": 0.08,
+    "payload_step_height_reward_weight": 4.0,
+    "payload_step_height_reward_distance": 0.7,
+    "payload_success_y": 3.2,
+    "payload_success_reward": 5.0,
+    "payload_success_height_tolerance": 0.03,
+}
+
 DUAL_PAYLOAD_PLANE_SCENARIO_KWARGS: dict[str, object] = {
     **PAYLOAD_PLANE_SCENARIO_KWARGS,
     "payload_centering_tolerance": 0.75,

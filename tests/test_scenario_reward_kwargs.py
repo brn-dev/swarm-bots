@@ -8,6 +8,7 @@ from swarmbots.scenario_presets.scenario_presets_kwargs import (
     COMMON_SCENARIO_KWARGS,
     MOVE_TO_SCENARIO_KWARGS,
     PAYLOAD_PLANE_SCENARIO_KWARGS,
+    PAYLOAD_STEP_SCENARIO_KWARGS,
     EASY_WALL_SCENARIO_KWARGS,
     HARD_WALL_SCENARIO_KWARGS,
     MEDIUM_WALL_SCENARIO_KWARGS,
@@ -53,6 +54,11 @@ def test_mj_and_mjw_climb_scenario_kwargs_use_shared_defaults() -> None:
 def test_mj_and_mjw_payload_scenario_kwargs_use_shared_defaults() -> None:
     assert scenario_presets.PAYLOAD_PLANE_SCENARIO_KWARGS == PAYLOAD_PLANE_SCENARIO_KWARGS
     assert mjw_scenario_presets.PAYLOAD_PLANE_SCENARIO_KWARGS == PAYLOAD_PLANE_SCENARIO_KWARGS
+
+
+def test_mj_and_mjw_payload_step_scenario_kwargs_use_shared_defaults() -> None:
+    assert scenario_presets.PAYLOAD_STEP_SCENARIO_KWARGS == PAYLOAD_STEP_SCENARIO_KWARGS
+    assert mjw_scenario_presets.PAYLOAD_STEP_SCENARIO_KWARGS == PAYLOAD_STEP_SCENARIO_KWARGS
 
 
 def test_mj_and_mjw_move_to_scenario_kwargs_use_shared_defaults() -> None:

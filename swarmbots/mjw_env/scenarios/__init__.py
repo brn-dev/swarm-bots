@@ -4,6 +4,7 @@ from swarmbots.mjw_env.scenarios.mjw_dual_payload_plane_scenario import MJWDualP
 from swarmbots.mjw_env.scenarios.mjw_move_to_scenario import MJWMoveToScenario
 from swarmbots.mjw_env.scenarios.mjw_obstacle_street_scenario import MJWObstacleStreetScenario
 from swarmbots.mjw_env.scenarios.mjw_payload_plane_scenario import MJWPayloadPlaneScenario
+from swarmbots.mjw_env.scenarios.mjw_payload_step_scenario import MJWPayloadStepScenario
 
 __all__ = [
     "MJWBridgeScenario",
@@ -12,4 +13,5 @@ __all__ = [
     "MJWMoveToScenario",
     "MJWObstacleStreetScenario",
     "MJWPayloadPlaneScenario",
+    "MJWPayloadStepScenario",
 ]
