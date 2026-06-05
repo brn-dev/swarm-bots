@@ -198,6 +198,7 @@ class MJWPayloadPlaneScenario(BaseMJWScenario):
         )
         worldbody.add_light(pos=[0, 0, 100], dir=[0, 0, -1])
         worldbody.add_light(pos=[0, 100, 100], dir=[-1, -1, -1])
+        self._add_static_geoms(worldbody)
 
         swarm_site = worldbody.add_site(pos=[0, 0, 0], name="swarm_site")
         spec.attach(self.swarm.create_swarm_spec(seed=self.seed), "", site=swarm_site)
@@ -215,6 +216,9 @@ class MJWPayloadPlaneScenario(BaseMJWScenario):
                 friction = np.asarray(tuple(float(v) for v in self.friction), dtype=float)
             model.geom_friction[:] = friction
         return model
+
+    def _add_static_geoms(self, worldbody: mujoco.MjsBody) -> None:
+        pass
 
     def _add_payload_geom(self, payload_body: mujoco.MjsBody) -> None:
         geom_kwargs: dict[str, Any] = {

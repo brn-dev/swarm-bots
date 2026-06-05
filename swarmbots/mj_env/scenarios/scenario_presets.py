@@ -10,6 +10,7 @@ from swarmbots.mj_env.scenarios.dual_payload_plane_scenario import DualPayloadPl
 from swarmbots.mj_env.scenarios.move_to_scenario import MoveToScenario
 from swarmbots.mj_env.scenarios.obstacle_street_scenario import ObstacleStreetScenario
 from swarmbots.mj_env.scenarios.payload_plane_scenario import PayloadPlaneScenario
+from swarmbots.mj_env.scenarios.payload_step_scenario import PayloadStepScenario
 from swarmbots.mj_env.swarm.base_swarm import BaseSwarm
 from swarmbots.mj_env.swarm.homogeneous_swarm import HomogeneousSwarm, PreConnectedUnitLocationsConfig
 from swarmbots.mj_env.swarm.unit_config import UNIT_CONFIG_TETRAHEDRON_XYZ, UNIT_CONFIG_TETRAHEDRON_ZX, \
@@ -25,6 +26,7 @@ from swarmbots.scenario_presets.scenario_presets_kwargs import (
     MEDIUM_WALL_SCENARIO_KWARGS as SHARED_MEDIUM_WALL_SCENARIO_KWARGS,
     MOVE_TO_SCENARIO_KWARGS as SHARED_MOVE_TO_SCENARIO_KWARGS,
     PAYLOAD_PLANE_SCENARIO_KWARGS as SHARED_PAYLOAD_PLANE_SCENARIO_KWARGS,
+    PAYLOAD_STEP_SCENARIO_KWARGS as SHARED_PAYLOAD_STEP_SCENARIO_KWARGS,
     WALL_SCENARIO_KWARGS as SHARED_WALL_SCENARIO_KWARGS,
     make_scenario_kwargs,
     wall_scenario_kwargs_with_difficulty,
@@ -38,6 +40,7 @@ HARD_WALL_SCENARIO_KWARGS = make_scenario_kwargs(SHARED_HARD_WALL_SCENARIO_KWARG
 BRIDGE_SCENARIO_KWARGS = make_scenario_kwargs(SHARED_BRIDGE_SCENARIO_KWARGS)
 CLIMB_SCENARIO_KWARGS = make_scenario_kwargs(SHARED_CLIMB_SCENARIO_KWARGS)
 PAYLOAD_PLANE_SCENARIO_KWARGS = make_scenario_kwargs(SHARED_PAYLOAD_PLANE_SCENARIO_KWARGS)
+PAYLOAD_STEP_SCENARIO_KWARGS = make_scenario_kwargs(SHARED_PAYLOAD_STEP_SCENARIO_KWARGS)
 DUAL_PAYLOAD_PLANE_SCENARIO_KWARGS = make_scenario_kwargs(SHARED_DUAL_PAYLOAD_PLANE_SCENARIO_KWARGS)
 MOVE_TO_SCENARIO_KWARGS = make_scenario_kwargs(SHARED_MOVE_TO_SCENARIO_KWARGS)
 
@@ -223,6 +226,30 @@ def default_dual_payload_plane(
     scenario_kwargs = make_scenario_kwargs(DEFAULT_KWARGS, DUAL_PAYLOAD_PLANE_SCENARIO_KWARGS)
     scenario_kwargs.update(kwargs)
     return DualPayloadPlaneScenario(
+        swarm=_resolve_swarm(
+            swarm,
+            unit_start_locations,
+            randomize_unit_orientations,
+            quantize_connection_twist,
+            joints=joints,
+        ),
+        **scenario_kwargs,
+        seed=seed,
+    )
+
+
+def default_payload_step(
+        seed: int | None = None,
+        swarm: BaseSwarm | None = None,
+        unit_start_locations: list[tuple[float, float, float]] | str | Any | None = None,
+        randomize_unit_orientations: bool = False,
+        quantize_connection_twist: int | None = 8,
+        joints: str = 'zx',
+        **kwargs
+) -> PayloadStepScenario:
+    scenario_kwargs = make_scenario_kwargs(DEFAULT_KWARGS, PAYLOAD_STEP_SCENARIO_KWARGS)
+    scenario_kwargs.update(kwargs)
+    return PayloadStepScenario(
         swarm=_resolve_swarm(
             swarm,
             unit_start_locations,

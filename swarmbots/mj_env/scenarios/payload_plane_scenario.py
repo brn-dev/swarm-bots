@@ -167,12 +167,16 @@ class PayloadPlaneScenario(BaseScenario):
         )
         worldbody.add_light(pos=[0, 0, 100], dir=[0, 0, -1])
         worldbody.add_light(pos=[0, 100, 100], dir=[-1, -1, -1])
+        self._add_static_geoms(worldbody)
 
         payload_body = worldbody.add_body(name="Payload", pos=[0, 0, self.payload_radius])
         payload_body.add_freejoint(name="Payload_freejoint")
         self._add_payload_geom(payload_body)
 
         return spec
+
+    def _add_static_geoms(self, worldbody: mujoco.MjsBody) -> None:
+        pass
 
     def _add_payload_geom(self, payload_body: mujoco.MjsBody) -> None:
         geom_kwargs: dict[str, Any] = {

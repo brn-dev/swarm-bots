@@ -51,6 +51,7 @@ Keep only durable architecture notes and gotchas. Prefer deleting stale detail o
 - Scenarios own reset baselines and per-step progress deltas; no generic `BaseScenario.compute_progress(...)`.
 - Render overlays are visual-only via `BaseScenario.add_render_geoms(scene)` after `Renderer.update_scene()`; do not use them for physics/model geometry.
 - Key `global_obs` layouts: payload `(x, y, z, rot6d)`, dual-payload two payload poses, move-to absolute goal `(x, y)`, climb top-face center goal `(x, y, z)`.
+- Payload-step scenarios keep the single-payload global obs layout; the elevated step is fixed scenario geometry/settings, and the height reward uses a latch so crossing onto the step does not create a negative potential drop.
 - `SwarmBotsEnv.reset(seed=...)` must reseed `scenario.rng`; reset sampling does not use Gymnasium `env.np_random`.
 
 ## MJW
