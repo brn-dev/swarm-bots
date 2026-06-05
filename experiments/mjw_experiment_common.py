@@ -118,7 +118,11 @@ def _scenario_display_name(*, scenario_name: MJWScenarioName) -> str:
 
 
 def _default_experiment_run_name(*, scenario_name: MJWScenarioName) -> str:
-    return f"swarm_bots_{scenario_name}"
+    return f"mat_nop_swarm_bots_{scenario_name}_mjw"
+
+
+def _default_ccd_iterations(*, scenario_name: MJWScenarioName) -> int | None:
+    return 128 if scenario_name == "dual_payload" else None
 
 
 def make_vector_env(
@@ -129,6 +133,7 @@ def make_vector_env(
     settle_initial_reset: bool,
     device: torch.device,
     scenario_name: MJWScenarioName = "wall",
+    ccd_iterations: int | None = None,
     scenario_kwargs: dict[str, object] | None = None,
 ) -> MJWSwarmBotsVectorEnv:
     return MJWSwarmBotsVectorEnv(
@@ -138,6 +143,7 @@ def make_vector_env(
         first_episode_lengths=first_episode_lengths,
         settle_initial_reset=settle_initial_reset,
         device=device,
+        ccd_iterations=ccd_iterations,
     )
 
 
@@ -311,6 +317,7 @@ def run_experiment(
         mat_query_context_lr_multiplier: float = 0.25,
         experiment_run_name: str | None = None,
         scenario_name: MJWScenarioName = "wall",
+        ccd_iterations: int | None = None,
         scenario_kwargs: dict[str, object] | None = None,
 ) -> None:
     from swarmbots.learn.torch_logging import enable_torch_compile_logging
@@ -384,6 +391,7 @@ def run_experiment(
         f"mat_decoder_self_attention_mode={mat_decoder_self_attention_mode_metadata}, "
         f"shuffle_agents={shuffle_agents}, "
         f"preserve_inactive_prefix_structure={preserve_inactive_prefix_structure}, "
+        f"ccd_iterations={ccd_iterations}, "
         f"scenario_kwargs={scenario_kwargs}"
     )
     if policy_variant != "mat_qcs":
@@ -412,6 +420,8 @@ def run_experiment(
 
     if experiment_run_name is None:
         experiment_run_name = _default_experiment_run_name(scenario_name=scenario_name)
+    if ccd_iterations is None:
+        ccd_iterations = _default_ccd_iterations(scenario_name=scenario_name)
 
     run_dir = REPO_ROOT / "runs" / experiment_run_name / variant_name / run_id
     save_optimizer = True
@@ -426,6 +436,7 @@ def run_experiment(
         settle_initial_reset=True,
         device=rollout_device,
         scenario_name=scenario_name,
+        ccd_iterations=ccd_iterations,
         scenario_kwargs=scenario_kwargs,
     )
     print(f"Created {type(vector_env)} with {num_envs} environments.")
@@ -716,6 +727,7 @@ def run_experiment(
         "preserve_inactive_prefix_structure": preserve_inactive_prefix_structure,
         "experiment_run_name": experiment_run_name,
         "scenario_name": scenario_name,
+        "ccd_iterations": ccd_iterations,
         "settle_initial_reset": True,
         "scenario_kwargs": scenario_kwargs,
     }
