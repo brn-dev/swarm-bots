@@ -52,12 +52,13 @@ from swarmbots.learn.summary_statistics import SummaryStatisticsFormat
 from swarmbots.learn.swarmbots_obs_indices import build_obs_indices
 from swarmbots.learn.nn_components.deep_set import DeepSetCriticConfig
 from swarmbots.mjw_env import MJWSwarmBotsVectorEnv
-from swarmbots.mjw_env.scenarios.mjw_scenario_presets import default_wall
+from swarmbots.mjw_env.scenarios.mjw_scenario_presets import default_dual_payload_plane, default_wall
 from swarmbots.utils.recording_schedule import DEFAULT_LIVE_RECORDING_SCHEDULE, install_scheduled_recordings
 from swarmbots.utils.run_paths import get_run_id_from_checkpoint_path
 
 ContinuousActionDistVariant = Literal["sticky_sign_magnitude_beta", "sign_magnitude_beta", "beta", "gsde", "squashed_diag_gaussian"]
 PolicyVariant = Literal["mat_qcs", "mat_qcc", "mat_dec", "mat_orig", "ppo", "mappo"]
+MJWScenarioName = Literal["wall", "dual_payload"]
 
 
 @dataclass(frozen=True)
@@ -104,6 +105,22 @@ def configure_float32_matmul_precision() -> None:
         torch.set_float32_matmul_precision("high")
 
 
+def _make_scenario(*, scenario_name: MJWScenarioName, scenario_kwargs: dict[str, object] | None) -> Any:
+    scenario_factory = {
+        "wall": default_wall,
+        "dual_payload": default_dual_payload_plane,
+    }[scenario_name]
+    return scenario_factory(**({} if scenario_kwargs is None else scenario_kwargs))
+
+
+def _scenario_display_name(*, scenario_name: MJWScenarioName) -> str:
+    return "dual-payload" if scenario_name == "dual_payload" else "wall"
+
+
+def _default_experiment_run_name(*, scenario_name: MJWScenarioName) -> str:
+    return f"swarm_bots_{scenario_name}"
+
+
 def make_vector_env(
     *,
     episode_length: int,
@@ -111,10 +128,11 @@ def make_vector_env(
     first_episode_lengths: list[int] | None,
     settle_initial_reset: bool,
     device: torch.device,
+    scenario_name: MJWScenarioName = "wall",
     scenario_kwargs: dict[str, object] | None = None,
 ) -> MJWSwarmBotsVectorEnv:
     return MJWSwarmBotsVectorEnv(
-        scenario=default_wall(**({} if scenario_kwargs is None else scenario_kwargs)),
+        scenario=_make_scenario(scenario_name=scenario_name, scenario_kwargs=scenario_kwargs),
         num_envs=num_envs,
         episode_length=episode_length,
         first_episode_lengths=first_episode_lengths,
@@ -291,7 +309,8 @@ def run_experiment(
         preserve_inactive_prefix_structure: bool = False,
         mat_decoder_lr_multiplier: float = 0.25,
         mat_query_context_lr_multiplier: float = 0.25,
-        experiment_run_name: str = "mat_qcs_nop_swarm_bots_wall_mjw_batch_env_sweep",
+        experiment_run_name: str | None = None,
+        scenario_name: MJWScenarioName = "wall",
         scenario_kwargs: dict[str, object] | None = None,
 ) -> None:
     from swarmbots.learn.torch_logging import enable_torch_compile_logging
@@ -352,7 +371,7 @@ def run_experiment(
         else None
     )
     variant_log_message = (
-        f"MJW batch env sweep variant {variant_name}: "
+        f"MJW {_scenario_display_name(scenario_name=scenario_name)} batch env sweep variant {variant_name}: "
         f"{num_envs} envs x {rollout_steps_per_env} steps/env = {rollout_samples}, "
         f"virtual_mini_batches={virtual_mini_batches}, n_epochs={n_epochs}, "
         f"continuous_action_dist={continuous_action_dist}, use_nop={use_nop}, "
@@ -370,12 +389,17 @@ def run_experiment(
     if policy_variant != "mat_qcs":
         variant_log_message = f"{variant_log_message}, policy_variant={policy_variant}"
     logger.info(variant_log_message)
-    logger.info("MJW wall training uses one batched GPU env directly; worker-pool vectorization is disabled.")
+    scenario_display_name_text = _scenario_display_name(scenario_name=scenario_name)
     logger.info(
-        "MJW wall training supports live exact-state recording via the `record` command "
+        f"MJW {scenario_display_name_text} training uses one batched GPU env directly; worker-pool vectorization is disabled."
+    )
+    logger.info(
+        f"MJW {scenario_display_name_text} training supports live exact-state recording via the `record` command "
         "(for example: record:{\"episodes\":8,\"parallel\":4,\"frame_stride\":4})."
     )
-    logger.info("MJW env uses per-env first-episode staggering so episode ends are spread across time from startup.")
+    logger.info(
+        f"MJW {scenario_display_name_text} env uses per-env first-episode staggering so episode ends are spread across time from startup."
+    )
     logger.info("MJW env also settles all worlds once on the initial reset, which increases startup latency.")
 
     if load_path is not None:
@@ -385,6 +409,9 @@ def run_experiment(
         logger.info(f"{load_path = }")
         run_id = get_run_id_from_checkpoint_path(load_path)
     logger.info(f"{run_id = }")
+
+    if experiment_run_name is None:
+        experiment_run_name = _default_experiment_run_name(scenario_name=scenario_name)
 
     run_dir = REPO_ROOT / "runs" / experiment_run_name / variant_name / run_id
     save_optimizer = True
@@ -398,6 +425,7 @@ def run_experiment(
         first_episode_lengths=first_episode_lengths,
         settle_initial_reset=True,
         device=rollout_device,
+        scenario_name=scenario_name,
         scenario_kwargs=scenario_kwargs,
     )
     print(f"Created {type(vector_env)} with {num_envs} environments.")
@@ -662,7 +690,6 @@ def run_experiment(
         "env_settings": env_settings,
         "script": entrypoint_path.read_text(encoding="utf-8"),
         "shared_experiment_script": Path(__file__).read_text(encoding="utf-8"),
-        "base_script": (REPO_ROOT / "scripts" / "run_mat_qcs_nop_wall_mjw.py").read_text(encoding="utf-8"),
         "script_scenario_presets": Path(mjw_scenario_presets.__file__).read_text(encoding="utf-8"),
         "backend": "mjw_env",
         "recording_enabled": "live_mjw_exact_state",
@@ -688,6 +715,7 @@ def run_experiment(
         "shuffle_agents": shuffle_agents,
         "preserve_inactive_prefix_structure": preserve_inactive_prefix_structure,
         "experiment_run_name": experiment_run_name,
+        "scenario_name": scenario_name,
         "settle_initial_reset": True,
         "scenario_kwargs": scenario_kwargs,
     }
