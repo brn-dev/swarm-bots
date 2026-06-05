@@ -7,7 +7,7 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from experiments.mat_nop_mjw_wall_common import PolicyVariant, run_experiment as run_mjw_wall_experiment
+from experiments.mjw_experiment_common import PolicyVariant, run_experiment as run_mjw_wall_experiment
 from swarmbots.learn.algos.mat_qcs.mat_qcs_decoder import MATQCSDecoderSelfAttentionMode
 
 EXPERIMENT_RUN_NAME = "mat_nop_mjw_wall_medium_1024x4"

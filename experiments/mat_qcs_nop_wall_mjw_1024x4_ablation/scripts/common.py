@@ -12,7 +12,7 @@ if str(REPO_ROOT) not in sys.path:
 from swarmbots.learn.algos.mat_qcs.mat_qcs_decoder import MATQCSDecoderSelfAttentionMode
 from swarmbots.learn.nn_components.activations import ActivationFactory
 
-from experiments.mat_nop_mjw_wall_common import (
+from experiments.mjw_experiment_common import (
     ContinuousActionDistVariant,
     MATInitGains,
     MATNormalizationConfig,
