@@ -67,12 +67,8 @@ Keep only durable architecture notes and gotchas. Prefer deleting stale detail o
 ## Runtime
 
 - Runtime hyperparameters are live attributes. Mutating config dataclasses after init does nothing.
-- Checkpoints include policy state, optional optimizer state, env-wrapper normalization state, and training counters.
 - Activation factories with `ParameterLearnMode.PER_FEATURE` need explicit feature counts; use `make_activation(...)` in generic `act_fn_cls` paths.
-- MAT-QCS/NOP `proper_init_1`: hidden/projection/transformer-FF gains `1.0`, output/action/value/prediction heads `0.01`.
-- PPO/MAPPO should follow the same pattern: trunk layers at `1.0`, action/value heads at `0.01`. `MAPPOPolicy` uses `DeepSetCritic` when configured, so keep its explicit head gain wired through if critic configs change.
-- CPU wall training should use `WorkerPoolAsyncVectorEnv(..., copy=False)`. Do not clone envs whose constructors differ in per-env state like `first_episode_length`.
-- On Windows, workers re-import the script top-level module. Keep heavy PPO/torch/MJW imports out of top level unless env construction needs them.
+- hidden/projection/transformer-FF gains `1.0`, output/action/value/prediction heads `0.01`.
 - Remote run logs are reachable directly from Windows over `\\\\server2026\\swarm-bots\\runs`; prefer that path for reading `log.csv` files instead of the WSL SSH route.
 
 ## Version And Install
