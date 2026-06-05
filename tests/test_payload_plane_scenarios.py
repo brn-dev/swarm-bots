@@ -321,6 +321,7 @@ def test_payload_plane_reward_uses_payload_progress_and_x_penalty_in_mjw_runtime
         payload_centering_tolerance=0.0,
         units_without_connections_reward_weight=0.0,
         guidance_reward_weight=1.0,
+        payload_pos_observable=True,
     )
     runtime.payload_position = torch.zeros((1, 3), device=device, dtype=torch.float32)
     runtime._global_obs = torch.zeros((1, 9), device=device, dtype=torch.float32)
@@ -450,6 +451,7 @@ def test_payload_plane_forward_reward_cap_is_applied_in_mjw_runtime() -> None:
         payload_centering_tolerance=0.0,
         units_without_connections_reward_weight=0.0,
         guidance_reward_weight=1.0,
+        payload_pos_observable=True,
     )
     runtime.payload_position = torch.zeros((1, 3), device=device, dtype=torch.float32)
     runtime._global_obs = torch.zeros((1, 9), device=device, dtype=torch.float32)

@@ -78,6 +78,7 @@ def test_ppo_policy_exposes_popart_when_enabled_in_critic_config() -> None:
             critic_config=PPOCriticConfig(
                 use_popart=True,
             ),
+            continuous_config=StickySignMagnitudeBetaConfig(stickiness=0.25),
         ),
     )
 
@@ -130,6 +131,7 @@ def test_mappo_policy_exposes_popart_when_enabled_in_critic_config() -> None:
                 ),
                 use_popart=True,
             ),
+            continuous_config=StickySignMagnitudeBetaConfig(stickiness=0.25),
         ),
     )
 
