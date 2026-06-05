@@ -691,7 +691,7 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
             pending_done_mask = done_mask[pending.world_idx]
             if torch.any(pending_done_mask):
                 pending_world_idx = pending.world_idx[pending_done_mask]
-                if pending.future.done():
+                if self._use_settled_resets:
                     snapshots = pending.future.result()
                     selected_indices = torch.nonzero(pending_done_mask, as_tuple=False).flatten().tolist()
                     self._scenario_runtime.apply_settled_reset_batch(
@@ -711,7 +711,12 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
                 remaining_done[pending_world_idx] = False
 
         if torch.any(remaining_done):
-            self._reset_worlds(remaining_done)
+            if self._use_settled_resets:
+                self._reset_world_indices_with_settled_snapshots(
+                    torch.nonzero(remaining_done, as_tuple=False).flatten()
+                )
+            else:
+                self._reset_worlds(remaining_done)
 
     def _reset_worlds(self, reset_mask: torch.Tensor) -> None:
         world_idx = torch.nonzero(reset_mask, as_tuple=False).flatten()
@@ -728,11 +733,17 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
             return
 
         logger.warning(f"Running initial settled reset for {int(world_idx.numel())} MJW envs.")
+        self._reset_world_indices_with_settled_snapshots(world_idx)
+        logger.warning(f"Envs settled.")
+
+    def _reset_world_indices_with_settled_snapshots(self, world_idx: torch.Tensor) -> None:
+        if world_idx.numel() == 0:
+            return
+
         reset_batch = self._scenario_runtime.sample_reset_batch(n_reset=int(world_idx.numel()), rng=self._rng)
         specs = self._scenario_runtime.build_cpu_reset_specs(reset_batch=reset_batch)
         snapshots = self._scenario_runtime.settle_cpu_reset_specs(specs=specs)
         self._scenario_runtime.apply_settled_reset_batch(world_idx=world_idx, snapshots=snapshots)
-        logger.warning(f"Envs settled.")
 
     def _should_use_initial_settled_reset(self, reset_mask: torch.Tensor) -> bool:
         if self._initial_settled_reset_done:
