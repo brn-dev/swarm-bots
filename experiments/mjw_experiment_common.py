@@ -52,13 +52,13 @@ from swarmbots.learn.summary_statistics import SummaryStatisticsFormat
 from swarmbots.learn.swarmbots_obs_indices import build_obs_indices
 from swarmbots.learn.nn_components.deep_set import DeepSetCriticConfig
 from swarmbots.mjw_env import MJWSwarmBotsVectorEnv
-from swarmbots.mjw_env.scenarios.mjw_scenario_presets import default_dual_payload_plane, default_wall
+from swarmbots.mjw_env.scenarios.mjw_scenario_presets import default_dual_payload_plane, default_payload_step, default_wall
 from swarmbots.utils.recording_schedule import DEFAULT_LIVE_RECORDING_SCHEDULE, install_scheduled_recordings
 from swarmbots.utils.run_paths import get_run_id_from_checkpoint_path
 
 ContinuousActionDistVariant = Literal["sticky_sign_magnitude_beta", "sign_magnitude_beta", "beta", "gsde", "squashed_diag_gaussian"]
 PolicyVariant = Literal["mat_qcs", "mat_qcc", "mat_dec", "mat_orig", "ppo", "mappo"]
-MJWScenarioName = Literal["wall", "dual_payload"]
+MJWScenarioName = Literal["wall", "dual_payload", "payload_step"]
 
 
 @dataclass(frozen=True)
@@ -109,12 +109,17 @@ def _make_scenario(*, scenario_name: MJWScenarioName, scenario_kwargs: dict[str,
     scenario_factory = {
         "wall": default_wall,
         "dual_payload": default_dual_payload_plane,
+        "payload_step": default_payload_step,
     }[scenario_name]
     return scenario_factory(**({} if scenario_kwargs is None else scenario_kwargs))
 
 
 def _scenario_display_name(*, scenario_name: MJWScenarioName) -> str:
-    return "dual-payload" if scenario_name == "dual_payload" else "wall"
+    return {
+        "wall": "wall",
+        "dual_payload": "dual-payload",
+        "payload_step": "payload-step",
+    }[scenario_name]
 
 
 def _default_experiment_run_name(*, scenario_name: MJWScenarioName) -> str:
@@ -122,7 +127,7 @@ def _default_experiment_run_name(*, scenario_name: MJWScenarioName) -> str:
 
 
 def _default_ccd_iterations(*, scenario_name: MJWScenarioName) -> int | None:
-    return 2048 if scenario_name == "dual_payload" else None
+    return 2048 if scenario_name in {"dual_payload", "payload_step"} else None
 
 
 def make_vector_env(
@@ -332,7 +337,7 @@ def run_experiment(
     configure_float32_matmul_precision()
 
     if not torch.cuda.is_available():
-        raise RuntimeError("MJW batch env sweep requires CUDA.")
+        raise RuntimeError("MJW requires CUDA.")
 
     rollout_samples = num_envs * rollout_steps_per_env
     if rollout_samples % virtual_mini_batches != 0:
@@ -378,7 +383,7 @@ def run_experiment(
         else None
     )
     variant_log_message = (
-        f"MJW {_scenario_display_name(scenario_name=scenario_name)} batch env sweep variant {variant_name}: "
+        f"MJW {_scenario_display_name(scenario_name=scenario_name)} - {variant_name}: "
         f"{num_envs} envs x {rollout_steps_per_env} steps/env = {rollout_samples}, "
         f"virtual_mini_batches={virtual_mini_batches}, n_epochs={n_epochs}, "
         f"continuous_action_dist={continuous_action_dist}, use_nop={use_nop}, "
