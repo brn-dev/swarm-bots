@@ -8,6 +8,7 @@ import pytest
 import torch
 
 from swarmbots.mjw_env.mjw_swarm_bots_vector_env import MJWSwarmBotsVectorEnv, _SettledResetSnapshotBuffer
+from swarmbots.mjw_env.scenarios.base_mjw_scenario import MJWStepResult
 
 
 class _FakeRuntime:
@@ -129,6 +130,51 @@ def test_mjw_done_termination_without_buffer_uses_settled_reset() -> None:
     assert runtime.settled_reset_calls == [
         ([1, 3], ["settled-spec-sample-0-0", "settled-spec-sample-0-1"])
     ]
+
+
+def test_mjw_step_computes_truncations_with_current_limit() -> None:
+    env, runtime = _make_uninitialized_env(use_settled_resets=False)
+    env.num_envs = 2
+    env._n_agents = 1
+    env._n_actuators = 1
+    env._n_connectors = 1
+    env._qpos = torch.zeros((2, 1), dtype=torch.float32)
+    env._qvel = torch.zeros((2, 1), dtype=torch.float32)
+    env.current_step = torch.zeros((2,), dtype=torch.long)
+    env.is_first_episode = torch.ones((2,), dtype=torch.bool)
+    env._episode_length_limit = torch.tensor([1, 2], dtype=torch.long)
+    env._first_episode_length_limit = None
+    env.simulation_unstable_reward = -1.0
+    env._steps_since_nefc_overflow_check = 0
+    env._nefc_overflow_check_interval_steps = 100
+    reset_done_calls: list[torch.Tensor] = []
+
+    def compute_step_rewards(*, stable_mask: torch.Tensor) -> MJWStepResult:
+        assert torch.equal(stable_mask, torch.tensor([True, True]))
+        return MJWStepResult(reward=torch.ones((2,), dtype=torch.float32), info={})
+
+    runtime.compute_step_rewards = compute_step_rewards
+    env._apply_actions = lambda *, actuators, connectors: None
+    env._run_physics = lambda: None
+    env._update_max_nefc_since_overflow_check = lambda: None
+    env._maybe_notify_nefc_overflow = lambda: None
+    env._build_obs = lambda: {"obs": env.current_step.clone().unsqueeze(-1)}
+    env._apply_error_obs = lambda obs, unstable_mask: obs
+    env._reset_done_worlds = lambda dones: reset_done_calls.append(dones.clone())
+
+    _obs, rewards, terminations, truncations, infos = env.step(
+        {
+            "actuators": torch.zeros((2, 1, 1), dtype=torch.float32),
+            "connectors": torch.zeros((2, 1, 1), dtype=torch.bool),
+        }
+    )
+
+    assert torch.equal(rewards, torch.ones((2,), dtype=torch.float32))
+    assert torch.equal(terminations, torch.tensor([False, False]))
+    assert torch.equal(truncations, torch.tensor([True, False]))
+    assert torch.equal(infos["_final_obs"], torch.tensor([True, False]))
+    assert len(reset_done_calls) == 1
+    assert torch.equal(reset_done_calls[0], torch.tensor([True, False]))
 
 
 def test_mjw_done_uses_ready_settled_snapshot_buffer() -> None:
