@@ -586,6 +586,7 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
         if connectors.shape != (self.num_envs, self._n_agents, self._n_connectors):
             raise ValueError(f"Unexpected connectors shape {tuple(connectors.shape)}")
 
+        trunc_limit = self._get_current_truncation_limit()
         self._refill_settled_reset_buffer()
 
         self._apply_actions(actuators=actuators, connectors=connectors)
