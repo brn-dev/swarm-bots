@@ -127,7 +127,7 @@ def _default_experiment_run_name(*, scenario_name: MJWScenarioName) -> str:
 
 
 def _default_ccd_iterations(*, scenario_name: MJWScenarioName) -> int | None:
-    return 2048 if scenario_name in {"dual_payload", "payload_step"} else None
+    return 4096 if scenario_name in {"dual_payload", "payload_step"} else None
 
 
 def make_vector_env(
