@@ -22,7 +22,7 @@ from plot_logs.plot_logs import is_supported_log_path, open_log_text, parse_scal
 DEFAULT_X_COLUMN = "timesteps"
 EP_REW_EMA_COLUMN = "ep_rew_ema"
 EP_SUCCESS_RATE_EMA_COLUMN = "ep_success_rate_ema"
-DEFAULT_DPIS = [100, 200, 300]
+DEFAULT_DPIS = [200]
 DEFAULT_RUN_LENGTH_LIMIT = 100_000_000
 GROUP_PALETTE: tuple[str, ...] = (
     "#0072B2",
@@ -42,6 +42,11 @@ GROUP_LINE_WIDTH = 1.0
 THEORETICAL_MAXIMUM_LINE_WIDTH = 1.0
 THEORETICAL_MAXIMUM_COLOR = "#444444"
 THEORETICAL_MAXIMUM_LABEL = "Theoretical maximum"
+LEGEND_FONT_SIZE = 14
+LEGEND_HANDLE_LENGTH = 2.8
+LEGEND_HANDLE_TEXT_PAD = 0.8
+LEGEND_LABEL_SPACING = 0.5
+LEGEND_BORDER_PAD = 0.7
 
 
 @dataclass(slots=True)
@@ -396,7 +401,15 @@ def add_group_legend(
     ]
     if theoretical_maximum_line is not None:
         handles.append(theoretical_maximum_line)
-    axis.legend(handles=handles, loc="best")
+    axis.legend(
+        handles=handles,
+        loc="best",
+        fontsize=LEGEND_FONT_SIZE,
+        handlelength=LEGEND_HANDLE_LENGTH,
+        handletextpad=LEGEND_HANDLE_TEXT_PAD,
+        labelspacing=LEGEND_LABEL_SPACING,
+        borderpad=LEGEND_BORDER_PAD,
+    )
 
 
 def dpi_output_path(output_path: Path, dpi: int) -> Path:
@@ -580,7 +593,14 @@ def plot_group_metric(
     axis.set_ylabel(metric.ylabel)
     axis.grid(alpha=0.25)
     add_theoretical_maximum_line(axis, theoretical_maximum)
-    axis.legend(loc="best")
+    axis.legend(
+        loc="best",
+        fontsize=LEGEND_FONT_SIZE,
+        handlelength=LEGEND_HANDLE_LENGTH,
+        handletextpad=LEGEND_HANDLE_TEXT_PAD,
+        labelspacing=LEGEND_LABEL_SPACING,
+        borderpad=LEGEND_BORDER_PAD,
+    )
     figure.tight_layout()
     resolved_output_name = output_name or f"{metric.output_stem}_grouped.png"
     return save_figure_variants(figure, output_dir / resolved_output_name, dpis=dpis)
