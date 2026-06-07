@@ -412,14 +412,15 @@ def add_group_legend(
     )
 
 
-def dpi_output_path(output_path: Path, dpi: int) -> Path:
-    return output_path.with_name(f"{output_path.stem}_dpi{dpi}{output_path.suffix}")
+def dpi_output_path(output_path: Path, dpi: int | None) -> Path:
+    dpi_text = f"_dpi{dpi}" if dpi else ""
+    return output_path.with_name(f"{output_path.stem}{dpi_text}{output_path.suffix}")
 
 
 def save_figure_variants(figure: Figure, output_path: Path, *, dpis: Sequence[int]) -> list[Path]:
     normalized_dpis = normalize_dpis(dpis)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_paths = [dpi_output_path(output_path, dpi) for dpi in normalized_dpis]
+    output_paths = [dpi_output_path(output_path, dpi if len(normalized_dpis) > 1 else None) for dpi in normalized_dpis]
     for dpi, dpi_output_path_value in zip(normalized_dpis, output_paths, strict=True):
         figure.savefig(dpi_output_path_value, dpi=dpi, bbox_inches="tight")
     plt.close(figure)
