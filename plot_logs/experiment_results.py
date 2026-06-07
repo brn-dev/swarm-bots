@@ -22,7 +22,7 @@ from plot_logs.plot_logs import is_supported_log_path, open_log_text, parse_scal
 DEFAULT_X_COLUMN = "timesteps"
 EP_REW_EMA_COLUMN = "ep_rew_ema"
 EP_SUCCESS_RATE_EMA_COLUMN = "ep_success_rate_ema"
-DEFAULT_DPI = 300
+DEFAULT_DPIS = [100, 200, 300]
 DEFAULT_RUN_LENGTH_LIMIT = 100_000_000
 GROUP_PALETTE: tuple[str, ...] = (
     "#0072B2",
@@ -131,10 +131,11 @@ def parse_args() -> argparse.Namespace:
         help=f"X-axis column. Defaults to {DEFAULT_X_COLUMN!r}.",
     )
     parser.add_argument(
-        "--dpi",
+        "--dpis",
+        nargs="+",
         type=int,
-        default=DEFAULT_DPI,
-        help=f"PNG DPI. Defaults to {DEFAULT_DPI}.",
+        default=DEFAULT_DPIS,
+        help=f"PNG DPIs. Defaults to {DEFAULT_DPIS}.",
     )
     parser.add_argument(
         "--theoretical-maximum",
@@ -149,6 +150,15 @@ def parse_args() -> argparse.Namespace:
         help=f"Expected individual run length. Defaults to {DEFAULT_RUN_LENGTH_LIMIT}.",
     )
     return parser.parse_args()
+
+
+def normalize_dpis(dpis: Sequence[int] | None) -> tuple[int, ...]:
+    if dpis is None:
+        return tuple(DEFAULT_DPIS)
+    normalized_dpis = tuple(int(dpi) for dpi in dpis)
+    if not normalized_dpis:
+        raise ValueError("At least one DPI is required.")
+    return normalized_dpis
 
 
 def find_log_file(run_dir: Path) -> Path | None:
@@ -389,11 +399,18 @@ def add_group_legend(
     axis.legend(handles=handles, loc="best")
 
 
-def save_figure(figure: Figure, output_path: Path, *, dpi: int) -> Path:
+def dpi_output_path(output_path: Path, dpi: int) -> Path:
+    return output_path.with_name(f"{output_path.stem}_dpi{dpi}{output_path.suffix}")
+
+
+def save_figure_variants(figure: Figure, output_path: Path, *, dpis: Sequence[int]) -> list[Path]:
+    normalized_dpis = normalize_dpis(dpis)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    figure.savefig(output_path, dpi=dpi, bbox_inches="tight")
+    output_paths = [dpi_output_path(output_path, dpi) for dpi in normalized_dpis]
+    for dpi, dpi_output_path_value in zip(normalized_dpis, output_paths, strict=True):
+        figure.savefig(dpi_output_path_value, dpi=dpi, bbox_inches="tight")
     plt.close(figure)
-    return output_path
+    return output_paths
 
 
 def final_finite_run_point(run: ExperimentRunLog, column: str) -> tuple[float, float] | None:
@@ -419,14 +436,14 @@ def plot_individual_metric(
     output_dir: Path,
     *,
     x_column: str,
-    dpi: int,
+    dpis: Sequence[int],
     theoretical_maximum: float | None = None,
     run_length_limit: int = DEFAULT_RUN_LENGTH_LIMIT,
     metric: MetricPlotSpec,
     output_name: str | None = None,
     title: str | None = None,
     colors: dict[str, tuple[float, float, float, float]] | None = None,
-) -> Path:
+) -> list[Path]:
     colors = group_colors(groups) if colors is None else colors
     figure, axis = plt.subplots(figsize=(16, 9))
     short_run_threshold = 0.99 * run_length_limit
@@ -460,7 +477,7 @@ def plot_individual_metric(
     add_group_legend(axis, groups, colors, theoretical_maximum_line=theoretical_maximum_line)
     figure.tight_layout()
     resolved_output_name = output_name or f"{metric.output_stem}_individual_runs.png"
-    return save_figure(figure, output_dir / resolved_output_name, dpi=dpi)
+    return save_figure_variants(figure, output_dir / resolved_output_name, dpis=dpis)
 
 
 def finite_interp(x_source: np.ndarray, y_source: np.ndarray, x_target: np.ndarray) -> np.ndarray:
@@ -533,13 +550,13 @@ def plot_group_metric(
     output_dir: Path,
     *,
     x_column: str,
-    dpi: int,
+    dpis: Sequence[int],
     theoretical_maximum: float | None = None,
     metric: MetricPlotSpec,
     output_name: str | None = None,
     title: str | None = None,
     colors: dict[str, tuple[float, float, float, float]] | None = None,
-) -> Path:
+) -> list[Path]:
     colors = group_colors(groups) if colors is None else colors
     figure, axis = plt.subplots(figsize=(16, 9))
     for group in groups:
@@ -566,7 +583,7 @@ def plot_group_metric(
     axis.legend(loc="best")
     figure.tight_layout()
     resolved_output_name = output_name or f"{metric.output_stem}_grouped.png"
-    return save_figure(figure, output_dir / resolved_output_name, dpi=dpi)
+    return save_figure_variants(figure, output_dir / resolved_output_name, dpis=dpis)
 
 
 def plot_experiment_selection(
@@ -575,7 +592,7 @@ def plot_experiment_selection(
     groups: Sequence[ExperimentGroup],
     output_dir: Path,
     x_column: str,
-    dpi: int,
+    dpis: Sequence[int],
     theoretical_maximum: float | None,
     run_length_limit: int,
     colors: dict[str, tuple[float, float, float, float]],
@@ -597,31 +614,33 @@ def plot_experiment_selection(
         if not metric_has_finite_values(selected_groups, metric.column):
             continue
         output_stem = f"{metric.output_stem}_{selection.name}"
-        output_paths.extend([
+        output_paths.extend(
             plot_individual_metric(
                 selected_groups,
                 selection_output_dir,
                 x_column=x_column,
-                dpi=dpi,
+                dpis=dpis,
                 theoretical_maximum=theoretical_maximum,
                 run_length_limit=run_length_limit,
                 metric=metric,
                 output_name=f"{output_stem}_individual_runs.png",
                 title=f"{metric.title} Per Run{title_suffix}",
                 colors=colors,
-            ),
+            )
+        )
+        output_paths.extend(
             plot_group_metric(
                 selected_groups,
                 selection_output_dir,
                 x_column=x_column,
-                dpi=dpi,
+                dpis=dpis,
                 theoretical_maximum=theoretical_maximum,
                 metric=metric,
                 output_name=f"{output_stem}_grouped.png",
                 title=f"{metric.title} By Group{title_suffix}",
                 colors=colors,
-            ),
-        ])
+            )
+        )
     return output_paths
 
 
@@ -631,7 +650,7 @@ def plot_experiment_results(
     *,
     group_order: Sequence[str] | None = None,
     x_column: str = DEFAULT_X_COLUMN,
-    dpi: int = DEFAULT_DPI,
+    dpis: Sequence[int] | None = None,
     theoretical_maximum: float | None = None,
     run_length_limit: int = DEFAULT_RUN_LENGTH_LIMIT,
     display_name_overrides: Mapping[str, str] | None = None,
@@ -647,31 +666,34 @@ def plot_experiment_results(
     )
     output_dir = output_dir.expanduser().resolve()
     colors = group_colors(groups)
+    normalized_dpis = normalize_dpis(dpis)
     output_paths: list[Path] = []
     for metric in PLOT_SPECS:
         if not metric_has_finite_values(groups, metric.column):
             continue
-        output_paths.extend([
+        output_paths.extend(
             plot_individual_metric(
                 groups,
                 output_dir,
                 x_column=x_column,
-                dpi=dpi,
+                dpis=normalized_dpis,
                 theoretical_maximum=theoretical_maximum,
                 run_length_limit=run_length_limit,
                 metric=metric,
                 colors=colors,
-            ),
+            )
+        )
+        output_paths.extend(
             plot_group_metric(
                 groups,
                 output_dir,
                 x_column=x_column,
-                dpi=dpi,
+                dpis=normalized_dpis,
                 theoretical_maximum=theoretical_maximum,
                 metric=metric,
                 colors=colors,
-            ),
-        ])
+            )
+        )
     if extra_plot_selections is not None:
         for selection in extra_plot_selections:
             output_paths.extend(
@@ -680,7 +702,7 @@ def plot_experiment_results(
                     groups=groups,
                     output_dir=output_dir,
                     x_column=x_column,
-                    dpi=dpi,
+                    dpis=normalized_dpis,
                     theoretical_maximum=theoretical_maximum,
                     run_length_limit=run_length_limit,
                     colors=colors,
@@ -696,7 +718,7 @@ def main() -> int:
         args.output_dir,
         group_order=args.group_order,
         x_column=args.x_column,
-        dpi=args.dpi,
+        dpis=args.dpis,
         theoretical_maximum=args.theoretical_maximum,
         run_length_limit=args.run_length_limit,
     )
