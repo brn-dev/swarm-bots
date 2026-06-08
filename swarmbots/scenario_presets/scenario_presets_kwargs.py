@@ -39,7 +39,6 @@ WALL_SCENARIO_KWARGS: dict[str, object] = {
     "street_width": 10.0,
     "wall_height": 0.20,
     "forward_reward_weight": 1.0,
-    "forward_reward_max_y": 2.0,
     "forward_reward_wall_boost_factor": 1.0,
     "wall_pass_reward_weight": 10.0,
     "wall_pass_reward_skew": 0.0,
@@ -186,5 +185,8 @@ def make_scenario_kwargs(*parts: Mapping[str, object]) -> dict[str, object]:
 
 PO_WALL_MEDIUM_SCENARIO_KWARGS = make_scenario_kwargs(
     MEDIUM_WALL_SCENARIO_KWARGS,
-    {"first_wall_distance": UniformDistParams.from_midpoint_and_width(1.0, 0.5)},
+    {
+        "swarm_start_y": UniformDistParams(0.0, 0.25),
+        "first_wall_distance": UniformDistParams.from_midpoint_and_width(1.0, 1.0),
+    },
 )

@@ -7,15 +7,16 @@ import numpy as np
 from swarmbots.mj_env.scenarios.wall_scenario import WallScenario
 
 
-def test_forward_reward_cap_is_applied_per_unit_in_mj_env() -> None:
+def test_forward_reward_cap_uses_wall_success_threshold_per_unit_in_mj_env() -> None:
     scenario = object.__new__(WallScenario)
     scenario.forward_reward_weight = 1.0
-    scenario.forward_reward_max_y = 1.0
+    scenario.wall_success_threshold = 1.0
     scenario._qpos_indices = np.array([[0, 0], [1, 1]], dtype=int)
     scenario._compute_wall_pass_reward = lambda data, state: 0.0
 
     state = {
         "progress": 0.9,
+        "wall_y": 0.0,
         "units_active_mask": np.array([True, True], dtype=bool),
     }
     data = SimpleNamespace(qpos=np.array([1.6, 0.9], dtype=float))
@@ -30,7 +31,7 @@ def test_forward_reward_cap_is_applied_per_unit_in_mj_env() -> None:
 def test_wall_height_forward_reward_boost_applies_per_high_unit_in_mj_env() -> None:
     scenario = object.__new__(WallScenario)
     scenario.forward_reward_weight = 1.0
-    scenario.forward_reward_max_y = None
+    scenario.wall_success_threshold = 10.0
     scenario.forward_reward_wall_boost_factor = 3.0
     scenario.forward_reward_wall_boost_distance = 0.5
     scenario.forward_reward_wall_boost_height_margin = 0.1
@@ -57,7 +58,7 @@ def test_wall_height_forward_reward_boost_applies_per_high_unit_in_mj_env() -> N
 def test_wall_height_forward_reward_boost_penalizes_backtracking_symmetrically_in_mj_env() -> None:
     scenario = object.__new__(WallScenario)
     scenario.forward_reward_weight = 1.0
-    scenario.forward_reward_max_y = None
+    scenario.wall_success_threshold = 10.0
     scenario.forward_reward_wall_boost_factor = 3.0
     scenario.forward_reward_wall_boost_distance = 0.5
     scenario.forward_reward_wall_boost_height_margin = 0.1

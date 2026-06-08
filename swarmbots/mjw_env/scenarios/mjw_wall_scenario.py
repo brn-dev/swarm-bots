@@ -53,12 +53,11 @@ class MJWWallScenario(BaseMJWScenario):
     street_width: float
     wall_pass_reward_weight: float
     wall_pass_thresholds: list[float]
+    wall_success_threshold: float
     wall_pass_reward_skew: float = 0.0
-    wall_success_threshold: float | None = None
     wall_success_reward: float = 0.0
     wall_climb_reward_weight: float = 0.0
     wall_climb_reward_distance: float = 0.45
-    forward_reward_max_y: float | None = None
     forward_reward_wall_boost_factor: float = 1.0
     forward_reward_wall_boost_distance: float | None = None
     forward_reward_wall_boost_height_margin: float | None = None
@@ -74,8 +73,6 @@ class MJWWallScenario(BaseMJWScenario):
             raise ValueError(f"Expected timestep > 0, got {self.timestep}")
         if self.action_repeat <= 0:
             raise ValueError(f"Expected action_repeat > 0, got {self.action_repeat}")
-        if self.forward_reward_max_y is not None:
-            self.forward_reward_max_y = float(self.forward_reward_max_y)
         self.potential_reward_discount_factor = float(self.potential_reward_discount_factor)
         self.forward_reward_wall_boost_factor = float(self.forward_reward_wall_boost_factor)
         if self.forward_reward_wall_boost_factor < 1.0:
@@ -98,13 +95,12 @@ class MJWWallScenario(BaseMJWScenario):
         self.wall_height = float(self.wall_height)
         self.wall_climb_reward_weight = float(self.wall_climb_reward_weight)
         self.wall_climb_reward_distance = float(self.wall_climb_reward_distance)
+        self.wall_success_threshold = float(self.wall_success_threshold)
         self.wall_success_reward = float(self.wall_success_reward)
         if self.wall_climb_reward_distance <= 0.0:
             raise ValueError(f"Expected wall_climb_reward_distance > 0, got {self.wall_climb_reward_distance}")
-        if self.wall_success_threshold is not None:
-            self.wall_success_threshold = float(self.wall_success_threshold)
-            if self.wall_success_threshold <= 0.0:
-                raise ValueError(f"Expected wall_success_threshold > 0, got {self.wall_success_threshold}")
+        if self.wall_success_threshold <= 0.0:
+            raise ValueError(f"Expected wall_success_threshold > 0, got {self.wall_success_threshold}")
         self.street_width = float(self.street_width)
         self.side_wall_x = self.street_width / 2.0
         self.total_thresholds = len(self.wall_pass_thresholds)
@@ -139,7 +135,6 @@ class MJWWallScenario(BaseMJWScenario):
             "first_wall_distance": self.first_wall_distance,
             "street_width": self.street_width,
             "forward_reward_weight": self.forward_reward_weight,
-            "forward_reward_max_y": self.forward_reward_max_y,
             "forward_reward_wall_boost_factor": self.forward_reward_wall_boost_factor,
             "forward_reward_wall_boost_distance": self.forward_reward_wall_boost_distance,
             "forward_reward_wall_boost_height_margin": self.forward_reward_wall_boost_height_margin,

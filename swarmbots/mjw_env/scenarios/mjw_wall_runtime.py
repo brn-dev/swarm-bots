@@ -158,7 +158,7 @@ def _compute_wall_reward_kernel(
     wall_pass_rank_weights: torch.Tensor,
     progress_reward_weight: float,
     forward_reward_weight: float,
-    forward_reward_max_y: float,
+    forward_reward_cap_y: torch.Tensor,
     wall_pass_reward_weight: float,
     wall_pass_reward_skew: float,
     num_wall_thresholds: int,
@@ -185,7 +185,7 @@ def _compute_wall_reward_kernel(
     torch.Tensor,
 ]:
     safe_unit_y = torch.where(stable_mask.unsqueeze(1), unit_y, torch.zeros_like(unit_y))
-    capped_unit_y = torch.clamp(safe_unit_y, max=float(forward_reward_max_y))
+    capped_unit_y = torch.minimum(safe_unit_y, forward_reward_cap_y.unsqueeze(1))
     if forward_reward_wall_boost_factor == 1.0:
         forward_progress_unit_potential = capped_unit_y
         new_progress = masked_mean(forward_progress_unit_potential, units_active_mask, dim=1)
@@ -364,7 +364,7 @@ class _WallCPUResetSettler(BaseMJWCPUResetSettler):
         wall_y = float(spec.hidden_global_vars[0])
         forward_progress_unit_y = _compute_forward_progress_unit_y_np(
             unit_y=unit_y,
-            forward_reward_max_y=self.scenario.forward_reward_max_y,
+            forward_reward_cap_y=wall_y + float(self.scenario.wall_success_threshold),
         )
         boost_distance = (
             float(self.scenario.forward_reward_wall_boost_distance)
@@ -557,7 +557,7 @@ class WallMJWScenarioRuntime(BaseMJWScenarioRuntime):
         total_passed = (unit_y.unsqueeze(-1) > reset_batch.wall_pass_thresholds.unsqueeze(1)).sum(dim=-1)
         forward_progress_unit_y = _compute_forward_progress_unit_y_torch(
             unit_y=unit_y,
-            forward_reward_max_y=self.scenario.forward_reward_max_y,
+            forward_reward_cap_y=self.wall_y[world_idx] + float(self.scenario.wall_success_threshold),
         )
         forward_progress_unit_y = _apply_forward_reward_wall_boost_to_potential_torch(
             unit_y=unit_y,
@@ -734,7 +734,7 @@ class WallMJWScenarioRuntime(BaseMJWScenarioRuntime):
             wall_pass_rank_weights,
             float(self.scenario.progress_reward_weight),
             float(self.scenario.forward_reward_weight),
-            float("inf") if self.scenario.forward_reward_max_y is None else float(self.scenario.forward_reward_max_y),
+            self.wall_y + float(self.scenario.wall_success_threshold),
             float(self.scenario.wall_pass_reward_weight),
             wall_pass_reward_skew,
             int(self._num_wall_thresholds),
@@ -791,11 +791,7 @@ class WallMJWScenarioRuntime(BaseMJWScenarioRuntime):
         unit_y: torch.Tensor,
         stable_mask: torch.Tensor,
     ) -> torch.Tensor:
-        wall_success_threshold = getattr(self.scenario, "wall_success_threshold", None)
-        if wall_success_threshold is None:
-            return torch.zeros_like(stable_mask)
-
-        success_y = self.wall_y + float(wall_success_threshold)
+        success_y = self.wall_y + float(self.scenario.wall_success_threshold)
         unit_past_wall = unit_y > success_y.unsqueeze(1)
         active_mask = self.bindings.units_active_mask
         active_units_count = active_mask.sum(dim=-1)
@@ -859,21 +855,6 @@ class WallMJWScenarioRuntime(BaseMJWScenarioRuntime):
         self.bindings.mocap_pos[world_idx, int(self._wall_mocap_id), 2] = 0.0
 
 
-def _compute_forward_progress_baseline_np(
-    *,
-    unit_y: np.ndarray,
-    active_mask: np.ndarray,
-    forward_reward_max_y: float | None,
-) -> float:
-    capped_unit_y = np.asarray(unit_y, dtype=float)
-    if forward_reward_max_y is not None:
-        capped_unit_y = np.minimum(capped_unit_y, forward_reward_max_y)
-    active_units_mask = np.asarray(active_mask, dtype=bool)
-    if not active_units_mask.any():
-        return 0.0
-    return float(capped_unit_y[active_units_mask].mean())
-
-
 def _mean_active_forward_progress_np(*, forward_progress_unit_y: np.ndarray, active_mask: np.ndarray) -> float:
     active_units_mask = np.asarray(active_mask, dtype=bool)
     if not active_units_mask.any():
@@ -881,10 +862,9 @@ def _mean_active_forward_progress_np(*, forward_progress_unit_y: np.ndarray, act
     return float(forward_progress_unit_y[active_units_mask].mean())
 
 
-def _compute_forward_progress_unit_y_np(*, unit_y: np.ndarray, forward_reward_max_y: float | None) -> np.ndarray:
+def _compute_forward_progress_unit_y_np(*, unit_y: np.ndarray, forward_reward_cap_y: float) -> np.ndarray:
     capped_unit_y = np.asarray(unit_y, dtype=float)
-    if forward_reward_max_y is not None:
-        capped_unit_y = np.minimum(capped_unit_y, forward_reward_max_y)
+    capped_unit_y = np.minimum(capped_unit_y, float(forward_reward_cap_y))
     return capped_unit_y.astype(np.float32, copy=False)
 
 
@@ -945,22 +925,8 @@ def _compute_wall_climb_potential_np(
     return (approach * height * active_mask.astype(np.float32)).astype(np.float32, copy=False)
 
 
-def _compute_forward_progress_baseline_torch(
-    *,
-    unit_y: torch.Tensor,
-    active_mask: torch.Tensor,
-    forward_reward_max_y: float | None,
-) -> torch.Tensor:
-    capped_unit_y = unit_y
-    if forward_reward_max_y is not None:
-        capped_unit_y = torch.clamp(capped_unit_y, max=float(forward_reward_max_y))
-    return masked_mean(capped_unit_y, active_mask, dim=1)
-
-
-def _compute_forward_progress_unit_y_torch(*, unit_y: torch.Tensor, forward_reward_max_y: float | None) -> torch.Tensor:
-    if forward_reward_max_y is None:
-        return unit_y
-    return torch.clamp(unit_y, max=float(forward_reward_max_y))
+def _compute_forward_progress_unit_y_torch(*, unit_y: torch.Tensor, forward_reward_cap_y: torch.Tensor) -> torch.Tensor:
+    return torch.minimum(unit_y, forward_reward_cap_y.unsqueeze(1))
 
 
 def _apply_forward_reward_wall_boost_to_potential_torch(
