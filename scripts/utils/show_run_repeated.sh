@@ -4,10 +4,11 @@ set -eu
 
 usage() {
     cat <<'EOF'
-Usage: show_run_repeated.sh [PID|--pid PID]
+Usage: show_run_repeated.sh [--count] [PID|--pid PID]
 
 Show active run_repeated.sh process registrations without requesting a stop.
 With no arguments, all active repeated runners are shown.
+Use --count to print only the active runner count.
 EOF
 }
 
@@ -83,9 +84,14 @@ repo_root=$(
 control_dir=${SWARMBOTS_RUN_REPEATED_DIR:-$repo_root/.run/run_repeated}
 
 target_pid=
+count_only=0
 
 while [ $# -gt 0 ]; do
     case "$1" in
+        --count)
+            count_only=1
+            shift
+            ;;
         --pid)
             if [ $# -lt 2 ]; then
                 printf 'Missing value for --pid\n' >&2
@@ -115,9 +121,18 @@ if [ -n "$target_pid" ] && ! is_positive_integer "$target_pid"; then
     exit 1
 fi
 
+if [ "$count_only" -ne 0 ] && [ -n "$target_pid" ]; then
+    printf '%s\n' '--count cannot be combined with a PID.' >&2
+    exit 1
+fi
+
 cleanup_stale_control_files
 
 if [ ! -d "$control_dir" ]; then
+    if [ "$count_only" -ne 0 ]; then
+        printf '0\n'
+        exit 0
+    fi
     printf 'No active run_repeated.sh processes found.\n'
     exit 0
 fi
@@ -145,6 +160,11 @@ for control_file in "$control_dir"/*.control; do
         active_count=$((active_count + 1))
     fi
 done
+
+if [ "$count_only" -ne 0 ]; then
+    printf '%s\n' "$active_count"
+    exit 0
+fi
 
 if [ "$active_count" -eq 0 ]; then
     printf 'No active run_repeated.sh processes found.\n'

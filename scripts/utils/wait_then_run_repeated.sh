@@ -4,14 +4,19 @@ set -eu
 
 usage() {
     cat <<'EOF'
-Usage: wait_then_run_repeated.sh REQUIRED_FREE_VRAM SCRIPT_PATH [RUNS] [OPTIONS] [-- SCRIPT_ARGS...]
+Usage: wait_then_run_repeated.sh [GATE...] SCRIPT_PATH [RUNS] [OPTIONS] [-- SCRIPT_ARGS...]
 
-Wait until the selected GPU has enough free VRAM for a stable period, then call
-scripts/utils/run_repeated.sh.
+Wait until all selected gates have been satisfied for a stable period, then
+call scripts/utils/run_repeated.sh.
+
+Gates:
+  VRAM amount         Required free VRAM in MiB. Plain numbers are MiB.
+                      Supported suffixes: M, MiB, G, GiB, T, TiB.
+                      Examples: 24000, 24G.
+  RUN COUNT           Maximum number of other active repeated runs. Use the
+                      suffix R, for example 2R.
 
 Arguments:
-  REQUIRED_FREE_VRAM  Required free VRAM. Plain numbers are MiB. Supported
-                      suffixes: M, MiB, G, GiB, T, TiB. Examples: 24000, 24G.
   SCRIPT_PATH         Training script path passed to run_repeated.sh.
   RUNS                Number of runs passed to run_repeated.sh. Defaults to 5.
 
@@ -33,6 +38,8 @@ Options:
 If SWARMBOTS_DISCORD_WEBHOOK_URL is set, a Discord notification is sent when
 the wait ends and the repeated runs are about to start.
 
+Gate arguments must come before SCRIPT_PATH. You can provide one gate or both.
+
 Any arguments after `--` are forwarded to the training script.
 EOF
 }
@@ -52,7 +59,7 @@ is_positive_integer() {
     is_non_negative_integer "$1" && [ "$1" -gt 0 ]
 }
 
-parse_memory_mib() {
+try_parse_memory_mib() {
     memory_text=$1
 
     case "$memory_text" in
@@ -99,11 +106,38 @@ parse_memory_mib() {
     esac
 
     if ! is_positive_integer "$memory_number"; then
-        printf 'Invalid VRAM amount: %s\n' "$memory_text" >&2
-        exit 1
+        return 1
     fi
 
     printf '%s\n' "$((memory_number * memory_multiplier))"
+}
+
+parse_memory_mib() {
+    if ! memory_mib=$(try_parse_memory_mib "$1"); then
+        printf 'Invalid VRAM amount: %s\n' "$1" >&2
+        exit 1
+    fi
+
+    printf '%s\n' "$memory_mib"
+}
+
+try_parse_run_limit() {
+    run_limit_text=$1
+
+    case "$run_limit_text" in
+        *[Rr])
+            run_limit_text=${run_limit_text%[Rr]}
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+
+    if ! is_non_negative_integer "$run_limit_text"; then
+        return 1
+    fi
+
+    printf '%s\n' "$run_limit_text"
 }
 
 query_free_vram_mib() {
@@ -122,6 +156,24 @@ query_free_vram_mib() {
     fi
 
     printf '%s\n' "$free_vram"
+}
+
+count_active_run_repeated_processes() {
+    if [ ! -f "$show_run_repeated_script" ]; then
+        printf 'show_run_repeated.sh not found next to this script: %s\n' "$show_run_repeated_script" >&2
+        exit 1
+    fi
+
+    if ! active_count=$(sh "$show_run_repeated_script" --count); then
+        printf 'Could not read active run count from show_run_repeated.sh.\n' >&2
+        exit 1
+    fi
+    if ! is_non_negative_integer "$active_count"; then
+        printf 'Could not read active run count from show_run_repeated.sh.\n' >&2
+        exit 1
+    fi
+
+    printf '%s\n' "$active_count"
 }
 
 cleanup_lock() {
@@ -179,22 +231,94 @@ EOF
     fi
 }
 
+describe_wait_targets() {
+    if [ -n "$required_free_vram_mib" ] && [ -n "$max_other_repeated_runs" ]; then
+        printf 'Waiting for GPU %s to have at least %s MiB free and at most %s other repeated runs for %s seconds.\n' \
+            "$gpu_index" "$required_free_vram_mib" "$max_other_repeated_runs" "$stable_for_seconds"
+    elif [ -n "$required_free_vram_mib" ]; then
+        printf 'Waiting for GPU %s to have at least %s MiB free for %s seconds.\n' \
+            "$gpu_index" "$required_free_vram_mib" "$stable_for_seconds"
+    else
+        printf 'Waiting for at most %s other repeated runs for %s seconds.\n' \
+            "$max_other_repeated_runs" "$stable_for_seconds"
+    fi
+}
+
+wait_conditions_met() {
+    wait_status_message=
+
+    if [ -n "$required_free_vram_mib" ]; then
+        free_vram_mib=$(query_free_vram_mib "$gpu_index")
+        if [ "$free_vram_mib" -lt "$required_free_vram_mib" ]; then
+            wait_status_message="GPU $gpu_index free VRAM is $free_vram_mib MiB; waiting for $required_free_vram_mib MiB."
+            return 1
+        fi
+    fi
+
+    if [ -n "$max_other_repeated_runs" ]; then
+        active_run_count=$(count_active_run_repeated_processes)
+        if [ "$active_run_count" -gt "$max_other_repeated_runs" ]; then
+            wait_status_message="There are $active_run_count active repeated runs; waiting for at most $max_other_repeated_runs other repeated runs."
+            return 1
+        fi
+    fi
+
+    return 0
+}
+
 if [ $# -eq 0 ] || [ "$1" = "--help" ]; then
     usage
     exit 0
 fi
 
-required_free_vram_mib=$(parse_memory_mib "$1")
-shift
+required_free_vram_mib=
+max_other_repeated_runs=
+script_path=
 
-if [ $# -eq 0 ]; then
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --help)
+            usage
+            exit 0
+            ;;
+        --)
+            shift
+            break
+            ;;
+    esac
+
+    if [ -z "$script_path" ]; then
+        if [ -z "$required_free_vram_mib" ] && memory_mib=$(try_parse_memory_mib "$1"); then
+            required_free_vram_mib=$memory_mib
+            shift
+            continue
+        fi
+
+        if [ -z "$max_other_repeated_runs" ] && run_limit=$(try_parse_run_limit "$1"); then
+            max_other_repeated_runs=$run_limit
+            shift
+            continue
+        fi
+
+        script_path=$1
+        shift
+        break
+    fi
+
+    break
+done
+
+if [ -z "$script_path" ]; then
     printf 'Missing SCRIPT_PATH.\n' >&2
     usage >&2
     exit 1
 fi
 
-script_path=$1
-shift
+if [ -z "$required_free_vram_mib" ] && [ -z "$max_other_repeated_runs" ]; then
+    printf 'Missing gate argument. Provide a VRAM amount, a run limit like 2R, or both.\n' >&2
+    usage >&2
+    exit 1
+fi
 
 runs=5
 if [ $# -gt 0 ] && is_non_negative_integer "$1"; then
@@ -317,9 +441,15 @@ repo_root=$(
     pwd
 )
 run_repeated_script=$script_dir/run_repeated.sh
+show_run_repeated_script=$script_dir/show_run_repeated.sh
 
 if [ ! -f "$run_repeated_script" ]; then
     printf 'run_repeated.sh not found next to this script: %s\n' "$run_repeated_script" >&2
+    exit 1
+fi
+
+if [ ! -f "$show_run_repeated_script" ]; then
+    printf 'show_run_repeated.sh not found next to this script: %s\n' "$show_run_repeated_script" >&2
     exit 1
 fi
 
@@ -337,31 +467,44 @@ fi
 
 stable_started_at=
 
-printf 'Waiting for GPU %s to have at least %s MiB free for %s seconds.\n' \
-    "$gpu_index" "$required_free_vram_mib" "$stable_for_seconds"
+describe_wait_targets
 
 while :; do
     now=$(date '+%s')
-    free_vram_mib=$(query_free_vram_mib "$gpu_index")
 
-    if [ "$free_vram_mib" -ge "$required_free_vram_mib" ]; then
+    if wait_conditions_met; then
         if [ -z "$stable_started_at" ]; then
             stable_started_at=$now
-            printf 'GPU %s free VRAM is now %s MiB; starting stable timer.\n' "$gpu_index" "$free_vram_mib"
+            if [ -n "$required_free_vram_mib" ] && [ -n "$max_other_repeated_runs" ]; then
+                printf 'GPU %s free VRAM is now %s MiB and there are %s active repeated runs; starting stable timer.\n' \
+                    "$gpu_index" "$free_vram_mib" "$active_run_count"
+            elif [ -n "$required_free_vram_mib" ]; then
+                printf 'GPU %s free VRAM is now %s MiB; starting stable timer.\n' "$gpu_index" "$free_vram_mib"
+            else
+                printf 'There are now %s active repeated runs; starting stable timer.\n' "$active_run_count"
+            fi
         fi
 
         stable_elapsed=$((now - stable_started_at))
         if [ "$stable_elapsed" -ge "$stable_for_seconds" ]; then
-            printf 'GPU %s stayed above %s MiB for %s seconds. Starting repeated run.\n' \
-                "$gpu_index" "$required_free_vram_mib" "$stable_elapsed"
+            if [ -n "$required_free_vram_mib" ] && [ -n "$max_other_repeated_runs" ]; then
+                printf 'GPU %s stayed above %s MiB and there were at most %s other repeated runs for %s seconds. Starting repeated run.\n' \
+                    "$gpu_index" "$required_free_vram_mib" "$max_other_repeated_runs" "$stable_elapsed"
+            elif [ -n "$required_free_vram_mib" ]; then
+                printf 'GPU %s stayed above %s MiB for %s seconds. Starting repeated run.\n' \
+                    "$gpu_index" "$required_free_vram_mib" "$stable_elapsed"
+            else
+                printf 'There were at most %s other repeated runs for %s seconds. Starting repeated run.\n' \
+                    "$max_other_repeated_runs" "$stable_elapsed"
+            fi
             break
         fi
     else
         if [ -n "$stable_started_at" ]; then
-            printf 'GPU %s free VRAM dropped to %s MiB; resetting stable timer.\n' "$gpu_index" "$free_vram_mib"
+            printf '%s\n' "$wait_status_message"
+            printf 'Resetting stable timer.\n'
         else
-            printf 'GPU %s free VRAM is %s MiB; waiting for %s MiB.\n' \
-                "$gpu_index" "$free_vram_mib" "$required_free_vram_mib"
+            printf '%s\n' "$wait_status_message"
         fi
         stable_started_at=
     fi
