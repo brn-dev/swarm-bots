@@ -16,19 +16,12 @@ class RewardIndicatorWallScenario(WallScenario):
         return spec
 
     def _add_reward_indicator_geoms(self, spec: mujoco.MjSpec) -> None:
-        if self.forward_reward_max_y is not None:
-            self._add_visual_box(
-                spec,
-                name="RewardForwardRegion",
-                size=[self.side_wall_x, self.forward_reward_max_y / 2.0, 0.010],
-                rgba=[0.0, 0.85, 0.20, 0.2],
-            )
-            # self._add_visual_box(
-            #     spec,
-            #     name="RewardForwardCap",
-            #     size=[self.side_wall_x, 0.035, 0.045],
-            #     rgba=[0.0, 0.95, 0.95, 0.3],
-            # )
+        self._add_visual_box(
+            spec,
+            name="RewardForwardRegion",
+            size=[self.side_wall_x, 0.5, 0.010],
+            rgba=[0.0, 0.85, 0.20, 0.2],
+        )
 
         for threshold_idx in range(int(self.wall_pass_thresholds.size)):
             self._add_visual_box(
@@ -66,9 +59,9 @@ class RewardIndicatorWallScenario(WallScenario):
         model: mujoco.MjModel,
         wall_y: float,
     ) -> None:
-        if self.forward_reward_max_y is not None:
-            self._set_mocap_pos(model, data, "RewardForwardRegion", [0.0, self.forward_reward_max_y / 2.0, 0.018])
-            self._set_mocap_pos(model, data, "RewardForwardCap", [0.0, self.forward_reward_max_y, 0.085])
+        forward_reward_cap_y = wall_y + self.wall_success_threshold
+        self._set_visual_box_y_size(model, "RewardForwardRegion", forward_reward_cap_y / 2.0)
+        self._set_mocap_pos(model, data, "RewardForwardRegion", [0.0, forward_reward_cap_y / 2.0, 0.018])
 
         for threshold_idx, threshold_y in enumerate(self._compute_wall_pass_thresholds(wall_y)):
             self._set_mocap_pos(
@@ -86,6 +79,12 @@ class RewardIndicatorWallScenario(WallScenario):
         mocap_id = int(model.body_mocapid[body_id])
         if mocap_id >= 0:
             data.mocap_pos[mocap_id] = pos
+
+    @staticmethod
+    def _set_visual_box_y_size(model: mujoco.MjModel, body_name: str, y_size: float) -> None:
+        geom_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, f"{body_name}_geom")
+        if geom_id >= 0:
+            model.geom_size[geom_id, 1] = y_size
 
 
 output_path = Path("wall_scenario_reward_indicators.png")

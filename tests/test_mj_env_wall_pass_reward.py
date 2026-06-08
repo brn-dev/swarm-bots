@@ -21,7 +21,7 @@ def _make_scenario(
     scenario.wall_pass_thresholds = np.asarray([0.0] if wall_pass_thresholds is None else wall_pass_thresholds, dtype=float)
     scenario.wall_pass_reward_weight = wall_pass_reward_weight
     scenario.wall_pass_reward_skew = wall_pass_reward_skew
-    scenario.wall_success_threshold = None
+    scenario.wall_success_threshold = 100.0
     scenario.wall_success_reward = 0.0
     scenario._qpos_indices = np.asarray([[2 * unit_idx, (2 * unit_idx) + 1] for unit_idx in range(num_units)], dtype=np.int64)
     return scenario
@@ -324,7 +324,6 @@ def test_wall_success_termination_requires_at_least_one_active_unit() -> None:
 def test_wall_success_reward_is_added_once_to_weighted_progress_reward() -> None:
     scenario = _make_scenario(wall_pass_reward_skew=0.0, wall_pass_reward_weight=0.0, num_units=2)
     scenario.forward_reward_weight = 0.0
-    scenario.forward_reward_max_y = None
     scenario.wall_climb_reward_weight = 0.0
     scenario.wall_success_threshold = 1.0
     scenario.wall_success_reward = 3.0
@@ -398,7 +397,7 @@ def test_wall_climb_reward_applies_discount_factor_to_current_potential() -> Non
 def test_forward_reward_applies_discount_factor_to_current_potential() -> None:
     scenario = _make_scenario(wall_pass_reward_skew=0.0, wall_pass_reward_weight=0.0, num_units=1)
     scenario.forward_reward_weight = 1.0
-    scenario.forward_reward_max_y = None
+    scenario.wall_success_threshold = 10.0
     scenario.forward_reward_wall_boost_factor = 1.0
     scenario.wall_climb_reward_weight = 0.0
     scenario.potential_reward_discount_factor = 0.9
@@ -406,6 +405,7 @@ def test_forward_reward_applies_discount_factor_to_current_potential() -> None:
     state: dict[str, object] = {
         "progress": 1.0,
         "forward_progress_unit_y": np.asarray([1.0], dtype=float),
+        "wall_y": 0.0,
         "wall_pass_absolute_thresholds": np.asarray([], dtype=float),
         "next_threshold_for_unit": np.zeros((1,), dtype=int),
         "units_active_mask": np.asarray([True], dtype=bool),
@@ -442,7 +442,6 @@ def test_wall_climb_reward_latches_after_crossing_wall_y_without_penalty_or_retr
 def test_units_without_connections_reward_is_named_explicitly_in_cpu_scenario_state() -> None:
     scenario = _make_scenario(wall_pass_reward_skew=0.0, wall_pass_reward_weight=0.0, num_units=2)
     scenario.forward_reward_weight = 0.0
-    scenario.forward_reward_max_y = None
     scenario.wall_climb_reward_weight = 0.0
     scenario.reward_weights = {
         "progress_reward_weight": 1.0,
@@ -451,6 +450,7 @@ def test_units_without_connections_reward_is_named_explicitly_in_cpu_scenario_st
     }
     state: dict[str, object] = {
         "progress": 0.0,
+        "wall_y": 0.0,
         "wall_pass_absolute_thresholds": np.asarray([], dtype=float),
         "next_threshold_for_unit": np.zeros((2,), dtype=int),
     }

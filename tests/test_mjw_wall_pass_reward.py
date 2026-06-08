@@ -34,13 +34,12 @@ def _make_runtime(
     runtime.scenario = SimpleNamespace(
         progress_reward_weight=0.5,
         forward_reward_weight=0.0,
-        forward_reward_max_y=None,
         forward_reward_wall_boost_factor=1.0,
         forward_reward_wall_boost_distance=None,
         forward_reward_wall_boost_height_margin=None,
         wall_pass_reward_weight=wall_pass_reward_weight,
         wall_pass_reward_skew=wall_pass_reward_skew,
-        wall_success_threshold=None,
+        wall_success_threshold=100.0,
         wall_success_reward=0.0,
         wall_height=0.4,
         wall_climb_reward_weight=0.0,
@@ -50,6 +49,7 @@ def _make_runtime(
         guidance_reward_weight=1.0,
     )
     runtime.progress = torch.zeros((1,), device=device, dtype=torch.float32)
+    runtime.wall_y = torch.zeros((1,), device=device, dtype=torch.float32)
     runtime.forward_progress_unit_y = torch.zeros((1, num_units), device=device, dtype=torch.float32)
     runtime.wall_pass_absolute_thresholds = torch.tensor([thresholds], device=device, dtype=torch.float32)
     runtime.next_threshold_for_unit = torch.zeros((1, num_units), device=device, dtype=torch.long)
@@ -89,11 +89,11 @@ def test_wall_pass_reward_is_only_issued_once_per_threshold() -> None:
     assert int(runtime.next_threshold_for_unit[0, 0]) == 1
 
 
-def test_forward_reward_cap_stops_progress_reward_beyond_max_y() -> None:
+def test_forward_reward_cap_uses_wall_success_threshold_in_mjw() -> None:
     runtime = _make_runtime()
     runtime.scenario.progress_reward_weight = 1.0
     runtime.scenario.forward_reward_weight = 1.0
-    runtime.scenario.forward_reward_max_y = 0.5
+    runtime.scenario.wall_success_threshold = 0.5
     runtime.scenario.wall_pass_reward_weight = 0.0
     runtime.progress[0] = 0.45
     stable_mask = torch.tensor([True], dtype=torch.bool)

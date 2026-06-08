@@ -27,6 +27,7 @@ class WallScenario(BaseScenario):
     def __init__(
             self,
             swarm: BaseSwarm,
+            *,
             timestep: float = 0.002,
             action_repeat: int = 15,
             wall_height: float = 0.5,
@@ -40,7 +41,6 @@ class WallScenario(BaseScenario):
             force_elliptic_cone: bool = False,
             progress_reward_weight: float = 1.0,
             forward_reward_weight: float = 1.0,
-            forward_reward_max_y: float | None = None,
             forward_reward_wall_boost_factor: float = 1.0,
             forward_reward_wall_boost_distance: float | None = None,
             forward_reward_wall_boost_height_margin: float | None = None,
@@ -48,7 +48,7 @@ class WallScenario(BaseScenario):
             wall_pass_reward_weight: float = 0.0,
             wall_pass_reward_skew: float = 0.0,
             wall_pass_thresholds: list[float] | None = None,
-            wall_success_threshold: float | None = None,
+            wall_success_threshold: float,
             wall_success_reward: float = 0.0,
             wall_climb_reward_weight: float = 0.0,
             wall_climb_reward_distance: float = 0.45,
@@ -69,7 +69,6 @@ class WallScenario(BaseScenario):
         self.wall_height = float(wall_height)
         self.first_wall_distance = first_wall_distance
         self.forward_reward_weight = float(forward_reward_weight)
-        self.forward_reward_max_y = None if forward_reward_max_y is None else float(forward_reward_max_y)
         self.forward_reward_wall_boost_factor = float(forward_reward_wall_boost_factor)
         self.forward_reward_wall_boost_distance = (
             None
@@ -103,9 +102,9 @@ class WallScenario(BaseScenario):
         if wall_pass_thresholds is None:
             wall_pass_thresholds = [0.0]
         self.wall_pass_thresholds = np.sort(wall_pass_thresholds)
-        self.wall_success_threshold = None if wall_success_threshold is None else float(wall_success_threshold)
+        self.wall_success_threshold = float(wall_success_threshold)
         self.wall_success_reward = float(wall_success_reward)
-        if self.wall_success_threshold is not None and self.wall_success_threshold <= 0.0:
+        if self.wall_success_threshold <= 0.0:
             raise ValueError(f"Expected wall_success_threshold > 0, got {self.wall_success_threshold}")
 
         super().__init__(
@@ -144,7 +143,6 @@ class WallScenario(BaseScenario):
             "first_wall_distance": self.first_wall_distance,
             "street_width": self.street_width,
             "forward_reward_weight": self.forward_reward_weight,
-            "forward_reward_max_y": self.forward_reward_max_y,
             "forward_reward_wall_boost_factor": self.forward_reward_wall_boost_factor,
             "forward_reward_wall_boost_distance": self.forward_reward_wall_boost_distance,
             "forward_reward_wall_boost_height_margin": self.forward_reward_wall_boost_height_margin,
@@ -325,10 +323,6 @@ class WallScenario(BaseScenario):
             data: mujoco.MjData,
             state: dict,
     ) -> bool:
-        if self.wall_success_threshold is None:
-            state["success"] = False
-            return False
-
         wall_y = state.get("wall_y")
         if wall_y is None:
             state["success"] = False
@@ -524,23 +518,25 @@ class WallScenario(BaseScenario):
             self,
             data: mujoco.MjData,
             units_active_mask: np.ndarray | None,
+            state: dict,
     ) -> float:
-        unit_y = self._compute_forward_progress_unit_y(data)
+        unit_y = self._compute_forward_progress_unit_y(data, state)
         return self._mean_active_forward_progress(unit_y, units_active_mask)
 
-    def _compute_forward_progress_unit_y(self, data: mujoco.MjData) -> np.ndarray:
+    def _compute_forward_progress_unit_y(self, data: mujoco.MjData, state: dict) -> np.ndarray:
         unit_y = np.asarray(data.qpos[self._qpos_indices[:, 1]], dtype=float)
-        if self.forward_reward_max_y is not None:
-            unit_y = np.minimum(unit_y, self.forward_reward_max_y)
-        return unit_y
+        return np.minimum(unit_y, self._forward_reward_cap_y(state))
 
     def _compute_forward_reward_unit_potential(
             self,
             data: mujoco.MjData,
             state: dict,
     ) -> np.ndarray:
-        unit_y = self._compute_forward_progress_unit_y(data)
+        unit_y = self._compute_forward_progress_unit_y(data, state)
         return self._apply_forward_reward_wall_boost_to_potential(unit_y, data, state)
+
+    def _forward_reward_cap_y(self, state: dict) -> float:
+        return float(state["wall_y"]) + self.wall_success_threshold
 
     def _mean_active_forward_progress(
             self,
