@@ -30,6 +30,9 @@ Options:
   --no-lock               Disable wait/start locking.
   --help                  Show this help text.
 
+If SWARMBOTS_DISCORD_WEBHOOK_URL is set, a Discord notification is sent when
+the wait ends and the repeated runs are about to start.
+
 Any arguments after `--` are forwarded to the training script.
 EOF
 }
@@ -153,6 +156,27 @@ acquire_lock() {
 
     lock_acquired=1
     printf '%s\n' "$$" > "$lock_dir/pid"
+}
+
+send_start_notification() {
+    if [ -z "${SWARMBOTS_DISCORD_WEBHOOK_URL:-}" ]; then
+        return 0
+    fi
+
+    machine_name=$(hostname 2>/dev/null || uname -n)
+    notification_message=$(
+        cat <<EOF
+wait_then_run_repeated starting
+machine: $machine_name
+gpu: $gpu_index
+script: $script_path
+runs: $runs
+EOF
+    )
+
+    if ! "$python_executable" "$repo_root/scripts/utils/send_discord_notification.py" --message "$notification_message" >/dev/null; then
+        printf 'Failed to send Discord start notification.\n' >&2
+    fi
 }
 
 if [ $# -eq 0 ] || [ "$1" = "--help" ]; then
@@ -288,6 +312,10 @@ script_dir=$(
     cd -- "$(dirname -- "$0")"
     pwd
 )
+repo_root=$(
+    cd -- "$script_dir/../.."
+    pwd
+)
 run_repeated_script=$script_dir/run_repeated.sh
 
 if [ ! -f "$run_repeated_script" ]; then
@@ -342,6 +370,7 @@ while :; do
 done
 
 cleanup_lock
+send_start_notification
 
 if [ -n "$stop_file" ]; then
     sh "$run_repeated_script" "$script_path" "$runs" \
