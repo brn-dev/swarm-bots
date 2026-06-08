@@ -187,3 +187,9 @@ def make_scenario_kwargs(*parts: Mapping[str, object]) -> dict[str, object]:
     for part in parts:
         merged.update(deepcopy(dict(part)))
     return merged
+
+
+PO_WALL_MEDIUM_SCENARIO_KWARGS = make_scenario_kwargs(
+    MEDIUM_WALL_SCENARIO_KWARGS,
+    {"first_wall_distance": UniformDistParams.from_midpoint_and_width(1.0, 0.5)},
+)
