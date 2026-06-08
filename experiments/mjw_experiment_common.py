@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import argparse
 import math
 import sys
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
@@ -103,6 +105,30 @@ class MATNormalizationConfig:
 def configure_float32_matmul_precision() -> None:
     if torch.cuda.is_available():
         torch.set_float32_matmul_precision("high")
+
+
+def _get_requested_cuda_idx(argv: Sequence[str] | None = None) -> int | None:
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--cuda_idx", "--cuda-idx", type=int, dest="cuda_idx")
+    parsed_args, _ = parser.parse_known_args(sys.argv[1:] if argv is None else list(argv))
+    return parsed_args.cuda_idx
+
+
+def _configure_cuda_device(*, cuda_idx: int | None) -> None:
+    if cuda_idx is None:
+        return
+    if cuda_idx < 0:
+        raise ValueError(f"cuda_idx must be non-negative, got {cuda_idx}")
+    if not torch.cuda.is_available():
+        raise RuntimeError("CUDA was requested via --cuda_idx, but torch.cuda.is_available() is False.")
+
+    visible_device_count = torch.cuda.device_count()
+    if cuda_idx >= visible_device_count:
+        raise RuntimeError(
+            f"Requested CUDA device {cuda_idx}, but only {visible_device_count} CUDA device(s) are visible."
+        )
+
+    torch.cuda.set_device(cuda_idx)
 
 
 def _make_scenario(*, scenario_name: MJWScenarioName, scenario_kwargs: dict[str, object] | None) -> Any:
@@ -327,6 +353,9 @@ def run_experiment(
 ) -> None:
     from swarmbots.learn.torch_logging import enable_torch_compile_logging
 
+    cuda_idx = _get_requested_cuda_idx()
+    _configure_cuda_device(cuda_idx=cuda_idx)
+
     logger.remove()
     logger.add(
         sys.stderr,
@@ -377,6 +406,8 @@ def run_experiment(
 
     logger.info(f"{rollout_device = }")
     logger.info(f"{train_device = }")
+    if cuda_idx is not None:
+        logger.info(f"CUDA device index requested via --cuda_idx={cuda_idx}")
     mat_decoder_self_attention_mode_metadata = (
         mat_decoder_self_attention_mode.name
         if policy_variant == "mat_qcs"
