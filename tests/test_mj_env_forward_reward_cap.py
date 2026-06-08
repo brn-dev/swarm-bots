@@ -4,11 +4,11 @@ from types import SimpleNamespace
 
 import numpy as np
 
-from swarmbots.mj_env.scenarios.obstacle_street_scenario import ObstacleStreetScenario
+from swarmbots.mj_env.scenarios.wall_scenario import WallScenario
 
 
 def test_forward_reward_cap_is_applied_per_unit_in_mj_env() -> None:
-    scenario = object.__new__(ObstacleStreetScenario)
+    scenario = object.__new__(WallScenario)
     scenario.forward_reward_weight = 1.0
     scenario.forward_reward_max_y = 1.0
     scenario._qpos_indices = np.array([[0, 0], [1, 1]], dtype=int)
@@ -28,13 +28,13 @@ def test_forward_reward_cap_is_applied_per_unit_in_mj_env() -> None:
 
 
 def test_wall_height_forward_reward_boost_applies_per_high_unit_in_mj_env() -> None:
-    scenario = object.__new__(ObstacleStreetScenario)
+    scenario = object.__new__(WallScenario)
     scenario.forward_reward_weight = 1.0
     scenario.forward_reward_max_y = None
     scenario.forward_reward_wall_boost_factor = 3.0
     scenario.forward_reward_wall_boost_distance = 0.5
     scenario.forward_reward_wall_boost_height_margin = 0.1
-    scenario.wall_heights = [0.4]
+    scenario.wall_height = 0.4
     scenario.swarm = SimpleNamespace(body_radius=0.1)
     scenario._qpos_indices = np.array([[0, 1, 2], [3, 4, 5]], dtype=int)
     scenario._compute_wall_pass_reward = lambda data, state: 0.0
@@ -43,7 +43,7 @@ def test_wall_height_forward_reward_boost_applies_per_high_unit_in_mj_env() -> N
     state = {
         "progress": 1.2,
         "forward_progress_unit_y": np.array([1.8, 0.6], dtype=float),
-        "wall_y": np.array([1.0], dtype=float),
+        "wall_y": 1.0,
         "units_active_mask": np.array([True, True], dtype=bool),
     }
     data = SimpleNamespace(qpos=np.array([0.0, 0.7, 0.5, 0.0, 0.7, 0.49], dtype=float))
@@ -55,13 +55,13 @@ def test_wall_height_forward_reward_boost_applies_per_high_unit_in_mj_env() -> N
 
 
 def test_wall_height_forward_reward_boost_penalizes_backtracking_symmetrically_in_mj_env() -> None:
-    scenario = object.__new__(ObstacleStreetScenario)
+    scenario = object.__new__(WallScenario)
     scenario.forward_reward_weight = 1.0
     scenario.forward_reward_max_y = None
     scenario.forward_reward_wall_boost_factor = 3.0
     scenario.forward_reward_wall_boost_distance = 0.5
     scenario.forward_reward_wall_boost_height_margin = 0.1
-    scenario.wall_heights = [0.4]
+    scenario.wall_height = 0.4
     scenario.swarm = SimpleNamespace(body_radius=0.1)
     scenario.potential_reward_discount_factor = 1.0
     scenario._qpos_indices = np.array([[0, 1, 2]], dtype=int)
@@ -71,7 +71,7 @@ def test_wall_height_forward_reward_boost_penalizes_backtracking_symmetrically_i
     state = {
         "progress": 2.1,
         "forward_progress_unit_y": np.array([2.1], dtype=float),
-        "wall_y": np.array([1.0], dtype=float),
+        "wall_y": 1.0,
         "units_active_mask": np.array([True], dtype=bool),
     }
     backtrack = SimpleNamespace(qpos=np.array([0.0, 0.6, 0.5], dtype=float))
@@ -83,3 +83,5 @@ def test_wall_height_forward_reward_boost_penalizes_backtracking_symmetrically_i
     assert np.isclose(backtrack_reward, -0.3)
     assert np.isclose(retry_reward, 0.3)
     assert np.isclose(backtrack_reward + retry_reward, 0.0)
+
+

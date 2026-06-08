@@ -1,16 +1,15 @@
 from pathlib import Path
 
 import mujoco
-import numpy as np
 from PIL import Image
 
-from swarmbots.mj_env.scenarios.obstacle_street_scenario import ObstacleStreetScenario
+from swarmbots.mj_env.scenarios.wall_scenario import WallScenario
 from swarmbots.mj_env.scenarios.scenario_presets import DEFAULT_KWARGS, WALL_SCENARIO_KWARGS, default_wall
 from swarmbots.mj_env.swarm_bots_env import SwarmBotsEnv
 from swarmbots.scenario_presets.scenario_presets_kwargs import make_scenario_kwargs
 
 
-class RewardIndicatorWallScenario(ObstacleStreetScenario):
+class RewardIndicatorWallScenario(WallScenario):
     def _create_scenario_spec(self) -> mujoco.MjSpec:
         spec = super()._create_scenario_spec()
         self._add_reward_indicator_geoms(spec)
@@ -31,7 +30,7 @@ class RewardIndicatorWallScenario(ObstacleStreetScenario):
             #     rgba=[0.0, 0.95, 0.95, 0.3],
             # )
 
-        for threshold_idx in range(self.num_walls * int(self.wall_pass_thresholds.size)):
+        for threshold_idx in range(int(self.wall_pass_thresholds.size)):
             self._add_visual_box(
                 spec,
                 name=f"RewardWallPassThreshold_{threshold_idx}",
@@ -51,27 +50,27 @@ class RewardIndicatorWallScenario(ObstacleStreetScenario):
         geom.contype = 0
         geom.conaffinity = 0
 
-    def reset_walls_and_ramps(
+    def reset_wall(
         self,
         data: mujoco.MjData,
         model: mujoco.MjModel,
         hidden_global_vars: list[float],
-    ) -> np.ndarray:
-        wall_y_values = super().reset_walls_and_ramps(data, model, hidden_global_vars)
-        self._position_reward_indicators(data, model, wall_y_values)
-        return wall_y_values
+    ) -> float:
+        wall_y = super().reset_wall(data, model, hidden_global_vars)
+        self._position_reward_indicators(data, model, wall_y)
+        return wall_y
 
     def _position_reward_indicators(
         self,
         data: mujoco.MjData,
         model: mujoco.MjModel,
-        wall_y_values: np.ndarray,
+        wall_y: float,
     ) -> None:
         if self.forward_reward_max_y is not None:
             self._set_mocap_pos(model, data, "RewardForwardRegion", [0.0, self.forward_reward_max_y / 2.0, 0.018])
             self._set_mocap_pos(model, data, "RewardForwardCap", [0.0, self.forward_reward_max_y, 0.085])
 
-        for threshold_idx, threshold_y in enumerate(self._compute_wall_pass_thresholds(wall_y_values)):
+        for threshold_idx, threshold_y in enumerate(self._compute_wall_pass_thresholds(wall_y)):
             self._set_mocap_pos(
                 model,
                 data,

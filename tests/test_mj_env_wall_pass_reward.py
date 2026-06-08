@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from swarmbots.mj_env.scenarios.obstacle_street_scenario import ObstacleStreetScenario
+from swarmbots.mj_env.scenarios.wall_scenario import WallScenario
 
 
 def _make_scenario(
@@ -15,8 +15,8 @@ def _make_scenario(
     wall_pass_thresholds: list[float] | None = None,
     wall_pass_reward_weight: float = 3.0,
     num_units: int = 3,
-) -> ObstacleStreetScenario:
-    scenario = object.__new__(ObstacleStreetScenario)
+) -> WallScenario:
+    scenario = object.__new__(WallScenario)
     scenario.num_units = num_units
     scenario.wall_pass_thresholds = np.asarray([0.0] if wall_pass_thresholds is None else wall_pass_thresholds, dtype=float)
     scenario.wall_pass_reward_weight = wall_pass_reward_weight
@@ -47,14 +47,13 @@ def _make_data(unit_y: list[float]) -> SimpleNamespace:
     return SimpleNamespace(qpos=qpos)
 
 
-def _make_wall_climb_scenario(*, potential_reward_discount_factor: float = 1.0) -> ObstacleStreetScenario:
-    scenario = object.__new__(ObstacleStreetScenario)
+def _make_wall_climb_scenario(*, potential_reward_discount_factor: float = 1.0) -> WallScenario:
+    scenario = object.__new__(WallScenario)
     scenario.num_units = 1
-    scenario.num_walls = 1
     scenario.wall_climb_reward_weight = 5.0
     scenario.wall_climb_reward_distance = 0.5
     scenario.potential_reward_discount_factor = potential_reward_discount_factor
-    scenario.wall_heights = [0.4]
+    scenario.wall_height = 0.4
     scenario.swarm = SimpleNamespace(body_radius=0.1)
     scenario._qpos_indices = np.asarray([[0, 1, 2]], dtype=np.int64)
     return scenario
@@ -88,7 +87,7 @@ def _oracle_wall_pass_step(
     thresholds: np.ndarray,
     next_threshold_for_unit: np.ndarray,
     active_mask: np.ndarray,
-    thresholds_per_wall: int,
+    num_wall_thresholds: int,
     reward_weight: float,
     skew: float,
 ) -> tuple[float, int, np.ndarray, np.ndarray]:
@@ -113,8 +112,8 @@ def _oracle_wall_pass_step(
             num_passed += 1
         new_next_thresholds[unit_idx] = max(int(next_threshold_for_unit[unit_idx]), total_passed)
 
-    if active_units_count > 0 and thresholds_per_wall > 0:
-        reward = (reward_units / float(active_units_count * thresholds_per_wall)) * reward_weight
+    if active_units_count > 0 and num_wall_thresholds > 0:
+        reward = (reward_units / float(active_units_count * num_wall_thresholds)) * reward_weight
     else:
         reward = 0.0
     passed_thresholds_mask = np.arange(thresholds.size)[np.newaxis, :] < new_next_thresholds[:, np.newaxis]
@@ -229,7 +228,7 @@ def test_wall_pass_reward_rank_weights_sum_to_active_unit_count() -> None:
 def test_wall_pass_reward_matches_independent_oracle_exhaustively() -> None:
     reward_weight = 7.5
     skews = [0.0, 0.25, 1.0, 2.0]
-    thresholds_per_wall_options = [1, 2, 3]
+    num_wall_threshold_options = [1, 2, 3]
 
     for num_units in range(1, 5):
         active_masks = [
@@ -237,11 +236,11 @@ def test_wall_pass_reward_matches_independent_oracle_exhaustively() -> None:
             for mask in product([False, True], repeat=num_units)
             if any(mask)
         ]
-        for active_mask, thresholds_per_wall, num_walls, skew in product(active_masks, thresholds_per_wall_options, [1, 2], skews):
-            thresholds = np.arange(thresholds_per_wall * num_walls, dtype=float) + 0.5
+        for active_mask, num_wall_thresholds, skew in product(active_masks, num_wall_threshold_options, skews):
+            thresholds = np.arange(num_wall_thresholds, dtype=float) + 0.5
             scenario = _make_scenario(
                 wall_pass_reward_skew=skew,
-                wall_pass_thresholds=[0.0] * thresholds_per_wall,
+                wall_pass_thresholds=[0.0] * num_wall_thresholds,
                 wall_pass_reward_weight=reward_weight,
                 num_units=num_units,
             )
@@ -262,7 +261,7 @@ def test_wall_pass_reward_matches_independent_oracle_exhaustively() -> None:
                         thresholds=thresholds,
                         next_threshold_for_unit=oracle_next_thresholds,
                         active_mask=active_mask,
-                        thresholds_per_wall=thresholds_per_wall,
+                        num_wall_thresholds=num_wall_thresholds,
                         reward_weight=reward_weight,
                         skew=skew,
                     )
@@ -270,12 +269,12 @@ def test_wall_pass_reward_matches_independent_oracle_exhaustively() -> None:
                     total_oracle_reward += oracle_reward
 
                     assert actual_reward == pytest.approx(oracle_reward)
-                    assert state["num_walls_passed"] == oracle_num_passed
+                    assert state["num_wall_thresholds_passed"] == oracle_num_passed
                     assert state["next_threshold_for_unit"].tolist() == oracle_next_thresholds.tolist()
                     assert state["passed_thresholds_mask"].tolist() == oracle_passed_mask.tolist()
 
                 assert total_reward == pytest.approx(total_oracle_reward)
-                max_reward = reward_weight * num_walls
+                max_reward = reward_weight
                 if all(step_active >= thresholds.size for unit_idx, step_active in enumerate(schedule[-1]) if active_mask[unit_idx]):
                     assert total_reward == pytest.approx(max_reward)
 
@@ -287,7 +286,7 @@ def test_wall_pass_reward_handles_no_active_units() -> None:
     reward = scenario._compute_wall_pass_reward(_make_data([0.6, 0.6, 0.6]), state)
 
     assert reward == 0.0
-    assert state["num_walls_passed"] == 0
+    assert state["num_wall_thresholds_passed"] == 0
     assert state["next_threshold_for_unit"].tolist() == [0, 0, 0]
     assert state["passed_thresholds_mask"].tolist() == [[False], [False], [False]]
 
@@ -296,7 +295,7 @@ def test_wall_success_termination_uses_separate_threshold_for_active_units() -> 
     scenario = _make_scenario(wall_pass_reward_skew=0.0, wall_pass_reward_weight=0.0)
     scenario.wall_success_threshold = 1.0
     state: dict[str, object] = {
-        "wall_y": np.asarray([1.0], dtype=float),
+        "wall_y": 1.0,
         "units_active_mask": np.asarray([True, False, True], dtype=bool),
     }
 
@@ -312,7 +311,7 @@ def test_wall_success_termination_requires_at_least_one_active_unit() -> None:
     scenario = _make_scenario(wall_pass_reward_skew=0.0, wall_pass_reward_weight=0.0)
     scenario.wall_success_threshold = 1.0
     state: dict[str, object] = {
-        "wall_y": np.asarray([1.0], dtype=float),
+        "wall_y": 1.0,
         "units_active_mask": np.asarray([False, False, False], dtype=bool),
     }
 
@@ -336,7 +335,7 @@ def test_wall_success_reward_is_added_once_to_weighted_progress_reward() -> None
     }
     state: dict[str, object] = {
         "progress": 0.0,
-        "wall_y": np.asarray([1.0], dtype=float),
+        "wall_y": 1.0,
         "wall_pass_absolute_thresholds": np.asarray([], dtype=float),
         "next_threshold_for_unit": np.zeros((2,), dtype=int),
         "units_active_mask": np.asarray([True, True], dtype=bool),
@@ -362,8 +361,8 @@ def test_wall_success_reward_is_added_once_to_weighted_progress_reward() -> None
 def test_wall_climb_reward_uses_signed_potential_delta_so_retry_is_rewarded() -> None:
     scenario = _make_wall_climb_scenario()
     state: dict[str, object] = {
-        "wall_y": np.asarray([1.0], dtype=float),
-        "wall_climb_potential": np.zeros((1, 1), dtype=np.float32),
+        "wall_y": 1.0,
+        "wall_climb_potential": np.zeros((1,), dtype=np.float32),
         "units_active_mask": np.asarray([True], dtype=bool),
     }
 
@@ -381,8 +380,8 @@ def test_wall_climb_reward_applies_discount_factor_to_current_potential() -> Non
     discount_factor = 0.9
     scenario = _make_wall_climb_scenario(potential_reward_discount_factor=discount_factor)
     state: dict[str, object] = {
-        "wall_y": np.asarray([1.0], dtype=float),
-        "wall_climb_potential": np.zeros((1, 1), dtype=np.float32),
+        "wall_y": 1.0,
+        "wall_climb_potential": np.zeros((1,), dtype=np.float32),
         "units_active_mask": np.asarray([True], dtype=bool),
     }
 
@@ -422,9 +421,9 @@ def test_forward_reward_applies_discount_factor_to_current_potential() -> None:
 def test_wall_climb_reward_latches_after_crossing_wall_y_without_penalty_or_retry_reward() -> None:
     scenario = _make_wall_climb_scenario()
     state: dict[str, object] = {
-        "wall_y": np.asarray([1.0], dtype=float),
-        "wall_climb_potential": np.zeros((1, 1), dtype=np.float32),
-        "wall_climb_done_mask": np.zeros((1, 1), dtype=bool),
+        "wall_y": 1.0,
+        "wall_climb_potential": np.zeros((1,), dtype=np.float32),
+        "wall_climb_done_mask": np.zeros((1,), dtype=bool),
         "units_active_mask": np.asarray([True], dtype=bool),
     }
 
@@ -436,8 +435,8 @@ def test_wall_climb_reward_latches_after_crossing_wall_y_without_penalty_or_retr
     assert climb == pytest.approx(expected_reward)
     assert cross_wall_y == pytest.approx(0.0)
     assert retry_after_backtracking == pytest.approx(0.0)
-    assert state["wall_climb_done_mask"].tolist() == [[True]]
-    assert state["wall_climb_potential"].tolist() == [[0.0]]
+    assert state["wall_climb_done_mask"].tolist() == [True]
+    assert state["wall_climb_potential"].tolist() == [0.0]
 
 
 def test_units_without_connections_reward_is_named_explicitly_in_cpu_scenario_state() -> None:
@@ -473,3 +472,5 @@ def test_units_without_connections_reward_is_named_explicitly_in_cpu_scenario_st
     assert state["weighted_guidance_reward"] == pytest.approx(-0.5)
     assert state["reward_terms"]["units_without_connections"] == pytest.approx(-0.5)
     assert "guidance" not in state["reward_terms"]
+
+

@@ -7,7 +7,7 @@ import threading
 import re
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Optional, Collection, Callable, Self
 
@@ -71,6 +71,9 @@ class BaseAlgorithm(abc.ABC):
         self._command_log_path: Path | None = None
         self._pause_until_monotonic: float | None = None
         self._pause_notice_logged: bool = False
+        self._active_max_total_timesteps: int | None = None
+        self._active_learn_started_monotonic: float | None = None
+        self._active_learn_started_timesteps: int | None = None
 
     @abc.abstractmethod
     def get_hyper_parameters(self) -> dict[str, Any]:
@@ -191,6 +194,9 @@ class BaseAlgorithm(abc.ABC):
         self._active_run_dir = run_dir
         self._active_extra_run_metadata = extra_run_metadata
         self._active_save_optimizer = save_optimizer
+        self._active_max_total_timesteps = max_total_timesteps
+        self._active_learn_started_monotonic = time.monotonic()
+        self._active_learn_started_timesteps = self.n_total_timesteps
         self._stop_requested = False
         self._stop_should_save = True
         self._stop_save_optimizer = None
@@ -293,6 +299,9 @@ class BaseAlgorithm(abc.ABC):
             self._active_run_dir = None
             self._active_extra_run_metadata = None
             self._active_save_optimizer = True
+            self._active_max_total_timesteps = None
+            self._active_learn_started_monotonic = None
+            self._active_learn_started_timesteps = None
             self._stop_requested = False
             self._stop_should_save = True
             self._stop_save_optimizer = None
@@ -481,6 +490,9 @@ class BaseAlgorithm(abc.ABC):
             return False
         elif cmd in {"show_reward_weights", "show_rw"}:
             self._cmd_show_reward_weights(params)
+            return False
+        elif cmd in {"show_eta", "eta"}:
+            self._cmd_show_eta(params)
             return False
         elif cmd == 'set_lr':
             lr = json.loads(params)
@@ -854,6 +866,21 @@ class BaseAlgorithm(abc.ABC):
         first = results[0] if results else None
         logger.info(first)
 
+    def _cmd_show_eta(self, params: str) -> None:
+        _ = params
+        eta = self._build_run_eta_estimate()
+        if eta is None:
+            logger.info({
+                "estimated_finish_at": None,
+                "remaining_duration": None,
+                "remaining_timesteps": None,
+                "observed_throughput_tps": None,
+                "reason": "Need at least one completed iteration in the current learn() call.",
+            })
+            return
+
+        logger.info(eta)
+
     def _cmd_set_reward_weights(self, params: str, extra_run_metadata: dict[str, Any] | None) -> None:
         config = _parse_params_maybe_json(params)
         if not isinstance(config, dict):
@@ -886,6 +913,40 @@ class BaseAlgorithm(abc.ABC):
         logger.error(f"Reward weights update failed in {len(failed)}/{len(results)} env(s): {reward_weights}")
         for i, res in failed:
             logger.error(f"env[{i}] update failed: {res}")
+
+    def _build_run_eta_estimate(
+            self,
+            current_time: datetime | None = None,
+            elapsed_seconds: float | None = None,
+    ) -> dict[str, Any] | None:
+        max_total_timesteps = self._active_max_total_timesteps
+        if max_total_timesteps is None:
+            return None
+
+        learn_started_timesteps = self._active_learn_started_timesteps
+        learn_started_monotonic = self._active_learn_started_monotonic
+        if learn_started_timesteps is None or learn_started_monotonic is None:
+            return None
+
+        completed_timesteps = self.n_total_timesteps - learn_started_timesteps
+        if completed_timesteps <= 0:
+            return None
+
+        elapsed_seconds = time.monotonic() - learn_started_monotonic if elapsed_seconds is None else elapsed_seconds
+        if elapsed_seconds <= 0.0:
+            return None
+
+        current_time = datetime.now().astimezone() if current_time is None else current_time
+        remaining_timesteps = max(0, max_total_timesteps - self.n_total_timesteps)
+        observed_throughput_tps = completed_timesteps / elapsed_seconds
+        remaining_duration_seconds = remaining_timesteps / observed_throughput_tps
+        estimated_finish_at = current_time + timedelta(seconds=remaining_duration_seconds)
+        return {
+            "estimated_finish_at": estimated_finish_at.isoformat(timespec="seconds"),
+            "remaining_duration": _format_duration_seconds(remaining_duration_seconds),
+            "remaining_timesteps": remaining_timesteps,
+            "observed_throughput_tps": round(observed_throughput_tps, 3),
+        }
 
 
 def _parse_step_from_metadata_filename(path: Path) -> int | None:

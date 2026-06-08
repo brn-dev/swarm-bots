@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass
 from typing import Any, Iterable
 
@@ -9,7 +8,7 @@ import numpy as np
 from gymnasium import spaces
 from gymnasium.vector.utils import batch_space
 
-from swarmbots.mj_env.float_or_dist_params import FloatOrBoundedDistParams, FloatOrDistParams, fodp_low
+from swarmbots.mj_env.float_or_dist_params import FloatOrDistParams
 from swarmbots.mjw_env.scenarios.base_mjw_scenario import BaseMJWScenario, MJWRuntimeBindings, MJWRecordingCameraConfig
 from swarmbots.mjw_env.swarm.mjw_homogeneous_swarm import MJWHomogeneousSwarm
 
@@ -28,7 +27,7 @@ def _hinges_per_limb(unit_config: tuple[object, ...]) -> int:
 
 
 @dataclass
-class MJWObstacleStreetScenario(BaseMJWScenario):
+class MJWWallScenario(BaseMJWScenario):
     swarm: MJWHomogeneousSwarm
     timestep: float
     action_repeat: int
@@ -49,14 +48,9 @@ class MJWObstacleStreetScenario(BaseMJWScenario):
     reset_settle_timestep_scale: float
     swarm_start_x: FloatOrDistParams
     swarm_start_y: FloatOrDistParams
-    num_walls: int
-    wall_height: float | list[float]
-    inter_wall_distance: FloatOrBoundedDistParams
+    wall_height: float
     first_wall_distance: FloatOrDistParams
-    opening_width: FloatOrDistParams | list[FloatOrDistParams]
-    unusable_opening_offset: FloatOrDistParams
     street_width: float
-    no_initial_ramp: bool
     wall_pass_reward_weight: float
     wall_pass_thresholds: list[float]
     wall_pass_reward_skew: float = 0.0
@@ -75,7 +69,7 @@ class MJWObstacleStreetScenario(BaseMJWScenario):
 
     def __post_init__(self) -> None:
         if self.include_connectors_xquat_in_obs:
-            raise ValueError("MJWObstacleStreetScenario currently does not support connector quats in observations")
+            raise ValueError("MJWWallScenario currently does not support connector quats in observations")
         if self.timestep <= 0.0:
             raise ValueError(f"Expected timestep > 0, got {self.timestep}")
         if self.action_repeat <= 0:
@@ -101,6 +95,7 @@ class MJWObstacleStreetScenario(BaseMJWScenario):
                     "Expected forward_reward_wall_boost_height_margin >= 0, "
                     f"got {self.forward_reward_wall_boost_height_margin}"
                 )
+        self.wall_height = float(self.wall_height)
         self.wall_climb_reward_weight = float(self.wall_climb_reward_weight)
         self.wall_climb_reward_distance = float(self.wall_climb_reward_distance)
         self.wall_success_reward = float(self.wall_success_reward)
@@ -110,17 +105,9 @@ class MJWObstacleStreetScenario(BaseMJWScenario):
             self.wall_success_threshold = float(self.wall_success_threshold)
             if self.wall_success_threshold <= 0.0:
                 raise ValueError(f"Expected wall_success_threshold > 0, got {self.wall_success_threshold}")
-        self.wall_heights = self.wall_height if isinstance(self.wall_height, list) else [self.wall_height] * self.num_walls
-        self.opening_widths = self.opening_width if isinstance(self.opening_width, list) else [self.opening_width] * self.num_walls
+        self.street_width = float(self.street_width)
         self.side_wall_x = self.street_width / 2.0
-        min_inter_wall_distance = fodp_low(self.inter_wall_distance)
-        if min_inter_wall_distance <= 1.0:
-            raise ValueError(f"Expected inter_wall_distance.low > 1.0, got {min_inter_wall_distance}")
-        self.ramp_length = min_inter_wall_distance - 1.0
-        self.ramp_range_x = self.side_wall_x - 1.5
-        self.ramp_angles = [math.asin(float(wh) / self.ramp_length) + math.pi / 64.0 for wh in self.wall_heights]
-        self.ramp_distances_to_wall = [self.ramp_length * math.cos(angle) for angle in self.ramp_angles]
-        self.total_thresholds = self.num_walls * len(self.wall_pass_thresholds)
+        self.total_thresholds = len(self.wall_pass_thresholds)
         self.inactive_area_location = (self.street_width * 2.0, 0.0, 0.1)
 
     def get_settings(self) -> dict[str, Any]:
@@ -148,14 +135,9 @@ class MJWObstacleStreetScenario(BaseMJWScenario):
             "seed": self.seed,
             "reset_settle_time": self.reset_settle_time,
             "reset_settle_timestep_scale": self.reset_settle_timestep_scale,
-            "num_walls": self.num_walls,
-            "wall_heights": list(self.wall_heights),
-            "inter_wall_distance": self.inter_wall_distance,
+            "wall_height": self.wall_height,
             "first_wall_distance": self.first_wall_distance,
-            "opening_widths": list(self.opening_widths),
-            "unusable_opening_offset": self.unusable_opening_offset,
             "street_width": self.street_width,
-            "no_initial_ramp": self.no_initial_ramp,
             "forward_reward_weight": self.forward_reward_weight,
             "forward_reward_max_y": self.forward_reward_max_y,
             "forward_reward_wall_boost_factor": self.forward_reward_wall_boost_factor,
@@ -174,9 +156,8 @@ class MJWObstacleStreetScenario(BaseMJWScenario):
 
     def get_default_recording_camera_config(self) -> MJWRecordingCameraConfig | None:
         first_wall_distance = self.first_wall_distance if isinstance(self.first_wall_distance, (int, float)) else 1.0
-        max_wall_height = max(float(height) for height in self.wall_heights)
         lookat_y = max(0.75, min(float(first_wall_distance) * 0.9, float(first_wall_distance) + 0.5))
-        lookat_z = max(0.35, max_wall_height * 1.25)
+        lookat_z = max(0.35, self.wall_height * 1.25)
         distance = max(3.0, min(8.0, self.street_width * 0.45 + self.swarm.max_unit_extent * 1.5))
         return MJWRecordingCameraConfig(
             lookat=(0.0, lookat_y, lookat_z),
@@ -214,31 +195,12 @@ class MJWObstacleStreetScenario(BaseMJWScenario):
         swarm_site = worldbody.add_site(pos=[0, 0, 0], name="swarm_site")
         spec.attach(self.swarm.create_swarm_spec(seed=self.seed), "", site=swarm_site)
 
-        for wall_idx in range(self.num_walls):
-            body_left = worldbody.add_body(name=f"Wall_{wall_idx}_Left", mocap=True, pos=[0, 0, 0])
-            body_left.add_geom(
-                type=mujoco.mjtGeom.mjGEOM_BOX,
-                size=[25.0 / 2.0, 0.1, self.wall_heights[wall_idx]],
-                rgba=[0.5, 0.5, 0.6, 1],
-            )
-            body_right = worldbody.add_body(name=f"Wall_{wall_idx}_Right", mocap=True, pos=[0, 0, 0])
-            body_right.add_geom(
-                type=mujoco.mjtGeom.mjGEOM_BOX,
-                size=[25.0 / 2.0, 0.1, self.wall_heights[wall_idx]],
-                rgba=[0.5, 0.5, 0.6, 1],
-            )
-            if wall_idx > 0 or not self.no_initial_ramp:
-                body_ramp = worldbody.add_body(
-                    name=f"Ramp_{wall_idx}",
-                    mocap=True,
-                    pos=[0, 0, 0],
-                    euler=[self.ramp_angles[wall_idx], 0, 0],
-                )
-                body_ramp.add_geom(
-                    type=mujoco.mjtGeom.mjGEOM_BOX,
-                    size=[1, self.ramp_length * 1.2 / 2.0, 0.1],
-                    rgba=[0.5, 0.5, 0.6, 1],
-                )
+        wall_body = worldbody.add_body(name="Wall", mocap=True, pos=[0, 0, 0])
+        wall_body.add_geom(
+            type=mujoco.mjtGeom.mjGEOM_BOX,
+            size=[self.side_wall_x, 0.1, self.wall_height],
+            rgba=[0.5, 0.5, 0.6, 1],
+        )
 
         model = spec.compile()
         model.opt.timestep = float(self.timestep)
@@ -259,8 +221,6 @@ class MJWObstacleStreetScenario(BaseMJWScenario):
         connector_obs_dim = limbs_per_unit * 5
         connectors_xpos_dim = limbs_per_unit * 3 if self.include_connectors_xpos_in_obs else 0
         local_obs_dim = qpos_obs_dim + qvel_dim + connector_obs_dim + connectors_xpos_dim
-        hidden_global_dim = (3 * self.num_walls) + (self.num_walls if not self.no_initial_ramp else max(self.num_walls - 1, 0))
-        hidden_local_dim = self.total_thresholds
         return spaces.Dict(
             {
                 "local_obs": spaces.Box(low=-np.inf, high=np.inf, shape=(self.swarm.num_units, local_obs_dim), dtype=np.float32),
@@ -268,10 +228,10 @@ class MJWObstacleStreetScenario(BaseMJWScenario):
                 "hidden_local_vars": spaces.Box(
                     low=-np.inf,
                     high=np.inf,
-                    shape=(self.swarm.num_units, hidden_local_dim),
+                    shape=(self.swarm.num_units, self.total_thresholds),
                     dtype=np.float32,
                 ),
-                "hidden_global_vars": spaces.Box(low=-np.inf, high=np.inf, shape=(hidden_global_dim,), dtype=np.float32),
+                "hidden_global_vars": spaces.Box(low=-np.inf, high=np.inf, shape=(1,), dtype=np.float32),
                 "agent_mask": spaces.MultiBinary((self.swarm.num_units,)),
             }
         )
@@ -301,9 +261,9 @@ class MJWObstacleStreetScenario(BaseMJWScenario):
         return None
 
     def create_runtime(self, *, bindings: MJWRuntimeBindings, runtime_metadata: Any) -> Any:
-        from swarmbots.mjw_env.scenarios.mjw_obstacle_street_runtime import ObstacleStreetMJWScenarioRuntime
+        from swarmbots.mjw_env.scenarios.mjw_wall_runtime import WallMJWScenarioRuntime
 
-        return ObstacleStreetMJWScenarioRuntime(
+        return WallMJWScenarioRuntime(
             scenario=self,
             bindings=bindings,
             runtime_metadata=runtime_metadata,
