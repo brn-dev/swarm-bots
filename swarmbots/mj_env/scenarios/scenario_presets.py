@@ -8,7 +8,7 @@ from swarmbots.mj_env.scenarios.bridge_scenario import BridgeScenario
 from swarmbots.mj_env.scenarios.climb_scenario import ClimbScenario
 from swarmbots.mj_env.scenarios.dual_payload_plane_scenario import DualPayloadPlaneScenario
 from swarmbots.mj_env.scenarios.move_to_scenario import MoveToScenario
-from swarmbots.mj_env.scenarios.obstacle_street_scenario import ObstacleStreetScenario
+from swarmbots.mj_env.scenarios.wall_scenario import WallScenario
 from swarmbots.mj_env.scenarios.payload_plane_scenario import PayloadPlaneScenario
 from swarmbots.mj_env.scenarios.payload_step_scenario import PayloadStepScenario
 from swarmbots.mj_env.swarm.base_swarm import BaseSwarm
@@ -118,10 +118,10 @@ def default_wall(
         joints: str = 'zx',
         difficulty: Difficulty | None = None,
         **kwargs
-) -> ObstacleStreetScenario:
+) -> WallScenario:
     scenario_kwargs = make_scenario_kwargs(DEFAULT_KWARGS, wall_scenario_kwargs_with_difficulty(difficulty))
     scenario_kwargs.update(kwargs)
-    return ObstacleStreetScenario(
+    return WallScenario(
         swarm=_resolve_swarm(
             swarm,
             unit_start_locations,
@@ -134,15 +134,15 @@ def default_wall(
     )
 
 
-def easy_wall(**kwargs: Any) -> ObstacleStreetScenario:
+def easy_wall(**kwargs: Any) -> WallScenario:
     return default_wall(difficulty="easy", **kwargs)
 
 
-def medium_wall(**kwargs: Any) -> ObstacleStreetScenario:
+def medium_wall(**kwargs: Any) -> WallScenario:
     return default_wall(difficulty="medium", **kwargs)
 
 
-def hard_wall(**kwargs: Any) -> ObstacleStreetScenario:
+def hard_wall(**kwargs: Any) -> WallScenario:
     return default_wall(difficulty="hard", **kwargs)
 
 
@@ -286,3 +286,4 @@ def default_move_to(
         **scenario_kwargs,
         seed=seed,
     )
+

@@ -1,10 +1,9 @@
-from dataclasses import dataclass
-from typing import Any, Iterable, Literal
+from typing import Any, Iterable
 
 import mujoco
 import numpy as np
 
-from swarmbots.mj_env.float_or_dist_params import FloatOrDistParams, eval_fodp, fodp_low, FloatOrBoundedDistParams
+from swarmbots.mj_env.float_or_dist_params import FloatOrDistParams, eval_fodp
 from swarmbots.mj_env.scenarios.base_scenario import (
     BaseScenario,
     SwarmActDict,
@@ -12,48 +11,6 @@ from swarmbots.mj_env.scenarios.base_scenario import (
 )
 from swarmbots.mj_env.swarm.base_swarm import BaseSwarm
 from swarmbots.mj_env.swarm.swarm_connections import SwarmConnections
-
-
-@dataclass(frozen=True, slots=True)
-class PoleParams:
-    x: FloatOrDistParams
-    y: FloatOrDistParams
-
-
-TruncatedMultivariateNormal2DSamplingMode = Literal["clamp", "rejection"]
-
-
-@dataclass(frozen=True, slots=True)
-class CorrelatedPoleParams:
-    mean: tuple[float, float]
-    cov: tuple[tuple[float, float], tuple[float, float]]
-    low: tuple[float, float] | None = None
-    high: tuple[float, float] | None = None
-    sampling_mode: TruncatedMultivariateNormal2DSamplingMode = "clamp"
-
-    @staticmethod
-    def from_std_and_rho(
-            *,
-            mean: tuple[float, float],
-            std_x: float,
-            std_y: float,
-            rho: float,
-            low: tuple[float, float] | None = None,
-            high: tuple[float, float] | None = None,
-            sampling_mode: TruncatedMultivariateNormal2DSamplingMode = "clamp",
-    ) -> "CorrelatedPoleParams":
-        if std_x < 0 or std_y < 0:
-            raise ValueError(f"Expected std_x/std_y >= 0, got {std_x=} {std_y=}")
-        if not (-1.0 <= rho <= 1.0):
-            raise ValueError(f"Expected rho in [-1, 1], got {rho}")
-        if (low is None) != (high is None):
-            raise ValueError(f"Expected low/high to be both set or both None, got {low=} {high=}")
-        cov_xy = float(rho) * float(std_x) * float(std_y)
-        cov = ((float(std_x) ** 2, cov_xy), (cov_xy, float(std_y) ** 2))
-        return CorrelatedPoleParams(mean=mean, cov=cov, low=low, high=high, sampling_mode=sampling_mode)
-
-
-PoleSpec = PoleParams | CorrelatedPoleParams
 
 
 def _wall_pass_rank_weights(active_units_count: int, skew: float) -> np.ndarray:
@@ -66,24 +23,15 @@ def _wall_pass_rank_weights(active_units_count: int, skew: float) -> np.ndarray:
     return unnormalized * (float(active_units_count) / float(unnormalized.sum()))
 
 
-class ObstacleStreetScenario(BaseScenario):
-
+class WallScenario(BaseScenario):
     def __init__(
             self,
             swarm: BaseSwarm,
             timestep: float = 0.002,
             action_repeat: int = 15,
-            poles: Iterable[PoleSpec | tuple[FloatOrDistParams, FloatOrDistParams]] = (),
-            pole_radius: float = 0.1,
-            pole_height: float = 1.0,
-            num_walls: int = 3,
-            wall_height: float | list[float] = 0.5,
-            inter_wall_distance: FloatOrBoundedDistParams = 4.0,
+            wall_height: float = 0.5,
             first_wall_distance: FloatOrDistParams = 2.0,
-            opening_width: FloatOrDistParams | list[FloatOrDistParams] = 2.0,
-            unusable_opening_offset: FloatOrDistParams = 2.0,
             street_width: float = 10.0,
-            no_initial_ramp: bool = True,
             actuator_strength: float = 8.0,
             connection_dist_threshold: float = 0.1,
             connection_angle_threshold: float = -0.5,
@@ -116,29 +64,10 @@ class ObstacleStreetScenario(BaseScenario):
             randomize_initial_swarm_z_rotation: bool = False,
             seed: int | None = None,
     ) -> None:
-        self.poles: list[PoleSpec] = []
-        for p in poles:
-            if isinstance(p, tuple):
-                if len(p) != 2:
-                    raise ValueError(f"Expected pole tuple (x, y), got {p!r}")
-                self.poles.append(PoleParams(x=p[0], y=p[1]))
-            else:
-                self.poles.append(p)
-        self.pole_radius = float(pole_radius)
-        self.pole_height = float(pole_height)
-
-        self.num_walls = num_walls
-        self.no_initial_ramp = no_initial_ramp
-
-        self.street_width = street_width
-        self.side_wall_x = street_width / 2
-        self.wall_fixed_width = 25.0
-        self.wall_heights = wall_height if isinstance(wall_height, list) else [wall_height] * num_walls
-        self.inter_wall_distance = inter_wall_distance
+        self.street_width = float(street_width)
+        self.side_wall_x = self.street_width / 2.0
+        self.wall_height = float(wall_height)
         self.first_wall_distance = first_wall_distance
-
-        self.opening_widths = opening_width if isinstance(opening_width, list) else [opening_width] * num_walls
-        self.unusable_opening_offset = unusable_opening_offset
         self.forward_reward_weight = float(forward_reward_weight)
         self.forward_reward_max_y = None if forward_reward_max_y is None else float(forward_reward_max_y)
         self.forward_reward_wall_boost_factor = float(forward_reward_wall_boost_factor)
@@ -178,13 +107,6 @@ class ObstacleStreetScenario(BaseScenario):
         self.wall_success_reward = float(wall_success_reward)
         if self.wall_success_threshold is not None and self.wall_success_threshold <= 0.0:
             raise ValueError(f"Expected wall_success_threshold > 0, got {self.wall_success_threshold}")
-        min_inter_wall_distance = fodp_low(self.inter_wall_distance)
-        if min_inter_wall_distance <= 1.0:
-            raise ValueError(f"Expected inter_wall_distance.low > 1.0, got {min_inter_wall_distance}")
-        self.ramp_length = min_inter_wall_distance - 1.0
-        self.ramp_range_x = self.side_wall_x - 1.5
-        self.ramp_angles = [np.asin(wh / self.ramp_length) + np.pi/64 for wh in self.wall_heights]
-        self.ramp_distances_to_wall = [self.ramp_length * np.cos(ra) for ra in self.ramp_angles]
 
         super().__init__(
             swarm=swarm,
@@ -209,8 +131,8 @@ class ObstacleStreetScenario(BaseScenario):
             swarm_start_x=swarm_start_x,
             swarm_start_y=swarm_start_y,
             randomize_initial_swarm_z_rotation=randomize_initial_swarm_z_rotation,
-            inactive_area_location=[street_width * 2, 0, 0.1],
-            _reset_in_init=False
+            inactive_area_location=[self.street_width * 2.0, 0.0, 0.1],
+            _reset_in_init=False,
         )
 
         self._dummy_state, self._dummy_connections = self.reset_scenario(self.dummy_model, self.dummy_data)
@@ -218,99 +140,57 @@ class ObstacleStreetScenario(BaseScenario):
     def get_settings(self) -> dict[str, Any]:
         settings = super().get_settings()
         settings.update({
-            'poles': self.poles,
-            'pole_radius': self.pole_radius,
-            'pole_height': self.pole_height,
-            'num_walls': self.num_walls,
-            'wall_heights': self.wall_heights,
-            'inter_wall_distance': self.inter_wall_distance,
-            'first_wall_distance': self.first_wall_distance,
-            'opening_widths': self.opening_widths,
-            'unusable_opening_offset': self.unusable_opening_offset,
-            'street_width': self.street_width,
-            'no_initial_ramp': self.no_initial_ramp,
-            'forward_reward_weight': self.forward_reward_weight,
-            'forward_reward_max_y': self.forward_reward_max_y,
-            'forward_reward_wall_boost_factor': self.forward_reward_wall_boost_factor,
-            'forward_reward_wall_boost_distance': self.forward_reward_wall_boost_distance,
-            'forward_reward_wall_boost_height_margin': self.forward_reward_wall_boost_height_margin,
-            'wall_pass_reward_weight': self.wall_pass_reward_weight,
-            'wall_pass_reward_skew': self.wall_pass_reward_skew,
-            'wall_pass_thresholds': self.wall_pass_thresholds.tolist(),
-            'wall_success_threshold': self.wall_success_threshold,
-            'wall_success_reward': self.wall_success_reward,
-            'wall_climb_reward_weight': self.wall_climb_reward_weight,
-            'wall_climb_reward_distance': self.wall_climb_reward_distance,
+            "wall_height": self.wall_height,
+            "first_wall_distance": self.first_wall_distance,
+            "street_width": self.street_width,
+            "forward_reward_weight": self.forward_reward_weight,
+            "forward_reward_max_y": self.forward_reward_max_y,
+            "forward_reward_wall_boost_factor": self.forward_reward_wall_boost_factor,
+            "forward_reward_wall_boost_distance": self.forward_reward_wall_boost_distance,
+            "forward_reward_wall_boost_height_margin": self.forward_reward_wall_boost_height_margin,
+            "wall_pass_reward_weight": self.wall_pass_reward_weight,
+            "wall_pass_reward_skew": self.wall_pass_reward_skew,
+            "wall_pass_thresholds": self.wall_pass_thresholds.tolist(),
+            "wall_success_threshold": self.wall_success_threshold,
+            "wall_success_reward": self.wall_success_reward,
+            "wall_climb_reward_weight": self.wall_climb_reward_weight,
+            "wall_climb_reward_distance": self.wall_climb_reward_distance,
         })
         return settings
-
 
     def _create_scenario_spec(self) -> mujoco.MjSpec:
         spec = mujoco.MjSpec()
         spec.compiler.degree = 0
         worldbody: mujoco.MjsBody = spec.worldbody
 
-        # base stuff
         worldbody.add_geom(
             type=mujoco.mjtGeom.mjGEOM_PLANE,
             size=[100, 100, 0.1],
             rgba=[0.2, 0.3, 0.4, 1],
-            pos=[0, 0, 0]
+            pos=[0, 0, 0],
         )
-
         worldbody.add_light(pos=[0, 0, 100], dir=[0, 0, -1])
         worldbody.add_light(pos=[0, 100, 100], dir=[-1, -1, -1])
 
-        for i, _ in enumerate(self.poles):
-            body_pole = worldbody.add_body(name=f'Pole_{i}', mocap=True, pos=[0, 0, 0])
-            body_pole.add_geom(
-                type=mujoco.mjtGeom.mjGEOM_CYLINDER,
-                fromto=[0, 0, 0, 0, 0, self.pole_height],
-                size=[self.pole_radius, 0, 0],
-                rgba=[0.15, 0.8, 0.95, 1],
-            )
-
-        # side walls
         worldbody.add_geom(
             type=mujoco.mjtGeom.mjGEOM_BOX,
             size=[0.1, 100, 5],
             rgba=[0.3, 0.4, 0.5, 0.1],
-            pos=[self.side_wall_x, 0, 0]
+            pos=[self.side_wall_x, 0, 0],
         )
         worldbody.add_geom(
             type=mujoco.mjtGeom.mjGEOM_BOX,
             size=[0.1, 100, 5],
             rgba=[0.3, 0.4, 0.5, 0.1],
-            pos=[-self.side_wall_x, 0, 0]
+            pos=[-self.side_wall_x, 0, 0],
         )
 
-        for i in range(self.num_walls):
-            body_left = worldbody.add_body(name=f'Wall_{i}_Left', mocap=True, pos=[0, 0, 0])
-            body_left.add_geom(
-                type=mujoco.mjtGeom.mjGEOM_BOX,
-                size=[self.wall_fixed_width / 2, 0.1, self.wall_heights[i]],
-                rgba=[0.5, 0.5, 0.6, 1],
-            )
-
-            body_right = worldbody.add_body(name=f'Wall_{i}_Right', mocap=True, pos=[0, 0, 0])
-            body_right.add_geom(
-                type=mujoco.mjtGeom.mjGEOM_BOX,
-                size=[self.wall_fixed_width / 2, 0.1, self.wall_heights[i]],
-                rgba=[0.5, 0.5, 0.6, 1],
-            )
-
-            if i > 0 or not self.no_initial_ramp:
-                body_ramp = worldbody.add_body(
-                    name=f'Ramp_{i}', mocap=True,
-                    pos=[0, 0, 0],
-                    euler=[self.ramp_angles[i], 0, 0],
-                )
-                body_ramp.add_geom(
-                    type=mujoco.mjtGeom.mjGEOM_BOX,
-                    size=[1, self.ramp_length * 1.2 / 2, 0.1],
-                    rgba=[0.5, 0.5, 0.6, 1],
-                )
-
+        wall_body = worldbody.add_body(name="Wall", mocap=True, pos=[0, 0, 0])
+        wall_body.add_geom(
+            type=mujoco.mjtGeom.mjGEOM_BOX,
+            size=[self.side_wall_x, 0.1, self.wall_height],
+            rgba=[0.5, 0.5, 0.6, 1],
+        )
         return spec
 
     def reset_scenario(
@@ -322,121 +202,57 @@ class ObstacleStreetScenario(BaseScenario):
         state, connections = super().reset_scenario(model, data, settle=False)
 
         hidden_global_vars: list[float] = []
-        wall_y = self.reset_walls_and_ramps(data, model, hidden_global_vars)
-        self.reset_poles(data, model, hidden_global_vars)
+        wall_y = self.reset_wall(data, model, hidden_global_vars)
 
         mujoco.mj_forward(model, data)
         if settle:
             self.settle_reset(model, data, state)
 
-        state['hidden_global_vars'] = np.array(hidden_global_vars, dtype=float)
-        state['wall_y'] = wall_y
+        state["hidden_global_vars"] = np.array(hidden_global_vars, dtype=float)
+        state["wall_y"] = wall_y
         unit_y = np.asarray(data.qpos[self._qpos_indices[:, 1]], dtype=float)
-        state['wall_climb_done_mask'] = (
-            unit_y[:, np.newaxis] > wall_y[np.newaxis, :]
-            if wall_y.size > 0
-            else np.zeros((self.num_units, 0), dtype=bool)
-        )
-        state['wall_climb_potential'] = (
-            np.zeros((self.num_units, self.num_walls), dtype=np.float32)
+        state["wall_climb_done_mask"] = unit_y > wall_y
+        state["wall_climb_potential"] = (
+            np.zeros((self.num_units,), dtype=np.float32)
             if self.wall_climb_reward_weight == 0.0
             else self._compute_wall_climb_potential(data, state)
         )
         wall_pass_absolute_thresholds = self._compute_wall_pass_thresholds(wall_y)
-        state['wall_pass_absolute_thresholds'] = wall_pass_absolute_thresholds
-        passed_thresholds_mask = (
-            unit_y[:, np.newaxis] > wall_pass_absolute_thresholds[np.newaxis, :]
-            if wall_pass_absolute_thresholds.size > 0
-            else np.zeros((self.num_units, 0), dtype=bool)
-        )
-        state['passed_thresholds_mask'] = passed_thresholds_mask
-        state['next_threshold_for_unit'] = passed_thresholds_mask.sum(axis=1).astype(int)
-        state['num_walls_passed'] = 0
-        state['walls_passed_reward'] = 0.0
+        state["wall_pass_absolute_thresholds"] = wall_pass_absolute_thresholds
+        passed_thresholds_mask = unit_y[:, np.newaxis] > wall_pass_absolute_thresholds[np.newaxis, :]
+        state["passed_thresholds_mask"] = passed_thresholds_mask
+        state["next_threshold_for_unit"] = passed_thresholds_mask.sum(axis=1).astype(int)
+        state["num_wall_thresholds_passed"] = 0
+        state["wall_thresholds_passed_reward"] = 0.0
         forward_progress_unit_y = self._compute_forward_reward_unit_potential(data, state)
-        state['progress'] = self._mean_active_forward_progress(forward_progress_unit_y, state.get("units_active_mask"))
-        state['forward_progress_unit_y'] = forward_progress_unit_y
+        state["progress"] = self._mean_active_forward_progress(forward_progress_unit_y, state.get("units_active_mask"))
+        state["forward_progress_unit_y"] = forward_progress_unit_y
 
         return state, connections
 
-    def reset_poles(self, data: mujoco.MjData, model: mujoco.MjModel, hidden_global_vars: list[float]) -> None:
-        rng = self.rng
-        for i, pole in enumerate(self.poles):
-            pole_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, f'Pole_{i}')
-            mocap_id = model.body_mocapid[pole_id]
-            x, y = sample_pole_xy(pole, rng)
-            hidden_global_vars.extend([x, y])
-            data.mocap_pos[mocap_id] = [x, y, 0.0]
-
-    def reset_walls_and_ramps(
+    def reset_wall(
             self,
             data: mujoco.MjData,
             model: mujoco.MjModel,
-            hidden_global_vars: list[float]
-    ) -> np.ndarray:
-        rng = self.rng
-        wall_y_values = np.zeros(self.num_walls, dtype=float)
-
-        unusable_opening_offset = eval_fodp(self.unusable_opening_offset, rng)
-
-        wall_y = eval_fodp(self.first_wall_distance, rng)
-        for i in range(self.num_walls):
-            if i != 0:
-                wall_y += eval_fodp(self.inter_wall_distance, rng)
-            hidden_global_vars.append(wall_y)
-            wall_y_values[i] = wall_y
-
-            opening_width = eval_fodp(self.opening_widths[i], rng)
-            hidden_global_vars.append(opening_width)
-
-            opening_x = (rng.random() - 0.5) * 2 * (
-                    self.side_wall_x
-                    - opening_width / 2
-                    + unusable_opening_offset)  # small chance that there is no usable opening
-                                                # -> must use ramp to continue
-            hidden_global_vars.append(opening_x)
-
-            first_wall_end_x = opening_x - opening_width / 2
-            wall_left_pos_x = first_wall_end_x - (self.wall_fixed_width / 2)
-
-            wall_left_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, f'Wall_{i}_Left')
-            mocap_id = model.body_mocapid[wall_left_id]
-            data.mocap_pos[mocap_id] = [wall_left_pos_x, wall_y, 0.0]
-
-            second_wall_start_x = opening_x + opening_width / 2
-
-            wall_right_pos_x = second_wall_start_x + (self.wall_fixed_width / 2)
-
-            wall_right_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, f'Wall_{i}_Right')
-            mocap_id = model.body_mocapid[wall_right_id]
-            data.mocap_pos[mocap_id] = [wall_right_pos_x, wall_y, 0.0]
-
-            if i > 0 or not self.no_initial_ramp:
-                ramp_x = (rng.random() - 0.5) * 2 * self.ramp_range_x
-                hidden_global_vars.append(ramp_x)
-
-                ramp_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, f'Ramp_{i}')
-                mocap_id = model.body_mocapid[ramp_id]
-                data.mocap_pos[mocap_id] = [
-                    ramp_x,
-                    wall_y - self.ramp_distances_to_wall[i] / 2,
-                    self.wall_heights[i] / 2 - 0.05,
-                ]
-
-        return wall_y_values
+            hidden_global_vars: list[float],
+    ) -> float:
+        wall_y = eval_fodp(self.first_wall_distance, self.rng)
+        hidden_global_vars.append(wall_y)
+        wall_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "Wall")
+        mocap_id = model.body_mocapid[wall_id]
+        data.mocap_pos[mocap_id] = [0.0, wall_y, 0.0]
+        return float(wall_y)
 
     def get_obs(
             self,
             model: mujoco.MjModel,
             data: mujoco.MjData,
             state: dict,
-            connections: SwarmConnections
+            connections: SwarmConnections,
     ) -> SwarmObsDict:
         obs = super().get_obs(model, data, state, connections)
-
-        obs['hidden_global_vars'] = state['hidden_global_vars'].copy()
-        obs['hidden_local_vars'] = np.asarray(state['passed_thresholds_mask'], dtype=float).copy()
-
+        obs["hidden_global_vars"] = state["hidden_global_vars"].copy()
+        obs["hidden_local_vars"] = np.asarray(state["passed_thresholds_mask"], dtype=float).copy()
         return obs
 
     def _compute_wall_pass_reward(
@@ -447,17 +263,17 @@ class ObstacleStreetScenario(BaseScenario):
         wall_pass_absolute_thresholds = np.asarray(state.get("wall_pass_absolute_thresholds"), dtype=float)
         next_threshold_for_unit = np.asarray(state.get("next_threshold_for_unit"), dtype=int)
         if wall_pass_absolute_thresholds.size == 0 or next_threshold_for_unit.shape != (self.num_units,):
-            state["num_walls_passed"] = 0
-            state["walls_passed_reward"] = 0.0
+            state["num_wall_thresholds_passed"] = 0
+            state["wall_thresholds_passed_reward"] = 0.0
             return 0.0
 
         unit_y = np.asarray(data.qpos[self._qpos_indices[:, 1]], dtype=float)
         units_active_mask = state.get("units_active_mask")
         active_units_mask = None if units_active_mask is None else np.asarray(units_active_mask, dtype=bool)
         active_units_count = self.num_units if active_units_mask is None else int(active_units_mask.sum())
-        thresholds_per_wall = int(self.wall_pass_thresholds.size)
+        num_wall_thresholds = int(self.wall_pass_thresholds.size)
 
-        num_walls_passed = 0
+        num_wall_thresholds_passed = 0
         wall_pass_reward_units = 0.0
         if self.wall_pass_reward_skew != 0.0:
             thresholds_passed_by_active_units = np.zeros(wall_pass_absolute_thresholds.size, dtype=int)
@@ -482,15 +298,15 @@ class ObstacleStreetScenario(BaseScenario):
                     wall_pass_reward_units += float(rank_weights[next_rank])
                     thresholds_passed_by_active_units[next_threshold_idx] = next_rank + 1
                 next_threshold_idx += 1
-                num_walls_passed += 1
+                num_wall_thresholds_passed += 1
             next_threshold_for_unit[unit_idx] = next_threshold_idx
 
-        if active_units_count > 0 and thresholds_per_wall > 0:
-            walls_passed_reward = (
-                wall_pass_reward_units / (active_units_count * thresholds_per_wall)
+        if active_units_count > 0 and num_wall_thresholds > 0:
+            wall_thresholds_passed_reward = (
+                wall_pass_reward_units / (active_units_count * num_wall_thresholds)
             ) * self.wall_pass_reward_weight
         else:
-            walls_passed_reward = 0.0
+            wall_thresholds_passed_reward = 0.0
         state["next_threshold_for_unit"] = next_threshold_for_unit
         if wall_pass_absolute_thresholds.size > 0:
             unit_threshold_indices = np.arange(wall_pass_absolute_thresholds.size, dtype=int)
@@ -499,10 +315,10 @@ class ObstacleStreetScenario(BaseScenario):
             )
         else:
             state["passed_thresholds_mask"] = np.zeros((self.num_units, 0), dtype=bool)
-        state["num_walls_passed"] = num_walls_passed
-        state["walls_passed_reward"] = walls_passed_reward
+        state["num_wall_thresholds_passed"] = num_wall_thresholds_passed
+        state["wall_thresholds_passed_reward"] = wall_thresholds_passed_reward
 
-        return walls_passed_reward
+        return wall_thresholds_passed_reward
 
     def _compute_wall_success_termination(
             self,
@@ -513,19 +329,19 @@ class ObstacleStreetScenario(BaseScenario):
             state["success"] = False
             return False
 
-        wall_y_by_wall = np.asarray(state.get("wall_y"), dtype=float)
-        if wall_y_by_wall.size == 0:
+        wall_y = state.get("wall_y")
+        if wall_y is None:
             state["success"] = False
             return False
 
         unit_y = np.asarray(data.qpos[self._qpos_indices[:, 1]], dtype=float)
-        unit_past_all_walls = (unit_y[:, np.newaxis] > (wall_y_by_wall + self.wall_success_threshold)).all(axis=1)
+        unit_past_wall = unit_y > (float(wall_y) + self.wall_success_threshold)
         units_active_mask = state.get("units_active_mask")
         if units_active_mask is None:
-            success = bool(unit_past_all_walls.all())
+            success = bool(unit_past_wall.all())
         else:
             active_units_mask = np.asarray(units_active_mask, dtype=bool)
-            success = bool(active_units_mask.any() and unit_past_all_walls[active_units_mask].all())
+            success = bool(active_units_mask.any() and unit_past_wall[active_units_mask].all())
         state["success"] = success
         return success
 
@@ -534,13 +350,13 @@ class ObstacleStreetScenario(BaseScenario):
             data: mujoco.MjData,
             state: dict,
     ) -> np.ndarray:
-        wall_y_by_wall = np.asarray(state.get("wall_y"), dtype=float)
-        if wall_y_by_wall.size == 0:
-            return np.zeros((self.num_units, 0), dtype=np.float32)
+        wall_y = state.get("wall_y")
+        if wall_y is None:
+            return np.zeros((self.num_units,), dtype=np.float32)
 
         unit_y = np.asarray(data.qpos[self._qpos_indices[:, 1]], dtype=float)
         unit_z = np.asarray(data.qpos[self._qpos_indices[:, 2]], dtype=float)
-        distance_to_wall = wall_y_by_wall[np.newaxis, :] - unit_y[:, np.newaxis]
+        distance_to_wall = float(wall_y) - unit_y
         approach = np.clip(1.0 - (distance_to_wall / self.wall_climb_reward_distance), 0.0, 1.0)
         approach = np.where(
             (distance_to_wall >= 0.0) & (distance_to_wall <= self.wall_climb_reward_distance),
@@ -549,13 +365,13 @@ class ObstacleStreetScenario(BaseScenario):
         )
         approach = np.sqrt(approach)
         unit_ground_z = float(getattr(self.swarm, "body_radius", 0.1))
-        target_lift = np.maximum(np.asarray(self.wall_heights, dtype=float) - unit_ground_z, 1e-6)
-        height = np.clip((unit_z[:, np.newaxis] - unit_ground_z) / target_lift[np.newaxis, :], 0.0, 1.0)
+        target_lift = max(self.wall_height - unit_ground_z, 1e-6)
+        height = np.clip((unit_z - unit_ground_z) / target_lift, 0.0, 1.0)
         units_active_mask = state.get("units_active_mask")
         if units_active_mask is None:
-            active_mask = np.ones((self.num_units, 1), dtype=np.float32)
+            active_mask = np.ones((self.num_units,), dtype=np.float32)
         else:
-            active_mask = np.asarray(units_active_mask, dtype=bool)[:, np.newaxis].astype(np.float32)
+            active_mask = np.asarray(units_active_mask, dtype=bool).astype(np.float32)
         return (approach * height * active_mask).astype(np.float32, copy=False)
 
     def _compute_wall_climb_done_mask(
@@ -563,15 +379,15 @@ class ObstacleStreetScenario(BaseScenario):
             data: mujoco.MjData,
             state: dict,
     ) -> np.ndarray:
-        wall_y_by_wall = np.asarray(state.get("wall_y"), dtype=float)
-        if wall_y_by_wall.size == 0:
-            return np.zeros((self.num_units, 0), dtype=bool)
+        wall_y = state.get("wall_y")
+        if wall_y is None:
+            return np.zeros((self.num_units,), dtype=bool)
 
         unit_y = np.asarray(data.qpos[self._qpos_indices[:, 1]], dtype=float)
-        done_mask = unit_y[:, np.newaxis] > wall_y_by_wall[np.newaxis, :]
+        done_mask = unit_y > float(wall_y)
         units_active_mask = state.get("units_active_mask")
         if units_active_mask is not None:
-            done_mask &= np.asarray(units_active_mask, dtype=bool)[:, np.newaxis]
+            done_mask &= np.asarray(units_active_mask, dtype=bool)
         return done_mask
 
     def _compute_wall_climb_reward(
@@ -597,25 +413,23 @@ class ObstacleStreetScenario(BaseScenario):
         newly_done_mask = crossed_wall_y_mask & ~previous_done_mask
         done_mask = previous_done_mask | newly_done_mask
         current_potential = np.where(done_mask, 0.0, current_potential).astype(np.float32, copy=False)
-        wall_climb_delta_by_wall = (
-            self.potential_reward_delta(current_potential, previous_potential)
-        )
-        wall_climb_delta_by_wall = np.where(
-            newly_done_mask & (wall_climb_delta_by_wall < 0.0),
+        wall_climb_delta = self.potential_reward_delta(current_potential, previous_potential)
+        wall_climb_delta = np.where(
+            newly_done_mask & (wall_climb_delta < 0.0),
             0.0,
-            wall_climb_delta_by_wall,
+            wall_climb_delta,
         )
         state["wall_climb_potential"] = current_potential
         state["wall_climb_done_mask"] = done_mask
 
         units_active_mask = state.get("units_active_mask")
         if units_active_mask is None:
-            climb_delta = float(wall_climb_delta_by_wall.sum(axis=1).mean())
+            climb_delta = float(wall_climb_delta.mean())
         else:
             active_mask = np.asarray(units_active_mask, dtype=bool)
             active_units_count = int(active_mask.sum())
             climb_delta = (
-                float(wall_climb_delta_by_wall[active_mask].sum(axis=1).mean())
+                float(wall_climb_delta[active_mask].mean())
                 if active_units_count > 0
                 else 0.0
             )
@@ -645,10 +459,10 @@ class ObstacleStreetScenario(BaseScenario):
         wall_climb_reward = self._compute_wall_climb_reward(data, state)
         progress_reward = forward_reward * self.forward_reward_weight + wall_pass_reward + wall_climb_reward
 
-        state['forward_reward'] = forward_reward
-        state['progress_reward'] = progress_reward
-        state['wall_pass_reward'] = wall_pass_reward
-        state['wall_climb_reward'] = wall_climb_reward
+        state["forward_reward"] = forward_reward
+        state["progress_reward"] = progress_reward
+        state["wall_pass_reward"] = wall_pass_reward
+        state["wall_climb_reward"] = wall_climb_reward
         return progress_reward
 
     def evaluate_step(
@@ -657,57 +471,54 @@ class ObstacleStreetScenario(BaseScenario):
             model: mujoco.MjModel,
             data: mujoco.MjData,
             state: dict,
-            connections: SwarmConnections
+            connections: SwarmConnections,
     ) -> tuple[float, bool]:
         units_active_mask = state.get("units_active_mask")
         if units_active_mask is not None:
             self._enforce_inactive_units_state(model, data, units_active_mask)
 
         self.compute_progress_reward(data, state)
-        forward_reward = state['forward_reward']
-        wall_pass_reward = state['wall_pass_reward']
-        wall_climb_reward = state['wall_climb_reward']
+        forward_reward = state["forward_reward"]
+        wall_pass_reward = state["wall_pass_reward"]
+        wall_climb_reward = state["wall_climb_reward"]
         terminated = self._compute_wall_success_termination(data, state)
         wall_success_reward = self.wall_success_reward if terminated else 0.0
-        progress_reward = state['progress_reward'] + wall_success_reward
-        state['progress_reward'] = progress_reward
-        state['wall_success_reward'] = wall_success_reward
+        progress_reward = state["progress_reward"] + wall_success_reward
+        state["progress_reward"] = progress_reward
+        state["wall_success_reward"] = wall_success_reward
 
         units_without_connections_reward = super().compute_guidance_reward(data, action, state, connections)
-        state['units_without_connections_reward'] = units_without_connections_reward
-        state['guidance_reward'] = units_without_connections_reward
+        state["units_without_connections_reward"] = units_without_connections_reward
+        state["guidance_reward"] = units_without_connections_reward
 
-        progress_reward_weight = self.reward_weights['progress_reward_weight']
+        progress_reward_weight = self.reward_weights["progress_reward_weight"]
         weighted_progress_reward = progress_reward * progress_reward_weight
         weighted_forward_reward = forward_reward * self.forward_reward_weight * progress_reward_weight
         weighted_wall_pass_reward = wall_pass_reward * progress_reward_weight
         weighted_wall_climb_reward = wall_climb_reward * progress_reward_weight
         weighted_wall_success_reward = wall_success_reward * progress_reward_weight
         weighted_units_without_connections_reward = (
-            units_without_connections_reward * self.reward_weights['guidance_reward_weight']
+            units_without_connections_reward * self.reward_weights["guidance_reward_weight"]
         )
-        state['weighted_progress_reward'] = weighted_progress_reward
-        state['weighted_forward_reward'] = weighted_forward_reward
-        state['weighted_forward_progress_reward'] = weighted_forward_reward
-        state['weighted_wall_pass_reward'] = weighted_wall_pass_reward
-        state['weighted_wall_climb_reward'] = weighted_wall_climb_reward
-        state['weighted_wall_success_reward'] = weighted_wall_success_reward
-        state['weighted_units_without_connections_reward'] = weighted_units_without_connections_reward
-        state['weighted_guidance_reward'] = weighted_units_without_connections_reward
-        state['reward_terms'] = {
-            'forward': weighted_forward_reward,
-            'wall': weighted_wall_pass_reward,
-            'climb': weighted_wall_climb_reward,
-            'success': weighted_wall_success_reward,
-            'units_without_connections': weighted_units_without_connections_reward,
+        state["weighted_progress_reward"] = weighted_progress_reward
+        state["weighted_forward_reward"] = weighted_forward_reward
+        state["weighted_forward_progress_reward"] = weighted_forward_reward
+        state["weighted_wall_pass_reward"] = weighted_wall_pass_reward
+        state["weighted_wall_climb_reward"] = weighted_wall_climb_reward
+        state["weighted_wall_success_reward"] = weighted_wall_success_reward
+        state["weighted_units_without_connections_reward"] = weighted_units_without_connections_reward
+        state["weighted_guidance_reward"] = weighted_units_without_connections_reward
+        state["reward_terms"] = {
+            "forward": weighted_forward_reward,
+            "wall": weighted_wall_pass_reward,
+            "climb": weighted_wall_climb_reward,
+            "success": weighted_wall_success_reward,
+            "units_without_connections": weighted_units_without_connections_reward,
         }
         return weighted_progress_reward + weighted_units_without_connections_reward, terminated
 
-    def _compute_wall_pass_thresholds(self, wall_y: np.ndarray) -> np.ndarray:
-        if wall_y.size == 0:
-            return np.asarray([], dtype=float)
-        wall_thresholds = wall_y[:, np.newaxis] + self.wall_pass_thresholds[np.newaxis, :]
-        return np.sort(wall_thresholds.reshape(-1))
+    def _compute_wall_pass_thresholds(self, wall_y: float) -> np.ndarray:
+        return float(wall_y) + self.wall_pass_thresholds
 
     def _compute_forward_progress_baseline(
             self,
@@ -765,8 +576,8 @@ class ObstacleStreetScenario(BaseScenario):
         if boost_factor == 1.0:
             return unit_forward_potential
 
-        wall_y_by_wall = np.asarray(state.get("wall_y"), dtype=float)
-        if wall_y_by_wall.size == 0:
+        wall_y = state.get("wall_y")
+        if wall_y is None:
             return unit_forward_potential
 
         qpos_indices = np.asarray(self._qpos_indices)
@@ -775,8 +586,8 @@ class ObstacleStreetScenario(BaseScenario):
         boost_mask = _compute_forward_reward_wall_boost_mask_np(
             unit_y=unit_y,
             unit_z=unit_z,
-            wall_y_by_wall=wall_y_by_wall,
-            wall_heights=np.asarray(self.wall_heights, dtype=float),
+            wall_y=float(wall_y),
+            wall_height=self.wall_height,
             boost_distance=self._forward_reward_wall_boost_distance(),
             height_margin=self._forward_reward_wall_boost_height_margin(),
             wall_half_thickness=0.1,
@@ -800,54 +611,13 @@ def _compute_forward_reward_wall_boost_mask_np(
         *,
         unit_y: np.ndarray,
         unit_z: np.ndarray,
-        wall_y_by_wall: np.ndarray,
-        wall_heights: np.ndarray,
+        wall_y: float,
+        wall_height: float,
         boost_distance: float,
         height_margin: float,
         wall_half_thickness: float,
 ) -> np.ndarray:
-    distance_to_wall = wall_y_by_wall[np.newaxis, :] - unit_y[:, np.newaxis]
+    distance_to_wall = float(wall_y) - unit_y
     near_wall = (distance_to_wall >= -float(wall_half_thickness)) & (distance_to_wall <= float(boost_distance))
-    high_enough = unit_z[:, np.newaxis] >= (wall_heights[np.newaxis, :] + float(height_margin))
-    return (near_wall & high_enough).any(axis=1)
-
-
-def sample_pole_xy(pole: PoleSpec, rng: np.random.Generator) -> tuple[float, float]:
-    if isinstance(pole, PoleParams):
-        return eval_fodp(pole.x, rng), eval_fodp(pole.y, rng)
-
-    if not isinstance(pole, CorrelatedPoleParams):
-        raise TypeError(f"Unsupported pole spec: {type(pole).__name__}")
-
-    mean = np.asarray(pole.mean, dtype=float)
-    cov = np.asarray(pole.cov, dtype=float)
-    if mean.shape != (2,) or cov.shape != (2, 2):
-        raise ValueError(f"Expected mean shape (2,) and cov shape (2,2), got {mean.shape=} {cov.shape=}")
-
-    if (pole.low is None) != (pole.high is None):
-        raise ValueError(f"Expected low/high to be both set or both None, got {pole.low=} {pole.high=}")
-
-    if pole.low is None:
-        x, y = rng.multivariate_normal(mean=mean, cov=cov)
-        return float(x), float(y)
-
-    low = np.asarray(pole.low, dtype=float)
-    high = np.asarray(pole.high, dtype=float)
-    if low.shape != (2,) or high.shape != (2,):
-        raise ValueError(f"Expected low/high shape (2,), got {low.shape=} {high.shape=}")
-    if np.any(low > high):
-        raise ValueError(f"Expected low <= high, got {pole.low=} {pole.high=}")
-
-    if pole.sampling_mode == "clamp":
-        xy = rng.multivariate_normal(mean=mean, cov=cov)
-        xy = np.clip(xy, low, high)
-        return float(xy[0]), float(xy[1])
-
-    if pole.sampling_mode == "rejection":
-        for _ in range(10_000):
-            xy = rng.multivariate_normal(mean=mean, cov=cov)
-            if np.all((xy >= low) & (xy <= high)):
-                return float(xy[0]), float(xy[1])
-        raise RuntimeError(f"Failed to sample pole position within bounds after many retries: {pole=}")
-
-    raise ValueError(f"Unknown sampling_mode: {pole.sampling_mode!r}")
+    high_enough = unit_z >= (float(wall_height) + float(height_margin))
+    return near_wall & high_enough

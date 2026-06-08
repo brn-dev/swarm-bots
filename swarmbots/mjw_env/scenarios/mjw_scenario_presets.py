@@ -16,7 +16,7 @@ from swarmbots.mjw_env.scenarios.mjw_bridge_scenario import MJWBridgeScenario
 from swarmbots.mjw_env.scenarios.mjw_climb_scenario import MJWClimbScenario
 from swarmbots.mjw_env.scenarios.mjw_dual_payload_plane_scenario import MJWDualPayloadPlaneScenario
 from swarmbots.mjw_env.scenarios.mjw_move_to_scenario import MJWMoveToScenario
-from swarmbots.mjw_env.scenarios.mjw_obstacle_street_scenario import MJWObstacleStreetScenario
+from swarmbots.mjw_env.scenarios.mjw_wall_scenario import MJWWallScenario
 from swarmbots.mjw_env.scenarios.mjw_payload_plane_scenario import MJWPayloadPlaneScenario
 from swarmbots.mjw_env.scenarios.mjw_payload_step_scenario import MJWPayloadStepScenario
 from swarmbots.mjw_env.swarm.mjw_homogeneous_swarm import MJWHomogeneousSwarm, MJWPreConnectedUnitLocationsConfig
@@ -128,7 +128,7 @@ def default_wall(
     joints: str = "zx",
     difficulty: Difficulty | None = None,
     **kwargs: object,
-) -> MJWObstacleStreetScenario:
+) -> MJWWallScenario:
     scenario_kwargs = make_scenario_kwargs(DEFAULT_KWARGS, wall_scenario_kwargs_with_difficulty(difficulty))
     scenario_kwargs.update(
         {
@@ -137,7 +137,7 @@ def default_wall(
         }
     )
     scenario_kwargs.update(kwargs)
-    return MJWObstacleStreetScenario(
+    return MJWWallScenario(
         swarm=_resolve_swarm(
             swarm=swarm,
             unit_start_locations=unit_start_locations,
@@ -149,15 +149,15 @@ def default_wall(
     )
 
 
-def easy_wall(**kwargs: object) -> MJWObstacleStreetScenario:
+def easy_wall(**kwargs: object) -> MJWWallScenario:
     return default_wall(difficulty="easy", **kwargs)
 
 
-def medium_wall(**kwargs: object) -> MJWObstacleStreetScenario:
+def medium_wall(**kwargs: object) -> MJWWallScenario:
     return default_wall(difficulty="medium", **kwargs)
 
 
-def hard_wall(**kwargs: object) -> MJWObstacleStreetScenario:
+def hard_wall(**kwargs: object) -> MJWWallScenario:
     return default_wall(difficulty="hard", **kwargs)
 
 
@@ -333,3 +333,4 @@ def default_move_to(
         seed=seed,
         **scenario_kwargs,
     )
+

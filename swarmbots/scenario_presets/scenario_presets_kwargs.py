@@ -33,15 +33,10 @@ COMMON_SCENARIO_KWARGS: dict[str, object] = {
 }
 
 WALL_SCENARIO_KWARGS: dict[str, object] = {
-    "num_walls": 1,
-    "opening_width": 0.01,
     "swarm_start_x": 0.0,
     "swarm_start_y": UniformDistParams(0.25, 0.75),
     "first_wall_distance": 1.0,
-    "inter_wall_distance": 4.0,
-    "unusable_opening_offset": 2.0,
     "street_width": 10.0,
-    "no_initial_ramp": True,
     "wall_height": 0.20,
     "forward_reward_weight": 1.0,
     "forward_reward_max_y": 2.0,

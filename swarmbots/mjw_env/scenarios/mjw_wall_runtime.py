@@ -19,25 +19,25 @@ from swarmbots.mjw_env.scenarios.base_mjw_scenario import (
     MJWRuntimeBindings,
     MJWStepResult,
 )
-from swarmbots.mjw_env.mjw_torch_utils import masked_mean, sample_float_or_bounded_dist, sample_float_or_dist
+from swarmbots.mjw_env.mjw_torch_utils import masked_mean, sample_float_or_dist
 
 
 @dataclass(slots=True)
-class ObstacleStreetResetBatch:
+class WallResetBatch:
     common: MJWCommonResetBatch
     hidden_global_vars: torch.Tensor
     wall_pass_thresholds: torch.Tensor
 
 
 @dataclass(slots=True)
-class ObstacleStreetResetSpec:
+class WallResetSpec:
     common: MJWCommonResetSpec
     hidden_global_vars: np.ndarray
     wall_pass_thresholds: np.ndarray
 
 
 @dataclass(slots=True)
-class ObstacleStreetSettledSnapshot:
+class WallSettledSnapshot:
     common: MJWCommonSettledSnapshot
     hidden_global_vars: np.ndarray
     wall_pass_thresholds: np.ndarray
@@ -67,21 +67,14 @@ def _compute_wall_climb_potential_torch(
     unit_z: torch.Tensor,
     stable_mask: torch.Tensor,
     units_active_mask: torch.Tensor,
-    wall_y_by_wall: torch.Tensor,
-    wall_heights: torch.Tensor,
+    wall_y: torch.Tensor,
+    wall_height: float,
     wall_climb_reward_distance: float,
     unit_ground_z: float,
 ) -> torch.Tensor:
-    if wall_y_by_wall.shape[1] == 0:
-        return torch.zeros(
-            (*unit_y.shape, 0),
-            device=unit_y.device,
-            dtype=torch.float32,
-        )
-
     safe_unit_y = torch.where(stable_mask.unsqueeze(1), unit_y, torch.zeros_like(unit_y))
     safe_unit_z = torch.where(stable_mask.unsqueeze(1), unit_z, torch.zeros_like(unit_z))
-    distance_to_wall = wall_y_by_wall.unsqueeze(1) - safe_unit_y.unsqueeze(-1)
+    distance_to_wall = wall_y.unsqueeze(1) - safe_unit_y
     approach = torch.clamp(1.0 - (distance_to_wall / float(wall_climb_reward_distance)), min=0.0, max=1.0)
     approach = torch.where(
         (distance_to_wall >= 0.0) & (distance_to_wall <= float(wall_climb_reward_distance)),
@@ -89,13 +82,13 @@ def _compute_wall_climb_potential_torch(
         torch.zeros_like(approach),
     )
     approach = torch.sqrt(approach)
-    target_lift = torch.clamp(wall_heights - float(unit_ground_z), min=1e-6)
+    target_lift = max(float(wall_height) - float(unit_ground_z), 1e-6)
     height = torch.clamp(
-        (safe_unit_z.unsqueeze(-1) - float(unit_ground_z)) / target_lift.view(1, 1, -1),
+        (safe_unit_z - float(unit_ground_z)) / target_lift,
         min=0.0,
         max=1.0,
     )
-    active_mask = units_active_mask.unsqueeze(-1).to(dtype=torch.float32)
+    active_mask = units_active_mask.to(dtype=torch.float32)
     return approach * height * active_mask
 
 
@@ -104,40 +97,34 @@ def _compute_forward_reward_wall_boost_mask_torch(
     unit_y: torch.Tensor,
     unit_z: torch.Tensor,
     stable_mask: torch.Tensor,
-    wall_y_by_wall: torch.Tensor,
-    wall_heights: torch.Tensor,
+    wall_y: torch.Tensor,
+    wall_height: float,
     boost_distance: float,
     height_margin: float,
     wall_half_thickness: float,
 ) -> torch.Tensor:
-    if wall_y_by_wall.shape[1] == 0:
-        return torch.zeros_like(unit_y, dtype=torch.bool)
-
     safe_unit_y = torch.where(stable_mask.unsqueeze(1), unit_y, torch.zeros_like(unit_y))
     safe_unit_z = torch.where(stable_mask.unsqueeze(1), unit_z, torch.zeros_like(unit_z))
-    distance_to_wall = wall_y_by_wall.unsqueeze(1) - safe_unit_y.unsqueeze(-1)
+    distance_to_wall = wall_y.unsqueeze(1) - safe_unit_y
     near_wall = (distance_to_wall >= -float(wall_half_thickness)) & (distance_to_wall <= float(boost_distance))
-    high_enough = safe_unit_z.unsqueeze(-1) >= (wall_heights.view(1, 1, -1) + float(height_margin))
-    return (near_wall & high_enough).any(dim=-1)
+    high_enough = safe_unit_z >= (float(wall_height) + float(height_margin))
+    return near_wall & high_enough
 
 
 def _compute_forward_reward_wall_boost_mask_np(
     *,
     unit_y: np.ndarray,
     unit_z: np.ndarray,
-    wall_y_by_wall: np.ndarray,
-    wall_heights: np.ndarray,
+    wall_y: np.ndarray,
+    wall_height: float,
     boost_distance: float,
     height_margin: float,
     wall_half_thickness: float,
 ) -> np.ndarray:
-    if wall_y_by_wall.size == 0:
-        return np.zeros_like(unit_y, dtype=bool)
-
-    distance_to_wall = wall_y_by_wall[np.newaxis, :] - unit_y[:, np.newaxis]
+    distance_to_wall = wall_y - unit_y
     near_wall = (distance_to_wall >= -float(wall_half_thickness)) & (distance_to_wall <= float(boost_distance))
-    high_enough = unit_z[:, np.newaxis] >= (wall_heights[np.newaxis, :] + float(height_margin))
-    return (near_wall & high_enough).any(axis=-1)
+    high_enough = unit_z >= (float(wall_height) + float(height_margin))
+    return near_wall & high_enough
 
 
 def _compute_wall_climb_done_mask_torch(
@@ -145,25 +132,22 @@ def _compute_wall_climb_done_mask_torch(
     unit_y: torch.Tensor,
     stable_mask: torch.Tensor,
     units_active_mask: torch.Tensor,
-    wall_y_by_wall: torch.Tensor,
+    wall_y: torch.Tensor,
 ) -> torch.Tensor:
-    if wall_y_by_wall.shape[1] == 0:
-        return torch.zeros((*unit_y.shape, 0), device=unit_y.device, dtype=torch.bool)
-
     safe_unit_y = torch.where(stable_mask.unsqueeze(1), unit_y, torch.zeros_like(unit_y))
-    crossed_wall_y = safe_unit_y.unsqueeze(-1) > wall_y_by_wall.unsqueeze(1)
-    return crossed_wall_y & units_active_mask.unsqueeze(-1)
+    crossed_wall_y = safe_unit_y > wall_y.unsqueeze(1)
+    return crossed_wall_y & units_active_mask
 
 
-def _compute_obstacle_street_reward_kernel(
+def _compute_wall_reward_kernel(
     unit_y: torch.Tensor,
     unit_z: torch.Tensor,
     stable_mask: torch.Tensor,
     units_active_mask: torch.Tensor,
     partner_unit: torch.Tensor,
     wall_pass_absolute_thresholds: torch.Tensor,
-    wall_y_by_wall: torch.Tensor,
-    wall_heights: torch.Tensor,
+    wall_y: torch.Tensor,
+    wall_height: float,
     next_threshold_for_unit: torch.Tensor,
     wall_climb_potential: torch.Tensor,
     wall_climb_done_mask: torch.Tensor,
@@ -177,7 +161,7 @@ def _compute_obstacle_street_reward_kernel(
     forward_reward_max_y: float,
     wall_pass_reward_weight: float,
     wall_pass_reward_skew: float,
-    wall_thresholds_per_wall: int,
+    num_wall_thresholds: int,
     wall_climb_reward_weight: float,
     wall_climb_reward_distance: float,
     potential_reward_discount_factor: float,
@@ -211,8 +195,8 @@ def _compute_obstacle_street_reward_kernel(
             unit_y=unit_y,
             unit_z=unit_z,
             stable_mask=stable_mask,
-            wall_y_by_wall=wall_y_by_wall,
-            wall_heights=wall_heights,
+            wall_y=wall_y,
+            wall_height=wall_height,
             boost_distance=forward_reward_wall_boost_distance,
             height_margin=forward_reward_wall_boost_height_margin,
             wall_half_thickness=0.1,
@@ -253,7 +237,7 @@ def _compute_obstacle_street_reward_kernel(
                 & (unit_rank_torch.view(1, 1, -1) <= new_passed_count.unsqueeze(-1))
             )
             crossed_rank_weight_sum = (rank_weights.unsqueeze(1) * crossed_rank_mask.to(dtype=torch.float32)).sum(dim=(1, 2))
-        denom = active_units_count * max(wall_thresholds_per_wall, 1)
+        denom = active_units_count * max(num_wall_thresholds, 1)
         valid = stable_mask & (denom > 0)
         wall_pass_reward = torch.where(
             valid,
@@ -276,8 +260,8 @@ def _compute_obstacle_street_reward_kernel(
             unit_z=unit_z,
             stable_mask=stable_mask,
             units_active_mask=units_active_mask,
-            wall_y_by_wall=wall_y_by_wall,
-            wall_heights=wall_heights,
+            wall_y=wall_y,
+            wall_height=wall_height,
             wall_climb_reward_distance=wall_climb_reward_distance,
             unit_ground_z=unit_ground_z,
         )
@@ -285,11 +269,11 @@ def _compute_obstacle_street_reward_kernel(
             unit_y=unit_y,
             stable_mask=stable_mask,
             units_active_mask=units_active_mask,
-            wall_y_by_wall=wall_y_by_wall,
+            wall_y=wall_y,
         )
         newly_done_mask = crossed_wall_y_mask & ~wall_climb_done_mask
         new_wall_climb_done_mask = torch.where(
-            stable_mask.view(-1, 1, 1),
+            stable_mask.view(-1, 1),
             wall_climb_done_mask | newly_done_mask,
             wall_climb_done_mask,
         )
@@ -299,7 +283,7 @@ def _compute_obstacle_street_reward_kernel(
             current_wall_climb_potential,
         )
         wall_climb_delta = torch.where(
-            stable_mask.view(-1, 1, 1),
+            stable_mask.view(-1, 1),
             (new_wall_climb_potential * float(potential_reward_discount_factor)) - wall_climb_potential,
             torch.zeros_like(wall_climb_potential),
         )
@@ -309,7 +293,7 @@ def _compute_obstacle_street_reward_kernel(
             wall_climb_delta,
         )
         wall_climb_reward = (
-            masked_mean(wall_climb_delta.sum(dim=-1), units_active_mask, dim=1)
+            masked_mean(wall_climb_delta, units_active_mask, dim=1)
             * float(wall_climb_reward_weight)
         )
     progress_reward = (forward_component_reward + wall_pass_reward + wall_climb_reward) * float(progress_reward_weight)
@@ -345,25 +329,23 @@ def _compute_obstacle_street_reward_kernel(
     )
 
 
-class _ObstacleStreetCPUResetSettler(BaseMJWCPUResetSettler):
+class _WallCPUResetSettler(BaseMJWCPUResetSettler):
     def __init__(
         self,
         *,
-        scenario: "MJWObstacleStreetScenario",
+        scenario: "MJWWallScenario",
         bindings: MJWRuntimeBindings,
         threshold_index: np.ndarray,
     ) -> None:
         super().__init__(scenario=scenario, bindings=bindings)
         self.scenario = scenario
         self.threshold_index = threshold_index
-        self.wall_left_mocap_ids = self._build_wall_mocap_ids(kind="left")
-        self.wall_right_mocap_ids = self._build_wall_mocap_ids(kind="right")
-        self.ramp_mocap_ids = self._build_ramp_mocap_ids()
+        self.wall_mocap_id = self._build_wall_mocap_id()
 
-    def settle_batch(self, *, specs: list[ObstacleStreetResetSpec]) -> list[ObstacleStreetSettledSnapshot]:
+    def settle_batch(self, *, specs: list[WallResetSpec]) -> list[WallSettledSnapshot]:
         return [self._settle_one(spec=spec) for spec in specs]
 
-    def _settle_one(self, *, spec: ObstacleStreetResetSpec) -> ObstacleStreetSettledSnapshot:
+    def _settle_one(self, *, spec: WallResetSpec) -> WallSettledSnapshot:
         self._apply_common_reset(common_reset_spec=spec.common)
         self._apply_wall_configuration(hidden_global_vars=spec.hidden_global_vars)
         mujoco.mj_forward(self.model, self.data)
@@ -379,11 +361,7 @@ class _ObstacleStreetCPUResetSettler(BaseMJWCPUResetSettler):
             total_passed = np.zeros((active_mask.shape[0],), dtype=np.int64)
             passed_thresholds_mask = np.zeros((active_mask.shape[0], 0), dtype=bool)
 
-        wall_y_by_wall = _extract_wall_y_by_wall_np(
-            hidden_global_vars=spec.hidden_global_vars[np.newaxis, :],
-            num_walls=self.scenario.num_walls,
-            no_initial_ramp=self.scenario.no_initial_ramp,
-        )[0]
+        wall_y = float(spec.hidden_global_vars[0])
         forward_progress_unit_y = _compute_forward_progress_unit_y_np(
             unit_y=unit_y,
             forward_reward_max_y=self.scenario.forward_reward_max_y,
@@ -402,8 +380,8 @@ class _ObstacleStreetCPUResetSettler(BaseMJWCPUResetSettler):
             unit_y=unit_y,
             unit_z=unit_z,
             forward_progress_unit_y=forward_progress_unit_y,
-            wall_y_by_wall=wall_y_by_wall,
-            wall_heights=np.asarray(self.scenario.wall_heights, dtype=float),
+            wall_y=wall_y,
+            wall_height=float(self.scenario.wall_height),
             forward_reward_wall_boost_factor=float(self.scenario.forward_reward_wall_boost_factor),
             boost_distance=boost_distance,
             height_margin=height_margin,
@@ -413,20 +391,20 @@ class _ObstacleStreetCPUResetSettler(BaseMJWCPUResetSettler):
             active_mask=active_mask,
         )
         if self.scenario.wall_climb_reward_weight == 0.0:
-            wall_climb_potential = np.zeros((active_mask.shape[0], self.scenario.num_walls), dtype=np.float32)
-            wall_climb_done_mask = np.zeros((active_mask.shape[0], self.scenario.num_walls), dtype=bool)
+            wall_climb_potential = np.zeros((active_mask.shape[0],), dtype=np.float32)
+            wall_climb_done_mask = np.zeros((active_mask.shape[0],), dtype=bool)
         else:
-            wall_climb_done_mask = (unit_y[:, np.newaxis] > wall_y_by_wall[np.newaxis, :]) & active_mask[:, np.newaxis]
+            wall_climb_done_mask = (unit_y > wall_y) & active_mask
             wall_climb_potential = _compute_wall_climb_potential_np(
                 unit_y=unit_y,
                 unit_z=unit_z,
                 active_mask=active_mask,
-                wall_y_by_wall=wall_y_by_wall,
-                wall_heights=np.asarray(self.scenario.wall_heights, dtype=float),
+                wall_y=wall_y,
+                wall_height=float(self.scenario.wall_height),
                 wall_climb_reward_distance=self.scenario.wall_climb_reward_distance,
                 unit_ground_z=float(self.scenario.swarm.body_radius),
             )
-        return ObstacleStreetSettledSnapshot(
+        return WallSettledSnapshot(
             common=self._build_common_snapshot(common_reset_spec=spec.common),
             hidden_global_vars=spec.hidden_global_vars.copy(),
             wall_pass_thresholds=spec.wall_pass_thresholds.copy(),
@@ -441,51 +419,18 @@ class _ObstacleStreetCPUResetSettler(BaseMJWCPUResetSettler):
     def _apply_wall_configuration(self, *, hidden_global_vars: np.ndarray) -> None:
         if self.data.mocap_pos.size == 0:
             return
-        hidden_col = 0
-        ramp_idx = 0
-        for wall_idx in range(self.scenario.num_walls):
-            wall_y = float(hidden_global_vars[hidden_col])
-            opening_width = float(hidden_global_vars[hidden_col + 1])
-            opening_x = float(hidden_global_vars[hidden_col + 2])
-            hidden_col += 3
+        self.data.mocap_pos[int(self.wall_mocap_id)] = [0.0, float(hidden_global_vars[0]), 0.0]
 
-            wall_left_pos_x = opening_x - (opening_width / 2.0) - 12.5
-            wall_right_pos_x = opening_x + (opening_width / 2.0) + 12.5
-            self.data.mocap_pos[int(self.wall_left_mocap_ids[wall_idx])] = [wall_left_pos_x, wall_y, 0.0]
-            self.data.mocap_pos[int(self.wall_right_mocap_ids[wall_idx])] = [wall_right_pos_x, wall_y, 0.0]
-
-            if wall_idx > 0 or not self.scenario.no_initial_ramp:
-                ramp_x = float(hidden_global_vars[hidden_col])
-                hidden_col += 1
-                self.data.mocap_pos[int(self.ramp_mocap_ids[ramp_idx])] = [
-                    ramp_x,
-                    wall_y - (self.scenario.ramp_distances_to_wall[wall_idx] / 2.0),
-                    (self.scenario.wall_heights[wall_idx] / 2.0) - 0.05,
-                ]
-                ramp_idx += 1
-
-    def _build_wall_mocap_ids(self, *, kind: str) -> np.ndarray:
-        ids = np.zeros((self.scenario.num_walls,), dtype=np.int64)
-        for wall_idx in range(self.scenario.num_walls):
-            body_name = f"Wall_{wall_idx}_{'Left' if kind == 'left' else 'Right'}"
-            body_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, body_name)
-            ids[wall_idx] = self.model.body_mocapid[body_id]
-        return ids
-
-    def _build_ramp_mocap_ids(self) -> np.ndarray:
-        ramp_ids: list[int] = []
-        for wall_idx in range(self.scenario.num_walls):
-            if wall_idx > 0 or not self.scenario.no_initial_ramp:
-                body_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, f"Ramp_{wall_idx}")
-                ramp_ids.append(int(self.model.body_mocapid[body_id]))
-        return np.asarray(ramp_ids, dtype=np.int64)
+    def _build_wall_mocap_id(self) -> int:
+        body_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, "Wall")
+        return int(self.model.body_mocapid[body_id])
 
 
-class ObstacleStreetMJWScenarioRuntime(BaseMJWScenarioRuntime):
+class WallMJWScenarioRuntime(BaseMJWScenarioRuntime):
     def __init__(
         self,
         *,
-        scenario: "MJWObstacleStreetScenario",
+        scenario: "MJWWallScenario",
         bindings: MJWRuntimeBindings,
         runtime_metadata: None = None,
     ) -> None:
@@ -494,19 +439,18 @@ class ObstacleStreetMJWScenarioRuntime(BaseMJWScenarioRuntime):
         total_thresholds = scenario.total_thresholds
         self._global_obs = torch.empty((bindings.num_envs, 0), device=bindings.device, dtype=torch.float32)
         self.hidden_global_vars = torch.zeros((bindings.num_envs, hidden_global_dim), device=bindings.device, dtype=torch.float32)
-        self.wall_y_by_wall = torch.zeros((bindings.num_envs, scenario.num_walls), device=bindings.device, dtype=torch.float32)
+        self.wall_y = torch.zeros((bindings.num_envs,), device=bindings.device, dtype=torch.float32)
         self.wall_pass_absolute_thresholds = torch.zeros((bindings.num_envs, total_thresholds), device=bindings.device, dtype=torch.float32)
         self.wall_climb_potential = torch.zeros(
-            (bindings.num_envs, scenario.swarm.num_units, scenario.num_walls),
+            (bindings.num_envs, scenario.swarm.num_units),
             device=bindings.device,
             dtype=torch.float32,
         )
         self.wall_climb_done_mask = torch.zeros(
-            (bindings.num_envs, scenario.swarm.num_units, scenario.num_walls),
+            (bindings.num_envs, scenario.swarm.num_units),
             device=bindings.device,
             dtype=torch.bool,
         )
-        self._wall_heights = torch.as_tensor(scenario.wall_heights, device=bindings.device, dtype=torch.float32)
         self.next_threshold_for_unit = torch.zeros(
             (bindings.num_envs, scenario.swarm.num_units),
             device=bindings.device,
@@ -534,8 +478,8 @@ class ObstacleStreetMJWScenarioRuntime(BaseMJWScenarioRuntime):
         )
         self._wall_pass_rank_weights_skew: float | None = None
         self._threshold_index_np = np.arange(total_thresholds, dtype=np.int64)
-        self._wall_thresholds_per_wall = len(scenario.wall_pass_thresholds)
-        self._cpu_settler = _ObstacleStreetCPUResetSettler(
+        self._num_wall_thresholds = len(scenario.wall_pass_thresholds)
+        self._cpu_settler = _WallCPUResetSettler(
             scenario=scenario,
             bindings=bindings,
             threshold_index=self._threshold_index_np,
@@ -556,7 +500,7 @@ class ObstacleStreetMJWScenarioRuntime(BaseMJWScenarioRuntime):
                 torch.Tensor,
             ],
         ]
-        self._reward_kernel = _compute_obstacle_street_reward_kernel
+        self._reward_kernel = _compute_wall_reward_kernel
         if scenario.compile_reward_kernel:
             if not hasattr(torch, "compile"):
                 raise RuntimeError("compile_reward_kernel=True requires torch.compile support.")
@@ -570,9 +514,7 @@ class ObstacleStreetMJWScenarioRuntime(BaseMJWScenarioRuntime):
                 fullgraph=False,
                 dynamic=False,
             )
-        self._wall_left_mocap_ids = self._cpu_settler.wall_left_mocap_ids
-        self._wall_right_mocap_ids = self._cpu_settler.wall_right_mocap_ids
-        self._ramp_mocap_ids = self._cpu_settler.ramp_mocap_ids
+        self._wall_mocap_id = self._cpu_settler.wall_mocap_id
 
     @property
     def global_obs(self) -> torch.Tensor:
@@ -586,32 +528,28 @@ class ObstacleStreetMJWScenarioRuntime(BaseMJWScenarioRuntime):
     def hidden_global_obs(self) -> torch.Tensor:
         return self.hidden_global_vars
 
-    def sample_reset_batch(self, *, n_reset: int, rng: torch.Generator) -> ObstacleStreetResetBatch:
+    def sample_reset_batch(self, *, n_reset: int, rng: torch.Generator) -> WallResetBatch:
         hidden_global_vars, wall_pass_thresholds = self._sample_wall_configuration_values(n_reset=n_reset, rng=rng)
-        return ObstacleStreetResetBatch(
+        return WallResetBatch(
             common=self._sample_common_reset_batch(n_reset=n_reset, rng=rng),
             hidden_global_vars=hidden_global_vars,
             wall_pass_thresholds=wall_pass_thresholds,
         )
 
-    def select_reset_batch(self, *, reset_batch: ObstacleStreetResetBatch, mask: torch.Tensor) -> ObstacleStreetResetBatch:
-        return ObstacleStreetResetBatch(
+    def select_reset_batch(self, *, reset_batch: WallResetBatch, mask: torch.Tensor) -> WallResetBatch:
+        return WallResetBatch(
             common=self._select_common_reset_batch(common_reset_batch=reset_batch.common, mask=mask),
             hidden_global_vars=reset_batch.hidden_global_vars[mask],
             wall_pass_thresholds=reset_batch.wall_pass_thresholds[mask],
         )
 
-    def apply_reset_batch(self, *, world_idx: torch.Tensor, reset_batch: ObstacleStreetResetBatch) -> None:
+    def apply_reset_batch(self, *, world_idx: torch.Tensor, reset_batch: WallResetBatch) -> None:
         self._apply_common_reset_batch(world_idx=world_idx, common_reset_batch=reset_batch.common)
         self._apply_wall_configuration(world_idx=world_idx, hidden_global_vars=reset_batch.hidden_global_vars)
         mjw.forward(self.bindings.model, self.bindings.data)
 
         self.hidden_global_vars[world_idx] = reset_batch.hidden_global_vars
-        self.wall_y_by_wall[world_idx] = _extract_wall_y_by_wall_torch(
-            hidden_global_vars=reset_batch.hidden_global_vars,
-            num_walls=self.scenario.num_walls,
-            no_initial_ramp=self.scenario.no_initial_ramp,
-        )
+        self.wall_y[world_idx] = reset_batch.hidden_global_vars[:, 0]
         self.wall_pass_absolute_thresholds[world_idx] = reset_batch.wall_pass_thresholds
 
         unit_y = self._get_unit_y()[world_idx]
@@ -626,8 +564,8 @@ class ObstacleStreetMJWScenarioRuntime(BaseMJWScenarioRuntime):
             unit_z=unit_z,
             stable_mask=torch.ones((unit_y.shape[0],), device=unit_y.device, dtype=torch.bool),
             forward_progress_unit_y=forward_progress_unit_y,
-            wall_y_by_wall=self.wall_y_by_wall[world_idx],
-            wall_heights=self._wall_heights,
+            wall_y=self.wall_y[world_idx],
+            wall_height=float(self.scenario.wall_height),
             forward_reward_wall_boost_factor=float(self.scenario.forward_reward_wall_boost_factor),
             boost_distance=(
                 float(self.scenario.forward_reward_wall_boost_distance)
@@ -651,16 +589,16 @@ class ObstacleStreetMJWScenarioRuntime(BaseMJWScenarioRuntime):
             self.wall_climb_done_mask[world_idx] = False
         else:
             self.wall_climb_done_mask[world_idx] = (
-                (unit_y.unsqueeze(-1) > self.wall_y_by_wall[world_idx].unsqueeze(1))
-                & self.bindings.units_active_mask[world_idx].unsqueeze(-1)
+                (unit_y > self.wall_y[world_idx].unsqueeze(1))
+                & self.bindings.units_active_mask[world_idx]
             )
             self.wall_climb_potential[world_idx] = _compute_wall_climb_potential_torch(
                 unit_y=unit_y,
                 unit_z=unit_z,
                 stable_mask=torch.ones((unit_y.shape[0],), device=unit_y.device, dtype=torch.bool),
                 units_active_mask=self.bindings.units_active_mask[world_idx],
-                wall_y_by_wall=self.wall_y_by_wall[world_idx],
-                wall_heights=self._wall_heights,
+                wall_y=self.wall_y[world_idx],
+                wall_height=float(self.scenario.wall_height),
                 wall_climb_reward_distance=float(self.scenario.wall_climb_reward_distance),
                 unit_ground_z=float(self.scenario.swarm.body_radius),
             )
@@ -668,12 +606,12 @@ class ObstacleStreetMJWScenarioRuntime(BaseMJWScenarioRuntime):
         self.passed_thresholds_mask[world_idx] = self._threshold_index_torch.view(1, 1, -1) < total_passed.unsqueeze(-1)
         self._hidden_local_obs[world_idx] = self.passed_thresholds_mask[world_idx].to(dtype=torch.float32)
 
-    def build_cpu_reset_specs(self, *, reset_batch: ObstacleStreetResetBatch) -> list[ObstacleStreetResetSpec]:
+    def build_cpu_reset_specs(self, *, reset_batch: WallResetBatch) -> list[WallResetSpec]:
         common_specs = self._build_common_reset_specs(common_reset_batch=reset_batch.common)
         hidden_global_vars = reset_batch.hidden_global_vars.detach().cpu().numpy()
         wall_pass_thresholds = reset_batch.wall_pass_thresholds.detach().cpu().numpy()
         return [
-            ObstacleStreetResetSpec(
+            WallResetSpec(
                 common=common_specs[i],
                 hidden_global_vars=hidden_global_vars[i].copy(),
                 wall_pass_thresholds=wall_pass_thresholds[i].copy(),
@@ -681,21 +619,17 @@ class ObstacleStreetMJWScenarioRuntime(BaseMJWScenarioRuntime):
             for i in range(len(common_specs))
         ]
 
-    def settle_cpu_reset_specs(self, *, specs: list[ObstacleStreetResetSpec]) -> list[ObstacleStreetSettledSnapshot]:
+    def settle_cpu_reset_specs(self, *, specs: list[WallResetSpec]) -> list[WallSettledSnapshot]:
         return self._cpu_settler.settle_batch(specs=specs)
 
-    def apply_settled_reset_batch(self, *, world_idx: torch.Tensor, snapshots: list[ObstacleStreetSettledSnapshot]) -> None:
+    def apply_settled_reset_batch(self, *, world_idx: torch.Tensor, snapshots: list[WallSettledSnapshot]) -> None:
         self._apply_common_settled_snapshot_batch(world_idx=world_idx, snapshots=[snapshot.common for snapshot in snapshots])
         self.hidden_global_vars[world_idx] = torch.as_tensor(
             np.stack([snapshot.hidden_global_vars for snapshot in snapshots]),
             device=self.bindings.device,
             dtype=self.hidden_global_vars.dtype,
         )
-        self.wall_y_by_wall[world_idx] = _extract_wall_y_by_wall_torch(
-            hidden_global_vars=self.hidden_global_vars[world_idx],
-            num_walls=self.scenario.num_walls,
-            no_initial_ramp=self.scenario.no_initial_ramp,
-        )
+        self.wall_y[world_idx] = self.hidden_global_vars[world_idx, 0]
         self.wall_pass_absolute_thresholds[world_idx] = torch.as_tensor(
             np.stack([snapshot.wall_pass_thresholds for snapshot in snapshots]),
             device=self.bindings.device,
@@ -741,16 +675,14 @@ class ObstacleStreetMJWScenarioRuntime(BaseMJWScenarioRuntime):
         needs_wall_height_context = wall_climb_reward_weight != 0.0 or forward_reward_wall_boost_factor != 1.0
         if not needs_wall_height_context:
             unit_z = torch.empty_like(unit_y)
-            wall_y_by_wall = torch.empty((unit_y.shape[0], 0), device=unit_y.device, dtype=torch.float32)
-            wall_heights = torch.empty((0,), device=unit_y.device, dtype=torch.float32)
-            wall_climb_potential = torch.empty((*unit_y.shape, 0), device=unit_y.device, dtype=torch.float32)
-            wall_climb_done_mask = torch.empty((*unit_y.shape, 0), device=unit_y.device, dtype=torch.bool)
+            wall_y = torch.empty((unit_y.shape[0],), device=unit_y.device, dtype=torch.float32)
+            wall_climb_potential = torch.empty_like(unit_y)
+            wall_climb_done_mask = torch.empty_like(unit_y, dtype=torch.bool)
             wall_climb_reward_distance = 1.0
             unit_ground_z = 0.1
         else:
             unit_z = self._get_unit_z()
-            wall_y_by_wall = self.wall_y_by_wall
-            wall_heights = self._wall_heights
+            wall_y = self.wall_y
             wall_climb_potential = self.wall_climb_potential
             wall_climb_done_mask = self.wall_climb_done_mask
             wall_climb_reward_distance = float(self.scenario.wall_climb_reward_distance)
@@ -790,8 +722,8 @@ class ObstacleStreetMJWScenarioRuntime(BaseMJWScenarioRuntime):
             self.bindings.units_active_mask,
             self.bindings.partner_unit,
             self.wall_pass_absolute_thresholds,
-            wall_y_by_wall,
-            wall_heights,
+            wall_y,
+            float(self.scenario.wall_height),
             self.next_threshold_for_unit,
             wall_climb_potential,
             wall_climb_done_mask,
@@ -805,7 +737,7 @@ class ObstacleStreetMJWScenarioRuntime(BaseMJWScenarioRuntime):
             float("inf") if self.scenario.forward_reward_max_y is None else float(self.scenario.forward_reward_max_y),
             float(self.scenario.wall_pass_reward_weight),
             wall_pass_reward_skew,
-            int(self._wall_thresholds_per_wall),
+            int(self._num_wall_thresholds),
             wall_climb_reward_weight,
             wall_climb_reward_distance,
             float(getattr(self.scenario, "potential_reward_discount_factor", 1.0)),
@@ -860,14 +792,14 @@ class ObstacleStreetMJWScenarioRuntime(BaseMJWScenarioRuntime):
         stable_mask: torch.Tensor,
     ) -> torch.Tensor:
         wall_success_threshold = getattr(self.scenario, "wall_success_threshold", None)
-        if wall_success_threshold is None or self.wall_y_by_wall.shape[1] == 0:
+        if wall_success_threshold is None:
             return torch.zeros_like(stable_mask)
 
-        success_y_by_wall = self.wall_y_by_wall + float(wall_success_threshold)
-        unit_past_all_walls = (unit_y.unsqueeze(-1) > success_y_by_wall.unsqueeze(1)).all(dim=-1)
+        success_y = self.wall_y + float(wall_success_threshold)
+        unit_past_wall = unit_y > success_y.unsqueeze(1)
         active_mask = self.bindings.units_active_mask
         active_units_count = active_mask.sum(dim=-1)
-        active_units_success = torch.where(active_mask, unit_past_all_walls, torch.ones_like(unit_past_all_walls))
+        active_units_success = torch.where(active_mask, unit_past_wall, torch.ones_like(unit_past_wall))
         return stable_mask & (active_units_count > 0) & active_units_success.all(dim=-1)
 
     def _get_unit_y(self) -> torch.Tensor:
@@ -908,84 +840,23 @@ class ObstacleStreetMJWScenarioRuntime(BaseMJWScenarioRuntime):
             device=self.bindings.device,
             dtype=torch.float32,
         )
-        unusable_opening_offset = sample_float_or_dist(
-            self.scenario.unusable_opening_offset,
-            shape=(n_reset,),
-            device=self.bindings.device,
-            generator=rng,
-        )
-        current_wall_y = sample_float_or_dist(
+        wall_y = sample_float_or_dist(
             self.scenario.first_wall_distance,
             shape=(n_reset,),
             device=self.bindings.device,
             generator=rng,
         )
-        hidden_col = 0
-        for wall_idx in range(self.scenario.num_walls):
-            if wall_idx != 0:
-                current_wall_y = current_wall_y + sample_float_or_bounded_dist(
-                    self.scenario.inter_wall_distance,
-                    shape=(n_reset,),
-                    device=self.bindings.device,
-                    generator=rng,
-                )
-            opening_width = sample_float_or_dist(
-                self.scenario.opening_widths[wall_idx],
-                shape=(n_reset,),
-                device=self.bindings.device,
-                generator=rng,
-            )
-            opening_range = self.scenario.side_wall_x - (opening_width / 2.0) + unusable_opening_offset
-            opening_x = (torch.rand((n_reset,), device=self.bindings.device, generator=rng) * 2.0 - 1.0) * opening_range
-            hidden_global[:, hidden_col] = current_wall_y
-            hidden_global[:, hidden_col + 1] = opening_width
-            hidden_global[:, hidden_col + 2] = opening_x
-            hidden_col += 3
-
-            start = wall_idx * self._wall_thresholds_per_wall
-            stop = start + self._wall_thresholds_per_wall
-            wall_pass_thresholds[:, start:stop] = current_wall_y.unsqueeze(-1) + self._threshold_values.unsqueeze(0)
-
-            if wall_idx > 0 or not self.scenario.no_initial_ramp:
-                hidden_global[:, hidden_col] = (
-                    (torch.rand((n_reset,), device=self.bindings.device, generator=rng) * 2.0 - 1.0)
-                    * self.scenario.ramp_range_x
-                )
-                hidden_col += 1
-
-        wall_pass_thresholds, _ = torch.sort(wall_pass_thresholds, dim=-1)
+        hidden_global[:, 0] = wall_y
+        wall_pass_thresholds[:] = wall_y.unsqueeze(-1) + self._threshold_values.unsqueeze(0)
         return hidden_global, wall_pass_thresholds
 
     def _apply_wall_configuration(self, *, world_idx: torch.Tensor, hidden_global_vars: torch.Tensor) -> None:
         if self.bindings.mocap_pos.numel() == 0:
             return
-        hidden_col = 0
-        ramp_idx = 0
-        for wall_idx in range(self.scenario.num_walls):
-            wall_y = hidden_global_vars[:, hidden_col]
-            opening_width = hidden_global_vars[:, hidden_col + 1]
-            opening_x = hidden_global_vars[:, hidden_col + 2]
-            hidden_col += 3
-
-            wall_left_pos_x = opening_x - (opening_width / 2.0) - 12.5
-            wall_right_pos_x = opening_x + (opening_width / 2.0) + 12.5
-            left_mocap_id = int(self._wall_left_mocap_ids[wall_idx])
-            right_mocap_id = int(self._wall_right_mocap_ids[wall_idx])
-            self.bindings.mocap_pos[world_idx, left_mocap_id, 0] = wall_left_pos_x
-            self.bindings.mocap_pos[world_idx, left_mocap_id, 1] = wall_y
-            self.bindings.mocap_pos[world_idx, left_mocap_id, 2] = 0.0
-            self.bindings.mocap_pos[world_idx, right_mocap_id, 0] = wall_right_pos_x
-            self.bindings.mocap_pos[world_idx, right_mocap_id, 1] = wall_y
-            self.bindings.mocap_pos[world_idx, right_mocap_id, 2] = 0.0
-
-            if wall_idx > 0 or not self.scenario.no_initial_ramp:
-                ramp_x = hidden_global_vars[:, hidden_col]
-                hidden_col += 1
-                mocap_id = int(self._ramp_mocap_ids[ramp_idx])
-                self.bindings.mocap_pos[world_idx, mocap_id, 0] = ramp_x
-                self.bindings.mocap_pos[world_idx, mocap_id, 1] = wall_y - (self.scenario.ramp_distances_to_wall[wall_idx] / 2.0)
-                self.bindings.mocap_pos[world_idx, mocap_id, 2] = (self.scenario.wall_heights[wall_idx] / 2.0) - 0.05
-                ramp_idx += 1
+        wall_y = hidden_global_vars[:, 0]
+        self.bindings.mocap_pos[world_idx, int(self._wall_mocap_id), 0] = 0.0
+        self.bindings.mocap_pos[world_idx, int(self._wall_mocap_id), 1] = wall_y
+        self.bindings.mocap_pos[world_idx, int(self._wall_mocap_id), 2] = 0.0
 
 
 def _compute_forward_progress_baseline_np(
@@ -1022,8 +893,8 @@ def _apply_forward_reward_wall_boost_to_potential_np(
     unit_y: np.ndarray,
     unit_z: np.ndarray,
     forward_progress_unit_y: np.ndarray,
-    wall_y_by_wall: np.ndarray,
-    wall_heights: np.ndarray,
+    wall_y: float,
+    wall_height: float,
     forward_reward_wall_boost_factor: float,
     boost_distance: float,
     height_margin: float,
@@ -1034,8 +905,8 @@ def _apply_forward_reward_wall_boost_to_potential_np(
     boost_mask = _compute_forward_reward_wall_boost_mask_np(
         unit_y=unit_y,
         unit_z=unit_z,
-        wall_y_by_wall=wall_y_by_wall,
-        wall_heights=wall_heights,
+        wall_y=wall_y,
+        wall_height=wall_height,
         boost_distance=boost_distance,
         height_margin=height_margin,
         wall_half_thickness=0.1,
@@ -1052,14 +923,12 @@ def _compute_wall_climb_potential_np(
     unit_y: np.ndarray,
     unit_z: np.ndarray,
     active_mask: np.ndarray,
-    wall_y_by_wall: np.ndarray,
-    wall_heights: np.ndarray,
+    wall_y: float,
+    wall_height: float,
     wall_climb_reward_distance: float,
     unit_ground_z: float,
 ) -> np.ndarray:
-    if wall_y_by_wall.size == 0:
-        return np.zeros((unit_y.shape[0], 0), dtype=np.float32)
-    distance_to_wall = wall_y_by_wall[np.newaxis, :] - unit_y[:, np.newaxis]
+    distance_to_wall = float(wall_y) - unit_y
     approach = np.clip(1.0 - (distance_to_wall / float(wall_climb_reward_distance)), 0.0, 1.0)
     approach = np.where(
         (distance_to_wall >= 0.0) & (distance_to_wall <= float(wall_climb_reward_distance)),
@@ -1067,13 +936,13 @@ def _compute_wall_climb_potential_np(
         0.0,
     )
     approach = np.sqrt(approach)
-    target_lift = np.maximum(wall_heights - float(unit_ground_z), 1e-6)
+    target_lift = max(float(wall_height) - float(unit_ground_z), 1e-6)
     height = np.clip(
-        (unit_z[:, np.newaxis] - float(unit_ground_z)) / target_lift[np.newaxis, :],
+        (unit_z - float(unit_ground_z)) / target_lift,
         0.0,
         1.0,
     )
-    return (approach * height * active_mask[:, np.newaxis].astype(np.float32)).astype(np.float32, copy=False)
+    return (approach * height * active_mask.astype(np.float32)).astype(np.float32, copy=False)
 
 
 def _compute_forward_progress_baseline_torch(
@@ -1100,8 +969,8 @@ def _apply_forward_reward_wall_boost_to_potential_torch(
     unit_z: torch.Tensor,
     stable_mask: torch.Tensor,
     forward_progress_unit_y: torch.Tensor,
-    wall_y_by_wall: torch.Tensor,
-    wall_heights: torch.Tensor,
+    wall_y: torch.Tensor,
+    wall_height: float,
     forward_reward_wall_boost_factor: float,
     boost_distance: float,
     height_margin: float,
@@ -1113,8 +982,8 @@ def _apply_forward_reward_wall_boost_to_potential_torch(
         unit_y=unit_y,
         unit_z=unit_z,
         stable_mask=stable_mask,
-        wall_y_by_wall=wall_y_by_wall,
-        wall_heights=wall_heights,
+        wall_y=wall_y,
+        wall_height=wall_height,
         boost_distance=boost_distance,
         height_margin=height_margin,
         wall_half_thickness=0.1,
@@ -1125,34 +994,3 @@ def _apply_forward_reward_wall_boost_to_potential_torch(
         forward_progress_unit_y,
     )
 
-
-def _extract_wall_y_by_wall_np(
-    *,
-    hidden_global_vars: np.ndarray,
-    num_walls: int,
-    no_initial_ramp: bool,
-) -> np.ndarray:
-    wall_y_columns: list[int] = []
-    hidden_col = 0
-    for wall_idx in range(num_walls):
-        wall_y_columns.append(hidden_col)
-        hidden_col += 3
-        if wall_idx > 0 or not no_initial_ramp:
-            hidden_col += 1
-    return hidden_global_vars[:, wall_y_columns].astype(np.float32, copy=False)
-
-
-def _extract_wall_y_by_wall_torch(
-    *,
-    hidden_global_vars: torch.Tensor,
-    num_walls: int,
-    no_initial_ramp: bool,
-) -> torch.Tensor:
-    wall_y_columns: list[int] = []
-    hidden_col = 0
-    for wall_idx in range(num_walls):
-        wall_y_columns.append(hidden_col)
-        hidden_col += 3
-        if wall_idx > 0 or not no_initial_ramp:
-            hidden_col += 1
-    return hidden_global_vars[:, wall_y_columns]

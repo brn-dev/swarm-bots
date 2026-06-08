@@ -5,10 +5,10 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from swarmbots.mjw_env.scenarios.mjw_obstacle_street_runtime import (
-    ObstacleStreetMJWScenarioRuntime,
+from swarmbots.mjw_env.scenarios.mjw_wall_runtime import (
+    WallMJWScenarioRuntime,
     _build_wall_pass_rank_weights,
-    _compute_obstacle_street_reward_kernel,
+    _compute_wall_reward_kernel,
 )
 
 
@@ -19,8 +19,8 @@ def _make_runtime(
     wall_pass_reward_weight: float = 4.0,
     wall_pass_absolute_thresholds: list[float] | None = None,
     units_active_mask: list[bool] | None = None,
-) -> ObstacleStreetMJWScenarioRuntime:
-    runtime = object.__new__(ObstacleStreetMJWScenarioRuntime)
+) -> WallMJWScenarioRuntime:
+    runtime = object.__new__(WallMJWScenarioRuntime)
     device = torch.device("cpu")
     thresholds = [0.5] if wall_pass_absolute_thresholds is None else wall_pass_absolute_thresholds
     runtime.bindings = SimpleNamespace(
@@ -42,6 +42,7 @@ def _make_runtime(
         wall_pass_reward_skew=wall_pass_reward_skew,
         wall_success_threshold=None,
         wall_success_reward=0.0,
+        wall_height=0.4,
         wall_climb_reward_weight=0.0,
         wall_climb_reward_distance=0.5,
         potential_reward_discount_factor=1.0,
@@ -52,16 +53,16 @@ def _make_runtime(
     runtime.forward_progress_unit_y = torch.zeros((1, num_units), device=device, dtype=torch.float32)
     runtime.wall_pass_absolute_thresholds = torch.tensor([thresholds], device=device, dtype=torch.float32)
     runtime.next_threshold_for_unit = torch.zeros((1, num_units), device=device, dtype=torch.long)
-    runtime.wall_climb_potential = torch.zeros((1, num_units, 0), device=device, dtype=torch.float32)
-    runtime.wall_climb_done_mask = torch.zeros((1, num_units, 0), device=device, dtype=torch.bool)
+    runtime.wall_climb_potential = torch.zeros((1, num_units), device=device, dtype=torch.float32)
+    runtime.wall_climb_done_mask = torch.zeros((1, num_units), device=device, dtype=torch.bool)
     runtime.passed_thresholds_mask = torch.zeros((1, num_units, len(thresholds)), device=device, dtype=torch.bool)
     runtime._hidden_local_obs = torch.zeros((1, num_units, len(thresholds)), device=device, dtype=torch.float32)
     runtime._threshold_index_torch = torch.arange(len(thresholds), device=device, dtype=torch.long)
     runtime._unit_rank_torch = torch.arange(1, num_units + 1, device=device, dtype=torch.long)
     runtime._wall_pass_rank_weights = torch.zeros((num_units + 1, num_units), device=device, dtype=torch.float32)
     runtime._wall_pass_rank_weights_skew = None
-    runtime._wall_thresholds_per_wall = len(thresholds)
-    runtime._reward_kernel = _compute_obstacle_street_reward_kernel
+    runtime._num_wall_thresholds = len(thresholds)
+    runtime._reward_kernel = _compute_wall_reward_kernel
     return runtime
 
 
@@ -116,8 +117,8 @@ def test_wall_height_forward_reward_boost_applies_per_high_unit_in_mjw() -> None
     runtime.scenario.swarm = SimpleNamespace(body_radius=0.1)
     runtime.progress[0] = 1.2
     runtime.forward_progress_unit_y[0] = torch.tensor([1.8, 0.6], dtype=torch.float32)
-    runtime.wall_y_by_wall = torch.tensor([[1.0]], dtype=torch.float32)
-    runtime._wall_heights = torch.tensor([0.4], dtype=torch.float32)
+    runtime.wall_y = torch.tensor([1.0], dtype=torch.float32)
+    runtime.scenario.wall_height = 0.4
     stable_mask = torch.tensor([True], dtype=torch.bool)
 
     runtime._get_unit_y = lambda: torch.tensor([[0.7, 0.7]], dtype=torch.float32)
@@ -137,8 +138,8 @@ def test_wall_height_forward_reward_boost_penalizes_backtracking_symmetrically_i
     runtime.scenario.swarm = SimpleNamespace(body_radius=0.1)
     runtime.progress[0] = 2.1
     runtime.forward_progress_unit_y[0] = torch.tensor([2.1], dtype=torch.float32)
-    runtime.wall_y_by_wall = torch.tensor([[1.0]], dtype=torch.float32)
-    runtime._wall_heights = torch.tensor([0.4], dtype=torch.float32)
+    runtime.wall_y = torch.tensor([1.0], dtype=torch.float32)
+    runtime.scenario.wall_height = 0.4
     stable_mask = torch.tensor([True], dtype=torch.bool)
 
     runtime._get_unit_y = lambda: torch.tensor([[0.6]], dtype=torch.float32)
@@ -288,7 +289,7 @@ def test_wall_pass_reward_skew_ignores_inactive_units() -> None:
 def test_wall_success_termination_uses_separate_threshold_for_active_units_in_mjw() -> None:
     runtime = _make_runtime(num_units=3, wall_pass_reward_weight=0.0, units_active_mask=[True, False, True])
     runtime.scenario.wall_success_threshold = 1.0
-    runtime.wall_y_by_wall = torch.tensor([[1.0]], dtype=torch.float32)
+    runtime.wall_y = torch.tensor([1.0], dtype=torch.float32)
     stable_mask = torch.tensor([True], dtype=torch.bool)
 
     runtime._get_unit_y = lambda: torch.tensor([[2.01, 0.0, 1.99]], dtype=torch.float32)
@@ -306,7 +307,7 @@ def test_wall_success_termination_uses_separate_threshold_for_active_units_in_mj
 def test_wall_success_termination_requires_at_least_one_active_unit_in_mjw() -> None:
     runtime = _make_runtime(num_units=3, wall_pass_reward_weight=0.0, units_active_mask=[False, False, False])
     runtime.scenario.wall_success_threshold = 1.0
-    runtime.wall_y_by_wall = torch.tensor([[1.0]], dtype=torch.float32)
+    runtime.wall_y = torch.tensor([1.0], dtype=torch.float32)
     stable_mask = torch.tensor([True], dtype=torch.bool)
 
     runtime._get_unit_y = lambda: torch.tensor([[2.01, 2.01, 2.01]], dtype=torch.float32)
@@ -321,7 +322,7 @@ def test_wall_success_reward_is_added_once_to_weighted_progress_reward_in_mjw() 
     runtime.scenario.progress_reward_weight = 2.0
     runtime.scenario.wall_success_threshold = 1.0
     runtime.scenario.wall_success_reward = 3.0
-    runtime.wall_y_by_wall = torch.tensor([[1.0]], dtype=torch.float32)
+    runtime.wall_y = torch.tensor([1.0], dtype=torch.float32)
     stable_mask = torch.tensor([True], dtype=torch.bool)
 
     runtime._get_unit_y = lambda: torch.tensor([[2.01, 2.01]], dtype=torch.float32)
@@ -367,10 +368,10 @@ def test_wall_climb_reward_uses_signed_potential_delta_so_retry_is_rewarded_in_m
     runtime.scenario.wall_climb_reward_weight = 5.0
     runtime.scenario.wall_climb_reward_distance = 0.5
     runtime.scenario.swarm = SimpleNamespace(body_radius=0.1)
-    runtime.wall_y_by_wall = torch.tensor([[1.0]], dtype=torch.float32)
-    runtime._wall_heights = torch.tensor([0.4], dtype=torch.float32)
-    runtime.wall_climb_potential = torch.zeros((1, 1, 1), dtype=torch.float32)
-    runtime.wall_climb_done_mask = torch.zeros((1, 1, 1), dtype=torch.bool)
+    runtime.wall_y = torch.tensor([1.0], dtype=torch.float32)
+    runtime.scenario.wall_height = 0.4
+    runtime.wall_climb_potential = torch.zeros((1, 1), dtype=torch.float32)
+    runtime.wall_climb_done_mask = torch.zeros((1, 1), dtype=torch.bool)
     stable_mask = torch.tensor([True], dtype=torch.bool)
 
     runtime._get_unit_y = lambda: torch.tensor([[0.75]], dtype=torch.float32)
@@ -397,10 +398,10 @@ def test_wall_climb_reward_applies_discount_factor_to_current_potential_in_mjw()
     runtime.scenario.wall_climb_reward_distance = 0.5
     runtime.scenario.potential_reward_discount_factor = 0.9
     runtime.scenario.swarm = SimpleNamespace(body_radius=0.1)
-    runtime.wall_y_by_wall = torch.tensor([[1.0]], dtype=torch.float32)
-    runtime._wall_heights = torch.tensor([0.4], dtype=torch.float32)
-    runtime.wall_climb_potential = torch.zeros((1, 1, 1), dtype=torch.float32)
-    runtime.wall_climb_done_mask = torch.zeros((1, 1, 1), dtype=torch.bool)
+    runtime.wall_y = torch.tensor([1.0], dtype=torch.float32)
+    runtime.scenario.wall_height = 0.4
+    runtime.wall_climb_potential = torch.zeros((1, 1), dtype=torch.float32)
+    runtime.wall_climb_done_mask = torch.zeros((1, 1), dtype=torch.bool)
     stable_mask = torch.tensor([True], dtype=torch.bool)
 
     runtime._get_unit_y = lambda: torch.tensor([[0.75]], dtype=torch.float32)
@@ -426,10 +427,10 @@ def test_wall_climb_reward_latches_after_crossing_wall_y_without_penalty_or_retr
     runtime.scenario.wall_climb_reward_weight = 5.0
     runtime.scenario.wall_climb_reward_distance = 0.5
     runtime.scenario.swarm = SimpleNamespace(body_radius=0.1)
-    runtime.wall_y_by_wall = torch.tensor([[1.0]], dtype=torch.float32)
-    runtime._wall_heights = torch.tensor([0.4], dtype=torch.float32)
-    runtime.wall_climb_potential = torch.zeros((1, 1, 1), dtype=torch.float32)
-    runtime.wall_climb_done_mask = torch.zeros((1, 1, 1), dtype=torch.bool)
+    runtime.wall_y = torch.tensor([1.0], dtype=torch.float32)
+    runtime.scenario.wall_height = 0.4
+    runtime.wall_climb_potential = torch.zeros((1, 1), dtype=torch.float32)
+    runtime.wall_climb_done_mask = torch.zeros((1, 1), dtype=torch.bool)
     stable_mask = torch.tensor([True], dtype=torch.bool)
 
     runtime._get_unit_y = lambda: torch.tensor([[0.75]], dtype=torch.float32)
@@ -446,5 +447,7 @@ def test_wall_climb_reward_latches_after_crossing_wall_y_without_penalty_or_retr
     assert float(climb.info["wall_climb_reward"][0]) == pytest.approx(expected_reward)
     assert float(cross_wall_y.info["wall_climb_reward"][0]) == pytest.approx(0.0)
     assert float(retry_after_backtracking.info["wall_climb_reward"][0]) == pytest.approx(0.0)
-    assert runtime.wall_climb_done_mask.tolist() == [[[True]]]
-    assert float(runtime.wall_climb_potential[0, 0, 0]) == pytest.approx(0.0)
+    assert runtime.wall_climb_done_mask.tolist() == [[True]]
+    assert float(runtime.wall_climb_potential[0, 0]) == pytest.approx(0.0)
+
+
