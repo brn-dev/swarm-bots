@@ -17,6 +17,10 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from throughput_benchmark_paths import default_throughput_benchmark_json_out
+
+DEFAULT_JSON_OUT = default_throughput_benchmark_json_out(__file__)
+
 from swarmbots.learn.action_dists.bernoulli_action_dist import BernoulliConfig
 from swarmbots.learn.action_dists.entropy_utils import AgentActionsReduction, EntropyLossConfig
 from swarmbots.learn.action_dists.hybrid_action_dist import HybridActionDistribution
@@ -531,6 +535,7 @@ def parse_args() -> tuple[BenchmarkConfig, list[str]]:
     parser.add_argument("--decoder-nhead", type=int, default=2)
     parser.add_argument("--compile-mode", type=str, default="default")
     parser.add_argument("--seed", type=int, default=1234)
+    parser.add_argument("--json-out", type=Path, default=DEFAULT_JSON_OUT)
     parser.add_argument(
         "--cases",
         nargs="+",
@@ -568,7 +573,7 @@ def parse_args() -> tuple[BenchmarkConfig, list[str]]:
         decoder_nhead=int(args.decoder_nhead),
         compile_mode=str(args.compile_mode),
         seed=int(args.seed),
-    ), list(args.cases)
+    ), list(args.cases), args.json_out
 
 
 def main() -> None:
@@ -583,7 +588,7 @@ def main() -> None:
     enable_torch_compile_logging()
     configure_float32_matmul_precision()
 
-    config, selected_case_names = parse_args()
+    config, selected_case_names, json_out = parse_args()
     device = torch.device(config.device)
     logger.info("Running MAT-QCS compile benchmark with config: {}", config)
 
@@ -609,7 +614,13 @@ def main() -> None:
     for result in results:
         logger.info("{}", result)
     log_speedups(results)
-    print(json.dumps([asdict(result) for result in results], indent=2))
+    payload = [asdict(result) for result in results]
+    print(json.dumps(payload, indent=2))
+
+    if json_out is not None:
+        json_out.parent.mkdir(parents=True, exist_ok=True)
+        json_out.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        logger.info("Wrote benchmark JSON to {}", json_out)
 
 
 if __name__ == "__main__":

@@ -8,6 +8,13 @@ from typing import Literal
 from swarmbots.mj_env.float_or_dist_params import UniformDistParams
 from swarmbots.scenario_presets.move_to_goal_config import RelativePolarGoalConfig
 
+
+def make_scenario_kwargs(*parts: Mapping[str, object]) -> dict[str, object]:
+    merged: dict[str, object] = {}
+    for part in parts:
+        merged.update(deepcopy(dict(part)))
+    return merged
+
 Difficulty = Literal['easy', 'medium', 'hard']
 
 COMMON_SCENARIO_KWARGS: dict[str, object] = {
@@ -174,14 +181,6 @@ MOVE_TO_SCENARIO_KWARGS: dict[str, object] = {
         angle=UniformDistParams(0.0, 2.0 * math.pi),
     ),
 }
-
-
-def make_scenario_kwargs(*parts: Mapping[str, object]) -> dict[str, object]:
-    merged: dict[str, object] = {}
-    for part in parts:
-        merged.update(deepcopy(dict(part)))
-    return merged
-
 
 PO_WALL_MEDIUM_SCENARIO_KWARGS = make_scenario_kwargs(
     MEDIUM_WALL_SCENARIO_KWARGS,

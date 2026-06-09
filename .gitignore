@@ -1,6 +1,7 @@
 videos/
 runs/
 runs/*.-.zip
+throughput_benchmark_results/
 MUJOCO_LOG.TXT
 scripts/MUJOCO_LOG.TXT
 plot_logs/.plot_logs_recent_config.json

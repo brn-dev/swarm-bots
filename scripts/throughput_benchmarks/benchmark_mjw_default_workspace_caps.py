@@ -6,6 +6,7 @@ import sys
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from typing import Any, Literal
 
 import torch
 from loguru import logger
@@ -14,12 +15,16 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from throughput_benchmark_paths import default_throughput_benchmark_json_out
+
+DEFAULT_JSON_OUT = default_throughput_benchmark_json_out(__file__)
+
 from swarmbots.mjw_env import MJWSwarmBotsVectorEnv
 from swarmbots.mjw_env.scenarios.mjw_scenario_presets import default_wall as default_mjw_wall
 from swarmbots.mjw_env.swarm.mjw_homogeneous_swarm import MJWPreConnectedUnitLocationsConfig
 
 
-DEFAULT_PAIR_SPECS = ("0.002:15", "0.003:10", "0.004:8", "0.005:6")
+VariantName = Literal["current_defaults", "previous_defaults"]
 
 
 @dataclass(frozen=True)
@@ -34,45 +39,15 @@ class BenchmarkConfig:
 
 
 @dataclass(frozen=True)
-class CadenceSpec:
-    timestep: float
-    action_repeat: int
-
-    @property
-    def env_step_dt(self) -> float:
-        return self.timestep * self.action_repeat
-
-    @property
-    def label(self) -> str:
-        return f"{self.timestep:.3f}x{self.action_repeat}"
-
-
-@dataclass(frozen=True)
-class CadenceResult:
+class VariantResult:
+    variant: VariantName
     num_envs: int
-    timestep: float
-    action_repeat: int
-    env_step_dt: float
     measured_steps: int
     step_seconds: float
     step_envs_per_second: float
-    terminations_count: int
-    truncations_count: int
+    done_count: int
     nconmax: int
     njmax: int
-
-
-def parse_cadence_spec(text: str) -> CadenceSpec:
-    parts = text.split(":")
-    if len(parts) != 2:
-        raise ValueError(f"Expected cadence spec '<timestep>:<action_repeat>', got {text!r}")
-    timestep = float(parts[0])
-    action_repeat = int(parts[1])
-    if timestep <= 0.0:
-        raise ValueError(f"Expected timestep > 0, got {timestep}")
-    if action_repeat <= 0:
-        raise ValueError(f"Expected action_repeat > 0, got {action_repeat}")
-    return CadenceSpec(timestep=timestep, action_repeat=action_repeat)
 
 
 def make_mjw_unit_start_locations(pool_seeds: tuple[int, ...]) -> MJWPreConnectedUnitLocationsConfig:
@@ -89,21 +64,43 @@ def make_mjw_unit_start_locations(pool_seeds: tuple[int, ...]) -> MJWPreConnecte
     )
 
 
-def create_env(config: BenchmarkConfig, *, cadence: CadenceSpec) -> MJWSwarmBotsVectorEnv:
-    if not torch.cuda.is_available():
-        raise RuntimeError("benchmark_mjw_physics_cadence_sweep requires CUDA.")
-    scenario = default_mjw_wall(
+def make_scenario() -> Any:
+    return default_mjw_wall(
         first_wall_distance=1.0,
         unit_start_locations=make_mjw_unit_start_locations(pool_seeds=tuple(range(52_000, 52_005))),
         quantize_connection_twist=8,
-        timestep=cadence.timestep,
-        action_repeat=cadence.action_repeat,
     )
+
+
+def _compute_previous_default_caps(scenario: Any) -> tuple[int, int]:
+    model = scenario.build_model()
+    n_total_connectors = scenario.swarm.num_units * scenario.swarm.config.limbs_per_unit
+    previous_nconmax = max(128, n_total_connectors * 8)
+    previous_njmax = max(512, int(model.nv * 8 + previous_nconmax * 6))
+    return previous_nconmax, previous_njmax
+
+
+def create_env(config: BenchmarkConfig, *, variant: VariantName) -> MJWSwarmBotsVectorEnv:
+    if not torch.cuda.is_available():
+        raise RuntimeError("benchmark_mjw_default_workspace_caps requires CUDA.")
+
+    scenario = make_scenario()
+    if variant == "current_defaults":
+        return MJWSwarmBotsVectorEnv(
+            scenario=scenario,
+            num_envs=config.num_envs,
+            episode_length=config.episode_length,
+            device=torch.device("cuda"),
+        )
+
+    previous_nconmax, previous_njmax = _compute_previous_default_caps(scenario)
     return MJWSwarmBotsVectorEnv(
         scenario=scenario,
         num_envs=config.num_envs,
         episode_length=config.episode_length,
         device=torch.device("cuda"),
+        nconmax=previous_nconmax,
+        njmax=previous_njmax,
     )
 
 
@@ -138,29 +135,27 @@ def measure_steps(
     warmup_steps: int,
     measured_steps: int,
     seed: int,
-) -> tuple[float, float, int, int]:
+) -> tuple[float, float, int]:
     env.reset(seed=seed)
     for step_idx in range(warmup_steps):
         env.step(action_pool[step_idx % len(action_pool)])
 
     synchronize_env(env)
     start = time.perf_counter()
-    terminations_count = 0
-    truncations_count = 0
+    done_count = 0
     for step_idx in range(measured_steps):
         _, _, terminations, truncations, _ = env.step(action_pool[step_idx % len(action_pool)])
-        terminations_count += int(terminations.sum().item())
-        truncations_count += int(truncations.sum().item())
+        done_count += int((terminations.sum() + truncations.sum()).item())
     synchronize_env(env)
     elapsed = time.perf_counter() - start
-    return elapsed, (measured_steps * env.num_envs) / elapsed, terminations_count, truncations_count
+    return elapsed, (measured_steps * env.num_envs) / elapsed, done_count
 
 
-def benchmark_cadence(*, config: BenchmarkConfig, cadence: CadenceSpec) -> CadenceResult:
-    env = create_env(config, cadence=cadence)
+def benchmark_variant(*, config: BenchmarkConfig, variant: VariantName) -> VariantResult:
+    env = create_env(config, variant=variant)
     try:
         action_pool = build_action_pool(env, config)
-        step_seconds, step_envs_per_second, terminations_count, truncations_count = measure_steps(
+        step_seconds, step_envs_per_second, done_count = measure_steps(
             env=env,
             action_pool=action_pool,
             warmup_steps=config.warmup_steps,
@@ -168,16 +163,13 @@ def benchmark_cadence(*, config: BenchmarkConfig, cadence: CadenceSpec) -> Caden
             seed=config.seed,
         )
         caps = env.get_settings()["physics_workspace_caps"]
-        return CadenceResult(
+        return VariantResult(
+            variant=variant,
             num_envs=config.num_envs,
-            timestep=cadence.timestep,
-            action_repeat=cadence.action_repeat,
-            env_step_dt=cadence.env_step_dt,
             measured_steps=config.measured_steps,
             step_seconds=step_seconds,
             step_envs_per_second=step_envs_per_second,
-            terminations_count=terminations_count,
-            truncations_count=truncations_count,
+            done_count=done_count,
             nconmax=int(caps["nconmax"]),
             njmax=int(caps["njmax"]),
         )
@@ -185,29 +177,18 @@ def benchmark_cadence(*, config: BenchmarkConfig, cadence: CadenceSpec) -> Caden
         env.close()
 
 
-def print_results(results: list[CadenceResult], *, baseline: CadenceSpec) -> None:
-    headers = [
-        "envs",
-        "cadence",
-        "env_step_dt",
-        "nconmax",
-        "njmax",
-        "seconds",
-        "env_steps_per_second",
-        "terminations",
-        "truncations",
-    ]
+def print_results(results: list[VariantResult]) -> None:
+    headers = ["variant", "envs", "steps", "nconmax", "njmax", "seconds", "env_steps_per_second", "done_count"]
     rows = [
         [
+            result.variant,
             str(result.num_envs),
-            f"{result.timestep:.3f}x{result.action_repeat}",
-            f"{result.env_step_dt:.3f}",
+            str(result.measured_steps),
             str(result.nconmax),
             str(result.njmax),
             f"{result.step_seconds:.3f}",
             f"{result.step_envs_per_second:,.0f}",
-            str(result.terminations_count),
-            str(result.truncations_count),
+            str(result.done_count),
         ]
         for result in results
     ]
@@ -217,18 +198,17 @@ def print_results(results: list[CadenceResult], *, baseline: CadenceSpec) -> Non
     for row in rows:
         print(" | ".join(value.ljust(widths[idx]) for idx, value in enumerate(row)))
 
-    baseline_label = baseline.label
-    summary_headers = ["envs", "cadence", "vs_baseline", "gain_pct"]
+    summary_headers = ["envs", "current/previous", "current_gain_pct"]
     summary_rows: list[list[str]] = []
     for num_envs in sorted({result.num_envs for result in results}):
-        per_label = {f"{result.timestep:.3f}x{result.action_repeat}": result for result in results if result.num_envs == num_envs}
-        baseline_result = per_label.get(baseline_label)
-        if baseline_result is None:
+        per_variant = {result.variant: result for result in results if result.num_envs == num_envs}
+        current = per_variant.get("current_defaults")
+        previous = per_variant.get("previous_defaults")
+        if current is None or previous is None:
             continue
-        for result in (r for r in results if r.num_envs == num_envs and f"{r.timestep:.3f}x{r.action_repeat}" != baseline_label):
-            speed_ratio = result.step_envs_per_second / baseline_result.step_envs_per_second
-            gain_pct = (speed_ratio - 1.0) * 100.0
-            summary_rows.append([str(num_envs), f"{result.timestep:.3f}x{result.action_repeat}", f"{speed_ratio:.2f}x", f"{gain_pct:.1f}%"])
+        speed_ratio = current.step_envs_per_second / previous.step_envs_per_second
+        gain_pct = ((current.step_envs_per_second / previous.step_envs_per_second) - 1.0) * 100.0
+        summary_rows.append([str(num_envs), f"{speed_ratio:.2f}x", f"{gain_pct:.1f}%"])
 
     if not summary_rows:
         return
@@ -238,7 +218,6 @@ def print_results(results: list[CadenceResult], *, baseline: CadenceSpec) -> Non
         for col_idx, header in enumerate(summary_headers)
     ]
     print()
-    print("Baseline:", baseline_label)
     print(" | ".join(header.ljust(summary_widths[idx]) for idx, header in enumerate(summary_headers)))
     print("-+-".join("-" * width for width in summary_widths))
     for row in summary_rows:
@@ -247,29 +226,17 @@ def print_results(results: list[CadenceResult], *, baseline: CadenceSpec) -> Non
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Benchmark MJW throughput over timestep/action_repeat sweep.",
+        description="Benchmark MJW current workspace-cap defaults versus the previous oversized defaults.",
     )
     parser.add_argument(
         "--num-envs",
         nargs="+",
         type=int,
-        default=[512],
+        default=[256, 512, 1024],
         help="Vector-env sizes to benchmark.",
     )
-    parser.add_argument(
-        "--pairs",
-        nargs="+",
-        default=list(DEFAULT_PAIR_SPECS),
-        help="Cadence pairs in '<timestep>:<action_repeat>' format.",
-    )
-    parser.add_argument(
-        "--baseline",
-        type=str,
-        default="0.002:15",
-        help="Baseline cadence used in the summary table.",
-    )
-    parser.add_argument("--warmup-steps", type=int, default=32, help="Warmup steps per cadence.")
-    parser.add_argument("--steps", type=int, default=128, help="Measured steps per cadence.")
+    parser.add_argument("--warmup-steps", type=int, default=64, help="Warmup steps per variant.")
+    parser.add_argument("--steps", type=int, default=256, help="Measured steps per variant.")
     parser.add_argument("--action-pool-size", type=int, default=16, help="Number of prebuilt random actions to cycle.")
     parser.add_argument(
         "--episode-length",
@@ -284,23 +251,17 @@ def parse_args() -> argparse.Namespace:
         help="Connector activation probability in the random action pool.",
     )
     parser.add_argument("--seed", type=int, default=1234, help="Base RNG seed.")
-    parser.add_argument("--json-out", type=Path, default=None, help="Optional path for machine-readable output.")
+    parser.add_argument("--json-out", type=Path, default=DEFAULT_JSON_OUT, help="Optional path for machine-readable output.")
     return parser.parse_args()
 
 
-def validate_args(args: argparse.Namespace) -> tuple[list[CadenceSpec], CadenceSpec]:
+def validate_args(args: argparse.Namespace) -> None:
     if any(num_envs <= 0 for num_envs in args.num_envs):
         raise ValueError("--num-envs values must be positive.")
     if args.warmup_steps < 0 or args.steps <= 0 or args.action_pool_size <= 0:
         raise ValueError("warmup/steps/action-pool-size must be positive, with warmup >= 0.")
     if not 0.0 <= args.connector_prob <= 1.0:
         raise ValueError("--connector-prob must be in [0, 1].")
-    cadence_specs = [parse_cadence_spec(text) for text in args.pairs]
-    baseline = parse_cadence_spec(args.baseline)
-    baseline_label = baseline.label
-    if baseline_label not in {spec.label for spec in cadence_specs}:
-        raise ValueError(f"--baseline {args.baseline!r} is not present in --pairs")
-    return cadence_specs, baseline
 
 
 def main() -> None:
@@ -315,8 +276,8 @@ def main() -> None:
     enable_torch_compile_logging()
 
     args = parse_args()
-    cadence_specs, baseline = validate_args(args)
-    results: list[CadenceResult] = []
+    validate_args(args)
+    results: list[VariantResult] = []
     for num_envs in args.num_envs:
         config = BenchmarkConfig(
             num_envs=num_envs,
@@ -327,14 +288,14 @@ def main() -> None:
             connector_prob=args.connector_prob,
             seed=args.seed,
         )
-        for cadence in cadence_specs:
+        for variant in ("current_defaults", "previous_defaults"):
             logger.info(
-                f"Benchmarking MJW cadence={cadence.label}, env_step_dt={cadence.env_step_dt:.3f}, "
+                f"Benchmarking MJW workspace caps variant={variant}, "
                 f"num_envs={config.num_envs}, warmup_steps={config.warmup_steps}, measured_steps={config.measured_steps}"
             )
-            results.append(benchmark_cadence(config=config, cadence=cadence))
+            results.append(benchmark_variant(config=config, variant=variant))
 
-    print_results(results, baseline=baseline)
+    print_results(results)
 
     if args.json_out is not None:
         args.json_out.parent.mkdir(parents=True, exist_ok=True)
@@ -352,3 +313,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
