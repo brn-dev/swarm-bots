@@ -17,6 +17,10 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from throughput_benchmark_paths import default_throughput_benchmark_json_out
+
+DEFAULT_JSON_OUT = default_throughput_benchmark_json_out(__file__)
+
 from swarmbots.mjw_env import MJWSwarmBotsVectorEnv
 from swarmbots.mjw_env.scenarios.mjw_scenario_presets import default_wall as default_mjw_wall
 from swarmbots.mjw_env.swarm.mjw_homogeneous_swarm import MJWPreConnectedUnitLocationsConfig
@@ -403,7 +407,7 @@ def parse_args() -> argparse.Namespace:
         default="default",
         help="torch.compile mode for the reward kernel when a compiled full-step variant is benchmarked.",
     )
-    parser.add_argument("--json-out", type=Path, default=None, help="Optional path for machine-readable output.")
+    parser.add_argument("--json-out", type=Path, default=DEFAULT_JSON_OUT, help="Optional path for machine-readable output.")
     return parser.parse_args()
 
 
@@ -534,3 +538,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

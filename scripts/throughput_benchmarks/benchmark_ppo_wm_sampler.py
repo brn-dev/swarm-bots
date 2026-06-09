@@ -15,6 +15,10 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from throughput_benchmark_paths import default_throughput_benchmark_json_out
+
+DEFAULT_JSON_OUT = default_throughput_benchmark_json_out(__file__)
+
 from swarmbots.learn.algos.ppo.ppo_rollout_buffer import PPOEpisodeSegment
 from swarmbots.learn.algos.ppo.ppo_sampler import PPOSampler
 from swarmbots.learn.algos.world_modeling.base_wm_sampler import BaseWMSampler
@@ -444,7 +448,7 @@ def parse_args() -> tuple[BenchmarkConfig, list[str], Path | None]:
         default=[case.name for case in ALL_CASES],
         help="Benchmark case subset to run.",
     )
-    parser.add_argument("--json-out", type=Path, default=None)
+    parser.add_argument("--json-out", type=Path, default=DEFAULT_JSON_OUT)
     args = parser.parse_args()
     return BenchmarkConfig(
         device=args.device,
@@ -502,3 +506,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

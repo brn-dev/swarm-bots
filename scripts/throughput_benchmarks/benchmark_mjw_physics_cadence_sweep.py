@@ -14,9 +14,16 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from throughput_benchmark_paths import default_throughput_benchmark_json_out
+
+DEFAULT_JSON_OUT = default_throughput_benchmark_json_out(__file__)
+
 from swarmbots.mjw_env import MJWSwarmBotsVectorEnv
 from swarmbots.mjw_env.scenarios.mjw_scenario_presets import default_wall as default_mjw_wall
 from swarmbots.mjw_env.swarm.mjw_homogeneous_swarm import MJWPreConnectedUnitLocationsConfig
+
+
+DEFAULT_PAIR_SPECS = ("0.002:15", "0.003:10", "0.004:8", "0.005:6")
 
 
 @dataclass(frozen=True)
@@ -28,21 +35,48 @@ class BenchmarkConfig:
     episode_length: int
     connector_prob: float
     seed: int
-    settled_reset_time: float
-    settled_reset_timestep_scale: float
 
 
 @dataclass(frozen=True)
-class BenchmarkResult:
-    mode: str
+class CadenceSpec:
+    timestep: float
+    action_repeat: int
+
+    @property
+    def env_step_dt(self) -> float:
+        return self.timestep * self.action_repeat
+
+    @property
+    def label(self) -> str:
+        return f"{self.timestep:.3f}x{self.action_repeat}"
+
+
+@dataclass(frozen=True)
+class CadenceResult:
     num_envs: int
-    episode_length: int
+    timestep: float
+    action_repeat: int
+    env_step_dt: float
     measured_steps: int
-    reset_settle_time: float
-    reset_settle_timestep_scale: float
     step_seconds: float
     step_envs_per_second: float
-    done_count: int
+    terminations_count: int
+    truncations_count: int
+    nconmax: int
+    njmax: int
+
+
+def parse_cadence_spec(text: str) -> CadenceSpec:
+    parts = text.split(":")
+    if len(parts) != 2:
+        raise ValueError(f"Expected cadence spec '<timestep>:<action_repeat>', got {text!r}")
+    timestep = float(parts[0])
+    action_repeat = int(parts[1])
+    if timestep <= 0.0:
+        raise ValueError(f"Expected timestep > 0, got {timestep}")
+    if action_repeat <= 0:
+        raise ValueError(f"Expected action_repeat > 0, got {action_repeat}")
+    return CadenceSpec(timestep=timestep, action_repeat=action_repeat)
 
 
 def make_mjw_unit_start_locations(pool_seeds: tuple[int, ...]) -> MJWPreConnectedUnitLocationsConfig:
@@ -59,24 +93,20 @@ def make_mjw_unit_start_locations(pool_seeds: tuple[int, ...]) -> MJWPreConnecte
     )
 
 
-def create_env(config: BenchmarkConfig, *, use_settled_resets: bool) -> MJWSwarmBotsVectorEnv:
+def create_env(config: BenchmarkConfig, *, cadence: CadenceSpec) -> MJWSwarmBotsVectorEnv:
     if not torch.cuda.is_available():
-        raise RuntimeError("benchmark_mjw_settled_resets requires CUDA.")
-
-    first_episode_lengths = [int((i + 1) * config.episode_length / config.num_envs) for i in range(config.num_envs)]
+        raise RuntimeError("benchmark_mjw_physics_cadence_sweep requires CUDA.")
     scenario = default_mjw_wall(
         first_wall_distance=1.0,
-        unit_start_locations=make_mjw_unit_start_locations(pool_seeds=tuple(range(62_000, 62_005))),
+        unit_start_locations=make_mjw_unit_start_locations(pool_seeds=tuple(range(52_000, 52_005))),
         quantize_connection_twist=8,
-        reset_settle_time=config.settled_reset_time if use_settled_resets else 0.0,
-        reset_settle_timestep_scale=config.settled_reset_timestep_scale,
+        timestep=cadence.timestep,
+        action_repeat=cadence.action_repeat,
     )
     return MJWSwarmBotsVectorEnv(
         scenario=scenario,
         num_envs=config.num_envs,
         episode_length=config.episode_length,
-        first_episode_lengths=first_episode_lengths,
-        settle_initial_reset=False,
         device=torch.device("cuda"),
     )
 
@@ -105,61 +135,83 @@ def build_action_pool(env: MJWSwarmBotsVectorEnv, config: BenchmarkConfig) -> li
     ]
 
 
-def measure_mode(
+def measure_steps(
     *,
     env: MJWSwarmBotsVectorEnv,
     action_pool: list[dict[str, torch.Tensor]],
     warmup_steps: int,
     measured_steps: int,
     seed: int,
-    mode: str,
-) -> BenchmarkResult:
+) -> tuple[float, float, int, int]:
     env.reset(seed=seed)
     for step_idx in range(warmup_steps):
         env.step(action_pool[step_idx % len(action_pool)])
 
     synchronize_env(env)
     start = time.perf_counter()
-    done_count = 0
+    terminations_count = 0
+    truncations_count = 0
     for step_idx in range(measured_steps):
         _, _, terminations, truncations, _ = env.step(action_pool[step_idx % len(action_pool)])
-        done_count += int((terminations.sum() + truncations.sum()).item())
+        terminations_count += int(terminations.sum().item())
+        truncations_count += int(truncations.sum().item())
     synchronize_env(env)
     elapsed = time.perf_counter() - start
-    return BenchmarkResult(
-        mode=mode,
-        num_envs=env.num_envs,
-        episode_length=env.episode_length,
-        measured_steps=measured_steps,
-        reset_settle_time=float(env.scenario.reset_settle_time),
-        reset_settle_timestep_scale=float(env.scenario.reset_settle_timestep_scale),
-        step_seconds=elapsed,
-        step_envs_per_second=(measured_steps * env.num_envs) / elapsed,
-        done_count=done_count,
-    )
+    return elapsed, (measured_steps * env.num_envs) / elapsed, terminations_count, truncations_count
 
 
-def print_results(results: list[BenchmarkResult]) -> None:
+def benchmark_cadence(*, config: BenchmarkConfig, cadence: CadenceSpec) -> CadenceResult:
+    env = create_env(config, cadence=cadence)
+    try:
+        action_pool = build_action_pool(env, config)
+        step_seconds, step_envs_per_second, terminations_count, truncations_count = measure_steps(
+            env=env,
+            action_pool=action_pool,
+            warmup_steps=config.warmup_steps,
+            measured_steps=config.measured_steps,
+            seed=config.seed,
+        )
+        caps = env.get_settings()["physics_workspace_caps"]
+        return CadenceResult(
+            num_envs=config.num_envs,
+            timestep=cadence.timestep,
+            action_repeat=cadence.action_repeat,
+            env_step_dt=cadence.env_step_dt,
+            measured_steps=config.measured_steps,
+            step_seconds=step_seconds,
+            step_envs_per_second=step_envs_per_second,
+            terminations_count=terminations_count,
+            truncations_count=truncations_count,
+            nconmax=int(caps["nconmax"]),
+            njmax=int(caps["njmax"]),
+        )
+    finally:
+        env.close()
+
+
+def print_results(results: list[CadenceResult], *, baseline: CadenceSpec) -> None:
     headers = [
-        "mode",
         "envs",
-        "ep_len",
-        "steps",
-        "settle_time",
+        "cadence",
+        "env_step_dt",
+        "nconmax",
+        "njmax",
         "seconds",
         "env_steps_per_second",
-        "done_count",
+        "terminations",
+        "truncations",
     ]
     rows = [
         [
-            result.mode,
             str(result.num_envs),
-            str(result.episode_length),
-            str(result.measured_steps),
-            f"{result.reset_settle_time:.3f}",
+            f"{result.timestep:.3f}x{result.action_repeat}",
+            f"{result.env_step_dt:.3f}",
+            str(result.nconmax),
+            str(result.njmax),
             f"{result.step_seconds:.3f}",
             f"{result.step_envs_per_second:,.0f}",
-            str(result.done_count),
+            str(result.terminations_count),
+            str(result.truncations_count),
         ]
         for result in results
     ]
@@ -169,23 +221,18 @@ def print_results(results: list[BenchmarkResult]) -> None:
     for row in rows:
         print(" | ".join(value.ljust(widths[idx]) for idx, value in enumerate(row)))
 
-    summary_headers = ["envs", "direct/settled", "settled_slowdown_pct", "episode_length"]
+    baseline_label = baseline.label
+    summary_headers = ["envs", "cadence", "vs_baseline", "gain_pct"]
     summary_rows: list[list[str]] = []
     for num_envs in sorted({result.num_envs for result in results}):
-        per_mode = {result.mode: result for result in results if result.num_envs == num_envs}
-        if "direct_reset" not in per_mode or "settled_reset" not in per_mode:
+        per_label = {f"{result.timestep:.3f}x{result.action_repeat}": result for result in results if result.num_envs == num_envs}
+        baseline_result = per_label.get(baseline_label)
+        if baseline_result is None:
             continue
-        direct_eps = per_mode["direct_reset"].step_envs_per_second
-        settled_eps = per_mode["settled_reset"].step_envs_per_second
-        slowdown_pct = (1.0 - (settled_eps / direct_eps)) * 100.0
-        summary_rows.append(
-            [
-                str(num_envs),
-                f"{direct_eps / settled_eps:.2f}x",
-                f"{slowdown_pct:.1f}%",
-                str(per_mode["direct_reset"].episode_length),
-            ]
-        )
+        for result in (r for r in results if r.num_envs == num_envs and f"{r.timestep:.3f}x{r.action_repeat}" != baseline_label):
+            speed_ratio = result.step_envs_per_second / baseline_result.step_envs_per_second
+            gain_pct = (speed_ratio - 1.0) * 100.0
+            summary_rows.append([str(num_envs), f"{result.timestep:.3f}x{result.action_repeat}", f"{speed_ratio:.2f}x", f"{gain_pct:.1f}%"])
 
     if not summary_rows:
         return
@@ -195,6 +242,7 @@ def print_results(results: list[BenchmarkResult]) -> None:
         for col_idx, header in enumerate(summary_headers)
     ]
     print()
+    print("Baseline:", baseline_label)
     print(" | ".join(header.ljust(summary_widths[idx]) for idx, header in enumerate(summary_headers)))
     print("-+-".join("-" * width for width in summary_widths))
     for row in summary_rows:
@@ -203,10 +251,7 @@ def print_results(results: list[BenchmarkResult]) -> None:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description=(
-            "Benchmark MJW slowdown from non-initial settled env resets by comparing "
-            "reset_settle_time=0 against reset_settle_time>0 at short episode lengths."
-        ),
+        description="Benchmark MJW throughput over timestep/action_repeat sweep.",
     )
     parser.add_argument(
         "--num-envs",
@@ -215,51 +260,51 @@ def parse_args() -> argparse.Namespace:
         default=[512],
         help="Vector-env sizes to benchmark.",
     )
-    parser.add_argument("--warmup-steps", type=int, default=128, help="Warmup steps per mode.")
-    parser.add_argument("--steps", type=int, default=2048, help="Measured steps per mode.")
+    parser.add_argument(
+        "--pairs",
+        nargs="+",
+        default=list(DEFAULT_PAIR_SPECS),
+        help="Cadence pairs in '<timestep>:<action_repeat>' format.",
+    )
+    parser.add_argument(
+        "--baseline",
+        type=str,
+        default="0.002:15",
+        help="Baseline cadence used in the summary table.",
+    )
+    parser.add_argument("--warmup-steps", type=int, default=32, help="Warmup steps per cadence.")
+    parser.add_argument("--steps", type=int, default=128, help="Measured steps per cadence.")
     parser.add_argument("--action-pool-size", type=int, default=16, help="Number of prebuilt random actions to cycle.")
     parser.add_argument(
         "--episode-length",
         type=int,
-        default=512,
-        help="Episode length used to force non-initial same-step resets during measurement.",
+        default=100_000,
+        help="Episode length to avoid truncation noise during throughput measurement.",
     )
     parser.add_argument(
         "--connector-prob",
         type=float,
         default=0.15,
-        help="Connector activation probability in the action pool.",
+        help="Connector activation probability in the random action pool.",
     )
     parser.add_argument("--seed", type=int, default=1234, help="Base RNG seed.")
-    parser.add_argument(
-        "--settled-reset-time",
-        type=float,
-        default=1.0,
-        help="Scenario reset_settle_time for the settled-reset mode.",
-    )
-    parser.add_argument(
-        "--settled-reset-timestep-scale",
-        type=float,
-        default=3.0,
-        help="Scenario reset_settle_timestep_scale for the settled-reset mode.",
-    )
-    parser.add_argument("--json-out", type=Path, default=None, help="Optional path for machine-readable output.")
+    parser.add_argument("--json-out", type=Path, default=DEFAULT_JSON_OUT, help="Optional path for machine-readable output.")
     return parser.parse_args()
 
 
-def validate_args(args: argparse.Namespace) -> None:
+def validate_args(args: argparse.Namespace) -> tuple[list[CadenceSpec], CadenceSpec]:
     if any(num_envs <= 0 for num_envs in args.num_envs):
         raise ValueError("--num-envs values must be positive.")
     if args.warmup_steps < 0 or args.steps <= 0 or args.action_pool_size <= 0:
         raise ValueError("warmup/steps/action-pool-size must be positive, with warmup >= 0.")
-    if args.episode_length <= 0:
-        raise ValueError("--episode-length must be positive.")
     if not 0.0 <= args.connector_prob <= 1.0:
         raise ValueError("--connector-prob must be in [0, 1].")
-    if args.settled_reset_time < 0.0:
-        raise ValueError("--settled-reset-time must be >= 0.")
-    if args.settled_reset_timestep_scale <= 0.0:
-        raise ValueError("--settled-reset-timestep-scale must be > 0.")
+    cadence_specs = [parse_cadence_spec(text) for text in args.pairs]
+    baseline = parse_cadence_spec(args.baseline)
+    baseline_label = baseline.label
+    if baseline_label not in {spec.label for spec in cadence_specs}:
+        raise ValueError(f"--baseline {args.baseline!r} is not present in --pairs")
+    return cadence_specs, baseline
 
 
 def main() -> None:
@@ -274,9 +319,8 @@ def main() -> None:
     enable_torch_compile_logging()
 
     args = parse_args()
-    validate_args(args)
-
-    results: list[BenchmarkResult] = []
+    cadence_specs, baseline = validate_args(args)
+    results: list[CadenceResult] = []
     for num_envs in args.num_envs:
         config = BenchmarkConfig(
             num_envs=num_envs,
@@ -286,35 +330,15 @@ def main() -> None:
             episode_length=args.episode_length,
             connector_prob=args.connector_prob,
             seed=args.seed,
-            settled_reset_time=args.settled_reset_time,
-            settled_reset_timestep_scale=args.settled_reset_timestep_scale,
         )
-        logger.info(
-            f"Benchmarking settled-reset slowdown at num_envs={config.num_envs}, "
-            f"episode_length={config.episode_length}, measured_steps={config.measured_steps}"
-        )
+        for cadence in cadence_specs:
+            logger.info(
+                f"Benchmarking MJW cadence={cadence.label}, env_step_dt={cadence.env_step_dt:.3f}, "
+                f"num_envs={config.num_envs}, warmup_steps={config.warmup_steps}, measured_steps={config.measured_steps}"
+            )
+            results.append(benchmark_cadence(config=config, cadence=cadence))
 
-        for mode_name, use_settled_resets in (
-            ("direct_reset", False),
-            ("settled_reset", True),
-        ):
-            env = create_env(config, use_settled_resets=use_settled_resets)
-            try:
-                action_pool = build_action_pool(env, config)
-                results.append(
-                    measure_mode(
-                        env=env,
-                        action_pool=action_pool,
-                        warmup_steps=config.warmup_steps,
-                        measured_steps=config.measured_steps,
-                        seed=config.seed + (17_000 if use_settled_resets else 0),
-                        mode=mode_name,
-                    )
-                )
-            finally:
-                env.close()
-
-    print_results(results)
+    print_results(results, baseline=baseline)
 
     if args.json_out is not None:
         args.json_out.parent.mkdir(parents=True, exist_ok=True)
@@ -327,8 +351,9 @@ def main() -> None:
             "results": [asdict(result) for result in results],
         }
         args.json_out.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-        print(f"Wrote JSON results to {args.json_out}")
+        logger.info(f"Wrote benchmark JSON to {args.json_out}")
 
 
 if __name__ == "__main__":
     main()
+

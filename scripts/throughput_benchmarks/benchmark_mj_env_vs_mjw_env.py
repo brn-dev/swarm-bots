@@ -16,6 +16,10 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from throughput_benchmark_paths import default_throughput_benchmark_json_out
+
+DEFAULT_JSON_OUT = default_throughput_benchmark_json_out(__file__)
+
 from swarmbots.mj_env.scenarios.scenario_presets import default_wall as default_mj_wall
 from swarmbots.mj_env.swarm.homogeneous_swarm import PreConnectedUnitLocationsConfig
 from swarmbots.mj_env.swarm_bots_env import SwarmBotsEnv
@@ -475,7 +479,7 @@ def parse_args() -> argparse.Namespace:
         help="Activation probability for connector actions in the random action pool.",
     )
     parser.add_argument("--seed", type=int, default=1234, help="Base RNG seed for actions and resets.")
-    parser.add_argument("--json-out", type=Path, default=None, help="Optional path for machine-readable benchmark output.")
+    parser.add_argument("--json-out", type=Path, default=DEFAULT_JSON_OUT, help="Optional path for machine-readable benchmark output.")
     return parser.parse_args()
 
 
@@ -578,3 +582,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
