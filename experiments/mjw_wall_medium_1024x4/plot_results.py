@@ -10,7 +10,7 @@ if str(REPO_ROOT) not in sys.path:
 from plot_logs.experiment_results import plot_experiment_results
 
 
-EXPERIMENT_RUN_DIR = REPO_ROOT / "runs" / "mat_nop_mjw_wall_medium_1024x4"
+EXPERIMENT_RUN_DIR = REPO_ROOT / "runs" / "mjw_wall_medium_1024x4"
 OUTPUT_DIR = Path(__file__).resolve().parent / "results"
 GROUP_ORDER = (
     "mat_qcc",

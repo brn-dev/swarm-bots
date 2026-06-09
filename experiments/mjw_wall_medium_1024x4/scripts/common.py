@@ -10,7 +10,7 @@ if str(REPO_ROOT) not in sys.path:
 from experiments.mjw_experiment_common import PolicyVariant, run_experiment as run_mjw_wall_experiment
 from swarmbots.learn.algos.mat_qcs.mat_qcs_decoder import MATQCSDecoderSelfAttentionMode
 
-EXPERIMENT_RUN_NAME = "mat_nop_mjw_wall_medium_1024x4"
+EXPERIMENT_RUN_NAME = "mjw_wall_medium_1024x4"
 SCENARIO_KWARGS: dict[str, object] = {"difficulty": "medium"}
 
 
