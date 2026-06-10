@@ -5,7 +5,7 @@ import platform
 from pathlib import Path
 
 
-REPO_ROOT = Path(__file__).resolve().parent
+REPO_ROOT = Path(__file__).resolve().parents[2]
 THROUGHPUT_BENCHMARK_RESULTS_DIR = REPO_ROOT / "throughput_benchmark_results"
 
 

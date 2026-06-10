@@ -17,7 +17,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from throughput_benchmark_paths import default_throughput_benchmark_json_out
+from scripts.throughput_benchmarks.throughput_benchmark_paths import default_throughput_benchmark_json_out
 
 DEFAULT_JSON_OUT = default_throughput_benchmark_json_out(__file__)
 
@@ -686,3 +686,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
