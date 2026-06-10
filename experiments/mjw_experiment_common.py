@@ -186,6 +186,7 @@ def wrap_vec_env(
     use_popart: bool,
     rollout_device: torch.device,
     normalize_prev_binary_actions: bool = False,
+    use_transition_obs: bool = True,
     shuffle_agents: bool = False,
     preserve_inactive_prefix_structure: bool = False,
 ) -> Any:
@@ -231,7 +232,8 @@ def wrap_vec_env(
         scalar_feature_indices=obs_indices.hidden_global_vars_scalar_indices,
         quaternion_indices=obs_indices.hidden_global_vars_quaternion_indices,
     )
-    env = TorchTransitionObsWrapper(env, normalize_prev_binary_actions=normalize_prev_binary_actions)
+    if use_transition_obs:
+        env = TorchTransitionObsWrapper(env, normalize_prev_binary_actions=normalize_prev_binary_actions)
     if not use_popart:
         env = TorchNormalizeRewardWrapper(env, gamma=gamma)
     return env
@@ -342,6 +344,7 @@ def run_experiment(
         mat_normalization: MATNormalizationConfig = MATNormalizationConfig(),
         use_nop: bool = True,
         nop_add_agent_embeddings_transition_model: bool = False,
+        use_transition_obs: bool = True,
         shuffle_agents: bool = False,
         preserve_inactive_prefix_structure: bool = False,
         mat_decoder_lr_multiplier: float = 0.25,
@@ -418,6 +421,7 @@ def run_experiment(
         f"{num_envs} envs x {rollout_steps_per_env} steps/env = {rollout_samples}, "
         f"virtual_mini_batches={virtual_mini_batches}, n_epochs={n_epochs}, "
         f"continuous_action_dist={continuous_action_dist}, use_nop={use_nop}, "
+        f"use_transition_obs={use_transition_obs}, "
         f"compile_policy_modules={compile_policy_modules}, policy_compile_mode={policy_compile_mode}, "
         f"nop_add_agent_embeddings_transition_model={nop_add_agent_embeddings_transition_model}, "
         f"act_fn_cls={activation_factory_name(act_fn_cls)}, "
@@ -496,6 +500,7 @@ def run_experiment(
         use_popart=use_popart,
         rollout_device=rollout_device,
         normalize_prev_binary_actions=mat_normalization.normalize_prev_binary_actions,
+        use_transition_obs=use_transition_obs,
         shuffle_agents=shuffle_agents,
         preserve_inactive_prefix_structure=preserve_inactive_prefix_structure,
     )
@@ -749,6 +754,7 @@ def run_experiment(
         "variant_name": variant_name,
         "continuous_action_dist": continuous_action_dist,
         "use_nop": use_nop,
+        "use_transition_obs": use_transition_obs,
         "nop_add_agent_embeddings_transition_model": nop_add_agent_embeddings_transition_model,
         "act_fn_cls": activation_factory_name(act_fn_cls),
         "mat_init_gains": asdict(mat_init_gains),
