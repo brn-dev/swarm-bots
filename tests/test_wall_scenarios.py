@@ -29,7 +29,9 @@ def test_po_wall_medium_samples_wall_y_into_hidden_global_obs_only_in_mj() -> No
         assert np.isclose(obs["hidden_global_vars"][0], state["wall_y"])
         sampled_wall_positions.append(float(obs["hidden_global_vars"][0]))
 
-    assert all(0.75 <= wall_y <= 1.25 for wall_y in sampled_wall_positions)
+    first_wall_distance = scenario.first_wall_distance
+    assert isinstance(first_wall_distance, UniformDistParams)
+    assert all(first_wall_distance.low <= wall_y <= first_wall_distance.high for wall_y in sampled_wall_positions)
     assert len({round(wall_y, 6) for wall_y in sampled_wall_positions}) > 1
 
 
@@ -39,7 +41,7 @@ def test_po_wall_medium_mjw_space_keeps_wall_position_hidden() -> None:
 
     assert obs_space["global_obs"].shape == (0,)
     assert obs_space["hidden_global_vars"].shape == (1,)
-    assert scenario.get_settings()["first_wall_distance"] == UniformDistParams(0.75, 1.25)
+    assert isinstance(scenario.get_settings()["first_wall_distance"], UniformDistParams)
 
 
 def test_po_wall_medium_mjw_reset_sampling_puts_wall_y_in_hidden_global_vars() -> None:

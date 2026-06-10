@@ -179,7 +179,7 @@ class ClimbScenario(BaseScenario):
                 type=mujoco.mjtGeom.mjGEOM_SPHERE,
                 size=[self.goal_radius, 0.0, 0.0],
                 pos=self.goal_position.tolist(),
-                rgba=[0.1, 0.95, 0.35, 0.75],
+                rgba=[0.1, 0.95, 0.35, 0.1],
                 contype=0,
                 conaffinity=0,
             )
