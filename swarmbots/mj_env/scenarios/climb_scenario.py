@@ -26,7 +26,9 @@ class ClimbScenario(BaseScenario):
         cuboid_center_y: float = 2.0,
         horizontal_goal_radius: float = 0.3,
         height_goal_radius: float = 0.1,
+        goal_radius: float | None = None,
         goal_height_offset: float | None = None,
+        goal_success_reward: float = 5.0,
         visualize_goal: bool = True,
         actuator_strength: float = 8.0,
         connection_dist_threshold: float = 0.1,
@@ -58,9 +60,15 @@ class ClimbScenario(BaseScenario):
         self.cuboid_center_y = float(cuboid_center_y)
         self.horizontal_goal_radius = float(horizontal_goal_radius)
         self.height_goal_radius = float(height_goal_radius)
+        self.goal_radius = (
+            min(self.cuboid_size_x, self.cuboid_size_y) * 0.375
+            if goal_radius is None
+            else float(goal_radius)
+        )
         self.goal_height_offset = (
             float(swarm.max_unit_extent) / 2.0 if goal_height_offset is None else float(goal_height_offset)
         )
+        self.goal_success_reward = float(goal_success_reward)
         self.visualize_goal = bool(visualize_goal)
         self.horizontal_reward_weight = float(horizontal_reward_weight)
         self.height_reward_weight = float(height_reward_weight)
@@ -77,6 +85,8 @@ class ClimbScenario(BaseScenario):
             raise ValueError(f"Expected horizontal_goal_radius >= 0, got {self.horizontal_goal_radius}")
         if self.height_goal_radius < 0.0:
             raise ValueError(f"Expected height_goal_radius >= 0, got {self.height_goal_radius}")
+        if self.goal_radius < 0.0:
+            raise ValueError(f"Expected goal_radius >= 0, got {self.goal_radius}")
         if self.goal_height_offset < 0.0:
             raise ValueError(f"Expected goal_height_offset >= 0, got {self.goal_height_offset}")
 
@@ -123,7 +133,9 @@ class ClimbScenario(BaseScenario):
                 "cuboid_center_y": self.cuboid_center_y,
                 "horizontal_goal_radius": self.horizontal_goal_radius,
                 "height_goal_radius": self.height_goal_radius,
+                "goal_radius": self.goal_radius,
                 "goal_height_offset": self.goal_height_offset,
+                "goal_success_reward": self.goal_success_reward,
                 "global_obs_layout": CLIMB_GOAL_XYZ_GLOBAL_OBS_LAYOUT,
                 "visualize_goal": self.visualize_goal,
                 "horizontal_reward_weight": self.horizontal_reward_weight,
@@ -165,7 +177,7 @@ class ClimbScenario(BaseScenario):
             worldbody.add_geom(
                 name="ClimbGoal",
                 type=mujoco.mjtGeom.mjGEOM_SPHERE,
-                size=[max(self.horizontal_goal_radius * 0.25, 0.03), 0.0, 0.0],
+                size=[self.goal_radius, 0.0, 0.0],
                 pos=self.goal_position.tolist(),
                 rgba=[0.1, 0.95, 0.35, 0.75],
                 contype=0,
@@ -181,6 +193,7 @@ class ClimbScenario(BaseScenario):
     ) -> tuple[dict, SwarmConnections]:
         state, connections = super().reset_scenario(model, data, settle=settle)
         state["goal_position"] = self.goal_position.copy()
+        state["success"] = False
         self._reset_progress_baselines(data, state)
         return state, connections
 
@@ -247,6 +260,11 @@ class ClimbScenario(BaseScenario):
         progress_reward = self.compute_progress_reward(data, state)
         horizontal_reward = state["horizontal_reward"]
         height_reward = state["height_reward"]
+        terminated = self._compute_goal_success_termination(data, state)
+        goal_success_reward = self.goal_success_reward if terminated else 0.0
+        progress_reward += goal_success_reward
+        state["progress_reward"] = progress_reward
+        state["goal_success_reward"] = goal_success_reward
 
         guidance_reward = super().compute_guidance_reward(data, action, state, connections)
         state["guidance_reward"] = guidance_reward
@@ -255,18 +273,38 @@ class ClimbScenario(BaseScenario):
         weighted_progress_reward = progress_reward * progress_reward_weight
         weighted_horizontal_reward = horizontal_reward * progress_reward_weight
         weighted_height_reward = height_reward * progress_reward_weight
+        weighted_goal_success_reward = goal_success_reward * progress_reward_weight
         weighted_guidance_reward = guidance_reward * self.reward_weights["guidance_reward_weight"]
         state["weighted_progress_reward"] = weighted_progress_reward
         state["weighted_horizontal_reward"] = weighted_horizontal_reward
         state["weighted_height_reward"] = weighted_height_reward
+        state["weighted_goal_success_reward"] = weighted_goal_success_reward
         state["weighted_guidance_reward"] = weighted_guidance_reward
         state["reward_terms"] = {
             "horizontal": weighted_horizontal_reward,
             "height": weighted_height_reward,
+            "success": weighted_goal_success_reward,
             "guidance": weighted_guidance_reward,
         }
 
-        return weighted_progress_reward + weighted_guidance_reward, False
+        return weighted_progress_reward + weighted_guidance_reward, terminated
+
+    def _compute_goal_success_termination(
+        self,
+        data: mujoco.MjData,
+        state: dict,
+    ) -> bool:
+        unit_positions = np.asarray(data.qpos[self._qpos_indices[:, :3]], dtype=float)
+        distance_to_goal = np.linalg.norm(unit_positions - self.goal_position[np.newaxis, :], axis=1)
+        units_inside_goal = distance_to_goal <= self.goal_radius
+        units_active_mask = state.get("units_active_mask")
+        if units_active_mask is None:
+            success = bool(units_inside_goal.all())
+        else:
+            active_units_mask = np.asarray(units_active_mask, dtype=bool)
+            success = bool(active_units_mask.any() and units_inside_goal[active_units_mask].all())
+        state["success"] = success
+        return success
 
     def _reset_progress_baselines(self, data: mujoco.MjData, state: dict) -> None:
         units_active_mask = state.get("units_active_mask")
