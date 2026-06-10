@@ -6,6 +6,7 @@ MUJOCO_LOG.TXT
 scripts/MUJOCO_LOG.TXT
 plot_logs/.plot_logs_recent_config.json
 .run
+.old/recording/videos/
 
 
 # Byte-compiled / optimized / DLL files
