@@ -54,13 +54,18 @@ from swarmbots.learn.summary_statistics import SummaryStatisticsFormat
 from swarmbots.learn.swarmbots_obs_indices import build_obs_indices
 from swarmbots.learn.nn_components.deep_set import DeepSetCriticConfig
 from swarmbots.mjw_env import MJWSwarmBotsVectorEnv
-from swarmbots.mjw_env.scenarios.mjw_scenario_presets import default_dual_payload_plane, default_payload_step, default_wall
+from swarmbots.mjw_env.scenarios.mjw_scenario_presets import (
+    default_climb,
+    default_dual_payload_plane,
+    default_payload_step,
+    default_wall,
+)
 from swarmbots.utils.recording_schedule import DEFAULT_LIVE_RECORDING_SCHEDULE, install_scheduled_recordings
 from swarmbots.utils.run_paths import get_run_id_from_checkpoint_path
 
 ContinuousActionDistVariant = Literal["sticky_sign_magnitude_beta", "sign_magnitude_beta", "beta", "gsde", "squashed_diag_gaussian"]
 PolicyVariant = Literal["mat_qcs", "mat_qcc", "mat_dec", "mat_orig", "ppo", "mappo"]
-MJWScenarioName = Literal["wall", "dual_payload", "payload_step"]
+MJWScenarioName = Literal["wall", "climb", "dual_payload", "payload_step"]
 
 
 @dataclass(frozen=True)
@@ -134,6 +139,7 @@ def _configure_cuda_device(*, cuda_idx: int | None) -> None:
 def _make_scenario(*, scenario_name: MJWScenarioName, scenario_kwargs: dict[str, object] | None) -> Any:
     scenario_factory = {
         "wall": default_wall,
+        "climb": default_climb,
         "dual_payload": default_dual_payload_plane,
         "payload_step": default_payload_step,
     }[scenario_name]
@@ -143,6 +149,7 @@ def _make_scenario(*, scenario_name: MJWScenarioName, scenario_kwargs: dict[str,
 def _scenario_display_name(*, scenario_name: MJWScenarioName) -> str:
     return {
         "wall": "wall",
+        "climb": "climb",
         "dual_payload": "dual-payload",
         "payload_step": "payload-step",
     }[scenario_name]
