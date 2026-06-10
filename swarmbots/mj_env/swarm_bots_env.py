@@ -235,6 +235,9 @@ class SwarmBotsEnv(gymnasium.Env):
         weighted_wall_success_reward = self.scenario_state.get("weighted_wall_success_reward")
         if weighted_wall_success_reward is not None:
             info["wall_success_reward"] = float(weighted_wall_success_reward)
+        weighted_goal_success_reward = self.scenario_state.get("weighted_goal_success_reward")
+        if weighted_goal_success_reward is not None:
+            info["goal_success_reward"] = float(weighted_goal_success_reward)
         weighted_units_without_connections_reward = self.scenario_state.get("weighted_units_without_connections_reward")
         if weighted_units_without_connections_reward is not None:
             info["units_without_connections_reward"] = float(weighted_units_without_connections_reward)

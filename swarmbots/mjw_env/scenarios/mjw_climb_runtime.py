@@ -255,6 +255,7 @@ class ClimbMJWScenarioRuntime(BaseMJWScenarioRuntime):
         mjw.forward(self.bindings.model, self.bindings.data)
 
     def compute_step_rewards(self, *, stable_mask: torch.Tensor) -> MJWStepResult:
+        unit_position = self._get_unit_position()
         (
             new_horizontal_progress,
             new_height_progress,
@@ -263,7 +264,7 @@ class ClimbMJWScenarioRuntime(BaseMJWScenarioRuntime):
             height_reward,
             guidance_reward,
         ) = self._reward_kernel(
-            self._get_unit_position(),
+            unit_position,
             self._global_obs,
             stable_mask,
             self.bindings.units_active_mask,
@@ -281,20 +282,35 @@ class ClimbMJWScenarioRuntime(BaseMJWScenarioRuntime):
         )
         self.horizontal_progress[stable_mask] = new_horizontal_progress[stable_mask]
         self.height_progress[stable_mask] = new_height_progress[stable_mask]
+        success_terminations = _compute_climb_goal_success_terminations(
+            unit_position=unit_position,
+            goal_position=self._global_obs,
+            stable_mask=stable_mask,
+            units_active_mask=self.bindings.units_active_mask,
+            goal_radius=float(self.scenario.goal_radius),
+        )
+        goal_success_reward = success_terminations.to(dtype=progress_reward.dtype) * (
+            float(self.scenario.goal_success_reward) * float(self.scenario.progress_reward_weight)
+        )
+        progress_reward = progress_reward + goal_success_reward
 
         return MJWStepResult(
             reward=progress_reward + guidance_reward,
             info={
+                "success": success_terminations,
                 "progress_reward": progress_reward,
                 "horizontal_reward": horizontal_reward,
                 "height_reward": height_reward,
+                "goal_success_reward": goal_success_reward,
                 "guidance_reward": guidance_reward,
                 "reward_terms": {
                     "horizontal": horizontal_reward,
                     "height": height_reward,
+                    "success": goal_success_reward,
                     "guidance": guidance_reward,
                 },
             },
+            terminations=success_terminations,
         )
 
     def _get_unit_position(self) -> torch.Tensor:
@@ -356,3 +372,19 @@ def _compute_climb_horizontal_progress_baseline_torch(
     distance_to_goal = torch.sqrt((delta * delta).sum(dim=-1))
     remaining_distance = torch.clamp(distance_to_goal - float(goal_radius), min=0.0)
     return -masked_mean(remaining_distance, units_active_mask, dim=1)
+
+
+def _compute_climb_goal_success_terminations(
+    *,
+    unit_position: torch.Tensor,
+    goal_position: torch.Tensor,
+    stable_mask: torch.Tensor,
+    units_active_mask: torch.Tensor,
+    goal_radius: float,
+) -> torch.Tensor:
+    delta = unit_position - goal_position.unsqueeze(1)
+    distance_to_goal = torch.sqrt((delta * delta).sum(dim=-1))
+    units_inside_goal = distance_to_goal <= float(goal_radius)
+    active_units_count = units_active_mask.sum(dim=-1)
+    active_units_success = torch.where(units_active_mask, units_inside_goal, torch.ones_like(units_inside_goal))
+    return stable_mask & (active_units_count > 0) & active_units_success.all(dim=-1)

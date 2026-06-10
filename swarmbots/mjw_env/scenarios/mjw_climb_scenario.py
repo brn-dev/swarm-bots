@@ -58,7 +58,9 @@ class MJWClimbScenario(BaseMJWScenario):
     cuboid_center_y: float
     horizontal_goal_radius: float
     height_goal_radius: float
+    goal_radius: float | None = None
     goal_height_offset: float | None = None
+    goal_success_reward: float = 5.0
     visualize_goal: bool = True
     seed: int | None = None
     compile_reward_kernel: bool = False
@@ -81,12 +83,18 @@ class MJWClimbScenario(BaseMJWScenario):
         self.cuboid_center_y = float(self.cuboid_center_y)
         self.horizontal_goal_radius = float(self.horizontal_goal_radius)
         self.height_goal_radius = float(self.height_goal_radius)
+        self.goal_radius = (
+            min(self.cuboid_size_x, self.cuboid_size_y) * 0.375
+            if self.goal_radius is None
+            else float(self.goal_radius)
+        )
         self.potential_reward_discount_factor = float(self.potential_reward_discount_factor)
         self.goal_height_offset = (
             float(self.swarm.max_unit_extent) / 2.0
             if self.goal_height_offset is None
             else float(self.goal_height_offset)
         )
+        self.goal_success_reward = float(self.goal_success_reward)
         self.horizontal_reward_weight = float(self.horizontal_reward_weight)
         self.height_reward_weight = float(self.height_reward_weight)
         self.inactive_area_location = (50.0, 0.0, 0.1)
@@ -103,6 +111,8 @@ class MJWClimbScenario(BaseMJWScenario):
             raise ValueError(f"Expected horizontal_goal_radius >= 0, got {self.horizontal_goal_radius}")
         if self.height_goal_radius < 0.0:
             raise ValueError(f"Expected height_goal_radius >= 0, got {self.height_goal_radius}")
+        if self.goal_radius < 0.0:
+            raise ValueError(f"Expected goal_radius >= 0, got {self.goal_radius}")
         if self.goal_height_offset < 0.0:
             raise ValueError(f"Expected goal_height_offset >= 0, got {self.goal_height_offset}")
 
@@ -145,7 +155,9 @@ class MJWClimbScenario(BaseMJWScenario):
             "cuboid_center_y": self.cuboid_center_y,
             "horizontal_goal_radius": self.horizontal_goal_radius,
             "height_goal_radius": self.height_goal_radius,
+            "goal_radius": self.goal_radius,
             "goal_height_offset": self.goal_height_offset,
+            "goal_success_reward": self.goal_success_reward,
             "global_obs_layout": CLIMB_GOAL_XYZ_GLOBAL_OBS_LAYOUT,
             "visualize_goal": self.visualize_goal,
             "horizontal_reward_weight": self.horizontal_reward_weight,
@@ -195,7 +207,7 @@ class MJWClimbScenario(BaseMJWScenario):
             worldbody.add_geom(
                 name="ClimbGoal",
                 type=mujoco.mjtGeom.mjGEOM_SPHERE,
-                size=[max(self.horizontal_goal_radius * 0.25, 0.03), 0.0, 0.0],
+                size=[self.goal_radius, 0.0, 0.0],
                 pos=list(self.goal_position),
                 rgba=[0.1, 0.95, 0.35, 0.75],
                 contype=0,
