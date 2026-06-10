@@ -17,6 +17,7 @@ GROUP_ORDER = (
     "mat_qcs_full_causal",
     "mat_qcs_context_tokens_only",
     "mat_orig",
+    "mat_orig_with_projection_lr_multiplier",
     "mat_orig_no_lr_multipliers",
 )
 DISPLAY_NAME_OVERRIDES = {
@@ -26,6 +27,9 @@ DISPLAY_NAME_OVERRIDES = {
         "MAT-QCS context tokens only + NOP"
     ),
     "mat_orig": "MAT-Orig + NOP",
+    "mat_orig_with_projection_lr_multiplier": (
+        "MAT-Orig + NOP, decoder/projection LR multipliers"
+    ),
     "mat_orig_no_lr_multipliers": "MAT-Orig + NOP, no LR multipliers",
 }
 THEORETICAL_MAXIMUM = None

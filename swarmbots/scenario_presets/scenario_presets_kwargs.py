@@ -115,7 +115,7 @@ CLIMB_SCENARIO_KWARGS: dict[str, object] = {
     "swarm_start_y": UniformDistParams(0.0, 0.5),
     "cuboid_size_x": 4.0,
     "cuboid_size_y": 4.0,
-    "cuboid_size_z": 0.25,
+    "cuboid_size_z": 0.2,
     "cuboid_center_x": 0.0,
     "cuboid_center_y": 3,
     "horizontal_goal_radius": 0.3,
