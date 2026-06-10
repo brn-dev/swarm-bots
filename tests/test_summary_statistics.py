@@ -1,5 +1,6 @@
 import unittest
 
+import numpy as np
 import torch
 
 from swarmbots.learn.metrics_list import MetricsLists
@@ -37,6 +38,19 @@ class SummaryStatisticsTests(unittest.TestCase):
         self.assertIsNone(stats.data)
         self.assertEqual(stats.histogram.bin_frequencies, [0.5, 0.5])
         self.assertEqual(stats.histogram.bin_edges, [0.0, 1.5, 3.0])
+
+    def test_std_matches_between_numpy_list_and_torch_inputs(self) -> None:
+        values = [1.0, 2.0, 3.0]
+
+        list_stats = compute_summary_statistics(values)
+        numpy_stats = compute_summary_statistics(np.asarray(values))
+        torch_stats = compute_summary_statistics(torch.tensor(values))
+
+        assert list_stats is not None
+        assert numpy_stats is not None
+        assert torch_stats is not None
+        self.assertAlmostEqual(float(list_stats.std), float(numpy_stats.std))
+        self.assertAlmostEqual(float(list_stats.std), float(torch_stats.std))
 
     def test_single_value_torch_histogram_has_bounds(self) -> None:
         stats = compute_summary_statistics(torch.tensor([2.0]), make_histogram=3)

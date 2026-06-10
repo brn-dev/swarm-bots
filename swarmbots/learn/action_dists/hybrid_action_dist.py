@@ -336,7 +336,8 @@ class HybridActionDistribution(ActionDist):
             if isinstance(config,
                           (SquashedDiagGaussianConfig, PredictedStdConfig, GSDEConfig,
                            BetaConfig, BangZeroBangConfig, StickyBangZeroBangConfig, SignMagnitudeBetaConfig,
-                           LeftMiddleRightBetaConfig)
+                           StickySignMagnitudeBetaConfig, LeftMiddleRightBetaConfig,
+                           StickyLeftMiddleRightBetaConfig)
             ):
                 self.continuous_configs[idx] = replace(config, ent_loss_coef=value)
         if self.bernoulli_config is not None:
@@ -360,7 +361,8 @@ class HybridActionDistribution(ActionDist):
         if isinstance(config,
                       (SquashedDiagGaussianConfig, PredictedStdConfig, GSDEConfig,
                        BetaConfig, BangZeroBangConfig, StickyBangZeroBangConfig, SignMagnitudeBetaConfig,
-                       LeftMiddleRightBetaConfig)
+                       StickySignMagnitudeBetaConfig, LeftMiddleRightBetaConfig,
+                       StickyLeftMiddleRightBetaConfig)
         ):
             self.continuous_configs[sub_dist_idx] = replace(config, ent_loss_coef=value)
 

@@ -206,7 +206,11 @@ def compute_summary_statistics(
     summary_stats: SummaryStatistics = SummaryStatistics(
         n=n,
         mean=mean,
-        std=values.std().item(),
+        std=(
+            values.std(ddof=0).item()
+            if isinstance(values, np.ndarray)
+            else values.std(correction=0).item()
+        ),
     )
     if compute_skewness or compute_kurtosis:
         skewness, kurtosis = _compute_standardized_moments(
