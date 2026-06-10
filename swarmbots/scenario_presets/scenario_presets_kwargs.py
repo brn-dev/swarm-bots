@@ -112,7 +112,7 @@ BRIDGE_SCENARIO_KWARGS: dict[str, object] = {
 CLIMB_SCENARIO_KWARGS: dict[str, object] = {
     "plane_size": 100.0,
     "swarm_start_x": 0.0,
-    "swarm_start_y": 0.0,
+    "swarm_start_y": UniformDistParams(0.0, 0.5),
     "cuboid_size_x": 4.0,
     "cuboid_size_y": 4.0,
     "cuboid_size_z": 0.3,

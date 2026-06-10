@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Callable, Mapping
+from typing import Literal, TypeVar
 import importlib.util
 import shutil
 import sys
@@ -16,40 +18,56 @@ from swarmbots.mjw_env.scenarios.mjw_bridge_scenario import MJWBridgeScenario
 from swarmbots.mjw_env.scenarios.mjw_climb_scenario import MJWClimbScenario
 from swarmbots.mjw_env.scenarios.mjw_dual_payload_plane_scenario import MJWDualPayloadPlaneScenario
 from swarmbots.mjw_env.scenarios.mjw_move_to_scenario import MJWMoveToScenario
-from swarmbots.mjw_env.scenarios.mjw_wall_scenario import MJWWallScenario
 from swarmbots.mjw_env.scenarios.mjw_payload_plane_scenario import MJWPayloadPlaneScenario
 from swarmbots.mjw_env.scenarios.mjw_payload_step_scenario import MJWPayloadStepScenario
+from swarmbots.mjw_env.scenarios.mjw_wall_scenario import MJWWallScenario
 from swarmbots.mjw_env.swarm.mjw_homogeneous_swarm import MJWHomogeneousSwarm, MJWPreConnectedUnitLocationsConfig
+from swarmbots.scenario_presets import scenario_presets_kwargs as shared_kwargs
 from swarmbots.scenario_presets.scenario_presets_kwargs import (
-    BRIDGE_SCENARIO_KWARGS as SHARED_BRIDGE_SCENARIO_KWARGS,
-    CLIMB_SCENARIO_KWARGS as SHARED_CLIMB_SCENARIO_KWARGS,
-    COMMON_SCENARIO_KWARGS,
     Difficulty,
-    DUAL_PAYLOAD_PLANE_SCENARIO_KWARGS as SHARED_DUAL_PAYLOAD_PLANE_SCENARIO_KWARGS,
-    EASY_WALL_SCENARIO_KWARGS as SHARED_EASY_WALL_SCENARIO_KWARGS,
-    HARD_WALL_SCENARIO_KWARGS as SHARED_HARD_WALL_SCENARIO_KWARGS,
-    MEDIUM_WALL_SCENARIO_KWARGS as SHARED_MEDIUM_WALL_SCENARIO_KWARGS,
-    MOVE_TO_SCENARIO_KWARGS as SHARED_MOVE_TO_SCENARIO_KWARGS,
-    PAYLOAD_PLANE_SCENARIO_KWARGS as SHARED_PAYLOAD_PLANE_SCENARIO_KWARGS,
-    PAYLOAD_STEP_SCENARIO_KWARGS as SHARED_PAYLOAD_STEP_SCENARIO_KWARGS,
-    PO_WALL_MEDIUM_SCENARIO_KWARGS as SHARED_PO_WALL_MEDIUM_SCENARIO_KWARGS,
-    WALL_SCENARIO_KWARGS as SHARED_WALL_SCENARIO_KWARGS,
     make_scenario_kwargs,
     wall_scenario_kwargs_with_difficulty,
 )
 
-DEFAULT_KWARGS = make_scenario_kwargs(COMMON_SCENARIO_KWARGS)
-WALL_SCENARIO_KWARGS = make_scenario_kwargs(SHARED_WALL_SCENARIO_KWARGS)
-EASY_WALL_SCENARIO_KWARGS = make_scenario_kwargs(SHARED_EASY_WALL_SCENARIO_KWARGS)
-MEDIUM_WALL_SCENARIO_KWARGS = make_scenario_kwargs(SHARED_MEDIUM_WALL_SCENARIO_KWARGS)
-HARD_WALL_SCENARIO_KWARGS = make_scenario_kwargs(SHARED_HARD_WALL_SCENARIO_KWARGS)
-PO_WALL_MEDIUM_SCENARIO_KWARGS = make_scenario_kwargs(SHARED_PO_WALL_MEDIUM_SCENARIO_KWARGS)
-BRIDGE_SCENARIO_KWARGS = make_scenario_kwargs(SHARED_BRIDGE_SCENARIO_KWARGS)
-CLIMB_SCENARIO_KWARGS = make_scenario_kwargs(SHARED_CLIMB_SCENARIO_KWARGS)
-PAYLOAD_PLANE_SCENARIO_KWARGS = make_scenario_kwargs(SHARED_PAYLOAD_PLANE_SCENARIO_KWARGS)
-PAYLOAD_STEP_SCENARIO_KWARGS = make_scenario_kwargs(SHARED_PAYLOAD_STEP_SCENARIO_KWARGS)
-DUAL_PAYLOAD_PLANE_SCENARIO_KWARGS = make_scenario_kwargs(SHARED_DUAL_PAYLOAD_PLANE_SCENARIO_KWARGS)
-MOVE_TO_SCENARIO_KWARGS = make_scenario_kwargs(SHARED_MOVE_TO_SCENARIO_KWARGS)
+ScenarioT = TypeVar("ScenarioT")
+JointPreset = Literal["zx", "xy", "xyz"]
+
+DEFAULT_KWARGS = make_scenario_kwargs(shared_kwargs.COMMON_SCENARIO_KWARGS)
+WALL_SCENARIO_KWARGS = make_scenario_kwargs(shared_kwargs.WALL_SCENARIO_KWARGS)
+EASY_WALL_SCENARIO_KWARGS = make_scenario_kwargs(shared_kwargs.EASY_WALL_SCENARIO_KWARGS)
+MEDIUM_WALL_SCENARIO_KWARGS = make_scenario_kwargs(shared_kwargs.MEDIUM_WALL_SCENARIO_KWARGS)
+HARD_WALL_SCENARIO_KWARGS = make_scenario_kwargs(shared_kwargs.HARD_WALL_SCENARIO_KWARGS)
+PO_WALL_MEDIUM_SCENARIO_KWARGS = make_scenario_kwargs(shared_kwargs.PO_WALL_MEDIUM_SCENARIO_KWARGS)
+BRIDGE_SCENARIO_KWARGS = make_scenario_kwargs(shared_kwargs.BRIDGE_SCENARIO_KWARGS)
+CLIMB_SCENARIO_KWARGS = make_scenario_kwargs(shared_kwargs.CLIMB_SCENARIO_KWARGS)
+PAYLOAD_PLANE_SCENARIO_KWARGS = make_scenario_kwargs(shared_kwargs.PAYLOAD_PLANE_SCENARIO_KWARGS)
+PAYLOAD_STEP_SCENARIO_KWARGS = make_scenario_kwargs(shared_kwargs.PAYLOAD_STEP_SCENARIO_KWARGS)
+DUAL_PAYLOAD_PLANE_SCENARIO_KWARGS = make_scenario_kwargs(shared_kwargs.DUAL_PAYLOAD_PLANE_SCENARIO_KWARGS)
+MOVE_TO_SCENARIO_KWARGS = make_scenario_kwargs(shared_kwargs.MOVE_TO_SCENARIO_KWARGS)
+
+_JOINT_CONFIGS: dict[JointPreset, dict[str, object]] = {
+    "zx": {
+        "unit_config": UNIT_CONFIG_TETRAHEDRON_ZX,
+        "hinge_range": (None, np.pi / 3),
+        "hinge_armature": (0.025, 0.015),
+        "hinge_damping": (0.3, 0.15),
+        "hinge_frictionloss": (0.3, 0.15),
+    },
+    "xy": {
+        "unit_config": UNIT_CONFIG_TETRAHEDRON_XY,
+        "hinge_range": (np.pi / 3, np.pi / 3),
+        "hinge_armature": (0.015, 0.015),
+        "hinge_damping": (0.15, 0.15),
+        "hinge_frictionloss": (0.15, 0.15),
+    },
+    "xyz": {
+        "unit_config": UNIT_CONFIG_TETRAHEDRON_XYZ,
+        "hinge_range": (np.pi / 3, np.pi / 3, None),
+        "hinge_armature": (0.01, 0.01, 0.025),
+        "hinge_damping": (0.1, 0.1, 0.5),
+        "hinge_frictionloss": (0.1, 0.1, 0.5),
+    },
+}
 
 
 def should_compile_reward_kernel_by_default() -> bool:
@@ -62,60 +80,73 @@ def should_compile_reward_kernel_by_default() -> bool:
     return True
 
 
+def _default_unit_start_locations() -> MJWPreConnectedUnitLocationsConfig:
+    return MJWPreConnectedUnitLocationsConfig(
+        num_units=5,
+        num_unit_probs={
+            4: 1.0,
+            5: 1.0,
+        },
+        max_radius=1.5,
+        unconnected_prob=0.02,
+        z_pos=0.5,
+        pool_seeds=tuple(range(42_000, 42_050)),
+    )
+
+
 def _resolve_swarm(
     *,
     swarm: MJWHomogeneousSwarm | None,
     unit_start_locations: MJWPreConnectedUnitLocationsConfig | None,
     quantize_connection_twist: int,
-    joints: str,
+    joints: JointPreset,
 ) -> MJWHomogeneousSwarm:
     if swarm is not None:
+        if unit_start_locations is not None:
+            raise ValueError("unit_start_locations can only be used when presets construct the swarm")
         return swarm
-    if unit_start_locations is None:
-        unit_start_locations = MJWPreConnectedUnitLocationsConfig(
-            num_units=5,
-            num_unit_probs={
-                4: 1.0,
-                5: 1.0,
-            },
-            max_radius=1.5,
-            unconnected_prob=0.02,
-            z_pos=0.5,
-            pool_seeds=tuple(range(42_000, 42_050)),
-        )
-
-    joint_configs = {
-        "zx": {
-            "unit_config": UNIT_CONFIG_TETRAHEDRON_ZX,
-            "hinge_range": (None, np.pi / 3),
-            "hinge_armature": (0.025, 0.015),
-            "hinge_damping": (0.3, 0.15),
-            "hinge_frictionloss": (0.3, 0.15),
-        },
-        "xy": {
-            "unit_config": UNIT_CONFIG_TETRAHEDRON_XY,
-            "hinge_range": (np.pi / 3, np.pi / 3),
-            "hinge_armature": (0.015, 0.015),
-            "hinge_damping": (0.15, 0.15),
-            "hinge_frictionloss": (0.15, 0.15),
-        },
-        "xyz": {
-            "unit_config": UNIT_CONFIG_TETRAHEDRON_XYZ,
-            "hinge_range": (np.pi / 3, np.pi / 3, None),
-            "hinge_armature": (0.01, 0.01, 0.025),
-            "hinge_damping": (0.1, 0.1, 0.5),
-            "hinge_frictionloss": (0.1, 0.1, 0.5),
-        },
-    }
 
     return MJWHomogeneousSwarm(
-        unit_start_locations=unit_start_locations,
+        unit_start_locations=unit_start_locations or _default_unit_start_locations(),
         body_radius=0.1,
         leg_length=0.2,
         leg_radius=0.025,
         connection_torquescale=50.0,
         quantize_connection_twist=quantize_connection_twist,
-        **joint_configs[joints],
+        **_JOINT_CONFIGS[joints],
+    )
+
+
+def _reward_kernel_kwargs() -> dict[str, object]:
+    return {
+        "compile_reward_kernel": should_compile_reward_kernel_by_default(),
+        "reward_kernel_compile_mode": "default",
+    }
+
+
+def _preset_kwargs(*parts: Mapping[str, object], overrides: Mapping[str, object]) -> dict[str, object]:
+    return make_scenario_kwargs(DEFAULT_KWARGS, *parts, _reward_kernel_kwargs(), overrides)
+
+
+def _make_scenario(
+    scenario_cls: Callable[..., ScenarioT],
+    *,
+    scenario_kwargs: Mapping[str, object],
+    seed: int | None,
+    swarm: MJWHomogeneousSwarm | None,
+    unit_start_locations: MJWPreConnectedUnitLocationsConfig | None,
+    quantize_connection_twist: int,
+    joints: JointPreset,
+) -> ScenarioT:
+    return scenario_cls(
+        swarm=_resolve_swarm(
+            swarm=swarm,
+            unit_start_locations=unit_start_locations,
+            quantize_connection_twist=quantize_connection_twist,
+            joints=joints,
+        ),
+        seed=seed,
+        **scenario_kwargs,
     )
 
 
@@ -125,27 +156,18 @@ def default_wall(
     swarm: MJWHomogeneousSwarm | None = None,
     unit_start_locations: MJWPreConnectedUnitLocationsConfig | None = None,
     quantize_connection_twist: int = 8,
-    joints: str = "zx",
+    joints: JointPreset = "zx",
     difficulty: Difficulty | None = None,
     **kwargs: object,
 ) -> MJWWallScenario:
-    scenario_kwargs = make_scenario_kwargs(DEFAULT_KWARGS, wall_scenario_kwargs_with_difficulty(difficulty))
-    scenario_kwargs.update(
-        {
-            "compile_reward_kernel": should_compile_reward_kernel_by_default(),
-            "reward_kernel_compile_mode": "default",
-        }
-    )
-    scenario_kwargs.update(kwargs)
-    return MJWWallScenario(
-        swarm=_resolve_swarm(
-            swarm=swarm,
-            unit_start_locations=unit_start_locations,
-            quantize_connection_twist=quantize_connection_twist,
-            joints=joints,
-        ),
+    return _make_scenario(
+        MJWWallScenario,
+        scenario_kwargs=_preset_kwargs(wall_scenario_kwargs_with_difficulty(difficulty), overrides=kwargs),
         seed=seed,
-        **scenario_kwargs,
+        swarm=swarm,
+        unit_start_locations=unit_start_locations,
+        quantize_connection_twist=quantize_connection_twist,
+        joints=joints,
     )
 
 
@@ -167,26 +189,17 @@ def default_bridge(
     swarm: MJWHomogeneousSwarm | None = None,
     unit_start_locations: MJWPreConnectedUnitLocationsConfig | None = None,
     quantize_connection_twist: int = 8,
-    joints: str = "zx",
+    joints: JointPreset = "zx",
     **kwargs: object,
 ) -> MJWBridgeScenario:
-    scenario_kwargs = make_scenario_kwargs(DEFAULT_KWARGS, BRIDGE_SCENARIO_KWARGS)
-    scenario_kwargs.update(
-        {
-            "compile_reward_kernel": should_compile_reward_kernel_by_default(),
-            "reward_kernel_compile_mode": "default",
-        }
-    )
-    scenario_kwargs.update(kwargs)
-    return MJWBridgeScenario(
-        swarm=_resolve_swarm(
-            swarm=swarm,
-            unit_start_locations=unit_start_locations,
-            quantize_connection_twist=quantize_connection_twist,
-            joints=joints,
-        ),
+    return _make_scenario(
+        MJWBridgeScenario,
+        scenario_kwargs=_preset_kwargs(BRIDGE_SCENARIO_KWARGS, overrides=kwargs),
         seed=seed,
-        **scenario_kwargs,
+        swarm=swarm,
+        unit_start_locations=unit_start_locations,
+        quantize_connection_twist=quantize_connection_twist,
+        joints=joints,
     )
 
 
@@ -196,26 +209,17 @@ def default_climb(
     swarm: MJWHomogeneousSwarm | None = None,
     unit_start_locations: MJWPreConnectedUnitLocationsConfig | None = None,
     quantize_connection_twist: int = 8,
-    joints: str = "zx",
+    joints: JointPreset = "zx",
     **kwargs: object,
 ) -> MJWClimbScenario:
-    scenario_kwargs = make_scenario_kwargs(DEFAULT_KWARGS, CLIMB_SCENARIO_KWARGS)
-    scenario_kwargs.update(
-        {
-            "compile_reward_kernel": should_compile_reward_kernel_by_default(),
-            "reward_kernel_compile_mode": "default",
-        }
-    )
-    scenario_kwargs.update(kwargs)
-    return MJWClimbScenario(
-        swarm=_resolve_swarm(
-            swarm=swarm,
-            unit_start_locations=unit_start_locations,
-            quantize_connection_twist=quantize_connection_twist,
-            joints=joints,
-        ),
+    return _make_scenario(
+        MJWClimbScenario,
+        scenario_kwargs=_preset_kwargs(CLIMB_SCENARIO_KWARGS, overrides=kwargs),
         seed=seed,
-        **scenario_kwargs,
+        swarm=swarm,
+        unit_start_locations=unit_start_locations,
+        quantize_connection_twist=quantize_connection_twist,
+        joints=joints,
     )
 
 
@@ -225,26 +229,17 @@ def default_payload_plane(
     swarm: MJWHomogeneousSwarm | None = None,
     unit_start_locations: MJWPreConnectedUnitLocationsConfig | None = None,
     quantize_connection_twist: int = 8,
-    joints: str = "zx",
+    joints: JointPreset = "zx",
     **kwargs: object,
 ) -> MJWPayloadPlaneScenario:
-    scenario_kwargs = make_scenario_kwargs(DEFAULT_KWARGS, PAYLOAD_PLANE_SCENARIO_KWARGS)
-    scenario_kwargs.update(
-        {
-            "compile_reward_kernel": should_compile_reward_kernel_by_default(),
-            "reward_kernel_compile_mode": "default",
-        }
-    )
-    scenario_kwargs.update(kwargs)
-    return MJWPayloadPlaneScenario(
-        swarm=_resolve_swarm(
-            swarm=swarm,
-            unit_start_locations=unit_start_locations,
-            quantize_connection_twist=quantize_connection_twist,
-            joints=joints,
-        ),
+    return _make_scenario(
+        MJWPayloadPlaneScenario,
+        scenario_kwargs=_preset_kwargs(PAYLOAD_PLANE_SCENARIO_KWARGS, overrides=kwargs),
         seed=seed,
-        **scenario_kwargs,
+        swarm=swarm,
+        unit_start_locations=unit_start_locations,
+        quantize_connection_twist=quantize_connection_twist,
+        joints=joints,
     )
 
 
@@ -254,26 +249,17 @@ def default_dual_payload_plane(
     swarm: MJWHomogeneousSwarm | None = None,
     unit_start_locations: MJWPreConnectedUnitLocationsConfig | None = None,
     quantize_connection_twist: int = 8,
-    joints: str = "zx",
+    joints: JointPreset = "zx",
     **kwargs: object,
 ) -> MJWDualPayloadPlaneScenario:
-    scenario_kwargs = make_scenario_kwargs(DEFAULT_KWARGS, DUAL_PAYLOAD_PLANE_SCENARIO_KWARGS)
-    scenario_kwargs.update(
-        {
-            "compile_reward_kernel": should_compile_reward_kernel_by_default(),
-            "reward_kernel_compile_mode": "default",
-        }
-    )
-    scenario_kwargs.update(kwargs)
-    return MJWDualPayloadPlaneScenario(
-        swarm=_resolve_swarm(
-            swarm=swarm,
-            unit_start_locations=unit_start_locations,
-            quantize_connection_twist=quantize_connection_twist,
-            joints=joints,
-        ),
+    return _make_scenario(
+        MJWDualPayloadPlaneScenario,
+        scenario_kwargs=_preset_kwargs(DUAL_PAYLOAD_PLANE_SCENARIO_KWARGS, overrides=kwargs),
         seed=seed,
-        **scenario_kwargs,
+        swarm=swarm,
+        unit_start_locations=unit_start_locations,
+        quantize_connection_twist=quantize_connection_twist,
+        joints=joints,
     )
 
 
@@ -283,26 +269,17 @@ def default_payload_step(
     swarm: MJWHomogeneousSwarm | None = None,
     unit_start_locations: MJWPreConnectedUnitLocationsConfig | None = None,
     quantize_connection_twist: int = 8,
-    joints: str = "zx",
+    joints: JointPreset = "zx",
     **kwargs: object,
 ) -> MJWPayloadStepScenario:
-    scenario_kwargs = make_scenario_kwargs(DEFAULT_KWARGS, PAYLOAD_STEP_SCENARIO_KWARGS)
-    scenario_kwargs.update(
-        {
-            "compile_reward_kernel": should_compile_reward_kernel_by_default(),
-            "reward_kernel_compile_mode": "default",
-        }
-    )
-    scenario_kwargs.update(kwargs)
-    return MJWPayloadStepScenario(
-        swarm=_resolve_swarm(
-            swarm=swarm,
-            unit_start_locations=unit_start_locations,
-            quantize_connection_twist=quantize_connection_twist,
-            joints=joints,
-        ),
+    return _make_scenario(
+        MJWPayloadStepScenario,
+        scenario_kwargs=_preset_kwargs(PAYLOAD_STEP_SCENARIO_KWARGS, overrides=kwargs),
         seed=seed,
-        **scenario_kwargs,
+        swarm=swarm,
+        unit_start_locations=unit_start_locations,
+        quantize_connection_twist=quantize_connection_twist,
+        joints=joints,
     )
 
 
@@ -312,25 +289,15 @@ def default_move_to(
     swarm: MJWHomogeneousSwarm | None = None,
     unit_start_locations: MJWPreConnectedUnitLocationsConfig | None = None,
     quantize_connection_twist: int = 8,
-    joints: str = "zx",
+    joints: JointPreset = "zx",
     **kwargs: object,
 ) -> MJWMoveToScenario:
-    scenario_kwargs = make_scenario_kwargs(DEFAULT_KWARGS, MOVE_TO_SCENARIO_KWARGS)
-    scenario_kwargs.update(
-        {
-            "compile_reward_kernel": should_compile_reward_kernel_by_default(),
-            "reward_kernel_compile_mode": "default",
-        }
-    )
-    scenario_kwargs.update(kwargs)
-    return MJWMoveToScenario(
-        swarm=_resolve_swarm(
-            swarm=swarm,
-            unit_start_locations=unit_start_locations,
-            quantize_connection_twist=quantize_connection_twist,
-            joints=joints,
-        ),
+    return _make_scenario(
+        MJWMoveToScenario,
+        scenario_kwargs=_preset_kwargs(MOVE_TO_SCENARIO_KWARGS, overrides=kwargs),
         seed=seed,
-        **scenario_kwargs,
+        swarm=swarm,
+        unit_start_locations=unit_start_locations,
+        quantize_connection_twist=quantize_connection_twist,
+        joints=joints,
     )
-
