@@ -70,7 +70,7 @@ Keep only durable architecture notes and gotchas. Prefer deleting stale detail o
 - Runtime hyperparameters are live attributes. Mutating config dataclasses after init does nothing.
 - Activation factories with `ParameterLearnMode.PER_FEATURE` need explicit feature counts; use `make_activation(...)` in generic `act_fn_cls` paths.
 - hidden/projection/transformer-FF gains `1.0`, output/action/value/prediction heads `0.01`.
-- Remote run logs are reachable directly from Windows over `\\\\server2026\\swarm-bots\\runs`; prefer that path for reading `log.csv` files instead of the WSL SSH route.
+- Remote run logs are reachable vis WSL SSH at `brn@server2026`, `~/swarm-bots/runs`. Logs are huge so use scripts/code to summarize data and otherwise fetch sparsely. 
 
 ## Version And Install
 
