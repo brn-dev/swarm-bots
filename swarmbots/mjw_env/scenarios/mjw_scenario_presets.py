@@ -17,6 +17,7 @@ from swarmbots.mj_env.swarm.unit_config import (
 from swarmbots.mjw_env.scenarios.mjw_bridge_scenario import MJWBridgeScenario
 from swarmbots.mjw_env.scenarios.mjw_climb_scenario import MJWClimbScenario
 from swarmbots.mjw_env.scenarios.mjw_dual_payload_plane_scenario import MJWDualPayloadPlaneScenario
+from swarmbots.mjw_env.scenarios.mjw_find_opening_scenario import MJWFindOpeningScenario
 from swarmbots.mjw_env.scenarios.mjw_move_to_scenario import MJWMoveToScenario
 from swarmbots.mjw_env.scenarios.mjw_payload_plane_scenario import MJWPayloadPlaneScenario
 from swarmbots.mjw_env.scenarios.mjw_payload_step_scenario import MJWPayloadStepScenario
@@ -39,6 +40,7 @@ MEDIUM_WALL_SCENARIO_KWARGS = make_scenario_kwargs(shared_kwargs.MEDIUM_WALL_SCE
 HARD_WALL_SCENARIO_KWARGS = make_scenario_kwargs(shared_kwargs.HARD_WALL_SCENARIO_KWARGS)
 PO_WALL_MEDIUM_SCENARIO_KWARGS = make_scenario_kwargs(shared_kwargs.PO_WALL_MEDIUM_SCENARIO_KWARGS)
 BRIDGE_SCENARIO_KWARGS = make_scenario_kwargs(shared_kwargs.BRIDGE_SCENARIO_KWARGS)
+FIND_OPENING_SCENARIO_KWARGS = make_scenario_kwargs(shared_kwargs.FIND_OPENING_SCENARIO_KWARGS)
 CLIMB_SCENARIO_KWARGS = make_scenario_kwargs(shared_kwargs.CLIMB_SCENARIO_KWARGS)
 PAYLOAD_PLANE_SCENARIO_KWARGS = make_scenario_kwargs(shared_kwargs.PAYLOAD_PLANE_SCENARIO_KWARGS)
 PAYLOAD_STEP_SCENARIO_KWARGS = make_scenario_kwargs(shared_kwargs.PAYLOAD_STEP_SCENARIO_KWARGS)
@@ -195,6 +197,26 @@ def default_bridge(
     return _make_scenario(
         MJWBridgeScenario,
         scenario_kwargs=_preset_kwargs(BRIDGE_SCENARIO_KWARGS, overrides=kwargs),
+        seed=seed,
+        swarm=swarm,
+        unit_start_locations=unit_start_locations,
+        quantize_connection_twist=quantize_connection_twist,
+        joints=joints,
+    )
+
+
+def default_find_opening(
+    *,
+    seed: int | None = None,
+    swarm: MJWHomogeneousSwarm | None = None,
+    unit_start_locations: MJWPreConnectedUnitLocationsConfig | None = None,
+    quantize_connection_twist: int = 8,
+    joints: JointPreset = "zx",
+    **kwargs: object,
+) -> MJWFindOpeningScenario:
+    return _make_scenario(
+        MJWFindOpeningScenario,
+        scenario_kwargs=_preset_kwargs(FIND_OPENING_SCENARIO_KWARGS, overrides=kwargs),
         seed=seed,
         swarm=swarm,
         unit_start_locations=unit_start_locations,

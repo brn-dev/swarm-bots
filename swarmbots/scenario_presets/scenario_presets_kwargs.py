@@ -110,6 +110,20 @@ BRIDGE_SCENARIO_KWARGS: dict[str, object] = {
     "fell_off_bridge_reward": -2.0,
 }
 
+FIND_OPENING_SCENARIO_KWARGS: dict[str, object] = {
+    "street_width": 10.0,
+    "wall_y": 2.0,
+    "wall_height": 2.0,
+    "wall_thickness": 0.2,
+    "opening_width": 1.5,
+    "opening_x": UniformDistParams(-3.0, 3.0),
+    "opening_y_margin": 1.0,
+    "success_reward": 5.0,
+    "opening_distance_reward_weight": 3.0,
+    "swarm_start_x": UniformDistParams(-0.25, 0.25),
+    "swarm_start_y": UniformDistParams(-0.25, 0.25),
+}
+
 CLIMB_SCENARIO_KWARGS: dict[str, object] = {
     "plane_size": 100.0,
     "swarm_start_x": 0.0,

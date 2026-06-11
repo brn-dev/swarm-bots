@@ -8,6 +8,7 @@ import numpy as np
 from swarmbots.mj_env.scenarios.bridge_scenario import BridgeScenario
 from swarmbots.mj_env.scenarios.climb_scenario import ClimbScenario
 from swarmbots.mj_env.scenarios.dual_payload_plane_scenario import DualPayloadPlaneScenario
+from swarmbots.mj_env.scenarios.find_opening_scenario import FindOpeningScenario
 from swarmbots.mj_env.scenarios.move_to_scenario import MoveToScenario
 from swarmbots.mj_env.scenarios.payload_plane_scenario import PayloadPlaneScenario
 from swarmbots.mj_env.scenarios.payload_step_scenario import PayloadStepScenario
@@ -37,6 +38,7 @@ MEDIUM_WALL_SCENARIO_KWARGS = make_scenario_kwargs(shared_kwargs.MEDIUM_WALL_SCE
 HARD_WALL_SCENARIO_KWARGS = make_scenario_kwargs(shared_kwargs.HARD_WALL_SCENARIO_KWARGS)
 PO_WALL_MEDIUM_SCENARIO_KWARGS = make_scenario_kwargs(shared_kwargs.PO_WALL_MEDIUM_SCENARIO_KWARGS)
 BRIDGE_SCENARIO_KWARGS = make_scenario_kwargs(shared_kwargs.BRIDGE_SCENARIO_KWARGS)
+FIND_OPENING_SCENARIO_KWARGS = make_scenario_kwargs(shared_kwargs.FIND_OPENING_SCENARIO_KWARGS)
 CLIMB_SCENARIO_KWARGS = make_scenario_kwargs(shared_kwargs.CLIMB_SCENARIO_KWARGS)
 PAYLOAD_PLANE_SCENARIO_KWARGS = make_scenario_kwargs(shared_kwargs.PAYLOAD_PLANE_SCENARIO_KWARGS)
 PAYLOAD_STEP_SCENARIO_KWARGS = make_scenario_kwargs(shared_kwargs.PAYLOAD_STEP_SCENARIO_KWARGS)
@@ -186,6 +188,27 @@ def default_bridge(
         randomize_unit_orientations=randomize_unit_orientations,
         quantize_connection_twist=quantize_connection_twist,
         joints="zx",
+    )
+
+
+def default_find_opening(
+    seed: int | None = None,
+    swarm: BaseSwarm | None = None,
+    unit_start_locations: UnitStartLocationsArg | None = None,
+    randomize_unit_orientations: bool = False,
+    quantize_connection_twist: int | None = 8,
+    joints: JointPreset = "zx",
+    **kwargs: Any,
+) -> FindOpeningScenario:
+    return _make_scenario(
+        FindOpeningScenario,
+        scenario_kwargs=_preset_kwargs(FIND_OPENING_SCENARIO_KWARGS, overrides=kwargs),
+        seed=seed,
+        swarm=swarm,
+        unit_start_locations=unit_start_locations,
+        randomize_unit_orientations=randomize_unit_orientations,
+        quantize_connection_twist=quantize_connection_twist,
+        joints=joints,
     )
 
 

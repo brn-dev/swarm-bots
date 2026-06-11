@@ -58,6 +58,7 @@ from swarmbots.mjw_env import MJWSwarmBotsVectorEnv
 from swarmbots.mjw_env.scenarios.mjw_scenario_presets import (
     default_climb,
     default_dual_payload_plane,
+    default_find_opening,
     default_payload_step,
     default_wall,
 )
@@ -66,7 +67,7 @@ from swarmbots.utils.run_paths import get_run_id_from_checkpoint_path
 
 ContinuousActionDistVariant = Literal["sticky_sign_magnitude_beta", "sign_magnitude_beta", "beta", "gsde", "squashed_diag_gaussian"]
 PolicyVariant = Literal["mat_qcs", "mat_qcc", "mat_dec", "mat_orig", "ppo", "mappo"]
-MJWScenarioName = Literal["wall", "climb", "dual_payload", "payload_step"]
+MJWScenarioName = Literal["wall", "find_opening", "climb", "dual_payload", "payload_step"]
 
 
 @dataclass(frozen=True)
@@ -141,6 +142,7 @@ def _configure_cuda_device(*, cuda_idx: int | None) -> None:
 def _make_scenario(*, scenario_name: MJWScenarioName, scenario_kwargs: dict[str, object] | None) -> Any:
     scenario_factory = {
         "wall": default_wall,
+        "find_opening": default_find_opening,
         "climb": default_climb,
         "dual_payload": default_dual_payload_plane,
         "payload_step": default_payload_step,
@@ -151,6 +153,7 @@ def _make_scenario(*, scenario_name: MJWScenarioName, scenario_kwargs: dict[str,
 def _scenario_display_name(*, scenario_name: MJWScenarioName) -> str:
     return {
         "wall": "wall",
+        "find_opening": "find-opening",
         "climb": "climb",
         "dual_payload": "dual-payload",
         "payload_step": "payload-step",
