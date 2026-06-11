@@ -50,6 +50,7 @@ class BridgeScenario(BaseScenario):
             swarm_start_x: FloatOrDistParams = 0.0,
             swarm_start_y: FloatOrDistParams = 0.0,
             randomize_initial_swarm_z_rotation: bool = False,
+            continuous_connector_actions: bool = False,
             seed: int | None = None,
     ) -> None:
         self.street_width = float(street_width)
@@ -111,6 +112,7 @@ class BridgeScenario(BaseScenario):
             swarm_start_x=swarm_start_x,
             swarm_start_y=swarm_start_y,
             randomize_initial_swarm_z_rotation=randomize_initial_swarm_z_rotation,
+            continuous_connector_actions=continuous_connector_actions,
             inactive_area_location=[-street_width * 1.5, 0, 0.1],
             _reset_in_init=False,
         )

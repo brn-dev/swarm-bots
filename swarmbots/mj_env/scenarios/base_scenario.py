@@ -8,6 +8,7 @@ import numpy as np
 from gymnasium import spaces
 from mujoco import MjsBody
 
+from swarmbots.utils.connector_actions import connector_action_space
 import swarmbots.mj_env.mujoco_utils as mj_utils
 from swarmbots.learn.performance_timer import PerformanceTimer
 from swarmbots.mj_env.float_or_dist_params import FloatOrDistParams, eval_fodp_2d
@@ -24,7 +25,7 @@ class SwarmObsDict(TypedDict):
 
 class SwarmActDict(TypedDict):
     actuators: np.ndarray  # shape (n_unit, n_actuators_per_unit), type float
-    connectors: np.ndarray  # shape (n_unit, n_connectors_per_unit), type bool
+    connectors: np.ndarray  # shape (n_unit, n_connectors_per_unit), type bool or float
 
 class RewardWeights(TypedDict, total=False):
     progress_reward_weight: float
@@ -84,6 +85,7 @@ class BaseScenario(abc.ABC):
             swarm_start_y: FloatOrDistParams,
             randomize_initial_swarm_z_rotation: bool,
             inactive_area_location: Iterable[float] | None,
+            continuous_connector_actions: bool,
             seed: int | None,
             _reset_in_init: bool = True,
     ) -> None:
@@ -103,6 +105,7 @@ class BaseScenario(abc.ABC):
         self.connection_dist_threshold = connection_dist_threshold
         self.connection_angle_threshold = connection_angle_threshold
         self.disconnect_potential_threshold = disconnect_potential_threshold
+        self.continuous_connector_actions = bool(continuous_connector_actions)
         self.swarm_start_x = swarm_start_x
         self.swarm_start_y = swarm_start_y
         self.randomize_initial_swarm_z_rotation = bool(randomize_initial_swarm_z_rotation)
@@ -213,6 +216,7 @@ class BaseScenario(abc.ABC):
             'connection_dist_threshold': self.connection_dist_threshold,
             'connection_angle_threshold': self.connection_angle_threshold,
             'disconnect_potential_threshold': self.disconnect_potential_threshold,
+            'continuous_connector_actions': self.continuous_connector_actions,
             'swarm_start_x': self.swarm_start_x,
             'swarm_start_y': self.swarm_start_y,
             'randomize_initial_swarm_z_rotation': self.randomize_initial_swarm_z_rotation,
@@ -570,6 +574,16 @@ class BaseScenario(abc.ABC):
             actuators_action[~agent_mask] = 0.0
         data.ctrl[self._ctrl_indices] = actuators_action * self.actuator_strength
 
+        if self.continuous_connector_actions:
+            self._apply_continuous_connector_action(
+                model=model,
+                data=data,
+                action=action,
+                state=state,
+                connections=connections,
+            )
+            return
+
         connectors_action = np.asarray(action['connectors'], dtype=bool)
         if agent_mask is not None:
             connectors_action = connectors_action.copy()
@@ -590,6 +604,37 @@ class BaseScenario(abc.ABC):
             currently_active_mask,
             newly_deactivated_mask,
             self.disconnect_potential_threshold
+        )
+        self.disconnect(data, connections, deactivation_mask)
+
+    def _apply_continuous_connector_action(
+            self,
+            model: mujoco.MjModel,
+            data: mujoco.MjData,
+            action: SwarmActDict,
+            state: dict,
+            connections: SwarmConnections,
+    ) -> None:
+        agent_mask = state['units_active_mask']
+        connectors_action = np.asarray(action['connectors'], dtype=np.float32)
+        if agent_mask is not None:
+            connectors_action = connectors_action.copy()
+            connectors_action[~agent_mask] = -1.0
+
+        currently_active_mask = connections.get_is_active_mask()
+        newly_activated_mask = np.logical_and(connectors_action > 0.0, np.logical_not(currently_active_mask))
+
+        self.try_connect(
+            model,
+            data,
+            connections,
+            newly_activated_mask
+        )
+
+        deactivation_mask = connections.update_disconnect_potentials_continuous(
+            currently_active_mask,
+            connectors_action,
+            self.disconnect_potential_threshold,
         )
         self.disconnect(data, connections, deactivation_mask)
 
@@ -625,7 +670,10 @@ class BaseScenario(abc.ABC):
             'actuators': spaces.Box(
                 low=-1, high=1, shape=self.get_actuator_action_shape(), dtype=np.float32
             ),
-            'connectors': spaces.MultiBinary(self.get_connector_action_shape())
+            'connectors': connector_action_space(
+                self.get_connector_action_shape(),
+                continuous=self.continuous_connector_actions,
+            )
         })
 
     def try_connect(

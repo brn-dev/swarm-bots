@@ -7,7 +7,7 @@ name = "swarm-bots"
 version = "0.1.0"
 description = "Swarm robot simulation environments and reinforcement learning training code."
 readme = "README.md"
-requires-python = ">=3.13"
+requires-python = ">=3.13,<3.14"
 dependencies = [
     "gymnasium",
     "loguru",

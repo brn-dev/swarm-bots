@@ -113,6 +113,7 @@ class BaseMJWScenario(Protocol):
     connection_dist_threshold: float
     connection_angle_threshold: float
     disconnect_potential_threshold: float
+    continuous_connector_actions: bool
     potential_reward_discount_factor: float
     reset_settle_time: float
     reset_settle_timestep_scale: float

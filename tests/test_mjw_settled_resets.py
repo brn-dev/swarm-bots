@@ -7,7 +7,11 @@ from typing import Any
 import pytest
 import torch
 
-from swarmbots.mjw_env.mjw_swarm_bots_vector_env import MJWSwarmBotsVectorEnv, _SettledResetSnapshotBuffer
+from swarmbots.mjw_env.mjw_swarm_bots_vector_env import (
+    MJWSwarmBotsVectorEnv,
+    _resolve_torch_device,
+    _SettledResetSnapshotBuffer,
+)
 from swarmbots.mjw_env.scenarios.base_mjw_scenario import MJWStepResult
 
 
@@ -90,6 +94,7 @@ def _make_uninitialized_env(*, use_settled_resets: bool = True) -> tuple[MJWSwar
     env._settled_reset_buffer = None
     env._settle_executor = None
     env._live_episode_recorder = _FakeLiveEpisodeRecorder()
+    env._continuous_connector_actions = False
     return env, runtime
 
 
@@ -108,6 +113,14 @@ def _make_snapshot_buffer(
         capacity=capacity,
         batch_size=batch_size,
     )
+
+
+def test_mjw_indexless_cuda_device_uses_torch_current_device(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 3)
+
+    assert _resolve_torch_device("cuda") == torch.device("cuda:3")
+    assert _resolve_torch_device("cuda:1") == torch.device("cuda:1")
+    assert _resolve_torch_device("cpu") == torch.device("cpu")
 
 
 def test_mjw_done_without_settled_resets_uses_raw_reset() -> None:

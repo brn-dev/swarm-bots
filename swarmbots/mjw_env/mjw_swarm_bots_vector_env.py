@@ -83,6 +83,13 @@ def _resolve_workspace_cap(
     return int(fallback_value)
 
 
+def _resolve_torch_device(device: str | torch.device) -> torch.device:
+    resolved_device = torch.device(device)
+    if resolved_device.type == "cuda" and resolved_device.index is None:
+        return torch.device("cuda", torch.cuda.current_device())
+    return resolved_device
+
+
 class _SettledResetSnapshotBuffer:
     def __init__(
         self,
@@ -207,12 +214,8 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
         if settled_reset_batch_size is not None and settled_reset_batch_size <= 0:
             raise ValueError(f"Expected settled_reset_batch_size > 0, got {settled_reset_batch_size}")
 
-        self.device = torch.device(device)
-        if self.device.type == "cuda":
-            cuda_index = 0 if self.device.index is None else int(self.device.index)
-            self._wp_device = wp.device_from_torch(torch.device(f"cuda:{cuda_index}"))
-        else:
-            self._wp_device = wp.device_from_torch(self.device)
+        self.device = _resolve_torch_device(device)
+        self._wp_device = wp.device_from_torch(self.device)
         self.scenario = scenario
         self.num_envs = int(num_envs)
         self.episode_length = int(episode_length)
@@ -225,6 +228,7 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
         self.simulation_unstable_reward = float(simulation_unstable_reward)
         self.render_mode = None
         self.action_backend = "torch"
+        self._continuous_connector_actions = bool(getattr(scenario, "continuous_connector_actions", False))
         self._nefc_overflow_check_interval_steps = int(nefc_overflow_check_interval_steps)
 
         self.single_observation_space = scenario.get_single_observation_space()
@@ -580,7 +584,10 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
         actions: dict[str, torch.Tensor],
     ) -> tuple[dict[str, torch.Tensor], torch.Tensor, torch.Tensor, torch.Tensor, dict[str, Any]]:
         actuators = torch.as_tensor(actions["actuators"], device=self.device, dtype=torch.float32)
-        connectors = torch.as_tensor(actions["connectors"], device=self.device, dtype=torch.bool)
+        if self._continuous_connector_actions:
+            connectors = torch.as_tensor(actions["connectors"], device=self.device, dtype=torch.float32)
+        else:
+            connectors = torch.as_tensor(actions["connectors"], device=self.device, dtype=torch.bool)
         if actuators.shape != (self.num_envs, self._n_agents, self._n_actuators):
             raise ValueError(f"Unexpected actuators shape {tuple(actuators.shape)}")
         if connectors.shape != (self.num_envs, self._n_agents, self._n_connectors):
@@ -816,6 +823,12 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
         if self._ctrl.numel() > 0:
             self._ctrl[:, self._ctrl_flat_indices] = actuators.reshape(self.num_envs, -1) * float(self.scenario.actuator_strength)
 
+        if self._continuous_connector_actions:
+            connector_action = connectors.masked_fill(~self.units_active_mask.unsqueeze(-1), -1.0)
+            self._try_connect(connector_action > 0.0)
+            self._disconnect_continuous(connector_action)
+            return
+
         connector_action = connectors & self.units_active_mask.unsqueeze(-1)
         self._try_connect(connector_action)
         self._disconnect(connector_action)
@@ -906,6 +919,54 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
 
         stayed_active = currently_active & (disconnect_update == 0)
         disconnect_update[stayed_active] = -2.0
+        self.disconnect_potentials += disconnect_update
+        self.disconnect_potentials.clamp_min_(0.0)
+
+        canonical_disconnect = self.disconnect_potentials >= float(self.scenario.disconnect_potential_threshold)
+        canonical_disconnect &= currently_active
+        canonical_disconnect &= (
+            (self._unit_indices < self.partner_unit)
+            | ((self._unit_indices == self.partner_unit) & (self._connector_indices < self.partner_connector))
+        )
+
+        world_idx, unit1, connector1 = torch.nonzero(canonical_disconnect, as_tuple=True)
+        unit2 = self.partner_unit[world_idx, unit1, connector1]
+        connector2 = self.partner_connector[world_idx, unit1, connector1]
+        eq_variants = self._eq_indices[unit1, connector1, unit2, connector2]
+        self._eq_active[world_idx.unsqueeze(1), eq_variants] = 0
+
+        self.partner_unit[world_idx, unit1, connector1] = -1
+        self.partner_connector[world_idx, unit1, connector1] = -1
+        self.connection_twist_idx[world_idx, unit1, connector1] = -1
+        self.disconnect_potentials[world_idx, unit1, connector1] = 0.0
+
+        self.partner_unit[world_idx, unit2, connector2] = -1
+        self.partner_connector[world_idx, unit2, connector2] = -1
+        self.connection_twist_idx[world_idx, unit2, connector2] = -1
+        self.disconnect_potentials[world_idx, unit2, connector2] = 0.0
+
+    def _disconnect_continuous(self, connector_action: torch.Tensor) -> None:
+        currently_active = self.partner_unit >= 0
+
+        partner_flat_idx = (
+            self.partner_unit.clamp_min(0) * self._n_connectors
+            + self.partner_connector.clamp_min(0)
+        ).reshape(self.num_envs, self._n_total_connectors)
+        partner_actions = torch.gather(
+            connector_action.reshape(self.num_envs, self._n_total_connectors),
+            dim=1,
+            index=partner_flat_idx,
+        ).reshape_as(connector_action)
+
+        disconnect_update = self._disconnect_update
+        torch.add(
+            (-connector_action).clamp_min(0.0),
+            (-partner_actions).clamp_min(0.0),
+            out=disconnect_update,
+        )
+        hold_update = -2.0 * torch.minimum(connector_action.clamp_min(0.0), partner_actions.clamp_min(0.0))
+        disconnect_update.copy_(torch.where(disconnect_update > 0.0, disconnect_update, hold_update))
+        disconnect_update.masked_fill_(~currently_active, 0.0)
         self.disconnect_potentials += disconnect_update
         self.disconnect_potentials.clamp_min_(0.0)
 
