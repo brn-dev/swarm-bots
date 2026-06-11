@@ -25,6 +25,7 @@ COMMON_SCENARIO_KWARGS: dict[str, object] = {
     "connection_dist_threshold": 0.1,
     "connection_angle_threshold": -0.5,
     "disconnect_potential_threshold": 5.0,
+    "continuous_connector_actions": False,
     "progress_reward_weight": 1.0,
     "guidance_reward_weight": 1.0,
     "units_without_connections_reward_weight": -1e-5,
@@ -124,7 +125,7 @@ CLIMB_SCENARIO_KWARGS: dict[str, object] = {
     "goal_height_offset": None,
     "goal_success_reward": 5.0,
     "horizontal_reward_weight": 2.0,
-    "height_reward_weight": 5.0,
+    "height_reward_weight": 8.0,
     "visualize_goal": True,
     "units_without_connections_reward_weight": -1e-4,
 }
@@ -188,6 +189,7 @@ MOVE_TO_SCENARIO_KWARGS: dict[str, object] = {
 PO_WALL_MEDIUM_SCENARIO_KWARGS = make_scenario_kwargs(
     MEDIUM_WALL_SCENARIO_KWARGS,
     {
+        "wall_height": 0.25,
         "swarm_start_y": UniformDistParams(0.0, 0.25),
         "first_wall_distance": UniformDistParams.from_midpoint_and_width(1.0, 1.0),
     },
