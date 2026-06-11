@@ -8,6 +8,7 @@ import numpy as np
 from gymnasium import spaces
 from gymnasium.vector.utils import batch_space
 
+from swarmbots.utils.connector_actions import connector_action_space
 from swarmbots.mj_env.float_or_dist_params import FloatOrDistParams
 from swarmbots.mjw_env.scenarios.base_mjw_scenario import BaseMJWScenario, MJWRecordingCameraConfig, MJWRuntimeBindings
 from swarmbots.mjw_env.swarm.mjw_homogeneous_swarm import MJWHomogeneousSwarm
@@ -58,6 +59,7 @@ class MJWClimbScenario(BaseMJWScenario):
     cuboid_center_y: float
     horizontal_goal_radius: float
     height_goal_radius: float
+    continuous_connector_actions: bool = False
     goal_radius: float | None = None
     goal_height_offset: float | None = None
     goal_success_reward: float = 5.0
@@ -140,6 +142,7 @@ class MJWClimbScenario(BaseMJWScenario):
             "connection_dist_threshold": self.connection_dist_threshold,
             "connection_angle_threshold": self.connection_angle_threshold,
             "disconnect_potential_threshold": self.disconnect_potential_threshold,
+            "continuous_connector_actions": self.continuous_connector_actions,
             "swarm_start_x": self.swarm_start_x,
             "swarm_start_y": self.swarm_start_y,
             "randomize_initial_swarm_z_rotation": self.randomize_initial_swarm_z_rotation,
@@ -266,7 +269,10 @@ class MJWClimbScenario(BaseMJWScenario):
                     shape=(self.swarm.num_units, actuators_per_unit),
                     dtype=np.float32,
                 ),
-                "connectors": spaces.MultiBinary((self.swarm.num_units, self.swarm.config.limbs_per_unit)),
+                "connectors": connector_action_space(
+                    (self.swarm.num_units, self.swarm.config.limbs_per_unit),
+                    continuous=self.continuous_connector_actions,
+                ),
             }
         )
 

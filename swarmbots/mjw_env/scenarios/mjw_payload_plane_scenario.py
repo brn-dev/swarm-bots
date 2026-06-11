@@ -10,6 +10,7 @@ from gymnasium import spaces
 from gymnasium.vector.utils import batch_space
 
 import swarmbots.mj_env.mujoco_utils as mj_utils
+from swarmbots.utils.connector_actions import connector_action_space
 from swarmbots.mj_env.float_or_dist_params import FloatOrDistParams
 from swarmbots.mjw_env.scenarios.base_mjw_scenario import BaseMJWScenario, MJWRecordingCameraConfig, MJWRuntimeBindings
 from swarmbots.mjw_env.swarm.mjw_homogeneous_swarm import MJWHomogeneousSwarm
@@ -67,6 +68,7 @@ class MJWPayloadPlaneScenario(BaseMJWScenario):
     payload_centering_penalty_weight: float
     payload_centering_penalty_power: float
     payload_centering_tolerance: float
+    continuous_connector_actions: bool = False
     payload_pos_observable: bool = True
     forward_reward_max_y: float | None = None
     towards_payload_reward_weight: float = 1.0
@@ -148,6 +150,7 @@ class MJWPayloadPlaneScenario(BaseMJWScenario):
             "connection_dist_threshold": self.connection_dist_threshold,
             "connection_angle_threshold": self.connection_angle_threshold,
             "disconnect_potential_threshold": self.disconnect_potential_threshold,
+            "continuous_connector_actions": self.continuous_connector_actions,
             "swarm_start_x": self.swarm_start_x,
             "swarm_start_y": self.swarm_start_y,
             "randomize_initial_swarm_z_rotation": self.randomize_initial_swarm_z_rotation,
@@ -287,7 +290,10 @@ class MJWPayloadPlaneScenario(BaseMJWScenario):
                     shape=(self.swarm.num_units, actuators_per_unit),
                     dtype=np.float32,
                 ),
-                "connectors": spaces.MultiBinary((self.swarm.num_units, self.swarm.config.limbs_per_unit)),
+                "connectors": connector_action_space(
+                    (self.swarm.num_units, self.swarm.config.limbs_per_unit),
+                    continuous=self.continuous_connector_actions,
+                ),
             }
         )
 

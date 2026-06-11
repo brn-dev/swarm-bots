@@ -64,6 +64,39 @@ class SwarmConnections:
 
         return self.disconnect_potentials >= disconnect_potential_threshold
 
+    def update_disconnect_potentials_continuous(
+            self,
+            currently_active_mask: np.ndarray,
+            connector_actions: np.ndarray,
+            disconnect_potential_threshold: float,
+    ) -> np.ndarray:
+        active_units, active_connectors = np.nonzero(currently_active_mask)
+        if len(active_units) == 0:
+            return self.disconnect_potentials >= disconnect_potential_threshold
+
+        partners = self.connections[active_units, active_connectors]
+        partner_units = partners[:, 0]
+        partner_connectors = partners[:, 1]
+
+        own_actions = connector_actions[active_units, active_connectors]
+        partner_actions = connector_actions[partner_units, partner_connectors]
+        own_disconnect_intent = np.maximum(-own_actions, 0.0)
+        partner_disconnect_intent = np.maximum(-partner_actions, 0.0)
+        disconnect_update = own_disconnect_intent + partner_disconnect_intent
+
+        own_hold_intent = np.maximum(own_actions, 0.0)
+        partner_hold_intent = np.maximum(partner_actions, 0.0)
+        hold_update = -2.0 * np.minimum(own_hold_intent, partner_hold_intent)
+
+        potential_update = np.where(disconnect_update > 0.0, disconnect_update, hold_update)
+        self.disconnect_potentials[active_units, active_connectors] += potential_update
+        self.disconnect_potentials[currently_active_mask] = np.maximum(
+            0.0,
+            self.disconnect_potentials[currently_active_mask],
+        )
+
+        return self.disconnect_potentials >= disconnect_potential_threshold
+
     def disconnect(
             self,
             unit: int,

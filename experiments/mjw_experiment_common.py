@@ -12,6 +12,7 @@ from typing import Any, Literal
 import torch
 from loguru import logger
 from torch import nn
+import warp as wp
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -114,7 +115,7 @@ def configure_float32_matmul_precision() -> None:
 
 def _get_requested_cuda_idx(argv: Sequence[str] | None = None) -> int | None:
     parser = argparse.ArgumentParser(add_help=False)
-    parser.add_argument("--cuda_idx", "--cuda-idx", type=int, dest="cuda_idx")
+    parser.add_argument("--cuda_idx", "--cuda-idx", "--gpu", type=int, dest="cuda_idx")
     parsed_args, _ = parser.parse_known_args(sys.argv[1:] if argv is None else list(argv))
     return parsed_args.cuda_idx
 
@@ -134,6 +135,7 @@ def _configure_cuda_device(*, cuda_idx: int | None) -> None:
         )
 
     torch.cuda.set_device(cuda_idx)
+    wp.set_device(f'cuda:{cuda_idx}')
 
 
 def _make_scenario(*, scenario_name: MJWScenarioName, scenario_kwargs: dict[str, object] | None) -> Any:

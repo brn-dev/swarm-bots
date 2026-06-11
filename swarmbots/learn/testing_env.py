@@ -18,6 +18,7 @@ class TestingSwarmBotsEnv(gymnasium.Env):
         n_hidden_local_vars: int = 0,
         n_hidden_global_vars: int = 0,
         max_steps: int = 100,
+        continuous_connector_actions: bool = False,
     ):
         self.n_agents = n_agents
         self.n_local_obs = n_local_obs
@@ -51,13 +52,24 @@ class TestingSwarmBotsEnv(gymnasium.Env):
             ),
         })
 
+        connector_space: spaces.Box | spaces.MultiBinary
+        if continuous_connector_actions:
+            connector_space = spaces.Box(
+                low=-1.0,
+                high=1.0,
+                shape=(n_agents, connectors_dim),
+                dtype=np.float32,
+            )
+        else:
+            connector_space = spaces.MultiBinary((n_agents, connectors_dim))
+
         self.action_space = spaces.Dict({
             "actuators": spaces.Box(
                 low=-1.0, high=1.0,
                 shape=(n_agents, actuators_dim),
                 dtype=np.float32
             ),
-            "connectors": spaces.MultiBinary((n_agents, connectors_dim)),
+            "connectors": connector_space,
         })
 
     def reset(
