@@ -6,6 +6,7 @@ from swarmbots.mj_env.float_or_dist_params import (
     FloatOrBoundedDistParams,
     FloatOrDistParams,
     NormalDistParams,
+    SplitUniformDistParams,
     TruncatedNormalDistParams,
     UniformDistParams,
 )
@@ -38,6 +39,28 @@ def sample_float_or_dist(
             float(value.high),
             generator=generator,
         )
+    if isinstance(value, SplitUniformDistParams):
+        unit_samples = torch.rand(
+            shape,
+            device=device,
+            dtype=torch.float32,
+            generator=generator,
+        )
+        sample_positive_side = torch.randint(
+            0,
+            2,
+            shape,
+            device=device,
+            dtype=torch.int8,
+            generator=generator,
+        ).bool()
+        negative_samples = float(value.low) + unit_samples * (
+            -float(value.margin) - float(value.low)
+        )
+        positive_samples = float(value.margin) + unit_samples * (
+            float(value.high) - float(value.margin)
+        )
+        return torch.where(sample_positive_side, positive_samples, negative_samples)
     if isinstance(value, NormalDistParams):
         return torch.empty(shape, device=device, dtype=torch.float32).normal_(
             float(value.mean),

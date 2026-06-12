@@ -27,6 +27,21 @@ class UniformDistParams(BoundedDistParams):
             high=midpoint + width_half
         )
 
+
+@dataclass(frozen=True, slots=True)
+class SplitUniformDistParams(BoundedDistParams):
+    margin: float
+
+    def __post_init__(self) -> None:
+        if self.margin < 0.0:
+            raise ValueError(f"Expected margin >= 0, got {self.margin}")
+        if self.low >= -self.margin or self.high <= self.margin:
+            raise ValueError(
+                "Expected non-empty intervals on both sides of the margin, "
+                f"got low={self.low}, high={self.high}, margin={self.margin}"
+            )
+
+
 TruncatedNormalDistSamplingMode = Literal['clamp', 'rejection']
 
 @dataclass(frozen=True, slots=True)
@@ -59,6 +74,10 @@ def eval_fodp(fodp: FloatOrDistParams, rng: np.random.Generator) -> float:
         return float(fodp)
     if isinstance(fodp, UniformDistParams):
         return float(rng.uniform(low=fodp.low, high=fodp.high))
+    if isinstance(fodp, SplitUniformDistParams):
+        if rng.integers(0, 2) == 0:
+            return float(rng.uniform(low=fodp.low, high=-fodp.margin))
+        return float(rng.uniform(low=fodp.margin, high=fodp.high))
     if isinstance(fodp, TruncatedNormalDistParams):
         return eval_truncated_normal(fodp, rng)
     if isinstance(fodp, NormalDistParams):

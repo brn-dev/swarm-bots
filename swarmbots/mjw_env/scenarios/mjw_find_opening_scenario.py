@@ -65,6 +65,7 @@ class MJWFindOpeningScenario(BaseMJWScenario):
     wall_y: float
     wall_height: float
     wall_thickness: float
+    wall_segment_width: float
     opening_width: float
     opening_x: FloatOrBoundedDistParams
     opening_y_margin: float
@@ -88,6 +89,7 @@ class MJWFindOpeningScenario(BaseMJWScenario):
         self.wall_y = float(self.wall_y)
         self.wall_height = float(self.wall_height)
         self.wall_thickness = float(self.wall_thickness)
+        self.wall_segment_width = float(self.wall_segment_width)
         self.opening_width = float(self.opening_width)
         self.opening_y_margin = float(self.opening_y_margin)
         self.success_reward = float(self.success_reward)
@@ -100,6 +102,11 @@ class MJWFindOpeningScenario(BaseMJWScenario):
             raise ValueError(f"Expected wall_height > 0, got {self.wall_height}")
         if self.wall_thickness <= 0.0:
             raise ValueError(f"Expected wall_thickness > 0, got {self.wall_thickness}")
+        if self.wall_segment_width < self.street_width:
+            raise ValueError(
+                f"Expected wall_segment_width >= street_width, got "
+                f"{self.wall_segment_width} and {self.street_width}"
+            )
         if not 0.0 < self.opening_width < self.street_width:
             raise ValueError(
                 f"Expected 0 < opening_width < street_width, got {self.opening_width} and {self.street_width}"
@@ -156,6 +163,7 @@ class MJWFindOpeningScenario(BaseMJWScenario):
             "wall_y": self.wall_y,
             "wall_height": self.wall_height,
             "wall_thickness": self.wall_thickness,
+            "wall_segment_width": self.wall_segment_width,
             "opening_width": self.opening_width,
             "opening_x": self.opening_x,
             "opening_y_margin": self.opening_y_margin,
@@ -200,7 +208,7 @@ class MJWFindOpeningScenario(BaseMJWScenario):
         spec.attach(self.swarm.create_swarm_spec(seed=self.seed), "", site=swarm_site)
 
         barrier_body = worldbody.add_body(name="FindOpeningBarrier", mocap=True, pos=[0, 0, 0])
-        segment_half_width = self.street_width / 2.0
+        segment_half_width = self.wall_segment_width / 2.0
         segment_center_offset = (self.opening_width / 2.0) + segment_half_width
         for name, x in (
             ("FindOpeningBarrier-left", -segment_center_offset),

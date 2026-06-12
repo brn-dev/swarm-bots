@@ -7,7 +7,7 @@ import numpy as np
 import pytest
 import torch
 
-from swarmbots.mj_env.float_or_dist_params import UniformDistParams
+from swarmbots.mj_env.float_or_dist_params import SplitUniformDistParams
 from swarmbots.mj_env.scenarios.scenario_presets import (
     default_find_opening as default_mj_find_opening,
 )
@@ -28,11 +28,10 @@ def test_find_opening_mj_samples_opening_once_per_episode_and_keeps_it_hidden() 
     scenario = default_mj_find_opening(
         seed=123,
         reset_settle_time=0.0,
-        opening_x=UniformDistParams(-1.0, 1.0),
     )
 
     sampled_opening_x: list[float] = []
-    for _ in range(8):
+    for _ in range(64):
         state, connections = scenario.reset_scenario(
             scenario.dummy_model,
             scenario.dummy_data,
@@ -57,17 +56,23 @@ def test_find_opening_mj_samples_opening_once_per_episode_and_keeps_it_hidden() 
         assert np.array_equal(first_obs["hidden_global_vars"], second_obs["hidden_global_vars"])
         sampled_opening_x.append(float(first_obs["hidden_global_vars"][0]))
 
-    assert all(-1.0 <= opening_x <= 1.0 for opening_x in sampled_opening_x)
+    assert isinstance(scenario.opening_x_param, SplitUniformDistParams)
+    assert all(-3.0 <= opening_x <= 3.0 for opening_x in sampled_opening_x)
+    assert all(abs(opening_x) >= 1.0 for opening_x in sampled_opening_x)
+    assert any(opening_x < 0.0 for opening_x in sampled_opening_x)
+    assert any(opening_x > 0.0 for opening_x in sampled_opening_x)
     assert len({round(opening_x, 6) for opening_x in sampled_opening_x}) > 1
 
 
 def test_find_opening_mj_barrier_geometry_matches_sampled_opening() -> None:
     opening_x = 1.25
     opening_width = 1.5
+    wall_segment_width = 100.0
     scenario = default_mj_find_opening(
         reset_settle_time=0.0,
         opening_x=opening_x,
         opening_width=opening_width,
+        wall_segment_width=wall_segment_width,
     )
     scenario.reset_scenario(scenario.dummy_model, scenario.dummy_data, settle=False)
 
@@ -92,6 +97,12 @@ def test_find_opening_mj_barrier_geometry_matches_sampled_opening() -> None:
 
     assert left_right_edge == pytest.approx(opening_x - opening_width / 2.0)
     assert right_left_edge == pytest.approx(opening_x + opening_width / 2.0)
+    assert scenario.dummy_model.geom_size[left_geom_id, 0] == pytest.approx(
+        wall_segment_width / 2.0
+    )
+    assert scenario.dummy_model.geom_size[right_geom_id, 0] == pytest.approx(
+        wall_segment_width / 2.0
+    )
 
 
 def test_find_opening_mj_potential_rewards_xy_progress_towards_post_wall_waypoint() -> None:
@@ -158,7 +169,7 @@ def test_find_opening_mjw_reset_sampling_respects_opening_distribution() -> None
     device = torch.device("cpu")
     runtime.bindings = SimpleNamespace(device=device)
     runtime.scenario = SimpleNamespace(
-        opening_x=UniformDistParams(-0.75, 0.5),
+        opening_x=SplitUniformDistParams(-0.75, 0.5, margin=0.2),
         swarm=SimpleNamespace(get_active_pool_size=lambda: 2, max_unit_extent=0.2),
         swarm_start_x=0.0,
         swarm_start_y=0.0,
@@ -173,6 +184,9 @@ def test_find_opening_mjw_reset_sampling_respects_opening_distribution() -> None
     assert samples.opening_x.shape == (32,)
     assert torch.all(samples.opening_x >= -0.75)
     assert torch.all(samples.opening_x <= 0.5)
+    assert torch.all(torch.abs(samples.opening_x) >= 0.2)
+    assert torch.any(samples.opening_x < 0.0)
+    assert torch.any(samples.opening_x > 0.0)
     assert torch.unique(samples.opening_x).numel() > 1
 
 
