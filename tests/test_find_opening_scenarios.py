@@ -142,6 +142,17 @@ def test_find_opening_mjw_space_and_metadata_keep_opening_actor_hidden() -> None
     assert not hasattr(generic_metadata, "barrier_mocap_id")
 
 
+def test_find_opening_mjw_camera_views_wall_diagonally_from_swarm_start_side() -> None:
+    scenario = default_mjw_find_opening()
+
+    camera_config = scenario.get_default_recording_camera_config()
+
+    assert camera_config is not None
+    assert camera_config.lookat == pytest.approx((0.0, scenario.wall_y * 0.5, 0.8))
+    assert camera_config.azimuth == 45.0
+    assert camera_config.elevation == -35.0
+
+
 def test_find_opening_mjw_reset_sampling_respects_opening_distribution() -> None:
     runtime = object.__new__(FindOpeningMJWScenarioRuntime)
     device = torch.device("cpu")
