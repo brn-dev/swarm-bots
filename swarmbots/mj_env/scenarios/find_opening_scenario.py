@@ -29,6 +29,7 @@ class FindOpeningScenario(BaseScenario):
             wall_y: float = 2.0,
             wall_height: float = 2.0,
             wall_thickness: float = 0.2,
+            wall_segment_width: float = 100.0,
             opening_width: float = 1.5,
             opening_x: FloatOrBoundedDistParams = 0.0,
             opening_y_margin: float = 1.0,
@@ -59,6 +60,7 @@ class FindOpeningScenario(BaseScenario):
         self.wall_y = float(wall_y)
         self.wall_height = float(wall_height)
         self.wall_thickness = float(wall_thickness)
+        self.wall_segment_width = float(wall_segment_width)
         self.opening_width = float(opening_width)
         self.opening_x_param = opening_x
         self.opening_y_margin = float(opening_y_margin)
@@ -71,6 +73,11 @@ class FindOpeningScenario(BaseScenario):
             raise ValueError(f"Expected wall_height > 0, got {self.wall_height}")
         if self.wall_thickness <= 0.0:
             raise ValueError(f"Expected wall_thickness > 0, got {self.wall_thickness}")
+        if self.wall_segment_width < self.street_width:
+            raise ValueError(
+                f"Expected wall_segment_width >= street_width, got "
+                f"{self.wall_segment_width} and {self.street_width}"
+            )
         if not 0.0 < self.opening_width < self.street_width:
             raise ValueError(
                 f"Expected 0 < opening_width < street_width, got {self.opening_width} and {self.street_width}"
@@ -138,6 +145,7 @@ class FindOpeningScenario(BaseScenario):
             "wall_y": self.wall_y,
             "wall_height": self.wall_height,
             "wall_thickness": self.wall_thickness,
+            "wall_segment_width": self.wall_segment_width,
             "opening_width": self.opening_width,
             "opening_x": self.opening_x_param,
             "opening_y_margin": self.opening_y_margin,
@@ -170,7 +178,7 @@ class FindOpeningScenario(BaseScenario):
             )
 
         barrier_body = worldbody.add_body(name="FindOpeningBarrier", mocap=True, pos=[0, 0, 0])
-        segment_half_width = self.street_width / 2.0
+        segment_half_width = self.wall_segment_width / 2.0
         segment_center_offset = (self.opening_width / 2.0) + segment_half_width
         for name, x in (
             ("FindOpeningBarrier-left", -segment_center_offset),

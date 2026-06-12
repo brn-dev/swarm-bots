@@ -5,7 +5,7 @@ from collections.abc import Mapping
 from copy import deepcopy
 from typing import Literal
 
-from swarmbots.mj_env.float_or_dist_params import UniformDistParams
+from swarmbots.mj_env.float_or_dist_params import SplitUniformDistParams, UniformDistParams
 from swarmbots.scenario_presets.move_to_goal_config import RelativePolarGoalConfig
 
 
@@ -115,8 +115,9 @@ FIND_OPENING_SCENARIO_KWARGS: dict[str, object] = {
     "wall_y": 2.0,
     "wall_height": 2.0,
     "wall_thickness": 0.2,
-    "opening_width": 1.5,
-    "opening_x": UniformDistParams(-3.0, 3.0),
+    "wall_segment_width": 100.0,
+    "opening_width": 1,
+    "opening_x": SplitUniformDistParams(-4.0, 4.0, margin=1.0),
     "opening_y_margin": 1.0,
     "success_reward": 5.0,
     "opening_distance_reward_weight": 3.0,
