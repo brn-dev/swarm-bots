@@ -168,8 +168,8 @@ class MJWFindOpeningScenario(BaseMJWScenario):
     def get_default_recording_camera_config(self) -> MJWRecordingCameraConfig | None:
         return MJWRecordingCameraConfig(
             lookat=(0.0, self.wall_y, max(0.4, self.wall_height * 0.4)),
-            distance=max(4.0, min(10.0, self.street_width * 0.6)),
-            azimuth=180.0,
+            distance=max(4.0, min(10.0, self.street_width * 0.75)),
+            azimuth=135.0,
             elevation=-35.0,
         )
 
