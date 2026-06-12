@@ -22,7 +22,6 @@ def run_experiment(
         policy_variant: PolicyVariant = "mat_qcc",
         mat_decoder_self_attention_mode: MATQCSDecoderSelfAttentionMode = MATQCSDecoderSelfAttentionMode.FULL_CAUSAL,
         mat_decoder_lr_multiplier: float = 0.25,
-        mat_query_context_lr_multiplier: float = 0.25,
 ) -> None:
     run_mjw_wall_experiment(
         num_envs=1024,
@@ -37,5 +36,4 @@ def run_experiment(
         experiment_run_name=EXPERIMENT_RUN_NAME,
         scenario_kwargs=SCENARIO_KWARGS,
         mat_decoder_lr_multiplier=mat_decoder_lr_multiplier,
-        mat_query_context_lr_multiplier=mat_query_context_lr_multiplier,
     )

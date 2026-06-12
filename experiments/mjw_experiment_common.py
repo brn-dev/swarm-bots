@@ -360,8 +360,6 @@ def run_experiment(
         shuffle_agents: bool = False,
         preserve_inactive_prefix_structure: bool = False,
         mat_decoder_lr_multiplier: float = 0.25,
-        mat_encoder_decoder_projection_lr_multiplier: float = 1.0,
-        mat_query_context_lr_multiplier: float = 0.25,
         experiment_run_name: str | None = None,
         scenario_name: MJWScenarioName = "wall",
         ccd_iterations: int | None = None,
@@ -666,9 +664,7 @@ def run_experiment(
 
     parameter_lr_multipliers = _make_mat_parameter_lr_multipliers(
         policy_variant=policy_variant,
-        decoder_lr_multiplier=mat_decoder_lr_multiplier,
-        encoder_decoder_projection_lr_multiplier=mat_encoder_decoder_projection_lr_multiplier,
-        query_context_lr_multiplier=mat_query_context_lr_multiplier,
+        mat_decoder_lr_multiplier=mat_decoder_lr_multiplier,
     )
     ppo = PPO(
         policy=policy,
@@ -777,8 +773,6 @@ def run_experiment(
         "mat_add_agent_embeddings": mat_add_agent_embeddings,
         "mat_decoder_self_attention_mode": mat_decoder_self_attention_mode_metadata,
         "mat_decoder_lr_multiplier": mat_decoder_lr_multiplier,
-        "mat_encoder_decoder_projection_lr_multiplier": mat_encoder_decoder_projection_lr_multiplier,
-        "mat_query_context_lr_multiplier": mat_query_context_lr_multiplier,
         "parameter_lr_multipliers": parameter_lr_multipliers,
         "shuffle_agents": shuffle_agents,
         "preserve_inactive_prefix_structure": preserve_inactive_prefix_structure,
@@ -816,41 +810,33 @@ def run_experiment(
 def _make_mat_parameter_lr_multipliers(
         *,
         policy_variant: PolicyVariant,
-        decoder_lr_multiplier: float,
-        encoder_decoder_projection_lr_multiplier: float,
-        query_context_lr_multiplier: float,
+        mat_decoder_lr_multiplier: float,
 ) -> dict[str, float]:
-    parameter_lr_multipliers: dict[str, float] = {}
-    if decoder_lr_multiplier != 1.0:
-        if policy_variant in {"mat_qcs", "mat_qcc", "mat_orig"}:
-            parameter_lr_multipliers["decoder"] = decoder_lr_multiplier
-        else:
-            logger.warning(f"Ignoring decoder LR multiplier for policy_variant={policy_variant!r}")
+    if mat_decoder_lr_multiplier == 1.0:
+        return {}
 
-    if encoder_decoder_projection_lr_multiplier != 1.0:
-        if policy_variant == "mat_orig":
-            parameter_lr_multipliers["encoder_decoder_projection"] = encoder_decoder_projection_lr_multiplier
-        else:
-            logger.warning(
-                "Ignoring encoder-decoder projection LR multiplier for "
-                f"policy_variant={policy_variant!r}"
-            )
+    if policy_variant == "mat_orig":
+        return {
+            "decoder": mat_decoder_lr_multiplier,
+            "encoder_decoder_projection": mat_decoder_lr_multiplier,
+        }
 
-    if query_context_lr_multiplier != 1.0:
-        if policy_variant in {"mat_qcs", "mat_qcc"}:
+    if policy_variant in {"mat_qcs", "mat_qcc"}:
+        return {
+            prefix: mat_decoder_lr_multiplier
             for prefix in (
-                    "query_input_norm",
-                    "query_encoder",
-                    "query_token_norm",
-                    "context_input_norm",
-                    "context_encoder",
-                    "context_token_norm",
-            ):
-                parameter_lr_multipliers[prefix] = query_context_lr_multiplier
-        else:
-            logger.warning(f"Ignoring query/context LR multiplier for policy_variant={policy_variant!r}")
+                "decoder",
+                "query_input_norm",
+                "query_encoder",
+                "query_token_norm",
+                "context_input_norm",
+                "context_encoder",
+                "context_token_norm",
+            )
+        }
 
-    return parameter_lr_multipliers
+    logger.warning(f"Ignoring decoder LR multiplier for policy_variant={policy_variant!r}")
+    return {}
 
 
 def _make_base_policy(
