@@ -69,18 +69,8 @@ class MATDecPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
         self.agent_action_dim = env.action_space.total_agent_action_dim
 
         self.d_model_encoder = config.encoder_config.d_model
-        self.encoder_config = replace(
-            config.encoder_config,
-            d_model=self.d_model_encoder,
-            act_fn_cls=config.act_fn_cls,
-            dropout=config.dropout,
-        )
-        self.encoder = MATEncoder(
-            config=self.encoder_config,
-            max_agents=self.max_agents,
-            local_obs_dim=self.local_obs_dim,
-            global_obs_dim=self.global_obs_dim,
-        )
+        self.encoder_config = self._build_encoder_config()
+        self.encoder = self._build_encoder()
 
         if config.actor_head_hidden_dims is not None and len(config.actor_head_hidden_dims) > 0:
             self.actor_head = MLP(
@@ -128,6 +118,22 @@ class MATDecPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
             self._evaluate_actions_core_impl
         )
         self._apply_optional_compile()
+
+    def _build_encoder_config(self) -> MATEncoderConfig:
+        return replace(
+            self.config.encoder_config,
+            d_model=self.d_model_encoder,
+            act_fn_cls=self.config.act_fn_cls,
+            dropout=self.config.dropout,
+        )
+
+    def _build_encoder(self) -> nn.Module:
+        return MATEncoder(
+            config=self.encoder_config,
+            max_agents=self.max_agents,
+            local_obs_dim=self.local_obs_dim,
+            global_obs_dim=self.global_obs_dim,
+        )
 
     def get_hyper_parameters(self) -> dict[str, Any]:
         return {

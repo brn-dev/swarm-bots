@@ -1,3 +1,4 @@
+import pytest
 import torch
 from gymnasium.vector import AutoresetMode, SyncVectorEnv
 
@@ -8,8 +9,10 @@ from swarmbots.learn.algos.ppo.ppo_rollout_buffer import (
     PPOEpisodeSegment,
     PPORolloutBuffer,
 )
+from swarmbots.learn.algos.r_mat.r_mat_dec_policy import RMATDecPolicy, RMATDecPolicyConfig
 from swarmbots.learn.algos.r_mat.r_mat_encoder import RMATEncoder, RMATEncoderConfig
-from swarmbots.learn.algos.r_mat.r_mat_policy import RMATQCSPolicy, RMATQCSPolicyConfig
+from swarmbots.learn.algos.r_mat.r_mat_qcc_policy import RMATQCCPolicy, RMATQCCPolicyConfig
+from swarmbots.learn.algos.r_mat.r_mat_qcs_policy import RMATQCSPolicy, RMATQCSPolicyConfig
 from swarmbots.learn.algos.r_mat.r_ppo_wm_sampler import RPPOWMSamplerConfig
 from swarmbots.learn.env_wrappers.learn_wrappers.swarm_bots_learn_env_wrapper import SwarmBotsLearnEnvWrapper
 from swarmbots.learn.testing_env import TestingSwarmBotsEnv as _TestingSwarmBotsEnv
@@ -163,16 +166,27 @@ def test_rollout_accumulator_stores_segment_initial_state_and_position() -> None
     torch.testing.assert_close(env_one_segment.initial_temporal_state, torch.tensor([[20.0]]))
 
 
-def test_rmat_rollout_and_training_use_env_major_tbptt_rows() -> None:
+@pytest.mark.parametrize(
+    ("policy_cls", "policy_config_cls"),
+    [
+        (RMATQCSPolicy, RMATQCSPolicyConfig),
+        (RMATQCCPolicy, RMATQCCPolicyConfig),
+        (RMATDecPolicy, RMATDecPolicyConfig),
+    ],
+)
+def test_rmat_rollout_and_training_use_env_major_tbptt_rows(
+        policy_cls: type[RMATQCSPolicy | RMATQCCPolicy | RMATDecPolicy],
+        policy_config_cls: type[RMATQCSPolicyConfig | RMATQCCPolicyConfig | RMATDecPolicyConfig],
+) -> None:
     vector_env = SyncVectorEnv(
         [lambda: _TestingSwarmBotsEnv(2, 3, 2, 1, 1, max_steps=3) for _ in range(2)],
         autoreset_mode=AutoresetMode.SAME_STEP,
     )
     env = SwarmBotsLearnEnvWrapper(vector_env)
     try:
-        policy = RMATQCSPolicy(
+        policy = policy_cls(
             env,
-            RMATQCSPolicyConfig(
+            policy_config_cls(
                 encoder_config=RMATEncoderConfig(
                     d_model=16,
                     nhead=2,

@@ -29,6 +29,7 @@ Keep only durable architecture notes and gotchas. Prefer deleting stale detail o
 - Rollout bootstrap should use a value-only path, not full deterministic action generation.
 - `MATQCSPolicy` is the main transformer policy; `PPOPolicy` is the plain MLP policy; `MATDecPolicy` is decoderless despite the name.
 - `MATQCCPolicy` keeps query/context streams separate and is not state-dict compatible with `MATQCSDecoder`'s interleaved `CONTEXT_TOKENS_ONLY` implementation.
+- Recurrent MAT variants share `RMATPolicyMixin`: `RMATQCSPolicy`, `RMATQCCPolicy`, and decoderless `RMATDecPolicy` all use `RMATEncoder` plus env-major `RPPOWMSampler` TBPTT rows.
 - `MATOrigPolicy` uses shifted previous-agent actions, requires contiguous true-prefix `agent_mask`, and must zero inactive-agent log-probs in rollout and `evaluate_actions()`.
 - `MATQCSPolicy` supports arbitrary inactive positions if every row has at least one active agent. `assume_agent_mask_is_active_prefix=True` enables the cheap prefix path for QCS/QCC configs.
 - For MAT customization, override `_build_encoder*()` / `_build_action_dist(...)`; do not mutate fields after `super().__init__()`.

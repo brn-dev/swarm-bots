@@ -9,7 +9,7 @@ from swarmbots.learn.action_dists.hybrid_action_dist import HybridActionDistribu
 from swarmbots.learn.algos.ppo.base_ppo_policy import BasePPOPolicy, DelegatingPPOPolicyTemporalStateMixin
 from swarmbots.learn.algos.ppo.ppo_rollout_buffer import PPOEpisodeSegment
 from swarmbots.learn.algos.ppo.ppo_sampler import PPOSamples, PPOSamplerConfig
-from swarmbots.learn.algos.r_mat.r_mat_policy import RMATQCSPolicy
+from swarmbots.learn.algos.r_mat.r_mat_policy_mixin import RMATPolicyMixin
 from swarmbots.learn.algos.world_modeling.base_wm_sampler import BaseWMSampler
 from swarmbots.learn.algos.world_modeling.ppo_wm_sampler import PPOWMSampler, PPOWMSamples, PPOWMSamplerConfig
 from swarmbots.learn.algos.world_modeling.spr_mixin import SPRMixin
@@ -85,7 +85,7 @@ class SPRWrapper(
             raise ValueError(f"spr_loss_weight must be >= 0, got {world_model_config.spr_loss_weight}")
         if _contains_rmat_policy(policy):
             raise ValueError(
-                "SPRWrapper does not support RMATQCSPolicy. "
+                "SPRWrapper does not support RMAT policies. "
                 "SPR target latents currently ignore recurrent history, so use NextObsPredWrapper with RMAT instead."
             )
         self.policy = policy
@@ -385,7 +385,7 @@ def _contains_rmat_policy(policy: BasePPOPolicy[Any, Any]) -> bool:
     current: Any = policy
     seen_ids: set[int] = set()
     while True:
-        if isinstance(current, RMATQCSPolicy):
+        if isinstance(current, RMATPolicyMixin):
             return True
         current_id = id(current)
         if current_id in seen_ids or not hasattr(current, "policy"):
