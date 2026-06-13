@@ -179,7 +179,6 @@ class _ValueOnlyBootstrapPolicy(_BaseTestPolicy):
         super().__init__(action_dim=action_dim)
         self.forward_calls = 0
         self.predict_value_calls = 0
-        self.temporal_state = 0
 
     def forward(
             self,
@@ -219,14 +218,7 @@ class _ValueOnlyBootstrapPolicy(_BaseTestPolicy):
         _ = agent_mask
         _ = previous_actions
         self.predict_value_calls += 1
-        self.temporal_state += 1
         return local_obs[..., 0].mean(dim=1) + 0.5
-
-    def get_temporal_state_snapshot(self) -> int:
-        return self.temporal_state
-
-    def restore_temporal_state_snapshot(self, snapshot: int) -> None:
-        self.temporal_state = snapshot
 
     def requires_previous_actions(self) -> bool:
         return False
@@ -645,7 +637,6 @@ class SameStepPipelineTests(unittest.TestCase):
             self.assertEqual(float(_to_cpu(episodes[0].final_value).item()), 2.5)
             self.assertEqual(policy.forward_calls, 2)
             self.assertGreaterEqual(policy.predict_value_calls, 2)
-            self.assertEqual(policy.temporal_state, 0)
         finally:
             env.close()
 

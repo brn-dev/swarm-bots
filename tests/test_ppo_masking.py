@@ -105,10 +105,9 @@ def _make_flat_samples() -> PPOSamples:
 
 
 class PPOMaskingTests(unittest.TestCase):
-    def test_compute_loss_does_not_backpropagate_through_masked_agents_or_burn_in_steps(self) -> None:
+    def test_compute_loss_does_not_backpropagate_through_padded_steps_or_inactive_agents(self) -> None:
         batch = _make_samples()
-        batch.time_mask = torch.ones(2, 3, dtype=torch.bool)
-        batch.time_loss_mask = torch.tensor([
+        batch.time_mask = torch.tensor([
             [True, False, True],
             [False, True, True],
         ])
@@ -126,18 +125,14 @@ class PPOMaskingTests(unittest.TestCase):
         loss, _approx_kl, _metrics = ppo.compute_loss(batch)
         loss.backward()
 
-        expected_log_prob_grad_mask = batch.agent_mask & batch.time_loss_mask.unsqueeze(-1)
-        expected_value_grad_mask = batch.agent_mask.any(dim=-1) & batch.time_loss_mask
+        expected_log_prob_grad_mask = batch.agent_mask & batch.time_mask.unsqueeze(-1)
+        expected_value_grad_mask = batch.agent_mask.any(dim=-1) & batch.time_mask
         self.assertTrue(torch.equal(policy.log_prob_delta.grad != 0.0, expected_log_prob_grad_mask))
         self.assertTrue(torch.equal(policy.value_delta.grad != 0.0, expected_value_grad_mask))
 
-    def test_time_loss_mask_takes_precedence_over_time_mask_for_valid_items(self) -> None:
+    def test_time_mask_controls_valid_items(self) -> None:
         batch = _make_samples()
         batch.time_mask = torch.tensor([
-            [True, True, True],
-            [True, True, True],
-        ])
-        batch.time_loss_mask = torch.tensor([
             [True, False, True],
             [False, True, True],
         ])
@@ -145,7 +140,7 @@ class PPOMaskingTests(unittest.TestCase):
 
         valid_mask = PPO._combine_valid_masks(
             agent_mask=batch.agent_mask,
-            time_mask=PPO._get_time_loss_mask(batch),
+            time_mask=PPO._get_time_mask(batch),
             target=target,
         )
 
@@ -156,8 +151,7 @@ class PPOMaskingTests(unittest.TestCase):
 
     def test_normalize_advantages_uses_only_unmasked_loss_steps_and_zeroes_masked_steps(self) -> None:
         batch = _make_samples()
-        batch.time_mask = torch.ones(2, 3, dtype=torch.bool)
-        batch.time_loss_mask = torch.tensor([
+        batch.time_mask = torch.tensor([
             [True, False, True],
             [False, True, True],
         ])
@@ -169,12 +163,12 @@ class PPOMaskingTests(unittest.TestCase):
         mean = valid_values.mean()
         variance = ((valid_values - mean) ** 2).mean()
         expected = torch.zeros_like(batch.advantages)
-        expected[batch.time_loss_mask] = (valid_values - mean) / torch.sqrt(variance + 1e-8)
+        expected[batch.time_mask] = (valid_values - mean) / torch.sqrt(variance + 1e-8)
         self.assertTrue(torch.allclose(normalized, expected))
 
-    def test_extra_loss_reduction_masks_agents_and_burn_in_without_agent_reduction(self) -> None:
+    def test_extra_loss_reduction_masks_agents_and_padded_steps_without_agent_reduction(self) -> None:
         batch = _make_samples()
-        batch.time_loss_mask = torch.tensor([
+        batch.time_mask = torch.tensor([
             [True, False, True],
             [False, True, True],
         ])
@@ -183,13 +177,13 @@ class PPOMaskingTests(unittest.TestCase):
 
         reduced = ppo._reduce_extra_loss_value(batch, value)
 
-        expected_mask = batch.agent_mask & batch.time_loss_mask.unsqueeze(-1)
+        expected_mask = batch.agent_mask & batch.time_mask.unsqueeze(-1)
         self.assertTrue(torch.equal(value[expected_mask], torch.tensor([0.0, 1.0, 8.0, 9.0, 11.0])))
         self.assertTrue(torch.equal(reduced, value[expected_mask].mean()))
 
     def test_extra_loss_reduction_averages_active_agents_before_time_mask(self) -> None:
         batch = _make_samples()
-        batch.time_loss_mask = torch.tensor([
+        batch.time_mask = torch.tensor([
             [True, False, True],
             [False, True, True],
         ])
@@ -211,17 +205,16 @@ class PPOMaskingTests(unittest.TestCase):
         ])
         self.assertTrue(torch.equal(reduced, per_step_agent_mean[valid_step_mask].mean()))
 
-    def test_action_metrics_drop_padded_burn_in_and_inactive_agents(self) -> None:
+    def test_action_metrics_drop_padded_steps_and_inactive_agents(self) -> None:
         batch = _make_samples()
-        batch.time_mask = torch.ones(2, 3, dtype=torch.bool)
-        batch.time_loss_mask = torch.tensor([
+        batch.time_mask = torch.tensor([
             [False, True, False],
             [True, True, False],
         ])
 
         actions = PPO._get_action_metrics_actions(batch)
 
-        expected_valid_mask = batch.agent_mask & batch.time_loss_mask.unsqueeze(-1)
+        expected_valid_mask = batch.agent_mask & batch.time_mask.unsqueeze(-1)
         self.assertTrue(torch.equal(actions, batch.actions[expected_valid_mask]))
 
     def test_value_loss_requires_none_reduction_and_applies_valid_mask(self) -> None:
@@ -251,6 +244,26 @@ class PPOMaskingTests(unittest.TestCase):
         self.assertTrue(torch.equal(chunks[0].advantages, torch.tensor([1.0, 2.0])))
         self.assertTrue(torch.equal(chunks[1].advantages, torch.tensor([4.0, 8.0])))
         self.assertIsNone(chunks[0].agent_mask)
+
+    def test_virtual_batch_field_slicing_supports_nested_temporal_state(self) -> None:
+        temporal_state = [
+            (
+                torch.arange(8, dtype=torch.float32).reshape(4, 2),
+                {"normalizer": torch.arange(4, dtype=torch.float32).reshape(4, 1)},
+            )
+        ]
+
+        first_chunk = PPO._slice_batch_field(temporal_state, 0, 2)
+        second_chunk = PPO._slice_batch_field(temporal_state, 2, 4)
+
+        torch.testing.assert_close(
+            first_chunk[0][0],
+            torch.tensor([[0.0, 1.0], [2.0, 3.0]]),
+        )
+        torch.testing.assert_close(
+            second_chunk[0][1]["normalizer"],
+            torch.tensor([[2.0], [3.0]]),
+        )
 
     def test_virtual_batch_gradient_matches_full_batch_with_global_advantage_normalization(self) -> None:
         batch = _make_flat_samples()

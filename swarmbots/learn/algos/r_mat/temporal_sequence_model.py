@@ -85,7 +85,7 @@ class LSTMTemporalSequenceModel(TemporalSequenceModel):
         parameter = next(self.parameters())
         device = parameter.device if device is None else device
         dtype = parameter.dtype if dtype is None else dtype
-        shape = (self.config.num_layers, batch_size, self.hidden_dim)
+        shape = (batch_size, self.config.num_layers, self.hidden_dim)
         hidden_state = torch.zeros(shape, device=device, dtype=dtype)
         cell_state = torch.zeros(shape, device=device, dtype=dtype)
         return hidden_state, cell_state
@@ -122,14 +122,19 @@ class LSTMTemporalSequenceModel(TemporalSequenceModel):
             if reset_mask is not None:
                 reset_t = reset_mask[:, time_idx]
                 if torch.any(reset_t):
-                    keep_state_mask = (~reset_t).view(1, batch_size, 1)
+                    keep_state_mask = (~reset_t).view(batch_size, 1, 1)
                     hidden_state = hidden_state * keep_state_mask
                     cell_state = cell_state * keep_state_mask
 
             step_output, (next_hidden_state, next_cell_state) = self.lstm(
                 inputs[:, time_idx:time_idx + 1, :],
-                (hidden_state, cell_state),
+                (
+                    hidden_state.transpose(0, 1).contiguous(),
+                    cell_state.transpose(0, 1).contiguous(),
+                ),
             )
+            next_hidden_state = next_hidden_state.transpose(0, 1).contiguous()
+            next_cell_state = next_cell_state.transpose(0, 1).contiguous()
 
             if valid_mask is None:
                 outputs.append(step_output)
@@ -139,7 +144,7 @@ class LSTMTemporalSequenceModel(TemporalSequenceModel):
 
             valid_t = valid_mask[:, time_idx]
             valid_output_mask = valid_t.view(batch_size, 1, 1)
-            valid_state_mask = valid_t.view(1, batch_size, 1)
+            valid_state_mask = valid_t.view(batch_size, 1, 1)
             outputs.append(torch.where(valid_output_mask, step_output, zero_output))
             hidden_state = torch.where(valid_state_mask, next_hidden_state, hidden_state)
             cell_state = torch.where(valid_state_mask, next_cell_state, cell_state)

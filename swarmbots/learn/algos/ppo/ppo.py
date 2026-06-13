@@ -30,6 +30,7 @@ from swarmbots.learn.performance_timer import PerformanceTimer
 from swarmbots.learn.serialization_utils import serialize_dataclass, serialize_fn
 from swarmbots.learn.scheduling.schedulers import SchedulerManager
 from swarmbots.learn.summary_statistics import compute_summary_statistics
+from swarmbots.learn.temporal_state import index_temporal_state
 from swarmbots.learn.torch_device import as_device
 
 TARGET_KL_MARGIN = 1.5
@@ -866,6 +867,8 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
             return value[start_idx:end_idx]
         if value is None:
             return None
+        if isinstance(value, (tuple, list, Mapping)):
+            return index_temporal_state(value, slice(start_idx, end_idx))
         raise TypeError(f"Unsupported batch field type {type(value)}")
 
     def reduce_agents(
@@ -962,7 +965,7 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
     ) -> torch.Tensor | None:
         return self._combine_valid_masks(
             agent_mask=batch.agent_mask,
-            time_mask=self._get_time_loss_mask(batch),
+            time_mask=self._get_time_mask(batch),
             target=target,
         )
 
@@ -1037,7 +1040,7 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
             batch: PPOSamples,
             advantages: torch.Tensor,
     ) -> torch.Tensor:
-        step_valid_mask = self._build_time_valid_mask(self._get_time_loss_mask(batch), advantages)
+        step_valid_mask = self._build_time_valid_mask(self._get_time_mask(batch), advantages)
         if step_valid_mask is None:
             return (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
@@ -1052,10 +1055,7 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
         return torch.where(step_valid_mask, normalized, torch.zeros_like(normalized))
 
     @staticmethod
-    def _get_time_loss_mask(batch: PPOSamples) -> torch.Tensor | None:
-        time_loss_mask = getattr(batch, "time_loss_mask", None)
-        if time_loss_mask is not None:
-            return time_loss_mask
+    def _get_time_mask(batch: PPOSamples) -> torch.Tensor | None:
         return getattr(batch, "time_mask", None)
 
     @classmethod
@@ -1078,7 +1078,7 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
             batch: PPOSamples,
     ) -> torch.Tensor | None:
         agent_mask = batch.agent_mask
-        time_mask = cls._get_time_loss_mask(batch)
+        time_mask = cls._get_time_mask(batch)
 
         valid_mask = agent_mask
         if time_mask is not None:

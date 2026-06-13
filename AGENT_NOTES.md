@@ -24,7 +24,7 @@ Keep only durable architecture notes and gotchas. Prefer deleting stale detail o
 
 ## Rollout, PPO, MAT
 
-- `collect_steps()` chunks may start mid-episode. Use `PPOEpisode.is_true_episode_start`; do not infer from chunk position.
+- `collect_steps()` chunks may start mid-episode. Use `PPOEpisodeSegment.is_true_episode_start`; do not infer from chunk position.
 - PPO `rollout_warmup_steps_per_env` performs a bufferless startup rollout, keeps only `PPORolloutState`, and does not increment timesteps/iterations or emit episode metrics.
 - Rollout bootstrap should use a value-only path, not full deterministic action generation.
 - `MATQCSPolicy` is the main transformer policy; `PPOPolicy` is the plain MLP policy; `MATDecPolicy` is decoderless despite the name.
@@ -37,11 +37,13 @@ Keep only durable architecture notes and gotchas. Prefer deleting stale detail o
 
 ## Recurrent And World Models
 
-- `RMATQCSPolicy` stores rollout temporal state inside the policy. Under `SAME_STEP`, reset masks are queued after done and consumed on the next episode's first obs.
-- Step-rollout bootstrap must snapshot/restore RMAT state. RMAT training uses zero-init plus burn-in, not exact rollout hidden-state replay.
+- Recurrent state is explicit and lives in `PPORolloutState`, not inside the policy. Policy temporal APIs take and return opaque tensor trees with a leading environment batch dimension.
+- Recurrent step rollouts use env-major TBPTT rows. Episode segments carry env/time metadata plus their exact detached initial state; `RPPOWMSampler` regroups segments and applies `episode_start_mask` inside the sequence.
+- Store one initial recurrent state per TBPTT row. Do not restore burn-in or per-step state storage. `sequence_length` must cover the fixed number of rollout steps per env.
+- Under `SAME_STEP`, terminal bootstrap evaluates `final_obs` from the post-current-observation state without committing the resulting state. The returned reset obs consumes the done reset mask on the next rollout step.
 - WM integration is policy-wrapper based: `NextObsPredWrapper` / `SPRWrapper`.
-- WM wrappers must delegate sampler, temporal-state hooks, and `after_optimizer_step()` to the wrapped policy. Flat WM samplers break RMAT.
-- WM losses use `wm_actions`, not PPO current-step `actions`; recurrent WM losses use `time_loss_mask`.
+- WM wrappers must delegate sampler, explicit temporal-state APIs, and `after_optimizer_step()` to the wrapped policy. Flat WM samplers break RMAT.
+- WM losses use `wm_actions`, not PPO current-step `actions`; recurrent padding uses `time_mask`.
 - NOP global-observation prediction is optional. It is enabled by explicit global scalar/rot6d target indices and pools predicted agent latents across active agents before global heads.
 - Shared recurrent WM flattening lives in `swarmbots/learn/algos/world_modeling/wm_recurrent_batch.py`.
 

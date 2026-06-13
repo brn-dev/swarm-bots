@@ -6,7 +6,7 @@ from torch import nn
 
 from swarmbots.learn.action_dists.action_dist import ActionMetricsSplitterInput
 from swarmbots.learn.action_dists.hybrid_action_dist import HybridActionDistribution
-from swarmbots.learn.algos.ppo.base_ppo_policy import BasePPOPolicy
+from swarmbots.learn.algos.ppo.base_ppo_policy import BasePPOPolicy, DelegatingPPOPolicyTemporalStateMixin
 from swarmbots.learn.algos.ppo.ppo_rollout_buffer import PPOEpisodeSegment
 from swarmbots.learn.algos.ppo.ppo_sampler import PPOSamples, PPOSamplerConfig
 from swarmbots.learn.algos.r_mat.r_mat_policy import RMATQCSPolicy
@@ -46,7 +46,11 @@ class SPRWorldModelConfig:
     spr_loss_weight: float = 1.0
 
 
-class SPRWrapper(BasePPOPolicy[PPOWMSamples, PPOWMSamplerConfig], SPRMixin):
+class SPRWrapper(
+    DelegatingPPOPolicyTemporalStateMixin,
+    BasePPOPolicy[PPOWMSamples, PPOWMSamplerConfig],
+    SPRMixin,
+):
 
     def __init__(
             self,
@@ -105,18 +109,6 @@ class SPRWrapper(BasePPOPolicy[PPOWMSamples, PPOWMSamplerConfig], SPRMixin):
 
     def get_value_normalizer_metrics(self) -> dict[str, float]:
         return self.policy.get_value_normalizer_metrics()
-
-    def reset_temporal_state(
-            self,
-            episode_start_mask: torch.Tensor | None = None,
-    ) -> None:
-        self.policy.reset_temporal_state(episode_start_mask=episode_start_mask)
-
-    def get_temporal_state_snapshot(self) -> Any:
-        return self.policy.get_temporal_state_snapshot()
-
-    def restore_temporal_state_snapshot(self, snapshot: Any) -> None:
-        self.policy.restore_temporal_state_snapshot(snapshot)
 
     @property
     def online_encoder(self) -> nn.Module:
@@ -198,7 +190,7 @@ class SPRWrapper(BasePPOPolicy[PPOWMSamples, PPOWMSamplerConfig], SPRMixin):
         )
         wm_target_time_mask = build_wm_target_time_mask(
             wm_target_time_mask=batch.wm_target_time_mask,
-            time_loss_mask=getattr(batch, "time_loss_mask", None),
+            sequence_time_mask=getattr(batch, "time_mask", None),
         )
         spr_loss = self.compute_spr_loss(
             online_local_latents=local_latents,

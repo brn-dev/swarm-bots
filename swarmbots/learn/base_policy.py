@@ -46,17 +46,44 @@ class BasePolicy(nn.Module, abc.ABC):
     def requires_previous_actions(self) -> bool:
         raise NotImplementedError()
 
-    def reset_temporal_state(
+    def initial_temporal_state(
             self,
-            episode_start_mask: torch.Tensor | None = None,
-    ) -> None:
-        _ = episode_start_mask
-
-    def get_temporal_state_snapshot(self) -> Any:
+            batch_size: int,
+            n_agents: int,
+            *,
+            device: torch.device,
+            dtype: torch.dtype,
+    ) -> Any:
+        _ = batch_size
+        _ = n_agents
+        _ = device
+        _ = dtype
         return None
 
-    def restore_temporal_state_snapshot(self, snapshot: Any) -> None:
-        _ = snapshot
+    def act_with_temporal_state(
+            self,
+            local_obs: torch.Tensor,
+            global_obs: torch.Tensor,
+            hidden_local_vars: torch.Tensor | None = None,
+            hidden_global_vars: torch.Tensor | None = None,
+            agent_mask: torch.Tensor | None = None,
+            previous_actions: torch.Tensor | None = None,
+            deterministic: bool = False,
+            *,
+            temporal_state: Any = None,
+            episode_start_mask: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, Any]:
+        _ = episode_start_mask
+        actions = self.act(
+            local_obs=local_obs,
+            global_obs=global_obs,
+            hidden_local_vars=hidden_local_vars,
+            hidden_global_vars=hidden_global_vars,
+            agent_mask=agent_mask,
+            previous_actions=previous_actions,
+            deterministic=deterministic,
+        )
+        return actions, temporal_state
 
     @staticmethod
     def _grad_norm_from_parameters(parameters: Iterable[nn.Parameter]) -> float:
