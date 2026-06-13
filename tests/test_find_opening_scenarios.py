@@ -57,8 +57,14 @@ def test_find_opening_mj_samples_opening_once_per_episode_and_keeps_it_hidden() 
         sampled_opening_x.append(float(first_obs["hidden_global_vars"][0]))
 
     assert isinstance(scenario.opening_x_param, SplitUniformDistParams)
-    assert all(-3.0 <= opening_x <= 3.0 for opening_x in sampled_opening_x)
-    assert all(abs(opening_x) >= 1.0 for opening_x in sampled_opening_x)
+    assert all(
+        scenario.opening_x_param.low <= opening_x <= scenario.opening_x_param.high
+        for opening_x in sampled_opening_x
+    )
+    assert all(
+        abs(opening_x) >= scenario.opening_x_param.margin
+        for opening_x in sampled_opening_x
+    )
     assert any(opening_x < 0.0 for opening_x in sampled_opening_x)
     assert any(opening_x > 0.0 for opening_x in sampled_opening_x)
     assert len({round(opening_x, 6) for opening_x in sampled_opening_x}) > 1
@@ -153,14 +159,14 @@ def test_find_opening_mjw_space_and_metadata_keep_opening_actor_hidden() -> None
     assert not hasattr(generic_metadata, "barrier_mocap_id")
 
 
-def test_find_opening_mjw_camera_views_wall_diagonally_from_swarm_start_side() -> None:
+def test_find_opening_mjw_camera_views_wall_diagonally() -> None:
     scenario = default_mjw_find_opening()
 
     camera_config = scenario.get_default_recording_camera_config()
 
     assert camera_config is not None
-    assert camera_config.lookat == pytest.approx((0.0, scenario.wall_y * 0.5, 0.8))
-    assert camera_config.azimuth == 45.0
+    assert camera_config.lookat == pytest.approx((0.0, scenario.wall_y, 0.8))
+    assert camera_config.azimuth == 135.0
     assert camera_config.elevation == -35.0
 
 
