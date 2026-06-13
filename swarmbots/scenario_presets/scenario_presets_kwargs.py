@@ -205,7 +205,7 @@ PO_WALL_MEDIUM_SCENARIO_KWARGS = make_scenario_kwargs(
     MEDIUM_WALL_SCENARIO_KWARGS,
     {
         "wall_height": 0.25,
-        "swarm_start_y": UniformDistParams(0.0, 0.25),
-        "first_wall_distance": UniformDistParams.from_midpoint_and_width(1.0, 1.0),
+        "swarm_start_y": UniformDistParams(-0.25, 0.0),
+        "first_wall_distance": UniformDistParams.from_midpoint_and_width(1.0, 1.5),
     },
 )
