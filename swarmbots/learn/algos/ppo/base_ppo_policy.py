@@ -1,6 +1,6 @@
 import abc
 import re
-from typing import TypeVar, Generic
+from typing import Any, TypeVar, Generic
 
 import torch
 
@@ -50,6 +50,54 @@ class BasePPOPolicy(BasePolicy, Generic[PPOSamplesType, PPOSamplerConfigType], a
             previous_actions: torch.Tensor | None = None,
     ) -> torch.Tensor:
         raise NotImplementedError()
+
+    def forward_with_temporal_state(
+            self,
+            local_obs: torch.Tensor,
+            global_obs: torch.Tensor,
+            hidden_local_vars: torch.Tensor | None = None,
+            hidden_global_vars: torch.Tensor | None = None,
+            agent_mask: torch.Tensor | None = None,
+            previous_actions: torch.Tensor | None = None,
+            deterministic: bool = False,
+            *,
+            temporal_state: Any = None,
+            episode_start_mask: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, Any]:
+        _ = episode_start_mask
+        actions, log_probs, values = self(
+            local_obs=local_obs,
+            global_obs=global_obs,
+            hidden_local_vars=hidden_local_vars,
+            hidden_global_vars=hidden_global_vars,
+            agent_mask=agent_mask,
+            previous_actions=previous_actions,
+            deterministic=deterministic,
+        )
+        return actions, log_probs, values, temporal_state
+
+    def predict_values_with_temporal_state(
+            self,
+            local_obs: torch.Tensor,
+            global_obs: torch.Tensor,
+            hidden_local_vars: torch.Tensor | None = None,
+            hidden_global_vars: torch.Tensor | None = None,
+            agent_mask: torch.Tensor | None = None,
+            previous_actions: torch.Tensor | None = None,
+            *,
+            temporal_state: Any = None,
+            episode_start_mask: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, Any]:
+        _ = episode_start_mask
+        values = self.predict_values(
+            local_obs=local_obs,
+            global_obs=global_obs,
+            hidden_local_vars=hidden_local_vars,
+            hidden_global_vars=hidden_global_vars,
+            agent_mask=agent_mask,
+            previous_actions=previous_actions,
+        )
+        return values, temporal_state
 
     @abc.abstractmethod
     def _evaluate_actions(
@@ -149,3 +197,95 @@ class BasePPOPolicy(BasePolicy, Generic[PPOSamplesType, PPOSamplerConfigType], a
                 raise ValueError(f"Multiple entropy aliases for action index {idx} are not allowed")
             updates[idx] = float(weights.pop(key))
         return updates
+
+
+class DelegatingPPOPolicyTemporalStateMixin:
+    policy: BasePPOPolicy[Any, Any]
+
+    def initial_temporal_state(
+            self,
+            batch_size: int,
+            n_agents: int,
+            *,
+            device: torch.device,
+            dtype: torch.dtype,
+    ) -> Any:
+        return self.policy.initial_temporal_state(
+            batch_size=batch_size,
+            n_agents=n_agents,
+            device=device,
+            dtype=dtype,
+        )
+
+    def forward_with_temporal_state(
+            self,
+            local_obs: torch.Tensor,
+            global_obs: torch.Tensor,
+            hidden_local_vars: torch.Tensor | None = None,
+            hidden_global_vars: torch.Tensor | None = None,
+            agent_mask: torch.Tensor | None = None,
+            previous_actions: torch.Tensor | None = None,
+            deterministic: bool = False,
+            *,
+            temporal_state: Any = None,
+            episode_start_mask: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, Any]:
+        return self.policy.forward_with_temporal_state(
+            local_obs=local_obs,
+            global_obs=global_obs,
+            hidden_local_vars=hidden_local_vars,
+            hidden_global_vars=hidden_global_vars,
+            agent_mask=agent_mask,
+            previous_actions=previous_actions,
+            deterministic=deterministic,
+            temporal_state=temporal_state,
+            episode_start_mask=episode_start_mask,
+        )
+
+    def predict_values_with_temporal_state(
+            self,
+            local_obs: torch.Tensor,
+            global_obs: torch.Tensor,
+            hidden_local_vars: torch.Tensor | None = None,
+            hidden_global_vars: torch.Tensor | None = None,
+            agent_mask: torch.Tensor | None = None,
+            previous_actions: torch.Tensor | None = None,
+            *,
+            temporal_state: Any = None,
+            episode_start_mask: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, Any]:
+        return self.policy.predict_values_with_temporal_state(
+            local_obs=local_obs,
+            global_obs=global_obs,
+            hidden_local_vars=hidden_local_vars,
+            hidden_global_vars=hidden_global_vars,
+            agent_mask=agent_mask,
+            previous_actions=previous_actions,
+            temporal_state=temporal_state,
+            episode_start_mask=episode_start_mask,
+        )
+
+    def act_with_temporal_state(
+            self,
+            local_obs: torch.Tensor,
+            global_obs: torch.Tensor,
+            hidden_local_vars: torch.Tensor | None = None,
+            hidden_global_vars: torch.Tensor | None = None,
+            agent_mask: torch.Tensor | None = None,
+            previous_actions: torch.Tensor | None = None,
+            deterministic: bool = False,
+            *,
+            temporal_state: Any = None,
+            episode_start_mask: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, Any]:
+        return self.policy.act_with_temporal_state(
+            local_obs=local_obs,
+            global_obs=global_obs,
+            hidden_local_vars=hidden_local_vars,
+            hidden_global_vars=hidden_global_vars,
+            agent_mask=agent_mask,
+            previous_actions=previous_actions,
+            deterministic=deterministic,
+            temporal_state=temporal_state,
+            episode_start_mask=episode_start_mask,
+        )

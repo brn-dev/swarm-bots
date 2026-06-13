@@ -15,6 +15,10 @@ def _make_episode(
         num_steps: int,
         is_true_episode_start: bool = True,
         with_agent_mask: bool = True,
+        step_offset: int = 0,
+        rollout_env_idx: int | None = None,
+        rollout_start_step: int = 0,
+        initial_state_value: float = 0.0,
 ) -> PPOEpisodeSegment:
     n_agents = 2
     n_local_obs = 3
@@ -23,7 +27,7 @@ def _make_episode(
     n_hidden_global = 1
     n_actions = 2
 
-    step_values = torch.arange(num_steps, dtype=torch.float32)
+    step_values = torch.arange(step_offset, step_offset + num_steps, dtype=torch.float32)
     local_obs = (
         step_values.view(num_steps, 1, 1) * 100.0
         + torch.arange(n_agents, dtype=torch.float32).view(1, n_agents, 1) * 10.0
@@ -79,73 +83,85 @@ def _make_episode(
         is_true_episode_start=is_true_episode_start,
         returns=returns,
         advantages=advantages,
+        initial_temporal_state=torch.tensor([[initial_state_value]]),
+        rollout_env_idx=rollout_env_idx,
+        rollout_start_step=rollout_start_step,
     )
 
 
 class RPPOWMSamplerTests(unittest.TestCase):
-    def test_burn_in_chunks_overlap_and_mask_only_train_steps(self) -> None:
-        episode = _make_episode(num_steps=7)
+    def test_env_fragments_form_one_tbptt_row_with_mid_sequence_reset(self) -> None:
+        first_episode = _make_episode(
+            num_steps=2,
+            rollout_env_idx=0,
+            rollout_start_step=0,
+            initial_state_value=10.0,
+        )
+        second_episode = _make_episode(
+            num_steps=2,
+            step_offset=2,
+            rollout_env_idx=0,
+            rollout_start_step=2,
+            initial_state_value=99.0,
+        )
 
         sampler = RPPOWMSampler(
-            episodes=[episode],
-            config=RPPOWMSamplerConfig(batch_size=2, num_next_steps=3, sequence_length=4, burn_in_length=2),
+            episodes=[second_episode, first_episode],
+            config=RPPOWMSamplerConfig(batch_size=1, num_next_steps=3, sequence_length=4),
             requires_previous_actions=True,
         )
 
-        self.assertEqual(sampler.local_obs.shape[:2], (3, 4))
-        self.assertTrue(torch.equal(sampler.local_obs[:, :, 0, 0], torch.tensor([
-            [0.0, 100.0, 200.0, 300.0],
-            [200.0, 300.0, 400.0, 500.0],
-            [400.0, 500.0, 600.0, 0.0],
-        ])))
-        self.assertTrue(torch.equal(sampler.time_mask, torch.tensor([
-            [True, True, True, True],
-            [True, True, True, True],
-            [True, True, True, False],
-        ])))
-        self.assertTrue(torch.equal(sampler.time_loss_mask, torch.tensor([
-            [True, True, True, True],
-            [False, False, True, True],
-            [False, False, True, False],
-        ])))
-        self.assertTrue(torch.equal(sampler.is_true_episode_start, torch.tensor([True, False, False])))
+        self.assertEqual(sampler.local_obs.shape[:2], (1, 4))
+        self.assertTrue(torch.equal(
+            sampler.local_obs[0, :, 0, 0],
+            torch.tensor([0.0, 100.0, 200.0, 300.0]),
+        ))
+        self.assertTrue(torch.equal(sampler.time_mask, torch.ones((1, 4), dtype=torch.bool)))
+        self.assertTrue(torch.equal(
+            sampler.episode_start_mask,
+            torch.tensor([[True, False, True, False]]),
+        ))
+        self.assertTrue(torch.equal(sampler.initial_temporal_state, torch.tensor([[10.0]])))
 
         assert sampler.previous_actions is not None
-        self.assertTrue(torch.equal(sampler.previous_actions[0, 0], episode.initial_previous_actions))
-        self.assertTrue(torch.equal(sampler.previous_actions[0, 1], episode.actions[0]))
-        self.assertTrue(torch.equal(sampler.previous_actions[1, 0], episode.actions[1]))
-        self.assertTrue(torch.equal(sampler.previous_actions[2, 3], torch.zeros_like(episode.actions[0])))
+        self.assertTrue(torch.equal(sampler.previous_actions[0, 0], first_episode.initial_previous_actions))
+        self.assertTrue(torch.equal(sampler.previous_actions[0, 1], first_episode.actions[0]))
+        self.assertTrue(torch.equal(sampler.previous_actions[0, 2], second_episode.initial_previous_actions))
 
-        assert sampler.agent_mask is not None
-        assert sampler.wm_agent_mask is not None
-        assert sampler.wm_loss_agent_mask is not None
-        self.assertTrue(torch.equal(sampler.agent_mask[2], torch.tensor([
-            [True, True],
-            [True, False],
-            [True, True],
-            [True, True],
-        ])))
-        self.assertTrue(torch.equal(sampler.wm_target_time_mask[2], torch.tensor([
-            [True, True, True],
-            [True, True, False],
-            [True, False, False],
-            [False, False, False],
-        ])))
-        self.assertTrue(torch.equal(sampler.wm_actions[2, 2, 0], episode.actions[6]))
-        self.assertTrue(torch.equal(sampler.next_local_obs[2, 2, 0], episode.final_local_obs))
-        self.assertTrue(torch.equal(sampler.next_global_obs[2, 2, 0], episode.final_global_obs))
+        self.assertTrue(torch.equal(sampler.next_local_obs[0, 1, 0], first_episode.final_local_obs))
+        self.assertFalse(bool(sampler.wm_target_time_mask[0, 1, 1]))
 
-    def test_mid_episode_first_chunk_treats_burn_in_as_state_warmup(self) -> None:
-        episode = _make_episode(num_steps=3, is_true_episode_start=False)
+    def test_mid_episode_row_uses_exact_initial_state_without_reset(self) -> None:
+        episode = _make_episode(
+            num_steps=3,
+            is_true_episode_start=False,
+            initial_state_value=7.0,
+        )
 
         sampler = RPPOWMSampler(
             episodes=[episode],
-            config=RPPOWMSamplerConfig(batch_size=1, num_next_steps=1, sequence_length=4, burn_in_length=2),
+            config=RPPOWMSamplerConfig(batch_size=1, num_next_steps=1, sequence_length=4),
         )
 
         self.assertTrue(torch.equal(sampler.time_mask, torch.tensor([[True, True, True, False]])))
-        self.assertTrue(torch.equal(sampler.time_loss_mask, torch.tensor([[False, False, True, False]])))
-        self.assertTrue(torch.equal(sampler.is_true_episode_start, torch.tensor([False])))
+        self.assertTrue(torch.equal(sampler.episode_start_mask, torch.zeros((1, 4), dtype=torch.bool)))
+        self.assertTrue(torch.equal(sampler.initial_temporal_state, torch.tensor([[7.0]])))
+
+    def test_rejects_batch_size_larger_than_tbptt_row_count(self) -> None:
+        episodes = [
+            _make_episode(num_steps=2, rollout_env_idx=env_idx)
+            for env_idx in range(2)
+        ]
+
+        with self.assertRaisesRegex(ValueError, "batch_size counts TBPTT rows"):
+            RPPOWMSampler(
+                episodes=episodes,
+                config=RPPOWMSamplerConfig(
+                    batch_size=4,
+                    num_next_steps=1,
+                    sequence_length=2,
+                ),
+            )
 
     def test_rejects_empty_segments_and_mixed_agent_masks(self) -> None:
         with self.assertRaisesRegex(ValueError, "at least one non-empty"):
@@ -167,8 +183,6 @@ class RPPOWMSamplerTests(unittest.TestCase):
         valid_episode = _make_episode(num_steps=1)
         invalid_configs = [
             (RPPOWMSamplerConfig(batch_size=1, num_next_steps=1, sequence_length=0), "sequence_length"),
-            (RPPOWMSamplerConfig(batch_size=1, num_next_steps=1, sequence_length=2, burn_in_length=-1), "burn_in"),
-            (RPPOWMSamplerConfig(batch_size=1, num_next_steps=1, sequence_length=2, burn_in_length=2), "burn_in"),
             (RPPOWMSamplerConfig(batch_size=1, num_next_steps=0, sequence_length=2), "num_next_steps"),
         ]
         for config, message in invalid_configs:
@@ -230,14 +244,14 @@ class RecurrentWMBatchHelperTests(unittest.TestCase):
             [[True, True, False], [True, False, False], [True, True, True]],
             [[True, True, True], [False, False, False], [True, False, True]],
         ])
-        time_loss_mask = torch.tensor([
+        sequence_time_mask = torch.tensor([
             [True, False, True],
             [False, True, True],
         ])
 
         actual = build_wm_target_time_mask(
             wm_target_time_mask=wm_target_time_mask,
-            time_loss_mask=time_loss_mask,
+            sequence_time_mask=sequence_time_mask,
         )
 
         self.assertTrue(torch.equal(actual, torch.tensor([
@@ -265,7 +279,7 @@ class RecurrentWMBatchHelperTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "prefix shape"):
             build_wm_target_time_mask(
                 wm_target_time_mask=torch.ones(2, 3, 1, dtype=torch.bool),
-                time_loss_mask=torch.ones(2, 4, dtype=torch.bool),
+                sequence_time_mask=torch.ones(2, 4, dtype=torch.bool),
             )
 
 

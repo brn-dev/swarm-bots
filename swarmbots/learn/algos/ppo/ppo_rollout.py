@@ -18,6 +18,7 @@ class PPORolloutState:
     obs: dict[str, torch.Tensor]
     episode_start_mask: torch.Tensor
     previous_actions: torch.Tensor | None
+    temporal_state: Any
     rollout_step_idx: int
 
 
@@ -200,20 +201,20 @@ def _evaluate_values(
         policy: BasePPOPolicy[Any, Any],
         obs: dict[str, torch.Tensor],
         previous_actions: torch.Tensor | None,
+        temporal_state: Any,
+        episode_start_mask: torch.Tensor | None = None,
         terminated_mask: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    temporal_state_snapshot = policy.get_temporal_state_snapshot()
-    try:
-        values = policy.predict_values(
-            local_obs=obs["local_obs"],
-            global_obs=obs["global_obs"],
-            hidden_local_vars=obs["hidden_local_vars"],
-            hidden_global_vars=obs["hidden_global_vars"],
-            agent_mask=obs.get("agent_mask", None),
-            previous_actions=previous_actions,
-        )
-    finally:
-        policy.restore_temporal_state_snapshot(temporal_state_snapshot)
+    values, _ = policy.predict_values_with_temporal_state(
+        local_obs=obs["local_obs"],
+        global_obs=obs["global_obs"],
+        hidden_local_vars=obs["hidden_local_vars"],
+        hidden_global_vars=obs["hidden_global_vars"],
+        agent_mask=obs.get("agent_mask", None),
+        previous_actions=previous_actions,
+        temporal_state=temporal_state,
+        episode_start_mask=episode_start_mask,
+    )
 
     if terminated_mask is None:
         return values
@@ -256,10 +257,17 @@ def _reset_rollout_state(
         obs=obs,
         n_agent_actions=n_agent_actions,
     )
+    temporal_state = policy.initial_temporal_state(
+        batch_size=local_obs.shape[0],
+        n_agents=local_obs.shape[1],
+        device=local_obs.device,
+        dtype=local_obs.dtype,
+    )
     return PPORolloutState(
         obs=obs,
         episode_start_mask=episode_start_mask,
         previous_actions=previous_actions,
+        temporal_state=temporal_state,
         rollout_step_idx=0,
     )
 
@@ -272,6 +280,7 @@ def _collect_rollout_step(
         obs: dict[str, torch.Tensor],
         episode_start_mask: torch.Tensor,
         previous_actions: torch.Tensor | None,
+        temporal_state: Any,
         rollout_step_idx: int,
         timers: _RolloutTimers,
         episode_infos: list[dict[str, Any]],
@@ -279,7 +288,7 @@ def _collect_rollout_step(
         is_gsde_interval_reset_mode: bool,
         gsde_reset_interval: int,
         gsde_reset_prob: float,
-) -> tuple[dict[str, torch.Tensor], torch.Tensor, torch.Tensor | None, int]:
+) -> tuple[dict[str, torch.Tensor], torch.Tensor, torch.Tensor | None, Any, int]:
     obs_snapshot = _snapshot_obs(obs)
     local_obs = obs_snapshot["local_obs"]
     batch_shape = tuple(local_obs.shape[:-1])
@@ -294,7 +303,6 @@ def _collect_rollout_step(
     )
 
     with timers.reset_noise_timer:
-        policy.reset_temporal_state(episode_start_mask=episode_start_mask)
         _reset_temporal_correlations(
             policy=policy,
             episode_start_mask=episode_start_mask,
@@ -303,13 +311,15 @@ def _collect_rollout_step(
     timers.reset_noise_timings.append(timers.reset_noise_timer.get_duration())
 
     with timers.policy_forward_timer:
-        actions, log_probs, values = policy(
-            obs_snapshot["local_obs"],
-            obs_snapshot["global_obs"],
+        actions, log_probs, values, next_temporal_state = policy.forward_with_temporal_state(
+            local_obs=obs_snapshot["local_obs"],
+            global_obs=obs_snapshot["global_obs"],
             hidden_local_vars=obs_snapshot["hidden_local_vars"],
             hidden_global_vars=obs_snapshot["hidden_global_vars"],
             agent_mask=obs_snapshot.get("agent_mask", None),
             previous_actions=previous_actions,
+            temporal_state=temporal_state,
+            episode_start_mask=episode_start_mask,
         )
     timers.policy_forward_timings.append(timers.policy_forward_timer.get_duration())
 
@@ -331,10 +341,10 @@ def _collect_rollout_step(
         policy=policy,
         obs=bootstrap_obs,
         previous_actions=bootstrap_previous_actions,
+        temporal_state=next_temporal_state,
         terminated_mask=terminations,
     )
 
-    policy.reset_temporal_state(episode_start_mask=dones)
     _reset_temporal_correlations(policy=policy, episode_start_mask=dones)
 
     with timers.buffer_add_timer:
@@ -350,6 +360,8 @@ def _collect_rollout_step(
             values=values,
             previous_actions=previous_actions,
             episode_start_mask=episode_start_mask,
+            temporal_state=temporal_state,
+            rollout_step_idx=rollout_step_idx,
             bootstrap_obs=bootstrap_obs,
             bootstrap_values=bootstrap_values,
             dones=dones,
@@ -360,7 +372,7 @@ def _collect_rollout_step(
     if previous_actions is not None:
         next_previous_actions = actions.detach().masked_fill(dones.unsqueeze(-1).unsqueeze(-1), 0.0)
 
-    return next_obs, dones, next_previous_actions, rollout_step_idx + 1
+    return next_obs, dones, next_previous_actions, next_temporal_state, rollout_step_idx + 1
 
 
 def _warmup_rollout_step(
@@ -370,12 +382,13 @@ def _warmup_rollout_step(
         obs: dict[str, torch.Tensor],
         episode_start_mask: torch.Tensor,
         previous_actions: torch.Tensor | None,
+        temporal_state: Any,
         rollout_step_idx: int,
         gsde_enabled: bool,
         is_gsde_interval_reset_mode: bool,
         gsde_reset_interval: int,
         gsde_reset_prob: float,
-) -> tuple[dict[str, torch.Tensor], torch.Tensor, torch.Tensor | None, int]:
+) -> tuple[dict[str, torch.Tensor], torch.Tensor, torch.Tensor | None, Any, int]:
     local_obs = obs["local_obs"]
     batch_shape = tuple(local_obs.shape[:-1])
     step_reset_mask = _build_gsde_step_reset_mask(
@@ -388,33 +401,33 @@ def _warmup_rollout_step(
         rollout_device=local_obs.device,
     )
 
-    policy.reset_temporal_state(episode_start_mask=episode_start_mask)
     _reset_temporal_correlations(
         policy=policy,
         episode_start_mask=episode_start_mask,
         step_reset_mask=step_reset_mask,
     )
 
-    actions, _log_probs, _values = policy(
-        local_obs,
-        obs["global_obs"],
+    actions, _log_probs, _values, next_temporal_state = policy.forward_with_temporal_state(
+        local_obs=local_obs,
+        global_obs=obs["global_obs"],
         hidden_local_vars=obs["hidden_local_vars"],
         hidden_global_vars=obs["hidden_global_vars"],
         agent_mask=obs.get("agent_mask", None),
         previous_actions=previous_actions,
+        temporal_state=temporal_state,
+        episode_start_mask=episode_start_mask,
     )
 
     next_obs, _rewards, terminations, truncations, _infos = env.step(actions)
     dones = torch.logical_or(terminations, truncations)
 
-    policy.reset_temporal_state(episode_start_mask=dones)
     _reset_temporal_correlations(policy=policy, episode_start_mask=dones)
 
     next_previous_actions: torch.Tensor | None = None
     if previous_actions is not None:
         next_previous_actions = actions.detach().masked_fill(dones.unsqueeze(-1).unsqueeze(-1), 0.0)
 
-    return next_obs, dones, next_previous_actions, rollout_step_idx + 1
+    return next_obs, dones, next_previous_actions, next_temporal_state, rollout_step_idx + 1
 
 
 def _build_rollout_metrics(
@@ -470,6 +483,7 @@ def warmup_rollout_steps(
     obs = rollout_state.obs
     episode_start_mask = rollout_state.episode_start_mask
     previous_actions = rollout_state.previous_actions
+    temporal_state = rollout_state.temporal_state
     rollout_step_idx = rollout_state.rollout_step_idx
 
     policy.to(obs["local_obs"].device)
@@ -478,12 +492,13 @@ def warmup_rollout_steps(
     transitions_collected = 0
     while transitions_collected < n_steps:
         transitions_collected += obs["local_obs"].shape[0]
-        obs, episode_start_mask, previous_actions, rollout_step_idx = _warmup_rollout_step(
+        obs, episode_start_mask, previous_actions, temporal_state, rollout_step_idx = _warmup_rollout_step(
             env=env,
             policy=policy,
             obs=obs,
             episode_start_mask=episode_start_mask,
             previous_actions=previous_actions,
+            temporal_state=temporal_state,
             rollout_step_idx=rollout_step_idx,
             gsde_enabled=gsde_enabled,
             is_gsde_interval_reset_mode=is_gsde_interval_reset_mode,
@@ -495,6 +510,7 @@ def warmup_rollout_steps(
         obs=obs,
         episode_start_mask=episode_start_mask,
         previous_actions=previous_actions,
+        temporal_state=temporal_state,
         rollout_step_idx=rollout_step_idx,
     )
 
@@ -523,6 +539,12 @@ def collect_whole_episodes(
             dtype=buffer.rollout_dtype,
             device=buffer.rollout_device,
         )
+    temporal_state = policy.initial_temporal_state(
+        batch_size=buffer.n_envs,
+        n_agents=buffer.n_agents,
+        device=buffer.rollout_device,
+        dtype=buffer.rollout_dtype,
+    )
 
     with PerformanceTimer() as to_rollout_device_timer:
         policy.to(buffer.rollout_device)
@@ -533,13 +555,14 @@ def collect_whole_episodes(
     timers = _init_rollout_timers()
 
     while len(buffer.episodes) < n_episodes:
-        obs, episode_start_mask, previous_actions, rollout_step_idx = _collect_rollout_step(
+        obs, episode_start_mask, previous_actions, temporal_state, rollout_step_idx = _collect_rollout_step(
             env=env,
             policy=policy,
             buffer=buffer,
             obs=obs,
             episode_start_mask=episode_start_mask,
             previous_actions=previous_actions,
+            temporal_state=temporal_state,
             rollout_step_idx=rollout_step_idx,
             timers=timers,
             episode_infos=episode_infos,
@@ -591,11 +614,18 @@ def collect_steps(
                 dtype=buffer.rollout_dtype,
                 device=buffer.rollout_device,
             )
+        temporal_state = policy.initial_temporal_state(
+            batch_size=buffer.n_envs,
+            n_agents=buffer.n_agents,
+            device=buffer.rollout_device,
+            dtype=buffer.rollout_dtype,
+        )
         rollout_step_idx = 0
     else:
         obs = rollout_state.obs
         episode_start_mask = rollout_state.episode_start_mask
         previous_actions = rollout_state.previous_actions
+        temporal_state = rollout_state.temporal_state
         rollout_step_idx = rollout_state.rollout_step_idx
 
     with PerformanceTimer() as to_rollout_device_timer:
@@ -611,13 +641,14 @@ def collect_steps(
     transitions_collected = 0
     while transitions_collected < n_steps:
         transitions_collected += buffer.n_envs
-        obs, episode_start_mask, previous_actions, rollout_step_idx = _collect_rollout_step(
+        obs, episode_start_mask, previous_actions, temporal_state, rollout_step_idx = _collect_rollout_step(
             env=env,
             policy=policy,
             buffer=buffer,
             obs=obs,
             episode_start_mask=episode_start_mask,
             previous_actions=previous_actions,
+            temporal_state=temporal_state,
             rollout_step_idx=rollout_step_idx,
             timers=timers,
             episode_infos=episode_infos,
@@ -631,6 +662,8 @@ def collect_steps(
         policy=policy,
         obs=obs,
         previous_actions=previous_actions,
+        temporal_state=temporal_state,
+        episode_start_mask=episode_start_mask,
     )
 
     with PerformanceTimer() as buffer_get_whole_episodes_timer:
@@ -657,6 +690,7 @@ def collect_steps(
         obs=obs,
         episode_start_mask=episode_start_mask,
         previous_actions=previous_actions,
+        temporal_state=temporal_state,
         rollout_step_idx=rollout_step_idx,
     )
     return episodes, episode_infos, metrics, new_state

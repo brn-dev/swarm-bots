@@ -1,10 +1,16 @@
 from dataclasses import dataclass
-from typing import Optional, Iterator
+from typing import Any, Optional, Iterator
 
 import torch
 from gymnasium import spaces
 
 from swarmbots.learn.hybrid_action_space import VectorHybridActionSpace
+from swarmbots.learn.temporal_state import (
+    clone_detach_temporal_state,
+    copy_temporal_state_rows_,
+    index_temporal_state,
+    move_temporal_state,
+)
 from swarmbots.learn.torch_device import as_device
 
 MaybeTensor = Optional[torch.Tensor]
@@ -33,6 +39,9 @@ class PPOEpisodeSegment:
 
     returns: MaybeTensor = None  # (n_steps)
     advantages: MaybeTensor = None  # (n_steps)
+    initial_temporal_state: Any = None
+    rollout_env_idx: int | None = None
+    rollout_start_step: int = 0
 
     def compute_gae(self, gamma: float, gae_lambda: float) -> None:
         assert self.rewards is not None
@@ -119,6 +128,8 @@ class PPOEpisodeAccumulator:
             dtype=storage_dtype, device=storage_device
         )
         self.step = torch.zeros(n_envs, dtype=torch.long, device=storage_device)
+        self.initial_temporal_state: Any = None
+        self.rollout_start_steps = torch.zeros(n_envs, dtype=torch.long, device=storage_device)
 
     @property
     def total_steps(self) -> int:
@@ -137,6 +148,8 @@ class PPOEpisodeAccumulator:
             values: torch.Tensor,
             previous_actions: MaybeTensor,
             episode_start_mask: torch.Tensor,
+            temporal_state: Any,
+            rollout_step_idx: int,
             bootstrap_obs: dict[str, torch.Tensor],
             bootstrap_values: torch.Tensor,
             dones: torch.Tensor,
@@ -150,6 +163,15 @@ class PPOEpisodeAccumulator:
             else:
                 self.initial_previous_actions[new_episode_env_indices] = previous_actions[new_episode_env_indices]
             self.is_true_episode_start[new_episode_env_indices] = episode_start_mask[new_episode_env_indices]
+            self.rollout_start_steps[new_episode_env_indices] = rollout_step_idx
+            if self.initial_temporal_state is None:
+                self.initial_temporal_state = clone_detach_temporal_state(temporal_state)
+            else:
+                copy_temporal_state_rows_(
+                    self.initial_temporal_state,
+                    temporal_state,
+                    new_episode_env_indices,
+                )
 
         self.local_obs[env_indices, step_indices] = local_obs
         self.global_obs[env_indices, step_indices] = global_obs
@@ -214,12 +236,19 @@ class PPOEpisodeAccumulator:
             final_value=maybe_clone(final_value),
             initial_previous_actions=maybe_clone(self.initial_previous_actions[env]),
             is_true_episode_start=bool(self.is_true_episode_start[env].item()),
+            initial_temporal_state=clone_detach_temporal_state(
+                index_temporal_state(self.initial_temporal_state, slice(env, env + 1))
+            ),
+            rollout_env_idx=env,
+            rollout_start_step=int(self.rollout_start_steps[env].item()),
         )
 
     def reset(self) -> None:
         self.initial_previous_actions.zero_()
         self.is_true_episode_start.zero_()
         self.step[:] = 0
+        self.initial_temporal_state = None
+        self.rollout_start_steps.zero_()
 
 
 class PPORolloutBuffer:
@@ -295,6 +324,8 @@ class PPORolloutBuffer:
             values: torch.Tensor,
             previous_actions: MaybeTensor,
             episode_start_mask: torch.Tensor,
+            temporal_state: Any,
+            rollout_step_idx: int,
             bootstrap_obs: dict[str, torch.Tensor],
             bootstrap_values: torch.Tensor,
             dones: torch.Tensor,
@@ -311,6 +342,8 @@ class PPORolloutBuffer:
             values=values,
             previous_actions=previous_actions,
             episode_start_mask=episode_start_mask,
+            temporal_state=temporal_state,
+            rollout_step_idx=rollout_step_idx,
             bootstrap_obs=bootstrap_obs,
             bootstrap_values=bootstrap_values,
             dones=dones,
@@ -377,6 +410,13 @@ class PPORolloutBuffer:
                 is_true_episode_start=ep.is_true_episode_start,
                 returns=ep.returns.to(device=self.train_device, dtype=self.train_dtype),
                 advantages=ep.advantages.to(device=self.train_device, dtype=self.train_dtype),
+                initial_temporal_state=move_temporal_state(
+                    ep.initial_temporal_state,
+                    device=self.train_device,
+                    dtype=self.train_dtype,
+                ),
+                rollout_env_idx=ep.rollout_env_idx,
+                rollout_start_step=ep.rollout_start_step,
             )
             for ep in episodes
         ]

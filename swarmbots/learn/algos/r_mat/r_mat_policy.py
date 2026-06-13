@@ -1,5 +1,4 @@
 from dataclasses import dataclass, field, replace
-
 import torch
 from torch import nn
 
@@ -27,9 +26,6 @@ class RMATQCSPolicy(MATQCSPolicy):
             config: RMATQCSPolicyConfig = RMATQCSPolicyConfig(),
     ) -> None:
         super().__init__(env=env, config=config)
-        self._rollout_encoder_state: RMATEncoderState | None = None
-        self._rollout_state_batch_size: int | None = None
-        self._pending_episode_start_mask: torch.Tensor | None = None
 
     def _build_encoder_config(self) -> RMATEncoderConfig:
         # noinspection PyTypeChecker
@@ -59,10 +55,12 @@ class RMATQCSPolicy(MATQCSPolicy):
             deterministic: bool = False,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         batch_size = local_obs.shape[0]
-        augmented_observations = self._encode_rollout_observations(
+        augmented_observations, _ = self._encode_observations(
             local_obs=local_obs,
             global_obs=global_obs,
             agent_mask=agent_mask,
+            temporal_state=None,
+            episode_start_mask=None,
         )
         actions, log_probs = self._generate_actions(
             augmented_observations=augmented_observations,
@@ -92,6 +90,8 @@ class RMATQCSPolicy(MATQCSPolicy):
             batch.global_obs,
             agent_mask=batch.agent_mask,
             time_mask=batch.time_mask,
+            initial_state=batch.initial_temporal_state,
+            reset_mask=batch.episode_start_mask,
         )
 
         flat_batch_size = batch_size * sequence_length
@@ -104,7 +104,7 @@ class RMATQCSPolicy(MATQCSPolicy):
         )
         flat_loss_agent_mask = _flatten_time_agent_mask(
             agent_mask=batch.agent_mask,
-            time_mask=batch.time_loss_mask,
+            time_mask=batch.time_mask,
             n_agents=n_agents,
         )
         flat_previous_actions = (
@@ -151,7 +151,7 @@ class RMATQCSPolicy(MATQCSPolicy):
             batch_size=batch_size,
             sequence_length=sequence_length,
             n_agents=n_agents,
-            time_loss_mask=batch.time_loss_mask,
+            time_mask=batch.time_mask,
             loss_agent_mask=flat_loss_agent_mask,
         )
 
@@ -173,10 +173,12 @@ class RMATQCSPolicy(MATQCSPolicy):
             previous_actions: torch.Tensor | None = None,
     ) -> torch.Tensor:
         _ = previous_actions
-        augmented_observations = self._encode_rollout_observations(
+        augmented_observations, _ = self._encode_observations(
             local_obs=local_obs,
             global_obs=global_obs,
             agent_mask=agent_mask,
+            temporal_state=None,
+            episode_start_mask=None,
         )
         return self._critic_with_hidden_vars(
             augmented_observations,
@@ -197,10 +199,12 @@ class RMATQCSPolicy(MATQCSPolicy):
     ) -> torch.Tensor:
         _ = hidden_local_vars
         _ = hidden_global_vars
-        augmented_observations = self._encode_rollout_observations(
+        augmented_observations, _ = self._encode_observations(
             local_obs=local_obs,
             global_obs=global_obs,
             agent_mask=agent_mask,
+            temporal_state=None,
+            episode_start_mask=None,
         )
         actions, _ = self._generate_actions(
             augmented_observations=augmented_observations,
@@ -223,103 +227,140 @@ class RMATQCSPolicy(MATQCSPolicy):
             requires_previous_actions=self.requires_previous_actions(),
         )
 
-    def reset_temporal_state(
+    def initial_temporal_state(
             self,
-            episode_start_mask: torch.Tensor | None = None,
-    ) -> None:
-        if episode_start_mask is None:
-            self._rollout_encoder_state = None
-            self._rollout_state_batch_size = None
-            self._pending_episode_start_mask = None
-            return
-
-        if episode_start_mask.ndim != 1:
-            raise ValueError(
-                f"Expected episode_start_mask shape (B,), got {tuple(episode_start_mask.shape)}"
-            )
-        if episode_start_mask.dtype != torch.bool:
-            raise ValueError(f"Expected episode_start_mask dtype bool, got {episode_start_mask.dtype}")
-
-        if self._pending_episode_start_mask is None:
-            self._pending_episode_start_mask = episode_start_mask.clone()
-            return
-        self._pending_episode_start_mask = self._pending_episode_start_mask | episode_start_mask
-
-    def get_temporal_state_snapshot(self) -> tuple[RMATEncoderState | None, int | None, torch.Tensor | None]:
-        return (
-            None if self._rollout_encoder_state is None else _clone_temporal_state(self._rollout_encoder_state),
-            self._rollout_state_batch_size,
-            None if self._pending_episode_start_mask is None else self._pending_episode_start_mask.clone(),
-        )
-
-    def restore_temporal_state_snapshot(
-            self,
-            snapshot: tuple[RMATEncoderState | None, int | None, torch.Tensor | None],
-    ) -> None:
-        encoder_state, state_batch_size, pending_episode_start_mask = snapshot
-        self._rollout_encoder_state = (
-            None if encoder_state is None else _clone_temporal_state(encoder_state)
-        )
-        self._rollout_state_batch_size = state_batch_size
-        self._pending_episode_start_mask = (
-            None if pending_episode_start_mask is None else pending_episode_start_mask.clone()
-        )
-
-    def _get_rollout_encoder_state(
-            self,
-            *,
             batch_size: int,
+            n_agents: int,
+            *,
             device: torch.device,
             dtype: torch.dtype,
     ) -> RMATEncoderState:
-        required_state_batch_size = batch_size * self.n_agents
-        if self._rollout_state_batch_size != required_state_batch_size:
-            self._rollout_encoder_state = None
-            self._rollout_state_batch_size = required_state_batch_size
+        return self.encoder.initial_state(
+            batch_size=batch_size,
+            n_agents=n_agents,
+            device=device,
+            dtype=dtype,
+        )
 
-        if self._rollout_encoder_state is None:
-            return self.encoder.initial_state(
-                batch_size=required_state_batch_size,
-                device=device,
-                dtype=dtype,
-            )
-        return _move_temporal_state(self._rollout_encoder_state, device=device, dtype=dtype)
+    def forward_with_temporal_state(
+            self,
+            local_obs: torch.Tensor,
+            global_obs: torch.Tensor,
+            hidden_local_vars: torch.Tensor | None = None,
+            hidden_global_vars: torch.Tensor | None = None,
+            agent_mask: torch.Tensor | None = None,
+            previous_actions: torch.Tensor | None = None,
+            deterministic: bool = False,
+            *,
+            temporal_state: RMATEncoderState | None = None,
+            episode_start_mask: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, RMATEncoderState]:
+        augmented_observations, next_state = self._encode_observations(
+            local_obs=local_obs,
+            global_obs=global_obs,
+            agent_mask=agent_mask,
+            temporal_state=temporal_state,
+            episode_start_mask=episode_start_mask,
+        )
+        actions, log_probs = self._generate_actions(
+            augmented_observations=augmented_observations,
+            batch_size=local_obs.shape[0],
+            agent_mask=agent_mask,
+            previous_actions=previous_actions,
+            deterministic=deterministic,
+            return_log_probs=True,
+        )
+        values = self._critic_with_hidden_vars(
+            augmented_observations,
+            hidden_local_vars,
+            hidden_global_vars,
+            agent_mask=agent_mask,
+        )
+        return actions, log_probs, values, next_state
 
-    def _encode_rollout_observations(
+    def predict_values_with_temporal_state(
+            self,
+            local_obs: torch.Tensor,
+            global_obs: torch.Tensor,
+            hidden_local_vars: torch.Tensor | None = None,
+            hidden_global_vars: torch.Tensor | None = None,
+            agent_mask: torch.Tensor | None = None,
+            previous_actions: torch.Tensor | None = None,
+            *,
+            temporal_state: RMATEncoderState | None = None,
+            episode_start_mask: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, RMATEncoderState]:
+        _ = previous_actions
+        augmented_observations, next_state = self._encode_observations(
+            local_obs=local_obs,
+            global_obs=global_obs,
+            agent_mask=agent_mask,
+            temporal_state=temporal_state,
+            episode_start_mask=episode_start_mask,
+        )
+        values = self._critic_with_hidden_vars(
+            augmented_observations,
+            hidden_local_vars,
+            hidden_global_vars,
+            agent_mask=agent_mask,
+        )
+        return values, next_state
+
+    def act_with_temporal_state(
+            self,
+            local_obs: torch.Tensor,
+            global_obs: torch.Tensor,
+            hidden_local_vars: torch.Tensor | None = None,
+            hidden_global_vars: torch.Tensor | None = None,
+            agent_mask: torch.Tensor | None = None,
+            previous_actions: torch.Tensor | None = None,
+            deterministic: bool = False,
+            *,
+            temporal_state: RMATEncoderState | None = None,
+            episode_start_mask: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, RMATEncoderState]:
+        _ = hidden_local_vars
+        _ = hidden_global_vars
+        augmented_observations, next_state = self._encode_observations(
+            local_obs=local_obs,
+            global_obs=global_obs,
+            agent_mask=agent_mask,
+            temporal_state=temporal_state,
+            episode_start_mask=episode_start_mask,
+        )
+        actions, _ = self._generate_actions(
+            augmented_observations=augmented_observations,
+            batch_size=local_obs.shape[0],
+            agent_mask=agent_mask,
+            previous_actions=previous_actions,
+            deterministic=deterministic,
+            return_log_probs=False,
+        )
+        return actions, next_state
+
+    def _encode_observations(
             self,
             *,
             local_obs: torch.Tensor,
             global_obs: torch.Tensor,
             agent_mask: torch.Tensor | None,
-    ) -> torch.Tensor:
-        batch_size = local_obs.shape[0]
-        rollout_state = self._get_rollout_encoder_state(
-            batch_size=batch_size,
-            device=local_obs.device,
-            dtype=local_obs.dtype,
-        )
-        augmented_observations, next_state = self.encoder(
+            temporal_state: RMATEncoderState | None,
+            episode_start_mask: torch.Tensor | None,
+    ) -> tuple[torch.Tensor, RMATEncoderState]:
+        if temporal_state is None:
+            temporal_state = self.initial_temporal_state(
+                batch_size=local_obs.shape[0],
+                n_agents=local_obs.shape[-2],
+                device=local_obs.device,
+                dtype=local_obs.dtype,
+            )
+        return self.encoder(
             local_obs,
             global_obs,
             agent_mask=agent_mask,
-            initial_state=rollout_state,
-            reset_mask=self._consume_pending_reset_mask(batch_size=batch_size, device=local_obs.device),
+            initial_state=temporal_state,
+            reset_mask=episode_start_mask,
         )
-        self._rollout_encoder_state = next_state
-        self._rollout_state_batch_size = batch_size * self.n_agents
-        return augmented_observations
-
-    def _consume_pending_reset_mask(
-            self,
-            *,
-            batch_size: int,
-            device: torch.device,
-    ) -> torch.Tensor | None:
-        if self._pending_episode_start_mask is None:
-            return None
-        reset_mask = self._pending_episode_start_mask.to(device=device)
-        self._pending_episode_start_mask = None
-        return reset_mask
 
 
 def _flatten_time_agent_mask(
@@ -339,59 +380,19 @@ def _reshape_extra_losses(
         batch_size: int,
         sequence_length: int,
         n_agents: int,
-        time_loss_mask: torch.Tensor,
+        time_mask: torch.Tensor,
         loss_agent_mask: torch.Tensor,
 ) -> LossDict:
     reshaped_losses: LossDict = {}
-    flat_time_loss_mask = time_loss_mask.reshape(batch_size * sequence_length)
+    flat_time_mask = time_mask.reshape(batch_size * sequence_length)
     for name, value in extra_losses.items():
         if value.ndim == 2 and value.shape == (batch_size * sequence_length, n_agents):
             reshaped_value = value.masked_fill(~loss_agent_mask, 0.0)
             reshaped_losses[name] = reshaped_value.reshape(batch_size, sequence_length, n_agents)
             continue
         if value.ndim == 1 and value.shape == (batch_size * sequence_length,):
-            reshaped_value = value.masked_fill(~flat_time_loss_mask, 0.0)
+            reshaped_value = value.masked_fill(~flat_time_mask, 0.0)
             reshaped_losses[name] = reshaped_value.reshape(batch_size, sequence_length)
             continue
         reshaped_losses[name] = value
     return reshaped_losses
-
-
-def _move_temporal_state(
-        state: RMATEncoderState,
-        *,
-        device: torch.device,
-        dtype: torch.dtype,
-) -> RMATEncoderState:
-    return [_move_temporal_state_item(item, device=device, dtype=dtype) for item in state]
-
-
-def _clone_temporal_state(state: RMATEncoderState) -> RMATEncoderState:
-    return [_clone_temporal_state_item(item) for item in state]
-
-
-def _move_temporal_state_item(
-        item,
-        *,
-        device: torch.device,
-        dtype: torch.dtype,
-):
-    if torch.is_tensor(item):
-        if item.is_floating_point():
-            return item.to(device=device, dtype=dtype)
-        return item.to(device=device)
-    if isinstance(item, tuple):
-        return tuple(_move_temporal_state_item(value, device=device, dtype=dtype) for value in item)
-    if isinstance(item, list):
-        return [_move_temporal_state_item(value, device=device, dtype=dtype) for value in item]
-    return item
-
-
-def _clone_temporal_state_item(item):
-    if torch.is_tensor(item):
-        return item.clone()
-    if isinstance(item, tuple):
-        return tuple(_clone_temporal_state_item(value) for value in item)
-    if isinstance(item, list):
-        return [_clone_temporal_state_item(value) for value in item]
-    return item

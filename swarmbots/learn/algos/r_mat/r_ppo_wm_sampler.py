@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from typing import Any
 
 import torch
 
@@ -11,37 +12,37 @@ from swarmbots.learn.algos.world_modeling.wm_sampler_helper import (
     pad_time_axis,
 )
 from swarmbots.learn.base_sampler import BaseSampler, BatchIndices
+from swarmbots.learn.temporal_state import concatenate_temporal_states, index_temporal_state
 
 
 @dataclass
 class RPPOWMSamples(BaseWMSamples):
-    local_obs: torch.Tensor  # (batch, sequence_length, n_agents, n_local_obs_features)
-    global_obs: torch.Tensor  # (batch, sequence_length, n_global_obs_features)
-    hidden_local_vars: torch.Tensor  # (batch, sequence_length, n_agents, n_hidden_local_vars)
-    hidden_global_vars: torch.Tensor  # (batch, sequence_length, n_hidden_global_vars)
-    agent_mask: MaybeTensor  # (batch, sequence_length, n_agents)
-    previous_actions: MaybeTensor  # (batch, sequence_length, n_agents, n_actions)
-    actions: torch.Tensor  # (batch, sequence_length, n_agents, n_actions)
-    wm_actions: torch.Tensor  # (batch, sequence_length, n_next_steps, n_agents, n_actions)
-    log_probs: torch.Tensor  # (batch, sequence_length, n_agents)
-    values: torch.Tensor  # (batch, sequence_length)
-    returns: torch.Tensor  # (batch, sequence_length)
-    advantages: torch.Tensor  # (batch, sequence_length)
-    time_mask: torch.Tensor  # (batch, sequence_length)
-    time_loss_mask: torch.Tensor  # (batch, sequence_length)
-    is_true_episode_start: torch.Tensor  # (batch,)
+    local_obs: torch.Tensor
+    global_obs: torch.Tensor
+    hidden_local_vars: torch.Tensor
+    hidden_global_vars: torch.Tensor
+    agent_mask: MaybeTensor
+    previous_actions: MaybeTensor
+    actions: torch.Tensor
+    wm_actions: torch.Tensor
+    log_probs: torch.Tensor
+    values: torch.Tensor
+    returns: torch.Tensor
+    advantages: torch.Tensor
+    time_mask: torch.Tensor
+    episode_start_mask: torch.Tensor
+    initial_temporal_state: Any
 
-    next_local_obs: torch.Tensor  # (batch, sequence_length, n_next_steps, n_agents, n_local_obs_features)
-    wm_target_time_mask: torch.Tensor  # (batch, sequence_length, n_next_steps)
-    next_global_obs: torch.Tensor  # (batch, sequence_length, n_next_steps, n_global_obs_features)
-    wm_agent_mask: MaybeTensor  # (batch, sequence_length, n_next_steps, n_agents)
-    wm_loss_agent_mask: MaybeTensor  # (batch, sequence_length, n_next_steps, n_agents)
+    next_local_obs: torch.Tensor
+    wm_target_time_mask: torch.Tensor
+    next_global_obs: torch.Tensor
+    wm_agent_mask: MaybeTensor
+    wm_loss_agent_mask: MaybeTensor
 
 
 @dataclass(frozen=True, kw_only=True)
 class RPPOWMSamplerConfig(PPOWMSamplerConfig):
     sequence_length: int
-    burn_in_length: int = 0
 
 
 class RPPOWMSampler(
@@ -54,15 +55,9 @@ class RPPOWMSampler(
             episodes: list[PPOEpisodeSegment],
             config: RPPOWMSamplerConfig,
             requires_previous_actions: bool = False,
-    ):
+    ) -> None:
         if config.sequence_length < 1:
             raise ValueError(f"sequence_length must be >= 1, got {config.sequence_length}")
-        if config.burn_in_length < 0:
-            raise ValueError(f"burn_in_length must be >= 0, got {config.burn_in_length}")
-        if config.burn_in_length >= config.sequence_length:
-            raise ValueError(
-                f"burn_in_length must be < sequence_length, got {config.burn_in_length} >= {config.sequence_length}"
-            )
         if config.num_next_steps < 1:
             raise ValueError(f"num_next_steps must be >= 1, got {config.num_next_steps}")
         if config.compile_wm_window_helper:
@@ -70,170 +65,76 @@ class RPPOWMSampler(
                 compile_mode=config.wm_window_helper_compile_mode,
             )
 
-        has_agent_mask = any(ep.agent_mask is not None for ep in episodes)
-        has_missing_agent_mask = any(ep.agent_mask is None for ep in episodes)
-        if has_agent_mask and has_missing_agent_mask:
+        non_empty_episodes = [episode for episode in episodes if episode.local_obs.shape[0] > 0]
+        if not non_empty_episodes:
+            raise ValueError("RPPOWMSampler requires at least one non-empty episode segment")
+        if any(episode.initial_temporal_state is None for episode in non_empty_episodes):
+            raise ValueError("Recurrent episode segments must contain initial_temporal_state")
+
+        has_agent_mask = any(episode.agent_mask is not None for episode in non_empty_episodes)
+        if has_agent_mask and any(episode.agent_mask is None for episode in non_empty_episodes):
             raise ValueError("agent_mask must be provided for all episodes or none")
 
-        local_obs_chunks: list[torch.Tensor] = []
-        global_obs_chunks: list[torch.Tensor] = []
-        hidden_local_vars_chunks: list[torch.Tensor] = []
-        hidden_global_vars_chunks: list[torch.Tensor] = []
-        agent_mask_chunks: list[torch.Tensor] = []
-        previous_actions_chunks: list[torch.Tensor] = []
-        actions_chunks: list[torch.Tensor] = []
-        wm_actions_chunks: list[torch.Tensor] = []
-        log_probs_chunks: list[torch.Tensor] = []
-        values_chunks: list[torch.Tensor] = []
-        returns_chunks: list[torch.Tensor] = []
-        advantages_chunks: list[torch.Tensor] = []
-        time_mask_chunks: list[torch.Tensor] = []
-        time_loss_mask_chunks: list[torch.Tensor] = []
-        is_true_episode_start_chunks: list[torch.Tensor] = []
-        next_local_obs_chunks: list[torch.Tensor] = []
-        wm_target_time_mask_chunks: list[torch.Tensor] = []
-        next_global_obs_chunks: list[torch.Tensor] = []
-        wm_agent_mask_chunks: list[torch.Tensor] = []
-        wm_loss_agent_mask_chunks: list[torch.Tensor] = []
-
-        sequence_length = config.sequence_length
-        burn_in_length = config.burn_in_length
-        train_length = sequence_length - burn_in_length
-
-        for episode in episodes:
-            num_steps = int(episode.local_obs.shape[0])
-            if num_steps == 0:
-                continue
-
-            episode_windows = build_wm_episode_windows(
-                episode,
-                num_next_steps=config.num_next_steps,
-                compile_modules=config.compile_wm_window_helper,
-                compile_mode=config.wm_window_helper_compile_mode,
+        grouped_episodes = _group_episode_segments(non_empty_episodes)
+        sequence_rows = [
+            _build_sequence_row(
+                episode_group,
+                config=config,
+                requires_previous_actions=requires_previous_actions,
+                has_agent_mask=has_agent_mask,
             )
-            previous_actions = _build_previous_actions(episode) if requires_previous_actions else None
+            for episode_group in grouped_episodes
+        ]
+        if config.batch_size > len(sequence_rows):
+            raise ValueError(
+                f"Recurrent batch_size counts TBPTT rows and must not exceed the available row count: "
+                f"got batch_size={config.batch_size} for {len(sequence_rows)} rows"
+            )
 
-            train_start_idx = 0
-            while train_start_idx < num_steps:
-                start_idx = 0 if train_start_idx == 0 else train_start_idx - burn_in_length
-                chunk_length = min(sequence_length, num_steps - start_idx)
-                if train_start_idx == 0 and not episode.is_true_episode_start:
-                    loss_start_idx = min(chunk_length, burn_in_length)
-                else:
-                    loss_start_idx = train_start_idx - start_idx
-                time_mask_chunks.append(
-                    _build_time_mask(chunk_length, sequence_length, episode.local_obs.device)
-                )
-                time_loss_mask_chunks.append(
-                    _build_time_loss_mask(
-                        chunk_length=chunk_length,
-                        sequence_length=sequence_length,
-                        loss_start_idx=loss_start_idx,
-                        device=episode.local_obs.device,
-                    )
-                )
-                is_true_episode_start_chunks.append(
-                    torch.tensor(
-                        train_start_idx == 0 and episode.is_true_episode_start,
-                        dtype=torch.bool,
-                        device=episode.local_obs.device,
-                    )
-                )
-
-                local_obs_chunks.append(_slice_time_chunk(episode.local_obs, start_idx, sequence_length, pad_value=0))
-                global_obs_chunks.append(_slice_time_chunk(episode.global_obs, start_idx, sequence_length, pad_value=0))
-                hidden_local_vars_chunks.append(
-                    _slice_time_chunk(episode.hidden_local_vars, start_idx, sequence_length, pad_value=0)
-                )
-                hidden_global_vars_chunks.append(
-                    _slice_time_chunk(episode.hidden_global_vars, start_idx, sequence_length, pad_value=0)
-                )
-                actions_chunks.append(_slice_time_chunk(episode.actions, start_idx, sequence_length, pad_value=0))
-                wm_actions_chunks.append(
-                    _slice_time_chunk(episode_windows.multi_step_actions, start_idx, sequence_length, pad_value=0)
-                )
-                log_probs_chunks.append(_slice_time_chunk(episode.log_probs, start_idx, sequence_length, pad_value=0))
-                values_chunks.append(_slice_time_chunk(episode.values, start_idx, sequence_length, pad_value=0))
-                returns_chunks.append(_slice_time_chunk(episode.returns, start_idx, sequence_length, pad_value=0))
-                advantages_chunks.append(_slice_time_chunk(episode.advantages, start_idx, sequence_length, pad_value=0))
-                next_local_obs_chunks.append(
-                    _slice_time_chunk(episode_windows.next_local_obs, start_idx, sequence_length, pad_value=0)
-                )
-                wm_target_time_mask_chunks.append(
-                    _slice_time_chunk(
-                        episode_windows.wm_target_time_mask,
-                        start_idx,
-                        sequence_length,
-                        pad_value=False,
-                    )
-                )
-                next_global_obs_chunks.append(
-                    _slice_time_chunk(episode_windows.next_global_obs, start_idx, sequence_length, pad_value=0)
-                )
-
-                if has_agent_mask:
-                    if episode.agent_mask is None:
-                        raise ValueError("agent_mask must be provided when agent masks are enabled")
-                    if episode_windows.wm_agent_mask is None:
-                        raise ValueError("wm_agent_mask must be provided when agent masks are enabled")
-                    if episode_windows.wm_loss_agent_mask is None:
-                        raise ValueError("wm_loss_agent_mask must be provided when agent masks are enabled")
-                    agent_mask_chunks.append(
-                        _slice_time_chunk(episode.agent_mask, start_idx, sequence_length, pad_value=True)
-                    )
-                    wm_agent_mask_chunks.append(
-                        _slice_time_chunk(episode_windows.wm_agent_mask, start_idx, sequence_length, pad_value=True)
-                    )
-                    wm_loss_agent_mask_chunks.append(
-                        _slice_time_chunk(
-                            episode_windows.wm_loss_agent_mask,
-                            start_idx,
-                            sequence_length,
-                            pad_value=True,
-                        )
-                    )
-
-                if previous_actions is not None:
-                    previous_actions_chunks.append(
-                        _slice_time_chunk(previous_actions, start_idx, sequence_length, pad_value=0)
-                    )
-                if train_start_idx == 0:
-                    train_start_idx = chunk_length
-                else:
-                    train_start_idx += train_length
-
-        if not local_obs_chunks:
-            raise ValueError("RPPOWMSampler requires at least one non-empty episode segment")
-
-        self.local_obs = torch.stack(local_obs_chunks, dim=0).contiguous()
-        self.global_obs = torch.stack(global_obs_chunks, dim=0).contiguous()
-        self.hidden_local_vars = torch.stack(hidden_local_vars_chunks, dim=0).contiguous()
-        self.hidden_global_vars = torch.stack(hidden_global_vars_chunks, dim=0).contiguous()
-        self.agent_mask = torch.stack(agent_mask_chunks, dim=0).contiguous() if has_agent_mask else None
-        self.previous_actions = (
-            torch.stack(previous_actions_chunks, dim=0).contiguous()
-            if requires_previous_actions else None
+        self.local_obs = torch.stack([row.local_obs for row in sequence_rows]).contiguous()
+        self.global_obs = torch.stack([row.global_obs for row in sequence_rows]).contiguous()
+        self.hidden_local_vars = torch.stack([row.hidden_local_vars for row in sequence_rows]).contiguous()
+        self.hidden_global_vars = torch.stack([row.hidden_global_vars for row in sequence_rows]).contiguous()
+        self.agent_mask = (
+            torch.stack([row.agent_mask for row in sequence_rows]).contiguous()
+            if has_agent_mask
+            else None
         )
-        self.actions = torch.stack(actions_chunks, dim=0).contiguous()
-        self.wm_actions = torch.stack(wm_actions_chunks, dim=0).contiguous()
-        self.log_probs = torch.stack(log_probs_chunks, dim=0).contiguous()
-        self.values = torch.stack(values_chunks, dim=0).contiguous()
-        self.returns = torch.stack(returns_chunks, dim=0).contiguous()
-        self.advantages = torch.stack(advantages_chunks, dim=0).contiguous()
-        self.time_mask = torch.stack(time_mask_chunks, dim=0).contiguous()
-        self.time_loss_mask = torch.stack(time_loss_mask_chunks, dim=0).contiguous()
-        self.is_true_episode_start = torch.stack(is_true_episode_start_chunks, dim=0).contiguous()
-        self.next_local_obs = torch.stack(next_local_obs_chunks, dim=0).contiguous()
-        self.wm_target_time_mask = torch.stack(wm_target_time_mask_chunks, dim=0).contiguous()
-        self.next_global_obs = torch.stack(next_global_obs_chunks, dim=0).contiguous()
-        self.wm_agent_mask = torch.stack(wm_agent_mask_chunks, dim=0).contiguous() if has_agent_mask else None
+        self.previous_actions = (
+            torch.stack([row.previous_actions for row in sequence_rows]).contiguous()
+            if requires_previous_actions
+            else None
+        )
+        self.actions = torch.stack([row.actions for row in sequence_rows]).contiguous()
+        self.wm_actions = torch.stack([row.wm_actions for row in sequence_rows]).contiguous()
+        self.log_probs = torch.stack([row.log_probs for row in sequence_rows]).contiguous()
+        self.values = torch.stack([row.values for row in sequence_rows]).contiguous()
+        self.returns = torch.stack([row.returns for row in sequence_rows]).contiguous()
+        self.advantages = torch.stack([row.advantages for row in sequence_rows]).contiguous()
+        self.time_mask = torch.stack([row.time_mask for row in sequence_rows]).contiguous()
+        self.episode_start_mask = torch.stack([row.episode_start_mask for row in sequence_rows]).contiguous()
+        self.initial_temporal_state = concatenate_temporal_states(
+            [row.initial_temporal_state for row in sequence_rows]
+        )
+        self.next_local_obs = torch.stack([row.next_local_obs for row in sequence_rows]).contiguous()
+        self.wm_target_time_mask = torch.stack(
+            [row.wm_target_time_mask for row in sequence_rows]
+        ).contiguous()
+        self.next_global_obs = torch.stack([row.next_global_obs for row in sequence_rows]).contiguous()
+        self.wm_agent_mask = (
+            torch.stack([row.wm_agent_mask for row in sequence_rows]).contiguous()
+            if has_agent_mask
+            else None
+        )
         self.wm_loss_agent_mask = (
-            torch.stack(wm_loss_agent_mask_chunks, dim=0).contiguous() if has_agent_mask else None
+            torch.stack([row.wm_loss_agent_mask for row in sequence_rows]).contiguous()
+            if has_agent_mask
+            else None
         )
 
         super().__init__(
             config=config,
-            n_samples=self.local_obs.shape[0],
+            n_samples=len(sequence_rows),
             index_device=self.local_obs.device,
         )
 
@@ -252,8 +153,8 @@ class RPPOWMSampler(
             returns=self.returns[batch_indices],
             advantages=self.advantages[batch_indices],
             time_mask=self.time_mask[batch_indices],
-            time_loss_mask=self.time_loss_mask[batch_indices],
-            is_true_episode_start=self.is_true_episode_start[batch_indices],
+            episode_start_mask=self.episode_start_mask[batch_indices],
+            initial_temporal_state=index_temporal_state(self.initial_temporal_state, batch_indices),
             next_local_obs=self.next_local_obs[batch_indices],
             wm_target_time_mask=self.wm_target_time_mask[batch_indices],
             next_global_obs=self.next_global_obs[batch_indices],
@@ -262,44 +163,180 @@ class RPPOWMSampler(
         )
 
 
+@dataclass
+class _SequenceRow:
+    local_obs: torch.Tensor
+    global_obs: torch.Tensor
+    hidden_local_vars: torch.Tensor
+    hidden_global_vars: torch.Tensor
+    agent_mask: torch.Tensor | None
+    previous_actions: torch.Tensor | None
+    actions: torch.Tensor
+    wm_actions: torch.Tensor
+    log_probs: torch.Tensor
+    values: torch.Tensor
+    returns: torch.Tensor
+    advantages: torch.Tensor
+    time_mask: torch.Tensor
+    episode_start_mask: torch.Tensor
+    initial_temporal_state: Any
+    next_local_obs: torch.Tensor
+    wm_target_time_mask: torch.Tensor
+    next_global_obs: torch.Tensor
+    wm_agent_mask: torch.Tensor | None
+    wm_loss_agent_mask: torch.Tensor | None
+
+
+def _group_episode_segments(
+        episodes: list[PPOEpisodeSegment],
+) -> list[list[PPOEpisodeSegment]]:
+    groups: dict[tuple[str, int], list[PPOEpisodeSegment]] = {}
+    for episode_idx, episode in enumerate(episodes):
+        key = (
+            ("env", episode.rollout_env_idx)
+            if episode.rollout_env_idx is not None
+            else ("episode", episode_idx)
+        )
+        groups.setdefault(key, []).append(episode)
+
+    grouped_episodes = []
+    for key in sorted(groups):
+        group = groups[key]
+        group.sort(key=lambda episode: episode.rollout_start_step)
+        grouped_episodes.append(group)
+    return grouped_episodes
+
+
+def _build_sequence_row(
+        episodes: list[PPOEpisodeSegment],
+        *,
+        config: RPPOWMSamplerConfig,
+        requires_previous_actions: bool,
+        has_agent_mask: bool,
+) -> _SequenceRow:
+    sequence_length = config.sequence_length
+    for previous_episode, episode in zip(episodes, episodes[1:]):
+        expected_start = previous_episode.rollout_start_step + int(previous_episode.local_obs.shape[0])
+        if episode.rollout_start_step != expected_start:
+            raise ValueError(
+                f"Non-contiguous rollout segments for env {episode.rollout_env_idx}: "
+                f"expected start {expected_start}, got {episode.rollout_start_step}"
+            )
+    num_steps = sum(int(episode.local_obs.shape[0]) for episode in episodes)
+    if num_steps > sequence_length:
+        env_idx = episodes[0].rollout_env_idx
+        raise ValueError(
+            f"TBPTT row for env {env_idx} has {num_steps} steps, exceeding sequence_length={sequence_length}. "
+            "Use a fixed step rollout no longer than the TBPTT sequence."
+        )
+
+    episode_windows = [
+        build_wm_episode_windows(
+            episode,
+            num_next_steps=config.num_next_steps,
+            compile_modules=config.compile_wm_window_helper,
+            compile_mode=config.wm_window_helper_compile_mode,
+        )
+        for episode in episodes
+    ]
+    episode_start_mask = torch.zeros(
+        sequence_length,
+        dtype=torch.bool,
+        device=episodes[0].local_obs.device,
+    )
+    offset = 0
+    for episode in episodes:
+        if episode.is_true_episode_start:
+            episode_start_mask[offset] = True
+        offset += int(episode.local_obs.shape[0])
+
+    def concatenate_and_pad(
+            tensors: list[torch.Tensor],
+            *,
+            pad_value: bool | int | float,
+    ) -> torch.Tensor:
+        tensor = torch.cat(tensors, dim=0)
+        return pad_time_axis(
+            tensor,
+            padding_len=sequence_length - tensor.shape[0],
+            pad_value=pad_value,
+        )
+
+    previous_actions = None
+    if requires_previous_actions:
+        previous_actions = concatenate_and_pad(
+            [_build_previous_actions(episode) for episode in episodes],
+            pad_value=0,
+        )
+
+    agent_mask = None
+    wm_agent_mask = None
+    wm_loss_agent_mask = None
+    if has_agent_mask:
+        if any(episode.agent_mask is None for episode in episodes):
+            raise ValueError("agent_mask must be provided when agent masks are enabled")
+        if any(windows.wm_agent_mask is None for windows in episode_windows):
+            raise ValueError("wm_agent_mask must be provided when agent masks are enabled")
+        if any(windows.wm_loss_agent_mask is None for windows in episode_windows):
+            raise ValueError("wm_loss_agent_mask must be provided when agent masks are enabled")
+        agent_mask = concatenate_and_pad(
+            [episode.agent_mask for episode in episodes],
+            pad_value=True,
+        )
+        wm_agent_mask = concatenate_and_pad(
+            [windows.wm_agent_mask for windows in episode_windows],
+            pad_value=True,
+        )
+        wm_loss_agent_mask = concatenate_and_pad(
+            [windows.wm_loss_agent_mask for windows in episode_windows],
+            pad_value=True,
+        )
+
+    time_mask = torch.zeros(sequence_length, dtype=torch.bool, device=episodes[0].local_obs.device)
+    time_mask[:num_steps] = True
+    return _SequenceRow(
+        local_obs=concatenate_and_pad([episode.local_obs for episode in episodes], pad_value=0),
+        global_obs=concatenate_and_pad([episode.global_obs for episode in episodes], pad_value=0),
+        hidden_local_vars=concatenate_and_pad(
+            [episode.hidden_local_vars for episode in episodes],
+            pad_value=0,
+        ),
+        hidden_global_vars=concatenate_and_pad(
+            [episode.hidden_global_vars for episode in episodes],
+            pad_value=0,
+        ),
+        agent_mask=agent_mask,
+        previous_actions=previous_actions,
+        actions=concatenate_and_pad([episode.actions for episode in episodes], pad_value=0),
+        wm_actions=concatenate_and_pad(
+            [windows.multi_step_actions for windows in episode_windows],
+            pad_value=0,
+        ),
+        log_probs=concatenate_and_pad([episode.log_probs for episode in episodes], pad_value=0),
+        values=concatenate_and_pad([episode.values for episode in episodes], pad_value=0),
+        returns=concatenate_and_pad([episode.returns for episode in episodes], pad_value=0),
+        advantages=concatenate_and_pad([episode.advantages for episode in episodes], pad_value=0),
+        time_mask=time_mask,
+        episode_start_mask=episode_start_mask,
+        initial_temporal_state=episodes[0].initial_temporal_state,
+        next_local_obs=concatenate_and_pad(
+            [windows.next_local_obs for windows in episode_windows],
+            pad_value=0,
+        ),
+        wm_target_time_mask=concatenate_and_pad(
+            [windows.wm_target_time_mask for windows in episode_windows],
+            pad_value=False,
+        ),
+        next_global_obs=concatenate_and_pad(
+            [windows.next_global_obs for windows in episode_windows],
+            pad_value=0,
+        ),
+        wm_agent_mask=wm_agent_mask,
+        wm_loss_agent_mask=wm_loss_agent_mask,
+    )
+
+
 def _build_previous_actions(episode: PPOEpisodeSegment) -> torch.Tensor:
     if episode.initial_previous_actions is None:
         return torch.zeros_like(episode.actions)
     return torch.cat((episode.initial_previous_actions.unsqueeze(0), episode.actions[:-1]), dim=0)
-
-
-def _build_time_mask(
-        chunk_length: int,
-        sequence_length: int,
-        device: torch.device,
-) -> torch.Tensor:
-    mask = torch.zeros(sequence_length, dtype=torch.bool, device=device)
-    mask[:chunk_length] = True
-    return mask
-
-
-def _build_time_loss_mask(
-        *,
-        chunk_length: int,
-        sequence_length: int,
-        loss_start_idx: int,
-        device: torch.device,
-) -> torch.Tensor:
-    mask = torch.zeros(sequence_length, dtype=torch.bool, device=device)
-    mask[loss_start_idx:chunk_length] = True
-    return mask
-
-
-def _slice_time_chunk(
-        tensor: torch.Tensor,
-        start_idx: int,
-        sequence_length: int,
-        *,
-        pad_value: bool | int | float,
-) -> torch.Tensor:
-    chunk = tensor[start_idx:start_idx + sequence_length]
-    return pad_time_axis(
-        chunk,
-        padding_len=sequence_length - chunk.shape[0],
-        pad_value=pad_value,
-    )

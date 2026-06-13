@@ -17,6 +17,10 @@ from swarmbots.learn.nn_components.nn_init import (
     make_init_linear_orthogonal,
     reinitialize_transformer_stack,
 )
+from swarmbots.learn.temporal_state import (
+    flatten_temporal_state_batch_agents,
+    unflatten_temporal_state_batch_agents,
+)
 
 RMATEncoderState = list[TemporalModelState]
 
@@ -201,12 +205,21 @@ class RMATEncoder(nn.Module):
     def initial_state(
             self,
             batch_size: int,
+            n_agents: int,
             *,
             device: torch.device | None = None,
             dtype: torch.dtype | None = None,
     ) -> RMATEncoderState:
         return [
-            layer.temporal_model.initial_state(batch_size=batch_size, device=device, dtype=dtype)
+            unflatten_temporal_state_batch_agents(
+                layer.temporal_model.initial_state(
+                    batch_size=batch_size * n_agents,
+                    device=device,
+                    dtype=dtype,
+                ),
+                batch_size=batch_size,
+                n_agents=n_agents,
+            )
             for layer in self.layers
         ]
 
@@ -253,7 +266,8 @@ class RMATEncoder(nn.Module):
 
         layer_states = self._normalize_initial_state(
             initial_state=initial_state,
-            batch_size=batch_size * n_agents,
+            batch_size=batch_size,
+            n_agents=n_agents,
             device=local_obs.device,
             dtype=embeddings.dtype,
         )
@@ -268,7 +282,13 @@ class RMATEncoder(nn.Module):
                 initial_state=layer_state,
                 reset_mask=reset_mask,
             )
-            next_states.append(next_state)
+            next_states.append(
+                unflatten_temporal_state_batch_agents(
+                    next_state,
+                    batch_size=batch_size,
+                    n_agents=n_agents,
+                )
+            )
 
         hidden = self.output_norm(hidden)
         if valid_agent_time_mask is not None:
@@ -283,15 +303,23 @@ class RMATEncoder(nn.Module):
             *,
             initial_state: RMATEncoderState | None,
             batch_size: int,
+            n_agents: int,
             device: torch.device,
             dtype: torch.dtype,
     ) -> RMATEncoderState:
         if initial_state is None:
             return [
-                layer.temporal_model.initial_state(batch_size=batch_size, device=device, dtype=dtype)
+                layer.temporal_model.initial_state(
+                    batch_size=batch_size * n_agents,
+                    device=device,
+                    dtype=dtype,
+                )
                 for layer in self.layers
             ]
-        return list(initial_state)
+        return [
+            flatten_temporal_state_batch_agents(layer_state)
+            for layer_state in initial_state
+        ]
 
     @staticmethod
     def _normalize_inputs(

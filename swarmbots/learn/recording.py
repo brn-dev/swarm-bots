@@ -180,12 +180,15 @@ def record_policy(
                 dtype=obs["local_obs"].dtype,
                 device=obs["local_obs"].device,
             )
-        policy.reset_temporal_state(
-            episode_start_mask=torch.ones((env.num_envs,), device=device, dtype=torch.bool)
+        temporal_state = policy.initial_temporal_state(
+            batch_size=env.num_envs,
+            n_agents=env.n_agents,
+            device=obs["local_obs"].device,
+            dtype=obs["local_obs"].dtype,
         )
+        episode_start_mask = torch.ones((env.num_envs,), device=device, dtype=torch.bool)
         action_dist = getattr(policy, "action_dist", None)
         if action_dist is not None and hasattr(action_dist, "reset_temporal_correlations_on_ep_start"):
-            episode_start_mask = torch.ones((env.num_envs,), device=device, dtype=torch.bool)
             action_dist.reset_temporal_correlations_on_ep_start(episode_start_mask)
         frames = []
         ep_rew = None
@@ -229,15 +232,18 @@ def record_policy(
                     rollout_step_idx=step_cnt,
                     gsde_reset_mode=gsde_reset_mode,
                 )
-                actions = policy.act(
-                    local_obs,
-                    global_obs,
+                actions, temporal_state = policy.act_with_temporal_state(
+                    local_obs=local_obs,
+                    global_obs=global_obs,
                     hidden_local_vars=hidden_local_vars,
                     hidden_global_vars=hidden_global_vars,
                     agent_mask=agent_mask,
                     previous_actions=previous_actions,
                     deterministic=deterministic,
+                    temporal_state=temporal_state,
+                    episode_start_mask=episode_start_mask,
                 )
+                episode_start_mask.zero_()
                 # print(format_summary_statistics(compute_summary_statistics(actions[:, :, :8], make_histogram=True), SummaryStatisticsFormat(histogram=True)))
             
             obs, reward, term, trunc, infos = env.step(actions)
