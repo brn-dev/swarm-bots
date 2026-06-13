@@ -49,3 +49,26 @@ def add_payload_centering_boundary_geoms(
             rgba=(1.0, 0.16, 0.05, 1.0),
             width=6.0,
         )
+
+
+def add_y_reference_line_geom(
+    scene: mujoco.MjvScene,
+    *,
+    y: float,
+    half_width: float = 0.5,
+    z: float = 0.025,
+    rgba: tuple[float, float, float, float] = (1.0, 0.75, 0.05, 1.0),
+) -> None:
+    add_line_geom(
+        scene,
+        from_pos=(-float(half_width), float(y), float(z)),
+        to_pos=(float(half_width), float(y), float(z)),
+        rgba=rgba,
+        width=5.0,
+    )
+
+
+def add_wall_y_reference_line_geoms(scene: mujoco.MjvScene) -> None:
+    bounds_rgba = (0.1, 0.8, 1.0, 1.0)
+    add_y_reference_line_geom(scene, y=0.5, rgba=bounds_rgba)
+    add_y_reference_line_geom(scene, y=1.5, rgba=bounds_rgba)

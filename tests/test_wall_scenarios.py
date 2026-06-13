@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from unittest.mock import call, patch
 
 import numpy as np
 import torch
@@ -10,6 +11,7 @@ from swarmbots.mj_env.scenarios.scenario_presets import default_wall as default_
 from swarmbots.mjw_env.scenarios.mjw_wall_runtime import WallMJWScenarioRuntime
 from swarmbots.mjw_env.scenarios.mjw_scenario_presets import default_wall as default_mjw_wall
 from swarmbots.scenario_presets.scenario_presets_kwargs import PO_WALL_MEDIUM_SCENARIO_KWARGS
+from swarmbots.utils.mujoco_render_geoms import add_wall_y_reference_line_geoms
 
 
 def test_po_wall_medium_samples_wall_y_into_hidden_global_obs_only_in_mj() -> None:
@@ -65,5 +67,53 @@ def test_po_wall_medium_mjw_reset_sampling_puts_wall_y_in_hidden_global_vars() -
     assert torch.all((wall_y >= 0.75) & (wall_y <= 1.25))
     assert torch.unique(wall_y).numel() > 1
     assert torch.allclose(wall_pass_thresholds, wall_y.unsqueeze(1) + runtime._threshold_values.unsqueeze(0))
+
+
+def test_mjw_wall_configuration_moves_wall_mocap_for_selected_worlds() -> None:
+    runtime = object.__new__(WallMJWScenarioRuntime)
+    runtime.bindings = SimpleNamespace(mocap_pos=torch.zeros((3, 1, 3), dtype=torch.float32))
+    runtime._wall_mocap_id = 0
+
+    runtime._apply_wall_configuration(
+        world_idx=torch.tensor([0, 2]),
+        hidden_global_vars=torch.tensor([[0.5], [1.5]], dtype=torch.float32),
+    )
+
+    assert torch.allclose(runtime.bindings.mocap_pos[0, 0], torch.tensor([0.0, 0.5, 0.0]))
+    assert torch.allclose(runtime.bindings.mocap_pos[1, 0], torch.zeros(3))
+    assert torch.allclose(runtime.bindings.mocap_pos[2, 0], torch.tensor([0.0, 1.5, 0.0]))
+
+
+def test_wall_scenarios_add_wall_y_reference_lines() -> None:
+    mj_scenario = default_mj_wall(
+        seed=123,
+        reset_settle_time=0.0,
+        **PO_WALL_MEDIUM_SCENARIO_KWARGS,
+    )
+    mjw_scenario = default_mjw_wall(**PO_WALL_MEDIUM_SCENARIO_KWARGS)
+    scene = object()
+
+    with (
+        patch("swarmbots.mj_env.scenarios.wall_scenario.add_wall_y_reference_line_geoms") as add_mj_lines,
+        patch("swarmbots.mjw_env.scenarios.mjw_wall_scenario.add_wall_y_reference_line_geoms") as add_mjw_lines,
+    ):
+        mj_scenario.add_render_geoms(scene)
+        mjw_scenario.add_render_geoms(scene)
+
+    add_mj_lines.assert_called_once_with(scene)
+    add_mjw_lines.assert_called_once_with(scene)
+
+
+def test_wall_y_reference_lines_show_bounds() -> None:
+    scene = object()
+
+    with patch("swarmbots.utils.mujoco_render_geoms.add_y_reference_line_geom") as add_line:
+        add_wall_y_reference_line_geoms(scene)
+
+    bounds_rgba = (0.1, 0.8, 1.0, 1.0)
+    assert add_line.call_args_list == [
+        call(scene, y=0.5, rgba=bounds_rgba),
+        call(scene, y=1.5, rgba=bounds_rgba),
+    ]
 
 

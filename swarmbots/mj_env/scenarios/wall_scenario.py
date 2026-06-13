@@ -11,6 +11,7 @@ from swarmbots.mj_env.scenarios.base_scenario import (
 )
 from swarmbots.mj_env.swarm.base_swarm import BaseSwarm
 from swarmbots.mj_env.swarm.swarm_connections import SwarmConnections
+from swarmbots.utils.mujoco_render_geoms import add_wall_y_reference_line_geoms
 
 
 def _wall_pass_rank_weights(active_units_count: int, skew: float) -> np.ndarray:
@@ -229,6 +230,9 @@ class WallScenario(BaseScenario):
         state["forward_progress_unit_y"] = forward_progress_unit_y
 
         return state, connections
+
+    def add_render_geoms(self, scene: mujoco.MjvScene) -> None:
+        add_wall_y_reference_line_geoms(scene)
 
     def reset_wall(
             self,

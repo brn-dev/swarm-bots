@@ -12,6 +12,7 @@ from swarmbots.utils.connector_actions import connector_action_space
 from swarmbots.mj_env.float_or_dist_params import FloatOrDistParams
 from swarmbots.mjw_env.scenarios.base_mjw_scenario import BaseMJWScenario, MJWRuntimeBindings, MJWRecordingCameraConfig
 from swarmbots.mjw_env.swarm.mjw_homogeneous_swarm import MJWHomogeneousSwarm
+from swarmbots.utils.mujoco_render_geoms import add_wall_y_reference_line_geoms
 
 
 def _hinges_per_limb(unit_config: tuple[object, ...]) -> int:
@@ -260,6 +261,9 @@ class MJWWallScenario(BaseMJWScenario):
     def build_runtime_metadata(self, *, host_model: mujoco.MjModel) -> None:
         _ = host_model
         return None
+
+    def add_render_geoms(self, scene: mujoco.MjvScene) -> None:
+        add_wall_y_reference_line_geoms(scene)
 
     def create_runtime(self, *, bindings: MJWRuntimeBindings, runtime_metadata: Any) -> Any:
         from swarmbots.mjw_env.scenarios.mjw_wall_runtime import WallMJWScenarioRuntime
