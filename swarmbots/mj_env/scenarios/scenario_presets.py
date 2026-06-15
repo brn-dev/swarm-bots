@@ -22,7 +22,7 @@ from swarmbots.mj_env.swarm.unit_config import (
 )
 from swarmbots.scenario_presets import scenario_presets_kwargs as shared_kwargs
 from swarmbots.scenario_presets.scenario_presets_kwargs import (
-    Difficulty,
+    WallDifficulty,
     make_scenario_kwargs,
     wall_scenario_kwargs_with_difficulty,
 )
@@ -145,7 +145,7 @@ def default_wall(
     randomize_unit_orientations: bool = False,
     quantize_connection_twist: int | None = 8,
     joints: JointPreset = "zx",
-    difficulty: Difficulty | None = None,
+    difficulty: WallDifficulty | None = None,
     **kwargs: Any,
 ) -> WallScenario:
     return _make_scenario(
