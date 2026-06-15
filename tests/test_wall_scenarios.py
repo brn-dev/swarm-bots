@@ -10,8 +10,18 @@ from swarmbots.mj_env.float_or_dist_params import UniformDistParams
 from swarmbots.mj_env.scenarios.scenario_presets import default_wall as default_mj_wall
 from swarmbots.mjw_env.scenarios.mjw_wall_runtime import WallMJWScenarioRuntime
 from swarmbots.mjw_env.scenarios.mjw_scenario_presets import default_wall as default_mjw_wall
-from swarmbots.scenario_presets.scenario_presets_kwargs import PO_WALL_MEDIUM_SCENARIO_KWARGS
+from swarmbots.scenario_presets.scenario_presets_kwargs import (
+    PO_WALL_HARD_SCENARIO_KWARGS,
+    PO_WALL_MEDIUM_SCENARIO_KWARGS,
+    po_wall_scenario_kwargs_with_difficulty,
+)
 from swarmbots.utils.mujoco_render_geoms import add_wall_y_reference_line_geoms
+
+
+def test_po_wall_difficulties_set_wall_height() -> None:
+    assert PO_WALL_MEDIUM_SCENARIO_KWARGS["wall_height"] == 0.25
+    assert PO_WALL_HARD_SCENARIO_KWARGS["wall_height"] == 0.3
+    assert po_wall_scenario_kwargs_with_difficulty()["wall_height"] == 0.25
 
 
 def test_po_wall_medium_samples_wall_y_into_hidden_global_obs_only_in_mj() -> None:
