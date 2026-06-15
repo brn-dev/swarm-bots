@@ -15,7 +15,7 @@ def make_scenario_kwargs(*parts: Mapping[str, object]) -> dict[str, object]:
         merged.update(deepcopy(dict(part)))
     return merged
 
-Difficulty = Literal["easy", "medium", "hard"]
+WallDifficulty = Literal["easy", "medium", "hard"]
 PoWallDifficulty = Literal["medium", "hard"]
 
 COMMON_SCENARIO_KWARGS: dict[str, object] = {
@@ -58,7 +58,7 @@ WALL_SCENARIO_KWARGS: dict[str, object] = {
     "wall_climb_reward_distance": 0.45,
 }
 
-WALL_DIFFICULTY_UPDATES: dict[Difficulty, dict[str, object]] = {
+WALL_DIFFICULTY_UPDATES: dict[WallDifficulty, dict[str, object]] = {
     "easy": {
         "wall_height": 0.2,
     },
@@ -86,7 +86,7 @@ WALL_DIFFICULTY_UPDATES: dict[Difficulty, dict[str, object]] = {
     },
 }
 
-def wall_scenario_kwargs_with_difficulty(difficulty: Difficulty | None) -> dict[str, object]:
+def wall_scenario_kwargs_with_difficulty(difficulty: WallDifficulty | None) -> dict[str, object]:
     kwargs = WALL_SCENARIO_KWARGS.copy()
     if difficulty is not None:
         kwargs.update(WALL_DIFFICULTY_UPDATES[difficulty])

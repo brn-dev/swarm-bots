@@ -25,7 +25,7 @@ from swarmbots.mjw_env.scenarios.mjw_wall_scenario import MJWWallScenario
 from swarmbots.mjw_env.swarm.mjw_homogeneous_swarm import MJWHomogeneousSwarm, MJWPreConnectedUnitLocationsConfig
 from swarmbots.scenario_presets import scenario_presets_kwargs as shared_kwargs
 from swarmbots.scenario_presets.scenario_presets_kwargs import (
-    Difficulty,
+    WallDifficulty,
     make_scenario_kwargs,
     wall_scenario_kwargs_with_difficulty,
 )
@@ -160,7 +160,7 @@ def default_wall(
     unit_start_locations: MJWPreConnectedUnitLocationsConfig | None = None,
     quantize_connection_twist: int = 8,
     joints: JointPreset = "zx",
-    difficulty: Difficulty | None = None,
+    difficulty: WallDifficulty | None = None,
     **kwargs: object,
 ) -> MJWWallScenario:
     return _make_scenario(
