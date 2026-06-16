@@ -793,9 +793,9 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
         if world_idx.numel() == 0:
             return
 
-        logger.warning(f"Running initial settled reset for {int(world_idx.numel())} MJW envs.")
+        logger.info(f"Running initial settled reset for {int(world_idx.numel())} MJW envs.")
         self._reset_world_indices_with_settled_snapshots(world_idx)
-        logger.warning(f"Envs settled.")
+        logger.info("Envs settled.")
 
     def _reset_world_indices_with_settled_snapshots(self, world_idx: torch.Tensor) -> None:
         if world_idx.numel() == 0:
