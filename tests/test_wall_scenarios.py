@@ -11,7 +11,7 @@ from swarmbots.mj_env.scenarios.scenario_presets import default_wall as default_
 from swarmbots.mjw_env.scenarios.mjw_wall_runtime import WallMJWScenarioRuntime
 from swarmbots.mjw_env.scenarios.mjw_scenario_presets import default_wall as default_mjw_wall
 from swarmbots.scenario_presets.scenario_presets_kwargs import (
-    PO_WALL_HARD_SCENARIO_KWARGS,
+    PO_WALL_EASY_SCENARIO_KWARGS,
     PO_WALL_MEDIUM_SCENARIO_KWARGS,
     po_wall_scenario_kwargs_with_difficulty,
 )
@@ -19,16 +19,17 @@ from swarmbots.utils.mujoco_render_geoms import add_wall_y_reference_line_geoms
 
 
 def test_po_wall_difficulties_set_wall_height() -> None:
-    assert PO_WALL_MEDIUM_SCENARIO_KWARGS["wall_height"] == 0.25
-    assert PO_WALL_HARD_SCENARIO_KWARGS["wall_height"] == 0.3
+    assert PO_WALL_EASY_SCENARIO_KWARGS["wall_height"] == 0.25
+    assert PO_WALL_MEDIUM_SCENARIO_KWARGS["wall_height"] == 0.3
+    assert po_wall_scenario_kwargs_with_difficulty("medium")["wall_height"] == 0.3
     assert po_wall_scenario_kwargs_with_difficulty()["wall_height"] == 0.25
 
 
-def test_po_wall_medium_samples_wall_y_into_hidden_global_obs_only_in_mj() -> None:
+def test_po_wall_easy_samples_wall_y_into_hidden_global_obs_only_in_mj() -> None:
     scenario = default_mj_wall(
         seed=123,
         reset_settle_time=0.0,
-        **PO_WALL_MEDIUM_SCENARIO_KWARGS,
+        **PO_WALL_EASY_SCENARIO_KWARGS,
     )
 
     sampled_wall_positions: list[float] = []
@@ -47,8 +48,8 @@ def test_po_wall_medium_samples_wall_y_into_hidden_global_obs_only_in_mj() -> No
     assert len({round(wall_y, 6) for wall_y in sampled_wall_positions}) > 1
 
 
-def test_po_wall_medium_mjw_space_keeps_wall_position_hidden() -> None:
-    scenario = default_mjw_wall(**PO_WALL_MEDIUM_SCENARIO_KWARGS)
+def test_po_wall_easy_mjw_space_keeps_wall_position_hidden() -> None:
+    scenario = default_mjw_wall(**PO_WALL_EASY_SCENARIO_KWARGS)
     obs_space = scenario.get_single_observation_space()
 
     assert obs_space["global_obs"].shape == (0,)
@@ -56,7 +57,7 @@ def test_po_wall_medium_mjw_space_keeps_wall_position_hidden() -> None:
     assert isinstance(scenario.get_settings()["first_wall_distance"], UniformDistParams)
 
 
-def test_po_wall_medium_mjw_reset_sampling_puts_wall_y_in_hidden_global_vars() -> None:
+def test_po_wall_easy_mjw_reset_sampling_puts_wall_y_in_hidden_global_vars() -> None:
     runtime = object.__new__(WallMJWScenarioRuntime)
     runtime.bindings = SimpleNamespace(device=torch.device("cpu"))
     runtime.hidden_global_vars = torch.zeros((1, 1), dtype=torch.float32)
@@ -98,9 +99,9 @@ def test_wall_scenarios_add_wall_y_reference_lines() -> None:
     mj_scenario = default_mj_wall(
         seed=123,
         reset_settle_time=0.0,
-        **PO_WALL_MEDIUM_SCENARIO_KWARGS,
+        **PO_WALL_EASY_SCENARIO_KWARGS,
     )
-    mjw_scenario = default_mjw_wall(**PO_WALL_MEDIUM_SCENARIO_KWARGS)
+    mjw_scenario = default_mjw_wall(**PO_WALL_EASY_SCENARIO_KWARGS)
     scene = object()
 
     with (
