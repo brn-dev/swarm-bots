@@ -8,9 +8,10 @@ import torch
 from gymnasium import spaces
 from gymnasium.vector import VectorEnv, VectorWrapper
 
-
-PAYLOAD_GLOBAL_OBS_ADAPTER_NAME = "move_to_payload"
-DUAL_PAYLOAD_GLOBAL_OBS_ADAPTER_NAME = "move_to_dual_payload"
+from swarmbots.scenario_presets.scenario_obs_layouts import (
+    DUAL_PAYLOAD_GLOBAL_OBS_ADAPTER_NAME,
+    PAYLOAD_GLOBAL_OBS_ADAPTER_NAME,
+)
 
 
 class MoveToPayloadGlobalObsAdapter(VectorWrapper):
