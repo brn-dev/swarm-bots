@@ -1,6 +1,8 @@
 import mujoco
 import numpy as np
 
+from swarmbots.mj_env.float_or_dist_params import BoundedDistParams, FloatOrDistParams
+
 
 def add_line_geom(
     scene: mujoco.MjvScene,
@@ -68,7 +70,15 @@ def add_y_reference_line_geom(
     )
 
 
-def add_wall_y_reference_line_geoms(scene: mujoco.MjvScene) -> None:
+def add_wall_y_reference_line_geoms(
+    scene: mujoco.MjvScene,
+    *,
+    first_wall_distance: FloatOrDistParams,
+) -> None:
     bounds_rgba = (0.1, 0.8, 1.0, 1.0)
-    add_y_reference_line_geom(scene, y=0.5, rgba=bounds_rgba)
-    add_y_reference_line_geom(scene, y=1.5, rgba=bounds_rgba)
+    if isinstance(first_wall_distance, (float, int)):
+        add_y_reference_line_geom(scene, y=float(first_wall_distance), rgba=bounds_rgba)
+        return
+    if isinstance(first_wall_distance, BoundedDistParams):
+        add_y_reference_line_geom(scene, y=first_wall_distance.low, rgba=bounds_rgba)
+        add_y_reference_line_geom(scene, y=first_wall_distance.high, rgba=bounds_rgba)
