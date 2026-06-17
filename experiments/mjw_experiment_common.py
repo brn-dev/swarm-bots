@@ -364,6 +364,7 @@ def run_experiment(
         scenario_name: MJWScenarioName = "wall",
         ccd_iterations: int | None = None,
         scenario_kwargs: dict[str, object] | None = None,
+        total_timesteps: int = 100_000_000,
 ) -> None:
     from swarmbots.learn.torch_logging import enable_torch_compile_logging
 
@@ -391,7 +392,6 @@ def run_experiment(
 
     episode_length = 512
     rollout_warmup_steps_per_env = episode_length
-    total_timesteps = 100_000_000
     save_interval = None
 
     use_popart = True
