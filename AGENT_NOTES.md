@@ -56,6 +56,7 @@ Keep only durable architecture notes and gotchas. Prefer deleting stale detail o
 - Key `global_obs` layouts: payload `(x, y, z, rot6d)`, dual-payload two payload poses, multi-payload goal records `(is_active, x, y, z, rot6d, goal_x, goal_y)`, move-to absolute goal `(x, y)`, climb top-face center goal `(x, y, z)`.
 - Multi-payload goal inactive records keep `is_active=0` and zero scalar fields, but use identity rot6d so WM/global rot6d targets remain valid. `is_active` is not a global scalar target.
 - Find-opening barrier segments use `wall_segment_width`, independent of `street_width`; their inner edges must remain anchored to the sampled opening in both MJ and MJW.
+- Find-opening wall exploration reward cells are an internal episode latch: cells split `street_width` along x, cover the strip immediately before the wall front face, and are reset-latched from initial unit positions.
 - Payload-step scenarios keep the single-payload global obs layout; the elevated step is fixed scenario geometry/settings, and the height reward uses a latch so crossing onto the step does not create a negative potential drop.
 - `SwarmBotsEnv.reset(seed=...)` must reseed `scenario.rng`; reset sampling does not use Gymnasium `env.np_random`.
 

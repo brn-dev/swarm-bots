@@ -71,6 +71,9 @@ class MJWFindOpeningScenario(BaseMJWScenario):
     opening_y_margin: float
     success_reward: float
     opening_distance_reward_weight: float
+    wall_exploration_cell_count: int = 0
+    wall_exploration_cell_reward: float = 0.0
+    wall_exploration_cell_depth: float = 1.0
     continuous_connector_actions: bool = False
     seed: int | None = None
     compile_reward_kernel: bool = False
@@ -94,6 +97,9 @@ class MJWFindOpeningScenario(BaseMJWScenario):
         self.opening_y_margin = float(self.opening_y_margin)
         self.success_reward = float(self.success_reward)
         self.opening_distance_reward_weight = float(self.opening_distance_reward_weight)
+        self.wall_exploration_cell_count = int(self.wall_exploration_cell_count)
+        self.wall_exploration_cell_reward = float(self.wall_exploration_cell_reward)
+        self.wall_exploration_cell_depth = float(self.wall_exploration_cell_depth)
         self.potential_reward_discount_factor = float(self.potential_reward_discount_factor)
 
         if self.street_width <= 0.0:
@@ -113,6 +119,10 @@ class MJWFindOpeningScenario(BaseMJWScenario):
             )
         if self.opening_y_margin <= 0.0:
             raise ValueError(f"Expected opening_y_margin > 0, got {self.opening_y_margin}")
+        if self.wall_exploration_cell_count < 0:
+            raise ValueError(f"Expected wall_exploration_cell_count >= 0, got {self.wall_exploration_cell_count}")
+        if self.wall_exploration_cell_depth <= 0.0:
+            raise ValueError(f"Expected wall_exploration_cell_depth > 0, got {self.wall_exploration_cell_depth}")
 
         self.side_wall_x = self.street_width / 2.0
         self.inactive_area_location = (self.street_width * 2.0, 0.0, 0.1)
@@ -169,6 +179,9 @@ class MJWFindOpeningScenario(BaseMJWScenario):
             "opening_y_margin": self.opening_y_margin,
             "success_reward": self.success_reward,
             "opening_distance_reward_weight": self.opening_distance_reward_weight,
+            "wall_exploration_cell_count": self.wall_exploration_cell_count,
+            "wall_exploration_cell_reward": self.wall_exploration_cell_reward,
+            "wall_exploration_cell_depth": self.wall_exploration_cell_depth,
             "compile_reward_kernel": self.compile_reward_kernel,
             "reward_kernel_compile_mode": self.reward_kernel_compile_mode,
         }
