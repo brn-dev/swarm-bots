@@ -266,7 +266,8 @@ def maybe_compute_summary_statistics(
 ) -> Optional[SummaryStatistics]:
     if is_summary_statistics(x):
         if make_histogram and x.histogram in (None, NO_DATA) and x.data is not None:
-            compute_histogram(x, n_bins=make_histogram if isinstance(make_histogram, int) else HISTOGRAM_DEFAULT_BINS)
+            n_bins = HISTOGRAM_DEFAULT_BINS if isinstance(make_histogram, bool) else make_histogram
+            compute_histogram(x, n_bins=n_bins)
         if compute_skewness or compute_kurtosis:
             needs_skewness = compute_skewness and x.skewness in (None, NO_DATA)
             needs_kurtosis = compute_kurtosis and x.kurtosis in (None, NO_DATA)

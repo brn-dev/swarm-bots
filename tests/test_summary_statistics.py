@@ -4,7 +4,13 @@ import numpy as np
 import torch
 
 from swarmbots.learn.metrics_list import MetricsLists
-from swarmbots.learn.summary_statistics import compute_summary_statistics
+from swarmbots.learn.summary_statistics import (
+    HISTOGRAM_DEFAULT_BINS,
+    SummaryStatistics,
+    combine_summary_statistics,
+    compute_summary_statistics,
+    maybe_compute_summary_statistics,
+)
 
 
 class SummaryStatisticsTests(unittest.TestCase):
@@ -71,6 +77,64 @@ class SummaryStatisticsTests(unittest.TestCase):
         assert stats is not None
         self.assertIsNone(stats.data)
         self.assertEqual(stats.n, 2)
+
+    def test_default_histogram_request_on_retained_stats_uses_default_bin_count(self) -> None:
+        stats = compute_summary_statistics(np.arange(10.0), keep_data=True)
+
+        assert stats is not None
+        maybe_compute_summary_statistics(stats, make_histogram=True)
+
+        assert stats.histogram is not None
+        self.assertEqual(len(stats.histogram.bin_frequencies), HISTOGRAM_DEFAULT_BINS)
+
+    def test_explicit_histogram_request_on_retained_stats_uses_requested_bin_count(self) -> None:
+        stats = compute_summary_statistics(np.arange(10.0), keep_data=True)
+
+        assert stats is not None
+        maybe_compute_summary_statistics(stats, make_histogram=4)
+
+        assert stats.histogram is not None
+        self.assertEqual(len(stats.histogram.bin_frequencies), 4)
+
+    def test_combined_summary_statistics_match_original_population(self) -> None:
+        first = compute_summary_statistics(np.array([1.0, 2.0, 3.0]), find_min=True, find_max=True)
+        second = compute_summary_statistics(np.array([10.0, 12.0]), find_min=True, find_max=True)
+        expected = compute_summary_statistics(np.array([1.0, 2.0, 3.0, 10.0, 12.0]), find_min=True, find_max=True)
+
+        assert first is not None
+        assert second is not None
+        assert expected is not None
+        combined = combine_summary_statistics([first, second])
+
+        self.assertEqual(combined.n, expected.n)
+        self.assertAlmostEqual(float(combined.mean), float(expected.mean))
+        self.assertAlmostEqual(float(combined.std), float(expected.std))
+        self.assertEqual(combined.min_value, expected.min_value)
+        self.assertEqual(combined.max_value, expected.max_value)
+
+    def test_combined_summary_statistics_ignore_empty_shards(self) -> None:
+        empty = compute_summary_statistics([], find_min=True, find_max=True)
+        non_empty = compute_summary_statistics(np.array([3.0, 5.0]), find_min=True, find_max=True)
+
+        assert empty is not None
+        assert non_empty is not None
+        combined = combine_summary_statistics([empty, non_empty])
+
+        self.assertEqual(combined.n, 2)
+        self.assertAlmostEqual(float(combined.mean), 4.0)
+        self.assertAlmostEqual(float(combined.std), 1.0)
+        self.assertEqual(combined.min_value, 3.0)
+        self.assertEqual(combined.max_value, 5.0)
+
+    def test_combined_summary_statistics_only_report_bounds_when_all_non_empty_shards_have_them(self) -> None:
+        with_bounds = compute_summary_statistics(np.array([1.0, 2.0]), find_min=True, find_max=True)
+        without_bounds = SummaryStatistics(n=1, mean=10.0, std=0.0)
+
+        assert with_bounds is not None
+        combined = combine_summary_statistics([with_bounds, without_bounds])
+
+        self.assertIsNone(combined.min_value)
+        self.assertIsNone(combined.max_value)
 
 
 if __name__ == "__main__":

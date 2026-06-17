@@ -157,6 +157,23 @@ class MetricsLoggerTests(unittest.TestCase):
             self.assertIn("timesteps;value;timestamp", contents)
             self.assertIn("12;3.5;", contents)
 
+    def test_csv_schema_expands_when_new_metrics_appear(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            log_dir = Path(tmp_dir)
+            metrics_logger = MetricsLogger(log_dir=log_dir)
+
+            metrics_logger.log({"timesteps": 1})
+            metrics_logger.log({"timesteps": 2, "loss": 0.25})
+            metrics_logger.close()
+
+            with (log_dir / "log.csv").open(newline="", encoding="utf-8") as log_file:
+                rows = list(csv.DictReader(log_file, delimiter=";"))
+
+            self.assertEqual(rows[0]["timesteps"], "1")
+            self.assertEqual(rows[0]["loss"], "")
+            self.assertEqual(rows[1]["timesteps"], "2")
+            self.assertEqual(rows[1]["loss"], "0.25")
+
     def test_learn_keeps_csv_when_compression_flag_is_disabled(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             run_dir = Path(tmp_dir)

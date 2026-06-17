@@ -37,6 +37,15 @@ class TorchRunningMeanStdTests(unittest.TestCase):
         torch.testing.assert_close(rms.var, torch.tensor(0.0, dtype=torch.float64))
         torch.testing.assert_close(rms.count, torch.tensor(1.0, dtype=torch.float64))
 
+    def test_initial_count_behaves_like_a_neutral_prior(self) -> None:
+        rms = TorchRunningMeanStd(shape=(), initial_count=1.0)
+
+        rms.update(torch.tensor([2.0]))
+
+        torch.testing.assert_close(rms.mean, torch.tensor(1.0, dtype=torch.float64))
+        torch.testing.assert_close(rms.var, torch.tensor(1.5, dtype=torch.float64))
+        torch.testing.assert_close(rms.count, torch.tensor(2.0, dtype=torch.float64))
+
     def test_empty_batch_update_is_noop(self) -> None:
         rms = TorchRunningMeanStd(shape=(2,), initial_count=0.0)
         rms.update(torch.tensor([[1.0, 2.0]], dtype=torch.float32))

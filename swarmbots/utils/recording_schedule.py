@@ -33,6 +33,9 @@ def install_scheduled_recordings(
     total_timesteps: int,
     schedule: Mapping[float, int],
 ) -> Callable[[Any, dict[str, Any], int], None]:
+    if total_timesteps <= 0:
+        raise ValueError(f"total_timesteps must be positive, got {total_timesteps}")
+
     pending_milestones: list[tuple[float, int, int]] = []
     current_timesteps = int(algorithm.n_total_timesteps)
     seen_targets: set[int] = set()

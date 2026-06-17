@@ -84,6 +84,23 @@ class CheckpointEnvStateTests(unittest.TestCase):
         self.assertTrue(torch.equal(restored.return_rms.var, wrapper.return_rms.var))
         self.assertTrue(torch.equal(restored.return_rms.count, wrapper.return_rms.count))
 
+    def test_capture_env_state_snapshots_running_stats(self) -> None:
+        wrapper = TorchNormalizeRewardWrapper(_DummyTorchEnv(), gamma=0.5)
+        restored = TorchNormalizeRewardWrapper(_DummyTorchEnv(), gamma=0.5)
+        _set_rms(wrapper.return_rms, offset=7.0)
+
+        env_state = capture_env_state(wrapper)
+        captured_mean = wrapper.return_rms.mean.clone()
+        captured_var = wrapper.return_rms.var.clone()
+        captured_count = wrapper.return_rms.count.clone()
+        _set_rms(wrapper.return_rms, offset=99.0)
+
+        apply_env_state(restored, env_state)
+
+        self.assertTrue(torch.equal(restored.return_rms.mean, captured_mean))
+        self.assertTrue(torch.equal(restored.return_rms.var, captured_var))
+        self.assertTrue(torch.equal(restored.return_rms.count, captured_count))
+
     def test_apply_env_state_rejects_obs_key_mismatch_and_missing_wrapper(self) -> None:
         wrapper = TorchFeatureWiseObsNormWrapper(
             _DummyTorchEnv(),
