@@ -1,11 +1,12 @@
 from typing import Any
 
-from swarmbots.learn.env_wrappers.move_to_payload_global_obs_adapter import (
+from swarmbots.learn.obs_indices import ObsIndices
+from swarmbots.scenario_presets.scenario_obs_layouts import (
+    CLIMB_GOAL_XYZ_GLOBAL_OBS_LAYOUT,
     DUAL_PAYLOAD_GLOBAL_OBS_ADAPTER_NAME,
+    MULTI_PAYLOAD_GOAL_GLOBAL_OBS_LAYOUT,
     PAYLOAD_GLOBAL_OBS_ADAPTER_NAME,
 )
-from swarmbots.learn.obs_indices import ObsIndices
-from swarmbots.scenario_presets.scenario_obs_layouts import CLIMB_GOAL_XYZ_GLOBAL_OBS_LAYOUT
 
 
 def _hinges_per_limb(limb_type: str) -> int:
@@ -30,6 +31,19 @@ def _global_scalar_indices(scenario_settings: dict[str, Any], global_obs_dim: in
         if global_obs_dim != 18:
             raise ValueError(f"Unexpected adapted move-to dual-payload global_obs_dim for obs indices: {global_obs_dim}")
         return [0, 1, 2, 9, 10, 11]
+
+    if scenario_settings.get("global_obs_layout") == MULTI_PAYLOAD_GOAL_GLOBAL_OBS_LAYOUT:
+        num_payloads = int(scenario_settings["num_payloads"])
+        expected_global_obs_dim = num_payloads * 12
+        if global_obs_dim != expected_global_obs_dim:
+            raise ValueError(f"Unexpected multi-payload goal global_obs_dim for obs indices: {global_obs_dim}")
+        scalar_indices = []
+        for payload_idx in range(num_payloads):
+            offset = payload_idx * 12
+            scalar_indices.extend(
+                [offset + 1, offset + 2, offset + 3, offset + 10, offset + 11]
+            )
+        return scalar_indices
 
     if "payload_shape" in scenario_settings:
         expected_global_obs_dim = 18 if scenario_settings.get("num_payloads") == 2 else 9
@@ -60,6 +74,12 @@ def _global_rot6d_indices(scenario_settings: dict[str, Any], global_obs_dim: int
         DUAL_PAYLOAD_GLOBAL_OBS_ADAPTER_NAME,
     ):
         return []
+    if scenario_settings.get("global_obs_layout") == MULTI_PAYLOAD_GOAL_GLOBAL_OBS_LAYOUT:
+        num_payloads = int(scenario_settings["num_payloads"])
+        expected_global_obs_dim = num_payloads * 12
+        if global_obs_dim != expected_global_obs_dim:
+            raise ValueError(f"Unexpected multi-payload goal global_obs_dim for obs indices: {global_obs_dim}")
+        return [payload_idx * 12 + 4 for payload_idx in range(num_payloads)]
     if "payload_shape" not in scenario_settings:
         return []
 

@@ -152,6 +152,32 @@ class ObsIndicesTests(unittest.TestCase):
         self.assertEqual(obs_indices.global_rot6d_indices, [3, 12])
         self.assertEqual(obs_indices.global_quaternion_indices, [])
 
+    def test_multi_payload_goal_global_obs_indexes_payload_records(self) -> None:
+        obs_indices = build_obs_indices(
+            env_settings=_env_settings(
+                unit_types=["xy"],
+                include_connectors_xpos_in_obs=True,
+                include_connectors_xquat_in_obs=False,
+                quat_rot6d_representation=True,
+                scenario_overrides={
+                    "payload_shape": "box",
+                    "global_obs_layout": "multi_payload_goal",
+                    "num_payloads": 3,
+                },
+            ),
+            local_obs_dim=29,
+            global_obs_dim=36,
+            hidden_local_vars_dim=0,
+            hidden_global_vars_dim=0,
+        )
+
+        self.assertEqual(
+            obs_indices.global_scalar_indices,
+            [1, 2, 3, 10, 11, 13, 14, 15, 22, 23, 25, 26, 27, 34, 35],
+        )
+        self.assertEqual(obs_indices.global_rot6d_indices, [4, 16, 28])
+        self.assertEqual(obs_indices.global_quaternion_indices, [])
+
     def test_hidden_dual_payload_pose_only_normalizes_positions(self) -> None:
         obs_indices = build_obs_indices(
             env_settings=_env_settings(

@@ -19,6 +19,7 @@ from swarmbots.mjw_env.scenarios.mjw_climb_scenario import MJWClimbScenario
 from swarmbots.mjw_env.scenarios.mjw_dual_payload_plane_scenario import MJWDualPayloadPlaneScenario
 from swarmbots.mjw_env.scenarios.mjw_find_opening_scenario import MJWFindOpeningScenario
 from swarmbots.mjw_env.scenarios.mjw_move_to_scenario import MJWMoveToScenario
+from swarmbots.mjw_env.scenarios.mjw_multi_payload_goal_scenario import MJWMultiPayloadGoalScenario
 from swarmbots.mjw_env.scenarios.mjw_payload_plane_scenario import MJWPayloadPlaneScenario
 from swarmbots.mjw_env.scenarios.mjw_payload_step_scenario import MJWPayloadStepScenario
 from swarmbots.mjw_env.scenarios.mjw_wall_scenario import MJWWallScenario
@@ -46,6 +47,7 @@ CLIMB_SCENARIO_KWARGS = make_scenario_kwargs(shared_kwargs.CLIMB_SCENARIO_KWARGS
 PAYLOAD_PLANE_SCENARIO_KWARGS = make_scenario_kwargs(shared_kwargs.PAYLOAD_PLANE_SCENARIO_KWARGS)
 PAYLOAD_STEP_SCENARIO_KWARGS = make_scenario_kwargs(shared_kwargs.PAYLOAD_STEP_SCENARIO_KWARGS)
 DUAL_PAYLOAD_PLANE_SCENARIO_KWARGS = make_scenario_kwargs(shared_kwargs.DUAL_PAYLOAD_PLANE_SCENARIO_KWARGS)
+MULTI_PAYLOAD_GOAL_SCENARIO_KWARGS = make_scenario_kwargs(shared_kwargs.MULTI_PAYLOAD_GOAL_SCENARIO_KWARGS)
 MOVE_TO_SCENARIO_KWARGS = make_scenario_kwargs(shared_kwargs.MOVE_TO_SCENARIO_KWARGS)
 
 _JOINT_CONFIGS: dict[JointPreset, dict[str, object]] = {
@@ -278,6 +280,26 @@ def default_dual_payload_plane(
     return _make_scenario(
         MJWDualPayloadPlaneScenario,
         scenario_kwargs=_preset_kwargs(DUAL_PAYLOAD_PLANE_SCENARIO_KWARGS, overrides=kwargs),
+        seed=seed,
+        swarm=swarm,
+        unit_start_locations=unit_start_locations,
+        quantize_connection_twist=quantize_connection_twist,
+        joints=joints,
+    )
+
+
+def default_multi_payload_goal(
+    *,
+    seed: int | None = None,
+    swarm: MJWHomogeneousSwarm | None = None,
+    unit_start_locations: MJWPreConnectedUnitLocationsConfig | None = None,
+    quantize_connection_twist: int = 8,
+    joints: JointPreset = "zx",
+    **kwargs: object,
+) -> MJWMultiPayloadGoalScenario:
+    return _make_scenario(
+        MJWMultiPayloadGoalScenario,
+        scenario_kwargs=_preset_kwargs(MULTI_PAYLOAD_GOAL_SCENARIO_KWARGS, overrides=kwargs),
         seed=seed,
         swarm=swarm,
         unit_start_locations=unit_start_locations,

@@ -190,6 +190,24 @@ DUAL_PAYLOAD_PLANE_SCENARIO_KWARGS: dict[str, object] = {
     "lagging_payload_weight": 0.75,
 }
 
+MULTI_PAYLOAD_GOAL_SCENARIO_KWARGS: dict[str, object] = {
+    "plane_size": 100.0,
+    "swarm_start_x": 0.0,
+    "swarm_start_y": 0.0,
+    "forward_reward_weight": 10.0,
+    "payload_shape": "box",
+    "payload_radius": 0.3,
+    "payload_mass": 3.0,
+    "max_payloads": 4,
+    "active_payload_count_probs": {2: 1.0, 3: 1.0, 4: 1.0},
+    "payload_spawn_y": 1.0,
+    "payload_spawn_margin": 0.8,
+    "goal_rect": (-1.5, 1.5, 2.4, 4.2),
+    "goal_radius": 0.35,
+    "visualize_goal": True,
+    "success_reward": 5.0,
+}
+
 MOVE_TO_SCENARIO_KWARGS: dict[str, object] = {
     "plane_size": 100.0,
     "swarm_start_x": 0.0,
