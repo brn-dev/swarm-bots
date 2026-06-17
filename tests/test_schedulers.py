@@ -1,8 +1,8 @@
 import math
 import unittest
 
-from swarmbots.learn.scheduling.cosine_scheduler import CosineSchedulerConfig
-from swarmbots.learn.scheduling.exponential_scheduler import ExponentialSchedulerConfig
+from swarmbots.learn.scheduling.cosine_scheduler import CosineScheduler, CosineSchedulerConfig
+from swarmbots.learn.scheduling.exponential_scheduler import ExponentialScheduler, ExponentialSchedulerConfig
 from swarmbots.learn.scheduling.linear_scheduler import LinearScheduler, LinearSchedulerConfig
 from swarmbots.learn.scheduling.scheduler_factory import make_scheduler
 from swarmbots.learn.scheduling.schedulers import (
@@ -41,6 +41,77 @@ class SchedulerTests(unittest.TestCase):
 
         self.assertEqual(result, {"new_value": None, "event": "lr-hold"})
         self.assertEqual(hold_result, {"new_value": None, "event": "lr-hold"})
+
+    def test_chainable_schedulers_saturate_after_duration(self) -> None:
+        schedulers = [
+            LinearScheduler(
+                unit=ScheduleUnit.ITERATIONS,
+                duration=10,
+                start_value=1.0,
+                final_value=0.25,
+            ),
+            ExponentialScheduler(
+                unit=ScheduleUnit.ITERATIONS,
+                duration=10,
+                start_value=1.0,
+                final_value=0.25,
+                base=2.0,
+            ),
+            CosineScheduler(
+                unit=ScheduleUnit.ITERATIONS,
+                duration=10,
+                start_value=1.0,
+                final_value=0.25,
+            ),
+        ]
+
+        for scheduler in schedulers:
+            with self.subTest(scheduler=type(scheduler).__name__):
+                result = scheduler(
+                    old_value=1.0,
+                    state={},
+                    n_iterations=100,
+                    n_model_updates=0,
+                    n_timesteps=0,
+                    metrics={},
+                )
+
+                self.assertAlmostEqual(result["new_value"], 0.25)
+
+    def test_chainable_schedulers_with_non_positive_duration_jump_to_final_value(self) -> None:
+        schedulers = [
+            LinearScheduler(
+                unit=ScheduleUnit.ITERATIONS,
+                duration=0,
+                start_value=1.0,
+                final_value=0.25,
+            ),
+            ExponentialScheduler(
+                unit=ScheduleUnit.ITERATIONS,
+                duration=-1,
+                start_value=1.0,
+                final_value=0.25,
+            ),
+            CosineScheduler(
+                unit=ScheduleUnit.ITERATIONS,
+                duration=0,
+                start_value=1.0,
+                final_value=0.25,
+            ),
+        ]
+
+        for scheduler in schedulers:
+            with self.subTest(scheduler=type(scheduler).__name__):
+                result = scheduler(
+                    old_value=1.0,
+                    state={},
+                    n_iterations=0,
+                    n_model_updates=0,
+                    n_timesteps=0,
+                    metrics={},
+                )
+
+                self.assertAlmostEqual(result["new_value"], 0.25)
 
     def test_scheduler_factory_builds_all_supported_schedulers_and_rejects_unknown_config(self) -> None:
         linear = make_scheduler(LinearSchedulerConfig(

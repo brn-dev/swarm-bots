@@ -1,6 +1,7 @@
 
 
 import pathlib
+from types import SimpleNamespace
 from typing import Any, Optional
 
 import numpy as np
@@ -58,6 +59,21 @@ def copy_running_mean_std(src: Any, dst: Any) -> None:
     dst.count = float(torch.as_tensor(src.count, device="cpu", dtype=torch.float64).item())
 
 
+def clone_running_mean_std(src: Any) -> Any:
+    if isinstance(src.mean, torch.Tensor):
+        return SimpleNamespace(
+            mean=src.mean.detach().clone(),
+            var=src.var.detach().clone(),
+            count=torch.as_tensor(src.count, device=src.count.device, dtype=src.count.dtype).detach().clone(),
+        )
+
+    return SimpleNamespace(
+        mean=np.asarray(src.mean).copy(),
+        var=np.asarray(src.var).copy(),
+        count=float(torch.as_tensor(src.count, device="cpu", dtype=torch.float64).item()),
+    )
+
+
 def iter_running_mean_std(env: Any) -> list[tuple[str, Any]]:
     rms_entries: list[tuple[str, Any]] = []
     for attr_name in dir(env):
@@ -90,7 +106,7 @@ def capture_env_state(env: Any) -> list[dict[str, Any]]:
             wrapper_state['obs_key'] = current_env.obs_key
 
         for attr_name, value in iter_running_mean_std(current_env):
-            wrapper_state[attr_name] = value
+            wrapper_state[attr_name] = clone_running_mean_std(value)
 
         if wrapper_state:
             wrapper_state["wrapper_class"] = type(current_env).__name__

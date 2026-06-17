@@ -133,6 +133,44 @@ class ObsIndicesTests(unittest.TestCase):
         self.assertEqual(obs_indices.global_rot6d_indices, [])
         self.assertEqual(obs_indices.global_quaternion_indices, [])
 
+    def test_move_to_payload_adapter_normalizes_payload_position_only(self) -> None:
+        obs_indices = build_obs_indices(
+            env_settings=_env_settings(
+                unit_types=["xy"],
+                include_connectors_xpos_in_obs=True,
+                include_connectors_xquat_in_obs=False,
+                quat_rot6d_representation=True,
+                scenario_overrides={"global_obs_adapter": "move_to_payload"},
+            ),
+            local_obs_dim=29,
+            global_obs_dim=9,
+            hidden_local_vars_dim=0,
+            hidden_global_vars_dim=0,
+        )
+
+        self.assertEqual(obs_indices.global_scalar_indices, [0, 1, 2])
+        self.assertEqual(obs_indices.global_rot6d_indices, [])
+        self.assertEqual(obs_indices.global_quaternion_indices, [])
+
+    def test_climb_goal_global_obs_is_xyz_scalars(self) -> None:
+        obs_indices = build_obs_indices(
+            env_settings=_env_settings(
+                unit_types=["xy"],
+                include_connectors_xpos_in_obs=True,
+                include_connectors_xquat_in_obs=False,
+                quat_rot6d_representation=True,
+                scenario_overrides={"global_obs_layout": "climb_goal_xyz"},
+            ),
+            local_obs_dim=29,
+            global_obs_dim=3,
+            hidden_local_vars_dim=0,
+            hidden_global_vars_dim=0,
+        )
+
+        self.assertEqual(obs_indices.global_scalar_indices, [0, 1, 2])
+        self.assertEqual(obs_indices.global_rot6d_indices, [])
+        self.assertEqual(obs_indices.global_quaternion_indices, [])
+
     def test_dual_payload_global_obs_normalizes_both_payload_positions(self) -> None:
         obs_indices = build_obs_indices(
             env_settings=_env_settings(

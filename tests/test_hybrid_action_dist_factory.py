@@ -16,11 +16,52 @@ from swarmbots.learn.action_dists.sticky_bang_zero_bang_action_dist import (
     StickyBangZeroBangActionDist,
     StickyBangZeroBangConfig,
 )
-from swarmbots.learn.hybrid_action_space import HybridActionSpace
+from swarmbots.learn.hybrid_action_space import HybridActionSpace, VectorHybridActionSpace
 from swarmbots.learn.nn_components.nn_init import init_linear_orthogonal
 
 
 class HybridActionDistFactoryTests(unittest.TestCase):
+    def test_hybrid_action_space_preserves_declared_sequence_order_for_split_concat(self) -> None:
+        action_space = HybridActionSpace([
+            ("actuators", spaces.Box(-1.0, 1.0, shape=(2, 2), dtype=np.float32)),
+            ("connectors", spaces.MultiBinary((2, 1))),
+        ])
+        action_parts = {
+            "actuators": np.array([[0.1, 0.2], [0.3, 0.4]], dtype=np.float32),
+            "connectors": np.array([[1], [0]], dtype=np.int8),
+        }
+
+        concatenated = action_space.concat_actions(action_parts)
+        split = action_space.split_actions(concatenated)
+
+        self.assertEqual(action_space.key_order, ["actuators", "connectors"])
+        np.testing.assert_allclose(
+            concatenated,
+            np.array([[0.1, 0.2, 1.0], [0.3, 0.4, 0.0]], dtype=np.float32),
+        )
+        np.testing.assert_allclose(split["actuators"], action_parts["actuators"])
+        np.testing.assert_array_equal(split["connectors"], action_parts["connectors"])
+
+    def test_hybrid_action_space_rejects_subspaces_with_different_agent_counts(self) -> None:
+        with self.assertRaisesRegex(ValueError, "share n_agents"):
+            HybridActionSpace([
+                ("actuators", spaces.Box(-1.0, 1.0, shape=(2, 2), dtype=np.float32)),
+                ("connectors", spaces.MultiBinary((3, 1))),
+            ])
+
+    def test_vector_hybrid_action_space_rejects_subspaces_with_different_env_or_agent_counts(self) -> None:
+        with self.assertRaisesRegex(ValueError, "share n_envs"):
+            VectorHybridActionSpace([
+                ("actuators", spaces.Box(-1.0, 1.0, shape=(2, 3, 2), dtype=np.float32)),
+                ("connectors", spaces.MultiBinary((4, 3, 1))),
+            ])
+
+        with self.assertRaisesRegex(ValueError, "share n_agents"):
+            VectorHybridActionSpace([
+                ("actuators", spaces.Box(-1.0, 1.0, shape=(2, 3, 2), dtype=np.float32)),
+                ("connectors", spaces.MultiBinary((2, 4, 1))),
+            ])
+
     def test_sticky_bang_config_creates_sticky_distribution_before_base_config_match(self) -> None:
         dist = make_proba_distribution(
             latent_dim=4,
