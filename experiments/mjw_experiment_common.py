@@ -59,6 +59,7 @@ from swarmbots.mjw_env.scenarios.mjw_scenario_presets import (
     default_climb,
     default_dual_payload_plane,
     default_find_opening,
+    default_multi_payload_goal,
     default_payload_step,
     default_wall,
 )
@@ -67,7 +68,7 @@ from swarmbots.utils.run_paths import get_run_id_from_checkpoint_path
 
 ContinuousActionDistVariant = Literal["sticky_sign_magnitude_beta", "sign_magnitude_beta", "beta", "gsde", "squashed_diag_gaussian"]
 PolicyVariant = Literal["mat_qcs", "mat_qcc", "mat_dec", "mat_orig", "ppo", "mappo"]
-MJWScenarioName = Literal["wall", "find_opening", "climb", "dual_payload", "payload_step"]
+MJWScenarioName = Literal["wall", "find_opening", "climb", "dual_payload", "payload_step", "multi_payload_goal"]
 
 
 @dataclass(frozen=True)
@@ -146,6 +147,7 @@ def _make_scenario(*, scenario_name: MJWScenarioName, scenario_kwargs: dict[str,
         "climb": default_climb,
         "dual_payload": default_dual_payload_plane,
         "payload_step": default_payload_step,
+        "multi_payload_goal": default_multi_payload_goal,
     }[scenario_name]
     return scenario_factory(**({} if scenario_kwargs is None else scenario_kwargs))
 
@@ -157,6 +159,7 @@ def _scenario_display_name(*, scenario_name: MJWScenarioName) -> str:
         "climb": "climb",
         "dual_payload": "dual-payload",
         "payload_step": "payload-step",
+        "multi_payload_goal": "multi-payload-goal",
     }[scenario_name]
 
 
@@ -165,7 +168,7 @@ def _default_experiment_run_name(*, scenario_name: MJWScenarioName) -> str:
 
 
 def _default_ccd_iterations(*, scenario_name: MJWScenarioName) -> int | None:
-    return 4096 if scenario_name in {"dual_payload", "payload_step"} else None
+    return 4096 if scenario_name in {"dual_payload", "payload_step", "multi_payload_goal"} else None
 
 
 def make_vector_env(
