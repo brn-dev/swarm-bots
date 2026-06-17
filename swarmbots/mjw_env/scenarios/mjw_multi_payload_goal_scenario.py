@@ -69,7 +69,7 @@ class MJWMultiPayloadGoalScenario:
     reward_kernel_compile_mode: str = "default"
     randomize_initial_swarm_z_rotation: bool = False
     physics_nconmax: int | None = None
-    physics_njmax: int | None = 200
+    physics_njmax: int | None = 250
 
     def __post_init__(self) -> None:
         if self.include_connectors_xquat_in_obs:
