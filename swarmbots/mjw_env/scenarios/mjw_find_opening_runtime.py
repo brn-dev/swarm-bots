@@ -42,6 +42,36 @@ class FindOpeningSettledSnapshot:
     common: MJWCommonSettledSnapshot
     opening_x: float
     opening_potential: float
+    wall_exploration_visited_cells: np.ndarray
+
+
+def _compute_wall_exploration_visited_cells_torch(
+    *,
+    unit_x: torch.Tensor,
+    unit_y: torch.Tensor,
+    stable_mask: torch.Tensor,
+    units_active_mask: torch.Tensor,
+    side_wall_x: float,
+    wall_front_y: float,
+    cell_depth: float,
+    cell_count: int,
+) -> torch.Tensor:
+    if cell_count == 0:
+        return torch.zeros((unit_x.shape[0], 0), device=unit_x.device, dtype=torch.bool)
+
+    valid = (
+        stable_mask.unsqueeze(1)
+        & units_active_mask
+        & (unit_x >= -float(side_wall_x))
+        & (unit_x <= float(side_wall_x))
+        & (unit_y >= float(wall_front_y) - float(cell_depth))
+        & (unit_y <= float(wall_front_y))
+    )
+    normalized_x = (unit_x + float(side_wall_x)) / (2.0 * float(side_wall_x))
+    cell_indices = torch.floor(normalized_x * int(cell_count)).to(dtype=torch.long)
+    cell_indices = torch.clamp(cell_indices, min=0, max=int(cell_count) - 1)
+    one_hot_cells = torch.nn.functional.one_hot(cell_indices, num_classes=int(cell_count)).to(dtype=torch.bool)
+    return (one_hot_cells & valid.unsqueeze(-1)).any(dim=1)
 
 
 def _compute_find_opening_reward_kernel(
@@ -57,9 +87,15 @@ def _compute_find_opening_reward_kernel(
     success_reward_value: float,
     progress_reward_weight: float,
     potential_reward_discount_factor: float,
+    wall_exploration_visited_cells: torch.Tensor,
+    wall_exploration_cell_count: int,
+    wall_exploration_cell_reward: float,
+    wall_exploration_cell_depth: float,
+    side_wall_x: float,
+    wall_front_y: float,
     units_without_connections_reward_weight: float,
     guidance_reward_weight: float,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     distance_to_waypoint = torch.sqrt(
         torch.square(unit_x - opening_x.unsqueeze(1))
         + torch.square(unit_y - float(opening_waypoint_y))
@@ -82,6 +118,22 @@ def _compute_find_opening_reward_kernel(
         float(success_reward_value) * float(progress_reward_weight)
     )
 
+    current_exploration_cells = _compute_wall_exploration_visited_cells_torch(
+        unit_x=unit_x,
+        unit_y=unit_y,
+        stable_mask=stable_mask,
+        units_active_mask=units_active_mask,
+        side_wall_x=side_wall_x,
+        wall_front_y=wall_front_y,
+        cell_depth=wall_exploration_cell_depth,
+        cell_count=int(wall_exploration_cell_count),
+    )
+    newly_visited_cells = current_exploration_cells & ~wall_exploration_visited_cells
+    new_wall_exploration_visited_cells = wall_exploration_visited_cells | current_exploration_cells
+    exploration_reward = newly_visited_cells.sum(dim=-1).to(dtype=torch.float32) * (
+        float(wall_exploration_cell_reward) * float(progress_reward_weight)
+    )
+
     connection_mask = partner_unit >= 0
     units_without_connections = (~connection_mask).all(dim=-1) & units_active_mask
     guidance_reward = torch.where(
@@ -93,7 +145,15 @@ def _compute_find_opening_reward_kernel(
         torch.zeros_like(opening_potential, dtype=torch.float32),
     )
     guidance_reward *= float(guidance_reward_weight)
-    return new_opening_potential, opening_reward, success_reward, guidance_reward, success
+    return (
+        new_opening_potential,
+        opening_reward,
+        exploration_reward,
+        success_reward,
+        guidance_reward,
+        success,
+        new_wall_exploration_visited_cells,
+    )
 
 
 class _FindOpeningCPUResetSettler(BaseMJWCPUResetSettler):
@@ -134,6 +194,15 @@ class _FindOpeningCPUResetSettler(BaseMJWCPUResetSettler):
                 opening_x=spec.opening_x,
                 opening_waypoint_y=self.scenario.wall_y + self.scenario.opening_y_margin,
             ),
+            wall_exploration_visited_cells=_compute_wall_exploration_visited_cells_np(
+                unit_x=unit_x,
+                unit_y=unit_y,
+                active_mask=active_mask,
+                side_wall_x=float(self.scenario.side_wall_x),
+                wall_front_y=float(self.scenario.wall_y - (self.scenario.wall_thickness / 2.0)),
+                cell_depth=float(self.scenario.wall_exploration_cell_depth),
+                cell_count=int(self.scenario.wall_exploration_cell_count),
+            ),
         )
 
     def _apply_opening_position(self, *, opening_x: float) -> None:
@@ -161,6 +230,11 @@ class FindOpeningMJWScenarioRuntime(BaseMJWScenarioRuntime):
         )
         self.opening_x = torch.zeros((bindings.num_envs, 1), device=bindings.device, dtype=torch.float32)
         self.opening_potential = torch.zeros((bindings.num_envs,), device=bindings.device, dtype=torch.float32)
+        self.wall_exploration_visited_cells = torch.zeros(
+            (bindings.num_envs, int(scenario.wall_exploration_cell_count)),
+            device=bindings.device,
+            dtype=torch.bool,
+        )
         self._barrier_mocap_id = int(runtime_metadata.barrier_mocap_id)
         self._cpu_settler = _FindOpeningCPUResetSettler(
             scenario=scenario,
@@ -169,7 +243,7 @@ class FindOpeningMJWScenarioRuntime(BaseMJWScenarioRuntime):
         )
         self._reward_kernel: Callable[
             ...,
-            tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor],
+            tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor],
         ] = _compute_find_opening_reward_kernel
         if scenario.compile_reward_kernel:
             if not hasattr(torch, "compile"):
@@ -242,6 +316,16 @@ class FindOpeningMJWScenarioRuntime(BaseMJWScenarioRuntime):
             opening_x=reset_batch.opening_x,
             opening_waypoint_y=self.scenario.wall_y + self.scenario.opening_y_margin,
         )
+        self.wall_exploration_visited_cells[world_idx] = _compute_wall_exploration_visited_cells_torch(
+            unit_x=self._get_unit_x()[world_idx],
+            unit_y=self._get_unit_y()[world_idx],
+            stable_mask=torch.ones((world_idx.shape[0],), device=self.bindings.device, dtype=torch.bool),
+            units_active_mask=self.bindings.units_active_mask[world_idx],
+            side_wall_x=float(self.scenario.side_wall_x),
+            wall_front_y=float(self.scenario.wall_y - (self.scenario.wall_thickness / 2.0)),
+            cell_depth=float(self.scenario.wall_exploration_cell_depth),
+            cell_count=int(self.scenario.wall_exploration_cell_count),
+        )
 
     def build_cpu_reset_specs(
         self,
@@ -285,10 +369,23 @@ class FindOpeningMJWScenarioRuntime(BaseMJWScenarioRuntime):
             device=self.bindings.device,
             dtype=self.opening_potential.dtype,
         )
+        self.wall_exploration_visited_cells[world_idx] = torch.as_tensor(
+            np.stack([snapshot.wall_exploration_visited_cells for snapshot in snapshots]),
+            device=self.bindings.device,
+            dtype=self.wall_exploration_visited_cells.dtype,
+        )
         mjw.forward(self.bindings.model, self.bindings.data)
 
     def compute_step_rewards(self, *, stable_mask: torch.Tensor) -> MJWStepResult:
-        new_opening_potential, opening_reward, success_reward, guidance_reward, success = self._reward_kernel(
+        (
+            new_opening_potential,
+            opening_reward,
+            exploration_reward,
+            success_reward,
+            guidance_reward,
+            success,
+            new_wall_exploration_visited_cells,
+        ) = self._reward_kernel(
             self._get_unit_x(),
             self._get_unit_y(),
             self.opening_x[:, 0],
@@ -301,21 +398,30 @@ class FindOpeningMJWScenarioRuntime(BaseMJWScenarioRuntime):
             float(self.scenario.success_reward),
             float(self.scenario.progress_reward_weight),
             float(self.scenario.potential_reward_discount_factor),
+            self.wall_exploration_visited_cells,
+            int(self.scenario.wall_exploration_cell_count),
+            float(self.scenario.wall_exploration_cell_reward),
+            float(self.scenario.wall_exploration_cell_depth),
+            float(self.scenario.side_wall_x),
+            float(self.scenario.wall_y - (self.scenario.wall_thickness / 2.0)),
             float(self.scenario.units_without_connections_reward_weight),
             float(self.scenario.guidance_reward_weight),
         )
         self.opening_potential[stable_mask] = new_opening_potential[stable_mask]
-        progress_reward = opening_reward + success_reward
+        self.wall_exploration_visited_cells[stable_mask] = new_wall_exploration_visited_cells[stable_mask]
+        progress_reward = opening_reward + exploration_reward + success_reward
         return MJWStepResult(
             reward=progress_reward + guidance_reward,
             info={
                 "success": success,
                 "progress_reward": progress_reward,
                 "opening_reward": opening_reward,
+                "wall_exploration_reward": exploration_reward,
                 "success_reward": success_reward,
                 "guidance_reward": guidance_reward,
                 "reward_terms": {
                     "opening": opening_reward,
+                    "exploration": exploration_reward,
                     "success": success_reward,
                     "guidance": guidance_reward,
                 },
@@ -356,6 +462,40 @@ def _compute_opening_potential_np(
         np.asarray(unit_y, dtype=float) - float(opening_waypoint_y),
     )
     return -float(distance_to_waypoint[active_units_mask].mean())
+
+
+def _compute_wall_exploration_visited_cells_np(
+    *,
+    unit_x: np.ndarray,
+    unit_y: np.ndarray,
+    active_mask: np.ndarray,
+    side_wall_x: float,
+    wall_front_y: float,
+    cell_depth: float,
+    cell_count: int,
+) -> np.ndarray:
+    if cell_count == 0:
+        return np.zeros((0,), dtype=bool)
+
+    active_units_mask = np.asarray(active_mask, dtype=bool)
+    unit_x = np.asarray(unit_x, dtype=float)
+    unit_y = np.asarray(unit_y, dtype=float)
+    in_exploration_strip = (
+        active_units_mask
+        & (unit_x >= -float(side_wall_x))
+        & (unit_x <= float(side_wall_x))
+        & (unit_y >= float(wall_front_y) - float(cell_depth))
+        & (unit_y <= float(wall_front_y))
+    )
+    visited_cells = np.zeros((cell_count,), dtype=bool)
+    if not in_exploration_strip.any():
+        return visited_cells
+
+    cell_width = (2.0 * float(side_wall_x)) / float(cell_count)
+    cell_indices = np.floor((unit_x[in_exploration_strip] + float(side_wall_x)) / cell_width).astype(int)
+    cell_indices = np.clip(cell_indices, 0, cell_count - 1)
+    visited_cells[cell_indices] = True
+    return visited_cells
 
 
 def _compute_opening_potential_torch(

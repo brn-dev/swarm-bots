@@ -35,6 +35,9 @@ class FindOpeningScenario(BaseScenario):
             opening_y_margin: float = 1.0,
             success_reward: float = 5.0,
             opening_distance_reward_weight: float = 1.0,
+            wall_exploration_cell_count: int = 0,
+            wall_exploration_cell_reward: float = 0.0,
+            wall_exploration_cell_depth: float = 1.0,
             actuator_strength: float = 8.0,
             connection_dist_threshold: float = 0.1,
             connection_angle_threshold: float = -0.5,
@@ -66,6 +69,9 @@ class FindOpeningScenario(BaseScenario):
         self.opening_y_margin = float(opening_y_margin)
         self.success_reward = float(success_reward)
         self.opening_distance_reward_weight = float(opening_distance_reward_weight)
+        self.wall_exploration_cell_count = int(wall_exploration_cell_count)
+        self.wall_exploration_cell_reward = float(wall_exploration_cell_reward)
+        self.wall_exploration_cell_depth = float(wall_exploration_cell_depth)
 
         if self.street_width <= 0.0:
             raise ValueError(f"Expected street_width > 0, got {self.street_width}")
@@ -84,6 +90,10 @@ class FindOpeningScenario(BaseScenario):
             )
         if self.opening_y_margin <= 0.0:
             raise ValueError(f"Expected opening_y_margin > 0, got {self.opening_y_margin}")
+        if self.wall_exploration_cell_count < 0:
+            raise ValueError(f"Expected wall_exploration_cell_count >= 0, got {self.wall_exploration_cell_count}")
+        if self.wall_exploration_cell_depth <= 0.0:
+            raise ValueError(f"Expected wall_exploration_cell_depth > 0, got {self.wall_exploration_cell_depth}")
 
         self.side_wall_x = self.street_width / 2.0
         self._validate_opening_x()
@@ -151,6 +161,9 @@ class FindOpeningScenario(BaseScenario):
             "opening_y_margin": self.opening_y_margin,
             "success_reward": self.success_reward,
             "opening_distance_reward_weight": self.opening_distance_reward_weight,
+            "wall_exploration_cell_count": self.wall_exploration_cell_count,
+            "wall_exploration_cell_reward": self.wall_exploration_cell_reward,
+            "wall_exploration_cell_depth": self.wall_exploration_cell_depth,
         })
         return settings
 
@@ -213,6 +226,10 @@ class FindOpeningScenario(BaseScenario):
             state.get("units_active_mask"),
             opening_x,
         )
+        state["wall_exploration_visited_cells"] = self._compute_wall_exploration_visited_cells(
+            data,
+            state.get("units_active_mask"),
+        )
         state["success"] = False
         return state, connections
 
@@ -260,9 +277,10 @@ class FindOpeningScenario(BaseScenario):
             self.potential_reward_delta(new_potential, old_potential)
             * self.opening_distance_reward_weight
         )
+        exploration_reward = self._compute_wall_exploration_reward(data, state)
         state["opening_reward"] = opening_reward
-        state["progress_reward"] = opening_reward
-        return opening_reward
+        state["progress_reward"] = opening_reward + exploration_reward
+        return state["progress_reward"]
 
     def evaluate_step(
             self,
@@ -285,14 +303,73 @@ class FindOpeningScenario(BaseScenario):
         weighted_opening_reward = (
             state["opening_reward"] * self.reward_weights["progress_reward_weight"]
         )
+        weighted_exploration_reward = (
+            state["wall_exploration_reward"] * self.reward_weights["progress_reward_weight"]
+        )
         state["weighted_opening_reward"] = weighted_opening_reward
+        state["weighted_wall_exploration_reward"] = weighted_exploration_reward
         state["weighted_units_without_connections_reward"] = state["weighted_guidance_reward"]
         state["reward_terms"] = {
             "opening": weighted_opening_reward,
+            "exploration": weighted_exploration_reward,
             "success": weighted_success_reward,
             "units_without_connections": state["weighted_guidance_reward"],
         }
         return reward + weighted_success_reward, success
+
+    def _compute_wall_exploration_reward(
+            self,
+            data: mujoco.MjData,
+            state: dict,
+    ) -> float:
+        visited_cells = np.asarray(
+            state.get("wall_exploration_visited_cells"),
+            dtype=bool,
+        )
+        current_cells = self._compute_wall_exploration_visited_cells(
+            data,
+            state.get("units_active_mask"),
+        )
+        if visited_cells.shape != current_cells.shape:
+            visited_cells = np.zeros_like(current_cells)
+        newly_visited_cells = current_cells & ~visited_cells
+        state["wall_exploration_visited_cells"] = visited_cells | current_cells
+        wall_exploration_reward = float(newly_visited_cells.sum()) * self.wall_exploration_cell_reward
+        state["wall_exploration_reward"] = wall_exploration_reward
+        state["wall_exploration_new_cells"] = int(newly_visited_cells.sum())
+        return wall_exploration_reward
+
+    def _compute_wall_exploration_visited_cells(
+            self,
+            data: mujoco.MjData,
+            units_active_mask: np.ndarray | None,
+    ) -> np.ndarray:
+        if self.wall_exploration_cell_count == 0:
+            return np.zeros((0,), dtype=bool)
+
+        unit_x = np.asarray(data.qpos[self._qpos_indices[:, 0]], dtype=float)
+        unit_y = np.asarray(data.qpos[self._qpos_indices[:, 1]], dtype=float)
+        if units_active_mask is None:
+            active_mask = np.ones((self.num_units,), dtype=bool)
+        else:
+            active_mask = np.asarray(units_active_mask, dtype=bool)
+        front_y = self.wall_y - (self.wall_thickness / 2.0)
+        in_exploration_strip = (
+            active_mask
+            & (unit_x >= -self.side_wall_x)
+            & (unit_x <= self.side_wall_x)
+            & (unit_y >= front_y - self.wall_exploration_cell_depth)
+            & (unit_y <= front_y)
+        )
+        visited_cells = np.zeros((self.wall_exploration_cell_count,), dtype=bool)
+        if not in_exploration_strip.any():
+            return visited_cells
+
+        cell_width = self.street_width / float(self.wall_exploration_cell_count)
+        cell_indices = np.floor((unit_x[in_exploration_strip] + self.side_wall_x) / cell_width).astype(int)
+        cell_indices = np.clip(cell_indices, 0, self.wall_exploration_cell_count - 1)
+        visited_cells[cell_indices] = True
+        return visited_cells
 
     def _compute_opening_potential(
             self,

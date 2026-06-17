@@ -145,6 +145,46 @@ def test_find_opening_mj_potential_rewards_xy_progress_towards_post_wall_waypoin
     assert closer_potential == pytest.approx(-1.0)
 
 
+def test_find_opening_mj_rewards_wall_exploration_cells_once_per_episode() -> None:
+    scenario = default_mj_find_opening(
+        reset_settle_time=0.0,
+        opening_distance_reward_weight=0.0,
+        wall_y=2.0,
+        wall_thickness=0.2,
+        street_width=4.0,
+        opening_width=1.0,
+        opening_x=0.0,
+        wall_exploration_cell_count=4,
+        wall_exploration_cell_reward=0.25,
+        wall_exploration_cell_depth=1.0,
+    )
+    state, _ = scenario.reset_scenario(
+        scenario.dummy_model,
+        scenario.dummy_data,
+        settle=False,
+    )
+    active_mask = state.get("units_active_mask")
+    if active_mask is None:
+        active_mask = np.ones(scenario.num_units, dtype=bool)
+    active_unit_indices = np.flatnonzero(active_mask)
+    first_unit = active_unit_indices[0]
+    second_unit = active_unit_indices[min(1, active_unit_indices.size - 1)]
+
+    scenario.dummy_data.qpos[scenario._qpos_indices[first_unit, 0]] = -1.5
+    scenario.dummy_data.qpos[scenario._qpos_indices[first_unit, 1]] = 1.5
+    first_reward = scenario.compute_progress_reward(scenario.dummy_data, state)
+    second_reward = scenario.compute_progress_reward(scenario.dummy_data, state)
+
+    scenario.dummy_data.qpos[scenario._qpos_indices[second_unit, 0]] = 1.5
+    scenario.dummy_data.qpos[scenario._qpos_indices[second_unit, 1]] = 1.5
+    third_reward = scenario.compute_progress_reward(scenario.dummy_data, state)
+
+    assert first_reward == pytest.approx(0.25)
+    assert second_reward == pytest.approx(0.0)
+    assert third_reward == pytest.approx(0.25)
+    assert state["wall_exploration_visited_cells"].tolist() == [True, False, False, True]
+
+
 def test_find_opening_mjw_space_and_metadata_keep_opening_actor_hidden() -> None:
     scenario = default_mjw_find_opening()
     obs_space = scenario.get_single_observation_space()
@@ -205,7 +245,15 @@ def test_find_opening_mjw_reward_kernel_terminates_only_when_all_active_units_pa
     partner_unit = torch.full((2, 3, 1), -1, dtype=torch.long)
     opening_potential = torch.tensor([-1.0, -2.0], dtype=torch.float32)
 
-    new_potential, opening_reward, success_reward, guidance_reward, success = (
+    (
+        new_potential,
+        opening_reward,
+        exploration_reward,
+        success_reward,
+        guidance_reward,
+        success,
+        new_visited_cells,
+    ) = (
         _compute_find_opening_reward_kernel(
             unit_x,
             unit_y,
@@ -219,6 +267,12 @@ def test_find_opening_mjw_reward_kernel_terminates_only_when_all_active_units_pa
             5.0,
             1.0,
             1.0,
+            torch.zeros((2, 0), dtype=torch.bool),
+            0,
+            0.0,
+            1.0,
+            2.0,
+            2.0,
             -0.25,
             1.0,
         )
@@ -226,6 +280,68 @@ def test_find_opening_mjw_reward_kernel_terminates_only_when_all_active_units_pa
 
     assert torch.allclose(new_potential, torch.tensor([-0.5, -1.0]))
     assert torch.allclose(opening_reward, torch.tensor([1.0, 2.0]))
+    assert torch.allclose(exploration_reward, torch.zeros(2))
     assert torch.allclose(success_reward, torch.tensor([5.0, 0.0]))
     assert torch.allclose(guidance_reward, torch.tensor([-0.25, -0.25]))
     assert torch.equal(success, torch.tensor([True, False]))
+    assert new_visited_cells.shape == (2, 0)
+
+
+def test_find_opening_mjw_reward_kernel_rewards_new_exploration_cells_once() -> None:
+    unit_x = torch.tensor([[-1.5, 1.5, 5.0], [-0.5, 1.5, 0.0]], dtype=torch.float32)
+    unit_y = torch.tensor([[1.5, 1.5, 1.5], [1.5, 1.5, 1.5]], dtype=torch.float32)
+    opening_x = torch.zeros(2, dtype=torch.float32)
+    stable_mask = torch.tensor([True, True], dtype=torch.bool)
+    active_mask = torch.tensor([[True, True, False], [True, True, False]], dtype=torch.bool)
+    partner_unit = torch.full((2, 3, 1), -1, dtype=torch.long)
+    opening_potential = torch.zeros(2, dtype=torch.float32)
+    visited_cells = torch.tensor(
+        [
+            [True, False, False, False],
+            [False, False, False, False],
+        ],
+        dtype=torch.bool,
+    )
+
+    (
+        _new_potential,
+        _opening_reward,
+        exploration_reward,
+        _success_reward,
+        _guidance_reward,
+        _success,
+        new_visited_cells,
+    ) = _compute_find_opening_reward_kernel(
+        unit_x,
+        unit_y,
+        opening_x,
+        stable_mask,
+        active_mask,
+        partner_unit,
+        opening_potential,
+        4.0,
+        0.0,
+        0.0,
+        1.0,
+        1.0,
+        visited_cells,
+        4,
+        0.25,
+        1.0,
+        2.0,
+        1.9,
+        0.0,
+        1.0,
+    )
+
+    assert torch.allclose(exploration_reward, torch.tensor([0.25, 0.5]))
+    assert torch.equal(
+        new_visited_cells,
+        torch.tensor(
+            [
+                [True, False, False, True],
+                [False, True, False, True],
+            ],
+            dtype=torch.bool,
+        ),
+    )
