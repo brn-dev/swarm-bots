@@ -220,7 +220,6 @@ class FindOpeningScenario(BaseScenario):
             self.settle_reset(model, data, state)
 
         state["opening_x"] = opening_x
-        state["hidden_global_vars"] = np.array([opening_x], dtype=float)
         state["opening_potential"] = self._compute_opening_potential(
             data,
             state.get("units_active_mask"),
@@ -230,6 +229,7 @@ class FindOpeningScenario(BaseScenario):
             data,
             state.get("units_active_mask"),
         )
+        state["hidden_global_vars"] = self._get_hidden_global_vars(state)
         state["success"] = False
         return state, connections
 
@@ -258,8 +258,25 @@ class FindOpeningScenario(BaseScenario):
             connections: SwarmConnections,
     ) -> SwarmObsDict:
         obs = super().get_obs(model, data, state, connections)
-        obs["hidden_global_vars"] = state["hidden_global_vars"].copy()
+        hidden_global_vars = self._get_hidden_global_vars(state)
+        state["hidden_global_vars"] = hidden_global_vars
+        obs["hidden_global_vars"] = hidden_global_vars.copy()
         return obs
+
+    def _get_hidden_global_vars(self, state: dict) -> np.ndarray:
+        visited_cells = np.asarray(
+            state.get(
+                "wall_exploration_visited_cells",
+                np.zeros((self.wall_exploration_cell_count,), dtype=bool),
+            ),
+            dtype=float,
+        )
+        return np.concatenate(
+            (
+                np.array([float(state["opening_x"])], dtype=float),
+                visited_cells,
+            )
+        )
 
     def compute_progress_reward(
             self,
@@ -334,6 +351,7 @@ class FindOpeningScenario(BaseScenario):
             visited_cells = np.zeros_like(current_cells)
         newly_visited_cells = current_cells & ~visited_cells
         state["wall_exploration_visited_cells"] = visited_cells | current_cells
+        state["hidden_global_vars"] = self._get_hidden_global_vars(state)
         wall_exploration_reward = float(newly_visited_cells.sum()) * self.wall_exploration_cell_reward
         state["wall_exploration_reward"] = wall_exploration_reward
         state["wall_exploration_new_cells"] = int(newly_visited_cells.sum())

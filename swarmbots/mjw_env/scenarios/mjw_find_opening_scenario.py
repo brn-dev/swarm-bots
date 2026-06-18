@@ -269,7 +269,12 @@ class MJWFindOpeningScenario(BaseMJWScenario):
                     shape=(self.swarm.num_units, 0),
                     dtype=np.float32,
                 ),
-                "hidden_global_vars": spaces.Box(low=-np.inf, high=np.inf, shape=(1,), dtype=np.float32),
+                "hidden_global_vars": spaces.Box(
+                    low=-np.inf,
+                    high=np.inf,
+                    shape=(1 + self.wall_exploration_cell_count,),
+                    dtype=np.float32,
+                ),
                 "agent_mask": spaces.MultiBinary((self.swarm.num_units,)),
             }
         )

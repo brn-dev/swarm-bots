@@ -228,7 +228,13 @@ class FindOpeningMJWScenarioRuntime(BaseMJWScenarioRuntime):
             device=bindings.device,
             dtype=torch.float32,
         )
-        self.opening_x = torch.zeros((bindings.num_envs, 1), device=bindings.device, dtype=torch.float32)
+        hidden_global_dim = 1 + int(scenario.wall_exploration_cell_count)
+        self._hidden_global_obs = torch.zeros(
+            (bindings.num_envs, hidden_global_dim),
+            device=bindings.device,
+            dtype=torch.float32,
+        )
+        self.opening_x = self._hidden_global_obs[:, :1]
         self.opening_potential = torch.zeros((bindings.num_envs,), device=bindings.device, dtype=torch.float32)
         self.wall_exploration_visited_cells = torch.zeros(
             (bindings.num_envs, int(scenario.wall_exploration_cell_count)),
@@ -269,7 +275,7 @@ class FindOpeningMJWScenarioRuntime(BaseMJWScenarioRuntime):
 
     @property
     def hidden_global_obs(self) -> torch.Tensor:
-        return self.opening_x
+        return self._hidden_global_obs
 
     def sample_reset_batch(
         self,
@@ -326,6 +332,7 @@ class FindOpeningMJWScenarioRuntime(BaseMJWScenarioRuntime):
             cell_depth=float(self.scenario.wall_exploration_cell_depth),
             cell_count=int(self.scenario.wall_exploration_cell_count),
         )
+        self._sync_wall_exploration_hidden_obs(world_idx=world_idx)
 
     def build_cpu_reset_specs(
         self,
@@ -374,6 +381,7 @@ class FindOpeningMJWScenarioRuntime(BaseMJWScenarioRuntime):
             device=self.bindings.device,
             dtype=self.wall_exploration_visited_cells.dtype,
         )
+        self._sync_wall_exploration_hidden_obs(world_idx=world_idx)
         mjw.forward(self.bindings.model, self.bindings.data)
 
     def compute_step_rewards(self, *, stable_mask: torch.Tensor) -> MJWStepResult:
@@ -409,6 +417,7 @@ class FindOpeningMJWScenarioRuntime(BaseMJWScenarioRuntime):
         )
         self.opening_potential[stable_mask] = new_opening_potential[stable_mask]
         self.wall_exploration_visited_cells[stable_mask] = new_wall_exploration_visited_cells[stable_mask]
+        self._sync_wall_exploration_hidden_obs(world_idx=stable_mask)
         progress_reward = opening_reward + exploration_reward + success_reward
         return MJWStepResult(
             reward=progress_reward + guidance_reward,
@@ -444,6 +453,13 @@ class FindOpeningMJWScenarioRuntime(BaseMJWScenarioRuntime):
 
     def _get_unit_y(self) -> torch.Tensor:
         return self.bindings.qpos[:, self.bindings.unit_qpos_adr + 1]
+
+    def _sync_wall_exploration_hidden_obs(self, *, world_idx: torch.Tensor) -> None:
+        if self.wall_exploration_visited_cells.shape[1] == 0:
+            return
+        self._hidden_global_obs[world_idx, 1:] = self.wall_exploration_visited_cells[world_idx].to(
+            dtype=self._hidden_global_obs.dtype
+        )
 
 
 def _compute_opening_potential_np(
