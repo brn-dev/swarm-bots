@@ -59,7 +59,7 @@ def make_env(
     camera: int,
 ) -> SwarmBotsEnv:
     scenario = default_wall(
-        first_wall_distance=1.0,
+        wall_distance=1.0,
         unit_start_locations=make_preconnected_unit_start_locations((pool_seed,)),
     )
     return SwarmBotsEnv(

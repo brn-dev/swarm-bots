@@ -837,7 +837,7 @@ class WallMJWScenarioRuntime(BaseMJWScenarioRuntime):
             dtype=torch.float32,
         )
         wall_y = sample_float_or_dist(
-            self.scenario.first_wall_distance,
+            self.scenario.wall_distance,
             shape=(n_reset,),
             device=self.bindings.device,
             generator=rng,

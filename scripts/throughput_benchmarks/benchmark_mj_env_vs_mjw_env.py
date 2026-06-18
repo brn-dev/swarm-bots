@@ -112,7 +112,7 @@ def make_mj_env_fn(
 ) -> Callable[[], SwarmBotsEnv]:
     def _init() -> SwarmBotsEnv:
         scenario = default_mj_wall(
-            first_wall_distance=1.0,
+            wall_distance=1.0,
             unit_start_locations=unit_start_locations,
             quantize_connection_twist=8,
         )
@@ -160,7 +160,7 @@ def create_mjw_env(config: BenchmarkConfig) -> "MJWSwarmBotsVectorEnv":
         raise RuntimeError("mjw_env benchmark requires CUDA.")
 
     scenario = default_mjw_wall(
-        first_wall_distance=1.0,
+        wall_distance=1.0,
         unit_start_locations=make_mjw_unit_start_locations(pool_seeds=tuple(range(42_000, 42_005))),
         quantize_connection_twist=8,
     )

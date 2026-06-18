@@ -51,7 +51,7 @@ class MJWWallScenario(BaseMJWScenario):
     swarm_start_x: FloatOrDistParams
     swarm_start_y: FloatOrDistParams
     wall_height: float
-    first_wall_distance: FloatOrDistParams
+    wall_distance: FloatOrDistParams
     street_width: float
     wall_pass_reward_weight: float
     wall_pass_thresholds: list[float]
@@ -136,7 +136,7 @@ class MJWWallScenario(BaseMJWScenario):
             "reset_settle_time": self.reset_settle_time,
             "reset_settle_timestep_scale": self.reset_settle_timestep_scale,
             "wall_height": self.wall_height,
-            "first_wall_distance": self.first_wall_distance,
+            "wall_distance": self.wall_distance,
             "street_width": self.street_width,
             "forward_reward_weight": self.forward_reward_weight,
             "forward_reward_wall_boost_factor": self.forward_reward_wall_boost_factor,
@@ -154,8 +154,8 @@ class MJWWallScenario(BaseMJWScenario):
         }
 
     def get_default_recording_camera_config(self) -> MJWRecordingCameraConfig | None:
-        first_wall_distance = self.first_wall_distance if isinstance(self.first_wall_distance, (int, float)) else 1.0
-        lookat_y = max(0.75, min(float(first_wall_distance) * 0.9, float(first_wall_distance) + 0.5))
+        wall_distance = self.wall_distance if isinstance(self.wall_distance, (int, float)) else 1.0
+        lookat_y = max(0.75, min(float(wall_distance) * 0.9, float(wall_distance) + 0.5))
         lookat_z = max(0.35, self.wall_height * 1.25)
         distance = max(3.0, min(8.0, self.street_width * 0.45 + self.swarm.max_unit_extent * 1.5))
         return MJWRecordingCameraConfig(
@@ -263,7 +263,7 @@ class MJWWallScenario(BaseMJWScenario):
         return None
 
     def add_render_geoms(self, scene: mujoco.MjvScene) -> None:
-        add_wall_y_reference_line_geoms(scene)
+        add_wall_y_reference_line_geoms(scene, wall_distance=self.wall_distance)
 
     def create_runtime(self, *, bindings: MJWRuntimeBindings, runtime_metadata: Any) -> Any:
         from swarmbots.mjw_env.scenarios.mjw_wall_runtime import WallMJWScenarioRuntime

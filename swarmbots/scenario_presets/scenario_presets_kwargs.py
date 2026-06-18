@@ -44,7 +44,7 @@ COMMON_SCENARIO_KWARGS: dict[str, object] = {
 WALL_SCENARIO_KWARGS: dict[str, object] = {
     "swarm_start_x": 0.0,
     "swarm_start_y": UniformDistParams(0.25, 0.75),
-    "first_wall_distance": 1.0,
+    "wall_distance": 1.0,
     "street_width": 10.0,
     "wall_height": 0.20,
     "forward_reward_weight": 1.0,
@@ -227,7 +227,7 @@ PO_WALL_SCENARIO_KWARGS = make_scenario_kwargs(
     MEDIUM_WALL_SCENARIO_KWARGS,
     {
         "swarm_start_y": UniformDistParams(-0.25, 0.0),
-        "first_wall_distance": UniformDistParams.from_midpoint_and_width(1.0, 1.5),
+        "wall_distance": UniformDistParams.from_midpoint_and_width(1.0, 1.5),
     },
 )
 

@@ -66,7 +66,7 @@ def make_mjw_unit_start_locations(pool_seeds: tuple[int, ...]) -> MJWPreConnecte
 
 def make_scenario() -> Any:
     return default_mjw_wall(
-        first_wall_distance=1.0,
+        wall_distance=1.0,
         unit_start_locations=make_mjw_unit_start_locations(pool_seeds=tuple(range(52_000, 52_005))),
         quantize_connection_twist=8,
     )
