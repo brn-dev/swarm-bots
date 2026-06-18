@@ -145,6 +145,7 @@ class MJWFindOpeningScenario(BaseMJWScenario):
 
     def get_settings(self) -> dict[str, Any]:
         return {
+            "scenario_type": "find_opening",
             "swarm": self.swarm.get_settings(),
             "timestep": self.timestep,
             "action_repeat": self.action_repeat,

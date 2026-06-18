@@ -240,6 +240,49 @@ class ObsIndicesTests(unittest.TestCase):
         self.assertEqual(obs_indices.hidden_global_vars_scalar_indices, [0, 1, 2, 9, 10, 11])
         self.assertEqual(obs_indices.hidden_global_vars_quaternion_indices, [])
 
+    def test_find_opening_hidden_globals_only_normalize_opening_x(self) -> None:
+        obs_indices = build_obs_indices(
+            env_settings=_env_settings(
+                unit_types=["xy"],
+                include_connectors_xpos_in_obs=True,
+                include_connectors_xquat_in_obs=False,
+                quat_rot6d_representation=True,
+                scenario_overrides={
+                    "scenario_type": "find_opening",
+                    "opening_x": 0.0,
+                    "wall_exploration_cell_count": 10,
+                },
+            ),
+            local_obs_dim=29,
+            global_obs_dim=0,
+            hidden_local_vars_dim=0,
+            hidden_global_vars_dim=11,
+        )
+
+        self.assertEqual(obs_indices.hidden_global_vars_scalar_indices, [0])
+        self.assertEqual(obs_indices.hidden_global_vars_quaternion_indices, [])
+
+    def test_find_opening_legacy_settings_keep_visited_cells_unnormalized(self) -> None:
+        obs_indices = build_obs_indices(
+            env_settings=_env_settings(
+                unit_types=["xy"],
+                include_connectors_xpos_in_obs=True,
+                include_connectors_xquat_in_obs=False,
+                quat_rot6d_representation=True,
+                scenario_overrides={
+                    "opening_x": 0.0,
+                    "wall_exploration_cell_count": 4,
+                },
+            ),
+            local_obs_dim=29,
+            global_obs_dim=0,
+            hidden_local_vars_dim=0,
+            hidden_global_vars_dim=5,
+        )
+
+        self.assertEqual(obs_indices.hidden_global_vars_scalar_indices, [0])
+        self.assertEqual(obs_indices.hidden_global_vars_quaternion_indices, [])
+
     def test_unknown_non_empty_global_obs_layout_must_be_added_explicitly(self) -> None:
         with self.assertRaisesRegex(ValueError, "Unsupported non-empty global_obs layout"):
             build_obs_indices(

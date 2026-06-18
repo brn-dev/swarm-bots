@@ -151,6 +151,7 @@ class FindOpeningScenario(BaseScenario):
     def get_settings(self) -> dict[str, Any]:
         settings = super().get_settings()
         settings.update({
+            "scenario_type": "find_opening",
             "street_width": self.street_width,
             "wall_y": self.wall_y,
             "wall_height": self.wall_height,
