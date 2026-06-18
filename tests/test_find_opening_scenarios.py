@@ -51,8 +51,9 @@ def test_find_opening_mj_samples_opening_once_per_episode_and_keeps_it_hidden() 
         )
 
         assert first_obs["global_obs"].shape == (0,)
-        assert first_obs["hidden_global_vars"].shape == (1,)
+        assert first_obs["hidden_global_vars"].shape == (11,)
         assert first_obs["hidden_global_vars"][0] == pytest.approx(state["opening_x"])
+        assert np.array_equal(first_obs["hidden_global_vars"][1:], np.zeros(10))
         assert np.array_equal(first_obs["hidden_global_vars"], second_obs["hidden_global_vars"])
         sampled_opening_x.append(float(first_obs["hidden_global_vars"][0]))
 
@@ -158,7 +159,7 @@ def test_find_opening_mj_rewards_wall_exploration_cells_once_per_episode() -> No
         wall_exploration_cell_reward=0.25,
         wall_exploration_cell_depth=1.0,
     )
-    state, _ = scenario.reset_scenario(
+    state, connections = scenario.reset_scenario(
         scenario.dummy_model,
         scenario.dummy_data,
         settle=False,
@@ -183,6 +184,15 @@ def test_find_opening_mj_rewards_wall_exploration_cells_once_per_episode() -> No
     assert second_reward == pytest.approx(0.0)
     assert third_reward == pytest.approx(0.25)
     assert state["wall_exploration_visited_cells"].tolist() == [True, False, False, True]
+    obs = scenario.get_obs(
+        scenario.dummy_model,
+        scenario.dummy_data,
+        state,
+        connections,
+    )
+    assert obs["hidden_global_vars"].shape == (5,)
+    assert obs["hidden_global_vars"][0] == pytest.approx(0.0)
+    assert np.array_equal(obs["hidden_global_vars"][1:], np.array([1.0, 0.0, 0.0, 1.0]))
 
 
 def test_find_opening_mjw_space_and_metadata_keep_opening_actor_hidden() -> None:
@@ -194,9 +204,38 @@ def test_find_opening_mjw_space_and_metadata_keep_opening_actor_hidden() -> None
     runtime_metadata = scenario.build_runtime_metadata(host_model=host_model)
 
     assert obs_space["global_obs"].shape == (0,)
-    assert obs_space["hidden_global_vars"].shape == (1,)
+    assert obs_space["hidden_global_vars"].shape == (11,)
     assert isinstance(runtime_metadata, MJWFindOpeningRuntimeMetadata)
     assert not hasattr(generic_metadata, "barrier_mocap_id")
+
+
+def test_find_opening_mjw_hidden_global_obs_includes_exploration_cells() -> None:
+    scenario = default_mjw_find_opening(wall_exploration_cell_count=4)
+    obs_space = scenario.get_single_observation_space()
+    runtime = object.__new__(FindOpeningMJWScenarioRuntime)
+    runtime.wall_exploration_visited_cells = torch.tensor(
+        [
+            [True, False, False, True],
+            [False, True, False, False],
+        ],
+        dtype=torch.bool,
+    )
+    runtime._hidden_global_obs = torch.zeros((2, 5), dtype=torch.float32)
+    runtime._hidden_global_obs[:, 0] = torch.tensor([1.25, -0.75], dtype=torch.float32)
+
+    runtime._sync_wall_exploration_hidden_obs(world_idx=torch.tensor([0, 1]))
+
+    assert obs_space["hidden_global_vars"].shape == (5,)
+    assert torch.allclose(
+        runtime.hidden_global_obs,
+        torch.tensor(
+            [
+                [1.25, 1.0, 0.0, 0.0, 1.0],
+                [-0.75, 0.0, 1.0, 0.0, 0.0],
+            ],
+            dtype=torch.float32,
+        ),
+    )
 
 
 def test_find_opening_mjw_camera_views_wall_diagonally() -> None:
