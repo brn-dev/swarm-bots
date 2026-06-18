@@ -123,7 +123,7 @@ FIND_OPENING_SCENARIO_KWARGS: dict[str, object] = {
     "success_reward": 10.0,
     "opening_distance_reward_weight": 3.0,
     "wall_exploration_cell_count": 10,
-    "wall_exploration_cell_reward": 0.1,
+    "wall_exploration_cell_reward": 0.5,
     "wall_exploration_cell_depth": 0.5,
     "swarm_start_x": UniformDistParams(-0.25, 0.25),
     "swarm_start_y": UniformDistParams(-0.25, 0.25),
