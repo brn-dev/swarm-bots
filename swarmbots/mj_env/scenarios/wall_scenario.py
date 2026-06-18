@@ -32,7 +32,7 @@ class WallScenario(BaseScenario):
             timestep: float = 0.002,
             action_repeat: int = 15,
             wall_height: float = 0.5,
-            first_wall_distance: FloatOrDistParams = 2.0,
+            wall_distance: FloatOrDistParams = 2.0,
             street_width: float = 10.0,
             actuator_strength: float = 8.0,
             connection_dist_threshold: float = 0.1,
@@ -69,7 +69,7 @@ class WallScenario(BaseScenario):
         self.street_width = float(street_width)
         self.side_wall_x = self.street_width / 2.0
         self.wall_height = float(wall_height)
-        self.first_wall_distance = first_wall_distance
+        self.wall_distance = wall_distance
         self.forward_reward_weight = float(forward_reward_weight)
         self.forward_reward_wall_boost_factor = float(forward_reward_wall_boost_factor)
         self.forward_reward_wall_boost_distance = (
@@ -143,7 +143,7 @@ class WallScenario(BaseScenario):
         settings = super().get_settings()
         settings.update({
             "wall_height": self.wall_height,
-            "first_wall_distance": self.first_wall_distance,
+            "wall_distance": self.wall_distance,
             "street_width": self.street_width,
             "forward_reward_weight": self.forward_reward_weight,
             "forward_reward_wall_boost_factor": self.forward_reward_wall_boost_factor,
@@ -232,7 +232,7 @@ class WallScenario(BaseScenario):
         return state, connections
 
     def add_render_geoms(self, scene: mujoco.MjvScene) -> None:
-        add_wall_y_reference_line_geoms(scene)
+        add_wall_y_reference_line_geoms(scene, wall_distance=self.wall_distance)
 
     def reset_wall(
             self,
@@ -240,7 +240,7 @@ class WallScenario(BaseScenario):
             model: mujoco.MjModel,
             hidden_global_vars: list[float],
     ) -> float:
-        wall_y = eval_fodp(self.first_wall_distance, self.rng)
+        wall_y = eval_fodp(self.wall_distance, self.rng)
         hidden_global_vars.append(wall_y)
         wall_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "Wall")
         mocap_id = model.body_mocapid[wall_id]

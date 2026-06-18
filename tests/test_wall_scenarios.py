@@ -42,9 +42,9 @@ def test_po_wall_easy_samples_wall_y_into_hidden_global_obs_only_in_mj() -> None
         assert np.isclose(obs["hidden_global_vars"][0], state["wall_y"])
         sampled_wall_positions.append(float(obs["hidden_global_vars"][0]))
 
-    first_wall_distance = scenario.first_wall_distance
-    assert isinstance(first_wall_distance, UniformDistParams)
-    assert all(first_wall_distance.low <= wall_y <= first_wall_distance.high for wall_y in sampled_wall_positions)
+    wall_distance = scenario.wall_distance
+    assert isinstance(wall_distance, UniformDistParams)
+    assert all(wall_distance.low <= wall_y <= wall_distance.high for wall_y in sampled_wall_positions)
     assert len({round(wall_y, 6) for wall_y in sampled_wall_positions}) > 1
 
 
@@ -54,7 +54,7 @@ def test_po_wall_easy_mjw_space_keeps_wall_position_hidden() -> None:
 
     assert obs_space["global_obs"].shape == (0,)
     assert obs_space["hidden_global_vars"].shape == (1,)
-    assert isinstance(scenario.get_settings()["first_wall_distance"], UniformDistParams)
+    assert isinstance(scenario.get_settings()["wall_distance"], UniformDistParams)
 
 
 def test_po_wall_easy_mjw_reset_sampling_puts_wall_y_in_hidden_global_vars() -> None:
@@ -65,7 +65,7 @@ def test_po_wall_easy_mjw_reset_sampling_puts_wall_y_in_hidden_global_vars() -> 
     runtime._num_wall_thresholds = 2
     runtime._threshold_values = torch.tensor([0.2, 0.5], dtype=torch.float32)
     runtime.scenario = SimpleNamespace(
-        first_wall_distance=UniformDistParams(0.75, 1.25),
+        wall_distance=UniformDistParams(0.75, 1.25),
     )
 
     hidden_global_vars, wall_pass_thresholds = runtime._sample_wall_configuration_values(
@@ -111,15 +111,16 @@ def test_wall_scenarios_add_wall_y_reference_lines() -> None:
         mj_scenario.add_render_geoms(scene)
         mjw_scenario.add_render_geoms(scene)
 
-    add_mj_lines.assert_called_once_with(scene)
-    add_mjw_lines.assert_called_once_with(scene)
+    add_mj_lines.assert_called_once_with(scene, wall_distance=mj_scenario.wall_distance)
+    add_mjw_lines.assert_called_once_with(scene, wall_distance=mjw_scenario.wall_distance)
 
 
 def test_wall_y_reference_lines_show_bounds() -> None:
     scene = object()
+    wall_distance = UniformDistParams(0.5, 1.5)
 
     with patch("swarmbots.utils.mujoco_render_geoms.add_y_reference_line_geom") as add_line:
-        add_wall_y_reference_line_geoms(scene)
+        add_wall_y_reference_line_geoms(scene, wall_distance=wall_distance)
 
     bounds_rgba = (0.1, 0.8, 1.0, 1.0)
     assert add_line.call_args_list == [

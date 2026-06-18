@@ -72,7 +72,7 @@ def make_env_fn(
 ) -> Callable[[], SwarmBotsEnv]:
     def _init() -> SwarmBotsEnv:
         scenario = default_wall(
-            first_wall_distance=1.0,
+            wall_distance=1.0,
             unit_start_locations=unit_start_locations,
             quantize_connection_twist=8,
             timestep=timestep,

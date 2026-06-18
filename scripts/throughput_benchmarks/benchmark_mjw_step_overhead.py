@@ -85,7 +85,7 @@ def create_env(config: BenchmarkConfig) -> MJWSwarmBotsVectorEnv:
     if not torch.cuda.is_available():
         raise RuntimeError("benchmark_mjw_step_overhead requires CUDA.")
     scenario = default_mjw_wall(
-        first_wall_distance=1.0,
+        wall_distance=1.0,
         unit_start_locations=make_mjw_unit_start_locations(pool_seeds=tuple(range(52_000, 52_005))),
         quantize_connection_twist=8,
         compile_reward_kernel=config.compile_reward_kernel,

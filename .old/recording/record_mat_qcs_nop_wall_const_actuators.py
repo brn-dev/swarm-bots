@@ -38,13 +38,13 @@ def parse_args() -> argparse.Namespace:
 
 def make_env_fn(
     episode_length: int,
-    first_wall_distance: float,
+    wall_distance: float,
     camera: int,
     render_mode: str | None = None,
     first_episode_length: int | None = None,
 ) -> Callable[[], SwarmBotsEnv]:
     def _init() -> SwarmBotsEnv:
-        scenario = default_wall(first_wall_distance=first_wall_distance)
+        scenario = default_wall(wall_distance=wall_distance)
         return SwarmBotsEnv(
             scenario=scenario,
             episode_length=episode_length,
@@ -166,7 +166,7 @@ def main() -> None:
 
     dummy_env = make_env_fn(
         episode_length=args.episode_length,
-        first_wall_distance=args.first_wall_distance,
+        wall_distance=args.wall_distance,
         camera=args.camera,
         render_mode=None,
     )()
@@ -187,7 +187,7 @@ def main() -> None:
 
     record_env_fn = make_env_fn(
         episode_length=args.episode_length,
-        first_wall_distance=args.first_wall_distance,
+        wall_distance=args.wall_distance,
         camera=args.camera,
         render_mode="rgb_array",
     )

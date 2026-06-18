@@ -69,7 +69,7 @@ def create_env(config: BenchmarkConfig, *, use_settled_resets: bool) -> MJWSwarm
 
     first_episode_lengths = [int((i + 1) * config.episode_length / config.num_envs) for i in range(config.num_envs)]
     scenario = default_mjw_wall(
-        first_wall_distance=1.0,
+        wall_distance=1.0,
         unit_start_locations=make_mjw_unit_start_locations(pool_seeds=tuple(range(62_000, 62_005))),
         quantize_connection_twist=8,
         reset_settle_time=config.settled_reset_time if use_settled_resets else 0.0,
