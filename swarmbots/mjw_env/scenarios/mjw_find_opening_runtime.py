@@ -84,6 +84,7 @@ def _compute_find_opening_reward_kernel(
     opening_potential: torch.Tensor,
     opening_waypoint_y: float,
     opening_distance_reward_weight: float,
+    opening_distance_reward_falloff_distance: float | None,
     success_reward_value: float,
     progress_reward_weight: float,
     potential_reward_discount_factor: float,
@@ -100,7 +101,11 @@ def _compute_find_opening_reward_kernel(
         torch.square(unit_x - opening_x.unsqueeze(1))
         + torch.square(unit_y - float(opening_waypoint_y))
     )
-    candidate_potential = -masked_mean(distance_to_waypoint, units_active_mask, dim=1)
+    shaped_distance = _shape_opening_reward_distance_torch(
+        distance_to_waypoint,
+        opening_distance_reward_falloff_distance,
+    )
+    candidate_potential = -masked_mean(shaped_distance, units_active_mask, dim=1)
     new_opening_potential = torch.where(stable_mask, candidate_potential, opening_potential)
     opening_reward = (
         (new_opening_potential * float(potential_reward_discount_factor)) - opening_potential
@@ -193,6 +198,7 @@ class _FindOpeningCPUResetSettler(BaseMJWCPUResetSettler):
                 active_mask=active_mask,
                 opening_x=spec.opening_x,
                 opening_waypoint_y=self.scenario.wall_y + self.scenario.opening_y_margin,
+                opening_distance_reward_falloff_distance=self.scenario.opening_distance_reward_falloff_distance,
             ),
             wall_exploration_visited_cells=_compute_wall_exploration_visited_cells_np(
                 unit_x=unit_x,
@@ -321,6 +327,7 @@ class FindOpeningMJWScenarioRuntime(BaseMJWScenarioRuntime):
             active_mask=self.bindings.units_active_mask[world_idx],
             opening_x=reset_batch.opening_x,
             opening_waypoint_y=self.scenario.wall_y + self.scenario.opening_y_margin,
+            opening_distance_reward_falloff_distance=self.scenario.opening_distance_reward_falloff_distance,
         )
         self.wall_exploration_visited_cells[world_idx] = _compute_wall_exploration_visited_cells_torch(
             unit_x=self._get_unit_x()[world_idx],
@@ -403,6 +410,7 @@ class FindOpeningMJWScenarioRuntime(BaseMJWScenarioRuntime):
             self.opening_potential,
             float(self.scenario.wall_y + self.scenario.opening_y_margin),
             float(self.scenario.opening_distance_reward_weight),
+            self.scenario.opening_distance_reward_falloff_distance,
             float(self.scenario.success_reward),
             float(self.scenario.progress_reward_weight),
             float(self.scenario.potential_reward_discount_factor),
@@ -469,6 +477,7 @@ def _compute_opening_potential_np(
     active_mask: np.ndarray,
     opening_x: float,
     opening_waypoint_y: float,
+    opening_distance_reward_falloff_distance: float | None,
 ) -> float:
     active_units_mask = np.asarray(active_mask, dtype=bool)
     if not active_units_mask.any():
@@ -477,7 +486,21 @@ def _compute_opening_potential_np(
         np.asarray(unit_x, dtype=float) - float(opening_x),
         np.asarray(unit_y, dtype=float) - float(opening_waypoint_y),
     )
-    return -float(distance_to_waypoint[active_units_mask].mean())
+    shaped_distance = _shape_opening_reward_distance_np(
+        distance_to_waypoint,
+        opening_distance_reward_falloff_distance,
+    )
+    return -float(shaped_distance[active_units_mask].mean())
+
+
+def _shape_opening_reward_distance_np(
+    distance_to_waypoint: np.ndarray,
+    falloff_distance: float | None,
+) -> np.ndarray:
+    if falloff_distance is None:
+        return distance_to_waypoint
+    falloff_distance = float(falloff_distance)
+    return falloff_distance * np.log1p(distance_to_waypoint / falloff_distance)
 
 
 def _compute_wall_exploration_visited_cells_np(
@@ -521,9 +544,24 @@ def _compute_opening_potential_torch(
     active_mask: torch.Tensor,
     opening_x: torch.Tensor,
     opening_waypoint_y: float,
+    opening_distance_reward_falloff_distance: float | None,
 ) -> torch.Tensor:
     distance_to_waypoint = torch.sqrt(
         torch.square(unit_x - opening_x.unsqueeze(1))
         + torch.square(unit_y - float(opening_waypoint_y))
     )
-    return -masked_mean(distance_to_waypoint, active_mask, dim=1)
+    shaped_distance = _shape_opening_reward_distance_torch(
+        distance_to_waypoint,
+        opening_distance_reward_falloff_distance,
+    )
+    return -masked_mean(shaped_distance, active_mask, dim=1)
+
+
+def _shape_opening_reward_distance_torch(
+    distance_to_waypoint: torch.Tensor,
+    falloff_distance: float | None,
+) -> torch.Tensor:
+    if falloff_distance is None:
+        return distance_to_waypoint
+    falloff_distance = float(falloff_distance)
+    return falloff_distance * torch.log1p(distance_to_waypoint / falloff_distance)

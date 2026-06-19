@@ -71,6 +71,7 @@ class MJWFindOpeningScenario(BaseMJWScenario):
     opening_y_margin: float
     success_reward: float
     opening_distance_reward_weight: float
+    opening_distance_reward_falloff_distance: float | None = None
     wall_exploration_cell_count: int = 0
     wall_exploration_cell_reward: float = 0.0
     wall_exploration_cell_depth: float = 1.0
@@ -97,6 +98,11 @@ class MJWFindOpeningScenario(BaseMJWScenario):
         self.opening_y_margin = float(self.opening_y_margin)
         self.success_reward = float(self.success_reward)
         self.opening_distance_reward_weight = float(self.opening_distance_reward_weight)
+        self.opening_distance_reward_falloff_distance = (
+            None
+            if self.opening_distance_reward_falloff_distance is None
+            else float(self.opening_distance_reward_falloff_distance)
+        )
         self.wall_exploration_cell_count = int(self.wall_exploration_cell_count)
         self.wall_exploration_cell_reward = float(self.wall_exploration_cell_reward)
         self.wall_exploration_cell_depth = float(self.wall_exploration_cell_depth)
@@ -119,6 +125,14 @@ class MJWFindOpeningScenario(BaseMJWScenario):
             )
         if self.opening_y_margin <= 0.0:
             raise ValueError(f"Expected opening_y_margin > 0, got {self.opening_y_margin}")
+        if (
+            self.opening_distance_reward_falloff_distance is not None
+            and self.opening_distance_reward_falloff_distance <= 0.0
+        ):
+            raise ValueError(
+                "Expected opening_distance_reward_falloff_distance > 0 or None, "
+                f"got {self.opening_distance_reward_falloff_distance}"
+            )
         if self.wall_exploration_cell_count < 0:
             raise ValueError(f"Expected wall_exploration_cell_count >= 0, got {self.wall_exploration_cell_count}")
         if self.wall_exploration_cell_depth <= 0.0:
@@ -180,6 +194,7 @@ class MJWFindOpeningScenario(BaseMJWScenario):
             "opening_y_margin": self.opening_y_margin,
             "success_reward": self.success_reward,
             "opening_distance_reward_weight": self.opening_distance_reward_weight,
+            "opening_distance_reward_falloff_distance": self.opening_distance_reward_falloff_distance,
             "wall_exploration_cell_count": self.wall_exploration_cell_count,
             "wall_exploration_cell_reward": self.wall_exploration_cell_reward,
             "wall_exploration_cell_depth": self.wall_exploration_cell_depth,

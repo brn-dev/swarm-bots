@@ -146,6 +146,58 @@ def test_find_opening_mj_potential_rewards_xy_progress_towards_post_wall_waypoin
     assert closer_potential == pytest.approx(-1.0)
 
 
+def test_find_opening_mj_falloff_distance_emphasizes_near_opening_progress() -> None:
+    scenario = default_mj_find_opening(
+        reset_settle_time=0.0,
+        opening_x=0.0,
+        wall_y=0.0,
+        opening_y_margin=1.0,
+        opening_distance_reward_falloff_distance=1.0,
+    )
+    state, _ = scenario.reset_scenario(
+        scenario.dummy_model,
+        scenario.dummy_data,
+        settle=False,
+    )
+    active_mask = state.get("units_active_mask")
+    if active_mask is None:
+        active_mask = np.ones(scenario.num_units, dtype=bool)
+
+    scenario.dummy_data.qpos[scenario._qpos_indices[active_mask, 0]] = 0.0
+    scenario.dummy_data.qpos[scenario._qpos_indices[active_mask, 1]] = 5.0
+    far_old_potential = scenario._compute_opening_potential(
+        scenario.dummy_data,
+        active_mask,
+        opening_x=0.0,
+    )
+    scenario.dummy_data.qpos[scenario._qpos_indices[active_mask, 1]] = 4.0
+    far_new_potential = scenario._compute_opening_potential(
+        scenario.dummy_data,
+        active_mask,
+        opening_x=0.0,
+    )
+
+    scenario.dummy_data.qpos[scenario._qpos_indices[active_mask, 1]] = 2.0
+    near_old_potential = scenario._compute_opening_potential(
+        scenario.dummy_data,
+        active_mask,
+        opening_x=0.0,
+    )
+    scenario.dummy_data.qpos[scenario._qpos_indices[active_mask, 1]] = 1.0
+    near_new_potential = scenario._compute_opening_potential(
+        scenario.dummy_data,
+        active_mask,
+        opening_x=0.0,
+    )
+
+    far_reward = scenario.potential_reward_delta(far_new_potential, far_old_potential)
+    near_reward = scenario.potential_reward_delta(near_new_potential, near_old_potential)
+
+    assert far_reward == pytest.approx(np.log(5.0) - np.log(4.0))
+    assert near_reward == pytest.approx(np.log(2.0))
+    assert near_reward > far_reward
+
+
 def test_find_opening_mj_rewards_wall_exploration_cells_once_per_episode() -> None:
     scenario = default_mj_find_opening(
         reset_settle_time=0.0,
@@ -303,6 +355,7 @@ def test_find_opening_mjw_reward_kernel_terminates_only_when_all_active_units_pa
             opening_potential,
             4.0,
             2.0,
+            None,
             5.0,
             1.0,
             1.0,
@@ -324,6 +377,51 @@ def test_find_opening_mjw_reward_kernel_terminates_only_when_all_active_units_pa
     assert torch.allclose(guidance_reward, torch.tensor([-0.25, -0.25]))
     assert torch.equal(success, torch.tensor([True, False]))
     assert new_visited_cells.shape == (2, 0)
+
+
+def test_find_opening_mjw_reward_kernel_falloff_distance_emphasizes_near_opening_progress() -> None:
+    unit_x = torch.zeros((2, 1), dtype=torch.float32)
+    unit_y = torch.tensor([[4.0], [1.0]], dtype=torch.float32)
+    opening_x = torch.zeros(2, dtype=torch.float32)
+    stable_mask = torch.tensor([True, True], dtype=torch.bool)
+    active_mask = torch.ones((2, 1), dtype=torch.bool)
+    partner_unit = torch.full((2, 1, 1), -1, dtype=torch.long)
+    opening_potential = -torch.log(torch.tensor([6.0, 3.0], dtype=torch.float32))
+
+    (
+        new_potential,
+        opening_reward,
+        _exploration_reward,
+        _success_reward,
+        _guidance_reward,
+        _success,
+        _new_visited_cells,
+    ) = _compute_find_opening_reward_kernel(
+        unit_x,
+        unit_y,
+        opening_x,
+        stable_mask,
+        active_mask,
+        partner_unit,
+        opening_potential,
+        0.0,
+        1.0,
+        1.0,
+        0.0,
+        1.0,
+        1.0,
+        torch.zeros((2, 0), dtype=torch.bool),
+        0,
+        0.0,
+        1.0,
+        2.0,
+        2.0,
+        0.0,
+        1.0,
+    )
+
+    assert torch.allclose(new_potential, -torch.log(torch.tensor([5.0, 2.0])))
+    assert opening_reward[1] > opening_reward[0]
 
 
 def test_find_opening_mjw_reward_kernel_rewards_new_exploration_cells_once() -> None:
@@ -360,6 +458,7 @@ def test_find_opening_mjw_reward_kernel_rewards_new_exploration_cells_once() -> 
         opening_potential,
         4.0,
         0.0,
+        None,
         0.0,
         1.0,
         1.0,
