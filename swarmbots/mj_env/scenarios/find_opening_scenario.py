@@ -35,6 +35,7 @@ class FindOpeningScenario(BaseScenario):
             opening_y_margin: float = 1.0,
             success_reward: float = 5.0,
             opening_distance_reward_weight: float = 1.0,
+            opening_distance_reward_falloff_distance: float | None = None,
             wall_exploration_cell_count: int = 0,
             wall_exploration_cell_reward: float = 0.0,
             wall_exploration_cell_depth: float = 1.0,
@@ -69,6 +70,11 @@ class FindOpeningScenario(BaseScenario):
         self.opening_y_margin = float(opening_y_margin)
         self.success_reward = float(success_reward)
         self.opening_distance_reward_weight = float(opening_distance_reward_weight)
+        self.opening_distance_reward_falloff_distance = (
+            None
+            if opening_distance_reward_falloff_distance is None
+            else float(opening_distance_reward_falloff_distance)
+        )
         self.wall_exploration_cell_count = int(wall_exploration_cell_count)
         self.wall_exploration_cell_reward = float(wall_exploration_cell_reward)
         self.wall_exploration_cell_depth = float(wall_exploration_cell_depth)
@@ -90,6 +96,14 @@ class FindOpeningScenario(BaseScenario):
             )
         if self.opening_y_margin <= 0.0:
             raise ValueError(f"Expected opening_y_margin > 0, got {self.opening_y_margin}")
+        if (
+            self.opening_distance_reward_falloff_distance is not None
+            and self.opening_distance_reward_falloff_distance <= 0.0
+        ):
+            raise ValueError(
+                "Expected opening_distance_reward_falloff_distance > 0 or None, "
+                f"got {self.opening_distance_reward_falloff_distance}"
+            )
         if self.wall_exploration_cell_count < 0:
             raise ValueError(f"Expected wall_exploration_cell_count >= 0, got {self.wall_exploration_cell_count}")
         if self.wall_exploration_cell_depth <= 0.0:
@@ -162,6 +176,7 @@ class FindOpeningScenario(BaseScenario):
             "opening_y_margin": self.opening_y_margin,
             "success_reward": self.success_reward,
             "opening_distance_reward_weight": self.opening_distance_reward_weight,
+            "opening_distance_reward_falloff_distance": self.opening_distance_reward_falloff_distance,
             "wall_exploration_cell_count": self.wall_exploration_cell_count,
             "wall_exploration_cell_reward": self.wall_exploration_cell_reward,
             "wall_exploration_cell_depth": self.wall_exploration_cell_depth,
@@ -402,12 +417,19 @@ class FindOpeningScenario(BaseScenario):
             unit_x - float(opening_x),
             unit_y - self._opening_waypoint_y(),
         )
+        shaped_distance = self._shape_opening_reward_distance(distance_to_waypoint)
         if units_active_mask is None:
-            return -float(distance_to_waypoint.mean())
+            return -float(shaped_distance.mean())
         active_mask = np.asarray(units_active_mask, dtype=bool)
         if not active_mask.any():
             return 0.0
-        return -float(distance_to_waypoint[active_mask].mean())
+        return -float(shaped_distance[active_mask].mean())
+
+    def _shape_opening_reward_distance(self, distance_to_waypoint: np.ndarray) -> np.ndarray:
+        if self.opening_distance_reward_falloff_distance is None:
+            return distance_to_waypoint
+        falloff_distance = self.opening_distance_reward_falloff_distance
+        return falloff_distance * np.log1p(distance_to_waypoint / falloff_distance)
 
     def _compute_success(
             self,
