@@ -67,7 +67,7 @@ from swarmbots.utils.recording_schedule import DEFAULT_LIVE_RECORDING_SCHEDULE, 
 from swarmbots.utils.run_paths import get_run_id_from_checkpoint_path
 
 ContinuousActionDistVariant = Literal["sticky_sign_magnitude_beta", "sign_magnitude_beta", "beta", "gsde", "squashed_diag_gaussian"]
-PolicyVariant = Literal["mat_qcs", "mat_qcc", "mat_dec", "mat_orig", "ppo", "mappo"]
+PolicyVariant = Literal["mat_qcs", "mat_qcc", "mat_dec", "mat_orig", "ppo", "ppo_small", "mappo", "mappo_small"]
 MJWScenarioName = Literal["wall", "find_opening", "climb", "dual_payload", "payload_step", "multi_payload_goal"]
 
 
@@ -921,6 +921,29 @@ def _make_base_policy(
             ),
         )
 
+    if policy_variant == "ppo_small":
+        return PPOPolicy(
+            env=env,
+            config=PPOPolicyConfig(
+                actor_config=PPOActorConfig(
+                    hidden_dims=[384, 320, 256, 192],
+                    shared_encoder_latent_dim_per_agent=160,
+                    actor_head_hidden_dims=[128, 96],
+                    latent_pi_dim_per_agent=64,
+                    act_fun_class=act_fn_cls,
+                ),
+                critic_config=PPOCriticConfig(
+                    hidden_dims=[160, 160],
+                    act_fun_class=act_fn_cls,
+                    use_popart=use_popart,
+                ),
+                continuous_config=continuous_config,
+                bernoulli_config=bernoulli_config,
+                compile_modules=compile_policy_modules,
+                compile_mode=policy_compile_mode,
+            ),
+        )
+
     if policy_variant == "mappo":
         return MAPPOPolicy(
             env=env,
@@ -936,6 +959,32 @@ def _make_base_policy(
                     deep_set_config=DeepSetCriticConfig(
                         local_projection_hidden_dims=[256, 128],
                         value_regressor_hidden_dims=[256, 128],
+                    ),
+                    act_fun_class=act_fn_cls,
+                    use_popart=use_popart,
+                ),
+                continuous_config=continuous_config,
+                bernoulli_config=bernoulli_config,
+                compile_modules=compile_policy_modules,
+                compile_mode=policy_compile_mode,
+            ),
+        )
+
+    if policy_variant == "mappo_small":
+        return MAPPOPolicy(
+            env=env,
+            config=MAPPOPolicyConfig(
+                actor_config=MAPPOActorConfig(
+                    hidden_dims=[512, 512, 384, 256],
+                    shared_encoder_latent_dim=256,
+                    actor_head_hidden_dims=[128],
+                    latent_pi_dim=112,
+                    act_fun_class=act_fn_cls,
+                ),
+                critic_config=MAPPOCriticConfig(
+                    deep_set_config=DeepSetCriticConfig(
+                        local_projection_hidden_dims=[224, 112],
+                        value_regressor_hidden_dims=[192, 128],
                     ),
                     act_fun_class=act_fn_cls,
                     use_popart=use_popart,
