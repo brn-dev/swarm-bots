@@ -5,7 +5,7 @@ from common import run_experiment
 
 def main() -> None:
     run_experiment(
-        variant_name="mat_dec_no_nop",
+        variant_name="mat_dec_no_nop_no_transition_obs",
         entrypoint_path=Path(__file__).resolve(),
         use_nop=False,
     )

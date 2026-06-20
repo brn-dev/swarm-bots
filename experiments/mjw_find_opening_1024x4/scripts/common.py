@@ -30,6 +30,7 @@ def run_experiment(
         mat_add_agent_embeddings=False,
         mat_decoder_self_attention_mode=mat_decoder_self_attention_mode,
         nop_add_agent_embeddings_transition_model=False,
+        use_transition_obs=False,
         use_nop=True,
         experiment_run_name=EXPERIMENT_RUN_NAME,
         scenario_name="find_opening",

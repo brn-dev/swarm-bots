@@ -5,7 +5,7 @@ from common import run_experiment
 
 def main() -> None:
     run_experiment(
-        variant_name="mat_dec_gsde",
+        variant_name="mat_dec_gsde_no_transition_obs",
         entrypoint_path=Path(__file__).resolve(),
         continuous_action_dist="gsde",
     )

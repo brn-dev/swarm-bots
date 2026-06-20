@@ -27,7 +27,7 @@ def run_experiment(
     mat_decoder_self_attention_mode: MATQCSDecoderSelfAttentionMode = MATQCSDecoderSelfAttentionMode.FULL_CAUSAL,
     mat_decoder_lr_multiplier: float = 0.25,
     use_nop: bool = True,
-    use_transition_obs: bool = True,
+    use_transition_obs: bool = False,
 ) -> None:
     run_mjw_wall_experiment(
         num_envs=1024,

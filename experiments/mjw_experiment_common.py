@@ -201,7 +201,7 @@ def wrap_vec_env(
     use_popart: bool,
     rollout_device: torch.device,
     normalize_prev_binary_actions: bool = False,
-    use_transition_obs: bool = True,
+    use_transition_obs: bool = False,
     shuffle_agents: bool = False,
     preserve_inactive_prefix_structure: bool = False,
 ) -> Any:
@@ -359,7 +359,7 @@ def run_experiment(
         mat_normalization: MATNormalizationConfig = MATNormalizationConfig(),
         use_nop: bool = True,
         nop_add_agent_embeddings_transition_model: bool = False,
-        use_transition_obs: bool = True,
+        use_transition_obs: bool = False,
         shuffle_agents: bool = False,
         preserve_inactive_prefix_structure: bool = False,
         mat_decoder_lr_multiplier: float = 0.25,
