@@ -26,6 +26,7 @@ def run_experiment(
     continuous_action_dist: ContinuousActionDistVariant = "sign_magnitude_beta",
     mat_decoder_self_attention_mode: MATQCSDecoderSelfAttentionMode = MATQCSDecoderSelfAttentionMode.CONTEXT_TOKENS_ONLY,
     mat_decoder_lr_multiplier: float = 0.25,
+    include_actor_head_lr_multiplier: bool = False,
     use_nop: bool = True,
     use_transition_obs: bool = False,
 ) -> None:
@@ -44,4 +45,5 @@ def run_experiment(
         experiment_run_name=EXPERIMENT_RUN_NAME,
         scenario_kwargs=SCENARIO_KWARGS,
         mat_decoder_lr_multiplier=mat_decoder_lr_multiplier,
+        include_actor_head_lr_multiplier=include_actor_head_lr_multiplier,
     )

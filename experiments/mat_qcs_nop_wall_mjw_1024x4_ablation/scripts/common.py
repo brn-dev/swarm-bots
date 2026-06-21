@@ -72,6 +72,7 @@ def run_ablation(
         use_nop: bool = True,
         shuffle_agents: bool = False,
         preserve_inactive_prefix_structure: bool = False,
+        include_actor_head_lr_multiplier: bool = False,
         scenario_kwargs: dict[str, object] | None = None,
 ) -> None:
     run_experiment(
@@ -91,6 +92,7 @@ def run_ablation(
         nop_add_agent_embeddings_transition_model=True,
         shuffle_agents=shuffle_agents,
         preserve_inactive_prefix_structure=preserve_inactive_prefix_structure,
+        include_actor_head_lr_multiplier=include_actor_head_lr_multiplier,
         experiment_run_name=EXPERIMENT_RUN_NAME,
         scenario_kwargs=scenario_kwargs,
     )

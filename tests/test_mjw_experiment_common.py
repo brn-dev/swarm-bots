@@ -58,8 +58,62 @@ def test_mat_qcx_lr_multipliers_include_action_projection_modules() -> None:
         "action_input_norm",
         "action_encoder",
         "action_token_norm",
+        "memory_input_norm",
+        "memory_encoder",
+        "memory_token_norm",
     }
     assert set(multipliers.values()) == {0.25}
+
+
+def test_mat_lr_multipliers_can_include_actor_head_modules() -> None:
+    expected_qcs_qcc_prefixes = {
+        "decoder",
+        "query_input_norm",
+        "query_encoder",
+        "query_token_norm",
+        "context_input_norm",
+        "context_encoder",
+        "context_token_norm",
+        "actor_head_input_norm",
+        "actor_head",
+    }
+
+    for policy_variant in ("mat_qcs", "mat_qcc"):
+        multipliers = _make_mat_parameter_lr_multipliers(
+            policy_variant=policy_variant,
+            mat_decoder_lr_multiplier=0.25,
+            include_actor_head_lr_multiplier=True,
+        )
+
+        assert set(multipliers) == expected_qcs_qcc_prefixes
+        assert set(multipliers.values()) == {0.25}
+
+    qcx_multipliers = _make_mat_parameter_lr_multipliers(
+        policy_variant="mat_qcx",
+        mat_decoder_lr_multiplier=0.25,
+        include_actor_head_lr_multiplier=True,
+    )
+
+    assert set(qcx_multipliers) == {
+        "decoder",
+        "action_input_norm",
+        "action_encoder",
+        "action_token_norm",
+        "memory_input_norm",
+        "memory_encoder",
+        "memory_token_norm",
+        "actor_head_input_norm",
+        "actor_head",
+    }
+    assert set(qcx_multipliers.values()) == {0.25}
+
+    mat_dec_multipliers = _make_mat_parameter_lr_multipliers(
+        policy_variant="mat_dec",
+        mat_decoder_lr_multiplier=0.25,
+        include_actor_head_lr_multiplier=True,
+    )
+
+    assert mat_dec_multipliers == {"actor_head": 0.25}
 
 
 def test_make_base_policy_constructs_mat_qcx_variant() -> None:

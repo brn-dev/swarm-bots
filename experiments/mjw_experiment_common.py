@@ -367,6 +367,7 @@ def run_experiment(
         shuffle_agents: bool = False,
         preserve_inactive_prefix_structure: bool = False,
         mat_decoder_lr_multiplier: float = 0.25,
+        include_actor_head_lr_multiplier: bool = False,
         experiment_run_name: str | None = None,
         scenario_name: MJWScenarioName = "wall",
         ccd_iterations: int | None = None,
@@ -672,6 +673,7 @@ def run_experiment(
     parameter_lr_multipliers = _make_mat_parameter_lr_multipliers(
         policy_variant=policy_variant,
         mat_decoder_lr_multiplier=mat_decoder_lr_multiplier,
+        include_actor_head_lr_multiplier=include_actor_head_lr_multiplier,
     )
     ppo = PPO(
         policy=policy,
@@ -780,6 +782,7 @@ def run_experiment(
         "mat_add_agent_embeddings": mat_add_agent_embeddings,
         "mat_decoder_self_attention_mode": mat_decoder_self_attention_mode_metadata,
         "mat_decoder_lr_multiplier": mat_decoder_lr_multiplier,
+        "include_actor_head_lr_multiplier": include_actor_head_lr_multiplier,
         "parameter_lr_multipliers": parameter_lr_multipliers,
         "shuffle_agents": shuffle_agents,
         "preserve_inactive_prefix_structure": preserve_inactive_prefix_structure,
@@ -818,9 +821,18 @@ def _make_mat_parameter_lr_multipliers(
         *,
         policy_variant: PolicyVariant,
         mat_decoder_lr_multiplier: float,
+        include_actor_head_lr_multiplier: bool = False,
 ) -> dict[str, float]:
     if mat_decoder_lr_multiplier == 1.0:
         return {}
+
+    def make_prefix_multipliers(*prefixes: str, include_actor_head_input_norm: bool = False) -> dict[str, float]:
+        effective_prefixes = list(prefixes)
+        if include_actor_head_lr_multiplier:
+            if include_actor_head_input_norm:
+                effective_prefixes.append("actor_head_input_norm")
+            effective_prefixes.append("actor_head")
+        return {prefix: mat_decoder_lr_multiplier for prefix in effective_prefixes}
 
     if policy_variant == "mat_orig":
         return {
@@ -829,29 +841,31 @@ def _make_mat_parameter_lr_multipliers(
         }
 
     if policy_variant in {"mat_qcs", "mat_qcc"}:
-        return {
-            prefix: mat_decoder_lr_multiplier
-            for prefix in (
-                "decoder",
-                "query_input_norm",
-                "query_encoder",
-                "query_token_norm",
-                "context_input_norm",
-                "context_encoder",
-                "context_token_norm",
-            )
-        }
+        return make_prefix_multipliers(
+            "decoder",
+            "query_input_norm",
+            "query_encoder",
+            "query_token_norm",
+            "context_input_norm",
+            "context_encoder",
+            "context_token_norm",
+            include_actor_head_input_norm=True,
+        )
 
     if policy_variant == "mat_qcx":
-        return {
-            prefix: mat_decoder_lr_multiplier
-            for prefix in (
-                "decoder",
-                "action_input_norm",
-                "action_encoder",
-                "action_token_norm",
-            )
-        }
+        return make_prefix_multipliers(
+            "decoder",
+            "action_input_norm",
+            "action_encoder",
+            "action_token_norm",
+            "memory_input_norm",
+            "memory_encoder",
+            "memory_token_norm",
+            include_actor_head_input_norm=True,
+        )
+
+    if policy_variant == "mat_dec" and include_actor_head_lr_multiplier:
+        return make_prefix_multipliers()
 
     logger.warning(f"Ignoring decoder LR multiplier for policy_variant={policy_variant!r}")
     return {}

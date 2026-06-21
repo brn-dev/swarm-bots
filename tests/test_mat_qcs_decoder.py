@@ -1,5 +1,3 @@
-from collections.abc import Callable
-
 import torch
 
 from swarmbots.learn.algos.mat_qcs.mat_qcs_decoder import MATQCSDecoder, MATQCSDecoderConfig, MATQCSDecoderSelfAttentionMode
@@ -41,74 +39,67 @@ def _make_decoder_pair(
     return cheap_decoder, arbitrary_decoder
 
 
-def _record_causal_hints(
-        monkeypatch,
-) -> list[bool | None]:
-    from torch.nn.modules import transformer
-
-    original_detect_is_causal_mask: Callable[..., bool] = transformer._detect_is_causal_mask
-    causal_hints: list[bool | None] = []
-
-    def record_detect_is_causal_mask(
-            mask: torch.Tensor | None,
-            is_causal: bool | None = None,
-            size: int | None = None,
-    ) -> bool:
-        causal_hints.append(is_causal)
-        return original_detect_is_causal_mask(mask, is_causal, size)
-
-    monkeypatch.setattr(transformer, "_detect_is_causal_mask", record_detect_is_causal_mask)
-    return causal_hints
-
-
-def test_parallel_decoder_passes_explicit_causal_hint(monkeypatch) -> None:
-    causal_hints = _record_causal_hints(monkeypatch)
+def test_parallel_decoder_does_not_depend_on_future_tokens() -> None:
+    torch.manual_seed(2)
     query_tokens = torch.randn(2, 4, 8)
     context_tokens = torch.randn(2, 4, 8)
     memory_tokens = torch.randn(2, 4, 8)
     agent_mask = torch.ones(2, 4, dtype=torch.bool)
+    modified_query_tokens = query_tokens.clone()
+    modified_context_tokens = context_tokens.clone()
+    modified_query_tokens[:, 2:, :] = torch.randn_like(modified_query_tokens[:, 2:, :])
+    modified_context_tokens[:, 2:, :] = torch.randn_like(modified_context_tokens[:, 2:, :])
 
-    for self_attention_mode, expected_hint in (
-            (MATQCSDecoderSelfAttentionMode.FULL_CAUSAL, True),
-            (MATQCSDecoderSelfAttentionMode.PREVIOUS_AGENTS, False),
-            (MATQCSDecoderSelfAttentionMode.CONTEXT_TOKENS_ONLY, False),
-    ):
+    for self_attention_mode in MATQCSDecoderSelfAttentionMode:
         decoder = _make_decoder(self_attention_mode)
-        decoder(
+        decoder.eval()
+        with torch.no_grad():
+            output = decoder(
+                query_tokens=query_tokens,
+                context_tokens=context_tokens,
+                memory_tokens=memory_tokens,
+                agent_mask=agent_mask,
+                memory_mask=agent_mask,
+            )
+            modified_output = decoder(
+                query_tokens=modified_query_tokens,
+                context_tokens=modified_context_tokens,
+                memory_tokens=memory_tokens,
+                agent_mask=agent_mask,
+                memory_mask=agent_mask,
+            )
+
+        torch.testing.assert_close(modified_output[:, :2, :], output[:, :2, :], rtol=0.0, atol=1e-6)
+
+
+def test_context_tokens_only_parallel_decoder_ignores_past_query_tokens() -> None:
+    torch.manual_seed(3)
+    decoder = _make_decoder(MATQCSDecoderSelfAttentionMode.CONTEXT_TOKENS_ONLY)
+    decoder.eval()
+    query_tokens = torch.randn(2, 4, 8)
+    context_tokens = torch.randn(2, 4, 8)
+    memory_tokens = torch.randn(2, 4, 8)
+    agent_mask = torch.ones(2, 4, dtype=torch.bool)
+    modified_query_tokens = query_tokens.clone()
+    modified_query_tokens[:, :2, :] = torch.randn_like(modified_query_tokens[:, :2, :])
+
+    with torch.no_grad():
+        output = decoder(
             query_tokens=query_tokens,
             context_tokens=context_tokens,
             memory_tokens=memory_tokens,
             agent_mask=agent_mask,
             memory_mask=agent_mask,
         )
-        assert causal_hints[-1] is expected_hint
-
-
-def test_step_decoder_passes_explicit_causal_hint(monkeypatch) -> None:
-    causal_hints = _record_causal_hints(monkeypatch)
-    context_tokens = torch.randn(2, 2, 8)
-    query_prefix_tokens = torch.randn(2, 2, 8)
-    query_token = torch.randn(2, 1, 8)
-    memory_tokens = torch.randn(2, 4, 8)
-    agent_mask = torch.ones(2, 4, dtype=torch.bool)
-
-    for self_attention_mode, expected_hint in (
-            (MATQCSDecoderSelfAttentionMode.FULL_CAUSAL, True),
-            (MATQCSDecoderSelfAttentionMode.PREVIOUS_AGENTS, False),
-            (MATQCSDecoderSelfAttentionMode.CONTEXT_TOKENS_ONLY, True),
-    ):
-        decoder = _make_decoder(self_attention_mode)
-        decoder.forward_step(
+        modified_output = decoder(
+            query_tokens=modified_query_tokens,
             context_tokens=context_tokens,
-            query_token=query_token,
             memory_tokens=memory_tokens,
-            query_prefix_tokens=query_prefix_tokens,
-            context_mask=agent_mask[:, :2],
-            query_prefix_mask=agent_mask[:, :2],
-            query_mask=agent_mask[:, 2],
+            agent_mask=agent_mask,
             memory_mask=agent_mask,
         )
-        assert causal_hints[-1] is expected_hint
+
+    torch.testing.assert_close(modified_output[:, 2:, :], output[:, 2:, :], rtol=0.0, atol=1e-6)
 
 
 def test_arbitrary_mask_parallel_decoder_avoids_inactive_slot_zero_nan() -> None:
@@ -135,33 +126,6 @@ def test_arbitrary_mask_parallel_decoder_avoids_inactive_slot_zero_nan() -> None
     )
 
     assert torch.isfinite(output).all()
-
-
-def test_prefix_mask_parallel_decoder_uses_cheap_causal_mask(monkeypatch) -> None:
-    causal_hints = _record_causal_hints(monkeypatch)
-    decoder = _make_decoder(
-        MATQCSDecoderSelfAttentionMode.FULL_CAUSAL,
-        assume_agent_mask_is_active_prefix=True,
-    )
-    query_tokens = torch.randn(2, 4, 8)
-    context_tokens = torch.randn(2, 4, 8)
-    memory_tokens = torch.randn(2, 4, 8)
-    agent_mask = torch.tensor(
-        [
-            [True, True, False, False],
-            [True, True, True, False],
-        ]
-    )
-
-    decoder(
-        query_tokens=query_tokens,
-        context_tokens=context_tokens,
-        memory_tokens=memory_tokens,
-        agent_mask=agent_mask,
-        memory_mask=agent_mask,
-    )
-
-    assert causal_hints[-1] is True
 
 
 def test_arbitrary_parallel_decoder_matches_cheap_decoder_for_prefix_masks() -> None:

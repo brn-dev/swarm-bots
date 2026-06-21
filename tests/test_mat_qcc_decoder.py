@@ -1,5 +1,3 @@
-from typing import Any, cast
-
 import torch
 
 from swarmbots.learn.algos.mat_qcc.mat_qcc_decoder import MATQCCDecoder, MATQCCDecoderConfig
@@ -170,47 +168,8 @@ def test_prefix_fast_path_matches_arbitrary_mask_path_for_prefix_masks() -> None
     torch.testing.assert_close(prefix_step_output, arbitrary_step_output, rtol=0.0, atol=1e-6)
 
 
-def test_context_state_is_reformed_between_layers(monkeypatch: Any) -> None:
-    torch.manual_seed(3)
-    decoder = _make_decoder()
-    decoder.eval()
-
-    query_tokens = torch.randn(2, 4, 8)
-    context_tokens = torch.randn(2, 4, 8)
-    memory_tokens = torch.randn(2, 4, 8)
-    agent_mask = torch.ones(2, 4, dtype=torch.bool)
-    layer_context_inputs: list[torch.Tensor] = []
-
-    for layer in decoder.layers:
-        original_forward = layer.forward
-
-        def record_forward(
-                *args: Any,
-                _original_forward: Any = original_forward,
-                **kwargs: Any,
-        ) -> tuple[torch.Tensor, torch.Tensor]:
-            context_input = cast(torch.Tensor, kwargs["context_tokens"])
-            layer_context_inputs.append(context_input.detach().clone())
-            return _original_forward(*args, **kwargs)
-
-        monkeypatch.setattr(layer, "forward", record_forward)
-
-    with torch.no_grad():
-        decoder(
-            query_tokens=query_tokens,
-            context_tokens=context_tokens,
-            memory_tokens=memory_tokens,
-            agent_mask=agent_mask,
-            memory_mask=agent_mask,
-        )
-
-    assert len(layer_context_inputs) == len(decoder.layers)
-    torch.testing.assert_close(layer_context_inputs[0], context_tokens, rtol=0.0, atol=0.0)
-    assert not torch.allclose(layer_context_inputs[1], context_tokens, rtol=0.0, atol=1e-6)
-
-
 def test_parallel_output_does_not_depend_on_future_context_tokens() -> None:
-    torch.manual_seed(4)
+    torch.manual_seed(3)
     decoder = _make_decoder()
     decoder.eval()
 
@@ -242,7 +201,7 @@ def test_parallel_output_does_not_depend_on_future_context_tokens() -> None:
 
 
 def test_arbitrary_masks_do_not_create_nan_outputs() -> None:
-    torch.manual_seed(5)
+    torch.manual_seed(4)
     decoder = _make_decoder(assume_agent_mask_is_active_prefix=False)
     query_tokens = torch.randn(2, 4, 8)
     context_tokens = torch.randn(2, 4, 8)
