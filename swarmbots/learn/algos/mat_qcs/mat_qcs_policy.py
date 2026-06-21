@@ -24,7 +24,7 @@ from swarmbots.learn.algos.ppo.ppo_rollout_buffer import PPOEpisodeSegment
 from swarmbots.learn.algos.ppo.ppo_sampler import PPOSamples, PPOSampler, PPOSamplerConfig
 from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
 from swarmbots.learn.losses import LossDict, LossMetrics
-from swarmbots.learn.nn_components.activations import ActivationFactory
+from swarmbots.learn.nn_components.activations import ActivationFactory, make_activation
 from swarmbots.learn.nn_components.deep_set import DeepSetCritic
 from swarmbots.learn.nn_components.mlp import MLP
 from swarmbots.learn.nn_components.nn_init import make_init_linear_orthogonal
@@ -109,71 +109,17 @@ class MATQCSPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
             )
             nn.init.orthogonal_(self.agent_embeddings_decoder)
 
-        self.query_input_norm = (
-            nn.LayerNorm(self.d_model_encoder)
-            if config.decoder_config.normalize_query_input
-            else nn.Identity()
-        )
-        self.query_encoder = self._build_token_encoder(
-            input_dim=self.d_model_encoder,
-            output_dim=self.d_model_decoder,
-            hidden_dims=config.decoder_config.query_encoder_hidden_dims,
-            act_fn_cls=config.act_fn_cls,
-            linear_init_gain=config.decoder_config.token_encoder_init_gain,
-            projection_init_gain=config.decoder_config.token_encoder_projection_init_gain,
-            end_with_act_fn=config.decoder_config.token_encoder_end_with_act_fn,
-        )
-        self.query_token_norm = (
-            nn.LayerNorm(self.d_model_decoder)
-            if config.decoder_config.normalize_query_tokens
-            else nn.Identity()
-        )
+        self.query_input_norm = self._build_query_input_norm()
+        self.query_encoder = self._build_query_encoder()
+        self.query_token_norm = self._build_query_token_norm()
 
-        self.context_input_norm = (
-            nn.LayerNorm(self.d_model_encoder + self.agent_action_dim)
-            if config.decoder_config.normalize_context_input
-            else nn.Identity()
-        )
-        self.context_encoder = self._build_token_encoder(
-            input_dim=self.d_model_encoder + self.agent_action_dim,
-            output_dim=self.d_model_decoder,
-            hidden_dims=config.decoder_config.context_encoder_hidden_dims,
-            act_fn_cls=config.act_fn_cls,
-            linear_init_gain=config.decoder_config.token_encoder_init_gain,
-            projection_init_gain=config.decoder_config.token_encoder_projection_init_gain,
-            end_with_act_fn=config.decoder_config.token_encoder_end_with_act_fn,
-        )
-        self.context_token_norm = (
-            nn.LayerNorm(self.d_model_decoder)
-            if config.decoder_config.normalize_context_tokens
-            else nn.Identity()
-        )
-        self.memory_input_norm = (
-            nn.LayerNorm(self.d_model_encoder)
-            if config.decoder_config.normalize_memory_input
-            else nn.Identity()
-        )
-        memory_dims = config.decoder_config.memory_dims
-        if memory_dims is None:
-            self.memory_encoder = nn.Identity()
-            self.memory_d_model = self.d_model_encoder
-        else:
-            if len(memory_dims) == 0:
-                raise ValueError("decoder_config.memory_dims must be None or contain at least one dimension")
-            self.memory_encoder = self._build_encoder_from_dims(
-                input_dim=self.d_model_encoder,
-                dims=memory_dims,
-                act_fn_cls=config.act_fn_cls,
-                linear_init_gain=config.decoder_config.token_encoder_init_gain,
-                projection_init_gain=config.decoder_config.token_encoder_projection_init_gain,
-                end_with_act_fn=config.decoder_config.token_encoder_end_with_act_fn,
-            )
-            self.memory_d_model = memory_dims[-1]
-        self.memory_token_norm = (
-            nn.LayerNorm(self.memory_d_model)
-            if config.decoder_config.normalize_memory_tokens
-            else nn.Identity()
-        )
+        self.context_input_norm = self._build_context_input_norm()
+        self.context_encoder = self._build_context_encoder()
+        self.context_token_norm = self._build_context_token_norm()
+
+        self.memory_input_norm = self._build_memory_input_norm()
+        self.memory_encoder, self.memory_d_model = self._build_memory_encoder()
+        self.memory_token_norm = self._build_memory_token_norm()
 
         decoder_config = self._build_decoder_config()
         self.decoder_config = decoder_config
@@ -241,6 +187,88 @@ class MATQCSPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
             max_agents=self.max_agents,
             local_obs_dim=self.local_obs_dim,
             global_obs_dim=self.global_obs_dim,
+        )
+
+    def _build_query_input_norm(self) -> nn.Module:
+        return (
+            nn.LayerNorm(self.d_model_encoder)
+            if self.config.decoder_config.normalize_query_input
+            else nn.Identity()
+        )
+
+    def _build_query_encoder(self) -> nn.Module:
+        return self._build_token_encoder(
+            input_dim=self.d_model_encoder,
+            output_dim=self.d_model_decoder,
+            hidden_dims=self.config.decoder_config.query_encoder_hidden_dims,
+            act_fn_cls=self.config.act_fn_cls,
+            linear_init_gain=self.config.decoder_config.token_encoder_init_gain,
+            projection_init_gain=self.config.decoder_config.token_encoder_projection_init_gain,
+            end_with_act_fn=self.config.decoder_config.token_encoder_end_with_act_fn,
+        )
+
+    def _build_query_token_norm(self) -> nn.Module:
+        return (
+            nn.LayerNorm(self.d_model_decoder)
+            if self.config.decoder_config.normalize_query_tokens
+            else nn.Identity()
+        )
+
+    def _build_context_input_norm(self) -> nn.Module:
+        return (
+            nn.LayerNorm(self.d_model_encoder + self.agent_action_dim)
+            if self.config.decoder_config.normalize_context_input
+            else nn.Identity()
+        )
+
+    def _build_context_encoder(self) -> nn.Module:
+        return self._build_token_encoder(
+            input_dim=self.d_model_encoder + self.agent_action_dim,
+            output_dim=self.d_model_decoder,
+            hidden_dims=self.config.decoder_config.context_encoder_hidden_dims,
+            act_fn_cls=self.config.act_fn_cls,
+            linear_init_gain=self.config.decoder_config.token_encoder_init_gain,
+            projection_init_gain=self.config.decoder_config.token_encoder_projection_init_gain,
+            end_with_act_fn=self.config.decoder_config.token_encoder_end_with_act_fn,
+        )
+
+    def _build_context_token_norm(self) -> nn.Module:
+        return (
+            nn.LayerNorm(self.d_model_decoder)
+            if self.config.decoder_config.normalize_context_tokens
+            else nn.Identity()
+        )
+
+    def _build_memory_input_norm(self) -> nn.Module:
+        return (
+            nn.LayerNorm(self.d_model_encoder)
+            if self.config.decoder_config.normalize_memory_input
+            else nn.Identity()
+        )
+
+    def _build_memory_encoder(self) -> tuple[nn.Module, int]:
+        memory_dims = self.config.decoder_config.memory_dims
+        if memory_dims is None:
+            return nn.Identity(), self.d_model_encoder
+        if len(memory_dims) == 0:
+            raise ValueError("decoder_config.memory_dims must be None or contain at least one dimension")
+        return (
+            self._build_encoder_from_dims(
+                input_dim=self.d_model_encoder,
+                dims=memory_dims,
+                act_fn_cls=self.config.act_fn_cls,
+                linear_init_gain=self.config.decoder_config.token_encoder_init_gain,
+                projection_init_gain=self.config.decoder_config.token_encoder_projection_init_gain,
+                end_with_act_fn=self.config.decoder_config.token_encoder_end_with_act_fn,
+            ),
+            memory_dims[-1],
+        )
+
+    def _build_memory_token_norm(self) -> nn.Module:
+        return (
+            nn.LayerNorm(self.memory_d_model)
+            if self.config.decoder_config.normalize_memory_tokens
+            else nn.Identity()
         )
 
     def _build_decoder_config(self) -> MATQCSDecoderConfig:
