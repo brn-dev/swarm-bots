@@ -849,6 +849,10 @@ def _make_mat_parameter_lr_multipliers(
             "context_input_norm",
             "context_encoder",
             "context_token_norm",
+            "memory_input_norm",
+            "memory_encoder",
+            "memory_token_norm",
+            "agent_embeddings_decoder",
             include_actor_head_input_norm=True,
         )
 
