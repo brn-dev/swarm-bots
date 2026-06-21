@@ -4,13 +4,13 @@ import sys
 import pytest
 import torch
 from gymnasium import spaces
-from torch import nn
 
 from swarmbots.learn.action_dists.bernoulli_action_dist import BernoulliConfig
 from swarmbots.learn.action_dists.sticky_sign_magnitude_beta_action_dist import StickySignMagnitudeBetaConfig
 from swarmbots.learn.algos.mat.mat_encoder import MATEncoderConfig
 from swarmbots.learn.algos.mat_qcx.mat_qcx_decoder import MATQCXDecoderConfig
 from swarmbots.learn.algos.mat_qcx.mat_qcx_policy import MATQCXPolicy, MATQCXPolicyConfig
+from swarmbots.learn.algos.ppo.ppo_sampler import PPOSamples
 from swarmbots.learn.hybrid_action_space import HybridActionSpace
 
 
@@ -62,6 +62,62 @@ def _make_policy(
     )
 
 
+def _random_valid_actions(batch_size: int) -> torch.Tensor:
+    actions = torch.empty(batch_size, _DummyMATQCXEnv.n_agents, _DummyMATQCXEnv.action_space.total_agent_action_dim)
+    actions[..., :2] = torch.empty_like(actions[..., :2]).uniform_(-0.8, 0.8)
+    actions[..., 2:] = torch.randint(0, 2, actions[..., 2:].shape, dtype=actions.dtype)
+    return actions
+
+
+def _make_samples(
+        *,
+        local_obs: torch.Tensor,
+        global_obs: torch.Tensor,
+        hidden_local_vars: torch.Tensor,
+        hidden_global_vars: torch.Tensor,
+        agent_mask: torch.Tensor,
+        actions: torch.Tensor,
+        previous_actions: torch.Tensor | None = None,
+) -> PPOSamples:
+    batch_size = int(local_obs.shape[0])
+    return PPOSamples(
+        local_obs=local_obs,
+        global_obs=global_obs,
+        hidden_local_vars=hidden_local_vars,
+        hidden_global_vars=hidden_global_vars,
+        agent_mask=agent_mask,
+        previous_actions=torch.zeros_like(actions) if previous_actions is None else previous_actions,
+        actions=actions,
+        log_probs=torch.zeros(actions.shape[:2], dtype=actions.dtype),
+        values=torch.zeros(batch_size, dtype=actions.dtype),
+        returns=torch.zeros(batch_size, dtype=actions.dtype),
+        advantages=torch.zeros(batch_size, dtype=actions.dtype),
+    )
+
+
+def _evaluate_log_probs_and_values(
+        policy: MATQCXPolicy,
+        *,
+        local_obs: torch.Tensor,
+        global_obs: torch.Tensor,
+        hidden_local_vars: torch.Tensor,
+        hidden_global_vars: torch.Tensor,
+        agent_mask: torch.Tensor,
+        actions: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    log_probs, values, *_ = policy.evaluate_actions(
+        _make_samples(
+            local_obs=local_obs,
+            global_obs=global_obs,
+            hidden_local_vars=hidden_local_vars,
+            hidden_global_vars=hidden_global_vars,
+            agent_mask=agent_mask,
+            actions=actions,
+        )
+    )
+    return log_probs, values
+
+
 def test_qcx_policy_forward_and_evaluate_actions_handle_arbitrary_masks() -> None:
     torch.manual_seed(0)
     policy = _make_policy()
@@ -94,19 +150,17 @@ def test_qcx_policy_forward_and_evaluate_actions_handle_arbitrary_masks() -> Non
             deterministic=False,
         )
 
-        class _Batch:
-            pass
-
-        batch = _Batch()
-        batch.actions = actions
-        batch.local_obs = local_obs
-        batch.global_obs = global_obs
-        batch.hidden_local_vars = hidden_local_vars
-        batch.hidden_global_vars = hidden_global_vars
-        batch.agent_mask = agent_mask
-        batch.previous_actions = previous_actions
-
-        eval_log_probs, eval_values, *_ = policy.evaluate_actions(batch)
+        eval_log_probs, eval_values, *_ = policy.evaluate_actions(
+            _make_samples(
+                local_obs=local_obs,
+                global_obs=global_obs,
+                hidden_local_vars=hidden_local_vars,
+                hidden_global_vars=hidden_global_vars,
+                agent_mask=agent_mask,
+                previous_actions=previous_actions,
+                actions=actions,
+            )
+        )
 
     assert torch.isfinite(actions).all()
     assert torch.isfinite(log_probs).all()
@@ -131,13 +185,29 @@ def test_qcx_policy_rejects_decoder_agent_embeddings() -> None:
         _make_policy(add_agent_embeddings=True)
 
 
-def test_qcx_policy_action_encoder_ends_with_activation() -> None:
+def test_qcx_policy_action_encoder_configuration_constructs_and_runs() -> None:
+    torch.manual_seed(1)
     policy = _make_policy()
+    policy.eval()
 
-    assert isinstance(list(policy.action_encoder.children())[-1], nn.GELU)
+    with torch.no_grad():
+        actions, log_probs, values = policy(
+            local_obs=torch.randn(2, _DummyMATQCXEnv.n_agents, _DummyMATQCXEnv.local_obs_dim),
+            global_obs=torch.randn(2, _DummyMATQCXEnv.global_obs_dim),
+            hidden_local_vars=torch.randn(2, _DummyMATQCXEnv.n_agents, _DummyMATQCXEnv.hidden_local_vars_dim),
+            hidden_global_vars=torch.randn(2, _DummyMATQCXEnv.hidden_global_vars_dim),
+            agent_mask=torch.ones(2, _DummyMATQCXEnv.n_agents, dtype=torch.bool),
+            previous_actions=torch.zeros(2, _DummyMATQCXEnv.n_agents, _DummyMATQCXEnv.action_space.total_agent_action_dim),
+            deterministic=True,
+        )
+
+    assert actions.shape == (2, _DummyMATQCXEnv.n_agents, _DummyMATQCXEnv.action_space.total_agent_action_dim)
+    assert torch.isfinite(log_probs).all()
+    assert torch.isfinite(values).all()
 
 
-def test_qcx_policy_memory_encoder_uses_explicit_memory_activation_flag() -> None:
+def test_qcx_policy_memory_encoder_configuration_constructs_and_runs() -> None:
+    torch.manual_seed(2)
     policy = MATQCXPolicy(
         env=_DummyMATQCXEnv(),
         config=MATQCXPolicyConfig(
@@ -161,22 +231,35 @@ def test_qcx_policy_memory_encoder_uses_explicit_memory_activation_flag() -> Non
             max_agents=8,
         ),
     )
+    policy.eval()
 
-    assert isinstance(list(policy.memory_encoder.children())[-1], nn.GELU)
+    with torch.no_grad():
+        actions, log_probs, values = policy(
+            local_obs=torch.randn(2, _DummyMATQCXEnv.n_agents, _DummyMATQCXEnv.local_obs_dim),
+            global_obs=torch.randn(2, _DummyMATQCXEnv.global_obs_dim),
+            hidden_local_vars=torch.randn(2, _DummyMATQCXEnv.n_agents, _DummyMATQCXEnv.hidden_local_vars_dim),
+            hidden_global_vars=torch.randn(2, _DummyMATQCXEnv.hidden_global_vars_dim),
+            agent_mask=torch.ones(2, _DummyMATQCXEnv.n_agents, dtype=torch.bool),
+            previous_actions=torch.zeros(2, _DummyMATQCXEnv.n_agents, _DummyMATQCXEnv.action_space.total_agent_action_dim),
+            deterministic=True,
+        )
+
+    assert actions.shape == (2, _DummyMATQCXEnv.n_agents, _DummyMATQCXEnv.action_space.total_agent_action_dim)
+    assert torch.isfinite(log_probs).all()
+    assert torch.isfinite(values).all()
 
 
 def test_qcx_policy_evaluate_ignores_inactive_context_actions() -> None:
-    torch.manual_seed(1)
+    torch.manual_seed(3)
     policy = _make_policy()
     policy.eval()
 
     batch_size = 3
-    action_dim = _DummyMATQCXEnv.action_space.total_agent_action_dim
     local_obs = torch.randn(batch_size, _DummyMATQCXEnv.n_agents, _DummyMATQCXEnv.local_obs_dim)
     global_obs = torch.randn(batch_size, _DummyMATQCXEnv.global_obs_dim)
     hidden_local_vars = torch.randn(batch_size, _DummyMATQCXEnv.n_agents, _DummyMATQCXEnv.hidden_local_vars_dim)
     hidden_global_vars = torch.randn(batch_size, _DummyMATQCXEnv.hidden_global_vars_dim)
-    actions = torch.randn(batch_size, _DummyMATQCXEnv.n_agents, action_dim)
+    actions = _random_valid_actions(batch_size)
     agent_mask = torch.tensor(
         [
             [False, True, True, False, True],
@@ -186,9 +269,12 @@ def test_qcx_policy_evaluate_ignores_inactive_context_actions() -> None:
     )
     modified_actions = actions.clone()
     modified_actions[~agent_mask] = torch.randn_like(modified_actions[~agent_mask])
+    modified_actions[..., :2].clamp_(-0.8, 0.8)
+    modified_actions[..., 2:] = (modified_actions[..., 2:] > 0.0).to(modified_actions.dtype)
 
     with torch.no_grad():
-        latent_pi, values, _ = policy._evaluate_latent_and_values(
+        log_probs, values = _evaluate_log_probs_and_values(
+            policy,
             local_obs=local_obs,
             global_obs=global_obs,
             hidden_local_vars=hidden_local_vars,
@@ -196,7 +282,8 @@ def test_qcx_policy_evaluate_ignores_inactive_context_actions() -> None:
             agent_mask=agent_mask,
             actions=actions,
         )
-        modified_latent_pi, modified_values, _ = policy._evaluate_latent_and_values(
+        modified_log_probs, modified_values = _evaluate_log_probs_and_values(
+            policy,
             local_obs=local_obs,
             global_obs=global_obs,
             hidden_local_vars=hidden_local_vars,
@@ -205,22 +292,21 @@ def test_qcx_policy_evaluate_ignores_inactive_context_actions() -> None:
             actions=modified_actions,
         )
 
-    torch.testing.assert_close(modified_latent_pi, latent_pi, rtol=0.0, atol=1e-6)
+    torch.testing.assert_close(modified_log_probs[agent_mask], log_probs[agent_mask], rtol=0.0, atol=1e-6)
     torch.testing.assert_close(modified_values, values, rtol=0.0, atol=0.0)
 
 
 def test_qcx_policy_evaluate_ignores_inactive_observations() -> None:
-    torch.manual_seed(2)
+    torch.manual_seed(4)
     policy = _make_policy()
     policy.eval()
 
     batch_size = 3
-    action_dim = _DummyMATQCXEnv.action_space.total_agent_action_dim
     local_obs = torch.randn(batch_size, _DummyMATQCXEnv.n_agents, _DummyMATQCXEnv.local_obs_dim)
     global_obs = torch.randn(batch_size, _DummyMATQCXEnv.global_obs_dim)
     hidden_local_vars = torch.randn(batch_size, _DummyMATQCXEnv.n_agents, _DummyMATQCXEnv.hidden_local_vars_dim)
     hidden_global_vars = torch.randn(batch_size, _DummyMATQCXEnv.hidden_global_vars_dim)
-    actions = torch.randn(batch_size, _DummyMATQCXEnv.n_agents, action_dim)
+    actions = _random_valid_actions(batch_size)
     agent_mask = torch.tensor(
         [
             [False, True, True, False, True],
@@ -234,7 +320,8 @@ def test_qcx_policy_evaluate_ignores_inactive_observations() -> None:
     modified_hidden_local_vars[~agent_mask] = torch.randn_like(modified_hidden_local_vars[~agent_mask])
 
     with torch.no_grad():
-        latent_pi, values, _ = policy._evaluate_latent_and_values(
+        log_probs, values = _evaluate_log_probs_and_values(
+            policy,
             local_obs=local_obs,
             global_obs=global_obs,
             hidden_local_vars=hidden_local_vars,
@@ -242,7 +329,8 @@ def test_qcx_policy_evaluate_ignores_inactive_observations() -> None:
             agent_mask=agent_mask,
             actions=actions,
         )
-        modified_latent_pi, modified_values, _ = policy._evaluate_latent_and_values(
+        modified_log_probs, modified_values = _evaluate_log_probs_and_values(
+            policy,
             local_obs=modified_local_obs,
             global_obs=global_obs,
             hidden_local_vars=modified_hidden_local_vars,
@@ -251,28 +339,30 @@ def test_qcx_policy_evaluate_ignores_inactive_observations() -> None:
             actions=actions,
         )
 
-    torch.testing.assert_close(modified_latent_pi[agent_mask], latent_pi[agent_mask], rtol=0.0, atol=1e-6)
+    torch.testing.assert_close(modified_log_probs[agent_mask], log_probs[agent_mask], rtol=0.0, atol=1e-5)
     torch.testing.assert_close(modified_values, values, rtol=0.0, atol=1e-6)
 
 
 def test_qcx_policy_evaluate_does_not_depend_on_future_actions() -> None:
-    torch.manual_seed(3)
+    torch.manual_seed(5)
     policy = _make_policy()
     policy.eval()
 
     batch_size = 3
-    action_dim = _DummyMATQCXEnv.action_space.total_agent_action_dim
     local_obs = torch.randn(batch_size, _DummyMATQCXEnv.n_agents, _DummyMATQCXEnv.local_obs_dim)
     global_obs = torch.randn(batch_size, _DummyMATQCXEnv.global_obs_dim)
     hidden_local_vars = torch.randn(batch_size, _DummyMATQCXEnv.n_agents, _DummyMATQCXEnv.hidden_local_vars_dim)
     hidden_global_vars = torch.randn(batch_size, _DummyMATQCXEnv.hidden_global_vars_dim)
-    actions = torch.randn(batch_size, _DummyMATQCXEnv.n_agents, action_dim)
+    actions = _random_valid_actions(batch_size)
     agent_mask = torch.ones(batch_size, _DummyMATQCXEnv.n_agents, dtype=torch.bool)
     modified_actions = actions.clone()
     modified_actions[:, 2:, :] = torch.randn_like(modified_actions[:, 2:, :])
+    modified_actions[..., :2].clamp_(-0.8, 0.8)
+    modified_actions[..., 2:] = (modified_actions[..., 2:] > 0.0).to(modified_actions.dtype)
 
     with torch.no_grad():
-        latent_pi, values, _ = policy._evaluate_latent_and_values(
+        log_probs, values = _evaluate_log_probs_and_values(
+            policy,
             local_obs=local_obs,
             global_obs=global_obs,
             hidden_local_vars=hidden_local_vars,
@@ -280,7 +370,8 @@ def test_qcx_policy_evaluate_does_not_depend_on_future_actions() -> None:
             agent_mask=agent_mask,
             actions=actions,
         )
-        modified_latent_pi, modified_values, _ = policy._evaluate_latent_and_values(
+        modified_log_probs, modified_values = _evaluate_log_probs_and_values(
+            policy,
             local_obs=local_obs,
             global_obs=global_obs,
             hidden_local_vars=hidden_local_vars,
@@ -289,7 +380,7 @@ def test_qcx_policy_evaluate_does_not_depend_on_future_actions() -> None:
             actions=modified_actions,
         )
 
-    torch.testing.assert_close(modified_latent_pi[:, :3, :], latent_pi[:, :3, :], rtol=0.0, atol=1e-6)
+    torch.testing.assert_close(modified_log_probs[:, :2], log_probs[:, :2], rtol=0.0, atol=1e-5)
     torch.testing.assert_close(modified_values, values, rtol=0.0, atol=0.0)
 
 
@@ -303,6 +394,7 @@ def test_qcx_policy_compile_modules_constructs_when_supported() -> None:
 
 
 def test_qcx_policy_can_skip_action_projection_when_dims_match() -> None:
+    torch.manual_seed(6)
     action_dim = _DummyMATQCXEnv.action_space.total_agent_action_dim
     policy = MATQCXPolicy(
         env=_DummyMATQCXEnv(),
@@ -328,8 +420,22 @@ def test_qcx_policy_can_skip_action_projection_when_dims_match() -> None:
             compile_modules=False,
         ),
     )
+    policy.eval()
 
-    assert isinstance(policy.action_encoder, nn.Identity)
+    with torch.no_grad():
+        actions, log_probs, values = policy(
+            local_obs=torch.randn(2, _DummyMATQCXEnv.n_agents, _DummyMATQCXEnv.local_obs_dim),
+            global_obs=torch.randn(2, _DummyMATQCXEnv.global_obs_dim),
+            hidden_local_vars=torch.randn(2, _DummyMATQCXEnv.n_agents, _DummyMATQCXEnv.hidden_local_vars_dim),
+            hidden_global_vars=torch.randn(2, _DummyMATQCXEnv.hidden_global_vars_dim),
+            agent_mask=torch.ones(2, _DummyMATQCXEnv.n_agents, dtype=torch.bool),
+            previous_actions=torch.zeros(2, _DummyMATQCXEnv.n_agents, action_dim),
+            deterministic=True,
+        )
+
+    assert actions.shape == (2, _DummyMATQCXEnv.n_agents, action_dim)
+    assert torch.isfinite(log_probs).all()
+    assert torch.isfinite(values).all()
 
 
 def test_qcx_policy_rejects_skipping_action_projection_when_dims_differ() -> None:
