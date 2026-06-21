@@ -30,6 +30,8 @@ from swarmbots.learn.action_dists.squashed_diag_gaussian_action_dist import Squa
 from swarmbots.learn.algos.mat.mat_dec_policy import MATDecPolicy, MATDecPolicyConfig
 from swarmbots.learn.algos.mat_qcc.mat_qcc_decoder import MATQCCDecoderConfig
 from swarmbots.learn.algos.mat_qcc.mat_qcc_policy import MATQCCPolicy, MATQCCPolicyConfig
+from swarmbots.learn.algos.mat_qcx.mat_qcx_decoder import MATQCXDecoderConfig
+from swarmbots.learn.algos.mat_qcx.mat_qcx_policy import MATQCXPolicy, MATQCXPolicyConfig
 from swarmbots.learn.algos.mappo.mappo_actor import MAPPOActorConfig
 from swarmbots.learn.algos.mappo.mappo_policy import MAPPOCriticConfig, MAPPOPolicy, MAPPOPolicyConfig
 from swarmbots.learn.algos.mat_qcs.mat_qcs_decoder import MATQCSDecoderConfig, MATQCSDecoderSelfAttentionMode
@@ -67,7 +69,7 @@ from swarmbots.utils.recording_schedule import DEFAULT_LIVE_RECORDING_SCHEDULE, 
 from swarmbots.utils.run_paths import get_run_id_from_checkpoint_path
 
 ContinuousActionDistVariant = Literal["sticky_sign_magnitude_beta", "sign_magnitude_beta", "beta", "gsde", "squashed_diag_gaussian"]
-PolicyVariant = Literal["mat_qcs", "mat_qcc", "mat_dec", "mat_orig", "ppo", "ppo_small", "mappo", "mappo_small"]
+PolicyVariant = Literal["mat_qcs", "mat_qcc", "mat_qcx", "mat_dec", "mat_orig", "ppo", "ppo_small", "mappo", "mappo_small"]
 MJWScenarioName = Literal["wall", "find_opening", "climb", "dual_payload", "payload_step", "multi_payload_goal"]
 
 
@@ -102,9 +104,11 @@ class MATNormalizationConfig:
     normalize_encoder_tokens: bool = False
     normalize_query_input: bool = False
     normalize_context_input: bool = False
+    normalize_action_input: bool = False
     normalize_memory_input: bool = False
     normalize_query_tokens: bool = False
     normalize_context_tokens: bool = False
+    normalize_action_tokens: bool = False
     normalize_memory_tokens: bool = False
     normalize_actor_head_input: bool = False
     normalize_prev_binary_actions: bool = False
@@ -838,6 +842,17 @@ def _make_mat_parameter_lr_multipliers(
             )
         }
 
+    if policy_variant == "mat_qcx":
+        return {
+            prefix: mat_decoder_lr_multiplier
+            for prefix in (
+                "decoder",
+                "action_input_norm",
+                "action_encoder",
+                "action_token_norm",
+            )
+        }
+
     logger.warning(f"Ignoring decoder LR multiplier for policy_variant={policy_variant!r}")
     return {}
 
@@ -864,7 +879,7 @@ def _make_base_policy(
         mat_init_gains: MATInitGains,
         mat_normalization: MATNormalizationConfig,
         assume_agent_mask_is_active_prefix: bool,
-) -> PPOPolicy | MAPPOPolicy | MATQCSPolicy | MATQCCPolicy | MATDecPolicy | MATOrigPolicy:
+) -> PPOPolicy | MAPPOPolicy | MATQCSPolicy | MATQCCPolicy | MATQCXPolicy | MATDecPolicy | MATOrigPolicy:
     continuous_config = make_continuous_config(
         variant=continuous_action_dist,
         initial_stickiness=initial_stickiness,
@@ -1069,6 +1084,44 @@ def _make_base_policy(
                     normalize_memory_input=mat_normalization.normalize_memory_input,
                     normalize_query_tokens=mat_normalization.normalize_query_tokens,
                     normalize_context_tokens=mat_normalization.normalize_context_tokens,
+                    normalize_memory_tokens=mat_normalization.normalize_memory_tokens,
+                    normalize_actor_head_input=mat_normalization.normalize_actor_head_input,
+                    assume_agent_mask_is_active_prefix=assume_agent_mask_is_active_prefix,
+                ),
+                critic_config=mat_qcs_critic_config,
+                dropout=0.0,
+                act_fn_cls=act_fn_cls,
+                continuous_config=continuous_config,
+                bernoulli_config=bernoulli_config,
+                max_agents=20,
+                compile_modules=compile_policy_modules,
+                compile_mode=policy_compile_mode,
+                action_net_init_gain=mat_init_gains.action_net,
+            ),
+        )
+
+    if policy_variant == "mat_qcx":
+        return MATQCXPolicy(
+            env=env,
+            config=MATQCXPolicyConfig(
+                encoder_config=mat_encoder_config,
+                decoder_config=MATQCXDecoderConfig(
+                    d_model=dec_d_model,
+                    nhead=dec_nhead,
+                    num_layers=2,
+                    dim_feedforward=dec_d_model * 2,
+                    add_agent_embeddings=mat_add_agent_embeddings,
+                    token_encoder_init_gain=mat_init_gains.decoder_token_encoder,
+                    token_encoder_projection_init_gain=mat_init_gains.decoder_token_encoder_projection,
+                    transformer_ff_init_gain=mat_init_gains.decoder_transformer_ff,
+                    actor_head_init_gain=mat_init_gains.actor_head,
+                    context_encoder_hidden_dims=[dec_d_model],
+                    action_encoder_hidden_dims=[dec_d_model],
+                    memory_dims=None,
+                    normalize_context_input=mat_normalization.normalize_context_input,
+                    normalize_action_input=mat_normalization.normalize_action_input,
+                    normalize_memory_input=mat_normalization.normalize_memory_input,
+                    normalize_action_tokens=mat_normalization.normalize_action_tokens,
                     normalize_memory_tokens=mat_normalization.normalize_memory_tokens,
                     normalize_actor_head_input=mat_normalization.normalize_actor_head_input,
                     assume_agent_mask_is_active_prefix=assume_agent_mask_is_active_prefix,

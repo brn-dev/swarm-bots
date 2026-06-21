@@ -30,6 +30,7 @@ Keep only durable architecture notes and gotchas. Prefer deleting stale detail o
 - `MATQCSPolicy` is the main transformer policy; `PPOPolicy` is the plain MLP policy; `MATDecPolicy` is decoderless despite the name.
 - `MATOrigPolicy` uses shifted previous-agent actions, requires contiguous true-prefix `agent_mask`, and must zero inactive-agent log-probs in rollout and `evaluate_actions()`.
 - `MATQCSPolicy` supports arbitrary inactive positions if every row has at least one active agent. `assume_agent_mask_is_active_prefix=True` enables the cheap prefix path for QCS/QCC configs.
+- `MATQCXPolicy` is QCC-style query-to-context only: action projection is policy-side, decoder input is projected once to decoder width, query encoders are optional per-layer modules defaulting to identity, and context encoders are per decoder layer with context-token norm enabled by default. QCX does not do context-context attention and does not support decoder agent embeddings yet.
 - Recurrent MAT variants share `RMATPolicyMixin` and env-major `RPPOWMSampler` TBPTT rows. `MATQCCPolicy` is not state-dict compatible with `MATQCSDecoder`'s interleaved `CONTEXT_TOKENS_ONLY` implementation.
 - For MAT customization, override `_build_encoder*()` / `_build_action_dist(...)`; do not mutate fields after `super().__init__()`.
 - `ActionDist.compile_friendly` gates MAT compile coverage. Mutable action-dist scalars must be tensors/buffers, not Python floats. Sticky dists must keep `requires_previous_actions()` structurally stable even when annealed to zero.
