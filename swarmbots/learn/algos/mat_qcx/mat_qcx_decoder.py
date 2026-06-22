@@ -3,7 +3,7 @@ from dataclasses import dataclass
 import torch
 from torch import nn
 
-from swarmbots.learn.algos.mat_qcs.mat_qcs_policy import MATQCSPolicy
+from swarmbots.learn.algos.mat_qc_base_policy import MATQCBasePolicy
 from swarmbots.learn.nn_components.activations import ActivationFactory, make_activation
 from swarmbots.learn.nn_components.nn_init import init_transformer_feedforward, reinitialize_multihead_attention
 
@@ -26,8 +26,7 @@ class MATQCXDecoderConfig:
     transformer_ff_init_gain: float | None = 1.0
     query_encoder_hidden_dims: list[int] | None = None
     context_encoder_hidden_dims: list[int] | None = None
-    project_actions: bool = True
-    action_encoder_hidden_dims: list[int] | None = None
+    action_encoder_dims: list[int] | None = None
     memory_dims: list[int] | None = None
     actor_head_hidden_dims: list[int] | None = None
     layer_token_encoder_end_with_act_fn: bool = True
@@ -80,7 +79,7 @@ class MATQCXDecoderLayer(nn.Module):
             if normalize_context_input
             else nn.Identity()
         )
-        self.context_encoder = MATQCSPolicy._build_token_encoder(
+        self.context_encoder = MATQCBasePolicy._build_token_encoder(
             input_dim=d_model + action_d_model,
             output_dim=d_model,
             hidden_dims=context_encoder_hidden_dims,
@@ -136,7 +135,7 @@ class MATQCXDecoderLayer(nn.Module):
     ) -> nn.Module:
         if hidden_dims is None or len(hidden_dims) == 0:
             return nn.Identity()
-        return MATQCSPolicy._build_token_encoder(
+        return MATQCBasePolicy._build_token_encoder(
             input_dim=d_model,
             output_dim=d_model,
             hidden_dims=hidden_dims,
@@ -346,7 +345,7 @@ class MATQCXDecoder(nn.Module):
     ) -> nn.Module:
         if input_d_model == d_model:
             return nn.Identity()
-        return MATQCSPolicy._build_token_encoder(
+        return MATQCBasePolicy._build_token_encoder(
             input_dim=input_d_model,
             output_dim=d_model,
             hidden_dims=None,
@@ -359,26 +358,26 @@ class MATQCXDecoder(nn.Module):
     def forward(
             self,
             query_tokens: torch.Tensor,
-            context_tokens: torch.Tensor,
+            action_tokens: torch.Tensor,
             memory_tokens: torch.Tensor,
             agent_mask: torch.Tensor | None = None,
             memory_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
         if memory_tokens.shape[1] > self.max_agents:
             raise ValueError(f"Expected memory_tokens second dim <= {self.max_agents}, got {memory_tokens.shape[1]}")
-        if query_tokens.shape[1] != context_tokens.shape[1]:
-            raise ValueError("query_tokens and context_tokens must have the same number of agents")
+        if query_tokens.shape[1] != action_tokens.shape[1]:
+            raise ValueError("query_tokens and action_tokens must have the same number of agents")
 
         context_attention_mask, has_visible_context, context_key_padding_mask = self._build_parallel_context_attention_mask(
             batch_size=query_tokens.shape[0],
             n_queries=query_tokens.shape[1],
-            n_contexts=context_tokens.shape[1],
+            n_contexts=action_tokens.shape[1],
             context_mask=agent_mask,
             device=query_tokens.device,
         )
         return self._decode(
             x=query_tokens,
-            action_tokens=context_tokens,
+            action_tokens=action_tokens,
             memory_tokens=memory_tokens,
             context_token_count=None,
             context_attention_mask=context_attention_mask,
@@ -389,7 +388,7 @@ class MATQCXDecoder(nn.Module):
 
     def forward_step(
             self,
-            context_tokens: torch.Tensor,
+            action_tokens: torch.Tensor,
             query_token: torch.Tensor,
             memory_tokens: torch.Tensor,
             *,
@@ -406,8 +405,8 @@ class MATQCXDecoder(nn.Module):
             raise ValueError(
                 f"Expected memory_tokens second dim <= {self.max_agents}, got {memory_tokens.shape[1]}"
             )
-        if query_prefix_tokens.shape[1] != context_tokens.shape[1]:
-            raise ValueError("query_prefix_tokens and context_tokens must have the same sequence length")
+        if query_prefix_tokens.shape[1] != action_tokens.shape[1]:
+            raise ValueError("query_prefix_tokens and action_tokens must have the same sequence length")
 
         x = torch.cat((query_prefix_tokens, query_token), dim=1)
         combined_context_mask = context_mask
@@ -415,15 +414,15 @@ class MATQCXDecoder(nn.Module):
         context_attention_mask, has_visible_context, context_key_padding_mask = self._build_parallel_context_attention_mask(
             batch_size=query_token.shape[0],
             n_queries=x.shape[1],
-            n_contexts=context_tokens.shape[1],
+            n_contexts=action_tokens.shape[1],
             context_mask=combined_context_mask,
             device=query_token.device,
         )
         return self._decode(
             x=x,
-            action_tokens=context_tokens,
+            action_tokens=action_tokens,
             memory_tokens=memory_tokens,
-            context_token_count=context_tokens.shape[1],
+            context_token_count=action_tokens.shape[1],
             context_attention_mask=context_attention_mask,
             has_visible_context=has_visible_context,
             context_key_padding_mask=context_key_padding_mask,

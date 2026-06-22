@@ -49,7 +49,7 @@ def _make_policy(
                 num_layers=1,
                 dim_feedforward=32,
                 context_encoder_hidden_dims=[16],
-                action_encoder_hidden_dims=[16],
+                action_encoder_dims=[16, 16],
                 memory_dims=None,
                 add_agent_embeddings=add_agent_embeddings,
                 assume_agent_mask_is_active_prefix=assume_agent_mask_is_active_prefix,
@@ -393,7 +393,7 @@ def test_qcx_policy_compile_modules_constructs_when_supported() -> None:
     assert policy.config.compile_modules
 
 
-def test_qcx_policy_can_skip_action_projection_when_dims_match() -> None:
+def test_qcx_policy_can_use_identity_action_encoder() -> None:
     torch.manual_seed(6)
     action_dim = _DummyMATQCXEnv.action_space.total_agent_action_dim
     policy = MATQCXPolicy(
@@ -406,11 +406,11 @@ def test_qcx_policy_can_skip_action_projection_when_dims_match() -> None:
                 dim_feedforward=16,
             ),
             decoder_config=MATQCXDecoderConfig(
-                d_model=action_dim,
+                d_model=action_dim + 1,
                 nhead=1,
                 num_layers=1,
-                dim_feedforward=action_dim * 2,
-                project_actions=False,
+                dim_feedforward=(action_dim + 1) * 2,
+                action_encoder_dims=[],
                 memory_dims=None,
                 assume_agent_mask_is_active_prefix=False,
             ),
@@ -436,33 +436,51 @@ def test_qcx_policy_can_skip_action_projection_when_dims_match() -> None:
     assert actions.shape == (2, _DummyMATQCXEnv.n_agents, action_dim)
     assert torch.isfinite(log_probs).all()
     assert torch.isfinite(values).all()
+    assert policy.decoder.action_d_model == action_dim
 
 
-def test_qcx_policy_rejects_skipping_action_projection_when_dims_differ() -> None:
+def test_qcx_policy_accepts_action_encoder_dim_different_from_decoder_model_dim() -> None:
+    torch.manual_seed(7)
     action_dim = _DummyMATQCXEnv.action_space.total_agent_action_dim
-
-    with pytest.raises(ValueError, match="project_actions=False requires agent action dim"):
-        MATQCXPolicy(
-            env=_DummyMATQCXEnv(),
-            config=MATQCXPolicyConfig(
-                encoder_config=MATEncoderConfig(
-                    d_model=8,
-                    nhead=1,
-                    num_layers=1,
-                    dim_feedforward=16,
-                ),
-                decoder_config=MATQCXDecoderConfig(
-                    d_model=action_dim + 1,
-                    nhead=1,
-                    num_layers=1,
-                    dim_feedforward=(action_dim + 1) * 2,
-                    project_actions=False,
-                    memory_dims=None,
-                    assume_agent_mask_is_active_prefix=False,
-                ),
-                continuous_config=StickySignMagnitudeBetaConfig(stickiness=0.25),
-                bernoulli_config=BernoulliConfig(initial_prob=0.5),
-                max_agents=8,
-                compile_modules=False,
+    action_token_dim = action_dim + 2
+    policy = MATQCXPolicy(
+        env=_DummyMATQCXEnv(),
+        config=MATQCXPolicyConfig(
+            encoder_config=MATEncoderConfig(
+                d_model=8,
+                nhead=1,
+                num_layers=1,
+                dim_feedforward=16,
             ),
+            decoder_config=MATQCXDecoderConfig(
+                d_model=action_dim + 1,
+                nhead=1,
+                num_layers=1,
+                dim_feedforward=(action_dim + 1) * 2,
+                action_encoder_dims=[action_token_dim],
+                memory_dims=None,
+                assume_agent_mask_is_active_prefix=False,
+            ),
+            continuous_config=StickySignMagnitudeBetaConfig(stickiness=0.25),
+            bernoulli_config=BernoulliConfig(initial_prob=0.5),
+            max_agents=8,
+            compile_modules=False,
+        ),
+    )
+    policy.eval()
+
+    with torch.no_grad():
+        actions, log_probs, values = policy(
+            local_obs=torch.randn(2, _DummyMATQCXEnv.n_agents, _DummyMATQCXEnv.local_obs_dim),
+            global_obs=torch.randn(2, _DummyMATQCXEnv.global_obs_dim),
+            hidden_local_vars=torch.randn(2, _DummyMATQCXEnv.n_agents, _DummyMATQCXEnv.hidden_local_vars_dim),
+            hidden_global_vars=torch.randn(2, _DummyMATQCXEnv.hidden_global_vars_dim),
+            agent_mask=torch.ones(2, _DummyMATQCXEnv.n_agents, dtype=torch.bool),
+            previous_actions=torch.zeros(2, _DummyMATQCXEnv.n_agents, action_dim),
+            deterministic=True,
         )
+
+    assert actions.shape == (2, _DummyMATQCXEnv.n_agents, action_dim)
+    assert torch.isfinite(log_probs).all()
+    assert torch.isfinite(values).all()
+    assert policy.decoder.action_d_model == action_token_dim

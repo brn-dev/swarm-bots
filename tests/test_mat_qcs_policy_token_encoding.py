@@ -63,10 +63,10 @@ def test_context_token_agent_embedding_slice_matches_full_sequence_encoding() ->
 
     with torch.no_grad():
         augmented_observations = policy.encoder(local_obs, global_obs)
-        full_context_tokens = policy._encode_context_tokens(augmented_observations, actions)
+        full_context_tokens = policy._encode_decoder_context_tokens(augmented_observations, actions)
         per_agent_context_tokens = torch.cat(
             [
-                policy._encode_context_tokens(
+                policy._encode_decoder_context_tokens(
                     augmented_observations[:, agent_idx:agent_idx + 1, :],
                     actions[:, agent_idx:agent_idx + 1, :],
                     agent_embeddings=policy.agent_embeddings_decoder[:, agent_idx:agent_idx + 1, :],

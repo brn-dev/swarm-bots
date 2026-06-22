@@ -55,7 +55,7 @@ def test_parallel_outputs_match_step_outputs() -> None:
     with torch.no_grad():
         parallel_output = decoder(
             query_tokens=input_tokens,
-            context_tokens=action_tokens,
+            action_tokens=action_tokens,
             memory_tokens=memory_tokens,
             agent_mask=agent_mask,
             memory_mask=agent_mask,
@@ -63,7 +63,7 @@ def test_parallel_outputs_match_step_outputs() -> None:
         step_output = torch.cat(
             [
                 decoder.forward_step(
-                    context_tokens=action_tokens[:, :agent_idx, :],
+                    action_tokens=action_tokens[:, :agent_idx, :],
                     query_token=input_tokens[:, agent_idx:agent_idx + 1, :],
                     memory_tokens=memory_tokens,
                     query_prefix_tokens=input_tokens[:, :agent_idx, :],
@@ -98,7 +98,7 @@ def test_parallel_outputs_match_step_outputs_for_arbitrary_masks() -> None:
     with torch.no_grad():
         parallel_output = decoder(
             query_tokens=input_tokens,
-            context_tokens=action_tokens,
+            action_tokens=action_tokens,
             memory_tokens=memory_tokens,
             agent_mask=agent_mask,
             memory_mask=agent_mask,
@@ -106,7 +106,7 @@ def test_parallel_outputs_match_step_outputs_for_arbitrary_masks() -> None:
         step_output = torch.cat(
             [
                 decoder.forward_step(
-                    context_tokens=action_tokens[:, :agent_idx, :],
+                    action_tokens=action_tokens[:, :agent_idx, :],
                     query_token=input_tokens[:, agent_idx:agent_idx + 1, :],
                     memory_tokens=memory_tokens,
                     query_prefix_tokens=input_tokens[:, :agent_idx, :],
@@ -144,14 +144,14 @@ def test_prefix_fast_path_matches_arbitrary_mask_path_for_prefix_masks() -> None
     with torch.no_grad():
         prefix_output = prefix_decoder(
             query_tokens=input_tokens,
-            context_tokens=action_tokens,
+            action_tokens=action_tokens,
             memory_tokens=memory_tokens,
             agent_mask=agent_mask,
             memory_mask=agent_mask,
         )
         arbitrary_output = arbitrary_decoder(
             query_tokens=input_tokens,
-            context_tokens=action_tokens,
+            action_tokens=action_tokens,
             memory_tokens=memory_tokens,
             agent_mask=agent_mask,
             memory_mask=agent_mask,
@@ -181,7 +181,7 @@ def test_configured_query_and_context_encoders_construct_and_run() -> None:
     with torch.no_grad():
         output = decoder(
             query_tokens=torch.randn(2, 4, 6),
-            context_tokens=torch.randn(2, 4, 8),
+            action_tokens=torch.randn(2, 4, 8),
             memory_tokens=torch.randn(2, 4, 7),
             agent_mask=torch.ones(2, 4, dtype=torch.bool),
             memory_mask=torch.ones(2, 4, dtype=torch.bool),
@@ -211,7 +211,7 @@ def test_decoder_accepts_matching_input_and_model_width_without_projection() -> 
     with torch.no_grad():
         output = decoder(
             query_tokens=torch.randn(2, 4, 8),
-            context_tokens=torch.randn(2, 4, 8),
+            action_tokens=torch.randn(2, 4, 8),
             memory_tokens=torch.randn(2, 4, 7),
             agent_mask=torch.ones(2, 4, dtype=torch.bool),
             memory_mask=torch.ones(2, 4, dtype=torch.bool),
@@ -236,14 +236,14 @@ def test_parallel_output_does_not_depend_on_future_query_tokens() -> None:
     with torch.no_grad():
         output = decoder(
             query_tokens=input_tokens,
-            context_tokens=action_tokens,
+            action_tokens=action_tokens,
             memory_tokens=memory_tokens,
             agent_mask=agent_mask,
             memory_mask=agent_mask,
         )
         modified_output = decoder(
             query_tokens=modified_input_tokens,
-            context_tokens=action_tokens,
+            action_tokens=action_tokens,
             memory_tokens=memory_tokens,
             agent_mask=agent_mask,
             memory_mask=agent_mask,
@@ -268,14 +268,14 @@ def test_parallel_output_does_not_depend_on_future_action_tokens() -> None:
     with torch.no_grad():
         output = decoder(
             query_tokens=input_tokens,
-            context_tokens=action_tokens,
+            action_tokens=action_tokens,
             memory_tokens=memory_tokens,
             agent_mask=agent_mask,
             memory_mask=agent_mask,
         )
         modified_output = decoder(
             query_tokens=input_tokens,
-            context_tokens=modified_action_tokens,
+            action_tokens=modified_action_tokens,
             memory_tokens=memory_tokens,
             agent_mask=agent_mask,
             memory_mask=agent_mask,
@@ -299,14 +299,14 @@ def test_first_agent_output_does_not_depend_on_action_tokens() -> None:
     with torch.no_grad():
         output = decoder(
             query_tokens=input_tokens,
-            context_tokens=action_tokens,
+            action_tokens=action_tokens,
             memory_tokens=memory_tokens,
             agent_mask=agent_mask,
             memory_mask=agent_mask,
         )
         modified_output = decoder(
             query_tokens=input_tokens,
-            context_tokens=modified_action_tokens,
+            action_tokens=modified_action_tokens,
             memory_tokens=memory_tokens,
             agent_mask=agent_mask,
             memory_mask=agent_mask,
@@ -335,14 +335,14 @@ def test_inactive_context_action_tokens_do_not_affect_outputs_with_arbitrary_mas
     with torch.no_grad():
         output = decoder(
             query_tokens=input_tokens,
-            context_tokens=action_tokens,
+            action_tokens=action_tokens,
             memory_tokens=memory_tokens,
             agent_mask=agent_mask,
             memory_mask=agent_mask,
         )
         modified_output = decoder(
             query_tokens=input_tokens,
-            context_tokens=modified_action_tokens,
+            action_tokens=modified_action_tokens,
             memory_tokens=memory_tokens,
             agent_mask=agent_mask,
             memory_mask=agent_mask,
@@ -371,14 +371,14 @@ def test_inactive_context_input_tokens_do_not_affect_active_outputs_with_arbitra
     with torch.no_grad():
         output = decoder(
             query_tokens=input_tokens,
-            context_tokens=action_tokens,
+            action_tokens=action_tokens,
             memory_tokens=memory_tokens,
             agent_mask=agent_mask,
             memory_mask=agent_mask,
         )
         modified_output = decoder(
             query_tokens=modified_input_tokens,
-            context_tokens=action_tokens,
+            action_tokens=action_tokens,
             memory_tokens=memory_tokens,
             agent_mask=agent_mask,
             memory_mask=agent_mask,
@@ -403,13 +403,13 @@ def test_arbitrary_masks_do_not_create_nan_outputs() -> None:
     with torch.no_grad():
         output = decoder(
             query_tokens=input_tokens,
-            context_tokens=action_tokens,
+            action_tokens=action_tokens,
             memory_tokens=memory_tokens,
             agent_mask=agent_mask,
             memory_mask=agent_mask,
         )
         first_step_output = decoder.forward_step(
-            context_tokens=action_tokens[:, :0, :],
+            action_tokens=action_tokens[:, :0, :],
             query_token=input_tokens[:, :1, :],
             memory_tokens=memory_tokens,
             query_prefix_tokens=input_tokens[:, :0, :],
