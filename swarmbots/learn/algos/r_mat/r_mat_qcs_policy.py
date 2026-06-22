@@ -34,7 +34,6 @@ class RMATQCSPolicy(RMATPolicyMixin, MATQCSPolicy):
         super().__init__(env=env, config=config)
 
     def _build_encoder_config(self) -> RMATEncoderConfig:
-        # noinspection PyTypeChecker
         return replace(
             self.config.encoder_config,
             d_model=self.d_model_encoder,
@@ -101,7 +100,7 @@ class RMATQCSPolicy(RMATPolicyMixin, MATQCSPolicy):
 
         query_tokens = self._encode_query_tokens(flat_augmented_observations)
         memory_tokens = self._encode_memory_tokens(flat_augmented_observations)
-        context_tokens = self._encode_context_tokens(flat_augmented_observations, flat_actions)
+        context_tokens = self._encode_decoder_context_tokens(flat_augmented_observations, flat_actions)
 
         decoder_output = self.decoder(
             query_tokens=query_tokens,

@@ -4,18 +4,18 @@ from typing import Any
 import torch
 from torch import nn
 
-from swarmbots.learn.algos.mat_qcs.mat_qcs_policy import MATQCSPolicy, MATQCSPolicyConfig
+from swarmbots.learn.algos.mat_qc_base_policy import MATQCBasePolicy, MATQCBasePolicyConfig
 from swarmbots.learn.algos.mat_qcx.mat_qcx_decoder import MATQCXDecoder, MATQCXDecoderConfig
 from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
 from swarmbots.learn.serialization_utils import serialize_dataclass
 
 
 @dataclass(frozen=True)
-class MATQCXPolicyConfig(MATQCSPolicyConfig):
+class MATQCXPolicyConfig(MATQCBasePolicyConfig):
     decoder_config: MATQCXDecoderConfig = field(default_factory=MATQCXDecoderConfig)
 
 
-class MATQCXPolicy(MATQCSPolicy):
+class MATQCXPolicy(MATQCBasePolicy):
 
     def __init__(
             self,
@@ -29,25 +29,30 @@ class MATQCXPolicy(MATQCSPolicy):
             if config.decoder_config.normalize_action_input
             else nn.Identity()
         )
-        if config.decoder_config.project_actions:
+        action_encoder_dims = config.decoder_config.action_encoder_dims
+        if action_encoder_dims is None:
             self.action_encoder = self._build_token_encoder(
                 input_dim=self.agent_action_dim,
                 output_dim=self.d_model_decoder,
-                hidden_dims=config.decoder_config.action_encoder_hidden_dims,
+                hidden_dims=None,
                 act_fn_cls=config.act_fn_cls,
                 linear_init_gain=config.decoder_config.token_encoder_init_gain,
                 projection_init_gain=config.decoder_config.token_encoder_projection_init_gain,
                 end_with_act_fn=config.decoder_config.action_encoder_end_with_act_fn,
             )
-        else:
-            if self.agent_action_dim != self.d_model_decoder:
-                raise ValueError(
-                    "MATQCXDecoderConfig.project_actions=False requires agent action dim "
-                    f"({self.agent_action_dim}) to match decoder d_model ({self.d_model_decoder})"
-                )
+        elif len(action_encoder_dims) == 0:
             self.action_encoder = nn.Identity()
+        else:
+            self.action_encoder = self._build_encoder_from_dims(
+                input_dim=self.agent_action_dim,
+                dims=action_encoder_dims,
+                act_fn_cls=config.act_fn_cls,
+                linear_init_gain=config.decoder_config.token_encoder_init_gain,
+                projection_init_gain=config.decoder_config.token_encoder_projection_init_gain,
+                end_with_act_fn=config.decoder_config.action_encoder_end_with_act_fn,
+            )
         self.action_token_norm = (
-            nn.LayerNorm(self.d_model_decoder)
+            nn.LayerNorm(self._initial_decoder_context_token_dim())
             if config.decoder_config.normalize_action_tokens
             else nn.Identity()
         )
@@ -58,7 +63,7 @@ class MATQCXPolicy(MATQCSPolicy):
             self.action_token_norm = self._compile_module(self.action_token_norm)
 
     def get_hyper_parameters(self) -> dict[str, Any]:
-        hyper_parameters = super().get_hyper_parameters()["mat_qcs_policy_config"]
+        hyper_parameters = self._get_hyper_parameters_payload()
         hyper_parameters["decoder_config"] = serialize_dataclass(self.decoder_config)
         return {
             "mat_qcx_policy_config": hyper_parameters,
@@ -108,6 +113,14 @@ class MATQCXPolicy(MATQCSPolicy):
             memory_dims[-1],
         )
 
+    def _initial_decoder_context_token_dim(self) -> int:
+        action_encoder_dims = self.config.decoder_config.action_encoder_dims
+        if action_encoder_dims is None:
+            return self.d_model_decoder
+        if len(action_encoder_dims) == 0:
+            return self.agent_action_dim
+        return action_encoder_dims[-1]
+
     def _build_decoder(
             self,
             decoder_config: MATQCXDecoderConfig,
@@ -116,7 +129,7 @@ class MATQCXPolicy(MATQCSPolicy):
             config=decoder_config,
             max_agents=self.max_agents,
             input_d_model=self.d_model_encoder,
-            action_d_model=self.d_model_decoder,
+            action_d_model=self._initial_decoder_context_token_dim(),
             memory_d_model=self.memory_d_model,
         )
 
@@ -129,7 +142,7 @@ class MATQCXPolicy(MATQCSPolicy):
         _ = agent_embeddings
         return augmented_observations
 
-    def _encode_context_tokens(
+    def _encode_decoder_context_tokens(
             self,
             augmented_observations: torch.Tensor,
             actions: torch.Tensor,
@@ -138,6 +151,46 @@ class MATQCXPolicy(MATQCSPolicy):
     ) -> torch.Tensor:
         _ = augmented_observations, agent_embeddings
         return self.action_token_norm(self.action_encoder(self.action_input_norm(actions)))
+
+    def _decode_step(
+            self,
+            *,
+            decoder_context_tokens: torch.Tensor,
+            query_token: torch.Tensor,
+            memory_tokens: torch.Tensor,
+            query_prefix_tokens: torch.Tensor,
+            context_mask: torch.Tensor | None,
+            query_prefix_mask: torch.Tensor | None,
+            query_mask: torch.Tensor | None,
+            memory_mask: torch.Tensor | None,
+    ) -> torch.Tensor:
+        return self.decoder.forward_step(
+            action_tokens=decoder_context_tokens,
+            query_token=query_token,
+            memory_tokens=memory_tokens,
+            query_prefix_tokens=query_prefix_tokens,
+            context_mask=context_mask,
+            query_prefix_mask=query_prefix_mask,
+            query_mask=query_mask,
+            memory_mask=memory_mask,
+        )
+
+    def _decode_parallel(
+            self,
+            *,
+            query_tokens: torch.Tensor,
+            decoder_context_tokens: torch.Tensor,
+            memory_tokens: torch.Tensor,
+            agent_mask: torch.Tensor | None,
+            memory_mask: torch.Tensor | None,
+    ) -> torch.Tensor:
+        return self.decoder(
+            query_tokens=query_tokens,
+            action_tokens=decoder_context_tokens,
+            memory_tokens=memory_tokens,
+            agent_mask=agent_mask,
+            memory_mask=memory_mask,
+        )
 
     def get_grad_norms(self) -> dict[str, float]:
         return {

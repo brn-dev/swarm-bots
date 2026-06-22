@@ -1134,7 +1134,7 @@ def _make_base_policy(
                     transformer_ff_init_gain=mat_init_gains.decoder_transformer_ff,
                     actor_head_init_gain=mat_init_gains.actor_head,
                     context_encoder_hidden_dims=[dec_d_model],
-                    action_encoder_hidden_dims=[dec_d_model],
+                    action_encoder_dims=[dec_d_model, dec_d_model],
                     memory_dims=None,
                     normalize_context_input=mat_normalization.normalize_context_input,
                     normalize_action_input=mat_normalization.normalize_action_input,
