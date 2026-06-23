@@ -285,8 +285,68 @@ def test_parallel_output_does_not_depend_on_future_action_tokens() -> None:
     assert not torch.allclose(modified_output[:, 3, :], output[:, 3, :], rtol=0.0, atol=1e-6)
 
 
-def test_first_agent_output_does_not_depend_on_action_tokens() -> None:
+def test_parallel_decoder_last_action_token_is_optional() -> None:
     torch.manual_seed(7)
+    input_tokens = torch.randn(2, 4, 6)
+    action_tokens = torch.randn(2, 4, 8)
+    memory_tokens = torch.randn(2, 4, 7)
+    agent_mask = torch.ones(2, 4, dtype=torch.bool)
+
+    for assume_agent_mask_is_active_prefix in (True, False):
+        decoder = _make_decoder(assume_agent_mask_is_active_prefix=assume_agent_mask_is_active_prefix)
+        decoder.eval()
+
+        with torch.no_grad():
+            full_output = decoder(
+                query_tokens=input_tokens,
+                action_tokens=action_tokens,
+                memory_tokens=memory_tokens,
+                agent_mask=agent_mask,
+                memory_mask=agent_mask,
+            )
+            truncated_output = decoder(
+                query_tokens=input_tokens,
+                action_tokens=action_tokens[:, :-1, :],
+                memory_tokens=memory_tokens,
+                agent_mask=agent_mask,
+                memory_mask=agent_mask,
+            )
+
+        torch.testing.assert_close(truncated_output, full_output, rtol=0.0, atol=1e-6)
+
+
+def test_parallel_decoder_accepts_no_action_tokens_for_single_agent() -> None:
+    torch.manual_seed(8)
+    input_tokens = torch.randn(2, 1, 6)
+    action_tokens = torch.randn(2, 1, 8)
+    memory_tokens = torch.randn(2, 1, 7)
+    agent_mask = torch.ones(2, 1, dtype=torch.bool)
+
+    for assume_agent_mask_is_active_prefix in (True, False):
+        decoder = _make_decoder(assume_agent_mask_is_active_prefix=assume_agent_mask_is_active_prefix)
+        decoder.eval()
+
+        with torch.no_grad():
+            full_output = decoder(
+                query_tokens=input_tokens,
+                action_tokens=action_tokens,
+                memory_tokens=memory_tokens,
+                agent_mask=agent_mask,
+                memory_mask=agent_mask,
+            )
+            truncated_output = decoder(
+                query_tokens=input_tokens,
+                action_tokens=action_tokens[:, :0, :],
+                memory_tokens=memory_tokens,
+                agent_mask=agent_mask,
+                memory_mask=agent_mask,
+            )
+
+        torch.testing.assert_close(truncated_output, full_output, rtol=0.0, atol=1e-6)
+
+
+def test_first_agent_output_does_not_depend_on_action_tokens() -> None:
+    torch.manual_seed(9)
     decoder = _make_decoder()
     decoder.eval()
 
@@ -316,7 +376,7 @@ def test_first_agent_output_does_not_depend_on_action_tokens() -> None:
 
 
 def test_inactive_context_action_tokens_do_not_affect_outputs_with_arbitrary_masks() -> None:
-    torch.manual_seed(8)
+    torch.manual_seed(10)
     decoder = _make_decoder(assume_agent_mask_is_active_prefix=False)
     decoder.eval()
 
@@ -352,7 +412,7 @@ def test_inactive_context_action_tokens_do_not_affect_outputs_with_arbitrary_mas
 
 
 def test_inactive_context_input_tokens_do_not_affect_active_outputs_with_arbitrary_masks() -> None:
-    torch.manual_seed(9)
+    torch.manual_seed(11)
     decoder = _make_decoder(assume_agent_mask_is_active_prefix=False)
     decoder.eval()
 
@@ -388,7 +448,7 @@ def test_inactive_context_input_tokens_do_not_affect_active_outputs_with_arbitra
 
 
 def test_arbitrary_masks_do_not_create_nan_outputs() -> None:
-    torch.manual_seed(10)
+    torch.manual_seed(12)
     decoder = _make_decoder(assume_agent_mask_is_active_prefix=False)
     input_tokens = torch.randn(2, 4, 6)
     action_tokens = torch.randn(2, 4, 8)

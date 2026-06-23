@@ -102,6 +102,64 @@ def test_context_tokens_only_parallel_decoder_ignores_past_query_tokens() -> Non
     torch.testing.assert_close(modified_output[:, 2:, :], output[:, 2:, :], rtol=0.0, atol=1e-6)
 
 
+def test_parallel_decoder_last_context_token_is_optional() -> None:
+    torch.manual_seed(4)
+    query_tokens = torch.randn(2, 4, 8)
+    context_tokens = torch.randn(2, 4, 8)
+    memory_tokens = torch.randn(2, 4, 8)
+    agent_mask = torch.ones(2, 4, dtype=torch.bool)
+
+    for self_attention_mode in MATQCSDecoderSelfAttentionMode:
+        decoder = _make_decoder(self_attention_mode)
+        decoder.eval()
+        with torch.no_grad():
+            full_output = decoder(
+                query_tokens=query_tokens,
+                context_tokens=context_tokens,
+                memory_tokens=memory_tokens,
+                agent_mask=agent_mask,
+                memory_mask=agent_mask,
+            )
+            truncated_output = decoder(
+                query_tokens=query_tokens,
+                context_tokens=context_tokens[:, :-1, :],
+                memory_tokens=memory_tokens,
+                agent_mask=agent_mask,
+                memory_mask=agent_mask,
+            )
+
+        torch.testing.assert_close(truncated_output, full_output, rtol=0.0, atol=1e-6)
+
+
+def test_parallel_decoder_accepts_no_context_tokens_for_single_agent() -> None:
+    torch.manual_seed(5)
+    query_tokens = torch.randn(2, 1, 8)
+    context_tokens = torch.randn(2, 1, 8)
+    memory_tokens = torch.randn(2, 1, 8)
+    agent_mask = torch.ones(2, 1, dtype=torch.bool)
+
+    for self_attention_mode in MATQCSDecoderSelfAttentionMode:
+        decoder = _make_decoder(self_attention_mode)
+        decoder.eval()
+        with torch.no_grad():
+            full_output = decoder(
+                query_tokens=query_tokens,
+                context_tokens=context_tokens,
+                memory_tokens=memory_tokens,
+                agent_mask=agent_mask,
+                memory_mask=agent_mask,
+            )
+            truncated_output = decoder(
+                query_tokens=query_tokens,
+                context_tokens=context_tokens[:, :0, :],
+                memory_tokens=memory_tokens,
+                agent_mask=agent_mask,
+                memory_mask=agent_mask,
+            )
+
+        torch.testing.assert_close(truncated_output, full_output, rtol=0.0, atol=1e-6)
+
+
 def test_arbitrary_mask_parallel_decoder_avoids_inactive_slot_zero_nan() -> None:
     decoder = _make_decoder(
         MATQCSDecoderSelfAttentionMode.FULL_CAUSAL,

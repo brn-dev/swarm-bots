@@ -135,6 +135,13 @@ class MATQCSPolicy(MATQCBasePolicy):
 
         return self.context_token_norm(tokens)
 
+    def _parallel_decoder_context_inputs(
+            self,
+            augmented_observations: torch.Tensor,
+            actions: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        return augmented_observations[:, :-1, :], actions[:, :-1, :]
+
     def _initial_decoder_context_token_dim(self) -> int:
         return self.d_model_decoder
 

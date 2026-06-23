@@ -152,6 +152,13 @@ class MATQCXPolicy(MATQCBasePolicy):
         _ = augmented_observations, agent_embeddings
         return self.action_token_norm(self.action_encoder(self.action_input_norm(actions)))
 
+    def _parallel_decoder_context_inputs(
+            self,
+            augmented_observations: torch.Tensor,
+            actions: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        return augmented_observations[:, :-1, :], actions[:, :-1, :]
+
     def _decode_step(
             self,
             *,

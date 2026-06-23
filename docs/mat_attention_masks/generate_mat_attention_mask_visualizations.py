@@ -12,6 +12,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from swarmbots.learn.algos.mat_qcc.mat_qcc_decoder import MATQCCDecoder, MATQCCDecoderConfig
+from swarmbots.learn.algos.mat_qcx.mat_qcx_decoder import MATQCXDecoder, MATQCXDecoderConfig
 from swarmbots.learn.algos.mat_qcs.mat_qcs_decoder import MATQCSDecoder, MATQCSDecoderSelfAttentionMode
 
 
@@ -52,6 +53,7 @@ def build_mask_panels(*, n_agents: int) -> list[MaskPanel]:
     return [
         build_qcc_query_context_panel(n_agents=n_agents),
         build_qcc_context_self_panel(n_agents=n_agents),
+        build_qcx_query_context_panel(n_agents=n_agents),
         build_qcs_panel(
             n_agents=n_agents,
             mode=MATQCSDecoderSelfAttentionMode.CONTEXT_TOKENS_ONLY,
@@ -113,6 +115,31 @@ def build_qcc_context_self_panel(*, n_agents: int) -> MaskPanel:
     )
 
 
+def build_qcx_query_context_panel(*, n_agents: int) -> MaskPanel:
+    decoder = make_qcx_decoder(n_agents=n_agents)
+    mask, has_visible_context, _key_padding_mask = decoder._build_parallel_context_attention_mask(
+        batch_size=1,
+        n_queries=n_agents,
+        n_contexts=n_agents,
+        context_mask=None,
+        device=torch.device("cpu"),
+    )
+    if mask is None or has_visible_context is None:
+        raise RuntimeError("QCX query-context mask unexpectedly missing")
+
+    visible_with_safety = ~mask
+    effective_allowed = visible_with_safety & has_visible_context[0].unsqueeze(1)
+    safety_only = visible_with_safety & ~effective_allowed
+    return MaskPanel(
+        title="QCX query-to-context attention",
+        row_labels=agent_labels(prefix="q", n_agents=n_agents),
+        column_labels=agent_labels(prefix="x", n_agents=n_agents),
+        allowed=effective_allowed,
+        safety_only=optional_mask(safety_only),
+        note="x tokens are action-conditioned context tokens; orange is the safety key for the first query.",
+    )
+
+
 def build_qcs_panel(
         *,
         n_agents: int,
@@ -135,6 +162,16 @@ def make_qcc_decoder(*, n_agents: int) -> MATQCCDecoder:
     return MATQCCDecoder(
         MATQCCDecoderConfig(d_model=8, nhead=1, assume_agent_mask_is_active_prefix=True),
         max_agents=n_agents,
+        memory_d_model=8,
+    )
+
+
+def make_qcx_decoder(*, n_agents: int) -> MATQCXDecoder:
+    return MATQCXDecoder(
+        MATQCXDecoderConfig(d_model=8, nhead=1, assume_agent_mask_is_active_prefix=True),
+        max_agents=n_agents,
+        input_d_model=8,
+        action_d_model=8,
         memory_d_model=8,
     )
 
