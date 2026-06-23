@@ -63,6 +63,7 @@ from swarmbots.mjw_env.scenarios.mjw_scenario_presets import (
     default_find_opening,
     default_multi_payload_goal,
     default_payload_step,
+    default_vertical_reach,
     default_wall,
 )
 from swarmbots.utils.recording_schedule import DEFAULT_LIVE_RECORDING_SCHEDULE, install_scheduled_recordings
@@ -70,7 +71,15 @@ from swarmbots.utils.run_paths import get_run_id_from_checkpoint_path
 
 ContinuousActionDistVariant = Literal["sticky_sign_magnitude_beta", "sign_magnitude_beta", "beta", "gsde", "squashed_diag_gaussian"]
 PolicyVariant = Literal["mat_qcs", "mat_qcc", "mat_qcx", "mat_dec", "mat_orig", "ppo", "ppo_small", "mappo", "mappo_small"]
-MJWScenarioName = Literal["wall", "find_opening", "climb", "dual_payload", "payload_step", "multi_payload_goal"]
+MJWScenarioName = Literal[
+    "wall",
+    "find_opening",
+    "climb",
+    "vertical_reach",
+    "dual_payload",
+    "payload_step",
+    "multi_payload_goal",
+]
 
 
 @dataclass(frozen=True)
@@ -149,6 +158,7 @@ def _make_scenario(*, scenario_name: MJWScenarioName, scenario_kwargs: dict[str,
         "wall": default_wall,
         "find_opening": default_find_opening,
         "climb": default_climb,
+        "vertical_reach": default_vertical_reach,
         "dual_payload": default_dual_payload_plane,
         "payload_step": default_payload_step,
         "multi_payload_goal": default_multi_payload_goal,
@@ -161,6 +171,7 @@ def _scenario_display_name(*, scenario_name: MJWScenarioName) -> str:
         "wall": "wall",
         "find_opening": "find-opening",
         "climb": "climb",
+        "vertical_reach": "vertical-reach",
         "dual_payload": "dual-payload",
         "payload_step": "payload-step",
         "multi_payload_goal": "multi-payload-goal",

@@ -6,6 +6,7 @@ from swarmbots.scenario_presets.scenario_obs_layouts import (
     DUAL_PAYLOAD_GLOBAL_OBS_ADAPTER_NAME,
     MULTI_PAYLOAD_GOAL_GLOBAL_OBS_LAYOUT,
     PAYLOAD_GLOBAL_OBS_ADAPTER_NAME,
+    VERTICAL_REACH_GOAL_XYZ_GLOBAL_OBS_LAYOUT,
 )
 
 
@@ -58,9 +59,12 @@ def _global_scalar_indices(scenario_settings: dict[str, Any], global_obs_dim: in
             raise ValueError(f"Unexpected move-to global_obs_dim for obs indices: {global_obs_dim}")
         return [0, 1]
 
-    if scenario_settings.get("global_obs_layout") == CLIMB_GOAL_XYZ_GLOBAL_OBS_LAYOUT:
+    if scenario_settings.get("global_obs_layout") in (
+        CLIMB_GOAL_XYZ_GLOBAL_OBS_LAYOUT,
+        VERTICAL_REACH_GOAL_XYZ_GLOBAL_OBS_LAYOUT,
+    ):
         if global_obs_dim != 3:
-            raise ValueError(f"Unexpected climb global_obs_dim for obs indices: {global_obs_dim}")
+            raise ValueError(f"Unexpected xyz goal global_obs_dim for obs indices: {global_obs_dim}")
         return [0, 1, 2]
 
     raise ValueError(f"Unsupported non-empty global_obs layout for obs indices: {global_obs_dim}")

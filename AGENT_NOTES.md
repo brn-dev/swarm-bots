@@ -55,6 +55,7 @@ Keep only durable architecture notes and gotchas. Prefer deleting stale detail o
 - `MJWSwarmBotsVectorEnv` is a real `gymnasium.vector.VectorEnv` with one MJWarp model, batched GPU `Data`, and `action_backend="torch"`.
 - Scenario-specific MJW logic belongs in scenario runtime classes, not `mjw_swarm_bots_vector_env.py`. Scenario metadata goes through `scenario.build_runtime_metadata(...)`; keep `MJWModelMetadata` generic.
 - Scenario terminations flow through `MJWStepResult.terminations`.
+- Vertical reach is not climb: the tall wall is effectively unclimbable, the green protruding goal box is visual/non-colliding, success is any active unit entering it, and the main shaping reward is max active-unit height inside the front-wall reach column. The box-distance reward is secondary. Global obs/success use the goal box center, while horizontal shaping defaults to the wall/box contact point (`horizontal_goal_at_wall_contact=True`).
 - Reset paths: direct, one-shot `settle_initial_reset`, and a background CPU-settled snapshot buffer. MJW samples reset specs on the main thread and settles them in the executor; done-world resets consume ready snapshots and only block on buffer misses.
 - Hot-path connector matching is kernelized in `swarmbots/mjw_env/mjw_kernels.py`; keep Warp indices `int32` unless PyTorch indexing forces `int64`.
 - Reuse GPU scratch buffers. Avoid rebuilding tensors or Python branching in the MJW step path.

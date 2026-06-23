@@ -150,6 +150,30 @@ CLIMB_SCENARIO_KWARGS: dict[str, object] = {
     "units_without_connections_reward_weight": -1e-4,
 }
 
+VERTICAL_REACH_SCENARIO_KWARGS: dict[str, object] = {
+    "plane_size": 100.0,
+    "swarm_start_x": UniformDistParams(-0.25, 0.25),
+    "swarm_start_y": UniformDistParams(-0.25, 0.25),
+    "wall_width": 6.0,
+    "wall_thickness": 0.35,
+    "wall_height": 6.0,
+    "wall_center_x": 0.0,
+    "wall_y": 1.5,
+    "goal_box_width": 1.0,
+    "goal_box_depth": 0.4,
+    "goal_box_height": 0.4,
+    "goal_center_z": 0.8,
+    "goal_success_reward": 10.0,
+    "reach_column_half_width": 0.6,
+    "reach_column_depth": 0.4,
+    "reach_column_reward_weight": 8.0,
+    "horizontal_goal_at_wall_contact": True,
+    "horizontal_reward_weight": 1.0,
+    "height_reward_weight": 0.25,
+    "visualize_goal": True,
+    "units_without_connections_reward_weight": -3e-3,
+}
+
 PAYLOAD_PLANE_SCENARIO_KWARGS: dict[str, object] = {
     "plane_size": 100.0,
     "swarm_start_x": 0.0,

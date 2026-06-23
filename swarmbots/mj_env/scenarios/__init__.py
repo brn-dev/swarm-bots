@@ -7,6 +7,7 @@ from swarmbots.mj_env.scenarios.multi_payload_goal_scenario import MultiPayloadG
 from swarmbots.mj_env.scenarios.wall_scenario import WallScenario
 from swarmbots.mj_env.scenarios.payload_plane_scenario import PayloadPlaneScenario
 from swarmbots.mj_env.scenarios.payload_step_scenario import PayloadStepScenario
+from swarmbots.mj_env.scenarios.vertical_reach_scenario import VerticalReachScenario
 
 __all__ = [
     "BridgeScenario",
@@ -18,5 +19,6 @@ __all__ = [
     "WallScenario",
     "PayloadPlaneScenario",
     "PayloadStepScenario",
+    "VerticalReachScenario",
 ]
 
