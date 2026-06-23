@@ -22,6 +22,7 @@ from swarmbots.mjw_env.scenarios.mjw_move_to_scenario import MJWMoveToScenario
 from swarmbots.mjw_env.scenarios.mjw_multi_payload_goal_scenario import MJWMultiPayloadGoalScenario
 from swarmbots.mjw_env.scenarios.mjw_payload_plane_scenario import MJWPayloadPlaneScenario
 from swarmbots.mjw_env.scenarios.mjw_payload_step_scenario import MJWPayloadStepScenario
+from swarmbots.mjw_env.scenarios.mjw_vertical_reach_scenario import MJWVerticalReachScenario
 from swarmbots.mjw_env.scenarios.mjw_wall_scenario import MJWWallScenario
 from swarmbots.mjw_env.swarm.mjw_homogeneous_swarm import MJWHomogeneousSwarm, MJWPreConnectedUnitLocationsConfig
 from swarmbots.scenario_presets import scenario_presets_kwargs as shared_kwargs
@@ -44,6 +45,7 @@ PO_WALL_MEDIUM_SCENARIO_KWARGS = make_scenario_kwargs(shared_kwargs.PO_WALL_MEDI
 BRIDGE_SCENARIO_KWARGS = make_scenario_kwargs(shared_kwargs.BRIDGE_SCENARIO_KWARGS)
 FIND_OPENING_SCENARIO_KWARGS = make_scenario_kwargs(shared_kwargs.FIND_OPENING_SCENARIO_KWARGS)
 CLIMB_SCENARIO_KWARGS = make_scenario_kwargs(shared_kwargs.CLIMB_SCENARIO_KWARGS)
+VERTICAL_REACH_SCENARIO_KWARGS = make_scenario_kwargs(shared_kwargs.VERTICAL_REACH_SCENARIO_KWARGS)
 PAYLOAD_PLANE_SCENARIO_KWARGS = make_scenario_kwargs(shared_kwargs.PAYLOAD_PLANE_SCENARIO_KWARGS)
 PAYLOAD_STEP_SCENARIO_KWARGS = make_scenario_kwargs(shared_kwargs.PAYLOAD_STEP_SCENARIO_KWARGS)
 DUAL_PAYLOAD_PLANE_SCENARIO_KWARGS = make_scenario_kwargs(shared_kwargs.DUAL_PAYLOAD_PLANE_SCENARIO_KWARGS)
@@ -240,6 +242,26 @@ def default_climb(
     return _make_scenario(
         MJWClimbScenario,
         scenario_kwargs=_preset_kwargs(CLIMB_SCENARIO_KWARGS, overrides=kwargs),
+        seed=seed,
+        swarm=swarm,
+        unit_start_locations=unit_start_locations,
+        quantize_connection_twist=quantize_connection_twist,
+        joints=joints,
+    )
+
+
+def default_vertical_reach(
+    *,
+    seed: int | None = None,
+    swarm: MJWHomogeneousSwarm | None = None,
+    unit_start_locations: MJWPreConnectedUnitLocationsConfig | None = None,
+    quantize_connection_twist: int = 8,
+    joints: JointPreset = "zx",
+    **kwargs: object,
+) -> MJWVerticalReachScenario:
+    return _make_scenario(
+        MJWVerticalReachScenario,
+        scenario_kwargs=_preset_kwargs(VERTICAL_REACH_SCENARIO_KWARGS, overrides=kwargs),
         seed=seed,
         swarm=swarm,
         unit_start_locations=unit_start_locations,

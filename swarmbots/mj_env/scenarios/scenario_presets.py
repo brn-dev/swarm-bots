@@ -13,6 +13,7 @@ from swarmbots.mj_env.scenarios.move_to_scenario import MoveToScenario
 from swarmbots.mj_env.scenarios.multi_payload_goal_scenario import MultiPayloadGoalScenario
 from swarmbots.mj_env.scenarios.payload_plane_scenario import PayloadPlaneScenario
 from swarmbots.mj_env.scenarios.payload_step_scenario import PayloadStepScenario
+from swarmbots.mj_env.scenarios.vertical_reach_scenario import VerticalReachScenario
 from swarmbots.mj_env.scenarios.wall_scenario import WallScenario
 from swarmbots.mj_env.swarm.base_swarm import BaseSwarm
 from swarmbots.mj_env.swarm.homogeneous_swarm import HomogeneousSwarm, PreConnectedUnitLocationsConfig, UnitStartLocations
@@ -42,6 +43,7 @@ PO_WALL_MEDIUM_SCENARIO_KWARGS = make_scenario_kwargs(shared_kwargs.PO_WALL_MEDI
 BRIDGE_SCENARIO_KWARGS = make_scenario_kwargs(shared_kwargs.BRIDGE_SCENARIO_KWARGS)
 FIND_OPENING_SCENARIO_KWARGS = make_scenario_kwargs(shared_kwargs.FIND_OPENING_SCENARIO_KWARGS)
 CLIMB_SCENARIO_KWARGS = make_scenario_kwargs(shared_kwargs.CLIMB_SCENARIO_KWARGS)
+VERTICAL_REACH_SCENARIO_KWARGS = make_scenario_kwargs(shared_kwargs.VERTICAL_REACH_SCENARIO_KWARGS)
 PAYLOAD_PLANE_SCENARIO_KWARGS = make_scenario_kwargs(shared_kwargs.PAYLOAD_PLANE_SCENARIO_KWARGS)
 PAYLOAD_STEP_SCENARIO_KWARGS = make_scenario_kwargs(shared_kwargs.PAYLOAD_STEP_SCENARIO_KWARGS)
 DUAL_PAYLOAD_PLANE_SCENARIO_KWARGS = make_scenario_kwargs(shared_kwargs.DUAL_PAYLOAD_PLANE_SCENARIO_KWARGS)
@@ -227,6 +229,27 @@ def default_climb(
     return _make_scenario(
         ClimbScenario,
         scenario_kwargs=_preset_kwargs(CLIMB_SCENARIO_KWARGS, overrides=kwargs),
+        seed=seed,
+        swarm=swarm,
+        unit_start_locations=unit_start_locations,
+        randomize_unit_orientations=randomize_unit_orientations,
+        quantize_connection_twist=quantize_connection_twist,
+        joints=joints,
+    )
+
+
+def default_vertical_reach(
+    seed: int | None = None,
+    swarm: BaseSwarm | None = None,
+    unit_start_locations: UnitStartLocationsArg | None = None,
+    randomize_unit_orientations: bool = False,
+    quantize_connection_twist: int | None = 8,
+    joints: JointPreset = "zx",
+    **kwargs: Any,
+) -> VerticalReachScenario:
+    return _make_scenario(
+        VerticalReachScenario,
+        scenario_kwargs=_preset_kwargs(VERTICAL_REACH_SCENARIO_KWARGS, overrides=kwargs),
         seed=seed,
         swarm=swarm,
         unit_start_locations=unit_start_locations,
