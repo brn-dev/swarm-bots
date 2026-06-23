@@ -157,18 +157,32 @@ class MATQCSDecoder(nn.Module):
         if memory_tokens.shape[1] > self.max_agents:
             raise ValueError(f"Expected memory_tokens second dim <= {self.max_agents}, got {memory_tokens.shape[1]}")
         n_agents = query_tokens.shape[1]
+        n_contexts = context_tokens.shape[1]
+        if n_contexts not in (n_agents, n_agents - 1):
+            raise ValueError(
+                f"Expected context_tokens second dim to be {n_agents} or {n_agents - 1}, got {n_contexts}"
+            )
 
-        interleaved_tokens = torch.stack((query_tokens, context_tokens), dim=2).reshape(
-            query_tokens.shape[0], n_agents * 2, query_tokens.shape[-1]
+        paired_tokens = torch.stack((query_tokens[:, :n_contexts, :], context_tokens), dim=2).reshape(
+            query_tokens.shape[0], n_contexts * 2, query_tokens.shape[-1]
         )
-        attention_mask = self.parallel_attention_mask[: n_agents * 2, : n_agents * 2]
+        if n_contexts == n_agents:
+            interleaved_tokens = paired_tokens
+        else:
+            interleaved_tokens = torch.cat((paired_tokens, query_tokens[:, -1:, :]), dim=1)
+        target_seq_len = interleaved_tokens.shape[1]
+        attention_mask = self.parallel_attention_mask[:target_seq_len, :target_seq_len]
         attention_mask_is_causal = self.parallel_attention_mask_is_causal
 
         target_key_padding_mask = None
         if agent_mask is not None:
-            target_key_padding_mask = torch.stack((~agent_mask, ~agent_mask), dim=2).reshape(
-                agent_mask.shape[0], n_agents * 2
-            )
+            paired_key_padding_mask = torch.stack(
+                (~agent_mask[:, :n_contexts], ~agent_mask[:, :n_contexts]), dim=2
+            ).reshape(agent_mask.shape[0], n_contexts * 2)
+            if n_contexts == n_agents:
+                target_key_padding_mask = paired_key_padding_mask
+            else:
+                target_key_padding_mask = torch.cat((paired_key_padding_mask, ~agent_mask[:, -1:]), dim=1)
             if not self.assume_agent_mask_is_active_prefix:
                 attention_mask = self._mask_inactive_target_keys(
                     attention_mask=attention_mask,

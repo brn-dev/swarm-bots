@@ -1,5 +1,6 @@
 from dataclasses import dataclass, field, replace
 
+import torch
 from torch import nn
 
 from swarmbots.learn.algos.mat_qcc.mat_qcc_decoder import MATQCCDecoder, MATQCCDecoderConfig
@@ -43,3 +44,10 @@ class RMATQCCPolicy(RMATQCSPolicy):
             max_agents=self.max_agents,
             memory_d_model=self.memory_d_model,
         )
+
+    def _parallel_decoder_context_inputs(
+            self,
+            augmented_observations: torch.Tensor,
+            actions: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        return augmented_observations, actions

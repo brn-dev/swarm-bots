@@ -302,6 +302,13 @@ class MATQCBasePolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
     ) -> torch.Tensor:
         raise NotImplementedError
 
+    def _parallel_decoder_context_inputs(
+            self,
+            augmented_observations: torch.Tensor,
+            actions: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        return augmented_observations, actions
+
     def _initial_decoder_context_token_dim(self) -> int:
         raise NotImplementedError
 
@@ -533,7 +540,14 @@ class MATQCBasePolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
         augmented_observations = self.encoder(local_obs, global_obs, agent_mask=agent_mask)
         query_tokens = self._encode_query_tokens(augmented_observations)
         memory_tokens = self._encode_memory_tokens(augmented_observations)
-        decoder_context_tokens = self._encode_decoder_context_tokens(augmented_observations, actions)
+        context_observations, context_actions = self._parallel_decoder_context_inputs(
+            augmented_observations,
+            actions,
+        )
+        decoder_context_tokens = self._encode_decoder_context_tokens(
+            context_observations,
+            context_actions,
+        )
         decoder_output = self._decode_parallel(
             query_tokens=query_tokens,
             decoder_context_tokens=decoder_context_tokens,

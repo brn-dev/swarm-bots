@@ -365,13 +365,17 @@ class MATQCXDecoder(nn.Module):
     ) -> torch.Tensor:
         if memory_tokens.shape[1] > self.max_agents:
             raise ValueError(f"Expected memory_tokens second dim <= {self.max_agents}, got {memory_tokens.shape[1]}")
-        if query_tokens.shape[1] != action_tokens.shape[1]:
-            raise ValueError("query_tokens and action_tokens must have the same number of agents")
+        n_queries = query_tokens.shape[1]
+        n_contexts = action_tokens.shape[1]
+        if n_contexts not in (n_queries, n_queries - 1):
+            raise ValueError(
+                f"Expected action_tokens second dim to be {n_queries} or {n_queries - 1}, got {n_contexts}"
+            )
 
         context_attention_mask, has_visible_context, context_key_padding_mask = self._build_parallel_context_attention_mask(
             batch_size=query_tokens.shape[0],
-            n_queries=query_tokens.shape[1],
-            n_contexts=action_tokens.shape[1],
+            n_queries=n_queries,
+            n_contexts=n_contexts,
             context_mask=agent_mask,
             device=query_tokens.device,
         )
@@ -379,7 +383,7 @@ class MATQCXDecoder(nn.Module):
             x=query_tokens,
             action_tokens=action_tokens,
             memory_tokens=memory_tokens,
-            context_token_count=None,
+            context_token_count=n_contexts,
             context_attention_mask=context_attention_mask,
             has_visible_context=has_visible_context,
             context_key_padding_mask=context_key_padding_mask,

@@ -100,7 +100,11 @@ class RMATQCSPolicy(RMATPolicyMixin, MATQCSPolicy):
 
         query_tokens = self._encode_query_tokens(flat_augmented_observations)
         memory_tokens = self._encode_memory_tokens(flat_augmented_observations)
-        context_tokens = self._encode_decoder_context_tokens(flat_augmented_observations, flat_actions)
+        context_observations, context_actions = self._parallel_decoder_context_inputs(
+            flat_augmented_observations,
+            flat_actions,
+        )
+        context_tokens = self._encode_decoder_context_tokens(context_observations, context_actions)
 
         decoder_output = self.decoder(
             query_tokens=query_tokens,
