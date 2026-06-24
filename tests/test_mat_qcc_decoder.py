@@ -17,6 +17,21 @@ def _make_decoder(*, assume_agent_mask_is_active_prefix: bool = True) -> MATQCCD
     )
 
 
+def _make_untied_decoder(*, assume_agent_mask_is_active_prefix: bool = True) -> MATQCCDecoder:
+    return MATQCCDecoder(
+        config=MATQCCDecoderConfig(
+            d_model=8,
+            nhead=2,
+            num_layers=2,
+            dim_feedforward=16,
+            assume_agent_mask_is_active_prefix=assume_agent_mask_is_active_prefix,
+            tie_query_context_and_context_self_attention=False,
+        ),
+        max_agents=4,
+        memory_d_model=8,
+    )
+
+
 def test_parallel_outputs_match_step_outputs() -> None:
     torch.manual_seed(0)
     decoder = _make_decoder()
@@ -168,8 +183,84 @@ def test_prefix_fast_path_matches_arbitrary_mask_path_for_prefix_masks() -> None
     torch.testing.assert_close(prefix_step_output, arbitrary_step_output, rtol=0.0, atol=1e-6)
 
 
-def test_parallel_output_does_not_depend_on_future_context_tokens() -> None:
+def test_parallel_decoder_last_context_token_is_optional() -> None:
     torch.manual_seed(3)
+    query_tokens = torch.randn(2, 4, 8)
+    context_tokens = torch.randn(2, 4, 8)
+    memory_tokens = torch.randn(2, 4, 8)
+    agent_mask = torch.ones(2, 4, dtype=torch.bool)
+
+    for make_decoder in (_make_decoder, _make_untied_decoder):
+        for assume_agent_mask_is_active_prefix in (True, False):
+            decoder = make_decoder(assume_agent_mask_is_active_prefix=assume_agent_mask_is_active_prefix)
+            decoder.eval()
+
+            with torch.no_grad():
+                full_output = decoder(
+                    query_tokens=query_tokens,
+                    context_tokens=context_tokens,
+                    memory_tokens=memory_tokens,
+                    agent_mask=agent_mask,
+                    memory_mask=agent_mask,
+                )
+                truncated_output = decoder(
+                    query_tokens=query_tokens,
+                    context_tokens=context_tokens[:, :-1, :],
+                    memory_tokens=memory_tokens,
+                    agent_mask=agent_mask,
+                    memory_mask=agent_mask,
+                )
+
+            torch.testing.assert_close(truncated_output, full_output, rtol=0.0, atol=1e-6)
+
+
+def test_parallel_decoder_accepts_no_context_tokens_for_single_agent() -> None:
+    torch.manual_seed(4)
+    query_tokens = torch.randn(2, 1, 8)
+    context_tokens = torch.randn(2, 1, 8)
+    memory_tokens = torch.randn(2, 1, 8)
+    agent_mask = torch.ones(2, 1, dtype=torch.bool)
+
+    for make_decoder in (_make_decoder, _make_untied_decoder):
+        for assume_agent_mask_is_active_prefix in (True, False):
+            decoder = make_decoder(assume_agent_mask_is_active_prefix=assume_agent_mask_is_active_prefix)
+            decoder.eval()
+
+            with torch.no_grad():
+                full_output = decoder(
+                    query_tokens=query_tokens,
+                    context_tokens=context_tokens,
+                    memory_tokens=memory_tokens,
+                    agent_mask=agent_mask,
+                    memory_mask=agent_mask,
+                )
+                truncated_output = decoder(
+                    query_tokens=query_tokens,
+                    context_tokens=context_tokens[:, :0, :],
+                    memory_tokens=memory_tokens,
+                    agent_mask=agent_mask,
+                    memory_mask=agent_mask,
+                )
+
+            torch.testing.assert_close(truncated_output, full_output, rtol=0.0, atol=1e-6)
+
+
+def test_untied_context_self_attention_uses_separate_parameters() -> None:
+    tied_decoder = _make_decoder()
+    untied_decoder = _make_untied_decoder()
+
+    tied_layer = tied_decoder.layers[0]
+    untied_layer = untied_decoder.layers[0]
+
+    assert tied_layer.context_self_attn is None
+    assert untied_layer.context_self_attn is not None
+    assert untied_layer.context_self_attn is not untied_layer.query_context_attn
+    assert "layers.0.context_self_attn.in_proj_weight" not in tied_decoder.state_dict()
+    assert "layers.0.context_self_attn.in_proj_weight" in untied_decoder.state_dict()
+
+
+def test_parallel_output_does_not_depend_on_future_context_tokens() -> None:
+    torch.manual_seed(5)
     decoder = _make_decoder()
     decoder.eval()
 
@@ -201,7 +292,7 @@ def test_parallel_output_does_not_depend_on_future_context_tokens() -> None:
 
 
 def test_arbitrary_masks_do_not_create_nan_outputs() -> None:
-    torch.manual_seed(4)
+    torch.manual_seed(6)
     decoder = _make_decoder(assume_agent_mask_is_active_prefix=False)
     query_tokens = torch.randn(2, 4, 8)
     context_tokens = torch.randn(2, 4, 8)
