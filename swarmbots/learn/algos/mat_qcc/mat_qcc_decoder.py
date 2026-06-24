@@ -36,6 +36,7 @@ class MATQCCDecoderConfig:
     normalize_memory_tokens: bool = False
     normalize_actor_head_input: bool = False
     assume_agent_mask_is_active_prefix: bool = True
+    tie_query_context_and_context_self_attention: bool = True
 
 
 class MATQCCDecoderLayer(nn.Module):
@@ -52,6 +53,7 @@ class MATQCCDecoderLayer(nn.Module):
             layer_norm_eps: float,
             norm_first: bool,
             bias: bool,
+            tie_query_context_and_context_self_attention: bool,
     ) -> None:
         super().__init__()
         self.query_context_attn = nn.MultiheadAttention(
@@ -60,6 +62,17 @@ class MATQCCDecoderLayer(nn.Module):
             dropout=dropout,
             batch_first=True,
             bias=bias,
+        )
+        self.context_self_attn = (
+            None
+            if tie_query_context_and_context_self_attention
+            else nn.MultiheadAttention(
+                d_model,
+                nhead,
+                dropout=dropout,
+                batch_first=True,
+                bias=bias,
+            )
         )
         self.memory_attn = nn.MultiheadAttention(
             d_model,
@@ -105,6 +118,8 @@ class MATQCCDecoderLayer(nn.Module):
             has_visible_context=query_has_visible_context,
             context_key_padding_mask=query_context_key_padding_mask,
             memory_key_padding_mask=memory_key_padding_mask,
+            context_attn=self.query_context_attn,
+            skip_first_token_without_context=True,
         )
         new_context_tokens = self._forward_tokens(
             target_tokens=context_tokens,
@@ -114,8 +129,15 @@ class MATQCCDecoderLayer(nn.Module):
             has_visible_context=context_has_visible_context,
             context_key_padding_mask=context_self_key_padding_mask,
             memory_key_padding_mask=memory_key_padding_mask,
+            context_attn=self._context_self_attention(),
+            skip_first_token_without_context=False,
         )
         return new_query_tokens, new_context_tokens
+
+    def _context_self_attention(self) -> nn.MultiheadAttention:
+        if self.context_self_attn is None:
+            return self.query_context_attn
+        return self.context_self_attn
 
     def _forward_tokens(
             self,
@@ -127,6 +149,8 @@ class MATQCCDecoderLayer(nn.Module):
             has_visible_context: torch.Tensor | None,
             context_key_padding_mask: torch.Tensor | None,
             memory_key_padding_mask: torch.Tensor | None,
+            context_attn: nn.MultiheadAttention,
+            skip_first_token_without_context: bool,
     ) -> torch.Tensor:
         if target_tokens.shape[1] == 0:
             return target_tokens
@@ -139,6 +163,8 @@ class MATQCCDecoderLayer(nn.Module):
                 context_attention_mask=context_attention_mask,
                 has_visible_context=has_visible_context,
                 context_key_padding_mask=context_key_padding_mask,
+                context_attn=context_attn,
+                skip_first_token_without_context=skip_first_token_without_context,
             )
             x = x + self._memory_attn_block(
                 self.norm2(x),
@@ -154,6 +180,8 @@ class MATQCCDecoderLayer(nn.Module):
                 context_attention_mask=context_attention_mask,
                 has_visible_context=has_visible_context,
                 context_key_padding_mask=context_key_padding_mask,
+                context_attn=context_attn,
+                skip_first_token_without_context=skip_first_token_without_context,
             )
         )
         x = self.norm2(
@@ -173,11 +201,33 @@ class MATQCCDecoderLayer(nn.Module):
             context_attention_mask: torch.Tensor | None,
             has_visible_context: torch.Tensor | None,
             context_key_padding_mask: torch.Tensor | None,
+            context_attn: nn.MultiheadAttention,
+            skip_first_token_without_context: bool,
     ) -> torch.Tensor:
         if context_tokens.shape[1] == 0:
             return torch.zeros_like(query_tokens)
 
-        output = self.query_context_attn(
+        if (
+                skip_first_token_without_context
+                and has_visible_context is not None
+                and query_tokens.shape[1] > 1
+                and context_attention_mask is not None
+                and not has_visible_context[:, 0].any()
+        ):
+            sliced_attention_mask = self._slice_attention_mask_first_query(context_attention_mask, has_visible_context)
+            attended_output = context_attn(
+                query=query_tokens[:, 1:, :],
+                key=context_tokens,
+                value=context_tokens,
+                attn_mask=sliced_attention_mask,
+                key_padding_mask=context_key_padding_mask,
+                need_weights=False,
+            )[0]
+            attended_output = attended_output.masked_fill(~has_visible_context[:, 1:].unsqueeze(-1), 0.0)
+            first_output = torch.zeros_like(query_tokens[:, :1, :])
+            return self.dropout1(torch.cat((first_output, attended_output), dim=1))
+
+        output = context_attn(
             query=query_tokens,
             key=context_tokens,
             value=context_tokens,
@@ -188,6 +238,26 @@ class MATQCCDecoderLayer(nn.Module):
         if has_visible_context is not None:
             output = output.masked_fill(~has_visible_context.unsqueeze(-1), 0.0)
         return self.dropout1(output)
+
+    @staticmethod
+    def _slice_attention_mask_first_query(
+            attention_mask: torch.Tensor,
+            has_visible_context: torch.Tensor,
+    ) -> torch.Tensor:
+        if attention_mask.dim() == 2:
+            return attention_mask[1:, :]
+        batch_size = has_visible_context.shape[0]
+        heads_per_batch = attention_mask.shape[0] // batch_size
+        return attention_mask.reshape(
+            batch_size,
+            heads_per_batch,
+            attention_mask.shape[1],
+            attention_mask.shape[2],
+        )[:, :, 1:, :].reshape(
+            attention_mask.shape[0],
+            attention_mask.shape[1] - 1,
+            attention_mask.shape[2],
+        )
 
     def _memory_attn_block(
             self,
@@ -241,6 +311,7 @@ class MATQCCDecoder(nn.Module):
                     layer_norm_eps=config.layer_norm_eps,
                     norm_first=config.norm_first,
                     bias=config.bias,
+                    tie_query_context_and_context_self_attention=config.tie_query_context_and_context_self_attention,
                 )
                 for _ in range(config.num_layers)
             ]
@@ -260,11 +331,17 @@ class MATQCCDecoder(nn.Module):
     ) -> torch.Tensor:
         if memory_tokens.shape[1] > self.max_agents:
             raise ValueError(f"Expected memory_tokens second dim <= {self.max_agents}, got {memory_tokens.shape[1]}")
+        n_queries = query_tokens.shape[1]
+        n_contexts = context_tokens.shape[1]
+        if n_contexts not in (n_queries, n_queries - 1):
+            raise ValueError(
+                f"Expected context_tokens second dim to be {n_queries} or {n_queries - 1}, got {n_contexts}"
+            )
 
         context_attention_mask, has_visible_context, context_key_padding_mask = self._build_parallel_context_attention_mask(
             batch_size=query_tokens.shape[0],
-            n_queries=query_tokens.shape[1],
-            n_contexts=context_tokens.shape[1],
+            n_queries=n_queries,
+            n_contexts=n_contexts,
             context_mask=agent_mask,
             device=query_tokens.device,
         )
@@ -485,5 +562,7 @@ class MATQCCDecoder(nn.Module):
     def _reinitialize_layers(self, *, feedforward_init_gain: float) -> None:
         for layer in self.layers:
             reinitialize_multihead_attention(layer.query_context_attn)
+            if layer.context_self_attn is not None:
+                reinitialize_multihead_attention(layer.context_self_attn)
             reinitialize_multihead_attention(layer.memory_attn)
             init_transformer_feedforward(layer, gain=feedforward_init_gain)
