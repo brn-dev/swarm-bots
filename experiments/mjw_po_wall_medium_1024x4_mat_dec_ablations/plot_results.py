@@ -68,6 +68,7 @@ def main() -> int:
         theoretical_maximum=THEORETICAL_MAXIMUM,
         display_name_overrides=DISPLAY_NAME_OVERRIDES,
         extra_group_sources=EXTRA_GROUP_SOURCES,
+        cut_at_limit=True,
     )
     for output_path in result.output_paths:
         print(output_path)

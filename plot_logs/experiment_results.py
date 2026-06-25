@@ -38,11 +38,12 @@ INDIVIDUAL_RUN_LINE_WIDTH = 0.8
 INDIVIDUAL_RUN_ALPHA = 0.9
 SHORT_RUN_MARKER_SIZE = 24
 SHORT_RUN_MARKER_EDGE_WIDTH = 0.6
-GROUP_LINE_WIDTH = 1.0
+GROUP_LINE_WIDTH = 0.8
+GROUP_LINE_ALPHA = 0.9
 THEORETICAL_MAXIMUM_LINE_WIDTH = 1.0
 THEORETICAL_MAXIMUM_COLOR = "#444444"
 THEORETICAL_MAXIMUM_LABEL = "Theoretical maximum"
-LEGEND_FONT_SIZE = 14
+LEGEND_FONT_SIZE = 20
 LEGEND_HANDLE_LENGTH = 2.8
 LEGEND_HANDLE_TEXT_PAD = 0.8
 LEGEND_LABEL_SPACING = 0.5
@@ -159,6 +160,23 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=DEFAULT_RUN_LENGTH_LIMIT,
         help=f"Expected individual run length. Defaults to {DEFAULT_RUN_LENGTH_LIMIT}.",
+    )
+    parser.add_argument(
+        "--cut-at-limit",
+        action="store_true",
+        help="Cut plotted run data off at --run-length-limit.",
+    )
+    parser.add_argument(
+        "--group-line-width",
+        type=float,
+        default=GROUP_LINE_WIDTH,
+        help=f"Grouped mean line width. Defaults to {GROUP_LINE_WIDTH}.",
+    )
+    parser.add_argument(
+        "--group-line-alpha",
+        type=float,
+        default=GROUP_LINE_ALPHA,
+        help=f"Grouped mean line opacity. Defaults to {GROUP_LINE_ALPHA}.",
     )
     return parser.parse_args()
 
@@ -409,9 +427,18 @@ def add_group_legend(
     colors: dict[str, tuple[float, float, float, float]],
     *,
     theoretical_maximum_line: Line2D | None = None,
+    group_line_width: float = GROUP_LINE_WIDTH,
+    group_line_alpha: float = GROUP_LINE_ALPHA,
 ) -> None:
     handles = [
-        Line2D([0], [0], color=colors[group.name], lw=GROUP_LINE_WIDTH, label=group_label(group))
+        Line2D(
+            [0],
+            [0],
+            color=colors[group.name],
+            alpha=group_line_alpha,
+            lw=group_line_width,
+            label=group_label(group),
+        )
         for group in groups
     ]
     if theoretical_maximum_line is not None:
@@ -443,18 +470,50 @@ def save_figure_variants(figure: Figure, output_path: Path, *, dpis: Sequence[in
 
 
 def final_finite_run_point(run: ExperimentRunLog, column: str) -> tuple[float, float] | None:
-    y_values = run.series[column]
-    finite_mask = np.isfinite(run.x_values) & np.isfinite(y_values)
+    return final_finite_point(run.x_values, run.series[column])
+
+
+def final_finite_point(x_values: np.ndarray, y_values: np.ndarray) -> tuple[float, float] | None:
+    finite_mask = np.isfinite(x_values) & np.isfinite(y_values)
     finite_indices = np.flatnonzero(finite_mask)
     if finite_indices.size == 0:
         return None
     final_index = int(finite_indices[-1])
-    return float(run.x_values[final_index]), float(y_values[final_index])
+    return float(x_values[final_index]), float(y_values[final_index])
 
 
-def metric_has_finite_values(groups: Sequence[ExperimentGroup], column: str) -> bool:
+def run_metric_series(
+    run: ExperimentRunLog,
+    column: str,
+    *,
+    run_length_limit: int,
+    cut_at_limit: bool,
+) -> tuple[np.ndarray, np.ndarray]:
+    x_values = run.x_values
+    y_values = run.series[column]
+    if not cut_at_limit:
+        return x_values, y_values
+
+    in_limit_mask = x_values <= run_length_limit
+    return x_values[in_limit_mask], y_values[in_limit_mask]
+
+
+def metric_has_finite_values(
+    groups: Sequence[ExperimentGroup],
+    column: str,
+    *,
+    run_length_limit: int = DEFAULT_RUN_LENGTH_LIMIT,
+    cut_at_limit: bool = False,
+) -> bool:
     return any(
-        np.isfinite(run.series[column]).any()
+        np.isfinite(
+            run_metric_series(
+                run,
+                column,
+                run_length_limit=run_length_limit,
+                cut_at_limit=cut_at_limit,
+            )[1]
+        ).any()
         for group in groups
         for run in group.runs
     )
@@ -468,6 +527,9 @@ def plot_individual_metric(
     dpis: Sequence[int],
     theoretical_maximum: float | None = None,
     run_length_limit: int = DEFAULT_RUN_LENGTH_LIMIT,
+    cut_at_limit: bool = False,
+    group_line_width: float = GROUP_LINE_WIDTH,
+    group_line_alpha: float = GROUP_LINE_ALPHA,
     metric: MetricPlotSpec,
     output_name: str | None = None,
     title: str | None = None,
@@ -479,15 +541,23 @@ def plot_individual_metric(
     for group in groups:
         color = colors[group.name]
         for run in group.runs:
+            x_values, y_values = run_metric_series(
+                run,
+                metric.column,
+                run_length_limit=run_length_limit,
+                cut_at_limit=cut_at_limit,
+            )
+            if x_values.size == 0:
+                continue
             axis.plot(
-                run.x_values,
-                run.series[metric.column],
+                x_values,
+                y_values,
                 color=color,
                 alpha=INDIVIDUAL_RUN_ALPHA,
                 linewidth=INDIVIDUAL_RUN_LINE_WIDTH,
             )
             if run.x_values[-1] < short_run_threshold:
-                final_point = final_finite_run_point(run, metric.column)
+                final_point = final_finite_point(x_values, y_values)
                 if final_point is not None:
                     axis.scatter(
                         *final_point,
@@ -503,7 +573,14 @@ def plot_individual_metric(
     axis.set_ylabel(metric.ylabel)
     axis.grid(alpha=0.25)
     theoretical_maximum_line = add_theoretical_maximum_line(axis, theoretical_maximum)
-    add_group_legend(axis, groups, colors, theoretical_maximum_line=theoretical_maximum_line)
+    add_group_legend(
+        axis,
+        groups,
+        colors,
+        theoretical_maximum_line=theoretical_maximum_line,
+        group_line_width=group_line_width,
+        group_line_alpha=group_line_alpha,
+    )
     figure.tight_layout()
     resolved_output_name = output_name or f"{metric.output_stem}_individual_runs.png"
     return save_figure_variants(figure, output_dir / resolved_output_name, dpis=dpis)
@@ -557,17 +634,41 @@ def group_x_values(runs: Sequence[ExperimentRunLog]) -> np.ndarray:
     return np.asarray(values, dtype=float)
 
 
+def limited_group_x_values(runs: Sequence[ExperimentRunLog], *, run_length_limit: int) -> np.ndarray:
+    values = sorted({
+        float(value)
+        for run in runs
+        for value in run.x_values
+        if np.isfinite(value) and value <= run_length_limit
+    })
+    return np.asarray(values, dtype=float)
+
+
 def group_metric_mean_and_std(
     runs: Sequence[ExperimentRunLog],
     *,
     column: str,
+    run_length_limit: int = DEFAULT_RUN_LENGTH_LIMIT,
+    cut_at_limit: bool = False,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    x_values = group_x_values(runs)
+    x_values = (
+        limited_group_x_values(runs, run_length_limit=run_length_limit)
+        if cut_at_limit
+        else group_x_values(runs)
+    )
     if x_values.size == 0:
         return x_values, x_values, x_values
 
     run_emas = np.vstack([
-        finite_interp(run.x_values, run.series[column], x_values)
+        finite_interp(
+            *run_metric_series(
+                run,
+                column,
+                run_length_limit=run_length_limit,
+                cut_at_limit=cut_at_limit,
+            ),
+            x_values,
+        )
         for run in runs
     ])
     mean_values = nan_mean(run_emas, axis=0)
@@ -581,6 +682,10 @@ def plot_group_metric(
     x_column: str,
     dpis: Sequence[int],
     theoretical_maximum: float | None = None,
+    run_length_limit: int = DEFAULT_RUN_LENGTH_LIMIT,
+    cut_at_limit: bool = False,
+    group_line_width: float = GROUP_LINE_WIDTH,
+    group_line_alpha: float = GROUP_LINE_ALPHA,
     metric: MetricPlotSpec,
     output_name: str | None = None,
     title: str | None = None,
@@ -589,11 +694,23 @@ def plot_group_metric(
     colors = group_colors(groups) if colors is None else colors
     figure, axis = plt.subplots(figsize=(16, 9))
     for group in groups:
-        x_values, mean_values, std_values = group_metric_mean_and_std(group.runs, column=metric.column)
+        x_values, mean_values, std_values = group_metric_mean_and_std(
+            group.runs,
+            column=metric.column,
+            run_length_limit=run_length_limit,
+            cut_at_limit=cut_at_limit,
+        )
         if x_values.size == 0:
             continue
         color = colors[group.name]
-        axis.plot(x_values, mean_values, color=color, linewidth=GROUP_LINE_WIDTH, label=group_label(group))
+        axis.plot(
+            x_values,
+            mean_values,
+            color=color,
+            alpha=group_line_alpha,
+            linewidth=group_line_width,
+            label=group_label(group),
+        )
         if len(group.runs) > 1:
             axis.fill_between(
                 x_values,
@@ -631,6 +748,9 @@ def plot_experiment_selection(
     dpis: Sequence[int],
     theoretical_maximum: float | None,
     run_length_limit: int,
+    cut_at_limit: bool,
+    group_line_width: float,
+    group_line_alpha: float,
     colors: dict[str, tuple[float, float, float, float]],
 ) -> list[Path]:
     selected_groups = selected_groups_by_name(groups, selection.group_names)
@@ -647,7 +767,12 @@ def plot_experiment_selection(
     title_suffix = f" - {selection.title_suffix or selection.name.replace('_', ' ').title()}"
     output_paths: list[Path] = []
     for metric in PLOT_SPECS:
-        if not metric_has_finite_values(selected_groups, metric.column):
+        if not metric_has_finite_values(
+            selected_groups,
+            metric.column,
+            run_length_limit=run_length_limit,
+            cut_at_limit=cut_at_limit,
+        ):
             continue
         output_stem = f"{metric.output_stem}_{selection.name}"
         output_paths.extend(
@@ -658,6 +783,9 @@ def plot_experiment_selection(
                 dpis=dpis,
                 theoretical_maximum=theoretical_maximum,
                 run_length_limit=run_length_limit,
+                cut_at_limit=cut_at_limit,
+                group_line_width=group_line_width,
+                group_line_alpha=group_line_alpha,
                 metric=metric,
                 output_name=f"{output_stem}_individual_runs.png",
                 title=f"{metric.title} Per Run{title_suffix}",
@@ -671,6 +799,10 @@ def plot_experiment_selection(
                 x_column=x_column,
                 dpis=dpis,
                 theoretical_maximum=theoretical_maximum,
+                run_length_limit=run_length_limit,
+                cut_at_limit=cut_at_limit,
+                group_line_width=group_line_width,
+                group_line_alpha=group_line_alpha,
                 metric=metric,
                 output_name=f"{output_stem}_grouped.png",
                 title=f"{metric.title} By Group{title_suffix}",
@@ -690,6 +822,9 @@ def plot_experiment_results(
     dpis: Sequence[int] | None = None,
     theoretical_maximum: float | None = None,
     run_length_limit: int = DEFAULT_RUN_LENGTH_LIMIT,
+    cut_at_limit: bool = False,
+    group_line_width: float = GROUP_LINE_WIDTH,
+    group_line_alpha: float = GROUP_LINE_ALPHA,
     display_name_overrides: Mapping[str, str] | None = None,
     extra_group_sources: Mapping[str, Sequence[Path]] | None = None,
     extra_plot_selections: Sequence[ExperimentPlotSelection] | None = None,
@@ -707,7 +842,12 @@ def plot_experiment_results(
     normalized_dpis = normalize_dpis(dpis)
     output_paths: list[Path] = []
     for metric in PLOT_SPECS:
-        if not metric_has_finite_values(groups, metric.column):
+        if not metric_has_finite_values(
+            groups,
+            metric.column,
+            run_length_limit=run_length_limit,
+            cut_at_limit=cut_at_limit,
+        ):
             continue
         output_paths.extend(
             plot_individual_metric(
@@ -717,6 +857,9 @@ def plot_experiment_results(
                 dpis=normalized_dpis,
                 theoretical_maximum=theoretical_maximum,
                 run_length_limit=run_length_limit,
+                cut_at_limit=cut_at_limit,
+                group_line_width=group_line_width,
+                group_line_alpha=group_line_alpha,
                 metric=metric,
                 colors=colors,
             )
@@ -728,6 +871,10 @@ def plot_experiment_results(
                 x_column=x_column,
                 dpis=normalized_dpis,
                 theoretical_maximum=theoretical_maximum,
+                run_length_limit=run_length_limit,
+                cut_at_limit=cut_at_limit,
+                group_line_width=group_line_width,
+                group_line_alpha=group_line_alpha,
                 metric=metric,
                 colors=colors,
             )
@@ -743,6 +890,9 @@ def plot_experiment_results(
                     dpis=normalized_dpis,
                     theoretical_maximum=theoretical_maximum,
                     run_length_limit=run_length_limit,
+                    cut_at_limit=cut_at_limit,
+                    group_line_width=group_line_width,
+                    group_line_alpha=group_line_alpha,
                     colors=colors,
                 )
             )
@@ -760,6 +910,9 @@ def main() -> int:
         dpis=args.dpis,
         theoretical_maximum=args.theoretical_maximum,
         run_length_limit=args.run_length_limit,
+        cut_at_limit=args.cut_at_limit,
+        group_line_width=args.group_line_width,
+        group_line_alpha=args.group_line_alpha,
     )
     for output_path in result.output_paths:
         print(output_path)
