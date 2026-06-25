@@ -24,6 +24,7 @@ from swarmbots.mjw_env.scenarios.base_mjw_scenario import BaseMJWScenario, MJWRu
 from swarmbots.mjw_env.swarm.mjw_homogeneous_swarm import MJWSwarmPool
 from swarmbots.learn.discord_notifications import notify_mjw_nefc_overflow_once
 from swarmbots.learn.tensor_conversion import to_numpy_array
+from swarmbots.utils.recording_resolution import DEFAULT_RECORDING_HEIGHT, DEFAULT_RECORDING_WIDTH
 
 
 def _build_inactive_unit_positions(
@@ -671,8 +672,8 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
         fps: int = 20,
         fps_mode: str = "compensate_stride",
         frame_stride: int = 1,
-        width: int = 640,
-        height: int = 480,
+        width: int = DEFAULT_RECORDING_WIDTH,
+        height: int = DEFAULT_RECORDING_HEIGHT,
         camera: int | str = -1,
     ) -> None:
         config = MJWRecordingConfig(

@@ -16,6 +16,7 @@ from swarmbots.mj_env.scenarios.base_scenario import (
     SwarmObsDict,
 )
 from swarmbots.mj_env.swarm.swarm_connections import SwarmConnections
+from swarmbots.utils.recording_resolution import DEFAULT_RECORDING_HEIGHT, DEFAULT_RECORDING_WIDTH
 
 
 class SwarmBotsEnv(gymnasium.Env):
@@ -26,8 +27,8 @@ class SwarmBotsEnv(gymnasium.Env):
         scenario: BaseScenario,
         episode_length: int = 500,
         render_mode: str | None = None,
-        width: int = 640,
-        height: int = 480,
+        width: int = DEFAULT_RECORDING_WIDTH,
+        height: int = DEFAULT_RECORDING_HEIGHT,
         camera: int | list[int] | Literal['all'] = 'all',
         scene_option: MjvOption = None,
         simulation_unstable_reward: float = -1.0,
@@ -283,6 +284,13 @@ class SwarmBotsEnv(gymnasium.Env):
             self._renderer.disable_depth_rendering()
 
         return np.concatenate(frames, axis=1)
+
+    def set_render_resolution(self, *, width: int, height: int) -> None:
+        self.width = int(width)
+        self.height = int(height)
+        if self._renderer is not None:
+            self._renderer.close()
+            self._renderer = None
 
     def close(self):
         if self._renderer is not None:

@@ -28,6 +28,7 @@ from swarmbots.learn.metrics_logger import MetricsLogger
 from swarmbots.learn.performance_timer import PerformanceTimer
 from swarmbots.learn.recording import record_policy
 from swarmbots.utils.machine_specs import collect_machine_specs
+from swarmbots.utils.recording_resolution import DEFAULT_RECORDING_HEIGHT, DEFAULT_RECORDING_WIDTH
 
 
 
@@ -727,8 +728,8 @@ class BaseAlgorithm(abc.ABC):
             video_folder = config.get("folder", None)
             max_parallel_episodes = int(config.get("parallel", config.get("max_parallel", min(num_episodes, 4))))
             frame_stride = int(config.get("frame_stride", 1))
-            width = int(config.get("width", 640))
-            height = int(config.get("height", 480))
+            width = int(config.get("width", DEFAULT_RECORDING_WIDTH))
+            height = int(config.get("height", DEFAULT_RECORDING_HEIGHT))
             camera = config.get("camera", -1)
             live = _parse_bool(config.get("live", True))
         else:
@@ -742,8 +743,8 @@ class BaseAlgorithm(abc.ABC):
             video_folder = None
             max_parallel_episodes = min(num_episodes, 10)
             frame_stride = 1
-            width = 640
-            height = 480
+            width = DEFAULT_RECORDING_WIDTH
+            height = DEFAULT_RECORDING_HEIGHT
             camera = -1
             live = True
 
@@ -773,7 +774,8 @@ class BaseAlgorithm(abc.ABC):
             )
             logger.warning(
                 f"Started live recording of {num_episodes} episode(s) to {folder.as_posix()} "
-                f"(parallel={max_parallel_episodes}, frame_stride={frame_stride}, fps={fps}, fps_mode={fps_mode})"
+                f"(parallel={max_parallel_episodes}, frame_stride={frame_stride}, fps={fps}, "
+                f"fps_mode={fps_mode}, resolution={width}x{height})"
             )
             return
 
@@ -798,6 +800,7 @@ class BaseAlgorithm(abc.ABC):
 
         try:
             record_env = self._make_record_env()
+            _set_record_env_render_resolution(record_env, width=width, height=height)
             move_env_to_device(record_env, device)
             apply_env_state(record_env, capture_env_state(self.env))
             freeze_env_normalization(record_env)
@@ -809,7 +812,8 @@ class BaseAlgorithm(abc.ABC):
                 )
 
             logger.warning(
-                f"Recording {num_episodes} episode(s) to {folder.as_posix()} (deterministic={deterministic}, fps={fps})"
+                f"Recording {num_episodes} episode(s) to {folder.as_posix()} "
+                f"(deterministic={deterministic}, fps={fps}, resolution={width}x{height})"
             )
             record_policy(
                 env=record_env,
@@ -980,6 +984,13 @@ def _policy_uses_compiled_modules(policy: BasePolicy) -> bool:
         return True
 
     return bool(getattr(policy, "_wm_compile_modules", False))
+
+
+def _set_record_env_render_resolution(record_env: BaseLearnEnvWrapper, *, width: int, height: int) -> None:
+    set_resolution = getattr(record_env, "call", None)
+    if callable(set_resolution):
+        set_resolution("set_render_resolution", width=int(width), height=int(height))
+
 
 def _read_metadata_json(path: Path) -> dict[str, Any] | None:
     try:
