@@ -131,6 +131,12 @@ def parse_args() -> argparse.Namespace:
         help="Optional group label order. Groups not listed here are appended alphabetically.",
     )
     parser.add_argument(
+        "--group-filter",
+        nargs="*",
+        default=None,
+        help="Optional group labels to include. Groups not listed here are ignored.",
+    )
+    parser.add_argument(
         "--x-column",
         default=DEFAULT_X_COLUMN,
         help=f"X-axis column. Defaults to {DEFAULT_X_COLUMN!r}.",
@@ -284,6 +290,7 @@ def load_experiment_groups(
     experiment_run_dir: Path,
     *,
     group_order: Sequence[str] | None = None,
+    group_filter: Sequence[str] | None = None,
     x_column: str = DEFAULT_X_COLUMN,
     display_name_overrides: Mapping[str, str] | None = None,
     extra_group_sources: Mapping[str, Sequence[Path]] | None = None,
@@ -317,6 +324,14 @@ def load_experiment_groups(
                 grouped_logs.pop(group_name, None)
                 continue
             group_logs.sort(key=lambda item: (item[0], item[1].as_posix()))
+
+    if group_filter is not None:
+        allowed_group_names = set(group_filter)
+        grouped_logs = {
+            group_name: run_logs
+            for group_name, run_logs in grouped_logs.items()
+            if group_name in allowed_group_names
+        }
 
     if not grouped_logs:
         raise ValueError(f"No run logs found under {experiment_run_dir}")
@@ -670,6 +685,7 @@ def plot_experiment_results(
     output_dir: Path,
     *,
     group_order: Sequence[str] | None = None,
+    group_filter: Sequence[str] | None = None,
     x_column: str = DEFAULT_X_COLUMN,
     dpis: Sequence[int] | None = None,
     theoretical_maximum: float | None = None,
@@ -681,6 +697,7 @@ def plot_experiment_results(
     groups = load_experiment_groups(
         experiment_run_dir,
         group_order=group_order,
+        group_filter=group_filter,
         x_column=x_column,
         display_name_overrides=display_name_overrides,
         extra_group_sources=extra_group_sources,
@@ -738,6 +755,7 @@ def main() -> int:
         args.experiment_run_dir,
         args.output_dir,
         group_order=args.group_order,
+        group_filter=args.group_filter,
         x_column=args.x_column,
         dpis=args.dpis,
         theoretical_maximum=args.theoretical_maximum,
