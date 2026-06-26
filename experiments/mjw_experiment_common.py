@@ -23,6 +23,12 @@ from swarmbots.learn.action_dists.beta_action_dist import BetaConfig
 from swarmbots.learn.action_dists.bernoulli_action_dist import BernoulliConfig
 from swarmbots.learn.action_dists.entropy_utils import AgentActionsReduction, EntropyLossConfig
 from swarmbots.learn.action_dists.gsde_action_dist import GSDEConfig
+from swarmbots.learn.action_dists.reparameterized_sign_magnitude_kumaraswamy_action_dist import (
+    ReparameterizedSignMagnitudeKumaraswamyConfig,
+)
+from swarmbots.learn.action_dists.reparameterized_squashed_gaussian_mixture_action_dist import (
+    ReparameterizedSquashedGaussianMixtureConfig,
+)
 from swarmbots.learn.action_dists.sign_magnitude_beta_action_dist import SignMagnitudeBetaConfig
 from swarmbots.learn.action_dists.sticky_action_dist import StickyActionDist
 from swarmbots.learn.action_dists.sticky_sign_magnitude_beta_action_dist import StickySignMagnitudeBetaConfig
@@ -69,7 +75,15 @@ from swarmbots.mjw_env.scenarios.mjw_scenario_presets import (
 from swarmbots.utils.recording_schedule import DEFAULT_LIVE_RECORDING_SCHEDULE, install_scheduled_recordings
 from swarmbots.utils.run_paths import get_run_id_from_checkpoint_path
 
-ContinuousActionDistVariant = Literal["sticky_sign_magnitude_beta", "sign_magnitude_beta", "beta", "gsde", "squashed_diag_gaussian"]
+ContinuousActionDistVariant = Literal[
+    "sticky_sign_magnitude_beta",
+    "sign_magnitude_beta",
+    "reparameterized_sign_magnitude_kumaraswamy",
+    "reparameterized_squashed_gaussian_mixture",
+    "beta",
+    "gsde",
+    "squashed_diag_gaussian",
+]
 PolicyVariant = Literal["mat_qcs", "mat_qcc", "mat_qcx", "mat_dec", "mat_orig", "ppo", "ppo_small", "mappo", "mappo_small"]
 MJWScenarioName = Literal[
     "wall",
@@ -307,7 +321,15 @@ def make_continuous_config(
         variant: ContinuousActionDistVariant,
         initial_stickiness: float,
         gsde_init_stds: list[float],
-) -> StickySignMagnitudeBetaConfig | SignMagnitudeBetaConfig | BetaConfig | GSDEConfig | SquashedDiagGaussianConfig:
+) -> (
+        StickySignMagnitudeBetaConfig
+        | SignMagnitudeBetaConfig
+        | ReparameterizedSignMagnitudeKumaraswamyConfig
+        | ReparameterizedSquashedGaussianMixtureConfig
+        | BetaConfig
+        | GSDEConfig
+        | SquashedDiagGaussianConfig
+):
     if variant == "sticky_sign_magnitude_beta":
         return StickySignMagnitudeBetaConfig(
             stickiness=initial_stickiness,
@@ -322,6 +344,20 @@ def make_continuous_config(
             beta_ent_scale=0.75,
             categorical_ent_loss_config=make_sign_magnitude_beta_entropy_config(),
             beta_ent_loss_config=make_sign_magnitude_beta_entropy_config(),
+        )
+    if variant == "reparameterized_sign_magnitude_kumaraswamy":
+        return ReparameterizedSignMagnitudeKumaraswamyConfig(
+            ent_loss_coef=1e-3,
+            kumaraswamy_ent_scale=0.75,
+            categorical_ent_loss_config=make_sign_magnitude_beta_entropy_config(),
+            kumaraswamy_ent_loss_config=make_sign_magnitude_beta_entropy_config(),
+        )
+    if variant == "reparameterized_squashed_gaussian_mixture":
+        return ReparameterizedSquashedGaussianMixtureConfig(
+            ent_loss_coef=1e-3,
+            gaussian_ent_scale=0.75,
+            categorical_ent_loss_config=make_sign_magnitude_beta_entropy_config(),
+            gaussian_ent_loss_config=make_sign_magnitude_beta_entropy_config(),
         )
     if variant == "beta":
         return BetaConfig(

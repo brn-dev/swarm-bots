@@ -443,14 +443,14 @@ def parse_args() -> argparse.Namespace:
         "--num-envs",
         nargs="+",
         type=int,
-        default=[32, 128, 512],
+        default=[32, 128, 512, 2048, 8192],
         help="Vector-env sizes to benchmark.",
     )
     parser.add_argument("--mj-workers", type=int, default=23, help="Worker count for mj_env.")
     parser.add_argument(
         "--mj-max-num-envs",
         type=int,
-        default=1024,
+        default=2048,
         help=(
             "Only run mj_env for --num-envs values <= this threshold. "
             "If omitted, defaults to the lowest requested --num-envs."
