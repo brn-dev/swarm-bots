@@ -17,14 +17,16 @@ GROUP_ORDER = (
     "mat_qcs_full_causal",
     "mat_qcs_context_tokens_only",
     "mat_orig",
+    "mat_dec",
+    "mappo_small",
 )
 DISPLAY_NAME_OVERRIDES = {
-    "mat_qcc": "MAT-QCC + NOP, no transition obs",
-    "mat_qcs_full_causal": "MAT-QCS full causal + NOP, no transition obs",
-    "mat_qcs_context_tokens_only": (
-        "MAT-QCS context tokens only + NOP, no transition obs"
-    ),
-    "mat_orig": "MAT-Orig + NOP, no transition obs",
+    "mat_qcc": "MAT-QCC",
+    "mat_qcs_full_causal": "MAT-QCS full causal",
+    "mat_qcs_context_tokens_only": "MAT-QCS context tokens only",
+    "mat_orig": "MAT-Orig",
+    "mat_dec": "MAT-Dec",
+    "mappo_small": "MAPPO",
 }
 THEORETICAL_MAXIMUM = None
 
