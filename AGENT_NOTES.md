@@ -34,6 +34,7 @@ Keep only durable architecture notes and gotchas. Prefer deleting stale detail o
 - Recurrent MAT variants share `RMATPolicyMixin` and env-major `RPPOWMSampler` TBPTT rows. `MATQCCPolicy` is not state-dict compatible with `MATQCSDecoder`'s interleaved `CONTEXT_TOKENS_ONLY` implementation. QCC parallel evaluation omits the final context/action token like QCS/QCX; `MATQCCDecoderConfig.tie_query_context_and_context_self_attention=False` adds separate context-self attention parameters.
 - For MAT customization, override `_build_encoder*()` / `_build_action_dist(...)`; do not mutate fields after `super().__init__()`.
 - `ActionDist.compile_friendly` gates MAT compile coverage. Mutable action-dist scalars must be tensors/buffers, not Python floats. Sticky dists must keep `requires_previous_actions()` structurally stable even when annealed to zero.
+- `ReparameterizedSignMagnitudeKumaraswamyActionDist` is the cheap pathwise alternative to sign/magnitude beta: it uses two disjoint action intervals with inverse-CDF Kumaraswamy samples, so `sample()` has gradients through mixture probability and shape parameters while `log_prob()` stays exact for the piecewise density. `ReparameterizedSquashedGaussianMixtureActionDist` is a more general bounded mixture using inverse-CDF solve in tanh-Gaussian latent space plus a custom implicit-gradient backward; it is more expensive and marked non-compile-friendly.
 
 ## World Models
 

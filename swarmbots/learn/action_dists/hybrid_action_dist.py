@@ -36,6 +36,14 @@ from swarmbots.learn.action_dists.sticky_left_middle_right_beta_action_dist impo
 )
 from swarmbots.learn.action_dists.beta_mixture_action_dist import BetaMixtureActionDist, BetaMixtureConfig
 from swarmbots.learn.action_dists.predicted_std_action_dist import PredictedStdActionDist, PredictedStdConfig
+from swarmbots.learn.action_dists.reparameterized_sign_magnitude_kumaraswamy_action_dist import (
+    ReparameterizedSignMagnitudeKumaraswamyActionDist,
+    ReparameterizedSignMagnitudeKumaraswamyConfig,
+)
+from swarmbots.learn.action_dists.reparameterized_squashed_gaussian_mixture_action_dist import (
+    ReparameterizedSquashedGaussianMixtureActionDist,
+    ReparameterizedSquashedGaussianMixtureConfig,
+)
 from swarmbots.learn.action_dists.squashed_diag_gaussian_action_dist import (
     SquashedDiagGaussianActionDist,
     SquashedDiagGaussianConfig,
@@ -58,6 +66,8 @@ ContinuousActionDistConfig: TypeAlias = (
     | GSDEConfig
     | BetaConfig
     | BetaMixtureConfig
+    | ReparameterizedSignMagnitudeKumaraswamyConfig
+    | ReparameterizedSquashedGaussianMixtureConfig
     | StickySignMagnitudeBetaConfig
     | StickyLeftMiddleRightBetaConfig
     | SignMagnitudeBetaConfig
@@ -337,6 +347,8 @@ class HybridActionDistribution(ActionDist):
                           (SquashedDiagGaussianConfig, PredictedStdConfig, GSDEConfig,
                            BetaConfig, BangZeroBangConfig, StickyBangZeroBangConfig, SignMagnitudeBetaConfig,
                            StickySignMagnitudeBetaConfig, LeftMiddleRightBetaConfig,
+                           ReparameterizedSignMagnitudeKumaraswamyConfig,
+                           ReparameterizedSquashedGaussianMixtureConfig,
                            StickyLeftMiddleRightBetaConfig)
             ):
                 self.continuous_configs[idx] = replace(config, ent_loss_coef=value)
@@ -362,6 +374,8 @@ class HybridActionDistribution(ActionDist):
                       (SquashedDiagGaussianConfig, PredictedStdConfig, GSDEConfig,
                        BetaConfig, BangZeroBangConfig, StickyBangZeroBangConfig, SignMagnitudeBetaConfig,
                        StickySignMagnitudeBetaConfig, LeftMiddleRightBetaConfig,
+                       ReparameterizedSignMagnitudeKumaraswamyConfig,
+                       ReparameterizedSquashedGaussianMixtureConfig,
                        StickyLeftMiddleRightBetaConfig)
         ):
             self.continuous_configs[sub_dist_idx] = replace(config, ent_loss_coef=value)
@@ -440,7 +454,9 @@ def make_proba_distribution(
             raise ValueError(
                 "Supply a ContinuousActionDistConfig "
                 "(SquashedDiagGaussianConfig | PredictedStdConfig | GSDEConfig | "
-                "BetaConfig | BetaMixtureConfig | StickySignMagnitudeBetaConfig | StickyLeftMiddleRightBetaConfig | "
+                "BetaConfig | BetaMixtureConfig | ReparameterizedSignMagnitudeKumaraswamyConfig | "
+                "ReparameterizedSquashedGaussianMixtureConfig | "
+                "StickySignMagnitudeBetaConfig | StickyLeftMiddleRightBetaConfig | "
                 "SignMagnitudeBetaConfig | LeftMiddleRightBetaConfig | BangZeroBangConfig | StickyBangZeroBangConfig) "
                 "for continuous actions."
             )
@@ -516,6 +532,38 @@ def make_proba_distribution(
                 epsilon=continuous_config.epsilon,
                 alphas=continuous_config.alphas,
                 betas=continuous_config.betas,
+            )
+        elif isinstance(continuous_config, ReparameterizedSignMagnitudeKumaraswamyConfig):
+            return ReparameterizedSignMagnitudeKumaraswamyActionDist(
+                latent_dim=latent_dim,
+                action_dim=action_space_dim,
+                action_net_initialization=action_net_initialization,
+                initial_positive_prob=continuous_config.initial_positive_prob,
+                epsilon=continuous_config.epsilon,
+                negative_a=continuous_config.negative_a,
+                negative_b=continuous_config.negative_b,
+                positive_a=continuous_config.positive_a,
+                positive_b=continuous_config.positive_b,
+                ent_loss_coef=continuous_config.ent_loss_coef,
+                kumaraswamy_ent_scale=continuous_config.kumaraswamy_ent_scale,
+                categorical_ent_loss_config=continuous_config.categorical_ent_loss_config,
+                kumaraswamy_ent_loss_config=continuous_config.kumaraswamy_ent_loss_config,
+            )
+        elif isinstance(continuous_config, ReparameterizedSquashedGaussianMixtureConfig):
+            return ReparameterizedSquashedGaussianMixtureActionDist(
+                latent_dim=latent_dim,
+                action_dim=action_space_dim,
+                action_net_initialization=action_net_initialization,
+                initial_action_modes=continuous_config.initial_action_modes,
+                initial_stds=continuous_config.initial_stds,
+                initial_weights=continuous_config.initial_weights,
+                epsilon=continuous_config.epsilon,
+                inverse_cdf_iterations=continuous_config.inverse_cdf_iterations,
+                log_std_clamp_range=continuous_config.log_std_clamp_range,
+                ent_loss_coef=continuous_config.ent_loss_coef,
+                gaussian_ent_scale=continuous_config.gaussian_ent_scale,
+                categorical_ent_loss_config=continuous_config.categorical_ent_loss_config,
+                gaussian_ent_loss_config=continuous_config.gaussian_ent_loss_config,
             )
         elif isinstance(continuous_config, StickySignMagnitudeBetaConfig):
             return StickySignMagnitudeBetaActionDist(
