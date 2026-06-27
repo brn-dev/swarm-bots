@@ -16,7 +16,11 @@ from swarmbots.mj_env.scenarios.base_scenario import (
     SwarmObsDict,
 )
 from swarmbots.mj_env.swarm.swarm_connections import SwarmConnections
-from swarmbots.utils.recording_resolution import DEFAULT_RECORDING_HEIGHT, DEFAULT_RECORDING_WIDTH
+from swarmbots.utils.recording_resolution import (
+    DEFAULT_RECORDING_HEIGHT,
+    DEFAULT_RECORDING_WIDTH,
+    ensure_mujoco_offscreen_framebuffer,
+)
 
 
 class SwarmBotsEnv(gymnasium.Env):
@@ -62,6 +66,7 @@ class SwarmBotsEnv(gymnasium.Env):
         # Reusing that pair here avoids recompiling the same MuJoCo scene for every env.
         self.model = self.scenario.dummy_model
         self.data = self.scenario.dummy_data
+        ensure_mujoco_offscreen_framebuffer(self.model, width=self.width, height=self.height)
 
         self.scenario_state: dict | None = None
         self.swarm_connections: SwarmConnections | None = None
@@ -288,6 +293,7 @@ class SwarmBotsEnv(gymnasium.Env):
     def set_render_resolution(self, *, width: int, height: int) -> None:
         self.width = int(width)
         self.height = int(height)
+        ensure_mujoco_offscreen_framebuffer(self.model, width=self.width, height=self.height)
         if self._renderer is not None:
             self._renderer.close()
             self._renderer = None
@@ -307,5 +313,6 @@ class SwarmBotsEnv(gymnasium.Env):
         clone.scenario = self.scenario.clone_for_worker_pool()
         clone.model = clone.scenario.dummy_model
         clone.data = clone.scenario.dummy_data
+        ensure_mujoco_offscreen_framebuffer(clone.model, width=clone.width, height=clone.height)
         clone._renderer = None
         return clone

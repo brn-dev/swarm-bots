@@ -12,6 +12,7 @@ from loguru import logger
 
 from swarmbots.mjw_env.scenarios.base_mjw_scenario import BaseMJWScenario, MJWRecordingCameraConfig
 from swarmbots.utils.recording_overlay import draw_accumulated_reward
+from swarmbots.utils.recording_resolution import ensure_mujoco_offscreen_framebuffer
 
 
 @dataclass(slots=True)
@@ -100,15 +101,18 @@ class MJWLiveEpisodeRecorder:
         self._cleanup_writer_futures()
         self._close_render_context()
 
-        self._config = config
-        self._episodes_started = 0
-        self._episodes_completed = 0
-        self._active_slots_by_world.clear()
-        self._render_context = _RenderContext(
+        ensure_mujoco_offscreen_framebuffer(self._model, width=config.width, height=config.height)
+        render_context = _RenderContext(
             data=mujoco.MjData(self._model),
             renderer=mujoco.Renderer(self._model, height=config.height, width=config.width),
             camera=self._build_camera(config.camera),
         )
+
+        self._episodes_started = 0
+        self._episodes_completed = 0
+        self._active_slots_by_world.clear()
+        self._config = config
+        self._render_context = render_context
 
         self.on_episode_starts(
             world_idx=episode_start_world_idx,
