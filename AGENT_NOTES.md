@@ -61,6 +61,7 @@ Keep only durable architecture notes and gotchas. Prefer deleting stale detail o
 - Hot-path connector matching is kernelized in `swarmbots/mjw_env/mjw_kernels.py`; keep Warp indices `int32` unless PyTorch indexing forces `int64`.
 - Reuse GPU scratch buffers. Avoid rebuilding tensors or Python branching in the MJW step path.
 - Live MJW recording uses one shared `mujoco.Renderer`; `max_parallel_episodes` only caps concurrent episodes and should not multiply renderer VRAM.
+- MuJoCo render resolution above 640x480 needs `model.vis.global_.offwidth/offheight` raised before constructing `mujoco.Renderer`; `ensure_mujoco_offscreen_framebuffer(...)` owns this.
 
 ## Runtime And Install
 
