@@ -438,8 +438,8 @@ def print_results_table(
         logger.warning(f"Skipped speedup comparison for env counts without both backends: {missing_speedups}")
 
 
-def parse_int_list_argument(values: list[str], *, argument_name: str) -> list[int]:
-    text = " ".join(values).strip()
+def parse_int_list_argument(values: list[str | int], *, argument_name: str) -> list[int]:
+    text = " ".join(str(value) for value in values).strip()
     if not text:
         raise argparse.ArgumentTypeError(f"{argument_name} needs at least one integer.")
 
@@ -479,7 +479,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--mj-workers",
         nargs="+",
-        default=["24", "48", "96"],
+        default=[24, 48, 96],
         help="Worker counts for mj_env. Accepts values like '24 48 96', '24,48,96', or '[24, 48, 96]'.",
     )
     parser.add_argument(
