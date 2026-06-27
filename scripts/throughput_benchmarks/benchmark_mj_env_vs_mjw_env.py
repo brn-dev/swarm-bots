@@ -360,7 +360,7 @@ def format_speedup(results: list[BenchmarkResult], *, result: BenchmarkResult) -
     if accelerated is None:
         return "-"
     baseline = result.step_envs_per_second
-    return f"{accelerated / baseline:.2f}x"
+    return f"{accelerated.step_envs_per_second / baseline:.2f}x"
 
 
 def print_results_table(
