@@ -70,6 +70,7 @@ class BenchmarkResult:
 class BenchmarkFailure:
     backend: BackendName
     num_envs: int
+    mj_workers: int | None
     phase: str
     error_type: str
     error: str
@@ -345,12 +346,20 @@ def benchmark_backend(
         env.close()
 
 
-def format_speedup(results: list[BenchmarkResult], *, num_envs: int) -> str:
-    per_backend = {result.backend: result for result in results if result.num_envs == num_envs}
-    if "mj_env" not in per_backend or "mjw_env" not in per_backend:
+def format_speedup(results: list[BenchmarkResult], *, result: BenchmarkResult) -> str:
+    if result.backend != "mj_env":
         return "-"
-    baseline = per_backend["mj_env"].step_envs_per_second
-    accelerated = per_backend["mjw_env"].step_envs_per_second
+    accelerated = next(
+        (
+            candidate
+            for candidate in results
+            if candidate.backend == "mjw_env" and candidate.num_envs == result.num_envs
+        ),
+        None,
+    )
+    if accelerated is None:
+        return "-"
+    baseline = result.step_envs_per_second
     return f"{accelerated / baseline:.2f}x"
 
 
@@ -388,7 +397,7 @@ def print_results_table(
                 "-" if result.mj_workers is None else str(result.mj_workers),
                 "-" if result.backend != "mj_env" else str(result.mj_copy).lower(),
                 result.device,
-                format_speedup(results, num_envs=result.num_envs),
+                format_speedup(results, result=result),
                 "",
             ]
         )
@@ -402,7 +411,7 @@ def print_results_table(
                 "-",
                 "-",
                 "-",
-                "-",
+                "-" if failure.mj_workers is None else str(failure.mj_workers),
                 "-",
                 "-",
                 "-",
@@ -411,7 +420,7 @@ def print_results_table(
         )
 
     widths = [
-        max(len(header), *(len(row[col_idx]) for row in rows))
+        max([len(header), *(len(row[col_idx]) for row in rows)])
         for col_idx, header in enumerate(headers)
     ]
     print(" | ".join(header.ljust(widths[idx]) for idx, header in enumerate(headers)))
@@ -422,10 +431,31 @@ def print_results_table(
     missing_speedups = [
         num_envs
         for num_envs in requested_env_counts
-        if len([result for result in results if result.num_envs == num_envs]) < 2
+        if not any(result.backend == "mj_env" and result.num_envs == num_envs for result in results)
+        or not any(result.backend == "mjw_env" and result.num_envs == num_envs for result in results)
     ]
     if missing_speedups:
         logger.warning(f"Skipped speedup comparison for env counts without both backends: {missing_speedups}")
+
+
+def parse_int_list_argument(values: list[str], *, argument_name: str) -> list[int]:
+    text = " ".join(values).strip()
+    if not text:
+        raise argparse.ArgumentTypeError(f"{argument_name} needs at least one integer.")
+
+    if text.startswith("[") and text.endswith("]"):
+        text = text[1:-1]
+
+    worker_counts: list[int] = []
+    for raw_value in text.replace(",", " ").split():
+        try:
+            worker_counts.append(int(raw_value))
+        except ValueError as error:
+            raise argparse.ArgumentTypeError(f"{argument_name} contains a non-integer value: {raw_value!r}.") from error
+
+    if not worker_counts:
+        raise argparse.ArgumentTypeError(f"{argument_name} needs at least one integer.")
+    return worker_counts
 
 
 def parse_args() -> argparse.Namespace:
@@ -443,14 +473,19 @@ def parse_args() -> argparse.Namespace:
         "--num-envs",
         nargs="+",
         type=int,
-        default=[32, 128, 512, 2048, 8192],
+        default=[32, 128, 256, 512, 1024, 2048, 8192],
         help="Vector-env sizes to benchmark.",
     )
-    parser.add_argument("--mj-workers", type=int, default=23, help="Worker count for mj_env.")
+    parser.add_argument(
+        "--mj-workers",
+        nargs="+",
+        default=["24", "48", "96"],
+        help="Worker counts for mj_env. Accepts values like '24 48 96', '24,48,96', or '[24, 48, 96]'.",
+    )
     parser.add_argument(
         "--mj-max-num-envs",
         type=int,
-        default=2048,
+        default=1024,
         help=(
             "Only run mj_env for --num-envs values <= this threshold. "
             "If omitted, defaults to the lowest requested --num-envs."
@@ -480,14 +515,19 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--seed", type=int, default=1234, help="Base RNG seed for actions and resets.")
     parser.add_argument("--json-out", type=Path, default=DEFAULT_JSON_OUT, help="Optional path for machine-readable benchmark output.")
-    return parser.parse_args()
+    args = parser.parse_args()
+    try:
+        args.mj_workers = parse_int_list_argument(args.mj_workers, argument_name="--mj-workers")
+    except argparse.ArgumentTypeError as error:
+        parser.error(str(error))
+    return args
 
 
 def validate_args(args: argparse.Namespace) -> None:
     if any(num_envs <= 0 for num_envs in args.num_envs):
         raise ValueError("--num-envs values must be positive.")
-    if args.mj_workers <= 0:
-        raise ValueError("--mj-workers must be positive.")
+    if any(mj_workers <= 0 for mj_workers in args.mj_workers):
+        raise ValueError("--mj-workers values must be positive.")
     if args.mj_max_num_envs is not None and args.mj_max_num_envs <= 0:
         raise ValueError("--mj-max-num-envs must be positive.")
     if args.warmup_steps < 0 or args.steps <= 0 or args.reset_repeats <= 0 or args.action_pool_size <= 0:
@@ -528,35 +568,48 @@ def main() -> None:
                     f"mj_env is only benchmarked for num_envs <= {mj_max_num_envs}."
                 )
                 continue
-            config = BenchmarkConfig(
-                num_envs=num_envs,
-                warmup_steps=args.warmup_steps,
-                measured_steps=args.steps,
-                reset_repeats=args.reset_repeats,
-                action_pool_size=args.action_pool_size,
-                episode_length=args.episode_length,
-                mj_workers=args.mj_workers,
-                mj_copy=args.mj_copy == "true",
-                connector_prob=args.connector_prob,
-                seed=args.seed,
-            )
-            logger.info(
-                f"Benchmarking {backend} with num_envs={num_envs}, "
-                f"warmup_steps={config.warmup_steps}, measured_steps={config.measured_steps}"
-            )
-            try:
-                results.append(benchmark_backend(backend=backend, config=config))
-            except Exception as error:
-                failures.append(
-                    BenchmarkFailure(
-                        backend=backend,
-                        num_envs=num_envs,
-                        phase="benchmark",
-                        error_type=type(error).__name__,
-                        error=format_failure_message(error),
+            worker_counts = args.mj_workers if backend == "mj_env" else [args.mj_workers[0]]
+            for mj_workers in worker_counts:
+                if backend == "mj_env" and mj_workers > num_envs:
+                    logger.info(
+                        f"Skipping {backend} for num_envs={num_envs}, mj_workers={mj_workers}. "
+                        "Worker count must be <= num_envs."
                     )
+                    continue
+                config = BenchmarkConfig(
+                    num_envs=num_envs,
+                    warmup_steps=args.warmup_steps,
+                    measured_steps=args.steps,
+                    reset_repeats=args.reset_repeats,
+                    action_pool_size=args.action_pool_size,
+                    episode_length=args.episode_length,
+                    mj_workers=mj_workers,
+                    mj_copy=args.mj_copy == "true",
+                    connector_prob=args.connector_prob,
+                    seed=args.seed,
                 )
-                logger.error(f"Benchmark failed for {backend} with num_envs={num_envs}: {format_failure_message(error)}")
+                logger.info(
+                    f"Benchmarking {backend} with num_envs={num_envs}, "
+                    f"mj_workers={mj_workers if backend == 'mj_env' else '-'}, "
+                    f"warmup_steps={config.warmup_steps}, measured_steps={config.measured_steps}"
+                )
+                try:
+                    results.append(benchmark_backend(backend=backend, config=config))
+                except Exception as error:
+                    failures.append(
+                        BenchmarkFailure(
+                            backend=backend,
+                            num_envs=num_envs,
+                            mj_workers=mj_workers if backend == "mj_env" else None,
+                            phase="benchmark",
+                            error_type=type(error).__name__,
+                            error=format_failure_message(error),
+                        )
+                    )
+                    logger.error(
+                        f"Benchmark failed for {backend} with num_envs={num_envs}, "
+                        f"mj_workers={mj_workers if backend == 'mj_env' else '-'}: {format_failure_message(error)}"
+                    )
 
     requested_env_counts_for_speedup = (
         sorted(num_envs for num_envs in args.num_envs if num_envs <= mj_max_num_envs)
