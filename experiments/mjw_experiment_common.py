@@ -48,6 +48,12 @@ from swarmbots.learn.algos.mat_orig.mat_orig_policy import MATOrigCriticConfig, 
 from swarmbots.learn.algos.ppo.ppo import AutomaticLearningRate, PPO, StepsRolloutMode
 from swarmbots.learn.algos.ppo.ppo_policy import PPOActorConfig, PPOCriticConfig, PPOPolicy, PPOPolicyConfig, PopArtConfig
 from swarmbots.learn.algos.ppo.ppo_sampler import PPOSamplerConfig
+from swarmbots.learn.algos.r_mat.r_mat_dec_policy import RMATDecPolicy, RMATDecPolicyConfig
+from swarmbots.learn.algos.r_mat.r_mat_encoder import RMATEncoderConfig
+from swarmbots.learn.algos.r_mat.r_mat_qcc_policy import RMATQCCPolicy, RMATQCCPolicyConfig
+from swarmbots.learn.algos.r_mat.r_mat_qcx_policy import RMATQCXPolicy, RMATQCXPolicyConfig
+from swarmbots.learn.algos.r_mat.r_mat_qcs_policy import RMATQCSPolicy, RMATQCSPolicyConfig
+from swarmbots.learn.algos.r_mat.r_ppo_wm_sampler import RPPOWMSamplerConfig
 from swarmbots.learn.algos.world_modeling.next_obs_pred_mixin import NextObsPredConfig
 from swarmbots.learn.algos.world_modeling.next_obs_pred_ppo_wrapper import NOPWorldModelConfig, NextObsPredWrapper
 from swarmbots.learn.algos.world_modeling.ppo_wm_sampler import PPOWMSamplerConfig
@@ -84,7 +90,21 @@ ContinuousActionDistVariant = Literal[
     "gsde",
     "squashed_diag_gaussian",
 ]
-PolicyVariant = Literal["mat_qcs", "mat_qcc", "mat_qcx", "mat_dec", "mat_orig", "ppo", "ppo_small", "mappo", "mappo_small"]
+PolicyVariant = Literal[
+    "mat_qcs",
+    "mat_qcc",
+    "mat_qcx",
+    "mat_dec",
+    "mat_orig",
+    "r_mat_qcs",
+    "r_mat_qcc",
+    "r_mat_qcx",
+    "r_mat_dec",
+    "ppo",
+    "ppo_small",
+    "mappo",
+    "mappo_small",
+]
 MJWScenarioName = Literal[
     "wall",
     "find_opening",
@@ -198,6 +218,10 @@ def _default_experiment_run_name(*, scenario_name: MJWScenarioName) -> str:
 
 def _default_ccd_iterations(*, scenario_name: MJWScenarioName) -> int | None:
     return 4096 if scenario_name in {"dual_payload", "payload_step", "multi_payload_goal"} else None
+
+
+def _is_recurrent_policy_variant(policy_variant: PolicyVariant) -> bool:
+    return policy_variant in {"r_mat_qcs", "r_mat_qcc", "r_mat_qcx", "r_mat_dec"}
 
 
 def make_vector_env(
@@ -444,6 +468,13 @@ def run_experiment(
             f"Expected rollout_samples divisible by virtual_mini_batches, got "
             f"{rollout_samples=} {virtual_mini_batches=}"
         )
+    recurrent_policy = _is_recurrent_policy_variant(policy_variant)
+    sampler_batch_size = num_envs if recurrent_policy else rollout_samples
+    if sampler_batch_size % virtual_mini_batches != 0:
+        raise ValueError(
+            f"Expected sampler_batch_size divisible by virtual_mini_batches, got "
+            f"{sampler_batch_size=} {virtual_mini_batches=}"
+        )
 
     episode_length = 512
     rollout_warmup_steps_per_env = episode_length
@@ -479,7 +510,7 @@ def run_experiment(
         logger.info(f"CUDA device index requested via --cuda_idx={cuda_idx}")
     mat_decoder_self_attention_mode_metadata = (
         mat_decoder_self_attention_mode.name
-        if policy_variant == "mat_qcs"
+        if policy_variant in {"mat_qcs", "r_mat_qcs"}
         else None
     )
     variant_log_message = (
@@ -722,6 +753,22 @@ def run_experiment(
         mat_decoder_lr_multiplier=mat_decoder_lr_multiplier,
         include_actor_head_lr_multiplier=include_actor_head_lr_multiplier,
     )
+    if recurrent_policy:
+        sampler_config = RPPOWMSamplerConfig(
+            batch_size=sampler_batch_size,
+            sequence_length=rollout_steps_per_env,
+            num_next_steps=world_model_num_next_steps,
+            compile_wm_window_helper=use_nop,
+        )
+    elif use_nop:
+        sampler_config = PPOWMSamplerConfig(
+            batch_size=sampler_batch_size,
+            num_next_steps=world_model_num_next_steps,
+            compile_wm_window_helper=True,
+        )
+    else:
+        sampler_config = PPOSamplerConfig(batch_size=sampler_batch_size)
+
     ppo = PPO(
         policy=policy,
         env=env,
@@ -729,11 +776,7 @@ def run_experiment(
         rollout_mode=StepsRolloutMode(rollout_samples),
         rollout_warmup_steps_per_env=rollout_warmup_steps_per_env,
         max_episode_length=episode_length,
-        sampler_config=PPOWMSamplerConfig(
-            batch_size=rollout_samples,
-            num_next_steps=world_model_num_next_steps,
-            compile_wm_window_helper=True,
-        ) if use_nop else PPOSamplerConfig(batch_size=rollout_samples),
+        sampler_config=sampler_config,
         n_epochs=n_epochs,
         gamma=gamma,
         gae_lambda=0.95,
@@ -813,6 +856,8 @@ def run_experiment(
         "recording_enabled": "live_mjw_exact_state",
         "rollout_samples": rollout_samples,
         "rollout_steps_per_env": rollout_steps_per_env,
+        "sampler_batch_size": sampler_batch_size,
+        "recurrent_policy": recurrent_policy,
         "rollout_warmup_steps_per_env": rollout_warmup_steps_per_env,
         "virtual_mini_batches": virtual_mini_batches,
         "n_epochs": n_epochs,
@@ -887,7 +932,7 @@ def _make_mat_parameter_lr_multipliers(
             "encoder_decoder_projection": mat_decoder_lr_multiplier,
         }
 
-    if policy_variant in {"mat_qcs", "mat_qcc"}:
+    if policy_variant in {"mat_qcs", "mat_qcc", "r_mat_qcs", "r_mat_qcc"}:
         return make_prefix_multipliers(
             "decoder",
             "query_input_norm",
@@ -915,7 +960,19 @@ def _make_mat_parameter_lr_multipliers(
             include_actor_head_input_norm=True,
         )
 
-    if policy_variant == "mat_dec" and include_actor_head_lr_multiplier:
+    if policy_variant == "r_mat_qcx":
+        return make_prefix_multipliers(
+            "decoder",
+            "action_input_norm",
+            "action_encoder",
+            "action_token_norm",
+            "memory_input_norm",
+            "memory_encoder",
+            "memory_token_norm",
+            include_actor_head_input_norm=True,
+        )
+
+    if policy_variant in {"mat_dec", "r_mat_dec"} and include_actor_head_lr_multiplier:
         return make_prefix_multipliers()
 
     logger.warning(f"Ignoring decoder LR multiplier for policy_variant={policy_variant!r}")
@@ -944,7 +1001,19 @@ def _make_base_policy(
         mat_init_gains: MATInitGains,
         mat_normalization: MATNormalizationConfig,
         assume_agent_mask_is_active_prefix: bool,
-) -> PPOPolicy | MAPPOPolicy | MATQCSPolicy | MATQCCPolicy | MATQCXPolicy | MATDecPolicy | MATOrigPolicy:
+) -> (
+        PPOPolicy
+        | MAPPOPolicy
+        | MATQCSPolicy
+        | MATQCCPolicy
+        | MATQCXPolicy
+        | MATDecPolicy
+        | MATOrigPolicy
+        | RMATQCSPolicy
+        | RMATQCCPolicy
+        | RMATQCXPolicy
+        | RMATDecPolicy
+):
     continuous_config = make_continuous_config(
         variant=continuous_action_dist,
         initial_stickiness=initial_stickiness,
@@ -963,6 +1032,21 @@ def _make_base_policy(
         init_sigma=popart_init_sigma,
     )
     mat_encoder_config = MATEncoderConfig(
+        d_model=enc_d_model,
+        nhead=enc_nhead,
+        num_layers=2,
+        dim_feedforward=enc_d_model * 2,
+        act_fn_cls=act_fn_cls,
+        add_agent_embeddings=mat_add_agent_embeddings,
+        linear_init_gain=mat_init_gains.obs_encoder,
+        linear_projection_init_gain=mat_init_gains.obs_encoder_projection,
+        transformer_ff_init_gain=mat_init_gains.encoder_transformer_ff,
+        local_obs_encoder_hidden_dims=[enc_d_model, enc_d_model],
+        global_obs_encoder_hidden_dims=[enc_d_model],
+        normalize_obs_inputs=mat_normalization.normalize_obs_inputs,
+        normalize_tokens=mat_normalization.normalize_encoder_tokens,
+    )
+    rmat_encoder_config = RMATEncoderConfig(
         d_model=enc_d_model,
         nhead=enc_nhead,
         num_layers=2,
@@ -1165,6 +1249,85 @@ def _make_base_policy(
             ),
         )
 
+    if policy_variant == "r_mat_qcs":
+        return RMATQCSPolicy(
+            env=env,
+            config=RMATQCSPolicyConfig(
+                encoder_config=rmat_encoder_config,
+                decoder_config=MATQCSDecoderConfig(
+                    d_model=dec_d_model,
+                    nhead=dec_nhead,
+                    num_layers=2,
+                    dim_feedforward=dec_d_model * 2,
+                    add_agent_embeddings=mat_add_agent_embeddings,
+                    token_encoder_init_gain=mat_init_gains.decoder_token_encoder,
+                    token_encoder_projection_init_gain=mat_init_gains.decoder_token_encoder_projection,
+                    transformer_ff_init_gain=mat_init_gains.decoder_transformer_ff,
+                    actor_head_init_gain=mat_init_gains.actor_head,
+                    query_encoder_hidden_dims=[dec_d_model],
+                    context_encoder_hidden_dims=[dec_d_model],
+                    memory_dims=None,
+                    self_attention_mode=mat_decoder_self_attention_mode,
+                    normalize_query_input=mat_normalization.normalize_query_input,
+                    normalize_context_input=mat_normalization.normalize_context_input,
+                    normalize_memory_input=mat_normalization.normalize_memory_input,
+                    normalize_query_tokens=mat_normalization.normalize_query_tokens,
+                    normalize_context_tokens=mat_normalization.normalize_context_tokens,
+                    normalize_memory_tokens=mat_normalization.normalize_memory_tokens,
+                    normalize_actor_head_input=mat_normalization.normalize_actor_head_input,
+                    assume_agent_mask_is_active_prefix=assume_agent_mask_is_active_prefix,
+                ),
+                critic_config=mat_qcs_critic_config,
+                dropout=0.0,
+                act_fn_cls=act_fn_cls,
+                continuous_config=continuous_config,
+                bernoulli_config=bernoulli_config,
+                max_agents=20,
+                compile_modules=compile_policy_modules,
+                compile_mode=policy_compile_mode,
+                action_net_init_gain=mat_init_gains.action_net,
+            ),
+        )
+
+    if policy_variant == "r_mat_qcc":
+        return RMATQCCPolicy(
+            env=env,
+            config=RMATQCCPolicyConfig(
+                encoder_config=rmat_encoder_config,
+                decoder_config=MATQCCDecoderConfig(
+                    d_model=dec_d_model,
+                    nhead=dec_nhead,
+                    num_layers=2,
+                    dim_feedforward=dec_d_model * 2,
+                    add_agent_embeddings=mat_add_agent_embeddings,
+                    token_encoder_init_gain=mat_init_gains.decoder_token_encoder,
+                    token_encoder_projection_init_gain=mat_init_gains.decoder_token_encoder_projection,
+                    transformer_ff_init_gain=mat_init_gains.decoder_transformer_ff,
+                    actor_head_init_gain=mat_init_gains.actor_head,
+                    query_encoder_hidden_dims=[dec_d_model],
+                    context_encoder_hidden_dims=[dec_d_model],
+                    memory_dims=None,
+                    normalize_query_input=mat_normalization.normalize_query_input,
+                    normalize_context_input=mat_normalization.normalize_context_input,
+                    normalize_memory_input=mat_normalization.normalize_memory_input,
+                    normalize_query_tokens=mat_normalization.normalize_query_tokens,
+                    normalize_context_tokens=mat_normalization.normalize_context_tokens,
+                    normalize_memory_tokens=mat_normalization.normalize_memory_tokens,
+                    normalize_actor_head_input=mat_normalization.normalize_actor_head_input,
+                    assume_agent_mask_is_active_prefix=assume_agent_mask_is_active_prefix,
+                ),
+                critic_config=mat_qcs_critic_config,
+                dropout=0.0,
+                act_fn_cls=act_fn_cls,
+                continuous_config=continuous_config,
+                bernoulli_config=bernoulli_config,
+                max_agents=20,
+                compile_modules=compile_policy_modules,
+                compile_mode=policy_compile_mode,
+                action_net_init_gain=mat_init_gains.action_net,
+            ),
+        )
+
     if policy_variant == "mat_qcx":
         return MATQCXPolicy(
             env=env,
@@ -1203,11 +1366,68 @@ def _make_base_policy(
             ),
         )
 
+    if policy_variant == "r_mat_qcx":
+        return RMATQCXPolicy(
+            env=env,
+            config=RMATQCXPolicyConfig(
+                encoder_config=rmat_encoder_config,
+                decoder_config=MATQCXDecoderConfig(
+                    d_model=dec_d_model,
+                    nhead=dec_nhead,
+                    num_layers=2,
+                    dim_feedforward=dec_d_model * 2,
+                    add_agent_embeddings=mat_add_agent_embeddings,
+                    token_encoder_init_gain=mat_init_gains.decoder_token_encoder,
+                    token_encoder_projection_init_gain=mat_init_gains.decoder_token_encoder_projection,
+                    transformer_ff_init_gain=mat_init_gains.decoder_transformer_ff,
+                    actor_head_init_gain=mat_init_gains.actor_head,
+                    context_encoder_hidden_dims=[dec_d_model],
+                    action_encoder_dims=[dec_d_model, dec_d_model],
+                    memory_dims=None,
+                    normalize_context_input=mat_normalization.normalize_context_input,
+                    normalize_action_input=mat_normalization.normalize_action_input,
+                    normalize_memory_input=mat_normalization.normalize_memory_input,
+                    normalize_action_tokens=mat_normalization.normalize_action_tokens,
+                    normalize_memory_tokens=mat_normalization.normalize_memory_tokens,
+                    normalize_actor_head_input=mat_normalization.normalize_actor_head_input,
+                    assume_agent_mask_is_active_prefix=assume_agent_mask_is_active_prefix,
+                ),
+                critic_config=mat_qcs_critic_config,
+                dropout=0.0,
+                act_fn_cls=act_fn_cls,
+                continuous_config=continuous_config,
+                bernoulli_config=bernoulli_config,
+                max_agents=20,
+                compile_modules=compile_policy_modules,
+                compile_mode=policy_compile_mode,
+                action_net_init_gain=mat_init_gains.action_net,
+            ),
+        )
+
     if policy_variant == "mat_dec":
         return MATDecPolicy(
             env=env,
             config=MATDecPolicyConfig(
                 encoder_config=mat_encoder_config,
+                critic_config=mat_qcs_critic_config,
+                actor_head_hidden_dims=[dec_d_model],
+                dropout=0.0,
+                act_fn_cls=act_fn_cls,
+                continuous_config=continuous_config,
+                bernoulli_config=bernoulli_config,
+                max_agents=20,
+                compile_modules=compile_policy_modules,
+                compile_mode=policy_compile_mode,
+                actor_head_init_gain=mat_init_gains.actor_head,
+                action_net_init_gain=mat_init_gains.action_net,
+            ),
+        )
+
+    if policy_variant == "r_mat_dec":
+        return RMATDecPolicy(
+            env=env,
+            config=RMATDecPolicyConfig(
+                encoder_config=rmat_encoder_config,
                 critic_config=mat_qcs_critic_config,
                 actor_head_hidden_dims=[dec_d_model],
                 dropout=0.0,
