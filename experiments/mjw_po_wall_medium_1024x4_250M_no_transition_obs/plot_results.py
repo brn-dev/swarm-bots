@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import sys
 from pathlib import Path
 
@@ -28,17 +29,31 @@ DISPLAY_NAME_OVERRIDES = {
     "mat_dec": "MAT-Dec",
     "mappo_small": "MAPPO",
 }
+FINAL_GROUP_FILTER = tuple(dict.fromkeys((*GROUP_ORDER, *DISPLAY_NAME_OVERRIDES)))
 THEORETICAL_MAXIMUM = None
 
 
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--final",
+        action="store_true",
+        help="Only plot named final variants and write outputs under results/final.",
+    )
+    return parser.parse_args()
+
+
 def main() -> int:
+    args = parse_args()
+    output_dir = OUTPUT_DIR / "final" if args.final else OUTPUT_DIR
     result = plot_experiment_results(
         EXPERIMENT_RUN_DIR,
-        OUTPUT_DIR,
+        output_dir,
         group_order=GROUP_ORDER,
+        group_filter=FINAL_GROUP_FILTER if args.final else None,
         theoretical_maximum=THEORETICAL_MAXIMUM,
         display_name_overrides=DISPLAY_NAME_OVERRIDES,
-        run_length_limit=250_000_000
+        run_length_limit=250_000_000,
     )
     for output_path in result.output_paths:
         print(output_path)
