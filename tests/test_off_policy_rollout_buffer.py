@@ -324,7 +324,7 @@ class OffPolicyRolloutBufferTests(unittest.TestCase):
         finally:
             env.close()
 
-    def test_replay_buffer_discards_oldest_segments_by_transition_capacity(self) -> None:
+    def test_replay_buffer_discards_oldest_transitions_by_transition_capacity(self) -> None:
         env = _make_env((1, (4,), "truncate"))
         try:
             policy = _PreviousActionPolicy(action_dim=env.action_space.total_agent_action_dim)
@@ -343,9 +343,11 @@ class OffPolicyRolloutBufferTests(unittest.TestCase):
                 rollout_state=rollout_state,
             )
 
-            self.assertEqual(replay_buffer.n_transitions, 1)
-            self.assertEqual(len(replay_buffer.segments), 1)
-            torch.testing.assert_close(replay_buffer.segments[0].local_obs[:, 0, 0].cpu(), torch.tensor([1102.0]))
+            self.assertEqual(replay_buffer.n_transitions, 2)
+            with patch("torch.randint", return_value=torch.tensor([0, 1])):
+                batch = replay_buffer.sample_transition_batch(batch_size=2)
+            torch.testing.assert_close(batch.local_obs[:, 0, 0].cpu(), torch.tensor([1101.0, 1102.0]))
+            torch.testing.assert_close(batch.next_local_obs[:, 0, 0].cpu(), torch.tensor([1102.0, 1103.0]))
         finally:
             env.close()
 
