@@ -24,6 +24,7 @@ Keep only durable architecture notes and gotchas. Prefer deleting stale detail o
 - `collect_steps()` chunks may start mid-episode. Use `PPOEpisodeSegment.is_true_episode_start`; do not infer from chunk position.
 - PPO warmup rollout keeps only `PPORolloutState`; it must not increment timesteps/iterations or emit episode metrics.
 - Rollout bootstrap should use a value-only path, not full deterministic action generation.
+- Off-policy rollout/replay infrastructure lives in `swarmbots.learn.algos.off_policy`; it stores episode segments/chunks with explicit `next_*` observations, `terminations`, `truncations`, `previous_actions`, and `next_previous_actions`. Shared SAME_STEP final-observation and episode-info handling lives in `swarmbots.learn.rollout_utils`.
 - Recurrent state is explicit in `PPORolloutState`, not inside the policy. Temporal APIs take/return opaque tensor trees with leading env batch dimension.
 - Recurrent rollouts use env-major TBPTT rows. Store one initial recurrent state per row; do not restore burn-in or store per-step recurrent state.
 - Under `SAME_STEP`, terminal bootstrap evaluates `final_obs` from the post-current-observation state without committing the resulting state. The returned reset obs consumes the done reset mask on the next rollout step.

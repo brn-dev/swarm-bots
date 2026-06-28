@@ -1,7 +1,6 @@
 from dataclasses import dataclass
 from typing import Any
 
-import numpy as np
 import torch
 
 from swarmbots.learn.algos.ppo.base_ppo_policy import BasePPOPolicy
@@ -9,8 +8,8 @@ from swarmbots.learn.algos.ppo.ppo_rollout_buffer import PPOEpisodeSegment, PPOR
 from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
 from swarmbots.learn.gsde_reset import GSDEResetMode, GSDEIntervalResetMode, GSDEProbabilityResetMode
 from swarmbots.learn.performance_timer import PerformanceTimer
+from swarmbots.learn.rollout_utils import append_episode_infos, extract_bootstrap_obs, initial_previous_actions, snapshot_obs
 from swarmbots.learn.summary_statistics import compute_summary_statistics
-from swarmbots.learn.tensor_conversion import to_torch_tensor
 
 
 @dataclass(slots=True)
@@ -107,95 +106,6 @@ def _reset_temporal_correlations(
         policy.action_dist.reset_temporal_correlations_on_step(mask=step_reset_mask, batch_shape=batch_shape)
 
 
-def _append_episode_infos(
-        *,
-        episode_infos: list[dict[str, Any]],
-        infos: dict[str, Any],
-        dones: torch.Tensor,
-) -> None:
-    info_source = infos
-    if "episode" not in info_source:
-        final_info = infos.get("final_info", None)
-        if isinstance(final_info, dict) and "episode" in final_info:
-            info_source = final_info
-        else:
-            return
-
-    episode_stats = info_source["episode"]
-    if not isinstance(episode_stats, dict):
-        raise ValueError(f"Expected infos['episode'] to be a dict, got {type(episode_stats)}")
-
-    episode_mask = to_torch_tensor(
-        info_source.get("_episode", dones),
-        device=dones.device,
-        dtype=torch.bool,
-    ).reshape(-1)
-    if tuple(episode_mask.shape) != tuple(dones.shape):
-        raise ValueError(f"Expected infos['_episode'] shape {tuple(dones.shape)}, got {tuple(episode_mask.shape)}")
-    if not torch.equal(episode_mask, dones):
-        raise ValueError("Expected infos['_episode'] to match computed dones.")
-
-    for env_idx in torch.nonzero(episode_mask, as_tuple=False).flatten().tolist():
-        episode_infos.append(
-            {
-                key: _to_python_episode_stat(values[env_idx])
-                for key, values in episode_stats.items()
-                if not key.startswith("_")
-            }
-        )
-
-
-def _extract_bootstrap_obs(
-        *,
-        env: BaseLearnEnvWrapper,
-        next_obs: dict[str, torch.Tensor],
-        infos: dict[str, Any],
-        dones: torch.Tensor,
-) -> dict[str, torch.Tensor]:
-    if not torch.any(dones):
-        return next_obs
-
-    if "final_obs" not in infos or "_final_obs" not in infos:
-        raise ValueError("SAME_STEP rollouts require infos['final_obs'] and infos['_final_obs'] for done environments.")
-
-    final_obs_mask = to_torch_tensor(infos["_final_obs"], device=dones.device, dtype=torch.bool).reshape(-1)
-    if tuple(final_obs_mask.shape) != tuple(dones.shape):
-        raise ValueError(f"Expected infos['_final_obs'] shape {tuple(dones.shape)}, got {tuple(final_obs_mask.shape)}")
-    if not torch.equal(final_obs_mask, dones):
-        raise ValueError("Expected infos['_final_obs'] to match computed dones.")
-
-    bootstrap_obs = {key: value.clone() for key, value in next_obs.items()}
-    final_obs_value = infos["final_obs"]
-    if isinstance(final_obs_value, dict):
-        final_obs = env._obs_to_torch(final_obs_value)
-        for key, value in final_obs.items():
-            bootstrap_obs[key][final_obs_mask] = value[final_obs_mask]
-        if "agent_mask" in bootstrap_obs and "agent_mask" not in final_obs:
-            raise ValueError("Expected final_obs to contain 'agent_mask' when the observation space includes it.")
-        return bootstrap_obs
-
-    final_obs_entries = np.asarray(final_obs_value, dtype=object).reshape(-1)
-
-    for env_idx in torch.nonzero(final_obs_mask, as_tuple=False).flatten().tolist():
-        final_obs = env._obs_to_torch(final_obs_entries[env_idx])
-        for key, value in final_obs.items():
-            bootstrap_obs[key][env_idx] = value
-        if "agent_mask" in bootstrap_obs and "agent_mask" not in final_obs:
-            raise ValueError("Expected final_obs to contain 'agent_mask' when the observation space includes it.")
-
-    return bootstrap_obs
-
-
-def _to_python_episode_stat(value: Any) -> Any:
-    if isinstance(value, torch.Tensor):
-        if value.numel() == 1:
-            return value.item()
-        return value.detach().cpu().numpy()
-    if isinstance(value, np.ndarray) and value.size == 1:
-        return value.item()
-    return value
-
-
 def _evaluate_values(
         *,
         policy: BasePPOPolicy[Any, Any],
@@ -221,28 +131,6 @@ def _evaluate_values(
     return values.masked_fill(terminated_mask, 0.0)
 
 
-def _snapshot_obs(obs: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
-    return {key: value.clone() for key, value in obs.items()}
-
-
-def _initial_previous_actions(
-        *,
-        policy: BasePPOPolicy[Any, Any],
-        obs: dict[str, torch.Tensor],
-        n_agent_actions: int,
-) -> torch.Tensor | None:
-    if not policy.requires_previous_actions():
-        return None
-
-    local_obs = obs["local_obs"]
-    n_envs, n_agents = local_obs.shape[:2]
-    return torch.zeros(
-        (n_envs, n_agents, n_agent_actions),
-        dtype=local_obs.dtype,
-        device=local_obs.device,
-    )
-
-
 def _reset_rollout_state(
         *,
         env: BaseLearnEnvWrapper,
@@ -252,7 +140,7 @@ def _reset_rollout_state(
     obs, _info = env.reset()
     local_obs = obs["local_obs"]
     episode_start_mask = torch.ones((local_obs.shape[0],), dtype=torch.bool, device=local_obs.device)
-    previous_actions = _initial_previous_actions(
+    previous_actions = initial_previous_actions(
         policy=policy,
         obs=obs,
         n_agent_actions=n_agent_actions,
@@ -289,7 +177,7 @@ def _collect_rollout_step(
         gsde_reset_interval: int,
         gsde_reset_prob: float,
 ) -> tuple[dict[str, torch.Tensor], torch.Tensor, torch.Tensor | None, Any, int]:
-    obs_snapshot = _snapshot_obs(obs)
+    obs_snapshot = snapshot_obs(obs)
     local_obs = obs_snapshot["local_obs"]
     batch_shape = tuple(local_obs.shape[:-1])
     step_reset_mask = _build_gsde_step_reset_mask(
@@ -328,9 +216,9 @@ def _collect_rollout_step(
     timers.env_step_timings.append(timers.env_step_timer.get_duration())
 
     dones = torch.logical_or(terminations, truncations)
-    _append_episode_infos(episode_infos=episode_infos, infos=infos, dones=dones)
+    append_episode_infos(episode_infos=episode_infos, infos=infos, dones=dones)
 
-    bootstrap_obs = _extract_bootstrap_obs(
+    bootstrap_obs = extract_bootstrap_obs(
         env=env,
         next_obs=next_obs,
         infos=infos,
@@ -532,13 +420,11 @@ def collect_whole_episodes(
     with PerformanceTimer() as env_reset_timer:
         obs, _info = env.reset()
     episode_start_mask = torch.ones((buffer.n_envs,), dtype=torch.bool, device=buffer.rollout_device)
-    previous_actions: torch.Tensor | None = None
-    if policy.requires_previous_actions():
-        previous_actions = torch.zeros(
-            (buffer.n_envs, buffer.n_agents, buffer.n_agent_actions),
-            dtype=buffer.rollout_dtype,
-            device=buffer.rollout_device,
-        )
+    previous_actions = initial_previous_actions(
+        policy=policy,
+        obs=obs,
+        n_agent_actions=buffer.n_agent_actions,
+    )
     temporal_state = policy.initial_temporal_state(
         batch_size=buffer.n_envs,
         n_agents=buffer.n_agents,
@@ -607,13 +493,11 @@ def collect_steps(
             obs, _info = env.reset()
         env_reset_time = env_reset_timer.get_duration()
         episode_start_mask = torch.ones((buffer.n_envs,), dtype=torch.bool, device=buffer.rollout_device)
-        previous_actions: torch.Tensor | None = None
-        if policy.requires_previous_actions():
-            previous_actions = torch.zeros(
-                (buffer.n_envs, buffer.n_agents, buffer.n_agent_actions),
-                dtype=buffer.rollout_dtype,
-                device=buffer.rollout_device,
-            )
+        previous_actions = initial_previous_actions(
+            policy=policy,
+            obs=obs,
+            n_agent_actions=buffer.n_agent_actions,
+        )
         temporal_state = policy.initial_temporal_state(
             batch_size=buffer.n_envs,
             n_agents=buffer.n_agents,
