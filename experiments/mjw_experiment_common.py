@@ -428,6 +428,7 @@ def run_experiment(
         policy_variant: PolicyVariant = "mat_qcs",
         mat_add_agent_embeddings: bool = False,
         mat_decoder_self_attention_mode: MATQCSDecoderSelfAttentionMode = MATQCSDecoderSelfAttentionMode.FULL_CAUSAL,
+        mat_qcc_tie_query_context_and_context_self_attention: bool = True,
         act_fn_cls: ActivationFactory = nn.GELU,
         mat_init_gains: MATInitGains = MATInitGains(),
         nop_init_gains: NOPInitGains = NOPInitGains(),
@@ -526,6 +527,8 @@ def run_experiment(
         f"mat_normalization={mat_normalization}, "
         f"mat_add_agent_embeddings={mat_add_agent_embeddings}, "
         f"mat_decoder_self_attention_mode={mat_decoder_self_attention_mode_metadata}, "
+        f"mat_qcc_tie_query_context_and_context_self_attention="
+        f"{mat_qcc_tie_query_context_and_context_self_attention}, "
         f"shuffle_agents={shuffle_agents}, "
         f"preserve_inactive_prefix_structure={preserve_inactive_prefix_structure}, "
         f"ccd_iterations={ccd_iterations}, "
@@ -641,6 +644,9 @@ def run_experiment(
         gsde_init_stds=gsde_init_stds,
         mat_add_agent_embeddings=mat_add_agent_embeddings,
         mat_decoder_self_attention_mode=mat_decoder_self_attention_mode,
+        mat_qcc_tie_query_context_and_context_self_attention=(
+            mat_qcc_tie_query_context_and_context_self_attention
+        ),
         act_fn_cls=act_fn_cls,
         mat_init_gains=mat_init_gains,
         mat_normalization=mat_normalization,
@@ -873,6 +879,9 @@ def run_experiment(
         "mat_normalization": asdict(mat_normalization),
         "mat_add_agent_embeddings": mat_add_agent_embeddings,
         "mat_decoder_self_attention_mode": mat_decoder_self_attention_mode_metadata,
+        "mat_qcc_tie_query_context_and_context_self_attention": (
+            mat_qcc_tie_query_context_and_context_self_attention
+        ),
         "mat_decoder_lr_multiplier": mat_decoder_lr_multiplier,
         "include_actor_head_lr_multiplier": include_actor_head_lr_multiplier,
         "parameter_lr_multipliers": parameter_lr_multipliers,
@@ -997,6 +1006,7 @@ def _make_base_policy(
         gsde_init_stds: list[float],
         mat_add_agent_embeddings: bool,
         mat_decoder_self_attention_mode: MATQCSDecoderSelfAttentionMode,
+        mat_qcc_tie_query_context_and_context_self_attention: bool,
         act_fn_cls: ActivationFactory,
         mat_init_gains: MATInitGains,
         mat_normalization: MATNormalizationConfig,
@@ -1236,6 +1246,9 @@ def _make_base_policy(
                     normalize_memory_tokens=mat_normalization.normalize_memory_tokens,
                     normalize_actor_head_input=mat_normalization.normalize_actor_head_input,
                     assume_agent_mask_is_active_prefix=assume_agent_mask_is_active_prefix,
+                    tie_query_context_and_context_self_attention=(
+                        mat_qcc_tie_query_context_and_context_self_attention
+                    ),
                 ),
                 critic_config=mat_qcs_critic_config,
                 dropout=0.0,
@@ -1315,6 +1328,9 @@ def _make_base_policy(
                     normalize_memory_tokens=mat_normalization.normalize_memory_tokens,
                     normalize_actor_head_input=mat_normalization.normalize_actor_head_input,
                     assume_agent_mask_is_active_prefix=assume_agent_mask_is_active_prefix,
+                    tie_query_context_and_context_self_attention=(
+                        mat_qcc_tie_query_context_and_context_self_attention
+                    ),
                 ),
                 critic_config=mat_qcs_critic_config,
                 dropout=0.0,

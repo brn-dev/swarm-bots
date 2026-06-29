@@ -22,6 +22,7 @@ def run_experiment(
         entrypoint_path: Path,
         policy_variant: PolicyVariant = "mat_qcc",
         mat_decoder_self_attention_mode: MATQCSDecoderSelfAttentionMode = MATQCSDecoderSelfAttentionMode.FULL_CAUSAL,
+        mat_qcc_tie_query_context_and_context_self_attention: bool = True,
         mat_decoder_lr_multiplier: float = 0.25,
         include_actor_head_lr_multiplier: bool = False,
         use_transition_obs: bool = False,
@@ -34,6 +35,9 @@ def run_experiment(
         policy_variant=policy_variant,
         mat_add_agent_embeddings=False,
         mat_decoder_self_attention_mode=mat_decoder_self_attention_mode,
+        mat_qcc_tie_query_context_and_context_self_attention=(
+            mat_qcc_tie_query_context_and_context_self_attention
+        ),
         nop_add_agent_embeddings_transition_model=False,
         use_nop=True,
         use_transition_obs=use_transition_obs,
