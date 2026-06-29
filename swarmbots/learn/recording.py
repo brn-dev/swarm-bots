@@ -186,10 +186,8 @@ def record_policy(
             device=obs["local_obs"].device,
             dtype=obs["local_obs"].dtype,
         )
-        episode_start_mask = torch.ones((env.num_envs,), device=device, dtype=torch.bool)
+        episode_start_mask = torch.ones((env.num_envs,), device=obs["local_obs"].device, dtype=torch.bool)
         action_dist = getattr(policy, "action_dist", None)
-        if action_dist is not None and hasattr(action_dist, "reset_temporal_correlations_on_ep_start"):
-            action_dist.reset_temporal_correlations_on_ep_start(episode_start_mask)
         frames = []
         ep_rew = None
         ep_progress_reward = None
@@ -224,7 +222,9 @@ def record_policy(
                 hidden_local_vars = obs["hidden_local_vars"]
                 hidden_global_vars = obs["hidden_global_vars"]
                 agent_mask = obs.get("agent_mask", None)
-                
+
+                if action_dist is not None and hasattr(action_dist, "reset_temporal_correlations_on_ep_start"):
+                    action_dist.reset_temporal_correlations_on_ep_start(episode_start_mask)
                 _maybe_reset_gsde_noise(
                     policy=policy,
                     local_obs=local_obs,
@@ -243,10 +243,10 @@ def record_policy(
                     temporal_state=temporal_state,
                     episode_start_mask=episode_start_mask,
                 )
-                episode_start_mask.zero_()
                 # print(format_summary_statistics(compute_summary_statistics(actions[:, :, :8], make_histogram=True), SummaryStatisticsFormat(histogram=True)))
             
             obs, reward, term, trunc, infos = env.step(actions)
+            episode_start_mask = torch.logical_or(term, trunc).to(device=obs["local_obs"].device, dtype=torch.bool)
             accumulated_reward += _extract_raw_env_reward(
                 reward,
                 env_idx=0,
