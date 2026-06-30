@@ -7,10 +7,20 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from plot_logs.experiment_results import plot_experiment_results
+from plot_logs.experiment_results import (
+    GROUP_LINE_ALPHA,
+    GROUP_LINE_WIDTH,
+    ExperimentPlotSelection,
+    group_colors,
+    load_experiment_groups,
+    normalize_dpis,
+    plot_experiment_results,
+    plot_experiment_selection,
+)
 
 
 EXPERIMENT_RUN_DIR = REPO_ROOT / "runs" / "mjw_po_wall_medium_1024x4_250M_recurrent"
+NON_RECURRENT_EXPERIMENT_RUN_DIR = REPO_ROOT / "runs" / "mjw_po_wall_medium_1024x4_250M"
 OUTPUT_DIR = Path(__file__).resolve().parent / "results"
 GROUP_ORDER = (
     "r_mat_qcc",
@@ -26,7 +36,110 @@ DISPLAY_NAME_OVERRIDES = {
     "r_mat_qcs_context_tokens_only": "R-MAT-QCS context tokens only + NOP",
     "r_mat_dec": "R-MAT-Dec + NOP",
 }
+NON_RECURRENT_DISPLAY_NAME_OVERRIDES = {
+    "mat_qcc": "MAT-QCC + NOP",
+    "mat_qcx": "MAT-QCX + NOP",
+    "mat_qcs_full_causal": "MAT-QCS full causal + NOP",
+    "mat_qcs_context_tokens_only": "MAT-QCS context tokens only + NOP",
+    "mat_dec": "MAT-Dec + NOP",
+}
+NON_RECURRENT_GROUP_BY_RECURRENT_GROUP = {
+    "r_mat_qcc": "mat_qcc",
+    "r_mat_qcx": "mat_qcx",
+    "r_mat_qcs_full_causal": "mat_qcs_full_causal",
+    "r_mat_qcs_context_tokens_only": "mat_qcs_context_tokens_only",
+    "r_mat_dec": "mat_dec",
+}
 THEORETICAL_MAXIMUM = None
+RUN_LENGTH_LIMIT = 250_000_000
+
+
+def non_recurrent_pairwise_group_name(non_recurrent_group: str) -> str:
+    return f"non_recurrent_{non_recurrent_group}"
+
+
+def build_pairwise_group_order() -> tuple[str, ...]:
+    return (
+        *GROUP_ORDER,
+        *(
+            non_recurrent_pairwise_group_name(non_recurrent_group)
+            for non_recurrent_group in NON_RECURRENT_GROUP_BY_RECURRENT_GROUP.values()
+        ),
+    )
+
+
+def build_pairwise_display_name_overrides() -> dict[str, str]:
+    overrides = dict(DISPLAY_NAME_OVERRIDES)
+    overrides.update(
+        {
+            non_recurrent_pairwise_group_name(non_recurrent_group): (
+                f"{NON_RECURRENT_DISPLAY_NAME_OVERRIDES[non_recurrent_group]} (non-recurrent)"
+            )
+            for non_recurrent_group in NON_RECURRENT_GROUP_BY_RECURRENT_GROUP.values()
+        }
+    )
+    return overrides
+
+
+def build_pairwise_extra_group_sources() -> dict[str, tuple[Path, ...]]:
+    return {
+        non_recurrent_pairwise_group_name(non_recurrent_group): (
+            NON_RECURRENT_EXPERIMENT_RUN_DIR / non_recurrent_group,
+        )
+        for non_recurrent_group in NON_RECURRENT_GROUP_BY_RECURRENT_GROUP.values()
+    }
+
+
+def build_pairwise_plot_selections() -> tuple[ExperimentPlotSelection, ...]:
+    display_name_overrides = build_pairwise_display_name_overrides()
+    return tuple(
+        ExperimentPlotSelection(
+            name=f"pair_{recurrent_group}_vs_non_recurrent",
+            group_names=(
+                recurrent_group,
+                non_recurrent_pairwise_group_name(non_recurrent_group),
+            ),
+            title_suffix=(
+                f"{display_name_overrides[recurrent_group]} vs "
+                f"{display_name_overrides[non_recurrent_pairwise_group_name(non_recurrent_group)]}"
+            ),
+            required_group_names=(
+                recurrent_group,
+                non_recurrent_pairwise_group_name(non_recurrent_group),
+            ),
+            output_subdir="pairwise",
+        )
+        for recurrent_group, non_recurrent_group in NON_RECURRENT_GROUP_BY_RECURRENT_GROUP.items()
+    )
+
+
+def plot_pairwise_recurrent_vs_non_recurrent() -> list[Path]:
+    groups = load_experiment_groups(
+        EXPERIMENT_RUN_DIR,
+        group_order=build_pairwise_group_order(),
+        display_name_overrides=build_pairwise_display_name_overrides(),
+        extra_group_sources=build_pairwise_extra_group_sources(),
+    )
+    colors = group_colors(groups)
+    normalized_dpis = normalize_dpis(None)
+    output_paths: list[Path] = []
+    for selection in build_pairwise_plot_selections():
+        output_paths.extend(
+            plot_experiment_selection(
+                selection=selection,
+                groups=groups,
+                output_dir=OUTPUT_DIR,
+                x_column="timesteps",
+                dpis=normalized_dpis,
+                theoretical_maximum=THEORETICAL_MAXIMUM,
+                run_length_limit=RUN_LENGTH_LIMIT,
+                cut_at_limit=False,
+                group_line_width=GROUP_LINE_WIDTH,
+                group_line_alpha=GROUP_LINE_ALPHA,
+                colors=colors,
+            )
+        )
+    return output_paths
 
 
 def main() -> int:
@@ -36,8 +149,9 @@ def main() -> int:
         group_order=GROUP_ORDER,
         theoretical_maximum=THEORETICAL_MAXIMUM,
         display_name_overrides=DISPLAY_NAME_OVERRIDES,
-        run_length_limit=250_000_000,
+        run_length_limit=RUN_LENGTH_LIMIT,
     )
+    result.output_paths.extend(plot_pairwise_recurrent_vs_non_recurrent())
     for output_path in result.output_paths:
         print(output_path)
     return 0
