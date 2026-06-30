@@ -66,26 +66,47 @@ def extract_bootstrap_obs(
     if not torch.equal(final_obs_mask, dones):
         raise ValueError("Expected infos['_final_obs'] to match computed dones.")
 
+    expected_obs_keys = set(next_obs)
     bootstrap_obs = {key: value.clone() for key, value in next_obs.items()}
     final_obs_value = infos["final_obs"]
     if isinstance(final_obs_value, dict):
-        final_obs = env._obs_to_torch(final_obs_value)
-        for key, value in final_obs.items():
-            bootstrap_obs[key][final_obs_mask] = value[final_obs_mask]
-        if "agent_mask" in bootstrap_obs and "agent_mask" not in final_obs:
-            raise ValueError("Expected final_obs to contain 'agent_mask' when the observation space includes it.")
+        final_obs = _final_obs_to_torch(env=env, final_obs=final_obs_value)
+        _validate_final_obs_keys(final_obs=final_obs, expected_obs_keys=expected_obs_keys)
+        for key in expected_obs_keys:
+            bootstrap_obs[key][final_obs_mask] = final_obs[key][final_obs_mask]
         return bootstrap_obs
 
     final_obs_entries = np.asarray(final_obs_value, dtype=object).reshape(-1)
 
     for env_idx in torch.nonzero(final_obs_mask, as_tuple=False).flatten().tolist():
-        final_obs = env._obs_to_torch(final_obs_entries[env_idx])
-        for key, value in final_obs.items():
-            bootstrap_obs[key][env_idx] = value
-        if "agent_mask" in bootstrap_obs and "agent_mask" not in final_obs:
-            raise ValueError("Expected final_obs to contain 'agent_mask' when the observation space includes it.")
+        final_obs = _final_obs_to_torch(env=env, final_obs=final_obs_entries[env_idx])
+        _validate_final_obs_keys(final_obs=final_obs, expected_obs_keys=expected_obs_keys)
+        for key in expected_obs_keys:
+            bootstrap_obs[key][env_idx] = final_obs[key]
 
     return bootstrap_obs
+
+
+def _final_obs_to_torch(
+        *,
+        env: BaseLearnEnvWrapper,
+        final_obs: Any,
+) -> dict[str, torch.Tensor]:
+    try:
+        return env._obs_to_torch(final_obs)
+    except KeyError as exc:
+        missing_key = exc.args[0]
+        raise ValueError(f"Expected final_obs to contain observation key {missing_key!r}.") from exc
+
+
+def _validate_final_obs_keys(
+        *,
+        final_obs: dict[str, torch.Tensor],
+        expected_obs_keys: set[str],
+) -> None:
+    missing_keys = expected_obs_keys.difference(final_obs)
+    if missing_keys:
+        raise ValueError(f"Expected final_obs to contain observation keys {sorted(missing_keys)}.")
 
 
 def to_python_episode_stat(value: Any) -> Any:

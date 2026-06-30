@@ -1,4 +1,5 @@
 import torch
+import pytest
 
 from swarmbots.learn.algos.mat_qcc.mat_qcc_decoder import MATQCCDecoder, MATQCCDecoderConfig
 
@@ -30,6 +31,20 @@ def _make_untied_decoder(*, assume_agent_mask_is_active_prefix: bool = True) -> 
         max_agents=4,
         memory_d_model=8,
     )
+
+
+def test_decoder_rejects_non_positive_num_layers() -> None:
+    with pytest.raises(ValueError, match="num_layers must be > 0"):
+        MATQCCDecoder(
+            config=MATQCCDecoderConfig(
+                d_model=8,
+                nhead=2,
+                num_layers=0,
+                dim_feedforward=16,
+            ),
+            max_agents=4,
+            memory_d_model=8,
+        )
 
 
 def test_parallel_outputs_match_step_outputs() -> None:
@@ -255,8 +270,15 @@ def test_untied_context_self_attention_uses_separate_parameters() -> None:
     assert tied_layer.context_self_attn is None
     assert untied_layer.context_self_attn is not None
     assert untied_layer.context_self_attn is not untied_layer.query_context_attn
-    assert "layers.0.context_self_attn.in_proj_weight" not in tied_decoder.state_dict()
-    assert "layers.0.context_self_attn.in_proj_weight" in untied_decoder.state_dict()
+    query_context_storage = {
+        parameter.untyped_storage().data_ptr()
+        for parameter in untied_layer.query_context_attn.parameters()
+    }
+    context_self_storage = {
+        parameter.untyped_storage().data_ptr()
+        for parameter in untied_layer.context_self_attn.parameters()
+    }
+    assert query_context_storage.isdisjoint(context_self_storage)
 
 
 def test_parallel_output_does_not_depend_on_future_context_tokens() -> None:

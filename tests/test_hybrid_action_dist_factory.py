@@ -42,6 +42,38 @@ class HybridActionDistFactoryTests(unittest.TestCase):
         np.testing.assert_allclose(split["actuators"], action_parts["actuators"])
         np.testing.assert_array_equal(split["connectors"], action_parts["connectors"])
 
+    def test_vector_hybrid_action_space_preserves_declared_sequence_order_for_split_concat(self) -> None:
+        action_space = VectorHybridActionSpace([
+            ("actuators", spaces.Box(-1.0, 1.0, shape=(2, 3, 2), dtype=np.float32)),
+            ("connectors", spaces.MultiBinary((2, 3, 1))),
+        ])
+        action_parts = {
+            "actuators": np.array(
+                [
+                    [[0.1, 0.2], [0.3, 0.4], [0.5, 0.6]],
+                    [[1.1, 1.2], [1.3, 1.4], [1.5, 1.6]],
+                ],
+                dtype=np.float32,
+            ),
+            "connectors": np.array(
+                [
+                    [[1], [0], [1]],
+                    [[0], [1], [0]],
+                ],
+                dtype=np.int8,
+            ),
+        }
+
+        concatenated = action_space.concat_actions(action_parts)
+        split = action_space.split_actions(concatenated)
+
+        self.assertEqual(action_space.key_order, ["actuators", "connectors"])
+        self.assertEqual(concatenated.shape, (2, 3, 3))
+        np.testing.assert_allclose(concatenated[..., :2], action_parts["actuators"])
+        np.testing.assert_array_equal(concatenated[..., 2:], action_parts["connectors"])
+        np.testing.assert_allclose(split["actuators"], action_parts["actuators"])
+        np.testing.assert_array_equal(split["connectors"], action_parts["connectors"])
+
     def test_hybrid_action_space_rejects_subspaces_with_different_agent_counts(self) -> None:
         with self.assertRaisesRegex(ValueError, "share n_agents"):
             HybridActionSpace([

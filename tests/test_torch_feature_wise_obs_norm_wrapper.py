@@ -122,6 +122,45 @@ class TorchFeatureWiseObsNormWrapperTests(unittest.TestCase):
         finally:
             env.close()
 
+    def test_all_inactive_agent_mask_skips_running_stats_update_but_normalizes_observations(self) -> None:
+        env = _make_env(n_envs=1, n_agents=2, n_local_obs=3)
+        try:
+            wrapper = TorchFeatureWiseObsNormWrapper(
+                env,
+                obs_key="local_obs",
+                scalar_feature_indices=[0, 2],
+                quaternion_indices=[],
+                eps=0.0,
+            )
+            wrapper.obs_rms = TorchRunningMeanStd(shape=(2,), initial_count=7.0)
+            wrapper.obs_rms.mean = torch.tensor([10.0, 100.0], dtype=torch.float64)
+            wrapper.obs_rms.var = torch.tensor([4.0, 25.0], dtype=torch.float64)
+            local_obs = torch.tensor(
+                [
+                    [
+                        [12.0, 1.0, 110.0],
+                        [8.0, 2.0, 95.0],
+                    ]
+                ],
+                dtype=torch.float32,
+            )
+            observations = _obs(
+                local_obs=local_obs,
+                agent_mask=torch.tensor([[False, False]], dtype=torch.bool),
+            )
+
+            normalized = wrapper.observations(observations)
+
+            assert wrapper.obs_rms is not None
+            torch.testing.assert_close(wrapper.obs_rms.count, torch.tensor(7.0, dtype=torch.float64))
+            torch.testing.assert_close(wrapper.obs_rms.mean, torch.tensor([10.0, 100.0], dtype=torch.float64))
+            torch.testing.assert_close(wrapper.obs_rms.var, torch.tensor([4.0, 25.0], dtype=torch.float64))
+            expected = local_obs.clone()
+            expected[..., [0, 2]] = torch.tensor([[[1.0, 2.0], [-1.0, -1.0]]])
+            torch.testing.assert_close(normalized["local_obs"], expected)
+        finally:
+            env.close()
+
     def test_same_step_final_obs_is_normalized_without_updating_running_stats(self) -> None:
         env = _make_env(n_envs=1, n_agents=2, n_local_obs=2, max_steps=1, local_obs_offset=2.0)
         try:

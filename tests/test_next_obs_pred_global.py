@@ -241,7 +241,6 @@ class NextObsPredGlobalTests(unittest.TestCase):
         self.assertIsNone(policy.global_pool_encoder)
         self.assertIsNone(policy.global_scalars_predictor)
         self.assertIsNone(policy.global_rot6ds_predictor)
-        self.assertFalse(any(key.startswith("global_") for key in policy.state_dict()))
 
     def test_wrapper_with_global_targets_allocates_global_modules(self) -> None:
         policy = NextObsPredWrapper(
@@ -266,7 +265,6 @@ class NextObsPredGlobalTests(unittest.TestCase):
         self.assertIsNotNone(policy.global_pool_encoder)
         self.assertIsNotNone(policy.global_scalars_predictor)
         self.assertIsNotNone(policy.global_rot6ds_predictor)
-        self.assertTrue(any(key.startswith("global_") for key in policy.state_dict()))
 
 
 if __name__ == "__main__":

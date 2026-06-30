@@ -1,4 +1,5 @@
 import torch
+import pytest
 
 from swarmbots.learn.algos.mat_qcs.mat_qcs_decoder import MATQCSDecoder, MATQCSDecoderConfig, MATQCSDecoderSelfAttentionMode
 
@@ -37,6 +38,20 @@ def _make_decoder_pair(
     cheap_decoder.eval()
     arbitrary_decoder.eval()
     return cheap_decoder, arbitrary_decoder
+
+
+def test_decoder_rejects_non_positive_num_layers() -> None:
+    with pytest.raises(ValueError, match="num_layers must be > 0"):
+        MATQCSDecoder(
+            config=MATQCSDecoderConfig(
+                d_model=8,
+                nhead=2,
+                num_layers=0,
+                dim_feedforward=16,
+            ),
+            max_agents=4,
+            memory_d_model=8,
+        )
 
 
 def test_parallel_decoder_does_not_depend_on_future_tokens() -> None:
