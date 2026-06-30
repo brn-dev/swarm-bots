@@ -385,6 +385,30 @@ class _ObsReuseProxy:
         return getattr(self.env, item)
 
 
+def _drop_done_final_obs_key(infos: dict[str, Any], key: str) -> dict[str, Any]:
+    mutated_infos = dict(infos)
+    if "final_obs" not in mutated_infos or "_final_obs" not in mutated_infos:
+        return mutated_infos
+
+    final_obs_value = mutated_infos["final_obs"]
+    if isinstance(final_obs_value, dict):
+        final_obs = dict(final_obs_value)
+        final_obs.pop(key, None)
+        mutated_infos["final_obs"] = final_obs
+        return mutated_infos
+
+    final_obs_entries = np.asarray(final_obs_value, dtype=object).copy()
+    final_obs_mask = np.asarray(mutated_infos["_final_obs"], dtype=bool).reshape(-1)
+    for idx, has_final_obs in enumerate(final_obs_mask):
+        if not has_final_obs:
+            continue
+        obs = dict(final_obs_entries[idx])
+        obs.pop(key, None)
+        final_obs_entries[idx] = obs
+    mutated_infos["final_obs"] = final_obs_entries
+    return mutated_infos
+
+
 def _to_cpu(tensor: torch.Tensor) -> torch.Tensor:
     return tensor.detach().cpu()
 
@@ -1198,26 +1222,27 @@ class SameStepPipelineTests(unittest.TestCase):
 
     def test_collect_steps_raises_when_agent_mask_missing_from_final_obs(self) -> None:
         env = _make_agent_mask_env((1, (2,), "truncate"))
-
-        def _drop_agent_mask(infos: dict[str, Any]) -> dict[str, Any]:
-            mutated_infos = dict(infos)
-            if "final_obs" not in mutated_infos or "_final_obs" not in mutated_infos:
-                return mutated_infos
-            final_obs = np.asarray(mutated_infos["final_obs"], dtype=object).copy()
-            for idx, has_final_obs in enumerate(np.asarray(mutated_infos["_final_obs"], dtype=bool).reshape(-1)):
-                if not has_final_obs:
-                    continue
-                obs = dict(final_obs[idx])
-                obs.pop("agent_mask", None)
-                final_obs[idx] = obs
-            mutated_infos["final_obs"] = final_obs
-            return mutated_infos
-
-        proxy = _EnvProxy(env, mutate_step_infos=_drop_agent_mask)
+        proxy = _EnvProxy(env, mutate_step_infos=lambda infos: _drop_done_final_obs_key(infos, "agent_mask"))
         try:
             policy = _ConstantValuePolicy(action_dim=proxy.action_space.total_agent_action_dim)
             buffer = _make_buffer(proxy)
             with self.assertRaisesRegex(ValueError, "agent_mask"):
+                collect_steps(
+                    env=proxy,
+                    policy=policy,
+                    buffer=buffer,
+                    n_steps=2,
+                )
+        finally:
+            proxy.close()
+
+    def test_collect_steps_raises_when_required_final_obs_key_is_missing(self) -> None:
+        env = _make_scripted_env((1, (2,), "truncate"))
+        proxy = _EnvProxy(env, mutate_step_infos=lambda infos: _drop_done_final_obs_key(infos, "hidden_global_vars"))
+        try:
+            policy = _ConstantValuePolicy(action_dim=proxy.action_space.total_agent_action_dim)
+            buffer = _make_buffer(proxy)
+            with self.assertRaisesRegex(ValueError, "final_obs.*hidden_global_vars"):
                 collect_steps(
                     env=proxy,
                     policy=policy,

@@ -292,6 +292,8 @@ class MATQCCDecoder(nn.Module):
         super().__init__()
         if config.d_model is None:
             raise ValueError("MATQCCDecoderConfig.d_model must be set before constructing MATQCCDecoder")
+        if config.num_layers <= 0:
+            raise ValueError(f"MATQCCDecoderConfig.num_layers must be > 0, got {config.num_layers}")
 
         self.max_agents = max_agents
         self.d_model = config.d_model
