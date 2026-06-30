@@ -20,7 +20,7 @@ from plot_logs.experiment_results import (
 
 
 EXPERIMENT_RUN_DIR = REPO_ROOT / "runs" / "mjw_po_wall_medium_1024x4_250M_recurrent"
-NON_RECURRENT_EXPERIMENT_RUN_DIR = REPO_ROOT / "runs" / "mjw_po_wall_medium_1024x4_250M"
+NON_RECURRENT_EXPERIMENT_RUN_DIR = REPO_ROOT / "runs" / "mjw_po_wall_medium_1024x4_250M_no_transition_obs"
 OUTPUT_DIR = Path(__file__).resolve().parent / "results"
 GROUP_ORDER = (
     "r_mat_qcc",
