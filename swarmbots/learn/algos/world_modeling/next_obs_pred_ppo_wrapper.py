@@ -10,10 +10,16 @@ from torch import nn
 from swarmbots.learn.action_dists.action_dist import ActionMetricsSplitterInput
 from swarmbots.learn.action_dists.hybrid_action_dist import HybridActionDistribution
 from swarmbots.learn.algos.ppo.base_ppo_policy import BasePPOPolicy, DelegatingPPOPolicyTemporalStateMixin
+from swarmbots.learn.algos.ppo.ppo_rollout_batch import PPORolloutBatch
 from swarmbots.learn.algos.ppo.ppo_rollout_buffer import PPOEpisodeSegment
 from swarmbots.learn.algos.ppo.ppo_sampler import PPOSamples, PPOSamplerConfig
 from swarmbots.learn.algos.world_modeling.base_wm_sampler import BaseWMSampler
-from swarmbots.learn.algos.world_modeling.ppo_wm_sampler import PPOWMSampler, PPOWMSamples, PPOWMSamplerConfig
+from swarmbots.learn.algos.world_modeling.ppo_wm_sampler import (
+    PPOWMBatchSampler,
+    PPOWMSampler,
+    PPOWMSamples,
+    PPOWMSamplerConfig,
+)
 from swarmbots.learn.algos.world_modeling.next_obs_pred_mixin import NextObsPredConfig, NextObsPredMixin
 from swarmbots.learn.algos.world_modeling.transformer_transition_model import (
     TransformerTransitionModel,
@@ -208,6 +214,27 @@ class NextObsPredWrapper(
         sampler = self.policy.make_sampler(episodes=episodes, config=config)
         if not isinstance(sampler, BaseWMSampler):
             raise ValueError('Policy does not create a WM Sampler!')
+        return sampler
+
+    def supports_rollout_batch_sampler(self, config: PPOWMSamplerConfig) -> bool:
+        if type(config) is PPOWMSamplerConfig:
+            return True
+        return self.policy.supports_rollout_batch_sampler(config)
+
+    def make_rollout_batch_sampler(
+            self,
+            rollout_batch: PPORolloutBatch,
+            config: PPOWMSamplerConfig,
+    ) -> BaseWMSampler[Any, PPOWMSamplerConfig]:
+        if type(config) is PPOWMSamplerConfig:
+            return PPOWMBatchSampler(
+                rollout_batch=rollout_batch,
+                config=config,
+                requires_previous_actions=self.requires_previous_actions(),
+            )
+        sampler = self.policy.make_rollout_batch_sampler(rollout_batch=rollout_batch, config=config)
+        if not isinstance(sampler, BaseWMSampler):
+            raise ValueError("Policy does not create a WM Sampler!")
         return sampler
 
     def after_optimizer_step(self) -> None:

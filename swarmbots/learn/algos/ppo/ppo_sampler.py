@@ -4,6 +4,7 @@ from typing import TypeVar
 import torch
 
 from swarmbots.learn.algos.ppo.ppo_rollout_buffer import MaybeTensor, PPOEpisodeSegment
+from swarmbots.learn.algos.ppo.ppo_rollout_batch import PPORolloutBatch
 from swarmbots.learn.base_sampler import BaseSampler, BaseSamplerConfig, BatchIndices
 
 
@@ -85,3 +86,55 @@ class PPOSampler(BaseSampler[PPOSamplesType, PPOSamplerConfigType]):
             returns=self.returns[batch_indices],
             advantages=self.advantages[batch_indices],
         )
+
+
+class PPOBatchSampler(BaseSampler[PPOSamplesType, PPOSamplerConfigType]):
+
+    def __init__(
+            self,
+            rollout_batch: PPORolloutBatch,
+            config: PPOSamplerConfigType,
+            requires_previous_actions: bool = False,
+    ):
+        self.local_obs = _flatten_env_time(rollout_batch.local_obs)
+        self.global_obs = _flatten_env_time(rollout_batch.global_obs)
+        self.hidden_local_vars = _flatten_env_time(rollout_batch.hidden_local_vars)
+        self.hidden_global_vars = _flatten_env_time(rollout_batch.hidden_global_vars)
+        self.agent_mask = (
+            None if rollout_batch.agent_mask is None else _flatten_env_time(rollout_batch.agent_mask)
+        )
+        self.previous_actions = (
+            None
+            if not requires_previous_actions or rollout_batch.previous_actions is None
+            else _flatten_env_time(rollout_batch.previous_actions)
+        )
+        self.actions = _flatten_env_time(rollout_batch.actions)
+        self.log_probs = _flatten_env_time(rollout_batch.log_probs)
+        self.values = _flatten_env_time(rollout_batch.values)
+        self.returns = _flatten_env_time(rollout_batch.returns)
+        self.advantages = _flatten_env_time(rollout_batch.advantages)
+
+        super().__init__(
+            config=config,
+            n_samples=self.local_obs.shape[0],
+            index_device=self.local_obs.device,
+        )
+
+    def _fetch_samples(self, batch_indices: BatchIndices) -> PPOSamples:
+        return PPOSamples(
+            local_obs=self.local_obs[batch_indices],
+            global_obs=self.global_obs[batch_indices],
+            hidden_local_vars=self.hidden_local_vars[batch_indices],
+            hidden_global_vars=self.hidden_global_vars[batch_indices],
+            agent_mask=None if self.agent_mask is None else self.agent_mask[batch_indices],
+            previous_actions=None if self.previous_actions is None else self.previous_actions[batch_indices],
+            actions=self.actions[batch_indices],
+            log_probs=self.log_probs[batch_indices],
+            values=self.values[batch_indices],
+            returns=self.returns[batch_indices],
+            advantages=self.advantages[batch_indices],
+        )
+
+
+def _flatten_env_time(tensor: torch.Tensor) -> torch.Tensor:
+    return tensor.flatten(0, 1).contiguous()
