@@ -120,6 +120,10 @@ class RMATPolicyMixin:
             requires_previous_actions=self.requires_previous_actions(),
         )
 
+    def supports_rollout_batch_sampler(self, config: object) -> bool:
+        _ = config
+        return False
+
     def initial_temporal_state(
             self,
             batch_size: int,

@@ -23,6 +23,9 @@ Only write comments when something is non-obvious or explains a decision!
 * Don't be overly defensive
 * Do NOT make shape or similar checks if they would result in a hard pytorch error anyway
 
+## Tests
+When writing tests, check the intent - do not tailor the tests to the implementation.
+
 ## Guidance
 If you are unsure about how a specfic library works or how its API looks like, search the web. 
 

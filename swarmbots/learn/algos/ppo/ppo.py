@@ -14,10 +14,12 @@ from swarmbots.learn.algos.ppo.ppo_policy import PPOPolicy
 from swarmbots.learn.algos.ppo.base_ppo_policy import BasePPOPolicy
 from swarmbots.learn.algos.ppo.ppo_rollout import (
     PPORolloutState,
+    collect_step_rollout_batch,
     collect_steps,
     collect_whole_episodes,
     warmup_rollout_steps,
 )
+from swarmbots.learn.algos.ppo.ppo_rollout_batch import PPORolloutBatch
 from swarmbots.learn.algos.ppo.ppo_rollout_buffer import PPOEpisodeSegment, PPORolloutBuffer
 from swarmbots.learn.algos.ppo.ppo_sampler import PPOSamples, PPOSamplerConfig
 from swarmbots.learn.algos.world_modeling.ppo_wm_sampler import PPOWMSamplerConfig
@@ -453,20 +455,34 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
                     n_episodes=self.rollout_mode.n_episodes_per_rollout,
                     gsde_reset_mode=self.gsde_reset_mode,
                 )
+                training_data: list[PPOEpisodeSegment] | PPORolloutBatch = episodes
+                total_steps_in_rollout = sum(len(ep.rewards) for ep in episodes)
                 self._rollout_state = None
             elif isinstance(self.rollout_mode, StepsRolloutMode):
-                episodes, episode_infos, rollout_metrics, self._rollout_state = collect_steps(
-                    env=self.env,
-                    policy=self.policy,
-                    buffer=self.rollout_buffer,
-                    n_steps=self.rollout_mode.n_steps_per_rollout,
-                    rollout_state=self._rollout_state,
-                    gsde_reset_mode=self.gsde_reset_mode,
-                )
+                if self.policy.supports_rollout_batch_sampler(self.sampler_config):
+                    rollout_batch, episode_infos, rollout_metrics, self._rollout_state = collect_step_rollout_batch(
+                        env=self.env,
+                        policy=self.policy,
+                        buffer=self.rollout_buffer,
+                        n_steps=self.rollout_mode.n_steps_per_rollout,
+                        rollout_state=self._rollout_state,
+                        gsde_reset_mode=self.gsde_reset_mode,
+                    )
+                    training_data = rollout_batch
+                    total_steps_in_rollout = rollout_batch.n_samples
+                else:
+                    episodes, episode_infos, rollout_metrics, self._rollout_state = collect_steps(
+                        env=self.env,
+                        policy=self.policy,
+                        buffer=self.rollout_buffer,
+                        n_steps=self.rollout_mode.n_steps_per_rollout,
+                        rollout_state=self._rollout_state,
+                        gsde_reset_mode=self.gsde_reset_mode,
+                    )
+                    training_data = episodes
+                    total_steps_in_rollout = sum(len(ep.rewards) for ep in episodes)
             else:
                 raise TypeError(f"Unknown rollout_mode type: {type(self.rollout_mode)}")
-
-            total_steps_in_rollout = sum(len(ep.rewards) for ep in episodes)
         self.n_total_timesteps += total_steps_in_rollout
         self.n_total_iterations += 1
 
@@ -490,7 +506,7 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
                 if "success" in ep_info:
                     episode_success_rate_ema.update(float(ep_info["success"]))
 
-        update_metrics = self.train(episodes)
+        update_metrics = self.train(training_data)
         metrics = {
             **update_metrics,
             **rollout_metrics,
@@ -503,15 +519,21 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
         }
         return metrics, total_steps_in_rollout
 
-    def train(self, episodes: list[PPOEpisodeSegment]) -> dict[str, Any]:
+    def train(self, training_data: list[PPOEpisodeSegment] | PPORolloutBatch) -> dict[str, Any]:
         with PerformanceTimer() as to_train_device_timer:
             self.policy.train()
             self.policy.to(self.train_device)
             self.value_loss_fn.to(self.train_device)
 
         with PerformanceTimer() as sampler_init_timer:
-            sampler = self.policy.make_sampler(episodes, config=self.sampler_config)
-        episodes.clear()
+            if isinstance(training_data, PPORolloutBatch):
+                sampler = self.policy.make_rollout_batch_sampler(
+                    rollout_batch=training_data,
+                    config=self.sampler_config,
+                )
+            else:
+                sampler = self.policy.make_sampler(training_data, config=self.sampler_config)
+                training_data.clear()
         self.rollout_buffer.episodes.clear()
 
         valid_returns = self._select_valid_value_items(sampler, sampler.returns)

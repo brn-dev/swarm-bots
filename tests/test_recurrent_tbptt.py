@@ -9,8 +9,10 @@ from swarmbots.learn.algos.ppo.ppo_rollout_buffer import (
     PPOEpisodeSegment,
     PPORolloutBuffer,
 )
+from swarmbots.learn.algos.ppo.ppo_sampler import PPOSamplerConfig
 from swarmbots.learn.algos.r_mat.r_mat_dec_policy import RMATDecPolicy, RMATDecPolicyConfig
 from swarmbots.learn.algos.r_mat.r_mat_encoder import RMATEncoder, RMATEncoderConfig
+from swarmbots.learn.algos.r_mat.r_mat_policy_mixin import RMATPolicyMixin
 from swarmbots.learn.algos.r_mat.r_mat_qcc_policy import RMATQCCPolicy, RMATQCCPolicyConfig
 from swarmbots.learn.algos.r_mat.r_mat_qcx_policy import RMATQCXPolicy, RMATQCXPolicyConfig
 from swarmbots.learn.algos.r_mat.r_mat_qcs_policy import RMATQCSPolicy, RMATQCSPolicyConfig
@@ -77,6 +79,10 @@ def test_rmat_sequence_matches_explicit_step_state_flow() -> None:
     for sequence_layer_state, step_layer_state in zip(sequence_state, step_state, strict=True):
         for sequence_tensor, step_tensor in zip(sequence_layer_state, step_layer_state, strict=True):
             torch.testing.assert_close(sequence_tensor, step_tensor)
+
+
+def test_rmat_policy_mixin_disables_flat_rollout_batch_sampler() -> None:
+    assert not RMATPolicyMixin().supports_rollout_batch_sampler(PPOSamplerConfig(batch_size=1))
 
 
 def test_rollout_accumulator_stores_segment_initial_state_and_position() -> None:

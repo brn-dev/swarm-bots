@@ -1,15 +1,19 @@
 import abc
 import re
-from typing import Any, TypeVar, Generic
+from typing import TYPE_CHECKING, Any, TypeVar, Generic
 
 import torch
 
 from swarmbots.learn.action_dists.action_dist import ActionMetricsSplitterInput
 from swarmbots.learn.action_dists.hybrid_action_dist import HybridActionDistribution
 from swarmbots.learn.algos.ppo.ppo_rollout_buffer import PPOEpisodeSegment
-from swarmbots.learn.algos.ppo.ppo_sampler import PPOSamples, PPOSampler, PPOSamplerConfig
+from swarmbots.learn.algos.ppo.ppo_sampler import PPOSamples, PPOSampler, PPOBatchSampler, PPOSamplerConfig
+from swarmbots.learn.base_sampler import BaseSampler
 from swarmbots.learn.base_policy import BasePolicy
 from swarmbots.learn.losses import LossDict, LossMetrics
+
+if TYPE_CHECKING:
+    from swarmbots.learn.algos.ppo.ppo_rollout_batch import PPORolloutBatch
 
 PPOSamplesType = TypeVar('PPOSamplesType', bound=PPOSamples)
 PPOSamplerConfigType = TypeVar('PPOSamplerConfigType', bound=PPOSamplerConfig)
@@ -128,6 +132,22 @@ class BasePPOPolicy(BasePolicy, Generic[PPOSamplesType, PPOSamplerConfigType], a
             config: PPOSamplerConfigType,
     ) -> PPOSampler[PPOSamplesType, PPOSamplerConfigType]:
         raise NotImplementedError()
+
+    def supports_rollout_batch_sampler(self, config: PPOSamplerConfigType) -> bool:
+        return type(config) is PPOSamplerConfig
+
+    def make_rollout_batch_sampler(
+            self,
+            rollout_batch: "PPORolloutBatch",
+            config: PPOSamplerConfigType,
+    ) -> BaseSampler[PPOSamplesType, PPOSamplerConfigType]:
+        if type(config) is not PPOSamplerConfig:
+            raise ValueError(f"Unsupported rollout batch sampler config: {type(config)}")
+        return PPOBatchSampler(
+            rollout_batch=rollout_batch,
+            config=config,
+            requires_previous_actions=self.requires_previous_actions(),
+        )
 
     def after_optimizer_step(self) -> None:
         pass

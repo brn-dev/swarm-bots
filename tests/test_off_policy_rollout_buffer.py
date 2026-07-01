@@ -351,6 +351,59 @@ class OffPolicyRolloutBufferTests(unittest.TestCase):
         finally:
             env.close()
 
+    def test_sequence_batch_follows_env_time_not_global_insert_order(self) -> None:
+        env = _make_env((1, (5,), "truncate"), (2, (5,), "truncate"))
+        try:
+            policy = _PreviousActionPolicy(action_dim=env.action_space.total_agent_action_dim)
+            replay_buffer = _make_buffer(env, capacity=16)
+            collect_steps(env=env, policy=policy, replay_buffer=replay_buffer, n_steps=6)
+
+            with patch("torch.randint", return_value=torch.tensor([0])):
+                batch = replay_buffer.sample_sequence_batch(batch_size=1, horizon=3, require_full=True)
+
+            self.assertEqual(tuple(batch.local_obs.shape[:2]), (1, 3))
+            torch.testing.assert_close(batch.local_obs[0, :, 0, 0].cpu(), torch.tensor([1100.0, 1101.0, 1102.0]))
+            torch.testing.assert_close(batch.next_local_obs[0, :, 0, 0].cpu(), torch.tensor([1101.0, 1102.0, 1103.0]))
+            torch.testing.assert_close(batch.time_mask.cpu(), torch.tensor([[True, True, True]]))
+        finally:
+            env.close()
+
+    def test_n_step_batch_accumulates_rewards_and_discount(self) -> None:
+        env = _make_env((1, (5,), "truncate"))
+        try:
+            policy = _PreviousActionPolicy(action_dim=env.action_space.total_agent_action_dim)
+            replay_buffer = _make_buffer(env, capacity=16)
+            collect_steps(env=env, policy=policy, replay_buffer=replay_buffer, n_steps=3)
+
+            with patch("torch.randint", return_value=torch.tensor([0])):
+                batch = replay_buffer.sample_n_step_transition_batch(batch_size=1, n_steps=2, gamma=0.5)
+
+            torch.testing.assert_close(batch.rewards.cpu(), torch.tensor([17.0]))
+            torch.testing.assert_close(batch.discounts.cpu(), torch.tensor([0.25]))
+            torch.testing.assert_close(batch.next_local_obs[:, 0, 0].cpu(), torch.tensor([1102.0]))
+            torch.testing.assert_close(batch.steps.cpu(), torch.tensor([2]))
+        finally:
+            env.close()
+
+    def test_n_step_batch_truncates_at_replay_frontier(self) -> None:
+        env = _make_env((1, (5,), "truncate"))
+        try:
+            policy = _PreviousActionPolicy(action_dim=env.action_space.total_agent_action_dim)
+            replay_buffer = _make_buffer(env, capacity=16)
+            collect_steps(env=env, policy=policy, replay_buffer=replay_buffer, n_steps=1)
+
+            with patch("torch.randint", return_value=torch.tensor([0])):
+                batch = replay_buffer.sample_n_step_transition_batch(batch_size=1, n_steps=2, gamma=0.5)
+
+            torch.testing.assert_close(batch.rewards.cpu(), torch.tensor([11.0]))
+            torch.testing.assert_close(batch.discounts.cpu(), torch.tensor([0.5]))
+            torch.testing.assert_close(batch.next_local_obs[:, 0, 0].cpu(), torch.tensor([1101.0]))
+            torch.testing.assert_close(batch.steps.cpu(), torch.tensor([1]))
+            self.assertFalse(bool(batch.terminations.any().item()))
+            self.assertFalse(bool(batch.truncations.any().item()))
+        finally:
+            env.close()
+
 
 def _first_obs_value(obs: torch.Tensor) -> float:
     return float(obs.detach().cpu()[0, 0].item())
