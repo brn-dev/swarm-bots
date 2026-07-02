@@ -111,11 +111,33 @@ class MLSTMCell(nn.Module):
             keys: torch.Tensor,
             values: torch.Tensor,
             state: MLSTMCellState,
+            *,
+            valid_mask: torch.Tensor | None = None,
+            reset_mask: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, MLSTMCellState]:
         if queries.ndim != 3:
             raise ValueError(f"Expected queries shape (B, T, H), got {tuple(queries.shape)}")
 
         batch_size, sequence_length, _ = queries.shape
+        if valid_mask is not None:
+            expected_mask_shape = (batch_size, sequence_length)
+            if valid_mask.shape != expected_mask_shape:
+                raise ValueError(f"Expected valid_mask shape {expected_mask_shape}, got {tuple(valid_mask.shape)}")
+            if valid_mask.dtype != torch.bool:
+                raise ValueError(f"Expected valid_mask dtype torch.bool, got {valid_mask.dtype}")
+        if reset_mask is not None:
+            expected_mask_shape = (batch_size, sequence_length)
+            if reset_mask.shape != expected_mask_shape:
+                raise ValueError(f"Expected reset_mask shape {expected_mask_shape}, got {tuple(reset_mask.shape)}")
+            if reset_mask.dtype != torch.bool:
+                raise ValueError(f"Expected reset_mask dtype torch.bool, got {reset_mask.dtype}")
+
+        if valid_mask is not None:
+            valid_feature_mask = valid_mask.unsqueeze(-1)
+            queries = queries.masked_fill(~valid_feature_mask, 0.0)
+            keys = keys.masked_fill(~valid_feature_mask, 0.0)
+            values = values.masked_fill(~valid_feature_mask, 0.0)
+
         q = queries.reshape(batch_size, sequence_length, self.config.num_heads, self.head_dim).transpose(1, 2)
         k = keys.reshape(batch_size, sequence_length, self.config.num_heads, self.head_dim).transpose(1, 2)
         v = values.reshape(batch_size, sequence_length, self.config.num_heads, self.head_dim).transpose(1, 2)
@@ -124,10 +146,15 @@ class MLSTMCell(nn.Module):
         input_preact = self.input_gate(gate_inputs).transpose(1, 2)
         forget_preact = self.forget_gate(gate_inputs).transpose(1, 2)
         log_forget = F.logsigmoid(forget_preact)
+        if valid_mask is not None:
+            valid_mask_heads = valid_mask.unsqueeze(1)
+            log_forget = torch.where(valid_mask_heads, log_forget, torch.zeros_like(log_forget))
+            input_preact = torch.where(valid_mask_heads, input_preact, torch.full_like(input_preact, -torch.inf))
         log_forget_cumsum = torch.cumsum(log_forget, dim=-1)
 
         c_state, n_state, m_state = state
         state_log_scale = m_state.unsqueeze(-1) + log_forget_cumsum
+        normalizer_state_log_scale = state_log_scale
 
         row_log_forget_cumsum = log_forget_cumsum.unsqueeze(-1)
         col_log_forget_cumsum = log_forget_cumsum.unsqueeze(-2)
@@ -136,13 +163,32 @@ class MLSTMCell(nn.Module):
             torch.ones((sequence_length, sequence_length), dtype=torch.bool, device=queries.device),
         )
         input_log_scale = input_log_scale.masked_fill(~causal_mask, -torch.inf)
+        if reset_mask is not None:
+            reset_groups = torch.cumsum(reset_mask.to(torch.int64), dim=-1)
+            same_reset_group = reset_groups.unsqueeze(-1) == reset_groups.unsqueeze(-2)
+            same_reset_group = same_reset_group.unsqueeze(1)
+            input_log_scale = input_log_scale.masked_fill(~same_reset_group, -torch.inf)
+            state_survives = reset_groups == 0
+            state_log_scale = state_log_scale.masked_fill(~state_survives.unsqueeze(1), -torch.inf)
+            segment_log_forget = log_forget.unsqueeze(-2).masked_fill(
+                ~(same_reset_group & causal_mask.view(1, 1, sequence_length, sequence_length)),
+                0.0,
+            ).sum(dim=-1)
+            normalizer_state_log_scale = torch.where(
+                state_survives.unsqueeze(1),
+                normalizer_state_log_scale,
+                segment_log_forget,
+            )
 
         normalizer_log_scale = torch.maximum(
-            state_log_scale,
+            normalizer_state_log_scale,
             input_log_scale.max(dim=-1).values,
         )
-        state_weights = torch.exp(state_log_scale - normalizer_log_scale)
-        input_weights = torch.exp(input_log_scale - normalizer_log_scale.unsqueeze(-1))
+        no_contribution = torch.isneginf(normalizer_log_scale)
+        safe_normalizer_log_scale = normalizer_log_scale.masked_fill(no_contribution, 0.0)
+        state_weights = torch.exp(state_log_scale - safe_normalizer_log_scale).masked_fill(no_contribution, 0.0)
+        input_weights = torch.exp(input_log_scale - safe_normalizer_log_scale.unsqueeze(-1))
+        input_weights = input_weights.masked_fill(no_contribution.unsqueeze(-1), 0.0)
 
         k_scaled = k / math.sqrt(self.head_dim)
         c_from_inputs = torch.einsum("bnts,bnsd,bnse->bntde", input_weights, k_scaled, v)
@@ -153,12 +199,15 @@ class MLSTMCell(nn.Module):
         hidden_numerator = torch.einsum("bntd,bntde->bnte", q, c_sequence)
         denominator = torch.maximum(
             (q * n_sequence).sum(dim=-1, keepdim=True).abs(),
-            torch.exp(-normalizer_log_scale).unsqueeze(-1),
+            torch.exp(-safe_normalizer_log_scale).unsqueeze(-1),
         )
         hidden = hidden_numerator / (denominator + self.config.eps)
+        hidden = hidden.masked_fill(no_contribution.unsqueeze(-1), 0.0)
         hidden = self.output_norm(hidden).transpose(1, 2).reshape(batch_size, sequence_length, self.hidden_dim)
+        if valid_mask is not None:
+            hidden = hidden.masked_fill(~valid_mask.unsqueeze(-1), 0.0)
         return hidden, (
             c_sequence[:, :, -1].contiguous(),
             n_sequence[:, :, -1].contiguous(),
-            normalizer_log_scale[:, :, -1].contiguous(),
+            safe_normalizer_log_scale[:, :, -1].contiguous(),
         )

@@ -15,7 +15,7 @@ class SLSTMTemporalSequenceModelConfig:
     num_heads: int = 4
     bias: bool = False
     recurrent_weight_init: Literal["zeros", "standard"] = "zeros"
-    bias_init: Literal["powerlaw_blockdependent", "small_init", "zeros", "standard"] = "powerlaw_blockdependent"
+    bias_init: Literal["powerlaw", "small_init", "zeros", "standard"] = "powerlaw"
     eps: float = 1e-6
     output_norm: bool = True
 
