@@ -1,12 +1,16 @@
+from itertools import product
+
 import pytest
 import torch
 
 from swarmbots.learn.algos.r_mat.r_mat_encoder import RMATEncoder, RMATEncoderConfig
+from swarmbots.learn.algos.xlstm.mlstm import MLSTMCell, MLSTMCellConfig
 from swarmbots.learn.algos.xlstm.mlstm import (
     MLSTMCellState,
     MLSTMTemporalSequenceModel,
     MLSTMTemporalSequenceModelConfig,
 )
+from swarmbots.learn.algos.xlstm.temporal_utils import reset_state, select_state
 from swarmbots.learn.algos.xlstm.slstm.slstm_cell import SLSTMCell, SLSTMCellConfig
 from swarmbots.learn.algos.xlstm.slstm import SLSTMTemporalSequenceModel, SLSTMTemporalSequenceModelConfig
 
@@ -114,7 +118,7 @@ def test_xlstm_rejects_hidden_dim_not_divisible_by_heads(
         model_cls(hidden_dim=8, config=config)
 
 
-def test_mlstm_parallel_sequence_matches_recurrent_path_with_reset_segments() -> None:
+def test_mlstm_parallel_sequence_matches_recurrent_path_with_resets() -> None:
     torch.manual_seed(2)
     parallel_model = MLSTMTemporalSequenceModel(
         hidden_dim=8,
@@ -141,6 +145,171 @@ def test_mlstm_parallel_sequence_matches_recurrent_path_with_reset_segments() ->
     )
     recurrent_output, recurrent_state = recurrent_model(
         inputs,
+        initial_state=initial_state,
+        reset_mask=reset_mask,
+    )
+
+    torch.testing.assert_close(parallel_output, recurrent_output, atol=1e-5, rtol=1e-5)
+    for parallel_tensor, recurrent_tensor in zip(parallel_state, recurrent_state, strict=True):
+        torch.testing.assert_close(parallel_tensor, recurrent_tensor, atol=1e-5, rtol=1e-5)
+
+
+def test_mlstm_parallel_cell_valid_and_reset_masks_exhaustively_match_step_flow() -> None:
+    torch.manual_seed(4)
+    cell = MLSTMCell(hidden_dim=4, config=MLSTMCellConfig(num_heads=2))
+    sequence_length = 4
+    queries = torch.randn(1, sequence_length, 4)
+    keys = torch.randn(1, sequence_length, 4)
+    values = torch.randn(1, sequence_length, 4)
+    initial_state: MLSTMCellState = tuple(torch.randn_like(item) for item in cell.initial_state(1))
+
+    for valid_bits in product([False, True], repeat=sequence_length):
+        valid_mask = torch.tensor([valid_bits], dtype=torch.bool)
+        for reset_bits in product([False, True], repeat=sequence_length):
+            reset_mask = torch.tensor([reset_bits], dtype=torch.bool)
+
+            parallel_output, parallel_state = cell.forward_sequence(
+                queries,
+                keys,
+                values,
+                initial_state,
+                valid_mask=valid_mask,
+                reset_mask=reset_mask,
+            )
+            recurrent_output, recurrent_state = _run_recurrent_mlstm_cell_sequence(
+                cell=cell,
+                queries=queries,
+                keys=keys,
+                values=values,
+                initial_state=initial_state,
+                valid_mask=valid_mask,
+                reset_mask=reset_mask,
+            )
+
+            torch.testing.assert_close(parallel_output, recurrent_output, atol=1e-5, rtol=1e-5)
+            for parallel_tensor, recurrent_tensor in zip(parallel_state, recurrent_state, strict=True):
+                torch.testing.assert_close(parallel_tensor, recurrent_tensor, atol=1e-5, rtol=1e-5)
+
+
+def test_mlstm_parallel_cell_reset_keeps_zero_state_stabilizer() -> None:
+    torch.manual_seed(6)
+    cell = MLSTMCell(hidden_dim=4, config=MLSTMCellConfig(num_heads=2))
+    with torch.no_grad():
+        cell.input_gate.weight.zero_()
+        cell.input_gate.bias.fill_(-10.0)
+        cell.forget_gate.weight.zero_()
+        cell.forget_gate.bias.fill_(6.0)
+
+    sequence_length = 2
+    queries = torch.randn(1, sequence_length, 4)
+    keys = torch.randn(1, sequence_length, 4)
+    values = torch.randn(1, sequence_length, 4)
+    initial_state: MLSTMCellState = tuple(torch.randn_like(item) for item in cell.initial_state(1))
+    valid_mask = torch.ones(1, sequence_length, dtype=torch.bool)
+    reset_mask = torch.tensor([[True, False]])
+
+    parallel_output, parallel_state = cell.forward_sequence(
+        queries,
+        keys,
+        values,
+        initial_state,
+        valid_mask=valid_mask,
+        reset_mask=reset_mask,
+    )
+    recurrent_output, recurrent_state = _run_recurrent_mlstm_cell_sequence(
+        cell=cell,
+        queries=queries,
+        keys=keys,
+        values=values,
+        initial_state=initial_state,
+        valid_mask=valid_mask,
+        reset_mask=reset_mask,
+    )
+
+    torch.testing.assert_close(parallel_output, recurrent_output, atol=1e-5, rtol=1e-5)
+    for parallel_tensor, recurrent_tensor in zip(parallel_state, recurrent_state, strict=True):
+        torch.testing.assert_close(parallel_tensor, recurrent_tensor, atol=1e-5, rtol=1e-5)
+
+
+def test_mlstm_parallel_cell_ignores_invalid_nan_inputs() -> None:
+    torch.manual_seed(7)
+    cell = MLSTMCell(hidden_dim=4, config=MLSTMCellConfig(num_heads=2))
+    sequence_length = 3
+    valid_mask = torch.tensor([[True, False, True]])
+    reset_mask = torch.zeros(1, sequence_length, dtype=torch.bool)
+    queries = torch.randn(1, sequence_length, 4)
+    keys = torch.randn(1, sequence_length, 4)
+    values = torch.randn(1, sequence_length, 4)
+    initial_state = cell.initial_state(1)
+
+    nan_queries = queries.clone()
+    nan_keys = keys.clone()
+    nan_values = values.clone()
+    nan_queries[:, 1] = torch.nan
+    nan_keys[:, 1] = torch.nan
+    nan_values[:, 1] = torch.nan
+
+    nan_output, nan_state = cell.forward_sequence(
+        nan_queries,
+        nan_keys,
+        nan_values,
+        initial_state,
+        valid_mask=valid_mask,
+        reset_mask=reset_mask,
+    )
+    clean_queries = queries.masked_fill(~valid_mask.unsqueeze(-1), 0.0)
+    clean_keys = keys.masked_fill(~valid_mask.unsqueeze(-1), 0.0)
+    clean_values = values.masked_fill(~valid_mask.unsqueeze(-1), 0.0)
+    clean_output, clean_state = cell.forward_sequence(
+        clean_queries,
+        clean_keys,
+        clean_values,
+        initial_state,
+        valid_mask=valid_mask,
+        reset_mask=reset_mask,
+    )
+
+    torch.testing.assert_close(nan_output, clean_output, atol=1e-5, rtol=1e-5)
+    for nan_tensor, clean_tensor in zip(nan_state, clean_state, strict=True):
+        torch.testing.assert_close(nan_tensor, clean_tensor, atol=1e-5, rtol=1e-5)
+
+
+def test_mlstm_parallel_temporal_sequence_matches_recurrent_path_with_invalid_masks() -> None:
+    torch.manual_seed(5)
+    parallel_model = MLSTMTemporalSequenceModel(
+        hidden_dim=8,
+        config=MLSTMTemporalSequenceModelConfig(num_heads=2, use_parallel_sequence=True),
+    )
+    recurrent_model = MLSTMTemporalSequenceModel(
+        hidden_dim=8,
+        config=MLSTMTemporalSequenceModelConfig(num_heads=2, use_parallel_sequence=False),
+    )
+    recurrent_model.load_state_dict(parallel_model.state_dict())
+
+    inputs = torch.randn(4, 6, 8)
+    initial_state: MLSTMCellState = tuple(torch.randn_like(item) for item in parallel_model.initial_state(4))
+    valid_mask = torch.tensor([
+        [True, True, False, True, False, True],
+        [False, False, False, False, False, False],
+        [True, False, True, False, True, False],
+        [False, True, True, False, False, True],
+    ])
+    reset_mask = torch.tensor([
+        [False, False, True, False, False, False],
+        [False, True, False, False, False, False],
+        [True, False, False, True, False, False],
+        [False, True, False, False, True, False],
+    ])
+
+    parallel_output, parallel_state = parallel_model(
+        inputs,
+        valid_mask=valid_mask,
+        initial_state=initial_state,
+        reset_mask=reset_mask,
+    )
+    recurrent_output, recurrent_state = recurrent_model(
+        inputs,
+        valid_mask=valid_mask,
         initial_state=initial_state,
         reset_mask=reset_mask,
     )
@@ -194,3 +363,33 @@ def test_slstm_reset_state_with_large_negative_input_is_finite() -> None:
     assert torch.isfinite(output).all()
     for state_tensor in next_state:
         assert torch.isfinite(state_tensor).all()
+
+
+def _run_recurrent_mlstm_cell_sequence(
+        *,
+        cell: MLSTMCell,
+        queries: torch.Tensor,
+        keys: torch.Tensor,
+        values: torch.Tensor,
+        initial_state: MLSTMCellState,
+        valid_mask: torch.Tensor,
+        reset_mask: torch.Tensor,
+) -> tuple[torch.Tensor, MLSTMCellState]:
+    sequence_length = queries.shape[1]
+    state = initial_state
+    zero_output = queries.new_zeros((queries.shape[0], cell.hidden_dim))
+    outputs: list[torch.Tensor] = []
+
+    for time_idx in range(sequence_length):
+        state = reset_state(state, reset_mask[:, time_idx])
+        step_output, next_state = cell(
+            queries[:, time_idx],
+            keys[:, time_idx],
+            values[:, time_idx],
+            state,
+        )
+        valid_t = valid_mask[:, time_idx]
+        outputs.append(torch.where(valid_t.unsqueeze(-1), step_output, zero_output))
+        state = select_state(next_state, state, valid_t)
+
+    return torch.stack(outputs, dim=1), state

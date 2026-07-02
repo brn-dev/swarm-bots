@@ -65,9 +65,10 @@ class MLSTMTemporalSequenceModel(TemporalSequenceModel):
             else initial_state
         )
 
-        if self.config.use_parallel_sequence and _can_use_parallel_sequence(valid_mask):
+        if self.config.use_parallel_sequence:
             return self._forward_parallel(
                 inputs,
+                valid_mask=valid_mask,
                 initial_state=state,
                 reset_mask=reset_mask,
             )
@@ -114,38 +115,17 @@ class MLSTMTemporalSequenceModel(TemporalSequenceModel):
             self,
             inputs: torch.Tensor,
             *,
+            valid_mask: torch.Tensor | None,
             initial_state: MLSTMCellState,
             reset_mask: torch.Tensor | None,
     ) -> tuple[torch.Tensor, MLSTMCellState]:
         q, k, v = self.qkv_projection(inputs).chunk(3, dim=-1)
-        sequence_length = inputs.shape[1]
-        state = initial_state
-        outputs: list[torch.Tensor] = []
-        start_idx = 0
-
-        for end_idx in _parallel_segment_end_indices(reset_mask=reset_mask, sequence_length=sequence_length):
-            if reset_mask is not None:
-                state = reset_state(state, reset_mask[:, start_idx])
-            segment_output, state = self.cell.forward_sequence(
-                q[:, start_idx:end_idx],
-                k[:, start_idx:end_idx],
-                v[:, start_idx:end_idx],
-                state,
-            )
-            outputs.append(segment_output)
-            start_idx = end_idx
-
-        return torch.cat(outputs, dim=1).contiguous(), state
-
-
-def _can_use_parallel_sequence(valid_mask: torch.Tensor | None) -> bool:
-    return valid_mask is None or bool(torch.all(valid_mask))
-
-
-def _parallel_segment_end_indices(*, reset_mask: torch.Tensor | None, sequence_length: int) -> list[int]:
-    if reset_mask is None:
-        return [sequence_length]
-
-    reset_times = torch.any(reset_mask, dim=0).nonzero(as_tuple=False).flatten().tolist()
-    segment_starts = [time_idx for time_idx in reset_times if time_idx > 0]
-    return [*segment_starts, sequence_length]
+        output, state = self.cell.forward_sequence(
+            q,
+            k,
+            v,
+            initial_state,
+            valid_mask=valid_mask,
+            reset_mask=reset_mask,
+        )
+        return output.contiguous(), state

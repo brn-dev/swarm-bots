@@ -15,7 +15,7 @@ SLSTMCellState = tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]
 class SLSTMCellConfig:
     num_heads: int = 4
     recurrent_weight_init: Literal["zeros", "standard"] = "zeros"
-    bias_init: Literal["powerlaw_blockdependent", "small_init", "zeros", "standard"] = "powerlaw_blockdependent"
+    bias_init: Literal["powerlaw", "small_init", "zeros", "standard"] = "powerlaw"
     forget_bias_init_start: float = 3.0
     forget_bias_init_end: float = 6.0
     eps: float = 1e-6
@@ -45,7 +45,7 @@ class SLSTMCell(nn.Module):
         else:
             raise ValueError(f"Unsupported recurrent_weight_init={self.config.recurrent_weight_init}")
 
-        if self.config.bias_init == "powerlaw_blockdependent":
+        if self.config.bias_init == "powerlaw":
             nn.init.zeros_(self.bias)
             with torch.no_grad():
                 if self.head_dim == 1:
