@@ -25,16 +25,28 @@ OUTPUT_DIR = Path(__file__).resolve().parent / "results"
 GROUP_ORDER = (
     "r_mat_qcc",
     "r_mat_qcx",
+    "mlstm_mat_qcx",
+    "slstm_mat_qcx",
+    "smlstm_mat_qcx",
     "r_mat_qcs_full_causal",
     "r_mat_qcs_context_tokens_only",
     "r_mat_dec",
+    "mlstm_mat_dec",
+    "slstm_mat_dec",
+    "smlstm_mat_dec",
 )
 DISPLAY_NAME_OVERRIDES = {
     "r_mat_qcc": "R-MAT-QCC + NOP",
     "r_mat_qcx": "R-MAT-QCX + NOP",
+    "mlstm_mat_qcx": "R-MAT-QCX (mLSTM) + NOP",
+    "slstm_mat_qcx": "R-MAT-QCX (sLSTM) + NOP",
+    "smlstm_mat_qcx": "R-MAT-QCX (sLSTM/mLSTM) + NOP",
     "r_mat_qcs_full_causal": "R-MAT-QCS full causal + NOP",
     "r_mat_qcs_context_tokens_only": "R-MAT-QCS context tokens only + NOP",
     "r_mat_dec": "R-MAT-Dec + NOP",
+    "mlstm_mat_dec": "R-MAT-Dec (mLSTM) + NOP",
+    "slstm_mat_dec": "R-MAT-Dec (sLSTM) + NOP",
+    "smlstm_mat_dec": "R-MAT-Dec (sLSTM/mLSTM) + NOP",
 }
 NON_RECURRENT_DISPLAY_NAME_OVERRIDES = {
     "mat_qcc": "MAT-QCC + NOP",
@@ -52,6 +64,20 @@ NON_RECURRENT_GROUP_BY_RECURRENT_GROUP = {
 }
 THEORETICAL_MAXIMUM = None
 RUN_LENGTH_LIMIT = 250_000_000
+FOCUSED_VARIANT_GROUPS_BY_BASELINE = {
+    "mat_dec": (
+        "r_mat_dec",
+        "mlstm_mat_dec",
+        "slstm_mat_dec",
+        "smlstm_mat_dec",
+    ),
+    "mat_qcx": (
+        "r_mat_qcx",
+        "mlstm_mat_qcx",
+        "slstm_mat_qcx",
+        "smlstm_mat_qcx",
+    ),
+}
 
 
 def non_recurrent_pairwise_group_name(non_recurrent_group: str) -> str:
@@ -113,6 +139,25 @@ def build_pairwise_plot_selections() -> tuple[ExperimentPlotSelection, ...]:
     )
 
 
+def build_focused_variant_plot_selections() -> tuple[ExperimentPlotSelection, ...]:
+    return tuple(
+        ExperimentPlotSelection(
+            name=f"{baseline_group}_variants_vs_non_recurrent",
+            group_names=(
+                *variant_groups,
+                non_recurrent_pairwise_group_name(baseline_group),
+            ),
+            title_suffix=(
+                f"{NON_RECURRENT_DISPLAY_NAME_OVERRIDES[baseline_group]} recurrent variants vs "
+                f"{NON_RECURRENT_DISPLAY_NAME_OVERRIDES[baseline_group]} (non-recurrent)"
+            ),
+            required_group_names=(non_recurrent_pairwise_group_name(baseline_group),),
+            output_subdir=baseline_group,
+        )
+        for baseline_group, variant_groups in FOCUSED_VARIANT_GROUPS_BY_BASELINE.items()
+    )
+
+
 def plot_pairwise_recurrent_vs_non_recurrent() -> list[Path]:
     groups = load_experiment_groups(
         EXPERIMENT_RUN_DIR,
@@ -124,6 +169,22 @@ def plot_pairwise_recurrent_vs_non_recurrent() -> list[Path]:
     normalized_dpis = normalize_dpis(None)
     output_paths: list[Path] = []
     for selection in build_pairwise_plot_selections():
+        output_paths.extend(
+            plot_experiment_selection(
+                selection=selection,
+                groups=groups,
+                output_dir=OUTPUT_DIR,
+                x_column="timesteps",
+                dpis=normalized_dpis,
+                theoretical_maximum=THEORETICAL_MAXIMUM,
+                run_length_limit=RUN_LENGTH_LIMIT,
+                cut_at_limit=False,
+                group_line_width=GROUP_LINE_WIDTH,
+                group_line_alpha=GROUP_LINE_ALPHA,
+                colors=colors,
+            )
+        )
+    for selection in build_focused_variant_plot_selections():
         output_paths.extend(
             plot_experiment_selection(
                 selection=selection,

@@ -4,7 +4,7 @@ import argparse
 import math
 import sys
 from collections.abc import Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, is_dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal
@@ -218,6 +218,21 @@ def _default_experiment_run_name(*, scenario_name: MJWScenarioName) -> str:
 
 def _default_ccd_iterations(*, scenario_name: MJWScenarioName) -> int | None:
     return 4096 if scenario_name in {"dual_payload", "payload_step", "multi_payload_goal"} else None
+
+
+def _metadata_name(value: Any) -> Any:
+    if value is None:
+        return None
+    if isinstance(value, type):
+        return f"{value.__module__}.{value.__qualname__}"
+    if is_dataclass(value) and not isinstance(value, type):
+        return {
+            "class": f"{value.__class__.__module__}.{value.__class__.__qualname__}",
+            "values": asdict(value),
+        }
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        return [_metadata_name(item) for item in value]
+    return value
 
 
 def _is_recurrent_policy_variant(policy_variant: PolicyVariant) -> bool:
@@ -444,6 +459,8 @@ def run_experiment(
         scenario_name: MJWScenarioName = "wall",
         ccd_iterations: int | None = None,
         scenario_kwargs: dict[str, object] | None = None,
+        rmat_temporal_model_cls: Any = None,
+        rmat_temporal_model_config: Any = None,
         total_timesteps: int = 100_000_000,
 ) -> None:
     from swarmbots.learn.torch_logging import enable_torch_compile_logging
@@ -650,6 +667,8 @@ def run_experiment(
         act_fn_cls=act_fn_cls,
         mat_init_gains=mat_init_gains,
         mat_normalization=mat_normalization,
+        rmat_temporal_model_cls=rmat_temporal_model_cls,
+        rmat_temporal_model_config=rmat_temporal_model_config,
         assume_agent_mask_is_active_prefix=not shuffle_agents or preserve_inactive_prefix_structure,
     )
     policy_local_latent_dim = int(getattr(base_policy, "local_latent_dim", enc_d_model))
@@ -892,6 +911,8 @@ def run_experiment(
         "ccd_iterations": ccd_iterations,
         "settle_initial_reset": True,
         "scenario_kwargs": scenario_kwargs,
+        "rmat_temporal_model_cls": _metadata_name(rmat_temporal_model_cls),
+        "rmat_temporal_model_config": _metadata_name(rmat_temporal_model_config),
     }
     if policy_variant != "mat_qcs":
         extra_run_metadata["policy_variant"] = policy_variant
@@ -1010,6 +1031,8 @@ def _make_base_policy(
         act_fn_cls: ActivationFactory,
         mat_init_gains: MATInitGains,
         mat_normalization: MATNormalizationConfig,
+        rmat_temporal_model_cls: Any,
+        rmat_temporal_model_config: Any,
         assume_agent_mask_is_active_prefix: bool,
 ) -> (
         PPOPolicy
@@ -1070,6 +1093,8 @@ def _make_base_policy(
         global_obs_encoder_hidden_dims=[enc_d_model],
         normalize_obs_inputs=mat_normalization.normalize_obs_inputs,
         normalize_tokens=mat_normalization.normalize_encoder_tokens,
+        **({} if rmat_temporal_model_cls is None else {"temporal_model_cls": rmat_temporal_model_cls}),
+        **({} if rmat_temporal_model_config is None else {"temporal_model_config": rmat_temporal_model_config}),
     )
 
     if policy_variant == "ppo":

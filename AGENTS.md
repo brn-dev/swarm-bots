@@ -27,7 +27,7 @@ Only write comments when something is non-obvious or explains a decision!
 When writing tests, check the intent - do not tailor the tests to the implementation.
 
 ## Guidance
-If you are unsure about how a specfic library works or how its API looks like, search the web. 
+If you are unsure about how a specific library works or how its API looks like, search the web. 
 
 Don't care too much about backwards compatibility. It's better to implement something properly, just tell me if something breaks old stuff.  
   

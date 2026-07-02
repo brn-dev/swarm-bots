@@ -1,3 +1,4 @@
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -27,7 +28,7 @@ RMATEncoderState = list[TemporalModelState]
 
 @dataclass(frozen=True)
 class RMATEncoderConfig(MATEncoderConfig):
-    temporal_model_cls: type[TemporalSequenceModel] = LSTMTemporalSequenceModel
+    temporal_model_cls: type[TemporalSequenceModel] | Sequence[type[TemporalSequenceModel]] = LSTMTemporalSequenceModel
     temporal_model_config: Any = field(default_factory=LSTMTemporalSequenceModelConfig)
 
 
@@ -36,6 +37,8 @@ class _RMATBlock(nn.Module):
     def __init__(
             self,
             config: RMATEncoderConfig,
+            *,
+            layer_idx: int,
     ) -> None:
         super().__init__()
         self.d_model = config.d_model
@@ -60,9 +63,21 @@ class _RMATBlock(nn.Module):
                 self.inter_agent_attention_encoder,
                 feedforward_init_gain=config.transformer_ff_init_gain,
             )
-        self.temporal_model = config.temporal_model_cls(
+        temporal_model_cls = _resolve_per_layer_value(
+            config.temporal_model_cls,
+            layer_idx=layer_idx,
+            num_layers=config.num_layers,
+            name="temporal_model_cls",
+        )
+        temporal_model_config = _resolve_per_layer_value(
+            config.temporal_model_config,
+            layer_idx=layer_idx,
+            num_layers=config.num_layers,
+            name="temporal_model_config",
+        )
+        self.temporal_model = temporal_model_cls(
             hidden_dim=config.d_model,
-            config=config.temporal_model_config,
+            config=temporal_model_config,
         )
 
     def forward(
@@ -189,8 +204,8 @@ class RMATEncoder(nn.Module):
 
         # noinspection PyTypeChecker
         self.layers: list[_RMATBlock] = nn.ModuleList([
-            _RMATBlock(config=config)
-            for _ in range(config.num_layers)
+            _RMATBlock(config=config, layer_idx=layer_idx)
+            for layer_idx in range(config.num_layers)
         ])
         self.output_norm = nn.LayerNorm(config.d_model)
 
@@ -390,3 +405,21 @@ def _combine_agent_time_mask(
     if valid_mask is None:
         return torch.ones((batch_size, sequence_length, n_agents), dtype=torch.bool, device=device)
     return valid_mask
+
+
+def _resolve_per_layer_value(
+        value: Any,
+        *,
+        layer_idx: int,
+        num_layers: int,
+        name: str,
+) -> Any:
+    if not _is_per_layer_sequence(value):
+        return value
+    if len(value) != num_layers:
+        raise ValueError(f"Expected {name} to have {num_layers} entries, got {len(value)}")
+    return value[layer_idx]
+
+
+def _is_per_layer_sequence(value: Any) -> bool:
+    return isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray))
