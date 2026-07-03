@@ -14,7 +14,7 @@ from swarmbots.learn.algos.xlstm.mlstm import MLSTMTemporalSequenceModel, MLSTMT
 from swarmbots.learn.algos.xlstm.slstm import SLSTMTemporalSequenceModel, SLSTMTemporalSequenceModelConfig
 from swarmbots.scenario_presets.scenario_presets_kwargs import PO_WALL_MEDIUM_SCENARIO_KWARGS
 
-EXPERIMENT_RUN_NAME = "mjw_po_wall_medium_1024x4_250M_recurrent"
+EXPERIMENT_RUN_NAME = "mjw_po_wall_medium_1024x4_250M_recurrent+"
 EXPERIMENT_TOTAL_TIMESTEPS = 250_000_000
 SCENARIO_KWARGS: dict[str, object] = dict(PO_WALL_MEDIUM_SCENARIO_KWARGS)
 TemporalModelVariant = Literal["lstm", "mlstm", "slstm", "smlstm"]
@@ -29,8 +29,8 @@ def run_experiment(
         mat_decoder_lr_multiplier: float = 0.25,
         include_actor_head_lr_multiplier: bool = False,
         temporal_model_variant: TemporalModelVariant = "lstm",
-        rmat_temporal_residual: bool = False,
-        rmat_temporal_layer_norm: bool = False,
+        rmat_temporal_residual: bool = True,
+        rmat_temporal_layer_norm: bool = True,
 ) -> None:
     temporal_model_cls, temporal_model_config = _make_temporal_model_specs(temporal_model_variant)
     run_mjw_wall_experiment(
