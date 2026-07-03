@@ -81,6 +81,114 @@ def test_rmat_sequence_matches_explicit_step_state_flow() -> None:
             torch.testing.assert_close(sequence_tensor, step_tensor)
 
 
+@pytest.mark.parametrize("norm_first", [True, False])
+def test_rmat_temporal_sublayer_has_residual_signal_path(norm_first: bool) -> None:
+    torch.manual_seed(0)
+    encoder = RMATEncoder(
+        RMATEncoderConfig(
+            d_model=8,
+            nhead=2,
+            num_layers=1,
+            dim_feedforward=16,
+            dropout=0.0,
+            norm_first=norm_first,
+            temporal_residual=True,
+            temporal_layer_norm=True,
+        ),
+        max_agents=2,
+        local_obs_dim=4,
+        global_obs_dim=0,
+    )
+    encoder.eval()
+    for parameter in encoder.layers[0].temporal_model.parameters():
+        torch.nn.init.zeros_(parameter)
+
+    first_local_obs = torch.randn(2, 2, 4)
+    second_local_obs = first_local_obs + 0.25
+    global_obs = torch.empty(2, 0)
+
+    first_output, _ = encoder(first_local_obs, global_obs)
+    second_output, _ = encoder(second_local_obs, global_obs)
+
+    assert not torch.equal(first_output, torch.zeros_like(first_output))
+    assert not torch.equal(first_output, second_output)
+
+
+def test_rmat_temporal_residual_can_be_enabled_without_layer_norm() -> None:
+    torch.manual_seed(0)
+    encoder = RMATEncoder(
+        RMATEncoderConfig(
+            d_model=8,
+            nhead=2,
+            num_layers=1,
+            dim_feedforward=16,
+            dropout=0.0,
+            temporal_residual=True,
+            temporal_layer_norm=False,
+        ),
+        max_agents=2,
+        local_obs_dim=4,
+        global_obs_dim=0,
+    )
+    encoder.eval()
+    assert isinstance(encoder.layers[0].temporal_norm, torch.nn.Identity)
+    for parameter in encoder.layers[0].temporal_model.parameters():
+        torch.nn.init.zeros_(parameter)
+
+    local_obs = torch.randn(2, 2, 4)
+    global_obs = torch.empty(2, 0)
+
+    output, _ = encoder(local_obs, global_obs)
+
+    assert not torch.equal(output, torch.zeros_like(output))
+
+
+def test_rmat_temporal_layer_norm_can_be_enabled_without_residual() -> None:
+    encoder = RMATEncoder(
+        RMATEncoderConfig(
+            d_model=8,
+            nhead=2,
+            num_layers=1,
+            dim_feedforward=16,
+            temporal_residual=False,
+            temporal_layer_norm=True,
+        ),
+        max_agents=2,
+        local_obs_dim=4,
+        global_obs_dim=0,
+    )
+
+    assert not encoder.layers[0].temporal_residual
+    assert isinstance(encoder.layers[0].temporal_norm, torch.nn.LayerNorm)
+
+
+def test_rmat_temporal_sublayer_residual_is_disabled_by_default() -> None:
+    torch.manual_seed(0)
+    encoder = RMATEncoder(
+        RMATEncoderConfig(
+            d_model=8,
+            nhead=2,
+            num_layers=1,
+            dim_feedforward=16,
+            dropout=0.0,
+        ),
+        max_agents=2,
+        local_obs_dim=4,
+        global_obs_dim=0,
+    )
+    encoder.eval()
+    assert isinstance(encoder.layers[0].temporal_norm, torch.nn.Identity)
+    for parameter in encoder.layers[0].temporal_model.parameters():
+        torch.nn.init.zeros_(parameter)
+
+    local_obs = torch.randn(2, 2, 4)
+    global_obs = torch.empty(2, 0)
+
+    output, _ = encoder(local_obs, global_obs)
+
+    torch.testing.assert_close(output, torch.zeros_like(output))
+
+
 def test_rmat_policy_mixin_disables_flat_rollout_batch_sampler() -> None:
     assert not RMATPolicyMixin().supports_rollout_batch_sampler(PPOSamplerConfig(batch_size=1))
 

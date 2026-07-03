@@ -30,6 +30,8 @@ RMATEncoderState = list[TemporalModelState]
 class RMATEncoderConfig(MATEncoderConfig):
     temporal_model_cls: type[TemporalSequenceModel] | Sequence[type[TemporalSequenceModel]] = LSTMTemporalSequenceModel
     temporal_model_config: Any = field(default_factory=LSTMTemporalSequenceModelConfig)
+    temporal_residual: bool = False
+    temporal_layer_norm: bool = False
 
 
 class _RMATBlock(nn.Module):
@@ -79,6 +81,15 @@ class _RMATBlock(nn.Module):
             hidden_dim=config.d_model,
             config=temporal_model_config,
         )
+        self.temporal_norm: nn.Module = (
+            nn.LayerNorm(config.d_model, eps=config.layer_norm_eps)
+            if config.temporal_layer_norm
+            else nn.Identity()
+        )
+        self.temporal_dropout = nn.Dropout(config.dropout)
+        self.temporal_residual = config.temporal_residual
+        self.temporal_layer_norm = config.temporal_layer_norm
+        self.norm_first = config.norm_first
 
     def forward(
             self,
@@ -129,12 +140,23 @@ class _RMATBlock(nn.Module):
             temporal_reset_mask = reset_mask.unsqueeze(1).expand(batch_size, n_agents, sequence_length)
             temporal_reset_mask = temporal_reset_mask.reshape(batch_size * n_agents, sequence_length)
 
-        temporal_outputs, next_state = self.temporal_model(
-            temporal_inputs,
+        temporal_model_inputs = (
+            self.temporal_norm(temporal_inputs)
+            if self.temporal_layer_norm and self.norm_first
+            else temporal_inputs
+        )
+        temporal_model_outputs, next_state = self.temporal_model(
+            temporal_model_inputs,
             valid_mask=temporal_valid_mask,
             initial_state=initial_state,
             reset_mask=temporal_reset_mask,
         )
+        if self.temporal_residual:
+            temporal_outputs = temporal_inputs + self.temporal_dropout(temporal_model_outputs)
+        else:
+            temporal_outputs = temporal_model_outputs
+        if self.temporal_layer_norm and not self.norm_first:
+            temporal_outputs = self.temporal_norm(temporal_outputs)
         outputs = temporal_outputs.reshape(batch_size, n_agents, sequence_length, hidden_dim).permute(0, 2, 1, 3)
         if valid_agent_time_mask is not None:
             outputs = outputs.masked_fill(~valid_agent_time_mask.unsqueeze(-1), 0.0)
