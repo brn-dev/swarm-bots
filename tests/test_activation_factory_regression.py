@@ -2,6 +2,7 @@ import torch
 from torch import nn
 
 from swarmbots.learn.algos.mat.mat_encoder import MATEncoder, MATEncoderConfig
+from swarmbots.learn.algos.r_mat.r_mat_encoder import RMATEncoder, RMATEncoderConfig
 from swarmbots.learn.algos.world_modeling.transformer_transition_model import (
     TransformerTransitionModel,
     TransformerTransitionModelConfig,
@@ -16,7 +17,8 @@ from swarmbots.learn.nn_components.mlp import MLP
 
 def _fill_linear_with_ones(linear: nn.Linear) -> nn.Linear:
     nn.init.ones_(linear.weight)
-    nn.init.zeros_(linear.bias)
+    if linear.bias is not None:
+        nn.init.zeros_(linear.bias)
     return linear
 
 
@@ -51,6 +53,22 @@ def test_mlp_passes_feature_counts_to_feature_aware_activation_factories() -> No
     assert mlp(torch.randn(4, 3)).shape == (4, 2)
 
 
+def test_mlp_supports_biasless_linear_layers_and_dropout() -> None:
+    mlp = MLP(
+        input_dim=3,
+        hidden_dims=[5, 2],
+        end_with_act_fn=False,
+        bias=False,
+        dropout=0.25,
+    )
+
+    linear_layers = [module for module in mlp.modules() if isinstance(module, nn.Linear)]
+
+    assert all(linear.bias is None for linear in linear_layers)
+    assert any(isinstance(module, nn.Dropout) for module in mlp.modules())
+    assert mlp(torch.randn(4, 3)).shape == (4, 2)
+
+
 def test_mat_encoder_accepts_regular_transformer_activation_class() -> None:
     encoder = MATEncoder(
         MATEncoderConfig(
@@ -68,6 +86,27 @@ def test_mat_encoder_accepts_regular_transformer_activation_class() -> None:
     out = encoder(torch.randn(2, 3, 5), torch.empty(2, 0))
 
     assert isinstance(encoder.encoder.layers[0].activation, nn.GELU)
+    assert out.shape == (2, 3, 8)
+    assert torch.isfinite(out).all()
+
+
+def test_rmat_encoder_accepts_regular_transformer_activation_class() -> None:
+    encoder = RMATEncoder(
+        RMATEncoderConfig(
+            d_model=8,
+            nhead=2,
+            num_layers=1,
+            dim_feedforward=16,
+            act_fn_cls=nn.GELU,
+        ),
+        max_agents=3,
+        local_obs_dim=5,
+        global_obs_dim=0,
+    )
+
+    out, _ = encoder(torch.randn(2, 3, 5), torch.empty(2, 0))
+
+    assert any(isinstance(module, nn.GELU) for module in encoder.encoder.layers[0].feedforward.modules())
     assert out.shape == (2, 3, 8)
     assert torch.isfinite(out).all()
 

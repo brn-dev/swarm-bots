@@ -44,11 +44,13 @@ def test_multi_payload_goal_reset_samples_active_payloads_goals_and_obs() -> Non
     active_mask = env.scenario_state["active_payload_mask"]
     goal_positions = env.scenario_state["goal_positions"]
     spawn_positions = env.scenario_state["payload_spawn_position"]
+    swarm_start_location = env.scenario_state["swarm_start_location"]
 
     assert int(active_mask.sum()) == 2
     assert payload_records[:, 0].tolist() == active_mask.astype(float).tolist()
-    assert np.allclose(np.sort(spawn_positions[active_mask, 0]), np.array([-0.4, 0.4]))
-    assert np.allclose(spawn_positions[active_mask, 1], 1.0)
+    relative_spawn_x = spawn_positions[active_mask, 0] - swarm_start_location[0]
+    assert np.allclose(np.sort(relative_spawn_x), np.array([-0.4, 0.4]))
+    assert np.allclose(spawn_positions[active_mask, 1], swarm_start_location[1] + 1.0)
     inactive_payload_records = payload_records[~active_mask]
     assert np.all(inactive_payload_records[:, 0] == 0.0)
     assert np.all(inactive_payload_records[:, 1:4] == 0.0)
