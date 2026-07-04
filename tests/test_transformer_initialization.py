@@ -171,6 +171,12 @@ def test_rmat_encoder_uses_mat_init_gains() -> None:
         rtol=1e-5,
         atol=1e-6,
     )
+    torch.testing.assert_close(
+        torch.linalg.vector_norm(encoder.layers[0].temporal_output_projection.weight),
+        torch.tensor(math.sqrt(encoder.layers[0].temporal_output_projection.weight.shape[1])),
+        rtol=1e-5,
+        atol=1e-6,
+    )
 
     first_layer = encoder.layers[0].inter_agent_attention_encoder.layers[0]
     second_layer = encoder.layers[1].inter_agent_attention_encoder.layers[0]
