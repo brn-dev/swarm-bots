@@ -15,7 +15,9 @@ class MLP(nn.Sequential):
             linear_init: LinearInitialization = init_linear_orthogonal,
             final_linear_init: LinearInitialization | None = None,
             act_fn_cls: ActivationFactory = nn.Tanh,
-    ):
+            bias: bool = True,
+            dropout: float = 0.0,
+    ) -> None:
         assert len(hidden_dims) > 0
 
         self.input_dim = input_dim
@@ -28,9 +30,11 @@ class MLP(nn.Sequential):
 
         if start_with_act_fn:
             modules.append(make_activation(act_fn_cls, num_features=input_dim))
+            if dropout > 0.0:
+                modules.append(nn.Dropout(dropout))
 
         for i in range(n_layers):
-            linear = nn.Linear(dims[i], dims[i + 1])
+            linear = nn.Linear(dims[i], dims[i + 1], bias=bias)
             is_final_layer = i == n_layers - 1
             if is_final_layer and final_linear_init is not None:
                 final_linear_init(linear)
@@ -40,5 +44,7 @@ class MLP(nn.Sequential):
 
             if i < n_layers - 1 or end_with_act_fn:
                 modules.append(make_activation(act_fn_cls, num_features=dims[i + 1]))
+                if dropout > 0.0:
+                    modules.append(nn.Dropout(dropout))
 
         super().__init__(*modules)

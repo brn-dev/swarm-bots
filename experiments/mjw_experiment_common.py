@@ -1035,15 +1035,15 @@ def _make_base_policy(
         gsde_init_stds: list[float],
         mat_add_agent_embeddings: bool,
         mat_decoder_self_attention_mode: MATQCSDecoderSelfAttentionMode,
-        mat_qcc_tie_query_context_and_context_self_attention: bool,
         act_fn_cls: ActivationFactory,
         mat_init_gains: MATInitGains,
         mat_normalization: MATNormalizationConfig,
-        rmat_temporal_model_cls: Any,
-        rmat_temporal_model_config: Any,
-        rmat_temporal_residual: bool,
-        rmat_temporal_layer_norm: bool,
-        assume_agent_mask_is_active_prefix: bool,
+        mat_qcc_tie_query_context_and_context_self_attention: bool = True,
+        rmat_temporal_model_cls: Any = None,
+        rmat_temporal_model_config: Any = None,
+        rmat_temporal_residual: bool = False,
+        rmat_temporal_layer_norm: bool = False,
+        assume_agent_mask_is_active_prefix: bool = False,
 ) -> (
         PPOPolicy
         | MAPPOPolicy

@@ -44,7 +44,7 @@ LSTMTemporalModelState = tuple[torch.Tensor, torch.Tensor]
 @dataclass(frozen=True)
 class LSTMTemporalSequenceModelConfig:
     num_layers: int = 1
-    bias: bool = True
+    bias: bool = False
     dropout: float = 0.0
 
 

@@ -178,6 +178,17 @@ def test_rmat_encoder_uses_mat_init_gains() -> None:
         atol=1e-6,
     )
 
-    first_layer = encoder.layers[0].inter_agent_attention_encoder.layers[0]
-    second_layer = encoder.layers[1].inter_agent_attention_encoder.layers[0]
+    first_layer = encoder.encoder.layers[0]
+    second_layer = encoder.encoder.layers[1]
     assert not torch.equal(first_layer.self_attn.in_proj_weight, second_layer.self_attn.in_proj_weight)
+    assert isinstance(first_layer.feedforward[0], nn.Linear)
+    assert isinstance(second_layer.feedforward[0], nn.Linear)
+    assert not torch.equal(first_layer.feedforward[0].weight, second_layer.feedforward[0].weight)
+
+    expected_feedforward_norm = 1.5 * math.sqrt(first_layer.feedforward[0].weight.shape[1])
+    torch.testing.assert_close(
+        torch.linalg.vector_norm(first_layer.feedforward[0].weight),
+        torch.tensor(expected_feedforward_norm),
+        rtol=1e-5,
+        atol=1e-6,
+    )

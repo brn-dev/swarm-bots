@@ -8,7 +8,8 @@ DEFAULT_ORTHOGONAL_GAIN = 1.0
 
 def init_linear_orthogonal(module: nn.Linear, gain: float = DEFAULT_ORTHOGONAL_GAIN) -> nn.Linear:
     nn.init.orthogonal_(module.weight, gain=gain)
-    nn.init.constant_(module.bias, 0)
+    if module.bias is not None:
+        nn.init.constant_(module.bias, 0)
     return module
 
 

@@ -118,6 +118,7 @@ def test_find_opening_mj_potential_rewards_xy_progress_towards_post_wall_waypoin
         opening_x=2.0,
         wall_y=3.0,
         opening_y_margin=1.0,
+        opening_distance_reward_falloff_distance=None,
     )
     state, _ = scenario.reset_scenario(
         scenario.dummy_model,

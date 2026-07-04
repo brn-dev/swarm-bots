@@ -162,7 +162,7 @@ def test_rmat_temporal_layer_norm_can_be_enabled_without_residual() -> None:
     assert isinstance(encoder.layers[0].temporal_norm, torch.nn.LayerNorm)
 
 
-def test_rmat_temporal_sublayer_residual_is_disabled_by_default() -> None:
+def test_rmat_temporal_sublayer_residual_and_norm_can_be_disabled() -> None:
     torch.manual_seed(0)
     encoder = RMATEncoder(
         RMATEncoderConfig(
@@ -171,12 +171,15 @@ def test_rmat_temporal_sublayer_residual_is_disabled_by_default() -> None:
             num_layers=1,
             dim_feedforward=16,
             dropout=0.0,
+            temporal_residual=False,
+            temporal_layer_norm=False,
         ),
         max_agents=2,
         local_obs_dim=4,
         global_obs_dim=0,
     )
     encoder.eval()
+    assert not encoder.layers[0].temporal_residual
     assert isinstance(encoder.layers[0].temporal_norm, torch.nn.Identity)
     for parameter in encoder.layers[0].temporal_model.parameters():
         torch.nn.init.zeros_(parameter)
@@ -187,6 +190,99 @@ def test_rmat_temporal_sublayer_residual_is_disabled_by_default() -> None:
     output, _ = encoder(local_obs, global_obs)
 
     torch.testing.assert_close(output, torch.zeros_like(output))
+
+
+def test_rmat_default_biasless_temporal_core_keeps_reset_zero_input_silent() -> None:
+    torch.manual_seed(0)
+    config = RMATEncoderConfig(
+        d_model=8,
+        nhead=2,
+        num_layers=1,
+        dim_feedforward=16,
+        dropout=0.0,
+        temporal_residual=False,
+        temporal_layer_norm=False,
+    )
+    encoder = RMATEncoder(
+        config,
+        max_agents=2,
+        local_obs_dim=4,
+        global_obs_dim=0,
+    )
+
+    assert config.bias
+    output, _ = encoder.layers[0]._temporal_block(
+        torch.zeros(3, 1, 2, 8),
+        valid_agent_time_mask=torch.ones(3, 1, 2, dtype=torch.bool),
+        initial_state=None,
+        reset_mask=torch.ones(3, 1, dtype=torch.bool),
+    )
+
+    torch.testing.assert_close(output, torch.zeros_like(output))
+
+
+@pytest.mark.parametrize("temporal_model_order", ["temporal_first", "inter_agent_attention_first"])
+def test_rmat_temporal_order_and_inter_module_mlp_are_configurable(temporal_model_order: str) -> None:
+    torch.manual_seed(0)
+    encoder = RMATEncoder(
+        RMATEncoderConfig(
+            d_model=8,
+            nhead=2,
+            num_layers=1,
+            dim_feedforward=16,
+            dropout=0.0,
+            temporal_model_order=temporal_model_order,
+            inter_module_mlp=True,
+        ),
+        max_agents=2,
+        local_obs_dim=4,
+        global_obs_dim=0,
+    )
+
+    output, state = encoder(
+        local_obs=torch.randn(2, 3, 2, 4),
+        global_obs=torch.empty(2, 3, 0),
+        agent_mask=torch.ones(2, 3, 2, dtype=torch.bool),
+    )
+
+    assert encoder.layers[0].temporal_model_order == temporal_model_order
+    assert encoder.layers[0].inter_module_feedforward is not None
+    assert output.shape == (2, 3, 2, 8)
+    assert len(state) == 1
+
+
+def test_rmat_omits_inter_module_norm_parameters_when_inter_module_mlp_is_disabled() -> None:
+    encoder = RMATEncoder(
+        RMATEncoderConfig(
+            d_model=8,
+            nhead=2,
+            num_layers=1,
+            dim_feedforward=16,
+            inter_module_mlp=False,
+        ),
+        max_agents=2,
+        local_obs_dim=4,
+        global_obs_dim=0,
+    )
+
+    assert all("inter_module_feedforward_norm" not in name for name, _ in encoder.named_parameters())
+
+
+def test_rmat_rejects_more_agents_than_configured_max_agents() -> None:
+    encoder = RMATEncoder(
+        RMATEncoderConfig(
+            d_model=8,
+            nhead=2,
+            num_layers=1,
+            dim_feedforward=16,
+        ),
+        max_agents=2,
+        local_obs_dim=4,
+        global_obs_dim=0,
+    )
+
+    with pytest.raises(ValueError, match="agent dim"):
+        encoder(torch.zeros(1, 3, 4), torch.empty(1, 0))
 
 
 def test_rmat_policy_mixin_disables_flat_rollout_batch_sampler() -> None:
