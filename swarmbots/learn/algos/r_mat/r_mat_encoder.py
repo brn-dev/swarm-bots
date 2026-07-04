@@ -30,8 +30,8 @@ RMATEncoderState = list[TemporalModelState]
 class RMATEncoderConfig(MATEncoderConfig):
     temporal_model_cls: type[TemporalSequenceModel] | Sequence[type[TemporalSequenceModel]] = LSTMTemporalSequenceModel
     temporal_model_config: Any = field(default_factory=LSTMTemporalSequenceModelConfig)
-    temporal_residual: bool = False
-    temporal_layer_norm: bool = False
+    temporal_residual: bool = True
+    temporal_layer_norm: bool = True
 
 
 class _RMATBlock(nn.Module):
@@ -81,6 +81,15 @@ class _RMATBlock(nn.Module):
             hidden_dim=config.d_model,
             config=temporal_model_config,
         )
+        temporal_output_projection_gain = (
+            config.linear_init_gain
+            if config.linear_projection_init_gain is None
+            else config.linear_projection_init_gain
+        )
+        self.temporal_output_projection = nn.Linear(config.d_model, config.d_model, bias=config.bias)
+        nn.init.orthogonal_(self.temporal_output_projection.weight, gain=temporal_output_projection_gain)
+        if self.temporal_output_projection.bias is not None:
+            nn.init.zeros_(self.temporal_output_projection.bias)
         self.temporal_norm: nn.Module = (
             nn.LayerNorm(config.d_model, eps=config.layer_norm_eps)
             if config.temporal_layer_norm
@@ -151,6 +160,7 @@ class _RMATBlock(nn.Module):
             initial_state=initial_state,
             reset_mask=temporal_reset_mask,
         )
+        temporal_model_outputs = self.temporal_output_projection(temporal_model_outputs)
         if self.temporal_residual:
             temporal_outputs = temporal_inputs + self.temporal_dropout(temporal_model_outputs)
         else:
