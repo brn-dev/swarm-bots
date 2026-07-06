@@ -8,7 +8,7 @@ import torch
 from gymnasium import spaces
 from gymnasium.vector import AutoresetMode, SyncVectorEnv
 
-import swarmbots.learn.algos.off_policy.rollout as off_policy_rollout
+import swarmbots.learn.algos.off_policy.off_policy_rollout as off_policy_rollout
 from swarmbots.learn.algos.off_policy import OffPolicyReplayBuffer, collect_off_policy_steps
 from swarmbots.learn.base_policy import BasePolicy
 from swarmbots.learn.env_wrappers.learn_wrappers.swarm_bots_learn_env_wrapper import SwarmBotsLearnEnvWrapper
@@ -131,12 +131,14 @@ def _make_buffer(
         *,
         capacity_per_env: int,
         store_previous_actions: bool = False,
+        temporal_state_store_interval: int | None = None,
 ) -> OffPolicyReplayBuffer:
     return OffPolicyReplayBuffer(
         capacity_per_env=capacity_per_env,
         observation_space=env.observation_space,
         action_space=env.action_space,
         store_previous_actions=store_previous_actions,
+        temporal_state_store_interval=temporal_state_store_interval,
         storage_device="cpu",
         train_device="cpu",
     )
@@ -163,6 +165,10 @@ def _multi_obs(values: tuple[float, ...]) -> dict[str, torch.Tensor]:
 
 def _actions(value: float) -> torch.Tensor:
     return torch.full((1, 2, 2), value)
+
+
+def _temporal_state(value: float) -> torch.Tensor:
+    return torch.full((1, 2, 1), value)
 
 
 class _PreviousActionPolicy(BasePolicy):
@@ -447,6 +453,29 @@ class OffPolicyReplayTests(unittest.TestCase):
         finally:
             env.close()
 
+    def test_default_buffer_does_not_allocate_recurrent_storage(self) -> None:
+        env = _make_env()
+        try:
+            buffer = _make_buffer(env, capacity_per_env=2)
+
+            self.assertIsNone(buffer.episode_starts)
+            self.assertIsNone(buffer.temporal_states)
+            self.assertIsNone(buffer._temporal_state_available)
+            self.assertIsNone(buffer._current_episode_start_mask)
+
+            buffer.add(
+                obs=_obs(0.0),
+                actions=_actions(0.0),
+                rewards=torch.tensor([0.0]),
+                terminations=torch.tensor([False]),
+                truncations=torch.tensor([False]),
+                next_obs=_obs(1.0),
+            )
+
+            self.assertIsNone(buffer.get_all().episode_start_mask)
+        finally:
+            env.close()
+
     def test_sample_without_replacement_rejects_oversized_batches(self) -> None:
         env = _make_env()
         try:
@@ -570,6 +599,85 @@ class OffPolicyReplayTests(unittest.TestCase):
             self.assertEqual(batch.local_obs[:, 0, 0].tolist(), [0.0, 100.0])
             self.assertEqual(batch.next_local_obs[:, 0, 0].tolist(), [10.0, 1001.0])
             self.assertEqual(batch.truncations.tolist(), [False, True])
+        finally:
+            env.close()
+
+    def test_direct_done_add_accepts_packed_terminal_obs_for_sparse_lanes(self) -> None:
+        env = _make_multi_env((), (), ())
+        try:
+            buffer = _make_buffer(env, capacity_per_env=2)
+            buffer.add(
+                obs=_multi_obs((0.0, 100.0, 200.0)),
+                actions=torch.full((3, 2, 2), 1.0),
+                rewards=torch.tensor([0.0, 1.0, 2.0]),
+                terminations=torch.tensor([True, False, False]),
+                truncations=torch.tensor([False, False, True]),
+                next_obs=_multi_obs((10.0, 110.0, 210.0)),
+                terminal_obs=_multi_obs((1.0, 201.0)),
+            )
+
+            batch = buffer.get_all()
+            self.assertEqual(batch.local_obs[:, 0, 0].tolist(), [0.0, 100.0, 200.0])
+            self.assertEqual(batch.next_local_obs[:, 0, 0].tolist(), [1.0, 110.0, 201.0])
+            self.assertEqual(batch.terminations.tolist(), [True, False, False])
+            self.assertEqual(batch.truncations.tolist(), [False, False, True])
+        finally:
+            env.close()
+
+    def test_direct_done_add_rejects_terminal_obs_with_wrong_leading_dimension(self) -> None:
+        env = _make_multi_env((), (), ())
+        try:
+            buffer = _make_buffer(env, capacity_per_env=2)
+
+            with self.assertRaisesRegex(ValueError, "leading dimension"):
+                buffer.add(
+                    obs=_multi_obs((0.0, 100.0, 200.0)),
+                    actions=torch.full((3, 2, 2), 1.0),
+                    rewards=torch.tensor([0.0, 1.0, 2.0]),
+                    terminations=torch.tensor([False, False, False]),
+                    truncations=torch.tensor([False, True, False]),
+                    next_obs=_multi_obs((10.0, 110.0, 210.0)),
+                    terminal_obs=_multi_obs((999.0, 1001.0)),
+                )
+        finally:
+            env.close()
+
+    def test_terminal_obs_for_reused_slot_does_not_leak_to_new_transition(self) -> None:
+        env = _make_multi_env((), ())
+        try:
+            buffer = _make_buffer(env, capacity_per_env=2)
+            buffer.add(
+                obs=_multi_obs((0.0, 100.0)),
+                actions=torch.full((2, 2, 2), 0.0),
+                rewards=torch.tensor([0.0, 0.0]),
+                terminations=torch.tensor([False, False]),
+                truncations=torch.tensor([True, False]),
+                next_obs=_multi_obs((10.0, 110.0)),
+                terminal_obs=_multi_obs((1.0,)),
+            )
+            buffer.add(
+                obs=_multi_obs((999.0, 999.0)),
+                actions=torch.full((2, 2, 2), 1.0),
+                rewards=torch.tensor([1.0, 1.0]),
+                terminations=torch.tensor([False, False]),
+                truncations=torch.tensor([False, False]),
+                next_obs=_multi_obs((20.0, 120.0)),
+            )
+            buffer.add(
+                obs=_multi_obs((999.0, 999.0)),
+                actions=torch.full((2, 2, 2), 2.0),
+                rewards=torch.tensor([2.0, 2.0]),
+                terminations=torch.tensor([False, False]),
+                truncations=torch.tensor([False, True]),
+                next_obs=_multi_obs((30.0, 130.0)),
+                terminal_obs=_multi_obs((131.0,)),
+            )
+
+            batch = buffer.get_all()
+            self.assertEqual(batch.local_obs[:, 0, 0].tolist(), [10.0, 20.0, 110.0, 120.0])
+            self.assertEqual(batch.next_local_obs[:, 0, 0].tolist(), [20.0, 30.0, 120.0, 131.0])
+            self.assertEqual(batch.truncations.tolist(), [False, False, False, True])
+            self.assertEqual(set(buffer._terminal_obs_by_env_slot.keys()), {(1, 0)})
         finally:
             env.close()
 
@@ -842,6 +950,191 @@ class OffPolicyReplayTests(unittest.TestCase):
             )
             self.assertIsInstance(rollout_state.temporal_state, torch.Tensor)
             self.assertEqual(rollout_state.temporal_state[:, 0, 0].tolist(), [2.0])
+        finally:
+            env.close()
+
+    def test_episode_segment_sampling_uses_temporal_checkpoints_and_burn_in_mask(self) -> None:
+        env = _make_env()
+        try:
+            buffer = _make_buffer(env, capacity_per_env=6, temporal_state_store_interval=2)
+            for step in range(6):
+                buffer.add(
+                    obs=_obs(float(step)),
+                    actions=_actions(float(step + 10)),
+                    rewards=torch.tensor([float(step + 20)]),
+                    terminations=torch.tensor([False]),
+                    truncations=torch.tensor([False]),
+                    next_obs=_obs(float(step + 1)),
+                    temporal_state=_temporal_state(float(step)),
+                    next_temporal_state=_temporal_state(float(step + 1)),
+                )
+
+            with patch("torch.randint", return_value=torch.tensor([1])):
+                batch = buffer.sample_episode_segments(
+                    1,
+                    segment_length=2,
+                    burn_in_steps=1,
+                )
+
+            self.assertEqual(batch.local_obs[0, :, 0, 0].tolist(), [2.0, 3.0, 4.0])
+            self.assertEqual(batch.actions[0, :, 0, 0].tolist(), [12.0, 13.0, 14.0])
+            self.assertEqual(batch.rewards[0].tolist(), [22.0, 23.0, 24.0])
+            self.assertEqual(batch.train_mask.tolist(), [[False, True, True]])
+            self.assertEqual(batch.burn_in_mask.tolist(), [[True, False, False]])
+            self.assertEqual(batch.episode_start_mask.tolist(), [[False, False, False]])
+            self.assertEqual(batch.burn_in_steps, 1)
+            self.assertEqual(batch.segment_length, 2)
+            self.assertIsInstance(batch.initial_temporal_state, torch.Tensor)
+            self.assertEqual(batch.initial_temporal_state[:, 0, 0].tolist(), [2.0])
+        finally:
+            env.close()
+
+    def test_episode_segment_sampling_rejects_cross_episode_windows(self) -> None:
+        env = _make_env()
+        try:
+            buffer = _make_buffer(env, capacity_per_env=4, temporal_state_store_interval=1)
+            truncations = [False, True, False, False]
+            for step, truncated in enumerate(truncations):
+                buffer.add(
+                    obs=_obs(float(step)),
+                    actions=_actions(float(step)),
+                    rewards=torch.tensor([float(step)]),
+                    terminations=torch.tensor([False]),
+                    truncations=torch.tensor([truncated]),
+                    next_obs=_obs(float(step + 1)),
+                    terminal_obs=_obs(float(step + 1)) if truncated else None,
+                    temporal_state=_temporal_state(float(step)),
+                    next_temporal_state=_temporal_state(float(step + 1)),
+                )
+
+            batch = buffer.sample_episode_segments(
+                2,
+                segment_length=2,
+                replacement=False,
+            )
+
+            segments_by_start = {
+                float(batch.local_obs[batch_idx, 0, 0, 0].item()): batch.episode_ends[batch_idx].tolist()
+                for batch_idx in range(2)
+            }
+            self.assertEqual(segments_by_start, {0.0: [False, True], 2.0: [False, False]})
+        finally:
+            env.close()
+
+    def test_episode_segment_sampling_can_skip_initial_temporal_state_requirement(self) -> None:
+        env = _make_env()
+        try:
+            buffer = _make_buffer(env, capacity_per_env=3)
+            for step in range(3):
+                buffer.add(
+                    obs=_obs(float(step)),
+                    actions=_actions(float(step)),
+                    rewards=torch.tensor([float(step)]),
+                    terminations=torch.tensor([False]),
+                    truncations=torch.tensor([False]),
+                    next_obs=_obs(float(step + 1)),
+                )
+
+            with patch("torch.randint", return_value=torch.tensor([1])):
+                batch = buffer.sample_episode_segments(
+                    1,
+                    segment_length=2,
+                    require_initial_temporal_state=False,
+                )
+
+            self.assertEqual(batch.local_obs[0, :, 0, 0].tolist(), [1.0, 2.0])
+            self.assertEqual(batch.actions[0, :, 0, 0].tolist(), [1.0, 2.0])
+            self.assertEqual(batch.train_mask.tolist(), [[True, True]])
+            self.assertIsNone(batch.episode_start_mask)
+            self.assertIsNone(batch.initial_temporal_state)
+        finally:
+            env.close()
+
+    def test_episode_segment_sampling_clears_stale_temporal_checkpoint_on_obs_wraparound(self) -> None:
+        env = _make_env()
+        try:
+            buffer = _make_buffer(env, capacity_per_env=3, temporal_state_store_interval=10)
+            for step in range(5):
+                buffer.add(
+                    obs=_obs(float(step)),
+                    actions=_actions(float(step)),
+                    rewards=torch.tensor([float(step)]),
+                    terminations=torch.tensor([False]),
+                    truncations=torch.tensor([False]),
+                    next_obs=_obs(float(step + 1)),
+                    temporal_state=_temporal_state(float(step)),
+                    next_temporal_state=_temporal_state(float(step + 1)),
+                )
+
+            with self.assertRaisesRegex(ValueError, "no contiguous replay windows"):
+                buffer.sample_episode_segments(1, segment_length=1)
+        finally:
+            env.close()
+
+    def test_replay_episode_start_mask_marks_initial_and_post_done_transitions(self) -> None:
+        env = _make_env()
+        try:
+            buffer = _make_buffer(env, capacity_per_env=4, temporal_state_store_interval=1)
+            truncations = [False, True, False]
+            for step, truncated in enumerate(truncations):
+                buffer.add(
+                    obs=_obs(float(step)),
+                    actions=_actions(float(step)),
+                    rewards=torch.tensor([float(step)]),
+                    terminations=torch.tensor([False]),
+                    truncations=torch.tensor([truncated]),
+                    next_obs=_obs(float(step + 1)),
+                    terminal_obs=_obs(float(step + 1)) if truncated else None,
+                )
+
+            batch = buffer.get_all()
+            self.assertEqual(batch.episode_start_mask.tolist(), [True, False, True])
+            self.assertEqual(batch.truncations.tolist(), truncations)
+        finally:
+            env.close()
+
+    def test_policy_rollout_stores_temporal_state_checkpoints_for_segments(self) -> None:
+        env = _make_env()
+        try:
+            buffer = _make_buffer(env, capacity_per_env=5, temporal_state_store_interval=2)
+            policy = _TemporalPolicy()
+            collect_off_policy_steps(
+                env=env,
+                replay_buffer=buffer,
+                n_steps=5,
+                policy=policy,
+            )
+
+            with patch("torch.randint", return_value=torch.tensor([1])):
+                batch = buffer.sample_episode_segments(
+                    1,
+                    segment_length=2,
+                    burn_in_steps=1,
+                )
+
+            self.assertEqual(batch.local_obs[0, :, 0, 0].tolist(), [102.0, 103.0, 104.0])
+            self.assertIsInstance(batch.initial_temporal_state, torch.Tensor)
+            self.assertEqual(batch.initial_temporal_state[:, 0, 0].tolist(), [2.0])
+            self.assertEqual(batch.actions[0, :, 0, 0].tolist(), [3.0, 4.0, 5.0])
+            self.assertEqual(batch.train_mask.tolist(), [[False, True, True]])
+        finally:
+            env.close()
+
+    def test_episode_segment_sampling_requires_temporal_state_storage_by_default(self) -> None:
+        env = _make_env()
+        try:
+            buffer = _make_buffer(env, capacity_per_env=3)
+            buffer.add(
+                obs=_obs(0.0),
+                actions=_actions(0.0),
+                rewards=torch.tensor([0.0]),
+                terminations=torch.tensor([False]),
+                truncations=torch.tensor([False]),
+                next_obs=_obs(1.0),
+            )
+
+            with self.assertRaisesRegex(ValueError, "temporal_state_store_interval"):
+                buffer.sample_episode_segments(1, segment_length=1)
         finally:
             env.close()
 
