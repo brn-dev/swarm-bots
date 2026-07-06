@@ -27,7 +27,6 @@ class OffPolicyReplayBatch:
     next_hidden_local_vars: torch.Tensor
     next_hidden_global_vars: torch.Tensor
     next_agent_mask: MaybeTensor
-    next_previous_actions: MaybeTensor
 
     @property
     def episode_ends(self) -> torch.Tensor:
@@ -48,8 +47,10 @@ class OffPolicyReplayBuffer:
             store_previous_actions: bool = False,
             storage_device: torch.device | str = "cpu",
             storage_dtype: torch.dtype = torch.float32,
+            storage_pin_memory: bool = False,
             train_device: torch.device | str = "auto",
             train_dtype: torch.dtype = torch.float32,
+            non_blocking_train_transfer: bool | None = None,
     ) -> None:
         if capacity_per_env <= 0:
             raise ValueError(f"capacity_per_env must be > 0, got {capacity_per_env}")
@@ -63,8 +64,16 @@ class OffPolicyReplayBuffer:
         self.store_previous_actions = store_previous_actions
         self.storage_device = as_device(storage_device)
         self.storage_dtype = storage_dtype
+        self.storage_pin_memory = storage_pin_memory
         self.train_device = as_device(train_device)
         self.train_dtype = train_dtype
+        if self.storage_pin_memory and self.storage_device.type != "cpu":
+            raise ValueError("storage_pin_memory=True requires storage_device='cpu'.")
+        self.non_blocking_train_transfer = (
+            self.storage_pin_memory and self.train_device.type == "cuda"
+            if non_blocking_train_transfer is None
+            else non_blocking_train_transfer
+        )
 
         self.local_obs_space = observation_space["local_obs"]
         self.n_envs = int(self.local_obs_space.shape[0])
@@ -83,47 +92,42 @@ class OffPolicyReplayBuffer:
 
         obs_shape = (self.n_envs, self.observation_capacity_per_env)
         transition_shape = (self.n_envs, self.capacity_per_env)
-        self.local_obs = torch.zeros(
+        self.local_obs = self._new_storage_tensor(
             (*obs_shape, self.n_agents, *self.agent_obs_shape),
             dtype=self.storage_dtype,
-            device=self.storage_device,
         )
-        self.global_obs = torch.zeros(
+        self.global_obs = self._new_storage_tensor(
             (*obs_shape, *self.global_obs_shape),
             dtype=self.storage_dtype,
-            device=self.storage_device,
         )
-        self.hidden_local_vars = torch.zeros(
+        self.hidden_local_vars = self._new_storage_tensor(
             (*obs_shape, self.n_agents, *self.hidden_local_vars_shape),
             dtype=self.storage_dtype,
-            device=self.storage_device,
         )
-        self.hidden_global_vars = torch.zeros(
+        self.hidden_global_vars = self._new_storage_tensor(
             (*obs_shape, *self.hidden_global_vars_shape),
             dtype=self.storage_dtype,
-            device=self.storage_device,
         )
         self.agent_mask: MaybeTensor = None
         if self.has_agent_mask:
-            self.agent_mask = torch.zeros(
+            self.agent_mask = self._new_storage_tensor(
                 (*obs_shape, self.n_agents),
                 dtype=torch.bool,
-                device=self.storage_device,
             )
 
-        self.actions = torch.zeros(
+        self.actions = self._new_storage_tensor(
             (*transition_shape, self.n_agents, self.n_agent_actions),
             dtype=self.storage_dtype,
-            device=self.storage_device,
         )
-        self.rewards = torch.zeros(transition_shape, dtype=self.storage_dtype, device=self.storage_device)
-        self.terminations = torch.zeros(transition_shape, dtype=torch.bool, device=self.storage_device)
-        self.truncations = torch.zeros(transition_shape, dtype=torch.bool, device=self.storage_device)
+        self.rewards = self._new_storage_tensor(transition_shape, dtype=self.storage_dtype)
+        self.terminations = self._new_storage_tensor(transition_shape, dtype=torch.bool)
+        self.truncations = self._new_storage_tensor(transition_shape, dtype=torch.bool)
         self.previous_actions: MaybeTensor = None
-        self.next_previous_actions: MaybeTensor = None
         if store_previous_actions:
-            self.previous_actions = torch.zeros_like(self.actions)
-            self.next_previous_actions = torch.zeros_like(self.actions)
+            self.previous_actions = self._new_storage_tensor(
+                (*transition_shape, self.n_agents, self.n_agent_actions),
+                dtype=self.storage_dtype,
+            )
 
         self._write_slot = 0
         self._current_obs_slots = torch.zeros(self.n_envs, dtype=torch.long, device=self.storage_device)
@@ -183,7 +187,6 @@ class OffPolicyReplayBuffer:
             next_obs: dict[str, torch.Tensor],
             terminal_obs: dict[str, torch.Tensor] | None = None,
             previous_actions: MaybeTensor = None,
-            next_previous_actions: MaybeTensor = None,
             copy_current_obs: bool | None = None,
     ) -> None:
         """
@@ -217,17 +220,8 @@ class OffPolicyReplayBuffer:
 
         transition_obs_slots = self._current_obs_slots.clone()
         next_obs_slots = self._obs_write_slots.clone()
-        non_done_env_indices = torch.nonzero(torch.logical_not(dones), as_tuple=False).flatten()
-        if len(non_done_env_indices) > 0:
-            storage_non_done_env_indices = non_done_env_indices.to(device=self.storage_device)
-            self._copy_obs_rows_at_slots_(
-                obs=next_obs,
-                obs_slots=next_obs_slots[storage_non_done_env_indices],
-                target_env_indices=storage_non_done_env_indices,
-            )
-            self._obs_write_slots[storage_non_done_env_indices] = self._advance_obs_slots(
-                self._obs_write_slots[storage_non_done_env_indices],
-            )
+        self._copy_obs_rows_at_slots_(obs=next_obs, obs_slots=next_obs_slots)
+        self._obs_write_slots = self._advance_obs_slots(self._obs_write_slots)
 
         if len(done_env_indices) > 0:
             assert terminal_obs is not None
@@ -238,18 +232,7 @@ class OffPolicyReplayBuffer:
                 done_env_indices=storage_done_env_indices,
             )
 
-            reset_obs_slots = next_obs_slots[storage_done_env_indices].clone()
-            self._copy_obs_rows_at_slots_(
-                obs=next_obs,
-                obs_slots=reset_obs_slots,
-                target_env_indices=storage_done_env_indices,
-            )
-            self._obs_write_slots[storage_done_env_indices] = self._advance_obs_slots(reset_obs_slots)
-            self._current_obs_slots[storage_done_env_indices] = reset_obs_slots
-
-        if len(non_done_env_indices) > 0:
-            storage_non_done_env_indices = non_done_env_indices.to(device=self.storage_device)
-            self._current_obs_slots[storage_non_done_env_indices] = next_obs_slots[storage_non_done_env_indices]
+        self._current_obs_slots = next_obs_slots
 
         self._transition_obs_slots[:, slot] = transition_obs_slots
         self._transition_next_obs_slots[:, slot] = next_obs_slots
@@ -264,13 +247,6 @@ class OffPolicyReplayBuffer:
                 self.previous_actions[:, slot].zero_()
             else:
                 self.previous_actions[:, slot] = previous_actions.to(device=self.storage_device, dtype=self.storage_dtype)
-            if next_previous_actions is None:
-                self.next_previous_actions[:, slot].zero_()
-            else:
-                self.next_previous_actions[:, slot] = next_previous_actions.to(
-                    device=self.storage_device,
-                    dtype=self.storage_dtype,
-                )
 
         self._write_slot = (slot + 1) % self.capacity_per_env
         self._size_per_env = min(self._size_per_env + 1, self.capacity_per_env)
@@ -402,7 +378,7 @@ class OffPolicyReplayBuffer:
         terminal_envs = self._terminal_envs_by_transition_slot[slot]
         for row_idx, env_idx in enumerate(done_env_indices.tolist()):
             self._terminal_obs_by_env_slot[(env_idx, slot)] = {
-                key: value[row_idx].clone()
+                key: self._clone_storage_row(value[row_idx])
                 for key, value in terminal_rows.items()
             }
             terminal_envs.add(env_idx)
@@ -444,11 +420,12 @@ class OffPolicyReplayBuffer:
         truncations = self.truncations[env_indices, transition_slots]
         dones = torch.logical_or(terminations, truncations)
 
-        next_local_obs = self.local_obs[env_indices, next_obs_slots].clone()
-        next_global_obs = self.global_obs[env_indices, next_obs_slots].clone()
-        next_hidden_local_vars = self.hidden_local_vars[env_indices, next_obs_slots].clone()
-        next_hidden_global_vars = self.hidden_global_vars[env_indices, next_obs_slots].clone()
-        next_agent_mask = None if self.agent_mask is None else self.agent_mask[env_indices, next_obs_slots].clone()
+        actions = self._to_train(self.actions[env_indices, transition_slots])
+        next_local_obs = self.local_obs[env_indices, next_obs_slots]
+        next_global_obs = self.global_obs[env_indices, next_obs_slots]
+        next_hidden_local_vars = self.hidden_local_vars[env_indices, next_obs_slots]
+        next_hidden_global_vars = self.hidden_global_vars[env_indices, next_obs_slots]
+        next_agent_mask = None if self.agent_mask is None else self.agent_mask[env_indices, next_obs_slots]
         self._replace_done_next_obs_with_terminal_obs_(
             dones=dones,
             env_indices=env_indices,
@@ -465,11 +442,14 @@ class OffPolicyReplayBuffer:
             global_obs=self._to_train(self.global_obs[env_indices, obs_slots]),
             hidden_local_vars=self._to_train(self.hidden_local_vars[env_indices, obs_slots]),
             hidden_global_vars=self._to_train(self.hidden_global_vars[env_indices, obs_slots]),
-            agent_mask=None if self.agent_mask is None else self.agent_mask[env_indices, obs_slots].to(self.train_device),
-            actions=self._to_train(self.actions[env_indices, transition_slots]),
+            agent_mask=None if self.agent_mask is None else self._to_train(
+                self.agent_mask[env_indices, obs_slots],
+                dtype=torch.bool,
+            ),
+            actions=actions,
             rewards=self._to_train(self.rewards[env_indices, transition_slots]),
-            terminations=terminations.to(self.train_device),
-            truncations=truncations.to(self.train_device),
+            terminations=self._to_train(terminations, dtype=torch.bool),
+            truncations=self._to_train(truncations, dtype=torch.bool),
             previous_actions=None if self.previous_actions is None else self._to_train(
                 self.previous_actions[env_indices, transition_slots],
             ),
@@ -477,10 +457,7 @@ class OffPolicyReplayBuffer:
             next_global_obs=self._to_train(next_global_obs),
             next_hidden_local_vars=self._to_train(next_hidden_local_vars),
             next_hidden_global_vars=self._to_train(next_hidden_global_vars),
-            next_agent_mask=None if next_agent_mask is None else next_agent_mask.to(self.train_device),
-            next_previous_actions=None if self.next_previous_actions is None else self._to_train(
-                self.next_previous_actions[env_indices, transition_slots],
-            ),
+            next_agent_mask=None if next_agent_mask is None else self._to_train(next_agent_mask, dtype=torch.bool),
         )
 
     def _replace_done_next_obs_with_terminal_obs_(
@@ -527,8 +504,33 @@ class OffPolicyReplayBuffer:
         if next_agent_mask is not None:
             next_agent_mask[done_batch_indices] = torch.stack(terminal_agent_mask, dim=0)
 
-    def _to_train(self, tensor: torch.Tensor) -> torch.Tensor:
-        return tensor.to(device=self.train_device, dtype=self.train_dtype)
+    def _new_storage_tensor(self, shape: tuple[int, ...], *, dtype: torch.dtype) -> torch.Tensor:
+        if self.storage_pin_memory:
+            return torch.empty(shape, dtype=dtype, device=self.storage_device, pin_memory=True).zero_()
+        return torch.zeros(shape, dtype=dtype, device=self.storage_device)
+
+    def _clone_storage_row(self, tensor: torch.Tensor) -> torch.Tensor:
+        cloned = tensor.clone()
+        if self.storage_pin_memory and cloned.device.type == "cpu" and not cloned.is_pinned():
+            return cloned.pin_memory()
+        return cloned
+
+    def _to_train(self, tensor: torch.Tensor, *, dtype: torch.dtype | None = None) -> torch.Tensor:
+        target_dtype = dtype
+        if target_dtype is None and tensor.is_floating_point():
+            target_dtype = self.train_dtype
+        if (
+                self.storage_pin_memory
+                and self.train_device.type == "cuda"
+                and tensor.device.type == "cpu"
+                and not tensor.is_pinned()
+        ):
+            tensor = tensor.pin_memory()
+        return tensor.to(
+            device=self.train_device,
+            dtype=target_dtype if target_dtype is not None else tensor.dtype,
+            non_blocking=self.non_blocking_train_transfer,
+        )
 
     def _advance_obs_slots(self, obs_slots: torch.Tensor) -> torch.Tensor:
         return (obs_slots + 1) % self.observation_capacity_per_env

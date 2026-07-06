@@ -12,6 +12,7 @@ import swarmbots.learn.algos.off_policy.rollout as off_policy_rollout
 from swarmbots.learn.algos.off_policy import OffPolicyReplayBuffer, collect_off_policy_steps
 from swarmbots.learn.base_policy import BasePolicy
 from swarmbots.learn.env_wrappers.learn_wrappers.swarm_bots_learn_env_wrapper import SwarmBotsLearnEnvWrapper
+from swarmbots.learn.gsde_reset import GSDEIntervalResetMode
 
 
 class _ScriptedOffPolicyEnv(gymnasium.Env):
@@ -241,7 +242,171 @@ class _NoPreviousActionPolicy(BasePolicy):
         return False
 
 
+class _TemporalPolicy(BasePolicy):
+    def __init__(self) -> None:
+        super().__init__()
+        self.episode_start_masks: list[torch.Tensor] = []
+
+    @property
+    def gsde_enabled(self) -> bool:
+        return False
+
+    def get_hyper_parameters(self) -> dict[str, Any]:
+        return {}
+
+    def get_grad_norms(self) -> dict[str, float]:
+        return {}
+
+    def initial_temporal_state(
+            self,
+            batch_size: int,
+            n_agents: int,
+            *,
+            device: torch.device,
+            dtype: torch.dtype,
+    ) -> torch.Tensor:
+        return torch.zeros((batch_size, n_agents, 1), dtype=dtype, device=device)
+
+    def act(
+            self,
+            local_obs: torch.Tensor,
+            global_obs: torch.Tensor,
+            hidden_local_vars: torch.Tensor | None = None,
+            hidden_global_vars: torch.Tensor | None = None,
+            agent_mask: torch.Tensor | None = None,
+            previous_actions: torch.Tensor | None = None,
+            deterministic: bool = False,
+    ) -> torch.Tensor:
+        _ = local_obs
+        _ = global_obs
+        _ = hidden_local_vars
+        _ = hidden_global_vars
+        _ = agent_mask
+        _ = previous_actions
+        _ = deterministic
+        raise AssertionError("off-policy rollout should use act_with_temporal_state()")
+
+    def act_with_temporal_state(
+            self,
+            local_obs: torch.Tensor,
+            global_obs: torch.Tensor,
+            hidden_local_vars: torch.Tensor | None = None,
+            hidden_global_vars: torch.Tensor | None = None,
+            agent_mask: torch.Tensor | None = None,
+            previous_actions: torch.Tensor | None = None,
+            deterministic: bool = False,
+            *,
+            temporal_state: Any = None,
+            episode_start_mask: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        _ = global_obs
+        _ = hidden_local_vars
+        _ = hidden_global_vars
+        _ = agent_mask
+        _ = previous_actions
+        _ = deterministic
+        if not isinstance(temporal_state, torch.Tensor):
+            raise AssertionError("temporal_state must be passed")
+        if episode_start_mask is None:
+            raise AssertionError("episode_start_mask must be passed")
+        self.episode_start_masks.append(episode_start_mask.detach().cpu().clone())
+        reset_mask = episode_start_mask.view(-1, 1, 1)
+        current_state = temporal_state.masked_fill(reset_mask, 0.0)
+        action_value = current_state + 1.0
+        actions = action_value.expand(*local_obs.shape[:2], 2).clone()
+        return actions, action_value
+
+    def update_loss_weights(self, **weights: float) -> None:
+        if weights:
+            raise ValueError(f"Unknown loss weights: {sorted(weights)}")
+
+    def requires_previous_actions(self) -> bool:
+        return False
+
+
+class _SpyGSDEActionDist:
+    def __init__(self) -> None:
+        self.episode_start_masks: list[torch.Tensor] = []
+        self.step_resets: list[tuple[torch.Tensor | None, tuple[int, ...] | None]] = []
+
+    def reset_temporal_correlations_on_ep_start(self, mask: torch.Tensor) -> None:
+        self.episode_start_masks.append(mask.detach().cpu().clone())
+
+    def reset_temporal_correlations_on_step(
+            self,
+            mask: torch.Tensor | None = None,
+            batch_shape: tuple[int, ...] | None = None,
+    ) -> None:
+        self.step_resets.append((None if mask is None else mask.detach().cpu().clone(), batch_shape))
+
+
+class _GSDEPolicy(_NoPreviousActionPolicy):
+    def __init__(self) -> None:
+        super().__init__()
+        self.action_dist = _SpyGSDEActionDist()
+
+    @property
+    def gsde_enabled(self) -> bool:
+        return True
+
+
 class OffPolicyReplayTests(unittest.TestCase):
+    def assertNoNextPreviousActions(self, batch: object) -> None:
+        self.assertFalse(hasattr(batch, "next_previous_actions"))
+
+    def test_storage_pin_memory_requires_cpu_storage(self) -> None:
+        env = _make_env()
+        try:
+            with self.assertRaisesRegex(ValueError, "storage_pin_memory"):
+                OffPolicyReplayBuffer(
+                    capacity_per_env=2,
+                    observation_space=env.observation_space,
+                    action_space=env.action_space,
+                    storage_device="cuda",
+                    storage_pin_memory=True,
+                    train_device="cpu",
+                )
+        finally:
+            env.close()
+
+    def test_non_blocking_train_transfer_can_be_enabled_explicitly(self) -> None:
+        env = _make_env()
+        try:
+            buffer = OffPolicyReplayBuffer(
+                capacity_per_env=2,
+                observation_space=env.observation_space,
+                action_space=env.action_space,
+                storage_device="cpu",
+                train_device="cpu",
+                non_blocking_train_transfer=True,
+            )
+
+            self.assertTrue(buffer.non_blocking_train_transfer)
+        finally:
+            env.close()
+
+    @unittest.skipUnless(torch.cuda.is_available(), "CUDA is required for pinned-memory replay transfer")
+    def test_storage_pin_memory_allocates_pinned_cpu_storage(self) -> None:
+        env = _make_env()
+        try:
+            buffer = OffPolicyReplayBuffer(
+                capacity_per_env=2,
+                observation_space=env.observation_space,
+                action_space=env.action_space,
+                storage_device="cpu",
+                storage_pin_memory=True,
+                train_device="cuda",
+            )
+
+            self.assertTrue(buffer.local_obs.is_pinned())
+            self.assertTrue(buffer.actions.is_pinned())
+            self.assertTrue(buffer.rewards.is_pinned())
+            self.assertTrue(buffer.terminations.is_pinned())
+            self.assertTrue(buffer.truncations.is_pinned())
+            self.assertTrue(buffer.non_blocking_train_transfer)
+        finally:
+            env.close()
+
     def test_ring_observation_slots_survive_wraparound(self) -> None:
         env = _make_env()
         try:
@@ -321,6 +486,29 @@ class OffPolicyReplayTests(unittest.TestCase):
             self.assertEqual(batch.next_local_obs[:, 0, 0].tolist(), [3.0, 5.0])
             self.assertEqual(batch.actions[:, 0, 0].tolist(), [12.0, 14.0])
             self.assertEqual(batch.rewards.tolist(), [22.0, 24.0])
+        finally:
+            env.close()
+
+    def test_replacement_sample_replaces_duplicate_done_next_obs_with_terminal_obs(self) -> None:
+        env = _make_env()
+        try:
+            buffer = _make_buffer(env, capacity_per_env=2)
+            buffer.add(
+                obs=_obs(0.0),
+                actions=_actions(10.0),
+                rewards=torch.tensor([1.0]),
+                terminations=torch.tensor([False]),
+                truncations=torch.tensor([True]),
+                next_obs=_obs(100.0),
+                terminal_obs=_obs(1.0),
+            )
+
+            with patch("torch.randint", return_value=torch.tensor([0, 0])):
+                batch = buffer.sample(2, replacement=True)
+
+            self.assertEqual(batch.local_obs[:, 0, 0].tolist(), [0.0, 0.0])
+            self.assertEqual(batch.next_local_obs[:, 0, 0].tolist(), [1.0, 1.0])
+            self.assertEqual(batch.truncations.tolist(), [True, True])
         finally:
             env.close()
 
@@ -433,7 +621,7 @@ class OffPolicyReplayTests(unittest.TestCase):
             self.assertEqual(batch.truncations.tolist(), [False, True, False])
             self.assertEqual(batch.previous_actions[:, 0, 0].tolist(), [0.0, 1.0, 0.0])
             self.assertEqual(batch.actions[:, 0, 0].tolist(), [1.0, 2.0, 3.0])
-            self.assertEqual(batch.next_previous_actions[:, 0, 0].tolist(), [1.0, 2.0, 3.0])
+            self.assertNoNextPreviousActions(batch)
             self.assertEqual(len(episode_infos), 1)
             self.assertEqual(metrics["transitions_collected"], 3)
             self.assertTrue(torch.equal(rollout_state.episode_start_mask.cpu(), torch.tensor([False])))
@@ -579,7 +767,219 @@ class OffPolicyReplayTests(unittest.TestCase):
             batch = buffer.get_all()
             self.assertEqual(batch.previous_actions[:, 0, 0].tolist(), [0.0, 1.0, 2.0])
             self.assertEqual(batch.actions[:, 0, 0].tolist(), [1.0, 2.0, 3.0])
-            self.assertEqual(batch.next_previous_actions[:, 0, 0].tolist(), [1.0, 2.0, 3.0])
+            self.assertNoNextPreviousActions(batch)
+        finally:
+            env.close()
+
+    def test_policy_rollout_uses_temporal_state_api(self) -> None:
+        env = _make_env()
+        try:
+            buffer = _make_buffer(env, capacity_per_env=4)
+            policy = _TemporalPolicy()
+            _episode_infos, _metrics, rollout_state = collect_off_policy_steps(
+                env=env,
+                replay_buffer=buffer,
+                n_steps=3,
+                policy=policy,
+            )
+
+            batch = buffer.get_all()
+            self.assertEqual(batch.actions[:, 0, 0].tolist(), [1.0, 2.0, 3.0])
+            self.assertEqual(
+                [mask.tolist() for mask in policy.episode_start_masks],
+                [[True], [False], [False]],
+            )
+            self.assertIsInstance(rollout_state.temporal_state, torch.Tensor)
+            self.assertEqual(rollout_state.temporal_state[:, 0, 0].tolist(), [3.0])
+        finally:
+            env.close()
+
+    def test_temporal_state_resets_on_episode_start_mask(self) -> None:
+        env = _make_env(done_steps=(2,))
+        try:
+            buffer = _make_buffer(env, capacity_per_env=4)
+            policy = _TemporalPolicy()
+            _episode_infos, _metrics, rollout_state = collect_off_policy_steps(
+                env=env,
+                replay_buffer=buffer,
+                n_steps=3,
+                policy=policy,
+            )
+
+            batch = buffer.get_all()
+            self.assertEqual(batch.actions[:, 0, 0].tolist(), [1.0, 2.0, 1.0])
+            self.assertEqual(
+                [mask.tolist() for mask in policy.episode_start_masks],
+                [[True], [False], [True]],
+            )
+            self.assertIsInstance(rollout_state.temporal_state, torch.Tensor)
+            self.assertEqual(rollout_state.temporal_state[:, 0, 0].tolist(), [1.0])
+        finally:
+            env.close()
+
+    def test_temporal_state_initializes_when_policy_starts_after_random_rollout(self) -> None:
+        env = _make_env()
+        try:
+            buffer = _make_buffer(env, capacity_per_env=4)
+            _episode_infos, _metrics, rollout_state = collect_off_policy_steps(
+                env=env,
+                replay_buffer=buffer,
+                n_steps=1,
+                random_actions=True,
+            )
+            policy = _TemporalPolicy()
+            _episode_infos, _metrics, rollout_state = collect_off_policy_steps(
+                env=env,
+                replay_buffer=buffer,
+                n_steps=2,
+                policy=policy,
+                rollout_state=rollout_state,
+            )
+
+            self.assertEqual(
+                [mask.tolist() for mask in policy.episode_start_masks],
+                [[False], [False]],
+            )
+            self.assertIsInstance(rollout_state.temporal_state, torch.Tensor)
+            self.assertEqual(rollout_state.temporal_state[:, 0, 0].tolist(), [2.0])
+        finally:
+            env.close()
+
+    def test_gsde_interval_resets_are_applied_before_policy_forward(self) -> None:
+        env = _make_env()
+        try:
+            buffer = _make_buffer(env, capacity_per_env=4)
+            policy = _GSDEPolicy()
+            collect_off_policy_steps(
+                env=env,
+                replay_buffer=buffer,
+                n_steps=3,
+                policy=policy,
+                gsde_reset_mode=GSDEIntervalResetMode(interval=2),
+            )
+
+            self.assertEqual(
+                [mask.tolist() for mask in policy.action_dist.episode_start_masks],
+                [[True], [False], [False]],
+            )
+            self.assertEqual(len(policy.action_dist.step_resets), 2)
+            self.assertEqual(policy.action_dist.step_resets[0], (None, (1, 2)))
+            self.assertEqual(policy.action_dist.step_resets[1], (None, (1, 2)))
+        finally:
+            env.close()
+
+    def test_gsde_interval_noise_initializes_after_random_warmup(self) -> None:
+        env = _make_env()
+        try:
+            buffer = _make_buffer(env, capacity_per_env=4)
+            _episode_infos, _metrics, rollout_state = collect_off_policy_steps(
+                env=env,
+                replay_buffer=buffer,
+                n_steps=1,
+                random_actions=True,
+            )
+            self.assertFalse(rollout_state.gsde_noise_initialized)
+
+            policy = _GSDEPolicy()
+            _episode_infos, _metrics, rollout_state = collect_off_policy_steps(
+                env=env,
+                replay_buffer=buffer,
+                n_steps=1,
+                policy=policy,
+                rollout_state=rollout_state,
+                gsde_reset_mode=GSDEIntervalResetMode(interval=3),
+            )
+
+            self.assertTrue(rollout_state.gsde_noise_initialized)
+            self.assertEqual(policy.action_dist.step_resets, [(None, (1, 2))])
+
+            collect_off_policy_steps(
+                env=env,
+                replay_buffer=buffer,
+                n_steps=1,
+                policy=policy,
+                rollout_state=rollout_state,
+                gsde_reset_mode=GSDEIntervalResetMode(interval=3),
+            )
+
+            self.assertEqual(policy.action_dist.step_resets, [(None, (1, 2))])
+        finally:
+            env.close()
+
+    def test_gsde_policy_requires_reset_mode(self) -> None:
+        env = _make_env()
+        try:
+            buffer = _make_buffer(env, capacity_per_env=4)
+            with self.assertRaisesRegex(RuntimeError, "gsde_reset_mode"):
+                collect_off_policy_steps(
+                    env=env,
+                    replay_buffer=buffer,
+                    n_steps=1,
+                    policy=_GSDEPolicy(),
+                )
+        finally:
+            env.close()
+
+    def test_sampled_actions_are_available_for_next_previous_action_conditioning(self) -> None:
+        env = _make_env()
+        try:
+            buffer = _make_buffer(env, capacity_per_env=3, store_previous_actions=True)
+            for step in range(3):
+                buffer.add(
+                    obs=_obs(float(step)),
+                    actions=_actions(float(step + 10)),
+                    rewards=torch.tensor([float(step)]),
+                    terminations=torch.tensor([False]),
+                    truncations=torch.tensor([False]),
+                    next_obs=_obs(float(step + 1)),
+                    previous_actions=_actions(float(step + 20)),
+                )
+
+            with patch("torch.randint", return_value=torch.tensor([2, 0])):
+                batch = buffer.sample(2, replacement=True)
+
+            self.assertEqual(batch.actions[:, 0, 0].tolist(), [12.0, 10.0])
+            self.assertEqual(batch.previous_actions[:, 0, 0].tolist(), [22.0, 20.0])
+            self.assertNoNextPreviousActions(batch)
+        finally:
+            env.close()
+
+    def test_direct_add_defaults_missing_previous_actions_to_zero(self) -> None:
+        env = _make_env()
+        try:
+            buffer = _make_buffer(env, capacity_per_env=3, store_previous_actions=True)
+            buffer.add(
+                obs=_obs(0.0),
+                actions=_actions(7.0),
+                rewards=torch.tensor([1.0]),
+                terminations=torch.tensor([False]),
+                truncations=torch.tensor([False]),
+                next_obs=_obs(1.0),
+            )
+
+            batch = buffer.get_all()
+            self.assertEqual(batch.previous_actions[:, 0, 0].tolist(), [0.0])
+            self.assertEqual(batch.actions[:, 0, 0].tolist(), [7.0])
+            self.assertNoNextPreviousActions(batch)
+        finally:
+            env.close()
+
+    def test_batch_does_not_expose_next_previous_actions(self) -> None:
+        env = _make_env()
+        try:
+            buffer = _make_buffer(env, capacity_per_env=3, store_previous_actions=True)
+            buffer.add(
+                obs=_obs(0.0),
+                actions=_actions(7.0),
+                rewards=torch.tensor([1.0]),
+                terminations=torch.tensor([False]),
+                truncations=torch.tensor([False]),
+                next_obs=_obs(1.0),
+                previous_actions=_actions(3.0),
+            )
+
+            self.assertNoNextPreviousActions(buffer.get_all())
+            self.assertNoNextPreviousActions(buffer.sample(1))
         finally:
             env.close()
 
@@ -625,7 +1025,8 @@ class OffPolicyReplayTests(unittest.TestCase):
 
             batch = buffer.get_all()
             self.assertEqual(batch.previous_actions[:, 0, 0].tolist(), [0.0, 0.0])
-            self.assertEqual(batch.next_previous_actions[:, 0, 0].tolist(), [0.0, 0.0])
+            self.assertEqual(batch.actions[:, 0, 0].tolist(), [0.0, 0.0])
+            self.assertNoNextPreviousActions(batch)
         finally:
             env.close()
 
@@ -642,7 +1043,7 @@ class OffPolicyReplayTests(unittest.TestCase):
 
             batch = buffer.get_all()
             self.assertIsNone(batch.previous_actions)
-            self.assertIsNone(batch.next_previous_actions)
+            self.assertNoNextPreviousActions(batch)
         finally:
             env.close()
 
