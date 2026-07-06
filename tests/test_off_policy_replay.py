@@ -8,6 +8,7 @@ import torch
 from gymnasium import spaces
 from gymnasium.vector import AutoresetMode, SyncVectorEnv
 
+import swarmbots.learn.algos.off_policy.rollout as off_policy_rollout
 from swarmbots.learn.algos.off_policy import OffPolicyReplayBuffer, collect_off_policy_steps
 from swarmbots.learn.base_policy import BasePolicy
 from swarmbots.learn.env_wrappers.learn_wrappers.swarm_bots_learn_env_wrapper import SwarmBotsLearnEnvWrapper
@@ -454,6 +455,57 @@ class OffPolicyReplayTests(unittest.TestCase):
             self.assertEqual(metrics["transitions_collected"], 2)
             self.assertEqual(rollout_state.rollout_step_idx, 4)
             self.assertEqual(float(rollout_state.obs["local_obs"][0, 0, 0].item()), 201.0)
+        finally:
+            env.close()
+
+    def test_collect_only_snapshots_current_obs_when_buffer_needs_it(self) -> None:
+        env = _make_env(done_steps=(4,))
+        try:
+            buffer = _make_buffer(env, capacity_per_env=8)
+            with patch(
+                    "swarmbots.learn.algos.off_policy.rollout.snapshot_obs",
+                    wraps=off_policy_rollout.snapshot_obs,
+            ) as snapshot_mock:
+                _episode_infos, _metrics, rollout_state = collect_off_policy_steps(
+                    env=env,
+                    replay_buffer=buffer,
+                    n_steps=3,
+                    random_actions=True,
+                )
+
+            self.assertEqual(snapshot_mock.call_count, 1)
+
+            with patch(
+                    "swarmbots.learn.algos.off_policy.rollout.snapshot_obs",
+                    wraps=off_policy_rollout.snapshot_obs,
+            ) as snapshot_mock:
+                collect_off_policy_steps(
+                    env=env,
+                    replay_buffer=buffer,
+                    n_steps=2,
+                    rollout_state=rollout_state,
+                    random_actions=True,
+                )
+
+            self.assertEqual(snapshot_mock.call_count, 0)
+        finally:
+            env.close()
+
+    def test_collect_applies_explicit_rollout_device_to_env(self) -> None:
+        env = _make_env()
+        try:
+            buffer = _make_buffer(env, capacity_per_env=4)
+            with patch.object(env, "set_device", wraps=env.set_device) as set_device_mock:
+                _episode_infos, _metrics, rollout_state = collect_off_policy_steps(
+                    env=env,
+                    replay_buffer=buffer,
+                    n_steps=1,
+                    random_actions=True,
+                    rollout_device="cpu",
+                )
+
+            set_device_mock.assert_called_once_with(torch.device("cpu"))
+            self.assertEqual(rollout_state.obs["local_obs"].device, torch.device("cpu"))
         finally:
             env.close()
 
