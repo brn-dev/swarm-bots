@@ -365,6 +365,9 @@ def collect_off_policy_steps(
                 next_obs=next_obs,
                 terminal_obs=terminal_obs,
                 previous_actions=previous_actions,
+                episode_start_mask=episode_start_mask,
+                temporal_state=temporal_state,
+                next_temporal_state=next_temporal_state,
                 copy_current_obs=current_obs_needs_copy,
             )
         timers.buffer_add_timings.append(timers.buffer_add_timer.get_duration())

@@ -1,4 +1,6 @@
+from collections.abc import Mapping
 from dataclasses import dataclass
+from typing import Any
 
 import torch
 from gymnasium import spaces
@@ -27,6 +29,50 @@ class OffPolicyReplayBatch:
     next_hidden_local_vars: torch.Tensor
     next_hidden_global_vars: torch.Tensor
     next_agent_mask: MaybeTensor
+    episode_start_mask: torch.Tensor | None = None
+
+    @property
+    def episode_ends(self) -> torch.Tensor:
+        return torch.logical_or(self.terminations, self.truncations)
+
+    @property
+    def terminal_mask(self) -> torch.Tensor:
+        return self.terminations
+
+
+@dataclass(frozen=True, slots=True)
+class OffPolicyReplayEpisodeSegmentBatch:
+    local_obs: torch.Tensor
+    global_obs: torch.Tensor
+    hidden_local_vars: torch.Tensor
+    hidden_global_vars: torch.Tensor
+    agent_mask: MaybeTensor
+    actions: torch.Tensor
+    rewards: torch.Tensor
+    terminations: torch.Tensor
+    truncations: torch.Tensor
+    previous_actions: MaybeTensor
+    next_local_obs: torch.Tensor
+    next_global_obs: torch.Tensor
+    next_hidden_local_vars: torch.Tensor
+    next_hidden_global_vars: torch.Tensor
+    next_agent_mask: MaybeTensor
+    episode_start_mask: MaybeTensor
+    train_mask: torch.Tensor
+    initial_temporal_state: Any
+    burn_in_steps: int
+
+    @property
+    def sequence_length(self) -> int:
+        return int(self.actions.shape[1])
+
+    @property
+    def segment_length(self) -> int:
+        return self.sequence_length - self.burn_in_steps
+
+    @property
+    def burn_in_mask(self) -> torch.Tensor:
+        return torch.logical_not(self.train_mask)
 
     @property
     def episode_ends(self) -> torch.Tensor:
@@ -45,6 +91,8 @@ class OffPolicyReplayBuffer:
             action_space: VectorHybridActionSpace,
             *,
             store_previous_actions: bool = False,
+            temporal_state_store_interval: int | None = None,
+            temporal_state_storage_dtype: torch.dtype | None = None,
             storage_device: torch.device | str = "cpu",
             storage_dtype: torch.dtype = torch.float32,
             storage_pin_memory: bool = False,
@@ -56,12 +104,22 @@ class OffPolicyReplayBuffer:
             raise ValueError(f"capacity_per_env must be > 0, got {capacity_per_env}")
         if not isinstance(observation_space, spaces.Dict):
             raise ValueError(f"observation_space must be a gymnasium.spaces.Dict, got {observation_space}")
+        if temporal_state_store_interval is not None and temporal_state_store_interval <= 0:
+            raise ValueError(
+                f"temporal_state_store_interval must be > 0 when set, got {temporal_state_store_interval}"
+            )
 
         self.capacity_per_env = capacity_per_env
         self.observation_capacity_per_env = capacity_per_env + 1
         self.observation_space = observation_space
         self.action_space = action_space
         self.store_previous_actions = store_previous_actions
+        self.temporal_state_store_interval = temporal_state_store_interval
+        self.temporal_state_storage_dtype = (
+            storage_dtype
+            if temporal_state_storage_dtype is None
+            else temporal_state_storage_dtype
+        )
         self.storage_device = as_device(storage_device)
         self.storage_dtype = storage_dtype
         self.storage_pin_memory = storage_pin_memory
@@ -122,12 +180,19 @@ class OffPolicyReplayBuffer:
         self.rewards = self._new_storage_tensor(transition_shape, dtype=self.storage_dtype)
         self.terminations = self._new_storage_tensor(transition_shape, dtype=torch.bool)
         self.truncations = self._new_storage_tensor(transition_shape, dtype=torch.bool)
+        self.episode_starts: MaybeTensor = None
+        if temporal_state_store_interval is not None:
+            self.episode_starts = self._new_storage_tensor(transition_shape, dtype=torch.bool)
         self.previous_actions: MaybeTensor = None
         if store_previous_actions:
             self.previous_actions = self._new_storage_tensor(
                 (*transition_shape, self.n_agents, self.n_agent_actions),
                 dtype=self.storage_dtype,
             )
+        self.temporal_states: Any = None
+        self._temporal_state_available: torch.Tensor | None = None
+        if temporal_state_store_interval is not None:
+            self._temporal_state_available = self._new_storage_tensor(obs_shape, dtype=torch.bool)
 
         self._write_slot = 0
         self._current_obs_slots = torch.zeros(self.n_envs, dtype=torch.long, device=self.storage_device)
@@ -146,6 +211,10 @@ class OffPolicyReplayBuffer:
         self._terminal_envs_by_transition_slot: list[set[int]] = [set() for _ in range(self.capacity_per_env)]
         self._size_per_env = 0
         self._has_current_obs = False
+        self._current_episode_start_mask: MaybeTensor = None
+        if temporal_state_store_interval is not None:
+            self._current_episode_start_mask = torch.ones(self.n_envs, dtype=torch.bool, device=self.storage_device)
+        self._vector_steps_added = 0
         self.total_transitions_added = 0
 
     @property
@@ -169,11 +238,19 @@ class OffPolicyReplayBuffer:
         self._obs_write_slots.zero_()
         self._transition_obs_slots.zero_()
         self._transition_next_obs_slots.zero_()
+        if self.episode_starts is not None:
+            self.episode_starts.zero_()
+        if self._temporal_state_available is not None:
+            self._temporal_state_available.zero_()
+        self.temporal_states = None
         self._terminal_obs_by_env_slot.clear()
         for terminal_envs in self._terminal_envs_by_transition_slot:
             terminal_envs.clear()
         self._size_per_env = 0
         self._has_current_obs = False
+        if self._current_episode_start_mask is not None:
+            self._current_episode_start_mask.fill_(True)
+        self._vector_steps_added = 0
         self.total_transitions_added = 0
 
     def add(
@@ -187,6 +264,9 @@ class OffPolicyReplayBuffer:
             next_obs: dict[str, torch.Tensor],
             terminal_obs: dict[str, torch.Tensor] | None = None,
             previous_actions: MaybeTensor = None,
+            episode_start_mask: torch.Tensor | None = None,
+            temporal_state: Any = None,
+            next_temporal_state: Any = None,
             copy_current_obs: bool | None = None,
     ) -> None:
         """
@@ -200,6 +280,13 @@ class OffPolicyReplayBuffer:
         dones = torch.logical_or(terminations, truncations)
         done_env_indices = torch.nonzero(dones, as_tuple=False).flatten()
         should_copy_current_obs = not self._has_current_obs if copy_current_obs is None else copy_current_obs
+        storage_episode_start_mask: torch.Tensor | None = None
+        if self.episode_starts is not None:
+            if episode_start_mask is None:
+                assert self._current_episode_start_mask is not None
+                storage_episode_start_mask = self._current_episode_start_mask.clone()
+            else:
+                storage_episode_start_mask = episode_start_mask.to(device=self.storage_device, dtype=torch.bool)
 
         if len(done_env_indices) > 0 and terminal_obs is None:
             raise ValueError("terminal_obs is required for done transitions under SAME_STEP autoreset.")
@@ -236,6 +323,14 @@ class OffPolicyReplayBuffer:
 
         self._transition_obs_slots[:, slot] = transition_obs_slots
         self._transition_next_obs_slots[:, slot] = next_obs_slots
+        if self.episode_starts is not None:
+            assert storage_episode_start_mask is not None
+            self.episode_starts[:, slot] = storage_episode_start_mask
+
+        if self._should_store_temporal_state(self._vector_steps_added) and temporal_state is not None:
+            self._copy_temporal_state_rows_at_slots_(state=temporal_state, obs_slots=transition_obs_slots)
+        if self._should_store_temporal_state(self._vector_steps_added + 1) and next_temporal_state is not None:
+            self._copy_temporal_state_rows_at_slots_(state=next_temporal_state, obs_slots=next_obs_slots)
 
         self.actions[:, slot] = actions.to(device=self.storage_device, dtype=self.storage_dtype)
         self.rewards[:, slot] = rewards.to(device=self.storage_device, dtype=self.storage_dtype)
@@ -251,6 +346,9 @@ class OffPolicyReplayBuffer:
         self._write_slot = (slot + 1) % self.capacity_per_env
         self._size_per_env = min(self._size_per_env + 1, self.capacity_per_env)
         self._has_current_obs = True
+        if self._current_episode_start_mask is not None:
+            self._current_episode_start_mask = dones.to(device=self.storage_device, dtype=torch.bool)
+        self._vector_steps_added += 1
         self.total_transitions_added += self.n_envs
 
     def sample(
@@ -277,6 +375,89 @@ class OffPolicyReplayBuffer:
         else:
             indices = torch.randperm(len(self), generator=generator, device=self.storage_device)[:batch_size]
         return self._fetch_indices(indices)
+
+    def sample_episode_segments(
+            self,
+            batch_size: int,
+            *,
+            segment_length: int,
+            burn_in_steps: int = 0,
+            replacement: bool = True,
+            require_initial_temporal_state: bool = True,
+            generator: torch.Generator | None = None,
+    ) -> OffPolicyReplayEpisodeSegmentBatch:
+        if batch_size <= 0:
+            raise ValueError(f"batch_size must be > 0, got {batch_size}")
+        if segment_length <= 0:
+            raise ValueError(f"segment_length must be > 0, got {segment_length}")
+        if burn_in_steps < 0:
+            raise ValueError(f"burn_in_steps must be >= 0, got {burn_in_steps}")
+        if len(self) == 0:
+            raise ValueError("Cannot sample from an empty replay buffer.")
+        if require_initial_temporal_state and self._temporal_state_available is None:
+            raise ValueError(
+                "sample_episode_segments(require_initial_temporal_state=True) requires "
+                "temporal_state_store_interval to be set on the replay buffer."
+            )
+
+        total_sequence_length = burn_in_steps + segment_length
+        candidate_env_indices, candidate_logical_starts = self._episode_segment_candidates(
+            total_sequence_length=total_sequence_length,
+            require_initial_temporal_state=require_initial_temporal_state,
+        )
+        num_candidates = int(candidate_env_indices.numel())
+        if num_candidates == 0:
+            raise ValueError(
+                "Cannot sample episode segments: no contiguous replay windows satisfy the requested length, "
+                "episode-boundary, and temporal-state checkpoint constraints."
+            )
+        if not replacement and batch_size > num_candidates:
+            raise ValueError(
+                f"Cannot sample batch_size={batch_size} episode segments without replacement from "
+                f"{num_candidates} candidates."
+            )
+
+        if replacement:
+            candidate_indices = torch.randint(
+                num_candidates,
+                (batch_size,),
+                generator=generator,
+                device=self.storage_device,
+            )
+        else:
+            candidate_indices = torch.randperm(num_candidates, generator=generator, device=self.storage_device)[
+                :batch_size
+            ]
+        env_indices = candidate_env_indices[candidate_indices]
+        logical_starts = candidate_logical_starts[candidate_indices]
+        sequence_offsets = torch.arange(total_sequence_length, dtype=torch.long, device=self.storage_device)
+        logical_sequence_slots = logical_starts.unsqueeze(1) + sequence_offsets.unsqueeze(0)
+        flat_indices = (env_indices.unsqueeze(1) * self._size_per_env + logical_sequence_slots).reshape(-1)
+        flat_batch = self._fetch_indices(flat_indices)
+
+        initial_temporal_state = None
+        if require_initial_temporal_state:
+            start_transition_slots = self._logical_to_transition_slots(logical_starts)
+            start_obs_slots = self._transition_obs_slots[env_indices, start_transition_slots]
+            initial_temporal_state = self._to_train_temporal_state(
+                self._temporal_state_rows(env_indices=env_indices, obs_slots=start_obs_slots)
+            )
+
+        train_mask = torch.ones(
+            (batch_size, total_sequence_length),
+            dtype=torch.bool,
+            device=self.storage_device,
+        )
+        if burn_in_steps > 0:
+            train_mask[:, :burn_in_steps] = False
+        return self._reshape_episode_segment_batch(
+            flat_batch=flat_batch,
+            batch_size=batch_size,
+            total_sequence_length=total_sequence_length,
+            burn_in_steps=burn_in_steps,
+            train_mask=self._to_train(train_mask, dtype=torch.bool),
+            initial_temporal_state=initial_temporal_state,
+        )
 
     def get_all(self) -> OffPolicyReplayBatch:
         if len(self) == 0:
@@ -312,6 +493,7 @@ class OffPolicyReplayBuffer:
             dtype=self.storage_dtype,
         )
 
+        self._clear_temporal_state_available_(obs_slots=obs_slots, target_env_indices=target_env_indices)
         self.local_obs[target_env_indices, obs_slots] = local_obs
         self.global_obs[target_env_indices, obs_slots] = global_obs
         self.hidden_local_vars[target_env_indices, obs_slots] = hidden_local_vars
@@ -458,6 +640,103 @@ class OffPolicyReplayBuffer:
             next_hidden_local_vars=self._to_train(next_hidden_local_vars),
             next_hidden_global_vars=self._to_train(next_hidden_global_vars),
             next_agent_mask=None if next_agent_mask is None else self._to_train(next_agent_mask, dtype=torch.bool),
+            episode_start_mask=None if self.episode_starts is None else self._to_train(
+                self.episode_starts[env_indices, transition_slots],
+                dtype=torch.bool,
+            ),
+        )
+
+    def _episode_segment_candidates(
+            self,
+            *,
+            total_sequence_length: int,
+            require_initial_temporal_state: bool,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        if self._size_per_env < total_sequence_length:
+            empty = torch.empty((0,), dtype=torch.long, device=self.storage_device)
+            return empty, empty
+        if require_initial_temporal_state and self.temporal_states is None:
+            empty = torch.empty((0,), dtype=torch.long, device=self.storage_device)
+            return empty, empty
+
+        max_start_count = self._size_per_env - total_sequence_length + 1
+        logical_positions = torch.arange(self._size_per_env, dtype=torch.long, device=self.storage_device)
+        transition_slots_by_logical = self._logical_to_transition_slots(logical_positions)
+        start_positions = torch.arange(max_start_count, dtype=torch.long, device=self.storage_device)
+        candidate_env_indices: list[torch.Tensor] = []
+        candidate_logical_starts: list[torch.Tensor] = []
+
+        for env_idx in range(self.n_envs):
+            episode_ends = torch.logical_or(
+                self.terminations[env_idx, transition_slots_by_logical],
+                self.truncations[env_idx, transition_slots_by_logical],
+            )
+            valid = torch.ones(max_start_count, dtype=torch.bool, device=self.storage_device)
+            if total_sequence_length > 1:
+                end_prefix_sum = torch.cat((
+                    torch.zeros((1,), dtype=torch.long, device=self.storage_device),
+                    episode_ends.to(dtype=torch.long).cumsum(dim=0),
+                ))
+                ends_before_final_transition = (
+                    end_prefix_sum[start_positions + total_sequence_length - 1]
+                    - end_prefix_sum[start_positions]
+                )
+                valid = torch.logical_and(valid, ends_before_final_transition == 0)
+            if require_initial_temporal_state:
+                assert self._temporal_state_available is not None
+                start_transition_slots = transition_slots_by_logical[:max_start_count]
+                start_obs_slots = self._transition_obs_slots[env_idx, start_transition_slots]
+                valid = torch.logical_and(valid, self._temporal_state_available[env_idx, start_obs_slots])
+
+            valid_starts = torch.nonzero(valid, as_tuple=False).flatten()
+            if len(valid_starts) == 0:
+                continue
+            candidate_env_indices.append(torch.full_like(valid_starts, env_idx))
+            candidate_logical_starts.append(valid_starts)
+
+        if not candidate_env_indices:
+            empty = torch.empty((0,), dtype=torch.long, device=self.storage_device)
+            return empty, empty
+        return torch.cat(candidate_env_indices, dim=0), torch.cat(candidate_logical_starts, dim=0)
+
+    def _reshape_episode_segment_batch(
+            self,
+            *,
+            flat_batch: OffPolicyReplayBatch,
+            batch_size: int,
+            total_sequence_length: int,
+            burn_in_steps: int,
+            train_mask: torch.Tensor,
+            initial_temporal_state: Any,
+    ) -> OffPolicyReplayEpisodeSegmentBatch:
+        def reshape_tensor(tensor: torch.Tensor) -> torch.Tensor:
+            return tensor.reshape(batch_size, total_sequence_length, *tensor.shape[1:])
+
+        def reshape_optional_tensor(tensor: torch.Tensor | None) -> torch.Tensor | None:
+            if tensor is None:
+                return None
+            return reshape_tensor(tensor)
+
+        return OffPolicyReplayEpisodeSegmentBatch(
+            local_obs=reshape_tensor(flat_batch.local_obs),
+            global_obs=reshape_tensor(flat_batch.global_obs),
+            hidden_local_vars=reshape_tensor(flat_batch.hidden_local_vars),
+            hidden_global_vars=reshape_tensor(flat_batch.hidden_global_vars),
+            agent_mask=reshape_optional_tensor(flat_batch.agent_mask),
+            actions=reshape_tensor(flat_batch.actions),
+            rewards=reshape_tensor(flat_batch.rewards),
+            terminations=reshape_tensor(flat_batch.terminations),
+            truncations=reshape_tensor(flat_batch.truncations),
+            previous_actions=reshape_optional_tensor(flat_batch.previous_actions),
+            next_local_obs=reshape_tensor(flat_batch.next_local_obs),
+            next_global_obs=reshape_tensor(flat_batch.next_global_obs),
+            next_hidden_local_vars=reshape_tensor(flat_batch.next_hidden_local_vars),
+            next_hidden_global_vars=reshape_tensor(flat_batch.next_hidden_global_vars),
+            next_agent_mask=reshape_optional_tensor(flat_batch.next_agent_mask),
+            episode_start_mask=reshape_optional_tensor(flat_batch.episode_start_mask),
+            train_mask=train_mask,
+            initial_temporal_state=initial_temporal_state,
+            burn_in_steps=burn_in_steps,
         )
 
     def _replace_done_next_obs_with_terminal_obs_(
@@ -531,6 +810,172 @@ class OffPolicyReplayBuffer:
             dtype=target_dtype if target_dtype is not None else tensor.dtype,
             non_blocking=self.non_blocking_train_transfer,
         )
+
+    def _to_train_temporal_state(self, state: Any) -> Any:
+        if state is None:
+            return None
+        if torch.is_tensor(state):
+            return self._to_train(state)
+        if isinstance(state, tuple):
+            return tuple(self._to_train_temporal_state(item) for item in state)
+        if isinstance(state, list):
+            return [self._to_train_temporal_state(item) for item in state]
+        if isinstance(state, Mapping):
+            return type(state)((key, self._to_train_temporal_state(value)) for key, value in state.items())
+        raise TypeError(f"Unsupported temporal state item: {type(state).__name__}")
+
+    def _clear_temporal_state_available_(
+            self,
+            *,
+            obs_slots: torch.Tensor,
+            target_env_indices: torch.Tensor,
+    ) -> None:
+        if self._temporal_state_available is None:
+            return
+        self._temporal_state_available[target_env_indices, obs_slots] = False
+
+    def _should_store_temporal_state(self, observation_step_idx: int) -> bool:
+        return (
+            self.temporal_state_store_interval is not None
+            and observation_step_idx % self.temporal_state_store_interval == 0
+        )
+
+    def _copy_temporal_state_rows_at_slots_(
+            self,
+            *,
+            state: Any,
+            obs_slots: torch.Tensor,
+            target_env_indices: torch.Tensor | None = None,
+            source_env_indices: torch.Tensor | None = None,
+    ) -> None:
+        if self._temporal_state_available is None:
+            return
+        if target_env_indices is None:
+            target_env_indices = torch.arange(self.n_envs, dtype=torch.long, device=self.storage_device)
+        if source_env_indices is None:
+            source_env_indices = target_env_indices
+        obs_slots = obs_slots.to(device=self.storage_device, dtype=torch.long)
+        target_env_indices = target_env_indices.to(device=self.storage_device, dtype=torch.long)
+        source_env_indices = source_env_indices.to(dtype=torch.long)
+
+        if self.temporal_states is None:
+            self.temporal_states = self._new_temporal_state_storage(state)
+        self._copy_temporal_state_tree_rows_(
+            target=self.temporal_states,
+            source=state,
+            obs_slots=obs_slots,
+            target_env_indices=target_env_indices,
+            source_env_indices=source_env_indices,
+        )
+        self._temporal_state_available[target_env_indices, obs_slots] = True
+
+    def _new_temporal_state_storage(self, state: Any) -> Any:
+        if torch.is_tensor(state):
+            if int(state.shape[0]) != self.n_envs:
+                raise ValueError(f"Temporal state leading dimension must be {self.n_envs}, got {state.shape[0]}")
+            dtype = self.temporal_state_storage_dtype if state.is_floating_point() else state.dtype
+            return self._new_storage_tensor(
+                (self.n_envs, self.observation_capacity_per_env, *state.shape[1:]),
+                dtype=dtype,
+            )
+        if isinstance(state, tuple):
+            return tuple(self._new_temporal_state_storage(item) for item in state)
+        if isinstance(state, list):
+            return [self._new_temporal_state_storage(item) for item in state]
+        if isinstance(state, Mapping):
+            return type(state)((key, self._new_temporal_state_storage(value)) for key, value in state.items())
+        raise TypeError(f"Unsupported temporal state item: {type(state).__name__}")
+
+    def _copy_temporal_state_tree_rows_(
+            self,
+            *,
+            target: Any,
+            source: Any,
+            obs_slots: torch.Tensor,
+            target_env_indices: torch.Tensor,
+            source_env_indices: torch.Tensor,
+    ) -> None:
+        if torch.is_tensor(target) and torch.is_tensor(source):
+            source_indices = source_env_indices.to(device=source.device, dtype=torch.long)
+            source_rows = source[source_indices].to(device=self.storage_device, dtype=target.dtype)
+            target[target_env_indices, obs_slots] = source_rows
+            return
+        if isinstance(target, tuple) and isinstance(source, tuple):
+            for target_item, source_item in zip(target, source, strict=True):
+                self._copy_temporal_state_tree_rows_(
+                    target=target_item,
+                    source=source_item,
+                    obs_slots=obs_slots,
+                    target_env_indices=target_env_indices,
+                    source_env_indices=source_env_indices,
+                )
+            return
+        if isinstance(target, list) and isinstance(source, list):
+            for target_item, source_item in zip(target, source, strict=True):
+                self._copy_temporal_state_tree_rows_(
+                    target=target_item,
+                    source=source_item,
+                    obs_slots=obs_slots,
+                    target_env_indices=target_env_indices,
+                    source_env_indices=source_env_indices,
+                )
+            return
+        if isinstance(target, Mapping) and isinstance(source, Mapping):
+            if target.keys() != source.keys():
+                raise ValueError("Temporal state mappings must have matching keys")
+            for key in target:
+                self._copy_temporal_state_tree_rows_(
+                    target=target[key],
+                    source=source[key],
+                    obs_slots=obs_slots,
+                    target_env_indices=target_env_indices,
+                    source_env_indices=source_env_indices,
+                )
+            return
+        raise TypeError(
+            f"Temporal state structures do not match: {type(target).__name__} and {type(source).__name__}"
+        )
+
+    def _temporal_state_rows(
+            self,
+            *,
+            env_indices: torch.Tensor,
+            obs_slots: torch.Tensor,
+    ) -> Any:
+        return self._temporal_state_tree_rows(
+            state=self.temporal_states,
+            env_indices=env_indices,
+            obs_slots=obs_slots,
+        )
+
+    def _temporal_state_tree_rows(
+            self,
+            *,
+            state: Any,
+            env_indices: torch.Tensor,
+            obs_slots: torch.Tensor,
+    ) -> Any:
+        if torch.is_tensor(state):
+            return state[env_indices, obs_slots]
+        if isinstance(state, tuple):
+            return tuple(
+                self._temporal_state_tree_rows(state=item, env_indices=env_indices, obs_slots=obs_slots)
+                for item in state
+            )
+        if isinstance(state, list):
+            return [
+                self._temporal_state_tree_rows(state=item, env_indices=env_indices, obs_slots=obs_slots)
+                for item in state
+            ]
+        if isinstance(state, Mapping):
+            return type(state)(
+                (
+                    key,
+                    self._temporal_state_tree_rows(state=value, env_indices=env_indices, obs_slots=obs_slots),
+                )
+                for key, value in state.items()
+            )
+        raise TypeError(f"Unsupported temporal state item: {type(state).__name__}")
 
     def _advance_obs_slots(self, obs_slots: torch.Tensor) -> torch.Tensor:
         return (obs_slots + 1) % self.observation_capacity_per_env
