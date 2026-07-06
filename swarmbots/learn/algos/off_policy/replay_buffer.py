@@ -30,8 +30,12 @@ class OffPolicyReplayBatch:
     next_previous_actions: MaybeTensor
 
     @property
-    def dones(self) -> torch.Tensor:
+    def episode_ends(self) -> torch.Tensor:
         return torch.logical_or(self.terminations, self.truncations)
+
+    @property
+    def terminal_mask(self) -> torch.Tensor:
+        return self.terminations
 
 
 class OffPolicyReplayBuffer:
@@ -187,6 +191,7 @@ class OffPolicyReplayBuffer:
 
         After the stream is initialized, the current obs for this transition is the previous appended next_obs/reset
         obs. In that normal streaming case, this method ignores obs for storage and does not copy it into replay again.
+        terminal_obs may either be full vector-env observations or rows packed in done-env order.
         """
         slot = self._write_slot
         dones = torch.logical_or(terminations, truncations)
@@ -358,10 +363,9 @@ class OffPolicyReplayBuffer:
             terminal_obs: dict[str, torch.Tensor],
             done_env_indices: torch.Tensor,
     ) -> None:
-        source_env_indices = torch.arange(
-            done_env_indices.numel(),
-            dtype=torch.long,
-            device=self.storage_device,
+        source_env_indices = self._terminal_obs_source_indices(
+            terminal_obs=terminal_obs,
+            done_env_indices=done_env_indices,
         )
         terminal_rows = {
             "local_obs": self._select_obs_rows_for_storage(
@@ -402,6 +406,23 @@ class OffPolicyReplayBuffer:
                 for key, value in terminal_rows.items()
             }
             terminal_envs.add(env_idx)
+
+    def _terminal_obs_source_indices(
+            self,
+            *,
+            terminal_obs: dict[str, torch.Tensor],
+            done_env_indices: torch.Tensor,
+    ) -> torch.Tensor:
+        terminal_batch_size = int(terminal_obs["local_obs"].shape[0])
+        done_count = int(done_env_indices.numel())
+        if terminal_batch_size == self.n_envs:
+            return done_env_indices
+        if terminal_batch_size == done_count:
+            return torch.arange(done_count, dtype=torch.long, device=self.storage_device)
+        raise ValueError(
+            "terminal_obs must be either full vector-env observations or rows packed in done-env order; "
+            f"got leading dimension {terminal_batch_size} for {done_count} done envs across {self.n_envs} envs."
+        )
 
     def _select_obs_rows_for_storage(
             self,

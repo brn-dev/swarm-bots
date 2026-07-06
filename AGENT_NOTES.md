@@ -76,4 +76,5 @@ Keep only durable architecture notes and gotchas. Prefer deleting stale detail o
 - Remote run logs are reachable via WSL SSH at `brn@server2026`, `~/swarm-bots/runs`. Logs are huge; summarize with scripts/code and fetch sparsely.
 - Target Python is `3.13` (`pyproject.toml` / `.python-version`), even if older docs mention `3.11`.
 - Use `uv`; plain `pip install .` misses PyTorch CUDA package sources.
+- Run tests through uv from a normal repo shell, e.g. `uv run python -m pytest tests/test_off_policy_replay.py` or `uv run python -m pytest`. In the Codex desktop `cmd.exe` sandbox, `.venv\Scripts\python.exe` can fail with `Access is denied` because it is a uv-managed launcher, and `uv` may be missing from PATH; do not treat that as a repo/test failure.
 - Headless Linux defaults `MUJOCO_GL=egl` for `swarmbots.mj_env` / `swarmbots.mjw_env` when unset.

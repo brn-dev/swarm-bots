@@ -142,6 +142,8 @@ def collect_off_policy_steps(
             f"n_steps must be a multiple of replay_buffer.n_envs ({replay_buffer.n_envs}) because off-policy "
             "rollout stores full vector-env steps."
         )
+    if random_actions and policy is not None:
+        raise ValueError("Pass either a policy or random_actions=True, not both.")
     if policy is None and not random_actions:
         raise ValueError("Either pass a policy or set random_actions=True.")
     if rollout_state is None and len(replay_buffer) > 0:
