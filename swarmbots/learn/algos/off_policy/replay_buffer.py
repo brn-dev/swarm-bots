@@ -182,6 +182,12 @@ class OffPolicyReplayBuffer:
             next_previous_actions: MaybeTensor = None,
             copy_current_obs: bool | None = None,
     ) -> None:
+        """
+        Append one full vector-env step from a continuous stream.
+
+        After the stream is initialized, the current obs for this transition is the previous appended next_obs/reset
+        obs. In that normal streaming case, this method ignores obs for storage and does not copy it into replay again.
+        """
         slot = self._write_slot
         dones = torch.logical_or(terminations, truncations)
         done_env_indices = torch.nonzero(dones, as_tuple=False).flatten()

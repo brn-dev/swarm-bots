@@ -15,6 +15,7 @@ from swarmbots.learn.rollout_utils import (
     snapshot_obs,
 )
 from swarmbots.learn.summary_statistics import compute_summary_statistics
+from swarmbots.learn.torch_device import as_device
 
 
 @dataclass(slots=True)
@@ -69,6 +70,27 @@ def _reset_rollout_state(
     )
 
 
+def _move_obs_to_device(obs: dict[str, torch.Tensor], device: torch.device) -> dict[str, torch.Tensor]:
+    return {key: value.to(device=device) for key, value in obs.items()}
+
+
+def _move_rollout_state_to_device(
+        *,
+        rollout_state: OffPolicyRolloutState,
+        device: torch.device,
+) -> OffPolicyRolloutState:
+    return OffPolicyRolloutState(
+        obs=_move_obs_to_device(rollout_state.obs, device=device),
+        episode_start_mask=rollout_state.episode_start_mask.to(device=device),
+        previous_actions=(
+            None
+            if rollout_state.previous_actions is None
+            else rollout_state.previous_actions.to(device=device)
+        ),
+        rollout_step_idx=rollout_state.rollout_step_idx,
+    )
+
+
 def _build_rollout_metrics(
         *,
         env_reset_time: float,
@@ -104,11 +126,14 @@ def collect_off_policy_steps(
         rollout_state: OffPolicyRolloutState | None = None,
         random_actions: bool = False,
         deterministic: bool = False,
+        rollout_device: torch.device | str | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any], OffPolicyRolloutState]:
     """
     Collect complete vector-env steps into replay.
 
     n_steps counts individual transitions, so it must be a multiple of the vector env lane count.
+    rollout_device controls where the env wrapper emits tensors and where policy inference runs. If omitted, the
+    current env/rollout-state device is used.
     """
     if n_steps <= 0:
         raise ValueError(f"n_steps must be > 0, got {n_steps}")
@@ -131,6 +156,17 @@ def collect_off_policy_steps(
     track_previous_actions = replay_buffer.store_previous_actions or policy_requires_previous_actions
     env_reset_time = 0.0
     current_obs_is_stored = rollout_state is not None and replay_buffer.has_current_obs
+
+    resolved_rollout_device: torch.device | None = None
+    if rollout_device is not None:
+        resolved_rollout_device = as_device(rollout_device)
+        env.set_device(resolved_rollout_device)
+        if rollout_state is not None:
+            rollout_state = _move_rollout_state_to_device(
+                rollout_state=rollout_state,
+                device=resolved_rollout_device,
+            )
+
     if rollout_state is None:
         with PerformanceTimer() as env_reset_timer:
             rollout_state = _reset_rollout_state(
@@ -147,7 +183,7 @@ def collect_off_policy_steps(
 
     with PerformanceTimer() as to_rollout_device_timer:
         if policy is not None:
-            policy.to(obs["local_obs"].device)
+            policy.to(resolved_rollout_device if resolved_rollout_device is not None else obs["local_obs"].device)
             policy.eval()
 
     episode_infos: list[dict[str, Any]] = []
@@ -155,23 +191,24 @@ def collect_off_policy_steps(
 
     transitions_collected = 0
     while transitions_collected < n_steps:
-        obs_snapshot = snapshot_obs(obs)
+        current_obs_needs_copy = not current_obs_is_stored
+        obs_for_step = snapshot_obs(obs) if current_obs_needs_copy else obs
 
         with timers.policy_forward_timer:
             if random_actions:
                 actions = sample_random_actions(
                     env.action_space,
-                    device=obs_snapshot["local_obs"].device,
-                    dtype=obs_snapshot["local_obs"].dtype,
+                    device=obs_for_step["local_obs"].device,
+                    dtype=obs_for_step["local_obs"].dtype,
                 )
             else:
                 assert policy is not None
                 actions = policy.act(
-                    local_obs=obs_snapshot["local_obs"],
-                    global_obs=obs_snapshot["global_obs"],
-                    hidden_local_vars=obs_snapshot["hidden_local_vars"],
-                    hidden_global_vars=obs_snapshot["hidden_global_vars"],
-                    agent_mask=obs_snapshot.get("agent_mask", None),
+                    local_obs=obs_for_step["local_obs"],
+                    global_obs=obs_for_step["global_obs"],
+                    hidden_local_vars=obs_for_step["hidden_local_vars"],
+                    hidden_global_vars=obs_for_step["hidden_global_vars"],
+                    agent_mask=obs_for_step.get("agent_mask", None),
                     previous_actions=previous_actions if policy_requires_previous_actions else None,
                     deterministic=deterministic,
                 )
@@ -201,7 +238,7 @@ def collect_off_policy_steps(
 
         with timers.buffer_add_timer:
             replay_buffer.add(
-                obs=obs_snapshot,
+                obs=obs_for_step,
                 actions=actions.detach(),
                 rewards=rewards,
                 terminations=terminations,
@@ -210,7 +247,7 @@ def collect_off_policy_steps(
                 terminal_obs=terminal_obs,
                 previous_actions=previous_actions,
                 next_previous_actions=replay_next_previous_actions,
-                copy_current_obs=not current_obs_is_stored,
+                copy_current_obs=current_obs_needs_copy,
             )
         timers.buffer_add_timings.append(timers.buffer_add_timer.get_duration())
 
