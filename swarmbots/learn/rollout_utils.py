@@ -57,15 +57,7 @@ def extract_bootstrap_obs(
     if not torch.any(dones):
         return next_obs
 
-    if "final_obs" not in infos or "_final_obs" not in infos:
-        raise ValueError("SAME_STEP rollouts require infos['final_obs'] and infos['_final_obs'] for done environments.")
-
-    final_obs_mask = to_torch_tensor(infos["_final_obs"], device=dones.device, dtype=torch.bool).reshape(-1)
-    if tuple(final_obs_mask.shape) != tuple(dones.shape):
-        raise ValueError(f"Expected infos['_final_obs'] shape {tuple(dones.shape)}, got {tuple(final_obs_mask.shape)}")
-    if not torch.equal(final_obs_mask, dones):
-        raise ValueError("Expected infos['_final_obs'] to match computed dones.")
-
+    final_obs_mask = _validated_final_obs_mask(infos=infos, dones=dones)
     expected_obs_keys = set(next_obs)
     bootstrap_obs = {key: value.clone() for key, value in next_obs.items()}
     final_obs_value = infos["final_obs"]
@@ -85,6 +77,52 @@ def extract_bootstrap_obs(
             bootstrap_obs[key][env_idx] = final_obs[key]
 
     return bootstrap_obs
+
+
+def extract_terminal_obs(
+        *,
+        env: BaseLearnEnvWrapper,
+        next_obs: dict[str, torch.Tensor],
+        infos: dict[str, Any],
+        dones: torch.Tensor,
+) -> dict[str, torch.Tensor] | None:
+    if not torch.any(dones):
+        return None
+
+    final_obs_mask = _validated_final_obs_mask(infos=infos, dones=dones)
+    expected_obs_keys = set(next_obs)
+    final_obs_value = infos["final_obs"]
+    if isinstance(final_obs_value, dict):
+        final_obs = _final_obs_to_torch(env=env, final_obs=final_obs_value)
+        _validate_final_obs_keys(final_obs=final_obs, expected_obs_keys=expected_obs_keys)
+        return {key: final_obs[key][final_obs_mask] for key in expected_obs_keys}
+
+    final_obs_entries = np.asarray(final_obs_value, dtype=object).reshape(-1)
+    terminal_obs: dict[str, list[torch.Tensor]] = {key: [] for key in expected_obs_keys}
+
+    for env_idx in torch.nonzero(final_obs_mask, as_tuple=False).flatten().tolist():
+        final_obs = _final_obs_to_torch(env=env, final_obs=final_obs_entries[env_idx])
+        _validate_final_obs_keys(final_obs=final_obs, expected_obs_keys=expected_obs_keys)
+        for key in expected_obs_keys:
+            terminal_obs[key].append(final_obs[key])
+
+    return {key: torch.stack(values, dim=0) for key, values in terminal_obs.items()}
+
+
+def _validated_final_obs_mask(
+        *,
+        infos: dict[str, Any],
+        dones: torch.Tensor,
+) -> torch.Tensor:
+    if "final_obs" not in infos or "_final_obs" not in infos:
+        raise ValueError("SAME_STEP rollouts require infos['final_obs'] and infos['_final_obs'] for done environments.")
+
+    final_obs_mask = to_torch_tensor(infos["_final_obs"], device=dones.device, dtype=torch.bool).reshape(-1)
+    if tuple(final_obs_mask.shape) != tuple(dones.shape):
+        raise ValueError(f"Expected infos['_final_obs'] shape {tuple(dones.shape)}, got {tuple(final_obs_mask.shape)}")
+    if not torch.equal(final_obs_mask, dones):
+        raise ValueError("Expected infos['_final_obs'] to match computed dones.")
+    return final_obs_mask
 
 
 def _final_obs_to_torch(
@@ -125,11 +163,11 @@ def snapshot_obs(obs: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
 
 def initial_previous_actions(
         *,
-        policy: BasePolicy,
         obs: dict[str, torch.Tensor],
         n_agent_actions: int,
+        policy: BasePolicy | None = None,
 ) -> torch.Tensor | None:
-    if not policy.requires_previous_actions():
+    if policy is not None and not policy.requires_previous_actions():
         return None
 
     local_obs = obs["local_obs"]
