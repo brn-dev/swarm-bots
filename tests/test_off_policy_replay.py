@@ -150,6 +150,16 @@ def _obs(value: float) -> dict[str, torch.Tensor]:
     }
 
 
+def _multi_obs(values: tuple[float, ...]) -> dict[str, torch.Tensor]:
+    value_tensor = torch.tensor(values, dtype=torch.float32)
+    return {
+        "local_obs": value_tensor.view(-1, 1, 1).expand(-1, 2, 3).clone(),
+        "global_obs": (value_tensor + 0.5).view(-1, 1).expand(-1, 2).clone(),
+        "hidden_local_vars": (value_tensor + 1.0).view(-1, 1, 1).expand(-1, 2, 1).clone(),
+        "hidden_global_vars": (value_tensor + 2.0).view(-1, 1).clone(),
+    }
+
+
 def _actions(value: float) -> torch.Tensor:
     return torch.full((1, 2, 2), value)
 
@@ -354,6 +364,27 @@ class OffPolicyReplayTests(unittest.TestCase):
         finally:
             env.close()
 
+    def test_direct_done_add_accepts_full_vector_terminal_obs(self) -> None:
+        env = _make_multi_env((), ())
+        try:
+            buffer = _make_buffer(env, capacity_per_env=2)
+            buffer.add(
+                obs=_multi_obs((0.0, 100.0)),
+                actions=torch.full((2, 2, 2), 1.0),
+                rewards=torch.tensor([0.0, 1.0]),
+                terminations=torch.tensor([False, False]),
+                truncations=torch.tensor([False, True]),
+                next_obs=_multi_obs((10.0, 200.0)),
+                terminal_obs=_multi_obs((999.0, 1001.0)),
+            )
+
+            batch = buffer.get_all()
+            self.assertEqual(batch.local_obs[:, 0, 0].tolist(), [0.0, 100.0])
+            self.assertEqual(batch.next_local_obs[:, 0, 0].tolist(), [10.0, 1001.0])
+            self.assertEqual(batch.truncations.tolist(), [False, True])
+        finally:
+            env.close()
+
     def test_copy_current_obs_true_after_stream_start_is_rejected(self) -> None:
         env = _make_env()
         try:
@@ -426,6 +457,8 @@ class OffPolicyReplayTests(unittest.TestCase):
             self.assertEqual(batch.next_local_obs[:, 0, 0].tolist(), [101.0, 102.0, 201.0])
             self.assertEqual(batch.terminations.tolist(), [False, True, False])
             self.assertEqual(batch.truncations.tolist(), [False, False, False])
+            self.assertEqual(batch.episode_ends.tolist(), [False, True, False])
+            self.assertEqual(batch.terminal_mask.tolist(), [False, True, False])
         finally:
             env.close()
 
@@ -560,6 +593,21 @@ class OffPolicyReplayTests(unittest.TestCase):
                     replay_buffer=buffer,
                     n_steps=2,
                     policy=_PreviousActionPolicy(),
+                )
+        finally:
+            env.close()
+
+    def test_collect_rejects_random_actions_with_policy(self) -> None:
+        env = _make_env()
+        try:
+            buffer = _make_buffer(env, capacity_per_env=4)
+            with self.assertRaisesRegex(ValueError, "either a policy or random_actions"):
+                collect_off_policy_steps(
+                    env=env,
+                    replay_buffer=buffer,
+                    n_steps=2,
+                    policy=_NoPreviousActionPolicy(),
+                    random_actions=True,
                 )
         finally:
             env.close()
