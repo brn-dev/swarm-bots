@@ -712,7 +712,7 @@ class OffPolicyReplayTests(unittest.TestCase):
         try:
             buffer = _make_buffer(env, capacity_per_env=4, store_previous_actions=True)
             with patch(
-                    "swarmbots.learn.algos.off_policy.rollout.sample_random_actions",
+                    "swarmbots.learn.algos.off_policy.off_policy_rollout.sample_random_actions",
                     side_effect=[_actions(1.0), _actions(2.0), _actions(3.0)],
             ):
                 episode_infos, metrics, rollout_state = collect_off_policy_steps(
@@ -792,7 +792,7 @@ class OffPolicyReplayTests(unittest.TestCase):
         try:
             buffer = _make_buffer(env, capacity_per_env=8)
             with patch(
-                    "swarmbots.learn.algos.off_policy.rollout.snapshot_obs",
+                    "swarmbots.learn.algos.off_policy.off_policy_rollout.snapshot_obs",
                     wraps=off_policy_rollout.snapshot_obs,
             ) as snapshot_mock:
                 _episode_infos, _metrics, rollout_state = collect_off_policy_steps(
@@ -805,7 +805,7 @@ class OffPolicyReplayTests(unittest.TestCase):
             self.assertEqual(snapshot_mock.call_count, 1)
 
             with patch(
-                    "swarmbots.learn.algos.off_policy.rollout.snapshot_obs",
+                    "swarmbots.learn.algos.off_policy.off_policy_rollout.snapshot_obs",
                     wraps=off_policy_rollout.snapshot_obs,
             ) as snapshot_mock:
                 collect_off_policy_steps(
