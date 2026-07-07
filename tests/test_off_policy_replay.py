@@ -248,6 +248,44 @@ class _NoPreviousActionPolicy(BasePolicy):
         return False
 
 
+class _ObsEncodingPolicy(BasePolicy):
+    @property
+    def gsde_enabled(self) -> bool:
+        return False
+
+    def get_hyper_parameters(self) -> dict[str, Any]:
+        return {}
+
+    def get_grad_norms(self) -> dict[str, float]:
+        return {}
+
+    def act(
+            self,
+            local_obs: torch.Tensor,
+            global_obs: torch.Tensor,
+            hidden_local_vars: torch.Tensor | None = None,
+            hidden_global_vars: torch.Tensor | None = None,
+            agent_mask: torch.Tensor | None = None,
+            previous_actions: torch.Tensor | None = None,
+            deterministic: bool = False,
+    ) -> torch.Tensor:
+        _ = global_obs
+        _ = hidden_local_vars
+        _ = hidden_global_vars
+        _ = agent_mask
+        _ = previous_actions
+        _ = deterministic
+        action_values = local_obs[..., :1] + 0.25
+        return action_values.expand(*local_obs.shape[:2], 2).clone()
+
+    def update_loss_weights(self, **weights: float) -> None:
+        if weights:
+            raise ValueError(f"Unknown loss weights: {sorted(weights)}")
+
+    def requires_previous_actions(self) -> bool:
+        return False
+
+
 class _TemporalPolicy(BasePolicy):
     def __init__(self) -> None:
         super().__init__()
@@ -360,6 +398,90 @@ class OffPolicyReplayTests(unittest.TestCase):
     def assertNoNextPreviousActions(self, batch: object) -> None:
         self.assertFalse(hasattr(batch, "next_previous_actions"))
 
+    def assertFlatTransitionScalars(
+            self,
+            batch: Any,
+            *,
+            local_obs: list[float],
+            next_local_obs: list[float],
+            actions: list[float],
+            rewards: list[float],
+            terminations: list[bool] | None = None,
+            truncations: list[bool] | None = None,
+            previous_actions: list[float] | None = None,
+            episode_start_mask: list[bool] | None = None,
+    ) -> None:
+        self.assertEqual(batch.local_obs[:, 0, 0].tolist(), local_obs)
+        self.assertEqual(batch.local_obs[:, 1, 2].tolist(), local_obs)
+        self.assertEqual(batch.global_obs[:, 1].tolist(), [value + 0.5 for value in local_obs])
+        self.assertEqual(batch.hidden_local_vars[:, 1, 0].tolist(), [value + 1.0 for value in local_obs])
+        self.assertEqual(batch.hidden_global_vars[:, 0].tolist(), [value + 2.0 for value in local_obs])
+        self.assertEqual(batch.next_local_obs[:, 0, 0].tolist(), next_local_obs)
+        self.assertEqual(batch.next_local_obs[:, 1, 2].tolist(), next_local_obs)
+        self.assertEqual(batch.next_global_obs[:, 1].tolist(), [value + 0.5 for value in next_local_obs])
+        self.assertEqual(batch.next_hidden_local_vars[:, 1, 0].tolist(), [value + 1.0 for value in next_local_obs])
+        self.assertEqual(batch.next_hidden_global_vars[:, 0].tolist(), [value + 2.0 for value in next_local_obs])
+        self.assertEqual(batch.actions[:, 0, 0].tolist(), actions)
+        self.assertEqual(batch.actions[:, 1, 1].tolist(), actions)
+        self.assertEqual(batch.rewards.tolist(), rewards)
+
+        if terminations is None:
+            terminations = [False] * len(local_obs)
+        if truncations is None:
+            truncations = [False] * len(local_obs)
+        self.assertEqual(batch.terminations.tolist(), terminations)
+        self.assertEqual(batch.truncations.tolist(), truncations)
+
+        if previous_actions is not None:
+            self.assertIsNotNone(batch.previous_actions)
+            assert batch.previous_actions is not None
+            self.assertEqual(batch.previous_actions[:, 0, 0].tolist(), previous_actions)
+            self.assertEqual(batch.previous_actions[:, 1, 1].tolist(), previous_actions)
+
+        if episode_start_mask is not None:
+            self.assertIsNotNone(batch.episode_start_mask)
+            assert batch.episode_start_mask is not None
+            self.assertEqual(batch.episode_start_mask.tolist(), episode_start_mask)
+
+    def assertSegmentTransitionScalars(
+            self,
+            batch: Any,
+            batch_idx: int,
+            *,
+            local_obs: list[float],
+            next_local_obs: list[float],
+            actions: list[float],
+            rewards: list[float],
+            terminations: list[bool] | None = None,
+            truncations: list[bool] | None = None,
+    ) -> None:
+        self.assertEqual(batch.local_obs[batch_idx, :, 0, 0].tolist(), local_obs)
+        self.assertEqual(batch.local_obs[batch_idx, :, 1, 2].tolist(), local_obs)
+        self.assertEqual(batch.global_obs[batch_idx, :, 1].tolist(), [value + 0.5 for value in local_obs])
+        self.assertEqual(batch.hidden_local_vars[batch_idx, :, 1, 0].tolist(), [value + 1.0 for value in local_obs])
+        self.assertEqual(batch.hidden_global_vars[batch_idx, :, 0].tolist(), [value + 2.0 for value in local_obs])
+        self.assertEqual(batch.next_local_obs[batch_idx, :, 0, 0].tolist(), next_local_obs)
+        self.assertEqual(batch.next_local_obs[batch_idx, :, 1, 2].tolist(), next_local_obs)
+        self.assertEqual(batch.next_global_obs[batch_idx, :, 1].tolist(), [value + 0.5 for value in next_local_obs])
+        self.assertEqual(
+            batch.next_hidden_local_vars[batch_idx, :, 1, 0].tolist(),
+            [value + 1.0 for value in next_local_obs],
+        )
+        self.assertEqual(
+            batch.next_hidden_global_vars[batch_idx, :, 0].tolist(),
+            [value + 2.0 for value in next_local_obs],
+        )
+        self.assertEqual(batch.actions[batch_idx, :, 0, 0].tolist(), actions)
+        self.assertEqual(batch.actions[batch_idx, :, 1, 1].tolist(), actions)
+        self.assertEqual(batch.rewards[batch_idx].tolist(), rewards)
+
+        if terminations is None:
+            terminations = [False] * len(local_obs)
+        if truncations is None:
+            truncations = [False] * len(local_obs)
+        self.assertEqual(batch.terminations[batch_idx].tolist(), terminations)
+        self.assertEqual(batch.truncations[batch_idx].tolist(), truncations)
+
     def test_storage_pin_memory_requires_cpu_storage(self) -> None:
         env = _make_env()
         try:
@@ -430,6 +552,59 @@ class OffPolicyReplayTests(unittest.TestCase):
             batch = buffer.get_all()
             self.assertEqual(batch.local_obs[:, 0, 0].tolist(), [2.0, 3.0, 4.0])
             self.assertEqual(batch.next_local_obs[:, 0, 0].tolist(), [3.0, 4.0, 5.0])
+        finally:
+            env.close()
+
+    def test_direct_stream_keeps_full_transition_tuple_aligned_after_multiple_wraparounds(self) -> None:
+        env = _make_env()
+        try:
+            buffer = _make_buffer(env, capacity_per_env=4, store_previous_actions=True)
+            for step in range(11):
+                buffer.add(
+                    obs=_obs(float(step)),
+                    actions=_actions(float(1000 + step)),
+                    rewards=torch.tensor([float(2000 + step)]),
+                    terminations=torch.tensor([False]),
+                    truncations=torch.tensor([False]),
+                    next_obs=_obs(float(step + 1)),
+                    previous_actions=_actions(float(3000 + step)),
+                )
+
+            self.assertFlatTransitionScalars(
+                buffer.get_all(),
+                local_obs=[7.0, 8.0, 9.0, 10.0],
+                next_local_obs=[8.0, 9.0, 10.0, 11.0],
+                actions=[1007.0, 1008.0, 1009.0, 1010.0],
+                rewards=[2007.0, 2008.0, 2009.0, 2010.0],
+                previous_actions=[3007.0, 3008.0, 3009.0, 3010.0],
+            )
+        finally:
+            env.close()
+
+    def test_without_replacement_sample_keeps_arbitrary_wrapped_rows_aligned(self) -> None:
+        env = _make_env()
+        try:
+            buffer = _make_buffer(env, capacity_per_env=5)
+            for step in range(9):
+                buffer.add(
+                    obs=_obs(float(step)),
+                    actions=_actions(float(10 + step)),
+                    rewards=torch.tensor([float(20 + step)]),
+                    terminations=torch.tensor([False]),
+                    truncations=torch.tensor([False]),
+                    next_obs=_obs(float(step + 1)),
+                )
+
+            with patch("torch.randperm", return_value=torch.tensor([4, 0, 2, 1, 3])):
+                batch = buffer.sample(3, replacement=False)
+
+            self.assertFlatTransitionScalars(
+                batch,
+                local_obs=[8.0, 4.0, 6.0],
+                next_local_obs=[9.0, 5.0, 7.0],
+                actions=[18.0, 14.0, 16.0],
+                rewards=[28.0, 24.0, 26.0],
+            )
         finally:
             env.close()
 
@@ -578,6 +753,79 @@ class OffPolicyReplayTests(unittest.TestCase):
             self.assertEqual(batch.local_obs[:, 0, 0].tolist(), [100.0, 200.0])
             self.assertEqual(batch.next_local_obs[:, 0, 0].tolist(), [101.0, 201.0])
             self.assertEqual(batch.truncations.tolist(), [True, True])
+        finally:
+            env.close()
+
+    def test_direct_done_stream_keeps_terminal_and_reset_obs_associated_after_wraparound(self) -> None:
+        env = _make_env()
+        try:
+            buffer = _make_buffer(env, capacity_per_env=5)
+            next_values = [1.0, 100.0, 101.0, 200.0, 201.0, 202.0, 300.0, 301.0]
+            terminal_values = {
+                1: 2.0,
+                3: 102.0,
+                6: 203.0,
+            }
+            for step, next_value in enumerate(next_values):
+                is_termination = step == 3
+                is_truncation = step in (1, 6)
+                buffer.add(
+                    obs=_obs(float(-1000 - step)),
+                    actions=_actions(float(1000 + step)),
+                    rewards=torch.tensor([float(2000 + step)]),
+                    terminations=torch.tensor([is_termination]),
+                    truncations=torch.tensor([is_truncation]),
+                    next_obs=_obs(next_value),
+                    terminal_obs=_obs(terminal_values[step]) if step in terminal_values else None,
+                )
+
+            self.assertFlatTransitionScalars(
+                buffer.get_all(),
+                local_obs=[101.0, 200.0, 201.0, 202.0, 300.0],
+                next_local_obs=[102.0, 201.0, 202.0, 203.0, 301.0],
+                actions=[1003.0, 1004.0, 1005.0, 1006.0, 1007.0],
+                rewards=[2003.0, 2004.0, 2005.0, 2006.0, 2007.0],
+                terminations=[True, False, False, False, False],
+                truncations=[False, False, False, True, False],
+            )
+        finally:
+            env.close()
+
+    def test_replacement_sample_keeps_wrapped_done_rows_aligned_with_terminal_obs(self) -> None:
+        env = _make_env()
+        try:
+            buffer = _make_buffer(env, capacity_per_env=5)
+            next_values = [1.0, 100.0, 101.0, 200.0, 201.0, 202.0, 300.0, 301.0]
+            terminal_values = {
+                1: 2.0,
+                3: 102.0,
+                6: 203.0,
+            }
+            for step, next_value in enumerate(next_values):
+                is_termination = step == 3
+                is_truncation = step in (1, 6)
+                buffer.add(
+                    obs=_obs(float(-1000 - step)),
+                    actions=_actions(float(1000 + step)),
+                    rewards=torch.tensor([float(2000 + step)]),
+                    terminations=torch.tensor([is_termination]),
+                    truncations=torch.tensor([is_truncation]),
+                    next_obs=_obs(next_value),
+                    terminal_obs=_obs(terminal_values[step]) if step in terminal_values else None,
+                )
+
+            with patch("torch.randint", return_value=torch.tensor([0, 3, 0])):
+                batch = buffer.sample(3, replacement=True)
+
+            self.assertFlatTransitionScalars(
+                batch,
+                local_obs=[101.0, 202.0, 101.0],
+                next_local_obs=[102.0, 203.0, 102.0],
+                actions=[1003.0, 1006.0, 1003.0],
+                rewards=[2003.0, 2006.0, 2003.0],
+                terminations=[True, False, True],
+                truncations=[False, True, False],
+            )
         finally:
             env.close()
 
@@ -758,6 +1006,49 @@ class OffPolicyReplayTests(unittest.TestCase):
         finally:
             env.close()
 
+    def test_collect_with_obs_encoded_policy_keeps_actions_tied_to_current_obs_after_wraparound(self) -> None:
+        env = _make_env()
+        try:
+            buffer = _make_buffer(env, capacity_per_env=4)
+            collect_off_policy_steps(
+                env=env,
+                replay_buffer=buffer,
+                n_steps=9,
+                policy=_ObsEncodingPolicy(),
+            )
+
+            self.assertFlatTransitionScalars(
+                buffer.get_all(),
+                local_obs=[105.0, 106.0, 107.0, 108.0],
+                next_local_obs=[106.0, 107.0, 108.0, 109.0],
+                actions=[105.25, 106.25, 107.25, 108.25],
+                rewards=[6.0, 7.0, 8.0, 9.0],
+            )
+        finally:
+            env.close()
+
+    def test_collect_with_done_wraparound_keeps_action_terminal_and_reset_obs_alignment(self) -> None:
+        env = _make_env(done_steps=(3,))
+        try:
+            buffer = _make_buffer(env, capacity_per_env=5)
+            collect_off_policy_steps(
+                env=env,
+                replay_buffer=buffer,
+                n_steps=10,
+                policy=_ObsEncodingPolicy(),
+            )
+
+            self.assertFlatTransitionScalars(
+                buffer.get_all(),
+                local_obs=[202.0, 300.0, 301.0, 302.0, 400.0],
+                next_local_obs=[203.0, 301.0, 302.0, 303.0, 401.0],
+                actions=[202.25, 300.25, 301.25, 302.25, 400.25],
+                rewards=[3.0, 1.0, 2.0, 3.0, 1.0],
+                truncations=[True, False, False, True, False],
+            )
+        finally:
+            env.close()
+
     def test_collect_resumes_with_rollout_state_in_same_buffer(self) -> None:
         env = _make_env(done_steps=(3,))
         try:
@@ -879,6 +1170,31 @@ class OffPolicyReplayTests(unittest.TestCase):
         finally:
             env.close()
 
+    def test_collect_previous_actions_stay_aligned_through_done_and_wraparound(self) -> None:
+        env = _make_env(done_steps=(3,))
+        try:
+            buffer = _make_buffer(env, capacity_per_env=5, store_previous_actions=True)
+            collect_off_policy_steps(
+                env=env,
+                replay_buffer=buffer,
+                n_steps=10,
+                policy=_ObsEncodingPolicy(),
+            )
+
+            batch = buffer.get_all()
+            self.assertFlatTransitionScalars(
+                batch,
+                local_obs=[202.0, 300.0, 301.0, 302.0, 400.0],
+                next_local_obs=[203.0, 301.0, 302.0, 303.0, 401.0],
+                actions=[202.25, 300.25, 301.25, 302.25, 400.25],
+                rewards=[3.0, 1.0, 2.0, 3.0, 1.0],
+                truncations=[True, False, False, True, False],
+                previous_actions=[201.25, 0.0, 300.25, 301.25, 0.0],
+            )
+            self.assertNoNextPreviousActions(batch)
+        finally:
+            env.close()
+
     def test_policy_rollout_uses_temporal_state_api(self) -> None:
         env = _make_env()
         try:
@@ -986,6 +1302,82 @@ class OffPolicyReplayTests(unittest.TestCase):
             self.assertEqual(batch.segment_length, 2)
             self.assertIsInstance(batch.initial_temporal_state, torch.Tensor)
             self.assertEqual(batch.initial_temporal_state[:, 0, 0].tolist(), [2.0])
+        finally:
+            env.close()
+
+    def test_episode_segment_sampling_keeps_wrapped_transition_tuples_aligned(self) -> None:
+        env = _make_env()
+        try:
+            buffer = _make_buffer(env, capacity_per_env=5, temporal_state_store_interval=1)
+            for step in range(8):
+                buffer.add(
+                    obs=_obs(float(step)),
+                    actions=_actions(float(100 + step)),
+                    rewards=torch.tensor([float(200 + step)]),
+                    terminations=torch.tensor([False]),
+                    truncations=torch.tensor([False]),
+                    next_obs=_obs(float(step + 1)),
+                    temporal_state=_temporal_state(float(step)),
+                    next_temporal_state=_temporal_state(float(step + 1)),
+                )
+
+            with patch("torch.randint", return_value=torch.tensor([1])):
+                batch = buffer.sample_episode_segments(
+                    1,
+                    segment_length=2,
+                    burn_in_steps=1,
+                )
+
+            self.assertSegmentTransitionScalars(
+                batch,
+                0,
+                local_obs=[4.0, 5.0, 6.0],
+                next_local_obs=[5.0, 6.0, 7.0],
+                actions=[104.0, 105.0, 106.0],
+                rewards=[204.0, 205.0, 206.0],
+            )
+            self.assertEqual(batch.train_mask.tolist(), [[False, True, True]])
+            self.assertIsInstance(batch.initial_temporal_state, torch.Tensor)
+            self.assertEqual(batch.initial_temporal_state[:, 0, 0].tolist(), [4.0])
+        finally:
+            env.close()
+
+    def test_episode_segment_sampling_allows_final_done_transition_after_wraparound(self) -> None:
+        env = _make_env()
+        try:
+            buffer = _make_buffer(env, capacity_per_env=5, temporal_state_store_interval=1)
+            for step in range(8):
+                truncated = step == 6
+                buffer.add(
+                    obs=_obs(float(step)),
+                    actions=_actions(float(100 + step)),
+                    rewards=torch.tensor([float(200 + step)]),
+                    terminations=torch.tensor([False]),
+                    truncations=torch.tensor([truncated]),
+                    next_obs=_obs(100.0 if truncated else float(step + 1)),
+                    terminal_obs=_obs(7.0) if truncated else None,
+                    temporal_state=_temporal_state(float(step)),
+                    next_temporal_state=_temporal_state(float(step + 1)),
+                )
+
+            with patch("torch.randint", return_value=torch.tensor([2])):
+                batch = buffer.sample_episode_segments(
+                    1,
+                    segment_length=2,
+                )
+
+            self.assertSegmentTransitionScalars(
+                batch,
+                0,
+                local_obs=[5.0, 6.0],
+                next_local_obs=[6.0, 7.0],
+                actions=[105.0, 106.0],
+                rewards=[205.0, 206.0],
+                truncations=[False, True],
+            )
+            self.assertEqual(batch.episode_ends.tolist(), [[False, True]])
+            self.assertIsInstance(batch.initial_temporal_state, torch.Tensor)
+            self.assertEqual(batch.initial_temporal_state[:, 0, 0].tolist(), [5.0])
         finally:
             env.close()
 
@@ -1337,6 +1729,53 @@ class OffPolicyReplayTests(unittest.TestCase):
             batch = buffer.get_all()
             self.assertIsNone(batch.previous_actions)
             self.assertNoNextPreviousActions(batch)
+        finally:
+            env.close()
+
+    def test_multi_env_obs_encoded_policy_keeps_each_lane_aligned_after_wraparound(self) -> None:
+        env = _make_multi_env((), (2,))
+        try:
+            buffer = _make_buffer(env, capacity_per_env=3)
+            collect_off_policy_steps(
+                env=env,
+                replay_buffer=buffer,
+                n_steps=16,
+                policy=_ObsEncodingPolicy(),
+            )
+
+            self.assertFlatTransitionScalars(
+                buffer.get_all(),
+                local_obs=[105.0, 106.0, 107.0, 1301.0, 1400.0, 1401.0],
+                next_local_obs=[106.0, 107.0, 108.0, 1302.0, 1401.0, 1402.0],
+                actions=[105.25, 106.25, 107.25, 1301.25, 1400.25, 1401.25],
+                rewards=[6.0, 7.0, 8.0, 2.0, 1.0, 2.0],
+                truncations=[False, False, False, True, False, True],
+            )
+        finally:
+            env.close()
+
+    def test_multi_env_sample_keeps_flat_env_major_indices_aligned_after_wraparound(self) -> None:
+        env = _make_multi_env((), (2,))
+        try:
+            buffer = _make_buffer(env, capacity_per_env=3)
+            collect_off_policy_steps(
+                env=env,
+                replay_buffer=buffer,
+                n_steps=16,
+                policy=_ObsEncodingPolicy(),
+            )
+
+            with patch("torch.randint", return_value=torch.tensor([0, 4, 5, 2])):
+                batch = buffer.sample(4, replacement=True)
+
+            self.assertFlatTransitionScalars(
+                batch,
+                local_obs=[105.0, 1400.0, 1401.0, 107.0],
+                next_local_obs=[106.0, 1401.0, 1402.0, 108.0],
+                actions=[105.25, 1400.25, 1401.25, 107.25],
+                rewards=[6.0, 1.0, 2.0, 8.0],
+                truncations=[False, False, True, False],
+            )
         finally:
             env.close()
 

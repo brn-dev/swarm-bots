@@ -28,13 +28,14 @@ Keep only durable architecture notes and gotchas. Delete stale detail instead of
 - Keep collecting into a nonempty replay buffer with the returned `OffPolicyRolloutState`; resetting the env into that buffer without state breaks observation-slot continuity.
 - `OffPolicyReplayBatch` has no `next_previous_actions`; use sampled `actions` when conditioning on `next_*` obs. Pass `rollout_device` explicitly when moving env, policy inference, and resumed rollout state.
 - gSDE off-policy rollouts need `gsde_reset_mode`; `OffPolicyRolloutState.gsde_noise_initialized` forces full batch-shaped noise after random warmup, reset, or rollout-device moves.
+- SAC lives in `swarmbots.learn.algos.sac` and reuses off-policy rollout/replay. It intentionally rejects non-`Box` action sub-spaces; use continuous connector actions for TMASAC/SAC, not Bernoulli connectors.
 
 ## Policies And Action Dists
 
 - `MATQCBasePolicy` holds shared QCS/QCX/QCC PPO plumbing. QCS is the main transformer policy; QCC subclasses QCS with its own decoder; QCX is query-to-context only; `MATDecPolicy` is decoderless despite the name.
 - `MATOrigPolicy` requires contiguous true-prefix `agent_mask` and shifted previous-agent actions; inactive-agent log-probs must be zeroed in rollout and `evaluate_actions()`.
 - QCS/QCC/QCX support arbitrary inactive positions if each row has at least one active agent. `assume_agent_mask_is_active_prefix=True` selects the cheaper prefix path.
-- RMAT variants share `RMATPolicyMixin` and `RPPOWMSampler` env-major TBPTT rows. RMAT uses one custom encoder stack with temporal cores; temporal cores must honor reset masks. The default LSTM temporal core/output projection are biasless so reset zero-input rows do not emit learned initial-state priors.
+- RMAT variants share `RMATPolicyMixin` and `RPPOWMSampler` env-major TBPTT rows. RMAT uses one custom encoder stack with temporal cores; temporal cores must honor reset masks. The default LSTM temporal core/output projection are biasless so reset zero-input rows do not emit learned initial-state priors; `RMATEncoderConfig.use_temporal_output_projection=False` removes the extra temporal output projection.
 - For MAT customization, override `_build_encoder*()` and `_build_action_dist(...)`; do not mutate inherited fields after `super().__init__()`.
 - `ActionDist.compile_friendly` controls torch.compile coverage. Mutable action-dist scalars must be tensors/buffers, and sticky dists must keep `requires_previous_actions()` structurally stable even when annealed to zero.
 
