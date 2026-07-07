@@ -33,6 +33,7 @@ class RMATEncoderConfig(MATEncoderConfig):
     inter_module_mlp: bool = False
     temporal_residual: bool = True
     temporal_layer_norm: bool = True
+    use_temporal_output_projection: bool = True
 
 
 class _RMATTransformerEncoderLayer(nn.Module):
@@ -69,13 +70,16 @@ class _RMATTransformerEncoderLayer(nn.Module):
             hidden_dim=config.d_model,
             config=temporal_model_config,
         )
-        temporal_output_projection_gain = (
-            config.linear_init_gain
-            if config.linear_projection_init_gain is None
-            else config.linear_projection_init_gain
-        )
-        self.temporal_output_projection = nn.Linear(config.d_model, config.d_model, bias=False)
-        nn.init.orthogonal_(self.temporal_output_projection.weight, gain=temporal_output_projection_gain)
+        if config.use_temporal_output_projection:
+            temporal_output_projection_gain = (
+                config.linear_init_gain
+                if config.linear_projection_init_gain is None
+                else config.linear_projection_init_gain
+            )
+            self.temporal_output_projection: nn.Module = nn.Linear(config.d_model, config.d_model, bias=False)
+            nn.init.orthogonal_(self.temporal_output_projection.weight, gain=temporal_output_projection_gain)
+        else:
+            self.temporal_output_projection = nn.Identity()
         self.temporal_norm: nn.Module = (
             nn.LayerNorm(config.d_model, eps=config.layer_norm_eps)
             if config.temporal_layer_norm

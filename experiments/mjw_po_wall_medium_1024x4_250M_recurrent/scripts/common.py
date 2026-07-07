@@ -31,6 +31,7 @@ def run_experiment(
         temporal_model_variant: TemporalModelVariant = "lstm",
         rmat_temporal_residual: bool = False,
         rmat_temporal_layer_norm: bool = False,
+        rmat_use_temporal_output_projection: bool = False,
 ) -> None:
     temporal_model_cls, temporal_model_config = _make_temporal_model_specs(temporal_model_variant)
     run_mjw_wall_experiment(
@@ -52,6 +53,7 @@ def run_experiment(
         rmat_temporal_model_config=temporal_model_config,
         rmat_temporal_residual=rmat_temporal_residual,
         rmat_temporal_layer_norm=rmat_temporal_layer_norm,
+        rmat_use_temporal_output_projection=rmat_use_temporal_output_projection,
     )
 
 

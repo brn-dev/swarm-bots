@@ -17,8 +17,34 @@ from swarmbots.learn.algos.r_mat.r_mat_qcc_policy import RMATQCCPolicy, RMATQCCP
 from swarmbots.learn.algos.r_mat.r_mat_qcx_policy import RMATQCXPolicy, RMATQCXPolicyConfig
 from swarmbots.learn.algos.r_mat.r_mat_qcs_policy import RMATQCSPolicy, RMATQCSPolicyConfig
 from swarmbots.learn.algos.r_mat.r_ppo_wm_sampler import RPPOWMSamplerConfig
+from swarmbots.learn.algos.r_mat.temporal_sequence_model import TemporalSequenceModel
 from swarmbots.learn.env_wrappers.learn_wrappers.swarm_bots_learn_env_wrapper import SwarmBotsLearnEnvWrapper
 from swarmbots.learn.testing_env import TestingSwarmBotsEnv as _TestingSwarmBotsEnv
+
+
+class _IdentityTemporalSequenceModel(TemporalSequenceModel):
+
+    def __init__(self, hidden_dim: int, config: object | None = None) -> None:
+        super().__init__(hidden_dim=hidden_dim)
+
+    def initial_state(
+            self,
+            batch_size: int,
+            *,
+            device: torch.device | None = None,
+            dtype: torch.dtype | None = None,
+    ) -> None:
+        return None
+
+    def forward(
+            self,
+            inputs: torch.Tensor,
+            *,
+            valid_mask: torch.Tensor | None = None,
+            initial_state: object | None = None,
+            reset_mask: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, None]:
+        return inputs, None
 
 
 def test_rmat_sequence_matches_explicit_step_state_flow() -> None:
@@ -190,6 +216,36 @@ def test_rmat_temporal_sublayer_residual_and_norm_can_be_disabled() -> None:
     output, _ = encoder(local_obs, global_obs)
 
     torch.testing.assert_close(output, torch.zeros_like(output))
+
+
+def test_rmat_temporal_output_projection_can_be_disabled() -> None:
+    encoder = RMATEncoder(
+        RMATEncoderConfig(
+            d_model=8,
+            nhead=2,
+            num_layers=1,
+            dim_feedforward=16,
+            temporal_model_cls=_IdentityTemporalSequenceModel,
+            temporal_model_config=None,
+            temporal_residual=False,
+            temporal_layer_norm=False,
+            use_temporal_output_projection=False,
+        ),
+        max_agents=2,
+        local_obs_dim=4,
+        global_obs_dim=0,
+    )
+
+    embeddings = torch.randn(3, 4, 2, 8)
+    output, _ = encoder.layers[0]._temporal_block(
+        embeddings,
+        valid_agent_time_mask=torch.ones(3, 4, 2, dtype=torch.bool),
+        initial_state=None,
+        reset_mask=None,
+    )
+
+    assert isinstance(encoder.layers[0].temporal_output_projection, torch.nn.Identity)
+    torch.testing.assert_close(output, embeddings)
 
 
 def test_rmat_default_biasless_temporal_core_keeps_reset_zero_input_silent() -> None:

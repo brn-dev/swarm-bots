@@ -4,11 +4,13 @@ from torch import nn
 from experiments.mjw_experiment_common import (
     MATInitGains,
     MATNormalizationConfig,
+    PolicyVariant,
     _make_base_policy,
     _make_mat_parameter_lr_multipliers,
 )
 from swarmbots.learn.algos.mat_qcs.mat_qcs_decoder import MATQCSDecoderSelfAttentionMode
 from swarmbots.learn.algos.mat_qcx.mat_qcx_policy import MATQCXPolicy
+from swarmbots.learn.algos.r_mat.r_mat_dec_policy import RMATDecPolicy
 from swarmbots.learn.hybrid_action_space import HybridActionSpace
 
 
@@ -24,6 +26,38 @@ class _DummyEnv:
             "disc": spaces.MultiBinary((n_agents, 1)),
         }
     )
+
+
+def _make_test_base_policy(
+        *,
+        policy_variant: PolicyVariant,
+        mat_normalization: MATNormalizationConfig = MATNormalizationConfig(),
+        **overrides: object,
+) -> object:
+    kwargs: dict[str, object] = {
+        "env": _DummyEnv(),
+        "policy_variant": policy_variant,
+        "enc_d_model": 8,
+        "enc_nhead": 1,
+        "dec_d_model": 8,
+        "dec_nhead": 1,
+        "use_popart": False,
+        "popart_beta": 0.1,
+        "popart_init_sigma": 1.0,
+        "compile_policy_modules": False,
+        "policy_compile_mode": "default",
+        "continuous_action_dist": "sign_magnitude_beta",
+        "initial_stickiness": 0.25,
+        "gsde_init_stds": [1.0, 1.0],
+        "mat_add_agent_embeddings": False,
+        "mat_decoder_self_attention_mode": MATQCSDecoderSelfAttentionMode.FULL_CAUSAL,
+        "act_fn_cls": nn.GELU,
+        "mat_init_gains": MATInitGains(),
+        "mat_normalization": mat_normalization,
+        "assume_agent_mask_is_active_prefix": False,
+    }
+    kwargs.update(overrides)
+    return _make_base_policy(**kwargs)
 
 
 def test_mat_qcs_and_qcc_lr_multipliers_do_not_include_qcx_action_modules() -> None:
@@ -125,36 +159,28 @@ def test_mat_lr_multipliers_can_include_actor_head_modules() -> None:
 
 
 def test_make_base_policy_constructs_mat_qcx_variant() -> None:
-    policy = _make_base_policy(
-        env=_DummyEnv(),
+    policy = _make_test_base_policy(
         policy_variant="mat_qcx",
-        enc_d_model=8,
-        enc_nhead=1,
-        dec_d_model=8,
-        dec_nhead=1,
-        use_popart=False,
-        popart_beta=0.1,
-        popart_init_sigma=1.0,
-        compile_policy_modules=False,
-        policy_compile_mode="default",
-        continuous_action_dist="sign_magnitude_beta",
-        initial_stickiness=0.25,
-        gsde_init_stds=[1.0, 1.0],
-        mat_add_agent_embeddings=False,
-        mat_decoder_self_attention_mode=MATQCSDecoderSelfAttentionMode.FULL_CAUSAL,
-        act_fn_cls=nn.GELU,
-        mat_init_gains=MATInitGains(),
         mat_normalization=MATNormalizationConfig(
             normalize_action_input=True,
             normalize_action_tokens=True,
         ),
-        assume_agent_mask_is_active_prefix=False,
     )
 
     assert isinstance(policy, MATQCXPolicy)
     assert isinstance(policy.action_input_norm, nn.LayerNorm)
     assert isinstance(policy.action_token_norm, nn.LayerNorm)
     assert isinstance(policy.decoder.layers[0].context_token_norm, nn.LayerNorm)
+
+
+def test_make_base_policy_passes_rmat_temporal_output_projection_flag() -> None:
+    policy = _make_test_base_policy(
+        policy_variant="r_mat_dec",
+        rmat_use_temporal_output_projection=False,
+    )
+
+    assert isinstance(policy, RMATDecPolicy)
+    assert all(isinstance(layer.temporal_output_projection, nn.Identity) for layer in policy.encoder.layers)
 
 
 def test_mat_lr_multiplier_one_disables_parameter_overrides() -> None:

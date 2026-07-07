@@ -463,6 +463,7 @@ def run_experiment(
         rmat_temporal_model_config: Any = None,
         rmat_temporal_residual: bool = False,
         rmat_temporal_layer_norm: bool = False,
+        rmat_use_temporal_output_projection: bool = True,
         total_timesteps: int = 100_000_000,
 ) -> None:
     from swarmbots.learn.torch_logging import enable_torch_compile_logging
@@ -553,7 +554,8 @@ def run_experiment(
         f"ccd_iterations={ccd_iterations}, "
         f"scenario_kwargs={scenario_kwargs}, "
         f"rmat_temporal_residual={rmat_temporal_residual}, "
-        f"rmat_temporal_layer_norm={rmat_temporal_layer_norm}"
+        f"rmat_temporal_layer_norm={rmat_temporal_layer_norm}, "
+        f"rmat_use_temporal_output_projection={rmat_use_temporal_output_projection}"
     )
     if policy_variant != "mat_qcs":
         variant_log_message = f"{variant_log_message}, policy_variant={policy_variant}"
@@ -675,6 +677,7 @@ def run_experiment(
         rmat_temporal_model_config=rmat_temporal_model_config,
         rmat_temporal_residual=rmat_temporal_residual,
         rmat_temporal_layer_norm=rmat_temporal_layer_norm,
+        rmat_use_temporal_output_projection=rmat_use_temporal_output_projection,
         assume_agent_mask_is_active_prefix=not shuffle_agents or preserve_inactive_prefix_structure,
     )
     policy_local_latent_dim = int(getattr(base_policy, "local_latent_dim", enc_d_model))
@@ -921,6 +924,7 @@ def run_experiment(
         "rmat_temporal_model_config": _metadata_name(rmat_temporal_model_config),
         "rmat_temporal_residual": rmat_temporal_residual,
         "rmat_temporal_layer_norm": rmat_temporal_layer_norm,
+        "rmat_use_temporal_output_projection": rmat_use_temporal_output_projection,
     }
     if policy_variant != "mat_qcs":
         extra_run_metadata["policy_variant"] = policy_variant
@@ -1043,6 +1047,7 @@ def _make_base_policy(
         rmat_temporal_model_config: Any = None,
         rmat_temporal_residual: bool = False,
         rmat_temporal_layer_norm: bool = False,
+        rmat_use_temporal_output_projection: bool = True,
         assume_agent_mask_is_active_prefix: bool = False,
 ) -> (
         PPOPolicy
@@ -1105,6 +1110,7 @@ def _make_base_policy(
         normalize_tokens=mat_normalization.normalize_encoder_tokens,
         temporal_residual=rmat_temporal_residual,
         temporal_layer_norm=rmat_temporal_layer_norm,
+        use_temporal_output_projection=rmat_use_temporal_output_projection,
         **({} if rmat_temporal_model_cls is None else {"temporal_model_cls": rmat_temporal_model_cls}),
         **({} if rmat_temporal_model_config is None else {"temporal_model_config": rmat_temporal_model_config}),
     )
