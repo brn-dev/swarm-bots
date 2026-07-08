@@ -36,7 +36,7 @@ class RMATEncoderConfig(MATEncoderConfig):
     use_temporal_output_projection: bool = True
 
 
-class _RMATTransformerEncoderLayer(nn.Module):
+class RMATEncoderLayer(nn.Module):
 
     def __init__(
             self,
@@ -81,22 +81,27 @@ class _RMATTransformerEncoderLayer(nn.Module):
         else:
             self.temporal_output_projection = nn.Identity()
         self.temporal_norm: nn.Module = (
-            nn.LayerNorm(config.d_model, eps=config.layer_norm_eps)
+            nn.LayerNorm(config.d_model, eps=config.layer_norm_eps, bias=config.bias)
             if config.temporal_layer_norm
             else nn.Identity()
         )
-        self.attention_norm = nn.LayerNorm(config.d_model, eps=config.layer_norm_eps)
-        self.feedforward_norm = nn.LayerNorm(config.d_model, eps=config.layer_norm_eps)
+        self.attention_norm = nn.LayerNorm(config.d_model, eps=config.layer_norm_eps, bias=config.bias)
+        self.feedforward_norm = nn.LayerNorm(config.d_model, eps=config.layer_norm_eps, bias=config.bias)
         feedforward_linear_init = (
             make_init_linear_orthogonal(config.transformer_ff_init_gain)
             if config.transformer_ff_init_gain is not None
             else make_init_linear_orthogonal(config.linear_init_gain)
         )
         feedforward_projection_init = make_init_linear_orthogonal(1.0)
+        transformer_ff_hidden_dims = (
+            [config.dim_feedforward]
+            if config.transformer_ff_hidden_dims is None
+            else config.transformer_ff_hidden_dims
+        )
         self.inter_module_feedforward: MLP | None = (
             MLP(
                 input_dim=config.d_model,
-                hidden_dims=[config.dim_feedforward, config.d_model],
+                hidden_dims=[*transformer_ff_hidden_dims, config.d_model],
                 end_with_act_fn=False,
                 linear_init=feedforward_linear_init,
                 final_linear_init=feedforward_projection_init,
@@ -108,13 +113,13 @@ class _RMATTransformerEncoderLayer(nn.Module):
             else None
         )
         self.inter_module_feedforward_norm: nn.LayerNorm | None = (
-            nn.LayerNorm(config.d_model, eps=config.layer_norm_eps)
+            nn.LayerNorm(config.d_model, eps=config.layer_norm_eps, bias=config.bias)
             if config.inter_module_mlp
             else None
         )
         self.feedforward = MLP(
             input_dim=config.d_model,
-            hidden_dims=[config.dim_feedforward, config.d_model],
+            hidden_dims=[*transformer_ff_hidden_dims, config.d_model],
             end_with_act_fn=False,
             linear_init=feedforward_linear_init,
             final_linear_init=feedforward_projection_init,
@@ -296,46 +301,6 @@ class _RMATTransformerEncoderLayer(nn.Module):
         return norm(embeddings + dropout(feedforward(embeddings)))
 
 
-class _RMATTransformerEncoder(nn.Module):
-
-    def __init__(
-            self,
-            config: RMATEncoderConfig,
-    ) -> None:
-        super().__init__()
-        self.layers: nn.ModuleList = nn.ModuleList([
-            _RMATTransformerEncoderLayer(config=config, layer_idx=layer_idx)
-            for layer_idx in range(config.num_layers)
-        ])
-        self.norm = nn.LayerNorm(config.d_model)
-
-    def forward(
-            self,
-            embeddings: torch.Tensor,
-            *,
-            agent_mask: torch.Tensor | None,
-            time_mask: torch.Tensor | None,
-            initial_states: RMATEncoderState,
-            reset_mask: torch.Tensor | None,
-    ) -> tuple[torch.Tensor, RMATEncoderState]:
-        if len(initial_states) != len(self.layers):
-            raise ValueError(f"Expected {len(self.layers)} initial states, got {len(initial_states)}")
-
-        next_states: RMATEncoderState = []
-        hidden = embeddings
-        for layer, layer_state in zip(self.layers, initial_states, strict=True):
-            hidden, next_state = layer(
-                hidden,
-                agent_mask=agent_mask,
-                time_mask=time_mask,
-                initial_state=layer_state,
-                reset_mask=reset_mask,
-            )
-            next_states.append(next_state)
-
-        return self.norm(hidden), next_states
-
-
 class RMATEncoder(nn.Module):
 
     def __init__(
@@ -399,7 +364,11 @@ class RMATEncoder(nn.Module):
         else:
             self.global_obs_encoder = None
 
-        self.encoder = _RMATTransformerEncoder(config=config)
+        self.layers: nn.ModuleList = nn.ModuleList([
+            RMATEncoderLayer(config=config, layer_idx=layer_idx)
+            for layer_idx in range(config.num_layers)
+        ])
+        self.norm = nn.LayerNorm(config.d_model, eps=config.layer_norm_eps, bias=config.bias)
 
         self.agent_embeddings: nn.Parameter | None = None
         if self.add_agent_embeddings:
@@ -429,10 +398,6 @@ class RMATEncoder(nn.Module):
             )
             for layer in self.layers
         ]
-
-    @property
-    def layers(self) -> nn.ModuleList:
-        return self.encoder.layers
 
     def forward(
             self,
@@ -485,7 +450,7 @@ class RMATEncoder(nn.Module):
             dtype=embeddings.dtype,
         )
 
-        hidden, flat_next_states = self.encoder(
+        hidden, flat_next_states = self._apply_layers(
             embeddings,
             agent_mask=agent_mask,
             time_mask=time_mask,
@@ -507,6 +472,32 @@ class RMATEncoder(nn.Module):
         if squeeze_time:
             return hidden[:, 0].contiguous(), next_states
         return hidden.contiguous(), next_states
+
+    def _apply_layers(
+            self,
+            embeddings: torch.Tensor,
+            *,
+            agent_mask: torch.Tensor | None,
+            time_mask: torch.Tensor | None,
+            initial_states: RMATEncoderState,
+            reset_mask: torch.Tensor | None,
+    ) -> tuple[torch.Tensor, RMATEncoderState]:
+        if len(initial_states) != len(self.layers):
+            raise ValueError(f"Expected {len(self.layers)} initial states, got {len(initial_states)}")
+
+        next_states: RMATEncoderState = []
+        hidden = embeddings
+        for layer, layer_state in zip(self.layers, initial_states, strict=True):
+            hidden, next_state = layer(
+                hidden,
+                agent_mask=agent_mask,
+                time_mask=time_mask,
+                initial_state=layer_state,
+                reset_mask=reset_mask,
+            )
+            next_states.append(next_state)
+
+        return self.norm(hidden), next_states
 
     def _normalize_initial_state(
             self,
