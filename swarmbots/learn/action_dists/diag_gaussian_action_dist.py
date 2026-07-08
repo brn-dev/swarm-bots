@@ -67,6 +67,13 @@ class DiagGaussianActionDist(ContinuousActionDist):
             agent: int | None = None,
             previous_actions: torch.Tensor | None = None,
     ) -> torch.Tensor:
+        return self.distribution.sample()
+
+    def rsample(
+            self,
+            agent: int | None = None,
+            previous_actions: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         return self.distribution.rsample()
 
     def mode(self, previous_actions: torch.Tensor | None = None) -> torch.Tensor:

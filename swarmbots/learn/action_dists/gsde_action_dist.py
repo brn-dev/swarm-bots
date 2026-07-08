@@ -195,6 +195,17 @@ class GSDEActionDist(ContinuousActionDist, TemporallyCorrelatedActionDist):
             agent: int | None = None,
             previous_actions: torch.Tensor | None = None,
     ) -> torch.Tensor:
+        with torch.no_grad():
+            return self._sample(agent)
+
+    def rsample(
+            self,
+            agent: int | None = None,
+            previous_actions: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        return self._sample(agent)
+
+    def _sample(self, agent: int | None) -> torch.Tensor:
         if self.squash_output:
             self._last_gaussian_actions = self._sample_gaussian_actions(agent)
             return TanhBijector.forward(self._last_gaussian_actions)
@@ -250,11 +261,13 @@ class GSDEActionDist(ContinuousActionDist, TemporallyCorrelatedActionDist):
             deterministic: bool = False,
             agent: int | None = None,
             previous_actions: torch.Tensor | None = None,
+            use_rsample: bool = False,
     ):
         actions = self.update_latent_features(latent_pi).get_actions(
             deterministic=deterministic,
             agent=agent,
             previous_actions=previous_actions,
+            use_rsample=use_rsample,
         )
         log_probs = self.log_prob(actions, gaussian_actions=self._last_gaussian_actions)
         return actions, log_probs

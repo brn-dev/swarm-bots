@@ -92,6 +92,17 @@ class PredictedStdActionDist(ContinuousActionDist):
             agent: int | None = None,
             previous_actions: torch.Tensor | None = None,
     ) -> torch.Tensor:
+        gaussian_actions = self.distribution.sample()
+        if self.squash_output:
+            self._last_gaussian_actions = gaussian_actions
+            return TanhBijector.forward(gaussian_actions)
+        return gaussian_actions
+
+    def rsample(
+            self,
+            agent: int | None = None,
+            previous_actions: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         gaussian_actions = self.distribution.rsample()
         if self.squash_output:
             self._last_gaussian_actions = gaussian_actions
@@ -148,13 +159,14 @@ class PredictedStdActionDist(ContinuousActionDist):
             deterministic: bool = False,
             agent: int | None = None,
             previous_actions: torch.Tensor | None = None,
+            use_rsample: bool = False,
     ):
-        # get_actions calls sample() or mode(), both of which set _last_gaussian_actions
-        # --> prevents squashing and unsquashing which can lead to numerical instability
+        # Avoids inverse tanh in the common sample/log-prob path, which is less numerically stable.
         actions = self.update_latent_features(latent_pi).get_actions(
             deterministic=deterministic,
             agent=agent,
             previous_actions=previous_actions,
+            use_rsample=use_rsample,
         )
         log_probs = self.log_prob(actions, gaussian_actions=self._last_gaussian_actions)
         return actions, log_probs

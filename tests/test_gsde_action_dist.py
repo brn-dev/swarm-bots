@@ -215,6 +215,37 @@ class GSDEActionDistTests(unittest.TestCase):
 
         self.assertTrue(torch.allclose(agent_actions, full_actions[:, 1:2]))
 
+    def test_rsample_tracks_distribution_head_gradient(self) -> None:
+        dist = GSDEActionDist(
+            latent_dim=2,
+            action_dim=1,
+            base_std=1.0,
+        )
+        latent_pi = torch.ones((2, 3, 2), dtype=torch.float32, requires_grad=True)
+        dist.reset_noise((2, 3))
+
+        actions = dist.update_latent_features(latent_pi).rsample()
+        actions.sum().backward()
+
+        self.assertTrue(actions.requires_grad)
+        self.assertIsNotNone(dist.action_net.bias.grad)
+        self.assertGreater(dist.action_net.bias.grad.abs().sum().item(), 0.0)
+
+    def test_sample_does_not_track_distribution_head_gradient(self) -> None:
+        dist = GSDEActionDist(
+            latent_dim=2,
+            action_dim=1,
+            base_std=1.0,
+        )
+        latent_pi = torch.ones((2, 3, 2), dtype=torch.float32, requires_grad=True)
+        dist.reset_noise((2, 3))
+
+        actions = dist.update_latent_features(latent_pi).sample()
+        log_probs = dist.log_prob(actions)
+
+        self.assertFalse(actions.requires_grad)
+        self.assertTrue(log_probs.requires_grad)
+
     def test_squashed_get_actions_with_log_probs_uses_cached_gaussian_actions(self) -> None:
         torch.manual_seed(1234)
         dist = GSDEActionDist(

@@ -195,6 +195,47 @@ class HybridActionDistFactoryTests(unittest.TestCase):
         self.assertIn("ent", metrics)
         self.assertTrue(dist.compile_friendly)
 
+    def test_beta_rsample_keeps_gradient_for_sac_actor_loss(self) -> None:
+        dist = make_proba_distribution(
+            latent_dim=4,
+            action_space=spaces.Box(-1.0, 1.0, shape=(2, 2), dtype=np.float32),
+            action_space_dim=2,
+            action_net_initialization=init_linear_orthogonal,
+            continuous_config=BetaConfig(),
+        )
+        latent = torch.randn(3, 2, 4, requires_grad=True)
+
+        actions, _log_probs = dist.get_actions_with_log_probs(
+            latent,
+            deterministic=False,
+            use_rsample=True,
+        )
+        actor_surrogate = actions.square().mean()
+        actor_surrogate.backward()
+
+        self.assertTrue(actions.requires_grad)
+        self.assertIsNotNone(latent.grad)
+        assert latent.grad is not None
+        self.assertGreater(latent.grad.abs().sum().item(), 0.0)
+
+    def test_beta_sample_does_not_track_sample_gradient(self) -> None:
+        dist = make_proba_distribution(
+            latent_dim=4,
+            action_space=spaces.Box(-1.0, 1.0, shape=(2, 2), dtype=np.float32),
+            action_space_dim=2,
+            action_net_initialization=init_linear_orthogonal,
+            continuous_config=BetaConfig(),
+        )
+        latent = torch.randn(3, 2, 4, requires_grad=True)
+
+        actions, log_probs = dist.get_actions_with_log_probs(
+            latent,
+            deterministic=False,
+        )
+
+        self.assertFalse(actions.requires_grad)
+        self.assertTrue(log_probs.requires_grad)
+
     def test_squashed_diag_gaussian_config_computes_entropy_loss(self) -> None:
         dist = make_proba_distribution(
             latent_dim=4,

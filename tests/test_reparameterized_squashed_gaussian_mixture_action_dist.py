@@ -41,7 +41,7 @@ class ReparameterizedSquashedGaussianMixtureActionDistTests(unittest.TestCase):
         self.assertIn("ent_gaussian", metrics)
         self.assertFalse(dist.compile_friendly)
 
-    def test_sample_is_reparameterized_through_distribution_head(self) -> None:
+    def test_rsample_is_reparameterized_through_distribution_head(self) -> None:
         torch.manual_seed(0)
         dist = ReparameterizedSquashedGaussianMixtureActionDist(
             latent_dim=4,
@@ -50,7 +50,7 @@ class ReparameterizedSquashedGaussianMixtureActionDistTests(unittest.TestCase):
         )
         latent = torch.zeros(32, 2, 4, requires_grad=True)
 
-        actions = dist.update_latent_features(latent).sample()
+        actions = dist.update_latent_features(latent).rsample()
         actions.sum().backward()
         bias_grad = dist.output_net.bias.grad.view(
             dist.action_dim,
@@ -63,6 +63,21 @@ class ReparameterizedSquashedGaussianMixtureActionDistTests(unittest.TestCase):
         self.assertGreater(bias_grad[:, :, 0].abs().sum().item(), 0.0)
         self.assertGreater(bias_grad[:, :, 1].abs().sum().item(), 0.0)
         self.assertGreater(bias_grad[:, :, 2].abs().sum().item(), 0.0)
+
+    def test_sample_does_not_track_distribution_head_gradient(self) -> None:
+        dist = ReparameterizedSquashedGaussianMixtureActionDist(
+            latent_dim=4,
+            action_dim=3,
+            action_net_initialization=init_linear_orthogonal,
+            inverse_cdf_iterations=8,
+        )
+        latent = torch.zeros(5, 2, 4, requires_grad=True)
+
+        actions = dist.update_latent_features(latent).sample()
+        log_probs = dist.log_prob(actions)
+
+        self.assertFalse(actions.requires_grad)
+        self.assertTrue(log_probs.requires_grad)
 
     def test_initial_mode_is_near_zero_with_symmetric_components(self) -> None:
         dist = ReparameterizedSquashedGaussianMixtureActionDist(
