@@ -1,12 +1,13 @@
+import copy
 from dataclasses import dataclass
 
 import torch
 from torch import nn
 
-from swarmbots.learn.nn_components.activations import ActivationFactory, make_activation
+from swarmbots.learn.nn_components.activations import ActivationFactory
 from swarmbots.learn.nn_components.nn_init import (
     make_init_linear_orthogonal,
-    reinitialize_transformer_stack,
+    reinitialize_multihead_attention,
 )
 from swarmbots.learn.nn_components.mlp import MLP
 
@@ -26,10 +27,116 @@ class MATEncoderConfig:
     linear_init_gain: float = 1.0
     linear_projection_init_gain: float | None = 1.0
     transformer_ff_init_gain: float | None = 1.0
+    transformer_ff_hidden_dims: list[int] | None = None
     local_obs_encoder_hidden_dims: list[int] | None = None
     global_obs_encoder_hidden_dims: list[int] | None = None
     normalize_obs_inputs: bool = False
     normalize_tokens: bool = False
+
+
+class MATEncoderLayer(nn.Module):
+
+    def __init__(
+            self,
+            config: MATEncoderConfig,
+    ) -> None:
+        super().__init__()
+        self.self_attn = nn.MultiheadAttention(
+            config.d_model,
+            config.nhead,
+            dropout=config.dropout,
+            bias=config.bias,
+            batch_first=True,
+        )
+        self.norm_first = config.norm_first
+        self.norm1 = nn.LayerNorm(config.d_model, eps=config.layer_norm_eps, bias=config.bias)
+        self.norm2 = nn.LayerNorm(config.d_model, eps=config.layer_norm_eps, bias=config.bias)
+        self.dropout1 = nn.Dropout(config.dropout)
+        self.dropout2 = nn.Dropout(config.dropout)
+        transformer_ff_hidden_dims = (
+            [config.dim_feedforward]
+            if config.transformer_ff_hidden_dims is None
+            else config.transformer_ff_hidden_dims
+        )
+        self.feedforward = MLP(
+            input_dim=config.d_model,
+            hidden_dims=[*transformer_ff_hidden_dims, config.d_model],
+            end_with_act_fn=False,
+            linear_init=_skip_init,
+            final_linear_init=_skip_init,
+            act_fn_cls=config.act_fn_cls,
+            bias=config.bias,
+            dropout=config.dropout,
+        )
+
+    @property
+    def linear1(self) -> nn.Linear:
+        return self._feedforward_linear_layers()[0]
+
+    @property
+    def linear2(self) -> nn.Linear:
+        return self._feedforward_linear_layers()[-1]
+
+    @property
+    def activation(self) -> nn.Module:
+        for module in self.feedforward:
+            if not isinstance(module, (nn.Linear, nn.Dropout)):
+                return module
+        raise RuntimeError("MATEncoderLayer feedforward has no activation")
+
+    def forward(
+            self,
+            src: torch.Tensor,
+            src_mask: torch.Tensor | None = None,
+            src_key_padding_mask: torch.Tensor | None = None,
+            is_causal: bool = False,
+    ) -> torch.Tensor:
+        hidden = src
+        if self.norm_first:
+            hidden = hidden + self._self_attention_block(
+                self.norm1(hidden),
+                attention_mask=src_mask,
+                key_padding_mask=src_key_padding_mask,
+                is_causal=is_causal,
+            )
+            hidden = hidden + self._feedforward_block(self.norm2(hidden))
+            return hidden
+
+        hidden = self.norm1(
+            hidden + self._self_attention_block(
+                hidden,
+                attention_mask=src_mask,
+                key_padding_mask=src_key_padding_mask,
+                is_causal=is_causal,
+            )
+        )
+        hidden = self.norm2(hidden + self._feedforward_block(hidden))
+        return hidden
+
+    def _self_attention_block(
+            self,
+            embeddings: torch.Tensor,
+            *,
+            attention_mask: torch.Tensor | None,
+            key_padding_mask: torch.Tensor | None,
+            is_causal: bool,
+    ) -> torch.Tensor:
+        attention_output = self.self_attn(
+            embeddings,
+            embeddings,
+            embeddings,
+            attn_mask=attention_mask,
+            key_padding_mask=key_padding_mask,
+            need_weights=False,
+            is_causal=is_causal,
+        )[0]
+        return self.dropout1(attention_output)
+
+    def _feedforward_block(self, embeddings: torch.Tensor) -> torch.Tensor:
+        return self.dropout2(self.feedforward(embeddings))
+
+    def _feedforward_linear_layers(self) -> list[nn.Linear]:
+        return [module for module in self.feedforward if isinstance(module, nn.Linear)]
 
 
 class MATEncoder(nn.Module):
@@ -91,28 +198,14 @@ class MATEncoder(nn.Module):
         else:
             self.global_obs_encoder = None
 
-        encoder_layer = nn.TransformerEncoderLayer(
-            d_model=config.d_model,
-            nhead=config.nhead,
-            dim_feedforward=config.dim_feedforward,
-            dropout=config.dropout,
-            activation=make_activation(config.act_fn_cls, num_features=config.dim_feedforward),
-            layer_norm_eps=config.layer_norm_eps,
-            batch_first=True,
-            norm_first=config.norm_first,
-            bias=config.bias,
-        )
-        self.encoder = nn.TransformerEncoder(
-            encoder_layer=encoder_layer,
-            num_layers=config.num_layers,
-            norm=nn.LayerNorm(config.d_model),
-            enable_nested_tensor=not config.norm_first,
-        )
+        prototype_layer = MATEncoderLayer(config)
+        self.layers = nn.ModuleList([
+            copy.deepcopy(prototype_layer)
+            for _ in range(config.num_layers)
+        ])
+        self.norm = nn.LayerNorm(config.d_model, eps=config.layer_norm_eps, bias=config.bias)
         if config.transformer_ff_init_gain is not None:
-            reinitialize_transformer_stack(
-                self.encoder,
-                feedforward_init_gain=config.transformer_ff_init_gain,
-            )
+            self._reinitialize_layers(feedforward_init_gain=config.transformer_ff_init_gain)
 
         self.agent_embeddings: nn.Parameter | None = None
         if self.add_agent_embeddings:
@@ -146,5 +239,25 @@ class MATEncoder(nn.Module):
         if agent_mask is not None:
             src_key_padding_mask = ~agent_mask
 
-        augmented_observations = self.encoder(local_embeddings, src_key_padding_mask=src_key_padding_mask)
+        augmented_observations = local_embeddings
+        for layer in self.layers:
+            augmented_observations = layer(
+                augmented_observations,
+                src_key_padding_mask=src_key_padding_mask,
+            )
+        augmented_observations = self.norm(augmented_observations)
         return augmented_observations
+
+    def _reinitialize_layers(self, *, feedforward_init_gain: float) -> None:
+        hidden_linear_init = make_init_linear_orthogonal(feedforward_init_gain)
+        output_linear_init = make_init_linear_orthogonal(1.0)
+        for layer in self.layers:
+            reinitialize_multihead_attention(layer.self_attn)
+            feedforward_linear_layers = layer._feedforward_linear_layers()
+            for linear in feedforward_linear_layers[:-1]:
+                hidden_linear_init(linear)
+            output_linear_init(feedforward_linear_layers[-1])
+
+
+def _skip_init(module: nn.Linear) -> nn.Linear:
+    return module

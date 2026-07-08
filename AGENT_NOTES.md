@@ -36,9 +36,10 @@ Keep only durable architecture notes and gotchas. Delete stale detail instead of
 ## Policies And Action Dists
 
 - `MATQCBasePolicy` holds shared QCS/QCX/QCC PPO plumbing. QCS is the main transformer policy; QCC subclasses QCS with its own decoder; QCX is query-to-context only; `MATDecPolicy` is decoderless despite the name.
+- `MATEncoder` owns its custom `MATEncoderLayer` stack directly. `transformer_ff_hidden_dims` configures hidden MLP widths before the final `d_model` projection; `transformer_ff_init_gain=None` intentionally preserves cloned identical layer initialization.
 - `MATOrigPolicy` requires contiguous true-prefix `agent_mask` and shifted previous-agent actions; inactive-agent log-probs must be zeroed in rollout and `evaluate_actions()`.
 - QCS/QCC/QCX support arbitrary inactive positions if each row has at least one active agent. `assume_agent_mask_is_active_prefix=True` selects the cheaper prefix path.
-- RMAT variants share `RMATPolicyMixin` and `RPPOWMSampler` env-major TBPTT rows. RMAT uses one custom encoder stack with temporal cores; temporal cores must honor reset masks. The default LSTM temporal core/output projection are biasless so reset zero-input rows do not emit learned initial-state priors; `RMATEncoderConfig.use_temporal_output_projection=False` removes the extra temporal output projection.
+- RMAT variants share `RMATPolicyMixin` and `RPPOWMSampler` env-major TBPTT rows. `RMATEncoder` owns its custom `RMATEncoderLayer` stack directly; `transformer_ff_hidden_dims` also applies to the optional inter-module MLP. Temporal cores must honor reset masks. The default LSTM temporal core/output projection are biasless so reset zero-input rows do not emit learned initial-state priors; `RMATEncoderConfig.use_temporal_output_projection=False` removes the extra temporal output projection.
 - For MAT customization, override `_build_encoder*()` and `_build_action_dist(...)`; do not mutate inherited fields after `super().__init__()`.
 - `ActionDist.compile_friendly` controls torch.compile coverage. Mutable action-dist scalars must be tensors/buffers, and sticky dists must keep `requires_previous_actions()` structurally stable even when annealed to zero.
 

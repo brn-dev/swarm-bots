@@ -307,6 +307,69 @@ def test_rmat_temporal_order_and_inter_module_mlp_are_configurable(temporal_mode
     assert len(state) == 1
 
 
+def test_rmat_custom_feedforward_hidden_dims_preserve_masked_sequence_contract() -> None:
+    torch.manual_seed(0)
+    encoder = RMATEncoder(
+        RMATEncoderConfig(
+            d_model=8,
+            nhead=2,
+            num_layers=2,
+            dim_feedforward=16,
+            dropout=0.0,
+            transformer_ff_hidden_dims=[13, 11],
+            inter_module_mlp=True,
+            add_agent_embeddings=True,
+            local_obs_encoder_hidden_dims=[7],
+            global_obs_encoder_hidden_dims=[6],
+            normalize_obs_inputs=True,
+            normalize_tokens=True,
+        ),
+        max_agents=4,
+        local_obs_dim=5,
+        global_obs_dim=3,
+    )
+    encoder.eval()
+    local_obs = torch.randn(2, 3, 4, 5)
+    global_obs = torch.randn(2, 3, 3)
+    agent_mask = torch.tensor([
+        [
+            [True, True, True, False],
+            [True, False, True, True],
+            [True, True, True, True],
+        ],
+        [
+            [True, True, False, True],
+            [True, True, True, True],
+            [False, True, True, True],
+        ],
+    ])
+    time_mask = torch.tensor([
+        [True, True, False],
+        [True, False, True],
+    ])
+    reset_mask = torch.tensor([
+        [True, False, False],
+        [True, False, True],
+    ])
+
+    output, state = encoder(
+        local_obs,
+        global_obs,
+        agent_mask=agent_mask,
+        time_mask=time_mask,
+        reset_mask=reset_mask,
+    )
+
+    valid_agent_time_mask = agent_mask & time_mask.unsqueeze(-1)
+    assert output.shape == (2, 3, 4, 8)
+    assert len(state) == 2
+    assert torch.isfinite(output).all()
+    torch.testing.assert_close(
+        output[~valid_agent_time_mask],
+        torch.zeros_like(output[~valid_agent_time_mask]),
+    )
+
+
 def test_rmat_omits_inter_module_norm_parameters_when_inter_module_mlp_is_disabled() -> None:
     encoder = RMATEncoder(
         RMATEncoderConfig(
