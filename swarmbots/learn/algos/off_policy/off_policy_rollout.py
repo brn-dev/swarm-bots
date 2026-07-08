@@ -156,12 +156,16 @@ def _reset_policy_action_noise(
 ) -> None:
     action_dist = getattr(policy, "action_dist")
     batch_shape = tuple(local_obs.shape[:-1])
+    if force_step_reset:
+        action_dist.reset_temporal_correlations_on_step(batch_shape=batch_shape)
     action_dist.reset_temporal_correlations_on_ep_start(episode_start_mask)
     if isinstance(gsde_reset_mode, GSDEIntervalResetMode):
-        if force_step_reset or (rollout_step_idx % gsde_reset_mode.interval) == 0:
+        if not force_step_reset and (rollout_step_idx % gsde_reset_mode.interval) == 0:
             action_dist.reset_temporal_correlations_on_step(batch_shape=batch_shape)
         return
     if isinstance(gsde_reset_mode, GSDEProbabilityResetMode):
+        if force_step_reset:
+            return
         mask = torch.empty(batch_shape, device=local_obs.device, dtype=torch.bool).bernoulli_(gsde_reset_mode.probability)
         action_dist.reset_temporal_correlations_on_step(mask=mask)
         return

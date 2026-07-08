@@ -144,6 +144,14 @@ class ReparameterizedSquashedGaussianMixtureActionDist(ActionDist):
             agent: int | None = None,
             previous_actions: torch.Tensor | None = None,
     ) -> torch.Tensor:
+        with torch.no_grad():
+            return self.rsample(agent=agent, previous_actions=previous_actions)
+
+    def rsample(
+            self,
+            agent: int | None = None,
+            previous_actions: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         _ = (agent, previous_actions)
         self._assert_ready()
 

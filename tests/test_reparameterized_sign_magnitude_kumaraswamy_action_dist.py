@@ -39,7 +39,23 @@ class ReparameterizedSignMagnitudeKumaraswamyActionDistTests(unittest.TestCase):
         self.assertIn("ent_kumaraswamy", metrics)
         self.assertTrue(dist.compile_friendly)
 
-    def test_sample_is_reparameterized_through_distribution_head(self) -> None:
+    def test_rsample_is_reparameterized_through_distribution_head(self) -> None:
+        dist = ReparameterizedSignMagnitudeKumaraswamyActionDist(
+            latent_dim=4,
+            action_dim=3,
+            action_net_initialization=init_linear_orthogonal,
+        )
+        latent = torch.zeros(5, 2, 4, requires_grad=True)
+
+        actions = dist.update_latent_features(latent).rsample()
+        loss = actions.sum()
+        loss.backward()
+
+        self.assertTrue(actions.requires_grad)
+        self.assertIsNotNone(dist.output_net.bias.grad)
+        self.assertGreater(dist.output_net.bias.grad.abs().sum().item(), 0.0)
+
+    def test_sample_does_not_track_distribution_head_gradient(self) -> None:
         dist = ReparameterizedSignMagnitudeKumaraswamyActionDist(
             latent_dim=4,
             action_dim=3,
@@ -48,12 +64,10 @@ class ReparameterizedSignMagnitudeKumaraswamyActionDistTests(unittest.TestCase):
         latent = torch.zeros(5, 2, 4, requires_grad=True)
 
         actions = dist.update_latent_features(latent).sample()
-        loss = actions.sum()
-        loss.backward()
+        log_probs = dist.log_prob(actions)
 
-        self.assertTrue(actions.requires_grad)
-        self.assertIsNotNone(dist.output_net.bias.grad)
-        self.assertGreater(dist.output_net.bias.grad.abs().sum().item(), 0.0)
+        self.assertFalse(actions.requires_grad)
+        self.assertTrue(log_probs.requires_grad)
 
     def test_initial_mode_is_near_zero_with_symmetric_probabilities(self) -> None:
         dist = ReparameterizedSignMagnitudeKumaraswamyActionDist(

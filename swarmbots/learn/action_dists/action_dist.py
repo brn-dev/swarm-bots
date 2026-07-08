@@ -60,6 +60,13 @@ class ActionDist(nn.Module, abc.ABC):
     ) -> torch.Tensor:
         raise NotImplementedError
 
+    def rsample(
+            self,
+            agent: int | None = None,
+            previous_actions: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        raise NotImplementedError(f"{type(self).__name__} does not support rsample().")
+
     @abc.abstractmethod
     def mode(self, previous_actions: torch.Tensor | None = None) -> torch.Tensor:
         raise NotImplementedError
@@ -124,9 +131,12 @@ class ActionDist(nn.Module, abc.ABC):
             deterministic: bool = False,
             agent: int | None = None,
             previous_actions: torch.Tensor | None = None,
+            use_rsample: bool = False,
     ) -> torch.Tensor:
         if deterministic:
             return self.mode(previous_actions=previous_actions)
+        if use_rsample:
+            return self.rsample(agent=agent, previous_actions=previous_actions)
         return self.sample(agent=agent, previous_actions=previous_actions)
 
     def get_actions_with_log_probs(
@@ -135,11 +145,13 @@ class ActionDist(nn.Module, abc.ABC):
             deterministic: bool = False,
             agent: int | None = None,
             previous_actions: torch.Tensor | None = None,
+            use_rsample: bool = False,
     ):
         actions = self.update_latent_features(latent_pi).get_actions(
             deterministic=deterministic,
             agent=agent,
             previous_actions=previous_actions,
+            use_rsample=use_rsample,
         )
         log_probs = self.log_prob(actions, previous_actions=previous_actions)
         return actions, log_probs

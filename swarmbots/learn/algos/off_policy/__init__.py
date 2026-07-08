@@ -1,4 +1,5 @@
 from swarmbots.learn.algos.off_policy.replay_buffer import (
+    NoEpisodeSegmentCandidatesError,
     OffPolicyReplayBatch,
     OffPolicyReplayBuffer,
     OffPolicyReplayEpisodeSegmentBatch,
@@ -9,6 +10,7 @@ __all__ = [
     "OffPolicyReplayBatch",
     "OffPolicyReplayBuffer",
     "OffPolicyReplayEpisodeSegmentBatch",
+    "NoEpisodeSegmentCandidatesError",
     "OffPolicyRolloutState",
     "collect_off_policy_steps",
 ]

@@ -102,6 +102,14 @@ class BetaActionDist(ActionDist):
         actions_01 = self.distribution.sample()
         return 2.0 * actions_01 - 1.0
 
+    def rsample(
+            self,
+            agent: int | None = None,
+            previous_actions: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        actions_01 = self.distribution.rsample()
+        return 2.0 * actions_01 - 1.0
+
     def mode(self, previous_actions: torch.Tensor | None = None) -> torch.Tensor:
         return 2.0 * self.distribution.mean - 1.0
 

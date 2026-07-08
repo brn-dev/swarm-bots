@@ -102,6 +102,14 @@ class SquashedDiagGaussianActionDist(DiagGaussianActionDist):
         self._last_gaussian_actions = super().sample()
         return torch.tanh(self._last_gaussian_actions)
 
+    def rsample(
+            self,
+            agent: int | None = None,
+            previous_actions: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        self._last_gaussian_actions = super().rsample()
+        return torch.tanh(self._last_gaussian_actions)
+
     def mode(self, previous_actions: torch.Tensor | None = None) -> torch.Tensor:
         self._last_gaussian_actions = super().mode()
         return torch.tanh(self._last_gaussian_actions)
@@ -112,13 +120,14 @@ class SquashedDiagGaussianActionDist(DiagGaussianActionDist):
             deterministic: bool = False,
             agent: int | None = None,
             previous_actions: torch.Tensor | None = None,
+            use_rsample: bool = False,
     ):
-        # get_actions calls sample() or mode(), both of which set _last_gaussian_actions
-        # --> prevents squashing and unsquashing which can lead to numerical instability
+        # Avoids inverse tanh in the common sample/log-prob path, which is less numerically stable.
         actions = self.update_latent_features(latent_pi).get_actions(
             deterministic=deterministic,
             agent=agent,
             previous_actions=previous_actions,
+            use_rsample=use_rsample,
         )
         log_probs = self.log_prob(actions, gaussian_actions=self._last_gaussian_actions)
         return actions, log_probs

@@ -21,7 +21,10 @@ from swarmbots.learn.action_dists.bang_zero_bang_action_dist import BangZeroBang
 from swarmbots.learn.action_dists.continuous_action_dist import ContinuousActionDist
 from swarmbots.learn.action_dists.diag_gaussian_action_dist import DiagGaussianActionDist
 from swarmbots.learn.action_dists.gsde_action_dist import GSDEActionDist, GSDEConfig
-from swarmbots.learn.action_dists.sign_magnitude_beta_action_dist import SignMagnitudeBetaActionDist, SignMagnitudeBetaConfig
+from swarmbots.learn.action_dists.sign_magnitude_beta_action_dist import (
+    SignMagnitudeBetaActionDist,
+    SignMagnitudeBetaConfig,
+)
 from swarmbots.learn.action_dists.left_middle_right_beta_action_dist import (
     LeftMiddleRightBetaActionDist,
     LeftMiddleRightBetaConfig,
@@ -187,6 +190,30 @@ class HybridActionDistribution(ActionDist):
             agent: int | None = None,
             previous_actions: torch.Tensor | None = None,
     ) -> torch.Tensor:
+        return self._sample_sub_distributions(
+            sampler_name="sample",
+            agent=agent,
+            previous_actions=previous_actions,
+        )
+
+    def rsample(
+            self,
+            agent: int | None = None,
+            previous_actions: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        return self._sample_sub_distributions(
+            sampler_name="rsample",
+            agent=agent,
+            previous_actions=previous_actions,
+        )
+
+    def _sample_sub_distributions(
+            self,
+            *,
+            sampler_name: str,
+            agent: int | None,
+            previous_actions: torch.Tensor | None,
+    ) -> torch.Tensor:
         split_previous_actions: tuple[torch.Tensor | None, ...]
         if previous_actions is None:
             split_previous_actions = (None,) * len(self.distributions)
@@ -195,10 +222,11 @@ class HybridActionDistribution(ActionDist):
         actions: list[torch.Tensor] = []
         for idx, dist in enumerate(self.distributions):
             previous_action = split_previous_actions[idx]
-            if isinstance(dist, GSDEActionDist):
-                actions.append(dist.sample(agent=agent, previous_actions=previous_action))
+            sampler = getattr(dist, sampler_name)
+            if dist.sampling_depends_on_agent:
+                actions.append(sampler(agent=agent, previous_actions=previous_action))
             else:
-                actions.append(dist.sample(previous_actions=previous_action))
+                actions.append(sampler(previous_actions=previous_action))
         return torch.cat(actions, dim=AGENT_ACTIONS_DIM)
 
     def mode(self, previous_actions: torch.Tensor | None = None) -> torch.Tensor:
@@ -234,6 +262,7 @@ class HybridActionDistribution(ActionDist):
             deterministic: bool = False,
             agent: int | None = None,
             previous_actions: torch.Tensor | None = None,
+            use_rsample: bool = False,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         actions_parts: list[torch.Tensor] = []
         log_prob_parts: list[torch.Tensor] = []
@@ -251,12 +280,14 @@ class HybridActionDistribution(ActionDist):
                     deterministic=deterministic,
                     agent=agent,
                     previous_actions=previous_action,
+                    use_rsample=use_rsample,
                 )
             else:
                 action_part, log_prob_part = dist.get_actions_with_log_probs(
                     latent_pi=latent_pi,
                     deterministic=deterministic,
                     previous_actions=previous_action,
+                    use_rsample=use_rsample,
                 )
             actions_parts.append(action_part)
             log_prob_parts.append(log_prob_part)

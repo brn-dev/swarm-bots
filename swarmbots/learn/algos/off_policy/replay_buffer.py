@@ -12,6 +12,10 @@ from swarmbots.learn.torch_device import as_device
 MaybeTensor = torch.Tensor | None
 
 
+class NoEpisodeSegmentCandidatesError(ValueError):
+    pass
+
+
 @dataclass(frozen=True, slots=True)
 class OffPolicyReplayBatch:
     local_obs: torch.Tensor
@@ -407,7 +411,7 @@ class OffPolicyReplayBuffer:
         )
         num_candidates = int(candidate_env_indices.numel())
         if num_candidates == 0:
-            raise ValueError(
+            raise NoEpisodeSegmentCandidatesError(
                 "Cannot sample episode segments: no contiguous replay windows satisfy the requested length, "
                 "episode-boundary, and temporal-state checkpoint constraints."
             )
