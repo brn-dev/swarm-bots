@@ -211,6 +211,7 @@ def collect_off_policy_steps(
         deterministic: bool = False,
         gsde_reset_mode: GSDEResetMode | None = None,
         rollout_device: torch.device | str | None = None,
+        _store_transitions: bool = True,
 ) -> tuple[list[dict[str, Any]], dict[str, Any], OffPolicyRolloutState]:
     """
     Collect complete vector-env steps into replay.
@@ -218,6 +219,7 @@ def collect_off_policy_steps(
     n_steps counts individual transitions, so it must be a multiple of the vector env lane count.
     rollout_device controls where the env wrapper emits tensors and where policy inference runs. If omitted, the
     current env/rollout-state device is used.
+    _store_transitions=False is only for startup warmup before replay has any stored observations.
     """
     if n_steps <= 0:
         raise ValueError(f"n_steps must be > 0, got {n_steps}")
@@ -230,6 +232,8 @@ def collect_off_policy_steps(
         raise ValueError("Pass either a policy or random_actions=True, not both.")
     if policy is None and not random_actions:
         raise ValueError("Either pass a policy or set random_actions=True.")
+    if not _store_transitions and len(replay_buffer) > 0:
+        raise ValueError("Discarded off-policy rollout warmup requires an empty replay buffer.")
     if rollout_state is None and len(replay_buffer) > 0:
         raise ValueError("A non-empty replay buffer requires a rollout_state to preserve observation-slot continuity.")
 
@@ -241,7 +245,7 @@ def collect_off_policy_steps(
         )
     track_previous_actions = replay_buffer.store_previous_actions or policy_requires_previous_actions
     env_reset_time = 0.0
-    current_obs_is_stored = rollout_state is not None and replay_buffer.has_current_obs
+    current_obs_is_stored = _store_transitions and rollout_state is not None and replay_buffer.has_current_obs
 
     resolved_rollout_device: torch.device | None = None
     to_rollout_device_time = 0.0
@@ -359,28 +363,29 @@ def collect_off_policy_steps(
                 0.0,
             )
 
-        with timers.buffer_add_timer:
-            replay_buffer.add(
-                obs=obs_for_step,
-                actions=actions.detach(),
-                rewards=rewards,
-                terminations=terminations,
-                truncations=truncations,
-                next_obs=next_obs,
-                terminal_obs=terminal_obs,
-                previous_actions=previous_actions,
-                episode_start_mask=episode_start_mask,
-                temporal_state=temporal_state,
-                next_temporal_state=next_temporal_state,
-                copy_current_obs=current_obs_needs_copy,
-            )
-        timers.buffer_add_timings.append(timers.buffer_add_timer.get_duration())
+        if _store_transitions:
+            with timers.buffer_add_timer:
+                replay_buffer.add(
+                    obs=obs_for_step,
+                    actions=actions.detach(),
+                    rewards=rewards,
+                    terminations=terminations,
+                    truncations=truncations,
+                    next_obs=next_obs,
+                    terminal_obs=terminal_obs,
+                    previous_actions=previous_actions,
+                    episode_start_mask=episode_start_mask,
+                    temporal_state=temporal_state,
+                    next_temporal_state=next_temporal_state,
+                    copy_current_obs=current_obs_needs_copy,
+                )
+            timers.buffer_add_timings.append(timers.buffer_add_timer.get_duration())
 
         obs = next_obs
         episode_start_mask = dones
         previous_actions = rollout_next_previous_actions
         temporal_state = next_temporal_state
-        current_obs_is_stored = True
+        current_obs_is_stored = _store_transitions
         rollout_step_idx += 1
         transitions_collected += replay_buffer.n_envs
 
@@ -400,3 +405,31 @@ def collect_off_policy_steps(
         gsde_noise_initialized=gsde_noise_initialized,
     )
     return episode_infos, metrics, new_state
+
+
+@torch.no_grad()
+def warmup_off_policy_steps(
+        env: BaseLearnEnvWrapper,
+        replay_buffer: OffPolicyReplayBuffer,
+        n_steps: int,
+        *,
+        policy: BasePolicy | None = None,
+        rollout_state: OffPolicyRolloutState | None = None,
+        random_actions: bool = False,
+        deterministic: bool = False,
+        gsde_reset_mode: GSDEResetMode | None = None,
+        rollout_device: torch.device | str | None = None,
+) -> OffPolicyRolloutState:
+    _episode_infos, _metrics, new_state = collect_off_policy_steps(
+        env=env,
+        replay_buffer=replay_buffer,
+        n_steps=n_steps,
+        policy=policy,
+        rollout_state=rollout_state,
+        random_actions=random_actions,
+        deterministic=deterministic,
+        gsde_reset_mode=gsde_reset_mode,
+        rollout_device=rollout_device,
+        _store_transitions=False,
+    )
+    return new_state

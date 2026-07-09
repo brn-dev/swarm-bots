@@ -8,10 +8,15 @@ from experiments.mjw_experiment_common import (
     _make_base_policy,
     _make_mat_parameter_lr_multipliers,
 )
+from swarmbots.learn.action_dists.reparameterized_sign_magnitude_kumaraswamy_action_dist import (
+    ReparameterizedSignMagnitudeKumaraswamyActionDist,
+)
 from swarmbots.learn.algos.mat_qcs.mat_qcs_decoder import MATQCSDecoderSelfAttentionMode
 from swarmbots.learn.algos.mat_qcx.mat_qcx_policy import MATQCXPolicy
 from swarmbots.learn.algos.r_mat.r_mat_dec_policy import RMATDecPolicy
+from swarmbots.learn.algos.sac.tmasac_policy import TMASACPolicy
 from swarmbots.learn.hybrid_action_space import HybridActionSpace
+from swarmbots.learn.obs_indices import ObsIndices
 
 
 class _DummyEnv:
@@ -25,6 +30,37 @@ class _DummyEnv:
             "cont": spaces.Box(low=-1.0, high=1.0, shape=(n_agents, 2), dtype=float),
             "disc": spaces.MultiBinary((n_agents, 1)),
         }
+    )
+
+
+class _DummyContinuousEnv:
+    n_agents = 3
+    local_obs_dim = 4
+    global_obs_dim = 2
+    hidden_local_vars_dim = 0
+    hidden_global_vars_dim = 0
+    action_space = HybridActionSpace(
+        {
+            "actuators": spaces.Box(low=-1.0, high=1.0, shape=(n_agents, 2), dtype=float),
+            "connectors": spaces.Box(low=-1.0, high=1.0, shape=(n_agents, 1), dtype=float),
+        }
+    )
+
+
+def _make_obs_indices() -> ObsIndices:
+    return ObsIndices(
+        local_scalar_indices=[0, 1],
+        local_angle_indices=[],
+        local_rot6d_indices=[],
+        local_binary_indices=[],
+        local_quaternion_indices=[],
+        global_scalar_indices=[],
+        global_rot6d_indices=[],
+        global_quaternion_indices=[],
+        hidden_local_vars_scalar_indices=[],
+        hidden_local_vars_quaternion_indices=[],
+        hidden_global_vars_scalar_indices=[],
+        hidden_global_vars_quaternion_indices=[],
     )
 
 
@@ -181,6 +217,22 @@ def test_make_base_policy_passes_rmat_temporal_output_projection_flag() -> None:
 
     assert isinstance(policy, RMATDecPolicy)
     assert all(isinstance(layer.temporal_output_projection, nn.Identity) for layer in policy.encoder.layers)
+
+
+def test_make_base_policy_constructs_tmasac_rsmk_with_nop() -> None:
+    policy = _make_test_base_policy(
+        env=_DummyContinuousEnv(),
+        policy_variant="tmasac",
+        continuous_action_dist="reparameterized_sign_magnitude_kumaraswamy",
+        use_nop=True,
+        obs_indices=_make_obs_indices(),
+    )
+
+    assert isinstance(policy, TMASACPolicy)
+    assert isinstance(policy.action_dist.distributions[0], ReparameterizedSignMagnitudeKumaraswamyActionDist)
+    assert isinstance(policy.action_dist.distributions[1], ReparameterizedSignMagnitudeKumaraswamyActionDist)
+    assert policy.actor_nop is None
+    assert policy.critic_nop is not None
 
 
 def test_mat_lr_multiplier_one_disables_parameter_overrides() -> None:

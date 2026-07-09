@@ -222,6 +222,7 @@ class SACTests(unittest.TestCase):
                 gradient_steps=1,
                 train_device="cpu",
                 rollout_device="cpu",
+                replay_storage_device="cpu",
             )
 
             metrics, rollout_steps = algo.perform_iteration(
@@ -258,6 +259,7 @@ class SACTests(unittest.TestCase):
                 gradient_steps=1,
                 train_device="cpu",
                 rollout_device="cpu",
+                replay_storage_device="cpu",
             )
 
             metrics, rollout_steps = algo.perform_iteration(
@@ -276,6 +278,77 @@ class SACTests(unittest.TestCase):
         finally:
             env.close()
 
+    def test_rollout_warmup_advances_state_without_training_counters_or_replay(self) -> None:
+        env = _make_env()
+        try:
+            policy = _make_policy(env)
+            algo = SAC(
+                policy=policy,
+                env=env,
+                learning_rate=1e-3,
+                buffer_capacity_per_env=8,
+                learning_starts=0,
+                batch_size=2,
+                rollout_steps_per_iteration=2,
+                rollout_warmup_steps_per_env=3,
+                gradient_steps=1,
+                train_device="cpu",
+                rollout_device="cpu",
+                replay_storage_device="cpu",
+            )
+
+            algo._before_learn_loop()
+
+            self.assertEqual(algo.n_total_timesteps, 0)
+            self.assertEqual(algo.n_total_iterations, 0)
+            self.assertEqual(algo.n_total_updates, 0)
+            self.assertEqual(len(algo.replay_buffer), 0)
+            self.assertIsNotNone(algo._rollout_state)
+            assert algo._rollout_state is not None
+            self.assertEqual(algo._rollout_state.rollout_step_idx, 3)
+
+            metrics, rollout_steps = algo.perform_iteration(
+                ExponentialMovingAverage(alpha=0.1),
+                ExponentialMovingAverage(alpha=0.1),
+                update_ema=False,
+            )
+
+            self.assertEqual(rollout_steps, 2)
+            self.assertEqual(algo.n_total_timesteps, 2)
+            self.assertEqual(algo.n_total_iterations, 1)
+            self.assertEqual(len(algo.replay_buffer), 2)
+            self.assertEqual(metrics["updates"], 1)
+        finally:
+            env.close()
+
+    def test_rollout_warmup_is_skipped_for_started_training_state(self) -> None:
+        env = _make_env()
+        try:
+            policy = _make_policy(env)
+            algo = SAC(
+                policy=policy,
+                env=env,
+                learning_rate=1e-3,
+                buffer_capacity_per_env=8,
+                learning_starts=0,
+                batch_size=2,
+                rollout_steps_per_iteration=2,
+                rollout_warmup_steps_per_env=3,
+                gradient_steps=1,
+                train_device="cpu",
+                rollout_device="cpu",
+                replay_storage_device="cpu",
+            )
+            algo.n_total_timesteps = 2
+
+            algo._before_learn_loop()
+
+            self.assertIsNone(algo._rollout_state)
+            self.assertTrue(algo._rollout_warmup_done)
+            self.assertEqual(len(algo.replay_buffer), 0)
+        finally:
+            env.close()
+
     def test_gradient_steps_minus_one_uses_collected_transition_count(self) -> None:
         env = _make_env()
         try:
@@ -291,6 +364,7 @@ class SACTests(unittest.TestCase):
                 gradient_steps=-1,
                 train_device="cpu",
                 rollout_device="cpu",
+                replay_storage_device="cpu",
             )
 
             metrics, rollout_steps = algo.perform_iteration(
@@ -322,6 +396,7 @@ class SACTests(unittest.TestCase):
                         gradient_steps=1,
                         train_device="cpu",
                         rollout_device="cpu",
+                        replay_storage_device="cpu",
                     )
 
                     metrics, rollout_steps = algo.perform_iteration(
@@ -355,6 +430,7 @@ class SACTests(unittest.TestCase):
                     gradient_steps=1,
                     train_device="cpu",
                     rollout_device="cpu",
+                    replay_storage_device="cpu",
                 )
 
             algo = SAC(
@@ -369,6 +445,7 @@ class SACTests(unittest.TestCase):
                 gsde_reset_mode=GSDEIntervalResetMode(interval=1),
                 train_device="cpu",
                 rollout_device="cpu",
+                replay_storage_device="cpu",
             )
 
             metrics, rollout_steps = algo.perform_iteration(
@@ -425,6 +502,7 @@ class SACTests(unittest.TestCase):
                 nop_steps=4,
                 train_device="cpu",
                 rollout_device="cpu",
+                replay_storage_device="cpu",
             )
 
             metrics, rollout_steps = algo.perform_iteration(
@@ -475,6 +553,7 @@ class SACTests(unittest.TestCase):
                 nop_steps=4,
                 train_device="cpu",
                 rollout_device="cpu",
+                replay_storage_device="cpu",
             )
 
             metrics, rollout_steps = algo.perform_iteration(
@@ -514,6 +593,7 @@ class SACTests(unittest.TestCase):
                 max_grad_norm=None,
                 train_device="cpu",
                 rollout_device="cpu",
+                replay_storage_device="cpu",
             )
 
             metrics, _actor_grad_norm, _critic_grad_norm = algo._train_step(
