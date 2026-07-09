@@ -24,6 +24,7 @@ from swarmbots.learn.summary_statistics import (
 )
 
 NEWLINE_KEY = '<newline>'
+SUPPRESS_MISSING_CONSOLE_KEY_WARNINGS = "_suppress_missing_console_key_warnings"
 ConsoleMetricFormat = str | SummaryStatisticsFormat | None
 
 class MetricsLogger:
@@ -84,7 +85,8 @@ class MetricsLogger:
 
         persistence_metrics = {
             k: v for k, v in metrics.items()
-            if not self._ignore_keys_for_persistence or k not in self._ignore_keys_for_persistence
+            if k != SUPPRESS_MISSING_CONSOLE_KEY_WARNINGS
+            and (not self._ignore_keys_for_persistence or k not in self._ignore_keys_for_persistence)
         }
 
         if self.file_path and persistence_metrics:
@@ -381,13 +383,14 @@ class MetricsLogger:
                 yield key, value, None
             return
 
+        warn_missing_console_keys = not bool(metrics.get(SUPPRESS_MISSING_CONSOLE_KEY_WARNINGS, False))
         for key, fmt, alias in self._console_key_specs:
             if key == NEWLINE_KEY:
                 yield key, fmt, None
             else:
                 if key in metrics:
                     yield alias, metrics[key], fmt
-                elif key not in self._warned_missing_console_keys:
+                elif warn_missing_console_keys and key not in self._warned_missing_console_keys:
                     self._warned_missing_console_keys.add(key)
                     logger.warning(
                         f"MetricsLogger: console key '{key}' is missing in metrics and will be skipped."
