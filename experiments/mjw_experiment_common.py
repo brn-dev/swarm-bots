@@ -363,7 +363,15 @@ def set_actuator_gsde_init_joint_stds(
             gsde_dist.log_stds[:, i::actuators_per_limb] = math.log(joint_std)
 
 
-def make_sign_magnitude_beta_entropy_config() -> EntropyLossConfig:
+def make_sign_magnitude_categorical_entropy_config() -> EntropyLossConfig:
+    return EntropyLossConfig(
+        entropy_floor=0.35,
+        agent_actions_reduction=AgentActionsReduction.SUM,
+        metrics_reduction=AgentActionsReduction.MEAN,
+    )
+
+
+def make_sign_magnitude_magnitude_entropy_config() -> EntropyLossConfig:
     return EntropyLossConfig(
         agent_actions_reduction=AgentActionsReduction.SUM,
         metrics_reduction=AgentActionsReduction.MEAN,
@@ -375,6 +383,7 @@ def make_continuous_config(
         variant: ContinuousActionDistVariant,
         initial_stickiness: float,
         gsde_init_stds: list[float],
+        rsmk_kumaraswamy_ent_scale: float = 0.75,
 ) -> (
         StickySignMagnitudeBetaConfig
         | SignMagnitudeBetaConfig
@@ -390,34 +399,34 @@ def make_continuous_config(
             stickiness=initial_stickiness,
             ent_loss_coef=1e-3,
             beta_ent_scale=0.75,
-            categorical_ent_loss_config=make_sign_magnitude_beta_entropy_config(),
-            beta_ent_loss_config=make_sign_magnitude_beta_entropy_config(),
+            categorical_ent_loss_config=make_sign_magnitude_categorical_entropy_config(),
+            beta_ent_loss_config=make_sign_magnitude_magnitude_entropy_config(),
         )
     if variant == "sign_magnitude_beta":
         return SignMagnitudeBetaConfig(
             ent_loss_coef=1e-3,
             beta_ent_scale=0.75,
-            categorical_ent_loss_config=make_sign_magnitude_beta_entropy_config(),
-            beta_ent_loss_config=make_sign_magnitude_beta_entropy_config(),
+            categorical_ent_loss_config=make_sign_magnitude_categorical_entropy_config(),
+            beta_ent_loss_config=make_sign_magnitude_magnitude_entropy_config(),
         )
     if variant == "reparameterized_sign_magnitude_kumaraswamy":
         return ReparameterizedSignMagnitudeKumaraswamyConfig(
             ent_loss_coef=1e-3,
-            kumaraswamy_ent_scale=0.75,
-            categorical_ent_loss_config=make_sign_magnitude_beta_entropy_config(),
-            kumaraswamy_ent_loss_config=make_sign_magnitude_beta_entropy_config(),
+            kumaraswamy_ent_scale=rsmk_kumaraswamy_ent_scale,
+            categorical_ent_loss_config=make_sign_magnitude_categorical_entropy_config(),
+            kumaraswamy_ent_loss_config=make_sign_magnitude_magnitude_entropy_config(),
         )
     if variant == "reparameterized_squashed_gaussian_mixture":
         return ReparameterizedSquashedGaussianMixtureConfig(
             ent_loss_coef=1e-3,
             gaussian_ent_scale=0.75,
-            categorical_ent_loss_config=make_sign_magnitude_beta_entropy_config(),
-            gaussian_ent_loss_config=make_sign_magnitude_beta_entropy_config(),
+            categorical_ent_loss_config=make_sign_magnitude_categorical_entropy_config(),
+            gaussian_ent_loss_config=make_sign_magnitude_magnitude_entropy_config(),
         )
     if variant == "beta":
         return BetaConfig(
             ent_loss_coef=1e-3,
-            ent_loss_config=make_sign_magnitude_beta_entropy_config(),
+            ent_loss_config=make_sign_magnitude_magnitude_entropy_config(),
         )
     if variant == "predicted_std":
         return PredictedStdConfig(
@@ -492,6 +501,8 @@ def run_experiment(
         rmat_temporal_layer_norm: bool = False,
         rmat_use_temporal_output_projection: bool = True,
         total_timesteps: int = 100_000_000,
+        sac_ent_coef: float | str = "auto_0.5",
+        sac_target_entropy: float | str = "auto_0.5",
 ) -> None:
     from swarmbots.learn.torch_logging import enable_torch_compile_logging
 
@@ -598,7 +609,8 @@ def run_experiment(
             f"{variant_log_message}, sac_learning_rate={sac_learning_rate}, "
             f"sac_buffer_capacity_per_env={sac_buffer_capacity_per_env}, "
             f"sac_learning_starts={sac_learning_starts}, sac_batch_size={sac_batch_size}, "
-            f"sac_gradient_steps={sac_gradient_steps}"
+            f"sac_gradient_steps={sac_gradient_steps}, sac_ent_coef={sac_ent_coef}, "
+            f"sac_target_entropy={sac_target_entropy}"
         )
     if policy_variant != "mat_qcs":
         variant_log_message = f"{variant_log_message}, policy_variant={policy_variant}"
@@ -799,8 +811,8 @@ def run_experiment(
             gradient_steps=sac_gradient_steps,
             gamma=gamma,
             tau=0.005,
-            ent_coef="auto",
-            target_entropy="auto",
+            ent_coef=sac_ent_coef,
+            target_entropy=sac_target_entropy,
             target_update_interval=1,
             max_grad_norm=2.0,
             nop_steps=world_model_num_next_steps + 1,
@@ -945,6 +957,39 @@ def run_experiment(
         )
         if use_nop:
             logging_console_keys.append(("critic_nop_loss_scaled", None, "critic_nop"))
+        if continuous_action_dist == "reparameterized_sign_magnitude_kumaraswamy":
+            logging_console_keys.extend([
+                (
+                    "actor_action_dist_act0_ent_categorical",
+                    SummaryStatisticsFormat(mean=".3f"),
+                    "cat0_ent",
+                ),
+                (
+                    "actor_action_dist_act1_ent_categorical",
+                    SummaryStatisticsFormat(mean=".3f"),
+                    "cat1_ent",
+                ),
+                (
+                    "actor_action_dist_act0_ent_kumaraswamy",
+                    SummaryStatisticsFormat(mean=".3f"),
+                    "km0_ent",
+                ),
+                (
+                    "actor_action_dist_act1_ent_kumaraswamy",
+                    SummaryStatisticsFormat(mean=".3f"),
+                    "km1_ent",
+                ),
+                (
+                    "actor_action_dist_act0_entropy_loss_scaled",
+                    SummaryStatisticsFormat(mean=".3f"),
+                    "act0_ent_loss",
+                ),
+                (
+                    "actor_action_dist_act1_entropy_loss_scaled",
+                    SummaryStatisticsFormat(mean=".3f"),
+                    "act1_ent_loss",
+                ),
+            ])
     else:
         logging_console_keys.extend(
             (f"act0_j{i}", SummaryStatisticsFormat(histogram=11)) for i in range(actuators_per_limb)
@@ -1038,6 +1083,8 @@ def run_experiment(
                 "sac_batch_size": sac_batch_size,
                 "sac_gradient_steps": sac_gradient_steps,
                 "sac_nop_steps": world_model_num_next_steps + 1,
+                "sac_ent_coef": sac_ent_coef,
+                "sac_target_entropy": sac_target_entropy,
             }
         )
     if policy_variant != "mat_qcs":
@@ -1247,6 +1294,11 @@ def _make_base_policy(
         variant=continuous_action_dist,
         initial_stickiness=initial_stickiness,
         gsde_init_stds=gsde_init_stds,
+        rsmk_kumaraswamy_ent_scale=(
+            0.0
+            if policy_variant == "tmasac" and continuous_action_dist == "reparameterized_sign_magnitude_kumaraswamy"
+            else 0.75
+        ),
     )
     bernoulli_config = BernoulliConfig(
         initial_prob=0.8,

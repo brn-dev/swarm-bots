@@ -231,6 +231,10 @@ def test_make_base_policy_constructs_tmasac_rsmk_with_nop() -> None:
     assert isinstance(policy, TMASACPolicy)
     assert isinstance(policy.action_dist.distributions[0], ReparameterizedSignMagnitudeKumaraswamyActionDist)
     assert isinstance(policy.action_dist.distributions[1], ReparameterizedSignMagnitudeKumaraswamyActionDist)
+    assert policy.action_dist.distributions[0].kumaraswamy_ent_scale == 0.0
+    assert policy.action_dist.distributions[1].kumaraswamy_ent_scale == 0.0
+    assert policy.action_dist.distributions[0].categorical_ent_loss_config.entropy_floor == 0.35
+    assert policy.action_dist.distributions[0].kumaraswamy_ent_loss_config.entropy_floor is None
     assert policy.actor_nop is None
     assert policy.critic_nop is not None
 

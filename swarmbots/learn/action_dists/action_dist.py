@@ -35,13 +35,8 @@ class ActionDist(nn.Module, abc.ABC):
 
         if init_action_net:
             self.action_net_initialization = action_net_initialization
-
-            if latent_dim == action_dim:
-                self.action_net = nn.Identity()
-            else:
-                self.action_net = nn.Linear(latent_dim, action_dim)
-
-                action_net_initialization(self.action_net)
+            self.action_net = nn.Linear(latent_dim, action_dim)
+            action_net_initialization(self.action_net)
         else:
             self.action_net_initialization = None
             self.action_net = None

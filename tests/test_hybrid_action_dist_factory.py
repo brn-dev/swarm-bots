@@ -278,6 +278,28 @@ class HybridActionDistFactoryTests(unittest.TestCase):
         self.assertIn("entropy", losses)
         self.assertIn("ent", metrics)
 
+    def test_action_net_initialization_applies_when_latent_dim_matches_action_dim(self) -> None:
+        def constant_init(module: torch.nn.Linear) -> None:
+            torch.nn.init.constant_(module.weight, 0.0)
+            torch.nn.init.constant_(module.bias, 0.25)
+
+        dist = make_proba_distribution(
+            latent_dim=2,
+            action_space=spaces.Box(-1.0, 1.0, shape=(1, 2), dtype=np.float32),
+            action_space_dim=2,
+            action_net_initialization=constant_init,
+            continuous_config=SquashedDiagGaussianConfig(
+                std=0.25,
+                std_learnable=True,
+            ),
+        )
+        latent = torch.zeros(3, 1, 2)
+
+        dist.update_latent_features(latent)
+
+        self.assertIsInstance(dist.action_net, torch.nn.Linear)
+        self.assertTrue(torch.allclose(dist.distribution.mean, torch.full((3, 1, 2), 0.25)))
+
 
 if __name__ == "__main__":
     unittest.main()
