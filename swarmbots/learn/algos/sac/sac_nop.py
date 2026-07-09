@@ -24,6 +24,7 @@ class SACNOPLatentSource(Enum):
     CRITIC = "critic"
     ACTOR = "actor"
     BOTH = "both"
+    SHARED_ENCODER = "shared_encoder"
 
 
 @dataclass(frozen=True)

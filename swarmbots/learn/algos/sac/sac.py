@@ -20,6 +20,7 @@ from swarmbots.learn.algos.sac.base_sac_policy import BaseSACPolicy
 from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
 from swarmbots.learn.exponential_moving_average import ExponentialMovingAverage
 from swarmbots.learn.gsde_reset import GSDEResetMode, GSDEIntervalResetMode, GSDEProbabilityResetMode
+from swarmbots.learn.metrics_logger import SUPPRESS_MISSING_CONSOLE_KEY_WARNINGS
 from swarmbots.learn.metrics_list import MetricsLists
 from swarmbots.learn.performance_timer import PerformanceTimer
 from swarmbots.learn.summary_statistics import compute_summary_statistics
@@ -214,6 +215,7 @@ class SAC(BaseAlgorithm):
                 "replay_size": len(self.replay_buffer),
                 "random_actions": random_actions,
                 "training_skipped": True,
+                SUPPRESS_MISSING_CONSOLE_KEY_WARNINGS: True,
             }
 
         metrics = {
@@ -315,6 +317,11 @@ class SAC(BaseAlgorithm):
             log_prob_sum=log_prob_pi_sum,
             batch=batch,
         )
+        target_entropy = self._target_entropy(
+            batch=batch,
+            dtype=log_prob_pi_sum.dtype,
+            device=log_prob_pi_sum.device,
+        )
 
         with torch.no_grad():
             self._reset_train_gsde_noise(batch.next_local_obs)
@@ -402,6 +409,8 @@ class SAC(BaseAlgorithm):
             "current_q2": current_q2.mean().item(),
             "q_pi": torch.minimum(q1_pi, q2_pi).mean().item(),
             "log_prob": log_prob_pi_sum.mean().item(),
+            "entropy": (-log_prob_pi_sum).mean().item(),
+            "target_entropy": target_entropy.mean().item(),
             "ent_coef": ent_coef.item(),
         }
         if ent_coef_loss is not None:

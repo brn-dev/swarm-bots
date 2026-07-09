@@ -65,11 +65,13 @@ def _make_config(
         nop_config: SACNOPConfig | None = None,
         *,
         share_observation_encoder: bool = False,
+        shared_encoder_config: MATEncoderConfig | None = None,
         continuous_config: ContinuousActionDistConfig | None = None,
 ) -> TMASACPolicyConfig:
     return TMASACPolicyConfig(
         actor_encoder_config=_small_encoder_config(),
         critic_encoder_config=_small_encoder_config(),
+        shared_encoder_config=shared_encoder_config,
         share_observation_encoder=share_observation_encoder,
         actor_head_config=TMASACActorHeadConfig(hidden_dims=[10]),
         critic_config=TMASACCriticConfig(
@@ -191,18 +193,52 @@ class TMASACPolicyTests(unittest.TestCase):
         self.assertTrue(torch.equal(actions[~batch.agent_mask], torch.zeros_like(actions[~batch.agent_mask])))
         self.assertTrue(torch.equal(log_probs[~batch.agent_mask], torch.zeros_like(log_probs[~batch.agent_mask])))
 
-    def test_shared_observation_encoder_is_critic_owned_and_detached_for_actor(self) -> None:
+    def test_critic_actions_condition_transformer_inputs(self) -> None:
+        torch.manual_seed(0)
+        policy = TMASACPolicy(env=_DummyContinuousEnv(), config=_make_config())
+        batch = _make_batch()
+        captured_tokens = []
+
+        def capture_transformer_inputs(_module: torch.nn.Module, args: tuple[torch.Tensor, ...]) -> None:
+            captured_tokens.append(args[0].detach().clone())
+
+        hook = policy.critic.encoder.layers[0].register_forward_pre_hook(capture_transformer_inputs)
+        try:
+            policy.q_values(
+                local_obs=batch.local_obs,
+                global_obs=batch.global_obs,
+                hidden_local_vars=batch.hidden_local_vars,
+                hidden_global_vars=batch.hidden_global_vars,
+                agent_mask=batch.agent_mask,
+                actions=batch.actions,
+            )
+            policy.q_values(
+                local_obs=batch.local_obs,
+                global_obs=batch.global_obs,
+                hidden_local_vars=batch.hidden_local_vars,
+                hidden_global_vars=batch.hidden_global_vars,
+                agent_mask=batch.agent_mask,
+                actions=torch.zeros_like(batch.actions),
+            )
+        finally:
+            hook.remove()
+
+        self.assertEqual(len(captured_tokens), 2)
+        self.assertFalse(torch.allclose(captured_tokens[0], captured_tokens[1]))
+
+    def test_shared_observation_encoder_is_policy_owned_critic_optimized_and_detached_for_actor(self) -> None:
         torch.manual_seed(0)
         policy = TMASACPolicy(
             env=_DummyContinuousEnv(),
-            config=_make_config(share_observation_encoder=True),
+            config=_make_config(shared_encoder_config=_small_encoder_config()),
         )
         batch = _make_batch()
-        shared_encoder_param_ids = {id(parameter) for parameter in policy.critic.encoder.parameters()}
+        assert policy.shared_observation_encoder is not None
+        shared_encoder_param_ids = {id(parameter) for parameter in policy.shared_observation_encoder.parameters()}
         actor_param_ids = {id(parameter) for parameter in policy.actor_parameters()}
         critic_param_ids = {id(parameter) for parameter in policy.critic_parameters()}
 
-        self.assertIs(policy.actor_encoder, policy.critic.encoder)
+        self.assertIsNot(policy.actor_encoder, policy.critic.encoder)
         self.assertFalse(shared_encoder_param_ids & actor_param_ids)
         self.assertTrue(shared_encoder_param_ids <= critic_param_ids)
 
@@ -214,7 +250,7 @@ class TMASACPolicyTests(unittest.TestCase):
             deterministic=False,
         )
         log_probs.sum().backward()
-        self.assertTrue(all(parameter.grad is None for parameter in policy.critic.encoder.parameters()))
+        self.assertTrue(all(parameter.grad is None for parameter in policy.shared_observation_encoder.parameters()))
 
         policy.zero_grad(set_to_none=True)
         q1, q2 = policy.q_values(
@@ -226,7 +262,16 @@ class TMASACPolicyTests(unittest.TestCase):
             actions=batch.actions,
         )
         (q1 + q2).sum().backward()
-        self.assertTrue(any(parameter.grad is not None for parameter in policy.critic.encoder.parameters()))
+        self.assertTrue(any(parameter.grad is not None for parameter in policy.shared_observation_encoder.parameters()))
+
+    def test_legacy_share_observation_encoder_uses_policy_owned_encoder(self) -> None:
+        policy = TMASACPolicy(
+            env=_DummyContinuousEnv(),
+            config=_make_config(share_observation_encoder=True),
+        )
+
+        self.assertIsNotNone(policy.shared_observation_encoder)
+        self.assertIsNot(policy.actor_encoder, policy.critic.encoder)
 
     def test_rejects_discrete_action_subspaces(self) -> None:
         with self.assertRaisesRegex(ValueError, "continuous Box action sub-spaces only"):
@@ -338,12 +383,13 @@ class TMASACPolicyTests(unittest.TestCase):
     def test_nop_source_modes_allocate_expected_modules_and_compute_losses(self) -> None:
         batch = _make_batch()
         source_expectations = {
-            SACNOPLatentSource.CRITIC: (False, True),
-            SACNOPLatentSource.ACTOR: (True, False),
-            SACNOPLatentSource.BOTH: (True, True),
+            SACNOPLatentSource.CRITIC: (False, True, "critic_nop_loss_scaled"),
+            SACNOPLatentSource.ACTOR: (True, False, None),
+            SACNOPLatentSource.BOTH: (True, True, "critic_nop_loss_scaled"),
+            SACNOPLatentSource.SHARED_ENCODER: (False, True, "shared_encoder_nop_loss_scaled"),
         }
 
-        for source, (expect_actor_nop, expect_critic_nop) in source_expectations.items():
+        for source, (expect_actor_nop, expect_critic_nop, expected_critic_metric) in source_expectations.items():
             with self.subTest(source=source):
                 torch.manual_seed(10)
                 policy = TMASACPolicy(
@@ -361,7 +407,12 @@ class TMASACPolicyTests(unittest.TestCase):
                                 local_scalar_target_indices=[0, 1],
                                 predict_delta=False,
                             ),
-                        )
+                        ),
+                        shared_encoder_config=(
+                            _small_encoder_config()
+                            if source is SACNOPLatentSource.SHARED_ENCODER
+                            else None
+                        ),
                     ),
                 )
                 actor_loss, actor_metrics = policy.compute_actor_nop_loss(batch)
@@ -375,7 +426,8 @@ class TMASACPolicyTests(unittest.TestCase):
                     self.assertIn("actor_nop_loss_scaled", actor_metrics)
                     self.assertTrue(torch.isfinite(actor_loss))
                 if expect_critic_nop:
-                    self.assertIn("critic_nop_loss_scaled", critic_metrics)
+                    assert expected_critic_metric is not None
+                    self.assertIn(expected_critic_metric, critic_metrics)
                     self.assertTrue(torch.isfinite(critic_loss))
                 if source is SACNOPLatentSource.BOTH:
                     assert policy.actor_nop is not None
@@ -419,6 +471,16 @@ class TMASACPolicyTests(unittest.TestCase):
         self.assertTrue(torch.isfinite(critic_loss))
         self.assertIn("actor_nop_loss_scaled", actor_metrics)
         self.assertIn("critic_nop_loss_scaled", critic_metrics)
+
+    def test_shared_encoder_nop_source_requires_shared_encoder(self) -> None:
+        with self.assertRaisesRegex(ValueError, "SHARED_ENCODER"):
+            TMASACPolicy(
+                env=_DummyContinuousEnv(),
+                config=_make_config(SACNOPConfig(
+                    enabled=True,
+                    latent_source=SACNOPLatentSource.SHARED_ENCODER,
+                )),
+            )
 
     def test_both_nop_modules_do_not_share_parameters(self) -> None:
         policy = TMASACPolicy(

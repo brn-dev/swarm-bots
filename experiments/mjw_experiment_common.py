@@ -23,6 +23,7 @@ from swarmbots.learn.action_dists.beta_action_dist import BetaConfig
 from swarmbots.learn.action_dists.bernoulli_action_dist import BernoulliConfig
 from swarmbots.learn.action_dists.entropy_utils import AgentActionsReduction, EntropyLossConfig
 from swarmbots.learn.action_dists.gsde_action_dist import GSDEConfig
+from swarmbots.learn.action_dists.predicted_std_action_dist import PredictedStdConfig
 from swarmbots.learn.action_dists.reparameterized_sign_magnitude_kumaraswamy_action_dist import (
     ReparameterizedSignMagnitudeKumaraswamyConfig,
 )
@@ -95,6 +96,7 @@ ContinuousActionDistVariant = Literal[
     "reparameterized_sign_magnitude_kumaraswamy",
     "reparameterized_squashed_gaussian_mixture",
     "beta",
+    "predicted_std",
     "gsde",
     "squashed_diag_gaussian",
 ]
@@ -379,6 +381,7 @@ def make_continuous_config(
         | ReparameterizedSignMagnitudeKumaraswamyConfig
         | ReparameterizedSquashedGaussianMixtureConfig
         | BetaConfig
+        | PredictedStdConfig
         | GSDEConfig
         | SquashedDiagGaussianConfig
 ):
@@ -415,6 +418,15 @@ def make_continuous_config(
         return BetaConfig(
             ent_loss_coef=1e-3,
             ent_loss_config=make_sign_magnitude_beta_entropy_config(),
+        )
+    if variant == "predicted_std":
+        return PredictedStdConfig(
+            base_std=gsde_init_stds[0],
+            ent_loss_coef=1e-3,
+            ent_loss_config=EntropyLossConfig(
+                agent_actions_reduction=AgentActionsReduction.SUM,
+                metrics_reduction=AgentActionsReduction.MEAN,
+            ),
         )
     if variant == "gsde":
         return GSDEConfig(
@@ -534,11 +546,11 @@ def run_experiment(
     policy_compile_mode = "default"
     compile_world_model_modules = True
 
-    sac_learning_rate = 3e-4
-    sac_buffer_capacity_per_env = episode_length
+    sac_learning_rate = 2e-5
+    sac_buffer_capacity_per_env = episode_length * 2
     sac_learning_starts = max(10_000, rollout_samples * 4)
     sac_batch_size = rollout_samples
-    sac_gradient_steps = rollout_steps_per_env
+    sac_gradient_steps = 8
 
     run_id = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     load_path: str | Path | None = None
@@ -919,12 +931,14 @@ def run_experiment(
                 ("act0", SummaryStatisticsFormat(histogram=21)),
                 ("act1", SummaryStatisticsFormat(histogram=21)),
                 ("updates", "3", "upd"),
-                ("critic_loss", ".3f"),
-                ("actor_loss", ".3f"),
-                ("ent_coef", ".3f"),
-                ("log_prob", ".3f"),
-                ("q_pi", ".3f"),
-                ("target_q", ".3f"),
+                ("critic_loss", SummaryStatisticsFormat(mean=".3f")),
+                ("actor_loss", SummaryStatisticsFormat(mean=".3f")),
+                ("ent_coef", SummaryStatisticsFormat(mean=".3f")),
+                ("entropy", SummaryStatisticsFormat(mean=".3f"), "ent"),
+                ("target_entropy", SummaryStatisticsFormat(mean=".3f"), "target_ent"),
+                ("log_prob", SummaryStatisticsFormat(mean=".3f")),
+                ("q_pi", SummaryStatisticsFormat(mean=".3f")),
+                ("target_q", SummaryStatisticsFormat(mean=".3f")),
                 ("replay_size", "8"),
                 ("random_actions", None, "rnd"),
             ]

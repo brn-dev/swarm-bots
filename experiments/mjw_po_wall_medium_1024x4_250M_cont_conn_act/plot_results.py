@@ -20,6 +20,7 @@ VARIANT_GROUPS = (
     "mat_qcs_context_tokens_only",
     "mat_orig",
     "tmasac_rsmk",
+    "tmasac_predicted_std",
 )
 BASE_DISPLAY_NAME_OVERRIDES = {
     "mat_qcc": "MAT-QCC + NOP",
@@ -29,6 +30,7 @@ BASE_DISPLAY_NAME_OVERRIDES = {
     ),
     "mat_orig": "MAT-Orig + NOP",
     "tmasac_rsmk": "TMASAC RSMK + NOP",
+    "tmasac_predicted_std": "TMASAC Predicted Std + NOP",
 }
 THEORETICAL_MAXIMUM = None
 
