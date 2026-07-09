@@ -312,6 +312,13 @@ class SAC(BaseAlgorithm):
             agent_mask=batch.agent_mask,
             deterministic=False,
         )
+        actor_action_dist_losses, actor_action_dist_metrics = self._compute_actor_action_dist_extra_losses(
+            agent_mask=batch.agent_mask,
+        )
+        reduced_actor_action_dist_losses = self._reduce_actor_action_dist_extra_losses(
+            batch=batch,
+            extra_losses=actor_action_dist_losses,
+        )
         log_prob_pi_sum = self._reduce_agent_log_probs(log_prob_pi, batch.agent_mask)
         ent_coef, ent_coef_loss = self._update_entropy_coefficient(
             log_prob_sum=log_prob_pi_sum,
@@ -389,6 +396,10 @@ class SAC(BaseAlgorithm):
         else:
             actor_nop_loss, actor_nop_metrics = self.policy.compute_actor_nop_loss(nop_loss_batch)
         actor_total_loss = actor_loss if actor_nop_loss is None else actor_loss + actor_nop_loss
+        if reduced_actor_action_dist_losses:
+            actor_total_loss = actor_total_loss + torch.stack(
+                tuple(reduced_actor_action_dist_losses.values())
+            ).sum()
 
         self.actor_optimizer.zero_grad()
         actor_total_loss.backward()
@@ -415,18 +426,26 @@ class SAC(BaseAlgorithm):
         }
         if ent_coef_loss is not None:
             metrics["ent_coef_loss"] = ent_coef_loss.item()
+        metrics.update({
+            f"actor_action_dist_{name}_loss_scaled": value.item()
+            for name, value in reduced_actor_action_dist_losses.items()
+        })
+        metrics.update({
+            f"actor_action_dist_{name}": value
+            for name, value in actor_action_dist_metrics.items()
+        })
         metrics.update(actor_nop_metrics)
         metrics.update(critic_nop_metrics)
         return metrics, actor_grad_norm, critic_grad_norm
 
     def _setup_entropy_coefficient(self) -> None:
         if isinstance(self.ent_coef, str):
-            ent_coef_value = self.ent_coef.lower()
-            if not ent_coef_value.startswith("auto"):
-                raise ValueError("ent_coef string must be 'auto' or 'auto_<initial_value>'")
-            init_value = 1.0
-            if "_" in ent_coef_value:
-                init_value = float(ent_coef_value.split("_", 1)[1])
+            init_value = self._parse_auto_value(
+                self.ent_coef,
+                parameter_name="ent_coef",
+                suffix_name="initial_value",
+                default=1.0,
+            )
             if init_value <= 0:
                 raise ValueError(f"Initial entropy coefficient must be > 0, got {init_value}")
             self.log_ent_coef = torch.log(
@@ -466,8 +485,7 @@ class SAC(BaseAlgorithm):
             device: torch.device,
     ) -> torch.Tensor:
         if isinstance(self.target_entropy, str):
-            if self.target_entropy.lower() != "auto":
-                raise ValueError("target_entropy string must be 'auto'")
+            auto_scale = self._target_entropy_auto_scale()
             if batch.agent_mask is None:
                 active_agents = torch.full(
                     batch.rewards.shape,
@@ -477,15 +495,89 @@ class SAC(BaseAlgorithm):
                 )
             else:
                 active_agents = batch.agent_mask.to(dtype=dtype).sum(dim=1)
-            return -float(self.agent_action_dim) * active_agents
+            return -auto_scale * float(self.agent_action_dim) * active_agents
 
         return torch.full(batch.rewards.shape, float(self.target_entropy), dtype=dtype, device=device)
+
+    def _target_entropy_auto_scale(self) -> float:
+        assert isinstance(self.target_entropy, str)
+        scale = self._parse_auto_value(
+            self.target_entropy,
+            parameter_name="target_entropy",
+            suffix_name="scale",
+            default=1.0,
+        )
+        if scale <= 0.0:
+            raise ValueError(f"target_entropy auto scale must be > 0, got {scale}")
+        return scale
+
+    @staticmethod
+    def _parse_auto_value(
+            value: str,
+            *,
+            parameter_name: str,
+            suffix_name: str,
+            default: float,
+    ) -> float:
+        normalized_value = value.lower()
+        if normalized_value == "auto":
+            return default
+        for separator in ("_", "*"):
+            prefix = f"auto{separator}"
+            if normalized_value.startswith(prefix):
+                return float(normalized_value.removeprefix(prefix))
+        raise ValueError(
+            f"{parameter_name} string must be 'auto', 'auto_{suffix_name}', or 'auto*{suffix_name}'"
+        )
 
     @staticmethod
     def _reduce_agent_log_probs(log_probs: torch.Tensor, agent_mask: torch.Tensor | None) -> torch.Tensor:
         if agent_mask is None:
             return log_probs.sum(dim=1)
         return (log_probs * agent_mask.to(dtype=log_probs.dtype)).sum(dim=1)
+
+    def _compute_actor_action_dist_extra_losses(
+            self,
+            *,
+            agent_mask: torch.Tensor | None,
+    ) -> tuple[dict[str, torch.Tensor], dict[str, Any]]:
+        action_dist = getattr(self.policy, "action_dist", None)
+        compute_extra_losses = getattr(action_dist, "compute_extra_losses", None)
+        if not callable(compute_extra_losses):
+            return {}, {}
+        return compute_extra_losses(agent_mask=agent_mask)
+
+    def _reduce_actor_action_dist_extra_losses(
+            self,
+            *,
+            batch: OffPolicyReplayBatch,
+            extra_losses: dict[str, torch.Tensor],
+    ) -> dict[str, torch.Tensor]:
+        return {
+            name: self._reduce_actor_action_dist_extra_loss(batch=batch, value=value)
+            for name, value in extra_losses.items()
+        }
+
+    def _reduce_actor_action_dist_extra_loss(
+            self,
+            *,
+            batch: OffPolicyReplayBatch,
+            value: torch.Tensor,
+    ) -> torch.Tensor:
+        if value.ndim == 0:
+            return value
+        if value.shape == batch.rewards.shape:
+            return value.mean()
+
+        expected_agent_shape = tuple(batch.local_obs.shape[:2])
+        if tuple(value.shape) != expected_agent_shape:
+            raise ValueError(
+                f"Expected SAC actor action-dist extra loss shape {expected_agent_shape} or "
+                f"{tuple(batch.rewards.shape)}, got {tuple(value.shape)}"
+            )
+        if batch.agent_mask is None:
+            return value.sum(dim=1).mean()
+        return (value * batch.agent_mask.to(dtype=value.dtype)).sum(dim=1).mean()
 
     def _clip_grad_norm(self, parameters: list[torch.nn.Parameter]) -> float:
         if self.max_grad_norm is None:
