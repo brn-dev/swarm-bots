@@ -54,6 +54,14 @@ from swarmbots.learn.algos.r_mat.r_mat_qcc_policy import RMATQCCPolicy, RMATQCCP
 from swarmbots.learn.algos.r_mat.r_mat_qcx_policy import RMATQCXPolicy, RMATQCXPolicyConfig
 from swarmbots.learn.algos.r_mat.r_mat_qcs_policy import RMATQCSPolicy, RMATQCSPolicyConfig
 from swarmbots.learn.algos.r_mat.r_ppo_wm_sampler import RPPOWMSamplerConfig
+from swarmbots.learn.algos.sac.sac import SAC
+from swarmbots.learn.algos.sac.sac_nop import SACNOPConfig
+from swarmbots.learn.algos.sac.tmasac_policy import (
+    TMASACActorHeadConfig,
+    TMASACCriticConfig,
+    TMASACPolicy,
+    TMASACPolicyConfig,
+)
 from swarmbots.learn.algos.world_modeling.next_obs_pred_mixin import NextObsPredConfig
 from swarmbots.learn.algos.world_modeling.next_obs_pred_ppo_wrapper import NOPWorldModelConfig, NextObsPredWrapper
 from swarmbots.learn.algos.world_modeling.ppo_wm_sampler import PPOWMSamplerConfig
@@ -104,6 +112,7 @@ PolicyVariant = Literal[
     "ppo_small",
     "mappo",
     "mappo_small",
+    "tmasac",
 ]
 MJWScenarioName = Literal[
     "wall",
@@ -237,6 +246,10 @@ def _metadata_name(value: Any) -> Any:
 
 def _is_recurrent_policy_variant(policy_variant: PolicyVariant) -> bool:
     return policy_variant in {"r_mat_qcs", "r_mat_qcc", "r_mat_qcx", "r_mat_dec"}
+
+
+def _is_sac_policy_variant(policy_variant: PolicyVariant) -> bool:
+    return policy_variant == "tmasac"
 
 
 def make_vector_env(
@@ -448,6 +461,8 @@ def run_experiment(
         mat_init_gains: MATInitGains = MATInitGains(),
         nop_init_gains: NOPInitGains = NOPInitGains(),
         mat_normalization: MATNormalizationConfig = MATNormalizationConfig(),
+        enc_nhead: int = 4,
+        dec_nhead: int = 2,
         use_nop: bool = True,
         nop_add_agent_embeddings_transition_model: bool = False,
         use_transition_obs: bool = False,
@@ -490,6 +505,7 @@ def run_experiment(
             f"{rollout_samples=} {virtual_mini_batches=}"
         )
     recurrent_policy = _is_recurrent_policy_variant(policy_variant)
+    sac_policy = _is_sac_policy_variant(policy_variant)
     sampler_batch_size = num_envs if recurrent_policy else rollout_samples
     if sampler_batch_size % virtual_mini_batches != 0:
         raise ValueError(
@@ -501,7 +517,7 @@ def run_experiment(
     rollout_warmup_steps_per_env = episode_length
     save_interval = None
 
-    use_popart = True
+    use_popart = not sac_policy
     popart_beta = 5e-4
     popart_init_sigma = 0.65
 
@@ -517,6 +533,12 @@ def run_experiment(
     compile_policy_modules = True
     policy_compile_mode = "default"
     compile_world_model_modules = True
+
+    sac_learning_rate = 3e-4
+    sac_buffer_capacity_per_env = episode_length
+    sac_learning_starts = max(10_000, rollout_samples * 4)
+    sac_batch_size = rollout_samples
+    sac_gradient_steps = rollout_steps_per_env
 
     run_id = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     load_path: str | Path | None = None
@@ -537,12 +559,14 @@ def run_experiment(
     variant_log_message = (
         f"MJW {_scenario_display_name(scenario_name=scenario_name)} - {variant_name}: "
         f"{num_envs} envs x {rollout_steps_per_env} steps/env = {rollout_samples}, "
+        f"algorithm={'sac' if sac_policy else 'ppo'}, "
         f"virtual_mini_batches={virtual_mini_batches}, n_epochs={n_epochs}, "
         f"continuous_action_dist={continuous_action_dist}, use_nop={use_nop}, "
         f"use_transition_obs={use_transition_obs}, "
         f"compile_policy_modules={compile_policy_modules}, policy_compile_mode={policy_compile_mode}, "
         f"nop_add_agent_embeddings_transition_model={nop_add_agent_embeddings_transition_model}, "
         f"act_fn_cls={activation_factory_name(act_fn_cls)}, "
+        f"enc_nhead={enc_nhead}, dec_nhead={dec_nhead}, "
         f"mat_init_gains={mat_init_gains}, nop_init_gains={nop_init_gains}, "
         f"mat_normalization={mat_normalization}, "
         f"mat_add_agent_embeddings={mat_add_agent_embeddings}, "
@@ -557,6 +581,13 @@ def run_experiment(
         f"rmat_temporal_layer_norm={rmat_temporal_layer_norm}, "
         f"rmat_use_temporal_output_projection={rmat_use_temporal_output_projection}"
     )
+    if sac_policy:
+        variant_log_message = (
+            f"{variant_log_message}, sac_learning_rate={sac_learning_rate}, "
+            f"sac_buffer_capacity_per_env={sac_buffer_capacity_per_env}, "
+            f"sac_learning_starts={sac_learning_starts}, sac_batch_size={sac_batch_size}, "
+            f"sac_gradient_steps={sac_gradient_steps}"
+        )
     if policy_variant != "mat_qcs":
         variant_log_message = f"{variant_log_message}, policy_variant={policy_variant}"
     logger.info(variant_log_message)
@@ -645,8 +676,6 @@ def run_experiment(
     dec_d_model = 128
     transition_model_d_model = 128
 
-    enc_nhead = 4
-    dec_nhead = 2
     transition_model_nhead = 2
 
     print("Initializing Policy...")
@@ -672,7 +701,15 @@ def run_experiment(
         ),
         act_fn_cls=act_fn_cls,
         mat_init_gains=mat_init_gains,
+        nop_init_gains=nop_init_gains,
         mat_normalization=mat_normalization,
+        use_nop=use_nop,
+        nop_add_agent_embeddings_transition_model=nop_add_agent_embeddings_transition_model,
+        compile_world_model_modules=compile_world_model_modules,
+        world_model_loss_coef=world_model_loss_coef,
+        transition_model_d_model=transition_model_d_model,
+        transition_model_nhead=transition_model_nhead,
+        obs_indices=obs_indices,
         rmat_temporal_model_cls=rmat_temporal_model_cls,
         rmat_temporal_model_config=rmat_temporal_model_config,
         rmat_temporal_residual=rmat_temporal_residual,
@@ -682,7 +719,7 @@ def run_experiment(
     )
     policy_local_latent_dim = int(getattr(base_policy, "local_latent_dim", enc_d_model))
     policy = base_policy
-    if use_nop:
+    if use_nop and not sac_policy:
         policy = NextObsPredWrapper(
             policy=base_policy,
             world_model_config=NOPWorldModelConfig(
@@ -733,111 +770,137 @@ def run_experiment(
     print(policy)
     print(f"learnable_params: {policy.num_parameters():,}")
 
-    print("Initializing PPO Algorithm...")
+    print(f"Initializing {'SAC' if sac_policy else 'PPO'} Algorithm...")
 
-    warm_lr = 1e-4
-    warmup_iterations = 200
-    cold_lr = warm_lr * 5e-3 if warmup_iterations > 0 else warm_lr
-    clip_range = 0.05
-    target_kl = 0.002
-
-    auto_lr = AutomaticLearningRate(
-        initial_lr=cold_lr,
-        max_lr=8e-4,
-        updater=make_auto_lr_updater(
-            early_stop_epoch_decay_limit=math.ceil(n_epochs * 0.75),
-            max_kl_div=target_kl * 1.55,
-            warm_scheduler_config=CosineSchedulerConfig(
-                unit=ScheduleUnit.ITERATIONS,
-                duration=warmup_iterations,
-                start_value=cold_lr,
-                final_value=warm_lr,
-            )
-            if warmup_iterations > 0
-            else None,
-        ),
-    )
-
-    scheduler_manager: SchedulerManager | None = None
-    continuous_dist = policy.action_dist.distributions[0]
-    if continuous_action_dist == "sticky_sign_magnitude_beta" and isinstance(continuous_dist, StickyActionDist):
-        sticky_dist: StickyActionDist = continuous_dist
-        scheduler_manager = SchedulerManager(
-            [
-                ScheduledHyperParameter(
-                    name="act0_stickiness",
-                    scheduler=LinearScheduler(
-                        unit=ScheduleUnit.TIMESTEPS,
-                        duration=stickiness_anneal_steps,
-                        start_value=initial_stickiness,
-                        final_value=final_stickiness,
-                        name="act0_stickiness",
-                    ),
-                    get_value=lambda: sticky_dist.get_stickiness(),
-                    apply=lambda new_value: sticky_dist.set_stickiness(new_value),
-                )
-            ]
-        )
-    elif continuous_action_dist == "sticky_sign_magnitude_beta":
-        act0_dist_type = type(continuous_dist) if policy.action_dist.distributions else None
-        logger.warning(f"Skipping act0_stickiness scheduler: action dist[0] is {act0_dist_type}")
-
-    parameter_lr_multipliers = _make_mat_parameter_lr_multipliers(
-        policy_variant=policy_variant,
-        mat_decoder_lr_multiplier=mat_decoder_lr_multiplier,
-        include_actor_head_lr_multiplier=include_actor_head_lr_multiplier,
-    )
-    if recurrent_policy:
-        sampler_config = RPPOWMSamplerConfig(
-            batch_size=sampler_batch_size,
-            sequence_length=rollout_steps_per_env,
-            num_next_steps=world_model_num_next_steps,
-            compile_wm_window_helper=use_nop,
-        )
-    elif use_nop:
-        sampler_config = PPOWMSamplerConfig(
-            batch_size=sampler_batch_size,
-            num_next_steps=world_model_num_next_steps,
-            compile_wm_window_helper=True,
+    parameter_lr_multipliers: dict[str, float] = {}
+    algorithm: PPO | SAC
+    if sac_policy:
+        algorithm = SAC(
+            policy=policy,
+            env=env,
+            learning_rate=sac_learning_rate,
+            buffer_capacity_per_env=sac_buffer_capacity_per_env,
+            learning_starts=sac_learning_starts,
+            batch_size=sac_batch_size,
+            rollout_steps_per_iteration=rollout_samples,
+            rollout_warmup_steps_per_env=rollout_warmup_steps_per_env,
+            gradient_steps=sac_gradient_steps,
+            gamma=gamma,
+            tau=0.005,
+            ent_coef="auto",
+            target_entropy="auto",
+            target_update_interval=1,
+            max_grad_norm=2.0,
+            nop_steps=world_model_num_next_steps + 1,
+            train_device=train_device,
+            rollout_device=rollout_device,
+            record_device=record_device,
+            replay_storage_device="cuda",
         )
     else:
-        sampler_config = PPOSamplerConfig(batch_size=sampler_batch_size)
+        warm_lr = 1e-4
+        warmup_iterations = 200
+        cold_lr = warm_lr * 5e-3 if warmup_iterations > 0 else warm_lr
+        clip_range = 0.05
+        target_kl = 0.002
 
-    ppo = PPO(
-        policy=policy,
-        env=env,
-        learning_rate=auto_lr,
-        rollout_mode=StepsRolloutMode(rollout_samples),
-        rollout_warmup_steps_per_env=rollout_warmup_steps_per_env,
-        max_episode_length=episode_length,
-        sampler_config=sampler_config,
-        n_epochs=n_epochs,
-        gamma=gamma,
-        gae_lambda=0.95,
-        clip_range=clip_range,
-        target_kl=target_kl,
-        max_grad_norm=2.0,
-        gsde_reset_mode=GSDEProbabilityResetMode(probability=1 / 6),
-        mc_ent_coef=0e-5,
-        vf_coef=vf_coef,
-        value_loss_fn=nn.MSELoss(reduction="none"),
-        train_device=train_device,
-        rollout_device=rollout_device,
-        record_device=record_device,
-        use_popart=use_popart,
-        agent_logprob_reduction="sum" if policy_variant == "ppo" else None,
-        metrics_action_splitters=[lambda actions: split_actuator_joints(actions, actuators_per_limb), None],
-        scheduler_manager=scheduler_manager,
-        virtual_mini_batches=virtual_mini_batches,
-        parameter_lr_multipliers=parameter_lr_multipliers,
-    )
+        auto_lr = AutomaticLearningRate(
+            initial_lr=cold_lr,
+            max_lr=8e-4,
+            updater=make_auto_lr_updater(
+                early_stop_epoch_decay_limit=math.ceil(n_epochs * 0.75),
+                max_kl_div=target_kl * 1.55,
+                warm_scheduler_config=CosineSchedulerConfig(
+                    unit=ScheduleUnit.ITERATIONS,
+                    duration=warmup_iterations,
+                    start_value=cold_lr,
+                    final_value=warm_lr,
+                )
+                if warmup_iterations > 0
+                else None,
+            ),
+        )
+
+        scheduler_manager: SchedulerManager | None = None
+        continuous_dist = policy.action_dist.distributions[0]
+        if continuous_action_dist == "sticky_sign_magnitude_beta" and isinstance(continuous_dist, StickyActionDist):
+            sticky_dist: StickyActionDist = continuous_dist
+            scheduler_manager = SchedulerManager(
+                [
+                    ScheduledHyperParameter(
+                        name="act0_stickiness",
+                        scheduler=LinearScheduler(
+                            unit=ScheduleUnit.TIMESTEPS,
+                            duration=stickiness_anneal_steps,
+                            start_value=initial_stickiness,
+                            final_value=final_stickiness,
+                            name="act0_stickiness",
+                        ),
+                        get_value=lambda: sticky_dist.get_stickiness(),
+                        apply=lambda new_value: sticky_dist.set_stickiness(new_value),
+                    )
+                ]
+            )
+        elif continuous_action_dist == "sticky_sign_magnitude_beta":
+            act0_dist_type = type(continuous_dist) if policy.action_dist.distributions else None
+            logger.warning(f"Skipping act0_stickiness scheduler: action dist[0] is {act0_dist_type}")
+
+        parameter_lr_multipliers = _make_mat_parameter_lr_multipliers(
+            policy_variant=policy_variant,
+            mat_decoder_lr_multiplier=mat_decoder_lr_multiplier,
+            include_actor_head_lr_multiplier=include_actor_head_lr_multiplier,
+        )
+        if recurrent_policy:
+            sampler_config = RPPOWMSamplerConfig(
+                batch_size=sampler_batch_size,
+                sequence_length=rollout_steps_per_env,
+                num_next_steps=world_model_num_next_steps,
+                compile_wm_window_helper=use_nop,
+            )
+        elif use_nop:
+            sampler_config = PPOWMSamplerConfig(
+                batch_size=sampler_batch_size,
+                num_next_steps=world_model_num_next_steps,
+                compile_wm_window_helper=True,
+            )
+        else:
+            sampler_config = PPOSamplerConfig(batch_size=sampler_batch_size)
+
+        algorithm = PPO(
+            policy=policy,
+            env=env,
+            learning_rate=auto_lr,
+            rollout_mode=StepsRolloutMode(rollout_samples),
+            rollout_warmup_steps_per_env=rollout_warmup_steps_per_env,
+            max_episode_length=episode_length,
+            sampler_config=sampler_config,
+            n_epochs=n_epochs,
+            gamma=gamma,
+            gae_lambda=0.95,
+            clip_range=clip_range,
+            target_kl=target_kl,
+            max_grad_norm=2.0,
+            gsde_reset_mode=GSDEProbabilityResetMode(probability=1 / 6),
+            mc_ent_coef=0e-5,
+            vf_coef=vf_coef,
+            value_loss_fn=nn.MSELoss(reduction="none"),
+            train_device=train_device,
+            rollout_device=rollout_device,
+            record_device=record_device,
+            use_popart=use_popart,
+            agent_logprob_reduction="sum" if policy_variant == "ppo" else None,
+            metrics_action_splitters=[lambda actions: split_actuator_joints(actions, actuators_per_limb), None],
+            scheduler_manager=scheduler_manager,
+            virtual_mini_batches=virtual_mini_batches,
+            parameter_lr_multipliers=parameter_lr_multipliers,
+        )
 
     if load_path:
         logger.info(f"Loading model from {load_path}")
-        ppo.load(load_path, recover_best_return_ema=False, strict_load_state_dict=True)
+        algorithm.load(load_path, recover_best_return_ema=False, strict_load_state_dict=True)
 
     scheduled_recording_hook = install_scheduled_recordings(
-        algorithm=ppo,
+        algorithm=algorithm,
         total_timesteps=total_timesteps,
         schedule=DEFAULT_LIVE_RECORDING_SCHEDULE,
     )
@@ -850,28 +913,53 @@ def run_experiment(
         ("timesteps", "8", "steps"),
         ("total_updates", "6", "tot_upd"),
     ]
-    logging_console_keys.extend((f"act0_j{i}", SummaryStatisticsFormat(histogram=11)) for i in range(actuators_per_limb))
-    logging_console_keys.extend(
-        (f"std0_j{i}", SummaryStatisticsFormat(mean=".3f", std=".3f", min_value=".3f", max_value=".3f"))
-        for i in range(actuators_per_limb)
-    )
+    if sac_policy:
+        logging_console_keys.extend(
+            [
+                ("act0", SummaryStatisticsFormat(histogram=21)),
+                ("act1", SummaryStatisticsFormat(histogram=21)),
+                ("updates", "3", "upd"),
+                ("critic_loss", ".3f"),
+                ("actor_loss", ".3f"),
+                ("ent_coef", ".3f"),
+                ("log_prob", ".3f"),
+                ("q_pi", ".3f"),
+                ("target_q", ".3f"),
+                ("replay_size", "8"),
+                ("random_actions", None, "rnd"),
+            ]
+        )
+        if use_nop:
+            logging_console_keys.append(("critic_nop_loss_scaled", None, "critic_nop"))
+    else:
+        logging_console_keys.extend(
+            (f"act0_j{i}", SummaryStatisticsFormat(histogram=11)) for i in range(actuators_per_limb)
+        )
+        logging_console_keys.extend(
+            (f"std0_j{i}", SummaryStatisticsFormat(mean=".3f", std=".3f", min_value=".3f", max_value=".3f"))
+            for i in range(actuators_per_limb)
+        )
+        logging_console_keys.extend(
+            [
+                ("act1", SummaryStatisticsFormat(histogram=2)),
+                ("updates", "3", "upd"),
+                ("approx_kl", SummaryStatisticsFormat(mean=".2e", std=".2e")),
+                ("clip_frac", None),
+                ("ratio", SummaryStatisticsFormat(mean=".3f", std=".3f", min_value=".1e", max_value=".3f")),
+            ]
+        )
+        if use_nop:
+            logging_console_keys.append(("wm_loss_scaled", None, "wm_loss"))
+        logging_console_keys.extend(
+            [
+                ("val_loss_scaled", None, "val_loss"),
+                ("expl_var", ".3f"),
+                ("popart_mu", ".3f", "pa_mu"),
+                ("popart_sigma", ".3f", "pa_sigma"),
+            ]
+        )
     logging_console_keys.extend(
         [
-            ("act1", SummaryStatisticsFormat(histogram=2)),
-            ("updates", "3", "upd"),
-            ("approx_kl", SummaryStatisticsFormat(mean=".2e", std=".2e")),
-            ("clip_frac", None),
-            ("ratio", SummaryStatisticsFormat(mean=".3f", std=".3f", min_value=".1e", max_value=".3f")),
-        ]
-    )
-    if use_nop:
-        logging_console_keys.append(("wm_loss_scaled", None, "wm_loss"))
-    logging_console_keys.extend(
-        [
-            ("val_loss_scaled", None, "val_loss"),
-            ("expl_var", ".3f"),
-            ("popart_mu", ".3f", "pa_mu"),
-            ("popart_sigma", ".3f", "pa_sigma"),
             ("ep_rew", SummaryStatisticsFormat(mean=" .2f", std=".2f", max_value=" .2f", n="1")),
             ("ep_rew_ema", " .3f"),
             ("best_ep_rew_ema", " .3f", "best_ema"),
@@ -887,6 +975,7 @@ def run_experiment(
         "shared_experiment_script": Path(__file__).read_text(encoding="utf-8"),
         "script_scenario_presets": Path(mjw_scenario_presets.__file__).read_text(encoding="utf-8"),
         "backend": "mjw_env",
+        "algorithm_variant": "sac" if sac_policy else "ppo",
         "recording_enabled": "live_mjw_exact_state",
         "rollout_samples": rollout_samples,
         "rollout_steps_per_env": rollout_steps_per_env,
@@ -926,6 +1015,17 @@ def run_experiment(
         "rmat_temporal_layer_norm": rmat_temporal_layer_norm,
         "rmat_use_temporal_output_projection": rmat_use_temporal_output_projection,
     }
+    if sac_policy:
+        extra_run_metadata.update(
+            {
+                "sac_learning_rate": sac_learning_rate,
+                "sac_buffer_capacity_per_env": sac_buffer_capacity_per_env,
+                "sac_learning_starts": sac_learning_starts,
+                "sac_batch_size": sac_batch_size,
+                "sac_gradient_steps": sac_gradient_steps,
+                "sac_nop_steps": world_model_num_next_steps + 1,
+            }
+        )
     if policy_variant != "mat_qcs":
         extra_run_metadata["policy_variant"] = policy_variant
 
@@ -933,8 +1033,8 @@ def run_experiment(
         run_name=f"{experiment_run_name}/{variant_name}/{run_id}",
         run_dir=str(run_dir),
         total_timesteps=total_timesteps,
-        algorithm=ppo,
-        run=lambda: ppo.learn(
+        algorithm=algorithm,
+        run=lambda: algorithm.learn(
             max_total_timesteps=total_timesteps,
             run_dir=str(run_dir),
             log_interval=1,
@@ -1021,6 +1121,64 @@ def _make_mat_parameter_lr_multipliers(
     return {}
 
 
+def _make_sac_nop_config(
+        *,
+        use_nop: bool,
+        obs_indices: ObsIndices | None,
+        source_latent_dim: int,
+        nop_init_gains: NOPInitGains,
+        nop_add_agent_embeddings_transition_model: bool,
+        compile_world_model_modules: bool,
+        policy_compile_mode: str,
+        world_model_loss_coef: float,
+        transition_model_d_model: int,
+        transition_model_nhead: int,
+        act_fn_cls: ActivationFactory,
+) -> SACNOPConfig:
+    if not use_nop:
+        return SACNOPConfig(enabled=False)
+    if obs_indices is None:
+        raise ValueError("obs_indices is required when building TMASAC with NOP enabled.")
+
+    return SACNOPConfig(
+        enabled=True,
+        nop_loss_coef=world_model_loss_coef,
+        compile_modules=compile_world_model_modules,
+        compile_mode=policy_compile_mode,
+        act_fn_cls=act_fn_cls,
+        latent_projection_hidden_dims=[source_latent_dim],
+        pre_predictors_hidden_dims=[transition_model_d_model, transition_model_d_model],
+        scalar_predictor_hidden_dims=[],
+        angle_predictor_hidden_dims=[],
+        rot6d_predictor_hidden_dims=[],
+        binary_predictor_hidden_dims=[],
+        latent_projection_init_gain=nop_init_gains.pre_transition,
+        pre_predictors_init_gain=nop_init_gains.pre_predictors,
+        predictor_init_gain=nop_init_gains.predictors,
+        transition_model_dropout=0.0,
+        transition_model_d_model=transition_model_d_model,
+        transition_model_nhead=transition_model_nhead,
+        transition_model_num_layers=2,
+        transition_model_dim_feedforward=transition_model_d_model * 2,
+        transition_model_add_agent_embeddings=nop_add_agent_embeddings_transition_model,
+        transition_model_coembed_hidden_dims=[transition_model_d_model],
+        transition_model_coembed_init_gain=nop_init_gains.transition_coembed,
+        transition_model_head_init_gain=nop_init_gains.transition_head,
+        transition_model_transformer_ff_init_gain=nop_init_gains.transition_transformer_ff,
+        scalar_loss_fn="smooth_l1",
+        next_obs_pred_config=NextObsPredConfig(
+            local_scalar_target_indices=obs_indices.local_scalar_indices,
+            local_angle_target_indices=obs_indices.local_angle_indices,
+            local_rot6d_target_indices=obs_indices.local_rot6d_indices,
+            local_binary_target_indices=obs_indices.local_binary_indices,
+            scalar_loss_weight=1.0,
+            angle_loss_weight=1.0,
+            rot6d_loss_weight=1.0,
+            binary_loss_weight=1.0,
+        ),
+    )
+
+
 def _make_base_policy(
         *,
         env: Any,
@@ -1042,6 +1200,14 @@ def _make_base_policy(
         act_fn_cls: ActivationFactory,
         mat_init_gains: MATInitGains,
         mat_normalization: MATNormalizationConfig,
+        nop_init_gains: NOPInitGains = NOPInitGains(),
+        use_nop: bool = False,
+        nop_add_agent_embeddings_transition_model: bool = False,
+        compile_world_model_modules: bool = False,
+        world_model_loss_coef: float = 0.1,
+        transition_model_d_model: int = 128,
+        transition_model_nhead: int = 2,
+        obs_indices: ObsIndices | None = None,
         mat_qcc_tie_query_context_and_context_self_attention: bool = True,
         rmat_temporal_model_cls: Any = None,
         rmat_temporal_model_config: Any = None,
@@ -1061,6 +1227,7 @@ def _make_base_policy(
         | RMATQCCPolicy
         | RMATQCXPolicy
         | RMATDecPolicy
+        | TMASACPolicy
 ):
     continuous_config = make_continuous_config(
         variant=continuous_action_dist,
@@ -1114,6 +1281,51 @@ def _make_base_policy(
         **({} if rmat_temporal_model_cls is None else {"temporal_model_cls": rmat_temporal_model_cls}),
         **({} if rmat_temporal_model_config is None else {"temporal_model_config": rmat_temporal_model_config}),
     )
+
+    if policy_variant == "tmasac":
+        if use_popart:
+            raise ValueError("TMASACPolicy does not support PopArt; call with use_popart=False.")
+        return TMASACPolicy(
+            env=env,
+            config=TMASACPolicyConfig(
+                actor_encoder_config=mat_encoder_config,
+                critic_encoder_config=mat_encoder_config,
+                actor_head_config=TMASACActorHeadConfig(
+                    hidden_dims=[dec_d_model],
+                    normalize_input=mat_normalization.normalize_actor_head_input,
+                    init_gain=mat_init_gains.actor_head,
+                ),
+                critic_config=TMASACCriticConfig(
+                    n_local_projection_hidden_layers=2,
+                    n_value_regressor_hidden_layers=1,
+                    use_popart=False,
+                    popart_config=popart_config,
+                    local_projection_init_gain=mat_init_gains.critic_local_projection,
+                    value_regressor_init_gain=mat_init_gains.critic_value_regressor,
+                    value_head_init_gain=mat_init_gains.critic_value_head,
+                ),
+                dropout=0.0,
+                act_fn_cls=act_fn_cls,
+                continuous_config=continuous_config,
+                max_agents=20,
+                nop_config=_make_sac_nop_config(
+                    use_nop=use_nop,
+                    obs_indices=obs_indices,
+                    source_latent_dim=enc_d_model,
+                    nop_init_gains=nop_init_gains,
+                    nop_add_agent_embeddings_transition_model=nop_add_agent_embeddings_transition_model,
+                    compile_world_model_modules=compile_world_model_modules,
+                    policy_compile_mode=policy_compile_mode,
+                    world_model_loss_coef=world_model_loss_coef,
+                    transition_model_d_model=transition_model_d_model,
+                    transition_model_nhead=transition_model_nhead,
+                    act_fn_cls=act_fn_cls,
+                ),
+                compile_modules=compile_policy_modules,
+                compile_mode=policy_compile_mode,
+                action_net_init_gain=mat_init_gains.action_net,
+            ),
+        )
 
     if policy_variant == "ppo":
         return PPOPolicy(

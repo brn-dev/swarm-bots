@@ -29,7 +29,9 @@ Keep only durable architecture notes and gotchas. Delete stale detail instead of
 - `OffPolicyReplayBatch` has no `next_previous_actions`; use sampled `actions` when conditioning on `next_*` obs. Pass `rollout_device` explicitly when moving env, policy inference, and resumed rollout state.
 - gSDE off-policy rollouts need `gsde_reset_mode`; `OffPolicyRolloutState.gsde_noise_initialized` forces full batch-shaped noise after random warmup, reset, or rollout-device moves.
 - SAC lives in `swarmbots.learn.algos.sac` and reuses off-policy rollout/replay. It intentionally rejects non-`Box` action sub-spaces; use continuous connector actions for TMASAC/SAC, not Bernoulli connectors.
+- `SAC(rollout_warmup_steps_per_env=...)` mirrors PPO steady-state rollout warmup: it advances env/rollout state without replay writes or training counters, then the first real collection writes from that returned `OffPolicyRolloutState`.
 - TMASAC SAC actors currently accept the reparameterizable continuous configs `BetaConfig`, `PredictedStdConfig`, `SquashedDiagGaussianConfig`, `GSDEConfig`, `ReparameterizedSignMagnitudeKumaraswamyConfig`, and `ReparameterizedSquashedGaussianMixtureConfig`. SAC with `GSDEConfig` requires an explicit `gsde_reset_mode`.
+- `experiments/mjw_experiment_common.py` supports `policy_variant="tmasac"` through an SAC branch; TMASAC NOP is configured with `SACNOPConfig`, not `NextObsPredWrapper`.
 - Action distributions follow the PyTorch naming convention: `sample()` is ordinary non-reparameterized sampling, `rsample()` keeps the actor-gradient path. `ActionDist.get_actions_with_log_probs(..., use_rsample=True)` is for SAC actor updates; rollout and target-Q sampling use the default ordinary `sample()` path.
 - `TMASACPolicy` uses separate actor/critic MAT encoders by default, can share the observation encoder with `share_observation_encoder=True`, and that shared encoder is critic-owned: actor reads detach its latents so only critic/NOP critic gradients update the encoder. SAC NOP modules are selected by latent source (`critic`, `actor`, or `both`); `both` means separate actor/critic projections, transition models, and losses. Multi-step SAC NOP uses `SAC(nop_steps=4)` by default and samples a separate contiguous episode segment batch for NOP losses when NOP is enabled; if replay has no valid contiguous NOP window yet, SAC skips only the auxiliary NOP loss and still runs the main actor/critic update.
 
@@ -64,6 +66,7 @@ Keep only durable architecture notes and gotchas. Delete stale detail instead of
 ## Runtime
 
 - Runtime hyperparameters are live attributes; mutating config dataclasses after init does nothing.
+- `experiments/mjw_experiment_common.run_experiment` exposes MAT policy `enc_nhead`/`dec_nhead` for experiment sweeps. MatDec only uses encoder heads; MatQCX uses both encoder and decoder heads. The NOP transition model head count stays on the runner default unless that path is changed separately.
 - Activation factories with `ParameterLearnMode.PER_FEATURE` need explicit feature counts; generic activation paths should use `make_activation(...)`.
 - Initialization gains: hidden/projection/transformer-FF `1.0`; output/action/value/prediction heads `0.01`.
 - Target Python is `3.13`; use `uv` because plain `pip install .` misses PyTorch CUDA package sources.

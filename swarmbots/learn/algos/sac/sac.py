@@ -5,7 +5,12 @@ from loguru import logger
 from torch.nn import functional as F
 
 from swarmbots.learn.algos.base_algorithm import BaseAlgorithm, LearningRate
-from swarmbots.learn.algos.off_policy import OffPolicyReplayBuffer, OffPolicyRolloutState, collect_off_policy_steps
+from swarmbots.learn.algos.off_policy import (
+    OffPolicyReplayBuffer,
+    OffPolicyRolloutState,
+    collect_off_policy_steps,
+    warmup_off_policy_steps,
+)
 from swarmbots.learn.algos.off_policy.replay_buffer import (
     NoEpisodeSegmentCandidatesError,
     OffPolicyReplayBatch,
@@ -34,6 +39,7 @@ class SAC(BaseAlgorithm):
             learning_starts: int = 10_000,
             batch_size: int = 256,
             rollout_steps_per_iteration: int | None = None,
+            rollout_warmup_steps_per_env: int = 0,
             gradient_steps: int = 1,
             gamma: float = 0.99,
             tau: float = 0.005,
@@ -47,7 +53,7 @@ class SAC(BaseAlgorithm):
             train_device: str | torch.device = "auto",
             rollout_device: str | torch.device = "cpu",
             record_device: str | torch.device | None = None,
-            replay_storage_device: str | torch.device = "cpu",
+            replay_storage_device: str | torch.device = "cuda",
             replay_storage_pin_memory: bool = False,
     ) -> None:
         if not isinstance(learning_rate, float):
@@ -61,6 +67,8 @@ class SAC(BaseAlgorithm):
         self.rollout_steps_per_iteration = (
             env.action_space.n_envs if rollout_steps_per_iteration is None else int(rollout_steps_per_iteration)
         )
+        self.rollout_warmup_steps_per_env = int(rollout_warmup_steps_per_env)
+        self._rollout_warmup_done = self.rollout_warmup_steps_per_env == 0
         self.gradient_steps = int(gradient_steps)
         self.gamma = float(gamma)
         self.tau = float(tau)
@@ -109,6 +117,7 @@ class SAC(BaseAlgorithm):
             "learning_starts": self.learning_starts,
             "batch_size": self.batch_size,
             "rollout_steps_per_iteration": self.rollout_steps_per_iteration,
+            "rollout_warmup_steps_per_env": self.rollout_warmup_steps_per_env,
             "gradient_steps": self.gradient_steps,
             "gamma": self.gamma,
             "tau": self.tau,
@@ -127,6 +136,40 @@ class SAC(BaseAlgorithm):
             "policy_num_params": self._policy_num_params,
             "policy_num_trainable_params": self._policy_num_trainable_params,
         }
+
+    def _before_learn_loop(self) -> None:
+        if self._rollout_warmup_done:
+            return
+        if (
+                self.n_total_timesteps > 0
+                or self.n_total_iterations > 0
+                or self.n_total_updates > 0
+                or self._rollout_state is not None
+                or len(self.replay_buffer) > 0
+        ):
+            self._rollout_warmup_done = True
+            return
+
+        warmup_transitions = self.rollout_warmup_steps_per_env * self.replay_buffer.n_envs
+        logger.info(
+            f"Running SAC rollout warmup for {self.rollout_warmup_steps_per_env} vector steps "
+            f"({warmup_transitions} transitions) without training or replay writes."
+        )
+        random_actions = self.n_total_timesteps < self.learning_starts
+        with PerformanceTimer() as warmup_timer:
+            self._rollout_state = warmup_off_policy_steps(
+                env=self.env,
+                replay_buffer=self.replay_buffer,
+                n_steps=warmup_transitions,
+                policy=None if random_actions else self.policy,
+                rollout_state=None,
+                random_actions=random_actions,
+                deterministic=False,
+                gsde_reset_mode=self.gsde_reset_mode,
+                rollout_device=self.rollout_device,
+            )
+        self._rollout_warmup_done = True
+        logger.info(f"Finished SAC rollout warmup in {warmup_timer.get_duration():.2f}s.")
 
     def perform_iteration(
             self,
@@ -482,6 +525,10 @@ class SAC(BaseAlgorithm):
             raise ValueError(
                 f"rollout_steps_per_iteration must be a multiple of n_envs ({self.env.action_space.n_envs}), "
                 f"got {self.rollout_steps_per_iteration}"
+            )
+        if self.rollout_warmup_steps_per_env < 0:
+            raise ValueError(
+                f"rollout_warmup_steps_per_env must be >= 0, got {self.rollout_warmup_steps_per_env}"
             )
         if self.gradient_steps == 0 or self.gradient_steps < -1:
             raise ValueError(f"gradient_steps must be -1 or > 0, got {self.gradient_steps}")
