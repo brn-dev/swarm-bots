@@ -29,7 +29,7 @@ class SACNOPLatentSource(Enum):
 
 @dataclass(frozen=True)
 class SACNOPConfig:
-    enabled: bool = True
+    enabled: bool = False
     latent_source: SACNOPLatentSource | str = SACNOPLatentSource.CRITIC
     nop_latent_dim: int | None = None
     nop_loss_coef: float = 1.0
@@ -83,6 +83,10 @@ class SACNOPModule(nn.Module, NextObsPredMixin):
             raise ValueError(f"nop_loss_coef must be >= 0, got {config.nop_loss_coef}")
         if config.nop_latent_dim is not None and config.nop_latent_dim <= 0:
             raise ValueError(f"nop_latent_dim must be > 0 when set, got {config.nop_latent_dim}")
+        if not _has_next_obs_pred_targets(config.next_obs_pred_config):
+            raise ValueError(
+                "SACNOPConfig.enabled=True requires at least one next-observation prediction target."
+            )
 
         self.name = name
         self.nop_loss_coef = float(config.nop_loss_coef)
@@ -368,3 +372,14 @@ def normalize_nop_latent_source(source: SACNOPLatentSource | str) -> SACNOPLaten
     except ValueError as exc:
         valid = [item.value for item in SACNOPLatentSource]
         raise ValueError(f"Unknown NOP latent source {source!r}; expected one of {valid}") from exc
+
+
+def _has_next_obs_pred_targets(config: NextObsPredConfig) -> bool:
+    return any((
+        bool(config.local_scalar_target_indices),
+        bool(config.local_angle_target_indices),
+        bool(config.local_rot6d_target_indices),
+        bool(config.local_binary_target_indices),
+        bool(config.global_scalar_target_indices),
+        bool(config.global_rot6d_target_indices),
+    ))

@@ -1,9 +1,11 @@
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 import torch
 from gymnasium import spaces
 
+from swarmbots.learn.action_dists.entropy_utils import EntropyLossConfig
 from swarmbots.learn.action_dists.hybrid_action_dist import make_proba_distribution
 from swarmbots.learn.action_dists.reparameterized_sign_magnitude_kumaraswamy_action_dist import (
     ReparameterizedSignMagnitudeKumaraswamyActionDist,
@@ -80,6 +82,27 @@ class ReparameterizedSignMagnitudeKumaraswamyActionDistTests(unittest.TestCase):
         actions = dist.update_latent_features(latent).mode()
 
         self.assertLess(actions.abs().max().item(), 0.05)
+
+    def test_loss_only_path_skips_kumaraswamy_entropy_when_scale_is_zero(self) -> None:
+        dist = ReparameterizedSignMagnitudeKumaraswamyActionDist(
+            latent_dim=4,
+            action_dim=3,
+            action_net_initialization=init_linear_orthogonal,
+            ent_loss_coef=1e-3,
+            kumaraswamy_ent_scale=0.0,
+            categorical_ent_loss_config=EntropyLossConfig(entropy_floor=0.35),
+        )
+        latent = torch.zeros(5, 2, 4)
+        dist.update_latent_features(latent)
+
+        with patch(
+                "swarmbots.learn.action_dists.reparameterized_sign_magnitude_kumaraswamy_action_dist."
+                "_kumaraswamy_entropy",
+                side_effect=AssertionError("kumaraswamy entropy should not be computed"),
+        ):
+            losses = dist.compute_extra_losses_without_metrics()
+
+        self.assertIn("entropy", losses)
 
 
 if __name__ == "__main__":
