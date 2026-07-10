@@ -1,4 +1,5 @@
 from gymnasium import spaces
+import torch
 from torch import nn
 
 from experiments.mjw_experiment_common import (
@@ -11,6 +12,7 @@ from experiments.mjw_experiment_common import (
 from swarmbots.learn.action_dists.reparameterized_sign_magnitude_kumaraswamy_action_dist import (
     ReparameterizedSignMagnitudeKumaraswamyActionDist,
 )
+from swarmbots.learn.action_dists.predicted_std_action_dist import PredictedStdActionDist
 from swarmbots.learn.algos.mat_qcs.mat_qcs_decoder import MATQCSDecoderSelfAttentionMode
 from swarmbots.learn.algos.mat_qcx.mat_qcx_policy import MATQCXPolicy
 from swarmbots.learn.algos.r_mat.r_mat_dec_policy import RMATDecPolicy
@@ -237,6 +239,24 @@ def test_make_base_policy_constructs_tmasac_rsmk_with_nop() -> None:
     assert policy.action_dist.distributions[0].kumaraswamy_ent_loss_config.entropy_floor is None
     assert policy.actor_nop is None
     assert policy.critic_nop is not None
+
+
+def test_make_base_policy_uses_action_gain_for_predicted_std_log_std_head() -> None:
+    policy = _make_test_base_policy(
+        env=_DummyContinuousEnv(),
+        policy_variant="tmasac",
+        continuous_action_dist="predicted_std",
+        mat_init_gains=MATInitGains(action_net=0.0),
+        gsde_init_stds=[0.25, 0.30],
+    )
+    dist = policy.action_dist.distributions[0]
+
+    assert isinstance(dist, PredictedStdActionDist)
+    latent = torch.randn(4, _DummyContinuousEnv.n_agents, policy.actor_head.latent_dim)
+    dist.update_latent_features(latent)
+
+    assert torch.allclose(dist.log_std_net.weight, torch.zeros_like(dist.log_std_net.weight))
+    assert torch.allclose(dist.distribution.scale, torch.full_like(dist.distribution.scale, 0.25))
 
 
 def test_mat_lr_multiplier_one_disables_parameter_overrides() -> None:

@@ -302,6 +302,7 @@ def collect_off_policy_steps(
     timers = _init_rollout_timers()
 
     transitions_collected = 0
+    rollout_action_metrics_batches: list[torch.Tensor] = []
     while transitions_collected < n_steps:
         current_obs_needs_copy = not current_obs_is_stored
         obs_for_step = snapshot_obs(obs) if current_obs_needs_copy else obs
@@ -342,6 +343,12 @@ def collect_off_policy_steps(
                     episode_start_mask=episode_start_mask,
                 )
         timers.policy_forward_timings.append(timers.policy_forward_timer.get_duration())
+        actions_for_metrics = actions.detach()
+        agent_mask_for_metrics = obs_for_step.get("agent_mask", None)
+        if agent_mask_for_metrics is None:
+            rollout_action_metrics_batches.append(actions_for_metrics.reshape(-1, actions_for_metrics.shape[-1]))
+        else:
+            rollout_action_metrics_batches.append(actions_for_metrics[agent_mask_for_metrics])
 
         with timers.env_step_timer:
             next_obs, rewards, terminations, truncations, infos = env.step(actions)
@@ -396,6 +403,8 @@ def collect_off_policy_steps(
         episode_infos=episode_infos,
         transitions_collected=transitions_collected,
     )
+    if rollout_action_metrics_batches:
+        metrics["_rollout_actions"] = torch.cat(rollout_action_metrics_batches, dim=0)
     new_state = OffPolicyRolloutState(
         obs=obs,
         episode_start_mask=episode_start_mask,

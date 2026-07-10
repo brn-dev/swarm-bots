@@ -36,6 +36,8 @@ class SAC(BaseAlgorithm):
             policy: BaseSACPolicy,
             env: BaseLearnEnvWrapper,
             learning_rate: float = 3e-4,
+            learning_rate_warmup_updates: int = 500,
+            learning_rate_warmup_start_factor: float = 0.01,
             buffer_capacity_per_env: int = 1_000_000,
             learning_starts: int = 10_000,
             batch_size: int = 256,
@@ -62,6 +64,8 @@ class SAC(BaseAlgorithm):
         super().__init__(policy, env, learning_rate)
 
         self.learning_rate = learning_rate
+        self.learning_rate_warmup_updates = int(learning_rate_warmup_updates)
+        self.learning_rate_warmup_start_factor = float(learning_rate_warmup_start_factor)
         self.buffer_capacity_per_env = int(buffer_capacity_per_env)
         self.learning_starts = int(learning_starts)
         self.batch_size = int(batch_size)
@@ -102,8 +106,9 @@ class SAC(BaseAlgorithm):
         )
 
         self.policy.to(self.train_device)
-        self.actor_optimizer = torch.optim.Adam(self.policy.actor_parameters(), lr=self.learning_rate)
-        self.critic_optimizer = torch.optim.Adam(self.policy.critic_parameters(), lr=self.learning_rate)
+        initial_actor_critic_lr = self._actor_critic_learning_rate_for_update(self.n_total_updates)
+        self.actor_optimizer = torch.optim.Adam(self.policy.actor_parameters(), lr=initial_actor_critic_lr)
+        self.critic_optimizer = torch.optim.Adam(self.policy.critic_parameters(), lr=initial_actor_critic_lr)
         self.log_ent_coef: torch.Tensor | None = None
         self.ent_coef_tensor: torch.Tensor | None = None
         self.ent_coef_optimizer: torch.optim.Optimizer | None = None
@@ -114,6 +119,8 @@ class SAC(BaseAlgorithm):
     def get_hyper_parameters(self) -> dict[str, Any]:
         return {
             "learning_rate": self.learning_rate,
+            "learning_rate_warmup_updates": self.learning_rate_warmup_updates,
+            "learning_rate_warmup_start_factor": self.learning_rate_warmup_start_factor,
             "buffer_capacity_per_env": self.buffer_capacity_per_env,
             "learning_starts": self.learning_starts,
             "batch_size": self.batch_size,
@@ -195,6 +202,7 @@ class SAC(BaseAlgorithm):
             )
 
         rollout_steps = int(rollout_metrics.get("transitions_collected", self.rollout_steps_per_iteration))
+        rollout_actions = rollout_metrics.pop("_rollout_actions", None)
         self.n_total_timesteps += rollout_steps
         self.n_total_iterations += 1
 
@@ -226,6 +234,8 @@ class SAC(BaseAlgorithm):
             "random_actions": random_actions,
             "replay_size": len(self.replay_buffer),
         }
+        if rollout_actions is not None:
+            metrics.update(self._compute_action_metrics(rollout_actions, prefix="rollout"))
         return metrics, rollout_steps
 
     def train(self, *, gradient_steps: int) -> dict[str, Any]:
@@ -281,7 +291,7 @@ class SAC(BaseAlgorithm):
             sampled_actions = batch.actions
             if batch.agent_mask is not None:
                 sampled_actions = sampled_actions[batch.agent_mask]
-            metrics.update(self.policy.action_dist.get_metrics(sampled_actions))
+            metrics.update(self._compute_action_metrics(sampled_actions, prefix="replay"))
 
         return {
             **metrics,
@@ -294,6 +304,28 @@ class SAC(BaseAlgorithm):
             "train_time": train_timer.get_duration(),
         }
 
+    def _compute_action_metrics(self, actions: torch.Tensor, *, prefix: str) -> dict[str, Any]:
+        action_dist = self.policy.action_dist
+        split_actions = torch.split(actions, action_dist.action_dims, dim=-1)
+        metrics: dict[str, Any] = {}
+        for i, dist_actions in enumerate(split_actions):
+            if i == 0:
+                for joint_idx in range(2):
+                    metrics[f"{prefix}_act0_j{joint_idx}"] = compute_summary_statistics(
+                        dist_actions[..., joint_idx::2],
+                        find_min=True,
+                        find_max=True,
+                        make_histogram=10,
+                    )
+                continue
+            metrics[f"{prefix}_act{i}"] = compute_summary_statistics(
+                dist_actions,
+                find_min=True,
+                find_max=True,
+                make_histogram=10,
+            )
+        return metrics
+
     def _train_step(
             self,
             batch: OffPolicyReplayBatch,
@@ -301,6 +333,7 @@ class SAC(BaseAlgorithm):
             nop_batch: OffPolicyReplayBatch | OffPolicyReplayEpisodeSegmentBatch | None = None,
             global_update_idx: int,
     ) -> tuple[dict[str, float], float, float]:
+        actor_critic_lr = self._apply_actor_critic_learning_rate_for_update(global_update_idx)
         nop_loss_batch = batch if nop_batch is None else nop_batch
         skip_multi_step_nop_loss = self._uses_multi_step_nop() and nop_batch is None
         self._reset_train_gsde_noise(batch.local_obs)
@@ -423,6 +456,7 @@ class SAC(BaseAlgorithm):
             "entropy": (-log_prob_pi_sum).mean().item(),
             "target_entropy": target_entropy.mean().item(),
             "ent_coef": ent_coef.item(),
+            "actor_critic_learning_rate": actor_critic_lr,
         }
         if ent_coef_loss is not None:
             metrics["ent_coef_loss"] = ent_coef_loss.item()
@@ -588,6 +622,24 @@ class SAC(BaseAlgorithm):
         grad_norm = torch.nn.utils.clip_grad_norm_(parameters, self.max_grad_norm)
         return float(grad_norm)
 
+    def _apply_actor_critic_learning_rate_for_update(self, update_idx: int) -> float:
+        lr = self._actor_critic_learning_rate_for_update(update_idx)
+        logger.warning(f'Setting LR to {lr:.3e}')
+        for optimizer in (self.actor_optimizer, self.critic_optimizer):
+            for param_group in optimizer.param_groups:
+                param_group["lr"] = lr
+        return lr
+
+    def _actor_critic_learning_rate_for_update(self, update_idx: int) -> float:
+        if self.learning_rate_warmup_updates <= 0:
+            return self.learning_rate
+        if update_idx >= self.learning_rate_warmup_updates:
+            return self.learning_rate
+
+        progress = max(0.0, float(update_idx) / float(self.learning_rate_warmup_updates))
+        factor = self.learning_rate_warmup_start_factor + (1.0 - self.learning_rate_warmup_start_factor) * progress
+        return self.learning_rate * factor
+
     def _should_train(self) -> bool:
         return (
             self.n_total_timesteps >= self.learning_starts
@@ -617,6 +669,15 @@ class SAC(BaseAlgorithm):
     def _validate_hyper_parameters(self) -> None:
         if self.buffer_capacity_per_env <= 0:
             raise ValueError(f"buffer_capacity_per_env must be > 0, got {self.buffer_capacity_per_env}")
+        if self.learning_rate_warmup_updates < 0:
+            raise ValueError(
+                f"learning_rate_warmup_updates must be >= 0, got {self.learning_rate_warmup_updates}"
+            )
+        if not (0.0 < self.learning_rate_warmup_start_factor <= 1.0):
+            raise ValueError(
+                "learning_rate_warmup_start_factor must be in (0, 1], got "
+                f"{self.learning_rate_warmup_start_factor}"
+            )
         if self.learning_starts < 0:
             raise ValueError(f"learning_starts must be >= 0, got {self.learning_starts}")
         if self.batch_size <= 0:
@@ -758,10 +819,12 @@ class SAC(BaseAlgorithm):
 
     def _apply_learning_rate(self, lr: LearningRate) -> None:
         assert isinstance(lr, float)
-        for optimizer in (self.actor_optimizer, self.critic_optimizer, self.ent_coef_optimizer):
-            if optimizer is None:
-                continue
+        actor_critic_lr = self._actor_critic_learning_rate_for_update(self.n_total_updates)
+        for optimizer in (self.actor_optimizer, self.critic_optimizer):
             for param_group in optimizer.param_groups:
+                param_group["lr"] = actor_critic_lr
+        if self.ent_coef_optimizer is not None:
+            for param_group in self.ent_coef_optimizer.param_groups:
                 param_group["lr"] = lr
 
     @staticmethod
