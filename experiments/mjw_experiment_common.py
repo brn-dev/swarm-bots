@@ -487,6 +487,7 @@ def run_experiment(
         mat_normalization: MATNormalizationConfig = MATNormalizationConfig(),
         enc_nhead: int = 4,
         dec_nhead: int = 2,
+        mat_encoder_transformer_ff_hidden_dims: Sequence[int] | None = None,
         use_nop: bool = True,
         nop_add_agent_embeddings_transition_model: bool = False,
         use_transition_obs: bool = False,
@@ -738,6 +739,7 @@ def run_experiment(
         world_model_loss_coef=world_model_loss_coef,
         transition_model_d_model=transition_model_d_model,
         transition_model_nhead=transition_model_nhead,
+        mat_encoder_transformer_ff_hidden_dims=mat_encoder_transformer_ff_hidden_dims,
         obs_indices=obs_indices,
         rmat_temporal_model_cls=rmat_temporal_model_cls,
         rmat_temporal_model_config=rmat_temporal_model_config,
@@ -1063,6 +1065,11 @@ def run_experiment(
         "mat_init_gains": asdict(mat_init_gains),
         "nop_init_gains": asdict(nop_init_gains),
         "mat_normalization": asdict(mat_normalization),
+        "mat_encoder_transformer_ff_hidden_dims": (
+            None
+            if mat_encoder_transformer_ff_hidden_dims is None
+            else list(mat_encoder_transformer_ff_hidden_dims)
+        ),
         "mat_add_agent_embeddings": mat_add_agent_embeddings,
         "mat_decoder_self_attention_mode": mat_decoder_self_attention_mode_metadata,
         "mat_qcc_tie_query_context_and_context_self_attention": (
@@ -1278,6 +1285,7 @@ def _make_base_policy(
         world_model_loss_coef: float = 0.1,
         transition_model_d_model: int = 128,
         transition_model_nhead: int = 2,
+        mat_encoder_transformer_ff_hidden_dims: Sequence[int] | None = None,
         obs_indices: ObsIndices | None = None,
         mat_qcc_tie_query_context_and_context_self_attention: bool = True,
         rmat_temporal_model_cls: Any = None,
@@ -1334,6 +1342,11 @@ def _make_base_policy(
         linear_init_gain=mat_init_gains.obs_encoder,
         linear_projection_init_gain=mat_init_gains.obs_encoder_projection,
         transformer_ff_init_gain=mat_init_gains.encoder_transformer_ff,
+        transformer_ff_hidden_dims=(
+            None
+            if mat_encoder_transformer_ff_hidden_dims is None
+            else list(mat_encoder_transformer_ff_hidden_dims)
+        ),
         local_obs_encoder_hidden_dims=[enc_d_model, enc_d_model],
         global_obs_encoder_hidden_dims=[enc_d_model],
         normalize_obs_inputs=mat_normalization.normalize_obs_inputs,
@@ -1349,6 +1362,11 @@ def _make_base_policy(
         linear_init_gain=mat_init_gains.obs_encoder,
         linear_projection_init_gain=mat_init_gains.obs_encoder_projection,
         transformer_ff_init_gain=mat_init_gains.encoder_transformer_ff,
+        transformer_ff_hidden_dims=(
+            None
+            if mat_encoder_transformer_ff_hidden_dims is None
+            else list(mat_encoder_transformer_ff_hidden_dims)
+        ),
         local_obs_encoder_hidden_dims=[enc_d_model, enc_d_model],
         global_obs_encoder_hidden_dims=[enc_d_model],
         normalize_obs_inputs=mat_normalization.normalize_obs_inputs,
