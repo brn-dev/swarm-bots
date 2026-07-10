@@ -12,7 +12,7 @@ from plot_logs.experiment_results import ExperimentPlotSelection, plot_experimen
 
 RUNS_DIR = REPO_ROOT / "runs"
 EXPERIMENT_RUN_DIR = REPO_ROOT / "runs" / "mjw_po_wall_medium_1024x4_250M_cont_conn_act"
-BASELINE_EXPERIMENT_RUN_DIR = RUNS_DIR / "mjw_po_wall_medium_1024x4_250M"
+BASELINE_EXPERIMENT_RUN_DIR = RUNS_DIR / "mjw_po_wall_medium_1024x4_250M_no_transition_obs"
 OUTPUT_DIR = Path(__file__).resolve().parent / "results"
 VARIANT_GROUPS = (
     "mat_qcc",
@@ -46,7 +46,7 @@ GROUP_ORDER = tuple(
 )
 DISPLAY_NAME_OVERRIDES = {
     baseline_group_name(group_name): (
-        f"{display_name} (non-continuous connectors)"
+        f"{display_name} (discrete connectors)"
     )
     for group_name, display_name in BASE_DISPLAY_NAME_OVERRIDES.items()
 } | {
