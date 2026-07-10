@@ -15,6 +15,8 @@ EXPERIMENT_RUN_DIR = REPO_ROOT / "runs" / "mjw_po_wall_medium_1024x4_250M_cont_c
 BASELINE_EXPERIMENT_RUN_DIR = RUNS_DIR / "mjw_po_wall_medium_1024x4_250M_no_transition_obs"
 OUTPUT_DIR = Path(__file__).resolve().parent / "results"
 VARIANT_GROUPS = (
+    "mat_qcx",
+    "mat_dec",
     "mat_qcc",
     "mat_qcs_full_causal",
     "mat_qcs_context_tokens_only",
@@ -57,7 +59,7 @@ EXTRA_GROUP_SOURCES = {
     baseline_group_name(group_name): (
         BASELINE_EXPERIMENT_RUN_DIR / group_name,
     )
-    for group_name in VARIANT_GROUPS
+    for group_name in ["mat_qcx", "mat_dec"]
 }
 EXTRA_PLOT_SELECTIONS = tuple(
     ExperimentPlotSelection(
