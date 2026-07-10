@@ -25,6 +25,8 @@ VARIANT_GROUPS = (
     "tmasac_predicted_std",
 )
 BASE_DISPLAY_NAME_OVERRIDES = {
+    "mat_qcx": "MAT-QCX + NOP",
+    "mat_dec": "MAT-Dec + NOP",
     "mat_qcc": "MAT-QCC + NOP",
     "mat_qcs_full_causal": "MAT-QCS full causal + NOP",
     "mat_qcs_context_tokens_only": (
