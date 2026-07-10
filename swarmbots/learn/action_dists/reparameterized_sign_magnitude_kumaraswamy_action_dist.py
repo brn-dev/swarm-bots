@@ -226,28 +226,11 @@ class ReparameterizedSignMagnitudeKumaraswamyActionDist(ActionDist):
             agent_mask: torch.Tensor | None = None,
             action_splitter: ActionMetricsSplitterInput = None,
     ) -> tuple[LossDict, LossMetrics]:
-        if self.ent_loss_coef <= 0.0:
+        losses, categorical_entropy_per_action, weighted_kumaraswamy_entropy_per_action = (
+            self._compute_extra_losses_and_entropy_tensors(include_kumaraswamy_entropy=True)
+        )
+        if not losses:
             return {}, {}
-
-        self._assert_ready()
-        weights = F.softmax(self.weight_logits, dim=-1)
-
-        categorical_entropy_per_action = -(weights * F.log_softmax(self.weight_logits, dim=-1)).sum(dim=-1)
-        weighted_kumaraswamy_entropy_per_action = (
-                weights[..., self._NEGATIVE_INDEX] * _kumaraswamy_entropy(self.negative_a, self.negative_b)
-                + weights[..., self._POSITIVE_INDEX] * _kumaraswamy_entropy(self.positive_a, self.positive_b)
-        )
-        categorical_ent_loss = compute_ent_loss(
-            config=self.categorical_ent_loss_config,
-            entropy_per_action=categorical_entropy_per_action,
-        )
-        kumaraswamy_ent_loss = compute_ent_loss(
-            config=self.kumaraswamy_ent_loss_config,
-            entropy_per_action=weighted_kumaraswamy_entropy_per_action,
-        )
-        entropy_loss = self.ent_loss_coef * (
-                categorical_ent_loss + self.kumaraswamy_ent_scale * kumaraswamy_ent_loss
-        )
 
         action_metrics_splitter = resolve_action_metrics_splitter(action_splitter)
         categorical_ent_metrics = compute_ent_metrics(
@@ -264,7 +247,51 @@ class ReparameterizedSignMagnitudeKumaraswamyActionDist(ActionDist):
             metrics_action_splitter=action_metrics_splitter,
             name="ent_kumaraswamy",
         )
-        return {"entropy": entropy_loss}, {**categorical_ent_metrics, **kumaraswamy_ent_metrics}
+        return losses, {**categorical_ent_metrics, **kumaraswamy_ent_metrics}
+
+    def compute_extra_losses_without_metrics(
+            self,
+            *,
+            agent_mask: torch.Tensor | None = None,
+            action_splitter: ActionMetricsSplitterInput = None,
+    ) -> LossDict:
+        _ = (agent_mask, action_splitter)
+        losses, _categorical_entropy, _kumaraswamy_entropy = self._compute_extra_losses_and_entropy_tensors(
+            include_kumaraswamy_entropy=self.kumaraswamy_ent_scale > 0.0,
+        )
+        return losses
+
+    def _compute_extra_losses_and_entropy_tensors(
+            self,
+            *,
+            include_kumaraswamy_entropy: bool,
+    ) -> tuple[LossDict, torch.Tensor | None, torch.Tensor | None]:
+        if self.ent_loss_coef <= 0.0:
+            return {}, None, None
+
+        self._assert_ready()
+        weights = F.softmax(self.weight_logits, dim=-1)
+        categorical_entropy_per_action = -(weights * F.log_softmax(self.weight_logits, dim=-1)).sum(dim=-1)
+        categorical_ent_loss = compute_ent_loss(
+            config=self.categorical_ent_loss_config,
+            entropy_per_action=categorical_entropy_per_action,
+        )
+        weighted_kumaraswamy_entropy_per_action = None
+        if include_kumaraswamy_entropy:
+            weighted_kumaraswamy_entropy_per_action = (
+                    weights[..., self._NEGATIVE_INDEX] * _kumaraswamy_entropy(self.negative_a, self.negative_b)
+                    + weights[..., self._POSITIVE_INDEX] * _kumaraswamy_entropy(self.positive_a, self.positive_b)
+            )
+            kumaraswamy_ent_loss = compute_ent_loss(
+                config=self.kumaraswamy_ent_loss_config,
+                entropy_per_action=weighted_kumaraswamy_entropy_per_action,
+            )
+            entropy_loss = self.ent_loss_coef * (
+                    categorical_ent_loss + self.kumaraswamy_ent_scale * kumaraswamy_ent_loss
+            )
+        else:
+            entropy_loss = self.ent_loss_coef * categorical_ent_loss
+        return {"entropy": entropy_loss}, categorical_entropy_per_action, weighted_kumaraswamy_entropy_per_action
 
     def set_ent_loss_coef(self, value: float) -> None:
         if value < 0.0:

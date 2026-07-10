@@ -542,6 +542,9 @@ class SAC(BaseAlgorithm):
             agent_mask: torch.Tensor | None,
     ) -> tuple[dict[str, torch.Tensor], dict[str, Any]]:
         action_dist = getattr(self.policy, "action_dist", None)
+        compute_extra_losses_without_metrics = getattr(action_dist, "compute_extra_losses_without_metrics", None)
+        if callable(compute_extra_losses_without_metrics):
+            return compute_extra_losses_without_metrics(agent_mask=agent_mask), {}
         compute_extra_losses = getattr(action_dist, "compute_extra_losses", None)
         if not callable(compute_extra_losses):
             return {}, {}

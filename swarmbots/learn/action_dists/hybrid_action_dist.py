@@ -315,6 +315,29 @@ class HybridActionDistribution(ActionDist):
             metrics.update(self._prefix_named_values(dist_metrics, prefix=prefix))
         return losses, metrics
 
+    def compute_extra_losses_without_metrics(
+            self,
+            *,
+            agent_mask: torch.Tensor | None = None,
+            action_splitter: ActionMetricsSplitterInput = None,
+    ) -> LossDict:
+        losses: LossDict = {}
+        splitters = self._resolve_action_splitters(action_splitter)
+        for i, dist in enumerate(self.distributions):
+            compute_losses_without_metrics = getattr(dist, "compute_extra_losses_without_metrics", None)
+            if callable(compute_losses_without_metrics):
+                dist_losses = compute_losses_without_metrics(
+                    agent_mask=agent_mask,
+                    action_splitter=splitters[i],
+                )
+            else:
+                dist_losses, _dist_metrics = dist.compute_extra_losses(
+                    agent_mask=agent_mask,
+                    action_splitter=splitters[i],
+                )
+            losses.update(self._prefix_named_values(dist_losses, prefix=f"act{i}_"))
+        return losses
+
     def get_metrics(
             self,
             actions: torch.Tensor,

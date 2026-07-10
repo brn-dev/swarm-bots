@@ -273,6 +273,20 @@ class TMASACPolicyTests(unittest.TestCase):
         self.assertIsNotNone(policy.shared_observation_encoder)
         self.assertIsNot(policy.actor_encoder, policy.critic.encoder)
 
+    def test_nop_config_defaults_to_disabled(self) -> None:
+        policy = TMASACPolicy(env=_DummyContinuousEnv(), config=_make_config())
+
+        self.assertFalse(policy.has_nop_loss())
+        self.assertIsNone(policy.actor_nop)
+        self.assertIsNone(policy.critic_nop)
+
+    def test_enabled_nop_requires_prediction_targets(self) -> None:
+        with self.assertRaisesRegex(ValueError, "prediction target"):
+            TMASACPolicy(
+                env=_DummyContinuousEnv(),
+                config=_make_config(SACNOPConfig(enabled=True)),
+            )
+
     def test_rejects_discrete_action_subspaces(self) -> None:
         with self.assertRaisesRegex(ValueError, "continuous Box action sub-spaces only"):
             TMASACPolicy(env=_DummyDiscreteEnv(), config=_make_config())
