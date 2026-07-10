@@ -501,8 +501,9 @@ def run_experiment(
         rmat_temporal_layer_norm: bool = False,
         rmat_use_temporal_output_projection: bool = True,
         total_timesteps: int = 100_000_000,
-        sac_ent_coef: float | str = "auto_0.5",
+        sac_ent_coef: float | str = "auto_0.05",
         sac_target_entropy: float | str = "auto_0.5",
+        bernoulli_initial_prob: float = 0.8,
 ) -> None:
     from swarmbots.learn.torch_logging import enable_torch_compile_logging
 
@@ -596,6 +597,7 @@ def run_experiment(
         f"mat_decoder_self_attention_mode={mat_decoder_self_attention_mode_metadata}, "
         f"mat_qcc_tie_query_context_and_context_self_attention="
         f"{mat_qcc_tie_query_context_and_context_self_attention}, "
+        f"bernoulli_initial_prob={bernoulli_initial_prob}, "
         f"shuffle_agents={shuffle_agents}, "
         f"preserve_inactive_prefix_structure={preserve_inactive_prefix_structure}, "
         f"ccd_iterations={ccd_iterations}, "
@@ -740,6 +742,7 @@ def run_experiment(
         rmat_temporal_layer_norm=rmat_temporal_layer_norm,
         rmat_use_temporal_output_projection=rmat_use_temporal_output_projection,
         assume_agent_mask_is_active_prefix=not shuffle_agents or preserve_inactive_prefix_structure,
+        bernoulli_initial_prob=bernoulli_initial_prob,
     )
     policy_local_latent_dim = int(getattr(base_policy, "local_latent_dim", enc_d_model))
     policy = base_policy
@@ -1276,6 +1279,7 @@ def _make_base_policy(
         rmat_temporal_layer_norm: bool = False,
         rmat_use_temporal_output_projection: bool = True,
         assume_agent_mask_is_active_prefix: bool = False,
+        bernoulli_initial_prob: float = 0.8,
 ) -> (
         PPOPolicy
         | MAPPOPolicy
@@ -1301,7 +1305,7 @@ def _make_base_policy(
         ),
     )
     bernoulli_config = BernoulliConfig(
-        initial_prob=0.8,
+        initial_prob=bernoulli_initial_prob,
         ent_loss_coef=1e-3,
         ent_loss_config=EntropyLossConfig(
             agent_actions_reduction=AgentActionsReduction.SUM,

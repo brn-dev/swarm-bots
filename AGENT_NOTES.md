@@ -69,7 +69,7 @@ Keep only durable architecture notes and gotchas. Delete stale detail instead of
 ## Runtime
 
 - Runtime hyperparameters are live attributes; mutating config dataclasses after init does nothing.
-- `experiments/mjw_experiment_common.run_experiment` exposes MAT policy `enc_nhead`/`dec_nhead` for experiment sweeps. MatDec only uses encoder heads; MatQCX uses both encoder and decoder heads. The NOP transition model head count stays on the runner default unless that path is changed separately.
+- `experiments/mjw_experiment_common.run_experiment` exposes MAT policy `enc_nhead`/`dec_nhead` and binary connector `bernoulli_initial_prob` for experiment sweeps. MatDec only uses encoder heads; MatQCX uses both encoder and decoder heads. The NOP transition model head count stays on the runner default unless that path is changed separately.
 - Activation factories with `ParameterLearnMode.PER_FEATURE` need explicit feature counts; generic activation paths should use `make_activation(...)`.
 - Initialization gains: hidden/projection/transformer-FF `1.0`; output/action/value/prediction heads `0.01`.
 - Target Python is `3.13`; use `uv` because plain `pip install .` misses PyTorch CUDA package sources.
