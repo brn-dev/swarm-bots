@@ -398,6 +398,54 @@ class SACTests(unittest.TestCase):
         finally:
             env.close()
 
+    def test_learning_rate_warmup_only_applies_to_actor_and_critic_optimizers(self) -> None:
+        env = _make_env()
+        try:
+            policy = _ConstantTargetSACPolicy(
+                n_agents=env.n_agents,
+                action_dim=env.action_space.total_agent_action_dim,
+                target_q_value=0.0,
+            )
+            algo = SAC(
+                policy=policy,
+                env=env,
+                learning_rate=1e-3,
+                learning_rate_warmup_updates=4,
+                learning_rate_warmup_start_factor=0.25,
+                buffer_capacity_per_env=4,
+                learning_starts=0,
+                batch_size=2,
+                ent_coef="auto_0.1",
+                max_grad_norm=None,
+                train_device="cpu",
+                rollout_device="cpu",
+                replay_storage_device="cpu",
+            )
+            batch = _make_bootstrap_batch(env)
+            assert algo.ent_coef_optimizer is not None
+
+            metrics, _actor_grad_norm, _critic_grad_norm = algo._train_step(
+                batch,
+                global_update_idx=0,
+            )
+
+            self.assertAlmostEqual(metrics["actor_critic_learning_rate"], 2.5e-4)
+            self.assertAlmostEqual(algo.actor_optimizer.param_groups[0]["lr"], 2.5e-4)
+            self.assertAlmostEqual(algo.critic_optimizer.param_groups[0]["lr"], 2.5e-4)
+            self.assertAlmostEqual(algo.ent_coef_optimizer.param_groups[0]["lr"], 1e-3)
+
+            metrics, _actor_grad_norm, _critic_grad_norm = algo._train_step(
+                batch,
+                global_update_idx=4,
+            )
+
+            self.assertAlmostEqual(metrics["actor_critic_learning_rate"], 1e-3)
+            self.assertAlmostEqual(algo.actor_optimizer.param_groups[0]["lr"], 1e-3)
+            self.assertAlmostEqual(algo.critic_optimizer.param_groups[0]["lr"], 1e-3)
+            self.assertAlmostEqual(algo.ent_coef_optimizer.param_groups[0]["lr"], 1e-3)
+        finally:
+            env.close()
+
     def test_perform_iteration_with_supported_reparameterized_actor_configs(self) -> None:
         for continuous_config in _supported_reparameterized_configs():
             with self.subTest(config=type(continuous_config).__name__):

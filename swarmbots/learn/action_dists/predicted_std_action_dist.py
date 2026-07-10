@@ -70,6 +70,7 @@ class PredictedStdActionDist(ContinuousActionDist):
         self.epsilon = epsilon
 
         self.distribution: Optional[torchdist.Normal] = None
+        self.log_stds: Optional[torch.Tensor] = None
 
         self._last_gaussian_actions: Optional[torch.Tensor] = None
 
@@ -84,6 +85,7 @@ class PredictedStdActionDist(ContinuousActionDist):
             log_stds: torch.Tensor,
     ) -> Self:
         log_stds = torch.clamp(log_stds, *self.log_std_clamp_range)
+        self.log_stds = log_stds
         self.distribution = torchdist.Normal(mean_actions, log_stds.exp())
         return self
 

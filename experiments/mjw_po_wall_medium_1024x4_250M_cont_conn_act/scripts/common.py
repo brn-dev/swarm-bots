@@ -31,6 +31,8 @@ def run_experiment(
         mat_decoder_lr_multiplier: float = 0.25,
         include_actor_head_lr_multiplier: bool = False,
         use_nop: bool = True,
+        sac_ent_coef: float | str = "auto_0.01",
+        sac_target_entropy: float | str = "auto_0.1",
 ) -> None:
     run_mjw_wall_experiment(
         num_envs=1024,
@@ -48,4 +50,6 @@ def run_experiment(
         mat_decoder_lr_multiplier=mat_decoder_lr_multiplier,
         total_timesteps=EXPERIMENT_TOTAL_TIMESTEPS,
         include_actor_head_lr_multiplier=include_actor_head_lr_multiplier,
+        sac_ent_coef=sac_ent_coef,
+        sac_target_entropy=sac_target_entropy,
     )

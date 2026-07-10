@@ -69,6 +69,7 @@ from swarmbots.learn.algos.world_modeling.ppo_wm_sampler import PPOWMSamplerConf
 from swarmbots.learn.discord_notifications import run_with_discord_notification
 from swarmbots.learn.gsde_reset import GSDEProbabilityResetMode
 from swarmbots.learn.nn_components.activations import ActivationFactory, activation_factory_name
+from swarmbots.learn.nn_components.nn_init import make_init_linear_orthogonal
 from swarmbots.learn.obs_indices import ObsIndices
 from swarmbots.learn.scheduling.auto_lr_updater import make_auto_lr_updater
 from swarmbots.learn.scheduling.cosine_scheduler import CosineSchedulerConfig
@@ -383,6 +384,7 @@ def make_continuous_config(
         variant: ContinuousActionDistVariant,
         initial_stickiness: float,
         gsde_init_stds: list[float],
+        action_net_init_gain: float = 0.01,
         rsmk_kumaraswamy_ent_scale: float = 0.75,
 ) -> (
         StickySignMagnitudeBetaConfig
@@ -431,6 +433,7 @@ def make_continuous_config(
     if variant == "predicted_std":
         return PredictedStdConfig(
             base_std=gsde_init_stds[0],
+            log_std_net_initialization=make_init_linear_orthogonal(action_net_init_gain),
             ent_loss_coef=1e-3,
             ent_loss_config=EntropyLossConfig(
                 agent_actions_reduction=AgentActionsReduction.SUM,
@@ -943,8 +946,12 @@ def run_experiment(
     if sac_policy:
         logging_console_keys.extend(
             [
-                ("act0", SummaryStatisticsFormat(histogram=21)),
-                ("act1", SummaryStatisticsFormat(histogram=21)),
+                ("rollout_act0_j0", SummaryStatisticsFormat(histogram=11), "roll0_j0"),
+                ("rollout_act0_j1", SummaryStatisticsFormat(histogram=11), "roll0_j1"),
+                ("rollout_act1", SummaryStatisticsFormat(histogram=5), "roll1"),
+                ("replay_act0_j0", SummaryStatisticsFormat(histogram=11), "rep0_j0"),
+                ("replay_act0_j1", SummaryStatisticsFormat(histogram=11), "rep0_j1"),
+                ("replay_act1", SummaryStatisticsFormat(histogram=5), "rep1"),
                 ("updates", "3", "upd"),
                 ("critic_loss", SummaryStatisticsFormat(mean=".3f")),
                 ("actor_loss", SummaryStatisticsFormat(mean=".3f")),
@@ -1298,6 +1305,7 @@ def _make_base_policy(
         variant=continuous_action_dist,
         initial_stickiness=initial_stickiness,
         gsde_init_stds=gsde_init_stds,
+        action_net_init_gain=mat_init_gains.action_net,
         rsmk_kumaraswamy_ent_scale=(
             0.0
             if policy_variant == "tmasac" and continuous_action_dist == "reparameterized_sign_magnitude_kumaraswamy"
