@@ -709,6 +709,7 @@ def run_experiment(
         )
     actuators_per_limb = env.actuators_dim // env.connectors_dim
     print(f"actuators_per_limb: {actuators_per_limb}")
+    connector_action_histogram_bins = 5 if env.continuous_connector_actions else 2
 
     enc_d_model = 256
     dec_d_model = 128
@@ -958,10 +959,10 @@ def run_experiment(
             [
                 ("rollout_act0_j0", SummaryStatisticsFormat(histogram=11), "roll0_j0"),
                 ("rollout_act0_j1", SummaryStatisticsFormat(histogram=11), "roll0_j1"),
-                ("rollout_act1", SummaryStatisticsFormat(histogram=5), "roll1"),
+                ("rollout_act1", SummaryStatisticsFormat(histogram=connector_action_histogram_bins), "roll1"),
                 ("replay_act0_j0", SummaryStatisticsFormat(histogram=11), "rep0_j0"),
                 ("replay_act0_j1", SummaryStatisticsFormat(histogram=11), "rep0_j1"),
-                ("replay_act1", SummaryStatisticsFormat(histogram=5), "rep1"),
+                ("replay_act1", SummaryStatisticsFormat(histogram=connector_action_histogram_bins), "rep1"),
                 ("updates", "3", "upd"),
                 ("critic_loss", SummaryStatisticsFormat(mean=".3f")),
                 ("actor_loss", SummaryStatisticsFormat(mean=".3f")),
@@ -1020,7 +1021,7 @@ def run_experiment(
         )
         logging_console_keys.extend(
             [
-                ("act1", SummaryStatisticsFormat(histogram=2)),
+                ("act1", SummaryStatisticsFormat(histogram=connector_action_histogram_bins)),
                 ("updates", "3", "upd"),
                 ("approx_kl", SummaryStatisticsFormat(mean=".2e", std=".2e")),
                 ("clip_frac", None),
