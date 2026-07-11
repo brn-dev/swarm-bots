@@ -624,7 +624,7 @@ class SAC(BaseAlgorithm):
 
     def _apply_actor_critic_learning_rate_for_update(self, update_idx: int) -> float:
         lr = self._actor_critic_learning_rate_for_update(update_idx)
-        logger.warning(f'Setting LR to {lr:.3e}')
+
         for optimizer in (self.actor_optimizer, self.critic_optimizer):
             for param_group in optimizer.param_groups:
                 param_group["lr"] = lr
@@ -638,7 +638,10 @@ class SAC(BaseAlgorithm):
 
         progress = max(0.0, float(update_idx) / float(self.learning_rate_warmup_updates))
         factor = self.learning_rate_warmup_start_factor + (1.0 - self.learning_rate_warmup_start_factor) * progress
-        return self.learning_rate * factor
+
+        lr = self.learning_rate * factor
+        logger.warning(f'[Warmup] LR {lr:.3e}')
+        return lr
 
     def _should_train(self) -> bool:
         return (
