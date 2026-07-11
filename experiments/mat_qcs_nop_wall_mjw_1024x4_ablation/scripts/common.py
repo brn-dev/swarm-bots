@@ -22,6 +22,7 @@ from experiments.mjw_experiment_common import (
 )
 
 EXPERIMENT_RUN_NAME = "mat_qcs_nop_swarm_bots_wall_mjw_1024x4_ablation"
+DEFAULT_SCENARIO_KWARGS: dict[str, object] = {"continuous_connector_actions": False}
 
 
 def make_mat_hidden_init_gains(
@@ -75,6 +76,10 @@ def run_ablation(
         include_actor_head_lr_multiplier: bool = False,
         scenario_kwargs: dict[str, object] | None = None,
 ) -> None:
+    effective_scenario_kwargs = {
+        **DEFAULT_SCENARIO_KWARGS,
+        **({} if scenario_kwargs is None else scenario_kwargs),
+    }
     run_experiment(
         num_envs=1024,
         rollout_steps_per_env=4,
@@ -94,5 +99,5 @@ def run_ablation(
         preserve_inactive_prefix_structure=preserve_inactive_prefix_structure,
         include_actor_head_lr_multiplier=include_actor_head_lr_multiplier,
         experiment_run_name=EXPERIMENT_RUN_NAME,
-        scenario_kwargs=scenario_kwargs,
+        scenario_kwargs=effective_scenario_kwargs,
     )

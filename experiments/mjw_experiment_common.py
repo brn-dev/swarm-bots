@@ -212,6 +212,13 @@ def _make_scenario(*, scenario_name: MJWScenarioName, scenario_kwargs: dict[str,
     return scenario_factory(**({} if scenario_kwargs is None else scenario_kwargs))
 
 
+def _with_default_scenario_kwargs(scenario_kwargs: dict[str, object] | None) -> dict[str, object]:
+    return {
+        "continuous_connector_actions": True,
+        **({} if scenario_kwargs is None else scenario_kwargs),
+    }
+
+
 def _scenario_display_name(*, scenario_name: MJWScenarioName) -> str:
     return {
         "wall": "wall",
@@ -574,6 +581,7 @@ def run_experiment(
     rollout_device = torch.device("cuda")
     train_device = torch.device("cuda")
     record_device = torch.device("cuda")
+    scenario_kwargs = _with_default_scenario_kwargs(scenario_kwargs)
 
     logger.info(f"{rollout_device = }")
     logger.info(f"{train_device = }")

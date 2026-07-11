@@ -11,6 +11,7 @@ from experiments.mjw_experiment_common import PolicyVariant, run_experiment as r
 from swarmbots.learn.algos.mat_qcs.mat_qcs_decoder import MATQCSDecoderSelfAttentionMode
 
 EXPERIMENT_RUN_NAME = "mjw_find_opening_1024x4"
+SCENARIO_KWARGS: dict[str, object] = {"continuous_connector_actions": False}
 
 
 def run_experiment(
@@ -35,6 +36,7 @@ def run_experiment(
         use_nop=True,
         experiment_run_name=EXPERIMENT_RUN_NAME,
         scenario_name="find_opening",
+        scenario_kwargs=SCENARIO_KWARGS,
         mat_decoder_lr_multiplier=mat_decoder_lr_multiplier,
         include_actor_head_lr_multiplier=include_actor_head_lr_multiplier,
     )

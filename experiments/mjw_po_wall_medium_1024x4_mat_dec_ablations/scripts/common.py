@@ -17,6 +17,7 @@ from swarmbots.scenario_presets.scenario_presets_kwargs import PO_WALL_MEDIUM_SC
 
 EXPERIMENT_RUN_NAME = "mjw_po_wall_medium_1024x4_mat_dec_ablations"
 SCENARIO_KWARGS: dict[str, object] = dict(PO_WALL_MEDIUM_SCENARIO_KWARGS)
+SCENARIO_KWARGS["continuous_connector_actions"] = False
 
 
 def run_experiment(

@@ -11,7 +11,7 @@ from experiments.mjw_experiment_common import PolicyVariant, run_experiment as r
 from swarmbots.learn.algos.mat_qcs.mat_qcs_decoder import MATQCSDecoderSelfAttentionMode
 
 EXPERIMENT_RUN_NAME = "mjw_wall_medium_1024x4"
-SCENARIO_KWARGS: dict[str, object] = {"difficulty": "medium"}
+SCENARIO_KWARGS: dict[str, object] = {"difficulty": "medium", "continuous_connector_actions": False}
 
 
 def run_experiment(

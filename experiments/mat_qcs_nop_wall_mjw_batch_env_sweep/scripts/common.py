@@ -9,6 +9,8 @@ if str(REPO_ROOT) not in sys.path:
 
 from experiments.mjw_experiment_common import run_experiment as run_mjw_wall_experiment
 
+SCENARIO_KWARGS: dict[str, object] = {"continuous_connector_actions": False}
+
 
 def run_experiment(
         *,
@@ -28,4 +30,5 @@ def run_experiment(
         n_epochs=n_epochs,
         mat_add_agent_embeddings=True,
         nop_add_agent_embeddings_transition_model=True,
+        scenario_kwargs=SCENARIO_KWARGS,
     )
