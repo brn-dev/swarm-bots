@@ -168,22 +168,22 @@ def plot_pairwise_recurrent_vs_non_recurrent() -> list[Path]:
     colors = group_colors(groups)
     normalized_dpis = normalize_dpis(None)
     output_paths: list[Path] = []
-    for selection in build_pairwise_plot_selections():
-        output_paths.extend(
-            plot_experiment_selection(
-                selection=selection,
-                groups=groups,
-                output_dir=OUTPUT_DIR,
-                x_column="timesteps",
-                dpis=normalized_dpis,
-                theoretical_maximum=THEORETICAL_MAXIMUM,
-                run_length_limit=RUN_LENGTH_LIMIT,
-                cut_at_limit=False,
-                group_line_width=GROUP_LINE_WIDTH,
-                group_line_alpha=GROUP_LINE_ALPHA,
-                colors=colors,
-            )
-        )
+    # for selection in build_pairwise_plot_selections():
+    #     output_paths.extend(
+    #         plot_experiment_selection(
+    #             selection=selection,
+    #             groups=groups,
+    #             output_dir=OUTPUT_DIR,
+    #             x_column="timesteps",
+    #             dpis=normalized_dpis,
+    #             theoretical_maximum=THEORETICAL_MAXIMUM,
+    #             run_length_limit=RUN_LENGTH_LIMIT,
+    #             cut_at_limit=False,
+    #             group_line_width=GROUP_LINE_WIDTH,
+    #             group_line_alpha=GROUP_LINE_ALPHA,
+    #             colors=colors,
+    #         )
+    #     )
     for selection in build_focused_variant_plot_selections():
         output_paths.extend(
             plot_experiment_selection(
