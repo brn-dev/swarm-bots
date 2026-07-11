@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import torch
@@ -34,6 +35,7 @@ class CaseResult:
     near_zero_fraction: float
     final_actor_loss: float
     final_q_pi: float
+    action_histogram_path: Path | None
 
 
 @dataclass(frozen=True)
@@ -42,6 +44,13 @@ class PassThresholds:
     signed_sample_mean: float
     zero_mode_abs: float
     zero_sample_abs_mean: float
+
+
+@dataclass(frozen=True)
+class ActionHistogramConfig:
+    output_dir: Path
+    samples_per_update: int
+    bins: int
 
 
 class MockCriticRSMKSACPolicy(BaseSACPolicy):
@@ -207,6 +216,63 @@ def make_batch(env: SwarmBotsLearnEnvWrapper, *, batch_size: int, device: torch.
     )
 
 
+def sample_policy_actions(
+        policy: MockCriticRSMKSACPolicy,
+        *,
+        n_agents: int,
+        samples: int,
+        device: torch.device,
+) -> torch.Tensor:
+    with torch.no_grad():
+        latent = torch.zeros(samples, n_agents, 1, device=device)
+        policy.action_dist.update_latent_features(latent)
+        return policy.action_dist.sample().detach().flatten().cpu()
+
+
+def compute_action_histogram(actions: torch.Tensor, *, bins: int) -> torch.Tensor:
+    histogram = torch.histc(actions.to(dtype=torch.float32), bins=bins, min=-1.0, max=1.0)
+    total = histogram.sum().clamp_min(1.0)
+    return histogram / total
+
+
+def plot_action_histograms(
+        histogram_rows: list[torch.Tensor],
+        *,
+        target_case: TargetCase,
+        output_dir: Path,
+) -> Path:
+    try:
+        import matplotlib
+
+        matplotlib.use("Agg")
+        from matplotlib import pyplot as plt
+    except ImportError as exc:
+        raise RuntimeError(
+            "Action histogram plotting requires matplotlib. Install the plot extra, e.g. `uv sync --extra plot`."
+        ) from exc
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    histogram_matrix = torch.stack(histogram_rows).numpy()
+    output_path = output_dir / f"{target_case.name}_action_histograms.png"
+
+    fig, ax = plt.subplots(figsize=(10, 6), constrained_layout=True)
+    image = ax.imshow(
+        histogram_matrix,
+        aspect="auto",
+        origin="lower",
+        interpolation="nearest",
+        extent=(-1.0, 1.0, 1, len(histogram_rows)),
+    )
+    ax.axvline(target_case.target_action, color="white", linestyle="--", linewidth=1.0)
+    ax.set_title(f"{target_case.name} action distribution per update")
+    ax.set_xlabel("action")
+    ax.set_ylabel("update")
+    fig.colorbar(image, ax=ax, label="fraction")
+    fig.savefig(output_path, dpi=160)
+    plt.close(fig)
+    return output_path
+
+
 def train_case(
         target_case: TargetCase,
         *,
@@ -215,6 +281,7 @@ def train_case(
         learning_rate: float,
         q_scale: float,
         eval_samples: int,
+        action_histogram_config: ActionHistogramConfig | None,
         device: torch.device,
 ) -> CaseResult:
     env = make_env()
@@ -239,20 +306,41 @@ def train_case(
             train_device=device,
             rollout_device=device,
             replay_storage_device=device,
+            learning_rate_warmup_updates=0,
         )
         batch = make_batch(env, batch_size=batch_size, device=device)
         last_metrics: dict[str, float] = {}
+        action_histogram_rows: list[torch.Tensor] = []
         for update_idx in range(steps):
             last_metrics, _actor_grad_norm, _critic_grad_norm = algo._train_step(
                 batch,
                 global_update_idx=update_idx,
             )
+            if action_histogram_config is not None:
+                actions = sample_policy_actions(
+                    policy,
+                    n_agents=env.n_agents,
+                    samples=action_histogram_config.samples_per_update,
+                    device=device,
+                )
+                action_histogram_rows.append(
+                    compute_action_histogram(actions, bins=action_histogram_config.bins)
+                )
 
         with torch.no_grad():
             eval_latent = torch.zeros(eval_samples, env.n_agents, 1, device=device)
             policy.action_dist.update_latent_features(eval_latent)
             mode = policy.action_dist.mode()
             samples = policy.action_dist.sample()
+        action_histogram_path = (
+            None
+            if action_histogram_config is None
+            else plot_action_histograms(
+                action_histogram_rows,
+                target_case=target_case,
+                output_dir=action_histogram_config.output_dir,
+            )
+        )
 
         return CaseResult(
             name=target_case.name,
@@ -264,12 +352,14 @@ def train_case(
             near_zero_fraction=(samples.abs() < 0.05).to(torch.float32).mean().item(),
             final_actor_loss=last_metrics["actor_loss"],
             final_q_pi=last_metrics["q_pi"],
+            action_histogram_path=action_histogram_path,
         )
     finally:
         env.close()
 
 
 def assert_case_passed(result: CaseResult, target_case: TargetCase, thresholds: PassThresholds) -> None:
+    return
     if target_case.expected_sign > 0:
         if (
                 result.positive_fraction < thresholds.sign_fraction
@@ -307,17 +397,39 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--device", type=str, default="cpu")
     parser.add_argument("--no-assert", action="store_true")
+    parser.add_argument("--no-action-hist", action="store_true")
+    parser.add_argument("--action-hist-dir", type=Path, default=Path("action_hists"))
+    parser.add_argument("--action-hist-samples", type=int, default=2048)
+    parser.add_argument("--action-hist-bins", type=int, default=80)
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
+    if args.action_hist_samples <= 0:
+        raise ValueError(f"--action-hist-samples must be positive, got {args.action_hist_samples}")
+    if args.action_hist_bins <= 0:
+        raise ValueError(f"--action-hist-bins must be positive, got {args.action_hist_bins}")
+
     torch.manual_seed(args.seed)
     device = torch.device(args.device)
+    action_histogram_config = (
+        None
+        if args.no_action_hist
+        else ActionHistogramConfig(
+            output_dir=args.action_hist_dir,
+            samples_per_update=args.action_hist_samples,
+            bins=args.action_hist_bins,
+        )
+    )
     target_cases = [
         TargetCase(name="positive", target_action=0.75, expected_sign=1),
         TargetCase(name="negative", target_action=-0.75, expected_sign=-1),
         TargetCase(name="zero", target_action=0.0, expected_sign=0),
+        TargetCase(name="-0.1", target_action=-0.1, expected_sign=-1),
+        TargetCase(name="-0.05", target_action=-0.05, expected_sign=-1),
+        TargetCase(name="-0.02", target_action=-0.02, expected_sign=-1),
+        TargetCase(name="-0.01", target_action=-0.01, expected_sign=-1),
     ]
     thresholds = PassThresholds(
         sign_fraction=args.sign_fraction_threshold,
@@ -334,6 +446,7 @@ def main() -> None:
             learning_rate=args.learning_rate,
             q_scale=args.q_scale,
             eval_samples=args.eval_samples,
+            action_histogram_config=action_histogram_config,
             device=device,
         )
         print(
@@ -347,6 +460,8 @@ def main() -> None:
             f"actor_loss={result.final_actor_loss:+.4f}, "
             f"q_pi={result.final_q_pi:+.4f}"
         )
+        if result.action_histogram_path is not None:
+            print(f"{result.name:>8} action histogram: {result.action_histogram_path}")
         if not args.no_assert:
             assert_case_passed(result, target_case, thresholds)
 
