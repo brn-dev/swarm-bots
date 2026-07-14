@@ -408,6 +408,7 @@ def make_continuous_config(
         gsde_init_stds: list[float],
         action_net_init_gain: float = 0.01,
         rsmk_kumaraswamy_ent_scale: float = 0.75,
+        ent_loss_coef: float = 1e-3,
 ) -> (
         StickySignMagnitudeBetaConfig
         | SignMagnitudeBetaConfig
@@ -423,56 +424,56 @@ def make_continuous_config(
     if variant == "sticky_sign_magnitude_beta":
         return StickySignMagnitudeBetaConfig(
             stickiness=initial_stickiness,
-            ent_loss_coef=1e-3,
+            ent_loss_coef=ent_loss_coef,
             beta_ent_scale=0.75,
             categorical_ent_loss_config=make_sign_magnitude_categorical_entropy_config(),
             beta_ent_loss_config=make_sign_magnitude_magnitude_entropy_config(),
         )
     if variant == "sign_magnitude_beta":
         return SignMagnitudeBetaConfig(
-            ent_loss_coef=1e-3,
+            ent_loss_coef=ent_loss_coef,
             beta_ent_scale=0.75,
             categorical_ent_loss_config=make_sign_magnitude_categorical_entropy_config(),
             beta_ent_loss_config=make_sign_magnitude_magnitude_entropy_config(),
         )
     if variant == "gumbel_softmax_sign_magnitude_beta":
         return GumbelSoftmaxSignMagnitudeBetaConfig(
-            ent_loss_coef=1e-3,
+            ent_loss_coef=ent_loss_coef,
             beta_ent_scale=0.75,
             categorical_ent_loss_config=make_sign_magnitude_categorical_entropy_config(),
             beta_ent_loss_config=make_sign_magnitude_magnitude_entropy_config(),
         )
     if variant == "gumbel_softmax_sign_magnitude_kumaraswamy":
         return GumbelSoftmaxSignMagnitudeKumaraswamyConfig(
-            ent_loss_coef=1e-3,
+            ent_loss_coef=ent_loss_coef,
             kumaraswamy_ent_scale=rsmk_kumaraswamy_ent_scale,
             categorical_ent_loss_config=make_sign_magnitude_categorical_entropy_config(),
             kumaraswamy_ent_loss_config=make_sign_magnitude_magnitude_entropy_config(),
         )
     if variant == "reparameterized_sign_magnitude_kumaraswamy":
         return ReparameterizedSignMagnitudeKumaraswamyConfig(
-            ent_loss_coef=1e-3,
+            ent_loss_coef=ent_loss_coef,
             kumaraswamy_ent_scale=rsmk_kumaraswamy_ent_scale,
             categorical_ent_loss_config=make_sign_magnitude_categorical_entropy_config(),
             kumaraswamy_ent_loss_config=make_sign_magnitude_magnitude_entropy_config(),
         )
     if variant == "reparameterized_squashed_gaussian_mixture":
         return ReparameterizedSquashedGaussianMixtureConfig(
-            ent_loss_coef=1e-3,
+            ent_loss_coef=ent_loss_coef,
             gaussian_ent_scale=0.75,
             categorical_ent_loss_config=make_sign_magnitude_categorical_entropy_config(),
             gaussian_ent_loss_config=make_sign_magnitude_magnitude_entropy_config(),
         )
     if variant == "beta":
         return BetaConfig(
-            ent_loss_coef=1e-3,
+            ent_loss_coef=ent_loss_coef,
             ent_loss_config=make_sign_magnitude_magnitude_entropy_config(),
         )
     if variant == "predicted_std":
         return PredictedStdConfig(
             base_std=gsde_init_stds[0],
             log_std_net_initialization=make_init_linear_orthogonal(action_net_init_gain),
-            ent_loss_coef=1e-3,
+            ent_loss_coef=ent_loss_coef,
             ent_loss_config=EntropyLossConfig(
                 agent_actions_reduction=AgentActionsReduction.SUM,
                 metrics_reduction=AgentActionsReduction.MEAN,
@@ -487,7 +488,7 @@ def make_continuous_config(
             sde_learn_features=False,
             normalize_latent_sde_by_dim=True,
             log_std_clamp_range=(-20.0, 2.0),
-            ent_loss_coef=1e-3,
+            ent_loss_coef=ent_loss_coef,
             ent_loss_config=EntropyLossConfig(
                 agent_actions_reduction=AgentActionsReduction.SUM,
                 metrics_reduction=AgentActionsReduction.MEAN,
@@ -497,7 +498,7 @@ def make_continuous_config(
         return SquashedDiagGaussianConfig(
             std=gsde_init_stds[0],
             std_learnable=True,
-            ent_loss_coef=1e-3,
+            ent_loss_coef=ent_loss_coef,
             ent_loss_config=EntropyLossConfig(
                 agent_actions_reduction=AgentActionsReduction.SUM,
                 metrics_reduction=AgentActionsReduction.MEAN,
@@ -595,6 +596,10 @@ def run_experiment(
         raise ValueError(f"rollout_steps_per_env must be > 0, got {rollout_steps_per_env}")
     if virtual_mini_batches <= 0:
         raise ValueError(f"virtual_mini_batches must be > 0, got {virtual_mini_batches}")
+    if n_epochs <= 0:
+        raise ValueError(f"n_epochs must be > 0, got {n_epochs}")
+    if total_timesteps <= 0:
+        raise ValueError(f"total_timesteps must be > 0, got {total_timesteps}")
 
     rollout_samples = num_envs * rollout_steps_per_env
     if rollout_samples % virtual_mini_batches != 0:
@@ -1103,6 +1108,7 @@ def run_experiment(
         "script_scenario_presets": Path(mjw_scenario_presets.__file__).read_text(encoding="utf-8"),
         "backend": "mjw_env",
         "algorithm_variant": "sac" if sac_policy else "ppo",
+        "policy_variant": policy_variant,
         "recording_enabled": "live_mjw_exact_state",
         "rollout_samples": rollout_samples,
         "rollout_steps_per_env": rollout_steps_per_env,
@@ -1167,9 +1173,6 @@ def run_experiment(
                 "sac_target_entropy": sac_target_entropy,
             }
         )
-    if policy_variant != "mat_qcs":
-        extra_run_metadata["policy_variant"] = policy_variant
-
     _run_training_with_notification_and_close(
         env=env,
         run_name=f"{experiment_run_name}/{variant_name}/{run_id}",
@@ -1383,6 +1386,7 @@ def _make_base_policy(
         initial_stickiness=initial_stickiness,
         gsde_init_stds=gsde_init_stds,
         action_net_init_gain=mat_init_gains.action_net,
+        ent_loss_coef=0.0 if policy_variant == "tmasac" else 1e-3,
         rsmk_kumaraswamy_ent_scale=(
             0.0
             if policy_variant == "tmasac" and continuous_action_dist in (

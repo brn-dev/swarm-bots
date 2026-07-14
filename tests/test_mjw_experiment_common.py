@@ -231,6 +231,7 @@ def _patch_default_experiment_boundaries(
     monkeypatch.setattr(experiment_common, "SAC", make_sac)
     monkeypatch.setattr(experiment_common, "install_scheduled_recordings", install_recordings)
     monkeypatch.setattr(experiment_common, "run_with_discord_notification", run_notification)
+    capture["algorithm"] = algorithm
     capture["recording_hook"] = recording_hook
     return capture, env
 
@@ -319,12 +320,24 @@ def test_default_run_experiment_wires_ppo_contract(
     assert ppo_kwargs["sampler_config"].num_next_steps == 3
     assert ppo_kwargs["rollout_warmup_steps_per_env"] == 512
     assert ppo_kwargs["use_popart"] is True
+    assert ppo_kwargs["learning_rate"].initial_lr == pytest.approx(5e-7)
+    assert ppo_kwargs["learning_rate"].max_lr == pytest.approx(8e-4)
+    assert ppo_kwargs["clip_range"] == pytest.approx(0.05)
+    assert ppo_kwargs["target_kl"] == pytest.approx(0.002)
+    assert set(ppo_kwargs["parameter_lr_multipliers"].values()) == {0.25}
+    assert "decoder" in ppo_kwargs["parameter_lr_multipliers"]
+    assert "actor_head" not in ppo_kwargs["parameter_lr_multipliers"]
 
     learn_kwargs = capture["learn_kwargs"]
     assert isinstance(learn_kwargs, dict)
+    assert learn_kwargs["max_total_timesteps"] == 16
+    assert learn_kwargs["save_interval"] is None
+    assert learn_kwargs["save_optimizer"] is True
+    assert learn_kwargs["best_rotation_n"] == 1
     metadata = learn_kwargs["extra_run_metadata"]
     assert isinstance(metadata, dict)
     assert metadata["algorithm_variant"] == "ppo"
+    assert metadata["policy_variant"] == "mat_qcs"
     assert metadata["rollout_samples"] == 8
     assert metadata["total_timesteps"] == 16
     assert metadata["world_model_num_next_steps"] == 3
@@ -332,7 +345,17 @@ def test_default_run_experiment_wires_ppo_contract(
     assert metadata["bernoulli_initial_prob"] == 0.8
     assert metadata["enc_nhead"] == 4
     assert metadata["dec_nhead"] == 2
+    assert metadata["mat_decoder_lr_multiplier"] == pytest.approx(0.25)
+    assert metadata["include_actor_head_lr_multiplier"] is False
+    assert metadata["parameter_lr_multipliers"] == ppo_kwargs["parameter_lr_multipliers"]
     assert learn_kwargs["post_iteration_hooks"] == [capture["recording_hook"]]
+    recording_kwargs = capture["recording_kwargs"]
+    assert isinstance(recording_kwargs, dict)
+    assert recording_kwargs == {
+        "algorithm": capture["algorithm"],
+        "total_timesteps": 16,
+        "schedule": experiment_common.DEFAULT_LIVE_RECORDING_SCHEDULE,
+    }
     logging_key_names = {entry[0] for entry in learn_kwargs["logging_console_keys"]}
     assert "act0_j0" in logging_key_names
     assert "act0_j1" in logging_key_names
@@ -412,8 +435,8 @@ def test_tmasac_run_experiment_preserves_sac_and_nop_configuration(
     assert metadata["sac_target_entropy"] == "auto_0.7"
     assert "sac_nop_steps" not in metadata
     logging_key_names = {entry[0] for entry in learn_kwargs["logging_console_keys"]}
-    assert "actor_action_dist_act0_entropy_loss_scaled" in logging_key_names
-    assert "actor_action_dist_act1_entropy_loss_scaled" in logging_key_names
+    assert "actor_action_dist_act0_entropy_loss_scaled" not in logging_key_names
+    assert "actor_action_dist_act1_entropy_loss_scaled" not in logging_key_names
     assert "actor_action_dist_act0_ent_categorical" not in logging_key_names
     assert "actor_action_dist_act0_ent_kumaraswamy" not in logging_key_names
     assert env.closed
@@ -456,6 +479,8 @@ def test_run_experiment_rejects_virtual_batches_that_split_sampling_units(
         ({"num_envs": 0}, "num_envs must be > 0"),
         ({"rollout_steps_per_env": 0}, "rollout_steps_per_env must be > 0"),
         ({"virtual_mini_batches": 0}, "virtual_mini_batches must be > 0"),
+        ({"n_epochs": 0}, "n_epochs must be > 0"),
+        ({"total_timesteps": 0}, "total_timesteps must be > 0"),
     ],
 )
 def test_run_experiment_rejects_non_positive_sampling_dimensions(
@@ -608,6 +633,8 @@ def test_default_base_policy_produces_finite_actions_log_probs_and_values() -> N
     assert policy.has_popart
     assert all(isinstance(dist, SignMagnitudeBetaActionDist) for dist in policy.action_dist.distributions)
     continuous_dist = policy.action_dist.distributions[0]
+    assert continuous_dist.ent_loss_coef == pytest.approx(1e-3)
+    assert continuous_dist.beta_ent_scale == pytest.approx(0.75)
     assert continuous_dist.categorical_ent_loss_config.entropy_floor == 0.35
     assert continuous_dist.beta_ent_loss_config.entropy_floor is None
 
@@ -802,6 +829,8 @@ def test_make_base_policy_constructs_tmasac_rsmk_with_nop() -> None:
     assert isinstance(policy, TMASACPolicy)
     assert isinstance(policy.action_dist.distributions[0], ReparameterizedSignMagnitudeKumaraswamyActionDist)
     assert isinstance(policy.action_dist.distributions[1], ReparameterizedSignMagnitudeKumaraswamyActionDist)
+    assert policy.action_dist.distributions[0].ent_loss_coef == 0.0
+    assert policy.action_dist.distributions[1].ent_loss_coef == 0.0
     assert policy.action_dist.distributions[0].kumaraswamy_ent_scale == 0.0
     assert policy.action_dist.distributions[1].kumaraswamy_ent_scale == 0.0
     assert policy.action_dist.distributions[0].categorical_ent_loss_config.entropy_floor == 0.35
@@ -871,6 +900,9 @@ def test_make_base_policy_supports_tmasac_straight_through_action_families() -> 
 
         assert isinstance(policy, TMASACPolicy)
         assert all(isinstance(dist, expected_type) for dist in policy.action_dist.distributions)
+        for dist in policy.action_dist.distributions:
+            assert dist.ent_loss_coef == 0.0
+            assert dist.compute_extra_losses() == ({}, {})
 
     kumaraswamy_dist = policy.action_dist.distributions[0]
     assert isinstance(kumaraswamy_dist, GumbelSoftmaxSignMagnitudeKumaraswamyActionDist)

@@ -117,9 +117,9 @@ class _DummyPolicy(BasePPOPolicy[PPOSampler, PPOSamplerConfig]):
         return False
 
 
-def _make_env(n_envs: int) -> SwarmBotsLearnEnvWrapper:
+def _make_env(n_envs: int, max_steps: int = 32) -> SwarmBotsLearnEnvWrapper:
     vector_env = SyncVectorEnv(
-        [lambda: TestingSwarmBotsEnv(2, 3, 2, 1, 1, max_steps=32) for _ in range(n_envs)],
+        [lambda: TestingSwarmBotsEnv(2, 3, 2, 1, 1, max_steps=max_steps) for _ in range(n_envs)],
         autoreset_mode=AutoresetMode.SAME_STEP,
     )
     return SwarmBotsLearnEnvWrapper(vector_env)
@@ -181,6 +181,32 @@ class PPORolloutBufferSizingTests(unittest.TestCase):
             self.assertIsNotNone(algo._rollout_state)
             assert algo._rollout_state is not None
             self.assertEqual(algo._rollout_state.rollout_step_idx, 3)
+        finally:
+            env.close()
+
+    def test_rollout_warmup_continues_from_same_step_reset_observation(self) -> None:
+        env = _make_env(n_envs=2, max_steps=2)
+        try:
+            policy = _DummyPolicy(action_dim=env.action_space.total_agent_action_dim)
+            algo = PPO(
+                policy=policy,
+                env=env,
+                rollout_mode=StepsRolloutMode(4),
+                max_episode_length=2,
+                rollout_warmup_steps_per_env=3,
+            )
+
+            algo._before_learn_loop()
+
+            assert algo._rollout_state is not None
+            torch.testing.assert_close(
+                algo._rollout_state.obs["local_obs"],
+                torch.ones_like(algo._rollout_state.obs["local_obs"]),
+            )
+            self.assertFalse(algo._rollout_state.episode_start_mask.any().item())
+            self.assertEqual(algo._rollout_state.rollout_step_idx, 3)
+            self.assertEqual(algo.n_total_timesteps, 0)
+            self.assertEqual(len(algo.rollout_buffer.episodes), 0)
         finally:
             env.close()
 

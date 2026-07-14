@@ -1,7 +1,9 @@
+import math
 import unittest
 
 import numpy as np
 import torch
+from torch import distributions as torchdist
 from gymnasium import spaces
 
 from swarmbots.learn.action_dists.beta_action_dist import BetaActionDist, BetaConfig
@@ -11,6 +13,10 @@ from swarmbots.learn.action_dists.gumbel_softmax_sign_magnitude_action_dist impo
 )
 from swarmbots.learn.action_dists.hybrid_action_dist import HybridActionDistribution, make_proba_distribution
 from swarmbots.learn.action_dists.predicted_std_action_dist import PredictedStdActionDist, PredictedStdConfig
+from swarmbots.learn.action_dists.sign_magnitude_beta_action_dist import (
+    SignMagnitudeBetaActionDist,
+    SignMagnitudeBetaConfig,
+)
 from swarmbots.learn.action_dists.squashed_diag_gaussian_action_dist import (
     SquashedDiagGaussianActionDist,
     SquashedDiagGaussianConfig,
@@ -215,6 +221,51 @@ class HybridActionDistFactoryTests(unittest.TestCase):
         self.assertIn("entropy", losses)
         self.assertIn("ent", metrics)
         self.assertTrue(dist.compile_friendly)
+
+    def test_sign_magnitude_beta_default_starts_balanced_on_zero_latent(self) -> None:
+        dist = make_proba_distribution(
+            latent_dim=4,
+            action_space=spaces.Box(-1.0, 1.0, shape=(2, 2), dtype=np.float32),
+            action_space_dim=2,
+            action_net_initialization=init_linear_orthogonal,
+            continuous_config=SignMagnitudeBetaConfig(),
+        )
+
+        dist.update_latent_features(torch.zeros(3, 2, 4))
+
+        self.assertIsInstance(dist, SignMagnitudeBetaActionDist)
+        assert isinstance(dist, SignMagnitudeBetaActionDist)
+        assert dist.weight_logits is not None
+        torch.testing.assert_close(
+            torch.softmax(dist.weight_logits, dim=-1),
+            torch.full((3, 2, 2, 2), 0.5),
+        )
+        assert dist.negative_beta_dist is not None
+        assert dist.positive_beta_dist is not None
+        torch.testing.assert_close(dist.negative_beta_dist.mean, torch.full((3, 2, 2), 0.5))
+        torch.testing.assert_close(dist.positive_beta_dist.mean, torch.full((3, 2, 2), 0.5))
+
+    def test_sign_magnitude_beta_log_prob_matches_disjoint_mixture_density(self) -> None:
+        config = SignMagnitudeBetaConfig()
+        dist = make_proba_distribution(
+            latent_dim=4,
+            action_space=spaces.Box(-1.0, 1.0, shape=(1, 2), dtype=np.float32),
+            action_space_dim=2,
+            action_net_initialization=init_linear_orthogonal,
+            continuous_config=config,
+        )
+        actions = torch.tensor([[[-0.75, 0.25]]])
+
+        dist.update_latent_features(torch.zeros(1, 1, 4))
+        actual_log_prob = dist.log_prob(actions)
+
+        magnitude_dist = torchdist.Beta(
+            concentration1=torch.tensor(config.negative_alpha),
+            concentration0=torch.tensor(config.negative_beta),
+        )
+        component_log_prob = math.log(0.5) + magnitude_dist.log_prob(torch.tensor(0.25))
+        expected_log_prob = (2.0 * component_log_prob).reshape(1, 1)
+        torch.testing.assert_close(actual_log_prob, expected_log_prob)
 
     def test_probability_clamp_epsilon_must_leave_a_nonempty_interval(self) -> None:
         action_space = spaces.Box(-1.0, 1.0, shape=(2, 2), dtype=np.float32)

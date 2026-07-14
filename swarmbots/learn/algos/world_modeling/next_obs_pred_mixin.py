@@ -855,8 +855,12 @@ class NextObsPredMixin(abc.ABC):
             feature_mean = target_binaries.mean(dim=tuple(range(target_binaries.ndim - 1)))
         else:
             weights = valid_mask.to(dtype=target_binaries.dtype).unsqueeze(-1)
-            denom = weights.sum(dim=tuple(range(weights.ndim - 1))).clamp_min(1.0)
-            feature_mean = (target_binaries * weights).sum(dim=tuple(range(target_binaries.ndim - 1))) / denom
+            valid_count = weights.sum(dim=tuple(range(weights.ndim - 1)))
+            feature_mean = (
+                (target_binaries * weights).sum(dim=tuple(range(target_binaries.ndim - 1)))
+                / valid_count.clamp_min(1.0)
+            )
+            feature_mean = torch.where(valid_count > 0, feature_mean, self.binary_target_ema)
 
         if self.training:
             with torch.no_grad():
