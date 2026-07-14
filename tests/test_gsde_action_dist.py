@@ -1,3 +1,4 @@
+import math
 import unittest
 
 import torch
@@ -102,14 +103,14 @@ class GSDEActionDistTests(unittest.TestCase):
             base_std=1.0,
         )
         dist.reset_noise((2, 3))
-        original_noise = dist._exploration_matrices.clone()
+        original_noise = dist._exploration_noise.clone()
 
         dist.reset_on_ep_start(torch.tensor([True, False], dtype=torch.bool))
 
         self.assertEqual(tuple(dist._exploration_batch_shape), (2, 3))
-        self.assertEqual(tuple(dist._exploration_matrices.shape), (2, 3, 2, 1))
-        self.assertFalse(torch.equal(dist._exploration_matrices[0], original_noise[0]))
-        self.assertTrue(torch.equal(dist._exploration_matrices[1], original_noise[1]))
+        self.assertEqual(tuple(dist._exploration_noise.shape), (2, 3, 2, 1))
+        self.assertFalse(torch.equal(dist._exploration_noise[0], original_noise[0]))
+        self.assertTrue(torch.equal(dist._exploration_noise[1], original_noise[1]))
 
     def test_masked_reset_only_replaces_selected_agent_noise(self) -> None:
         torch.manual_seed(1234)
@@ -119,7 +120,7 @@ class GSDEActionDistTests(unittest.TestCase):
             base_std=1.0,
         )
         dist.reset_noise((2, 3))
-        original_noise = dist._exploration_matrices.clone()
+        original_noise = dist._exploration_noise.clone()
         reset_mask = torch.tensor(
             [
                 [False, True, False],
@@ -130,12 +131,12 @@ class GSDEActionDistTests(unittest.TestCase):
 
         dist.reset_noise_masked(reset_mask)
 
-        self.assertTrue(torch.equal(dist._exploration_matrices[0, 0], original_noise[0, 0]))
-        self.assertFalse(torch.equal(dist._exploration_matrices[0, 1], original_noise[0, 1]))
-        self.assertTrue(torch.equal(dist._exploration_matrices[0, 2], original_noise[0, 2]))
-        self.assertFalse(torch.equal(dist._exploration_matrices[1, 0], original_noise[1, 0]))
-        self.assertTrue(torch.equal(dist._exploration_matrices[1, 1], original_noise[1, 1]))
-        self.assertFalse(torch.equal(dist._exploration_matrices[1, 2], original_noise[1, 2]))
+        self.assertTrue(torch.equal(dist._exploration_noise[0, 0], original_noise[0, 0]))
+        self.assertFalse(torch.equal(dist._exploration_noise[0, 1], original_noise[0, 1]))
+        self.assertTrue(torch.equal(dist._exploration_noise[0, 2], original_noise[0, 2]))
+        self.assertFalse(torch.equal(dist._exploration_noise[1, 0], original_noise[1, 0]))
+        self.assertTrue(torch.equal(dist._exploration_noise[1, 1], original_noise[1, 1]))
+        self.assertFalse(torch.equal(dist._exploration_noise[1, 2], original_noise[1, 2]))
 
     def test_zero_mask_does_not_replace_noise(self) -> None:
         dist = GSDEActionDist(
@@ -144,11 +145,11 @@ class GSDEActionDistTests(unittest.TestCase):
             base_std=1.0,
         )
         dist.reset_noise((2, 3))
-        original_noise = dist._exploration_matrices.clone()
+        original_noise = dist._exploration_noise.clone()
 
         dist.reset_noise_masked(torch.zeros((2, 3), dtype=torch.bool))
 
-        self.assertTrue(torch.equal(dist._exploration_matrices, original_noise))
+        self.assertTrue(torch.equal(dist._exploration_noise, original_noise))
 
     def test_env_mask_initializes_env_only_shape_when_no_batch_shape_exists(self) -> None:
         dist = GSDEActionDist(
@@ -160,7 +161,7 @@ class GSDEActionDistTests(unittest.TestCase):
         dist.reset_on_ep_start(torch.tensor([True, False], dtype=torch.bool))
 
         self.assertEqual(tuple(dist._exploration_batch_shape), (2,))
-        self.assertEqual(tuple(dist._exploration_matrices.shape), (2, 2, 1))
+        self.assertEqual(tuple(dist._exploration_noise.shape), (2, 2, 1))
 
     def test_agent_mask_reinitializes_noise_to_agent_batch_shape(self) -> None:
         dist = GSDEActionDist(
@@ -173,7 +174,7 @@ class GSDEActionDistTests(unittest.TestCase):
         dist.reset_noise_masked(torch.zeros((2, 3), dtype=torch.bool))
 
         self.assertEqual(tuple(dist._exploration_batch_shape), (2, 3))
-        self.assertEqual(tuple(dist._exploration_matrices.shape), (2, 3, 2, 1))
+        self.assertEqual(tuple(dist._exploration_noise.shape), (2, 3, 2, 1))
 
     def test_step_reset_with_batch_shape_replaces_all_noise(self) -> None:
         torch.manual_seed(1234)
@@ -183,12 +184,12 @@ class GSDEActionDistTests(unittest.TestCase):
             base_std=1.0,
         )
         dist.reset_noise((2, 3))
-        original_noise = dist._exploration_matrices.clone()
+        original_noise = dist._exploration_noise.clone()
 
         dist.reset_on_step(batch_shape=(2, 3))
 
         self.assertEqual(tuple(dist._exploration_batch_shape), (2, 3))
-        self.assertFalse(torch.equal(dist._exploration_matrices, original_noise))
+        self.assertFalse(torch.equal(dist._exploration_noise, original_noise))
 
     def test_sampling_requires_noise_reset(self) -> None:
         dist = GSDEActionDist(
@@ -230,6 +231,65 @@ class GSDEActionDistTests(unittest.TestCase):
         self.assertTrue(actions.requires_grad)
         self.assertIsNotNone(dist.action_net.bias.grad)
         self.assertGreater(dist.action_net.bias.grad.abs().sum().item(), 0.0)
+
+    def test_rsample_tracks_log_std_gradient_through_actions(self) -> None:
+        dist = GSDEActionDist(
+            latent_dim=2,
+            action_dim=1,
+            base_std=1.0,
+        )
+        latent_pi = torch.ones((2, 3, 2), dtype=torch.float32)
+        dist.reset_noise((2, 3))
+        noise_state = dist.get_temporal_correlation_state()
+        assert noise_state is not None
+        with torch.no_grad():
+            dist.action_net.weight.zero_()
+            dist.action_net.bias.zero_()
+            noise_state.fill_(1.0)
+
+        actions = dist.update_latent_features(latent_pi).rsample()
+        actions.sum().backward()
+
+        self.assertIsNotNone(dist.log_stds.grad)
+        self.assertGreater(dist.log_stds.grad.abs().sum().item(), 0.0)
+
+    def test_updated_std_applies_to_existing_noise_state(self) -> None:
+        dist = GSDEActionDist(
+            latent_dim=2,
+            action_dim=1,
+            base_std=1.0,
+        )
+        latent_pi = torch.ones((2, 3, 2), dtype=torch.float32)
+        dist.reset_noise((2, 3))
+        noise_state = dist.get_temporal_correlation_state()
+        assert noise_state is not None
+        with torch.no_grad():
+            dist.action_net.weight.zero_()
+            dist.action_net.bias.zero_()
+            noise_state.fill_(1.0)
+
+        original_actions = dist.update_latent_features(latent_pi).sample()
+        with torch.no_grad():
+            dist.log_stds.fill_(math.log(0.5))
+        scaled_actions = dist.update_latent_features(latent_pi).sample()
+
+        self.assertTrue(torch.allclose(scaled_actions, original_actions * 0.5))
+
+    def test_ppo_log_prob_evaluation_does_not_depend_on_current_noise(self) -> None:
+        dist = GSDEActionDist(
+            latent_dim=2,
+            action_dim=1,
+            base_std=1.0,
+        )
+        latent_pi = torch.ones((2, 3, 2), dtype=torch.float32)
+        dist.reset_noise((2, 3))
+        actions, rollout_log_probs = dist.get_actions_with_log_probs(latent_pi)
+
+        dist.reset_noise((2, 3))
+        dist.update_latent_features(latent_pi)
+        evaluated_log_probs = dist.log_prob(actions)
+
+        self.assertTrue(torch.allclose(evaluated_log_probs, rollout_log_probs))
 
     def test_sample_does_not_track_distribution_head_gradient(self) -> None:
         dist = GSDEActionDist(

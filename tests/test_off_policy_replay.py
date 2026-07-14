@@ -136,6 +136,8 @@ def _make_buffer(
         capacity_per_env: int,
         store_previous_actions: bool = False,
         temporal_state_store_interval: int | None = None,
+        storage_device: str = "cpu",
+        train_device: str = "cpu",
 ) -> OffPolicyReplayBuffer:
     return OffPolicyReplayBuffer(
         capacity_per_env=capacity_per_env,
@@ -143,8 +145,8 @@ def _make_buffer(
         action_space=env.action_space,
         store_previous_actions=store_previous_actions,
         temporal_state_store_interval=temporal_state_store_interval,
-        storage_device="cpu",
-        train_device="cpu",
+        storage_device=storage_device,
+        train_device=train_device,
     )
 
 
@@ -377,6 +379,13 @@ class _SpyGSDEActionDist:
         self.episode_start_masks: list[torch.Tensor] = []
         self.step_resets: list[tuple[torch.Tensor | None, tuple[int, ...] | None]] = []
         self.call_order: list[str] = []
+        self.noise_state: torch.Tensor | None = None
+
+    def get_temporal_correlation_state(self) -> torch.Tensor | None:
+        return self.noise_state
+
+    def set_temporal_correlation_state(self, state: torch.Tensor | None) -> None:
+        self.noise_state = state
 
     def reset_temporal_correlations_on_ep_start(self, mask: torch.Tensor) -> None:
         self.call_order.append("ep_start")
@@ -389,6 +398,10 @@ class _SpyGSDEActionDist:
     ) -> None:
         self.call_order.append("step")
         self.step_resets.append((None if mask is None else mask.detach().cpu().clone(), batch_shape))
+        if batch_shape is not None:
+            self.noise_state = torch.zeros((*batch_shape, 1))
+        elif self.noise_state is None and mask is not None:
+            self.noise_state = torch.zeros((*mask.shape, 1))
 
 
 class _GSDEPolicy(_NoPreviousActionPolicy):
@@ -531,6 +544,39 @@ class OffPolicyReplayTests(unittest.TestCase):
 
             self.assertEqual(batch.episode_ends.tolist(), [True, True])
             self.assertEqual(batch.terminal_mask.tolist(), [True, False])
+        finally:
+            env.close()
+
+    @unittest.skipUnless(torch.cuda.is_available(), "requires CUDA replay storage")
+    def test_cpu_generator_samples_cuda_replay(self) -> None:
+        env = _make_env()
+        try:
+            buffer = _make_buffer(
+                env,
+                capacity_per_env=2,
+                storage_device="cuda",
+                train_device="cpu",
+            )
+            buffer.add(
+                obs=_obs(0.0),
+                actions=_actions(0.0),
+                rewards=torch.tensor([0.0]),
+                terminations=torch.tensor([False]),
+                truncations=torch.tensor([False]),
+                next_obs=_obs(1.0),
+            )
+            generator = torch.Generator(device="cpu").manual_seed(7)
+
+            batch = buffer.sample(1, generator=generator)
+            segment_batch = buffer.sample_episode_segments(
+                1,
+                segment_length=1,
+                require_initial_temporal_state=False,
+                generator=generator,
+            )
+
+            self.assertEqual(batch.actions.device.type, "cpu")
+            self.assertEqual(segment_batch.actions.device.type, "cpu")
         finally:
             env.close()
 
@@ -1278,7 +1324,7 @@ class OffPolicyReplayTests(unittest.TestCase):
         finally:
             env.close()
 
-    def test_temporal_state_initializes_when_policy_starts_after_random_rollout(self) -> None:
+    def test_recurrent_policy_cannot_start_mid_episode_after_untracked_random_rollout(self) -> None:
         env = _make_env()
         try:
             buffer = _make_buffer(env, capacity_per_env=4)
@@ -1289,20 +1335,14 @@ class OffPolicyReplayTests(unittest.TestCase):
                 random_actions=True,
             )
             policy = _TemporalPolicy()
-            _episode_infos, _metrics, rollout_state = collect_off_policy_steps(
-                env=env,
-                replay_buffer=buffer,
-                n_steps=2,
-                policy=policy,
-                rollout_state=rollout_state,
-            )
-
-            self.assertEqual(
-                [mask.tolist() for mask in policy.episode_start_masks],
-                [[False], [False]],
-            )
-            self.assertIsInstance(rollout_state.temporal_state, torch.Tensor)
-            self.assertEqual(rollout_state.temporal_state[:, 0, 0].tolist(), [2.0])
+            with self.assertRaisesRegex(ValueError, "Pass the policy during random collection"):
+                collect_off_policy_steps(
+                    env=env,
+                    replay_buffer=buffer,
+                    n_steps=2,
+                    policy=policy,
+                    rollout_state=rollout_state,
+                )
         finally:
             env.close()
 
@@ -1339,6 +1379,96 @@ class OffPolicyReplayTests(unittest.TestCase):
             self.assertEqual(batch.segment_length, 2)
             self.assertIsInstance(batch.initial_temporal_state, torch.Tensor)
             self.assertEqual(batch.initial_temporal_state[:, 0, 0].tolist(), [2.0])
+        finally:
+            env.close()
+
+    def test_episode_window_sampling_keeps_origins_uniform_and_masks_unavailable_future_steps(self) -> None:
+        env = _make_env()
+        try:
+            buffer = _make_buffer(env, capacity_per_env=4)
+            transitions = [
+                (0.0, 10.0, False, 1.0, None),
+                (1.0, 11.0, True, 100.0, 2.0),
+                (100.0, 12.0, False, 101.0, None),
+                (101.0, 13.0, False, 102.0, None),
+            ]
+            for obs_value, action_value, truncated, next_obs_value, terminal_obs_value in transitions:
+                buffer.add(
+                    obs=_obs(obs_value),
+                    actions=_actions(action_value),
+                    rewards=torch.tensor([action_value + 10.0]),
+                    terminations=torch.tensor([False]),
+                    truncations=torch.tensor([truncated]),
+                    next_obs=_obs(next_obs_value),
+                    terminal_obs=None if terminal_obs_value is None else _obs(terminal_obs_value),
+                )
+
+            with patch("torch.randint", return_value=torch.tensor([0, 1, 2, 3])):
+                windows = buffer.sample_episode_windows(4, num_next_steps=3)
+
+            self.assertEqual(windows.origin_batch.local_obs[:, 0, 0].tolist(), [0.0, 1.0, 100.0, 101.0])
+            self.assertEqual(windows.origin_batch.actions[:, 0, 0].tolist(), [10.0, 11.0, 12.0, 13.0])
+            self.assertEqual(
+                windows.train_mask.tolist(),
+                [
+                    [True, True, False],
+                    [True, False, False],
+                    [True, True, False],
+                    [True, False, False],
+                ],
+            )
+            self.assertEqual(
+                windows.actions[:, :, 0, 0].tolist(),
+                [
+                    [10.0, 11.0, 0.0],
+                    [11.0, 0.0, 0.0],
+                    [12.0, 13.0, 0.0],
+                    [13.0, 0.0, 0.0],
+                ],
+            )
+            self.assertEqual(
+                windows.next_local_obs[:, :, 0, 0].tolist(),
+                [
+                    [1.0, 2.0, 0.0],
+                    [2.0, 0.0, 0.0],
+                    [101.0, 102.0, 0.0],
+                    [102.0, 0.0, 0.0],
+                ],
+            )
+        finally:
+            env.close()
+
+    def test_episode_window_padding_uses_attention_safe_agent_masks(self) -> None:
+        env = _make_agent_mask_env()
+        try:
+            buffer = _make_buffer(env, capacity_per_env=2)
+            obs = _obs(0.0)
+            obs["agent_mask"] = torch.tensor([[True, False]])
+            next_obs = _obs(1.0)
+            next_obs["agent_mask"] = torch.tensor([[False, True]])
+            buffer.add(
+                obs=obs,
+                actions=_actions(10.0),
+                rewards=torch.tensor([20.0]),
+                terminations=torch.tensor([False]),
+                truncations=torch.tensor([False]),
+                next_obs=next_obs,
+            )
+
+            with patch("torch.randint", return_value=torch.tensor([0])):
+                windows = buffer.sample_episode_windows(1, num_next_steps=3)
+
+            self.assertEqual(windows.train_mask.tolist(), [[True, False, False]])
+            assert windows.agent_mask is not None
+            assert windows.next_agent_mask is not None
+            self.assertEqual(
+                windows.agent_mask.tolist(),
+                [[[True, False], [True, True], [True, True]]],
+            )
+            self.assertEqual(
+                windows.next_agent_mask.tolist(),
+                [[[False, True], [True, True], [True, True]]],
+            )
         finally:
             env.close()
 
@@ -1620,7 +1750,7 @@ class OffPolicyReplayTests(unittest.TestCase):
                 n_steps=1,
                 random_actions=True,
             )
-            self.assertFalse(rollout_state.gsde_noise_initialized)
+            self.assertIsNone(rollout_state.gsde_noise_state)
 
             policy = _GSDEPolicy()
             _episode_infos, _metrics, rollout_state = collect_off_policy_steps(
@@ -1632,7 +1762,7 @@ class OffPolicyReplayTests(unittest.TestCase):
                 gsde_reset_mode=GSDEIntervalResetMode(interval=3),
             )
 
-            self.assertTrue(rollout_state.gsde_noise_initialized)
+            self.assertIsNotNone(rollout_state.gsde_noise_state)
             self.assertEqual(policy.action_dist.step_resets, [(None, (1, 2))])
 
             collect_off_policy_steps(
@@ -1658,7 +1788,7 @@ class OffPolicyReplayTests(unittest.TestCase):
                 n_steps=1,
                 random_actions=True,
             )
-            self.assertFalse(rollout_state.gsde_noise_initialized)
+            self.assertIsNone(rollout_state.gsde_noise_state)
 
             policy = _GSDEPolicy()
             _episode_infos, _metrics, rollout_state = collect_off_policy_steps(
@@ -1670,7 +1800,7 @@ class OffPolicyReplayTests(unittest.TestCase):
                 gsde_reset_mode=GSDEProbabilityResetMode(probability=0.5),
             )
 
-            self.assertTrue(rollout_state.gsde_noise_initialized)
+            self.assertIsNotNone(rollout_state.gsde_noise_state)
             self.assertEqual(policy.action_dist.call_order, ["step", "ep_start"])
             self.assertEqual(policy.action_dist.step_resets, [(None, (1, 2))])
             self.assertEqual([mask.tolist() for mask in policy.action_dist.episode_start_masks], [[False]])
@@ -1681,13 +1811,33 @@ class OffPolicyReplayTests(unittest.TestCase):
         env = _make_env()
         try:
             buffer = _make_buffer(env, capacity_per_env=4)
-            with self.assertRaisesRegex(RuntimeError, "gsde_reset_mode"):
+            with self.assertRaisesRegex(ValueError, "gsde_reset_mode"):
                 collect_off_policy_steps(
                     env=env,
                     replay_buffer=buffer,
                     n_steps=1,
                     policy=_GSDEPolicy(),
                 )
+        finally:
+            env.close()
+
+    def test_gsde_reset_mode_rejects_invalid_parameters(self) -> None:
+        env = _make_env()
+        try:
+            buffer = _make_buffer(env, capacity_per_env=4)
+            for reset_mode in (
+                    GSDEIntervalResetMode(interval=0),
+                    GSDEProbabilityResetMode(probability=1.0),
+            ):
+                with self.subTest(reset_mode=reset_mode):
+                    with self.assertRaises(ValueError):
+                        collect_off_policy_steps(
+                            env=env,
+                            replay_buffer=buffer,
+                            n_steps=1,
+                            policy=_GSDEPolicy(),
+                            gsde_reset_mode=reset_mode,
+                        )
         finally:
             env.close()
 
@@ -1768,18 +1918,26 @@ class OffPolicyReplayTests(unittest.TestCase):
         finally:
             env.close()
 
-    def test_collect_rejects_random_actions_with_policy(self) -> None:
+    def test_random_collection_advances_recurrent_policy_state(self) -> None:
         env = _make_env()
         try:
             buffer = _make_buffer(env, capacity_per_env=4)
-            with self.assertRaisesRegex(ValueError, "either a policy or random_actions"):
-                collect_off_policy_steps(
-                    env=env,
-                    replay_buffer=buffer,
-                    n_steps=2,
-                    policy=_NoPreviousActionPolicy(),
-                    random_actions=True,
-                )
+            policy = _TemporalPolicy()
+
+            _episode_infos, _metrics, rollout_state = collect_off_policy_steps(
+                env=env,
+                replay_buffer=buffer,
+                n_steps=2,
+                policy=policy,
+                random_actions=True,
+            )
+
+            self.assertEqual(
+                [mask.tolist() for mask in policy.episode_start_masks],
+                [[True], [False]],
+            )
+            self.assertIsInstance(rollout_state.temporal_state, torch.Tensor)
+            self.assertEqual(rollout_state.temporal_state[:, 0, 0].tolist(), [2.0])
         finally:
             env.close()
 

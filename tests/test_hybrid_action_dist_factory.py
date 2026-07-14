@@ -6,6 +6,9 @@ from gymnasium import spaces
 
 from swarmbots.learn.action_dists.beta_action_dist import BetaActionDist, BetaConfig
 from swarmbots.learn.action_dists.bang_zero_bang_action_dist import BangZeroBangActionDist, BangZeroBangConfig
+from swarmbots.learn.action_dists.gumbel_softmax_sign_magnitude_action_dist import (
+    GumbelSoftmaxSignMagnitudeKumaraswamyConfig,
+)
 from swarmbots.learn.action_dists.hybrid_action_dist import HybridActionDistribution, make_proba_distribution
 from swarmbots.learn.action_dists.predicted_std_action_dist import PredictedStdActionDist, PredictedStdConfig
 from swarmbots.learn.action_dists.squashed_diag_gaussian_action_dist import (
@@ -21,6 +24,24 @@ from swarmbots.learn.nn_components.nn_init import init_linear_orthogonal
 
 
 class HybridActionDistFactoryTests(unittest.TestCase):
+    def test_entropy_update_handles_neutral_kumaraswamy_config_family(self) -> None:
+        action_space = HybridActionSpace([
+            ("actuators", spaces.Box(-1.0, 1.0, shape=(2, 3), dtype=np.float32)),
+        ])
+        dist = HybridActionDistribution(
+            latent_dim=4,
+            action_space=action_space,
+            action_net_initialization=init_linear_orthogonal,
+            continuous_config=GumbelSoftmaxSignMagnitudeKumaraswamyConfig(),
+        )
+
+        dist.set_all_ent_loss_coefs(0.25)
+
+        updated_config = dist.continuous_configs[0]
+        self.assertIsInstance(updated_config, GumbelSoftmaxSignMagnitudeKumaraswamyConfig)
+        self.assertEqual(updated_config.ent_loss_coef, 0.25)
+        self.assertEqual(dist.distributions[0].ent_loss_coef, 0.25)
+
     def test_hybrid_action_space_preserves_declared_sequence_order_for_split_concat(self) -> None:
         action_space = HybridActionSpace([
             ("actuators", spaces.Box(-1.0, 1.0, shape=(2, 2), dtype=np.float32)),
@@ -194,6 +215,22 @@ class HybridActionDistFactoryTests(unittest.TestCase):
         self.assertIn("entropy", losses)
         self.assertIn("ent", metrics)
         self.assertTrue(dist.compile_friendly)
+
+    def test_probability_clamp_epsilon_must_leave_a_nonempty_interval(self) -> None:
+        action_space = spaces.Box(-1.0, 1.0, shape=(2, 2), dtype=np.float32)
+        for config in (
+                BetaConfig(epsilon=0.5),
+                GumbelSoftmaxSignMagnitudeKumaraswamyConfig(epsilon=0.5),
+        ):
+            with self.subTest(config=type(config).__name__):
+                with self.assertRaisesRegex(ValueError, r"epsilon must be in \(0, 0.5\)"):
+                    make_proba_distribution(
+                        latent_dim=4,
+                        action_space=action_space,
+                        action_space_dim=2,
+                        action_net_initialization=init_linear_orthogonal,
+                        continuous_config=config,
+                    )
 
     def test_beta_rsample_keeps_gradient_for_sac_actor_loss(self) -> None:
         dist = make_proba_distribution(

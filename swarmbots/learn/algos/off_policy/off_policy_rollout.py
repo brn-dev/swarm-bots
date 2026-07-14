@@ -6,7 +6,12 @@ import torch
 from swarmbots.learn.algos.off_policy.replay_buffer import OffPolicyReplayBuffer
 from swarmbots.learn.base_policy import BasePolicy
 from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
-from swarmbots.learn.gsde_reset import GSDEResetMode, GSDEIntervalResetMode, GSDEProbabilityResetMode
+from swarmbots.learn.gsde_reset import (
+    GSDEResetMode,
+    GSDEIntervalResetMode,
+    GSDEProbabilityResetMode,
+    resolve_gsde_reset_mode,
+)
 from swarmbots.learn.performance_timer import PerformanceTimer
 from swarmbots.learn.rollout_utils import (
     append_episode_infos,
@@ -27,7 +32,7 @@ class OffPolicyRolloutState:
     previous_actions: torch.Tensor | None
     temporal_state: Any
     rollout_step_idx: int
-    gsde_noise_initialized: bool = False
+    gsde_noise_state: Any = None
 
 
 @dataclass(slots=True)
@@ -107,42 +112,8 @@ def _move_rollout_state_to_device(
         ),
         temporal_state=move_temporal_state(rollout_state.temporal_state, device=device),
         rollout_step_idx=rollout_state.rollout_step_idx,
-        gsde_noise_initialized=rollout_state.gsde_noise_initialized,
+        gsde_noise_state=move_temporal_state(rollout_state.gsde_noise_state, device=device),
     )
-
-
-def _validate_gsde_reset_mode(
-        *,
-        policy: BasePolicy | None,
-        deterministic: bool,
-        gsde_reset_mode: GSDEResetMode | None,
-) -> GSDEResetMode | None:
-    if policy is None or deterministic or not bool(getattr(policy, "gsde_enabled", False)):
-        return None
-    if gsde_reset_mode is None:
-        raise RuntimeError("Policy reports gsde_enabled=True but gsde_reset_mode is None.")
-
-    action_dist = getattr(policy, "action_dist", None)
-    if (
-            action_dist is None
-            or not hasattr(action_dist, "reset_temporal_correlations_on_ep_start")
-            or not hasattr(action_dist, "reset_temporal_correlations_on_step")
-    ):
-        raise RuntimeError(
-            "Policy reports gsde_enabled=True but its action_dist does not expose temporal-correlation reset methods."
-        )
-
-    if isinstance(gsde_reset_mode, GSDEIntervalResetMode):
-        if gsde_reset_mode.interval <= 0:
-            raise ValueError(f"GSDEIntervalResetMode.interval must be > 0, got {gsde_reset_mode.interval}")
-        return gsde_reset_mode
-    if isinstance(gsde_reset_mode, GSDEProbabilityResetMode):
-        if not (0.0 < gsde_reset_mode.probability < 1.0):
-            raise ValueError(
-                f"GSDEProbabilityResetMode.probability must be in (0, 1), got {gsde_reset_mode.probability}"
-            )
-        return gsde_reset_mode
-    raise TypeError(f"Unknown gsde_reset_mode type: {type(gsde_reset_mode)}")
 
 
 def _reset_policy_action_noise(
@@ -228,8 +199,6 @@ def collect_off_policy_steps(
             f"n_steps must be a multiple of replay_buffer.n_envs ({replay_buffer.n_envs}) because off-policy "
             "rollout stores full vector-env steps."
         )
-    if random_actions and policy is not None:
-        raise ValueError("Pass either a policy or random_actions=True, not both.")
     if policy is None and not random_actions:
         raise ValueError("Either pass a policy or set random_actions=True.")
     if not _store_transitions and len(replay_buffer) > 0:
@@ -254,13 +223,10 @@ def collect_off_policy_steps(
             resolved_rollout_device = as_device(rollout_device)
             env.set_device(resolved_rollout_device)
             if rollout_state is not None:
-                previous_state_device = rollout_state.obs["local_obs"].device
                 rollout_state = _move_rollout_state_to_device(
                     rollout_state=rollout_state,
                     device=resolved_rollout_device,
                 )
-                if previous_state_device != resolved_rollout_device:
-                    rollout_state.gsde_noise_initialized = False
     to_rollout_device_time += to_rollout_device_timer.get_duration()
 
     if rollout_state is None:
@@ -278,25 +244,44 @@ def collect_off_policy_steps(
     previous_actions = rollout_state.previous_actions
     temporal_state = rollout_state.temporal_state
     rollout_step_idx = rollout_state.rollout_step_idx
-    gsde_noise_initialized = rollout_state.gsde_noise_initialized
+    gsde_noise_state = rollout_state.gsde_noise_state
+    gsde_noise_initialized = gsde_noise_state is not None
     if policy is not None and temporal_state is None:
-        temporal_state = policy.initial_temporal_state(
+        initial_temporal_state = policy.initial_temporal_state(
             batch_size=obs["local_obs"].shape[0],
             n_agents=obs["local_obs"].shape[1],
             device=obs["local_obs"].device,
             dtype=obs["local_obs"].dtype,
         )
+        if initial_temporal_state is not None and not bool(episode_start_mask.all()):
+            raise ValueError(
+                "Cannot introduce a recurrent policy after random rollout has entered an episode. "
+                "Pass the policy during random collection so its temporal state is advanced."
+            )
+        temporal_state = initial_temporal_state
+
+    advance_policy_state_with_random_actions = (
+        random_actions
+        and policy is not None
+        and temporal_state is not None
+    )
 
     with PerformanceTimer() as policy_to_device_timer:
         if policy is not None:
             policy.to(resolved_rollout_device if resolved_rollout_device is not None else obs["local_obs"].device)
             policy.eval()
     to_rollout_device_time += policy_to_device_timer.get_duration()
-    active_gsde_reset_mode = _validate_gsde_reset_mode(
-        policy=policy,
-        deterministic=deterministic,
-        gsde_reset_mode=gsde_reset_mode,
+    active_gsde_reset_mode = resolve_gsde_reset_mode(
+        gsde_enabled=(
+            policy is not None
+            and (not random_actions or advance_policy_state_with_random_actions)
+            and not deterministic
+            and policy.gsde_enabled
+        ),
+        reset_mode=gsde_reset_mode,
     )
+    if policy is not None and active_gsde_reset_mode is not None and gsde_noise_state is not None:
+        policy.action_dist.set_temporal_correlation_state(gsde_noise_state)
 
     episode_infos: list[dict[str, Any]] = []
     timers = _init_rollout_timers()
@@ -328,7 +313,21 @@ def collect_off_policy_steps(
                     device=obs_for_step["local_obs"].device,
                     dtype=obs_for_step["local_obs"].dtype,
                 )
-                next_temporal_state = temporal_state
+                if advance_policy_state_with_random_actions:
+                    assert policy is not None
+                    _unused_policy_actions, next_temporal_state = policy.act_with_temporal_state(
+                        local_obs=obs_for_step["local_obs"],
+                        global_obs=obs_for_step["global_obs"],
+                        hidden_local_vars=obs_for_step["hidden_local_vars"],
+                        hidden_global_vars=obs_for_step["hidden_global_vars"],
+                        agent_mask=obs_for_step.get("agent_mask", None),
+                        previous_actions=previous_actions if policy_requires_previous_actions else None,
+                        deterministic=deterministic,
+                        temporal_state=temporal_state,
+                        episode_start_mask=episode_start_mask,
+                    )
+                else:
+                    next_temporal_state = temporal_state
             else:
                 assert policy is not None
                 actions, next_temporal_state = policy.act_with_temporal_state(
@@ -405,13 +404,15 @@ def collect_off_policy_steps(
     )
     if rollout_action_metrics_batches:
         metrics["_rollout_actions"] = torch.cat(rollout_action_metrics_batches, dim=0)
+    if policy is not None and active_gsde_reset_mode is not None:
+        gsde_noise_state = policy.action_dist.get_temporal_correlation_state()
     new_state = OffPolicyRolloutState(
         obs=obs,
         episode_start_mask=episode_start_mask,
         previous_actions=previous_actions,
         temporal_state=temporal_state,
         rollout_step_idx=rollout_step_idx,
-        gsde_noise_initialized=gsde_noise_initialized,
+        gsde_noise_state=gsde_noise_state,
     )
     return episode_infos, metrics, new_state
 

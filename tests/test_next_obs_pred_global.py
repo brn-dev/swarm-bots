@@ -101,6 +101,50 @@ class NextObsPredGlobalTests(unittest.TestCase):
         self.assertIsNone(harness.global_scalars_predictor)
         self.assertIsNone(harness.global_rot6ds_predictor)
 
+    def test_local_scalar_multistep_delta_is_relative_to_previous_target_state(self) -> None:
+        harness = _make_harness(
+            config=NextObsPredConfig(
+                local_scalar_target_indices=[0],
+                predict_delta=True,
+            ),
+            local_scalars_predictor=nn.Identity(),
+        )
+
+        loss, metrics = harness.compute_next_obs_pred_loss(
+            local_latents=torch.tensor([[[1.0], [2.0]]]),
+            local_obs=torch.tensor([[[10.0], [20.0]]]),
+            next_local_obs=torch.tensor([[
+                [[11.0], [22.0]],
+                [[12.0], [24.0]],
+                [[13.0], [26.0]],
+            ]]),
+            actions=torch.zeros(1, 3, 2, 1),
+            time_mask=torch.ones(1, 3, dtype=torch.bool),
+        )
+
+        self.assertAlmostEqual(loss.item(), 0.0)
+        self.assertEqual(metrics["scalar_loss"], 0.0)
+
+    def test_local_loss_uses_next_state_agent_mask(self) -> None:
+        harness = _make_harness(
+            config=NextObsPredConfig(
+                local_scalar_target_indices=[0],
+                predict_delta=False,
+            ),
+            local_scalars_predictor=nn.Identity(),
+        )
+
+        loss, metrics = harness.compute_next_obs_pred_loss(
+            local_latents=torch.tensor([[[1.0], [100.0]]]),
+            next_local_obs=torch.tensor([[[1.0], [999.0]]]),
+            actions=torch.zeros(1, 2, 1),
+            agent_mask=torch.tensor([[True, True]]),
+            loss_agent_mask=torch.tensor([[True, False]]),
+        )
+
+        self.assertAlmostEqual(loss.item(), 0.0)
+        self.assertEqual(metrics["scalar_loss"], 0.0)
+
     def test_global_scalar_loss_uses_masked_agent_pool_and_does_not_require_local_obs(self) -> None:
         harness = _make_harness(
             config=NextObsPredConfig(
@@ -123,6 +167,50 @@ class NextObsPredGlobalTests(unittest.TestCase):
             global_obs=global_obs,
             actions=actions,
             agent_mask=agent_mask,
+        )
+
+        self.assertAlmostEqual(loss.item(), 0.0)
+        self.assertEqual(metrics["global_scalar_loss"], 0.0)
+
+    def test_global_pool_uses_next_state_loss_mask(self) -> None:
+        harness = _make_harness(
+            config=NextObsPredConfig(
+                global_scalar_target_indices=[0],
+                predict_delta=False,
+            ),
+            global_scalars_predictor=nn.Identity(),
+        )
+        local_latents = torch.tensor([[[1.0], [100.0], [3.0]]])
+        next_global_obs = torch.tensor([[2.0]])
+
+        loss, metrics = harness.compute_next_obs_pred_loss(
+            local_latents=local_latents,
+            next_local_obs=torch.zeros(1, 3, 1),
+            next_global_obs=next_global_obs,
+            actions=torch.zeros(1, 3, 1),
+            agent_mask=torch.tensor([[True, True, True]]),
+            loss_agent_mask=torch.tensor([[True, False, True]]),
+        )
+
+        self.assertAlmostEqual(loss.item(), 0.0)
+        self.assertEqual(metrics["global_scalar_loss"], 0.0)
+
+    def test_global_loss_ignores_rows_without_next_active_agents(self) -> None:
+        harness = _make_harness(
+            config=NextObsPredConfig(
+                global_scalar_target_indices=[0],
+                predict_delta=False,
+            ),
+            global_scalars_predictor=nn.Identity(),
+        )
+
+        loss, metrics = harness.compute_next_obs_pred_loss(
+            local_latents=torch.tensor([[[100.0], [200.0]], [[1.0], [3.0]]]),
+            next_local_obs=torch.zeros(2, 2, 1),
+            next_global_obs=torch.tensor([[999.0], [2.0]]),
+            actions=torch.zeros(2, 2, 1),
+            agent_mask=torch.ones(2, 2, dtype=torch.bool),
+            loss_agent_mask=torch.tensor([[False, False], [True, True]]),
         )
 
         self.assertAlmostEqual(loss.item(), 0.0)

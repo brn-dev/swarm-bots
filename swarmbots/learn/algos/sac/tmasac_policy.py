@@ -1,28 +1,21 @@
 import copy
+import warnings
 from collections.abc import Iterable
 from dataclasses import dataclass, field, replace
 from enum import Enum
-from typing import Any
+from typing import Any, Self
 
 import torch
 from gymnasium import spaces
 from torch import nn
 
-from swarmbots.learn.action_dists.beta_action_dist import BetaConfig
-from swarmbots.learn.action_dists.gsde_action_dist import GSDEConfig
 from swarmbots.learn.action_dists.hybrid_action_dist import (
     ContinuousActionDistConfigInput,
     HybridActionDistribution,
+    continuous_action_gradient_estimator,
     continuous_config_to_dicts,
 )
 from swarmbots.learn.action_dists.predicted_std_action_dist import PredictedStdConfig
-from swarmbots.learn.action_dists.reparameterized_sign_magnitude_kumaraswamy_action_dist import (
-    ReparameterizedSignMagnitudeKumaraswamyConfig,
-)
-from swarmbots.learn.action_dists.reparameterized_squashed_gaussian_mixture_action_dist import (
-    ReparameterizedSquashedGaussianMixtureConfig,
-)
-from swarmbots.learn.action_dists.squashed_diag_gaussian_action_dist import SquashedDiagGaussianConfig
 from swarmbots.learn.algos.mat.mat_encoder import MATEncoder, MATEncoderConfig, MATEncoderLayer
 from swarmbots.learn.algos.off_policy.replay_buffer import OffPolicyReplayBatch, OffPolicyReplayEpisodeSegmentBatch
 from swarmbots.learn.algos.ppo.ppo_policy import PopArtConfig
@@ -59,6 +52,7 @@ class TMASACCriticConfig:
     n_local_projection_hidden_layers: int = 1
     n_value_regressor_hidden_layers: int = 2
     action_coembed_hidden_dims: list[int] | None = None
+    independent_encoders: bool = False
     use_popart: bool = False
     popart_config: PopArtConfig = field(default_factory=PopArtConfig)
     action_coembed_init_gain: float = 1.0
@@ -126,6 +120,7 @@ class TMASACActionConditionedEncoder(nn.Module):
             local_input_dim: int,
             global_input_dim: int,
             hidden_local_vars_dim: int,
+            hidden_global_vars_dim: int,
             action_dim: int,
             encoder_config: MATEncoderConfig,
             critic_config: TMASACCriticConfig,
@@ -136,9 +131,11 @@ class TMASACActionConditionedEncoder(nn.Module):
         self.local_input_dim = int(local_input_dim)
         self.global_input_dim = int(global_input_dim)
         self.hidden_local_vars_dim = int(hidden_local_vars_dim)
+        self.hidden_global_vars_dim = int(hidden_global_vars_dim)
         self.action_dim = int(action_dim)
         self.d_model = int(encoder_config.d_model)
-        self.has_global_input = self.global_input_dim > 0
+        self.global_encoder_input_dim = self.global_input_dim + self.hidden_global_vars_dim
+        self.has_global_input = self.global_encoder_input_dim > 0
 
         local_action_input_dim = self.local_input_dim + self.hidden_local_vars_dim + self.action_dim
         self.local_action_input_norm = (
@@ -161,7 +158,7 @@ class TMASACActionConditionedEncoder(nn.Module):
         )
 
         self.global_input_norm = (
-            nn.LayerNorm(self.global_input_dim)
+            nn.LayerNorm(self.global_encoder_input_dim)
             if encoder_config.normalize_obs_inputs and self.has_global_input
             else nn.Identity()
         )
@@ -173,11 +170,11 @@ class TMASACActionConditionedEncoder(nn.Module):
                 else make_init_linear_orthogonal(encoder_config.linear_projection_init_gain)
             )
             if not encoder_config.global_obs_encoder_hidden_dims:
-                self.global_encoder = nn.Linear(self.global_input_dim, self.d_model)
+                self.global_encoder = nn.Linear(self.global_encoder_input_dim, self.d_model)
                 projection_linear_init(self.global_encoder)
             else:
                 self.global_encoder = MLP(
-                    input_dim=self.global_input_dim,
+                    input_dim=self.global_encoder_input_dim,
                     hidden_dims=[*encoder_config.global_obs_encoder_hidden_dims, self.d_model],
                     end_with_act_fn=False,
                     linear_init=linear_init,
@@ -216,6 +213,7 @@ class TMASACActionConditionedEncoder(nn.Module):
             global_inputs: torch.Tensor,
             actions: torch.Tensor,
             hidden_local_vars: torch.Tensor | None,
+            hidden_global_vars: torch.Tensor | None,
             agent_mask: torch.Tensor | None,
     ) -> torch.Tensor:
         n_agents = local_inputs.shape[1]
@@ -234,7 +232,13 @@ class TMASACActionConditionedEncoder(nn.Module):
             tokens = tokens + self.agent_embeddings[:, :n_agents, :]
 
         if self.global_encoder is not None:
-            global_tokens = self.global_encoder(self.global_input_norm(global_inputs))
+            global_parts = [global_inputs] if self.global_input_dim > 0 else []
+            if self.hidden_global_vars_dim > 0:
+                if hidden_global_vars is None:
+                    raise ValueError("hidden_global_vars must be provided when hidden_global_vars_dim > 0")
+                global_parts.append(hidden_global_vars)
+            global_encoder_inputs = global_parts[0] if len(global_parts) == 1 else torch.cat(global_parts, dim=-1)
+            global_tokens = self.global_encoder(self.global_input_norm(global_encoder_inputs))
             tokens = tokens + global_tokens.unsqueeze(1).expand(-1, n_agents, -1)
         tokens = self.token_norm(tokens)
 
@@ -281,26 +285,30 @@ class TMASACTwinCritic(nn.Module):
             act_fn_cls=act_fn_cls,
             dropout=dropout,
         )
-        self.encoder = TMASACActionConditionedEncoder(
-            max_agents=max_agents,
-            local_input_dim=local_input_dim,
-            global_input_dim=global_input_dim,
-            hidden_local_vars_dim=self.hidden_local_vars_dim,
-            action_dim=self.action_dim,
-            encoder_config=self.encoder_config,
-            critic_config=critic_config,
-            act_fn_cls=act_fn_cls,
-        )
+        def build_encoder() -> TMASACActionConditionedEncoder:
+            return TMASACActionConditionedEncoder(
+                max_agents=max_agents,
+                local_input_dim=local_input_dim,
+                global_input_dim=global_input_dim,
+                hidden_local_vars_dim=self.hidden_local_vars_dim,
+                hidden_global_vars_dim=self.hidden_global_vars_dim,
+                action_dim=self.action_dim,
+                encoder_config=self.encoder_config,
+                critic_config=critic_config,
+                act_fn_cls=act_fn_cls,
+            )
+
+        self.encoder = build_encoder()
+        self.encoder2 = build_encoder() if critic_config.independent_encoders else None
+        self.nop_source_latent_dim = self.d_model * (2 if self.encoder2 is not None else 1)
         q_local_dim = self.d_model
         self.q1 = self._build_q_network(
             q_local_dim=q_local_dim,
-            hidden_global_vars_dim=self.hidden_global_vars_dim,
             critic_config=critic_config,
             act_fn_cls=act_fn_cls,
         )
         self.q2 = self._build_q_network(
             q_local_dim=q_local_dim,
-            hidden_global_vars_dim=self.hidden_global_vars_dim,
             critic_config=critic_config,
             act_fn_cls=act_fn_cls,
         )
@@ -312,15 +320,30 @@ class TMASACTwinCritic(nn.Module):
             global_inputs: torch.Tensor,
             actions: torch.Tensor,
             hidden_local_vars: torch.Tensor | None,
+            hidden_global_vars: torch.Tensor | None,
             agent_mask: torch.Tensor | None,
     ) -> torch.Tensor:
-        return self.encoder(
+        primary_latents = self._encode_with(
+            self.encoder,
             local_inputs=local_inputs,
             global_inputs=global_inputs,
             actions=actions,
             hidden_local_vars=hidden_local_vars,
+            hidden_global_vars=hidden_global_vars,
             agent_mask=agent_mask,
         )
+        if self.encoder2 is None:
+            return primary_latents
+        secondary_latents = self._encode_with(
+            self.encoder2,
+            local_inputs=local_inputs,
+            global_inputs=global_inputs,
+            actions=actions,
+            hidden_local_vars=hidden_local_vars,
+            hidden_global_vars=hidden_global_vars,
+            agent_mask=agent_mask,
+        )
+        return self._combine_nop_source_latents(primary_latents, secondary_latents)
 
     def forward(
             self,
@@ -331,32 +354,189 @@ class TMASACTwinCritic(nn.Module):
             hidden_local_vars: torch.Tensor | None,
             hidden_global_vars: torch.Tensor | None,
             agent_mask: torch.Tensor | None,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        critic_latents = self.encode(
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        q1_latents = self._encode_with(
+            self.encoder,
             local_inputs=local_obs,
             global_inputs=global_obs,
             actions=actions,
             hidden_local_vars=hidden_local_vars,
+            hidden_global_vars=hidden_global_vars,
             agent_mask=agent_mask,
         )
-        q_global_features = self._build_q_global_features(hidden_global_vars)
+        q2_latents = q1_latents if self.encoder2 is None else self._encode_with(
+            self.encoder2,
+            local_inputs=local_obs,
+            global_inputs=global_obs,
+            actions=actions,
+            hidden_local_vars=hidden_local_vars,
+            hidden_global_vars=hidden_global_vars,
+            agent_mask=agent_mask,
+        )
         return (
-            self.q1(critic_latents, q_global_features, agent_mask=agent_mask),
-            self.q2(critic_latents, q_global_features, agent_mask=agent_mask),
+            self.q1(q1_latents, agent_mask=agent_mask),
+            self.q2(q2_latents, agent_mask=agent_mask),
+            self._combine_nop_source_latents(q1_latents, q2_latents),
         )
 
-    def _build_q_global_features(self, hidden_global_vars: torch.Tensor | None) -> torch.Tensor | None:
+    def _combine_nop_source_latents(
+            self,
+            primary_latents: torch.Tensor,
+            secondary_latents: torch.Tensor,
+    ) -> torch.Tensor:
+        if self.encoder2 is None:
+            return primary_latents
+        return torch.cat((primary_latents, secondary_latents), dim=-1)
+
+    @staticmethod
+    def _encode_with(
+            encoder: TMASACActionConditionedEncoder,
+            *,
+            local_inputs: torch.Tensor,
+            global_inputs: torch.Tensor,
+            actions: torch.Tensor,
+            hidden_local_vars: torch.Tensor | None,
+            hidden_global_vars: torch.Tensor | None,
+            agent_mask: torch.Tensor | None,
+    ) -> torch.Tensor:
+        return encoder(
+            local_inputs=local_inputs,
+            global_inputs=global_inputs,
+            actions=actions,
+            hidden_local_vars=hidden_local_vars,
+            hidden_global_vars=hidden_global_vars,
+            agent_mask=agent_mask,
+        )
+
+    def _load_from_state_dict(
+            self,
+            state_dict: dict[str, Any],
+            prefix: str,
+            local_metadata: dict[str, Any],
+            strict: bool,
+            missing_keys: list[str],
+            unexpected_keys: list[str],
+            error_msgs: list[str],
+    ) -> None:
+        migrated_hidden_global_inputs = self._migrate_legacy_hidden_global_inputs(state_dict, prefix)
+        if self.encoder2 is not None:
+            primary_prefix = f"{prefix}encoder."
+            secondary_prefix = f"{prefix}encoder2."
+            has_primary_encoder = any(key.startswith(primary_prefix) for key in state_dict)
+            has_secondary_encoder = any(key.startswith(secondary_prefix) for key in state_dict)
+            if has_primary_encoder and not has_secondary_encoder:
+                for key, value in list(state_dict.items()):
+                    if key.startswith(primary_prefix):
+                        state_dict[f"{secondary_prefix}{key.removeprefix(primary_prefix)}"] = value
+        if migrated_hidden_global_inputs:
+            warnings.warn(
+                "Migrated legacy TMASAC critic hidden-global inputs approximately: compatible columns were "
+                "preserved, new transformer-input columns kept their initialization, and obsolete value-head "
+                "columns were dropped.",
+                UserWarning,
+                stacklevel=2,
+            )
+        super()._load_from_state_dict(
+            state_dict,
+            prefix,
+            local_metadata,
+            strict,
+            missing_keys,
+            unexpected_keys,
+            error_msgs,
+        )
+
+    def _migrate_legacy_hidden_global_inputs(
+            self,
+            state_dict: dict[str, Any],
+            prefix: str,
+    ) -> bool:
         if self.hidden_global_vars_dim <= 0:
+            return False
+
+        current_state_dict = self.state_dict()
+        has_legacy_shape = any(
+            self._migrate_legacy_input_tensor(
+                local_key,
+                state_dict.get(f"{prefix}{local_key}"),
+                current_value,
+            ) is not None
+            for local_key, current_value in current_state_dict.items()
+            if self._is_q_input_state_key(local_key)
+        )
+        if not has_legacy_shape:
+            return False
+
+        for local_key, current_value in current_state_dict.items():
+            if not self._is_hidden_global_input_state_key(local_key):
+                continue
+            checkpoint_key = f"{prefix}{local_key}"
+            migrated_value = self._migrate_legacy_input_tensor(
+                local_key,
+                state_dict.get(checkpoint_key),
+                current_value,
+            )
+            if migrated_value is not None:
+                state_dict[checkpoint_key] = migrated_value
+            elif checkpoint_key not in state_dict and self._is_global_encoder_state_key(local_key):
+                state_dict[checkpoint_key] = current_value.detach().clone()
+        return True
+
+    def _migrate_legacy_input_tensor(
+            self,
+            local_key: str,
+            checkpoint_value: Any,
+            current_value: torch.Tensor,
+    ) -> torch.Tensor | None:
+        if not isinstance(checkpoint_value, torch.Tensor):
             return None
-        if hidden_global_vars is None:
-            raise ValueError("hidden_global_vars must be provided when hidden_global_vars_dim > 0")
-        return hidden_global_vars
+        if checkpoint_value.ndim not in (1, 2) or checkpoint_value.ndim != current_value.ndim:
+            return None
+        if checkpoint_value.shape[:-1] != current_value.shape[:-1]:
+            return None
+        checkpoint_width_delta = checkpoint_value.shape[-1] - current_value.shape[-1]
+        expected_width_delta = (
+            -self.hidden_global_vars_dim
+            if self._is_global_encoder_state_key(local_key)
+            else self.hidden_global_vars_dim
+        )
+        if checkpoint_width_delta != expected_width_delta:
+            return None
+
+        migrated_value = current_value.detach().clone()
+        compatible_width = min(checkpoint_value.shape[-1], current_value.shape[-1])
+        migrated_value[..., :compatible_width].copy_(checkpoint_value[..., :compatible_width])
+        return migrated_value
+
+    @staticmethod
+    def _is_hidden_global_input_state_key(local_key: str) -> bool:
+        return (
+            TMASACTwinCritic._is_global_encoder_state_key(local_key)
+            or TMASACTwinCritic._is_q_input_state_key(local_key)
+        )
+
+    @staticmethod
+    def _is_q_input_state_key(local_key: str) -> bool:
+        return local_key.startswith((
+            "q1.deepset.element_encoder.",
+            "q1.deepset.set_decoder.",
+            "q2.deepset.element_encoder.",
+            "q2.deepset.set_decoder.",
+        ))
+
+    @staticmethod
+    def _is_global_encoder_state_key(local_key: str) -> bool:
+        return local_key.startswith((
+            "encoder.global_input_norm.",
+            "encoder.global_encoder.",
+            "encoder2.global_input_norm.",
+            "encoder2.global_encoder.",
+        ))
 
     @staticmethod
     def _build_q_network(
             *,
             q_local_dim: int,
-            hidden_global_vars_dim: int,
             critic_config: TMASACCriticConfig,
             act_fn_cls: ActivationFactory,
     ) -> DeepSetCritic:
@@ -368,9 +548,7 @@ class TMASACTwinCritic(nn.Module):
             value_regressor_hidden_dims=[
                 q_local_dim
             ] * critic_config.n_value_regressor_hidden_layers,
-            num_global_features=hidden_global_vars_dim,
             act_fn_cls=act_fn_cls,
-            context_in_elements=hidden_global_vars_dim > 0,
             local_projection_linear_init_gain=critic_config.local_projection_init_gain,
             value_regressor_linear_init_gain=critic_config.value_regressor_init_gain,
             value_head_linear_init_gain=critic_config.value_head_init_gain,
@@ -508,10 +686,21 @@ class TMASACPolicy(BaseSACPolicy):
         self.actor_nop = self._build_nop_module("actor")
         self.critic_nop = self._build_nop_module("critic")
         self._apply_optional_compile()
+        self._keep_target_modules_in_eval_mode()
 
     @property
     def actor_encoder(self) -> nn.Module:
         return self._actor_encoder
+
+    def train(self, mode: bool = True) -> Self:
+        super().train(mode)
+        self._keep_target_modules_in_eval_mode()
+        return self
+
+    def _keep_target_modules_in_eval_mode(self) -> None:
+        if self.shared_observation_encoder_target is not None:
+            self.shared_observation_encoder_target.train(False)
+        self.critic_target.train(False)
 
     def action_log_prob(
             self,
@@ -521,6 +710,7 @@ class TMASACPolicy(BaseSACPolicy):
             hidden_local_vars: torch.Tensor | None = None,
             hidden_global_vars: torch.Tensor | None = None,
             agent_mask: torch.Tensor | None = None,
+            previous_actions: torch.Tensor | None = None,
             deterministic: bool = False,
             use_rsample: bool = True,
     ) -> tuple[torch.Tensor, torch.Tensor]:
@@ -535,6 +725,7 @@ class TMASACPolicy(BaseSACPolicy):
         actions, log_probs = self.action_dist.get_actions_with_log_probs(
             latent_pi,
             deterministic=deterministic,
+            previous_actions=previous_actions,
             use_rsample=use_rsample,
         )
         return self._mask_actions(actions, agent_mask), self._mask_log_probs(log_probs, agent_mask)
@@ -555,7 +746,7 @@ class TMASACPolicy(BaseSACPolicy):
             agent_mask=agent_mask,
             target=False,
         )
-        return self.critic(
+        q1, q2, _nop_latents = self.critic(
             local_obs=critic_local_inputs,
             global_obs=critic_global_inputs,
             actions=actions,
@@ -563,6 +754,37 @@ class TMASACPolicy(BaseSACPolicy):
             hidden_global_vars=hidden_global_vars,
             agent_mask=agent_mask,
         )
+        return q1, q2
+
+    def q_values_with_nop_latents(
+            self,
+            *,
+            local_obs: torch.Tensor,
+            global_obs: torch.Tensor,
+            actions: torch.Tensor,
+            hidden_local_vars: torch.Tensor | None = None,
+            hidden_global_vars: torch.Tensor | None = None,
+            agent_mask: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
+        critic_local_inputs, critic_global_inputs = self._critic_observation_inputs(
+            local_obs=local_obs,
+            global_obs=global_obs,
+            agent_mask=agent_mask,
+            target=False,
+        )
+        q1, q2, critic_latents = self.critic(
+            local_obs=critic_local_inputs,
+            global_obs=critic_global_inputs,
+            actions=actions,
+            hidden_local_vars=hidden_local_vars,
+            hidden_global_vars=hidden_global_vars,
+            agent_mask=agent_mask,
+        )
+        if self.critic_nop is None:
+            return q1, q2, None
+        if self.nop_latent_source is SACNOPLatentSource.SHARED_ENCODER:
+            return q1, q2, critic_local_inputs
+        return q1, q2, critic_latents
 
     def target_q_values(
             self,
@@ -580,7 +802,7 @@ class TMASACPolicy(BaseSACPolicy):
             agent_mask=agent_mask,
             target=True,
         )
-        return self.critic_target(
+        q1, q2, _nop_latents = self.critic_target(
             local_obs=critic_local_inputs,
             global_obs=critic_global_inputs,
             actions=actions,
@@ -588,6 +810,7 @@ class TMASACPolicy(BaseSACPolicy):
             hidden_global_vars=hidden_global_vars,
             agent_mask=agent_mask,
         )
+        return q1, q2
 
     def encode_critic(
             self,
@@ -596,6 +819,7 @@ class TMASACPolicy(BaseSACPolicy):
             global_obs: torch.Tensor,
             actions: torch.Tensor,
             hidden_local_vars: torch.Tensor | None,
+            hidden_global_vars: torch.Tensor | None,
             agent_mask: torch.Tensor | None,
     ) -> torch.Tensor:
         critic_local_inputs, critic_global_inputs = self._critic_observation_inputs(
@@ -609,6 +833,7 @@ class TMASACPolicy(BaseSACPolicy):
             global_inputs=critic_global_inputs,
             actions=actions,
             hidden_local_vars=hidden_local_vars,
+            hidden_global_vars=hidden_global_vars,
             agent_mask=agent_mask,
         )
 
@@ -649,29 +874,43 @@ class TMASACPolicy(BaseSACPolicy):
     def compute_critic_nop_loss(
             self,
             batch: OffPolicyReplayBatch | OffPolicyReplayEpisodeSegmentBatch,
+            *,
+            source_latents: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor | None, dict[str, Any]]:
         if self.critic_nop is None:
             return None, {}
-        local_obs, global_obs, hidden_local_vars, actions, agent_mask = self._nop_initial_critic_inputs(batch)
-        if self.nop_latent_source is SACNOPLatentSource.SHARED_ENCODER:
-            source_latents = self.encode_shared_observations(
-                local_obs=local_obs,
-                global_obs=global_obs,
-                agent_mask=agent_mask,
-                target=False,
-            )
-        else:
-            source_latents = self.encode_critic(
-                local_obs=local_obs,
-                global_obs=global_obs,
-                actions=actions,
-                hidden_local_vars=hidden_local_vars,
-                agent_mask=agent_mask,
-            )
+        if source_latents is None:
+            (
+                local_obs,
+                global_obs,
+                hidden_local_vars,
+                hidden_global_vars,
+                actions,
+                agent_mask,
+            ) = self._nop_initial_critic_inputs(batch)
+            if self.nop_latent_source is SACNOPLatentSource.SHARED_ENCODER:
+                source_latents = self.encode_shared_observations(
+                    local_obs=local_obs,
+                    global_obs=global_obs,
+                    agent_mask=agent_mask,
+                    target=False,
+                )
+            else:
+                source_latents = self.encode_critic(
+                    local_obs=local_obs,
+                    global_obs=global_obs,
+                    actions=actions,
+                    hidden_local_vars=hidden_local_vars,
+                    hidden_global_vars=hidden_global_vars,
+                    agent_mask=agent_mask,
+                )
         return self.critic_nop.compute_loss(source_latents=source_latents, batch=batch)
 
     def has_nop_loss(self) -> bool:
         return self.actor_nop is not None or self.critic_nop is not None
+
+    def get_nop_num_next_steps(self) -> int:
+        return self.config.nop_config.num_next_steps
 
     def polyak_update_targets(self, tau: float) -> None:
         if self.shared_observation_encoder is not None and self.shared_observation_encoder_target is not None:
@@ -842,7 +1081,7 @@ class TMASACPolicy(BaseSACPolicy):
                 source_latent_dim = self.shared_encoder_config.d_model
                 module_name = "shared_encoder"
             elif source in (SACNOPLatentSource.CRITIC, SACNOPLatentSource.BOTH):
-                source_latent_dim = self.critic_encoder_config.d_model
+                source_latent_dim = self._critic_module().nop_source_latent_dim
             else:
                 return None
         else:
@@ -853,6 +1092,11 @@ class TMASACPolicy(BaseSACPolicy):
             action_dim=self.agent_action_dim,
             config=nop_config,
             name=module_name,
+            skip_first_transition=(
+                nop_config.skip_first_transition_for_critic
+                and source_name == "critic"
+                and source in (SACNOPLatentSource.CRITIC, SACNOPLatentSource.BOTH)
+            ),
         )
 
     def _validated_continuous_config(self, env: BaseLearnEnvWrapper) -> ContinuousActionDistConfigInput:
@@ -862,20 +1106,15 @@ class TMASACPolicy(BaseSACPolicy):
             raise ValueError(
                 f"Expected {env.action_space.n_spaces} continuous configs, got {len(configs)}"
             )
-        supported_reparameterized_configs = (
-            BetaConfig,
-            GSDEConfig,
-            PredictedStdConfig,
-            ReparameterizedSignMagnitudeKumaraswamyConfig,
-            ReparameterizedSquashedGaussianMixtureConfig,
-            SquashedDiagGaussianConfig,
-        )
         for idx, sub_config in enumerate(configs):
-            if not isinstance(sub_config, supported_reparameterized_configs):
+            if sub_config is None:
+                raise ValueError(f"TMASACPolicy requires a continuous action config for action sub-space {idx}.")
+            gradient_estimator = continuous_action_gradient_estimator(sub_config)
+            if not gradient_estimator.supports_actor_gradients:
                 raise ValueError(
-                    "TMASACPolicy currently supports only reparameterized continuous action configs for SAC "
-                    f"({', '.join(cls.__name__ for cls in supported_reparameterized_configs)}); "
-                    f"action sub-space {idx} got {type(sub_config).__name__}."
+                    "TMASACPolicy requires pathwise or straight-through actor gradients for SAC; "
+                    f"action sub-space {idx} got {type(sub_config).__name__} "
+                    f"with gradient estimator {gradient_estimator.value!r}."
                 )
         return config
 
@@ -927,16 +1166,31 @@ class TMASACPolicy(BaseSACPolicy):
     @staticmethod
     def _nop_initial_critic_inputs(
             batch: OffPolicyReplayBatch | OffPolicyReplayEpisodeSegmentBatch,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None, torch.Tensor, torch.Tensor | None]:
+    ) -> tuple[
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor | None,
+        torch.Tensor | None,
+        torch.Tensor,
+        torch.Tensor | None,
+    ]:
         if isinstance(batch, OffPolicyReplayEpisodeSegmentBatch):
             return (
                 batch.local_obs[:, 0],
                 batch.global_obs[:, 0],
                 None if batch.hidden_local_vars is None else batch.hidden_local_vars[:, 0],
+                None if batch.hidden_global_vars is None else batch.hidden_global_vars[:, 0],
                 batch.actions[:, 0],
                 None if batch.agent_mask is None else batch.agent_mask[:, 0],
             )
-        return batch.local_obs, batch.global_obs, batch.hidden_local_vars, batch.actions, batch.agent_mask
+        return (
+            batch.local_obs,
+            batch.global_obs,
+            batch.hidden_local_vars,
+            batch.hidden_global_vars,
+            batch.actions,
+            batch.agent_mask,
+        )
 
     @staticmethod
     def _normalize_actor_head_kind(kind: TMASACActorHeadKind | str) -> TMASACActorHeadKind:

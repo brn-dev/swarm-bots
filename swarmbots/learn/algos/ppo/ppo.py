@@ -25,7 +25,12 @@ from swarmbots.learn.algos.ppo.ppo_sampler import PPOSamples, PPOSamplerConfig
 from swarmbots.learn.algos.world_modeling.ppo_wm_sampler import PPOWMSamplerConfig
 from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
 from swarmbots.learn.exponential_moving_average import ExponentialMovingAverage
-from swarmbots.learn.gsde_reset import GSDEResetMode, GSDEIntervalResetMode, GSDEProbabilityResetMode
+from swarmbots.learn.gsde_reset import (
+    GSDEResetMode,
+    GSDEIntervalResetMode,
+    GSDEProbabilityResetMode,
+    resolve_gsde_reset_mode,
+)
 from swarmbots.learn.masking import masked_mean
 from swarmbots.learn.metrics_list import MetricsLists
 from swarmbots.learn.performance_timer import PerformanceTimer
@@ -189,7 +194,10 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
             )
 
         self.gsde_reset_mode = gsde_reset_mode
-        assert not policy.gsde_enabled or self.gsde_reset_mode is not None
+        resolve_gsde_reset_mode(
+            gsde_enabled=policy.gsde_enabled,
+            reset_mode=self.gsde_reset_mode,
+        )
         if agent_logprob_reduction not in (None, "sum", "mean"):
             raise ValueError(f"{agent_logprob_reduction=} must be 'sum', 'mean', or None")
         if agent_logprob_reduction is not None and not isinstance(policy, PPOPolicy):

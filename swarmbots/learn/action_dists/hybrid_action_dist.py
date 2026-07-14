@@ -1,4 +1,4 @@
-from dataclasses import replace
+from dataclasses import dataclass, field, fields, replace
 from typing import Any, Mapping, Self, TypeAlias
 
 import torch
@@ -13,14 +13,20 @@ from swarmbots.learn.action_dists.action_dist import (
     ActionNetInitialization,
     ActionMetricsSplitter,
     ActionMetricsSplitterInput,
+    ActionGradientEstimator,
 )
 from swarmbots.learn.action_dists.bernoulli_action_dist import BernoulliActionDist
 from swarmbots.learn.action_dists.bernoulli_action_dist import BernoulliConfig
 from swarmbots.learn.action_dists.beta_action_dist import BetaActionDist, BetaConfig
 from swarmbots.learn.action_dists.bang_zero_bang_action_dist import BangZeroBangActionDist, BangZeroBangConfig
 from swarmbots.learn.action_dists.continuous_action_dist import ContinuousActionDist
-from swarmbots.learn.action_dists.diag_gaussian_action_dist import DiagGaussianActionDist
 from swarmbots.learn.action_dists.gsde_action_dist import GSDEActionDist, GSDEConfig
+from swarmbots.learn.action_dists.gumbel_softmax_sign_magnitude_action_dist import (
+    GumbelSoftmaxSignMagnitudeBetaActionDist,
+    GumbelSoftmaxSignMagnitudeBetaConfig,
+    GumbelSoftmaxSignMagnitudeKumaraswamyActionDist,
+    GumbelSoftmaxSignMagnitudeKumaraswamyConfig,
+)
 from swarmbots.learn.action_dists.sign_magnitude_beta_action_dist import (
     SignMagnitudeBetaActionDist,
     SignMagnitudeBetaConfig,
@@ -42,6 +48,9 @@ from swarmbots.learn.action_dists.predicted_std_action_dist import PredictedStdA
 from swarmbots.learn.action_dists.reparameterized_sign_magnitude_kumaraswamy_action_dist import (
     ReparameterizedSignMagnitudeKumaraswamyActionDist,
     ReparameterizedSignMagnitudeKumaraswamyConfig,
+)
+from swarmbots.learn.action_dists.sign_magnitude_kumaraswamy_action_dist import (
+    SignMagnitudeKumaraswamyConfig,
 )
 from swarmbots.learn.action_dists.reparameterized_squashed_gaussian_mixture_action_dist import (
     ReparameterizedSquashedGaussianMixtureActionDist,
@@ -69,6 +78,8 @@ ContinuousActionDistConfig: TypeAlias = (
     | GSDEConfig
     | BetaConfig
     | BetaMixtureConfig
+    | GumbelSoftmaxSignMagnitudeBetaConfig
+    | GumbelSoftmaxSignMagnitudeKumaraswamyConfig
     | ReparameterizedSignMagnitudeKumaraswamyConfig
     | ReparameterizedSquashedGaussianMixtureConfig
     | StickySignMagnitudeBetaConfig
@@ -84,6 +95,69 @@ ContinuousActionDistConfigInput: TypeAlias = (
     | list[ContinuousActionDistConfig | None]
     | None
 )
+
+
+@dataclass(frozen=True)
+class _ContinuousActionDistSpec:
+    distribution_type: type[ActionDist]
+    gradient_estimator: ActionGradientEstimator = ActionGradientEstimator.NONE
+    constructor_overrides: Mapping[str, Any] = field(default_factory=dict)
+
+
+_CONTINUOUS_ACTION_DIST_SPECS: dict[type, _ContinuousActionDistSpec] = {
+    SquashedDiagGaussianConfig: _ContinuousActionDistSpec(
+        SquashedDiagGaussianActionDist,
+        ActionGradientEstimator.PATHWISE,
+    ),
+    PredictedStdConfig: _ContinuousActionDistSpec(
+        PredictedStdActionDist,
+        ActionGradientEstimator.PATHWISE,
+        {"squash_output": True},
+    ),
+    GSDEConfig: _ContinuousActionDistSpec(
+        GSDEActionDist,
+        ActionGradientEstimator.PATHWISE,
+        {"squash_output": True},
+    ),
+    BetaConfig: _ContinuousActionDistSpec(BetaActionDist, ActionGradientEstimator.PATHWISE),
+    BetaMixtureConfig: _ContinuousActionDistSpec(BetaMixtureActionDist),
+    GumbelSoftmaxSignMagnitudeBetaConfig: _ContinuousActionDistSpec(
+        GumbelSoftmaxSignMagnitudeBetaActionDist,
+        ActionGradientEstimator.STRAIGHT_THROUGH,
+    ),
+    GumbelSoftmaxSignMagnitudeKumaraswamyConfig: _ContinuousActionDistSpec(
+        GumbelSoftmaxSignMagnitudeKumaraswamyActionDist,
+        ActionGradientEstimator.STRAIGHT_THROUGH,
+    ),
+    ReparameterizedSignMagnitudeKumaraswamyConfig: _ContinuousActionDistSpec(
+        ReparameterizedSignMagnitudeKumaraswamyActionDist,
+        ActionGradientEstimator.PATHWISE,
+    ),
+    ReparameterizedSquashedGaussianMixtureConfig: _ContinuousActionDistSpec(
+        ReparameterizedSquashedGaussianMixtureActionDist,
+        ActionGradientEstimator.PATHWISE,
+    ),
+    StickySignMagnitudeBetaConfig: _ContinuousActionDistSpec(StickySignMagnitudeBetaActionDist),
+    SignMagnitudeBetaConfig: _ContinuousActionDistSpec(SignMagnitudeBetaActionDist),
+    StickyLeftMiddleRightBetaConfig: _ContinuousActionDistSpec(StickyLeftMiddleRightBetaActionDist),
+    LeftMiddleRightBetaConfig: _ContinuousActionDistSpec(LeftMiddleRightBetaActionDist),
+    StickyBangZeroBangConfig: _ContinuousActionDistSpec(StickyBangZeroBangActionDist),
+    BangZeroBangConfig: _ContinuousActionDistSpec(BangZeroBangActionDist),
+}
+
+
+def continuous_action_gradient_estimator(
+        config: ContinuousActionDistConfig,
+) -> ActionGradientEstimator:
+    return _continuous_action_dist_spec(config).gradient_estimator
+
+
+def _continuous_action_dist_spec(config: ContinuousActionDistConfig) -> _ContinuousActionDistSpec:
+    for config_type in type(config).__mro__:
+        spec = _CONTINUOUS_ACTION_DIST_SPECS.get(config_type)
+        if spec is not None:
+            return spec
+    raise TypeError(f"Unsupported continuous action config type: {type(config).__name__}")
 
 
 def continuous_config_to_dicts(
@@ -181,6 +255,10 @@ class HybridActionDistribution(ActionDist):
             "action_dims": list(self.action_dims),
             "has_gsde": self.has_gsde,
             "continuous_config": continuous_config_to_dicts(self.continuous_configs),
+            "continuous_gradient_estimators": [
+                None if config is None else continuous_action_gradient_estimator(config).value
+                for config in self.continuous_configs
+            ],
             "bernoulli_config": bernoulli_config_to_dict(self.bernoulli_config),
             "sub_distributions": [dist.get_hyper_parameters() for dist in self.distributions],
         }
@@ -360,6 +438,25 @@ class HybridActionDistribution(ActionDist):
             if isinstance(dist, TemporallyCorrelatedActionDist):
                 dist.reset_on_ep_start(mask)
 
+    def get_temporal_correlation_state(self) -> tuple[Any, ...]:
+        return tuple(
+            dist.get_temporal_correlation_state()
+            if isinstance(dist, TemporallyCorrelatedActionDist)
+            else None
+            for dist in self.distributions
+        )
+
+    def set_temporal_correlation_state(self, state: tuple[Any, ...]) -> None:
+        if len(state) != len(self.distributions):
+            raise ValueError(
+                f"Expected temporal-correlation state for {len(self.distributions)} distributions, got {len(state)}"
+            )
+        for dist, dist_state in zip(self.distributions, state, strict=True):
+            if isinstance(dist, TemporallyCorrelatedActionDist):
+                dist.set_temporal_correlation_state(dist_state)
+            elif dist_state is not None:
+                raise ValueError("Received temporal-correlation state for a non-temporally-correlated distribution.")
+
     def reset_temporal_correlations_on_step(
             self,
             mask: torch.Tensor | None = None,
@@ -401,7 +498,7 @@ class HybridActionDistribution(ActionDist):
                           (SquashedDiagGaussianConfig, PredictedStdConfig, GSDEConfig,
                            BetaConfig, BangZeroBangConfig, StickyBangZeroBangConfig, SignMagnitudeBetaConfig,
                            StickySignMagnitudeBetaConfig, LeftMiddleRightBetaConfig,
-                           ReparameterizedSignMagnitudeKumaraswamyConfig,
+                           SignMagnitudeKumaraswamyConfig,
                            ReparameterizedSquashedGaussianMixtureConfig,
                            StickyLeftMiddleRightBetaConfig)
             ):
@@ -428,7 +525,7 @@ class HybridActionDistribution(ActionDist):
                       (SquashedDiagGaussianConfig, PredictedStdConfig, GSDEConfig,
                        BetaConfig, BangZeroBangConfig, StickyBangZeroBangConfig, SignMagnitudeBetaConfig,
                        StickySignMagnitudeBetaConfig, LeftMiddleRightBetaConfig,
-                       ReparameterizedSignMagnitudeKumaraswamyConfig,
+                       SignMagnitudeKumaraswamyConfig,
                        ReparameterizedSquashedGaussianMixtureConfig,
                        StickyLeftMiddleRightBetaConfig)
         ):
@@ -451,6 +548,34 @@ class HybridActionDistribution(ActionDist):
             raise ValueError(f"Action sub-dist {sub_dist_idx} does not support stickiness updates")
 
         dist.set_stickiness(value)
+
+    def set_all_gumbel_temperatures(self, value: float) -> None:
+        if value <= 0.0:
+            raise ValueError(f"gumbel temperature must be > 0, got {value}")
+        for dist in self.distributions:
+            setter = getattr(dist, "set_gumbel_temperature", None)
+            if callable(setter):
+                setter(value)
+        for idx, config in enumerate(self.continuous_configs):
+            if isinstance(config, (GumbelSoftmaxSignMagnitudeBetaConfig,
+                                   GumbelSoftmaxSignMagnitudeKumaraswamyConfig)):
+                self.continuous_configs[idx] = replace(config, gumbel_temperature=value)
+
+    def set_sub_gumbel_temperature(self, sub_dist_idx: int, value: float) -> None:
+        if value <= 0.0:
+            raise ValueError(f"gumbel temperature must be > 0, got {value}")
+        if not (0 <= sub_dist_idx < len(self.distributions)):
+            raise IndexError(
+                f"sub_dist_idx out of range [0, {len(self.distributions) - 1}], got {sub_dist_idx}"
+            )
+        setter = getattr(self.distributions[sub_dist_idx], "set_gumbel_temperature", None)
+        if not callable(setter):
+            raise ValueError(f"Action sub-dist {sub_dist_idx} does not support Gumbel temperature updates")
+        setter(value)
+        config = self.continuous_configs[sub_dist_idx]
+        if isinstance(config, (GumbelSoftmaxSignMagnitudeBetaConfig,
+                               GumbelSoftmaxSignMagnitudeKumaraswamyConfig)):
+            self.continuous_configs[sub_dist_idx] = replace(config, gumbel_temperature=value)
 
     @staticmethod
     def _prefix_named_values(
@@ -494,6 +619,27 @@ class HybridActionDistribution(ActionDist):
         return f"act{index}_{metric_name}"
 
 
+def _make_continuous_action_distribution(
+        *,
+        config: ContinuousActionDistConfig,
+        latent_dim: int,
+        action_dim: int,
+        action_net_initialization: ActionNetInitialization,
+) -> ActionDist:
+    spec = _continuous_action_dist_spec(config)
+    constructor_kwargs = {
+        config_field.name: getattr(config, config_field.name)
+        for config_field in fields(config)
+    }
+    constructor_kwargs.update(spec.constructor_overrides)
+    return spec.distribution_type(
+        latent_dim=latent_dim,
+        action_dim=action_dim,
+        action_net_initialization=action_net_initialization,
+        **constructor_kwargs,
+    )
+
+
 def make_proba_distribution(
         latent_dim: int,
         action_space: spaces.Space,
@@ -505,212 +651,19 @@ def make_proba_distribution(
     if isinstance(action_space, spaces.Box):
         _assert_unit_box_range(action_space)
         if continuous_config is None:
+            supported_configs = " | ".join(
+                config_type.__name__
+                for config_type in _CONTINUOUS_ACTION_DIST_SPECS
+            )
             raise ValueError(
-                "Supply a ContinuousActionDistConfig "
-                "(SquashedDiagGaussianConfig | PredictedStdConfig | GSDEConfig | "
-                "BetaConfig | BetaMixtureConfig | ReparameterizedSignMagnitudeKumaraswamyConfig | "
-                "ReparameterizedSquashedGaussianMixtureConfig | "
-                "StickySignMagnitudeBetaConfig | StickyLeftMiddleRightBetaConfig | "
-                "SignMagnitudeBetaConfig | LeftMiddleRightBetaConfig | BangZeroBangConfig | StickyBangZeroBangConfig) "
-                "for continuous actions."
+                f"Supply a ContinuousActionDistConfig ({supported_configs}) for continuous actions."
             )
 
-        if isinstance(continuous_config, SquashedDiagGaussianConfig):
-            return SquashedDiagGaussianActionDist(
-                latent_dim=latent_dim,
-                action_dim=action_space_dim,
-                std=continuous_config.std,
-                std_learnable=continuous_config.std_learnable,
-                epsilon=continuous_config.epsilon,
-                action_net_initialization=action_net_initialization,
-                ent_loss_coef=continuous_config.ent_loss_coef,
-                ent_loss_config=continuous_config.ent_loss_config,
-                action_magnitude_loss_coef=continuous_config.action_magnitude_loss_coef,
-                action_magnitude_loss_threshold=continuous_config.action_magnitude_loss_threshold,
-                action_magnitude_loss_power=continuous_config.action_magnitude_loss_power,
-            )
-        elif isinstance(continuous_config, PredictedStdConfig):
-            return PredictedStdActionDist(
-                latent_dim=latent_dim,
-                action_dim=action_space_dim,
-                base_std=continuous_config.base_std,
-                epsilon=continuous_config.epsilon,
-                action_net_initialization=action_net_initialization,
-                log_std_net_initialization=continuous_config.log_std_net_initialization,
-                log_std_clamp_range=continuous_config.log_std_clamp_range,
-                squash_output=True,
-                ent_loss_coef=continuous_config.ent_loss_coef,
-                ent_loss_config=continuous_config.ent_loss_config,
-                action_magnitude_loss_coef=continuous_config.action_magnitude_loss_coef,
-                action_magnitude_loss_threshold=continuous_config.action_magnitude_loss_threshold,
-                action_magnitude_loss_power=continuous_config.action_magnitude_loss_power,
-            )
-        elif isinstance(continuous_config, GSDEConfig):
-            return GSDEActionDist(
-                latent_dim=latent_dim,
-                action_dim=action_space_dim,
-                base_std=continuous_config.base_std,
-                latent_sde_dim=continuous_config.latent_sde_dim,
-                std_learnable=continuous_config.std_learnable,
-                normalize_latent_sde_by_dim=continuous_config.normalize_latent_sde_by_dim,
-                squash_output=True,
-                epsilon=continuous_config.epsilon,
-                full_std=continuous_config.full_std,
-                sde_learn_features=continuous_config.sde_learn_features,
-                latent_sde_net_initialization=continuous_config.latent_sde_net_initialization,
-                log_std_clamp_range=continuous_config.log_std_clamp_range,
-                action_net_initialization=action_net_initialization,
-                ent_loss_coef=continuous_config.ent_loss_coef,
-                ent_loss_config=continuous_config.ent_loss_config,
-                action_magnitude_loss_coef=continuous_config.action_magnitude_loss_coef,
-                action_magnitude_loss_threshold=continuous_config.action_magnitude_loss_threshold,
-                action_magnitude_loss_power=continuous_config.action_magnitude_loss_power,
-            )
-        elif isinstance(continuous_config, BetaConfig):
-            return BetaActionDist(
-                latent_dim=latent_dim,
-                action_dim=action_space_dim,
-                action_net_initialization=action_net_initialization,
-                alpha=continuous_config.alpha,
-                beta=continuous_config.beta,
-                epsilon=continuous_config.epsilon,
-                ent_loss_coef=continuous_config.ent_loss_coef,
-                ent_loss_config=continuous_config.ent_loss_config,
-            )
-        elif isinstance(continuous_config, BetaMixtureConfig):
-            return BetaMixtureActionDist(
-                latent_dim=latent_dim,
-                action_dim=action_space_dim,
-                num_components=continuous_config.num_components,
-                action_net_initialization=action_net_initialization,
-                epsilon=continuous_config.epsilon,
-                alphas=continuous_config.alphas,
-                betas=continuous_config.betas,
-            )
-        elif isinstance(continuous_config, ReparameterizedSignMagnitudeKumaraswamyConfig):
-            return ReparameterizedSignMagnitudeKumaraswamyActionDist(
-                latent_dim=latent_dim,
-                action_dim=action_space_dim,
-                action_net_initialization=action_net_initialization,
-                initial_positive_prob=continuous_config.initial_positive_prob,
-                epsilon=continuous_config.epsilon,
-                negative_a=continuous_config.negative_a,
-                negative_b=continuous_config.negative_b,
-                positive_a=continuous_config.positive_a,
-                positive_b=continuous_config.positive_b,
-                ent_loss_coef=continuous_config.ent_loss_coef,
-                kumaraswamy_ent_scale=continuous_config.kumaraswamy_ent_scale,
-                categorical_ent_loss_config=continuous_config.categorical_ent_loss_config,
-                kumaraswamy_ent_loss_config=continuous_config.kumaraswamy_ent_loss_config,
-            )
-        elif isinstance(continuous_config, ReparameterizedSquashedGaussianMixtureConfig):
-            return ReparameterizedSquashedGaussianMixtureActionDist(
-                latent_dim=latent_dim,
-                action_dim=action_space_dim,
-                action_net_initialization=action_net_initialization,
-                initial_action_modes=continuous_config.initial_action_modes,
-                initial_stds=continuous_config.initial_stds,
-                initial_weights=continuous_config.initial_weights,
-                epsilon=continuous_config.epsilon,
-                inverse_cdf_iterations=continuous_config.inverse_cdf_iterations,
-                log_std_clamp_range=continuous_config.log_std_clamp_range,
-                ent_loss_coef=continuous_config.ent_loss_coef,
-                gaussian_ent_scale=continuous_config.gaussian_ent_scale,
-                categorical_ent_loss_config=continuous_config.categorical_ent_loss_config,
-                gaussian_ent_loss_config=continuous_config.gaussian_ent_loss_config,
-            )
-        elif isinstance(continuous_config, StickySignMagnitudeBetaConfig):
-            return StickySignMagnitudeBetaActionDist(
-                latent_dim=latent_dim,
-                action_dim=action_space_dim,
-                action_net_initialization=action_net_initialization,
-                initial_positive_prob=continuous_config.initial_positive_prob,
-                epsilon=continuous_config.epsilon,
-                negative_alpha=continuous_config.negative_alpha,
-                negative_beta=continuous_config.negative_beta,
-                positive_alpha=continuous_config.positive_alpha,
-                positive_beta=continuous_config.positive_beta,
-                ent_loss_coef=continuous_config.ent_loss_coef,
-                beta_ent_scale=continuous_config.beta_ent_scale,
-                categorical_ent_loss_config=continuous_config.categorical_ent_loss_config,
-                beta_ent_loss_config=continuous_config.beta_ent_loss_config,
-                stickiness=continuous_config.stickiness,
-            )
-        elif isinstance(continuous_config, SignMagnitudeBetaConfig):
-            return SignMagnitudeBetaActionDist(
-                latent_dim=latent_dim,
-                action_dim=action_space_dim,
-                action_net_initialization=action_net_initialization,
-                initial_positive_prob=continuous_config.initial_positive_prob,
-                epsilon=continuous_config.epsilon,
-                negative_alpha=continuous_config.negative_alpha,
-                negative_beta=continuous_config.negative_beta,
-                positive_alpha=continuous_config.positive_alpha,
-                positive_beta=continuous_config.positive_beta,
-                ent_loss_coef=continuous_config.ent_loss_coef,
-                beta_ent_scale=continuous_config.beta_ent_scale,
-                categorical_ent_loss_config=continuous_config.categorical_ent_loss_config,
-                beta_ent_loss_config=continuous_config.beta_ent_loss_config,
-            )
-        elif isinstance(continuous_config, StickyLeftMiddleRightBetaConfig):
-            return StickyLeftMiddleRightBetaActionDist(
-                latent_dim=latent_dim,
-                action_dim=action_space_dim,
-                eps_c=continuous_config.eps_c,
-                action_net_initialization=action_net_initialization,
-                initial_middle_prob=continuous_config.initial_middle_prob,
-                epsilon=continuous_config.epsilon,
-                left_alpha=continuous_config.left_alpha,
-                left_beta=continuous_config.left_beta,
-                right_alpha=continuous_config.right_alpha,
-                right_beta=continuous_config.right_beta,
-                ent_loss_coef=continuous_config.ent_loss_coef,
-                beta_ent_scale=continuous_config.beta_ent_scale,
-                categorical_ent_loss_config=continuous_config.categorical_ent_loss_config,
-                beta_ent_loss_config=continuous_config.beta_ent_loss_config,
-                stickiness=continuous_config.stickiness,
-                middle_sticky=continuous_config.middle_sticky,
-            )
-        elif isinstance(continuous_config, LeftMiddleRightBetaConfig):
-            return LeftMiddleRightBetaActionDist(
-                latent_dim=latent_dim,
-                action_dim=action_space_dim,
-                eps_c=continuous_config.eps_c,
-                action_net_initialization=action_net_initialization,
-                initial_middle_prob=continuous_config.initial_middle_prob,
-                epsilon=continuous_config.epsilon,
-                left_alpha=continuous_config.left_alpha,
-                left_beta=continuous_config.left_beta,
-                right_alpha=continuous_config.right_alpha,
-                right_beta=continuous_config.right_beta,
-                ent_loss_coef=continuous_config.ent_loss_coef,
-                beta_ent_scale=continuous_config.beta_ent_scale,
-                categorical_ent_loss_config=continuous_config.categorical_ent_loss_config,
-                beta_ent_loss_config=continuous_config.beta_ent_loss_config,
-            )
-        elif isinstance(continuous_config, StickyBangZeroBangConfig):
-            return StickyBangZeroBangActionDist(
-                latent_dim=latent_dim,
-                action_dim=action_space_dim,
-                bang=continuous_config.bang,
-                stickiness=continuous_config.stickiness,
-                zero_sticky=continuous_config.zero_sticky,
-                action_net_initialization=action_net_initialization,
-                ent_loss_coef=continuous_config.ent_loss_coef,
-                ent_loss_config=continuous_config.ent_loss_config,
-            )
-        elif isinstance(continuous_config, BangZeroBangConfig):
-            return BangZeroBangActionDist(
-                latent_dim=latent_dim,
-                action_dim=action_space_dim,
-                bang=continuous_config.bang,
-                action_net_initialization=action_net_initialization,
-                ent_loss_coef=continuous_config.ent_loss_coef,
-                ent_loss_config=continuous_config.ent_loss_config,
-            )
-        raise TypeError(
-            "Unsupported continuous action config type for Box action space: "
-            f"{type(continuous_config)}"
+        return _make_continuous_action_distribution(
+            config=continuous_config,
+            latent_dim=latent_dim,
+            action_dim=action_space_dim,
+            action_net_initialization=action_net_initialization,
         )
     elif isinstance(action_space, spaces.MultiBinary):
         return BernoulliActionDist(

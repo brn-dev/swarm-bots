@@ -30,7 +30,9 @@ class SACNOPLatentSource(Enum):
 @dataclass(frozen=True)
 class SACNOPConfig:
     enabled: bool = False
+    num_next_steps: int = 4
     latent_source: SACNOPLatentSource | str = SACNOPLatentSource.CRITIC
+    skip_first_transition_for_critic: bool = True
     nop_latent_dim: int | None = None
     nop_loss_coef: float = 1.0
     compile_modules: bool = False
@@ -63,6 +65,10 @@ class SACNOPConfig:
     scalar_loss_fn: str | nn.Module | None = None
     next_obs_pred_config: NextObsPredConfig = field(default_factory=NextObsPredConfig)
 
+    def __post_init__(self) -> None:
+        if self.num_next_steps <= 0:
+            raise ValueError(f"num_next_steps must be > 0, got {self.num_next_steps}")
+
 
 class SACNOPModule(nn.Module, NextObsPredMixin):
     def __init__(
@@ -73,6 +79,7 @@ class SACNOPModule(nn.Module, NextObsPredMixin):
             action_dim: int,
             config: SACNOPConfig,
             name: str,
+            skip_first_transition: bool = False,
     ) -> None:
         super().__init__()
         if source_latent_dim <= 0:
@@ -94,12 +101,17 @@ class SACNOPModule(nn.Module, NextObsPredMixin):
         self.source_latent_dim = int(source_latent_dim)
         self.action_dim = int(action_dim)
         self.nop_latent_dim = self.source_latent_dim if config.nop_latent_dim is None else int(config.nop_latent_dim)
+        self.latent_projection_hidden_dims = (
+            [max(self.source_latent_dim, self.nop_latent_dim)]
+            if config.latent_projection_hidden_dims is None
+            else [*config.latent_projection_hidden_dims]
+        )
         self.config = config
 
         latent_projection = self._build_projection(
             input_dim=self.source_latent_dim,
             output_dim=self.nop_latent_dim,
-            hidden_dims=config.latent_projection_hidden_dims,
+            hidden_dims=self.latent_projection_hidden_dims,
             act_fn_cls=config.act_fn_cls,
             init_gain=config.latent_projection_init_gain,
         )
@@ -202,6 +214,7 @@ class SACNOPModule(nn.Module, NextObsPredMixin):
                 act_fn_cls=config.act_fn_cls,
                 init_gain=config.predictor_init_gain,
             ),
+            skip_first_transition=skip_first_transition,
         )
         self._apply_optional_compile()
 
@@ -236,10 +249,11 @@ class SACNOPModule(nn.Module, NextObsPredMixin):
             "action_dim": self.action_dim,
             "nop_latent_dim": self.nop_latent_dim,
             "nop_loss_coef": self.nop_loss_coef,
+            "skip_first_transition": self.skip_first_transition,
             "compile_modules": self.config.compile_modules,
             "compile_mode": self.config.compile_mode,
             "act_fn_cls": serialize_value(self.config.act_fn_cls),
-            "latent_projection_hidden_dims": self._copy_optional_list(self.config.latent_projection_hidden_dims),
+            "latent_projection_hidden_dims": [*self.latent_projection_hidden_dims],
             "pre_predictors_hidden_dims": self._copy_optional_list(self.config.pre_predictors_hidden_dims),
             "scalar_predictor_hidden_dims": self._copy_optional_list(self.config.scalar_predictor_hidden_dims),
             "angle_predictor_hidden_dims": self._copy_optional_list(self.config.angle_predictor_hidden_dims),
@@ -257,7 +271,7 @@ class SACNOPModule(nn.Module, NextObsPredMixin):
             "predictor_init_gain": self.config.predictor_init_gain,
             "scalar_loss_fn": serialize_value(self.scalar_loss_fn),
             "next_obs_pred": self.get_next_obs_pred_hyper_parameters(
-                pre_transition_dims=self.config.latent_projection_hidden_dims,
+                pre_transition_dims=self.latent_projection_hidden_dims,
                 pre_predictors_dims=self.config.pre_predictors_hidden_dims,
                 scalar_predictor_hidden_dims=self.config.scalar_predictor_hidden_dims,
                 angle_predictor_hidden_dims=self.config.angle_predictor_hidden_dims,

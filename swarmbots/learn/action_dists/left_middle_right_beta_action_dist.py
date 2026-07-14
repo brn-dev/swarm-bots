@@ -13,6 +13,7 @@ from swarmbots.learn.action_dists.action_dist import (
     ActionNetInitialization,
     compute_action_metrics,
     resolve_action_metrics_splitter,
+    validate_probability_clamp_epsilon,
 )
 from swarmbots.learn.action_dists.entropy_utils import (
     AgentActionsReduction,
@@ -80,8 +81,7 @@ class LeftMiddleRightBetaActionDist(ActionDist):
 
         if not (0.0 < eps_c < 1.0):
             raise ValueError(f"eps_c must be in (0, 1), got {eps_c}")
-        if epsilon <= 0.0:
-            raise ValueError(f"epsilon must be > 0, got {epsilon}")
+        validate_probability_clamp_epsilon(epsilon)
         if ent_loss_coef < 0.0:
             raise ValueError(f"ent_loss_coef must be >= 0, got {ent_loss_coef}")
         if beta_ent_scale < 0.0:

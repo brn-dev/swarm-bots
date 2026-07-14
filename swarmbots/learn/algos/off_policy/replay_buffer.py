@@ -86,6 +86,29 @@ class OffPolicyReplayEpisodeSegmentBatch:
     def terminal_mask(self) -> torch.Tensor:
         return self.terminations
 
+    @property
+    def origin_batch(self) -> OffPolicyReplayBatch:
+        return OffPolicyReplayBatch(
+            local_obs=self.local_obs[:, 0],
+            global_obs=self.global_obs[:, 0],
+            hidden_local_vars=self.hidden_local_vars[:, 0],
+            hidden_global_vars=self.hidden_global_vars[:, 0],
+            agent_mask=None if self.agent_mask is None else self.agent_mask[:, 0],
+            actions=self.actions[:, 0],
+            rewards=self.rewards[:, 0],
+            terminations=self.terminations[:, 0],
+            truncations=self.truncations[:, 0],
+            previous_actions=None if self.previous_actions is None else self.previous_actions[:, 0],
+            next_local_obs=self.next_local_obs[:, 0],
+            next_global_obs=self.next_global_obs[:, 0],
+            next_hidden_local_vars=self.next_hidden_local_vars[:, 0],
+            next_hidden_global_vars=self.next_hidden_global_vars[:, 0],
+            next_agent_mask=None if self.next_agent_mask is None else self.next_agent_mask[:, 0],
+            episode_start_mask=(
+                None if self.episode_start_mask is None else self.episode_start_mask[:, 0]
+            ),
+        )
+
 
 class OffPolicyReplayBuffer:
     def __init__(
@@ -362,23 +385,29 @@ class OffPolicyReplayBuffer:
             replacement: bool = True,
             generator: torch.Generator | None = None,
     ) -> OffPolicyReplayBatch:
-        if batch_size <= 0:
-            raise ValueError(f"batch_size must be > 0, got {batch_size}")
-        if len(self) == 0:
-            raise ValueError("Cannot sample from an empty replay buffer.")
-        if not replacement and batch_size > len(self):
-            raise ValueError(f"Cannot sample batch_size={batch_size} without replacement from {len(self)} transitions.")
-
-        if replacement:
-            indices = torch.randint(
-                len(self),
-                (batch_size,),
-                generator=generator,
-                device=self.storage_device,
-            )
-        else:
-            indices = torch.randperm(len(self), generator=generator, device=self.storage_device)[:batch_size]
+        indices = self._sample_transition_indices(
+            batch_size=batch_size,
+            replacement=replacement,
+            generator=generator,
+        )
         return self._fetch_indices(indices)
+
+    def sample_episode_windows(
+            self,
+            batch_size: int,
+            *,
+            num_next_steps: int,
+            replacement: bool = True,
+            generator: torch.Generator | None = None,
+    ) -> OffPolicyReplayEpisodeSegmentBatch:
+        if num_next_steps <= 0:
+            raise ValueError(f"num_next_steps must be > 0, got {num_next_steps}")
+        indices = self._sample_transition_indices(
+            batch_size=batch_size,
+            replacement=replacement,
+            generator=generator,
+        )
+        return self._fetch_episode_windows(indices, num_next_steps=num_next_steps)
 
     def sample_episode_segments(
             self,
@@ -421,17 +450,12 @@ class OffPolicyReplayBuffer:
                 f"{num_candidates} candidates."
             )
 
-        if replacement:
-            candidate_indices = torch.randint(
-                num_candidates,
-                (batch_size,),
-                generator=generator,
-                device=self.storage_device,
-            )
-        else:
-            candidate_indices = torch.randperm(num_candidates, generator=generator, device=self.storage_device)[
-                :batch_size
-            ]
+        candidate_indices = self._sample_indices(
+            population_size=num_candidates,
+            batch_size=batch_size,
+            replacement=replacement,
+            generator=generator,
+        )
         env_indices = candidate_env_indices[candidate_indices]
         logical_starts = candidate_logical_starts[candidate_indices]
         sequence_offsets = torch.arange(total_sequence_length, dtype=torch.long, device=self.storage_device)
@@ -462,6 +486,52 @@ class OffPolicyReplayBuffer:
             train_mask=self._to_train(train_mask, dtype=torch.bool),
             initial_temporal_state=initial_temporal_state,
         )
+
+    def _sample_transition_indices(
+            self,
+            *,
+            batch_size: int,
+            replacement: bool,
+            generator: torch.Generator | None,
+    ) -> torch.Tensor:
+        if batch_size <= 0:
+            raise ValueError(f"batch_size must be > 0, got {batch_size}")
+        if len(self) == 0:
+            raise ValueError("Cannot sample from an empty replay buffer.")
+        if not replacement and batch_size > len(self):
+            raise ValueError(
+                f"Cannot sample batch_size={batch_size} without replacement from {len(self)} transitions."
+            )
+        return self._sample_indices(
+            population_size=len(self),
+            batch_size=batch_size,
+            replacement=replacement,
+            generator=generator,
+        )
+
+    def _sample_indices(
+            self,
+            *,
+            population_size: int,
+            batch_size: int,
+            replacement: bool,
+            generator: torch.Generator | None,
+    ) -> torch.Tensor:
+        sampling_device = self.storage_device if generator is None else torch.device(generator.device)
+        if replacement:
+            indices = torch.randint(
+                population_size,
+                (batch_size,),
+                generator=generator,
+                device=sampling_device,
+            )
+        else:
+            indices = torch.randperm(
+                population_size,
+                generator=generator,
+                device=sampling_device,
+            )[:batch_size]
+        return indices.to(device=self.storage_device)
 
     def get_all(self) -> OffPolicyReplayBatch:
         if len(self) == 0:
@@ -650,6 +720,79 @@ class OffPolicyReplayBuffer:
             ),
         )
 
+    def _fetch_episode_windows(
+            self,
+            indices: torch.Tensor,
+            *,
+            num_next_steps: int,
+    ) -> OffPolicyReplayEpisodeSegmentBatch:
+        batch_size = int(indices.numel())
+        env_indices = torch.div(indices, self._size_per_env, rounding_mode="floor")
+        logical_starts = indices.remainder(self._size_per_env)
+        sequence_offsets = torch.arange(num_next_steps, dtype=torch.long, device=self.storage_device)
+        logical_positions = logical_starts.unsqueeze(1) + sequence_offsets.unsqueeze(0)
+        within_replay = logical_positions < self._size_per_env
+        safe_logical_positions = logical_positions.clamp_max(self._size_per_env - 1)
+        flat_indices = (
+            env_indices.unsqueeze(1) * self._size_per_env + safe_logical_positions
+        ).reshape(-1)
+        flat_batch = self._fetch_indices(flat_indices)
+        within_replay = self._to_train(within_replay, dtype=torch.bool)
+        window_batch = self._reshape_episode_segment_batch(
+            flat_batch=flat_batch,
+            batch_size=batch_size,
+            total_sequence_length=num_next_steps,
+            burn_in_steps=0,
+            train_mask=within_replay,
+            initial_temporal_state=None,
+        )
+        previous_episode_end = torch.cat((
+            torch.zeros((batch_size, 1), dtype=torch.bool, device=window_batch.actions.device),
+            window_batch.episode_ends[:, :-1],
+        ), dim=1).to(dtype=torch.long).cumsum(dim=1) > 0
+        valid_steps = within_replay & ~previous_episode_end
+        return self._mask_episode_window_batch(window_batch, valid_steps=valid_steps)
+
+    @staticmethod
+    def _mask_episode_window_batch(
+            batch: OffPolicyReplayEpisodeSegmentBatch,
+            *,
+            valid_steps: torch.Tensor,
+    ) -> OffPolicyReplayEpisodeSegmentBatch:
+        def mask_tensor(tensor: torch.Tensor, value: bool | float = 0.0) -> torch.Tensor:
+            invalid = ~valid_steps.reshape((*valid_steps.shape, *((1,) * (tensor.ndim - 2))))
+            return tensor.masked_fill(invalid, value)
+
+        def mask_optional_tensor(
+                tensor: torch.Tensor | None,
+                value: bool | float = 0.0,
+        ) -> torch.Tensor | None:
+            if tensor is None:
+                return None
+            return mask_tensor(tensor, value)
+
+        return OffPolicyReplayEpisodeSegmentBatch(
+            local_obs=mask_tensor(batch.local_obs),
+            global_obs=mask_tensor(batch.global_obs),
+            hidden_local_vars=mask_tensor(batch.hidden_local_vars),
+            hidden_global_vars=mask_tensor(batch.hidden_global_vars),
+            agent_mask=mask_optional_tensor(batch.agent_mask, True),
+            actions=mask_tensor(batch.actions),
+            rewards=mask_tensor(batch.rewards),
+            terminations=mask_tensor(batch.terminations, False),
+            truncations=mask_tensor(batch.truncations, False),
+            previous_actions=mask_optional_tensor(batch.previous_actions),
+            next_local_obs=mask_tensor(batch.next_local_obs),
+            next_global_obs=mask_tensor(batch.next_global_obs),
+            next_hidden_local_vars=mask_tensor(batch.next_hidden_local_vars),
+            next_hidden_global_vars=mask_tensor(batch.next_hidden_global_vars),
+            next_agent_mask=mask_optional_tensor(batch.next_agent_mask, True),
+            episode_start_mask=mask_optional_tensor(batch.episode_start_mask, False),
+            train_mask=valid_steps,
+            initial_temporal_state=None,
+            burn_in_steps=0,
+        )
+
     def _episode_segment_candidates(
             self,
             *,
@@ -667,41 +810,28 @@ class OffPolicyReplayBuffer:
         logical_positions = torch.arange(self._size_per_env, dtype=torch.long, device=self.storage_device)
         transition_slots_by_logical = self._logical_to_transition_slots(logical_positions)
         start_positions = torch.arange(max_start_count, dtype=torch.long, device=self.storage_device)
-        candidate_env_indices: list[torch.Tensor] = []
-        candidate_logical_starts: list[torch.Tensor] = []
-
-        for env_idx in range(self.n_envs):
-            episode_ends = torch.logical_or(
-                self.terminations[env_idx, transition_slots_by_logical],
-                self.truncations[env_idx, transition_slots_by_logical],
+        episode_ends = torch.logical_or(
+            self.terminations[:, transition_slots_by_logical],
+            self.truncations[:, transition_slots_by_logical],
+        )
+        valid = torch.ones((self.n_envs, max_start_count), dtype=torch.bool, device=self.storage_device)
+        if total_sequence_length > 1:
+            end_prefix_sum = torch.cat((
+                torch.zeros((self.n_envs, 1), dtype=torch.long, device=self.storage_device),
+                episode_ends.to(dtype=torch.long).cumsum(dim=1),
+            ), dim=1)
+            ends_before_final_transition = (
+                end_prefix_sum[:, start_positions + total_sequence_length - 1]
+                - end_prefix_sum[:, start_positions]
             )
-            valid = torch.ones(max_start_count, dtype=torch.bool, device=self.storage_device)
-            if total_sequence_length > 1:
-                end_prefix_sum = torch.cat((
-                    torch.zeros((1,), dtype=torch.long, device=self.storage_device),
-                    episode_ends.to(dtype=torch.long).cumsum(dim=0),
-                ))
-                ends_before_final_transition = (
-                    end_prefix_sum[start_positions + total_sequence_length - 1]
-                    - end_prefix_sum[start_positions]
-                )
-                valid = torch.logical_and(valid, ends_before_final_transition == 0)
-            if require_initial_temporal_state:
-                assert self._temporal_state_available is not None
-                start_transition_slots = transition_slots_by_logical[:max_start_count]
-                start_obs_slots = self._transition_obs_slots[env_idx, start_transition_slots]
-                valid = torch.logical_and(valid, self._temporal_state_available[env_idx, start_obs_slots])
+            valid &= ends_before_final_transition == 0
+        if require_initial_temporal_state:
+            assert self._temporal_state_available is not None
+            start_transition_slots = transition_slots_by_logical[:max_start_count]
+            start_obs_slots = self._transition_obs_slots[:, start_transition_slots]
+            valid &= self._temporal_state_available.gather(1, start_obs_slots)
 
-            valid_starts = torch.nonzero(valid, as_tuple=False).flatten()
-            if len(valid_starts) == 0:
-                continue
-            candidate_env_indices.append(torch.full_like(valid_starts, env_idx))
-            candidate_logical_starts.append(valid_starts)
-
-        if not candidate_env_indices:
-            empty = torch.empty((0,), dtype=torch.long, device=self.storage_device)
-            return empty, empty
-        return torch.cat(candidate_env_indices, dim=0), torch.cat(candidate_logical_starts, dim=0)
+        return torch.nonzero(valid, as_tuple=True)
 
     def _reshape_episode_segment_batch(
             self,
@@ -765,9 +895,12 @@ class OffPolicyReplayBuffer:
         terminal_hidden_global_vars: list[torch.Tensor] = []
         terminal_agent_mask: list[torch.Tensor] = []
 
-        for batch_idx in done_batch_indices.tolist():
-            env_idx = int(env_indices[batch_idx].item())
-            transition_slot = int(transition_slots[batch_idx].item())
+        done_entries = torch.stack((
+            done_batch_indices,
+            env_indices[done_batch_indices],
+            transition_slots[done_batch_indices],
+        ), dim=1).tolist()
+        for batch_idx, env_idx, transition_slot in done_entries:
             terminal_obs = self._terminal_obs_by_env_slot.get((env_idx, transition_slot))
             if terminal_obs is None:
                 raise ValueError(

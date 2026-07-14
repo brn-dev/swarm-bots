@@ -184,6 +184,38 @@ def _split_rollout_batch(batch: PPORolloutBatch) -> list[tuple[int, int, PPOEpis
 
 
 class PPORolloutBatchTests(unittest.TestCase):
+    def test_gae_bootstraps_truncation_without_crossing_into_reset_episode(self) -> None:
+        rewards = torch.tensor([
+            [0.0, 100.0],
+            [0.0, 100.0],
+        ])
+        values = torch.zeros_like(rewards)
+        bootstrap_values = torch.tensor([
+            [5.0, 0.0],
+            [0.0, 0.0],
+        ])
+        dones = torch.tensor([
+            [True, False],
+            [True, False],
+        ])
+
+        advantages = compute_step_rollout_gae(
+            rewards=rewards,
+            values=values,
+            bootstrap_values=bootstrap_values,
+            dones=dones,
+            gamma=1.0,
+            gae_lambda=1.0,
+        )
+
+        torch.testing.assert_close(
+            advantages,
+            torch.tensor([
+                [5.0, 100.0],
+                [0.0, 100.0],
+            ]),
+        )
+
     def test_vectorized_gae_matches_episode_segments(self) -> None:
         batch = _make_rollout_batch(with_agent_mask=True)
         for env_idx, start_idx, episode in _split_rollout_batch(batch):

@@ -8,7 +8,12 @@ import torch
 from swarmbots.learn.base_policy import BasePolicy
 from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
 from swarmbots.learn.env_wrappers.torch_normalize_reward_wrapper import TorchNormalizeRewardWrapper
-from swarmbots.learn.gsde_reset import GSDEResetMode, GSDEIntervalResetMode, GSDEProbabilityResetMode
+from swarmbots.learn.gsde_reset import (
+    GSDEResetMode,
+    GSDEIntervalResetMode,
+    GSDEProbabilityResetMode,
+    resolve_gsde_reset_mode,
+)
 from swarmbots.utils.recording_overlay import draw_accumulated_reward
 from swarmbots.learn.tensor_conversion import to_numpy_array
 
@@ -51,11 +56,12 @@ def _maybe_reset_gsde_noise(
     rollout_step_idx: int,
     gsde_reset_mode: GSDEResetMode | None,
 ) -> None:
-    if deterministic or not bool(getattr(policy, "gsde_enabled", False)):
+    active_reset_mode = resolve_gsde_reset_mode(
+        gsde_enabled=not deterministic and policy.gsde_enabled,
+        reset_mode=gsde_reset_mode,
+    )
+    if active_reset_mode is None:
         return
-
-    if gsde_reset_mode is None:
-        raise RuntimeError("Policy reports gsde_enabled=True but gsde_reset_mode is None.")
 
     action_dist = getattr(policy, "action_dist", None)
     if action_dist is None or not hasattr(action_dist, "reset_temporal_correlations_on_step"):
@@ -64,17 +70,17 @@ def _maybe_reset_gsde_noise(
         )
 
     batch_shape = tuple(local_obs.shape[:-1])
-    if isinstance(gsde_reset_mode, GSDEIntervalResetMode):
-        if (rollout_step_idx % gsde_reset_mode.interval) == 0:
+    if isinstance(active_reset_mode, GSDEIntervalResetMode):
+        if (rollout_step_idx % active_reset_mode.interval) == 0:
             action_dist.reset_temporal_correlations_on_step(batch_shape=batch_shape)
         return
 
-    if isinstance(gsde_reset_mode, GSDEProbabilityResetMode):
-        mask = torch.empty(batch_shape, device=local_obs.device, dtype=torch.bool).bernoulli_(gsde_reset_mode.probability)
+    if isinstance(active_reset_mode, GSDEProbabilityResetMode):
+        mask = torch.empty(batch_shape, device=local_obs.device, dtype=torch.bool).bernoulli_(
+            active_reset_mode.probability
+        )
         action_dist.reset_temporal_correlations_on_step(mask=mask)
         return
-
-    raise TypeError(f"Unknown gsde_reset_mode type: {type(gsde_reset_mode)}")
 
 
 def _extract_env_reward(reward: Any, *, env_idx: int = 0) -> float:

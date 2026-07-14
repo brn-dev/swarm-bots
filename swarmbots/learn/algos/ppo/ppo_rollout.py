@@ -8,7 +8,12 @@ from swarmbots.learn.algos.ppo.base_ppo_policy import BasePPOPolicy
 from swarmbots.learn.algos.ppo.ppo_rollout_batch import PPORolloutBatch, PPORolloutBatchBuilder
 from swarmbots.learn.algos.ppo.ppo_rollout_buffer import PPOEpisodeSegment, PPORolloutBuffer
 from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
-from swarmbots.learn.gsde_reset import GSDEResetMode, GSDEIntervalResetMode, GSDEProbabilityResetMode
+from swarmbots.learn.gsde_reset import (
+    GSDEResetMode,
+    GSDEIntervalResetMode,
+    GSDEProbabilityResetMode,
+    resolve_gsde_reset_mode,
+)
 from swarmbots.learn.performance_timer import PerformanceTimer
 from swarmbots.learn.rollout_utils import append_episode_infos, extract_bootstrap_obs, initial_previous_actions, snapshot_obs
 from swarmbots.learn.summary_statistics import compute_summary_statistics
@@ -39,23 +44,20 @@ def _parse_gsde_reset_mode(
         policy: BasePPOPolicy[Any, Any],
         gsde_reset_mode: GSDEResetMode | None,
 ) -> tuple[bool, bool, int, float]:
-    assert not policy.gsde_enabled or gsde_reset_mode is not None
     gsde_enabled = policy.gsde_enabled
+    active_reset_mode = resolve_gsde_reset_mode(
+        gsde_enabled=gsde_enabled,
+        reset_mode=gsde_reset_mode,
+    )
     is_gsde_interval_reset_mode = False
     gsde_reset_interval = -1
     gsde_reset_prob = -1.0
-    if gsde_enabled:
-        if isinstance(gsde_reset_mode, GSDEIntervalResetMode):
+    if active_reset_mode is not None:
+        if isinstance(active_reset_mode, GSDEIntervalResetMode):
             is_gsde_interval_reset_mode = True
-            gsde_reset_interval = gsde_reset_mode.interval
-            if gsde_reset_interval <= 0:
-                raise ValueError(f"GSDEIntervalResetMode.interval must be > 0, got {gsde_reset_interval}")
-        elif isinstance(gsde_reset_mode, GSDEProbabilityResetMode):
-            gsde_reset_prob = gsde_reset_mode.probability
-            if not (0.0 < gsde_reset_prob < 1.0):
-                raise ValueError(f"GSDEProbabilityResetMode.probability must be in (0, 1), got {gsde_reset_prob}")
-        else:
-            raise TypeError(f"Unknown gsde_reset_mode type: {type(gsde_reset_mode)}")
+            gsde_reset_interval = active_reset_mode.interval
+        elif isinstance(active_reset_mode, GSDEProbabilityResetMode):
+            gsde_reset_prob = active_reset_mode.probability
     return gsde_enabled, is_gsde_interval_reset_mode, gsde_reset_interval, gsde_reset_prob
 
 

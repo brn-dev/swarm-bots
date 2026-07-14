@@ -1,9 +1,11 @@
+from pathlib import Path
 from typing import Any
 
 import torch
 from loguru import logger
 from torch.nn import functional as F
 
+from swarmbots.learn.action_dists.action_dist import ActionMetricsSplitterInput
 from swarmbots.learn.algos.base_algorithm import BaseAlgorithm, LearningRate
 from swarmbots.learn.algos.off_policy import (
     OffPolicyReplayBuffer,
@@ -19,12 +21,20 @@ from swarmbots.learn.algos.off_policy.replay_buffer import (
 from swarmbots.learn.algos.sac.base_sac_policy import BaseSACPolicy
 from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
 from swarmbots.learn.exponential_moving_average import ExponentialMovingAverage
-from swarmbots.learn.gsde_reset import GSDEResetMode, GSDEIntervalResetMode, GSDEProbabilityResetMode
+from swarmbots.learn.gsde_reset import (
+    GSDEResetMode,
+    GSDEIntervalResetMode,
+    GSDEProbabilityResetMode,
+    resolve_gsde_reset_mode,
+)
 from swarmbots.learn.metrics_logger import SUPPRESS_MISSING_CONSOLE_KEY_WARNINGS
 from swarmbots.learn.metrics_list import MetricsLists
 from swarmbots.learn.performance_timer import PerformanceTimer
 from swarmbots.learn.summary_statistics import compute_summary_statistics
 from swarmbots.learn.torch_device import as_device
+
+
+DEFAULT_TOTAL_REPLAY_CAPACITY = 1_000_000
 
 
 class SAC(BaseAlgorithm):
@@ -38,7 +48,7 @@ class SAC(BaseAlgorithm):
             learning_rate: float = 3e-4,
             learning_rate_warmup_updates: int = 500,
             learning_rate_warmup_start_factor: float = 0.01,
-            buffer_capacity_per_env: int = 1_000_000,
+            buffer_capacity_per_env: int | None = None,
             learning_starts: int = 10_000,
             batch_size: int = 256,
             rollout_steps_per_iteration: int | None = None,
@@ -47,17 +57,19 @@ class SAC(BaseAlgorithm):
             gamma: float = 0.99,
             tau: float = 0.005,
             ent_coef: float | str = "auto",
+            ent_coef_learning_rate: float | None = None,
             target_entropy: float | str = "auto",
             target_update_interval: int = 1,
             max_grad_norm: float | None = 2.0,
-            nop_steps: int = 4,
             nop_batch_size: int | None = None,
+            independent_nop_sampling: bool = False,
             gsde_reset_mode: GSDEResetMode | None = None,
             train_device: str | torch.device = "auto",
             rollout_device: str | torch.device = "cpu",
             record_device: str | torch.device | None = None,
             replay_storage_device: str | torch.device = "cuda",
             replay_storage_pin_memory: bool = False,
+            metrics_action_splitters: ActionMetricsSplitterInput = None,
     ) -> None:
         if not isinstance(learning_rate, float):
             raise TypeError(f"learning_rate must be a float, got {type(learning_rate).__name__}")
@@ -66,7 +78,11 @@ class SAC(BaseAlgorithm):
         self.learning_rate = learning_rate
         self.learning_rate_warmup_updates = int(learning_rate_warmup_updates)
         self.learning_rate_warmup_start_factor = float(learning_rate_warmup_start_factor)
-        self.buffer_capacity_per_env = int(buffer_capacity_per_env)
+        self.buffer_capacity_per_env = (
+            max(1, DEFAULT_TOTAL_REPLAY_CAPACITY // env.action_space.n_envs)
+            if buffer_capacity_per_env is None
+            else int(buffer_capacity_per_env)
+        )
         self.learning_starts = int(learning_starts)
         self.batch_size = int(batch_size)
         self.rollout_steps_per_iteration = (
@@ -78,17 +94,21 @@ class SAC(BaseAlgorithm):
         self.gamma = float(gamma)
         self.tau = float(tau)
         self.ent_coef = ent_coef
+        self.ent_coef_learning_rate = (
+            None if ent_coef_learning_rate is None else float(ent_coef_learning_rate)
+        )
         self.target_entropy = target_entropy
         self.target_update_interval = int(target_update_interval)
         self.max_grad_norm = None if max_grad_norm is None else float(max_grad_norm)
-        self.nop_steps = int(nop_steps)
         self.nop_batch_size = self.batch_size if nop_batch_size is None else int(nop_batch_size)
+        self.independent_nop_sampling = bool(independent_nop_sampling)
         self.gsde_reset_mode = gsde_reset_mode
         self.train_device = as_device(train_device)
         self.rollout_device = as_device(rollout_device)
         self.record_device = self.rollout_device if record_device is None else as_device(record_device)
         self.replay_storage_device = as_device(replay_storage_device)
         self.replay_storage_pin_memory = bool(replay_storage_pin_memory)
+        self.metrics_action_splitters = metrics_action_splitters
         self.agent_action_dim = int(env.action_space.total_agent_action_dim)
         self._rollout_state: OffPolicyRolloutState | None = None
 
@@ -123,6 +143,7 @@ class SAC(BaseAlgorithm):
             "learning_rate_warmup_start_factor": self.learning_rate_warmup_start_factor,
             "buffer_capacity_per_env": self.buffer_capacity_per_env,
             "learning_starts": self.learning_starts,
+            "replay_fill_target": self.replay_fill_target,
             "batch_size": self.batch_size,
             "rollout_steps_per_iteration": self.rollout_steps_per_iteration,
             "rollout_warmup_steps_per_env": self.rollout_warmup_steps_per_env,
@@ -130,11 +151,13 @@ class SAC(BaseAlgorithm):
             "gamma": self.gamma,
             "tau": self.tau,
             "ent_coef": self.ent_coef,
+            "ent_coef_learning_rate": self.ent_coef_learning_rate,
+            "resolved_ent_coef_learning_rate": self._resolved_ent_coef_learning_rate(),
             "target_entropy": self.target_entropy,
             "target_update_interval": self.target_update_interval,
             "max_grad_norm": self.max_grad_norm,
-            "nop_steps": self.nop_steps,
             "nop_batch_size": self.nop_batch_size,
+            "independent_nop_sampling": self.independent_nop_sampling,
             "gsde_reset_mode": self._serialize_gsde_reset_mode(self.gsde_reset_mode),
             "train_device": str(self.train_device),
             "rollout_device": str(self.rollout_device),
@@ -169,7 +192,7 @@ class SAC(BaseAlgorithm):
                 env=self.env,
                 replay_buffer=self.replay_buffer,
                 n_steps=warmup_transitions,
-                policy=None if random_actions else self.policy,
+                policy=self.policy,
                 rollout_state=None,
                 random_actions=random_actions,
                 deterministic=False,
@@ -186,14 +209,12 @@ class SAC(BaseAlgorithm):
             update_ema: bool,
     ) -> tuple[dict[str, Any], int]:
         random_actions = self.n_total_timesteps < self.learning_starts
-        if self.policy.gsde_enabled and self._rollout_state is not None:
-            self._rollout_state.gsde_noise_initialized = False
         with PerformanceTimer() as rollout_timer:
             episode_infos, rollout_metrics, self._rollout_state = collect_off_policy_steps(
                 env=self.env,
                 replay_buffer=self.replay_buffer,
                 n_steps=self.rollout_steps_per_iteration,
-                policy=None if random_actions else self.policy,
+                policy=self.policy,
                 rollout_state=self._rollout_state,
                 random_actions=random_actions,
                 deterministic=False,
@@ -259,8 +280,7 @@ class SAC(BaseAlgorithm):
         n_updates = 0
         for _ in range(gradient_steps):
             with sample_timer:
-                batch = self.replay_buffer.sample(self.batch_size)
-                nop_batch = self._sample_nop_batch()
+                batch, nop_batch, reuse_critic_nop_latents = self._sample_training_batches()
             sample_timings.append(sample_timer.get_duration())
 
             global_update_idx = self.n_total_updates + n_updates
@@ -268,6 +288,7 @@ class SAC(BaseAlgorithm):
                 step_metrics, actor_grad_norm, critic_grad_norm = self._train_step(
                     batch,
                     nop_batch=nop_batch,
+                    reuse_critic_nop_latents=reuse_critic_nop_latents,
                     global_update_idx=global_update_idx,
                 )
             update_timings.append(update_timer.get_duration())
@@ -305,32 +326,20 @@ class SAC(BaseAlgorithm):
         }
 
     def _compute_action_metrics(self, actions: torch.Tensor, *, prefix: str) -> dict[str, Any]:
-        action_dist = self.policy.action_dist
-        split_actions = torch.split(actions, action_dist.action_dims, dim=-1)
-        metrics: dict[str, Any] = {}
-        for i, dist_actions in enumerate(split_actions):
-            if i == 0:
-                for joint_idx in range(2):
-                    metrics[f"{prefix}_act0_j{joint_idx}"] = compute_summary_statistics(
-                        dist_actions[..., joint_idx::2],
-                        find_min=True,
-                        find_max=True,
-                        make_histogram=10,
-                    )
-                continue
-            metrics[f"{prefix}_act{i}"] = compute_summary_statistics(
-                dist_actions,
-                find_min=True,
-                find_max=True,
-                make_histogram=10,
-            )
-        return metrics
+        return {
+            f"{prefix}_{name}": value
+            for name, value in self.policy.action_dist.get_metrics(
+                actions,
+                action_splitter=self.metrics_action_splitters,
+            ).items()
+        }
 
     def _train_step(
             self,
             batch: OffPolicyReplayBatch,
             *,
             nop_batch: OffPolicyReplayBatch | OffPolicyReplayEpisodeSegmentBatch | None = None,
+            reuse_critic_nop_latents: bool = False,
             global_update_idx: int,
     ) -> tuple[dict[str, float], float, float]:
         actor_critic_lr = self._apply_actor_critic_learning_rate_for_update(global_update_idx)
@@ -343,6 +352,7 @@ class SAC(BaseAlgorithm):
             hidden_local_vars=batch.hidden_local_vars,
             hidden_global_vars=batch.hidden_global_vars,
             agent_mask=batch.agent_mask,
+            previous_actions=batch.previous_actions,
             deterministic=False,
         )
         actor_action_dist_losses, actor_action_dist_metrics = self._compute_actor_action_dist_extra_losses(
@@ -364,29 +374,63 @@ class SAC(BaseAlgorithm):
         )
 
         with torch.no_grad():
-            self._reset_train_gsde_noise(batch.next_local_obs)
+            bootstrap_next_local_obs = self._replace_terminal_rows(
+                batch.next_local_obs,
+                terminal_mask=batch.terminal_mask,
+                value=0.0,
+            )
+            bootstrap_next_global_obs = self._replace_terminal_rows(
+                batch.next_global_obs,
+                terminal_mask=batch.terminal_mask,
+                value=0.0,
+            )
+            bootstrap_next_hidden_local_vars = self._replace_terminal_rows(
+                batch.next_hidden_local_vars,
+                terminal_mask=batch.terminal_mask,
+                value=0.0,
+            )
+            bootstrap_next_hidden_global_vars = self._replace_terminal_rows(
+                batch.next_hidden_global_vars,
+                terminal_mask=batch.terminal_mask,
+                value=0.0,
+            )
+            bootstrap_next_agent_mask = (
+                None
+                if batch.next_agent_mask is None
+                else self._replace_terminal_rows(
+                    batch.next_agent_mask,
+                    terminal_mask=batch.terminal_mask,
+                    value=True,
+                )
+            )
+            self._reset_train_gsde_noise(bootstrap_next_local_obs)
             next_actions, next_log_probs = self.policy.action_log_prob(
-                local_obs=batch.next_local_obs,
-                global_obs=batch.next_global_obs,
-                hidden_local_vars=batch.next_hidden_local_vars,
-                hidden_global_vars=batch.next_hidden_global_vars,
-                agent_mask=batch.next_agent_mask,
+                local_obs=bootstrap_next_local_obs,
+                global_obs=bootstrap_next_global_obs,
+                hidden_local_vars=bootstrap_next_hidden_local_vars,
+                hidden_global_vars=bootstrap_next_hidden_global_vars,
+                agent_mask=bootstrap_next_agent_mask,
+                previous_actions=batch.actions,
                 deterministic=False,
                 use_rsample=False,
             )
-            next_log_prob_sum = self._reduce_agent_log_probs(next_log_probs, batch.next_agent_mask)
+            next_log_prob_sum = self._reduce_agent_log_probs(next_log_probs, bootstrap_next_agent_mask)
             target_q1, target_q2 = self.policy.target_q_values(
-                local_obs=batch.next_local_obs,
-                global_obs=batch.next_global_obs,
-                hidden_local_vars=batch.next_hidden_local_vars,
-                hidden_global_vars=batch.next_hidden_global_vars,
-                agent_mask=batch.next_agent_mask,
+                local_obs=bootstrap_next_local_obs,
+                global_obs=bootstrap_next_global_obs,
+                hidden_local_vars=bootstrap_next_hidden_local_vars,
+                hidden_global_vars=bootstrap_next_hidden_global_vars,
+                agent_mask=bootstrap_next_agent_mask,
                 actions=next_actions,
             )
             next_q = torch.minimum(target_q1, target_q2) - ent_coef * next_log_prob_sum
-            target_q = batch.rewards + (1.0 - batch.terminal_mask.to(dtype=batch.rewards.dtype)) * self.gamma * next_q
+            target_q = torch.where(
+                batch.terminal_mask,
+                batch.rewards,
+                batch.rewards + self.gamma * next_q,
+            )
 
-        current_q1, current_q2 = self.policy.q_values(
+        current_q1, current_q2, critic_nop_latents = self.policy.q_values_with_nop_latents(
             local_obs=batch.local_obs,
             global_obs=batch.global_obs,
             hidden_local_vars=batch.hidden_local_vars,
@@ -400,6 +444,11 @@ class SAC(BaseAlgorithm):
         )
         if skip_multi_step_nop_loss:
             critic_nop_loss, critic_nop_metrics = None, {"nop_loss_skipped": 1.0}
+        elif reuse_critic_nop_latents and critic_nop_latents is not None:
+            critic_nop_loss, critic_nop_metrics = self.policy.compute_critic_nop_loss(
+                nop_loss_batch,
+                source_latents=critic_nop_latents,
+            )
         else:
             critic_nop_loss, critic_nop_metrics = self.policy.compute_critic_nop_loss(nop_loss_batch)
         critic_total_loss = critic_loss if critic_nop_loss is None else critic_loss + critic_nop_loss
@@ -460,6 +509,7 @@ class SAC(BaseAlgorithm):
         }
         if ent_coef_loss is not None:
             metrics["ent_coef_loss"] = ent_coef_loss.item()
+            metrics["ent_coef_learning_rate"] = self._resolved_ent_coef_learning_rate()
         metrics.update({
             f"actor_action_dist_{name}_loss_scaled": value.item()
             for name, value in reduced_actor_action_dist_losses.items()
@@ -485,7 +535,10 @@ class SAC(BaseAlgorithm):
             self.log_ent_coef = torch.log(
                 torch.ones((), device=self.train_device, dtype=torch.float32) * init_value
             ).requires_grad_(True)
-            self.ent_coef_optimizer = torch.optim.Adam([self.log_ent_coef], lr=self.learning_rate)
+            self.ent_coef_optimizer = torch.optim.Adam(
+                [self.log_ent_coef],
+                lr=self._resolved_ent_coef_learning_rate(),
+            )
             return
 
         ent_coef = float(self.ent_coef)
@@ -568,7 +621,17 @@ class SAC(BaseAlgorithm):
     def _reduce_agent_log_probs(log_probs: torch.Tensor, agent_mask: torch.Tensor | None) -> torch.Tensor:
         if agent_mask is None:
             return log_probs.sum(dim=1)
-        return (log_probs * agent_mask.to(dtype=log_probs.dtype)).sum(dim=1)
+        return log_probs.masked_fill(~agent_mask, 0.0).sum(dim=1)
+
+    @staticmethod
+    def _replace_terminal_rows(
+            tensor: torch.Tensor,
+            *,
+            terminal_mask: torch.Tensor,
+            value: bool | float,
+    ) -> torch.Tensor:
+        row_mask = terminal_mask.reshape((-1,) + (1,) * (tensor.ndim - 1))
+        return tensor.masked_fill(row_mask, value)
 
     def _compute_actor_action_dist_extra_losses(
             self,
@@ -644,25 +707,71 @@ class SAC(BaseAlgorithm):
         return lr
 
     def _should_train(self) -> bool:
-        return (
-            self.n_total_timesteps >= self.learning_starts
-            and len(self.replay_buffer) >= self.batch_size
+        return len(self.replay_buffer) >= self.replay_fill_target
+
+    @property
+    def replay_fill_target(self) -> int:
+        return max(self.learning_starts, self.batch_size)
+
+    def load(
+            self,
+            path: str | Path,
+            *,
+            map_location: Any | None = "cpu",
+            recover_best_return_ema: bool = True,
+            strict_load_state_dict: bool = True,
+    ) -> None:
+        super().load(
+            path,
+            map_location=map_location,
+            recover_best_return_ema=recover_best_return_ema,
+            strict_load_state_dict=strict_load_state_dict,
+        )
+        self.replay_buffer.reset()
+        self._rollout_state = None
+        self._rollout_warmup_done = True
+        logger.info(
+            "Loaded SAC without replay state; collecting "
+            f"{self.replay_fill_target} fresh transitions before training resumes."
         )
 
-    def _sample_nop_batch(self) -> OffPolicyReplayEpisodeSegmentBatch | None:
+    def _sample_training_batches(
+            self,
+    ) -> tuple[
+        OffPolicyReplayBatch,
+        OffPolicyReplayBatch | OffPolicyReplayEpisodeSegmentBatch | None,
+        bool,
+    ]:
+        if not self.policy.has_nop_loss():
+            return self.replay_buffer.sample(self.batch_size), None, False
+        if self.independent_nop_sampling:
+            return (
+                self.replay_buffer.sample(self.batch_size),
+                self._sample_independent_nop_batch(),
+                False,
+            )
+        nop_batch = self.replay_buffer.sample_episode_windows(
+            self.batch_size,
+            num_next_steps=self.policy.get_nop_num_next_steps(),
+        )
+        return nop_batch.origin_batch, nop_batch, True
+
+    def _sample_independent_nop_batch(
+            self,
+    ) -> OffPolicyReplayBatch | OffPolicyReplayEpisodeSegmentBatch | None:
         if not self._uses_multi_step_nop():
-            return None
+            return self.replay_buffer.sample(self.nop_batch_size)
         try:
             return self.replay_buffer.sample_episode_segments(
                 self.nop_batch_size,
-                segment_length=self.nop_steps,
+                segment_length=self.policy.get_nop_num_next_steps(),
                 require_initial_temporal_state=False,
             )
         except NoEpisodeSegmentCandidatesError:
             return None
 
     def _uses_multi_step_nop(self) -> bool:
-        return self.nop_steps > 1 and self.policy.has_nop_loss()
+        return self.policy.has_nop_loss() and self.policy.get_nop_num_next_steps() > 1
 
     def _resolved_gradient_steps(self, rollout_steps: int) -> int:
         if self.gradient_steps == -1:
@@ -681,10 +790,20 @@ class SAC(BaseAlgorithm):
                 "learning_rate_warmup_start_factor must be in (0, 1], got "
                 f"{self.learning_rate_warmup_start_factor}"
             )
+        if self.ent_coef_learning_rate is not None and self.ent_coef_learning_rate <= 0.0:
+            raise ValueError(
+                f"ent_coef_learning_rate must be > 0 when set, got {self.ent_coef_learning_rate}"
+            )
         if self.learning_starts < 0:
             raise ValueError(f"learning_starts must be >= 0, got {self.learning_starts}")
         if self.batch_size <= 0:
             raise ValueError(f"batch_size must be > 0, got {self.batch_size}")
+        total_replay_capacity = self.buffer_capacity_per_env * self.env.action_space.n_envs
+        if self.replay_fill_target > total_replay_capacity:
+            raise ValueError(
+                f"Replay fill target {self.replay_fill_target} exceeds total replay capacity "
+                f"{total_replay_capacity}. Increase buffer_capacity_per_env or reduce learning_starts/batch_size."
+            )
         if self.rollout_steps_per_iteration <= 0:
             raise ValueError(
                 f"rollout_steps_per_iteration must be > 0, got {self.rollout_steps_per_iteration}"
@@ -708,26 +827,21 @@ class SAC(BaseAlgorithm):
             raise ValueError(f"target_update_interval must be > 0, got {self.target_update_interval}")
         if self.max_grad_norm is not None and self.max_grad_norm <= 0:
             raise ValueError(f"max_grad_norm must be > 0 when set, got {self.max_grad_norm}")
-        if self.nop_steps <= 0:
-            raise ValueError(f"nop_steps must be > 0, got {self.nop_steps}")
         if self.nop_batch_size <= 0:
             raise ValueError(f"nop_batch_size must be > 0, got {self.nop_batch_size}")
-        if self.policy.gsde_enabled:
-            if self.gsde_reset_mode is None:
-                raise ValueError("gsde_reset_mode is required when the SAC policy uses GSDEConfig.")
-            if isinstance(self.gsde_reset_mode, GSDEIntervalResetMode):
-                if self.gsde_reset_mode.interval <= 0:
-                    raise ValueError(
-                        f"GSDEIntervalResetMode.interval must be > 0, got {self.gsde_reset_mode.interval}"
-                    )
-            elif isinstance(self.gsde_reset_mode, GSDEProbabilityResetMode):
-                if not (0.0 < self.gsde_reset_mode.probability < 1.0):
-                    raise ValueError(
-                        "GSDEProbabilityResetMode.probability must be in (0, 1), "
-                        f"got {self.gsde_reset_mode.probability}"
-                    )
-            else:
-                raise TypeError(f"Unknown gsde_reset_mode type: {type(self.gsde_reset_mode)}")
+        if (
+                self.policy.has_nop_loss()
+                and not self.independent_nop_sampling
+                and self.nop_batch_size != self.batch_size
+        ):
+            raise ValueError(
+                "nop_batch_size must equal batch_size when independent_nop_sampling=False; "
+                "shared-origin NOP uses the Bellman batch origins."
+            )
+        resolve_gsde_reset_mode(
+            gsde_enabled=self.policy.gsde_enabled,
+            reset_mode=self.gsde_reset_mode,
+        )
 
     @staticmethod
     def _set_requires_grad(parameters: list[torch.nn.Parameter], value: bool) -> None:
@@ -765,7 +879,10 @@ class SAC(BaseAlgorithm):
     def _move_entropy_tensors_to_train_device(self) -> None:
         if self.log_ent_coef is not None and self.log_ent_coef.device != self.train_device:
             self.log_ent_coef = self.log_ent_coef.detach().to(self.train_device).requires_grad_(True)
-            self.ent_coef_optimizer = torch.optim.Adam([self.log_ent_coef], lr=self.learning_rate)
+            self.ent_coef_optimizer = torch.optim.Adam(
+                [self.log_ent_coef],
+                lr=self._resolved_ent_coef_learning_rate(),
+            )
         if self.ent_coef_tensor is not None and self.ent_coef_tensor.device != self.train_device:
             self.ent_coef_tensor = self.ent_coef_tensor.to(self.train_device)
 
@@ -799,7 +916,27 @@ class SAC(BaseAlgorithm):
         if unexpected_keys:
             logger.warning(f"Loading SAC optimizer state with unexpected policy keys: {unexpected_keys}")
         self.actor_optimizer.load_state_dict(state_dict["actor_optimizer"])
-        self.critic_optimizer.load_state_dict(state_dict["critic_optimizer"])
+        critic_optimizer_state = state_dict["critic_optimizer"]
+        saved_critic_parameter_count = sum(
+            len(param_group["params"])
+            for param_group in critic_optimizer_state["param_groups"]
+        )
+        current_critic_parameter_count = sum(
+            len(param_group["params"])
+            for param_group in self.critic_optimizer.param_groups
+        )
+        if saved_critic_parameter_count == current_critic_parameter_count:
+            self.critic_optimizer.load_state_dict(critic_optimizer_state)
+        else:
+            logger.warning(
+                "Critic optimizer parameter count changed "
+                f"({saved_critic_parameter_count} -> {current_critic_parameter_count}); "
+                "reinitializing critic optimizer state."
+            )
+            self.critic_optimizer = torch.optim.Adam(
+                self.policy.critic_parameters(),
+                lr=self._actor_critic_learning_rate_for_update(self.n_total_updates),
+            )
         self.log_ent_coef = None
         self.ent_coef_optimizer = None
         self.ent_coef_tensor = None
@@ -809,10 +946,14 @@ class SAC(BaseAlgorithm):
             raise ValueError("Invalid SAC optimizer state: both log_ent_coef and ent_coef_tensor are set.")
         if log_ent_coef is not None:
             self.log_ent_coef = log_ent_coef.to(self.train_device).detach().requires_grad_(True)
-            self.ent_coef_optimizer = torch.optim.Adam([self.log_ent_coef], lr=self.learning_rate)
+            self.ent_coef_optimizer = torch.optim.Adam(
+                [self.log_ent_coef],
+                lr=self._resolved_ent_coef_learning_rate(),
+            )
             ent_state = state_dict.get("ent_coef_optimizer", None)
             if ent_state is not None:
                 self.ent_coef_optimizer.load_state_dict(ent_state)
+            self._apply_entropy_coefficient_learning_rate()
         if ent_coef_tensor is not None:
             self.ent_coef_tensor = ent_coef_tensor.to(self.train_device).detach()
         self._move_optimizer_state_to_device(self.actor_optimizer, self.train_device)
@@ -826,9 +967,19 @@ class SAC(BaseAlgorithm):
         for optimizer in (self.actor_optimizer, self.critic_optimizer):
             for param_group in optimizer.param_groups:
                 param_group["lr"] = actor_critic_lr
-        if self.ent_coef_optimizer is not None:
-            for param_group in self.ent_coef_optimizer.param_groups:
-                param_group["lr"] = lr
+        self._apply_entropy_coefficient_learning_rate()
+
+    def _apply_entropy_coefficient_learning_rate(self) -> None:
+        if self.ent_coef_optimizer is None:
+            return
+        learning_rate = self._resolved_ent_coef_learning_rate()
+        for param_group in self.ent_coef_optimizer.param_groups:
+            param_group["lr"] = learning_rate
+
+    def _resolved_ent_coef_learning_rate(self) -> float:
+        if self.ent_coef_learning_rate is None:
+            return self.learning_rate
+        return self.ent_coef_learning_rate
 
     @staticmethod
     def _move_optimizer_state_to_device(optimizer: torch.optim.Optimizer, device: torch.device) -> None:
@@ -844,9 +995,16 @@ class SAC(BaseAlgorithm):
             extra_run_metadata: dict[str, Any] | None,
     ) -> bool:
         if cmd in {"set_batch_size", "batch_size"}:
-            self.batch_size = int(params)
-            if self.batch_size <= 0:
-                raise ValueError(f"batch_size must be > 0, got {self.batch_size}")
+            batch_size = int(params)
+            if batch_size <= 0:
+                raise ValueError(f"batch_size must be > 0, got {batch_size}")
+            total_replay_capacity = self.buffer_capacity_per_env * self.env.action_space.n_envs
+            if max(self.learning_starts, batch_size) > total_replay_capacity:
+                raise ValueError(
+                    f"batch_size={batch_size} would make the replay fill target exceed total replay capacity "
+                    f"{total_replay_capacity}."
+                )
+            self.batch_size = batch_size
             logger.warning(f"Setting batch_size to {self.batch_size}")
             return True
         if cmd == "set_gamma":

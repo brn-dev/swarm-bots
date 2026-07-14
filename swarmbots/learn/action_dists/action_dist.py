@@ -1,4 +1,5 @@
 import abc
+from enum import StrEnum
 from typing import Callable, Optional, Self, Any
 
 import torch
@@ -14,6 +15,21 @@ ActionMetricsSplitter = Callable[[torch.Tensor], dict[str, torch.Tensor]]
 ActionMetricsSplitterInput = ActionMetricsSplitter | list[ActionMetricsSplitter | None] | None
 
 AGENT_ACTIONS_DIM = -1
+
+
+class ActionGradientEstimator(StrEnum):
+    NONE = "none"
+    PATHWISE = "pathwise"
+    STRAIGHT_THROUGH = "straight_through"
+
+    @property
+    def supports_actor_gradients(self) -> bool:
+        return self is not ActionGradientEstimator.NONE
+
+
+def validate_probability_clamp_epsilon(epsilon: float) -> None:
+    if not (0.0 < epsilon < 0.5):
+        raise ValueError(f"epsilon must be in (0, 0.5), got {epsilon}")
 
 
 

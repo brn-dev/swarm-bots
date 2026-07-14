@@ -81,6 +81,7 @@ class NextObsPredMixin(abc.ABC):
 
     predict_delta: bool
     predict_delta_mode: PredictDeltaMode | None
+    skip_first_transition: bool
 
     binary_target_ema: Optional[torch.Tensor]
     binary_target_ema_decay: float
@@ -100,6 +101,7 @@ class NextObsPredMixin(abc.ABC):
             global_pool_encoder: Optional[nn.Module] = None,
             global_scalars_predictor: Optional[nn.Module] = None,
             global_rot6ds_predictor: Optional[nn.Module] = None,
+            skip_first_transition: bool = False,
     ) -> None:
         local_scalar_target_indices = self._normalize_indices(config.local_scalar_target_indices)
         local_angle_target_indices = self._normalize_indices(config.local_angle_target_indices)
@@ -132,6 +134,7 @@ class NextObsPredMixin(abc.ABC):
             pre_transition_transform if pre_transition_transform is not None else nn.Identity()
         )
         self.transition_model = transition_model
+        self.skip_first_transition = bool(skip_first_transition)
         self.pre_predictors_transform = (
             pre_predictors_transform if pre_predictors_transform is not None else nn.Identity()
         )
@@ -584,11 +587,14 @@ class NextObsPredMixin(abc.ABC):
         if self.has_global_next_obs_pred_targets:
             if next_global_obs is None:
                 raise ValueError("next_global_obs is required for global next-observation prediction targets")
-            global_latent_preds = self._pool_global_latent_preds(latent_preds, agent_mask=agent_mask)
+            global_latent_preds = self._pool_global_latent_preds(
+                latent_preds,
+                agent_mask=effective_loss_agent_mask,
+            )
             global_valid_mask = self._build_global_valid_mask(
                 base_shape=global_latent_preds.shape[:-1],
-                device=global_latent_preds.device,
                 time_mask=time_mask,
+                agent_mask=effective_loss_agent_mask,
             )
         global_scalar_loss = self.compute_global_scalar_loss(
             global_latent_preds=global_latent_preds,
@@ -795,18 +801,46 @@ class NextObsPredMixin(abc.ABC):
     def _build_global_valid_mask(
             *,
             base_shape: tuple[int, ...],
-            device: torch.device,
             time_mask: torch.Tensor | None,
+            agent_mask: torch.Tensor | None,
     ) -> torch.Tensor | None:
-        if time_mask is None:
-            return None
-        if len(base_shape) != 2:
-            raise ValueError("time_mask is only supported for multi-step global loss")
-        if time_mask.shape != base_shape or time_mask.dtype != torch.bool:
-            raise ValueError(
-                f"Expected time_mask shape {base_shape} and dtype bool, got {tuple(time_mask.shape)} / {time_mask.dtype}"
-            )
-        return torch.ones(base_shape, dtype=torch.bool, device=device) & time_mask
+        valid_mask = None
+        if agent_mask is not None:
+            if len(base_shape) == 1:
+                if agent_mask.ndim != 2 or agent_mask.shape[0] != base_shape[0]:
+                    raise ValueError(
+                        f"Expected single-step agent_mask shape (B, N) with B={base_shape[0]}, "
+                        f"got {tuple(agent_mask.shape)}"
+                    )
+                valid_mask = agent_mask.any(dim=-1)
+            elif len(base_shape) == 2:
+                if agent_mask.ndim == 2:
+                    if agent_mask.shape[0] != base_shape[0]:
+                        raise ValueError(
+                            f"Expected multi-step agent_mask leading dimension {base_shape[0]}, "
+                            f"got {tuple(agent_mask.shape)}"
+                        )
+                    valid_mask = agent_mask.any(dim=-1, keepdim=True).expand(base_shape)
+                elif agent_mask.ndim == 3 and agent_mask.shape[:2] == base_shape:
+                    valid_mask = agent_mask.any(dim=-1)
+                else:
+                    raise ValueError(
+                        f"Expected multi-step agent_mask shape (B, N) or (B, T, N) with "
+                        f"(B, T)={base_shape}, got {tuple(agent_mask.shape)}"
+                    )
+            else:
+                raise ValueError(f"Expected global prediction base shape (B,) or (B, T), got {base_shape}")
+
+        if time_mask is not None:
+            if len(base_shape) != 2:
+                raise ValueError("time_mask is only supported for multi-step global loss")
+            if time_mask.shape != base_shape or time_mask.dtype != torch.bool:
+                raise ValueError(
+                    f"Expected time_mask shape {base_shape} and dtype bool, "
+                    f"got {tuple(time_mask.shape)} / {time_mask.dtype}"
+                )
+            valid_mask = time_mask if valid_mask is None else valid_mask & time_mask
+        return valid_mask
 
     def _update_binary_target_ema(
             self,
@@ -857,7 +891,11 @@ class NextObsPredMixin(abc.ABC):
                     f"Expected next_local_obs shape (B, N, F)=({local_latents.shape[0]}, {local_latents.shape[1]}, F), "
                     f"got {tuple(next_local_obs.shape)}"
                 )
-            latent_preds = self.transition_model(local_latents, actions, agent_mask=agent_mask)
+            latent_preds = (
+                local_latents
+                if self.skip_first_transition
+                else self.transition_model(local_latents, actions, agent_mask=agent_mask)
+            )
             return latent_preds, latent_preds.shape[:2]
 
         if actions.ndim == 4:
@@ -870,7 +908,24 @@ class NextObsPredMixin(abc.ABC):
                 raise ValueError(
                     f"Expected next_local_obs shape (B, T, N, F)=({b}, {t}, {n}, F), got {tuple(next_local_obs.shape)}"
                 )
-            latent_preds = self.transition_model.predict_n_steps(local_latents, actions, agent_mask=agent_mask)
+            if self.skip_first_transition:
+                first_latent_pred = local_latents.unsqueeze(1)
+                if t == 1:
+                    latent_preds = first_latent_pred
+                else:
+                    transition_agent_mask = (
+                        agent_mask[:, 1:]
+                        if agent_mask is not None and agent_mask.ndim == 3
+                        else agent_mask
+                    )
+                    remaining_latent_preds = self.transition_model.predict_n_steps(
+                        local_latents,
+                        actions[:, 1:],
+                        agent_mask=transition_agent_mask,
+                    )
+                    latent_preds = torch.cat((first_latent_pred, remaining_latent_preds), dim=1)
+            else:
+                latent_preds = self.transition_model.predict_n_steps(local_latents, actions, agent_mask=agent_mask)
             return latent_preds, latent_preds.shape[:3]
 
         raise ValueError(
