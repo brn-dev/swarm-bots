@@ -12,6 +12,7 @@ from swarmbots.learn.action_dists.action_dist import (
     ActionNetInitialization,
     ActionMetricsSplitterInput,
     compute_action_metrics,
+    validate_probability_clamp_epsilon,
 )
 
 
@@ -44,6 +45,7 @@ class BetaMixtureActionDist(ActionDist):
 
         if num_components < 2:
             raise ValueError(f"num_components must be >= 2, got {num_components}.")
+        validate_probability_clamp_epsilon(epsilon)
 
         self.num_components = num_components
         self.epsilon = epsilon

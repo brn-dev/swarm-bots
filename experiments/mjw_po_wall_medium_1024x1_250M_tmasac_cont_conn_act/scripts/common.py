@@ -25,7 +25,9 @@ def run_experiment(
         entrypoint_path: Path,
         continuous_action_dist: ContinuousActionDistVariant,
         use_nop: bool = True,
-        sac_ent_coef: float | str = "auto_0.001",
+        sac_learning_rate: float = 3e-4,
+        sac_ent_coef_learning_rate: float | None = 5e-4,
+        sac_ent_coef: float | str = "auto_0.005",
         sac_target_entropy: float | str = "auto_0.1",
 ) -> None:
     run_mjw_wall_experiment(
@@ -41,6 +43,8 @@ def run_experiment(
         experiment_run_name=EXPERIMENT_RUN_NAME,
         scenario_kwargs=SCENARIO_KWARGS,
         total_timesteps=EXPERIMENT_TOTAL_TIMESTEPS,
+        sac_learning_rate=sac_learning_rate,
+        sac_ent_coef_learning_rate=sac_ent_coef_learning_rate,
         sac_ent_coef=sac_ent_coef,
         sac_target_entropy=sac_target_entropy,
     )

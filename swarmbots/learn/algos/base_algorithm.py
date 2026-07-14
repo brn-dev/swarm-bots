@@ -34,7 +34,7 @@ from swarmbots.utils.recording_resolution import DEFAULT_RECORDING_HEIGHT, DEFAU
 
 
 MIN_ITERATIONS_FOR_EMA = 10
-MIN_ITERATIONS_FOR_BEST = 200
+MIN_ITERATIONS_FOR_BEST = 100
 
 LearningRate = float | list[float] | dict[str, float]
 LearnIterationHook = Callable[["BaseAlgorithm", dict[str, Any], int], None]

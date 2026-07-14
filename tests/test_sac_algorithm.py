@@ -1,11 +1,17 @@
-from typing import Any
+import tempfile
 import unittest
+from dataclasses import replace
+from typing import Any
 
 import torch
 from gymnasium.vector import AutoresetMode, SyncVectorEnv
 
 from swarmbots.learn.action_dists.beta_action_dist import BetaConfig
 from swarmbots.learn.action_dists.gsde_action_dist import GSDEConfig
+from swarmbots.learn.action_dists.gumbel_softmax_sign_magnitude_action_dist import (
+    GumbelSoftmaxSignMagnitudeBetaConfig,
+    GumbelSoftmaxSignMagnitudeKumaraswamyConfig,
+)
 from swarmbots.learn.action_dists.hybrid_action_dist import ContinuousActionDistConfig
 from swarmbots.learn.action_dists.predicted_std_action_dist import PredictedStdConfig
 from swarmbots.learn.action_dists.reparameterized_sign_magnitude_kumaraswamy_action_dist import (
@@ -16,7 +22,11 @@ from swarmbots.learn.action_dists.reparameterized_squashed_gaussian_mixture_acti
 )
 from swarmbots.learn.action_dists.squashed_diag_gaussian_action_dist import SquashedDiagGaussianConfig
 from swarmbots.learn.algos.mat.mat_encoder import MATEncoderConfig
-from swarmbots.learn.algos.off_policy.replay_buffer import OffPolicyReplayBatch, OffPolicyReplayEpisodeSegmentBatch
+from swarmbots.learn.algos.off_policy.replay_buffer import (
+    OffPolicyReplayBatch,
+    OffPolicyReplayBuffer,
+    OffPolicyReplayEpisodeSegmentBatch,
+)
 from swarmbots.learn.algos.sac import (
     BaseSACPolicy,
     SAC,
@@ -31,6 +41,7 @@ from swarmbots.learn.algos.world_modeling.next_obs_pred_mixin import NextObsPred
 from swarmbots.learn.env_wrappers.learn_wrappers.swarm_bots_learn_env_wrapper import SwarmBotsLearnEnvWrapper
 from swarmbots.learn.exponential_moving_average import ExponentialMovingAverage
 from swarmbots.learn.gsde_reset import GSDEIntervalResetMode
+from swarmbots.learn.temporal_state import clone_temporal_state
 from swarmbots.learn.testing_env import TestingSwarmBotsEnv
 
 
@@ -82,9 +93,11 @@ def _make_policy(
     )
 
 
-def _supported_reparameterized_configs() -> list[ContinuousActionDistConfig]:
+def _supported_differentiable_configs() -> list[ContinuousActionDistConfig]:
     return [
         BetaConfig(),
+        GumbelSoftmaxSignMagnitudeBetaConfig(),
+        GumbelSoftmaxSignMagnitudeKumaraswamyConfig(),
         PredictedStdConfig(base_std=0.7),
         SquashedDiagGaussianConfig(std=0.5, std_learnable=True),
         ReparameterizedSignMagnitudeKumaraswamyConfig(),
@@ -109,10 +122,11 @@ class _ConstantTargetSACPolicy(BaseSACPolicy):
             hidden_local_vars: torch.Tensor | None = None,
             hidden_global_vars: torch.Tensor | None = None,
             agent_mask: torch.Tensor | None = None,
+            previous_actions: torch.Tensor | None = None,
             deterministic: bool = False,
             use_rsample: bool = True,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        _ = (global_obs, hidden_local_vars, hidden_global_vars, deterministic, use_rsample)
+        _ = (global_obs, hidden_local_vars, hidden_global_vars, previous_actions, deterministic, use_rsample)
         actions = local_obs.new_ones((local_obs.shape[0], self.n_agents, self.action_dim)) * self.actor_scale
         if agent_mask is not None:
             actions = actions.masked_fill(~agent_mask.unsqueeze(-1), 0.0)
@@ -162,8 +176,10 @@ class _ConstantTargetSACPolicy(BaseSACPolicy):
     def compute_critic_nop_loss(
             self,
             batch: OffPolicyReplayBatch | OffPolicyReplayEpisodeSegmentBatch,
+            *,
+            source_latents: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor | None, dict[str, Any]]:
-        _ = batch
+        _ = (batch, source_latents)
         return None, {}
 
     def polyak_update_targets(self, tau: float) -> None:
@@ -181,6 +197,39 @@ class _ConstantTargetSACPolicy(BaseSACPolicy):
     def update_loss_weights(self, **weights: float) -> None:
         if weights:
             raise ValueError(f"Unknown weights given: {weights}")
+
+
+class _NonFiniteTerminalTargetSACPolicy(_ConstantTargetSACPolicy):
+    def target_q_values(
+            self,
+            *,
+            local_obs: torch.Tensor,
+            global_obs: torch.Tensor,
+            actions: torch.Tensor,
+            hidden_local_vars: torch.Tensor | None = None,
+            hidden_global_vars: torch.Tensor | None = None,
+            agent_mask: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        if not all(torch.isfinite(tensor).all() for tensor in (
+                local_obs,
+                global_obs,
+                hidden_local_vars,
+                hidden_global_vars,
+        )):
+            raise AssertionError("SAC must sanitize terminal next-observation rows before bootstrapping")
+        if agent_mask is not None and not bool(agent_mask[0].all()):
+            raise AssertionError("SAC must replace an all-inactive terminal mask before attention")
+        target_q1, target_q2 = super().target_q_values(
+            local_obs=local_obs,
+            global_obs=global_obs,
+            actions=actions,
+            hidden_local_vars=hidden_local_vars,
+            hidden_global_vars=hidden_global_vars,
+            agent_mask=agent_mask,
+        )
+        target_q1[0] = torch.nan
+        target_q2[0] = torch.nan
+        return target_q1, target_q2
 
 
 class _ConstantActionDistExtraLoss:
@@ -271,7 +320,7 @@ class SACTests(unittest.TestCase):
                 policy=policy,
                 env=env,
                 learning_rate=1e-3,
-                buffer_capacity_per_env=8,
+                buffer_capacity_per_env=128,
                 learning_starts=100,
                 batch_size=2,
                 rollout_steps_per_iteration=2,
@@ -294,6 +343,8 @@ class SACTests(unittest.TestCase):
             self.assertEqual(metrics["updates"], 0)
             self.assertTrue(metrics["random_actions"])
             self.assertTrue(metrics["training_skipped"])
+            self.assertIs(type(algo.replay_buffer), OffPolicyReplayBuffer)
+            self.assertIs(type(algo.replay_buffer.sample(1)), OffPolicyReplayBatch)
         finally:
             env.close()
 
@@ -398,7 +449,59 @@ class SACTests(unittest.TestCase):
         finally:
             env.close()
 
-    def test_learning_rate_warmup_only_applies_to_actor_and_critic_optimizers(self) -> None:
+    def test_load_requires_fresh_replay_fill_before_training_resumes(self) -> None:
+        source_env = _make_env()
+        restored_env = _make_env()
+        try:
+            common_kwargs = {
+                "learning_rate": 1e-3,
+                "buffer_capacity_per_env": 8,
+                "learning_starts": 4,
+                "batch_size": 2,
+                "rollout_steps_per_iteration": 2,
+                "gradient_steps": 1,
+                "train_device": "cpu",
+                "rollout_device": "cpu",
+                "replay_storage_device": "cpu",
+            }
+            source = SAC(policy=_make_policy(source_env), env=source_env, **common_kwargs)
+            source.perform_iteration(
+                ExponentialMovingAverage(alpha=0.1),
+                ExponentialMovingAverage(alpha=0.1),
+                update_ema=False,
+            )
+
+            with tempfile.TemporaryDirectory() as temp_dir:
+                checkpoint_path = f"{temp_dir}/sac.pt"
+                source.save(checkpoint_path)
+                restored = SAC(policy=_make_policy(restored_env), env=restored_env, **common_kwargs)
+                restored.load(checkpoint_path)
+
+                self.assertEqual(restored.n_total_timesteps, 2)
+                self.assertEqual(len(restored.replay_buffer), 0)
+                self.assertIsNone(restored._rollout_state)
+
+                first_metrics, _ = restored.perform_iteration(
+                    ExponentialMovingAverage(alpha=0.1),
+                    ExponentialMovingAverage(alpha=0.1),
+                    update_ema=False,
+                )
+                self.assertEqual(restored.n_total_timesteps, 4)
+                self.assertEqual(len(restored.replay_buffer), 2)
+                self.assertEqual(first_metrics["updates"], 0)
+
+                second_metrics, _ = restored.perform_iteration(
+                    ExponentialMovingAverage(alpha=0.1),
+                    ExponentialMovingAverage(alpha=0.1),
+                    update_ema=False,
+                )
+                self.assertEqual(len(restored.replay_buffer), 4)
+                self.assertEqual(second_metrics["updates"], 1)
+        finally:
+            source_env.close()
+            restored_env.close()
+
+    def test_learning_rate_warmup_preserves_explicit_entropy_coefficient_rate(self) -> None:
         env = _make_env()
         try:
             policy = _ConstantTargetSACPolicy(
@@ -416,6 +519,7 @@ class SACTests(unittest.TestCase):
                 learning_starts=0,
                 batch_size=2,
                 ent_coef="auto_0.1",
+                ent_coef_learning_rate=3e-3,
                 max_grad_norm=None,
                 train_device="cpu",
                 rollout_device="cpu",
@@ -430,9 +534,10 @@ class SACTests(unittest.TestCase):
             )
 
             self.assertAlmostEqual(metrics["actor_critic_learning_rate"], 2.5e-4)
+            self.assertAlmostEqual(metrics["ent_coef_learning_rate"], 3e-3)
             self.assertAlmostEqual(algo.actor_optimizer.param_groups[0]["lr"], 2.5e-4)
             self.assertAlmostEqual(algo.critic_optimizer.param_groups[0]["lr"], 2.5e-4)
-            self.assertAlmostEqual(algo.ent_coef_optimizer.param_groups[0]["lr"], 1e-3)
+            self.assertAlmostEqual(algo.ent_coef_optimizer.param_groups[0]["lr"], 3e-3)
 
             metrics, _actor_grad_norm, _critic_grad_norm = algo._train_step(
                 batch,
@@ -442,12 +547,99 @@ class SACTests(unittest.TestCase):
             self.assertAlmostEqual(metrics["actor_critic_learning_rate"], 1e-3)
             self.assertAlmostEqual(algo.actor_optimizer.param_groups[0]["lr"], 1e-3)
             self.assertAlmostEqual(algo.critic_optimizer.param_groups[0]["lr"], 1e-3)
-            self.assertAlmostEqual(algo.ent_coef_optimizer.param_groups[0]["lr"], 1e-3)
+            self.assertAlmostEqual(algo.ent_coef_optimizer.param_groups[0]["lr"], 3e-3)
+
+            algo.set_learning_rate(2e-3)
+
+            self.assertAlmostEqual(algo.ent_coef_optimizer.param_groups[0]["lr"], 3e-3)
         finally:
             env.close()
 
-    def test_perform_iteration_with_supported_reparameterized_actor_configs(self) -> None:
-        for continuous_config in _supported_reparameterized_configs():
+    def test_load_reapplies_configured_entropy_coefficient_learning_rate(self) -> None:
+        source_env = _make_env()
+        restored_env = _make_env()
+        try:
+            common_kwargs = {
+                "learning_rate": 1e-3,
+                "learning_rate_warmup_updates": 0,
+                "buffer_capacity_per_env": 4,
+                "learning_starts": 0,
+                "batch_size": 2,
+                "ent_coef": "auto_0.1",
+                "train_device": "cpu",
+                "rollout_device": "cpu",
+                "replay_storage_device": "cpu",
+            }
+            source = SAC(
+                policy=_ConstantTargetSACPolicy(
+                    n_agents=source_env.n_agents,
+                    action_dim=source_env.action_space.total_agent_action_dim,
+                    target_q_value=0.0,
+                ),
+                env=source_env,
+                ent_coef_learning_rate=1e-4,
+                **common_kwargs,
+            )
+            restored = SAC(
+                policy=_ConstantTargetSACPolicy(
+                    n_agents=restored_env.n_agents,
+                    action_dim=restored_env.action_space.total_agent_action_dim,
+                    target_q_value=0.0,
+                ),
+                env=restored_env,
+                ent_coef_learning_rate=3e-3,
+                **common_kwargs,
+            )
+
+            with tempfile.TemporaryDirectory() as temp_dir:
+                checkpoint_path = f"{temp_dir}/sac.pt"
+                source.save(
+                    checkpoint_path,
+                    optimizer_state_dict=source._get_optimizer_state_dict(),
+                )
+                restored.load(checkpoint_path)
+
+            assert restored.ent_coef_optimizer is not None
+            self.assertAlmostEqual(restored.ent_coef_optimizer.param_groups[0]["lr"], 3e-3)
+        finally:
+            source_env.close()
+            restored_env.close()
+
+    def test_entropy_coefficient_learning_rate_defaults_to_main_rate(self) -> None:
+        env = _make_env()
+        try:
+            policy = _ConstantTargetSACPolicy(
+                n_agents=env.n_agents,
+                action_dim=env.action_space.total_agent_action_dim,
+                target_q_value=0.0,
+            )
+            algo = SAC(
+                policy=policy,
+                env=env,
+                learning_rate=1e-3,
+                learning_rate_warmup_updates=0,
+                buffer_capacity_per_env=4,
+                learning_starts=0,
+                batch_size=2,
+                ent_coef="auto_0.1",
+                train_device="cpu",
+                rollout_device="cpu",
+                replay_storage_device="cpu",
+            )
+            assert algo.ent_coef_optimizer is not None
+
+            self.assertIsNone(algo.ent_coef_learning_rate)
+            self.assertAlmostEqual(algo.ent_coef_optimizer.param_groups[0]["lr"], 1e-3)
+
+            algo.set_learning_rate(2e-3)
+
+            self.assertAlmostEqual(algo.ent_coef_optimizer.param_groups[0]["lr"], 2e-3)
+            self.assertAlmostEqual(algo.get_hyper_parameters()["resolved_ent_coef_learning_rate"], 2e-3)
+        finally:
+            env.close()
+
+    def test_perform_iteration_with_supported_differentiable_actor_configs(self) -> None:
+        for continuous_config in _supported_differentiable_configs():
             with self.subTest(config=type(continuous_config).__name__):
                 env = _make_env()
                 try:
@@ -528,13 +720,167 @@ class SACTests(unittest.TestCase):
         finally:
             env.close()
 
-    def test_multi_step_nop_samples_episode_segments(self) -> None:
+    def test_gsde_rollout_noise_persists_across_training_iterations(self) -> None:
+        env = _make_env(max_steps=20)
+        try:
+            policy = _make_policy(env, continuous_config=GSDEConfig(base_std=0.5))
+            algo = SAC(
+                policy=policy,
+                env=env,
+                learning_rate=1e-3,
+                buffer_capacity_per_env=8,
+                learning_starts=0,
+                batch_size=1,
+                rollout_steps_per_iteration=1,
+                gradient_steps=1,
+                gsde_reset_mode=GSDEIntervalResetMode(interval=10),
+                train_device="cpu",
+                rollout_device="cpu",
+                replay_storage_device="cpu",
+            )
+            episode_return_ema = ExponentialMovingAverage(alpha=0.1)
+            episode_success_rate_ema = ExponentialMovingAverage(alpha=0.1)
+
+            algo.perform_iteration(
+                episode_return_ema,
+                episode_success_rate_ema,
+                update_ema=False,
+            )
+            assert algo._rollout_state is not None
+            first_noise_state = clone_temporal_state(algo._rollout_state.gsde_noise_state)
+
+            algo.perform_iteration(
+                episode_return_ema,
+                episode_success_rate_ema,
+                update_ema=False,
+            )
+            assert algo._rollout_state is not None
+            second_noise_state = algo._rollout_state.gsde_noise_state
+
+            self.assertIsInstance(first_noise_state, tuple)
+            self.assertIsInstance(second_noise_state, tuple)
+            for first_noise, second_noise in zip(first_noise_state, second_noise_state, strict=True):
+                self.assertIsNotNone(first_noise)
+                self.assertIsNotNone(second_noise)
+                self.assertTrue(torch.equal(first_noise, second_noise))
+        finally:
+            env.close()
+
+    def test_shared_origin_nop_reuses_bellman_critic_latents_for_multi_step_windows(self) -> None:
         env = _make_env()
         try:
             policy = _make_policy(
                 env,
                 nop_config=SACNOPConfig(
                     enabled=True,
+                    num_next_steps=3,
+                    latent_source=SACNOPLatentSource.CRITIC,
+                    nop_latent_dim=8,
+                    transition_model_d_model=8,
+                    transition_model_nhead=2,
+                    transition_model_num_layers=1,
+                    transition_model_dim_feedforward=16,
+                    next_obs_pred_config=NextObsPredConfig(
+                        local_scalar_target_indices=[0, 1],
+                        predict_delta=False,
+                    ),
+                ),
+            )
+            encoder_forward_calls = 0
+            reused_latents = []
+            seen_nop_action_shapes: list[tuple[int, ...]] = []
+
+            def count_encoder_forward(
+                    _module: torch.nn.Module,
+                    _args: tuple[torch.Tensor, ...],
+                    _kwargs: dict[str, Any],
+            ) -> None:
+                nonlocal encoder_forward_calls
+                encoder_forward_calls += 1
+
+            original_compute_critic_nop_loss = policy.compute_critic_nop_loss
+
+            def capture_critic_nop_loss(
+                    batch: OffPolicyReplayBatch | OffPolicyReplayEpisodeSegmentBatch,
+                    *,
+                    source_latents: torch.Tensor | None = None,
+            ) -> tuple[torch.Tensor | None, dict[str, Any]]:
+                reused_latents.append(source_latents)
+                seen_nop_action_shapes.append(tuple(batch.actions.shape))
+                return original_compute_critic_nop_loss(batch, source_latents=source_latents)
+
+            hook = policy.critic.encoder.register_forward_pre_hook(count_encoder_forward, with_kwargs=True)
+            policy.compute_critic_nop_loss = capture_critic_nop_loss
+            algo = SAC(
+                policy=policy,
+                env=env,
+                learning_rate=1e-3,
+                buffer_capacity_per_env=8,
+                learning_starts=0,
+                batch_size=2,
+                rollout_steps_per_iteration=2,
+                gradient_steps=1,
+                train_device="cpu",
+                rollout_device="cpu",
+                replay_storage_device="cpu",
+            )
+            self.assertFalse(algo.independent_nop_sampling)
+            self.assertFalse(algo.get_hyper_parameters()["independent_nop_sampling"])
+
+            try:
+                metrics, _rollout_steps = algo.perform_iteration(
+                    ExponentialMovingAverage(alpha=0.1),
+                    ExponentialMovingAverage(alpha=0.1),
+                    update_ema=False,
+                )
+            finally:
+                hook.remove()
+
+            self.assertIn("critic_nop_loss_scaled", metrics)
+            self.assertEqual(encoder_forward_calls, 2)
+            self.assertEqual(len(reused_latents), 1)
+            self.assertIsNotNone(reused_latents[0])
+            self.assertEqual(
+                seen_nop_action_shapes,
+                [(2, 3, env.n_agents, env.action_space.total_agent_action_dim)],
+            )
+        finally:
+            env.close()
+
+    def test_shared_origin_nop_requires_the_bellman_batch_size(self) -> None:
+        env = _make_env()
+        try:
+            policy = _make_policy(
+                env,
+                nop_config=SACNOPConfig(
+                    enabled=True,
+                    next_obs_pred_config=NextObsPredConfig(local_scalar_target_indices=[0]),
+                ),
+            )
+
+            with self.assertRaisesRegex(ValueError, "nop_batch_size must equal batch_size"):
+                SAC(
+                    policy=policy,
+                    env=env,
+                    learning_rate=1e-3,
+                    batch_size=2,
+                    nop_batch_size=3,
+                    train_device="cpu",
+                    rollout_device="cpu",
+                    replay_storage_device="cpu",
+                )
+        finally:
+            env.close()
+
+    def test_independent_multi_step_nop_samples_separate_episode_segments(self) -> None:
+        env = _make_env()
+        try:
+            policy = _make_policy(
+                env,
+                continuous_config=ReparameterizedSignMagnitudeKumaraswamyConfig(),
+                nop_config=SACNOPConfig(
+                    enabled=True,
+                    num_next_steps=3,
                     latent_source=SACNOPLatentSource.CRITIC,
                     nop_latent_dim=8,
                     transition_model_d_model=8,
@@ -548,13 +894,17 @@ class SACTests(unittest.TestCase):
                 ),
             )
             seen_nop_action_shapes: list[tuple[int, ...]] = []
+            seen_source_latents: list[torch.Tensor | None] = []
             original_compute_critic_nop_loss = policy.compute_critic_nop_loss
 
             def capture_critic_nop_loss(
                     batch: OffPolicyReplayBatch | OffPolicyReplayEpisodeSegmentBatch,
+                    *,
+                    source_latents: torch.Tensor | None = None,
             ) -> tuple[torch.Tensor | None, dict[str, Any]]:
                 seen_nop_action_shapes.append(tuple(batch.actions.shape))
-                return original_compute_critic_nop_loss(batch)
+                seen_source_latents.append(source_latents)
+                return original_compute_critic_nop_loss(batch, source_latents=source_latents)
 
             policy.compute_critic_nop_loss = capture_critic_nop_loss
             algo = SAC(
@@ -564,9 +914,9 @@ class SACTests(unittest.TestCase):
                 buffer_capacity_per_env=16,
                 learning_starts=0,
                 batch_size=2,
+                independent_nop_sampling=True,
                 rollout_steps_per_iteration=4,
                 gradient_steps=1,
-                nop_steps=4,
                 train_device="cpu",
                 rollout_device="cpu",
                 replay_storage_device="cpu",
@@ -584,18 +934,84 @@ class SACTests(unittest.TestCase):
             self.assertNotIn("nop_loss_skipped", metrics)
             self.assertEqual(
                 seen_nop_action_shapes,
-                [(2, 4, env.n_agents, env.action_space.total_agent_action_dim)],
+                [(2, 3, env.n_agents, env.action_space.total_agent_action_dim)],
+            )
+            self.assertEqual(seen_source_latents, [None])
+        finally:
+            env.close()
+
+    def test_independent_one_step_nop_uses_a_separate_replay_batch(self) -> None:
+        env = _make_env()
+        try:
+            policy = _make_policy(
+                env,
+                nop_config=SACNOPConfig(
+                    enabled=True,
+                    num_next_steps=1,
+                    latent_source=SACNOPLatentSource.CRITIC,
+                    nop_latent_dim=8,
+                    transition_model_d_model=8,
+                    transition_model_nhead=2,
+                    transition_model_num_layers=1,
+                    transition_model_dim_feedforward=16,
+                    next_obs_pred_config=NextObsPredConfig(
+                        local_scalar_target_indices=[0, 1],
+                        predict_delta=False,
+                    ),
+                ),
+            )
+            seen_source_latents: list[torch.Tensor | None] = []
+            seen_action_shapes: list[tuple[int, ...]] = []
+            original_compute_critic_nop_loss = policy.compute_critic_nop_loss
+
+            def capture_critic_nop_loss(
+                    batch: OffPolicyReplayBatch | OffPolicyReplayEpisodeSegmentBatch,
+                    *,
+                    source_latents: torch.Tensor | None = None,
+            ) -> tuple[torch.Tensor | None, dict[str, Any]]:
+                seen_source_latents.append(source_latents)
+                seen_action_shapes.append(tuple(batch.actions.shape))
+                return original_compute_critic_nop_loss(batch, source_latents=source_latents)
+
+            policy.compute_critic_nop_loss = capture_critic_nop_loss
+            algo = SAC(
+                policy=policy,
+                env=env,
+                learning_rate=1e-3,
+                buffer_capacity_per_env=8,
+                learning_starts=0,
+                batch_size=2,
+                independent_nop_sampling=True,
+                rollout_steps_per_iteration=2,
+                gradient_steps=1,
+                train_device="cpu",
+                rollout_device="cpu",
+                replay_storage_device="cpu",
+            )
+
+            metrics, _rollout_steps = algo.perform_iteration(
+                ExponentialMovingAverage(alpha=0.1),
+                ExponentialMovingAverage(alpha=0.1),
+                update_ema=False,
+            )
+
+            self.assertIn("critic_nop_loss_scaled", metrics)
+            self.assertEqual(seen_source_latents, [None])
+            self.assertEqual(
+                seen_action_shapes,
+                [(2, env.n_agents, env.action_space.total_agent_action_dim)],
             )
         finally:
             env.close()
 
-    def test_multi_step_nop_skip_does_not_block_main_sac_update(self) -> None:
+    def test_independent_multi_step_nop_skip_does_not_block_main_sac_update(self) -> None:
         env = _make_env(max_steps=1)
         try:
             policy = _make_policy(
                 env,
                 nop_config=SACNOPConfig(
                     enabled=True,
+                    num_next_steps=4,
                     latent_source=SACNOPLatentSource.CRITIC,
                     nop_latent_dim=8,
                     transition_model_d_model=8,
@@ -615,9 +1031,9 @@ class SACTests(unittest.TestCase):
                 buffer_capacity_per_env=16,
                 learning_starts=0,
                 batch_size=2,
+                independent_nop_sampling=True,
                 rollout_steps_per_iteration=2,
                 gradient_steps=1,
-                nop_steps=4,
                 train_device="cpu",
                 rollout_device="cpu",
                 replay_storage_device="cpu",
@@ -632,7 +1048,7 @@ class SACTests(unittest.TestCase):
             self.assertEqual(rollout_steps, 2)
             self.assertEqual(metrics["updates"], 1)
             self.assertEqual(algo.n_total_updates, 1)
-            self.assertLess(algo.replay_buffer.size_per_env, algo.nop_steps)
+            self.assertLess(algo.replay_buffer.size_per_env, policy.config.nop_config.num_next_steps)
             self.assertIn("actor_loss", metrics)
             self.assertIn("critic_loss", metrics)
             self.assertIn("nop_loss_skipped", metrics)
@@ -787,6 +1203,63 @@ class SACTests(unittest.TestCase):
 
             self.assertAlmostEqual(metrics["actor_action_dist_entropy_loss_scaled"], 3.0)
             self.assertAlmostEqual(metrics["actor_action_dist_ent_categorical"], 0.25)
+        finally:
+            env.close()
+
+    def test_non_finite_terminal_next_q_does_not_poison_target(self) -> None:
+        env = _make_env()
+        try:
+            policy = _NonFiniteTerminalTargetSACPolicy(
+                n_agents=env.n_agents,
+                action_dim=env.action_space.total_agent_action_dim,
+                target_q_value=10.0,
+            )
+            algo = SAC(
+                policy=policy,
+                env=env,
+                learning_rate=1e-3,
+                buffer_capacity_per_env=4,
+                learning_starts=0,
+                batch_size=2,
+                gamma=0.5,
+                ent_coef=0.0,
+                max_grad_norm=None,
+                train_device="cpu",
+                rollout_device="cpu",
+                replay_storage_device="cpu",
+            )
+
+            batch = _make_bootstrap_batch(env)
+            next_local_obs = batch.next_local_obs.clone()
+            next_global_obs = batch.next_global_obs.clone()
+            next_hidden_local_vars = batch.next_hidden_local_vars.clone()
+            next_hidden_global_vars = batch.next_hidden_global_vars.clone()
+            next_local_obs[0] = torch.nan
+            next_global_obs[0] = torch.nan
+            next_hidden_local_vars[0] = torch.nan
+            next_hidden_global_vars[0] = torch.nan
+            next_agent_mask = torch.ones(
+                batch.actions.shape[:2],
+                dtype=torch.bool,
+                device=batch.actions.device,
+            )
+            next_agent_mask[0] = False
+            batch = replace(
+                batch,
+                next_local_obs=next_local_obs,
+                next_global_obs=next_global_obs,
+                next_hidden_local_vars=next_hidden_local_vars,
+                next_hidden_global_vars=next_hidden_global_vars,
+                next_agent_mask=next_agent_mask,
+            )
+
+            metrics, _actor_grad_norm, _critic_grad_norm = algo._train_step(
+                batch,
+                global_update_idx=0,
+            )
+
+            self.assertAlmostEqual(metrics["target_q"], 2.5)
+            self.assertTrue(torch.isfinite(torch.tensor(metrics["critic_loss"])))
         finally:
             env.close()
 

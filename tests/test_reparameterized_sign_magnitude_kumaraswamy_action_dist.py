@@ -10,6 +10,7 @@ from swarmbots.learn.action_dists.hybrid_action_dist import make_proba_distribut
 from swarmbots.learn.action_dists.reparameterized_sign_magnitude_kumaraswamy_action_dist import (
     ReparameterizedSignMagnitudeKumaraswamyActionDist,
     ReparameterizedSignMagnitudeKumaraswamyConfig,
+    _kumaraswamy_icdf,
 )
 from swarmbots.learn.nn_components.nn_init import init_linear_orthogonal
 
@@ -57,6 +58,20 @@ class ReparameterizedSignMagnitudeKumaraswamyActionDistTests(unittest.TestCase):
         self.assertIsNotNone(dist.output_net.bias.grad)
         self.assertGreater(dist.output_net.bias.grad.abs().sum().item(), 0.0)
 
+    def test_inverse_cdf_preserves_float32_tail_value_and_gradient(self) -> None:
+        u = torch.tensor(1e-6, dtype=torch.float32)
+        a = torch.tensor(2.0, dtype=torch.float32)
+        b = torch.tensor(100.0, dtype=torch.float32, requires_grad=True)
+
+        sample = _kumaraswamy_icdf(u, a, b, epsilon=1e-6)
+        sample.backward()
+
+        self.assertGreater(sample.item(), 1e-5)
+        self.assertIsNotNone(b.grad)
+        assert b.grad is not None
+        self.assertTrue(torch.isfinite(b.grad))
+        self.assertNotEqual(b.grad.item(), 0.0)
+
     def test_sample_does_not_track_distribution_head_gradient(self) -> None:
         dist = ReparameterizedSignMagnitudeKumaraswamyActionDist(
             latent_dim=4,
@@ -65,13 +80,19 @@ class ReparameterizedSignMagnitudeKumaraswamyActionDistTests(unittest.TestCase):
         )
         latent = torch.zeros(5, 2, 4, requires_grad=True)
 
-        actions = dist.update_latent_features(latent).sample()
+        dist.update_latent_features(latent)
+        with patch.object(
+                ReparameterizedSignMagnitudeKumaraswamyActionDist,
+                "rsample",
+                side_effect=AssertionError("ordinary sampling must not use the inverse-CDF mixture estimator"),
+        ):
+            actions = dist.sample()
         log_probs = dist.log_prob(actions)
 
         self.assertFalse(actions.requires_grad)
         self.assertTrue(log_probs.requires_grad)
 
-    def test_initial_mode_is_near_zero_with_symmetric_probabilities(self) -> None:
+    def test_initial_mode_uses_negative_component_on_symmetric_density_tie(self) -> None:
         dist = ReparameterizedSignMagnitudeKumaraswamyActionDist(
             latent_dim=4,
             action_dim=3,
@@ -81,7 +102,7 @@ class ReparameterizedSignMagnitudeKumaraswamyActionDistTests(unittest.TestCase):
 
         actions = dist.update_latent_features(latent).mode()
 
-        self.assertLess(actions.abs().max().item(), 0.05)
+        torch.testing.assert_close(actions, torch.full_like(actions, -0.5))
 
     def test_loss_only_path_skips_kumaraswamy_entropy_when_scale_is_zero(self) -> None:
         dist = ReparameterizedSignMagnitudeKumaraswamyActionDist(
@@ -96,8 +117,7 @@ class ReparameterizedSignMagnitudeKumaraswamyActionDistTests(unittest.TestCase):
         dist.update_latent_features(latent)
 
         with patch(
-                "swarmbots.learn.action_dists.reparameterized_sign_magnitude_kumaraswamy_action_dist."
-                "_kumaraswamy_entropy",
+                "torch.distributions.Kumaraswamy.entropy",
                 side_effect=AssertionError("kumaraswamy entropy should not be computed"),
         ):
             losses = dist.compute_extra_losses_without_metrics()

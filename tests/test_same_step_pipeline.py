@@ -8,9 +8,10 @@ from gymnasium import spaces
 from gymnasium.vector import AutoresetMode, SyncVectorEnv
 
 from swarmbots.learn.algos.ppo.base_ppo_policy import BasePPOPolicy
-from swarmbots.learn.algos.ppo.ppo_rollout import collect_steps, collect_whole_episodes
+from swarmbots.learn.algos.ppo.ppo_rollout import collect_step_rollout_batch, collect_steps, collect_whole_episodes
 from swarmbots.learn.algos.ppo.ppo_rollout_buffer import PPORolloutBuffer, PPOEpisodeSegment
 from swarmbots.learn.algos.ppo.ppo_sampler import PPOSampler, PPOSamplerConfig
+from swarmbots.learn.algos.world_modeling.ppo_wm_sampler import PPOWMBatchSampler, PPOWMSamplerConfig
 from swarmbots.learn.env_wrappers.progress_guidance_ep_stats_wrapper import ProgressGuidanceEpisodeStatsWrapper
 from swarmbots.learn.env_wrappers.torch_feature_wise_obs_norm_wrapper import TorchFeatureWiseObsNormWrapper
 from swarmbots.learn.env_wrappers.torch_normalize_reward_wrapper import TorchNormalizeRewardWrapper
@@ -641,6 +642,50 @@ class SameStepPipelineTests(unittest.TestCase):
             self.assertTrue(torch.allclose(_to_cpu(episode.final_value), torch.tensor(2.0)))
             self.assertTrue(bool(rollout_state.episode_start_mask[0].item()))
             self.assertTrue(torch.all(_to_cpu(rollout_state.obs["local_obs"][0, :, 0]) == 0.0))
+        finally:
+            env.close()
+
+    def test_default_rollout_batch_world_model_windows_stop_at_same_step_reset(self) -> None:
+        env = _make_scripted_env((1, (2,), "truncate"))
+        try:
+            policy = _ConstantValuePolicy(action_dim=env.action_space.total_agent_action_dim)
+            buffer = _make_buffer(env)
+
+            rollout_batch, episode_infos, metrics, rollout_state = collect_step_rollout_batch(
+                env=env,
+                policy=policy,
+                buffer=buffer,
+                n_steps=3,
+            )
+            sampler = PPOWMBatchSampler(
+                rollout_batch=rollout_batch,
+                config=PPOWMSamplerConfig(batch_size=3, num_next_steps=3),
+            )
+
+            self.assertTrue(metrics["step_rollout_batch_path"])
+            self.assertEqual(len(episode_infos), 1)
+            self.assertTrue(torch.equal(rollout_batch.dones.cpu(), torch.tensor([[False, True, False]])))
+            self.assertTrue(torch.equal(
+                rollout_batch.episode_start_mask.cpu(),
+                torch.tensor([[True, False, True]]),
+            ))
+            self.assertTrue(torch.equal(
+                sampler.next_local_obs[:, :, 0, 0].cpu(),
+                torch.tensor([
+                    [1101.0, 1102.0, 0.0],
+                    [1102.0, 0.0, 0.0],
+                    [1201.0, 0.0, 0.0],
+                ]),
+            ))
+            self.assertTrue(torch.equal(
+                sampler.wm_target_time_mask.cpu(),
+                torch.tensor([
+                    [True, True, False],
+                    [True, False, False],
+                    [True, False, False],
+                ]),
+            ))
+            self.assertEqual(_first_obs_value(rollout_state.obs["local_obs"][0]), 1201.0)
         finally:
             env.close()
 

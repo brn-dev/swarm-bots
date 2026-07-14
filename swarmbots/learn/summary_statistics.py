@@ -13,7 +13,7 @@ class NoData:
 NO_DATA: NoData = NoData()
 
 
-HISTOGRAM_DEFAULT_BINS = 10
+HISTOGRAM_DEFAULT_BINS = 11
 HISTOGRAM_BLOCKS = " ▁▂▃▄▅▆▇█"
 
 @dataclass

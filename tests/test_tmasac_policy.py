@@ -67,6 +67,8 @@ def _make_config(
         share_observation_encoder: bool = False,
         shared_encoder_config: MATEncoderConfig | None = None,
         continuous_config: ContinuousActionDistConfig | None = None,
+        dropout: float = 0.0,
+        independent_critic_encoders: bool = False,
 ) -> TMASACPolicyConfig:
     return TMASACPolicyConfig(
         actor_encoder_config=_small_encoder_config(),
@@ -77,7 +79,9 @@ def _make_config(
         critic_config=TMASACCriticConfig(
             n_local_projection_hidden_layers=1,
             n_value_regressor_hidden_layers=1,
+            independent_encoders=independent_critic_encoders,
         ),
+        dropout=dropout,
         continuous_config=PredictedStdConfig(base_std=0.5) if continuous_config is None else continuous_config,
         nop_config=SACNOPConfig() if nop_config is None else nop_config,
     )
@@ -123,36 +127,36 @@ def _make_batch(batch_size: int = 4) -> OffPolicyReplayBatch:
     )
 
 
-def _make_segment_batch(batch_size: int = 3, nop_steps: int = 4) -> OffPolicyReplayEpisodeSegmentBatch:
+def _make_segment_batch(batch_size: int = 3, num_next_steps: int = 4) -> OffPolicyReplayEpisodeSegmentBatch:
     env = _DummyContinuousEnv()
     action_dim = env.action_space.total_agent_action_dim
-    agent_mask = torch.ones(batch_size, nop_steps, env.n_agents, dtype=torch.bool)
+    agent_mask = torch.ones(batch_size, num_next_steps, env.n_agents, dtype=torch.bool)
     if batch_size > 1:
         agent_mask[1, :, -1] = False
     return OffPolicyReplayEpisodeSegmentBatch(
-        local_obs=torch.randn(batch_size, nop_steps, env.n_agents, env.local_obs_dim),
-        global_obs=torch.randn(batch_size, nop_steps, env.global_obs_dim),
-        hidden_local_vars=torch.randn(batch_size, nop_steps, env.n_agents, env.hidden_local_vars_dim),
-        hidden_global_vars=torch.randn(batch_size, nop_steps, env.hidden_global_vars_dim),
+        local_obs=torch.randn(batch_size, num_next_steps, env.n_agents, env.local_obs_dim),
+        global_obs=torch.randn(batch_size, num_next_steps, env.global_obs_dim),
+        hidden_local_vars=torch.randn(batch_size, num_next_steps, env.n_agents, env.hidden_local_vars_dim),
+        hidden_global_vars=torch.randn(batch_size, num_next_steps, env.hidden_global_vars_dim),
         agent_mask=agent_mask,
-        actions=torch.randn(batch_size, nop_steps, env.n_agents, action_dim).clamp(-0.9, 0.9),
-        rewards=torch.randn(batch_size, nop_steps),
-        terminations=torch.zeros(batch_size, nop_steps, dtype=torch.bool),
-        truncations=torch.zeros(batch_size, nop_steps, dtype=torch.bool),
+        actions=torch.randn(batch_size, num_next_steps, env.n_agents, action_dim).clamp(-0.9, 0.9),
+        rewards=torch.randn(batch_size, num_next_steps),
+        terminations=torch.zeros(batch_size, num_next_steps, dtype=torch.bool),
+        truncations=torch.zeros(batch_size, num_next_steps, dtype=torch.bool),
         previous_actions=None,
-        next_local_obs=torch.randn(batch_size, nop_steps, env.n_agents, env.local_obs_dim),
-        next_global_obs=torch.randn(batch_size, nop_steps, env.global_obs_dim),
-        next_hidden_local_vars=torch.randn(batch_size, nop_steps, env.n_agents, env.hidden_local_vars_dim),
-        next_hidden_global_vars=torch.randn(batch_size, nop_steps, env.hidden_global_vars_dim),
+        next_local_obs=torch.randn(batch_size, num_next_steps, env.n_agents, env.local_obs_dim),
+        next_global_obs=torch.randn(batch_size, num_next_steps, env.global_obs_dim),
+        next_hidden_local_vars=torch.randn(batch_size, num_next_steps, env.n_agents, env.hidden_local_vars_dim),
+        next_hidden_global_vars=torch.randn(batch_size, num_next_steps, env.hidden_global_vars_dim),
         next_agent_mask=agent_mask.clone(),
-        episode_start_mask=torch.zeros(batch_size, nop_steps, dtype=torch.bool),
-        train_mask=torch.ones(batch_size, nop_steps, dtype=torch.bool),
+        episode_start_mask=torch.zeros(batch_size, num_next_steps, dtype=torch.bool),
+        train_mask=torch.ones(batch_size, num_next_steps, dtype=torch.bool),
         initial_temporal_state=None,
         burn_in_steps=0,
     )
 
 
-def _supported_reparameterized_configs() -> list[ContinuousActionDistConfig]:
+def _supported_differentiable_configs() -> list[ContinuousActionDistConfig]:
     return [
         BetaConfig(),
         PredictedStdConfig(base_std=0.5),
@@ -162,7 +166,76 @@ def _supported_reparameterized_configs() -> list[ContinuousActionDistConfig]:
     ]
 
 
+def _small_nop_config(
+        *,
+        latent_source: SACNOPLatentSource = SACNOPLatentSource.CRITIC,
+        skip_first_transition_for_critic: bool = True,
+) -> SACNOPConfig:
+    return SACNOPConfig(
+        enabled=True,
+        latent_source=latent_source,
+        skip_first_transition_for_critic=skip_first_transition_for_critic,
+        nop_latent_dim=8,
+        transition_model_d_model=8,
+        transition_model_nhead=2,
+        transition_model_num_layers=1,
+        transition_model_dim_feedforward=16,
+        next_obs_pred_config=NextObsPredConfig(
+            local_scalar_target_indices=[0, 1],
+            predict_delta=False,
+        ),
+    )
+
+
+class _RecordingTransitionModel(torch.nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.action_inputs: list[torch.Tensor] = []
+        self.agent_masks: list[torch.Tensor | None] = []
+
+    def forward(
+            self,
+            z_t: torch.Tensor,
+            a_t: torch.Tensor,
+            agent_mask: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        self.action_inputs.append(a_t.detach().clone())
+        self.agent_masks.append(None if agent_mask is None else agent_mask.detach().clone())
+        return z_t
+
+    def predict_n_steps(
+            self,
+            z_0: torch.Tensor,
+            action_seq: torch.Tensor,
+            agent_mask: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        self.action_inputs.append(action_seq.detach().clone())
+        self.agent_masks.append(None if agent_mask is None else agent_mask.detach().clone())
+        return z_0.unsqueeze(1).expand(-1, action_seq.shape[1], -1, -1)
+
+
 class TMASACPolicyTests(unittest.TestCase):
+    def test_target_modules_stay_in_eval_mode_when_policy_trains(self) -> None:
+        policy = TMASACPolicy(
+            env=_DummyContinuousEnv(),
+            config=_make_config(
+                shared_encoder_config=_small_encoder_config(),
+                dropout=0.5,
+            ),
+        )
+
+        policy.train()
+
+        self.assertTrue(policy.actor_encoder.training)
+        self.assertTrue(policy.critic.training)
+        self.assertIsNotNone(policy.shared_observation_encoder)
+        assert policy.shared_observation_encoder is not None
+        self.assertTrue(policy.shared_observation_encoder.training)
+        self.assertFalse(policy.critic_target.training)
+        self.assertIsNotNone(policy.shared_observation_encoder_target)
+        assert policy.shared_observation_encoder_target is not None
+        self.assertFalse(policy.shared_observation_encoder_target.training)
+
     def test_action_and_q_paths_match_pipeline_shapes(self) -> None:
         torch.manual_seed(0)
         env = _DummyContinuousEnv()
@@ -192,6 +265,127 @@ class TMASACPolicyTests(unittest.TestCase):
         self.assertEqual(tuple(q2.shape), (4,))
         self.assertTrue(torch.equal(actions[~batch.agent_mask], torch.zeros_like(actions[~batch.agent_mask])))
         self.assertTrue(torch.equal(log_probs[~batch.agent_mask], torch.zeros_like(log_probs[~batch.agent_mask])))
+
+    def test_twin_critics_share_action_conditioned_encoder_by_default(self) -> None:
+        policy = TMASACPolicy(env=_DummyContinuousEnv(), config=_make_config())
+
+        self.assertIsNone(policy.critic.encoder2)
+
+    def test_twin_critics_can_use_independent_action_conditioned_encoders(self) -> None:
+        policy = TMASACPolicy(
+            env=_DummyContinuousEnv(),
+            config=_make_config(independent_critic_encoders=True),
+        )
+
+        assert policy.critic.encoder2 is not None
+        encoder1_parameter_ids = {id(parameter) for parameter in policy.critic.encoder.parameters()}
+        encoder2_parameter_ids = {id(parameter) for parameter in policy.critic.encoder2.parameters()}
+        self.assertFalse(encoder1_parameter_ids & encoder2_parameter_ids)
+
+    def test_legacy_shared_critic_encoder_checkpoint_initializes_both_encoders(self) -> None:
+        config = _make_config(independent_critic_encoders=True)
+        policy = TMASACPolicy(env=_DummyContinuousEnv(), config=config)
+        legacy_state_dict = {
+            key: value
+            for key, value in policy.state_dict().items()
+            if ".encoder2." not in key
+        }
+        restored = TMASACPolicy(env=_DummyContinuousEnv(), config=config)
+
+        restored.load_state_dict(legacy_state_dict, strict=True)
+
+        assert restored.critic.encoder2 is not None
+        for primary, secondary in zip(
+                restored.critic.encoder.parameters(),
+                restored.critic.encoder2.parameters(),
+                strict=True,
+        ):
+            torch.testing.assert_close(primary, secondary)
+
+    def test_legacy_hidden_global_critic_checkpoint_migrates_input_widths(self) -> None:
+        hidden_global_vars_dim = _DummyContinuousEnv.hidden_global_vars_dim
+        q_input_weight_suffixes = (
+            ".q1.deepset.element_encoder.0.weight",
+            ".q2.deepset.element_encoder.0.weight",
+        )
+        for shared_encoder_config in (None, _small_encoder_config()):
+            with self.subTest(shared_observation_encoder=shared_encoder_config is not None):
+                torch.manual_seed(0)
+                config = _make_config(
+                    shared_encoder_config=shared_encoder_config,
+                    independent_critic_encoders=True,
+                )
+                policy = TMASACPolicy(env=_DummyContinuousEnv(), config=config)
+                current_state_dict = policy.state_dict()
+                legacy_state_dict = {}
+                for key, value in current_state_dict.items():
+                    if ".encoder2." in key:
+                        continue
+                    if shared_encoder_config is not None and ".encoder.global_encoder." in key:
+                        continue
+                    if key.endswith(".encoder.global_encoder.weight"):
+                        legacy_state_dict[key] = value[..., :-hidden_global_vars_dim].clone()
+                    elif key.endswith(q_input_weight_suffixes):
+                        obsolete_columns = torch.full(
+                            (*value.shape[:-1], hidden_global_vars_dim),
+                            123.0,
+                            dtype=value.dtype,
+                            device=value.device,
+                        )
+                        legacy_state_dict[key] = torch.cat((value, obsolete_columns), dim=-1)
+                    else:
+                        legacy_state_dict[key] = value.clone()
+
+                restored = TMASACPolicy(env=_DummyContinuousEnv(), config=config)
+                restored_initial_state_dict = {
+                    key: value.clone()
+                    for key, value in restored.state_dict().items()
+                }
+                with self.assertWarnsRegex(UserWarning, "hidden-global inputs approximately"):
+                    restored.load_state_dict(legacy_state_dict, strict=True)
+
+                restored_state_dict = restored.state_dict()
+                for critic_prefix in ("critic", "critic_target"):
+                    global_weight_key = f"{critic_prefix}.encoder.global_encoder.weight"
+                    if shared_encoder_config is None:
+                        public_global_width = _DummyContinuousEnv.global_obs_dim
+                        torch.testing.assert_close(
+                            restored_state_dict[global_weight_key][..., :public_global_width],
+                            legacy_state_dict[global_weight_key],
+                        )
+                        torch.testing.assert_close(
+                            restored_state_dict[global_weight_key][..., public_global_width:],
+                            restored_initial_state_dict[global_weight_key][..., public_global_width:],
+                        )
+                    else:
+                        torch.testing.assert_close(
+                            restored_state_dict[global_weight_key],
+                            restored_initial_state_dict[global_weight_key],
+                        )
+
+                    secondary_global_weight_key = global_weight_key.replace(".encoder.", ".encoder2.")
+                    torch.testing.assert_close(
+                        restored_state_dict[secondary_global_weight_key],
+                        restored_state_dict[global_weight_key],
+                    )
+                    for q_suffix in q_input_weight_suffixes:
+                        q_weight_key = f"{critic_prefix}{q_suffix}"
+                        torch.testing.assert_close(
+                            restored_state_dict[q_weight_key],
+                            current_state_dict[q_weight_key],
+                        )
+
+                batch = _make_batch()
+                q1, q2 = restored.q_values(
+                    local_obs=batch.local_obs,
+                    global_obs=batch.global_obs,
+                    hidden_local_vars=batch.hidden_local_vars,
+                    hidden_global_vars=batch.hidden_global_vars,
+                    agent_mask=batch.agent_mask,
+                    actions=batch.actions,
+                )
+                self.assertTrue(torch.isfinite(q1).all())
+                self.assertTrue(torch.isfinite(q2).all())
 
     def test_critic_actions_condition_transformer_inputs(self) -> None:
         torch.manual_seed(0)
@@ -225,6 +419,75 @@ class TMASACPolicyTests(unittest.TestCase):
 
         self.assertEqual(len(captured_tokens), 2)
         self.assertFalse(torch.allclose(captured_tokens[0], captured_tokens[1]))
+
+    def test_hidden_global_vars_condition_transformer_inputs(self) -> None:
+        torch.manual_seed(0)
+        env = _DummyContinuousEnv()
+        policy = TMASACPolicy(env=env, config=_make_config())
+        batch = _make_batch()
+        captured_tokens = []
+
+        def capture_transformer_inputs(_module: torch.nn.Module, args: tuple[torch.Tensor, ...]) -> None:
+            captured_tokens.append(args[0].detach().clone())
+
+        hook = policy.critic.encoder.layers[0].register_forward_pre_hook(capture_transformer_inputs)
+        try:
+            for hidden_global_vars in (batch.hidden_global_vars, torch.zeros_like(batch.hidden_global_vars)):
+                policy.q_values(
+                    local_obs=batch.local_obs,
+                    global_obs=batch.global_obs,
+                    hidden_local_vars=batch.hidden_local_vars,
+                    hidden_global_vars=hidden_global_vars,
+                    agent_mask=batch.agent_mask,
+                    actions=batch.actions,
+                )
+        finally:
+            hook.remove()
+
+        self.assertEqual(
+            policy.critic.encoder.global_encoder_input_dim,
+            env.global_obs_dim + env.hidden_global_vars_dim,
+        )
+        self.assertEqual(policy.critic.q1.num_global_features, 0)
+        self.assertEqual(len(captured_tokens), 2)
+        self.assertFalse(torch.allclose(captured_tokens[0], captured_tokens[1]))
+
+    def test_independent_critic_latents_are_concatenated_for_nop(self) -> None:
+        policy = TMASACPolicy(
+            env=_DummyContinuousEnv(),
+            config=_make_config(
+                SACNOPConfig(
+                    enabled=True,
+                    latent_source=SACNOPLatentSource.CRITIC,
+                    nop_latent_dim=8,
+                    transition_model_d_model=8,
+                    transition_model_nhead=2,
+                    transition_model_num_layers=1,
+                    transition_model_dim_feedforward=16,
+                    next_obs_pred_config=NextObsPredConfig(
+                        local_scalar_target_indices=[0],
+                        predict_delta=False,
+                    ),
+                ),
+                independent_critic_encoders=True,
+            ),
+        )
+        batch = _make_batch()
+
+        critic_latents = policy.encode_critic(
+            local_obs=batch.local_obs,
+            global_obs=batch.global_obs,
+            actions=batch.actions,
+            hidden_local_vars=batch.hidden_local_vars,
+            hidden_global_vars=batch.hidden_global_vars,
+            agent_mask=batch.agent_mask,
+        )
+
+        expected_latent_dim = 2 * policy.critic_encoder_config.d_model
+        self.assertEqual(critic_latents.shape[-1], expected_latent_dim)
+        assert policy.critic_nop is not None
+        self.assertEqual(policy.critic_nop.source_latent_dim, expected_latent_dim)
+        self.assertEqual(policy.critic_nop.pre_transition_transform.input_dim, expected_latent_dim)
 
     def test_shared_observation_encoder_is_policy_owned_critic_optimized_and_detached_for_actor(self) -> None:
         torch.manual_seed(0)
@@ -280,6 +543,65 @@ class TMASACPolicyTests(unittest.TestCase):
         self.assertIsNone(policy.actor_nop)
         self.assertIsNone(policy.critic_nop)
 
+    def test_nop_config_rejects_non_positive_horizon(self) -> None:
+        with self.assertRaisesRegex(ValueError, "num_next_steps"):
+            SACNOPConfig(num_next_steps=0)
+
+    def test_critic_nop_skips_first_transition_by_default(self) -> None:
+        policy = TMASACPolicy(
+            env=_DummyContinuousEnv(),
+            config=_make_config(_small_nop_config()),
+        )
+        batch = _make_batch()
+        transition_model = _RecordingTransitionModel()
+        assert policy.critic_nop is not None
+        policy.critic_nop.transition_model = transition_model
+
+        loss, _metrics = policy.compute_critic_nop_loss(batch)
+
+        self.assertIsNotNone(loss)
+        self.assertTrue(policy.critic_nop.skip_first_transition)
+        self.assertEqual(
+            policy.critic_nop.latent_projection_hidden_dims,
+            [policy.critic_nop.source_latent_dim],
+        )
+        self.assertEqual(transition_model.action_inputs, [])
+
+    def test_critic_nop_multistep_transitions_start_with_second_action(self) -> None:
+        policy = TMASACPolicy(
+            env=_DummyContinuousEnv(),
+            config=_make_config(_small_nop_config()),
+        )
+        batch = _make_segment_batch(num_next_steps=4)
+        transition_model = _RecordingTransitionModel()
+        assert policy.critic_nop is not None
+        policy.critic_nop.transition_model = transition_model
+
+        loss, _metrics = policy.compute_critic_nop_loss(batch)
+
+        self.assertIsNotNone(loss)
+        self.assertEqual(len(transition_model.action_inputs), 1)
+        torch.testing.assert_close(transition_model.action_inputs[0], batch.actions[:, 1:])
+        assert transition_model.agent_masks[0] is not None
+        torch.testing.assert_close(transition_model.agent_masks[0], batch.agent_mask[:, 1:])
+
+    def test_critic_nop_can_keep_first_transition(self) -> None:
+        policy = TMASACPolicy(
+            env=_DummyContinuousEnv(),
+            config=_make_config(_small_nop_config(skip_first_transition_for_critic=False)),
+        )
+        batch = _make_batch()
+        transition_model = _RecordingTransitionModel()
+        assert policy.critic_nop is not None
+        policy.critic_nop.transition_model = transition_model
+
+        loss, _metrics = policy.compute_critic_nop_loss(batch)
+
+        self.assertIsNotNone(loss)
+        self.assertFalse(policy.critic_nop.skip_first_transition)
+        self.assertEqual(len(transition_model.action_inputs), 1)
+        torch.testing.assert_close(transition_model.action_inputs[0], batch.actions)
+
     def test_enabled_nop_requires_prediction_targets(self) -> None:
         with self.assertRaisesRegex(ValueError, "prediction target"):
             TMASACPolicy(
@@ -291,11 +613,11 @@ class TMASACPolicyTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "continuous Box action sub-spaces only"):
             TMASACPolicy(env=_DummyDiscreteEnv(), config=_make_config())
 
-    def test_supported_reparameterized_actor_paths(self) -> None:
+    def test_supported_differentiable_actor_paths(self) -> None:
         env = _DummyContinuousEnv()
         batch = _make_batch()
 
-        for idx, continuous_config in enumerate(_supported_reparameterized_configs()):
+        for idx, continuous_config in enumerate(_supported_differentiable_configs()):
             with self.subTest(config=type(continuous_config).__name__):
                 torch.manual_seed(idx)
                 policy = TMASACPolicy(
@@ -334,8 +656,8 @@ class TMASACPolicyTests(unittest.TestCase):
                     torch.zeros_like(log_probs[~batch.agent_mask]),
                 ))
 
-    def test_rejects_non_reparameterized_continuous_config(self) -> None:
-        with self.assertRaisesRegex(ValueError, "reparameterized"):
+    def test_rejects_non_differentiable_continuous_config(self) -> None:
+        with self.assertRaisesRegex(ValueError, "pathwise or straight-through"):
             TMASACPolicy(
                 env=_DummyContinuousEnv(),
                 config=_make_config(continuous_config=BetaMixtureConfig(
@@ -437,9 +759,16 @@ class TMASACPolicyTests(unittest.TestCase):
                 self.assertEqual(actor_loss is not None, expect_actor_nop)
                 self.assertEqual(critic_loss is not None, expect_critic_nop)
                 if expect_actor_nop:
+                    assert policy.actor_nop is not None
+                    self.assertFalse(policy.actor_nop.skip_first_transition)
                     self.assertIn("actor_nop_loss_scaled", actor_metrics)
                     self.assertTrue(torch.isfinite(actor_loss))
                 if expect_critic_nop:
+                    assert policy.critic_nop is not None
+                    self.assertEqual(
+                        policy.critic_nop.skip_first_transition,
+                        source in (SACNOPLatentSource.CRITIC, SACNOPLatentSource.BOTH),
+                    )
                     assert expected_critic_metric is not None
                     self.assertIn(expected_critic_metric, critic_metrics)
                     self.assertTrue(torch.isfinite(critic_loss))
@@ -472,7 +801,7 @@ class TMASACPolicyTests(unittest.TestCase):
                 )
             ),
         )
-        batch = _make_segment_batch(nop_steps=4)
+        batch = _make_segment_batch(num_next_steps=4)
 
         actor_loss, actor_metrics = policy.compute_actor_nop_loss(batch)
         critic_loss, critic_metrics = policy.compute_critic_nop_loss(batch)

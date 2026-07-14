@@ -13,6 +13,7 @@ from swarmbots.learn.action_dists.action_dist import (
     ActionNetInitialization,
     compute_action_metrics,
     resolve_action_metrics_splitter,
+    validate_probability_clamp_epsilon,
 )
 from swarmbots.learn.action_dists.entropy_utils import (
     AgentActionsReduction,
@@ -302,8 +303,7 @@ class ReparameterizedSquashedGaussianMixtureActionDist(ActionDist):
             for weight in initial_weights:
                 if weight <= 0.0:
                     raise ValueError(f"initial_weights must be > 0, got {initial_weights}")
-        if epsilon <= 0.0:
-            raise ValueError(f"epsilon must be > 0, got {epsilon}")
+        validate_probability_clamp_epsilon(epsilon)
         if inverse_cdf_iterations < 1:
             raise ValueError(f"inverse_cdf_iterations must be >= 1, got {inverse_cdf_iterations}")
         if len(log_std_clamp_range) != 2 or log_std_clamp_range[0] >= log_std_clamp_range[1]:

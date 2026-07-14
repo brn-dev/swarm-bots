@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import math
 import sys
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass, is_dataclass
 from datetime import datetime
 from pathlib import Path
@@ -23,6 +23,10 @@ from swarmbots.learn.action_dists.beta_action_dist import BetaConfig
 from swarmbots.learn.action_dists.bernoulli_action_dist import BernoulliConfig
 from swarmbots.learn.action_dists.entropy_utils import AgentActionsReduction, EntropyLossConfig
 from swarmbots.learn.action_dists.gsde_action_dist import GSDEConfig
+from swarmbots.learn.action_dists.gumbel_softmax_sign_magnitude_action_dist import (
+    GumbelSoftmaxSignMagnitudeBetaConfig,
+    GumbelSoftmaxSignMagnitudeKumaraswamyConfig,
+)
 from swarmbots.learn.action_dists.predicted_std_action_dist import PredictedStdConfig
 from swarmbots.learn.action_dists.reparameterized_sign_magnitude_kumaraswamy_action_dist import (
     ReparameterizedSignMagnitudeKumaraswamyConfig,
@@ -94,6 +98,8 @@ from swarmbots.utils.run_paths import get_run_id_from_checkpoint_path
 ContinuousActionDistVariant = Literal[
     "sticky_sign_magnitude_beta",
     "sign_magnitude_beta",
+    "gumbel_softmax_sign_magnitude_beta",
+    "gumbel_softmax_sign_magnitude_kumaraswamy",
     "reparameterized_sign_magnitude_kumaraswamy",
     "reparameterized_squashed_gaussian_mixture",
     "beta",
@@ -262,6 +268,10 @@ def _is_sac_policy_variant(policy_variant: PolicyVariant) -> bool:
     return policy_variant == "tmasac"
 
 
+def _make_staggered_first_episode_lengths(*, episode_length: int, num_envs: int) -> list[int]:
+    return [math.ceil((env_idx + 1) * episode_length / num_envs) for env_idx in range(num_envs)]
+
+
 def make_vector_env(
     *,
     episode_length: int,
@@ -357,14 +367,19 @@ def set_actuator_gsde_init_joint_stds(
 ) -> None:
     from swarmbots.learn.action_dists.gsde_action_dist import GSDEActionDist
 
-    if len(joint_stds) != actuators_per_limb:
-        raise ValueError()
-
-    gsde_dist = next((dist for dist in policy.action_dist.distributions if isinstance(dist, GSDEActionDist)), None)
+    gsde_dist = next(
+        (dist for dist in policy.action_dist.distributions if isinstance(dist, GSDEActionDist)),
+        None,
+    )
 
     if gsde_dist is None:
-        logger.warning("No gSDE dist found, skipping log std init")
         return
+
+    if len(joint_stds) != actuators_per_limb:
+        raise ValueError(
+            f"Expected one gSDE initial std per actuator joint, got "
+            f"{len(joint_stds)=} {actuators_per_limb=}"
+        )
 
     with torch.no_grad():
         for i, joint_std in enumerate(joint_stds):
@@ -396,6 +411,8 @@ def make_continuous_config(
 ) -> (
         StickySignMagnitudeBetaConfig
         | SignMagnitudeBetaConfig
+        | GumbelSoftmaxSignMagnitudeBetaConfig
+        | GumbelSoftmaxSignMagnitudeKumaraswamyConfig
         | ReparameterizedSignMagnitudeKumaraswamyConfig
         | ReparameterizedSquashedGaussianMixtureConfig
         | BetaConfig
@@ -417,6 +434,20 @@ def make_continuous_config(
             beta_ent_scale=0.75,
             categorical_ent_loss_config=make_sign_magnitude_categorical_entropy_config(),
             beta_ent_loss_config=make_sign_magnitude_magnitude_entropy_config(),
+        )
+    if variant == "gumbel_softmax_sign_magnitude_beta":
+        return GumbelSoftmaxSignMagnitudeBetaConfig(
+            ent_loss_coef=1e-3,
+            beta_ent_scale=0.75,
+            categorical_ent_loss_config=make_sign_magnitude_categorical_entropy_config(),
+            beta_ent_loss_config=make_sign_magnitude_magnitude_entropy_config(),
+        )
+    if variant == "gumbel_softmax_sign_magnitude_kumaraswamy":
+        return GumbelSoftmaxSignMagnitudeKumaraswamyConfig(
+            ent_loss_coef=1e-3,
+            kumaraswamy_ent_scale=rsmk_kumaraswamy_ent_scale,
+            categorical_ent_loss_config=make_sign_magnitude_categorical_entropy_config(),
+            kumaraswamy_ent_loss_config=make_sign_magnitude_magnitude_entropy_config(),
         )
     if variant == "reparameterized_sign_magnitude_kumaraswamy":
         return ReparameterizedSignMagnitudeKumaraswamyConfig(
@@ -475,6 +506,27 @@ def make_continuous_config(
     raise ValueError(f"Unknown continuous action dist variant: {variant}")
 
 
+def _run_training_with_notification_and_close(
+        *,
+        env: Any,
+        run_name: str,
+        run_dir: str | Path,
+        total_timesteps: int,
+        algorithm: Any,
+        run: Callable[[], None],
+) -> None:
+    try:
+        run_with_discord_notification(
+            run_name=run_name,
+            run_dir=run_dir,
+            total_timesteps=total_timesteps,
+            algorithm=algorithm,
+            run=run,
+        )
+    finally:
+        env.close()
+
+
 def run_experiment(
         *,
         num_envs: int,
@@ -497,6 +549,7 @@ def run_experiment(
         mat_encoder_transformer_ff_hidden_dims: Sequence[int] | None = None,
         use_nop: bool = True,
         nop_add_agent_embeddings_transition_model: bool = False,
+        nop_skip_first_transition_for_critic: bool = True,
         use_transition_obs: bool = False,
         shuffle_agents: bool = False,
         preserve_inactive_prefix_structure: bool = False,
@@ -512,8 +565,11 @@ def run_experiment(
         rmat_temporal_layer_norm: bool = False,
         rmat_use_temporal_output_projection: bool = True,
         total_timesteps: int = 100_000_000,
+        sac_learning_rate: float = 3e-4,
+        sac_ent_coef_learning_rate: float | None = 1e-3,
         sac_ent_coef: float | str = "auto_0.05",
         sac_target_entropy: float | str = "auto_0.5",
+        sac_independent_nop_sampling: bool = False,
         bernoulli_initial_prob: float = 0.8,
 ) -> None:
     from swarmbots.learn.torch_logging import enable_torch_compile_logging
@@ -532,6 +588,13 @@ def run_experiment(
 
     if not torch.cuda.is_available():
         raise RuntimeError("MJW requires CUDA.")
+
+    if num_envs <= 0:
+        raise ValueError(f"num_envs must be > 0, got {num_envs}")
+    if rollout_steps_per_env <= 0:
+        raise ValueError(f"rollout_steps_per_env must be > 0, got {rollout_steps_per_env}")
+    if virtual_mini_batches <= 0:
+        raise ValueError(f"virtual_mini_batches must be > 0, got {virtual_mini_batches}")
 
     rollout_samples = num_envs * rollout_steps_per_env
     if rollout_samples % virtual_mini_batches != 0:
@@ -569,10 +632,12 @@ def run_experiment(
     policy_compile_mode = "default"
     compile_world_model_modules = True
 
-    sac_learning_rate = 2e-5
-    sac_buffer_capacity_per_env = episode_length * 2
     sac_learning_starts = max(10_000, rollout_samples * 4)
     sac_batch_size = rollout_samples
+    sac_buffer_capacity_per_env = max(
+        episode_length * 2,
+        math.ceil(max(sac_learning_starts, sac_batch_size) / num_envs),
+    )
     sac_gradient_steps = 8
 
     run_id = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
@@ -601,6 +666,7 @@ def run_experiment(
         f"use_transition_obs={use_transition_obs}, "
         f"compile_policy_modules={compile_policy_modules}, policy_compile_mode={policy_compile_mode}, "
         f"nop_add_agent_embeddings_transition_model={nop_add_agent_embeddings_transition_model}, "
+        f"nop_skip_first_transition_for_critic={nop_skip_first_transition_for_critic}, "
         f"act_fn_cls={activation_factory_name(act_fn_cls)}, "
         f"enc_nhead={enc_nhead}, dec_nhead={dec_nhead}, "
         f"mat_init_gains={mat_init_gains}, nop_init_gains={nop_init_gains}, "
@@ -624,7 +690,9 @@ def run_experiment(
             f"sac_buffer_capacity_per_env={sac_buffer_capacity_per_env}, "
             f"sac_learning_starts={sac_learning_starts}, sac_batch_size={sac_batch_size}, "
             f"sac_gradient_steps={sac_gradient_steps}, sac_ent_coef={sac_ent_coef}, "
-            f"sac_target_entropy={sac_target_entropy}"
+            f"sac_ent_coef_learning_rate={sac_ent_coef_learning_rate}, "
+            f"sac_target_entropy={sac_target_entropy}, "
+            f"sac_independent_nop_sampling={sac_independent_nop_sampling}"
         )
     if policy_variant != "mat_qcs":
         variant_log_message = f"{variant_log_message}, policy_variant={policy_variant}"
@@ -658,7 +726,10 @@ def run_experiment(
     run_dir = REPO_ROOT / "runs" / experiment_run_name / variant_name / run_id
     save_optimizer = True
 
-    first_episode_lengths = [int((i + 1) * episode_length / num_envs) for i in range(num_envs)]
+    first_episode_lengths = _make_staggered_first_episode_lengths(
+        episode_length=episode_length,
+        num_envs=num_envs,
+    )
 
     print("Creating MJW vector env...")
     vector_env = make_vector_env(
@@ -744,8 +815,10 @@ def run_experiment(
         mat_normalization=mat_normalization,
         use_nop=use_nop,
         nop_add_agent_embeddings_transition_model=nop_add_agent_embeddings_transition_model,
+        nop_skip_first_transition_for_critic=nop_skip_first_transition_for_critic,
         compile_world_model_modules=compile_world_model_modules,
         world_model_loss_coef=world_model_loss_coef,
+        world_model_num_next_steps=world_model_num_next_steps,
         transition_model_d_model=transition_model_d_model,
         transition_model_nhead=transition_model_nhead,
         mat_encoder_transformer_ff_hidden_dims=mat_encoder_transformer_ff_hidden_dims,
@@ -829,14 +902,17 @@ def run_experiment(
             gamma=gamma,
             tau=0.005,
             ent_coef=sac_ent_coef,
+            ent_coef_learning_rate=sac_ent_coef_learning_rate,
             target_entropy=sac_target_entropy,
             target_update_interval=1,
             max_grad_norm=2.0,
-            nop_steps=world_model_num_next_steps + 1,
+            independent_nop_sampling=sac_independent_nop_sampling,
+            gsde_reset_mode=GSDEProbabilityResetMode(probability=1 / 6),
             train_device=train_device,
             rollout_device=rollout_device,
             record_device=record_device,
             replay_storage_device="cuda",
+            metrics_action_splitters=[lambda actions: split_actuator_joints(actions, actuators_per_limb), None],
         )
     else:
         warm_lr = 1e-4
@@ -978,47 +1054,18 @@ def run_experiment(
         )
         if use_nop:
             logging_console_keys.append(("critic_nop_loss_scaled", None, "critic_nop"))
-        if continuous_action_dist == "reparameterized_sign_magnitude_kumaraswamy":
-            logging_console_keys.extend([
-                (
-                    "actor_action_dist_act0_ent_categorical",
-                    SummaryStatisticsFormat(mean=".3f"),
-                    "cat0_ent",
-                ),
-                (
-                    "actor_action_dist_act1_ent_categorical",
-                    SummaryStatisticsFormat(mean=".3f"),
-                    "cat1_ent",
-                ),
-                (
-                    "actor_action_dist_act0_ent_kumaraswamy",
-                    SummaryStatisticsFormat(mean=".3f"),
-                    "km0_ent",
-                ),
-                (
-                    "actor_action_dist_act1_ent_kumaraswamy",
-                    SummaryStatisticsFormat(mean=".3f"),
-                    "km1_ent",
-                ),
-                (
-                    "actor_action_dist_act0_entropy_loss_scaled",
-                    SummaryStatisticsFormat(mean=".3f"),
-                    "act0_ent_loss",
-                ),
-                (
-                    "actor_action_dist_act1_entropy_loss_scaled",
-                    SummaryStatisticsFormat(mean=".3f"),
-                    "act1_ent_loss",
-                ),
-            ])
     else:
         logging_console_keys.extend(
             (f"act0_j{i}", SummaryStatisticsFormat(histogram=11)) for i in range(actuators_per_limb)
         )
-        logging_console_keys.extend(
-            (f"std0_j{i}", SummaryStatisticsFormat(mean=".3f", std=".3f", min_value=".3f", max_value=".3f"))
-            for i in range(actuators_per_limb)
-        )
+        if continuous_action_dist in {"predicted_std", "gsde", "squashed_diag_gaussian"}:
+            logging_console_keys.extend(
+                (
+                    f"std0_j{i}",
+                    SummaryStatisticsFormat(mean=".3f", std=".3f", min_value=".3f", max_value=".3f"),
+                )
+                for i in range(actuators_per_limb)
+            )
         logging_console_keys.extend(
             [
                 ("act1", SummaryStatisticsFormat(histogram=connector_action_histogram_bins)),
@@ -1059,6 +1106,7 @@ def run_experiment(
         "recording_enabled": "live_mjw_exact_state",
         "rollout_samples": rollout_samples,
         "rollout_steps_per_env": rollout_steps_per_env,
+        "total_timesteps": total_timesteps,
         "sampler_batch_size": sampler_batch_size,
         "recurrent_policy": recurrent_policy,
         "rollout_warmup_steps_per_env": rollout_warmup_steps_per_env,
@@ -1068,9 +1116,14 @@ def run_experiment(
         "variant_name": variant_name,
         "continuous_action_dist": continuous_action_dist,
         "use_nop": use_nop,
+        "world_model_num_next_steps": world_model_num_next_steps,
+        "sac_independent_nop_sampling": sac_independent_nop_sampling,
         "use_transition_obs": use_transition_obs,
         "nop_add_agent_embeddings_transition_model": nop_add_agent_embeddings_transition_model,
+        "nop_skip_first_transition_for_critic": nop_skip_first_transition_for_critic,
         "act_fn_cls": activation_factory_name(act_fn_cls),
+        "enc_nhead": enc_nhead,
+        "dec_nhead": dec_nhead,
         "mat_init_gains": asdict(mat_init_gains),
         "nop_init_gains": asdict(nop_init_gains),
         "mat_normalization": asdict(mat_normalization),
@@ -1084,6 +1137,7 @@ def run_experiment(
         "mat_qcc_tie_query_context_and_context_self_attention": (
             mat_qcc_tie_query_context_and_context_self_attention
         ),
+        "bernoulli_initial_prob": bernoulli_initial_prob,
         "mat_decoder_lr_multiplier": mat_decoder_lr_multiplier,
         "include_actor_head_lr_multiplier": include_actor_head_lr_multiplier,
         "parameter_lr_multipliers": parameter_lr_multipliers,
@@ -1108,15 +1162,16 @@ def run_experiment(
                 "sac_learning_starts": sac_learning_starts,
                 "sac_batch_size": sac_batch_size,
                 "sac_gradient_steps": sac_gradient_steps,
-                "sac_nop_steps": world_model_num_next_steps + 1,
                 "sac_ent_coef": sac_ent_coef,
+                "sac_ent_coef_learning_rate": sac_ent_coef_learning_rate,
                 "sac_target_entropy": sac_target_entropy,
             }
         )
     if policy_variant != "mat_qcs":
         extra_run_metadata["policy_variant"] = policy_variant
 
-    run_with_discord_notification(
+    _run_training_with_notification_and_close(
+        env=env,
         run_name=f"{experiment_run_name}/{variant_name}/{run_id}",
         run_dir=str(run_dir),
         total_timesteps=total_timesteps,
@@ -1135,7 +1190,6 @@ def run_experiment(
     )
 
     print("Training Finished.")
-    env.close()
 
 
 def _make_mat_parameter_lr_multipliers(
@@ -1215,25 +1269,29 @@ def _make_sac_nop_config(
         source_latent_dim: int,
         nop_init_gains: NOPInitGains,
         nop_add_agent_embeddings_transition_model: bool,
+        nop_skip_first_transition_for_critic: bool,
         compile_world_model_modules: bool,
         policy_compile_mode: str,
         world_model_loss_coef: float,
+        num_next_steps: int,
         transition_model_d_model: int,
         transition_model_nhead: int,
         act_fn_cls: ActivationFactory,
 ) -> SACNOPConfig:
     if not use_nop:
-        return SACNOPConfig(enabled=False)
+        return SACNOPConfig(enabled=False, num_next_steps=num_next_steps)
     if obs_indices is None:
         raise ValueError("obs_indices is required when building TMASAC with NOP enabled.")
 
     return SACNOPConfig(
         enabled=True,
+        num_next_steps=num_next_steps,
+        skip_first_transition_for_critic=nop_skip_first_transition_for_critic,
         nop_loss_coef=world_model_loss_coef,
         compile_modules=compile_world_model_modules,
         compile_mode=policy_compile_mode,
         act_fn_cls=act_fn_cls,
-        latent_projection_hidden_dims=[source_latent_dim],
+        latent_projection_hidden_dims=[source_latent_dim, source_latent_dim],
         pre_predictors_hidden_dims=[transition_model_d_model, transition_model_d_model],
         scalar_predictor_hidden_dims=[],
         angle_predictor_hidden_dims=[],
@@ -1290,8 +1348,10 @@ def _make_base_policy(
         nop_init_gains: NOPInitGains = NOPInitGains(),
         use_nop: bool = False,
         nop_add_agent_embeddings_transition_model: bool = False,
+        nop_skip_first_transition_for_critic: bool = True,
         compile_world_model_modules: bool = False,
         world_model_loss_coef: float = 0.1,
+        world_model_num_next_steps: int = 4,
         transition_model_d_model: int = 128,
         transition_model_nhead: int = 2,
         mat_encoder_transformer_ff_hidden_dims: Sequence[int] | None = None,
@@ -1325,7 +1385,10 @@ def _make_base_policy(
         action_net_init_gain=mat_init_gains.action_net,
         rsmk_kumaraswamy_ent_scale=(
             0.0
-            if policy_variant == "tmasac" and continuous_action_dist == "reparameterized_sign_magnitude_kumaraswamy"
+            if policy_variant == "tmasac" and continuous_action_dist in (
+                "reparameterized_sign_magnitude_kumaraswamy",
+                "gumbel_softmax_sign_magnitude_kumaraswamy",
+            )
             else 0.75
         ),
     )
@@ -1419,9 +1482,11 @@ def _make_base_policy(
                     source_latent_dim=enc_d_model,
                     nop_init_gains=nop_init_gains,
                     nop_add_agent_embeddings_transition_model=nop_add_agent_embeddings_transition_model,
+                    nop_skip_first_transition_for_critic=nop_skip_first_transition_for_critic,
                     compile_world_model_modules=compile_world_model_modules,
                     policy_compile_mode=policy_compile_mode,
                     world_model_loss_coef=world_model_loss_coef,
+                    num_next_steps=world_model_num_next_steps,
                     transition_model_d_model=transition_model_d_model,
                     transition_model_nhead=transition_model_nhead,
                     act_fn_cls=act_fn_cls,

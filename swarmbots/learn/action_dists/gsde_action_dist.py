@@ -98,7 +98,7 @@ class GSDEActionDist(ContinuousActionDist, TemporallyCorrelatedActionDist):
         self._latent_sde: Optional[torch.Tensor] = None
         self._last_gaussian_actions: Optional[torch.Tensor] = None
 
-        self._exploration_matrices: Optional[torch.Tensor] = None
+        self._exploration_noise: Optional[torch.Tensor] = None
         self._exploration_batch_shape: Optional[tuple[int, ...]] = None
 
     def set_std(self, std: float) -> None:
@@ -119,14 +119,19 @@ class GSDEActionDist(ContinuousActionDist, TemporallyCorrelatedActionDist):
 
     def reset_noise(self, batch_shape: tuple[int, ...]) -> None:
         with torch.no_grad():
-            std_matrix = self._get_std_matrix(self.log_stds)
-            noise = torch.randn(
+            self._exploration_noise = torch.randn(
                 (*batch_shape, self.latent_sde_dim, self.action_dim),
-                device=std_matrix.device,
-                dtype=std_matrix.dtype,
+                device=self.log_stds.device,
+                dtype=self.log_stds.dtype,
             )
-            self._exploration_matrices = noise * std_matrix
             self._exploration_batch_shape = batch_shape
+
+    def get_temporal_correlation_state(self) -> torch.Tensor | None:
+        return self._exploration_noise
+
+    def set_temporal_correlation_state(self, state: torch.Tensor | None) -> None:
+        self._exploration_noise = state
+        self._exploration_batch_shape = None if state is None else tuple(state.shape[:-2])
 
     def reset_noise_masked(self, mask: torch.Tensor) -> None:
         if mask.dtype != torch.bool:
@@ -134,7 +139,7 @@ class GSDEActionDist(ContinuousActionDist, TemporallyCorrelatedActionDist):
 
         mask = self._expand_reset_mask(mask)
         expected_batch_shape = tuple(mask.shape)
-        if self._exploration_matrices is None or self._exploration_batch_shape != expected_batch_shape:
+        if self._exploration_noise is None or self._exploration_batch_shape != expected_batch_shape:
             self.reset_noise(expected_batch_shape)
             return
 
@@ -143,15 +148,14 @@ class GSDEActionDist(ContinuousActionDist, TemporallyCorrelatedActionDist):
             return
 
         with torch.no_grad():
-            mask_flat = mask.to(self._exploration_matrices.device, dtype=torch.bool).reshape(-1)
-            std_matrix = self._get_std_matrix(self.log_stds)
+            mask_flat = mask.to(self._exploration_noise.device, dtype=torch.bool).reshape(-1)
             noise = torch.randn(
                 (num_resets, self.latent_sde_dim, self.action_dim),
-                device=std_matrix.device,
-                dtype=std_matrix.dtype,
+                device=self._exploration_noise.device,
+                dtype=self._exploration_noise.dtype,
             )
-            exploration_matrices_flat = self._exploration_matrices.reshape(-1, self.latent_sde_dim, self.action_dim)
-            exploration_matrices_flat[mask_flat] = noise * std_matrix
+            exploration_noise_flat = self._exploration_noise.reshape(-1, self.latent_sde_dim, self.action_dim)
+            exploration_noise_flat[mask_flat] = noise
 
     def reset_on_ep_start(self, mask: torch.Tensor) -> None:
         self.reset_noise_masked(mask)
@@ -276,14 +280,15 @@ class GSDEActionDist(ContinuousActionDist, TemporallyCorrelatedActionDist):
         if self._latent_sde is None or self.distribution is None:
             raise RuntimeError("update_latent_features() must be called before sampling actions.")
 
-        if self._exploration_matrices is None:
+        if self._exploration_noise is None:
             raise RuntimeError("reset_noise() must be called before sampling GSDE actions.")
 
         if agent is not None:
-            exploration_matrices = self._exploration_matrices[:, agent:agent+1]
+            exploration_noise = self._exploration_noise[:, agent:agent+1]
         else:
-            exploration_matrices = self._exploration_matrices
+            exploration_noise = self._exploration_noise
 
+        exploration_matrices = exploration_noise * self._get_std_matrix(self.log_stds)
         noise = torch.einsum("...d,...da->...a", self._latent_sde, exploration_matrices)
         return self.distribution.mean + noise
 
@@ -332,7 +337,7 @@ class GSDEActionDist(ContinuousActionDist, TemporallyCorrelatedActionDist):
             "std_mean": float(std_matrix.mean().item()),
             "std_min": float(std_matrix.min().item()),
             "std_max": float(std_matrix.max().item()),
-            "has_active_noise": self._exploration_matrices is not None,
+            "has_active_noise": self._exploration_noise is not None,
         }
 
     @property

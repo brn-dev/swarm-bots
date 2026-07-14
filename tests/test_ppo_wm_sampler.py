@@ -230,6 +230,42 @@ def _episode_to_device(episode: PPOEpisodeSegment, device: torch.device) -> PPOE
 
 
 class PPOWMSamplerTests(unittest.TestCase):
+    def test_three_step_windows_end_at_terminal_observation_then_pad(self) -> None:
+        episode = _make_episode(
+            base_value=10.0,
+            num_steps=3,
+            with_agent_mask=False,
+        )
+
+        windows = build_wm_episode_windows(episode, num_next_steps=3)
+
+        self.assertTrue(torch.equal(windows.multi_step_actions[0], episode.actions))
+        self.assertTrue(torch.equal(
+            windows.next_local_obs[0],
+            torch.stack((episode.local_obs[1], episode.local_obs[2], episode.final_local_obs)),
+        ))
+        self.assertTrue(torch.equal(
+            windows.next_local_obs[1, :2],
+            torch.stack((episode.local_obs[2], episode.final_local_obs)),
+        ))
+        self.assertTrue(torch.equal(
+            windows.next_local_obs[1, 2],
+            torch.zeros_like(episode.final_local_obs),
+        ))
+        self.assertTrue(torch.equal(windows.next_local_obs[2, 0], episode.final_local_obs))
+        self.assertTrue(torch.equal(
+            windows.next_local_obs[2, 1:],
+            torch.zeros_like(windows.next_local_obs[2, 1:]),
+        ))
+        self.assertTrue(torch.equal(
+            windows.wm_target_time_mask,
+            torch.tensor([
+                [True, True, True],
+                [True, True, False],
+                [True, False, False],
+            ]),
+        ))
+
     def test_batch_helper_matches_single_episode_helper(self) -> None:
         for with_agent_mask in (False, True):
             for num_next_steps in (1, 2, 4):
