@@ -149,6 +149,22 @@ class PPOMaskingTests(unittest.TestCase):
             [[False, False], [True, True], [False, True]],
         ])))
 
+    def test_popart_statistics_exclude_padded_and_all_inactive_steps(self) -> None:
+        batch = _make_samples()
+        batch.returns = torch.tensor([
+            [1.0, 100.0, 200.0],
+            [300.0, 5.0, 6.0],
+        ])
+        batch.time_mask = torch.tensor([
+            [True, True, True],
+            [False, True, True],
+        ])
+        ppo = _ppo_with_reduction(None)
+
+        valid_returns = ppo._select_valid_value_items(batch, batch.returns)
+
+        torch.testing.assert_close(valid_returns, torch.tensor([1.0, 100.0, 5.0, 6.0]))
+
     def test_normalize_advantages_uses_only_unmasked_loss_steps_and_zeroes_masked_steps(self) -> None:
         batch = _make_samples()
         batch.time_mask = torch.tensor([

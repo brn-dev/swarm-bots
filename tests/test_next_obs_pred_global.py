@@ -5,6 +5,7 @@ from torch import nn
 
 from swarmbots.learn.algos.world_modeling.next_obs_pred_ppo_wrapper import NOPWorldModelConfig, NextObsPredWrapper
 from swarmbots.learn.algos.world_modeling.next_obs_pred_mixin import NextObsPredConfig, NextObsPredMixin
+from swarmbots.learn.algos.world_modeling.ppo_wm_sampler import PPOWMSamples
 
 
 class _IdentityTransition(nn.Module):
@@ -34,10 +35,29 @@ class _NOPHarness(nn.Module, NextObsPredMixin):
     pass
 
 
+class _LatentPolicy:
+    def _evaluate_actions(
+            self,
+            batch: PPOWMSamples,
+            action_splitter: object | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor, dict[str, torch.Tensor], dict[str, float], torch.Tensor]:
+        _ = action_splitter
+        return (
+            torch.zeros_like(batch.log_probs),
+            torch.zeros_like(batch.values),
+            {},
+            {},
+            torch.ones_like(batch.local_obs),
+        )
+
+
 def _make_harness(
         *,
         config: NextObsPredConfig,
         local_scalars_predictor: nn.Module | None = None,
+        local_angles_predictor: nn.Module | None = None,
+        local_rot6ds_predictor: nn.Module | None = None,
+        local_binaries_predictor: nn.Module | None = None,
         global_scalars_predictor: nn.Module | None = None,
         global_rot6ds_predictor: nn.Module | None = None,
 ) -> _NOPHarness:
@@ -47,6 +67,9 @@ def _make_harness(
         config=config,
         scalar_loss_fn=nn.MSELoss(reduction="none"),
         local_scalars_predictor=local_scalars_predictor,
+        local_angles_predictor=local_angles_predictor,
+        local_rot6ds_predictor=local_rot6ds_predictor,
+        local_binaries_predictor=local_binaries_predictor,
         global_scalars_predictor=global_scalars_predictor,
         global_rot6ds_predictor=global_rot6ds_predictor,
     )
@@ -144,6 +167,126 @@ class NextObsPredGlobalTests(unittest.TestCase):
 
         self.assertAlmostEqual(loss.item(), 0.0)
         self.assertEqual(metrics["scalar_loss"], 0.0)
+
+    def test_local_angle_multistep_delta_wraps_and_uses_previous_target_state(self) -> None:
+        harness = _make_harness(
+            config=NextObsPredConfig(
+                local_angle_target_indices=[0],
+                predict_delta=True,
+            ),
+            local_angles_predictor=nn.Identity(),
+        )
+        base_angle = torch.deg2rad(torch.tensor(170.0))
+        target_angles = torch.deg2rad(torch.tensor([-170.0, -150.0]))
+
+        loss, metrics = harness.compute_next_obs_pred_loss(
+            local_latents=torch.deg2rad(torch.tensor([[[20.0]]])),
+            local_obs=torch.stack((base_angle.sin(), base_angle.cos())).reshape(1, 1, 2),
+            next_local_obs=torch.stack((target_angles.sin(), target_angles.cos()), dim=-1).reshape(1, 2, 1, 2),
+            actions=torch.zeros(1, 2, 1, 1),
+            time_mask=torch.ones(1, 2, dtype=torch.bool),
+        )
+
+        self.assertAlmostEqual(loss.item(), 0.0, places=5)
+        self.assertAlmostEqual(metrics["angle_loss"], 0.0, places=5)
+
+    def test_binary_target_ema_ignores_batches_without_valid_targets(self) -> None:
+        harness = _make_harness(
+            config=NextObsPredConfig(
+                local_binary_target_indices=[0],
+                binary_target_ema_decay=0.0,
+                predict_delta=False,
+            ),
+            local_binaries_predictor=nn.Identity(),
+        )
+
+        loss, metrics = harness.compute_next_obs_pred_loss(
+            local_latents=torch.zeros(1, 2, 1),
+            next_local_obs=torch.zeros(1, 2, 1),
+            actions=torch.zeros(1, 2, 1),
+            loss_agent_mask=torch.zeros(1, 2, dtype=torch.bool),
+        )
+
+        self.assertAlmostEqual(loss.item(), 0.0)
+        self.assertAlmostEqual(metrics["binary_loss"], 0.0)
+        torch.testing.assert_close(harness.binary_target_ema, torch.tensor([0.5]))
+
+    def test_local_rot6d_multistep_delta_uses_previous_target_orientation(self) -> None:
+        harness = _make_harness(
+            config=NextObsPredConfig(
+                local_rot6d_target_indices=[0],
+                predict_delta=True,
+            ),
+            local_rot6ds_predictor=nn.Identity(),
+        )
+
+        def z_rotation_rot6d(degrees: torch.Tensor) -> torch.Tensor:
+            radians = torch.deg2rad(degrees)
+            zeros = torch.zeros_like(radians)
+            return torch.stack(
+                (radians.cos(), radians.sin(), zeros, -radians.sin(), radians.cos(), zeros),
+                dim=-1,
+            )
+
+        loss, metrics = harness.compute_next_obs_pred_loss(
+            local_latents=torch.deg2rad(torch.tensor([[[0.0, 0.0, 20.0]]])),
+            local_obs=z_rotation_rot6d(torch.tensor(170.0)).reshape(1, 1, 6),
+            next_local_obs=z_rotation_rot6d(torch.tensor([-170.0, -150.0])).reshape(1, 2, 1, 6),
+            actions=torch.zeros(1, 2, 1, 1),
+            time_mask=torch.ones(1, 2, dtype=torch.bool),
+        )
+
+        self.assertAlmostEqual(loss.item(), 0.0, places=5)
+        self.assertAlmostEqual(metrics["rot6d_loss"], 0.0, places=5)
+
+    def test_wrapper_masks_padded_horizons_and_applies_world_model_coefficient_once(self) -> None:
+        policy = NextObsPredWrapper(
+            policy=_LatentPolicy(),
+            world_model_config=NOPWorldModelConfig(
+                n_agents=1,
+                local_latent_dim=1,
+                action_dim=1,
+                world_model_loss_coef=0.1,
+                d_model_transition_model=1,
+                nhead_transition_model=1,
+                num_layers_transition_model=1,
+                dim_feedforward_transition_model=2,
+                scalar_loss_fn="mse",
+                next_obs_pred_config=NextObsPredConfig(
+                    local_scalar_target_indices=[0],
+                    predict_delta=True,
+                ),
+            ),
+        )
+        policy.transition_model = _IdentityTransition()
+        policy.pre_transition_transform = nn.Identity()
+        policy.pre_predictors_transform = nn.Identity()
+        policy.local_scalars_predictor = nn.Identity()
+        batch = PPOWMSamples(
+            local_obs=torch.tensor([[[10.0]]]),
+            global_obs=torch.zeros(1, 1),
+            hidden_local_vars=torch.zeros(1, 1, 1),
+            hidden_global_vars=torch.zeros(1, 1),
+            agent_mask=torch.ones(1, 1, dtype=torch.bool),
+            previous_actions=None,
+            actions=torch.zeros(1, 1, 1),
+            log_probs=torch.zeros(1, 1),
+            values=torch.zeros(1),
+            returns=torch.zeros(1),
+            advantages=torch.zeros(1),
+            wm_actions=torch.zeros(1, 3, 1, 1),
+            next_local_obs=torch.tensor([[[[12.0]], [[14.0]], [[999.0]]]]),
+            wm_target_time_mask=torch.tensor([[True, True, False]]),
+            next_global_obs=torch.zeros(1, 3, 1),
+            wm_agent_mask=torch.ones(1, 3, 1, dtype=torch.bool),
+            wm_loss_agent_mask=torch.ones(1, 3, 1, dtype=torch.bool),
+        )
+
+        _log_probs, _values, extra_losses, metrics = policy.evaluate_actions(batch)
+
+        self.assertAlmostEqual(metrics["wm_loss"], 1.0)
+        self.assertAlmostEqual(metrics["wm_loss_scaled"], 0.1)
+        self.assertAlmostEqual(extra_losses["world_model"].item(), 0.1)
 
     def test_global_scalar_loss_uses_masked_agent_pool_and_does_not_require_local_obs(self) -> None:
         harness = _make_harness(
