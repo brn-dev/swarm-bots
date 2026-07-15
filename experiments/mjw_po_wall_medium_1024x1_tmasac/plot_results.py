@@ -49,6 +49,18 @@ def main() -> int:
         run_length_limit=EXPERIMENT_TOTAL_TIMESTEPS,
         cut_at_limit=True,
     )
+
+    plot_experiment_results(
+        Path(__file__).resolve().parent / "results/250M",
+        OUTPUT_DIR,
+        group_order=GROUP_ORDER,
+        theoretical_maximum=THEORETICAL_MAXIMUM,
+        display_name_overrides=DISPLAY_NAME_OVERRIDES,
+        extra_group_sources=EXTRA_GROUP_SOURCES,
+        run_length_limit=250_000_000,
+        cut_at_limit=True,
+    )
+
     for output_path in result.output_paths:
         print(output_path)
     return 0
