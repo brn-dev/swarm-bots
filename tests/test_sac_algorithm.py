@@ -106,11 +106,19 @@ def _supported_differentiable_configs() -> list[ContinuousActionDistConfig]:
 
 
 class _ConstantTargetSACPolicy(BaseSACPolicy):
-    def __init__(self, *, n_agents: int, action_dim: int, target_q_value: float) -> None:
+    def __init__(
+            self,
+            *,
+            n_agents: int,
+            action_dim: int,
+            target_q_value: float,
+            log_prob_per_agent: float = 0.0,
+    ) -> None:
         super().__init__()
         self.n_agents = int(n_agents)
         self.action_dim = int(action_dim)
         self.target_q_value = float(target_q_value)
+        self.log_prob_per_agent = float(log_prob_per_agent)
         self.actor_scale = torch.nn.Parameter(torch.tensor(0.1))
         self.critic_bias = torch.nn.Parameter(torch.tensor(0.0))
 
@@ -130,7 +138,10 @@ class _ConstantTargetSACPolicy(BaseSACPolicy):
         actions = local_obs.new_ones((local_obs.shape[0], self.n_agents, self.action_dim)) * self.actor_scale
         if agent_mask is not None:
             actions = actions.masked_fill(~agent_mask.unsqueeze(-1), 0.0)
-        return actions, actions[..., 0] * 0.0
+        log_probs = local_obs.new_full((local_obs.shape[0], self.n_agents), self.log_prob_per_agent)
+        if agent_mask is not None:
+            log_probs = log_probs.masked_fill(~agent_mask, 0.0)
+        return actions, log_probs
 
     def q_values(
             self,
@@ -604,6 +615,55 @@ class SACTests(unittest.TestCase):
         finally:
             source_env.close()
             restored_env.close()
+
+    def test_legacy_checkpoint_entropy_coefficient_is_reset_for_mean_reduction(self) -> None:
+        env = _make_env()
+        try:
+            source = SAC(
+                policy=_ConstantTargetSACPolicy(
+                    n_agents=env.n_agents,
+                    action_dim=env.action_space.total_agent_action_dim,
+                    target_q_value=0.0,
+                ),
+                env=env,
+                learning_rate=1e-3,
+                buffer_capacity_per_env=4,
+                learning_starts=0,
+                batch_size=2,
+                ent_coef="auto_0.1",
+                train_device="cpu",
+                rollout_device="cpu",
+                replay_storage_device="cpu",
+            )
+            restored = SAC(
+                policy=_ConstantTargetSACPolicy(
+                    n_agents=env.n_agents,
+                    action_dim=env.action_space.total_agent_action_dim,
+                    target_q_value=0.0,
+                ),
+                env=env,
+                learning_rate=1e-3,
+                buffer_capacity_per_env=4,
+                learning_starts=0,
+                batch_size=2,
+                ent_coef="auto_0.25",
+                train_device="cpu",
+                rollout_device="cpu",
+                replay_storage_device="cpu",
+            )
+            legacy_optimizer_state = source._get_optimizer_state_dict()
+            legacy_optimizer_state.pop("entropy_agent_reduction")
+
+            restored._apply_optimizer_state_dict(
+                legacy_optimizer_state,
+                missing_keys=[],
+                unexpected_keys=[],
+            )
+
+            assert restored.log_ent_coef is not None
+            self.assertAlmostEqual(restored.log_ent_coef.detach().exp().item(), 0.25)
+        finally:
+            env.close()
 
     def test_entropy_coefficient_learning_rate_defaults_to_main_rate(self) -> None:
         env = _make_env()
@@ -1088,7 +1148,43 @@ class SACTests(unittest.TestCase):
         finally:
             env.close()
 
-    def test_scaled_auto_target_entropy_uses_active_agent_count(self) -> None:
+    def test_entropy_objective_uses_mean_log_probability_per_agent(self) -> None:
+        env = _make_env()
+        try:
+            policy = _ConstantTargetSACPolicy(
+                n_agents=env.n_agents,
+                action_dim=env.action_space.total_agent_action_dim,
+                target_q_value=10.0,
+                log_prob_per_agent=-2.0,
+            )
+            algo = SAC(
+                policy=policy,
+                env=env,
+                learning_rate=1e-3,
+                buffer_capacity_per_env=4,
+                learning_starts=0,
+                batch_size=2,
+                gamma=0.5,
+                ent_coef=0.25,
+                max_grad_norm=None,
+                train_device="cpu",
+                rollout_device="cpu",
+                replay_storage_device="cpu",
+            )
+
+            metrics, _actor_grad_norm, _critic_grad_norm = algo._train_step(
+                _make_bootstrap_batch(env),
+                global_update_idx=0,
+            )
+
+            self.assertAlmostEqual(metrics["target_q"], 2.625)
+            self.assertAlmostEqual(metrics["log_prob"], -2.0)
+            self.assertAlmostEqual(metrics["entropy"], 2.0)
+            self.assertAlmostEqual(metrics["target_entropy"], -2.0)
+        finally:
+            env.close()
+
+    def test_scaled_auto_target_entropy_is_per_agent(self) -> None:
         env = _make_env()
         try:
             policy = _ConstantTargetSACPolicy(
@@ -1141,10 +1237,77 @@ class SACTests(unittest.TestCase):
                 device=torch.device("cpu"),
             )
 
-            expected = torch.tensor([-1.0, -0.5])
+            expected = torch.tensor([-0.5, -0.5])
             self.assertTrue(torch.allclose(target_entropy, expected))
             assert algo.log_ent_coef is not None
             self.assertAlmostEqual(algo.log_ent_coef.detach().exp().item(), 0.1)
+        finally:
+            env.close()
+
+    def test_entropy_coefficient_loss_is_averaged_over_active_agents(self) -> None:
+        env = _make_env()
+        try:
+            cases = (
+                (
+                    "unmasked",
+                    None,
+                    torch.tensor(
+                        [
+                            [-0.5, -0.5],
+                            [-0.5, -0.5],
+                        ]
+                    ),
+                ),
+                (
+                    "masked",
+                    torch.tensor(
+                        [
+                            [True, True],
+                            [True, False],
+                        ],
+                        dtype=torch.bool,
+                    ),
+                    torch.tensor(
+                        [
+                            [-0.5, -0.5],
+                            [-0.5, 0.0],
+                        ]
+                    ),
+                ),
+            )
+            for case_name, agent_mask, log_probs in cases:
+                with self.subTest(case_name=case_name):
+                    policy = _ConstantTargetSACPolicy(
+                        n_agents=env.n_agents,
+                        action_dim=env.action_space.total_agent_action_dim,
+                        target_q_value=0.0,
+                    )
+                    algo = SAC(
+                        policy=policy,
+                        env=env,
+                        learning_rate=1e-3,
+                        buffer_capacity_per_env=4,
+                        learning_starts=0,
+                        batch_size=2,
+                        ent_coef="auto*0.1",
+                        target_entropy="auto*0.25",
+                        train_device="cpu",
+                        rollout_device="cpu",
+                        replay_storage_device="cpu",
+                    )
+                    batch = replace(_make_bootstrap_batch(env), agent_mask=agent_mask)
+                    log_prob_mean = algo._mean_agent_log_probs(log_probs, agent_mask)
+
+                    _ent_coef, ent_coef_loss = algo._update_entropy_coefficient(
+                        log_prob_mean=log_prob_mean,
+                        batch=batch,
+                    )
+
+                    assert ent_coef_loss is not None
+                    self.assertAlmostEqual(
+                        ent_coef_loss.item(),
+                        torch.log(torch.tensor(0.1)).item(),
+                    )
         finally:
             env.close()
 
