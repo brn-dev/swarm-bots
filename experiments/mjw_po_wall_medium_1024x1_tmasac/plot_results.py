@@ -51,7 +51,7 @@ def main() -> int:
     )
 
     plot_experiment_results(
-        Path(__file__).resolve().parent / "results/250M",
+        Path(__file__).resolve().parent / "results" / "250M",
         OUTPUT_DIR,
         group_order=GROUP_ORDER,
         theoretical_maximum=THEORETICAL_MAXIMUM,
