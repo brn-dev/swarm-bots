@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import itertools
 import sys
 from pathlib import Path
 
@@ -50,7 +51,7 @@ def main() -> int:
         cut_at_limit=True,
     )
 
-    plot_experiment_results(
+    result_250 = plot_experiment_results(
         EXPERIMENT_RUN_DIR,
         Path(__file__).resolve().parent / "results/250M",
         group_order=GROUP_ORDER,
@@ -61,7 +62,7 @@ def main() -> int:
         cut_at_limit=True,
     )
 
-    for output_path in result.output_paths:
+    for output_path in itertools.chain(result.output_paths, result_250.output_paths):
         print(output_path)
     return 0
 
