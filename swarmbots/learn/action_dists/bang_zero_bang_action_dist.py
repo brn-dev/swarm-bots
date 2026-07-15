@@ -19,6 +19,7 @@ from swarmbots.learn.action_dists.entropy_utils import (
 from swarmbots.learn.losses import LossDict, LossMetrics
 from swarmbots.learn.nn_components.nn_init import init_linear_orthogonal
 from swarmbots.learn.serialization_utils import serialize_dataclass
+from swarmbots.learn.summary_statistics import HistogramConfig
 
 
 @dataclass(frozen=True)
@@ -117,6 +118,9 @@ class BangZeroBangActionDist(DiscreteActionDist):
 
     def _indices_to_actions(self, indices: torch.Tensor) -> torch.Tensor:
         return (indices.to(dtype=torch.float32) - 1.0) * self.bang
+
+    def _get_metrics_histogram(self) -> HistogramConfig:
+        return HistogramConfig(bins=3, low=-self.bang, high=self.bang)
 
     def get_hyper_parameters(self) -> dict[str, Any]:
         return {

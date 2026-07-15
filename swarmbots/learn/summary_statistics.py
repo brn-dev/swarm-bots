@@ -21,6 +21,26 @@ class Histogram:
     bin_frequencies: list[float]  # (n_bins)
     bin_edges: list[float]  # (n_bins + 1)
 
+
+@dataclass(frozen=True)
+class HistogramConfig:
+    bins: int
+    low: float | None = None
+    high: float | None = None
+
+    def __post_init__(self) -> None:
+        if self.bins < 1:
+            raise ValueError(f"bins must be >= 1, got {self.bins}")
+        if (self.low is None) != (self.high is None):
+            raise ValueError("low and high must either both be set or both be None.")
+        if self.low is not None and self.high is not None and self.low >= self.high:
+            raise ValueError(f"low must be less than high, got {self.low} >= {self.high}")
+
+    @property
+    def has_fixed_range(self) -> bool:
+        return self.low is not None
+
+
 @dataclass
 class SummaryStatistics:
     n: int
@@ -45,6 +65,7 @@ class SummaryStatisticsFormat:
     histogram: bool | int = False
 
 SummaryStatisticsInput = list[SummaryStatistics] | torch.Tensor | np.ndarray | list
+HistogramRequest = bool | int | HistogramConfig
 
 def is_summary_statistics(obj: Any) -> bool:
     return isinstance(obj, SummaryStatistics)
@@ -142,7 +163,7 @@ def compute_summary_statistics(
         arr: SummaryStatisticsInput,
         find_min: bool = False,
         find_max: bool = False,
-        make_histogram: bool | int = False,
+        make_histogram: HistogramRequest = False,
         compute_skewness: bool = False,
         compute_kurtosis: bool = False,
         keep_data: bool = False,
@@ -199,7 +220,7 @@ def compute_summary_statistics(
                 values,
                 min_val=summary_stats.min_value,
                 max_val=summary_stats.max_value,
-                n_bins=HISTOGRAM_DEFAULT_BINS if isinstance(make_histogram, bool) else make_histogram,
+                config=_resolve_histogram_config(make_histogram),
             )
         return summary_stats
 
@@ -238,20 +259,15 @@ def compute_summary_statistics(
             summary_stats.data = values.detach().cpu().numpy()
 
     if make_histogram:
-        if summary_stats.std > 1e-6:
-            summary_stats.histogram = _compute_histogram(
-                values,
-                min_val=summary_stats.min_value,
-                max_val=summary_stats.max_value,
-                n_bins=HISTOGRAM_DEFAULT_BINS if isinstance(make_histogram, bool) else make_histogram,
-            )
-        else:
-            summary_stats.histogram = _compute_histogram(
-                values,
-                min_val=summary_stats.min_value,
-                max_val=summary_stats.max_value,
-                n_bins=1,
-            )
+        histogram_config = _resolve_histogram_config(make_histogram)
+        if summary_stats.std <= 1e-6 and not histogram_config.has_fixed_range:
+            histogram_config = HistogramConfig(bins=1)
+        summary_stats.histogram = _compute_histogram(
+            values,
+            min_val=summary_stats.min_value,
+            max_val=summary_stats.max_value,
+            config=histogram_config,
+        )
 
     return summary_stats
 
@@ -259,15 +275,14 @@ def maybe_compute_summary_statistics(
         x: SummaryStatisticsInput | SummaryStatistics | None,
         find_min: bool = False,
         find_max: bool = False,
-        make_histogram: bool | int = False,
+        make_histogram: HistogramRequest = False,
         compute_skewness: bool = False,
         compute_kurtosis: bool = False,
         keep_data: bool = False,
 ) -> Optional[SummaryStatistics]:
     if is_summary_statistics(x):
         if make_histogram and x.histogram in (None, NO_DATA) and x.data is not None:
-            n_bins = HISTOGRAM_DEFAULT_BINS if isinstance(make_histogram, bool) else make_histogram
-            compute_histogram(x, n_bins=n_bins)
+            compute_histogram(x, config=_resolve_histogram_config(make_histogram))
         if compute_skewness or compute_kurtosis:
             needs_skewness = compute_skewness and x.skewness in (None, NO_DATA)
             needs_kurtosis = compute_kurtosis and x.kurtosis in (None, NO_DATA)
@@ -307,43 +322,63 @@ def maybe_compute_summary_statistics(
         keep_data=keep_data,
     )
     
-def compute_histogram(stats: SummaryStatistics, n_bins: int = HISTOGRAM_DEFAULT_BINS) -> None:
+def compute_histogram(
+        stats: SummaryStatistics,
+        config: HistogramConfig = HistogramConfig(bins=HISTOGRAM_DEFAULT_BINS),
+) -> None:
     assert stats.data is not None
     values = stats.data
     stats.min_value = values.min().item()
     stats.max_value = values.max().item()
-    stats.histogram = _compute_histogram(values, stats.min_value, stats.max_value, n_bins)
+    stats.histogram = _compute_histogram(values, stats.min_value, stats.max_value, config)
+
+
+def _resolve_histogram_config(request: HistogramRequest) -> HistogramConfig:
+    if isinstance(request, HistogramConfig):
+        return request
+    return HistogramConfig(
+        bins=HISTOGRAM_DEFAULT_BINS if isinstance(request, bool) else request,
+    )
 
 
 def _compute_histogram(
     values: np.ndarray | torch.Tensor,
     min_val: float, 
     max_val: float, 
-    n_bins: int = HISTOGRAM_DEFAULT_BINS
+    config: HistogramConfig,
 ) -> Histogram:
     values_size = values.size if isinstance(values, np.ndarray) else values.numel()
     if values_size == 0:
         return Histogram(bin_frequencies=[0.0], bin_edges=[0.0, 1.0])
 
-    if min_val == max_val:
+    if config.has_fixed_range:
+        assert config.low is not None
+        assert config.high is not None
+        low = config.low
+        high = config.high
+        bin_count = config.bins
+    elif min_val == max_val:
         width = 1.0 if min_val == 0.0 else abs(min_val) * 0.01
         low = min_val - width
         high = max_val + width
-        return Histogram(bin_frequencies=[1.0], bin_edges=[float(low), float(high)])
+        bin_count = 1
+    else:
+        low = min_val
+        high = max_val
+        bin_count = config.bins
 
-    bin_count = int(max(1, n_bins))
     if isinstance(values, torch.Tensor):
         histogram_values = values.detach()
         if not histogram_values.is_floating_point():
             histogram_values = histogram_values.to(dtype=torch.float32)
 
-        counts = torch.histc(histogram_values, bins=bin_count, min=float(min_val), max=float(max_val))
+        counts = torch.histc(histogram_values, bins=bin_count, min=float(low), max=float(high))
         counts_np = counts.to(device="cpu", dtype=torch.float64).numpy()
         total = float(counts_np.sum())
         frequencies = (counts_np / total) if total > 0.0 else np.zeros_like(counts_np, dtype=np.float64)
         edges = torch.linspace(
-            float(min_val),
-            float(max_val),
+            float(low),
+            float(high),
             bin_count + 1,
             device=counts.device,
             dtype=torch.float64,
@@ -354,7 +389,7 @@ def _compute_histogram(
             bin_edges=[float(x) for x in edges.tolist()],
         )
 
-    counts, edges = np.histogram(values, bins=bin_count, range=(min_val, max_val))
+    counts, edges = np.histogram(values, bins=bin_count, range=(low, high))
     total = float(counts.sum())
     frequencies = (counts.astype(np.float64) / total) if total > 0.0 else np.zeros_like(counts, dtype=np.float64)
 
@@ -441,7 +476,16 @@ def combine_summary_statistics(
     stats_with_data = [s for s in stats_list if int(s.n) > 0]
     total_n = sum(int(s.n) for s in stats_with_data)
     if total_n <= 0:
-        raise ValueError(f"Total n must be > 0, got {total_n}.")
+        return SummaryStatistics(
+            n=0,
+            mean=NO_DATA,
+            std=NO_DATA,
+            skewness=NO_DATA if any(s.skewness is not None for s in stats_list) else None,
+            kurtosis=NO_DATA if any(s.kurtosis is not None for s in stats_list) else None,
+            min_value=NO_DATA if any(s.min_value is not None for s in stats_list) else None,
+            max_value=NO_DATA if any(s.max_value is not None for s in stats_list) else None,
+            histogram=NO_DATA if any(s.histogram is not None for s in stats_list) else None,
+        )
 
     invalid_mean = [s for s in stats_with_data if s.mean is NO_DATA]
     if invalid_mean:
@@ -483,14 +527,75 @@ def combine_summary_statistics(
         combined.kurtosis = kurtosis if kurtosis is not None else NO_DATA
 
     if combine_histograms:
-        raise NotImplementedError("Combining histograms is not implemented yet.")
+        histograms = [s.histogram for s in stats_with_data]
+        if histograms and all(isinstance(histogram, Histogram) for histogram in histograms):
+            combined.histogram = _combine_histograms(stats_with_data)
+        elif histograms and all(histogram is not None for histogram in histograms):
+            combined.histogram = NO_DATA
 
     return combined
+
+
+def _combine_histograms(stats_list: list[SummaryStatistics]) -> Histogram:
+    histograms = [stats.histogram for stats in stats_list]
+    assert histograms and all(isinstance(histogram, Histogram) for histogram in histograms)
+    typed_histograms = [histogram for histogram in histograms if isinstance(histogram, Histogram)]
+
+    first_edges = np.asarray(typed_histograms[0].bin_edges, dtype=np.float64)
+    has_matching_edges = all(
+        len(histogram.bin_edges) == len(first_edges)
+        and np.allclose(histogram.bin_edges, first_edges, rtol=0.0, atol=1e-12)
+        for histogram in typed_histograms[1:]
+    )
+    if has_matching_edges:
+        combined_counts = np.zeros(len(typed_histograms[0].bin_frequencies), dtype=np.float64)
+        for stats, histogram in zip(stats_list, typed_histograms):
+            combined_counts += np.asarray(histogram.bin_frequencies, dtype=np.float64) * int(stats.n)
+        return _histogram_from_counts(
+            combined_counts,
+            first_edges,
+        )
+
+    target_bin_count = max(len(histogram.bin_frequencies) for histogram in typed_histograms)
+    target_min = min(histogram.bin_edges[0] for histogram in typed_histograms)
+    target_max = max(histogram.bin_edges[-1] for histogram in typed_histograms)
+    target_edges = np.linspace(target_min, target_max, target_bin_count + 1, dtype=np.float64)
+    combined_counts = np.zeros(target_bin_count, dtype=np.float64)
+
+    # Raw samples are unavailable, so differing source bins are merged by assuming uniform mass within each bin.
+    for stats, histogram in zip(stats_list, typed_histograms):
+        source_edges = np.asarray(histogram.bin_edges, dtype=np.float64)
+        source_counts = np.asarray(histogram.bin_frequencies, dtype=np.float64) * int(stats.n)
+        for source_idx, source_count in enumerate(source_counts):
+            source_low = source_edges[source_idx]
+            source_high = source_edges[source_idx + 1]
+            source_width = source_high - source_low
+            if source_width <= 0.0 or source_count <= 0.0:
+                continue
+            for target_idx in range(target_bin_count):
+                overlap = min(source_high, target_edges[target_idx + 1]) - max(
+                    source_low,
+                    target_edges[target_idx],
+                )
+                if overlap > 0.0:
+                    combined_counts[target_idx] += source_count * overlap / source_width
+
+    return _histogram_from_counts(combined_counts, target_edges)
+
+
+def _histogram_from_counts(counts: np.ndarray, edges: np.ndarray) -> Histogram:
+    total = float(counts.sum())
+    frequencies = counts / total if total > 0.0 else np.zeros_like(counts)
+    return Histogram(
+        bin_frequencies=[float(value) for value in frequencies.tolist()],
+        bin_edges=[float(value) for value in edges.tolist()],
+    )
+
 
 def _no_data_stats(
         find_min: bool = False,
         find_max: bool = False,
-        make_histogram: bool | int = False,
+        make_histogram: HistogramRequest = False,
         compute_skewness: bool = False,
         compute_kurtosis: bool = False,
 ) -> SummaryStatistics:

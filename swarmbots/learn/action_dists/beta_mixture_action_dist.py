@@ -8,6 +8,7 @@ from torch.nn import functional as F
 
 from swarmbots.learn.action_dists.action_dist import (
     AGENT_ACTIONS_DIM,
+    BOUNDED_ACTION_HISTOGRAM,
     ActionDist,
     ActionNetInitialization,
     ActionMetricsSplitterInput,
@@ -129,7 +130,7 @@ class BetaMixtureActionDist(ActionDist):
             actions: torch.Tensor,
             action_splitter: ActionMetricsSplitterInput = None,
     ) -> dict[str, Any]:
-        return compute_action_metrics(actions, action_splitter, hist_bins=21)
+        return compute_action_metrics(actions, action_splitter, histogram=BOUNDED_ACTION_HISTOGRAM)
 
     def _validate_shape_and_values(self, parameter_name: str, values: tuple[float, ...]) -> None:
         if len(values) != self.num_components:

@@ -8,6 +8,7 @@ from torch.nn import functional as F
 
 from swarmbots.learn.action_dists.action_dist import (
     AGENT_ACTIONS_DIM,
+    BOUNDED_ACTION_HISTOGRAM,
     ActionDist,
     ActionMetricsSplitterInput,
     ActionNetInitialization,
@@ -279,7 +280,7 @@ class LeftMiddleRightBetaActionDist(ActionDist):
             actions: torch.Tensor,
             action_splitter: ActionMetricsSplitterInput = None,
     ) -> dict[str, Any]:
-        return compute_action_metrics(actions, action_splitter, hist_bins=21)
+        return compute_action_metrics(actions, action_splitter, histogram=BOUNDED_ACTION_HISTOGRAM)
 
     def get_hyper_parameters(self) -> dict[str, Any]:
         return {

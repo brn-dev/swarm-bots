@@ -1,10 +1,14 @@
 import csv
 from collections.abc import Collection, Iterable
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from enum import Enum, auto
 import gzip
 import json
 from pathlib import Path
+from queue import Queue
 import shutil
-from datetime import datetime, timezone
+from threading import Lock, Thread
 from typing import Any
 import numpy as np
 from loguru import logger
@@ -21,11 +25,52 @@ from swarmbots.learn.summary_statistics import (
     format_summary_statistics,
     NO_DATA,
     NoData,
+    combine_summary_statistics,
+    compute_summary_statistics,
 )
 
 NEWLINE_KEY = '<newline>'
 SUPPRESS_MISSING_CONSOLE_KEY_WARNINGS = "_suppress_missing_console_key_warnings"
 ConsoleMetricFormat = str | SummaryStatisticsFormat | None
+_MAX_PENDING_BATCHES = 2
+
+
+class _StopWorker:
+    pass
+
+
+_STOP_WORKER = _StopWorker()
+_MetricsBatch = list[dict[str, Any]]
+
+
+class MetricReduction(Enum):
+    LAST = auto()
+    MEAN_STD = auto()
+    SUM = auto()
+    RATE = auto()
+
+
+@dataclass(frozen=True)
+class BufferedMetric:
+    value: Any
+    reduction: MetricReduction
+
+
+def last(value: Any) -> BufferedMetric:
+    return BufferedMetric(value=value, reduction=MetricReduction.LAST)
+
+
+def mean_std(value: Any) -> BufferedMetric:
+    return BufferedMetric(value=value, reduction=MetricReduction.MEAN_STD)
+
+
+def summed(value: Any) -> BufferedMetric:
+    return BufferedMetric(value=value, reduction=MetricReduction.SUM)
+
+
+def rate(numerator: int | float, denominator: int | float) -> BufferedMetric:
+    return BufferedMetric(value=(numerator, denominator), reduction=MetricReduction.RATE)
+
 
 class MetricsLogger:
     def __init__(
@@ -47,7 +92,11 @@ class MetricsLogger:
                 tuple[str, str | SummaryStatisticsFormat | None]
                 | tuple[str, str | SummaryStatisticsFormat | None, str]
             ] | None = None,
+            buffer_size: int = 1,
     ) -> None:
+        if buffer_size < 1:
+            raise ValueError(f"buffer_size must be >= 1, got {buffer_size}")
+
         self.log_dir = Path(log_dir) if log_dir else None
         self.file_path = self.log_dir / filename if self.log_dir else None
         
@@ -65,6 +114,8 @@ class MetricsLogger:
 
         self._ignore_keys_for_persistence = set(ignore_keys_for_persistence or [])
         self._console_key_specs = self._normalize_console_keys(console_keys)
+        self._buffer_size = buffer_size
+        self._metrics_buffer: _MetricsBatch = []
 
         if self._wandb_run is None and wandb_project is not None:
             self._init_wandb(
@@ -78,8 +129,63 @@ class MetricsLogger:
                 wandb_kwargs=wandb_kwargs,
             )
 
+        self._worker_queue: Queue[_MetricsBatch | _StopWorker] = Queue(maxsize=_MAX_PENDING_BATCHES)
+        self._worker_error: BaseException | None = None
+        self._worker_error_lock = Lock()
+        self._closed = False
+        self._worker_thread = Thread(
+            target=self._worker_loop,
+            name="metrics-logger",
+            daemon=True,
+        )
+        self._worker_thread.start()
+
     def log(self, metrics: dict[str, Any]) -> None:
-        metrics.setdefault("timestamp", datetime.now(timezone.utc).isoformat(timespec="seconds"))
+        if self._closed:
+            raise RuntimeError("Cannot log metrics after MetricsLogger.close().")
+        self._raise_worker_error()
+
+        buffered_metrics = metrics.copy()
+        buffered_metrics.setdefault("timestamp", datetime.now(timezone.utc).isoformat(timespec="seconds"))
+        self._metrics_buffer.append(buffered_metrics)
+        if len(self._metrics_buffer) < self._buffer_size:
+            return
+
+        self._enqueue_buffer()
+
+    def flush(self) -> None:
+        if self._closed:
+            self._raise_worker_error()
+            return
+
+        self._enqueue_buffer()
+        self._worker_queue.join()
+        self._raise_worker_error()
+
+    def _enqueue_buffer(self) -> None:
+        if not self._metrics_buffer:
+            return
+
+        metrics_batch = self._metrics_buffer
+        self._metrics_buffer = []
+        self._worker_queue.put(metrics_batch)
+
+    def _worker_loop(self) -> None:
+        while True:
+            work_item = self._worker_queue.get()
+            try:
+                if work_item is _STOP_WORKER:
+                    return
+                if self._get_worker_error() is None:
+                    try:
+                        self._process_metrics_batch(work_item)
+                    except BaseException as error:
+                        self._set_worker_error(error)
+            finally:
+                self._worker_queue.task_done()
+
+    def _process_metrics_batch(self, metrics_batch: _MetricsBatch) -> None:
+        metrics = self._aggregate_buffered_metrics(metrics_batch)
 
         self._log_to_console(metrics)
 
@@ -94,6 +200,70 @@ class MetricsLogger:
 
         if self._wandb_run is not None and persistence_metrics:
             self._log_to_wandb(persistence_metrics)
+
+    def _get_worker_error(self) -> BaseException | None:
+        with self._worker_error_lock:
+            return self._worker_error
+
+    def _set_worker_error(self, error: BaseException) -> None:
+        with self._worker_error_lock:
+            if self._worker_error is None:
+                self._worker_error = error
+
+    def _raise_worker_error(self) -> None:
+        error = self._get_worker_error()
+        if error is not None:
+            raise RuntimeError("MetricsLogger background worker failed.") from error
+
+    @staticmethod
+    def _aggregate_buffered_metrics(buffer: list[dict[str, Any]]) -> dict[str, Any]:
+        values_by_key: dict[str, list[Any]] = {}
+        for metrics in buffer:
+            for key, value in metrics.items():
+                values_by_key.setdefault(key, []).append(value)
+
+        return {
+            key: MetricsLogger._aggregate_metric_values(key, values)
+            for key, values in values_by_key.items()
+        }
+
+    @staticmethod
+    def _aggregate_metric_values(key: str, values: list[Any]) -> Any:
+        wrapped_values = [value for value in values if isinstance(value, BufferedMetric)]
+        if wrapped_values:
+            if len(wrapped_values) != len(values):
+                raise TypeError(f"Metric {key!r} mixes buffered and plain values within one logging window.")
+            reductions = {value.reduction for value in wrapped_values}
+            if len(reductions) != 1:
+                raise ValueError(f"Metric {key!r} uses multiple reductions within one logging window: {reductions}")
+
+            reduction = wrapped_values[0].reduction
+            raw_values = [value.value for value in wrapped_values]
+            if reduction is MetricReduction.LAST:
+                return raw_values[-1]
+            if reduction is MetricReduction.MEAN_STD:
+                return compute_summary_statistics(raw_values)
+            if reduction is MetricReduction.SUM:
+                return sum(raw_values)
+            if reduction is MetricReduction.RATE:
+                numerator = sum(value[0] for value in raw_values)
+                denominator = sum(value[1] for value in raw_values)
+                if denominator <= 0:
+                    raise ValueError(f"Metric {key!r} rate denominator must be > 0, got {denominator}.")
+                return numerator / denominator
+            raise TypeError(reduction)
+
+        summary_statistics = [value for value in values if isinstance(value, SummaryStatistics)]
+        if summary_statistics:
+            if len(summary_statistics) != len(values):
+                raise TypeError(f"Metric {key!r} mixes SummaryStatistics and plain values within one logging window.")
+            return combine_summary_statistics(
+                summary_statistics,
+                combine_data=all(stats.data is not None for stats in summary_statistics),
+                combine_histograms=any(stats.histogram is not None for stats in summary_statistics),
+            )
+
+        return values[-1]
 
     def _log_to_console(self, metrics: dict[str, Any]) -> None:
         parts = []
@@ -309,6 +479,15 @@ class MetricsLogger:
             self._wandb_run.log(wandb_metrics, step=step)
 
     def close(self) -> None:
+        if self._closed:
+            self._raise_worker_error()
+            return
+
+        self._enqueue_buffer()
+        self._worker_queue.join()
+        self._worker_queue.put(_STOP_WORKER)
+        self._worker_thread.join()
+
         if self.file:
             self.file.close()
             self.file = None
@@ -323,6 +502,9 @@ class MetricsLogger:
             finally:
                 self._wandb_run = None
                 self._wandb_managed_run = False
+
+        self._closed = True
+        self._raise_worker_error()
 
     def compress_persisted_log(self) -> Path | None:
         if self.file_path is None or not self.file_path.exists():
@@ -349,7 +531,11 @@ class MetricsLogger:
         return gz_path
 
     def __del__(self) -> None:
-        self.close()
+        try:
+            if hasattr(self, "_closed"):
+                self.close()
+        except Exception:
+            pass
 
     def _normalize_console_keys(
         self,

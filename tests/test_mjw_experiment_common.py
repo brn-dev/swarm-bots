@@ -334,12 +334,15 @@ def test_default_run_experiment_wires_ppo_contract(
     assert learn_kwargs["save_interval"] is None
     assert learn_kwargs["save_optimizer"] is True
     assert learn_kwargs["best_rotation_n"] == 1
+    assert learn_kwargs["log_interval"] == 1
+    assert learn_kwargs["logging_buffer_size"] == 5
     metadata = learn_kwargs["extra_run_metadata"]
     assert isinstance(metadata, dict)
     assert metadata["algorithm_variant"] == "ppo"
     assert metadata["policy_variant"] == "mat_qcs"
     assert metadata["rollout_samples"] == 8
     assert metadata["total_timesteps"] == 16
+    assert metadata["logging_buffer_size"] == 5
     assert metadata["world_model_num_next_steps"] == 3
     assert metadata["scenario_kwargs"] == {"continuous_connector_actions": True}
     assert metadata["bernoulli_initial_prob"] == 0.8
@@ -424,6 +427,8 @@ def test_tmasac_run_experiment_preserves_sac_and_nop_configuration(
 
     learn_kwargs = capture["learn_kwargs"]
     assert isinstance(learn_kwargs, dict)
+    assert learn_kwargs["log_interval"] == 1
+    assert learn_kwargs["logging_buffer_size"] == 20
     metadata = learn_kwargs["extra_run_metadata"]
     assert isinstance(metadata, dict)
     assert metadata["algorithm_variant"] == "sac"
@@ -433,6 +438,7 @@ def test_tmasac_run_experiment_preserves_sac_and_nop_configuration(
     assert metadata["sac_ent_coef"] == "auto_0.2"
     assert metadata["sac_ent_coef_learning_rate"] == 1e-3
     assert metadata["sac_target_entropy"] == "auto_0.7"
+    assert metadata["logging_buffer_size"] == 20
     assert "sac_nop_steps" not in metadata
     logging_key_names = {entry[0] for entry in learn_kwargs["logging_console_keys"]}
     assert "actor_action_dist_act0_entropy_loss_scaled" not in logging_key_names

@@ -6,6 +6,7 @@ import torch.distributions as torchdist
 
 from swarmbots.learn.action_dists.action_dist import (
     AGENT_ACTIONS_DIM,
+    BOUNDED_ACTION_HISTOGRAM,
     ActionNetInitialization,
     ActionDist,
     ActionMetricsSplitterInput,
@@ -21,6 +22,9 @@ from swarmbots.learn.losses import LossDict, LossMetrics
 from swarmbots.learn.masking import masked_mean
 from swarmbots.learn.serialization_utils import serialize_dataclass
 from swarmbots.learn.summary_statistics import compute_summary_statistics
+
+
+STD_HISTOGRAM_BINS = 11
 
 
 class ContinuousActionDist(ActionDist, abc.ABC):
@@ -133,9 +137,8 @@ class ContinuousActionDist(ActionDist, abc.ABC):
             actions: torch.Tensor,
             action_splitter: ActionMetricsSplitterInput = None,
     ) -> dict[str, Any]:
-        hist_bins = 21
         splitter = resolve_action_metrics_splitter(action_splitter)
-        metrics = compute_action_metrics(actions, splitter, hist_bins=hist_bins)
+        metrics = compute_action_metrics(actions, splitter, histogram=BOUNDED_ACTION_HISTOGRAM)
 
         if not hasattr(self, "log_stds"):
             return metrics
@@ -149,11 +152,11 @@ class ContinuousActionDist(ActionDist, abc.ABC):
         if splitter is not None and can_split_stds:
             for key, split_stds in splitter(std_values).items():
                 metrics[f"std_{key}"] = compute_summary_statistics(
-                    split_stds, find_min=True, find_max=True, make_histogram=hist_bins
+                    split_stds, find_min=True, find_max=True, make_histogram=STD_HISTOGRAM_BINS
                 )
         else:
             metrics["std"] = compute_summary_statistics(
-                std_values, find_min=True, find_max=True, make_histogram=hist_bins
+                std_values, find_min=True, find_max=True, make_histogram=STD_HISTOGRAM_BINS
             )
 
         return metrics

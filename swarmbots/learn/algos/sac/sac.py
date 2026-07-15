@@ -869,7 +869,7 @@ class SAC(BaseAlgorithm):
                 values,
                 find_min=info_key in {"r", "l", "progress_reward", "guidance_reward"},
                 find_max=info_key in {"r", "l", "progress_reward", "guidance_reward"},
-                make_histogram=30 if info_key in {"r", "l", "progress_reward", "guidance_reward"} else False,
+                make_histogram=15 if info_key in {"r", "l", "progress_reward", "guidance_reward"} else False,
             )
         success_values = [float(ep_info["success"]) for ep_info in episode_infos if "success" in ep_info]
         if success_values:

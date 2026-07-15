@@ -20,6 +20,10 @@ from swarmbots.learn.action_dists.entropy_utils import (
 from swarmbots.learn.losses import LossDict, LossMetrics
 from swarmbots.learn.nn_components.nn_init import init_linear_orthogonal
 from swarmbots.learn.serialization_utils import serialize_dataclass
+from swarmbots.learn.summary_statistics import HistogramConfig
+
+
+BERNOULLI_ACTION_HISTOGRAM = HistogramConfig(bins=2, low=0.0, high=1.0)
 
 
 @dataclass(frozen=True)
@@ -114,8 +118,8 @@ class BernoulliActionDist(DiscreteActionDist):
     def compile_friendly(self) -> bool:
         return True
 
-    def _get_metrics_hist_bins(self) -> int:
-        return 2
+    def _get_metrics_histogram(self) -> HistogramConfig:
+        return BERNOULLI_ACTION_HISTOGRAM
 
     def get_hyper_parameters(self) -> dict[str, Any]:
         return {
