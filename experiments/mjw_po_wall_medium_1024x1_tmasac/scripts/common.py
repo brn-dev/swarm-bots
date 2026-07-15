@@ -14,7 +14,7 @@ from experiments.mjw_experiment_common import (
 from swarmbots.scenario_presets.scenario_presets_kwargs import PO_WALL_MEDIUM_SCENARIO_KWARGS
 
 EXPERIMENT_RUN_NAME = "mjw_po_wall_medium_1024x1_tmasac"
-EXPERIMENT_TOTAL_TIMESTEPS = 50_000_000
+EXPERIMENT_TOTAL_TIMESTEPS = 100_000_000
 SCENARIO_KWARGS: dict[str, object] = dict(PO_WALL_MEDIUM_SCENARIO_KWARGS)
 SCENARIO_KWARGS["continuous_connector_actions"] = True
 
