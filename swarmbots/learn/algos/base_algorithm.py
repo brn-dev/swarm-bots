@@ -24,7 +24,7 @@ from swarmbots.learn.checkpointing import load_checkpoint, extract_policy_state_
     apply_env_state, extract_env_state, freeze_env_normalization, capture_env_state, move_env_to_device
 from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
 from swarmbots.learn.exponential_moving_average import ExponentialMovingAverage, HybridEMA
-from swarmbots.learn.metrics_logger import MetricsLogger
+from swarmbots.learn.metrics_logger import MetricsLogger, mean_std, rate, summed
 from swarmbots.learn.performance_timer import PerformanceTimer
 from swarmbots.learn.recording import record_policy
 from swarmbots.utils.machine_specs import collect_machine_specs
@@ -38,6 +38,40 @@ MIN_ITERATIONS_FOR_BEST = 100
 
 LearningRate = float | list[float] | dict[str, float]
 LearnIterationHook = Callable[["BaseAlgorithm", dict[str, Any], int], None]
+
+MEAN_STD_LOG_METRIC_KEYS = frozenset({
+    "rollout_time",
+    "env_reset_time",
+    "to_rollout_device_time",
+    "total_reset_noise_time",
+    "total_policy_forward_time",
+    "total_env_step_time",
+    "total_buffer_add_time",
+    "buffer_get_whole_episodes_time",
+    "rollout_batch_builder_init_time",
+    "rollout_batch_finalize_time",
+    "to_train_device_time",
+    "sampler_init_time",
+    "total_sampling_time",
+    "total_update_time",
+    "metrics_time",
+    "train_time",
+    "total_compute_grad_norms_time",
+    "expl_var",
+    "grad_clip_frac",
+})
+SUM_LOG_METRIC_KEYS = frozenset({"updates", "transitions_collected"})
+
+
+def _apply_log_metric_reductions(metrics: dict[str, Any]) -> dict[str, Any]:
+    logging_metrics = metrics.copy()
+    for key in MEAN_STD_LOG_METRIC_KEYS:
+        if key in logging_metrics and logging_metrics[key] is not None:
+            logging_metrics[key] = mean_std(logging_metrics[key])
+    for key in SUM_LOG_METRIC_KEYS:
+        if key in logging_metrics and logging_metrics[key] is not None:
+            logging_metrics[key] = summed(logging_metrics[key])
+    return logging_metrics
 
 
 class BaseAlgorithm(abc.ABC):
@@ -132,6 +166,7 @@ class BaseAlgorithm(abc.ABC):
             wandb_kwargs: dict[str, Any] | None = None,
             logging_ignore_keys_for_persistence: list[str] | None = None,
             logging_console_keys: Collection[str] | Collection[tuple[str, str | None]] | None = None,
+            logging_buffer_size: int = 1,
             compress_metrics_log_on_exit: bool = False,
             enable_command_prompt: bool = True,
             make_record_env: Callable[[], BaseLearnEnvWrapper] | None = None,
@@ -143,6 +178,10 @@ class BaseAlgorithm(abc.ABC):
                 (additional_timesteps is not None and additional_timesteps > 0 and max_total_timesteps is None)
         )
         assert best_rotation_n >= 1
+        if log_interval is not None and log_interval < 1:
+            raise ValueError(f"log_interval must be >= 1 or None, got {log_interval}")
+        if logging_buffer_size < 1:
+            raise ValueError(f"logging_buffer_size must be >= 1, got {logging_buffer_size}")
 
         if max_total_timesteps is None:
             max_total_timesteps = self.n_total_timesteps + additional_timesteps
@@ -186,6 +225,7 @@ class BaseAlgorithm(abc.ABC):
             wandb_step_key="timesteps",
             ignore_keys_for_persistence=logging_ignore_keys_for_persistence,
             console_keys=logging_console_keys,
+            buffer_size=logging_buffer_size,
         )
         episode_return_ema = HybridEMA(alpha=episode_return_ema_alpha)
         episode_success_rate_ema = HybridEMA(alpha=episode_return_ema_alpha)
@@ -250,19 +290,17 @@ class BaseAlgorithm(abc.ABC):
                     self._best_return_ema = best_return_ema
 
                 if log_interval is not None and self.n_total_iterations % log_interval == 0:
-                    fps = int(rollout_steps / iter_duration)
-
                     metric_logger.log({
                         'learn_start': learn_started_at,
                         'latest_hp_update': self._latest_hp_update,
                         'iteration': self.n_total_iterations,
                         'timesteps': self.n_total_timesteps,
                         'learning_rate': self.learning_rate,
-                        **metrics,
+                        **_apply_log_metric_reductions(metrics),
                         'ep_rew_ema': current_return_ema,
                         'ep_success_rate_ema': current_success_rate_ema_percent,
                         'best_ep_rew_ema': best_return_ema,
-                        'fps': fps,
+                        'fps': rate(rollout_steps, iter_duration),
                     })
 
                 if save_interval is not None and run_dir is not None and self.n_total_iterations % save_interval == 0:
@@ -294,22 +332,26 @@ class BaseAlgorithm(abc.ABC):
 
         finally:
             self._final_return_ema = self._last_return_ema
-            metric_logger.close()
-            if should_compress_metrics_log:
-                metric_logger.compress_persisted_log()
-            self._active_run_dir = None
-            self._active_extra_run_metadata = None
-            self._active_save_optimizer = True
-            self._active_max_total_timesteps = None
-            self._active_learn_started_monotonic = None
-            self._active_learn_started_timesteps = None
-            self._stop_requested = False
-            self._stop_should_save = True
-            self._stop_save_optimizer = None
-            self._last_return_ema = None
-            self._latest_hp_update = None
-            self._make_record_env = None
-            self._command_log_path = None
+            try:
+                try:
+                    metric_logger.close()
+                finally:
+                    if should_compress_metrics_log:
+                        metric_logger.compress_persisted_log()
+            finally:
+                self._active_run_dir = None
+                self._active_extra_run_metadata = None
+                self._active_save_optimizer = True
+                self._active_max_total_timesteps = None
+                self._active_learn_started_monotonic = None
+                self._active_learn_started_timesteps = None
+                self._stop_requested = False
+                self._stop_should_save = True
+                self._stop_save_optimizer = None
+                self._last_return_ema = None
+                self._latest_hp_update = None
+                self._make_record_env = None
+                self._command_log_path = None
 
         return self
 

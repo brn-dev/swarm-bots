@@ -9,6 +9,7 @@ from swarmbots.learn.action_dists.action_dist import (
     ActionMetricsSplitterInput,
     compute_action_metrics,
 )
+from swarmbots.learn.summary_statistics import HistogramConfig
 
 
 class DiscreteActionDist(ActionDist, abc.ABC):
@@ -41,8 +42,8 @@ class DiscreteActionDist(ActionDist, abc.ABC):
         return compute_action_metrics(
             actions,
             action_splitter,
-            hist_bins=self._get_metrics_hist_bins(),
+            histogram=self._get_metrics_histogram(),
         )
 
-    def _get_metrics_hist_bins(self) -> int:
-        return 21
+    def _get_metrics_histogram(self) -> HistogramConfig | int:
+        return 11

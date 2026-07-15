@@ -4,6 +4,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from threading import Event
 from typing import Any
 from unittest import mock
 
@@ -13,7 +14,8 @@ from loguru import logger
 from swarmbots.learn.algos.base_algorithm import BaseAlgorithm
 from swarmbots.learn.base_policy import BasePolicy
 from swarmbots.learn.exponential_moving_average import ExponentialMovingAverage
-from swarmbots.learn.metrics_logger import MetricsLogger
+from swarmbots.learn.metrics_logger import MetricsLogger, mean_std, rate, summed
+from swarmbots.learn.summary_statistics import compute_summary_statistics
 
 
 class _DummyPolicy(BasePolicy):
@@ -134,6 +136,152 @@ class _SuccessRateEmaAlgorithm(_DummyAlgorithm):
 
 
 class MetricsLoggerTests(unittest.TestCase):
+    def test_full_buffer_is_processed_on_background_thread(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            log_dir = Path(tmp_dir)
+            metrics_logger = MetricsLogger(log_dir=log_dir, buffer_size=2)
+            worker_started = Event()
+            allow_worker_to_continue = Event()
+            process_metrics_batch = metrics_logger._process_metrics_batch
+
+            def wait_before_processing(metrics_batch: list[dict[str, Any]]) -> None:
+                worker_started.set()
+                if not allow_worker_to_continue.wait(timeout=5.0):
+                    raise TimeoutError("Timed out waiting to continue metrics processing.")
+                process_metrics_batch(metrics_batch)
+
+            metrics_logger._process_metrics_batch = wait_before_processing
+            try:
+                metrics_logger.log({"iteration": 1})
+                metrics_logger.log({"iteration": 2})
+
+                self.assertTrue(worker_started.wait(timeout=5.0))
+                self.assertFalse((log_dir / "log.csv").exists())
+            finally:
+                allow_worker_to_continue.set()
+                metrics_logger.close()
+
+            with (log_dir / "log.csv").open(newline="", encoding="utf-8") as log_file:
+                rows = list(csv.DictReader(log_file, delimiter=";"))
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["iteration"], "2")
+
+    def test_background_worker_failure_is_raised_on_close(self) -> None:
+        metrics_logger = MetricsLogger(buffer_size=1)
+        metrics_logger._process_metrics_batch = mock.Mock(side_effect=ValueError("write failed"))
+
+        metrics_logger.log({"iteration": 1})
+
+        with self.assertRaisesRegex(RuntimeError, "background worker failed") as raised:
+            metrics_logger.close()
+        self.assertIsInstance(raised.exception.__cause__, ValueError)
+
+    def test_buffer_combines_explicit_reductions_and_summary_statistics(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            log_dir = Path(tmp_dir)
+            metrics_logger = MetricsLogger(log_dir=log_dir, buffer_size=3)
+
+            for index, (numerator, denominator) in enumerate(((10, 1), (30, 1), (20, 2)), start=1):
+                stats = compute_summary_statistics([float(index), float(index + 1)], make_histogram=2)
+                metrics_logger.log({
+                    "last_value": index,
+                    "sample": mean_std(float(index)),
+                    "count": summed(index),
+                    "throughput": rate(numerator, denominator),
+                    "stats": stats,
+                })
+                if index < 3:
+                    self.assertFalse((log_dir / "log.csv").exists())
+
+            metrics_logger.close()
+
+            with (log_dir / "log.csv").open(newline="", encoding="utf-8") as log_file:
+                rows = list(csv.DictReader(log_file, delimiter=";"))
+
+            self.assertEqual(len(rows), 1)
+            row = rows[0]
+            self.assertEqual(row["last_value"], "3")
+            self.assertAlmostEqual(float(row["sample__mean"]), 2.0)
+            self.assertAlmostEqual(float(row["sample__std"]), 0.816497)
+            self.assertEqual(row["sample__n"], "3")
+            self.assertEqual(row["count"], "6")
+            self.assertAlmostEqual(float(row["throughput"]), 15.0)
+            self.assertAlmostEqual(float(row["stats__mean"]), 2.5)
+            self.assertEqual(row["stats__n"], "6")
+            self.assertAlmostEqual(sum(json.loads(row["stats__histogram_freqs"])), 1.0)
+
+    def test_close_flushes_partial_buffer(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            log_dir = Path(tmp_dir)
+            metrics_logger = MetricsLogger(log_dir=log_dir, buffer_size=3)
+            metrics_logger.log({"iteration": 1, "updates": summed(2)})
+            metrics_logger.log({"iteration": 2, "updates": summed(3)})
+
+            metrics_logger.close()
+
+            with (log_dir / "log.csv").open(newline="", encoding="utf-8") as log_file:
+                rows = list(csv.DictReader(log_file, delimiter=";"))
+
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["iteration"], "2")
+            self.assertEqual(rows[0]["updates"], "5")
+
+    def test_rejects_invalid_buffer_size(self) -> None:
+        with self.assertRaisesRegex(ValueError, "buffer_size"):
+            MetricsLogger(buffer_size=0)
+
+    def test_learn_aggregates_complete_and_partial_logging_windows(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            run_dir = Path(tmp_dir)
+            algo = _DummyAlgorithm(policy=_DummyPolicy(), env=_DummyEnv(), learning_rate=1e-3)
+
+            algo.learn(
+                max_total_timesteps=3,
+                run_dir=run_dir,
+                logging_buffer_size=2,
+                save_optimizer=False,
+                enable_command_prompt=False,
+            )
+
+            with (run_dir / "log.csv").open(newline="", encoding="utf-8") as log_file:
+                rows = list(csv.DictReader(log_file, delimiter=";"))
+
+            self.assertEqual(len(rows), 2)
+            self.assertEqual([row["iteration"] for row in rows], ["2", "3"])
+            self.assertEqual([row["total_updates"] for row in rows], ["2", "3"])
+
+    def test_learn_clears_active_state_when_metrics_worker_fails(self) -> None:
+        algo = _DummyAlgorithm(policy=_DummyPolicy(), env=_DummyEnv(), learning_rate=1e-3)
+        record_env_factory = mock.Mock()
+
+        with mock.patch.object(
+                MetricsLogger,
+                "_process_metrics_batch",
+                side_effect=ValueError("write failed"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "background worker failed"):
+                algo.learn(
+                    max_total_timesteps=1,
+                    save_optimizer=False,
+                    enable_command_prompt=False,
+                    make_record_env=record_env_factory,
+                    extra_run_metadata={"test": True},
+                )
+
+        self.assertIsNone(algo._active_run_dir)
+        self.assertIsNone(algo._active_extra_run_metadata)
+        self.assertTrue(algo._active_save_optimizer)
+        self.assertIsNone(algo._active_max_total_timesteps)
+        self.assertIsNone(algo._active_learn_started_monotonic)
+        self.assertIsNone(algo._active_learn_started_timesteps)
+        self.assertFalse(algo._stop_requested)
+        self.assertTrue(algo._stop_should_save)
+        self.assertIsNone(algo._stop_save_optimizer)
+        self.assertIsNone(algo._last_return_ema)
+        self.assertIsNone(algo._latest_hp_update)
+        self.assertIsNone(algo._make_record_env)
+        self.assertIsNone(algo._command_log_path)
+
     def test_compress_persisted_log_replaces_csv_with_gzip(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             log_dir = Path(tmp_dir)

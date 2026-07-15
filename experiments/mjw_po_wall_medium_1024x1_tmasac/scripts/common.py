@@ -13,7 +13,7 @@ from experiments.mjw_experiment_common import (
 )
 from swarmbots.scenario_presets.scenario_presets_kwargs import PO_WALL_MEDIUM_SCENARIO_KWARGS
 
-EXPERIMENT_RUN_NAME = "mjw_po_wall_medium_1024x1_tmasac_cont_conn_act"
+EXPERIMENT_RUN_NAME = "mjw_po_wall_medium_1024x1_tmasac"
 EXPERIMENT_TOTAL_TIMESTEPS = 100_000_000
 SCENARIO_KWARGS: dict[str, object] = dict(PO_WALL_MEDIUM_SCENARIO_KWARGS)
 SCENARIO_KWARGS["continuous_connector_actions"] = True
@@ -26,7 +26,7 @@ def run_experiment(
         continuous_action_dist: ContinuousActionDistVariant,
         use_nop: bool = True,
         sac_learning_rate: float = 3e-4,
-        sac_ent_coef_learning_rate: float | None = 5e-4,
+        sac_ent_coef_learning_rate: float | None = None,
         sac_ent_coef: float | str = "auto_0.005",
         sac_target_entropy: float | str = "auto_0.1",
 ) -> None:

@@ -554,7 +554,7 @@ def run_experiment(*, num_envs: int, rollout_samples: int, variant_name: str, en
             ("ratio", SummaryStatisticsFormat(mean=".3f", std=".3f", min_value=".1e", max_value=".3f")),
             ("wm_loss_scaled", None, "wm_loss"),
             ("val_loss_scaled", None, "val_loss"),
-            ("expl_var", ".3f"),
+            ("expl_var", SummaryStatisticsFormat(mean=".3f", std=".3f")),
             ("popart_mu", ".3f", "pa_mu"),
             ("popart_sigma", ".3f", "pa_sigma"),
             ("ep_rew", SummaryStatisticsFormat(mean=" .2f", std=".2f", max_value=" .2f", n="1")),

@@ -8,13 +8,14 @@ from torch import nn
 
 from swarmbots.learn.losses import LossDict, LossMetrics
 from swarmbots.learn.masking import masked_mean
-from swarmbots.learn.summary_statistics import compute_summary_statistics
+from swarmbots.learn.summary_statistics import HistogramConfig, compute_summary_statistics
 
 ActionNetInitialization = Callable[[nn.Linear], None]
 ActionMetricsSplitter = Callable[[torch.Tensor], dict[str, torch.Tensor]]
 ActionMetricsSplitterInput = ActionMetricsSplitter | list[ActionMetricsSplitter | None] | None
 
 AGENT_ACTIONS_DIM = -1
+BOUNDED_ACTION_HISTOGRAM = HistogramConfig(bins=11, low=-1.0, high=1.0)
 
 
 class ActionGradientEstimator(StrEnum):
@@ -206,13 +207,13 @@ def compute_action_metrics(
         actions: torch.Tensor,
         action_splitter: ActionMetricsSplitterInput,
         *,
-        hist_bins: int,
+        histogram: HistogramConfig | int,
 ) -> dict[str, Any]:
     splitter = resolve_action_metrics_splitter(action_splitter)
     metrics: dict[str, Any] = {}
     if splitter is None:
-        metrics["act"] = compute_summary_statistics(actions, make_histogram=hist_bins)
+        metrics["act"] = compute_summary_statistics(actions, make_histogram=histogram)
     else:
         for key, split_actions in splitter(actions).items():
-            metrics[f"act_{key}"] = compute_summary_statistics(split_actions, make_histogram=hist_bins)
+            metrics[f"act_{key}"] = compute_summary_statistics(split_actions, make_histogram=histogram)
     return metrics

@@ -644,6 +644,7 @@ def run_experiment(
         math.ceil(max(sac_learning_starts, sac_batch_size) / num_envs),
     )
     sac_gradient_steps = 8
+    logging_buffer_size = 20 if sac_policy else 5
 
     run_id = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     load_path: str | Path | None = None
@@ -1085,7 +1086,7 @@ def run_experiment(
         logging_console_keys.extend(
             [
                 ("val_loss_scaled", None, "val_loss"),
-                ("expl_var", ".3f"),
+                ("expl_var", SummaryStatisticsFormat(mean=".3f", std=".3f")),
                 ("popart_mu", ".3f", "pa_mu"),
                 ("popart_sigma", ".3f", "pa_sigma"),
             ]
@@ -1113,6 +1114,7 @@ def run_experiment(
         "rollout_samples": rollout_samples,
         "rollout_steps_per_env": rollout_steps_per_env,
         "total_timesteps": total_timesteps,
+        "logging_buffer_size": logging_buffer_size,
         "sampler_batch_size": sampler_batch_size,
         "recurrent_policy": recurrent_policy,
         "rollout_warmup_steps_per_env": rollout_warmup_steps_per_env,
@@ -1183,6 +1185,7 @@ def run_experiment(
             max_total_timesteps=total_timesteps,
             run_dir=str(run_dir),
             log_interval=1,
+            logging_buffer_size=logging_buffer_size,
             save_interval=save_interval,
             save_optimizer=save_optimizer,
             best_rotation_n=1,

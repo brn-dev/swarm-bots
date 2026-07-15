@@ -11,22 +11,25 @@ from plot_logs.experiment_results import plot_experiment_results
 
 
 RUNS_DIR = REPO_ROOT / "runs"
-EXPERIMENT_RUN_DIR = RUNS_DIR / "mjw_po_wall_medium_1024x1_tmasac_cont_conn_act"
+EXPERIMENT_RUN_DIR = RUNS_DIR / "mjw_po_wall_medium_1024x1_tmasac"
 BASELINE_EXPERIMENT_RUN_DIR = RUNS_DIR / "mjw_po_wall_medium_1024x4_250M_cont_conn_act"
 OUTPUT_DIR = Path(__file__).resolve().parent / "results"
+EXPERIMENT_TOTAL_TIMESTEPS = 100_000_000
 MAT_DEC_BASELINE_GROUP = "mat_dec_baseline"
 MAT_QCX_BASELINE_GROUP = "mat_qcx_baseline"
 GROUP_ORDER = (
     MAT_DEC_BASELINE_GROUP,
     MAT_QCX_BASELINE_GROUP,
-    "tmasac_rsmk",
-    "tmasac_predicted_std",
+    "tmasac_lr=3e-4",
+    "tmasac_lr=1e-4",
+    "tmasac_lr=5e-5",
 )
 DISPLAY_NAME_OVERRIDES = {
     MAT_DEC_BASELINE_GROUP: "MAT-Dec + NOP baseline",
     MAT_QCX_BASELINE_GROUP: "MAT-QCX + NOP baseline",
-    "tmasac_rsmk": "TMASAC RSMK + NOP",
-    "tmasac_predicted_std": "TMASAC Predicted Std + NOP",
+    "tmasac_lr=3e-4": "TMASAC Gumbel SMB + NOP, LR 3e-4",
+    "tmasac_lr=1e-4": "TMASAC Gumbel SMB + NOP, LR 1e-4",
+    "tmasac_lr=5e-5": "TMASAC Gumbel SMB + NOP, LR 5e-5",
 }
 EXTRA_GROUP_SOURCES = {
     MAT_DEC_BASELINE_GROUP: (BASELINE_EXPERIMENT_RUN_DIR / "mat_dec",),
@@ -43,7 +46,8 @@ def main() -> int:
         theoretical_maximum=THEORETICAL_MAXIMUM,
         display_name_overrides=DISPLAY_NAME_OVERRIDES,
         extra_group_sources=EXTRA_GROUP_SOURCES,
-        run_length_limit=250_000_000,
+        run_length_limit=EXPERIMENT_TOTAL_TIMESTEPS,
+        cut_at_limit=True,
     )
     for output_path in result.output_paths:
         print(output_path)
