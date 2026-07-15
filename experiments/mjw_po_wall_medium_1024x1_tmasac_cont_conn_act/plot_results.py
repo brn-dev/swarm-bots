@@ -11,7 +11,7 @@ from plot_logs.experiment_results import plot_experiment_results
 
 
 RUNS_DIR = REPO_ROOT / "runs"
-EXPERIMENT_RUN_DIR = RUNS_DIR / "mjw_po_wall_medium_1024x1_250M_tmasac_cont_conn_act"
+EXPERIMENT_RUN_DIR = RUNS_DIR / "mjw_po_wall_medium_1024x1_tmasac_cont_conn_act"
 BASELINE_EXPERIMENT_RUN_DIR = RUNS_DIR / "mjw_po_wall_medium_1024x4_250M_cont_conn_act"
 OUTPUT_DIR = Path(__file__).resolve().parent / "results"
 MAT_DEC_BASELINE_GROUP = "mat_dec_baseline"
