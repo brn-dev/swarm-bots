@@ -27,7 +27,7 @@ def run_experiment(
         use_nop: bool = True,
         sac_learning_rate: float = 3e-4,
         sac_ent_coef_learning_rate: float | None = None,
-        sac_ent_coef: float | str = "auto_0.005",
+        sac_ent_coef: float | str = "auto_0.05",
         sac_target_entropy: float | str = "auto_0.1",
 ) -> None:
     run_mjw_wall_experiment(
