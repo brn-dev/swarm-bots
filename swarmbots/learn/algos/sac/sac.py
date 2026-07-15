@@ -35,6 +35,7 @@ from swarmbots.learn.torch_device import as_device
 
 
 DEFAULT_TOTAL_REPLAY_CAPACITY = 1_000_000
+ENTROPY_AGENT_REDUCTION = "mean"
 
 
 class SAC(BaseAlgorithm):
@@ -154,6 +155,7 @@ class SAC(BaseAlgorithm):
             "ent_coef_learning_rate": self.ent_coef_learning_rate,
             "resolved_ent_coef_learning_rate": self._resolved_ent_coef_learning_rate(),
             "target_entropy": self.target_entropy,
+            "entropy_agent_reduction": ENTROPY_AGENT_REDUCTION,
             "target_update_interval": self.target_update_interval,
             "max_grad_norm": self.max_grad_norm,
             "nop_batch_size": self.nop_batch_size,
@@ -362,15 +364,15 @@ class SAC(BaseAlgorithm):
             batch=batch,
             extra_losses=actor_action_dist_losses,
         )
-        log_prob_pi_sum = self._reduce_agent_log_probs(log_prob_pi, batch.agent_mask)
+        log_prob_pi_mean = self._mean_agent_log_probs(log_prob_pi, batch.agent_mask)
         ent_coef, ent_coef_loss = self._update_entropy_coefficient(
-            log_prob_sum=log_prob_pi_sum,
+            log_prob_mean=log_prob_pi_mean,
             batch=batch,
         )
         target_entropy = self._target_entropy(
             batch=batch,
-            dtype=log_prob_pi_sum.dtype,
-            device=log_prob_pi_sum.device,
+            dtype=log_prob_pi_mean.dtype,
+            device=log_prob_pi_mean.device,
         )
 
         with torch.no_grad():
@@ -414,7 +416,7 @@ class SAC(BaseAlgorithm):
                 deterministic=False,
                 use_rsample=False,
             )
-            next_log_prob_sum = self._reduce_agent_log_probs(next_log_probs, bootstrap_next_agent_mask)
+            next_log_prob_mean = self._mean_agent_log_probs(next_log_probs, bootstrap_next_agent_mask)
             target_q1, target_q2 = self.policy.target_q_values(
                 local_obs=bootstrap_next_local_obs,
                 global_obs=bootstrap_next_global_obs,
@@ -423,7 +425,7 @@ class SAC(BaseAlgorithm):
                 agent_mask=bootstrap_next_agent_mask,
                 actions=next_actions,
             )
-            next_q = torch.minimum(target_q1, target_q2) - ent_coef * next_log_prob_sum
+            next_q = torch.minimum(target_q1, target_q2) - ent_coef * next_log_prob_mean
             target_q = torch.where(
                 batch.terminal_mask,
                 batch.rewards,
@@ -469,7 +471,7 @@ class SAC(BaseAlgorithm):
                 agent_mask=batch.agent_mask,
                 actions=actions_pi,
             )
-            actor_loss = (ent_coef * log_prob_pi_sum - torch.minimum(q1_pi, q2_pi)).mean()
+            actor_loss = (ent_coef * log_prob_pi_mean - torch.minimum(q1_pi, q2_pi)).mean()
         finally:
             self._set_requires_grad(critic_parameters, True)
 
@@ -501,8 +503,8 @@ class SAC(BaseAlgorithm):
             "current_q1": current_q1.mean().item(),
             "current_q2": current_q2.mean().item(),
             "q_pi": torch.minimum(q1_pi, q2_pi).mean().item(),
-            "log_prob": log_prob_pi_sum.mean().item(),
-            "entropy": (-log_prob_pi_sum).mean().item(),
+            "log_prob": log_prob_pi_mean.mean().item(),
+            "entropy": (-log_prob_pi_mean).mean().item(),
             "target_entropy": target_entropy.mean().item(),
             "ent_coef": ent_coef.item(),
             "actor_critic_learning_rate": actor_critic_lr,
@@ -549,15 +551,15 @@ class SAC(BaseAlgorithm):
     def _update_entropy_coefficient(
             self,
             *,
-            log_prob_sum: torch.Tensor,
+            log_prob_mean: torch.Tensor,
             batch: OffPolicyReplayBatch,
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
         if self.log_ent_coef is None:
             assert self.ent_coef_tensor is not None
             return self.ent_coef_tensor, None
 
-        target_entropy = self._target_entropy(batch=batch, dtype=log_prob_sum.dtype, device=log_prob_sum.device)
-        ent_coef_loss = -(self.log_ent_coef * (log_prob_sum + target_entropy).detach()).mean()
+        target_entropy = self._target_entropy(batch=batch, dtype=log_prob_mean.dtype, device=log_prob_mean.device)
+        ent_coef_loss = -(self.log_ent_coef * (log_prob_mean + target_entropy).detach()).mean()
         assert self.ent_coef_optimizer is not None
         self.ent_coef_optimizer.zero_grad()
         ent_coef_loss.backward()
@@ -573,16 +575,8 @@ class SAC(BaseAlgorithm):
     ) -> torch.Tensor:
         if isinstance(self.target_entropy, str):
             auto_scale = self._target_entropy_auto_scale()
-            if batch.agent_mask is None:
-                active_agents = torch.full(
-                    batch.rewards.shape,
-                    float(self.env.n_agents),
-                    dtype=dtype,
-                    device=device,
-                )
-            else:
-                active_agents = batch.agent_mask.to(dtype=dtype).sum(dim=1)
-            return -auto_scale * float(self.agent_action_dim) * active_agents
+            target_entropy_per_agent = -auto_scale * float(self.agent_action_dim)
+            return torch.full(batch.rewards.shape, target_entropy_per_agent, dtype=dtype, device=device)
 
         return torch.full(batch.rewards.shape, float(self.target_entropy), dtype=dtype, device=device)
 
@@ -617,11 +611,16 @@ class SAC(BaseAlgorithm):
             f"{parameter_name} string must be 'auto', 'auto_{suffix_name}', or 'auto*{suffix_name}'"
         )
 
-    @staticmethod
-    def _reduce_agent_log_probs(log_probs: torch.Tensor, agent_mask: torch.Tensor | None) -> torch.Tensor:
+    def _mean_agent_log_probs(
+            self,
+            log_probs: torch.Tensor,
+            agent_mask: torch.Tensor | None,
+    ) -> torch.Tensor:
         if agent_mask is None:
-            return log_probs.sum(dim=1)
-        return log_probs.masked_fill(~agent_mask, 0.0).sum(dim=1)
+            return log_probs.mean(dim=1)
+        log_prob_sums = log_probs.masked_fill(~agent_mask, 0.0).sum(dim=1)
+        active_agent_counts = agent_mask.to(dtype=log_probs.dtype).sum(dim=1)
+        return log_prob_sums / active_agent_counts
 
     @staticmethod
     def _replace_terminal_rows(
@@ -900,6 +899,7 @@ class SAC(BaseAlgorithm):
         return {
             "actor_optimizer": self.actor_optimizer.state_dict(),
             "critic_optimizer": self.critic_optimizer.state_dict(),
+            "entropy_agent_reduction": ENTROPY_AGENT_REDUCTION,
             "ent_coef_optimizer": None if self.ent_coef_optimizer is None else self.ent_coef_optimizer.state_dict(),
             "log_ent_coef": None if self.log_ent_coef is None else self.log_ent_coef.detach(),
             "ent_coef_tensor": None if self.ent_coef_tensor is None else self.ent_coef_tensor.detach(),
@@ -937,25 +937,33 @@ class SAC(BaseAlgorithm):
                 self.policy.critic_parameters(),
                 lr=self._actor_critic_learning_rate_for_update(self.n_total_updates),
             )
+        saved_entropy_agent_reduction = state_dict.get("entropy_agent_reduction")
         self.log_ent_coef = None
         self.ent_coef_optimizer = None
         self.ent_coef_tensor = None
-        log_ent_coef = state_dict.get("log_ent_coef", None)
-        ent_coef_tensor = state_dict.get("ent_coef_tensor", None)
-        if log_ent_coef is not None and ent_coef_tensor is not None:
-            raise ValueError("Invalid SAC optimizer state: both log_ent_coef and ent_coef_tensor are set.")
-        if log_ent_coef is not None:
-            self.log_ent_coef = log_ent_coef.to(self.train_device).detach().requires_grad_(True)
-            self.ent_coef_optimizer = torch.optim.Adam(
-                [self.log_ent_coef],
-                lr=self._resolved_ent_coef_learning_rate(),
+        if saved_entropy_agent_reduction != ENTROPY_AGENT_REDUCTION:
+            logger.warning(
+                "Loaded a SAC checkpoint without compatible mean-agent entropy semantics; "
+                "resetting the entropy coefficient from the current configuration."
             )
-            ent_state = state_dict.get("ent_coef_optimizer", None)
-            if ent_state is not None:
-                self.ent_coef_optimizer.load_state_dict(ent_state)
-            self._apply_entropy_coefficient_learning_rate()
-        if ent_coef_tensor is not None:
-            self.ent_coef_tensor = ent_coef_tensor.to(self.train_device).detach()
+            self._setup_entropy_coefficient()
+        else:
+            log_ent_coef = state_dict.get("log_ent_coef", None)
+            ent_coef_tensor = state_dict.get("ent_coef_tensor", None)
+            if log_ent_coef is not None and ent_coef_tensor is not None:
+                raise ValueError("Invalid SAC optimizer state: both log_ent_coef and ent_coef_tensor are set.")
+            if log_ent_coef is not None:
+                self.log_ent_coef = log_ent_coef.to(self.train_device).detach().requires_grad_(True)
+                self.ent_coef_optimizer = torch.optim.Adam(
+                    [self.log_ent_coef],
+                    lr=self._resolved_ent_coef_learning_rate(),
+                )
+                ent_state = state_dict.get("ent_coef_optimizer", None)
+                if ent_state is not None:
+                    self.ent_coef_optimizer.load_state_dict(ent_state)
+                self._apply_entropy_coefficient_learning_rate()
+            if ent_coef_tensor is not None:
+                self.ent_coef_tensor = ent_coef_tensor.to(self.train_device).detach()
         self._move_optimizer_state_to_device(self.actor_optimizer, self.train_device)
         self._move_optimizer_state_to_device(self.critic_optimizer, self.train_device)
         if self.ent_coef_optimizer is not None:
