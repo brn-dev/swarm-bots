@@ -5,7 +5,7 @@ from common import run_experiment
 
 def main() -> None:
     run_experiment(
-        variant_name="tmasac_lr=1e-4",
+        variant_name="tmasac_lr=1e-4_no_nop",
         sac_learning_rate=1e-4,
         sac_ent_coef_learning_rate=None,
         sac_ent_coef="auto_0.05",
