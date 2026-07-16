@@ -23,6 +23,7 @@ GROUP_ORDER = (
     MAT_QCX_BASELINE_GROUP,
     "tmasac_lr=3e-4",
     "tmasac_lr=1e-4",
+    "tmasac_lr=1e-4_bigger_mlps",
     "tmasac_lr=5e-5",
 )
 DISPLAY_NAME_OVERRIDES = {
@@ -30,6 +31,7 @@ DISPLAY_NAME_OVERRIDES = {
     MAT_QCX_BASELINE_GROUP: "MAT-QCX + NOP baseline",
     "tmasac_lr=3e-4": "TMASAC Gumbel SMB + NOP, LR 3e-4",
     "tmasac_lr=1e-4": "TMASAC Gumbel SMB + NOP, LR 1e-4",
+    "tmasac_lr=1e-4_bigger_mlps": "TMASAC Gumbel SMB + NOP, LR 1e-4, bigger MLPs",
     "tmasac_lr=5e-5": "TMASAC Gumbel SMB + NOP, LR 5e-5",
 }
 EXTRA_GROUP_SOURCES = {

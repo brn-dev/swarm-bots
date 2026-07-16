@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from typing import Sequence
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 if str(REPO_ROOT) not in sys.path:
@@ -29,6 +30,7 @@ def run_experiment(
         sac_ent_coef_learning_rate: float | None = None,
         sac_ent_coef: float | str = "auto_0.05",
         sac_target_entropy: float | str = "auto_0.1",
+        mat_encoder_transformer_ff_hidden_dims: Sequence[int] | None = None,
 ) -> None:
     run_mjw_wall_experiment(
         num_envs=1024,
@@ -47,4 +49,5 @@ def run_experiment(
         sac_ent_coef_learning_rate=sac_ent_coef_learning_rate,
         sac_ent_coef=sac_ent_coef,
         sac_target_entropy=sac_target_entropy,
+        mat_encoder_transformer_ff_hidden_dims=mat_encoder_transformer_ff_hidden_dims,
     )
