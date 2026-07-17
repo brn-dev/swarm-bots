@@ -721,6 +721,9 @@ class OffPolicyReplayTests(unittest.TestCase):
             self.assertIsNone(buffer.episode_starts)
             self.assertIsNone(buffer.temporal_states)
             self.assertIsNone(buffer._temporal_state_available)
+            self.assertIsNone(buffer._temporal_state_indices)
+            self.assertIsNone(buffer._temporal_state_slots_in_use)
+            self.assertEqual(buffer.temporal_state_capacity_per_env, 0)
             self.assertIsNone(buffer._current_episode_start_mask)
 
             buffer.add(
@@ -771,12 +774,52 @@ class OffPolicyReplayTests(unittest.TestCase):
 
             self.assertIsInstance(buffer.temporal_states, torch.Tensor)
             self.assertEqual(buffer.temporal_states.dtype, torch.float16)
+            self.assertEqual(buffer.temporal_states.shape[1], 3)
             batch = buffer.sample_episode_segments(1, segment_length=1)
             self.assertIsInstance(batch.initial_temporal_state, torch.Tensor)
             self.assertEqual(batch.initial_temporal_state.dtype, torch.float32)
             torch.testing.assert_close(
                 batch.initial_temporal_state,
                 _temporal_state(1.25),
+            )
+        finally:
+            env.close()
+
+    def test_temporal_state_storage_is_compact_and_reuses_slots_after_ring_wrap(self) -> None:
+        env = _make_env()
+        try:
+            buffer = _make_buffer(
+                env,
+                capacity_per_env=5,
+                temporal_state_store_interval=2,
+            )
+            for step in range(12):
+                buffer.add(
+                    obs=_obs(float(step)),
+                    actions=_actions(float(step)),
+                    rewards=torch.tensor([float(step)]),
+                    terminations=torch.tensor([False]),
+                    truncations=torch.tensor([False]),
+                    next_obs=_obs(float(step + 1)),
+                    temporal_state=_temporal_state(float(step)),
+                    next_temporal_state=_temporal_state(float(step + 1)),
+                )
+
+            self.assertEqual(buffer.temporal_state_capacity_per_env, 3)
+            self.assertIsInstance(buffer.temporal_states, torch.Tensor)
+            self.assertEqual(buffer.temporal_states.shape[1], 3)
+            self.assertEqual(int(buffer._temporal_state_available.sum()), 3)
+
+            batch = buffer.sample_episode_segments(
+                2,
+                segment_length=1,
+                replacement=False,
+                allow_episode_boundaries=True,
+            )
+            self.assertIsInstance(batch.initial_temporal_state, torch.Tensor)
+            self.assertEqual(
+                set(batch.initial_temporal_state[:, 0, 0].tolist()),
+                {8.0, 10.0},
             )
         finally:
             env.close()
