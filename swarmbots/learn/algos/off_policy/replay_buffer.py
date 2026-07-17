@@ -226,8 +226,24 @@ class OffPolicyReplayBuffer:
             )
         self.temporal_states: Any = None
         self._temporal_state_available: torch.Tensor | None = None
+        self._temporal_state_indices: torch.Tensor | None = None
+        self._temporal_state_slots_in_use: torch.Tensor | None = None
+        self.temporal_state_capacity_per_env = 0
         if temporal_state_store_interval is not None:
             self._temporal_state_available = self._new_storage_tensor(obs_shape, dtype=torch.bool)
+            self._temporal_state_indices = torch.full(
+                obs_shape,
+                -1,
+                dtype=torch.long,
+                device=self.storage_device,
+            )
+            self.temporal_state_capacity_per_env = (
+                self.observation_capacity_per_env + temporal_state_store_interval - 1
+            ) // temporal_state_store_interval
+            self._temporal_state_slots_in_use = self._new_storage_tensor(
+                (self.n_envs, self.temporal_state_capacity_per_env),
+                dtype=torch.bool,
+            )
 
         self._write_slot = 0
         self._current_obs_slots = torch.zeros(self.n_envs, dtype=torch.long, device=self.storage_device)
@@ -277,6 +293,10 @@ class OffPolicyReplayBuffer:
             self.episode_starts.zero_()
         if self._temporal_state_available is not None:
             self._temporal_state_available.zero_()
+        if self._temporal_state_indices is not None:
+            self._temporal_state_indices.fill_(-1)
+        if self._temporal_state_slots_in_use is not None:
+            self._temporal_state_slots_in_use.zero_()
         self.temporal_states = None
         self._terminal_obs_by_env_slot.clear()
         for terminal_envs in self._terminal_envs_by_transition_slot:
@@ -981,6 +1001,21 @@ class OffPolicyReplayBuffer:
     ) -> None:
         if self._temporal_state_available is None:
             return
+        assert self._temporal_state_indices is not None
+        assert self._temporal_state_slots_in_use is not None
+        checkpoint_slots = self._temporal_state_indices[target_env_indices, obs_slots]
+        has_checkpoint = checkpoint_slots >= 0
+        # Python conditions on these tensors would synchronize CUDA replay storage on every write.
+        safe_checkpoint_slots = checkpoint_slots.clamp_min(0)
+        slots_in_use = self._temporal_state_slots_in_use[
+            target_env_indices,
+            safe_checkpoint_slots,
+        ]
+        self._temporal_state_slots_in_use[
+            target_env_indices,
+            safe_checkpoint_slots,
+        ] = torch.logical_and(slots_in_use, ~has_checkpoint)
+        self._temporal_state_indices[target_env_indices, obs_slots] = -1
         self._temporal_state_available[target_env_indices, obs_slots] = False
 
     def _should_store_temporal_state(self, observation_step_idx: int) -> bool:
@@ -999,6 +1034,8 @@ class OffPolicyReplayBuffer:
     ) -> None:
         if self._temporal_state_available is None:
             return
+        assert self._temporal_state_indices is not None
+        assert self._temporal_state_slots_in_use is not None
         if target_env_indices is None:
             target_env_indices = torch.arange(self.n_envs, dtype=torch.long, device=self.storage_device)
         if source_env_indices is None:
@@ -1007,12 +1044,21 @@ class OffPolicyReplayBuffer:
         target_env_indices = target_env_indices.to(device=self.storage_device, dtype=torch.long)
         source_env_indices = source_env_indices.to(dtype=torch.long)
 
+        checkpoint_slots = self._temporal_state_indices[target_env_indices, obs_slots]
+        needs_checkpoint_slot = checkpoint_slots < 0
+        # Pool capacity is the maximum retained checkpoint count, so an unmapped observation has a free slot.
+        free_slots = ~self._temporal_state_slots_in_use[target_env_indices]
+        allocated_slots = free_slots.to(dtype=torch.long).argmax(dim=1)
+        checkpoint_slots = torch.where(needs_checkpoint_slot, allocated_slots, checkpoint_slots)
+        self._temporal_state_slots_in_use[target_env_indices, checkpoint_slots] = True
+        self._temporal_state_indices[target_env_indices, obs_slots] = checkpoint_slots
+
         if self.temporal_states is None:
             self.temporal_states = self._new_temporal_state_storage(state)
         self._copy_temporal_state_tree_rows_(
             target=self.temporal_states,
             source=state,
-            obs_slots=obs_slots,
+            checkpoint_slots=checkpoint_slots,
             target_env_indices=target_env_indices,
             source_env_indices=source_env_indices,
         )
@@ -1024,7 +1070,7 @@ class OffPolicyReplayBuffer:
                 raise ValueError(f"Temporal state leading dimension must be {self.n_envs}, got {state.shape[0]}")
             dtype = self.temporal_state_storage_dtype if state.is_floating_point() else state.dtype
             return self._new_storage_tensor(
-                (self.n_envs, self.observation_capacity_per_env, *state.shape[1:]),
+                (self.n_envs, self.temporal_state_capacity_per_env, *state.shape[1:]),
                 dtype=dtype,
             )
         if isinstance(state, tuple):
@@ -1040,21 +1086,21 @@ class OffPolicyReplayBuffer:
             *,
             target: Any,
             source: Any,
-            obs_slots: torch.Tensor,
+            checkpoint_slots: torch.Tensor,
             target_env_indices: torch.Tensor,
             source_env_indices: torch.Tensor,
     ) -> None:
         if torch.is_tensor(target) and torch.is_tensor(source):
             source_indices = source_env_indices.to(device=source.device, dtype=torch.long)
             source_rows = source[source_indices].to(device=self.storage_device, dtype=target.dtype)
-            target[target_env_indices, obs_slots] = source_rows
+            target[target_env_indices, checkpoint_slots] = source_rows
             return
         if isinstance(target, tuple) and isinstance(source, tuple):
             for target_item, source_item in zip(target, source, strict=True):
                 self._copy_temporal_state_tree_rows_(
                     target=target_item,
                     source=source_item,
-                    obs_slots=obs_slots,
+                    checkpoint_slots=checkpoint_slots,
                     target_env_indices=target_env_indices,
                     source_env_indices=source_env_indices,
                 )
@@ -1064,7 +1110,7 @@ class OffPolicyReplayBuffer:
                 self._copy_temporal_state_tree_rows_(
                     target=target_item,
                     source=source_item,
-                    obs_slots=obs_slots,
+                    checkpoint_slots=checkpoint_slots,
                     target_env_indices=target_env_indices,
                     source_env_indices=source_env_indices,
                 )
@@ -1076,7 +1122,7 @@ class OffPolicyReplayBuffer:
                 self._copy_temporal_state_tree_rows_(
                     target=target[key],
                     source=source[key],
-                    obs_slots=obs_slots,
+                    checkpoint_slots=checkpoint_slots,
                     target_env_indices=target_env_indices,
                     source_env_indices=source_env_indices,
                 )
@@ -1091,10 +1137,14 @@ class OffPolicyReplayBuffer:
             env_indices: torch.Tensor,
             obs_slots: torch.Tensor,
     ) -> Any:
+        assert self._temporal_state_indices is not None
+        checkpoint_slots = self._temporal_state_indices[env_indices, obs_slots]
+        if torch.any(checkpoint_slots < 0):
+            raise RuntimeError("Requested observation slot has no temporal-state checkpoint.")
         return self._temporal_state_tree_rows(
             state=self.temporal_states,
             env_indices=env_indices,
-            obs_slots=obs_slots,
+            checkpoint_slots=checkpoint_slots,
         )
 
     def _temporal_state_tree_rows(
@@ -1102,25 +1152,37 @@ class OffPolicyReplayBuffer:
             *,
             state: Any,
             env_indices: torch.Tensor,
-            obs_slots: torch.Tensor,
+            checkpoint_slots: torch.Tensor,
     ) -> Any:
         if torch.is_tensor(state):
-            return state[env_indices, obs_slots]
+            return state[env_indices, checkpoint_slots]
         if isinstance(state, tuple):
             return tuple(
-                self._temporal_state_tree_rows(state=item, env_indices=env_indices, obs_slots=obs_slots)
+                self._temporal_state_tree_rows(
+                    state=item,
+                    env_indices=env_indices,
+                    checkpoint_slots=checkpoint_slots,
+                )
                 for item in state
             )
         if isinstance(state, list):
             return [
-                self._temporal_state_tree_rows(state=item, env_indices=env_indices, obs_slots=obs_slots)
+                self._temporal_state_tree_rows(
+                    state=item,
+                    env_indices=env_indices,
+                    checkpoint_slots=checkpoint_slots,
+                )
                 for item in state
             ]
         if isinstance(state, Mapping):
             return type(state)(
                 (
                     key,
-                    self._temporal_state_tree_rows(state=value, env_indices=env_indices, obs_slots=obs_slots),
+                    self._temporal_state_tree_rows(
+                        state=value,
+                        env_indices=env_indices,
+                        checkpoint_slots=checkpoint_slots,
+                    ),
                 )
                 for key, value in state.items()
             )

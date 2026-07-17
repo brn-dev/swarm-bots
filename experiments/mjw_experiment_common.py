@@ -4,7 +4,7 @@ import argparse
 import math
 import sys
 from collections.abc import Callable, Sequence
-from dataclasses import asdict, dataclass, is_dataclass
+from dataclasses import asdict, dataclass, is_dataclass, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal
@@ -59,6 +59,11 @@ from swarmbots.learn.algos.r_mat.r_mat_qcc_policy import RMATQCCPolicy, RMATQCCP
 from swarmbots.learn.algos.r_mat.r_mat_qcx_policy import RMATQCXPolicy, RMATQCXPolicyConfig
 from swarmbots.learn.algos.r_mat.r_mat_qcs_policy import RMATQCSPolicy, RMATQCSPolicyConfig
 from swarmbots.learn.algos.r_mat.r_ppo_wm_sampler import RPPOWMSamplerConfig
+from swarmbots.learn.algos.sac.recurrent_sac import RecurrentSAC
+from swarmbots.learn.algos.sac.recurrent_tmasac_policy import (
+    RecurrentTMASACPolicy,
+    RecurrentTMASACPolicyConfig,
+)
 from swarmbots.learn.algos.sac.sac import SAC
 from swarmbots.learn.algos.sac.sac_nop import SACNOPConfig
 from swarmbots.learn.algos.sac.tmasac_policy import (
@@ -122,6 +127,7 @@ PolicyVariant = Literal[
     "mappo",
     "mappo_small",
     "tmasac",
+    "r_tmasac",
 ]
 MJWScenarioName = Literal[
     "wall",
@@ -261,11 +267,11 @@ def _metadata_name(value: Any) -> Any:
 
 
 def _is_recurrent_policy_variant(policy_variant: PolicyVariant) -> bool:
-    return policy_variant in {"r_mat_qcs", "r_mat_qcc", "r_mat_qcx", "r_mat_dec"}
+    return policy_variant in {"r_mat_qcs", "r_mat_qcc", "r_mat_qcx", "r_mat_dec", "r_tmasac"}
 
 
 def _is_sac_policy_variant(policy_variant: PolicyVariant) -> bool:
-    return policy_variant == "tmasac"
+    return policy_variant in {"tmasac", "r_tmasac"}
 
 
 def _make_staggered_first_episode_lengths(*, episode_length: int, num_envs: int) -> list[int]:
@@ -548,6 +554,9 @@ def run_experiment(
         enc_nhead: int = 4,
         dec_nhead: int = 2,
         mat_encoder_transformer_ff_hidden_dims: Sequence[int] | None = None,
+        rmat_actor_d_model: int | None = None,
+        rmat_actor_transformer_ff_hidden_dims: Sequence[int] | None = None,
+        rmat_actor_inter_module_mlp: bool = False,
         use_nop: bool = True,
         nop_add_agent_embeddings_transition_model: bool = False,
         nop_skip_first_transition_for_critic: bool = True,
@@ -571,6 +580,12 @@ def run_experiment(
         sac_ent_coef: float | str = "auto_0.05",
         sac_target_entropy: float | str = "auto_0.5",
         sac_independent_nop_sampling: bool = False,
+        sac_batch_size: int | None = None,
+        sac_buffer_capacity_per_env: int | None = None,
+        sac_recurrent_burn_in_steps: int = 32,
+        sac_recurrent_learning_steps: int = 64,
+        sac_temporal_state_store_interval: int = 32,
+        sac_temporal_state_storage_dtype: torch.dtype | None = None,
         bernoulli_initial_prob: float = 0.8,
 ) -> None:
     from swarmbots.learn.torch_logging import enable_torch_compile_logging
@@ -600,6 +615,14 @@ def run_experiment(
         raise ValueError(f"n_epochs must be > 0, got {n_epochs}")
     if total_timesteps <= 0:
         raise ValueError(f"total_timesteps must be > 0, got {total_timesteps}")
+    if rmat_actor_d_model is not None and rmat_actor_d_model <= 0:
+        raise ValueError(f"rmat_actor_d_model must be > 0, got {rmat_actor_d_model}")
+    if sac_buffer_capacity_per_env is not None and sac_buffer_capacity_per_env <= 0:
+        raise ValueError(
+            f"sac_buffer_capacity_per_env must be > 0, got {sac_buffer_capacity_per_env}"
+        )
+    if sac_batch_size is not None and sac_batch_size <= 0:
+        raise ValueError(f"sac_batch_size must be > 0, got {sac_batch_size}")
 
     rollout_samples = num_envs * rollout_steps_per_env
     if rollout_samples % virtual_mini_batches != 0:
@@ -609,6 +632,7 @@ def run_experiment(
         )
     recurrent_policy = _is_recurrent_policy_variant(policy_variant)
     sac_policy = _is_sac_policy_variant(policy_variant)
+    recurrent_sac_policy = policy_variant == "r_tmasac"
     sampler_batch_size = num_envs if recurrent_policy else rollout_samples
     if sampler_batch_size % virtual_mini_batches != 0:
         raise ValueError(
@@ -633,15 +657,19 @@ def run_experiment(
     stickiness_anneal_steps = 15_000_000
     gsde_init_stds = [0.25, 0.30]
 
-    compile_policy_modules = True
+    compile_policy_modules = not recurrent_sac_policy
     policy_compile_mode = "default"
-    compile_world_model_modules = True
+    compile_world_model_modules = not recurrent_sac_policy
 
     sac_learning_starts = max(10_000, rollout_samples * 4)
-    sac_batch_size = rollout_samples
-    sac_buffer_capacity_per_env = max(
-        episode_length * 2,
-        math.ceil(max(sac_learning_starts, sac_batch_size) / num_envs),
+    resolved_sac_batch_size = rollout_samples if sac_batch_size is None else sac_batch_size
+    resolved_sac_buffer_capacity_per_env = (
+        max(
+            episode_length * 2,
+            math.ceil(max(sac_learning_starts, resolved_sac_batch_size) / num_envs),
+        )
+        if sac_buffer_capacity_per_env is None
+        else sac_buffer_capacity_per_env
     )
     sac_gradient_steps = 8
     logging_buffer_size = 20 if sac_policy else 5
@@ -688,18 +716,28 @@ def run_experiment(
         f"scenario_kwargs={scenario_kwargs}, "
         f"rmat_temporal_residual={rmat_temporal_residual}, "
         f"rmat_temporal_layer_norm={rmat_temporal_layer_norm}, "
-        f"rmat_use_temporal_output_projection={rmat_use_temporal_output_projection}"
+        f"rmat_use_temporal_output_projection={rmat_use_temporal_output_projection}, "
+        f"rmat_actor_d_model={rmat_actor_d_model}, "
+        f"rmat_actor_transformer_ff_hidden_dims={rmat_actor_transformer_ff_hidden_dims}, "
+        f"rmat_actor_inter_module_mlp={rmat_actor_inter_module_mlp}"
     )
     if sac_policy:
         variant_log_message = (
             f"{variant_log_message}, sac_learning_rate={sac_learning_rate}, "
-            f"sac_buffer_capacity_per_env={sac_buffer_capacity_per_env}, "
-            f"sac_learning_starts={sac_learning_starts}, sac_batch_size={sac_batch_size}, "
+            f"sac_buffer_capacity_per_env={resolved_sac_buffer_capacity_per_env}, "
+            f"sac_learning_starts={sac_learning_starts}, sac_batch_size={resolved_sac_batch_size}, "
             f"sac_gradient_steps={sac_gradient_steps}, sac_ent_coef={sac_ent_coef}, "
             f"sac_ent_coef_learning_rate={sac_ent_coef_learning_rate}, "
             f"sac_target_entropy={sac_target_entropy}, "
             f"sac_independent_nop_sampling={sac_independent_nop_sampling}"
         )
+        if recurrent_sac_policy:
+            variant_log_message = (
+                f"{variant_log_message}, sac_recurrent_burn_in_steps={sac_recurrent_burn_in_steps}, "
+                f"sac_recurrent_learning_steps={sac_recurrent_learning_steps}, "
+                f"sac_temporal_state_store_interval={sac_temporal_state_store_interval}, "
+                f"sac_temporal_state_storage_dtype={sac_temporal_state_storage_dtype}"
+            )
     if policy_variant != "mat_qcs":
         variant_log_message = f"{variant_log_message}, policy_variant={policy_variant}"
     logger.info(variant_log_message)
@@ -828,6 +866,9 @@ def run_experiment(
         transition_model_d_model=transition_model_d_model,
         transition_model_nhead=transition_model_nhead,
         mat_encoder_transformer_ff_hidden_dims=mat_encoder_transformer_ff_hidden_dims,
+        rmat_actor_d_model=rmat_actor_d_model,
+        rmat_actor_transformer_ff_hidden_dims=rmat_actor_transformer_ff_hidden_dims,
+        rmat_actor_inter_module_mlp=rmat_actor_inter_module_mlp,
         obs_indices=obs_indices,
         rmat_temporal_model_cls=rmat_temporal_model_cls,
         rmat_temporal_model_config=rmat_temporal_model_config,
@@ -893,15 +934,24 @@ def run_experiment(
     print(f"Initializing {'SAC' if sac_policy else 'PPO'} Algorithm...")
 
     parameter_lr_multipliers: dict[str, float] = {}
-    algorithm: PPO | SAC
+    algorithm: PPO | SAC | RecurrentSAC
     if sac_policy:
-        algorithm = SAC(
+        recurrent_sac_kwargs: dict[str, object] = {}
+        if recurrent_sac_policy:
+            recurrent_sac_kwargs = {
+                "burn_in_steps": sac_recurrent_burn_in_steps,
+                "learning_steps": sac_recurrent_learning_steps,
+                "temporal_state_store_interval": sac_temporal_state_store_interval,
+                "temporal_state_storage_dtype": sac_temporal_state_storage_dtype,
+            }
+        sac_algorithm_cls = RecurrentSAC if recurrent_sac_policy else SAC
+        algorithm = sac_algorithm_cls(
             policy=policy,
             env=env,
             learning_rate=sac_learning_rate,
-            buffer_capacity_per_env=sac_buffer_capacity_per_env,
+            buffer_capacity_per_env=resolved_sac_buffer_capacity_per_env,
             learning_starts=sac_learning_starts,
-            batch_size=sac_batch_size,
+            batch_size=resolved_sac_batch_size,
             rollout_steps_per_iteration=rollout_samples,
             rollout_warmup_steps_per_env=rollout_warmup_steps_per_env,
             gradient_steps=sac_gradient_steps,
@@ -919,6 +969,7 @@ def run_experiment(
             record_device=record_device,
             replay_storage_device="cuda",
             metrics_action_splitters=[lambda actions: split_actuator_joints(actions, actuators_per_limb), None],
+            **recurrent_sac_kwargs,
         )
     else:
         warm_lr = 1e-4
@@ -1140,6 +1191,13 @@ def run_experiment(
             if mat_encoder_transformer_ff_hidden_dims is None
             else list(mat_encoder_transformer_ff_hidden_dims)
         ),
+        "rmat_actor_d_model": rmat_actor_d_model,
+        "rmat_actor_transformer_ff_hidden_dims": (
+            None
+            if rmat_actor_transformer_ff_hidden_dims is None
+            else list(rmat_actor_transformer_ff_hidden_dims)
+        ),
+        "rmat_actor_inter_module_mlp": rmat_actor_inter_module_mlp,
         "mat_add_agent_embeddings": mat_add_agent_embeddings,
         "mat_decoder_self_attention_mode": mat_decoder_self_attention_mode_metadata,
         "mat_qcc_tie_query_context_and_context_self_attention": (
@@ -1166,15 +1224,24 @@ def run_experiment(
         extra_run_metadata.update(
             {
                 "sac_learning_rate": sac_learning_rate,
-                "sac_buffer_capacity_per_env": sac_buffer_capacity_per_env,
+                "sac_buffer_capacity_per_env": resolved_sac_buffer_capacity_per_env,
                 "sac_learning_starts": sac_learning_starts,
-                "sac_batch_size": sac_batch_size,
+                "sac_batch_size": resolved_sac_batch_size,
                 "sac_gradient_steps": sac_gradient_steps,
                 "sac_ent_coef": sac_ent_coef,
                 "sac_ent_coef_learning_rate": sac_ent_coef_learning_rate,
                 "sac_target_entropy": sac_target_entropy,
             }
         )
+        if recurrent_sac_policy:
+            extra_run_metadata.update(
+                {
+                    "sac_recurrent_burn_in_steps": sac_recurrent_burn_in_steps,
+                    "sac_recurrent_learning_steps": sac_recurrent_learning_steps,
+                    "sac_temporal_state_store_interval": sac_temporal_state_store_interval,
+                    "sac_temporal_state_storage_dtype": str(sac_temporal_state_storage_dtype),
+                }
+            )
     _run_training_with_notification_and_close(
         env=env,
         run_name=f"{experiment_run_name}/{variant_name}/{run_id}",
@@ -1361,6 +1428,9 @@ def _make_base_policy(
         transition_model_d_model: int = 128,
         transition_model_nhead: int = 2,
         mat_encoder_transformer_ff_hidden_dims: Sequence[int] | None = None,
+        rmat_actor_d_model: int | None = None,
+        rmat_actor_transformer_ff_hidden_dims: Sequence[int] | None = None,
+        rmat_actor_inter_module_mlp: bool = False,
         obs_indices: ObsIndices | None = None,
         mat_qcc_tie_query_context_and_context_self_attention: bool = True,
         rmat_temporal_model_cls: Any = None,
@@ -1383,16 +1453,18 @@ def _make_base_policy(
         | RMATQCXPolicy
         | RMATDecPolicy
         | TMASACPolicy
+        | RecurrentTMASACPolicy
 ):
+    sac_policy_variant = _is_sac_policy_variant(policy_variant)
     continuous_config = make_continuous_config(
         variant=continuous_action_dist,
         initial_stickiness=initial_stickiness,
         gsde_init_stds=gsde_init_stds,
         action_net_init_gain=mat_init_gains.action_net,
-        ent_loss_coef=0.0 if policy_variant == "tmasac" else 1e-3,
+        ent_loss_coef=0.0 if sac_policy_variant else 1e-3,
         rsmk_kumaraswamy_ent_scale=(
             0.0
-            if policy_variant == "tmasac" and continuous_action_dist in (
+            if sac_policy_variant and continuous_action_dist in (
                 "reparameterized_sign_magnitude_kumaraswamy",
                 "gumbel_softmax_sign_magnitude_kumaraswamy",
             )
@@ -1456,52 +1528,82 @@ def _make_base_policy(
         **({} if rmat_temporal_model_cls is None else {"temporal_model_cls": rmat_temporal_model_cls}),
         **({} if rmat_temporal_model_config is None else {"temporal_model_config": rmat_temporal_model_config}),
     )
+    resolved_rmat_actor_d_model = enc_d_model if rmat_actor_d_model is None else rmat_actor_d_model
+    resolved_rmat_actor_ff_hidden_dims = (
+        mat_encoder_transformer_ff_hidden_dims
+        if rmat_actor_transformer_ff_hidden_dims is None
+        else rmat_actor_transformer_ff_hidden_dims
+    )
+    rmat_actor_encoder_config = replace(
+        rmat_encoder_config,
+        d_model=resolved_rmat_actor_d_model,
+        dim_feedforward=resolved_rmat_actor_d_model * 2,
+        transformer_ff_hidden_dims=(
+            None
+            if resolved_rmat_actor_ff_hidden_dims is None
+            else list(resolved_rmat_actor_ff_hidden_dims)
+        ),
+        local_obs_encoder_hidden_dims=[resolved_rmat_actor_d_model, resolved_rmat_actor_d_model],
+        global_obs_encoder_hidden_dims=[resolved_rmat_actor_d_model],
+        inter_module_mlp=rmat_actor_inter_module_mlp,
+    )
 
-    if policy_variant == "tmasac":
+    if sac_policy_variant:
         if use_popart:
             raise ValueError("TMASACPolicy does not support PopArt; call with use_popart=False.")
+        tmasac_config_kwargs = {
+            "actor_encoder_config": (
+                rmat_actor_encoder_config if policy_variant == "r_tmasac" else mat_encoder_config
+            ),
+            "critic_encoder_config": mat_encoder_config,
+            "actor_head_config": TMASACActorHeadConfig(
+                hidden_dims=[dec_d_model],
+                normalize_input=mat_normalization.normalize_actor_head_input,
+                init_gain=mat_init_gains.actor_head,
+            ),
+            "critic_config": TMASACCriticConfig(
+                n_local_projection_hidden_layers=2,
+                n_value_regressor_hidden_layers=1,
+                use_popart=False,
+                popart_config=popart_config,
+                local_projection_init_gain=mat_init_gains.critic_local_projection,
+                value_regressor_init_gain=mat_init_gains.critic_value_regressor,
+                value_head_init_gain=mat_init_gains.critic_value_head,
+            ),
+            "dropout": 0.0,
+            "act_fn_cls": act_fn_cls,
+            "continuous_config": continuous_config,
+            "max_agents": 20,
+            "nop_config": _make_sac_nop_config(
+                use_nop=use_nop,
+                obs_indices=obs_indices,
+                source_latent_dim=enc_d_model,
+                nop_init_gains=nop_init_gains,
+                nop_add_agent_embeddings_transition_model=nop_add_agent_embeddings_transition_model,
+                nop_skip_first_transition_for_critic=nop_skip_first_transition_for_critic,
+                compile_world_model_modules=compile_world_model_modules,
+                policy_compile_mode=policy_compile_mode,
+                world_model_loss_coef=world_model_loss_coef,
+                num_next_steps=world_model_num_next_steps,
+                transition_model_d_model=transition_model_d_model,
+                transition_model_nhead=transition_model_nhead,
+                act_fn_cls=act_fn_cls,
+            ),
+            "compile_modules": compile_policy_modules,
+            "compile_mode": policy_compile_mode,
+            "action_net_init_gain": mat_init_gains.action_net,
+        }
+        if policy_variant == "r_tmasac":
+            return RecurrentTMASACPolicy(
+                env=env,
+                config=RecurrentTMASACPolicyConfig(
+                    recurrent_critic=False,
+                    **tmasac_config_kwargs,
+                ),
+            )
         return TMASACPolicy(
             env=env,
-            config=TMASACPolicyConfig(
-                actor_encoder_config=mat_encoder_config,
-                critic_encoder_config=mat_encoder_config,
-                actor_head_config=TMASACActorHeadConfig(
-                    hidden_dims=[dec_d_model],
-                    normalize_input=mat_normalization.normalize_actor_head_input,
-                    init_gain=mat_init_gains.actor_head,
-                ),
-                critic_config=TMASACCriticConfig(
-                    n_local_projection_hidden_layers=2,
-                    n_value_regressor_hidden_layers=1,
-                    use_popart=False,
-                    popart_config=popart_config,
-                    local_projection_init_gain=mat_init_gains.critic_local_projection,
-                    value_regressor_init_gain=mat_init_gains.critic_value_regressor,
-                    value_head_init_gain=mat_init_gains.critic_value_head,
-                ),
-                dropout=0.0,
-                act_fn_cls=act_fn_cls,
-                continuous_config=continuous_config,
-                max_agents=20,
-                nop_config=_make_sac_nop_config(
-                    use_nop=use_nop,
-                    obs_indices=obs_indices,
-                    source_latent_dim=enc_d_model,
-                    nop_init_gains=nop_init_gains,
-                    nop_add_agent_embeddings_transition_model=nop_add_agent_embeddings_transition_model,
-                    nop_skip_first_transition_for_critic=nop_skip_first_transition_for_critic,
-                    compile_world_model_modules=compile_world_model_modules,
-                    policy_compile_mode=policy_compile_mode,
-                    world_model_loss_coef=world_model_loss_coef,
-                    num_next_steps=world_model_num_next_steps,
-                    transition_model_d_model=transition_model_d_model,
-                    transition_model_nhead=transition_model_nhead,
-                    act_fn_cls=act_fn_cls,
-                ),
-                compile_modules=compile_policy_modules,
-                compile_mode=policy_compile_mode,
-                action_net_init_gain=mat_init_gains.action_net,
-            ),
+            config=TMASACPolicyConfig(**tmasac_config_kwargs),
         )
 
     if policy_variant == "ppo":

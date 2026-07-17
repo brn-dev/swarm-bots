@@ -37,6 +37,7 @@ from swarmbots.learn.algos.mat_qcs.mat_qcs_decoder import MATQCSDecoderSelfAtten
 from swarmbots.learn.algos.mat_qcs.mat_qcs_policy import MATQCSPolicy
 from swarmbots.learn.algos.mat_qcx.mat_qcx_policy import MATQCXPolicy
 from swarmbots.learn.algos.r_mat.r_mat_dec_policy import RMATDecPolicy
+from swarmbots.learn.algos.sac.recurrent_tmasac_policy import RecurrentTMASACPolicy
 from swarmbots.learn.algos.sac.tmasac_policy import TMASACPolicy
 from swarmbots.learn.env_wrappers.learn_wrappers.swarm_bots_learn_env_wrapper import (
     SwarmBotsLearnEnvWrapper,
@@ -213,6 +214,10 @@ def _patch_default_experiment_boundaries(
         capture["sac_kwargs"] = kwargs
         return algorithm
 
+    def make_recurrent_sac(**kwargs: object) -> _FakeExperimentAlgorithm:
+        capture["recurrent_sac_kwargs"] = kwargs
+        return algorithm
+
     def install_recordings(**kwargs: object) -> object:
         capture["recording_kwargs"] = kwargs
         return recording_hook
@@ -229,6 +234,7 @@ def _patch_default_experiment_boundaries(
     monkeypatch.setattr(experiment_common, "set_actuator_gsde_init_joint_stds", lambda **_kwargs: None)
     monkeypatch.setattr(experiment_common, "PPO", make_ppo)
     monkeypatch.setattr(experiment_common, "SAC", make_sac)
+    monkeypatch.setattr(experiment_common, "RecurrentSAC", make_recurrent_sac)
     monkeypatch.setattr(experiment_common, "install_scheduled_recordings", install_recordings)
     monkeypatch.setattr(experiment_common, "run_with_discord_notification", run_notification)
     capture["algorithm"] = algorithm
@@ -448,6 +454,63 @@ def test_tmasac_run_experiment_preserves_sac_and_nop_configuration(
     assert env.closed
 
 
+def test_recurrent_tmasac_run_experiment_wires_recurrent_replay_and_actor_layout(
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+) -> None:
+    capture, env = _patch_default_experiment_boundaries(monkeypatch)
+    entrypoint_path = tmp_path / "recurrent_tmasac_entrypoint.py"
+    entrypoint_path.write_text("# test recurrent TMASAC experiment\n", encoding="utf-8")
+
+    experiment_common.run_experiment(
+        num_envs=4,
+        rollout_steps_per_env=1,
+        variant_name="recurrent-tmasac-contract",
+        entrypoint_path=entrypoint_path,
+        policy_variant="r_tmasac",
+        continuous_action_dist="gumbel_softmax_sign_magnitude_beta",
+        rmat_actor_d_model=64,
+        rmat_actor_transformer_ff_hidden_dims=[128],
+        rmat_actor_inter_module_mlp=True,
+        sac_batch_size=16,
+        sac_buffer_capacity_per_env=160,
+        sac_recurrent_burn_in_steps=32,
+        sac_recurrent_learning_steps=64,
+        sac_temporal_state_store_interval=32,
+        sac_temporal_state_storage_dtype=torch.float16,
+        total_timesteps=16,
+    )
+
+    base_policy_kwargs = capture["base_policy_kwargs"]
+    assert isinstance(base_policy_kwargs, dict)
+    assert base_policy_kwargs["policy_variant"] == "r_tmasac"
+    assert base_policy_kwargs["compile_policy_modules"] is False
+    assert base_policy_kwargs["compile_world_model_modules"] is False
+    assert base_policy_kwargs["rmat_actor_d_model"] == 64
+    assert base_policy_kwargs["rmat_actor_transformer_ff_hidden_dims"] == [128]
+    assert base_policy_kwargs["rmat_actor_inter_module_mlp"] is True
+
+    recurrent_sac_kwargs = capture["recurrent_sac_kwargs"]
+    assert isinstance(recurrent_sac_kwargs, dict)
+    assert recurrent_sac_kwargs["buffer_capacity_per_env"] == 160
+    assert recurrent_sac_kwargs["batch_size"] == 16
+    assert recurrent_sac_kwargs["burn_in_steps"] == 32
+    assert recurrent_sac_kwargs["learning_steps"] == 64
+    assert recurrent_sac_kwargs["temporal_state_store_interval"] == 32
+    assert recurrent_sac_kwargs["temporal_state_storage_dtype"] is torch.float16
+    assert recurrent_sac_kwargs["independent_nop_sampling"] is False
+
+    learn_kwargs = capture["learn_kwargs"]
+    assert isinstance(learn_kwargs, dict)
+    metadata = learn_kwargs["extra_run_metadata"]
+    assert isinstance(metadata, dict)
+    assert metadata["recurrent_policy"] is True
+    assert metadata["sac_buffer_capacity_per_env"] == 160
+    assert metadata["sac_batch_size"] == 16
+    assert metadata["sac_temporal_state_storage_dtype"] == "torch.float16"
+    assert env.closed
+
+
 @pytest.mark.parametrize(
     ("num_envs", "rollout_steps_per_env", "policy_variant", "expected_message"),
     [
@@ -487,6 +550,7 @@ def test_run_experiment_rejects_virtual_batches_that_split_sampling_units(
         ({"virtual_mini_batches": 0}, "virtual_mini_batches must be > 0"),
         ({"n_epochs": 0}, "n_epochs must be > 0"),
         ({"total_timesteps": 0}, "total_timesteps must be > 0"),
+        ({"sac_batch_size": 0}, "sac_batch_size must be > 0"),
     ],
 )
 def test_run_experiment_rejects_non_positive_sampling_dimensions(
@@ -846,6 +910,64 @@ def test_make_base_policy_constructs_tmasac_rsmk_with_nop() -> None:
     assert policy.critic_nop.skip_first_transition
     assert policy.critic_nop.latent_projection_hidden_dims == [8, 8]
     assert policy.critic_nop.local_scalar_target_indices == [0, 1]
+
+
+def test_make_base_policy_constructs_recurrent_tmasac_with_feedforward_critic() -> None:
+    policy = _make_test_base_policy(
+        env=_DummyContinuousEnv(),
+        policy_variant="r_tmasac",
+        continuous_action_dist="gumbel_softmax_sign_magnitude_beta",
+        rmat_actor_d_model=16,
+        rmat_actor_transformer_ff_hidden_dims=[32],
+        rmat_actor_inter_module_mlp=True,
+    )
+
+    assert isinstance(policy, RecurrentTMASACPolicy)
+    assert policy.recurrent_critic is False
+    assert policy._actor_encoder.d_model == 16
+    assert policy.critic.d_model == 8
+    for layer in policy._actor_encoder.layers:
+        inter_module_mlp = layer.inter_module_feedforward
+        assert inter_module_mlp is not None
+        final_projection = inter_module_mlp[-1]
+        assert isinstance(final_projection, nn.Linear)
+
+
+def test_big_end_and_two_small_recurrent_actor_mlps_have_similar_parameter_counts() -> None:
+    common_kwargs = {
+        "env": _DummyContinuousEnv(),
+        "policy_variant": "r_tmasac",
+        "continuous_action_dist": "gumbel_softmax_sign_magnitude_beta",
+        "rmat_actor_d_model": 8,
+    }
+    big_end_policy = _make_test_base_policy(
+        **common_kwargs,
+        rmat_actor_transformer_ff_hidden_dims=[16, 16],
+    )
+    two_small_policy = _make_test_base_policy(
+        **common_kwargs,
+        rmat_actor_transformer_ff_hidden_dims=[16],
+        rmat_actor_inter_module_mlp=True,
+    )
+
+    def count_mlp_parameters(policy: RecurrentTMASACPolicy) -> int:
+        return sum(
+            parameter.numel()
+            for layer in policy._actor_encoder.layers
+            for mlp in (layer.feedforward, layer.inter_module_feedforward)
+            if mlp is not None
+            for parameter in mlp.parameters()
+        )
+
+    assert count_mlp_parameters(two_small_policy) == pytest.approx(
+        count_mlp_parameters(big_end_policy),
+        rel=0.02,
+    )
+    big_end_encoder_parameters = sum(parameter.numel() for parameter in big_end_policy._actor_encoder.parameters())
+    two_small_encoder_parameters = sum(
+        parameter.numel() for parameter in two_small_policy._actor_encoder.parameters()
+    )
+    assert two_small_encoder_parameters == pytest.approx(big_end_encoder_parameters, rel=0.02)
 
 
 def test_tmasac_nop_requires_observation_target_indices() -> None:
