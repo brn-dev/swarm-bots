@@ -134,6 +134,9 @@ class BaseSACPolicy(BasePolicy, abc.ABC):
         requires_previous_actions = getattr(action_dist, "requires_previous_actions", None)
         return bool(callable(requires_previous_actions) and requires_previous_actions())
 
+    def requires_recurrent_training(self) -> bool:
+        return False
+
     def has_nop_loss(self) -> bool:
         return False
 

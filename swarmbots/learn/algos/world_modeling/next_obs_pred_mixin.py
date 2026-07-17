@@ -242,8 +242,11 @@ class NextObsPredMixin(abc.ABC):
                 raise ValueError("local_obs is required when predict_delta is True")
             target_scalars = target_scalars - base_local_obs[..., self.local_scalar_target_indices]
         scalar_losses = self.scalar_loss_fn(pred_scalars, target_scalars)
-        loss_per_item = self._reduce_feature_loss(scalar_losses)
-        return masked_mean(loss_per_item, valid_mask)
+        loss_per_item = self._reduce_scalar_feature_loss(
+            scalar_losses,
+            target_shape=target_scalars.shape,
+        )
+        return self._masked_scalar_loss_mean(loss_per_item, valid_mask)
 
     def compute_angle_loss(
             self,
@@ -386,7 +389,22 @@ class NextObsPredMixin(abc.ABC):
                 raise ValueError("global_obs is required when predict_delta is True for global scalar targets")
             target_scalars = target_scalars - base_global_obs[..., self.global_scalar_target_indices]
         scalar_losses = self.scalar_loss_fn(pred_scalars, target_scalars)
-        loss_per_item = self._reduce_feature_loss(scalar_losses)
+        loss_per_item = self._reduce_scalar_feature_loss(
+            scalar_losses,
+            target_shape=target_scalars.shape,
+        )
+        return self._masked_scalar_loss_mean(loss_per_item, valid_mask)
+
+    @staticmethod
+    def _masked_scalar_loss_mean(
+            loss_per_item: torch.Tensor,
+            valid_mask: torch.Tensor | None,
+    ) -> torch.Tensor:
+        if loss_per_item.ndim == 0 and valid_mask is not None:
+            raise ValueError(
+                "A fully reduced scalar_loss_fn cannot be combined with a validity mask; "
+                "return an unreduced or per-item loss instead."
+            )
         return masked_mean(loss_per_item, valid_mask)
 
     def compute_global_rot6d_loss(
@@ -700,6 +718,21 @@ class NextObsPredMixin(abc.ABC):
         if losses.ndim < 3:
             return losses
         return losses.mean(dim=-1)
+
+    @staticmethod
+    def _reduce_scalar_feature_loss(
+            losses: torch.Tensor,
+            *,
+            target_shape: torch.Size,
+    ) -> torch.Tensor:
+        if losses.ndim == 0 or losses.shape == target_shape[:-1]:
+            return losses
+        if losses.shape == target_shape:
+            return losses.mean(dim=-1)
+        raise ValueError(
+            "Expected scalar loss shape to be scalar, per-item "
+            f"{tuple(target_shape[:-1])}, or unreduced {tuple(target_shape)}, got {tuple(losses.shape)}"
+        )
 
     @staticmethod
     def _expand_rot6d_indices(indices: list[int]) -> list[int]:

@@ -1,5 +1,4 @@
 import copy
-import warnings
 from collections.abc import Iterable
 from dataclasses import dataclass, field, replace
 from enum import Enum
@@ -418,7 +417,6 @@ class TMASACTwinCritic(nn.Module):
             unexpected_keys: list[str],
             error_msgs: list[str],
     ) -> None:
-        migrated_hidden_global_inputs = self._migrate_legacy_hidden_global_inputs(state_dict, prefix)
         if self.encoder2 is not None:
             primary_prefix = f"{prefix}encoder."
             secondary_prefix = f"{prefix}encoder2."
@@ -428,14 +426,6 @@ class TMASACTwinCritic(nn.Module):
                 for key, value in list(state_dict.items()):
                     if key.startswith(primary_prefix):
                         state_dict[f"{secondary_prefix}{key.removeprefix(primary_prefix)}"] = value
-        if migrated_hidden_global_inputs:
-            warnings.warn(
-                "Migrated legacy TMASAC critic hidden-global inputs approximately: compatible columns were "
-                "preserved, new transformer-input columns kept their initialization, and obsolete value-head "
-                "columns were dropped.",
-                UserWarning,
-                stacklevel=2,
-            )
         super()._load_from_state_dict(
             state_dict,
             prefix,
@@ -445,93 +435,6 @@ class TMASACTwinCritic(nn.Module):
             unexpected_keys,
             error_msgs,
         )
-
-    def _migrate_legacy_hidden_global_inputs(
-            self,
-            state_dict: dict[str, Any],
-            prefix: str,
-    ) -> bool:
-        if self.hidden_global_vars_dim <= 0:
-            return False
-
-        current_state_dict = self.state_dict()
-        has_legacy_shape = any(
-            self._migrate_legacy_input_tensor(
-                local_key,
-                state_dict.get(f"{prefix}{local_key}"),
-                current_value,
-            ) is not None
-            for local_key, current_value in current_state_dict.items()
-            if self._is_q_input_state_key(local_key)
-        )
-        if not has_legacy_shape:
-            return False
-
-        for local_key, current_value in current_state_dict.items():
-            if not self._is_hidden_global_input_state_key(local_key):
-                continue
-            checkpoint_key = f"{prefix}{local_key}"
-            migrated_value = self._migrate_legacy_input_tensor(
-                local_key,
-                state_dict.get(checkpoint_key),
-                current_value,
-            )
-            if migrated_value is not None:
-                state_dict[checkpoint_key] = migrated_value
-            elif checkpoint_key not in state_dict and self._is_global_encoder_state_key(local_key):
-                state_dict[checkpoint_key] = current_value.detach().clone()
-        return True
-
-    def _migrate_legacy_input_tensor(
-            self,
-            local_key: str,
-            checkpoint_value: Any,
-            current_value: torch.Tensor,
-    ) -> torch.Tensor | None:
-        if not isinstance(checkpoint_value, torch.Tensor):
-            return None
-        if checkpoint_value.ndim not in (1, 2) or checkpoint_value.ndim != current_value.ndim:
-            return None
-        if checkpoint_value.shape[:-1] != current_value.shape[:-1]:
-            return None
-        checkpoint_width_delta = checkpoint_value.shape[-1] - current_value.shape[-1]
-        expected_width_delta = (
-            -self.hidden_global_vars_dim
-            if self._is_global_encoder_state_key(local_key)
-            else self.hidden_global_vars_dim
-        )
-        if checkpoint_width_delta != expected_width_delta:
-            return None
-
-        migrated_value = current_value.detach().clone()
-        compatible_width = min(checkpoint_value.shape[-1], current_value.shape[-1])
-        migrated_value[..., :compatible_width].copy_(checkpoint_value[..., :compatible_width])
-        return migrated_value
-
-    @staticmethod
-    def _is_hidden_global_input_state_key(local_key: str) -> bool:
-        return (
-            TMASACTwinCritic._is_global_encoder_state_key(local_key)
-            or TMASACTwinCritic._is_q_input_state_key(local_key)
-        )
-
-    @staticmethod
-    def _is_q_input_state_key(local_key: str) -> bool:
-        return local_key.startswith((
-            "q1.deepset.element_encoder.",
-            "q1.deepset.set_decoder.",
-            "q2.deepset.element_encoder.",
-            "q2.deepset.set_decoder.",
-        ))
-
-    @staticmethod
-    def _is_global_encoder_state_key(local_key: str) -> bool:
-        return local_key.startswith((
-            "encoder.global_input_norm.",
-            "encoder.global_encoder.",
-            "encoder2.global_input_norm.",
-            "encoder2.global_encoder.",
-        ))
 
     @staticmethod
     def _build_q_network(
@@ -639,8 +542,7 @@ class TMASACPolicy(BaseSACPolicy):
         )
         critic_global_input_dim = 0 if self.shared_encoder_config is not None else self.global_obs_dim
 
-        self._actor_encoder = self._build_observation_encoder(
-            self.actor_encoder_config,
+        self._actor_encoder = self._build_actor_encoder(
             local_obs_dim=actor_local_input_dim,
             global_obs_dim=actor_global_input_dim,
         )
@@ -653,31 +555,13 @@ class TMASACPolicy(BaseSACPolicy):
             action_net_initialization=make_init_linear_orthogonal(config.action_net_init_gain),
         )
 
-        self.critic = TMASACTwinCritic(
-            n_agents=self.n_agents,
-            max_agents=self.max_agents,
+        self.critic = self._build_critic(
             local_input_dim=critic_local_input_dim,
             global_input_dim=critic_global_input_dim,
-            hidden_local_vars_dim=self.hidden_local_vars_dim,
-            hidden_global_vars_dim=self.hidden_global_vars_dim,
-            action_dim=self.agent_action_dim,
-            encoder_config=self.critic_encoder_config,
-            critic_config=config.critic_config,
-            act_fn_cls=config.act_fn_cls,
-            dropout=config.dropout,
         )
-        self.critic_target = TMASACTwinCritic(
-            n_agents=self.n_agents,
-            max_agents=self.max_agents,
+        self.critic_target = self._build_critic(
             local_input_dim=critic_local_input_dim,
             global_input_dim=critic_global_input_dim,
-            hidden_local_vars_dim=self.hidden_local_vars_dim,
-            hidden_global_vars_dim=self.hidden_global_vars_dim,
-            action_dim=self.agent_action_dim,
-            encoder_config=self.critic_encoder_config,
-            critic_config=config.critic_config,
-            act_fn_cls=config.act_fn_cls,
-            dropout=config.dropout,
         )
         self.critic_target.load_state_dict(self.critic.state_dict())
         for parameter in self.critic_target.parameters():
@@ -1046,6 +930,38 @@ class TMASACPolicy(BaseSACPolicy):
             d_model=self.actor_encoder_config.d_model,
             config=self.config.actor_head_config,
             act_fn_cls=self.config.act_fn_cls,
+        )
+
+    def _build_actor_encoder(
+            self,
+            *,
+            local_obs_dim: int,
+            global_obs_dim: int,
+    ) -> nn.Module:
+        return self._build_observation_encoder(
+            self.actor_encoder_config,
+            local_obs_dim=local_obs_dim,
+            global_obs_dim=global_obs_dim,
+        )
+
+    def _build_critic(
+            self,
+            *,
+            local_input_dim: int,
+            global_input_dim: int,
+    ) -> TMASACTwinCritic:
+        return TMASACTwinCritic(
+            n_agents=self.n_agents,
+            max_agents=self.max_agents,
+            local_input_dim=local_input_dim,
+            global_input_dim=global_input_dim,
+            hidden_local_vars_dim=self.hidden_local_vars_dim,
+            hidden_global_vars_dim=self.hidden_global_vars_dim,
+            action_dim=self.agent_action_dim,
+            encoder_config=self.critic_encoder_config,
+            critic_config=self.config.critic_config,
+            act_fn_cls=self.config.act_fn_cls,
+            dropout=self.config.dropout,
         )
 
     def _build_observation_encoder(

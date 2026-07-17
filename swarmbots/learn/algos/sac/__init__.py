@@ -8,9 +8,17 @@ from swarmbots.learn.algos.sac.tmasac_policy import (
     TMASACPolicy,
     TMASACPolicyConfig,
 )
+from swarmbots.learn.algos.sac.recurrent_tmasac_policy import (
+    RecurrentTMASACPolicy,
+    RecurrentTMASACPolicyConfig,
+)
+from swarmbots.learn.algos.sac.recurrent_sac import RecurrentSAC
 
 __all__ = [
     "BaseSACPolicy",
+    "RecurrentSAC",
+    "RecurrentTMASACPolicy",
+    "RecurrentTMASACPolicyConfig",
     "SAC",
     "SACNOPConfig",
     "SACNOPLatentSource",
