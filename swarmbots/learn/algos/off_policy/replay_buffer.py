@@ -135,6 +135,14 @@ class OffPolicyReplayBuffer:
             raise ValueError(
                 f"temporal_state_store_interval must be > 0 when set, got {temporal_state_store_interval}"
             )
+        if (
+                temporal_state_storage_dtype is not None
+                and not temporal_state_storage_dtype.is_floating_point
+        ):
+            raise ValueError(
+                "temporal_state_storage_dtype must be a floating-point dtype, got "
+                f"{temporal_state_storage_dtype}"
+            )
 
         self.capacity_per_env = capacity_per_env
         self.observation_capacity_per_env = capacity_per_env + 1
@@ -417,6 +425,7 @@ class OffPolicyReplayBuffer:
             burn_in_steps: int = 0,
             replacement: bool = True,
             require_initial_temporal_state: bool = True,
+            allow_episode_boundaries: bool = False,
             generator: torch.Generator | None = None,
     ) -> OffPolicyReplayEpisodeSegmentBatch:
         if batch_size <= 0:
@@ -434,15 +443,16 @@ class OffPolicyReplayBuffer:
             )
 
         total_sequence_length = burn_in_steps + segment_length
-        candidate_env_indices, candidate_logical_starts = self._episode_segment_candidates(
+        candidate_env_indices, candidate_logical_starts = self._replay_segment_candidates(
             total_sequence_length=total_sequence_length,
             require_initial_temporal_state=require_initial_temporal_state,
+            allow_episode_boundaries=allow_episode_boundaries,
         )
         num_candidates = int(candidate_env_indices.numel())
         if num_candidates == 0:
             raise NoEpisodeSegmentCandidatesError(
-                "Cannot sample episode segments: no contiguous replay windows satisfy the requested length, "
-                "episode-boundary, and temporal-state checkpoint constraints."
+                "Cannot sample replay segments: no contiguous replay windows satisfy the requested length "
+                "and temporal-state-start constraints."
             )
         if not replacement and batch_size > num_candidates:
             raise ValueError(
@@ -793,11 +803,12 @@ class OffPolicyReplayBuffer:
             burn_in_steps=0,
         )
 
-    def _episode_segment_candidates(
+    def _replay_segment_candidates(
             self,
             *,
             total_sequence_length: int,
             require_initial_temporal_state: bool,
+            allow_episode_boundaries: bool,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         if self._size_per_env < total_sequence_length:
             empty = torch.empty((0,), dtype=torch.long, device=self.storage_device)
@@ -809,13 +820,13 @@ class OffPolicyReplayBuffer:
         max_start_count = self._size_per_env - total_sequence_length + 1
         logical_positions = torch.arange(self._size_per_env, dtype=torch.long, device=self.storage_device)
         transition_slots_by_logical = self._logical_to_transition_slots(logical_positions)
-        start_positions = torch.arange(max_start_count, dtype=torch.long, device=self.storage_device)
-        episode_ends = torch.logical_or(
-            self.terminations[:, transition_slots_by_logical],
-            self.truncations[:, transition_slots_by_logical],
-        )
         valid = torch.ones((self.n_envs, max_start_count), dtype=torch.bool, device=self.storage_device)
-        if total_sequence_length > 1:
+        if not allow_episode_boundaries and total_sequence_length > 1:
+            start_positions = torch.arange(max_start_count, dtype=torch.long, device=self.storage_device)
+            episode_ends = torch.logical_or(
+                self.terminations[:, transition_slots_by_logical],
+                self.truncations[:, transition_slots_by_logical],
+            )
             end_prefix_sum = torch.cat((
                 torch.zeros((self.n_envs, 1), dtype=torch.long, device=self.storage_device),
                 episode_ends.to(dtype=torch.long).cumsum(dim=1),
@@ -829,7 +840,8 @@ class OffPolicyReplayBuffer:
             assert self._temporal_state_available is not None
             start_transition_slots = transition_slots_by_logical[:max_start_count]
             start_obs_slots = self._transition_obs_slots[:, start_transition_slots]
-            valid &= self._temporal_state_available.gather(1, start_obs_slots)
+            has_temporal_checkpoint = self._temporal_state_available.gather(1, start_obs_slots)
+            valid &= has_temporal_checkpoint
 
         return torch.nonzero(valid, as_tuple=True)
 

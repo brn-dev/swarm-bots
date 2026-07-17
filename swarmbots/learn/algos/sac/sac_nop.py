@@ -70,6 +70,20 @@ class SACNOPConfig:
             raise ValueError(f"num_next_steps must be > 0, got {self.num_next_steps}")
 
 
+@dataclass(frozen=True, slots=True)
+class SACNOPSequenceBatch:
+    """NOP origins use (B, O, ...) while future fields use (B, O, K, ...)."""
+
+    local_obs: torch.Tensor
+    global_obs: torch.Tensor | None
+    agent_mask: torch.Tensor | None
+    actions: torch.Tensor
+    next_local_obs: torch.Tensor
+    next_global_obs: torch.Tensor | None
+    next_agent_mask: torch.Tensor | None
+    train_mask: torch.Tensor
+
+
 class SACNOPModule(nn.Module, NextObsPredMixin):
     def __init__(
             self,
@@ -222,7 +236,7 @@ class SACNOPModule(nn.Module, NextObsPredMixin):
             self,
             *,
             source_latents: torch.Tensor,
-            batch: OffPolicyReplayBatch | OffPolicyReplayEpisodeSegmentBatch,
+            batch: OffPolicyReplayBatch | OffPolicyReplayEpisodeSegmentBatch | SACNOPSequenceBatch,
     ) -> tuple[torch.Tensor, dict[str, Any]]:
         next_obs_pred_loss, metrics = self.compute_next_obs_pred_loss(
             local_latents=source_latents,
@@ -233,7 +247,11 @@ class SACNOPModule(nn.Module, NextObsPredMixin):
             global_obs=batch.global_obs if self.has_global_next_obs_pred_targets else None,
             agent_mask=batch.agent_mask,
             loss_agent_mask=batch.next_agent_mask,
-            time_mask=batch.train_mask if isinstance(batch, OffPolicyReplayEpisodeSegmentBatch) else None,
+            time_mask=(
+                batch.train_mask
+                if isinstance(batch, (OffPolicyReplayEpisodeSegmentBatch, SACNOPSequenceBatch))
+                else None
+            ),
         )
         scaled_loss = self.nop_loss_coef * next_obs_pred_loss
         prefixed_metrics = {f"{self.name}_nop_{key}": value for key, value in metrics.items()}

@@ -136,6 +136,7 @@ def _make_buffer(
         capacity_per_env: int,
         store_previous_actions: bool = False,
         temporal_state_store_interval: int | None = None,
+        temporal_state_storage_dtype: torch.dtype | None = None,
         storage_device: str = "cpu",
         train_device: str = "cpu",
 ) -> OffPolicyReplayBuffer:
@@ -145,6 +146,7 @@ def _make_buffer(
         action_space=env.action_space,
         store_previous_actions=store_previous_actions,
         temporal_state_store_interval=temporal_state_store_interval,
+        temporal_state_storage_dtype=temporal_state_storage_dtype,
         storage_device=storage_device,
         train_device=train_device,
     )
@@ -731,6 +733,51 @@ class OffPolicyReplayTests(unittest.TestCase):
             )
 
             self.assertIsNone(buffer.get_all().episode_start_mask)
+        finally:
+            env.close()
+
+    def test_temporal_state_storage_dtype_must_be_floating_point(self) -> None:
+        env = _make_env()
+        try:
+            with self.assertRaisesRegex(ValueError, "floating-point dtype"):
+                _make_buffer(
+                    env,
+                    capacity_per_env=2,
+                    temporal_state_store_interval=1,
+                    temporal_state_storage_dtype=torch.int8,
+                )
+        finally:
+            env.close()
+
+    def test_temporal_state_uses_storage_dtype_and_restores_train_dtype(self) -> None:
+        env = _make_env()
+        try:
+            buffer = _make_buffer(
+                env,
+                capacity_per_env=2,
+                temporal_state_store_interval=1,
+                temporal_state_storage_dtype=torch.float16,
+            )
+            buffer.add(
+                obs=_obs(0.0),
+                actions=_actions(0.0),
+                rewards=torch.tensor([0.0]),
+                terminations=torch.tensor([False]),
+                truncations=torch.tensor([False]),
+                next_obs=_obs(1.0),
+                temporal_state=_temporal_state(1.25),
+                next_temporal_state=_temporal_state(2.5),
+            )
+
+            self.assertIsInstance(buffer.temporal_states, torch.Tensor)
+            self.assertEqual(buffer.temporal_states.dtype, torch.float16)
+            batch = buffer.sample_episode_segments(1, segment_length=1)
+            self.assertIsInstance(batch.initial_temporal_state, torch.Tensor)
+            self.assertEqual(batch.initial_temporal_state.dtype, torch.float32)
+            torch.testing.assert_close(
+                batch.initial_temporal_state,
+                _temporal_state(1.25),
+            )
         finally:
             env.close()
 
@@ -1548,7 +1595,7 @@ class OffPolicyReplayTests(unittest.TestCase):
         finally:
             env.close()
 
-    def test_episode_segment_sampling_rejects_cross_episode_windows(self) -> None:
+    def test_episode_segment_sampling_allows_cross_episode_windows(self) -> None:
         env = _make_env()
         try:
             buffer = _make_buffer(env, capacity_per_env=4, temporal_state_store_interval=1)
@@ -1566,21 +1613,44 @@ class OffPolicyReplayTests(unittest.TestCase):
                     next_temporal_state=_temporal_state(float(step + 1)),
                 )
 
-            batch = buffer.sample_episode_segments(
+            episode_batch = buffer.sample_episode_segments(
                 2,
                 segment_length=2,
                 replacement=False,
             )
+            self.assertEqual(
+                sorted(episode_batch.local_obs[:, 0, 0, 0].tolist()),
+                [0.0, 2.0],
+            )
+            self.assertIsInstance(episode_batch.initial_temporal_state, torch.Tensor)
+            initial_states_by_start = {
+                float(episode_batch.local_obs[batch_idx, 0, 0, 0].item()): float(
+                    episode_batch.initial_temporal_state[batch_idx, 0, 0].item()
+                )
+                for batch_idx in range(2)
+            }
+            self.assertEqual(initial_states_by_start[2.0], 2.0)
+
+            batch = buffer.sample_episode_segments(
+                3,
+                segment_length=2,
+                replacement=False,
+                allow_episode_boundaries=True,
+            )
 
             segments_by_start = {
                 float(batch.local_obs[batch_idx, 0, 0, 0].item()): batch.episode_ends[batch_idx].tolist()
-                for batch_idx in range(2)
+                for batch_idx in range(3)
             }
-            self.assertEqual(segments_by_start, {0.0: [False, True], 2.0: [False, False]})
+            self.assertEqual(segments_by_start, {
+                0.0: [False, True],
+                1.0: [True, False],
+                2.0: [False, False],
+            })
         finally:
             env.close()
 
-    def test_episode_segment_sampling_raises_typed_error_when_no_windows_exist(self) -> None:
+    def test_episode_segment_sampling_without_temporal_state_can_cross_every_boundary(self) -> None:
         env = _make_env()
         try:
             buffer = _make_buffer(env, capacity_per_env=3)
@@ -1596,7 +1666,28 @@ class OffPolicyReplayTests(unittest.TestCase):
                 )
 
             with self.assertRaisesRegex(NoEpisodeSegmentCandidatesError, "no contiguous replay windows"):
-                buffer.sample_episode_segments(1, segment_length=2, require_initial_temporal_state=False)
+                buffer.sample_episode_segments(
+                    1,
+                    segment_length=2,
+                    require_initial_temporal_state=False,
+                )
+
+            batch = buffer.sample_episode_segments(
+                2,
+                segment_length=2,
+                replacement=False,
+                require_initial_temporal_state=False,
+                allow_episode_boundaries=True,
+            )
+
+            segments_by_start = {
+                float(batch.local_obs[batch_idx, 0, 0, 0].item()): batch.episode_ends[batch_idx].tolist()
+                for batch_idx in range(2)
+            }
+            self.assertEqual(segments_by_start, {
+                0.0: [True, True],
+                100.0: [True, True],
+            })
         finally:
             env.close()
 
@@ -1645,8 +1736,40 @@ class OffPolicyReplayTests(unittest.TestCase):
                     next_temporal_state=_temporal_state(float(step + 1)),
                 )
 
-            with self.assertRaisesRegex(ValueError, "no contiguous replay windows"):
+            with self.assertRaisesRegex(NoEpisodeSegmentCandidatesError, "no contiguous replay windows"):
                 buffer.sample_episode_segments(1, segment_length=1)
+        finally:
+            env.close()
+
+    def test_episode_start_without_temporal_checkpoint_is_not_a_segment_start(self) -> None:
+        env = _make_env()
+        try:
+            buffer = _make_buffer(env, capacity_per_env=4, temporal_state_store_interval=10)
+            for step in range(4):
+                truncated = step == 1
+                buffer.add(
+                    obs=_obs(float(step)),
+                    actions=_actions(float(step)),
+                    rewards=torch.tensor([float(step)]),
+                    terminations=torch.tensor([False]),
+                    truncations=torch.tensor([truncated]),
+                    next_obs=_obs(100.0 if truncated else float(step + 1)),
+                    terminal_obs=_obs(2.0) if truncated else None,
+                    temporal_state=_temporal_state(float(step + 5)),
+                    next_temporal_state=_temporal_state(float(step + 6)),
+                )
+
+            batch = buffer.sample_episode_segments(
+                1,
+                segment_length=2,
+                replacement=False,
+                allow_episode_boundaries=True,
+            )
+
+            self.assertEqual(batch.local_obs[0, :, 0, 0].tolist(), [0.0, 1.0])
+            self.assertEqual(batch.episode_start_mask.tolist(), [[True, False]])
+            self.assertIsInstance(batch.initial_temporal_state, torch.Tensor)
+            self.assertEqual(batch.initial_temporal_state[:, 0, 0].tolist(), [5.0])
         finally:
             env.close()
 

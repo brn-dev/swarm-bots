@@ -41,6 +41,7 @@ ENTROPY_AGENT_REDUCTION = "mean"
 class SAC(BaseAlgorithm):
     policy: BaseSACPolicy
     learning_rate: float
+    supports_recurrent_training = False
 
     def __init__(
             self,
@@ -74,6 +75,11 @@ class SAC(BaseAlgorithm):
     ) -> None:
         if not isinstance(learning_rate, float):
             raise TypeError(f"learning_rate must be a float, got {type(learning_rate).__name__}")
+        if policy.requires_recurrent_training() and not self.supports_recurrent_training:
+            raise TypeError(
+                f"{type(policy).__name__} requires a recurrent SAC algorithm; "
+                f"plain {type(self).__name__} samples isolated replay transitions."
+            )
         super().__init__(policy, env, learning_rate)
 
         self.learning_rate = learning_rate
@@ -114,17 +120,7 @@ class SAC(BaseAlgorithm):
         self._rollout_state: OffPolicyRolloutState | None = None
 
         self._validate_hyper_parameters()
-        self.replay_buffer = OffPolicyReplayBuffer(
-            capacity_per_env=self.buffer_capacity_per_env,
-            observation_space=env.observation_space,
-            action_space=env.action_space,
-            store_previous_actions=policy.requires_previous_actions(),
-            storage_device=self.replay_storage_device,
-            storage_dtype=torch.float32,
-            storage_pin_memory=self.replay_storage_pin_memory,
-            train_device=self.train_device,
-            train_dtype=torch.float32,
-        )
+        self.replay_buffer = self._build_replay_buffer()
 
         self.policy.to(self.train_device)
         initial_actor_critic_lr = self._actor_critic_learning_rate_for_update(self.n_total_updates)
@@ -136,6 +132,19 @@ class SAC(BaseAlgorithm):
         self._setup_entropy_coefficient()
         self._policy_num_params = self.policy.num_parameters(learnable_only=False)
         self._policy_num_trainable_params = self.policy.num_parameters()
+
+    def _build_replay_buffer(self) -> OffPolicyReplayBuffer:
+        return OffPolicyReplayBuffer(
+            capacity_per_env=self.buffer_capacity_per_env,
+            observation_space=self.env.observation_space,
+            action_space=self.env.action_space,
+            store_previous_actions=self.policy.requires_previous_actions(),
+            storage_device=self.replay_storage_device,
+            storage_dtype=torch.float32,
+            storage_pin_memory=self.replay_storage_pin_memory,
+            train_device=self.train_device,
+            train_dtype=torch.float32,
+        )
 
     def get_hyper_parameters(self) -> dict[str, Any]:
         return {
