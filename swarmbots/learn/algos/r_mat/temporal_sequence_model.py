@@ -5,7 +5,7 @@ from typing import Any
 import torch
 from torch import nn
 
-from swarmbots.learn.temporal_state import index_temporal_state_batch_time, stack_temporal_states
+from swarmbots.learn.temporal_state import initialize_selected_temporal_state, update_selected_temporal_state
 
 TemporalModelState = Any
 
@@ -126,7 +126,11 @@ class LSTMTemporalSequenceModel(TemporalSequenceModel):
             hidden_state, cell_state = initial_state
 
         outputs: list[torch.Tensor] = []
-        states: list[LSTMTemporalModelState] = []
+        selected_states = (
+            initialize_selected_temporal_state((hidden_state, cell_state), state_output_indices)
+            if state_output_indices is not None
+            else None
+        )
         zero_output = inputs.new_zeros((batch_size, 1, self.hidden_dim))
 
         for time_idx in range(sequence_length):
@@ -150,24 +154,25 @@ class LSTMTemporalSequenceModel(TemporalSequenceModel):
                 outputs.append(step_output)
                 hidden_state = next_hidden_state
                 cell_state = next_cell_state
-                if state_output_indices is not None:
-                    states.append((hidden_state, cell_state))
-                continue
+            else:
+                valid_t = valid_mask[:, time_idx]
+                valid_output_mask = valid_t.view(batch_size, 1, 1)
+                valid_state_mask = valid_t.view(batch_size, 1, 1)
+                outputs.append(torch.where(valid_output_mask, step_output, zero_output))
+                hidden_state = torch.where(valid_state_mask, next_hidden_state, hidden_state)
+                cell_state = torch.where(valid_state_mask, next_cell_state, cell_state)
 
-            valid_t = valid_mask[:, time_idx]
-            valid_output_mask = valid_t.view(batch_size, 1, 1)
-            valid_state_mask = valid_t.view(batch_size, 1, 1)
-            outputs.append(torch.where(valid_output_mask, step_output, zero_output))
-            hidden_state = torch.where(valid_state_mask, next_hidden_state, hidden_state)
-            cell_state = torch.where(valid_state_mask, next_cell_state, cell_state)
             if state_output_indices is not None:
-                states.append((hidden_state, cell_state))
+                selected_states = update_selected_temporal_state(
+                    selected_states,
+                    (hidden_state, cell_state),
+                    state_output_indices,
+                    time_idx,
+                )
 
         output_sequence = torch.cat(outputs, dim=1).contiguous()
         final_state = (hidden_state, cell_state)
         if state_output_indices is not None:
-            state_sequence = stack_temporal_states(states, dim=1)
-            selected_states = index_temporal_state_batch_time(state_sequence, state_output_indices)
             return output_sequence, final_state, selected_states
         return output_sequence, final_state
 

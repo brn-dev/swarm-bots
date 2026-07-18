@@ -57,6 +57,8 @@ class HybridActionDistFactoryTests(unittest.TestCase):
     def test_inductor_actor_refreshes_distribution_state_for_external_entropy_loss(self) -> None:
         if sys.platform == "win32":
             self.skipTest("TorchInductor's C++ backend requires a complete OpenMP toolchain on Windows")
+        torch._dynamo.reset()
+        self.addCleanup(torch._dynamo.reset)
 
         action_space = HybridActionSpace([
             ("actions", spaces.Box(-1.0, 1.0, shape=(2, 2), dtype=np.float32)),
@@ -108,7 +110,7 @@ class HybridActionDistFactoryTests(unittest.TestCase):
             for name in compiled_losses:
                 torch.testing.assert_close(compiled_losses[name], eager_losses[name])
 
-    def test_all_compile_friendly_continuous_distributions_refresh_external_state(self) -> None:
+    def test_compile_friendly_continuous_distributions_with_external_losses_refresh_state(self) -> None:
         configs = (
             SquashedDiagGaussianConfig(std=0.5, std_learnable=True),
             PredictedStdConfig(base_std=0.5),
@@ -118,8 +120,8 @@ class HybridActionDistFactoryTests(unittest.TestCase):
             ReparameterizedSignMagnitudeKumaraswamyConfig(),
             StickySignMagnitudeBetaConfig(stickiness=0.25),
             SignMagnitudeBetaConfig(),
-            LeftMiddleRightBetaConfig(),
-            StickyLeftMiddleRightBetaConfig(stickiness=0.25),
+            LeftMiddleRightBetaConfig(eps_c=0.1),
+            StickyLeftMiddleRightBetaConfig(eps_c=0.1, stickiness=0.25),
             BangZeroBangConfig(),
             StickyBangZeroBangConfig(stickiness=0.25),
         )

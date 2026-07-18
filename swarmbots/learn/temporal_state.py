@@ -49,6 +49,33 @@ def index_temporal_state_batch_time(
     )
 
 
+def initialize_selected_temporal_state(
+        state: TemporalState,
+        state_output_indices: torch.Tensor,
+) -> TemporalState:
+    num_outputs = state_output_indices.shape[0]
+    return _map_temporal_state(
+        state,
+        lambda tensor: tensor.new_zeros((num_outputs, *tensor.shape[1:])),
+    )
+
+
+def update_selected_temporal_state(
+        selected_state: TemporalState,
+        state: TemporalState,
+        state_output_indices: torch.Tensor,
+        time_idx: int,
+) -> TemporalState:
+    batch_indices = state_output_indices[:, 0]
+    selected_time_mask = state_output_indices[:, 1] == time_idx
+
+    def update_tensor(selected_tensor: torch.Tensor, state_tensor: torch.Tensor) -> torch.Tensor:
+        mask = selected_time_mask.reshape(-1, *([1] * (state_tensor.ndim - 1)))
+        return torch.where(mask, state_tensor[batch_indices], selected_tensor)
+
+    return _map_temporal_state_pair(selected_state, state, update_tensor)
+
+
 def copy_temporal_state_rows_(
         target: TemporalState,
         source: TemporalState,
@@ -149,6 +176,41 @@ def _map_temporal_state(
     if isinstance(state, Mapping):
         return type(state)((key, _map_temporal_state(value, tensor_fn)) for key, value in state.items())
     raise TypeError(f"Unsupported temporal state item: {type(state).__name__}")
+
+
+def _map_temporal_state_pair(
+        first_state: TemporalState,
+        second_state: TemporalState,
+        tensor_fn: Callable[[torch.Tensor, torch.Tensor], torch.Tensor],
+) -> TemporalState:
+    if first_state is None and second_state is None:
+        return None
+    if torch.is_tensor(first_state) and torch.is_tensor(second_state):
+        return tensor_fn(first_state, second_state)
+    if isinstance(first_state, tuple) and isinstance(second_state, tuple):
+        return tuple(
+            _map_temporal_state_pair(first_item, second_item, tensor_fn)
+            for first_item, second_item in zip(first_state, second_state, strict=True)
+        )
+    if isinstance(first_state, list) and isinstance(second_state, list):
+        return [
+            _map_temporal_state_pair(first_item, second_item, tensor_fn)
+            for first_item, second_item in zip(first_state, second_state, strict=True)
+        ]
+    if isinstance(first_state, Mapping) and isinstance(second_state, Mapping):
+        if first_state.keys() != second_state.keys():
+            raise ValueError("Temporal state mappings must have matching keys")
+        return type(first_state)(
+            (
+                key,
+                _map_temporal_state_pair(first_state[key], second_state[key], tensor_fn),
+            )
+            for key in first_state
+        )
+    raise TypeError(
+        "Temporal state structures do not match: "
+        f"{type(first_state).__name__} and {type(second_state).__name__}"
+    )
 
 
 def _flatten_temporal_state_first_two_dimensions(state: TemporalState) -> TemporalState:
