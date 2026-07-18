@@ -68,33 +68,6 @@ class GSDEActionDistTests(unittest.TestCase):
         self.assertEqual({"ent", "ent_left", "ent_right"}, set(metrics.keys()))
         self.assertTrue(all(torch.isfinite(torch.tensor(value)) for value in metrics.values()))
 
-    def test_squashed_gsde_combines_entropy_and_action_magnitude_losses(self) -> None:
-        dist = GSDEActionDist(
-            latent_dim=2,
-            action_dim=2,
-            base_std=0.75,
-            squash_output=True,
-            ent_loss_coef=0.1,
-            action_magnitude_loss_coef=0.25,
-            action_magnitude_loss_threshold=0.0,
-        )
-        latent_pi = torch.tensor(
-            [
-                [[1.0, -2.0], [0.5, 0.25]],
-                [[-1.0, 1.5], [2.0, -0.5]],
-            ],
-            dtype=torch.float32,
-        )
-
-        dist.update_latent_features(latent_pi)
-        losses, metrics = dist.compute_extra_losses()
-
-        self.assertEqual({"entropy", "action_magnitude"}, set(losses.keys()))
-        self.assertEqual(tuple(losses["entropy"].shape), (2, 2))
-        self.assertEqual(tuple(losses["action_magnitude"].shape), (2, 2))
-        self.assertIn("ent", metrics)
-        self.assertIn("action_magnitude_loss_scaled", metrics)
-
     def test_episode_start_reset_expands_env_mask_across_agent_noise(self) -> None:
         torch.manual_seed(1234)
         dist = GSDEActionDist(

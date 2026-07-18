@@ -67,7 +67,7 @@ class BernoulliActionDist(DiscreteActionDist):
                 self.action_net.bias.fill_(initial_logit)
 
     def update_distribution_params(self, action_logits: torch.Tensor) -> Self:
-        self.distribution = torchdist.Bernoulli(logits=action_logits)
+        self.distribution = torchdist.Bernoulli(logits=action_logits, validate_args=False)
         return self
 
     def sample(

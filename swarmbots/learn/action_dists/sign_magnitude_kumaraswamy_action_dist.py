@@ -111,8 +111,16 @@ class SignMagnitudeKumaraswamyActionDist(SignMagnitudeActionDist):
         self.positive_a = shape_parameter_greater_than_one(raw_magnitude_parameters[..., 2])
         self.positive_b = shape_parameter_greater_than_one(raw_magnitude_parameters[..., 3])
         return (
-            torchdist.Kumaraswamy(self.negative_a, self.negative_b),
-            torchdist.Kumaraswamy(self.positive_a, self.positive_b),
+            torchdist.Kumaraswamy(
+                self.negative_a,
+                self.negative_b,
+                validate_args=False,
+            ),
+            torchdist.Kumaraswamy(
+                self.positive_a,
+                self.positive_b,
+                validate_args=False,
+            ),
         )
 
     def _magnitude_modes(self) -> tuple[torch.Tensor, torch.Tensor]:

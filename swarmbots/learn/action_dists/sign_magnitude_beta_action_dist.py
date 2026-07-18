@@ -109,8 +109,16 @@ class SignMagnitudeBetaActionDist(SignMagnitudeActionDist):
         positive_alpha = shape_parameter_greater_than_one(raw_magnitude_parameters[..., 2])
         positive_beta = shape_parameter_greater_than_one(raw_magnitude_parameters[..., 3])
         return (
-            torchdist.Beta(concentration1=negative_alpha, concentration0=negative_beta),
-            torchdist.Beta(concentration1=positive_alpha, concentration0=positive_beta),
+            torchdist.Beta(
+                concentration1=negative_alpha,
+                concentration0=negative_beta,
+                validate_args=False,
+            ),
+            torchdist.Beta(
+                concentration1=positive_alpha,
+                concentration0=positive_beta,
+                validate_args=False,
+            ),
         )
 
     def _magnitude_modes(self) -> tuple[torch.Tensor, torch.Tensor]:

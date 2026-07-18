@@ -84,7 +84,11 @@ class BetaMixtureActionDist(ActionDist):
         self.weight_logits = raw[..., 0]
         alpha = 1.0 + F.softplus(raw[..., 1])
         beta = 1.0 + F.softplus(raw[..., 2])
-        self.components = torchdist.Beta(concentration1=alpha, concentration0=beta)
+        self.components = torchdist.Beta(
+            concentration1=alpha,
+            concentration0=beta,
+            validate_args=False,
+        )
         return self
 
     def _assert_ready(self) -> None:

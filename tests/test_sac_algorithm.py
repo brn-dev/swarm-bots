@@ -1,7 +1,10 @@
+import math
 import tempfile
 import unittest
+from collections.abc import Callable
 from dataclasses import replace
 from typing import Any
+from unittest.mock import patch
 
 import torch
 from gymnasium.vector import AutoresetMode, SyncVectorEnv
@@ -41,8 +44,25 @@ from swarmbots.learn.algos.world_modeling.next_obs_pred_mixin import NextObsPred
 from swarmbots.learn.env_wrappers.learn_wrappers.swarm_bots_learn_env_wrapper import SwarmBotsLearnEnvWrapper
 from swarmbots.learn.exponential_moving_average import ExponentialMovingAverage
 from swarmbots.learn.gsde_reset import GSDEIntervalResetMode
-from swarmbots.learn.temporal_state import clone_temporal_state
+from swarmbots.learn.summary_statistics import SummaryStatistics
 from swarmbots.learn.testing_env import TestingSwarmBotsEnv
+from swarmbots.learn.temporal_state import clone_temporal_state
+
+
+_REAL_TORCH_COMPILE = torch.compile
+
+
+def _compile_with_eager_backend(
+        function: Callable[..., Any],
+        **kwargs: Any,
+) -> Callable[..., Any]:
+    return _REAL_TORCH_COMPILE(function, backend="eager", **kwargs)
+
+
+def _summary_mean(value: object) -> float:
+    assert isinstance(value, SummaryStatistics)
+    assert isinstance(value.mean, float)
+    return value.mean
 
 
 def _make_env(*, max_steps: int = 20) -> SwarmBotsLearnEnvWrapper:
@@ -70,6 +90,7 @@ def _make_policy(
         *,
         continuous_config: ContinuousActionDistConfig | None = None,
         nop_config: SACNOPConfig | None = None,
+        compile_modules: bool = False,
 ) -> TMASACPolicy:
     encoder_config = MATEncoderConfig(
         d_model=8,
@@ -89,6 +110,7 @@ def _make_policy(
             ),
             continuous_config=PredictedStdConfig(base_std=0.7) if continuous_config is None else continuous_config,
             nop_config=SACNOPConfig() if nop_config is None else nop_config,
+            compile_modules=compile_modules,
         ),
     )
 
@@ -731,6 +753,55 @@ class SACTests(unittest.TestCase):
                     self.assertIn("ent_coef", metrics)
                 finally:
                     env.close()
+
+    def test_compiled_sac_update_uses_post_actor_distribution_state_for_extra_losses(self) -> None:
+        continuous_configs: tuple[ContinuousActionDistConfig, ...] = (
+            PredictedStdConfig(base_std=0.7, ent_loss_coef=0.2),
+            GumbelSoftmaxSignMagnitudeBetaConfig(ent_loss_coef=0.2),
+        )
+        for continuous_config in continuous_configs:
+            with self.subTest(config=type(continuous_config).__name__):
+                torch._dynamo.reset()
+                env = _make_env()
+                try:
+                    with patch(
+                            "swarmbots.learn.algos.sac.tmasac_policy.torch.compile",
+                            side_effect=_compile_with_eager_backend,
+                    ):
+                        policy = _make_policy(
+                            env,
+                            continuous_config=continuous_config,
+                            compile_modules=True,
+                        )
+                        algo = SAC(
+                            policy=policy,
+                            env=env,
+                            learning_rate=1e-3,
+                            buffer_capacity_per_env=8,
+                            learning_starts=0,
+                            batch_size=2,
+                            rollout_steps_per_iteration=2,
+                            gradient_steps=1,
+                            train_device="cpu",
+                            rollout_device="cpu",
+                            replay_storage_device="cpu",
+                        )
+                        metrics, rollout_steps = algo.perform_iteration(
+                            ExponentialMovingAverage(alpha=0.1),
+                            ExponentialMovingAverage(alpha=0.1),
+                            update_ema=False,
+                        )
+
+                    self.assertEqual(rollout_steps, 2)
+                    self.assertEqual(metrics["updates"], 1)
+                    for action_idx in range(env.action_space.n_spaces):
+                        metric_name = f"actor_action_dist_act{action_idx}_entropy_loss_scaled"
+                        self.assertIn(metric_name, metrics)
+                        self.assertTrue(math.isfinite(_summary_mean(metrics[metric_name])))
+                    self.assertTrue(math.isfinite(_summary_mean(metrics["actor_total_loss"])))
+                finally:
+                    env.close()
+                    torch._dynamo.reset()
 
     def test_perform_iteration_with_gsde_actor_requires_and_uses_reset_mode(self) -> None:
         env = _make_env()

@@ -1229,7 +1229,7 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
             if not isinstance(parsed_weights, dict):
                 raise ValueError(
                     "set_extra_loss_weights expects a JSON object, e.g. "
-                    "set_extra_loss_weights:{\"action_magnitude\":0.01}"
+                    "set_extra_loss_weights:{\"entropy\":0.001}"
                 )
             if not parsed_weights:
                 logger.warning("No extra loss weights provided.")

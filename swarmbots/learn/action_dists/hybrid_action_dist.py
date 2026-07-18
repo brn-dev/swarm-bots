@@ -19,7 +19,6 @@ from swarmbots.learn.action_dists.bernoulli_action_dist import BernoulliActionDi
 from swarmbots.learn.action_dists.bernoulli_action_dist import BernoulliConfig
 from swarmbots.learn.action_dists.beta_action_dist import BetaActionDist, BetaConfig
 from swarmbots.learn.action_dists.bang_zero_bang_action_dist import BangZeroBangActionDist, BangZeroBangConfig
-from swarmbots.learn.action_dists.continuous_action_dist import ContinuousActionDist
 from swarmbots.learn.action_dists.gsde_action_dist import GSDEActionDist, GSDEConfig
 from swarmbots.learn.action_dists.gumbel_softmax_sign_magnitude_action_dist import (
     GumbelSoftmaxSignMagnitudeBetaActionDist,
@@ -477,14 +476,6 @@ class HybridActionDistribution(ActionDist):
             scale_std = getattr(dist, "scale_std", None)
             if callable(scale_std):
                 scale_std(multiplier)
-
-    def set_action_magnitude_loss_coef(self, value: float) -> None:
-        for dist in self.distributions:
-            if isinstance(dist, ContinuousActionDist):
-                dist.set_action_magnitude_loss_coef(value)
-        for idx, config in enumerate(self.continuous_configs):
-            if isinstance(config, (SquashedDiagGaussianConfig, PredictedStdConfig, GSDEConfig)):
-                self.continuous_configs[idx] = replace(config, action_magnitude_loss_coef=value)
 
     def set_all_ent_loss_coefs(self, value: float) -> None:
         if value < 0:

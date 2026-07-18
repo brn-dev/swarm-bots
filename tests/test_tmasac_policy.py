@@ -1,10 +1,18 @@
 import unittest
+from collections.abc import Callable
+from dataclasses import replace
+from typing import Any
+from unittest.mock import patch
 
 import torch
 from gymnasium import spaces
 
 from swarmbots.learn.action_dists.beta_action_dist import BetaConfig
 from swarmbots.learn.action_dists.beta_mixture_action_dist import BetaMixtureConfig
+from swarmbots.learn.action_dists.gumbel_softmax_sign_magnitude_action_dist import (
+    GumbelSoftmaxSignMagnitudeBetaConfig,
+    GumbelSoftmaxSignMagnitudeKumaraswamyConfig,
+)
 from swarmbots.learn.action_dists.gsde_action_dist import GSDEConfig
 from swarmbots.learn.action_dists.hybrid_action_dist import ContinuousActionDistConfig
 from swarmbots.learn.action_dists.predicted_std_action_dist import PredictedStdConfig
@@ -27,6 +35,9 @@ from swarmbots.learn.algos.sac import (
 )
 from swarmbots.learn.algos.world_modeling.next_obs_pred_mixin import NextObsPredConfig
 from swarmbots.learn.hybrid_action_space import HybridActionSpace
+
+
+_REAL_TORCH_COMPILE = torch.compile
 
 
 class _DummyContinuousEnv:
@@ -265,6 +276,183 @@ class TMASACPolicyTests(unittest.TestCase):
         self.assertEqual(tuple(q2.shape), (4,))
         self.assertTrue(torch.equal(actions[~batch.agent_mask], torch.zeros_like(actions[~batch.agent_mask])))
         self.assertTrue(torch.equal(log_probs[~batch.agent_mask], torch.zeros_like(log_probs[~batch.agent_mask])))
+
+    def test_full_graph_compile_friendly_actors_match_eager_forward_and_gradients(self) -> None:
+        configs: tuple[ContinuousActionDistConfig, ...] = (
+            PredictedStdConfig(base_std=0.5, ent_loss_coef=0.1),
+            SquashedDiagGaussianConfig(std=0.5, std_learnable=True, ent_loss_coef=0.1),
+            BetaConfig(ent_loss_coef=0.1),
+            GumbelSoftmaxSignMagnitudeBetaConfig(ent_loss_coef=0.1),
+            GumbelSoftmaxSignMagnitudeKumaraswamyConfig(ent_loss_coef=0.1),
+            ReparameterizedSignMagnitudeKumaraswamyConfig(ent_loss_coef=0.1),
+        )
+        for continuous_config in configs:
+            with self.subTest(continuous_config=type(continuous_config).__name__):
+                torch._dynamo.reset()
+                try:
+                    self._assert_full_graph_actor_matches_eager(continuous_config)
+                finally:
+                    torch._dynamo.reset()
+
+    def _assert_full_graph_actor_matches_eager(
+            self,
+            continuous_config: ContinuousActionDistConfig,
+    ) -> None:
+        compiled_graphs: list[torch.fx.GraphModule] = []
+        actor_compile_options: list[dict[str, Any]] = []
+
+        def eager_backend(
+                graph_module: torch.fx.GraphModule,
+                _example_inputs: list[torch.Tensor],
+                **_kwargs: Any,
+        ) -> Callable[..., Any]:
+            compiled_graphs.append(graph_module)
+            return graph_module.forward
+
+        def compile_with_eager_backend(
+                function: Callable[..., Any],
+                **kwargs: Any,
+        ) -> Callable[..., Any]:
+            if getattr(function, "__name__", "") == "_action_log_prob_impl":
+                actor_compile_options.append(kwargs)
+            return _REAL_TORCH_COMPILE(function, backend=eager_backend, **kwargs)
+
+        eager_config = _make_config(
+            continuous_config=continuous_config,
+        )
+        eager_policy = TMASACPolicy(env=_DummyContinuousEnv(), config=eager_config)
+        with patch(
+                "swarmbots.learn.algos.sac.tmasac_policy.torch.compile",
+                side_effect=compile_with_eager_backend,
+        ):
+            compiled_policy = TMASACPolicy(
+                env=_DummyContinuousEnv(),
+                config=replace(eager_config, compile_modules=True),
+            )
+        self.assertEqual(
+            actor_compile_options,
+            [{"mode": "default", "fullgraph": True, "dynamic": False}],
+        )
+
+        compiled_policy.actor_encoder.load_state_dict(eager_policy.actor_encoder.state_dict())
+        compiled_policy.actor_head.load_state_dict(eager_policy.actor_head.state_dict())
+        compiled_policy.action_dist.load_state_dict(eager_policy.action_dist.state_dict())
+        batch = _make_batch()
+        call_kwargs = {
+            "local_obs": batch.local_obs,
+            "global_obs": batch.global_obs,
+            "hidden_local_vars": batch.hidden_local_vars,
+            "hidden_global_vars": batch.hidden_global_vars,
+            "agent_mask": batch.agent_mask,
+            "previous_actions": batch.previous_actions,
+        }
+
+        actor_update_outputs: tuple[
+            torch.Tensor,
+            torch.Tensor,
+            torch.Tensor,
+            torch.Tensor,
+        ] | None = None
+        actor_update_extra_losses: tuple[dict[str, torch.Tensor], dict[str, torch.Tensor]] | None = None
+        action_modes = (
+            {"deterministic": False, "use_rsample": False},
+            {"deterministic": False, "use_rsample": True},
+            {"deterministic": True, "use_rsample": False},
+        )
+        for seed, action_mode in enumerate(action_modes, start=123):
+            mode_kwargs = {**call_kwargs, **action_mode}
+            torch.manual_seed(seed)
+            eager_actions, eager_log_probs = eager_policy.action_log_prob(**mode_kwargs)
+            torch.manual_seed(seed)
+            compiled_actions, compiled_log_probs = compiled_policy.action_log_prob(**mode_kwargs)
+            torch.testing.assert_close(compiled_actions, eager_actions)
+            torch.testing.assert_close(compiled_log_probs, eager_log_probs)
+            eager_extra_losses = eager_policy.action_dist.compute_extra_losses_without_metrics(
+                agent_mask=batch.agent_mask,
+            )
+            compiled_extra_losses = compiled_policy.action_dist.compute_extra_losses_without_metrics(
+                agent_mask=batch.agent_mask,
+            )
+            self._assert_loss_dict_close(compiled_extra_losses, eager_extra_losses)
+            if action_mode["use_rsample"]:
+                actor_update_outputs = (
+                    eager_actions,
+                    eager_log_probs,
+                    compiled_actions,
+                    compiled_log_probs,
+                )
+                actor_update_extra_losses = eager_extra_losses, compiled_extra_losses
+
+        assert actor_update_outputs is not None
+        assert actor_update_extra_losses is not None
+        eager_actions, eager_log_probs, compiled_actions, compiled_log_probs = actor_update_outputs
+        eager_extra_losses, compiled_extra_losses = actor_update_extra_losses
+        eager_loss = (
+            eager_actions.square().mean()
+            + eager_log_probs.square().mean()
+            + torch.stack(tuple(eager_extra_losses.values())).sum()
+        )
+        compiled_loss = (
+            compiled_actions.square().mean()
+            + compiled_log_probs.square().mean()
+            + torch.stack(tuple(compiled_extra_losses.values())).sum()
+        )
+        eager_loss.backward()
+        compiled_loss.backward()
+        for module_name in ("actor_encoder", "actor_head", "action_dist"):
+            eager_module = getattr(eager_policy, module_name)
+            compiled_module = getattr(compiled_policy, module_name)
+            for (eager_name, eager_parameter), (compiled_name, compiled_parameter) in zip(
+                    eager_module.named_parameters(),
+                    compiled_module.named_parameters(),
+                    strict=True,
+            ):
+                self.assertEqual(compiled_name, eager_name)
+                if eager_parameter.grad is None or compiled_parameter.grad is None:
+                    self.assertIsNone(eager_parameter.grad)
+                    self.assertIsNone(compiled_parameter.grad)
+                    continue
+                torch.testing.assert_close(compiled_parameter.grad, eager_parameter.grad)
+
+        self.assertEqual(len(compiled_graphs), len(action_modes))
+        for seed, action_mode in enumerate(action_modes, start=456):
+            torch.manual_seed(seed)
+            eager_policy.action_log_prob(
+                **{
+                    **call_kwargs,
+                    "local_obs": call_kwargs["local_obs"] + 0.25,
+                    "global_obs": call_kwargs["global_obs"] - 0.25,
+                },
+                **action_mode,
+            )
+            torch.manual_seed(seed)
+            compiled_policy.action_log_prob(
+                **{
+                    **call_kwargs,
+                    "local_obs": call_kwargs["local_obs"] + 0.25,
+                    "global_obs": call_kwargs["global_obs"] - 0.25,
+                },
+                **action_mode,
+            )
+            self._assert_loss_dict_close(
+                compiled_policy.action_dist.compute_extra_losses_without_metrics(
+                    agent_mask=batch.agent_mask,
+                ),
+                eager_policy.action_dist.compute_extra_losses_without_metrics(
+                    agent_mask=batch.agent_mask,
+                ),
+            )
+        self.assertEqual(len(compiled_graphs), len(action_modes))
+
+    def _assert_loss_dict_close(
+            self,
+            actual: dict[str, torch.Tensor],
+            expected: dict[str, torch.Tensor],
+    ) -> None:
+        self.assertEqual(actual.keys(), expected.keys())
+        self.assertTrue(actual)
+        for name in actual:
+            torch.testing.assert_close(actual[name], expected[name])
 
     def test_twin_critics_share_action_conditioned_encoder_by_default(self) -> None:
         policy = TMASACPolicy(env=_DummyContinuousEnv(), config=_make_config())

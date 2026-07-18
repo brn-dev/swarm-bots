@@ -30,9 +30,6 @@ class GSDEConfig:
     log_std_clamp_range: tuple[float, float] = (-20.0, 2.0)
     ent_loss_coef: float = 0.0
     ent_loss_config: EntropyLossConfig = field(default_factory=EntropyLossConfig)
-    action_magnitude_loss_coef: float = 0.0
-    action_magnitude_loss_threshold: float = 0.0
-    action_magnitude_loss_power: int = 2
 
 
 class GSDEActionDist(ContinuousActionDist, TemporallyCorrelatedActionDist):
@@ -54,9 +51,6 @@ class GSDEActionDist(ContinuousActionDist, TemporallyCorrelatedActionDist):
             log_std_clamp_range: tuple[float, float] = (-20.0, 2.0),
             ent_loss_coef: float = 0.0,
             ent_loss_config: EntropyLossConfig | None = None,
-            action_magnitude_loss_coef: float = 0.0,
-            action_magnitude_loss_threshold: float = 0.0,
-            action_magnitude_loss_power: int = 2,
     ):
         assert latent_sde_dim is None or latent_sde_dim == latent_dim or sde_learn_features
 
@@ -66,9 +60,6 @@ class GSDEActionDist(ContinuousActionDist, TemporallyCorrelatedActionDist):
             action_net_initialization=action_net_initialization,
             ent_loss_coef=ent_loss_coef,
             ent_loss_config=ent_loss_config,
-            action_magnitude_loss_coef=action_magnitude_loss_coef,
-            action_magnitude_loss_threshold=action_magnitude_loss_threshold,
-            action_magnitude_loss_power=action_magnitude_loss_power,
         )
 
         self.latent_sde_dim = latent_dim if latent_sde_dim is None else latent_sde_dim
@@ -249,15 +240,10 @@ class GSDEActionDist(ContinuousActionDist, TemporallyCorrelatedActionDist):
             agent_mask=agent_mask,
             action_splitter=action_splitter,
         )
-        action_magnitude_loss, action_magnitude_metrics = self.compute_action_magnitude_loss(
-            agent_mask=agent_mask
-        )
         losses: LossDict = {}
         if ent_loss is not None:
             losses["entropy"] = ent_loss
-        if action_magnitude_loss is not None:
-            losses["action_magnitude"] = action_magnitude_loss
-        return losses, {**ent_loss_metrics, **action_magnitude_metrics}
+        return losses, ent_loss_metrics
 
     def get_actions_with_log_probs(
             self,

@@ -1,5 +1,5 @@
 import copy
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import Any, Self
@@ -464,12 +464,17 @@ class TMASACTwinCritic(nn.Module):
 
 
 class TMASACPolicy(BaseSACPolicy):
+    _compiled_action_log_prob: Callable[..., tuple[torch.Tensor, torch.Tensor]] | None
+    _compiled_actor_encoder: nn.Module | None
+
     def __init__(
             self,
             env: BaseLearnEnvWrapper,
             config: TMASACPolicyConfig = TMASACPolicyConfig(),
     ) -> None:
         super().__init__()
+        object.__setattr__(self, "_compiled_action_log_prob", None)
+        object.__setattr__(self, "_compiled_actor_encoder", None)
         self.config = config
         self._validate_continuous_action_space(env)
         self._validate_config(config)
@@ -598,9 +603,43 @@ class TMASACPolicy(BaseSACPolicy):
             deterministic: bool = False,
             use_rsample: bool = True,
     ) -> tuple[torch.Tensor, torch.Tensor]:
+        if self._compiled_action_log_prob is not None:
+            return self._compiled_action_log_prob(
+                local_obs=local_obs,
+                global_obs=global_obs,
+                hidden_local_vars=hidden_local_vars,
+                hidden_global_vars=hidden_global_vars,
+                agent_mask=agent_mask,
+                previous_actions=previous_actions,
+                deterministic=deterministic,
+                use_rsample=use_rsample,
+            )
+        return self._action_log_prob_impl(
+            local_obs=local_obs,
+            global_obs=global_obs,
+            hidden_local_vars=hidden_local_vars,
+            hidden_global_vars=hidden_global_vars,
+            agent_mask=agent_mask,
+            previous_actions=previous_actions,
+            deterministic=deterministic,
+            use_rsample=use_rsample,
+        )
+
+    def _action_log_prob_impl(
+            self,
+            *,
+            local_obs: torch.Tensor,
+            global_obs: torch.Tensor,
+            hidden_local_vars: torch.Tensor | None = None,
+            hidden_global_vars: torch.Tensor | None = None,
+            agent_mask: torch.Tensor | None = None,
+            previous_actions: torch.Tensor | None = None,
+            deterministic: bool = False,
+            use_rsample: bool = True,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         _ = hidden_local_vars
         _ = hidden_global_vars
-        actor_latents = self.encode_actor(
+        actor_latents = self._encode_actor_impl(
             local_obs=local_obs,
             global_obs=global_obs,
             agent_mask=agent_mask,
@@ -733,7 +772,26 @@ class TMASACPolicy(BaseSACPolicy):
             global_obs=global_obs,
             agent_mask=agent_mask,
         )
-        return self.actor_encoder(actor_local_inputs, actor_global_inputs, agent_mask=agent_mask)
+        actor_encoder = (
+            self._actor_encoder
+            if self._compiled_actor_encoder is None
+            else self._compiled_actor_encoder
+        )
+        return actor_encoder(actor_local_inputs, actor_global_inputs, agent_mask=agent_mask)
+
+    def _encode_actor_impl(
+            self,
+            *,
+            local_obs: torch.Tensor,
+            global_obs: torch.Tensor,
+            agent_mask: torch.Tensor | None,
+    ) -> torch.Tensor:
+        actor_local_inputs, actor_global_inputs = self._actor_observation_inputs(
+            local_obs=local_obs,
+            global_obs=global_obs,
+            agent_mask=agent_mask,
+        )
+        return self._actor_encoder(actor_local_inputs, actor_global_inputs, agent_mask=agent_mask)
 
     def actor_parameters(self) -> list[nn.Parameter]:
         return list(self._iter_parameters(self.actor_encoder, self.actor_head, self.action_dist, self.actor_nop))
@@ -1046,10 +1104,38 @@ class TMASACPolicy(BaseSACPolicy):
             self.shared_observation_encoder = self._compile_module(self.shared_observation_encoder)
         if self.shared_observation_encoder_target is not None:
             self.shared_observation_encoder_target = self._compile_module(self.shared_observation_encoder_target)
-        self._actor_encoder = self._compile_module(self._actor_encoder)
-        self.actor_head = self._compile_module(self.actor_head)
+        compile_actor_end_to_end = (
+            self.action_dist.compile_friendly
+            and self.shared_observation_encoder is None
+        )
+        if compile_actor_end_to_end:
+            object.__setattr__(
+                self,
+                "_compiled_actor_encoder",
+                self._compile_module(self._actor_encoder),
+            )
+            self._compiled_action_log_prob = self._compile_callable(
+                self._action_log_prob_impl,
+                fullgraph=True,
+            )
+        else:
+            self._actor_encoder = self._compile_module(self._actor_encoder)
+            self.actor_head = self._compile_module(self.actor_head)
         self.critic = self._compile_module(self.critic)
         self.critic_target = self._compile_module(self.critic_target)
+
+    def _compile_callable(
+            self,
+            fn: Callable[..., Any],
+            *,
+            fullgraph: bool,
+    ) -> Callable[..., Any]:
+        return torch.compile(
+            fn,
+            mode=self.config.compile_mode,
+            fullgraph=fullgraph,
+            dynamic=False,
+        )
 
     def _compile_module(self, module: nn.Module) -> nn.Module:
         return torch.compile(

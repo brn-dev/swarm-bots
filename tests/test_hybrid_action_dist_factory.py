@@ -1,5 +1,8 @@
 import math
+import sys
 import unittest
+from collections.abc import Callable
+from typing import Any
 
 import numpy as np
 import torch
@@ -9,10 +12,15 @@ from gymnasium import spaces
 from swarmbots.learn.action_dists.beta_action_dist import BetaActionDist, BetaConfig
 from swarmbots.learn.action_dists.bang_zero_bang_action_dist import BangZeroBangActionDist, BangZeroBangConfig
 from swarmbots.learn.action_dists.gumbel_softmax_sign_magnitude_action_dist import (
+    GumbelSoftmaxSignMagnitudeBetaConfig,
     GumbelSoftmaxSignMagnitudeKumaraswamyConfig,
 )
 from swarmbots.learn.action_dists.hybrid_action_dist import HybridActionDistribution, make_proba_distribution
+from swarmbots.learn.action_dists.left_middle_right_beta_action_dist import LeftMiddleRightBetaConfig
 from swarmbots.learn.action_dists.predicted_std_action_dist import PredictedStdActionDist, PredictedStdConfig
+from swarmbots.learn.action_dists.reparameterized_sign_magnitude_kumaraswamy_action_dist import (
+    ReparameterizedSignMagnitudeKumaraswamyConfig,
+)
 from swarmbots.learn.action_dists.sign_magnitude_beta_action_dist import (
     SignMagnitudeBetaActionDist,
     SignMagnitudeBetaConfig,
@@ -20,6 +28,12 @@ from swarmbots.learn.action_dists.sign_magnitude_beta_action_dist import (
 from swarmbots.learn.action_dists.squashed_diag_gaussian_action_dist import (
     SquashedDiagGaussianActionDist,
     SquashedDiagGaussianConfig,
+)
+from swarmbots.learn.action_dists.sticky_left_middle_right_beta_action_dist import (
+    StickyLeftMiddleRightBetaConfig,
+)
+from swarmbots.learn.action_dists.sticky_sign_magnitude_beta_action_dist import (
+    StickySignMagnitudeBetaConfig,
 )
 from swarmbots.learn.action_dists.sticky_bang_zero_bang_action_dist import (
     StickyBangZeroBangActionDist,
@@ -29,7 +43,158 @@ from swarmbots.learn.hybrid_action_space import HybridActionSpace, VectorHybridA
 from swarmbots.learn.nn_components.nn_init import init_linear_orthogonal
 
 
+_REAL_TORCH_COMPILE = torch.compile
+
+
+def _compile_with_eager_backend(
+        function: Callable[..., Any],
+        **kwargs: Any,
+) -> Callable[..., Any]:
+    return _REAL_TORCH_COMPILE(function, backend="eager", **kwargs)
+
+
 class HybridActionDistFactoryTests(unittest.TestCase):
+    def test_inductor_actor_refreshes_distribution_state_for_external_entropy_loss(self) -> None:
+        if sys.platform == "win32":
+            self.skipTest("TorchInductor's C++ backend requires a complete OpenMP toolchain on Windows")
+
+        action_space = HybridActionSpace([
+            ("actions", spaces.Box(-1.0, 1.0, shape=(2, 2), dtype=np.float32)),
+        ])
+        config = PredictedStdConfig(base_std=0.5, ent_loss_coef=0.2)
+        torch.manual_seed(321)
+        eager_dist = HybridActionDistribution(
+            latent_dim=4,
+            action_space=action_space,
+            continuous_config=config,
+            action_net_initialization=init_linear_orthogonal,
+        )
+        torch.manual_seed(321)
+        compiled_dist = HybridActionDistribution(
+            latent_dim=4,
+            action_space=action_space,
+            continuous_config=config,
+            action_net_initialization=init_linear_orthogonal,
+        )
+
+        def compiled_actor(latent_pi: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+            return compiled_dist.get_actions_with_log_probs(
+                latent_pi,
+                deterministic=True,
+                use_rsample=False,
+            )
+
+        compiled_actor_fn = _REAL_TORCH_COMPILE(
+            compiled_actor,
+            mode="default",
+            fullgraph=True,
+            dynamic=False,
+        )
+        latent_pi = torch.randn(3, 2, 4)
+        for latent_offset in (0.0, 0.25):
+            current_latent = latent_pi + latent_offset
+            eager_actions, eager_log_probs = eager_dist.get_actions_with_log_probs(
+                current_latent,
+                deterministic=True,
+                use_rsample=False,
+            )
+            compiled_actions, compiled_log_probs = compiled_actor_fn(current_latent)
+            torch.testing.assert_close(compiled_actions, eager_actions)
+            torch.testing.assert_close(compiled_log_probs, eager_log_probs)
+            eager_losses = eager_dist.compute_extra_losses_without_metrics()
+            compiled_losses = compiled_dist.compute_extra_losses_without_metrics()
+            self.assertEqual(compiled_losses.keys(), eager_losses.keys())
+            self.assertTrue(compiled_losses)
+            for name in compiled_losses:
+                torch.testing.assert_close(compiled_losses[name], eager_losses[name])
+
+    def test_all_compile_friendly_continuous_distributions_refresh_external_state(self) -> None:
+        configs = (
+            SquashedDiagGaussianConfig(std=0.5, std_learnable=True),
+            PredictedStdConfig(base_std=0.5),
+            BetaConfig(),
+            GumbelSoftmaxSignMagnitudeBetaConfig(),
+            GumbelSoftmaxSignMagnitudeKumaraswamyConfig(),
+            ReparameterizedSignMagnitudeKumaraswamyConfig(),
+            StickySignMagnitudeBetaConfig(stickiness=0.25),
+            SignMagnitudeBetaConfig(),
+            LeftMiddleRightBetaConfig(),
+            StickyLeftMiddleRightBetaConfig(stickiness=0.25),
+            BangZeroBangConfig(),
+            StickyBangZeroBangConfig(stickiness=0.25),
+        )
+        action_space = HybridActionSpace([
+            ("actions", spaces.Box(-1.0, 1.0, shape=(2, 2), dtype=np.float32)),
+        ])
+        previous_actions = torch.zeros(3, 2, 2)
+        agent_mask = torch.tensor([
+            [True, True],
+            [True, False],
+            [True, True],
+        ])
+
+        for config in configs:
+            with self.subTest(config=type(config).__name__):
+                torch._dynamo.reset()
+                try:
+                    torch.manual_seed(123)
+                    eager_dist = HybridActionDistribution(
+                        latent_dim=4,
+                        action_space=action_space,
+                        continuous_config=config,
+                        action_net_initialization=init_linear_orthogonal,
+                    )
+                    torch.manual_seed(123)
+                    compiled_dist = HybridActionDistribution(
+                        latent_dim=4,
+                        action_space=action_space,
+                        continuous_config=config,
+                        action_net_initialization=init_linear_orthogonal,
+                    )
+                    self.assertTrue(eager_dist.compile_friendly)
+                    self.assertTrue(compiled_dist.compile_friendly)
+                    eager_dist.set_all_ent_loss_coefs(0.2)
+                    compiled_dist.set_all_ent_loss_coefs(0.2)
+
+                    def compiled_actor(latent_pi: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+                        return compiled_dist.get_actions_with_log_probs(
+                            latent_pi,
+                            deterministic=True,
+                            previous_actions=previous_actions,
+                            use_rsample=False,
+                        )
+
+                    compiled_actor_fn = _compile_with_eager_backend(
+                        compiled_actor,
+                        fullgraph=True,
+                        dynamic=False,
+                    )
+                    latent_pi = torch.randn(3, 2, 4)
+                    for latent_offset in (0.0, 0.25):
+                        current_latent = latent_pi + latent_offset
+                        eager_actions, eager_log_probs = eager_dist.get_actions_with_log_probs(
+                            current_latent,
+                            deterministic=True,
+                            previous_actions=previous_actions,
+                            use_rsample=False,
+                        )
+                        compiled_actions, compiled_log_probs = compiled_actor_fn(current_latent)
+                        torch.testing.assert_close(compiled_actions, eager_actions)
+                        torch.testing.assert_close(compiled_log_probs, eager_log_probs)
+
+                        eager_losses = eager_dist.compute_extra_losses_without_metrics(
+                            agent_mask=agent_mask,
+                        )
+                        compiled_losses = compiled_dist.compute_extra_losses_without_metrics(
+                            agent_mask=agent_mask,
+                        )
+                        self.assertEqual(compiled_losses.keys(), eager_losses.keys())
+                        self.assertTrue(compiled_losses)
+                        for name in compiled_losses:
+                            torch.testing.assert_close(compiled_losses[name], eager_losses[name])
+                finally:
+                    torch._dynamo.reset()
+
     def test_entropy_update_handles_neutral_kumaraswamy_config_family(self) -> None:
         action_space = HybridActionSpace([
             ("actuators", spaces.Box(-1.0, 1.0, shape=(2, 3), dtype=np.float32)),
