@@ -114,7 +114,11 @@ class MLSTMCell(nn.Module):
             *,
             valid_mask: torch.Tensor | None = None,
             reset_mask: torch.Tensor | None = None,
-    ) -> tuple[torch.Tensor, MLSTMCellState]:
+            state_output_indices: torch.Tensor | None = None,
+    ) -> (
+        tuple[torch.Tensor, MLSTMCellState]
+        | tuple[torch.Tensor, MLSTMCellState, MLSTMCellState]
+    ):
         if queries.ndim != 3:
             raise ValueError(f"Expected queries shape (B, T, H), got {tuple(queries.shape)}")
 
@@ -206,8 +210,18 @@ class MLSTMCell(nn.Module):
         hidden = self.output_norm(hidden).transpose(1, 2).reshape(batch_size, sequence_length, self.hidden_dim)
         if valid_mask is not None:
             hidden = hidden.masked_fill(~valid_mask.unsqueeze(-1), 0.0)
-        return hidden, (
+        final_state = (
             c_sequence[:, :, -1].contiguous(),
             n_sequence[:, :, -1].contiguous(),
             safe_normalizer_log_scale[:, :, -1].contiguous(),
         )
+        if state_output_indices is not None:
+            batch_indices = state_output_indices[:, 0]
+            time_indices = state_output_indices[:, 1]
+            selected_states = (
+                c_sequence[batch_indices, :, time_indices].contiguous(),
+                n_sequence[batch_indices, :, time_indices].contiguous(),
+                safe_normalizer_log_scale[batch_indices, :, time_indices].contiguous(),
+            )
+            return hidden, final_state, selected_states
+        return hidden, final_state

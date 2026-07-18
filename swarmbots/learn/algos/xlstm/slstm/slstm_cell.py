@@ -18,7 +18,6 @@ class SLSTMCellConfig:
     bias_init: Literal["powerlaw", "small_init", "zeros", "standard"] = "powerlaw"
     forget_bias_init_start: float = 3.0
     forget_bias_init_end: float = 6.0
-    eps: float = 1e-6
 
 
 class SLSTMCell(nn.Module):
@@ -115,13 +114,18 @@ class SLSTMCell(nn.Module):
 
         log_forget = F.logsigmoid(forget_preact)
         m_candidate = torch.maximum(input_preact, stabilizer_heads + log_forget)
+        # The NXAI reference special-cases an all-zero initial normalizer. Applying it per row
+        # preserves the same stabilization when individual RL episodes reset inside a batch.
         m_new = torch.where(normalizer_heads == 0.0, input_preact, m_candidate)
         input_gate = torch.minimum(torch.exp(input_preact - m_new), torch.ones_like(input_preact))
         forget_gate = torch.minimum(torch.exp(stabilizer_heads + log_forget - m_new), torch.ones_like(forget_preact))
 
         cell_new = forget_gate * cell_heads + input_gate * torch.tanh(cell_preact)
-        normalizer_new = forget_gate * normalizer_heads + input_gate
-        hidden_new = torch.sigmoid(output_preact) * cell_new / (normalizer_new + self.config.eps)
+        normalizer_new = torch.maximum(
+            forget_gate * normalizer_heads + input_gate,
+            torch.ones_like(normalizer_heads),
+        )
+        hidden_new = torch.sigmoid(output_preact) * cell_new / normalizer_new
 
         hidden_new = hidden_new.reshape(batch_size, self.hidden_dim)
         return hidden_new, (

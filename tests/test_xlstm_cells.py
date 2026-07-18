@@ -1,4 +1,5 @@
 from itertools import product
+from unittest.mock import patch
 
 import pytest
 import torch
@@ -13,6 +14,7 @@ from swarmbots.learn.algos.xlstm.mlstm import (
 from swarmbots.learn.algos.xlstm.temporal_utils import reset_state, select_state
 from swarmbots.learn.algos.xlstm.slstm.slstm_cell import SLSTMCell, SLSTMCellConfig
 from swarmbots.learn.algos.xlstm.slstm import SLSTMTemporalSequenceModel, SLSTMTemporalSequenceModelConfig
+from swarmbots.learn.temporal_state import index_temporal_state_batch_time, stack_temporal_states
 
 
 @pytest.mark.parametrize(
@@ -35,10 +37,16 @@ def test_xlstm_temporal_sequence_matches_explicit_step_flow(
         [True, False, False, False, True],
     ])
 
-    sequence_output, sequence_state = model(inputs, reset_mask=reset_mask)
+    state_output_indices = torch.tensor([[0, 1], [1, 4], [0, 3]])
+    sequence_output, sequence_state, selected_states = model(
+        inputs,
+        reset_mask=reset_mask,
+        state_output_indices=state_output_indices,
+    )
 
     step_state = model.initial_state(batch_size=inputs.shape[0], device=inputs.device, dtype=inputs.dtype)
     step_outputs = []
+    step_states = []
     for time_idx in range(inputs.shape[1]):
         step_output, step_state = model(
             inputs[:, time_idx:time_idx + 1],
@@ -46,10 +54,83 @@ def test_xlstm_temporal_sequence_matches_explicit_step_flow(
             reset_mask=reset_mask[:, time_idx:time_idx + 1],
         )
         step_outputs.append(step_output[:, 0])
+        step_states.append(step_state)
 
     torch.testing.assert_close(sequence_output, torch.stack(step_outputs, dim=1))
     for sequence_tensor, step_tensor in zip(sequence_state, step_state, strict=True):
         torch.testing.assert_close(sequence_tensor, step_tensor)
+    expected_state_sequence = stack_temporal_states(step_states, dim=1)
+    expected_selected_states = index_temporal_state_batch_time(
+        expected_state_sequence,
+        state_output_indices,
+    )
+    for selected_tensor, expected_tensor in zip(selected_states, expected_selected_states, strict=True):
+        torch.testing.assert_close(selected_tensor, expected_tensor)
+
+
+def test_slstm_projects_the_full_sequence_once() -> None:
+    model = SLSTMTemporalSequenceModel(
+        hidden_dim=8,
+        config=SLSTMTemporalSequenceModelConfig(num_heads=2),
+    )
+    inputs = torch.randn(3, 5, 8)
+
+    with patch.object(
+            model.input_projection,
+            "forward",
+            wraps=model.input_projection.forward,
+    ) as projection_forward:
+        model(inputs)
+
+    projection_forward.assert_called_once()
+    assert projection_forward.call_args.args[0].shape == inputs.shape
+
+
+def test_slstm_can_compile_its_recurrent_step() -> None:
+    with patch(
+            "swarmbots.learn.algos.xlstm.slstm.slstm_temporal_sequence_model.torch.compile",
+            side_effect=lambda function, **_kwargs: function,
+    ) as compile_mock:
+        model = SLSTMTemporalSequenceModel(
+            hidden_dim=8,
+            config=SLSTMTemporalSequenceModelConfig(
+                num_heads=2,
+                compile_step=True,
+                compile_mode="default",
+            ),
+        )
+        output, _state = model(torch.randn(3, 5, 8))
+
+    assert output.shape == (3, 5, 8)
+    compile_mock.assert_called_once()
+    assert compile_mock.call_args.kwargs == {
+        "mode": "default",
+        "fullgraph": False,
+        "dynamic": True,
+    }
+
+
+def test_slstm_clamps_restored_normalizer_before_hidden_division() -> None:
+    cell = SLSTMCell(
+        hidden_dim=1,
+        config=SLSTMCellConfig(
+            num_heads=1,
+            recurrent_weight_init="zeros",
+            bias_init="zeros",
+        ),
+    )
+    gate_inputs = torch.tensor([[-10.0, 10.0, 0.0, 0.0]])
+    restored_state = (
+        torch.zeros(1, 1),
+        torch.full((1, 1), 2.0),
+        torch.full((1, 1), 0.25),
+        torch.zeros(1, 1),
+    )
+
+    output, state = cell(gate_inputs, restored_state)
+
+    torch.testing.assert_close(state[2], torch.ones(1, 1))
+    torch.testing.assert_close(output, torch.ones(1, 1), atol=1e-4, rtol=1e-4)
 
 
 @pytest.mark.parametrize(

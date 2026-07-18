@@ -574,6 +574,7 @@ def run_experiment(
         rmat_temporal_residual: bool = False,
         rmat_temporal_layer_norm: bool = False,
         rmat_use_temporal_output_projection: bool = True,
+        rmat_experimental_compile_lstm: bool = False,
         total_timesteps: int = 100_000_000,
         sac_learning_rate: float = 3e-4,
         sac_ent_coef_learning_rate: float | None = 1e-3,
@@ -586,6 +587,7 @@ def run_experiment(
         sac_recurrent_learning_steps: int = 64,
         sac_temporal_state_store_interval: int = 32,
         sac_temporal_state_storage_dtype: torch.dtype | None = None,
+        sac_max_truncations_per_segment: int = 1,
         bernoulli_initial_prob: float = 0.8,
 ) -> None:
     from swarmbots.learn.torch_logging import enable_torch_compile_logging
@@ -657,9 +659,9 @@ def run_experiment(
     stickiness_anneal_steps = 15_000_000
     gsde_init_stds = [0.25, 0.30]
 
-    compile_policy_modules = not recurrent_sac_policy
+    compile_policy_modules = True
     policy_compile_mode = "default"
-    compile_world_model_modules = not recurrent_sac_policy
+    compile_world_model_modules = True
 
     sac_learning_starts = max(10_000, rollout_samples * 4)
     resolved_sac_batch_size = rollout_samples if sac_batch_size is None else sac_batch_size
@@ -875,6 +877,7 @@ def run_experiment(
         rmat_temporal_residual=rmat_temporal_residual,
         rmat_temporal_layer_norm=rmat_temporal_layer_norm,
         rmat_use_temporal_output_projection=rmat_use_temporal_output_projection,
+        rmat_experimental_compile_lstm=rmat_experimental_compile_lstm,
         assume_agent_mask_is_active_prefix=not shuffle_agents or preserve_inactive_prefix_structure,
         bernoulli_initial_prob=bernoulli_initial_prob,
     )
@@ -943,6 +946,7 @@ def run_experiment(
                 "learning_steps": sac_recurrent_learning_steps,
                 "temporal_state_store_interval": sac_temporal_state_store_interval,
                 "temporal_state_storage_dtype": sac_temporal_state_storage_dtype,
+                "max_truncations_per_segment": sac_max_truncations_per_segment,
             }
         sac_algorithm_cls = RecurrentSAC if recurrent_sac_policy else SAC
         algorithm = sac_algorithm_cls(
@@ -1238,6 +1242,7 @@ def run_experiment(
                 {
                     "sac_recurrent_burn_in_steps": sac_recurrent_burn_in_steps,
                     "sac_recurrent_learning_steps": sac_recurrent_learning_steps,
+                    "sac_max_truncations_per_segment": sac_max_truncations_per_segment,
                     "sac_temporal_state_store_interval": sac_temporal_state_store_interval,
                     "sac_temporal_state_storage_dtype": str(sac_temporal_state_storage_dtype),
                 }
@@ -1438,6 +1443,7 @@ def _make_base_policy(
         rmat_temporal_residual: bool = False,
         rmat_temporal_layer_norm: bool = False,
         rmat_use_temporal_output_projection: bool = True,
+        rmat_experimental_compile_lstm: bool = False,
         assume_agent_mask_is_active_prefix: bool = False,
         bernoulli_initial_prob: float = 0.8,
 ) -> (
@@ -1598,6 +1604,7 @@ def _make_base_policy(
                 env=env,
                 config=RecurrentTMASACPolicyConfig(
                     recurrent_critic=False,
+                    experimental_compile_lstm=rmat_experimental_compile_lstm,
                     **tmasac_config_kwargs,
                 ),
             )

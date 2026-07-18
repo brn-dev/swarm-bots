@@ -43,7 +43,10 @@ class _IdentityTemporalSequenceModel(TemporalSequenceModel):
             valid_mask: torch.Tensor | None = None,
             initial_state: object | None = None,
             reset_mask: torch.Tensor | None = None,
-    ) -> tuple[torch.Tensor, None]:
+            state_output_indices: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, None] | tuple[torch.Tensor, None, None]:
+        if state_output_indices is not None:
+            return inputs, None, None
         return inputs, None
 
 

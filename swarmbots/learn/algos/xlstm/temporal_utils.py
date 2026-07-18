@@ -36,6 +36,5 @@ def select_state(
 ) -> tuple[torch.Tensor, ...]:
     return tuple(
         torch.where(valid_t.reshape(-1, *([1] * (next_item.ndim - 1))), next_item, previous_item)
-        for next_item, previous_item in zip(next_state, previous_state, strict=True)
+        for next_item, previous_item in zip(next_state, previous_state)
     )
-

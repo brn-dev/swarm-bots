@@ -39,6 +39,16 @@ def index_temporal_state(
     return _map_temporal_state(state, lambda tensor: tensor[indices])
 
 
+def index_temporal_state_batch_time(
+        state: TemporalState,
+        indices: torch.Tensor,
+) -> TemporalState:
+    return _map_temporal_state(
+        state,
+        lambda tensor: tensor[indices[:, 0], indices[:, 1]],
+    )
+
+
 def copy_temporal_state_rows_(
         target: TemporalState,
         source: TemporalState,
@@ -69,7 +79,7 @@ def copy_temporal_state_rows_(
 
 
 def flatten_temporal_state_batch_agents(state: TemporalState) -> TemporalState:
-    return _map_temporal_state(state, lambda tensor: tensor.flatten(0, 1))
+    return _flatten_temporal_state_first_two_dimensions(state)
 
 
 def unflatten_temporal_state_batch_agents(
@@ -84,7 +94,18 @@ def unflatten_temporal_state_batch_agents(
     )
 
 
+def stack_temporal_states(states: Sequence[TemporalState], *, dim: int) -> TemporalState:
+    return _combine_temporal_states(states, lambda tensors: torch.stack(tensors, dim=dim))
+
+
 def concatenate_temporal_states(states: Sequence[TemporalState]) -> TemporalState:
+    return _combine_temporal_states(states, lambda tensors: torch.cat(tensors, dim=0))
+
+
+def _combine_temporal_states(
+        states: Sequence[TemporalState],
+        tensor_fn: Callable[[Sequence[torch.Tensor]], torch.Tensor],
+) -> TemporalState:
     if not states:
         raise ValueError("Expected at least one temporal state")
 
@@ -94,20 +115,20 @@ def concatenate_temporal_states(states: Sequence[TemporalState]) -> TemporalStat
             raise ValueError("Temporal states must either all be None or all contain state")
         return None
     if torch.is_tensor(first):
-        return torch.cat(states, dim=0)
+        return tensor_fn(states)
     if isinstance(first, tuple):
         return tuple(
-            concatenate_temporal_states([state[idx] for state in states])
+            _combine_temporal_states([state[idx] for state in states], tensor_fn)
             for idx in range(len(first))
         )
     if isinstance(first, list):
         return [
-            concatenate_temporal_states([state[idx] for state in states])
+            _combine_temporal_states([state[idx] for state in states], tensor_fn)
             for idx in range(len(first))
         ]
     if isinstance(first, Mapping):
         return type(first)(
-            (key, concatenate_temporal_states([state[key] for state in states]))
+            (key, _combine_temporal_states([state[key] for state in states], tensor_fn))
             for key in first
         )
     raise TypeError(f"Unsupported temporal state item: {type(first).__name__}")
@@ -128,3 +149,7 @@ def _map_temporal_state(
     if isinstance(state, Mapping):
         return type(state)((key, _map_temporal_state(value, tensor_fn)) for key, value in state.items())
     raise TypeError(f"Unsupported temporal state item: {type(state).__name__}")
+
+
+def _flatten_temporal_state_first_two_dimensions(state: TemporalState) -> TemporalState:
+    return _map_temporal_state(state, lambda tensor: tensor.flatten(0, 1))

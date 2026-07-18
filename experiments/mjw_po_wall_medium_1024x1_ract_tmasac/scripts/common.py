@@ -57,7 +57,7 @@ def run_experiment(
         sac_ent_coef="auto_0.05",
         sac_target_entropy="auto_0.1",
         sac_batch_size=16,
-        sac_buffer_capacity_per_env=160,
+        sac_buffer_capacity_per_env=1024,
         sac_recurrent_burn_in_steps=32,
         sac_recurrent_learning_steps=64,
         sac_temporal_state_store_interval=16,

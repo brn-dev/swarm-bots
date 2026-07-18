@@ -472,6 +472,7 @@ def test_recurrent_tmasac_run_experiment_wires_recurrent_replay_and_actor_layout
         rmat_actor_d_model=64,
         rmat_actor_transformer_ff_hidden_dims=[128],
         rmat_actor_inter_module_mlp=True,
+        rmat_experimental_compile_lstm=True,
         sac_batch_size=16,
         sac_buffer_capacity_per_env=160,
         sac_recurrent_burn_in_steps=32,
@@ -484,8 +485,9 @@ def test_recurrent_tmasac_run_experiment_wires_recurrent_replay_and_actor_layout
     base_policy_kwargs = capture["base_policy_kwargs"]
     assert isinstance(base_policy_kwargs, dict)
     assert base_policy_kwargs["policy_variant"] == "r_tmasac"
-    assert base_policy_kwargs["compile_policy_modules"] is False
-    assert base_policy_kwargs["compile_world_model_modules"] is False
+    assert base_policy_kwargs["compile_policy_modules"] is True
+    assert base_policy_kwargs["compile_world_model_modules"] is True
+    assert base_policy_kwargs["rmat_experimental_compile_lstm"] is True
     assert base_policy_kwargs["rmat_actor_d_model"] == 64
     assert base_policy_kwargs["rmat_actor_transformer_ff_hidden_dims"] == [128]
     assert base_policy_kwargs["rmat_actor_inter_module_mlp"] is True
@@ -498,6 +500,7 @@ def test_recurrent_tmasac_run_experiment_wires_recurrent_replay_and_actor_layout
     assert recurrent_sac_kwargs["learning_steps"] == 64
     assert recurrent_sac_kwargs["temporal_state_store_interval"] == 32
     assert recurrent_sac_kwargs["temporal_state_storage_dtype"] is torch.float16
+    assert recurrent_sac_kwargs["max_truncations_per_segment"] == 1
     assert recurrent_sac_kwargs["independent_nop_sampling"] is False
 
     learn_kwargs = capture["learn_kwargs"]
