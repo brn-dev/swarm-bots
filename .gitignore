@@ -9,6 +9,7 @@ plot_logs/.plot_logs_recent_config.json
 .old/recording/videos/
 _docs
 uv.lock
+.ref/flashrnn-main
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

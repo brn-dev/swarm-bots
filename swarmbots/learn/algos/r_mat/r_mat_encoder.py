@@ -148,7 +148,11 @@ class RMATEncoderLayer(nn.Module):
             time_mask: torch.Tensor | None,
             initial_state: TemporalModelState | None,
             reset_mask: torch.Tensor | None,
-    ) -> tuple[torch.Tensor, TemporalModelState]:
+            state_output_indices: torch.Tensor | None = None,
+    ) -> (
+        tuple[torch.Tensor, TemporalModelState]
+        | tuple[torch.Tensor, TemporalModelState, TemporalModelState]
+    ):
         batch_size, sequence_length, n_agents, hidden_dim = embeddings.shape
         valid_agent_time_mask = _combine_agent_time_mask(
             agent_mask=agent_mask,
@@ -161,11 +165,16 @@ class RMATEncoderLayer(nn.Module):
 
         hidden = embeddings
         if self.temporal_model_order == "temporal_first":
-            hidden, next_state = self._temporal_block(
+            temporal_result = self._temporal_block(
                 hidden,
                 valid_agent_time_mask=valid_agent_time_mask,
                 initial_state=initial_state,
                 reset_mask=reset_mask,
+                state_output_indices=state_output_indices,
+            )
+            hidden, next_state, selected_state = _unpack_temporal_result(
+                temporal_result,
+                has_state_output=state_output_indices is not None,
             )
             hidden = self._apply_inter_module_feedforward(hidden, valid_agent_time_mask=valid_agent_time_mask)
             hidden = self._inter_agent_attention_block(
@@ -180,11 +189,16 @@ class RMATEncoderLayer(nn.Module):
                 valid_agent_time_mask=valid_agent_time_mask,
             )
             hidden = self._apply_inter_module_feedforward(hidden, valid_agent_time_mask=valid_agent_time_mask)
-            hidden, next_state = self._temporal_block(
+            temporal_result = self._temporal_block(
                 hidden,
                 valid_agent_time_mask=valid_agent_time_mask,
                 initial_state=initial_state,
                 reset_mask=reset_mask,
+                state_output_indices=state_output_indices,
+            )
+            hidden, next_state, selected_state = _unpack_temporal_result(
+                temporal_result,
+                has_state_output=state_output_indices is not None,
             )
 
         hidden = self._feedforward_block(
@@ -194,6 +208,8 @@ class RMATEncoderLayer(nn.Module):
             dropout=self.feedforward_dropout,
         )
         hidden = _mask_invalid_agent_time(hidden, valid_agent_time_mask)
+        if state_output_indices is not None:
+            return hidden.contiguous(), next_state, selected_state
         return hidden.contiguous(), next_state
 
     def _inter_agent_attention_block(
@@ -232,7 +248,11 @@ class RMATEncoderLayer(nn.Module):
             valid_agent_time_mask: torch.Tensor | None,
             initial_state: TemporalModelState | None,
             reset_mask: torch.Tensor | None,
-    ) -> tuple[torch.Tensor, TemporalModelState]:
+            state_output_indices: torch.Tensor | None = None,
+    ) -> (
+        tuple[torch.Tensor, TemporalModelState]
+        | tuple[torch.Tensor, TemporalModelState, TemporalModelState]
+    ):
         batch_size, sequence_length, n_agents, hidden_dim = embeddings.shape
         temporal_inputs = self.temporal_norm(embeddings) if self.temporal_layer_norm and self.norm_first else embeddings
 
@@ -250,11 +270,16 @@ class RMATEncoderLayer(nn.Module):
             temporal_reset_mask = reset_mask.unsqueeze(1).expand(batch_size, n_agents, sequence_length)
             temporal_reset_mask = temporal_reset_mask.reshape(batch_size * n_agents, sequence_length)
 
-        temporal_model_outputs, next_state = self.temporal_model(
+        temporal_result = self.temporal_model(
             flat_temporal_inputs,
             valid_mask=temporal_valid_mask,
             initial_state=initial_state,
             reset_mask=temporal_reset_mask,
+            state_output_indices=state_output_indices,
+        )
+        temporal_model_outputs, next_state, selected_state = _unpack_temporal_result(
+            temporal_result,
+            has_state_output=state_output_indices is not None,
         )
         temporal_model_outputs = self.temporal_output_projection(temporal_model_outputs)
         temporal_model_outputs = temporal_model_outputs.reshape(
@@ -269,7 +294,10 @@ class RMATEncoderLayer(nn.Module):
             outputs = temporal_model_outputs
         if self.temporal_layer_norm and not self.norm_first:
             outputs = self.temporal_norm(outputs)
-        return _mask_invalid_agent_time(outputs, valid_agent_time_mask), next_state
+        outputs = _mask_invalid_agent_time(outputs, valid_agent_time_mask)
+        if state_output_indices is not None:
+            return outputs, next_state, selected_state
+        return outputs, next_state
 
     def _apply_inter_module_feedforward(
             self,
@@ -408,7 +436,11 @@ class RMATEncoder(nn.Module):
             time_mask: torch.Tensor | None = None,
             initial_state: RMATEncoderState | None = None,
             reset_mask: torch.Tensor | None = None,
-    ) -> tuple[torch.Tensor, RMATEncoderState]:
+            state_output_indices: torch.Tensor | None = None,
+    ) -> (
+        tuple[torch.Tensor, RMATEncoderState]
+        | tuple[torch.Tensor, RMATEncoderState, RMATEncoderState]
+    ):
         local_obs, global_obs, agent_mask, time_mask, reset_mask, squeeze_time = self._normalize_inputs(
             local_obs=local_obs,
             global_obs=global_obs,
@@ -449,13 +481,22 @@ class RMATEncoder(nn.Module):
             device=local_obs.device,
             dtype=embeddings.dtype,
         )
+        flat_state_output_indices = _expand_state_output_indices(
+            state_output_indices,
+            n_agents=n_agents,
+        )
 
-        hidden, flat_next_states = self._apply_layers(
+        layer_result = self._apply_layers(
             embeddings,
             agent_mask=agent_mask,
             time_mask=time_mask,
             initial_states=layer_states,
             reset_mask=reset_mask,
+            state_output_indices=flat_state_output_indices,
+        )
+        hidden, flat_next_states, flat_selected_states = _unpack_temporal_result(
+            layer_result,
+            has_state_output=state_output_indices is not None,
         )
         next_states = [
             unflatten_temporal_state_batch_agents(
@@ -465,12 +506,24 @@ class RMATEncoder(nn.Module):
             )
             for next_state in flat_next_states
         ]
+        selected_states = [
+            unflatten_temporal_state_batch_agents(
+                selected_state,
+                batch_size=state_output_indices.shape[0],
+                n_agents=n_agents,
+            )
+            for selected_state in flat_selected_states
+        ] if state_output_indices is not None else []
 
         if valid_agent_time_mask is not None:
             hidden = hidden.masked_fill(~valid_agent_time_mask.unsqueeze(-1), 0.0)
 
         if squeeze_time:
+            if state_output_indices is not None:
+                return hidden[:, 0].contiguous(), next_states, selected_states
             return hidden[:, 0].contiguous(), next_states
+        if state_output_indices is not None:
+            return hidden.contiguous(), next_states, selected_states
         return hidden.contiguous(), next_states
 
     def _apply_layers(
@@ -481,23 +534,38 @@ class RMATEncoder(nn.Module):
             time_mask: torch.Tensor | None,
             initial_states: RMATEncoderState,
             reset_mask: torch.Tensor | None,
-    ) -> tuple[torch.Tensor, RMATEncoderState]:
+            state_output_indices: torch.Tensor | None,
+    ) -> (
+        tuple[torch.Tensor, RMATEncoderState]
+        | tuple[torch.Tensor, RMATEncoderState, RMATEncoderState]
+    ):
         if len(initial_states) != len(self.layers):
             raise ValueError(f"Expected {len(self.layers)} initial states, got {len(initial_states)}")
 
         next_states: RMATEncoderState = []
+        selected_states: RMATEncoderState = []
         hidden = embeddings
-        for layer, layer_state in zip(self.layers, initial_states, strict=True):
-            hidden, next_state = layer(
+        for layer, layer_state in zip(self.layers, initial_states):
+            layer_result = layer(
                 hidden,
                 agent_mask=agent_mask,
                 time_mask=time_mask,
                 initial_state=layer_state,
                 reset_mask=reset_mask,
+                state_output_indices=state_output_indices,
+            )
+            hidden, next_state, selected_state = _unpack_temporal_result(
+                layer_result,
+                has_state_output=state_output_indices is not None,
             )
             next_states.append(next_state)
+            if state_output_indices is not None:
+                selected_states.append(selected_state)
 
-        return self.norm(hidden), next_states
+        normalized_hidden = self.norm(hidden)
+        if state_output_indices is not None:
+            return normalized_hidden, next_states, selected_states
+        return normalized_hidden, next_states
 
     def _normalize_initial_state(
             self,
@@ -557,6 +625,31 @@ class RMATEncoder(nn.Module):
         if time_mask is None:
             time_mask = torch.ones((batch_size, sequence_length), dtype=torch.bool, device=local_obs.device)
         return local_obs, global_obs, agent_mask, time_mask, reset_mask, False
+
+
+def _unpack_temporal_result(
+        result: tuple[torch.Tensor, Any] | tuple[torch.Tensor, Any, Any],
+        *,
+        has_state_output: bool,
+) -> tuple[torch.Tensor, Any, Any]:
+    if has_state_output:
+        output, final_state, selected_state = result
+        return output, final_state, selected_state
+    output, final_state = result
+    return output, final_state, None
+
+
+def _expand_state_output_indices(
+        state_output_indices: torch.Tensor | None,
+        *,
+        n_agents: int,
+) -> torch.Tensor | None:
+    if state_output_indices is None:
+        return None
+    agent_indices = torch.arange(n_agents, device=state_output_indices.device)
+    flat_batch_indices = state_output_indices[:, :1] * n_agents + agent_indices.unsqueeze(0)
+    time_indices = state_output_indices[:, 1:2].expand(-1, n_agents)
+    return torch.stack((flat_batch_indices, time_indices), dim=-1).reshape(-1, 2)
 
 
 def _combine_agent_time_mask(

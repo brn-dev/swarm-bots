@@ -5,6 +5,8 @@ from typing import Any
 import torch
 from torch import nn
 
+from swarmbots.learn.temporal_state import index_temporal_state_batch_time, stack_temporal_states
+
 TemporalModelState = Any
 
 
@@ -34,7 +36,11 @@ class TemporalSequenceModel(nn.Module, abc.ABC):
             valid_mask: torch.Tensor | None = None,
             initial_state: TemporalModelState | None = None,
             reset_mask: torch.Tensor | None = None,
-    ) -> tuple[torch.Tensor, TemporalModelState]:
+            state_output_indices: torch.Tensor | None = None,
+    ) -> (
+        tuple[torch.Tensor, TemporalModelState]
+        | tuple[torch.Tensor, TemporalModelState, TemporalModelState]
+    ):
         raise NotImplementedError
 
 
@@ -97,7 +103,11 @@ class LSTMTemporalSequenceModel(TemporalSequenceModel):
             valid_mask: torch.Tensor | None = None,
             initial_state: LSTMTemporalModelState | None = None,
             reset_mask: torch.Tensor | None = None,
-    ) -> tuple[torch.Tensor, LSTMTemporalModelState]:
+            state_output_indices: torch.Tensor | None = None,
+    ) -> (
+        tuple[torch.Tensor, LSTMTemporalModelState]
+        | tuple[torch.Tensor, LSTMTemporalModelState, LSTMTemporalModelState]
+    ):
         if inputs.ndim != 3:
             raise ValueError(f"Expected inputs shape (B, T, H), got {tuple(inputs.shape)}")
 
@@ -116,15 +126,15 @@ class LSTMTemporalSequenceModel(TemporalSequenceModel):
             hidden_state, cell_state = initial_state
 
         outputs: list[torch.Tensor] = []
+        states: list[LSTMTemporalModelState] = []
         zero_output = inputs.new_zeros((batch_size, 1, self.hidden_dim))
 
         for time_idx in range(sequence_length):
             if reset_mask is not None:
                 reset_t = reset_mask[:, time_idx]
-                if torch.any(reset_t):
-                    keep_state_mask = (~reset_t).view(batch_size, 1, 1)
-                    hidden_state = hidden_state * keep_state_mask
-                    cell_state = cell_state * keep_state_mask
+                keep_state_mask = (~reset_t).view(batch_size, 1, 1)
+                hidden_state = hidden_state * keep_state_mask
+                cell_state = cell_state * keep_state_mask
 
             step_output, (next_hidden_state, next_cell_state) = self.lstm(
                 inputs[:, time_idx:time_idx + 1, :],
@@ -140,6 +150,8 @@ class LSTMTemporalSequenceModel(TemporalSequenceModel):
                 outputs.append(step_output)
                 hidden_state = next_hidden_state
                 cell_state = next_cell_state
+                if state_output_indices is not None:
+                    states.append((hidden_state, cell_state))
                 continue
 
             valid_t = valid_mask[:, time_idx]
@@ -148,8 +160,16 @@ class LSTMTemporalSequenceModel(TemporalSequenceModel):
             outputs.append(torch.where(valid_output_mask, step_output, zero_output))
             hidden_state = torch.where(valid_state_mask, next_hidden_state, hidden_state)
             cell_state = torch.where(valid_state_mask, next_cell_state, cell_state)
+            if state_output_indices is not None:
+                states.append((hidden_state, cell_state))
 
-        return torch.cat(outputs, dim=1).contiguous(), (hidden_state, cell_state)
+        output_sequence = torch.cat(outputs, dim=1).contiguous()
+        final_state = (hidden_state, cell_state)
+        if state_output_indices is not None:
+            state_sequence = stack_temporal_states(states, dim=1)
+            selected_states = index_temporal_state_batch_time(state_sequence, state_output_indices)
+            return output_sequence, final_state, selected_states
+        return output_sequence, final_state
 
     @staticmethod
     def _normalize_mask(

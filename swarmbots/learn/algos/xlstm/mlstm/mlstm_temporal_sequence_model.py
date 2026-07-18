@@ -6,6 +6,7 @@ from torch import nn
 from swarmbots.learn.algos.r_mat.temporal_sequence_model import TemporalSequenceModel
 from swarmbots.learn.algos.xlstm.temporal_utils import check_mask, check_sequence_inputs, reset_state, select_state
 from swarmbots.learn.algos.xlstm.mlstm.mlstm_cell import MLSTMCell, MLSTMCellConfig, MLSTMCellState
+from swarmbots.learn.temporal_state import index_temporal_state_batch_time, stack_temporal_states
 
 
 @dataclass(frozen=True)
@@ -54,7 +55,11 @@ class MLSTMTemporalSequenceModel(TemporalSequenceModel):
             valid_mask: torch.Tensor | None = None,
             initial_state: MLSTMCellState | None = None,
             reset_mask: torch.Tensor | None = None,
-    ) -> tuple[torch.Tensor, MLSTMCellState]:
+            state_output_indices: torch.Tensor | None = None,
+    ) -> (
+        tuple[torch.Tensor, MLSTMCellState]
+        | tuple[torch.Tensor, MLSTMCellState, MLSTMCellState]
+    ):
         batch_size, sequence_length, _ = check_sequence_inputs(inputs)
         check_mask(valid_mask, batch_size=batch_size, sequence_length=sequence_length, name="valid_mask")
         check_mask(reset_mask, batch_size=batch_size, sequence_length=sequence_length, name="reset_mask")
@@ -71,6 +76,7 @@ class MLSTMTemporalSequenceModel(TemporalSequenceModel):
                 valid_mask=valid_mask,
                 initial_state=state,
                 reset_mask=reset_mask,
+                state_output_indices=state_output_indices,
             )
 
         return self._forward_recurrent(
@@ -78,6 +84,7 @@ class MLSTMTemporalSequenceModel(TemporalSequenceModel):
             valid_mask=valid_mask,
             initial_state=state,
             reset_mask=reset_mask,
+            state_output_indices=state_output_indices,
         )
 
     def _forward_recurrent(
@@ -87,11 +94,16 @@ class MLSTMTemporalSequenceModel(TemporalSequenceModel):
             valid_mask: torch.Tensor | None,
             initial_state: MLSTMCellState,
             reset_mask: torch.Tensor | None,
-    ) -> tuple[torch.Tensor, MLSTMCellState]:
+            state_output_indices: torch.Tensor | None,
+    ) -> (
+        tuple[torch.Tensor, MLSTMCellState]
+        | tuple[torch.Tensor, MLSTMCellState, MLSTMCellState]
+    ):
         batch_size, sequence_length, _ = inputs.shape
         state = initial_state
         zero_output = inputs.new_zeros((batch_size, self.hidden_dim))
         outputs: list[torch.Tensor] = []
+        states: list[MLSTMCellState] = []
 
         for time_idx in range(sequence_length):
             if reset_mask is not None:
@@ -103,13 +115,22 @@ class MLSTMTemporalSequenceModel(TemporalSequenceModel):
             if valid_mask is None:
                 outputs.append(step_output)
                 state = next_state
+                if state_output_indices is not None:
+                    states.append(state)
                 continue
 
             valid_t = valid_mask[:, time_idx]
             outputs.append(torch.where(valid_t.unsqueeze(-1), step_output, zero_output))
             state = select_state(next_state, state, valid_t)
+            if state_output_indices is not None:
+                states.append(state)
 
-        return torch.stack(outputs, dim=1).contiguous(), state
+        output_sequence = torch.stack(outputs, dim=1).contiguous()
+        if state_output_indices is not None:
+            state_sequence = stack_temporal_states(states, dim=1)
+            selected_states = index_temporal_state_batch_time(state_sequence, state_output_indices)
+            return output_sequence, state, selected_states
+        return output_sequence, state
 
     def _forward_parallel(
             self,
@@ -118,14 +139,23 @@ class MLSTMTemporalSequenceModel(TemporalSequenceModel):
             valid_mask: torch.Tensor | None,
             initial_state: MLSTMCellState,
             reset_mask: torch.Tensor | None,
-    ) -> tuple[torch.Tensor, MLSTMCellState]:
+            state_output_indices: torch.Tensor | None,
+    ) -> (
+        tuple[torch.Tensor, MLSTMCellState]
+        | tuple[torch.Tensor, MLSTMCellState, MLSTMCellState]
+    ):
         q, k, v = self.qkv_projection(inputs).chunk(3, dim=-1)
-        output, state = self.cell.forward_sequence(
+        result = self.cell.forward_sequence(
             q,
             k,
             v,
             initial_state,
             valid_mask=valid_mask,
             reset_mask=reset_mask,
+            state_output_indices=state_output_indices,
         )
+        if state_output_indices is not None:
+            output, state, selected_states = result
+            return output.contiguous(), state, selected_states
+        output, state = result
         return output.contiguous(), state
