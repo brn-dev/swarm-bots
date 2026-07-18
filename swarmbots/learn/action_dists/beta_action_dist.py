@@ -92,7 +92,11 @@ class BetaActionDist(ActionDist):
         raw = self.output_net(latent_pi).view(*latent_pi.shape[:-1], self.action_dim, self._OUTPUTS_PER_ACTION)
         alpha = 1.0 + F.softplus(raw[..., 0])
         beta = 1.0 + F.softplus(raw[..., 1])
-        self.distribution = torchdist.Beta(concentration1=alpha, concentration0=beta)
+        self.distribution = torchdist.Beta(
+            concentration1=alpha,
+            concentration0=beta,
+            validate_args=False,
+        )
         return self
 
     def sample(

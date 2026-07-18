@@ -23,9 +23,6 @@ class DiagGaussianActionDist(ContinuousActionDist):
             action_net_initialization: ActionNetInitialization = init_linear_orthogonal,
             ent_loss_coef: float = 0.0,
             ent_loss_config: EntropyLossConfig | None = None,
-            action_magnitude_loss_coef: float = 0.0,
-            action_magnitude_loss_threshold: float = 0.0,
-            action_magnitude_loss_power: int = 2,
     ):
         super().__init__(
             latent_dim=latent_dim,
@@ -33,9 +30,6 @@ class DiagGaussianActionDist(ContinuousActionDist):
             action_net_initialization=action_net_initialization,
             ent_loss_coef=ent_loss_coef,
             ent_loss_config=ent_loss_config,
-            action_magnitude_loss_coef=action_magnitude_loss_coef,
-            action_magnitude_loss_threshold=action_magnitude_loss_threshold,
-            action_magnitude_loss_power=action_magnitude_loss_power,
         )
         self.std_learnable = std_learnable
 
@@ -59,7 +53,11 @@ class DiagGaussianActionDist(ContinuousActionDist):
             self.log_stds += math.log(multiplier)
 
     def update_distribution_params(self, means: torch.Tensor, log_stds: torch.Tensor) -> Self:
-        self.distribution = torchdist.Normal(loc=means, scale=torch.exp(log_stds))
+        self.distribution = torchdist.Normal(
+            loc=means,
+            scale=torch.exp(log_stds),
+            validate_args=False,
+        )
         return self
 
     def sample(
@@ -89,15 +87,10 @@ class DiagGaussianActionDist(ContinuousActionDist):
             agent_mask=agent_mask,
             action_splitter=action_splitter,
         )
-        action_magnitude_loss, action_magnitude_metrics = self.compute_action_magnitude_loss(
-            agent_mask=agent_mask
-        )
         losses: LossDict = {}
         if ent_loss is not None:
             losses["entropy"] = ent_loss
-        if action_magnitude_loss is not None:
-            losses["action_magnitude"] = action_magnitude_loss
-        return losses, {**ent_loss_metrics, **action_magnitude_metrics}
+        return losses, ent_loss_metrics
 
     def get_hyper_parameters(self) -> dict[str, Any]:
         std_tensor = torch.exp(self.log_stds.detach())

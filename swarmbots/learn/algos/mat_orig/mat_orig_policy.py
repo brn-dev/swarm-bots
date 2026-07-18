@@ -624,16 +624,6 @@ class MATOrigPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
                 raise ValueError(f"act{idx}_ent_loss_coef must be >= 0, got {value}")
             self.action_dist.set_sub_ent_loss_coef(idx, value)
 
-        action_magnitude_weight = self._pop_loss_weight_alias(
-            remaining_weights,
-            aliases=("action_magnitude_loss_coef", "action_magnitude"),
-        )
-        if action_magnitude_weight is not None:
-            alias, value = action_magnitude_weight
-            if value < 0:
-                raise ValueError(f"{alias} must be >= 0, got {value}")
-            self.action_dist.set_action_magnitude_loss_coef(value)
-
         entropy_weight = self._pop_loss_weight_alias(
             remaining_weights,
             aliases=("ent_loss_coef", "entropy", "ent"),

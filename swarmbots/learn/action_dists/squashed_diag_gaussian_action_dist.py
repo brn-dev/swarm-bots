@@ -18,9 +18,6 @@ class SquashedDiagGaussianConfig:
     epsilon: float = 1e-6
     ent_loss_coef: float = 0.0
     ent_loss_config: EntropyLossConfig = field(default_factory=EntropyLossConfig)
-    action_magnitude_loss_coef: float = 0.0
-    action_magnitude_loss_threshold: float = 0.0
-    action_magnitude_loss_power: int = 2
 
 
 # Inspired by
@@ -36,9 +33,6 @@ class SquashedDiagGaussianActionDist(DiagGaussianActionDist):
             action_net_initialization: ActionNetInitialization = init_linear_orthogonal,
             ent_loss_coef: float = 0.0,
             ent_loss_config: EntropyLossConfig | None = None,
-            action_magnitude_loss_coef: float = 0.0,
-            action_magnitude_loss_threshold: float = 0.0,
-            action_magnitude_loss_power: int = 2,
     ):
         super().__init__(
             latent_dim=latent_dim,
@@ -48,9 +42,6 @@ class SquashedDiagGaussianActionDist(DiagGaussianActionDist):
             action_net_initialization=action_net_initialization,
             ent_loss_coef=ent_loss_coef,
             ent_loss_config=ent_loss_config,
-            action_magnitude_loss_coef=action_magnitude_loss_coef,
-            action_magnitude_loss_threshold=action_magnitude_loss_threshold,
-            action_magnitude_loss_power=action_magnitude_loss_power,
         )
 
         self.epsilon = epsilon
@@ -84,15 +75,10 @@ class SquashedDiagGaussianActionDist(DiagGaussianActionDist):
             agent_mask=agent_mask,
             action_splitter=action_splitter,
         )
-        action_magnitude_loss, action_magnitude_metrics = self.compute_action_magnitude_loss(
-            agent_mask=agent_mask
-        )
         losses: LossDict = {}
         if ent_loss is not None:
             losses["entropy"] = ent_loss
-        if action_magnitude_loss is not None:
-            losses["action_magnitude"] = action_magnitude_loss
-        return losses, {**ent_loss_metrics, **action_magnitude_metrics}
+        return losses, ent_loss_metrics
 
     def sample(
             self,
@@ -141,4 +127,4 @@ class SquashedDiagGaussianActionDist(DiagGaussianActionDist):
 
     @property
     def compile_friendly(self) -> bool:
-        return False
+        return True

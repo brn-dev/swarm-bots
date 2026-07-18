@@ -74,7 +74,10 @@ class StickyLeftMiddleRightBetaActionDist(LeftMiddleRightBetaActionDist, StickyA
         right_01 = self.right_beta_dist.sample()
         middle_actions = torch.empty_like(left_01).uniform_(-self.eps_c, self.eps_c)
         effective_probs = self._effective_probs(previous_actions)
-        component_indices = torchdist.Categorical(probs=effective_probs).sample()
+        component_indices = torchdist.Categorical(
+            probs=effective_probs,
+            validate_args=False,
+        ).sample()
 
         left_actions = -1.0 + self.interval_width * left_01
         right_actions = self.eps_c + self.interval_width * right_01

@@ -1,11 +1,15 @@
 from collections.abc import Collection
 from dataclasses import dataclass, field, replace
-from typing import Any, Callable, cast
+from typing import Any, Callable, TypeVar, cast
 
 import torch
 from torch import nn
 from torch._dynamo import config as torch_dynamo_config
 
+from swarmbots.learn.algos.off_policy.replay_buffer import (
+    OffPolicyReplayBatch,
+    OffPolicyReplayEpisodeSegmentBatch,
+)
 from swarmbots.learn.algos.r_mat.r_mat_encoder import RMATEncoder, RMATEncoderConfig, RMATEncoderState
 from swarmbots.learn.algos.sac.sac_nop import SACNOPSequenceBatch
 from swarmbots.learn.algos.sac.tmasac_policy import (
@@ -23,6 +27,25 @@ ActorEncoderCallable = Callable[
     tuple[torch.Tensor, RMATEncoderState]
     | tuple[torch.Tensor, RMATEncoderState, RMATEncoderState],
 ]
+ActorActionSequenceCallable = Callable[
+    ...,
+    tuple[torch.Tensor, torch.Tensor, torch.Tensor, RMATEncoderState],
+]
+ActorActionSequenceWithSelectedStatesCallable = Callable[
+    ...,
+    tuple[
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+        RMATEncoderState,
+        RMATEncoderState,
+    ],
+]
+ActorActionsAndLogProbsCallable = Callable[
+    ...,
+    tuple[torch.Tensor, torch.Tensor],
+]
+ActorEntryPointT = TypeVar("ActorEntryPointT", bound=Callable[..., Any])
 
 
 @dataclass(frozen=True)
@@ -264,7 +287,14 @@ class RecurrentTMASACTwinCritic(TMASACTwinCritic):
 class RecurrentTMASACPolicy(TMASACPolicy):
     config: RecurrentTMASACPolicyConfig
     _compiled_actor_encoders: dict[int, ActorEncoderCallable]
+    _compiled_actor_action_sequences: dict[int, ActorActionSequenceCallable]
+    _compiled_actor_action_sequences_with_selected_states: dict[
+        int,
+        ActorActionSequenceWithSelectedStatesCallable,
+    ]
+    _compiled_actor_actions_and_log_probs: ActorActionsAndLogProbsCallable | None
     _actor_encoder_compilation_enabled: bool
+    _actor_end_to_end_compilation_enabled: bool
     _actor_encoder_uses_lstm: bool
 
     def __init__(
@@ -279,7 +309,11 @@ class RecurrentTMASACPolicy(TMASACPolicy):
         if config.recurrent_critic and not isinstance(config.critic_encoder_config, RMATEncoderConfig):
             raise TypeError("recurrent_critic=True requires an RMATEncoderConfig for critic_encoder_config.")
         object.__setattr__(self, "_compiled_actor_encoders", {})
+        object.__setattr__(self, "_compiled_actor_action_sequences", {})
+        object.__setattr__(self, "_compiled_actor_action_sequences_with_selected_states", {})
+        object.__setattr__(self, "_compiled_actor_actions_and_log_probs", None)
         object.__setattr__(self, "_actor_encoder_compilation_enabled", False)
+        object.__setattr__(self, "_actor_end_to_end_compilation_enabled", False)
         object.__setattr__(self, "_actor_encoder_uses_lstm", False)
         super().__init__(env=env, config=config)
 
@@ -301,51 +335,167 @@ class RecurrentTMASACPolicy(TMASACPolicy):
             not self._actor_encoder_uses_lstm
             or self.config.experimental_compile_lstm
         )
-        self.configure_actor_encoder_compilation((1,))
-        self.actor_head = self._compile_module(self.actor_head)
+        self._actor_end_to_end_compilation_enabled = (
+            self._actor_encoder_compilation_enabled
+            and self.action_dist.compile_friendly
+        )
+        self.configure_actor_compilation(
+            encoder_only_sequence_lengths=(),
+            action_sequence_lengths=(1,),
+            action_sequence_with_selected_states_lengths=(),
+        )
+        if not self._actor_end_to_end_compilation_enabled:
+            if self.action_dist.compile_friendly:
+                self._compiled_actor_actions_and_log_probs = self._compile_actor_tail_callable(
+                    self._actor_actions_and_log_probs_impl,
+                )
+            else:
+                self.actor_head = self._compile_module(self.actor_head)
         if not self.recurrent_critic:
             self.critic = self._compile_module(self.critic)
             self.critic_target = self._compile_module(self.critic_target)
 
-    def _compile_recurrent_module(self, module: nn.Module) -> nn.Module:
-        def compile_module() -> nn.Module:
+    def _compile_actor_callable(
+            self,
+            fn: ActorEntryPointT,
+            *,
+            fullgraph: bool,
+    ) -> ActorEntryPointT:
+        def compile_callable() -> Callable[..., Any]:
             return torch.compile(
-                module,
+                fn,
                 mode=self.config.compile_mode,
-                fullgraph=True,
+                fullgraph=fullgraph,
                 dynamic=False,
             )
 
         if self._actor_encoder_uses_lstm and self.config.experimental_compile_lstm:
             with torch_dynamo_config.patch("allow_rnn", True):
-                return compile_module()
-        return compile_module()
+                return cast(ActorEntryPointT, compile_callable())
+        return cast(ActorEntryPointT, compile_callable())
 
-    def configure_actor_encoder_compilation(self, sequence_lengths: Collection[int]) -> None:
+    def _compile_actor_tail_callable(
+            self,
+            fn: ActorActionsAndLogProbsCallable,
+    ) -> ActorActionsAndLogProbsCallable:
+        return self._compile_actor_callable(
+            fn,
+            fullgraph=True,
+        )
+
+    def configure_actor_compilation(
+            self,
+            *,
+            encoder_only_sequence_lengths: Collection[int],
+            action_sequence_lengths: Collection[int],
+            action_sequence_with_selected_states_lengths: Collection[int],
+    ) -> None:
+        encoder_only_lengths = self._normalize_compiled_sequence_lengths(
+            encoder_only_sequence_lengths,
+        )
+        action_lengths = self._normalize_compiled_sequence_lengths(action_sequence_lengths)
+        selected_state_action_lengths = self._normalize_compiled_sequence_lengths(
+            action_sequence_with_selected_states_lengths,
+        )
+
+        if not self.config.compile_modules:
+            self._clear_compiled_actor_entry_points()
+            return
+
+        encoder_lengths = encoder_only_lengths
+        if not self._actor_end_to_end_compilation_enabled:
+            encoder_lengths |= action_lengths | selected_state_action_lengths
+        if self._actor_encoder_compilation_enabled:
+            self._configure_compiled_entry_points(
+                self._compiled_actor_encoders,
+                self._actor_encoder,
+                sequence_lengths=encoder_lengths,
+                fullgraph=True,
+            )
+        else:
+            self._compiled_actor_encoders.clear()
+
+        if not self._actor_end_to_end_compilation_enabled:
+            self._compiled_actor_action_sequences.clear()
+            self._compiled_actor_action_sequences_with_selected_states.clear()
+            return
+
+        self._configure_compiled_actor_action_entry_points(
+            action_sequence_lengths=action_lengths,
+            action_sequence_with_selected_states_lengths=selected_state_action_lengths,
+        )
+
+    @staticmethod
+    def _normalize_compiled_sequence_lengths(
+            sequence_lengths: Collection[int],
+    ) -> frozenset[int]:
         normalized_lengths = frozenset(int(length) for length in sequence_lengths)
         if any(length <= 0 for length in normalized_lengths):
             raise ValueError(
                 f"Compiled actor sequence lengths must be positive, got {sorted(normalized_lengths)}"
             )
+        return normalized_lengths
 
-        compiled_actor_encoders: dict[int, ActorEncoderCallable] = self._compiled_actor_encoders
-        if not self.config.compile_modules or not self._actor_encoder_compilation_enabled:
-            compiled_actor_encoders.clear()
-            return
+    def _configure_compiled_actor_action_entry_points(
+            self,
+            *,
+            action_sequence_lengths: frozenset[int],
+            action_sequence_with_selected_states_lengths: frozenset[int],
+    ) -> None:
+        self._configure_compiled_entry_points(
+            self._compiled_actor_action_sequences,
+            self._action_log_prob_sequence_impl,
+            sequence_lengths=action_sequence_lengths,
+            fullgraph=True,
+        )
+        self._configure_compiled_entry_points(
+            self._compiled_actor_action_sequences_with_selected_states,
+            self._action_log_prob_sequence_with_selected_states_impl,
+            sequence_lengths=action_sequence_with_selected_states_lengths,
+            fullgraph=True,
+        )
 
-        existing_lengths = frozenset(compiled_actor_encoders)
-        for sequence_length in normalized_lengths - existing_lengths:
-            compiled_actor_encoders[sequence_length] = self._compile_recurrent_module(self._actor_encoder)
-        for sequence_length in existing_lengths - normalized_lengths:
-            del compiled_actor_encoders[sequence_length]
+    def _configure_compiled_entry_points(
+            self,
+            compiled_entry_points: dict[int, ActorEntryPointT],
+            entry_point: ActorEntryPointT,
+            *,
+            sequence_lengths: frozenset[int],
+            fullgraph: bool,
+    ) -> None:
+        existing_lengths = frozenset(compiled_entry_points)
+        for sequence_length in sequence_lengths - existing_lengths:
+            compiled_entry_points[sequence_length] = self._compile_actor_callable(
+                entry_point,
+                fullgraph=fullgraph,
+            )
+        for sequence_length in existing_lengths - sequence_lengths:
+            del compiled_entry_points[sequence_length]
+
+    def _clear_compiled_actor_entry_points(self) -> None:
+        self._compiled_actor_encoders.clear()
+        self._compiled_actor_action_sequences.clear()
+        self._compiled_actor_action_sequences_with_selected_states.clear()
 
     @property
     def compiled_actor_sequence_lengths(self) -> frozenset[int]:
+        return frozenset(self._compiled_actor_action_sequences)
+
+    @property
+    def compiled_actor_selected_state_sequence_lengths(self) -> frozenset[int]:
+        return frozenset(self._compiled_actor_action_sequences_with_selected_states)
+
+    @property
+    def compiled_actor_encoder_sequence_lengths(self) -> frozenset[int]:
         return frozenset(self._compiled_actor_encoders)
 
     @property
     def actor_encoder_compilation_enabled(self) -> bool:
         return self._actor_encoder_compilation_enabled
+
+    @property
+    def actor_end_to_end_compilation_enabled(self) -> bool:
+        return self._actor_end_to_end_compilation_enabled
 
     @property
     def recurrent_critic(self) -> bool:
@@ -396,6 +546,30 @@ class RecurrentTMASACPolicy(TMASACPolicy):
         )
         return actions, next_state
 
+    def action_log_prob(
+            self,
+            *,
+            local_obs: torch.Tensor,
+            global_obs: torch.Tensor,
+            hidden_local_vars: torch.Tensor | None = None,
+            hidden_global_vars: torch.Tensor | None = None,
+            agent_mask: torch.Tensor | None = None,
+            previous_actions: torch.Tensor | None = None,
+            deterministic: bool = False,
+            use_rsample: bool = True,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        _ = (hidden_local_vars, hidden_global_vars)
+        actions, log_probs, _latents, _state = self.action_log_prob_sequence(
+            local_obs=local_obs,
+            global_obs=global_obs,
+            agent_mask=agent_mask,
+            previous_actions=previous_actions,
+            deterministic=deterministic,
+            use_rsample=use_rsample,
+            initial_state=None,
+        )
+        return actions, log_probs
+
     def encode_actor(
             self,
             *,
@@ -403,12 +577,11 @@ class RecurrentTMASACPolicy(TMASACPolicy):
             global_obs: torch.Tensor,
             agent_mask: torch.Tensor | None,
     ) -> torch.Tensor:
-        latents, _state = self._run_actor_encoder(
-            local_obs=local_obs,
-            global_obs=global_obs,
-            agent_mask=agent_mask,
+        _ = local_obs, global_obs, agent_mask
+        raise NotImplementedError(
+            "RecurrentTMASACPolicy does not support state-free actor encoding; "
+            "use encode_actor_sequence with an explicit recurrent state."
         )
-        return latents
 
     def action_log_prob_sequence(
             self,
@@ -423,6 +596,27 @@ class RecurrentTMASACPolicy(TMASACPolicy):
             time_mask: torch.Tensor | None = None,
             reset_mask: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, RMATEncoderState]:
+        if self._actor_end_to_end_compilation_enabled:
+            sequence_length = self._actor_sequence_length(local_obs)
+            actor_entry_point = self._compiled_actor_action_sequences.get(sequence_length)
+            if actor_entry_point is None:
+                raise RuntimeError(
+                    f"No compiled actor action entry point for sequence length {sequence_length}; "
+                    f"configured lengths are {sorted(self._compiled_actor_action_sequences)}."
+                )
+            return self._run_actor_action_entry_point(
+                actor_entry_point,
+                local_obs=local_obs,
+                global_obs=global_obs,
+                agent_mask=agent_mask,
+                previous_actions=previous_actions,
+                deterministic=deterministic,
+                use_rsample=use_rsample,
+                initial_state=initial_state,
+                time_mask=time_mask,
+                reset_mask=reset_mask,
+            )
+
         actor_latents, next_state = self.encode_actor_sequence(
             local_obs=local_obs,
             global_obs=global_obs,
@@ -460,6 +654,31 @@ class RecurrentTMASACPolicy(TMASACPolicy):
         RMATEncoderState,
         RMATEncoderState,
     ]:
+        if self._actor_end_to_end_compilation_enabled:
+            sequence_length = self._actor_sequence_length(local_obs)
+            actor_entry_point = self._compiled_actor_action_sequences_with_selected_states.get(
+                sequence_length,
+            )
+            if actor_entry_point is None:
+                raise RuntimeError(
+                    "No compiled actor action-with-selected-states entry point for sequence length "
+                    f"{sequence_length}; configured lengths are "
+                    f"{sorted(self._compiled_actor_action_sequences_with_selected_states)}."
+                )
+            return self._run_actor_action_entry_point(
+                actor_entry_point,
+                local_obs=local_obs,
+                global_obs=global_obs,
+                agent_mask=agent_mask,
+                previous_actions=previous_actions,
+                deterministic=deterministic,
+                use_rsample=use_rsample,
+                initial_state=initial_state,
+                state_output_indices=state_output_indices,
+                time_mask=time_mask,
+                reset_mask=reset_mask,
+            )
+
         actor_latents, next_state, selected_states = self.encode_actor_sequence_with_selected_states(
             local_obs=local_obs,
             global_obs=global_obs,
@@ -478,7 +697,100 @@ class RecurrentTMASACPolicy(TMASACPolicy):
         )
         return actions, log_probs, actor_latents, next_state, selected_states
 
+    def _action_log_prob_sequence_impl(
+            self,
+            *,
+            local_obs: torch.Tensor,
+            global_obs: torch.Tensor,
+            agent_mask: torch.Tensor | None,
+            previous_actions: torch.Tensor | None,
+            deterministic: bool,
+            use_rsample: bool,
+            initial_state: RMATEncoderState | None,
+            time_mask: torch.Tensor | None,
+            reset_mask: torch.Tensor | None,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, RMATEncoderState]:
+        actor_latents, next_state = self._actor_encoder(
+            local_obs,
+            global_obs,
+            agent_mask=agent_mask,
+            time_mask=time_mask,
+            initial_state=initial_state,
+            reset_mask=reset_mask,
+        )
+        actions, log_probs = self._actor_actions_and_log_probs_impl(
+            actor_latents=actor_latents,
+            agent_mask=agent_mask,
+            previous_actions=previous_actions,
+            deterministic=deterministic,
+            use_rsample=use_rsample,
+        )
+        return actions, log_probs, actor_latents, next_state
+
+    def _action_log_prob_sequence_with_selected_states_impl(
+            self,
+            *,
+            local_obs: torch.Tensor,
+            global_obs: torch.Tensor,
+            agent_mask: torch.Tensor | None,
+            previous_actions: torch.Tensor | None,
+            deterministic: bool,
+            use_rsample: bool,
+            initial_state: RMATEncoderState | None,
+            state_output_indices: torch.Tensor,
+            time_mask: torch.Tensor | None,
+            reset_mask: torch.Tensor | None,
+    ) -> tuple[
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+        RMATEncoderState,
+        RMATEncoderState,
+    ]:
+        actor_latents, next_state, selected_states = self._actor_encoder(
+            local_obs,
+            global_obs,
+            agent_mask=agent_mask,
+            time_mask=time_mask,
+            initial_state=initial_state,
+            reset_mask=reset_mask,
+            state_output_indices=state_output_indices,
+        )
+        actions, log_probs = self._actor_actions_and_log_probs_impl(
+            actor_latents=actor_latents,
+            agent_mask=agent_mask,
+            previous_actions=previous_actions,
+            deterministic=deterministic,
+            use_rsample=use_rsample,
+        )
+        return actions, log_probs, actor_latents, next_state, selected_states
+
     def _actor_actions_and_log_probs(
+            self,
+            *,
+            actor_latents: torch.Tensor,
+            agent_mask: torch.Tensor | None,
+            previous_actions: torch.Tensor | None,
+            deterministic: bool,
+            use_rsample: bool,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        if self._compiled_actor_actions_and_log_probs is not None:
+            return self._compiled_actor_actions_and_log_probs(
+                actor_latents=actor_latents,
+                agent_mask=agent_mask,
+                previous_actions=previous_actions,
+                deterministic=deterministic,
+                use_rsample=use_rsample,
+            )
+        return self._actor_actions_and_log_probs_impl(
+            actor_latents=actor_latents,
+            agent_mask=agent_mask,
+            previous_actions=previous_actions,
+            deterministic=deterministic,
+            use_rsample=use_rsample,
+        )
+
+    def _actor_actions_and_log_probs_impl(
             self,
             *,
             actor_latents: torch.Tensor,
@@ -557,7 +869,7 @@ class RecurrentTMASACPolicy(TMASACPolicy):
         tuple[torch.Tensor, RMATEncoderState]
         | tuple[torch.Tensor, RMATEncoderState, RMATEncoderState]
     ):
-        sequence_length = 1 if local_obs.ndim == 3 else local_obs.shape[1]
+        sequence_length = self._actor_sequence_length(local_obs)
         if not self._actor_encoder_compilation_enabled:
             actor_encoder = self._actor_encoder
         else:
@@ -582,10 +894,24 @@ class RecurrentTMASACPolicy(TMASACPolicy):
                 state_output_indices=state_output_indices,
             )
 
+        return self._run_with_optional_lstm_compilation(run_actor_encoder)
+
+    def _run_actor_action_entry_point(
+            self,
+            entry_point: Callable[..., Any],
+            **kwargs: Any,
+    ) -> Any:
+        return self._run_with_optional_lstm_compilation(lambda: entry_point(**kwargs))
+
+    def _run_with_optional_lstm_compilation(self, fn: Callable[[], Any]) -> Any:
         if self._actor_encoder_uses_lstm and self.config.experimental_compile_lstm:
             with torch_dynamo_config.patch("allow_rnn", True):
-                return run_actor_encoder()
-        return run_actor_encoder()
+                return fn()
+        return fn()
+
+    @staticmethod
+    def _actor_sequence_length(local_obs: torch.Tensor) -> int:
+        return 1 if local_obs.ndim == 3 else int(local_obs.shape[1])
 
     def q_values_sequence(
             self,
@@ -789,6 +1115,16 @@ class RecurrentTMASACPolicy(TMASACPolicy):
             return None, {}
         return self.actor_nop.compute_loss(source_latents=source_latents, batch=batch)
 
+    def compute_actor_nop_loss(
+            self,
+            batch: OffPolicyReplayBatch | OffPolicyReplayEpisodeSegmentBatch,
+    ) -> tuple[torch.Tensor | None, dict[str, Any]]:
+        _ = batch
+        raise NotImplementedError(
+            "RecurrentTMASACPolicy NOP loss requires sequence-aware actor latents; "
+            "RecurrentSAC uses compute_actor_nop_loss_from_latents."
+        )
+
     def compute_critic_nop_loss_from_latents(
             self,
             *,
@@ -807,9 +1143,18 @@ class RecurrentTMASACPolicy(TMASACPolicy):
         hyper_parameters["tmasac_policy_config"]["actor_encoder_compilation_enabled"] = (
             self.actor_encoder_compilation_enabled
         )
+        hyper_parameters["tmasac_policy_config"]["actor_end_to_end_compilation_enabled"] = (
+            self.actor_end_to_end_compilation_enabled
+        )
+        hyper_parameters["tmasac_policy_config"]["compiled_actor_encoder_sequence_lengths"] = sorted(
+            self.compiled_actor_encoder_sequence_lengths
+        )
         hyper_parameters["tmasac_policy_config"]["compiled_actor_sequence_lengths"] = sorted(
             self.compiled_actor_sequence_lengths
         )
+        hyper_parameters["tmasac_policy_config"][
+            "compiled_actor_selected_state_sequence_lengths"
+        ] = sorted(self.compiled_actor_selected_state_sequence_lengths)
         return hyper_parameters
 
     def _build_actor_encoder(

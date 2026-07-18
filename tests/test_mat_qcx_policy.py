@@ -1,5 +1,8 @@
 import shutil
 import sys
+from collections.abc import Callable
+from typing import Any
+from unittest.mock import patch
 
 import pytest
 import torch
@@ -12,6 +15,16 @@ from swarmbots.learn.algos.mat_qcx.mat_qcx_decoder import MATQCXDecoderConfig
 from swarmbots.learn.algos.mat_qcx.mat_qcx_policy import MATQCXPolicy, MATQCXPolicyConfig
 from swarmbots.learn.algos.ppo.ppo_sampler import PPOSamples
 from swarmbots.learn.hybrid_action_space import HybridActionSpace
+
+
+_REAL_TORCH_COMPILE = torch.compile
+
+
+def _compile_with_eager_backend(
+        function: Callable[..., Any],
+        **kwargs: Any,
+) -> Callable[..., Any]:
+    return _REAL_TORCH_COMPILE(function, backend="eager", **kwargs)
 
 
 class _DummyMATQCXEnv:
@@ -33,6 +46,7 @@ def _make_policy(
         assume_agent_mask_is_active_prefix: bool = False,
         add_agent_embeddings: bool = False,
         compile_modules: bool = False,
+        ent_loss_coef: float = 0.0,
 ) -> MATQCXPolicy:
     return MATQCXPolicy(
         env=_DummyMATQCXEnv(),
@@ -54,8 +68,14 @@ def _make_policy(
                 add_agent_embeddings=add_agent_embeddings,
                 assume_agent_mask_is_active_prefix=assume_agent_mask_is_active_prefix,
             ),
-            continuous_config=StickySignMagnitudeBetaConfig(stickiness=0.25),
-            bernoulli_config=BernoulliConfig(initial_prob=0.5),
+            continuous_config=StickySignMagnitudeBetaConfig(
+                stickiness=0.25,
+                ent_loss_coef=ent_loss_coef,
+            ),
+            bernoulli_config=BernoulliConfig(
+                initial_prob=0.5,
+                ent_loss_coef=ent_loss_coef,
+            ),
             max_agents=8,
             compile_modules=compile_modules,
         ),
@@ -391,6 +411,75 @@ def test_qcx_policy_compile_modules_constructs_when_supported() -> None:
     policy = _make_policy(compile_modules=True)
 
     assert policy.config.compile_modules
+
+
+def test_compiled_qc_evaluation_refreshes_distribution_state_for_extra_losses() -> None:
+    torch.manual_seed(41)
+    eager_policy = _make_policy(ent_loss_coef=0.2)
+    torch.manual_seed(41)
+    with (
+        patch(
+            "swarmbots.learn.algos.mat_qc_base_policy._ensure_torch_compile_available",
+        ),
+        patch(
+            "swarmbots.learn.algos.mat_qc_base_policy.torch.compile",
+            side_effect=_compile_with_eager_backend,
+        ),
+    ):
+        compiled_policy = _make_policy(compile_modules=True, ent_loss_coef=0.2)
+
+        batch_size = 3
+        local_obs = torch.randn(batch_size, _DummyMATQCXEnv.n_agents, _DummyMATQCXEnv.local_obs_dim)
+        global_obs = torch.randn(batch_size, _DummyMATQCXEnv.global_obs_dim)
+        hidden_local_vars = torch.randn(
+            batch_size,
+            _DummyMATQCXEnv.n_agents,
+            _DummyMATQCXEnv.hidden_local_vars_dim,
+        )
+        hidden_global_vars = torch.randn(batch_size, _DummyMATQCXEnv.hidden_global_vars_dim)
+        agent_mask = torch.tensor([
+            [False, True, True, False, True],
+            [True, True, False, False, True],
+            [True, False, True, True, False],
+        ])
+        actions = _random_valid_actions(batch_size)
+
+        for observation_offset in (0.0, 0.25):
+            samples = _make_samples(
+                local_obs=local_obs + observation_offset,
+                global_obs=global_obs - observation_offset,
+                hidden_local_vars=hidden_local_vars,
+                hidden_global_vars=hidden_global_vars,
+                agent_mask=agent_mask,
+                actions=actions,
+            )
+            eager_outputs = eager_policy.evaluate_actions(samples)
+            compiled_outputs = compiled_policy.evaluate_actions(samples)
+            torch.testing.assert_close(compiled_outputs[0], eager_outputs[0])
+            torch.testing.assert_close(compiled_outputs[1], eager_outputs[1])
+            compiled_losses = compiled_outputs[2]
+            eager_losses = eager_outputs[2]
+            assert compiled_losses.keys() == eager_losses.keys()
+            assert compiled_losses
+            for name in compiled_losses:
+                torch.testing.assert_close(compiled_losses[name], eager_losses[name])
+
+        compiled_total_loss = (
+            compiled_outputs[0].mean()
+            + compiled_outputs[1].mean()
+            + torch.stack(tuple(compiled_outputs[2].values())).sum()
+        )
+        compiled_total_loss.backward()
+        action_dist_gradients = [
+            parameter.grad
+            for parameter in compiled_policy.action_dist.parameters()
+            if parameter.requires_grad
+        ]
+        assert any(gradient is not None for gradient in action_dist_gradients)
+        assert all(
+            gradient is None or torch.isfinite(gradient).all()
+            for gradient in action_dist_gradients
+        )
 
 
 def test_qcx_policy_can_use_identity_action_encoder() -> None:

@@ -137,7 +137,10 @@ class SignMagnitudeActionDist(ActionDist):
     ) -> torch.Tensor:
         _ = agent
         self._assert_ready()
-        component_indices = torchdist.Categorical(probs=self._component_probs(previous_actions)).sample()
+        component_indices = torchdist.Categorical(
+            probs=self._component_probs(previous_actions),
+            validate_args=False,
+        ).sample()
         negative_magnitudes, positive_magnitudes = self._sample_independent_magnitudes()
         return self._select_actions(component_indices, negative_magnitudes, positive_magnitudes)
 

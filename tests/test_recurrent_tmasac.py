@@ -1,12 +1,23 @@
+import math
 import unittest
+from collections.abc import Callable
+from contextlib import nullcontext
 from dataclasses import replace
+from typing import Any
 from unittest.mock import Mock, patch
 
 import torch
 from gymnasium import spaces
 from gymnasium.vector import AutoresetMode, SyncVectorEnv
 
+from swarmbots.learn.action_dists.gumbel_softmax_sign_magnitude_action_dist import (
+    GumbelSoftmaxSignMagnitudeBetaConfig,
+)
+from swarmbots.learn.action_dists.hybrid_action_dist import ContinuousActionDistConfigInput
 from swarmbots.learn.action_dists.predicted_std_action_dist import PredictedStdConfig
+from swarmbots.learn.action_dists.reparameterized_squashed_gaussian_mixture_action_dist import (
+    ReparameterizedSquashedGaussianMixtureConfig,
+)
 from swarmbots.learn.algos.mat.mat_encoder import MATEncoder, MATEncoderConfig
 from swarmbots.learn.algos.off_policy.replay_buffer import OffPolicyReplayEpisodeSegmentBatch
 from swarmbots.learn.algos.r_mat.r_mat_encoder import RMATEncoder, RMATEncoderConfig
@@ -40,8 +51,38 @@ from swarmbots.learn.algos.world_modeling.next_obs_pred_mixin import NextObsPred
 from swarmbots.learn.env_wrappers.learn_wrappers.swarm_bots_learn_env_wrapper import SwarmBotsLearnEnvWrapper
 from swarmbots.learn.exponential_moving_average import ExponentialMovingAverage
 from swarmbots.learn.hybrid_action_space import HybridActionSpace
+from swarmbots.learn.summary_statistics import SummaryStatistics
 from swarmbots.learn.testing_env import TestingSwarmBotsEnv
 from swarmbots.learn.temporal_state import index_temporal_state_batch_time, stack_temporal_states
+
+
+_REAL_TORCH_COMPILE = torch.compile
+
+
+def _make_recording_eager_compile(
+        compiled_graphs: list[torch.fx.GraphModule],
+) -> Callable[..., Any]:
+    def eager_backend(
+            graph_module: torch.fx.GraphModule,
+            _example_inputs: list[torch.Tensor],
+            **_kwargs: Any,
+    ) -> Callable[..., Any]:
+        compiled_graphs.append(graph_module)
+        return graph_module.forward
+
+    def compile_with_eager_backend(
+            function: Callable[..., Any],
+            **kwargs: Any,
+    ) -> Callable[..., Any]:
+        return _REAL_TORCH_COMPILE(function, backend=eager_backend, **kwargs)
+
+    return compile_with_eager_backend
+
+
+def _summary_mean(value: object) -> float:
+    assert isinstance(value, SummaryStatistics)
+    assert isinstance(value.mean, float)
+    return value.mean
 
 
 class _DummyContinuousEnv:
@@ -72,6 +113,7 @@ def _encoder_config(
 def _policy_config(
         encoder_config: RMATEncoderConfig,
         *,
+        continuous_config: ContinuousActionDistConfigInput | None = None,
         recurrent_critic: bool = False,
         critic_encoder_config: MATEncoderConfig | None = None,
         nop_config: SACNOPConfig | None = None,
@@ -95,7 +137,11 @@ def _policy_config(
             n_local_projection_hidden_layers=1,
             n_value_regressor_hidden_layers=1,
         ),
-        continuous_config=PredictedStdConfig(base_std=0.5),
+        continuous_config=(
+            PredictedStdConfig(base_std=0.5)
+            if continuous_config is None
+            else continuous_config
+        ),
         recurrent_critic=recurrent_critic,
         nop_config=SACNOPConfig() if nop_config is None else nop_config,
     )
@@ -199,47 +245,66 @@ def _perform_short_recurrent_update(
         recurrent_critic: bool = False,
         nop_config: SACNOPConfig | None = None,
         max_steps: int = 20,
+        compile_modules: bool = False,
+        continuous_config: ContinuousActionDistConfigInput | None = None,
+        use_slstm: bool = False,
 ) -> tuple[dict[str, object], int]:
     env = _make_env(max_steps=max_steps)
     try:
-        policy = RecurrentTMASACPolicy(
-            env=env,
-            config=_policy_config(
-                _encoder_config(
-                    LSTMTemporalSequenceModel,
-                    LSTMTemporalSequenceModelConfig(),
-                ),
-                recurrent_critic=recurrent_critic,
-                nop_config=nop_config,
-            ),
+        temporal_model_class = SLSTMTemporalSequenceModel if use_slstm else LSTMTemporalSequenceModel
+        temporal_model_config = (
+            SLSTMTemporalSequenceModelConfig(num_heads=2)
+            if use_slstm
+            else LSTMTemporalSequenceModelConfig()
         )
-        algorithm = RecurrentSAC(
-            policy=policy,
-            env=env,
-            burn_in_steps=2,
-            learning_steps=3,
-            temporal_state_store_interval=1,
-            max_truncations_per_segment=2,
-            buffer_capacity_per_env=16,
-            learning_starts=5,
-            batch_size=2,
-            rollout_steps_per_iteration=1,
-            gradient_steps=1,
-            replay_storage_device="cpu",
-            train_device="cpu",
-            rollout_device="cpu",
-        )
-        episode_return_ema = ExponentialMovingAverage(alpha=0.1)
-        episode_success_rate_ema = ExponentialMovingAverage(alpha=0.1)
-
-        metrics: dict[str, object] = {}
-        for _ in range(5):
-            metrics, _steps = algorithm.perform_iteration(
-                episode_return_ema,
-                episode_success_rate_ema,
-                update_ema=True,
+        compile_context = (
+            patch(
+                "swarmbots.learn.algos.sac.tmasac_policy.torch.compile",
+                side_effect=_make_recording_eager_compile([]),
             )
-        return metrics, algorithm.n_total_updates
+            if compile_modules
+            else nullcontext()
+        )
+        with compile_context:
+            policy = RecurrentTMASACPolicy(
+                env=env,
+                config=replace(
+                    _policy_config(
+                        _encoder_config(temporal_model_class, temporal_model_config),
+                        recurrent_critic=recurrent_critic,
+                        nop_config=nop_config,
+                        continuous_config=continuous_config,
+                    ),
+                    compile_modules=compile_modules,
+                ),
+            )
+            algorithm = RecurrentSAC(
+                policy=policy,
+                env=env,
+                burn_in_steps=2,
+                learning_steps=3,
+                temporal_state_store_interval=1,
+                max_truncations_per_segment=2,
+                buffer_capacity_per_env=16,
+                learning_starts=5,
+                batch_size=2,
+                rollout_steps_per_iteration=1,
+                gradient_steps=1,
+                replay_storage_device="cpu",
+                train_device="cpu",
+                rollout_device="cpu",
+            )
+            episode_return_ema = ExponentialMovingAverage(alpha=0.1)
+            episode_success_rate_ema = ExponentialMovingAverage(alpha=0.1)
+
+            metrics: dict[str, object] = {}
+            for _ in range(5):
+                metrics, _steps = algorithm.perform_iteration(
+                    episode_return_ema,
+                    episode_success_rate_ema,
+                    update_ema=True,
+                )
+            return metrics, algorithm.n_total_updates
     finally:
         env.close()
 
@@ -297,10 +362,32 @@ class RecurrentTMASACTests(unittest.TestCase):
         self.assertIsInstance(policy.critic, RecurrentTMASACTwinCritic)
         self.assertIsInstance(policy.critic_target, RecurrentTMASACTwinCritic)
 
-    def test_compile_modules_creates_static_full_graph_actor_encoder_entry_point(self) -> None:
+    def test_state_free_actor_and_nop_apis_are_unsupported(self) -> None:
+        policy = RecurrentTMASACPolicy(
+            env=_DummyContinuousEnv(),
+            config=_policy_config(
+                _encoder_config(SLSTMTemporalSequenceModel, SLSTMTemporalSequenceModelConfig(num_heads=2))
+            ),
+        )
+
+        with self.assertRaisesRegex(NotImplementedError, "state-free actor encoding"):
+            policy.encode_actor(
+                local_obs=torch.randn(
+                    2,
+                    _DummyContinuousEnv.n_agents,
+                    _DummyContinuousEnv.local_obs_dim,
+                ),
+                global_obs=torch.randn(2, _DummyContinuousEnv.global_obs_dim),
+                agent_mask=torch.ones(2, _DummyContinuousEnv.n_agents, dtype=torch.bool),
+            )
+        with self.assertRaisesRegex(NotImplementedError, "sequence-aware actor latents"):
+            policy.compute_actor_nop_loss(Mock())
+
+    def test_compile_modules_creates_static_actor_entry_points(self) -> None:
         config = replace(
             _policy_config(
-                _encoder_config(SLSTMTemporalSequenceModel, SLSTMTemporalSequenceModelConfig(num_heads=2))
+                _encoder_config(SLSTMTemporalSequenceModel, SLSTMTemporalSequenceModelConfig(num_heads=2)),
+                continuous_config=GumbelSoftmaxSignMagnitudeBetaConfig(),
             ),
             compile_modules=True,
         )
@@ -310,26 +397,299 @@ class RecurrentTMASACTests(unittest.TestCase):
                 side_effect=lambda module, **_kwargs: module,
         ) as compile_mock:
             policy = RecurrentTMASACPolicy(env=_DummyContinuousEnv(), config=config)
+            policy.configure_actor_compilation(
+                encoder_only_sequence_lengths=(2,),
+                action_sequence_lengths=(1,),
+                action_sequence_with_selected_states_lengths=(3,),
+            )
 
         compiled_modules = {call.args[0] for call in compile_mock.call_args_list}
         self.assertIn(policy.actor_encoder, compiled_modules)
-        self.assertIn(policy.actor_head, compiled_modules)
+        self.assertNotIn(policy.actor_head, compiled_modules)
         self.assertIn(policy.critic, compiled_modules)
         self.assertIn(policy.critic_target, compiled_modules)
+        self.assertTrue(policy.actor_end_to_end_compilation_enabled)
+        self.assertEqual(policy.compiled_actor_encoder_sequence_lengths, frozenset({2}))
         self.assertEqual(policy.compiled_actor_sequence_lengths, frozenset({1}))
-        actor_encoder_compile = next(
+        self.assertEqual(policy.compiled_actor_selected_state_sequence_lengths, frozenset({3}))
+        actor_compile_calls = [
             call for call in compile_mock.call_args_list
+            if (
+                call.args[0] is policy.actor_encoder
+                or getattr(call.args[0], "__name__", "") in {
+                    "_action_log_prob_sequence_impl",
+                    "_action_log_prob_sequence_with_selected_states_impl",
+                }
+            )
+        ]
+        self.assertEqual(len(actor_compile_calls), 3)
+        encoder_compile_call = next(
+            call for call in actor_compile_calls
             if call.args[0] is policy.actor_encoder
         )
         self.assertEqual(
-            actor_encoder_compile.kwargs,
+            encoder_compile_call.kwargs,
             {"mode": "default", "fullgraph": True, "dynamic": False},
         )
+        for actor_compile_call in actor_compile_calls:
+            if actor_compile_call is encoder_compile_call:
+                continue
+            self.assertEqual(
+                actor_compile_call.kwargs,
+                {"mode": "default", "fullgraph": True, "dynamic": False},
+            )
+
+    def test_full_graph_slstm_encoder_matches_eager_forward_and_gradients(self) -> None:
+        compiled_graphs: list[torch.fx.GraphModule] = []
+
+        encoder_config = _encoder_config(
+            SLSTMTemporalSequenceModel,
+            SLSTMTemporalSequenceModelConfig(num_heads=2),
+        )
+        eager_policy = RecurrentTMASACPolicy(
+            env=_DummyContinuousEnv(),
+            config=_policy_config(encoder_config),
+        )
+        compiled_config = replace(
+            _policy_config(encoder_config),
+            compile_modules=True,
+        )
+        with patch(
+                "swarmbots.learn.algos.sac.tmasac_policy.torch.compile",
+                side_effect=_make_recording_eager_compile(compiled_graphs),
+        ):
+            compiled_policy = RecurrentTMASACPolicy(
+                env=_DummyContinuousEnv(),
+                config=compiled_config,
+            )
+            compiled_policy.configure_actor_compilation(
+                encoder_only_sequence_lengths=(3,),
+                action_sequence_lengths=(),
+                action_sequence_with_selected_states_lengths=(),
+            )
+
+        compiled_policy.actor_encoder.load_state_dict(eager_policy.actor_encoder.state_dict())
+        local_obs = torch.randn(
+            2,
+            3,
+            _DummyContinuousEnv.n_agents,
+            _DummyContinuousEnv.local_obs_dim,
+        )
+        global_obs = torch.randn(2, 3, _DummyContinuousEnv.global_obs_dim)
+        agent_mask = torch.tensor([
+            [[True, True, True], [True, False, True], [True, True, False]],
+            [[True, True, False], [True, True, True], [False, True, True]],
+        ])
+        reset_mask = torch.tensor([
+            [True, False, False],
+            [False, True, False],
+        ])
+        state_output_indices = torch.tensor([[0, 1], [1, 2]])
+
+        eager_outputs = eager_policy.encode_actor_sequence_with_selected_states(
+            local_obs=local_obs,
+            global_obs=global_obs,
+            agent_mask=agent_mask,
+            initial_state=None,
+            state_output_indices=state_output_indices,
+            reset_mask=reset_mask,
+        )
+        compiled_outputs = compiled_policy.encode_actor_sequence_with_selected_states(
+            local_obs=local_obs,
+            global_obs=global_obs,
+            agent_mask=agent_mask,
+            initial_state=None,
+            state_output_indices=state_output_indices,
+            reset_mask=reset_mask,
+        )
+        compiled_policy.encode_actor_sequence_with_selected_states(
+            local_obs=local_obs + 0.5,
+            global_obs=global_obs - 0.5,
+            agent_mask=agent_mask,
+            initial_state=None,
+            state_output_indices=state_output_indices,
+            reset_mask=reset_mask,
+        )
+        self.assertEqual(len(compiled_graphs), 1)
+
+        eager_latents, eager_final_state, eager_selected_states = eager_outputs
+        compiled_latents, compiled_final_state, compiled_selected_states = compiled_outputs
+        torch.testing.assert_close(compiled_latents, eager_latents)
+        for compiled_state, eager_state in (
+                (compiled_final_state, eager_final_state),
+                (compiled_selected_states, eager_selected_states),
+        ):
+            for compiled_layer, eager_layer in zip(compiled_state, eager_state, strict=True):
+                for compiled_tensor, eager_tensor in zip(compiled_layer, eager_layer, strict=True):
+                    torch.testing.assert_close(compiled_tensor, eager_tensor)
+
+        eager_loss = eager_latents.square().mean() + sum(
+            tensor.square().mean()
+            for state in (eager_final_state, eager_selected_states)
+            for layer in state
+            for tensor in layer
+        )
+        compiled_loss = compiled_latents.square().mean() + sum(
+            tensor.square().mean()
+            for state in (compiled_final_state, compiled_selected_states)
+            for layer in state
+            for tensor in layer
+        )
+        eager_loss.backward()
+        compiled_loss.backward()
+        for (eager_name, eager_parameter), (compiled_name, compiled_parameter) in zip(
+                eager_policy.actor_encoder.named_parameters(),
+                compiled_policy.actor_encoder.named_parameters(),
+                strict=True,
+        ):
+            self.assertEqual(compiled_name, eager_name)
+            if eager_parameter.grad is None or compiled_parameter.grad is None:
+                self.assertIsNone(eager_parameter.grad)
+                self.assertIsNone(compiled_parameter.grad)
+                continue
+            torch.testing.assert_close(compiled_parameter.grad, eager_parameter.grad)
+
+    def test_full_graph_slstm_gumbel_beta_actor_matches_eager_forward_and_gradients(self) -> None:
+        compiled_graphs: list[torch.fx.GraphModule] = []
+        encoder_config = _encoder_config(
+            SLSTMTemporalSequenceModel,
+            SLSTMTemporalSequenceModelConfig(num_heads=2),
+        )
+        eager_config = _policy_config(
+            encoder_config,
+            continuous_config=GumbelSoftmaxSignMagnitudeBetaConfig(ent_loss_coef=0.1),
+        )
+        eager_policy = RecurrentTMASACPolicy(
+            env=_DummyContinuousEnv(),
+            config=eager_config,
+        )
+        with patch(
+                "swarmbots.learn.algos.sac.tmasac_policy.torch.compile",
+                side_effect=_make_recording_eager_compile(compiled_graphs),
+        ):
+            compiled_policy = RecurrentTMASACPolicy(
+                env=_DummyContinuousEnv(),
+                config=replace(eager_config, compile_modules=True),
+            )
+            compiled_policy.configure_actor_compilation(
+                encoder_only_sequence_lengths=(),
+                action_sequence_lengths=(),
+                action_sequence_with_selected_states_lengths=(3,),
+            )
+
+        compiled_policy.actor_encoder.load_state_dict(eager_policy.actor_encoder.state_dict())
+        compiled_policy.actor_head.load_state_dict(eager_policy.actor_head.state_dict())
+        compiled_policy.action_dist.load_state_dict(eager_policy.action_dist.state_dict())
+        local_obs = torch.randn(
+            2,
+            3,
+            _DummyContinuousEnv.n_agents,
+            _DummyContinuousEnv.local_obs_dim,
+        )
+        global_obs = torch.randn(2, 3, _DummyContinuousEnv.global_obs_dim)
+        agent_mask = torch.tensor([
+            [[True, True, True], [True, False, True], [True, True, False]],
+            [[True, True, False], [True, True, True], [False, True, True]],
+        ])
+        previous_actions = torch.randn(
+            2,
+            3,
+            _DummyContinuousEnv.n_agents,
+            _DummyContinuousEnv.action_space.total_agent_action_dim,
+        ).clamp(-0.9, 0.9)
+        reset_mask = torch.tensor([
+            [True, False, False],
+            [False, True, False],
+        ])
+        state_output_indices = torch.tensor([[0, 1], [1, 2]])
+
+        call_kwargs = {
+            "local_obs": local_obs,
+            "global_obs": global_obs,
+            "agent_mask": agent_mask,
+            "previous_actions": previous_actions,
+            "deterministic": False,
+            "use_rsample": True,
+            "initial_state": None,
+            "state_output_indices": state_output_indices,
+            "reset_mask": reset_mask,
+        }
+        torch.manual_seed(123)
+        eager_outputs = eager_policy.action_log_prob_sequence_with_selected_states(**call_kwargs)
+        torch.manual_seed(123)
+        compiled_outputs = compiled_policy.action_log_prob_sequence_with_selected_states(**call_kwargs)
+
+        for compiled_tensor, eager_tensor in zip(compiled_outputs[:3], eager_outputs[:3], strict=True):
+            torch.testing.assert_close(compiled_tensor, eager_tensor)
+        for compiled_state, eager_state in (
+                (compiled_outputs[3], eager_outputs[3]),
+                (compiled_outputs[4], eager_outputs[4]),
+        ):
+            for compiled_layer, eager_layer in zip(compiled_state, eager_state, strict=True):
+                for compiled_tensor, eager_tensor in zip(compiled_layer, eager_layer, strict=True):
+                    torch.testing.assert_close(compiled_tensor, eager_tensor)
+
+        eager_extra_losses = eager_policy.action_dist.compute_extra_losses_without_metrics(
+            agent_mask=agent_mask,
+        )
+        compiled_extra_losses = compiled_policy.action_dist.compute_extra_losses_without_metrics(
+            agent_mask=agent_mask,
+        )
+        self.assertEqual(compiled_extra_losses.keys(), eager_extra_losses.keys())
+        self.assertTrue(compiled_extra_losses)
+        for name in compiled_extra_losses:
+            torch.testing.assert_close(compiled_extra_losses[name], eager_extra_losses[name])
+
+        eager_loss = (
+            sum(tensor.square().mean() for tensor in eager_outputs[:3])
+            + torch.stack(tuple(eager_extra_losses.values())).sum()
+        )
+        compiled_loss = (
+            sum(tensor.square().mean() for tensor in compiled_outputs[:3])
+            + torch.stack(tuple(compiled_extra_losses.values())).sum()
+        )
+        eager_loss.backward()
+        compiled_loss.backward()
+        for module_name in ("actor_encoder", "actor_head", "action_dist"):
+            eager_module = getattr(eager_policy, module_name)
+            compiled_module = getattr(compiled_policy, module_name)
+            for (eager_name, eager_parameter), (compiled_name, compiled_parameter) in zip(
+                    eager_module.named_parameters(),
+                    compiled_module.named_parameters(),
+                    strict=True,
+            ):
+                self.assertEqual(compiled_name, eager_name)
+                if eager_parameter.grad is None or compiled_parameter.grad is None:
+                    self.assertIsNone(eager_parameter.grad)
+                    self.assertIsNone(compiled_parameter.grad)
+                    continue
+                torch.testing.assert_close(compiled_parameter.grad, eager_parameter.grad)
+
+        updated_call_kwargs = {
+            **call_kwargs,
+            "local_obs": local_obs + 0.25,
+            "global_obs": global_obs - 0.25,
+        }
+        torch.manual_seed(456)
+        eager_policy.action_log_prob_sequence_with_selected_states(**updated_call_kwargs)
+        torch.manual_seed(456)
+        compiled_policy.action_log_prob_sequence_with_selected_states(**updated_call_kwargs)
+        updated_eager_losses = eager_policy.action_dist.compute_extra_losses_without_metrics(
+            agent_mask=agent_mask,
+        )
+        updated_compiled_losses = compiled_policy.action_dist.compute_extra_losses_without_metrics(
+            agent_mask=agent_mask,
+        )
+        self.assertEqual(updated_compiled_losses.keys(), updated_eager_losses.keys())
+        for name in updated_compiled_losses:
+            torch.testing.assert_close(updated_compiled_losses[name], updated_eager_losses[name])
+        self.assertEqual(len(compiled_graphs), 1)
 
     def test_lstm_actor_encoder_compilation_is_opt_in(self) -> None:
         config = replace(
             _policy_config(
-                _encoder_config(LSTMTemporalSequenceModel, LSTMTemporalSequenceModelConfig())
+                _encoder_config(LSTMTemporalSequenceModel, LSTMTemporalSequenceModelConfig()),
+                continuous_config=GumbelSoftmaxSignMagnitudeBetaConfig(),
             ),
             compile_modules=True,
         )
@@ -342,9 +702,19 @@ class RecurrentTMASACTests(unittest.TestCase):
 
         compiled_modules = {call.args[0] for call in compile_mock.call_args_list}
         self.assertNotIn(policy.actor_encoder, compiled_modules)
-        self.assertIn(policy.actor_head, compiled_modules)
+        self.assertNotIn(policy.actor_head, compiled_modules)
         self.assertFalse(policy.actor_encoder_compilation_enabled)
+        self.assertFalse(policy.actor_end_to_end_compilation_enabled)
+        self.assertEqual(policy.compiled_actor_encoder_sequence_lengths, frozenset())
         self.assertEqual(policy.compiled_actor_sequence_lengths, frozenset())
+        actor_tail_compile = next(
+            call for call in compile_mock.call_args_list
+            if getattr(call.args[0], "__name__", "") == "_actor_actions_and_log_probs_impl"
+        )
+        self.assertEqual(
+            actor_tail_compile.kwargs,
+            {"mode": "default", "fullgraph": True, "dynamic": False},
+        )
         actor_latents, _state = policy.encode_actor_sequence(
             local_obs=torch.randn(
                 2,
@@ -358,10 +728,34 @@ class RecurrentTMASACTests(unittest.TestCase):
         )
         self.assertEqual(actor_latents.shape[:3], (2, 3, _DummyContinuousEnv.n_agents))
 
+    def test_non_compile_friendly_action_dist_keeps_distribution_outside_compiled_graph(self) -> None:
+        config = replace(
+            _policy_config(
+                _encoder_config(SLSTMTemporalSequenceModel, SLSTMTemporalSequenceModelConfig(num_heads=2)),
+                continuous_config=ReparameterizedSquashedGaussianMixtureConfig(),
+            ),
+            compile_modules=True,
+        )
+
+        with patch(
+                "swarmbots.learn.algos.sac.tmasac_policy.torch.compile",
+                side_effect=lambda module, **_kwargs: module,
+        ) as compile_mock:
+            policy = RecurrentTMASACPolicy(env=_DummyContinuousEnv(), config=config)
+
+        compiled_modules = {call.args[0] for call in compile_mock.call_args_list}
+        self.assertIn(policy.actor_encoder, compiled_modules)
+        self.assertIn(policy.actor_head, compiled_modules)
+        self.assertFalse(policy.actor_end_to_end_compilation_enabled)
+        self.assertEqual(policy.compiled_actor_encoder_sequence_lengths, frozenset({1}))
+        self.assertEqual(policy.compiled_actor_sequence_lengths, frozenset())
+        self.assertEqual(policy.compiled_actor_selected_state_sequence_lengths, frozenset())
+
     def test_experimental_lstm_compilation_enables_allow_rnn_while_compiling_and_running_encoder(self) -> None:
         config = replace(
             _policy_config(
-                _encoder_config(LSTMTemporalSequenceModel, LSTMTemporalSequenceModelConfig())
+                _encoder_config(LSTMTemporalSequenceModel, LSTMTemporalSequenceModelConfig()),
+                continuous_config=GumbelSoftmaxSignMagnitudeBetaConfig(),
             ),
             compile_modules=True,
             experimental_compile_lstm=True,
@@ -369,16 +763,20 @@ class RecurrentTMASACTests(unittest.TestCase):
         allow_rnn_values: list[bool] = []
         compile_allow_rnn_values: list[bool] = []
 
-        def fake_compile(module: torch.nn.Module, **_kwargs: object) -> torch.nn.Module | Mock:
-            if not isinstance(module, RMATEncoder):
+        def fake_compile(module: object, **_kwargs: object) -> object:
+            is_recurrent_actor_callable = getattr(module, "__name__", "") in {
+                "_action_log_prob_sequence_impl",
+                "_action_log_prob_sequence_with_selected_states_impl",
+            }
+            if not isinstance(module, RMATEncoder) and not is_recurrent_actor_callable:
                 return module
             compile_allow_rnn_values.append(bool(torch._dynamo.config.allow_rnn))
 
-            def compiled_encoder(*args: object, **kwargs: object) -> object:
+            def compiled_actor_callable(*args: object, **kwargs: object) -> object:
                 allow_rnn_values.append(bool(torch._dynamo.config.allow_rnn))
                 return module(*args, **kwargs)
 
-            return Mock(wraps=compiled_encoder)
+            return Mock(wraps=compiled_actor_callable)
 
         with (
                 torch._dynamo.config.patch("allow_rnn", False),
@@ -388,6 +786,11 @@ class RecurrentTMASACTests(unittest.TestCase):
                 ),
         ):
             policy = RecurrentTMASACPolicy(env=_DummyContinuousEnv(), config=config)
+            policy.configure_actor_compilation(
+                encoder_only_sequence_lengths=(1,),
+                action_sequence_lengths=(1,),
+                action_sequence_with_selected_states_lengths=(3,),
+            )
             policy.encode_actor_sequence(
                 local_obs=torch.randn(
                     2,
@@ -398,13 +801,28 @@ class RecurrentTMASACTests(unittest.TestCase):
                 agent_mask=torch.ones(2, _DummyContinuousEnv.n_agents, dtype=torch.bool),
                 initial_state=None,
             )
+            policy.action_log_prob_sequence(
+                local_obs=torch.randn(
+                    2,
+                    _DummyContinuousEnv.n_agents,
+                    _DummyContinuousEnv.local_obs_dim,
+                ),
+                global_obs=torch.randn(2, _DummyContinuousEnv.global_obs_dim),
+                agent_mask=torch.ones(2, _DummyContinuousEnv.n_agents, dtype=torch.bool),
+                previous_actions=None,
+                deterministic=True,
+                use_rsample=False,
+                initial_state=None,
+            )
             self.assertFalse(torch._dynamo.config.allow_rnn)
 
-        self.assertEqual(compile_allow_rnn_values, [True])
-        self.assertEqual(allow_rnn_values, [True])
+        self.assertEqual(compile_allow_rnn_values, [True, True, True])
+        self.assertEqual(allow_rnn_values, [True, True])
 
     @unittest.skipUnless(torch.cuda.is_available(), "experimental nn.LSTM compilation requires CUDA")
     def test_experimental_lstm_compiled_encoder_matches_eager_forward_and_gradients(self) -> None:
+        torch._dynamo.reset()
+        self.addCleanup(torch._dynamo.reset)
         eager_config = _policy_config(
             _encoder_config(LSTMTemporalSequenceModel, LSTMTemporalSequenceModelConfig())
         )
@@ -422,7 +840,11 @@ class RecurrentTMASACTests(unittest.TestCase):
             config=compiled_config,
         ).to("cuda")
         compiled_policy.actor_encoder.load_state_dict(eager_policy.actor_encoder.state_dict())
-        compiled_policy.configure_actor_encoder_compilation((1, 3))
+        compiled_policy.configure_actor_compilation(
+            encoder_only_sequence_lengths=(1, 3),
+            action_sequence_lengths=(),
+            action_sequence_with_selected_states_lengths=(),
+        )
 
         local_obs = torch.randn(
             2,
@@ -491,20 +913,32 @@ class RecurrentTMASACTests(unittest.TestCase):
                 rtol=1e-5,
             )
 
-    def test_actor_encoder_compilation_rejects_unconfigured_sequence_lengths(self) -> None:
+    def test_actor_compilation_rejects_unconfigured_sequence_lengths(self) -> None:
         config = replace(
             _policy_config(
-                _encoder_config(SLSTMTemporalSequenceModel, SLSTMTemporalSequenceModelConfig(num_heads=2))
+                _encoder_config(SLSTMTemporalSequenceModel, SLSTMTemporalSequenceModelConfig(num_heads=2)),
+                continuous_config=GumbelSoftmaxSignMagnitudeBetaConfig(),
             ),
             compile_modules=True,
         )
         compiled_actor_encoders: list[Mock] = []
+        compiled_actor_action_sequences: list[Mock] = []
+        compiled_actor_action_sequences_with_selected_states: list[Mock] = []
 
-        def fake_compile(module: torch.nn.Module, **_kwargs: object) -> torch.nn.Module | Mock:
+        def fake_compile(module: object, **_kwargs: object) -> object:
             if isinstance(module, RMATEncoder):
                 compiled_module = Mock(wraps=module)
                 compiled_actor_encoders.append(compiled_module)
                 return compiled_module
+            callable_name = getattr(module, "__name__", "")
+            if callable_name == "_action_log_prob_sequence_impl":
+                compiled_callable = Mock(wraps=module)
+                compiled_actor_action_sequences.append(compiled_callable)
+                return compiled_callable
+            if callable_name == "_action_log_prob_sequence_with_selected_states_impl":
+                compiled_callable = Mock(wraps=module)
+                compiled_actor_action_sequences_with_selected_states.append(compiled_callable)
+                return compiled_callable
             return module
 
         with patch(
@@ -512,10 +946,18 @@ class RecurrentTMASACTests(unittest.TestCase):
                 side_effect=fake_compile,
         ):
             policy = RecurrentTMASACPolicy(env=_DummyContinuousEnv(), config=config)
-            policy.configure_actor_encoder_compilation((1, 2, 3))
+            policy.configure_actor_compilation(
+                encoder_only_sequence_lengths=(1,),
+                action_sequence_lengths=(2,),
+                action_sequence_with_selected_states_lengths=(3,),
+            )
 
-        self.assertEqual(policy.compiled_actor_sequence_lengths, frozenset({1, 2, 3}))
-        self.assertEqual(len(compiled_actor_encoders), 3)
+        self.assertEqual(policy.compiled_actor_sequence_lengths, frozenset({2}))
+        self.assertEqual(policy.compiled_actor_encoder_sequence_lengths, frozenset({1}))
+        self.assertEqual(policy.compiled_actor_selected_state_sequence_lengths, frozenset({3}))
+        self.assertEqual(len(compiled_actor_encoders), 1)
+        self.assertEqual(len(compiled_actor_action_sequences), 2)
+        self.assertEqual(len(compiled_actor_action_sequences_with_selected_states), 1)
 
         batch_size = 2
         sequence_inputs = {
@@ -532,10 +974,13 @@ class RecurrentTMASACTests(unittest.TestCase):
             for sequence_length in (2, 4)
         }
         local_obs, global_obs, agent_mask = sequence_inputs[2]
-        policy.encode_actor_sequence(
+        policy.action_log_prob_sequence(
             local_obs=local_obs,
             global_obs=global_obs,
             agent_mask=agent_mask,
+            previous_actions=None,
+            deterministic=True,
+            use_rsample=False,
             initial_state=None,
         )
         local_obs, global_obs, agent_mask = (
@@ -548,25 +993,31 @@ class RecurrentTMASACTests(unittest.TestCase):
             torch.randn(batch_size, 3, _DummyContinuousEnv.global_obs_dim),
             torch.ones(batch_size, 3, _DummyContinuousEnv.n_agents, dtype=torch.bool),
         )
-        policy.encode_actor_sequence_with_selected_states(
+        policy.action_log_prob_sequence_with_selected_states(
             local_obs=local_obs,
             global_obs=global_obs,
             agent_mask=agent_mask,
+            previous_actions=None,
+            deterministic=True,
+            use_rsample=False,
             initial_state=None,
             state_output_indices=torch.tensor([[0, 1], [1, 2]]),
         )
         local_obs, global_obs, agent_mask = sequence_inputs[4]
-        with self.assertRaisesRegex(RuntimeError, "No compiled actor encoder entry point"):
-            policy.encode_actor_sequence(
+        with self.assertRaisesRegex(RuntimeError, "No compiled actor action entry point"):
+            policy.action_log_prob_sequence(
                 local_obs=local_obs,
                 global_obs=global_obs,
                 agent_mask=agent_mask,
+                previous_actions=None,
+                deterministic=True,
+                use_rsample=False,
                 initial_state=None,
             )
 
-        self.assertEqual(policy._compiled_actor_encoders[2].call_count, 1)
         self.assertEqual(policy._compiled_actor_encoders[1].call_count, 0)
-        self.assertEqual(policy._compiled_actor_encoders[3].call_count, 1)
+        self.assertEqual(policy._compiled_actor_action_sequences[2].call_count, 1)
+        self.assertEqual(policy._compiled_actor_action_sequences_with_selected_states[3].call_count, 1)
 
     def test_recurrent_sac_configures_rollout_burn_in_and_learning_compile_lengths(self) -> None:
         env = _make_env()
@@ -579,8 +1030,8 @@ class RecurrentTMASACTests(unittest.TestCase):
             )
             with patch.object(
                     policy,
-                    "configure_actor_encoder_compilation",
-                    wraps=policy.configure_actor_encoder_compilation,
+                    "configure_actor_compilation",
+                    wraps=policy.configure_actor_compilation,
             ) as configure_mock:
                 RecurrentSAC(
                     policy=policy,
@@ -596,7 +1047,11 @@ class RecurrentTMASACTests(unittest.TestCase):
                     rollout_device="cpu",
                 )
 
-            configure_mock.assert_called_once_with({1, 2, 3})
+            configure_mock.assert_called_once_with(
+                encoder_only_sequence_lengths=(2,),
+                action_sequence_lengths=(1,),
+                action_sequence_with_selected_states_lengths=(3,),
+            )
         finally:
             env.close()
 
@@ -1657,8 +2112,39 @@ class RecurrentTMASACTests(unittest.TestCase):
                     env=env,
                     burn_in_steps=2,
                     learning_steps=3,
+                    temporal_state_store_interval=3,
+                    buffer_capacity_per_env=6,
+                    learning_starts=0,
+                    batch_size=2,
+                    replay_storage_device="cpu",
+                    train_device="cpu",
+                )
+        finally:
+            env.close()
+
+    def test_recurrent_sac_rejects_checkpoint_interval_longer_than_learning_sequence(self) -> None:
+        env = _make_env()
+        try:
+            policy = RecurrentTMASACPolicy(
+                env=env,
+                config=_policy_config(
+                    _encoder_config(
+                        LSTMTemporalSequenceModel,
+                        LSTMTemporalSequenceModelConfig(),
+                    )
+                ),
+            )
+            with self.assertRaisesRegex(
+                    ValueError,
+                    "learning_steps must be >= temporal_state_store_interval",
+            ):
+                RecurrentSAC(
+                    policy=policy,
+                    env=env,
+                    burn_in_steps=2,
+                    learning_steps=3,
                     temporal_state_store_interval=4,
-                    buffer_capacity_per_env=7,
+                    buffer_capacity_per_env=16,
                     learning_starts=0,
                     batch_size=2,
                     replay_storage_device="cpu",
@@ -1703,6 +2189,40 @@ class RecurrentTMASACTests(unittest.TestCase):
         self.assertEqual(total_updates, 1)
         self.assertIn("actor_loss", metrics)
         self.assertIn("critic_loss", metrics)
+
+    def test_compiled_recurrent_sac_update_uses_post_actor_distribution_state(self) -> None:
+        configurations = (
+            (
+                PredictedStdConfig(base_std=0.5, ent_loss_coef=0.2),
+                True,
+            ),
+            (
+                GumbelSoftmaxSignMagnitudeBetaConfig(ent_loss_coef=0.2),
+                False,
+            ),
+        )
+        for continuous_config, use_slstm in configurations:
+            with self.subTest(
+                    config=type(continuous_config).__name__,
+                    temporal_model="sLSTM" if use_slstm else "LSTM",
+            ):
+                torch._dynamo.reset()
+                try:
+                    metrics, total_updates = _perform_short_recurrent_update(
+                        compile_modules=True,
+                        continuous_config=continuous_config,
+                        use_slstm=use_slstm,
+                    )
+
+                    self.assertEqual(metrics["updates"], 1)
+                    self.assertEqual(total_updates, 1)
+                    self.assertTrue(math.isfinite(_summary_mean(metrics["actor_total_loss"])))
+                    for action_idx in range(2):
+                        metric_name = f"actor_action_dist_act{action_idx}_entropy_loss_scaled"
+                        self.assertIn(metric_name, metrics)
+                        self.assertTrue(math.isfinite(_summary_mean(metrics[metric_name])))
+                finally:
+                    torch._dynamo.reset()
 
     def test_short_recurrent_sac_nop_update_smoke(self) -> None:
         metrics, _total_updates = _perform_short_recurrent_update(

@@ -24,9 +24,6 @@ class PredictedStdConfig:
     log_std_clamp_range: tuple[float, float] = (-20.0, 2.0)
     ent_loss_coef: float = 0.0
     ent_loss_config: EntropyLossConfig = field(default_factory=EntropyLossConfig)
-    action_magnitude_loss_coef: float = 0.0
-    action_magnitude_loss_threshold: float = 0.0
-    action_magnitude_loss_power: int = 2
 
 
 class PredictedStdActionDist(ContinuousActionDist):
@@ -43,9 +40,6 @@ class PredictedStdActionDist(ContinuousActionDist):
             log_std_clamp_range: tuple[float, float] = (-20.0, 2.0),
             ent_loss_coef: float = 0.0,
             ent_loss_config: EntropyLossConfig | None = None,
-            action_magnitude_loss_coef: float = 0.0,
-            action_magnitude_loss_threshold: float = 0.0,
-            action_magnitude_loss_power: int = 2,
     ):
         super().__init__(
             latent_dim=latent_dim,
@@ -53,9 +47,6 @@ class PredictedStdActionDist(ContinuousActionDist):
             action_net_initialization=action_net_initialization,
             ent_loss_coef=ent_loss_coef,
             ent_loss_config=ent_loss_config,
-            action_magnitude_loss_coef=action_magnitude_loss_coef,
-            action_magnitude_loss_threshold=action_magnitude_loss_threshold,
-            action_magnitude_loss_power=action_magnitude_loss_power,
         )
 
         self.log_std_net = nn.Linear(latent_dim, action_dim)
@@ -86,7 +77,11 @@ class PredictedStdActionDist(ContinuousActionDist):
     ) -> Self:
         log_stds = torch.clamp(log_stds, *self.log_std_clamp_range)
         self.log_stds = log_stds
-        self.distribution = torchdist.Normal(mean_actions, log_stds.exp())
+        self.distribution = torchdist.Normal(
+            mean_actions,
+            log_stds.exp(),
+            validate_args=False,
+        )
         return self
 
     def sample(
@@ -145,15 +140,10 @@ class PredictedStdActionDist(ContinuousActionDist):
             agent_mask=agent_mask,
             action_splitter=action_splitter,
         )
-        action_magnitude_loss, action_magnitude_metrics = self.compute_action_magnitude_loss(
-            agent_mask=agent_mask
-        )
         losses: LossDict = {}
         if ent_loss is not None:
             losses["entropy"] = ent_loss
-        if action_magnitude_loss is not None:
-            losses["action_magnitude"] = action_magnitude_loss
-        return losses, {**ent_loss_metrics, **action_magnitude_metrics}
+        return losses, ent_loss_metrics
 
     def get_actions_with_log_probs(
             self,
@@ -202,4 +192,4 @@ class PredictedStdActionDist(ContinuousActionDist):
 
     @property
     def compile_friendly(self) -> bool:
-        return False
+        return True

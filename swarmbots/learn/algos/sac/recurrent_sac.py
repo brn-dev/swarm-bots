@@ -48,10 +48,11 @@ class RecurrentSAC(SAC):
         self.temporal_state_storage_dtype = temporal_state_storage_dtype
         self.max_truncations_per_segment = int(max_truncations_per_segment)
         super().__init__(policy=policy, env=env, **kwargs)
-        compiled_sequence_lengths = {1, self.learning_steps}
-        if self.burn_in_steps > 0:
-            compiled_sequence_lengths.add(self.burn_in_steps)
-        self.policy.configure_actor_encoder_compilation(compiled_sequence_lengths)
+        self.policy.configure_actor_compilation(
+            encoder_only_sequence_lengths=(self.burn_in_steps,) if self.burn_in_steps > 0 else (),
+            action_sequence_lengths=(1,),
+            action_sequence_with_selected_states_lengths=(self.learning_steps,),
+        )
 
     @property
     def replay_fill_target(self) -> int:
@@ -66,7 +67,13 @@ class RecurrentSAC(SAC):
             **super().get_hyper_parameters(),
             "burn_in_steps": self.burn_in_steps,
             "learning_steps": self.learning_steps,
+            "compiled_actor_encoder_sequence_lengths": sorted(
+                self.policy.compiled_actor_encoder_sequence_lengths
+            ),
             "compiled_actor_sequence_lengths": sorted(self.policy.compiled_actor_sequence_lengths),
+            "compiled_actor_selected_state_sequence_lengths": sorted(
+                self.policy.compiled_actor_selected_state_sequence_lengths
+            ),
             "max_truncations_per_segment": self.max_truncations_per_segment,
             "temporal_state_store_interval": self.temporal_state_store_interval,
             "temporal_state_storage_dtype": str(
@@ -616,6 +623,13 @@ class RecurrentSAC(SAC):
             raise ValueError(
                 "temporal_state_store_interval must be > 0, got "
                 f"{self.temporal_state_store_interval}"
+            )
+        if self.learning_steps < self.temporal_state_store_interval:
+            raise ValueError(
+                "learning_steps must be >= temporal_state_store_interval so checkpoint-anchored "
+                "segments cover every replay transition; "
+                f"got learning_steps={self.learning_steps}, "
+                f"temporal_state_store_interval={self.temporal_state_store_interval}"
             )
         if self.max_truncations_per_segment <= 0:
             raise ValueError(

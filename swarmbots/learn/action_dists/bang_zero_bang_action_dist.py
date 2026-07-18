@@ -59,7 +59,7 @@ class BangZeroBangActionDist(DiscreteActionDist):
 
     def update_distribution_params(self, action_logits: torch.Tensor) -> Self:
         reshaped_logits = action_logits.view(*action_logits.shape[:-1], self.agent_action_dim, 3)
-        self.distribution = torchdist.Categorical(logits=reshaped_logits)
+        self.distribution = torchdist.Categorical(logits=reshaped_logits, validate_args=False)
         return self
 
     def sample(

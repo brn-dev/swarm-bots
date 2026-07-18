@@ -144,14 +144,25 @@ class LeftMiddleRightBetaActionDist(ActionDist):
     def update_latent_features(self, latent_pi: torch.Tensor) -> Self:
         raw = self.output_net(latent_pi).view(*latent_pi.shape[:-1], self.action_dim, self._OUTPUTS_PER_ACTION)
         self.weight_logits = raw[..., :self._N_MIXTURE_COMPONENTS]
-        self.categorical_dist = torchdist.Categorical(logits=self.weight_logits)
+        self.categorical_dist = torchdist.Categorical(
+            logits=self.weight_logits,
+            validate_args=False,
+        )
 
         left_alpha = 1.0 + F.softplus(raw[..., 3])
         left_beta = 1.0 + F.softplus(raw[..., 4])
         right_alpha = 1.0 + F.softplus(raw[..., 5])
         right_beta = 1.0 + F.softplus(raw[..., 6])
-        self.left_beta_dist = torchdist.Beta(concentration1=left_alpha, concentration0=left_beta)
-        self.right_beta_dist = torchdist.Beta(concentration1=right_alpha, concentration0=right_beta)
+        self.left_beta_dist = torchdist.Beta(
+            concentration1=left_alpha,
+            concentration0=left_beta,
+            validate_args=False,
+        )
+        self.right_beta_dist = torchdist.Beta(
+            concentration1=right_alpha,
+            concentration0=right_beta,
+            validate_args=False,
+        )
         return self
 
     def sample(
