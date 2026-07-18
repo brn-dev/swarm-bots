@@ -1161,7 +1161,20 @@ class RecurrentTMASACTests(unittest.TestCase):
         env = _DummyContinuousEnv()
         local_obs = torch.randn(batch_size, sequence_length, env.n_agents, env.local_obs_dim)
         global_obs = torch.randn(batch_size, sequence_length, env.global_obs_dim)
-        agent_mask = torch.ones(batch_size, sequence_length, env.n_agents, dtype=torch.bool)
+        agent_mask = torch.tensor([
+            [
+                [True, True, True],
+                [True, False, True],
+                [True, True, False],
+                [True, True, True],
+            ],
+            [
+                [True, True, False],
+                [True, True, True],
+                [False, True, True],
+                [True, False, True],
+            ],
+        ])
         reset_mask = torch.tensor(
             [[True, False, True, False], [True, False, False, True]],
             dtype=torch.bool,

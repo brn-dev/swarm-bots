@@ -36,10 +36,16 @@ def test_xlstm_temporal_sequence_matches_explicit_step_flow(
         [True, False, True, False, False],
         [True, False, False, False, True],
     ])
+    valid_mask = torch.tensor([
+        [True, False, True, True, True],
+        [True, True, False, True, True],
+        [False, True, True, False, True],
+    ])
 
     state_output_indices = torch.tensor([[0, 1], [1, 4], [0, 3]])
     sequence_output, sequence_state, selected_states = model(
         inputs,
+        valid_mask=valid_mask,
         reset_mask=reset_mask,
         state_output_indices=state_output_indices,
     )
@@ -50,6 +56,7 @@ def test_xlstm_temporal_sequence_matches_explicit_step_flow(
     for time_idx in range(inputs.shape[1]):
         step_output, step_state = model(
             inputs[:, time_idx:time_idx + 1],
+            valid_mask=valid_mask[:, time_idx:time_idx + 1],
             initial_state=step_state,
             reset_mask=reset_mask[:, time_idx:time_idx + 1],
         )

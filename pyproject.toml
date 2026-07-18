@@ -16,7 +16,8 @@ dependencies = [
     "numpy",
     "pandas",
     "pillow",
-    "torch",
+    "torch==2.10.0+cu128 ; sys_platform == 'win32'",
+    "torch ; sys_platform != 'win32'",
 ]
 
 [project.optional-dependencies]
