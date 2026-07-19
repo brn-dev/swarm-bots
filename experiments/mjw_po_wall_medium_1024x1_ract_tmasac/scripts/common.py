@@ -24,6 +24,7 @@ from swarmbots.scenario_presets.scenario_presets_kwargs import PO_WALL_MEDIUM_SC
 EXPERIMENT_RUN_NAME = "mjw_po_wall_medium_1024x1_ract_tmasac"
 EXPERIMENT_TOTAL_TIMESTEPS = 100_000_000
 ACTOR_D_MODEL = 256
+MAT_TRANSFORMER_FF_HIDDEN_DIMS = (512, 512)
 SCENARIO_KWARGS: dict[str, object] = dict(PO_WALL_MEDIUM_SCENARIO_KWARGS)
 SCENARIO_KWARGS["continuous_connector_actions"] = True
 TemporalModelVariant = Literal["mat", "lstm", "slstm", "smlstm"]
@@ -62,6 +63,11 @@ def run_experiment(
         sac_recurrent_learning_steps=64,
         sac_temporal_state_store_interval=16,
         sac_temporal_state_storage_dtype=torch.float16,
+        mat_encoder_transformer_ff_hidden_dims=(
+            MAT_TRANSFORMER_FF_HIDDEN_DIMS
+            if temporal_model_variant == "mat"
+            else None
+        ),
         rmat_actor_d_model=ACTOR_D_MODEL,
         rmat_actor_transformer_ff_hidden_dims=transformer_ff_hidden_dims,
         rmat_actor_inter_module_mlp=inter_module_mlp,
