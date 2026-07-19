@@ -66,6 +66,7 @@ from swarmbots.learn.algos.sac.recurrent_tmasac_policy import (
 )
 from swarmbots.learn.algos.sac.sac import SAC
 from swarmbots.learn.algos.sac.sac_nop import SACNOPConfig
+from swarmbots.learn.algos.sac.segment_tmasac_policy import SegmentTMASACPolicy
 from swarmbots.learn.algos.sac.tmasac_policy import (
     TMASACActorHeadConfig,
     TMASACCriticConfig,
@@ -128,6 +129,7 @@ PolicyVariant = Literal[
     "mappo_small",
     "tmasac",
     "r_tmasac",
+    "segment_tmasac",
 ]
 MJWScenarioName = Literal[
     "wall",
@@ -271,7 +273,7 @@ def _is_recurrent_policy_variant(policy_variant: PolicyVariant) -> bool:
 
 
 def _is_sac_policy_variant(policy_variant: PolicyVariant) -> bool:
-    return policy_variant in {"tmasac", "r_tmasac"}
+    return policy_variant in {"tmasac", "r_tmasac", "segment_tmasac"}
 
 
 def _make_staggered_first_episode_lengths(*, episode_length: int, num_envs: int) -> list[int]:
@@ -634,7 +636,7 @@ def run_experiment(
         )
     recurrent_policy = _is_recurrent_policy_variant(policy_variant)
     sac_policy = _is_sac_policy_variant(policy_variant)
-    recurrent_sac_policy = policy_variant == "r_tmasac"
+    recurrent_sac_policy = policy_variant in {"r_tmasac", "segment_tmasac"}
     sampler_batch_size = num_envs if recurrent_policy else rollout_samples
     if sampler_batch_size % virtual_mini_batches != 0:
         raise ValueError(
@@ -1460,6 +1462,7 @@ def _make_base_policy(
         | RMATDecPolicy
         | TMASACPolicy
         | RecurrentTMASACPolicy
+        | SegmentTMASACPolicy
 ):
     sac_policy_variant = _is_sac_policy_variant(policy_variant)
     continuous_config = make_continuous_config(
@@ -1607,6 +1610,11 @@ def _make_base_policy(
                     experimental_compile_lstm=rmat_experimental_compile_lstm,
                     **tmasac_config_kwargs,
                 ),
+            )
+        if policy_variant == "segment_tmasac":
+            return SegmentTMASACPolicy(
+                env=env,
+                config=TMASACPolicyConfig(**tmasac_config_kwargs),
             )
         return TMASACPolicy(
             env=env,

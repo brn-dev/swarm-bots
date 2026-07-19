@@ -26,7 +26,7 @@ EXPERIMENT_TOTAL_TIMESTEPS = 100_000_000
 ACTOR_D_MODEL = 256
 SCENARIO_KWARGS: dict[str, object] = dict(PO_WALL_MEDIUM_SCENARIO_KWARGS)
 SCENARIO_KWARGS["continuous_connector_actions"] = True
-TemporalModelVariant = Literal["lstm", "slstm", "smlstm"]
+TemporalModelVariant = Literal["mat", "lstm", "slstm", "smlstm"]
 MLPLayout = Literal["small_end", "big_end", "two_small"]
 
 
@@ -35,7 +35,7 @@ def run_experiment(
         variant_name: str,
         entrypoint_path: Path,
         temporal_model_variant: TemporalModelVariant,
-        mlp_layout: MLPLayout,
+        mlp_layout: MLPLayout | None,
 ) -> None:
     temporal_model_cls, temporal_model_config = _make_temporal_model_specs(temporal_model_variant)
     transformer_ff_hidden_dims, inter_module_mlp = _make_mlp_layout(mlp_layout)
@@ -45,7 +45,7 @@ def run_experiment(
         variant_name=variant_name,
         entrypoint_path=entrypoint_path,
         continuous_action_dist="gumbel_softmax_sign_magnitude_beta",
-        policy_variant="r_tmasac",
+        policy_variant="segment_tmasac" if temporal_model_variant == "mat" else "r_tmasac",
         mat_add_agent_embeddings=False,
         nop_add_agent_embeddings_transition_model=False,
         use_nop=True,
@@ -74,6 +74,8 @@ def run_experiment(
 
 
 def _make_temporal_model_specs(variant: TemporalModelVariant) -> tuple[object | None, object | None]:
+    if variant == "mat":
+        return None, None
     if variant == "lstm":
         return None, None
     if variant == "slstm":
@@ -89,7 +91,9 @@ def _make_temporal_model_specs(variant: TemporalModelVariant) -> tuple[object | 
     raise ValueError(f"Unknown temporal_model_variant={variant!r}")
 
 
-def _make_mlp_layout(layout: MLPLayout) -> tuple[list[int], bool]:
+def _make_mlp_layout(layout: MLPLayout | None) -> tuple[list[int] | None, bool]:
+    if layout is None:
+        return None, False
     if layout == "small_end":
         return [ACTOR_D_MODEL * 2], False
     if layout == "big_end":

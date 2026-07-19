@@ -10,6 +10,7 @@ plot_logs/.plot_logs_recent_config.json
 _docs
 uv.lock
 .ref/flashrnn-main
+.uv-cache/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

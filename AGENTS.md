@@ -34,6 +34,20 @@ Don't care too much about backwards compatibility. It's better to implement some
 See [gymnasium_autoreset.md](gymnasium_autoreset.md) for NEXT_STEP auto reset which we use. You often get confused here.
 See `gymnasium_autoreset.md` or `swarmbots.learn.env_wrappers.worker_pool_async_vector_env` about how next-step auto-reset works.
 
+## Python environment
+
+The project uses uv and the existing virtual environment is `.venv`.
+
+For normal Python execution and tests, invoke the virtual environment directly:
+
+- `.\.venv\Scripts\python.exe <script>`
+- `.\.venv\Scripts\python.exe -m pytest`
+- `.\.venv\Scripts\python.exe -m ruff check .`
+
+Do not activate the environment in a separate command.
+Do not use `uv run` merely to execute tests or scripts.
+Use `uv sync`, `uv add`, and other uv commands only when managing dependencies.
+
 ## Infos
 We are using python 3.11, am planning to upgrade to 3.13 soon.  
 Do NOT ask for permission to modify files within this repo.  

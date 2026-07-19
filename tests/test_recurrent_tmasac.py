@@ -32,6 +32,7 @@ from swarmbots.learn.algos.sac import (
     SAC,
     SACNOPConfig,
     SACNOPLatentSource,
+    SegmentTMASACPolicy,
     TMASACActorHeadConfig,
     TMASACCriticConfig,
     TMASACPolicy,
@@ -167,6 +168,33 @@ def _small_nop_config(
             global_scalar_target_indices=global_scalar_target_indices,
             predict_delta=False,
         ),
+    )
+
+
+def _segment_policy_config(
+        *,
+        nop_config: SACNOPConfig | None = None,
+        ent_loss_coef: float = 0.0,
+) -> TMASACPolicyConfig:
+    encoder_config = MATEncoderConfig(
+        d_model=8,
+        nhead=2,
+        num_layers=1,
+        dim_feedforward=16,
+    )
+    return TMASACPolicyConfig(
+        actor_encoder_config=encoder_config,
+        critic_encoder_config=encoder_config,
+        actor_head_config=TMASACActorHeadConfig(hidden_dims=[8]),
+        critic_config=TMASACCriticConfig(
+            n_local_projection_hidden_layers=1,
+            n_value_regressor_hidden_layers=1,
+        ),
+        continuous_config=PredictedStdConfig(
+            base_std=0.5,
+            ent_loss_coef=ent_loss_coef,
+        ),
+        nop_config=SACNOPConfig() if nop_config is None else nop_config,
     )
 
 
@@ -309,7 +337,108 @@ def _perform_short_recurrent_update(
         env.close()
 
 
+def _perform_short_segment_update(
+        *,
+        nop_config: SACNOPConfig | None = None,
+        ent_loss_coef: float = 0.0,
+) -> tuple[dict[str, object], int]:
+    env = _make_env(max_steps=20)
+    try:
+        policy = SegmentTMASACPolicy(
+            env=env,
+            config=_segment_policy_config(
+                nop_config=nop_config,
+                ent_loss_coef=ent_loss_coef,
+            ),
+        )
+        algorithm = RecurrentSAC(
+            policy=policy,
+            env=env,
+            burn_in_steps=2,
+            learning_steps=3,
+            temporal_state_store_interval=1,
+            max_truncations_per_segment=2,
+            buffer_capacity_per_env=16,
+            learning_starts=5,
+            batch_size=2,
+            rollout_steps_per_iteration=1,
+            gradient_steps=1,
+            replay_storage_device="cpu",
+            train_device="cpu",
+            rollout_device="cpu",
+        )
+        policy.encode_actor_sequence = Mock(
+            side_effect=AssertionError("Feed-forward MAT must not execute burn-in."),
+        )
+        episode_return_ema = ExponentialMovingAverage(alpha=0.1)
+        episode_success_rate_ema = ExponentialMovingAverage(alpha=0.1)
+
+        metrics: dict[str, object] = {}
+        for _ in range(5):
+            metrics, _steps = algorithm.perform_iteration(
+                episode_return_ema,
+                episode_success_rate_ema,
+                update_ema=True,
+            )
+        return metrics, algorithm.n_total_updates
+    finally:
+        env.close()
+
+
 class RecurrentTMASACTests(unittest.TestCase):
+    def test_segment_tmasac_treats_time_as_independent_batch_rows(self) -> None:
+        policy = SegmentTMASACPolicy(
+            env=_DummyContinuousEnv(),
+            config=_segment_policy_config(),
+        )
+        batch_size = 2
+        sequence_length = 4
+        local_obs = torch.randn(batch_size, sequence_length, 3, 5)
+        global_obs = torch.randn(batch_size, sequence_length, 2)
+        agent_mask = torch.ones(batch_size, sequence_length, 3, dtype=torch.bool)
+
+        sequence_actions, sequence_log_probs, _latents, next_state = (
+            policy.action_log_prob_sequence(
+                local_obs=local_obs,
+                global_obs=global_obs,
+                agent_mask=agent_mask,
+                previous_actions=None,
+                deterministic=True,
+                use_rsample=False,
+                initial_state=torch.randn(batch_size, 1),
+            )
+        )
+        flat_actions, flat_log_probs = policy.action_log_prob(
+            local_obs=local_obs.flatten(0, 1),
+            global_obs=global_obs.flatten(0, 1),
+            agent_mask=agent_mask.flatten(0, 1),
+            deterministic=True,
+            use_rsample=False,
+        )
+
+        torch.testing.assert_close(sequence_actions.flatten(0, 1), flat_actions)
+        torch.testing.assert_close(sequence_log_probs.flatten(0, 1), flat_log_probs)
+        self.assertEqual(next_state.shape, (batch_size, 1))
+
+    def test_segment_tmasac_uses_recurrent_sac_without_temporal_actor_state(self) -> None:
+        metrics, total_updates = _perform_short_segment_update(ent_loss_coef=0.2)
+
+        self.assertEqual(metrics["updates"], 1)
+        self.assertEqual(total_updates, 1)
+        self.assertIn("actor_loss", metrics)
+        self.assertIn("critic_loss", metrics)
+        self.assertIn("actor_action_dist_act0_entropy_loss_scaled", metrics)
+
+    def test_segment_tmasac_supports_sequence_nop(self) -> None:
+        metrics, total_updates = _perform_short_segment_update(
+            nop_config=_small_nop_config(num_next_steps=2),
+        )
+
+        self.assertEqual(metrics["updates"], 1)
+        self.assertEqual(total_updates, 1)
+        self.assertIn("actor_nop_loss", metrics)
+        self.assertIn("critic_nop_loss", metrics)
+
     def test_plain_sac_rejects_recurrent_policy(self) -> None:
         env = _make_env()
         try:

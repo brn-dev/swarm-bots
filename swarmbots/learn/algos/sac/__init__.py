@@ -13,10 +13,12 @@ from swarmbots.learn.algos.sac.recurrent_tmasac_policy import (
     RecurrentTMASACPolicyConfig,
 )
 from swarmbots.learn.algos.sac.recurrent_sac import RecurrentSAC
+from swarmbots.learn.algos.sac.segment_tmasac_policy import SegmentTMASACPolicy
 
 __all__ = [
     "BaseSACPolicy",
     "RecurrentSAC",
+    "SegmentTMASACPolicy",
     "RecurrentTMASACPolicy",
     "RecurrentTMASACPolicyConfig",
     "SAC",
