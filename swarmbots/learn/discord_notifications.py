@@ -18,8 +18,8 @@ DISCORD_CONTENT_LIMIT = 2000
 DISCORD_USER_AGENT = "swarm-bots-training-notifier/0.1"
 T = TypeVar("T")
 
-_mjw_nefc_overflow_notification_lock = threading.Lock()
-_mjw_nefc_overflow_notification_keys: set[str] = set()
+_mjw_warning_notification_lock = threading.Lock()
+_mjw_warning_notification_keys: set[tuple[str, str]] = set()
 _current_run_name: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "swarmbots_discord_current_run_name",
     default=None,
@@ -126,13 +126,12 @@ def notify_mjw_nefc_overflow_once(
     if not webhook_url:
         return False
 
-    run_name = _current_run_name.get()
-    notification_key = run_name if run_name is not None else f"unscoped:{scenario_name}"
-
-    with _mjw_nefc_overflow_notification_lock:
-        if notification_key in _mjw_nefc_overflow_notification_keys:
-            return False
-        _mjw_nefc_overflow_notification_keys.add(notification_key)
+    claimed, run_name = _claim_mjw_warning_notification_once(
+        warning_type="nefc_overflow",
+        scenario_name=scenario_name,
+    )
+    if not claimed:
+        return False
 
     lines = [
         f"MJW warning: nefc overflow - please increase njmax to {required_njmax}",
@@ -143,6 +142,52 @@ def notify_mjw_nefc_overflow_once(
     ]
     content = "\n".join(lines)
     return send_discord_message(content=content, webhook_url=webhook_url)
+
+
+def notify_mjw_simulation_instability_once(
+        *,
+        scenario_name: str,
+        num_envs: int,
+        unstable_world_indices: list[int],
+) -> bool:
+    webhook_url = os.environ.get(DISCORD_WEBHOOK_ENV_VAR)
+    if not webhook_url or not unstable_world_indices:
+        return False
+
+    claimed, run_name = _claim_mjw_warning_notification_once(
+        warning_type="simulation_instability",
+        scenario_name=scenario_name,
+    )
+    if not claimed:
+        return False
+
+    displayed_indices = unstable_world_indices[:20]
+    indices_text = ", ".join(str(index) for index in displayed_indices)
+    if len(displayed_indices) < len(unstable_world_indices):
+        indices_text = f"{indices_text}, ..."
+    lines = [
+        "MJW warning: simulation instability detected",
+        f"machine: {_get_machine_name()}",
+        f"run: {run_name or 'unknown'}",
+        f"scenario: {scenario_name}",
+        f"unstable worlds: {len(unstable_world_indices)} / {num_envs} ({indices_text})",
+    ]
+    return send_discord_message(content="\n".join(lines), webhook_url=webhook_url)
+
+
+def _claim_mjw_warning_notification_once(
+        *,
+        warning_type: str,
+        scenario_name: str,
+) -> tuple[bool, str | None]:
+    run_name = _current_run_name.get()
+    run_key = run_name if run_name is not None else f"unscoped:{scenario_name}"
+    notification_key = warning_type, run_key
+    with _mjw_warning_notification_lock:
+        if notification_key in _mjw_warning_notification_keys:
+            return False, run_name
+        _mjw_warning_notification_keys.add(notification_key)
+    return True, run_name
 
 
 def _get_run_status(

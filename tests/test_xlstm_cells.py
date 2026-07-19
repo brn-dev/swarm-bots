@@ -453,6 +453,22 @@ def test_slstm_reset_state_with_large_negative_input_is_finite() -> None:
         assert torch.isfinite(state_tensor).all()
 
 
+def test_reset_state_clears_nonfinite_values_in_reset_rows() -> None:
+    state = (
+        torch.tensor([
+            [float("nan"), float("inf")],
+            [3.0, 4.0],
+            [float("nan"), float("-inf")],
+        ]),
+    )
+
+    reset = reset_state(state, torch.tensor([True, False, False]))
+
+    torch.testing.assert_close(reset[0][0], torch.zeros(2))
+    torch.testing.assert_close(reset[0][1], state[0][1])
+    torch.testing.assert_close(reset[0][2], state[0][2], equal_nan=True)
+
+
 def _run_recurrent_mlstm_cell_sequence(
         *,
         cell: MLSTMCell,

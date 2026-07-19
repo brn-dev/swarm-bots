@@ -53,6 +53,10 @@ class _FakeLiveEpisodeRecorder:
         return None
 
 
+class _FakeScenario:
+    pass
+
+
 class _ManualExecutor:
     def __init__(self) -> None:
         self.submissions: list[tuple[Callable[..., list[Any]], dict[str, Any], Future[list[Any]]]] = []
@@ -188,6 +192,81 @@ def test_mjw_step_computes_truncations_with_current_limit() -> None:
     assert torch.equal(infos["_final_obs"], torch.tensor([True, False]))
     assert len(reset_done_calls) == 1
     assert torch.equal(reset_done_calls[0], torch.tensor([True, False]))
+
+
+def test_mjw_step_terminates_worlds_with_any_nonfinite_physics_state(
+        monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env, runtime = _make_uninitialized_env(use_settled_resets=False)
+    env.scenario = _FakeScenario()
+    env.num_envs = 4
+    env._n_agents = 1
+    env._n_actuators = 1
+    env._n_connectors = 1
+    env._qpos = torch.tensor([
+        [float("nan"), 0.0],
+        [float("inf"), 0.0],
+        [0.0, 0.0],
+        [0.0, 0.0],
+    ])
+    env._qvel = torch.tensor([
+        [0.0, 0.0],
+        [0.0, 0.0],
+        [0.0, float("-inf")],
+        [0.0, 0.0],
+    ])
+    env.current_step = torch.zeros((4,), dtype=torch.long)
+    env.is_first_episode = torch.ones((4,), dtype=torch.bool)
+    env._episode_length_limit = torch.full((4,), 10, dtype=torch.long)
+    env._first_episode_length_limit = None
+    env.simulation_unstable_reward = -7.0
+    env._steps_since_nefc_overflow_check = 0
+    env._nefc_overflow_check_interval_steps = 100
+    reset_done_calls: list[torch.Tensor] = []
+    instability_notifications: list[dict[str, Any]] = []
+
+    def compute_step_rewards(*, stable_mask: torch.Tensor) -> MJWStepResult:
+        assert torch.equal(stable_mask, torch.tensor([False, False, False, True]))
+        return MJWStepResult(reward=torch.ones((4,), dtype=torch.float32), info={})
+
+    runtime.compute_step_rewards = compute_step_rewards
+    env._apply_actions = lambda *, actuators, connectors: None
+    env._run_physics = lambda: None
+    env._update_max_nefc_since_overflow_check = lambda: None
+    env._maybe_notify_nefc_overflow = lambda: None
+    env._build_obs = lambda: {
+        "local_obs": torch.ones((4, 1)),
+        "global_obs": torch.ones((4, 1)),
+        "hidden_local_vars": torch.ones((4, 1)),
+        "hidden_global_vars": torch.ones((4, 1)),
+    }
+    env._reset_done_worlds = lambda dones: reset_done_calls.append(dones.clone())
+    monkeypatch.setattr(
+        "swarmbots.mjw_env.mjw_swarm_bots_vector_env.notify_mjw_simulation_instability_once",
+        lambda **kwargs: instability_notifications.append(kwargs) or True,
+    )
+
+    _obs, rewards, terminations, truncations, infos = env.step(
+        {
+            "actuators": torch.zeros((4, 1, 1), dtype=torch.float32),
+            "connectors": torch.zeros((4, 1, 1), dtype=torch.bool),
+        }
+    )
+
+    expected_unstable = torch.tensor([True, True, True, False])
+    torch.testing.assert_close(rewards, torch.tensor([-7.0, -7.0, -7.0, 1.0]))
+    assert torch.equal(terminations, expected_unstable)
+    assert not truncations.any()
+    assert torch.equal(infos["_final_obs"], expected_unstable)
+    for final_obs in infos["final_obs"].values():
+        assert torch.equal(final_obs[:3], torch.zeros((3, 1)))
+    assert len(reset_done_calls) == 1
+    assert torch.equal(reset_done_calls[0], expected_unstable)
+    assert instability_notifications == [{
+        "scenario_name": "_FakeScenario",
+        "num_envs": 4,
+        "unstable_world_indices": [0, 1, 2],
+    }]
 
 
 def test_mjw_done_uses_ready_settled_snapshot_buffer() -> None:
