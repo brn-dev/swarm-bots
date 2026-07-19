@@ -33,11 +33,13 @@ from swarmbots.learn.action_dists.reparameterized_sign_magnitude_kumaraswamy_act
 )
 from swarmbots.learn.action_dists.predicted_std_action_dist import PredictedStdActionDist
 from swarmbots.learn.action_dists.sign_magnitude_beta_action_dist import SignMagnitudeBetaActionDist
+from swarmbots.learn.algos.mat.mat_encoder import MATEncoder
 from swarmbots.learn.algos.mat_qcs.mat_qcs_decoder import MATQCSDecoderSelfAttentionMode
 from swarmbots.learn.algos.mat_qcs.mat_qcs_policy import MATQCSPolicy
 from swarmbots.learn.algos.mat_qcx.mat_qcx_policy import MATQCXPolicy
 from swarmbots.learn.algos.r_mat.r_mat_dec_policy import RMATDecPolicy
 from swarmbots.learn.algos.sac.recurrent_tmasac_policy import RecurrentTMASACPolicy
+from swarmbots.learn.algos.sac.segment_tmasac_policy import SegmentTMASACPolicy
 from swarmbots.learn.algos.sac.tmasac_policy import TMASACPolicy
 from swarmbots.learn.env_wrappers.learn_wrappers.swarm_bots_learn_env_wrapper import (
     SwarmBotsLearnEnvWrapper,
@@ -514,6 +516,49 @@ def test_recurrent_tmasac_run_experiment_wires_recurrent_replay_and_actor_layout
     assert env.closed
 
 
+def test_segment_tmasac_run_experiment_wires_recurrent_segment_sampling(
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+) -> None:
+    capture, env = _patch_default_experiment_boundaries(monkeypatch)
+    entrypoint_path = tmp_path / "segment_tmasac_entrypoint.py"
+    entrypoint_path.write_text("# test segment TMASAC experiment\n", encoding="utf-8")
+
+    experiment_common.run_experiment(
+        num_envs=4,
+        rollout_steps_per_env=1,
+        variant_name="segment-tmasac-contract",
+        entrypoint_path=entrypoint_path,
+        policy_variant="segment_tmasac",
+        sac_batch_size=16,
+        sac_buffer_capacity_per_env=160,
+        sac_recurrent_burn_in_steps=32,
+        sac_recurrent_learning_steps=64,
+        sac_temporal_state_store_interval=16,
+        total_timesteps=16,
+    )
+
+    base_policy_kwargs = capture["base_policy_kwargs"]
+    assert isinstance(base_policy_kwargs, dict)
+    assert base_policy_kwargs["policy_variant"] == "segment_tmasac"
+
+    recurrent_sac_kwargs = capture["recurrent_sac_kwargs"]
+    assert isinstance(recurrent_sac_kwargs, dict)
+    assert recurrent_sac_kwargs["batch_size"] == 16
+    assert recurrent_sac_kwargs["burn_in_steps"] == 32
+    assert recurrent_sac_kwargs["learning_steps"] == 64
+    assert recurrent_sac_kwargs["temporal_state_store_interval"] == 16
+
+    learn_kwargs = capture["learn_kwargs"]
+    assert isinstance(learn_kwargs, dict)
+    metadata = learn_kwargs["extra_run_metadata"]
+    assert isinstance(metadata, dict)
+    assert metadata["algorithm_variant"] == "sac"
+    assert metadata["policy_variant"] == "segment_tmasac"
+    assert metadata["sac_recurrent_learning_steps"] == 64
+    assert env.closed
+
+
 @pytest.mark.parametrize(
     ("num_envs", "rollout_steps_per_env", "policy_variant", "expected_message"),
     [
@@ -934,6 +979,19 @@ def test_make_base_policy_constructs_recurrent_tmasac_with_feedforward_critic() 
         assert inter_module_mlp is not None
         final_projection = inter_module_mlp[-1]
         assert isinstance(final_projection, nn.Linear)
+
+
+def test_make_base_policy_constructs_segment_tmasac_with_regular_mat() -> None:
+    policy = _make_test_base_policy(
+        env=_DummyContinuousEnv(),
+        policy_variant="segment_tmasac",
+        continuous_action_dist="gumbel_softmax_sign_magnitude_beta",
+    )
+
+    assert isinstance(policy, SegmentTMASACPolicy)
+    assert isinstance(policy.actor_encoder, MATEncoder)
+    assert policy.recurrent_critic is False
+    assert not policy.uses_temporal_actor_state
 
 
 def test_big_end_and_two_small_recurrent_actor_mlps_have_similar_parameter_counts() -> None:

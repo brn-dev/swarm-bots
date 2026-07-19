@@ -501,6 +501,10 @@ class RecurrentTMASACPolicy(TMASACPolicy):
     def recurrent_critic(self) -> bool:
         return self.config.recurrent_critic
 
+    @property
+    def uses_temporal_actor_state(self) -> bool:
+        return True
+
     def requires_recurrent_training(self) -> bool:
         return True
 

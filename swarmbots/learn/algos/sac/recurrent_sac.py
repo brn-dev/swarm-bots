@@ -15,6 +15,7 @@ from swarmbots.learn.algos.sac.recurrent_tmasac_policy import (
     RecurrentCriticState,
     RecurrentTMASACPolicy,
 )
+from swarmbots.learn.algos.sac.segment_tmasac_policy import SegmentTMASACPolicy
 from swarmbots.learn.algos.sac.sac import SAC
 from swarmbots.learn.algos.sac.sac_nop import SACNOPSequenceBatch
 from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
@@ -22,12 +23,12 @@ from swarmbots.learn.temporal_state import concatenate_temporal_states, detach_t
 
 
 class RecurrentSAC(SAC):
-    policy: RecurrentTMASACPolicy
+    policy: RecurrentTMASACPolicy | SegmentTMASACPolicy
     supports_recurrent_training = True
 
     def __init__(
             self,
-            policy: RecurrentTMASACPolicy,
+            policy: RecurrentTMASACPolicy | SegmentTMASACPolicy,
             env: BaseLearnEnvWrapper,
             *,
             burn_in_steps: int = 32,
@@ -37,9 +38,9 @@ class RecurrentSAC(SAC):
             max_truncations_per_segment: int = 1,
             **kwargs: Any,
     ) -> None:
-        if not isinstance(policy, RecurrentTMASACPolicy):
+        if not isinstance(policy, (RecurrentTMASACPolicy, SegmentTMASACPolicy)):
             raise TypeError(
-                "RecurrentSAC requires RecurrentTMASACPolicy, got "
+                "RecurrentSAC requires RecurrentTMASACPolicy or SegmentTMASACPolicy, got "
                 f"{type(policy).__name__}"
             )
         self.burn_in_steps = int(burn_in_steps)
@@ -168,7 +169,11 @@ class RecurrentSAC(SAC):
             agent_mask=learning_batch.agent_mask,
         )
         actor_action_dist_losses = {
-            name: _flatten_sequence_tensor(value)
+            name: _flatten_sequence_tensor(
+                value,
+                batch_size=learning_batch.actions.shape[0],
+                sequence_length=learning_batch.actions.shape[1],
+            )
             for name, value in actor_action_dist_losses.items()
         }
         reduced_actor_action_dist_losses = self._reduce_actor_action_dist_extra_losses(
@@ -343,6 +348,9 @@ class RecurrentSAC(SAC):
             critic_state = self._burn_in_critic_state(batch, target=False)
             target_critic_state = self._burn_in_critic_state(batch, target=True)
         if self.burn_in_steps == 0:
+            return actor_state, critic_state, target_critic_state
+
+        if not self.policy.uses_temporal_actor_state:
             return actor_state, critic_state, target_critic_state
 
         burn_in_batch = _slice_segment(batch, 0, self.burn_in_steps)
@@ -772,10 +780,15 @@ def _flatten_segment(batch: OffPolicyReplayEpisodeSegmentBatch) -> OffPolicyRepl
     )
 
 
-def _flatten_sequence_tensor(tensor: torch.Tensor) -> torch.Tensor:
-    if tensor.ndim < 2:
+def _flatten_sequence_tensor(
+        tensor: torch.Tensor,
+        *,
+        batch_size: int,
+        sequence_length: int,
+) -> torch.Tensor:
+    if tensor.ndim < 2 or tensor.shape[:2] != (batch_size, sequence_length):
         return tensor
-    return tensor.reshape(tensor.shape[0] * tensor.shape[1], *tensor.shape[2:])
+    return tensor.reshape(batch_size * sequence_length, *tensor.shape[2:])
 
 
 def _mask_terminal_next_observations(
