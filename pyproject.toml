@@ -16,9 +16,9 @@ dependencies = [
     "numpy",
     "pandas",
     "pillow",
-    "torch==2.10.0+cu128 ; sys_platform == 'win32'",
-    "torch ; sys_platform != 'win32'",
-    "triton-windows>=3.6,<3.7 ; sys_platform == 'win32'",
+    "torch==2.12.1+cu132 ; sys_platform == 'win32' or sys_platform == 'linux'",
+    "torch ; sys_platform != 'win32' and sys_platform != 'linux'",
+    "triton-windows>=3.7,<3.8 ; sys_platform == 'win32'",
 ]
 
 [project.optional-dependencies]
@@ -36,12 +36,12 @@ dev = [
 
 [tool.uv.sources]
 torch = [
-    { index = "pytorch-cu128", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { index = "pytorch-cu132", marker = "sys_platform == 'win32' or sys_platform == 'linux'" },
 ]
 
 [[tool.uv.index]]
-name = "pytorch-cu128"
-url = "https://download.pytorch.org/whl/cu128"
+name = "pytorch-cu132"
+url = "https://download.pytorch.org/whl/cu132"
 explicit = true
 
 [tool.setuptools.packages.find]
