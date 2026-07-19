@@ -22,7 +22,10 @@ from swarmbots.mjw_env.mjw_torch_quat import quat_to_rot6d_torch
 from swarmbots.mjw_env.mjw_torch_utils import to_device_bool_tensor
 from swarmbots.mjw_env.scenarios.base_mjw_scenario import BaseMJWScenario, MJWRuntimeBindings
 from swarmbots.mjw_env.swarm.mjw_homogeneous_swarm import MJWSwarmPool
-from swarmbots.learn.discord_notifications import notify_mjw_nefc_overflow_once
+from swarmbots.learn.discord_notifications import (
+    notify_mjw_nefc_overflow_once,
+    notify_mjw_simulation_instability_once,
+)
 from swarmbots.learn.tensor_conversion import to_numpy_array
 from swarmbots.utils.recording_resolution import DEFAULT_RECORDING_HEIGHT, DEFAULT_RECORDING_WIDTH
 
@@ -604,7 +607,10 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
         if self._steps_since_nefc_overflow_check >= self._nefc_overflow_check_interval_steps:
             self._maybe_notify_nefc_overflow()
 
-        unstable_mask = torch.isnan(self._qpos).any(dim=1) | torch.isnan(self._qvel).any(dim=1)
+        unstable_mask = (
+            ~torch.isfinite(self._qpos).all(dim=1)
+            | ~torch.isfinite(self._qvel).all(dim=1)
+        )
         stable_mask = ~unstable_mask
 
         self.current_step[stable_mask] += 1
@@ -647,7 +653,15 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
                     snapshots_by_world=self._capture_world_snapshots(stable_active_world_idx),
                 )
 
-        if torch.any(dones):
+        step_status = torch.cat((dones.any().unsqueeze(0), unstable_mask)).to(device="cpu")
+        if bool(step_status[0]):
+            unstable_world_indices = torch.nonzero(step_status[1:], as_tuple=True)[0].tolist()
+            if unstable_world_indices:
+                notify_mjw_simulation_instability_once(
+                    scenario_name=type(self.scenario).__name__,
+                    num_envs=self.num_envs,
+                    unstable_world_indices=unstable_world_indices,
+                )
             infos["final_obs"] = {key: value.clone() for key, value in obs.items()}
             infos["_final_obs"] = dones.clone()
             self.is_first_episode[dones] = False
@@ -1035,11 +1049,10 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
         }
 
     def _apply_error_obs(self, obs: dict[str, torch.Tensor], unstable_mask: torch.Tensor) -> dict[str, torch.Tensor]:
-        unstable_world_idx = torch.nonzero(unstable_mask, as_tuple=True)[0]
-        obs["local_obs"][unstable_world_idx] = 0.0
-        obs["global_obs"][unstable_world_idx] = 0.0
-        obs["hidden_local_vars"][unstable_world_idx] = 0.0
-        obs["hidden_global_vars"][unstable_world_idx] = 0.0
+        obs["local_obs"][unstable_mask] = 0.0
+        obs["global_obs"][unstable_mask] = 0.0
+        obs["hidden_local_vars"][unstable_mask] = 0.0
+        obs["hidden_global_vars"][unstable_mask] = 0.0
         return obs
 
     def _capture_world_snapshots(self, world_idx: torch.Tensor) -> dict[int, MJWWorldSnapshot]:

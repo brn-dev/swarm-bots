@@ -24,7 +24,7 @@ def check_mask(
 
 def reset_state(state: tuple[torch.Tensor, ...], reset_t: torch.Tensor) -> tuple[torch.Tensor, ...]:
     return tuple(
-        item * (~reset_t).to(dtype=item.dtype).reshape(-1, *([1] * (item.ndim - 1)))
+        item.masked_fill(reset_t.reshape(-1, *([1] * (item.ndim - 1))), 0.0)
         for item in state
     )
 
