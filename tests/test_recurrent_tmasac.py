@@ -823,6 +823,10 @@ class RecurrentTMASACTests(unittest.TestCase):
     def test_experimental_lstm_compiled_encoder_matches_eager_forward_and_gradients(self) -> None:
         torch._dynamo.reset()
         self.addCleanup(torch._dynamo.reset)
+        # Inductor decomposes the LSTM instead of matching cuDNN's float32
+        # reduction order, so compiled and eager CUDA results differ slightly.
+        compiled_atol = 5e-4
+        compiled_rtol = 1e-3
         eager_config = _policy_config(
             _encoder_config(LSTMTemporalSequenceModel, LSTMTemporalSequenceModelConfig())
         )
@@ -877,14 +881,24 @@ class RecurrentTMASACTests(unittest.TestCase):
 
         eager_latents, eager_final_state, eager_selected_states = eager_outputs
         compiled_latents, compiled_final_state, compiled_selected_states = compiled_outputs
-        torch.testing.assert_close(compiled_latents, eager_latents, atol=1e-5, rtol=1e-5)
+        torch.testing.assert_close(
+            compiled_latents,
+            eager_latents,
+            atol=compiled_atol,
+            rtol=compiled_rtol,
+        )
         for compiled_state, eager_state in (
                 (compiled_final_state, eager_final_state),
                 (compiled_selected_states, eager_selected_states),
         ):
             for compiled_layer, eager_layer in zip(compiled_state, eager_state, strict=True):
                 for compiled_tensor, eager_tensor in zip(compiled_layer, eager_layer, strict=True):
-                    torch.testing.assert_close(compiled_tensor, eager_tensor, atol=1e-5, rtol=1e-5)
+                    torch.testing.assert_close(
+                        compiled_tensor,
+                        eager_tensor,
+                        atol=compiled_atol,
+                        rtol=compiled_rtol,
+                    )
 
         eager_loss = eager_latents.square().mean() + sum(
             tensor.square().mean()
@@ -909,8 +923,8 @@ class RecurrentTMASACTests(unittest.TestCase):
             torch.testing.assert_close(
                 compiled_parameter.grad,
                 eager_parameter.grad,
-                atol=1e-5,
-                rtol=1e-5,
+                atol=compiled_atol,
+                rtol=compiled_rtol,
             )
 
     def test_actor_compilation_rejects_unconfigured_sequence_lengths(self) -> None:

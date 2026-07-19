@@ -147,6 +147,11 @@ class LSTMTemporalSequenceModel(TemporalSequenceModel):
                     cell_state.transpose(0, 1).contiguous(),
                 ),
             )
+            # Compiled nn.LSTM adds a singleton leading dimension to h_n and
+            # c_n. Normalize to the documented (layers, batch, hidden) layout.
+            lstm_state_shape = (self.config.num_layers, batch_size, self.hidden_dim)
+            next_hidden_state = next_hidden_state.reshape(lstm_state_shape)
+            next_cell_state = next_cell_state.reshape(lstm_state_shape)
             next_hidden_state = next_hidden_state.transpose(0, 1).contiguous()
             next_cell_state = next_cell_state.transpose(0, 1).contiguous()
 
