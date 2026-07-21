@@ -96,6 +96,8 @@ def create_env(config: BenchmarkConfig) -> MJWSwarmBotsVectorEnv:
         num_envs=config.num_envs,
         episode_length=config.episode_length,
         device=torch.device("cuda"),
+        compile_tensor_operations=config.compile_reward_kernel,
+        tensor_operations_compile_mode=config.reward_kernel_compile_mode,
     )
 
 
@@ -394,7 +396,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--compile-reward-kernel",
         action="store_true",
-        help="Benchmark the compiled full-step mode instead of the eager full-step mode.",
+        help="Benchmark compiled reward and MJW environment tensor operations instead of the eager full step.",
     )
     parser.add_argument(
         "--benchmark-both-full-step-modes",
@@ -405,7 +407,10 @@ def parse_args() -> argparse.Namespace:
         "--reward-kernel-compile-mode",
         type=str,
         default="default",
-        help="torch.compile mode for the reward kernel when a compiled full-step variant is benchmarked.",
+        help=(
+            "torch.compile mode for reward and MJW environment tensor operations in "
+            "compiled full-step mode."
+        ),
     )
     parser.add_argument("--json-out", type=Path, default=DEFAULT_JSON_OUT, help="Optional path for machine-readable output.")
     return parser.parse_args()

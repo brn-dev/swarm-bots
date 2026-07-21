@@ -4,7 +4,7 @@ import unittest
 from collections.abc import Callable
 from dataclasses import replace
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import torch
 from gymnasium.vector import AutoresetMode, SyncVectorEnv
@@ -307,7 +307,298 @@ def _make_bootstrap_batch(env: SwarmBotsLearnEnvWrapper) -> OffPolicyReplayBatch
     )
 
 
+def _move_replay_batch(
+        batch: OffPolicyReplayBatch,
+        device: torch.device | str,
+) -> OffPolicyReplayBatch:
+    return replace(
+        batch,
+        **{
+            field_name: None if value is None else value.to(device)
+            for field_name, value in (
+                ("local_obs", batch.local_obs),
+                ("global_obs", batch.global_obs),
+                ("hidden_local_vars", batch.hidden_local_vars),
+                ("hidden_global_vars", batch.hidden_global_vars),
+                ("agent_mask", batch.agent_mask),
+                ("actions", batch.actions),
+                ("rewards", batch.rewards),
+                ("terminations", batch.terminations),
+                ("truncations", batch.truncations),
+                ("previous_actions", batch.previous_actions),
+                ("next_local_obs", batch.next_local_obs),
+                ("next_global_obs", batch.next_global_obs),
+                ("next_hidden_local_vars", batch.next_hidden_local_vars),
+                ("next_hidden_global_vars", batch.next_hidden_global_vars),
+                ("next_agent_mask", batch.next_agent_mask),
+                ("episode_start_mask", batch.episode_start_mask),
+            )
+        },
+    )
+
+
 class SACTests(unittest.TestCase):
+    @unittest.skipUnless(torch.cuda.is_available(), "requires CUDA compilation")
+    def test_compiled_cuda_train_step_matches_eager_losses_gradients_and_updates(self) -> None:
+        eager_env = _make_env()
+        compiled_env = _make_env()
+        try:
+            common_kwargs = {
+                "learning_rate": 1e-3,
+                "learning_rate_warmup_updates": 0,
+                "buffer_capacity_per_env": 8,
+                "learning_starts": 0,
+                "batch_size": 2,
+                "ent_coef": 0.2,
+                "max_grad_norm": None,
+                "train_device": "cuda",
+                "rollout_device": "cpu",
+                "replay_storage_device": "cpu",
+            }
+            eager = SAC(
+                policy=_ConstantTargetSACPolicy(
+                    n_agents=eager_env.n_agents,
+                    action_dim=eager_env.action_space.total_agent_action_dim,
+                    target_q_value=1.5,
+                    log_prob_per_agent=-0.4,
+                ),
+                env=eager_env,
+                sac_compile_tensor_operations=False,
+                sac_compile_optimizer_steps=False,
+                **common_kwargs,
+            )
+            compiled = SAC(
+                policy=_ConstantTargetSACPolicy(
+                    n_agents=compiled_env.n_agents,
+                    action_dim=compiled_env.action_space.total_agent_action_dim,
+                    target_q_value=1.5,
+                    log_prob_per_agent=-0.4,
+                ),
+                env=compiled_env,
+                sac_compile_tensor_operations=True,
+                sac_compile_optimizer_steps=True,
+                **common_kwargs,
+            )
+            batch = _move_replay_batch(_make_bootstrap_batch(eager_env), "cuda")
+
+            eager_metrics, eager_actor_grad, eager_critic_grad = eager._train_step(
+                batch,
+                global_update_idx=0,
+            )
+            compiled_metrics, compiled_actor_grad, compiled_critic_grad = compiled._train_step(
+                batch,
+                global_update_idx=0,
+            )
+
+            for metric_name in eager_metrics:
+                self.assertAlmostEqual(
+                    compiled_metrics[metric_name],
+                    eager_metrics[metric_name],
+                    places=6,
+                )
+            self.assertAlmostEqual(compiled_actor_grad, eager_actor_grad, places=6)
+            self.assertAlmostEqual(compiled_critic_grad, eager_critic_grad, places=6)
+            for eager_parameter, compiled_parameter in zip(
+                    eager.policy.parameters(),
+                    compiled.policy.parameters(),
+                    strict=True,
+            ):
+                torch.testing.assert_close(compiled_parameter, eager_parameter)
+        finally:
+            eager_env.close()
+            compiled_env.close()
+
+    def test_sac_compile_overrides_build_loss_and_optimizer_entry_points(self) -> None:
+        env = _make_env()
+        try:
+            policy = _make_policy(env)
+            with patch(
+                    "swarmbots.learn.algos.sac.sac_tensor_ops.torch.compile",
+                    side_effect=lambda function, **_kwargs: function,
+            ) as compile_mock:
+                algo = SAC(
+                    policy=policy,
+                    env=env,
+                    learning_rate=1e-3,
+                    buffer_capacity_per_env=8,
+                    learning_starts=0,
+                    batch_size=2,
+                    train_device="cpu",
+                    rollout_device="cpu",
+                    replay_storage_device="cpu",
+                    sac_compile_tensor_operations=True,
+                    sac_compile_optimizer_steps=True,
+                    sac_compile_mode="reduce-overhead",
+                )
+
+            self.assertEqual(compile_mock.call_count, 9)
+            compiled_names = [call.args[0].__name__ for call in compile_mock.call_args_list]
+            self.assertEqual(compiled_names.count("optimizer_step"), 3)
+            self.assertEqual(
+                set(compiled_names) - {"optimizer_step"},
+                {
+                    "_mask_terminal_observations",
+                    "_mean_agent_log_probs",
+                    "_entropy_coefficient_loss",
+                    "_bellman_target",
+                    "_critic_loss",
+                    "_actor_loss",
+                },
+            )
+            for call in compile_mock.call_args_list:
+                expected_fullgraph = call.args[0].__name__ != "optimizer_step"
+                self.assertEqual(call.kwargs, {
+                    "mode": "reduce-overhead",
+                    "fullgraph": expected_fullgraph,
+                    "dynamic": False,
+                })
+            hyper_parameters = algo.get_hyper_parameters()
+            self.assertTrue(hyper_parameters["sac_compile_tensor_operations"])
+            self.assertTrue(hyper_parameters["sac_compile_optimizer_steps"])
+            self.assertEqual(hyper_parameters["sac_compile_mode"], "reduce-overhead")
+        finally:
+            env.close()
+
+    def test_cpu_sac_training_operations_stay_eager_by_default(self) -> None:
+        env = _make_env()
+        try:
+            policy = _make_policy(env)
+            with patch(
+                    "swarmbots.learn.algos.sac.sac_tensor_ops.torch.compile",
+            ) as compile_mock:
+                algo = SAC(
+                    policy=policy,
+                    env=env,
+                    learning_rate=1e-3,
+                    buffer_capacity_per_env=8,
+                    learning_starts=0,
+                    batch_size=2,
+                    train_device="cpu",
+                    rollout_device="cpu",
+                    replay_storage_device="cpu",
+                )
+
+            self.assertFalse(algo.sac_compile_tensor_operations)
+            self.assertFalse(algo.sac_compile_optimizer_steps)
+            compile_mock.assert_not_called()
+        finally:
+            env.close()
+
+    def test_compiled_actor_and_critic_optimizer_steps_wait_for_learning_rate_warmup(self) -> None:
+        env = _make_env()
+        try:
+            algo = SAC(
+                policy=_make_policy(env),
+                env=env,
+                learning_rate=1e-3,
+                learning_rate_warmup_updates=2,
+                buffer_capacity_per_env=8,
+                learning_starts=0,
+                batch_size=2,
+                train_device="cpu",
+                rollout_device="cpu",
+                replay_storage_device="cpu",
+                sac_compile_optimizer_steps=False,
+            )
+            optimizer = Mock()
+            compiled_step = Mock()
+            algo.sac_compile_optimizer_steps = True
+
+            algo._step_actor_or_critic_optimizer(
+                optimizer=optimizer,
+                compiled_step=compiled_step,
+                global_update_idx=1,
+            )
+            optimizer.step.assert_called_once_with()
+            compiled_step.assert_not_called()
+
+            optimizer.reset_mock()
+            algo._step_actor_or_critic_optimizer(
+                optimizer=optimizer,
+                compiled_step=compiled_step,
+                global_update_idx=2,
+            )
+            optimizer.step.assert_not_called()
+            compiled_step.assert_called_once_with()
+        finally:
+            env.close()
+
+    def test_entropy_coefficient_uses_its_compiled_optimizer_step(self) -> None:
+        env = _make_env()
+        try:
+            algo = SAC(
+                policy=_make_policy(env),
+                env=env,
+                learning_rate=1e-3,
+                buffer_capacity_per_env=8,
+                learning_starts=0,
+                batch_size=2,
+                train_device="cpu",
+                rollout_device="cpu",
+                replay_storage_device="cpu",
+                sac_compile_optimizer_steps=False,
+            )
+            compiled_step = Mock(wraps=algo.ent_coef_optimizer.step)
+            algo._ent_coef_optimizer_step = compiled_step
+            batch = _make_bootstrap_batch(env)
+
+            ent_coef, ent_coef_loss = algo._update_entropy_coefficient(
+                log_prob_mean=torch.tensor([-1.0, -2.0]),
+                batch=batch,
+            )
+
+            compiled_step.assert_called_once_with()
+            self.assertIsNotNone(ent_coef_loss)
+            self.assertTrue(torch.isfinite(ent_coef))
+        finally:
+            env.close()
+
+    def test_sac_compile_mode_must_be_non_empty_when_compilation_is_enabled(self) -> None:
+        env = _make_env()
+        try:
+            with self.assertRaisesRegex(ValueError, "sac_compile_mode"):
+                SAC(
+                    policy=_make_policy(env),
+                    env=env,
+                    learning_rate=1e-3,
+                    buffer_capacity_per_env=8,
+                    learning_starts=0,
+                    batch_size=2,
+                    train_device="cpu",
+                    rollout_device="cpu",
+                    replay_storage_device="cpu",
+                    sac_compile_tensor_operations=True,
+                    sac_compile_mode="",
+                )
+        finally:
+            env.close()
+
+    def test_replay_tensor_compile_override_reaches_buffer_and_hyper_parameters(self) -> None:
+        env = _make_env()
+        try:
+            with patch(
+                    "swarmbots.learn.algos.off_policy.replay_buffer_tensor_ops.torch.compile",
+                    side_effect=lambda function, **_kwargs: function,
+            ) as compile_mock:
+                algo = SAC(
+                    policy=_make_policy(env),
+                    env=env,
+                    learning_rate=1e-3,
+                    buffer_capacity_per_env=8,
+                    learning_starts=0,
+                    batch_size=2,
+                    train_device="cpu",
+                    rollout_device="cpu",
+                    replay_storage_device="cpu",
+                    replay_compile_tensor_operations=True,
+                )
+
+            self.assertTrue(algo.replay_buffer.compile_tensor_operations)
+            self.assertTrue(algo.get_hyper_parameters()["replay_compile_tensor_operations"])
+            self.assertEqual(compile_mock.call_count, 6)
+        finally:
+            env.close()
+
     def test_perform_iteration_collects_replay_and_updates_once(self) -> None:
         env = _make_env()
         try:
@@ -637,6 +928,142 @@ class SACTests(unittest.TestCase):
         finally:
             source_env.close()
             restored_env.close()
+
+    def test_restored_entropy_optimizer_updates_restored_coefficient(self) -> None:
+        env = _make_env()
+        try:
+            common_kwargs = {
+                "learning_rate": 1e-3,
+                "learning_rate_warmup_updates": 0,
+                "buffer_capacity_per_env": 4,
+                "learning_starts": 0,
+                "batch_size": 2,
+                "train_device": "cpu",
+                "rollout_device": "cpu",
+                "replay_storage_device": "cpu",
+            }
+            source = SAC(
+                policy=_make_policy(env),
+                env=env,
+                ent_coef="auto_0.1",
+                **common_kwargs,
+            )
+            restored = SAC(
+                policy=_make_policy(env),
+                env=env,
+                ent_coef="auto_0.2",
+                **common_kwargs,
+            )
+            restored._apply_optimizer_state_dict(
+                source._get_optimizer_state_dict(),
+                missing_keys=[],
+                unexpected_keys=[],
+            )
+            assert restored.log_ent_coef is not None
+            coefficient_before_update = restored.log_ent_coef.detach().clone()
+
+            restored._update_entropy_coefficient(
+                log_prob_mean=torch.tensor([-1.0, -2.0]),
+                batch=_make_bootstrap_batch(env),
+            )
+
+            self.assertFalse(torch.equal(restored.log_ent_coef, coefficient_before_update))
+        finally:
+            env.close()
+
+    def test_auto_entropy_checkpoint_can_replace_fixed_entropy_configuration(self) -> None:
+        env = _make_env()
+        try:
+            common_kwargs = {
+                "learning_rate": 1e-3,
+                "learning_rate_warmup_updates": 0,
+                "buffer_capacity_per_env": 4,
+                "learning_starts": 0,
+                "batch_size": 2,
+                "train_device": "cpu",
+                "rollout_device": "cpu",
+                "replay_storage_device": "cpu",
+            }
+            source = SAC(
+                policy=_make_policy(env),
+                env=env,
+                ent_coef="auto_0.1",
+                **common_kwargs,
+            )
+            restored = SAC(
+                policy=_make_policy(env),
+                env=env,
+                ent_coef=0.2,
+                **common_kwargs,
+            )
+            restored._apply_optimizer_state_dict(
+                source._get_optimizer_state_dict(),
+                missing_keys=[],
+                unexpected_keys=[],
+            )
+            assert restored.log_ent_coef is not None
+            coefficient_before_update = restored.log_ent_coef.detach().clone()
+
+            restored._update_entropy_coefficient(
+                log_prob_mean=torch.tensor([-1.0, -2.0]),
+                batch=_make_bootstrap_batch(env),
+            )
+
+            self.assertFalse(torch.equal(restored.log_ent_coef, coefficient_before_update))
+        finally:
+            env.close()
+
+    def test_reinitialized_critic_optimizer_uses_refreshed_compiled_step(self) -> None:
+        env = _make_env()
+        try:
+            with patch(
+                    "swarmbots.learn.algos.sac.sac_tensor_ops.torch.compile",
+                    side_effect=lambda function, **_kwargs: function,
+            ):
+                algo = SAC(
+                    policy=_make_policy(env),
+                    env=env,
+                    learning_rate=1e-3,
+                    learning_rate_warmup_updates=0,
+                    buffer_capacity_per_env=4,
+                    learning_starts=0,
+                    batch_size=2,
+                    ent_coef=0.2,
+                    train_device="cpu",
+                    rollout_device="cpu",
+                    replay_storage_device="cpu",
+                    sac_compile_optimizer_steps=True,
+                )
+                optimizer_state = algo._get_optimizer_state_dict()
+                optimizer_state["critic_optimizer"]["param_groups"][0]["params"].pop()
+                previous_critic_optimizer = algo.critic_optimizer
+                previous_critic_optimizer.param_groups[0]["lr"] = 0.0
+                algo._apply_optimizer_state_dict(
+                    optimizer_state,
+                    missing_keys=[],
+                    unexpected_keys=[],
+                )
+                critic_parameters_before_update = [
+                    parameter.detach().clone()
+                    for parameter in algo.policy.critic_parameters()
+                ]
+
+                algo._train_step(
+                    _make_bootstrap_batch(env),
+                    global_update_idx=0,
+                )
+
+            self.assertIsNot(algo.critic_optimizer, previous_critic_optimizer)
+            self.assertTrue(any(
+                not torch.equal(parameter_before, parameter_after)
+                for parameter_before, parameter_after in zip(
+                    critic_parameters_before_update,
+                    algo.policy.critic_parameters(),
+                    strict=True,
+                )
+            ))
+        finally:
+            env.close()
 
     def test_legacy_checkpoint_entropy_coefficient_is_reset_for_mean_reduction(self) -> None:
         env = _make_env()

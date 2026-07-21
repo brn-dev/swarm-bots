@@ -12,13 +12,18 @@ import warp as wp
 from gymnasium.vector import AutoresetMode, VectorEnv
 from loguru import logger
 
+from swarmbots.mjw_env.mjw_env_tensor_ops import (
+    MJWActionLayout,
+    MJWObservationLayout,
+    build_mjw_env_tensor_operations,
+    should_compile_mjw_env_tensor_operations_by_default,
+)
 from swarmbots.mjw_env.mjw_kernels import (
     compute_best_connection_candidates,
     gather_connector_frames,
 )
 from swarmbots.mjw_env.mjw_live_recording import MJWLiveEpisodeRecorder, MJWRecordingConfig, MJWWorldSnapshot
 from swarmbots.mjw_env.mjw_model_metadata import MJWModelMetadata, build_model_metadata
-from swarmbots.mjw_env.mjw_torch_quat import quat_to_rot6d_torch
 from swarmbots.mjw_env.mjw_torch_utils import to_device_bool_tensor
 from swarmbots.mjw_env.scenarios.base_mjw_scenario import BaseMJWScenario, MJWRuntimeBindings
 from swarmbots.mjw_env.swarm.mjw_homogeneous_swarm import MJWSwarmPool
@@ -194,6 +199,8 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
         njmax: int | None = None,
         ccd_iterations: int | None = None,
         nefc_overflow_check_interval_steps: int = 128,
+        compile_tensor_operations: bool | None = None,
+        tensor_operations_compile_mode: str = "default",
     ) -> None:
         super().__init__()
         wp.init()
@@ -234,6 +241,12 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
         self.action_backend = "torch"
         self._continuous_connector_actions = bool(getattr(scenario, "continuous_connector_actions", False))
         self._nefc_overflow_check_interval_steps = int(nefc_overflow_check_interval_steps)
+        self.compile_tensor_operations = (
+            should_compile_mjw_env_tensor_operations_by_default(self.device)
+            if compile_tensor_operations is None
+            else bool(compile_tensor_operations)
+        )
+        self.tensor_operations_compile_mode = str(tensor_operations_compile_mode)
 
         self.single_observation_space = scenario.get_single_observation_space()
         self.single_action_space = scenario.get_single_action_space()
@@ -411,6 +424,27 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
             self._connector_obs_slice.stop,
             self._connector_obs_slice.stop + (self._n_connectors * 3),
         )
+        self._tensor_operations = build_mjw_env_tensor_operations(
+            observation_layout=MJWObservationLayout(
+                num_envs=self.num_envs,
+                num_agents=self._n_agents,
+                num_connectors=self._n_connectors,
+                free_joint_position=self._free_joint_pos_slice,
+                free_joint_rotation=self._free_joint_rot_slice,
+                hinge=self._hinge_obs_slice,
+                qvel=self._qvel_obs_slice,
+                connector=self._connector_obs_slice,
+                connector_position=self._connector_xpos_obs_slice,
+                use_rot6d=bool(self.scenario.quat_rot6d_representation),
+                include_connector_positions=bool(self.scenario.include_connectors_xpos_in_obs),
+            ),
+            action_layout=MJWActionLayout(
+                num_envs=self.num_envs,
+                continuous_connectors=self._continuous_connector_actions,
+            ),
+            compile_operations=self.compile_tensor_operations,
+            compile_mode=self.tensor_operations_compile_mode,
+        )
 
         self._qpos_wp = wp.from_torch(self._qpos)
         self._xpos_wp = wp.from_torch(self._xpos, dtype=wp.vec3)
@@ -511,6 +545,8 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
             "episode_length": self.episode_length,
             "action_repeat": self.action_repeat,
             "simulation_unstable_reward": self.simulation_unstable_reward,
+            "compile_tensor_operations": self.compile_tensor_operations,
+            "tensor_operations_compile_mode": self.tensor_operations_compile_mode,
             "swarm_pool": {
                 "pool_size": self.get_swarm_pool_size(),
                 "active_pool_size": self.get_active_swarm_pool_size(),
@@ -834,17 +870,19 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
         return bool(torch.all(reset_mask))
 
     def _apply_actions(self, *, actuators: torch.Tensor, connectors: torch.Tensor) -> None:
-        actuators = actuators.masked_fill(~self.units_active_mask.unsqueeze(-1), 0.0)
-        if self._ctrl.numel() > 0:
-            self._ctrl[:, self._ctrl_flat_indices] = actuators.reshape(self.num_envs, -1) * float(self.scenario.actuator_strength)
-
+        connector_action = self._tensor_operations.prepare_actions(
+            actuators,
+            connectors,
+            self.units_active_mask,
+            self._ctrl,
+            self._ctrl_flat_indices,
+            float(self.scenario.actuator_strength),
+        )
         if self._continuous_connector_actions:
-            connector_action = connectors.masked_fill(~self.units_active_mask.unsqueeze(-1), -1.0)
             self._try_connect(connector_action > 0.0)
             self._disconnect_continuous(connector_action)
             return
 
-        connector_action = connectors & self.units_active_mask.unsqueeze(-1)
         self._try_connect(connector_action)
         self._disconnect(connector_action)
 
@@ -1009,37 +1047,19 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
         self.disconnect_potentials[world_idx, unit2, connector2] = 0.0
 
     def _build_obs(self) -> dict[str, torch.Tensor]:
-        local_obs = self._local_obs
-        qpos = self._qpos[:, self._qpos_flat_indices].reshape(self.num_envs, self._n_agents, -1)
-        qvel = self._qvel[:, self._qvel_flat_indices].reshape(self.num_envs, self._n_agents, -1)
-        local_obs[:, :, self._free_joint_pos_slice] = qpos[:, :, :3]
-        free_joint_quat = qpos[:, :, 3:7]
-        if self.scenario.quat_rot6d_representation:
-            local_obs[:, :, self._free_joint_rot_slice] = quat_to_rot6d_torch(free_joint_quat)
-        else:
-            local_obs[:, :, self._free_joint_rot_slice] = free_joint_quat
-
-        hinge_qpos = qpos[:, :, 7:]
-        hinge_obs = local_obs[:, :, self._hinge_obs_slice].view(self.num_envs, self._n_agents, -1, 2)
-        hinge_obs[..., 0] = torch.sin(hinge_qpos)
-        hinge_obs[..., 1] = torch.cos(hinge_qpos)
-        local_obs[:, :, self._qvel_obs_slice] = qvel
-        connector_active = self.partner_unit >= 0
-        valid_twist = connector_active & (self.connection_twist_idx >= 0)
-        twist_values = self._twist_values[self.connection_twist_idx.clamp(min=0)]
-        connector_obs = local_obs[:, :, self._connector_obs_slice].view(self.num_envs, self._n_agents, self._n_connectors, 5)
-        valid_twist_f = valid_twist.to(dtype=torch.float32)
-        connector_obs[..., 0] = (~connector_active).to(dtype=torch.float32)
-        connector_obs[..., 1] = connector_active.to(dtype=torch.float32)
-        connector_obs[..., 2] = torch.sin(twist_values) * valid_twist_f
-        connector_obs[..., 3] = torch.cos(twist_values) * valid_twist_f
-        connector_obs[..., 4] = self.disconnect_potentials
-        if self.scenario.include_connectors_xpos_in_obs:
-            local_obs[:, :, self._connector_xpos_obs_slice] = self._xpos[:, self._connector_body_indices].reshape(
-                self.num_envs,
-                self._n_agents,
-                -1,
-            )
+        local_obs = self._tensor_operations.build_local_obs(
+            self._local_obs,
+            self._qpos,
+            self._qvel,
+            self.partner_unit,
+            self.connection_twist_idx,
+            self.disconnect_potentials,
+            self._twist_values,
+            self._xpos,
+            self._qpos_flat_indices,
+            self._qvel_flat_indices,
+            self._connector_body_indices,
+        )
         return {
             "local_obs": local_obs,
             "global_obs": self._scenario_runtime.global_obs,
@@ -1049,10 +1069,18 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
         }
 
     def _apply_error_obs(self, obs: dict[str, torch.Tensor], unstable_mask: torch.Tensor) -> dict[str, torch.Tensor]:
-        obs["local_obs"][unstable_mask] = 0.0
-        obs["global_obs"][unstable_mask] = 0.0
-        obs["hidden_local_vars"][unstable_mask] = 0.0
-        obs["hidden_global_vars"][unstable_mask] = 0.0
+        (
+            obs["local_obs"],
+            obs["global_obs"],
+            obs["hidden_local_vars"],
+            obs["hidden_global_vars"],
+        ) = self._tensor_operations.mask_error_observations(
+            obs["local_obs"],
+            obs["global_obs"],
+            obs["hidden_local_vars"],
+            obs["hidden_global_vars"],
+            unstable_mask,
+        )
         return obs
 
     def _capture_world_snapshots(self, world_idx: torch.Tensor) -> dict[int, MJWWorldSnapshot]:

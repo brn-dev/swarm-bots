@@ -12,6 +12,12 @@ from swarmbots.mj_env.scenarios.scenario_presets import default_move_to as defau
 from swarmbots.mj_env.swarm.swarm_config import SwarmConfig
 from swarmbots.mj_env.swarm.swarm_connections import SwarmConnections
 from swarmbots.mj_env.swarm.unit_config import UNIT_CONFIG_TETRAHEDRON_ZX
+from swarmbots.mjw_env.mjw_env_tensor_ops import (
+    MJWActionLayout,
+    MJWEnvTensorOperations,
+    MJWObservationLayout,
+    build_mjw_env_tensor_operations,
+)
 from swarmbots.mjw_env.scenarios.mjw_scenario_presets import default_move_to as default_mjw_move_to
 from swarmbots.mjw_env.mjw_swarm_bots_vector_env import MJWSwarmBotsVectorEnv
 
@@ -25,6 +31,30 @@ def _make_connections() -> SwarmConnections:
     connections = SwarmConnections(config)
     connections.connect(0, 0, 1, 0, twist_angle=0.0)
     return connections
+
+
+def _make_action_tensor_operations(*, continuous_connectors: bool) -> MJWEnvTensorOperations:
+    return build_mjw_env_tensor_operations(
+        observation_layout=MJWObservationLayout(
+            num_envs=1,
+            num_agents=2,
+            num_connectors=1,
+            free_joint_position=slice(0, 3),
+            free_joint_rotation=slice(3, 7),
+            hinge=slice(7, 9),
+            qvel=slice(9, 17),
+            connector=slice(17, 22),
+            connector_position=slice(22, 25),
+            use_rot6d=False,
+            include_connector_positions=False,
+        ),
+        action_layout=MJWActionLayout(
+            num_envs=1,
+            continuous_connectors=continuous_connectors,
+        ),
+        compile_operations=False,
+        compile_mode="default",
+    )
 
 
 class ContinuousConnectorActionTests(unittest.TestCase):
@@ -153,6 +183,7 @@ class ContinuousConnectorActionTests(unittest.TestCase):
         env._ctrl_flat_indices = torch.empty((0,), dtype=torch.long)
         env.scenario = SimpleNamespace(actuator_strength=1.0)
         env._continuous_connector_actions = False
+        env._tensor_operations = _make_action_tensor_operations(continuous_connectors=False)
         env._try_connect = lambda connector_action: calls.append(("connect", connector_action.clone()))
         env._disconnect = lambda connector_action: calls.append(("disconnect", connector_action.clone()))
         env._disconnect_continuous = lambda connector_action: calls.append(("continuous", connector_action.clone()))

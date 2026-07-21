@@ -1,4 +1,5 @@
 import unittest
+from dataclasses import fields
 from typing import Any
 from unittest.mock import patch
 
@@ -9,6 +10,7 @@ from gymnasium import spaces
 from gymnasium.vector import AutoresetMode, SyncVectorEnv
 
 import swarmbots.learn.algos.off_policy.off_policy_rollout as off_policy_rollout
+import swarmbots.learn.algos.off_policy.replay_buffer_tensor_ops as replay_buffer_tensor_ops
 from swarmbots.learn.algos.off_policy import (
     NoEpisodeSegmentCandidatesError,
     OffPolicyReplayBuffer,
@@ -139,6 +141,7 @@ def _make_buffer(
         temporal_state_storage_dtype: torch.dtype | None = None,
         storage_device: str = "cpu",
         train_device: str = "cpu",
+        compile_tensor_operations: bool | None = None,
 ) -> OffPolicyReplayBuffer:
     return OffPolicyReplayBuffer(
         capacity_per_env=capacity_per_env,
@@ -149,6 +152,7 @@ def _make_buffer(
         temporal_state_storage_dtype=temporal_state_storage_dtype,
         storage_device=storage_device,
         train_device=train_device,
+        compile_tensor_operations=compile_tensor_operations,
     )
 
 
@@ -177,6 +181,60 @@ def _actions(value: float) -> torch.Tensor:
 
 def _temporal_state(value: float) -> torch.Tensor:
     return torch.full((1, 2, 1), value)
+
+
+def _add_direct_step(
+        buffer: OffPolicyReplayBuffer,
+        *,
+        obs_values: tuple[float, ...],
+        next_obs_values: tuple[float, ...],
+        action_value: float,
+        terminations: tuple[bool, ...] | None = None,
+        truncations: tuple[bool, ...] | None = None,
+        terminal_obs_values: tuple[float, ...] | None = None,
+        previous_action_value: float | None = None,
+        episode_start_mask: tuple[bool, ...] | None = None,
+        temporal_state: Any = None,
+        next_temporal_state: Any = None,
+) -> None:
+    n_envs = len(obs_values)
+    if len(next_obs_values) != n_envs:
+        raise ValueError("obs_values and next_obs_values must have equal lengths")
+    terminations = (False,) * n_envs if terminations is None else terminations
+    truncations = (False,) * n_envs if truncations is None else truncations
+    has_done = any(terminations) or any(truncations)
+    if has_done and terminal_obs_values is None:
+        raise ValueError("terminal_obs_values is required for done transitions")
+
+    make_obs = _obs if n_envs == 1 else _multi_obs
+    obs_argument = make_obs(obs_values[0]) if n_envs == 1 else make_obs(obs_values)
+    next_obs_argument = make_obs(next_obs_values[0]) if n_envs == 1 else make_obs(next_obs_values)
+    terminal_obs = None
+    if terminal_obs_values is not None:
+        terminal_obs = (
+            make_obs(terminal_obs_values[0])
+            if n_envs == 1
+            else make_obs(terminal_obs_values)
+        )
+    previous_actions = None
+    if previous_action_value is not None:
+        previous_actions = torch.full((n_envs, 2, 2), previous_action_value)
+
+    buffer.add(
+        obs=obs_argument,
+        actions=torch.full((n_envs, 2, 2), action_value),
+        rewards=torch.full((n_envs,), action_value + 0.25),
+        terminations=torch.tensor(terminations, dtype=torch.bool),
+        truncations=torch.tensor(truncations, dtype=torch.bool),
+        next_obs=next_obs_argument,
+        terminal_obs=terminal_obs,
+        previous_actions=previous_actions,
+        episode_start_mask=(
+            None if episode_start_mask is None else torch.tensor(episode_start_mask, dtype=torch.bool)
+        ),
+        temporal_state=temporal_state,
+        next_temporal_state=next_temporal_state,
+    )
 
 
 class _PreviousActionPolicy(BasePolicy):
@@ -504,6 +562,354 @@ class OffPolicyReplayTests(unittest.TestCase):
         self.assertEqual(batch.terminations[batch_idx].tolist(), terminations)
         self.assertEqual(batch.truncations[batch_idx].tolist(), truncations)
 
+    def test_constructor_rejects_invalid_capacity_observation_space_and_checkpoint_interval(self) -> None:
+        env = _make_env()
+        try:
+            for capacity_per_env in (0, -1):
+                with self.subTest(capacity_per_env=capacity_per_env):
+                    with self.assertRaisesRegex(ValueError, "capacity_per_env must be > 0"):
+                        _make_buffer(env, capacity_per_env=capacity_per_env)
+
+            with self.assertRaisesRegex(ValueError, "observation_space must be"):
+                OffPolicyReplayBuffer(
+                    capacity_per_env=2,
+                    observation_space=spaces.Box(low=-1.0, high=1.0, shape=(1,)),
+                    action_space=env.action_space,
+                    storage_device="cpu",
+                    train_device="cpu",
+                )
+
+            for store_interval in (0, -2):
+                with self.subTest(store_interval=store_interval):
+                    with self.assertRaisesRegex(ValueError, "temporal_state_store_interval must be > 0"):
+                        _make_buffer(
+                            env,
+                            capacity_per_env=2,
+                            temporal_state_store_interval=store_interval,
+                        )
+        finally:
+            env.close()
+
+    def test_sampling_apis_reject_empty_buffers_and_invalid_sizes(self) -> None:
+        env = _make_env()
+        try:
+            buffer = _make_buffer(env, capacity_per_env=2)
+            with self.assertRaisesRegex(ValueError, "empty replay buffer"):
+                buffer.sample(1)
+            with self.assertRaisesRegex(ValueError, "empty replay buffer"):
+                buffer.get_all()
+            with self.assertRaisesRegex(ValueError, "num_next_steps must be > 0"):
+                buffer.sample_episode_windows(1, num_next_steps=0)
+            with self.assertRaisesRegex(ValueError, "batch_size must be > 0"):
+                buffer.sample_episode_segments(0, segment_length=1)
+            with self.assertRaisesRegex(ValueError, "segment_length must be > 0"):
+                buffer.sample_episode_segments(1, segment_length=0)
+            with self.assertRaisesRegex(ValueError, "burn_in_steps must be >= 0"):
+                buffer.sample_episode_segments(1, segment_length=1, burn_in_steps=-1)
+
+            _add_direct_step(
+                buffer,
+                obs_values=(0.0,),
+                next_obs_values=(1.0,),
+                action_value=0.0,
+            )
+            with self.assertRaisesRegex(ValueError, "batch_size must be > 0"):
+                buffer.sample(0)
+        finally:
+            env.close()
+
+    def test_cpu_replay_defaults_to_eager_tensor_operations(self) -> None:
+        env = _make_env()
+        try:
+            with patch.object(replay_buffer_tensor_ops.torch, "compile") as compile_mock:
+                buffer = _make_buffer(env, capacity_per_env=2)
+
+            self.assertFalse(buffer.compile_tensor_operations)
+            compile_mock.assert_not_called()
+        finally:
+            env.close()
+
+    def test_compiled_tensor_operations_cover_add_fetch_windows_and_temporal_slots(self) -> None:
+        env = _make_env()
+        try:
+            with patch.object(
+                    replay_buffer_tensor_ops.torch,
+                    "compile",
+                    side_effect=lambda function, **_kwargs: function,
+            ) as compile_mock:
+                buffer = _make_buffer(
+                    env,
+                    capacity_per_env=3,
+                    temporal_state_store_interval=1,
+                    compile_tensor_operations=True,
+                )
+                _add_direct_step(
+                    buffer,
+                    obs_values=(0.0,),
+                    next_obs_values=(1.0,),
+                    action_value=0.0,
+                    temporal_state=_temporal_state(10.0),
+                    next_temporal_state=_temporal_state(11.0),
+                )
+                _add_direct_step(
+                    buffer,
+                    obs_values=(1.0,),
+                    next_obs_values=(2.0,),
+                    action_value=1.0,
+                    temporal_state=_temporal_state(11.0),
+                    next_temporal_state=_temporal_state(12.0),
+                )
+                flat_batch = buffer.get_all()
+                window_batch = buffer.sample_episode_windows(
+                    1,
+                    num_next_steps=2,
+                    generator=torch.Generator().manual_seed(0),
+                )
+                segment_batch = buffer.sample_episode_segments(
+                    1,
+                    segment_length=1,
+                    generator=torch.Generator().manual_seed(0),
+                )
+
+            self.assertTrue(buffer.compile_tensor_operations)
+            self.assertEqual(compile_mock.call_count, 6)
+            self.assertEqual(
+                {compile_call.args[0].__name__ for compile_call in compile_mock.call_args_list},
+                {
+                    "_gather_replay_storage",
+                    "_episode_window_indices",
+                    "_episode_segment_indices",
+                    "_episode_segment_candidate_mask",
+                    "_release_temporal_state_slots",
+                    "_allocate_temporal_state_slots",
+                },
+            )
+            compile_kwargs_by_operation = {
+                compile_call.args[0].__name__: compile_call.kwargs
+                for compile_call in compile_mock.call_args_list
+            }
+            self.assertEqual(compile_kwargs_by_operation, {
+                "_gather_replay_storage": {"fullgraph": True},
+                "_episode_window_indices": {"fullgraph": True},
+                "_episode_segment_indices": {"fullgraph": True},
+                "_episode_segment_candidate_mask": {"fullgraph": True},
+                "_release_temporal_state_slots": {"fullgraph": True, "dynamic": False},
+                "_allocate_temporal_state_slots": {"fullgraph": True, "dynamic": False},
+            })
+            self.assertEqual(flat_batch.local_obs[:, 0, 0].tolist(), [0.0, 1.0])
+            self.assertEqual(window_batch.actions.shape[1], 2)
+            self.assertIsNotNone(segment_batch.initial_temporal_state)
+        finally:
+            env.close()
+
+    def test_get_all_is_env_major_and_chronological_after_wraparound(self) -> None:
+        env = _make_multi_env((), ())
+        try:
+            buffer = _make_buffer(env, capacity_per_env=3)
+            for step in range(5):
+                _add_direct_step(
+                    buffer,
+                    obs_values=(float(step), float(100 + step)),
+                    next_obs_values=(float(step + 1), float(101 + step)),
+                    action_value=float(step),
+                )
+
+            batch = buffer.get_all()
+
+            self.assertEqual(
+                batch.local_obs[:, 0, 0].tolist(),
+                [2.0, 3.0, 4.0, 102.0, 103.0, 104.0],
+            )
+            self.assertEqual(
+                batch.next_local_obs[:, 0, 0].tolist(),
+                [3.0, 4.0, 5.0, 103.0, 104.0, 105.0],
+            )
+            self.assertEqual(batch.actions[:, 0, 0].tolist(), [2.0, 3.0, 4.0] * 2)
+        finally:
+            env.close()
+
+    def test_seeded_replacement_sampling_is_reproducible_across_every_field(self) -> None:
+        env = _make_env()
+        try:
+            buffer = _make_buffer(env, capacity_per_env=4, store_previous_actions=True)
+            for step in range(6):
+                _add_direct_step(
+                    buffer,
+                    obs_values=(float(step),),
+                    next_obs_values=(float(step + 1),),
+                    action_value=float(step),
+                    previous_action_value=float(step - 1),
+                )
+
+            first = buffer.sample(20, generator=torch.Generator().manual_seed(1234))
+            second = buffer.sample(20, generator=torch.Generator().manual_seed(1234))
+
+            for field in fields(first):
+                first_value = getattr(first, field.name)
+                second_value = getattr(second, field.name)
+                if first_value is None:
+                    self.assertIsNone(second_value)
+                else:
+                    torch.testing.assert_close(first_value, second_value)
+        finally:
+            env.close()
+
+    def test_reset_discards_ring_terminal_and_temporal_state_and_accepts_a_fresh_stream(self) -> None:
+        env = _make_env()
+        try:
+            buffer = _make_buffer(
+                env,
+                capacity_per_env=2,
+                store_previous_actions=True,
+                temporal_state_store_interval=1,
+            )
+            _add_direct_step(
+                buffer,
+                obs_values=(0.0,),
+                next_obs_values=(100.0,),
+                action_value=1.0,
+                truncations=(True,),
+                terminal_obs_values=(9.0,),
+                previous_action_value=-1.0,
+                temporal_state=_temporal_state(20.0),
+                next_temporal_state=_temporal_state(21.0),
+            )
+            self.assertTrue(buffer._terminal_obs_by_env_slot)
+            self.assertIsNotNone(buffer.temporal_states)
+
+            buffer.reset()
+
+            self.assertEqual(len(buffer), 0)
+            self.assertEqual(buffer.total_transitions_added, 0)
+            self.assertFalse(buffer.has_current_obs)
+            self.assertFalse(buffer._terminal_obs_by_env_slot)
+            self.assertIsNone(buffer.temporal_states)
+            self.assertEqual(buffer._size_per_env_tensor.item(), 0)
+            self.assertEqual(buffer._logical_transition_slot_offset.item(), 0)
+            assert buffer._temporal_state_available is not None
+            assert buffer._temporal_state_indices is not None
+            assert buffer._temporal_state_slots_in_use is not None
+            self.assertFalse(buffer._temporal_state_available.any())
+            self.assertTrue((buffer._temporal_state_indices == -1).all())
+            self.assertFalse(buffer._temporal_state_slots_in_use.any())
+
+            _add_direct_step(
+                buffer,
+                obs_values=(50.0,),
+                next_obs_values=(51.0,),
+                action_value=5.0,
+                previous_action_value=4.0,
+                temporal_state=_temporal_state(30.0),
+                next_temporal_state=_temporal_state(31.0),
+            )
+            batch = buffer.get_all()
+            self.assertFlatTransitionScalars(
+                batch,
+                local_obs=[50.0],
+                next_local_obs=[51.0],
+                actions=[5.0],
+                rewards=[5.25],
+                previous_actions=[4.0],
+                episode_start_mask=[True],
+            )
+        finally:
+            env.close()
+
+    def test_nested_temporal_state_round_trips_with_float_conversion_and_integer_preservation(self) -> None:
+        env = _make_env()
+        try:
+            buffer = OffPolicyReplayBuffer(
+                capacity_per_env=1,
+                observation_space=env.observation_space,
+                action_space=env.action_space,
+                temporal_state_store_interval=1,
+                temporal_state_storage_dtype=torch.float16,
+                storage_device="cpu",
+                train_device="cpu",
+                train_dtype=torch.float64,
+            )
+            temporal_state = {
+                "actor": (
+                    torch.full((1, 2, 1), 3.5, dtype=torch.float32),
+                    [torch.full((1, 2, 1), 7, dtype=torch.int64)],
+                ),
+            }
+            next_temporal_state = {
+                "actor": (
+                    torch.full((1, 2, 1), 4.5, dtype=torch.float32),
+                    [torch.full((1, 2, 1), 8, dtype=torch.int64)],
+                ),
+            }
+            _add_direct_step(
+                buffer,
+                obs_values=(0.0,),
+                next_obs_values=(1.0,),
+                action_value=0.0,
+                temporal_state=temporal_state,
+                next_temporal_state=next_temporal_state,
+            )
+
+            batch = buffer.sample_episode_segments(1, segment_length=1)
+            restored_state = batch.initial_temporal_state
+
+            self.assertIsInstance(restored_state, dict)
+            self.assertEqual(restored_state["actor"][0].dtype, torch.float64)
+            self.assertEqual(restored_state["actor"][1][0].dtype, torch.int64)
+            torch.testing.assert_close(
+                restored_state["actor"][0],
+                torch.full((1, 2, 1), 3.5, dtype=torch.float64),
+            )
+            torch.testing.assert_close(
+                restored_state["actor"][1][0],
+                torch.full((1, 2, 1), 7, dtype=torch.int64),
+            )
+        finally:
+            env.close()
+
+    def test_storage_and_training_dtypes_are_applied_to_all_sampled_float_fields(self) -> None:
+        env = _make_env()
+        try:
+            buffer = OffPolicyReplayBuffer(
+                capacity_per_env=1,
+                observation_space=env.observation_space,
+                action_space=env.action_space,
+                store_previous_actions=True,
+                storage_device="cpu",
+                storage_dtype=torch.float16,
+                train_device="cpu",
+                train_dtype=torch.float64,
+            )
+            _add_direct_step(
+                buffer,
+                obs_values=(0.0,),
+                next_obs_values=(1.0,),
+                action_value=2.0,
+                previous_action_value=1.0,
+            )
+
+            batch = buffer.get_all()
+
+            self.assertEqual(buffer.local_obs.dtype, torch.float16)
+            self.assertEqual(buffer.actions.dtype, torch.float16)
+            for field_name in (
+                    "local_obs",
+                    "global_obs",
+                    "hidden_local_vars",
+                    "hidden_global_vars",
+                    "actions",
+                    "rewards",
+                    "previous_actions",
+                    "next_local_obs",
+                    "next_global_obs",
+                    "next_hidden_local_vars",
+                    "next_hidden_global_vars",
+            ):
+                self.assertEqual(getattr(batch, field_name).dtype, torch.float64)
+            self.assertEqual(batch.terminations.dtype, torch.bool)
+            self.assertEqual(batch.truncations.dtype, torch.bool)
+        finally:
+            env.close()
+
     def test_storage_pin_memory_requires_cpu_storage(self) -> None:
         env = _make_env()
         try:
@@ -556,6 +962,7 @@ class OffPolicyReplayTests(unittest.TestCase):
             buffer = _make_buffer(
                 env,
                 capacity_per_env=2,
+                temporal_state_store_interval=1,
                 storage_device="cuda",
                 train_device="cpu",
             )
@@ -566,19 +973,114 @@ class OffPolicyReplayTests(unittest.TestCase):
                 terminations=torch.tensor([False]),
                 truncations=torch.tensor([False]),
                 next_obs=_obs(1.0),
+                temporal_state=_temporal_state(0.0),
+                next_temporal_state=_temporal_state(1.0),
             )
             generator = torch.Generator(device="cpu").manual_seed(7)
 
             batch = buffer.sample(1, generator=generator)
+            window_batch = buffer.sample_episode_windows(
+                1,
+                num_next_steps=2,
+                generator=generator,
+            )
             segment_batch = buffer.sample_episode_segments(
                 1,
                 segment_length=1,
-                require_initial_temporal_state=False,
                 generator=generator,
             )
 
             self.assertEqual(batch.actions.device.type, "cpu")
+            self.assertEqual(window_batch.actions.device.type, "cpu")
+            self.assertEqual(window_batch.train_mask.tolist(), [[True, False]])
             self.assertEqual(segment_batch.actions.device.type, "cpu")
+            self.assertEqual(segment_batch.initial_temporal_state.device.type, "cpu")
+        finally:
+            env.close()
+
+    @unittest.skipUnless(torch.cuda.is_available(), "requires CUDA replay storage")
+    def test_compiled_cuda_replay_matches_eager_after_wraparound_and_episode_boundaries(self) -> None:
+        env = _make_env()
+        try:
+            buffers = [
+                _make_buffer(
+                    env,
+                    capacity_per_env=4,
+                    store_previous_actions=True,
+                    temporal_state_store_interval=2,
+                    storage_device="cuda",
+                    train_device="cpu",
+                    compile_tensor_operations=compile_tensor_operations,
+                )
+                for compile_tensor_operations in (False, True)
+            ]
+            for step in range(7):
+                termination = step == 2
+                truncation = step == 5
+                for buffer in buffers:
+                    _add_direct_step(
+                        buffer,
+                        obs_values=(float(step),),
+                        next_obs_values=(float(step + 1),),
+                        action_value=float(step),
+                        terminations=(termination,),
+                        truncations=(truncation,),
+                        terminal_obs_values=(float(100 + step),) if termination or truncation else None,
+                        previous_action_value=float(step - 1),
+                        temporal_state=_temporal_state(float(10 + step)),
+                        next_temporal_state=_temporal_state(float(11 + step)),
+                    )
+
+            def assert_batches_equal(first: Any, second: Any) -> None:
+                self.assertIs(type(first), type(second))
+                for field in fields(first):
+                    first_value = getattr(first, field.name)
+                    second_value = getattr(second, field.name)
+                    if first_value is None:
+                        self.assertIsNone(second_value)
+                    elif torch.is_tensor(first_value):
+                        torch.testing.assert_close(first_value, second_value)
+                    else:
+                        self.assertEqual(first_value, second_value)
+
+            eager_buffer, compiled_buffer = buffers
+            assert_batches_equal(eager_buffer.get_all(), compiled_buffer.get_all())
+
+            all_indices = torch.arange(len(eager_buffer), device="cuda")
+            assert_batches_equal(
+                eager_buffer._fetch_episode_windows(all_indices, num_next_steps=4),
+                compiled_buffer._fetch_episode_windows(all_indices, num_next_steps=4),
+            )
+
+            eager_candidates = eager_buffer._replay_segment_candidates(
+                total_sequence_length=3,
+                require_initial_temporal_state=True,
+                allow_episode_boundaries=True,
+            )
+            compiled_candidates = compiled_buffer._replay_segment_candidates(
+                total_sequence_length=3,
+                require_initial_temporal_state=True,
+                allow_episode_boundaries=True,
+            )
+            for eager_indices, compiled_indices in zip(eager_candidates, compiled_candidates, strict=True):
+                torch.testing.assert_close(eager_indices.cpu(), compiled_indices.cpu())
+
+            segment_kwargs = {
+                "batch_size": int(eager_candidates[0].numel()),
+                "segment_length": 2,
+                "burn_in_steps": 1,
+                "replacement": False,
+                "allow_episode_boundaries": True,
+            }
+            eager_segment = eager_buffer.sample_episode_segments(
+                **segment_kwargs,
+                generator=torch.Generator().manual_seed(123),
+            )
+            compiled_segment = compiled_buffer.sample_episode_segments(
+                **segment_kwargs,
+                generator=torch.Generator().manual_seed(123),
+            )
+            assert_batches_equal(eager_segment, compiled_segment)
         finally:
             env.close()
 
@@ -1690,6 +2192,84 @@ class OffPolicyReplayTests(unittest.TestCase):
                 1.0: [True, False],
                 2.0: [False, False],
             })
+        finally:
+            env.close()
+
+    def test_episode_segment_candidates_exhaustively_respect_wrapped_episode_boundaries(self) -> None:
+        env = _make_env()
+        try:
+            capacity = 4
+            for done_bits in range(1 << capacity):
+                with self.subTest(done_bits=f"{done_bits:0{capacity}b}"):
+                    buffer = _make_buffer(env, capacity_per_env=capacity)
+                    retained_episode_ends = [bool(done_bits & (1 << idx)) for idx in range(capacity)]
+                    all_episode_ends = [False, False, *retained_episode_ends]
+                    for step, episode_end in enumerate(all_episode_ends):
+                        _add_direct_step(
+                            buffer,
+                            obs_values=(float(step),),
+                            next_obs_values=(float(step + 1),),
+                            action_value=float(step),
+                            terminations=(episode_end and step % 2 == 0,),
+                            truncations=(episode_end and step % 2 == 1,),
+                            terminal_obs_values=(float(step + 0.5),) if episode_end else None,
+                        )
+
+                    for sequence_length in range(1, capacity + 1):
+                        _env_indices, logical_starts = buffer._replay_segment_candidates(
+                            total_sequence_length=sequence_length,
+                            require_initial_temporal_state=False,
+                            allow_episode_boundaries=False,
+                        )
+                        expected_starts = [
+                            start
+                            for start in range(capacity - sequence_length + 1)
+                            if not any(retained_episode_ends[start:start + sequence_length - 1])
+                        ]
+                        self.assertEqual(logical_starts.tolist(), expected_starts)
+
+                        _env_indices, cross_boundary_starts = buffer._replay_segment_candidates(
+                            total_sequence_length=sequence_length,
+                            require_initial_temporal_state=False,
+                            allow_episode_boundaries=True,
+                        )
+                        self.assertEqual(
+                            cross_boundary_starts.tolist(),
+                            list(range(capacity - sequence_length + 1)),
+                        )
+        finally:
+            env.close()
+
+    def test_wrapped_segment_candidates_only_start_at_live_temporal_checkpoints(self) -> None:
+        env = _make_env()
+        try:
+            buffer = _make_buffer(
+                env,
+                capacity_per_env=5,
+                temporal_state_store_interval=2,
+            )
+            for step in range(8):
+                _add_direct_step(
+                    buffer,
+                    obs_values=(float(step),),
+                    next_obs_values=(float(step + 1),),
+                    action_value=float(step),
+                    temporal_state=_temporal_state(float(step)),
+                    next_temporal_state=_temporal_state(float(step + 1)),
+                )
+
+            batch = buffer.sample_episode_segments(
+                2,
+                segment_length=2,
+                replacement=False,
+            )
+
+            self.assertEqual(sorted(batch.local_obs[:, 0, 0, 0].tolist()), [4.0, 6.0])
+            self.assertIsInstance(batch.initial_temporal_state, torch.Tensor)
+            self.assertEqual(
+                sorted(batch.initial_temporal_state[:, 0, 0].tolist()),
+                [4.0, 6.0],
+            )
         finally:
             env.close()
 

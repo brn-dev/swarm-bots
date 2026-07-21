@@ -7,6 +7,11 @@ from typing import Any
 import pytest
 import torch
 
+from swarmbots.mjw_env.mjw_env_tensor_ops import (
+    MJWActionLayout,
+    MJWObservationLayout,
+    build_mjw_env_tensor_operations,
+)
 from swarmbots.mjw_env.mjw_swarm_bots_vector_env import (
     MJWSwarmBotsVectorEnv,
     _resolve_torch_device,
@@ -99,6 +104,27 @@ def _make_uninitialized_env(*, use_settled_resets: bool = True) -> tuple[MJWSwar
     env._settle_executor = None
     env._live_episode_recorder = _FakeLiveEpisodeRecorder()
     env._continuous_connector_actions = False
+    env._tensor_operations = build_mjw_env_tensor_operations(
+        observation_layout=MJWObservationLayout(
+            num_envs=4,
+            num_agents=1,
+            num_connectors=1,
+            free_joint_position=slice(0, 3),
+            free_joint_rotation=slice(3, 7),
+            hinge=slice(7, 9),
+            qvel=slice(9, 17),
+            connector=slice(17, 22),
+            connector_position=slice(22, 25),
+            use_rot6d=False,
+            include_connector_positions=False,
+        ),
+        action_layout=MJWActionLayout(
+            num_envs=4,
+            continuous_connectors=False,
+        ),
+        compile_operations=False,
+        compile_mode="default",
+    )
     return env, runtime
 
 

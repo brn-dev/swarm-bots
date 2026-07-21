@@ -11,6 +11,10 @@ _docs
 uv.lock
 .ref/flashrnn-main
 .uv-cache/
+.tmp_tests/
+.test-tmp/
+.torchinductor/
+.torchinductor_cache/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
