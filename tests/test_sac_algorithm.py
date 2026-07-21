@@ -484,6 +484,36 @@ class SACTests(unittest.TestCase):
         finally:
             env.close()
 
+    @unittest.skipUnless(torch.cuda.is_available(), "requires CUDA")
+    def test_indexless_cuda_train_device_does_not_replace_entropy_optimizer(self) -> None:
+        env = _make_env()
+        try:
+            algo = SAC(
+                policy=_make_policy(env),
+                env=env,
+                learning_rate=1e-3,
+                buffer_capacity_per_env=4,
+                learning_starts=0,
+                batch_size=2,
+                ent_coef="auto_0.1",
+                train_device="cuda",
+                rollout_device="cpu",
+                replay_storage_device="cpu",
+                sac_compile_optimizer_steps=False,
+            )
+            entropy_optimizer = algo.ent_coef_optimizer
+            entropy_coefficient = algo.log_ent_coef
+            assert entropy_optimizer is not None
+            assert entropy_coefficient is not None
+            self.assertEqual(algo.train_device, entropy_coefficient.device)
+
+            algo._move_entropy_tensors_to_train_device()
+
+            self.assertIs(algo.ent_coef_optimizer, entropy_optimizer)
+            self.assertIs(algo.log_ent_coef, entropy_coefficient)
+        finally:
+            env.close()
+
     def test_compiled_actor_and_critic_optimizer_steps_wait_for_learning_rate_warmup(self) -> None:
         env = _make_env()
         try:

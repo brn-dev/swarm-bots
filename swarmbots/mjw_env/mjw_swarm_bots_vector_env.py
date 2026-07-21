@@ -32,6 +32,7 @@ from swarmbots.learn.discord_notifications import (
     notify_mjw_simulation_instability_once,
 )
 from swarmbots.learn.tensor_conversion import to_numpy_array
+from swarmbots.learn.torch_device import as_device as _resolve_torch_device
 from swarmbots.utils.recording_resolution import DEFAULT_RECORDING_HEIGHT, DEFAULT_RECORDING_WIDTH
 
 
@@ -90,13 +91,6 @@ def _resolve_workspace_cap(
     if scenario_value is not None:
         return int(scenario_value)
     return int(fallback_value)
-
-
-def _resolve_torch_device(device: str | torch.device) -> torch.device:
-    resolved_device = torch.device(device)
-    if resolved_device.type == "cuda" and resolved_device.index is None:
-        return torch.device("cuda", torch.cuda.current_device())
-    return resolved_device
 
 
 class _SettledResetSnapshotBuffer:
