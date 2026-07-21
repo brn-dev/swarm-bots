@@ -65,6 +65,7 @@ def run_experiment(
         rmat_temporal_residual=False,
         rmat_temporal_layer_norm=False,
         rmat_use_temporal_output_projection=not is_recurrent,
+        rmat_experimental_compile_lstm=temporal_model_variant == "lstm",
     )
 
 
