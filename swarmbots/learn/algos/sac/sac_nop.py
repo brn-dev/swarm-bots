@@ -310,37 +310,10 @@ class SACNOPModule(nn.Module, NextObsPredMixin):
         if not self.config.compile_mode:
             raise ValueError("SACNOPConfig.compile_mode must be a non-empty string when compile_modules=True.")
 
-        self.pre_transition_transform = self._compile_module(self.pre_transition_transform)
-        self.transition_model = self._compile_module(self.transition_model)
-        self.pre_predictors_transform = self._compile_module(self.pre_predictors_transform)
-        if self.local_scalars_predictor is not None:
-            self.local_scalars_predictor = self._compile_module(self.local_scalars_predictor)
-        if self.local_angles_predictor is not None:
-            self.local_angles_predictor = self._compile_module(self.local_angles_predictor)
-        if self.local_rot6ds_predictor is not None:
-            self.local_rot6ds_predictor = self._compile_module(self.local_rot6ds_predictor)
-        if self.local_binaries_predictor is not None:
-            self.local_binaries_predictor = self._compile_module(self.local_binaries_predictor)
-        if self.global_pool_encoder is not None:
-            self.global_pool_encoder = self._compile_module(self.global_pool_encoder)
-        if self.global_scalars_predictor is not None:
-            self.global_scalars_predictor = self._compile_module(self.global_scalars_predictor)
-        if self.global_rot6ds_predictor is not None:
-            self.global_rot6ds_predictor = self._compile_module(self.global_rot6ds_predictor)
         self._compute_next_obs_pred_loss_fn = torch.compile(
             self._compute_next_obs_pred_loss_impl,
             mode=self.config.compile_mode,
-            fullgraph=False,
-            dynamic=False,
-        )
-
-    def _compile_module(self, module: nn.Module) -> nn.Module:
-        if isinstance(module, nn.Identity):
-            return module
-        return torch.compile(
-            module,
-            mode=self.config.compile_mode,
-            fullgraph=False,
+            fullgraph=True,
             dynamic=False,
         )
 

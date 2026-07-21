@@ -1,9 +1,9 @@
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 import torch
 from loguru import logger
-from torch.nn import functional as F
 
 from swarmbots.learn.action_dists.action_dist import ActionMetricsSplitterInput
 from swarmbots.learn.algos.base_algorithm import BaseAlgorithm, LearningRate
@@ -19,6 +19,10 @@ from swarmbots.learn.algos.off_policy.replay_buffer import (
     OffPolicyReplayEpisodeSegmentBatch,
 )
 from swarmbots.learn.algos.sac.base_sac_policy import BaseSACPolicy
+from swarmbots.learn.algos.sac.sac_tensor_ops import (
+    build_optimizer_step,
+    build_sac_tensor_operations,
+)
 from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
 from swarmbots.learn.exponential_moving_average import ExponentialMovingAverage
 from swarmbots.learn.gsde_reset import (
@@ -71,6 +75,10 @@ class SAC(BaseAlgorithm):
             record_device: str | torch.device | None = None,
             replay_storage_device: str | torch.device = "cuda",
             replay_storage_pin_memory: bool = False,
+            replay_compile_tensor_operations: bool | None = None,
+            sac_compile_tensor_operations: bool | None = None,
+            sac_compile_optimizer_steps: bool | None = None,
+            sac_compile_mode: str = "default",
             metrics_action_splitters: ActionMetricsSplitterInput = None,
     ) -> None:
         if not isinstance(learning_rate, float):
@@ -115,6 +123,22 @@ class SAC(BaseAlgorithm):
         self.record_device = self.rollout_device if record_device is None else as_device(record_device)
         self.replay_storage_device = as_device(replay_storage_device)
         self.replay_storage_pin_memory = bool(replay_storage_pin_memory)
+        self.replay_compile_tensor_operations = replay_compile_tensor_operations
+        self.sac_compile_tensor_operations = (
+            self.train_device.type == "cuda"
+            if sac_compile_tensor_operations is None
+            else bool(sac_compile_tensor_operations)
+        )
+        self.sac_compile_optimizer_steps = (
+            self.train_device.type == "cuda"
+            if sac_compile_optimizer_steps is None
+            else bool(sac_compile_optimizer_steps)
+        )
+        self.sac_compile_mode = sac_compile_mode
+        self._tensor_operations = build_sac_tensor_operations(
+            compile_operations=self.sac_compile_tensor_operations,
+            compile_mode=self.sac_compile_mode,
+        )
         self.metrics_action_splitters = metrics_action_splitters
         self.agent_action_dim = int(env.action_space.total_agent_action_dim)
         self._rollout_state: OffPolicyRolloutState | None = None
@@ -130,6 +154,7 @@ class SAC(BaseAlgorithm):
         self.ent_coef_tensor: torch.Tensor | None = None
         self.ent_coef_optimizer: torch.optim.Optimizer | None = None
         self._setup_entropy_coefficient()
+        self._rebuild_optimizer_steps()
         self._policy_num_params = self.policy.num_parameters(learnable_only=False)
         self._policy_num_trainable_params = self.policy.num_parameters()
 
@@ -144,6 +169,7 @@ class SAC(BaseAlgorithm):
             storage_pin_memory=self.replay_storage_pin_memory,
             train_device=self.train_device,
             train_dtype=torch.float32,
+            compile_tensor_operations=self.replay_compile_tensor_operations,
         )
 
     def get_hyper_parameters(self) -> dict[str, Any]:
@@ -175,6 +201,10 @@ class SAC(BaseAlgorithm):
             "record_device": str(self.record_device),
             "replay_storage_device": str(self.replay_storage_device),
             "replay_storage_pin_memory": self.replay_storage_pin_memory,
+            "replay_compile_tensor_operations": self.replay_buffer.compile_tensor_operations,
+            "sac_compile_tensor_operations": self.sac_compile_tensor_operations,
+            "sac_compile_optimizer_steps": self.sac_compile_optimizer_steps,
+            "sac_compile_mode": self.sac_compile_mode,
             "policy_num_params": self._policy_num_params,
             "policy_num_trainable_params": self._policy_num_trainable_params,
         }
@@ -385,34 +415,19 @@ class SAC(BaseAlgorithm):
         )
 
         with torch.no_grad():
-            bootstrap_next_local_obs = self._replace_terminal_rows(
+            (
+                bootstrap_next_local_obs,
+                bootstrap_next_global_obs,
+                bootstrap_next_hidden_local_vars,
+                bootstrap_next_hidden_global_vars,
+                bootstrap_next_agent_mask,
+            ) = self._tensor_operations.mask_terminal_observations(
+                batch.terminal_mask,
                 batch.next_local_obs,
-                terminal_mask=batch.terminal_mask,
-                value=0.0,
-            )
-            bootstrap_next_global_obs = self._replace_terminal_rows(
                 batch.next_global_obs,
-                terminal_mask=batch.terminal_mask,
-                value=0.0,
-            )
-            bootstrap_next_hidden_local_vars = self._replace_terminal_rows(
                 batch.next_hidden_local_vars,
-                terminal_mask=batch.terminal_mask,
-                value=0.0,
-            )
-            bootstrap_next_hidden_global_vars = self._replace_terminal_rows(
                 batch.next_hidden_global_vars,
-                terminal_mask=batch.terminal_mask,
-                value=0.0,
-            )
-            bootstrap_next_agent_mask = (
-                None
-                if batch.next_agent_mask is None
-                else self._replace_terminal_rows(
-                    batch.next_agent_mask,
-                    terminal_mask=batch.terminal_mask,
-                    value=True,
-                )
+                batch.next_agent_mask,
             )
             self._reset_train_gsde_noise(bootstrap_next_local_obs)
             next_actions, next_log_probs = self.policy.action_log_prob(
@@ -434,11 +449,14 @@ class SAC(BaseAlgorithm):
                 agent_mask=bootstrap_next_agent_mask,
                 actions=next_actions,
             )
-            next_q = torch.minimum(target_q1, target_q2) - ent_coef * next_log_prob_mean
-            target_q = torch.where(
-                batch.terminal_mask,
+            target_q = self._tensor_operations.bellman_target(
                 batch.rewards,
-                batch.rewards + self.gamma * next_q,
+                batch.terminal_mask,
+                target_q1,
+                target_q2,
+                next_log_prob_mean,
+                ent_coef,
+                self.gamma,
             )
 
         current_q1, current_q2, critic_nop_latents = self.policy.q_values_with_nop_latents(
@@ -449,9 +467,10 @@ class SAC(BaseAlgorithm):
             agent_mask=batch.agent_mask,
             actions=batch.actions,
         )
-        critic_loss = 0.5 * (
-            F.mse_loss(current_q1, target_q)
-            + F.mse_loss(current_q2, target_q)
+        critic_loss = self._tensor_operations.critic_loss(
+            current_q1,
+            current_q2,
+            target_q,
         )
         if skip_multi_step_nop_loss:
             critic_nop_loss, critic_nop_metrics = None, {"nop_loss_skipped": 1.0}
@@ -467,7 +486,11 @@ class SAC(BaseAlgorithm):
         self.critic_optimizer.zero_grad()
         critic_total_loss.backward()
         critic_grad_norm = self._clip_grad_norm(self.policy.critic_parameters())
-        self.critic_optimizer.step()
+        self._step_actor_or_critic_optimizer(
+            optimizer=self.critic_optimizer,
+            compiled_step=self._critic_optimizer_step,
+            global_update_idx=global_update_idx,
+        )
 
         critic_parameters = self.policy.critic_parameters()
         self._set_requires_grad(critic_parameters, False)
@@ -480,7 +503,12 @@ class SAC(BaseAlgorithm):
                 agent_mask=batch.agent_mask,
                 actions=actions_pi,
             )
-            actor_loss = (ent_coef * log_prob_pi_mean - torch.minimum(q1_pi, q2_pi)).mean()
+            actor_loss = self._tensor_operations.actor_loss(
+                q1_pi,
+                q2_pi,
+                log_prob_pi_mean,
+                ent_coef,
+            )
         finally:
             self._set_requires_grad(critic_parameters, True)
 
@@ -497,7 +525,11 @@ class SAC(BaseAlgorithm):
         self.actor_optimizer.zero_grad()
         actor_total_loss.backward()
         actor_grad_norm = self._clip_grad_norm(self.policy.actor_parameters())
-        self.actor_optimizer.step()
+        self._step_actor_or_critic_optimizer(
+            optimizer=self.actor_optimizer,
+            compiled_step=self._actor_optimizer_step,
+            global_update_idx=global_update_idx,
+        )
 
         if global_update_idx % self.target_update_interval == 0:
             self.policy.polyak_update_targets(self.tau)
@@ -568,11 +600,16 @@ class SAC(BaseAlgorithm):
             return self.ent_coef_tensor, None
 
         target_entropy = self._target_entropy(batch=batch, dtype=log_prob_mean.dtype, device=log_prob_mean.device)
-        ent_coef_loss = -(self.log_ent_coef * (log_prob_mean + target_entropy).detach()).mean()
+        ent_coef_loss = self._tensor_operations.entropy_coefficient_loss(
+            self.log_ent_coef,
+            log_prob_mean,
+            target_entropy,
+        )
         assert self.ent_coef_optimizer is not None
         self.ent_coef_optimizer.zero_grad()
         ent_coef_loss.backward()
-        self.ent_coef_optimizer.step()
+        assert self._ent_coef_optimizer_step is not None
+        self._ent_coef_optimizer_step()
         return self.log_ent_coef.detach().exp(), ent_coef_loss.detach()
 
     def _target_entropy(
@@ -625,21 +662,7 @@ class SAC(BaseAlgorithm):
             log_probs: torch.Tensor,
             agent_mask: torch.Tensor | None,
     ) -> torch.Tensor:
-        if agent_mask is None:
-            return log_probs.mean(dim=1)
-        log_prob_sums = log_probs.masked_fill(~agent_mask, 0.0).sum(dim=1)
-        active_agent_counts = agent_mask.to(dtype=log_probs.dtype).sum(dim=1)
-        return log_prob_sums / active_agent_counts
-
-    @staticmethod
-    def _replace_terminal_rows(
-            tensor: torch.Tensor,
-            *,
-            terminal_mask: torch.Tensor,
-            value: bool | float,
-    ) -> torch.Tensor:
-        row_mask = terminal_mask.reshape((-1,) + (1,) * (tensor.ndim - 1))
-        return tensor.masked_fill(row_mask, value)
+        return self._tensor_operations.mean_agent_log_probs(log_probs, agent_mask)
 
     def _compute_actor_action_dist_extra_losses(
             self,
@@ -700,6 +723,42 @@ class SAC(BaseAlgorithm):
             for param_group in optimizer.param_groups:
                 param_group["lr"] = lr
         return lr
+
+    def _step_actor_or_critic_optimizer(
+            self,
+            *,
+            optimizer: torch.optim.Optimizer,
+            compiled_step: Callable[[], None],
+            global_update_idx: int,
+    ) -> None:
+        if (
+                self.sac_compile_optimizer_steps
+                and global_update_idx >= self.learning_rate_warmup_updates
+        ):
+            compiled_step()
+            return
+        optimizer.step()
+
+    def _rebuild_optimizer_steps(self) -> None:
+        self._actor_optimizer_step = build_optimizer_step(
+            self.actor_optimizer,
+            compile_step=self.sac_compile_optimizer_steps,
+            compile_mode=self.sac_compile_mode,
+        )
+        self._critic_optimizer_step = build_optimizer_step(
+            self.critic_optimizer,
+            compile_step=self.sac_compile_optimizer_steps,
+            compile_mode=self.sac_compile_mode,
+        )
+        self._ent_coef_optimizer_step = (
+            None
+            if self.ent_coef_optimizer is None
+            else build_optimizer_step(
+                self.ent_coef_optimizer,
+                compile_step=self.sac_compile_optimizer_steps,
+                compile_mode=self.sac_compile_mode,
+            )
+        )
 
     def _actor_critic_learning_rate_for_update(self, update_idx: int) -> float:
         if self.learning_rate_warmup_updates <= 0:
@@ -885,14 +944,18 @@ class SAC(BaseAlgorithm):
         return metrics
 
     def _move_entropy_tensors_to_train_device(self) -> None:
+        optimizer_replaced = False
         if self.log_ent_coef is not None and self.log_ent_coef.device != self.train_device:
             self.log_ent_coef = self.log_ent_coef.detach().to(self.train_device).requires_grad_(True)
             self.ent_coef_optimizer = torch.optim.Adam(
                 [self.log_ent_coef],
                 lr=self._resolved_ent_coef_learning_rate(),
             )
+            optimizer_replaced = True
         if self.ent_coef_tensor is not None and self.ent_coef_tensor.device != self.train_device:
             self.ent_coef_tensor = self.ent_coef_tensor.to(self.train_device)
+        if optimizer_replaced:
+            self._rebuild_optimizer_steps()
 
     @staticmethod
     def _serialize_gsde_reset_mode(mode: GSDEResetMode | None) -> dict[str, Any] | None:
@@ -977,6 +1040,7 @@ class SAC(BaseAlgorithm):
         self._move_optimizer_state_to_device(self.critic_optimizer, self.train_device)
         if self.ent_coef_optimizer is not None:
             self._move_optimizer_state_to_device(self.ent_coef_optimizer, self.train_device)
+        self._rebuild_optimizer_steps()
 
     def _apply_learning_rate(self, lr: LearningRate) -> None:
         assert isinstance(lr, float)
@@ -1043,6 +1107,7 @@ class SAC(BaseAlgorithm):
             self.ent_coef = ent_coef
             self.log_ent_coef = None
             self.ent_coef_optimizer = None
+            self._ent_coef_optimizer_step = None
             self.ent_coef_tensor = torch.tensor(ent_coef, device=self.train_device, dtype=torch.float32)
             logger.warning(f"Setting fixed ent_coef to {ent_coef}")
             return True

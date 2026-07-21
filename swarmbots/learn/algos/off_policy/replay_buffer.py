@@ -5,6 +5,9 @@ from typing import Any
 import torch
 from gymnasium import spaces
 
+from swarmbots.learn.algos.off_policy.replay_buffer_tensor_ops import (
+    build_replay_buffer_tensor_operations,
+)
 from swarmbots.learn.hybrid_action_space import VectorHybridActionSpace
 from swarmbots.learn.torch_device import as_device
 
@@ -126,6 +129,7 @@ class OffPolicyReplayBuffer:
             train_device: torch.device | str = "auto",
             train_dtype: torch.dtype = torch.float32,
             non_blocking_train_transfer: bool | None = None,
+            compile_tensor_operations: bool | None = None,
     ) -> None:
         if capacity_per_env <= 0:
             raise ValueError(f"capacity_per_env must be > 0, got {capacity_per_env}")
@@ -166,6 +170,14 @@ class OffPolicyReplayBuffer:
             self.storage_pin_memory and self.train_device.type == "cuda"
             if non_blocking_train_transfer is None
             else non_blocking_train_transfer
+        )
+        self.compile_tensor_operations = (
+            self.storage_device.type == "cuda"
+            if compile_tensor_operations is None
+            else compile_tensor_operations
+        )
+        self._tensor_operations = build_replay_buffer_tensor_operations(
+            compile_operations=self.compile_tensor_operations,
         )
 
         self.local_obs_space = observation_space["local_obs"]
@@ -261,6 +273,12 @@ class OffPolicyReplayBuffer:
         self._terminal_obs_by_env_slot: dict[tuple[int, int], dict[str, torch.Tensor]] = {}
         self._terminal_envs_by_transition_slot: list[set[int]] = [set() for _ in range(self.capacity_per_env)]
         self._size_per_env = 0
+        self._size_per_env_tensor = torch.zeros((), dtype=torch.long, device=self.storage_device)
+        self._logical_transition_slot_offset = torch.zeros(
+            (),
+            dtype=torch.long,
+            device=self.storage_device,
+        )
         self._has_current_obs = False
         self._current_episode_start_mask: MaybeTensor = None
         if temporal_state_store_interval is not None:
@@ -302,6 +320,8 @@ class OffPolicyReplayBuffer:
         for terminal_envs in self._terminal_envs_by_transition_slot:
             terminal_envs.clear()
         self._size_per_env = 0
+        self._size_per_env_tensor.zero_()
+        self._logical_transition_slot_offset.zero_()
         self._has_current_obs = False
         if self._current_episode_start_mask is not None:
             self._current_episode_start_mask.fill_(True)
@@ -399,7 +419,11 @@ class OffPolicyReplayBuffer:
                 self.previous_actions[:, slot] = previous_actions.to(device=self.storage_device, dtype=self.storage_dtype)
 
         self._write_slot = (slot + 1) % self.capacity_per_env
-        self._size_per_env = min(self._size_per_env + 1, self.capacity_per_env)
+        if self._size_per_env < self.capacity_per_env:
+            self._size_per_env += 1
+            self._size_per_env_tensor.fill_(self._size_per_env)
+        if self._size_per_env == self.capacity_per_env:
+            self._logical_transition_slot_offset.fill_(self._write_slot)
         self._has_current_obs = True
         if self._current_episode_start_mask is not None:
             self._current_episode_start_mask = dones.to(device=self.storage_device, dtype=torch.bool)
@@ -489,8 +513,12 @@ class OffPolicyReplayBuffer:
         env_indices = candidate_env_indices[candidate_indices]
         logical_starts = candidate_logical_starts[candidate_indices]
         sequence_offsets = torch.arange(total_sequence_length, dtype=torch.long, device=self.storage_device)
-        logical_sequence_slots = logical_starts.unsqueeze(1) + sequence_offsets.unsqueeze(0)
-        flat_indices = (env_indices.unsqueeze(1) * self._size_per_env + logical_sequence_slots).reshape(-1)
+        flat_indices = self._tensor_operations.episode_segment_indices(
+            env_indices,
+            logical_starts,
+            self._size_per_env_tensor,
+            sequence_offsets,
+        )
         flat_batch = self._fetch_indices(flat_indices)
 
         initial_temporal_state = None
@@ -697,21 +725,46 @@ class OffPolicyReplayBuffer:
         return tensor[source_env_indices].to(device=self.storage_device, dtype=dtype)
 
     def _fetch_indices(self, indices: torch.Tensor) -> OffPolicyReplayBatch:
-        env_indices = torch.div(indices, self._size_per_env, rounding_mode="floor")
-        logical_transition_slots = indices.remainder(self._size_per_env)
-        transition_slots = self._logical_to_transition_slots(logical_transition_slots)
-        obs_slots = self._transition_obs_slots[env_indices, transition_slots]
-        next_obs_slots = self._transition_next_obs_slots[env_indices, transition_slots]
-        terminations = self.terminations[env_indices, transition_slots]
-        truncations = self.truncations[env_indices, transition_slots]
+        (
+            env_indices,
+            transition_slots,
+            local_obs,
+            global_obs,
+            hidden_local_vars,
+            hidden_global_vars,
+            agent_mask,
+            actions,
+            rewards,
+            terminations,
+            truncations,
+            previous_actions,
+            next_local_obs,
+            next_global_obs,
+            next_hidden_local_vars,
+            next_hidden_global_vars,
+            next_agent_mask,
+            episode_start_mask,
+        ) = self._tensor_operations.gather_replay_storage(
+            indices,
+            self._size_per_env_tensor,
+            self._logical_transition_slot_offset,
+            self.capacity_per_env,
+            self._transition_obs_slots,
+            self._transition_next_obs_slots,
+            self.local_obs,
+            self.global_obs,
+            self.hidden_local_vars,
+            self.hidden_global_vars,
+            self.agent_mask,
+            self.actions,
+            self.rewards,
+            self.terminations,
+            self.truncations,
+            self.previous_actions,
+            self.episode_starts,
+        )
         dones = torch.logical_or(terminations, truncations)
 
-        actions = self._to_train(self.actions[env_indices, transition_slots])
-        next_local_obs = self.local_obs[env_indices, next_obs_slots]
-        next_global_obs = self.global_obs[env_indices, next_obs_slots]
-        next_hidden_local_vars = self.hidden_local_vars[env_indices, next_obs_slots]
-        next_hidden_global_vars = self.hidden_global_vars[env_indices, next_obs_slots]
-        next_agent_mask = None if self.agent_mask is None else self.agent_mask[env_indices, next_obs_slots]
         self._replace_done_next_obs_with_terminal_obs_(
             dones=dones,
             env_indices=env_indices,
@@ -724,28 +777,26 @@ class OffPolicyReplayBuffer:
         )
 
         return OffPolicyReplayBatch(
-            local_obs=self._to_train(self.local_obs[env_indices, obs_slots]),
-            global_obs=self._to_train(self.global_obs[env_indices, obs_slots]),
-            hidden_local_vars=self._to_train(self.hidden_local_vars[env_indices, obs_slots]),
-            hidden_global_vars=self._to_train(self.hidden_global_vars[env_indices, obs_slots]),
-            agent_mask=None if self.agent_mask is None else self._to_train(
-                self.agent_mask[env_indices, obs_slots],
+            local_obs=self._to_train(local_obs),
+            global_obs=self._to_train(global_obs),
+            hidden_local_vars=self._to_train(hidden_local_vars),
+            hidden_global_vars=self._to_train(hidden_global_vars),
+            agent_mask=None if agent_mask is None else self._to_train(
+                agent_mask,
                 dtype=torch.bool,
             ),
-            actions=actions,
-            rewards=self._to_train(self.rewards[env_indices, transition_slots]),
+            actions=self._to_train(actions),
+            rewards=self._to_train(rewards),
             terminations=self._to_train(terminations, dtype=torch.bool),
             truncations=self._to_train(truncations, dtype=torch.bool),
-            previous_actions=None if self.previous_actions is None else self._to_train(
-                self.previous_actions[env_indices, transition_slots],
-            ),
+            previous_actions=None if previous_actions is None else self._to_train(previous_actions),
             next_local_obs=self._to_train(next_local_obs),
             next_global_obs=self._to_train(next_global_obs),
             next_hidden_local_vars=self._to_train(next_hidden_local_vars),
             next_hidden_global_vars=self._to_train(next_hidden_global_vars),
             next_agent_mask=None if next_agent_mask is None else self._to_train(next_agent_mask, dtype=torch.bool),
-            episode_start_mask=None if self.episode_starts is None else self._to_train(
-                self.episode_starts[env_indices, transition_slots],
+            episode_start_mask=None if episode_start_mask is None else self._to_train(
+                episode_start_mask,
                 dtype=torch.bool,
             ),
         )
@@ -757,15 +808,12 @@ class OffPolicyReplayBuffer:
             num_next_steps: int,
     ) -> OffPolicyReplayEpisodeSegmentBatch:
         batch_size = int(indices.numel())
-        env_indices = torch.div(indices, self._size_per_env, rounding_mode="floor")
-        logical_starts = indices.remainder(self._size_per_env)
         sequence_offsets = torch.arange(num_next_steps, dtype=torch.long, device=self.storage_device)
-        logical_positions = logical_starts.unsqueeze(1) + sequence_offsets.unsqueeze(0)
-        within_replay = logical_positions < self._size_per_env
-        safe_logical_positions = logical_positions.clamp_max(self._size_per_env - 1)
-        flat_indices = (
-            env_indices.unsqueeze(1) * self._size_per_env + safe_logical_positions
-        ).reshape(-1)
+        flat_indices, within_replay = self._tensor_operations.episode_window_indices(
+            indices,
+            self._size_per_env_tensor,
+            sequence_offsets,
+        )
         flat_batch = self._fetch_indices(flat_indices)
         within_replay = self._to_train(within_replay, dtype=torch.bool)
         window_batch = self._reshape_episode_segment_batch(
@@ -837,31 +885,22 @@ class OffPolicyReplayBuffer:
             empty = torch.empty((0,), dtype=torch.long, device=self.storage_device)
             return empty, empty
 
-        max_start_count = self._size_per_env - total_sequence_length + 1
         logical_positions = torch.arange(self._size_per_env, dtype=torch.long, device=self.storage_device)
-        transition_slots_by_logical = self._logical_to_transition_slots(logical_positions)
-        valid = torch.ones((self.n_envs, max_start_count), dtype=torch.bool, device=self.storage_device)
-        if not allow_episode_boundaries and total_sequence_length > 1:
-            start_positions = torch.arange(max_start_count, dtype=torch.long, device=self.storage_device)
-            episode_ends = torch.logical_or(
-                self.terminations[:, transition_slots_by_logical],
-                self.truncations[:, transition_slots_by_logical],
-            )
-            end_prefix_sum = torch.cat((
-                torch.zeros((self.n_envs, 1), dtype=torch.long, device=self.storage_device),
-                episode_ends.to(dtype=torch.long).cumsum(dim=1),
-            ), dim=1)
-            ends_before_final_transition = (
-                end_prefix_sum[:, start_positions + total_sequence_length - 1]
-                - end_prefix_sum[:, start_positions]
-            )
-            valid &= ends_before_final_transition == 0
+        temporal_state_available = None
         if require_initial_temporal_state:
             assert self._temporal_state_available is not None
-            start_transition_slots = transition_slots_by_logical[:max_start_count]
-            start_obs_slots = self._transition_obs_slots[:, start_transition_slots]
-            has_temporal_checkpoint = self._temporal_state_available.gather(1, start_obs_slots)
-            valid &= has_temporal_checkpoint
+            temporal_state_available = self._temporal_state_available
+        valid = self._tensor_operations.episode_segment_candidate_mask(
+            logical_positions,
+            self._logical_transition_slot_offset,
+            self.capacity_per_env,
+            total_sequence_length,
+            self.terminations,
+            self.truncations,
+            self._transition_obs_slots,
+            temporal_state_available,
+            allow_episode_boundaries,
+        )
 
         return torch.nonzero(valid, as_tuple=True)
 
@@ -1003,20 +1042,13 @@ class OffPolicyReplayBuffer:
             return
         assert self._temporal_state_indices is not None
         assert self._temporal_state_slots_in_use is not None
-        checkpoint_slots = self._temporal_state_indices[target_env_indices, obs_slots]
-        has_checkpoint = checkpoint_slots >= 0
-        # Python conditions on these tensors would synchronize CUDA replay storage on every write.
-        safe_checkpoint_slots = checkpoint_slots.clamp_min(0)
-        slots_in_use = self._temporal_state_slots_in_use[
+        self._tensor_operations.release_temporal_state_slots(
+            self._temporal_state_available,
+            self._temporal_state_indices,
+            self._temporal_state_slots_in_use,
             target_env_indices,
-            safe_checkpoint_slots,
-        ]
-        self._temporal_state_slots_in_use[
-            target_env_indices,
-            safe_checkpoint_slots,
-        ] = torch.logical_and(slots_in_use, ~has_checkpoint)
-        self._temporal_state_indices[target_env_indices, obs_slots] = -1
-        self._temporal_state_available[target_env_indices, obs_slots] = False
+            obs_slots,
+        )
 
     def _should_store_temporal_state(self, observation_step_idx: int) -> bool:
         return (
@@ -1044,14 +1076,12 @@ class OffPolicyReplayBuffer:
         target_env_indices = target_env_indices.to(device=self.storage_device, dtype=torch.long)
         source_env_indices = source_env_indices.to(dtype=torch.long)
 
-        checkpoint_slots = self._temporal_state_indices[target_env_indices, obs_slots]
-        needs_checkpoint_slot = checkpoint_slots < 0
-        # Pool capacity is the maximum retained checkpoint count, so an unmapped observation has a free slot.
-        free_slots = ~self._temporal_state_slots_in_use[target_env_indices]
-        allocated_slots = free_slots.to(dtype=torch.long).argmax(dim=1)
-        checkpoint_slots = torch.where(needs_checkpoint_slot, allocated_slots, checkpoint_slots)
-        self._temporal_state_slots_in_use[target_env_indices, checkpoint_slots] = True
-        self._temporal_state_indices[target_env_indices, obs_slots] = checkpoint_slots
+        checkpoint_slots = self._tensor_operations.allocate_temporal_state_slots(
+            self._temporal_state_indices,
+            self._temporal_state_slots_in_use,
+            target_env_indices,
+            obs_slots,
+        )
 
         if self.temporal_states is None:
             self.temporal_states = self._new_temporal_state_storage(state)
@@ -1189,9 +1219,14 @@ class OffPolicyReplayBuffer:
         raise TypeError(f"Unsupported temporal state item: {type(state).__name__}")
 
     def _advance_obs_slots(self, obs_slots: torch.Tensor) -> torch.Tensor:
-        return (obs_slots + 1) % self.observation_capacity_per_env
+        return self._tensor_operations.advance_obs_slots(
+            obs_slots,
+            self.observation_capacity_per_env,
+        )
 
     def _logical_to_transition_slots(self, logical_transition_slots: torch.Tensor) -> torch.Tensor:
-        if self._size_per_env < self.capacity_per_env:
-            return logical_transition_slots
-        return (logical_transition_slots + self._write_slot) % self.capacity_per_env
+        return self._tensor_operations.logical_to_transition_slots(
+            logical_transition_slots,
+            self._logical_transition_slot_offset,
+            self.capacity_per_env,
+        )

@@ -3,7 +3,6 @@ from typing import Any
 
 import torch
 from loguru import logger
-from torch.nn import functional as F
 
 from swarmbots.learn.algos.off_policy.replay_buffer import (
     NoEpisodeSegmentCandidatesError,
@@ -110,6 +109,7 @@ class RecurrentSAC(SAC):
             storage_pin_memory=self.replay_storage_pin_memory,
             train_device=self.train_device,
             train_dtype=torch.float32,
+            compile_tensor_operations=self.replay_compile_tensor_operations,
         )
 
     def _sample_training_batches(
@@ -199,7 +199,7 @@ class RecurrentSAC(SAC):
         )
 
         with torch.no_grad():
-            bootstrap_batch = _mask_terminal_next_observations(learning_batch)
+            bootstrap_batch = self._mask_terminal_next_observations(learning_batch)
             next_actions, next_log_probs = self._next_policy_actions(
                 batch=bootstrap_batch,
                 actions_pi=actions_pi,
@@ -221,11 +221,14 @@ class RecurrentSAC(SAC):
                 next_actions=next_actions,
                 initial_state=target_critic_state,
             )
-            next_q = torch.minimum(target_q1, target_q2) - ent_coef * next_log_prob_mean
-            target_q = torch.where(
-                learning_batch.terminal_mask,
+            target_q = self._tensor_operations.bellman_target(
                 learning_batch.rewards,
-                learning_batch.rewards + self.gamma * next_q,
+                learning_batch.terminal_mask,
+                target_q1,
+                target_q2,
+                next_log_prob_mean,
+                ent_coef,
+                self.gamma,
             )
 
         current_q1, current_q2, critic_nop_latents, _next_critic_state = self.policy.q_values_sequence(
@@ -240,9 +243,10 @@ class RecurrentSAC(SAC):
             time_mask=learning_batch.train_mask,
             reset_mask=learning_batch.episode_start_mask,
         )
-        critic_loss = 0.5 * (
-            F.mse_loss(current_q1, target_q)
-            + F.mse_loss(current_q2, target_q)
+        critic_loss = self._tensor_operations.critic_loss(
+            current_q1,
+            current_q2,
+            target_q,
         )
         nop_training_batch = self._build_nop_training_batch(
             batch=learning_batch,
@@ -261,7 +265,11 @@ class RecurrentSAC(SAC):
         self.critic_optimizer.zero_grad()
         critic_total_loss.backward()
         critic_grad_norm = self._clip_grad_norm(self.policy.critic_parameters())
-        self.critic_optimizer.step()
+        self._step_actor_or_critic_optimizer(
+            optimizer=self.critic_optimizer,
+            compiled_step=self._critic_optimizer_step,
+            global_update_idx=global_update_idx,
+        )
 
         actor_critic_state = critic_state
         if self.policy.recurrent_critic:
@@ -275,10 +283,12 @@ class RecurrentSAC(SAC):
                 actions_pi=actions_pi,
                 initial_state=actor_critic_state,
             )
-            actor_loss = (
-                ent_coef * log_prob_pi_mean.reshape_as(q1_pi)
-                - torch.minimum(q1_pi, q2_pi)
-            ).mean()
+            actor_loss = self._tensor_operations.actor_loss(
+                q1_pi,
+                q2_pi,
+                log_prob_pi_mean.reshape_as(q1_pi),
+                ent_coef,
+            )
         finally:
             self._set_requires_grad(critic_parameters, True)
 
@@ -301,7 +311,11 @@ class RecurrentSAC(SAC):
         self.actor_optimizer.zero_grad()
         actor_total_loss.backward()
         actor_grad_norm = self._clip_grad_norm(self.policy.actor_parameters())
-        self.actor_optimizer.step()
+        self._step_actor_or_critic_optimizer(
+            optimizer=self.actor_optimizer,
+            compiled_step=self._actor_optimizer_step,
+            global_update_idx=global_update_idx,
+        )
 
         if global_update_idx % self.target_update_interval == 0:
             self.policy.polyak_update_targets(self.tau)
@@ -465,13 +479,19 @@ class RecurrentSAC(SAC):
             self,
             truncations: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
+        truncations_per_segment = truncations.sum(dim=1)
+        overflowing_segments = torch.nonzero(
+            truncations_per_segment > self.max_truncations_per_segment,
+            as_tuple=False,
+        ).flatten()
+        if overflowing_segments.numel() > 0:
+            raise ValueError(
+                "Sampled recurrent segment rows "
+                f"{overflowing_segments.tolist()} exceed max_truncations_per_segment="
+                f"{self.max_truncations_per_segment}."
+            )
         truncation_indices = torch.nonzero(truncations, as_tuple=False)
         capacity = truncations.shape[0] * self.max_truncations_per_segment
-        if truncation_indices.shape[0] > capacity:
-            raise ValueError(
-                f"Sampled recurrent segment batch contains {truncation_indices.shape[0]} truncations, "
-                f"exceeding configured capacity {capacity}; increase max_truncations_per_segment."
-            )
         padded_indices = torch.zeros((capacity, 2), dtype=torch.long, device=truncations.device)
         padded_indices[:truncation_indices.shape[0]] = truncation_indices
         valid_mask = torch.arange(capacity, device=truncations.device) < truncation_indices.shape[0]
@@ -619,6 +639,33 @@ class RecurrentSAC(SAC):
                 if critic_latents is None
                 else critic_latents[:, :num_origins]
             ),
+        )
+
+    def _mask_terminal_next_observations(
+            self,
+            batch: OffPolicyReplayEpisodeSegmentBatch,
+    ) -> OffPolicyReplayEpisodeSegmentBatch:
+        (
+            next_local_obs,
+            next_global_obs,
+            next_hidden_local_vars,
+            next_hidden_global_vars,
+            next_agent_mask,
+        ) = self._tensor_operations.mask_terminal_observations(
+            batch.terminal_mask,
+            batch.next_local_obs,
+            batch.next_global_obs,
+            batch.next_hidden_local_vars,
+            batch.next_hidden_global_vars,
+            batch.next_agent_mask,
+        )
+        return replace(
+            batch,
+            next_local_obs=next_local_obs,
+            next_global_obs=next_global_obs,
+            next_hidden_local_vars=next_hidden_local_vars,
+            next_hidden_global_vars=next_hidden_global_vars,
+            next_agent_mask=next_agent_mask,
         )
 
     def _validate_hyper_parameters(self) -> None:
@@ -789,27 +836,3 @@ def _flatten_sequence_tensor(
     if tensor.ndim < 2 or tensor.shape[:2] != (batch_size, sequence_length):
         return tensor
     return tensor.reshape(batch_size * sequence_length, *tensor.shape[2:])
-
-
-def _mask_terminal_next_observations(
-        batch: OffPolicyReplayEpisodeSegmentBatch,
-) -> OffPolicyReplayEpisodeSegmentBatch:
-    def mask_tensor(tensor: torch.Tensor, value: bool | float) -> torch.Tensor:
-        row_mask = batch.terminal_mask.reshape(
-            *batch.terminal_mask.shape,
-            *((1,) * (tensor.ndim - batch.terminal_mask.ndim)),
-        )
-        return tensor.masked_fill(row_mask, value)
-
-    return replace(
-        batch,
-        next_local_obs=mask_tensor(batch.next_local_obs, 0.0),
-        next_global_obs=mask_tensor(batch.next_global_obs, 0.0),
-        next_hidden_local_vars=mask_tensor(batch.next_hidden_local_vars, 0.0),
-        next_hidden_global_vars=mask_tensor(batch.next_hidden_global_vars, 0.0),
-        next_agent_mask=(
-            None
-            if batch.next_agent_mask is None
-            else mask_tensor(batch.next_agent_mask, True)
-        ),
-    )

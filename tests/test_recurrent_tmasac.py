@@ -1889,17 +1889,24 @@ class RecurrentTMASACTests(unittest.TestCase):
                 env=env,
                 config=_policy_config(encoder_config),
             )
-            recurrent_sac = RecurrentSAC(
-                policy=recurrent_policy,
-                env=env,
-                buffer_capacity_per_env=128,
-                learning_starts=0,
-                batch_size=2,
-                replay_storage_device="cpu",
-                train_device="cpu",
-            )
+            with patch(
+                    "swarmbots.learn.algos.off_policy.replay_buffer_tensor_ops.torch.compile",
+                    side_effect=lambda function, **_kwargs: function,
+            ) as replay_compile_mock:
+                recurrent_sac = RecurrentSAC(
+                    policy=recurrent_policy,
+                    env=env,
+                    buffer_capacity_per_env=128,
+                    learning_starts=0,
+                    batch_size=2,
+                    replay_storage_device="cpu",
+                    train_device="cpu",
+                    replay_compile_tensor_operations=True,
+                )
             self.assertEqual(recurrent_sac.burn_in_steps, 32)
             self.assertEqual(recurrent_sac.learning_steps, 64)
+            self.assertTrue(recurrent_sac.replay_buffer.compile_tensor_operations)
+            self.assertEqual(replay_compile_mock.call_count, 6)
             self.assertEqual(recurrent_sac.replay_buffer.temporal_state_store_interval, 32)
             self.assertIsNotNone(recurrent_sac.replay_buffer._temporal_state_available)
             sampled_segment = object()
@@ -2213,10 +2220,41 @@ class RecurrentTMASACTests(unittest.TestCase):
                 train_device="cpu",
             )
 
-            with self.assertRaisesRegex(ValueError, "exceeding configured capacity 2"):
+            with self.assertRaisesRegex(ValueError, r"rows \[1\] exceed max_truncations_per_segment=1"):
                 algorithm._padded_truncation_indices(torch.tensor([
                     [False, True, False],
                     [True, False, True],
+                ]))
+        finally:
+            env.close()
+
+    def test_truncation_limit_is_enforced_per_sampled_segment(self) -> None:
+        env = _make_env()
+        try:
+            policy = RecurrentTMASACPolicy(
+                env=env,
+                config=_policy_config(
+                    _encoder_config(LSTMTemporalSequenceModel, LSTMTemporalSequenceModelConfig())
+                ),
+            )
+            algorithm = RecurrentSAC(
+                policy=policy,
+                env=env,
+                burn_in_steps=1,
+                learning_steps=3,
+                temporal_state_store_interval=1,
+                max_truncations_per_segment=1,
+                buffer_capacity_per_env=8,
+                learning_starts=0,
+                batch_size=2,
+                replay_storage_device="cpu",
+                train_device="cpu",
+            )
+
+            with self.assertRaisesRegex(ValueError, r"rows \[0\] exceed max_truncations_per_segment=1"):
+                algorithm._padded_truncation_indices(torch.tensor([
+                    [True, False, True],
+                    [False, False, False],
                 ]))
         finally:
             env.close()

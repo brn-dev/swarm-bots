@@ -290,6 +290,8 @@ def make_vector_env(
     scenario_name: MJWScenarioName = "wall",
     ccd_iterations: int | None = None,
     scenario_kwargs: dict[str, object] | None = None,
+    compile_env_tensor_operations: bool | None = None,
+    env_tensor_operations_compile_mode: str = "default",
 ) -> MJWSwarmBotsVectorEnv:
     return MJWSwarmBotsVectorEnv(
         scenario=_make_scenario(scenario_name=scenario_name, scenario_kwargs=scenario_kwargs),
@@ -299,6 +301,8 @@ def make_vector_env(
         settle_initial_reset=settle_initial_reset,
         device=device,
         ccd_iterations=ccd_iterations,
+        compile_tensor_operations=compile_env_tensor_operations,
+        tensor_operations_compile_mode=env_tensor_operations_compile_mode,
     )
 
 
@@ -571,6 +575,8 @@ def run_experiment(
         scenario_name: MJWScenarioName = "wall",
         ccd_iterations: int | None = None,
         scenario_kwargs: dict[str, object] | None = None,
+        compile_env_tensor_operations: bool | None = None,
+        env_tensor_operations_compile_mode: str = "default",
         rmat_temporal_model_cls: Any = None,
         rmat_temporal_model_config: Any = None,
         rmat_temporal_residual: bool = False,
@@ -716,6 +722,8 @@ def run_experiment(
         f"bernoulli_initial_prob={bernoulli_initial_prob}, "
         f"shuffle_agents={shuffle_agents}, "
         f"preserve_inactive_prefix_structure={preserve_inactive_prefix_structure}, "
+        f"compile_env_tensor_operations={compile_env_tensor_operations}, "
+        f"env_tensor_operations_compile_mode={env_tensor_operations_compile_mode}, "
         f"ccd_iterations={ccd_iterations}, "
         f"scenario_kwargs={scenario_kwargs}, "
         f"rmat_temporal_residual={rmat_temporal_residual}, "
@@ -789,6 +797,8 @@ def run_experiment(
         scenario_name=scenario_name,
         ccd_iterations=ccd_iterations,
         scenario_kwargs=scenario_kwargs,
+        compile_env_tensor_operations=compile_env_tensor_operations,
+        env_tensor_operations_compile_mode=env_tensor_operations_compile_mode,
     )
     print(f"Created {type(vector_env)} with {num_envs} environments.")
 

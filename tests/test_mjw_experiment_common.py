@@ -276,6 +276,39 @@ def _make_test_base_policy(
     return _make_base_policy(**kwargs)
 
 
+def test_make_vector_env_forwards_tensor_compile_configuration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scenario = object()
+    vector_env = object()
+    constructor = Mock(return_value=vector_env)
+    monkeypatch.setattr(experiment_common, "_make_scenario", Mock(return_value=scenario))
+    monkeypatch.setattr(experiment_common, "MJWSwarmBotsVectorEnv", constructor)
+
+    result = experiment_common.make_vector_env(
+        episode_length=32,
+        num_envs=4,
+        first_episode_lengths=[8, 16, 24, 32],
+        settle_initial_reset=True,
+        device=torch.device("cuda"),
+        compile_env_tensor_operations=False,
+        env_tensor_operations_compile_mode="reduce-overhead",
+    )
+
+    assert result is vector_env
+    constructor.assert_called_once_with(
+        scenario=scenario,
+        num_envs=4,
+        episode_length=32,
+        first_episode_lengths=[8, 16, 24, 32],
+        settle_initial_reset=True,
+        device=torch.device("cuda"),
+        ccd_iterations=None,
+        compile_tensor_operations=False,
+        tensor_operations_compile_mode="reduce-overhead",
+    )
+
+
 def test_default_run_experiment_wires_ppo_contract(
         monkeypatch: pytest.MonkeyPatch,
         tmp_path: Path,
@@ -298,6 +331,8 @@ def test_default_run_experiment_wires_ppo_contract(
     assert vector_env_kwargs["first_episode_lengths"] == [128, 256, 384, 512]
     assert vector_env_kwargs["settle_initial_reset"] is True
     assert vector_env_kwargs["scenario_name"] == "wall"
+    assert vector_env_kwargs["compile_env_tensor_operations"] is None
+    assert vector_env_kwargs["env_tensor_operations_compile_mode"] == "default"
     assert vector_env_kwargs["scenario_kwargs"] == {"continuous_connector_actions": True}
 
     wrap_vec_env_kwargs = capture["wrap_vec_env_kwargs"]
@@ -394,8 +429,15 @@ def test_tmasac_run_experiment_preserves_sac_and_nop_configuration(
         sac_ent_coef="auto_0.2",
         sac_target_entropy="auto_0.7",
         sac_independent_nop_sampling=True,
+        compile_env_tensor_operations=False,
+        env_tensor_operations_compile_mode="reduce-overhead",
         total_timesteps=16,
     )
+
+    vector_env_kwargs = capture["vector_env_kwargs"]
+    assert isinstance(vector_env_kwargs, dict)
+    assert vector_env_kwargs["compile_env_tensor_operations"] is False
+    assert vector_env_kwargs["env_tensor_operations_compile_mode"] == "reduce-overhead"
 
     wrap_vec_env_kwargs = capture["wrap_vec_env_kwargs"]
     assert isinstance(wrap_vec_env_kwargs, dict)
