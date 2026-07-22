@@ -8,7 +8,12 @@ from swarmbots.learn.algos.r_mat.temporal_sequence_model import TemporalSequence
 from swarmbots.learn.algos.xlstm.head_utils import MultiHeadLayerNorm
 from swarmbots.learn.algos.xlstm.temporal_utils import check_mask, check_sequence_inputs, reset_state, select_state
 from swarmbots.learn.algos.xlstm.slstm.slstm_cell import SLSTMCell, SLSTMCellConfig, SLSTMCellState
-from swarmbots.learn.temporal_state import initialize_selected_temporal_state, update_selected_temporal_state
+from swarmbots.learn.temporal_state import (
+    index_temporal_state_batch_time,
+    initialize_selected_temporal_state,
+    stack_temporal_states,
+    update_selected_temporal_state,
+)
 
 
 @dataclass(frozen=True)
@@ -89,6 +94,53 @@ class SLSTMTemporalSequenceModel(TemporalSequenceModel):
         tuple[torch.Tensor, SLSTMCellState]
         | tuple[torch.Tensor, SLSTMCellState, SLSTMCellState]
     ):
+        output_sequence, final_state, selected_states, _state_sequence = self._forward(
+            inputs,
+            valid_mask=valid_mask,
+            initial_state=initial_state,
+            reset_mask=reset_mask,
+            state_output_indices=state_output_indices,
+            return_state_sequence=False,
+        )
+        if state_output_indices is not None:
+            return output_sequence, final_state, selected_states
+        return output_sequence, final_state
+
+    def forward_with_state_sequence(
+            self,
+            inputs: torch.Tensor,
+            *,
+            valid_mask: torch.Tensor | None = None,
+            initial_state: SLSTMCellState | None = None,
+            reset_mask: torch.Tensor | None = None,
+            state_output_indices: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, SLSTMCellState, SLSTMCellState | None, SLSTMCellState]:
+        output_sequence, final_state, selected_states, state_sequence = self._forward(
+            inputs,
+            valid_mask=valid_mask,
+            initial_state=initial_state,
+            reset_mask=reset_mask,
+            state_output_indices=state_output_indices,
+            return_state_sequence=True,
+        )
+        assert state_sequence is not None
+        return output_sequence, final_state, selected_states, state_sequence
+
+    def _forward(
+            self,
+            inputs: torch.Tensor,
+            *,
+            valid_mask: torch.Tensor | None,
+            initial_state: SLSTMCellState | None,
+            reset_mask: torch.Tensor | None,
+            state_output_indices: torch.Tensor | None,
+            return_state_sequence: bool,
+    ) -> tuple[
+        torch.Tensor,
+        SLSTMCellState,
+        SLSTMCellState | None,
+        SLSTMCellState | None,
+    ]:
         batch_size, sequence_length, _ = check_sequence_inputs(inputs)
         check_mask(valid_mask, batch_size=batch_size, sequence_length=sequence_length, name="valid_mask")
         check_mask(reset_mask, batch_size=batch_size, sequence_length=sequence_length, name="reset_mask")
@@ -103,9 +155,10 @@ class SLSTMTemporalSequenceModel(TemporalSequenceModel):
         outputs: list[torch.Tensor] = []
         selected_states = (
             initialize_selected_temporal_state(state, state_output_indices)
-            if state_output_indices is not None
+            if state_output_indices is not None and not return_state_sequence
             else None
         )
+        state_steps: list[SLSTMCellState] = []
 
         for time_idx in range(sequence_length):
             if reset_mask is not None:
@@ -121,7 +174,9 @@ class SLSTMTemporalSequenceModel(TemporalSequenceModel):
                 outputs.append(torch.where(valid_t.unsqueeze(-1), step_output, zero_output))
                 state = select_state(next_state, state, valid_t)
 
-            if state_output_indices is not None:
+            if return_state_sequence:
+                state_steps.append(state)
+            elif state_output_indices is not None:
                 selected_states = update_selected_temporal_state(
                     selected_states,
                     state,
@@ -131,9 +186,10 @@ class SLSTMTemporalSequenceModel(TemporalSequenceModel):
 
         outputs_tensor = torch.stack(outputs, dim=1)
         output_sequence = self._normalize_outputs(outputs_tensor).contiguous()
-        if state_output_indices is not None:
-            return output_sequence, state, selected_states
-        return output_sequence, state
+        state_sequence = stack_temporal_states(state_steps, dim=1) if return_state_sequence else None
+        if return_state_sequence and state_output_indices is not None:
+            selected_states = index_temporal_state_batch_time(state_sequence, state_output_indices)
+        return output_sequence, state, selected_states, state_sequence
 
     def _step(
             self,

@@ -5,6 +5,10 @@ import pytest
 import torch
 
 from swarmbots.learn.algos.r_mat.r_mat_encoder import RMATEncoder, RMATEncoderConfig
+from swarmbots.learn.algos.r_mat.temporal_sequence_model import (
+    LSTMTemporalSequenceModel,
+    LSTMTemporalSequenceModelConfig,
+)
 from swarmbots.learn.algos.xlstm.mlstm import MLSTMCell, MLSTMCellConfig
 from swarmbots.learn.algos.xlstm.mlstm import (
     MLSTMCellState,
@@ -73,6 +77,64 @@ def test_xlstm_temporal_sequence_matches_explicit_step_flow(
     )
     for selected_tensor, expected_tensor in zip(selected_states, expected_selected_states, strict=True):
         torch.testing.assert_close(selected_tensor, expected_tensor)
+
+
+@pytest.mark.parametrize(
+    ("model_cls", "config"),
+    [
+        (LSTMTemporalSequenceModel, LSTMTemporalSequenceModelConfig(num_layers=2)),
+        (SLSTMTemporalSequenceModel, SLSTMTemporalSequenceModelConfig(num_heads=2)),
+    ],
+)
+def test_temporal_state_sequence_matches_explicit_step_flow(
+        model_cls: type[LSTMTemporalSequenceModel | SLSTMTemporalSequenceModel],
+        config: LSTMTemporalSequenceModelConfig | SLSTMTemporalSequenceModelConfig,
+) -> None:
+    torch.manual_seed(0)
+    model = model_cls(hidden_dim=8, config=config)
+    inputs = torch.randn(2, 4, 8)
+    reset_mask = torch.tensor([
+        [True, False, False, True],
+        [False, True, False, False],
+    ])
+    valid_mask = torch.tensor([
+        [True, True, False, True],
+        [True, False, True, True],
+    ])
+    state_output_indices = torch.tensor([[0, 2], [1, 3]])
+
+    output, final_state, selected_states, state_sequence = model.forward_with_state_sequence(
+        inputs,
+        valid_mask=valid_mask,
+        reset_mask=reset_mask,
+        state_output_indices=state_output_indices,
+    )
+
+    step_state = model.initial_state(batch_size=inputs.shape[0], device=inputs.device, dtype=inputs.dtype)
+    step_outputs = []
+    step_states = []
+    for time_idx in range(inputs.shape[1]):
+        step_output, step_state = model(
+            inputs[:, time_idx:time_idx + 1],
+            valid_mask=valid_mask[:, time_idx:time_idx + 1],
+            initial_state=step_state,
+            reset_mask=reset_mask[:, time_idx:time_idx + 1],
+        )
+        step_outputs.append(step_output[:, 0])
+        step_states.append(step_state)
+
+    expected_state_sequence = stack_temporal_states(step_states, dim=1)
+    expected_selected_states = index_temporal_state_batch_time(
+        expected_state_sequence,
+        state_output_indices,
+    )
+    torch.testing.assert_close(output, torch.stack(step_outputs, dim=1))
+    for actual, expected in zip(final_state, step_state, strict=True):
+        torch.testing.assert_close(actual, expected)
+    for actual, expected in zip(state_sequence, expected_state_sequence, strict=True):
+        torch.testing.assert_close(actual, expected)
+    for actual, expected in zip(selected_states, expected_selected_states, strict=True):
+        torch.testing.assert_close(actual, expected)
 
 
 def test_slstm_projects_the_full_sequence_once() -> None:
@@ -467,6 +529,50 @@ def test_reset_state_clears_nonfinite_values_in_reset_rows() -> None:
     torch.testing.assert_close(reset[0][0], torch.zeros(2))
     torch.testing.assert_close(reset[0][1], state[0][1])
     torch.testing.assert_close(reset[0][2], state[0][2], equal_nan=True)
+
+
+@pytest.mark.parametrize(
+    ("model_cls", "config"),
+    [
+        (LSTMTemporalSequenceModel, LSTMTemporalSequenceModelConfig()),
+        (SLSTMTemporalSequenceModel, SLSTMTemporalSequenceModelConfig(num_heads=2)),
+        (
+            MLSTMTemporalSequenceModel,
+            MLSTMTemporalSequenceModelConfig(num_heads=2, use_parallel_sequence=False),
+        ),
+        (
+            MLSTMTemporalSequenceModel,
+            MLSTMTemporalSequenceModelConfig(num_heads=2, use_parallel_sequence=True),
+        ),
+    ],
+)
+def test_temporal_sequence_reset_clears_nonfinite_initial_state(
+        model_cls: type[
+            LSTMTemporalSequenceModel
+            | SLSTMTemporalSequenceModel
+            | MLSTMTemporalSequenceModel
+        ],
+        config: (
+            LSTMTemporalSequenceModelConfig
+            | SLSTMTemporalSequenceModelConfig
+            | MLSTMTemporalSequenceModelConfig
+        ),
+) -> None:
+    model = model_cls(hidden_dim=4, config=config)
+    initial_state = tuple(
+        torch.full_like(state_tensor, float("nan"))
+        for state_tensor in model.initial_state(batch_size=1)
+    )
+
+    output, final_state = model(
+        torch.zeros(1, 2, 4),
+        initial_state=initial_state,
+        reset_mask=torch.tensor([[True, False]]),
+    )
+
+    assert torch.isfinite(output).all()
+    for state_tensor in final_state:
+        assert torch.isfinite(state_tensor).all()
 
 
 def _run_recurrent_mlstm_cell_sequence(

@@ -11,6 +11,7 @@ from swarmbots.learn.algos.off_policy.replay_buffer import (
     OffPolicyReplayEpisodeSegmentBatch,
 )
 from swarmbots.learn.algos.r_mat.r_mat_encoder import RMATEncoder, RMATEncoderConfig, RMATEncoderState
+from swarmbots.learn.algos.r_mat.temporal_sequence_model import LSTMTemporalSequenceModel
 from swarmbots.learn.algos.sac.sac_nop import SACNOPSequenceBatch
 from swarmbots.learn.algos.sac.tmasac_policy import (
     TMASACCriticConfig,
@@ -18,14 +19,19 @@ from swarmbots.learn.algos.sac.tmasac_policy import (
     TMASACPolicyConfig,
     TMASACTwinCritic,
 )
+from swarmbots.learn.algos.xlstm.slstm import SLSTMTemporalSequenceModel
 from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
+from swarmbots.learn.nn_components.mlp import MLP
+from swarmbots.learn.nn_components.nn_init import make_init_linear_orthogonal
+from swarmbots.learn.serialization_utils import serialize_dataclass
 
 
 RecurrentCriticState = RMATEncoderState | tuple[RMATEncoderState, RMATEncoderState]
 ActorEncoderCallable = Callable[
     ...,
     tuple[torch.Tensor, RMATEncoderState]
-    | tuple[torch.Tensor, RMATEncoderState, RMATEncoderState],
+    | tuple[torch.Tensor, RMATEncoderState, RMATEncoderState]
+    | tuple[torch.Tensor, RMATEncoderState, RMATEncoderState, Any],
 ]
 ActorActionSequenceCallable = Callable[
     ...,
@@ -39,6 +45,7 @@ ActorActionSequenceWithSelectedStatesCallable = Callable[
         torch.Tensor,
         RMATEncoderState,
         RMATEncoderState,
+        Any | None,
     ],
 ]
 ActorActionsAndLogProbsCallable = Callable[
@@ -49,10 +56,79 @@ ActorEntryPointT = TypeVar("ActorEntryPointT", bound=Callable[..., Any])
 
 
 @dataclass(frozen=True)
+class ActorStateCriticInputConfig:
+    projection_dim: int | None = None
+    projection_hidden_dims: tuple[int, ...] | None = None
+    include_slstm_memory_strength: bool = True
+    init_gain: float = 1.0
+    output_init_gain: float = 1.0
+
+
+@dataclass(frozen=True)
 class RecurrentTMASACPolicyConfig(TMASACPolicyConfig):
     actor_encoder_config: RMATEncoderConfig = field(default_factory=RMATEncoderConfig)
     recurrent_critic: bool = False
+    actor_state_critic_input_config: ActorStateCriticInputConfig | None = None
     experimental_compile_lstm: bool = False
+
+
+class ActorStateTMASACTwinCritic(TMASACTwinCritic):
+    def __init__(
+            self,
+            *,
+            actor_state_input_dim: int,
+            actor_state_config: ActorStateCriticInputConfig,
+            actor_state_default_projection_dim: int,
+            **kwargs: Any,
+    ) -> None:
+        projection_dim = (
+            actor_state_default_projection_dim
+            if actor_state_config.projection_dim is None
+            else int(actor_state_config.projection_dim)
+        )
+        hidden_dims = (
+            (projection_dim,)
+            if actor_state_config.projection_hidden_dims is None
+            else actor_state_config.projection_hidden_dims
+        )
+        local_input_dim = int(kwargs.pop("local_input_dim"))
+        super().__init__(local_input_dim=local_input_dim + projection_dim, **kwargs)
+        self.actor_state_encoder = MLP(
+            input_dim=actor_state_input_dim,
+            hidden_dims=[*hidden_dims, projection_dim],
+            end_with_act_fn=False,
+            linear_init=make_init_linear_orthogonal(actor_state_config.init_gain),
+            final_linear_init=make_init_linear_orthogonal(actor_state_config.output_init_gain),
+            act_fn_cls=kwargs["act_fn_cls"],
+        )
+
+    def encode(
+            self,
+            *,
+            actor_state: torch.Tensor,
+            local_inputs: torch.Tensor,
+            **kwargs: Any,
+    ) -> torch.Tensor:
+        return super().encode(
+            local_inputs=self._append_actor_state(local_inputs, actor_state),
+            **kwargs,
+        )
+
+    def forward(
+            self,
+            *,
+            actor_state: torch.Tensor,
+            local_obs: torch.Tensor,
+            **kwargs: Any,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        return super().forward(
+            local_obs=self._append_actor_state(local_obs, actor_state),
+            **kwargs,
+        )
+
+    def _append_actor_state(self, local_inputs: torch.Tensor, actor_state: torch.Tensor) -> torch.Tensor:
+        projected_state = self.actor_state_encoder(actor_state.detach())
+        return torch.cat((local_inputs, projected_state), dim=-1)
 
 
 class RecurrentTMASACTwinCritic(TMASACTwinCritic):
@@ -308,6 +384,17 @@ class RecurrentTMASACPolicy(TMASACPolicy):
             raise ValueError("RecurrentTMASACPolicy does not support a separate shared observation encoder.")
         if config.recurrent_critic and not isinstance(config.critic_encoder_config, RMATEncoderConfig):
             raise TypeError("recurrent_critic=True requires an RMATEncoderConfig for critic_encoder_config.")
+        actor_state_config = config.actor_state_critic_input_config
+        if actor_state_config is not None:
+            if config.recurrent_critic:
+                raise ValueError("actor_state_critic_input_config is not supported with recurrent_critic=True.")
+            if actor_state_config.projection_dim is not None and actor_state_config.projection_dim < 1:
+                raise ValueError("actor-state critic projection_dim must be >= 1.")
+            if (
+                    actor_state_config.projection_hidden_dims is not None
+                    and any(hidden_dim < 1 for hidden_dim in actor_state_config.projection_hidden_dims)
+            ):
+                raise ValueError("actor-state critic projection_hidden_dims must all be >= 1.")
         object.__setattr__(self, "_compiled_actor_encoders", {})
         object.__setattr__(self, "_compiled_actor_action_sequences", {})
         object.__setattr__(self, "_compiled_actor_action_sequences_with_selected_states", {})
@@ -502,6 +589,10 @@ class RecurrentTMASACPolicy(TMASACPolicy):
         return self.config.recurrent_critic
 
     @property
+    def uses_actor_state_critic_input(self) -> bool:
+        return self.config.actor_state_critic_input_config is not None
+
+    @property
     def uses_temporal_actor_state(self) -> bool:
         return True
 
@@ -657,6 +748,7 @@ class RecurrentTMASACPolicy(TMASACPolicy):
         torch.Tensor,
         RMATEncoderState,
         RMATEncoderState,
+        Any | None,
     ]:
         if self._actor_end_to_end_compilation_enabled:
             sequence_length = self._actor_sequence_length(local_obs)
@@ -683,7 +775,7 @@ class RecurrentTMASACPolicy(TMASACPolicy):
                 reset_mask=reset_mask,
             )
 
-        actor_latents, next_state, selected_states = self.encode_actor_sequence_with_selected_states(
+        actor_encoder_result = self.encode_actor_sequence_with_selected_states(
             local_obs=local_obs,
             global_obs=global_obs,
             agent_mask=agent_mask,
@@ -692,6 +784,11 @@ class RecurrentTMASACPolicy(TMASACPolicy):
             reset_mask=reset_mask,
             state_output_indices=state_output_indices,
         )
+        if self.uses_actor_state_critic_input:
+            actor_latents, next_state, selected_states, last_layer_state_sequence = actor_encoder_result
+        else:
+            actor_latents, next_state, selected_states = actor_encoder_result
+            last_layer_state_sequence = None
         actions, log_probs = self._actor_actions_and_log_probs(
             actor_latents=actor_latents,
             agent_mask=agent_mask,
@@ -699,7 +796,14 @@ class RecurrentTMASACPolicy(TMASACPolicy):
             deterministic=deterministic,
             use_rsample=use_rsample,
         )
-        return actions, log_probs, actor_latents, next_state, selected_states
+        return (
+            actions,
+            log_probs,
+            actor_latents,
+            next_state,
+            selected_states,
+            last_layer_state_sequence,
+        )
 
     def _action_log_prob_sequence_impl(
             self,
@@ -750,8 +854,9 @@ class RecurrentTMASACPolicy(TMASACPolicy):
         torch.Tensor,
         RMATEncoderState,
         RMATEncoderState,
+        Any | None,
     ]:
-        actor_latents, next_state, selected_states = self._actor_encoder(
+        actor_encoder_result = self._actor_encoder(
             local_obs,
             global_obs,
             agent_mask=agent_mask,
@@ -759,7 +864,13 @@ class RecurrentTMASACPolicy(TMASACPolicy):
             initial_state=initial_state,
             reset_mask=reset_mask,
             state_output_indices=state_output_indices,
+            return_last_layer_state_sequence=self.uses_actor_state_critic_input,
         )
+        if self.uses_actor_state_critic_input:
+            actor_latents, next_state, selected_states, last_layer_state_sequence = actor_encoder_result
+        else:
+            actor_latents, next_state, selected_states = actor_encoder_result
+            last_layer_state_sequence = None
         actions, log_probs = self._actor_actions_and_log_probs_impl(
             actor_latents=actor_latents,
             agent_mask=agent_mask,
@@ -767,7 +878,14 @@ class RecurrentTMASACPolicy(TMASACPolicy):
             deterministic=deterministic,
             use_rsample=use_rsample,
         )
-        return actions, log_probs, actor_latents, next_state, selected_states
+        return (
+            actions,
+            log_probs,
+            actor_latents,
+            next_state,
+            selected_states,
+            last_layer_state_sequence,
+        )
 
     def _actor_actions_and_log_probs(
             self,
@@ -846,7 +964,10 @@ class RecurrentTMASACPolicy(TMASACPolicy):
             state_output_indices: torch.Tensor,
             time_mask: torch.Tensor | None = None,
             reset_mask: torch.Tensor | None = None,
-    ) -> tuple[torch.Tensor, RMATEncoderState, RMATEncoderState]:
+    ) -> (
+        tuple[torch.Tensor, RMATEncoderState, RMATEncoderState]
+        | tuple[torch.Tensor, RMATEncoderState, RMATEncoderState, Any]
+    ):
         result = self._run_actor_encoder(
             local_obs=local_obs,
             global_obs=global_obs,
@@ -855,9 +976,42 @@ class RecurrentTMASACPolicy(TMASACPolicy):
             initial_state=initial_state,
             reset_mask=reset_mask,
             state_output_indices=state_output_indices,
+            return_last_layer_state_sequence=self.uses_actor_state_critic_input,
         )
+        if self.uses_actor_state_critic_input:
+            actor_latents, next_state, selected_states, last_layer_state_sequence = result
+            return actor_latents, next_state, selected_states, last_layer_state_sequence
         actor_latents, next_state, selected_states = result
         return actor_latents, next_state, selected_states
+
+    def actor_state_critic_input(self, state: RMATEncoderState) -> torch.Tensor:
+        return self.actor_last_layer_state_critic_input(state[-1])
+
+    def actor_last_layer_state_critic_input(self, last_layer_state: Any) -> torch.Tensor:
+        if not self.uses_actor_state_critic_input:
+            raise RuntimeError("Actor-state critic input is not configured.")
+        temporal_model = self._actor_encoder.layers[-1].temporal_model
+        if isinstance(temporal_model, LSTMTemporalSequenceModel):
+            hidden_state, cell_state = last_layer_state
+            return torch.cat((hidden_state[..., -1, :], cell_state[..., -1, :]), dim=-1).detach()
+        if isinstance(temporal_model, SLSTMTemporalSequenceModel):
+            hidden_state, cell_state, normalizer_state, stabilizer_state = last_layer_state
+            safe_normalizer_state = normalizer_state.clamp_min(1.0)
+            normalized_memory = cell_state / safe_normalizer_state
+            actor_state_config = self.config.actor_state_critic_input_config
+            assert actor_state_config is not None
+            if not actor_state_config.include_slstm_memory_strength:
+                return torch.cat((hidden_state, normalized_memory), dim=-1).detach()
+            log_memory_strength = torch.log(safe_normalizer_state) + stabilizer_state
+            bounded_memory_strength = torch.nn.functional.softsign(log_memory_strength)
+            return torch.cat(
+                (hidden_state, normalized_memory, bounded_memory_strength),
+                dim=-1,
+            ).detach()
+        raise TypeError(
+            "Actor-state critic input supports only LSTMTemporalSequenceModel and "
+            f"SLSTMTemporalSequenceModel, got {type(temporal_model).__name__}."
+        )
 
     def _run_actor_encoder(
             self,
@@ -869,9 +1023,11 @@ class RecurrentTMASACPolicy(TMASACPolicy):
             initial_state: RMATEncoderState | None = None,
             reset_mask: torch.Tensor | None = None,
             state_output_indices: torch.Tensor | None = None,
+            return_last_layer_state_sequence: bool = False,
     ) -> (
         tuple[torch.Tensor, RMATEncoderState]
         | tuple[torch.Tensor, RMATEncoderState, RMATEncoderState]
+        | tuple[torch.Tensor, RMATEncoderState, RMATEncoderState, Any]
     ):
         sequence_length = self._actor_sequence_length(local_obs)
         if not self._actor_encoder_compilation_enabled:
@@ -887,6 +1043,7 @@ class RecurrentTMASACPolicy(TMASACPolicy):
         def run_actor_encoder() -> (
             tuple[torch.Tensor, RMATEncoderState]
             | tuple[torch.Tensor, RMATEncoderState, RMATEncoderState]
+            | tuple[torch.Tensor, RMATEncoderState, RMATEncoderState, Any]
         ):
             return actor_encoder(
                 local_obs,
@@ -896,6 +1053,7 @@ class RecurrentTMASACPolicy(TMASACPolicy):
                 initial_state=initial_state,
                 reset_mask=reset_mask,
                 state_output_indices=state_output_indices,
+                return_last_layer_state_sequence=return_last_layer_state_sequence,
             )
 
         return self._run_with_optional_lstm_compilation(run_actor_encoder)
@@ -930,6 +1088,7 @@ class RecurrentTMASACPolicy(TMASACPolicy):
             initial_state: RecurrentCriticState | None = None,
             time_mask: torch.Tensor | None = None,
             reset_mask: torch.Tensor | None = None,
+            actor_state: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None, RecurrentCriticState | None]:
         if self.recurrent_critic:
             critic = self.critic_target if target else self.critic
@@ -946,6 +1105,28 @@ class RecurrentTMASACPolicy(TMASACPolicy):
                 reset_mask=reset_mask,
             )
             return q1, q2, None if target or self.critic_nop is None else latents, next_state
+
+        if self.uses_actor_state_critic_input:
+            if actor_state is None:
+                raise ValueError("actor_state must be provided when actor-state critic input is configured.")
+            flat_inputs, batch_size, sequence_length = self._flatten_sequence_inputs(
+                local_obs=local_obs,
+                global_obs=global_obs,
+                actions=actions,
+                hidden_local_vars=hidden_local_vars,
+                hidden_global_vars=hidden_global_vars,
+                agent_mask=agent_mask,
+            )
+            flat_actor_state = actor_state.reshape(-1, *actor_state.shape[-2:])
+            critic = self.critic_target if target else self.critic
+            q1, q2, latents = critic(actor_state=flat_actor_state, **flat_inputs)
+            if local_obs.ndim == 3:
+                return q1, q2, None if target or self.critic_nop is None else latents, None
+            q1 = q1.reshape(batch_size, sequence_length)
+            q2 = q2.reshape(batch_size, sequence_length)
+            if target or self.critic_nop is None:
+                return q1, q2, None, None
+            return q1, q2, latents.reshape(batch_size, sequence_length, *latents.shape[1:]), None
 
         flat_inputs, batch_size, sequence_length = self._flatten_sequence_inputs(
             local_obs=local_obs,
@@ -978,6 +1159,17 @@ class RecurrentTMASACPolicy(TMASACPolicy):
             hidden_global_vars: torch.Tensor | None = None,
             agent_mask: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
+        if self.uses_actor_state_critic_input:
+            q1, q2, _latents, _state = self._stateless_actor_state_q_values(
+                local_obs=local_obs,
+                global_obs=global_obs,
+                actions=actions,
+                hidden_local_vars=hidden_local_vars,
+                hidden_global_vars=hidden_global_vars,
+                agent_mask=agent_mask,
+                target=False,
+            )
+            return q1, q2
         if not self.recurrent_critic:
             return super().q_values(
                 local_obs=local_obs,
@@ -1008,6 +1200,17 @@ class RecurrentTMASACPolicy(TMASACPolicy):
             hidden_global_vars: torch.Tensor | None = None,
             agent_mask: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
+        if self.uses_actor_state_critic_input:
+            q1, q2, latents, _state = self._stateless_actor_state_q_values(
+                local_obs=local_obs,
+                global_obs=global_obs,
+                actions=actions,
+                hidden_local_vars=hidden_local_vars,
+                hidden_global_vars=hidden_global_vars,
+                agent_mask=agent_mask,
+                target=False,
+            )
+            return q1, q2, latents
         if not self.recurrent_critic:
             return super().q_values_with_nop_latents(
                 local_obs=local_obs,
@@ -1038,6 +1241,17 @@ class RecurrentTMASACPolicy(TMASACPolicy):
             hidden_global_vars: torch.Tensor | None = None,
             agent_mask: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
+        if self.uses_actor_state_critic_input:
+            q1, q2, _latents, _state = self._stateless_actor_state_q_values(
+                local_obs=local_obs,
+                global_obs=global_obs,
+                actions=actions,
+                hidden_local_vars=hidden_local_vars,
+                hidden_global_vars=hidden_global_vars,
+                agent_mask=agent_mask,
+                target=True,
+            )
+            return q1, q2
         if not self.recurrent_critic:
             return super().target_q_values(
                 local_obs=local_obs,
@@ -1068,6 +1282,29 @@ class RecurrentTMASACPolicy(TMASACPolicy):
             hidden_global_vars: torch.Tensor | None,
             agent_mask: torch.Tensor | None,
     ) -> torch.Tensor:
+        if self.uses_actor_state_critic_input:
+            actor_state = self._stateless_actor_state_critic_input(
+                local_obs=local_obs,
+                global_obs=global_obs,
+                agent_mask=agent_mask,
+            )
+            critic = self._critic_module()
+            assert isinstance(critic, ActorStateTMASACTwinCritic)
+            critic_local_inputs, critic_global_inputs = self._critic_observation_inputs(
+                local_obs=local_obs,
+                global_obs=global_obs,
+                agent_mask=agent_mask,
+                target=False,
+            )
+            return critic.encode(
+                actor_state=actor_state,
+                local_inputs=critic_local_inputs,
+                global_inputs=critic_global_inputs,
+                actions=actions,
+                hidden_local_vars=hidden_local_vars,
+                hidden_global_vars=hidden_global_vars,
+                agent_mask=agent_mask,
+            )
         if not self.recurrent_critic:
             return super().encode_critic(
                 local_obs=local_obs,
@@ -1088,6 +1325,53 @@ class RecurrentTMASACPolicy(TMASACPolicy):
             agent_mask=agent_mask,
         )
         return latents
+
+    def _stateless_actor_state_q_values(
+            self,
+            *,
+            local_obs: torch.Tensor,
+            global_obs: torch.Tensor,
+            actions: torch.Tensor,
+            hidden_local_vars: torch.Tensor | None,
+            hidden_global_vars: torch.Tensor | None,
+            agent_mask: torch.Tensor | None,
+            target: bool,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None, RecurrentCriticState | None]:
+        actor_state = self._stateless_actor_state_critic_input(
+            local_obs=local_obs,
+            global_obs=global_obs,
+            agent_mask=agent_mask,
+        )
+        return self.q_values_sequence(
+            local_obs=local_obs,
+            global_obs=global_obs,
+            actions=actions,
+            hidden_local_vars=hidden_local_vars,
+            hidden_global_vars=hidden_global_vars,
+            agent_mask=agent_mask,
+            target=target,
+            actor_state=actor_state,
+        )
+
+    def _stateless_actor_state_critic_input(
+            self,
+            *,
+            local_obs: torch.Tensor,
+            global_obs: torch.Tensor,
+            agent_mask: torch.Tensor | None,
+    ) -> torch.Tensor:
+        if local_obs.ndim != 3:
+            raise ValueError(
+                "State-free critic methods expect local_obs shape (B, A, F); "
+                "use q_values_sequence with explicit actor_state for sequences."
+            )
+        with torch.no_grad():
+            _actor_latents, actor_state = self._actor_encoder(
+                local_obs,
+                global_obs,
+                agent_mask=agent_mask,
+            )
+        return self.actor_state_critic_input(actor_state)
 
     def initial_critic_state(
             self,
@@ -1144,6 +1428,11 @@ class RecurrentTMASACPolicy(TMASACPolicy):
     def get_hyper_parameters(self) -> dict[str, Any]:
         hyper_parameters = super().get_hyper_parameters()
         hyper_parameters["tmasac_policy_config"]["recurrent_critic"] = self.recurrent_critic
+        hyper_parameters["tmasac_policy_config"]["actor_state_critic_input_config"] = (
+            None
+            if self.config.actor_state_critic_input_config is None
+            else serialize_dataclass(self.config.actor_state_critic_input_config)
+        )
         hyper_parameters["tmasac_policy_config"]["actor_encoder_compilation_enabled"] = (
             self.actor_encoder_compilation_enabled
         )
@@ -1180,6 +1469,36 @@ class RecurrentTMASACPolicy(TMASACPolicy):
             local_input_dim: int,
             global_input_dim: int,
     ) -> TMASACTwinCritic:
+        actor_state_config = self.config.actor_state_critic_input_config
+        if actor_state_config is not None:
+            temporal_model = self._actor_encoder.layers[-1].temporal_model
+            if isinstance(temporal_model, LSTMTemporalSequenceModel):
+                actor_state_input_dim = 2 * self.actor_encoder_config.d_model
+            elif isinstance(temporal_model, SLSTMTemporalSequenceModel):
+                actor_state_input_dim = (
+                    3 if actor_state_config.include_slstm_memory_strength else 2
+                ) * self.actor_encoder_config.d_model
+            else:
+                raise TypeError(
+                    "Actor-state critic input supports only LSTMTemporalSequenceModel and "
+                    f"SLSTMTemporalSequenceModel, got {type(temporal_model).__name__}."
+                )
+            return ActorStateTMASACTwinCritic(
+                n_agents=self.n_agents,
+                max_agents=self.max_agents,
+                local_input_dim=local_input_dim,
+                global_input_dim=global_input_dim,
+                hidden_local_vars_dim=self.hidden_local_vars_dim,
+                hidden_global_vars_dim=self.hidden_global_vars_dim,
+                action_dim=self.agent_action_dim,
+                encoder_config=self.critic_encoder_config,
+                critic_config=self.config.critic_config,
+                act_fn_cls=self.config.act_fn_cls,
+                dropout=self.dropout,
+                actor_state_input_dim=actor_state_input_dim,
+                actor_state_config=actor_state_config,
+                actor_state_default_projection_dim=self.actor_encoder_config.d_model,
+            )
         if not self.config.recurrent_critic:
             return super()._build_critic(
                 local_input_dim=local_input_dim,
@@ -1202,6 +1521,9 @@ class RecurrentTMASACPolicy(TMASACPolicy):
     def _critic_module(self) -> TMASACTwinCritic:
         if isinstance(self.critic, TMASACTwinCritic):
             return self.critic
+        orig_mod = getattr(self.critic, "_orig_mod", None)
+        if isinstance(orig_mod, TMASACTwinCritic):
+            return orig_mod
         raise RuntimeError(f"Cannot resolve TMASAC critic from {type(self.critic).__name__}")
 
     @staticmethod

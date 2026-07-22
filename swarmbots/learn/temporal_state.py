@@ -121,6 +121,24 @@ def unflatten_temporal_state_batch_agents(
     )
 
 
+def unflatten_temporal_state_batch_agents_sequence(
+        state: TemporalState,
+        *,
+        batch_size: int,
+        n_agents: int,
+) -> TemporalState:
+    def unflatten(tensor: torch.Tensor) -> torch.Tensor:
+        sequence_length = tensor.shape[1]
+        return tensor.reshape(
+            batch_size,
+            n_agents,
+            sequence_length,
+            *tensor.shape[2:],
+        ).transpose(1, 2).contiguous()
+
+    return _map_temporal_state(state, unflatten)
+
+
 def stack_temporal_states(states: Sequence[TemporalState], *, dim: int) -> TemporalState:
     return _combine_temporal_states(states, lambda tensors: torch.stack(tensors, dim=dim))
 
