@@ -4,6 +4,7 @@ import torch
 from torch import nn
 
 from swarmbots.learn.algos.r_mat.temporal_sequence_model import TemporalSequenceModel
+from swarmbots.learn.algos.xlstm.head_utils import HeadwiseLinearProjection
 from swarmbots.learn.algos.xlstm.temporal_utils import check_mask, check_sequence_inputs, reset_state, select_state
 from swarmbots.learn.algos.xlstm.mlstm.mlstm_cell import MLSTMCell, MLSTMCellConfig, MLSTMCellState
 from swarmbots.learn.temporal_state import initialize_selected_temporal_state, update_selected_temporal_state
@@ -13,6 +14,8 @@ from swarmbots.learn.temporal_state import initialize_selected_temporal_state, u
 class MLSTMTemporalSequenceModelConfig:
     num_heads: int = 4
     bias: bool = False
+    qkv_proj_blocksize: int = 4
+    dense_qkv_proj: bool = False
     eps: float = 1e-6
     use_parallel_sequence: bool = True
 
@@ -26,12 +29,26 @@ class MLSTMTemporalSequenceModel(TemporalSequenceModel):
     ) -> None:
         super().__init__(hidden_dim=hidden_dim)
         self.config = config
-        self.qkv_projection = nn.Linear(hidden_dim, 3 * hidden_dim, bias=config.bias)
+        if config.dense_qkv_proj:
+            self.qkv_projection = nn.Linear(hidden_dim, 3 * hidden_dim, bias=config.bias)
+        else:
+            if config.qkv_proj_blocksize < 1:
+                raise ValueError(f"qkv_proj_blocksize must be >= 1, got {config.qkv_proj_blocksize}")
+            if hidden_dim % config.qkv_proj_blocksize != 0:
+                raise ValueError(
+                    f"hidden_dim={hidden_dim} must be divisible by qkv_proj_blocksize={config.qkv_proj_blocksize}",
+                )
+            self.qkv_projection = HeadwiseLinearProjection(
+                hidden_dim=hidden_dim,
+                num_heads=hidden_dim // config.qkv_proj_blocksize,
+                num_projections=3,
+                bias=config.bias,
+            )
         self.cell = MLSTMCell(
             hidden_dim=hidden_dim,
             config=MLSTMCellConfig(num_heads=config.num_heads, eps=config.eps),
         )
-        if self.qkv_projection.bias is not None:
+        if config.dense_qkv_proj and self.qkv_projection.bias is not None:
             nn.init.zeros_(self.qkv_projection.bias)
 
     def initial_state(

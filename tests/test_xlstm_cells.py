@@ -155,6 +155,131 @@ def test_slstm_projects_the_full_sequence_once() -> None:
     assert projection_forward.call_args.args[0].shape == inputs.shape
 
 
+def test_slstm_uses_headwise_input_projection_by_default() -> None:
+    model = SLSTMTemporalSequenceModel(
+        hidden_dim=8,
+        config=SLSTMTemporalSequenceModelConfig(num_heads=2),
+    )
+    inputs = torch.zeros(1, 1, 8)
+    inputs[..., :4] = 1.0
+
+    with torch.no_grad():
+        model.input_projection.weight.fill_(1.0)
+    projected_gates = model.input_projection(inputs).reshape(1, 1, 4, 2, 4)
+
+    torch.testing.assert_close(projected_gates[..., 0, :], torch.full((1, 1, 4, 4), 4.0))
+    torch.testing.assert_close(projected_gates[..., 1, :], torch.zeros(1, 1, 4, 4))
+    assert model.input_projection.weight.shape == (4, 2, 4, 4)
+
+
+def test_slstm_headwise_input_projection_uses_reference_initialization() -> None:
+    with patch(
+            "swarmbots.learn.algos.xlstm.head_utils.nn.init.normal_",
+    ) as normal_init:
+        model = SLSTMTemporalSequenceModel(
+            hidden_dim=8,
+            config=SLSTMTemporalSequenceModelConfig(num_heads=2),
+        )
+
+    normal_init.assert_any_call(
+        model.input_projection.weight,
+        mean=0.0,
+        std=(2.0 / (5.0 * 8)) ** 0.5,
+    )
+
+
+def test_slstm_dense_input_projection_is_opt_in() -> None:
+    model = SLSTMTemporalSequenceModel(
+        hidden_dim=8,
+        config=SLSTMTemporalSequenceModelConfig(num_heads=2, dense_input_proj=True),
+    )
+
+    assert isinstance(model.input_projection, torch.nn.Linear)
+    assert model.input_projection.weight.shape == (32, 8)
+
+
+@pytest.mark.parametrize("num_heads", [0, -1])
+def test_slstm_headwise_input_projection_rejects_non_positive_num_heads(num_heads: int) -> None:
+    with pytest.raises(ValueError, match="num_heads must be >= 1"):
+        SLSTMTemporalSequenceModel(
+            hidden_dim=8,
+            config=SLSTMTemporalSequenceModelConfig(num_heads=num_heads),
+        )
+
+
+def test_mlstm_uses_reference_blockwise_qkv_projection_by_default() -> None:
+    model = MLSTMTemporalSequenceModel(
+        hidden_dim=8,
+        config=MLSTMTemporalSequenceModelConfig(num_heads=2),
+    )
+    inputs = torch.zeros(1, 1, 8)
+    inputs[..., :4] = 1.0
+
+    with torch.no_grad():
+        model.qkv_projection.weight.fill_(1.0)
+    projected_qkv = model.qkv_projection(inputs).reshape(1, 1, 3, 2, 4)
+
+    torch.testing.assert_close(projected_qkv[..., 0, :], torch.full((1, 1, 3, 4), 4.0))
+    torch.testing.assert_close(projected_qkv[..., 1, :], torch.zeros(1, 1, 3, 4))
+    assert model.qkv_projection.weight.shape == (3, 2, 4, 4)
+
+
+def test_mlstm_headwise_qkv_projection_uses_reference_initialization() -> None:
+    with patch("swarmbots.learn.algos.xlstm.head_utils.nn.init.normal_") as normal_init:
+        model = MLSTMTemporalSequenceModel(
+            hidden_dim=8,
+            config=MLSTMTemporalSequenceModelConfig(num_heads=2),
+        )
+
+    normal_init.assert_any_call(
+        model.qkv_projection.weight,
+        mean=0.0,
+        std=(2.0 / (5.0 * 8)) ** 0.5,
+    )
+
+
+def test_mlstm_dense_qkv_projection_is_opt_in() -> None:
+    model = MLSTMTemporalSequenceModel(
+        hidden_dim=8,
+        config=MLSTMTemporalSequenceModelConfig(num_heads=2, dense_qkv_proj=True),
+    )
+
+    assert isinstance(model.qkv_projection, torch.nn.Linear)
+    assert model.qkv_projection.weight.shape == (24, 8)
+
+
+@pytest.mark.parametrize("qkv_proj_blocksize", [0, 3])
+def test_mlstm_rejects_invalid_qkv_projection_blocksize(qkv_proj_blocksize: int) -> None:
+    with pytest.raises(ValueError, match="qkv_proj_blocksize"):
+        MLSTMTemporalSequenceModel(
+            hidden_dim=8,
+            config=MLSTMTemporalSequenceModelConfig(
+                num_heads=2,
+                qkv_proj_blocksize=qkv_proj_blocksize,
+            ),
+        )
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        MLSTMTemporalSequenceModel(
+            hidden_dim=8,
+            config=MLSTMTemporalSequenceModelConfig(num_heads=2),
+        ),
+        SLSTMTemporalSequenceModel(
+            hidden_dim=8,
+            config=SLSTMTemporalSequenceModelConfig(num_heads=2),
+        ),
+    ],
+)
+def test_xlstm_output_norm_uses_reference_residual_weight(model: torch.nn.Module) -> None:
+    output_norm = model.cell.output_norm if isinstance(model, MLSTMTemporalSequenceModel) else model.output_norm
+
+    torch.testing.assert_close(output_norm.weight, torch.zeros(8))
+    torch.testing.assert_close(output_norm.effective_weight, torch.ones(8))
+
+
 def test_slstm_can_compile_its_recurrent_step() -> None:
     with patch(
             "swarmbots.learn.algos.xlstm.slstm.slstm_temporal_sequence_model.torch.compile",

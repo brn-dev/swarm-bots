@@ -5,7 +5,7 @@ import torch
 from torch import nn
 
 from swarmbots.learn.algos.r_mat.temporal_sequence_model import TemporalSequenceModel
-from swarmbots.learn.algos.xlstm.head_utils import MultiHeadLayerNorm
+from swarmbots.learn.algos.xlstm.head_utils import HeadwiseLinearProjection, MultiHeadLayerNorm
 from swarmbots.learn.algos.xlstm.temporal_utils import check_mask, check_sequence_inputs, reset_state, select_state
 from swarmbots.learn.algos.xlstm.slstm.slstm_cell import SLSTMCell, SLSTMCellConfig, SLSTMCellState
 from swarmbots.learn.temporal_state import (
@@ -20,6 +20,7 @@ from swarmbots.learn.temporal_state import (
 class SLSTMTemporalSequenceModelConfig:
     num_heads: int = 4
     bias: bool = False
+    dense_input_proj: bool = False
     recurrent_weight_init: Literal["zeros", "standard"] = "zeros"
     bias_init: Literal["powerlaw", "small_init", "zeros", "standard"] = "powerlaw"
     output_norm: bool = True
@@ -36,7 +37,16 @@ class SLSTMTemporalSequenceModel(TemporalSequenceModel):
     ) -> None:
         super().__init__(hidden_dim=hidden_dim)
         self.config = config
-        self.input_projection = nn.Linear(hidden_dim, 4 * hidden_dim, bias=config.bias)
+        self.input_projection = (
+            nn.Linear(hidden_dim, 4 * hidden_dim, bias=config.bias)
+            if config.dense_input_proj
+            else HeadwiseLinearProjection(
+                hidden_dim=hidden_dim,
+                num_heads=config.num_heads,
+                num_projections=4,
+                bias=config.bias,
+            )
+        )
         self.cell = SLSTMCell(
             hidden_dim=hidden_dim,
             config=SLSTMCellConfig(
@@ -46,7 +56,12 @@ class SLSTMTemporalSequenceModel(TemporalSequenceModel):
             ),
         )
         self.output_norm = (
-            MultiHeadLayerNorm(hidden_dim=hidden_dim, num_heads=config.num_heads, bias=False)
+            MultiHeadLayerNorm(
+                hidden_dim=hidden_dim,
+                num_heads=config.num_heads,
+                bias=False,
+                residual_weight=True,
+            )
             if config.output_norm
             else nn.Identity()
         )
@@ -65,7 +80,7 @@ class SLSTMTemporalSequenceModel(TemporalSequenceModel):
                 fullgraph=False,
                 dynamic=True,
             )
-        if self.input_projection.bias is not None:
+        if config.dense_input_proj and self.input_projection.bias is not None:
             nn.init.zeros_(self.input_projection.bias)
 
     def initial_state(
