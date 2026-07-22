@@ -11,6 +11,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from experiments.mjw_experiment_common import run_experiment as run_mjw_find_opening_experiment
+from swarmbots.learn.algos.sac.recurrent_tmasac_policy import ActorStateCriticInputConfig
 from swarmbots.learn.algos.xlstm.slstm import (
     SLSTMTemporalSequenceModel,
     SLSTMTemporalSequenceModelConfig,
@@ -28,6 +29,7 @@ def run_experiment(
         variant_name: str,
         entrypoint_path: Path,
         temporal_model_variant: TemporalModelVariant,
+        actor_state_critic_input_config: ActorStateCriticInputConfig | None = None,
 ) -> None:
     is_recurrent = temporal_model_variant != "baseline"
     temporal_model_cls, temporal_model_config = _make_temporal_model_specs(temporal_model_variant)
@@ -60,6 +62,7 @@ def run_experiment(
         rmat_actor_d_model=ACTOR_D_MODEL if is_recurrent else None,
         rmat_actor_transformer_ff_hidden_dims=[ACTOR_D_MODEL * 2] if is_recurrent else None,
         rmat_actor_inter_module_mlp=is_recurrent,
+        r_tmasac_actor_state_critic_input_config=actor_state_critic_input_config,
         rmat_temporal_model_cls=temporal_model_cls,
         rmat_temporal_model_config=temporal_model_config,
         rmat_temporal_residual=False,
