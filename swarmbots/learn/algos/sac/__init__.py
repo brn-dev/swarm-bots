@@ -9,6 +9,7 @@ from swarmbots.learn.algos.sac.tmasac_policy import (
     TMASACPolicyConfig,
 )
 from swarmbots.learn.algos.sac.recurrent_tmasac_policy import (
+    ActorStateCriticInputConfig,
     RecurrentTMASACPolicy,
     RecurrentTMASACPolicyConfig,
 )
@@ -16,6 +17,7 @@ from swarmbots.learn.algos.sac.recurrent_sac import RecurrentSAC
 from swarmbots.learn.algos.sac.segment_tmasac_policy import SegmentTMASACPolicy
 
 __all__ = [
+    "ActorStateCriticInputConfig",
     "BaseSACPolicy",
     "RecurrentSAC",
     "SegmentTMASACPolicy",

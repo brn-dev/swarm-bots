@@ -38,7 +38,10 @@ from swarmbots.learn.algos.mat_qcs.mat_qcs_decoder import MATQCSDecoderSelfAtten
 from swarmbots.learn.algos.mat_qcs.mat_qcs_policy import MATQCSPolicy
 from swarmbots.learn.algos.mat_qcx.mat_qcx_policy import MATQCXPolicy
 from swarmbots.learn.algos.r_mat.r_mat_dec_policy import RMATDecPolicy
-from swarmbots.learn.algos.sac.recurrent_tmasac_policy import RecurrentTMASACPolicy
+from swarmbots.learn.algos.sac.recurrent_tmasac_policy import (
+    ActorStateCriticInputConfig,
+    RecurrentTMASACPolicy,
+)
 from swarmbots.learn.algos.sac.segment_tmasac_policy import SegmentTMASACPolicy
 from swarmbots.learn.algos.sac.tmasac_policy import TMASACPolicy
 from swarmbots.learn.env_wrappers.learn_wrappers.swarm_bots_learn_env_wrapper import (
@@ -1021,6 +1024,23 @@ def test_make_base_policy_constructs_recurrent_tmasac_with_feedforward_critic() 
         assert inter_module_mlp is not None
         final_projection = inter_module_mlp[-1]
         assert isinstance(final_projection, nn.Linear)
+
+
+def test_make_base_policy_wires_recurrent_actor_state_critic_input() -> None:
+    actor_state_config = ActorStateCriticInputConfig(
+        projection_dim=6,
+        projection_hidden_dims=(10,),
+    )
+    policy = _make_test_base_policy(
+        env=_DummyContinuousEnv(),
+        policy_variant="r_tmasac",
+        continuous_action_dist="gumbel_softmax_sign_magnitude_beta",
+        r_tmasac_actor_state_critic_input_config=actor_state_config,
+    )
+
+    assert isinstance(policy, RecurrentTMASACPolicy)
+    assert policy.config.actor_state_critic_input_config == actor_state_config
+    assert policy.uses_actor_state_critic_input
 
 
 def test_make_base_policy_constructs_segment_tmasac_with_regular_mat() -> None:

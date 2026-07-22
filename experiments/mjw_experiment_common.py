@@ -61,6 +61,7 @@ from swarmbots.learn.algos.r_mat.r_mat_qcs_policy import RMATQCSPolicy, RMATQCSP
 from swarmbots.learn.algos.r_mat.r_ppo_wm_sampler import RPPOWMSamplerConfig
 from swarmbots.learn.algos.sac.recurrent_sac import RecurrentSAC
 from swarmbots.learn.algos.sac.recurrent_tmasac_policy import (
+    ActorStateCriticInputConfig,
     RecurrentTMASACPolicy,
     RecurrentTMASACPolicyConfig,
 )
@@ -563,6 +564,7 @@ def run_experiment(
         rmat_actor_d_model: int | None = None,
         rmat_actor_transformer_ff_hidden_dims: Sequence[int] | None = None,
         rmat_actor_inter_module_mlp: bool = False,
+        r_tmasac_actor_state_critic_input_config: ActorStateCriticInputConfig | None = None,
         use_nop: bool = True,
         nop_add_agent_embeddings_transition_model: bool = False,
         nop_skip_first_transition_for_critic: bool = True,
@@ -883,6 +885,7 @@ def run_experiment(
         rmat_actor_d_model=rmat_actor_d_model,
         rmat_actor_transformer_ff_hidden_dims=rmat_actor_transformer_ff_hidden_dims,
         rmat_actor_inter_module_mlp=rmat_actor_inter_module_mlp,
+        r_tmasac_actor_state_critic_input_config=r_tmasac_actor_state_critic_input_config,
         obs_indices=obs_indices,
         rmat_temporal_model_cls=rmat_temporal_model_cls,
         rmat_temporal_model_config=rmat_temporal_model_config,
@@ -1448,6 +1451,7 @@ def _make_base_policy(
         rmat_actor_d_model: int | None = None,
         rmat_actor_transformer_ff_hidden_dims: Sequence[int] | None = None,
         rmat_actor_inter_module_mlp: bool = False,
+        r_tmasac_actor_state_critic_input_config: ActorStateCriticInputConfig | None = None,
         obs_indices: ObsIndices | None = None,
         mat_qcc_tie_query_context_and_context_self_attention: bool = True,
         rmat_temporal_model_cls: Any = None,
@@ -1617,6 +1621,7 @@ def _make_base_policy(
                 env=env,
                 config=RecurrentTMASACPolicyConfig(
                     recurrent_critic=False,
+                    actor_state_critic_input_config=r_tmasac_actor_state_critic_input_config,
                     experimental_compile_lstm=rmat_experimental_compile_lstm,
                     **tmasac_config_kwargs,
                 ),

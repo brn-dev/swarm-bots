@@ -18,7 +18,10 @@ from swarmbots.learn.algos.sac.segment_tmasac_policy import SegmentTMASACPolicy
 from swarmbots.learn.algos.sac.sac import SAC
 from swarmbots.learn.algos.sac.sac_nop import SACNOPSequenceBatch
 from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
-from swarmbots.learn.temporal_state import concatenate_temporal_states, detach_temporal_state
+from swarmbots.learn.temporal_state import (
+    concatenate_temporal_states,
+    detach_temporal_state,
+)
 
 
 class RecurrentSAC(SAC):
@@ -142,7 +145,7 @@ class RecurrentSAC(SAC):
         learning_batch = _slice_segment(batch, self.burn_in_steps, batch.sequence_length)
         flat_batch = _flatten_segment(learning_batch)
         actor_state, critic_state, target_critic_state = self._burn_in_states(batch)
-        state_output_indices, state_output_mask = self._padded_truncation_indices(
+        truncation_indices, state_output_mask = self._padded_truncation_indices(
             learning_batch.truncations,
         )
 
@@ -153,6 +156,7 @@ class RecurrentSAC(SAC):
             actor_latents,
             next_actor_state,
             truncation_actor_states,
+            last_layer_actor_state_sequence,
         ) = self.policy.action_log_prob_sequence_with_selected_states(
             local_obs=learning_batch.local_obs,
             global_obs=learning_batch.global_obs,
@@ -161,10 +165,15 @@ class RecurrentSAC(SAC):
             deterministic=False,
             use_rsample=True,
             initial_state=actor_state,
-            state_output_indices=state_output_indices,
+            state_output_indices=truncation_indices,
             time_mask=learning_batch.train_mask,
             reset_mask=learning_batch.episode_start_mask,
         )
+        current_actor_state = None
+        if getattr(self.policy, "uses_actor_state_critic_input", False):
+            current_actor_state = self.policy.actor_last_layer_state_critic_input(
+                last_layer_actor_state_sequence,
+            )
         actor_action_dist_losses, actor_action_dist_metrics = self._compute_actor_action_dist_extra_losses(
             agent_mask=learning_batch.agent_mask,
         )
@@ -200,14 +209,16 @@ class RecurrentSAC(SAC):
 
         with torch.no_grad():
             bootstrap_batch = self._mask_terminal_next_observations(learning_batch)
-            next_actions, next_log_probs = self._next_policy_actions(
+            next_actions, next_log_probs, next_actor_state = self._next_policy_actions(
                 batch=bootstrap_batch,
                 actions_pi=actions_pi,
                 log_prob_pi=log_prob_pi,
+                current_actor_state=current_actor_state,
                 next_actor_state=detach_temporal_state(next_actor_state),
                 truncation_actor_states=detach_temporal_state(truncation_actor_states),
-                truncation_indices=state_output_indices,
+                truncation_indices=truncation_indices,
                 truncation_mask=state_output_mask,
+                return_actor_state=True,
             )
             next_log_prob_mean = self._mean_agent_log_probs(
                 next_log_probs.reshape(-1, next_log_probs.shape[-1]),
@@ -220,6 +231,7 @@ class RecurrentSAC(SAC):
                 batch=bootstrap_batch,
                 next_actions=next_actions,
                 initial_state=target_critic_state,
+                actor_state=next_actor_state,
             )
             target_q = self._tensor_operations.bellman_target(
                 learning_batch.rewards,
@@ -242,6 +254,7 @@ class RecurrentSAC(SAC):
             initial_state=critic_state,
             time_mask=learning_batch.train_mask,
             reset_mask=learning_batch.episode_start_mask,
+            **({} if current_actor_state is None else {"actor_state": current_actor_state}),
         )
         critic_loss = self._tensor_operations.critic_loss(
             current_q1,
@@ -282,6 +295,7 @@ class RecurrentSAC(SAC):
                 batch=learning_batch,
                 actions_pi=actions_pi,
                 initial_state=actor_critic_state,
+                actor_state=current_actor_state,
             )
             actor_loss = self._tensor_operations.actor_loss(
                 q1_pi,
@@ -424,7 +438,9 @@ class RecurrentSAC(SAC):
             truncation_actor_states: Any,
             truncation_indices: torch.Tensor,
             truncation_mask: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+            current_actor_state: torch.Tensor | None = None,
+            return_actor_state: bool = False,
+    ) -> tuple[torch.Tensor, torch.Tensor] | tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
         batch_size = batch.actions.shape[0]
         selected_batch_indices = truncation_indices[:, 0]
         selected_time_indices = truncation_indices[:, 1]
@@ -454,7 +470,12 @@ class RecurrentSAC(SAC):
         ))
 
         self._reset_train_gsde_noise(target_local_obs)
-        target_actions, target_log_probs, _latents, _state = self.policy.action_log_prob_sequence(
+        (
+            target_actions,
+            target_log_probs,
+            _latents,
+            target_next_actor_state,
+        ) = self.policy.action_log_prob_sequence(
             local_obs=target_local_obs,
             global_obs=target_global_obs,
             agent_mask=target_agent_mask,
@@ -473,7 +494,20 @@ class RecurrentSAC(SAC):
         valid_indices = truncation_indices[truncation_mask]
         next_actions[valid_indices[:, 0], valid_indices[:, 1]] = truncation_actions[truncation_mask]
         next_log_probs[valid_indices[:, 0], valid_indices[:, 1]] = truncation_log_probs[truncation_mask]
-        return next_actions, next_log_probs
+        if not return_actor_state:
+            return next_actions, next_log_probs
+        if current_actor_state is None:
+            return next_actions, next_log_probs, None
+
+        target_actor_state = self.policy.actor_state_critic_input(target_next_actor_state)
+        final_actor_state = target_actor_state[:batch_size]
+        truncation_actor_state = target_actor_state[batch_size:]
+        next_actor_state_input = torch.cat(
+            (current_actor_state[:, 1:], final_actor_state.unsqueeze(1)),
+            dim=1,
+        )
+        next_actor_state_input[valid_indices[:, 0], valid_indices[:, 1]] = truncation_actor_state[truncation_mask]
+        return next_actions, next_log_probs, next_actor_state_input
 
     def _padded_truncation_indices(
             self,
@@ -503,6 +537,7 @@ class RecurrentSAC(SAC):
             batch: OffPolicyReplayEpisodeSegmentBatch,
             next_actions: torch.Tensor,
             initial_state: RecurrentCriticState | None,
+            actor_state: torch.Tensor | None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         if not self.policy.recurrent_critic:
             q1, q2, _latents, _state = self.policy.q_values_sequence(
@@ -513,6 +548,7 @@ class RecurrentSAC(SAC):
                 hidden_global_vars=batch.next_hidden_global_vars,
                 agent_mask=batch.next_agent_mask,
                 target=True,
+                **({} if actor_state is None else {"actor_state": actor_state}),
             )
             return q1, q2
 
@@ -559,6 +595,7 @@ class RecurrentSAC(SAC):
             batch: OffPolicyReplayEpisodeSegmentBatch,
             actions_pi: torch.Tensor,
             initial_state: RecurrentCriticState | None,
+            actor_state: torch.Tensor | None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         if not self.policy.recurrent_critic:
             q1, q2, _latents, _state = self.policy.q_values_sequence(
@@ -569,6 +606,7 @@ class RecurrentSAC(SAC):
                 hidden_global_vars=batch.hidden_global_vars,
                 agent_mask=batch.agent_mask,
                 target=False,
+                **({} if actor_state is None else {"actor_state": actor_state}),
             )
             return q1, q2
 

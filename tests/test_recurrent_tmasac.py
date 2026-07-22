@@ -26,6 +26,7 @@ from swarmbots.learn.algos.r_mat.temporal_sequence_model import (
     LSTMTemporalSequenceModelConfig,
 )
 from swarmbots.learn.algos.sac import (
+    ActorStateCriticInputConfig,
     RecurrentSAC,
     RecurrentTMASACPolicy,
     RecurrentTMASACPolicyConfig,
@@ -146,6 +147,48 @@ def _policy_config(
         recurrent_critic=recurrent_critic,
         nop_config=SACNOPConfig() if nop_config is None else nop_config,
     )
+
+
+def _actor_state_policy(
+        temporal_model_cls: type,
+        temporal_model_config: object,
+        *,
+        actor_state_config: ActorStateCriticInputConfig = ActorStateCriticInputConfig(projection_dim=4),
+        compile_modules: bool = False,
+) -> RecurrentTMASACPolicy:
+    return RecurrentTMASACPolicy(
+        env=_DummyContinuousEnv(),
+        config=replace(
+            _policy_config(_encoder_config(temporal_model_cls, temporal_model_config)),
+            actor_state_critic_input_config=actor_state_config,
+            compile_modules=compile_modules,
+        ),
+    )
+
+
+def _actor_state_critic_inputs(
+        *,
+        sequence_length: int | None = None,
+        agent_mask: torch.Tensor | None = None,
+) -> dict[str, torch.Tensor]:
+    env = _DummyContinuousEnv()
+    batch_size = 2
+    local_prefix = (
+        (batch_size, env.n_agents)
+        if sequence_length is None
+        else (batch_size, sequence_length, env.n_agents)
+    )
+    global_prefix = (batch_size,) if sequence_length is None else (batch_size, sequence_length)
+    if agent_mask is None:
+        agent_mask = torch.ones(*local_prefix, dtype=torch.bool)
+    return {
+        "local_obs": torch.randn(*local_prefix, env.local_obs_dim),
+        "global_obs": torch.randn(*global_prefix, env.global_obs_dim),
+        "actions": torch.randn(*local_prefix, 2),
+        "hidden_local_vars": torch.randn(*local_prefix, env.hidden_local_vars_dim),
+        "hidden_global_vars": torch.randn(*global_prefix, env.hidden_global_vars_dim),
+        "agent_mask": agent_mask,
+    }
 
 
 def _small_nop_config(
@@ -276,6 +319,8 @@ def _perform_short_recurrent_update(
         compile_modules: bool = False,
         continuous_config: ContinuousActionDistConfigInput | None = None,
         use_slstm: bool = False,
+        actor_state_critic_input_config: ActorStateCriticInputConfig | None = None,
+        selected_state_capacities: list[int] | None = None,
 ) -> tuple[dict[str, object], int]:
     env = _make_env(max_steps=max_steps)
     try:
@@ -304,6 +349,7 @@ def _perform_short_recurrent_update(
                         continuous_config=continuous_config,
                     ),
                     compile_modules=compile_modules,
+                    actor_state_critic_input_config=actor_state_critic_input_config,
                 ),
             )
             algorithm = RecurrentSAC(
@@ -322,6 +368,16 @@ def _perform_short_recurrent_update(
                 train_device="cpu",
                 rollout_device="cpu",
             )
+            if selected_state_capacities is not None:
+                action_with_selected_states = policy.action_log_prob_sequence_with_selected_states
+
+                def record_selected_state_capacity(**kwargs: object) -> object:
+                    state_output_indices = kwargs["state_output_indices"]
+                    assert isinstance(state_output_indices, torch.Tensor)
+                    selected_state_capacities.append(state_output_indices.shape[0])
+                    return action_with_selected_states(**kwargs)
+
+                policy.action_log_prob_sequence_with_selected_states = record_selected_state_capacity
             episode_return_ema = ExponentialMovingAverage(alpha=0.1)
             episode_success_rate_ema = ExponentialMovingAverage(alpha=0.1)
 
@@ -1343,6 +1399,7 @@ class RecurrentTMASACTests(unittest.TestCase):
                     _latents,
                     sequence_final_state,
                     selected_states,
+                    last_layer_state_sequence,
                 ) = policy.action_log_prob_sequence_with_selected_states(
                     local_obs=local_obs,
                     global_obs=global_obs,
@@ -1354,6 +1411,7 @@ class RecurrentTMASACTests(unittest.TestCase):
                     state_output_indices=state_output_indices,
                     reset_mask=reset_mask,
                 )
+                self.assertIsNone(last_layer_state_sequence)
 
                 state = initial_state
                 step_actions = []
@@ -2383,6 +2441,302 @@ class RecurrentTMASACTests(unittest.TestCase):
         self.assertEqual(total_updates, 1)
         self.assertIn("actor_loss", metrics)
         self.assertIn("critic_loss", metrics)
+
+    def test_actor_state_critic_input_uses_last_lstm_layers_and_detaches(self) -> None:
+        hidden_dim = 8
+        encoder_config = replace(
+            _encoder_config(
+                LSTMTemporalSequenceModel,
+                LSTMTemporalSequenceModelConfig(num_layers=2),
+            ),
+            num_layers=2,
+        )
+        policy = RecurrentTMASACPolicy(
+            env=_DummyContinuousEnv(),
+            config=replace(
+                _policy_config(encoder_config),
+                actor_state_critic_input_config=ActorStateCriticInputConfig(projection_dim=4),
+            ),
+        )
+        state = policy.initial_temporal_state(
+            batch_size=2,
+            n_agents=policy.n_agents,
+            device=torch.device("cpu"),
+            dtype=torch.float32,
+        )
+        state[0] = tuple(tensor.fill_(99.0).requires_grad_() for tensor in state[0])
+        last_hidden = torch.randn(2, policy.n_agents, 2, hidden_dim, requires_grad=True)
+        last_cell = torch.randn(2, policy.n_agents, 2, hidden_dim, requires_grad=True)
+        state[1] = last_hidden, last_cell
+
+        critic_input = policy.actor_state_critic_input(state)
+
+        torch.testing.assert_close(
+            critic_input,
+            torch.cat((last_hidden[..., -1, :], last_cell[..., -1, :]), dim=-1),
+        )
+        self.assertFalse(critic_input.requires_grad)
+
+    def test_actor_state_critic_input_builds_stable_slstm_representation(self) -> None:
+        encoder_config = replace(
+            _encoder_config(
+                SLSTMTemporalSequenceModel,
+                SLSTMTemporalSequenceModelConfig(num_heads=2),
+            ),
+            num_layers=2,
+        )
+        policy = RecurrentTMASACPolicy(
+            env=_DummyContinuousEnv(),
+            config=replace(
+                _policy_config(encoder_config),
+                actor_state_critic_input_config=ActorStateCriticInputConfig(),
+            ),
+        )
+        state = policy.initial_temporal_state(
+            batch_size=2,
+            n_agents=policy.n_agents,
+            device=torch.device("cpu"),
+            dtype=torch.float32,
+        )
+        hidden = torch.randn_like(state[-1][0], requires_grad=True)
+        cell = torch.randn_like(state[-1][1], requires_grad=True)
+        normalizer = torch.rand_like(state[-1][2]).add_(1.0).requires_grad_()
+        stabilizer = torch.randn_like(state[-1][3], requires_grad=True)
+        state[-1] = hidden, cell, normalizer, stabilizer
+
+        critic_input = policy.actor_state_critic_input(state)
+        expected = torch.cat((
+            hidden,
+            cell / normalizer,
+            torch.nn.functional.softsign(torch.log(normalizer) + stabilizer),
+        ), dim=-1)
+
+        torch.testing.assert_close(critic_input, expected)
+        self.assertFalse(critic_input.requires_grad)
+
+    def test_actor_state_critic_input_keeps_inactive_slstm_agents_and_public_critic_api_finite(self) -> None:
+        agent_mask = torch.tensor([
+            [True, False, True],
+            [True, True, False],
+        ])
+        critic_inputs = _actor_state_critic_inputs(agent_mask=agent_mask)
+        for include_memory_strength in (False, True):
+            with self.subTest(include_memory_strength=include_memory_strength):
+                policy = _actor_state_policy(
+                    SLSTMTemporalSequenceModel,
+                    SLSTMTemporalSequenceModelConfig(num_heads=2),
+                    actor_state_config=ActorStateCriticInputConfig(
+                        projection_dim=4,
+                        include_slstm_memory_strength=include_memory_strength,
+                    ),
+                )
+                initial_state = policy.initial_temporal_state(
+                    batch_size=2,
+                    n_agents=policy.n_agents,
+                    device=torch.device("cpu"),
+                    dtype=torch.float32,
+                )
+                initial_critic_input = policy.actor_state_critic_input(initial_state)
+                self.assertTrue(torch.isfinite(initial_critic_input).all())
+                torch.testing.assert_close(initial_critic_input, torch.zeros_like(initial_critic_input))
+
+                q1, q2 = policy.q_values(**critic_inputs)
+                nop_q1, nop_q2, _latents = policy.q_values_with_nop_latents(**critic_inputs)
+                target_q1, target_q2 = policy.target_q_values(**critic_inputs)
+                critic_latents = policy.encode_critic(**critic_inputs)
+
+                for tensor in (q1, q2, nop_q1, nop_q2, target_q1, target_q2, critic_latents):
+                    self.assertTrue(torch.isfinite(tensor).all())
+
+    def test_state_free_actor_state_critic_api_matches_explicit_zero_state(self) -> None:
+        critic_inputs = _actor_state_critic_inputs(agent_mask=torch.tensor([
+            [True, False, True],
+            [True, True, True],
+        ]))
+        temporal_configs = (
+            (LSTMTemporalSequenceModel, LSTMTemporalSequenceModelConfig()),
+            (SLSTMTemporalSequenceModel, SLSTMTemporalSequenceModelConfig(num_heads=2)),
+        )
+        for temporal_model_cls, temporal_model_config in temporal_configs:
+            with self.subTest(temporal_model=temporal_model_cls.__name__):
+                policy = _actor_state_policy(temporal_model_cls, temporal_model_config)
+                _actor_latents, actor_state = policy.encode_actor_sequence(
+                    local_obs=critic_inputs["local_obs"],
+                    global_obs=critic_inputs["global_obs"],
+                    agent_mask=critic_inputs["agent_mask"],
+                    initial_state=None,
+                )
+                actor_state_input = policy.actor_state_critic_input(actor_state)
+                explicit_q1, explicit_q2, _latents, _state = policy.q_values_sequence(
+                    **critic_inputs,
+                    target=False,
+                    actor_state=actor_state_input,
+                )
+                explicit_target_q1, explicit_target_q2, _latents, _state = policy.q_values_sequence(
+                    **critic_inputs,
+                    target=True,
+                    actor_state=actor_state_input,
+                )
+
+                q1, q2 = policy.q_values(**critic_inputs)
+                target_q1, target_q2 = policy.target_q_values(**critic_inputs)
+
+                torch.testing.assert_close(q1, explicit_q1)
+                torch.testing.assert_close(q2, explicit_q2)
+                torch.testing.assert_close(target_q1, explicit_target_q1)
+                torch.testing.assert_close(target_q2, explicit_target_q2)
+
+    def test_state_free_actor_state_critic_api_rejects_sequences(self) -> None:
+        policy = _actor_state_policy(
+            LSTMTemporalSequenceModel,
+            LSTMTemporalSequenceModelConfig(),
+        )
+        sequence_inputs = _actor_state_critic_inputs(sequence_length=3)
+
+        for method_name in ("q_values", "q_values_with_nop_latents", "target_q_values", "encode_critic"):
+            with self.subTest(method=method_name):
+                with self.assertRaisesRegex(ValueError, "use q_values_sequence with explicit actor_state"):
+                    getattr(policy, method_name)(**sequence_inputs)
+
+    def test_actor_state_critic_sequence_stays_finite_across_inactive_agents_and_resets(self) -> None:
+        policy = _actor_state_policy(
+            SLSTMTemporalSequenceModel,
+            SLSTMTemporalSequenceModelConfig(num_heads=2),
+        )
+        batch_size = 2
+        sequence_length = 4
+        sequence_inputs = _actor_state_critic_inputs(
+            sequence_length=sequence_length,
+            agent_mask=torch.tensor([
+                [[True, False, True], [True, True, True], [True, False, True], [True, True, True]],
+                [[True, True, False], [True, False, False], [True, True, False], [True, True, True]],
+            ]),
+        )
+        reset_mask = torch.tensor([
+            [False, False, True, False],
+            [False, True, False, False],
+        ])
+        state_output_indices = torch.tensor([[0, 1], [1, 3]])
+        (
+            _actions,
+            _log_probs,
+            _latents,
+            _next_state,
+            selected_states,
+            last_layer_state_sequence,
+        ) = (
+            policy.action_log_prob_sequence_with_selected_states(
+                local_obs=sequence_inputs["local_obs"],
+                global_obs=sequence_inputs["global_obs"],
+                agent_mask=sequence_inputs["agent_mask"],
+                previous_actions=None,
+                deterministic=False,
+                use_rsample=True,
+                initial_state=None,
+                state_output_indices=state_output_indices,
+                reset_mask=reset_mask,
+            )
+        )
+        actor_state = policy.actor_last_layer_state_critic_input(
+            last_layer_state_sequence,
+        )
+        expected_selected_last_layer_state = index_temporal_state_batch_time(
+            last_layer_state_sequence,
+            state_output_indices,
+        )
+        for actual, expected in zip(selected_states[-1], expected_selected_last_layer_state, strict=True):
+            torch.testing.assert_close(actual, expected)
+
+        q1, q2, _latents, _state = policy.q_values_sequence(
+            **sequence_inputs,
+            target=False,
+            actor_state=actor_state,
+        )
+        target_q1, target_q2, _latents, _state = policy.q_values_sequence(
+            **sequence_inputs,
+            target=True,
+            actor_state=actor_state,
+        )
+
+        for tensor in (actor_state, q1, q2, target_q1, target_q2):
+            self.assertTrue(torch.isfinite(tensor).all())
+
+    def test_compiled_actor_state_critic_public_api_handles_inactive_slstm_agents(self) -> None:
+        compiled_graphs: list[torch.fx.GraphModule] = []
+        with patch(
+                "torch.compile",
+                side_effect=_make_recording_eager_compile(compiled_graphs),
+        ):
+            policy = _actor_state_policy(
+                SLSTMTemporalSequenceModel,
+                SLSTMTemporalSequenceModelConfig(num_heads=2),
+                compile_modules=True,
+            )
+            critic_inputs = _actor_state_critic_inputs(agent_mask=torch.tensor([
+                [True, False, True],
+                [True, True, False],
+            ]))
+
+            q1, q2 = policy.q_values(**critic_inputs)
+            target_q1, target_q2 = policy.target_q_values(**critic_inputs)
+            critic_latents = policy.encode_critic(**critic_inputs)
+
+        self.assertGreaterEqual(len(compiled_graphs), 2)
+        for tensor in (q1, q2, target_q1, target_q2, critic_latents):
+            self.assertTrue(torch.isfinite(tensor).all())
+
+    def test_actor_state_critic_input_rejects_mlstm(self) -> None:
+        with self.assertRaisesRegex(TypeError, "supports only LSTMTemporalSequenceModel"):
+            RecurrentTMASACPolicy(
+                env=_DummyContinuousEnv(),
+                config=replace(
+                    _policy_config(_encoder_config(
+                        MLSTMTemporalSequenceModel,
+                        MLSTMTemporalSequenceModelConfig(num_heads=2),
+                    )),
+                    actor_state_critic_input_config=ActorStateCriticInputConfig(),
+                ),
+            )
+
+    def test_short_recurrent_sac_actor_state_critic_input_updates_lstm_and_slstm(self) -> None:
+        for use_slstm in (False, True):
+            with self.subTest(temporal_model="sLSTM" if use_slstm else "LSTM"):
+                metrics, total_updates = _perform_short_recurrent_update(
+                    use_slstm=use_slstm,
+                    actor_state_critic_input_config=ActorStateCriticInputConfig(
+                        projection_dim=4,
+                        projection_hidden_dims=(6,),
+                    ),
+                )
+
+                self.assertEqual(metrics["updates"], 1)
+                self.assertEqual(total_updates, 1)
+                self.assertTrue(math.isfinite(_summary_mean(metrics["actor_loss"])))
+                self.assertTrue(math.isfinite(_summary_mean(metrics["critic_loss"])))
+
+    def test_actor_state_critic_input_keeps_sparse_selection_at_truncation_capacity(self) -> None:
+        selected_state_capacities: list[int] = []
+
+        _perform_short_recurrent_update(
+            actor_state_critic_input_config=ActorStateCriticInputConfig(projection_dim=4),
+            selected_state_capacities=selected_state_capacities,
+        )
+
+        self.assertEqual(selected_state_capacities, [4])
+
+    def test_compiled_recurrent_sac_actor_state_critic_input_update(self) -> None:
+        torch._dynamo.reset()
+        try:
+            metrics, total_updates = _perform_short_recurrent_update(
+                compile_modules=True,
+                use_slstm=True,
+                actor_state_critic_input_config=ActorStateCriticInputConfig(projection_dim=4),
+            )
+
+            self.assertEqual(metrics["updates"], 1)
+            self.assertEqual(total_updates, 1)
+        finally:
+            torch._dynamo.reset()
 
     def test_compiled_recurrent_sac_update_uses_post_actor_distribution_state(self) -> None:
         configurations = (

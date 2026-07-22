@@ -159,6 +159,7 @@ class MLSTMCell(nn.Module):
         c_state, n_state, m_state = state
         state_log_scale = m_state.unsqueeze(-1) + log_forget_cumsum
         normalizer_state_log_scale = state_log_scale
+        state_survives = None
 
         row_log_forget_cumsum = log_forget_cumsum.unsqueeze(-1)
         col_log_forget_cumsum = log_forget_cumsum.unsqueeze(-2)
@@ -196,9 +197,20 @@ class MLSTMCell(nn.Module):
 
         k_scaled = k / math.sqrt(self.head_dim)
         c_from_inputs = torch.einsum("bnts,bnsd,bnse->bntde", input_weights, k_scaled, v)
-        c_sequence = c_from_inputs + state_weights[..., None, None] * c_state.unsqueeze(2)
+        expanded_c_state = c_state.unsqueeze(2)
+        expanded_n_state = n_state.unsqueeze(2)
+        if state_survives is not None:
+            expanded_c_state = expanded_c_state.masked_fill(
+                ~state_survives[:, None, :, None, None],
+                0.0,
+            )
+            expanded_n_state = expanded_n_state.masked_fill(
+                ~state_survives[:, None, :, None],
+                0.0,
+            )
+        c_sequence = c_from_inputs + state_weights[..., None, None] * expanded_c_state
         n_sequence = torch.einsum("bnts,bnsd->bntd", input_weights, k_scaled)
-        n_sequence = n_sequence + state_weights[..., None] * n_state.unsqueeze(2)
+        n_sequence = n_sequence + state_weights[..., None] * expanded_n_state
 
         hidden_numerator = torch.einsum("bntd,bntde->bnte", q, c_sequence)
         denominator = torch.maximum(

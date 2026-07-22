@@ -5,7 +5,12 @@ from typing import Any
 import torch
 from torch import nn
 
-from swarmbots.learn.temporal_state import initialize_selected_temporal_state, update_selected_temporal_state
+from swarmbots.learn.temporal_state import (
+    index_temporal_state_batch_time,
+    initialize_selected_temporal_state,
+    stack_temporal_states,
+    update_selected_temporal_state,
+)
 
 TemporalModelState = Any
 
@@ -42,6 +47,24 @@ class TemporalSequenceModel(nn.Module, abc.ABC):
         | tuple[torch.Tensor, TemporalModelState, TemporalModelState]
     ):
         raise NotImplementedError
+
+    def forward_with_state_sequence(
+            self,
+            inputs: torch.Tensor,
+            *,
+            valid_mask: torch.Tensor | None = None,
+            initial_state: TemporalModelState | None = None,
+            reset_mask: torch.Tensor | None = None,
+            state_output_indices: torch.Tensor | None = None,
+    ) -> tuple[
+        torch.Tensor,
+        TemporalModelState,
+        TemporalModelState | None,
+        TemporalModelState,
+    ]:
+        raise NotImplementedError(
+            f"{type(self).__name__} does not expose a post-step state sequence."
+        )
 
 
 LSTMTemporalModelState = tuple[torch.Tensor, torch.Tensor]
@@ -108,6 +131,58 @@ class LSTMTemporalSequenceModel(TemporalSequenceModel):
         tuple[torch.Tensor, LSTMTemporalModelState]
         | tuple[torch.Tensor, LSTMTemporalModelState, LSTMTemporalModelState]
     ):
+        output_sequence, final_state, selected_states, _state_sequence = self._forward(
+            inputs,
+            valid_mask=valid_mask,
+            initial_state=initial_state,
+            reset_mask=reset_mask,
+            state_output_indices=state_output_indices,
+            return_state_sequence=False,
+        )
+        if state_output_indices is not None:
+            return output_sequence, final_state, selected_states
+        return output_sequence, final_state
+
+    def forward_with_state_sequence(
+            self,
+            inputs: torch.Tensor,
+            *,
+            valid_mask: torch.Tensor | None = None,
+            initial_state: LSTMTemporalModelState | None = None,
+            reset_mask: torch.Tensor | None = None,
+            state_output_indices: torch.Tensor | None = None,
+    ) -> tuple[
+        torch.Tensor,
+        LSTMTemporalModelState,
+        LSTMTemporalModelState | None,
+        LSTMTemporalModelState,
+    ]:
+        output_sequence, final_state, selected_states, state_sequence = self._forward(
+            inputs,
+            valid_mask=valid_mask,
+            initial_state=initial_state,
+            reset_mask=reset_mask,
+            state_output_indices=state_output_indices,
+            return_state_sequence=True,
+        )
+        assert state_sequence is not None
+        return output_sequence, final_state, selected_states, state_sequence
+
+    def _forward(
+            self,
+            inputs: torch.Tensor,
+            *,
+            valid_mask: torch.Tensor | None,
+            initial_state: LSTMTemporalModelState | None,
+            reset_mask: torch.Tensor | None,
+            state_output_indices: torch.Tensor | None,
+            return_state_sequence: bool,
+    ) -> tuple[
+        torch.Tensor,
+        LSTMTemporalModelState,
+        LSTMTemporalModelState | None,
+        LSTMTemporalModelState | None,
+    ]:
         if inputs.ndim != 3:
             raise ValueError(f"Expected inputs shape (B, T, H), got {tuple(inputs.shape)}")
 
@@ -128,17 +203,18 @@ class LSTMTemporalSequenceModel(TemporalSequenceModel):
         outputs: list[torch.Tensor] = []
         selected_states = (
             initialize_selected_temporal_state((hidden_state, cell_state), state_output_indices)
-            if state_output_indices is not None
+            if state_output_indices is not None and not return_state_sequence
             else None
         )
+        state_steps: list[LSTMTemporalModelState] = []
         zero_output = inputs.new_zeros((batch_size, 1, self.hidden_dim))
 
         for time_idx in range(sequence_length):
             if reset_mask is not None:
                 reset_t = reset_mask[:, time_idx]
-                keep_state_mask = (~reset_t).view(batch_size, 1, 1)
-                hidden_state = hidden_state * keep_state_mask
-                cell_state = cell_state * keep_state_mask
+                reset_state_mask = reset_t.view(batch_size, 1, 1)
+                hidden_state = hidden_state.masked_fill(reset_state_mask, 0.0)
+                cell_state = cell_state.masked_fill(reset_state_mask, 0.0)
 
             step_output, (next_hidden_state, next_cell_state) = self.lstm(
                 inputs[:, time_idx:time_idx + 1, :],
@@ -167,7 +243,9 @@ class LSTMTemporalSequenceModel(TemporalSequenceModel):
                 hidden_state = torch.where(valid_state_mask, next_hidden_state, hidden_state)
                 cell_state = torch.where(valid_state_mask, next_cell_state, cell_state)
 
-            if state_output_indices is not None:
+            if return_state_sequence:
+                state_steps.append((hidden_state, cell_state))
+            elif state_output_indices is not None:
                 selected_states = update_selected_temporal_state(
                     selected_states,
                     (hidden_state, cell_state),
@@ -177,9 +255,10 @@ class LSTMTemporalSequenceModel(TemporalSequenceModel):
 
         output_sequence = torch.cat(outputs, dim=1).contiguous()
         final_state = (hidden_state, cell_state)
-        if state_output_indices is not None:
-            return output_sequence, final_state, selected_states
-        return output_sequence, final_state
+        state_sequence = stack_temporal_states(state_steps, dim=1) if return_state_sequence else None
+        if return_state_sequence and state_output_indices is not None:
+            selected_states = index_temporal_state_batch_time(state_sequence, state_output_indices)
+        return output_sequence, final_state, selected_states, state_sequence
 
     @staticmethod
     def _normalize_mask(

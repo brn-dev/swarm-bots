@@ -164,7 +164,14 @@ class SegmentTMASACPolicy(TMASACPolicy):
             state_output_indices: torch.Tensor,
             time_mask: torch.Tensor | None = None,
             reset_mask: torch.Tensor | None = None,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> tuple[
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+        None,
+    ]:
         actions, log_probs, actor_latents, next_state = self.action_log_prob_sequence(
             local_obs=local_obs,
             global_obs=global_obs,
@@ -181,7 +188,7 @@ class SegmentTMASACPolicy(TMASACPolicy):
             device=local_obs.device,
             dtype=local_obs.dtype,
         )
-        return actions, log_probs, actor_latents, next_state, selected_states
+        return actions, log_probs, actor_latents, next_state, selected_states, None
 
     def q_values_sequence(
             self,
