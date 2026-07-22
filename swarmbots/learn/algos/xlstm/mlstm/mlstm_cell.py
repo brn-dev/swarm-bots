@@ -35,10 +35,16 @@ class MLSTMCell(nn.Module):
         self.head_dim = hidden_dim // config.num_heads
         self.input_gate = nn.Linear(3 * hidden_dim, config.num_heads)
         self.forget_gate = nn.Linear(3 * hidden_dim, config.num_heads)
-        self.output_norm = MultiHeadLayerNorm(hidden_dim=hidden_dim, num_heads=config.num_heads, bias=False)
+        self.output_norm = MultiHeadLayerNorm(
+            hidden_dim=hidden_dim,
+            num_heads=config.num_heads,
+            bias=False,
+            residual_weight=True,
+        )
         self.reset_parameters()
 
     def reset_parameters(self) -> None:
+        self.output_norm.reset_parameters()
         nn.init.zeros_(self.input_gate.weight)
         nn.init.normal_(self.input_gate.bias, mean=0.0, std=0.1)
         nn.init.zeros_(self.forget_gate.weight)
