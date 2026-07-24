@@ -51,6 +51,8 @@ class TMASACCriticConfig:
     n_local_projection_hidden_layers: int = 1
     n_value_regressor_hidden_layers: int = 2
     action_coembed_hidden_dims: list[int] | None = None
+    separate_observation_action_encoders: bool = False
+    action_encoder_dim: int | None = None
     independent_encoders: bool = False
     use_popart: bool = False
     popart_config: PopArtConfig = field(default_factory=PopArtConfig)
@@ -111,6 +113,54 @@ class TMASACDecentralizedActorHead(nn.Module):
         return self.head(self.input_norm(actor_latents)).contiguous()
 
 
+class TMASACObservationActionEncoder(nn.Module):
+    def __init__(
+            self,
+            *,
+            observation_input_dim: int,
+            action_dim: int,
+            d_model: int,
+            action_encoder_dim: int | None,
+            linear_init_gain: float,
+            act_fn_cls: ActivationFactory,
+    ) -> None:
+        super().__init__()
+        self.action_encoder_dim = (
+            max(1, d_model // 2)
+            if action_encoder_dim is None
+            else int(action_encoder_dim)
+        )
+        linear_init = make_init_linear_orthogonal(linear_init_gain)
+        self.observation_encoder = MLP(
+            input_dim=observation_input_dim,
+            hidden_dims=[d_model],
+            end_with_act_fn=True,
+            linear_init=linear_init,
+            act_fn_cls=act_fn_cls,
+        )
+        self.action_encoder = MLP(
+            input_dim=action_dim,
+            hidden_dims=[self.action_encoder_dim],
+            end_with_act_fn=True,
+            linear_init=linear_init,
+            act_fn_cls=act_fn_cls,
+        )
+        self.output_dim = d_model + self.action_encoder_dim
+
+    def forward(
+            self,
+            observation_inputs: torch.Tensor,
+            actions: torch.Tensor,
+    ) -> torch.Tensor:
+        return torch.cat(
+            (
+                self.observation_encoder(observation_inputs),
+                self.action_encoder(actions),
+            ),
+            dim=-1,
+        )
+
+
 class TMASACActionConditionedEncoder(nn.Module):
     def __init__(
             self,
@@ -136,7 +186,24 @@ class TMASACActionConditionedEncoder(nn.Module):
         self.global_encoder_input_dim = self.global_input_dim + self.hidden_global_vars_dim
         self.has_global_input = self.global_encoder_input_dim > 0
 
-        local_action_input_dim = self.local_input_dim + self.hidden_local_vars_dim + self.action_dim
+        local_observation_input_dim = self.local_input_dim + self.hidden_local_vars_dim
+        self.observation_action_encoder = (
+            TMASACObservationActionEncoder(
+                observation_input_dim=local_observation_input_dim,
+                action_dim=self.action_dim,
+                d_model=self.d_model,
+                action_encoder_dim=critic_config.action_encoder_dim,
+                linear_init_gain=critic_config.action_coembed_init_gain,
+                act_fn_cls=act_fn_cls,
+            )
+            if critic_config.separate_observation_action_encoders
+            else None
+        )
+        local_action_input_dim = (
+            local_observation_input_dim + self.action_dim
+            if self.observation_action_encoder is None
+            else self.observation_action_encoder.output_dim
+        )
         self.local_action_input_norm = (
             nn.LayerNorm(local_action_input_dim)
             if encoder_config.normalize_obs_inputs
@@ -219,13 +286,22 @@ class TMASACActionConditionedEncoder(nn.Module):
         if n_agents > self.max_agents:
             raise ValueError(f"Expected local_inputs second dim <= {self.max_agents}, got {n_agents}")
 
-        parts = [local_inputs]
+        observation_parts = [local_inputs]
         if self.hidden_local_vars_dim > 0:
             if hidden_local_vars is None:
                 raise ValueError("hidden_local_vars must be provided when hidden_local_vars_dim > 0")
-            parts.append(hidden_local_vars)
-        parts.append(actions)
-        token_inputs = self.local_action_input_norm(torch.cat(parts, dim=-1))
+            observation_parts.append(hidden_local_vars)
+        observation_inputs = (
+            observation_parts[0]
+            if len(observation_parts) == 1
+            else torch.cat(observation_parts, dim=-1)
+        )
+        token_inputs = (
+            torch.cat((observation_inputs, actions), dim=-1)
+            if self.observation_action_encoder is None
+            else self.observation_action_encoder(observation_inputs, actions)
+        )
+        token_inputs = self.local_action_input_norm(token_inputs)
         tokens = self.local_action_encoder(token_inputs)
         if self.agent_embeddings is not None:
             tokens = tokens + self.agent_embeddings[:, :n_agents, :]
@@ -1215,6 +1291,9 @@ class TMASACPolicy(BaseSACPolicy):
 
     @staticmethod
     def _validate_config(config: TMASACPolicyConfig) -> None:
+        action_encoder_dim = config.critic_config.action_encoder_dim
+        if action_encoder_dim is not None and action_encoder_dim <= 0:
+            raise ValueError(f"action_encoder_dim must be positive, got {action_encoder_dim}")
         if config.critic_config.use_popart:
             raise NotImplementedError(
                 "TMASACPolicy does not support PopArt critics yet because SAC must update PopArt target "

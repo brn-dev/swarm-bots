@@ -80,6 +80,8 @@ def _make_config(
         continuous_config: ContinuousActionDistConfig | None = None,
         dropout: float = 0.0,
         independent_critic_encoders: bool = False,
+        separate_observation_action_encoders: bool = False,
+        action_encoder_dim: int | None = None,
 ) -> TMASACPolicyConfig:
     return TMASACPolicyConfig(
         actor_encoder_config=_small_encoder_config(),
@@ -91,6 +93,8 @@ def _make_config(
             n_local_projection_hidden_layers=1,
             n_value_regressor_hidden_layers=1,
             independent_encoders=independent_critic_encoders,
+            separate_observation_action_encoders=separate_observation_action_encoders,
+            action_encoder_dim=action_encoder_dim,
         ),
         dropout=dropout,
         continuous_config=PredictedStdConfig(base_std=0.5) if continuous_config is None else continuous_config,
@@ -458,6 +462,119 @@ class TMASACPolicyTests(unittest.TestCase):
         policy = TMASACPolicy(env=_DummyContinuousEnv(), config=_make_config())
 
         self.assertIsNone(policy.critic.encoder2)
+
+    def test_critic_keeps_joint_observation_action_coembedding_by_default(self) -> None:
+        env = _DummyContinuousEnv()
+        policy = TMASACPolicy(env=env, config=_make_config())
+        encoder = policy.critic.encoder
+        first_fusion_linear = next(
+            module
+            for module in encoder.local_action_encoder
+            if isinstance(module, torch.nn.Linear)
+        )
+
+        self.assertFalse(policy.config.critic_config.separate_observation_action_encoders)
+        self.assertIsNone(encoder.observation_action_encoder)
+        self.assertFalse(any("observation_action_encoder" in key for key in policy.state_dict()))
+        self.assertEqual(
+            first_fusion_linear.in_features,
+            env.local_obs_dim
+            + env.hidden_local_vars_dim
+            + env.action_space.total_agent_action_dim,
+        )
+
+    def test_critic_can_preprocess_observations_and_actions_separately(self) -> None:
+        torch.manual_seed(0)
+        env = _DummyContinuousEnv()
+        policy = TMASACPolicy(
+            env=env,
+            config=_make_config(separate_observation_action_encoders=True),
+        )
+        encoder = policy.critic.encoder
+        observation_action_encoder = encoder.observation_action_encoder
+        assert observation_action_encoder is not None
+        observation_linear = next(
+            module
+            for module in observation_action_encoder.observation_encoder
+            if isinstance(module, torch.nn.Linear)
+        )
+        action_linear = next(
+            module
+            for module in observation_action_encoder.action_encoder
+            if isinstance(module, torch.nn.Linear)
+        )
+        first_fusion_linear = next(
+            module
+            for module in encoder.local_action_encoder
+            if isinstance(module, torch.nn.Linear)
+        )
+
+        self.assertEqual(
+            (observation_linear.in_features, observation_linear.out_features),
+            (env.local_obs_dim + env.hidden_local_vars_dim, encoder.d_model),
+        )
+        self.assertEqual(
+            (action_linear.in_features, action_linear.out_features),
+            (env.action_space.total_agent_action_dim, encoder.d_model // 2),
+        )
+        self.assertEqual(
+            first_fusion_linear.in_features,
+            encoder.d_model + encoder.d_model // 2,
+        )
+
+        batch = _make_batch()
+        actions = batch.actions.detach().requires_grad_(True)
+        q1, q2 = policy.q_values(
+            local_obs=batch.local_obs,
+            global_obs=batch.global_obs,
+            hidden_local_vars=batch.hidden_local_vars,
+            hidden_global_vars=batch.hidden_global_vars,
+            agent_mask=batch.agent_mask,
+            actions=actions,
+        )
+        (q1 + q2).sum().backward()
+
+        self.assertEqual(q1.shape, (batch.local_obs.shape[0],))
+        self.assertEqual(q2.shape, (batch.local_obs.shape[0],))
+        self.assertIsNotNone(actions.grad)
+        assert actions.grad is not None
+        self.assertGreater(actions.grad.abs().sum().item(), 0.0)
+
+    def test_critic_action_encoder_dim_can_be_overridden(self) -> None:
+        action_encoder_dim = 7
+        policy = TMASACPolicy(
+            env=_DummyContinuousEnv(),
+            config=_make_config(
+                separate_observation_action_encoders=True,
+                action_encoder_dim=action_encoder_dim,
+            ),
+        )
+        encoder = policy.critic.encoder
+        observation_action_encoder = encoder.observation_action_encoder
+        assert observation_action_encoder is not None
+        action_linear = next(
+            module
+            for module in observation_action_encoder.action_encoder
+            if isinstance(module, torch.nn.Linear)
+        )
+        first_fusion_linear = next(
+            module
+            for module in encoder.local_action_encoder
+            if isinstance(module, torch.nn.Linear)
+        )
+
+        self.assertEqual(action_linear.out_features, action_encoder_dim)
+        self.assertEqual(
+            first_fusion_linear.in_features,
+            encoder.d_model + action_encoder_dim,
+        )
+
+    def test_critic_action_encoder_dim_must_be_positive(self) -> None:
+        with self.assertRaisesRegex(ValueError, "action_encoder_dim must be positive"):
+            TMASACPolicy(
+                env=_DummyContinuousEnv(),
+                config=_make_config(action_encoder_dim=0),
+            )
 
     def test_twin_critics_can_use_independent_action_conditioned_encoders(self) -> None:
         policy = TMASACPolicy(

@@ -520,6 +520,7 @@ def test_recurrent_tmasac_run_experiment_wires_recurrent_replay_and_actor_layout
         rmat_actor_transformer_ff_hidden_dims=[128],
         rmat_actor_inter_module_mlp=True,
         rmat_experimental_compile_lstm=True,
+        tmasac_separate_observation_action_encoders=True,
         sac_batch_size=16,
         sac_buffer_capacity_per_env=160,
         sac_recurrent_burn_in_steps=32,
@@ -538,6 +539,7 @@ def test_recurrent_tmasac_run_experiment_wires_recurrent_replay_and_actor_layout
     assert base_policy_kwargs["rmat_actor_d_model"] == 64
     assert base_policy_kwargs["rmat_actor_transformer_ff_hidden_dims"] == [128]
     assert base_policy_kwargs["rmat_actor_inter_module_mlp"] is True
+    assert base_policy_kwargs["tmasac_separate_observation_action_encoders"] is True
 
     recurrent_sac_kwargs = capture["recurrent_sac_kwargs"]
     assert isinstance(recurrent_sac_kwargs, dict)
@@ -1024,6 +1026,19 @@ def test_make_base_policy_constructs_recurrent_tmasac_with_feedforward_critic() 
         assert inter_module_mlp is not None
         final_projection = inter_module_mlp[-1]
         assert isinstance(final_projection, nn.Linear)
+
+
+def test_make_base_policy_enables_separate_tmasac_observation_action_encoders() -> None:
+    policy = _make_test_base_policy(
+        env=_DummyContinuousEnv(),
+        policy_variant="r_tmasac",
+        continuous_action_dist="gumbel_softmax_sign_magnitude_beta",
+        tmasac_separate_observation_action_encoders=True,
+    )
+
+    assert isinstance(policy, RecurrentTMASACPolicy)
+    assert policy.config.critic_config.separate_observation_action_encoders
+    assert policy.critic.encoder.observation_action_encoder is not None
 
 
 def test_make_base_policy_wires_recurrent_actor_state_critic_input() -> None:
