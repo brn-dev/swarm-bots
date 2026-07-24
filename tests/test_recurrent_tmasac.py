@@ -119,6 +119,8 @@ def _policy_config(
         recurrent_critic: bool = False,
         critic_encoder_config: MATEncoderConfig | None = None,
         nop_config: SACNOPConfig | None = None,
+        separate_observation_action_encoders: bool = False,
+        action_encoder_dim: int | None = None,
 ) -> RecurrentTMASACPolicyConfig:
     if critic_encoder_config is None:
         critic_encoder_config = (
@@ -138,6 +140,8 @@ def _policy_config(
         critic_config=TMASACCriticConfig(
             n_local_projection_hidden_layers=1,
             n_value_regressor_hidden_layers=1,
+            separate_observation_action_encoders=separate_observation_action_encoders,
+            action_encoder_dim=action_encoder_dim,
         ),
         continuous_config=(
             PredictedStdConfig(base_std=0.5)
@@ -1348,6 +1352,57 @@ class RecurrentTMASACTests(unittest.TestCase):
         self.assertIsNone(next_state)
         self.assertIsNone(target_nop_latents)
         self.assertIsNone(target_next_state)
+
+    def test_recurrent_critic_can_preprocess_observations_and_actions_separately(self) -> None:
+        env = _DummyContinuousEnv()
+        policy = RecurrentTMASACPolicy(
+            env=env,
+            config=_policy_config(
+                _encoder_config(
+                    LSTMTemporalSequenceModel,
+                    LSTMTemporalSequenceModelConfig(),
+                ),
+                recurrent_critic=True,
+                separate_observation_action_encoders=True,
+            ),
+        )
+        critic = policy.critic
+        assert isinstance(critic, RecurrentTMASACTwinCritic)
+        observation_action_encoder = critic.observation_action_encoder
+        assert observation_action_encoder is not None
+        observation_linear = next(
+            module
+            for module in observation_action_encoder.observation_encoder
+            if isinstance(module, torch.nn.Linear)
+        )
+        action_linear = next(
+            module
+            for module in observation_action_encoder.action_encoder
+            if isinstance(module, torch.nn.Linear)
+        )
+
+        self.assertEqual(
+            (observation_linear.in_features, observation_linear.out_features),
+            (env.local_obs_dim + env.hidden_local_vars_dim, critic.d_model),
+        )
+        self.assertEqual(
+            (action_linear.in_features, action_linear.out_features),
+            (env.action_space.total_agent_action_dim, critic.d_model // 2),
+        )
+        self.assertEqual(
+            critic.encoder.local_obs_dim,
+            critic.d_model + critic.d_model // 2,
+        )
+
+        inputs = _actor_state_critic_inputs(sequence_length=3)
+        q1, q2, _nop_latents, next_state = policy.q_values_sequence(
+            **inputs,
+            target=False,
+        )
+
+        self.assertEqual(q1.shape, (2, 3))
+        self.assertEqual(q2.shape, (2, 3))
+        self.assertIsNotNone(next_state)
 
     def test_actor_sequence_matches_step_flow_for_all_temporal_cores(self) -> None:
         temporal_configs = (

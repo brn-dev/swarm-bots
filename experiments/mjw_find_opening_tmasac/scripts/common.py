@@ -30,6 +30,7 @@ def run_experiment(
         entrypoint_path: Path,
         temporal_model_variant: TemporalModelVariant,
         actor_state_critic_input_config: ActorStateCriticInputConfig | None = None,
+        separate_observation_action_encoders: bool = False,
 ) -> None:
     is_recurrent = temporal_model_variant != "baseline"
     temporal_model_cls, temporal_model_config = _make_temporal_model_specs(temporal_model_variant)
@@ -63,6 +64,7 @@ def run_experiment(
         rmat_actor_transformer_ff_hidden_dims=[ACTOR_D_MODEL * 2] if is_recurrent else None,
         rmat_actor_inter_module_mlp=is_recurrent,
         r_tmasac_actor_state_critic_input_config=actor_state_critic_input_config,
+        tmasac_separate_observation_action_encoders=separate_observation_action_encoders,
         rmat_temporal_model_cls=temporal_model_cls,
         rmat_temporal_model_config=temporal_model_config,
         rmat_temporal_residual=False,
