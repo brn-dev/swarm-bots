@@ -1,7 +1,6 @@
 import copy
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field, replace
-from enum import Enum
 from typing import Any, Self
 
 import torch
@@ -29,6 +28,13 @@ from swarmbots.learn.algos.sac.scenario_obs_encoder import (
     TMASACScenarioEncoderConfig,
     TMASACScenarioObservationEncoder,
 )
+from swarmbots.learn.algos.sac.tmasac_actor_heads import (
+    TMASACActorHead,
+    TMASACActorHeadConfig,
+    TMASACActorHeadKind,
+    TMASACIndependentActorHead,
+    TMASACQCXActorHead,
+)
 from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
 from swarmbots.learn.nn_components.activations import ActivationFactory
 from swarmbots.learn.nn_components.deep_set import DeepSetCritic
@@ -36,18 +42,6 @@ from swarmbots.learn.nn_components.mlp import MLP
 from swarmbots.learn.nn_components.nn_init import make_init_linear_orthogonal, reinitialize_multihead_attention
 from swarmbots.learn.polyak_update import polyak_update
 from swarmbots.learn.serialization_utils import serialize_dataclass, serialize_value
-
-
-class TMASACActorHeadKind(Enum):
-    DECENTRALIZED = "decentralized"
-
-
-@dataclass(frozen=True)
-class TMASACActorHeadConfig:
-    kind: TMASACActorHeadKind | str = TMASACActorHeadKind.DECENTRALIZED
-    hidden_dims: list[int] | None = None
-    normalize_input: bool = False
-    init_gain: float = 1.0
 
 
 @dataclass(frozen=True)
@@ -86,36 +80,6 @@ class TMASACPolicyConfig:
     compile_mode: str = "default"
     action_net_init_gain: float = 0.01
     scenario_encoder_config: TMASACScenarioEncoderConfig | None = None
-
-
-class TMASACDecentralizedActorHead(nn.Module):
-    def __init__(
-            self,
-            *,
-            d_model: int,
-            config: TMASACActorHeadConfig,
-            act_fn_cls: ActivationFactory,
-    ) -> None:
-        super().__init__()
-        self.d_model = int(d_model)
-        self.config = config
-        self.input_norm = nn.LayerNorm(d_model) if config.normalize_input else nn.Identity()
-        if config.hidden_dims:
-            self.head = MLP(
-                input_dim=d_model,
-                hidden_dims=[*config.hidden_dims],
-                end_with_act_fn=True,
-                linear_init=make_init_linear_orthogonal(config.init_gain),
-                act_fn_cls=act_fn_cls,
-            )
-            self.latent_dim = int(config.hidden_dims[-1])
-        else:
-            self.head = nn.Identity()
-            self.latent_dim = int(d_model)
-
-    def forward(self, actor_latents: torch.Tensor, agent_mask: torch.Tensor | None = None) -> torch.Tensor:
-        _ = agent_mask
-        return self.head(self.input_norm(actor_latents)).contiguous()
 
 
 class TMASACObservationActionEncoder(nn.Module):
@@ -331,7 +295,8 @@ class TMASACActionConditionedEncoder(nn.Module):
         hidden_linear_init = make_init_linear_orthogonal(feedforward_init_gain)
         output_linear_init = make_init_linear_orthogonal(1.0)
         for layer in self.layers:
-            reinitialize_multihead_attention(layer.self_attn)
+            if layer.self_attn is not None:
+                reinitialize_multihead_attention(layer.self_attn)
             feedforward_linear_layers = layer._feedforward_linear_layers()
             for linear in feedforward_linear_layers[:-1]:
                 hidden_linear_init(linear)
@@ -546,6 +511,7 @@ class TMASACTwinCritic(nn.Module):
 
 class TMASACPolicy(BaseSACPolicy):
     _compiled_action_log_prob: Callable[..., tuple[torch.Tensor, torch.Tensor]] | None
+    _compiled_actor_actions_and_log_probs: Callable[..., tuple[torch.Tensor, torch.Tensor]] | None
     _compiled_actor_encoder: nn.Module | None
 
     def __init__(
@@ -555,6 +521,7 @@ class TMASACPolicy(BaseSACPolicy):
     ) -> None:
         super().__init__()
         object.__setattr__(self, "_compiled_action_log_prob", None)
+        object.__setattr__(self, "_compiled_actor_actions_and_log_probs", None)
         object.__setattr__(self, "_compiled_actor_encoder", None)
         self.config = config
         self._validate_continuous_action_space(env)
@@ -577,6 +544,14 @@ class TMASACPolicy(BaseSACPolicy):
             bool(config.share_observation_encoder)
             or config.shared_encoder_config is not None
         )
+        if (
+                self.actor_head_kind is TMASACActorHeadKind.DECENTRALIZED
+                and self.share_observation_encoder
+        ):
+            raise ValueError(
+                "The decentralized TMASAC actor cannot share an observation encoder because "
+                "the shared critic encoder mixes agents."
+            )
         self.scenario_encoder_config = config.scenario_encoder_config
         if self.scenario_encoder_config is not None:
             if not getattr(env, "has_scenario_id", False):
@@ -630,6 +605,11 @@ class TMASACPolicy(BaseSACPolicy):
             config.actor_encoder_config,
             act_fn_cls=config.act_fn_cls,
             dropout=config.dropout,
+            use_agent_attention=(
+                False
+                if self.actor_head_kind is TMASACActorHeadKind.DECENTRALIZED
+                else config.actor_encoder_config.use_agent_attention
+            ),
         )
         self.critic_encoder_config = replace(
             config.critic_encoder_config,
@@ -786,14 +766,56 @@ class TMASACPolicy(BaseSACPolicy):
             agent_mask=agent_mask,
             scenario_ids=scenario_ids,
         )
-        latent_pi = self.actor_head(actor_latents, agent_mask=agent_mask)
-        actions, log_probs = self.action_dist.get_actions_with_log_probs(
-            latent_pi,
-            deterministic=deterministic,
+        return self._actor_actions_and_log_probs(
+            actor_latents=actor_latents,
+            agent_mask=agent_mask,
             previous_actions=previous_actions,
+            deterministic=deterministic,
             use_rsample=use_rsample,
         )
-        return self._mask_actions(actions, agent_mask), self._mask_log_probs(log_probs, agent_mask)
+
+    def _actor_actions_and_log_probs(
+            self,
+            *,
+            actor_latents: torch.Tensor,
+            agent_mask: torch.Tensor | None,
+            previous_actions: torch.Tensor | None,
+            deterministic: bool,
+            use_rsample: bool,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        if self._compiled_actor_actions_and_log_probs is not None:
+            return self._compiled_actor_actions_and_log_probs(
+                actor_latents=actor_latents,
+                agent_mask=agent_mask,
+                previous_actions=previous_actions,
+                deterministic=deterministic,
+                use_rsample=use_rsample,
+            )
+        return self._actor_actions_and_log_probs_impl(
+            actor_latents=actor_latents,
+            agent_mask=agent_mask,
+            previous_actions=previous_actions,
+            deterministic=deterministic,
+            use_rsample=use_rsample,
+        )
+
+    def _actor_actions_and_log_probs_impl(
+            self,
+            *,
+            actor_latents: torch.Tensor,
+            agent_mask: torch.Tensor | None,
+            previous_actions: torch.Tensor | None,
+            deterministic: bool,
+            use_rsample: bool,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        return self.actor_head.actions_and_log_probs(
+            actor_latents=actor_latents,
+            action_dist=self.action_dist,
+            agent_mask=agent_mask,
+            previous_actions=previous_actions,
+            deterministic=deterministic,
+            use_rsample=use_rsample,
+        )
 
     def q_values(
             self,
@@ -1254,10 +1276,18 @@ class TMASACPolicy(BaseSACPolicy):
             )
         return encoder.encode_global_obs(global_obs, scenario_ids)
 
-    def _build_actor_head(self) -> TMASACDecentralizedActorHead:
-        if self.actor_head_kind is not TMASACActorHeadKind.DECENTRALIZED:
-            raise NotImplementedError(f"Unsupported TMASAC actor head kind: {self.actor_head_kind}")
-        return TMASACDecentralizedActorHead(
+    def _build_actor_head(self) -> TMASACActorHead:
+        if self.actor_head_kind is TMASACActorHeadKind.QCX:
+            return TMASACQCXActorHead(
+                actor_latent_dim=self.actor_encoder_config.d_model,
+                action_dim=self.agent_action_dim,
+                n_agents=self.n_agents,
+                max_agents=self.max_agents,
+                config=self.config.actor_head_config,
+                act_fn_cls=self.config.act_fn_cls,
+                dropout=self.config.dropout,
+            )
+        return TMASACIndependentActorHead(
             d_model=self.actor_encoder_config.d_model,
             config=self.config.actor_head_config,
             act_fn_cls=self.config.act_fn_cls,
@@ -1409,7 +1439,13 @@ class TMASACPolicy(BaseSACPolicy):
             )
         else:
             self._actor_encoder = self._compile_module(self._actor_encoder)
-            self.actor_head = self._compile_module(self.actor_head)
+            if self.action_dist.compile_friendly:
+                self._compiled_actor_actions_and_log_probs = self._compile_callable(
+                    self._actor_actions_and_log_probs_impl,
+                    fullgraph=True,
+                )
+            elif self.actor_head.supports_standalone_compile:
+                self.actor_head = self._compile_module(self.actor_head)
         self.critic = self._compile_module(self.critic)
         self.critic_target = self._compile_module(self.critic_target)
 
@@ -1556,18 +1592,6 @@ class TMASACPolicy(BaseSACPolicy):
                     f"the environment: configured={expected_dims}, "
                     f"environment={scenario_dims.get(scenario.name)}."
                 )
-
-    @staticmethod
-    def _mask_actions(actions: torch.Tensor, agent_mask: torch.Tensor | None) -> torch.Tensor:
-        if agent_mask is None:
-            return actions
-        return actions.masked_fill(~agent_mask.unsqueeze(-1), 0.0)
-
-    @staticmethod
-    def _mask_log_probs(log_probs: torch.Tensor, agent_mask: torch.Tensor | None) -> torch.Tensor:
-        if agent_mask is None:
-            return log_probs
-        return log_probs.masked_fill(~agent_mask, 0.0)
 
     @staticmethod
     def _iter_parameters(*modules: nn.Module | None) -> Iterable[nn.Parameter]:

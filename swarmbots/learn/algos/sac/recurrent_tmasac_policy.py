@@ -456,7 +456,6 @@ class RecurrentTMASACPolicy(TMASACPolicy):
         int,
         ActorActionSequenceWithSelectedStatesCallable,
     ]
-    _compiled_actor_actions_and_log_probs: ActorActionsAndLogProbsCallable | None
     _actor_encoder_compilation_enabled: bool
     _actor_end_to_end_compilation_enabled: bool
     _actor_encoder_uses_lstm: bool
@@ -486,7 +485,6 @@ class RecurrentTMASACPolicy(TMASACPolicy):
         object.__setattr__(self, "_compiled_actor_encoders", {})
         object.__setattr__(self, "_compiled_actor_action_sequences", {})
         object.__setattr__(self, "_compiled_actor_action_sequences_with_selected_states", {})
-        object.__setattr__(self, "_compiled_actor_actions_and_log_probs", None)
         object.__setattr__(self, "_actor_encoder_compilation_enabled", False)
         object.__setattr__(self, "_actor_end_to_end_compilation_enabled", False)
         object.__setattr__(self, "_actor_encoder_uses_lstm", False)
@@ -524,7 +522,7 @@ class RecurrentTMASACPolicy(TMASACPolicy):
                 self._compiled_actor_actions_and_log_probs = self._compile_actor_tail_callable(
                     self._actor_actions_and_log_probs_impl,
                 )
-            else:
+            elif self.actor_head.supports_standalone_compile:
                 self.actor_head = self._compile_module(self.actor_head)
         if not self.recurrent_critic:
             self.critic = self._compile_module(self.critic)
@@ -1000,31 +998,6 @@ class RecurrentTMASACPolicy(TMASACPolicy):
             last_layer_state_sequence,
         )
 
-    def _actor_actions_and_log_probs(
-            self,
-            *,
-            actor_latents: torch.Tensor,
-            agent_mask: torch.Tensor | None,
-            previous_actions: torch.Tensor | None,
-            deterministic: bool,
-            use_rsample: bool,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        if self._compiled_actor_actions_and_log_probs is not None:
-            return self._compiled_actor_actions_and_log_probs(
-                actor_latents=actor_latents,
-                agent_mask=agent_mask,
-                previous_actions=previous_actions,
-                deterministic=deterministic,
-                use_rsample=use_rsample,
-            )
-        return self._actor_actions_and_log_probs_impl(
-            actor_latents=actor_latents,
-            agent_mask=agent_mask,
-            previous_actions=previous_actions,
-            deterministic=deterministic,
-            use_rsample=use_rsample,
-        )
-
     def _actor_actions_and_log_probs_impl(
             self,
             *,
@@ -1034,16 +1007,12 @@ class RecurrentTMASACPolicy(TMASACPolicy):
             deterministic: bool,
             use_rsample: bool,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        latent_pi = self.actor_head(actor_latents, agent_mask=agent_mask)
-        actions, log_probs = self.action_dist.get_actions_with_log_probs(
-            latent_pi,
-            deterministic=deterministic,
+        return super()._actor_actions_and_log_probs_impl(
+            actor_latents=actor_latents,
+            agent_mask=agent_mask,
             previous_actions=previous_actions,
+            deterministic=deterministic,
             use_rsample=use_rsample,
-        )
-        return (
-            self._mask_actions(actions, agent_mask),
-            self._mask_log_probs(log_probs, agent_mask),
         )
 
     def encode_actor_sequence(

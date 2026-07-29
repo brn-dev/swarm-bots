@@ -19,6 +19,7 @@ from swarmbots.learn.action_dists.reparameterized_squashed_gaussian_mixture_acti
     ReparameterizedSquashedGaussianMixtureConfig,
 )
 from swarmbots.learn.algos.mat.mat_encoder import MATEncoder, MATEncoderConfig
+from swarmbots.learn.algos.mat_qcx.mat_qcx_decoder import MATQCXDecoderConfig
 from swarmbots.learn.algos.off_policy.replay_buffer import OffPolicyReplayEpisodeSegmentBatch
 from swarmbots.learn.algos.r_mat.r_mat_encoder import RMATEncoder, RMATEncoderConfig
 from swarmbots.learn.algos.r_mat.temporal_sequence_model import (
@@ -37,6 +38,7 @@ from swarmbots.learn.algos.sac import (
     ScenarioObservationSpec,
     SegmentTMASACPolicy,
     TMASACActorHeadConfig,
+    TMASACActorHeadKind,
     TMASACCriticConfig,
     TMASACPolicy,
     TMASACPolicyConfig,
@@ -56,6 +58,9 @@ from swarmbots.learn.algos.xlstm.slstm import (
 from swarmbots.learn.algos.world_modeling.next_obs_pred_mixin import NextObsPredConfig
 from swarmbots.learn.env_wrappers.learn_wrappers.swarm_bots_learn_env_wrapper import SwarmBotsLearnEnvWrapper
 from swarmbots.learn.env_wrappers.multi_scenario_vector_env import MultiScenarioVectorEnv
+from swarmbots.learn.env_wrappers.torch_record_episode_statistics_wrapper import (
+    TorchRecordEpisodeStatisticsWrapper,
+)
 from swarmbots.learn.exponential_moving_average import ExponentialMovingAverage
 from swarmbots.learn.hybrid_action_space import HybridActionSpace
 from swarmbots.learn.summary_statistics import SummaryStatistics
@@ -203,6 +208,22 @@ def _encoder_config(
     )
 
 
+def _actor_head_config(
+        kind: TMASACActorHeadKind = TMASACActorHeadKind.INDEPENDENT,
+) -> TMASACActorHeadConfig:
+    return TMASACActorHeadConfig(
+        kind=kind,
+        hidden_dims=[8],
+        qcx_decoder_config=MATQCXDecoderConfig(
+            d_model=8,
+            nhead=2,
+            num_layers=1,
+            dim_feedforward=16,
+            assume_agent_mask_is_active_prefix=False,
+        ),
+    )
+
+
 def _policy_config(
         encoder_config: RMATEncoderConfig,
         *,
@@ -213,6 +234,7 @@ def _policy_config(
         separate_observation_action_encoders: bool = False,
         action_encoder_dim: int | None = None,
         scenario_encoder_config: TMASACScenarioEncoderConfig | None = None,
+        actor_head_kind: TMASACActorHeadKind = TMASACActorHeadKind.INDEPENDENT,
 ) -> RecurrentTMASACPolicyConfig:
     if critic_encoder_config is None:
         critic_encoder_config = (
@@ -228,7 +250,7 @@ def _policy_config(
     return RecurrentTMASACPolicyConfig(
         actor_encoder_config=encoder_config,
         critic_encoder_config=critic_encoder_config,
-        actor_head_config=TMASACActorHeadConfig(hidden_dims=[8]),
+        actor_head_config=_actor_head_config(actor_head_kind),
         critic_config=TMASACCriticConfig(
             n_local_projection_hidden_layers=1,
             n_value_regressor_hidden_layers=1,
@@ -316,6 +338,7 @@ def _segment_policy_config(
         nop_config: SACNOPConfig | None = None,
         ent_loss_coef: float = 0.0,
         scenario_encoder_config: TMASACScenarioEncoderConfig | None = None,
+        actor_head_kind: TMASACActorHeadKind = TMASACActorHeadKind.INDEPENDENT,
 ) -> TMASACPolicyConfig:
     encoder_config = MATEncoderConfig(
         d_model=8,
@@ -326,7 +349,7 @@ def _segment_policy_config(
     return TMASACPolicyConfig(
         actor_encoder_config=encoder_config,
         critic_encoder_config=encoder_config,
-        actor_head_config=TMASACActorHeadConfig(hidden_dims=[8]),
+        actor_head_config=_actor_head_config(actor_head_kind),
         critic_config=TMASACCriticConfig(
             n_local_projection_hidden_layers=1,
             n_value_regressor_hidden_layers=1,
@@ -414,7 +437,7 @@ def _make_env(*, max_steps: int = 200) -> SwarmBotsLearnEnvWrapper:
     return SwarmBotsLearnEnvWrapper(vector_env)
 
 
-def _make_scenario_env(*, max_steps: int = 200) -> SwarmBotsLearnEnvWrapper:
+def _make_scenario_env(*, max_steps: int = 200) -> TorchRecordEpisodeStatisticsWrapper:
     def make_vector_env(
             *,
             global_obs_dim: int,
@@ -438,18 +461,20 @@ def _make_scenario_env(*, max_steps: int = 200) -> SwarmBotsLearnEnvWrapper:
             autoreset_mode=AutoresetMode.SAME_STEP,
         )
 
-    return SwarmBotsLearnEnvWrapper(MultiScenarioVectorEnv({
-        "wall": make_vector_env(
-            global_obs_dim=0,
-            hidden_local_vars_dim=1,
-            hidden_global_vars_dim=2,
-        ),
-        "payload": make_vector_env(
-            global_obs_dim=3,
-            hidden_local_vars_dim=2,
-            hidden_global_vars_dim=1,
-        ),
-    }))
+    return TorchRecordEpisodeStatisticsWrapper(
+        SwarmBotsLearnEnvWrapper(MultiScenarioVectorEnv({
+            "wall": make_vector_env(
+                global_obs_dim=0,
+                hidden_local_vars_dim=1,
+                hidden_global_vars_dim=2,
+            ),
+            "payload": make_vector_env(
+                global_obs_dim=3,
+                hidden_local_vars_dim=2,
+                hidden_global_vars_dim=1,
+            ),
+        }))
+    )
 
 
 def _perform_short_recurrent_update(
@@ -642,6 +667,107 @@ def _perform_short_scenario_update(
 
 
 class RecurrentTMASACTests(unittest.TestCase):
+    def test_recurrent_actor_supports_qcx_and_decentralized_variants(self) -> None:
+        env = _DummyContinuousEnv()
+        encoder_config = _encoder_config(
+            LSTMTemporalSequenceModel,
+            LSTMTemporalSequenceModelConfig(),
+        )
+        batch_size = 2
+        sequence_length = 3
+        local_obs = torch.randn(batch_size, sequence_length, env.n_agents, env.local_obs_dim)
+        global_obs = torch.randn(batch_size, sequence_length, env.global_obs_dim)
+        agent_mask = torch.tensor(
+            [
+                [[True, False, True], [True, True, False], [False, True, True]],
+                [[True, True, True], [False, True, True], [True, False, True]],
+            ],
+            dtype=torch.bool,
+        )
+        previous_actions = torch.zeros(
+            batch_size,
+            sequence_length,
+            env.n_agents,
+            env.action_space.total_agent_action_dim,
+        )
+
+        for actor_head_kind in (TMASACActorHeadKind.QCX, TMASACActorHeadKind.DECENTRALIZED):
+            with self.subTest(actor_head_kind=actor_head_kind):
+                base_config = _policy_config(encoder_config)
+                policy = RecurrentTMASACPolicy(
+                    env=env,
+                    config=replace(
+                        base_config,
+                        actor_head_config=_actor_head_config(actor_head_kind),
+                    ),
+                )
+
+                actions, log_probs, actor_latents, _state = policy.action_log_prob_sequence(
+                    local_obs=local_obs,
+                    global_obs=global_obs,
+                    agent_mask=agent_mask,
+                    previous_actions=previous_actions,
+                    deterministic=False,
+                    use_rsample=True,
+                    initial_state=None,
+                )
+
+                self.assertEqual(tuple(actions.shape), (batch_size, sequence_length, env.n_agents, 2))
+                self.assertEqual(tuple(log_probs.shape), (batch_size, sequence_length, env.n_agents))
+                self.assertEqual(tuple(actor_latents.shape), (batch_size, sequence_length, env.n_agents, 8))
+                self.assertTrue(torch.isfinite(actions).all())
+                self.assertTrue(torch.isfinite(log_probs).all())
+                self.assertTrue(torch.equal(actions[~agent_mask], torch.zeros_like(actions[~agent_mask])))
+                self.assertTrue(torch.equal(log_probs[~agent_mask], torch.zeros_like(log_probs[~agent_mask])))
+                (actions.square().mean() + log_probs.square().mean()).backward()
+                self.assertTrue(
+                    any(
+                        parameter.grad is not None
+                        and torch.isfinite(parameter.grad).all()
+                        and torch.count_nonzero(parameter.grad).item() > 0
+                        for parameter in policy.actor_head.parameters()
+                    )
+                )
+                if actor_head_kind is TMASACActorHeadKind.DECENTRALIZED:
+                    self.assertTrue(all(layer.self_attn is None for layer in policy.actor_encoder.layers))
+
+    def test_decentralized_recurrent_actor_does_not_mix_agent_histories(self) -> None:
+        torch.manual_seed(0)
+        env = _DummyContinuousEnv()
+        policy = RecurrentTMASACPolicy(
+            env=env,
+            config=_policy_config(
+                _encoder_config(
+                    LSTMTemporalSequenceModel,
+                    LSTMTemporalSequenceModelConfig(),
+                ),
+                actor_head_kind=TMASACActorHeadKind.DECENTRALIZED,
+            ),
+        )
+        batch_size = 2
+        sequence_length = 4
+        local_obs = torch.randn(batch_size, sequence_length, env.n_agents, env.local_obs_dim)
+        changed_local_obs = local_obs.clone()
+        changed_local_obs[:, :, 1:, :] += 100.0
+        global_obs = torch.randn(batch_size, sequence_length, env.global_obs_dim)
+        agent_mask = torch.ones(batch_size, sequence_length, env.n_agents, dtype=torch.bool)
+
+        original_latents, _state = policy.encode_actor_sequence(
+            local_obs=local_obs,
+            global_obs=global_obs,
+            agent_mask=agent_mask,
+            initial_state=None,
+        )
+        changed_latents, _state = policy.encode_actor_sequence(
+            local_obs=changed_local_obs,
+            global_obs=global_obs,
+            agent_mask=agent_mask,
+            initial_state=None,
+        )
+
+        torch.testing.assert_close(original_latents[:, :, 0], changed_latents[:, :, 0])
+        self.assertFalse(torch.allclose(original_latents[:, :, 1:], changed_latents[:, :, 1:]))
+
     def test_recurrent_actor_scenario_encoder_supports_mixed_sequences_and_gradients(self) -> None:
         policy = RecurrentTMASACPolicy(
             env=_DummyScenarioEnv(),
@@ -891,8 +1017,8 @@ class RecurrentTMASACTests(unittest.TestCase):
         )
 
         self.assertGreater(updates, 0)
-        self.assertTrue(math.isfinite(float(metrics["actor_loss"])))
-        self.assertTrue(math.isfinite(float(metrics["critic_loss"])))
+        self.assertTrue(math.isfinite(_summary_mean(metrics["actor_loss"])))
+        self.assertTrue(math.isfinite(_summary_mean(metrics["critic_loss"])))
         self.assertIn("scenario/wall/ep_rew", metrics)
         self.assertIn("scenario/payload/ep_rew", metrics)
 
@@ -903,8 +1029,8 @@ class RecurrentTMASACTests(unittest.TestCase):
         )
 
         self.assertGreater(updates, 0)
-        self.assertTrue(math.isfinite(float(metrics["actor_loss"])))
-        self.assertTrue(math.isfinite(float(metrics["critic_loss"])))
+        self.assertTrue(math.isfinite(_summary_mean(metrics["actor_loss"])))
+        self.assertTrue(math.isfinite(_summary_mean(metrics["critic_loss"])))
 
     def test_recurrent_sac_updates_segment_tmasac_with_scenarios(self) -> None:
         metrics, updates = _perform_short_scenario_update(
@@ -913,8 +1039,8 @@ class RecurrentTMASACTests(unittest.TestCase):
         )
 
         self.assertGreater(updates, 0)
-        self.assertTrue(math.isfinite(float(metrics["actor_loss"])))
-        self.assertTrue(math.isfinite(float(metrics["critic_loss"])))
+        self.assertTrue(math.isfinite(_summary_mean(metrics["actor_loss"])))
+        self.assertTrue(math.isfinite(_summary_mean(metrics["critic_loss"])))
 
     def test_scenario_encoder_supports_feedforward_critic_sequences(self) -> None:
         policy = RecurrentTMASACPolicy(
@@ -964,38 +1090,62 @@ class RecurrentTMASACTests(unittest.TestCase):
             )
 
     def test_segment_tmasac_treats_time_as_independent_batch_rows(self) -> None:
-        policy = SegmentTMASACPolicy(
-            env=_DummyContinuousEnv(),
-            config=_segment_policy_config(),
-        )
         batch_size = 2
         sequence_length = 4
         local_obs = torch.randn(batch_size, sequence_length, 3, 5)
         global_obs = torch.randn(batch_size, sequence_length, 2)
-        agent_mask = torch.ones(batch_size, sequence_length, 3, dtype=torch.bool)
-
-        sequence_actions, sequence_log_probs, _latents, next_state = (
-            policy.action_log_prob_sequence(
-                local_obs=local_obs,
-                global_obs=global_obs,
-                agent_mask=agent_mask,
-                previous_actions=None,
-                deterministic=True,
-                use_rsample=False,
-                initial_state=torch.randn(batch_size, 1),
-            )
-        )
-        flat_actions, flat_log_probs = policy.action_log_prob(
-            local_obs=local_obs.flatten(0, 1),
-            global_obs=global_obs.flatten(0, 1),
-            agent_mask=agent_mask.flatten(0, 1),
-            deterministic=True,
-            use_rsample=False,
+        agent_mask = torch.tensor(
+            [
+                [[True, True, True], [True, False, True], [False, True, True], [True, True, False]],
+                [[True, False, True], [True, True, True], [True, True, False], [False, True, True]],
+            ],
+            dtype=torch.bool,
         )
 
-        torch.testing.assert_close(sequence_actions.flatten(0, 1), flat_actions)
-        torch.testing.assert_close(sequence_log_probs.flatten(0, 1), flat_log_probs)
-        self.assertEqual(next_state.shape, (batch_size, 1))
+        for actor_head_kind in TMASACActorHeadKind:
+            with self.subTest(actor_head_kind=actor_head_kind):
+                policy = SegmentTMASACPolicy(
+                    env=_DummyContinuousEnv(),
+                    config=_segment_policy_config(actor_head_kind=actor_head_kind),
+                )
+                sequence_actions, sequence_log_probs, _latents, next_state = (
+                    policy.action_log_prob_sequence(
+                        local_obs=local_obs,
+                        global_obs=global_obs,
+                        agent_mask=agent_mask,
+                        previous_actions=None,
+                        deterministic=True,
+                        use_rsample=False,
+                        initial_state=torch.randn(batch_size, 1),
+                    )
+                )
+                flat_actions, flat_log_probs = policy.action_log_prob(
+                    local_obs=local_obs.flatten(0, 1),
+                    global_obs=global_obs.flatten(0, 1),
+                    agent_mask=agent_mask.flatten(0, 1),
+                    deterministic=True,
+                    use_rsample=False,
+                )
+
+                torch.testing.assert_close(sequence_actions.flatten(0, 1), flat_actions)
+                torch.testing.assert_close(sequence_log_probs.flatten(0, 1), flat_log_probs)
+                self.assertTrue(
+                    torch.equal(
+                        sequence_actions[~agent_mask],
+                        torch.zeros_like(sequence_actions[~agent_mask]),
+                    )
+                )
+                self.assertTrue(
+                    torch.equal(
+                        sequence_log_probs[~agent_mask],
+                        torch.zeros_like(sequence_log_probs[~agent_mask]),
+                    )
+                )
+                self.assertEqual(next_state.shape, (batch_size, 1))
+                if actor_head_kind is TMASACActorHeadKind.DECENTRALIZED:
+                    self.assertTrue(
+                        all(layer.self_attn is None for layer in policy.actor_encoder.layers)
+                    )
 
     def test_segment_tmasac_uses_recurrent_sac_without_temporal_actor_state(self) -> None:
         metrics, total_updates = _perform_short_segment_update(ent_loss_coef=0.2)
@@ -1433,6 +1583,155 @@ class RecurrentTMASACTests(unittest.TestCase):
             initial_state=None,
         )
         self.assertEqual(actor_latents.shape[:3], (2, 3, _DummyContinuousEnv.n_agents))
+
+    def test_compiled_recurrent_qcx_actor_tail_matches_eager(self) -> None:
+        compiled_graphs: list[torch.fx.GraphModule] = []
+        encoder_config = _encoder_config(
+            LSTMTemporalSequenceModel,
+            LSTMTemporalSequenceModelConfig(),
+        )
+        eager_config = _policy_config(
+            encoder_config,
+            continuous_config=PredictedStdConfig(base_std=0.5, ent_loss_coef=0.1),
+            actor_head_kind=TMASACActorHeadKind.QCX,
+        )
+        eager_policy = RecurrentTMASACPolicy(
+            env=_DummyContinuousEnv(),
+            config=eager_config,
+        )
+        with patch(
+                "swarmbots.learn.algos.sac.tmasac_policy.torch.compile",
+                side_effect=_make_recording_eager_compile(compiled_graphs),
+        ):
+            compiled_policy = RecurrentTMASACPolicy(
+                env=_DummyContinuousEnv(),
+                config=replace(eager_config, compile_modules=True),
+            )
+
+        compiled_policy.actor_encoder.load_state_dict(eager_policy.actor_encoder.state_dict())
+        compiled_policy.actor_head.load_state_dict(eager_policy.actor_head.state_dict())
+        compiled_policy.action_dist.load_state_dict(eager_policy.action_dist.state_dict())
+        batch_size = 2
+        sequence_length = 3
+        agent_mask = torch.tensor(
+            [
+                [[True, False, True], [True, True, False], [False, True, True]],
+                [[True, True, True], [False, True, True], [True, False, True]],
+            ],
+            dtype=torch.bool,
+        )
+        call_kwargs = {
+            "local_obs": torch.randn(
+                batch_size,
+                sequence_length,
+                _DummyContinuousEnv.n_agents,
+                _DummyContinuousEnv.local_obs_dim,
+            ),
+            "global_obs": torch.randn(
+                batch_size,
+                sequence_length,
+                _DummyContinuousEnv.global_obs_dim,
+            ),
+            "agent_mask": agent_mask,
+            "previous_actions": torch.randn(
+                batch_size,
+                sequence_length,
+                _DummyContinuousEnv.n_agents,
+                _DummyContinuousEnv.action_space.total_agent_action_dim,
+            ).clamp(-0.9, 0.9),
+            "deterministic": False,
+            "use_rsample": True,
+            "initial_state": None,
+        }
+
+        torch.manual_seed(123)
+        eager_outputs = eager_policy.action_log_prob_sequence(**call_kwargs)
+        torch.manual_seed(123)
+        compiled_outputs = compiled_policy.action_log_prob_sequence(**call_kwargs)
+
+        for compiled_tensor, eager_tensor in zip(compiled_outputs[:3], eager_outputs[:3], strict=True):
+            torch.testing.assert_close(compiled_tensor, eager_tensor)
+        eager_extra_losses = eager_policy.action_dist.compute_extra_losses_without_metrics(
+            agent_mask=agent_mask,
+        )
+        compiled_extra_losses = compiled_policy.action_dist.compute_extra_losses_without_metrics(
+            agent_mask=agent_mask,
+        )
+        self.assertEqual(compiled_extra_losses.keys(), eager_extra_losses.keys())
+        for name in compiled_extra_losses:
+            torch.testing.assert_close(compiled_extra_losses[name], eager_extra_losses[name])
+        self.assertEqual(len(compiled_graphs), 1)
+
+    def test_compiled_segment_qcx_sequence_uses_autoregressive_actor_tail(self) -> None:
+        compiled_graphs: list[torch.fx.GraphModule] = []
+        compiled_function_names: list[str] = []
+
+        def eager_backend(
+                graph_module: torch.fx.GraphModule,
+                _example_inputs: list[torch.Tensor],
+                **_kwargs: Any,
+        ) -> Callable[..., Any]:
+            compiled_graphs.append(graph_module)
+            return graph_module.forward
+
+        def compile_with_eager_backend(
+                function: Callable[..., Any],
+                **kwargs: Any,
+        ) -> Callable[..., Any]:
+            compiled_function_names.append(getattr(function, "__name__", type(function).__name__))
+            return _REAL_TORCH_COMPILE(function, backend=eager_backend, **kwargs)
+
+        config = _segment_policy_config(actor_head_kind=TMASACActorHeadKind.QCX)
+        torch.manual_seed(123)
+        eager_policy = SegmentTMASACPolicy(env=_DummyContinuousEnv(), config=config)
+        torch.manual_seed(123)
+        with patch(
+                "swarmbots.learn.algos.sac.tmasac_policy.torch.compile",
+                side_effect=compile_with_eager_backend,
+        ):
+            compiled_policy = SegmentTMASACPolicy(
+                env=_DummyContinuousEnv(),
+                config=replace(config, compile_modules=True),
+            )
+
+        self.assertIsNotNone(compiled_policy._compiled_action_log_prob)
+        self.assertIsNotNone(compiled_policy._compiled_actor_actions_and_log_probs)
+        self.assertIn("_action_log_prob_impl", compiled_function_names)
+        self.assertIn("_actor_actions_and_log_probs_impl", compiled_function_names)
+
+        batch_size = 2
+        sequence_length = 3
+        call_kwargs = {
+            "local_obs": torch.randn(
+                batch_size,
+                sequence_length,
+                _DummyContinuousEnv.n_agents,
+                _DummyContinuousEnv.local_obs_dim,
+            ),
+            "global_obs": torch.randn(
+                batch_size,
+                sequence_length,
+                _DummyContinuousEnv.global_obs_dim,
+            ),
+            "agent_mask": torch.tensor([
+                [[True, True, True], [True, False, True], [True, True, False]],
+                [[True, True, False], [True, True, True], [False, True, True]],
+            ]),
+            "previous_actions": None,
+            "deterministic": True,
+            "use_rsample": False,
+            "initial_state": None,
+        }
+        eager_outputs = eager_policy.action_log_prob_sequence(**call_kwargs)
+        compiled_outputs = compiled_policy.action_log_prob_sequence(**call_kwargs)
+
+        for compiled_output, eager_output in zip(compiled_outputs, eager_outputs, strict=True):
+            torch.testing.assert_close(compiled_output, eager_output)
+        graph_count = len(compiled_graphs)
+        self.assertGreaterEqual(graph_count, 2)
+
+        compiled_policy.action_log_prob_sequence(**call_kwargs)
+        self.assertEqual(len(compiled_graphs), graph_count)
 
     def test_non_compile_friendly_action_dist_keeps_distribution_outside_compiled_graph(self) -> None:
         config = replace(
@@ -3013,6 +3312,55 @@ class RecurrentTMASACTests(unittest.TestCase):
         self.assertEqual(total_updates, 1)
         self.assertIn("actor_loss", metrics)
         self.assertIn("critic_loss", metrics)
+
+    def test_recurrent_training_skips_cleanly_when_replay_has_no_state_anchored_segment(self) -> None:
+        env = _make_env()
+        try:
+            policy = RecurrentTMASACPolicy(
+                env=env,
+                config=_policy_config(
+                    _encoder_config(
+                        LSTMTemporalSequenceModel,
+                        LSTMTemporalSequenceModelConfig(),
+                    ),
+                ),
+            )
+            algorithm = RecurrentSAC(
+                policy=policy,
+                env=env,
+                burn_in_steps=1,
+                learning_steps=2,
+                temporal_state_store_interval=1,
+                buffer_capacity_per_env=3,
+                learning_starts=0,
+                batch_size=1,
+                replay_storage_device="cpu",
+                train_device="cpu",
+            )
+            obs, _info = env.reset()
+            actions = torch.zeros(
+                1,
+                env.n_agents,
+                env.action_space.total_agent_action_dim,
+            )
+            for _ in range(3):
+                algorithm.replay_buffer.add(
+                    obs=obs,
+                    actions=actions,
+                    rewards=torch.zeros(1),
+                    terminations=torch.zeros(1, dtype=torch.bool),
+                    truncations=torch.zeros(1, dtype=torch.bool),
+                    next_obs=obs,
+                )
+
+            metrics = algorithm.train(gradient_steps=1)
+
+            self.assertEqual(metrics["updates"], 0)
+            self.assertEqual(metrics["total_updates"], 0)
+            self.assertTrue(metrics["training_skipped"])
+            self.assertEqual(metrics["replay_size"], 3)
+        finally:
+            env.close()
 
     def test_actor_state_critic_input_uses_last_lstm_layers_and_detaches(self) -> None:
         hidden_dim = 8

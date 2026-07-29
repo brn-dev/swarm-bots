@@ -43,6 +43,10 @@ from swarmbots.learn.algos.sac.recurrent_tmasac_policy import (
     RecurrentTMASACPolicy,
 )
 from swarmbots.learn.algos.sac.segment_tmasac_policy import SegmentTMASACPolicy
+from swarmbots.learn.algos.sac.tmasac_actor_heads import (
+    TMASACActorHeadKind,
+    TMASACQCXActorHead,
+)
 from swarmbots.learn.algos.sac.tmasac_policy import TMASACPolicy
 from swarmbots.learn.env_wrappers.learn_wrappers.swarm_bots_learn_env_wrapper import (
     SwarmBotsLearnEnvWrapper,
@@ -782,6 +786,34 @@ def test_make_base_policy_constructs_mat_qcx_variant() -> None:
     assert isinstance(policy.action_input_norm, nn.LayerNorm)
     assert isinstance(policy.action_token_norm, nn.LayerNorm)
     assert isinstance(policy.decoder.layers[0].context_token_norm, nn.LayerNorm)
+
+
+@pytest.mark.parametrize(
+    ("actor_head_kind", "expected_qcx", "expected_agent_attention"),
+    [
+        (TMASACActorHeadKind.INDEPENDENT, False, True),
+        (TMASACActorHeadKind.QCX, True, True),
+        (TMASACActorHeadKind.DECENTRALIZED, False, False),
+    ],
+)
+def test_make_base_policy_constructs_tmasac_actor_variants(
+        actor_head_kind: TMASACActorHeadKind,
+        expected_qcx: bool,
+        expected_agent_attention: bool,
+) -> None:
+    policy = _make_test_base_policy(
+        env=_DummyContinuousEnv(),
+        policy_variant="tmasac",
+        continuous_action_dist="predicted_std",
+        tmasac_actor_head_kind=actor_head_kind,
+    )
+
+    assert isinstance(policy, TMASACPolicy)
+    assert isinstance(policy.actor_head, TMASACQCXActorHead) is expected_qcx
+    assert all(
+        (layer.self_attn is not None) is expected_agent_attention
+        for layer in policy.actor_encoder.layers
+    )
 
 
 def test_default_base_policy_produces_finite_actions_log_probs_and_values() -> None:

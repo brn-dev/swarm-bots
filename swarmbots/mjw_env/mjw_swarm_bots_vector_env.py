@@ -188,6 +188,7 @@ class _SettledResetSnapshotBuffer:
 class MJWSwarmBotsVectorEnv(VectorEnv):
     metadata = {"autoreset_mode": AutoresetMode.SAME_STEP, "render_modes": []}
     supports_per_env_reset_seeds = False
+    _pending_step: _PendingMJWStep | None = None
 
     def __init__(
         self,

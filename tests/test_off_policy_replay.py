@@ -31,12 +31,14 @@ class _ScriptedOffPolicyEnv(gymnasium.Env):
             terminate_steps: tuple[int, ...] = (),
             env_id: int = 0,
             include_agent_mask: bool = False,
+            include_scenario_id: bool = False,
     ) -> None:
         super().__init__()
         self.done_steps = done_steps
         self.terminate_steps = terminate_steps
         self.env_id = env_id
         self.include_agent_mask = include_agent_mask
+        self.include_scenario_id = include_scenario_id
         self.episode_id = 0
         self.step_count = 0
         self.episode_return = 0.0
@@ -48,6 +50,8 @@ class _ScriptedOffPolicyEnv(gymnasium.Env):
         }
         if include_agent_mask:
             observation_spaces["agent_mask"] = spaces.MultiBinary(2)
+        if include_scenario_id:
+            observation_spaces["scenario_id"] = spaces.Discrete(3)
         self.observation_space = spaces.Dict(observation_spaces)
         self.action_space = spaces.Dict({
             "actuators": spaces.Box(low=-1.0, high=1.0, shape=(2, 1), dtype=np.float32),
@@ -95,6 +99,8 @@ class _ScriptedOffPolicyEnv(gymnasium.Env):
                 [True, (self.episode_id + self.step_count) % 2 == 0],
                 dtype=np.bool_,
             )
+        if self.include_scenario_id:
+            obs["scenario_id"] = np.int64(self.episode_id % 3)
         return obs
 
 
@@ -113,6 +119,19 @@ def _make_env(
 def _make_agent_mask_env(*, done_steps: tuple[int, ...] = ()) -> SwarmBotsLearnEnvWrapper:
     vector_env = SyncVectorEnv(
         [lambda: _ScriptedOffPolicyEnv(done_steps=done_steps, include_agent_mask=True)],
+        autoreset_mode=AutoresetMode.SAME_STEP,
+    )
+    return SwarmBotsLearnEnvWrapper(vector_env)
+
+
+def _make_scenario_env(*, done_steps: tuple[int, ...] = ()) -> SwarmBotsLearnEnvWrapper:
+    vector_env = SyncVectorEnv(
+        [
+            lambda: _ScriptedOffPolicyEnv(
+                done_steps=done_steps,
+                include_scenario_id=True,
+            )
+        ],
         autoreset_mode=AutoresetMode.SAME_STEP,
     )
     return SwarmBotsLearnEnvWrapper(vector_env)
@@ -350,6 +369,35 @@ class _ObsEncodingPolicy(BasePolicy):
 
     def requires_previous_actions(self) -> bool:
         return False
+
+
+class _ScenarioEncodingPolicy(_NoPreviousActionPolicy):
+    def act(
+            self,
+            local_obs: torch.Tensor,
+            global_obs: torch.Tensor,
+            hidden_local_vars: torch.Tensor | None = None,
+            hidden_global_vars: torch.Tensor | None = None,
+            agent_mask: torch.Tensor | None = None,
+            scenario_ids: torch.Tensor | None = None,
+            previous_actions: torch.Tensor | None = None,
+            deterministic: bool = False,
+    ) -> torch.Tensor:
+        _ = (
+            global_obs,
+            hidden_local_vars,
+            hidden_global_vars,
+            agent_mask,
+            previous_actions,
+            deterministic,
+        )
+        if scenario_ids is None:
+            raise AssertionError("scenario_ids must be passed for scenario observations")
+        return scenario_ids.to(dtype=local_obs.dtype).view(-1, 1, 1).expand(
+            -1,
+            local_obs.shape[1],
+            2,
+        )
 
 
 class _TemporalPolicy(BasePolicy):
@@ -774,24 +822,12 @@ class OffPolicyReplayTests(unittest.TestCase):
                 temporal_state=_temporal_state(20.0),
                 next_temporal_state=_temporal_state(21.0),
             )
-            self.assertTrue(buffer._terminal_obs_by_env_slot)
-            self.assertIsNotNone(buffer.temporal_states)
 
             buffer.reset()
 
             self.assertEqual(len(buffer), 0)
             self.assertEqual(buffer.total_transitions_added, 0)
             self.assertFalse(buffer.has_current_obs)
-            self.assertFalse(buffer._terminal_obs_by_env_slot)
-            self.assertIsNone(buffer.temporal_states)
-            self.assertEqual(buffer._size_per_env_tensor.item(), 0)
-            self.assertEqual(buffer._logical_transition_slot_offset.item(), 0)
-            assert buffer._temporal_state_available is not None
-            assert buffer._temporal_state_indices is not None
-            assert buffer._temporal_state_slots_in_use is not None
-            self.assertFalse(buffer._temporal_state_available.any())
-            self.assertTrue((buffer._temporal_state_indices == -1).all())
-            self.assertFalse(buffer._temporal_state_slots_in_use.any())
 
             _add_direct_step(
                 buffer,
@@ -812,6 +848,9 @@ class OffPolicyReplayTests(unittest.TestCase):
                 previous_actions=[4.0],
                 episode_start_mask=[True],
             )
+            segment = buffer.sample_episode_segments(1, segment_length=1)
+            self.assertIsInstance(segment.initial_temporal_state, torch.Tensor)
+            self.assertEqual(segment.initial_temporal_state[:, 0, 0].tolist(), [30.0])
         finally:
             env.close()
 
@@ -1310,7 +1349,6 @@ class OffPolicyReplayTests(unittest.TestCase):
             self.assertEqual(buffer.temporal_state_capacity_per_env, 3)
             self.assertIsInstance(buffer.temporal_states, torch.Tensor)
             self.assertEqual(buffer.temporal_states.shape[1], 3)
-            self.assertEqual(int(buffer._temporal_state_available.sum()), 3)
 
             batch = buffer.sample_episode_segments(
                 2,
@@ -1600,7 +1638,6 @@ class OffPolicyReplayTests(unittest.TestCase):
             self.assertEqual(batch.local_obs[:, 0, 0].tolist(), [10.0, 20.0, 110.0, 120.0])
             self.assertEqual(batch.next_local_obs[:, 0, 0].tolist(), [20.0, 30.0, 120.0, 131.0])
             self.assertEqual(batch.truncations.tolist(), [False, False, False, True])
-            self.assertEqual(set(buffer._terminal_obs_by_env_slot.keys()), {(1, 0)})
         finally:
             env.close()
 
@@ -1720,6 +1757,40 @@ class OffPolicyReplayTests(unittest.TestCase):
                 actions=[202.25, 300.25, 301.25, 302.25, 400.25],
                 rewards=[3.0, 1.0, 2.0, 3.0, 1.0],
                 truncations=[True, False, False, True, False],
+            )
+        finally:
+            env.close()
+
+    def test_scenario_ids_follow_policy_actions_terminal_obs_and_reset_stream_after_wraparound(self) -> None:
+        env = _make_scenario_env(done_steps=(1,))
+        try:
+            buffer = _make_buffer(env, capacity_per_env=3)
+
+            collect_off_policy_steps(
+                env=env,
+                replay_buffer=buffer,
+                n_steps=4,
+                policy=_ScenarioEncodingPolicy(),
+            )
+
+            retained = buffer.get_all()
+            assert retained.scenario_ids is not None
+            assert retained.next_scenario_ids is not None
+            self.assertEqual(retained.scenario_ids.tolist(), [2, 0, 1])
+            self.assertEqual(retained.next_scenario_ids.tolist(), [2, 0, 1])
+            self.assertEqual(retained.actions[:, 0, 0].tolist(), [2.0, 0.0, 1.0])
+            self.assertEqual(retained.local_obs[:, 0, 0].tolist(), [200.0, 300.0, 400.0])
+            self.assertEqual(retained.next_local_obs[:, 0, 0].tolist(), [201.0, 301.0, 401.0])
+            self.assertTrue(retained.truncations.all())
+
+            sampled = buffer.sample(20, generator=torch.Generator().manual_seed(7))
+            assert sampled.scenario_ids is not None
+            assert sampled.next_scenario_ids is not None
+            torch.testing.assert_close(sampled.next_scenario_ids, sampled.scenario_ids)
+            torch.testing.assert_close(sampled.actions[:, 0, 0], sampled.scenario_ids.float())
+            torch.testing.assert_close(
+                sampled.next_local_obs[:, 0, 0],
+                sampled.local_obs[:, 0, 0] + 1.0,
             )
         finally:
             env.close()
@@ -2195,7 +2266,7 @@ class OffPolicyReplayTests(unittest.TestCase):
         finally:
             env.close()
 
-    def test_episode_segment_candidates_exhaustively_respect_wrapped_episode_boundaries(self) -> None:
+    def test_episode_segment_sampling_exhaustively_respects_wrapped_episode_boundaries(self) -> None:
         env = _make_env()
         try:
             capacity = 4
@@ -2216,26 +2287,39 @@ class OffPolicyReplayTests(unittest.TestCase):
                         )
 
                     for sequence_length in range(1, capacity + 1):
-                        _env_indices, logical_starts = buffer._replay_segment_candidates(
-                            total_sequence_length=sequence_length,
-                            require_initial_temporal_state=False,
-                            allow_episode_boundaries=False,
-                        )
                         expected_starts = [
                             start
                             for start in range(capacity - sequence_length + 1)
                             if not any(retained_episode_ends[start:start + sequence_length - 1])
                         ]
-                        self.assertEqual(logical_starts.tolist(), expected_starts)
+                        if expected_starts:
+                            sampled = buffer.sample_episode_segments(
+                                len(expected_starts),
+                                segment_length=sequence_length,
+                                replacement=False,
+                                require_initial_temporal_state=False,
+                            )
+                            actual_starts = sorted(sampled.local_obs[:, 0, 0, 0].tolist())
+                            self.assertEqual(actual_starts, [float(start + 2) for start in expected_starts])
+                        else:
+                            with self.assertRaises(NoEpisodeSegmentCandidatesError):
+                                buffer.sample_episode_segments(
+                                    1,
+                                    segment_length=sequence_length,
+                                    require_initial_temporal_state=False,
+                                )
 
-                        _env_indices, cross_boundary_starts = buffer._replay_segment_candidates(
-                            total_sequence_length=sequence_length,
+                        cross_boundary_count = capacity - sequence_length + 1
+                        cross_boundary_sample = buffer.sample_episode_segments(
+                            cross_boundary_count,
+                            segment_length=sequence_length,
+                            replacement=False,
                             require_initial_temporal_state=False,
                             allow_episode_boundaries=True,
                         )
                         self.assertEqual(
-                            cross_boundary_starts.tolist(),
-                            list(range(capacity - sequence_length + 1)),
+                            sorted(cross_boundary_sample.local_obs[:, 0, 0, 0].tolist()),
+                            [float(start + 2) for start in range(cross_boundary_count)],
                         )
         finally:
             env.close()

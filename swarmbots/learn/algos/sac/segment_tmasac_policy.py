@@ -47,6 +47,18 @@ class SegmentTMASACPolicy(TMASACPolicy):
             action_sequence_with_selected_states_lengths,
         )
 
+    def _apply_optional_compile(self) -> None:
+        super()._apply_optional_compile()
+        if (
+                self.config.compile_modules
+                and self.action_dist.compile_friendly
+                and self._compiled_actor_actions_and_log_probs is None
+        ):
+            self._compiled_actor_actions_and_log_probs = self._compile_callable(
+                self._actor_actions_and_log_probs_impl,
+                fullgraph=True,
+            )
+
     def requires_recurrent_training(self) -> bool:
         return True
 
@@ -142,15 +154,13 @@ class SegmentTMASACPolicy(TMASACPolicy):
             agent_mask=flat_agent_mask,
             scenario_ids=flat_inputs["scenario_ids"],
         )
-        latent_pi = self.actor_head(actor_latents, agent_mask=flat_agent_mask)
-        actions, log_probs = self.action_dist.get_actions_with_log_probs(
-            latent_pi,
-            deterministic=deterministic,
+        actions, log_probs = self._actor_actions_and_log_probs(
+            actor_latents=actor_latents,
+            agent_mask=flat_agent_mask,
             previous_actions=flat_previous_actions,
+            deterministic=deterministic,
             use_rsample=use_rsample,
         )
-        actions = self._mask_actions(actions, flat_agent_mask)
-        log_probs = self._mask_log_probs(log_probs, flat_agent_mask)
         return (
             self._restore_sequence(actions, batch_size, sequence_length),
             self._restore_sequence(log_probs, batch_size, sequence_length),

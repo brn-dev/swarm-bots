@@ -91,10 +91,14 @@ class _FakeSettledResetBuffer:
         self.fill_async_calls += 1
 
 
-def _make_uninitialized_env(*, use_settled_resets: bool = True) -> tuple[MJWSwarmBotsVectorEnv, _FakeRuntime]:
+def _make_uninitialized_env(
+        *,
+        use_settled_resets: bool = True,
+        num_envs: int = 4,
+) -> tuple[MJWSwarmBotsVectorEnv, _FakeRuntime]:
     env = object.__new__(MJWSwarmBotsVectorEnv)
     runtime = _FakeRuntime()
-    env.num_envs = 4
+    env.num_envs = num_envs
     env.device = torch.device("cpu")
     env._scenario_runtime = runtime
     env._rng = torch.Generator(device="cpu")
@@ -104,9 +108,13 @@ def _make_uninitialized_env(*, use_settled_resets: bool = True) -> tuple[MJWSwar
     env._settle_executor = None
     env._live_episode_recorder = _FakeLiveEpisodeRecorder()
     env._continuous_connector_actions = False
+    env._pending_step = None
+    env._step_status_host = torch.empty(num_envs + 1, dtype=torch.bool)
+    env._step_status_ready = None
+    env._nefc_overflow_host = torch.empty((), dtype=torch.float32)
     env._tensor_operations = build_mjw_env_tensor_operations(
         observation_layout=MJWObservationLayout(
-            num_envs=4,
+            num_envs=num_envs,
             num_agents=1,
             num_connectors=1,
             free_joint_position=slice(0, 3),
@@ -119,7 +127,7 @@ def _make_uninitialized_env(*, use_settled_resets: bool = True) -> tuple[MJWSwar
             include_connector_positions=False,
         ),
         action_layout=MJWActionLayout(
-            num_envs=4,
+            num_envs=num_envs,
             continuous_connectors=False,
         ),
         compile_operations=False,
@@ -175,9 +183,8 @@ def test_mjw_done_termination_without_buffer_uses_settled_reset() -> None:
     ]
 
 
-def test_mjw_step_computes_truncations_with_current_limit() -> None:
-    env, runtime = _make_uninitialized_env(use_settled_resets=False)
-    env.num_envs = 2
+def test_mjw_deferred_step_preserves_terminal_obs_and_returns_same_step_reset_obs() -> None:
+    env, runtime = _make_uninitialized_env(use_settled_resets=False, num_envs=2)
     env._n_agents = 1
     env._n_actuators = 1
     env._n_connectors = 1
@@ -203,19 +210,30 @@ def test_mjw_step_computes_truncations_with_current_limit() -> None:
     env._maybe_notify_nefc_overflow = lambda: None
     env._build_obs = lambda: {"obs": env.current_step.clone().unsqueeze(-1)}
     env._apply_error_obs = lambda obs, unstable_mask: obs
-    env._reset_done_worlds = lambda dones: reset_done_calls.append(dones.clone())
+    def reset_done_worlds(dones: torch.Tensor) -> None:
+        reset_done_calls.append(dones.clone())
+        env.current_step[dones] = 0
 
-    _obs, rewards, terminations, truncations, infos = env.step(
-        {
-            "actuators": torch.zeros((2, 1, 1), dtype=torch.float32),
-            "connectors": torch.zeros((2, 1, 1), dtype=torch.bool),
-        }
-    )
+    env._reset_done_worlds = reset_done_worlds
 
+    actions = {
+        "actuators": torch.zeros((2, 1, 1), dtype=torch.float32),
+        "connectors": torch.zeros((2, 1, 1), dtype=torch.bool),
+    }
+    env.begin_step(actions)
+
+    assert env.has_pending_step
+    assert reset_done_calls == []
+
+    obs, rewards, terminations, truncations, infos = env.end_step()
+
+    assert not env.has_pending_step
     assert torch.equal(rewards, torch.ones((2,), dtype=torch.float32))
     assert torch.equal(terminations, torch.tensor([False, False]))
     assert torch.equal(truncations, torch.tensor([True, False]))
     assert torch.equal(infos["_final_obs"], torch.tensor([True, False]))
+    assert torch.equal(infos["final_obs"]["obs"], torch.tensor([[1], [1]]))
+    assert torch.equal(obs["obs"], torch.tensor([[0], [1]]))
     assert len(reset_done_calls) == 1
     assert torch.equal(reset_done_calls[0], torch.tensor([True, False]))
 
@@ -225,7 +243,6 @@ def test_mjw_step_terminates_worlds_with_any_nonfinite_physics_state(
 ) -> None:
     env, runtime = _make_uninitialized_env(use_settled_resets=False)
     env.scenario = _FakeScenario()
-    env.num_envs = 4
     env._n_agents = 1
     env._n_actuators = 1
     env._n_connectors = 1

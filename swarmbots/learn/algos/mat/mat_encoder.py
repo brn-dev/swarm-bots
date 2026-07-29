@@ -32,6 +32,7 @@ class MATEncoderConfig:
     global_obs_encoder_hidden_dims: list[int] | None = None
     normalize_obs_inputs: bool = False
     normalize_tokens: bool = False
+    use_agent_attention: bool = True
 
 
 class MATEncoderLayer(nn.Module):
@@ -41,12 +42,16 @@ class MATEncoderLayer(nn.Module):
             config: MATEncoderConfig,
     ) -> None:
         super().__init__()
-        self.self_attn = nn.MultiheadAttention(
-            config.d_model,
-            config.nhead,
-            dropout=config.dropout,
-            bias=config.bias,
-            batch_first=True,
+        self.self_attn: nn.MultiheadAttention | None = (
+            nn.MultiheadAttention(
+                config.d_model,
+                config.nhead,
+                dropout=config.dropout,
+                bias=config.bias,
+                batch_first=True,
+            )
+            if config.use_agent_attention
+            else None
         )
         self.norm_first = config.norm_first
         self.norm1 = nn.LayerNorm(config.d_model, eps=config.layer_norm_eps, bias=config.bias)
@@ -121,6 +126,8 @@ class MATEncoderLayer(nn.Module):
             key_padding_mask: torch.Tensor | None,
             is_causal: bool,
     ) -> torch.Tensor:
+        if self.self_attn is None:
+            return torch.zeros_like(embeddings)
         attention_output = self.self_attn(
             embeddings,
             embeddings,
@@ -252,7 +259,8 @@ class MATEncoder(nn.Module):
         hidden_linear_init = make_init_linear_orthogonal(feedforward_init_gain)
         output_linear_init = make_init_linear_orthogonal(1.0)
         for layer in self.layers:
-            reinitialize_multihead_attention(layer.self_attn)
+            if layer.self_attn is not None:
+                reinitialize_multihead_attention(layer.self_attn)
             feedforward_linear_layers = layer._feedforward_linear_layers()
             for linear in feedforward_linear_layers[:-1]:
                 hidden_linear_init(linear)

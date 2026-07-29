@@ -12,6 +12,7 @@ from experiments.mjw_experiment_common import (
     ContinuousActionDistVariant,
     run_experiment as run_mjw_wall_experiment,
 )
+from swarmbots.learn.algos.sac.tmasac_actor_heads import TMASACActorHeadKind
 from swarmbots.scenario_presets.scenario_presets_kwargs import PO_WALL_MEDIUM_SCENARIO_KWARGS
 
 EXPERIMENT_RUN_NAME = "mjw_po_wall_medium_1024x1_tmasac"
@@ -31,6 +32,7 @@ def run_experiment(
         sac_ent_coef: float | str = "auto_0.05",
         sac_target_entropy: float | str = "auto_0.1",
         mat_encoder_transformer_ff_hidden_dims: Sequence[int] | None = None,
+        actor_head_kind: TMASACActorHeadKind = TMASACActorHeadKind.INDEPENDENT,
 ) -> None:
     run_mjw_wall_experiment(
         num_envs=1024,
@@ -50,4 +52,5 @@ def run_experiment(
         sac_ent_coef=sac_ent_coef,
         sac_target_entropy=sac_target_entropy,
         mat_encoder_transformer_ff_hidden_dims=mat_encoder_transformer_ff_hidden_dims,
+        tmasac_actor_head_kind=actor_head_kind,
     )

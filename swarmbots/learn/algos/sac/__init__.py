@@ -6,9 +6,11 @@ from swarmbots.learn.algos.sac.scenario_obs_encoder import (
     ScenarioObservationSpec,
     TMASACScenarioEncoderConfig,
 )
-from swarmbots.learn.algos.sac.tmasac_policy import (
+from swarmbots.learn.algos.sac.tmasac_actor_heads import (
     TMASACActorHeadConfig,
     TMASACActorHeadKind,
+)
+from swarmbots.learn.algos.sac.tmasac_policy import (
     TMASACCriticConfig,
     TMASACPolicy,
     TMASACPolicyConfig,

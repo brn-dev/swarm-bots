@@ -68,8 +68,11 @@ from swarmbots.learn.algos.sac.recurrent_tmasac_policy import (
 from swarmbots.learn.algos.sac.sac import SAC
 from swarmbots.learn.algos.sac.sac_nop import SACNOPConfig
 from swarmbots.learn.algos.sac.segment_tmasac_policy import SegmentTMASACPolicy
-from swarmbots.learn.algos.sac.tmasac_policy import (
+from swarmbots.learn.algos.sac.tmasac_actor_heads import (
     TMASACActorHeadConfig,
+    TMASACActorHeadKind,
+)
+from swarmbots.learn.algos.sac.tmasac_policy import (
     TMASACCriticConfig,
     TMASACPolicy,
     TMASACPolicyConfig,
@@ -565,6 +568,7 @@ def run_experiment(
         rmat_actor_transformer_ff_hidden_dims: Sequence[int] | None = None,
         rmat_actor_inter_module_mlp: bool = False,
         r_tmasac_actor_state_critic_input_config: ActorStateCriticInputConfig | None = None,
+        tmasac_actor_head_kind: TMASACActorHeadKind | str = TMASACActorHeadKind.INDEPENDENT,
         tmasac_separate_observation_action_encoders: bool = False,
         use_nop: bool = True,
         nop_add_agent_embeddings_transition_model: bool = False,
@@ -887,6 +891,7 @@ def run_experiment(
         rmat_actor_transformer_ff_hidden_dims=rmat_actor_transformer_ff_hidden_dims,
         rmat_actor_inter_module_mlp=rmat_actor_inter_module_mlp,
         r_tmasac_actor_state_critic_input_config=r_tmasac_actor_state_critic_input_config,
+        tmasac_actor_head_kind=tmasac_actor_head_kind,
         tmasac_separate_observation_action_encoders=tmasac_separate_observation_action_encoders,
         obs_indices=obs_indices,
         rmat_temporal_model_cls=rmat_temporal_model_cls,
@@ -1219,6 +1224,11 @@ def run_experiment(
             else list(rmat_actor_transformer_ff_hidden_dims)
         ),
         "rmat_actor_inter_module_mlp": rmat_actor_inter_module_mlp,
+        "tmasac_actor_head_kind": (
+            tmasac_actor_head_kind.value
+            if isinstance(tmasac_actor_head_kind, TMASACActorHeadKind)
+            else tmasac_actor_head_kind
+        ),
         "mat_add_agent_embeddings": mat_add_agent_embeddings,
         "mat_decoder_self_attention_mode": mat_decoder_self_attention_mode_metadata,
         "mat_qcc_tie_query_context_and_context_self_attention": (
@@ -1454,6 +1464,7 @@ def _make_base_policy(
         rmat_actor_transformer_ff_hidden_dims: Sequence[int] | None = None,
         rmat_actor_inter_module_mlp: bool = False,
         r_tmasac_actor_state_critic_input_config: ActorStateCriticInputConfig | None = None,
+        tmasac_actor_head_kind: TMASACActorHeadKind | str = TMASACActorHeadKind.INDEPENDENT,
         tmasac_separate_observation_action_encoders: bool = False,
         obs_indices: ObsIndices | None = None,
         mat_qcc_tie_query_context_and_context_self_attention: bool = True,
@@ -1583,9 +1594,28 @@ def _make_base_policy(
             ),
             "critic_encoder_config": mat_encoder_config,
             "actor_head_config": TMASACActorHeadConfig(
+                kind=tmasac_actor_head_kind,
                 hidden_dims=[dec_d_model],
                 normalize_input=mat_normalization.normalize_actor_head_input,
                 init_gain=mat_init_gains.actor_head,
+                qcx_decoder_config=MATQCXDecoderConfig(
+                    d_model=dec_d_model,
+                    nhead=dec_nhead,
+                    num_layers=2,
+                    dim_feedforward=dec_d_model * 2,
+                    token_encoder_init_gain=mat_init_gains.decoder_token_encoder,
+                    token_encoder_projection_init_gain=mat_init_gains.decoder_token_encoder_projection,
+                    transformer_ff_init_gain=mat_init_gains.decoder_transformer_ff,
+                    context_encoder_hidden_dims=[dec_d_model],
+                    action_encoder_dims=[dec_d_model, dec_d_model],
+                    memory_dims=None,
+                    normalize_context_input=mat_normalization.normalize_context_input,
+                    normalize_action_input=mat_normalization.normalize_action_input,
+                    normalize_memory_input=mat_normalization.normalize_memory_input,
+                    normalize_action_tokens=mat_normalization.normalize_action_tokens,
+                    normalize_memory_tokens=mat_normalization.normalize_memory_tokens,
+                    assume_agent_mask_is_active_prefix=assume_agent_mask_is_active_prefix,
+                ),
             ),
             "critic_config": TMASACCriticConfig(
                 n_local_projection_hidden_layers=2,

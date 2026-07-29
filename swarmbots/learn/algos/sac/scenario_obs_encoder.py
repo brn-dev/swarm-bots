@@ -192,7 +192,7 @@ class ScenarioFieldEncoder(nn.Module):
             )
         if scenario_ids.dtype != torch.long:
             raise ValueError(f"Expected scenario_ids dtype torch.long, got {scenario_ids.dtype}.")
-        torch._assert(
+        torch._assert_async(
             torch.all((scenario_ids >= 0) & (scenario_ids < self.num_scenarios)),
             f"scenario_ids must be in [0, {self.num_scenarios}).",
         )

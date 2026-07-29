@@ -241,7 +241,7 @@ class MultiScenarioVectorEnv(VectorEnv):
         first_env = self.envs[0]
         if not isinstance(first_env.single_observation_space, spaces.Dict):
             raise ValueError("Scenario environments must expose Dict single_observation_space values.")
-        if "scenario_id" in first_env.single_observation_space:
+        if "scenario_id" in first_env.single_observation_space.spaces:
             raise ValueError(
                 "scenario_id is reserved for MultiScenarioVectorEnv and must not be provided by child envs."
             )
@@ -266,7 +266,7 @@ class MultiScenarioVectorEnv(VectorEnv):
                 "hidden_local_vars",
                 "hidden_global_vars",
             ):
-                if key not in env.single_observation_space:
+                if key not in env.single_observation_space.spaces:
                     raise ValueError(
                         f"Scenario {scenario_name!r} observation space is missing {key!r}."
                     )
@@ -286,12 +286,12 @@ class MultiScenarioVectorEnv(VectorEnv):
                 raise ValueError("All scenarios must use the same local observation space.")
             env_agent_mask_space = (
                 env.single_observation_space["agent_mask"]
-                if "agent_mask" in env.single_observation_space
+                if "agent_mask" in env.single_observation_space.spaces
                 else None
             )
             first_agent_mask_space = (
                 first_env.single_observation_space["agent_mask"]
-                if "agent_mask" in first_env.single_observation_space
+                if "agent_mask" in first_env.single_observation_space.spaces
                 else None
             )
             if env_agent_mask_space != first_agent_mask_space:
