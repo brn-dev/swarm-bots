@@ -48,12 +48,16 @@ class RMATEncoderLayer(nn.Module):
         super().__init__()
         self.d_model = config.d_model
         self.temporal_model_order = config.temporal_model_order
-        self.self_attn = nn.MultiheadAttention(
-            config.d_model,
-            config.nhead,
-            dropout=config.dropout,
-            bias=config.bias,
-            batch_first=True,
+        self.self_attn: nn.MultiheadAttention | None = (
+            nn.MultiheadAttention(
+                config.d_model,
+                config.nhead,
+                dropout=config.dropout,
+                bias=config.bias,
+                batch_first=True,
+            )
+            if config.use_agent_attention
+            else None
         )
         temporal_model_cls = _resolve_per_layer_value(
             config.temporal_model_cls,
@@ -135,7 +139,7 @@ class RMATEncoderLayer(nn.Module):
         self.temporal_residual = config.temporal_residual
         self.temporal_layer_norm = config.temporal_layer_norm
         self.norm_first = config.norm_first
-        if config.transformer_ff_init_gain is not None:
+        if config.transformer_ff_init_gain is not None and self.self_attn is not None:
             reinitialize_multihead_attention(self.self_attn)
 
         if self.temporal_model_order not in {"temporal_first", "inter_agent_attention_first"}:
@@ -238,20 +242,23 @@ class RMATEncoderLayer(nn.Module):
             valid_agent_time_mask: torch.Tensor | None,
     ) -> torch.Tensor:
         attention_inputs = self.attention_norm(embeddings) if self.norm_first else embeddings
-        batch_size, sequence_length, n_agents, hidden_dim = attention_inputs.shape
-        flat_attention_inputs = attention_inputs.reshape(batch_size * sequence_length, n_agents, hidden_dim)
-        flat_agent_mask = (
-            None
-            if agent_mask is None
-            else agent_mask.reshape(batch_size * sequence_length, n_agents)
-        )
-        attention_outputs = self.self_attn(
-            flat_attention_inputs,
-            flat_attention_inputs,
-            flat_attention_inputs,
-            key_padding_mask=None if flat_agent_mask is None else ~flat_agent_mask,
-            need_weights=False,
-        )[0].reshape(batch_size, sequence_length, n_agents, hidden_dim)
+        if self.self_attn is None:
+            attention_outputs = torch.zeros_like(attention_inputs)
+        else:
+            batch_size, sequence_length, n_agents, hidden_dim = attention_inputs.shape
+            flat_attention_inputs = attention_inputs.reshape(batch_size * sequence_length, n_agents, hidden_dim)
+            flat_agent_mask = (
+                None
+                if agent_mask is None
+                else agent_mask.reshape(batch_size * sequence_length, n_agents)
+            )
+            attention_outputs = self.self_attn(
+                flat_attention_inputs,
+                flat_attention_inputs,
+                flat_attention_inputs,
+                key_padding_mask=None if flat_agent_mask is None else ~flat_agent_mask,
+                need_weights=False,
+            )[0].reshape(batch_size, sequence_length, n_agents, hidden_dim)
 
         if self.norm_first:
             outputs = embeddings + self.attention_dropout(attention_outputs)

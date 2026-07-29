@@ -11,6 +11,7 @@ _docs
 uv.lock
 .ref/flashrnn-main
 .uv-cache/
+/.tmp/
 .tmp_tests/
 .test-tmp/
 .torchinductor/

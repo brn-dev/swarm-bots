@@ -2,7 +2,7 @@ import unittest
 from collections.abc import Callable
 from dataclasses import replace
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import torch
 from gymnasium import spaces
@@ -24,6 +24,7 @@ from swarmbots.learn.action_dists.reparameterized_squashed_gaussian_mixture_acti
 )
 from swarmbots.learn.action_dists.squashed_diag_gaussian_action_dist import SquashedDiagGaussianConfig
 from swarmbots.learn.algos.mat.mat_encoder import MATEncoderConfig
+from swarmbots.learn.algos.mat_qcx.mat_qcx_decoder import MATQCXDecoderConfig
 from swarmbots.learn.algos.off_policy.replay_buffer import OffPolicyReplayBatch, OffPolicyReplayEpisodeSegmentBatch
 from swarmbots.learn.algos.sac import (
     SACNOPConfig,
@@ -31,12 +32,14 @@ from swarmbots.learn.algos.sac import (
     ScenarioFieldEncoderConfig,
     ScenarioObservationSpec,
     TMASACActorHeadConfig,
+    TMASACActorHeadKind,
     TMASACCriticConfig,
     TMASACPolicy,
     TMASACPolicyConfig,
     TMASACScenarioEncoderConfig,
 )
 from swarmbots.learn.algos.sac.scenario_obs_encoder import TMASACScenarioObservationEncoder
+from swarmbots.learn.algos.sac.tmasac_actor_heads import TMASACQCXActorHead
 from swarmbots.learn.algos.world_modeling.next_obs_pred_mixin import NextObsPredConfig
 from swarmbots.learn.hybrid_action_space import HybridActionSpace
 
@@ -118,13 +121,24 @@ def _make_config(
         independent_critic_encoders: bool = False,
         separate_observation_action_encoders: bool = False,
         action_encoder_dim: int | None = None,
+        actor_head_kind: TMASACActorHeadKind | str = TMASACActorHeadKind.INDEPENDENT,
 ) -> TMASACPolicyConfig:
     return TMASACPolicyConfig(
         actor_encoder_config=_small_encoder_config(),
         critic_encoder_config=_small_encoder_config(),
         shared_encoder_config=shared_encoder_config,
         share_observation_encoder=share_observation_encoder,
-        actor_head_config=TMASACActorHeadConfig(hidden_dims=[10]),
+        actor_head_config=TMASACActorHeadConfig(
+            kind=actor_head_kind,
+            hidden_dims=[10],
+            qcx_decoder_config=MATQCXDecoderConfig(
+                d_model=12,
+                nhead=3,
+                num_layers=1,
+                dim_feedforward=24,
+                assume_agent_mask_is_active_prefix=False,
+            ),
+        ),
         critic_config=TMASACCriticConfig(
             n_local_projection_hidden_layers=1,
             n_value_regressor_hidden_layers=1,
@@ -266,6 +280,285 @@ class _RecordingTransitionModel(torch.nn.Module):
 
 
 class TMASACPolicyTests(unittest.TestCase):
+    def test_independent_actor_is_the_default_and_keeps_agent_attention(self) -> None:
+        policy = TMASACPolicy(env=_DummyContinuousEnv(), config=_make_config())
+
+        self.assertIs(policy.actor_head_kind, TMASACActorHeadKind.INDEPENDENT)
+        self.assertTrue(all(layer.self_attn is not None for layer in policy.actor_encoder.layers))
+
+    def test_policy_delegates_action_generation_to_every_actor_head(self) -> None:
+        env = _DummyContinuousEnv()
+        batch = _make_batch(batch_size=2)
+        expected_actions = torch.randn(
+            2,
+            env.n_agents,
+            env.action_space.total_agent_action_dim,
+        )
+        expected_log_probs = torch.randn(2, env.n_agents)
+
+        for actor_head_kind in TMASACActorHeadKind:
+            with self.subTest(actor_head_kind=actor_head_kind):
+                policy = TMASACPolicy(
+                    env=env,
+                    config=_make_config(actor_head_kind=actor_head_kind),
+                )
+                generate_actions = Mock(
+                    return_value=(expected_actions, expected_log_probs)
+                )
+                policy.actor_head.actions_and_log_probs = generate_actions
+
+                actions, log_probs = policy.action_log_prob(
+                    local_obs=batch.local_obs,
+                    global_obs=batch.global_obs,
+                    agent_mask=batch.agent_mask,
+                    deterministic=True,
+                    use_rsample=False,
+                )
+
+                self.assertIs(actions, expected_actions)
+                self.assertIs(log_probs, expected_log_probs)
+                generate_actions.assert_called_once()
+                call_kwargs = generate_actions.call_args.kwargs
+                self.assertEqual(
+                    tuple(call_kwargs["actor_latents"].shape),
+                    (2, env.n_agents, policy.actor_encoder_config.d_model),
+                )
+                self.assertIs(call_kwargs["action_dist"], policy.action_dist)
+                self.assertIs(call_kwargs["agent_mask"], batch.agent_mask)
+                self.assertIsNone(call_kwargs["previous_actions"])
+                self.assertTrue(call_kwargs["deterministic"])
+                self.assertFalse(call_kwargs["use_rsample"])
+
+    def test_decentralized_actor_removes_only_agent_attention(self) -> None:
+        torch.manual_seed(0)
+        policy = TMASACPolicy(
+            env=_DummyContinuousEnv(),
+            config=_make_config(actor_head_kind=TMASACActorHeadKind.DECENTRALIZED),
+        )
+        batch = _make_batch(batch_size=1)
+        changed_local_obs = batch.local_obs.clone()
+        changed_local_obs[:, 1:, :] += 100.0
+
+        original_latents = policy.encode_actor(
+            local_obs=batch.local_obs,
+            global_obs=batch.global_obs,
+            agent_mask=batch.agent_mask,
+        )
+        changed_latents = policy.encode_actor(
+            local_obs=changed_local_obs,
+            global_obs=batch.global_obs,
+            agent_mask=batch.agent_mask,
+        )
+
+        self.assertFalse(policy.actor_encoder_config.use_agent_attention)
+        self.assertTrue(all(layer.self_attn is None for layer in policy.actor_encoder.layers))
+        self.assertTrue(all(len(layer._feedforward_linear_layers()) == 2 for layer in policy.actor_encoder.layers))
+        self.assertTrue(all(isinstance(layer.norm2, torch.nn.LayerNorm) for layer in policy.actor_encoder.layers))
+        torch.testing.assert_close(original_latents[:, 0], changed_latents[:, 0])
+        self.assertFalse(torch.allclose(original_latents[:, 1:], changed_latents[:, 1:]))
+
+    def test_decentralized_actor_rejects_shared_agent_attention(self) -> None:
+        with self.assertRaisesRegex(ValueError, "cannot share an observation encoder"):
+            TMASACPolicy(
+                env=_DummyContinuousEnv(),
+                config=_make_config(
+                    actor_head_kind=TMASACActorHeadKind.DECENTRALIZED,
+                    shared_encoder_config=_small_encoder_config(),
+                ),
+            )
+
+    def test_qcx_actor_latents_depend_only_on_previous_agent_actions(self) -> None:
+        torch.manual_seed(0)
+        policy = TMASACPolicy(
+            env=_DummyContinuousEnv(),
+            config=_make_config(actor_head_kind=TMASACActorHeadKind.QCX),
+        )
+        batch = _make_batch(batch_size=1)
+        actor_latents = policy.encode_actor(
+            local_obs=batch.local_obs,
+            global_obs=batch.global_obs,
+            agent_mask=batch.agent_mask,
+        )
+        actor_head = policy.actor_head
+        assert isinstance(actor_head, TMASACQCXActorHead)
+        base_actions = torch.zeros(
+            1,
+            policy.n_agents,
+            policy.agent_action_dim,
+        )
+
+        base_outputs = actor_head(actor_latents, base_actions, batch.agent_mask)
+        changed_first_action = base_actions.clone()
+        changed_first_action[:, 0, :] = 1.0
+        first_changed_outputs = actor_head(actor_latents, changed_first_action, batch.agent_mask)
+        changed_second_action = base_actions.clone()
+        changed_second_action[:, 1, :] = 1.0
+        second_changed_outputs = actor_head(actor_latents, changed_second_action, batch.agent_mask)
+
+        torch.testing.assert_close(base_outputs[:, 0], first_changed_outputs[:, 0])
+        self.assertFalse(torch.allclose(base_outputs[:, 1:], first_changed_outputs[:, 1:]))
+        torch.testing.assert_close(base_outputs[:, :2], second_changed_outputs[:, :2])
+        self.assertFalse(torch.allclose(base_outputs[:, 2], second_changed_outputs[:, 2]))
+
+    def test_qcx_actor_samples_autoregressively_with_arbitrary_agent_masks(self) -> None:
+        torch.manual_seed(0)
+        env = _DummyContinuousEnv()
+        policy = TMASACPolicy(
+            env=env,
+            config=_make_config(actor_head_kind=TMASACActorHeadKind.QCX),
+        )
+        batch = _make_batch(batch_size=2)
+        agent_mask = torch.tensor(
+            [[True, False, True], [False, True, True]],
+            dtype=torch.bool,
+        )
+
+        actions, log_probs = policy.action_log_prob(
+            local_obs=batch.local_obs,
+            global_obs=batch.global_obs,
+            agent_mask=agent_mask,
+            deterministic=False,
+        )
+
+        self.assertEqual(tuple(actions.shape), (2, env.n_agents, env.action_space.total_agent_action_dim))
+        self.assertEqual(tuple(log_probs.shape), (2, env.n_agents))
+        self.assertTrue(torch.isfinite(actions).all())
+        self.assertTrue(torch.isfinite(log_probs).all())
+        self.assertTrue(torch.equal(actions[~agent_mask], torch.zeros_like(actions[~agent_mask])))
+        self.assertTrue(torch.equal(log_probs[~agent_mask], torch.zeros_like(log_probs[~agent_mask])))
+        for distribution in policy.action_dist.distributions:
+            self.assertEqual(tuple(distribution.distribution.mean.shape[:-1]), (2, env.n_agents))
+
+    def test_qcx_actor_excludes_inactive_agents_from_active_actions(self) -> None:
+        torch.manual_seed(0)
+        policy = TMASACPolicy(
+            env=_DummyContinuousEnv(),
+            config=_make_config(actor_head_kind=TMASACActorHeadKind.QCX),
+        )
+        batch = _make_batch(batch_size=1)
+        agent_mask = torch.tensor([[True, False, True]], dtype=torch.bool)
+        changed_local_obs = batch.local_obs.clone()
+        changed_local_obs[:, 1, :] += 100.0
+        call_kwargs = {
+            "global_obs": batch.global_obs,
+            "agent_mask": agent_mask,
+            "deterministic": True,
+            "use_rsample": False,
+        }
+
+        original_actions, original_log_probs = policy.action_log_prob(
+            local_obs=batch.local_obs,
+            **call_kwargs,
+        )
+        changed_actions, changed_log_probs = policy.action_log_prob(
+            local_obs=changed_local_obs,
+            **call_kwargs,
+        )
+
+        torch.testing.assert_close(original_actions[:, [0, 2]], changed_actions[:, [0, 2]])
+        torch.testing.assert_close(original_log_probs[:, [0, 2]], changed_log_probs[:, [0, 2]])
+        self.assertTrue(torch.equal(original_actions[:, 1], torch.zeros_like(original_actions[:, 1])))
+        self.assertTrue(torch.equal(original_log_probs[:, 1], torch.zeros_like(original_log_probs[:, 1])))
+
+    def test_qcx_actor_gradients_reach_every_actor_head_stage(self) -> None:
+        torch.manual_seed(0)
+        policy = TMASACPolicy(
+            env=_DummyContinuousEnv(),
+            config=_make_config(actor_head_kind=TMASACActorHeadKind.QCX),
+        )
+        batch = _make_batch()
+
+        actions, log_probs = policy.action_log_prob(
+            local_obs=batch.local_obs,
+            global_obs=batch.global_obs,
+            agent_mask=batch.agent_mask,
+            deterministic=False,
+            use_rsample=True,
+        )
+        (actions.square().mean() + log_probs.square().mean()).backward()
+
+        actor_head = policy.actor_head
+        assert isinstance(actor_head, TMASACQCXActorHead)
+        for module_name, module in (
+            ("action_encoder", actor_head.action_encoder),
+            ("decoder", actor_head.decoder),
+            ("output_head", actor_head.output_head),
+        ):
+            gradients = [
+                parameter.grad
+                for parameter in module.parameters()
+                if parameter.requires_grad
+            ]
+            self.assertTrue(gradients, msg=f"{module_name} has no trainable parameters")
+            self.assertTrue(
+                all(gradient is not None and torch.isfinite(gradient).all() for gradient in gradients),
+                msg=f"{module_name} has missing or non-finite gradients",
+            )
+            self.assertTrue(
+                any(torch.count_nonzero(gradient).item() > 0 for gradient in gradients if gradient is not None),
+                msg=f"{module_name} has only zero gradients",
+            )
+
+    def test_qcx_actor_restores_full_distribution_state_for_auxiliary_losses(self) -> None:
+        torch.manual_seed(0)
+        env = _DummyContinuousEnv()
+        policy = TMASACPolicy(
+            env=env,
+            config=_make_config(
+                actor_head_kind=TMASACActorHeadKind.QCX,
+                continuous_config=PredictedStdConfig(
+                    base_std=0.5,
+                    ent_loss_coef=0.1,
+                ),
+            ),
+        )
+        batch = _make_batch()
+
+        actions, log_probs = policy.action_log_prob(
+            local_obs=batch.local_obs,
+            global_obs=batch.global_obs,
+            agent_mask=batch.agent_mask,
+            deterministic=False,
+            use_rsample=True,
+        )
+        extra_losses = policy.action_dist.compute_extra_losses_without_metrics(
+            agent_mask=batch.agent_mask,
+        )
+
+        self.assertTrue(extra_losses)
+        for distribution in policy.action_dist.distributions:
+            self.assertEqual(
+                tuple(distribution.distribution.mean.shape[:-1]),
+                (batch.local_obs.shape[0], env.n_agents),
+            )
+        total_loss = (
+            actions.square().mean()
+            + log_probs.square().mean()
+            + torch.stack(tuple(extra_losses.values())).sum()
+        )
+        total_loss.backward()
+        self.assertTrue(
+            any(
+                parameter.grad is not None
+                and torch.isfinite(parameter.grad).all()
+                and torch.count_nonzero(parameter.grad).item() > 0
+                for parameter in policy.actor_head.parameters()
+            )
+        )
+
+    def test_actor_head_kind_normalizes_strings_and_rejects_unknown_values(self) -> None:
+        policy = TMASACPolicy(
+            env=_DummyContinuousEnv(),
+            config=_make_config(actor_head_kind="QCX"),
+        )
+
+        self.assertIs(policy.actor_head_kind, TMASACActorHeadKind.QCX)
+        with self.assertRaisesRegex(ValueError, "Unknown TMASAC actor head kind"):
+            TMASACPolicy(
+                env=_DummyContinuousEnv(),
+                config=_make_config(actor_head_kind="centralized"),
+            )
+
     def test_scenario_input_normalization_preserves_single_feature_values(self) -> None:
         scenario_config = TMASACScenarioEncoderConfig(
             scenarios=(
@@ -663,9 +956,79 @@ class TMASACPolicyTests(unittest.TestCase):
                 finally:
                     torch._dynamo.reset()
 
+    def test_full_graph_qcx_actor_matches_eager_forward_and_gradients(self) -> None:
+        torch._dynamo.reset()
+        try:
+            self._assert_full_graph_actor_matches_eager(
+                PredictedStdConfig(base_std=0.5, ent_loss_coef=0.1),
+                actor_head_kind=TMASACActorHeadKind.QCX,
+            )
+        finally:
+            torch._dynamo.reset()
+
+    def test_shared_encoder_qcx_compiles_autoregressive_actor_tail(self) -> None:
+        compiled_graphs: list[torch.fx.GraphModule] = []
+        compiled_function_names: list[str] = []
+
+        def eager_backend(
+                graph_module: torch.fx.GraphModule,
+                _example_inputs: list[torch.Tensor],
+                **_kwargs: Any,
+        ) -> Callable[..., Any]:
+            compiled_graphs.append(graph_module)
+            return graph_module.forward
+
+        def compile_with_eager_backend(
+                function: Callable[..., Any],
+                **kwargs: Any,
+        ) -> Callable[..., Any]:
+            compiled_function_names.append(getattr(function, "__name__", type(function).__name__))
+            return _REAL_TORCH_COMPILE(function, backend=eager_backend, **kwargs)
+
+        config = _make_config(
+            shared_encoder_config=_small_encoder_config(),
+            actor_head_kind=TMASACActorHeadKind.QCX,
+        )
+        torch.manual_seed(123)
+        eager_policy = TMASACPolicy(env=_DummyContinuousEnv(), config=config)
+        torch.manual_seed(123)
+        with patch(
+                "swarmbots.learn.algos.sac.tmasac_policy.torch.compile",
+                side_effect=compile_with_eager_backend,
+        ):
+            compiled_policy = TMASACPolicy(
+                env=_DummyContinuousEnv(),
+                config=replace(config, compile_modules=True),
+            )
+
+        self.assertIsNone(compiled_policy._compiled_action_log_prob)
+        self.assertIsNotNone(compiled_policy._compiled_actor_actions_and_log_probs)
+        self.assertIn("_actor_actions_and_log_probs_impl", compiled_function_names)
+
+        batch = _make_batch()
+        call_kwargs = {
+            "local_obs": batch.local_obs,
+            "global_obs": batch.global_obs,
+            "agent_mask": batch.agent_mask,
+            "deterministic": True,
+            "use_rsample": False,
+        }
+        eager_outputs = eager_policy.action_log_prob(**call_kwargs)
+        compiled_outputs = compiled_policy.action_log_prob(**call_kwargs)
+
+        for compiled_output, eager_output in zip(compiled_outputs, eager_outputs, strict=True):
+            torch.testing.assert_close(compiled_output, eager_output)
+        graph_count = len(compiled_graphs)
+        self.assertGreaterEqual(graph_count, 3)
+
+        compiled_policy.action_log_prob(**call_kwargs)
+        self.assertEqual(len(compiled_graphs), graph_count)
+
     def _assert_full_graph_actor_matches_eager(
             self,
             continuous_config: ContinuousActionDistConfig,
+            *,
+            actor_head_kind: TMASACActorHeadKind = TMASACActorHeadKind.INDEPENDENT,
     ) -> None:
         compiled_graphs: list[torch.fx.GraphModule] = []
         actor_compile_options: list[dict[str, Any]] = []
@@ -688,6 +1051,7 @@ class TMASACPolicyTests(unittest.TestCase):
 
         eager_config = _make_config(
             continuous_config=continuous_config,
+            actor_head_kind=actor_head_kind,
         )
         eager_policy = TMASACPolicy(env=_DummyContinuousEnv(), config=eager_config)
         with patch(

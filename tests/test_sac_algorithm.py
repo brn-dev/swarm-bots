@@ -1,8 +1,10 @@
 import math
 import tempfile
 import unittest
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import replace
+from pathlib import Path
 from typing import Any
 from unittest.mock import Mock, patch
 
@@ -63,6 +65,16 @@ def _summary_mean(value: object) -> float:
     assert isinstance(value, SummaryStatistics)
     assert isinstance(value.mean, float)
     return value.mean
+
+
+@contextmanager
+def _temporary_checkpoint_path() -> Iterator[str]:
+    with tempfile.NamedTemporaryFile(suffix=".pt", delete=False) as checkpoint_file:
+        checkpoint_path = checkpoint_file.name
+    try:
+        yield checkpoint_path
+    finally:
+        Path(checkpoint_path).unlink(missing_ok=True)
 
 
 def _make_env(*, max_steps: int = 20) -> SwarmBotsLearnEnvWrapper:
@@ -820,6 +832,42 @@ class SACTests(unittest.TestCase):
         finally:
             env.close()
 
+    def test_target_network_updates_follow_global_update_cadence_and_tau(self) -> None:
+        env = _make_env()
+        try:
+            policy = _make_policy(env)
+            algo = SAC(
+                policy=policy,
+                env=env,
+                learning_rate=1e-3,
+                buffer_capacity_per_env=8,
+                learning_starts=0,
+                batch_size=1,
+                rollout_steps_per_iteration=1,
+                gradient_steps=1,
+                tau=0.25,
+                target_update_interval=2,
+                train_device="cpu",
+                rollout_device="cpu",
+                replay_storage_device="cpu",
+            )
+            episode_return_ema = ExponentialMovingAverage(alpha=0.1)
+            episode_success_rate_ema = ExponentialMovingAverage(alpha=0.1)
+
+            with patch.object(policy, "polyak_update_targets") as update_targets:
+                for _ in range(3):
+                    algo.perform_iteration(
+                        episode_return_ema,
+                        episode_success_rate_ema,
+                        update_ema=False,
+                    )
+
+            self.assertEqual(algo.n_total_updates, 3)
+            self.assertEqual(update_targets.call_count, 2)
+            self.assertTrue(all(call_args.args == (0.25,) for call_args in update_targets.call_args_list))
+        finally:
+            env.close()
+
     def test_learning_starts_collects_random_actions_and_skips_training(self) -> None:
         env = _make_env()
         try:
@@ -979,8 +1027,7 @@ class SACTests(unittest.TestCase):
                 update_ema=False,
             )
 
-            with tempfile.TemporaryDirectory() as temp_dir:
-                checkpoint_path = f"{temp_dir}/sac.pt"
+            with _temporary_checkpoint_path() as checkpoint_path:
                 source.save(checkpoint_path)
                 restored = SAC(policy=_make_policy(restored_env), env=restored_env, **common_kwargs)
                 restored.load(checkpoint_path)
@@ -1099,8 +1146,7 @@ class SACTests(unittest.TestCase):
                 **common_kwargs,
             )
 
-            with tempfile.TemporaryDirectory() as temp_dir:
-                checkpoint_path = f"{temp_dir}/sac.pt"
+            with _temporary_checkpoint_path() as checkpoint_path:
                 source.save(
                     checkpoint_path,
                     optimizer_state_dict=source._get_optimizer_state_dict(),
