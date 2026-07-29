@@ -292,12 +292,14 @@ class DelegatingPPOPolicyTemporalStateMixin:
             hidden_local_vars: torch.Tensor | None = None,
             hidden_global_vars: torch.Tensor | None = None,
             agent_mask: torch.Tensor | None = None,
+            scenario_ids: torch.Tensor | None = None,
             previous_actions: torch.Tensor | None = None,
             deterministic: bool = False,
             *,
             temporal_state: Any = None,
             episode_start_mask: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, Any]:
+        _ = scenario_ids
         return self.policy.act_with_temporal_state(
             local_obs=local_obs,
             global_obs=global_obs,

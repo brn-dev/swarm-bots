@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import deque
 from concurrent.futures import Future, ThreadPoolExecutor
+from dataclasses import dataclass
 import math
 from pathlib import Path
 from typing import Any
@@ -61,6 +62,17 @@ def _mask_info_values(info_value: Any, unstable_mask: torch.Tensor) -> None:
             _mask_info_values(nested_value, unstable_mask)
         return
     info_value[unstable_mask] = 0.0
+
+
+@dataclass(slots=True)
+class _PendingMJWStep:
+    obs: dict[str, torch.Tensor]
+    rewards: torch.Tensor
+    terminations: torch.Tensor
+    truncations: torch.Tensor
+    infos: dict[str, Any]
+    dones: torch.Tensor
+    check_nefc_overflow: bool
 
 
 def _capture_step_graph(model: Any, data: Any, nstep: int) -> Any | None:
@@ -175,6 +187,7 @@ class _SettledResetSnapshotBuffer:
 
 class MJWSwarmBotsVectorEnv(VectorEnv):
     metadata = {"autoreset_mode": AutoresetMode.SAME_STEP, "render_modes": []}
+    supports_per_env_reset_seeds = False
 
     def __init__(
         self,
@@ -512,6 +525,24 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
         self._nefc_overflow_notification_checked = False
         self._max_nefc_since_overflow_check = torch.zeros((), device=self.device, dtype=self._nefc.dtype)
         self._steps_since_nefc_overflow_check = 0
+        self._pending_step: _PendingMJWStep | None = None
+        self._step_status_host = torch.empty(
+            self.num_envs + 1,
+            device="cpu",
+            dtype=torch.bool,
+            pin_memory=self.device.type == "cuda",
+        )
+        self._step_status_ready = (
+            torch.cuda.Event()
+            if self.device.type == "cuda"
+            else None
+        )
+        self._nefc_overflow_host = torch.empty(
+            (),
+            device="cpu",
+            dtype=self._max_nefc_since_overflow_check.dtype,
+            pin_memory=self.device.type == "cuda",
+        )
         if self._use_settled_resets:
             resolved_buffer_size = (
                 self.num_envs // 32
@@ -578,6 +609,8 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
         seed: int | None = None,
         options: dict[str, Any] | None = None,
     ) -> tuple[dict[str, torch.Tensor], dict[str, Any]]:
+        if self._pending_step is not None:
+            raise RuntimeError("reset() called while an MJW step is pending.")
         if seed is not None:
             if self._settled_reset_buffer is not None:
                 self._settled_reset_buffer.clear(wait=True)
@@ -602,6 +635,8 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
         return self._build_obs(), {}
 
     def close(self) -> None:
+        if self._pending_step is not None:
+            self.end_step()
         if hasattr(self, "_max_nefc_since_overflow_check"):
             self._maybe_notify_nefc_overflow()
         self._live_episode_recorder.close()
@@ -617,6 +652,21 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
         self,
         actions: dict[str, torch.Tensor],
     ) -> tuple[dict[str, torch.Tensor], torch.Tensor, torch.Tensor, torch.Tensor, dict[str, Any]]:
+        self.begin_step(actions)
+        return self.end_step()
+
+    @property
+    def supports_deferred_step(self) -> bool:
+        return self.device.type == "cuda"
+
+    @property
+    def has_pending_step(self) -> bool:
+        return self._pending_step is not None
+
+    def begin_step(self, actions: dict[str, torch.Tensor]) -> None:
+        if self._pending_step is not None:
+            raise RuntimeError("begin_step() called while another MJW step is pending.")
+
         actuators = torch.as_tensor(actions["actuators"], device=self.device, dtype=torch.float32)
         if self._continuous_connector_actions:
             connectors = torch.as_tensor(actions["connectors"], device=self.device, dtype=torch.float32)
@@ -634,8 +684,10 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
         self._run_physics()
         self._update_max_nefc_since_overflow_check()
         self._steps_since_nefc_overflow_check += 1
-        if self._steps_since_nefc_overflow_check >= self._nefc_overflow_check_interval_steps:
-            self._maybe_notify_nefc_overflow()
+        check_nefc_overflow = (
+            self._steps_since_nefc_overflow_check
+            >= self._nefc_overflow_check_interval_steps
+        )
 
         unstable_mask = (
             ~torch.isfinite(self._qpos).all(dim=1)
@@ -683,7 +735,50 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
                     snapshots_by_world=self._capture_world_snapshots(stable_active_world_idx),
                 )
 
-        step_status = torch.cat((dones.any().unsqueeze(0), unstable_mask)).to(device="cpu")
+        step_status = torch.cat((dones.any().unsqueeze(0), unstable_mask))
+        if self._step_status_ready is None:
+            self._step_status_host.copy_(step_status)
+            if check_nefc_overflow:
+                self._nefc_overflow_host.copy_(self._max_nefc_since_overflow_check)
+        else:
+            self._step_status_host.copy_(step_status, non_blocking=True)
+            if check_nefc_overflow:
+                self._nefc_overflow_host.copy_(
+                    self._max_nefc_since_overflow_check,
+                    non_blocking=True,
+                )
+            self._step_status_ready.record(torch.cuda.current_stream(self.device))
+        self._pending_step = _PendingMJWStep(
+            obs=obs,
+            rewards=rewards,
+            terminations=terminations,
+            truncations=truncations,
+            infos=infos,
+            dones=dones,
+            check_nefc_overflow=check_nefc_overflow,
+        )
+
+    def end_step(
+        self,
+    ) -> tuple[dict[str, torch.Tensor], torch.Tensor, torch.Tensor, torch.Tensor, dict[str, Any]]:
+        pending_step = self._pending_step
+        if pending_step is None:
+            raise RuntimeError("end_step() called without a pending MJW step.")
+        if self._step_status_ready is not None:
+            self._step_status_ready.synchronize()
+        self._pending_step = None
+
+        obs = pending_step.obs
+        rewards = pending_step.rewards
+        terminations = pending_step.terminations
+        truncations = pending_step.truncations
+        infos = pending_step.infos
+        dones = pending_step.dones
+        step_status = self._step_status_host
+        if pending_step.check_nefc_overflow:
+            self._maybe_notify_nefc_overflow(
+                required_njmax=int(self._nefc_overflow_host),
+            )
         if bool(step_status[0]):
             unstable_world_indices = torch.nonzero(step_status[1:], as_tuple=True)[0].tolist()
             if unstable_world_indices:
@@ -783,11 +878,12 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
             out=self._max_nefc_since_overflow_check,
         )
 
-    def _maybe_notify_nefc_overflow(self) -> None:
+    def _maybe_notify_nefc_overflow(self, *, required_njmax: int | None = None) -> None:
         if self._nefc_overflow_notification_checked:
             return
 
-        required_njmax = int(self._max_nefc_since_overflow_check.item())
+        if required_njmax is None:
+            required_njmax = int(self._max_nefc_since_overflow_check.item())
         self._steps_since_nefc_overflow_check = 0
         if required_njmax <= self._njmax:
             self._max_nefc_since_overflow_check.zero_()
@@ -817,8 +913,6 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
         self._settled_reset_buffer.fill_async()
 
     def _reset_done_worlds(self, done_mask: torch.Tensor) -> None:
-        if not torch.any(done_mask):
-            return
         if self._use_settled_resets:
             self._reset_world_indices_with_settled_snapshots(torch.nonzero(done_mask, as_tuple=False).flatten())
         else:

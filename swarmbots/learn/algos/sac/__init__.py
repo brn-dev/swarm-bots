@@ -1,6 +1,11 @@
 from swarmbots.learn.algos.sac.base_sac_policy import BaseSACPolicy
 from swarmbots.learn.algos.sac.sac import SAC
 from swarmbots.learn.algos.sac.sac_nop import SACNOPConfig, SACNOPLatentSource
+from swarmbots.learn.algos.sac.scenario_obs_encoder import (
+    ScenarioFieldEncoderConfig,
+    ScenarioObservationSpec,
+    TMASACScenarioEncoderConfig,
+)
 from swarmbots.learn.algos.sac.tmasac_policy import (
     TMASACActorHeadConfig,
     TMASACActorHeadKind,
@@ -26,9 +31,12 @@ __all__ = [
     "SAC",
     "SACNOPConfig",
     "SACNOPLatentSource",
+    "ScenarioFieldEncoderConfig",
+    "ScenarioObservationSpec",
     "TMASACActorHeadConfig",
     "TMASACActorHeadKind",
     "TMASACCriticConfig",
     "TMASACPolicy",
     "TMASACPolicyConfig",
+    "TMASACScenarioEncoderConfig",
 ]

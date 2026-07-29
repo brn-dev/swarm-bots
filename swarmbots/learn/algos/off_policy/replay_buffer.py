@@ -37,6 +37,8 @@ class OffPolicyReplayBatch:
     next_hidden_global_vars: torch.Tensor
     next_agent_mask: MaybeTensor
     episode_start_mask: torch.Tensor | None = None
+    scenario_ids: MaybeTensor = None
+    next_scenario_ids: MaybeTensor = None
 
     @property
     def episode_ends(self) -> torch.Tensor:
@@ -68,6 +70,8 @@ class OffPolicyReplayEpisodeSegmentBatch:
     train_mask: torch.Tensor
     initial_temporal_state: Any
     burn_in_steps: int
+    scenario_ids: MaybeTensor = None
+    next_scenario_ids: MaybeTensor = None
 
     @property
     def sequence_length(self) -> int:
@@ -110,6 +114,8 @@ class OffPolicyReplayEpisodeSegmentBatch:
             episode_start_mask=(
                 None if self.episode_start_mask is None else self.episode_start_mask[:, 0]
             ),
+            scenario_ids=None if self.scenario_ids is None else self.scenario_ids[:, 0],
+            next_scenario_ids=None if self.next_scenario_ids is None else self.next_scenario_ids[:, 0],
         )
 
 
@@ -187,6 +193,7 @@ class OffPolicyReplayBuffer:
         self.global_obs_shape = tuple(observation_space["global_obs"].shape[1:])
         self.hidden_local_vars_shape = tuple(observation_space["hidden_local_vars"].shape[2:])
         self.hidden_global_vars_shape = tuple(observation_space["hidden_global_vars"].shape[1:])
+        self.has_scenario_ids = "scenario_id" in observation_space.keys()
         self.has_agent_mask = "agent_mask" in observation_space.keys() and observation_space["agent_mask"] is not None
 
         if action_space.n_envs != self.n_envs:
@@ -213,6 +220,9 @@ class OffPolicyReplayBuffer:
             (*obs_shape, *self.hidden_global_vars_shape),
             dtype=self.storage_dtype,
         )
+        self.scenario_ids: MaybeTensor = None
+        if self.has_scenario_ids:
+            self.scenario_ids = self._new_storage_tensor(obs_shape, dtype=torch.long)
         self.agent_mask: MaybeTensor = None
         if self.has_agent_mask:
             self.agent_mask = self._new_storage_tensor(
@@ -630,6 +640,15 @@ class OffPolicyReplayBuffer:
         self.global_obs[target_env_indices, obs_slots] = global_obs
         self.hidden_local_vars[target_env_indices, obs_slots] = hidden_local_vars
         self.hidden_global_vars[target_env_indices, obs_slots] = hidden_global_vars
+        if self.scenario_ids is not None:
+            scenario_ids = obs.get("scenario_id", None)
+            if scenario_ids is None:
+                raise ValueError("obs must include scenario_id because this replay buffer stores scenario IDs.")
+            self.scenario_ids[target_env_indices, obs_slots] = self._select_obs_rows_for_storage(
+                scenario_ids,
+                source_env_indices,
+                dtype=torch.long,
+            )
         if self.agent_mask is not None:
             agent_mask = obs.get("agent_mask", None)
             if agent_mask is None:
@@ -679,6 +698,17 @@ class OffPolicyReplayBuffer:
                 dtype=self.storage_dtype,
             ),
         }
+        if self.scenario_ids is not None:
+            scenario_ids = terminal_obs.get("scenario_id", None)
+            if scenario_ids is None:
+                raise ValueError(
+                    "terminal_obs must include scenario_id because this replay buffer stores scenario IDs."
+                )
+            terminal_rows["scenario_id"] = self._select_obs_rows_for_storage(
+                scenario_ids,
+                source_env_indices,
+                dtype=torch.long,
+            )
         if self.agent_mask is not None:
             agent_mask = terminal_obs.get("agent_mask", None)
             if agent_mask is None:
@@ -744,6 +774,8 @@ class OffPolicyReplayBuffer:
             next_hidden_global_vars,
             next_agent_mask,
             episode_start_mask,
+            scenario_ids,
+            next_scenario_ids,
         ) = self._tensor_operations.gather_replay_storage(
             indices,
             self._size_per_env_tensor,
@@ -755,6 +787,7 @@ class OffPolicyReplayBuffer:
             self.global_obs,
             self.hidden_local_vars,
             self.hidden_global_vars,
+            self.scenario_ids,
             self.agent_mask,
             self.actions,
             self.rewards,
@@ -774,6 +807,7 @@ class OffPolicyReplayBuffer:
             next_hidden_local_vars=next_hidden_local_vars,
             next_hidden_global_vars=next_hidden_global_vars,
             next_agent_mask=next_agent_mask,
+            next_scenario_ids=next_scenario_ids,
         )
 
         return OffPolicyReplayBatch(
@@ -798,6 +832,12 @@ class OffPolicyReplayBuffer:
             episode_start_mask=None if episode_start_mask is None else self._to_train(
                 episode_start_mask,
                 dtype=torch.bool,
+            ),
+            scenario_ids=None if scenario_ids is None else self._to_train(scenario_ids, dtype=torch.long),
+            next_scenario_ids=(
+                None
+                if next_scenario_ids is None
+                else self._to_train(next_scenario_ids, dtype=torch.long)
             ),
         )
 
@@ -869,6 +909,8 @@ class OffPolicyReplayBuffer:
             train_mask=valid_steps,
             initial_temporal_state=None,
             burn_in_steps=0,
+            scenario_ids=mask_optional_tensor(batch.scenario_ids),
+            next_scenario_ids=mask_optional_tensor(batch.next_scenario_ids),
         )
 
     def _replay_segment_candidates(
@@ -942,6 +984,8 @@ class OffPolicyReplayBuffer:
             train_mask=train_mask,
             initial_temporal_state=initial_temporal_state,
             burn_in_steps=burn_in_steps,
+            scenario_ids=reshape_optional_tensor(flat_batch.scenario_ids),
+            next_scenario_ids=reshape_optional_tensor(flat_batch.next_scenario_ids),
         )
 
     def _replace_done_next_obs_with_terminal_obs_(
@@ -955,6 +999,7 @@ class OffPolicyReplayBuffer:
             next_hidden_local_vars: torch.Tensor,
             next_hidden_global_vars: torch.Tensor,
             next_agent_mask: torch.Tensor | None,
+            next_scenario_ids: torch.Tensor | None,
     ) -> None:
         done_batch_indices = torch.nonzero(dones, as_tuple=False).flatten()
         if len(done_batch_indices) == 0:
@@ -965,6 +1010,7 @@ class OffPolicyReplayBuffer:
         terminal_hidden_local_vars: list[torch.Tensor] = []
         terminal_hidden_global_vars: list[torch.Tensor] = []
         terminal_agent_mask: list[torch.Tensor] = []
+        terminal_scenario_ids: list[torch.Tensor] = []
 
         done_entries = torch.stack((
             done_batch_indices,
@@ -983,6 +1029,8 @@ class OffPolicyReplayBuffer:
             terminal_hidden_global_vars.append(terminal_obs["hidden_global_vars"])
             if next_agent_mask is not None:
                 terminal_agent_mask.append(terminal_obs["agent_mask"])
+            if next_scenario_ids is not None:
+                terminal_scenario_ids.append(terminal_obs["scenario_id"])
 
         next_local_obs[done_batch_indices] = torch.stack(terminal_local_obs, dim=0)
         next_global_obs[done_batch_indices] = torch.stack(terminal_global_obs, dim=0)
@@ -990,6 +1038,8 @@ class OffPolicyReplayBuffer:
         next_hidden_global_vars[done_batch_indices] = torch.stack(terminal_hidden_global_vars, dim=0)
         if next_agent_mask is not None:
             next_agent_mask[done_batch_indices] = torch.stack(terminal_agent_mask, dim=0)
+        if next_scenario_ids is not None:
+            next_scenario_ids[done_batch_indices] = torch.stack(terminal_scenario_ids, dim=0)
 
     def _new_storage_tensor(self, shape: tuple[int, ...], *, dtype: torch.dtype) -> torch.Tensor:
         if self.storage_pin_memory:

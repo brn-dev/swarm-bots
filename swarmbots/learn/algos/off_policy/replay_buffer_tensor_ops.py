@@ -23,6 +23,8 @@ GatheredReplayStorage = tuple[
     torch.Tensor,
     torch.Tensor | None,
     torch.Tensor | None,
+    torch.Tensor | None,
+    torch.Tensor | None,
 ]
 
 
@@ -51,6 +53,7 @@ def _gather_replay_storage(
         global_obs: torch.Tensor,
         hidden_local_vars: torch.Tensor,
         hidden_global_vars: torch.Tensor,
+        scenario_ids: torch.Tensor | None,
         agent_mask: torch.Tensor | None,
         actions: torch.Tensor,
         rewards: torch.Tensor,
@@ -88,6 +91,8 @@ def _gather_replay_storage(
         hidden_global_vars[env_indices, next_obs_slots],
         None if agent_mask is None else agent_mask[env_indices, next_obs_slots],
         None if episode_starts is None else episode_starts[env_indices, transition_slots],
+        None if scenario_ids is None else scenario_ids[env_indices, obs_slots],
+        None if scenario_ids is None else scenario_ids[env_indices, next_obs_slots],
     )
 
 

@@ -709,6 +709,7 @@ class RecurrentTMASACPolicy(TMASACPolicy):
             hidden_local_vars: torch.Tensor | None = None,
             hidden_global_vars: torch.Tensor | None = None,
             agent_mask: torch.Tensor | None = None,
+            scenario_ids: torch.Tensor | None = None,
             previous_actions: torch.Tensor | None = None,
             deterministic: bool = False,
             *,
@@ -721,6 +722,7 @@ class RecurrentTMASACPolicy(TMASACPolicy):
             local_obs=local_obs,
             global_obs=global_obs,
             agent_mask=agent_mask,
+            scenario_ids=scenario_ids,
             previous_actions=previous_actions,
             deterministic=deterministic,
             use_rsample=False,
@@ -737,6 +739,7 @@ class RecurrentTMASACPolicy(TMASACPolicy):
             hidden_local_vars: torch.Tensor | None = None,
             hidden_global_vars: torch.Tensor | None = None,
             agent_mask: torch.Tensor | None = None,
+            scenario_ids: torch.Tensor | None = None,
             previous_actions: torch.Tensor | None = None,
             deterministic: bool = False,
             use_rsample: bool = True,
@@ -746,6 +749,7 @@ class RecurrentTMASACPolicy(TMASACPolicy):
             local_obs=local_obs,
             global_obs=global_obs,
             agent_mask=agent_mask,
+            scenario_ids=scenario_ids,
             previous_actions=previous_actions,
             deterministic=deterministic,
             use_rsample=use_rsample,
@@ -759,8 +763,9 @@ class RecurrentTMASACPolicy(TMASACPolicy):
             local_obs: torch.Tensor,
             global_obs: torch.Tensor,
             agent_mask: torch.Tensor | None,
+            scenario_ids: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        _ = local_obs, global_obs, agent_mask
+        _ = local_obs, global_obs, agent_mask, scenario_ids
         raise NotImplementedError(
             "RecurrentTMASACPolicy does not support state-free actor encoding; "
             "use encode_actor_sequence with an explicit recurrent state."
@@ -772,6 +777,7 @@ class RecurrentTMASACPolicy(TMASACPolicy):
             local_obs: torch.Tensor,
             global_obs: torch.Tensor,
             agent_mask: torch.Tensor | None,
+            scenario_ids: torch.Tensor | None = None,
             previous_actions: torch.Tensor | None,
             deterministic: bool,
             use_rsample: bool,
@@ -792,6 +798,7 @@ class RecurrentTMASACPolicy(TMASACPolicy):
                 local_obs=local_obs,
                 global_obs=global_obs,
                 agent_mask=agent_mask,
+                scenario_ids=scenario_ids,
                 previous_actions=previous_actions,
                 deterministic=deterministic,
                 use_rsample=use_rsample,
@@ -804,6 +811,7 @@ class RecurrentTMASACPolicy(TMASACPolicy):
             local_obs=local_obs,
             global_obs=global_obs,
             agent_mask=agent_mask,
+            scenario_ids=scenario_ids,
             time_mask=time_mask,
             initial_state=initial_state,
             reset_mask=reset_mask,
@@ -823,6 +831,7 @@ class RecurrentTMASACPolicy(TMASACPolicy):
             local_obs: torch.Tensor,
             global_obs: torch.Tensor,
             agent_mask: torch.Tensor | None,
+            scenario_ids: torch.Tensor | None = None,
             previous_actions: torch.Tensor | None,
             deterministic: bool,
             use_rsample: bool,
@@ -854,6 +863,7 @@ class RecurrentTMASACPolicy(TMASACPolicy):
                 local_obs=local_obs,
                 global_obs=global_obs,
                 agent_mask=agent_mask,
+                scenario_ids=scenario_ids,
                 previous_actions=previous_actions,
                 deterministic=deterministic,
                 use_rsample=use_rsample,
@@ -867,6 +877,7 @@ class RecurrentTMASACPolicy(TMASACPolicy):
             local_obs=local_obs,
             global_obs=global_obs,
             agent_mask=agent_mask,
+            scenario_ids=scenario_ids,
             time_mask=time_mask,
             initial_state=initial_state,
             reset_mask=reset_mask,
@@ -899,6 +910,7 @@ class RecurrentTMASACPolicy(TMASACPolicy):
             local_obs: torch.Tensor,
             global_obs: torch.Tensor,
             agent_mask: torch.Tensor | None,
+            scenario_ids: torch.Tensor | None,
             previous_actions: torch.Tensor | None,
             deterministic: bool,
             use_rsample: bool,
@@ -906,9 +918,15 @@ class RecurrentTMASACPolicy(TMASACPolicy):
             time_mask: torch.Tensor | None,
             reset_mask: torch.Tensor | None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, RMATEncoderState]:
+        actor_local_inputs, actor_global_inputs = self._actor_observation_inputs(
+            local_obs=local_obs,
+            global_obs=global_obs,
+            agent_mask=agent_mask,
+            scenario_ids=scenario_ids,
+        )
         actor_latents, next_state = self._actor_encoder(
-            local_obs,
-            global_obs,
+            actor_local_inputs,
+            actor_global_inputs,
             agent_mask=agent_mask,
             time_mask=time_mask,
             initial_state=initial_state,
@@ -929,6 +947,7 @@ class RecurrentTMASACPolicy(TMASACPolicy):
             local_obs: torch.Tensor,
             global_obs: torch.Tensor,
             agent_mask: torch.Tensor | None,
+            scenario_ids: torch.Tensor | None,
             previous_actions: torch.Tensor | None,
             deterministic: bool,
             use_rsample: bool,
@@ -944,9 +963,15 @@ class RecurrentTMASACPolicy(TMASACPolicy):
         RMATEncoderState,
         Any | None,
     ]:
+        actor_local_inputs, actor_global_inputs = self._actor_observation_inputs(
+            local_obs=local_obs,
+            global_obs=global_obs,
+            agent_mask=agent_mask,
+            scenario_ids=scenario_ids,
+        )
         actor_encoder_result = self._actor_encoder(
-            local_obs,
-            global_obs,
+            actor_local_inputs,
+            actor_global_inputs,
             agent_mask=agent_mask,
             time_mask=time_mask,
             initial_state=initial_state,
@@ -1028,6 +1053,7 @@ class RecurrentTMASACPolicy(TMASACPolicy):
             global_obs: torch.Tensor,
             agent_mask: torch.Tensor | None,
             initial_state: RMATEncoderState | None,
+            scenario_ids: torch.Tensor | None = None,
             time_mask: torch.Tensor | None = None,
             reset_mask: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, RMATEncoderState]:
@@ -1035,6 +1061,7 @@ class RecurrentTMASACPolicy(TMASACPolicy):
             local_obs=local_obs,
             global_obs=global_obs,
             agent_mask=agent_mask,
+            scenario_ids=scenario_ids,
             time_mask=time_mask,
             initial_state=initial_state,
             reset_mask=reset_mask,
@@ -1050,6 +1077,7 @@ class RecurrentTMASACPolicy(TMASACPolicy):
             agent_mask: torch.Tensor | None,
             initial_state: RMATEncoderState | None,
             state_output_indices: torch.Tensor,
+            scenario_ids: torch.Tensor | None = None,
             time_mask: torch.Tensor | None = None,
             reset_mask: torch.Tensor | None = None,
     ) -> (
@@ -1060,6 +1088,7 @@ class RecurrentTMASACPolicy(TMASACPolicy):
             local_obs=local_obs,
             global_obs=global_obs,
             agent_mask=agent_mask,
+            scenario_ids=scenario_ids,
             time_mask=time_mask,
             initial_state=initial_state,
             reset_mask=reset_mask,
@@ -1107,6 +1136,7 @@ class RecurrentTMASACPolicy(TMASACPolicy):
             local_obs: torch.Tensor,
             global_obs: torch.Tensor,
             agent_mask: torch.Tensor | None,
+            scenario_ids: torch.Tensor | None,
             time_mask: torch.Tensor | None = None,
             initial_state: RMATEncoderState | None = None,
             reset_mask: torch.Tensor | None = None,
@@ -1117,6 +1147,12 @@ class RecurrentTMASACPolicy(TMASACPolicy):
         | tuple[torch.Tensor, RMATEncoderState, RMATEncoderState]
         | tuple[torch.Tensor, RMATEncoderState, RMATEncoderState, Any]
     ):
+        actor_local_inputs, actor_global_inputs = self._actor_observation_inputs(
+            local_obs=local_obs,
+            global_obs=global_obs,
+            agent_mask=agent_mask,
+            scenario_ids=scenario_ids,
+        )
         sequence_length = self._actor_sequence_length(local_obs)
         if not self._actor_encoder_compilation_enabled:
             actor_encoder = self._actor_encoder
@@ -1134,8 +1170,8 @@ class RecurrentTMASACPolicy(TMASACPolicy):
             | tuple[torch.Tensor, RMATEncoderState, RMATEncoderState, Any]
         ):
             return actor_encoder(
-                local_obs,
-                global_obs,
+                actor_local_inputs,
+                actor_global_inputs,
                 agent_mask=agent_mask,
                 time_mask=time_mask,
                 initial_state=initial_state,
@@ -1173,6 +1209,7 @@ class RecurrentTMASACPolicy(TMASACPolicy):
             hidden_global_vars: torch.Tensor | None,
             agent_mask: torch.Tensor | None,
             target: bool,
+            scenario_ids: torch.Tensor | None = None,
             initial_state: RecurrentCriticState | None = None,
             time_mask: torch.Tensor | None = None,
             reset_mask: torch.Tensor | None = None,
@@ -1181,9 +1218,23 @@ class RecurrentTMASACPolicy(TMASACPolicy):
         if self.recurrent_critic:
             critic = self.critic_target if target else self.critic
             assert isinstance(critic, RecurrentTMASACTwinCritic)
-            q1, q2, latents, next_state = critic(
+            (
+                critic_local_inputs,
+                critic_global_inputs,
+                hidden_local_vars,
+                hidden_global_vars,
+            ) = self._critic_observation_inputs(
                 local_obs=local_obs,
                 global_obs=global_obs,
+                hidden_local_vars=hidden_local_vars,
+                hidden_global_vars=hidden_global_vars,
+                agent_mask=agent_mask,
+                scenario_ids=scenario_ids,
+                target=target,
+            )
+            q1, q2, latents, next_state = critic(
+                local_obs=critic_local_inputs,
+                global_obs=critic_global_inputs,
                 actions=actions,
                 hidden_local_vars=hidden_local_vars,
                 hidden_global_vars=hidden_global_vars,
@@ -1204,6 +1255,22 @@ class RecurrentTMASACPolicy(TMASACPolicy):
                 hidden_local_vars=hidden_local_vars,
                 hidden_global_vars=hidden_global_vars,
                 agent_mask=agent_mask,
+                scenario_ids=scenario_ids,
+            )
+            flat_scenario_ids = flat_inputs.pop("scenario_ids")
+            (
+                flat_inputs["local_obs"],
+                flat_inputs["global_obs"],
+                flat_inputs["hidden_local_vars"],
+                flat_inputs["hidden_global_vars"],
+            ) = self._critic_observation_inputs(
+                local_obs=cast(torch.Tensor, flat_inputs["local_obs"]),
+                global_obs=cast(torch.Tensor, flat_inputs["global_obs"]),
+                hidden_local_vars=flat_inputs["hidden_local_vars"],
+                hidden_global_vars=flat_inputs["hidden_global_vars"],
+                agent_mask=flat_inputs["agent_mask"],
+                scenario_ids=flat_scenario_ids,
+                target=target,
             )
             flat_actor_state = actor_state.reshape(-1, *actor_state.shape[-2:])
             critic = self.critic_target if target else self.critic
@@ -1223,6 +1290,7 @@ class RecurrentTMASACPolicy(TMASACPolicy):
             hidden_local_vars=hidden_local_vars,
             hidden_global_vars=hidden_global_vars,
             agent_mask=agent_mask,
+            scenario_ids=scenario_ids,
         )
         if target:
             q1, q2 = self.target_q_values(**flat_inputs)
@@ -1246,6 +1314,7 @@ class RecurrentTMASACPolicy(TMASACPolicy):
             hidden_local_vars: torch.Tensor | None = None,
             hidden_global_vars: torch.Tensor | None = None,
             agent_mask: torch.Tensor | None = None,
+            scenario_ids: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         if self.uses_actor_state_critic_input:
             q1, q2, _latents, _state = self._stateless_actor_state_q_values(
@@ -1255,6 +1324,7 @@ class RecurrentTMASACPolicy(TMASACPolicy):
                 hidden_local_vars=hidden_local_vars,
                 hidden_global_vars=hidden_global_vars,
                 agent_mask=agent_mask,
+                scenario_ids=scenario_ids,
                 target=False,
             )
             return q1, q2
@@ -1266,6 +1336,7 @@ class RecurrentTMASACPolicy(TMASACPolicy):
                 hidden_local_vars=hidden_local_vars,
                 hidden_global_vars=hidden_global_vars,
                 agent_mask=agent_mask,
+                scenario_ids=scenario_ids,
             )
         q1, q2, _latents, _state = self.q_values_sequence(
             local_obs=local_obs,
@@ -1274,6 +1345,7 @@ class RecurrentTMASACPolicy(TMASACPolicy):
             hidden_local_vars=hidden_local_vars,
             hidden_global_vars=hidden_global_vars,
             agent_mask=agent_mask,
+            scenario_ids=scenario_ids,
             target=False,
         )
         return q1, q2
@@ -1287,6 +1359,7 @@ class RecurrentTMASACPolicy(TMASACPolicy):
             hidden_local_vars: torch.Tensor | None = None,
             hidden_global_vars: torch.Tensor | None = None,
             agent_mask: torch.Tensor | None = None,
+            scenario_ids: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
         if self.uses_actor_state_critic_input:
             q1, q2, latents, _state = self._stateless_actor_state_q_values(
@@ -1296,6 +1369,7 @@ class RecurrentTMASACPolicy(TMASACPolicy):
                 hidden_local_vars=hidden_local_vars,
                 hidden_global_vars=hidden_global_vars,
                 agent_mask=agent_mask,
+                scenario_ids=scenario_ids,
                 target=False,
             )
             return q1, q2, latents
@@ -1307,6 +1381,7 @@ class RecurrentTMASACPolicy(TMASACPolicy):
                 hidden_local_vars=hidden_local_vars,
                 hidden_global_vars=hidden_global_vars,
                 agent_mask=agent_mask,
+                scenario_ids=scenario_ids,
             )
         q1, q2, latents, _state = self.q_values_sequence(
             local_obs=local_obs,
@@ -1315,6 +1390,7 @@ class RecurrentTMASACPolicy(TMASACPolicy):
             hidden_local_vars=hidden_local_vars,
             hidden_global_vars=hidden_global_vars,
             agent_mask=agent_mask,
+            scenario_ids=scenario_ids,
             target=False,
         )
         return q1, q2, latents
@@ -1328,6 +1404,7 @@ class RecurrentTMASACPolicy(TMASACPolicy):
             hidden_local_vars: torch.Tensor | None = None,
             hidden_global_vars: torch.Tensor | None = None,
             agent_mask: torch.Tensor | None = None,
+            scenario_ids: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         if self.uses_actor_state_critic_input:
             q1, q2, _latents, _state = self._stateless_actor_state_q_values(
@@ -1337,6 +1414,7 @@ class RecurrentTMASACPolicy(TMASACPolicy):
                 hidden_local_vars=hidden_local_vars,
                 hidden_global_vars=hidden_global_vars,
                 agent_mask=agent_mask,
+                scenario_ids=scenario_ids,
                 target=True,
             )
             return q1, q2
@@ -1348,6 +1426,7 @@ class RecurrentTMASACPolicy(TMASACPolicy):
                 hidden_local_vars=hidden_local_vars,
                 hidden_global_vars=hidden_global_vars,
                 agent_mask=agent_mask,
+                scenario_ids=scenario_ids,
             )
         q1, q2, _latents, _state = self.q_values_sequence(
             local_obs=local_obs,
@@ -1356,6 +1435,7 @@ class RecurrentTMASACPolicy(TMASACPolicy):
             hidden_local_vars=hidden_local_vars,
             hidden_global_vars=hidden_global_vars,
             agent_mask=agent_mask,
+            scenario_ids=scenario_ids,
             target=True,
         )
         return q1, q2
@@ -1369,19 +1449,29 @@ class RecurrentTMASACPolicy(TMASACPolicy):
             hidden_local_vars: torch.Tensor | None,
             hidden_global_vars: torch.Tensor | None,
             agent_mask: torch.Tensor | None,
+            scenario_ids: torch.Tensor | None = None,
     ) -> torch.Tensor:
         if self.uses_actor_state_critic_input:
             actor_state = self._stateless_actor_state_critic_input(
                 local_obs=local_obs,
                 global_obs=global_obs,
                 agent_mask=agent_mask,
+                scenario_ids=scenario_ids,
             )
             critic = self._critic_module()
             assert isinstance(critic, ActorStateTMASACTwinCritic)
-            critic_local_inputs, critic_global_inputs = self._critic_observation_inputs(
+            (
+                critic_local_inputs,
+                critic_global_inputs,
+                hidden_local_vars,
+                hidden_global_vars,
+            ) = self._critic_observation_inputs(
                 local_obs=local_obs,
                 global_obs=global_obs,
+                hidden_local_vars=hidden_local_vars,
+                hidden_global_vars=hidden_global_vars,
                 agent_mask=agent_mask,
+                scenario_ids=scenario_ids,
                 target=False,
             )
             return critic.encode(
@@ -1401,12 +1491,27 @@ class RecurrentTMASACPolicy(TMASACPolicy):
                 hidden_local_vars=hidden_local_vars,
                 hidden_global_vars=hidden_global_vars,
                 agent_mask=agent_mask,
+                scenario_ids=scenario_ids,
             )
         critic = self._critic_module()
         assert isinstance(critic, RecurrentTMASACTwinCritic)
+        (
+            critic_local_inputs,
+            critic_global_inputs,
+            hidden_local_vars,
+            hidden_global_vars,
+        ) = self._critic_observation_inputs(
+            local_obs=local_obs,
+            global_obs=global_obs,
+            hidden_local_vars=hidden_local_vars,
+            hidden_global_vars=hidden_global_vars,
+            agent_mask=agent_mask,
+            scenario_ids=scenario_ids,
+            target=False,
+        )
         latents, _state = critic.encode(
-            local_inputs=local_obs,
-            global_inputs=global_obs,
+            local_inputs=critic_local_inputs,
+            global_inputs=critic_global_inputs,
             actions=actions,
             hidden_local_vars=hidden_local_vars,
             hidden_global_vars=hidden_global_vars,
@@ -1423,12 +1528,14 @@ class RecurrentTMASACPolicy(TMASACPolicy):
             hidden_local_vars: torch.Tensor | None,
             hidden_global_vars: torch.Tensor | None,
             agent_mask: torch.Tensor | None,
+            scenario_ids: torch.Tensor | None,
             target: bool,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None, RecurrentCriticState | None]:
         actor_state = self._stateless_actor_state_critic_input(
             local_obs=local_obs,
             global_obs=global_obs,
             agent_mask=agent_mask,
+            scenario_ids=scenario_ids,
         )
         return self.q_values_sequence(
             local_obs=local_obs,
@@ -1437,6 +1544,7 @@ class RecurrentTMASACPolicy(TMASACPolicy):
             hidden_local_vars=hidden_local_vars,
             hidden_global_vars=hidden_global_vars,
             agent_mask=agent_mask,
+            scenario_ids=scenario_ids,
             target=target,
             actor_state=actor_state,
         )
@@ -1447,6 +1555,7 @@ class RecurrentTMASACPolicy(TMASACPolicy):
             local_obs: torch.Tensor,
             global_obs: torch.Tensor,
             agent_mask: torch.Tensor | None,
+            scenario_ids: torch.Tensor | None,
     ) -> torch.Tensor:
         if local_obs.ndim != 3:
             raise ValueError(
@@ -1454,9 +1563,15 @@ class RecurrentTMASACPolicy(TMASACPolicy):
                 "use q_values_sequence with explicit actor_state for sequences."
             )
         with torch.no_grad():
+            actor_local_inputs, actor_global_inputs = self._actor_observation_inputs(
+                local_obs=local_obs,
+                global_obs=global_obs,
+                agent_mask=agent_mask,
+                scenario_ids=scenario_ids,
+            )
             _actor_latents, actor_state = self._actor_encoder(
-                local_obs,
-                global_obs,
+                actor_local_inputs,
+                actor_global_inputs,
                 agent_mask=agent_mask,
             )
         return self.actor_state_critic_input(actor_state)
@@ -1576,8 +1691,8 @@ class RecurrentTMASACPolicy(TMASACPolicy):
                 max_agents=self.max_agents,
                 local_input_dim=local_input_dim,
                 global_input_dim=global_input_dim,
-                hidden_local_vars_dim=self.hidden_local_vars_dim,
-                hidden_global_vars_dim=self.hidden_global_vars_dim,
+                hidden_local_vars_dim=self.critic_hidden_local_vars_dim,
+                hidden_global_vars_dim=self.critic_hidden_global_vars_dim,
                 action_dim=self.agent_action_dim,
                 encoder_config=self.critic_encoder_config,
                 critic_config=self.config.critic_config,
@@ -1598,8 +1713,8 @@ class RecurrentTMASACPolicy(TMASACPolicy):
             max_agents=self.max_agents,
             local_input_dim=local_input_dim,
             global_input_dim=global_input_dim,
-            hidden_local_vars_dim=self.hidden_local_vars_dim,
-            hidden_global_vars_dim=self.hidden_global_vars_dim,
+            hidden_local_vars_dim=self.critic_hidden_local_vars_dim,
+            hidden_global_vars_dim=self.critic_hidden_global_vars_dim,
             action_dim=self.agent_action_dim,
             encoder_config=encoder_config,
             critic_config=self.config.critic_config,
@@ -1623,6 +1738,7 @@ class RecurrentTMASACPolicy(TMASACPolicy):
             hidden_local_vars: torch.Tensor | None,
             hidden_global_vars: torch.Tensor | None,
             agent_mask: torch.Tensor | None,
+            scenario_ids: torch.Tensor | None,
     ) -> tuple[dict[str, torch.Tensor | None], int, int]:
         if local_obs.ndim == 3:
             return {
@@ -1632,6 +1748,7 @@ class RecurrentTMASACPolicy(TMASACPolicy):
                 "hidden_local_vars": hidden_local_vars,
                 "hidden_global_vars": hidden_global_vars,
                 "agent_mask": agent_mask,
+                "scenario_ids": scenario_ids,
             }, local_obs.shape[0], 1
         batch_size, sequence_length = local_obs.shape[:2]
 
@@ -1647,4 +1764,5 @@ class RecurrentTMASACPolicy(TMASACPolicy):
             "hidden_local_vars": flatten(hidden_local_vars),
             "hidden_global_vars": flatten(hidden_global_vars),
             "agent_mask": flatten(agent_mask),
+            "scenario_ids": flatten(scenario_ids),
         }, batch_size, sequence_length

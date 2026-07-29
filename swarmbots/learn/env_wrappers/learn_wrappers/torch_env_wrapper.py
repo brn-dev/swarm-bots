@@ -22,6 +22,9 @@ class TorchEnvWrapper(BaseLearnEnvWrapper):
         self.global_obs_dim = env.global_obs_dim
         self.hidden_local_vars_dim = env.hidden_local_vars_dim
         self.hidden_global_vars_dim = env.hidden_global_vars_dim
+        self.has_scenario_id = bool(getattr(env, "has_scenario_id", False))
+        self.scenario_names = getattr(env, "scenario_names", None)
+        self.scenario_observation_dims = getattr(env, "scenario_observation_dims", None)
         self.has_agent_mask = env.has_agent_mask
         self.n_agents = env.n_agents
 

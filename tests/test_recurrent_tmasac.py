@@ -33,12 +33,16 @@ from swarmbots.learn.algos.sac import (
     SAC,
     SACNOPConfig,
     SACNOPLatentSource,
+    ScenarioFieldEncoderConfig,
+    ScenarioObservationSpec,
     SegmentTMASACPolicy,
     TMASACActorHeadConfig,
     TMASACCriticConfig,
     TMASACPolicy,
     TMASACPolicyConfig,
+    TMASACScenarioEncoderConfig,
 )
+from swarmbots.learn.algos.sac.recurrent_sac import _flatten_segment, _slice_segment
 from swarmbots.learn.algos.sac.recurrent_tmasac_policy import RecurrentTMASACTwinCritic
 from swarmbots.learn.algos.sac.tmasac_policy import TMASACTwinCritic
 from swarmbots.learn.algos.xlstm.mlstm import (
@@ -51,6 +55,7 @@ from swarmbots.learn.algos.xlstm.slstm import (
 )
 from swarmbots.learn.algos.world_modeling.next_obs_pred_mixin import NextObsPredConfig
 from swarmbots.learn.env_wrappers.learn_wrappers.swarm_bots_learn_env_wrapper import SwarmBotsLearnEnvWrapper
+from swarmbots.learn.env_wrappers.multi_scenario_vector_env import MultiScenarioVectorEnv
 from swarmbots.learn.exponential_moving_average import ExponentialMovingAverage
 from swarmbots.learn.hybrid_action_space import HybridActionSpace
 from swarmbots.learn.summary_statistics import SummaryStatistics
@@ -98,6 +103,92 @@ class _DummyContinuousEnv:
     })
 
 
+class _DummyScenarioEnv(_DummyContinuousEnv):
+    global_obs_dim = 3
+    hidden_local_vars_dim = 2
+    hidden_global_vars_dim = 2
+    has_scenario_id = True
+    scenario_names = ("wall", "payload")
+    scenario_observation_dims = {
+        "wall": {
+            "global_obs": 0,
+            "hidden_local_vars": 1,
+            "hidden_global_vars": 2,
+        },
+        "payload": {
+            "global_obs": 3,
+            "hidden_local_vars": 2,
+            "hidden_global_vars": 1,
+        },
+    }
+
+
+def _scenario_encoder_config() -> TMASACScenarioEncoderConfig:
+    return TMASACScenarioEncoderConfig(
+        scenarios=(
+            ScenarioObservationSpec(
+                scenario_id=0,
+                name="wall",
+                global_obs_dim=0,
+                hidden_local_vars_dim=1,
+                hidden_global_vars_dim=2,
+            ),
+            ScenarioObservationSpec(
+                scenario_id=1,
+                name="payload",
+                global_obs_dim=3,
+                hidden_local_vars_dim=2,
+                hidden_global_vars_dim=1,
+            ),
+        ),
+        global_obs=ScenarioFieldEncoderConfig(output_dim=4),
+        hidden_local_vars=ScenarioFieldEncoderConfig(output_dim=3),
+        hidden_global_vars=ScenarioFieldEncoderConfig(output_dim=3),
+        scenario_embedding_dim=2,
+    )
+
+
+def _scenario_inputs(
+        *,
+        sequence_length: int | None,
+) -> dict[str, torch.Tensor]:
+    env = _DummyScenarioEnv()
+    batch_size = 2
+    local_prefix = (
+        (batch_size, env.n_agents)
+        if sequence_length is None
+        else (batch_size, sequence_length, env.n_agents)
+    )
+    global_prefix = (
+        (batch_size,)
+        if sequence_length is None
+        else (batch_size, sequence_length)
+    )
+    scenario_ids = (
+        torch.tensor([0, 1])
+        if sequence_length is None
+        else torch.tensor([
+            [step % 2 for step in range(sequence_length)],
+            [(step + 1) % 2 for step in range(sequence_length)],
+        ])
+    )
+    return {
+        "local_obs": torch.randn(*local_prefix, env.local_obs_dim),
+        "global_obs": torch.randn(*global_prefix, env.global_obs_dim),
+        "actions": torch.randn(*local_prefix, 2),
+        "hidden_local_vars": torch.randn(
+            *local_prefix,
+            env.hidden_local_vars_dim,
+        ),
+        "hidden_global_vars": torch.randn(
+            *global_prefix,
+            env.hidden_global_vars_dim,
+        ),
+        "agent_mask": torch.ones(*local_prefix, dtype=torch.bool),
+        "scenario_ids": scenario_ids,
+    }
+
+
 def _encoder_config(
         temporal_model_cls: type,
         temporal_model_config: object,
@@ -121,6 +212,7 @@ def _policy_config(
         nop_config: SACNOPConfig | None = None,
         separate_observation_action_encoders: bool = False,
         action_encoder_dim: int | None = None,
+        scenario_encoder_config: TMASACScenarioEncoderConfig | None = None,
 ) -> RecurrentTMASACPolicyConfig:
     if critic_encoder_config is None:
         critic_encoder_config = (
@@ -150,6 +242,7 @@ def _policy_config(
         ),
         recurrent_critic=recurrent_critic,
         nop_config=SACNOPConfig() if nop_config is None else nop_config,
+        scenario_encoder_config=scenario_encoder_config,
     )
 
 
@@ -222,6 +315,7 @@ def _segment_policy_config(
         *,
         nop_config: SACNOPConfig | None = None,
         ent_loss_coef: float = 0.0,
+        scenario_encoder_config: TMASACScenarioEncoderConfig | None = None,
 ) -> TMASACPolicyConfig:
     encoder_config = MATEncoderConfig(
         d_model=8,
@@ -242,6 +336,7 @@ def _segment_policy_config(
             ent_loss_coef=ent_loss_coef,
         ),
         nop_config=SACNOPConfig() if nop_config is None else nop_config,
+        scenario_encoder_config=scenario_encoder_config,
     )
 
 
@@ -255,6 +350,8 @@ def _make_segment_batch(
         hidden_local_vars_dim: int,
         hidden_global_vars_dim: int,
         action_dim: int,
+        scenario_ids: torch.Tensor | None = None,
+        next_scenario_ids: torch.Tensor | None = None,
 ) -> OffPolicyReplayEpisodeSegmentBatch:
     time_values = torch.arange(sequence_length, dtype=torch.float32).view(1, sequence_length, 1, 1)
     local_obs = time_values.expand(batch_size, sequence_length, n_agents, local_obs_dim).clone()
@@ -292,6 +389,8 @@ def _make_segment_batch(
         train_mask=torch.ones(batch_size, sequence_length, dtype=torch.bool),
         initial_temporal_state=None,
         burn_in_steps=0,
+        scenario_ids=scenario_ids,
+        next_scenario_ids=next_scenario_ids,
     )
 
 
@@ -313,6 +412,44 @@ def _make_env(*, max_steps: int = 200) -> SwarmBotsLearnEnvWrapper:
         autoreset_mode=AutoresetMode.SAME_STEP,
     )
     return SwarmBotsLearnEnvWrapper(vector_env)
+
+
+def _make_scenario_env(*, max_steps: int = 200) -> SwarmBotsLearnEnvWrapper:
+    def make_vector_env(
+            *,
+            global_obs_dim: int,
+            hidden_local_vars_dim: int,
+            hidden_global_vars_dim: int,
+    ) -> SyncVectorEnv:
+        return SyncVectorEnv(
+            [
+                lambda: TestingSwarmBotsEnv(
+                    n_agents=2,
+                    n_local_obs=4,
+                    n_global_obs=global_obs_dim,
+                    actuators_dim=1,
+                    connectors_dim=1,
+                    n_hidden_local_vars=hidden_local_vars_dim,
+                    n_hidden_global_vars=hidden_global_vars_dim,
+                    max_steps=max_steps,
+                    continuous_connector_actions=True,
+                )
+            ],
+            autoreset_mode=AutoresetMode.SAME_STEP,
+        )
+
+    return SwarmBotsLearnEnvWrapper(MultiScenarioVectorEnv({
+        "wall": make_vector_env(
+            global_obs_dim=0,
+            hidden_local_vars_dim=1,
+            hidden_global_vars_dim=2,
+        ),
+        "payload": make_vector_env(
+            global_obs_dim=3,
+            hidden_local_vars_dim=2,
+            hidden_global_vars_dim=1,
+        ),
+    }))
 
 
 def _perform_short_recurrent_update(
@@ -445,7 +582,387 @@ def _perform_short_segment_update(
         env.close()
 
 
+def _perform_short_scenario_update(
+        *,
+        recurrent_critic: bool,
+        segment_policy: bool,
+) -> tuple[dict[str, object], int]:
+    env = _make_scenario_env(max_steps=3)
+    try:
+        scenario_config = _scenario_encoder_config()
+        if segment_policy:
+            policy = SegmentTMASACPolicy(
+                env=env,
+                config=_segment_policy_config(
+                    scenario_encoder_config=scenario_config,
+                ),
+            )
+        else:
+            encoder_config = _encoder_config(
+                LSTMTemporalSequenceModel,
+                LSTMTemporalSequenceModelConfig(),
+            )
+            policy = RecurrentTMASACPolicy(
+                env=env,
+                config=_policy_config(
+                    encoder_config,
+                    recurrent_critic=recurrent_critic,
+                    scenario_encoder_config=scenario_config,
+                ),
+            )
+        algorithm = RecurrentSAC(
+            policy=policy,
+            env=env,
+            burn_in_steps=2,
+            learning_steps=3,
+            temporal_state_store_interval=1,
+            max_truncations_per_segment=2,
+            buffer_capacity_per_env=16,
+            learning_starts=10,
+            batch_size=2,
+            rollout_steps_per_iteration=2,
+            gradient_steps=1,
+            replay_storage_device="cpu",
+            train_device="cpu",
+            rollout_device="cpu",
+        )
+        episode_return_ema = ExponentialMovingAverage(alpha=0.1)
+        episode_success_rate_ema = ExponentialMovingAverage(alpha=0.1)
+        metrics: dict[str, object] = {}
+        for _ in range(8):
+            iteration_metrics, _steps = algorithm.perform_iteration(
+                episode_return_ema,
+                episode_success_rate_ema,
+                update_ema=True,
+            )
+            metrics.update(iteration_metrics)
+        return metrics, algorithm.n_total_updates
+    finally:
+        env.close()
+
+
 class RecurrentTMASACTests(unittest.TestCase):
+    def test_recurrent_actor_scenario_encoder_supports_mixed_sequences_and_gradients(self) -> None:
+        policy = RecurrentTMASACPolicy(
+            env=_DummyScenarioEnv(),
+            config=_policy_config(
+                _encoder_config(
+                    LSTMTemporalSequenceModel,
+                    LSTMTemporalSequenceModelConfig(),
+                ),
+                scenario_encoder_config=_scenario_encoder_config(),
+            ),
+        )
+        inputs = _scenario_inputs(sequence_length=4)
+
+        actions, log_probs, actor_latents, next_state = policy.action_log_prob_sequence(
+            local_obs=inputs["local_obs"],
+            global_obs=inputs["global_obs"],
+            agent_mask=inputs["agent_mask"],
+            scenario_ids=inputs["scenario_ids"],
+            previous_actions=inputs["actions"],
+            deterministic=False,
+            use_rsample=True,
+            initial_state=None,
+        )
+
+        self.assertEqual(tuple(actions.shape), (2, 4, 3, 2))
+        self.assertEqual(tuple(log_probs.shape), (2, 4, 3))
+        self.assertEqual(tuple(actor_latents.shape), (2, 4, 3, 8))
+        self.assertEqual(len(next_state), 1)
+        actor_latents.sum().backward()
+        assert policy.actor_scenario_encoder is not None
+        self.assertTrue(
+            any(parameter.grad is not None for parameter in policy.actor_scenario_encoder.parameters())
+        )
+        assert policy.critic_scenario_encoder is not None
+        self.assertTrue(
+            all(parameter.grad is None for parameter in policy.critic_scenario_encoder.parameters())
+        )
+
+    def test_recurrent_actor_scenario_reset_matches_fresh_state(self) -> None:
+        torch.manual_seed(3)
+        policy = RecurrentTMASACPolicy(
+            env=_DummyScenarioEnv(),
+            config=_policy_config(
+                _encoder_config(
+                    LSTMTemporalSequenceModel,
+                    LSTMTemporalSequenceModelConfig(),
+                ),
+                scenario_encoder_config=_scenario_encoder_config(),
+            ),
+        ).eval()
+        inputs = _scenario_inputs(sequence_length=3)
+        reset_mask = torch.zeros(2, 3, dtype=torch.bool)
+        reset_mask[:, 1] = True
+
+        sequence_latents, _state = policy.encode_actor_sequence(
+            local_obs=inputs["local_obs"],
+            global_obs=inputs["global_obs"],
+            agent_mask=inputs["agent_mask"],
+            scenario_ids=inputs["scenario_ids"],
+            initial_state=None,
+            reset_mask=reset_mask,
+        )
+        fresh_latents, _fresh_state = policy.encode_actor_sequence(
+            local_obs=inputs["local_obs"][:, 1],
+            global_obs=inputs["global_obs"][:, 1],
+            agent_mask=inputs["agent_mask"][:, 1],
+            scenario_ids=inputs["scenario_ids"][:, 1],
+            initial_state=None,
+        )
+
+        torch.testing.assert_close(sequence_latents[:, 1], fresh_latents)
+
+    def test_recurrent_critic_scenario_encoder_supports_online_and_target_sequences(self) -> None:
+        policy = RecurrentTMASACPolicy(
+            env=_DummyScenarioEnv(),
+            config=_policy_config(
+                _encoder_config(
+                    LSTMTemporalSequenceModel,
+                    LSTMTemporalSequenceModelConfig(),
+                ),
+                recurrent_critic=True,
+                scenario_encoder_config=_scenario_encoder_config(),
+            ),
+        )
+        inputs = _scenario_inputs(sequence_length=4)
+
+        q1, q2, _latents, next_state = policy.q_values_sequence(
+            **inputs,
+            target=False,
+        )
+        target_q1, target_q2, _target_latents, target_next_state = policy.q_values_sequence(
+            **inputs,
+            target=True,
+        )
+
+        self.assertEqual(tuple(q1.shape), (2, 4))
+        self.assertEqual(tuple(q2.shape), (2, 4))
+        self.assertEqual(tuple(target_q1.shape), (2, 4))
+        self.assertEqual(tuple(target_q2.shape), (2, 4))
+        self.assertIsNotNone(next_state)
+        self.assertIsNotNone(target_next_state)
+        (q1 + q2).sum().backward()
+        assert policy.critic_scenario_encoder is not None
+        self.assertTrue(
+            any(parameter.grad is not None for parameter in policy.critic_scenario_encoder.parameters())
+        )
+        assert policy.critic_scenario_encoder_target is not None
+        self.assertTrue(
+            all(
+                parameter.grad is None and not parameter.requires_grad
+                for parameter in policy.critic_scenario_encoder_target.parameters()
+            )
+        )
+
+    def test_actor_state_critic_supports_scenario_encoders(self) -> None:
+        policy = RecurrentTMASACPolicy(
+            env=_DummyScenarioEnv(),
+            config=replace(
+                _policy_config(
+                    _encoder_config(
+                        LSTMTemporalSequenceModel,
+                        LSTMTemporalSequenceModelConfig(),
+                    ),
+                    scenario_encoder_config=_scenario_encoder_config(),
+                ),
+                actor_state_critic_input_config=ActorStateCriticInputConfig(projection_dim=4),
+            ),
+        )
+        inputs = _scenario_inputs(sequence_length=None)
+
+        q1, q2 = policy.q_values(**inputs)
+        target_q1, target_q2 = policy.target_q_values(**inputs)
+
+        self.assertEqual(tuple(q1.shape), (2,))
+        self.assertEqual(tuple(q2.shape), (2,))
+        self.assertEqual(tuple(target_q1.shape), (2,))
+        self.assertEqual(tuple(target_q2.shape), (2,))
+
+    def test_segment_tmasac_supports_mixed_scenario_sequences(self) -> None:
+        policy = SegmentTMASACPolicy(
+            env=_DummyScenarioEnv(),
+            config=_segment_policy_config(
+                scenario_encoder_config=_scenario_encoder_config(),
+            ),
+        )
+        inputs = _scenario_inputs(sequence_length=4)
+
+        actions, log_probs, actor_latents, next_state = policy.action_log_prob_sequence(
+            local_obs=inputs["local_obs"],
+            global_obs=inputs["global_obs"],
+            agent_mask=inputs["agent_mask"],
+            scenario_ids=inputs["scenario_ids"],
+            previous_actions=inputs["actions"],
+            deterministic=False,
+            use_rsample=True,
+            initial_state=None,
+        )
+        q1, q2, _latents, critic_state = policy.q_values_sequence(
+            **inputs,
+            target=False,
+        )
+
+        self.assertEqual(tuple(actions.shape), (2, 4, 3, 2))
+        self.assertEqual(tuple(log_probs.shape), (2, 4, 3))
+        self.assertEqual(tuple(actor_latents.shape), (2, 4, 3, 8))
+        self.assertEqual(tuple(next_state.shape), (2, 1))
+        self.assertEqual(tuple(q1.shape), (2, 4))
+        self.assertEqual(tuple(q2.shape), (2, 4))
+        self.assertIsNone(critic_state)
+
+    def test_recurrent_batch_slice_and_flatten_preserve_scenario_ids(self) -> None:
+        scenario_ids = torch.tensor([[0, 1, 0, 1], [1, 0, 1, 0]])
+        next_scenario_ids = 1 - scenario_ids
+        batch = _make_segment_batch(
+            batch_size=2,
+            sequence_length=4,
+            n_agents=3,
+            local_obs_dim=5,
+            global_obs_dim=3,
+            hidden_local_vars_dim=2,
+            hidden_global_vars_dim=2,
+            action_dim=2,
+            scenario_ids=scenario_ids,
+            next_scenario_ids=next_scenario_ids,
+        )
+
+        sliced = _slice_segment(batch, 1, 4)
+        flattened = _flatten_segment(sliced)
+
+        assert sliced.scenario_ids is not None
+        assert sliced.next_scenario_ids is not None
+        assert flattened.scenario_ids is not None
+        assert flattened.next_scenario_ids is not None
+        torch.testing.assert_close(sliced.scenario_ids, scenario_ids[:, 1:])
+        torch.testing.assert_close(sliced.next_scenario_ids, next_scenario_ids[:, 1:])
+        torch.testing.assert_close(flattened.scenario_ids, scenario_ids[:, 1:].reshape(-1))
+        torch.testing.assert_close(
+            flattened.next_scenario_ids,
+            next_scenario_ids[:, 1:].reshape(-1),
+        )
+
+    def test_recurrent_feature_off_preserves_direct_actor_encoder_behavior_and_schema(self) -> None:
+        policy = RecurrentTMASACPolicy(
+            env=_DummyContinuousEnv(),
+            config=_policy_config(
+                _encoder_config(
+                    LSTMTemporalSequenceModel,
+                    LSTMTemporalSequenceModelConfig(),
+                )
+            ),
+        ).eval()
+        batch_size, sequence_length = 2, 3
+        local_obs = torch.randn(batch_size, sequence_length, 3, 5)
+        global_obs = torch.randn(batch_size, sequence_length, 2)
+        agent_mask = torch.ones(batch_size, sequence_length, 3, dtype=torch.bool)
+
+        public_latents, public_state = policy.encode_actor_sequence(
+            local_obs=local_obs,
+            global_obs=global_obs,
+            agent_mask=agent_mask,
+            initial_state=None,
+        )
+        direct_latents, direct_state = policy.actor_encoder(
+            local_obs,
+            global_obs,
+            agent_mask=agent_mask,
+        )
+
+        torch.testing.assert_close(public_latents, direct_latents)
+        for public_layer_state, direct_layer_state in zip(
+                public_state,
+                direct_state,
+                strict=True,
+        ):
+            torch.testing.assert_close(public_layer_state, direct_layer_state)
+        self.assertFalse(any("scenario_encoder" in key for key in policy.state_dict()))
+        self.assertNotIn(
+            "scenario_encoder_config",
+            policy.get_hyper_parameters()["tmasac_policy_config"],
+        )
+        self.assertFalse(any("scenario_encoder" in key for key in policy.get_grad_norms()))
+
+    def test_recurrent_sac_updates_with_actor_recurrence_and_scenarios(self) -> None:
+        metrics, updates = _perform_short_scenario_update(
+            recurrent_critic=False,
+            segment_policy=False,
+        )
+
+        self.assertGreater(updates, 0)
+        self.assertTrue(math.isfinite(float(metrics["actor_loss"])))
+        self.assertTrue(math.isfinite(float(metrics["critic_loss"])))
+        self.assertIn("scenario/wall/ep_rew", metrics)
+        self.assertIn("scenario/payload/ep_rew", metrics)
+
+    def test_recurrent_sac_updates_with_recurrent_critic_and_scenarios(self) -> None:
+        metrics, updates = _perform_short_scenario_update(
+            recurrent_critic=True,
+            segment_policy=False,
+        )
+
+        self.assertGreater(updates, 0)
+        self.assertTrue(math.isfinite(float(metrics["actor_loss"])))
+        self.assertTrue(math.isfinite(float(metrics["critic_loss"])))
+
+    def test_recurrent_sac_updates_segment_tmasac_with_scenarios(self) -> None:
+        metrics, updates = _perform_short_scenario_update(
+            recurrent_critic=False,
+            segment_policy=True,
+        )
+
+        self.assertGreater(updates, 0)
+        self.assertTrue(math.isfinite(float(metrics["actor_loss"])))
+        self.assertTrue(math.isfinite(float(metrics["critic_loss"])))
+
+    def test_scenario_encoder_supports_feedforward_critic_sequences(self) -> None:
+        policy = RecurrentTMASACPolicy(
+            env=_DummyScenarioEnv(),
+            config=replace(
+                _policy_config(_encoder_config(
+                    LSTMTemporalSequenceModel,
+                    LSTMTemporalSequenceModelConfig(),
+                )),
+                scenario_encoder_config=_scenario_encoder_config(),
+            ),
+        )
+        inputs = _scenario_inputs(sequence_length=3)
+
+        q1, q2, _latents, next_state = policy.q_values_sequence(
+            **inputs,
+            target=False,
+        )
+
+        self.assertEqual(q1.shape, (2, 3))
+        self.assertEqual(q2.shape, (2, 3))
+        self.assertIsNone(next_state)
+
+    def test_recurrent_scenario_policy_requires_scenario_ids(self) -> None:
+        policy = RecurrentTMASACPolicy(
+            env=_DummyScenarioEnv(),
+            config=replace(
+                _policy_config(_encoder_config(
+                    LSTMTemporalSequenceModel,
+                    LSTMTemporalSequenceModelConfig(),
+                )),
+                scenario_encoder_config=_scenario_encoder_config(),
+            ),
+        )
+        inputs = _scenario_inputs(sequence_length=2)
+
+        with self.assertRaisesRegex(ValueError, "scenario_ids were not provided"):
+            policy.action_log_prob_sequence(
+                local_obs=inputs["local_obs"],
+                global_obs=inputs["global_obs"],
+                agent_mask=inputs["agent_mask"],
+                scenario_ids=None,
+                previous_actions=None,
+                deterministic=False,
+                use_rsample=True,
+                initial_state=None,
+            )
+
     def test_segment_tmasac_treats_time_as_independent_batch_rows(self) -> None:
         policy = SegmentTMASACPolicy(
             env=_DummyContinuousEnv(),

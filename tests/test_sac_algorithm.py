@@ -265,6 +265,91 @@ class _NonFiniteTerminalTargetSACPolicy(_ConstantTargetSACPolicy):
         return target_q1, target_q2
 
 
+class _ScenarioTrackingSACPolicy(_ConstantTargetSACPolicy):
+    def __init__(self, *, n_agents: int, action_dim: int) -> None:
+        super().__init__(
+            n_agents=n_agents,
+            action_dim=action_dim,
+            target_q_value=1.0,
+        )
+        self.actor_scenario_ids: list[torch.Tensor] = []
+        self.critic_scenario_ids: list[torch.Tensor] = []
+        self.target_critic_scenario_ids: list[torch.Tensor] = []
+
+    def action_log_prob(
+            self,
+            *,
+            local_obs: torch.Tensor,
+            global_obs: torch.Tensor,
+            hidden_local_vars: torch.Tensor | None = None,
+            hidden_global_vars: torch.Tensor | None = None,
+            agent_mask: torch.Tensor | None = None,
+            scenario_ids: torch.Tensor | None = None,
+            previous_actions: torch.Tensor | None = None,
+            deterministic: bool = False,
+            use_rsample: bool = True,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        if scenario_ids is None:
+            raise AssertionError("SAC actor calls must include scenario IDs.")
+        self.actor_scenario_ids.append(scenario_ids.detach().clone())
+        return super().action_log_prob(
+            local_obs=local_obs,
+            global_obs=global_obs,
+            hidden_local_vars=hidden_local_vars,
+            hidden_global_vars=hidden_global_vars,
+            agent_mask=agent_mask,
+            previous_actions=previous_actions,
+            deterministic=deterministic,
+            use_rsample=use_rsample,
+        )
+
+    def q_values(
+            self,
+            *,
+            local_obs: torch.Tensor,
+            global_obs: torch.Tensor,
+            actions: torch.Tensor,
+            hidden_local_vars: torch.Tensor | None = None,
+            hidden_global_vars: torch.Tensor | None = None,
+            agent_mask: torch.Tensor | None = None,
+            scenario_ids: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        if scenario_ids is None:
+            raise AssertionError("SAC critic calls must include scenario IDs.")
+        self.critic_scenario_ids.append(scenario_ids.detach().clone())
+        return super().q_values(
+            local_obs=local_obs,
+            global_obs=global_obs,
+            actions=actions,
+            hidden_local_vars=hidden_local_vars,
+            hidden_global_vars=hidden_global_vars,
+            agent_mask=agent_mask,
+        )
+
+    def target_q_values(
+            self,
+            *,
+            local_obs: torch.Tensor,
+            global_obs: torch.Tensor,
+            actions: torch.Tensor,
+            hidden_local_vars: torch.Tensor | None = None,
+            hidden_global_vars: torch.Tensor | None = None,
+            agent_mask: torch.Tensor | None = None,
+            scenario_ids: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        if scenario_ids is None:
+            raise AssertionError("SAC target-critic calls must include scenario IDs.")
+        self.target_critic_scenario_ids.append(scenario_ids.detach().clone())
+        return super().target_q_values(
+            local_obs=local_obs,
+            global_obs=global_obs,
+            actions=actions,
+            hidden_local_vars=hidden_local_vars,
+            hidden_global_vars=hidden_global_vars,
+            agent_mask=agent_mask,
+        )
+
+
 class _ConstantActionDistExtraLoss:
     has_gsde = False
 
@@ -332,12 +417,81 @@ def _move_replay_batch(
                 ("next_hidden_global_vars", batch.next_hidden_global_vars),
                 ("next_agent_mask", batch.next_agent_mask),
                 ("episode_start_mask", batch.episode_start_mask),
+                ("scenario_ids", batch.scenario_ids),
+                ("next_scenario_ids", batch.next_scenario_ids),
             )
         },
     )
 
 
 class SACTests(unittest.TestCase):
+    def test_episode_metrics_are_split_by_scenario(self) -> None:
+        metrics = SAC._episode_metrics([
+            {"scenario_name": "wall", "r": 2.0, "l": 10, "success": False},
+            {"scenario_name": "wall", "r": 6.0, "l": 12, "success": True},
+            {"scenario_name": "payload", "r": 9.0, "l": 20, "success": True},
+        ])
+
+        self.assertEqual(metrics["scenario/wall/ep_rew"].mean, 4.0)
+        self.assertEqual(metrics["scenario/wall/ep_success_rate"], 50.0)
+        self.assertEqual(metrics["scenario/wall/episodes"], 2)
+        self.assertEqual(metrics["scenario/payload/ep_rew"].mean, 9.0)
+        self.assertEqual(metrics["scenario/payload/ep_success_rate"], 100.0)
+
+    def test_episode_metrics_keep_aggregate_statistics_for_mixed_scenarios(self) -> None:
+        metrics = SAC._episode_metrics([
+            {"scenario_name": "wall", "r": 2.0, "l": 10},
+            {"scenario_name": "payload", "r": 8.0, "l": 20},
+        ])
+
+        self.assertEqual(metrics["ep_rew"].mean, 5.0)
+        self.assertEqual(metrics["ep_len"].mean, 15.0)
+        self.assertEqual(metrics["ep_rew"].min_value, 2.0)
+        self.assertEqual(metrics["ep_rew"].max_value, 8.0)
+
+    def test_episode_metrics_fall_back_to_scenario_id_without_name(self) -> None:
+        metrics = SAC._episode_metrics([
+            {"scenario_id": 3, "r": 2.0},
+            {"scenario_id": 3, "r": 4.0},
+        ])
+
+        self.assertEqual(metrics["scenario/id_3/ep_rew"].mean, 3.0)
+        self.assertEqual(metrics["scenario/id_3/episodes"], 2)
+
+    def test_episode_metrics_prefer_scenario_name_over_id(self) -> None:
+        metrics = SAC._episode_metrics([
+            {"scenario_id": 3, "scenario_name": "named", "r": 2.0},
+        ])
+
+        self.assertIn("scenario/named/ep_rew", metrics)
+        self.assertNotIn("scenario/id_3/ep_rew", metrics)
+
+    def test_episode_metrics_omit_missing_per_scenario_statistics(self) -> None:
+        metrics = SAC._episode_metrics([
+            {"scenario_name": "wall", "r": 2.0},
+            {"scenario_name": "payload", "l": 5},
+        ])
+
+        self.assertIn("scenario/wall/ep_rew", metrics)
+        self.assertNotIn("scenario/wall/ep_len", metrics)
+        self.assertIn("scenario/payload/ep_len", metrics)
+        self.assertNotIn("scenario/payload/ep_rew", metrics)
+
+    def test_episode_metrics_compute_success_rate_from_reported_values_only(self) -> None:
+        metrics = SAC._episode_metrics([
+            {"scenario_name": "wall", "success": True},
+            {"scenario_name": "wall"},
+            {"scenario_name": "wall", "success": False},
+        ])
+
+        self.assertEqual(metrics["scenario/wall/ep_success_rate"], 50.0)
+        self.assertEqual(metrics["scenario/wall/episodes"], 3)
+
+    def test_episode_metrics_add_no_scenario_schema_for_legacy_infos(self) -> None:
+        metrics = SAC._episode_metrics([{"r": 2.0, "l": 5}])
+
+        self.assertFalse(any(key.startswith("scenario/") for key in metrics))
+
     @unittest.skipUnless(torch.cuda.is_available(), "requires CUDA compilation")
     def test_compiled_cuda_train_step_matches_eager_losses_gradients_and_updates(self) -> None:
         eager_env = _make_env()
@@ -1673,6 +1827,51 @@ class SACTests(unittest.TestCase):
             )
 
             self.assertAlmostEqual(metrics["target_q"], 2.5)
+        finally:
+            env.close()
+
+    def test_train_step_routes_current_and_successor_scenario_ids(self) -> None:
+        env = _make_env()
+        try:
+            policy = _ScenarioTrackingSACPolicy(
+                n_agents=env.n_agents,
+                action_dim=env.action_space.total_agent_action_dim,
+            )
+            algo = SAC(
+                policy=policy,
+                env=env,
+                learning_rate=1e-3,
+                buffer_capacity_per_env=4,
+                learning_starts=0,
+                batch_size=2,
+                max_grad_norm=None,
+                train_device="cpu",
+                rollout_device="cpu",
+                replay_storage_device="cpu",
+            )
+            current_scenario_ids = torch.tensor([0, 1])
+            next_scenario_ids = torch.tensor([1, 0])
+            batch = replace(
+                _make_bootstrap_batch(env),
+                scenario_ids=current_scenario_ids,
+                next_scenario_ids=next_scenario_ids,
+            )
+
+            algo._train_step(batch, global_update_idx=0)
+
+            self.assertEqual(len(policy.actor_scenario_ids), 2)
+            self.assertTrue(torch.equal(policy.actor_scenario_ids[0], current_scenario_ids))
+            self.assertTrue(torch.equal(policy.actor_scenario_ids[1], next_scenario_ids))
+            self.assertEqual(len(policy.critic_scenario_ids), 2)
+            self.assertTrue(all(
+                torch.equal(scenario_ids, current_scenario_ids)
+                for scenario_ids in policy.critic_scenario_ids
+            ))
+            self.assertEqual(len(policy.target_critic_scenario_ids), 1)
+            self.assertTrue(torch.equal(
+                policy.target_critic_scenario_ids[0],
+                next_scenario_ids,
+            ))
         finally:
             env.close()
 

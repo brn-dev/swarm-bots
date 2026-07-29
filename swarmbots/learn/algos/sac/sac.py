@@ -393,6 +393,7 @@ class SAC(BaseAlgorithm):
             hidden_local_vars=batch.hidden_local_vars,
             hidden_global_vars=batch.hidden_global_vars,
             agent_mask=batch.agent_mask,
+            **({} if batch.scenario_ids is None else {"scenario_ids": batch.scenario_ids}),
             previous_actions=batch.previous_actions,
             deterministic=False,
         )
@@ -436,6 +437,11 @@ class SAC(BaseAlgorithm):
                 hidden_local_vars=bootstrap_next_hidden_local_vars,
                 hidden_global_vars=bootstrap_next_hidden_global_vars,
                 agent_mask=bootstrap_next_agent_mask,
+                **(
+                    {}
+                    if batch.next_scenario_ids is None
+                    else {"scenario_ids": batch.next_scenario_ids}
+                ),
                 previous_actions=batch.actions,
                 deterministic=False,
                 use_rsample=False,
@@ -447,6 +453,11 @@ class SAC(BaseAlgorithm):
                 hidden_local_vars=bootstrap_next_hidden_local_vars,
                 hidden_global_vars=bootstrap_next_hidden_global_vars,
                 agent_mask=bootstrap_next_agent_mask,
+                **(
+                    {}
+                    if batch.next_scenario_ids is None
+                    else {"scenario_ids": batch.next_scenario_ids}
+                ),
                 actions=next_actions,
             )
             target_q = self._tensor_operations.bellman_target(
@@ -465,6 +476,7 @@ class SAC(BaseAlgorithm):
             hidden_local_vars=batch.hidden_local_vars,
             hidden_global_vars=batch.hidden_global_vars,
             agent_mask=batch.agent_mask,
+            **({} if batch.scenario_ids is None else {"scenario_ids": batch.scenario_ids}),
             actions=batch.actions,
         )
         critic_loss = self._tensor_operations.critic_loss(
@@ -501,6 +513,7 @@ class SAC(BaseAlgorithm):
                 hidden_local_vars=batch.hidden_local_vars,
                 hidden_global_vars=batch.hidden_global_vars,
                 agent_mask=batch.agent_mask,
+                **({} if batch.scenario_ids is None else {"scenario_ids": batch.scenario_ids}),
                 actions=actions_pi,
             )
             actor_loss = self._tensor_operations.actor_loss(
@@ -930,17 +943,59 @@ class SAC(BaseAlgorithm):
             "progress_reward": "ep_progress_rew",
             "guidance_reward": "ep_guidance_rew",
         }
-        for info_key, metric_key in key_map.items():
-            values = [ep_info[info_key] for ep_info in episode_infos if info_key in ep_info]
-            metrics[metric_key] = compute_summary_statistics(
-                values,
-                find_min=info_key in {"r", "l", "progress_reward", "guidance_reward"},
-                find_max=info_key in {"r", "l", "progress_reward", "guidance_reward"},
-                make_histogram=15 if info_key in {"r", "l", "progress_reward", "guidance_reward"} else False,
+
+        def add_episode_group_metrics(
+                group_infos: list[dict[str, Any]],
+                *,
+                prefix: str,
+                include_empty_statistics: bool,
+                make_histograms: bool,
+        ) -> None:
+            metric_prefix = "" if not prefix else f"{prefix}/"
+            ranged_info_keys = {"r", "l", "progress_reward", "guidance_reward"}
+            for info_key, metric_key in key_map.items():
+                values = [ep_info[info_key] for ep_info in group_infos if info_key in ep_info]
+                if not values and not include_empty_statistics:
+                    continue
+                metrics[f"{metric_prefix}{metric_key}"] = compute_summary_statistics(
+                    values,
+                    find_min=info_key in ranged_info_keys,
+                    find_max=info_key in ranged_info_keys,
+                    make_histogram=15 if make_histograms and info_key in ranged_info_keys else False,
+                )
+            success_values = [
+                float(ep_info["success"])
+                for ep_info in group_infos
+                if "success" in ep_info
+            ]
+            if success_values:
+                metrics[f"{metric_prefix}ep_success_rate"] = (
+                    100.0 * sum(success_values) / len(success_values)
+                )
+
+        add_episode_group_metrics(
+            episode_infos,
+            prefix="",
+            include_empty_statistics=True,
+            make_histograms=True,
+        )
+        scenario_episode_infos: dict[str, list[dict[str, Any]]] = {}
+        for ep_info in episode_infos:
+            scenario_name = ep_info.get("scenario_name", None)
+            scenario_id = ep_info.get("scenario_id", None)
+            if scenario_name is None and scenario_id is None:
+                continue
+            scenario_key = str(scenario_name) if scenario_name is not None else f"id_{scenario_id}"
+            scenario_episode_infos.setdefault(scenario_key, []).append(ep_info)
+        for scenario_key, scenario_infos in scenario_episode_infos.items():
+            prefix = f"scenario/{scenario_key}"
+            add_episode_group_metrics(
+                scenario_infos,
+                prefix=prefix,
+                include_empty_statistics=False,
+                make_histograms=False,
             )
-        success_values = [float(ep_info["success"]) for ep_info in episode_infos if "success" in ep_info]
-        if success_values:
-            metrics["ep_success_rate"] = 100.0 * (sum(success_values) / len(success_values))
+            metrics[f"{prefix}/episodes"] = len(scenario_infos)
         return metrics
 
     def _move_entropy_tensors_to_train_device(self) -> None:

@@ -29,6 +29,7 @@ class BasePolicy(nn.Module, abc.ABC):
             hidden_local_vars: torch.Tensor | None = None,
             hidden_global_vars: torch.Tensor | None = None,
             agent_mask: torch.Tensor | None = None,
+            scenario_ids: torch.Tensor | None = None,
             previous_actions: torch.Tensor | None = None,
             deterministic: bool = False
     ) -> torch.Tensor:
@@ -67,6 +68,7 @@ class BasePolicy(nn.Module, abc.ABC):
             hidden_local_vars: torch.Tensor | None = None,
             hidden_global_vars: torch.Tensor | None = None,
             agent_mask: torch.Tensor | None = None,
+            scenario_ids: torch.Tensor | None = None,
             previous_actions: torch.Tensor | None = None,
             deterministic: bool = False,
             *,
@@ -74,7 +76,7 @@ class BasePolicy(nn.Module, abc.ABC):
             episode_start_mask: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, Any]:
         _ = episode_start_mask
-        actions = self.act(
+        action_kwargs = dict(
             local_obs=local_obs,
             global_obs=global_obs,
             hidden_local_vars=hidden_local_vars,
@@ -83,6 +85,9 @@ class BasePolicy(nn.Module, abc.ABC):
             previous_actions=previous_actions,
             deterministic=deterministic,
         )
+        if scenario_ids is not None:
+            action_kwargs["scenario_ids"] = scenario_ids
+        actions = self.act(**action_kwargs)
         return actions, temporal_state
 
     @staticmethod

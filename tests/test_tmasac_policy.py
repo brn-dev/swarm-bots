@@ -28,11 +28,15 @@ from swarmbots.learn.algos.off_policy.replay_buffer import OffPolicyReplayBatch,
 from swarmbots.learn.algos.sac import (
     SACNOPConfig,
     SACNOPLatentSource,
+    ScenarioFieldEncoderConfig,
+    ScenarioObservationSpec,
     TMASACActorHeadConfig,
     TMASACCriticConfig,
     TMASACPolicy,
     TMASACPolicyConfig,
+    TMASACScenarioEncoderConfig,
 )
+from swarmbots.learn.algos.sac.scenario_obs_encoder import TMASACScenarioObservationEncoder
 from swarmbots.learn.algos.world_modeling.next_obs_pred_mixin import NextObsPredConfig
 from swarmbots.learn.hybrid_action_space import HybridActionSpace
 
@@ -60,6 +64,38 @@ class _DummyDiscreteEnv(_DummyContinuousEnv):
             "actuators": spaces.Box(low=-1.0, high=1.0, shape=(_DummyContinuousEnv.n_agents, 2), dtype=float),
             "connectors": spaces.MultiBinary((_DummyContinuousEnv.n_agents, 1)),
         }
+    )
+
+
+class _DummyScenarioEnv(_DummyContinuousEnv):
+    global_obs_dim = 4
+    hidden_local_vars_dim = 3
+    hidden_global_vars_dim = 3
+    has_scenario_id = True
+
+
+def _scenario_encoder_config() -> TMASACScenarioEncoderConfig:
+    return TMASACScenarioEncoderConfig(
+        scenarios=(
+            ScenarioObservationSpec(
+                scenario_id=0,
+                name="wall",
+                global_obs_dim=0,
+                hidden_local_vars_dim=3,
+                hidden_global_vars_dim=1,
+            ),
+            ScenarioObservationSpec(
+                scenario_id=1,
+                name="payload",
+                global_obs_dim=4,
+                hidden_local_vars_dim=0,
+                hidden_global_vars_dim=3,
+            ),
+        ),
+        global_obs=ScenarioFieldEncoderConfig(output_dim=6),
+        hidden_local_vars=ScenarioFieldEncoderConfig(output_dim=5, hidden_dims=(7,)),
+        hidden_global_vars=ScenarioFieldEncoderConfig(output_dim=4),
+        scenario_embedding_dim=3,
     )
 
 
@@ -230,6 +266,335 @@ class _RecordingTransitionModel(torch.nn.Module):
 
 
 class TMASACPolicyTests(unittest.TestCase):
+    def test_scenario_input_normalization_preserves_single_feature_values(self) -> None:
+        scenario_config = TMASACScenarioEncoderConfig(
+            scenarios=(
+                ScenarioObservationSpec(
+                    scenario_id=0,
+                    name="single_feature",
+                    global_obs_dim=1,
+                    hidden_local_vars_dim=1,
+                    hidden_global_vars_dim=1,
+                ),
+            ),
+            global_obs=ScenarioFieldEncoderConfig(
+                output_dim=1,
+                normalize_input=True,
+            ),
+            hidden_local_vars=ScenarioFieldEncoderConfig(output_dim=1),
+            hidden_global_vars=ScenarioFieldEncoderConfig(output_dim=1),
+            scenario_embedding_dim=0,
+        )
+        encoder = TMASACScenarioObservationEncoder(
+            config=scenario_config,
+            global_obs_dim=1,
+            hidden_local_vars_dim=1,
+            hidden_global_vars_dim=1,
+            act_fn_cls=_make_config().act_fn_cls,
+            include_hidden_fields=False,
+        )
+        global_layer = encoder.global_obs_encoder.layers[0]
+        with torch.no_grad():
+            global_layer.weight.fill_(1.0)
+            global_layer.bias.zero_()
+
+        scenario_ids = torch.zeros(2, dtype=torch.long)
+        encoded = encoder.encode_global_obs(
+            torch.tensor([[1.0], [2.0]]),
+            scenario_ids,
+        )
+
+        torch.testing.assert_close(encoded, torch.tensor([[1.0], [2.0]]))
+
+    def test_scenario_encoders_support_mixed_batches_and_target_updates(self) -> None:
+        env = _DummyScenarioEnv()
+        scenario_config = _scenario_encoder_config()
+        policy = TMASACPolicy(
+            env=env,
+            config=replace(_make_config(), scenario_encoder_config=scenario_config),
+        )
+        batch_size = 4
+        scenario_ids = torch.tensor([0, 1, 0, 1], dtype=torch.long)
+        local_obs = torch.randn(batch_size, env.n_agents, env.local_obs_dim)
+        global_obs = torch.randn(batch_size, env.global_obs_dim)
+        hidden_local_vars = torch.randn(
+            batch_size,
+            env.n_agents,
+            env.hidden_local_vars_dim,
+        )
+        hidden_global_vars = torch.randn(batch_size, env.hidden_global_vars_dim)
+        agent_mask = torch.ones(batch_size, env.n_agents, dtype=torch.bool)
+
+        actions, log_probs = policy.action_log_prob(
+            local_obs=local_obs,
+            global_obs=global_obs,
+            hidden_local_vars=hidden_local_vars,
+            hidden_global_vars=hidden_global_vars,
+            agent_mask=agent_mask,
+            scenario_ids=scenario_ids,
+        )
+        q1, q2 = policy.q_values(
+            local_obs=local_obs,
+            global_obs=global_obs,
+            hidden_local_vars=hidden_local_vars,
+            hidden_global_vars=hidden_global_vars,
+            agent_mask=agent_mask,
+            scenario_ids=scenario_ids,
+            actions=actions,
+        )
+
+        self.assertEqual(
+            tuple(actions.shape),
+            (batch_size, env.n_agents, env.action_space.total_agent_action_dim),
+        )
+        self.assertEqual(tuple(log_probs.shape), (batch_size, env.n_agents))
+        self.assertEqual(tuple(q1.shape), (batch_size,))
+        self.assertEqual(tuple(q2.shape), (batch_size,))
+        self.assertFalse(
+            {id(parameter) for parameter in policy.actor_parameters()}
+            & {id(parameter) for parameter in policy.critic_parameters()}
+        )
+
+        assert policy.critic_scenario_encoder is not None
+        assert policy.critic_scenario_encoder_target is not None
+        assert policy.actor_scenario_encoder is not None
+        encoded_zero_dim_global_a = policy.actor_scenario_encoder.encode_global_obs(
+            torch.randn(1, env.global_obs_dim),
+            torch.zeros(1, dtype=torch.long),
+        )
+        encoded_zero_dim_global_b = policy.actor_scenario_encoder.encode_global_obs(
+            torch.randn(1, env.global_obs_dim),
+            torch.zeros(1, dtype=torch.long),
+        )
+        torch.testing.assert_close(
+            encoded_zero_dim_global_a,
+            encoded_zero_dim_global_b,
+        )
+        online_parameter = next(policy.critic_scenario_encoder.parameters())
+        target_parameter = next(policy.critic_scenario_encoder_target.parameters())
+        with torch.no_grad():
+            online_parameter.add_(1.0)
+        policy.polyak_update_targets(tau=1.0)
+        self.assertTrue(torch.equal(online_parameter, target_parameter))
+        self.assertFalse(target_parameter.requires_grad)
+
+    def test_scenario_feature_disabled_preserves_policy_schema(self) -> None:
+        policy = TMASACPolicy(env=_DummyContinuousEnv(), config=_make_config())
+
+        self.assertFalse(any("scenario_encoder" in key for key in policy.state_dict()))
+        self.assertNotIn(
+            "scenario_encoder_config",
+            policy.get_hyper_parameters()["tmasac_policy_config"],
+        )
+        self.assertFalse(any("scenario_encoder" in key for key in policy.get_grad_norms()))
+
+    def test_scenario_environment_requires_scenario_encoder_config(self) -> None:
+        with self.assertRaisesRegex(ValueError, "requires TMASACPolicyConfig.scenario_encoder_config"):
+            TMASACPolicy(env=_DummyScenarioEnv(), config=_make_config())
+
+    def test_scenario_encoder_config_requires_scenario_environment(self) -> None:
+        config = replace(
+            _make_config(),
+            scenario_encoder_config=_scenario_encoder_config(),
+        )
+
+        with self.assertRaisesRegex(ValueError, "requires an environment observation_space"):
+            TMASACPolicy(env=_DummyContinuousEnv(), config=config)
+
+    def test_scenario_policy_requires_ids_for_actor_calls(self) -> None:
+        env = _DummyScenarioEnv()
+        policy = TMASACPolicy(
+            env=env,
+            config=replace(
+                _make_config(),
+                scenario_encoder_config=_scenario_encoder_config(),
+            ),
+        )
+        batch = _make_batch()
+
+        with self.assertRaisesRegex(ValueError, "scenario_ids were not provided"):
+            policy.action_log_prob(
+                local_obs=batch.local_obs,
+                global_obs=torch.zeros(batch.local_obs.shape[0], env.global_obs_dim),
+                hidden_local_vars=torch.zeros(
+                    batch.local_obs.shape[0],
+                    env.n_agents,
+                    env.hidden_local_vars_dim,
+                ),
+                hidden_global_vars=torch.zeros(
+                    batch.local_obs.shape[0],
+                    env.hidden_global_vars_dim,
+                ),
+                agent_mask=batch.agent_mask,
+            )
+
+    def test_scenario_policy_requires_ids_for_critic_calls(self) -> None:
+        env = _DummyScenarioEnv()
+        policy = TMASACPolicy(
+            env=env,
+            config=replace(
+                _make_config(),
+                scenario_encoder_config=_scenario_encoder_config(),
+            ),
+        )
+        batch_size = 2
+
+        with self.assertRaisesRegex(ValueError, "scenario_ids were not provided"):
+            policy.q_values(
+                local_obs=torch.zeros(batch_size, env.n_agents, env.local_obs_dim),
+                global_obs=torch.zeros(batch_size, env.global_obs_dim),
+                hidden_local_vars=torch.zeros(
+                    batch_size,
+                    env.n_agents,
+                    env.hidden_local_vars_dim,
+                ),
+                hidden_global_vars=torch.zeros(batch_size, env.hidden_global_vars_dim),
+                agent_mask=torch.ones(batch_size, env.n_agents, dtype=torch.bool),
+                actions=torch.zeros(
+                    batch_size,
+                    env.n_agents,
+                    env.action_space.total_agent_action_dim,
+                ),
+            )
+
+    def test_scenario_critic_requires_both_hidden_fields(self) -> None:
+        env = _DummyScenarioEnv()
+        policy = TMASACPolicy(
+            env=env,
+            config=replace(
+                _make_config(),
+                scenario_encoder_config=_scenario_encoder_config(),
+            ),
+        )
+        batch_size = 2
+
+        with self.assertRaisesRegex(ValueError, "requires hidden_local_vars and hidden_global_vars"):
+            policy.q_values(
+                local_obs=torch.zeros(batch_size, env.n_agents, env.local_obs_dim),
+                global_obs=torch.zeros(batch_size, env.global_obs_dim),
+                hidden_local_vars=None,
+                hidden_global_vars=torch.zeros(batch_size, env.hidden_global_vars_dim),
+                agent_mask=torch.ones(batch_size, env.n_agents, dtype=torch.bool),
+                scenario_ids=torch.tensor([0, 1]),
+                actions=torch.zeros(
+                    batch_size,
+                    env.n_agents,
+                    env.action_space.total_agent_action_dim,
+                ),
+            )
+
+    def test_non_scenario_policy_rejects_unexpected_scenario_ids(self) -> None:
+        policy = TMASACPolicy(env=_DummyContinuousEnv(), config=_make_config())
+        batch = _make_batch()
+
+        with self.assertRaisesRegex(ValueError, "has no scenario encoder configured"):
+            policy.action_log_prob(
+                local_obs=batch.local_obs,
+                global_obs=batch.global_obs,
+                hidden_local_vars=batch.hidden_local_vars,
+                hidden_global_vars=batch.hidden_global_vars,
+                agent_mask=batch.agent_mask,
+                scenario_ids=torch.zeros(batch.local_obs.shape[0], dtype=torch.long),
+            )
+
+    def test_scenario_policy_rejects_shared_observation_encoding(self) -> None:
+        config = replace(
+            _make_config(),
+            share_observation_encoder=True,
+            scenario_encoder_config=_scenario_encoder_config(),
+        )
+
+        with self.assertRaisesRegex(ValueError, "does not yet support shared observation encoding"):
+            TMASACPolicy(env=_DummyScenarioEnv(), config=config)
+
+    def test_scenario_policy_validates_environment_name_order(self) -> None:
+        env = _DummyScenarioEnv()
+        env.scenario_names = ("payload", "wall")
+        config = replace(
+            _make_config(),
+            scenario_encoder_config=_scenario_encoder_config(),
+        )
+
+        with self.assertRaisesRegex(ValueError, "names/order must match"):
+            TMASACPolicy(env=env, config=config)
+
+    def test_scenario_policy_validates_environment_field_dimensions(self) -> None:
+        env = _DummyScenarioEnv()
+        env.scenario_names = ("wall", "payload")
+        env.scenario_observation_dims = {
+            "wall": {
+                "global_obs": 1,
+                "hidden_local_vars": 3,
+                "hidden_global_vars": 1,
+            },
+            "payload": {
+                "global_obs": 4,
+                "hidden_local_vars": 0,
+                "hidden_global_vars": 3,
+            },
+        }
+        config = replace(
+            _make_config(),
+            scenario_encoder_config=_scenario_encoder_config(),
+        )
+
+        with self.assertRaisesRegex(ValueError, "dimensions for 'wall' do not match"):
+            TMASACPolicy(env=env, config=config)
+
+    def test_scenario_encoder_state_dict_round_trip_preserves_target_freezing(self) -> None:
+        config = replace(
+            _make_config(),
+            scenario_encoder_config=_scenario_encoder_config(),
+        )
+        source = TMASACPolicy(env=_DummyScenarioEnv(), config=config)
+        restored = TMASACPolicy(env=_DummyScenarioEnv(), config=config)
+
+        restored.load_state_dict(source.state_dict())
+
+        for key, source_value in source.state_dict().items():
+            torch.testing.assert_close(restored.state_dict()[key], source_value)
+        assert restored.critic_scenario_encoder_target is not None
+        self.assertTrue(
+            all(
+                not parameter.requires_grad
+                for parameter in restored.critic_scenario_encoder_target.parameters()
+            )
+        )
+
+    def test_scenario_target_encoder_stays_in_eval_mode(self) -> None:
+        policy = TMASACPolicy(
+            env=_DummyScenarioEnv(),
+            config=replace(
+                _make_config(),
+                scenario_encoder_config=_scenario_encoder_config(),
+            ),
+        )
+        policy.train()
+
+        assert policy.actor_scenario_encoder is not None
+        assert policy.critic_scenario_encoder is not None
+        assert policy.critic_scenario_encoder_target is not None
+        self.assertTrue(policy.actor_scenario_encoder.training)
+        self.assertTrue(policy.critic_scenario_encoder.training)
+        self.assertFalse(policy.critic_scenario_encoder_target.training)
+
+    def test_scenario_hyper_parameters_include_encoder_config(self) -> None:
+        policy = TMASACPolicy(
+            env=_DummyScenarioEnv(),
+            config=replace(
+                _make_config(),
+                scenario_encoder_config=_scenario_encoder_config(),
+            ),
+        )
+
+        serialized = policy.get_hyper_parameters()["tmasac_policy_config"]
+
+        self.assertIn("scenario_encoder_config", serialized)
+        self.assertEqual(
+            serialized["scenario_encoder_config"]["scenario_embedding_dim"],
+            3,
+        )
+
     def test_target_modules_stay_in_eval_mode_when_policy_trains(self) -> None:
         policy = TMASACPolicy(
             env=_DummyContinuousEnv(),
