@@ -68,6 +68,7 @@ class SegmentTMASACPolicy(TMASACPolicy):
             hidden_local_vars: torch.Tensor | None = None,
             hidden_global_vars: torch.Tensor | None = None,
             agent_mask: torch.Tensor | None = None,
+            scenario_ids: torch.Tensor | None = None,
             previous_actions: torch.Tensor | None = None,
             deterministic: bool = False,
             *,
@@ -81,6 +82,7 @@ class SegmentTMASACPolicy(TMASACPolicy):
             hidden_local_vars=hidden_local_vars,
             hidden_global_vars=hidden_global_vars,
             agent_mask=agent_mask,
+            scenario_ids=scenario_ids,
             previous_actions=previous_actions,
             deterministic=deterministic,
         )
@@ -93,6 +95,7 @@ class SegmentTMASACPolicy(TMASACPolicy):
             global_obs: torch.Tensor,
             agent_mask: torch.Tensor | None,
             initial_state: torch.Tensor | None,
+            scenario_ids: torch.Tensor | None = None,
             time_mask: torch.Tensor | None = None,
             reset_mask: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
@@ -101,6 +104,7 @@ class SegmentTMASACPolicy(TMASACPolicy):
             local_obs=local_obs,
             global_obs=global_obs,
             agent_mask=agent_mask,
+            scenario_ids=scenario_ids,
         )
         actor_latents = self.encode_actor(**flat_inputs)
         return (
@@ -114,6 +118,7 @@ class SegmentTMASACPolicy(TMASACPolicy):
             local_obs: torch.Tensor,
             global_obs: torch.Tensor,
             agent_mask: torch.Tensor | None,
+            scenario_ids: torch.Tensor | None = None,
             previous_actions: torch.Tensor | None,
             deterministic: bool,
             use_rsample: bool,
@@ -126,6 +131,7 @@ class SegmentTMASACPolicy(TMASACPolicy):
             local_obs=local_obs,
             global_obs=global_obs,
             agent_mask=agent_mask,
+            scenario_ids=scenario_ids,
             previous_actions=previous_actions,
         )
         flat_agent_mask = flat_inputs["agent_mask"]
@@ -134,6 +140,7 @@ class SegmentTMASACPolicy(TMASACPolicy):
             local_obs=cast(torch.Tensor, flat_inputs["local_obs"]),
             global_obs=cast(torch.Tensor, flat_inputs["global_obs"]),
             agent_mask=flat_agent_mask,
+            scenario_ids=flat_inputs["scenario_ids"],
         )
         latent_pi = self.actor_head(actor_latents, agent_mask=flat_agent_mask)
         actions, log_probs = self.action_dist.get_actions_with_log_probs(
@@ -157,6 +164,7 @@ class SegmentTMASACPolicy(TMASACPolicy):
             local_obs: torch.Tensor,
             global_obs: torch.Tensor,
             agent_mask: torch.Tensor | None,
+            scenario_ids: torch.Tensor | None = None,
             previous_actions: torch.Tensor | None,
             deterministic: bool,
             use_rsample: bool,
@@ -176,6 +184,7 @@ class SegmentTMASACPolicy(TMASACPolicy):
             local_obs=local_obs,
             global_obs=global_obs,
             agent_mask=agent_mask,
+            scenario_ids=scenario_ids,
             previous_actions=previous_actions,
             deterministic=deterministic,
             use_rsample=use_rsample,
@@ -200,6 +209,7 @@ class SegmentTMASACPolicy(TMASACPolicy):
             hidden_global_vars: torch.Tensor | None,
             agent_mask: torch.Tensor | None,
             target: bool,
+            scenario_ids: torch.Tensor | None = None,
             initial_state: Any = None,
             time_mask: torch.Tensor | None = None,
             reset_mask: torch.Tensor | None = None,
@@ -212,6 +222,7 @@ class SegmentTMASACPolicy(TMASACPolicy):
             hidden_local_vars=hidden_local_vars,
             hidden_global_vars=hidden_global_vars,
             agent_mask=agent_mask,
+            scenario_ids=scenario_ids,
         )
         if target:
             q1, q2 = self.target_q_values(**flat_inputs)

@@ -25,6 +25,10 @@ from swarmbots.learn.algos.sac.sac_nop import (
     SACNOPModule,
     normalize_nop_latent_source,
 )
+from swarmbots.learn.algos.sac.scenario_obs_encoder import (
+    TMASACScenarioEncoderConfig,
+    TMASACScenarioObservationEncoder,
+)
 from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
 from swarmbots.learn.nn_components.activations import ActivationFactory
 from swarmbots.learn.nn_components.deep_set import DeepSetCritic
@@ -81,6 +85,7 @@ class TMASACPolicyConfig:
     compile_modules: bool = False
     compile_mode: str = "default"
     action_net_init_gain: float = 0.01
+    scenario_encoder_config: TMASACScenarioEncoderConfig | None = None
 
 
 class TMASACDecentralizedActorHead(nn.Module):
@@ -572,6 +577,54 @@ class TMASACPolicy(BaseSACPolicy):
             bool(config.share_observation_encoder)
             or config.shared_encoder_config is not None
         )
+        self.scenario_encoder_config = config.scenario_encoder_config
+        if self.scenario_encoder_config is not None:
+            if not getattr(env, "has_scenario_id", False):
+                raise ValueError(
+                    "TMASAC scenario encoding requires an environment observation_space with scenario_id."
+                )
+            if self.share_observation_encoder:
+                raise ValueError(
+                    "TMASAC scenario encoding does not yet support shared observation encoding."
+                )
+            self._validate_scenario_env_config(env)
+            self._validate_scenario_nop_config(config)
+        elif getattr(env, "has_scenario_id", False):
+            raise ValueError(
+                "An environment with scenario_id requires TMASACPolicyConfig.scenario_encoder_config."
+            )
+
+        self.actor_scenario_encoder = self._build_scenario_encoder(include_hidden_fields=False)
+        self.critic_scenario_encoder = self._build_scenario_encoder(include_hidden_fields=True)
+        self.critic_scenario_encoder_target = (
+            None
+            if self.critic_scenario_encoder is None
+            else copy.deepcopy(self.critic_scenario_encoder)
+        )
+        if self.critic_scenario_encoder_target is not None:
+            for parameter in self.critic_scenario_encoder_target.parameters():
+                parameter.requires_grad_(False)
+
+        actor_global_obs_dim = (
+            self.global_obs_dim
+            if self.actor_scenario_encoder is None
+            else self.actor_scenario_encoder.global_output_dim
+        )
+        critic_global_obs_dim = (
+            self.global_obs_dim
+            if self.critic_scenario_encoder is None
+            else self.critic_scenario_encoder.global_output_dim
+        )
+        self.critic_hidden_local_vars_dim = (
+            self.hidden_local_vars_dim
+            if self.critic_scenario_encoder is None
+            else self.critic_scenario_encoder.hidden_local_output_dim
+        )
+        self.critic_hidden_global_vars_dim = (
+            self.hidden_global_vars_dim
+            if self.critic_scenario_encoder is None
+            else self.critic_scenario_encoder.hidden_global_output_dim
+        )
 
         self.actor_encoder_config = replace(
             config.actor_encoder_config,
@@ -598,12 +651,18 @@ class TMASACPolicy(BaseSACPolicy):
         self.shared_observation_encoder = (
             None
             if self.shared_encoder_config is None
-            else self._build_observation_encoder(self.shared_encoder_config)
+            else self._build_observation_encoder(
+                self.shared_encoder_config,
+                global_obs_dim=critic_global_obs_dim,
+            )
         )
         self.shared_observation_encoder_target = (
             None
             if self.shared_encoder_config is None
-            else self._build_observation_encoder(self.shared_encoder_config)
+            else self._build_observation_encoder(
+                self.shared_encoder_config,
+                global_obs_dim=critic_global_obs_dim,
+            )
         )
         if self.shared_observation_encoder is not None and self.shared_observation_encoder_target is not None:
             self.shared_observation_encoder_target.load_state_dict(self.shared_observation_encoder.state_dict())
@@ -615,13 +674,13 @@ class TMASACPolicy(BaseSACPolicy):
             if self.shared_encoder_config is None
             else self.shared_encoder_config.d_model
         )
-        actor_global_input_dim = 0 if self.shared_encoder_config is not None else self.global_obs_dim
+        actor_global_input_dim = 0 if self.shared_encoder_config is not None else actor_global_obs_dim
         critic_local_input_dim = (
             self.local_obs_dim
             if self.shared_encoder_config is None
             else self.shared_encoder_config.d_model
         )
-        critic_global_input_dim = 0 if self.shared_encoder_config is not None else self.global_obs_dim
+        critic_global_input_dim = 0 if self.shared_encoder_config is not None else critic_global_obs_dim
 
         self._actor_encoder = self._build_actor_encoder(
             local_obs_dim=actor_local_input_dim,
@@ -665,6 +724,8 @@ class TMASACPolicy(BaseSACPolicy):
     def _keep_target_modules_in_eval_mode(self) -> None:
         if self.shared_observation_encoder_target is not None:
             self.shared_observation_encoder_target.train(False)
+        if self.critic_scenario_encoder_target is not None:
+            self.critic_scenario_encoder_target.train(False)
         self.critic_target.train(False)
 
     def action_log_prob(
@@ -675,6 +736,7 @@ class TMASACPolicy(BaseSACPolicy):
             hidden_local_vars: torch.Tensor | None = None,
             hidden_global_vars: torch.Tensor | None = None,
             agent_mask: torch.Tensor | None = None,
+            scenario_ids: torch.Tensor | None = None,
             previous_actions: torch.Tensor | None = None,
             deterministic: bool = False,
             use_rsample: bool = True,
@@ -686,6 +748,7 @@ class TMASACPolicy(BaseSACPolicy):
                 hidden_local_vars=hidden_local_vars,
                 hidden_global_vars=hidden_global_vars,
                 agent_mask=agent_mask,
+                scenario_ids=scenario_ids,
                 previous_actions=previous_actions,
                 deterministic=deterministic,
                 use_rsample=use_rsample,
@@ -696,6 +759,7 @@ class TMASACPolicy(BaseSACPolicy):
             hidden_local_vars=hidden_local_vars,
             hidden_global_vars=hidden_global_vars,
             agent_mask=agent_mask,
+            scenario_ids=scenario_ids,
             previous_actions=previous_actions,
             deterministic=deterministic,
             use_rsample=use_rsample,
@@ -709,6 +773,7 @@ class TMASACPolicy(BaseSACPolicy):
             hidden_local_vars: torch.Tensor | None = None,
             hidden_global_vars: torch.Tensor | None = None,
             agent_mask: torch.Tensor | None = None,
+            scenario_ids: torch.Tensor | None = None,
             previous_actions: torch.Tensor | None = None,
             deterministic: bool = False,
             use_rsample: bool = True,
@@ -719,6 +784,7 @@ class TMASACPolicy(BaseSACPolicy):
             local_obs=local_obs,
             global_obs=global_obs,
             agent_mask=agent_mask,
+            scenario_ids=scenario_ids,
         )
         latent_pi = self.actor_head(actor_latents, agent_mask=agent_mask)
         actions, log_probs = self.action_dist.get_actions_with_log_probs(
@@ -738,19 +804,28 @@ class TMASACPolicy(BaseSACPolicy):
             hidden_local_vars: torch.Tensor | None = None,
             hidden_global_vars: torch.Tensor | None = None,
             agent_mask: torch.Tensor | None = None,
+            scenario_ids: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        critic_local_inputs, critic_global_inputs = self._critic_observation_inputs(
+        (
+            critic_local_inputs,
+            critic_global_inputs,
+            critic_hidden_local_vars,
+            critic_hidden_global_vars,
+        ) = self._critic_observation_inputs(
             local_obs=local_obs,
             global_obs=global_obs,
+            hidden_local_vars=hidden_local_vars,
+            hidden_global_vars=hidden_global_vars,
             agent_mask=agent_mask,
+            scenario_ids=scenario_ids,
             target=False,
         )
         q1, q2, _nop_latents = self.critic(
             local_obs=critic_local_inputs,
             global_obs=critic_global_inputs,
             actions=actions,
-            hidden_local_vars=hidden_local_vars,
-            hidden_global_vars=hidden_global_vars,
+            hidden_local_vars=critic_hidden_local_vars,
+            hidden_global_vars=critic_hidden_global_vars,
             agent_mask=agent_mask,
         )
         return q1, q2
@@ -764,19 +839,28 @@ class TMASACPolicy(BaseSACPolicy):
             hidden_local_vars: torch.Tensor | None = None,
             hidden_global_vars: torch.Tensor | None = None,
             agent_mask: torch.Tensor | None = None,
+            scenario_ids: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
-        critic_local_inputs, critic_global_inputs = self._critic_observation_inputs(
+        (
+            critic_local_inputs,
+            critic_global_inputs,
+            critic_hidden_local_vars,
+            critic_hidden_global_vars,
+        ) = self._critic_observation_inputs(
             local_obs=local_obs,
             global_obs=global_obs,
+            hidden_local_vars=hidden_local_vars,
+            hidden_global_vars=hidden_global_vars,
             agent_mask=agent_mask,
+            scenario_ids=scenario_ids,
             target=False,
         )
         q1, q2, critic_latents = self.critic(
             local_obs=critic_local_inputs,
             global_obs=critic_global_inputs,
             actions=actions,
-            hidden_local_vars=hidden_local_vars,
-            hidden_global_vars=hidden_global_vars,
+            hidden_local_vars=critic_hidden_local_vars,
+            hidden_global_vars=critic_hidden_global_vars,
             agent_mask=agent_mask,
         )
         if self.critic_nop is None:
@@ -794,19 +878,28 @@ class TMASACPolicy(BaseSACPolicy):
             hidden_local_vars: torch.Tensor | None = None,
             hidden_global_vars: torch.Tensor | None = None,
             agent_mask: torch.Tensor | None = None,
+            scenario_ids: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        critic_local_inputs, critic_global_inputs = self._critic_observation_inputs(
+        (
+            critic_local_inputs,
+            critic_global_inputs,
+            critic_hidden_local_vars,
+            critic_hidden_global_vars,
+        ) = self._critic_observation_inputs(
             local_obs=local_obs,
             global_obs=global_obs,
+            hidden_local_vars=hidden_local_vars,
+            hidden_global_vars=hidden_global_vars,
             agent_mask=agent_mask,
+            scenario_ids=scenario_ids,
             target=True,
         )
         q1, q2, _nop_latents = self.critic_target(
             local_obs=critic_local_inputs,
             global_obs=critic_global_inputs,
             actions=actions,
-            hidden_local_vars=hidden_local_vars,
-            hidden_global_vars=hidden_global_vars,
+            hidden_local_vars=critic_hidden_local_vars,
+            hidden_global_vars=critic_hidden_global_vars,
             agent_mask=agent_mask,
         )
         return q1, q2
@@ -820,19 +913,28 @@ class TMASACPolicy(BaseSACPolicy):
             hidden_local_vars: torch.Tensor | None,
             hidden_global_vars: torch.Tensor | None,
             agent_mask: torch.Tensor | None,
+            scenario_ids: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        critic_local_inputs, critic_global_inputs = self._critic_observation_inputs(
+        (
+            critic_local_inputs,
+            critic_global_inputs,
+            critic_hidden_local_vars,
+            critic_hidden_global_vars,
+        ) = self._critic_observation_inputs(
             local_obs=local_obs,
             global_obs=global_obs,
+            hidden_local_vars=hidden_local_vars,
+            hidden_global_vars=hidden_global_vars,
             agent_mask=agent_mask,
+            scenario_ids=scenario_ids,
             target=False,
         )
         return self._critic_module().encode(
             local_inputs=critic_local_inputs,
             global_inputs=critic_global_inputs,
             actions=actions,
-            hidden_local_vars=hidden_local_vars,
-            hidden_global_vars=hidden_global_vars,
+            hidden_local_vars=critic_hidden_local_vars,
+            hidden_global_vars=critic_hidden_global_vars,
             agent_mask=agent_mask,
         )
 
@@ -842,11 +944,13 @@ class TMASACPolicy(BaseSACPolicy):
             local_obs: torch.Tensor,
             global_obs: torch.Tensor,
             agent_mask: torch.Tensor | None,
+            scenario_ids: torch.Tensor | None = None,
     ) -> torch.Tensor:
         actor_local_inputs, actor_global_inputs = self._actor_observation_inputs(
             local_obs=local_obs,
             global_obs=global_obs,
             agent_mask=agent_mask,
+            scenario_ids=scenario_ids,
         )
         actor_encoder = (
             self._actor_encoder
@@ -861,19 +965,32 @@ class TMASACPolicy(BaseSACPolicy):
             local_obs: torch.Tensor,
             global_obs: torch.Tensor,
             agent_mask: torch.Tensor | None,
+            scenario_ids: torch.Tensor | None = None,
     ) -> torch.Tensor:
         actor_local_inputs, actor_global_inputs = self._actor_observation_inputs(
             local_obs=local_obs,
             global_obs=global_obs,
             agent_mask=agent_mask,
+            scenario_ids=scenario_ids,
         )
         return self._actor_encoder(actor_local_inputs, actor_global_inputs, agent_mask=agent_mask)
 
     def actor_parameters(self) -> list[nn.Parameter]:
-        return list(self._iter_parameters(self.actor_encoder, self.actor_head, self.action_dist, self.actor_nop))
+        return list(self._iter_parameters(
+            self.actor_scenario_encoder,
+            self.actor_encoder,
+            self.actor_head,
+            self.action_dist,
+            self.actor_nop,
+        ))
 
     def critic_parameters(self) -> list[nn.Parameter]:
-        return list(self._iter_parameters(self.shared_observation_encoder, self.critic, self.critic_nop))
+        return list(self._iter_parameters(
+            self.critic_scenario_encoder,
+            self.shared_observation_encoder,
+            self.critic,
+            self.critic_nop,
+        ))
 
     def compute_actor_nop_loss(
             self,
@@ -881,11 +998,12 @@ class TMASACPolicy(BaseSACPolicy):
     ) -> tuple[torch.Tensor | None, dict[str, Any]]:
         if self.actor_nop is None:
             return None, {}
-        local_obs, global_obs, agent_mask = self._nop_initial_obs(batch)
+        local_obs, global_obs, agent_mask, scenario_ids = self._nop_initial_obs(batch)
         actor_latents = self.encode_actor(
             local_obs=local_obs,
             global_obs=global_obs,
             agent_mask=agent_mask,
+            scenario_ids=scenario_ids,
         )
         return self.actor_nop.compute_loss(source_latents=actor_latents, batch=batch)
 
@@ -905,6 +1023,7 @@ class TMASACPolicy(BaseSACPolicy):
                 hidden_global_vars,
                 actions,
                 agent_mask,
+                scenario_ids,
             ) = self._nop_initial_critic_inputs(batch)
             if self.nop_latent_source is SACNOPLatentSource.SHARED_ENCODER:
                 source_latents = self.encode_shared_observations(
@@ -921,6 +1040,7 @@ class TMASACPolicy(BaseSACPolicy):
                     hidden_local_vars=hidden_local_vars,
                     hidden_global_vars=hidden_global_vars,
                     agent_mask=agent_mask,
+                    scenario_ids=scenario_ids,
                 )
         return self.critic_nop.compute_loss(source_latents=source_latents, batch=batch)
 
@@ -931,40 +1051,51 @@ class TMASACPolicy(BaseSACPolicy):
         return self.config.nop_config.num_next_steps
 
     def polyak_update_targets(self, tau: float) -> None:
+        if self.critic_scenario_encoder is not None and self.critic_scenario_encoder_target is not None:
+            polyak_update(
+                self.critic_scenario_encoder,
+                self.critic_scenario_encoder_target,
+                tau,
+            )
         if self.shared_observation_encoder is not None and self.shared_observation_encoder_target is not None:
             polyak_update(self.shared_observation_encoder, self.shared_observation_encoder_target, tau)
         polyak_update(self.critic, self.critic_target, tau)
 
     def get_hyper_parameters(self) -> dict[str, Any]:
+        policy_config = {
+            "actor_encoder_config": serialize_dataclass(self.actor_encoder_config),
+            "critic_encoder_config": serialize_dataclass(self.critic_encoder_config),
+            "shared_encoder_config": (
+                None
+                if self.shared_encoder_config is None
+                else serialize_dataclass(self.shared_encoder_config)
+            ),
+            "share_observation_encoder": self.share_observation_encoder,
+            "actor_head_config": serialize_dataclass(self.config.actor_head_config),
+            "critic_config": serialize_dataclass(self.config.critic_config),
+            "act_fn_cls": serialize_value(self.act_fn_cls),
+            "dropout": self.dropout,
+            "continuous_config": continuous_config_to_dicts(self.action_dist.continuous_configs),
+            "max_agents": self.max_agents,
+            "nop_config": serialize_dataclass(self.config.nop_config),
+            "nop_latent_source": self.nop_latent_source.value,
+            "actor_nop": None if self.actor_nop is None else self.actor_nop.get_hyper_parameters(),
+            "critic_nop": None if self.critic_nop is None else self.critic_nop.get_hyper_parameters(),
+            "compile_modules": self.config.compile_modules,
+            "compile_mode": self.config.compile_mode,
+            "action_net_init_gain": self.config.action_net_init_gain,
+            "action_dist_compile_friendly": self.action_dist.compile_friendly,
+        }
+        if self.scenario_encoder_config is not None:
+            policy_config["scenario_encoder_config"] = serialize_dataclass(
+                self.scenario_encoder_config
+            )
         return {
-            "tmasac_policy_config": {
-                "actor_encoder_config": serialize_dataclass(self.actor_encoder_config),
-                "critic_encoder_config": serialize_dataclass(self.critic_encoder_config),
-                "shared_encoder_config": (
-                    None
-                    if self.shared_encoder_config is None
-                    else serialize_dataclass(self.shared_encoder_config)
-                ),
-                "share_observation_encoder": self.share_observation_encoder,
-                "actor_head_config": serialize_dataclass(self.config.actor_head_config),
-                "critic_config": serialize_dataclass(self.config.critic_config),
-                "act_fn_cls": serialize_value(self.act_fn_cls),
-                "dropout": self.dropout,
-                "continuous_config": continuous_config_to_dicts(self.action_dist.continuous_configs),
-                "max_agents": self.max_agents,
-                "nop_config": serialize_dataclass(self.config.nop_config),
-                "nop_latent_source": self.nop_latent_source.value,
-                "actor_nop": None if self.actor_nop is None else self.actor_nop.get_hyper_parameters(),
-                "critic_nop": None if self.critic_nop is None else self.critic_nop.get_hyper_parameters(),
-                "compile_modules": self.config.compile_modules,
-                "compile_mode": self.config.compile_mode,
-                "action_net_init_gain": self.config.action_net_init_gain,
-                "action_dist_compile_friendly": self.action_dist.compile_friendly,
-            }
+            "tmasac_policy_config": policy_config
         }
 
     def get_grad_norms(self) -> dict[str, float]:
-        return {
+        metrics = {
             "shared_observation_encoder": self._module_grad_norm(self.shared_observation_encoder),
             "shared_observation_encoder_target": self._module_grad_norm(self.shared_observation_encoder_target),
             "actor_encoder": self._module_grad_norm(self.actor_encoder),
@@ -976,6 +1107,15 @@ class TMASACPolicy(BaseSACPolicy):
             "critic_nop": self._module_grad_norm(self.critic_nop),
             "total": self._module_grad_norm(self),
         }
+        if self.scenario_encoder_config is not None:
+            metrics.update({
+                "actor_scenario_encoder": self._module_grad_norm(self.actor_scenario_encoder),
+                "critic_scenario_encoder": self._module_grad_norm(self.critic_scenario_encoder),
+                "critic_scenario_encoder_target": self._module_grad_norm(
+                    self.critic_scenario_encoder_target
+                ),
+            })
+        return metrics
 
     def update_loss_weights(self, **weights: float) -> None:
         if not weights:
@@ -1027,7 +1167,13 @@ class TMASACPolicy(BaseSACPolicy):
             local_obs: torch.Tensor,
             global_obs: torch.Tensor,
             agent_mask: torch.Tensor | None,
+            scenario_ids: torch.Tensor | None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
+        global_obs = self._encode_scenario_global_obs(
+            encoder=self.actor_scenario_encoder,
+            global_obs=global_obs,
+            scenario_ids=scenario_ids,
+        )
         if self.shared_observation_encoder is None:
             return local_obs, global_obs
         shared_latents = self.encode_shared_observations(
@@ -1043,19 +1189,70 @@ class TMASACPolicy(BaseSACPolicy):
             *,
             local_obs: torch.Tensor,
             global_obs: torch.Tensor,
+            hidden_local_vars: torch.Tensor | None,
+            hidden_global_vars: torch.Tensor | None,
             agent_mask: torch.Tensor | None,
+            scenario_ids: torch.Tensor | None,
             target: bool,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor | None,
+        torch.Tensor | None,
+    ]:
+        scenario_encoder = (
+            self.critic_scenario_encoder_target
+            if target
+            else self.critic_scenario_encoder
+        )
+        global_obs = self._encode_scenario_global_obs(
+            encoder=scenario_encoder,
+            global_obs=global_obs,
+            scenario_ids=scenario_ids,
+        )
+        if scenario_encoder is not None:
+            assert scenario_ids is not None
+            if hidden_local_vars is None or hidden_global_vars is None:
+                raise ValueError(
+                    "TMASAC scenario encoding requires hidden_local_vars and hidden_global_vars."
+                )
+            hidden_local_vars = scenario_encoder.encode_hidden_local_vars(
+                hidden_local_vars,
+                scenario_ids,
+            )
+            hidden_global_vars = scenario_encoder.encode_hidden_global_vars(
+                hidden_global_vars,
+                scenario_ids,
+            )
         encoder = self.shared_observation_encoder_target if target else self.shared_observation_encoder
         if encoder is None:
-            return local_obs, global_obs
+            return local_obs, global_obs, hidden_local_vars, hidden_global_vars
         shared_latents = self.encode_shared_observations(
             local_obs=local_obs,
             global_obs=global_obs,
             agent_mask=agent_mask,
             target=target,
         )
-        return shared_latents, global_obs
+        return shared_latents, global_obs, hidden_local_vars, hidden_global_vars
+
+    @staticmethod
+    def _encode_scenario_global_obs(
+            *,
+            encoder: TMASACScenarioObservationEncoder | None,
+            global_obs: torch.Tensor,
+            scenario_ids: torch.Tensor | None,
+    ) -> torch.Tensor:
+        if encoder is None:
+            if scenario_ids is not None:
+                raise ValueError(
+                    "scenario_ids were provided, but TMASACPolicy has no scenario encoder configured."
+                )
+            return global_obs
+        if scenario_ids is None:
+            raise ValueError(
+                "TMASACPolicy scenario encoding is configured, but scenario_ids were not provided."
+            )
+        return encoder.encode_global_obs(global_obs, scenario_ids)
 
     def _build_actor_head(self) -> TMASACDecentralizedActorHead:
         if self.actor_head_kind is not TMASACActorHeadKind.DECENTRALIZED:
@@ -1089,13 +1286,29 @@ class TMASACPolicy(BaseSACPolicy):
             max_agents=self.max_agents,
             local_input_dim=local_input_dim,
             global_input_dim=global_input_dim,
-            hidden_local_vars_dim=self.hidden_local_vars_dim,
-            hidden_global_vars_dim=self.hidden_global_vars_dim,
+            hidden_local_vars_dim=self.critic_hidden_local_vars_dim,
+            hidden_global_vars_dim=self.critic_hidden_global_vars_dim,
             action_dim=self.agent_action_dim,
             encoder_config=self.critic_encoder_config,
             critic_config=self.config.critic_config,
             act_fn_cls=self.config.act_fn_cls,
             dropout=self.config.dropout,
+        )
+
+    def _build_scenario_encoder(
+            self,
+            *,
+            include_hidden_fields: bool,
+    ) -> TMASACScenarioObservationEncoder | None:
+        if self.scenario_encoder_config is None:
+            return None
+        return TMASACScenarioObservationEncoder(
+            config=self.scenario_encoder_config,
+            global_obs_dim=self.global_obs_dim,
+            hidden_local_vars_dim=self.hidden_local_vars_dim,
+            hidden_global_vars_dim=self.hidden_global_vars_dim,
+            act_fn_cls=self.config.act_fn_cls,
+            include_hidden_fields=include_hidden_fields,
         )
 
     def _build_observation_encoder(
@@ -1232,14 +1445,15 @@ class TMASACPolicy(BaseSACPolicy):
     @staticmethod
     def _nop_initial_obs(
             batch: OffPolicyReplayBatch | OffPolicyReplayEpisodeSegmentBatch,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None, torch.Tensor | None]:
         if isinstance(batch, OffPolicyReplayEpisodeSegmentBatch):
             return (
                 batch.local_obs[:, 0],
                 batch.global_obs[:, 0],
                 None if batch.agent_mask is None else batch.agent_mask[:, 0],
+                None if batch.scenario_ids is None else batch.scenario_ids[:, 0],
             )
-        return batch.local_obs, batch.global_obs, batch.agent_mask
+        return batch.local_obs, batch.global_obs, batch.agent_mask, batch.scenario_ids
 
     @staticmethod
     def _nop_initial_critic_inputs(
@@ -1251,6 +1465,7 @@ class TMASACPolicy(BaseSACPolicy):
         torch.Tensor | None,
         torch.Tensor,
         torch.Tensor | None,
+        torch.Tensor | None,
     ]:
         if isinstance(batch, OffPolicyReplayEpisodeSegmentBatch):
             return (
@@ -1260,6 +1475,7 @@ class TMASACPolicy(BaseSACPolicy):
                 None if batch.hidden_global_vars is None else batch.hidden_global_vars[:, 0],
                 batch.actions[:, 0],
                 None if batch.agent_mask is None else batch.agent_mask[:, 0],
+                None if batch.scenario_ids is None else batch.scenario_ids[:, 0],
             )
         return (
             batch.local_obs,
@@ -1268,6 +1484,7 @@ class TMASACPolicy(BaseSACPolicy):
             batch.hidden_global_vars,
             batch.actions,
             batch.agent_mask,
+            batch.scenario_ids,
         )
 
     @staticmethod
@@ -1299,6 +1516,46 @@ class TMASACPolicy(BaseSACPolicy):
                 "TMASACPolicy does not support PopArt critics yet because SAC must update PopArt target "
                 "statistics during critic training. Set critic_config.use_popart=False."
             )
+
+    @staticmethod
+    def _validate_scenario_nop_config(config: TMASACPolicyConfig) -> None:
+        if not config.nop_config.enabled:
+            return
+        target_config = config.nop_config.next_obs_pred_config
+        if target_config.global_scalar_target_indices or target_config.global_rot6d_target_indices:
+            raise ValueError(
+                "TMASAC scenario encoding does not yet support global NOP targets. "
+                "Use local NOP targets only."
+            )
+
+    def _validate_scenario_env_config(self, env: BaseLearnEnvWrapper) -> None:
+        assert self.scenario_encoder_config is not None
+        scenario_names = getattr(env, "scenario_names", None)
+        if scenario_names is not None:
+            configured_names = tuple(
+                scenario.name
+                for scenario in self.scenario_encoder_config.scenarios
+            )
+            if tuple(scenario_names) != configured_names:
+                raise ValueError(
+                    "Scenario encoder names/order must match the environment: "
+                    f"configured={configured_names}, environment={tuple(scenario_names)}."
+                )
+        scenario_dims = getattr(env, "scenario_observation_dims", None)
+        if scenario_dims is None:
+            return
+        for scenario in self.scenario_encoder_config.scenarios:
+            expected_dims = {
+                "global_obs": scenario.global_obs_dim,
+                "hidden_local_vars": scenario.hidden_local_vars_dim,
+                "hidden_global_vars": scenario.hidden_global_vars_dim,
+            }
+            if scenario_dims.get(scenario.name) != expected_dims:
+                raise ValueError(
+                    f"Scenario encoder dimensions for {scenario.name!r} do not match "
+                    f"the environment: configured={expected_dims}, "
+                    f"environment={scenario_dims.get(scenario.name)}."
+                )
 
     @staticmethod
     def _mask_actions(actions: torch.Tensor, agent_mask: torch.Tensor | None) -> torch.Tensor:

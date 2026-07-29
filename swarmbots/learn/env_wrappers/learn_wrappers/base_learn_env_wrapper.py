@@ -78,6 +78,15 @@ class BaseLearnEnvWrapper(VectorWrapper, Generic[ActSpace], abc.ABC):
         self.global_obs_dim = global_obs_shape[1]
         self.hidden_local_vars_dim = hidden_local_vars_shape[2]
         self.hidden_global_vars_dim = hidden_global_vars_shape[1]
+        self.has_scenario_id = "scenario_id" in self._observation_space.keys()
+        self.scenario_names = getattr(env, "scenario_names", None)
+        self.scenario_observation_dims = getattr(env, "scenario_observation_dims", None)
+        if self.has_scenario_id:
+            scenario_id_shape = self._observation_space["scenario_id"].shape
+            if tuple(scenario_id_shape) != (local_obs_shape[0],):
+                raise ValueError(
+                    f"Expected scenario_id shape ({local_obs_shape[0]},), got {scenario_id_shape}"
+                )
         self.has_agent_mask = "agent_mask" in self._observation_space.keys()
         if self.has_agent_mask:
             agent_mask_shape = self._observation_space["agent_mask"].shape
@@ -164,6 +173,8 @@ class BaseLearnEnvWrapper(VectorWrapper, Generic[ActSpace], abc.ABC):
         }
         if "agent_mask" in obs and obs["agent_mask"] is not None:
             obs_t["agent_mask"] = to_torch_tensor(obs["agent_mask"], device=self.device, dtype=torch.bool)
+        if "scenario_id" in obs and obs["scenario_id"] is not None:
+            obs_t["scenario_id"] = to_torch_tensor(obs["scenario_id"], device=self.device, dtype=torch.long)
         return obs_t
 
     @abc.abstractmethod

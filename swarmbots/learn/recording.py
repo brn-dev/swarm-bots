@@ -244,6 +244,11 @@ def record_policy(
                     hidden_local_vars=hidden_local_vars,
                     hidden_global_vars=hidden_global_vars,
                     agent_mask=agent_mask,
+                    **(
+                        {}
+                        if "scenario_id" not in obs
+                        else {"scenario_ids": obs["scenario_id"]}
+                    ),
                     previous_actions=previous_actions,
                     deterministic=deterministic,
                     temporal_state=temporal_state,

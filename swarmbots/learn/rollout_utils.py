@@ -38,13 +38,19 @@ def append_episode_infos(
         raise ValueError("Expected infos['_episode'] to match computed dones.")
 
     for env_idx in torch.nonzero(episode_mask, as_tuple=False).flatten().tolist():
-        episode_infos.append(
-            {
-                key: to_python_episode_stat(values[env_idx])
-                for key, values in episode_stats.items()
-                if not key.startswith("_")
-            }
-        )
+        episode_info = {}
+        for key, values in episode_stats.items():
+            if key.startswith("_"):
+                continue
+            value_mask = episode_stats.get(f"_{key}", None)
+            if value_mask is not None and not bool(to_python_episode_stat(value_mask[env_idx])):
+                continue
+            episode_info[key] = to_python_episode_stat(values[env_idx])
+        for scenario_key in ("scenario_id", "scenario_name"):
+            scenario_values = info_source.get(scenario_key, infos.get(scenario_key, None))
+            if scenario_values is not None:
+                episode_info[scenario_key] = to_python_episode_stat(scenario_values[env_idx])
+        episode_infos.append(episode_info)
 
 
 def extract_bootstrap_obs(

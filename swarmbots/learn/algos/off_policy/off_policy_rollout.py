@@ -321,6 +321,9 @@ def collect_off_policy_steps(
                         hidden_local_vars=obs_for_step["hidden_local_vars"],
                         hidden_global_vars=obs_for_step["hidden_global_vars"],
                         agent_mask=obs_for_step.get("agent_mask", None),
+                        **(
+                            {} if "scenario_id" not in obs_for_step else {"scenario_ids": obs_for_step["scenario_id"]}
+                        ),
                         previous_actions=previous_actions if policy_requires_previous_actions else None,
                         deterministic=deterministic,
                         temporal_state=temporal_state,
@@ -336,6 +339,9 @@ def collect_off_policy_steps(
                     hidden_local_vars=obs_for_step["hidden_local_vars"],
                     hidden_global_vars=obs_for_step["hidden_global_vars"],
                     agent_mask=obs_for_step.get("agent_mask", None),
+                    **(
+                        {} if "scenario_id" not in obs_for_step else {"scenario_ids": obs_for_step["scenario_id"]}
+                    ),
                     previous_actions=previous_actions if policy_requires_previous_actions else None,
                     deterministic=deterministic,
                     temporal_state=temporal_state,

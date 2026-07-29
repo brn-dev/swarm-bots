@@ -210,6 +210,7 @@ class RMATPolicyMixin:
             hidden_local_vars: torch.Tensor | None = None,
             hidden_global_vars: torch.Tensor | None = None,
             agent_mask: torch.Tensor | None = None,
+            scenario_ids: torch.Tensor | None = None,
             previous_actions: torch.Tensor | None = None,
             deterministic: bool = False,
             *,
@@ -218,6 +219,7 @@ class RMATPolicyMixin:
     ) -> tuple[torch.Tensor, RMATEncoderState]:
         _ = hidden_local_vars
         _ = hidden_global_vars
+        _ = scenario_ids
         augmented_observations, next_state = self._encode_observations(
             local_obs=local_obs,
             global_obs=global_obs,

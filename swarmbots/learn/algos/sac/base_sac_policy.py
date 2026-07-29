@@ -25,6 +25,7 @@ class BaseSACPolicy(BasePolicy, abc.ABC):
             hidden_local_vars: torch.Tensor | None = None,
             hidden_global_vars: torch.Tensor | None = None,
             agent_mask: torch.Tensor | None = None,
+            scenario_ids: torch.Tensor | None = None,
             previous_actions: torch.Tensor | None = None,
             deterministic: bool = False,
             use_rsample: bool = True,
@@ -41,6 +42,7 @@ class BaseSACPolicy(BasePolicy, abc.ABC):
             hidden_local_vars: torch.Tensor | None = None,
             hidden_global_vars: torch.Tensor | None = None,
             agent_mask: torch.Tensor | None = None,
+            scenario_ids: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         raise NotImplementedError()
 
@@ -53,8 +55,9 @@ class BaseSACPolicy(BasePolicy, abc.ABC):
             hidden_local_vars: torch.Tensor | None = None,
             hidden_global_vars: torch.Tensor | None = None,
             agent_mask: torch.Tensor | None = None,
+            scenario_ids: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
-        q1, q2 = self.q_values(
+        q_value_kwargs = dict(
             local_obs=local_obs,
             global_obs=global_obs,
             actions=actions,
@@ -62,6 +65,9 @@ class BaseSACPolicy(BasePolicy, abc.ABC):
             hidden_global_vars=hidden_global_vars,
             agent_mask=agent_mask,
         )
+        if scenario_ids is not None:
+            q_value_kwargs["scenario_ids"] = scenario_ids
+        q1, q2 = self.q_values(**q_value_kwargs)
         return q1, q2, None
 
     @abc.abstractmethod
@@ -74,6 +80,7 @@ class BaseSACPolicy(BasePolicy, abc.ABC):
             hidden_local_vars: torch.Tensor | None = None,
             hidden_global_vars: torch.Tensor | None = None,
             agent_mask: torch.Tensor | None = None,
+            scenario_ids: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         raise NotImplementedError()
 
@@ -112,10 +119,11 @@ class BaseSACPolicy(BasePolicy, abc.ABC):
             hidden_local_vars: torch.Tensor | None = None,
             hidden_global_vars: torch.Tensor | None = None,
             agent_mask: torch.Tensor | None = None,
+            scenario_ids: torch.Tensor | None = None,
             previous_actions: torch.Tensor | None = None,
             deterministic: bool = False,
     ) -> torch.Tensor:
-        actions, _log_probs = self.action_log_prob(
+        action_kwargs = dict(
             local_obs=local_obs,
             global_obs=global_obs,
             hidden_local_vars=hidden_local_vars,
@@ -125,6 +133,9 @@ class BaseSACPolicy(BasePolicy, abc.ABC):
             deterministic=deterministic,
             use_rsample=False,
         )
+        if scenario_ids is not None:
+            action_kwargs["scenario_ids"] = scenario_ids
+        actions, _log_probs = self.action_log_prob(**action_kwargs)
         if agent_mask is not None:
             actions = actions.masked_fill(~agent_mask.unsqueeze(-1), 0.0)
         return actions

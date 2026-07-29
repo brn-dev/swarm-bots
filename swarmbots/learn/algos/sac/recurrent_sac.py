@@ -14,9 +14,9 @@ from swarmbots.learn.algos.sac.recurrent_tmasac_policy import (
     RecurrentCriticState,
     RecurrentTMASACPolicy,
 )
-from swarmbots.learn.algos.sac.segment_tmasac_policy import SegmentTMASACPolicy
 from swarmbots.learn.algos.sac.sac import SAC
 from swarmbots.learn.algos.sac.sac_nop import SACNOPSequenceBatch
+from swarmbots.learn.algos.sac.segment_tmasac_policy import SegmentTMASACPolicy
 from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
 from swarmbots.learn.temporal_state import (
     concatenate_temporal_states,
@@ -161,6 +161,7 @@ class RecurrentSAC(SAC):
             local_obs=learning_batch.local_obs,
             global_obs=learning_batch.global_obs,
             agent_mask=learning_batch.agent_mask,
+            scenario_ids=learning_batch.scenario_ids,
             previous_actions=learning_batch.previous_actions,
             deterministic=False,
             use_rsample=True,
@@ -250,6 +251,7 @@ class RecurrentSAC(SAC):
             hidden_local_vars=learning_batch.hidden_local_vars,
             hidden_global_vars=learning_batch.hidden_global_vars,
             agent_mask=learning_batch.agent_mask,
+            scenario_ids=learning_batch.scenario_ids,
             target=False,
             initial_state=critic_state,
             time_mask=learning_batch.train_mask,
@@ -387,6 +389,7 @@ class RecurrentSAC(SAC):
                 local_obs=burn_in_batch.local_obs,
                 global_obs=burn_in_batch.global_obs,
                 agent_mask=burn_in_batch.agent_mask,
+                scenario_ids=burn_in_batch.scenario_ids,
                 initial_state=actor_state,
                 time_mask=torch.ones_like(burn_in_batch.train_mask),
                 reset_mask=burn_in_batch.episode_start_mask,
@@ -421,6 +424,7 @@ class RecurrentSAC(SAC):
                 hidden_local_vars=burn_in_batch.hidden_local_vars,
                 hidden_global_vars=burn_in_batch.hidden_global_vars,
                 agent_mask=burn_in_batch.agent_mask,
+                scenario_ids=burn_in_batch.scenario_ids,
                 target=target,
                 initial_state=critic_state,
                 time_mask=torch.ones_like(burn_in_batch.train_mask),
@@ -460,6 +464,14 @@ class RecurrentSAC(SAC):
                 batch.next_agent_mask[selected_batch_indices, selected_time_indices],
             ))
         )
+        target_scenario_ids = (
+            None
+            if batch.next_scenario_ids is None
+            else torch.cat((
+                batch.next_scenario_ids[:, -1],
+                batch.next_scenario_ids[selected_batch_indices, selected_time_indices],
+            ))
+        )
         target_previous_actions = torch.cat((
             batch.actions[:, -1],
             batch.actions[selected_batch_indices, selected_time_indices],
@@ -479,6 +491,7 @@ class RecurrentSAC(SAC):
             local_obs=target_local_obs,
             global_obs=target_global_obs,
             agent_mask=target_agent_mask,
+            scenario_ids=target_scenario_ids,
             previous_actions=target_previous_actions,
             deterministic=False,
             use_rsample=False,
@@ -547,6 +560,7 @@ class RecurrentSAC(SAC):
                 hidden_local_vars=batch.next_hidden_local_vars,
                 hidden_global_vars=batch.next_hidden_global_vars,
                 agent_mask=batch.next_agent_mask,
+                scenario_ids=batch.next_scenario_ids,
                 target=True,
                 **({} if actor_state is None else {"actor_state": actor_state}),
             )
@@ -563,6 +577,11 @@ class RecurrentSAC(SAC):
                 hidden_local_vars=batch.hidden_local_vars[:, time_idx],
                 hidden_global_vars=batch.hidden_global_vars[:, time_idx],
                 agent_mask=None if batch.agent_mask is None else batch.agent_mask[:, time_idx],
+                scenario_ids=(
+                    None
+                    if batch.scenario_ids is None
+                    else batch.scenario_ids[:, time_idx]
+                ),
                 target=True,
                 initial_state=history_state,
                 reset_mask=(
@@ -581,6 +600,11 @@ class RecurrentSAC(SAC):
                     None
                     if batch.next_agent_mask is None
                     else batch.next_agent_mask[:, time_idx]
+                ),
+                scenario_ids=(
+                    None
+                    if batch.next_scenario_ids is None
+                    else batch.next_scenario_ids[:, time_idx]
                 ),
                 target=True,
                 initial_state=history_state,
@@ -605,6 +629,7 @@ class RecurrentSAC(SAC):
                 hidden_local_vars=batch.hidden_local_vars,
                 hidden_global_vars=batch.hidden_global_vars,
                 agent_mask=batch.agent_mask,
+                scenario_ids=batch.scenario_ids,
                 target=False,
                 **({} if actor_state is None else {"actor_state": actor_state}),
             )
@@ -626,6 +651,11 @@ class RecurrentSAC(SAC):
                 hidden_local_vars=batch.hidden_local_vars[:, time_idx],
                 hidden_global_vars=batch.hidden_global_vars[:, time_idx],
                 agent_mask=None if batch.agent_mask is None else batch.agent_mask[:, time_idx],
+                scenario_ids=(
+                    None
+                    if batch.scenario_ids is None
+                    else batch.scenario_ids[:, time_idx]
+                ),
                 target=False,
                 initial_state=history_state,
                 reset_mask=reset_mask,
@@ -637,6 +667,11 @@ class RecurrentSAC(SAC):
                 hidden_local_vars=batch.hidden_local_vars[:, time_idx],
                 hidden_global_vars=batch.hidden_global_vars[:, time_idx],
                 agent_mask=None if batch.agent_mask is None else batch.agent_mask[:, time_idx],
+                scenario_ids=(
+                    None
+                    if batch.scenario_ids is None
+                    else batch.scenario_ids[:, time_idx]
+                ),
                 target=False,
                 initial_state=history_state,
                 reset_mask=reset_mask,
@@ -782,6 +817,8 @@ def _slice_segment(
         train_mask=batch.train_mask[:, start:end],
         initial_temporal_state=batch.initial_temporal_state,
         burn_in_steps=0,
+        scenario_ids=slice_tensor(batch.scenario_ids),
+        next_scenario_ids=slice_tensor(batch.next_scenario_ids),
     )
 
 
@@ -862,6 +899,8 @@ def _flatten_segment(batch: OffPolicyReplayEpisodeSegmentBatch) -> OffPolicyRepl
         next_hidden_global_vars=flatten(batch.next_hidden_global_vars),
         next_agent_mask=flatten(batch.next_agent_mask),
         episode_start_mask=flatten(batch.episode_start_mask),
+        scenario_ids=flatten(batch.scenario_ids),
+        next_scenario_ids=flatten(batch.next_scenario_ids),
     )
 
 
