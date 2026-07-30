@@ -437,6 +437,86 @@ def _make_env(*, max_steps: int = 200) -> SwarmBotsLearnEnvWrapper:
     return SwarmBotsLearnEnvWrapper(vector_env)
 
 
+def _make_recurrent_critic_algorithm(
+        env: SwarmBotsLearnEnvWrapper,
+) -> tuple[RecurrentTMASACPolicy, RecurrentSAC]:
+    policy = RecurrentTMASACPolicy(
+        env=env,
+        config=_policy_config(
+            _encoder_config(
+                LSTMTemporalSequenceModel,
+                LSTMTemporalSequenceModelConfig(),
+            ),
+            recurrent_critic=True,
+        ),
+    )
+    algorithm = RecurrentSAC(
+        policy=policy,
+        env=env,
+        burn_in_steps=1,
+        learning_steps=3,
+        temporal_state_store_interval=1,
+        buffer_capacity_per_env=8,
+        learning_starts=0,
+        batch_size=2,
+        replay_storage_device="cpu",
+        train_device="cpu",
+    )
+    return policy, algorithm
+
+
+def _make_recurrent_critic_batch(
+        env: SwarmBotsLearnEnvWrapper,
+) -> OffPolicyReplayEpisodeSegmentBatch:
+    return replace(
+        _make_segment_batch(
+            batch_size=2,
+            sequence_length=3,
+            n_agents=env.n_agents,
+            local_obs_dim=env.local_obs_dim,
+            global_obs_dim=env.global_obs_dim,
+            hidden_local_vars_dim=env.hidden_local_vars_dim,
+            hidden_global_vars_dim=env.hidden_global_vars_dim,
+            action_dim=env.action_space.total_agent_action_dim,
+        ),
+        episode_start_mask=torch.tensor([
+            [True, False, False],
+            [False, True, False],
+        ]),
+    )
+
+
+class _RecurrentCriticCallRecorder:
+    def __init__(
+            self,
+            batch: OffPolicyReplayEpisodeSegmentBatch,
+            *,
+            history_call_first: bool,
+    ) -> None:
+        self.batch = batch
+        self.history_call_first = history_call_first
+        self.calls: list[dict[str, Any]] = []
+        self.history_states = [object() for _ in range(batch.sequence_length)]
+        self.branch_states = [object() for _ in range(batch.sequence_length)]
+
+    def __call__(
+            self,
+            **kwargs: Any,
+    ) -> tuple[torch.Tensor, torch.Tensor, None, object]:
+        call_index = len(self.calls)
+        self.calls.append(kwargs)
+        time_index = call_index // 2
+        is_first_call = call_index % 2 == 0
+        is_history_call = is_first_call == self.history_call_first
+        q_value = torch.full((self.batch.actions.shape[0],), float(call_index))
+        state = (
+            self.history_states[time_index]
+            if is_history_call
+            else self.branch_states[time_index]
+        )
+        return q_value, q_value + 0.5, None, state
+
+
 def _make_scenario_env(*, max_steps: int = 200) -> TorchRecordEpisodeStatisticsWrapper:
     def make_vector_env(
             *,
@@ -487,6 +567,7 @@ def _perform_short_recurrent_update(
         use_slstm: bool = False,
         actor_state_critic_input_config: ActorStateCriticInputConfig | None = None,
         selected_state_capacities: list[int] | None = None,
+        nop_parameter_updates: dict[str, bool] | None = None,
 ) -> tuple[dict[str, object], int]:
     env = _make_env(max_steps=max_steps)
     try:
@@ -534,6 +615,19 @@ def _perform_short_recurrent_update(
                 train_device="cpu",
                 rollout_device="cpu",
             )
+            initial_nop_parameters = {}
+            if nop_parameter_updates is not None:
+                initial_nop_parameters = {
+                    module_name: [
+                        parameter.detach().clone()
+                        for parameter in module.parameters()
+                    ]
+                    for module_name, module in (
+                        ("actor", policy.actor_nop),
+                        ("critic", policy.critic_nop),
+                    )
+                    if module is not None
+                }
             if selected_state_capacities is not None:
                 action_with_selected_states = policy.action_log_prob_sequence_with_selected_states
 
@@ -554,6 +648,21 @@ def _perform_short_recurrent_update(
                     episode_success_rate_ema,
                     update_ema=True,
                 )
+            if nop_parameter_updates is not None:
+                for module_name, module in (
+                    ("actor", policy.actor_nop),
+                    ("critic", policy.critic_nop),
+                ):
+                    if module is None:
+                        continue
+                    nop_parameter_updates[module_name] = any(
+                        not torch.equal(before, after)
+                        for before, after in zip(
+                            initial_nop_parameters[module_name],
+                            module.parameters(),
+                            strict=True,
+                        )
+                    )
             return metrics, algorithm.n_total_updates
     finally:
         env.close()
@@ -2414,6 +2523,134 @@ class RecurrentTMASACTests(unittest.TestCase):
         torch.testing.assert_close(sequence_q1, torch.stack(step_q1, dim=1))
         torch.testing.assert_close(sequence_q2, torch.stack(step_q2, dim=1))
 
+    def test_target_recurrent_critic_branches_from_replay_history_without_committing_branch_state(
+            self,
+    ) -> None:
+        env = _make_env()
+        try:
+            policy, algorithm = _make_recurrent_critic_algorithm(env)
+            batch = _make_recurrent_critic_batch(env)
+            next_actions = batch.actions + 50.0
+            initial_state = object()
+            call_recorder = _RecurrentCriticCallRecorder(
+                batch,
+                history_call_first=True,
+            )
+
+            with patch.object(policy, "q_values_sequence", side_effect=call_recorder):
+                q1, q2 = algorithm._target_next_q_values(
+                    batch=batch,
+                    next_actions=next_actions,
+                    initial_state=initial_state,
+                    actor_state=None,
+                )
+
+            self.assertEqual(len(call_recorder.calls), 2 * batch.sequence_length)
+            expected_history_input_state = initial_state
+            for time_index in range(batch.sequence_length):
+                history_call = call_recorder.calls[2 * time_index]
+                branch_call = call_recorder.calls[2 * time_index + 1]
+                self.assertIs(history_call["initial_state"], expected_history_input_state)
+                self.assertIs(
+                    branch_call["initial_state"],
+                    call_recorder.history_states[time_index],
+                )
+                torch.testing.assert_close(
+                    history_call["actions"],
+                    batch.actions[:, time_index],
+                )
+                torch.testing.assert_close(
+                    branch_call["actions"],
+                    next_actions[:, time_index],
+                )
+                torch.testing.assert_close(
+                    history_call["local_obs"],
+                    batch.local_obs[:, time_index],
+                )
+                torch.testing.assert_close(
+                    branch_call["local_obs"],
+                    batch.next_local_obs[:, time_index],
+                )
+                torch.testing.assert_close(
+                    history_call["reset_mask"],
+                    batch.episode_start_mask[:, time_index],
+                )
+                self.assertNotIn("reset_mask", branch_call)
+                self.assertTrue(history_call["target"])
+                self.assertTrue(branch_call["target"])
+                expected_history_input_state = call_recorder.history_states[time_index]
+
+            torch.testing.assert_close(
+                q1,
+                torch.tensor([[1.0, 3.0, 5.0], [1.0, 3.0, 5.0]]),
+            )
+            torch.testing.assert_close(
+                q2,
+                torch.tensor([[1.5, 3.5, 5.5], [1.5, 3.5, 5.5]]),
+            )
+        finally:
+            env.close()
+
+    def test_actor_recurrent_critic_evaluates_policy_actions_without_advancing_history_with_them(
+            self,
+    ) -> None:
+        env = _make_env()
+        try:
+            policy, algorithm = _make_recurrent_critic_algorithm(env)
+            batch = _make_recurrent_critic_batch(env)
+            policy_actions = batch.actions + 50.0
+            initial_state = object()
+            call_recorder = _RecurrentCriticCallRecorder(
+                batch,
+                history_call_first=False,
+            )
+
+            with patch.object(policy, "q_values_sequence", side_effect=call_recorder):
+                q1, q2 = algorithm._actor_q_values(
+                    batch=batch,
+                    actions_pi=policy_actions,
+                    initial_state=initial_state,
+                    actor_state=None,
+                )
+
+            self.assertEqual(len(call_recorder.calls), 2 * batch.sequence_length)
+            expected_history_input_state = initial_state
+            for time_index in range(batch.sequence_length):
+                branch_call = call_recorder.calls[2 * time_index]
+                history_call = call_recorder.calls[2 * time_index + 1]
+                self.assertIs(branch_call["initial_state"], expected_history_input_state)
+                self.assertIs(history_call["initial_state"], expected_history_input_state)
+                torch.testing.assert_close(
+                    branch_call["actions"],
+                    policy_actions[:, time_index],
+                )
+                torch.testing.assert_close(
+                    history_call["actions"],
+                    batch.actions[:, time_index],
+                )
+                torch.testing.assert_close(
+                    branch_call["reset_mask"],
+                    batch.episode_start_mask[:, time_index],
+                )
+                torch.testing.assert_close(
+                    history_call["reset_mask"],
+                    batch.episode_start_mask[:, time_index],
+                )
+                self.assertFalse(branch_call["target"])
+                self.assertFalse(history_call["target"])
+                expected_history_input_state = call_recorder.history_states[time_index]
+
+            torch.testing.assert_close(
+                q1,
+                torch.tensor([[0.0, 2.0, 4.0], [0.0, 2.0, 4.0]]),
+            )
+            torch.testing.assert_close(
+                q2,
+                torch.tensor([[0.5, 2.5, 4.5], [0.5, 2.5, 4.5]]),
+            )
+        finally:
+            env.close()
+
     def test_nop_processes_every_aligned_learning_window_in_parallel(self) -> None:
         env = _make_env()
         try:
@@ -2643,6 +2880,10 @@ class RecurrentTMASACTests(unittest.TestCase):
                     [False, False, True, False, False],
                     [False, False, True, False, False],
                 ]),
+                train_mask=torch.tensor([
+                    [True, False, True, False, True],
+                    [False, True, True, True, False],
+                ]),
             )
 
             nop_training_batch = algorithm._build_nop_training_batch(
@@ -2653,8 +2894,8 @@ class RecurrentTMASACTests(unittest.TestCase):
 
             assert nop_training_batch is not None
             self.assertEqual(nop_training_batch.batch.train_mask.tolist(), [
-                [[True, True], [True, False], [True, True], [True, True]],
-                [[True, True], [True, False], [True, True], [True, True]],
+                [[True, False], [False, False], [True, False], [False, True]],
+                [[False, True], [True, False], [True, True], [True, False]],
             ])
         finally:
             env.close()
@@ -3033,15 +3274,28 @@ class RecurrentTMASACTests(unittest.TestCase):
             target_log_probs = torch.full((4, env.n_agents), -90.0)
             target_actions[2] = 77.0
             target_log_probs[2] = -77.0
+            current_actor_state = torch.arange(
+                2 * 3 * env.n_agents * 2,
+                dtype=torch.float32,
+            ).reshape(2, 3, env.n_agents, 2)
+            target_actor_state = torch.arange(
+                4 * env.n_agents * 2,
+                dtype=torch.float32,
+            ).reshape(4, env.n_agents, 2) + 500.0
+            target_next_actor_state = object()
 
             action_log_prob_sequence = Mock(return_value=(
                 target_actions,
                 target_log_probs,
                 torch.empty(0),
-                torch.empty(0),
+                target_next_actor_state,
             ))
-            with patch.object(policy, "action_log_prob_sequence", action_log_prob_sequence):
-                next_actions, next_log_probs = algorithm._next_policy_actions(
+            actor_state_critic_input = Mock(return_value=target_actor_state)
+            with (
+                patch.object(policy, "action_log_prob_sequence", action_log_prob_sequence),
+                patch.object(policy, "actor_state_critic_input", actor_state_critic_input),
+            ):
+                next_actions, next_log_probs, next_actor_state_input = algorithm._next_policy_actions(
                     batch=batch,
                     actions_pi=actions_pi,
                     log_prob_pi=log_prob_pi,
@@ -3049,6 +3303,8 @@ class RecurrentTMASACTests(unittest.TestCase):
                     truncation_actor_states=truncation_actor_states,
                     truncation_indices=truncation_indices,
                     truncation_mask=truncation_mask,
+                    current_actor_state=current_actor_state,
+                    return_actor_state=True,
                 )
 
             torch.testing.assert_close(next_actions[:, 0], actions_pi[:, 1])
@@ -3059,6 +3315,17 @@ class RecurrentTMASACTests(unittest.TestCase):
             torch.testing.assert_close(next_log_probs[0, 1], target_log_probs[2])
             torch.testing.assert_close(next_log_probs[1, 1], log_prob_pi[1, 2])
             torch.testing.assert_close(next_log_probs[:, 2], target_log_probs[:2])
+            assert next_actor_state_input is not None
+            expected_next_actor_state_input = torch.cat((
+                current_actor_state[:, 1:],
+                target_actor_state[:2].unsqueeze(1),
+            ), dim=1)
+            expected_next_actor_state_input[0, 1] = target_actor_state[2]
+            torch.testing.assert_close(
+                next_actor_state_input,
+                expected_next_actor_state_input,
+            )
+            actor_state_critic_input.assert_called_once_with(target_next_actor_state)
             action_log_prob_sequence.assert_called_once()
             target_call = action_log_prob_sequence.call_args.kwargs
             torch.testing.assert_close(
@@ -3693,13 +3960,19 @@ class RecurrentTMASACTests(unittest.TestCase):
                     torch._dynamo.reset()
 
     def test_short_recurrent_sac_nop_update_smoke(self) -> None:
+        nop_parameter_updates: dict[str, bool] = {}
         metrics, _total_updates = _perform_short_recurrent_update(
             nop_config=_small_nop_config(num_next_steps=2),
+            nop_parameter_updates=nop_parameter_updates,
         )
 
         self.assertEqual(metrics["updates"], 1)
         self.assertIn("actor_nop_loss", metrics)
         self.assertIn("critic_nop_loss", metrics)
+        self.assertEqual(nop_parameter_updates, {
+            "actor": True,
+            "critic": True,
+        })
 
     def test_short_recurrent_critic_update_smoke(self) -> None:
         metrics, total_updates = _perform_short_recurrent_update(recurrent_critic=True)

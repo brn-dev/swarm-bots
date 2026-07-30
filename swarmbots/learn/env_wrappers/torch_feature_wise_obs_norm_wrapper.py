@@ -7,6 +7,11 @@ import torch
 
 from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper, TorchObs
 from swarmbots.learn.env_wrappers.learn_wrappers.torch_env_wrapper import TorchEnvWrapper
+from swarmbots.learn.env_wrappers.torch_feature_wise_obs_norm_tensor_ops import (
+    NormalizeObservations,
+    build_obs_norm_tensor_operation,
+    should_compile_obs_norm_tensor_operations_by_default,
+)
 from swarmbots.learn.torch_running_mean_std import TorchRunningMeanStd
 
 
@@ -18,6 +23,8 @@ class TorchFeatureWiseObsNormWrapper(TorchEnvWrapper):
         scalar_feature_indices: list[int] | np.ndarray,
         quaternion_indices: list[int] | np.ndarray,
         eps: float = 1e-6,
+        compile_tensor_operations: bool | None = None,
+        tensor_operations_compile_mode: str = "reduce-overhead",
     ) -> None:
         super().__init__(env)
         if obs_key not in self.observation_space.spaces:
@@ -29,12 +36,12 @@ class TorchFeatureWiseObsNormWrapper(TorchEnvWrapper):
             scalar_feature_indices,
             max_index=obs_dim,
             name=f"{obs_key}_scalar_feature_indices",
-        )
+        ).to(self.device)
         self._quaternion_slices = self._as_quaternion_slices(
             quaternion_indices,
             max_index=obs_dim,
             name=f"{obs_key}_quaternion_indices",
-        )
+        ).to(self.device)
         self._ensure_no_overlap(self._scalar_indices, self._quaternion_slices, name=obs_key)
 
         self.obs_rms: TorchRunningMeanStd | None = None
@@ -43,6 +50,9 @@ class TorchFeatureWiseObsNormWrapper(TorchEnvWrapper):
 
         self._eps = float(eps)
         self._update_running_mean = True
+        self._compile_tensor_operations = compile_tensor_operations
+        self._tensor_operations_compile_mode = tensor_operations_compile_mode
+        self._normalize_observations = self._build_normalize_observations()
 
     @property
     def update_running_mean(self) -> bool:
@@ -55,31 +65,37 @@ class TorchFeatureWiseObsNormWrapper(TorchEnvWrapper):
     def observations(self, observations: TorchObs) -> TorchObs:
         obs = observations[self.obs_key]
 
-        if self._update_running_mean and self.obs_rms is not None:
-            batch = self._prepare_batch(
-                samples=obs[..., self._scalar_indices],
-                agent_mask=observations.get("agent_mask", None),
-            )
-            if batch.numel() > 0:
-                if batch.shape[-1] != self.obs_rms.mean.shape[-1]:
-                    raise ValueError(
-                        f'TorchFeatureWiseObsNormWrapper("{self.obs_key}") batch width mismatch: '
-                        f"{batch.shape[-1]} != {self.obs_rms.mean.shape[-1]}"
-                    )
-                self.obs_rms.update(batch)
-
         if self.obs_rms is None and self._quaternion_slices.numel() == 0:
             return observations
 
-        normalized_obs = obs.clone()
-        if self.obs_rms is not None:
-            scalar_mean = self.obs_rms.mean.to(device=obs.device, dtype=obs.dtype)
-            scalar_var = self.obs_rms.var.to(device=obs.device, dtype=obs.dtype)
-            scalars = normalized_obs[..., self._scalar_indices]
-            normalized_obs[..., self._scalar_indices] = (scalars - scalar_mean) / torch.sqrt(scalar_var + self._eps)
+        statistics_mask = self._statistics_mask(
+            obs=obs,
+            agent_mask=observations.get("agent_mask", None),
+        )
+        if self.obs_rms is None:
+            running_mean = torch.empty((0,), device=obs.device, dtype=torch.float64)
+            running_var = torch.empty((0,), device=obs.device, dtype=torch.float64)
+            running_count = torch.zeros((), device=obs.device, dtype=torch.float64)
+        else:
+            running_mean = self.obs_rms.mean
+            running_var = self.obs_rms.var
+            running_count = self.obs_rms.count
 
-        if self._quaternion_slices.numel() > 0:
-            self._normalize_quaternion_signs(normalized_obs, self._quaternion_slices.to(obs.device))
+        normalized_obs, next_mean, next_var, next_count = self._normalize_observations(
+            obs,
+            statistics_mask,
+            self._scalar_indices,
+            self._quaternion_slices,
+            running_mean,
+            running_var,
+            running_count,
+            self._eps,
+            self._update_running_mean and self.obs_rms is not None,
+        )
+        if self.obs_rms is not None and self._update_running_mean:
+            self.obs_rms.mean.copy_(next_mean)
+            self.obs_rms.var.copy_(next_var)
+            self.obs_rms.count.copy_(next_count)
 
         normalized_observations = dict(observations)
         normalized_observations[self.obs_key] = normalized_obs
@@ -97,29 +113,40 @@ class TorchFeatureWiseObsNormWrapper(TorchEnvWrapper):
             self._update_running_mean = old_update_running_mean
 
     def set_device(self, device: torch.device | str) -> None:
+        old_device_type = self.device.type
         if self.obs_rms is not None:
             self.obs_rms.to(device)
         super().set_device(device)
+        self._scalar_indices = self._scalar_indices.to(self.device)
+        self._quaternion_slices = self._quaternion_slices.to(self.device)
+        if self.device.type != old_device_type and self._compile_tensor_operations is None:
+            self._normalize_observations = self._build_normalize_observations()
 
-    def _prepare_batch(
+    def _statistics_mask(
         self,
         *,
-        samples: torch.Tensor,
+        obs: torch.Tensor,
         agent_mask: torch.Tensor | None,
     ) -> torch.Tensor:
         if (
             agent_mask is not None
             and agent_mask.ndim == 2
-            and samples.ndim >= 3
-            and tuple(agent_mask.shape) == tuple(samples.shape[:2])
+            and obs.ndim >= 3
+            and tuple(agent_mask.shape) == tuple(obs.shape[:2])
         ):
-            masked_samples = samples[agent_mask]
-            if masked_samples.ndim == 1:
-                return masked_samples.reshape(1, -1)
-            return masked_samples.reshape(-1, masked_samples.shape[-1])
-        if samples.ndim == 1:
-            return samples.reshape(1, -1)
-        return samples.reshape(-1, samples.shape[-1])
+            return agent_mask
+        return torch.ones(obs.shape[:-1], device=obs.device, dtype=torch.bool)
+
+    def _build_normalize_observations(self) -> NormalizeObservations:
+        compile_operation = (
+            should_compile_obs_norm_tensor_operations_by_default(self.device)
+            if self._compile_tensor_operations is None
+            else self._compile_tensor_operations
+        )
+        return build_obs_norm_tensor_operation(
+            compile_operation=compile_operation,
+            compile_mode=self._tensor_operations_compile_mode,
+        )
 
     @staticmethod
     def _as_index_array(
@@ -148,12 +175,6 @@ class TorchFeatureWiseObsNormWrapper(TorchEnvWrapper):
         if starts.min() < 0 or np.any(starts + 3 >= max_index):
             raise ValueError(f"{name} out of bounds for dimension {max_index}: {starts}")
         return torch.as_tensor(np.stack([starts + i for i in range(4)], axis=1), dtype=torch.long)
-
-    @staticmethod
-    def _normalize_quaternion_signs(obs: torch.Tensor, quat_slices: torch.Tensor) -> None:
-        quats = obs[..., quat_slices]
-        sign = torch.where(quats[..., 0] < 0, -1.0, 1.0).to(dtype=obs.dtype)
-        obs[..., quat_slices] = quats * sign.unsqueeze(-1)
 
     @staticmethod
     def _ensure_no_overlap(
