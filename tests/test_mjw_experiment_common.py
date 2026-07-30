@@ -1,3 +1,4 @@
+import inspect
 from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
@@ -9,6 +10,7 @@ import pytest
 import torch
 from torch import nn
 
+import experiments.mjw_find_opening_tmasac.scripts.common as find_opening_common
 import experiments.mjw_experiment_common as experiment_common
 from experiments.mjw_experiment_common import (
     MATInitGains,
@@ -60,6 +62,7 @@ from swarmbots.learn.env_wrappers.torch_record_episode_statistics_wrapper import
     TorchRecordEpisodeStatisticsWrapper,
 )
 from swarmbots.learn.hybrid_action_space import HybridActionSpace
+from swarmbots.learn.nn_components.feed_forward import GLUStackConfig, MLPConfig, StackedGLU, SwiGLUConfig
 from swarmbots.learn.obs_indices import ObsIndices
 from swarmbots.learn.testing_env import TestingSwarmBotsEnv
 
@@ -419,23 +422,31 @@ def test_default_run_experiment_wires_ppo_contract(
 
 def test_tmasac_run_experiment_preserves_sac_and_nop_configuration(
         monkeypatch: pytest.MonkeyPatch,
-        tmp_path: Path,
 ) -> None:
     capture, env = _patch_default_experiment_boundaries(monkeypatch)
-    entrypoint_path = tmp_path / "tmasac_entrypoint.py"
-    entrypoint_path.write_text("# test TMASAC experiment\n", encoding="utf-8")
+    transformer_ff_config = SwiGLUConfig(
+        hidden_dim=12,
+        stacked=GLUStackConfig(
+            n_layers=2,
+            pre_norm=nn.LayerNorm,
+            norm_first_layer=False,
+            residual=True,
+            residual_first_layer=False,
+        ),
+    )
 
     experiment_common.run_experiment(
         num_envs=4,
         rollout_steps_per_env=2,
         variant_name="tmasac-contract",
-        entrypoint_path=entrypoint_path,
+        entrypoint_path=Path(__file__),
         policy_variant="tmasac",
         continuous_action_dist="reparameterized_sign_magnitude_kumaraswamy",
         nop_skip_first_transition_for_critic=False,
         sac_ent_coef="auto_0.2",
         sac_target_entropy="auto_0.7",
         sac_independent_nop_sampling=True,
+        mat_encoder_transformer_ff_config=transformer_ff_config,
         compile_env_tensor_operations=False,
         env_tensor_operations_compile_mode="reduce-overhead",
         total_timesteps=16,
@@ -496,6 +507,16 @@ def test_tmasac_run_experiment_preserves_sac_and_nop_configuration(
     assert metadata["sac_ent_coef_learning_rate"] == 1e-3
     assert metadata["sac_target_entropy"] == "auto_0.7"
     assert metadata["logging_buffer_size"] == 20
+    assert metadata["mat_encoder_transformer_ff_config"] == {
+        "hidden_dim": 12,
+        "stacked": {
+            "n_layers": 2,
+            "pre_norm": "torch.nn.modules.normalization.LayerNorm",
+            "norm_first_layer": False,
+            "residual": True,
+            "residual_first_layer": False,
+        },
+    }
     assert "sac_nop_steps" not in metadata
     logging_key_names = {entry[0] for entry in learn_kwargs["logging_console_keys"]}
     assert "actor_action_dist_act0_entropy_loss_scaled" not in logging_key_names
@@ -521,7 +542,7 @@ def test_recurrent_tmasac_run_experiment_wires_recurrent_replay_and_actor_layout
         policy_variant="r_tmasac",
         continuous_action_dist="gumbel_softmax_sign_magnitude_beta",
         rmat_actor_d_model=64,
-        rmat_actor_transformer_ff_hidden_dims=[128],
+        rmat_actor_transformer_ff_config=MLPConfig(hidden_dims=[128]),
         rmat_actor_inter_module_mlp=True,
         rmat_experimental_compile_lstm=True,
         tmasac_separate_observation_action_encoders=True,
@@ -541,7 +562,7 @@ def test_recurrent_tmasac_run_experiment_wires_recurrent_replay_and_actor_layout
     assert base_policy_kwargs["compile_world_model_modules"] is True
     assert base_policy_kwargs["rmat_experimental_compile_lstm"] is True
     assert base_policy_kwargs["rmat_actor_d_model"] == 64
-    assert base_policy_kwargs["rmat_actor_transformer_ff_hidden_dims"] == [128]
+    assert base_policy_kwargs["rmat_actor_transformer_ff_config"] == MLPConfig(hidden_dims=[128])
     assert base_policy_kwargs["rmat_actor_inter_module_mlp"] is True
     assert base_policy_kwargs["tmasac_separate_observation_action_encoders"] is True
 
@@ -1045,7 +1066,7 @@ def test_make_base_policy_constructs_recurrent_tmasac_with_feedforward_critic() 
         policy_variant="r_tmasac",
         continuous_action_dist="gumbel_softmax_sign_magnitude_beta",
         rmat_actor_d_model=16,
-        rmat_actor_transformer_ff_hidden_dims=[32],
+        rmat_actor_transformer_ff_config=MLPConfig(hidden_dims=[32]),
         rmat_actor_inter_module_mlp=True,
     )
 
@@ -1058,6 +1079,67 @@ def test_make_base_policy_constructs_recurrent_tmasac_with_feedforward_critic() 
         assert inter_module_mlp is not None
         final_projection = inter_module_mlp[-1]
         assert isinstance(final_projection, nn.Linear)
+
+
+def test_make_base_policy_accepts_swiglu_configs_for_mat_and_recurrent_mat() -> None:
+    policy = _make_test_base_policy(
+        env=_DummyContinuousEnv(),
+        policy_variant="r_tmasac",
+        continuous_action_dist="gumbel_softmax_sign_magnitude_beta",
+        mat_encoder_transformer_ff_config=SwiGLUConfig(
+            hidden_dim=12,
+            stacked=GLUStackConfig(n_layers=2),
+        ),
+        rmat_actor_d_model=8,
+        rmat_actor_transformer_ff_config=SwiGLUConfig(
+            hidden_dim=10,
+            stacked=GLUStackConfig(n_layers=3),
+        ),
+    )
+
+    assert isinstance(policy, RecurrentTMASACPolicy)
+    assert all(
+        isinstance(layer.feedforward, StackedGLU) and len(layer.feedforward) == 3
+        for layer in policy._actor_encoder.layers
+    )
+    assert all(
+        isinstance(layer.feedforward, StackedGLU) and len(layer.feedforward) == 2
+        for layer in policy.critic.encoder.layers
+    )
+
+
+def test_experiment_entrypoint_exposes_only_typed_feedforward_configs() -> None:
+    parameters = inspect.signature(experiment_common.run_experiment).parameters
+
+    assert "mat_encoder_transformer_ff_config" in parameters
+    assert "rmat_actor_transformer_ff_config" in parameters
+    assert "mat_encoder_transformer_ff_hidden_dims" not in parameters
+    assert "rmat_actor_transformer_ff_hidden_dims" not in parameters
+
+
+def test_find_opening_recurrent_feedforward_configs_reach_critic_and_actor(
+        monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_kwargs: dict[str, object] = {}
+    swiglu_config = SwiGLUConfig(
+        hidden_dim=find_opening_common.PARAMETER_MATCHED_SWIGLU_HIDDEN_DIM
+    )
+    monkeypatch.setattr(
+        find_opening_common,
+        "run_mjw_find_opening_experiment",
+        lambda **kwargs: captured_kwargs.update(kwargs),
+    )
+
+    find_opening_common.run_experiment(
+        variant_name="test",
+        entrypoint_path=Path(__file__),
+        temporal_model_variant="lstm",
+        mat_encoder_transformer_ff_config=swiglu_config,
+        rmat_actor_transformer_ff_config=swiglu_config,
+    )
+
+    assert captured_kwargs["mat_encoder_transformer_ff_config"] is swiglu_config
+    assert captured_kwargs["rmat_actor_transformer_ff_config"] is swiglu_config
 
 
 def test_make_base_policy_enables_separate_tmasac_observation_action_encoders() -> None:
@@ -1112,11 +1194,11 @@ def test_big_end_and_two_small_recurrent_actor_mlps_have_similar_parameter_count
     }
     big_end_policy = _make_test_base_policy(
         **common_kwargs,
-        rmat_actor_transformer_ff_hidden_dims=[16, 16],
+        rmat_actor_transformer_ff_config=MLPConfig(hidden_dims=[16, 16]),
     )
     two_small_policy = _make_test_base_policy(
         **common_kwargs,
-        rmat_actor_transformer_ff_hidden_dims=[16],
+        rmat_actor_transformer_ff_config=MLPConfig(hidden_dims=[16]),
         rmat_actor_inter_module_mlp=True,
     )
 

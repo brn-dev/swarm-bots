@@ -1,3 +1,4 @@
+import math
 import unittest
 from collections.abc import Callable
 from dataclasses import replace
@@ -42,6 +43,7 @@ from swarmbots.learn.algos.sac.scenario_obs_encoder import TMASACScenarioObserva
 from swarmbots.learn.algos.sac.tmasac_actor_heads import TMASACQCXActorHead
 from swarmbots.learn.algos.world_modeling.next_obs_pred_mixin import NextObsPredConfig
 from swarmbots.learn.hybrid_action_space import HybridActionSpace
+from swarmbots.learn.nn_components.feed_forward import GLUStackConfig, SwiGLUConfig, feedforward_linear_layers
 
 
 _REAL_TORCH_COMPILE = torch.compile
@@ -280,6 +282,37 @@ class _RecordingTransitionModel(torch.nn.Module):
 
 
 class TMASACPolicyTests(unittest.TestCase):
+    def test_critic_swiglu_initializes_every_block_output_with_projection_gain(self) -> None:
+        transformer_gain = 1.5
+        critic_encoder_config = replace(
+            _small_encoder_config(),
+            transformer_ff_config=SwiGLUConfig(
+                hidden_dim=16,
+                stacked=GLUStackConfig(n_layers=2),
+            ),
+            transformer_ff_init_gain=transformer_gain,
+        )
+        policy = TMASACPolicy(
+            env=_DummyContinuousEnv(),
+            config=replace(_make_config(), critic_encoder_config=critic_encoder_config),
+        )
+        hidden_layers, output_layers = feedforward_linear_layers(
+            policy.critic.encoder.layers[0].feedforward
+        )
+
+        for linear in hidden_layers:
+            expected_norm = transformer_gain * math.sqrt(min(linear.weight.shape))
+            torch.testing.assert_close(
+                torch.linalg.vector_norm(linear.weight),
+                torch.tensor(expected_norm, dtype=linear.weight.dtype),
+            )
+        for linear in output_layers:
+            expected_norm = math.sqrt(min(linear.weight.shape))
+            torch.testing.assert_close(
+                torch.linalg.vector_norm(linear.weight),
+                torch.tensor(expected_norm, dtype=linear.weight.dtype),
+            )
+
     def test_independent_actor_is_the_default_and_keeps_agent_attention(self) -> None:
         policy = TMASACPolicy(env=_DummyContinuousEnv(), config=_make_config())
 

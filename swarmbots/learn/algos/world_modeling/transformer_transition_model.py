@@ -7,7 +7,7 @@ import torch
 from torch import nn
 
 from swarmbots.learn.nn_components.activations import ActivationFactory, make_activation
-from swarmbots.learn.nn_components.mlp import MLP
+from swarmbots.learn.nn_components.feed_forward import MLP
 from swarmbots.learn.nn_components.nn_init import (
     make_init_linear_orthogonal,
     reinitialize_transformer_stack,

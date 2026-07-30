@@ -5,14 +5,14 @@ from typing import Any, Literal
 import torch
 from torch import nn
 
-from swarmbots.learn.algos.mat.mat_encoder import MATEncoderConfig
+from swarmbots.learn.algos.mat.mat_encoder import MATEncoderConfig, resolve_transformer_ff_config
 from swarmbots.learn.algos.r_mat.temporal_sequence_model import (
     LSTMTemporalSequenceModel,
     LSTMTemporalSequenceModelConfig,
     TemporalModelState,
     TemporalSequenceModel,
 )
-from swarmbots.learn.nn_components.mlp import MLP
+from swarmbots.learn.nn_components.feed_forward import make_feedforward
 from swarmbots.learn.nn_components.nn_init import (
     make_init_linear_orthogonal,
     reinitialize_multihead_attention,
@@ -98,18 +98,13 @@ class RMATEncoderLayer(nn.Module):
             else make_init_linear_orthogonal(config.linear_init_gain)
         )
         feedforward_projection_init = make_init_linear_orthogonal(1.0)
-        transformer_ff_hidden_dims = (
-            [config.dim_feedforward]
-            if config.transformer_ff_hidden_dims is None
-            else config.transformer_ff_hidden_dims
-        )
-        self.inter_module_feedforward: MLP | None = (
-            MLP(
+        self.inter_module_feedforward: nn.Module | None = (
+            make_feedforward(
                 input_dim=config.d_model,
-                hidden_dims=[*transformer_ff_hidden_dims, config.d_model],
-                end_with_act_fn=False,
+                output_dim=config.d_model,
+                config=resolve_transformer_ff_config(config),
                 linear_init=feedforward_linear_init,
-                final_linear_init=feedforward_projection_init,
+                output_linear_init=feedforward_projection_init,
                 act_fn_cls=config.act_fn_cls,
                 bias=config.bias,
                 dropout=config.dropout,
@@ -122,12 +117,12 @@ class RMATEncoderLayer(nn.Module):
             if config.inter_module_mlp
             else None
         )
-        self.feedforward = MLP(
+        self.feedforward = make_feedforward(
             input_dim=config.d_model,
-            hidden_dims=[*transformer_ff_hidden_dims, config.d_model],
-            end_with_act_fn=False,
+            output_dim=config.d_model,
+            config=resolve_transformer_ff_config(config),
             linear_init=feedforward_linear_init,
-            final_linear_init=feedforward_projection_init,
+            output_linear_init=feedforward_projection_init,
             act_fn_cls=config.act_fn_cls,
             bias=config.bias,
             dropout=config.dropout,
@@ -368,7 +363,7 @@ class RMATEncoderLayer(nn.Module):
             self,
             embeddings: torch.Tensor,
             *,
-            feedforward: MLP,
+            feedforward: nn.Module,
             norm: nn.LayerNorm,
             dropout: nn.Dropout,
     ) -> torch.Tensor:
@@ -409,34 +404,26 @@ class RMATEncoder(nn.Module):
             else make_init_linear_orthogonal(config.linear_projection_init_gain)
         )
 
-        if config.local_obs_encoder_hidden_dims:
-            self.local_obs_encoder = MLP(
-                input_dim=self.local_obs_dim,
-                hidden_dims=[*config.local_obs_encoder_hidden_dims, config.d_model],
-                end_with_act_fn=False,
+        self.local_obs_encoder = make_feedforward(
+            input_dim=self.local_obs_dim,
+            output_dim=config.d_model,
+            config=config.local_obs_encoder_config,
+            linear_init=linear_init,
+            output_linear_init=projection_linear_init,
+            act_fn_cls=config.act_fn_cls,
+            bias=config.bias,
+        )
+
+        if self.has_global_obs:
+            self.global_obs_encoder = make_feedforward(
+                input_dim=self.global_obs_dim,
+                output_dim=config.d_model,
+                config=config.global_obs_encoder_config,
                 linear_init=linear_init,
-                final_linear_init=projection_linear_init,
+                output_linear_init=projection_linear_init,
                 act_fn_cls=config.act_fn_cls,
                 bias=config.bias,
             )
-        else:
-            self.local_obs_encoder = nn.Linear(self.local_obs_dim, config.d_model, bias=config.bias)
-            projection_linear_init(self.local_obs_encoder)
-
-        if self.has_global_obs:
-            if config.global_obs_encoder_hidden_dims:
-                self.global_obs_encoder = MLP(
-                    input_dim=self.global_obs_dim,
-                    hidden_dims=[*config.global_obs_encoder_hidden_dims, config.d_model],
-                    end_with_act_fn=False,
-                    linear_init=linear_init,
-                    final_linear_init=projection_linear_init,
-                    act_fn_cls=config.act_fn_cls,
-                    bias=config.bias,
-                )
-            else:
-                self.global_obs_encoder = nn.Linear(self.global_obs_dim, config.d_model, bias=config.bias)
-                projection_linear_init(self.global_obs_encoder)
         else:
             self.global_obs_encoder = None
 

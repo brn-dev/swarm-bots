@@ -8,7 +8,7 @@ from swarmbots.learn.action_dists.hybrid_action_dist import HybridActionDistribu
 from swarmbots.learn.algos.mat_qc_base_policy import MATQCBasePolicy
 from swarmbots.learn.algos.mat_qcx.mat_qcx_decoder import MATQCXDecoder, MATQCXDecoderConfig
 from swarmbots.learn.nn_components.activations import ActivationFactory
-from swarmbots.learn.nn_components.mlp import MLP
+from swarmbots.learn.nn_components.feed_forward import MLP
 from swarmbots.learn.nn_components.nn_init import make_init_linear_orthogonal
 
 

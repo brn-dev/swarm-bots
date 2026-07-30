@@ -137,7 +137,7 @@ def main() -> None:
     from swarmbots.learn.action_dists.entropy_utils import EntropyLossConfig, AgentActionsReduction
     from swarmbots.learn.action_dists.sign_magnitude_beta_action_dist import SignMagnitudeBetaConfig
     from swarmbots.learn.algos.mat_qcs.mat_qcs_decoder import MATQCSDecoderConfig, MATQCSDecoderSelfAttentionMode
-    from swarmbots.learn.algos.mat.mat_encoder import MATEncoderConfig
+    from swarmbots.learn.algos.mat import MATEncoderConfig, MLPConfig
     from swarmbots.learn.algos.mat_qcs.mat_qcs_policy import MATQCSCriticConfig, MATQCSPolicy, MATQCSPolicyConfig
     from swarmbots.learn.algos.ppo.ppo import AutomaticLearningRate, StepsRolloutMode, PPO
     from swarmbots.learn.algos.ppo.ppo_policy import PopArtConfig
@@ -320,8 +320,8 @@ def main() -> None:
                 num_layers=2,
                 dim_feedforward=enc_d_model * 2,
                 add_agent_embeddings=True,
-                local_obs_encoder_hidden_dims=[enc_d_model, enc_d_model],
-                global_obs_encoder_hidden_dims=[enc_d_model],
+                local_obs_encoder_config=MLPConfig(hidden_dims=[enc_d_model, enc_d_model]),
+                global_obs_encoder_config=MLPConfig(hidden_dims=[enc_d_model]),
             ),
             decoder_config=MATQCSDecoderConfig(
                 d_model=dec_d_model,
