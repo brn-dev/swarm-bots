@@ -109,13 +109,15 @@ def gather_connector_frames(
 
 @wp.kernel
 def compute_best_connection_candidates(
-    newly_activated: wp.array(dtype=wp.bool, ndim=2),
+    connector_action: wp.array(dtype=wp.bool, ndim=3),
+    partner_unit: wp.array(dtype=wp.int64, ndim=3),
     connector_positions: wp.array(dtype=wp.vec3, ndim=2),
     connector_x_axis: wp.array(dtype=wp.vec3, ndim=2),
     connector_y_axis: wp.array(dtype=wp.vec3, ndim=2),
     connector_z_axis: wp.array(dtype=wp.vec3, ndim=2),
     connector_unit_idx: wp.array(dtype=wp.int32, ndim=1),
     num_total_connectors: int,
+    num_connectors: int,
     distance_threshold_sq: float,
     angle_threshold: float,
     twist_step: float,
@@ -124,13 +126,17 @@ def compute_best_connection_candidates(
     best_twist_idx: wp.array(dtype=wp.int32, ndim=2),
 ):
     env_idx, connector_idx = wp.tid()
+    connector_unit = connector_unit_idx[connector_idx]
+    connector_within_unit = connector_idx % num_connectors
 
-    if not newly_activated[env_idx, connector_idx]:
+    if (
+        not connector_action[env_idx, connector_unit, connector_within_unit]
+        or partner_unit[env_idx, connector_unit, connector_within_unit] >= 0
+    ):
         best_partner_idx[env_idx, connector_idx] = -1
         best_twist_idx[env_idx, connector_idx] = -1
         return
 
-    connector_unit = connector_unit_idx[connector_idx]
     pos_i = connector_positions[env_idx, connector_idx]
     x_i = connector_x_axis[env_idx, connector_idx]
     y_i = connector_y_axis[env_idx, connector_idx]
@@ -143,9 +149,13 @@ def compute_best_connection_candidates(
     for candidate_idx in range(num_total_connectors):
         if candidate_idx == connector_idx:
             continue
-        if not newly_activated[env_idx, candidate_idx]:
+        candidate_unit = connector_unit_idx[candidate_idx]
+        candidate_within_unit = candidate_idx % num_connectors
+        if not connector_action[env_idx, candidate_unit, candidate_within_unit]:
             continue
-        if connector_unit_idx[candidate_idx] == connector_unit:
+        if partner_unit[env_idx, candidate_unit, candidate_within_unit] >= 0:
+            continue
+        if candidate_unit == connector_unit:
             continue
 
         rel_pos = connector_positions[env_idx, candidate_idx] - pos_i
@@ -173,3 +183,198 @@ def compute_best_connection_candidates(
 
     best_partner_idx[env_idx, connector_idx] = best_partner
     best_twist_idx[env_idx, connector_idx] = best_twist
+
+
+@wp.kernel
+def apply_connection_candidates(
+    best_partner_idx: wp.array(dtype=wp.int32, ndim=2),
+    best_twist_idx: wp.array(dtype=wp.int32, ndim=2),
+    connector_unit_idx: wp.array(dtype=wp.int32, ndim=1),
+    num_connectors: int,
+    num_agents: int,
+    num_twists: int,
+    eq_indices: wp.array(dtype=wp.int64, ndim=1),
+    partner_unit: wp.array(dtype=wp.int64, ndim=3),
+    partner_connector: wp.array(dtype=wp.int64, ndim=3),
+    connection_twist_idx: wp.array(dtype=wp.int64, ndim=3),
+    disconnect_potentials: wp.array(dtype=wp.float32, ndim=3),
+    eq_active: wp.array(dtype=wp.bool, ndim=2),
+):
+    env_idx, connector_flat_idx = wp.tid()
+    partner_flat_idx = best_partner_idx[env_idx, connector_flat_idx]
+    if partner_flat_idx <= connector_flat_idx:
+        return
+    if best_partner_idx[env_idx, partner_flat_idx] != connector_flat_idx:
+        return
+
+    unit1 = connector_unit_idx[connector_flat_idx]
+    connector1 = connector_flat_idx % num_connectors
+    unit2 = connector_unit_idx[partner_flat_idx]
+    connector2 = partner_flat_idx % num_connectors
+    twist_idx = best_twist_idx[env_idx, connector_flat_idx]
+
+    partner_unit[env_idx, unit1, connector1] = wp.int64(unit2)
+    partner_connector[env_idx, unit1, connector1] = wp.int64(connector2)
+    connection_twist_idx[env_idx, unit1, connector1] = wp.int64(twist_idx)
+    disconnect_potentials[env_idx, unit1, connector1] = 0.0
+
+    partner_unit[env_idx, unit2, connector2] = wp.int64(unit1)
+    partner_connector[env_idx, unit2, connector2] = wp.int64(connector1)
+    connection_twist_idx[env_idx, unit2, connector2] = wp.int64(twist_idx)
+    disconnect_potentials[env_idx, unit2, connector2] = 0.0
+
+    eq_offset = (
+        ((((unit1 * num_connectors + connector1) * num_agents + unit2) * num_connectors + connector2)
+        * num_twists)
+        + twist_idx
+    )
+    eq_active[env_idx, eq_indices[eq_offset]] = True
+
+
+@wp.func
+def _disconnect_connection(
+    env_idx: int,
+    unit1: int,
+    connector1: int,
+    unit2: int,
+    connector2: int,
+    num_connectors: int,
+    num_agents: int,
+    num_twists: int,
+    eq_indices: wp.array(dtype=wp.int64, ndim=1),
+    partner_unit: wp.array(dtype=wp.int64, ndim=3),
+    partner_connector: wp.array(dtype=wp.int64, ndim=3),
+    connection_twist_idx: wp.array(dtype=wp.int64, ndim=3),
+    disconnect_potentials: wp.array(dtype=wp.float32, ndim=3),
+    eq_active: wp.array(dtype=wp.bool, ndim=2),
+):
+    eq_base_offset = (
+        (((unit1 * num_connectors + connector1) * num_agents + unit2) * num_connectors + connector2)
+        * num_twists
+    )
+    for twist_idx in range(num_twists):
+        eq_active[env_idx, eq_indices[eq_base_offset + twist_idx]] = False
+
+    partner_unit[env_idx, unit1, connector1] = wp.int64(-1)
+    partner_connector[env_idx, unit1, connector1] = wp.int64(-1)
+    connection_twist_idx[env_idx, unit1, connector1] = wp.int64(-1)
+    disconnect_potentials[env_idx, unit1, connector1] = 0.0
+
+    partner_unit[env_idx, unit2, connector2] = wp.int64(-1)
+    partner_connector[env_idx, unit2, connector2] = wp.int64(-1)
+    connection_twist_idx[env_idx, unit2, connector2] = wp.int64(-1)
+    disconnect_potentials[env_idx, unit2, connector2] = 0.0
+
+
+@wp.kernel
+def update_binary_connector_disconnections(
+    connector_action: wp.array(dtype=wp.bool, ndim=3),
+    disconnect_threshold: float,
+    num_connectors: int,
+    num_agents: int,
+    num_twists: int,
+    eq_indices: wp.array(dtype=wp.int64, ndim=1),
+    partner_unit: wp.array(dtype=wp.int64, ndim=3),
+    partner_connector: wp.array(dtype=wp.int64, ndim=3),
+    connection_twist_idx: wp.array(dtype=wp.int64, ndim=3),
+    disconnect_potentials: wp.array(dtype=wp.float32, ndim=3),
+    eq_active: wp.array(dtype=wp.bool, ndim=2),
+):
+    env_idx, unit1, connector1 = wp.tid()
+    unit2 = int(partner_unit[env_idx, unit1, connector1])
+    if unit2 < 0:
+        return
+    connector2 = int(partner_connector[env_idx, unit1, connector1])
+    flat_idx = unit1 * num_connectors + connector1
+    partner_flat_idx = unit2 * num_connectors + connector2
+    if flat_idx >= partner_flat_idx:
+        return
+
+    disconnect_update = float(0.0)
+    if not connector_action[env_idx, unit1, connector1]:
+        disconnect_update += 1.0
+    if not connector_action[env_idx, unit2, connector2]:
+        disconnect_update += 1.0
+    if disconnect_update == 0.0:
+        disconnect_update = -2.0
+    next_potential = wp.max(
+        disconnect_potentials[env_idx, unit1, connector1] + disconnect_update,
+        0.0,
+    )
+    disconnect_potentials[env_idx, unit1, connector1] = next_potential
+    disconnect_potentials[env_idx, unit2, connector2] = next_potential
+    if next_potential < disconnect_threshold:
+        return
+
+    _disconnect_connection(
+        env_idx,
+        unit1,
+        connector1,
+        unit2,
+        connector2,
+        num_connectors,
+        num_agents,
+        num_twists,
+        eq_indices,
+        partner_unit,
+        partner_connector,
+        connection_twist_idx,
+        disconnect_potentials,
+        eq_active,
+    )
+
+
+@wp.kernel
+def update_continuous_connector_disconnections(
+    connector_action: wp.array(dtype=wp.float32, ndim=3),
+    disconnect_threshold: float,
+    num_connectors: int,
+    num_agents: int,
+    num_twists: int,
+    eq_indices: wp.array(dtype=wp.int64, ndim=1),
+    partner_unit: wp.array(dtype=wp.int64, ndim=3),
+    partner_connector: wp.array(dtype=wp.int64, ndim=3),
+    connection_twist_idx: wp.array(dtype=wp.int64, ndim=3),
+    disconnect_potentials: wp.array(dtype=wp.float32, ndim=3),
+    eq_active: wp.array(dtype=wp.bool, ndim=2),
+):
+    env_idx, unit1, connector1 = wp.tid()
+    unit2 = int(partner_unit[env_idx, unit1, connector1])
+    if unit2 < 0:
+        return
+    connector2 = int(partner_connector[env_idx, unit1, connector1])
+    flat_idx = unit1 * num_connectors + connector1
+    partner_flat_idx = unit2 * num_connectors + connector2
+    if flat_idx >= partner_flat_idx:
+        return
+
+    action1 = connector_action[env_idx, unit1, connector1]
+    action2 = connector_action[env_idx, unit2, connector2]
+    disconnect_update = wp.max(-action1, 0.0) + wp.max(-action2, 0.0)
+    if disconnect_update == 0.0:
+        disconnect_update = -2.0 * wp.min(wp.max(action1, 0.0), wp.max(action2, 0.0))
+    next_potential = wp.max(
+        disconnect_potentials[env_idx, unit1, connector1] + disconnect_update,
+        0.0,
+    )
+    disconnect_potentials[env_idx, unit1, connector1] = next_potential
+    disconnect_potentials[env_idx, unit2, connector2] = next_potential
+    if next_potential < disconnect_threshold:
+        return
+
+    _disconnect_connection(
+        env_idx,
+        unit1,
+        connector1,
+        unit2,
+        connector2,
+        num_connectors,
+        num_agents,
+        num_twists,
+        eq_indices,
+        partner_unit,
+        partner_connector,
+        connection_twist_idx,
+        disconnect_potentials,
+        eq_active,
+    )

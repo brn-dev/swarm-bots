@@ -201,6 +201,7 @@ class ContinuousConnectorActionTests(unittest.TestCase):
 
     def test_mjw_continuous_disconnect_updates_potential_and_disconnects(self) -> None:
         env = SimpleNamespace()
+        env.device = torch.device("cpu")
         env.num_envs = 1
         env._n_agents = 2
         env._n_connectors = 1

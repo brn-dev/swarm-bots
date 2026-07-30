@@ -56,9 +56,17 @@ def _obs(
 ) -> dict[str, torch.Tensor]:
     observations = {
         "local_obs": local_obs,
-        "global_obs": torch.zeros((local_obs.shape[0], 1), dtype=local_obs.dtype),
-        "hidden_local_vars": torch.zeros((local_obs.shape[0], local_obs.shape[1], 0), dtype=local_obs.dtype),
-        "hidden_global_vars": torch.zeros((local_obs.shape[0], 0), dtype=local_obs.dtype),
+        "global_obs": torch.zeros((local_obs.shape[0], 1), device=local_obs.device, dtype=local_obs.dtype),
+        "hidden_local_vars": torch.zeros(
+            (local_obs.shape[0], local_obs.shape[1], 0),
+            device=local_obs.device,
+            dtype=local_obs.dtype,
+        ),
+        "hidden_global_vars": torch.zeros(
+            (local_obs.shape[0], 0),
+            device=local_obs.device,
+            dtype=local_obs.dtype,
+        ),
     }
     if agent_mask is not None:
         observations["agent_mask"] = agent_mask
@@ -158,6 +166,95 @@ class TorchFeatureWiseObsNormWrapperTests(unittest.TestCase):
             expected = local_obs.clone()
             expected[..., [0, 2]] = torch.tensor([[[1.0, 2.0], [-1.0, -1.0]]])
             torch.testing.assert_close(normalized["local_obs"], expected)
+        finally:
+            env.close()
+
+    def test_masked_non_finite_samples_do_not_poison_running_stats(self) -> None:
+        env = _make_env(n_envs=1, n_agents=3, n_local_obs=2)
+        try:
+            wrapper = TorchFeatureWiseObsNormWrapper(
+                env,
+                obs_key="local_obs",
+                scalar_feature_indices=[0, 1],
+                quaternion_indices=[],
+                eps=1.0,
+            )
+            wrapper.obs_rms = TorchRunningMeanStd(shape=(2,), initial_count=0.0)
+            local_obs = torch.tensor(
+                [[[1.0, 10.0], [3.0, 30.0], [float("nan"), float("inf")]]],
+                dtype=torch.float32,
+            )
+            observations = _obs(
+                local_obs=local_obs,
+                agent_mask=torch.tensor([[True, True, False]], dtype=torch.bool),
+            )
+
+            wrapper.observations(observations)
+
+            assert wrapper.obs_rms is not None
+            torch.testing.assert_close(wrapper.obs_rms.mean, torch.tensor([2.0, 20.0], dtype=torch.float64))
+            torch.testing.assert_close(wrapper.obs_rms.var, torch.tensor([1.0, 100.0], dtype=torch.float64))
+            torch.testing.assert_close(wrapper.obs_rms.count, torch.tensor(2.0, dtype=torch.float64))
+        finally:
+            env.close()
+
+    @unittest.skipUnless(torch.cuda.is_available(), "requires CUDA compilation")
+    def test_compiled_cuda_running_statistics_survive_repeated_calls(self) -> None:
+        env = _make_env(n_envs=1, n_agents=2, n_local_obs=2)
+        env.set_device("cuda:0")
+        try:
+            wrapper = TorchFeatureWiseObsNormWrapper(
+                env,
+                obs_key="local_obs",
+                scalar_feature_indices=[0],
+                quaternion_indices=[],
+                eps=1.0,
+            )
+            wrapper.obs_rms = TorchRunningMeanStd(shape=(1,), device=env.device, initial_count=0.0)
+
+            wrapper.observations(
+                _obs(
+                    local_obs=torch.tensor([[[1.0, 10.0], [3.0, 30.0]]], device=env.device),
+                ),
+            )
+            wrapper.observations(
+                _obs(
+                    local_obs=torch.tensor([[[5.0, 50.0], [7.0, 70.0]]], device=env.device),
+                ),
+            )
+
+            assert wrapper.obs_rms is not None
+            torch.testing.assert_close(
+                wrapper.obs_rms.mean.cpu(),
+                torch.tensor([4.0], dtype=torch.float64),
+            )
+            torch.testing.assert_close(
+                wrapper.obs_rms.var.cpu(),
+                torch.tensor([5.0], dtype=torch.float64),
+            )
+            torch.testing.assert_close(
+                wrapper.obs_rms.count.cpu(),
+                torch.tensor(4.0, dtype=torch.float64),
+            )
+
+            wrapper.update_running_mean = False
+            wrapper.observations(
+                _obs(
+                    local_obs=torch.tensor([[[100.0, 1.0], [200.0, 2.0]]], device=env.device),
+                ),
+            )
+            torch.testing.assert_close(
+                wrapper.obs_rms.mean.cpu(),
+                torch.tensor([4.0], dtype=torch.float64),
+            )
+            torch.testing.assert_close(
+                wrapper.obs_rms.var.cpu(),
+                torch.tensor([5.0], dtype=torch.float64),
+            )
+            torch.testing.assert_close(
+                wrapper.obs_rms.count.cpu(),
+                torch.tensor(4.0, dtype=torch.float64),
+            )
         finally:
             env.close()
 

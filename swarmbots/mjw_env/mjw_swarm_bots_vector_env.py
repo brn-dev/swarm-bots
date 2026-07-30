@@ -20,8 +20,11 @@ from swarmbots.mjw_env.mjw_env_tensor_ops import (
     should_compile_mjw_env_tensor_operations_by_default,
 )
 from swarmbots.mjw_env.mjw_kernels import (
+    apply_connection_candidates,
     compute_best_connection_candidates,
     gather_connector_frames,
+    update_binary_connector_disconnections,
+    update_continuous_connector_disconnections,
 )
 from swarmbots.mjw_env.mjw_live_recording import MJWLiveEpisodeRecorder, MJWRecordingConfig, MJWWorldSnapshot
 from swarmbots.mjw_env.mjw_model_metadata import MJWModelMetadata, build_model_metadata
@@ -345,11 +348,6 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
             self._n_connectors
         )
         self._connector_unit_idx_i32 = self._connector_unit_idx.to(dtype=torch.int32)
-        self._connector_connector_idx = torch.arange(self._n_connectors, device=self.device, dtype=torch.long).repeat(
-            self._n_agents
-        )
-        self._flat_connector_idx = torch.arange(self._n_total_connectors, device=self.device, dtype=torch.long).view(1, -1)
-        self._flat_connector_idx_i32 = self._flat_connector_idx.to(dtype=torch.int32)
         self._unit_indices = torch.arange(self._n_agents, device=self.device, dtype=torch.long).view(1, -1, 1)
         self._connector_indices = torch.arange(self._n_connectors, device=self.device, dtype=torch.long).view(1, 1, -1)
         self._twist_values = torch.as_tensor(scenario.swarm.config.connection_twist_values, device=self.device, dtype=torch.float32)
@@ -470,6 +468,12 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
         self._connector_x_axis_wp = wp.from_torch(self._connector_x_axis, dtype=wp.vec3)
         self._connector_y_axis_wp = wp.from_torch(self._connector_y_axis, dtype=wp.vec3)
         self._connector_z_axis_wp = wp.from_torch(self._connector_z_axis, dtype=wp.vec3)
+        self._eq_indices_wp = wp.from_torch(self._eq_indices.reshape(-1))
+        self._partner_unit_wp = wp.from_torch(self.partner_unit)
+        self._partner_connector_wp = wp.from_torch(self.partner_connector)
+        self._connection_twist_idx_wp = wp.from_torch(self.connection_twist_idx)
+        self._disconnect_potentials_wp = wp.from_torch(self.disconnect_potentials)
+        self._eq_active_wp = wp.from_torch(self._eq_active)
 
         self._runtime_bindings = MJWRuntimeBindings(
             device=self.device,
@@ -976,8 +980,6 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
         self._disconnect(connector_action)
 
     def _try_connect(self, connector_action: torch.Tensor) -> None:
-        newly_activated = (connector_action & (self.partner_unit < 0)).reshape(self.num_envs, self._n_total_connectors)
-
         wp.launch(
             kernel=gather_connector_frames,
             dim=(self.num_envs, self._n_total_connectors),
@@ -999,13 +1001,15 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
             kernel=compute_best_connection_candidates,
             dim=(self.num_envs, self._n_total_connectors),
             inputs=[
-                wp.from_torch(newly_activated),
+                wp.from_torch(connector_action),
+                self._partner_unit_wp,
                 self._connector_positions_wp,
                 self._connector_x_axis_wp,
                 self._connector_y_axis_wp,
                 self._connector_z_axis_wp,
                 self._connector_unit_idx_wp,
                 self._n_total_connectors,
+                self._n_connectors,
                 self._distance_threshold_sq,
                 float(self.scenario.connection_angle_threshold),
                 self._twist_step,
@@ -1015,35 +1019,52 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
             device=self._wp_device,
         )
 
-        partner_idx = self._best_partner_idx
-        partner_idx_clamped = partner_idx.clamp(min=0).to(dtype=torch.long)
-        mutual_partner = torch.gather(partner_idx, 1, partner_idx_clamped)
-        canonical_match = partner_idx >= 0
-        canonical_match &= mutual_partner == self._flat_connector_idx_i32
-        canonical_match &= self._flat_connector_idx_i32 < partner_idx
-
-        world_idx, connector_idx = torch.nonzero(canonical_match, as_tuple=True)
-        partner_flat_idx = partner_idx[world_idx, connector_idx].to(dtype=torch.long)
-        twist_idx = self._best_twist_idx[world_idx, connector_idx].to(dtype=torch.long)
-        unit1 = self._connector_unit_idx[connector_idx]
-        connector1 = self._connector_connector_idx[connector_idx]
-        unit2 = self._connector_unit_idx[partner_flat_idx]
-        connector2 = self._connector_connector_idx[partner_flat_idx]
-
-        self.partner_unit[world_idx, unit1, connector1] = unit2
-        self.partner_connector[world_idx, unit1, connector1] = connector2
-        self.connection_twist_idx[world_idx, unit1, connector1] = twist_idx
-        self.disconnect_potentials[world_idx, unit1, connector1] = 0.0
-
-        self.partner_unit[world_idx, unit2, connector2] = unit1
-        self.partner_connector[world_idx, unit2, connector2] = connector1
-        self.connection_twist_idx[world_idx, unit2, connector2] = twist_idx
-        self.disconnect_potentials[world_idx, unit2, connector2] = 0.0
-
-        eq_idx = self._eq_indices[unit1, connector1, unit2, connector2, twist_idx]
-        self._eq_active[world_idx, eq_idx] = 1
+        wp.launch(
+            kernel=apply_connection_candidates,
+            dim=(self.num_envs, self._n_total_connectors),
+            inputs=[
+                self._best_partner_idx_wp,
+                self._best_twist_idx_wp,
+                self._connector_unit_idx_wp,
+                self._n_connectors,
+                self._n_agents,
+                self._n_twists,
+                self._eq_indices_wp,
+            ],
+            outputs=[
+                self._partner_unit_wp,
+                self._partner_connector_wp,
+                self._connection_twist_idx_wp,
+                self._disconnect_potentials_wp,
+                self._eq_active_wp,
+            ],
+            device=self._wp_device,
+        )
 
     def _disconnect(self, connector_action: torch.Tensor) -> None:
+        if self.device.type == "cuda":
+            wp.launch(
+                kernel=update_binary_connector_disconnections,
+                dim=(self.num_envs, self._n_agents, self._n_connectors),
+                inputs=[
+                    wp.from_torch(connector_action),
+                    float(self.scenario.disconnect_potential_threshold),
+                    self._n_connectors,
+                    self._n_agents,
+                    self._n_twists,
+                    self._eq_indices_wp,
+                ],
+                outputs=[
+                    self._partner_unit_wp,
+                    self._partner_connector_wp,
+                    self._connection_twist_idx_wp,
+                    self._disconnect_potentials_wp,
+                    self._eq_active_wp,
+                ],
+                device=self._wp_device,
+            )
+            return
+
         currently_active = self.partner_unit >= 0
         newly_deactivated = ~connector_action & currently_active
         disconnect_update = self._disconnect_update
@@ -1088,6 +1109,29 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
         self.disconnect_potentials[world_idx, unit2, connector2] = 0.0
 
     def _disconnect_continuous(self, connector_action: torch.Tensor) -> None:
+        if self.device.type == "cuda":
+            wp.launch(
+                kernel=update_continuous_connector_disconnections,
+                dim=(self.num_envs, self._n_agents, self._n_connectors),
+                inputs=[
+                    wp.from_torch(connector_action),
+                    float(self.scenario.disconnect_potential_threshold),
+                    self._n_connectors,
+                    self._n_agents,
+                    self._n_twists,
+                    self._eq_indices_wp,
+                ],
+                outputs=[
+                    self._partner_unit_wp,
+                    self._partner_connector_wp,
+                    self._connection_twist_idx_wp,
+                    self._disconnect_potentials_wp,
+                    self._eq_active_wp,
+                ],
+                device=self._wp_device,
+            )
+            return
+
         currently_active = self.partner_unit >= 0
 
         partner_flat_idx = (
