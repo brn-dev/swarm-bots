@@ -28,7 +28,7 @@ from swarmbots.learn.algos.world_modeling.transformer_transition_model import (
 from swarmbots.learn.algos.world_modeling.wm_recurrent_batch import build_wm_target_time_mask
 from swarmbots.learn.losses import LossDict, LossMetrics
 from swarmbots.learn.nn_components.activations import ActivationFactory
-from swarmbots.learn.nn_components.mlp import MLP
+from swarmbots.learn.nn_components.feed_forward import MLP
 from swarmbots.learn.nn_components.nn_init import make_init_linear_orthogonal
 
 

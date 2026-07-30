@@ -3,7 +3,7 @@ from dataclasses import dataclass, field
 import torch
 from torch import nn
 
-from swarmbots.learn.nn_components.mlp import MLP
+from swarmbots.learn.nn_components.feed_forward import MLP
 from swarmbots.learn.nn_components.nn_init import LinearInitialization, init_linear_orthogonal, make_init_linear_orthogonal
 
 

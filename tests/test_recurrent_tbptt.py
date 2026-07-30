@@ -12,6 +12,7 @@ from swarmbots.learn.algos.ppo.ppo_rollout_buffer import (
 from swarmbots.learn.algos.ppo.ppo_sampler import PPOSamplerConfig
 from swarmbots.learn.algos.r_mat.r_mat_dec_policy import RMATDecPolicy, RMATDecPolicyConfig
 from swarmbots.learn.algos.r_mat.r_mat_encoder import RMATEncoder, RMATEncoderConfig
+from swarmbots.learn.nn_components.feed_forward import MLPConfig
 from swarmbots.learn.algos.r_mat.r_mat_policy_mixin import RMATPolicyMixin
 from swarmbots.learn.algos.r_mat.r_mat_qcc_policy import RMATQCCPolicy, RMATQCCPolicyConfig
 from swarmbots.learn.algos.r_mat.r_mat_qcx_policy import RMATQCXPolicy, RMATQCXPolicyConfig
@@ -319,11 +320,11 @@ def test_rmat_custom_feedforward_hidden_dims_preserve_masked_sequence_contract()
             num_layers=2,
             dim_feedforward=16,
             dropout=0.0,
-            transformer_ff_hidden_dims=[13, 11],
+            transformer_ff_config=MLPConfig(hidden_dims=[13, 11]),
             inter_module_mlp=True,
             add_agent_embeddings=True,
-            local_obs_encoder_hidden_dims=[7],
-            global_obs_encoder_hidden_dims=[6],
+            local_obs_encoder_config=MLPConfig(hidden_dims=[7]),
+            global_obs_encoder_config=MLPConfig(hidden_dims=[6]),
             normalize_obs_inputs=True,
             normalize_tokens=True,
         ),

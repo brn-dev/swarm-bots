@@ -4,7 +4,7 @@ import pytest
 import torch
 from torch import nn
 
-from swarmbots.learn.algos.mat import MATEncoder, MATEncoderConfig, MATEncoderLayer
+from swarmbots.learn.algos.mat import MATEncoder, MATEncoderConfig, MATEncoderLayer, MLPConfig
 from swarmbots.learn.nn_components.activations import make_activation
 
 
@@ -154,8 +154,8 @@ def test_mat_encoder_forward_matches_reference_stack_with_embedding_options() ->
         act_fn_cls=nn.GELU,
         norm_first=True,
         add_agent_embeddings=True,
-        local_obs_encoder_hidden_dims=[7],
-        global_obs_encoder_hidden_dims=[6],
+        local_obs_encoder_config=MLPConfig(hidden_dims=[7]),
+        global_obs_encoder_config=MLPConfig(hidden_dims=[6]),
         normalize_obs_inputs=True,
         normalize_tokens=True,
         transformer_ff_init_gain=None,
@@ -198,7 +198,7 @@ def test_mat_encoder_uses_configurable_transformer_feedforward_hidden_dims() -> 
         nhead=2,
         num_layers=2,
         dim_feedforward=16,
-        transformer_ff_hidden_dims=[13, 11, 9],
+        transformer_ff_config=MLPConfig(hidden_dims=[13, 11, 9]),
         transformer_ff_init_gain=1.25,
         dropout=0.0,
         act_fn_cls=nn.GELU,
@@ -259,7 +259,7 @@ def test_mat_encoder_keeps_cloned_custom_feedforward_when_transformer_init_is_di
             nhead=2,
             num_layers=2,
             dim_feedforward=16,
-            transformer_ff_hidden_dims=[13, 11],
+            transformer_ff_config=MLPConfig(hidden_dims=[13, 11]),
             transformer_ff_init_gain=None,
         ),
         max_agents=4,

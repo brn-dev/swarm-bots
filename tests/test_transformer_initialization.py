@@ -3,7 +3,7 @@ import math
 import torch
 from torch import nn
 
-from swarmbots.learn.algos.mat.mat_encoder import MATEncoder, MATEncoderConfig
+from swarmbots.learn.algos.mat import MATEncoder, MATEncoderConfig, MLPConfig
 from swarmbots.learn.algos.r_mat import RMATEncoderLayer
 from swarmbots.learn.algos.r_mat.r_mat_encoder import RMATEncoder, RMATEncoderConfig
 from swarmbots.learn.algos.world_modeling.transformer_transition_model import (
@@ -211,7 +211,7 @@ def test_rmat_encoder_uses_configurable_transformer_feedforward_hidden_dims() ->
             nhead=2,
             num_layers=2,
             dim_feedforward=16,
-            transformer_ff_hidden_dims=[13, 11],
+            transformer_ff_config=MLPConfig(hidden_dims=[13, 11]),
             transformer_ff_init_gain=1.5,
             inter_module_mlp=True,
         ),

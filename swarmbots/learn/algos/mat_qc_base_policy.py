@@ -25,7 +25,7 @@ from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import B
 from swarmbots.learn.losses import LossDict, LossMetrics
 from swarmbots.learn.nn_components.activations import ActivationFactory, make_activation
 from swarmbots.learn.nn_components.deep_set import DeepSetCritic
-from swarmbots.learn.nn_components.mlp import MLP
+from swarmbots.learn.nn_components.feed_forward import MLP
 from swarmbots.learn.nn_components.nn_init import make_init_linear_orthogonal
 from swarmbots.learn.serialization_utils import serialize_dataclass, serialize_value
 

@@ -46,7 +46,7 @@ from swarmbots.learn.algos.mat_qcx.mat_qcx_policy import MATQCXPolicy, MATQCXPol
 from swarmbots.learn.algos.mappo.mappo_actor import MAPPOActorConfig
 from swarmbots.learn.algos.mappo.mappo_policy import MAPPOCriticConfig, MAPPOPolicy, MAPPOPolicyConfig
 from swarmbots.learn.algos.mat_qcs.mat_qcs_decoder import MATQCSDecoderConfig, MATQCSDecoderSelfAttentionMode
-from swarmbots.learn.algos.mat.mat_encoder import MATEncoderConfig
+from swarmbots.learn.algos.mat import FeedForwardConfig, MATEncoderConfig, MLPConfig
 from swarmbots.learn.algos.mat_qcs.mat_qcs_policy import MATQCSCriticConfig, MATQCSPolicy, MATQCSPolicyConfig
 from swarmbots.learn.algos.mat_orig.mat_orig_decoder import MATOrigDecoderConfig
 from swarmbots.learn.algos.mat_orig.mat_orig_policy import MATOrigCriticConfig, MATOrigPolicy, MATOrigPolicyConfig
@@ -88,6 +88,7 @@ from swarmbots.learn.obs_indices import ObsIndices
 from swarmbots.learn.scheduling.auto_lr_updater import make_auto_lr_updater
 from swarmbots.learn.scheduling.cosine_scheduler import CosineSchedulerConfig
 from swarmbots.learn.scheduling.linear_scheduler import LinearScheduler
+from swarmbots.learn.serialization_utils import serialize_dataclass
 from swarmbots.learn.scheduling.schedulers import ScheduledHyperParameter, SchedulerManager, ScheduleUnit
 from swarmbots.learn.summary_statistics import SummaryStatisticsFormat
 from swarmbots.learn.swarmbots_obs_indices import build_obs_indices
@@ -563,9 +564,9 @@ def run_experiment(
         mat_normalization: MATNormalizationConfig = MATNormalizationConfig(),
         enc_nhead: int = 4,
         dec_nhead: int = 2,
-        mat_encoder_transformer_ff_hidden_dims: Sequence[int] | None = None,
+        mat_encoder_transformer_ff_config: FeedForwardConfig | None = None,
         rmat_actor_d_model: int | None = None,
-        rmat_actor_transformer_ff_hidden_dims: Sequence[int] | None = None,
+        rmat_actor_transformer_ff_config: FeedForwardConfig | None = None,
         rmat_actor_inter_module_mlp: bool = False,
         r_tmasac_actor_state_critic_input_config: ActorStateCriticInputConfig | None = None,
         tmasac_actor_head_kind: TMASACActorHeadKind | str = TMASACActorHeadKind.INDEPENDENT,
@@ -737,7 +738,7 @@ def run_experiment(
         f"rmat_temporal_layer_norm={rmat_temporal_layer_norm}, "
         f"rmat_use_temporal_output_projection={rmat_use_temporal_output_projection}, "
         f"rmat_actor_d_model={rmat_actor_d_model}, "
-        f"rmat_actor_transformer_ff_hidden_dims={rmat_actor_transformer_ff_hidden_dims}, "
+        f"rmat_actor_transformer_ff_config={rmat_actor_transformer_ff_config}, "
         f"rmat_actor_inter_module_mlp={rmat_actor_inter_module_mlp}"
     )
     if sac_policy:
@@ -886,9 +887,9 @@ def run_experiment(
         world_model_num_next_steps=world_model_num_next_steps,
         transition_model_d_model=transition_model_d_model,
         transition_model_nhead=transition_model_nhead,
-        mat_encoder_transformer_ff_hidden_dims=mat_encoder_transformer_ff_hidden_dims,
+        mat_encoder_transformer_ff_config=mat_encoder_transformer_ff_config,
         rmat_actor_d_model=rmat_actor_d_model,
-        rmat_actor_transformer_ff_hidden_dims=rmat_actor_transformer_ff_hidden_dims,
+        rmat_actor_transformer_ff_config=rmat_actor_transformer_ff_config,
         rmat_actor_inter_module_mlp=rmat_actor_inter_module_mlp,
         r_tmasac_actor_state_critic_input_config=r_tmasac_actor_state_critic_input_config,
         tmasac_actor_head_kind=tmasac_actor_head_kind,
@@ -1212,16 +1213,16 @@ def run_experiment(
         "mat_init_gains": asdict(mat_init_gains),
         "nop_init_gains": asdict(nop_init_gains),
         "mat_normalization": asdict(mat_normalization),
-        "mat_encoder_transformer_ff_hidden_dims": (
+        "mat_encoder_transformer_ff_config": (
             None
-            if mat_encoder_transformer_ff_hidden_dims is None
-            else list(mat_encoder_transformer_ff_hidden_dims)
+            if mat_encoder_transformer_ff_config is None
+            else serialize_dataclass(mat_encoder_transformer_ff_config)
         ),
         "rmat_actor_d_model": rmat_actor_d_model,
-        "rmat_actor_transformer_ff_hidden_dims": (
+        "rmat_actor_transformer_ff_config": (
             None
-            if rmat_actor_transformer_ff_hidden_dims is None
-            else list(rmat_actor_transformer_ff_hidden_dims)
+            if rmat_actor_transformer_ff_config is None
+            else serialize_dataclass(rmat_actor_transformer_ff_config)
         ),
         "rmat_actor_inter_module_mlp": rmat_actor_inter_module_mlp,
         "tmasac_actor_head_kind": (
@@ -1459,9 +1460,9 @@ def _make_base_policy(
         world_model_num_next_steps: int = 4,
         transition_model_d_model: int = 128,
         transition_model_nhead: int = 2,
-        mat_encoder_transformer_ff_hidden_dims: Sequence[int] | None = None,
+        mat_encoder_transformer_ff_config: FeedForwardConfig | None = None,
         rmat_actor_d_model: int | None = None,
-        rmat_actor_transformer_ff_hidden_dims: Sequence[int] | None = None,
+        rmat_actor_transformer_ff_config: FeedForwardConfig | None = None,
         rmat_actor_inter_module_mlp: bool = False,
         r_tmasac_actor_state_critic_input_config: ActorStateCriticInputConfig | None = None,
         tmasac_actor_head_kind: TMASACActorHeadKind | str = TMASACActorHeadKind.INDEPENDENT,
@@ -1530,13 +1531,9 @@ def _make_base_policy(
         linear_init_gain=mat_init_gains.obs_encoder,
         linear_projection_init_gain=mat_init_gains.obs_encoder_projection,
         transformer_ff_init_gain=mat_init_gains.encoder_transformer_ff,
-        transformer_ff_hidden_dims=(
-            None
-            if mat_encoder_transformer_ff_hidden_dims is None
-            else list(mat_encoder_transformer_ff_hidden_dims)
-        ),
-        local_obs_encoder_hidden_dims=[enc_d_model, enc_d_model],
-        global_obs_encoder_hidden_dims=[enc_d_model],
+        transformer_ff_config=mat_encoder_transformer_ff_config,
+        local_obs_encoder_config=MLPConfig(hidden_dims=[enc_d_model, enc_d_model]),
+        global_obs_encoder_config=MLPConfig(hidden_dims=[enc_d_model]),
         normalize_obs_inputs=mat_normalization.normalize_obs_inputs,
         normalize_tokens=mat_normalization.normalize_encoder_tokens,
     )
@@ -1550,13 +1547,9 @@ def _make_base_policy(
         linear_init_gain=mat_init_gains.obs_encoder,
         linear_projection_init_gain=mat_init_gains.obs_encoder_projection,
         transformer_ff_init_gain=mat_init_gains.encoder_transformer_ff,
-        transformer_ff_hidden_dims=(
-            None
-            if mat_encoder_transformer_ff_hidden_dims is None
-            else list(mat_encoder_transformer_ff_hidden_dims)
-        ),
-        local_obs_encoder_hidden_dims=[enc_d_model, enc_d_model],
-        global_obs_encoder_hidden_dims=[enc_d_model],
+        transformer_ff_config=mat_encoder_transformer_ff_config,
+        local_obs_encoder_config=MLPConfig(hidden_dims=[enc_d_model, enc_d_model]),
+        global_obs_encoder_config=MLPConfig(hidden_dims=[enc_d_model]),
         normalize_obs_inputs=mat_normalization.normalize_obs_inputs,
         normalize_tokens=mat_normalization.normalize_encoder_tokens,
         temporal_residual=rmat_temporal_residual,
@@ -1566,22 +1559,20 @@ def _make_base_policy(
         **({} if rmat_temporal_model_config is None else {"temporal_model_config": rmat_temporal_model_config}),
     )
     resolved_rmat_actor_d_model = enc_d_model if rmat_actor_d_model is None else rmat_actor_d_model
-    resolved_rmat_actor_ff_hidden_dims = (
-        mat_encoder_transformer_ff_hidden_dims
-        if rmat_actor_transformer_ff_hidden_dims is None
-        else rmat_actor_transformer_ff_hidden_dims
+    resolved_rmat_actor_ff_config = (
+        mat_encoder_transformer_ff_config
+        if rmat_actor_transformer_ff_config is None
+        else rmat_actor_transformer_ff_config
     )
     rmat_actor_encoder_config = replace(
         rmat_encoder_config,
         d_model=resolved_rmat_actor_d_model,
         dim_feedforward=resolved_rmat_actor_d_model * 2,
-        transformer_ff_hidden_dims=(
-            None
-            if resolved_rmat_actor_ff_hidden_dims is None
-            else list(resolved_rmat_actor_ff_hidden_dims)
+        transformer_ff_config=resolved_rmat_actor_ff_config,
+        local_obs_encoder_config=MLPConfig(
+            hidden_dims=[resolved_rmat_actor_d_model, resolved_rmat_actor_d_model]
         ),
-        local_obs_encoder_hidden_dims=[resolved_rmat_actor_d_model, resolved_rmat_actor_d_model],
-        global_obs_encoder_hidden_dims=[resolved_rmat_actor_d_model],
+        global_obs_encoder_config=MLPConfig(hidden_dims=[resolved_rmat_actor_d_model]),
         inter_module_mlp=rmat_actor_inter_module_mlp,
     )
 

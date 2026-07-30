@@ -19,12 +19,13 @@ from swarmbots.learn.algos.xlstm.slstm import (
     SLSTMTemporalSequenceModel,
     SLSTMTemporalSequenceModelConfig,
 )
+from swarmbots.learn.nn_components.feed_forward import MLPConfig
 from swarmbots.scenario_presets.scenario_presets_kwargs import PO_WALL_MEDIUM_SCENARIO_KWARGS
 
 EXPERIMENT_RUN_NAME = "mjw_po_wall_medium_1024x1_ract_tmasac"
 EXPERIMENT_TOTAL_TIMESTEPS = 100_000_000
 ACTOR_D_MODEL = 256
-MAT_TRANSFORMER_FF_HIDDEN_DIMS = (512, 512)
+MAT_TRANSFORMER_FF_CONFIG = MLPConfig(hidden_dims=[512, 512])
 SCENARIO_KWARGS: dict[str, object] = dict(PO_WALL_MEDIUM_SCENARIO_KWARGS)
 SCENARIO_KWARGS["continuous_connector_actions"] = True
 TemporalModelVariant = Literal["mat", "lstm", "slstm", "smlstm"]
@@ -39,7 +40,7 @@ def run_experiment(
         mlp_layout: MLPLayout | None,
 ) -> None:
     temporal_model_cls, temporal_model_config = _make_temporal_model_specs(temporal_model_variant)
-    transformer_ff_hidden_dims, inter_module_mlp = _make_mlp_layout(mlp_layout)
+    transformer_ff_config, inter_module_mlp = _make_mlp_layout(mlp_layout)
     run_mjw_wall_experiment(
         num_envs=1024,
         rollout_steps_per_env=1,
@@ -63,13 +64,13 @@ def run_experiment(
         sac_recurrent_learning_steps=64,
         sac_temporal_state_store_interval=16,
         sac_temporal_state_storage_dtype=torch.float16,
-        mat_encoder_transformer_ff_hidden_dims=(
-            MAT_TRANSFORMER_FF_HIDDEN_DIMS
+        mat_encoder_transformer_ff_config=(
+            MAT_TRANSFORMER_FF_CONFIG
             if temporal_model_variant == "mat"
             else None
         ),
         rmat_actor_d_model=ACTOR_D_MODEL,
-        rmat_actor_transformer_ff_hidden_dims=transformer_ff_hidden_dims,
+        rmat_actor_transformer_ff_config=transformer_ff_config,
         rmat_actor_inter_module_mlp=inter_module_mlp,
         rmat_temporal_model_cls=temporal_model_cls,
         rmat_temporal_model_config=temporal_model_config,
@@ -97,13 +98,13 @@ def _make_temporal_model_specs(variant: TemporalModelVariant) -> tuple[object | 
     raise ValueError(f"Unknown temporal_model_variant={variant!r}")
 
 
-def _make_mlp_layout(layout: MLPLayout | None) -> tuple[list[int] | None, bool]:
+def _make_mlp_layout(layout: MLPLayout | None) -> tuple[MLPConfig | None, bool]:
     if layout is None:
         return None, False
     if layout == "small_end":
-        return [ACTOR_D_MODEL * 2], False
+        return MLPConfig(hidden_dims=[ACTOR_D_MODEL * 2]), False
     if layout == "big_end":
-        return [ACTOR_D_MODEL * 2, ACTOR_D_MODEL * 2], False
+        return MLPConfig(hidden_dims=[ACTOR_D_MODEL * 2, ACTOR_D_MODEL * 2]), False
     if layout == "two_small":
-        return [ACTOR_D_MODEL * 2], True
+        return MLPConfig(hidden_dims=[ACTOR_D_MODEL * 2]), True
     raise ValueError(f"Unknown mlp_layout={layout!r}")

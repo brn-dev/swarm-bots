@@ -38,7 +38,7 @@ from swarmbots.learn.algos.sac.tmasac_actor_heads import (
 from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
 from swarmbots.learn.nn_components.activations import ActivationFactory
 from swarmbots.learn.nn_components.deep_set import DeepSetCritic
-from swarmbots.learn.nn_components.mlp import MLP
+from swarmbots.learn.nn_components.feed_forward import MLP, feedforward_linear_layers, make_feedforward
 from swarmbots.learn.nn_components.nn_init import make_init_linear_orthogonal, reinitialize_multihead_attention
 from swarmbots.learn.polyak_update import polyak_update
 from swarmbots.learn.serialization_utils import serialize_dataclass, serialize_value
@@ -204,18 +204,14 @@ class TMASACActionConditionedEncoder(nn.Module):
                 if encoder_config.linear_projection_init_gain is None
                 else make_init_linear_orthogonal(encoder_config.linear_projection_init_gain)
             )
-            if not encoder_config.global_obs_encoder_hidden_dims:
-                self.global_encoder = nn.Linear(self.global_encoder_input_dim, self.d_model)
-                projection_linear_init(self.global_encoder)
-            else:
-                self.global_encoder = MLP(
-                    input_dim=self.global_encoder_input_dim,
-                    hidden_dims=[*encoder_config.global_obs_encoder_hidden_dims, self.d_model],
-                    end_with_act_fn=False,
-                    linear_init=linear_init,
-                    final_linear_init=projection_linear_init,
-                    act_fn_cls=act_fn_cls,
-                )
+            self.global_encoder = make_feedforward(
+                input_dim=self.global_encoder_input_dim,
+                output_dim=self.d_model,
+                config=encoder_config.global_obs_encoder_config,
+                linear_init=linear_init,
+                output_linear_init=projection_linear_init,
+                act_fn_cls=act_fn_cls,
+            )
         else:
             self.global_encoder = None
 
@@ -297,10 +293,11 @@ class TMASACActionConditionedEncoder(nn.Module):
         for layer in self.layers:
             if layer.self_attn is not None:
                 reinitialize_multihead_attention(layer.self_attn)
-            feedforward_linear_layers = layer._feedforward_linear_layers()
-            for linear in feedforward_linear_layers[:-1]:
+            hidden_layers, output_layers = feedforward_linear_layers(layer.feedforward)
+            for linear in hidden_layers:
                 hidden_linear_init(linear)
-            output_linear_init(feedforward_linear_layers[-1])
+            for linear in output_layers:
+                output_linear_init(linear)
 
 
 class TMASACTwinCritic(nn.Module):

@@ -22,7 +22,7 @@ from swarmbots.learn.algos.sac.tmasac_policy import (
 )
 from swarmbots.learn.algos.xlstm.slstm import SLSTMTemporalSequenceModel
 from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
-from swarmbots.learn.nn_components.mlp import MLP
+from swarmbots.learn.nn_components.feed_forward import MLP, MLPConfig
 from swarmbots.learn.nn_components.nn_init import make_init_linear_orthogonal
 from swarmbots.learn.serialization_utils import serialize_dataclass
 
@@ -156,10 +156,12 @@ class RecurrentTMASACTwinCritic(TMASACTwinCritic):
         self.encoder_config = replace(
             encoder_config,
             dropout=dropout,
-            local_obs_encoder_hidden_dims=(
-                [self.d_model]
-                if critic_config.action_coembed_hidden_dims is None
-                else [*critic_config.action_coembed_hidden_dims]
+            local_obs_encoder_config=MLPConfig(
+                hidden_dims=(
+                    [self.d_model]
+                    if critic_config.action_coembed_hidden_dims is None
+                    else [*critic_config.action_coembed_hidden_dims]
+                )
             ),
             linear_init_gain=critic_config.action_coembed_init_gain,
             linear_projection_init_gain=critic_config.action_coembed_output_init_gain,

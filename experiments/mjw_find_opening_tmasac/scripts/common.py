@@ -17,10 +17,12 @@ from swarmbots.learn.algos.xlstm.slstm import (
     SLSTMTemporalSequenceModel,
     SLSTMTemporalSequenceModelConfig,
 )
+from swarmbots.learn.nn_components.feed_forward import FeedForwardConfig, MLPConfig
 
 EXPERIMENT_RUN_NAME = "mjw_find_opening_tmasac"
 EXPERIMENT_TOTAL_TIMESTEPS = 100_000_000
 ACTOR_D_MODEL = 256
+PARAMETER_MATCHED_SWIGLU_HIDDEN_DIM = 344
 SCENARIO_KWARGS: dict[str, object] = {"continuous_connector_actions": True}
 TemporalModelVariant = Literal["baseline", "lstm", "slstm"]
 
@@ -33,9 +35,19 @@ def run_experiment(
         actor_state_critic_input_config: ActorStateCriticInputConfig | None = None,
         separate_observation_action_encoders: bool = False,
         actor_head_kind: TMASACActorHeadKind = TMASACActorHeadKind.INDEPENDENT,
+        mat_encoder_transformer_ff_config: FeedForwardConfig | None = None,
+        rmat_actor_transformer_ff_config: FeedForwardConfig | None = None,
 ) -> None:
     is_recurrent = temporal_model_variant != "baseline"
     temporal_model_cls, temporal_model_config = _make_temporal_model_specs(temporal_model_variant)
+    resolved_mat_encoder_transformer_ff_config = mat_encoder_transformer_ff_config
+    if resolved_mat_encoder_transformer_ff_config is None and not is_recurrent:
+        resolved_mat_encoder_transformer_ff_config = MLPConfig(hidden_dims=[512, 512])
+    resolved_rmat_actor_transformer_ff_config = (
+        MLPConfig(hidden_dims=[ACTOR_D_MODEL * 2])
+        if rmat_actor_transformer_ff_config is None
+        else rmat_actor_transformer_ff_config
+    )
 
     run_mjw_find_opening_experiment(
         num_envs=1024,
@@ -45,7 +57,7 @@ def run_experiment(
         continuous_action_dist="gumbel_softmax_sign_magnitude_beta",
         policy_variant="r_tmasac" if is_recurrent else "tmasac",
         mat_add_agent_embeddings=False,
-        mat_encoder_transformer_ff_hidden_dims=None if is_recurrent else (512, 512),
+        mat_encoder_transformer_ff_config=resolved_mat_encoder_transformer_ff_config,
         nop_add_agent_embeddings_transition_model=False,
         use_nop=True,
         experiment_run_name=EXPERIMENT_RUN_NAME,
@@ -63,7 +75,9 @@ def run_experiment(
         sac_temporal_state_store_interval=16,
         sac_temporal_state_storage_dtype=torch.float16 if is_recurrent else None,
         rmat_actor_d_model=ACTOR_D_MODEL if is_recurrent else None,
-        rmat_actor_transformer_ff_hidden_dims=[ACTOR_D_MODEL * 2] if is_recurrent else None,
+        rmat_actor_transformer_ff_config=(
+            resolved_rmat_actor_transformer_ff_config if is_recurrent else None
+        ),
         rmat_actor_inter_module_mlp=is_recurrent,
         r_tmasac_actor_state_critic_input_config=actor_state_critic_input_config,
         tmasac_actor_head_kind=actor_head_kind,

@@ -25,7 +25,7 @@ from swarmbots.learn.action_dists.bernoulli_action_dist import BernoulliConfig
 from swarmbots.learn.action_dists.entropy_utils import AgentActionsReduction, EntropyLossConfig
 from swarmbots.learn.action_dists.sign_magnitude_beta_action_dist import SignMagnitudeBetaConfig
 from swarmbots.learn.algos.mat_qcs.mat_qcs_decoder import MATQCSDecoderConfig, MATQCSDecoderSelfAttentionMode
-from swarmbots.learn.algos.mat.mat_encoder import MATEncoderConfig
+from swarmbots.learn.algos.mat import MATEncoderConfig, MLPConfig
 from swarmbots.learn.algos.mat_qcs.mat_qcs_policy import MATQCSCriticConfig, MATQCSPolicy, MATQCSPolicyConfig
 from swarmbots.learn.algos.ppo.ppo_policy import PopArtConfig
 from swarmbots.learn.algos.world_modeling.next_obs_pred_mixin import NextObsPredConfig
@@ -157,8 +157,10 @@ def build_policy_config(config: BenchmarkConfig, *, compile_modules: bool) -> MA
             nhead=config.encoder_nhead,
             num_layers=config.encoder_layers,
             dim_feedforward=config.encoder_d_model * 2,
-            local_obs_encoder_hidden_dims=[config.encoder_d_model, config.encoder_d_model],
-            global_obs_encoder_hidden_dims=[config.encoder_d_model],
+            local_obs_encoder_config=MLPConfig(
+                hidden_dims=[config.encoder_d_model, config.encoder_d_model]
+            ),
+            global_obs_encoder_config=MLPConfig(hidden_dims=[config.encoder_d_model]),
         ),
         decoder_config=MATQCSDecoderConfig(
             d_model=config.decoder_d_model,

@@ -8,7 +8,7 @@ from gymnasium import spaces
 
 from swarmbots.learn.action_dists.bernoulli_action_dist import BernoulliConfig
 from swarmbots.learn.action_dists.sticky_sign_magnitude_beta_action_dist import StickySignMagnitudeBetaConfig
-from swarmbots.learn.algos.mat.mat_encoder import MATEncoderConfig
+from swarmbots.learn.algos.mat import MATEncoderConfig, MLPConfig
 from swarmbots.learn.algos.mat_orig.mat_orig_decoder import MATOrigDecoderConfig
 from swarmbots.learn.algos.mat_orig.mat_orig_policy import MATOrigPolicy, MATOrigPolicyConfig
 from swarmbots.learn.hybrid_action_space import HybridActionSpace
@@ -54,7 +54,7 @@ def _make_policy(
                 num_layers=1,
                 dim_feedforward=2 * encoder_d_model,
                 act_fn_cls=nn.GELU,
-                local_obs_encoder_hidden_dims=[encoder_d_model, encoder_d_model],
+                local_obs_encoder_config=MLPConfig(hidden_dims=[encoder_d_model, encoder_d_model]),
             ),
             decoder_config=MATOrigDecoderConfig(
                 d_model=decoder_d_model,

@@ -15,7 +15,7 @@ from swarmbots.learn.algos.world_modeling.transformer_transition_model import (
     TransformerTransitionModelConfig,
 )
 from swarmbots.learn.nn_components.activations import ActivationFactory
-from swarmbots.learn.nn_components.mlp import MLP
+from swarmbots.learn.nn_components.feed_forward import MLP
 from swarmbots.learn.nn_components.nn_init import make_init_linear_orthogonal
 from swarmbots.learn.serialization_utils import serialize_dataclass, serialize_value
 

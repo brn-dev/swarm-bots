@@ -13,11 +13,12 @@ from experiments.mjw_experiment_common import (
     run_experiment as run_mjw_wall_experiment,
 )
 from swarmbots.learn.algos.mat_qcs.mat_qcs_decoder import MATQCSDecoderSelfAttentionMode
+from swarmbots.learn.nn_components.feed_forward import MLPConfig
 from swarmbots.scenario_presets.scenario_presets_kwargs import PO_WALL_MEDIUM_SCENARIO_KWARGS
 
 EXPERIMENT_RUN_NAME = "mjw_po_wall_medium_1024x4_250M_bigger_mlps"
 EXPERIMENT_TOTAL_TIMESTEPS = 250_000_000
-ENCODER_TRANSFORMER_FF_HIDDEN_DIMS = (512, 512)
+ENCODER_TRANSFORMER_FF_CONFIG = MLPConfig(hidden_dims=[512, 512])
 SCENARIO_KWARGS: dict[str, object] = dict(PO_WALL_MEDIUM_SCENARIO_KWARGS)
 SCENARIO_KWARGS["continuous_connector_actions"] = True
 
@@ -51,7 +52,7 @@ def run_experiment(
         mat_decoder_lr_multiplier=mat_decoder_lr_multiplier,
         total_timesteps=EXPERIMENT_TOTAL_TIMESTEPS,
         include_actor_head_lr_multiplier=include_actor_head_lr_multiplier,
-        mat_encoder_transformer_ff_hidden_dims=ENCODER_TRANSFORMER_FF_HIDDEN_DIMS,
+        mat_encoder_transformer_ff_config=ENCODER_TRANSFORMER_FF_CONFIG,
         sac_ent_coef=sac_ent_coef,
         sac_target_entropy=sac_target_entropy,
     )

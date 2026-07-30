@@ -1,5 +1,5 @@
 import copy
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import torch
 from torch import nn
@@ -9,7 +9,14 @@ from swarmbots.learn.nn_components.nn_init import (
     make_init_linear_orthogonal,
     reinitialize_multihead_attention,
 )
-from swarmbots.learn.nn_components.mlp import MLP
+from swarmbots.learn.nn_components.feed_forward import (
+    FeedForwardConfig,
+    GLU,
+    MLPConfig,
+    StackedGLU,
+    feedforward_linear_layers,
+    make_feedforward,
+)
 
 
 @dataclass(frozen=True)
@@ -27,9 +34,9 @@ class MATEncoderConfig:
     linear_init_gain: float = 1.0
     linear_projection_init_gain: float | None = 1.0
     transformer_ff_init_gain: float | None = 1.0
-    transformer_ff_hidden_dims: list[int] | None = None
-    local_obs_encoder_hidden_dims: list[int] | None = None
-    global_obs_encoder_hidden_dims: list[int] | None = None
+    transformer_ff_config: FeedForwardConfig | None = None
+    local_obs_encoder_config: FeedForwardConfig = field(default_factory=MLPConfig)
+    global_obs_encoder_config: FeedForwardConfig = field(default_factory=MLPConfig)
     normalize_obs_inputs: bool = False
     normalize_tokens: bool = False
     use_agent_attention: bool = True
@@ -58,17 +65,12 @@ class MATEncoderLayer(nn.Module):
         self.norm2 = nn.LayerNorm(config.d_model, eps=config.layer_norm_eps, bias=config.bias)
         self.dropout1 = nn.Dropout(config.dropout)
         self.dropout2 = nn.Dropout(config.dropout)
-        transformer_ff_hidden_dims = (
-            [config.dim_feedforward]
-            if config.transformer_ff_hidden_dims is None
-            else config.transformer_ff_hidden_dims
-        )
-        self.feedforward = MLP(
+        self.feedforward = make_feedforward(
             input_dim=config.d_model,
-            hidden_dims=[*transformer_ff_hidden_dims, config.d_model],
-            end_with_act_fn=False,
+            output_dim=config.d_model,
+            config=resolve_transformer_ff_config(config),
             linear_init=_skip_init,
-            final_linear_init=_skip_init,
+            output_linear_init=_skip_init,
             act_fn_cls=config.act_fn_cls,
             bias=config.bias,
             dropout=config.dropout,
@@ -84,7 +86,16 @@ class MATEncoderLayer(nn.Module):
 
     @property
     def activation(self) -> nn.Module:
-        for module in self.feedforward:
+        if isinstance(self.feedforward, GLU):
+            return self.feedforward.activation
+        if isinstance(self.feedforward, StackedGLU):
+            first_layer = self.feedforward[0]
+            if not isinstance(first_layer, GLU):
+                raise TypeError(f"Unexpected StackedGLU child module: {type(first_layer).__name__}")
+            return first_layer.activation
+        for module in self.feedforward.modules():
+            if module is self.feedforward:
+                continue
             if not isinstance(module, (nn.Linear, nn.Dropout)):
                 return module
         raise RuntimeError("MATEncoderLayer feedforward has no activation")
@@ -143,7 +154,8 @@ class MATEncoderLayer(nn.Module):
         return self.dropout2(self.feedforward(embeddings))
 
     def _feedforward_linear_layers(self) -> list[nn.Linear]:
-        return [module for module in self.feedforward if isinstance(module, nn.Linear)]
+        hidden_layers, output_layers = feedforward_linear_layers(self.feedforward)
+        return [*hidden_layers, *output_layers]
 
 
 class MATEncoder(nn.Module):
@@ -176,32 +188,24 @@ class MATEncoder(nn.Module):
             else make_init_linear_orthogonal(config.linear_projection_init_gain)
         )
 
-        if config.local_obs_encoder_hidden_dims is None or len(config.local_obs_encoder_hidden_dims) == 0:
-            self.local_obs_encoder = nn.Linear(self.local_obs_dim, config.d_model)
-            projection_linear_init(self.local_obs_encoder)
-        else:
-            self.local_obs_encoder = MLP(
-                input_dim=self.local_obs_dim,
-                hidden_dims=[*config.local_obs_encoder_hidden_dims, config.d_model],
-                end_with_act_fn=False,
-                linear_init=linear_init,
-                final_linear_init=projection_linear_init,
-                act_fn_cls=config.act_fn_cls,
-            )
+        self.local_obs_encoder = make_feedforward(
+            input_dim=self.local_obs_dim,
+            output_dim=config.d_model,
+            config=config.local_obs_encoder_config,
+            linear_init=linear_init,
+            output_linear_init=projection_linear_init,
+            act_fn_cls=config.act_fn_cls,
+        )
 
         if self.has_global_obs:
-            if config.global_obs_encoder_hidden_dims is None or len(config.global_obs_encoder_hidden_dims) == 0:
-                self.global_obs_encoder = nn.Linear(self.global_obs_dim, config.d_model)
-                projection_linear_init(self.global_obs_encoder)
-            else:
-                self.global_obs_encoder = MLP(
-                    input_dim=self.global_obs_dim,
-                    hidden_dims=[*config.global_obs_encoder_hidden_dims, config.d_model],
-                    end_with_act_fn=False,
-                    linear_init=linear_init,
-                    final_linear_init=projection_linear_init,
-                    act_fn_cls=config.act_fn_cls,
-                )
+            self.global_obs_encoder = make_feedforward(
+                input_dim=self.global_obs_dim,
+                output_dim=config.d_model,
+                config=config.global_obs_encoder_config,
+                linear_init=linear_init,
+                output_linear_init=projection_linear_init,
+                act_fn_cls=config.act_fn_cls,
+            )
         else:
             self.global_obs_encoder = None
 
@@ -261,11 +265,18 @@ class MATEncoder(nn.Module):
         for layer in self.layers:
             if layer.self_attn is not None:
                 reinitialize_multihead_attention(layer.self_attn)
-            feedforward_linear_layers = layer._feedforward_linear_layers()
-            for linear in feedforward_linear_layers[:-1]:
+            hidden_layers, output_layers = feedforward_linear_layers(layer.feedforward)
+            for linear in hidden_layers:
                 hidden_linear_init(linear)
-            output_linear_init(feedforward_linear_layers[-1])
+            for linear in output_layers:
+                output_linear_init(linear)
 
 
 def _skip_init(module: nn.Linear) -> nn.Linear:
     return module
+
+
+def resolve_transformer_ff_config(config: MATEncoderConfig) -> FeedForwardConfig:
+    if config.transformer_ff_config is None:
+        return MLPConfig(hidden_dims=[config.dim_feedforward])
+    return config.transformer_ff_config

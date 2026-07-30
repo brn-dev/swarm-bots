@@ -1,7 +1,7 @@
 import torch
 from torch import nn
 
-from swarmbots.learn.algos.mat.mat_encoder import MATEncoder, MATEncoderConfig
+from swarmbots.learn.algos.mat import MATEncoder, MATEncoderConfig, MLPConfig
 from swarmbots.learn.algos.r_mat.r_mat_encoder import RMATEncoder, RMATEncoderConfig
 from swarmbots.learn.algos.world_modeling.transformer_transition_model import (
     TransformerTransitionModel,
@@ -12,7 +12,7 @@ from swarmbots.learn.nn_components.activations import (
     SignedSquaredLeakyRelu,
     SignedSquaredLeakyReluFactory,
 )
-from swarmbots.learn.nn_components.mlp import MLP
+from swarmbots.learn.nn_components.feed_forward import MLP
 
 
 def _fill_linear_with_ones(linear: nn.Linear) -> nn.Linear:
@@ -97,7 +97,7 @@ def test_mat_encoder_custom_transformer_feedforward_passes_feature_counts_to_act
             nhead=2,
             num_layers=1,
             dim_feedforward=16,
-            transformer_ff_hidden_dims=[13, 11],
+            transformer_ff_config=MLPConfig(hidden_dims=[13, 11]),
             act_fn_cls=SignedSquaredLeakyReluFactory(negative_slope_mode=ParameterLearnMode.PER_FEATURE),
         ),
         max_agents=3,
@@ -143,7 +143,7 @@ def test_rmat_encoder_custom_transformer_feedforward_passes_feature_counts_to_ac
             nhead=2,
             num_layers=1,
             dim_feedforward=16,
-            transformer_ff_hidden_dims=[13, 11],
+            transformer_ff_config=MLPConfig(hidden_dims=[13, 11]),
             inter_module_mlp=True,
             act_fn_cls=SignedSquaredLeakyReluFactory(negative_slope_mode=ParameterLearnMode.PER_FEATURE),
         ),
