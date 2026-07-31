@@ -212,15 +212,20 @@ class TorchFeatureWiseObsNormWrapperTests(unittest.TestCase):
             )
             wrapper.obs_rms = TorchRunningMeanStd(shape=(1,), device=env.device, initial_count=0.0)
 
-            wrapper.observations(
+            first_normalized = wrapper.observations(
                 _obs(
                     local_obs=torch.tensor([[[1.0, 10.0], [3.0, 30.0]]], device=env.device),
                 ),
             )
+            first_normalized_snapshot = first_normalized["local_obs"].clone()
             wrapper.observations(
                 _obs(
                     local_obs=torch.tensor([[[5.0, 50.0], [7.0, 70.0]]], device=env.device),
                 ),
+            )
+            torch.testing.assert_close(
+                first_normalized["local_obs"],
+                first_normalized_snapshot,
             )
 
             assert wrapper.obs_rms is not None
