@@ -9,15 +9,18 @@ import torch
 from gymnasium import spaces
 from gymnasium.vector import AutoresetMode, SyncVectorEnv
 
-import swarmbots.learn.algos.off_policy.off_policy_rollout as off_policy_rollout
-import swarmbots.learn.algos.off_policy.replay_buffer_tensor_ops as replay_buffer_tensor_ops
 from swarmbots.learn.algos.off_policy import (
     NoEpisodeSegmentCandidatesError,
     OffPolicyReplayBuffer,
     collect_off_policy_steps,
+    off_policy_rollout,
+    replay_buffer_tensor_ops,
+    warmup_off_policy_steps,
 )
 from swarmbots.learn.base_policy import BasePolicy
-from swarmbots.learn.env_wrappers.learn_wrappers.swarm_bots_learn_env_wrapper import SwarmBotsLearnEnvWrapper
+from swarmbots.learn.env_wrappers.learn_wrappers.swarm_bots_learn_env_wrapper import (
+    SwarmBotsLearnEnvWrapper,
+)
 from swarmbots.learn.gsde_reset import GSDEIntervalResetMode, GSDEProbabilityResetMode
 
 
@@ -1824,6 +1827,45 @@ class OffPolicyReplayTests(unittest.TestCase):
         finally:
             env.close()
 
+    def test_discarded_warmup_preserves_same_step_stream_for_first_replay_write(self) -> None:
+        env = _make_env(done_steps=(3,))
+        try:
+            buffer = _make_buffer(env, capacity_per_env=4)
+            policy = _ObsEncodingPolicy()
+
+            rollout_state = warmup_off_policy_steps(
+                env=env,
+                replay_buffer=buffer,
+                n_steps=4,
+                policy=policy,
+            )
+
+            self.assertEqual(len(buffer), 0)
+            self.assertFalse(buffer.has_current_obs)
+            self.assertEqual(rollout_state.rollout_step_idx, 4)
+            self.assertEqual(float(rollout_state.obs["local_obs"][0, 0, 0]), 201.0)
+
+            _episode_infos, _metrics, rollout_state = collect_off_policy_steps(
+                env=env,
+                replay_buffer=buffer,
+                n_steps=2,
+                policy=policy,
+                rollout_state=rollout_state,
+            )
+
+            self.assertFlatTransitionScalars(
+                buffer.get_all(),
+                local_obs=[201.0, 202.0],
+                next_local_obs=[202.0, 203.0],
+                actions=[201.25, 202.25],
+                rewards=[2.0, 3.0],
+                truncations=[False, True],
+            )
+            self.assertEqual(rollout_state.rollout_step_idx, 6)
+            self.assertEqual(float(rollout_state.obs["local_obs"][0, 0, 0]), 300.0)
+        finally:
+            env.close()
+
     def test_collect_only_snapshots_current_obs_when_buffer_needs_it(self) -> None:
         env = _make_env(done_steps=(4,))
         try:
@@ -2353,6 +2395,139 @@ class OffPolicyReplayTests(unittest.TestCase):
             self.assertEqual(
                 sorted(batch.initial_temporal_state[:, 0, 0].tolist()),
                 [4.0, 6.0],
+            )
+        finally:
+            env.close()
+
+    def test_multi_env_segment_candidates_keep_checkpoint_rows_and_boundaries_aligned(self) -> None:
+        env = _make_multi_env((), ())
+        try:
+            buffer = _make_buffer(
+                env,
+                capacity_per_env=4,
+                temporal_state_store_interval=2,
+            )
+            for step in range(6):
+                env_values = (float(step), float(100 + step))
+                next_env_values = (float(step + 1), float(101 + step))
+                temporal_state = torch.tensor(env_values).view(2, 1, 1).expand(2, 2, 1).clone()
+                next_temporal_state = (
+                    torch.tensor(next_env_values).view(2, 1, 1).expand(2, 2, 1).clone()
+                )
+                _add_direct_step(
+                    buffer,
+                    obs_values=env_values,
+                    next_obs_values=next_env_values,
+                    action_value=float(step),
+                    terminations=(step == 2, False),
+                    terminal_obs_values=next_env_values if step == 2 else None,
+                    temporal_state=temporal_state,
+                    next_temporal_state=next_temporal_state,
+                )
+
+            episode_contained = buffer.sample_episode_segments(
+                3,
+                segment_length=2,
+                replacement=False,
+            )
+            episode_contained_starts = episode_contained.local_obs[:, 0, 0, 0]
+            self.assertEqual(sorted(episode_contained_starts.tolist()), [4.0, 102.0, 104.0])
+            self.assertIsInstance(episode_contained.initial_temporal_state, torch.Tensor)
+            torch.testing.assert_close(
+                episode_contained.initial_temporal_state[:, 0, 0],
+                episode_contained_starts,
+            )
+
+            cross_episode = buffer.sample_episode_segments(
+                4,
+                segment_length=2,
+                replacement=False,
+                allow_episode_boundaries=True,
+            )
+            cross_episode_starts = cross_episode.local_obs[:, 0, 0, 0]
+            self.assertEqual(sorted(cross_episode_starts.tolist()), [2.0, 4.0, 102.0, 104.0])
+            self.assertIsInstance(cross_episode.initial_temporal_state, torch.Tensor)
+            torch.testing.assert_close(
+                cross_episode.initial_temporal_state[:, 0, 0],
+                cross_episode_starts,
+            )
+            env_zero_start_two = torch.nonzero(cross_episode_starts == 2.0, as_tuple=False).item()
+            self.assertEqual(
+                cross_episode.episode_ends[env_zero_start_two].tolist(),
+                [True, False],
+            )
+        finally:
+            env.close()
+
+    def test_multi_env_wrapped_segments_keep_checkpoints_and_terminal_transitions_aligned(self) -> None:
+        env = _make_multi_env((), ())
+        try:
+            buffer = _make_buffer(
+                env,
+                capacity_per_env=5,
+                temporal_state_store_interval=1,
+            )
+            env0_obs_values = [0.0, 1.0, 2.0, 3.0, 4.0, 50.0, 51.0]
+            for step, env0_obs_value in enumerate(env0_obs_values):
+                env1_obs_value = float(100 + step)
+                truncated = step == 4
+                next_env0_obs_value = 50.0 if truncated else env0_obs_value + 1.0
+                next_obs_values = (next_env0_obs_value, env1_obs_value + 1.0)
+                current_state = torch.tensor(
+                    [env0_obs_value, env1_obs_value],
+                    dtype=torch.float32,
+                ).view(2, 1, 1).expand(-1, 2, 1).clone()
+                next_state = torch.tensor(
+                    next_obs_values,
+                    dtype=torch.float32,
+                ).view(2, 1, 1).expand(-1, 2, 1).clone()
+                _add_direct_step(
+                    buffer,
+                    obs_values=(env0_obs_value, env1_obs_value),
+                    next_obs_values=next_obs_values,
+                    action_value=float(step),
+                    truncations=(truncated, False),
+                    terminal_obs_values=(5.0, env1_obs_value + 1.0) if truncated else None,
+                    temporal_state=current_state,
+                    next_temporal_state=next_state,
+                )
+
+            batch = buffer.sample_episode_segments(
+                6,
+                segment_length=2,
+                burn_in_steps=1,
+                replacement=False,
+                allow_episode_boundaries=True,
+            )
+
+            starts = batch.local_obs[:, 0, 0, 0]
+            self.assertEqual(
+                sorted(starts.tolist()),
+                [2.0, 3.0, 4.0, 102.0, 103.0, 104.0],
+            )
+            self.assertIsInstance(batch.initial_temporal_state, torch.Tensor)
+            torch.testing.assert_close(
+                batch.initial_temporal_state[:, 0, 0],
+                starts,
+            )
+            self.assertEqual(
+                batch.train_mask.tolist(),
+                [[False, True, True]] * 6,
+            )
+
+            crossing_row = int(torch.nonzero(starts == 4.0, as_tuple=False).item())
+            self.assertSegmentTransitionScalars(
+                batch,
+                crossing_row,
+                local_obs=[4.0, 50.0, 51.0],
+                next_local_obs=[5.0, 51.0, 52.0],
+                actions=[4.0, 5.0, 6.0],
+                rewards=[4.25, 5.25, 6.25],
+                truncations=[True, False, False],
+            )
+            self.assertEqual(
+                batch.episode_start_mask[crossing_row].tolist(),
+                [False, True, False],
             )
         finally:
             env.close()

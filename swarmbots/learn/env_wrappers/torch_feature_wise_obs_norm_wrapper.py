@@ -92,6 +92,10 @@ class TorchFeatureWiseObsNormWrapper(TorchEnvWrapper):
             self._eps,
             self._update_running_mean and self.obs_rms is not None,
         )
+        if self._tensor_operations_are_compiled:
+            # reduce-overhead reuses CUDA-graph output buffers, while returned observations
+            # remain live until the rollout snapshots them before the next environment step.
+            normalized_obs = normalized_obs.clone()
         if self.obs_rms is not None and self._update_running_mean:
             self.obs_rms.mean.copy_(next_mean)
             self.obs_rms.var.copy_(next_var)
@@ -143,6 +147,7 @@ class TorchFeatureWiseObsNormWrapper(TorchEnvWrapper):
             if self._compile_tensor_operations is None
             else self._compile_tensor_operations
         )
+        self._tensor_operations_are_compiled = compile_operation
         return build_obs_norm_tensor_operation(
             compile_operation=compile_operation,
             compile_mode=self._tensor_operations_compile_mode,
