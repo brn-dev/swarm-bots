@@ -11,12 +11,50 @@ from swarmbots.learn.env_wrappers.learn_wrappers.torch_env_wrapper import TorchE
 from swarmbots.learn.tensor_conversion import to_torch_tensor
 
 
+def _step_transition_tensors(
+    local_obs: torch.Tensor,
+    previous_local_obs: torch.Tensor,
+    previous_actions: torch.Tensor,
+    dones: torch.Tensor,
+    global_obs: torch.Tensor | None,
+    previous_global_obs: torch.Tensor | None,
+    new_obs_first: bool,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor | None, torch.Tensor | None]:
+    local_done_mask = dones.reshape(dones.shape[0], 1, 1)
+    transition_previous_local = previous_local_obs.masked_fill(local_done_mask, 0)
+    transition_previous_actions = previous_actions.masked_fill(local_done_mask, 0)
+    if new_obs_first:
+        stacked_local = torch.cat((local_obs, transition_previous_actions, transition_previous_local), dim=-1)
+    else:
+        stacked_local = torch.cat((transition_previous_local, transition_previous_actions, local_obs), dim=-1)
+
+    if global_obs is None:
+        return stacked_local, transition_previous_local, transition_previous_actions, None, None
+    if previous_global_obs is None:
+        previous_global_obs = torch.zeros_like(global_obs)
+    transition_previous_global = previous_global_obs.masked_fill(dones.reshape(dones.shape[0], 1), 0)
+    stacked_global = (
+        torch.cat((global_obs, transition_previous_global), dim=-1)
+        if new_obs_first
+        else torch.cat((transition_previous_global, global_obs), dim=-1)
+    )
+    return (
+        stacked_local,
+        transition_previous_local,
+        transition_previous_actions,
+        stacked_global,
+        transition_previous_global,
+    )
+
+
 class TorchTransitionObsWrapper(TorchEnvWrapper):
     def __init__(
         self,
         env: BaseLearnEnvWrapper,
         new_obs_first: bool = True,
         normalize_prev_binary_actions: bool = False,
+        compile_tensor_operations: bool | None = None,
+        tensor_operations_compile_mode: str = "default",
     ) -> None:
         super().__init__(env)
         if "local_obs" not in self.observation_space.spaces:
@@ -24,6 +62,24 @@ class TorchTransitionObsWrapper(TorchEnvWrapper):
 
         self.new_obs_first = new_obs_first
         self.normalize_prev_binary_actions = bool(normalize_prev_binary_actions)
+        compile_operations = (
+            self.device.type == "cuda"
+            if compile_tensor_operations is None
+            else compile_tensor_operations
+        )
+        if compile_operations:
+            if not hasattr(torch, "compile") or not callable(torch.compile):
+                raise RuntimeError("Compiling transition-observation tensor operations requires torch.compile.")
+            if not tensor_operations_compile_mode:
+                raise ValueError("tensor_operations_compile_mode must be non-empty when compilation is enabled.")
+            self._step_transition_tensors = torch.compile(
+                _step_transition_tensors,
+                mode=tensor_operations_compile_mode,
+                fullgraph=True,
+                dynamic=False,
+            )
+        else:
+            self._step_transition_tensors = _step_transition_tensors
         local_space: spaces.Box = self.observation_space["local_obs"]  # type: ignore[assignment]
         self._n_agents, self._n_local_obs = map(int, local_space.shape[1:])
         self._has_global_obs = "global_obs" in self.observation_space.spaces
@@ -108,11 +164,21 @@ class TorchTransitionObsWrapper(TorchEnvWrapper):
         )
         dones = torch.logical_or(terminations, truncations)
 
-        obs_prev_local = prev_local.masked_fill(dones.view(self._n_envs, 1, 1), 0)
-        obs_prev_actions = prev_actions.masked_fill(dones.view(self._n_envs, 1, 1), 0)
-        obs_prev_global = prev_global
-        if obs_prev_global is not None:
-            obs_prev_global = obs_prev_global.masked_fill(dones.view(self._n_envs, 1), 0)
+        (
+            stacked_local_obs,
+            obs_prev_local,
+            obs_prev_actions,
+            stacked_global_obs,
+            obs_prev_global,
+        ) = self._step_transition_tensors(
+            obs["local_obs"],
+            prev_local,
+            prev_actions,
+            dones,
+            obs.get("global_obs"),
+            prev_global,
+            self.new_obs_first,
+        )
 
         self._prev_local = obs["local_obs"].clone()
         self._current_prev_local = obs_prev_local.clone()
@@ -122,12 +188,10 @@ class TorchTransitionObsWrapper(TorchEnvWrapper):
             if obs_prev_global is not None:
                 self._current_prev_global = obs_prev_global.clone()
 
-        stacked_obs = self._stack_obs(
-            obs,
-            prev_local=obs_prev_local,
-            prev_actions=obs_prev_actions,
-            prev_global=obs_prev_global,
-        )
+        stacked_obs = dict(obs)
+        stacked_obs["local_obs"] = stacked_local_obs
+        if stacked_global_obs is not None:
+            stacked_obs["global_obs"] = stacked_global_obs
         return stacked_obs, rewards, terminations, truncations, infos
 
     def set_device(self, device: torch.device | str) -> None:

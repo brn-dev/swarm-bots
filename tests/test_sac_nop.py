@@ -6,14 +6,13 @@ from unittest.mock import patch
 
 import torch
 
-import swarmbots.learn.algos.sac.sac_nop as sac_nop
 from swarmbots.learn.algos.off_policy.replay_buffer import (
     OffPolicyReplayBatch,
     OffPolicyReplayEpisodeSegmentBatch,
 )
+from swarmbots.learn.algos.sac import sac_nop
 from swarmbots.learn.algos.sac.sac_nop import SACNOPConfig, SACNOPModule
 from swarmbots.learn.algos.world_modeling.next_obs_pred_mixin import NextObsPredConfig
-
 
 _REAL_TORCH_COMPILE = torch.compile
 
@@ -228,6 +227,44 @@ class SACNOPTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, message):
                     SACNOPModule(n_agents=3, name="invalid", **kwargs)
 
+        with self.assertRaisesRegex(ValueError, "Unknown scalar_loss"):
+            _make_module(config=replace(valid_config, scalar_loss_fn="not-a-loss"))
+
+    def test_optional_predictor_preprocessing_and_global_pool_receive_gradients(self) -> None:
+        config = replace(
+            _nop_config(),
+            pre_predictors_hidden_dims=[7],
+            global_pool_hidden_dims=[5],
+            scalar_loss_fn="smooth_l1",
+        )
+        module = _make_module(config=config)
+        batch = _make_flat_batch()
+        source_latents = torch.randn(4, 3, 6, requires_grad=True)
+
+        loss, metrics = module.compute_loss(source_latents=source_latents, batch=batch)
+        loss.backward()
+
+        self.assertIsInstance(module.scalar_loss_fn, torch.nn.SmoothL1Loss)
+        self.assertIsNotNone(source_latents.grad)
+        self.assertTrue(torch.isfinite(source_latents.grad).all())
+        for module_name in ("pre_predictors_transform", "global_pool_encoder"):
+            submodule = getattr(module, module_name)
+            self.assertIsNotNone(submodule)
+            assert submodule is not None
+            self.assertTrue(
+                all(parameter.grad is not None for parameter in submodule.parameters()),
+                module_name,
+            )
+        self.assertIn("test_nop_loss", metrics)
+        self.assertEqual(
+            module.get_hyper_parameters()["pre_predictors_hidden_dims"],
+            [7],
+        )
+        self.assertEqual(
+            module.get_hyper_parameters()["global_pool_hidden_dims"],
+            [5],
+        )
+
     def test_compilation_uses_one_end_to_end_full_graph(self) -> None:
         with patch.object(
                 sac_nop.torch,
@@ -327,6 +364,25 @@ class SACNOPTests(unittest.TestCase):
         )
 
         torch.testing.assert_close(modified_loss, baseline_loss)
+
+    def test_all_masked_sequence_contributes_no_loss_or_latent_gradient(self) -> None:
+        module = _make_module()
+        module.eval()
+        batch = _make_segment_batch()
+        batch = replace(batch, train_mask=torch.zeros_like(batch.train_mask))
+        source_latents = torch.randn(2, 3, 6, requires_grad=True)
+
+        loss, metrics = module.compute_loss(
+            source_latents=source_latents,
+            batch=batch,
+        )
+        loss.backward()
+
+        torch.testing.assert_close(loss, torch.zeros_like(loss))
+        self.assertTrue(all(value == 0.0 for value in metrics.values()))
+        self.assertIsNotNone(source_latents.grad)
+        assert source_latents.grad is not None
+        self.assertEqual(torch.count_nonzero(source_latents.grad).item(), 0)
 
     def test_loss_coefficient_remains_mutable_outside_compiled_graph(self) -> None:
         with patch.object(

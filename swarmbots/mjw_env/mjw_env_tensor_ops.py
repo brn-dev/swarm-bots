@@ -13,6 +13,7 @@ MaskedObservations = tuple[
     torch.Tensor,
     torch.Tensor,
 ]
+FinalizedStep = tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]
 CompiledReturn = TypeVar("CompiledReturn")
 
 
@@ -135,11 +136,45 @@ def _mask_error_observations(
     )
 
 
+def _begin_step(
+    qpos: torch.Tensor,
+    qvel: torch.Tensor,
+    current_step: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    unstable_mask = ~torch.isfinite(qpos).all(dim=1) | ~torch.isfinite(qvel).all(dim=1)
+    stable_mask = ~unstable_mask
+    current_step.add_(stable_mask.to(dtype=current_step.dtype))
+    return unstable_mask, stable_mask
+
+
+def _finalize_step(
+    rewards: torch.Tensor,
+    unstable_mask: torch.Tensor,
+    stable_mask: torch.Tensor,
+    scenario_terminations: torch.Tensor,
+    current_step: torch.Tensor,
+    truncation_limit: torch.Tensor,
+    simulation_unstable_reward: float,
+) -> FinalizedStep:
+    scenario_terminations = scenario_terminations & stable_mask
+    terminations = unstable_mask | scenario_terminations
+    truncations = stable_mask & ~scenario_terminations & (current_step >= truncation_limit)
+    dones = terminations | truncations
+    rewards = torch.where(
+        unstable_mask,
+        torch.as_tensor(simulation_unstable_reward, dtype=rewards.dtype, device=rewards.device),
+        rewards,
+    )
+    return rewards, terminations, truncations, dones
+
+
 @dataclass(frozen=True, slots=True)
 class MJWEnvTensorOperations:
     build_local_obs: Callable[..., torch.Tensor]
     prepare_actions: Callable[..., torch.Tensor]
     mask_error_observations: Callable[..., MaskedObservations]
+    begin_step: Callable[..., tuple[torch.Tensor, torch.Tensor]]
+    finalize_step: Callable[..., FinalizedStep]
 
 
 def should_compile_mjw_env_tensor_operations_by_default(device: torch.device) -> bool:
@@ -178,6 +213,8 @@ def build_mjw_env_tensor_operations(
         build_local_obs=build_local_obs,
         prepare_actions=prepare_actions,
         mask_error_observations=_mask_error_observations,
+        begin_step=_begin_step,
+        finalize_step=_finalize_step,
     )
     if not compile_operations:
         return operations
@@ -197,6 +234,8 @@ def build_mjw_env_tensor_operations(
         build_local_obs=compile_operation(operations.build_local_obs),
         prepare_actions=compile_operation(operations.prepare_actions),
         mask_error_observations=compile_operation(operations.mask_error_observations),
+        begin_step=compile_operation(operations.begin_step),
+        finalize_step=compile_operation(operations.finalize_step),
     )
 
 

@@ -579,6 +579,7 @@ def _perform_short_recurrent_update(
         actor_state_critic_input_config: ActorStateCriticInputConfig | None = None,
         selected_state_capacities: list[int] | None = None,
         nop_parameter_updates: dict[str, bool] | None = None,
+        parameter_updates: dict[str, bool] | None = None,
 ) -> tuple[dict[str, object], int]:
     env = _make_env(max_steps=max_steps)
     try:
@@ -616,7 +617,7 @@ def _perform_short_recurrent_update(
                 burn_in_steps=2,
                 learning_steps=3,
                 temporal_state_store_interval=1,
-                max_truncations_per_segment=2,
+                max_truncations_per_segment=1,
                 buffer_capacity_per_env=16,
                 learning_starts=5,
                 batch_size=2,
@@ -638,6 +639,15 @@ def _perform_short_recurrent_update(
                         ("critic", policy.critic_nop),
                     )
                     if module is not None
+                }
+            initial_training_parameters = {}
+            if parameter_updates is not None:
+                initial_training_parameters = {
+                    group_name: [parameter.detach().clone() for parameter in parameters]
+                    for group_name, parameters in (
+                        ("actor", policy.actor_parameters()),
+                        ("critic", policy.critic_parameters()),
+                    )
                 }
             if selected_state_capacities is not None:
                 action_with_selected_states = policy.action_log_prob_sequence_with_selected_states
@@ -674,6 +684,19 @@ def _perform_short_recurrent_update(
                             strict=True,
                         )
                     )
+            if parameter_updates is not None:
+                for group_name, parameters in (
+                    ("actor", policy.actor_parameters()),
+                    ("critic", policy.critic_parameters()),
+                ):
+                    parameter_updates[group_name] = any(
+                        not torch.equal(before, after)
+                        for before, after in zip(
+                            initial_training_parameters[group_name],
+                            parameters,
+                            strict=True,
+                        )
+                    )
             return metrics, algorithm.n_total_updates
     finally:
         env.close()
@@ -699,7 +722,7 @@ def _perform_short_segment_update(
             burn_in_steps=2,
             learning_steps=3,
             temporal_state_store_interval=1,
-            max_truncations_per_segment=2,
+            max_truncations_per_segment=1,
             buffer_capacity_per_env=16,
             learning_starts=5,
             batch_size=2,
@@ -761,7 +784,7 @@ def _perform_short_scenario_update(
             burn_in_steps=2,
             learning_steps=3,
             temporal_state_store_interval=1,
-            max_truncations_per_segment=2,
+            max_truncations_per_segment=1,
             buffer_capacity_per_env=16,
             learning_starts=10,
             batch_size=2,
@@ -1382,8 +1405,13 @@ class RecurrentTMASACTests(unittest.TestCase):
         compiled_modules = {call.args[0] for call in compile_mock.call_args_list}
         self.assertIn(policy.actor_encoder, compiled_modules)
         self.assertNotIn(policy.actor_head, compiled_modules)
-        self.assertIn(policy.critic, compiled_modules)
-        self.assertIn(policy.critic_target, compiled_modules)
+        compiled_entry_points = {
+            getattr(call.args[0], "__name__", "")
+            for call in compile_mock.call_args_list
+        }
+        self.assertIn("_q_values_impl", compiled_entry_points)
+        self.assertIn("_q_values_with_nop_latents_impl", compiled_entry_points)
+        self.assertIn("_target_q_values_impl", compiled_entry_points)
         self.assertTrue(policy.actor_end_to_end_compilation_enabled)
         self.assertEqual(policy.compiled_actor_encoder_sequence_lengths, frozenset({2}))
         self.assertEqual(policy.compiled_actor_sequence_lengths, frozenset({1}))
@@ -2413,6 +2441,93 @@ class RecurrentTMASACTests(unittest.TestCase):
         self.assertIsInstance(sequence_state, tuple)
         self.assertIsInstance(step_state, tuple)
 
+    def test_recurrent_critic_public_single_step_paths_match_the_sequence_path(self) -> None:
+        env = _DummyContinuousEnv()
+        encoder_config = _encoder_config(
+            LSTMTemporalSequenceModel,
+            LSTMTemporalSequenceModelConfig(),
+        )
+        for independent_encoders in (False, True):
+            with self.subTest(independent_encoders=independent_encoders):
+                config = _policy_config(
+                    encoder_config,
+                    recurrent_critic=True,
+                    nop_config=_small_nop_config(latent_source=SACNOPLatentSource.CRITIC),
+                    separate_observation_action_encoders=independent_encoders,
+                )
+                config = replace(
+                    config,
+                    critic_config=replace(
+                        config.critic_config,
+                        independent_encoders=independent_encoders,
+                    ),
+                )
+                policy = RecurrentTMASACPolicy(env=env, config=config)
+                policy.eval()
+                inputs = _actor_state_critic_inputs()
+
+                sequence_q1, sequence_q2, sequence_latents, sequence_state = policy.q_values_sequence(
+                    **inputs,
+                    target=False,
+                )
+                q1, q2 = policy.q_values(**inputs)
+                nop_q1, nop_q2, nop_latents = policy.q_values_with_nop_latents(**inputs)
+                encoded_latents = policy.encode_critic(**inputs)
+
+                self.assertIsNotNone(sequence_state)
+                self.assertIsNotNone(sequence_latents)
+                self.assertIsNotNone(nop_latents)
+                assert sequence_latents is not None
+                assert nop_latents is not None
+                expected_latent_dim = encoder_config.d_model * (2 if independent_encoders else 1)
+                self.assertEqual(sequence_latents.shape, (2, env.n_agents, expected_latent_dim))
+                torch.testing.assert_close(q1, sequence_q1)
+                torch.testing.assert_close(q2, sequence_q2)
+                torch.testing.assert_close(nop_q1, sequence_q1)
+                torch.testing.assert_close(nop_q2, sequence_q2)
+                torch.testing.assert_close(nop_latents, sequence_latents)
+                torch.testing.assert_close(encoded_latents, sequence_latents)
+
+                target_q1, target_q2 = policy.target_q_values(**inputs)
+                sequence_target_q1, sequence_target_q2, target_latents, target_state = (
+                    policy.q_values_sequence(**inputs, target=True)
+                )
+                self.assertIsNone(target_latents)
+                self.assertIsNotNone(target_state)
+                torch.testing.assert_close(target_q1, sequence_target_q1)
+                torch.testing.assert_close(target_q2, sequence_target_q2)
+
+    def test_single_step_action_log_prob_matches_zero_state_sequence_evaluation(self) -> None:
+        policy = RecurrentTMASACPolicy(
+            env=_DummyContinuousEnv(),
+            config=_policy_config(
+                _encoder_config(
+                    LSTMTemporalSequenceModel,
+                    LSTMTemporalSequenceModelConfig(),
+                )
+            ),
+        )
+        policy.eval()
+        inputs = _actor_state_critic_inputs()
+        actor_inputs = {
+            "local_obs": inputs["local_obs"],
+            "global_obs": inputs["global_obs"],
+            "agent_mask": inputs["agent_mask"],
+            "deterministic": True,
+            "use_rsample": False,
+        }
+
+        actions, log_probs = policy.action_log_prob(**actor_inputs)
+        sequence_actions, sequence_log_probs, _latents, sequence_state = policy.action_log_prob_sequence(
+            **actor_inputs,
+            previous_actions=None,
+            initial_state=None,
+        )
+
+        self.assertIsNotNone(sequence_state)
+        torch.testing.assert_close(actions, sequence_actions)
+        torch.testing.assert_close(log_probs, sequence_log_probs)
+
     def test_actor_sequence_matches_step_flow_for_all_temporal_cores(self) -> None:
         temporal_configs = (
             (LSTMTemporalSequenceModel, LSTMTemporalSequenceModelConfig()),
@@ -2798,6 +2913,7 @@ class RecurrentTMASACTests(unittest.TestCase):
                 burn_in_steps=1,
                 require_initial_temporal_state=True,
                 allow_episode_boundaries=True,
+                max_train_truncations=1,
             )
 
             nop_training_batch = algorithm._build_nop_training_batch(
@@ -3001,10 +3117,10 @@ class RecurrentTMASACTests(unittest.TestCase):
                 policy=policy,
                 env=env,
                 burn_in_steps=0,
-                learning_steps=4,
+                learning_steps=3,
                 temporal_state_store_interval=1,
-                max_truncations_per_segment=2,
-                buffer_capacity_per_env=4,
+                max_truncations_per_segment=1,
+                buffer_capacity_per_env=3,
                 learning_starts=0,
                 batch_size=1,
                 replay_storage_device="cpu",
@@ -3013,7 +3129,7 @@ class RecurrentTMASACTests(unittest.TestCase):
             collect_off_policy_steps(
                 env=env,
                 replay_buffer=algorithm.replay_buffer,
-                n_steps=4,
+                n_steps=3,
                 policy=policy,
             )
 
@@ -3022,18 +3138,18 @@ class RecurrentTMASACTests(unittest.TestCase):
             self.assertFalse(reuse_critic_latents)
             self.assertEqual(
                 segment.local_obs[0, :, 0, 0].tolist(),
-                [0.0, 1.0, 0.0, 1.0],
+                [0.0, 1.0, 0.0],
             )
             self.assertEqual(
                 segment.next_local_obs[0, :, 0, 0].tolist(),
-                [1.0, 2.0, 1.0, 2.0],
+                [1.0, 2.0, 1.0],
             )
-            self.assertEqual(segment.episode_ends.tolist(), [[False, True, False, True]])
+            self.assertEqual(segment.episode_ends.tolist(), [[False, True, False]])
 
             nop_training_batch = algorithm._build_nop_training_batch(
                 batch=segment,
-                actor_latents=torch.zeros(1, 4, env.n_agents, 8),
-                critic_latents=torch.zeros(1, 4, env.n_agents, 8),
+                actor_latents=torch.zeros(1, 3, env.n_agents, 8),
+                critic_latents=torch.zeros(1, 3, env.n_agents, 8),
             )
 
             assert nop_training_batch is not None
@@ -3041,12 +3157,53 @@ class RecurrentTMASACTests(unittest.TestCase):
                 nop_training_batch.batch.next_local_obs[0, :, :, 0, 0].tolist(),
                 [
                     [1.0, 2.0, 1.0],
-                    [2.0, 1.0, 2.0],
                 ],
             )
             self.assertEqual(
                 nop_training_batch.batch.train_mask.tolist(),
-                [[[True, True, False], [True, False, False]]],
+                [[[True, True, False]]],
+            )
+        finally:
+            env.close()
+
+    def test_recurrent_sampling_excludes_training_segments_with_multiple_truncations(self) -> None:
+        env = _make_env(max_steps=2)
+        try:
+            policy = RecurrentTMASACPolicy(
+                env=env,
+                config=_policy_config(
+                    _encoder_config(
+                        LSTMTemporalSequenceModel,
+                        LSTMTemporalSequenceModelConfig(),
+                    )
+                ),
+            )
+            algorithm = RecurrentSAC(
+                policy=policy,
+                env=env,
+                burn_in_steps=0,
+                learning_steps=3,
+                temporal_state_store_interval=1,
+                max_truncations_per_segment=1,
+                buffer_capacity_per_env=5,
+                learning_starts=0,
+                batch_size=2,
+                replay_storage_device="cpu",
+                train_device="cpu",
+            )
+            collect_off_policy_steps(
+                env=env,
+                replay_buffer=algorithm.replay_buffer,
+                n_steps=5,
+                policy=policy,
+            )
+
+            segment, _nop_segment, _reuse_critic_latents = algorithm._sample_training_batches()
+
+            self.assertTrue((segment.truncations.sum(dim=1) <= 1).all())
+            self.assertEqual(
+                set(segment.local_obs[:, 0, 0, 0].tolist()),
+                {0.0},
             )
         finally:
             env.close()
@@ -3243,6 +3400,7 @@ class RecurrentTMASACTests(unittest.TestCase):
                 burn_in_steps=32,
                 require_initial_temporal_state=True,
                 allow_episode_boundaries=True,
+                max_train_truncations=1,
             )
             no_nop_segment = _make_segment_batch(
                 batch_size=2,
@@ -3679,7 +3837,7 @@ class RecurrentTMASACTests(unittest.TestCase):
         finally:
             env.close()
 
-    def test_truncation_state_indices_are_padded_to_configured_static_capacity(self) -> None:
+    def test_truncation_state_indices_have_one_static_entry_per_batch_row(self) -> None:
         env = _make_env()
         try:
             policy = RecurrentTMASACPolicy(
@@ -3694,7 +3852,7 @@ class RecurrentTMASACTests(unittest.TestCase):
                 burn_in_steps=1,
                 learning_steps=3,
                 temporal_state_store_interval=1,
-                max_truncations_per_segment=2,
+                max_truncations_per_segment=1,
                 buffer_capacity_per_env=8,
                 learning_starts=0,
                 batch_size=2,
@@ -3703,15 +3861,15 @@ class RecurrentTMASACTests(unittest.TestCase):
             )
             padded_indices, valid_mask = algorithm._padded_truncation_indices(torch.tensor([
                 [False, True, False],
-                [True, False, True],
+                [False, False, False],
             ]))
 
-            self.assertEqual(padded_indices.tolist(), [[0, 1], [1, 0], [1, 2], [0, 0]])
-            self.assertEqual(valid_mask.tolist(), [True, True, True, False])
+            self.assertEqual(padded_indices.tolist(), [[0, 1], [1, 0]])
+            self.assertEqual(valid_mask.tolist(), [True, False])
         finally:
             env.close()
 
-    def test_truncation_state_capacity_overflow_is_rejected(self) -> None:
+    def test_recurrent_sac_rejects_non_static_truncation_capacity(self) -> None:
         env = _make_env()
         try:
             policy = RecurrentTMASACPolicy(
@@ -3720,56 +3878,20 @@ class RecurrentTMASACTests(unittest.TestCase):
                     _encoder_config(LSTMTemporalSequenceModel, LSTMTemporalSequenceModelConfig())
                 ),
             )
-            algorithm = RecurrentSAC(
-                policy=policy,
-                env=env,
-                burn_in_steps=1,
-                learning_steps=3,
-                temporal_state_store_interval=1,
-                max_truncations_per_segment=1,
-                buffer_capacity_per_env=8,
-                learning_starts=0,
-                batch_size=2,
-                replay_storage_device="cpu",
-                train_device="cpu",
-            )
-
-            with self.assertRaisesRegex(ValueError, r"rows \[1\] exceed max_truncations_per_segment=1"):
-                algorithm._padded_truncation_indices(torch.tensor([
-                    [False, True, False],
-                    [True, False, True],
-                ]))
-        finally:
-            env.close()
-
-    def test_truncation_limit_is_enforced_per_sampled_segment(self) -> None:
-        env = _make_env()
-        try:
-            policy = RecurrentTMASACPolicy(
-                env=env,
-                config=_policy_config(
-                    _encoder_config(LSTMTemporalSequenceModel, LSTMTemporalSequenceModelConfig())
-                ),
-            )
-            algorithm = RecurrentSAC(
-                policy=policy,
-                env=env,
-                burn_in_steps=1,
-                learning_steps=3,
-                temporal_state_store_interval=1,
-                max_truncations_per_segment=1,
-                buffer_capacity_per_env=8,
-                learning_starts=0,
-                batch_size=2,
-                replay_storage_device="cpu",
-                train_device="cpu",
-            )
-
-            with self.assertRaisesRegex(ValueError, r"rows \[0\] exceed max_truncations_per_segment=1"):
-                algorithm._padded_truncation_indices(torch.tensor([
-                    [True, False, True],
-                    [False, False, False],
-                ]))
+            with self.assertRaisesRegex(ValueError, "must be 1"):
+                RecurrentSAC(
+                    policy=policy,
+                    env=env,
+                    burn_in_steps=1,
+                    learning_steps=3,
+                    temporal_state_store_interval=1,
+                    max_truncations_per_segment=2,
+                    buffer_capacity_per_env=8,
+                    learning_starts=0,
+                    batch_size=2,
+                    replay_storage_device="cpu",
+                    train_device="cpu",
+                )
         finally:
             env.close()
 
@@ -3891,12 +4013,16 @@ class RecurrentTMASACTests(unittest.TestCase):
             env.close()
 
     def test_short_recurrent_sac_update_smoke(self) -> None:
-        metrics, total_updates = _perform_short_recurrent_update()
+        parameter_updates: dict[str, bool] = {}
+        metrics, total_updates = _perform_short_recurrent_update(
+            parameter_updates=parameter_updates,
+        )
 
         self.assertEqual(metrics["updates"], 1)
         self.assertEqual(total_updates, 1)
         self.assertIn("actor_loss", metrics)
         self.assertIn("critic_loss", metrics)
+        self.assertEqual(parameter_updates, {"actor": True, "critic": True})
 
     def test_recurrent_update_masks_non_finite_terminal_successor_observations(self) -> None:
         env = _make_env()
@@ -4295,7 +4421,7 @@ class RecurrentTMASACTests(unittest.TestCase):
             selected_state_capacities=selected_state_capacities,
         )
 
-        self.assertEqual(selected_state_capacities, [4])
+        self.assertEqual(selected_state_capacities, [2])
 
     def test_compiled_recurrent_sac_actor_state_critic_input_update(self) -> None:
         torch._dynamo.reset()

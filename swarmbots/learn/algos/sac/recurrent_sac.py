@@ -14,7 +14,7 @@ from swarmbots.learn.algos.sac.recurrent_tmasac_policy import (
     RecurrentCriticState,
     RecurrentTMASACPolicy,
 )
-from swarmbots.learn.algos.sac.sac import SAC
+from swarmbots.learn.algos.sac.sac import SAC, TrainStepResult
 from swarmbots.learn.algos.sac.sac_nop import SACNOPSequenceBatch
 from swarmbots.learn.algos.sac.segment_tmasac_policy import SegmentTMASACPolicy
 from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
@@ -128,6 +128,7 @@ class RecurrentSAC(SAC):
             burn_in_steps=self.burn_in_steps,
             require_initial_temporal_state=True,
             allow_episode_boundaries=True,
+            max_train_truncations=self.max_truncations_per_segment,
         )
         return batch, None, False
 
@@ -138,7 +139,9 @@ class RecurrentSAC(SAC):
             nop_batch: OffPolicyReplayEpisodeSegmentBatch | None = None,
             reuse_critic_nop_latents: bool = False,
             global_update_idx: int,
-    ) -> tuple[dict[str, float], float, float]:
+            materialize_metrics: bool = True,
+    ) -> TrainStepResult:
+        self._mark_cuda_graph_train_step_begin()
         _ = nop_batch
         _ = reuse_critic_nop_latents
         actor_critic_lr = self._apply_actor_critic_learning_rate_for_update(global_update_idx)
@@ -338,25 +341,25 @@ class RecurrentSAC(SAC):
         self.policy.after_optimizer_step()
 
         metrics = {
-            "critic_loss": critic_loss.item(),
-            "critic_total_loss": critic_total_loss.item(),
-            "actor_loss": actor_loss.item(),
-            "actor_total_loss": actor_total_loss.item(),
-            "target_q": target_q.mean().item(),
-            "current_q1": current_q1.mean().item(),
-            "current_q2": current_q2.mean().item(),
-            "q_pi": torch.minimum(q1_pi, q2_pi).mean().item(),
-            "log_prob": log_prob_pi_mean.mean().item(),
-            "entropy": (-log_prob_pi_mean).mean().item(),
-            "target_entropy": target_entropy.mean().item(),
-            "ent_coef": ent_coef.item(),
+            "critic_loss": critic_loss.detach(),
+            "critic_total_loss": critic_total_loss.detach(),
+            "actor_loss": actor_loss.detach(),
+            "actor_total_loss": actor_total_loss.detach(),
+            "target_q": target_q.mean().detach(),
+            "current_q1": current_q1.mean().detach(),
+            "current_q2": current_q2.mean().detach(),
+            "q_pi": torch.minimum(q1_pi, q2_pi).mean().detach(),
+            "log_prob": log_prob_pi_mean.mean().detach(),
+            "entropy": (-log_prob_pi_mean).mean().detach(),
+            "target_entropy": target_entropy.mean().detach(),
+            "ent_coef": ent_coef.detach(),
             "actor_critic_learning_rate": actor_critic_lr,
         }
         if ent_coef_loss is not None:
-            metrics["ent_coef_loss"] = ent_coef_loss.item()
+            metrics["ent_coef_loss"] = ent_coef_loss.detach()
             metrics["ent_coef_learning_rate"] = self._resolved_ent_coef_learning_rate()
         metrics.update({
-            f"actor_action_dist_{name}_loss_scaled": value.item()
+            f"actor_action_dist_{name}_loss_scaled": value.detach()
             for name, value in reduced_actor_action_dist_losses.items()
         })
         metrics.update({
@@ -365,7 +368,10 @@ class RecurrentSAC(SAC):
         })
         metrics.update(actor_nop_metrics)
         metrics.update(critic_nop_metrics)
-        return metrics, actor_grad_norm, critic_grad_norm
+        result = (metrics, actor_grad_norm, critic_grad_norm)
+        if not materialize_metrics:
+            return self._preserve_train_step_result(result)
+        return self._materialize_train_step_results([result])[0]
 
     def _burn_in_states(
             self,
@@ -504,9 +510,23 @@ class RecurrentSAC(SAC):
 
         next_actions = torch.cat((actions_pi[:, 1:].detach(), last_actions.unsqueeze(1)), dim=1)
         next_log_probs = torch.cat((log_prob_pi[:, 1:].detach(), last_log_probs.unsqueeze(1)), dim=1)
-        valid_indices = truncation_indices[truncation_mask]
-        next_actions[valid_indices[:, 0], valid_indices[:, 1]] = truncation_actions[truncation_mask]
-        next_log_probs[valid_indices[:, 0], valid_indices[:, 1]] = truncation_log_probs[truncation_mask]
+        truncation_action_mask = truncation_mask.reshape(batch_size, *((1,) * (next_actions.ndim - 2)))
+        current_actions = next_actions[selected_batch_indices, selected_time_indices]
+        next_actions[selected_batch_indices, selected_time_indices] = torch.where(
+            truncation_action_mask,
+            truncation_actions,
+            current_actions,
+        )
+        truncation_log_prob_mask = truncation_mask.reshape(
+            batch_size,
+            *((1,) * (next_log_probs.ndim - 2)),
+        )
+        current_log_probs = next_log_probs[selected_batch_indices, selected_time_indices]
+        next_log_probs[selected_batch_indices, selected_time_indices] = torch.where(
+            truncation_log_prob_mask,
+            truncation_log_probs,
+            current_log_probs,
+        )
         if not return_actor_state:
             return next_actions, next_log_probs
         if current_actor_state is None:
@@ -519,30 +539,30 @@ class RecurrentSAC(SAC):
             (current_actor_state[:, 1:], final_actor_state.unsqueeze(1)),
             dim=1,
         )
-        next_actor_state_input[valid_indices[:, 0], valid_indices[:, 1]] = truncation_actor_state[truncation_mask]
+        truncation_state_mask = truncation_mask.reshape(
+            batch_size,
+            *((1,) * (next_actor_state_input.ndim - 2)),
+        )
+        current_truncation_state = next_actor_state_input[
+            selected_batch_indices,
+            selected_time_indices,
+        ]
+        next_actor_state_input[selected_batch_indices, selected_time_indices] = torch.where(
+            truncation_state_mask,
+            truncation_actor_state,
+            current_truncation_state,
+        )
         return next_actions, next_log_probs, next_actor_state_input
 
     def _padded_truncation_indices(
             self,
             truncations: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        truncations_per_segment = truncations.sum(dim=1)
-        overflowing_segments = torch.nonzero(
-            truncations_per_segment > self.max_truncations_per_segment,
-            as_tuple=False,
-        ).flatten()
-        if overflowing_segments.numel() > 0:
-            raise ValueError(
-                "Sampled recurrent segment rows "
-                f"{overflowing_segments.tolist()} exceed max_truncations_per_segment="
-                f"{self.max_truncations_per_segment}."
-            )
-        truncation_indices = torch.nonzero(truncations, as_tuple=False)
-        capacity = truncations.shape[0] * self.max_truncations_per_segment
-        padded_indices = torch.zeros((capacity, 2), dtype=torch.long, device=truncations.device)
-        padded_indices[:truncation_indices.shape[0]] = truncation_indices
-        valid_mask = torch.arange(capacity, device=truncations.device) < truncation_indices.shape[0]
-        return padded_indices, valid_mask
+        batch_size = truncations.shape[0]
+        batch_indices = torch.arange(batch_size, dtype=torch.long, device=truncations.device)
+        time_indices = truncations.to(dtype=torch.long).argmax(dim=1)
+        indices = torch.stack((batch_indices, time_indices), dim=1)
+        return indices, truncations.any(dim=1)
 
     def _target_next_q_values(
             self,
@@ -759,9 +779,10 @@ class RecurrentSAC(SAC):
                 f"got learning_steps={self.learning_steps}, "
                 f"temporal_state_store_interval={self.temporal_state_store_interval}"
             )
-        if self.max_truncations_per_segment <= 0:
+        if self.max_truncations_per_segment != 1:
             raise ValueError(
-                "max_truncations_per_segment must be > 0, got "
+                "Only one truncation per recurrent segment is supported; "
+                "max_truncations_per_segment must be 1, got "
                 f"{self.max_truncations_per_segment}"
             )
         minimum_buffer_capacity_per_env = (

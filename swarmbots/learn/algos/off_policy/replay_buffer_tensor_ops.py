@@ -61,6 +61,13 @@ def _gather_replay_storage(
         truncations: torch.Tensor,
         previous_actions: torch.Tensor | None,
         episode_starts: torch.Tensor | None,
+        terminal_obs_indices: torch.Tensor,
+        terminal_local_obs: torch.Tensor,
+        terminal_global_obs: torch.Tensor,
+        terminal_hidden_local_vars: torch.Tensor,
+        terminal_hidden_global_vars: torch.Tensor,
+        terminal_scenario_ids: torch.Tensor | None,
+        terminal_agent_mask: torch.Tensor | None,
 ) -> GatheredReplayStorage:
     env_indices = torch.div(indices, size_per_env, rounding_mode="floor")
     logical_transition_slots = indices.remainder(size_per_env)
@@ -71,6 +78,46 @@ def _gather_replay_storage(
     )
     obs_slots = transition_obs_slots[env_indices, transition_slots]
     next_obs_slots = transition_next_obs_slots[env_indices, transition_slots]
+    gathered_terminations = terminations[env_indices, transition_slots]
+    gathered_truncations = truncations[env_indices, transition_slots]
+    dones = torch.logical_or(gathered_terminations, gathered_truncations)
+    gathered_terminal_indices = terminal_obs_indices[env_indices, transition_slots]
+    safe_terminal_indices = gathered_terminal_indices.clamp_min(0)
+
+    def terminal_next_obs(stream_obs: torch.Tensor, terminal_obs: torch.Tensor) -> torch.Tensor:
+        mask = dones.reshape(dones.shape[0], *((1,) * (stream_obs.ndim - 1)))
+        return torch.where(mask, terminal_obs[safe_terminal_indices], stream_obs)
+
+    next_local_obs = terminal_next_obs(
+        local_obs[env_indices, next_obs_slots],
+        terminal_local_obs,
+    )
+    next_global_obs = terminal_next_obs(
+        global_obs[env_indices, next_obs_slots],
+        terminal_global_obs,
+    )
+    next_hidden_local_vars = terminal_next_obs(
+        hidden_local_vars[env_indices, next_obs_slots],
+        terminal_hidden_local_vars,
+    )
+    next_hidden_global_vars = terminal_next_obs(
+        hidden_global_vars[env_indices, next_obs_slots],
+        terminal_hidden_global_vars,
+    )
+    next_agent_mask = None
+    if agent_mask is not None:
+        assert terminal_agent_mask is not None
+        next_agent_mask = terminal_next_obs(
+            agent_mask[env_indices, next_obs_slots],
+            terminal_agent_mask,
+        )
+    next_scenario_ids = None
+    if scenario_ids is not None:
+        assert terminal_scenario_ids is not None
+        next_scenario_ids = terminal_next_obs(
+            scenario_ids[env_indices, next_obs_slots],
+            terminal_scenario_ids,
+        )
 
     return (
         env_indices,
@@ -82,17 +129,17 @@ def _gather_replay_storage(
         None if agent_mask is None else agent_mask[env_indices, obs_slots],
         actions[env_indices, transition_slots],
         rewards[env_indices, transition_slots],
-        terminations[env_indices, transition_slots],
-        truncations[env_indices, transition_slots],
+        gathered_terminations,
+        gathered_truncations,
         None if previous_actions is None else previous_actions[env_indices, transition_slots],
-        local_obs[env_indices, next_obs_slots],
-        global_obs[env_indices, next_obs_slots],
-        hidden_local_vars[env_indices, next_obs_slots],
-        hidden_global_vars[env_indices, next_obs_slots],
-        None if agent_mask is None else agent_mask[env_indices, next_obs_slots],
+        next_local_obs,
+        next_global_obs,
+        next_hidden_local_vars,
+        next_hidden_global_vars,
+        next_agent_mask,
         None if episode_starts is None else episode_starts[env_indices, transition_slots],
         None if scenario_ids is None else scenario_ids[env_indices, obs_slots],
-        None if scenario_ids is None else scenario_ids[env_indices, next_obs_slots],
+        next_scenario_ids,
     )
 
 
@@ -129,11 +176,13 @@ def _episode_segment_candidate_mask(
         logical_transition_slot_offset: torch.Tensor,
         capacity_per_env: int,
         total_sequence_length: int,
+        burn_in_steps: int,
         terminations: torch.Tensor,
         truncations: torch.Tensor,
         transition_obs_slots: torch.Tensor,
         temporal_state_available: torch.Tensor | None,
         allow_episode_boundaries: bool,
+        max_train_truncations: int | None,
 ) -> torch.Tensor:
     transition_slots_by_logical = _logical_to_transition_slots(
         logical_positions,
@@ -146,8 +195,8 @@ def _episode_segment_candidate_mask(
         dtype=torch.bool,
         device=terminations.device,
     )
+    start_positions = torch.arange(max_start_count, dtype=torch.long, device=terminations.device)
     if not allow_episode_boundaries and total_sequence_length > 1:
-        start_positions = torch.arange(max_start_count, dtype=torch.long, device=terminations.device)
         episode_ends = torch.logical_or(
             terminations[:, transition_slots_by_logical],
             truncations[:, transition_slots_by_logical],
@@ -161,6 +210,17 @@ def _episode_segment_candidate_mask(
             - end_prefix_sum[:, start_positions]
         )
         valid &= ends_before_final_transition == 0
+    if max_train_truncations is not None:
+        logical_truncations = truncations[:, transition_slots_by_logical]
+        truncation_prefix_sum = torch.cat((
+            torch.zeros((truncations.shape[0], 1), dtype=torch.long, device=truncations.device),
+            logical_truncations.to(dtype=torch.long).cumsum(dim=1),
+        ), dim=1)
+        train_truncation_counts = (
+            truncation_prefix_sum[:, start_positions + total_sequence_length]
+            - truncation_prefix_sum[:, start_positions + burn_in_steps]
+        )
+        valid &= train_truncation_counts <= max_train_truncations
     if temporal_state_available is not None:
         start_transition_slots = transition_slots_by_logical[:max_start_count]
         start_obs_slots = transition_obs_slots[:, start_transition_slots]
