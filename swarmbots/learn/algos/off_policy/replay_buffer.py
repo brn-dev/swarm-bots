@@ -280,8 +280,49 @@ class OffPolicyReplayBuffer:
             dtype=torch.long,
             device=self.storage_device,
         )
-        self._terminal_obs_by_env_slot: dict[tuple[int, int], dict[str, torch.Tensor]] = {}
-        self._terminal_envs_by_transition_slot: list[set[int]] = [set() for _ in range(self.capacity_per_env)]
+        self._terminal_obs_indices = torch.full(
+            transition_shape,
+            -1,
+            dtype=torch.long,
+            device=self.storage_device,
+        )
+        initial_terminal_capacity = min(self.total_capacity, max(64, self.n_envs * 4))
+        self._terminal_obs_slots_in_use = self._new_storage_tensor(
+            (initial_terminal_capacity,),
+            dtype=torch.bool,
+        )
+        self._terminal_local_obs = self._new_storage_tensor(
+            (initial_terminal_capacity, self.n_agents, *self.agent_obs_shape),
+            dtype=self.storage_dtype,
+        )
+        self._terminal_global_obs = self._new_storage_tensor(
+            (initial_terminal_capacity, *self.global_obs_shape),
+            dtype=self.storage_dtype,
+        )
+        self._terminal_hidden_local_vars = self._new_storage_tensor(
+            (initial_terminal_capacity, self.n_agents, *self.hidden_local_vars_shape),
+            dtype=self.storage_dtype,
+        )
+        self._terminal_hidden_global_vars = self._new_storage_tensor(
+            (initial_terminal_capacity, *self.hidden_global_vars_shape),
+            dtype=self.storage_dtype,
+        )
+        self._terminal_scenario_ids: MaybeTensor = None
+        if self.scenario_ids is not None:
+            self._terminal_scenario_ids = self._new_storage_tensor(
+                (initial_terminal_capacity,),
+                dtype=torch.long,
+            )
+        self._terminal_agent_mask: MaybeTensor = None
+        if self.agent_mask is not None:
+            self._terminal_agent_mask = self._new_storage_tensor(
+                (initial_terminal_capacity, self.n_agents),
+                dtype=torch.bool,
+            )
+        self._segment_candidate_cache: dict[
+            tuple[int, int, bool, bool, int | None],
+            tuple[torch.Tensor, torch.Tensor],
+        ] = {}
         self._size_per_env = 0
         self._size_per_env_tensor = torch.zeros((), dtype=torch.long, device=self.storage_device)
         self._logical_transition_slot_offset = torch.zeros(
@@ -326,9 +367,9 @@ class OffPolicyReplayBuffer:
         if self._temporal_state_slots_in_use is not None:
             self._temporal_state_slots_in_use.zero_()
         self.temporal_states = None
-        self._terminal_obs_by_env_slot.clear()
-        for terminal_envs in self._terminal_envs_by_transition_slot:
-            terminal_envs.clear()
+        self._terminal_obs_indices.fill_(-1)
+        self._terminal_obs_slots_in_use.zero_()
+        self._segment_candidate_cache.clear()
         self._size_per_env = 0
         self._size_per_env_tensor.zero_()
         self._logical_transition_slot_offset.zero_()
@@ -439,6 +480,7 @@ class OffPolicyReplayBuffer:
             self._current_episode_start_mask = dones.to(device=self.storage_device, dtype=torch.bool)
         self._vector_steps_added += 1
         self.total_transitions_added += self.n_envs
+        self._segment_candidate_cache.clear()
 
     def sample(
             self,
@@ -480,6 +522,7 @@ class OffPolicyReplayBuffer:
             replacement: bool = True,
             require_initial_temporal_state: bool = True,
             allow_episode_boundaries: bool = False,
+            max_train_truncations: int | None = None,
             generator: torch.Generator | None = None,
     ) -> OffPolicyReplayEpisodeSegmentBatch:
         if batch_size <= 0:
@@ -488,6 +531,11 @@ class OffPolicyReplayBuffer:
             raise ValueError(f"segment_length must be > 0, got {segment_length}")
         if burn_in_steps < 0:
             raise ValueError(f"burn_in_steps must be >= 0, got {burn_in_steps}")
+        if max_train_truncations is not None and max_train_truncations < 0:
+            raise ValueError(
+                "max_train_truncations must be >= 0 when set, got "
+                f"{max_train_truncations}"
+            )
         if len(self) == 0:
             raise ValueError("Cannot sample from an empty replay buffer.")
         if require_initial_temporal_state and self._temporal_state_available is None:
@@ -499,14 +547,16 @@ class OffPolicyReplayBuffer:
         total_sequence_length = burn_in_steps + segment_length
         candidate_env_indices, candidate_logical_starts = self._replay_segment_candidates(
             total_sequence_length=total_sequence_length,
+            burn_in_steps=burn_in_steps,
             require_initial_temporal_state=require_initial_temporal_state,
             allow_episode_boundaries=allow_episode_boundaries,
+            max_train_truncations=max_train_truncations,
         )
         num_candidates = int(candidate_env_indices.numel())
         if num_candidates == 0:
             raise NoEpisodeSegmentCandidatesError(
-                "Cannot sample replay segments: no contiguous replay windows satisfy the requested length "
-                "and temporal-state-start constraints."
+                "Cannot sample replay segments: no contiguous replay windows satisfy the requested "
+                "length, temporal-state-start, and episode-boundary constraints."
             )
         if not replacement and batch_size > num_candidates:
             raise ValueError(
@@ -660,10 +710,10 @@ class OffPolicyReplayBuffer:
             )
 
     def _clear_terminal_obs_for_slot_(self, slot: int) -> None:
-        terminal_envs = self._terminal_envs_by_transition_slot[slot]
-        for env_idx in terminal_envs:
-            self._terminal_obs_by_env_slot.pop((env_idx, slot), None)
-        terminal_envs.clear()
+        terminal_slots = self._terminal_obs_indices[:, slot]
+        occupied_terminal_slots = terminal_slots[terminal_slots >= 0]
+        self._terminal_obs_slots_in_use[occupied_terminal_slots] = False
+        self._terminal_obs_indices[:, slot] = -1
 
     def _store_terminal_obs_at_slot_(
             self,
@@ -719,13 +769,49 @@ class OffPolicyReplayBuffer:
                 dtype=torch.bool,
             )
 
-        terminal_envs = self._terminal_envs_by_transition_slot[slot]
-        for row_idx, env_idx in enumerate(done_env_indices.tolist()):
-            self._terminal_obs_by_env_slot[(env_idx, slot)] = {
-                key: self._clone_storage_row(value[row_idx])
-                for key, value in terminal_rows.items()
-            }
-            terminal_envs.add(env_idx)
+        terminal_slots = self._allocate_terminal_obs_slots(int(done_env_indices.numel()))
+        self._terminal_obs_indices[done_env_indices, slot] = terminal_slots
+        self._terminal_local_obs[terminal_slots] = terminal_rows["local_obs"]
+        self._terminal_global_obs[terminal_slots] = terminal_rows["global_obs"]
+        self._terminal_hidden_local_vars[terminal_slots] = terminal_rows["hidden_local_vars"]
+        self._terminal_hidden_global_vars[terminal_slots] = terminal_rows["hidden_global_vars"]
+        if self._terminal_scenario_ids is not None:
+            self._terminal_scenario_ids[terminal_slots] = terminal_rows["scenario_id"]
+        if self._terminal_agent_mask is not None:
+            self._terminal_agent_mask[terminal_slots] = terminal_rows["agent_mask"]
+
+    def _allocate_terminal_obs_slots(self, count: int) -> torch.Tensor:
+        free_slots = torch.nonzero(~self._terminal_obs_slots_in_use, as_tuple=False).flatten()
+        while free_slots.numel() < count:
+            self._grow_terminal_obs_storage()
+            free_slots = torch.nonzero(~self._terminal_obs_slots_in_use, as_tuple=False).flatten()
+        allocated_slots = free_slots[:count]
+        self._terminal_obs_slots_in_use[allocated_slots] = True
+        return allocated_slots
+
+    def _grow_terminal_obs_storage(self) -> None:
+        current_capacity = int(self._terminal_obs_slots_in_use.shape[0])
+        new_capacity = min(self.total_capacity, current_capacity * 2)
+        if new_capacity <= current_capacity:
+            raise RuntimeError("Terminal observation storage exhausted.")
+
+        def grow(tensor: torch.Tensor) -> torch.Tensor:
+            grown = self._new_storage_tensor(
+                (new_capacity, *tensor.shape[1:]),
+                dtype=tensor.dtype,
+            )
+            grown[:current_capacity].copy_(tensor)
+            return grown
+
+        self._terminal_obs_slots_in_use = grow(self._terminal_obs_slots_in_use)
+        self._terminal_local_obs = grow(self._terminal_local_obs)
+        self._terminal_global_obs = grow(self._terminal_global_obs)
+        self._terminal_hidden_local_vars = grow(self._terminal_hidden_local_vars)
+        self._terminal_hidden_global_vars = grow(self._terminal_hidden_global_vars)
+        if self._terminal_scenario_ids is not None:
+            self._terminal_scenario_ids = grow(self._terminal_scenario_ids)
+        if self._terminal_agent_mask is not None:
+            self._terminal_agent_mask = grow(self._terminal_agent_mask)
 
     def _terminal_obs_source_indices(
             self,
@@ -756,8 +842,8 @@ class OffPolicyReplayBuffer:
 
     def _fetch_indices(self, indices: torch.Tensor) -> OffPolicyReplayBatch:
         (
-            env_indices,
-            transition_slots,
+            _env_indices,
+            _transition_slots,
             local_obs,
             global_obs,
             hidden_local_vars,
@@ -795,19 +881,13 @@ class OffPolicyReplayBuffer:
             self.truncations,
             self.previous_actions,
             self.episode_starts,
-        )
-        dones = torch.logical_or(terminations, truncations)
-
-        self._replace_done_next_obs_with_terminal_obs_(
-            dones=dones,
-            env_indices=env_indices,
-            transition_slots=transition_slots,
-            next_local_obs=next_local_obs,
-            next_global_obs=next_global_obs,
-            next_hidden_local_vars=next_hidden_local_vars,
-            next_hidden_global_vars=next_hidden_global_vars,
-            next_agent_mask=next_agent_mask,
-            next_scenario_ids=next_scenario_ids,
+            self._terminal_obs_indices,
+            self._terminal_local_obs,
+            self._terminal_global_obs,
+            self._terminal_hidden_local_vars,
+            self._terminal_hidden_global_vars,
+            self._terminal_scenario_ids,
+            self._terminal_agent_mask,
         )
 
         return OffPolicyReplayBatch(
@@ -917,9 +997,21 @@ class OffPolicyReplayBuffer:
             self,
             *,
             total_sequence_length: int,
+            burn_in_steps: int = 0,
             require_initial_temporal_state: bool,
             allow_episode_boundaries: bool,
+            max_train_truncations: int | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
+        cache_key = (
+            total_sequence_length,
+            burn_in_steps,
+            require_initial_temporal_state,
+            allow_episode_boundaries,
+            max_train_truncations,
+        )
+        cached_candidates = self._segment_candidate_cache.get(cache_key)
+        if cached_candidates is not None:
+            return cached_candidates
         if self._size_per_env < total_sequence_length:
             empty = torch.empty((0,), dtype=torch.long, device=self.storage_device)
             return empty, empty
@@ -937,14 +1029,18 @@ class OffPolicyReplayBuffer:
             self._logical_transition_slot_offset,
             self.capacity_per_env,
             total_sequence_length,
+            burn_in_steps,
             self.terminations,
             self.truncations,
             self._transition_obs_slots,
             temporal_state_available,
             allow_episode_boundaries,
+            max_train_truncations,
         )
 
-        return torch.nonzero(valid, as_tuple=True)
+        candidates = torch.nonzero(valid, as_tuple=True)
+        self._segment_candidate_cache[cache_key] = candidates
+        return candidates
 
     def _reshape_episode_segment_batch(
             self,
@@ -988,69 +1084,10 @@ class OffPolicyReplayBuffer:
             next_scenario_ids=reshape_optional_tensor(flat_batch.next_scenario_ids),
         )
 
-    def _replace_done_next_obs_with_terminal_obs_(
-            self,
-            *,
-            dones: torch.Tensor,
-            env_indices: torch.Tensor,
-            transition_slots: torch.Tensor,
-            next_local_obs: torch.Tensor,
-            next_global_obs: torch.Tensor,
-            next_hidden_local_vars: torch.Tensor,
-            next_hidden_global_vars: torch.Tensor,
-            next_agent_mask: torch.Tensor | None,
-            next_scenario_ids: torch.Tensor | None,
-    ) -> None:
-        done_batch_indices = torch.nonzero(dones, as_tuple=False).flatten()
-        if len(done_batch_indices) == 0:
-            return
-
-        terminal_local_obs: list[torch.Tensor] = []
-        terminal_global_obs: list[torch.Tensor] = []
-        terminal_hidden_local_vars: list[torch.Tensor] = []
-        terminal_hidden_global_vars: list[torch.Tensor] = []
-        terminal_agent_mask: list[torch.Tensor] = []
-        terminal_scenario_ids: list[torch.Tensor] = []
-
-        done_entries = torch.stack((
-            done_batch_indices,
-            env_indices[done_batch_indices],
-            transition_slots[done_batch_indices],
-        ), dim=1).tolist()
-        for batch_idx, env_idx, transition_slot in done_entries:
-            terminal_obs = self._terminal_obs_by_env_slot.get((env_idx, transition_slot))
-            if terminal_obs is None:
-                raise ValueError(
-                    f"Missing terminal_obs for done transition env_idx={env_idx}, transition_slot={transition_slot}."
-                )
-            terminal_local_obs.append(terminal_obs["local_obs"])
-            terminal_global_obs.append(terminal_obs["global_obs"])
-            terminal_hidden_local_vars.append(terminal_obs["hidden_local_vars"])
-            terminal_hidden_global_vars.append(terminal_obs["hidden_global_vars"])
-            if next_agent_mask is not None:
-                terminal_agent_mask.append(terminal_obs["agent_mask"])
-            if next_scenario_ids is not None:
-                terminal_scenario_ids.append(terminal_obs["scenario_id"])
-
-        next_local_obs[done_batch_indices] = torch.stack(terminal_local_obs, dim=0)
-        next_global_obs[done_batch_indices] = torch.stack(terminal_global_obs, dim=0)
-        next_hidden_local_vars[done_batch_indices] = torch.stack(terminal_hidden_local_vars, dim=0)
-        next_hidden_global_vars[done_batch_indices] = torch.stack(terminal_hidden_global_vars, dim=0)
-        if next_agent_mask is not None:
-            next_agent_mask[done_batch_indices] = torch.stack(terminal_agent_mask, dim=0)
-        if next_scenario_ids is not None:
-            next_scenario_ids[done_batch_indices] = torch.stack(terminal_scenario_ids, dim=0)
-
     def _new_storage_tensor(self, shape: tuple[int, ...], *, dtype: torch.dtype) -> torch.Tensor:
         if self.storage_pin_memory:
             return torch.empty(shape, dtype=dtype, device=self.storage_device, pin_memory=True).zero_()
         return torch.zeros(shape, dtype=dtype, device=self.storage_device)
-
-    def _clone_storage_row(self, tensor: torch.Tensor) -> torch.Tensor:
-        cloned = tensor.clone()
-        if self.storage_pin_memory and cloned.device.type == "cpu" and not cloned.is_pinned():
-            return cloned.pin_memory()
-        return cloned
 
     def _to_train(self, tensor: torch.Tensor, *, dtype: torch.dtype | None = None) -> torch.Tensor:
         target_dtype = dtype

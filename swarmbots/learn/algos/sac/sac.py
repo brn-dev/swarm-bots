@@ -40,6 +40,8 @@ from swarmbots.learn.torch_device import as_device
 
 DEFAULT_TOTAL_REPLAY_CAPACITY = 1_000_000
 ENTROPY_AGENT_REDUCTION = "mean"
+TrainMetric = float | torch.Tensor
+TrainStepResult = tuple[dict[str, TrainMetric], TrainMetric, TrainMetric]
 
 
 class SAC(BaseAlgorithm):
@@ -139,6 +141,28 @@ class SAC(BaseAlgorithm):
             compile_operations=self.sac_compile_tensor_operations,
             compile_mode=self.sac_compile_mode,
         )
+        self._target_forward_phase = self._target_forward_phase_impl
+        self._critic_forward_phase = self._critic_forward_phase_impl
+        self._actor_forward_phase = self._actor_forward_phase_impl
+        if self.sac_compile_tensor_operations and not self.supports_recurrent_training:
+            self._target_forward_phase = torch.compile(
+                self._target_forward_phase_impl,
+                mode=self.sac_compile_mode,
+                fullgraph=False,
+                dynamic=False,
+            )
+            self._critic_forward_phase = torch.compile(
+                self._critic_forward_phase_impl,
+                mode=self.sac_compile_mode,
+                fullgraph=False,
+                dynamic=False,
+            )
+            self._actor_forward_phase = torch.compile(
+                self._actor_forward_phase_impl,
+                mode=self.sac_compile_mode,
+                fullgraph=False,
+                dynamic=False,
+            )
         self.metrics_action_splitters = metrics_action_splitters
         self.agent_action_dim = int(env.action_space.total_agent_action_dim)
         self._rollout_state: OffPolicyRolloutState | None = None
@@ -312,7 +336,10 @@ class SAC(BaseAlgorithm):
         loss_metrics = MetricsLists[float]()
         actor_grad_norms: list[float] = []
         critic_grad_norms: list[float] = []
+        pending_step_results: list[TrainStepResult] = []
         update_timings: list[float] = []
+        update_cuda_events: list[tuple[torch.cuda.Event, torch.cuda.Event]] = []
+        use_cuda_update_timing = self.train_device.type == "cuda"
         sample_timings: list[float] = []
         sample_timer = PerformanceTimer()
         update_timer = PerformanceTimer()
@@ -325,23 +352,42 @@ class SAC(BaseAlgorithm):
             sample_timings.append(sample_timer.get_duration())
 
             global_update_idx = self.n_total_updates + n_updates
+            if use_cuda_update_timing:
+                update_start_event = torch.cuda.Event(enable_timing=True)
+                update_end_event = torch.cuda.Event(enable_timing=True)
+                update_start_event.record(torch.cuda.current_stream(self.train_device))
             with update_timer:
                 step_metrics, actor_grad_norm, critic_grad_norm = self._train_step(
                     batch,
                     nop_batch=nop_batch,
                     reuse_critic_nop_latents=reuse_critic_nop_latents,
                     global_update_idx=global_update_idx,
+                    materialize_metrics=False,
                 )
-            update_timings.append(update_timer.get_duration())
-            loss_metrics.add(step_metrics)
-            actor_grad_norms.append(actor_grad_norm)
-            critic_grad_norms.append(critic_grad_norm)
+            if use_cuda_update_timing:
+                update_end_event.record(torch.cuda.current_stream(self.train_device))
+                update_cuda_events.append((update_start_event, update_end_event))
+            else:
+                update_timings.append(update_timer.get_duration())
+            pending_step_results.append((step_metrics, actor_grad_norm, critic_grad_norm))
             n_updates += 1
 
+        if update_cuda_events:
+            update_cuda_events[-1][1].synchronize()
+            update_timings.extend(
+                start_event.elapsed_time(end_event) / 1_000.0
+                for start_event, end_event in update_cuda_events
+            )
         train_timer.stop()
         self.n_total_updates += n_updates
 
         with PerformanceTimer() as metrics_timer:
+            for step_metrics, actor_grad_norm, critic_grad_norm in self._materialize_train_step_results(
+                pending_step_results
+            ):
+                loss_metrics.add(step_metrics)
+                actor_grad_norms.append(actor_grad_norm)
+                critic_grad_norms.append(critic_grad_norm)
             metrics: dict[str, Any] = {
                 **loss_metrics.compute_summary_statistics(),
                 "updates": n_updates,
@@ -382,7 +428,9 @@ class SAC(BaseAlgorithm):
             nop_batch: OffPolicyReplayBatch | OffPolicyReplayEpisodeSegmentBatch | None = None,
             reuse_critic_nop_latents: bool = False,
             global_update_idx: int,
-    ) -> tuple[dict[str, float], float, float]:
+            materialize_metrics: bool = True,
+    ) -> TrainStepResult:
+        self._mark_cuda_graph_train_step_begin()
         actor_critic_lr = self._apply_actor_critic_learning_rate_for_update(global_update_idx)
         nop_loss_batch = batch if nop_batch is None else nop_batch
         skip_multi_step_nop_loss = self._uses_multi_step_nop() and nop_batch is None
@@ -431,57 +479,18 @@ class SAC(BaseAlgorithm):
                 batch.next_agent_mask,
             )
             self._reset_train_gsde_noise(bootstrap_next_local_obs)
-            next_actions, next_log_probs = self.policy.action_log_prob(
-                local_obs=bootstrap_next_local_obs,
-                global_obs=bootstrap_next_global_obs,
-                hidden_local_vars=bootstrap_next_hidden_local_vars,
-                hidden_global_vars=bootstrap_next_hidden_global_vars,
-                agent_mask=bootstrap_next_agent_mask,
-                **(
-                    {}
-                    if batch.next_scenario_ids is None
-                    else {"scenario_ids": batch.next_scenario_ids}
-                ),
-                previous_actions=batch.actions,
-                deterministic=False,
-                use_rsample=False,
-            )
-            next_log_prob_mean = self._mean_agent_log_probs(next_log_probs, bootstrap_next_agent_mask)
-            target_q1, target_q2 = self.policy.target_q_values(
-                local_obs=bootstrap_next_local_obs,
-                global_obs=bootstrap_next_global_obs,
-                hidden_local_vars=bootstrap_next_hidden_local_vars,
-                hidden_global_vars=bootstrap_next_hidden_global_vars,
-                agent_mask=bootstrap_next_agent_mask,
-                **(
-                    {}
-                    if batch.next_scenario_ids is None
-                    else {"scenario_ids": batch.next_scenario_ids}
-                ),
-                actions=next_actions,
-            )
-            target_q = self._tensor_operations.bellman_target(
-                batch.rewards,
-                batch.terminal_mask,
-                target_q1,
-                target_q2,
-                next_log_prob_mean,
+            target_q = self._target_forward_phase(
+                batch,
+                bootstrap_next_local_obs,
+                bootstrap_next_global_obs,
+                bootstrap_next_hidden_local_vars,
+                bootstrap_next_hidden_global_vars,
+                bootstrap_next_agent_mask,
                 ent_coef,
-                self.gamma,
             )
 
-        current_q1, current_q2, critic_nop_latents = self.policy.q_values_with_nop_latents(
-            local_obs=batch.local_obs,
-            global_obs=batch.global_obs,
-            hidden_local_vars=batch.hidden_local_vars,
-            hidden_global_vars=batch.hidden_global_vars,
-            agent_mask=batch.agent_mask,
-            **({} if batch.scenario_ids is None else {"scenario_ids": batch.scenario_ids}),
-            actions=batch.actions,
-        )
-        critic_loss = self._tensor_operations.critic_loss(
-            current_q1,
-            current_q2,
+        current_q1, current_q2, critic_nop_latents, critic_loss = self._critic_forward_phase(
+            batch,
             target_q,
         )
         if skip_multi_step_nop_loss:
@@ -507,18 +516,9 @@ class SAC(BaseAlgorithm):
         critic_parameters = self.policy.critic_parameters()
         self._set_requires_grad(critic_parameters, False)
         try:
-            q1_pi, q2_pi = self.policy.q_values(
-                local_obs=batch.local_obs,
-                global_obs=batch.global_obs,
-                hidden_local_vars=batch.hidden_local_vars,
-                hidden_global_vars=batch.hidden_global_vars,
-                agent_mask=batch.agent_mask,
-                **({} if batch.scenario_ids is None else {"scenario_ids": batch.scenario_ids}),
-                actions=actions_pi,
-            )
-            actor_loss = self._tensor_operations.actor_loss(
-                q1_pi,
-                q2_pi,
+            q1_pi, q2_pi, actor_loss = self._actor_forward_phase(
+                batch,
+                actions_pi,
                 log_prob_pi_mean,
                 ent_coef,
             )
@@ -549,25 +549,25 @@ class SAC(BaseAlgorithm):
         self.policy.after_optimizer_step()
 
         metrics = {
-            "critic_loss": critic_loss.item(),
-            "critic_total_loss": critic_total_loss.item(),
-            "actor_loss": actor_loss.item(),
-            "actor_total_loss": actor_total_loss.item(),
-            "target_q": target_q.mean().item(),
-            "current_q1": current_q1.mean().item(),
-            "current_q2": current_q2.mean().item(),
-            "q_pi": torch.minimum(q1_pi, q2_pi).mean().item(),
-            "log_prob": log_prob_pi_mean.mean().item(),
-            "entropy": (-log_prob_pi_mean).mean().item(),
-            "target_entropy": target_entropy.mean().item(),
-            "ent_coef": ent_coef.item(),
+            "critic_loss": critic_loss.detach(),
+            "critic_total_loss": critic_total_loss.detach(),
+            "actor_loss": actor_loss.detach(),
+            "actor_total_loss": actor_total_loss.detach(),
+            "target_q": target_q.mean().detach(),
+            "current_q1": current_q1.mean().detach(),
+            "current_q2": current_q2.mean().detach(),
+            "q_pi": torch.minimum(q1_pi, q2_pi).mean().detach(),
+            "log_prob": log_prob_pi_mean.mean().detach(),
+            "entropy": (-log_prob_pi_mean).mean().detach(),
+            "target_entropy": target_entropy.mean().detach(),
+            "ent_coef": ent_coef.detach(),
             "actor_critic_learning_rate": actor_critic_lr,
         }
         if ent_coef_loss is not None:
-            metrics["ent_coef_loss"] = ent_coef_loss.item()
+            metrics["ent_coef_loss"] = ent_coef_loss.detach()
             metrics["ent_coef_learning_rate"] = self._resolved_ent_coef_learning_rate()
         metrics.update({
-            f"actor_action_dist_{name}_loss_scaled": value.item()
+            f"actor_action_dist_{name}_loss_scaled": value.detach()
             for name, value in reduced_actor_action_dist_losses.items()
         })
         metrics.update({
@@ -576,7 +576,148 @@ class SAC(BaseAlgorithm):
         })
         metrics.update(actor_nop_metrics)
         metrics.update(critic_nop_metrics)
-        return metrics, actor_grad_norm, critic_grad_norm
+        result = (metrics, actor_grad_norm, critic_grad_norm)
+        if not materialize_metrics:
+            return self._preserve_train_step_result(result)
+        return self._materialize_train_step_results([result])[0]
+
+    def _mark_cuda_graph_train_step_begin(self) -> None:
+        if self.train_device.type == "cuda":
+            torch.compiler.cudagraph_mark_step_begin()
+
+    @staticmethod
+    def _preserve_train_step_result(result: TrainStepResult) -> TrainStepResult:
+        metrics, actor_grad_norm, critic_grad_norm = result
+
+        def preserve(value: TrainMetric) -> TrainMetric:
+            if not torch.is_tensor(value):
+                return value
+            return value.detach().clone()
+
+        return (
+            {name: preserve(value) for name, value in metrics.items()},
+            preserve(actor_grad_norm),
+            preserve(critic_grad_norm),
+        )
+
+    @staticmethod
+    def _materialize_train_step_results(results: list[TrainStepResult]) -> list[TrainStepResult]:
+        tensor_locations: list[tuple[int, str | None]] = []
+        tensor_values: list[torch.Tensor] = []
+        for result_idx, (metrics, actor_grad_norm, critic_grad_norm) in enumerate(results):
+            for name, value in metrics.items():
+                if torch.is_tensor(value):
+                    tensor_locations.append((result_idx, name))
+                    tensor_values.append(value.detach().reshape(()))
+            for name, value in (("__actor_grad_norm", actor_grad_norm), ("__critic_grad_norm", critic_grad_norm)):
+                if torch.is_tensor(value):
+                    tensor_locations.append((result_idx, name))
+                    tensor_values.append(value.detach().reshape(()))
+        if not tensor_values:
+            return results
+
+        materialized_values = torch.stack(tensor_values).cpu().tolist()
+        mutable_results = [
+            [dict(metrics), actor_grad_norm, critic_grad_norm]
+            for metrics, actor_grad_norm, critic_grad_norm in results
+        ]
+        for (result_idx, name), value in zip(tensor_locations, materialized_values, strict=True):
+            if name == "__actor_grad_norm":
+                mutable_results[result_idx][1] = value
+            elif name == "__critic_grad_norm":
+                mutable_results[result_idx][2] = value
+            else:
+                assert name is not None
+                mutable_results[result_idx][0][name] = value
+        return [
+            (metrics, actor_grad_norm, critic_grad_norm)
+            for metrics, actor_grad_norm, critic_grad_norm in mutable_results
+        ]
+
+    def _target_forward_phase_impl(
+            self,
+            batch: OffPolicyReplayBatch,
+            next_local_obs: torch.Tensor,
+            next_global_obs: torch.Tensor,
+            next_hidden_local_vars: torch.Tensor,
+            next_hidden_global_vars: torch.Tensor,
+            next_agent_mask: torch.Tensor | None,
+            ent_coef: torch.Tensor,
+    ) -> torch.Tensor:
+        next_actions, next_log_probs = self.policy.action_log_prob(
+            local_obs=next_local_obs,
+            global_obs=next_global_obs,
+            hidden_local_vars=next_hidden_local_vars,
+            hidden_global_vars=next_hidden_global_vars,
+            agent_mask=next_agent_mask,
+            **(
+                {}
+                if batch.next_scenario_ids is None
+                else {"scenario_ids": batch.next_scenario_ids}
+            ),
+            previous_actions=batch.actions,
+            deterministic=False,
+            use_rsample=False,
+        )
+        next_log_prob_mean = self._mean_agent_log_probs(next_log_probs, next_agent_mask)
+        target_q1, target_q2 = self.policy.target_q_values(
+            local_obs=next_local_obs,
+            global_obs=next_global_obs,
+            hidden_local_vars=next_hidden_local_vars,
+            hidden_global_vars=next_hidden_global_vars,
+            agent_mask=next_agent_mask,
+            **(
+                {}
+                if batch.next_scenario_ids is None
+                else {"scenario_ids": batch.next_scenario_ids}
+            ),
+            actions=next_actions,
+        )
+        return self._tensor_operations.bellman_target(
+            batch.rewards,
+            batch.terminal_mask,
+            target_q1,
+            target_q2,
+            next_log_prob_mean,
+            ent_coef,
+            self.gamma,
+        )
+
+    def _critic_forward_phase_impl(
+            self,
+            batch: OffPolicyReplayBatch,
+            target_q: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None, torch.Tensor]:
+        current_q1, current_q2, critic_nop_latents = self.policy.q_values_with_nop_latents(
+            local_obs=batch.local_obs,
+            global_obs=batch.global_obs,
+            hidden_local_vars=batch.hidden_local_vars,
+            hidden_global_vars=batch.hidden_global_vars,
+            agent_mask=batch.agent_mask,
+            **({} if batch.scenario_ids is None else {"scenario_ids": batch.scenario_ids}),
+            actions=batch.actions,
+        )
+        critic_loss = self._tensor_operations.critic_loss(current_q1, current_q2, target_q)
+        return current_q1, current_q2, critic_nop_latents, critic_loss
+
+    def _actor_forward_phase_impl(
+            self,
+            batch: OffPolicyReplayBatch,
+            actions: torch.Tensor,
+            log_prob_mean: torch.Tensor,
+            ent_coef: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        q1, q2 = self.policy.q_values(
+            local_obs=batch.local_obs,
+            global_obs=batch.global_obs,
+            hidden_local_vars=batch.hidden_local_vars,
+            hidden_global_vars=batch.hidden_global_vars,
+            agent_mask=batch.agent_mask,
+            **({} if batch.scenario_ids is None else {"scenario_ids": batch.scenario_ids}),
+            actions=actions,
+        )
+        actor_loss = self._tensor_operations.actor_loss(q1, q2, log_prob_mean, ent_coef)
+        return q1, q2, actor_loss
 
     def _setup_entropy_coefficient(self) -> None:
         if isinstance(self.ent_coef, str):
@@ -723,11 +864,13 @@ class SAC(BaseAlgorithm):
             return value.sum(dim=1).mean()
         return (value * batch.agent_mask.to(dtype=value.dtype)).sum(dim=1).mean()
 
-    def _clip_grad_norm(self, parameters: list[torch.nn.Parameter]) -> float:
+    def _clip_grad_norm(self, parameters: list[torch.nn.Parameter]) -> TrainMetric:
         if self.max_grad_norm is None:
-            return self.policy._grad_norm_from_parameters(parameters)
-        grad_norm = torch.nn.utils.clip_grad_norm_(parameters, self.max_grad_norm)
-        return float(grad_norm)
+            gradients = [parameter.grad for parameter in parameters if parameter.grad is not None]
+            if not gradients:
+                return 0.0
+            return torch.nn.utils.get_total_norm(gradients, norm_type=2.0)
+        return torch.nn.utils.clip_grad_norm_(parameters, self.max_grad_norm)
 
     def _apply_actor_critic_learning_rate_for_update(self, update_idx: int) -> float:
         lr = self._actor_critic_learning_rate_for_update(update_idx)

@@ -461,6 +461,7 @@ class RecurrentTMASACPolicy(TMASACPolicy):
     _actor_encoder_compilation_enabled: bool
     _actor_end_to_end_compilation_enabled: bool
     _actor_encoder_uses_lstm: bool
+    _compiled_actor_state_q_values_sequence: Callable[..., Any] | None
 
     def __init__(
             self,
@@ -490,6 +491,7 @@ class RecurrentTMASACPolicy(TMASACPolicy):
         object.__setattr__(self, "_actor_encoder_compilation_enabled", False)
         object.__setattr__(self, "_actor_end_to_end_compilation_enabled", False)
         object.__setattr__(self, "_actor_encoder_uses_lstm", False)
+        object.__setattr__(self, "_compiled_actor_state_q_values_sequence", None)
         super().__init__(env=env, config=config)
 
     def _apply_optional_compile(self) -> None:
@@ -527,8 +529,21 @@ class RecurrentTMASACPolicy(TMASACPolicy):
             elif self.actor_head.supports_standalone_compile:
                 self.actor_head = self._compile_module(self.actor_head)
         if not self.recurrent_critic:
-            self.critic = self._compile_module(self.critic)
-            self.critic_target = self._compile_module(self.critic_target)
+            if self.uses_actor_state_critic_input:
+                self._compiled_actor_state_q_values_sequence = self._compile_callable(
+                    self._actor_state_q_values_sequence_impl,
+                    fullgraph=False,
+                )
+            else:
+                self._compiled_q_values = self._compile_callable(self._q_values_impl, fullgraph=False)
+                self._compiled_q_values_with_nop_latents = self._compile_callable(
+                    self._q_values_with_nop_latents_impl,
+                    fullgraph=False,
+                )
+                self._compiled_target_q_values = self._compile_callable(
+                    self._target_q_values_impl,
+                    fullgraph=False,
+                )
 
     def _compile_actor_callable(
             self,
@@ -1219,7 +1234,12 @@ class RecurrentTMASACPolicy(TMASACPolicy):
         if self.uses_actor_state_critic_input:
             if actor_state is None:
                 raise ValueError("actor_state must be provided when actor-state critic input is configured.")
-            flat_inputs, batch_size, sequence_length = self._flatten_sequence_inputs(
+            actor_state_q_values = (
+                self._actor_state_q_values_sequence_impl
+                if self._compiled_actor_state_q_values_sequence is None
+                else self._compiled_actor_state_q_values_sequence
+            )
+            return actor_state_q_values(
                 local_obs=local_obs,
                 global_obs=global_obs,
                 actions=actions,
@@ -1227,32 +1247,9 @@ class RecurrentTMASACPolicy(TMASACPolicy):
                 hidden_global_vars=hidden_global_vars,
                 agent_mask=agent_mask,
                 scenario_ids=scenario_ids,
-            )
-            flat_scenario_ids = flat_inputs.pop("scenario_ids")
-            (
-                flat_inputs["local_obs"],
-                flat_inputs["global_obs"],
-                flat_inputs["hidden_local_vars"],
-                flat_inputs["hidden_global_vars"],
-            ) = self._critic_observation_inputs(
-                local_obs=cast(torch.Tensor, flat_inputs["local_obs"]),
-                global_obs=cast(torch.Tensor, flat_inputs["global_obs"]),
-                hidden_local_vars=flat_inputs["hidden_local_vars"],
-                hidden_global_vars=flat_inputs["hidden_global_vars"],
-                agent_mask=flat_inputs["agent_mask"],
-                scenario_ids=flat_scenario_ids,
                 target=target,
+                actor_state=actor_state,
             )
-            flat_actor_state = actor_state.reshape(-1, *actor_state.shape[-2:])
-            critic = self.critic_target if target else self.critic
-            q1, q2, latents = critic(actor_state=flat_actor_state, **flat_inputs)
-            if local_obs.ndim == 3:
-                return q1, q2, None if target or self.critic_nop is None else latents, None
-            q1 = q1.reshape(batch_size, sequence_length)
-            q2 = q2.reshape(batch_size, sequence_length)
-            if target or self.critic_nop is None:
-                return q1, q2, None, None
-            return q1, q2, latents.reshape(batch_size, sequence_length, *latents.shape[1:]), None
 
         flat_inputs, batch_size, sequence_length = self._flatten_sequence_inputs(
             local_obs=local_obs,
@@ -1275,6 +1272,54 @@ class RecurrentTMASACPolicy(TMASACPolicy):
         if latents is not None:
             latents = latents.reshape(batch_size, sequence_length, *latents.shape[1:])
         return q1, q2, latents, None
+
+    def _actor_state_q_values_sequence_impl(
+            self,
+            *,
+            local_obs: torch.Tensor,
+            global_obs: torch.Tensor,
+            actions: torch.Tensor,
+            hidden_local_vars: torch.Tensor | None,
+            hidden_global_vars: torch.Tensor | None,
+            agent_mask: torch.Tensor | None,
+            scenario_ids: torch.Tensor | None,
+            target: bool,
+            actor_state: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None, RecurrentCriticState | None]:
+        flat_inputs, batch_size, sequence_length = self._flatten_sequence_inputs(
+            local_obs=local_obs,
+            global_obs=global_obs,
+            actions=actions,
+            hidden_local_vars=hidden_local_vars,
+            hidden_global_vars=hidden_global_vars,
+            agent_mask=agent_mask,
+            scenario_ids=scenario_ids,
+        )
+        flat_scenario_ids = flat_inputs.pop("scenario_ids")
+        (
+            flat_inputs["local_obs"],
+            flat_inputs["global_obs"],
+            flat_inputs["hidden_local_vars"],
+            flat_inputs["hidden_global_vars"],
+        ) = self._critic_observation_inputs(
+            local_obs=cast(torch.Tensor, flat_inputs["local_obs"]),
+            global_obs=cast(torch.Tensor, flat_inputs["global_obs"]),
+            hidden_local_vars=flat_inputs["hidden_local_vars"],
+            hidden_global_vars=flat_inputs["hidden_global_vars"],
+            agent_mask=flat_inputs["agent_mask"],
+            scenario_ids=flat_scenario_ids,
+            target=target,
+        )
+        flat_actor_state = actor_state.reshape(-1, *actor_state.shape[-2:])
+        critic = self.critic_target if target else self.critic
+        q1, q2, latents = critic(actor_state=flat_actor_state, **flat_inputs)
+        if local_obs.ndim == 3:
+            return q1, q2, None if target or self.critic_nop is None else latents, None
+        q1 = q1.reshape(batch_size, sequence_length)
+        q2 = q2.reshape(batch_size, sequence_length)
+        if target or self.critic_nop is None:
+            return q1, q2, None, None
+        return q1, q2, latents.reshape(batch_size, sequence_length, *latents.shape[1:]), None
 
     def q_values(
             self,

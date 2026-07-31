@@ -25,7 +25,9 @@ from swarmbots.learn.action_dists.reparameterized_sign_magnitude_kumaraswamy_act
 from swarmbots.learn.action_dists.reparameterized_squashed_gaussian_mixture_action_dist import (
     ReparameterizedSquashedGaussianMixtureConfig,
 )
-from swarmbots.learn.action_dists.squashed_diag_gaussian_action_dist import SquashedDiagGaussianConfig
+from swarmbots.learn.action_dists.squashed_diag_gaussian_action_dist import (
+    SquashedDiagGaussianConfig,
+)
 from swarmbots.learn.algos.mat.mat_encoder import MATEncoderConfig
 from swarmbots.learn.algos.off_policy.replay_buffer import (
     OffPolicyReplayBatch,
@@ -33,8 +35,8 @@ from swarmbots.learn.algos.off_policy.replay_buffer import (
     OffPolicyReplayEpisodeSegmentBatch,
 )
 from swarmbots.learn.algos.sac import (
-    BaseSACPolicy,
     SAC,
+    BaseSACPolicy,
     SACNOPConfig,
     SACNOPLatentSource,
     TMASACActorHeadConfig,
@@ -43,13 +45,14 @@ from swarmbots.learn.algos.sac import (
     TMASACPolicyConfig,
 )
 from swarmbots.learn.algos.world_modeling.next_obs_pred_mixin import NextObsPredConfig
-from swarmbots.learn.env_wrappers.learn_wrappers.swarm_bots_learn_env_wrapper import SwarmBotsLearnEnvWrapper
+from swarmbots.learn.env_wrappers.learn_wrappers.swarm_bots_learn_env_wrapper import (
+    SwarmBotsLearnEnvWrapper,
+)
 from swarmbots.learn.exponential_moving_average import ExponentialMovingAverage
 from swarmbots.learn.gsde_reset import GSDEIntervalResetMode
 from swarmbots.learn.summary_statistics import SummaryStatistics
-from swarmbots.learn.testing_env import TestingSwarmBotsEnv
 from swarmbots.learn.temporal_state import clone_temporal_state
-
+from swarmbots.learn.testing_env import TestingSwarmBotsEnv
 
 _REAL_TORCH_COMPILE = torch.compile
 
@@ -574,6 +577,79 @@ class SACTests(unittest.TestCase):
             eager_env.close()
             compiled_env.close()
 
+    @unittest.skipUnless(torch.cuda.is_available(), "requires CUDA compilation")
+    def test_reduce_overhead_cuda_train_steps_preserve_deferred_metrics(self) -> None:
+        eager_env = _make_env()
+        compiled_env = _make_env()
+        try:
+            common_kwargs = {
+                "learning_rate": 1e-3,
+                "learning_rate_warmup_updates": 0,
+                "buffer_capacity_per_env": 8,
+                "learning_starts": 0,
+                "batch_size": 2,
+                "ent_coef": 0.2,
+                "max_grad_norm": None,
+                "train_device": "cuda",
+                "rollout_device": "cpu",
+                "replay_storage_device": "cpu",
+            }
+            eager = SAC(
+                policy=_ConstantTargetSACPolicy(
+                    n_agents=eager_env.n_agents,
+                    action_dim=eager_env.action_space.total_agent_action_dim,
+                    target_q_value=1.5,
+                    log_prob_per_agent=-0.4,
+                ),
+                env=eager_env,
+                sac_compile_tensor_operations=False,
+                sac_compile_optimizer_steps=False,
+                **common_kwargs,
+            )
+            compiled = SAC(
+                policy=_ConstantTargetSACPolicy(
+                    n_agents=compiled_env.n_agents,
+                    action_dim=compiled_env.action_space.total_agent_action_dim,
+                    target_q_value=1.5,
+                    log_prob_per_agent=-0.4,
+                ),
+                env=compiled_env,
+                sac_compile_tensor_operations=True,
+                sac_compile_optimizer_steps=True,
+                sac_compile_mode="reduce-overhead",
+                **common_kwargs,
+            )
+            batch = _move_replay_batch(_make_bootstrap_batch(eager_env), "cuda")
+            expected_results = []
+            deferred_results = []
+
+            for update_idx in range(2):
+                expected_results.append(eager._train_step(batch, global_update_idx=update_idx))
+                deferred_results.append(compiled._train_step(
+                    batch,
+                    global_update_idx=update_idx,
+                    materialize_metrics=False,
+                ))
+
+            compiled_results = compiled._materialize_train_step_results(deferred_results)
+            for expected, actual in zip(expected_results, compiled_results, strict=True):
+                expected_metrics, expected_actor_grad, expected_critic_grad = expected
+                actual_metrics, actual_actor_grad, actual_critic_grad = actual
+                for metric_name, expected_value in expected_metrics.items():
+                    self.assertAlmostEqual(actual_metrics[metric_name], expected_value, places=6)
+                self.assertAlmostEqual(actual_actor_grad, expected_actor_grad, places=6)
+                self.assertAlmostEqual(actual_critic_grad, expected_critic_grad, places=6)
+
+            for eager_parameter, compiled_parameter in zip(
+                    eager.policy.parameters(),
+                    compiled.policy.parameters(),
+                    strict=True,
+            ):
+                torch.testing.assert_close(compiled_parameter, eager_parameter)
+        finally:
+            eager_env.close()
+            compiled_env.close()
+
     def test_sac_compile_overrides_build_loss_and_optimizer_entry_points(self) -> None:
         env = _make_env()
         try:
@@ -597,7 +673,7 @@ class SACTests(unittest.TestCase):
                     sac_compile_mode="reduce-overhead",
                 )
 
-            self.assertEqual(compile_mock.call_count, 9)
+            self.assertEqual(compile_mock.call_count, 12)
             compiled_names = [call.args[0].__name__ for call in compile_mock.call_args_list]
             self.assertEqual(compiled_names.count("optimizer_step"), 3)
             self.assertEqual(
@@ -609,10 +685,18 @@ class SACTests(unittest.TestCase):
                     "_bellman_target",
                     "_critic_loss",
                     "_actor_loss",
+                    "_target_forward_phase_impl",
+                    "_critic_forward_phase_impl",
+                    "_actor_forward_phase_impl",
                 },
             )
             for call in compile_mock.call_args_list:
-                expected_fullgraph = call.args[0].__name__ != "optimizer_step"
+                expected_fullgraph = call.args[0].__name__ not in {
+                    "optimizer_step",
+                    "_target_forward_phase_impl",
+                    "_critic_forward_phase_impl",
+                    "_actor_forward_phase_impl",
+                }
                 self.assertEqual(call.kwargs, {
                     "mode": "reduce-overhead",
                     "fullgraph": expected_fullgraph,
@@ -624,6 +708,42 @@ class SACTests(unittest.TestCase):
             self.assertEqual(hyper_parameters["sac_compile_mode"], "reduce-overhead")
         finally:
             env.close()
+
+    def test_train_step_result_materialization_preserves_order_and_plain_metrics(self) -> None:
+        results = [
+            (
+                {"loss": torch.tensor(1.25), "learning_rate": 0.01},
+                torch.tensor(2.5),
+                3.5,
+            ),
+            (
+                {"loss": torch.tensor(4.25)},
+                5.5,
+                torch.tensor(6.5),
+            ),
+        ]
+
+        materialized = SAC._materialize_train_step_results(results)
+
+        self.assertEqual(materialized, [
+            ({"loss": 1.25, "learning_rate": 0.01}, 2.5, 3.5),
+            ({"loss": 4.25}, 5.5, 6.5),
+        ])
+        self.assertTrue(torch.is_tensor(results[0][0]["loss"]))
+
+    def test_preserved_train_step_result_owns_tensor_storage(self) -> None:
+        loss = torch.tensor(1.25)
+        actor_grad_norm = torch.tensor(2.5)
+        result = ({"loss": loss, "learning_rate": 0.01}, actor_grad_norm, 3.5)
+
+        preserved = SAC._preserve_train_step_result(result)
+        loss.fill_(10.0)
+        actor_grad_norm.fill_(20.0)
+
+        self.assertEqual(
+            SAC._materialize_train_step_results([preserved]),
+            [({"loss": 1.25, "learning_rate": 0.01}, 2.5, 3.5)],
+        )
 
     def test_cpu_sac_training_operations_stay_eager_by_default(self) -> None:
         env = _make_env()
@@ -812,6 +932,14 @@ class SACTests(unittest.TestCase):
                 rollout_device="cpu",
                 replay_storage_device="cpu",
             )
+            actor_parameters_before = [
+                parameter.detach().clone()
+                for parameter in policy.actor_parameters()
+            ]
+            critic_parameters_before = [
+                parameter.detach().clone()
+                for parameter in policy.critic_parameters()
+            ]
 
             metrics, rollout_steps = algo.perform_iteration(
                 ExponentialMovingAverage(alpha=0.1),
@@ -829,6 +957,22 @@ class SACTests(unittest.TestCase):
             self.assertIn("actor_loss", metrics)
             self.assertIn("critic_loss", metrics)
             self.assertIn("ent_coef", metrics)
+            self.assertTrue(any(
+                not torch.equal(before, after)
+                for before, after in zip(
+                    actor_parameters_before,
+                    policy.actor_parameters(),
+                    strict=True,
+                )
+            ))
+            self.assertTrue(any(
+                not torch.equal(before, after)
+                for before, after in zip(
+                    critic_parameters_before,
+                    policy.critic_parameters(),
+                    strict=True,
+                )
+            ))
         finally:
             env.close()
 

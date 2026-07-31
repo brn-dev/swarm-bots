@@ -1,5 +1,6 @@
 import unittest
 from typing import Any
+from unittest.mock import patch
 
 import gymnasium
 import numpy as np
@@ -919,6 +920,30 @@ class SameStepPipelineTests(unittest.TestCase):
 
             expected_prev_actions = torch.tensor([[0.25, 1.0], [-0.5, -1.0]], dtype=torch.float32)
             torch.testing.assert_close(obs["local_obs"][0, :, 3:5], expected_prev_actions)
+        finally:
+            env.close()
+
+    def test_transition_obs_compiles_only_the_fixed_shape_step_operation(self) -> None:
+        with patch(
+                "swarmbots.learn.env_wrappers.torch_transition_obs_wrapper.torch.compile",
+                side_effect=lambda function, **_kwargs: function,
+        ) as compile_mock:
+            env = TorchTransitionObsWrapper(
+                _make_scripted_env((1, (99,), "truncate")),
+                compile_tensor_operations=True,
+                tensor_operations_compile_mode="reduce-overhead",
+            )
+        try:
+            env.reset()
+            env.step(torch.zeros((1, 2, 2)))
+
+            compile_mock.assert_called_once()
+            self.assertIs(compile_mock.call_args.args[0], env._step_transition_tensors)
+            self.assertEqual(compile_mock.call_args.kwargs, {
+                "mode": "reduce-overhead",
+                "fullgraph": True,
+                "dynamic": False,
+            })
         finally:
             env.close()
 

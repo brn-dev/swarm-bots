@@ -1057,6 +1057,28 @@ class TMASACPolicyTests(unittest.TestCase):
         compiled_policy.action_log_prob(**call_kwargs)
         self.assertEqual(len(compiled_graphs), graph_count)
 
+        q_call_kwargs = {
+            "local_obs": batch.local_obs,
+            "global_obs": batch.global_obs,
+            "actions": batch.actions,
+            "hidden_local_vars": batch.hidden_local_vars,
+            "hidden_global_vars": batch.hidden_global_vars,
+            "agent_mask": batch.agent_mask,
+        }
+        for method_name in ("q_values", "q_values_with_nop_latents", "target_q_values"):
+            eager_q_values = getattr(eager_policy, method_name)(**q_call_kwargs)
+            compiled_q_values = getattr(compiled_policy, method_name)(**q_call_kwargs)
+            for compiled_value, eager_value in zip(compiled_q_values, eager_q_values, strict=True):
+                if compiled_value is None:
+                    self.assertIsNone(eager_value)
+                else:
+                    torch.testing.assert_close(compiled_value, eager_value)
+        self.assertTrue({
+            "_q_values_impl",
+            "_q_values_with_nop_latents_impl",
+            "_target_q_values_impl",
+        }.issubset(compiled_function_names))
+
     def _assert_full_graph_actor_matches_eager(
             self,
             continuous_config: ContinuousActionDistConfig,

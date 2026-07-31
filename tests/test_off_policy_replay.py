@@ -649,8 +649,16 @@ class OffPolicyReplayTests(unittest.TestCase):
                 buffer.sample(1)
             with self.assertRaisesRegex(ValueError, "empty replay buffer"):
                 buffer.get_all()
+            with self.assertRaisesRegex(ValueError, "empty replay buffer"):
+                buffer.sample_episode_segments(1, segment_length=1)
             with self.assertRaisesRegex(ValueError, "num_next_steps must be > 0"):
                 buffer.sample_episode_windows(1, num_next_steps=0)
+            with self.assertRaisesRegex(ValueError, "max_train_truncations must be >= 0"):
+                buffer.sample_episode_segments(
+                    1,
+                    segment_length=1,
+                    max_train_truncations=-1,
+                )
             with self.assertRaisesRegex(ValueError, "batch_size must be > 0"):
                 buffer.sample_episode_segments(0, segment_length=1)
             with self.assertRaisesRegex(ValueError, "segment_length must be > 0"):
@@ -666,6 +674,82 @@ class OffPolicyReplayTests(unittest.TestCase):
             )
             with self.assertRaisesRegex(ValueError, "batch_size must be > 0"):
                 buffer.sample(0)
+        finally:
+            env.close()
+
+    def test_rollout_rejects_invalid_collection_modes_before_touching_the_env(self) -> None:
+        env = _make_env()
+        try:
+            buffer = _make_buffer(env, capacity_per_env=2)
+            invalid_calls = (
+                ({"n_steps": 0, "random_actions": True}, "n_steps must be > 0"),
+                ({"n_steps": 1}, "Either pass a policy or set random_actions=True"),
+            )
+            for kwargs, message in invalid_calls:
+                with self.subTest(message=message), self.assertRaisesRegex(ValueError, message):
+                    collect_off_policy_steps(env=env, replay_buffer=buffer, **kwargs)
+
+            _add_direct_step(
+                buffer,
+                obs_values=(0.0,),
+                next_obs_values=(1.0,),
+                action_value=0.0,
+            )
+            with self.assertRaisesRegex(ValueError, "requires an empty replay buffer"):
+                collect_off_policy_steps(
+                    env=env,
+                    replay_buffer=buffer,
+                    n_steps=1,
+                    random_actions=True,
+                    _store_transitions=False,
+                )
+        finally:
+            env.close()
+
+    def test_add_requires_same_step_terminal_obs_and_an_initialized_stream(self) -> None:
+        env = _make_env()
+        try:
+            buffer = _make_buffer(env, capacity_per_env=2)
+            add_kwargs = {
+                "obs": _obs(0.0),
+                "actions": _actions(0.0),
+                "rewards": torch.zeros(1),
+                "terminations": torch.zeros(1, dtype=torch.bool),
+                "truncations": torch.zeros(1, dtype=torch.bool),
+                "next_obs": _obs(1.0),
+            }
+            with self.assertRaisesRegex(ValueError, "copy_current_obs=False"):
+                buffer.add(**add_kwargs, copy_current_obs=False)
+
+            with self.assertRaisesRegex(ValueError, "terminal_obs is required"):
+                buffer.add(
+                    **{
+                        **add_kwargs,
+                        "terminations": torch.ones(1, dtype=torch.bool),
+                    }
+                )
+        finally:
+            env.close()
+
+    def test_segment_sampling_without_replacement_enforces_candidate_count(self) -> None:
+        env = _make_env()
+        try:
+            buffer = _make_buffer(env, capacity_per_env=3)
+            for step in range(2):
+                _add_direct_step(
+                    buffer,
+                    obs_values=(float(step),),
+                    next_obs_values=(float(step + 1),),
+                    action_value=float(step),
+                )
+
+            with self.assertRaisesRegex(ValueError, "without replacement from 2 candidates"):
+                buffer.sample_episode_segments(
+                    3,
+                    segment_length=1,
+                    replacement=False,
+                    require_initial_temporal_state=False,
+                )
         finally:
             env.close()
 
@@ -750,6 +834,127 @@ class OffPolicyReplayTests(unittest.TestCase):
             self.assertEqual(flat_batch.local_obs[:, 0, 0].tolist(), [0.0, 1.0])
             self.assertEqual(window_batch.actions.shape[1], 2)
             self.assertIsNotNone(segment_batch.initial_temporal_state)
+        finally:
+            env.close()
+
+    def test_segment_sampling_refreshes_candidates_after_replay_changes(self) -> None:
+        env = _make_env()
+        try:
+            buffer = _make_buffer(
+                env,
+                capacity_per_env=4,
+                temporal_state_store_interval=1,
+            )
+            for step in range(2):
+                _add_direct_step(
+                    buffer,
+                    obs_values=(float(step),),
+                    next_obs_values=(float(step + 1),),
+                    action_value=float(step),
+                    temporal_state=_temporal_state(float(step)),
+                    next_temporal_state=_temporal_state(float(step + 1)),
+                )
+
+            initial_sample = buffer.sample_episode_segments(
+                1,
+                segment_length=2,
+                replacement=False,
+                allow_episode_boundaries=True,
+            )
+            self.assertEqual(initial_sample.local_obs[:, 0, 0, 0].tolist(), [0.0])
+
+            _add_direct_step(
+                buffer,
+                obs_values=(2.0,),
+                next_obs_values=(3.0,),
+                action_value=2.0,
+                temporal_state=_temporal_state(2.0),
+                next_temporal_state=_temporal_state(3.0),
+            )
+            refreshed_sample = buffer.sample_episode_segments(
+                2,
+                segment_length=2,
+                replacement=False,
+                allow_episode_boundaries=True,
+            )
+            self.assertEqual(
+                sorted(refreshed_sample.local_obs[:, 0, 0, 0].tolist()),
+                [0.0, 1.0],
+            )
+        finally:
+            env.close()
+
+    def test_segment_candidates_limit_truncations_in_training_suffix(self) -> None:
+        env = _make_env()
+        try:
+            buffer = _make_buffer(env, capacity_per_env=6)
+            for step in range(6):
+                truncated = step in {0, 2, 4}
+                _add_direct_step(
+                    buffer,
+                    obs_values=(float(step),),
+                    next_obs_values=(float(step + 1),),
+                    action_value=float(step),
+                    truncations=(truncated,),
+                    terminal_obs_values=(float(100 + step),) if truncated else None,
+                )
+
+            unrestricted = buffer.sample_episode_segments(
+                3,
+                segment_length=3,
+                burn_in_steps=1,
+                replacement=False,
+                require_initial_temporal_state=False,
+                allow_episode_boundaries=True,
+            )
+            limited = buffer.sample_episode_segments(
+                2,
+                segment_length=3,
+                burn_in_steps=1,
+                replacement=False,
+                require_initial_temporal_state=False,
+                allow_episode_boundaries=True,
+                max_train_truncations=1,
+            )
+
+            self.assertEqual(
+                sorted(unrestricted.local_obs[:, 0, 0, 0].tolist()),
+                [0.0, 1.0, 2.0],
+            )
+            self.assertEqual(
+                sorted(limited.local_obs[:, 0, 0, 0].tolist()),
+                [0.0, 2.0],
+            )
+            self.assertTrue((limited.truncations[:, 1:].sum(dim=1) <= 1).all())
+        finally:
+            env.close()
+
+    def test_terminal_observation_tensor_pool_grows_without_losing_rows(self) -> None:
+        env = _make_env()
+        try:
+            storage_devices = ("cpu", "cuda") if torch.cuda.is_available() else ("cpu",)
+            for storage_device in storage_devices:
+                with self.subTest(storage_device=storage_device):
+                    buffer = _make_buffer(
+                        env,
+                        capacity_per_env=70,
+                        storage_device=storage_device,
+                    )
+                    for step in range(70):
+                        _add_direct_step(
+                            buffer,
+                            obs_values=(float(step),),
+                            next_obs_values=(float(step + 1),),
+                            action_value=float(step),
+                            truncations=(True,),
+                            terminal_obs_values=(float(1_000 + step),),
+                        )
+
+                    batch = buffer.get_all()
+                    self.assertEqual(
+                        batch.next_local_obs[:, 0, 0].tolist(),
+                        [float(1_000 + step) for step in range(70)],
+                    )
         finally:
             env.close()
 
@@ -2108,38 +2313,27 @@ class OffPolicyReplayTests(unittest.TestCase):
                     terminal_obs=None if terminal_obs_value is None else _obs(terminal_obs_value),
                 )
 
-            with patch("torch.randint", return_value=torch.tensor([0, 1, 2, 3])):
-                windows = buffer.sample_episode_windows(4, num_next_steps=3)
+            windows = buffer.sample_episode_windows(
+                4_096,
+                num_next_steps=3,
+                generator=torch.Generator().manual_seed(7),
+            )
 
-            self.assertEqual(windows.origin_batch.local_obs[:, 0, 0].tolist(), [0.0, 1.0, 100.0, 101.0])
-            self.assertEqual(windows.origin_batch.actions[:, 0, 0].tolist(), [10.0, 11.0, 12.0, 13.0])
-            self.assertEqual(
-                windows.train_mask.tolist(),
-                [
-                    [True, True, False],
-                    [True, False, False],
-                    [True, True, False],
-                    [True, False, False],
-                ],
-            )
-            self.assertEqual(
-                windows.actions[:, :, 0, 0].tolist(),
-                [
-                    [10.0, 11.0, 0.0],
-                    [11.0, 0.0, 0.0],
-                    [12.0, 13.0, 0.0],
-                    [13.0, 0.0, 0.0],
-                ],
-            )
-            self.assertEqual(
-                windows.next_local_obs[:, :, 0, 0].tolist(),
-                [
-                    [1.0, 2.0, 0.0],
-                    [2.0, 0.0, 0.0],
-                    [101.0, 102.0, 0.0],
-                    [102.0, 0.0, 0.0],
-                ],
-            )
+            origin_values = windows.origin_batch.local_obs[:, 0, 0]
+            expected_windows = {
+                0.0: ([True, True, False], [10.0, 11.0, 0.0], [1.0, 2.0, 0.0]),
+                1.0: ([True, False, False], [11.0, 0.0, 0.0], [2.0, 0.0, 0.0]),
+                100.0: ([True, True, False], [12.0, 13.0, 0.0], [101.0, 102.0, 0.0]),
+                101.0: ([True, False, False], [13.0, 0.0, 0.0], [102.0, 0.0, 0.0]),
+            }
+            for origin_value, (train_mask, actions, next_obs) in expected_windows.items():
+                matching_rows = torch.nonzero(origin_values == origin_value, as_tuple=False).flatten()
+                self.assertGreater(matching_rows.numel(), 800)
+                self.assertLess(matching_rows.numel(), 1_250)
+                row = int(matching_rows[0].item())
+                self.assertEqual(windows.train_mask[row].tolist(), train_mask)
+                self.assertEqual(windows.actions[row, :, 0, 0].tolist(), actions)
+                self.assertEqual(windows.next_local_obs[row, :, 0, 0].tolist(), next_obs)
         finally:
             env.close()
 
@@ -2809,6 +3003,31 @@ class OffPolicyReplayTests(unittest.TestCase):
             self.assertEqual(policy.action_dist.call_order, ["step", "ep_start"])
             self.assertEqual(policy.action_dist.step_resets, [(None, (1, 2))])
             self.assertEqual([mask.tolist() for mask in policy.action_dist.episode_start_masks], [[False]])
+        finally:
+            env.close()
+
+    def test_gsde_probability_reset_samples_a_mask_after_noise_initialization(self) -> None:
+        env = _make_env()
+        try:
+            buffer = _make_buffer(env, capacity_per_env=4)
+            policy = _GSDEPolicy()
+
+            collect_off_policy_steps(
+                env=env,
+                replay_buffer=buffer,
+                n_steps=2,
+                policy=policy,
+                gsde_reset_mode=GSDEProbabilityResetMode(probability=0.5),
+            )
+
+            self.assertEqual(policy.action_dist.call_order, ["step", "ep_start", "ep_start", "step"])
+            self.assertEqual(policy.action_dist.step_resets[0], (None, (1, 2)))
+            sampled_mask, batch_shape = policy.action_dist.step_resets[1]
+            self.assertIsNone(batch_shape)
+            self.assertIsNotNone(sampled_mask)
+            assert sampled_mask is not None
+            self.assertEqual(sampled_mask.shape, (1, 2))
+            self.assertEqual(sampled_mask.dtype, torch.bool)
         finally:
             env.close()
 

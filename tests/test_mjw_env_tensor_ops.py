@@ -347,6 +347,33 @@ class MJWEnvTensorOperationsTests(unittest.TestCase):
             torch.testing.assert_close(output[0], stable_copy)
             self.assertTrue((output[1] == 0).all())
 
+    def test_step_finalization_updates_only_stable_worlds_and_applies_done_precedence(self) -> None:
+        operations = _build_operations(
+            use_rot6d=False,
+            include_connector_positions=False,
+            continuous_connectors=False,
+        )
+        qpos = torch.tensor([[0.0, 1.0], [float("nan"), 0.0], [2.0, 3.0]])
+        qvel = torch.zeros_like(qpos)
+        current_step = torch.tensor([1, 4, 2])
+
+        unstable_mask, stable_mask = operations.begin_step(qpos, qvel, current_step)
+        rewards, terminations, truncations, dones = operations.finalize_step(
+            torch.tensor([1.0, 2.0, 3.0]),
+            unstable_mask,
+            stable_mask,
+            torch.tensor([True, True, False]),
+            current_step,
+            torch.tensor([5, 5, 3]),
+            -7.0,
+        )
+
+        self.assertEqual(current_step.tolist(), [2, 4, 3])
+        self.assertEqual(terminations.tolist(), [True, True, False])
+        self.assertEqual(truncations.tolist(), [False, False, True])
+        self.assertEqual(dones.tolist(), [True, True, True])
+        torch.testing.assert_close(rewards, torch.tensor([1.0, -7.0, 3.0]))
+
     def test_compiled_operations_match_eager_for_every_static_layout_variant(self) -> None:
         torch.manual_seed(123)
         for use_rot6d in (False, True):
@@ -437,10 +464,16 @@ class MJWEnvTensorOperationsTests(unittest.TestCase):
                 compile_mode="reduce-overhead",
             )
 
-        self.assertEqual(compile_mock.call_count, 3)
+        self.assertEqual(compile_mock.call_count, 5)
         self.assertEqual(
             [call.args[0].__name__ for call in compile_mock.call_args_list],
-            ["build_local_obs", "prepare_actions", "_mask_error_observations"],
+            [
+                "build_local_obs",
+                "prepare_actions",
+                "_mask_error_observations",
+                "_begin_step",
+                "_finalize_step",
+            ],
         )
         for compile_call in compile_mock.call_args_list:
             self.assertEqual(compile_call.kwargs, {
