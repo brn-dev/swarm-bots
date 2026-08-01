@@ -993,7 +993,7 @@ class TMASACPolicyTests(unittest.TestCase):
         torch._dynamo.reset()
         try:
             self._assert_full_graph_actor_matches_eager(
-                PredictedStdConfig(base_std=0.5, ent_loss_coef=0.1),
+                GumbelSoftmaxSignMagnitudeBetaConfig(ent_loss_coef=0.1),
                 actor_head_kind=TMASACActorHeadKind.QCX,
             )
         finally:

@@ -5,7 +5,10 @@ from torch import nn
 
 from swarmbots.learn.algos.mat_qc_base_policy import MATQCBasePolicy
 from swarmbots.learn.nn_components.activations import ActivationFactory, make_activation
-from swarmbots.learn.nn_components.nn_init import init_transformer_feedforward, reinitialize_multihead_attention
+from swarmbots.learn.nn_components.nn_init import (
+    init_transformer_feedforward,
+    reinitialize_multihead_attention,
+)
 
 
 @dataclass(frozen=True)
@@ -224,8 +227,9 @@ class MATQCXDecoderLayer(nn.Module):
                 and query_tokens.shape[1] > 1
                 and context_attention_mask is not None
                 and context_attention_mask.dim() == 2
-                and not has_visible_context[:, 0].any()
         ):
+            # A parallel causal mask always leaves query zero without prior context. Keep this
+            # decision structural: branching on has_visible_context[:, 0].any() breaks full-graph compilation.
             attended_output = self.query_context_attn(
                 query=query_tokens[:, 1:, :],
                 key=context_tokens,
