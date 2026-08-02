@@ -461,7 +461,6 @@ class RecurrentTMASACPolicy(TMASACPolicy):
     _actor_encoder_compilation_enabled: bool
     _actor_end_to_end_compilation_enabled: bool
     _actor_encoder_uses_lstm: bool
-    _compiled_actor_state_q_values_sequence: Callable[..., Any] | None
 
     def __init__(
             self,
@@ -491,7 +490,6 @@ class RecurrentTMASACPolicy(TMASACPolicy):
         object.__setattr__(self, "_actor_encoder_compilation_enabled", False)
         object.__setattr__(self, "_actor_end_to_end_compilation_enabled", False)
         object.__setattr__(self, "_actor_encoder_uses_lstm", False)
-        object.__setattr__(self, "_compiled_actor_state_q_values_sequence", None)
         super().__init__(env=env, config=config)
 
     def _apply_optional_compile(self) -> None:
@@ -529,21 +527,8 @@ class RecurrentTMASACPolicy(TMASACPolicy):
             elif self.actor_head.supports_standalone_compile:
                 self.actor_head = self._compile_module(self.actor_head)
         if not self.recurrent_critic:
-            if self.uses_actor_state_critic_input:
-                self._compiled_actor_state_q_values_sequence = self._compile_callable(
-                    self._actor_state_q_values_sequence_impl,
-                    fullgraph=False,
-                )
-            else:
-                self._compiled_q_values = self._compile_callable(self._q_values_impl, fullgraph=False)
-                self._compiled_q_values_with_nop_latents = self._compile_callable(
-                    self._q_values_with_nop_latents_impl,
-                    fullgraph=False,
-                )
-                self._compiled_target_q_values = self._compile_callable(
-                    self._target_q_values_impl,
-                    fullgraph=False,
-                )
+            self.critic = self._compile_module(self.critic)
+            self.critic_target = self._compile_module(self.critic_target)
 
     def _compile_actor_callable(
             self,
@@ -1234,12 +1219,7 @@ class RecurrentTMASACPolicy(TMASACPolicy):
         if self.uses_actor_state_critic_input:
             if actor_state is None:
                 raise ValueError("actor_state must be provided when actor-state critic input is configured.")
-            actor_state_q_values = (
-                self._actor_state_q_values_sequence_impl
-                if self._compiled_actor_state_q_values_sequence is None
-                else self._compiled_actor_state_q_values_sequence
-            )
-            return actor_state_q_values(
+            return self._actor_state_q_values_sequence_impl(
                 local_obs=local_obs,
                 global_obs=global_obs,
                 actions=actions,

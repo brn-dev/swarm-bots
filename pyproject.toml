@@ -22,9 +22,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+mamujoco = ["gymnasium-robotics>=1.4"]
 mjw = ["mujoco-warp", "warp-lang"]
 plot = ["matplotlib"]
 prompt = ["prompt-toolkit"]
+vmas = ["vmas[gymnasium]"]
 wandb = ["wandb"]
 warp = ["mujoco-warp", "warp-lang"]
 

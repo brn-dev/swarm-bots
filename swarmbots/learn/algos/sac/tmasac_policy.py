@@ -510,9 +510,6 @@ class TMASACPolicy(BaseSACPolicy):
     _compiled_action_log_prob: Callable[..., tuple[torch.Tensor, torch.Tensor]] | None
     _compiled_actor_actions_and_log_probs: Callable[..., tuple[torch.Tensor, torch.Tensor]] | None
     _compiled_actor_encoder: nn.Module | None
-    _compiled_q_values: Callable[..., tuple[torch.Tensor, torch.Tensor]] | None
-    _compiled_q_values_with_nop_latents: Callable[..., tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]] | None
-    _compiled_target_q_values: Callable[..., tuple[torch.Tensor, torch.Tensor]] | None
 
     def __init__(
             self,
@@ -523,9 +520,6 @@ class TMASACPolicy(BaseSACPolicy):
         object.__setattr__(self, "_compiled_action_log_prob", None)
         object.__setattr__(self, "_compiled_actor_actions_and_log_probs", None)
         object.__setattr__(self, "_compiled_actor_encoder", None)
-        object.__setattr__(self, "_compiled_q_values", None)
-        object.__setattr__(self, "_compiled_q_values_with_nop_latents", None)
-        object.__setattr__(self, "_compiled_target_q_values", None)
         self.config = config
         self._validate_continuous_action_space(env)
         self._validate_config(config)
@@ -831,37 +825,6 @@ class TMASACPolicy(BaseSACPolicy):
             agent_mask: torch.Tensor | None = None,
             scenario_ids: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        if self._compiled_q_values is not None:
-            return self._compiled_q_values(
-                local_obs=local_obs,
-                global_obs=global_obs,
-                actions=actions,
-                hidden_local_vars=hidden_local_vars,
-                hidden_global_vars=hidden_global_vars,
-                agent_mask=agent_mask,
-                scenario_ids=scenario_ids,
-            )
-        return self._q_values_impl(
-            local_obs=local_obs,
-            global_obs=global_obs,
-            actions=actions,
-            hidden_local_vars=hidden_local_vars,
-            hidden_global_vars=hidden_global_vars,
-            agent_mask=agent_mask,
-            scenario_ids=scenario_ids,
-        )
-
-    def _q_values_impl(
-            self,
-            *,
-            local_obs: torch.Tensor,
-            global_obs: torch.Tensor,
-            actions: torch.Tensor,
-            hidden_local_vars: torch.Tensor | None,
-            hidden_global_vars: torch.Tensor | None,
-            agent_mask: torch.Tensor | None,
-            scenario_ids: torch.Tensor | None,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
         (
             critic_local_inputs,
             critic_global_inputs,
@@ -896,37 +859,6 @@ class TMASACPolicy(BaseSACPolicy):
             hidden_global_vars: torch.Tensor | None = None,
             agent_mask: torch.Tensor | None = None,
             scenario_ids: torch.Tensor | None = None,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
-        if self._compiled_q_values_with_nop_latents is not None:
-            return self._compiled_q_values_with_nop_latents(
-                local_obs=local_obs,
-                global_obs=global_obs,
-                actions=actions,
-                hidden_local_vars=hidden_local_vars,
-                hidden_global_vars=hidden_global_vars,
-                agent_mask=agent_mask,
-                scenario_ids=scenario_ids,
-            )
-        return self._q_values_with_nop_latents_impl(
-            local_obs=local_obs,
-            global_obs=global_obs,
-            actions=actions,
-            hidden_local_vars=hidden_local_vars,
-            hidden_global_vars=hidden_global_vars,
-            agent_mask=agent_mask,
-            scenario_ids=scenario_ids,
-        )
-
-    def _q_values_with_nop_latents_impl(
-            self,
-            *,
-            local_obs: torch.Tensor,
-            global_obs: torch.Tensor,
-            actions: torch.Tensor,
-            hidden_local_vars: torch.Tensor | None,
-            hidden_global_vars: torch.Tensor | None,
-            agent_mask: torch.Tensor | None,
-            scenario_ids: torch.Tensor | None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
         (
             critic_local_inputs,
@@ -966,37 +898,6 @@ class TMASACPolicy(BaseSACPolicy):
             hidden_global_vars: torch.Tensor | None = None,
             agent_mask: torch.Tensor | None = None,
             scenario_ids: torch.Tensor | None = None,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        if self._compiled_target_q_values is not None:
-            return self._compiled_target_q_values(
-                local_obs=local_obs,
-                global_obs=global_obs,
-                actions=actions,
-                hidden_local_vars=hidden_local_vars,
-                hidden_global_vars=hidden_global_vars,
-                agent_mask=agent_mask,
-                scenario_ids=scenario_ids,
-            )
-        return self._target_q_values_impl(
-            local_obs=local_obs,
-            global_obs=global_obs,
-            actions=actions,
-            hidden_local_vars=hidden_local_vars,
-            hidden_global_vars=hidden_global_vars,
-            agent_mask=agent_mask,
-            scenario_ids=scenario_ids,
-        )
-
-    def _target_q_values_impl(
-            self,
-            *,
-            local_obs: torch.Tensor,
-            global_obs: torch.Tensor,
-            actions: torch.Tensor,
-            hidden_local_vars: torch.Tensor | None,
-            hidden_global_vars: torch.Tensor | None,
-            agent_mask: torch.Tensor | None,
-            scenario_ids: torch.Tensor | None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         (
             critic_local_inputs,
@@ -1542,15 +1443,8 @@ class TMASACPolicy(BaseSACPolicy):
                 )
             elif self.actor_head.supports_standalone_compile:
                 self.actor_head = self._compile_module(self.actor_head)
-        self._compiled_q_values = self._compile_callable(self._q_values_impl, fullgraph=False)
-        self._compiled_q_values_with_nop_latents = self._compile_callable(
-            self._q_values_with_nop_latents_impl,
-            fullgraph=False,
-        )
-        self._compiled_target_q_values = self._compile_callable(
-            self._target_q_values_impl,
-            fullgraph=False,
-        )
+        self.critic = self._compile_module(self.critic)
+        self.critic_target = self._compile_module(self.critic_target)
 
     def _compile_callable(
             self,

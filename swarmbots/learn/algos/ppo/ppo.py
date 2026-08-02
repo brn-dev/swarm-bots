@@ -502,10 +502,16 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
         )
         ep_time = compute_summary_statistics([ep['t'] for ep in episode_infos])
         ep_progress_rew = compute_summary_statistics(
-            [ep['progress_reward'] for ep in episode_infos], find_min=True, find_max=True, make_histogram=20
+            [ep['progress_reward'] for ep in episode_infos if 'progress_reward' in ep],
+            find_min=True,
+            find_max=True,
+            make_histogram=20,
         )
         ep_guidance_rew = compute_summary_statistics(
-            [ep['guidance_reward'] for ep in episode_infos], find_min=True, find_max=True, make_histogram=20
+            [ep['guidance_reward'] for ep in episode_infos if 'guidance_reward' in ep],
+            find_min=True,
+            find_max=True,
+            make_histogram=20,
         )
 
         if update_ema:

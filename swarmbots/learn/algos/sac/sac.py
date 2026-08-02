@@ -141,28 +141,6 @@ class SAC(BaseAlgorithm):
             compile_operations=self.sac_compile_tensor_operations,
             compile_mode=self.sac_compile_mode,
         )
-        self._target_forward_phase = self._target_forward_phase_impl
-        self._critic_forward_phase = self._critic_forward_phase_impl
-        self._actor_forward_phase = self._actor_forward_phase_impl
-        if self.sac_compile_tensor_operations and not self.supports_recurrent_training:
-            self._target_forward_phase = torch.compile(
-                self._target_forward_phase_impl,
-                mode=self.sac_compile_mode,
-                fullgraph=False,
-                dynamic=False,
-            )
-            self._critic_forward_phase = torch.compile(
-                self._critic_forward_phase_impl,
-                mode=self.sac_compile_mode,
-                fullgraph=False,
-                dynamic=False,
-            )
-            self._actor_forward_phase = torch.compile(
-                self._actor_forward_phase_impl,
-                mode=self.sac_compile_mode,
-                fullgraph=False,
-                dynamic=False,
-            )
         self.metrics_action_splitters = metrics_action_splitters
         self.agent_action_dim = int(env.action_space.total_agent_action_dim)
         self._rollout_state: OffPolicyRolloutState | None = None
@@ -634,7 +612,7 @@ class SAC(BaseAlgorithm):
             for metrics, actor_grad_norm, critic_grad_norm in mutable_results
         ]
 
-    def _target_forward_phase_impl(
+    def _target_forward_phase(
             self,
             batch: OffPolicyReplayBatch,
             next_local_obs: torch.Tensor,
@@ -683,7 +661,7 @@ class SAC(BaseAlgorithm):
             self.gamma,
         )
 
-    def _critic_forward_phase_impl(
+    def _critic_forward_phase(
             self,
             batch: OffPolicyReplayBatch,
             target_q: torch.Tensor,
@@ -700,7 +678,7 @@ class SAC(BaseAlgorithm):
         critic_loss = self._tensor_operations.critic_loss(current_q1, current_q2, target_q)
         return current_q1, current_q2, critic_nop_latents, critic_loss
 
-    def _actor_forward_phase_impl(
+    def _actor_forward_phase(
             self,
             batch: OffPolicyReplayBatch,
             actions: torch.Tensor,

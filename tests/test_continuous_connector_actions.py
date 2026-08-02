@@ -6,9 +6,13 @@ import torch
 from gymnasium import spaces
 from gymnasium.vector import AutoresetMode, SyncVectorEnv
 
-from swarmbots.learn.env_wrappers.learn_wrappers.swarm_bots_learn_env_wrapper import SwarmBotsLearnEnvWrapper
+from swarmbots.learn.env_wrappers.learn_wrappers.swarm_bots_learn_env_wrapper import (
+    SwarmBotsLearnEnvWrapper,
+)
 from swarmbots.learn.testing_env import TestingSwarmBotsEnv
-from swarmbots.mj_env.scenarios.scenario_presets import default_move_to as default_mj_move_to
+from swarmbots.mj_env.scenarios.scenario_presets import (
+    default_move_to as default_mj_move_to,
+)
 from swarmbots.mj_env.swarm.swarm_config import SwarmConfig
 from swarmbots.mj_env.swarm.swarm_connections import SwarmConnections
 from swarmbots.mj_env.swarm.unit_config import UNIT_CONFIG_TETRAHEDRON_ZX
@@ -18,7 +22,9 @@ from swarmbots.mjw_env.mjw_env_tensor_ops import (
     MJWObservationLayout,
     build_mjw_env_tensor_operations,
 )
-from swarmbots.mjw_env.scenarios.mjw_scenario_presets import default_move_to as default_mjw_move_to
+from swarmbots.mjw_env.scenarios.mjw_scenario_presets import (
+    default_move_to as default_mjw_move_to,
+)
 from swarmbots.mjw_env.mjw_swarm_bots_vector_env import MJWSwarmBotsVectorEnv
 
 
@@ -33,7 +39,9 @@ def _make_connections() -> SwarmConnections:
     return connections
 
 
-def _make_action_tensor_operations(*, continuous_connectors: bool) -> MJWEnvTensorOperations:
+def _make_action_tensor_operations(
+    *, continuous_connectors: bool
+) -> MJWEnvTensorOperations:
     return build_mjw_env_tensor_operations(
         observation_layout=MJWObservationLayout(
             num_envs=1,
@@ -113,10 +121,12 @@ class ContinuousConnectorActionTests(unittest.TestCase):
         env = SwarmBotsLearnEnvWrapper(vector_env)
 
         self.assertIsInstance(env.action_space["connectors"], spaces.Box)
-        action_dict = env._actions_to_env_dict(torch.tensor([[[0.25, -0.75], [0.5, 0.125]]]))
+        action_dict = env._actions_to_env(torch.tensor([[[0.25, -0.75], [0.5, 0.125]]]))
 
         self.assertEqual(action_dict["connectors"].dtype, np.float32)
-        np.testing.assert_allclose(action_dict["connectors"], np.array([[[-0.75], [0.125]]], dtype=np.float32))
+        np.testing.assert_allclose(
+            action_dict["connectors"], np.array([[[-0.75], [0.125]]], dtype=np.float32)
+        )
 
     def test_learn_wrapper_default_connector_actions_stay_binary(self) -> None:
         vector_env = SyncVectorEnv(
@@ -134,7 +144,7 @@ class ContinuousConnectorActionTests(unittest.TestCase):
         env = SwarmBotsLearnEnvWrapper(vector_env)
 
         self.assertIsInstance(env.action_space["connectors"], spaces.MultiBinary)
-        action_dict = env._actions_to_env_dict(torch.tensor([[[0.25, 0.5], [0.5, 0.75]]]))
+        action_dict = env._actions_to_env(torch.tensor([[[0.25, 0.5], [0.5, 0.75]]]))
 
         self.assertEqual(action_dict["connectors"].dtype, np.bool_)
         np.testing.assert_array_equal(
@@ -183,10 +193,18 @@ class ContinuousConnectorActionTests(unittest.TestCase):
         env._ctrl_flat_indices = torch.empty((0,), dtype=torch.long)
         env.scenario = SimpleNamespace(actuator_strength=1.0)
         env._continuous_connector_actions = False
-        env._tensor_operations = _make_action_tensor_operations(continuous_connectors=False)
-        env._try_connect = lambda connector_action: calls.append(("connect", connector_action.clone()))
-        env._disconnect = lambda connector_action: calls.append(("disconnect", connector_action.clone()))
-        env._disconnect_continuous = lambda connector_action: calls.append(("continuous", connector_action.clone()))
+        env._tensor_operations = _make_action_tensor_operations(
+            continuous_connectors=False
+        )
+        env._try_connect = lambda connector_action: calls.append(
+            ("connect", connector_action.clone())
+        )
+        env._disconnect = lambda connector_action: calls.append(
+            ("disconnect", connector_action.clone())
+        )
+        env._disconnect_continuous = lambda connector_action: calls.append(
+            ("continuous", connector_action.clone())
+        )
 
         MJWSwarmBotsVectorEnv._apply_actions(
             env,
@@ -197,7 +215,9 @@ class ContinuousConnectorActionTests(unittest.TestCase):
         self.assertEqual([name for name, _action in calls], ["connect", "disconnect"])
         for _name, connector_action in calls:
             self.assertEqual(connector_action.dtype, torch.bool)
-            torch.testing.assert_close(connector_action, torch.tensor([[[True], [False]]]))
+            torch.testing.assert_close(
+                connector_action, torch.tensor([[[True], [False]]])
+            )
 
     def test_mjw_continuous_disconnect_updates_potential_and_disconnects(self) -> None:
         env = SimpleNamespace()
@@ -217,14 +237,24 @@ class ContinuousConnectorActionTests(unittest.TestCase):
         env._eq_indices = torch.zeros((2, 1, 2, 1, 1), dtype=torch.long)
         env._eq_active = torch.ones((1, 1), dtype=torch.int32)
 
-        MJWSwarmBotsVectorEnv._disconnect_continuous(env, torch.tensor([[[-0.25], [1.0]]], dtype=torch.float32))
-        torch.testing.assert_close(env.disconnect_potentials, torch.full((1, 2, 1), 0.25))
+        MJWSwarmBotsVectorEnv._disconnect_continuous(
+            env, torch.tensor([[[-0.25], [1.0]]], dtype=torch.float32)
+        )
+        torch.testing.assert_close(
+            env.disconnect_potentials, torch.full((1, 2, 1), 0.25)
+        )
         self.assertEqual(int(env._eq_active[0, 0].item()), 1)
 
-        MJWSwarmBotsVectorEnv._disconnect_continuous(env, torch.tensor([[[-1.0], [-1.0]]], dtype=torch.float32))
+        MJWSwarmBotsVectorEnv._disconnect_continuous(
+            env, torch.tensor([[[-1.0], [-1.0]]], dtype=torch.float32)
+        )
         self.assertEqual(int(env._eq_active[0, 0].item()), 0)
-        self.assertTrue(torch.equal(env.partner_unit, torch.full_like(env.partner_unit, -1)))
-        torch.testing.assert_close(env.disconnect_potentials, torch.zeros_like(env.disconnect_potentials))
+        self.assertTrue(
+            torch.equal(env.partner_unit, torch.full_like(env.partner_unit, -1))
+        )
+        torch.testing.assert_close(
+            env.disconnect_potentials, torch.zeros_like(env.disconnect_potentials)
+        )
 
 
 if __name__ == "__main__":

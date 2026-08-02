@@ -599,6 +599,29 @@ class SameStepPipelineTests(unittest.TestCase):
         finally:
             env.close()
 
+    def test_progress_guidance_counts_first_transition_after_autoreset(self) -> None:
+        vector_env = SyncVectorEnv(
+            [
+                lambda: _RewardInfoRolloutEnv(
+                    env_id=1,
+                    done_steps=(1,),
+                    done_mode="truncate",
+                )
+            ],
+            autoreset_mode=AutoresetMode.SAME_STEP,
+        )
+        env = ProgressGuidanceEpisodeStatsWrapper(vector_env)
+        try:
+            env.reset()
+            env.step(env.action_space.sample())
+            _, _, _, truncations, infos = env.step(env.action_space.sample())
+
+            self.assertTrue(bool(truncations[0]))
+            self.assertEqual(float(infos["episode"]["progress_reward"][0]), 2.0)
+            self.assertEqual(float(infos["episode"]["guidance_reward"][0]), 11.0)
+        finally:
+            env.close()
+
     def test_torch_progress_guidance_accepts_torch_info_values(self) -> None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         env = TorchProgressGuidanceEpisodeStatsWrapper(
@@ -643,6 +666,33 @@ class SameStepPipelineTests(unittest.TestCase):
             self.assertTrue(torch.allclose(_to_cpu(episode.final_value), torch.tensor(2.0)))
             self.assertTrue(bool(rollout_state.episode_start_mask[0].item()))
             self.assertTrue(torch.all(_to_cpu(rollout_state.obs["local_obs"][0, :, 0]) == 0.0))
+        finally:
+            env.close()
+
+    def test_same_step_wrappers_count_first_transition_after_autoreset(self) -> None:
+        env = _make_full_non_shuffle_wrapper_chain(
+            (1, (1,), "truncate"),
+        )
+        try:
+            observations, _ = env.reset()
+            actions = _transition_actions_from_local(observations, scale=0.01)
+            _, _, _, truncations, first_infos = env.step(actions)
+            _, _, _, next_truncations, second_infos = env.step(actions)
+
+            self.assertTrue(bool(truncations[0].item()))
+            self.assertTrue(bool(next_truncations[0].item()))
+            self.assertEqual(int(first_infos["episode"]["l"][0].item()), 1)
+            self.assertEqual(int(second_infos["episode"]["l"][0].item()), 1)
+            self.assertEqual(float(second_infos["episode"]["r"][0].item()), 11.0)
+            self.assertEqual(
+                float(second_infos["episode"]["progress_reward"][0].item()),
+                2.0,
+            )
+            self.assertEqual(
+                float(second_infos["episode"]["guidance_reward"][0].item()),
+                11.0,
+            )
+            self.assertEqual(float(env.returns[0].item()), 11.0)
         finally:
             env.close()
 
