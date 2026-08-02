@@ -673,7 +673,7 @@ class SACTests(unittest.TestCase):
                     sac_compile_mode="reduce-overhead",
                 )
 
-            self.assertEqual(compile_mock.call_count, 12)
+            self.assertEqual(compile_mock.call_count, 9)
             compiled_names = [call.args[0].__name__ for call in compile_mock.call_args_list]
             self.assertEqual(compiled_names.count("optimizer_step"), 3)
             self.assertEqual(
@@ -685,18 +685,10 @@ class SACTests(unittest.TestCase):
                     "_bellman_target",
                     "_critic_loss",
                     "_actor_loss",
-                    "_target_forward_phase_impl",
-                    "_critic_forward_phase_impl",
-                    "_actor_forward_phase_impl",
                 },
             )
             for call in compile_mock.call_args_list:
-                expected_fullgraph = call.args[0].__name__ not in {
-                    "optimizer_step",
-                    "_target_forward_phase_impl",
-                    "_critic_forward_phase_impl",
-                    "_actor_forward_phase_impl",
-                }
+                expected_fullgraph = call.args[0].__name__ != "optimizer_step"
                 self.assertEqual(call.kwargs, {
                     "mode": "reduce-overhead",
                     "fullgraph": expected_fullgraph,

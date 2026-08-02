@@ -5,7 +5,10 @@ from typing import Any
 import numpy as np
 import torch
 
-from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper, TorchObs
+from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import (
+    BaseLearnEnvWrapper,
+    TorchObs,
+)
 from swarmbots.learn.tensor_conversion import to_torch_tensor
 
 
@@ -37,7 +40,13 @@ class TorchEnvWrapper(BaseLearnEnvWrapper):
         actions: torch.Tensor,
     ) -> tuple[TorchObs, torch.Tensor, torch.Tensor, torch.Tensor, dict[str, Any]]:
         obs, rewards, terminations, truncations, infos = self.env.step(actions)
-        return self.observations(obs), self.rewards(rewards), terminations, truncations, self._transform_infos(infos)
+        return (
+            self.observations(obs),
+            self.rewards(rewards),
+            terminations,
+            truncations,
+            self._transform_infos(infos),
+        )
 
     def observations(self, observations: TorchObs) -> TorchObs:
         return observations
@@ -49,14 +58,16 @@ class TorchEnvWrapper(BaseLearnEnvWrapper):
         self.env.set_device(device)
         self.device = self.env.device
 
-    def _actions_to_env_dict(self, actions: torch.Tensor) -> dict[str, Any]:
-        return self.env._actions_to_env_dict(actions)
+    def _actions_to_env(self, actions: torch.Tensor) -> Any:
+        return self.env._actions_to_env(actions)
 
     def _transform_infos(self, infos: dict[str, Any]) -> dict[str, Any]:
         if "final_obs" not in infos or "_final_obs" not in infos:
             return infos
 
-        final_obs_mask = to_torch_tensor(infos["_final_obs"], device=self.device, dtype=torch.bool).reshape(self._n_envs)
+        final_obs_mask = to_torch_tensor(
+            infos["_final_obs"], device=self.device, dtype=torch.bool
+        ).reshape(self._n_envs)
         if not torch.any(final_obs_mask):
             return infos
 

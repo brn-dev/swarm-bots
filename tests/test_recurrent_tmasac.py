@@ -1405,13 +1405,8 @@ class RecurrentTMASACTests(unittest.TestCase):
         compiled_modules = {call.args[0] for call in compile_mock.call_args_list}
         self.assertIn(policy.actor_encoder, compiled_modules)
         self.assertNotIn(policy.actor_head, compiled_modules)
-        compiled_entry_points = {
-            getattr(call.args[0], "__name__", "")
-            for call in compile_mock.call_args_list
-        }
-        self.assertIn("_q_values_impl", compiled_entry_points)
-        self.assertIn("_q_values_with_nop_latents_impl", compiled_entry_points)
-        self.assertIn("_target_q_values_impl", compiled_entry_points)
+        self.assertIn(policy.critic, compiled_modules)
+        self.assertIn(policy.critic_target, compiled_modules)
         self.assertTrue(policy.actor_end_to_end_compilation_enabled)
         self.assertEqual(policy.compiled_actor_encoder_sequence_lengths, frozenset({2}))
         self.assertEqual(policy.compiled_actor_sequence_lengths, frozenset({1}))

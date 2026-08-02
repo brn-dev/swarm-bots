@@ -55,14 +55,13 @@ class TorchProgressGuidanceEpisodeStatsWrapper(TorchEnvWrapper):
 
         self.episode_progress_rewards[self.prev_dones] = 0.0
         self.episode_guidance_rewards[self.prev_dones] = 0.0
-        active_mask = ~self.prev_dones
 
         progress_values = self._extract_step_values(infos, self.progress_key)
         guidance_values = self._extract_step_values(infos, self.guidance_key)
         if progress_values is not None:
-            self.episode_progress_rewards[active_mask] += progress_values[active_mask]
+            self.episode_progress_rewards += progress_values
         if guidance_values is not None:
-            self.episode_guidance_rewards[active_mask] += guidance_values[active_mask]
+            self.episode_guidance_rewards += guidance_values
 
         dones = torch.logical_or(terminations, truncations)
         self.prev_dones = dones

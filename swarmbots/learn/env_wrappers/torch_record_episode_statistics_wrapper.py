@@ -3,7 +3,6 @@ from __future__ import annotations
 import time
 from typing import Any
 
-import numpy as np
 import torch
 
 from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper, TorchObs
@@ -48,9 +47,8 @@ class TorchRecordEpisodeStatisticsWrapper(TorchEnvWrapper):
             self.episode_lengths[self.prev_dones] = 0
             self.episode_start_times[self.prev_dones] = now
 
-        active_mask = ~self.prev_dones
-        self.episode_returns[active_mask] += rewards[active_mask].to(dtype=self.episode_returns.dtype)
-        self.episode_lengths[active_mask] += 1
+        self.episode_returns += rewards.to(dtype=self.episode_returns.dtype)
+        self.episode_lengths += 1
 
         dones = torch.logical_or(terminations, truncations)
         self.prev_dones = dones

@@ -1073,11 +1073,9 @@ class TMASACPolicyTests(unittest.TestCase):
                     self.assertIsNone(eager_value)
                 else:
                     torch.testing.assert_close(compiled_value, eager_value)
-        self.assertTrue({
-            "_q_values_impl",
-            "_q_values_with_nop_latents_impl",
-            "_target_q_values_impl",
-        }.issubset(compiled_function_names))
+        self.assertNotIn("_q_values_impl", compiled_function_names)
+        self.assertNotIn("_q_values_with_nop_latents_impl", compiled_function_names)
+        self.assertNotIn("_target_q_values_impl", compiled_function_names)
 
     def _assert_full_graph_actor_matches_eager(
             self,

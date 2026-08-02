@@ -50,11 +50,10 @@ class TorchNormalizeRewardWrapper(TorchEnvWrapper):
     ) -> tuple[TorchObs, torch.Tensor, torch.Tensor, torch.Tensor, dict[str, Any]]:
         observations, rewards, terminations, truncations, infos = self.env.step(actions)
         self.returns[self.prev_dones] = 0.0
-        active_mask = ~self.prev_dones
-        self.returns[active_mask] = self.gamma * self.returns[active_mask] + rewards[active_mask].to(torch.float64)
+        self.returns.mul_(self.gamma).add_(rewards.to(torch.float64))
 
         if self._update_running_mean:
-            self.return_rms.update(self.returns[active_mask])
+            self.return_rms.update(self.returns)
 
         rewards = rewards / torch.sqrt(self.return_rms.var.to(device=rewards.device, dtype=rewards.dtype) + self.epsilon)
         self.prev_dones = torch.logical_or(terminations, truncations)
