@@ -15,7 +15,7 @@ from swarmbots.mj_env.float_or_dist_params import UniformDistParams
 
 EXPERIMENT_RUN_NAME = "mjw_bridge_po_tmasac"
 SCENARIO_KWARGS: dict[str, object] = {
-    "bridge_x": UniformDistParams(low=-2.0, high=2.0),
+    "bridge_x": UniformDistParams(low=-2.5, high=2.5),
     "continuous_connector_actions": True,
 }
 
