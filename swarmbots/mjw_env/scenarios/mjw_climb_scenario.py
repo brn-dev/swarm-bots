@@ -59,7 +59,7 @@ class MJWClimbScenario(BaseMJWScenario):
     cuboid_center_y: float
     horizontal_goal_radius: float
     height_goal_radius: float
-    continuous_connector_actions: bool = False
+    continuous_connector_actions: bool = True
     goal_radius: float | None = None
     goal_height_offset: float | None = None
     goal_success_reward: float = 5.0

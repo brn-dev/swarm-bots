@@ -56,7 +56,7 @@ class MJWWallScenario(BaseMJWScenario):
     wall_pass_reward_weight: float
     wall_pass_thresholds: list[float]
     wall_success_threshold: float
-    continuous_connector_actions: bool = False
+    continuous_connector_actions: bool = True
     wall_pass_reward_skew: float = 0.0
     wall_success_reward: float = 0.0
     wall_climb_reward_weight: float = 0.0

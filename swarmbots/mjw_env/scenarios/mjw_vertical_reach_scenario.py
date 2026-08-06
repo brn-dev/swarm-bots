@@ -65,7 +65,7 @@ class MJWVerticalReachScenario(BaseMJWScenario):
     reach_column_depth: float
     reach_column_reward_weight: float
     horizontal_goal_at_wall_contact: bool = True
-    continuous_connector_actions: bool = False
+    continuous_connector_actions: bool = True
     goal_success_reward: float = 5.0
     visualize_goal: bool = True
     seed: int | None = None

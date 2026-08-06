@@ -26,7 +26,7 @@ COMMON_SCENARIO_KWARGS: dict[str, object] = {
     "connection_dist_threshold": 0.1,
     "connection_angle_threshold": -0.5,
     "disconnect_potential_threshold": 5.0,
-    "continuous_connector_actions": False,
+    "continuous_connector_actions": True,
     "progress_reward_weight": 1.0,
     "guidance_reward_weight": 1.0,
     "units_without_connections_reward_weight": -1e-5,

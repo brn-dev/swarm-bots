@@ -65,7 +65,7 @@ class MJWBridgeScenario(BaseMJWScenario):
     platform_height: float
     fall_z_threshold: float
     fell_off_bridge_reward: float
-    continuous_connector_actions: bool = False
+    continuous_connector_actions: bool = True
     seed: int | None = None
     compile_reward_kernel: bool = False
     reward_kernel_compile_mode: str = "default"

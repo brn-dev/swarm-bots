@@ -108,7 +108,10 @@ def make_move_to_vector_env(
     device: torch.device,
 ) -> VectorEnv:
     vector_env = MJWSwarmBotsVectorEnv(
-        scenario=default_move_to(visualize_goal=True),
+        scenario=default_move_to(
+            visualize_goal=True,
+            continuous_connector_actions=False,
+        ),
         num_envs=num_envs,
         episode_length=episode_length,
         first_episode_lengths=first_episode_lengths,
@@ -130,7 +133,7 @@ def make_payload_vector_env(
     device: torch.device,
 ) -> MJWSwarmBotsVectorEnv:
     return MJWSwarmBotsVectorEnv(
-        scenario=default_payload_plane(),
+        scenario=default_payload_plane(continuous_connector_actions=False),
         num_envs=num_envs,
         episode_length=episode_length,
         first_episode_lengths=first_episode_lengths,

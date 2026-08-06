@@ -63,7 +63,7 @@ class MJWMultiPayloadGoalScenario:
     goal_radius: float
     success_reward: float
     visualize_goal: bool = True
-    continuous_connector_actions: bool = False
+    continuous_connector_actions: bool = True
     seed: int | None = None
     compile_reward_kernel: bool = False
     reward_kernel_compile_mode: str = "default"

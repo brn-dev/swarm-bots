@@ -50,7 +50,7 @@ class ClimbScenario(BaseScenario):
         swarm_start_x: FloatOrDistParams = 0.0,
         swarm_start_y: FloatOrDistParams = 0.0,
         randomize_initial_swarm_z_rotation: bool = False,
-        continuous_connector_actions: bool = False,
+        continuous_connector_actions: bool = True,
         seed: int | None = None,
     ) -> None:
         self.plane_size = float(plane_size)
