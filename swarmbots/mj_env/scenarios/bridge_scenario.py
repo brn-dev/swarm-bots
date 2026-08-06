@@ -31,6 +31,8 @@ class BridgeScenario(BaseScenario):
             platform_length: float = 4.0,
             platform_height: float = 0.2,
             fall_z_threshold: float = -1.0,
+            success_margin: float = 0.5,
+            success_reward: float = 10.0,
             fell_off_bridge_reward: float = -1.0,
             actuator_strength: float = 8.0,
             connection_dist_threshold: float = 0.1,
@@ -48,7 +50,7 @@ class BridgeScenario(BaseScenario):
             reset_settle_time: int = 0,
             reset_settle_timestep_scale: float = 1.0,
             swarm_start_x: FloatOrDistParams = 0.0,
-            swarm_start_y: FloatOrDistParams = 0.0,
+            swarm_start_y: FloatOrDistParams = 1.0,
             randomize_initial_swarm_z_rotation: bool = False,
             continuous_connector_actions: bool = True,
             seed: int | None = None,
@@ -59,6 +61,8 @@ class BridgeScenario(BaseScenario):
         self.platform_length = float(platform_length)
         self.platform_height = float(platform_height)
         self.fall_z_threshold = float(fall_z_threshold)
+        self.success_margin = float(success_margin)
+        self.success_reward = float(success_reward)
         if self.street_width <= 0:
             raise ValueError(f"Expected street_width > 0, got {self.street_width}")
         if self.bridge_width <= 0:
@@ -71,6 +75,8 @@ class BridgeScenario(BaseScenario):
             raise ValueError(f"Expected platform_length > 0, got {self.platform_length}")
         if self.platform_height <= 0:
             raise ValueError(f"Expected platform_height > 0, got {self.platform_height}")
+        if self.success_margin < 0:
+            raise ValueError(f"Expected success_margin >= 0, got {self.success_margin}")
 
         self.side_wall_x = self.street_width / 2.0
         self.bridge_x_param = bridge_x
@@ -84,6 +90,7 @@ class BridgeScenario(BaseScenario):
         self.bridge_center_y = (self.platform_length / 2.0) + (self.bridge_length / 2.0)
         self.bridge_y_min = self.platform_length / 2.0
         self.bridge_y_max = self.bridge_y_min + self.bridge_length
+        self.success_y = self.bridge_y_max + self.success_margin
 
         self.fell_off_bridge_reward = fell_off_bridge_reward
 
@@ -144,6 +151,10 @@ class BridgeScenario(BaseScenario):
             "platform_length": self.platform_length,
             "platform_height": self.platform_height,
             "fall_z_threshold": self.fall_z_threshold,
+            "success_margin": self.success_margin,
+            "success_y": self.success_y,
+            "success_reward": self.success_reward,
+            "fell_off_bridge_reward": self.fell_off_bridge_reward,
         })
         return settings
 
@@ -220,6 +231,7 @@ class BridgeScenario(BaseScenario):
         state["progress"] = self._compute_progress_baseline(data, state.get("units_active_mask"))
         state["hidden_global_vars"] = np.array([self.bridge_x], dtype=float)
         state["fell_off_bridge"] = False
+        state["success"] = False
 
         return state, connections
 
@@ -255,17 +267,35 @@ class BridgeScenario(BaseScenario):
             state: dict,
             connections: SwarmConnections,
     ) -> tuple[float, bool]:
-        reward, terminated = super().evaluate_step(action, model, data, state, connections)
-        if terminated:
-            return reward, True
-
+        reward, _ = super().evaluate_step(action, model, data, state, connections)
         fell_off_bridge = self._is_any_body_below_threshold(data, state.get("units_active_mask"))
-        state["fell_off_bridge"] = fell_off_bridge
-        if fell_off_bridge:
-            reward += self.fell_off_bridge_reward
-            return reward, True
+        success = not fell_off_bridge and self._compute_success(data, state.get("units_active_mask"))
+        fell_off_bridge_reward = self.fell_off_bridge_reward if fell_off_bridge else 0.0
+        success_reward = self.success_reward if success else 0.0
+        weighted_success_reward = success_reward * self.reward_weights["progress_reward_weight"]
 
-        return reward, False
+        state["fell_off_bridge"] = fell_off_bridge
+        state["fell_off_bridge_reward"] = fell_off_bridge_reward
+        state["success"] = success
+        state["success_reward"] = success_reward
+        state["weighted_success_reward"] = weighted_success_reward
+        state["progress_reward"] += success_reward
+        state["weighted_progress_reward"] += weighted_success_reward
+        state["reward_terms"]["success"] = weighted_success_reward
+        state["reward_terms"]["fall"] = fell_off_bridge_reward
+
+        return reward + weighted_success_reward + fell_off_bridge_reward, success or fell_off_bridge
+
+    def _compute_success(
+            self,
+            data: mujoco.MjData,
+            units_active_mask: np.ndarray | None,
+    ) -> bool:
+        units_y = data.qpos[self._qpos_indices[:, 1]]
+        if units_active_mask is None:
+            return bool((units_y > self.success_y).all())
+        active_mask = np.asarray(units_active_mask, dtype=bool)
+        return bool(active_mask.any() and (units_y[active_mask] > self.success_y).all())
 
     def _is_any_body_below_threshold(
             self,

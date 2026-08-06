@@ -64,6 +64,8 @@ class MJWBridgeScenario(BaseMJWScenario):
     platform_length: float
     platform_height: float
     fall_z_threshold: float
+    success_margin: float
+    success_reward: float
     fell_off_bridge_reward: float
     continuous_connector_actions: bool = True
     seed: int | None = None
@@ -84,6 +86,8 @@ class MJWBridgeScenario(BaseMJWScenario):
         self.platform_length = float(self.platform_length)
         self.platform_height = float(self.platform_height)
         self.fall_z_threshold = float(self.fall_z_threshold)
+        self.success_margin = float(self.success_margin)
+        self.success_reward = float(self.success_reward)
         self.fell_off_bridge_reward = float(self.fell_off_bridge_reward)
         self.potential_reward_discount_factor = float(self.potential_reward_discount_factor)
         if self.street_width <= 0.0:
@@ -98,6 +102,8 @@ class MJWBridgeScenario(BaseMJWScenario):
             raise ValueError(f"Expected platform_length > 0, got {self.platform_length}")
         if self.platform_height <= 0.0:
             raise ValueError(f"Expected platform_height > 0, got {self.platform_height}")
+        if self.success_margin < 0.0:
+            raise ValueError(f"Expected success_margin >= 0, got {self.success_margin}")
 
         self.side_wall_x = self.street_width / 2.0
         self.platform1_min_y = -50.0
@@ -106,6 +112,8 @@ class MJWBridgeScenario(BaseMJWScenario):
         self.platform1_half_length = (self.platform1_max_y - self.platform1_min_y) / 2.0
         self.platform2_center_y = self.platform_length + self.bridge_length
         self.bridge_center_y = (self.platform_length / 2.0) + (self.bridge_length / 2.0)
+        self.bridge_y_max = (self.platform_length / 2.0) + self.bridge_length
+        self.success_y = self.bridge_y_max + self.success_margin
         self.inactive_area_location = (-self.street_width * 1.5, 0.0, 0.1)
         self._validate_bridge_x()
 
@@ -155,6 +163,9 @@ class MJWBridgeScenario(BaseMJWScenario):
             "platform_length": self.platform_length,
             "platform_height": self.platform_height,
             "fall_z_threshold": self.fall_z_threshold,
+            "success_margin": self.success_margin,
+            "success_y": self.success_y,
+            "success_reward": self.success_reward,
             "fell_off_bridge_reward": self.fell_off_bridge_reward,
             "compile_reward_kernel": self.compile_reward_kernel,
             "reward_kernel_compile_mode": self.reward_kernel_compile_mode,
