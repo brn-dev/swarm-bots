@@ -105,10 +105,12 @@ BRIDGE_SCENARIO_KWARGS: dict[str, object] = {
     "bridge_x": 0.0,
     "platform_length": 4.0,
     "platform_height": 0.2,
-    "fall_z_threshold": -1.0,
+    "fall_z_threshold": -1.5,
+    "success_margin": 0.5,
+    "success_reward": 10.0,
     "swarm_start_x": 0.0,
-    "swarm_start_y": 0.0,
-    "fell_off_bridge_reward": -2.0,
+    "swarm_start_y": 0.5,
+    "fell_off_bridge_reward": -5.0,
 }
 
 FIND_OPENING_SCENARIO_KWARGS: dict[str, object] = {

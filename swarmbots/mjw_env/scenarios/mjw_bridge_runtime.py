@@ -20,7 +20,10 @@ from swarmbots.mjw_env.scenarios.base_mjw_scenario import (
     MJWRuntimeBindings,
     MJWStepResult,
 )
-from swarmbots.mjw_env.scenarios.mjw_bridge_scenario import MJWBridgeRuntimeMetadata
+from swarmbots.mjw_env.scenarios.mjw_bridge_scenario import (
+    MJWBridgeRuntimeMetadata,
+    MJWBridgeScenario,
+)
 
 
 @dataclass(slots=True)
@@ -51,11 +54,22 @@ def _compute_bridge_reward_kernel(
     progress: torch.Tensor,
     fall_z_threshold: float,
     fell_off_bridge_reward_value: float,
+    success_y: float,
+    success_reward_value: float,
     progress_reward_weight: float,
     potential_reward_discount_factor: float,
     units_without_connections_reward_weight: float,
     guidance_reward_weight: float,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+) -> tuple[
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+]:
     safe_unit_y = torch.where(stable_mask.unsqueeze(1), unit_y, torch.zeros_like(unit_y))
     new_progress = masked_mean(safe_unit_y, units_active_mask, dim=1)
     progress_reward = (
@@ -70,9 +84,24 @@ def _compute_bridge_reward_kernel(
         torch.zeros_like(progress_reward),
     )
 
+    active_units_count = units_active_mask.sum(dim=-1)
+    active_units_success = torch.where(
+        units_active_mask,
+        unit_y > float(success_y),
+        torch.ones_like(units_active_mask),
+    )
+    success = (
+        stable_mask
+        & ~fell_off_bridge
+        & (active_units_count > 0)
+        & active_units_success.all(dim=-1)
+    )
+    success_reward = success.to(dtype=progress_reward.dtype) * (
+        float(success_reward_value) * float(progress_reward_weight)
+    )
+
     connection_mask = partner_unit >= 0
     units_without_connections = (~connection_mask).all(dim=-1) & units_active_mask
-    active_units_count = units_active_mask.sum(dim=-1)
     guidance_reward = torch.where(
         active_units_count > 0,
         (
@@ -87,6 +116,8 @@ def _compute_bridge_reward_kernel(
         new_progress,
         progress_reward,
         guidance_reward,
+        success,
+        success_reward,
         fell_off_bridge,
         fell_off_bridge_reward,
         active_below_threshold,
@@ -149,7 +180,16 @@ class BridgeMJWScenarioRuntime(BaseMJWScenarioRuntime):
         )
         self._reward_kernel: Callable[
             ...,
-            tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor],
+            tuple[
+                torch.Tensor,
+                torch.Tensor,
+                torch.Tensor,
+                torch.Tensor,
+                torch.Tensor,
+                torch.Tensor,
+                torch.Tensor,
+                torch.Tensor,
+            ],
         ] = _compute_bridge_reward_kernel
         if scenario.compile_reward_kernel:
             if not hasattr(torch, "compile"):
@@ -241,6 +281,8 @@ class BridgeMJWScenarioRuntime(BaseMJWScenarioRuntime):
             new_progress,
             progress_reward,
             guidance_reward,
+            success,
+            success_reward,
             fell_off_bridge,
             fell_off_bridge_reward,
             _active_below_threshold,
@@ -253,6 +295,8 @@ class BridgeMJWScenarioRuntime(BaseMJWScenarioRuntime):
             self.progress,
             float(self.scenario.fall_z_threshold),
             float(self.scenario.fell_off_bridge_reward),
+            float(self.scenario.success_y),
+            float(self.scenario.success_reward),
             float(self.scenario.progress_reward_weight),
             float(self.scenario.potential_reward_discount_factor),
             float(self.scenario.units_without_connections_reward_weight),
@@ -260,19 +304,22 @@ class BridgeMJWScenarioRuntime(BaseMJWScenarioRuntime):
         )
         self.progress[stable_mask] = new_progress[stable_mask]
         return MJWStepResult(
-            reward=progress_reward + guidance_reward + fell_off_bridge_reward,
+            reward=progress_reward + success_reward + guidance_reward + fell_off_bridge_reward,
             info={
                 "progress_reward": progress_reward,
                 "guidance_reward": guidance_reward,
+                "success": success,
+                "success_reward": success_reward,
                 "fell_off_bridge": fell_off_bridge,
                 "fell_off_bridge_reward": fell_off_bridge_reward,
                 "reward_terms": {
                     "progress": progress_reward,
+                    "success": success_reward,
                     "guidance": guidance_reward,
                     "fall": fell_off_bridge_reward,
                 },
             },
-            terminations=fell_off_bridge,
+            terminations=success | fell_off_bridge,
         )
 
     def _apply_bridge_position(self, *, world_idx: torch.Tensor, bridge_x: torch.Tensor) -> None:
