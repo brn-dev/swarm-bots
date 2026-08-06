@@ -34,6 +34,7 @@ def make_env_fn(
             timestep=timestep,
             action_repeat=action_repeat,
             visualize_goal=True,
+            continuous_connector_actions=False,
         )
         return SwarmBotsEnv(
             scenario=scenario,

@@ -68,7 +68,7 @@ class MJWPayloadPlaneScenario(BaseMJWScenario):
     payload_centering_penalty_weight: float
     payload_centering_penalty_power: float
     payload_centering_tolerance: float
-    continuous_connector_actions: bool = False
+    continuous_connector_actions: bool = True
     payload_pos_observable: bool = True
     forward_reward_max_y: float | None = None
     towards_payload_reward_weight: float = 1.0

@@ -152,12 +152,25 @@ class ContinuousConnectorActionTests(unittest.TestCase):
             np.array([[[False], [True]]], dtype=np.bool_),
         )
 
-    def test_scenario_presets_expose_continuous_connector_action_spaces(self) -> None:
+    def test_scenario_presets_allow_explicit_discrete_connector_action_spaces(self) -> None:
         mj_scenario = default_mj_move_to(
             reset_settle_time=0.0,
-            continuous_connector_actions=True,
+            continuous_connector_actions=False,
         )
-        mjw_scenario = default_mjw_move_to(continuous_connector_actions=True)
+        mjw_scenario = default_mjw_move_to(continuous_connector_actions=False)
+
+        for connector_space in (
+            mj_scenario.get_action_space()["connectors"],
+            mjw_scenario.get_single_action_space()["connectors"],
+        ):
+            self.assertIsInstance(connector_space, spaces.MultiBinary)
+
+        self.assertFalse(mj_scenario.get_settings()["continuous_connector_actions"])
+        self.assertFalse(mjw_scenario.get_settings()["continuous_connector_actions"])
+
+    def test_scenario_presets_default_to_continuous_connector_action_spaces(self) -> None:
+        mj_scenario = default_mj_move_to(reset_settle_time=0.0)
+        mjw_scenario = default_mjw_move_to()
 
         for connector_space in (
             mj_scenario.get_action_space()["connectors"],
@@ -171,20 +184,7 @@ class ContinuousConnectorActionTests(unittest.TestCase):
         self.assertTrue(mj_scenario.get_settings()["continuous_connector_actions"])
         self.assertTrue(mjw_scenario.get_settings()["continuous_connector_actions"])
 
-    def test_scenario_presets_default_connector_action_spaces_stay_binary(self) -> None:
-        mj_scenario = default_mj_move_to(reset_settle_time=0.0)
-        mjw_scenario = default_mjw_move_to()
-
-        for connector_space in (
-            mj_scenario.get_action_space()["connectors"],
-            mjw_scenario.get_single_action_space()["connectors"],
-        ):
-            self.assertIsInstance(connector_space, spaces.MultiBinary)
-
-        self.assertFalse(mj_scenario.get_settings()["continuous_connector_actions"])
-        self.assertFalse(mjw_scenario.get_settings()["continuous_connector_actions"])
-
-    def test_mjw_default_apply_actions_uses_binary_connector_path(self) -> None:
+    def test_mjw_explicit_discrete_apply_actions_uses_binary_connector_path(self) -> None:
         calls: list[tuple[str, torch.Tensor]] = []
         env = SimpleNamespace()
         env.num_envs = 1

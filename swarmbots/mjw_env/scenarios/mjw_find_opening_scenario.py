@@ -75,7 +75,7 @@ class MJWFindOpeningScenario(BaseMJWScenario):
     wall_exploration_cell_count: int = 0
     wall_exploration_cell_reward: float = 0.0
     wall_exploration_cell_depth: float = 1.0
-    continuous_connector_actions: bool = False
+    continuous_connector_actions: bool = True
     seed: int | None = None
     compile_reward_kernel: bool = False
     reward_kernel_compile_mode: str = "default"

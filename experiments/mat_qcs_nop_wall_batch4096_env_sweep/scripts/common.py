@@ -77,6 +77,7 @@ def make_env_fn(
             quantize_connection_twist=8,
             timestep=timestep,
             action_repeat=action_repeat,
+            continuous_connector_actions=False,
         )
         return SwarmBotsEnv(
             scenario=scenario,

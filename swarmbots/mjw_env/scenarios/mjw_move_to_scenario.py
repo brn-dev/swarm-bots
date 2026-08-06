@@ -58,7 +58,7 @@ class MJWMoveToScenario(BaseMJWScenario):
     plane_size: float
     goal: MoveToGoalConfig
     goal_radius: float
-    continuous_connector_actions: bool = False
+    continuous_connector_actions: bool = True
     visualize_goal: bool = False
     seed: int | None = None
     compile_reward_kernel: bool = False

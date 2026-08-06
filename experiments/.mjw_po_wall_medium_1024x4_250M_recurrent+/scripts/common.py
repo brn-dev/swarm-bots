@@ -17,6 +17,7 @@ from swarmbots.scenario_presets.scenario_presets_kwargs import PO_WALL_MEDIUM_SC
 EXPERIMENT_RUN_NAME = "mjw_po_wall_medium_1024x4_250M_recurrent+"
 EXPERIMENT_TOTAL_TIMESTEPS = 250_000_000
 SCENARIO_KWARGS: dict[str, object] = dict(PO_WALL_MEDIUM_SCENARIO_KWARGS)
+SCENARIO_KWARGS["continuous_connector_actions"] = False
 TemporalModelVariant = Literal["lstm", "mlstm", "slstm", "smlstm"]
 
 

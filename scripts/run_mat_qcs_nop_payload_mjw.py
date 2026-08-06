@@ -49,7 +49,7 @@ def make_vector_env(
     device: torch.device,
 ) -> MJWSwarmBotsVectorEnv:
     return MJWSwarmBotsVectorEnv(
-        scenario=default_payload_plane(),
+        scenario=default_payload_plane(continuous_connector_actions=False),
         num_envs=num_envs,
         episode_length=episode_length,
         first_episode_length=first_episode_length,
