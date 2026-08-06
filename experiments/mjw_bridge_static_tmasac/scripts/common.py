@@ -1,0 +1,26 @@
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[3]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from experiments.tmasac_experiment_common import (
+    TMASACExperimentVariant,
+    run_tmasac_experiment,
+)
+
+EXPERIMENT_RUN_NAME = "mjw_bridge_static_tmasac"
+SCENARIO_KWARGS: dict[str, object] = {"continuous_connector_actions": True}
+
+
+def run_experiment(*, variant: TMASACExperimentVariant, entrypoint_path: Path) -> None:
+    run_tmasac_experiment(
+        experiment_run_name=EXPERIMENT_RUN_NAME,
+        scenario_name="bridge",
+        scenario_kwargs=SCENARIO_KWARGS,
+        variant=variant,
+        entrypoint_path=entrypoint_path,
+    )

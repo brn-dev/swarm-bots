@@ -100,6 +100,7 @@ from swarmbots.learn.swarmbots_obs_indices import build_obs_indices
 from swarmbots.learn.nn_components.deep_set import DeepSetCriticConfig
 from swarmbots.mjw_env import MJWSwarmBotsVectorEnv
 from swarmbots.mjw_env.scenarios.mjw_scenario_presets import (
+    default_bridge,
     default_climb,
     default_dual_payload_plane,
     default_find_opening,
@@ -143,6 +144,7 @@ PolicyVariant = Literal[
 ]
 MJWScenarioName = Literal[
     "wall",
+    "bridge",
     "find_opening",
     "climb",
     "vertical_reach",
@@ -185,6 +187,7 @@ def _configure_cuda_device(*, cuda_idx: int | None) -> None:
 def _make_scenario(*, scenario_name: MJWScenarioName, scenario_kwargs: dict[str, object] | None) -> Any:
     scenario_factory = {
         "wall": default_wall,
+        "bridge": default_bridge,
         "find_opening": default_find_opening,
         "climb": default_climb,
         "vertical_reach": default_vertical_reach,
@@ -205,6 +208,7 @@ def _with_default_scenario_kwargs(scenario_kwargs: dict[str, object] | None) -> 
 def _scenario_display_name(*, scenario_name: MJWScenarioName) -> str:
     return {
         "wall": "wall",
+        "bridge": "bridge",
         "find_opening": "find-opening",
         "climb": "climb",
         "vertical_reach": "vertical-reach",

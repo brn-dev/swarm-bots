@@ -6,6 +6,7 @@ Keep only durable architecture notes and costly gotchas. Delete stale implementa
 
 - `swarmbots/mj_env` is the CPU MuJoCo path, `swarmbots/mjw_env` is the batched GPU MJWarp path, and `swarmbots/learn` contains algorithms, rollout/replay, wrappers, action distributions, checkpointing, logging, and world-model wrappers.
 - `scripts/` contains examples and entry points. Shared MJW experiment setup is in `experiments/mjw_experiment_common.py`; shared external-benchmark setup is in `experiments/external_benchmarks/benchmark_experiment_common.py`.
+- The four standard TMASAC architecture variants are centralized in `experiments/tmasac_experiment_common.py`; scenario-specific TMASAC suites should only bind their scenario name/kwargs and run name.
 - `.ref` contains reference implementations for xLSTM, Multi-Agent Transformer, and Stable Baselines3.
 
 ## Autoreset And Observation Wrappers
