@@ -6,7 +6,10 @@ from typing import Literal
 import torch
 from torch import nn
 
-from experiments.mjw_experiment_common import MJWScenarioName
+from experiments.mjw_experiment_common import (
+    ContinuousActionDistVariant,
+    MJWScenarioName,
+)
 from experiments.mjw_experiment_common import run_experiment as run_mjw_experiment
 from swarmbots.learn.algos.sac.recurrent_tmasac_policy import (
     ActorStateCriticInputConfig,
@@ -40,6 +43,7 @@ def run_tmasac_experiment(
     scenario_kwargs: dict[str, object],
     variant: TMASACExperimentVariant,
     entrypoint_path: Path,
+    continuous_action_dist: ContinuousActionDistVariant = "gumbel_softmax_sign_magnitude_beta",
 ) -> None:
     is_recurrent = variant.startswith("slstm_")
     mat_transformer_ff_config, actor_transformer_ff_config = _make_feedforward_configs(
@@ -49,9 +53,13 @@ def run_tmasac_experiment(
     run_mjw_experiment(
         num_envs=1024,
         rollout_steps_per_env=1,
-        variant_name=variant,
+        variant_name=(
+            variant
+            if continuous_action_dist == "gumbel_softmax_sign_magnitude_beta"
+            else f"{variant}_{continuous_action_dist}"
+        ),
         entrypoint_path=entrypoint_path,
-        continuous_action_dist="gumbel_softmax_sign_magnitude_beta",
+        continuous_action_dist=continuous_action_dist,
         policy_variant="r_tmasac" if is_recurrent else "tmasac",
         mat_add_agent_embeddings=False,
         mat_encoder_transformer_ff_config=mat_transformer_ff_config,

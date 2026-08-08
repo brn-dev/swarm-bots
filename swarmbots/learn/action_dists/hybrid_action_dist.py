@@ -65,6 +65,10 @@ from swarmbots.learn.action_dists.sticky_bang_zero_bang_action_dist import (
 )
 from swarmbots.learn.action_dists.sticky_action_dist import StickyActionDist
 from swarmbots.learn.action_dists.temporally_correlated_action_dist import TemporallyCorrelatedActionDist
+from swarmbots.learn.action_dists.ternary_sign_magnitude_beta_action_dist import (
+    TernarySignMagnitudeBetaActionDist,
+    TernarySignMagnitudeBetaConfig,
+)
 from swarmbots.learn.hybrid_action_space import HybridActionSpace
 from swarmbots.learn.losses import LossDict, LossMetrics
 from swarmbots.learn.nn_components.nn_init import init_linear_orthogonal
@@ -79,6 +83,7 @@ ContinuousActionDistConfig: TypeAlias = (
     | BetaMixtureConfig
     | GumbelSoftmaxSignMagnitudeBetaConfig
     | GumbelSoftmaxSignMagnitudeKumaraswamyConfig
+    | TernarySignMagnitudeBetaConfig
     | ReparameterizedSignMagnitudeKumaraswamyConfig
     | ReparameterizedSquashedGaussianMixtureConfig
     | StickySignMagnitudeBetaConfig
@@ -126,6 +131,10 @@ _CONTINUOUS_ACTION_DIST_SPECS: dict[type, _ContinuousActionDistSpec] = {
     ),
     GumbelSoftmaxSignMagnitudeKumaraswamyConfig: _ContinuousActionDistSpec(
         GumbelSoftmaxSignMagnitudeKumaraswamyActionDist,
+        ActionGradientEstimator.STRAIGHT_THROUGH,
+    ),
+    TernarySignMagnitudeBetaConfig: _ContinuousActionDistSpec(
+        TernarySignMagnitudeBetaActionDist,
         ActionGradientEstimator.STRAIGHT_THROUGH,
     ),
     ReparameterizedSignMagnitudeKumaraswamyConfig: _ContinuousActionDistSpec(
@@ -549,7 +558,8 @@ class HybridActionDistribution(ActionDist):
                 setter(value)
         for idx, config in enumerate(self.continuous_configs):
             if isinstance(config, (GumbelSoftmaxSignMagnitudeBetaConfig,
-                                   GumbelSoftmaxSignMagnitudeKumaraswamyConfig)):
+                                   GumbelSoftmaxSignMagnitudeKumaraswamyConfig,
+                                   TernarySignMagnitudeBetaConfig)):
                 self.continuous_configs[idx] = replace(config, gumbel_temperature=value)
 
     def set_sub_gumbel_temperature(self, sub_dist_idx: int, value: float) -> None:
@@ -565,7 +575,8 @@ class HybridActionDistribution(ActionDist):
         setter(value)
         config = self.continuous_configs[sub_dist_idx]
         if isinstance(config, (GumbelSoftmaxSignMagnitudeBetaConfig,
-                               GumbelSoftmaxSignMagnitudeKumaraswamyConfig)):
+                               GumbelSoftmaxSignMagnitudeKumaraswamyConfig,
+                               TernarySignMagnitudeBetaConfig)):
             self.continuous_configs[sub_dist_idx] = replace(config, gumbel_temperature=value)
 
     @staticmethod

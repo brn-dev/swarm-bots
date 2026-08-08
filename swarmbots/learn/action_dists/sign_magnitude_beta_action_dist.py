@@ -49,6 +49,7 @@ class SignMagnitudeBetaActionDist(SignMagnitudeActionDist):
             beta_ent_scale: float = 1.0,
             categorical_ent_loss_config: EntropyLossConfig | None = None,
             beta_ent_loss_config: EntropyLossConfig | None = None,
+            initial_zero_prob: float | None = None,
     ) -> None:
         super().__init__(
             latent_dim=latent_dim,
@@ -68,6 +69,7 @@ class SignMagnitudeBetaActionDist(SignMagnitudeActionDist):
             categorical_ent_loss_config=categorical_ent_loss_config,
             magnitude_ent_loss_config=beta_ent_loss_config,
             magnitude_entropy_metric_name="ent_beta",
+            initial_zero_prob=initial_zero_prob,
         )
 
     @property

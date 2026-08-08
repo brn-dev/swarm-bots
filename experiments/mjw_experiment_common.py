@@ -43,6 +43,9 @@ from swarmbots.learn.action_dists.sign_magnitude_beta_action_dist import SignMag
 from swarmbots.learn.action_dists.sticky_action_dist import StickyActionDist
 from swarmbots.learn.action_dists.sticky_sign_magnitude_beta_action_dist import StickySignMagnitudeBetaConfig
 from swarmbots.learn.action_dists.squashed_diag_gaussian_action_dist import SquashedDiagGaussianConfig
+from swarmbots.learn.action_dists.ternary_sign_magnitude_beta_action_dist import (
+    TernarySignMagnitudeBetaConfig,
+)
 from swarmbots.learn.algos.mat.mat_dec_policy import MATDecPolicy, MATDecPolicyConfig
 from swarmbots.learn.algos.mat.mat_ind_policy import MATIndPolicy, MATIndPolicyConfig
 from swarmbots.learn.algos.mat_qcc.mat_qcc_decoder import MATQCCDecoderConfig
@@ -117,6 +120,7 @@ ContinuousActionDistVariant = Literal[
     "sticky_sign_magnitude_beta",
     "sign_magnitude_beta",
     "gumbel_softmax_sign_magnitude_beta",
+    "ternary_sign_magnitude_beta",
     "gumbel_softmax_sign_magnitude_kumaraswamy",
     "reparameterized_sign_magnitude_kumaraswamy",
     "reparameterized_squashed_gaussian_mixture",
@@ -400,6 +404,7 @@ def make_continuous_config(
         StickySignMagnitudeBetaConfig
         | SignMagnitudeBetaConfig
         | GumbelSoftmaxSignMagnitudeBetaConfig
+        | TernarySignMagnitudeBetaConfig
         | GumbelSoftmaxSignMagnitudeKumaraswamyConfig
         | ReparameterizedSignMagnitudeKumaraswamyConfig
         | ReparameterizedSquashedGaussianMixtureConfig
@@ -425,6 +430,13 @@ def make_continuous_config(
         )
     if variant == "gumbel_softmax_sign_magnitude_beta":
         return GumbelSoftmaxSignMagnitudeBetaConfig(
+            ent_loss_coef=ent_loss_coef,
+            beta_ent_scale=0.75,
+            categorical_ent_loss_config=make_sign_magnitude_categorical_entropy_config(),
+            beta_ent_loss_config=make_sign_magnitude_magnitude_entropy_config(),
+        )
+    if variant == "ternary_sign_magnitude_beta":
+        return TernarySignMagnitudeBetaConfig(
             ent_loss_coef=ent_loss_coef,
             beta_ent_scale=0.75,
             categorical_ent_loss_config=make_sign_magnitude_categorical_entropy_config(),

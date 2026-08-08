@@ -39,6 +39,9 @@ from swarmbots.learn.action_dists.sticky_bang_zero_bang_action_dist import (
     StickyBangZeroBangActionDist,
     StickyBangZeroBangConfig,
 )
+from swarmbots.learn.action_dists.ternary_sign_magnitude_beta_action_dist import (
+    TernarySignMagnitudeBetaConfig,
+)
 from swarmbots.learn.hybrid_action_space import HybridActionSpace, VectorHybridActionSpace
 from swarmbots.learn.nn_components.nn_init import init_linear_orthogonal
 
@@ -117,6 +120,7 @@ class HybridActionDistFactoryTests(unittest.TestCase):
             BetaConfig(),
             GumbelSoftmaxSignMagnitudeBetaConfig(),
             GumbelSoftmaxSignMagnitudeKumaraswamyConfig(),
+            TernarySignMagnitudeBetaConfig(),
             ReparameterizedSignMagnitudeKumaraswamyConfig(),
             StickySignMagnitudeBetaConfig(stickiness=0.25),
             SignMagnitudeBetaConfig(),

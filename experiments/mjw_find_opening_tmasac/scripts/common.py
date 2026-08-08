@@ -10,7 +10,10 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from experiments.mjw_experiment_common import run_experiment as run_mjw_find_opening_experiment
+from experiments.mjw_experiment_common import (
+    ContinuousActionDistVariant,
+    run_experiment as run_mjw_find_opening_experiment,
+)
 from swarmbots.learn.algos.sac.recurrent_tmasac_policy import ActorStateCriticInputConfig
 from swarmbots.learn.algos.sac.tmasac_actor_heads import TMASACActorHeadKind
 from swarmbots.learn.algos.xlstm.slstm import (
@@ -37,6 +40,7 @@ def run_experiment(
         actor_head_kind: TMASACActorHeadKind = TMASACActorHeadKind.INDEPENDENT,
         mat_encoder_transformer_ff_config: FeedForwardConfig | None = None,
         rmat_actor_transformer_ff_config: FeedForwardConfig | None = None,
+        continuous_action_dist: ContinuousActionDistVariant = "gumbel_softmax_sign_magnitude_beta",
 ) -> None:
     is_recurrent = temporal_model_variant != "baseline"
     temporal_model_cls, temporal_model_config = _make_temporal_model_specs(temporal_model_variant)
@@ -52,9 +56,13 @@ def run_experiment(
     run_mjw_find_opening_experiment(
         num_envs=1024,
         rollout_steps_per_env=1,
-        variant_name=variant_name,
+        variant_name=(
+            variant_name
+            if continuous_action_dist == "gumbel_softmax_sign_magnitude_beta"
+            else f"{variant_name}_{continuous_action_dist}"
+        ),
         entrypoint_path=entrypoint_path,
-        continuous_action_dist="gumbel_softmax_sign_magnitude_beta",
+        continuous_action_dist=continuous_action_dist,
         policy_variant="r_tmasac" if is_recurrent else "tmasac",
         mat_add_agent_embeddings=False,
         mat_encoder_transformer_ff_config=resolved_mat_encoder_transformer_ff_config,

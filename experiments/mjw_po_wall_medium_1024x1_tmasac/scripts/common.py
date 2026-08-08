@@ -37,7 +37,11 @@ def run_experiment(
     run_mjw_wall_experiment(
         num_envs=1024,
         rollout_steps_per_env=1,
-        variant_name=variant_name,
+        variant_name=(
+            variant_name
+            if continuous_action_dist == "gumbel_softmax_sign_magnitude_beta"
+            else f"{variant_name}_{continuous_action_dist}"
+        ),
         entrypoint_path=entrypoint_path,
         continuous_action_dist=continuous_action_dist,
         policy_variant="tmasac",
