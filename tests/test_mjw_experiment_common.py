@@ -39,7 +39,7 @@ from swarmbots.learn.algos.mat.mat_encoder import MATEncoder
 from swarmbots.learn.algos.mat_qcs.mat_qcs_decoder import MATQCSDecoderSelfAttentionMode
 from swarmbots.learn.algos.mat_qcs.mat_qcs_policy import MATQCSPolicy
 from swarmbots.learn.algos.mat_qcx.mat_qcx_policy import MATQCXPolicy
-from swarmbots.learn.algos.r_mat.r_mat_dec_policy import RMATDecPolicy
+from swarmbots.learn.algos.r_mat.r_mat_ind_policy import RMATIndPolicy
 from swarmbots.learn.algos.sac.recurrent_tmasac_policy import (
     ActorStateCriticInputConfig,
     RecurrentTMASACPolicy,
@@ -785,13 +785,13 @@ def test_mat_lr_multipliers_can_include_actor_head_modules() -> None:
     }
     assert set(qcx_multipliers.values()) == {0.25}
 
-    mat_dec_multipliers = _make_mat_parameter_lr_multipliers(
-        policy_variant="mat_dec",
+    mat_ind_multipliers = _make_mat_parameter_lr_multipliers(
+        policy_variant="mat_ind",
         mat_decoder_lr_multiplier=0.25,
         include_actor_head_lr_multiplier=True,
     )
 
-    assert mat_dec_multipliers == {"actor_head": 0.25}
+    assert mat_ind_multipliers == {"actor_head": 0.25}
 
 
 def test_make_base_policy_constructs_mat_qcx_variant() -> None:
@@ -896,11 +896,11 @@ def test_binary_connector_policy_starts_from_requested_connection_probability() 
 
 def test_make_base_policy_passes_rmat_temporal_output_projection_flag() -> None:
     policy = _make_test_base_policy(
-        policy_variant="r_mat_dec",
+        policy_variant="r_mat_ind",
         rmat_use_temporal_output_projection=False,
     )
 
-    assert isinstance(policy, RMATDecPolicy)
+    assert isinstance(policy, RMATIndPolicy)
     assert all(isinstance(layer.temporal_output_projection, nn.Identity) for layer in policy.encoder.layers)
 
 

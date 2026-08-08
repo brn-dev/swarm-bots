@@ -16,15 +16,15 @@ BASELINE_RUN_DIR = REPO_ROOT / "runs" / "mjw_po_wall_medium_1024x4_250M_no_trans
 OUTPUT_DIR = Path(__file__).resolve().parent / "results"
 RUN_LENGTH_LIMIT = 100_000_000
 GROUP_ORDER = (
-    "mat_dec_baseline",
+    "mat_ind_baseline",
     "mat_qcx_baseline",
-    "mat_dec",
+    "mat_ind",
     "mat_qcx",
 )
 DISPLAY_NAME_OVERRIDES = {
-    "mat_dec_baseline": "MAT-Dec 80/20 baseline",
+    "mat_ind_baseline": "MAT-Ind 80/20 baseline",
     "mat_qcx_baseline": "MAT-QCX 80/20 baseline",
-    "mat_dec": "MAT-Dec 50/50 conn",
+    "mat_ind": "MAT-Ind 50/50 conn",
     "mat_qcx": "MAT-QCX 50/50 conn",
 }
 FINAL_GROUP_FILTER = tuple(dict.fromkeys((*GROUP_ORDER, *DISPLAY_NAME_OVERRIDES)))
@@ -52,7 +52,7 @@ def main() -> int:
         theoretical_maximum=THEORETICAL_MAXIMUM,
         display_name_overrides=DISPLAY_NAME_OVERRIDES,
         extra_group_sources={
-            "mat_dec_baseline": (BASELINE_RUN_DIR / "mat_dec",),
+            "mat_ind_baseline": (BASELINE_RUN_DIR / "mat_ind",),
             "mat_qcx_baseline": (BASELINE_RUN_DIR / "mat_qcx",),
         },
         run_length_limit=RUN_LENGTH_LIMIT,

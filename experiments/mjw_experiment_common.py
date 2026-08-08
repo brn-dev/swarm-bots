@@ -43,7 +43,7 @@ from swarmbots.learn.action_dists.sign_magnitude_beta_action_dist import SignMag
 from swarmbots.learn.action_dists.sticky_action_dist import StickyActionDist
 from swarmbots.learn.action_dists.sticky_sign_magnitude_beta_action_dist import StickySignMagnitudeBetaConfig
 from swarmbots.learn.action_dists.squashed_diag_gaussian_action_dist import SquashedDiagGaussianConfig
-from swarmbots.learn.algos.mat.mat_dec_policy import MATDecPolicy, MATDecPolicyConfig
+from swarmbots.learn.algos.mat.mat_ind_policy import MATIndPolicy, MATIndPolicyConfig
 from swarmbots.learn.algos.mat_qcc.mat_qcc_decoder import MATQCCDecoderConfig
 from swarmbots.learn.algos.mat_qcc.mat_qcc_policy import MATQCCPolicy, MATQCCPolicyConfig
 from swarmbots.learn.algos.mat_qcx.mat_qcx_decoder import MATQCXDecoderConfig
@@ -58,7 +58,7 @@ from swarmbots.learn.algos.mat_orig.mat_orig_policy import MATOrigCriticConfig, 
 from swarmbots.learn.algos.ppo.ppo import AutomaticLearningRate, PPO, StepsRolloutMode
 from swarmbots.learn.algos.ppo.ppo_policy import PPOActorConfig, PPOCriticConfig, PPOPolicy, PPOPolicyConfig, PopArtConfig
 from swarmbots.learn.algos.ppo.ppo_sampler import PPOSamplerConfig
-from swarmbots.learn.algos.r_mat.r_mat_dec_policy import RMATDecPolicy, RMATDecPolicyConfig
+from swarmbots.learn.algos.r_mat.r_mat_ind_policy import RMATIndPolicy, RMATIndPolicyConfig
 from swarmbots.learn.algos.r_mat.r_mat_encoder import RMATEncoderConfig
 from swarmbots.learn.algos.r_mat.r_mat_qcc_policy import RMATQCCPolicy, RMATQCCPolicyConfig
 from swarmbots.learn.algos.r_mat.r_mat_qcx_policy import RMATQCXPolicy, RMATQCXPolicyConfig
@@ -128,12 +128,12 @@ PolicyVariant = Literal[
     "mat_qcs",
     "mat_qcc",
     "mat_qcx",
-    "mat_dec",
+    "mat_ind",
     "mat_orig",
     "r_mat_qcs",
     "r_mat_qcc",
     "r_mat_qcx",
-    "r_mat_dec",
+    "r_mat_ind",
     "ppo",
     "ppo_small",
     "mappo",
@@ -242,7 +242,7 @@ def _metadata_name(value: Any) -> Any:
 
 
 def _is_recurrent_policy_variant(policy_variant: PolicyVariant) -> bool:
-    return policy_variant in {"r_mat_qcs", "r_mat_qcc", "r_mat_qcx", "r_mat_dec", "r_tmasac"}
+    return policy_variant in {"r_mat_qcs", "r_mat_qcc", "r_mat_qcx", "r_mat_ind", "r_tmasac"}
 
 
 def _is_sac_policy_variant(policy_variant: PolicyVariant) -> bool:
@@ -1329,7 +1329,7 @@ def _make_mat_parameter_lr_multipliers(
             include_actor_head_input_norm=True,
         )
 
-    if policy_variant in {"mat_dec", "r_mat_dec"} and include_actor_head_lr_multiplier:
+    if policy_variant in {"mat_ind", "r_mat_ind"} and include_actor_head_lr_multiplier:
         return make_prefix_multipliers()
 
     logger.warning(f"Ignoring decoder LR multiplier for policy_variant={policy_variant!r}")
@@ -1451,12 +1451,12 @@ def _make_base_policy(
         | MATQCSPolicy
         | MATQCCPolicy
         | MATQCXPolicy
-        | MATDecPolicy
+        | MATIndPolicy
         | MATOrigPolicy
         | RMATQCSPolicy
         | RMATQCCPolicy
         | RMATQCXPolicy
-        | RMATDecPolicy
+        | RMATIndPolicy
         | TMASACPolicy
         | RecurrentTMASACPolicy
         | SegmentTMASACPolicy
@@ -1977,10 +1977,10 @@ def _make_base_policy(
             ),
         )
 
-    if policy_variant == "mat_dec":
-        return MATDecPolicy(
+    if policy_variant == "mat_ind":
+        return MATIndPolicy(
             env=env,
-            config=MATDecPolicyConfig(
+            config=MATIndPolicyConfig(
                 encoder_config=mat_encoder_config,
                 critic_config=mat_qcs_critic_config,
                 actor_head_hidden_dims=[dec_d_model],
@@ -1996,10 +1996,10 @@ def _make_base_policy(
             ),
         )
 
-    if policy_variant == "r_mat_dec":
-        return RMATDecPolicy(
+    if policy_variant == "r_mat_ind":
+        return RMATIndPolicy(
             env=env,
-            config=RMATDecPolicyConfig(
+            config=RMATIndPolicyConfig(
                 encoder_config=rmat_encoder_config,
                 critic_config=mat_qcs_critic_config,
                 actor_head_hidden_dims=[dec_d_model],

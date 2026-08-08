@@ -18,7 +18,6 @@ from plot_logs.experiment_results import (
     plot_experiment_selection,
 )
 
-
 EXPERIMENT_RUN_DIR = REPO_ROOT / "runs" / "mjw_po_wall_medium_1024x4_250M_recurrent+"
 NON_RECURRENT_EXPERIMENT_RUN_DIR = REPO_ROOT / "runs" / "mjw_po_wall_medium_1024x4_250M_no_transition_obs"
 OUTPUT_DIR = Path(__file__).resolve().parent / "results"
@@ -30,10 +29,10 @@ GROUP_ORDER = (
     "smlstm_mat_qcx",
     "r_mat_qcs_full_causal",
     "r_mat_qcs_context_tokens_only",
-    "r_mat_dec",
-    "mlstm_mat_dec",
-    "slstm_mat_dec",
-    "smlstm_mat_dec",
+    "r_mat_ind",
+    "mlstm_mat_ind",
+    "slstm_mat_ind",
+    "smlstm_mat_ind",
 )
 DISPLAY_NAME_OVERRIDES = {
     "r_mat_qcc": "R-MAT-QCC + NOP",
@@ -43,33 +42,33 @@ DISPLAY_NAME_OVERRIDES = {
     "smlstm_mat_qcx": "R-MAT-QCX (sLSTM/mLSTM) + NOP",
     "r_mat_qcs_full_causal": "R-MAT-QCS full causal + NOP",
     "r_mat_qcs_context_tokens_only": "R-MAT-QCS context tokens only + NOP",
-    "r_mat_dec": "R-MAT-Dec + NOP",
-    "mlstm_mat_dec": "R-MAT-Dec (mLSTM) + NOP",
-    "slstm_mat_dec": "R-MAT-Dec (sLSTM) + NOP",
-    "smlstm_mat_dec": "R-MAT-Dec (sLSTM/mLSTM) + NOP",
+    "r_mat_ind": "R-MAT-Ind + NOP",
+    "mlstm_mat_ind": "R-MAT-Ind (mLSTM) + NOP",
+    "slstm_mat_ind": "R-MAT-Ind (sLSTM) + NOP",
+    "smlstm_mat_ind": "R-MAT-Ind (sLSTM/mLSTM) + NOP",
 }
 NON_RECURRENT_DISPLAY_NAME_OVERRIDES = {
     "mat_qcc": "MAT-QCC + NOP",
     "mat_qcx": "MAT-QCX + NOP",
     "mat_qcs_full_causal": "MAT-QCS full causal + NOP",
     "mat_qcs_context_tokens_only": "MAT-QCS context tokens only + NOP",
-    "mat_dec": "MAT-Dec + NOP",
+    "mat_ind": "MAT-Ind + NOP",
 }
 NON_RECURRENT_GROUP_BY_RECURRENT_GROUP = {
     "r_mat_qcc": "mat_qcc",
     "r_mat_qcx": "mat_qcx",
     "r_mat_qcs_full_causal": "mat_qcs_full_causal",
     "r_mat_qcs_context_tokens_only": "mat_qcs_context_tokens_only",
-    "r_mat_dec": "mat_dec",
+    "r_mat_ind": "mat_ind",
 }
 THEORETICAL_MAXIMUM = None
 RUN_LENGTH_LIMIT = 250_000_000
 FOCUSED_VARIANT_GROUPS_BY_BASELINE = {
-    "mat_dec": (
-        "r_mat_dec",
-        "mlstm_mat_dec",
-        "slstm_mat_dec",
-        "smlstm_mat_dec",
+    "mat_ind": (
+        "r_mat_ind",
+        "mlstm_mat_ind",
+        "slstm_mat_ind",
+        "smlstm_mat_ind",
     ),
     "mat_qcx": (
         "r_mat_qcx",

@@ -14,8 +14,8 @@ from experiments.external_benchmarks.benchmark_experiment_common import (
 ExperimentVariant = Literal[
     "mat_qcx",
     "mat_qcx_nop",
-    "mat_dec",
-    "mat_dec_nop",
+    "mat_ind",
+    "mat_ind_nop",
     "tmasac",
     "tmasac_nop",
 ]
@@ -111,8 +111,8 @@ EXPERIMENT_CONFIGS: dict[str, ScenarioExperimentConfig] = {
 VARIANT_CONFIGS: dict[ExperimentVariant, tuple[BenchmarkPolicyVariant, bool]] = {
     "mat_qcx": ("mat_qcx", False),
     "mat_qcx_nop": ("mat_qcx", True),
-    "mat_dec": ("mat_dec", False),
-    "mat_dec_nop": ("mat_dec", True),
+    "mat_ind": ("mat_ind", False),
+    "mat_ind_nop": ("mat_ind", True),
     "tmasac": ("tmasac", False),
     "tmasac_nop": ("tmasac", True),
 }

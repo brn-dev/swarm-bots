@@ -16,7 +16,7 @@ BASELINE_EXPERIMENT_RUN_DIR = RUNS_DIR / "mjw_po_wall_medium_1024x4_250M_cont_co
 OUTPUT_DIR = Path(__file__).resolve().parent / "results"
 VARIANT_GROUPS = (
     "mat_qcx",
-    "mat_dec",
+    "mat_ind",
     "mat_qcc",
     "mat_qcs_full_causal",
     "mat_qcs_context_tokens_only",
@@ -26,7 +26,7 @@ VARIANT_GROUPS = (
 )
 BASE_DISPLAY_NAME_OVERRIDES = {
     "mat_qcx": "MAT-QCX + NOP",
-    "mat_dec": "MAT-Dec + NOP",
+    "mat_ind": "MAT-Ind + NOP",
     "mat_qcc": "MAT-QCC + NOP",
     "mat_qcs_full_causal": "MAT-QCS full causal + NOP",
     "mat_qcs_context_tokens_only": "MAT-QCS context tokens only + NOP",
