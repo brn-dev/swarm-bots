@@ -10,7 +10,7 @@ from swarmbots.learn.algos.ppo.ppo_rollout_buffer import (
     PPORolloutBuffer,
 )
 from swarmbots.learn.algos.ppo.ppo_sampler import PPOSamplerConfig
-from swarmbots.learn.algos.r_mat.r_mat_dec_policy import RMATDecPolicy, RMATDecPolicyConfig
+from swarmbots.learn.algos.r_mat.r_mat_ind_policy import RMATIndPolicy, RMATIndPolicyConfig
 from swarmbots.learn.algos.r_mat.r_mat_encoder import RMATEncoder, RMATEncoderConfig
 from swarmbots.learn.nn_components.feed_forward import MLPConfig
 from swarmbots.learn.algos.r_mat.r_mat_policy_mixin import RMATPolicyMixin
@@ -506,12 +506,12 @@ def test_rollout_accumulator_stores_segment_initial_state_and_position() -> None
         (RMATQCSPolicy, RMATQCSPolicyConfig),
         (RMATQCCPolicy, RMATQCCPolicyConfig),
         (RMATQCXPolicy, RMATQCXPolicyConfig),
-        (RMATDecPolicy, RMATDecPolicyConfig),
+        (RMATIndPolicy, RMATIndPolicyConfig),
     ],
 )
 def test_rmat_rollout_and_training_use_env_major_tbptt_rows(
-        policy_cls: type[RMATQCSPolicy | RMATQCCPolicy | RMATQCXPolicy | RMATDecPolicy],
-        policy_config_cls: type[RMATQCSPolicyConfig | RMATQCCPolicyConfig | RMATQCXPolicyConfig | RMATDecPolicyConfig],
+        policy_cls: type[RMATQCSPolicy | RMATQCCPolicy | RMATQCXPolicy | RMATIndPolicy],
+        policy_config_cls: type[RMATQCSPolicyConfig | RMATQCCPolicyConfig | RMATQCXPolicyConfig | RMATIndPolicyConfig],
 ) -> None:
     vector_env = SyncVectorEnv(
         [lambda: _TestingSwarmBotsEnv(2, 3, 2, 1, 1, max_steps=3) for _ in range(2)],

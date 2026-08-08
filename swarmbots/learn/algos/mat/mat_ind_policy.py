@@ -1,6 +1,6 @@
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
-from typing import Any, Optional
+from typing import Any
 
 import torch
 from torch import nn
@@ -14,11 +14,20 @@ from swarmbots.learn.action_dists.hybrid_action_dist import (
     continuous_config_to_dicts,
 )
 from swarmbots.learn.algos.mat.mat_encoder import MATEncoder, MATEncoderConfig
-from swarmbots.learn.algos.mat_qcs.mat_qcs_policy import MATQCSCriticConfig, _ensure_torch_compile_available
+from swarmbots.learn.algos.mat_qcs.mat_qcs_policy import (
+    MATQCSCriticConfig,
+    _ensure_torch_compile_available,
+)
 from swarmbots.learn.algos.ppo.base_ppo_policy import BasePPOPolicy
 from swarmbots.learn.algos.ppo.ppo_rollout_buffer import PPOEpisodeSegment
-from swarmbots.learn.algos.ppo.ppo_sampler import PPOSamples, PPOSampler, PPOSamplerConfig
-from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
+from swarmbots.learn.algos.ppo.ppo_sampler import (
+    PPOSampler,
+    PPOSamplerConfig,
+    PPOSamples,
+)
+from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import (
+    BaseLearnEnvWrapper,
+)
 from swarmbots.learn.losses import LossDict, LossMetrics
 from swarmbots.learn.nn_components.activations import ActivationFactory
 from swarmbots.learn.nn_components.deep_set import DeepSetCritic
@@ -28,7 +37,7 @@ from swarmbots.learn.serialization_utils import serialize_dataclass, serialize_v
 
 
 @dataclass(frozen=True)
-class MATDecPolicyConfig:
+class MATIndPolicyConfig:
     encoder_config: MATEncoderConfig = field(default_factory=MATEncoderConfig)
     critic_config: MATQCSCriticConfig = field(default_factory=MATQCSCriticConfig)
     actor_head_hidden_dims: list[int] | None = None
@@ -43,14 +52,15 @@ class MATDecPolicyConfig:
     action_net_init_gain: float = 0.01
 
 
-class MATDecPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
+class MATIndPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
 
     def __init__(
             self,
             env: BaseLearnEnvWrapper,
-            config: MATDecPolicyConfig = MATDecPolicyConfig(),
+            config: MATIndPolicyConfig | None = None,
     ) -> None:
         super().__init__()
+        config = MATIndPolicyConfig() if config is None else config
         self.config = config
 
         self.n_agents: int = env.n_agents
@@ -110,7 +120,7 @@ class MATDecPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
             popart_init_sigma=config.critic_config.popart_config.init_sigma,
         )
 
-        self._generate_actions_fn: Callable[..., tuple[torch.Tensor, Optional[torch.Tensor]]] = self._generate_actions_impl
+        self._generate_actions_fn: Callable[..., tuple[torch.Tensor, torch.Tensor | None]] = self._generate_actions_impl
         self._evaluate_latent_and_values_fn: Callable[..., tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = (
             self._evaluate_latent_and_values_impl
         )
@@ -137,7 +147,7 @@ class MATDecPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
 
     def get_hyper_parameters(self) -> dict[str, Any]:
         return {
-            "mat_dec_policy_config": {
+            "mat_ind_policy_config": {
                 "encoder_config": serialize_dataclass(self.encoder_config),
                 "critic_config": serialize_dataclass(self.config.critic_config),
                 "actor_head_hidden_dims": self.config.actor_head_hidden_dims,
@@ -191,7 +201,7 @@ class MATDecPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
             previous_actions: torch.Tensor | None,
             deterministic: bool,
             return_log_probs: bool,
-    ) -> tuple[torch.Tensor, Optional[torch.Tensor]]:
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
         return self._generate_actions_fn(
             augmented_observations=augmented_observations,
             agent_mask=agent_mask,
@@ -208,7 +218,7 @@ class MATDecPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
             previous_actions: torch.Tensor | None,
             deterministic: bool,
             return_log_probs: bool,
-    ) -> tuple[torch.Tensor, Optional[torch.Tensor]]:
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
         latent_pi = self.actor_head(augmented_observations).contiguous()
         if return_log_probs:
             actions, log_probs = self.action_dist.get_actions_with_log_probs(

@@ -1,11 +1,10 @@
 from dataclasses import dataclass, field, replace
-from typing import Optional
 
 import torch
 from torch import nn
 
 from swarmbots.learn.action_dists.action_dist import ActionMetricsSplitterInput
-from swarmbots.learn.algos.mat.mat_dec_policy import MATDecPolicy, MATDecPolicyConfig
+from swarmbots.learn.algos.mat.mat_ind_policy import MATIndPolicy, MATIndPolicyConfig
 from swarmbots.learn.algos.r_mat.r_mat_encoder import RMATEncoder, RMATEncoderConfig
 from swarmbots.learn.algos.r_mat.r_mat_policy_mixin import (
     RMATPolicyMixin,
@@ -13,25 +12,27 @@ from swarmbots.learn.algos.r_mat.r_mat_policy_mixin import (
     reshape_extra_losses,
 )
 from swarmbots.learn.algos.r_mat.r_ppo_wm_sampler import RPPOWMSamples
-from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
+from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import (
+    BaseLearnEnvWrapper,
+)
 from swarmbots.learn.losses import LossDict, LossMetrics
 
 
 @dataclass(frozen=True)
-class RMATDecPolicyConfig(MATDecPolicyConfig):
+class RMATIndPolicyConfig(MATIndPolicyConfig):
     encoder_config: RMATEncoderConfig = field(default_factory=RMATEncoderConfig)
 
 
-class RMATDecPolicy(RMATPolicyMixin, MATDecPolicy):
+class RMATIndPolicy(RMATPolicyMixin, MATIndPolicy):
 
     encoder_config: RMATEncoderConfig
 
     def __init__(
             self,
             env: BaseLearnEnvWrapper,
-            config: RMATDecPolicyConfig = RMATDecPolicyConfig(),
+            config: RMATIndPolicyConfig | None = None,
     ) -> None:
-        super().__init__(env=env, config=config)
+        super().__init__(env=env, config=RMATIndPolicyConfig() if config is None else config)
 
     def _build_encoder_config(self) -> RMATEncoderConfig:
         return replace(
@@ -57,7 +58,7 @@ class RMATDecPolicy(RMATPolicyMixin, MATDecPolicy):
             previous_actions: torch.Tensor | None,
             deterministic: bool,
             return_log_probs: bool,
-    ) -> tuple[torch.Tensor, Optional[torch.Tensor]]:
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
         return self._generate_actions(
             augmented_observations=augmented_observations,
             agent_mask=agent_mask,

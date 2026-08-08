@@ -6,11 +6,12 @@ import torch
 from gymnasium import spaces
 
 from swarmbots.learn.action_dists.bernoulli_action_dist import BernoulliConfig
-from swarmbots.learn.action_dists.sticky_sign_magnitude_beta_action_dist import StickySignMagnitudeBetaConfig
-from swarmbots.learn.algos.mat.mat_dec_policy import MATDecPolicy, MATDecPolicyConfig
+from swarmbots.learn.action_dists.sticky_sign_magnitude_beta_action_dist import (
+    StickySignMagnitudeBetaConfig,
+)
 from swarmbots.learn.algos.mat.mat_encoder import MATEncoderConfig
+from swarmbots.learn.algos.mat.mat_ind_policy import MATIndPolicy, MATIndPolicyConfig
 from swarmbots.learn.hybrid_action_space import HybridActionSpace
-
 
 _REAL_TORCH_COMPILE = torch.compile
 
@@ -22,7 +23,7 @@ def _compile_with_eager_backend(
     return _REAL_TORCH_COMPILE(function, backend="eager", **kwargs)
 
 
-class _DummyMATDecEnv:
+class _DummyMATIndEnv:
     n_agents = 4
     local_obs_dim = 6
     global_obs_dim = 3
@@ -36,14 +37,25 @@ class _DummyMATDecEnv:
     )
 
 
+class _DummyDefaultMATIndEnv:
+    n_agents = 4
+    local_obs_dim = 6
+    global_obs_dim = 3
+    hidden_local_vars_dim = 2
+    hidden_global_vars_dim = 5
+    action_space = HybridActionSpace(
+        {"disc": spaces.MultiBinary((n_agents, 1))}
+    )
+
+
 def _make_policy(
         *,
         compile_modules: bool = False,
         ent_loss_coef: float = 0.0,
-) -> MATDecPolicy:
-    return MATDecPolicy(
-        env=_DummyMATDecEnv(),
-        config=MATDecPolicyConfig(
+) -> MATIndPolicy:
+    return MATIndPolicy(
+        env=_DummyMATIndEnv(),
+        config=MATIndPolicyConfig(
             encoder_config=MATEncoderConfig(
                 d_model=16,
                 nhead=4,
@@ -65,15 +77,22 @@ def _make_policy(
     )
 
 
+def test_default_config_constructs_policy() -> None:
+    policy = MATIndPolicy(env=_DummyDefaultMATIndEnv())
+
+    assert isinstance(policy.config, MATIndPolicyConfig)
+    assert policy.max_agents == _DummyDefaultMATIndEnv.n_agents
+
+
 def test_forward_and_value_paths_match_pipeline_shapes() -> None:
     policy = _make_policy()
     torch.manual_seed(0)
 
     batch_size = 3
-    local_obs = torch.randn(batch_size, _DummyMATDecEnv.n_agents, _DummyMATDecEnv.local_obs_dim)
-    global_obs = torch.randn(batch_size, _DummyMATDecEnv.global_obs_dim)
-    hidden_local_vars = torch.randn(batch_size, _DummyMATDecEnv.n_agents, _DummyMATDecEnv.hidden_local_vars_dim)
-    hidden_global_vars = torch.randn(batch_size, _DummyMATDecEnv.hidden_global_vars_dim)
+    local_obs = torch.randn(batch_size, _DummyMATIndEnv.n_agents, _DummyMATIndEnv.local_obs_dim)
+    global_obs = torch.randn(batch_size, _DummyMATIndEnv.global_obs_dim)
+    hidden_local_vars = torch.randn(batch_size, _DummyMATIndEnv.n_agents, _DummyMATIndEnv.hidden_local_vars_dim)
+    hidden_global_vars = torch.randn(batch_size, _DummyMATIndEnv.hidden_global_vars_dim)
     agent_mask = torch.tensor(
         [
             [True, True, True, False],
@@ -83,8 +102,8 @@ def test_forward_and_value_paths_match_pipeline_shapes() -> None:
     )
     previous_actions = torch.zeros(
         batch_size,
-        _DummyMATDecEnv.n_agents,
-        _DummyMATDecEnv.action_space.total_agent_action_dim,
+        _DummyMATIndEnv.n_agents,
+        _DummyMATIndEnv.action_space.total_agent_action_dim,
     )
 
     actions, log_probs, values = policy(
@@ -106,10 +125,10 @@ def test_forward_and_value_paths_match_pipeline_shapes() -> None:
 
     assert actions.shape == (
         batch_size,
-        _DummyMATDecEnv.n_agents,
-        _DummyMATDecEnv.action_space.total_agent_action_dim,
+        _DummyMATIndEnv.n_agents,
+        _DummyMATIndEnv.action_space.total_agent_action_dim,
     )
-    assert log_probs.shape == (batch_size, _DummyMATDecEnv.n_agents)
+    assert log_probs.shape == (batch_size, _DummyMATIndEnv.n_agents)
     assert values.shape == (batch_size,)
     assert predicted_values.shape == (batch_size,)
     assert torch.allclose(values, predicted_values, rtol=0.0, atol=1e-6)
@@ -122,11 +141,11 @@ def test_evaluate_actions_matches_rollout_log_probs_for_masked_agents() -> None:
     torch.manual_seed(1)
 
     batch_size = 4
-    action_dim = _DummyMATDecEnv.action_space.total_agent_action_dim
-    local_obs = torch.randn(batch_size, _DummyMATDecEnv.n_agents, _DummyMATDecEnv.local_obs_dim)
-    global_obs = torch.randn(batch_size, _DummyMATDecEnv.global_obs_dim)
-    hidden_local_vars = torch.randn(batch_size, _DummyMATDecEnv.n_agents, _DummyMATDecEnv.hidden_local_vars_dim)
-    hidden_global_vars = torch.randn(batch_size, _DummyMATDecEnv.hidden_global_vars_dim)
+    action_dim = _DummyMATIndEnv.action_space.total_agent_action_dim
+    local_obs = torch.randn(batch_size, _DummyMATIndEnv.n_agents, _DummyMATIndEnv.local_obs_dim)
+    global_obs = torch.randn(batch_size, _DummyMATIndEnv.global_obs_dim)
+    hidden_local_vars = torch.randn(batch_size, _DummyMATIndEnv.n_agents, _DummyMATIndEnv.hidden_local_vars_dim)
+    hidden_global_vars = torch.randn(batch_size, _DummyMATIndEnv.hidden_global_vars_dim)
     agent_mask = torch.tensor(
         [
             [True, True, True, False],
@@ -135,7 +154,7 @@ def test_evaluate_actions_matches_rollout_log_probs_for_masked_agents() -> None:
             [True, True, True, True],
         ]
     )
-    previous_actions = torch.randn(batch_size, _DummyMATDecEnv.n_agents, action_dim)
+    previous_actions = torch.randn(batch_size, _DummyMATIndEnv.n_agents, action_dim)
     previous_actions = previous_actions.masked_fill(~agent_mask.unsqueeze(-1), 0.0)
 
     with torch.no_grad():
@@ -174,24 +193,24 @@ def test_compiled_evaluation_refreshes_distribution_state_for_extra_losses() -> 
     torch.manual_seed(43)
     with (
         patch(
-            "swarmbots.learn.algos.mat.mat_dec_policy._ensure_torch_compile_available",
+            "swarmbots.learn.algos.mat.mat_ind_policy._ensure_torch_compile_available",
         ),
         patch(
-            "swarmbots.learn.algos.mat.mat_dec_policy.torch.compile",
+            "swarmbots.learn.algos.mat.mat_ind_policy.torch.compile",
             side_effect=_compile_with_eager_backend,
         ),
     ):
         compiled_policy = _make_policy(compile_modules=True, ent_loss_coef=0.2)
 
         batch_size = 3
-        local_obs = torch.randn(batch_size, _DummyMATDecEnv.n_agents, _DummyMATDecEnv.local_obs_dim)
-        global_obs = torch.randn(batch_size, _DummyMATDecEnv.global_obs_dim)
+        local_obs = torch.randn(batch_size, _DummyMATIndEnv.n_agents, _DummyMATIndEnv.local_obs_dim)
+        global_obs = torch.randn(batch_size, _DummyMATIndEnv.global_obs_dim)
         hidden_local_vars = torch.randn(
             batch_size,
-            _DummyMATDecEnv.n_agents,
-            _DummyMATDecEnv.hidden_local_vars_dim,
+            _DummyMATIndEnv.n_agents,
+            _DummyMATIndEnv.hidden_local_vars_dim,
         )
-        hidden_global_vars = torch.randn(batch_size, _DummyMATDecEnv.hidden_global_vars_dim)
+        hidden_global_vars = torch.randn(batch_size, _DummyMATIndEnv.hidden_global_vars_dim)
         agent_mask = torch.tensor([
             [True, True, True, False],
             [True, True, False, False],
@@ -199,8 +218,8 @@ def test_compiled_evaluation_refreshes_distribution_state_for_extra_losses() -> 
         ])
         actions = torch.empty(
             batch_size,
-            _DummyMATDecEnv.n_agents,
-            _DummyMATDecEnv.action_space.total_agent_action_dim,
+            _DummyMATIndEnv.n_agents,
+            _DummyMATIndEnv.action_space.total_agent_action_dim,
         )
         actions[..., :2].uniform_(-0.8, 0.8)
         actions[..., 2:] = torch.randint(0, 2, actions[..., 2:].shape, dtype=actions.dtype)
