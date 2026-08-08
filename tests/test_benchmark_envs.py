@@ -203,7 +203,7 @@ def test_vmas_native_action_range_is_exposed_as_normalized_actions() -> None:
         env.close()
 
 
-@pytest.mark.parametrize("policy_variant", ["mat_qcx", "mat_ind", "tmasac"])
+@pytest.mark.parametrize("policy_variant", ["mat_qcx", "mat_dec", "mat_ind", "tmasac"])
 def test_benchmark_policy_factory_builds_requested_feedforward_variants(
     policy_variant: str,
 ) -> None:
@@ -240,7 +240,7 @@ def test_benchmark_policy_factory_builds_requested_feedforward_variants(
         env.close()
 
 
-@pytest.mark.parametrize("policy_variant", ["mat_qcx", "mat_ind"])
+@pytest.mark.parametrize("policy_variant", ["mat_qcx", "mat_dec", "mat_ind"])
 def test_external_benchmark_ppo_nop_uses_configured_encoder_width(
     policy_variant: str,
 ) -> None:
