@@ -43,6 +43,7 @@ from swarmbots.learn.action_dists.sign_magnitude_beta_action_dist import SignMag
 from swarmbots.learn.action_dists.sticky_action_dist import StickyActionDist
 from swarmbots.learn.action_dists.sticky_sign_magnitude_beta_action_dist import StickySignMagnitudeBetaConfig
 from swarmbots.learn.action_dists.squashed_diag_gaussian_action_dist import SquashedDiagGaussianConfig
+from swarmbots.learn.algos.mat.mat_dec_policy import MATDecPolicy, MATDecPolicyConfig
 from swarmbots.learn.algos.mat.mat_ind_policy import MATIndPolicy, MATIndPolicyConfig
 from swarmbots.learn.algos.mat_qcc.mat_qcc_decoder import MATQCCDecoderConfig
 from swarmbots.learn.algos.mat_qcc.mat_qcc_policy import MATQCCPolicy, MATQCCPolicyConfig
@@ -128,6 +129,7 @@ PolicyVariant = Literal[
     "mat_qcs",
     "mat_qcc",
     "mat_qcx",
+    "mat_dec",
     "mat_ind",
     "mat_orig",
     "r_mat_qcs",
@@ -1329,7 +1331,7 @@ def _make_mat_parameter_lr_multipliers(
             include_actor_head_input_norm=True,
         )
 
-    if policy_variant in {"mat_ind", "r_mat_ind"} and include_actor_head_lr_multiplier:
+    if policy_variant in {"mat_dec", "mat_ind", "r_mat_ind"} and include_actor_head_lr_multiplier:
         return make_prefix_multipliers()
 
     logger.warning(f"Ignoring decoder LR multiplier for policy_variant={policy_variant!r}")
@@ -1451,6 +1453,7 @@ def _make_base_policy(
         | MATQCSPolicy
         | MATQCCPolicy
         | MATQCXPolicy
+        | MATDecPolicy
         | MATIndPolicy
         | MATOrigPolicy
         | RMATQCSPolicy
@@ -1973,6 +1976,25 @@ def _make_base_policy(
                 max_agents=20,
                 compile_modules=compile_policy_modules,
                 compile_mode=policy_compile_mode,
+                action_net_init_gain=mat_init_gains.action_net,
+            ),
+        )
+
+    if policy_variant == "mat_dec":
+        return MATDecPolicy(
+            env=env,
+            config=MATDecPolicyConfig(
+                encoder_config=mat_encoder_config,
+                critic_config=mat_qcs_critic_config,
+                actor_head_hidden_dims=[dec_d_model, dec_d_model],
+                dropout=0.0,
+                act_fn_cls=act_fn_cls,
+                continuous_config=continuous_config,
+                bernoulli_config=bernoulli_config,
+                max_agents=20,
+                compile_modules=compile_policy_modules,
+                compile_mode=policy_compile_mode,
+                actor_head_init_gain=mat_init_gains.actor_head,
                 action_net_init_gain=mat_init_gains.action_net,
             ),
         )

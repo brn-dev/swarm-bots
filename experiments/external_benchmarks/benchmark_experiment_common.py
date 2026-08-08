@@ -55,7 +55,7 @@ from swarmbots.learn.summary_statistics import SummaryStatisticsFormat
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 BenchmarkSuite = Literal["mamujoco", "vmas"]
-BenchmarkPolicyVariant = Literal["mat_qcx", "mat_ind", "tmasac"]
+BenchmarkPolicyVariant = Literal["mat_qcx", "mat_dec", "mat_ind", "tmasac"]
 
 
 def run_benchmark_experiment(
@@ -78,7 +78,7 @@ def run_benchmark_experiment(
     scenario_kwargs: dict[str, Any] | None = None,
     compile_modules: bool = True,
 ) -> None:
-    if policy_variant not in {"mat_qcx", "mat_ind", "tmasac"}:
+    if policy_variant not in {"mat_qcx", "mat_dec", "mat_ind", "tmasac"}:
         raise ValueError(f"Unsupported benchmark policy variant: {policy_variant}")
     if min(num_envs, rollout_steps_per_env, episode_length, total_timesteps) <= 0:
         raise ValueError(

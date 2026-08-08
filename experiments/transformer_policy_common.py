@@ -17,6 +17,7 @@ from swarmbots.learn.action_dists.sign_magnitude_beta_action_dist import (
     SignMagnitudeBetaConfig,
 )
 from swarmbots.learn.algos.mat import MATEncoderConfig, MLPConfig
+from swarmbots.learn.algos.mat.mat_dec_policy import MATDecPolicy, MATDecPolicyConfig
 from swarmbots.learn.algos.mat.mat_ind_policy import MATIndPolicy, MATIndPolicyConfig
 from swarmbots.learn.algos.mat_qcs.mat_qcs_policy import MATQCSCriticConfig
 from swarmbots.learn.algos.mat_qcx.mat_qcx_decoder import MATQCXDecoderConfig
@@ -35,7 +36,7 @@ from swarmbots.learn.algos.sac.tmasac_policy import (
 from swarmbots.learn.algos.world_modeling.next_obs_pred_mixin import NextObsPredConfig
 from swarmbots.learn.obs_indices import ObsIndices
 
-FeedForwardTransformerPolicyVariant = Literal["mat_qcx", "mat_ind", "tmasac"]
+FeedForwardTransformerPolicyVariant = Literal["mat_qcx", "mat_dec", "mat_ind", "tmasac"]
 
 
 @dataclass(frozen=True)
@@ -96,7 +97,7 @@ def make_benchmark_transformer_policy(
     world_model_loss_coef: float = 0.1,
     world_model_num_next_steps: int = 3,
     transition_model_d_model: int = 128,
-) -> MATQCXPolicy | MATIndPolicy | TMASACPolicy:
+) -> MATQCXPolicy | MATDecPolicy | MATIndPolicy | TMASACPolicy:
     is_sac = policy_variant == "tmasac"
     entropy_config = EntropyLossConfig(
         entropy_floor=0.35,
@@ -206,7 +207,7 @@ def make_feedforward_transformer_policy(
     compile_modules: bool,
     compile_mode: str,
     max_agents: int = 20,
-) -> MATQCXPolicy | MATIndPolicy | TMASACPolicy:
+) -> MATQCXPolicy | MATDecPolicy | MATIndPolicy | TMASACPolicy:
     if policy_variant == "tmasac":
         return TMASACPolicy(
             env=env,
@@ -226,6 +227,24 @@ def make_feedforward_transformer_policy(
                 nop_config=nop_config,
                 compile_modules=compile_modules,
                 compile_mode=compile_mode,
+                action_net_init_gain=mat_init_gains.action_net,
+            ),
+        )
+    if policy_variant == "mat_dec":
+        return MATDecPolicy(
+            env=env,
+            config=MATDecPolicyConfig(
+                encoder_config=encoder_config,
+                critic_config=ppo_critic_config,
+                actor_head_hidden_dims=[dec_d_model, dec_d_model],
+                dropout=0.0,
+                act_fn_cls=act_fn_cls,
+                continuous_config=continuous_config,
+                bernoulli_config=bernoulli_config,
+                max_agents=max_agents,
+                compile_modules=compile_modules,
+                compile_mode=compile_mode,
+                actor_head_init_gain=mat_init_gains.actor_head,
                 action_net_init_gain=mat_init_gains.action_net,
             ),
         )

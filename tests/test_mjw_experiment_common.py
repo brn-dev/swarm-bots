@@ -35,6 +35,7 @@ from swarmbots.learn.action_dists.reparameterized_sign_magnitude_kumaraswamy_act
 )
 from swarmbots.learn.action_dists.predicted_std_action_dist import PredictedStdActionDist
 from swarmbots.learn.action_dists.sign_magnitude_beta_action_dist import SignMagnitudeBetaActionDist
+from swarmbots.learn.algos.mat.mat_dec_policy import MATDecPolicy
 from swarmbots.learn.algos.mat.mat_encoder import MATEncoder
 from swarmbots.learn.algos.mat_qcs.mat_qcs_decoder import MATQCSDecoderSelfAttentionMode
 from swarmbots.learn.algos.mat_qcs.mat_qcs_policy import MATQCSPolicy
@@ -792,6 +793,24 @@ def test_mat_lr_multipliers_can_include_actor_head_modules() -> None:
     )
 
     assert mat_ind_multipliers == {"actor_head": 0.25}
+
+    mat_dec_multipliers = _make_mat_parameter_lr_multipliers(
+        policy_variant="mat_dec",
+        mat_decoder_lr_multiplier=0.25,
+        include_actor_head_lr_multiplier=True,
+    )
+
+    assert mat_dec_multipliers == {"actor_head": 0.25}
+
+
+def test_make_base_policy_constructs_mat_dec_variant() -> None:
+    policy = _make_test_base_policy(policy_variant="mat_dec")
+
+    assert isinstance(policy, MATDecPolicy)
+    assert policy.actor_head.input_dim == policy.actor_encoder_config.d_model
+    assert policy.actor_head.hidden_dims == [8, 8]
+    assert policy.actor_encoder.global_obs_dim == _DummyEnv.global_obs_dim
+    assert all(layer.self_attn is None for layer in policy.actor_encoder.layers)
 
 
 def test_make_base_policy_constructs_mat_qcx_variant() -> None:

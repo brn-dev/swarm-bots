@@ -84,7 +84,7 @@ class MATIndPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
 
         if config.actor_head_hidden_dims is not None and len(config.actor_head_hidden_dims) > 0:
             self.actor_head = MLP(
-                input_dim=self.d_model_encoder,
+                input_dim=self._actor_input_dim(),
                 hidden_dims=config.actor_head_hidden_dims,
                 end_with_act_fn=True,
                 linear_init=make_init_linear_orthogonal(config.actor_head_init_gain),
@@ -93,7 +93,7 @@ class MATIndPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
             latent_pi_dim = config.actor_head_hidden_dims[-1]
         else:
             self.actor_head = nn.Identity()
-            latent_pi_dim = self.d_model_encoder
+            latent_pi_dim = self._actor_input_dim()
 
         self.action_dist = HybridActionDistribution(
             latent_dim=latent_pi_dim,
@@ -145,6 +145,19 @@ class MATIndPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
             global_obs_dim=self.global_obs_dim,
         )
 
+    def _actor_input_dim(self) -> int:
+        return self.d_model_encoder
+
+    def _actor_observations(
+            self,
+            local_obs: torch.Tensor,
+            global_obs: torch.Tensor,
+            augmented_observations: torch.Tensor,
+    ) -> torch.Tensor:
+        _ = local_obs
+        _ = global_obs
+        return augmented_observations
+
     def get_hyper_parameters(self) -> dict[str, Any]:
         return {
             "mat_ind_policy_config": {
@@ -179,7 +192,11 @@ class MATIndPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         augmented_observations = self.encoder(local_obs, global_obs, agent_mask=agent_mask)
         actions, log_probs = self._generate_actions(
-            augmented_observations=augmented_observations,
+            augmented_observations=self._actor_observations(
+                local_obs,
+                global_obs,
+                augmented_observations,
+            ),
             agent_mask=agent_mask,
             previous_actions=previous_actions,
             deterministic=deterministic,
@@ -313,7 +330,12 @@ class MATIndPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
             agent_mask: torch.Tensor | None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         augmented_observations = self.encoder(local_obs, global_obs, agent_mask=agent_mask)
-        latent_pi = self.actor_head(augmented_observations).contiguous()
+        actor_observations = self._actor_observations(
+            local_obs,
+            global_obs,
+            augmented_observations,
+        )
+        latent_pi = self.actor_head(actor_observations).contiguous()
         values = self._critic_with_hidden_vars(
             augmented_observations,
             hidden_local_vars,
