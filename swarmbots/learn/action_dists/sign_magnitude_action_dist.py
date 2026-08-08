@@ -3,7 +3,8 @@ import math
 from typing import Any, Self
 
 import torch
-from torch import distributions as torchdist, nn
+from torch import distributions as torchdist
+from torch import nn
 from torch.nn import functional as F
 
 from swarmbots.learn.action_dists.action_dist import (
@@ -43,6 +44,7 @@ class SignMagnitudeActionDist(ActionDist):
     _OUTPUTS_PER_ACTION = 6
 
     _NEGATIVE_INDEX = 0
+    _ZERO_INDEX: int | None = None
     _POSITIVE_INDEX = 1
 
     def __init__(
@@ -60,6 +62,7 @@ class SignMagnitudeActionDist(ActionDist):
             categorical_ent_loss_config: EntropyLossConfig | None,
             magnitude_ent_loss_config: EntropyLossConfig | None,
             magnitude_entropy_metric_name: str,
+            initial_zero_prob: float | None = None,
     ) -> None:
         super().__init__(
             latent_dim=latent_dim,
@@ -77,11 +80,18 @@ class SignMagnitudeActionDist(ActionDist):
             raise ValueError(
                 f"initial_positive_prob must be strictly between 0 and 1, got {initial_positive_prob}"
             )
+        if initial_zero_prob is not None and not (0.0 < initial_zero_prob < 1.0):
+            raise ValueError(
+                f"initial_zero_prob must be strictly between 0 and 1, got {initial_zero_prob}"
+            )
+        if self._ZERO_INDEX is None and initial_zero_prob is not None:
+            raise ValueError("initial_zero_prob is only valid for a distribution with a zero component")
         for name, value in zip(magnitude_parameter_names, initial_magnitude_parameters, strict=True):
             if value <= 1.0:
                 raise ValueError(f"{name} must be > 1.0, got {value}")
 
         self.initial_positive_prob = initial_positive_prob
+        self.initial_zero_prob = initial_zero_prob
         self.epsilon = epsilon
         self.ent_loss_coef = ent_loss_coef
         self.magnitude_ent_scale = magnitude_ent_scale
@@ -103,10 +113,35 @@ class SignMagnitudeActionDist(ActionDist):
 
         with torch.no_grad():
             bias = self.output_net.bias.view(action_dim, self._OUTPUTS_PER_ACTION)
-            if initial_positive_prob is not None:
+            if self._ZERO_INDEX is not None and (
+                    initial_zero_prob is not None or initial_positive_prob is not None
+            ):
+                zero_prob = (
+                    initial_zero_prob
+                    if initial_zero_prob is not None
+                    else (1.0 - initial_positive_prob) / 2.0
+                )
+                positive_prob = (
+                    initial_positive_prob
+                    if initial_positive_prob is not None
+                    else (1.0 - initial_zero_prob) / 2.0
+                )
+                negative_prob = 1.0 - zero_prob - positive_prob
+                if negative_prob <= 0.0:
+                    raise ValueError(
+                        "initial_zero_prob + initial_positive_prob must be < 1, "
+                        f"got {zero_prob + positive_prob}"
+                    )
+                bias[:, self._NEGATIVE_INDEX] = math.log(negative_prob)
+                bias[:, self._ZERO_INDEX] = math.log(zero_prob)
+                bias[:, self._POSITIVE_INDEX] = math.log(positive_prob)
+            elif initial_positive_prob is not None:
                 bias[:, self._NEGATIVE_INDEX] = math.log(1.0 - initial_positive_prob)
                 bias[:, self._POSITIVE_INDEX] = math.log(initial_positive_prob)
-            for output_index, parameter in enumerate(initial_magnitude_parameters, start=2):
+            for output_index, parameter in enumerate(
+                    initial_magnitude_parameters,
+                    start=self._N_MIXTURE_COMPONENTS,
+            ):
                 bias[:, output_index] = inverse_softplus(parameter - 1.0)
 
         self.weight_logits: torch.Tensor | None = None
@@ -116,7 +151,9 @@ class SignMagnitudeActionDist(ActionDist):
     def update_latent_features(self, latent_pi: torch.Tensor) -> Self:
         raw = self.output_net(latent_pi).view(*latent_pi.shape[:-1], self.action_dim, self._OUTPUTS_PER_ACTION)
         self.weight_logits = raw[..., :self._N_MIXTURE_COMPONENTS]
-        self.negative_magnitude_dist, self.positive_magnitude_dist = self._make_magnitude_distributions(raw[..., 2:])
+        self.negative_magnitude_dist, self.positive_magnitude_dist = self._make_magnitude_distributions(
+            raw[..., self._N_MIXTURE_COMPONENTS:]
+        )
         return self
 
     @abc.abstractmethod
@@ -150,13 +187,18 @@ class SignMagnitudeActionDist(ActionDist):
         assert self.positive_magnitude_dist is not None
         negative_magnitude_mode, positive_magnitude_mode = self._magnitude_modes()
         component_log_probs = self._component_log_probs(previous_actions)
-        component_mode_scores = torch.stack((
+        component_mode_scores = [
             component_log_probs[..., self._NEGATIVE_INDEX]
             + self.negative_magnitude_dist.log_prob(negative_magnitude_mode),
+        ]
+        if self._ZERO_INDEX is not None:
+            component_mode_scores.append(component_log_probs[..., self._ZERO_INDEX])
+        component_mode_scores.append(
             component_log_probs[..., self._POSITIVE_INDEX]
-            + self.positive_magnitude_dist.log_prob(positive_magnitude_mode),
-        ), dim=-1)
-        component_indices = component_mode_scores.argmax(dim=-1)
+            + self.positive_magnitude_dist.log_prob(positive_magnitude_mode)
+        )
+        stacked_component_mode_scores = torch.stack(component_mode_scores, dim=-1)
+        component_indices = stacked_component_mode_scores.argmax(dim=-1)
         return self._select_actions(
             component_indices,
             negative_magnitude_mode,
@@ -177,6 +219,12 @@ class SignMagnitudeActionDist(ActionDist):
             log_weights[..., self._NEGATIVE_INDEX] + negative_log_probs,
             log_weights[..., self._POSITIVE_INDEX] + positive_log_probs,
         )
+        if self._ZERO_INDEX is not None:
+            log_prob_per_action = torch.where(
+                actions == 0.0,
+                log_weights[..., self._ZERO_INDEX],
+                log_prob_per_action,
+            )
         return log_prob_per_action.sum(dim=AGENT_ACTIONS_DIM)
 
     def _component_probs(self, previous_actions: torch.Tensor | None) -> torch.Tensor:
@@ -228,7 +276,34 @@ class SignMagnitudeActionDist(ActionDist):
             positive_magnitudes: torch.Tensor,
     ) -> torch.Tensor:
         negative_actions = -1.0 + negative_magnitudes
-        return torch.where(component_indices == self._NEGATIVE_INDEX, negative_actions, positive_magnitudes)
+        actions = torch.where(
+            component_indices == self._NEGATIVE_INDEX,
+            negative_actions,
+            positive_magnitudes,
+        )
+        if self._ZERO_INDEX is not None:
+            actions = torch.where(component_indices == self._ZERO_INDEX, 0.0, actions)
+        return actions
+
+    def _sampled_component_log_probs(
+            self,
+            negative_magnitudes: torch.Tensor,
+            positive_magnitudes: torch.Tensor,
+    ) -> torch.Tensor:
+        negative_magnitude_log_probs, positive_magnitude_log_probs = self._magnitude_log_probs(
+            negative_magnitudes,
+            positive_magnitudes,
+        )
+        log_weights = self._component_log_probs(previous_actions=None)
+        component_log_probs = [
+            log_weights[..., self._NEGATIVE_INDEX] + negative_magnitude_log_probs,
+        ]
+        if self._ZERO_INDEX is not None:
+            component_log_probs.append(log_weights[..., self._ZERO_INDEX])
+        component_log_probs.append(
+            log_weights[..., self._POSITIVE_INDEX] + positive_magnitude_log_probs
+        )
+        return torch.stack(component_log_probs, dim=-1)
 
     def compute_extra_losses(
             self,
@@ -330,13 +405,16 @@ class SignMagnitudeActionDist(ActionDist):
         return compute_action_metrics(actions, action_splitter, histogram=BOUNDED_ACTION_HISTOGRAM)
 
     def get_hyper_parameters(self) -> dict[str, Any]:
-        return {
+        hyper_parameters = {
             **super().get_hyper_parameters(),
             "epsilon": self.epsilon,
             "ent_loss_coef": self.ent_loss_coef,
             "initial_positive_prob": self.initial_positive_prob,
             "categorical_ent_loss_config": serialize_dataclass(self.categorical_ent_loss_config),
         }
+        if self._ZERO_INDEX is not None:
+            hyper_parameters["initial_zero_prob"] = self.initial_zero_prob
+        return hyper_parameters
 
     def _assert_ready(self) -> None:
         if (

@@ -35,6 +35,9 @@ from swarmbots.learn.action_dists.reparameterized_sign_magnitude_kumaraswamy_act
 )
 from swarmbots.learn.action_dists.predicted_std_action_dist import PredictedStdActionDist
 from swarmbots.learn.action_dists.sign_magnitude_beta_action_dist import SignMagnitudeBetaActionDist
+from swarmbots.learn.action_dists.ternary_sign_magnitude_beta_action_dist import (
+    TernarySignMagnitudeBetaActionDist,
+)
 from swarmbots.learn.algos.mat.mat_dec_policy import MATDecPolicy
 from swarmbots.learn.algos.mat.mat_encoder import MATEncoder
 from swarmbots.learn.algos.mat_qcs.mat_qcs_decoder import MATQCSDecoderSelfAttentionMode
@@ -1284,6 +1287,7 @@ def test_make_base_policy_preserves_requested_tmasac_nop_horizon() -> None:
 def test_make_base_policy_supports_tmasac_straight_through_action_families() -> None:
     variants_and_types = (
         ("gumbel_softmax_sign_magnitude_beta", GumbelSoftmaxSignMagnitudeBetaActionDist),
+        ("ternary_sign_magnitude_beta", TernarySignMagnitudeBetaActionDist),
         (
             "gumbel_softmax_sign_magnitude_kumaraswamy",
             GumbelSoftmaxSignMagnitudeKumaraswamyActionDist,

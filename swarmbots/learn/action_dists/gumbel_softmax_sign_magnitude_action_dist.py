@@ -83,18 +83,11 @@ class _GumbelSoftmaxSignMagnitudeMixin:
         _ = (agent, previous_actions)
         self.update_latent_features(latent_pi)
         actions, selection, negative_magnitudes, positive_magnitudes = self._rsample_with_selection()
-        negative_magnitude_log_probs, positive_magnitude_log_probs = self._magnitude_log_probs(
+        component_log_probs = self._sampled_component_log_probs(
             negative_magnitudes,
             positive_magnitudes,
         )
-        assert self.weight_logits is not None
-        log_weights = F.log_softmax(self.weight_logits, dim=-1)
-        negative_log_probs = log_weights[..., self._NEGATIVE_INDEX] + negative_magnitude_log_probs
-        positive_log_probs = log_weights[..., self._POSITIVE_INDEX] + positive_magnitude_log_probs
-        log_probs = (
-                selection[..., self._NEGATIVE_INDEX] * negative_log_probs
-                + selection[..., self._POSITIVE_INDEX] * positive_log_probs
-        ).sum(dim=AGENT_ACTIONS_DIM)
+        log_probs = (selection * component_log_probs).sum(dim=-1).sum(dim=AGENT_ACTIONS_DIM)
         return actions, log_probs
 
     def _rsample_with_selection(

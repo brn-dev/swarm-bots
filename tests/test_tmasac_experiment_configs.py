@@ -1,3 +1,4 @@
+import importlib
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -68,6 +69,109 @@ def test_default_tmasac_uses_two_512_hidden_layers(
     config = run_mjw_experiment.call_args.kwargs["mat_encoder_transformer_ff_config"]
     assert isinstance(config, MLPConfig)
     assert config.hidden_dims == [512, 512]
+
+
+def test_tmasac_experiment_forwards_ternary_action_distribution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run_mjw_experiment = Mock()
+    monkeypatch.setattr(tmasac_common, "run_mjw_experiment", run_mjw_experiment)
+
+    tmasac_common.run_tmasac_experiment(
+        experiment_run_name="test_suite",
+        scenario_name="vertical_reach",
+        scenario_kwargs={"continuous_connector_actions": True},
+        variant="tmasac_baseline",
+        entrypoint_path=Path(__file__),
+        continuous_action_dist="ternary_sign_magnitude_beta",
+    )
+
+    kwargs = run_mjw_experiment.call_args.kwargs
+    assert kwargs["continuous_action_dist"] == "ternary_sign_magnitude_beta"
+    assert kwargs["variant_name"] == "tmasac_baseline_ternary_sign_magnitude_beta"
+
+
+@pytest.mark.parametrize(
+    ("module_name", "run_kwargs"),
+    [
+        (
+            "experiments.mjw_bridge_po_tmasac.scripts.ternary_smb.common",
+            {"variant": "tmasac_baseline", "entrypoint_path": Path(__file__)},
+        ),
+        (
+            "experiments.mjw_bridge_static_tmasac.scripts.ternary_smb.common",
+            {"variant": "tmasac_baseline", "entrypoint_path": Path(__file__)},
+        ),
+        (
+            "experiments.mjw_multi_payload_goal_easy_tmasac.scripts.ternary_smb.common",
+            {"variant": "tmasac_baseline", "entrypoint_path": Path(__file__)},
+        ),
+        (
+            "experiments.mjw_vertical_reach_tmasac.scripts.ternary_smb.common",
+            {"variant": "tmasac_baseline", "entrypoint_path": Path(__file__)},
+        ),
+        (
+            "experiments.mjw_po_wall_medium_1024x1_tmasac.scripts.ternary_smb.common",
+            {"variant_name": "wall_test", "entrypoint_path": Path(__file__)},
+        ),
+        (
+            "experiments.mjw_find_opening_tmasac.scripts.ternary_smb.common",
+            {"variant_name": "find_opening_test", "entrypoint_path": Path(__file__)},
+        ),
+    ],
+)
+def test_ternary_script_adapters_pin_action_distribution(
+    monkeypatch: pytest.MonkeyPatch,
+    module_name: str,
+    run_kwargs: dict[str, object],
+) -> None:
+    module = importlib.import_module(module_name)
+    parent_run_experiment = Mock()
+    monkeypatch.setattr(module, "_run_experiment", parent_run_experiment)
+
+    module.run_experiment(**run_kwargs)
+
+    assert (
+        parent_run_experiment.call_args.kwargs["continuous_action_dist"]
+        == "ternary_sign_magnitude_beta"
+    )
+
+
+@pytest.mark.parametrize(
+    ("module_name", "underlying_name", "run_kwargs"),
+    [
+        (
+            "experiments.mjw_po_wall_medium_1024x1_tmasac.scripts.common",
+            "run_mjw_wall_experiment",
+            {},
+        ),
+        (
+            "experiments.mjw_find_opening_tmasac.scripts.common",
+            "run_mjw_find_opening_experiment",
+            {"temporal_model_variant": "baseline"},
+        ),
+    ],
+)
+def test_custom_tmasac_suites_suffix_nondefault_action_distribution(
+    monkeypatch: pytest.MonkeyPatch,
+    module_name: str,
+    underlying_name: str,
+    run_kwargs: dict[str, object],
+) -> None:
+    module = importlib.import_module(module_name)
+    underlying_run_experiment = Mock()
+    monkeypatch.setattr(module, underlying_name, underlying_run_experiment)
+
+    module.run_experiment(
+        variant_name="test_variant",
+        entrypoint_path=Path(__file__),
+        continuous_action_dist="ternary_sign_magnitude_beta",
+        **run_kwargs,
+    )
+
+    kwargs = underlying_run_experiment.call_args.kwargs
+    assert kwargs["continuous_action_dist"] == "ternary_sign_magnitude_beta"
+    assert kwargs["variant_name"] == "test_variant_ternary_sign_magnitude_beta"
 
 
 def test_feedforward_tmasac_swiglu_stacks_two_parameter_matched_layers(
