@@ -15,6 +15,9 @@ OUTPUT_DIR = Path(__file__).resolve().parent / "results"
 MATCHING_TMASAC_RUN_DIR = RUNS_DIR / "mjw_find_opening_tmasac"
 EXTRA_GROUP_SOURCES = {
     "tmasac_baseline": (MATCHING_TMASAC_RUN_DIR / "tmasac_baseline",),
+    "slstm_two_small_actor_state_critic": (
+        MATCHING_TMASAC_RUN_DIR / "slstm_two_small_actor_state_critic",
+    ),
 }
 
 
