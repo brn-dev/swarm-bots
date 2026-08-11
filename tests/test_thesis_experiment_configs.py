@@ -4,10 +4,10 @@ from unittest.mock import patch
 import pytest
 
 from experiments import thesis_experiment_common
-from experiments.mjw_find_opening_thesis import plot_results as find_opening_plot
-from experiments.mjw_find_opening_thesis.scripts import common as find_opening_common
-from experiments.mjw_po_wall_medium_thesis import plot_results as po_wall_plot
-from experiments.mjw_po_wall_medium_thesis.scripts import common as po_wall_common
+from experiments.thesis_mjw_find_opening import plot_results as find_opening_plot
+from experiments.thesis_mjw_find_opening.scripts import common as find_opening_common
+from experiments.thesis_mjw_po_wall_medium import plot_results as po_wall_plot
+from experiments.thesis_mjw_po_wall_medium.scripts import common as po_wall_common
 from swarmbots.learn.algos.mat.mat_encoder import (
     MATEncoderConfig,
     resolve_transformer_ff_config,
@@ -88,6 +88,13 @@ def test_tmasac_thesis_variants_use_shared_current_architectures(
 def test_thesis_suites_use_continuous_connector_scenario_configs() -> None:
     assert find_opening_common.SCENARIO_KWARGS == {"continuous_connector_actions": True}
     assert po_wall_common.SCENARIO_KWARGS["continuous_connector_actions"] is True
+
+
+def test_thesis_suite_names_use_thesis_prefix() -> None:
+    assert find_opening_common.EXPERIMENT_RUN_NAME == "thesis_mjw_find_opening"
+    assert po_wall_common.EXPERIMENT_RUN_NAME == "thesis_mjw_po_wall_medium"
+    assert find_opening_plot.EXPERIMENT_RUN_DIR.name == "thesis_mjw_find_opening"
+    assert po_wall_plot.EXPERIMENT_RUN_DIR.name == "thesis_mjw_po_wall_medium"
 
 
 def test_find_opening_plot_reuses_matching_tmasac_runs() -> None:
