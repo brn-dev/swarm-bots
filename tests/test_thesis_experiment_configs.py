@@ -8,6 +8,11 @@ from experiments.mjw_find_opening_thesis import plot_results as find_opening_plo
 from experiments.mjw_find_opening_thesis.scripts import common as find_opening_common
 from experiments.mjw_po_wall_medium_thesis import plot_results as po_wall_plot
 from experiments.mjw_po_wall_medium_thesis.scripts import common as po_wall_common
+from swarmbots.learn.algos.mat.mat_encoder import (
+    MATEncoderConfig,
+    resolve_transformer_ff_config,
+)
+from swarmbots.learn.nn_components.feed_forward import MLPConfig
 
 
 @pytest.mark.parametrize(
@@ -90,7 +95,23 @@ def test_find_opening_plot_reuses_matching_tmasac_runs() -> None:
         "tmasac_baseline": (
             find_opening_plot.MATCHING_TMASAC_RUN_DIR / "tmasac_baseline",
         ),
+        "slstm_two_small_actor_state_critic": (
+            find_opening_plot.MATCHING_TMASAC_RUN_DIR
+            / "slstm_two_small_actor_state_critic",
+        ),
     }
+
+
+def test_implicit_recurrent_critic_feedforward_matches_current_small_mlp() -> None:
+    old_implicit_config = MATEncoderConfig(
+        d_model=256,
+        dim_feedforward=512,
+        transformer_ff_config=None,
+    )
+
+    assert resolve_transformer_ff_config(old_implicit_config) == MLPConfig(
+        hidden_dims=[512]
+    )
 
 
 def test_po_wall_plot_reuses_matching_ppo_and_tmasac_runs() -> None:
