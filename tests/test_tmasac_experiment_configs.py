@@ -231,8 +231,8 @@ def test_requested_scenario_suites_expose_expected_scenario_configs() -> None:
     assert bridge_static_common.SCENARIO_KWARGS == {
         "continuous_connector_actions": True
     }
-    assert bridge_po_common.SCENARIO_KWARGS["bridge_x"].low == -2.0
-    assert bridge_po_common.SCENARIO_KWARGS["bridge_x"].high == 2.0
+    assert bridge_po_common.SCENARIO_KWARGS["bridge_x"].low == -2.5
+    assert bridge_po_common.SCENARIO_KWARGS["bridge_x"].high == 2.5
     assert vertical_reach_common.SCENARIO_KWARGS == {
         "continuous_connector_actions": True
     }
