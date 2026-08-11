@@ -12,7 +12,7 @@ from experiments.thesis_experiment_common import (
     run_thesis_experiment,
 )
 
-EXPERIMENT_RUN_NAME = "mjw_find_opening_thesis"
+EXPERIMENT_RUN_NAME = "thesis_mjw_find_opening"
 SCENARIO_KWARGS: dict[str, object] = {"continuous_connector_actions": True}
 
 

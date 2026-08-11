@@ -16,7 +16,7 @@ from swarmbots.scenario_presets.scenario_presets_kwargs import (
     make_scenario_kwargs,
 )
 
-EXPERIMENT_RUN_NAME = "mjw_po_wall_medium_thesis"
+EXPERIMENT_RUN_NAME = "thesis_mjw_po_wall_medium"
 SCENARIO_KWARGS = make_scenario_kwargs(
     PO_WALL_MEDIUM_SCENARIO_KWARGS,
     {"continuous_connector_actions": True},
