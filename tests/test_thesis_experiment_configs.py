@@ -16,17 +16,20 @@ from swarmbots.learn.nn_components.feed_forward import MLPConfig
 
 
 @pytest.mark.parametrize(
-    ("variant", "policy_variant"),
+    ("variant", "policy_variant", "continuous_action_dist", "use_nop"),
     (
-        ("mappo", "mat_ind"),
-        ("mat_qcx", "mat_qcx"),
-        ("mat_ind", "mat_ind"),
-        ("mat_orig", "mat_orig"),
+        ("mappo", "mat_ind", "sign_magnitude_beta", True),
+        ("mat_qcx", "mat_qcx", "sign_magnitude_beta", True),
+        ("mat_ind", "mat_ind", "sign_magnitude_beta", True),
+        ("mat_orig", "mat_orig", "sign_magnitude_beta", True),
+        ("mat_qcx_gsde_no_nop", "mat_qcx", "gsde", False),
     ),
 )
 def test_ppo_thesis_variants_use_current_observation_and_action_defaults(
     variant: thesis_experiment_common.ThesisAlgorithmVariant,
     policy_variant: str,
+    continuous_action_dist: str,
+    use_nop: bool,
 ) -> None:
     entrypoint_path = Path(__file__)
     scenario_kwargs = {"continuous_connector_actions": True}
@@ -45,11 +48,12 @@ def test_ppo_thesis_variants_use_current_observation_and_action_defaults(
         rollout_steps_per_env=4,
         variant_name=variant,
         entrypoint_path=entrypoint_path,
+        continuous_action_dist=continuous_action_dist,
         policy_variant=policy_variant,
         mat_add_agent_embeddings=False,
         mat_use_agent_attention=variant != "mappo",
         nop_add_agent_embeddings_transition_model=False,
-        use_nop=True,
+        use_nop=use_nop,
         use_transition_obs=False,
         experiment_run_name="test",
         scenario_name="find_opening",
@@ -59,11 +63,39 @@ def test_ppo_thesis_variants_use_current_observation_and_action_defaults(
 
 
 @pytest.mark.parametrize(
-    "variant",
-    ("tmasac_baseline", "slstm_two_small_actor_state_critic"),
+    ("variant", "tmasac_variant", "continuous_action_dist", "use_nop"),
+    (
+        (
+            "tmasac_baseline",
+            "tmasac_baseline",
+            "gumbel_softmax_sign_magnitude_beta",
+            True,
+        ),
+        (
+            "slstm_two_small_actor_state_critic",
+            "slstm_two_small_actor_state_critic",
+            "gumbel_softmax_sign_magnitude_beta",
+            True,
+        ),
+        (
+            "tmasac_baseline_predicted_std_no_nop",
+            "tmasac_baseline",
+            "predicted_std",
+            False,
+        ),
+        (
+            "slstm_two_small_actor_state_critic_predicted_std_no_nop",
+            "slstm_two_small_actor_state_critic",
+            "predicted_std",
+            False,
+        ),
+    ),
 )
 def test_tmasac_thesis_variants_use_shared_current_architectures(
     variant: thesis_experiment_common.ThesisAlgorithmVariant,
+    tmasac_variant: str,
+    continuous_action_dist: str,
+    use_nop: bool,
 ) -> None:
     entrypoint_path = Path(__file__)
     scenario_kwargs = {"continuous_connector_actions": True}
@@ -81,8 +113,11 @@ def test_tmasac_thesis_variants_use_shared_current_architectures(
         experiment_run_name="test",
         scenario_name="wall",
         scenario_kwargs=scenario_kwargs,
-        variant=variant,
+        variant=tmasac_variant,
         entrypoint_path=entrypoint_path,
+        continuous_action_dist=continuous_action_dist,
+        use_nop=use_nop,
+        variant_name=variant,
     )
 
 

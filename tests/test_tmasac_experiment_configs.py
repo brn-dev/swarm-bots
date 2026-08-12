@@ -91,6 +91,29 @@ def test_tmasac_experiment_forwards_ternary_action_distribution(
     assert kwargs["variant_name"] == "tmasac_baseline_ternary_sign_magnitude_beta"
 
 
+def test_tmasac_experiment_forwards_no_nop_and_explicit_variant_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run_mjw_experiment = Mock()
+    monkeypatch.setattr(tmasac_common, "run_mjw_experiment", run_mjw_experiment)
+
+    tmasac_common.run_tmasac_experiment(
+        experiment_run_name="test_suite",
+        scenario_name="vertical_reach",
+        scenario_kwargs={"continuous_connector_actions": True},
+        variant="tmasac_baseline",
+        entrypoint_path=Path(__file__),
+        continuous_action_dist="predicted_std",
+        use_nop=False,
+        variant_name="tmasac_baseline_predicted_std_no_nop",
+    )
+
+    kwargs = run_mjw_experiment.call_args.kwargs
+    assert kwargs["continuous_action_dist"] == "predicted_std"
+    assert kwargs["use_nop"] is False
+    assert kwargs["variant_name"] == "tmasac_baseline_predicted_std_no_nop"
+
+
 @pytest.mark.parametrize(
     ("module_name", "run_kwargs"),
     [
