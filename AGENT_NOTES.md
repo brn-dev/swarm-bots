@@ -5,7 +5,7 @@ Keep only durable architecture notes and costly gotchas. Delete stale implementa
 ## Codebase Map
 
 - `swarmbots/mj_env` is the CPU MuJoCo path, `swarmbots/mjw_env` is the batched GPU MJWarp path, and `swarmbots/learn` contains algorithms, rollout/replay, wrappers, action distributions, checkpointing, logging, and world-model wrappers.
-- `scripts/` contains examples and entry points. Shared MJW experiment setup is in `experiments/mjw_experiment_common.py`; shared external-benchmark setup is in `experiments/external_benchmarks/benchmark_experiment_common.py`.
+- `scripts/` contains examples and entry points. Shared MJW experiment setup is in `experiments/mjw_experiment_common.py`; shared external-benchmark setup is in `experiments/external_benchmarks/benchmark_experiment_common.py`. The thesis MAPPO baseline deliberately uses the MAT-independent policy with agent attention disabled so its MLP structure matches the MAT comparisons.
 - The four standard TMASAC architecture variants are centralized in `experiments/tmasac_experiment_common.py`; scenario-specific TMASAC suites should only bind their scenario name/kwargs and run name. Thesis algorithm comparisons are centralized in `experiments/thesis_experiment_common.py`, with shared plot labels and the 100M-step cutoff in `experiments/thesis_plot_common.py`.
 - `.ref` contains reference implementations for xLSTM, Multi-Agent Transformer, and Stable Baselines3.
 
