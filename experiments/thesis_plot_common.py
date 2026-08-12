@@ -12,6 +12,9 @@ THESIS_GROUP_ORDER = (
     "mat_orig",
     "tmasac_baseline",
     "slstm_two_small_actor_state_critic",
+    "mat_qcx_gsde_no_nop",
+    "tmasac_baseline_predicted_std_no_nop",
+    "slstm_two_small_actor_state_critic_predicted_std_no_nop",
 )
 THESIS_DISPLAY_NAMES = {
     "mappo": "MAPPO",
@@ -20,6 +23,11 @@ THESIS_DISPLAY_NAMES = {
     "mat_orig": "MAT original actor decoder + NOP",
     "tmasac_baseline": "TMASAC",
     "slstm_two_small_actor_state_critic": "TMASAC + sLSTM",
+    "mat_qcx_gsde_no_nop": "MAT-QCX, gSDE, no NOP",
+    "tmasac_baseline_predicted_std_no_nop": "TMASAC, predicted std, no NOP",
+    "slstm_two_small_actor_state_critic_predicted_std_no_nop": (
+        "TMASAC + sLSTM, predicted std, no NOP"
+    ),
 }
 THESIS_RUN_LENGTH = 100_000_000
 

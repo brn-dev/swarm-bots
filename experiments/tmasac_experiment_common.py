@@ -44,6 +44,8 @@ def run_tmasac_experiment(
     variant: TMASACExperimentVariant,
     entrypoint_path: Path,
     continuous_action_dist: ContinuousActionDistVariant = "gumbel_softmax_sign_magnitude_beta",
+    use_nop: bool = True,
+    variant_name: str | None = None,
 ) -> None:
     is_recurrent = variant.startswith("slstm_")
     mat_transformer_ff_config, actor_transformer_ff_config = _make_feedforward_configs(
@@ -54,9 +56,13 @@ def run_tmasac_experiment(
         num_envs=1024,
         rollout_steps_per_env=1,
         variant_name=(
-            variant
-            if continuous_action_dist == "gumbel_softmax_sign_magnitude_beta"
-            else f"{variant}_{continuous_action_dist}"
+            variant_name
+            if variant_name is not None
+            else (
+                variant
+                if continuous_action_dist == "gumbel_softmax_sign_magnitude_beta"
+                else f"{variant}_{continuous_action_dist}"
+            )
         ),
         entrypoint_path=entrypoint_path,
         continuous_action_dist=continuous_action_dist,
@@ -64,7 +70,7 @@ def run_tmasac_experiment(
         mat_add_agent_embeddings=False,
         mat_encoder_transformer_ff_config=mat_transformer_ff_config,
         nop_add_agent_embeddings_transition_model=False,
-        use_nop=True,
+        use_nop=use_nop,
         experiment_run_name=experiment_run_name,
         scenario_name=scenario_name,
         scenario_kwargs=scenario_kwargs,

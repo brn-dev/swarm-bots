@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from experiments.mjw_experiment_common import MJWScenarioName, PolicyVariant
+from experiments.mjw_experiment_common import (
+    ContinuousActionDistVariant,
+    MJWScenarioName,
+    PolicyVariant,
+)
 from experiments.mjw_experiment_common import run_experiment as run_mjw_experiment
 from experiments.tmasac_experiment_common import (
     TMASACExperimentVariant,
@@ -19,17 +24,66 @@ ThesisAlgorithmVariant = Literal[
     "mat_orig",
     "tmasac_baseline",
     "slstm_two_small_actor_state_critic",
+    "mat_qcx_gsde_no_nop",
+    "tmasac_baseline_predicted_std_no_nop",
+    "slstm_two_small_actor_state_critic_predicted_std_no_nop",
 ]
 
-PPO_POLICY_VARIANTS: dict[ThesisAlgorithmVariant, PolicyVariant] = {
-    "mappo": "mat_ind",
-    "mat_qcx": "mat_qcx",
-    "mat_ind": "mat_ind",
-    "mat_orig": "mat_orig",
-}
-TMASAC_VARIANTS = {
-    "tmasac_baseline",
-    "slstm_two_small_actor_state_critic",
+
+@dataclass(frozen=True)
+class ThesisVariantConfig:
+    continuous_action_dist: ContinuousActionDistVariant
+    use_nop: bool
+    policy_variant: PolicyVariant | None = None
+    tmasac_variant: TMASACExperimentVariant | None = None
+
+
+THESIS_VARIANT_CONFIGS: dict[ThesisAlgorithmVariant, ThesisVariantConfig] = {
+    "mappo": ThesisVariantConfig(
+        policy_variant="mat_ind",
+        continuous_action_dist="sign_magnitude_beta",
+        use_nop=True,
+    ),
+    "mat_qcx": ThesisVariantConfig(
+        policy_variant="mat_qcx",
+        continuous_action_dist="sign_magnitude_beta",
+        use_nop=True,
+    ),
+    "mat_ind": ThesisVariantConfig(
+        policy_variant="mat_ind",
+        continuous_action_dist="sign_magnitude_beta",
+        use_nop=True,
+    ),
+    "mat_orig": ThesisVariantConfig(
+        policy_variant="mat_orig",
+        continuous_action_dist="sign_magnitude_beta",
+        use_nop=True,
+    ),
+    "tmasac_baseline": ThesisVariantConfig(
+        tmasac_variant="tmasac_baseline",
+        continuous_action_dist="gumbel_softmax_sign_magnitude_beta",
+        use_nop=True,
+    ),
+    "slstm_two_small_actor_state_critic": ThesisVariantConfig(
+        tmasac_variant="slstm_two_small_actor_state_critic",
+        continuous_action_dist="gumbel_softmax_sign_magnitude_beta",
+        use_nop=True,
+    ),
+    "mat_qcx_gsde_no_nop": ThesisVariantConfig(
+        policy_variant="mat_qcx",
+        continuous_action_dist="gsde",
+        use_nop=False,
+    ),
+    "tmasac_baseline_predicted_std_no_nop": ThesisVariantConfig(
+        tmasac_variant="tmasac_baseline",
+        continuous_action_dist="predicted_std",
+        use_nop=False,
+    ),
+    "slstm_two_small_actor_state_critic_predicted_std_no_nop": ThesisVariantConfig(
+        tmasac_variant="slstm_two_small_actor_state_critic",
+        continuous_action_dist="predicted_std",
+        use_nop=False,
+    ),
 }
 
 
@@ -41,37 +95,37 @@ def run_thesis_experiment(
     variant: ThesisAlgorithmVariant,
     entrypoint_path: Path,
 ) -> None:
-    if variant in TMASAC_VARIANTS:
+    config = THESIS_VARIANT_CONFIGS[variant]
+    if config.tmasac_variant is not None:
         run_tmasac_experiment(
             experiment_run_name=experiment_run_name,
             scenario_name=scenario_name,
             scenario_kwargs=scenario_kwargs,
-            variant=_as_tmasac_variant(variant),
+            variant=config.tmasac_variant,
             entrypoint_path=entrypoint_path,
+            continuous_action_dist=config.continuous_action_dist,
+            use_nop=config.use_nop,
+            variant_name=variant,
         )
         return
+
+    if config.policy_variant is None:
+        raise ValueError(f"Thesis PPO variant has no policy variant: {variant!r}")
 
     run_mjw_experiment(
         num_envs=1024,
         rollout_steps_per_env=4,
         variant_name=variant,
         entrypoint_path=entrypoint_path,
-        policy_variant=PPO_POLICY_VARIANTS[variant],
+        continuous_action_dist=config.continuous_action_dist,
+        policy_variant=config.policy_variant,
         mat_add_agent_embeddings=False,
         mat_use_agent_attention=variant != "mappo",
         nop_add_agent_embeddings_transition_model=False,
-        use_nop=True,
+        use_nop=config.use_nop,
         use_transition_obs=False,
         experiment_run_name=experiment_run_name,
         scenario_name=scenario_name,
         scenario_kwargs=scenario_kwargs,
         total_timesteps=EXPERIMENT_TOTAL_TIMESTEPS,
     )
-
-
-def _as_tmasac_variant(variant: ThesisAlgorithmVariant) -> TMASACExperimentVariant:
-    if variant == "tmasac_baseline":
-        return variant
-    if variant == "slstm_two_small_actor_state_critic":
-        return variant
-    raise ValueError(f"Not a TMASAC thesis variant: {variant!r}")
