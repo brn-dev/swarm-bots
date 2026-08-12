@@ -280,6 +280,7 @@ def _make_test_base_policy(
         "initial_stickiness": 0.25,
         "gsde_init_stds": [1.0, 1.0],
         "mat_add_agent_embeddings": False,
+        "mat_use_agent_attention": True,
         "mat_decoder_self_attention_mode": MATQCSDecoderSelfAttentionMode.FULL_CAUSAL,
         "act_fn_cls": nn.GELU,
         "mat_init_gains": MATInitGains(),
@@ -814,6 +815,16 @@ def test_make_base_policy_constructs_mat_dec_variant() -> None:
     assert policy.actor_head.hidden_dims == [8, 8]
     assert policy.actor_encoder.global_obs_dim == _DummyEnv.global_obs_dim
     assert all(layer.self_attn is None for layer in policy.actor_encoder.layers)
+
+
+def test_make_base_policy_can_disable_mat_ind_agent_attention() -> None:
+    policy = _make_test_base_policy(
+        policy_variant="mat_ind",
+        mat_use_agent_attention=False,
+    )
+
+    assert isinstance(policy.encoder, MATEncoder)
+    assert all(layer.self_attn is None for layer in policy.encoder.layers)
 
 
 def test_make_base_policy_constructs_mat_qcx_variant() -> None:

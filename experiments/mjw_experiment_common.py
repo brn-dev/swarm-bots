@@ -538,6 +538,7 @@ def run_experiment(
         continuous_action_dist: ContinuousActionDistVariant = "sign_magnitude_beta",
         policy_variant: PolicyVariant = "mat_qcs",
         mat_add_agent_embeddings: bool = False,
+        mat_use_agent_attention: bool = True,
         mat_decoder_self_attention_mode: MATQCSDecoderSelfAttentionMode = MATQCSDecoderSelfAttentionMode.FULL_CAUSAL,
         mat_qcc_tie_query_context_and_context_self_attention: bool = True,
         act_fn_cls: ActivationFactory = nn.GELU,
@@ -706,6 +707,7 @@ def run_experiment(
         f"mat_init_gains={mat_init_gains}, nop_init_gains={nop_init_gains}, "
         f"mat_normalization={mat_normalization}, "
         f"mat_add_agent_embeddings={mat_add_agent_embeddings}, "
+        f"mat_use_agent_attention={mat_use_agent_attention}, "
         f"mat_decoder_self_attention_mode={mat_decoder_self_attention_mode_metadata}, "
         f"mat_qcc_tie_query_context_and_context_self_attention="
         f"{mat_qcc_tie_query_context_and_context_self_attention}, "
@@ -853,6 +855,7 @@ def run_experiment(
         initial_stickiness=initial_stickiness,
         gsde_init_stds=gsde_init_stds,
         mat_add_agent_embeddings=mat_add_agent_embeddings,
+        mat_use_agent_attention=mat_use_agent_attention,
         mat_decoder_self_attention_mode=mat_decoder_self_attention_mode,
         mat_qcc_tie_query_context_and_context_self_attention=(
             mat_qcc_tie_query_context_and_context_self_attention
@@ -1213,6 +1216,7 @@ def run_experiment(
             else tmasac_actor_head_kind
         ),
         "mat_add_agent_embeddings": mat_add_agent_embeddings,
+        "mat_use_agent_attention": mat_use_agent_attention,
         "mat_decoder_self_attention_mode": mat_decoder_self_attention_mode_metadata,
         "mat_qcc_tie_query_context_and_context_self_attention": (
             mat_qcc_tie_query_context_and_context_self_attention
@@ -1429,6 +1433,7 @@ def _make_base_policy(
         initial_stickiness: float,
         gsde_init_stds: list[float],
         mat_add_agent_embeddings: bool,
+        mat_use_agent_attention: bool,
         mat_decoder_self_attention_mode: MATQCSDecoderSelfAttentionMode,
         act_fn_cls: ActivationFactory,
         mat_init_gains: MATInitGains,
@@ -1519,6 +1524,7 @@ def _make_base_policy(
         global_obs_encoder_config=MLPConfig(hidden_dims=[enc_d_model]),
         normalize_obs_inputs=mat_normalization.normalize_obs_inputs,
         normalize_tokens=mat_normalization.normalize_encoder_tokens,
+        use_agent_attention=mat_use_agent_attention,
     )
     rmat_encoder_config = RMATEncoderConfig(
         d_model=enc_d_model,
@@ -1535,6 +1541,7 @@ def _make_base_policy(
         global_obs_encoder_config=MLPConfig(hidden_dims=[enc_d_model]),
         normalize_obs_inputs=mat_normalization.normalize_obs_inputs,
         normalize_tokens=mat_normalization.normalize_encoder_tokens,
+        use_agent_attention=mat_use_agent_attention,
         temporal_residual=rmat_temporal_residual,
         temporal_layer_norm=rmat_temporal_layer_norm,
         use_temporal_output_projection=rmat_use_temporal_output_projection,

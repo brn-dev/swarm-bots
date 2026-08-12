@@ -22,7 +22,7 @@ ThesisAlgorithmVariant = Literal[
 ]
 
 PPO_POLICY_VARIANTS: dict[ThesisAlgorithmVariant, PolicyVariant] = {
-    "mappo": "mappo",
+    "mappo": "mat_ind",
     "mat_qcx": "mat_qcx",
     "mat_ind": "mat_ind",
     "mat_orig": "mat_orig",
@@ -58,6 +58,7 @@ def run_thesis_experiment(
         entrypoint_path=entrypoint_path,
         policy_variant=PPO_POLICY_VARIANTS[variant],
         mat_add_agent_embeddings=False,
+        mat_use_agent_attention=variant != "mappo",
         nop_add_agent_embeddings_transition_model=False,
         use_nop=True,
         use_transition_obs=False,

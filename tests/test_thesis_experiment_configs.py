@@ -18,7 +18,7 @@ from swarmbots.learn.nn_components.feed_forward import MLPConfig
 @pytest.mark.parametrize(
     ("variant", "policy_variant"),
     (
-        ("mappo", "mappo"),
+        ("mappo", "mat_ind"),
         ("mat_qcx", "mat_qcx"),
         ("mat_ind", "mat_ind"),
         ("mat_orig", "mat_orig"),
@@ -47,6 +47,7 @@ def test_ppo_thesis_variants_use_current_observation_and_action_defaults(
         entrypoint_path=entrypoint_path,
         policy_variant=policy_variant,
         mat_add_agent_embeddings=False,
+        mat_use_agent_attention=variant != "mappo",
         nop_add_agent_embeddings_transition_model=False,
         use_nop=True,
         use_transition_obs=False,
