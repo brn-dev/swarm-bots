@@ -91,8 +91,22 @@ def test_tmasac_experiment_forwards_ternary_action_distribution(
     assert kwargs["variant_name"] == "tmasac_baseline_ternary_sign_magnitude_beta"
 
 
-def test_tmasac_experiment_forwards_no_nop_and_explicit_variant_name(
+@pytest.mark.parametrize(
+    ("continuous_action_dist", "use_nop", "variant_name"),
+    (
+        ("predicted_std", True, "tmasac_baseline_predicted_std"),
+        (
+            "gumbel_softmax_sign_magnitude_beta",
+            False,
+            "tmasac_baseline_no_nop",
+        ),
+    ),
+)
+def test_tmasac_experiment_forwards_ablation_and_explicit_variant_name(
     monkeypatch: pytest.MonkeyPatch,
+    continuous_action_dist: tmasac_common.ContinuousActionDistVariant,
+    use_nop: bool,
+    variant_name: str,
 ) -> None:
     run_mjw_experiment = Mock()
     monkeypatch.setattr(tmasac_common, "run_mjw_experiment", run_mjw_experiment)
@@ -103,15 +117,15 @@ def test_tmasac_experiment_forwards_no_nop_and_explicit_variant_name(
         scenario_kwargs={"continuous_connector_actions": True},
         variant="tmasac_baseline",
         entrypoint_path=Path(__file__),
-        continuous_action_dist="predicted_std",
-        use_nop=False,
-        variant_name="tmasac_baseline_predicted_std_no_nop",
+        continuous_action_dist=continuous_action_dist,
+        use_nop=use_nop,
+        variant_name=variant_name,
     )
 
     kwargs = run_mjw_experiment.call_args.kwargs
-    assert kwargs["continuous_action_dist"] == "predicted_std"
-    assert kwargs["use_nop"] is False
-    assert kwargs["variant_name"] == "tmasac_baseline_predicted_std_no_nop"
+    assert kwargs["continuous_action_dist"] == continuous_action_dist
+    assert kwargs["use_nop"] is use_nop
+    assert kwargs["variant_name"] == variant_name
 
 
 @pytest.mark.parametrize(

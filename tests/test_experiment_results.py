@@ -2,6 +2,8 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -15,6 +17,38 @@ from plot_logs.experiment_results import (
 
 
 class ExperimentResultsTests(unittest.TestCase):
+    def test_main_group_names_excludes_loaded_groups_only_from_main_plots(self) -> None:
+        baseline_group = SimpleNamespace(name="baseline")
+        ablation_group = SimpleNamespace(name="ablation")
+
+        with (
+            patch(
+                "plot_logs.experiment_results.load_experiment_groups",
+                return_value=[baseline_group, ablation_group],
+            ),
+            patch(
+                "plot_logs.experiment_results.metric_has_finite_values",
+                return_value=True,
+            ),
+            patch(
+                "plot_logs.experiment_results.plot_individual_metric",
+                return_value=[],
+            ) as plot_individual_metric,
+            patch(
+                "plot_logs.experiment_results.plot_group_metric",
+                return_value=[],
+            ) as plot_group_metric,
+        ):
+            result = plot_experiment_results(
+                Path("unused"),
+                Path("unused-output"),
+                main_group_names=("baseline",),
+            )
+
+        self.assertEqual(result.groups, [baseline_group, ablation_group])
+        for call in (*plot_individual_metric.call_args_list, *plot_group_metric.call_args_list):
+            self.assertEqual(call.args[0], [baseline_group])
+
     def test_load_experiment_groups_ignores_missing_extra_group_source(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp_path = Path(tmp_dir)
