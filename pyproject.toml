@@ -36,6 +36,9 @@ dev = [
     "pytest",
 ]
 
+[tool.uv]
+exclude-newer = "1 week"
+
 [tool.uv.sources]
 torch = [
     { index = "pytorch-cu132", marker = "sys_platform == 'win32' or sys_platform == 'linux'" },
