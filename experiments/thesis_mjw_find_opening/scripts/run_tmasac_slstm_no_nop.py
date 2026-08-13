@@ -4,6 +4,6 @@ from common import run_experiment
 
 if __name__ == "__main__":
     run_experiment(
-        variant="tmasac_baseline_predicted_std_no_nop",
+        variant="slstm_two_small_actor_state_critic_no_nop",
         entrypoint_path=Path(__file__).resolve(),
     )

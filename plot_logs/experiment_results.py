@@ -827,6 +827,7 @@ def plot_experiment_results(
     group_line_alpha: float = GROUP_LINE_ALPHA,
     display_name_overrides: Mapping[str, str] | None = None,
     extra_group_sources: Mapping[str, Sequence[Path]] | None = None,
+    main_group_names: Sequence[str] | None = None,
     extra_plot_selections: Sequence[ExperimentPlotSelection] | None = None,
 ) -> ExperimentPlotResult:
     groups = load_experiment_groups(
@@ -839,11 +840,18 @@ def plot_experiment_results(
     )
     output_dir = output_dir.expanduser().resolve()
     colors = group_colors(groups)
+    main_groups = (
+        groups
+        if main_group_names is None
+        else selected_groups_by_name(groups, main_group_names)
+    )
+    if not main_groups:
+        raise ValueError("No groups selected for the main plots")
     normalized_dpis = normalize_dpis(dpis)
     output_paths: list[Path] = []
     for metric in PLOT_SPECS:
         if not metric_has_finite_values(
-            groups,
+            main_groups,
             metric.column,
             run_length_limit=run_length_limit,
             cut_at_limit=cut_at_limit,
@@ -851,7 +859,7 @@ def plot_experiment_results(
             continue
         output_paths.extend(
             plot_individual_metric(
-                groups,
+                main_groups,
                 output_dir,
                 x_column=x_column,
                 dpis=normalized_dpis,
@@ -866,7 +874,7 @@ def plot_experiment_results(
         )
         output_paths.extend(
             plot_group_metric(
-                groups,
+                main_groups,
                 output_dir,
                 x_column=x_column,
                 dpis=normalized_dpis,

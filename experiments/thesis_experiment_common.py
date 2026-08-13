@@ -24,9 +24,12 @@ ThesisAlgorithmVariant = Literal[
     "mat_orig",
     "tmasac_baseline",
     "slstm_two_small_actor_state_critic",
-    "mat_qcx_gsde_no_nop",
-    "tmasac_baseline_predicted_std_no_nop",
-    "slstm_two_small_actor_state_critic_predicted_std_no_nop",
+    "mat_qcx_gsde",
+    "mat_qcx_no_nop",
+    "tmasac_baseline_predicted_std",
+    "tmasac_baseline_no_nop",
+    "slstm_two_small_actor_state_critic_predicted_std",
+    "slstm_two_small_actor_state_critic_no_nop",
 ]
 
 
@@ -69,19 +72,34 @@ THESIS_VARIANT_CONFIGS: dict[ThesisAlgorithmVariant, ThesisVariantConfig] = {
         continuous_action_dist="gumbel_softmax_sign_magnitude_beta",
         use_nop=True,
     ),
-    "mat_qcx_gsde_no_nop": ThesisVariantConfig(
+    "mat_qcx_gsde": ThesisVariantConfig(
         policy_variant="mat_qcx",
         continuous_action_dist="gsde",
+        use_nop=True,
+    ),
+    "mat_qcx_no_nop": ThesisVariantConfig(
+        policy_variant="mat_qcx",
+        continuous_action_dist="sign_magnitude_beta",
         use_nop=False,
     ),
-    "tmasac_baseline_predicted_std_no_nop": ThesisVariantConfig(
+    "tmasac_baseline_predicted_std": ThesisVariantConfig(
         tmasac_variant="tmasac_baseline",
         continuous_action_dist="predicted_std",
+        use_nop=True,
+    ),
+    "tmasac_baseline_no_nop": ThesisVariantConfig(
+        tmasac_variant="tmasac_baseline",
+        continuous_action_dist="gumbel_softmax_sign_magnitude_beta",
         use_nop=False,
     ),
-    "slstm_two_small_actor_state_critic_predicted_std_no_nop": ThesisVariantConfig(
+    "slstm_two_small_actor_state_critic_predicted_std": ThesisVariantConfig(
         tmasac_variant="slstm_two_small_actor_state_critic",
         continuous_action_dist="predicted_std",
+        use_nop=True,
+    ),
+    "slstm_two_small_actor_state_critic_no_nop": ThesisVariantConfig(
+        tmasac_variant="slstm_two_small_actor_state_critic",
+        continuous_action_dist="gumbel_softmax_sign_magnitude_beta",
         use_nop=False,
     ),
 }

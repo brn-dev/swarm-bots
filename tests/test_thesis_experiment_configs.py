@@ -3,7 +3,7 @@ from unittest.mock import patch
 
 import pytest
 
-from experiments import thesis_experiment_common
+from experiments import thesis_experiment_common, thesis_plot_common
 from experiments.thesis_mjw_find_opening import plot_results as find_opening_plot
 from experiments.thesis_mjw_find_opening.scripts import common as find_opening_common
 from experiments.thesis_mjw_po_wall_medium import plot_results as po_wall_plot
@@ -22,7 +22,8 @@ from swarmbots.learn.nn_components.feed_forward import MLPConfig
         ("mat_qcx", "mat_qcx", "sign_magnitude_beta", True),
         ("mat_ind", "mat_ind", "sign_magnitude_beta", True),
         ("mat_orig", "mat_orig", "sign_magnitude_beta", True),
-        ("mat_qcx_gsde_no_nop", "mat_qcx", "gsde", False),
+        ("mat_qcx_gsde", "mat_qcx", "gsde", True),
+        ("mat_qcx_no_nop", "mat_qcx", "sign_magnitude_beta", False),
     ),
 )
 def test_ppo_thesis_variants_use_current_observation_and_action_defaults(
@@ -78,15 +79,27 @@ def test_ppo_thesis_variants_use_current_observation_and_action_defaults(
             True,
         ),
         (
-            "tmasac_baseline_predicted_std_no_nop",
+            "tmasac_baseline_predicted_std",
             "tmasac_baseline",
             "predicted_std",
+            True,
+        ),
+        (
+            "tmasac_baseline_no_nop",
+            "tmasac_baseline",
+            "gumbel_softmax_sign_magnitude_beta",
             False,
         ),
         (
-            "slstm_two_small_actor_state_critic_predicted_std_no_nop",
+            "slstm_two_small_actor_state_critic_predicted_std",
             "slstm_two_small_actor_state_critic",
             "predicted_std",
+            True,
+        ),
+        (
+            "slstm_two_small_actor_state_critic_no_nop",
+            "slstm_two_small_actor_state_critic",
+            "gumbel_softmax_sign_magnitude_beta",
             False,
         ),
     ),
@@ -131,6 +144,37 @@ def test_thesis_suite_names_use_thesis_prefix() -> None:
     assert po_wall_common.EXPERIMENT_RUN_NAME == "thesis_mjw_po_wall_medium"
     assert find_opening_plot.EXPERIMENT_RUN_DIR.name == "thesis_mjw_find_opening"
     assert po_wall_plot.EXPERIMENT_RUN_DIR.name == "thesis_mjw_po_wall_medium"
+
+
+def test_thesis_plots_keep_ablations_out_of_main_plot_and_use_pair_comparisons() -> None:
+    assert thesis_plot_common.THESIS_MAIN_GROUP_ORDER == (
+        "mappo",
+        "mat_qcx",
+        "mat_ind",
+        "mat_orig",
+        "tmasac_baseline",
+        "slstm_two_small_actor_state_critic",
+    )
+    assert {
+        selection.name: selection.group_names
+        for selection in thesis_plot_common.THESIS_ABLATION_PLOTS
+    } == {
+        "mat_qcx_no_nop": ("mat_qcx", "mat_qcx_no_nop"),
+        "tmasac_no_nop": ("tmasac_baseline", "tmasac_baseline_no_nop"),
+        "slstm_tmasac_no_nop": (
+            "slstm_two_small_actor_state_critic",
+            "slstm_two_small_actor_state_critic_no_nop",
+        ),
+        "mat_qcx_gsde": ("mat_qcx", "mat_qcx_gsde"),
+        "tmasac_predicted_std": (
+            "tmasac_baseline",
+            "tmasac_baseline_predicted_std",
+        ),
+        "slstm_tmasac_predicted_std": (
+            "slstm_two_small_actor_state_critic",
+            "slstm_two_small_actor_state_critic_predicted_std",
+        ),
+    }
 
 
 def test_find_opening_plot_reuses_matching_tmasac_runs() -> None:
