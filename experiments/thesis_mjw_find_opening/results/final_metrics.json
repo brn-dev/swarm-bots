@@ -1,0 +1,133 @@
+{
+  "tail_points_per_run": 10,
+  "run_length_limit": 100000000,
+  "standard_deviation": "population",
+  "variants": {
+    "mappo": {
+      "display_name": "MAPPO",
+      "number_of_runs": 5,
+      "ep_rew_ema": {
+        "number_of_runs": 5,
+        "mean": 2.3264091569256538,
+        "std": 0.1179096508477686
+      },
+      "ep_success_rate_ema": {
+        "number_of_runs": 5,
+        "mean": 0.055353059199489595,
+        "std": 0.08624811778226923
+      }
+    },
+    "mat_ind": {
+      "display_name": "MAT-Independent + NOP",
+      "number_of_runs": 5,
+      "ep_rew_ema": {
+        "number_of_runs": 5,
+        "mean": 3.374950405505649,
+        "std": 0.9355880969763135
+      },
+      "ep_success_rate_ema": {
+        "number_of_runs": 5,
+        "mean": 3.524430458278867,
+        "std": 4.353811896895923
+      }
+    },
+    "mat_orig": {
+      "display_name": "MAT original actor decoder + NOP",
+      "number_of_runs": 5,
+      "ep_rew_ema": {
+        "number_of_runs": 5,
+        "mean": 2.6992793076754333,
+        "std": 0.5403243589471647
+      },
+      "ep_success_rate_ema": {
+        "number_of_runs": 5,
+        "mean": 0.06679152438176536,
+        "std": 0.1335830410450625
+      }
+    },
+    "tmasac_baseline": {
+      "display_name": "TMASAC",
+      "number_of_runs": 5,
+      "ep_rew_ema": {
+        "number_of_runs": 5,
+        "mean": 13.609823632966433,
+        "std": 0.3641875250736582
+      },
+      "ep_success_rate_ema": {
+        "number_of_runs": 5,
+        "mean": 81.06453119597526,
+        "std": 2.225801597475177
+      }
+    },
+    "slstm_two_small_actor_state_critic": {
+      "display_name": "TMASAC + sLSTM",
+      "number_of_runs": 10,
+      "ep_rew_ema": {
+        "number_of_runs": 10,
+        "mean": 16.248085893004436,
+        "std": 0.09469127362907008
+      },
+      "ep_success_rate_ema": {
+        "number_of_runs": 10,
+        "mean": 99.03862328315667,
+        "std": 0.48217766292595304
+      }
+    },
+    "mat_qcx_gsde": {
+      "display_name": "MAT-QCX + NOP, gSDE",
+      "number_of_runs": 5,
+      "ep_rew_ema": {
+        "number_of_runs": 5,
+        "mean": 2.085676380806536,
+        "std": 0.48980536461081997
+      },
+      "ep_success_rate_ema": {
+        "number_of_runs": 5,
+        "mean": 0.1906822653602655,
+        "std": 0.2853210772520132
+      }
+    },
+    "mat_qcx_no_nop": {
+      "display_name": "MAT-QCX, no NOP",
+      "number_of_runs": 6,
+      "ep_rew_ema": {
+        "number_of_runs": 6,
+        "mean": 2.2211553128084414,
+        "std": 0.7416929205353963
+      },
+      "ep_success_rate_ema": {
+        "number_of_runs": 6,
+        "mean": 0.018652407866597775,
+        "std": 0.04025494250030442
+      }
+    },
+    "slstm_two_small_actor_state_critic_predicted_std": {
+      "display_name": "TMASAC + sLSTM + NOP, predicted std",
+      "number_of_runs": 5,
+      "ep_rew_ema": {
+        "number_of_runs": 5,
+        "mean": 16.28173884187644,
+        "std": 0.028939516898970875
+      },
+      "ep_success_rate_ema": {
+        "number_of_runs": 5,
+        "mean": 99.1437653161187,
+        "std": 0.3378487998079723
+      }
+    },
+    "slstm_two_small_actor_state_critic_no_nop": {
+      "display_name": "TMASAC + sLSTM, no NOP",
+      "number_of_runs": 5,
+      "ep_rew_ema": {
+        "number_of_runs": 5,
+        "mean": 14.975995806479801,
+        "std": 0.4866614227760226
+      },
+      "ep_success_rate_ema": {
+        "number_of_runs": 5,
+        "mean": 90.65716480436019,
+        "std": 4.459396406655945
+      }
+    }
+  }
+}
