@@ -14,6 +14,7 @@ from plot_logs.experiment_results import (
     ExperimentRunLog,
 )
 from plot_logs.experiment_summary import (
+    summarize_threshold_timesteps,
     summarize_experiment_groups,
     write_experiment_summary,
 )
@@ -59,6 +60,55 @@ class ExperimentSummaryTests(unittest.TestCase):
             variant[EP_SUCCESS_RATE_EMA_COLUMN],
             {"number_of_runs": 1, "mean": 75.0, "std": 0.0},
         )
+        self.assertEqual(
+            variant["success_rate_threshold_timesteps"],
+            {
+                "25": {"number_of_runs": 1, "mean": 2.0, "std": 0.0},
+                "50": {"number_of_runs": 1, "mean": 2.0, "std": 0.0},
+                "75": {"number_of_runs": 1, "mean": 3.0, "std": 0.0},
+                "90": {"number_of_runs": 1, "mean": 3.0, "std": 0.0},
+                "95": {"number_of_runs": 1, "mean": 3.0, "std": 0.0},
+                "98": {"number_of_runs": 1, "mean": 3.0, "std": 0.0},
+            },
+        )
+
+    def test_summarizes_first_per_run_threshold_timesteps(self) -> None:
+        runs = [
+            make_run("run-1", (0.0, 0.0, 0.0), (80.0, 90.0, 95.0)),
+            make_run("run-2", (0.0, 0.0, 0.0), (90.0, 90.0, 100.0)),
+        ]
+
+        summaries = summarize_threshold_timesteps(
+            runs,
+            EP_SUCCESS_RATE_EMA_COLUMN,
+            thresholds=(50.0, 90.0, 98.0),
+        )
+
+        self.assertEqual(
+            summaries,
+            {
+                "50": {"number_of_runs": 2, "mean": 1.0, "std": 0.0},
+                "90": {"number_of_runs": 2, "mean": 1.5, "std": 0.5},
+                "98": {"number_of_runs": 1, "mean": 3.0, "std": 0.0},
+            },
+        )
+
+    def test_unreached_thresholds_have_no_timestep_statistics(self) -> None:
+        runs = [make_run("run-1", (0.0, 0.0, 0.0), (80.0, 89.0, np.nan))]
+
+        summaries = summarize_threshold_timesteps(
+            runs,
+            EP_SUCCESS_RATE_EMA_COLUMN,
+            thresholds=(90.0, 95.0),
+        )
+
+        self.assertEqual(
+            summaries,
+            {
+                "90": {"number_of_runs": 0, "mean": None, "std": None},
+                "95": {"number_of_runs": 0, "mean": None, "std": None},
+            },
+        )
 
     def test_run_length_limit_excludes_later_values(self) -> None:
         group = ExperimentGroup(
@@ -79,6 +129,13 @@ class ExperimentSummaryTests(unittest.TestCase):
             2.0,
         )
         self.assertEqual(summary["run_length_limit"], 2)
+        self.assertEqual(
+            summary["variants"]["variant"]["success_rate_threshold_timesteps"],
+            {
+                threshold: {"number_of_runs": 0, "mean": None, "std": None}
+                for threshold in ("25", "50", "75", "90", "95", "98")
+            },
+        )
 
     def test_writes_strict_json(self) -> None:
         summary = {

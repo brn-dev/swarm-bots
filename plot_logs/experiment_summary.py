@@ -16,6 +16,7 @@ from plot_logs.experiment_results import (
 )
 
 DEFAULT_TAIL_POINTS = 10
+DEFAULT_SUCCESS_RATE_THRESHOLDS = (25.0, 50.0, 75.0, 90.0, 95.0, 98.0)
 
 
 def run_tail_mean(
@@ -68,15 +69,62 @@ def summarize_metric(
     }
 
 
+def summarize_threshold_timesteps(
+    runs: Sequence[ExperimentRunLog],
+    column: str,
+    *,
+    thresholds: Sequence[float],
+    run_length_limit: int = DEFAULT_RUN_LENGTH_LIMIT,
+    cut_at_limit: bool = False,
+) -> dict[str, dict[str, int | float | None]]:
+    timesteps_by_threshold = {threshold: [] for threshold in thresholds}
+    for run in runs:
+        x_values, values = run_metric_series(
+            run,
+            column,
+            run_length_limit=run_length_limit,
+            cut_at_limit=cut_at_limit,
+        )
+        finite_mask = np.isfinite(x_values) & np.isfinite(values)
+        for threshold in thresholds:
+            threshold_indices = np.flatnonzero(finite_mask & (values >= threshold))
+            if threshold_indices.size > 0:
+                timesteps_by_threshold[threshold].append(
+                    float(x_values[int(threshold_indices[0])])
+                )
+
+    summaries: dict[str, dict[str, int | float | None]] = {}
+    for threshold in thresholds:
+        timesteps = timesteps_by_threshold[threshold]
+        if not timesteps:
+            summaries[f"{threshold:g}"] = {
+                "number_of_runs": 0,
+                "mean": None,
+                "std": None,
+            }
+            continue
+
+        timestep_values = np.asarray(timesteps, dtype=float)
+        summaries[f"{threshold:g}"] = {
+            "number_of_runs": len(timesteps),
+            "mean": float(np.mean(timestep_values)),
+            "std": float(np.std(timestep_values)),
+        }
+    return summaries
+
+
 def summarize_experiment_groups(
     groups: Sequence[ExperimentGroup],
     *,
     tail_points: int = DEFAULT_TAIL_POINTS,
+    success_rate_thresholds: Sequence[float] = DEFAULT_SUCCESS_RATE_THRESHOLDS,
     run_length_limit: int = DEFAULT_RUN_LENGTH_LIMIT,
     cut_at_limit: bool = False,
 ) -> dict[str, Any]:
     if tail_points < 1:
         raise ValueError("tail_points must be at least 1")
+    if not all(np.isfinite(threshold) for threshold in success_rate_thresholds):
+        raise ValueError("success_rate_thresholds must be finite")
 
     variants: dict[str, Any] = {}
     for group in groups:
@@ -97,10 +145,18 @@ def summarize_experiment_groups(
                 run_length_limit=run_length_limit,
                 cut_at_limit=cut_at_limit,
             ),
+            "success_rate_threshold_timesteps": summarize_threshold_timesteps(
+                group.runs,
+                EP_SUCCESS_RATE_EMA_COLUMN,
+                thresholds=success_rate_thresholds,
+                run_length_limit=run_length_limit,
+                cut_at_limit=cut_at_limit,
+            ),
         }
 
     return {
         "tail_points_per_run": tail_points,
+        "success_rate_thresholds": list(success_rate_thresholds),
         "run_length_limit": run_length_limit if cut_at_limit else None,
         "standard_deviation": "population",
         "variants": variants,

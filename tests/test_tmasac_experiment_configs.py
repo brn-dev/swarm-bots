@@ -11,6 +11,10 @@ import experiments.mjw_bridge_static_tmasac.scripts.common as bridge_static_comm
 import experiments.mjw_multi_payload_goal_easy_tmasac.scripts.common as multi_payload_common
 import experiments.mjw_vertical_reach_tmasac.scripts.common as vertical_reach_common
 import experiments.tmasac_experiment_common as tmasac_common
+from swarmbots.learn.algos.r_mat.temporal_sequence_model import (
+    LSTMTemporalSequenceModel,
+    LSTMTemporalSequenceModelConfig,
+)
 from swarmbots.learn.algos.sac.recurrent_tmasac_policy import (
     ActorStateCriticInputConfig,
 )
@@ -31,6 +35,7 @@ from swarmbots.learn.nn_components.feed_forward import (
         ("tmasac_baseline", "tmasac"),
         ("tmasac_swiglu", "tmasac"),
         ("slstm_two_small_actor_state_critic", "r_tmasac"),
+        ("lstm_two_small_actor_state_critic", "r_tmasac"),
         ("slstm_two_small_swiglu_actor_state_critic", "r_tmasac"),
     ],
 )
@@ -261,6 +266,26 @@ def test_slstm_variants_use_two_actor_feedforwards_and_actor_state_critic_input(
     ] == ActorStateCriticInputConfig(
         projection_dim=256,
         projection_hidden_dims=(256,),
+    )
+
+
+def test_lstm_variant_matches_recurrent_architecture_with_standard_lstm(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run_mjw_experiment = Mock()
+    monkeypatch.setattr(tmasac_common, "run_mjw_experiment", run_mjw_experiment)
+
+    _run_variant("lstm_two_small_actor_state_critic")
+
+    kwargs = run_mjw_experiment.call_args.kwargs
+    assert kwargs["rmat_temporal_model_cls"] is LSTMTemporalSequenceModel
+    assert kwargs["rmat_temporal_model_config"] == LSTMTemporalSequenceModelConfig()
+    assert kwargs["rmat_experimental_compile_lstm"] is True
+    assert kwargs["mat_encoder_transformer_ff_config"] == MLPConfig(
+        hidden_dims=[512]
+    )
+    assert kwargs["rmat_actor_transformer_ff_config"] == MLPConfig(
+        hidden_dims=[512]
     )
 
 
