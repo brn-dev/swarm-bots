@@ -18,6 +18,9 @@ EXTRA_GROUP_SOURCES = {
     "slstm_two_small_actor_state_critic": (
         MATCHING_TMASAC_RUN_DIR / "slstm_two_small_actor_state_critic",
     ),
+    "lstm_two_small_actor_state_critic": (
+        MATCHING_TMASAC_RUN_DIR / "lstm_two_small_actor_state_critic",
+    ),
 }
 
 

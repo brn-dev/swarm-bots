@@ -25,6 +25,7 @@ THESIS_GROUP_ORDER = (
     "tmasac_baseline_no_nop",
     "slstm_two_small_actor_state_critic_predicted_std",
     "slstm_two_small_actor_state_critic_no_nop",
+    "lstm_two_small_actor_state_critic",
 )
 THESIS_ABLATION_PLOTS = (
     ExperimentPlotSelection(
@@ -77,6 +78,16 @@ THESIS_ABLATION_PLOTS = (
         title_suffix="sLSTM-TMASAC Predicted Standard Deviation",
         output_subdir="gaussian_action_distributions/slstm_tmasac",
     ),
+    ExperimentPlotSelection(
+        name="tmasac_temporal_model",
+        group_names=(
+            "slstm_two_small_actor_state_critic",
+            "lstm_two_small_actor_state_critic",
+        ),
+        required_group_names=("lstm_two_small_actor_state_critic",),
+        title_suffix="TMASAC Temporal Model Ablation",
+        output_subdir="temporal_model/tmasac",
+    ),
 )
 THESIS_DISPLAY_NAMES = {
     "mappo": "MAPPO",
@@ -93,6 +104,7 @@ THESIS_DISPLAY_NAMES = {
         "TMASAC + sLSTM + NOP, predicted std"
     ),
     "slstm_two_small_actor_state_critic_no_nop": "TMASAC + sLSTM, no NOP",
+    "lstm_two_small_actor_state_critic": "TMASAC + LSTM",
 }
 THESIS_RUN_LENGTH = 100_000_000
 

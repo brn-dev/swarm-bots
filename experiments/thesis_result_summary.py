@@ -20,8 +20,10 @@ from plot_logs.experiment_summary import (
 def parse_summary_args(*, default_output_path: Path) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Summarize each variant's final reward and success EMAs across runs. "
-            "Each run contributes the mean of its final finite metric values."
+            "Summarize each variant's final reward and success EMAs across runs, "
+            "including the distribution of per-run timesteps at which the success "
+            "EMA first reaches each configured threshold. Each run contributes the "
+            "mean of its final finite metric values."
         )
     )
     parser.add_argument(

@@ -11,6 +11,10 @@ from experiments.mjw_experiment_common import (
     MJWScenarioName,
 )
 from experiments.mjw_experiment_common import run_experiment as run_mjw_experiment
+from swarmbots.learn.algos.r_mat.temporal_sequence_model import (
+    LSTMTemporalSequenceModel,
+    LSTMTemporalSequenceModelConfig,
+)
 from swarmbots.learn.algos.sac.recurrent_tmasac_policy import (
     ActorStateCriticInputConfig,
 )
@@ -32,6 +36,7 @@ TMASACExperimentVariant = Literal[
     "tmasac_baseline",
     "tmasac_swiglu",
     "slstm_two_small_actor_state_critic",
+    "lstm_two_small_actor_state_critic",
     "slstm_two_small_swiglu_actor_state_critic",
 ]
 
@@ -47,7 +52,10 @@ def run_tmasac_experiment(
     use_nop: bool = True,
     variant_name: str | None = None,
 ) -> None:
-    is_recurrent = variant.startswith("slstm_")
+    temporal_model_cls, temporal_model_config = _make_temporal_model_spec(
+        variant=variant,
+    )
+    is_recurrent = temporal_model_cls is not None
     mat_transformer_ff_config, actor_transformer_ff_config = _make_feedforward_configs(
         variant=variant,
     )
@@ -98,13 +106,12 @@ def run_tmasac_experiment(
             if is_recurrent
             else None
         ),
-        rmat_temporal_model_cls=SLSTMTemporalSequenceModel if is_recurrent else None,
-        rmat_temporal_model_config=(
-            SLSTMTemporalSequenceModelConfig(num_heads=4) if is_recurrent else None
-        ),
+        rmat_temporal_model_cls=temporal_model_cls,
+        rmat_temporal_model_config=temporal_model_config,
         rmat_temporal_residual=False,
         rmat_temporal_layer_norm=False,
         rmat_use_temporal_output_projection=not is_recurrent,
+        rmat_experimental_compile_lstm=variant.startswith("lstm_"),
     )
 
 
@@ -116,12 +123,26 @@ def _make_feedforward_configs(
         return MLPConfig(hidden_dims=[512, 512]), None
     if variant == "tmasac_swiglu":
         return _make_stacked_swiglu_config(), None
-    if variant == "slstm_two_small_actor_state_critic":
+    if variant in {
+        "slstm_two_small_actor_state_critic",
+        "lstm_two_small_actor_state_critic",
+    }:
         return MLPConfig(hidden_dims=[512]), MLPConfig(hidden_dims=[512])
     if variant == "slstm_two_small_swiglu_actor_state_critic":
         swiglu_config = SwiGLUConfig(hidden_dim=PARAMETER_MATCHED_SWIGLU_HIDDEN_DIM)
         return swiglu_config, swiglu_config
     raise ValueError(f"Unknown TMASAC experiment variant: {variant!r}")
+
+
+def _make_temporal_model_spec(
+    *,
+    variant: TMASACExperimentVariant,
+) -> tuple[type[nn.Module] | None, object | None]:
+    if variant.startswith("slstm_"):
+        return SLSTMTemporalSequenceModel, SLSTMTemporalSequenceModelConfig(num_heads=4)
+    if variant.startswith("lstm_"):
+        return LSTMTemporalSequenceModel, LSTMTemporalSequenceModelConfig()
+    return None, None
 
 
 def _make_stacked_swiglu_config() -> SwiGLUConfig:

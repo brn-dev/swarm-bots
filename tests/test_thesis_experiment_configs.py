@@ -79,6 +79,12 @@ def test_ppo_thesis_variants_use_current_observation_and_action_defaults(
             True,
         ),
         (
+            "lstm_two_small_actor_state_critic",
+            "lstm_two_small_actor_state_critic",
+            "gumbel_softmax_sign_magnitude_beta",
+            True,
+        ),
+        (
             "tmasac_baseline_predicted_std",
             "tmasac_baseline",
             "predicted_std",
@@ -174,7 +180,14 @@ def test_thesis_plots_keep_ablations_out_of_main_plot_and_use_pair_comparisons()
             "slstm_two_small_actor_state_critic",
             "slstm_two_small_actor_state_critic_predicted_std",
         ),
+        "tmasac_temporal_model": (
+            "slstm_two_small_actor_state_critic",
+            "lstm_two_small_actor_state_critic",
+        ),
     }
+    assert thesis_plot_common.THESIS_GROUP_ORDER[-1] == (
+        "lstm_two_small_actor_state_critic"
+    )
 
 
 def test_find_opening_plot_reuses_matching_tmasac_runs() -> None:
@@ -185,6 +198,10 @@ def test_find_opening_plot_reuses_matching_tmasac_runs() -> None:
         "slstm_two_small_actor_state_critic": (
             find_opening_plot.MATCHING_TMASAC_RUN_DIR
             / "slstm_two_small_actor_state_critic",
+        ),
+        "lstm_two_small_actor_state_critic": (
+            find_opening_plot.MATCHING_TMASAC_RUN_DIR
+            / "lstm_two_small_actor_state_critic",
         ),
     }
 
