@@ -127,13 +127,35 @@ def run_thesis_experiment(
         )
         return
 
+    run_thesis_ppo_experiment(
+        experiment_run_name=experiment_run_name,
+        scenario_name=scenario_name,
+        scenario_kwargs=scenario_kwargs,
+        variant=variant,
+        entrypoint_path=entrypoint_path,
+    )
+
+
+def run_thesis_ppo_experiment(
+    *,
+    experiment_run_name: str,
+    scenario_name: MJWScenarioName,
+    scenario_kwargs: dict[str, object],
+    variant: ThesisAlgorithmVariant,
+    entrypoint_path: Path,
+    num_envs: int = 1024,
+    rollout_steps_per_env: int = 4,
+    variant_name: str | None = None,
+) -> None:
+    config = THESIS_VARIANT_CONFIGS[variant]
+
     if config.policy_variant is None:
         raise ValueError(f"Thesis PPO variant has no policy variant: {variant!r}")
 
     run_mjw_experiment(
-        num_envs=1024,
-        rollout_steps_per_env=4,
-        variant_name=variant,
+        num_envs=num_envs,
+        rollout_steps_per_env=rollout_steps_per_env,
+        variant_name=variant if variant_name is None else variant_name,
         entrypoint_path=entrypoint_path,
         continuous_action_dist=config.continuous_action_dist,
         policy_variant=config.policy_variant,
