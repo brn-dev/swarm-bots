@@ -11,7 +11,7 @@ from experiments.thesis_parallel_env_ablation_po_wall_medium.scripts import comm
 @pytest.mark.parametrize("algorithm_variant", ("mat_ind", "mat_qcx"))
 @pytest.mark.parametrize(
     ("num_envs", "rollout_steps_per_env"),
-    common.PARALLEL_ENV_CONFIGS,
+    common.TRAINING_PARALLEL_ENV_CONFIGS,
 )
 def test_parallel_env_variants_keep_rollout_batch_size_fixed(
     algorithm_variant: common.ParallelEnvAlgorithmVariant,
@@ -53,7 +53,7 @@ def test_parallel_env_ablation_has_one_entrypoint_per_variant() -> None:
     expected_entrypoints = {
         f"run_{algorithm_variant}_{num_envs}x{rollout_steps_per_env}.py"
         for algorithm_variant in ("mat_ind", "mat_qcx")
-        for num_envs, rollout_steps_per_env in common.PARALLEL_ENV_CONFIGS
+        for num_envs, rollout_steps_per_env in common.TRAINING_PARALLEL_ENV_CONFIGS
     }
 
     assert {path.name for path in scripts_dir.glob("run_*.py")} == expected_entrypoints
@@ -65,4 +65,11 @@ def test_parallel_env_ablation_plot_includes_all_variants() -> None:
         f"{algorithm_variant}_{num_envs}x{rollout_steps_per_env}"
         for algorithm_variant in ("mat_ind", "mat_qcx")
         for num_envs, rollout_steps_per_env in common.PARALLEL_ENV_CONFIGS
+    }
+
+
+def test_parallel_env_ablation_plot_reuses_thesis_1024x4_runs() -> None:
+    assert plot_results.EXTRA_GROUP_SOURCES == {
+        "mat_ind_1024x4": plot_results.THESIS_PO_WALL_GROUP_SOURCES["mat_ind"],
+        "mat_qcx_1024x4": plot_results.THESIS_PO_WALL_GROUP_SOURCES["mat_qcx"],
     }
