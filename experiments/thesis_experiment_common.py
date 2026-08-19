@@ -31,6 +31,7 @@ ThesisAlgorithmVariant = Literal[
     "tmasac_baseline_no_nop",
     "slstm_two_small_actor_state_critic_predicted_std",
     "slstm_two_small_actor_state_critic_no_nop",
+    "slstm_two_small_actor_state_critic_no_memory_strength",
 ]
 
 
@@ -38,6 +39,7 @@ ThesisAlgorithmVariant = Literal[
 class ThesisVariantConfig:
     continuous_action_dist: ContinuousActionDistVariant
     use_nop: bool
+    include_slstm_memory_strength: bool = True
     policy_variant: PolicyVariant | None = None
     tmasac_variant: TMASACExperimentVariant | None = None
 
@@ -108,6 +110,12 @@ THESIS_VARIANT_CONFIGS: dict[ThesisAlgorithmVariant, ThesisVariantConfig] = {
         continuous_action_dist="gumbel_softmax_sign_magnitude_beta",
         use_nop=False,
     ),
+    "slstm_two_small_actor_state_critic_no_memory_strength": ThesisVariantConfig(
+        tmasac_variant="slstm_two_small_actor_state_critic",
+        continuous_action_dist="gumbel_softmax_sign_magnitude_beta",
+        use_nop=True,
+        include_slstm_memory_strength=False,
+    ),
 }
 
 
@@ -129,6 +137,7 @@ def run_thesis_experiment(
             entrypoint_path=entrypoint_path,
             continuous_action_dist=config.continuous_action_dist,
             use_nop=config.use_nop,
+            include_slstm_memory_strength=config.include_slstm_memory_strength,
             variant_name=variant,
         )
         return

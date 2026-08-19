@@ -50,6 +50,7 @@ def run_tmasac_experiment(
     entrypoint_path: Path,
     continuous_action_dist: ContinuousActionDistVariant = "gumbel_softmax_sign_magnitude_beta",
     use_nop: bool = True,
+    include_slstm_memory_strength: bool = True,
     variant_name: str | None = None,
 ) -> None:
     temporal_model_cls, temporal_model_config = _make_temporal_model_spec(
@@ -102,6 +103,7 @@ def run_tmasac_experiment(
             ActorStateCriticInputConfig(
                 projection_dim=ACTOR_D_MODEL,
                 projection_hidden_dims=(ACTOR_D_MODEL,),
+                include_slstm_memory_strength=include_slstm_memory_strength,
             )
             if is_recurrent
             else None

@@ -26,6 +26,7 @@ THESIS_GROUP_ORDER = (
     "slstm_two_small_actor_state_critic_predicted_std",
     "slstm_two_small_actor_state_critic_no_nop",
     "lstm_two_small_actor_state_critic",
+    "slstm_two_small_actor_state_critic_no_memory_strength",
 )
 THESIS_ABLATION_PLOTS = (
     ExperimentPlotSelection(
@@ -88,6 +89,18 @@ THESIS_ABLATION_PLOTS = (
         title_suffix="TMASAC Temporal Model Ablation",
         output_subdir="temporal_model/tmasac",
     ),
+    ExperimentPlotSelection(
+        name="slstm_tmasac_memory_strength",
+        group_names=(
+            "slstm_two_small_actor_state_critic",
+            "slstm_two_small_actor_state_critic_no_memory_strength",
+        ),
+        required_group_names=(
+            "slstm_two_small_actor_state_critic_no_memory_strength",
+        ),
+        title_suffix="sLSTM-TMASAC Critic Memory Strength Ablation",
+        output_subdir="memory_strength/slstm_tmasac",
+    ),
 )
 THESIS_DISPLAY_NAMES = {
     "mappo": "MAPPO",
@@ -105,6 +118,9 @@ THESIS_DISPLAY_NAMES = {
     ),
     "slstm_two_small_actor_state_critic_no_nop": "TMASAC + sLSTM, no NOP",
     "lstm_two_small_actor_state_critic": "TMASAC + LSTM",
+    "slstm_two_small_actor_state_critic_no_memory_strength": (
+        "TMASAC + sLSTM, no critic memory strength"
+    ),
 }
 THESIS_RUN_LENGTH = 100_000_000
 
