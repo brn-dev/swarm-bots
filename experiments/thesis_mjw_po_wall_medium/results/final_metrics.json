@@ -150,7 +150,7 @@
       }
     },
     "mat_orig": {
-      "display_name": "MAT original actor decoder + NOP",
+      "display_name": "MAT original decoder + NOP",
       "number_of_runs": 5,
       "ep_rew_ema": {
         "number_of_runs": 5,

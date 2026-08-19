@@ -150,7 +150,7 @@
       }
     },
     "mat_orig": {
-      "display_name": "MAT original actor decoder + NOP",
+      "display_name": "MAT original decoder + NOP",
       "number_of_runs": 5,
       "ep_rew_ema": {
         "number_of_runs": 5,
@@ -522,13 +522,13 @@
       "number_of_runs": 2,
       "ep_rew_ema": {
         "number_of_runs": 2,
-        "mean": 9.600317043730616,
-        "std": 2.979152647031305
+        "mean": 13.433044704381576,
+        "std": 2.5861162510552624
       },
       "ep_success_rate_ema": {
         "number_of_runs": 2,
-        "mean": 48.360839934899786,
-        "std": 21.699935723950464
+        "mean": 75.90893736672503,
+        "std": 21.90592448810217
       },
       "success_rate_threshold_timesteps": {
         "25": {
@@ -537,9 +537,9 @@
           "std": 5038080.0
         },
         "50": {
-          "number_of_runs": 1,
-          "mean": 43110400.0,
-          "std": 0.0
+          "number_of_runs": 2,
+          "mean": 51036160.0,
+          "std": 7925760.0
         },
         "75": {
           "number_of_runs": 1,
@@ -547,19 +547,19 @@
           "std": 0.0
         },
         "90": {
-          "number_of_runs": 0,
-          "mean": null,
-          "std": null
+          "number_of_runs": 1,
+          "mean": 53104640.0,
+          "std": 0.0
         },
         "95": {
-          "number_of_runs": 0,
-          "mean": null,
-          "std": null
+          "number_of_runs": 1,
+          "mean": 55336960.0,
+          "std": 0.0
         },
         "98": {
-          "number_of_runs": 0,
-          "mean": null,
-          "std": null
+          "number_of_runs": 1,
+          "mean": 59781120.0,
+          "std": 0.0
         }
       }
     }
