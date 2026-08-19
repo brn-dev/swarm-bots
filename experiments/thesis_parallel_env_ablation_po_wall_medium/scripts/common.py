@@ -25,6 +25,7 @@ PARALLEL_ENV_CONFIGS = (
     (128, 32),
     (64, 64),
 )
+TRAINING_PARALLEL_ENV_CONFIGS = PARALLEL_ENV_CONFIGS[1:]
 SCENARIO_KWARGS = make_scenario_kwargs(
     PO_WALL_MEDIUM_SCENARIO_KWARGS,
     {"continuous_connector_actions": True},

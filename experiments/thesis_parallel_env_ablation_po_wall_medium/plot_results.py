@@ -7,6 +7,9 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from experiments.thesis_mjw_po_wall_medium.plot_results import (
+    EXTRA_GROUP_SOURCES as THESIS_PO_WALL_GROUP_SOURCES,
+)
 from plot_logs.experiment_results import plot_experiment_results
 
 EXPERIMENT_RUN_DIR = REPO_ROOT / "runs" / "thesis_parallel_env_ablation_po_wall_medium"
@@ -28,6 +31,10 @@ DISPLAY_NAME_OVERRIDES = {
     )
     for rollout_config_name in ROLLOUT_CONFIG_NAMES
 }
+EXTRA_GROUP_SOURCES = {
+    "mat_ind_1024x4": THESIS_PO_WALL_GROUP_SOURCES["mat_ind"],
+    "mat_qcx_1024x4": THESIS_PO_WALL_GROUP_SOURCES["mat_qcx"],
+}
 
 
 def main() -> int:
@@ -36,6 +43,7 @@ def main() -> int:
         OUTPUT_DIR,
         group_order=GROUP_ORDER,
         display_name_overrides=DISPLAY_NAME_OVERRIDES,
+        extra_group_sources=EXTRA_GROUP_SOURCES,
         run_length_limit=100_000_000,
         cut_at_limit=True,
     )
