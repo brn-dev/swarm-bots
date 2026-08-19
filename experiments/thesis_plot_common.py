@@ -106,7 +106,7 @@ THESIS_DISPLAY_NAMES = {
     "mappo": "MAPPO",
     "mat_qcx": "MAT-QCX + NOP",
     "mat_ind": "MAT-Independent + NOP",
-    "mat_orig": "MAT original actor decoder + NOP",
+    "mat_orig": "MAT original decoder + NOP",
     "tmasac_baseline": "TMASAC",
     "slstm_two_small_actor_state_critic": "TMASAC + sLSTM",
     "mat_qcx_gsde": "MAT-QCX + NOP, gSDE",
