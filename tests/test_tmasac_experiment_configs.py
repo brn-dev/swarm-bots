@@ -269,6 +269,31 @@ def test_slstm_variants_use_two_actor_feedforwards_and_actor_state_critic_input(
     )
 
 
+def test_slstm_variant_can_omit_memory_strength_from_critic_input(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run_mjw_experiment = Mock()
+    monkeypatch.setattr(tmasac_common, "run_mjw_experiment", run_mjw_experiment)
+
+    tmasac_common.run_tmasac_experiment(
+        experiment_run_name="test_suite",
+        scenario_name="find_opening",
+        scenario_kwargs={"continuous_connector_actions": True},
+        variant="slstm_two_small_actor_state_critic",
+        entrypoint_path=Path(__file__),
+        include_slstm_memory_strength=False,
+    )
+
+    kwargs = run_mjw_experiment.call_args.kwargs
+    assert kwargs[
+        "r_tmasac_actor_state_critic_input_config"
+    ] == ActorStateCriticInputConfig(
+        projection_dim=256,
+        projection_hidden_dims=(256,),
+        include_slstm_memory_strength=False,
+    )
+
+
 def test_lstm_variant_matches_recurrent_architecture_with_standard_lstm(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -64,24 +64,33 @@ def test_ppo_thesis_variants_use_current_observation_and_action_defaults(
 
 
 @pytest.mark.parametrize(
-    ("variant", "tmasac_variant", "continuous_action_dist", "use_nop"),
+    (
+        "variant",
+        "tmasac_variant",
+        "continuous_action_dist",
+        "use_nop",
+        "include_slstm_memory_strength",
+    ),
     (
         (
             "tmasac_baseline",
             "tmasac_baseline",
             "gumbel_softmax_sign_magnitude_beta",
             True,
+            True,
         ),
         (
             "slstm_two_small_actor_state_critic",
             "slstm_two_small_actor_state_critic",
             "gumbel_softmax_sign_magnitude_beta",
             True,
+            True,
         ),
         (
             "lstm_two_small_actor_state_critic",
             "lstm_two_small_actor_state_critic",
             "gumbel_softmax_sign_magnitude_beta",
+            True,
             True,
         ),
         (
@@ -89,23 +98,34 @@ def test_ppo_thesis_variants_use_current_observation_and_action_defaults(
             "tmasac_baseline",
             "predicted_std",
             True,
+            True,
         ),
         (
             "tmasac_baseline_no_nop",
             "tmasac_baseline",
             "gumbel_softmax_sign_magnitude_beta",
             False,
+            True,
         ),
         (
             "slstm_two_small_actor_state_critic_predicted_std",
             "slstm_two_small_actor_state_critic",
             "predicted_std",
             True,
+            True,
         ),
         (
             "slstm_two_small_actor_state_critic_no_nop",
             "slstm_two_small_actor_state_critic",
             "gumbel_softmax_sign_magnitude_beta",
+            False,
+            True,
+        ),
+        (
+            "slstm_two_small_actor_state_critic_no_memory_strength",
+            "slstm_two_small_actor_state_critic",
+            "gumbel_softmax_sign_magnitude_beta",
+            True,
             False,
         ),
     ),
@@ -115,6 +135,7 @@ def test_tmasac_thesis_variants_use_shared_current_architectures(
     tmasac_variant: str,
     continuous_action_dist: str,
     use_nop: bool,
+    include_slstm_memory_strength: bool,
 ) -> None:
     entrypoint_path = Path(__file__)
     scenario_kwargs = {"continuous_connector_actions": True}
@@ -136,6 +157,7 @@ def test_tmasac_thesis_variants_use_shared_current_architectures(
         entrypoint_path=entrypoint_path,
         continuous_action_dist=continuous_action_dist,
         use_nop=use_nop,
+        include_slstm_memory_strength=include_slstm_memory_strength,
         variant_name=variant,
     )
 
@@ -184,9 +206,13 @@ def test_thesis_plots_keep_ablations_out_of_main_plot_and_use_pair_comparisons()
             "slstm_two_small_actor_state_critic",
             "lstm_two_small_actor_state_critic",
         ),
+        "slstm_tmasac_memory_strength": (
+            "slstm_two_small_actor_state_critic",
+            "slstm_two_small_actor_state_critic_no_memory_strength",
+        ),
     }
     assert thesis_plot_common.THESIS_GROUP_ORDER[-1] == (
-        "lstm_two_small_actor_state_critic"
+        "slstm_two_small_actor_state_critic_no_memory_strength"
     )
 
 
