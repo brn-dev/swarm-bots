@@ -9,10 +9,16 @@
     98.0
   ],
   "run_length_limit": 100000000,
+  "run_length_limit_overrides": {
+    "mappo_250m": 250000000,
+    "mat_qcx_250m": 250000000,
+    "mat_ind_250m": 250000000,
+    "mat_orig_250m": 250000000
+  },
   "standard_deviation": "population",
   "variants": {
-    "mappo": {
-      "display_name": "MAPPO",
+    "mappo_100m": {
+      "display_name": "MAPPO (100M)",
       "number_of_runs": 5,
       "ep_rew_ema": {
         "number_of_runs": 5,
@@ -57,100 +63,8 @@
         }
       }
     },
-    "mat_qcx": {
-      "display_name": "MAT-QCX + NOP",
-      "number_of_runs": 5,
-      "ep_rew_ema": {
-        "number_of_runs": 5,
-        "mean": 13.546330538065742,
-        "std": 0.7572318216864008
-      },
-      "ep_success_rate_ema": {
-        "number_of_runs": 5,
-        "mean": 56.332509962572395,
-        "std": 6.972609010643839
-      },
-      "success_rate_threshold_timesteps": {
-        "25": {
-          "number_of_runs": 5,
-          "mean": 46448640.0,
-          "std": 7664800.486549614
-        },
-        "50": {
-          "number_of_runs": 5,
-          "mean": 73294643.2,
-          "std": 8321373.115432871
-        },
-        "75": {
-          "number_of_runs": 0,
-          "mean": null,
-          "std": null
-        },
-        "90": {
-          "number_of_runs": 0,
-          "mean": null,
-          "std": null
-        },
-        "95": {
-          "number_of_runs": 0,
-          "mean": null,
-          "std": null
-        },
-        "98": {
-          "number_of_runs": 0,
-          "mean": null,
-          "std": null
-        }
-      }
-    },
-    "mat_ind": {
-      "display_name": "MAT-Independent + NOP",
-      "number_of_runs": 5,
-      "ep_rew_ema": {
-        "number_of_runs": 5,
-        "mean": 13.377741183150741,
-        "std": 0.6621505093603666
-      },
-      "ep_success_rate_ema": {
-        "number_of_runs": 5,
-        "mean": 54.24984692998682,
-        "std": 5.98575970924879
-      },
-      "success_rate_threshold_timesteps": {
-        "25": {
-          "number_of_runs": 5,
-          "mean": 36641177.6,
-          "std": 4019064.495774389
-        },
-        "50": {
-          "number_of_runs": 5,
-          "mean": 70791987.2,
-          "std": 12182666.470316691
-        },
-        "75": {
-          "number_of_runs": 0,
-          "mean": null,
-          "std": null
-        },
-        "90": {
-          "number_of_runs": 0,
-          "mean": null,
-          "std": null
-        },
-        "95": {
-          "number_of_runs": 0,
-          "mean": null,
-          "std": null
-        },
-        "98": {
-          "number_of_runs": 0,
-          "mean": null,
-          "std": null
-        }
-      }
-    },
-    "mat_orig": {
-      "display_name": "MAT original decoder + NOP",
+    "mat_orig_100m": {
+      "display_name": "MAT original decoder (100M)",
       "number_of_runs": 5,
       "ep_rew_ema": {
         "number_of_runs": 5,
@@ -288,7 +202,7 @@
       }
     },
     "mat_qcx_gsde": {
-      "display_name": "MAT-QCX + NOP, gSDE",
+      "display_name": "MAT-QCX, gSDE",
       "number_of_runs": 5,
       "ep_rew_ema": {
         "number_of_runs": 5,
@@ -380,7 +294,7 @@
       }
     },
     "tmasac_baseline_predicted_std": {
-      "display_name": "TMASAC + NOP, predicted std",
+      "display_name": "TMASAC, predicted std",
       "number_of_runs": 5,
       "ep_rew_ema": {
         "number_of_runs": 5,
@@ -453,6 +367,144 @@
           "number_of_runs": 0,
           "mean": null,
           "std": null
+        },
+        "90": {
+          "number_of_runs": 0,
+          "mean": null,
+          "std": null
+        },
+        "95": {
+          "number_of_runs": 0,
+          "mean": null,
+          "std": null
+        },
+        "98": {
+          "number_of_runs": 0,
+          "mean": null,
+          "std": null
+        }
+      }
+    },
+    "mappo_250m": {
+      "display_name": "MAPPO (250M)",
+      "number_of_runs": 4,
+      "ep_rew_ema": {
+        "number_of_runs": 4,
+        "mean": 12.970829469620357,
+        "std": 0.21008132623988596
+      },
+      "ep_success_rate_ema": {
+        "number_of_runs": 4,
+        "mean": 50.05683961907786,
+        "std": 2.050289070737126
+      },
+      "success_rate_threshold_timesteps": {
+        "25": {
+          "number_of_runs": 4,
+          "mean": 22958080.0,
+          "std": 2037579.891537998
+        },
+        "50": {
+          "number_of_runs": 4,
+          "mean": 50314240.0,
+          "std": 4367846.162858761
+        },
+        "75": {
+          "number_of_runs": 0,
+          "mean": null,
+          "std": null
+        },
+        "90": {
+          "number_of_runs": 0,
+          "mean": null,
+          "std": null
+        },
+        "95": {
+          "number_of_runs": 0,
+          "mean": null,
+          "std": null
+        },
+        "98": {
+          "number_of_runs": 0,
+          "mean": null,
+          "std": null
+        }
+      }
+    },
+    "mat_qcx_250m": {
+      "display_name": "MAT-QCX (250M)",
+      "number_of_runs": 4,
+      "ep_rew_ema": {
+        "number_of_runs": 4,
+        "mean": 16.13649852465437,
+        "std": 0.5150647740034696
+      },
+      "ep_success_rate_ema": {
+        "number_of_runs": 4,
+        "mean": 80.50712113947905,
+        "std": 5.475415915849535
+      },
+      "success_rate_threshold_timesteps": {
+        "25": {
+          "number_of_runs": 4,
+          "mean": 54968320.0,
+          "std": 5303825.768480711
+        },
+        "50": {
+          "number_of_runs": 4,
+          "mean": 77158400.0,
+          "std": 5578018.536218753
+        },
+        "75": {
+          "number_of_runs": 4,
+          "mean": 111472640.0,
+          "std": 11132033.94202515
+        },
+        "90": {
+          "number_of_runs": 1,
+          "mean": 127385600.0,
+          "std": 0.0
+        },
+        "95": {
+          "number_of_runs": 0,
+          "mean": null,
+          "std": null
+        },
+        "98": {
+          "number_of_runs": 0,
+          "mean": null,
+          "std": null
+        }
+      }
+    },
+    "mat_ind_250m": {
+      "display_name": "MAT-Independent (250M)",
+      "number_of_runs": 4,
+      "ep_rew_ema": {
+        "number_of_runs": 4,
+        "mean": 14.0811723713143,
+        "std": 1.1075752171079083
+      },
+      "ep_success_rate_ema": {
+        "number_of_runs": 4,
+        "mean": 60.83199940170327,
+        "std": 10.278365787696005
+      },
+      "success_rate_threshold_timesteps": {
+        "25": {
+          "number_of_runs": 4,
+          "mean": 45009920.0,
+          "std": 4588945.492812047
+        },
+        "50": {
+          "number_of_runs": 4,
+          "mean": 94156800.0,
+          "std": 25849031.805589933
+        },
+        "75": {
+          "number_of_runs": 2,
+          "mean": 154511360.0,
+          "std": 13404160.0
         },
         "90": {
           "number_of_runs": 0,

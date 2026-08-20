@@ -9,6 +9,7 @@
     98.0
   ],
   "run_length_limit": 100000000,
+  "run_length_limit_overrides": {},
   "standard_deviation": "population",
   "variants": {
     "mappo": {
@@ -58,7 +59,7 @@
       }
     },
     "mat_qcx": {
-      "display_name": "MAT-QCX + NOP",
+      "display_name": "MAT-QCX",
       "number_of_runs": 5,
       "ep_rew_ema": {
         "number_of_runs": 5,
@@ -104,7 +105,7 @@
       }
     },
     "mat_ind": {
-      "display_name": "MAT-Independent + NOP",
+      "display_name": "MAT-Independent",
       "number_of_runs": 5,
       "ep_rew_ema": {
         "number_of_runs": 5,
@@ -150,7 +151,7 @@
       }
     },
     "mat_orig": {
-      "display_name": "MAT original decoder + NOP",
+      "display_name": "MAT original decoder",
       "number_of_runs": 5,
       "ep_rew_ema": {
         "number_of_runs": 5,
@@ -288,7 +289,7 @@
       }
     },
     "mat_qcx_gsde": {
-      "display_name": "MAT-QCX + NOP, gSDE",
+      "display_name": "MAT-QCX, gSDE",
       "number_of_runs": 5,
       "ep_rew_ema": {
         "number_of_runs": 5,
@@ -380,7 +381,7 @@
       }
     },
     "slstm_two_small_actor_state_critic_predicted_std": {
-      "display_name": "TMASAC + sLSTM + NOP, predicted std",
+      "display_name": "TMASAC + sLSTM, predicted std",
       "number_of_runs": 5,
       "ep_rew_ema": {
         "number_of_runs": 5,
@@ -519,47 +520,47 @@
     },
     "slstm_two_small_actor_state_critic_no_memory_strength": {
       "display_name": "TMASAC + sLSTM, no critic memory strength",
-      "number_of_runs": 2,
+      "number_of_runs": 4,
       "ep_rew_ema": {
-        "number_of_runs": 2,
-        "mean": 13.433044704381576,
-        "std": 2.5861162510552624
+        "number_of_runs": 4,
+        "mean": 16.16424059207676,
+        "std": 0.09357178750661858
       },
       "ep_success_rate_ema": {
-        "number_of_runs": 2,
-        "mean": 75.90893736672503,
-        "std": 21.90592448810217
+        "number_of_runs": 4,
+        "mean": 98.54340273628321,
+        "std": 0.5803096915264296
       },
       "success_rate_threshold_timesteps": {
         "25": {
-          "number_of_runs": 2,
-          "mean": 42291200.0,
-          "std": 5038080.0
+          "number_of_runs": 4,
+          "mean": 38968320.0,
+          "std": 5127702.366401545
         },
         "50": {
-          "number_of_runs": 2,
-          "mean": 51036160.0,
-          "std": 7925760.0
+          "number_of_runs": 4,
+          "mean": 47457280.0,
+          "std": 7221550.822918856
         },
         "75": {
-          "number_of_runs": 1,
-          "mean": 47882240.0,
-          "std": 0.0
+          "number_of_runs": 4,
+          "mean": 55710720.0,
+          "std": 9348939.1439243
         },
         "90": {
-          "number_of_runs": 1,
-          "mean": 53104640.0,
-          "std": 0.0
+          "number_of_runs": 4,
+          "mean": 62817280.0,
+          "std": 11413391.870254872
         },
         "95": {
-          "number_of_runs": 1,
-          "mean": 55336960.0,
-          "std": 0.0
+          "number_of_runs": 4,
+          "mean": 66677760.0,
+          "std": 13031745.816551212
         },
         "98": {
-          "number_of_runs": 1,
-          "mean": 59781120.0,
-          "std": 0.0
+          "number_of_runs": 4,
+          "mean": 71193600.0,
+          "std": 13701834.600198617
         }
       }
     }
