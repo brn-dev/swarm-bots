@@ -9,7 +9,7 @@ from experiments.thesis_plot_common import (
     THESIS_GROUP_ORDER,
     THESIS_RUN_LENGTH,
 )
-from plot_logs.experiment_results import load_experiment_groups
+from plot_logs.experiment_results import ExperimentGroup, load_experiment_groups
 from plot_logs.experiment_summary import (
     DEFAULT_TAIL_POINTS,
     summarize_experiment_groups,
@@ -53,6 +53,7 @@ def summarize_thesis_experiment(
     group_order: Sequence[str] = THESIS_GROUP_ORDER,
     display_name_overrides: Mapping[str, str] = THESIS_DISPLAY_NAMES,
     run_length_limit: int = THESIS_RUN_LENGTH,
+    run_length_limit_overrides: Mapping[str, int] | None = None,
 ) -> Path:
     groups = load_experiment_groups(
         experiment_run_dir,
@@ -60,10 +61,28 @@ def summarize_thesis_experiment(
         display_name_overrides=display_name_overrides,
         extra_group_sources=extra_group_sources,
     )
+    return summarize_thesis_groups(
+        groups=groups,
+        output_path=output_path,
+        tail_points=tail_points,
+        run_length_limit=run_length_limit,
+        run_length_limit_overrides=run_length_limit_overrides,
+    )
+
+
+def summarize_thesis_groups(
+    *,
+    groups: Sequence[ExperimentGroup],
+    output_path: Path,
+    tail_points: int,
+    run_length_limit: int = THESIS_RUN_LENGTH,
+    run_length_limit_overrides: Mapping[str, int] | None = None,
+) -> Path:
     summary = summarize_experiment_groups(
         groups,
         tail_points=tail_points,
         run_length_limit=run_length_limit,
+        run_length_limit_overrides=run_length_limit_overrides,
         cut_at_limit=True,
     )
     return write_experiment_summary(summary, output_path)

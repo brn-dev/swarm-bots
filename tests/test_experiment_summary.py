@@ -137,6 +137,37 @@ class ExperimentSummaryTests(unittest.TestCase):
             },
         )
 
+    def test_run_length_limit_overrides_apply_only_to_named_groups(self) -> None:
+        overridden_group = ExperimentGroup(
+            name="overridden",
+            display_name="Overridden",
+            runs=[make_run("long-run", (1.0, 2.0, 100.0), (1.0, 2.0, 100.0))],
+        )
+        default_group = ExperimentGroup(
+            name="default",
+            display_name="Default",
+            runs=[make_run("short-run", (1.0, 2.0, 100.0), (1.0, 2.0, 100.0))],
+        )
+
+        summary = summarize_experiment_groups(
+            [overridden_group, default_group],
+            tail_points=1,
+            run_length_limit=2,
+            run_length_limit_overrides={"overridden": 3},
+            cut_at_limit=True,
+        )
+
+        self.assertEqual(
+            summary["variants"]["overridden"][EP_REW_EMA_COLUMN]["mean"],
+            100.0,
+        )
+        self.assertEqual(
+            summary["variants"]["default"][EP_REW_EMA_COLUMN]["mean"],
+            2.0,
+        )
+        self.assertEqual(summary["run_length_limit"], 2)
+        self.assertEqual(summary["run_length_limit_overrides"], {"overridden": 3})
+
     def test_writes_strict_json(self) -> None:
         summary = {
             "variants": {
