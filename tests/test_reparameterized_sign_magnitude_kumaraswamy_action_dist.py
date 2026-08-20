@@ -58,6 +58,27 @@ class ReparameterizedSignMagnitudeKumaraswamyActionDistTests(unittest.TestCase):
         self.assertIsNotNone(dist.output_net.bias.grad)
         self.assertGreater(dist.output_net.bias.grad.abs().sum().item(), 0.0)
 
+    def test_rsample_negates_negative_magnitude(self) -> None:
+        dist = ReparameterizedSignMagnitudeKumaraswamyActionDist(
+            latent_dim=4,
+            action_dim=3,
+            action_net_initialization=init_linear_orthogonal,
+        )
+        dist.update_latent_features(torch.zeros(2, 1, 4))
+        assert dist.weight_logits is not None
+        with torch.no_grad():
+            dist.weight_logits[..., dist._NEGATIVE_INDEX] = 100.0
+            dist.weight_logits[..., dist._POSITIVE_INDEX] = -100.0
+
+        with patch(
+                "swarmbots.learn.action_dists.reparameterized_sign_magnitude_kumaraswamy_action_dist."
+                "kumaraswamy_icdf",
+                return_value=torch.full((2, 1, 3), 0.2),
+        ):
+            actions = dist.rsample()
+
+        torch.testing.assert_close(actions, torch.full((2, 1, 3), -0.2))
+
     def test_inverse_cdf_preserves_float32_tail_value_and_gradient(self) -> None:
         u = torch.tensor(1e-6, dtype=torch.float32)
         a = torch.tensor(2.0, dtype=torch.float32)

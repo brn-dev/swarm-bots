@@ -44,6 +44,8 @@ from swarmbots.learn.algos.mat_qcs.mat_qcs_decoder import MATQCSDecoderSelfAtten
 from swarmbots.learn.algos.mat_qcs.mat_qcs_policy import MATQCSPolicy
 from swarmbots.learn.algos.mat_qcx.mat_qcx_policy import MATQCXPolicy
 from swarmbots.learn.algos.r_mat.r_mat_ind_policy import RMATIndPolicy
+from swarmbots.learn.algos.r_mat.r_mat_encoder import RMATEncoder
+from swarmbots.learn.algos.sac.sac_nop import SACNOPLatentSource
 from swarmbots.learn.algos.sac.recurrent_tmasac_policy import (
     ActorStateCriticInputConfig,
     RecurrentTMASACPolicy,
@@ -878,6 +880,8 @@ def test_make_base_policy_constructs_tmasac_shared_encoder_layer_split() -> None
         tmasac_shared_encoder_num_layers=2,
         tmasac_actor_encoder_num_layers=1,
         tmasac_critic_encoder_num_layers=1,
+        use_nop=True,
+        obs_indices=_make_obs_indices(),
     )
 
     assert isinstance(policy, TMASACPolicy)
@@ -887,6 +891,38 @@ def test_make_base_policy_constructs_tmasac_shared_encoder_layer_split() -> None
     assert len(policy.shared_observation_encoder.layers) == 2
     assert len(policy.actor_encoder.layers) == 1
     assert len(policy.critic.encoder.layers) == 1
+    assert policy.nop_latent_source is SACNOPLatentSource.SHARED_ENCODER
+    assert policy.actor_nop is None
+    assert policy.critic_nop is not None
+    assert policy.critic_nop.name == "shared_encoder"
+    assert policy.critic_nop.skip_first_transition is False
+
+
+def test_make_base_policy_constructs_recurrent_shared_encoder_layer_split() -> None:
+    policy = _make_test_base_policy(
+        env=_DummyContinuousEnv(),
+        policy_variant="r_tmasac",
+        continuous_action_dist="predicted_std",
+        tmasac_shared_encoder_num_layers=2,
+        tmasac_recurrent_shared_encoder=True,
+        tmasac_actor_encoder_num_layers=1,
+        tmasac_critic_encoder_num_layers=1,
+        use_nop=True,
+        obs_indices=_make_obs_indices(),
+    )
+
+    assert isinstance(policy, RecurrentTMASACPolicy)
+    assert isinstance(policy.shared_observation_encoder, RMATEncoder)
+    assert isinstance(policy.actor_encoder, MATEncoder)
+    assert len(policy.shared_observation_encoder.layers) == 2
+    assert len(policy.actor_encoder.layers) == 1
+    assert len(policy.critic.encoder.layers) == 1
+    assert policy.config.actor_state_critic_input_config is None
+    assert policy.nop_latent_source is SACNOPLatentSource.SHARED_ENCODER
+    assert policy.actor_nop is None
+    assert policy.critic_nop is not None
+    assert policy.critic_nop.name == "shared_encoder"
+    assert policy.critic_nop.skip_first_transition is False
 
 
 def test_default_base_policy_produces_finite_actions_log_probs_and_values() -> None:

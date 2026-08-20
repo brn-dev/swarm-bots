@@ -279,6 +279,45 @@ def _policy_config(
     )
 
 
+def _shared_recurrent_policy_config(
+        *,
+        nop_config: SACNOPConfig | None = None,
+        compile_modules: bool = False,
+) -> RecurrentTMASACPolicyConfig:
+    shared_encoder_config = RMATEncoderConfig(
+        d_model=8,
+        nhead=2,
+        num_layers=2,
+        dim_feedforward=16,
+        temporal_model_cls=SLSTMTemporalSequenceModel,
+        temporal_model_config=SLSTMTemporalSequenceModelConfig(num_heads=2),
+    )
+    downstream_encoder_config = MATEncoderConfig(
+        d_model=8,
+        nhead=2,
+        num_layers=1,
+        dim_feedforward=16,
+    )
+    return RecurrentTMASACPolicyConfig(
+        actor_encoder_config=downstream_encoder_config,
+        critic_encoder_config=downstream_encoder_config,
+        shared_encoder_config=shared_encoder_config,
+        recurrent_shared_encoder=True,
+        actor_head_config=_actor_head_config(),
+        critic_config=TMASACCriticConfig(
+            n_local_projection_hidden_layers=1,
+            n_value_regressor_hidden_layers=1,
+        ),
+        continuous_config=PredictedStdConfig(base_std=0.5),
+        nop_config=(
+            _small_nop_config(latent_source=SACNOPLatentSource.SHARED_ENCODER)
+            if nop_config is None
+            else nop_config
+        ),
+        compile_modules=compile_modules,
+    )
+
+
 def _actor_state_policy(
         temporal_model_cls: type,
         temporal_model_config: object,
@@ -571,6 +610,7 @@ def _make_scenario_env(*, max_steps: int = 200) -> TorchRecordEpisodeStatisticsW
 def _perform_short_recurrent_update(
         *,
         recurrent_critic: bool = False,
+        recurrent_shared_encoder: bool = False,
         nop_config: SACNOPConfig | None = None,
         max_steps: int = 20,
         compile_modules: bool = False,
@@ -598,9 +638,22 @@ def _perform_short_recurrent_update(
             else nullcontext()
         )
         with compile_context:
-            policy = RecurrentTMASACPolicy(
-                env=env,
-                config=replace(
+            if recurrent_shared_encoder:
+                policy_config = _shared_recurrent_policy_config(
+                    nop_config=(
+                        SACNOPConfig(enabled=False)
+                        if nop_config is None
+                        else nop_config
+                    ),
+                    compile_modules=compile_modules,
+                )
+                if continuous_config is not None:
+                    policy_config = replace(
+                        policy_config,
+                        continuous_config=continuous_config,
+                    )
+            else:
+                policy_config = replace(
                     _policy_config(
                         _encoder_config(temporal_model_class, temporal_model_config),
                         recurrent_critic=recurrent_critic,
@@ -609,7 +662,10 @@ def _perform_short_recurrent_update(
                     ),
                     compile_modules=compile_modules,
                     actor_state_critic_input_config=actor_state_critic_input_config,
-                ),
+                )
+            policy = RecurrentTMASACPolicy(
+                env=env,
+                config=policy_config,
             )
             algorithm = RecurrentSAC(
                 policy=policy,
@@ -2257,6 +2313,210 @@ class RecurrentTMASACTests(unittest.TestCase):
                 ),
             )
 
+    def test_recurrent_shared_encoder_owns_memory_and_feeds_one_layer_heads(self) -> None:
+        policy = RecurrentTMASACPolicy(
+            env=_DummyContinuousEnv(),
+            config=_shared_recurrent_policy_config(),
+        )
+
+        self.assertTrue(policy.uses_recurrent_shared_encoder)
+        self.assertTrue(policy.critic_uses_temporal_state)
+        self.assertFalse(policy.recurrent_critic)
+        self.assertFalse(policy.uses_actor_state_critic_input)
+        self.assertIsInstance(policy.shared_observation_encoder, RMATEncoder)
+        self.assertIsInstance(policy.actor_encoder, MATEncoder)
+        assert isinstance(policy.shared_observation_encoder, RMATEncoder)
+        assert isinstance(policy.actor_encoder, MATEncoder)
+        self.assertEqual(len(policy.shared_observation_encoder.layers), 2)
+        self.assertEqual(len(policy.actor_encoder.layers), 1)
+        self.assertEqual(len(policy.critic.encoder.layers), 1)
+        single_step_inputs = _actor_state_critic_inputs()
+        shared_latents = policy.encode_shared_observations(
+            local_obs=single_step_inputs["local_obs"],
+            global_obs=single_step_inputs["global_obs"],
+            agent_mask=single_step_inputs["agent_mask"],
+            target=False,
+        )
+        self.assertEqual(shared_latents.shape, (2, _DummyContinuousEnv.n_agents, 8))
+        self.assertEqual(len(policy.initial_temporal_state(
+            batch_size=2,
+            n_agents=_DummyContinuousEnv.n_agents,
+            device=torch.device("cpu"),
+            dtype=torch.float32,
+        )), 2)
+
+    def test_recurrent_shared_encoder_rejects_incompatible_recurrent_paths(self) -> None:
+        base_config = _shared_recurrent_policy_config()
+        cases = (
+            (
+                replace(
+                    base_config,
+                    shared_encoder_config=MATEncoderConfig(
+                        d_model=8,
+                        nhead=2,
+                        num_layers=2,
+                        dim_feedforward=16,
+                    ),
+                ),
+                TypeError,
+                "shared_encoder_config",
+            ),
+            (
+                replace(
+                    base_config,
+                    actor_encoder_config=base_config.shared_encoder_config,
+                ),
+                TypeError,
+                "actor_encoder_config",
+            ),
+            (
+                replace(base_config, recurrent_critic=True),
+                ValueError,
+                "recurrent_critic",
+            ),
+            (
+                replace(
+                    base_config,
+                    actor_state_critic_input_config=ActorStateCriticInputConfig(),
+                ),
+                ValueError,
+                "replaces actor_state_critic_input_config",
+            ),
+        )
+
+        for config, exception_type, message in cases:
+            with self.subTest(message=message):
+                with self.assertRaisesRegex(exception_type, message):
+                    RecurrentTMASACPolicy(env=_DummyContinuousEnv(), config=config)
+
+    def test_recurrent_shared_encoder_sequences_feed_actor_critic_and_nop(self) -> None:
+        torch.manual_seed(7)
+        env = _DummyContinuousEnv()
+        policy = RecurrentTMASACPolicy(
+            env=env,
+            config=_shared_recurrent_policy_config(),
+        )
+        policy.eval()
+        inputs = _actor_state_critic_inputs(sequence_length=4)
+        reset_mask = torch.tensor([
+            [True, False, False, True],
+            [False, False, True, False],
+        ])
+        state_output_indices = torch.tensor([[0, 1], [1, 2]])
+        assert policy.shared_observation_encoder is not None
+        with patch.object(
+            policy.shared_observation_encoder,
+            "forward",
+            wraps=policy.shared_observation_encoder.forward,
+        ) as shared_encoder_forward:
+            (
+                actions,
+                log_probs,
+                actor_latents,
+                actor_state,
+                selected_states,
+                shared_latents,
+            ) = policy.action_log_prob_sequence_with_selected_states_and_shared_latents(
+                local_obs=inputs["local_obs"],
+                global_obs=inputs["global_obs"],
+                agent_mask=inputs["agent_mask"],
+                previous_actions=None,
+                deterministic=True,
+                use_rsample=False,
+                initial_state=None,
+                state_output_indices=state_output_indices,
+                reset_mask=reset_mask,
+            )
+            q1, q2, nop_latents, critic_state = policy.q_values_sequence(
+                **inputs,
+                target=False,
+                reset_mask=reset_mask,
+                precomputed_shared_latents=shared_latents,
+                precomputed_shared_state=actor_state,
+            )
+
+        self.assertEqual(actions.shape, (2, 4, env.n_agents, 2))
+        self.assertEqual(log_probs.shape, (2, 4, env.n_agents))
+        self.assertEqual(actor_latents.shape, (2, 4, env.n_agents, 8))
+        self.assertEqual(q1.shape, (2, 4))
+        self.assertEqual(q2.shape, (2, 4))
+        self.assertEqual(shared_encoder_forward.call_count, 1)
+        self.assertIs(nop_latents, shared_latents)
+        self.assertIs(critic_state, actor_state)
+        self.assertEqual(len(actor_state), 2)
+        self.assertEqual(len(selected_states), 2)
+        self.assertIsNone(policy.actor_nop)
+        self.assertIsNotNone(policy.critic_nop)
+        assert policy.critic_nop is not None
+        self.assertEqual(policy.critic_nop.name, "shared_encoder")
+        self.assertFalse(policy.critic_nop.skip_first_transition)
+
+    def test_recurrent_shared_encoder_nop_applies_the_first_action(self) -> None:
+        env = _DummyContinuousEnv()
+        policy = RecurrentTMASACPolicy(
+            env=env,
+            config=_shared_recurrent_policy_config(),
+        )
+        assert policy.critic_nop is not None
+        batch = _make_segment_batch(
+            batch_size=2,
+            sequence_length=2,
+            n_agents=env.n_agents,
+            local_obs_dim=env.local_obs_dim,
+            global_obs_dim=env.global_obs_dim,
+            hidden_local_vars_dim=env.hidden_local_vars_dim,
+            hidden_global_vars_dim=env.hidden_global_vars_dim,
+            action_dim=env.action_space.total_agent_action_dim,
+        )
+        source_latents = torch.randn(2, env.n_agents, 8)
+
+        transition_model = policy.critic_nop.transition_model
+        with patch.object(
+            transition_model,
+            "predict_n_steps",
+            wraps=transition_model.predict_n_steps,
+        ) as predict_n_steps:
+            loss, _metrics = policy.critic_nop.compute_loss(
+                source_latents=source_latents,
+                batch=batch,
+            )
+
+        self.assertTrue(torch.isfinite(loss))
+        predict_n_steps.assert_called_once()
+        torch.testing.assert_close(predict_n_steps.call_args.args[1], batch.actions)
+
+    def test_recurrent_shared_encoder_is_critic_owned_and_actor_detached(self) -> None:
+        policy = RecurrentTMASACPolicy(
+            env=_DummyContinuousEnv(),
+            config=_shared_recurrent_policy_config(
+                nop_config=SACNOPConfig(enabled=False),
+            ),
+        )
+        inputs = _actor_state_critic_inputs(sequence_length=3)
+        assert policy.shared_observation_encoder is not None
+        shared_parameters = list(policy.shared_observation_encoder.parameters())
+
+        policy.zero_grad(set_to_none=True)
+        _actions, log_probs, _latents, _state = policy.action_log_prob_sequence(
+            local_obs=inputs["local_obs"],
+            global_obs=inputs["global_obs"],
+            agent_mask=inputs["agent_mask"],
+            previous_actions=None,
+            deterministic=False,
+            use_rsample=True,
+            initial_state=None,
+        )
+        log_probs.sum().backward()
+        self.assertTrue(all(parameter.grad is None for parameter in shared_parameters))
+
+        policy.zero_grad(set_to_none=True)
+        q1, q2, _latents, _state = policy.q_values_sequence(
+            **inputs,
+            target=False,
+        )
+        (q1 + q2).sum().backward()
+        self.assertTrue(any(parameter.grad is not None for parameter in shared_parameters))
+
     def test_feedforward_critic_preserves_single_step_output_shapes(self) -> None:
         env = _DummyContinuousEnv()
         policy = RecurrentTMASACPolicy(
@@ -2841,6 +3101,73 @@ class RecurrentTMASACTests(unittest.TestCase):
             torch.testing.assert_close(
                 q2,
                 torch.tensor([[0.5, 2.5, 4.5], [0.5, 2.5, 4.5]]),
+            )
+        finally:
+            env.close()
+
+    def test_actor_reuses_recurrent_shared_encoder_state_for_history(self) -> None:
+        env = _make_env()
+        try:
+            policy = RecurrentTMASACPolicy(
+                env=env,
+                config=_shared_recurrent_policy_config(
+                    nop_config=SACNOPConfig(enabled=False),
+                ),
+            )
+            algorithm = RecurrentSAC(
+                policy=policy,
+                env=env,
+                burn_in_steps=1,
+                learning_steps=3,
+                temporal_state_store_interval=1,
+                buffer_capacity_per_env=8,
+                learning_starts=0,
+                batch_size=2,
+                replay_storage_device="cpu",
+                train_device="cpu",
+            )
+            batch = _make_recurrent_critic_batch(env)
+            policy_actions = batch.actions + 50.0
+            initial_state = object()
+            calls: list[dict[str, Any]] = []
+            output_states = [object() for _ in range(batch.sequence_length)]
+
+            def record_q_values(**kwargs: Any) -> tuple[torch.Tensor, torch.Tensor, None, object]:
+                call_index = len(calls)
+                calls.append(kwargs)
+                q_value = torch.full((batch.actions.shape[0],), float(call_index))
+                return q_value, q_value + 0.5, None, output_states[call_index]
+
+            with patch.object(policy, "q_values_sequence", side_effect=record_q_values):
+                q1, q2 = algorithm._actor_q_values(
+                    batch=batch,
+                    actions_pi=policy_actions,
+                    initial_state=initial_state,
+                    actor_state=None,
+                )
+
+            self.assertEqual(len(calls), batch.sequence_length)
+            expected_input_state = initial_state
+            for time_index, call in enumerate(calls):
+                self.assertIs(call["initial_state"], expected_input_state)
+                torch.testing.assert_close(
+                    call["actions"],
+                    policy_actions[:, time_index],
+                )
+                torch.testing.assert_close(
+                    call["reset_mask"],
+                    batch.episode_start_mask[:, time_index],
+                )
+                self.assertFalse(call["target"])
+                expected_input_state = output_states[time_index]
+
+            torch.testing.assert_close(
+                q1,
+                torch.tensor([[0.0, 1.0, 2.0], [0.0, 1.0, 2.0]]),
+            )
+            torch.testing.assert_close(
+                q2,
+                torch.tensor([[0.5, 1.5, 2.5], [0.5, 1.5, 2.5]]),
             )
         finally:
             env.close()
@@ -3508,6 +3835,92 @@ class RecurrentTMASACTests(unittest.TestCase):
         finally:
             env.close()
 
+    def test_recurrent_shared_burn_in_uses_the_saved_state_for_online_and_target(self) -> None:
+        env = _make_env()
+        try:
+            policy = RecurrentTMASACPolicy(
+                env=env,
+                config=_shared_recurrent_policy_config(
+                    nop_config=SACNOPConfig(enabled=False),
+                ),
+            )
+            algorithm = RecurrentSAC(
+                policy=policy,
+                env=env,
+                burn_in_steps=2,
+                learning_steps=2,
+                temporal_state_store_interval=1,
+                buffer_capacity_per_env=8,
+                learning_starts=0,
+                batch_size=2,
+                replay_storage_device="cpu",
+                train_device="cpu",
+            )
+            initial_state = policy.initial_temporal_state(
+                batch_size=2,
+                n_agents=env.n_agents,
+                device=torch.device("cpu"),
+                dtype=torch.float32,
+            )
+            saved_state = [
+                tuple(torch.ones_like(component) for component in layer_state)
+                for layer_state in initial_state
+            ]
+            segment = replace(
+                _make_segment_batch(
+                    batch_size=2,
+                    sequence_length=4,
+                    n_agents=env.n_agents,
+                    local_obs_dim=env.local_obs_dim,
+                    global_obs_dim=env.global_obs_dim,
+                    hidden_local_vars_dim=env.hidden_local_vars_dim,
+                    hidden_global_vars_dim=env.hidden_global_vars_dim,
+                    action_dim=env.action_space.total_agent_action_dim,
+                ),
+                initial_temporal_state=saved_state,
+            )
+            burn_in = _slice_segment(segment, 0, 2)
+            with torch.no_grad():
+                _latents, expected_online_state = policy.encode_actor_sequence(
+                    local_obs=burn_in.local_obs,
+                    global_obs=burn_in.global_obs,
+                    agent_mask=burn_in.agent_mask,
+                    initial_state=saved_state,
+                    time_mask=torch.ones_like(burn_in.train_mask),
+                    reset_mask=burn_in.episode_start_mask,
+                )
+                _q1, _q2, _latents, expected_target_state = policy.q_values_sequence(
+                    local_obs=burn_in.local_obs,
+                    global_obs=burn_in.global_obs,
+                    actions=burn_in.actions,
+                    hidden_local_vars=burn_in.hidden_local_vars,
+                    hidden_global_vars=burn_in.hidden_global_vars,
+                    agent_mask=burn_in.agent_mask,
+                    target=True,
+                    initial_state=saved_state,
+                    time_mask=torch.ones_like(burn_in.train_mask),
+                    reset_mask=burn_in.episode_start_mask,
+                )
+
+            actor_state, critic_state, target_critic_state = algorithm._burn_in_states(segment)
+
+            self.assertIs(critic_state, actor_state)
+            for actual_layer, expected_layer in zip(actor_state, expected_online_state, strict=True):
+                for actual_component, expected_component in zip(actual_layer, expected_layer, strict=True):
+                    torch.testing.assert_close(actual_component, expected_component)
+                    self.assertFalse(actual_component.requires_grad)
+            assert target_critic_state is not None
+            for actual_layer, expected_layer in zip(
+                target_critic_state,
+                expected_target_state,
+                strict=True,
+            ):
+                for actual_component, expected_component in zip(actual_layer, expected_layer, strict=True):
+                    torch.testing.assert_close(actual_component, expected_component)
+                    self.assertFalse(actual_component.requires_grad)
+        finally:
+            env.close()
+
     def test_recurrent_critic_burn_in_uses_replay_prefix_for_online_and_target_states(self) -> None:
         env = _make_env()
         try:
@@ -4019,6 +4432,58 @@ class RecurrentTMASACTests(unittest.TestCase):
         self.assertIn("critic_loss", metrics)
         self.assertEqual(parameter_updates, {"actor": True, "critic": True})
 
+    def test_short_recurrent_shared_encoder_sac_nop_update_smoke(self) -> None:
+        parameter_updates: dict[str, bool] = {}
+        nop_parameter_updates: dict[str, bool] = {}
+        metrics, total_updates = _perform_short_recurrent_update(
+            recurrent_shared_encoder=True,
+            nop_config=_small_nop_config(
+                num_next_steps=2,
+                latent_source=SACNOPLatentSource.SHARED_ENCODER,
+            ),
+            parameter_updates=parameter_updates,
+            nop_parameter_updates=nop_parameter_updates,
+        )
+
+        self.assertEqual(metrics["updates"], 1)
+        self.assertEqual(total_updates, 1)
+        self.assertIn("actor_loss", metrics)
+        self.assertIn("critic_loss", metrics)
+        self.assertIn("shared_encoder_nop_loss", metrics)
+        self.assertEqual(parameter_updates, {"actor": True, "critic": True})
+        self.assertEqual(nop_parameter_updates, {"critic": True})
+
+    def test_compiled_recurrent_shared_encoder_sac_update_smoke(self) -> None:
+        torch._dynamo.reset()
+        try:
+            metrics, total_updates = _perform_short_recurrent_update(
+                recurrent_shared_encoder=True,
+                compile_modules=True,
+            )
+
+            self.assertEqual(metrics["updates"], 1)
+            self.assertEqual(total_updates, 1)
+            self.assertTrue(math.isfinite(_summary_mean(metrics["actor_loss"])))
+            self.assertTrue(math.isfinite(_summary_mean(metrics["critic_loss"])))
+        finally:
+            torch._dynamo.reset()
+
+    def test_recurrent_shared_encoder_update_crosses_truncation_boundaries(self) -> None:
+        metrics, total_updates = _perform_short_recurrent_update(
+            recurrent_shared_encoder=True,
+            nop_config=_small_nop_config(
+                num_next_steps=2,
+                latent_source=SACNOPLatentSource.SHARED_ENCODER,
+            ),
+            max_steps=2,
+        )
+
+        self.assertEqual(metrics["updates"], 1)
+        self.assertEqual(total_updates, 1)
+        self.assertIn("actor_loss", metrics)
+        self.assertIn("critic_loss", metrics)
+        self.assertIn("shared_encoder_nop_loss", metrics)
+
     def test_recurrent_update_masks_non_finite_terminal_successor_observations(self) -> None:
         env = _make_env()
         try:
@@ -4199,11 +4664,7 @@ class RecurrentTMASACTests(unittest.TestCase):
         state[-1] = hidden, cell, normalizer, stabilizer
 
         critic_input = policy.actor_state_critic_input(state)
-        expected = torch.cat((
-            hidden,
-            cell / normalizer,
-            torch.nn.functional.softsign(torch.log(normalizer) + stabilizer),
-        ), dim=-1)
+        expected = torch.cat((hidden, cell / normalizer), dim=-1)
 
         torch.testing.assert_close(critic_input, expected)
         self.assertFalse(critic_input.requires_grad)
