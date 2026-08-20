@@ -15,7 +15,8 @@ from plot_logs.experiment_results import plot_experiment_results
 EXPERIMENT_RUN_DIR = REPO_ROOT / "runs" / "thesis_parallel_env_ablation_po_wall_medium"
 OUTPUT_DIR = Path(__file__).resolve().parent / "results"
 ROLLOUT_CONFIG_NAMES = ("1024x4", "512x8", "256x16", "128x32", "64x64")
-ALGORITHM_NAMES = ("mat_ind", "mat_qcx")
+# ALGORITHM_NAMES = ("mat_ind", "mat_qcx")
+ALGORITHM_NAMES = ("mat_qcx",)
 GROUP_ORDER = tuple(
     f"{algorithm_name}_{rollout_config_name}"
     for algorithm_name in ALGORITHM_NAMES
@@ -26,13 +27,13 @@ DISPLAY_NAME_OVERRIDES = {
         f"{display_name}, {rollout_config_name}"
     )
     for algorithm_name, display_name in (
-        ("mat_ind", "MAT-IND"),
+        # ("mat_ind", "MAT-IND"),
         ("mat_qcx", "MAT-QCX"),
     )
     for rollout_config_name in ROLLOUT_CONFIG_NAMES
 }
 EXTRA_GROUP_SOURCES = {
-    "mat_ind_1024x4": THESIS_PO_WALL_GROUP_SOURCES["mat_ind"],
+    # "mat_ind_1024x4": THESIS_PO_WALL_GROUP_SOURCES["mat_ind"],
     "mat_qcx_1024x4": THESIS_PO_WALL_GROUP_SOURCES["mat_qcx"],
 }
 
