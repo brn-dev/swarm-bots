@@ -79,6 +79,7 @@ class ExperimentPlotSelection:
     title_suffix: str | None = None
     required_group_names: tuple[str, ...] = ()
     output_subdir: str | None = None
+    display_name_overrides: Mapping[str, str] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -753,7 +754,7 @@ def plot_experiment_selection(
     group_line_alpha: float,
     colors: dict[str, tuple[float, float, float, float]],
 ) -> list[Path]:
-    selected_groups = selected_groups_by_name(groups, selection.group_names)
+    selected_groups = selected_groups_for_plot_selection(selection, groups)
     selected_group_names = {group.name for group in selected_groups}
     if any(group_name not in selected_group_names for group_name in selection.required_group_names):
         return []
@@ -810,6 +811,26 @@ def plot_experiment_selection(
             )
         )
     return output_paths
+
+
+def selected_groups_for_plot_selection(
+    selection: ExperimentPlotSelection,
+    groups: Sequence[ExperimentGroup],
+) -> list[ExperimentGroup]:
+    selected_groups = selected_groups_by_name(groups, selection.group_names)
+    if selection.display_name_overrides is None:
+        return selected_groups
+    return [
+        ExperimentGroup(
+            name=group.name,
+            display_name=selection.display_name_overrides.get(
+                group.name,
+                group.display_name,
+            ),
+            runs=group.runs,
+        )
+        for group in selected_groups
+    ]
 
 
 def plot_experiment_results(
