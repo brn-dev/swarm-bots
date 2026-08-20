@@ -23,6 +23,7 @@ from swarmbots.learn.nn_components.feed_forward import MLPConfig
         ("mappo", "mat_ind", "sign_magnitude_beta", True),
         ("mat_qcx", "mat_qcx", "sign_magnitude_beta", True),
         ("mat_ind", "mat_ind", "sign_magnitude_beta", True),
+        ("r_mat_ind", "r_mat_ind", "sign_magnitude_beta", True),
         ("mat_orig", "mat_orig", "sign_magnitude_beta", True),
         ("mat_qcx_gsde", "mat_qcx", "gsde", True),
         ("mat_qcx_no_nop", "mat_qcx", "sign_magnitude_beta", False),
@@ -231,6 +232,7 @@ def test_thesis_plots_keep_ablations_out_of_main_plot_and_use_pair_comparisons()
         selection.name: selection.group_names
         for selection in thesis_plot_common.THESIS_ABLATION_PLOTS
     } == {
+        "mat_ind_recurrence": ("mat_ind", "r_mat_ind"),
         "mat_qcx_no_nop": ("mat_qcx", "mat_qcx_no_nop"),
         "tmasac_no_nop": ("tmasac_baseline", "tmasac_baseline_no_nop"),
         "slstm_tmasac_no_nop": (

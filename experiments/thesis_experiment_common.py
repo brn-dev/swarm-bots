@@ -21,6 +21,7 @@ ThesisAlgorithmVariant = Literal[
     "mappo",
     "mat_qcx",
     "mat_ind",
+    "r_mat_ind",
     "mat_orig",
     "tmasac_baseline",
     "slstm_two_small_actor_state_critic",
@@ -57,6 +58,11 @@ THESIS_VARIANT_CONFIGS: dict[ThesisAlgorithmVariant, ThesisVariantConfig] = {
     ),
     "mat_ind": ThesisVariantConfig(
         policy_variant="mat_ind",
+        continuous_action_dist="sign_magnitude_beta",
+        use_nop=True,
+    ),
+    "r_mat_ind": ThesisVariantConfig(
+        policy_variant="r_mat_ind",
         continuous_action_dist="sign_magnitude_beta",
         use_nop=True,
     ),

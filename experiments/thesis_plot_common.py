@@ -19,6 +19,7 @@ THESIS_MAIN_GROUP_ORDER = (
 )
 THESIS_GROUP_ORDER = (
     *THESIS_MAIN_GROUP_ORDER,
+    "r_mat_ind",
     "mat_qcx_gsde",
     "mat_qcx_no_nop",
     "tmasac_baseline_predicted_std",
@@ -65,6 +66,17 @@ THESIS_ABLATION_PLOTS = (
             "slstm_two_small_actor_state_critic_no_nop": (
                 "TMASAC + sLSTM, no NOP"
             ),
+        },
+    ),
+    ExperimentPlotSelection(
+        name="mat_ind_recurrence",
+        group_names=("mat_ind", "r_mat_ind"),
+        required_group_names=("r_mat_ind",),
+        title_suffix="MAT-IND Recurrence Ablation",
+        output_subdir="recurrence/mat_ind",
+        display_name_overrides={
+            "mat_ind": "MAT-IND",
+            "r_mat_ind": "R-MAT-IND",
         },
     ),
     ExperimentPlotSelection(
@@ -120,6 +132,7 @@ THESIS_DISPLAY_NAMES = {
     "mappo": "MAPPO",
     "mat_qcx": "MAT-QCX",
     "mat_ind": "MAT-Independent",
+    "r_mat_ind": "R-MAT-IND",
     "mat_orig": "MAT original decoder",
     "tmasac_baseline": "TMASAC",
     "slstm_two_small_actor_state_critic": "TMASAC + sLSTM",
