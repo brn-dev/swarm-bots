@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import sys
-from datetime import datetime
 from pathlib import Path
 
 import torch
@@ -15,7 +14,7 @@ from run_mat_qcs_nop_move_to_dual_payload_mjw import (
 )
 from swarmbots.learn.discord_notifications import run_with_discord_notification
 from swarmbots.utils.recording_schedule import DEFAULT_LIVE_RECORDING_SCHEDULE, install_scheduled_recordings
-from swarmbots.utils.run_paths import get_run_id_from_checkpoint_path, make_run_dir
+from swarmbots.utils.run_paths import generate_run_id, get_run_id_from_checkpoint_path, make_run_dir
 
 import swarmbots.mjw_env.scenarios.mjw_scenario_presets as mjw_scenario_presets
 
@@ -60,7 +59,7 @@ def main() -> None:
     train_device = torch.device("cuda")
     record_device = torch.device("cuda")
 
-    run_id = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    run_id = generate_run_id()
     load_path: str | Path | None = None
     if load_path is not None:
         if Path(load_path).suffix != ".pt":

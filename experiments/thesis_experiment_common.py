@@ -161,6 +161,7 @@ def run_thesis_ppo_experiment(
     num_envs: int = 1024,
     rollout_steps_per_env: int = 4,
     variant_name: str | None = None,
+    total_timesteps: int = EXPERIMENT_TOTAL_TIMESTEPS,
 ) -> None:
     config = THESIS_VARIANT_CONFIGS[variant]
 
@@ -182,5 +183,5 @@ def run_thesis_ppo_experiment(
         experiment_run_name=experiment_run_name,
         scenario_name=scenario_name,
         scenario_kwargs=scenario_kwargs,
-        total_timesteps=EXPERIMENT_TOTAL_TIMESTEPS,
+        total_timesteps=total_timesteps,
     )

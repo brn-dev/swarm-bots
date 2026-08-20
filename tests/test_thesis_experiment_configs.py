@@ -6,8 +6,10 @@ import pytest
 from experiments import thesis_experiment_common, thesis_plot_common
 from experiments.thesis_mjw_find_opening import plot_results as find_opening_plot
 from experiments.thesis_mjw_find_opening.scripts import common as find_opening_common
+from experiments.thesis_mjw_po_wall_medium import plot_250m_results as po_wall_250m_plot
 from experiments.thesis_mjw_po_wall_medium import plot_results as po_wall_plot
 from experiments.thesis_mjw_po_wall_medium.scripts import common as po_wall_common
+from experiments.thesis_mjw_po_wall_medium.scripts import common_250m as po_wall_250m_common
 from swarmbots.learn.algos.mat.mat_encoder import (
     MATEncoderConfig,
     resolve_transformer_ff_config,
@@ -172,6 +174,48 @@ def test_thesis_suite_names_use_thesis_prefix() -> None:
     assert po_wall_common.EXPERIMENT_RUN_NAME == "thesis_mjw_po_wall_medium"
     assert find_opening_plot.EXPERIMENT_RUN_DIR.name == "thesis_mjw_find_opening"
     assert po_wall_plot.EXPERIMENT_RUN_DIR.name == "thesis_mjw_po_wall_medium"
+
+
+def test_po_wall_original_suite_remains_at_100m_steps() -> None:
+    with patch.object(thesis_experiment_common, "run_mjw_experiment") as run:
+        po_wall_common.run_experiment(
+            variant="mat_qcx",
+            entrypoint_path=Path(__file__),
+        )
+
+    assert run.call_args.kwargs["total_timesteps"] == 100_000_000
+
+
+@pytest.mark.parametrize("variant", ("mappo", "mat_qcx", "mat_ind", "mat_orig"))
+def test_po_wall_250m_suite_has_a_long_horizon_run_for_each_ppo_variant(
+    variant: po_wall_250m_common.LongHorizonAlgorithmVariant,
+) -> None:
+    with patch.object(thesis_experiment_common, "run_mjw_experiment") as run:
+        po_wall_250m_common.run_experiment(
+            variant=variant,
+            entrypoint_path=Path(__file__),
+        )
+
+    assert run.call_args.kwargs["variant_name"] == variant
+    assert run.call_args.kwargs["experiment_run_name"] == (
+        "thesis_mjw_po_wall_medium_250m"
+    )
+    assert run.call_args.kwargs["total_timesteps"] == 250_000_000
+
+
+def test_po_wall_250m_suite_has_separate_entrypoints_and_plot() -> None:
+    scripts_dir = Path(po_wall_250m_common.__file__).parent
+    assert {path.name for path in scripts_dir.glob("run_*_250m.py")} == {
+        "run_mappo_250m.py",
+        "run_mat_qcx_250m.py",
+        "run_mat_ind_250m.py",
+        "run_mat_orig_250m.py",
+    }
+    assert po_wall_250m_plot.EXPERIMENT_RUN_DIR.name == (
+        po_wall_250m_common.EXPERIMENT_RUN_NAME
+    )
+    assert po_wall_250m_plot.OUTPUT_DIR.name == "250m"
+    assert po_wall_250m_plot.GROUP_ORDER == ("mappo", "mat_qcx", "mat_ind", "mat_orig")
 
 
 def test_thesis_plots_keep_ablations_out_of_main_plot_and_use_pair_comparisons() -> None:

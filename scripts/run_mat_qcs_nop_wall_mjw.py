@@ -1,5 +1,4 @@
 import sys
-from datetime import datetime
 from pathlib import Path
 
 import torch
@@ -28,7 +27,7 @@ from swarmbots.learn.scheduling.schedulers import ScheduleUnit
 from swarmbots.learn.summary_statistics import SummaryStatisticsFormat
 from swarmbots.learn.swarmbots_obs_indices import build_obs_indices
 from swarmbots.utils.recording_schedule import DEFAULT_LIVE_RECORDING_SCHEDULE, install_scheduled_recordings
-from swarmbots.utils.run_paths import get_run_id_from_checkpoint_path, make_run_dir
+from swarmbots.utils.run_paths import generate_run_id, get_run_id_from_checkpoint_path, make_run_dir
 from swarmbots.mjw_env import MJWSwarmBotsVectorEnv
 import swarmbots.mjw_env.scenarios.mjw_scenario_presets as mjw_scenario_presets
 from swarmbots.mjw_env.scenarios.mjw_scenario_presets import default_wall
@@ -98,7 +97,7 @@ def main() -> None:
     policy_compile_mode = "default"
     compile_world_model_modules = True
 
-    run_id = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    run_id = generate_run_id()
 
     load_path: str | Path | None = None
     # load_path = make_run_dir("mat_qcs_nop_swarm_bots_wall_mjw", "2026-04-18_00-00-00") / "models" / "model_123456_steps_stopped.pt"

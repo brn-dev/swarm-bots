@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import math
 import sys
-from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
@@ -40,6 +39,7 @@ from swarmbots.mj_env.scenarios.scenario_presets import default_wall
 from swarmbots.mj_env.swarm.homogeneous_swarm import PreConnectedUnitLocationsConfig
 from swarmbots.mj_env.swarm_bots_env import SwarmBotsEnv
 from swarmbots.utils.recording_schedule import DEFAULT_RECORDING_SCHEDULE, install_scheduled_recordings
+from swarmbots.utils.run_paths import generate_run_id
 
 
 def configure_float32_matmul_precision() -> None:
@@ -247,7 +247,7 @@ def run_experiment(*, num_envs: int, rollout_samples: int, variant_name: str, en
     policy_compile_mode = "default"
     compile_world_model_modules = True
 
-    run_id = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    run_id = generate_run_id()
     load_path: str | None = None
 
     use_cuda = torch.cuda.is_available()

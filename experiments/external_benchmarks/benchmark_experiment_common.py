@@ -4,7 +4,6 @@ import argparse
 import math
 import sys
 from dataclasses import asdict
-from datetime import datetime
 from functools import partial
 from pathlib import Path
 from typing import Any, Literal
@@ -22,6 +21,7 @@ from experiments.transformer_policy_common import (
     make_mat_parameter_lr_multipliers,
 )
 from swarmbots.external_benchmark_envs import MultiAgentMujocoEnv, VMASVectorEnv
+from swarmbots.utils.run_paths import generate_run_id
 from swarmbots.learn.algos.ppo.ppo import PPO, AutomaticLearningRate, StepsRolloutMode
 from swarmbots.learn.algos.ppo.ppo_sampler import PPOSamplerConfig
 from swarmbots.learn.algos.sac.sac import SAC
@@ -97,7 +97,7 @@ def run_benchmark_experiment(
     train_device = rollout_device
     record_device = rollout_device
     compile_modules = compile_modules and rollout_device.type == "cuda"
-    run_id = datetime.now().astimezone().strftime("%Y-%m-%d_%H-%M-%S")
+    run_id = generate_run_id()
     run_dir = REPO_ROOT / "runs" / experiment_run_name / variant_name / run_id
 
     logger.remove()

@@ -5,7 +5,6 @@ import math
 import sys
 from collections.abc import Callable, Sequence
 from dataclasses import asdict, is_dataclass, replace
-from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal
 
@@ -114,7 +113,7 @@ from swarmbots.mjw_env.scenarios.mjw_scenario_presets import (
     default_wall,
 )
 from swarmbots.utils.recording_schedule import DEFAULT_LIVE_RECORDING_SCHEDULE, install_scheduled_recordings
-from swarmbots.utils.run_paths import get_run_id_from_checkpoint_path
+from swarmbots.utils.run_paths import generate_run_id, get_run_id_from_checkpoint_path
 
 ContinuousActionDistVariant = Literal[
     "sticky_sign_magnitude_beta",
@@ -675,7 +674,7 @@ def run_experiment(
     sac_gradient_steps = 8
     logging_buffer_size = 20 if sac_policy else 5
 
-    run_id = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    run_id = generate_run_id()
     load_path: str | Path | None = None
 
     rollout_device = torch.device("cuda")
