@@ -50,17 +50,20 @@ def summarize_thesis_experiment(
     extra_group_sources: Mapping[str, Sequence[Path]],
     output_path: Path,
     tail_points: int,
+    group_order: Sequence[str] = THESIS_GROUP_ORDER,
+    display_name_overrides: Mapping[str, str] = THESIS_DISPLAY_NAMES,
+    run_length_limit: int = THESIS_RUN_LENGTH,
 ) -> Path:
     groups = load_experiment_groups(
         experiment_run_dir,
-        group_order=THESIS_GROUP_ORDER,
-        display_name_overrides=THESIS_DISPLAY_NAMES,
+        group_order=group_order,
+        display_name_overrides=display_name_overrides,
         extra_group_sources=extra_group_sources,
     )
     summary = summarize_experiment_groups(
         groups,
         tail_points=tail_points,
-        run_length_limit=THESIS_RUN_LENGTH,
+        run_length_limit=run_length_limit,
         cut_at_limit=True,
     )
     return write_experiment_summary(summary, output_path)
