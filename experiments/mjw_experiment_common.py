@@ -551,6 +551,9 @@ def run_experiment(
         rmat_actor_transformer_ff_config: FeedForwardConfig | None = None,
         rmat_actor_inter_module_mlp: bool = False,
         r_tmasac_actor_state_critic_input_config: ActorStateCriticInputConfig | None = None,
+        tmasac_shared_encoder_num_layers: int | None = None,
+        tmasac_actor_encoder_num_layers: int = 2,
+        tmasac_critic_encoder_num_layers: int = 2,
         tmasac_actor_head_kind: TMASACActorHeadKind | str = TMASACActorHeadKind.INDEPENDENT,
         tmasac_separate_observation_action_encoders: bool = False,
         use_nop: bool = True,
@@ -617,6 +620,21 @@ def run_experiment(
         raise ValueError(f"total_timesteps must be > 0, got {total_timesteps}")
     if rmat_actor_d_model is not None and rmat_actor_d_model <= 0:
         raise ValueError(f"rmat_actor_d_model must be > 0, got {rmat_actor_d_model}")
+    if tmasac_shared_encoder_num_layers is not None and tmasac_shared_encoder_num_layers <= 0:
+        raise ValueError(
+            "tmasac_shared_encoder_num_layers must be > 0, got "
+            f"{tmasac_shared_encoder_num_layers}"
+        )
+    if tmasac_actor_encoder_num_layers <= 0:
+        raise ValueError(
+            "tmasac_actor_encoder_num_layers must be > 0, got "
+            f"{tmasac_actor_encoder_num_layers}"
+        )
+    if tmasac_critic_encoder_num_layers <= 0:
+        raise ValueError(
+            "tmasac_critic_encoder_num_layers must be > 0, got "
+            f"{tmasac_critic_encoder_num_layers}"
+        )
     if sac_buffer_capacity_per_env is not None and sac_buffer_capacity_per_env <= 0:
         raise ValueError(
             f"sac_buffer_capacity_per_env must be > 0, got {sac_buffer_capacity_per_env}"
@@ -876,6 +894,9 @@ def run_experiment(
         rmat_actor_transformer_ff_config=rmat_actor_transformer_ff_config,
         rmat_actor_inter_module_mlp=rmat_actor_inter_module_mlp,
         r_tmasac_actor_state_critic_input_config=r_tmasac_actor_state_critic_input_config,
+        tmasac_shared_encoder_num_layers=tmasac_shared_encoder_num_layers,
+        tmasac_actor_encoder_num_layers=tmasac_actor_encoder_num_layers,
+        tmasac_critic_encoder_num_layers=tmasac_critic_encoder_num_layers,
         tmasac_actor_head_kind=tmasac_actor_head_kind,
         tmasac_separate_observation_action_encoders=tmasac_separate_observation_action_encoders,
         obs_indices=obs_indices,
@@ -1209,6 +1230,9 @@ def run_experiment(
             else serialize_dataclass(rmat_actor_transformer_ff_config)
         ),
         "rmat_actor_inter_module_mlp": rmat_actor_inter_module_mlp,
+        "tmasac_shared_encoder_num_layers": tmasac_shared_encoder_num_layers,
+        "tmasac_actor_encoder_num_layers": tmasac_actor_encoder_num_layers,
+        "tmasac_critic_encoder_num_layers": tmasac_critic_encoder_num_layers,
         "tmasac_actor_head_kind": (
             tmasac_actor_head_kind.value
             if isinstance(tmasac_actor_head_kind, TMASACActorHeadKind)
@@ -1451,6 +1475,9 @@ def _make_base_policy(
         rmat_actor_transformer_ff_config: FeedForwardConfig | None = None,
         rmat_actor_inter_module_mlp: bool = False,
         r_tmasac_actor_state_critic_input_config: ActorStateCriticInputConfig | None = None,
+        tmasac_shared_encoder_num_layers: int | None = None,
+        tmasac_actor_encoder_num_layers: int = 2,
+        tmasac_critic_encoder_num_layers: int = 2,
         tmasac_actor_head_kind: TMASACActorHeadKind | str = TMASACActorHeadKind.INDEPENDENT,
         tmasac_separate_observation_action_encoders: bool = False,
         obs_indices: ObsIndices | None = None,
@@ -1570,9 +1597,23 @@ def _make_base_policy(
             raise ValueError("TMASACPolicy does not support PopArt; call with use_popart=False.")
         tmasac_config_kwargs = {
             "actor_encoder_config": (
-                rmat_actor_encoder_config if policy_variant == "r_tmasac" else mat_encoder_config
+                replace(
+                    rmat_actor_encoder_config if policy_variant == "r_tmasac" else mat_encoder_config,
+                    num_layers=tmasac_actor_encoder_num_layers,
+                )
             ),
-            "critic_encoder_config": mat_encoder_config,
+            "critic_encoder_config": replace(
+                mat_encoder_config,
+                num_layers=tmasac_critic_encoder_num_layers,
+            ),
+            "shared_encoder_config": (
+                None
+                if tmasac_shared_encoder_num_layers is None
+                else replace(
+                    mat_encoder_config,
+                    num_layers=tmasac_shared_encoder_num_layers,
+                )
+            ),
             "actor_head_config": TMASACActorHeadConfig(
                 kind=tmasac_actor_head_kind,
                 hidden_dims=[dec_d_model],

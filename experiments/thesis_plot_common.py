@@ -24,6 +24,7 @@ THESIS_GROUP_ORDER = (
     "mat_qcx_no_nop",
     "tmasac_baseline_predicted_std",
     "tmasac_baseline_no_nop",
+    "tmasac_shared_encoder",
     "slstm_two_small_actor_state_critic_predicted_std",
     "slstm_two_small_actor_state_critic_no_nop",
     "lstm_two_small_actor_state_critic",
@@ -66,6 +67,17 @@ THESIS_ABLATION_PLOTS = (
             "slstm_two_small_actor_state_critic_no_nop": (
                 "TMASAC + sLSTM, no NOP"
             ),
+        },
+    ),
+    ExperimentPlotSelection(
+        name="tmasac_shared_encoder",
+        group_names=("tmasac_baseline", "tmasac_shared_encoder"),
+        required_group_names=("tmasac_shared_encoder",),
+        title_suffix="TMASAC Shared Encoder Ablation",
+        output_subdir="shared_encoder/tmasac",
+        display_name_overrides={
+            "tmasac_baseline": "TMASAC, separate encoders",
+            "tmasac_shared_encoder": "TMASAC, shared encoder",
         },
     ),
     ExperimentPlotSelection(
@@ -140,6 +152,7 @@ THESIS_DISPLAY_NAMES = {
     "mat_qcx_no_nop": "MAT-QCX, no NOP",
     "tmasac_baseline_predicted_std": "TMASAC, predicted std",
     "tmasac_baseline_no_nop": "TMASAC, no NOP",
+    "tmasac_shared_encoder": "TMASAC, shared encoder",
     "slstm_two_small_actor_state_critic_predicted_std": (
         "TMASAC + sLSTM, predicted std"
     ),

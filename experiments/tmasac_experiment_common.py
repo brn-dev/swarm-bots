@@ -34,6 +34,7 @@ EXPERIMENT_TOTAL_TIMESTEPS = 100_000_000
 
 TMASACExperimentVariant = Literal[
     "tmasac_baseline",
+    "tmasac_shared_encoder",
     "tmasac_swiglu",
     "slstm_two_small_actor_state_critic",
     "lstm_two_small_actor_state_critic",
@@ -50,13 +51,14 @@ def run_tmasac_experiment(
     entrypoint_path: Path,
     continuous_action_dist: ContinuousActionDistVariant = "gumbel_softmax_sign_magnitude_beta",
     use_nop: bool = True,
-    include_slstm_memory_strength: bool = True,
+    include_slstm_memory_strength: bool = False,
     variant_name: str | None = None,
 ) -> None:
     temporal_model_cls, temporal_model_config = _make_temporal_model_spec(
         variant=variant,
     )
     is_recurrent = temporal_model_cls is not None
+    uses_shared_encoder = variant == "tmasac_shared_encoder"
     mat_transformer_ff_config, actor_transformer_ff_config = _make_feedforward_configs(
         variant=variant,
     )
@@ -108,6 +110,9 @@ def run_tmasac_experiment(
             if is_recurrent
             else None
         ),
+        tmasac_shared_encoder_num_layers=2 if uses_shared_encoder else None,
+        tmasac_actor_encoder_num_layers=1 if uses_shared_encoder else 2,
+        tmasac_critic_encoder_num_layers=1 if uses_shared_encoder else 2,
         rmat_temporal_model_cls=temporal_model_cls,
         rmat_temporal_model_config=temporal_model_config,
         rmat_temporal_residual=False,
@@ -121,7 +126,7 @@ def _make_feedforward_configs(
     *,
     variant: TMASACExperimentVariant,
 ) -> tuple[MLPConfig | SwiGLUConfig, MLPConfig | SwiGLUConfig | None]:
-    if variant == "tmasac_baseline":
+    if variant in {"tmasac_baseline", "tmasac_shared_encoder"}:
         return MLPConfig(hidden_dims=[512, 512]), None
     if variant == "tmasac_swiglu":
         return _make_stacked_swiglu_config(), None

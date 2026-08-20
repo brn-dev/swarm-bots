@@ -24,6 +24,7 @@ ThesisAlgorithmVariant = Literal[
     "r_mat_ind",
     "mat_orig",
     "tmasac_baseline",
+    "tmasac_shared_encoder",
     "slstm_two_small_actor_state_critic",
     "lstm_two_small_actor_state_critic",
     "mat_qcx_gsde",
@@ -40,7 +41,7 @@ ThesisAlgorithmVariant = Literal[
 class ThesisVariantConfig:
     continuous_action_dist: ContinuousActionDistVariant
     use_nop: bool
-    include_slstm_memory_strength: bool = True
+    include_slstm_memory_strength: bool = False
     policy_variant: PolicyVariant | None = None
     tmasac_variant: TMASACExperimentVariant | None = None
 
@@ -76,10 +77,16 @@ THESIS_VARIANT_CONFIGS: dict[ThesisAlgorithmVariant, ThesisVariantConfig] = {
         continuous_action_dist="gumbel_softmax_sign_magnitude_beta",
         use_nop=True,
     ),
+    "tmasac_shared_encoder": ThesisVariantConfig(
+        tmasac_variant="tmasac_shared_encoder",
+        continuous_action_dist="gumbel_softmax_sign_magnitude_beta",
+        use_nop=True,
+    ),
     "slstm_two_small_actor_state_critic": ThesisVariantConfig(
         tmasac_variant="slstm_two_small_actor_state_critic",
         continuous_action_dist="gumbel_softmax_sign_magnitude_beta",
         use_nop=True,
+        include_slstm_memory_strength=False,
     ),
     "lstm_two_small_actor_state_critic": ThesisVariantConfig(
         tmasac_variant="lstm_two_small_actor_state_critic",
@@ -110,6 +117,7 @@ THESIS_VARIANT_CONFIGS: dict[ThesisAlgorithmVariant, ThesisVariantConfig] = {
         tmasac_variant="slstm_two_small_actor_state_critic",
         continuous_action_dist="predicted_std",
         use_nop=True,
+        include_slstm_memory_strength=False,
     ),
     "slstm_two_small_actor_state_critic_no_nop": ThesisVariantConfig(
         tmasac_variant="slstm_two_small_actor_state_critic",
