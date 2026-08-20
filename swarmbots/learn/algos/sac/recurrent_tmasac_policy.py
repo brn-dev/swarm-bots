@@ -60,7 +60,7 @@ ActorEntryPointT = TypeVar("ActorEntryPointT", bound=Callable[..., Any])
 class ActorStateCriticInputConfig:
     projection_dim: int | None = None
     projection_hidden_dims: tuple[int, ...] | None = None
-    include_slstm_memory_strength: bool = True
+    include_slstm_memory_strength: bool = False
     init_gain: float = 1.0
     output_init_gain: float = 1.0
 

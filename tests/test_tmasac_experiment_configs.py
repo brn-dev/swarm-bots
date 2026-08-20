@@ -33,6 +33,7 @@ from swarmbots.learn.nn_components.feed_forward import (
     ("variant", "expected_policy_variant"),
     [
         ("tmasac_baseline", "tmasac"),
+        ("tmasac_shared_encoder", "tmasac"),
         ("tmasac_swiglu", "tmasac"),
         ("slstm_two_small_actor_state_critic", "r_tmasac"),
         ("lstm_two_small_actor_state_critic", "r_tmasac"),
@@ -74,6 +75,24 @@ def test_default_tmasac_uses_two_512_hidden_layers(
     config = run_mjw_experiment.call_args.kwargs["mat_encoder_transformer_ff_config"]
     assert isinstance(config, MLPConfig)
     assert config.hidden_dims == [512, 512]
+
+
+def test_shared_encoder_variant_uses_two_shared_and_one_downstream_layer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run_mjw_experiment = Mock()
+    monkeypatch.setattr(tmasac_common, "run_mjw_experiment", run_mjw_experiment)
+
+    _run_variant("tmasac_shared_encoder")
+
+    kwargs = run_mjw_experiment.call_args.kwargs
+    assert kwargs["tmasac_shared_encoder_num_layers"] == 2
+    assert kwargs["tmasac_actor_encoder_num_layers"] == 1
+    assert kwargs["tmasac_critic_encoder_num_layers"] == 1
+    assert kwargs["rmat_temporal_model_cls"] is None
+    assert kwargs["mat_encoder_transformer_ff_config"] == MLPConfig(
+        hidden_dims=[512, 512]
+    )
 
 
 def test_tmasac_experiment_forwards_ternary_action_distribution(
@@ -266,10 +285,11 @@ def test_slstm_variants_use_two_actor_feedforwards_and_actor_state_critic_input(
     ] == ActorStateCriticInputConfig(
         projection_dim=256,
         projection_hidden_dims=(256,),
+        include_slstm_memory_strength=False,
     )
 
 
-def test_slstm_variant_can_omit_memory_strength_from_critic_input(
+def test_slstm_variant_can_include_memory_strength_in_critic_input(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     run_mjw_experiment = Mock()
@@ -281,7 +301,7 @@ def test_slstm_variant_can_omit_memory_strength_from_critic_input(
         scenario_kwargs={"continuous_connector_actions": True},
         variant="slstm_two_small_actor_state_critic",
         entrypoint_path=Path(__file__),
-        include_slstm_memory_strength=False,
+        include_slstm_memory_strength=True,
     )
 
     kwargs = run_mjw_experiment.call_args.kwargs
@@ -290,7 +310,7 @@ def test_slstm_variant_can_omit_memory_strength_from_critic_input(
     ] == ActorStateCriticInputConfig(
         projection_dim=256,
         projection_hidden_dims=(256,),
-        include_slstm_memory_strength=False,
+        include_slstm_memory_strength=True,
     )
 
 

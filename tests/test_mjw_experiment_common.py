@@ -870,6 +870,25 @@ def test_make_base_policy_constructs_tmasac_actor_variants(
     )
 
 
+def test_make_base_policy_constructs_tmasac_shared_encoder_layer_split() -> None:
+    policy = _make_test_base_policy(
+        env=_DummyContinuousEnv(),
+        policy_variant="tmasac",
+        continuous_action_dist="predicted_std",
+        tmasac_shared_encoder_num_layers=2,
+        tmasac_actor_encoder_num_layers=1,
+        tmasac_critic_encoder_num_layers=1,
+    )
+
+    assert isinstance(policy, TMASACPolicy)
+    assert policy.shared_observation_encoder is not None
+    assert policy.shared_encoder_config is not None
+    assert policy.shared_encoder_config.d_model == 8
+    assert len(policy.shared_observation_encoder.layers) == 2
+    assert len(policy.actor_encoder.layers) == 1
+    assert len(policy.critic.encoder.layers) == 1
+
+
 def test_default_base_policy_produces_finite_actions_log_probs_and_values() -> None:
     policy = _make_test_base_policy(
         env=_DummyContinuousEnv(),
