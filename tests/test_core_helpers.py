@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from enum import Enum
 from pathlib import Path
 from typing import Any
@@ -15,7 +16,7 @@ from swarmbots.learn.masking import build_valid_mask, masked_mean, restrict_loss
 from swarmbots.learn.polyak_update import polyak_update
 from swarmbots.learn.serialization_utils import serialize_dataclass
 from swarmbots.utils.recording_schedule import format_recording_percentage, install_scheduled_recordings
-from swarmbots.utils.run_paths import get_run_id_from_checkpoint_path, make_run_dir
+from swarmbots.utils.run_paths import generate_run_id, get_run_id_from_checkpoint_path, make_run_dir
 
 
 class _Mode(Enum):
@@ -193,6 +194,14 @@ def test_make_run_dir_keeps_runs_under_repo_run_tree() -> None:
 
     with pytest.raises(ValueError, match="run_id"):
         make_run_dir("group", "/tmp/run-1")
+
+
+def test_generate_run_id_appends_six_random_letters(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("swarmbots.utils.run_paths.secrets.choice", lambda _alphabet: "q")
+
+    run_id = generate_run_id(datetime(2026, 8, 20, 12, 34, 56))
+
+    assert run_id == "2026-08-20_12-34-56_qqqqqq"
 
 
 def test_get_run_id_from_checkpoint_path_uses_run_directory_name() -> None:

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import sys
 import math
-from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
@@ -10,7 +9,7 @@ import swarmbots.mj_env.scenarios.scenario_presets as mj_scenario_presets
 from swarmbots.mj_env.scenarios.scenario_presets import default_wall
 from swarmbots.mj_env.swarm_bots_env import SwarmBotsEnv
 from swarmbots.utils.recording_schedule import DEFAULT_RECORDING_SCHEDULE, install_scheduled_recordings
-from swarmbots.utils.run_paths import get_run_id_from_checkpoint_path, make_run_dir
+from swarmbots.utils.run_paths import generate_run_id, get_run_id_from_checkpoint_path, make_run_dir
 
 
 def configure_float32_matmul_precision() -> None:
@@ -189,7 +188,7 @@ def main() -> None:
     gsde_init_stds = [0.25, 0.30]
 
     # =====  ID  =====
-    run_id = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    run_id = generate_run_id()
 
     # ===== LOAD =====
     load_path: str | Path | None = None

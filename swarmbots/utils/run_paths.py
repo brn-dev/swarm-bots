@@ -1,9 +1,18 @@
 from __future__ import annotations
 
+import secrets
+import string
+from datetime import datetime
 from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def generate_run_id(current_time: datetime | None = None) -> str:
+    current_time = datetime.now() if current_time is None else current_time
+    random_suffix = "".join(secrets.choice(string.ascii_uppercase) for _ in range(6))
+    return f"{current_time.strftime('%Y-%m-%d_%H-%M-%S')}_{random_suffix}"
 
 
 def make_run_dir(run_group: str, run_id: str) -> Path:

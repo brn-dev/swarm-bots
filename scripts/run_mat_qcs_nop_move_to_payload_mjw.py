@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import sys
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -41,7 +40,7 @@ from swarmbots.mjw_env import MJWSwarmBotsVectorEnv
 from swarmbots.mjw_env.scenarios.mjw_scenario_presets import default_move_to, default_payload_plane
 from swarmbots.scenario_presets.scenario_presets_kwargs import PAYLOAD_PLANE_SCENARIO_KWARGS
 from swarmbots.utils.recording_schedule import DEFAULT_LIVE_RECORDING_SCHEDULE, install_scheduled_recordings
-from swarmbots.utils.run_paths import make_run_dir
+from swarmbots.utils.run_paths import generate_run_id, make_run_dir
 
 import swarmbots.mjw_env.scenarios.mjw_scenario_presets as mjw_scenario_presets
 
@@ -527,7 +526,7 @@ def main() -> None:
     rollout_device = torch.device("cuda")
     train_device = torch.device("cuda")
     record_device = torch.device("cuda")
-    run_id = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    run_id = generate_run_id()
     run_dir = make_run_dir("mat_qcs_nop_swarm_bots_move_to_payload_mjw", run_id)
     first_episode_lengths = [int((i + 1) * episode_length / n_envs) for i in range(n_envs)]
     progress = SequentialRunProgress()
