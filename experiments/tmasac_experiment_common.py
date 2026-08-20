@@ -18,6 +18,7 @@ from swarmbots.learn.algos.r_mat.temporal_sequence_model import (
 from swarmbots.learn.algos.sac.recurrent_tmasac_policy import (
     ActorStateCriticInputConfig,
 )
+from swarmbots.learn.algos.sac.sac_nop import SACNOPLatentSource
 from swarmbots.learn.algos.xlstm.slstm import (
     SLSTMTemporalSequenceModel,
     SLSTMTemporalSequenceModelConfig,
@@ -37,6 +38,7 @@ TMASACExperimentVariant = Literal[
     "tmasac_shared_encoder",
     "tmasac_swiglu",
     "slstm_two_small_actor_state_critic",
+    "slstm_shared_encoder",
     "lstm_two_small_actor_state_critic",
     "slstm_two_small_swiglu_actor_state_critic",
 ]
@@ -58,7 +60,8 @@ def run_tmasac_experiment(
         variant=variant,
     )
     is_recurrent = temporal_model_cls is not None
-    uses_shared_encoder = variant == "tmasac_shared_encoder"
+    uses_recurrent_shared_encoder = variant == "slstm_shared_encoder"
+    uses_shared_encoder = variant == "tmasac_shared_encoder" or uses_recurrent_shared_encoder
     mat_transformer_ff_config, actor_transformer_ff_config = _make_feedforward_configs(
         variant=variant,
     )
@@ -100,19 +103,26 @@ def run_tmasac_experiment(
         rmat_actor_transformer_ff_config=(
             actor_transformer_ff_config if is_recurrent else None
         ),
-        rmat_actor_inter_module_mlp=is_recurrent,
+        rmat_actor_inter_module_mlp=is_recurrent and not uses_recurrent_shared_encoder,
         r_tmasac_actor_state_critic_input_config=(
             ActorStateCriticInputConfig(
                 projection_dim=ACTOR_D_MODEL,
                 projection_hidden_dims=(ACTOR_D_MODEL,),
                 include_slstm_memory_strength=include_slstm_memory_strength,
             )
-            if is_recurrent
+            if is_recurrent and not uses_recurrent_shared_encoder
             else None
         ),
         tmasac_shared_encoder_num_layers=2 if uses_shared_encoder else None,
+        tmasac_recurrent_shared_encoder=uses_recurrent_shared_encoder,
         tmasac_actor_encoder_num_layers=1 if uses_shared_encoder else 2,
         tmasac_critic_encoder_num_layers=1 if uses_shared_encoder else 2,
+        tmasac_nop_latent_source=(
+            SACNOPLatentSource.SHARED_ENCODER
+            if uses_shared_encoder
+            else SACNOPLatentSource.CRITIC
+        ),
+        nop_skip_first_transition_for_critic=True,
         rmat_temporal_model_cls=temporal_model_cls,
         rmat_temporal_model_config=temporal_model_config,
         rmat_temporal_residual=False,
@@ -126,7 +136,14 @@ def _make_feedforward_configs(
     *,
     variant: TMASACExperimentVariant,
 ) -> tuple[MLPConfig | SwiGLUConfig, MLPConfig | SwiGLUConfig | None]:
-    if variant in {"tmasac_baseline", "tmasac_shared_encoder"}:
+    if variant in {
+        "tmasac_baseline",
+        "tmasac_shared_encoder",
+        "slstm_shared_encoder",
+    }:
+        if variant == "slstm_shared_encoder":
+            config = MLPConfig(hidden_dims=[512, 512])
+            return config, config
         return MLPConfig(hidden_dims=[512, 512]), None
     if variant == "tmasac_swiglu":
         return _make_stacked_swiglu_config(), None

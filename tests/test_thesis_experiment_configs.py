@@ -80,14 +80,14 @@ def test_ppo_thesis_variants_use_current_observation_and_action_defaults(
             "tmasac_baseline",
             "gumbel_softmax_sign_magnitude_beta",
             True,
-            True,
+            False,
         ),
         (
             "tmasac_shared_encoder",
             "tmasac_shared_encoder",
             "gumbel_softmax_sign_magnitude_beta",
             True,
-            True,
+            False,
         ),
         (
             "slstm_two_small_actor_state_critic",
@@ -97,25 +97,32 @@ def test_ppo_thesis_variants_use_current_observation_and_action_defaults(
             False,
         ),
         (
+            "slstm_shared_encoder",
+            "slstm_shared_encoder",
+            "gumbel_softmax_sign_magnitude_beta",
+            True,
+            False,
+        ),
+        (
             "lstm_two_small_actor_state_critic",
             "lstm_two_small_actor_state_critic",
             "gumbel_softmax_sign_magnitude_beta",
             True,
-            True,
+            False,
         ),
         (
             "tmasac_baseline_predicted_std",
             "tmasac_baseline",
             "predicted_std",
             True,
-            True,
+            False,
         ),
         (
             "tmasac_baseline_no_nop",
             "tmasac_baseline",
             "gumbel_softmax_sign_magnitude_beta",
             False,
-            True,
+            False,
         ),
         (
             "slstm_two_small_actor_state_critic_predicted_std",
@@ -129,7 +136,7 @@ def test_ppo_thesis_variants_use_current_observation_and_action_defaults(
             "slstm_two_small_actor_state_critic",
             "gumbel_softmax_sign_magnitude_beta",
             False,
-            True,
+            False,
         ),
         (
             "slstm_two_small_actor_state_critic_no_memory_strength",
@@ -249,6 +256,10 @@ def test_thesis_plots_keep_ablations_out_of_main_plot_and_use_pair_comparisons()
         "tmasac_shared_encoder": (
             "tmasac_baseline",
             "tmasac_shared_encoder",
+        ),
+        "slstm_shared_encoder": (
+            "slstm_two_small_actor_state_critic",
+            "slstm_shared_encoder",
         ),
         "mat_qcx_gsde": ("mat_qcx", "mat_qcx_gsde"),
         "tmasac_predicted_std": (

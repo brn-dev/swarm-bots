@@ -65,6 +65,14 @@ class RecurrentSAC(SAC):
         )
         return max(super().replay_fill_target, sequence_fill_target)
 
+    @property
+    def _critic_uses_temporal_state(self) -> bool:
+        return self.policy.recurrent_critic or getattr(
+            self.policy,
+            "uses_recurrent_shared_encoder",
+            False,
+        )
+
     def get_hyper_parameters(self) -> dict[str, Any]:
         return {
             **super().get_hyper_parameters(),
@@ -157,21 +165,14 @@ class RecurrentSAC(SAC):
             actions_pi,
             log_prob_pi,
             actor_latents,
-            next_actor_state,
+            learning_next_actor_state,
             truncation_actor_states,
             last_layer_actor_state_sequence,
-        ) = self.policy.action_log_prob_sequence_with_selected_states(
-            local_obs=learning_batch.local_obs,
-            global_obs=learning_batch.global_obs,
-            agent_mask=learning_batch.agent_mask,
-            scenario_ids=learning_batch.scenario_ids,
-            previous_actions=learning_batch.previous_actions,
-            deterministic=False,
-            use_rsample=True,
+            current_shared_latents,
+        ) = self._learning_sequence_actions(
+            batch=learning_batch,
             initial_state=actor_state,
             state_output_indices=truncation_indices,
-            time_mask=learning_batch.train_mask,
-            reset_mask=learning_batch.episode_start_mask,
         )
         current_actor_state = None
         if getattr(self.policy, "uses_actor_state_critic_input", False):
@@ -218,7 +219,7 @@ class RecurrentSAC(SAC):
                 actions_pi=actions_pi,
                 log_prob_pi=log_prob_pi,
                 current_actor_state=current_actor_state,
-                next_actor_state=detach_temporal_state(next_actor_state),
+                next_actor_state=detach_temporal_state(learning_next_actor_state),
                 truncation_actor_states=detach_temporal_state(truncation_actor_states),
                 truncation_indices=truncation_indices,
                 truncation_mask=state_output_mask,
@@ -260,6 +261,14 @@ class RecurrentSAC(SAC):
             time_mask=learning_batch.train_mask,
             reset_mask=learning_batch.episode_start_mask,
             **({} if current_actor_state is None else {"actor_state": current_actor_state}),
+            **(
+                {}
+                if current_shared_latents is None
+                else {
+                    "precomputed_shared_latents": current_shared_latents,
+                    "precomputed_shared_state": learning_next_actor_state,
+                }
+            ),
         )
         critic_loss = self._tensor_operations.critic_loss(
             current_q1,
@@ -290,7 +299,7 @@ class RecurrentSAC(SAC):
         )
 
         actor_critic_state = critic_state
-        if self.policy.recurrent_critic:
+        if self._critic_uses_temporal_state:
             actor_critic_state = self._burn_in_critic_state(batch, target=False)
 
         critic_parameters = self.policy.critic_parameters()
@@ -373,6 +382,68 @@ class RecurrentSAC(SAC):
             return self._preserve_train_step_result(result)
         return self._materialize_train_step_results([result])[0]
 
+    def _learning_sequence_actions(
+            self,
+            *,
+            batch: OffPolicyReplayEpisodeSegmentBatch,
+            initial_state: Any,
+            state_output_indices: torch.Tensor,
+    ) -> tuple[
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+        Any,
+        Any,
+        Any | None,
+        torch.Tensor | None,
+    ]:
+        if getattr(self.policy, "uses_recurrent_shared_encoder", False):
+            assert isinstance(self.policy, RecurrentTMASACPolicy)
+            (
+                actions,
+                log_probs,
+                actor_latents,
+                next_state,
+                selected_states,
+                shared_latents,
+            ) = self.policy.action_log_prob_sequence_with_selected_states_and_shared_latents(
+                local_obs=batch.local_obs,
+                global_obs=batch.global_obs,
+                agent_mask=batch.agent_mask,
+                scenario_ids=batch.scenario_ids,
+                previous_actions=batch.previous_actions,
+                deterministic=False,
+                use_rsample=True,
+                initial_state=initial_state,
+                state_output_indices=state_output_indices,
+                time_mask=batch.train_mask,
+                reset_mask=batch.episode_start_mask,
+            )
+            return (
+                actions,
+                log_probs,
+                actor_latents,
+                next_state,
+                selected_states,
+                None,
+                shared_latents,
+            )
+
+        result = self.policy.action_log_prob_sequence_with_selected_states(
+            local_obs=batch.local_obs,
+            global_obs=batch.global_obs,
+            agent_mask=batch.agent_mask,
+            scenario_ids=batch.scenario_ids,
+            previous_actions=batch.previous_actions,
+            deterministic=False,
+            use_rsample=True,
+            initial_state=initial_state,
+            state_output_indices=state_output_indices,
+            time_mask=batch.train_mask,
+            reset_mask=batch.episode_start_mask,
+        )
+        return (*result, None)
+
     def _burn_in_states(
             self,
             batch: OffPolicyReplayEpisodeSegmentBatch,
@@ -380,7 +451,7 @@ class RecurrentSAC(SAC):
         actor_state = batch.initial_temporal_state
         critic_state = None
         target_critic_state = None
-        if self.policy.recurrent_critic:
+        if self._critic_uses_temporal_state:
             critic_state = self._burn_in_critic_state(batch, target=False)
             target_critic_state = self._burn_in_critic_state(batch, target=True)
         if self.burn_in_steps == 0:
@@ -400,11 +471,10 @@ class RecurrentSAC(SAC):
                 time_mask=torch.ones_like(burn_in_batch.train_mask),
                 reset_mask=burn_in_batch.episode_start_mask,
             )
-        return (
-            detach_temporal_state(actor_state),
-            critic_state,
-            target_critic_state,
-        )
+        actor_state = detach_temporal_state(actor_state)
+        if getattr(self.policy, "uses_recurrent_shared_encoder", False):
+            critic_state = actor_state
+        return actor_state, critic_state, target_critic_state
 
     def _burn_in_critic_state(
             self,
@@ -412,14 +482,17 @@ class RecurrentSAC(SAC):
             *,
             target: bool,
     ) -> RecurrentCriticState | None:
-        critic_state = self.policy.initial_critic_state(
-            batch_size=batch.actions.shape[0],
-            n_agents=batch.actions.shape[2],
-            device=batch.actions.device,
-            dtype=batch.actions.dtype,
-            target=target,
-        )
-        if not self.policy.recurrent_critic or self.burn_in_steps == 0:
+        if getattr(self.policy, "uses_recurrent_shared_encoder", False):
+            critic_state = batch.initial_temporal_state
+        else:
+            critic_state = self.policy.initial_critic_state(
+                batch_size=batch.actions.shape[0],
+                n_agents=batch.actions.shape[2],
+                device=batch.actions.device,
+                dtype=batch.actions.dtype,
+                target=target,
+            )
+        if not self._critic_uses_temporal_state or self.burn_in_steps == 0:
             return critic_state
         burn_in_batch = _slice_segment(batch, 0, self.burn_in_steps)
         with torch.no_grad():
@@ -572,7 +645,7 @@ class RecurrentSAC(SAC):
             initial_state: RecurrentCriticState | None,
             actor_state: torch.Tensor | None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        if not self.policy.recurrent_critic:
+        if not self._critic_uses_temporal_state:
             q1, q2, _latents, _state = self.policy.q_values_sequence(
                 local_obs=batch.next_local_obs,
                 global_obs=batch.next_global_obs,
@@ -641,7 +714,7 @@ class RecurrentSAC(SAC):
             initial_state: RecurrentCriticState | None,
             actor_state: torch.Tensor | None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        if not self.policy.recurrent_critic:
+        if not self._critic_uses_temporal_state:
             q1, q2, _latents, _state = self.policy.q_values_sequence(
                 local_obs=batch.local_obs,
                 global_obs=batch.global_obs,
@@ -664,7 +737,7 @@ class RecurrentSAC(SAC):
                 if batch.episode_start_mask is None
                 else batch.episode_start_mask[:, time_idx]
             )
-            q1, q2, _latents, _branch_state = self.policy.q_values_sequence(
+            q1, q2, _latents, branch_state = self.policy.q_values_sequence(
                 local_obs=batch.local_obs[:, time_idx],
                 global_obs=batch.global_obs[:, time_idx],
                 actions=actions_pi[:, time_idx],
@@ -680,22 +753,25 @@ class RecurrentSAC(SAC):
                 initial_state=history_state,
                 reset_mask=reset_mask,
             )
-            _q1, _q2, _latents, history_state = self.policy.q_values_sequence(
-                local_obs=batch.local_obs[:, time_idx],
-                global_obs=batch.global_obs[:, time_idx],
-                actions=batch.actions[:, time_idx],
-                hidden_local_vars=batch.hidden_local_vars[:, time_idx],
-                hidden_global_vars=batch.hidden_global_vars[:, time_idx],
-                agent_mask=None if batch.agent_mask is None else batch.agent_mask[:, time_idx],
-                scenario_ids=(
-                    None
-                    if batch.scenario_ids is None
-                    else batch.scenario_ids[:, time_idx]
-                ),
-                target=False,
-                initial_state=history_state,
-                reset_mask=reset_mask,
-            )
+            if getattr(self.policy, "uses_recurrent_shared_encoder", False):
+                history_state = branch_state
+            else:
+                _q1, _q2, _latents, history_state = self.policy.q_values_sequence(
+                    local_obs=batch.local_obs[:, time_idx],
+                    global_obs=batch.global_obs[:, time_idx],
+                    actions=batch.actions[:, time_idx],
+                    hidden_local_vars=batch.hidden_local_vars[:, time_idx],
+                    hidden_global_vars=batch.hidden_global_vars[:, time_idx],
+                    agent_mask=None if batch.agent_mask is None else batch.agent_mask[:, time_idx],
+                    scenario_ids=(
+                        None
+                        if batch.scenario_ids is None
+                        else batch.scenario_ids[:, time_idx]
+                    ),
+                    target=False,
+                    initial_state=history_state,
+                    reset_mask=reset_mask,
+                )
             q1_values.append(q1)
             q2_values.append(q2)
         return torch.stack(q1_values, dim=1), torch.stack(q2_values, dim=1)

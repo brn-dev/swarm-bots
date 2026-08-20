@@ -417,7 +417,7 @@ class HybridActionDistFactoryTests(unittest.TestCase):
         torch.testing.assert_close(dist.positive_beta_dist.mean, torch.full((3, 2, 2), 0.5))
 
     def test_sign_magnitude_beta_log_prob_matches_disjoint_mixture_density(self) -> None:
-        config = SignMagnitudeBetaConfig()
+        config = SignMagnitudeBetaConfig(negative_alpha=2.0, negative_beta=5.0)
         dist = make_proba_distribution(
             latent_dim=4,
             action_space=spaces.Box(-1.0, 1.0, shape=(1, 2), dtype=np.float32),
@@ -430,12 +430,20 @@ class HybridActionDistFactoryTests(unittest.TestCase):
         dist.update_latent_features(torch.zeros(1, 1, 4))
         actual_log_prob = dist.log_prob(actions)
 
-        magnitude_dist = torchdist.Beta(
+        negative_magnitude_dist = torchdist.Beta(
             concentration1=torch.tensor(config.negative_alpha),
             concentration0=torch.tensor(config.negative_beta),
         )
-        component_log_prob = math.log(0.5) + magnitude_dist.log_prob(torch.tensor(0.25))
-        expected_log_prob = (2.0 * component_log_prob).reshape(1, 1)
+        positive_magnitude_dist = torchdist.Beta(
+            concentration1=torch.tensor(config.positive_alpha),
+            concentration0=torch.tensor(config.positive_beta),
+        )
+        expected_log_prob = (
+            math.log(0.5)
+            + negative_magnitude_dist.log_prob(torch.tensor(0.75))
+            + math.log(0.5)
+            + positive_magnitude_dist.log_prob(torch.tensor(0.25))
+        ).reshape(1, 1)
         torch.testing.assert_close(actual_log_prob, expected_log_prob)
 
     def test_probability_clamp_epsilon_must_leave_a_nonempty_interval(self) -> None:

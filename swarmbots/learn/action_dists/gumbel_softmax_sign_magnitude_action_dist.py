@@ -100,7 +100,7 @@ class _GumbelSoftmaxSignMagnitudeMixin:
             temperature=self._gumbel_temperature.to(dtype=self.weight_logits.dtype),
         )
         negative_magnitudes, positive_magnitudes = self._rsample_independent_magnitudes()
-        negative_actions = -1.0 + negative_magnitudes
+        negative_actions = self._negative_actions_from_magnitudes(negative_magnitudes)
         actions = (
                 selection[..., self._NEGATIVE_INDEX] * negative_actions
                 + selection[..., self._POSITIVE_INDEX] * positive_magnitudes

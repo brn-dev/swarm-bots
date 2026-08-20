@@ -18,6 +18,7 @@ from swarmbots.learn.algos.r_mat.temporal_sequence_model import (
 from swarmbots.learn.algos.sac.recurrent_tmasac_policy import (
     ActorStateCriticInputConfig,
 )
+from swarmbots.learn.algos.sac.sac_nop import SACNOPLatentSource
 from swarmbots.learn.algos.xlstm.slstm import (
     SLSTMTemporalSequenceModel,
     SLSTMTemporalSequenceModelConfig,
@@ -36,6 +37,7 @@ from swarmbots.learn.nn_components.feed_forward import (
         ("tmasac_shared_encoder", "tmasac"),
         ("tmasac_swiglu", "tmasac"),
         ("slstm_two_small_actor_state_critic", "r_tmasac"),
+        ("slstm_shared_encoder", "r_tmasac"),
         ("lstm_two_small_actor_state_critic", "r_tmasac"),
         ("slstm_two_small_swiglu_actor_state_critic", "r_tmasac"),
     ],
@@ -89,8 +91,37 @@ def test_shared_encoder_variant_uses_two_shared_and_one_downstream_layer(
     assert kwargs["tmasac_shared_encoder_num_layers"] == 2
     assert kwargs["tmasac_actor_encoder_num_layers"] == 1
     assert kwargs["tmasac_critic_encoder_num_layers"] == 1
+    assert kwargs["tmasac_nop_latent_source"] is SACNOPLatentSource.SHARED_ENCODER
+    assert kwargs["nop_skip_first_transition_for_critic"] is True
     assert kwargs["rmat_temporal_model_cls"] is None
     assert kwargs["mat_encoder_transformer_ff_config"] == MLPConfig(
+        hidden_dims=[512, 512]
+    )
+
+
+def test_slstm_shared_encoder_variant_owns_recurrence_and_shared_nop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run_mjw_experiment = Mock()
+    monkeypatch.setattr(tmasac_common, "run_mjw_experiment", run_mjw_experiment)
+
+    _run_variant("slstm_shared_encoder")
+
+    kwargs = run_mjw_experiment.call_args.kwargs
+    assert kwargs["policy_variant"] == "r_tmasac"
+    assert kwargs["tmasac_recurrent_shared_encoder"] is True
+    assert kwargs["tmasac_shared_encoder_num_layers"] == 2
+    assert kwargs["tmasac_actor_encoder_num_layers"] == 1
+    assert kwargs["tmasac_critic_encoder_num_layers"] == 1
+    assert kwargs["tmasac_nop_latent_source"] is SACNOPLatentSource.SHARED_ENCODER
+    assert kwargs["nop_skip_first_transition_for_critic"] is True
+    assert kwargs["r_tmasac_actor_state_critic_input_config"] is None
+    assert kwargs["rmat_actor_inter_module_mlp"] is False
+    assert kwargs["rmat_temporal_model_cls"] is SLSTMTemporalSequenceModel
+    assert kwargs["mat_encoder_transformer_ff_config"] == MLPConfig(
+        hidden_dims=[512, 512]
+    )
+    assert kwargs["rmat_actor_transformer_ff_config"] == MLPConfig(
         hidden_dims=[512, 512]
     )
 

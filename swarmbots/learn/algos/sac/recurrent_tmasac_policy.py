@@ -6,13 +6,14 @@ import torch
 from torch import nn
 from torch._dynamo import config as torch_dynamo_config
 
+from swarmbots.learn.algos.mat.mat_encoder import MATEncoder, MATEncoderConfig
 from swarmbots.learn.algos.off_policy.replay_buffer import (
     OffPolicyReplayBatch,
     OffPolicyReplayEpisodeSegmentBatch,
 )
 from swarmbots.learn.algos.r_mat.r_mat_encoder import RMATEncoder, RMATEncoderConfig, RMATEncoderState
 from swarmbots.learn.algos.r_mat.temporal_sequence_model import LSTMTemporalSequenceModel
-from swarmbots.learn.algos.sac.sac_nop import SACNOPSequenceBatch
+from swarmbots.learn.algos.sac.sac_nop import SACNOPLatentSource, SACNOPSequenceBatch
 from swarmbots.learn.algos.sac.tmasac_policy import (
     TMASACCriticConfig,
     TMASACObservationActionEncoder,
@@ -67,8 +68,9 @@ class ActorStateCriticInputConfig:
 
 @dataclass(frozen=True)
 class RecurrentTMASACPolicyConfig(TMASACPolicyConfig):
-    actor_encoder_config: RMATEncoderConfig = field(default_factory=RMATEncoderConfig)
+    actor_encoder_config: MATEncoderConfig = field(default_factory=RMATEncoderConfig)
     recurrent_critic: bool = False
+    recurrent_shared_encoder: bool = False
     actor_state_critic_input_config: ActorStateCriticInputConfig | None = None
     experimental_compile_lstm: bool = False
 
@@ -467,10 +469,35 @@ class RecurrentTMASACPolicy(TMASACPolicy):
             env: BaseLearnEnvWrapper,
             config: RecurrentTMASACPolicyConfig = RecurrentTMASACPolicyConfig(),
     ) -> None:
-        if not isinstance(config.actor_encoder_config, RMATEncoderConfig):
-            raise TypeError("RecurrentTMASACPolicy requires an RMATEncoderConfig for actor_encoder_config.")
-        if config.shared_encoder_config is not None or config.share_observation_encoder:
-            raise ValueError("RecurrentTMASACPolicy does not support a separate shared observation encoder.")
+        if config.recurrent_shared_encoder:
+            if not isinstance(config.shared_encoder_config, RMATEncoderConfig):
+                raise TypeError(
+                    "recurrent_shared_encoder=True requires an RMATEncoderConfig for "
+                    "shared_encoder_config."
+                )
+            if isinstance(config.actor_encoder_config, RMATEncoderConfig):
+                raise TypeError(
+                    "recurrent_shared_encoder=True requires a non-recurrent MATEncoderConfig "
+                    "for actor_encoder_config."
+                )
+            if config.recurrent_critic:
+                raise ValueError(
+                    "recurrent_shared_encoder=True cannot be combined with recurrent_critic=True."
+                )
+            if config.actor_state_critic_input_config is not None:
+                raise ValueError(
+                    "The recurrent shared latent replaces actor_state_critic_input_config."
+                )
+        else:
+            if not isinstance(config.actor_encoder_config, RMATEncoderConfig):
+                raise TypeError(
+                    "RecurrentTMASACPolicy requires an RMATEncoderConfig for actor_encoder_config."
+                )
+            if config.shared_encoder_config is not None or config.share_observation_encoder:
+                raise ValueError(
+                    "RecurrentTMASACPolicy only supports a shared observation encoder when "
+                    "recurrent_shared_encoder=True."
+                )
         if config.recurrent_critic and not isinstance(config.critic_encoder_config, RMATEncoderConfig):
             raise TypeError("recurrent_critic=True requires an RMATEncoderConfig for critic_encoder_config.")
         actor_state_config = config.actor_state_critic_input_config
@@ -502,9 +529,15 @@ class RecurrentTMASACPolicy(TMASACPolicy):
                 "RecurrentTMASACPolicyConfig.compile_mode must be a non-empty string when compile_modules=True."
             )
 
+        recurrent_encoder = (
+            self.shared_observation_encoder
+            if self.uses_recurrent_shared_encoder
+            else self._actor_encoder
+        )
+        assert recurrent_encoder is not None
         self._actor_encoder_uses_lstm = any(
             isinstance(module, nn.LSTM)
-            for module in self._actor_encoder.modules()
+            for module in recurrent_encoder.modules()
         )
         self._actor_encoder_compilation_enabled = (
             not self._actor_encoder_uses_lstm
@@ -513,6 +546,7 @@ class RecurrentTMASACPolicy(TMASACPolicy):
         self._actor_end_to_end_compilation_enabled = (
             self._actor_encoder_compilation_enabled
             and self.action_dist.compile_friendly
+            and not self.uses_recurrent_shared_encoder
         )
         self.configure_actor_compilation(
             encoder_only_sequence_lengths=(),
@@ -581,9 +615,14 @@ class RecurrentTMASACPolicy(TMASACPolicy):
         if not self._actor_end_to_end_compilation_enabled:
             encoder_lengths |= action_lengths | selected_state_action_lengths
         if self._actor_encoder_compilation_enabled:
+            actor_encoder_entry_point = (
+                self._encode_actor_sequence_impl
+                if self.uses_recurrent_shared_encoder
+                else self._actor_encoder
+            )
             self._configure_compiled_entry_points(
                 self._compiled_actor_encoders,
-                self._actor_encoder,
+                actor_encoder_entry_point,
                 sequence_lengths=encoder_lengths,
                 fullgraph=True,
             )
@@ -677,6 +716,14 @@ class RecurrentTMASACPolicy(TMASACPolicy):
         return self.config.recurrent_critic
 
     @property
+    def uses_recurrent_shared_encoder(self) -> bool:
+        return self.config.recurrent_shared_encoder
+
+    @property
+    def critic_uses_temporal_state(self) -> bool:
+        return self.recurrent_critic or self.uses_recurrent_shared_encoder
+
+    @property
     def uses_actor_state_critic_input(self) -> bool:
         return self.config.actor_state_critic_input_config is not None
 
@@ -695,7 +742,13 @@ class RecurrentTMASACPolicy(TMASACPolicy):
             device: torch.device,
             dtype: torch.dtype,
     ) -> RMATEncoderState:
-        return self._actor_encoder.initial_state(
+        encoder = (
+            self._shared_recurrent_encoder(target=False)
+            if self.uses_recurrent_shared_encoder
+            else self._actor_encoder
+        )
+        assert isinstance(encoder, RMATEncoder)
+        return encoder.initial_state(
             batch_size=batch_size,
             n_agents=n_agents,
             device=device,
@@ -904,6 +957,57 @@ class RecurrentTMASACPolicy(TMASACPolicy):
             last_layer_state_sequence,
         )
 
+    def action_log_prob_sequence_with_selected_states_and_shared_latents(
+            self,
+            *,
+            local_obs: torch.Tensor,
+            global_obs: torch.Tensor,
+            agent_mask: torch.Tensor | None,
+            scenario_ids: torch.Tensor | None = None,
+            previous_actions: torch.Tensor | None,
+            deterministic: bool,
+            use_rsample: bool,
+            initial_state: RMATEncoderState | None,
+            state_output_indices: torch.Tensor,
+            time_mask: torch.Tensor | None = None,
+            reset_mask: torch.Tensor | None = None,
+    ) -> tuple[
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+        RMATEncoderState,
+        RMATEncoderState,
+        torch.Tensor,
+    ]:
+        if not self.uses_recurrent_shared_encoder:
+            raise RuntimeError("Recurrent shared observation encoding is not configured.")
+        result = self._run_actor_encoder(
+            local_obs=local_obs,
+            global_obs=global_obs,
+            agent_mask=agent_mask,
+            scenario_ids=scenario_ids,
+            time_mask=time_mask,
+            initial_state=initial_state,
+            reset_mask=reset_mask,
+            state_output_indices=state_output_indices,
+        )
+        actor_latents, next_state, selected_states, shared_latents = result
+        actions, log_probs = self._actor_actions_and_log_probs(
+            actor_latents=actor_latents,
+            agent_mask=agent_mask,
+            previous_actions=previous_actions,
+            deterministic=deterministic,
+            use_rsample=use_rsample,
+        )
+        return (
+            actions,
+            log_probs,
+            actor_latents,
+            next_state,
+            selected_states,
+            shared_latents,
+        )
+
     def _action_log_prob_sequence_impl(
             self,
             *,
@@ -918,16 +1022,11 @@ class RecurrentTMASACPolicy(TMASACPolicy):
             time_mask: torch.Tensor | None,
             reset_mask: torch.Tensor | None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, RMATEncoderState]:
-        actor_local_inputs, actor_global_inputs = self._actor_observation_inputs(
+        actor_latents, next_state = self._encode_actor_sequence_impl(
             local_obs=local_obs,
             global_obs=global_obs,
             agent_mask=agent_mask,
             scenario_ids=scenario_ids,
-        )
-        actor_latents, next_state = self._actor_encoder(
-            actor_local_inputs,
-            actor_global_inputs,
-            agent_mask=agent_mask,
             time_mask=time_mask,
             initial_state=initial_state,
             reset_mask=reset_mask,
@@ -963,16 +1062,11 @@ class RecurrentTMASACPolicy(TMASACPolicy):
         RMATEncoderState,
         Any | None,
     ]:
-        actor_local_inputs, actor_global_inputs = self._actor_observation_inputs(
+        actor_encoder_result = self._encode_actor_sequence_impl(
             local_obs=local_obs,
             global_obs=global_obs,
             agent_mask=agent_mask,
             scenario_ids=scenario_ids,
-        )
-        actor_encoder_result = self._actor_encoder(
-            actor_local_inputs,
-            actor_global_inputs,
-            agent_mask=agent_mask,
             time_mask=time_mask,
             initial_state=initial_state,
             reset_mask=reset_mask,
@@ -1069,6 +1163,9 @@ class RecurrentTMASACPolicy(TMASACPolicy):
         if self.uses_actor_state_critic_input:
             actor_latents, next_state, selected_states, last_layer_state_sequence = result
             return actor_latents, next_state, selected_states, last_layer_state_sequence
+        if self.uses_recurrent_shared_encoder:
+            actor_latents, next_state, selected_states, _shared_latents = result
+            return actor_latents, next_state, selected_states
         actor_latents, next_state, selected_states = result
         return actor_latents, next_state, selected_states
 
@@ -1118,15 +1215,13 @@ class RecurrentTMASACPolicy(TMASACPolicy):
         | tuple[torch.Tensor, RMATEncoderState, RMATEncoderState]
         | tuple[torch.Tensor, RMATEncoderState, RMATEncoderState, Any]
     ):
-        actor_local_inputs, actor_global_inputs = self._actor_observation_inputs(
-            local_obs=local_obs,
-            global_obs=global_obs,
-            agent_mask=agent_mask,
-            scenario_ids=scenario_ids,
-        )
         sequence_length = self._actor_sequence_length(local_obs)
         if not self._actor_encoder_compilation_enabled:
-            actor_encoder = self._actor_encoder
+            actor_encoder = (
+                self._encode_actor_sequence_impl
+                if self.uses_recurrent_shared_encoder
+                else self._actor_encoder
+            )
         else:
             actor_encoder = self._compiled_actor_encoders.get(sequence_length)
             if actor_encoder is None:
@@ -1140,6 +1235,24 @@ class RecurrentTMASACPolicy(TMASACPolicy):
             | tuple[torch.Tensor, RMATEncoderState, RMATEncoderState]
             | tuple[torch.Tensor, RMATEncoderState, RMATEncoderState, Any]
         ):
+            if self.uses_recurrent_shared_encoder:
+                return actor_encoder(
+                    local_obs=local_obs,
+                    global_obs=global_obs,
+                    agent_mask=agent_mask,
+                    scenario_ids=scenario_ids,
+                    time_mask=time_mask,
+                    initial_state=initial_state,
+                    reset_mask=reset_mask,
+                    state_output_indices=state_output_indices,
+                    return_last_layer_state_sequence=return_last_layer_state_sequence,
+                )
+            actor_local_inputs, actor_global_inputs = self._actor_observation_inputs(
+                local_obs=local_obs,
+                global_obs=global_obs,
+                agent_mask=agent_mask,
+                scenario_ids=scenario_ids,
+            )
             return actor_encoder(
                 actor_local_inputs,
                 actor_global_inputs,
@@ -1152,6 +1265,102 @@ class RecurrentTMASACPolicy(TMASACPolicy):
             )
 
         return self._run_with_optional_lstm_compilation(run_actor_encoder)
+
+    def _encode_actor_sequence_impl(
+            self,
+            *,
+            local_obs: torch.Tensor,
+            global_obs: torch.Tensor,
+            agent_mask: torch.Tensor | None,
+            scenario_ids: torch.Tensor | None,
+            time_mask: torch.Tensor | None,
+            initial_state: RMATEncoderState | None,
+            reset_mask: torch.Tensor | None,
+            state_output_indices: torch.Tensor | None = None,
+            return_last_layer_state_sequence: bool = False,
+    ) -> (
+        tuple[torch.Tensor, RMATEncoderState]
+        | tuple[torch.Tensor, RMATEncoderState, RMATEncoderState]
+        | tuple[torch.Tensor, RMATEncoderState, RMATEncoderState, Any]
+    ):
+        if not self.uses_recurrent_shared_encoder:
+            actor_local_inputs, actor_global_inputs = self._actor_observation_inputs(
+                local_obs=local_obs,
+                global_obs=global_obs,
+                agent_mask=agent_mask,
+                scenario_ids=scenario_ids,
+            )
+            return self._actor_encoder(
+                actor_local_inputs,
+                actor_global_inputs,
+                agent_mask=agent_mask,
+                time_mask=time_mask,
+                initial_state=initial_state,
+                reset_mask=reset_mask,
+                state_output_indices=state_output_indices,
+                return_last_layer_state_sequence=return_last_layer_state_sequence,
+            )
+
+        if return_last_layer_state_sequence:
+            raise ValueError(
+                "The recurrent shared encoder does not expose actor-state critic summaries."
+            )
+        shared_result = self._shared_recurrent_encoder(target=False)(
+            local_obs,
+            global_obs,
+            agent_mask=agent_mask,
+            time_mask=time_mask,
+            initial_state=initial_state,
+            reset_mask=reset_mask,
+            state_output_indices=state_output_indices,
+        )
+        if state_output_indices is None:
+            shared_latents, next_state = shared_result
+            actor_latents = self._encode_downstream_actor(
+                shared_latents.detach(),
+                global_obs=global_obs,
+                agent_mask=agent_mask,
+            )
+            return actor_latents, next_state
+        shared_latents, next_state, selected_states = shared_result
+        actor_latents = self._encode_downstream_actor(
+            shared_latents.detach(),
+            global_obs=global_obs,
+            agent_mask=agent_mask,
+        )
+        return actor_latents, next_state, selected_states, shared_latents
+
+    def _encode_downstream_actor(
+            self,
+            shared_latents: torch.Tensor,
+            *,
+            global_obs: torch.Tensor,
+            agent_mask: torch.Tensor | None,
+    ) -> torch.Tensor:
+        assert isinstance(self._actor_encoder, MATEncoder)
+        if shared_latents.ndim == 3:
+            return self._actor_encoder(
+                shared_latents,
+                global_obs,
+                agent_mask=agent_mask,
+            )
+        batch_size, sequence_length, n_agents, latent_dim = shared_latents.shape
+        flat_mask = (
+            None
+            if agent_mask is None
+            else agent_mask.reshape(batch_size * sequence_length, n_agents)
+        )
+        flat_actor_latents = self._actor_encoder(
+            shared_latents.reshape(batch_size * sequence_length, n_agents, latent_dim),
+            global_obs.reshape(batch_size * sequence_length, *global_obs.shape[2:]),
+            agent_mask=flat_mask,
+        )
+        return flat_actor_latents.reshape(
+            batch_size,
+            sequence_length,
+            n_agents,
+            flat_actor_latents.shape[-1],
+        )
 
     def _run_actor_action_entry_point(
             self,
@@ -1185,7 +1394,29 @@ class RecurrentTMASACPolicy(TMASACPolicy):
             time_mask: torch.Tensor | None = None,
             reset_mask: torch.Tensor | None = None,
             actor_state: torch.Tensor | None = None,
+            precomputed_shared_latents: torch.Tensor | None = None,
+            precomputed_shared_state: RMATEncoderState | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None, RecurrentCriticState | None]:
+        if self.uses_recurrent_shared_encoder:
+            return self._shared_encoder_q_values_sequence(
+                local_obs=local_obs,
+                global_obs=global_obs,
+                actions=actions,
+                hidden_local_vars=hidden_local_vars,
+                hidden_global_vars=hidden_global_vars,
+                agent_mask=agent_mask,
+                target=target,
+                scenario_ids=scenario_ids,
+                initial_state=initial_state,
+                time_mask=time_mask,
+                reset_mask=reset_mask,
+                precomputed_shared_latents=precomputed_shared_latents,
+                precomputed_shared_state=precomputed_shared_state,
+            )
+        if precomputed_shared_latents is not None or precomputed_shared_state is not None:
+            raise ValueError(
+                "Precomputed shared latents require recurrent shared observation encoding."
+            )
         if self.recurrent_critic:
             critic = self.critic_target if target else self.critic
             assert isinstance(critic, RecurrentTMASACTwinCritic)
@@ -1253,6 +1484,91 @@ class RecurrentTMASACPolicy(TMASACPolicy):
             latents = latents.reshape(batch_size, sequence_length, *latents.shape[1:])
         return q1, q2, latents, None
 
+    def _shared_encoder_q_values_sequence(
+            self,
+            *,
+            local_obs: torch.Tensor,
+            global_obs: torch.Tensor,
+            actions: torch.Tensor,
+            hidden_local_vars: torch.Tensor | None,
+            hidden_global_vars: torch.Tensor | None,
+            agent_mask: torch.Tensor | None,
+            target: bool,
+            scenario_ids: torch.Tensor | None,
+            initial_state: RecurrentCriticState | None,
+            time_mask: torch.Tensor | None,
+            reset_mask: torch.Tensor | None,
+            precomputed_shared_latents: torch.Tensor | None,
+            precomputed_shared_state: RMATEncoderState | None,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None, RMATEncoderState]:
+        if scenario_ids is not None:
+            raise ValueError(
+                "Recurrent shared TMASAC does not support scenario-specific observation encoding."
+            )
+        if precomputed_shared_latents is None:
+            if precomputed_shared_state is not None:
+                raise ValueError(
+                    "precomputed_shared_state requires precomputed_shared_latents."
+                )
+            shared_latents, next_state = self._shared_recurrent_encoder(target=target)(
+                local_obs,
+                global_obs,
+                agent_mask=agent_mask,
+                time_mask=time_mask,
+                initial_state=cast(RMATEncoderState | None, initial_state),
+                reset_mask=reset_mask,
+            )
+        else:
+            if target:
+                raise ValueError("Target Q values cannot reuse online shared latents.")
+            if precomputed_shared_state is None:
+                raise ValueError(
+                    "precomputed_shared_latents requires precomputed_shared_state."
+                )
+            shared_latents = precomputed_shared_latents
+            next_state = precomputed_shared_state
+        flat_inputs, batch_size, sequence_length = self._flatten_sequence_inputs(
+            local_obs=shared_latents,
+            global_obs=global_obs,
+            actions=actions,
+            hidden_local_vars=hidden_local_vars,
+            hidden_global_vars=hidden_global_vars,
+            agent_mask=agent_mask,
+            scenario_ids=None,
+        )
+        critic = self.critic_target if target else self.critic
+        q1, q2, critic_latents = critic(
+            local_obs=cast(torch.Tensor, flat_inputs["local_obs"]),
+            global_obs=cast(torch.Tensor, flat_inputs["global_obs"]),
+            actions=cast(torch.Tensor, flat_inputs["actions"]),
+            hidden_local_vars=flat_inputs["hidden_local_vars"],
+            hidden_global_vars=flat_inputs["hidden_global_vars"],
+            agent_mask=flat_inputs["agent_mask"],
+        )
+        nop_latents = (
+            shared_latents
+            if self.nop_latent_source is SACNOPLatentSource.SHARED_ENCODER
+            else critic_latents
+        )
+        if local_obs.ndim == 3:
+            return (
+                q1,
+                q2,
+                None if target or self.critic_nop is None else nop_latents,
+                next_state,
+            )
+        q1 = q1.reshape(batch_size, sequence_length)
+        q2 = q2.reshape(batch_size, sequence_length)
+        if target or self.critic_nop is None:
+            return q1, q2, None, next_state
+        if nop_latents.ndim == 3:
+            nop_latents = nop_latents.reshape(
+                batch_size,
+                sequence_length,
+                *nop_latents.shape[1:],
+            )
+        return q1, q2, nop_latents, next_state
+
     def _actor_state_q_values_sequence_impl(
             self,
             *,
@@ -1312,6 +1628,18 @@ class RecurrentTMASACPolicy(TMASACPolicy):
             agent_mask: torch.Tensor | None = None,
             scenario_ids: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
+        if self.uses_recurrent_shared_encoder:
+            q1, q2, _latents, _state = self.q_values_sequence(
+                local_obs=local_obs,
+                global_obs=global_obs,
+                actions=actions,
+                hidden_local_vars=hidden_local_vars,
+                hidden_global_vars=hidden_global_vars,
+                agent_mask=agent_mask,
+                scenario_ids=scenario_ids,
+                target=False,
+            )
+            return q1, q2
         if self.uses_actor_state_critic_input:
             q1, q2, _latents, _state = self._stateless_actor_state_q_values(
                 local_obs=local_obs,
@@ -1357,6 +1685,18 @@ class RecurrentTMASACPolicy(TMASACPolicy):
             agent_mask: torch.Tensor | None = None,
             scenario_ids: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
+        if self.uses_recurrent_shared_encoder:
+            q1, q2, latents, _state = self.q_values_sequence(
+                local_obs=local_obs,
+                global_obs=global_obs,
+                actions=actions,
+                hidden_local_vars=hidden_local_vars,
+                hidden_global_vars=hidden_global_vars,
+                agent_mask=agent_mask,
+                scenario_ids=scenario_ids,
+                target=False,
+            )
+            return q1, q2, latents
         if self.uses_actor_state_critic_input:
             q1, q2, latents, _state = self._stateless_actor_state_q_values(
                 local_obs=local_obs,
@@ -1402,6 +1742,18 @@ class RecurrentTMASACPolicy(TMASACPolicy):
             agent_mask: torch.Tensor | None = None,
             scenario_ids: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
+        if self.uses_recurrent_shared_encoder:
+            q1, q2, _latents, _state = self.q_values_sequence(
+                local_obs=local_obs,
+                global_obs=global_obs,
+                actions=actions,
+                hidden_local_vars=hidden_local_vars,
+                hidden_global_vars=hidden_global_vars,
+                agent_mask=agent_mask,
+                scenario_ids=scenario_ids,
+                target=True,
+            )
+            return q1, q2
         if self.uses_actor_state_critic_input:
             q1, q2, _latents, _state = self._stateless_actor_state_q_values(
                 local_obs=local_obs,
@@ -1447,6 +1799,36 @@ class RecurrentTMASACPolicy(TMASACPolicy):
             agent_mask: torch.Tensor | None,
             scenario_ids: torch.Tensor | None = None,
     ) -> torch.Tensor:
+        if self.uses_recurrent_shared_encoder:
+            shared_latents, _state = self._shared_recurrent_encoder(target=False)(
+                local_obs,
+                global_obs,
+                agent_mask=agent_mask,
+            )
+            flat_inputs, batch_size, sequence_length = self._flatten_sequence_inputs(
+                local_obs=shared_latents,
+                global_obs=global_obs,
+                actions=actions,
+                hidden_local_vars=hidden_local_vars,
+                hidden_global_vars=hidden_global_vars,
+                agent_mask=agent_mask,
+                scenario_ids=scenario_ids,
+            )
+            latents = self._critic_module().encode(
+                local_inputs=cast(torch.Tensor, flat_inputs["local_obs"]),
+                global_inputs=cast(torch.Tensor, flat_inputs["global_obs"]),
+                actions=cast(torch.Tensor, flat_inputs["actions"]),
+                hidden_local_vars=flat_inputs["hidden_local_vars"],
+                hidden_global_vars=flat_inputs["hidden_global_vars"],
+                agent_mask=flat_inputs["agent_mask"],
+            )
+            if local_obs.ndim == 3:
+                return latents
+            return latents.reshape(
+                batch_size,
+                sequence_length,
+                *latents.shape[1:],
+            )
         if self.uses_actor_state_critic_input:
             actor_state = self._stateless_actor_state_critic_input(
                 local_obs=local_obs,
@@ -1581,6 +1963,13 @@ class RecurrentTMASACPolicy(TMASACPolicy):
             dtype: torch.dtype,
             target: bool,
     ) -> RecurrentCriticState | None:
+        if self.uses_recurrent_shared_encoder:
+            return self._shared_recurrent_encoder(target=target).initial_state(
+                batch_size=batch_size,
+                n_agents=n_agents,
+                device=device,
+                dtype=dtype,
+            )
         if not self.recurrent_critic:
             return None
         critic = self.critic_target if target else self.critic
@@ -1627,6 +2016,9 @@ class RecurrentTMASACPolicy(TMASACPolicy):
     def get_hyper_parameters(self) -> dict[str, Any]:
         hyper_parameters = super().get_hyper_parameters()
         hyper_parameters["tmasac_policy_config"]["recurrent_critic"] = self.recurrent_critic
+        hyper_parameters["tmasac_policy_config"]["recurrent_shared_encoder"] = (
+            self.uses_recurrent_shared_encoder
+        )
         hyper_parameters["tmasac_policy_config"]["actor_state_critic_input_config"] = (
             None
             if self.config.actor_state_critic_input_config is None
@@ -1654,13 +2046,87 @@ class RecurrentTMASACPolicy(TMASACPolicy):
             *,
             local_obs_dim: int,
             global_obs_dim: int,
-    ) -> RMATEncoder:
+    ) -> MATEncoder | RMATEncoder:
+        if self.config.recurrent_shared_encoder:
+            return MATEncoder(
+                config=self.actor_encoder_config,
+                max_agents=self.max_agents,
+                local_obs_dim=local_obs_dim,
+                global_obs_dim=global_obs_dim,
+            )
         return RMATEncoder(
-            config=self.actor_encoder_config,
+            config=cast(RMATEncoderConfig, self.actor_encoder_config),
             max_agents=self.max_agents,
             local_obs_dim=local_obs_dim,
             global_obs_dim=global_obs_dim,
         )
+
+    def _build_observation_encoder(
+            self,
+            config: MATEncoderConfig,
+            *,
+            local_obs_dim: int | None = None,
+            global_obs_dim: int | None = None,
+    ) -> MATEncoder | RMATEncoder:
+        if self.config.recurrent_shared_encoder:
+            if not isinstance(config, RMATEncoderConfig):
+                raise TypeError(
+                    "The recurrent shared observation encoder requires RMATEncoderConfig."
+                )
+            return RMATEncoder(
+                config=config,
+                max_agents=self.max_agents,
+                local_obs_dim=(
+                    self.local_obs_dim
+                    if local_obs_dim is None
+                    else int(local_obs_dim)
+                ),
+                global_obs_dim=(
+                    self.global_obs_dim
+                    if global_obs_dim is None
+                    else int(global_obs_dim)
+                ),
+            )
+        return super()._build_observation_encoder(
+            config,
+            local_obs_dim=local_obs_dim,
+            global_obs_dim=global_obs_dim,
+        )
+
+    def encode_shared_observations(
+            self,
+            *,
+            local_obs: torch.Tensor,
+            global_obs: torch.Tensor,
+            agent_mask: torch.Tensor | None,
+            target: bool,
+    ) -> torch.Tensor:
+        if not self.uses_recurrent_shared_encoder:
+            return super().encode_shared_observations(
+                local_obs=local_obs,
+                global_obs=global_obs,
+                agent_mask=agent_mask,
+                target=target,
+            )
+        latents, _state = self._shared_recurrent_encoder(target=target)(
+            local_obs,
+            global_obs,
+            agent_mask=agent_mask,
+        )
+        return latents
+
+    def _shared_recurrent_encoder(self, *, target: bool) -> RMATEncoder:
+        encoder = (
+            self.shared_observation_encoder_target
+            if target
+            else self.shared_observation_encoder
+        )
+        if isinstance(encoder, RMATEncoder):
+            return encoder
+        orig_mod = getattr(encoder, "_orig_mod", None)
+        if isinstance(orig_mod, RMATEncoder):
+            return orig_mod
+        raise RuntimeError("Recurrent TMASAC has no recurrent shared encoder configured.")
 
     def _build_critic(
             self,

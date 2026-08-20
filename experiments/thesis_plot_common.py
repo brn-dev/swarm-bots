@@ -25,6 +25,7 @@ THESIS_GROUP_ORDER = (
     "tmasac_baseline_predicted_std",
     "tmasac_baseline_no_nop",
     "tmasac_shared_encoder",
+    "slstm_shared_encoder",
     "slstm_two_small_actor_state_critic_predicted_std",
     "slstm_two_small_actor_state_critic_no_nop",
     "lstm_two_small_actor_state_critic",
@@ -78,6 +79,20 @@ THESIS_ABLATION_PLOTS = (
         display_name_overrides={
             "tmasac_baseline": "TMASAC, separate encoders",
             "tmasac_shared_encoder": "TMASAC, shared encoder",
+        },
+    ),
+    ExperimentPlotSelection(
+        name="slstm_shared_encoder",
+        group_names=(
+            "slstm_two_small_actor_state_critic",
+            "slstm_shared_encoder",
+        ),
+        required_group_names=("slstm_shared_encoder",),
+        title_suffix="sLSTM-TMASAC Shared Encoder Ablation",
+        output_subdir="shared_encoder/slstm_tmasac",
+        display_name_overrides={
+            "slstm_two_small_actor_state_critic": "TMASAC + sLSTM, separate encoders",
+            "slstm_shared_encoder": "TMASAC + shared sLSTM encoder",
         },
     ),
     ExperimentPlotSelection(
@@ -153,6 +168,7 @@ THESIS_DISPLAY_NAMES = {
     "tmasac_baseline_predicted_std": "TMASAC, predicted std",
     "tmasac_baseline_no_nop": "TMASAC, no NOP",
     "tmasac_shared_encoder": "TMASAC, shared encoder",
+    "slstm_shared_encoder": "TMASAC + shared sLSTM encoder",
     "slstm_two_small_actor_state_critic_predicted_std": (
         "TMASAC + sLSTM, predicted std"
     ),

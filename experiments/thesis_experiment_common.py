@@ -26,6 +26,7 @@ ThesisAlgorithmVariant = Literal[
     "tmasac_baseline",
     "tmasac_shared_encoder",
     "slstm_two_small_actor_state_critic",
+    "slstm_shared_encoder",
     "lstm_two_small_actor_state_critic",
     "mat_qcx_gsde",
     "mat_qcx_no_nop",
@@ -87,6 +88,11 @@ THESIS_VARIANT_CONFIGS: dict[ThesisAlgorithmVariant, ThesisVariantConfig] = {
         continuous_action_dist="gumbel_softmax_sign_magnitude_beta",
         use_nop=True,
         include_slstm_memory_strength=False,
+    ),
+    "slstm_shared_encoder": ThesisVariantConfig(
+        tmasac_variant="slstm_shared_encoder",
+        continuous_action_dist="gumbel_softmax_sign_magnitude_beta",
+        use_nop=True,
     ),
     "lstm_two_small_actor_state_critic": ThesisVariantConfig(
         tmasac_variant="lstm_two_small_actor_state_critic",

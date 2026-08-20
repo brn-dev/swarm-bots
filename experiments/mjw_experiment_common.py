@@ -74,7 +74,7 @@ from swarmbots.learn.algos.sac.recurrent_tmasac_policy import (
     RecurrentTMASACPolicyConfig,
 )
 from swarmbots.learn.algos.sac.sac import SAC
-from swarmbots.learn.algos.sac.sac_nop import SACNOPConfig
+from swarmbots.learn.algos.sac.sac_nop import SACNOPConfig, SACNOPLatentSource
 from swarmbots.learn.algos.sac.segment_tmasac_policy import SegmentTMASACPolicy
 from swarmbots.learn.algos.sac.tmasac_actor_heads import (
     TMASACActorHeadConfig,
@@ -552,8 +552,10 @@ def run_experiment(
         rmat_actor_inter_module_mlp: bool = False,
         r_tmasac_actor_state_critic_input_config: ActorStateCriticInputConfig | None = None,
         tmasac_shared_encoder_num_layers: int | None = None,
+        tmasac_recurrent_shared_encoder: bool = False,
         tmasac_actor_encoder_num_layers: int = 2,
         tmasac_critic_encoder_num_layers: int = 2,
+        tmasac_nop_latent_source: SACNOPLatentSource | str | None = None,
         tmasac_actor_head_kind: TMASACActorHeadKind | str = TMASACActorHeadKind.INDEPENDENT,
         tmasac_separate_observation_action_encoders: bool = False,
         use_nop: bool = True,
@@ -635,6 +637,20 @@ def run_experiment(
             "tmasac_critic_encoder_num_layers must be > 0, got "
             f"{tmasac_critic_encoder_num_layers}"
         )
+    if tmasac_recurrent_shared_encoder:
+        if policy_variant != "r_tmasac":
+            raise ValueError(
+                "tmasac_recurrent_shared_encoder=True requires policy_variant='r_tmasac'."
+            )
+        if tmasac_shared_encoder_num_layers is None:
+            raise ValueError(
+                "tmasac_recurrent_shared_encoder=True requires "
+                "tmasac_shared_encoder_num_layers."
+            )
+    resolved_tmasac_nop_latent_source = _resolve_tmasac_nop_latent_source(
+        shared_encoder_num_layers=tmasac_shared_encoder_num_layers,
+        latent_source=tmasac_nop_latent_source,
+    )
     if sac_buffer_capacity_per_env is not None and sac_buffer_capacity_per_env <= 0:
         raise ValueError(
             f"sac_buffer_capacity_per_env must be > 0, got {sac_buffer_capacity_per_env}"
@@ -895,8 +911,10 @@ def run_experiment(
         rmat_actor_inter_module_mlp=rmat_actor_inter_module_mlp,
         r_tmasac_actor_state_critic_input_config=r_tmasac_actor_state_critic_input_config,
         tmasac_shared_encoder_num_layers=tmasac_shared_encoder_num_layers,
+        tmasac_recurrent_shared_encoder=tmasac_recurrent_shared_encoder,
         tmasac_actor_encoder_num_layers=tmasac_actor_encoder_num_layers,
         tmasac_critic_encoder_num_layers=tmasac_critic_encoder_num_layers,
+        tmasac_nop_latent_source=resolved_tmasac_nop_latent_source,
         tmasac_actor_head_kind=tmasac_actor_head_kind,
         tmasac_separate_observation_action_encoders=tmasac_separate_observation_action_encoders,
         obs_indices=obs_indices,
@@ -1231,8 +1249,14 @@ def run_experiment(
         ),
         "rmat_actor_inter_module_mlp": rmat_actor_inter_module_mlp,
         "tmasac_shared_encoder_num_layers": tmasac_shared_encoder_num_layers,
+        "tmasac_recurrent_shared_encoder": tmasac_recurrent_shared_encoder,
         "tmasac_actor_encoder_num_layers": tmasac_actor_encoder_num_layers,
         "tmasac_critic_encoder_num_layers": tmasac_critic_encoder_num_layers,
+        "tmasac_nop_latent_source": (
+            resolved_tmasac_nop_latent_source.value
+            if isinstance(resolved_tmasac_nop_latent_source, SACNOPLatentSource)
+            else resolved_tmasac_nop_latent_source
+        ),
         "tmasac_actor_head_kind": (
             tmasac_actor_head_kind.value
             if isinstance(tmasac_actor_head_kind, TMASACActorHeadKind)
@@ -1385,6 +1409,7 @@ def _make_sac_nop_config(
         nop_init_gains: NOPInitGains,
         nop_add_agent_embeddings_transition_model: bool,
         nop_skip_first_transition_for_critic: bool,
+        latent_source: SACNOPLatentSource | str,
         compile_world_model_modules: bool,
         policy_compile_mode: str,
         world_model_loss_coef: float,
@@ -1401,6 +1426,7 @@ def _make_sac_nop_config(
     return SACNOPConfig(
         enabled=True,
         num_next_steps=num_next_steps,
+        latent_source=latent_source,
         skip_first_transition_for_critic=nop_skip_first_transition_for_critic,
         nop_loss_coef=world_model_loss_coef,
         compile_modules=compile_world_model_modules,
@@ -1437,6 +1463,18 @@ def _make_sac_nop_config(
             binary_loss_weight=1.0,
         ),
     )
+
+
+def _resolve_tmasac_nop_latent_source(
+        *,
+        shared_encoder_num_layers: int | None,
+        latent_source: SACNOPLatentSource | str | None,
+) -> SACNOPLatentSource | str:
+    if latent_source is not None:
+        return latent_source
+    if shared_encoder_num_layers is not None:
+        return SACNOPLatentSource.SHARED_ENCODER
+    return SACNOPLatentSource.CRITIC
 
 
 def _make_base_policy(
@@ -1476,8 +1514,10 @@ def _make_base_policy(
         rmat_actor_inter_module_mlp: bool = False,
         r_tmasac_actor_state_critic_input_config: ActorStateCriticInputConfig | None = None,
         tmasac_shared_encoder_num_layers: int | None = None,
+        tmasac_recurrent_shared_encoder: bool = False,
         tmasac_actor_encoder_num_layers: int = 2,
         tmasac_critic_encoder_num_layers: int = 2,
+        tmasac_nop_latent_source: SACNOPLatentSource | str | None = None,
         tmasac_actor_head_kind: TMASACActorHeadKind | str = TMASACActorHeadKind.INDEPENDENT,
         tmasac_separate_observation_action_encoders: bool = False,
         obs_indices: ObsIndices | None = None,
@@ -1595,10 +1635,18 @@ def _make_base_policy(
     if sac_policy_variant:
         if use_popart:
             raise ValueError("TMASACPolicy does not support PopArt; call with use_popart=False.")
+        resolved_tmasac_nop_latent_source = _resolve_tmasac_nop_latent_source(
+            shared_encoder_num_layers=tmasac_shared_encoder_num_layers,
+            latent_source=tmasac_nop_latent_source,
+        )
         tmasac_config_kwargs = {
             "actor_encoder_config": (
                 replace(
-                    rmat_actor_encoder_config if policy_variant == "r_tmasac" else mat_encoder_config,
+                    (
+                        rmat_actor_encoder_config
+                        if policy_variant == "r_tmasac" and not tmasac_recurrent_shared_encoder
+                        else mat_encoder_config
+                    ),
                     num_layers=tmasac_actor_encoder_num_layers,
                 )
             ),
@@ -1610,7 +1658,11 @@ def _make_base_policy(
                 None
                 if tmasac_shared_encoder_num_layers is None
                 else replace(
-                    mat_encoder_config,
+                    (
+                        rmat_actor_encoder_config
+                        if tmasac_recurrent_shared_encoder
+                        else mat_encoder_config
+                    ),
                     num_layers=tmasac_shared_encoder_num_layers,
                 )
             ),
@@ -1659,6 +1711,7 @@ def _make_base_policy(
                 nop_init_gains=nop_init_gains,
                 nop_add_agent_embeddings_transition_model=nop_add_agent_embeddings_transition_model,
                 nop_skip_first_transition_for_critic=nop_skip_first_transition_for_critic,
+                latent_source=resolved_tmasac_nop_latent_source,
                 compile_world_model_modules=compile_world_model_modules,
                 policy_compile_mode=policy_compile_mode,
                 world_model_loss_coef=world_model_loss_coef,
@@ -1676,6 +1729,7 @@ def _make_base_policy(
                 env=env,
                 config=RecurrentTMASACPolicyConfig(
                     recurrent_critic=False,
+                    recurrent_shared_encoder=tmasac_recurrent_shared_encoder,
                     actor_state_critic_input_config=r_tmasac_actor_state_critic_input_config,
                     experimental_compile_lstm=rmat_experimental_compile_lstm,
                     **tmasac_config_kwargs,
