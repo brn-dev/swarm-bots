@@ -35,6 +35,10 @@ THESIS_ABLATION_PLOTS = (
         required_group_names=("mat_qcx_no_nop",),
         title_suffix="MAT-QCX NOP Ablation",
         output_subdir="no_nop/mat_qcx",
+        display_name_overrides={
+            "mat_qcx": "MAT-QCX + NOP",
+            "mat_qcx_no_nop": "MAT-QCX, no NOP",
+        },
     ),
     ExperimentPlotSelection(
         name="tmasac_no_nop",
@@ -42,6 +46,10 @@ THESIS_ABLATION_PLOTS = (
         required_group_names=("tmasac_baseline_no_nop",),
         title_suffix="TMASAC NOP Ablation",
         output_subdir="no_nop/tmasac",
+        display_name_overrides={
+            "tmasac_baseline": "TMASAC + NOP",
+            "tmasac_baseline_no_nop": "TMASAC, no NOP",
+        },
     ),
     ExperimentPlotSelection(
         name="slstm_tmasac_no_nop",
@@ -52,6 +60,12 @@ THESIS_ABLATION_PLOTS = (
         required_group_names=("slstm_two_small_actor_state_critic_no_nop",),
         title_suffix="sLSTM-TMASAC NOP Ablation",
         output_subdir="no_nop/slstm_tmasac",
+        display_name_overrides={
+            "slstm_two_small_actor_state_critic": "TMASAC + sLSTM + NOP",
+            "slstm_two_small_actor_state_critic_no_nop": (
+                "TMASAC + sLSTM, no NOP"
+            ),
+        },
     ),
     ExperimentPlotSelection(
         name="mat_qcx_gsde",
@@ -104,17 +118,17 @@ THESIS_ABLATION_PLOTS = (
 )
 THESIS_DISPLAY_NAMES = {
     "mappo": "MAPPO",
-    "mat_qcx": "MAT-QCX + NOP",
-    "mat_ind": "MAT-Independent + NOP",
-    "mat_orig": "MAT original decoder + NOP",
+    "mat_qcx": "MAT-QCX",
+    "mat_ind": "MAT-Independent",
+    "mat_orig": "MAT original decoder",
     "tmasac_baseline": "TMASAC",
     "slstm_two_small_actor_state_critic": "TMASAC + sLSTM",
-    "mat_qcx_gsde": "MAT-QCX + NOP, gSDE",
+    "mat_qcx_gsde": "MAT-QCX, gSDE",
     "mat_qcx_no_nop": "MAT-QCX, no NOP",
-    "tmasac_baseline_predicted_std": "TMASAC + NOP, predicted std",
+    "tmasac_baseline_predicted_std": "TMASAC, predicted std",
     "tmasac_baseline_no_nop": "TMASAC, no NOP",
     "slstm_two_small_actor_state_critic_predicted_std": (
-        "TMASAC + sLSTM + NOP, predicted std"
+        "TMASAC + sLSTM, predicted std"
     ),
     "slstm_two_small_actor_state_critic_no_nop": "TMASAC + sLSTM, no NOP",
     "lstm_two_small_actor_state_critic": "TMASAC + LSTM",

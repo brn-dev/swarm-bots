@@ -11,12 +11,28 @@ from plot_logs.experiment_results import (
     DEFAULT_X_COLUMN,
     EP_REW_EMA_COLUMN,
     EP_SUCCESS_RATE_EMA_COLUMN,
+    ExperimentGroup,
+    ExperimentPlotSelection,
     load_experiment_groups,
     plot_experiment_results,
+    selected_groups_for_plot_selection,
 )
 
 
 class ExperimentResultsTests(unittest.TestCase):
+    def test_plot_selection_can_override_display_names(self) -> None:
+        group = ExperimentGroup(name="baseline", display_name="Baseline", runs=[])
+        selection = ExperimentPlotSelection(
+            name="ablation",
+            group_names=("baseline",),
+            display_name_overrides={"baseline": "Baseline + feature"},
+        )
+
+        selected_groups = selected_groups_for_plot_selection(selection, [group])
+
+        self.assertEqual(selected_groups[0].display_name, "Baseline + feature")
+        self.assertEqual(group.display_name, "Baseline")
+
     def test_main_group_names_excludes_loaded_groups_only_from_main_plots(self) -> None:
         baseline_group = SimpleNamespace(name="baseline")
         ablation_group = SimpleNamespace(name="ablation")

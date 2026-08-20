@@ -260,6 +260,29 @@ def test_thesis_plots_keep_ablations_out_of_main_plot_and_use_pair_comparisons()
     )
 
 
+def test_thesis_main_labels_omit_nop_and_nop_ablations_label_both_sides() -> None:
+    assert all(
+        thesis_experiment_common.THESIS_VARIANT_CONFIGS[group_name].use_nop
+        for group_name in thesis_plot_common.THESIS_MAIN_GROUP_ORDER
+    )
+    assert all(
+        "NOP" not in thesis_plot_common.THESIS_DISPLAY_NAMES[group_name]
+        for group_name in thesis_plot_common.THESIS_MAIN_GROUP_ORDER
+    )
+    nop_selections = thesis_plot_common.THESIS_ABLATION_PLOTS[:3]
+    for selection in nop_selections:
+        assert selection.display_name_overrides is not None
+        assert set(selection.display_name_overrides) == set(selection.group_names)
+        assert any(
+            "+ NOP" in display_name
+            for display_name in selection.display_name_overrides.values()
+        )
+        assert any(
+            "no NOP" in display_name
+            for display_name in selection.display_name_overrides.values()
+        )
+
+
 def test_find_opening_plot_reuses_matching_tmasac_runs() -> None:
     assert find_opening_plot.EXTRA_GROUP_SOURCES == {
         "tmasac_baseline": (
