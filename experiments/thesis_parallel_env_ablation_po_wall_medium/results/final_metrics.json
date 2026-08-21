@@ -109,13 +109,13 @@
       "number_of_runs": 5,
       "ep_rew_ema": {
         "number_of_runs": 5,
-        "mean": 5.524009282493746,
-        "std": 0.8644595074410057
+        "mean": 5.907362018985318,
+        "std": 0.8539749333715968
       },
       "ep_success_rate_ema": {
         "number_of_runs": 5,
-        "mean": 3.6272392393366153,
-        "std": 3.3738328188281557
+        "mean": 4.89103226800448,
+        "std": 3.3210871923116194
       },
       "success_rate_threshold_timesteps": {
         "25": {
@@ -152,16 +152,16 @@
     },
     "mat_qcx_128x32": {
       "display_name": "MAT-QCX, 128x32",
-      "number_of_runs": 4,
+      "number_of_runs": 6,
       "ep_rew_ema": {
-        "number_of_runs": 4,
-        "mean": 2.020051544879926,
-        "std": 1.0990104991117369
+        "number_of_runs": 6,
+        "mean": 2.660548952897646,
+        "std": 0.5344122678921233
       },
       "ep_success_rate_ema": {
-        "number_of_runs": 4,
-        "mean": 5.291859766866297e-05,
-        "std": 6.76622156755844e-05
+        "number_of_runs": 6,
+        "mean": 0.03491363190223176,
+        "std": 0.06946447146536816
       },
       "success_rate_threshold_timesteps": {
         "25": {
@@ -198,14 +198,14 @@
     },
     "mat_qcx_64x64": {
       "display_name": "MAT-QCX, 64x64",
-      "number_of_runs": 2,
+      "number_of_runs": 4,
       "ep_rew_ema": {
-        "number_of_runs": 2,
-        "mean": 0.9267422705446311,
-        "std": 0.1669491952560549
+        "number_of_runs": 4,
+        "mean": 1.1102887170118492,
+        "std": 0.14420014624680214
       },
       "ep_success_rate_ema": {
-        "number_of_runs": 2,
+        "number_of_runs": 4,
         "mean": 0.0,
         "std": 0.0
       },

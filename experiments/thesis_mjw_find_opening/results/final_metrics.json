@@ -288,6 +288,52 @@
         }
       }
     },
+    "r_mat_ind": {
+      "display_name": "R-MAT-IND",
+      "number_of_runs": 4,
+      "ep_rew_ema": {
+        "number_of_runs": 4,
+        "mean": 1.9711439554493293,
+        "std": 0.023939402163263283
+      },
+      "ep_success_rate_ema": {
+        "number_of_runs": 4,
+        "mean": 0.0027927834742956306,
+        "std": 0.004837242703690432
+      },
+      "success_rate_threshold_timesteps": {
+        "25": {
+          "number_of_runs": 0,
+          "mean": null,
+          "std": null
+        },
+        "50": {
+          "number_of_runs": 0,
+          "mean": null,
+          "std": null
+        },
+        "75": {
+          "number_of_runs": 0,
+          "mean": null,
+          "std": null
+        },
+        "90": {
+          "number_of_runs": 0,
+          "mean": null,
+          "std": null
+        },
+        "95": {
+          "number_of_runs": 0,
+          "mean": null,
+          "std": null
+        },
+        "98": {
+          "number_of_runs": 0,
+          "mean": null,
+          "std": null
+        }
+      }
+    },
     "mat_qcx_gsde": {
       "display_name": "MAT-QCX, gSDE",
       "number_of_runs": 5,
@@ -346,6 +392,52 @@
         "number_of_runs": 5,
         "mean": 0.07327270344640936,
         "std": 0.09970969880428379
+      },
+      "success_rate_threshold_timesteps": {
+        "25": {
+          "number_of_runs": 0,
+          "mean": null,
+          "std": null
+        },
+        "50": {
+          "number_of_runs": 0,
+          "mean": null,
+          "std": null
+        },
+        "75": {
+          "number_of_runs": 0,
+          "mean": null,
+          "std": null
+        },
+        "90": {
+          "number_of_runs": 0,
+          "mean": null,
+          "std": null
+        },
+        "95": {
+          "number_of_runs": 0,
+          "mean": null,
+          "std": null
+        },
+        "98": {
+          "number_of_runs": 0,
+          "mean": null,
+          "std": null
+        }
+      }
+    },
+    "tmasac_shared_encoder": {
+      "display_name": "TMASAC, shared encoder",
+      "number_of_runs": 4,
+      "ep_rew_ema": {
+        "number_of_runs": 4,
+        "mean": 2.9531097161150726,
+        "std": 0.10680813486148179
+      },
+      "ep_success_rate_ema": {
+        "number_of_runs": 4,
+        "mean": 1.2898015431160452,
+        "std": 0.4246097637167824
       },
       "success_rate_threshold_timesteps": {
         "25": {

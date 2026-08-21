@@ -385,18 +385,64 @@
         }
       }
     },
+    "tmasac_shared_encoder": {
+      "display_name": "TMASAC, shared encoder",
+      "number_of_runs": 4,
+      "ep_rew_ema": {
+        "number_of_runs": 4,
+        "mean": 4.344884114601734,
+        "std": 0.20584013421827657
+      },
+      "ep_success_rate_ema": {
+        "number_of_runs": 4,
+        "mean": 2.860201330475165,
+        "std": 1.1390759929081127
+      },
+      "success_rate_threshold_timesteps": {
+        "25": {
+          "number_of_runs": 0,
+          "mean": null,
+          "std": null
+        },
+        "50": {
+          "number_of_runs": 0,
+          "mean": null,
+          "std": null
+        },
+        "75": {
+          "number_of_runs": 0,
+          "mean": null,
+          "std": null
+        },
+        "90": {
+          "number_of_runs": 0,
+          "mean": null,
+          "std": null
+        },
+        "95": {
+          "number_of_runs": 0,
+          "mean": null,
+          "std": null
+        },
+        "98": {
+          "number_of_runs": 0,
+          "mean": null,
+          "std": null
+        }
+      }
+    },
     "mappo_250m": {
       "display_name": "MAPPO (250M)",
       "number_of_runs": 4,
       "ep_rew_ema": {
         "number_of_runs": 4,
-        "mean": 12.970829469620357,
-        "std": 0.21008132623988596
+        "mean": 12.964131226800056,
+        "std": 0.28790975060358526
       },
       "ep_success_rate_ema": {
         "number_of_runs": 4,
-        "mean": 50.05683961907786,
-        "std": 2.050289070737126
+        "mean": 50.08068755725911,
+        "std": 3.01232428857451
       },
       "success_rate_threshold_timesteps": {
         "25": {
@@ -436,13 +482,13 @@
       "number_of_runs": 4,
       "ep_rew_ema": {
         "number_of_runs": 4,
-        "mean": 16.13649852465437,
-        "std": 0.5150647740034696
+        "mean": 17.202112890407882,
+        "std": 0.37923463503016425
       },
       "ep_success_rate_ema": {
         "number_of_runs": 4,
-        "mean": 80.50712113947905,
-        "std": 5.475415915849535
+        "mean": 90.99287189165278,
+        "std": 3.3184894165267114
       },
       "success_rate_threshold_timesteps": {
         "25": {
@@ -461,19 +507,19 @@
           "std": 11132033.94202515
         },
         "90": {
-          "number_of_runs": 1,
-          "mean": 127385600.0,
-          "std": 0.0
+          "number_of_runs": 4,
+          "mean": 169512960.0,
+          "std": 33344210.59741556
         },
         "95": {
-          "number_of_runs": 0,
-          "mean": null,
-          "std": null
+          "number_of_runs": 3,
+          "mean": 190730240.0,
+          "std": 15068641.60517021
         },
         "98": {
-          "number_of_runs": 0,
-          "mean": null,
-          "std": null
+          "number_of_runs": 2,
+          "mean": 216453120.0,
+          "std": 24104960.0
         }
       }
     },
@@ -482,13 +528,13 @@
       "number_of_runs": 4,
       "ep_rew_ema": {
         "number_of_runs": 4,
-        "mean": 14.0811723713143,
-        "std": 1.1075752171079083
+        "mean": 14.735001389526783,
+        "std": 1.2512739925768823
       },
       "ep_success_rate_ema": {
         "number_of_runs": 4,
-        "mean": 60.83199940170327,
-        "std": 10.278365787696005
+        "mean": 67.57870963713233,
+        "std": 11.225969804565509
       },
       "success_rate_threshold_timesteps": {
         "25": {
