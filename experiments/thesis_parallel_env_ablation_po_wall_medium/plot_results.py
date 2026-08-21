@@ -42,10 +42,10 @@ EXTRA_GROUP_SOURCES = {
 }
 GROUP_COLOR_OVERRIDES = {
     "mat_qcx_1024x4": THESIS_GROUP_COLOR_OVERRIDES["mat_qcx"],
-    "mat_qcx_512x8": "#0072B2",
-    "mat_qcx_256x16": "#009E73",
-    "mat_qcx_128x32": "#D55E00",
-    "mat_qcx_64x64": "#CC79A7",
+    "mat_qcx_512x8": "#6A3D9A",
+    "mat_qcx_256x16": "#E7298A",
+    "mat_qcx_128x32": "#A6761D",
+    "mat_qcx_64x64": "#666666",
 }
 
 
