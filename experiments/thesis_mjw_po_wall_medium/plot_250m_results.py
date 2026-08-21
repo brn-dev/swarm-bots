@@ -11,7 +11,10 @@ from experiments.thesis_mjw_po_wall_medium.scripts.common_250m import (
     EXPERIMENT_RUN_NAME,
     TOTAL_TIMESTEPS,
 )
-from experiments.thesis_plot_common import THESIS_DISPLAY_NAMES
+from experiments.thesis_plot_common import (
+    PO_WALL_MEDIUM_SCENARIO_TITLE,
+    THESIS_DISPLAY_NAMES,
+)
 from plot_logs.experiment_results import plot_experiment_results
 
 GROUP_ORDER = ("mappo", "mat_qcx", "mat_ind", "mat_orig")
@@ -27,6 +30,7 @@ def main() -> int:
         display_name_overrides=THESIS_DISPLAY_NAMES,
         run_length_limit=TOTAL_TIMESTEPS,
         cut_at_limit=True,
+        title_suffix=PO_WALL_MEDIUM_SCENARIO_TITLE,
     )
     for output_path in result.output_paths:
         print(output_path)

@@ -430,7 +430,7 @@ class HybridActionDistFactoryTests(unittest.TestCase):
         dist.update_latent_features(torch.zeros(1, 1, 4))
         actual_log_prob = dist.log_prob(actions)
 
-        negative_magnitude_dist = torchdist.Beta(
+        negative_unit_interval_dist = torchdist.Beta(
             concentration1=torch.tensor(config.negative_alpha),
             concentration0=torch.tensor(config.negative_beta),
         )
@@ -440,7 +440,7 @@ class HybridActionDistFactoryTests(unittest.TestCase):
         )
         expected_log_prob = (
             math.log(0.5)
-            + negative_magnitude_dist.log_prob(torch.tensor(0.75))
+            + negative_unit_interval_dist.log_prob(torch.tensor(0.25))
             + math.log(0.5)
             + positive_magnitude_dist.log_prob(torch.tensor(0.25))
         ).reshape(1, 1)

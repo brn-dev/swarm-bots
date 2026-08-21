@@ -7,7 +7,10 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from experiments.thesis_plot_common import plot_thesis_experiment_results
+from experiments.thesis_plot_common import (
+    PO_WALL_MEDIUM_SCENARIO_TITLE,
+    plot_thesis_experiment_results,
+)
 
 RUNS_DIR = REPO_ROOT / "runs"
 EXPERIMENT_RUN_DIR = RUNS_DIR / "thesis_mjw_po_wall_medium"
@@ -28,6 +31,7 @@ def main() -> int:
         experiment_run_dir=EXPERIMENT_RUN_DIR,
         output_dir=OUTPUT_DIR,
         extra_group_sources=EXTRA_GROUP_SOURCES,
+        scenario_title=PO_WALL_MEDIUM_SCENARIO_TITLE,
     )
     for output_path in result.output_paths:
         print(output_path)

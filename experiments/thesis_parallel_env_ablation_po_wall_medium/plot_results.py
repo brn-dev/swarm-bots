@@ -10,6 +10,7 @@ if str(REPO_ROOT) not in sys.path:
 from experiments.thesis_mjw_po_wall_medium.plot_results import (
     EXTRA_GROUP_SOURCES as THESIS_PO_WALL_GROUP_SOURCES,
 )
+from experiments.thesis_plot_common import PO_WALL_MEDIUM_SCENARIO_TITLE
 from plot_logs.experiment_results import plot_experiment_results
 
 EXPERIMENT_RUN_DIR = REPO_ROOT / "runs" / "thesis_parallel_env_ablation_po_wall_medium"
@@ -47,6 +48,7 @@ def main() -> int:
         extra_group_sources=EXTRA_GROUP_SOURCES,
         run_length_limit=100_000_000,
         cut_at_limit=True,
+        title_suffix=PO_WALL_MEDIUM_SCENARIO_TITLE,
     )
     for output_path in result.output_paths:
         print(output_path)

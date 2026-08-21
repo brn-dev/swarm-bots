@@ -179,6 +179,8 @@ THESIS_DISPLAY_NAMES = {
     ),
 }
 THESIS_RUN_LENGTH = 100_000_000
+PO_WALL_MEDIUM_SCENARIO_TITLE = "PO-Wall (Medium)"
+FIND_OPENING_SCENARIO_TITLE = "Find-Opening"
 
 
 def plot_thesis_experiment_results(
@@ -186,6 +188,7 @@ def plot_thesis_experiment_results(
     experiment_run_dir: Path,
     output_dir: Path,
     extra_group_sources: Mapping[str, Sequence[Path]],
+    scenario_title: str,
 ) -> ExperimentPlotResult:
     return plot_experiment_results(
         experiment_run_dir,
@@ -197,4 +200,5 @@ def plot_thesis_experiment_results(
         extra_plot_selections=THESIS_ABLATION_PLOTS,
         run_length_limit=THESIS_RUN_LENGTH,
         cut_at_limit=True,
+        title_suffix=scenario_title,
     )

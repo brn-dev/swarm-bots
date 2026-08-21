@@ -84,7 +84,19 @@ _REAL_TORCH_COMPILE = torch.compile
 
 def _make_recording_eager_compile(
         compiled_graphs: list[torch.fx.GraphModule],
+        *,
+        use_aot_autograd: bool = False,
 ) -> Callable[..., Any]:
+    if use_aot_autograd:
+        def compile_with_aot_autograd(
+                function: Callable[..., Any],
+                **kwargs: Any,
+        ) -> Callable[..., Any]:
+            kwargs.pop("mode", None)
+            return _REAL_TORCH_COMPILE(function, backend="aot_eager", **kwargs)
+
+        return compile_with_aot_autograd
+
     def eager_backend(
             graph_module: torch.fx.GraphModule,
             _example_inputs: list[torch.Tensor],
@@ -614,6 +626,7 @@ def _perform_short_recurrent_update(
         nop_config: SACNOPConfig | None = None,
         max_steps: int = 20,
         compile_modules: bool = False,
+        compile_with_aot_autograd: bool = False,
         continuous_config: ContinuousActionDistConfigInput | None = None,
         use_slstm: bool = False,
         actor_state_critic_input_config: ActorStateCriticInputConfig | None = None,
@@ -632,7 +645,10 @@ def _perform_short_recurrent_update(
         compile_context = (
             patch(
                 "swarmbots.learn.algos.sac.tmasac_policy.torch.compile",
-                side_effect=_make_recording_eager_compile([]),
+                side_effect=_make_recording_eager_compile(
+                    [],
+                    use_aot_autograd=compile_with_aot_autograd,
+                ),
             )
             if compile_modules
             else nullcontext()
@@ -4459,6 +4475,7 @@ class RecurrentTMASACTests(unittest.TestCase):
             metrics, total_updates = _perform_short_recurrent_update(
                 recurrent_shared_encoder=True,
                 compile_modules=True,
+                compile_with_aot_autograd=True,
             )
 
             self.assertEqual(metrics["updates"], 1)
