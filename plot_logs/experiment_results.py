@@ -778,6 +778,7 @@ def plot_experiment_selection(
     group_line_alpha: float,
     colors: dict[str, tuple[float, float, float, float]],
     title_suffix: str | None = None,
+    include_selection_title_suffix: bool = True,
 ) -> list[Path]:
     selected_groups = selected_groups_for_plot_selection(selection, groups)
     selected_group_names = {group.name for group in selected_groups}
@@ -790,9 +791,11 @@ def plot_experiment_selection(
     if selection.output_subdir is not None:
         selection_output_dir /= selection.output_subdir
 
-    selection_title_suffix = (
-        selection.title_suffix or selection.name.replace("_", " ").title()
-    )
+    selection_title_suffix = None
+    if include_selection_title_suffix:
+        selection_title_suffix = (
+            selection.title_suffix or selection.name.replace("_", " ").title()
+        )
     output_paths: list[Path] = []
     for metric in PLOT_SPECS:
         if not metric_has_finite_values(
@@ -890,6 +893,7 @@ def plot_experiment_results(
     main_group_names: Sequence[str] | None = None,
     extra_plot_selections: Sequence[ExperimentPlotSelection] | None = None,
     title_suffix: str | None = None,
+    include_selection_title_suffix: bool = True,
 ) -> ExperimentPlotResult:
     groups = load_experiment_groups(
         experiment_run_dir,
@@ -966,6 +970,7 @@ def plot_experiment_results(
                     group_line_alpha=group_line_alpha,
                     colors=colors,
                     title_suffix=title_suffix,
+                    include_selection_title_suffix=include_selection_title_suffix,
                 )
             )
     return ExperimentPlotResult(groups=groups, output_paths=output_paths)

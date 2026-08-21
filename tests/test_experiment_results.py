@@ -126,6 +126,50 @@ class ExperimentResultsTests(unittest.TestCase):
             self.assertEqual(call.kwargs["font_size"], 22)
             self.assertEqual(call.kwargs["legend_font_size"], 24)
 
+    def test_plot_selection_can_omit_selection_title_suffix(self) -> None:
+        groups = [SimpleNamespace(name="baseline"), SimpleNamespace(name="ablation")]
+        selection = ExperimentPlotSelection(
+            name="nop_ablation",
+            group_names=("baseline", "ablation"),
+            title_suffix="NOP Ablation",
+        )
+
+        with (
+            patch("plot_logs.experiment_results.metric_has_finite_values", return_value=True),
+            patch("plot_logs.experiment_results.plot_individual_metric", return_value=[]) as individual,
+            patch("plot_logs.experiment_results.plot_group_metric", return_value=[]) as grouped,
+        ):
+            plot_experiment_selection(
+                selection=selection,
+                groups=groups,
+                output_dir=Path("unused-output"),
+                x_column=DEFAULT_X_COLUMN,
+                dpis=(100,),
+                theoretical_maximum=None,
+                run_length_limit=100,
+                cut_at_limit=True,
+                group_line_width=1.0,
+                group_line_alpha=1.0,
+                colors={},
+                title_suffix="Find-Opening",
+                include_selection_title_suffix=False,
+            )
+
+        self.assertEqual(
+            {call.kwargs["title"] for call in individual.call_args_list},
+            {
+                "Episode Reward EMA Per Run - Find-Opening",
+                "Episode Success Rate EMA Per Run - Find-Opening",
+            },
+        )
+        self.assertEqual(
+            {call.kwargs["title"] for call in grouped.call_args_list},
+            {
+                "Episode Reward EMA By Group - Find-Opening",
+                "Episode Success Rate EMA By Group - Find-Opening",
+            },
+        )
+
     def test_main_group_names_excludes_loaded_groups_only_from_main_plots(self) -> None:
         baseline_group = SimpleNamespace(name="baseline")
         ablation_group = SimpleNamespace(name="ablation")
