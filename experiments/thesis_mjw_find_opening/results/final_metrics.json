@@ -58,18 +58,18 @@
         }
       }
     },
-    "mat_qcx": {
-      "display_name": "MAT-QCX",
+    "mat_ind": {
+      "display_name": "MAT-Independent",
       "number_of_runs": 5,
       "ep_rew_ema": {
         "number_of_runs": 5,
-        "mean": 4.710220719507409,
-        "std": 0.50142919768255
+        "mean": 3.374950405505649,
+        "std": 0.9355880969763135
       },
       "ep_success_rate_ema": {
         "number_of_runs": 5,
-        "mean": 3.3302992113792826,
-        "std": 3.7944915872597287
+        "mean": 3.524430458278867,
+        "std": 4.353811896895923
       },
       "success_rate_threshold_timesteps": {
         "25": {
@@ -104,18 +104,18 @@
         }
       }
     },
-    "mat_ind": {
-      "display_name": "MAT-Independent",
+    "mat_qcx": {
+      "display_name": "MAT-QCX",
       "number_of_runs": 5,
       "ep_rew_ema": {
         "number_of_runs": 5,
-        "mean": 3.374950405505649,
-        "std": 0.9355880969763135
+        "mean": 4.710220719507409,
+        "std": 0.50142919768255
       },
       "ep_success_rate_ema": {
         "number_of_runs": 5,
-        "mean": 3.524430458278867,
-        "std": 4.353811896895923
+        "mean": 3.3302992113792826,
+        "std": 3.7944915872597287
       },
       "success_rate_threshold_timesteps": {
         "25": {

@@ -11,8 +11,8 @@
   "run_length_limit": 100000000,
   "run_length_limit_overrides": {
     "mappo_250m": 250000000,
-    "mat_qcx_250m": 250000000,
     "mat_ind_250m": 250000000,
+    "mat_qcx_250m": 250000000,
     "mat_orig_250m": 250000000
   },
   "standard_deviation": "population",
@@ -477,52 +477,6 @@
         }
       }
     },
-    "mat_qcx_250m": {
-      "display_name": "MAT-QCX (250M)",
-      "number_of_runs": 4,
-      "ep_rew_ema": {
-        "number_of_runs": 4,
-        "mean": 17.202112890407882,
-        "std": 0.37923463503016425
-      },
-      "ep_success_rate_ema": {
-        "number_of_runs": 4,
-        "mean": 90.99287189165278,
-        "std": 3.3184894165267114
-      },
-      "success_rate_threshold_timesteps": {
-        "25": {
-          "number_of_runs": 4,
-          "mean": 54968320.0,
-          "std": 5303825.768480711
-        },
-        "50": {
-          "number_of_runs": 4,
-          "mean": 77158400.0,
-          "std": 5578018.536218753
-        },
-        "75": {
-          "number_of_runs": 4,
-          "mean": 111472640.0,
-          "std": 11132033.94202515
-        },
-        "90": {
-          "number_of_runs": 4,
-          "mean": 169512960.0,
-          "std": 33344210.59741556
-        },
-        "95": {
-          "number_of_runs": 3,
-          "mean": 190730240.0,
-          "std": 15068641.60517021
-        },
-        "98": {
-          "number_of_runs": 2,
-          "mean": 216453120.0,
-          "std": 24104960.0
-        }
-      }
-    },
     "mat_ind_250m": {
       "display_name": "MAT-Independent (250M)",
       "number_of_runs": 4,
@@ -566,6 +520,52 @@
           "number_of_runs": 0,
           "mean": null,
           "std": null
+        }
+      }
+    },
+    "mat_qcx_250m": {
+      "display_name": "MAT-QCX (250M)",
+      "number_of_runs": 4,
+      "ep_rew_ema": {
+        "number_of_runs": 4,
+        "mean": 17.202112890407882,
+        "std": 0.37923463503016425
+      },
+      "ep_success_rate_ema": {
+        "number_of_runs": 4,
+        "mean": 90.99287189165278,
+        "std": 3.3184894165267114
+      },
+      "success_rate_threshold_timesteps": {
+        "25": {
+          "number_of_runs": 4,
+          "mean": 54968320.0,
+          "std": 5303825.768480711
+        },
+        "50": {
+          "number_of_runs": 4,
+          "mean": 77158400.0,
+          "std": 5578018.536218753
+        },
+        "75": {
+          "number_of_runs": 4,
+          "mean": 111472640.0,
+          "std": 11132033.94202515
+        },
+        "90": {
+          "number_of_runs": 4,
+          "mean": 169512960.0,
+          "std": 33344210.59741556
+        },
+        "95": {
+          "number_of_runs": 3,
+          "mean": 190730240.0,
+          "std": 15068641.60517021
+        },
+        "98": {
+          "number_of_runs": 2,
+          "mean": 216453120.0,
+          "std": 24104960.0
         }
       }
     }
