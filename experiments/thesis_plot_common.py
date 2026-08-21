@@ -205,4 +205,5 @@ def plot_thesis_experiment_results(
         run_length_limit=THESIS_RUN_LENGTH,
         cut_at_limit=True,
         title_suffix=scenario_title,
+        include_selection_title_suffix=False,
     )
