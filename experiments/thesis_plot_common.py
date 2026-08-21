@@ -9,6 +9,9 @@ from plot_logs.experiment_results import (
     plot_experiment_results,
 )
 
+SMB_NOP_PLOT_FONT_SIZE = 22
+SMB_NOP_LEGEND_FONT_SIZE = 24
+
 THESIS_MAIN_GROUP_ORDER = (
     "mappo",
     "mat_qcx",
@@ -42,6 +45,8 @@ THESIS_ABLATION_PLOTS = (
             "mat_qcx": "MAT-QCX + NOP",
             "mat_qcx_no_nop": "MAT-QCX, no NOP",
         },
+        font_size=SMB_NOP_PLOT_FONT_SIZE,
+        legend_font_size=SMB_NOP_LEGEND_FONT_SIZE,
     ),
     ExperimentPlotSelection(
         name="tmasac_no_nop",
@@ -53,6 +58,8 @@ THESIS_ABLATION_PLOTS = (
             "tmasac_baseline": "TMASAC + NOP",
             "tmasac_baseline_no_nop": "TMASAC, no NOP",
         },
+        font_size=SMB_NOP_PLOT_FONT_SIZE,
+        legend_font_size=SMB_NOP_LEGEND_FONT_SIZE,
     ),
     ExperimentPlotSelection(
         name="slstm_tmasac_no_nop",
@@ -69,6 +76,8 @@ THESIS_ABLATION_PLOTS = (
                 "TMASAC + sLSTM, no NOP"
             ),
         },
+        font_size=SMB_NOP_PLOT_FONT_SIZE,
+        legend_font_size=SMB_NOP_LEGEND_FONT_SIZE,
     ),
     ExperimentPlotSelection(
         name="tmasac_shared_encoder",
@@ -112,6 +121,8 @@ THESIS_ABLATION_PLOTS = (
         required_group_names=("mat_qcx_gsde",),
         title_suffix="MAT-QCX gSDE",
         output_subdir="gaussian_action_distributions/mat_qcx",
+        font_size=SMB_NOP_PLOT_FONT_SIZE,
+        legend_font_size=SMB_NOP_LEGEND_FONT_SIZE,
     ),
     ExperimentPlotSelection(
         name="tmasac_predicted_std",
@@ -119,6 +130,8 @@ THESIS_ABLATION_PLOTS = (
         required_group_names=("tmasac_baseline_predicted_std",),
         title_suffix="TMASAC Predicted Standard Deviation",
         output_subdir="gaussian_action_distributions/tmasac",
+        font_size=SMB_NOP_PLOT_FONT_SIZE,
+        legend_font_size=SMB_NOP_LEGEND_FONT_SIZE,
     ),
     ExperimentPlotSelection(
         name="slstm_tmasac_predicted_std",
@@ -131,6 +144,8 @@ THESIS_ABLATION_PLOTS = (
         ),
         title_suffix="sLSTM-TMASAC Predicted Standard Deviation",
         output_subdir="gaussian_action_distributions/slstm_tmasac",
+        font_size=SMB_NOP_PLOT_FONT_SIZE,
+        legend_font_size=SMB_NOP_LEGEND_FONT_SIZE,
     ),
     ExperimentPlotSelection(
         name="tmasac_temporal_model",
