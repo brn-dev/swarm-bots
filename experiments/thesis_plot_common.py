@@ -14,8 +14,8 @@ SMB_NOP_LEGEND_FONT_SIZE = 24
 
 THESIS_MAIN_GROUP_ORDER = (
     "mappo",
-    "mat_qcx",
     "mat_ind",
+    "mat_qcx",
     "mat_orig",
     "tmasac_baseline",
     "slstm_two_small_actor_state_critic",
@@ -34,6 +34,14 @@ THESIS_GROUP_ORDER = (
     "lstm_two_small_actor_state_critic",
     "slstm_two_small_actor_state_critic_no_memory_strength",
 )
+THESIS_GROUP_COLOR_OVERRIDES = {
+    "mappo": "#CC79A7",
+    "mat_qcx": "#E69F00",
+    "mat_ind": "#D55E00",
+    "mat_orig": "#009E73",
+    "tmasac_baseline": "#0072B2",
+    "slstm_two_small_actor_state_critic": "#56B4E9",
+}
 THESIS_ABLATION_PLOTS = (
     ExperimentPlotSelection(
         name="mat_qcx_no_nop",
@@ -202,6 +210,7 @@ def plot_thesis_experiment_results(
         extra_group_sources=extra_group_sources,
         main_group_names=THESIS_MAIN_GROUP_ORDER,
         extra_plot_selections=THESIS_ABLATION_PLOTS,
+        group_color_overrides=THESIS_GROUP_COLOR_OVERRIDES,
         run_length_limit=THESIS_RUN_LENGTH,
         cut_at_limit=True,
         title_suffix=scenario_title,
