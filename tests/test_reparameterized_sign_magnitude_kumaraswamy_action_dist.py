@@ -58,7 +58,7 @@ class ReparameterizedSignMagnitudeKumaraswamyActionDistTests(unittest.TestCase):
         self.assertIsNotNone(dist.output_net.bias.grad)
         self.assertGreater(dist.output_net.bias.grad.abs().sum().item(), 0.0)
 
-    def test_rsample_negates_negative_magnitude(self) -> None:
+    def test_rsample_preserves_legacy_negative_unit_interval_mapping(self) -> None:
         dist = ReparameterizedSignMagnitudeKumaraswamyActionDist(
             latent_dim=4,
             action_dim=3,
@@ -77,7 +77,7 @@ class ReparameterizedSignMagnitudeKumaraswamyActionDistTests(unittest.TestCase):
         ):
             actions = dist.rsample()
 
-        torch.testing.assert_close(actions, torch.full((2, 1, 3), -0.2))
+        torch.testing.assert_close(actions, torch.full((2, 1, 3), -0.8))
 
     def test_inverse_cdf_preserves_float32_tail_value_and_gradient(self) -> None:
         u = torch.tensor(1e-6, dtype=torch.float32)

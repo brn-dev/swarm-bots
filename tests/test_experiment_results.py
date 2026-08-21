@@ -14,12 +14,24 @@ from plot_logs.experiment_results import (
     ExperimentGroup,
     ExperimentPlotSelection,
     load_experiment_groups,
+    joined_plot_title,
     plot_experiment_results,
+    plot_experiment_selection,
     selected_groups_for_plot_selection,
 )
 
 
 class ExperimentResultsTests(unittest.TestCase):
+    def test_joined_plot_title_appends_nonempty_suffixes(self) -> None:
+        self.assertEqual(
+            joined_plot_title(
+                "Episode Reward EMA By Group",
+                "PO-Wall (Medium)",
+                "MAT-QCX NOP Ablation",
+            ),
+            "Episode Reward EMA By Group - PO-Wall (Medium) - MAT-QCX NOP Ablation",
+        )
+
     def test_plot_selection_can_override_display_names(self) -> None:
         group = ExperimentGroup(name="baseline", display_name="Baseline", runs=[])
         selection = ExperimentPlotSelection(
@@ -32,6 +44,51 @@ class ExperimentResultsTests(unittest.TestCase):
 
         self.assertEqual(selected_groups[0].display_name, "Baseline + feature")
         self.assertEqual(group.display_name, "Baseline")
+
+    def test_plot_selection_title_includes_scenario_and_selection(self) -> None:
+        groups = [
+            SimpleNamespace(name="baseline"),
+            SimpleNamespace(name="ablation"),
+        ]
+        selection = ExperimentPlotSelection(
+            name="nop_ablation",
+            group_names=("baseline", "ablation"),
+            title_suffix="NOP Ablation",
+        )
+
+        with (
+            patch(
+                "plot_logs.experiment_results.metric_has_finite_values",
+                return_value=True,
+            ),
+            patch(
+                "plot_logs.experiment_results.plot_individual_metric",
+                return_value=[],
+            ) as plot_individual_metric,
+            patch(
+                "plot_logs.experiment_results.plot_group_metric",
+                return_value=[],
+            ) as plot_group_metric,
+        ):
+            plot_experiment_selection(
+                selection=selection,
+                groups=groups,
+                output_dir=Path("unused-output"),
+                x_column=DEFAULT_X_COLUMN,
+                dpis=(100,),
+                theoretical_maximum=None,
+                run_length_limit=100,
+                cut_at_limit=True,
+                group_line_width=1.0,
+                group_line_alpha=1.0,
+                colors={},
+                title_suffix="Find-Opening",
+            )
+
+        for call in (*plot_individual_metric.call_args_list, *plot_group_metric.call_args_list):
+            self.assertTrue(
+                call.kwargs["title"].endswith(" - Find-Opening - NOP Ablation")
+            )
 
     def test_main_group_names_excludes_loaded_groups_only_from_main_plots(self) -> None:
         baseline_group = SimpleNamespace(name="baseline")
@@ -59,11 +116,13 @@ class ExperimentResultsTests(unittest.TestCase):
                 Path("unused"),
                 Path("unused-output"),
                 main_group_names=("baseline",),
+                title_suffix="PO-Wall (Medium)",
             )
 
         self.assertEqual(result.groups, [baseline_group, ablation_group])
         for call in (*plot_individual_metric.call_args_list, *plot_group_metric.call_args_list):
             self.assertEqual(call.args[0], [baseline_group])
+            self.assertTrue(call.kwargs["title"].endswith(" - PO-Wall (Medium)"))
 
     def test_load_experiment_groups_ignores_missing_extra_group_source(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

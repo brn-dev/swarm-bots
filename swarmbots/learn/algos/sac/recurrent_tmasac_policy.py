@@ -553,6 +553,8 @@ class RecurrentTMASACPolicy(TMASACPolicy):
             action_sequence_lengths=(1,),
             action_sequence_with_selected_states_lengths=(),
         )
+        if self.uses_recurrent_shared_encoder:
+            self._actor_encoder = self._compile_module(self._actor_encoder)
         if not self._actor_end_to_end_compilation_enabled:
             if self.action_dist.compile_friendly:
                 self._compiled_actor_actions_and_log_probs = self._compile_actor_tail_callable(
@@ -616,7 +618,7 @@ class RecurrentTMASACPolicy(TMASACPolicy):
             encoder_lengths |= action_lengths | selected_state_action_lengths
         if self._actor_encoder_compilation_enabled:
             actor_encoder_entry_point = (
-                self._encode_actor_sequence_impl
+                self._encode_recurrent_shared_sequence_impl
                 if self.uses_recurrent_shared_encoder
                 else self._actor_encoder
             )
@@ -1216,12 +1218,50 @@ class RecurrentTMASACPolicy(TMASACPolicy):
         | tuple[torch.Tensor, RMATEncoderState, RMATEncoderState, Any]
     ):
         sequence_length = self._actor_sequence_length(local_obs)
-        if not self._actor_encoder_compilation_enabled:
-            actor_encoder = (
-                self._encode_actor_sequence_impl
-                if self.uses_recurrent_shared_encoder
-                else self._actor_encoder
+        if self.uses_recurrent_shared_encoder:
+            shared_encoder = (
+                self._encode_recurrent_shared_sequence_impl
+                if not self._actor_encoder_compilation_enabled
+                else self._compiled_actor_encoders.get(sequence_length)
             )
+            if shared_encoder is None:
+                raise RuntimeError(
+                    f"No compiled shared encoder entry point for sequence length {sequence_length}; "
+                    f"configured lengths are {sorted(self._compiled_actor_encoders)}."
+                )
+            shared_result = shared_encoder(
+                local_obs=local_obs,
+                global_obs=global_obs,
+                agent_mask=agent_mask,
+                time_mask=time_mask,
+                initial_state=initial_state,
+                reset_mask=reset_mask,
+                state_output_indices=state_output_indices,
+            )
+            if state_output_indices is None:
+                shared_latents, next_state = shared_result
+                actor_latents = self._encode_downstream_actor(
+                    shared_latents.detach(),
+                    global_obs=global_obs,
+                    agent_mask=agent_mask,
+                )
+                return actor_latents, next_state
+            shared_latents, next_state, selected_states = shared_result
+            actor_latents = self._encode_downstream_actor(
+                shared_latents.detach(),
+                global_obs=global_obs,
+                agent_mask=agent_mask,
+            )
+            return actor_latents, next_state, selected_states, shared_latents
+
+        actor_local_inputs, actor_global_inputs = self._actor_observation_inputs(
+            local_obs=local_obs,
+            global_obs=global_obs,
+            agent_mask=agent_mask,
+            scenario_ids=scenario_ids,
+        )
+        if not self._actor_encoder_compilation_enabled:
+            actor_encoder = self._actor_encoder
         else:
             actor_encoder = self._compiled_actor_encoders.get(sequence_length)
             if actor_encoder is None:
@@ -1235,24 +1275,6 @@ class RecurrentTMASACPolicy(TMASACPolicy):
             | tuple[torch.Tensor, RMATEncoderState, RMATEncoderState]
             | tuple[torch.Tensor, RMATEncoderState, RMATEncoderState, Any]
         ):
-            if self.uses_recurrent_shared_encoder:
-                return actor_encoder(
-                    local_obs=local_obs,
-                    global_obs=global_obs,
-                    agent_mask=agent_mask,
-                    scenario_ids=scenario_ids,
-                    time_mask=time_mask,
-                    initial_state=initial_state,
-                    reset_mask=reset_mask,
-                    state_output_indices=state_output_indices,
-                    return_last_layer_state_sequence=return_last_layer_state_sequence,
-                )
-            actor_local_inputs, actor_global_inputs = self._actor_observation_inputs(
-                local_obs=local_obs,
-                global_obs=global_obs,
-                agent_mask=agent_mask,
-                scenario_ids=scenario_ids,
-            )
             return actor_encoder(
                 actor_local_inputs,
                 actor_global_inputs,
@@ -1265,6 +1287,30 @@ class RecurrentTMASACPolicy(TMASACPolicy):
             )
 
         return self._run_with_optional_lstm_compilation(run_actor_encoder)
+
+    def _encode_recurrent_shared_sequence_impl(
+            self,
+            *,
+            local_obs: torch.Tensor,
+            global_obs: torch.Tensor,
+            agent_mask: torch.Tensor | None,
+            time_mask: torch.Tensor | None,
+            initial_state: RMATEncoderState | None,
+            reset_mask: torch.Tensor | None,
+            state_output_indices: torch.Tensor | None = None,
+    ) -> (
+        tuple[torch.Tensor, RMATEncoderState]
+        | tuple[torch.Tensor, RMATEncoderState, RMATEncoderState]
+    ):
+        return self._shared_recurrent_encoder(target=False)(
+            local_obs,
+            global_obs,
+            agent_mask=agent_mask,
+            time_mask=time_mask,
+            initial_state=initial_state,
+            reset_mask=reset_mask,
+            state_output_indices=state_output_indices,
+        )
 
     def _encode_actor_sequence_impl(
             self,
@@ -1305,9 +1351,9 @@ class RecurrentTMASACPolicy(TMASACPolicy):
             raise ValueError(
                 "The recurrent shared encoder does not expose actor-state critic summaries."
             )
-        shared_result = self._shared_recurrent_encoder(target=False)(
-            local_obs,
-            global_obs,
+        shared_result = self._encode_recurrent_shared_sequence_impl(
+            local_obs=local_obs,
+            global_obs=global_obs,
             agent_mask=agent_mask,
             time_mask=time_mask,
             initial_state=initial_state,
@@ -1337,7 +1383,6 @@ class RecurrentTMASACPolicy(TMASACPolicy):
             global_obs: torch.Tensor,
             agent_mask: torch.Tensor | None,
     ) -> torch.Tensor:
-        assert isinstance(self._actor_encoder, MATEncoder)
         if shared_latents.ndim == 3:
             return self._actor_encoder(
                 shared_latents,

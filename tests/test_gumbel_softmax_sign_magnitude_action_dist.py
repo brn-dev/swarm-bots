@@ -83,39 +83,17 @@ class TestGumbelSoftmaxSignMagnitudeActionDist(unittest.TestCase):
 
                 torch.testing.assert_close(actions, torch.full_like(actions, -0.5))
 
-    def test_beta_negative_action_is_negated_magnitude(self) -> None:
-        dist = GumbelSoftmaxSignMagnitudeBetaActionDist(
-            latent_dim=4,
-            action_dim=3,
-            action_net_initialization=_zero_init,
-        )
-        negative_components = torch.full((2, 3), dist._NEGATIVE_INDEX)
-        negative_magnitudes = torch.full((2, 3), 0.2)
+    def test_negative_branch_preserves_legacy_unit_interval_mapping(self) -> None:
+        for dist in _make_distributions():
+            with self.subTest(distribution=type(dist).__name__):
+                negative_components = torch.full((2, 3), dist._NEGATIVE_INDEX)
+                actions = dist._select_actions(
+                    negative_components,
+                    torch.full((2, 3), 0.2),
+                    torch.full((2, 3), 0.7),
+                )
 
-        actions = dist._select_actions(
-            negative_components,
-            negative_magnitudes,
-            torch.full((2, 3), 0.7),
-        )
-
-        torch.testing.assert_close(actions, torch.full((2, 3), -0.2))
-
-    def test_kumaraswamy_negative_action_is_negated_magnitude(self) -> None:
-        dist = GumbelSoftmaxSignMagnitudeKumaraswamyActionDist(
-            latent_dim=4,
-            action_dim=3,
-            action_net_initialization=_zero_init,
-        )
-        negative_components = torch.full((2, 3), dist._NEGATIVE_INDEX)
-        negative_magnitudes = torch.full((2, 3), 0.2)
-
-        actions = dist._select_actions(
-            negative_components,
-            negative_magnitudes,
-            torch.full((2, 3), 0.7),
-        )
-
-        torch.testing.assert_close(actions, torch.full((2, 3), -0.2))
+                torch.testing.assert_close(actions, torch.full((2, 3), -0.8))
 
     def test_deterministic_action_stays_finite_when_shape_logits_saturate(self) -> None:
         for dist in _make_distributions():

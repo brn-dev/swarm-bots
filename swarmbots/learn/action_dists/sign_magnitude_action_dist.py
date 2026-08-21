@@ -213,10 +213,7 @@ class SignMagnitudeActionDist(ActionDist):
         self._assert_ready()
         log_weights = self._component_log_probs(previous_actions)
         negative_mask = actions < 0.0
-        negative_log_probs, positive_log_probs = self._magnitude_log_probs(
-            self._negative_magnitudes_from_actions(actions),
-            actions,
-        )
+        negative_log_probs, positive_log_probs = self._magnitude_log_probs(actions + 1.0, actions)
         log_prob_per_action = torch.where(
             negative_mask,
             log_weights[..., self._NEGATIVE_INDEX] + negative_log_probs,
@@ -278,7 +275,7 @@ class SignMagnitudeActionDist(ActionDist):
             negative_magnitudes: torch.Tensor,
             positive_magnitudes: torch.Tensor,
     ) -> torch.Tensor:
-        negative_actions = self._negative_actions_from_magnitudes(negative_magnitudes)
+        negative_actions = -1.0 + negative_magnitudes
         actions = torch.where(
             component_indices == self._NEGATIVE_INDEX,
             negative_actions,
@@ -287,12 +284,6 @@ class SignMagnitudeActionDist(ActionDist):
         if self._ZERO_INDEX is not None:
             actions = torch.where(component_indices == self._ZERO_INDEX, 0.0, actions)
         return actions
-
-    def _negative_actions_from_magnitudes(self, negative_magnitudes: torch.Tensor) -> torch.Tensor:
-        return -negative_magnitudes
-
-    def _negative_magnitudes_from_actions(self, actions: torch.Tensor) -> torch.Tensor:
-        return -actions
 
     def _sampled_component_log_probs(
             self,

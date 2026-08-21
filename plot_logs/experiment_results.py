@@ -740,6 +740,10 @@ def plot_group_metric(
     return save_figure_variants(figure, output_dir / resolved_output_name, dpis=dpis)
 
 
+def joined_plot_title(base_title: str, *suffixes: str | None) -> str:
+    return " - ".join((base_title, *(suffix for suffix in suffixes if suffix)))
+
+
 def plot_experiment_selection(
     *,
     selection: ExperimentPlotSelection,
@@ -753,6 +757,7 @@ def plot_experiment_selection(
     group_line_width: float,
     group_line_alpha: float,
     colors: dict[str, tuple[float, float, float, float]],
+    title_suffix: str | None = None,
 ) -> list[Path]:
     selected_groups = selected_groups_for_plot_selection(selection, groups)
     selected_group_names = {group.name for group in selected_groups}
@@ -765,7 +770,9 @@ def plot_experiment_selection(
     if selection.output_subdir is not None:
         selection_output_dir /= selection.output_subdir
 
-    title_suffix = f" - {selection.title_suffix or selection.name.replace('_', ' ').title()}"
+    selection_title_suffix = (
+        selection.title_suffix or selection.name.replace("_", " ").title()
+    )
     output_paths: list[Path] = []
     for metric in PLOT_SPECS:
         if not metric_has_finite_values(
@@ -789,7 +796,11 @@ def plot_experiment_selection(
                 group_line_alpha=group_line_alpha,
                 metric=metric,
                 output_name=f"{output_stem}_individual_runs.png",
-                title=f"{metric.title} Per Run{title_suffix}",
+                title=joined_plot_title(
+                    f"{metric.title} Per Run",
+                    title_suffix,
+                    selection_title_suffix,
+                ),
                 colors=colors,
             )
         )
@@ -806,7 +817,11 @@ def plot_experiment_selection(
                 group_line_alpha=group_line_alpha,
                 metric=metric,
                 output_name=f"{output_stem}_grouped.png",
-                title=f"{metric.title} By Group{title_suffix}",
+                title=joined_plot_title(
+                    f"{metric.title} By Group",
+                    title_suffix,
+                    selection_title_suffix,
+                ),
                 colors=colors,
             )
         )
@@ -850,6 +865,7 @@ def plot_experiment_results(
     extra_group_sources: Mapping[str, Sequence[Path]] | None = None,
     main_group_names: Sequence[str] | None = None,
     extra_plot_selections: Sequence[ExperimentPlotSelection] | None = None,
+    title_suffix: str | None = None,
 ) -> ExperimentPlotResult:
     groups = load_experiment_groups(
         experiment_run_dir,
@@ -890,6 +906,7 @@ def plot_experiment_results(
                 group_line_width=group_line_width,
                 group_line_alpha=group_line_alpha,
                 metric=metric,
+                title=joined_plot_title(f"{metric.title} Per Run", title_suffix),
                 colors=colors,
             )
         )
@@ -905,6 +922,7 @@ def plot_experiment_results(
                 group_line_width=group_line_width,
                 group_line_alpha=group_line_alpha,
                 metric=metric,
+                title=joined_plot_title(f"{metric.title} By Group", title_suffix),
                 colors=colors,
             )
         )
@@ -923,6 +941,7 @@ def plot_experiment_results(
                     group_line_width=group_line_width,
                     group_line_alpha=group_line_alpha,
                     colors=colors,
+                    title_suffix=title_suffix,
                 )
             )
     return ExperimentPlotResult(groups=groups, output_paths=output_paths)

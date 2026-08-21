@@ -43,13 +43,11 @@ class ReparameterizedSignMagnitudeKumaraswamyActionDist(SignMagnitudeKumaraswamy
             1.0 - self.epsilon,
         )
 
-        negative_actions = self._negative_actions_from_magnitudes(
-            kumaraswamy_icdf(
-                negative_u,
-                self.negative_a,
-                self.negative_b,
-                epsilon=self.epsilon,
-            )
+        negative_actions = -1.0 + kumaraswamy_icdf(
+            negative_u,
+            self.negative_a,
+            self.negative_b,
+            epsilon=self.epsilon,
         )
         positive_actions = kumaraswamy_icdf(
             positive_u,
