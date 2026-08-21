@@ -283,6 +283,22 @@ def test_thesis_plots_keep_ablations_out_of_main_plot_and_use_pair_comparisons()
         "slstm_two_small_actor_state_critic_no_memory_strength"
     )
 
+    enlarged_selection_names = {
+        "mat_qcx_no_nop",
+        "tmasac_no_nop",
+        "slstm_tmasac_no_nop",
+        "mat_qcx_gsde",
+        "tmasac_predicted_std",
+        "slstm_tmasac_predicted_std",
+    }
+    for selection in thesis_plot_common.THESIS_ABLATION_PLOTS:
+        if selection.name in enlarged_selection_names:
+            assert selection.font_size == 22
+            assert selection.legend_font_size == 24
+        else:
+            assert selection.font_size == 16
+            assert selection.legend_font_size == 18
+
 
 def test_thesis_main_labels_omit_nop_and_nop_ablations_label_both_sides() -> None:
     assert all(

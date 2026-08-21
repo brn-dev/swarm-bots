@@ -43,6 +43,7 @@ GROUP_LINE_ALPHA = 0.8
 THEORETICAL_MAXIMUM_LINE_WIDTH = 1.0
 THEORETICAL_MAXIMUM_COLOR = "#444444"
 THEORETICAL_MAXIMUM_LABEL = "Theoretical maximum"
+PLOT_FONT_SIZE = 16
 LEGEND_FONT_SIZE = 18
 LEGEND_HANDLE_LENGTH = 2.8
 LEGEND_HANDLE_TEXT_PAD = 0.8
@@ -80,6 +81,8 @@ class ExperimentPlotSelection:
     required_group_names: tuple[str, ...] = ()
     output_subdir: str | None = None
     display_name_overrides: Mapping[str, str] | None = None
+    font_size: float = PLOT_FONT_SIZE
+    legend_font_size: float = LEGEND_FONT_SIZE
 
 
 @dataclass(frozen=True, slots=True)
@@ -430,6 +433,7 @@ def add_group_legend(
     theoretical_maximum_line: Line2D | None = None,
     group_line_width: float = GROUP_LINE_WIDTH,
     group_line_alpha: float = GROUP_LINE_ALPHA,
+    legend_font_size: float = LEGEND_FONT_SIZE,
 ) -> None:
     handles = [
         Line2D(
@@ -447,12 +451,21 @@ def add_group_legend(
     axis.legend(
         handles=handles,
         loc="best",
-        fontsize=LEGEND_FONT_SIZE,
+        fontsize=legend_font_size,
         handlelength=LEGEND_HANDLE_LENGTH,
         handletextpad=LEGEND_HANDLE_TEXT_PAD,
         labelspacing=LEGEND_LABEL_SPACING,
         borderpad=LEGEND_BORDER_PAD,
     )
+
+
+def set_axis_font_size(axis: Axes, font_size: float) -> None:
+    axis.title.set_fontsize(font_size * 1.2)
+    axis.xaxis.label.set_fontsize(font_size)
+    axis.yaxis.label.set_fontsize(font_size)
+    axis.tick_params(axis="both", labelsize=font_size)
+    axis.xaxis.get_offset_text().set_fontsize(font_size)
+    axis.yaxis.get_offset_text().set_fontsize(font_size)
 
 
 def dpi_output_path(output_path: Path, dpi: int | None) -> Path:
@@ -535,6 +548,8 @@ def plot_individual_metric(
     output_name: str | None = None,
     title: str | None = None,
     colors: dict[str, tuple[float, float, float, float]] | None = None,
+    font_size: float = PLOT_FONT_SIZE,
+    legend_font_size: float = LEGEND_FONT_SIZE,
 ) -> list[Path]:
     colors = group_colors(groups) if colors is None else colors
     figure, axis = plt.subplots(figsize=(16, 9))
@@ -572,6 +587,7 @@ def plot_individual_metric(
     axis.set_title(title or f"{metric.title} Per Run")
     axis.set_xlabel(x_column)
     axis.set_ylabel(metric.ylabel)
+    set_axis_font_size(axis, font_size)
     axis.grid(alpha=0.25)
     theoretical_maximum_line = add_theoretical_maximum_line(axis, theoretical_maximum)
     add_group_legend(
@@ -581,6 +597,7 @@ def plot_individual_metric(
         theoretical_maximum_line=theoretical_maximum_line,
         group_line_width=group_line_width,
         group_line_alpha=group_line_alpha,
+        legend_font_size=legend_font_size,
     )
     figure.tight_layout()
     resolved_output_name = output_name or f"{metric.output_stem}_individual_runs.png"
@@ -691,6 +708,8 @@ def plot_group_metric(
     output_name: str | None = None,
     title: str | None = None,
     colors: dict[str, tuple[float, float, float, float]] | None = None,
+    font_size: float = PLOT_FONT_SIZE,
+    legend_font_size: float = LEGEND_FONT_SIZE,
 ) -> list[Path]:
     colors = group_colors(groups) if colors is None else colors
     figure, axis = plt.subplots(figsize=(16, 9))
@@ -725,11 +744,12 @@ def plot_group_metric(
     axis.set_title(title or f"{metric.title} By Group")
     axis.set_xlabel(x_column)
     axis.set_ylabel(metric.ylabel)
+    set_axis_font_size(axis, font_size)
     axis.grid(alpha=0.25)
     add_theoretical_maximum_line(axis, theoretical_maximum)
     axis.legend(
         loc="best",
-        fontsize=LEGEND_FONT_SIZE,
+        fontsize=legend_font_size,
         handlelength=LEGEND_HANDLE_LENGTH,
         handletextpad=LEGEND_HANDLE_TEXT_PAD,
         labelspacing=LEGEND_LABEL_SPACING,
@@ -802,6 +822,8 @@ def plot_experiment_selection(
                     selection_title_suffix,
                 ),
                 colors=colors,
+                font_size=selection.font_size,
+                legend_font_size=selection.legend_font_size,
             )
         )
         output_paths.extend(
@@ -823,6 +845,8 @@ def plot_experiment_selection(
                     selection_title_suffix,
                 ),
                 colors=colors,
+                font_size=selection.font_size,
+                legend_font_size=selection.legend_font_size,
             )
         )
     return output_paths
