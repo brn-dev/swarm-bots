@@ -10,6 +10,9 @@ from experiments.thesis_mjw_po_wall_medium import plot_250m_results as po_wall_2
 from experiments.thesis_mjw_po_wall_medium import plot_results as po_wall_plot
 from experiments.thesis_mjw_po_wall_medium.scripts import common as po_wall_common
 from experiments.thesis_mjw_po_wall_medium.scripts import common_250m as po_wall_250m_common
+from experiments.thesis_parallel_env_ablation_po_wall_medium import (
+    plot_results as parallel_env_plot,
+)
 from swarmbots.learn.algos.mat.mat_encoder import (
     MATEncoderConfig,
     resolve_transformer_ff_config,
@@ -301,7 +304,7 @@ def test_thesis_plots_keep_ablations_out_of_main_plot_and_use_pair_comparisons()
 
 
 def test_thesis_group_colors_match_requested_swaps() -> None:
-    assert thesis_plot_common.THESIS_GROUP_COLOR_OVERRIDES == {
+    expected_main_colors = {
         "mappo": "#CC79A7",
         "mat_qcx": "#E69F00",
         "mat_ind": "#009E73",
@@ -309,6 +312,33 @@ def test_thesis_group_colors_match_requested_swaps() -> None:
         "tmasac_baseline": "#0072B2",
         "slstm_two_small_actor_state_critic": "#56B4E9",
     }
+    assert {
+        group_name: thesis_plot_common.THESIS_GROUP_COLOR_OVERRIDES[group_name]
+        for group_name in thesis_plot_common.THESIS_MAIN_GROUP_ORDER
+    } == expected_main_colors
+
+
+def test_every_thesis_variant_has_a_scenario_independent_color() -> None:
+    assert set(thesis_plot_common.THESIS_GROUP_COLOR_OVERRIDES) == set(
+        thesis_plot_common.THESIS_GROUP_ORDER
+    )
+
+
+def test_thesis_ablation_pairs_use_distinct_colors() -> None:
+    colors = thesis_plot_common.THESIS_GROUP_COLOR_OVERRIDES
+    for selection in thesis_plot_common.THESIS_ABLATION_PLOTS:
+        assert len({colors[group_name] for group_name in selection.group_names}) == len(
+            selection.group_names
+        )
+
+
+def test_parallel_env_baseline_keeps_mat_qcx_color() -> None:
+    assert set(parallel_env_plot.GROUP_COLOR_OVERRIDES) == set(
+        parallel_env_plot.GROUP_ORDER
+    )
+    assert parallel_env_plot.GROUP_COLOR_OVERRIDES["mat_qcx_1024x4"] == (
+        thesis_plot_common.THESIS_GROUP_COLOR_OVERRIDES["mat_qcx"]
+    )
 
 
 def test_thesis_main_labels_omit_nop_and_nop_ablations_label_both_sides() -> None:

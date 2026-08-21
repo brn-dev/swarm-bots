@@ -41,6 +41,17 @@ THESIS_GROUP_COLOR_OVERRIDES = {
     "mat_orig": "#D55E00",
     "tmasac_baseline": "#0072B2",
     "slstm_two_small_actor_state_critic": "#56B4E9",
+    "r_mat_ind": "#0072B2",
+    "mat_qcx_gsde": "#CC79A7",
+    "mat_qcx_no_nop": "#000000",
+    "tmasac_baseline_predicted_std": "#E69F00",
+    "tmasac_baseline_no_nop": "#000000",
+    "tmasac_shared_encoder": "#E69F00",
+    "slstm_shared_encoder": "#E69F00",
+    "slstm_two_small_actor_state_critic_predicted_std": "#E69F00",
+    "slstm_two_small_actor_state_critic_no_nop": "#000000",
+    "lstm_two_small_actor_state_critic": "#D55E00",
+    "slstm_two_small_actor_state_critic_no_memory_strength": "#000000",
 }
 THESIS_ABLATION_PLOTS = (
     ExperimentPlotSelection(

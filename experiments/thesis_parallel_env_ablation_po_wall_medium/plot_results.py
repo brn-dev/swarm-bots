@@ -10,7 +10,10 @@ if str(REPO_ROOT) not in sys.path:
 from experiments.thesis_mjw_po_wall_medium.plot_results import (
     EXTRA_GROUP_SOURCES as THESIS_PO_WALL_GROUP_SOURCES,
 )
-from experiments.thesis_plot_common import PO_WALL_MEDIUM_SCENARIO_TITLE
+from experiments.thesis_plot_common import (
+    PO_WALL_MEDIUM_SCENARIO_TITLE,
+    THESIS_GROUP_COLOR_OVERRIDES,
+)
 from plot_logs.experiment_results import plot_experiment_results
 
 EXPERIMENT_RUN_DIR = REPO_ROOT / "runs" / "thesis_parallel_env_ablation_po_wall_medium"
@@ -37,6 +40,13 @@ EXTRA_GROUP_SOURCES = {
     # "mat_ind_1024x4": THESIS_PO_WALL_GROUP_SOURCES["mat_ind"],
     "mat_qcx_1024x4": THESIS_PO_WALL_GROUP_SOURCES["mat_qcx"],
 }
+GROUP_COLOR_OVERRIDES = {
+    "mat_qcx_1024x4": THESIS_GROUP_COLOR_OVERRIDES["mat_qcx"],
+    "mat_qcx_512x8": "#0072B2",
+    "mat_qcx_256x16": "#009E73",
+    "mat_qcx_128x32": "#D55E00",
+    "mat_qcx_64x64": "#CC79A7",
+}
 
 
 def main() -> int:
@@ -46,6 +56,7 @@ def main() -> int:
         group_order=GROUP_ORDER,
         display_name_overrides=DISPLAY_NAME_OVERRIDES,
         extra_group_sources=EXTRA_GROUP_SOURCES,
+        group_color_overrides=GROUP_COLOR_OVERRIDES,
         run_length_limit=100_000_000,
         cut_at_limit=True,
         title_suffix=PO_WALL_MEDIUM_SCENARIO_TITLE,
