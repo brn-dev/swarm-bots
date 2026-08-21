@@ -39,7 +39,6 @@ THESIS_ABLATION_PLOTS = (
         name="mat_qcx_no_nop",
         group_names=("mat_qcx", "mat_qcx_no_nop"),
         required_group_names=("mat_qcx_no_nop",),
-        title_suffix="MAT-QCX NOP Ablation",
         output_subdir="no_nop/mat_qcx",
         display_name_overrides={
             "mat_qcx": "MAT-QCX + NOP",
@@ -52,7 +51,6 @@ THESIS_ABLATION_PLOTS = (
         name="tmasac_no_nop",
         group_names=("tmasac_baseline", "tmasac_baseline_no_nop"),
         required_group_names=("tmasac_baseline_no_nop",),
-        title_suffix="TMASAC NOP Ablation",
         output_subdir="no_nop/tmasac",
         display_name_overrides={
             "tmasac_baseline": "TMASAC + NOP",
@@ -68,7 +66,6 @@ THESIS_ABLATION_PLOTS = (
             "slstm_two_small_actor_state_critic_no_nop",
         ),
         required_group_names=("slstm_two_small_actor_state_critic_no_nop",),
-        title_suffix="sLSTM-TMASAC NOP Ablation",
         output_subdir="no_nop/slstm_tmasac",
         display_name_overrides={
             "slstm_two_small_actor_state_critic": "TMASAC + sLSTM + NOP",
@@ -83,7 +80,6 @@ THESIS_ABLATION_PLOTS = (
         name="tmasac_shared_encoder",
         group_names=("tmasac_baseline", "tmasac_shared_encoder"),
         required_group_names=("tmasac_shared_encoder",),
-        title_suffix="TMASAC Shared Encoder Ablation",
         output_subdir="shared_encoder/tmasac",
         display_name_overrides={
             "tmasac_baseline": "TMASAC, separate encoders",
@@ -97,7 +93,6 @@ THESIS_ABLATION_PLOTS = (
             "slstm_shared_encoder",
         ),
         required_group_names=("slstm_shared_encoder",),
-        title_suffix="sLSTM-TMASAC Shared Encoder Ablation",
         output_subdir="shared_encoder/slstm_tmasac",
         display_name_overrides={
             "slstm_two_small_actor_state_critic": "TMASAC + sLSTM, separate encoders",
@@ -108,7 +103,6 @@ THESIS_ABLATION_PLOTS = (
         name="mat_ind_recurrence",
         group_names=("mat_ind", "r_mat_ind"),
         required_group_names=("r_mat_ind",),
-        title_suffix="MAT-IND Recurrence Ablation",
         output_subdir="recurrence/mat_ind",
         display_name_overrides={
             "mat_ind": "MAT-IND",
@@ -119,7 +113,6 @@ THESIS_ABLATION_PLOTS = (
         name="mat_qcx_gsde",
         group_names=("mat_qcx", "mat_qcx_gsde"),
         required_group_names=("mat_qcx_gsde",),
-        title_suffix="MAT-QCX gSDE",
         output_subdir="gaussian_action_distributions/mat_qcx",
         font_size=SMB_NOP_PLOT_FONT_SIZE,
         legend_font_size=SMB_NOP_LEGEND_FONT_SIZE,
@@ -128,7 +121,6 @@ THESIS_ABLATION_PLOTS = (
         name="tmasac_predicted_std",
         group_names=("tmasac_baseline", "tmasac_baseline_predicted_std"),
         required_group_names=("tmasac_baseline_predicted_std",),
-        title_suffix="TMASAC Predicted Standard Deviation",
         output_subdir="gaussian_action_distributions/tmasac",
         font_size=SMB_NOP_PLOT_FONT_SIZE,
         legend_font_size=SMB_NOP_LEGEND_FONT_SIZE,
@@ -142,7 +134,6 @@ THESIS_ABLATION_PLOTS = (
         required_group_names=(
             "slstm_two_small_actor_state_critic_predicted_std",
         ),
-        title_suffix="sLSTM-TMASAC Predicted Standard Deviation",
         output_subdir="gaussian_action_distributions/slstm_tmasac",
         font_size=SMB_NOP_PLOT_FONT_SIZE,
         legend_font_size=SMB_NOP_LEGEND_FONT_SIZE,
@@ -154,7 +145,6 @@ THESIS_ABLATION_PLOTS = (
             "lstm_two_small_actor_state_critic",
         ),
         required_group_names=("lstm_two_small_actor_state_critic",),
-        title_suffix="TMASAC Temporal Model Ablation",
         output_subdir="temporal_model/tmasac",
     ),
     ExperimentPlotSelection(
@@ -166,7 +156,6 @@ THESIS_ABLATION_PLOTS = (
         required_group_names=(
             "slstm_two_small_actor_state_critic_no_memory_strength",
         ),
-        title_suffix="sLSTM-TMASAC Critic Memory Strength Ablation",
         output_subdir="memory_strength/slstm_tmasac",
     ),
 )
@@ -180,12 +169,12 @@ THESIS_DISPLAY_NAMES = {
     "slstm_two_small_actor_state_critic": "TMASAC + sLSTM",
     "mat_qcx_gsde": "MAT-QCX, gSDE",
     "mat_qcx_no_nop": "MAT-QCX, no NOP",
-    "tmasac_baseline_predicted_std": "TMASAC, predicted std",
+    "tmasac_baseline_predicted_std": "TMASAC, squashed Gaussian",
     "tmasac_baseline_no_nop": "TMASAC, no NOP",
     "tmasac_shared_encoder": "TMASAC, shared encoder",
     "slstm_shared_encoder": "TMASAC + shared sLSTM encoder",
     "slstm_two_small_actor_state_critic_predicted_std": (
-        "TMASAC + sLSTM, predicted std"
+        "TMASAC + sLSTM, squashed Gaussian"
     ),
     "slstm_two_small_actor_state_critic_no_nop": "TMASAC + sLSTM, no NOP",
     "lstm_two_small_actor_state_critic": "TMASAC + LSTM",
