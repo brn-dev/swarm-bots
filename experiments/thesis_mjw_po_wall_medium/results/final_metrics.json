@@ -294,7 +294,7 @@
       }
     },
     "tmasac_baseline_predicted_std": {
-      "display_name": "TMASAC, predicted std",
+      "display_name": "TMASAC, squashed Gaussian",
       "number_of_runs": 5,
       "ep_rew_ema": {
         "number_of_runs": 5,
