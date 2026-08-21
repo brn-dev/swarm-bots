@@ -323,6 +323,15 @@ def test_thesis_main_labels_omit_nop_and_nop_ablations_label_both_sides() -> Non
         )
 
 
+def test_thesis_squashed_gaussian_labels_use_reader_facing_name() -> None:
+    assert thesis_plot_common.THESIS_DISPLAY_NAMES[
+        "tmasac_baseline_predicted_std"
+    ] == "TMASAC, squashed Gaussian"
+    assert thesis_plot_common.THESIS_DISPLAY_NAMES[
+        "slstm_two_small_actor_state_critic_predicted_std"
+    ] == "TMASAC + sLSTM, squashed Gaussian"
+
+
 def test_find_opening_plot_reuses_matching_tmasac_runs() -> None:
     assert find_opening_plot.EXTRA_GROUP_SOURCES == {
         "tmasac_baseline": (
