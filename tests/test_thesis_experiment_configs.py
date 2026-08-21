@@ -304,8 +304,8 @@ def test_thesis_group_colors_match_requested_swaps() -> None:
     assert thesis_plot_common.THESIS_GROUP_COLOR_OVERRIDES == {
         "mappo": "#CC79A7",
         "mat_qcx": "#E69F00",
-        "mat_ind": "#D55E00",
-        "mat_orig": "#009E73",
+        "mat_ind": "#009E73",
+        "mat_orig": "#D55E00",
         "tmasac_baseline": "#0072B2",
         "slstm_two_small_actor_state_critic": "#56B4E9",
     }
