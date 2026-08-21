@@ -332,8 +332,25 @@ def test_thesis_ablation_pairs_use_distinct_colors() -> None:
         )
 
 
+def test_thesis_ablation_colors_do_not_reuse_main_colors() -> None:
+    colors = thesis_plot_common.THESIS_GROUP_COLOR_OVERRIDES
+    main_colors = {
+        colors[group_name]
+        for group_name in thesis_plot_common.THESIS_MAIN_GROUP_ORDER
+    }
+    ablation_colors = {
+        colors[group_name]
+        for group_name in thesis_plot_common.THESIS_GROUP_ORDER
+        if group_name not in thesis_plot_common.THESIS_MAIN_GROUP_ORDER
+    }
+    assert main_colors.isdisjoint(ablation_colors)
+
+
 def test_parallel_env_baseline_keeps_mat_qcx_color() -> None:
     assert set(parallel_env_plot.GROUP_COLOR_OVERRIDES) == set(
+        parallel_env_plot.GROUP_ORDER
+    )
+    assert len(set(parallel_env_plot.GROUP_COLOR_OVERRIDES.values())) == len(
         parallel_env_plot.GROUP_ORDER
     )
     assert parallel_env_plot.GROUP_COLOR_OVERRIDES["mat_qcx_1024x4"] == (
