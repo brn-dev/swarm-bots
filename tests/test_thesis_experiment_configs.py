@@ -230,14 +230,14 @@ def test_po_wall_250m_suite_has_separate_entrypoints_and_plot() -> None:
         po_wall_250m_common.EXPERIMENT_RUN_NAME
     )
     assert po_wall_250m_plot.OUTPUT_DIR.name == "250m"
-    assert po_wall_250m_plot.GROUP_ORDER == ("mappo", "mat_qcx", "mat_ind", "mat_orig")
+    assert po_wall_250m_plot.GROUP_ORDER == ("mappo", "mat_ind", "mat_qcx", "mat_orig")
 
 
 def test_thesis_plots_keep_ablations_out_of_main_plot_and_use_pair_comparisons() -> None:
     assert thesis_plot_common.THESIS_MAIN_GROUP_ORDER == (
         "mappo",
-        "mat_qcx",
         "mat_ind",
+        "mat_qcx",
         "mat_orig",
         "tmasac_baseline",
         "slstm_two_small_actor_state_critic",
@@ -298,6 +298,17 @@ def test_thesis_plots_keep_ablations_out_of_main_plot_and_use_pair_comparisons()
         else:
             assert selection.font_size == 16
             assert selection.legend_font_size == 18
+
+
+def test_thesis_group_colors_match_requested_swaps() -> None:
+    assert thesis_plot_common.THESIS_GROUP_COLOR_OVERRIDES == {
+        "mappo": "#CC79A7",
+        "mat_qcx": "#E69F00",
+        "mat_ind": "#D55E00",
+        "mat_orig": "#009E73",
+        "tmasac_baseline": "#0072B2",
+        "slstm_two_small_actor_state_critic": "#56B4E9",
+    }
 
 
 def test_thesis_main_labels_omit_nop_and_nop_ablations_label_both_sides() -> None:

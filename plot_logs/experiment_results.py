@@ -892,6 +892,7 @@ def plot_experiment_results(
     extra_group_sources: Mapping[str, Sequence[Path]] | None = None,
     main_group_names: Sequence[str] | None = None,
     extra_plot_selections: Sequence[ExperimentPlotSelection] | None = None,
+    group_color_overrides: Mapping[str, str] | None = None,
     title_suffix: str | None = None,
     include_selection_title_suffix: bool = True,
 ) -> ExperimentPlotResult:
@@ -905,6 +906,14 @@ def plot_experiment_results(
     )
     output_dir = output_dir.expanduser().resolve()
     colors = group_colors(groups)
+    if group_color_overrides is not None:
+        colors.update(
+            {
+                group_name: matplotlib.colors.to_rgba(color)
+                for group_name, color in group_color_overrides.items()
+                if group_name in colors
+            }
+        )
     main_groups = (
         groups
         if main_group_names is None

@@ -204,6 +204,43 @@ class ExperimentResultsTests(unittest.TestCase):
             self.assertEqual(call.args[0], [baseline_group])
             self.assertTrue(call.kwargs["title"].endswith(" - PO-Wall (Medium)"))
 
+    def test_plot_experiment_results_applies_group_color_overrides(self) -> None:
+        groups = [SimpleNamespace(name="baseline"), SimpleNamespace(name="variant")]
+
+        with (
+            patch(
+                "plot_logs.experiment_results.load_experiment_groups",
+                return_value=groups,
+            ),
+            patch(
+                "plot_logs.experiment_results.metric_has_finite_values",
+                return_value=True,
+            ),
+            patch(
+                "plot_logs.experiment_results.plot_individual_metric",
+                return_value=[],
+            ) as individual,
+            patch(
+                "plot_logs.experiment_results.plot_group_metric",
+                return_value=[],
+            ) as grouped,
+        ):
+            plot_experiment_results(
+                Path("unused"),
+                Path("unused-output"),
+                group_color_overrides={"baseline": "#CC79A7"},
+            )
+
+        for call in (*individual.call_args_list, *grouped.call_args_list):
+            self.assertEqual(
+                call.kwargs["colors"]["baseline"],
+                (0.8, 0.4745098039215686, 0.6549019607843137, 1.0),
+            )
+            self.assertEqual(
+                call.kwargs["colors"]["variant"],
+                (0.9019607843137255, 0.6235294117647059, 0.0, 1.0),
+            )
+
     def test_load_experiment_groups_ignores_missing_extra_group_source(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp_path = Path(tmp_dir)
