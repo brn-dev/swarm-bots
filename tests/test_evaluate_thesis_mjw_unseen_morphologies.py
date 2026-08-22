@@ -112,7 +112,7 @@ class _FakeEnv:
         actions: torch.Tensor,
     ) -> tuple[dict[str, torch.Tensor], torch.Tensor, torch.Tensor, torch.Tensor, dict[str, object]]:
         assert actions.shape == (2, 3, 2)
-        done_env_idx = self.step_index
+        done_env_idx = (0, 0, 1)[self.step_index]
         dones = torch.zeros((2,), dtype=torch.bool)
         dones[done_env_idx] = True
         stats = {
@@ -133,8 +133,8 @@ def test_serialized_config_uses_json_stable_unit_count_list() -> None:
     config = EvaluationConfig(
         unit_counts=(2, 3),
         pool_size=50,
-        episodes=500,
-        max_parallel_envs=250,
+        episodes=512,
+        max_parallel_envs=512,
         pool_seed_base=1_000_000,
         rollout_seed=2_000_000,
         deterministic=True,
@@ -166,6 +166,7 @@ def test_evaluate_policy_uses_same_step_episode_stats_and_resets_recurrent_rows(
     }
     assert torch.equal(policy.episode_start_masks[0], torch.tensor([True, True]))
     assert torch.equal(policy.episode_start_masks[1], torch.tensor([True, False]))
+    assert torch.equal(policy.episode_start_masks[2], torch.tensor([True, False]))
 
 
 def test_discover_final_checkpoints_selects_latest_final_per_run(tmp_path: Path) -> None:
@@ -206,18 +207,22 @@ def test_make_pool_seeds_is_repeatable_and_disjoint_between_unit_counts() -> Non
 @pytest.mark.parametrize(
     ("episodes", "max_parallel_envs", "expected"),
     [
-        (500, 256, 256),
-        (100, 32, 32),
+        (512, 512, 512),
+        (100, 128, 100),
         (17, 256, 17),
-        (500, 1, 1),
     ],
 )
-def test_resolve_num_envs_uses_available_parallelism_without_exceeding_episode_count(
+def test_resolve_num_envs_uses_one_environment_per_episode(
     episodes: int,
     max_parallel_envs: int,
     expected: int,
 ) -> None:
     assert resolve_num_envs(episodes=episodes, max_parallel_envs=max_parallel_envs) == expected
+
+
+def test_resolve_num_envs_rejects_fewer_environments_than_episodes() -> None:
+    with pytest.raises(ValueError, match="One-episode-per-environment"):
+        resolve_num_envs(episodes=513, max_parallel_envs=512)
 
 
 def test_summarize_episode_metrics_reports_population_statistics() -> None:
