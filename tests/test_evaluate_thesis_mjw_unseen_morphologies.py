@@ -148,6 +148,7 @@ def test_evaluate_policy_uses_same_step_episode_stats_and_resets_recurrent_rows(
         episode_count=2,
         deterministic=True,
         rollout_seed=123,
+        show_progress=False,
     )
 
     assert result["success_rate_percent"] == 50.0

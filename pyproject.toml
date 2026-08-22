@@ -18,6 +18,7 @@ dependencies = [
     "pillow",
     "torch==2.12.1+cu132 ; sys_platform == 'win32' or sys_platform == 'linux'",
     "torch ; sys_platform != 'win32' and sys_platform != 'linux'",
+    "tqdm>=4.68.3",
     "triton-windows>=3.7,<3.8 ; sys_platform == 'win32'",
 ]
 

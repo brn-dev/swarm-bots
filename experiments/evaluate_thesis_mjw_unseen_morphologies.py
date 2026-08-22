@@ -370,8 +370,11 @@ def evaluate_policy(
     episode_count: int,
     deterministic: bool,
     rollout_seed: int,
+    progress_description: str | None = None,
+    show_progress: bool = True,
 ) -> dict[str, object]:
     import torch
+    from tqdm.auto import tqdm
 
     from swarmbots.learn.rollout_utils import append_episode_infos
 
@@ -382,56 +385,72 @@ def evaluate_policy(
         "guidance_reward": [],
         "success": [],
     }
-    policy.eval()
-    torch.manual_seed(rollout_seed)
-    obs, _ = env.reset(seed=rollout_seed)
-    previous_actions = None
-    if policy.requires_previous_actions():
-        previous_actions = torch.zeros(
-            (env.num_envs, env.n_agents, env.action_space.total_agent_action_dim),
+    with tqdm(
+        total=episode_count,
+        desc=progress_description or "Episodes",
+        unit="episode",
+        dynamic_ncols=True,
+        disable=not show_progress,
+    ) as progress:
+        policy.eval()
+        torch.manual_seed(rollout_seed)
+        obs, _ = env.reset(seed=rollout_seed)
+        previous_actions = None
+        if policy.requires_previous_actions():
+            previous_actions = torch.zeros(
+                (env.num_envs, env.n_agents, env.action_space.total_agent_action_dim),
+                device=obs["local_obs"].device,
+                dtype=obs["local_obs"].dtype,
+            )
+        temporal_state = policy.initial_temporal_state(
+            batch_size=env.num_envs,
+            n_agents=env.n_agents,
             device=obs["local_obs"].device,
             dtype=obs["local_obs"].dtype,
         )
-    temporal_state = policy.initial_temporal_state(
-        batch_size=env.num_envs,
-        n_agents=env.n_agents,
-        device=obs["local_obs"].device,
-        dtype=obs["local_obs"].dtype,
-    )
-    episode_start_mask = torch.ones((env.num_envs,), device=obs["local_obs"].device, dtype=torch.bool)
-
-    while len(metrics["success"]) < episode_count:
-        with torch.no_grad():
-            actions, temporal_state = policy.act_with_temporal_state(
-                local_obs=obs["local_obs"],
-                global_obs=obs["global_obs"],
-                hidden_local_vars=obs["hidden_local_vars"],
-                hidden_global_vars=obs["hidden_global_vars"],
-                agent_mask=obs.get("agent_mask"),
-                previous_actions=previous_actions,
-                deterministic=deterministic,
-                temporal_state=temporal_state,
-                episode_start_mask=episode_start_mask,
-            )
-        obs, _rewards, terminations, truncations, infos = env.step(actions)
-        dones = torch.logical_or(terminations, truncations)
-        completed_episode_infos: list[dict[str, Any]] = []
-        append_episode_infos(
-            episode_infos=completed_episode_infos,
-            infos=infos,
-            dones=dones,
+        episode_start_mask = torch.ones(
+            (env.num_envs,),
+            device=obs["local_obs"].device,
+            dtype=torch.bool,
         )
-        episode_start_mask = dones.to(device=obs["local_obs"].device, dtype=torch.bool)
-        if previous_actions is not None:
-            previous_actions = actions.detach().masked_fill(dones[:, None, None], 0.0)
 
-        remaining = episode_count - len(metrics["success"])
-        for episode_info in completed_episode_infos[:remaining]:
-            metrics["episode_return"].append(float(episode_info["r"]))
-            metrics["episode_length"].append(float(episode_info["l"]))
-            metrics["progress_reward"].append(float(episode_info["progress_reward"]))
-            metrics["guidance_reward"].append(float(episode_info["guidance_reward"]))
-            metrics["success"].append(float(episode_info["success"]))
+        while len(metrics["success"]) < episode_count:
+            with torch.no_grad():
+                actions, temporal_state = policy.act_with_temporal_state(
+                    local_obs=obs["local_obs"],
+                    global_obs=obs["global_obs"],
+                    hidden_local_vars=obs["hidden_local_vars"],
+                    hidden_global_vars=obs["hidden_global_vars"],
+                    agent_mask=obs.get("agent_mask"),
+                    previous_actions=previous_actions,
+                    deterministic=deterministic,
+                    temporal_state=temporal_state,
+                    episode_start_mask=episode_start_mask,
+                )
+            obs, _rewards, terminations, truncations, infos = env.step(actions)
+            dones = torch.logical_or(terminations, truncations)
+            completed_episode_infos: list[dict[str, Any]] = []
+            append_episode_infos(
+                episode_infos=completed_episode_infos,
+                infos=infos,
+                dones=dones,
+            )
+            episode_start_mask = dones.to(device=obs["local_obs"].device, dtype=torch.bool)
+            if previous_actions is not None:
+                previous_actions = actions.detach().masked_fill(dones[:, None, None], 0.0)
+
+            remaining = episode_count - len(metrics["success"])
+            accepted_episode_infos = completed_episode_infos[:remaining]
+            for episode_info in accepted_episode_infos:
+                metrics["episode_return"].append(float(episode_info["r"]))
+                metrics["episode_length"].append(float(episode_info["l"]))
+                metrics["progress_reward"].append(float(episode_info["progress_reward"]))
+                metrics["guidance_reward"].append(float(episode_info["guidance_reward"]))
+                metrics["success"].append(float(episode_info["success"]))
+            progress.update(len(accepted_episode_infos))
+            if accepted_episode_infos:
+                success_rate = 100.0 * statistics.fmean(metrics["success"])
+                progress.set_postfix_str(f"success={success_rate:.1f}%", refresh=False)
 
     return summarize_episode_metrics(metrics)
 
@@ -592,6 +611,7 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT_PATH)
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--overwrite", action="store_true")
+    parser.add_argument("--no-progress", action="store_true", help="Disable episode progress bars.")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--po-wall-checkpoint", type=Path, action="append")
     parser.add_argument("--find-opening-checkpoint", type=Path, action="append")
@@ -734,6 +754,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                         episode_count=config.episodes,
                         deterministic=config.deterministic,
                         rollout_seed=config.rollout_seed,
+                        progress_description=f"{target.display_name}, {unit_count} units",
+                        show_progress=not args.no_progress,
                     )
                     result = {
                         "target": target.key,
