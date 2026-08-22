@@ -48,6 +48,7 @@ class EvaluationConfig:
     rollout_seed: int
     deterministic: bool
     episode_length: int
+    unconnected_prob: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -172,13 +173,14 @@ def _target_scenario_kwargs(
     *,
     unit_count: int,
     pool_seeds: tuple[int, ...],
+    unconnected_prob: float = 0.0,
 ) -> dict[str, object]:
     from swarmbots.mjw_env.swarm.mjw_homogeneous_swarm import MJWPreConnectedUnitLocationsConfig
 
     unit_start_locations = MJWPreConnectedUnitLocationsConfig(
         num_units=unit_count,
         num_unit_probs=None,
-        unconnected_prob=0.0,
+        unconnected_prob=unconnected_prob,
         max_radius=1.5,
         z_pos=0.5,
         pool_seeds=pool_seeds,
@@ -211,6 +213,7 @@ def _build_env_and_policy(
     num_envs: int,
     episode_length: int,
     device: Any,
+    unconnected_prob: float = 0.0,
 ) -> tuple[Any, Any]:
     import torch
     from torch import nn
@@ -238,7 +241,12 @@ def _build_env_and_policy(
     from swarmbots.learn.swarmbots_obs_indices import build_obs_indices
 
     configure_float32_matmul_precision()
-    scenario_kwargs = _target_scenario_kwargs(target, unit_count=unit_count, pool_seeds=pool_seeds)
+    scenario_kwargs = _target_scenario_kwargs(
+        target,
+        unit_count=unit_count,
+        pool_seeds=pool_seeds,
+        unconnected_prob=unconnected_prob,
+    )
     vector_env = make_vector_env(
         episode_length=episode_length,
         num_envs=num_envs,
@@ -620,7 +628,10 @@ def _load_resume_payload(
     payload = json.loads(output_path.read_text(encoding="utf-8"))
     if payload.get("schema_version") != RESULT_SCHEMA_VERSION:
         raise ValueError(f"Cannot resume {output_path}: unsupported or missing result schema version")
-    if payload.get("config") != _serialize_config(config):
+    payload_config = payload.get("config")
+    if isinstance(payload_config, dict) and "unconnected_prob" not in payload_config:
+        payload_config = {**payload_config, "unconnected_prob": 0.0}
+    if payload_config != _serialize_config(config):
         raise ValueError(f"Cannot resume {output_path}: its evaluation config differs from this invocation")
     if payload.get("resolved_num_envs") != resolved_num_envs:
         raise ValueError(f"Cannot resume {output_path}: its resolved environment count differs from this invocation")
@@ -635,10 +646,15 @@ def _selected_target_keys(raw_target: str) -> tuple[TargetKey, ...]:
     return (cast(TargetKey, raw_target),)
 
 
-def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
+def _parse_args(
+    argv: Sequence[str] | None = None,
+    *,
+    default_output_path: Path = DEFAULT_OUTPUT_PATH,
+    morphology_description: str = "unseen, fully pre-connected morphologies",
+) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Evaluate thesis TMASAC checkpoints on unseen, fully pre-connected morphologies "
+            f"Evaluate thesis TMASAC checkpoints on {morphology_description} "
             "containing 2 through 10 units, falling back to a run's best checkpoint when final is absent."
         ),
     )
@@ -667,7 +683,7 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--episode-length", type=int, default=512)
     parser.add_argument("--stochastic", action="store_true", help="Sample policy actions instead of using modes.")
     parser.add_argument("--cuda_idx", "--cuda-idx", "--gpu", type=int, default=None)
-    parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT_PATH)
+    parser.add_argument("--output", type=Path, default=default_output_path)
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--no-progress", action="store_true", help="Disable episode progress bars.")
@@ -677,7 +693,13 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def _validate_args(args: argparse.Namespace) -> EvaluationConfig:
+def _validate_args(
+    args: argparse.Namespace,
+    *,
+    unconnected_prob: float = 0.0,
+) -> EvaluationConfig:
+    if not 0.0 <= unconnected_prob <= 1.0:
+        raise ValueError("unconnected_prob must be in [0, 1]")
     unit_counts = tuple(dict.fromkeys(args.unit_counts))
     if not unit_counts or any(count < 2 or count > 20 for count in unit_counts):
         raise ValueError("--unit-counts must contain values in [2, 20]")
@@ -700,12 +722,23 @@ def _validate_args(args: argparse.Namespace) -> EvaluationConfig:
         rollout_seed=args.rollout_seed,
         deterministic=not args.stochastic,
         episode_length=args.episode_length,
+        unconnected_prob=unconnected_prob,
     )
 
 
-def main(argv: Sequence[str] | None = None) -> int:
-    args = _parse_args(argv)
-    config = _validate_args(args)
+def main(
+    argv: Sequence[str] | None = None,
+    *,
+    unconnected_prob: float = 0.0,
+    default_output_path: Path = DEFAULT_OUTPUT_PATH,
+    morphology_description: str = "unseen, fully pre-connected morphologies",
+) -> int:
+    args = _parse_args(
+        argv,
+        default_output_path=default_output_path,
+        morphology_description=morphology_description,
+    )
+    config = _validate_args(args, unconnected_prob=unconnected_prob)
     if args.resume and args.overwrite:
         raise ValueError("--resume and --overwrite are mutually exclusive")
     targets = [TARGETS[key] for key in _selected_target_keys(args.target)]
@@ -808,6 +841,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     num_envs=num_envs,
                     episode_length=config.episode_length,
                     device=device,
+                    unconnected_prob=config.unconnected_prob,
                 )
                 try:
                     print(f"Evaluating {checkpoint}...")

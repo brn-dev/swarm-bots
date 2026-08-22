@@ -47,6 +47,7 @@ class RecordingConfig:
     width: int
     height: int
     camera: int | str
+    unconnected_prob: float = 0.0
 
 
 def _safe_path_component(value: str) -> str:
@@ -81,10 +82,15 @@ def _parse_camera(value: str) -> int | str:
         return value
 
 
-def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
+def _parse_args(
+    argv: Sequence[str] | None = None,
+    *,
+    default_output_root: Path = DEFAULT_OUTPUT_ROOT,
+    morphology_description: str = "unseen, fully pre-connected morphologies",
+) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Record thesis TMASAC checkpoints on unseen, fully pre-connected morphologies "
+            f"Record thesis TMASAC checkpoints on {morphology_description} "
             "containing 2 through 10 agents."
         ),
     )
@@ -123,7 +129,7 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--height", type=int, default=DEFAULT_RECORDING_HEIGHT)
     parser.add_argument("--camera", type=_parse_camera, default=-1)
     parser.add_argument("--cuda_idx", "--cuda-idx", "--gpu", type=int, default=None)
-    parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT_ROOT)
+    parser.add_argument("--output", type=Path, default=default_output_root)
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--no-progress", action="store_true", help="Disable episode progress bars.")
     parser.add_argument("--dry-run", action="store_true")
@@ -132,7 +138,13 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def _validate_args(args: argparse.Namespace) -> RecordingConfig:
+def _validate_args(
+    args: argparse.Namespace,
+    *,
+    unconnected_prob: float = 0.0,
+) -> RecordingConfig:
+    if not 0.0 <= unconnected_prob <= 1.0:
+        raise ValueError("unconnected_prob must be in [0, 1]")
     unit_counts = tuple(dict.fromkeys(args.unit_counts))
     if not unit_counts or any(count < 2 or count > 20 for count in unit_counts):
         raise ValueError("--unit-counts must contain values in [2, 20]")
@@ -167,6 +179,7 @@ def _validate_args(args: argparse.Namespace) -> RecordingConfig:
         width=args.width,
         height=args.height,
         camera=args.camera,
+        unconnected_prob=unconnected_prob,
     )
 
 
@@ -215,9 +228,19 @@ def _start_recording(
     )
 
 
-def main(argv: Sequence[str] | None = None) -> int:
-    args = _parse_args(argv)
-    config = _validate_args(args)
+def main(
+    argv: Sequence[str] | None = None,
+    *,
+    unconnected_prob: float = 0.0,
+    default_output_root: Path = DEFAULT_OUTPUT_ROOT,
+    morphology_description: str = "unseen, fully pre-connected morphologies",
+) -> int:
+    args = _parse_args(
+        argv,
+        default_output_root=default_output_root,
+        morphology_description=morphology_description,
+    )
+    config = _validate_args(args, unconnected_prob=unconnected_prob)
     targets = [TARGETS[key] for key in _selected_target_keys(args.target)]
     checkpoints_by_target = {
         target.key: resolve_target_checkpoints(args, target)
@@ -287,6 +310,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     num_envs=config.episodes_per_combination,
                     episode_length=config.episode_length,
                     device=device,
+                    unconnected_prob=config.unconnected_prob,
                 )
                 try:
                     _load_checkpoint(checkpoint_path=checkpoint, env=env, policy=policy)
