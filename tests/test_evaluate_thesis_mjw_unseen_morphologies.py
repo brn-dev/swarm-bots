@@ -6,6 +6,7 @@ import torch
 
 from experiments.evaluate_thesis_mjw_unseen_morphologies import (
     EvaluationConfig,
+    _align_torch_compile_state_dict_keys,
     _serialize_config,
     discover_final_checkpoints,
     evaluate_policy,
@@ -13,6 +14,42 @@ from experiments.evaluate_thesis_mjw_unseen_morphologies import (
     resolve_num_envs,
     summarize_episode_metrics,
 )
+
+
+def test_align_torch_compile_state_dict_keys_loads_legacy_compiled_modules_strictly() -> None:
+    target = torch.nn.ModuleDict(
+        {
+            "actor": torch.nn.Linear(3, 2),
+            "critic_nop": torch.nn.ModuleDict({"transition_model": torch.nn.Linear(2, 1)}),
+        }
+    )
+    expected = {key: value.detach().clone() for key, value in target.state_dict().items()}
+    legacy_compiled = {
+        key.replace("actor.", "actor._orig_mod.").replace(
+            "critic_nop.transition_model.",
+            "critic_nop.transition_model._orig_mod.",
+        ): value
+        for key, value in expected.items()
+    }
+
+    aligned = _align_torch_compile_state_dict_keys(
+        legacy_compiled,
+        target_keys=target.state_dict().keys(),
+    )
+
+    assert aligned.keys() == expected.keys()
+    target.load_state_dict(aligned, strict=True)
+
+
+def test_align_torch_compile_state_dict_keys_rejects_ambiguous_checkpoint_keys() -> None:
+    with pytest.raises(ValueError, match="ambiguous torch.compile state-dict keys"):
+        _align_torch_compile_state_dict_keys(
+            {
+                "actor.weight": torch.zeros(1),
+                "actor._orig_mod.weight": torch.zeros(1),
+            },
+            target_keys=("actor.weight",),
+        )
 
 
 def _fake_obs() -> dict[str, torch.Tensor]:
