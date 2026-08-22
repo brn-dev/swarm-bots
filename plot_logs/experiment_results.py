@@ -15,12 +15,14 @@ import matplotlib.pyplot as plt
 from matplotlib.axes import Axes
 from matplotlib.figure import Figure
 from matplotlib.lines import Line2D
+from matplotlib.ticker import FuncFormatter
 
 from plot_logs.plot_logs import is_supported_log_path, open_log_text, parse_scalar, parse_x_value
 
 
 DEFAULT_X_COLUMN = "timesteps"
-X_AXIS_LABEL = "Environment steps"
+X_AXIS_LABEL = "Environment steps (millions)"
+ENVIRONMENT_STEPS_SCALE = 1_000_000
 EP_REW_EMA_COLUMN = "ep_rew_ema"
 EP_SUCCESS_RATE_EMA_COLUMN = "ep_success_rate_ema"
 DEFAULT_DPIS = [200]
@@ -469,6 +471,13 @@ def set_axis_font_size(axis: Axes, font_size: float) -> None:
     axis.yaxis.get_offset_text().set_fontsize(font_size)
 
 
+def set_environment_steps_axis(axis: Axes) -> None:
+    axis.set_xlabel(X_AXIS_LABEL)
+    axis.xaxis.set_major_formatter(
+        FuncFormatter(lambda value, _position: f"{value / ENVIRONMENT_STEPS_SCALE:g}")
+    )
+
+
 def dpi_output_path(output_path: Path, dpi: int | None) -> Path:
     dpi_text = f"_dpi{dpi}" if dpi else ""
     return output_path.with_name(f"{output_path.stem}{dpi_text}{output_path.suffix}")
@@ -586,7 +595,7 @@ def plot_individual_metric(
                     )
 
     axis.set_title(title or f"{metric.title} Per Run")
-    axis.set_xlabel(X_AXIS_LABEL)
+    set_environment_steps_axis(axis)
     axis.set_ylabel(metric.ylabel)
     set_axis_font_size(axis, font_size)
     axis.grid(alpha=0.25)
@@ -743,7 +752,7 @@ def plot_group_metric(
             )
 
     axis.set_title(title or f"{metric.title} By Group")
-    axis.set_xlabel(X_AXIS_LABEL)
+    set_environment_steps_axis(axis)
     axis.set_ylabel(metric.ylabel)
     set_axis_font_size(axis, font_size)
     axis.grid(alpha=0.25)
