@@ -34,6 +34,7 @@ class EvaluationTarget:
     scenario_name: Literal["wall", "find_opening"]
     tmasac_variant: Literal["tmasac_baseline", "slstm_two_small_actor_state_critic"]
     checkpoint_group_dirs: tuple[Path, ...]
+    include_slstm_memory_strength: bool = False
 
 
 @dataclass(frozen=True)
@@ -85,6 +86,7 @@ TARGETS: dict[TargetKey, EvaluationTarget] = {
             / "mjw_find_opening_tmasac"
             / "slstm_two_small_actor_state_critic",
         ),
+        include_slstm_memory_strength=True,
     ),
 }
 
@@ -284,7 +286,7 @@ def _build_env_and_policy(
             ActorStateCriticInputConfig(
                 projection_dim=ACTOR_D_MODEL,
                 projection_hidden_dims=(ACTOR_D_MODEL,),
-                include_slstm_memory_strength=False,
+                include_slstm_memory_strength=target.include_slstm_memory_strength,
             )
             if is_recurrent
             else None
