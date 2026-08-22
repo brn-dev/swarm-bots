@@ -106,7 +106,7 @@ SUCCESS_RATE_EMA_PLOT = MetricPlotSpec(
     column=EP_SUCCESS_RATE_EMA_COLUMN,
     output_stem=EP_SUCCESS_RATE_EMA_COLUMN,
     title="Episode Success Rate EMA",
-    ylabel="Success rate EMA",
+    ylabel="Success rate EMA (%)",
 )
 PLOT_SPECS: tuple[MetricPlotSpec, ...] = (
     RETURN_EMA_PLOT,
