@@ -6,6 +6,7 @@ import json
 import re
 import statistics
 import sys
+from collections.abc import Iterable, Mapping
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -321,9 +322,45 @@ def _load_checkpoint(*, checkpoint_path: Path, env: Any, policy: Any) -> None:
     )
 
     checkpoint = load_checkpoint(checkpoint_path, map_location="cpu")
-    policy.load_state_dict(extract_policy_state_dict(checkpoint), strict=True)
+    policy_state_dict = _align_torch_compile_state_dict_keys(
+        extract_policy_state_dict(checkpoint),
+        target_keys=policy.state_dict().keys(),
+    )
+    policy.load_state_dict(policy_state_dict, strict=True)
     apply_env_state(env, extract_env_state(checkpoint))
     freeze_env_normalization(env)
+
+
+def _align_torch_compile_state_dict_keys(
+    state_dict: Mapping[str, Any],
+    *,
+    target_keys: Iterable[str],
+) -> dict[str, Any]:
+    def canonical_key(key: str) -> str:
+        return ".".join(part for part in key.split(".") if part != "_orig_mod")
+
+    target_by_canonical_key: dict[str, str] = {}
+    for target_key in target_keys:
+        canonical = canonical_key(target_key)
+        previous = target_by_canonical_key.setdefault(canonical, target_key)
+        if previous != target_key:
+            raise ValueError(
+                "Target policy has ambiguous torch.compile state-dict keys: "
+                f"{previous!r} and {target_key!r}"
+            )
+
+    aligned: dict[str, Any] = {}
+    source_by_target_key: dict[str, str] = {}
+    for source_key, value in state_dict.items():
+        target_key = target_by_canonical_key.get(canonical_key(source_key), source_key)
+        previous_source = source_by_target_key.setdefault(target_key, source_key)
+        if previous_source != source_key:
+            raise ValueError(
+                "Checkpoint has ambiguous torch.compile state-dict keys: "
+                f"{previous_source!r} and {source_key!r} both map to {target_key!r}"
+            )
+        aligned[target_key] = value
+    return aligned
 
 
 def evaluate_policy(
