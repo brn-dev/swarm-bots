@@ -116,7 +116,12 @@ def make_pool_seeds(*, pool_seed_base: int, unit_count: int, pool_size: int) -> 
 
 
 def resolve_num_envs(*, episodes: int, max_parallel_envs: int) -> int:
-    return min(episodes, max_parallel_envs)
+    if episodes > max_parallel_envs:
+        raise ValueError(
+            "One-episode-per-environment evaluation requires --max-parallel-envs "
+            f"({max_parallel_envs}) to be at least --episodes ({episodes})"
+        )
+    return episodes
 
 
 def summarize_values(values: Sequence[float]) -> MetricSummary:
@@ -380,6 +385,11 @@ def evaluate_policy(
 
     from swarmbots.learn.rollout_utils import append_episode_infos
 
+    if episode_count != env.num_envs:
+        raise ValueError(
+            "One-episode-per-environment evaluation requires episode_count "
+            f"({episode_count}) to equal env.num_envs ({env.num_envs})"
+        )
     metrics = {
         "episode_return": [],
         "episode_length": [],
@@ -415,6 +425,7 @@ def evaluate_policy(
             device=obs["local_obs"].device,
             dtype=torch.bool,
         )
+        completed_envs = [False] * env.num_envs
 
         while len(metrics["success"]) < episode_count:
             with torch.no_grad():
@@ -431,18 +442,32 @@ def evaluate_policy(
                 )
             obs, _rewards, terminations, truncations, infos = env.step(actions)
             dones = torch.logical_or(terminations, truncations)
+            completed_env_indices = torch.nonzero(dones, as_tuple=False).flatten().tolist()
             completed_episode_infos: list[dict[str, Any]] = []
             append_episode_infos(
                 episode_infos=completed_episode_infos,
                 infos=infos,
                 dones=dones,
             )
+            if len(completed_episode_infos) != len(completed_env_indices):
+                raise RuntimeError(
+                    "Episode statistics count does not match the number of completed environments"
+                )
             episode_start_mask = dones.to(device=obs["local_obs"].device, dtype=torch.bool)
             if previous_actions is not None:
                 previous_actions = actions.detach().masked_fill(dones[:, None, None], 0.0)
 
-            remaining = episode_count - len(metrics["success"])
-            accepted_episode_infos = completed_episode_infos[:remaining]
+            accepted_episode_infos = []
+            for env_idx, episode_info in zip(
+                completed_env_indices,
+                completed_episode_infos,
+                strict=True,
+            ):
+                if completed_envs[env_idx]:
+                    continue
+                completed_envs[env_idx] = True
+                accepted_episode_infos.append(episode_info)
+
             for episode_info in accepted_episode_infos:
                 metrics["episode_return"].append(float(episode_info["r"]))
                 metrics["episode_length"].append(float(episode_info["l"]))
@@ -601,10 +626,15 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--episodes",
         type=int,
-        default=500,
-        help="Complete episodes per unit-count/checkpoint (default: 500).",
+        default=512,
+        help="Episodes and parallel environment lanes per unit-count/checkpoint (default: 512).",
     )
-    parser.add_argument("--max-parallel-envs", type=int, default=256)
+    parser.add_argument(
+        "--max-parallel-envs",
+        type=int,
+        default=512,
+        help="Safety cap for parallel lanes; must be at least --episodes (default: 512).",
+    )
     parser.add_argument("--pool-seed-base", type=int, default=1_000_000)
     parser.add_argument("--rollout-seed", type=int, default=2_000_000)
     parser.add_argument("--episode-length", type=int, default=512)
