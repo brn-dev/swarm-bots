@@ -625,7 +625,13 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
             if options is None or "reset_mask" not in options
             else to_device_bool_tensor(options["reset_mask"], device=self.device, expected_shape=(self.num_envs,))
         )
-        if self._should_use_initial_settled_reset(reset_mask):
+        force_settled = bool(options is not None and options.get("force_settled", False))
+        if force_settled and not bool(torch.all(reset_mask)):
+            raise ValueError("force_settled requires resetting every MJW environment.")
+        if force_settled and self._use_settled_resets:
+            self._reset_worlds_with_settled_snapshots(reset_mask)
+            self._initial_settled_reset_done = True
+        elif self._should_use_initial_settled_reset(reset_mask):
             self._reset_worlds_with_settled_snapshots(reset_mask)
             self._initial_settled_reset_done = True
         else:

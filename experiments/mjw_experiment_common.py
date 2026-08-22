@@ -89,7 +89,14 @@ from swarmbots.learn.algos.world_modeling.next_obs_pred_mixin import NextObsPred
 from swarmbots.learn.algos.world_modeling.next_obs_pred_ppo_wrapper import NOPWorldModelConfig, NextObsPredWrapper
 from swarmbots.learn.algos.world_modeling.ppo_wm_sampler import PPOWMSamplerConfig
 from swarmbots.learn.discord_notifications import run_with_discord_notification
+from swarmbots.learn.evaluation import (
+    DEFAULT_EVALUATION_MILESTONES,
+    EvaluationRecordingConfig,
+    FrozenEvaluationRunner,
+    ScheduledEvaluationHook,
+)
 from swarmbots.learn.gsde_reset import GSDEProbabilityResetMode
+from swarmbots.learn.metrics_logger import MetricsLogger
 from swarmbots.learn.nn_components.activations import ActivationFactory, activation_factory_name
 from swarmbots.learn.nn_components.nn_init import make_init_linear_orthogonal
 from swarmbots.learn.obs_indices import ObsIndices
@@ -592,6 +599,12 @@ def run_experiment(
         sac_temporal_state_storage_dtype: torch.dtype | None = None,
         sac_max_truncations_per_segment: int = 1,
         bernoulli_initial_prob: float = 0.8,
+        evaluation_num_envs: int = 256,
+        evaluation_episodes_per_env: int = 1,
+        evaluation_milestones: Sequence[float] = DEFAULT_EVALUATION_MILESTONES,
+        evaluation_seed: int = 1_000_000,
+        evaluation_deterministic: bool = True,
+        evaluation_recording_episodes: int = 5,
 ) -> None:
     from swarmbots.learn.torch_logging import enable_torch_compile_logging
 
@@ -620,6 +633,21 @@ def run_experiment(
         raise ValueError(f"n_epochs must be > 0, got {n_epochs}")
     if total_timesteps <= 0:
         raise ValueError(f"total_timesteps must be > 0, got {total_timesteps}")
+    if evaluation_num_envs <= 0:
+        raise ValueError(f"evaluation_num_envs must be > 0, got {evaluation_num_envs}")
+    if evaluation_episodes_per_env <= 0:
+        raise ValueError(
+            f"evaluation_episodes_per_env must be > 0, got {evaluation_episodes_per_env}"
+        )
+    if evaluation_recording_episodes < 0:
+        raise ValueError(
+            f"evaluation_recording_episodes must be >= 0, got {evaluation_recording_episodes}"
+        )
+    evaluation_milestones = tuple(float(milestone) for milestone in evaluation_milestones)
+    if any(milestone < 0 or milestone > 100 for milestone in evaluation_milestones):
+        raise ValueError(
+            f"evaluation_milestones must contain percentages in [0, 100], got {evaluation_milestones}"
+        )
     if rmat_actor_d_model is not None and rmat_actor_d_model <= 0:
         raise ValueError(f"rmat_actor_d_model must be > 0, got {rmat_actor_d_model}")
     if tmasac_shared_encoder_num_layers is not None and tmasac_shared_encoder_num_layers <= 0:
@@ -1129,6 +1157,61 @@ def run_experiment(
         schedule=DEFAULT_LIVE_RECORDING_SCHEDULE,
     )
 
+    def make_evaluation_env() -> Any:
+        evaluation_vector_env = make_vector_env(
+            episode_length=episode_length,
+            num_envs=evaluation_num_envs,
+            first_episode_lengths=None,
+            settle_initial_reset=True,
+            device=rollout_device,
+            scenario_name=scenario_name,
+            ccd_iterations=ccd_iterations,
+            scenario_kwargs=scenario_kwargs,
+            compile_env_tensor_operations=compile_env_tensor_operations,
+            env_tensor_operations_compile_mode=env_tensor_operations_compile_mode,
+        )
+        return wrap_vec_env(
+            vector_env=evaluation_vector_env,
+            obs_indices=obs_indices,
+            gamma=gamma,
+            use_popart=use_popart,
+            rollout_device=rollout_device,
+            normalize_prev_binary_actions=mat_normalization.normalize_prev_binary_actions,
+            use_transition_obs=use_transition_obs,
+            shuffle_agents=shuffle_agents,
+            preserve_inactive_prefix_structure=preserve_inactive_prefix_structure,
+        )
+
+    evaluation_runner = FrozenEvaluationRunner(
+        make_env=make_evaluation_env,
+        training_env=env,
+        policy=policy,
+        episodes_per_env=evaluation_episodes_per_env,
+        seed=evaluation_seed,
+        deterministic=evaluation_deterministic,
+        recording_config=EvaluationRecordingConfig(num_episodes=evaluation_recording_episodes),
+        video_folder=run_dir / "videos" / "eval",
+    )
+    evaluation_metrics_logger = MetricsLogger(
+        log_dir=run_dir,
+        filename="eval_log.csv",
+        console_keys=[
+            ("timesteps", None),
+            ("eval_milestone_pct", ".1f", "eval_pct"),
+            ("eval_ep_rew", SummaryStatisticsFormat(mean=" .2f", std=".2f", n="1")),
+            ("eval_success_rate", "5.2f", "eval_success_pct"),
+            ("eval_duration", ".1f", "eval_seconds"),
+        ],
+        buffer_size=1,
+    )
+    scheduled_evaluation_hook = ScheduledEvaluationHook(
+        algorithm=algorithm,
+        total_timesteps=total_timesteps,
+        milestones=evaluation_milestones,
+        runner=evaluation_runner,
+        metrics_logger=evaluation_metrics_logger,
+    )
+
     print("Starting training...")
     logging_console_keys: list[
         tuple[str, str | SummaryStatisticsFormat | None] | tuple[str, str | SummaryStatisticsFormat | None, str]
@@ -1212,6 +1295,12 @@ def run_experiment(
         "algorithm_variant": "sac" if sac_policy else "ppo",
         "policy_variant": policy_variant,
         "recording_enabled": "live_mjw_exact_state",
+        "evaluation_num_envs": evaluation_num_envs,
+        "evaluation_episodes_per_env": evaluation_episodes_per_env,
+        "evaluation_milestones": list(evaluation_milestones),
+        "evaluation_seed": evaluation_seed,
+        "evaluation_deterministic": evaluation_deterministic,
+        "evaluation_recording_episodes": evaluation_recording_episodes,
         "rollout_samples": rollout_samples,
         "rollout_steps_per_env": rollout_steps_per_env,
         "total_timesteps": total_timesteps,
@@ -1308,25 +1397,28 @@ def run_experiment(
                     "sac_temporal_state_storage_dtype": str(sac_temporal_state_storage_dtype),
                 }
             )
-    _run_training_with_notification_and_close(
-        env=env,
-        run_name=f"{experiment_run_name}/{variant_name}/{run_id}",
-        run_dir=str(run_dir),
-        total_timesteps=total_timesteps,
-        algorithm=algorithm,
-        run=lambda: algorithm.learn(
-            max_total_timesteps=total_timesteps,
+    try:
+        _run_training_with_notification_and_close(
+            env=env,
+            run_name=f"{experiment_run_name}/{variant_name}/{run_id}",
             run_dir=str(run_dir),
-            log_interval=1,
-            logging_buffer_size=logging_buffer_size,
-            save_interval=save_interval,
-            save_optimizer=save_optimizer,
-            best_rotation_n=1,
-            extra_run_metadata=extra_run_metadata,
-            logging_console_keys=logging_console_keys,
-            post_iteration_hooks=[scheduled_recording_hook],
-        ),
-    )
+            total_timesteps=total_timesteps,
+            algorithm=algorithm,
+            run=lambda: algorithm.learn(
+                max_total_timesteps=total_timesteps,
+                run_dir=str(run_dir),
+                log_interval=1,
+                logging_buffer_size=logging_buffer_size,
+                save_interval=save_interval,
+                save_optimizer=save_optimizer,
+                best_rotation_n=1,
+                extra_run_metadata=extra_run_metadata,
+                logging_console_keys=logging_console_keys,
+                post_iteration_hooks=[scheduled_recording_hook, scheduled_evaluation_hook],
+            ),
+        )
+    finally:
+        scheduled_evaluation_hook.close()
 
     print("Training Finished.")
 

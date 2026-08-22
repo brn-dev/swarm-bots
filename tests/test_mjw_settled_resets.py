@@ -428,6 +428,31 @@ def test_mjw_reset_with_seed_clears_settled_buffer_before_reseeding() -> None:
     assert runtime.raw_reset_calls == [([0, 1, 2, 3], ["sample-0-0", "sample-0-1", "sample-0-2", "sample-0-3"])]
 
 
+def test_mjw_force_settled_reset_repeats_settling_after_initial_reset() -> None:
+    env, runtime = _make_uninitialized_env(use_settled_resets=True)
+    env._settled_reset_buffer = None
+    env._initial_settled_reset_done = True
+    env.settle_initial_reset = True
+    env._build_obs = lambda: {"obs": torch.empty((env.num_envs, 0))}
+
+    env.reset(seed=999, options={"force_settled": True})
+
+    assert runtime.settled_specs == [[
+        "spec-sample-0-0",
+        "spec-sample-0-1",
+        "spec-sample-0-2",
+        "spec-sample-0-3",
+    ]]
+    assert runtime.settled_reset_calls == [
+        ([0, 1, 2, 3], [
+            "settled-spec-sample-0-0",
+            "settled-spec-sample-0-1",
+            "settled-spec-sample-0-2",
+            "settled-spec-sample-0-3",
+        ])
+    ]
+
+
 def test_mjw_close_clears_settled_buffer_without_waiting_then_shuts_down_executor() -> None:
     env, _runtime = _make_uninitialized_env(use_settled_resets=True)
     buffer = _FakeSettledResetBuffer()
