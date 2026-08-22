@@ -6,6 +6,7 @@ import torch
 
 from experiments.evaluate_thesis_mjw_unseen_morphologies import (
     EvaluationConfig,
+    TARGETS,
     _align_torch_compile_state_dict_keys,
     _serialize_config,
     discover_final_checkpoints,
@@ -14,6 +15,11 @@ from experiments.evaluate_thesis_mjw_unseen_morphologies import (
     resolve_num_envs,
     summarize_episode_metrics,
 )
+
+
+def test_find_opening_slstm_target_includes_memory_strength_features() -> None:
+    assert TARGETS["find_opening_slstm_tmasac"].include_slstm_memory_strength
+    assert not TARGETS["po_wall_tmasac"].include_slstm_memory_strength
 
 
 def test_align_torch_compile_state_dict_keys_loads_legacy_compiled_modules_strictly() -> None:
