@@ -149,6 +149,11 @@ def test_serialized_config_uses_json_stable_unit_count_list() -> None:
 def test_evaluate_policy_uses_same_step_episode_stats_and_resets_recurrent_rows() -> None:
     env = _FakeEnv()
     policy = _FakePolicy()
+    reset_callback_calls = 0
+
+    def on_reset() -> None:
+        nonlocal reset_callback_calls
+        reset_callback_calls += 1
 
     result = evaluate_policy(
         env=env,
@@ -157,8 +162,10 @@ def test_evaluate_policy_uses_same_step_episode_stats_and_resets_recurrent_rows(
         deterministic=True,
         rollout_seed=123,
         show_progress=False,
+        on_reset=on_reset,
     )
 
+    assert reset_callback_calls == 1
     assert result["success_rate_percent"] == 50.0
     assert result["episode_return"] == {
         "mean": 2.0,
