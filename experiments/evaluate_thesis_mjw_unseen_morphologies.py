@@ -730,6 +730,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             ]
             if not pending_checkpoints:
                 continue
+            # Static-shape compilation intentionally specializes each morphology. Reset Dynamo's
+            # per-code-object cache so those expected specializations do not accumulate to its
+            # global recompile limit across the 2--10 unit sweep.
+            torch.compiler.reset()
             pool_seeds = make_pool_seeds(
                 pool_seed_base=config.pool_seed_base,
                 unit_count=unit_count,
