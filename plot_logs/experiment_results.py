@@ -20,6 +20,7 @@ from plot_logs.plot_logs import is_supported_log_path, open_log_text, parse_scal
 
 
 DEFAULT_X_COLUMN = "timesteps"
+X_AXIS_LABEL = "Environment steps"
 EP_REW_EMA_COLUMN = "ep_rew_ema"
 EP_SUCCESS_RATE_EMA_COLUMN = "ep_success_rate_ema"
 DEFAULT_DPIS = [200]
@@ -97,13 +98,13 @@ RETURN_EMA_PLOT = MetricPlotSpec(
     column=EP_REW_EMA_COLUMN,
     output_stem="ep_rew_ema",
     title="Episode Reward EMA",
-    ylabel=EP_REW_EMA_COLUMN,
+    ylabel="Episode return EMA",
 )
 SUCCESS_RATE_EMA_PLOT = MetricPlotSpec(
     column=EP_SUCCESS_RATE_EMA_COLUMN,
     output_stem=EP_SUCCESS_RATE_EMA_COLUMN,
     title="Episode Success Rate EMA",
-    ylabel="Success rate (%)",
+    ylabel="Success rate EMA",
 )
 PLOT_SPECS: tuple[MetricPlotSpec, ...] = (
     RETURN_EMA_PLOT,
@@ -585,7 +586,7 @@ def plot_individual_metric(
                     )
 
     axis.set_title(title or f"{metric.title} Per Run")
-    axis.set_xlabel(x_column)
+    axis.set_xlabel(X_AXIS_LABEL)
     axis.set_ylabel(metric.ylabel)
     set_axis_font_size(axis, font_size)
     axis.grid(alpha=0.25)
@@ -742,7 +743,7 @@ def plot_group_metric(
             )
 
     axis.set_title(title or f"{metric.title} By Group")
-    axis.set_xlabel(x_column)
+    axis.set_xlabel(X_AXIS_LABEL)
     axis.set_ylabel(metric.ylabel)
     set_axis_font_size(axis, font_size)
     axis.grid(alpha=0.25)
