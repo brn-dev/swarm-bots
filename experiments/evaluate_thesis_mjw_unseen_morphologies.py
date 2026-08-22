@@ -23,6 +23,7 @@ DEFAULT_UNIT_COUNTS = tuple(range(2, 11))
 POOL_SEED_UNIT_STRIDE = 100_000
 RESULT_SCHEMA_VERSION = 1
 FINAL_CHECKPOINT_PATTERN = re.compile(r"^model_(?P<steps>\d+)_steps_final\.pt$")
+BEST_CHECKPOINT_NAME = "model_best.pt"
 
 TargetKey = Literal["po_wall_tmasac", "find_opening_slstm_tmasac"]
 
@@ -91,7 +92,15 @@ TARGETS: dict[TargetKey, EvaluationTarget] = {
 }
 
 
-def discover_final_checkpoints(group_dirs: Sequence[Path]) -> list[Path]:
+def _best_checkpoint_timesteps(checkpoint_path: Path) -> int:
+    metadata_path = Path(f"{checkpoint_path}.json")
+    if not metadata_path.is_file():
+        return -1
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    return int(metadata.get("n_total_timesteps", -1))
+
+
+def discover_evaluation_checkpoints(group_dirs: Sequence[Path]) -> list[Path]:
     checkpoints: list[Path] = []
     for group_dir in group_dirs:
         if not group_dir.is_dir():
@@ -105,6 +114,16 @@ def discover_final_checkpoints(group_dirs: Sequence[Path]) -> list[Path]:
             ]
             if candidates:
                 checkpoints.append(max(candidates, key=lambda item: (item[0], item[1].name))[1].resolve())
+                continue
+
+            best_candidates = list((models_dir / "best").rglob(BEST_CHECKPOINT_NAME))
+            if best_candidates:
+                checkpoints.append(
+                    max(
+                        best_candidates,
+                        key=lambda path: (_best_checkpoint_timesteps(path), str(path)),
+                    ).resolve()
+                )
     return sorted(set(checkpoints))
 
 
@@ -499,12 +518,16 @@ def _checkpoint_overrides(args: argparse.Namespace, target_key: TargetKey) -> li
 
 def resolve_target_checkpoints(args: argparse.Namespace, target: EvaluationTarget) -> list[Path]:
     overrides = _checkpoint_overrides(args, target.key)
-    checkpoints = overrides if overrides is not None else discover_final_checkpoints(target.checkpoint_group_dirs)
+    checkpoints = (
+        overrides
+        if overrides is not None
+        else discover_evaluation_checkpoints(target.checkpoint_group_dirs)
+    )
     if not checkpoints:
         flag = "--po-wall-checkpoint" if target.key == "po_wall_tmasac" else "--find-opening-checkpoint"
         searched = ", ".join(str(path) for path in target.checkpoint_group_dirs)
         raise FileNotFoundError(
-            f"No final checkpoints found for {target.display_name}. Searched: {searched}. "
+            f"No final or best checkpoints found for {target.display_name}. Searched: {searched}. "
             f"Pass one or more {flag} paths explicitly."
         )
     return checkpoints
@@ -515,8 +538,9 @@ def _job_key(*, target_key: str, checkpoint_path: Path, unit_count: int) -> tupl
 
 
 def _checkpoint_run_id(checkpoint_path: Path) -> str:
-    if checkpoint_path.parent.name == "models":
-        return checkpoint_path.parent.parent.name
+    models_dir = next((parent for parent in checkpoint_path.parents if parent.name == "models"), None)
+    if models_dir is not None:
+        return models_dir.parent.name
     return checkpoint_path.stem
 
 
@@ -611,8 +635,8 @@ def _selected_target_keys(raw_target: str) -> tuple[TargetKey, ...]:
 def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Evaluate final thesis TMASAC checkpoints on unseen, fully pre-connected "
-            "morphologies containing 2 through 10 units."
+            "Evaluate thesis TMASAC checkpoints on unseen, fully pre-connected morphologies "
+            "containing 2 through 10 units, falling back to a run's best checkpoint when final is absent."
         ),
     )
     parser.add_argument(
@@ -696,9 +720,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         f"{config.pool_size} unseen morphologies per unit count, {num_envs} parallel envs."
     )
     for target in targets:
-        print(f"{target.display_name}: {len(checkpoints_by_target[target.key])} final checkpoint(s)")
+        print(f"{target.display_name}: {len(checkpoints_by_target[target.key])} checkpoint(s)")
         for checkpoint in checkpoints_by_target[target.key]:
-            print(f"  {checkpoint}")
+            fallback_label = " [best fallback]" if checkpoint.name == BEST_CHECKPOINT_NAME else ""
+            print(f"  {checkpoint}{fallback_label}")
     if args.dry_run:
         return 0
 

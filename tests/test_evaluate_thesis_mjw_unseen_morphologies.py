@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -8,8 +9,9 @@ from experiments.evaluate_thesis_mjw_unseen_morphologies import (
     EvaluationConfig,
     TARGETS,
     _align_torch_compile_state_dict_keys,
+    _checkpoint_run_id,
     _serialize_config,
-    discover_final_checkpoints,
+    discover_evaluation_checkpoints,
     evaluate_policy,
     make_pool_seeds,
     resolve_num_envs,
@@ -169,7 +171,9 @@ def test_evaluate_policy_uses_same_step_episode_stats_and_resets_recurrent_rows(
     assert torch.equal(policy.episode_start_masks[2], torch.tensor([True, False]))
 
 
-def test_discover_final_checkpoints_selects_latest_final_per_run(tmp_path: Path) -> None:
+def test_discover_evaluation_checkpoints_prefers_final_and_falls_back_to_latest_best(
+    tmp_path: Path,
+) -> None:
     group_dir = tmp_path / "group"
     first_models = group_dir / "run-a" / "models"
     second_models = group_dir / "run-b" / "models"
@@ -183,13 +187,29 @@ def test_discover_final_checkpoints_selects_latest_final_per_run(tmp_path: Path)
         first_models.joinpath(name).touch()
     second_models.joinpath("model_150_steps_final.pt").touch()
     second_models.joinpath("unrelated_final.pt").touch()
+    first_best = first_models / "best" / "late" / "model_best.pt"
+    first_best.parent.mkdir(parents=True)
+    first_best.touch()
 
-    checkpoints = discover_final_checkpoints([group_dir])
+    third_models = group_dir / "run-c" / "models"
+    early_best = third_models / "best" / "early" / "model_best.pt"
+    late_best = third_models / "best" / "late" / "model_best.pt"
+    for checkpoint, timesteps in ((early_best, 100), (late_best, 200)):
+        checkpoint.parent.mkdir(parents=True, exist_ok=True)
+        checkpoint.touch()
+        Path(f"{checkpoint}.json").write_text(
+            json.dumps({"n_total_timesteps": timesteps}),
+            encoding="utf-8",
+        )
+
+    checkpoints = discover_evaluation_checkpoints([group_dir])
 
     assert checkpoints == [
         (first_models / "model_200_steps_final.pt").resolve(),
         (second_models / "model_150_steps_final.pt").resolve(),
+        late_best.resolve(),
     ]
+    assert _checkpoint_run_id(late_best) == "run-c"
 
 
 def test_make_pool_seeds_is_repeatable_and_disjoint_between_unit_counts() -> None:
