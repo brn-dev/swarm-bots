@@ -111,7 +111,7 @@ def main() -> None:
     logger.info("MJW wall training uses one batched GPU env directly; worker-pool vectorization is disabled.")
     logger.info(
         "MJW wall training supports live exact-state recording via the `record` command "
-        "(for example: record:{\"episodes\":8,\"parallel\":4,\"frame_stride\":4})."
+        "(for example: record:{\"episodes\":8,\"parallel\":4})."
     )
     logger.info("MJW env uses per-env first-episode staggering so episode ends are spread across time from startup.")
     logger.info("MJW env also settles all worlds once on the initial reset, which increases startup latency.")
