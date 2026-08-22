@@ -145,6 +145,16 @@ class _FakeExperimentAlgorithm:
         self.capture["learn_kwargs"] = kwargs
 
 
+class _FakeEvaluationHook:
+    def __init__(self, metrics_logger: Mock) -> None:
+        self.closed = False
+        self.metrics_logger = metrics_logger
+
+    def close(self) -> None:
+        self.closed = True
+        self.metrics_logger.close()
+
+
 def _make_obs_indices() -> ObsIndices:
     return ObsIndices(
         local_scalar_indices=[0, 1],
@@ -187,6 +197,9 @@ def _patch_default_experiment_boundaries(
     policy = _FakeExperimentPolicy()
     algorithm = _FakeExperimentAlgorithm(capture)
     recording_hook = object()
+    evaluation_runner = object()
+    evaluation_metrics_logger = Mock()
+    evaluation_hook = _FakeEvaluationHook(evaluation_metrics_logger)
 
     monkeypatch.setattr(
         experiment_common,
@@ -240,6 +253,18 @@ def _patch_default_experiment_boundaries(
         capture["recording_kwargs"] = kwargs
         return recording_hook
 
+    def make_evaluation_runner(**kwargs: object) -> object:
+        capture["evaluation_runner_kwargs"] = kwargs
+        return evaluation_runner
+
+    def make_metrics_logger(**kwargs: object) -> Mock:
+        capture["evaluation_metrics_logger_kwargs"] = kwargs
+        return evaluation_metrics_logger
+
+    def make_evaluation_hook(**kwargs: object) -> _FakeEvaluationHook:
+        capture["evaluation_hook_kwargs"] = kwargs
+        return evaluation_hook
+
     def run_notification(*, run: Callable[[], None], **kwargs: object) -> None:
         capture["notification_kwargs"] = kwargs
         run()
@@ -254,9 +279,15 @@ def _patch_default_experiment_boundaries(
     monkeypatch.setattr(experiment_common, "SAC", make_sac)
     monkeypatch.setattr(experiment_common, "RecurrentSAC", make_recurrent_sac)
     monkeypatch.setattr(experiment_common, "install_scheduled_recordings", install_recordings)
+    monkeypatch.setattr(experiment_common, "FrozenEvaluationRunner", make_evaluation_runner)
+    monkeypatch.setattr(experiment_common, "MetricsLogger", make_metrics_logger)
+    monkeypatch.setattr(experiment_common, "ScheduledEvaluationHook", make_evaluation_hook)
     monkeypatch.setattr(experiment_common, "run_with_discord_notification", run_notification)
     capture["algorithm"] = algorithm
     capture["recording_hook"] = recording_hook
+    capture["evaluation_runner"] = evaluation_runner
+    capture["evaluation_metrics_logger"] = evaluation_metrics_logger
+    capture["evaluation_hook"] = evaluation_hook
     return capture, env
 
 
@@ -411,7 +442,7 @@ def test_default_run_experiment_wires_ppo_contract(
     assert metadata["mat_decoder_lr_multiplier"] == pytest.approx(0.25)
     assert metadata["include_actor_head_lr_multiplier"] is False
     assert metadata["parameter_lr_multipliers"] == ppo_kwargs["parameter_lr_multipliers"]
-    assert learn_kwargs["post_iteration_hooks"] == [capture["recording_hook"]]
+    assert learn_kwargs["post_iteration_hooks"] == [capture["recording_hook"], capture["evaluation_hook"]]
     recording_kwargs = capture["recording_kwargs"]
     assert isinstance(recording_kwargs, dict)
     assert recording_kwargs == {
@@ -419,11 +450,29 @@ def test_default_run_experiment_wires_ppo_contract(
         "total_timesteps": 16,
         "schedule": experiment_common.DEFAULT_LIVE_RECORDING_SCHEDULE,
     }
+    evaluation_runner_kwargs = capture["evaluation_runner_kwargs"]
+    assert isinstance(evaluation_runner_kwargs, dict)
+    assert evaluation_runner_kwargs["training_env"] is env
+    assert evaluation_runner_kwargs["episodes_per_env"] == 1
+    assert evaluation_runner_kwargs["seed"] == 1_000_000
+    assert evaluation_runner_kwargs["deterministic"] is True
+    evaluation_hook_kwargs = capture["evaluation_hook_kwargs"]
+    assert isinstance(evaluation_hook_kwargs, dict)
+    assert evaluation_hook_kwargs["runner"] is capture["evaluation_runner"]
+    assert evaluation_hook_kwargs["milestones"] == experiment_common.DEFAULT_EVALUATION_MILESTONES
+    assert evaluation_hook_kwargs["metrics_logger"] is capture["evaluation_metrics_logger"]
+    evaluation_metrics_logger_kwargs = capture["evaluation_metrics_logger_kwargs"]
+    assert isinstance(evaluation_metrics_logger_kwargs, dict)
+    assert evaluation_metrics_logger_kwargs["filename"] == "eval_log.csv"
+    assert capture["evaluation_hook"].closed
+    capture["evaluation_metrics_logger"].close.assert_called_once_with()
     logging_key_names = {entry[0] for entry in learn_kwargs["logging_console_keys"]}
     assert "act0_j0" in logging_key_names
     assert "act0_j1" in logging_key_names
     assert "std0_j0" not in logging_key_names
     assert "std0_j1" not in logging_key_names
+    assert "eval_ep_rew" not in logging_key_names
+    assert "eval_success_rate" not in logging_key_names
     assert env.closed
 
 
