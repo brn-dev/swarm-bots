@@ -175,6 +175,7 @@ def test_frozen_evaluation_collects_each_lane_requested_number_of_times_and_rest
     assert evaluation_env.recording_kwargs is not None
     assert evaluation_env.recording_kwargs["num_episodes"] == 3
     assert evaluation_env.recording_kwargs["max_parallel_episodes"] == 2
+    assert evaluation_env.recording_kwargs["frame_stride"] == 1
     assert evaluation_env.recording_kwargs["video_name_prefix"] == "eval_025pct_25_steps"
 
     runner.close()

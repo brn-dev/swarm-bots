@@ -812,7 +812,7 @@ def run_experiment(
     )
     logger.info(
         f"MJW {scenario_display_name_text} training supports live exact-state recording via the `record` command "
-        "(for example: record:{\"episodes\":8,\"parallel\":4,\"frame_stride\":4})."
+        "(for example: record:{\"episodes\":8,\"parallel\":4})."
     )
     logger.info(
         f"MJW {scenario_display_name_text} env uses per-env first-episode staggering so episode ends are spread across time from startup."

@@ -23,7 +23,7 @@ DEFAULT_EVALUATION_MILESTONES: tuple[float, ...] = (25, 50, 75, 90, 95, 100)
 @dataclass(frozen=True, slots=True)
 class EvaluationRecordingConfig:
     num_episodes: int = 5
-    frame_stride: int = 4
+    frame_stride: int = 1
     fps: int = 30
     fps_mode: str = "compensate_stride"
     width: int = DEFAULT_RECORDING_WIDTH

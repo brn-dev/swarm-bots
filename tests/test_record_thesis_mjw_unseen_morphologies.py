@@ -16,6 +16,7 @@ def test_default_episode_count_is_two() -> None:
     config = _validate_args(_parse_args([]))
 
     assert config.episodes_per_combination == 2
+    assert config.frame_stride == 1
     assert "runs" in DEFAULT_OUTPUT_ROOT.parts
     assert "experiments" not in DEFAULT_OUTPUT_ROOT.relative_to(DEFAULT_OUTPUT_ROOT.parents[2]).parts
 

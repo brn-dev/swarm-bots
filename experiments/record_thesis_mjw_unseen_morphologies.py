@@ -118,7 +118,7 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         choices=("compensate_stride", "fixed"),
         default="compensate_stride",
     )
-    parser.add_argument("--frame-stride", type=int, default=4)
+    parser.add_argument("--frame-stride", type=int, default=1)
     parser.add_argument("--width", type=int, default=DEFAULT_RECORDING_WIDTH)
     parser.add_argument("--height", type=int, default=DEFAULT_RECORDING_HEIGHT)
     parser.add_argument("--camera", type=_parse_camera, default=-1)
