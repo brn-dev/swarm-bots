@@ -6,7 +6,7 @@ import json
 import re
 import statistics
 import sys
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -398,6 +398,7 @@ def evaluate_policy(
     rollout_seed: int,
     progress_description: str | None = None,
     show_progress: bool = True,
+    on_reset: Callable[[], None] | None = None,
 ) -> dict[str, object]:
     import torch
     from tqdm.auto import tqdm
@@ -426,6 +427,8 @@ def evaluate_policy(
         policy.eval()
         torch.manual_seed(rollout_seed)
         obs, _ = env.reset(seed=rollout_seed)
+        if on_reset is not None:
+            on_reset()
         previous_actions = None
         if policy.requires_previous_actions():
             previous_actions = torch.zeros(
