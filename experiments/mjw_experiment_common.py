@@ -577,6 +577,7 @@ def run_experiment(
         scenario_name: MJWScenarioName = "wall",
         ccd_iterations: int | None = None,
         scenario_kwargs: dict[str, object] | None = None,
+        evaluation_scenario_kwargs: dict[str, object] | None = None,
         compile_env_tensor_operations: bool | None = None,
         env_tensor_operations_compile_mode: str = "default",
         rmat_temporal_model_cls: Any = None,
@@ -586,6 +587,8 @@ def run_experiment(
         rmat_use_temporal_output_projection: bool = True,
         rmat_experimental_compile_lstm: bool = False,
         total_timesteps: int = 100_000_000,
+        load_path: str | Path | None = None,
+        additional_timesteps: int | None = None,
         sac_learning_rate: float = 3e-4,
         sac_ent_coef_learning_rate: float | None = 1e-3,
         sac_ent_coef: float | str = "auto_0.05",
@@ -633,6 +636,13 @@ def run_experiment(
         raise ValueError(f"n_epochs must be > 0, got {n_epochs}")
     if total_timesteps <= 0:
         raise ValueError(f"total_timesteps must be > 0, got {total_timesteps}")
+    if additional_timesteps is not None:
+        if additional_timesteps <= 0:
+            raise ValueError(
+                f"additional_timesteps must be > 0, got {additional_timesteps}"
+            )
+        if load_path is None:
+            raise ValueError("additional_timesteps requires load_path")
     if evaluation_num_envs <= 0:
         raise ValueError(f"evaluation_num_envs must be > 0, got {evaluation_num_envs}")
     if evaluation_episodes_per_env <= 0:
@@ -737,12 +747,16 @@ def run_experiment(
     logging_buffer_size = 20 if sac_policy else 5
 
     run_id = generate_run_id()
-    load_path: str | Path | None = None
 
     rollout_device = torch.device("cuda")
     train_device = torch.device("cuda")
     record_device = torch.device("cuda")
     scenario_kwargs = _with_default_scenario_kwargs(scenario_kwargs)
+    evaluation_scenario_kwargs = (
+        scenario_kwargs
+        if evaluation_scenario_kwargs is None
+        else _with_default_scenario_kwargs(evaluation_scenario_kwargs)
+    )
 
     logger.info(f"{rollout_device = }")
     logger.info(f"{train_device = }")
@@ -1151,9 +1165,18 @@ def run_experiment(
         logger.info(f"Loading model from {load_path}")
         algorithm.load(load_path, recover_best_return_ema=False, strict_load_state_dict=True)
 
+    training_start_timesteps = int(algorithm.n_total_timesteps)
+    if additional_timesteps is not None:
+        total_timesteps = training_start_timesteps + additional_timesteps
+        logger.info(
+            "Continuing training for "
+            f"{additional_timesteps} transitions ({training_start_timesteps} -> {total_timesteps})."
+        )
+
     scheduled_recording_hook = install_scheduled_recordings(
         algorithm=algorithm,
         total_timesteps=total_timesteps,
+        start_timesteps=training_start_timesteps,
         schedule=DEFAULT_LIVE_RECORDING_SCHEDULE,
     )
 
@@ -1166,7 +1189,7 @@ def run_experiment(
             device=rollout_device,
             scenario_name=scenario_name,
             ccd_iterations=ccd_iterations,
-            scenario_kwargs=scenario_kwargs,
+            scenario_kwargs=evaluation_scenario_kwargs,
             compile_env_tensor_operations=compile_env_tensor_operations,
             env_tensor_operations_compile_mode=env_tensor_operations_compile_mode,
         )
@@ -1207,6 +1230,7 @@ def run_experiment(
     scheduled_evaluation_hook = ScheduledEvaluationHook(
         algorithm=algorithm,
         total_timesteps=total_timesteps,
+        start_timesteps=training_start_timesteps,
         milestones=evaluation_milestones,
         runner=evaluation_runner,
         metrics_logger=evaluation_metrics_logger,
@@ -1304,6 +1328,9 @@ def run_experiment(
         "rollout_samples": rollout_samples,
         "rollout_steps_per_env": rollout_steps_per_env,
         "total_timesteps": total_timesteps,
+        "training_start_timesteps": training_start_timesteps,
+        "additional_timesteps": additional_timesteps,
+        "evaluation_scenario_kwargs": evaluation_scenario_kwargs,
         "logging_buffer_size": logging_buffer_size,
         "sampler_batch_size": sampler_batch_size,
         "recurrent_policy": recurrent_policy,

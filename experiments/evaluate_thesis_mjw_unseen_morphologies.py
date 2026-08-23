@@ -49,6 +49,7 @@ class EvaluationConfig:
     deterministic: bool
     episode_length: int
     unconnected_prob: float = 0.0
+    disable_connector_actions: bool = False
 
 
 @dataclass(frozen=True)
@@ -407,6 +408,7 @@ def evaluate_policy(
     progress_description: str | None = None,
     show_progress: bool = True,
     on_reset: Callable[[], None] | None = None,
+    disable_connector_actions: bool = False,
 ) -> dict[str, object]:
     import torch
     from tqdm.auto import tqdm
@@ -470,6 +472,9 @@ def evaluate_policy(
                     temporal_state=temporal_state,
                     episode_start_mask=episode_start_mask,
                 )
+            if disable_connector_actions:
+                actions = actions.clone()
+                actions[..., env.actuators_dim :] = -1.0
             obs, _rewards, terminations, truncations, infos = env.step(actions)
             dones = torch.logical_or(terminations, truncations)
             completed_env_indices = torch.nonzero(dones, as_tuple=False).flatten().tolist()
@@ -631,6 +636,8 @@ def _load_resume_payload(
     payload_config = payload.get("config")
     if isinstance(payload_config, dict) and "unconnected_prob" not in payload_config:
         payload_config = {**payload_config, "unconnected_prob": 0.0}
+    if isinstance(payload_config, dict) and "disable_connector_actions" not in payload_config:
+        payload_config = {**payload_config, "disable_connector_actions": False}
     if payload_config != _serialize_config(config):
         raise ValueError(f"Cannot resume {output_path}: its evaluation config differs from this invocation")
     if payload.get("resolved_num_envs") != resolved_num_envs:
@@ -690,6 +697,11 @@ def _parse_args(
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--po-wall-checkpoint", type=Path, action="append")
     parser.add_argument("--find-opening-checkpoint", type=Path, action="append")
+    parser.add_argument(
+        "--disable-connector-actions",
+        action="store_true",
+        help="Force every connector action to -1 so modules cannot form or retain connections.",
+    )
     return parser.parse_args(argv)
 
 
@@ -723,6 +735,7 @@ def _validate_args(
         deterministic=not args.stochastic,
         episode_length=args.episode_length,
         unconnected_prob=unconnected_prob,
+        disable_connector_actions=args.disable_connector_actions,
     )
 
 
@@ -854,6 +867,7 @@ def main(
                         rollout_seed=config.rollout_seed,
                         progress_description=f"{target.display_name}, {unit_count} units",
                         show_progress=not args.no_progress,
+                        disable_connector_actions=config.disable_connector_actions,
                     )
                     result = {
                         "target": target.key,

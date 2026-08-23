@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Literal
 
@@ -55,6 +56,10 @@ def run_tmasac_experiment(
     use_nop: bool = True,
     include_slstm_memory_strength: bool = False,
     variant_name: str | None = None,
+    load_path: str | Path | None = None,
+    additional_timesteps: int | None = None,
+    evaluation_scenario_kwargs: dict[str, object] | None = None,
+    evaluation_milestones: Sequence[float] | None = None,
 ) -> None:
     temporal_model_cls, temporal_model_config = _make_temporal_model_spec(
         variant=variant,
@@ -65,6 +70,16 @@ def run_tmasac_experiment(
     mat_transformer_ff_config, actor_transformer_ff_config = _make_feedforward_configs(
         variant=variant,
     )
+
+    continuation_kwargs: dict[str, object] = {}
+    if load_path is not None:
+        continuation_kwargs["load_path"] = load_path
+    if additional_timesteps is not None:
+        continuation_kwargs["additional_timesteps"] = additional_timesteps
+    if evaluation_scenario_kwargs is not None:
+        continuation_kwargs["evaluation_scenario_kwargs"] = evaluation_scenario_kwargs
+    if evaluation_milestones is not None:
+        continuation_kwargs["evaluation_milestones"] = evaluation_milestones
 
     run_mjw_experiment(
         num_envs=1024,
@@ -129,6 +144,7 @@ def run_tmasac_experiment(
         rmat_temporal_layer_norm=False,
         rmat_use_temporal_output_projection=not is_recurrent,
         rmat_experimental_compile_lstm=variant.startswith("lstm_"),
+        **continuation_kwargs,
     )
 
 

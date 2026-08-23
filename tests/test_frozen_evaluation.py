@@ -253,3 +253,31 @@ def test_scheduled_evaluation_only_runs_latest_crossed_milestone() -> None:
     runner.evaluate.assert_called_once_with(timesteps=80, milestone_percentage=75.0)
     assert metrics_logger.log.call_count == 2
     assert metrics_logger.flush.call_count == 2
+
+
+def test_scheduled_evaluation_milestones_are_relative_to_continuation_window() -> None:
+    algorithm = SimpleNamespace(n_total_timesteps=100)
+    runner = Mock()
+    runner.evaluate.return_value = {"eval_success_rate": 75.0}
+    metrics_logger = Mock()
+    hook = ScheduledEvaluationHook(
+        algorithm=algorithm,
+        start_timesteps=100,
+        total_timesteps=300,
+        milestones=(50, 100),
+        runner=runner,
+        metrics_logger=metrics_logger,
+    )
+
+    algorithm.n_total_timesteps = 199
+    hook(algorithm, {}, rollout_steps=99)
+    runner.evaluate.assert_not_called()
+
+    algorithm.n_total_timesteps = 200
+    hook(algorithm, {}, rollout_steps=1)
+    runner.evaluate.assert_called_once_with(timesteps=200, milestone_percentage=50.0)
+
+    runner.evaluate.reset_mock()
+    algorithm.n_total_timesteps = 300
+    hook(algorithm, {}, rollout_steps=100)
+    runner.evaluate.assert_called_once_with(timesteps=300, milestone_percentage=100.0)
