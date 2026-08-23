@@ -9,13 +9,14 @@ from experiments.record_thesis_mjw_unseen_morphologies import (
     _validate_args,
     checkpoint_output_name,
     combination_output_dir,
+    make_combination_rollout_seed,
 )
 
 
-def test_default_episode_count_is_two() -> None:
+def test_default_episode_count_is_three() -> None:
     config = _validate_args(_parse_args([]))
 
-    assert config.episodes_per_combination == 2
+    assert config.episodes_per_combination == 3
     assert config.frame_stride == 1
     assert "runs" in DEFAULT_OUTPUT_ROOT.parts
     assert "experiments" not in DEFAULT_OUTPUT_ROOT.relative_to(DEFAULT_OUTPUT_ROOT.parents[2]).parts
@@ -25,6 +26,20 @@ def test_episodes_alias_sets_episode_count() -> None:
     config = _validate_args(_parse_args(["--episodes", "4"]))
 
     assert config.episodes_per_combination == 4
+
+
+def test_combination_rollout_seeds_are_repeatable_and_distinct() -> None:
+    first_rollout_seed = make_combination_rollout_seed(
+        rollout_seed_base=2_000_000,
+        combination_index=0,
+    )
+    second_rollout_seed = make_combination_rollout_seed(
+        rollout_seed_base=2_000_000,
+        combination_index=1,
+    )
+
+    assert first_rollout_seed == 2_000_000
+    assert second_rollout_seed == 2_000_001
 
 
 def test_combination_output_dir_separates_target_agent_count_and_checkpoint(
