@@ -20,8 +20,9 @@ except ValueError:
     logger.level("SAVE", no=21, color="<magenta>")
 
 from swarmbots.learn.base_policy import BasePolicy
-from swarmbots.learn.checkpointing import load_checkpoint, extract_policy_state_dict, extract_optimizer_state_dict, \
-    apply_env_state, extract_env_state, freeze_env_normalization, capture_env_state, move_env_to_device
+from swarmbots.learn.checkpointing import align_torch_compile_state_dict_keys, load_checkpoint, \
+    extract_policy_state_dict, extract_optimizer_state_dict, apply_env_state, extract_env_state, \
+    freeze_env_normalization, capture_env_state, move_env_to_device
 from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
 from swarmbots.learn.exponential_moving_average import ExponentialMovingAverage, HybridEMA
 from swarmbots.learn.metrics_logger import MetricsLogger, mean_std, rate, summed
@@ -483,8 +484,12 @@ class BaseAlgorithm(abc.ABC):
             strict_load_state_dict: bool = True
     ) -> None:
         checkpoint = load_checkpoint(path, map_location=map_location)
-        missing_keys, unexpected_keys = self.policy.load_state_dict(
+        policy_state_dict = align_torch_compile_state_dict_keys(
             extract_policy_state_dict(checkpoint),
+            target_keys=self.policy.state_dict().keys(),
+        )
+        missing_keys, unexpected_keys = self.policy.load_state_dict(
+            policy_state_dict,
             strict=strict_load_state_dict
         )
         if missing_keys or unexpected_keys:

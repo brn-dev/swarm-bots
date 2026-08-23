@@ -371,31 +371,9 @@ def _align_torch_compile_state_dict_keys(
     *,
     target_keys: Iterable[str],
 ) -> dict[str, Any]:
-    def canonical_key(key: str) -> str:
-        return ".".join(part for part in key.split(".") if part != "_orig_mod")
+    from swarmbots.learn.checkpointing import align_torch_compile_state_dict_keys
 
-    target_by_canonical_key: dict[str, str] = {}
-    for target_key in target_keys:
-        canonical = canonical_key(target_key)
-        previous = target_by_canonical_key.setdefault(canonical, target_key)
-        if previous != target_key:
-            raise ValueError(
-                "Target policy has ambiguous torch.compile state-dict keys: "
-                f"{previous!r} and {target_key!r}"
-            )
-
-    aligned: dict[str, Any] = {}
-    source_by_target_key: dict[str, str] = {}
-    for source_key, value in state_dict.items():
-        target_key = target_by_canonical_key.get(canonical_key(source_key), source_key)
-        previous_source = source_by_target_key.setdefault(target_key, source_key)
-        if previous_source != source_key:
-            raise ValueError(
-                "Checkpoint has ambiguous torch.compile state-dict keys: "
-                f"{previous_source!r} and {source_key!r} both map to {target_key!r}"
-            )
-        aligned[target_key] = value
-    return aligned
+    return align_torch_compile_state_dict_keys(state_dict, target_keys=target_keys)
 
 
 def evaluate_policy(

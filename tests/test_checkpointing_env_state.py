@@ -1,9 +1,12 @@
 import unittest
+from typing import Any
+from unittest.mock import patch
 
 import torch
 from gymnasium import spaces
 
 from swarmbots.learn.checkpointing import apply_env_state, capture_env_state, freeze_env_normalization, move_env_to_device
+from swarmbots.learn.algos.base_algorithm import BaseAlgorithm
 from swarmbots.learn.env_wrappers.torch_feature_wise_obs_norm_wrapper import TorchFeatureWiseObsNormWrapper
 from swarmbots.learn.env_wrappers.torch_normalize_reward_wrapper import TorchNormalizeRewardWrapper
 from swarmbots.learn.hybrid_action_space import VectorHybridActionSpace
@@ -38,6 +41,29 @@ class _DummyTorchEnv:
         self.device = torch.device(device)
 
 
+class _CheckpointLoadAlgorithm(BaseAlgorithm):
+    def get_hyper_parameters(self) -> dict[str, Any]:
+        return {}
+
+    def _get_optimizer_state_dict(self) -> dict[str, Any]:
+        return {}
+
+    def _apply_optimizer_state_dict(
+        self,
+        state_dict: dict[str, Any],
+        missing_keys: list[str],
+        unexpected_keys: list[str],
+    ) -> None:
+        _ = state_dict, missing_keys, unexpected_keys
+
+    def _apply_learning_rate(self, lr: Any) -> None:
+        _ = lr
+
+    def perform_iteration(self, *args: Any, **kwargs: Any) -> tuple[dict[str, Any], int]:
+        _ = args, kwargs
+        return {}, 0
+
+
 def _set_rms(rms: TorchRunningMeanStd, *, offset: float) -> None:
     rms.mean = torch.arange(rms.mean.numel(), dtype=rms.mean.dtype, device=rms.mean.device).reshape_as(rms.mean) + offset
     rms.var = torch.arange(rms.var.numel(), dtype=rms.var.dtype, device=rms.var.device).reshape_as(rms.var) + offset + 10.0
@@ -45,6 +71,40 @@ def _set_rms(rms: TorchRunningMeanStd, *, offset: float) -> None:
 
 
 class CheckpointEnvStateTests(unittest.TestCase):
+    def test_load_aligns_compiled_checkpoint_keys_to_uncompiled_policy(self) -> None:
+        policy = torch.nn.Linear(3, 2)
+        expected_state = {
+            key: value.detach().clone()
+            for key, value in policy.state_dict().items()
+        }
+        compiled_state = {
+            f"_orig_mod.{key}": value
+            for key, value in expected_state.items()
+        }
+        with torch.no_grad():
+            policy.weight.zero_()
+            policy.bias.zero_()
+
+        algorithm = _CheckpointLoadAlgorithm(policy=policy, env=object(), learning_rate=1e-3)
+        checkpoint = {
+            "policy_state_dict": compiled_state,
+            "n_total_iterations": 7,
+            "n_total_updates": 11,
+            "n_total_timesteps": 100_000_768,
+        }
+
+        with patch(
+            "swarmbots.learn.algos.base_algorithm.load_checkpoint",
+            return_value=checkpoint,
+        ):
+            algorithm.load("unused.pt")
+
+        for key, value in policy.state_dict().items():
+            self.assertTrue(torch.equal(value, expected_state[key]))
+        self.assertEqual(algorithm.n_total_iterations, 7)
+        self.assertEqual(algorithm.n_total_updates, 11)
+        self.assertEqual(algorithm.n_total_timesteps, 100_000_768)
+
     def test_torch_obs_norm_restores_legacy_featurewise_wrapper_state_by_obs_key(self) -> None:
         wrapper = TorchFeatureWiseObsNormWrapper(
             _DummyTorchEnv(),
