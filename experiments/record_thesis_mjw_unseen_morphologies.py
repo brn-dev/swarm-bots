@@ -108,10 +108,10 @@ def _parse_args(
         "--episodes",
         dest="episodes_per_combination",
         type=int,
-        default=2,
+        default=3,
         help=(
             "Episodes to record per agent-count/scenario/checkpoint combination "
-            "(default: 2)."
+            "(default: 3)."
         ),
     )
     parser.add_argument("--pool-seed-base", type=int, default=1_000_000)
@@ -194,6 +194,14 @@ def _prepare_combination_output(output_dir: Path, *, overwrite: bool) -> None:
         for video_path in existing_videos:
             video_path.unlink()
     output_dir.mkdir(parents=True, exist_ok=True)
+
+
+def make_combination_rollout_seed(
+    *,
+    rollout_seed_base: int,
+    combination_index: int,
+) -> int:
+    return rollout_seed_base + combination_index
 
 
 def _write_manifest(output_root: Path, payload: dict[str, object]) -> None:
@@ -285,6 +293,7 @@ def main(
     results = manifest["results"]
     assert isinstance(results, list)
 
+    combination_index = 0
     for target in targets:
         checkpoints = checkpoints_by_target[target.key]
         for unit_count in config.unit_counts:
@@ -295,6 +304,11 @@ def main(
                 pool_size=config.pool_size,
             )
             for checkpoint in checkpoints:
+                rollout_seed = make_combination_rollout_seed(
+                    rollout_seed_base=config.rollout_seed,
+                    combination_index=combination_index,
+                )
+                combination_index += 1
                 output_dir = combination_output_dir(
                     output_root=output_root,
                     target_key=target.key,
@@ -302,7 +316,11 @@ def main(
                     checkpoint_path=checkpoint,
                 )
                 _prepare_combination_output(output_dir, overwrite=args.overwrite)
-                print(f"Building {target.display_name}, {unit_count} agents for {checkpoint}...")
+                print(
+                    f"Building {target.display_name}, {unit_count} agents for {checkpoint} "
+                    f"with pool seeds {pool_seeds[0]}-{pool_seeds[-1]} "
+                    f"and environment seed {rollout_seed}..."
+                )
                 env, policy = _build_env_and_policy(
                     target=target,
                     unit_count=unit_count,
@@ -320,7 +338,7 @@ def main(
                         policy=policy,
                         episode_count=config.episodes_per_combination,
                         deterministic=config.deterministic,
-                        rollout_seed=config.rollout_seed,
+                        rollout_seed=rollout_seed,
                         progress_description=f"{target.display_name}, {unit_count} agents",
                         show_progress=not args.no_progress,
                         on_reset=lambda: _start_recording(
@@ -353,6 +371,7 @@ def main(
                         "unit_count": unit_count,
                         "pool_size": config.pool_size,
                         "pool_seed_range_inclusive": [pool_seeds[0], pool_seeds[-1]],
+                        "rollout_seed": rollout_seed,
                         "summary": summary,
                         "videos": [str(path) for path in video_paths],
                     }
