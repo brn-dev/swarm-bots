@@ -22,7 +22,14 @@ def make_run_dir(run_group: str, run_id: str) -> Path:
 
 
 def get_run_id_from_checkpoint_path(load_path: str | Path) -> str:
-    return Path(load_path).parent.parent.name
+    checkpoint_path = Path(load_path)
+    models_dir = next(
+        (parent for parent in checkpoint_path.parents if parent.name == "models"),
+        None,
+    )
+    if models_dir is None:
+        return checkpoint_path.stem
+    return models_dir.parent.name
 
 
 def _validate_run_path_part(value: str, *, name: str) -> None:

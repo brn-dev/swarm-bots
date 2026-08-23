@@ -291,12 +291,18 @@ class ScheduledEvaluationHook:
         *,
         algorithm: Any,
         total_timesteps: int,
+        start_timesteps: int = 0,
         milestones: Sequence[float],
         runner: FrozenEvaluationRunner,
         metrics_logger: MetricsLogger,
     ) -> None:
         if total_timesteps <= 0:
             raise ValueError(f"total_timesteps must be positive, got {total_timesteps}")
+        if start_timesteps < 0 or start_timesteps >= total_timesteps:
+            raise ValueError(
+                "start_timesteps must be in [0, total_timesteps), got "
+                f"{start_timesteps=} {total_timesteps=}"
+            )
         self.runner = runner
         self.metrics_logger = metrics_logger
         current_timesteps = int(algorithm.n_total_timesteps)
@@ -305,7 +311,11 @@ class ScheduledEvaluationHook:
         for percentage in sorted(milestones):
             if percentage < 0 or percentage > 100:
                 raise ValueError(f"Evaluation milestone must be in [0, 100], got {percentage}")
-            target_timesteps = max(1, int(total_timesteps * percentage / 100))
+            target_timesteps = max(
+                start_timesteps + 1,
+                start_timesteps
+                + int((total_timesteps - start_timesteps) * percentage / 100),
+            )
             if target_timesteps in seen_targets or target_timesteps <= current_timesteps:
                 continue
             seen_targets.add(target_timesteps)

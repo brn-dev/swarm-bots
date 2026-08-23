@@ -99,10 +99,12 @@ class _FakePolicy:
 class _FakeEnv:
     num_envs = 2
     n_agents = 3
+    actuators_dim = 1
     action_space = SimpleNamespace(total_agent_action_dim=2)
 
     def __init__(self) -> None:
         self.step_index = 0
+        self.actions: list[torch.Tensor] = []
 
     def reset(self, *, seed: int) -> tuple[dict[str, torch.Tensor], dict[str, object]]:
         assert seed == 123
@@ -114,6 +116,7 @@ class _FakeEnv:
         actions: torch.Tensor,
     ) -> tuple[dict[str, torch.Tensor], torch.Tensor, torch.Tensor, torch.Tensor, dict[str, object]]:
         assert actions.shape == (2, 3, 2)
+        self.actions.append(actions.clone())
         done_env_idx = (0, 0, 1)[self.step_index]
         dones = torch.zeros((2,), dtype=torch.bool)
         dones[done_env_idx] = True
@@ -176,6 +179,25 @@ def test_evaluate_policy_uses_same_step_episode_stats_and_resets_recurrent_rows(
     assert torch.equal(policy.episode_start_masks[0], torch.tensor([True, True]))
     assert torch.equal(policy.episode_start_masks[1], torch.tensor([True, False]))
     assert torch.equal(policy.episode_start_masks[2], torch.tensor([True, False]))
+
+
+def test_evaluate_policy_can_force_connector_actions_to_disconnect() -> None:
+    env = _FakeEnv()
+
+    evaluate_policy(
+        env=env,
+        policy=_FakePolicy(),
+        episode_count=2,
+        deterministic=True,
+        rollout_seed=123,
+        show_progress=False,
+        disable_connector_actions=True,
+    )
+
+    assert env.actions
+    for actions in env.actions:
+        assert torch.equal(actions[..., 0], torch.zeros_like(actions[..., 0]))
+        assert torch.equal(actions[..., 1], -torch.ones_like(actions[..., 1]))
 
 
 def test_discover_evaluation_checkpoints_prefers_final_and_falls_back_to_latest_best(

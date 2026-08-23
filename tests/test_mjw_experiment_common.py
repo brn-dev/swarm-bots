@@ -140,6 +140,11 @@ class _FakeExperimentPolicy:
 class _FakeExperimentAlgorithm:
     def __init__(self, capture: dict[str, object]) -> None:
         self.capture = capture
+        self.n_total_timesteps = 0
+
+    def load(self, path: str | Path, **kwargs: object) -> None:
+        self.capture["load_call"] = {"path": path, **kwargs}
+        self.n_total_timesteps = 100
 
     def learn(self, **kwargs: object) -> None:
         self.capture["learn_kwargs"] = kwargs
@@ -189,9 +194,9 @@ def _make_wrapper_test_vector_env() -> SyncVectorEnv:
 
 
 def _patch_default_experiment_boundaries(
-        monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> tuple[dict[str, object], _FakeExperimentEnv]:
-    capture: dict[str, object] = {}
+    capture: dict[str, object] = {"vector_env_calls": []}
     vector_env = _FakeExperimentVectorEnv()
     env = _FakeExperimentEnv()
     policy = _FakeExperimentPolicy()
@@ -223,6 +228,9 @@ def _patch_default_experiment_boundaries(
 
     def make_vector_env(**kwargs: object) -> _FakeExperimentVectorEnv:
         capture["vector_env_kwargs"] = kwargs
+        vector_env_calls = capture["vector_env_calls"]
+        assert isinstance(vector_env_calls, list)
+        vector_env_calls.append(kwargs)
         return vector_env
 
     def wrap_vector_env(**kwargs: object) -> _FakeExperimentEnv:
@@ -448,6 +456,7 @@ def test_default_run_experiment_wires_ppo_contract(
     assert recording_kwargs == {
         "algorithm": capture["algorithm"],
         "total_timesteps": 16,
+        "start_timesteps": 0,
         "schedule": experiment_common.DEFAULT_LIVE_RECORDING_SCHEDULE,
     }
     evaluation_runner_kwargs = capture["evaluation_runner_kwargs"]
@@ -459,6 +468,7 @@ def test_default_run_experiment_wires_ppo_contract(
     evaluation_hook_kwargs = capture["evaluation_hook_kwargs"]
     assert isinstance(evaluation_hook_kwargs, dict)
     assert evaluation_hook_kwargs["runner"] is capture["evaluation_runner"]
+    assert evaluation_hook_kwargs["start_timesteps"] == 0
     assert evaluation_hook_kwargs["milestones"] == experiment_common.DEFAULT_EVALUATION_MILESTONES
     assert evaluation_hook_kwargs["metrics_logger"] is capture["evaluation_metrics_logger"]
     evaluation_metrics_logger_kwargs = capture["evaluation_metrics_logger_kwargs"]
@@ -474,6 +484,59 @@ def test_default_run_experiment_wires_ppo_contract(
     assert "eval_ep_rew" not in logging_key_names
     assert "eval_success_rate" not in logging_key_names
     assert env.closed
+
+
+def test_continuation_uses_additional_timestep_window_and_separate_evaluation_pool(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    capture, _env = _patch_default_experiment_boundaries(monkeypatch)
+    entrypoint_path = Path(__file__)
+    checkpoint_path = Path("source-run/models/model.pt")
+    training_locations = object()
+    evaluation_locations = object()
+
+    experiment_common.run_experiment(
+        num_envs=4,
+        rollout_steps_per_env=2,
+        variant_name="continuation-contract",
+        entrypoint_path=entrypoint_path,
+        scenario_kwargs={"unit_start_locations": training_locations},
+        evaluation_scenario_kwargs={"unit_start_locations": evaluation_locations},
+        load_path=checkpoint_path,
+        additional_timesteps=200,
+        evaluation_milestones=(50, 100),
+        total_timesteps=16,
+    )
+
+    assert capture["load_call"] == {
+        "path": checkpoint_path,
+        "recover_best_return_ema": False,
+        "strict_load_state_dict": True,
+    }
+    learn_kwargs = capture["learn_kwargs"]
+    assert isinstance(learn_kwargs, dict)
+    assert learn_kwargs["max_total_timesteps"] == 300
+    metadata = learn_kwargs["extra_run_metadata"]
+    assert metadata["training_start_timesteps"] == 100
+    assert metadata["additional_timesteps"] == 200
+
+    recording_kwargs = capture["recording_kwargs"]
+    assert recording_kwargs["start_timesteps"] == 100
+    assert recording_kwargs["total_timesteps"] == 300
+    evaluation_hook_kwargs = capture["evaluation_hook_kwargs"]
+    assert evaluation_hook_kwargs["start_timesteps"] == 100
+    assert evaluation_hook_kwargs["total_timesteps"] == 300
+    assert evaluation_hook_kwargs["milestones"] == (50.0, 100.0)
+
+    evaluation_runner_kwargs = capture["evaluation_runner_kwargs"]
+    assert isinstance(evaluation_runner_kwargs, dict)
+    make_evaluation_env = evaluation_runner_kwargs["make_env"]
+    assert callable(make_evaluation_env)
+    make_evaluation_env()
+    vector_env_calls = capture["vector_env_calls"]
+    assert isinstance(vector_env_calls, list)
+    assert vector_env_calls[0]["scenario_kwargs"]["unit_start_locations"] is training_locations
+    assert vector_env_calls[1]["scenario_kwargs"]["unit_start_locations"] is evaluation_locations
 
 
 def test_tmasac_run_experiment_preserves_sac_and_nop_configuration(

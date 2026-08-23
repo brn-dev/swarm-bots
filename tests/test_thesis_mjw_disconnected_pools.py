@@ -2,6 +2,7 @@ from pathlib import Path
 from typing import Any
 
 import experiments.evaluate_thesis_mjw_disconnected_pools as evaluate_disconnected
+import experiments.evaluate_thesis_mjw_disconnected_pools_no_connections as evaluate_no_connections
 import experiments.record_thesis_mjw_disconnected_pools as record_disconnected
 
 
@@ -59,3 +60,26 @@ def test_disconnected_outputs_do_not_overlap_preconnected_outputs() -> None:
         "thesis_mjw_disconnected_pools",
         "recordings",
     )
+    assert evaluate_no_connections.DEFAULT_OUTPUT_PATH != evaluate_disconnected.DEFAULT_OUTPUT_PATH
+
+
+def test_no_connection_ablation_forces_disabled_connector_actions(monkeypatch: Any) -> None:
+    invocation: dict[str, object] = {}
+
+    def fake_main(argv: object, **kwargs: object) -> int:
+        invocation.update(argv=argv, **kwargs)
+        return 31
+
+    monkeypatch.setattr(evaluate_no_connections, "_main", fake_main)
+
+    result = evaluate_no_connections.main(["--dry-run"])
+
+    assert result == 31
+    assert invocation["argv"] == [
+        "--dry-run",
+        "--target",
+        "po_wall_tmasac",
+        "--disable-connector-actions",
+    ]
+    assert invocation["unconnected_prob"] == 1.0
+    assert invocation["default_output_path"] == evaluate_no_connections.DEFAULT_OUTPUT_PATH

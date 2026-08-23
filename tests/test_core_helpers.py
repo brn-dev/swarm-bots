@@ -166,6 +166,28 @@ def test_scheduled_recordings_zero_percent_fires_after_first_training_step() -> 
     assert "record_000pct_1_steps" in algorithm.commands[0][1]
 
 
+def test_scheduled_recordings_are_relative_to_continuation_window() -> None:
+    algorithm = _RecordingAlgorithm(n_total_timesteps=100)
+    hook = install_scheduled_recordings(
+        algorithm=algorithm,
+        start_timesteps=100,
+        total_timesteps=300,
+        schedule={50.0: 2, 100.0: 3},
+    )
+
+    algorithm.n_total_timesteps = 199
+    hook(algorithm, {}, 99)
+    assert algorithm.commands == []
+
+    algorithm.n_total_timesteps = 200
+    hook(algorithm, {}, 1)
+    assert "record_050pct_200_steps" in algorithm.commands[0][1]
+
+    algorithm.n_total_timesteps = 300
+    hook(algorithm, {}, 100)
+    assert "record_100pct_300_steps" in algorithm.commands[1][1]
+
+
 def test_scheduled_recordings_reject_invalid_training_plan() -> None:
     algorithm = _RecordingAlgorithm(n_total_timesteps=0)
 
@@ -208,6 +230,26 @@ def test_get_run_id_from_checkpoint_path_uses_run_directory_name() -> None:
     checkpoint_path = Path("runs") / "group" / "2026-06-17_12-00-00" / "models" / "model.pt"
 
     assert get_run_id_from_checkpoint_path(checkpoint_path) == "2026-06-17_12-00-00"
+
+
+def test_get_run_id_from_nested_best_checkpoint_uses_run_directory_name() -> None:
+    checkpoint_path = (
+        Path("runs")
+        / "group"
+        / "2026-06-17_12-00-00"
+        / "models"
+        / "best"
+        / "2026-06-18_12-00-00"
+        / "model_best.pt"
+    )
+
+    assert get_run_id_from_checkpoint_path(checkpoint_path) == "2026-06-17_12-00-00"
+
+
+def test_get_run_id_from_standalone_checkpoint_uses_checkpoint_name() -> None:
+    checkpoint_path = Path("checkpoints") / "po_wall_baseline.pt"
+
+    assert get_run_id_from_checkpoint_path(checkpoint_path) == "po_wall_baseline"
 
 
 def test_serialize_dataclass_recurses_into_enums_types_tuples_and_dict_keys() -> None:
