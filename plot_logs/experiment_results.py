@@ -25,6 +25,8 @@ X_AXIS_LABEL = "Environment steps (millions)"
 ENVIRONMENT_STEPS_SCALE = 1_000_000
 EP_REW_EMA_COLUMN = "ep_rew_ema"
 EP_SUCCESS_RATE_EMA_COLUMN = "ep_success_rate_ema"
+EVAL_EP_REW_COLUMN = "eval_ep_rew__mean"
+EVAL_SUCCESS_RATE_COLUMN = "eval_success_rate"
 DEFAULT_DPIS = [200]
 DEFAULT_RUN_LENGTH_LIMIT = 100_000_000
 GROUP_PALETTE: tuple[str, ...] = (
@@ -112,6 +114,20 @@ PLOT_SPECS: tuple[MetricPlotSpec, ...] = (
     RETURN_EMA_PLOT,
     SUCCESS_RATE_EMA_PLOT,
 )
+EVALUATION_PLOT_SPECS: tuple[MetricPlotSpec, ...] = (
+    MetricPlotSpec(
+        column=EVAL_EP_REW_COLUMN,
+        output_stem="eval_ep_rew",
+        title="Frozen-Evaluation Episode Reward",
+        ylabel="Mean episode return",
+    ),
+    MetricPlotSpec(
+        column=EVAL_SUCCESS_RATE_COLUMN,
+        output_stem=EVAL_SUCCESS_RATE_COLUMN,
+        title="Frozen-Evaluation Success Rate",
+        ylabel="Success rate (%)",
+    ),
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -197,14 +213,14 @@ def normalize_dpis(dpis: Sequence[int] | None) -> tuple[int, ...]:
     return normalized_dpis
 
 
-def find_log_file(run_dir: Path) -> Path | None:
+def find_log_file(run_dir: Path, *, log_stem: str = "log") -> Path | None:
     preferred_names = (
-        "log.csv",
-        "log.csv.gz",
-        "log.csv.bz2",
-        "log.csv.xz",
-        "log.csv.zip",
-        "log.zip",
+        f"{log_stem}.csv",
+        f"{log_stem}.csv.gz",
+        f"{log_stem}.csv.bz2",
+        f"{log_stem}.csv.xz",
+        f"{log_stem}.csv.zip",
+        f"{log_stem}.zip",
     )
     for name in preferred_names:
         candidate = run_dir / name
@@ -214,23 +230,33 @@ def find_log_file(run_dir: Path) -> Path | None:
     candidates = sorted(
         path
         for path in run_dir.iterdir()
-        if path.is_file() and path.stem.startswith("log") and is_supported_log_path(path)
+        if path.is_file()
+        and path.stem.startswith(log_stem)
+        and is_supported_log_path(path)
     )
     return candidates[0] if candidates else None
 
 
-def iter_group_log_files(group_dir: Path) -> Iterable[tuple[str, Path]]:
-    direct_log = find_log_file(group_dir)
+def iter_group_log_files(
+    group_dir: Path,
+    *,
+    log_stem: str = "log",
+) -> Iterable[tuple[str, Path]]:
+    direct_log = find_log_file(group_dir, log_stem=log_stem)
     if direct_log is not None:
         yield group_dir.name, direct_log
 
     for run_dir in sorted((path for path in group_dir.iterdir() if path.is_dir()), key=lambda path: path.name):
-        log_path = find_log_file(run_dir)
+        log_path = find_log_file(run_dir, log_stem=log_stem)
         if log_path is not None:
             yield run_dir.name, log_path
 
 
-def iter_source_log_files(source_path: Path) -> Iterable[tuple[str, Path]]:
+def iter_source_log_files(
+    source_path: Path,
+    *,
+    log_stem: str = "log",
+) -> Iterable[tuple[str, Path]]:
     if source_path.is_file():
         if not is_supported_log_path(source_path):
             raise ValueError(f"Unsupported log path: {source_path}")
@@ -240,7 +266,7 @@ def iter_source_log_files(source_path: Path) -> Iterable[tuple[str, Path]]:
     if not source_path.is_dir():
         raise FileNotFoundError(source_path)
 
-    yield from iter_group_log_files(source_path)
+    yield from iter_group_log_files(source_path, log_stem=log_stem)
 
 
 def resolve_source_path(source_path: Path, *, experiment_run_dir: Path) -> Path:
@@ -319,6 +345,9 @@ def load_experiment_groups(
     x_column: str = DEFAULT_X_COLUMN,
     display_name_overrides: Mapping[str, str] | None = None,
     extra_group_sources: Mapping[str, Sequence[Path]] | None = None,
+    log_stem: str = "log",
+    required_metric_columns: Sequence[str] = (EP_REW_EMA_COLUMN,),
+    optional_metric_columns: Sequence[str] = (EP_SUCCESS_RATE_EMA_COLUMN,),
 ) -> list[ExperimentGroup]:
     experiment_run_dir = experiment_run_dir.expanduser().resolve()
     if not experiment_run_dir.is_dir():
@@ -326,7 +355,7 @@ def load_experiment_groups(
 
     grouped_logs: dict[str, list[tuple[str, Path]]] = {}
     for group_dir in sorted((path for path in experiment_run_dir.iterdir() if path.is_dir()), key=lambda path: path.name):
-        run_logs = list(iter_group_log_files(group_dir))
+        run_logs = list(iter_group_log_files(group_dir, log_stem=log_stem))
         if run_logs:
             grouped_logs[group_dir.name] = run_logs
 
@@ -339,7 +368,10 @@ def load_experiment_groups(
                 resolved_source_path = resolve_source_path(source_path, experiment_run_dir=experiment_run_dir)
                 if not resolved_source_path.exists():
                     continue
-                for run_name, log_path in iter_source_log_files(resolved_source_path):
+                for run_name, log_path in iter_source_log_files(
+                    resolved_source_path,
+                    log_stem=log_stem,
+                ):
                     resolved_log_path = log_path.resolve()
                     if resolved_log_path in seen_log_paths:
                         continue
@@ -367,8 +399,6 @@ def load_experiment_groups(
     #         unknown_names_display = ", ".join(unknown_names)
     #         raise ValueError(f"display_name_overrides contains unknown group names: {unknown_names_display}")
 
-    return_columns = (EP_REW_EMA_COLUMN,)
-    optional_return_columns = (EP_SUCCESS_RATE_EMA_COLUMN,)
     groups: list[ExperimentGroup] = []
     for group_name in ordered_group_names(grouped_logs, group_order):
         runs = [
@@ -377,8 +407,8 @@ def load_experiment_groups(
                 group_name=group_name,
                 run_name=run_name,
                 x_column=x_column,
-                return_columns=return_columns,
-                optional_return_columns=optional_return_columns,
+                return_columns=required_metric_columns,
+                optional_return_columns=optional_metric_columns,
             )
             for run_name, path in grouped_logs[group_name]
         ]
@@ -789,6 +819,7 @@ def plot_experiment_selection(
     colors: dict[str, tuple[float, float, float, float]],
     title_suffix: str | None = None,
     include_selection_title_suffix: bool = True,
+    plot_specs: Sequence[MetricPlotSpec] = PLOT_SPECS,
 ) -> list[Path]:
     selected_groups = selected_groups_for_plot_selection(selection, groups)
     selected_group_names = {group.name for group in selected_groups}
@@ -807,7 +838,7 @@ def plot_experiment_selection(
             selection.title_suffix or selection.name.replace("_", " ").title()
         )
     output_paths: list[Path] = []
-    for metric in PLOT_SPECS:
+    for metric in plot_specs:
         if not metric_has_finite_values(
             selected_groups,
             metric.column,
@@ -905,7 +936,11 @@ def plot_experiment_results(
     group_color_overrides: Mapping[str, str] | None = None,
     title_suffix: str | None = None,
     include_selection_title_suffix: bool = True,
+    log_stem: str = "log",
+    plot_specs: Sequence[MetricPlotSpec] = PLOT_SPECS,
 ) -> ExperimentPlotResult:
+    if not plot_specs:
+        raise ValueError("plot_specs must contain at least one metric")
     groups = load_experiment_groups(
         experiment_run_dir,
         group_order=group_order,
@@ -913,6 +948,9 @@ def plot_experiment_results(
         x_column=x_column,
         display_name_overrides=display_name_overrides,
         extra_group_sources=extra_group_sources,
+        log_stem=log_stem,
+        required_metric_columns=(plot_specs[0].column,),
+        optional_metric_columns=tuple(metric.column for metric in plot_specs[1:]),
     )
     output_dir = output_dir.expanduser().resolve()
     colors = group_colors(groups)
@@ -933,7 +971,7 @@ def plot_experiment_results(
         raise ValueError("No groups selected for the main plots")
     normalized_dpis = normalize_dpis(dpis)
     output_paths: list[Path] = []
-    for metric in PLOT_SPECS:
+    for metric in plot_specs:
         if not metric_has_finite_values(
             main_groups,
             metric.column,
@@ -990,6 +1028,7 @@ def plot_experiment_results(
                     colors=colors,
                     title_suffix=title_suffix,
                     include_selection_title_suffix=include_selection_title_suffix,
+                    plot_specs=plot_specs,
                 )
             )
     return ExperimentPlotResult(groups=groups, output_paths=output_paths)

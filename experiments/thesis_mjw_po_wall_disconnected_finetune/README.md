@@ -41,7 +41,17 @@ Generate grouped and per-run training curves for all three 50M variants with:
 .venv\Scripts\python.exe experiments\thesis_mjw_po_wall_disconnected_finetune\plot_results.py
 ```
 
-The plots are written to `experiments/thesis_mjw_po_wall_disconnected_finetune/results/`.
+Training plots are written to
+`experiments/thesis_mjw_po_wall_disconnected_finetune/results/`; frozen-evaluation
+reward and success-rate plots from each run's `eval_log.csv` are written to its
+`evaluation/` subdirectory. Generate the final training-metric summary with:
+
+```powershell
+.venv\Scripts\python.exe experiments\thesis_mjw_po_wall_disconnected_finetune\summarize_results.py
+```
+
+The summary is written to
+`experiments/thesis_mjw_po_wall_disconnected_finetune/results/final_metrics.json`.
 Record the normal and actuator-only TMASAC checkpoints respectively with:
 
 ```powershell

@@ -9,6 +9,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from plot_logs.experiment_results import (
     DEFAULT_X_COLUMN,
+    EVALUATION_PLOT_SPECS,
+    EVAL_EP_REW_COLUMN,
+    EVAL_SUCCESS_RATE_COLUMN,
     EP_REW_EMA_COLUMN,
     EP_SUCCESS_RATE_EMA_COLUMN,
     ExperimentGroup,
@@ -240,6 +243,52 @@ class ExperimentResultsTests(unittest.TestCase):
                 call.kwargs["colors"]["variant"],
                 (0.9019607843137255, 0.6235294117647059, 0.0, 1.0),
             )
+
+    def test_plot_experiment_results_can_plot_evaluation_logs(self) -> None:
+        groups = [SimpleNamespace(name="baseline")]
+
+        with (
+            patch(
+                "plot_logs.experiment_results.load_experiment_groups",
+                return_value=groups,
+            ) as load_groups,
+            patch(
+                "plot_logs.experiment_results.metric_has_finite_values",
+                return_value=True,
+            ),
+            patch(
+                "plot_logs.experiment_results.plot_individual_metric",
+                return_value=[],
+            ) as individual,
+            patch(
+                "plot_logs.experiment_results.plot_group_metric",
+                return_value=[],
+            ) as grouped,
+        ):
+            plot_experiment_results(
+                Path("unused"),
+                Path("unused-output"),
+                log_stem="eval_log",
+                plot_specs=EVALUATION_PLOT_SPECS,
+            )
+
+        self.assertEqual(load_groups.call_args.kwargs["log_stem"], "eval_log")
+        self.assertEqual(
+            load_groups.call_args.kwargs["required_metric_columns"],
+            (EVAL_EP_REW_COLUMN,),
+        )
+        self.assertEqual(
+            load_groups.call_args.kwargs["optional_metric_columns"],
+            (EVAL_SUCCESS_RATE_COLUMN,),
+        )
+        plotted_columns = {
+            call.kwargs["metric"].column
+            for call in (*individual.call_args_list, *grouped.call_args_list)
+        }
+        self.assertEqual(
+            plotted_columns,
+            {EVAL_EP_REW_COLUMN, EVAL_SUCCESS_RATE_COLUMN},
+        )
 
     def test_load_experiment_groups_ignores_missing_extra_group_source(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

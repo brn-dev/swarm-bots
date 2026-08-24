@@ -7,7 +7,10 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from plot_logs.experiment_results import plot_experiment_results
+from plot_logs.experiment_results import (
+    EVALUATION_PLOT_SPECS,
+    plot_experiment_results,
+)
 
 EXPERIMENT_RUN_DIR = (
     REPO_ROOT / "runs" / "thesis_mjw_po_wall_disconnected_finetune_50m"
@@ -23,19 +26,35 @@ DISPLAY_NAME_OVERRIDES = {
     "tmasac_no_connectors": "TMASAC, no connectors",
     "mat_qcx": "MAT-QCX",
 }
+RUN_LENGTH_LIMIT = 150_000_000
+TITLE_SUFFIX = "PO-Wall (Medium), disconnected-start fine-tuning"
 
 
 def main() -> int:
-    result = plot_experiment_results(
+    training_result = plot_experiment_results(
         EXPERIMENT_RUN_DIR,
         OUTPUT_DIR,
         group_order=GROUP_ORDER,
         display_name_overrides=DISPLAY_NAME_OVERRIDES,
-        run_length_limit=150_000_000,
+        run_length_limit=RUN_LENGTH_LIMIT,
         cut_at_limit=True,
-        title_suffix="PO-Wall (Medium), disconnected-start fine-tuning",
+        title_suffix=TITLE_SUFFIX,
     )
-    for output_path in result.output_paths:
+    evaluation_result = plot_experiment_results(
+        EXPERIMENT_RUN_DIR,
+        OUTPUT_DIR / "evaluation",
+        group_order=GROUP_ORDER,
+        display_name_overrides=DISPLAY_NAME_OVERRIDES,
+        run_length_limit=RUN_LENGTH_LIMIT,
+        cut_at_limit=True,
+        title_suffix=TITLE_SUFFIX,
+        log_stem="eval_log",
+        plot_specs=EVALUATION_PLOT_SPECS,
+    )
+    for output_path in (
+        *training_result.output_paths,
+        *evaluation_result.output_paths,
+    ):
         print(output_path)
     return 0
 
