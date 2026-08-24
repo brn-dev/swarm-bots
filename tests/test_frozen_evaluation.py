@@ -197,6 +197,7 @@ def test_frozen_evaluation_can_reuse_stateful_environment() -> None:
 
     assert first_metrics["eval_ep_rew"].mean == second_metrics["eval_ep_rew"].mean
     assert first_metrics["eval_success_rate"] == second_metrics["eval_success_rate"]
+    assert evaluation_env.recording_kwargs is None
     runner.close()
     assert evaluation_env.closed
 

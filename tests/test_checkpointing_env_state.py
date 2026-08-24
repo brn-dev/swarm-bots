@@ -5,7 +5,14 @@ from unittest.mock import patch
 import torch
 from gymnasium import spaces
 
-from swarmbots.learn.checkpointing import apply_env_state, capture_env_state, freeze_env_normalization, move_env_to_device
+from swarmbots.learn.checkpointing import (
+    align_torch_compile_state_dict_keys,
+    apply_env_state,
+    capture_env_state,
+    freeze_env_normalization,
+    migrate_tmasac_removed_connector_action_dims,
+    move_env_to_device,
+)
 from swarmbots.learn.algos.base_algorithm import BaseAlgorithm
 from swarmbots.learn.env_wrappers.torch_feature_wise_obs_norm_wrapper import TorchFeatureWiseObsNormWrapper
 from swarmbots.learn.env_wrappers.torch_normalize_reward_wrapper import TorchNormalizeRewardWrapper
@@ -104,6 +111,36 @@ class CheckpointEnvStateTests(unittest.TestCase):
         self.assertEqual(algorithm.n_total_iterations, 7)
         self.assertEqual(algorithm.n_total_updates, 11)
         self.assertEqual(algorithm.n_total_timesteps, 100_000_768)
+
+    def test_removed_action_migration_keeps_observation_and_actuator_columns(self) -> None:
+        key = "critic.encoder.local_action_encoder.0.weight"
+        source_weight = torch.arange(12, dtype=torch.float32).reshape(3, 4)
+        target_weight = torch.zeros(3, 3)
+
+        migrated = migrate_tmasac_removed_connector_action_dims(
+            {key: source_weight},
+            {key: target_weight},
+        )
+
+        self.assertTrue(torch.equal(migrated[key], source_weight[:, :3]))
+
+    def test_removed_action_migration_runs_after_compiled_key_alignment(self) -> None:
+        target_key = "critic.encoder._orig_mod.local_action_encoder.0.weight"
+        compiled_key = "critic._orig_mod.encoder.local_action_encoder.0.weight"
+        source_weight = torch.arange(12, dtype=torch.float32).reshape(3, 4)
+        target_weight = torch.zeros(3, 3)
+
+        aligned = align_torch_compile_state_dict_keys(
+            {compiled_key: source_weight},
+            target_keys=[target_key],
+        )
+        migrated = migrate_tmasac_removed_connector_action_dims(
+            aligned,
+            {target_key: target_weight},
+        )
+
+        self.assertEqual(list(migrated), [target_key])
+        self.assertTrue(torch.equal(migrated[target_key], source_weight[:, :3]))
 
     def test_torch_obs_norm_restores_legacy_featurewise_wrapper_state_by_obs_key(self) -> None:
         wrapper = TorchFeatureWiseObsNormWrapper(

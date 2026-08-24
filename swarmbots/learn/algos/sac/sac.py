@@ -6,7 +6,11 @@ import torch
 from loguru import logger
 
 from swarmbots.learn.action_dists.action_dist import ActionMetricsSplitterInput
-from swarmbots.learn.algos.base_algorithm import BaseAlgorithm, LearningRate
+from swarmbots.learn.algos.base_algorithm import (
+    BaseAlgorithm,
+    LearningRate,
+    PolicyStateDictTransform,
+)
 from swarmbots.learn.algos.off_policy import (
     OffPolicyReplayBuffer,
     OffPolicyRolloutState,
@@ -921,12 +925,14 @@ class SAC(BaseAlgorithm):
             map_location: Any | None = "cpu",
             recover_best_return_ema: bool = True,
             strict_load_state_dict: bool = True,
+            policy_state_dict_transform: PolicyStateDictTransform | None = None,
     ) -> None:
         super().load(
             path,
             map_location=map_location,
             recover_best_return_ema=recover_best_return_ema,
             strict_load_state_dict=strict_load_state_dict,
+            policy_state_dict_transform=policy_state_dict_transform,
         )
         self.replay_buffer.reset()
         self._rollout_state = None

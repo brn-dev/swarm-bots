@@ -28,20 +28,23 @@ class VectorSwarmBotsActionSpace(VectorHybridActionSpace):
         connectors_dim: int,
         *,
         continuous_connector_actions: bool = False,
+        include_connectors: bool = True,
     ):
+        action_spaces: dict[str, spaces.Space] = {
+            "actuators": spaces.Box(
+                low=-1.0,
+                high=1.0,
+                shape=(n_envs, n_agents, actuators_dim),
+                dtype=np.float32,
+            ),
+        }
+        if include_connectors:
+            action_spaces["connectors"] = connector_action_space(
+                (n_envs, n_agents, connectors_dim),
+                continuous=continuous_connector_actions,
+            )
         super().__init__(
-            spaces={
-                "actuators": spaces.Box(
-                    low=-1.0,
-                    high=1.0,
-                    shape=(n_envs, n_agents, actuators_dim),
-                    dtype=np.float32,
-                ),
-                "connectors": connector_action_space(
-                    (n_envs, n_agents, connectors_dim),
-                    continuous=continuous_connector_actions,
-                ),
-            }
+            spaces=action_spaces,
         )
 
 
@@ -53,6 +56,7 @@ class SwarmBotsLearnEnvWrapper(BaseLearnEnvWrapper):
         device: torch.device | str = "cpu",
         obs_dtype: torch.dtype = torch.float32,
         reward_dtype: torch.dtype = torch.float32,
+        disable_connector_actions: bool = False,
     ):
         assert isinstance(env.action_space, spaces.Dict)
         assert "actuators" in env.action_space.keys()
@@ -76,6 +80,7 @@ class SwarmBotsLearnEnvWrapper(BaseLearnEnvWrapper):
             actuators_dim=actuators_dim,
             connectors_dim=connectors_dim,
             continuous_connector_actions=continuous_connector_actions,
+            include_connectors=not disable_connector_actions,
         )
 
         super().__init__(
@@ -87,8 +92,9 @@ class SwarmBotsLearnEnvWrapper(BaseLearnEnvWrapper):
         )
 
         self.actuators_dim = action_space["actuators"].shape[2]
-        self.connectors_dim = action_space["connectors"].shape[2]
+        self.connectors_dim = connectors_dim
         self.continuous_connector_actions = continuous_connector_actions
+        self.connector_actions_disabled = disable_connector_actions
         self.action_backend = str(getattr(env, "action_backend", "numpy")).lower()
 
     def _actions_to_env(self, actions: torch.Tensor) -> dict[str, object]:
@@ -100,7 +106,13 @@ class SwarmBotsLearnEnvWrapper(BaseLearnEnvWrapper):
             backend=self.action_backend,
             dtype=np.float32 if self.action_backend == "numpy" else None,
         )
-        connector_actions = actions[..., self.actuators_dim :]
+        if self.connector_actions_disabled:
+            connector_actions = actions.new_full(
+                (*actions.shape[:-1], self.connectors_dim),
+                -1.0,
+            )
+        else:
+            connector_actions = actions[..., self.actuators_dim :]
         if self.continuous_connector_actions:
             connectors = to_backend_array(
                 connector_actions,

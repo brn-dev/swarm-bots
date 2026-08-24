@@ -9,7 +9,7 @@ import sys
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Optional, Collection, Callable, Self
+from typing import Any, Optional, Collection, Callable, Mapping, Self
 
 import torch
 from loguru import logger
@@ -39,6 +39,10 @@ MIN_ITERATIONS_FOR_BEST = 100
 
 LearningRate = float | list[float] | dict[str, float]
 LearnIterationHook = Callable[["BaseAlgorithm", dict[str, Any], int], None]
+PolicyStateDictTransform = Callable[
+    [dict[str, Any], Mapping[str, Any]],
+    dict[str, Any],
+]
 
 MEAN_STD_LOG_METRIC_KEYS = frozenset({
     "rollout_time",
@@ -481,13 +485,20 @@ class BaseAlgorithm(abc.ABC):
             *,
             map_location: Any | None = "cpu",
             recover_best_return_ema: bool = True,
-            strict_load_state_dict: bool = True
+            strict_load_state_dict: bool = True,
+            policy_state_dict_transform: PolicyStateDictTransform | None = None,
     ) -> None:
         checkpoint = load_checkpoint(path, map_location=map_location)
+        target_state_dict = self.policy.state_dict()
         policy_state_dict = align_torch_compile_state_dict_keys(
             extract_policy_state_dict(checkpoint),
-            target_keys=self.policy.state_dict().keys(),
+            target_keys=target_state_dict.keys(),
         )
+        if policy_state_dict_transform is not None:
+            policy_state_dict = policy_state_dict_transform(
+                policy_state_dict,
+                target_state_dict,
+            )
         missing_keys, unexpected_keys = self.policy.load_state_dict(
             policy_state_dict,
             strict=strict_load_state_dict

@@ -128,6 +128,41 @@ class ContinuousConnectorActionTests(unittest.TestCase):
             action_dict["connectors"], np.array([[[-0.75], [0.125]]], dtype=np.float32)
         )
 
+    def test_learn_wrapper_can_remove_and_force_continuous_connector_actions(self) -> None:
+        vector_env = SyncVectorEnv(
+            [
+                lambda: TestingSwarmBotsEnv(
+                    n_agents=2,
+                    n_local_obs=3,
+                    n_global_obs=2,
+                    actuators_dim=2,
+                    connectors_dim=1,
+                    continuous_connector_actions=True,
+                )
+            ],
+            autoreset_mode=AutoresetMode.SAME_STEP,
+        )
+        env = SwarmBotsLearnEnvWrapper(
+            vector_env,
+            disable_connector_actions=True,
+        )
+
+        self.assertEqual(list(env.action_space.keys()), ["actuators"])
+        self.assertEqual(env.action_space.total_agent_action_dim, 2)
+        self.assertEqual(env.connectors_dim, 1)
+        action_dict = env._actions_to_env(
+            torch.tensor([[[0.25, -0.75], [0.5, 0.125]]])
+        )
+
+        np.testing.assert_allclose(
+            action_dict["actuators"],
+            np.array([[[0.25, -0.75], [0.5, 0.125]]], dtype=np.float32),
+        )
+        np.testing.assert_array_equal(
+            action_dict["connectors"],
+            np.full((1, 2, 1), -1.0, dtype=np.float32),
+        )
+
     def test_learn_wrapper_default_connector_actions_stay_binary(self) -> None:
         vector_env = SyncVectorEnv(
             [

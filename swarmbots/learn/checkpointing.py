@@ -61,6 +61,59 @@ def align_torch_compile_state_dict_keys(
     return aligned
 
 
+def migrate_tmasac_removed_connector_action_dims(
+    state_dict: Mapping[str, Any],
+    target_state_dict: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Remove trailing connector columns while preserving TMASAC action-input weights."""
+    migrated = dict(state_dict)
+    migrated_keys: list[str] = []
+    trailing_input_weight_suffixes = (
+        ".local_action_encoder.0.weight",
+        ".observation_action_encoder.action_encoder.0.weight",
+        ".transition_model.coembed.0.weight",
+    )
+    trailing_input_norm_suffixes = (
+        ".local_action_input_norm.weight",
+        ".local_action_input_norm.bias",
+    )
+
+    for key, value in state_dict.items():
+        canonical_key = ".".join(
+            part for part in key.split(".") if part != "_orig_mod"
+        )
+        target = target_state_dict.get(key)
+        if not torch.is_tensor(value) or not torch.is_tensor(target):
+            continue
+        if value.shape == target.shape:
+            continue
+
+        if (
+            canonical_key.endswith(trailing_input_weight_suffixes)
+            and value.ndim == 2
+            and target.ndim == 2
+            and value.shape[0] == target.shape[0]
+            and value.shape[1] > target.shape[1]
+        ):
+            migrated[key] = value[:, : target.shape[1]]
+            migrated_keys.append(key)
+        elif (
+            canonical_key.endswith(trailing_input_norm_suffixes)
+            and value.ndim == 1
+            and target.ndim == 1
+            and value.shape[0] > target.shape[0]
+        ):
+            migrated[key] = value[: target.shape[0]]
+            migrated_keys.append(key)
+
+    if migrated_keys:
+        logger.warning(
+            "Migrated checkpoint tensors after removing trailing action dimensions: "
+            f"{migrated_keys}"
+        )
+    return migrated
+
+
 def extract_optimizer_state_dict(checkpoint: Any) -> Optional[dict[str, Any]]:
     if isinstance(checkpoint, dict):
         return checkpoint.get("optimizer_state_dict", None)
