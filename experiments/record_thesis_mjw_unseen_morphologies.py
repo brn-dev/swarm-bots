@@ -48,6 +48,7 @@ class RecordingConfig:
     height: int
     camera: int | str
     unconnected_prob: float = 0.0
+    disable_policy_connector_actions: bool = False
 
 
 def _safe_path_component(value: str) -> str:
@@ -142,6 +143,7 @@ def _validate_args(
     args: argparse.Namespace,
     *,
     unconnected_prob: float = 0.0,
+    disable_policy_connector_actions: bool = False,
 ) -> RecordingConfig:
     if not 0.0 <= unconnected_prob <= 1.0:
         raise ValueError("unconnected_prob must be in [0, 1]")
@@ -180,6 +182,7 @@ def _validate_args(
         height=args.height,
         camera=args.camera,
         unconnected_prob=unconnected_prob,
+        disable_policy_connector_actions=disable_policy_connector_actions,
     )
 
 
@@ -240,6 +243,7 @@ def main(
     argv: Sequence[str] | None = None,
     *,
     unconnected_prob: float = 0.0,
+    disable_policy_connector_actions: bool = False,
     default_output_root: Path = DEFAULT_OUTPUT_ROOT,
     morphology_description: str = "unseen, fully pre-connected morphologies",
 ) -> int:
@@ -248,7 +252,11 @@ def main(
         default_output_root=default_output_root,
         morphology_description=morphology_description,
     )
-    config = _validate_args(args, unconnected_prob=unconnected_prob)
+    config = _validate_args(
+        args,
+        unconnected_prob=unconnected_prob,
+        disable_policy_connector_actions=disable_policy_connector_actions,
+    )
     targets = [TARGETS[key] for key in _selected_target_keys(args.target)]
     checkpoints_by_target = {
         target.key: resolve_target_checkpoints(args, target)
@@ -329,6 +337,9 @@ def main(
                     episode_length=config.episode_length,
                     device=device,
                     unconnected_prob=config.unconnected_prob,
+                    disable_policy_connector_actions=(
+                        config.disable_policy_connector_actions
+                    ),
                 )
                 try:
                     _load_checkpoint(checkpoint_path=checkpoint, env=env, policy=policy)

@@ -56,6 +56,9 @@ from swarmbots.learn.algos.sac.tmasac_actor_heads import (
     TMASACQCXActorHead,
 )
 from swarmbots.learn.algos.sac.tmasac_policy import TMASACPolicy
+from swarmbots.learn.checkpointing import (
+    migrate_tmasac_removed_connector_action_dims,
+)
 from swarmbots.learn.env_wrappers.learn_wrappers.swarm_bots_learn_env_wrapper import (
     SwarmBotsLearnEnvWrapper,
 )
@@ -97,6 +100,24 @@ class _DummyContinuousEnv:
         {
             "actuators": spaces.Box(low=-1.0, high=1.0, shape=(n_agents, 2), dtype=float),
             "connectors": spaces.Box(low=-1.0, high=1.0, shape=(n_agents, 1), dtype=float),
+        }
+    )
+
+
+class _DummyActuatorOnlyContinuousEnv:
+    n_agents = 3
+    local_obs_dim = 4
+    global_obs_dim = 2
+    hidden_local_vars_dim = 0
+    hidden_global_vars_dim = 0
+    action_space = HybridActionSpace(
+        {
+            "actuators": spaces.Box(
+                low=-1.0,
+                high=1.0,
+                shape=(n_agents, 2),
+                dtype=float,
+            ),
         }
     )
 
@@ -365,6 +386,42 @@ def test_make_vector_env_forwards_tensor_compile_configuration(
     )
 
 
+def test_tmasac_checkpoint_migration_preserves_actuator_and_action_input_weights() -> None:
+    policy_kwargs = {
+        "policy_variant": "tmasac",
+        "continuous_action_dist": "gumbel_softmax_sign_magnitude_beta",
+        "use_nop": True,
+        "obs_indices": _make_obs_indices(),
+    }
+    full_policy = _make_test_base_policy(env=_DummyContinuousEnv(), **policy_kwargs)
+    actuator_policy = _make_test_base_policy(
+        env=_DummyActuatorOnlyContinuousEnv(),
+        **policy_kwargs,
+    )
+    full_state = full_policy.state_dict()
+    actuator_state = actuator_policy.state_dict()
+
+    migrated_state = migrate_tmasac_removed_connector_action_dims(
+        full_state,
+        actuator_state,
+    )
+    missing_keys, unexpected_keys = actuator_policy.load_state_dict(
+        migrated_state,
+        strict=False,
+    )
+
+    assert missing_keys == []
+    assert unexpected_keys
+    assert all(key.startswith("action_dist.distributions.1.") for key in unexpected_keys)
+    actuator_head_key = "action_dist.distributions.0.output_net.weight"
+    assert torch.equal(migrated_state[actuator_head_key], full_state[actuator_head_key])
+    critic_input_key = "critic.encoder.local_action_encoder.0.weight"
+    assert torch.equal(
+        migrated_state[critic_input_key],
+        full_state[critic_input_key][:, : actuator_state[critic_input_key].shape[1]],
+    )
+
+
 def test_default_run_experiment_wires_ppo_contract(
         monkeypatch: pytest.MonkeyPatch,
         tmp_path: Path,
@@ -465,6 +522,7 @@ def test_default_run_experiment_wires_ppo_contract(
     assert evaluation_runner_kwargs["episodes_per_env"] == 1
     assert evaluation_runner_kwargs["seed"] == 1_000_000
     assert evaluation_runner_kwargs["deterministic"] is True
+    assert evaluation_runner_kwargs["recording_config"].num_episodes == 0
     evaluation_hook_kwargs = capture["evaluation_hook_kwargs"]
     assert isinstance(evaluation_hook_kwargs, dict)
     assert evaluation_hook_kwargs["runner"] is capture["evaluation_runner"]
@@ -537,6 +595,48 @@ def test_continuation_uses_additional_timestep_window_and_separate_evaluation_po
     assert isinstance(vector_env_calls, list)
     assert vector_env_calls[0]["scenario_kwargs"]["unit_start_locations"] is training_locations
     assert vector_env_calls[1]["scenario_kwargs"]["unit_start_locations"] is evaluation_locations
+
+
+def test_connector_free_tmasac_wires_migration_and_actuator_only_metrics(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    capture, _env = _patch_default_experiment_boundaries(monkeypatch)
+    checkpoint_path = Path("source-run/models/model.pt")
+
+    experiment_common.run_experiment(
+        num_envs=4,
+        rollout_steps_per_env=2,
+        variant_name="tmasac-no-connectors",
+        entrypoint_path=Path(__file__),
+        policy_variant="tmasac",
+        load_path=checkpoint_path,
+        additional_timesteps=200,
+        disable_connector_actions=True,
+        migrate_removed_connector_actions=True,
+        total_timesteps=16,
+    )
+
+    wrap_vec_env_kwargs = capture["wrap_vec_env_kwargs"]
+    assert wrap_vec_env_kwargs["disable_connector_actions"] is True
+    load_call = capture["load_call"]
+    assert load_call["strict_load_state_dict"] is False
+    assert (
+        load_call["policy_state_dict_transform"]
+        is migrate_tmasac_removed_connector_action_dims
+    )
+    sac_kwargs = capture["sac_kwargs"]
+    assert len(sac_kwargs["metrics_action_splitters"]) == 1
+    learn_kwargs = capture["learn_kwargs"]
+    logging_keys = {entry[0] for entry in learn_kwargs["logging_console_keys"]}
+    assert "rollout_act1" not in logging_keys
+    assert "replay_act1" not in logging_keys
+    metadata = learn_kwargs["extra_run_metadata"]
+    assert metadata["disable_connector_actions"] is True
+    assert metadata["migrate_removed_connector_actions"] is True
+
+    make_evaluation_env = capture["evaluation_runner_kwargs"]["make_env"]
+    make_evaluation_env()
+    assert capture["wrap_vec_env_kwargs"]["disable_connector_actions"] is True
 
 
 def test_tmasac_run_experiment_preserves_sac_and_nop_configuration(

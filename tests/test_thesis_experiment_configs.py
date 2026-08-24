@@ -204,6 +204,34 @@ def test_po_wall_original_suite_remains_at_100m_steps() -> None:
     assert run.call_args.kwargs["total_timesteps"] == 100_000_000
 
 
+def test_ppo_thesis_continuation_forwards_checkpoint_and_evaluation_settings() -> None:
+    checkpoint_path = Path("source-run/models/model.pt")
+    evaluation_scenario_kwargs = {"unit_start_locations": object()}
+
+    with patch.object(thesis_experiment_common, "run_mjw_experiment") as run:
+        thesis_experiment_common.run_thesis_ppo_experiment(
+            experiment_run_name="continuation",
+            scenario_name="wall",
+            scenario_kwargs={"continuous_connector_actions": True},
+            evaluation_scenario_kwargs=evaluation_scenario_kwargs,
+            evaluation_milestones=(50, 100),
+            evaluation_recording_episodes=0,
+            live_recording_schedule={},
+            variant="mat_qcx",
+            variant_name="mat_qcx",
+            entrypoint_path=Path(__file__),
+            load_path=checkpoint_path,
+            additional_timesteps=50_000_000,
+        )
+
+    assert run.call_args.kwargs["load_path"] == checkpoint_path
+    assert run.call_args.kwargs["additional_timesteps"] == 50_000_000
+    assert run.call_args.kwargs["evaluation_scenario_kwargs"] is evaluation_scenario_kwargs
+    assert run.call_args.kwargs["evaluation_milestones"] == (50, 100)
+    assert run.call_args.kwargs["evaluation_recording_episodes"] == 0
+    assert run.call_args.kwargs["live_recording_schedule"] == {}
+
+
 @pytest.mark.parametrize("variant", ("mappo", "mat_qcx", "mat_ind", "mat_orig"))
 def test_po_wall_250m_suite_has_a_long_horizon_run_for_each_ppo_variant(
     variant: po_wall_250m_common.LongHorizonAlgorithmVariant,

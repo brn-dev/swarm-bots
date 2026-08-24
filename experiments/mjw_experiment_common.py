@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import math
 import sys
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, is_dataclass, replace
 from pathlib import Path
 from typing import Any, Literal
@@ -88,6 +88,9 @@ from swarmbots.learn.algos.sac.tmasac_policy import (
 from swarmbots.learn.algos.world_modeling.next_obs_pred_mixin import NextObsPredConfig
 from swarmbots.learn.algos.world_modeling.next_obs_pred_ppo_wrapper import NOPWorldModelConfig, NextObsPredWrapper
 from swarmbots.learn.algos.world_modeling.ppo_wm_sampler import PPOWMSamplerConfig
+from swarmbots.learn.checkpointing import (
+    migrate_tmasac_removed_connector_action_dims,
+)
 from swarmbots.learn.discord_notifications import run_with_discord_notification
 from swarmbots.learn.evaluation import (
     DEFAULT_EVALUATION_MILESTONES,
@@ -302,6 +305,7 @@ def wrap_vec_env(
     use_transition_obs: bool = False,
     shuffle_agents: bool = False,
     preserve_inactive_prefix_structure: bool = False,
+    disable_connector_actions: bool = False,
 ) -> Any:
     from swarmbots.learn.env_wrappers.learn_wrappers.swarm_bots_learn_env_wrapper import SwarmBotsLearnEnvWrapper
     from swarmbots.learn.env_wrappers.torch_feature_wise_obs_norm_wrapper import TorchFeatureWiseObsNormWrapper
@@ -313,7 +317,11 @@ def wrap_vec_env(
     from swarmbots.learn.env_wrappers.torch_shuffle_agents_wrapper import TorchShuffleAgentsWrapper
     from swarmbots.learn.env_wrappers.torch_transition_obs_wrapper import TorchTransitionObsWrapper
 
-    env = SwarmBotsLearnEnvWrapper(vector_env, device=rollout_device)
+    env = SwarmBotsLearnEnvWrapper(
+        vector_env,
+        device=rollout_device,
+        disable_connector_actions=disable_connector_actions,
+    )
     if shuffle_agents:
         env = TorchShuffleAgentsWrapper(
             env,
@@ -607,7 +615,10 @@ def run_experiment(
         evaluation_milestones: Sequence[float] = DEFAULT_EVALUATION_MILESTONES,
         evaluation_seed: int = 1_000_000,
         evaluation_deterministic: bool = True,
-        evaluation_recording_episodes: int = 5,
+        evaluation_recording_episodes: int = 0,
+        live_recording_schedule: Mapping[float, int] | None = None,
+        disable_connector_actions: bool = False,
+        migrate_removed_connector_actions: bool = False,
 ) -> None:
     from swarmbots.learn.torch_logging import enable_torch_compile_logging
 
@@ -891,6 +902,7 @@ def run_experiment(
         use_transition_obs=use_transition_obs,
         shuffle_agents=shuffle_agents,
         preserve_inactive_prefix_structure=preserve_inactive_prefix_structure,
+        disable_connector_actions=disable_connector_actions,
     )
 
     print("Environment initialized.")
@@ -1060,7 +1072,8 @@ def run_experiment(
             rollout_device=rollout_device,
             record_device=record_device,
             replay_storage_device="cuda",
-            metrics_action_splitters=[lambda actions: split_actuator_joints(actions, actuators_per_limb), None],
+            metrics_action_splitters=[lambda actions: split_actuator_joints(actions, actuators_per_limb)]
+            + ([] if disable_connector_actions else [None]),
             **recurrent_sac_kwargs,
         )
     else:
@@ -1155,7 +1168,8 @@ def run_experiment(
             record_device=record_device,
             use_popart=use_popart,
             agent_logprob_reduction="sum" if policy_variant == "ppo" else None,
-            metrics_action_splitters=[lambda actions: split_actuator_joints(actions, actuators_per_limb), None],
+            metrics_action_splitters=[lambda actions: split_actuator_joints(actions, actuators_per_limb)]
+            + ([] if disable_connector_actions else [None]),
             scheduler_manager=scheduler_manager,
             virtual_mini_batches=virtual_mini_batches,
             parameter_lr_multipliers=parameter_lr_multipliers,
@@ -1163,7 +1177,18 @@ def run_experiment(
 
     if load_path:
         logger.info(f"Loading model from {load_path}")
-        algorithm.load(load_path, recover_best_return_ema=False, strict_load_state_dict=True)
+        checkpoint_load_kwargs: dict[str, object] = {
+            "strict_load_state_dict": not migrate_removed_connector_actions,
+        }
+        if migrate_removed_connector_actions:
+            checkpoint_load_kwargs["policy_state_dict_transform"] = (
+                migrate_tmasac_removed_connector_action_dims
+            )
+        algorithm.load(
+            load_path,
+            recover_best_return_ema=False,
+            **checkpoint_load_kwargs,
+        )
 
     training_start_timesteps = int(algorithm.n_total_timesteps)
     if additional_timesteps is not None:
@@ -1177,7 +1202,11 @@ def run_experiment(
         algorithm=algorithm,
         total_timesteps=total_timesteps,
         start_timesteps=training_start_timesteps,
-        schedule=DEFAULT_LIVE_RECORDING_SCHEDULE,
+        schedule=(
+            DEFAULT_LIVE_RECORDING_SCHEDULE
+            if live_recording_schedule is None
+            else live_recording_schedule
+        ),
     )
 
     def make_evaluation_env() -> Any:
@@ -1203,6 +1232,7 @@ def run_experiment(
             use_transition_obs=use_transition_obs,
             shuffle_agents=shuffle_agents,
             preserve_inactive_prefix_structure=preserve_inactive_prefix_structure,
+            disable_connector_actions=disable_connector_actions,
         )
 
     evaluation_runner = FrozenEvaluationRunner(
@@ -1249,10 +1279,8 @@ def run_experiment(
             [
                 ("rollout_act0_j0", SummaryStatisticsFormat(histogram=11), "roll0_j0"),
                 ("rollout_act0_j1", SummaryStatisticsFormat(histogram=11), "roll0_j1"),
-                ("rollout_act1", SummaryStatisticsFormat(histogram=connector_action_histogram_bins), "roll1"),
                 ("replay_act0_j0", SummaryStatisticsFormat(histogram=11), "rep0_j0"),
                 ("replay_act0_j1", SummaryStatisticsFormat(histogram=11), "rep0_j1"),
-                ("replay_act1", SummaryStatisticsFormat(histogram=connector_action_histogram_bins), "rep1"),
                 ("updates", "3", "upd"),
                 ("critic_loss", SummaryStatisticsFormat(mean=".3f")),
                 ("actor_loss", SummaryStatisticsFormat(mean=".3f")),
@@ -1266,6 +1294,13 @@ def run_experiment(
                 ("random_actions", None, "rnd"),
             ]
         )
+        if not disable_connector_actions:
+            logging_console_keys.extend(
+                [
+                    ("rollout_act1", SummaryStatisticsFormat(histogram=connector_action_histogram_bins), "roll1"),
+                    ("replay_act1", SummaryStatisticsFormat(histogram=connector_action_histogram_bins), "rep1"),
+                ]
+            )
         if use_nop:
             logging_console_keys.append(("critic_nop_loss_scaled", None, "critic_nop"))
     else:
@@ -1280,9 +1315,12 @@ def run_experiment(
                 )
                 for i in range(actuators_per_limb)
             )
+        if not disable_connector_actions:
+            logging_console_keys.append(
+                ("act1", SummaryStatisticsFormat(histogram=connector_action_histogram_bins))
+            )
         logging_console_keys.extend(
             [
-                ("act1", SummaryStatisticsFormat(histogram=connector_action_histogram_bins)),
                 ("updates", "3", "upd"),
                 ("approx_kl", SummaryStatisticsFormat(mean=".2e", std=".2e")),
                 ("clip_frac", None),
@@ -1330,6 +1368,8 @@ def run_experiment(
         "total_timesteps": total_timesteps,
         "training_start_timesteps": training_start_timesteps,
         "additional_timesteps": additional_timesteps,
+        "disable_connector_actions": disable_connector_actions,
+        "migrate_removed_connector_actions": migrate_removed_connector_actions,
         "evaluation_scenario_kwargs": evaluation_scenario_kwargs,
         "logging_buffer_size": logging_buffer_size,
         "sampler_batch_size": sampler_batch_size,

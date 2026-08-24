@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Literal
 
@@ -60,6 +60,10 @@ def run_tmasac_experiment(
     additional_timesteps: int | None = None,
     evaluation_scenario_kwargs: dict[str, object] | None = None,
     evaluation_milestones: Sequence[float] | None = None,
+    evaluation_recording_episodes: int | None = None,
+    live_recording_schedule: Mapping[float, int] | None = None,
+    disable_connector_actions: bool = False,
+    migrate_removed_connector_actions: bool = False,
 ) -> None:
     temporal_model_cls, temporal_model_config = _make_temporal_model_spec(
         variant=variant,
@@ -80,6 +84,14 @@ def run_tmasac_experiment(
         continuation_kwargs["evaluation_scenario_kwargs"] = evaluation_scenario_kwargs
     if evaluation_milestones is not None:
         continuation_kwargs["evaluation_milestones"] = evaluation_milestones
+    if evaluation_recording_episodes is not None:
+        continuation_kwargs["evaluation_recording_episodes"] = evaluation_recording_episodes
+    if live_recording_schedule is not None:
+        continuation_kwargs["live_recording_schedule"] = live_recording_schedule
+    if disable_connector_actions:
+        continuation_kwargs["disable_connector_actions"] = True
+    if migrate_removed_connector_actions:
+        continuation_kwargs["migrate_removed_connector_actions"] = True
 
     run_mjw_experiment(
         num_envs=1024,

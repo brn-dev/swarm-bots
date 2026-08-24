@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -182,11 +183,31 @@ def run_thesis_ppo_experiment(
     rollout_steps_per_env: int = 4,
     variant_name: str | None = None,
     total_timesteps: int = EXPERIMENT_TOTAL_TIMESTEPS,
+    load_path: str | Path | None = None,
+    additional_timesteps: int | None = None,
+    evaluation_scenario_kwargs: dict[str, object] | None = None,
+    evaluation_milestones: Sequence[float] | None = None,
+    evaluation_recording_episodes: int | None = None,
+    live_recording_schedule: Mapping[float, int] | None = None,
 ) -> None:
     config = THESIS_VARIANT_CONFIGS[variant]
 
     if config.policy_variant is None:
         raise ValueError(f"Thesis PPO variant has no policy variant: {variant!r}")
+
+    continuation_kwargs: dict[str, object] = {}
+    if load_path is not None:
+        continuation_kwargs["load_path"] = load_path
+    if additional_timesteps is not None:
+        continuation_kwargs["additional_timesteps"] = additional_timesteps
+    if evaluation_scenario_kwargs is not None:
+        continuation_kwargs["evaluation_scenario_kwargs"] = evaluation_scenario_kwargs
+    if evaluation_milestones is not None:
+        continuation_kwargs["evaluation_milestones"] = evaluation_milestones
+    if evaluation_recording_episodes is not None:
+        continuation_kwargs["evaluation_recording_episodes"] = evaluation_recording_episodes
+    if live_recording_schedule is not None:
+        continuation_kwargs["live_recording_schedule"] = live_recording_schedule
 
     run_mjw_experiment(
         num_envs=num_envs,
@@ -204,4 +225,5 @@ def run_thesis_ppo_experiment(
         scenario_name=scenario_name,
         scenario_kwargs=scenario_kwargs,
         total_timesteps=total_timesteps,
+        **continuation_kwargs,
     )

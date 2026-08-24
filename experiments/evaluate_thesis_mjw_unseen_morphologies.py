@@ -215,6 +215,7 @@ def _build_env_and_policy(
     episode_length: int,
     device: Any,
     unconnected_prob: float = 0.0,
+    disable_policy_connector_actions: bool = False,
 ) -> tuple[Any, Any]:
     import torch
     from torch import nn
@@ -271,6 +272,7 @@ def _build_env_and_policy(
         gamma=0.99,
         use_popart=False,
         rollout_device=device,
+        disable_connector_actions=disable_policy_connector_actions,
     )
 
     temporal_model_cls, temporal_model_config = _make_temporal_model_spec(
