@@ -24,6 +24,10 @@ EVALUATION_RECORDING_EPISODES = 0
 LIVE_RECORDING_SCHEDULE: dict[float, int] = {}
 LONG_ADDITIONAL_TIMESTEPS = 50_000_000
 LONG_EXPERIMENT_RUN_NAME = "thesis_mjw_po_wall_disconnected_finetune_50m"
+HARD_WALL_HEIGHT = 0.4
+HARD_WALL_EXPERIMENT_RUN_NAME = (
+    "thesis_mjw_po_wall_disconnected_finetune_hard_wall_50m"
+)
 
 
 def _make_disconnected_pool(*, pool_seed_start: int) -> MJWPreConnectedUnitLocationsConfig:
@@ -51,6 +55,14 @@ EVALUATION_SCENARIO_KWARGS = make_scenario_kwargs(
         "unit_start_locations": _make_disconnected_pool(pool_seed_start=3_000_000),
     },
 )
+HARD_WALL_SCENARIO_KWARGS = make_scenario_kwargs(
+    SCENARIO_KWARGS,
+    {"wall_height": HARD_WALL_HEIGHT},
+)
+HARD_WALL_EVALUATION_SCENARIO_KWARGS = make_scenario_kwargs(
+    EVALUATION_SCENARIO_KWARGS,
+    {"wall_height": HARD_WALL_HEIGHT},
+)
 
 
 def run_experiment(*, checkpoint_path: Path, entrypoint_path: Path) -> None:
@@ -73,20 +85,13 @@ def run_experiment(*, checkpoint_path: Path, entrypoint_path: Path) -> None:
 
 
 def run_tmasac_50m(*, checkpoint_path: Path, entrypoint_path: Path) -> None:
-    checkpoint_path = _resolve_checkpoint(checkpoint_path)
-    run_tmasac_experiment(
+    _run_tmasac_50m_variant(
+        checkpoint_path=checkpoint_path,
+        entrypoint_path=entrypoint_path,
         experiment_run_name=LONG_EXPERIMENT_RUN_NAME,
-        scenario_name="wall",
         scenario_kwargs=SCENARIO_KWARGS,
         evaluation_scenario_kwargs=EVALUATION_SCENARIO_KWARGS,
-        evaluation_milestones=EVALUATION_MILESTONES,
-        evaluation_recording_episodes=EVALUATION_RECORDING_EPISODES,
-        live_recording_schedule=LIVE_RECORDING_SCHEDULE,
-        variant="tmasac_baseline",
         variant_name="tmasac_baseline",
-        entrypoint_path=entrypoint_path,
-        load_path=checkpoint_path,
-        additional_timesteps=LONG_ADDITIONAL_TIMESTEPS,
     )
 
 
@@ -95,22 +100,80 @@ def run_tmasac_no_connectors_50m(
     checkpoint_path: Path,
     entrypoint_path: Path,
 ) -> None:
-    checkpoint_path = _resolve_checkpoint(checkpoint_path)
-    run_tmasac_experiment(
+    _run_tmasac_50m_variant(
+        checkpoint_path=checkpoint_path,
+        entrypoint_path=entrypoint_path,
         experiment_run_name=LONG_EXPERIMENT_RUN_NAME,
-        scenario_name="wall",
         scenario_kwargs=SCENARIO_KWARGS,
         evaluation_scenario_kwargs=EVALUATION_SCENARIO_KWARGS,
+        variant_name="tmasac_no_connectors",
+        disable_connector_actions=True,
+    )
+
+
+def run_tmasac_hard_wall_50m(
+    *,
+    checkpoint_path: Path,
+    entrypoint_path: Path,
+) -> None:
+    _run_tmasac_50m_variant(
+        checkpoint_path=checkpoint_path,
+        entrypoint_path=entrypoint_path,
+        experiment_run_name=HARD_WALL_EXPERIMENT_RUN_NAME,
+        scenario_kwargs=HARD_WALL_SCENARIO_KWARGS,
+        evaluation_scenario_kwargs=HARD_WALL_EVALUATION_SCENARIO_KWARGS,
+        variant_name="tmasac_baseline",
+    )
+
+
+def run_tmasac_no_connectors_hard_wall_50m(
+    *,
+    checkpoint_path: Path,
+    entrypoint_path: Path,
+) -> None:
+    _run_tmasac_50m_variant(
+        checkpoint_path=checkpoint_path,
+        entrypoint_path=entrypoint_path,
+        experiment_run_name=HARD_WALL_EXPERIMENT_RUN_NAME,
+        scenario_kwargs=HARD_WALL_SCENARIO_KWARGS,
+        evaluation_scenario_kwargs=HARD_WALL_EVALUATION_SCENARIO_KWARGS,
+        variant_name="tmasac_no_connectors",
+        disable_connector_actions=True,
+    )
+
+
+def _run_tmasac_50m_variant(
+    *,
+    checkpoint_path: Path,
+    entrypoint_path: Path,
+    experiment_run_name: str,
+    scenario_kwargs: dict[str, object],
+    evaluation_scenario_kwargs: dict[str, object],
+    variant_name: str,
+    disable_connector_actions: bool = False,
+) -> None:
+    checkpoint_path = _resolve_checkpoint(checkpoint_path)
+    connector_ablation_kwargs: dict[str, object] = {}
+    if disable_connector_actions:
+        connector_ablation_kwargs = {
+            "disable_connector_actions": True,
+            "migrate_removed_connector_actions": True,
+        }
+
+    run_tmasac_experiment(
+        experiment_run_name=experiment_run_name,
+        scenario_name="wall",
+        scenario_kwargs=scenario_kwargs,
+        evaluation_scenario_kwargs=evaluation_scenario_kwargs,
         evaluation_milestones=EVALUATION_MILESTONES,
         evaluation_recording_episodes=EVALUATION_RECORDING_EPISODES,
         live_recording_schedule=LIVE_RECORDING_SCHEDULE,
         variant="tmasac_baseline",
-        variant_name="tmasac_no_connectors",
+        variant_name=variant_name,
         entrypoint_path=entrypoint_path,
         load_path=checkpoint_path,
         additional_timesteps=LONG_ADDITIONAL_TIMESTEPS,
-        disable_connector_actions=True,
-        migrate_removed_connector_actions=True,
+        **connector_ablation_kwargs,
     )
 
 

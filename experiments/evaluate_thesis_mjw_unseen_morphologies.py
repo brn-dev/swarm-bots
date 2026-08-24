@@ -175,8 +175,10 @@ def _target_scenario_kwargs(
     unit_count: int,
     pool_seeds: tuple[int, ...],
     unconnected_prob: float = 0.0,
+    scenario_kwargs_overrides: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     from swarmbots.mjw_env.swarm.mjw_homogeneous_swarm import MJWPreConnectedUnitLocationsConfig
+    from swarmbots.scenario_presets.scenario_presets_kwargs import make_scenario_kwargs
 
     unit_start_locations = MJWPreConnectedUnitLocationsConfig(
         num_units=unit_count,
@@ -187,23 +189,26 @@ def _target_scenario_kwargs(
         pool_seeds=pool_seeds,
     )
     if target.scenario_name == "find_opening":
-        return {
+        scenario_kwargs = {
             "continuous_connector_actions": True,
             "unit_start_locations": unit_start_locations,
         }
+    else:
+        from swarmbots.scenario_presets.scenario_presets_kwargs import (
+            PO_WALL_MEDIUM_SCENARIO_KWARGS,
+        )
 
-    from swarmbots.scenario_presets.scenario_presets_kwargs import (
-        PO_WALL_MEDIUM_SCENARIO_KWARGS,
-        make_scenario_kwargs,
-    )
+        scenario_kwargs = make_scenario_kwargs(
+            PO_WALL_MEDIUM_SCENARIO_KWARGS,
+            {
+                "continuous_connector_actions": True,
+                "unit_start_locations": unit_start_locations,
+            },
+        )
 
-    return make_scenario_kwargs(
-        PO_WALL_MEDIUM_SCENARIO_KWARGS,
-        {
-            "continuous_connector_actions": True,
-            "unit_start_locations": unit_start_locations,
-        },
-    )
+    if scenario_kwargs_overrides is None:
+        return scenario_kwargs
+    return make_scenario_kwargs(scenario_kwargs, dict(scenario_kwargs_overrides))
 
 
 def _build_env_and_policy(
@@ -216,6 +221,7 @@ def _build_env_and_policy(
     device: Any,
     unconnected_prob: float = 0.0,
     disable_policy_connector_actions: bool = False,
+    scenario_kwargs_overrides: Mapping[str, object] | None = None,
 ) -> tuple[Any, Any]:
     import torch
     from torch import nn
@@ -248,6 +254,7 @@ def _build_env_and_policy(
         unit_count=unit_count,
         pool_seeds=pool_seeds,
         unconnected_prob=unconnected_prob,
+        scenario_kwargs_overrides=scenario_kwargs_overrides,
     )
     vector_env = make_vector_env(
         episode_length=episode_length,

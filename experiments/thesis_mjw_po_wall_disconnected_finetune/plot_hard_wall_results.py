@@ -10,21 +10,21 @@ if str(REPO_ROOT) not in sys.path:
 from plot_logs.experiment_results import plot_experiment_results
 
 EXPERIMENT_RUN_DIR = (
-    REPO_ROOT / "runs" / "thesis_mjw_po_wall_disconnected_finetune_50m"
+    REPO_ROOT
+    / "runs"
+    / "thesis_mjw_po_wall_disconnected_finetune_hard_wall_50m"
 )
-OUTPUT_DIR = Path(__file__).resolve().parent / "results"
+OUTPUT_DIR = Path(__file__).resolve().parent / "hard_wall_results"
 GROUP_ORDER = (
     "tmasac_baseline",
     "tmasac_no_connectors",
-    "mat_qcx",
 )
 DISPLAY_NAME_OVERRIDES = {
     "tmasac_baseline": "TMASAC",
     "tmasac_no_connectors": "TMASAC, no connectors",
-    "mat_qcx": "MAT-QCX",
 }
 RUN_LENGTH_LIMIT = 150_000_000
-TITLE_SUFFIX = "PO-Wall (Medium), disconnected-start fine-tuning"
+TITLE_SUFFIX = "PO-Wall (height 0.4), disconnected-start fine-tuning"
 
 
 def main() -> int:

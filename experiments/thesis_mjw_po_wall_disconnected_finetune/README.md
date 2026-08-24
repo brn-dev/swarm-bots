@@ -26,6 +26,40 @@ Separate 50M launchers evaluate after +25M and +50M transitions and write under
 .venv\Scripts\python.exe experiments\thesis_mjw_po_wall_disconnected_finetune\scripts\run_mat_qcx_50m.py <checkpoint.pt>
 ```
 
+For the matched harder-wall experiment, the following launchers retain the same
+disconnected training and evaluation pools but increase only the wall height from
+0.3 to the established hard-wall value of 0.4. They write to
+`runs/thesis_mjw_po_wall_disconnected_finetune_hard_wall_50m/`:
+
+```powershell
+.venv\Scripts\python.exe experiments\thesis_mjw_po_wall_disconnected_finetune\scripts\run_tmasac_hard_wall_50m.py <checkpoint.pt>
+.venv\Scripts\python.exe experiments\thesis_mjw_po_wall_disconnected_finetune\scripts\run_tmasac_no_connectors_hard_wall_50m.py <checkpoint.pt>
+```
+
+Both continue for 50M transitions and evaluate numerically after +25M and +50M.
+The actuator-only control is required to establish whether independent modules
+can learn to cross the taller wall; wall height alone does not guarantee this.
+
+Generate hard-wall plots and a separate hard-wall summary with:
+
+```powershell
+.venv\Scripts\python.exe experiments\thesis_mjw_po_wall_disconnected_finetune\plot_hard_wall_results.py
+.venv\Scripts\python.exe experiments\thesis_mjw_po_wall_disconnected_finetune\summarize_hard_wall_results.py
+```
+
+These write only to
+`experiments/thesis_mjw_po_wall_disconnected_finetune/hard_wall_results/`.
+Record the hard-wall connector-enabled and actuator-only checkpoints with:
+
+```powershell
+.venv\Scripts\python.exe experiments\thesis_mjw_po_wall_disconnected_finetune\scripts\record_tmasac_hard_wall_50m.py
+.venv\Scripts\python.exe experiments\thesis_mjw_po_wall_disconnected_finetune\scripts\record_tmasac_no_connectors_hard_wall_50m.py
+```
+
+The recorders use the disjoint evaluation pool, rebuild the environment with
+wall height 0.4, and write beneath the hard-wall run group's `recordings/`
+directory without reading or replacing the medium-wall recordings.
+
 The no-connectors TMASAC variant exposes only actuator actions to the policy and
 always sends `-1` for every physical connector. It restores the complete actuator
 head and removes only the connector columns from critic/NOP action-input weights.
@@ -42,9 +76,8 @@ Generate grouped and per-run training curves for all three 50M variants with:
 ```
 
 Training plots are written to
-`experiments/thesis_mjw_po_wall_disconnected_finetune/results/`; frozen-evaluation
-reward and success-rate plots from each run's `eval_log.csv` are written to its
-`evaluation/` subdirectory. Generate the final training-metric summary with:
+`experiments/thesis_mjw_po_wall_disconnected_finetune/results/`. Generate the
+final training-metric summary with:
 
 ```powershell
 .venv\Scripts\python.exe experiments\thesis_mjw_po_wall_disconnected_finetune\summarize_results.py

@@ -5,10 +5,11 @@ import hashlib
 import json
 import re
 import sys
-from dataclasses import asdict, dataclass
+from collections.abc import Mapping, Sequence
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -49,6 +50,7 @@ class RecordingConfig:
     camera: int | str
     unconnected_prob: float = 0.0
     disable_policy_connector_actions: bool = False
+    scenario_kwargs_overrides: dict[str, object] = field(default_factory=dict)
 
 
 def _safe_path_component(value: str) -> str:
@@ -144,6 +146,7 @@ def _validate_args(
     *,
     unconnected_prob: float = 0.0,
     disable_policy_connector_actions: bool = False,
+    scenario_kwargs_overrides: Mapping[str, object] | None = None,
 ) -> RecordingConfig:
     if not 0.0 <= unconnected_prob <= 1.0:
         raise ValueError("unconnected_prob must be in [0, 1]")
@@ -183,6 +186,7 @@ def _validate_args(
         camera=args.camera,
         unconnected_prob=unconnected_prob,
         disable_policy_connector_actions=disable_policy_connector_actions,
+        scenario_kwargs_overrides=dict(scenario_kwargs_overrides or {}),
     )
 
 
@@ -244,6 +248,7 @@ def main(
     *,
     unconnected_prob: float = 0.0,
     disable_policy_connector_actions: bool = False,
+    scenario_kwargs_overrides: Mapping[str, object] | None = None,
     default_output_root: Path = DEFAULT_OUTPUT_ROOT,
     morphology_description: str = "unseen, fully pre-connected morphologies",
 ) -> int:
@@ -256,6 +261,7 @@ def main(
         args,
         unconnected_prob=unconnected_prob,
         disable_policy_connector_actions=disable_policy_connector_actions,
+        scenario_kwargs_overrides=scenario_kwargs_overrides,
     )
     targets = [TARGETS[key] for key in _selected_target_keys(args.target)]
     checkpoints_by_target = {
@@ -340,6 +346,7 @@ def main(
                     disable_policy_connector_actions=(
                         config.disable_policy_connector_actions
                     ),
+                    scenario_kwargs_overrides=config.scenario_kwargs_overrides,
                 )
                 try:
                     _load_checkpoint(checkpoint_path=checkpoint, env=env, policy=policy)

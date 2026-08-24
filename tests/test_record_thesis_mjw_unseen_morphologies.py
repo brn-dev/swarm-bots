@@ -37,6 +37,15 @@ def test_recording_config_can_disable_policy_connector_actions() -> None:
     assert config.disable_policy_connector_actions is True
 
 
+def test_recording_config_preserves_scenario_overrides() -> None:
+    config = _validate_args(
+        _parse_args([]),
+        scenario_kwargs_overrides={"wall_height": 0.4},
+    )
+
+    assert config.scenario_kwargs_overrides == {"wall_height": 0.4}
+
+
 def test_combination_rollout_seeds_are_repeatable_and_distinct() -> None:
     first_rollout_seed = make_combination_rollout_seed(
         rollout_seed_base=2_000_000,

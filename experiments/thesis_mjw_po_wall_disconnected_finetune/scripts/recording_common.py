@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import sys
+from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Sequence
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 if str(REPO_ROOT) not in sys.path:
@@ -19,6 +19,12 @@ EXPERIMENT_RUN_DIR = (
     / "thesis_mjw_po_wall_disconnected_finetune_50m"
 )
 RECORDING_ROOT = EXPERIMENT_RUN_DIR / "recordings"
+HARD_WALL_EXPERIMENT_RUN_DIR = (
+    REPO_ROOT
+    / "runs"
+    / "thesis_mjw_po_wall_disconnected_finetune_hard_wall_50m"
+)
+HARD_WALL_RECORDING_ROOT = HARD_WALL_EXPERIMENT_RUN_DIR / "recordings"
 
 
 def run_recording(
@@ -26,9 +32,13 @@ def run_recording(
     *,
     disable_policy_connector_actions: bool,
     variant_name: str,
+    experiment_run_dir: Path = EXPERIMENT_RUN_DIR,
+    recording_root: Path = RECORDING_ROOT,
+    scenario_kwargs_overrides: Mapping[str, object] | None = None,
+    morphology_description: str = "fully disconnected 4- and 5-unit PO-wall pools",
 ) -> int:
     recording_options = list(sys.argv[1:] if argv is None else argv)
-    group_dir = EXPERIMENT_RUN_DIR / variant_name
+    group_dir = experiment_run_dir / variant_name
     show_help = any(option in {"-h", "--help"} for option in recording_options)
     checkpoints = (
         []
@@ -61,6 +71,7 @@ def run_recording(
         recorder_argv,
         unconnected_prob=1.0,
         disable_policy_connector_actions=disable_policy_connector_actions,
-        default_output_root=RECORDING_ROOT / variant_name,
-        morphology_description="fully disconnected 4- and 5-unit PO-wall pools",
+        scenario_kwargs_overrides=scenario_kwargs_overrides,
+        default_output_root=recording_root / variant_name,
+        morphology_description=morphology_description,
     )

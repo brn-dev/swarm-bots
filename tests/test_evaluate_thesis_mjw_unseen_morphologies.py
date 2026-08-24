@@ -11,6 +11,7 @@ from experiments.evaluate_thesis_mjw_unseen_morphologies import (
     _align_torch_compile_state_dict_keys,
     _checkpoint_run_id,
     _serialize_config,
+    _target_scenario_kwargs,
     discover_evaluation_checkpoints,
     evaluate_policy,
     make_pool_seeds,
@@ -22,6 +23,22 @@ from experiments.evaluate_thesis_mjw_unseen_morphologies import (
 def test_find_opening_slstm_target_includes_memory_strength_features() -> None:
     assert TARGETS["find_opening_slstm_tmasac"].include_slstm_memory_strength
     assert not TARGETS["po_wall_tmasac"].include_slstm_memory_strength
+
+
+def test_po_wall_scenario_kwargs_can_override_wall_height_for_recording() -> None:
+    scenario_kwargs = _target_scenario_kwargs(
+        TARGETS["po_wall_tmasac"],
+        unit_count=4,
+        pool_seeds=(3_000_000,),
+        unconnected_prob=1.0,
+        scenario_kwargs_overrides={"wall_height": 0.4},
+    )
+
+    assert scenario_kwargs["wall_height"] == 0.4
+    pool = scenario_kwargs["unit_start_locations"]
+    assert pool.num_units == 4
+    assert pool.pool_seeds == (3_000_000,)
+    assert pool.unconnected_prob == 1.0
 
 
 def test_align_torch_compile_state_dict_keys_loads_legacy_compiled_modules_strictly() -> None:
