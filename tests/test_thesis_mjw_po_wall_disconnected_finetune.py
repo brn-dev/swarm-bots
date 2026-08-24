@@ -6,6 +6,7 @@ import pytest
 import experiments.thesis_mjw_po_wall_disconnected_finetune.plot_results as plot_results
 import experiments.thesis_mjw_po_wall_disconnected_finetune.scripts.common as common
 import experiments.thesis_mjw_po_wall_disconnected_finetune.scripts.recording_common as recording_common
+import experiments.thesis_mjw_po_wall_disconnected_finetune.summarize_results as summarize_results
 
 
 def test_disconnected_finetune_wires_tmasac_continuation(monkeypatch: Any) -> None:
@@ -170,13 +171,13 @@ def test_50m_recording_fails_when_its_run_group_has_no_models(
 
 
 def test_50m_plot_compares_all_launcher_groups(monkeypatch: Any) -> None:
-    invocation: dict[str, object] = {}
+    invocations: list[dict[str, object]] = []
 
     class FakeResult:
         output_paths: list[Path] = []
 
     def fake_plot_experiment_results(*args: object, **kwargs: object) -> FakeResult:
-        invocation.update(args=args, **kwargs)
+        invocations.append({"args": args, **kwargs})
         return FakeResult()
 
     monkeypatch.setattr(
@@ -186,10 +187,47 @@ def test_50m_plot_compares_all_launcher_groups(monkeypatch: Any) -> None:
     )
 
     assert plot_results.main() == 0
-    assert invocation["group_order"] == (
-        "tmasac_baseline",
-        "tmasac_no_connectors",
-        "mat_qcx",
+    assert len(invocations) == 2
+    for invocation in invocations:
+        assert invocation["group_order"] == (
+            "tmasac_baseline",
+            "tmasac_no_connectors",
+            "mat_qcx",
+        )
+        assert invocation["run_length_limit"] == 150_000_000
+        assert invocation["cut_at_limit"] is True
+    assert "log_stem" not in invocations[0]
+    assert invocations[1]["log_stem"] == "eval_log"
+    assert invocations[1]["plot_specs"] == plot_results.EVALUATION_PLOT_SPECS
+
+
+def test_50m_summary_uses_plot_groups_and_cutoff(monkeypatch: Any) -> None:
+    invocation: dict[str, object] = {}
+    output_path = Path("summary.json")
+
+    class FakeArgs:
+        output = output_path
+        tail_points = 7
+
+    def fake_summarize_thesis_experiment(**kwargs: object) -> Path:
+        invocation.update(kwargs)
+        return output_path
+
+    monkeypatch.setattr(
+        summarize_results,
+        "parse_summary_args",
+        lambda **kwargs: FakeArgs(),
     )
-    assert invocation["run_length_limit"] == 150_000_000
-    assert invocation["cut_at_limit"] is True
+    monkeypatch.setattr(
+        summarize_results,
+        "summarize_thesis_experiment",
+        fake_summarize_thesis_experiment,
+    )
+
+    assert summarize_results.main() == 0
+    assert invocation["group_order"] == plot_results.GROUP_ORDER
+    assert invocation["display_name_overrides"] == (
+        plot_results.DISPLAY_NAME_OVERRIDES
+    )
+    assert invocation["run_length_limit"] == plot_results.RUN_LENGTH_LIMIT
+    assert invocation["tail_points"] == 7
