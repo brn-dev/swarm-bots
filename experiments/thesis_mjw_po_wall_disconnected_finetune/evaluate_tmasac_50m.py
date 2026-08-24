@@ -15,8 +15,8 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from experiments.evaluate_thesis_mjw_unseen_morphologies import (
-    RESULT_SCHEMA_VERSION,
     discover_evaluation_checkpoints,
+    migrate_evaluation_payload,
 )
 from experiments.evaluate_thesis_mjw_unseen_morphologies import main as _evaluate_main
 
@@ -244,23 +244,44 @@ def _aggregate_connection_usage(
         for result in results
     ]
     episode_count = sum(int(summary["episode_count"]) for summary in usage_summaries)
+    observed_summaries = [
+        summary
+        for summary in usage_summaries
+        if summary["episodes_with_never_connected_unit_count"] is not None
+        and summary["episodes_without_any_successful_connection_count"] is not None
+    ]
+    observed_episode_count = sum(
+        int(summary["episode_count"]) for summary in observed_summaries
+    )
     never_connected_count = sum(
         int(summary["episodes_with_never_connected_unit_count"])
-        for summary in usage_summaries
+        for summary in observed_summaries
     )
     no_connection_count = sum(
         int(summary["episodes_without_any_successful_connection_count"])
-        for summary in usage_summaries
+        for summary in observed_summaries
     )
     return {
         "episode_count": episode_count,
-        "episodes_with_never_connected_unit_count": never_connected_count,
-        "episodes_with_never_connected_unit_rate_percent": (
-            100.0 * never_connected_count / episode_count if episode_count else None
+        "observed_episode_count": observed_episode_count,
+        "observation_coverage_percent": (
+            100.0 * observed_episode_count / episode_count if episode_count else None
         ),
-        "episodes_without_any_successful_connection_count": no_connection_count,
+        "episodes_with_never_connected_unit_count": (
+            never_connected_count if observed_episode_count else None
+        ),
+        "episodes_with_never_connected_unit_rate_percent": (
+            100.0 * never_connected_count / observed_episode_count
+            if observed_episode_count
+            else None
+        ),
+        "episodes_without_any_successful_connection_count": (
+            no_connection_count if observed_episode_count else None
+        ),
         "episodes_without_any_successful_connection_rate_percent": (
-            100.0 * no_connection_count / episode_count if episode_count else None
+            100.0 * no_connection_count / observed_episode_count
+            if observed_episode_count
+            else None
         ),
     }
 
@@ -484,12 +505,10 @@ def write_global_summary(output_root: Path) -> Path:
         source_path = output_root / f"{case.key}.json"
         if not source_path.is_file():
             continue
-        payload = json.loads(source_path.read_text(encoding="utf-8"))
-        if payload.get("schema_version") != RESULT_SCHEMA_VERSION:
-            raise ValueError(
-                f"Cannot summarize {source_path}: expected result schema "
-                f"{RESULT_SCHEMA_VERSION}. Re-run that case with --overwrite."
-            )
+        payload = migrate_evaluation_payload(
+            json.loads(source_path.read_text(encoding="utf-8")),
+            source_description=str(source_path),
+        )
         case_payloads[case.key] = payload
         source_paths[case.key] = source_path
     if not case_payloads:

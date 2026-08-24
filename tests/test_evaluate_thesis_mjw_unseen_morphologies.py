@@ -7,6 +7,7 @@ import torch
 
 from experiments.evaluate_thesis_mjw_unseen_morphologies import (
     EvaluationConfig,
+    RESULT_SCHEMA_VERSION,
     TARGETS,
     _align_torch_compile_state_dict_keys,
     _checkpoint_run_id,
@@ -15,9 +16,44 @@ from experiments.evaluate_thesis_mjw_unseen_morphologies import (
     discover_evaluation_checkpoints,
     evaluate_policy,
     make_pool_seeds,
+    migrate_evaluation_payload,
     resolve_num_envs,
     summarize_episode_metrics,
 )
+
+
+def test_schema_four_payload_migration_preserves_results_and_marks_usage_unobserved() -> None:
+    payload = {
+        "schema_version": 4,
+        "results": [
+            {
+                "summary": {
+                    "episode_count": 10,
+                    "success_count": 4,
+                }
+            }
+        ],
+    }
+
+    migrated = migrate_evaluation_payload(payload, source_description="test payload")
+
+    assert migrated["schema_version"] == RESULT_SCHEMA_VERSION
+    assert migrated["results"][0]["summary"]["connection_usage_by_outcome"] == {
+        "successful_episodes": {
+            "episode_count": 4,
+            "episodes_with_never_connected_unit_count": None,
+            "episodes_with_never_connected_unit_rate_percent": None,
+            "episodes_without_any_successful_connection_count": None,
+            "episodes_without_any_successful_connection_rate_percent": None,
+        },
+        "unsuccessful_episodes": {
+            "episode_count": 6,
+            "episodes_with_never_connected_unit_count": None,
+            "episodes_with_never_connected_unit_rate_percent": None,
+            "episodes_without_any_successful_connection_count": None,
+            "episodes_without_any_successful_connection_rate_percent": None,
+        },
+    }
 
 
 def test_find_opening_slstm_target_includes_memory_strength_features() -> None:

@@ -22,6 +22,7 @@ DEFAULT_OUTPUT_PATH = (
 DEFAULT_UNIT_COUNTS = tuple(range(2, 11))
 POOL_SEED_UNIT_STRIDE = 100_000
 RESULT_SCHEMA_VERSION = 5
+RESUMABLE_RESULT_SCHEMA_VERSIONS = (3, 4, RESULT_SCHEMA_VERSION)
 FINAL_CHECKPOINT_PATTERN = re.compile(r"^model_(?P<steps>\d+)_steps_final\.pt$")
 BEST_CHECKPOINT_NAME = "model_best.pt"
 CONNECTION_SUMMARY_KEYS = (
@@ -754,15 +755,63 @@ def _serialize_config(config: EvaluationConfig) -> dict[str, object]:
     return serialized
 
 
+def migrate_evaluation_payload(
+    payload: dict[str, object],
+    *,
+    source_description: str,
+) -> dict[str, object]:
+    schema_version = payload.get("schema_version")
+    if schema_version not in RESUMABLE_RESULT_SCHEMA_VERSIONS:
+        raise ValueError(
+            f"Cannot use {source_description}: unsupported or missing result schema version"
+        )
+    if schema_version == RESULT_SCHEMA_VERSION:
+        return payload
+
+    results = payload.get("results")
+    if not isinstance(results, list):
+        raise ValueError(f"Cannot use {source_description}: results is not a list")
+    for result in results:
+        if not isinstance(result, dict):
+            continue
+        summary = result["summary"]
+        summary.setdefault("successful_connections_per_unit_successful_episodes", None)
+        summary.setdefault("successful_connections_per_unit_unsuccessful_episodes", None)
+        if "connection_usage_by_outcome" in summary:
+            continue
+        episode_count = int(summary["episode_count"])
+        success_count = int(summary["success_count"])
+        summary["connection_usage_by_outcome"] = {
+            outcome_key: {
+                "episode_count": outcome_count,
+                "episodes_with_never_connected_unit_count": None,
+                "episodes_with_never_connected_unit_rate_percent": None,
+                "episodes_without_any_successful_connection_count": None,
+                "episodes_without_any_successful_connection_rate_percent": None,
+            }
+            for outcome_key, outcome_count in (
+                ("successful_episodes", success_count),
+                ("unsuccessful_episodes", episode_count - success_count),
+            )
+        }
+    payload["schema_version"] = RESULT_SCHEMA_VERSION
+    payload["schema_migration"] = {
+        "from_version": schema_version,
+        "episode_level_connection_usage_available_for_migrated_results": False,
+    }
+    return payload
+
+
 def _load_resume_payload(
     output_path: Path,
     config: EvaluationConfig,
     *,
     resolved_num_envs: int,
 ) -> dict[str, object]:
-    payload = json.loads(output_path.read_text(encoding="utf-8"))
-    if payload.get("schema_version") != RESULT_SCHEMA_VERSION:
-        raise ValueError(f"Cannot resume {output_path}: unsupported or missing result schema version")
+    payload = migrate_evaluation_payload(
+        json.loads(output_path.read_text(encoding="utf-8")),
+        source_description=f"resume {output_path}",
+    )
     payload_config = payload.get("config")
     if isinstance(payload_config, dict) and "unconnected_prob" not in payload_config:
         payload_config = {**payload_config, "unconnected_prob": 0.0}
