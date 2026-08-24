@@ -21,9 +21,15 @@ DEFAULT_OUTPUT_PATH = (
 )
 DEFAULT_UNIT_COUNTS = tuple(range(2, 11))
 POOL_SEED_UNIT_STRIDE = 100_000
-RESULT_SCHEMA_VERSION = 1
+RESULT_SCHEMA_VERSION = 4
 FINAL_CHECKPOINT_PATTERN = re.compile(r"^model_(?P<steps>\d+)_steps_final\.pt$")
 BEST_CHECKPOINT_NAME = "model_best.pt"
+CONNECTION_SUMMARY_KEYS = (
+    "successful_connections_per_unit",
+    "successful_connections_per_unit_successful_episodes",
+    "successful_connections_per_unit_unsuccessful_episodes",
+)
+SUMMARY_STATISTICS = ("mean", "std", "min", "max")
 
 TargetKey = Literal["po_wall_tmasac", "find_opening_slstm_tmasac"]
 
@@ -50,6 +56,8 @@ class EvaluationConfig:
     episode_length: int
     unconnected_prob: float = 0.0
     disable_connector_actions: bool = False
+    disable_policy_connector_actions: bool = False
+    scenario_kwargs_overrides: dict[str, object] | None = None
 
 
 @dataclass(frozen=True)
@@ -156,6 +164,101 @@ def summarize_values(values: Sequence[float]) -> MetricSummary:
     )
 
 
+def summarize_successful_connections_per_unit(
+    metrics: Mapping[str, Sequence[float]],
+    *,
+    episode_indices: Sequence[int] | None = None,
+) -> MetricSummary:
+    if episode_indices is None:
+        episode_indices = range(len(metrics["successful_connections_per_unit_mean"]))
+    episode_means = [
+        metrics["successful_connections_per_unit_mean"][index] for index in episode_indices
+    ]
+    episode_stds = [
+        metrics["successful_connections_per_unit_std"][index] for index in episode_indices
+    ]
+    if len(episode_means) != len(episode_stds):
+        raise ValueError("Connection metric means and standard deviations must have equal lengths")
+    # Each evaluation job fixes the active unit count, so per-episode first and second
+    # moments combine into the exact population statistics over all episode-unit pairs.
+    pooled_mean = statistics.fmean(episode_means)
+    pooled_second_moment = statistics.fmean(
+        episode_std**2 + episode_mean**2
+        for episode_mean, episode_std in zip(episode_means, episode_stds, strict=True)
+    )
+    pooled_variance = max(0.0, pooled_second_moment - pooled_mean**2)
+    return MetricSummary(
+        mean=float(pooled_mean),
+        std=float(pooled_variance**0.5),
+        min=float(
+            min(metrics["successful_connections_per_unit_min"][index] for index in episode_indices)
+        ),
+        max=float(
+            max(metrics["successful_connections_per_unit_max"][index] for index in episode_indices)
+        ),
+    )
+
+
+def summarize_connections_for_episode_outcome(
+    metrics: Mapping[str, Sequence[float]],
+    *,
+    successful: bool,
+) -> dict[str, float] | None:
+    episode_indices = [
+        index
+        for index, success in enumerate(metrics["success"])
+        if bool(success) == successful
+    ]
+    if not episode_indices:
+        return None
+    return asdict(
+        summarize_successful_connections_per_unit(
+            metrics,
+            episode_indices=episode_indices,
+        )
+    )
+
+
+def summarize_connection_usage_for_episode_outcome(
+    metrics: Mapping[str, Sequence[float]],
+    *,
+    successful: bool,
+) -> dict[str, int | float | None]:
+    episode_indices = [
+        index
+        for index, success in enumerate(metrics["success"])
+        if bool(success) == successful
+    ]
+    episode_count = len(episode_indices)
+    episodes_with_never_connected_unit_count = sum(
+        metrics["successful_connections_per_unit_min"][index] == 0.0
+        for index in episode_indices
+    )
+    episodes_without_any_successful_connection_count = sum(
+        metrics["successful_connections_per_unit_max"][index] == 0.0
+        for index in episode_indices
+    )
+    return {
+        "episode_count": episode_count,
+        "episodes_with_never_connected_unit_count": (
+            episodes_with_never_connected_unit_count
+        ),
+        "episodes_with_never_connected_unit_rate_percent": (
+            100.0 * episodes_with_never_connected_unit_count / episode_count
+            if episode_count
+            else None
+        ),
+        "episodes_without_any_successful_connection_count": (
+            episodes_without_any_successful_connection_count
+        ),
+        "episodes_without_any_successful_connection_rate_percent": (
+            100.0 * episodes_without_any_successful_connection_count / episode_count
+            if episode_count
+            else None
+        ),
+    }
+
+
 def summarize_episode_metrics(metrics: dict[str, list[float]]) -> dict[str, object]:
     successes = metrics["success"]
     return {
@@ -166,6 +269,25 @@ def summarize_episode_metrics(metrics: dict[str, list[float]]) -> dict[str, obje
         "episode_length": asdict(summarize_values(metrics["episode_length"])),
         "progress_reward": asdict(summarize_values(metrics["progress_reward"])),
         "guidance_reward": asdict(summarize_values(metrics["guidance_reward"])),
+        "successful_connections_per_unit": asdict(
+            summarize_successful_connections_per_unit(metrics)
+        ),
+        "successful_connections_per_unit_successful_episodes": (
+            summarize_connections_for_episode_outcome(metrics, successful=True)
+        ),
+        "successful_connections_per_unit_unsuccessful_episodes": (
+            summarize_connections_for_episode_outcome(metrics, successful=False)
+        ),
+        "connection_usage_by_outcome": {
+            "successful_episodes": summarize_connection_usage_for_episode_outcome(
+                metrics,
+                successful=True,
+            ),
+            "unsuccessful_episodes": summarize_connection_usage_for_episode_outcome(
+                metrics,
+                successful=False,
+            ),
+        },
     }
 
 
@@ -413,6 +535,10 @@ def evaluate_policy(
         "progress_reward": [],
         "guidance_reward": [],
         "success": [],
+        "successful_connections_per_unit_mean": [],
+        "successful_connections_per_unit_std": [],
+        "successful_connections_per_unit_min": [],
+        "successful_connections_per_unit_max": [],
     }
     with tqdm(
         total=episode_count,
@@ -496,6 +622,9 @@ def evaluate_policy(
                 metrics["progress_reward"].append(float(episode_info["progress_reward"]))
                 metrics["guidance_reward"].append(float(episode_info["guidance_reward"]))
                 metrics["success"].append(float(episode_info["success"]))
+                for statistic_name in ("mean", "std", "min", "max"):
+                    metric_name = f"successful_connections_per_unit_{statistic_name}"
+                    metrics[metric_name].append(float(episode_info[metric_name]))
             progress.update(len(accepted_episode_infos))
             if accepted_episode_infos:
                 success_rate = 100.0 * statistics.fmean(metrics["success"])
@@ -576,6 +705,11 @@ def _write_csv(output_path: Path, raw_results: object) -> None:
         "guidance_reward_std",
         "episode_length_mean",
         "episode_length_std",
+        *[
+            f"{summary_key}_{statistic_name}"
+            for summary_key in CONNECTION_SUMMARY_KEYS
+            for statistic_name in SUMMARY_STATISTICS
+        ],
     ]
     with output_path.open("w", encoding="utf-8", newline="") as output_file:
         writer = csv.DictWriter(output_file, fieldnames=fieldnames)
@@ -601,6 +735,15 @@ def _write_csv(output_path: Path, raw_results: object) -> None:
                     "guidance_reward_std": summary["guidance_reward"]["std"],
                     "episode_length_mean": summary["episode_length"]["mean"],
                     "episode_length_std": summary["episode_length"]["std"],
+                    **{
+                        f"{summary_key}_{statistic_name}": (
+                            summary[summary_key][statistic_name]
+                            if summary[summary_key] is not None
+                            else None
+                        )
+                        for summary_key in CONNECTION_SUMMARY_KEYS
+                        for statistic_name in SUMMARY_STATISTICS
+                    },
                 }
             )
 
@@ -696,6 +839,8 @@ def _validate_args(
     args: argparse.Namespace,
     *,
     unconnected_prob: float = 0.0,
+    disable_policy_connector_actions: bool = False,
+    scenario_kwargs_overrides: Mapping[str, object] | None = None,
 ) -> EvaluationConfig:
     if not 0.0 <= unconnected_prob <= 1.0:
         raise ValueError("unconnected_prob must be in [0, 1]")
@@ -723,6 +868,12 @@ def _validate_args(
         episode_length=args.episode_length,
         unconnected_prob=unconnected_prob,
         disable_connector_actions=args.disable_connector_actions,
+        disable_policy_connector_actions=disable_policy_connector_actions,
+        scenario_kwargs_overrides=(
+            None
+            if scenario_kwargs_overrides is None
+            else dict(scenario_kwargs_overrides)
+        ),
     )
 
 
@@ -730,6 +881,8 @@ def main(
     argv: Sequence[str] | None = None,
     *,
     unconnected_prob: float = 0.0,
+    disable_policy_connector_actions: bool = False,
+    scenario_kwargs_overrides: Mapping[str, object] | None = None,
     default_output_path: Path = DEFAULT_OUTPUT_PATH,
     morphology_description: str = "unseen, fully pre-connected morphologies",
 ) -> int:
@@ -738,7 +891,12 @@ def main(
         default_output_path=default_output_path,
         morphology_description=morphology_description,
     )
-    config = _validate_args(args, unconnected_prob=unconnected_prob)
+    config = _validate_args(
+        args,
+        unconnected_prob=unconnected_prob,
+        disable_policy_connector_actions=disable_policy_connector_actions,
+        scenario_kwargs_overrides=scenario_kwargs_overrides,
+    )
     if args.resume and args.overwrite:
         raise ValueError("--resume and --overwrite are mutually exclusive")
     targets = [TARGETS[key] for key in _selected_target_keys(args.target)]
@@ -842,6 +1000,10 @@ def main(
                     episode_length=config.episode_length,
                     device=device,
                     unconnected_prob=config.unconnected_prob,
+                    disable_policy_connector_actions=(
+                        config.disable_policy_connector_actions
+                    ),
+                    scenario_kwargs_overrides=config.scenario_kwargs_overrides,
                 )
                 try:
                     print(f"Evaluating {checkpoint}...")

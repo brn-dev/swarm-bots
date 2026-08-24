@@ -1069,6 +1069,10 @@ class SAC(BaseAlgorithm):
             "t": "ep_time",
             "progress_reward": "ep_progress_rew",
             "guidance_reward": "ep_guidance_rew",
+            "successful_connections_per_unit_mean": "ep_successful_connections_per_unit_mean",
+            "successful_connections_per_unit_std": "ep_successful_connections_per_unit_std",
+            "successful_connections_per_unit_min": "ep_successful_connections_per_unit_min",
+            "successful_connections_per_unit_max": "ep_successful_connections_per_unit_max",
         }
 
         def add_episode_group_metrics(
@@ -1079,7 +1083,16 @@ class SAC(BaseAlgorithm):
                 make_histograms: bool,
         ) -> None:
             metric_prefix = "" if not prefix else f"{prefix}/"
-            ranged_info_keys = {"r", "l", "progress_reward", "guidance_reward"}
+            ranged_info_keys = {
+                "r",
+                "l",
+                "progress_reward",
+                "guidance_reward",
+                "successful_connections_per_unit_mean",
+                "successful_connections_per_unit_std",
+                "successful_connections_per_unit_min",
+                "successful_connections_per_unit_max",
+            }
             for info_key, metric_key in key_map.items():
                 values = [ep_info[info_key] for ep_info in group_infos if info_key in ep_info]
                 if not values and not include_empty_statistics:

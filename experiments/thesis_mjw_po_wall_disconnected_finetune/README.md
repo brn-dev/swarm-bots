@@ -40,6 +40,23 @@ Both continue for 50M transitions and evaluate numerically after +25M and +50M.
 The actuator-only control is required to establish whether independent modules
 can learn to cross the taller wall; wall height alone does not guarantee this.
 
+Evaluate the final/best checkpoints from all four TMASAC groups (medium/hard wall
+and connector-enabled/actuator-only) on disjoint, fully disconnected 4- and
+5-unit pools with one command:
+
+```powershell
+.venv\Scripts\python.exe experiments\thesis_mjw_po_wall_disconnected_finetune\evaluate_tmasac_50m.py
+```
+
+The evaluator defaults to 512 deterministic episodes per unit count and writes
+one independently resumable JSON/CSV pair per case beneath
+`experiments/thesis_mjw_po_wall_disconnected_finetune/results/evaluation_50m/`.
+Connection counts are summarized across all episodes and separately across
+successful and unsuccessful episodes. Outcome-specific fields are empty when a
+run has no episodes with that outcome.
+Use `--case medium_connectors` (repeatable) to select a subset, and `--resume`
+or `--overwrite` for existing outputs.
+
 Generate hard-wall plots and a separate hard-wall summary with:
 
 ```powershell

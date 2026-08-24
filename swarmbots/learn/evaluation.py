@@ -240,6 +240,10 @@ class FrozenEvaluationRunner:
             "l": "eval_ep_len",
             "progress_reward": "eval_progress_reward",
             "guidance_reward": "eval_guidance_reward",
+            "successful_connections_per_unit_mean": "eval_successful_connections_per_unit_mean",
+            "successful_connections_per_unit_std": "eval_successful_connections_per_unit_std",
+            "successful_connections_per_unit_min": "eval_successful_connections_per_unit_min",
+            "successful_connections_per_unit_max": "eval_successful_connections_per_unit_max",
         }
         for source_key, metric_key in summary_keys.items():
             values = episode_metrics.get(source_key)

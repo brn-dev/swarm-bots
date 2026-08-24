@@ -513,6 +513,18 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
             find_max=True,
             make_histogram=20,
         )
+        connection_metrics = {
+            f"ep_successful_connections_per_unit_{statistic_name}": compute_summary_statistics(
+                [
+                    ep[f"successful_connections_per_unit_{statistic_name}"]
+                    for ep in episode_infos
+                    if f"successful_connections_per_unit_{statistic_name}" in ep
+                ],
+                find_min=True,
+                find_max=True,
+            )
+            for statistic_name in ("mean", "std", "min", "max")
+        }
 
         if update_ema:
             for ep_info in episode_infos:
@@ -530,6 +542,7 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
             'ep_time': ep_time,
             'ep_progress_rew': ep_progress_rew,
             'ep_guidance_rew': ep_guidance_rew,
+            **connection_metrics,
         }
         return metrics, total_steps_in_rollout
 

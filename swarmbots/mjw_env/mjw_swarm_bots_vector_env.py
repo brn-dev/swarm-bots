@@ -369,6 +369,14 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
         self.partner_connector = torch.full_like(self.partner_unit, -1)
         self.connection_twist_idx = torch.full_like(self.partner_unit, -1)
         self.disconnect_potentials = torch.zeros((self.num_envs, self._n_agents, self._n_connectors), device=self.device, dtype=torch.float32)
+        self.successful_connection_counts = torch.zeros(
+            (self.num_envs, self._n_agents),
+            device=self.device,
+            dtype=torch.int64,
+        )
+        self._connection_active_before_update = torch.empty_like(self.partner_unit, dtype=torch.bool)
+        self._connection_active_after_update = torch.empty_like(self.partner_unit, dtype=torch.bool)
+        self._successful_connection_count_update = torch.empty_like(self.successful_connection_counts)
 
         self.current_step = torch.zeros((self.num_envs,), device=self.device, dtype=torch.int64)
         self.is_first_episode = torch.ones((self.num_envs,), device=self.device, dtype=torch.bool)
@@ -636,6 +644,7 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
             self._initial_settled_reset_done = True
         else:
             self._reset_worlds(reset_mask)
+        self.successful_connection_counts[reset_mask] = 0
         if self._live_episode_recorder.is_active():
             reset_world_idx = torch.nonzero(reset_mask, as_tuple=False).flatten()
             self._live_episode_recorder.on_episode_starts(
@@ -792,6 +801,7 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
                 required_njmax=int(self._nefc_overflow_host),
             )
         if bool(step_status[0]):
+            self._inject_connection_episode_stats(infos=infos, dones=dones)
             unstable_world_indices = torch.nonzero(step_status[1:], as_tuple=True)[0].tolist()
             if unstable_world_indices:
                 notify_mjw_simulation_instability_once(
@@ -803,6 +813,7 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
             infos["_final_obs"] = dones.clone()
             self.is_first_episode[dones] = False
             self._reset_done_worlds(dones)
+            self.successful_connection_counts[dones] = 0
             if self._live_episode_recorder.is_active():
                 done_world_idx = torch.nonzero(dones, as_tuple=False).flatten()
                 self._live_episode_recorder.on_episode_starts(
@@ -987,6 +998,11 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
         self._disconnect(connector_action)
 
     def _try_connect(self, connector_action: torch.Tensor) -> None:
+        torch.ge(
+            self.partner_unit,
+            0,
+            out=self._connection_active_before_update,
+        )
         wp.launch(
             kernel=gather_connector_frames,
             dim=(self.num_envs, self._n_total_connectors),
@@ -1047,6 +1063,56 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
             ],
             device=self._wp_device,
         )
+
+        self._record_successful_connections()
+
+    def _record_successful_connections(self) -> None:
+        torch.logical_not(
+            self._connection_active_before_update,
+            out=self._connection_active_before_update,
+        )
+        torch.ge(
+            self.partner_unit,
+            0,
+            out=self._connection_active_after_update,
+        )
+        torch.logical_and(
+            self._connection_active_after_update,
+            self._connection_active_before_update,
+            out=self._connection_active_after_update,
+        )
+        torch.sum(
+            self._connection_active_after_update,
+            dim=-1,
+            out=self._successful_connection_count_update,
+        )
+        self.successful_connection_counts.add_(self._successful_connection_count_update)
+
+    def _inject_connection_episode_stats(
+        self,
+        *,
+        infos: dict[str, Any],
+        dones: torch.Tensor,
+    ) -> None:
+        counts = self.successful_connection_counts.to(dtype=torch.float32)
+        active_mask = self.units_active_mask
+        active_unit_count = active_mask.sum(dim=-1).clamp_min(1)
+        mean = (counts * active_mask).sum(dim=-1) / active_unit_count
+        squared_deviations = (counts - mean.unsqueeze(-1)).square() * active_mask
+        std = torch.sqrt(squared_deviations.sum(dim=-1) / active_unit_count)
+        minimum = counts.masked_fill(~active_mask, torch.inf).amin(dim=-1)
+        maximum = counts.masked_fill(~active_mask, -torch.inf).amax(dim=-1)
+
+        stats = infos.setdefault("episode", {})
+        stats.update(
+            {
+                "successful_connections_per_unit_mean": torch.where(dones, mean, 0.0),
+                "successful_connections_per_unit_std": torch.where(dones, std, 0.0),
+                "successful_connections_per_unit_min": torch.where(dones, minimum, 0.0),
+                "successful_connections_per_unit_max": torch.where(dones, maximum, 0.0),
+            }
+        )
+        infos["_episode"] = dones.clone()
 
     def _disconnect(self, connector_action: torch.Tensor) -> None:
         if self.device.type == "cuda":

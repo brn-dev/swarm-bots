@@ -502,6 +502,27 @@ class SACTests(unittest.TestCase):
         self.assertEqual(metrics["scenario/wall/ep_success_rate"], 50.0)
         self.assertEqual(metrics["scenario/wall/episodes"], 3)
 
+    def test_episode_metrics_include_successful_connections_per_unit(self) -> None:
+        metrics = SAC._episode_metrics([
+            {
+                "successful_connections_per_unit_mean": 1.0,
+                "successful_connections_per_unit_std": 0.5,
+                "successful_connections_per_unit_min": 0.0,
+                "successful_connections_per_unit_max": 2.0,
+            },
+            {
+                "successful_connections_per_unit_mean": 3.0,
+                "successful_connections_per_unit_std": 1.5,
+                "successful_connections_per_unit_min": 1.0,
+                "successful_connections_per_unit_max": 5.0,
+            },
+        ])
+
+        self.assertEqual(metrics["ep_successful_connections_per_unit_mean"].mean, 2.0)
+        self.assertEqual(metrics["ep_successful_connections_per_unit_std"].mean, 1.0)
+        self.assertEqual(metrics["ep_successful_connections_per_unit_min"].min_value, 0.0)
+        self.assertEqual(metrics["ep_successful_connections_per_unit_max"].max_value, 5.0)
+
     def test_episode_metrics_add_no_scenario_schema_for_legacy_infos(self) -> None:
         metrics = SAC._episode_metrics([{"r": 2.0, "l": 5}])
 
