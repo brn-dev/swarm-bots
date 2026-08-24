@@ -45,13 +45,15 @@ The plots are written to `experiments/thesis_mjw_po_wall_disconnected_finetune/r
 Record the normal and actuator-only TMASAC checkpoints respectively with:
 
 ```powershell
-.venv\Scripts\python.exe experiments\thesis_mjw_po_wall_disconnected_finetune\scripts\record_tmasac_50m.py <checkpoint.pt>
-.venv\Scripts\python.exe experiments\thesis_mjw_po_wall_disconnected_finetune\scripts\record_tmasac_no_connectors_50m.py <checkpoint.pt>
+.venv\Scripts\python.exe experiments\thesis_mjw_po_wall_disconnected_finetune\scripts\record_tmasac_50m.py
+.venv\Scripts\python.exe experiments\thesis_mjw_po_wall_disconnected_finetune\scripts\record_tmasac_no_connectors_50m.py
 ```
 
-Both recorders default to the disjoint evaluation seed range and record 4- and
-5-unit pools. Options after the checkpoint are forwarded to the shared recorder;
-for example, append `--episodes 5 --cuda-idx 1`.
+Each recorder automatically selects the final checkpoint from every run in its
+corresponding 50M group, falling back to the latest best checkpoint for incomplete
+runs. Both default to the disjoint evaluation seed range and record 4- and 5-unit
+pools. Command-line options are forwarded to the shared recorder; for example,
+append `--episodes 5 --cuda-idx 1`.
 
 The zero-fine-tuning baseline is the existing disconnected-pool evaluation:
 

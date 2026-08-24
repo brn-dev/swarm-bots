@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import argparse
 import sys
 from pathlib import Path
 from typing import Sequence
@@ -9,14 +8,17 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from experiments.evaluate_thesis_mjw_unseen_morphologies import (
+    discover_evaluation_checkpoints,
+)
 from experiments.record_thesis_mjw_unseen_morphologies import main as _record_main
 
-RECORDING_ROOT = (
+EXPERIMENT_RUN_DIR = (
     REPO_ROOT
     / "runs"
     / "thesis_mjw_po_wall_disconnected_finetune_50m"
-    / "recordings"
 )
+RECORDING_ROOT = EXPERIMENT_RUN_DIR / "recordings"
 
 
 def run_recording(
@@ -25,19 +27,24 @@ def run_recording(
     disable_policy_connector_actions: bool,
     variant_name: str,
 ) -> int:
-    parser = argparse.ArgumentParser(
-        description=(
-            "Record a 50M disconnected-start PO-wall TMASAC checkpoint. "
-            "Options after CHECKPOINT are forwarded to the shared thesis recorder."
-        ),
-        epilog=(
-            "Example: CHECKPOINT --episodes 3 --frame-stride 2 --cuda-idx 0. "
-            "Pass CHECKPOINT --help to list all forwarded recording options."
-        ),
+    recording_options = list(sys.argv[1:] if argv is None else argv)
+    group_dir = EXPERIMENT_RUN_DIR / variant_name
+    show_help = any(option in {"-h", "--help"} for option in recording_options)
+    checkpoints = (
+        []
+        if show_help
+        else discover_evaluation_checkpoints((group_dir,))
     )
-    parser.add_argument("checkpoint", type=Path)
-    parser.add_argument("recording_options", nargs=argparse.REMAINDER)
-    args = parser.parse_args(argv)
+    if not checkpoints and not show_help:
+        raise FileNotFoundError(
+            f"No final or best checkpoints found under {group_dir}"
+        )
+
+    checkpoint_options = [
+        option
+        for checkpoint in checkpoints
+        for option in ("--po-wall-checkpoint", str(checkpoint))
+    ]
 
     recorder_argv = [
         "--target",
@@ -47,9 +54,8 @@ def run_recording(
         "5",
         "--pool-seed-base",
         "3000000",
-        "--po-wall-checkpoint",
-        str(args.checkpoint),
-        *args.recording_options,
+        *checkpoint_options,
+        *recording_options,
     ]
     return _record_main(
         recorder_argv,
