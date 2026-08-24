@@ -1,6 +1,8 @@
 from pathlib import Path
 from typing import Any, cast
 
+import pytest
+
 import experiments.thesis_mjw_po_wall_disconnected_finetune.plot_results as plot_results
 import experiments.thesis_mjw_po_wall_disconnected_finetune.scripts.common as common
 import experiments.thesis_mjw_po_wall_disconnected_finetune.scripts.recording_common as recording_common
@@ -104,15 +106,21 @@ def test_50m_recording_uses_disconnected_four_and_five_unit_pools(
     monkeypatch: Any,
 ) -> None:
     invocation: dict[str, object] = {}
+    checkpoints = [Path("first-final.pt"), Path("second-best.pt")]
 
     def fake_record_main(argv: object, **kwargs: object) -> int:
         invocation.update(argv=argv, **kwargs)
         return 41
 
     monkeypatch.setattr(recording_common, "_record_main", fake_record_main)
+    monkeypatch.setattr(
+        recording_common,
+        "discover_evaluation_checkpoints",
+        lambda group_dirs: checkpoints,
+    )
 
     result = recording_common.run_recording(
-        ["checkpoint.pt", "--episodes", "2"],
+        ["--episodes", "2"],
         disable_policy_connector_actions=True,
         variant_name="tmasac_no_connectors",
     )
@@ -127,7 +135,9 @@ def test_50m_recording_uses_disconnected_four_and_five_unit_pools(
         "--pool-seed-base",
         "3000000",
         "--po-wall-checkpoint",
-        "checkpoint.pt",
+        "first-final.pt",
+        "--po-wall-checkpoint",
+        "second-best.pt",
         "--episodes",
         "2",
     ]
@@ -135,6 +145,27 @@ def test_50m_recording_uses_disconnected_four_and_five_unit_pools(
     assert invocation["disable_policy_connector_actions"] is True
     assert invocation["default_output_root"] == (
         recording_common.RECORDING_ROOT / "tmasac_no_connectors"
+    )
+
+
+def test_50m_recording_fails_when_its_run_group_has_no_models(
+    monkeypatch: Any,
+) -> None:
+    monkeypatch.setattr(
+        recording_common,
+        "discover_evaluation_checkpoints",
+        lambda group_dirs: [],
+    )
+
+    with pytest.raises(FileNotFoundError) as exc_info:
+        recording_common.run_recording(
+            [],
+            disable_policy_connector_actions=False,
+            variant_name="tmasac_baseline",
+        )
+
+    assert str(recording_common.EXPERIMENT_RUN_DIR / "tmasac_baseline") in str(
+        exc_info.value
     )
 
 
