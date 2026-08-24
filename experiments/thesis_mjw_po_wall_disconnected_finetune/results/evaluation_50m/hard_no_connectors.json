@@ -1,5 +1,5 @@
 {
-  "completed_at": "2026-08-24T20:46:29.117830+00:00",
+  "completed_at": "2026-08-24T21:01:08.512066+00:00",
   "config": {
     "deterministic": true,
     "disable_connector_actions": false,
@@ -19,7 +19,7 @@
       5
     ]
   },
-  "created_at": "2026-08-24T20:45:03.807225+00:00",
+  "created_at": "2026-08-24T20:59:22.238534+00:00",
   "resolved_num_envs": 512,
   "results": [
     {
@@ -55,10 +55,10 @@
           "std": 0.0
         },
         "episode_return": {
-          "max": 7.571037943474948,
-          "mean": 3.634439929226801,
-          "min": -0.11058266297914088,
-          "std": 1.4744908609511003
+          "max": 8.350094735156745,
+          "mean": 3.4635480931492566,
+          "min": -1.9120339811779559,
+          "std": 1.4861765521060817
         },
         "guidance_reward": {
           "max": -1.5360000133514404,
@@ -67,10 +67,10 @@
           "std": 0.0
         },
         "progress_reward": {
-          "max": 9.107038425281644,
-          "mean": 5.170440140236451,
-          "min": 1.425417129183188,
-          "std": 1.4744909758463625
+          "max": 9.886097110807896,
+          "mean": 4.999548294469037,
+          "min": -0.37603402649983764,
+          "std": 1.486176697843925
         },
         "success_count": 0,
         "success_rate_percent": 0.0,
@@ -124,10 +124,10 @@
           "std": 0.0
         },
         "episode_return": {
-          "max": 5.023669637739658,
-          "mean": 1.9217604880368526,
-          "min": -1.201044527348131,
-          "std": 1.0127664313460145
+          "max": 4.810590403620154,
+          "mean": 1.9323570256856328,
+          "min": -1.455403367523104,
+          "std": 1.0117723099229066
         },
         "guidance_reward": {
           "max": -1.5360000133514404,
@@ -136,10 +136,10 @@
           "std": 0.0
         },
         "progress_reward": {
-          "max": 6.559670865535736,
-          "mean": 3.457760491600723,
-          "min": 0.33495550882071257,
-          "std": 1.0127664862360561
+          "max": 6.34659181162715,
+          "mean": 3.468357048013999,
+          "min": 0.08059661090373993,
+          "std": 1.01177239324168
         },
         "success_count": 0,
         "success_rate_percent": 0.0,
@@ -193,10 +193,10 @@
           "std": 0.0
         },
         "episode_return": {
-          "max": 6.0722820004448295,
-          "mean": 2.1746877579071224,
-          "min": -0.8903452334925532,
-          "std": 1.1199850705386898
+          "max": 5.799074613023549,
+          "mean": 2.151440620439189,
+          "min": -0.6918571852147579,
+          "std": 1.152920581043013
         },
         "guidance_reward": {
           "max": -1.5360000133514404,
@@ -205,10 +205,79 @@
           "std": 0.0
         },
         "progress_reward": {
-          "max": 7.608283346518874,
-          "mean": 3.7106879021833663,
-          "min": 0.6456547700800002,
-          "std": 1.1199852821123437
+          "max": 7.335075424052775,
+          "mean": 3.6874407664925,
+          "min": 0.8441428951919079,
+          "std": 1.1529208104454096
+        },
+        "success_count": 0,
+        "success_rate_percent": 0.0,
+        "successful_connections_per_unit": {
+          "max": 0.0,
+          "mean": 0.0,
+          "min": 0.0,
+          "std": 0.0
+        },
+        "successful_connections_per_unit_successful_episodes": null,
+        "successful_connections_per_unit_unsuccessful_episodes": {
+          "max": 0.0,
+          "mean": 0.0,
+          "min": 0.0,
+          "std": 0.0
+        }
+      },
+      "target": "po_wall_tmasac",
+      "unit_count": 4
+    },
+    {
+      "checkpoint": "/home/brn/git/swarm-bots/runs/thesis_mjw_po_wall_disconnected_finetune_hard_wall_50m/tmasac_no_connectors/2026-07-17_23-52-34/models/model_150001664_steps_final.pt",
+      "pool_seed_range_inclusive": [
+        3200000,
+        3200049
+      ],
+      "pool_size": 50,
+      "run_id": "2026-07-17_23-52-34",
+      "summary": {
+        "connection_usage_by_outcome": {
+          "successful_episodes": {
+            "episode_count": 0,
+            "episodes_with_never_connected_unit_count": 0,
+            "episodes_with_never_connected_unit_rate_percent": null,
+            "episodes_without_any_successful_connection_count": 0,
+            "episodes_without_any_successful_connection_rate_percent": null
+          },
+          "unsuccessful_episodes": {
+            "episode_count": 512,
+            "episodes_with_never_connected_unit_count": 512,
+            "episodes_with_never_connected_unit_rate_percent": 100.0,
+            "episodes_without_any_successful_connection_count": 512,
+            "episodes_without_any_successful_connection_rate_percent": 100.0
+          }
+        },
+        "episode_count": 512,
+        "episode_length": {
+          "max": 512.0,
+          "mean": 512.0,
+          "min": 512.0,
+          "std": 0.0
+        },
+        "episode_return": {
+          "max": 4.069579855073243,
+          "mean": 1.5793753206837664,
+          "min": -1.52065395610407,
+          "std": 0.9162202088487356
+        },
+        "guidance_reward": {
+          "max": -1.5360000133514404,
+          "mean": -1.5360000133514404,
+          "min": -1.5360000133514404,
+          "std": 0.0
+        },
+        "progress_reward": {
+          "max": 5.605579786002636,
+          "mean": 3.1153753436356055,
+          "min": 0.015346100553870201,
+          "std": 0.9162202311397364
         },
         "success_count": 0,
         "success_rate_percent": 0.0,
@@ -262,10 +331,10 @@
           "std": 0.0
         },
         "episode_return": {
-          "max": 5.220060303807259,
-          "mean": 1.87699413209657,
-          "min": -1.318974151276052,
-          "std": 1.011501086727554
+          "max": 5.071401242166758,
+          "mean": 1.8441518153124434,
+          "min": -1.3276129169389606,
+          "std": 1.017410411203513
         },
         "guidance_reward": {
           "max": -1.5360000133514404,
@@ -274,10 +343,10 @@
           "std": 0.0
         },
         "progress_reward": {
-          "max": 6.756060628220439,
-          "mean": 3.412994171805394,
-          "min": 0.21702609304338694,
-          "std": 1.0115011404242857
+          "max": 6.607401795685291,
+          "mean": 3.38015185698589,
+          "min": 0.20838708570227027,
+          "std": 1.0174104624221731
         },
         "success_count": 0,
         "success_rate_percent": 0.0,
@@ -331,10 +400,10 @@
           "std": 0.0
         },
         "episode_return": {
-          "max": 7.629091261420399,
-          "mean": 3.011195943382745,
-          "min": -0.6756234564818442,
-          "std": 1.3250042701322478
+          "max": 7.8370619133347645,
+          "mean": 2.962728742127638,
+          "min": 0.08730870904400945,
+          "std": 1.2077087680880185
         },
         "guidance_reward": {
           "max": -1.5360000133514404,
@@ -343,10 +412,10 @@
           "std": 0.0
         },
         "progress_reward": {
-          "max": 9.165091636765283,
-          "mean": 4.547195957134824,
-          "min": 0.8603764177532867,
-          "std": 1.325004390087233
+          "max": 9.37306231536786,
+          "mean": 4.498728713019328,
+          "min": 1.6233085724816192,
+          "std": 1.2077088706503645
         },
         "success_count": 0,
         "success_rate_percent": 0.0,
@@ -400,10 +469,10 @@
           "std": 0.0
         },
         "episode_return": {
-          "max": 4.67250869597774,
-          "mean": 1.9302573303934878,
-          "min": -0.31973397079855204,
-          "std": 0.9321450990451904
+          "max": 5.0594879139680415,
+          "mean": 1.9378305676054879,
+          "min": -0.12729257857427,
+          "std": 1.010713025892854
         },
         "guidance_reward": {
           "max": -1.5360000133514404,
@@ -412,10 +481,10 @@
           "std": 0.0
         },
         "progress_reward": {
-          "max": 6.208511462114984,
-          "mean": 3.4662572922549,
-          "min": 1.216266024071956,
-          "std": 0.9321451392462557
+          "max": 6.595488517930789,
+          "mean": 3.4738305372711364,
+          "min": 1.4087073634145781,
+          "std": 1.0107130742769743
         },
         "success_count": 0,
         "success_rate_percent": 0.0,
@@ -469,10 +538,10 @@
           "std": 0.0
         },
         "episode_return": {
-          "max": 5.085941664641723,
-          "mean": 2.0968642748505317,
-          "min": -0.49788459192495793,
-          "std": 1.043449145352261
+          "max": 5.588635878521018,
+          "mean": 2.1232684521867213,
+          "min": -0.2625216331798583,
+          "std": 1.0318145735731314
         },
         "guidance_reward": {
           "max": -1.5360000133514404,
@@ -481,10 +550,79 @@
           "std": 0.0
         },
         "progress_reward": {
-          "max": 6.621942327648867,
-          "mean": 3.6328643395729974,
-          "min": 1.0381153755733976,
-          "std": 1.0434493091456538
+          "max": 7.124637766653905,
+          "mean": 3.6592684781229177,
+          "min": 1.2734783712076023,
+          "std": 1.0318147263898194
+        },
+        "success_count": 0,
+        "success_rate_percent": 0.0,
+        "successful_connections_per_unit": {
+          "max": 0.0,
+          "mean": 0.0,
+          "min": 0.0,
+          "std": 0.0
+        },
+        "successful_connections_per_unit_successful_episodes": null,
+        "successful_connections_per_unit_unsuccessful_episodes": {
+          "max": 0.0,
+          "mean": 0.0,
+          "min": 0.0,
+          "std": 0.0
+        }
+      },
+      "target": "po_wall_tmasac",
+      "unit_count": 5
+    },
+    {
+      "checkpoint": "/home/brn/git/swarm-bots/runs/thesis_mjw_po_wall_disconnected_finetune_hard_wall_50m/tmasac_no_connectors/2026-07-17_23-52-34/models/model_150001664_steps_final.pt",
+      "pool_seed_range_inclusive": [
+        3300000,
+        3300049
+      ],
+      "pool_size": 50,
+      "run_id": "2026-07-17_23-52-34",
+      "summary": {
+        "connection_usage_by_outcome": {
+          "successful_episodes": {
+            "episode_count": 0,
+            "episodes_with_never_connected_unit_count": 0,
+            "episodes_with_never_connected_unit_rate_percent": null,
+            "episodes_without_any_successful_connection_count": 0,
+            "episodes_without_any_successful_connection_rate_percent": null
+          },
+          "unsuccessful_episodes": {
+            "episode_count": 512,
+            "episodes_with_never_connected_unit_count": 512,
+            "episodes_with_never_connected_unit_rate_percent": 100.0,
+            "episodes_without_any_successful_connection_count": 512,
+            "episodes_without_any_successful_connection_rate_percent": 100.0
+          }
+        },
+        "episode_count": 512,
+        "episode_length": {
+          "max": 512.0,
+          "mean": 512.0,
+          "min": 512.0,
+          "std": 0.0
+        },
+        "episode_return": {
+          "max": 4.031022408278659,
+          "mean": 1.5877608896305446,
+          "min": -0.3509867445100099,
+          "std": 0.8773365913620844
+        },
+        "guidance_reward": {
+          "max": -1.5360000133514404,
+          "mean": -1.5360000133514404,
+          "min": -1.5360000133514404,
+          "std": 0.0
+        },
+        "progress_reward": {
+          "max": 5.567022787901806,
+          "mean": 3.123760875267612,
+          "min": 1.185013252455974,
+          "std": 0.8773365975560081
         },
         "success_count": 0,
         "success_rate_percent": 0.0,
@@ -538,10 +676,10 @@
           "std": 0.0
         },
         "episode_return": {
-          "max": 6.124421534826979,
-          "mean": 1.937683010935416,
-          "min": -0.5603270358406007,
-          "std": 0.9721229846795175
+          "max": 4.79537985380739,
+          "mean": 1.928481235875779,
+          "min": -0.967102776397951,
+          "std": 0.9398086616530856
         },
         "guidance_reward": {
           "max": -1.5360000133514404,
@@ -550,10 +688,10 @@
           "std": 0.0
         },
         "progress_reward": {
-          "max": 7.660422375687631,
-          "mean": 3.473682998339186,
-          "min": 0.9756729081709636,
-          "std": 0.9721230208995396
+          "max": 6.331380989038735,
+          "mean": 3.4644812295995973,
+          "min": 0.5688972555944929,
+          "std": 0.9398087008390958
         },
         "success_count": 0,
         "success_rate_percent": 0.0,
@@ -575,5 +713,5 @@
       "unit_count": 5
     }
   ],
-  "schema_version": 4
+  "schema_version": 5
 }

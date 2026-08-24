@@ -60,14 +60,14 @@
     },
     "tmasac_no_connectors": {
       "display_name": "TMASAC, no connectors",
-      "number_of_runs": 4,
+      "number_of_runs": 5,
       "ep_rew_ema": {
-        "number_of_runs": 4,
-        "mean": 3.6380598441253893,
-        "std": 1.2702556721935707
+        "number_of_runs": 5,
+        "mean": 3.3193769399003643,
+        "std": 1.302718216642854
       },
       "ep_success_rate_ema": {
-        "number_of_runs": 4,
+        "number_of_runs": 5,
         "mean": 0.0,
         "std": 0.0
       },
