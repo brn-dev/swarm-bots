@@ -57,6 +57,17 @@ run has no episodes with that outcome.
 Use `--case medium_connectors` (repeatable) to select a subset, and `--resume`
 or `--overwrite` for existing outputs.
 
+After evaluation, `global_summary.json` is written beside the four case files.
+It pools metrics across checkpoints with exact observation counts, retains
+per-unit-count results, reports checkpoint-level variability, measures how often
+successful and unsuccessful episodes contain never-connected units, and provides
+connector/no-connector and hard/medium effect differences. Rebuild it from
+existing case files without running the policies again with:
+
+```powershell
+.venv\Scripts\python.exe experiments\thesis_mjw_po_wall_disconnected_finetune\evaluate_tmasac_50m.py --summary-only
+```
+
 Generate hard-wall plots and a separate hard-wall summary with:
 
 ```powershell

@@ -161,6 +161,24 @@ def test_evaluator_requires_a_discovered_checkpoint(
         evaluation.main(["--case", "medium_connectors", "--dry-run"])
 
 
+def test_summary_only_rebuilds_existing_results_without_checkpoint_discovery(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output_root = Path("existing-results")
+    monkeypatch.setattr(
+        evaluation,
+        "write_global_summary",
+        lambda received_output_root: received_output_root / evaluation.GLOBAL_SUMMARY_FILENAME,
+    )
+    monkeypatch.setattr(
+        evaluation,
+        "discover_evaluation_checkpoints",
+        lambda _group_dirs: pytest.fail("summary-only must not discover checkpoints"),
+    )
+
+    assert evaluation.main(["--summary-only", "--output-root", str(output_root)]) == 0
+
+
 def test_global_summary_pools_runs_and_builds_thesis_comparisons() -> None:
     connector_payload = _case_payload(
         [
