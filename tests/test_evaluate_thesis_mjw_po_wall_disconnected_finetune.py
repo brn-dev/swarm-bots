@@ -258,6 +258,8 @@ def test_global_summary_pools_runs_and_builds_thesis_comparisons() -> None:
     assert aggregate["connection_usage_by_outcome"]["successful_episodes"] == pytest.approx(
         {
             "episode_count": 14,
+            "observed_episode_count": 14,
+            "observation_coverage_percent": 100.0,
             "episodes_with_never_connected_unit_count": 3,
             "episodes_with_never_connected_unit_rate_percent": 100.0 * 3 / 14,
             "episodes_without_any_successful_connection_count": 1,
