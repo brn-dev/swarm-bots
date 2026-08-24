@@ -108,6 +108,8 @@ def _make_uninitialized_env(
     env._settle_executor = None
     env._live_episode_recorder = _FakeLiveEpisodeRecorder()
     env._continuous_connector_actions = False
+    env.units_active_mask = torch.ones((num_envs, 1), dtype=torch.bool)
+    env.successful_connection_counts = torch.zeros((num_envs, 1), dtype=torch.int64)
     env._pending_step = None
     env._step_status_host = torch.empty(num_envs + 1, dtype=torch.bool)
     env._step_status_ready = None

@@ -143,6 +143,10 @@ class _FakeEnv:
             "progress_reward": torch.tensor([2.0, 4.0]),
             "guidance_reward": torch.tensor([-1.0, 1.0]),
             "success": torch.tensor([0.0, 1.0]),
+            "successful_connections_per_unit_mean": torch.tensor([1.0, 3.0]),
+            "successful_connections_per_unit_std": torch.tensor([1.0, 0.0]),
+            "successful_connections_per_unit_min": torch.tensor([0.0, 3.0]),
+            "successful_connections_per_unit_max": torch.tensor([2.0, 3.0]),
         }
         self.step_index += 1
         return _fake_obs(), torch.zeros((2,)), dones, torch.zeros_like(dones), {
@@ -161,9 +165,14 @@ def test_serialized_config_uses_json_stable_unit_count_list() -> None:
         rollout_seed=2_000_000,
         deterministic=True,
         episode_length=512,
+        disable_policy_connector_actions=True,
+        scenario_kwargs_overrides={"wall_height": 0.4},
     )
 
-    assert _serialize_config(config)["unit_counts"] == [2, 3]
+    serialized = _serialize_config(config)
+    assert serialized["unit_counts"] == [2, 3]
+    assert serialized["disable_policy_connector_actions"] is True
+    assert serialized["scenario_kwargs_overrides"] == {"wall_height": 0.4}
 
 
 def test_evaluate_policy_uses_same_step_episode_stats_and_resets_recurrent_rows() -> None:
@@ -299,6 +308,10 @@ def test_summarize_episode_metrics_reports_population_statistics() -> None:
             "progress_reward": [2.0, 4.0],
             "guidance_reward": [-1.0, 1.0],
             "success": [0.0, 1.0],
+            "successful_connections_per_unit_mean": [1.0, 3.0],
+            "successful_connections_per_unit_std": [1.0, 0.0],
+            "successful_connections_per_unit_min": [0.0, 3.0],
+            "successful_connections_per_unit_max": [2.0, 3.0],
         }
     )
 
@@ -310,4 +323,102 @@ def test_summarize_episode_metrics_reports_population_statistics() -> None:
         "std": 1.0,
         "min": 1.0,
         "max": 3.0,
+    }
+    assert result["successful_connections_per_unit"] == pytest.approx(
+        {
+            "mean": 2.0,
+            "std": 1.5**0.5,
+            "min": 0.0,
+            "max": 3.0,
+        }
+    )
+    assert result["successful_connections_per_unit_successful_episodes"] == pytest.approx(
+        {
+            "mean": 3.0,
+            "std": 0.0,
+            "min": 3.0,
+            "max": 3.0,
+        }
+    )
+    assert result["successful_connections_per_unit_unsuccessful_episodes"] == pytest.approx(
+        {
+            "mean": 1.0,
+            "std": 1.0,
+            "min": 0.0,
+            "max": 2.0,
+        }
+    )
+    assert result["connection_usage_by_outcome"] == {
+        "successful_episodes": {
+            "episode_count": 1,
+            "episodes_with_never_connected_unit_count": 0,
+            "episodes_with_never_connected_unit_rate_percent": 0.0,
+            "episodes_without_any_successful_connection_count": 0,
+            "episodes_without_any_successful_connection_rate_percent": 0.0,
+        },
+        "unsuccessful_episodes": {
+            "episode_count": 1,
+            "episodes_with_never_connected_unit_count": 1,
+            "episodes_with_never_connected_unit_rate_percent": 100.0,
+            "episodes_without_any_successful_connection_count": 0,
+            "episodes_without_any_successful_connection_rate_percent": 0.0,
+        },
+    }
+
+
+def test_summarize_episode_metrics_uses_null_connection_stats_without_successes() -> None:
+    result = summarize_episode_metrics(
+        {
+            "episode_return": [1.0],
+            "episode_length": [10.0],
+            "progress_reward": [2.0],
+            "guidance_reward": [-1.0],
+            "success": [0.0],
+            "successful_connections_per_unit_mean": [1.0],
+            "successful_connections_per_unit_std": [1.0],
+            "successful_connections_per_unit_min": [0.0],
+            "successful_connections_per_unit_max": [2.0],
+        }
+    )
+
+    assert result["successful_connections_per_unit_successful_episodes"] is None
+    assert result["successful_connections_per_unit_unsuccessful_episodes"] == pytest.approx(
+        {
+            "mean": 1.0,
+            "std": 1.0,
+            "min": 0.0,
+            "max": 2.0,
+        }
+    )
+
+
+def test_summarize_episode_metrics_uses_null_connection_stats_without_unsuccessful_episodes() -> None:
+    result = summarize_episode_metrics(
+        {
+            "episode_return": [1.0],
+            "episode_length": [10.0],
+            "progress_reward": [2.0],
+            "guidance_reward": [-1.0],
+            "success": [1.0],
+            "successful_connections_per_unit_mean": [0.0],
+            "successful_connections_per_unit_std": [0.0],
+            "successful_connections_per_unit_min": [0.0],
+            "successful_connections_per_unit_max": [0.0],
+        }
+    )
+
+    assert result["successful_connections_per_unit_unsuccessful_episodes"] is None
+    assert result["connection_usage_by_outcome"]["successful_episodes"] == {
+        "episode_count": 1,
+        "episodes_with_never_connected_unit_count": 1,
+        "episodes_with_never_connected_unit_rate_percent": 100.0,
+        "episodes_without_any_successful_connection_count": 1,
+        "episodes_without_any_successful_connection_rate_percent": 100.0,
+    }
+    assert result["connection_usage_by_outcome"]["unsuccessful_episodes"] == {
+        "episode_count": 0,
+        "episodes_with_never_connected_unit_count": 0,
+        "episodes_with_never_connected_unit_rate_percent": None,
+        "episodes_without_any_successful_connection_count": 0,
+        "episodes_without_any_successful_connection_rate_percent": None,
     }
