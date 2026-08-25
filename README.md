@@ -1,6 +1,6 @@
 # SwarmBots
 
-> [!IMPORTANT]
+> [!Please note]
 > This is a research repository under active development. Its APIs, experiment
 > configurations, and results may change as further experiments are completed.
 > A stable, documented version of the SwarmBots benchmark will be released once
