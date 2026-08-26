@@ -14,7 +14,6 @@ from experiments.thesis_plot_common import (
     PO_WALL_MEDIUM_SCENARIO_TITLE,
     THESIS_GROUP_COLOR_OVERRIDES,
     THESIS_GROUP_LINESTYLE_OVERRIDES,
-    THESIS_GROUP_MARKER_OVERRIDES,
 )
 from plot_logs.experiment_results import plot_experiment_results
 
@@ -55,9 +54,9 @@ GROUP_LINESTYLE_OVERRIDES = {
     for rollout_config_name in ROLLOUT_CONFIG_NAMES
 }
 GROUP_MARKER_OVERRIDES = {
-    "mat_qcx_1024x4": THESIS_GROUP_MARKER_OVERRIDES["mat_qcx"],
-    "mat_qcx_512x8": "o",
-    "mat_qcx_256x16": "s",
+    "mat_qcx_1024x4": "o",
+    "mat_qcx_512x8": "s",
+    "mat_qcx_256x16": "^",
     "mat_qcx_128x32": "v",
     "mat_qcx_64x64": "D",
 }
