@@ -1,3 +1,4 @@
+import io
 import sys
 import tempfile
 import unittest
@@ -11,6 +12,7 @@ from matplotlib.lines import Line2D
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from experiments import plot_all_thesis
 from plot_logs.experiment_results import (
     DEFAULT_X_COLUMN,
     EP_REW_EMA_COLUMN,
@@ -421,6 +423,73 @@ class ExperimentResultsTests(unittest.TestCase):
             )
             for path in result.output_paths:
                 self.assertTrue(path.exists(), path)
+
+
+class ThesisPlotRunnerTests(unittest.TestCase):
+    def test_discovery_includes_main_extended_and_finetuning_plots(self) -> None:
+        scripts = plot_all_thesis.discover_plot_scripts()
+        names = {path.relative_to(plot_all_thesis.EXPERIMENTS_DIR).as_posix() for path in scripts}
+
+        self.assertTrue({
+            "thesis_mjw_find_opening/plot_results.py",
+            "thesis_mjw_po_wall_medium/plot_results.py",
+            "thesis_mjw_po_wall_medium/plot_250m_results.py",
+            "thesis_mjw_po_wall_disconnected_finetune/plot_results.py",
+            "thesis_mjw_po_wall_disconnected_finetune/plot_hard_wall_results.py",
+            "thesis_parallel_env_ablation_po_wall_medium/plot_results.py",
+        }.issubset(names))
+        self.assertNotIn("thesis_plot_common.py", names)
+        self.assertNotIn("plot_all_thesis.py", names)
+        self.assertEqual(scripts, sorted(scripts))
+
+    def test_runner_attempts_every_script_and_reports_failures(self) -> None:
+        scripts = plot_all_thesis.discover_plot_scripts()[:3]
+        for returncodes, expected_exit in (((0, 0, 0), 0), ((0, 2, 0), 1)):
+            with (
+                self.subTest(returncodes=returncodes),
+                patch.object(plot_all_thesis, "discover_plot_scripts", return_value=scripts),
+                patch.object(
+                    plot_all_thesis.subprocess, "run",
+                    side_effect=[SimpleNamespace(returncode=code) for code in returncodes],
+                ) as run,
+                patch("sys.stdout", new_callable=io.StringIO) as output,
+            ):
+                self.assertEqual(plot_all_thesis.main([]), expected_exit)
+                self.assertEqual(run.call_count, len(scripts))
+                for call, script in zip(run.call_args_list, scripts, strict=True):
+                    self.assertEqual(call.args, ([sys.executable, str(script)],))
+                    self.assertEqual(call.kwargs, {"cwd": plot_all_thesis.REPO_ROOT, "check": False})
+                if expected_exit:
+                    self.assertIn(
+                        f"FAILED (exit 2): {scripts[1].relative_to(plot_all_thesis.REPO_ROOT).as_posix()}",
+                        output.getvalue(),
+                    )
+                else:
+                    self.assertIn("3/3 thesis plot scripts succeeded", output.getvalue())
+
+    def test_dry_run_lists_scripts_without_invoking_them(self) -> None:
+        with (
+            patch.object(plot_all_thesis.subprocess, "run") as run,
+            patch("sys.stdout", new_callable=io.StringIO) as output,
+        ):
+            self.assertEqual(plot_all_thesis.main(["--dry-run"]), 0)
+
+        run.assert_not_called()
+        self.assertEqual(output.getvalue().splitlines(), [
+            script.relative_to(plot_all_thesis.REPO_ROOT).as_posix()
+            for script in plot_all_thesis.discover_plot_scripts()
+        ])
+
+    def test_no_scripts_is_reported_as_failure(self) -> None:
+        with (
+            patch.object(plot_all_thesis, "discover_plot_scripts", return_value=[]),
+            patch.object(plot_all_thesis.subprocess, "run") as run,
+            patch("sys.stderr", new_callable=io.StringIO) as output,
+        ):
+            self.assertEqual(plot_all_thesis.main([]), 1)
+
+        run.assert_not_called()
+        self.assertIn("No thesis plot scripts found", output.getvalue())
 
 
 if __name__ == "__main__":
