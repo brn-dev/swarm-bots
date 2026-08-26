@@ -29,7 +29,7 @@ from plot_logs.experiment_results import (
     plot_experiment_results,
     plot_experiment_selection,
     selected_groups_for_plot_selection,
-    sparse_marker_indices,
+    local_average_marker_points,
 )
 
 
@@ -312,11 +312,14 @@ class ExperimentResultsTests(unittest.TestCase):
                     plot_names = selection.group_names if is_selection else tuple(reversed(names))
                     runs_per_group = 2 if "individual" in output_path.stem else 1
                     legend_lines = axis.get_legend().get_lines()
-                    self.assertEqual(len(axis.lines), len(plot_names) * runs_per_group + 1)
+                    curve_lines = [line for line in axis.lines if line.get_linestyle() != "None"]
+                    marker_layers = [line for line in axis.lines if line.get_linestyle() == "None"]
+                    self.assertEqual(len(curve_lines), len(plot_names) * runs_per_group + 1)
+                    self.assertEqual(len(marker_layers), runs_per_group)
                     self.assertEqual(len(legend_lines), len(plot_names) + 1)
                     for index, name in enumerate(plot_names):
                         expected = Line2D([], [], linestyle=styles.get(name, "-"))
-                        lines = axis.lines[index * runs_per_group:(index + 1) * runs_per_group]
+                        lines = curve_lines[index * runs_per_group:(index + 1) * runs_per_group]
                         for line in (*lines, legend_lines[index]):
                             # get_linestyle() collapses every custom dash sequence to "--".
                             self.assertEqual(line._unscaled_dash_pattern, expected._unscaled_dash_pattern)
@@ -324,38 +327,62 @@ class ExperimentResultsTests(unittest.TestCase):
                             if name == "solid":
                                 self.assertEqual(line.get_markersize(), GROUP_MARKER_SIZE)
                                 self.assertEqual(line.get_markerfacecolor(), "white")
-                        if name == "solid":
-                            for line in lines:
-                                marker_x = line.get_xdata()[line.get_markevery()]
-                                self.assertEqual(len(marker_x), 7)
-                                self.assertTrue(np.all((marker_x > 0) & (marker_x < 100)))
+                        for line in lines:
+                            np.testing.assert_array_equal(line.get_xdata(), np.arange(101))
+                            scale = 50.0 if "success_rate" in output_path.stem else 1.0
+                            np.testing.assert_allclose(line.get_ydata(), np.arange(101) / 200 * scale)
+                            self.assertEqual(line.get_markevery(), [])
+                    for layer in marker_layers:
+                        marker_x, marker_y = layer.get_data()
+                        np.testing.assert_allclose(marker_x, np.arange(1, 13) * 100 / 13)
+                        local_mean_steps = np.array([
+                            7.5, 15.5, 23.5, 30.5, 38.5, 46.5,
+                            53.5, 61.5, 69.5, 76.5, 84.5, 92.5,
+                        ])
+                        np.testing.assert_allclose(marker_y, local_mean_steps / 200 * scale)
+                        self.assertEqual(layer.get_marker(), "D")
+                        self.assertGreater(layer.get_zorder(), curve_lines[0].get_zorder())
+                        self.assertEqual(layer.get_label(), "_nolegend_")
                     self.assertEqual(axis.lines[-1].get_linestyle(), "--")
                     self.assertEqual(legend_lines[-1].get_linestyle(), "--")
             finally:
                 for call in save.call_args_list:
                     plt.close(call.args[0])
 
-    def test_sparse_markers_use_environment_steps_and_only_finite_points(self) -> None:
-        x_values = np.concatenate((
-            [np.nan], np.linspace(0, 10, 101), np.arange(15, 101, 5), [np.inf],
-        ))
-        y_values = np.ones_like(x_values)
-        y_values[x_values == 50] = np.nan
+    @patch("plot_logs.experiment_results.GROUP_MARKER_COUNT", 7)
+    def test_marker_averages_dampen_spikes_without_modifying_the_curve(self) -> None:
+        x_values = np.linspace(0, 100, 1001)
+        y_values = np.full_like(x_values, 10)
+        y_values[x_values == 50] = 31
+        original_y = y_values.copy()
 
-        indices = sparse_marker_indices(x_values, y_values)
+        marker_x, marker_y = local_average_marker_points(x_values, y_values)
 
-        self.assertEqual(len(indices), 7)
-        self.assertTrue(np.isfinite(y_values[indices]).all())
-        np.testing.assert_allclose(x_values[indices], np.linspace(12.5, 87.5, 7), atol=5)
+        np.testing.assert_allclose(marker_x, np.linspace(12.5, 87.5, 7))
+        np.testing.assert_allclose(marker_y, [10, 10, 10, 11, 10, 10, 10])
+        np.testing.assert_array_equal(y_values, original_y)
 
-        for x, y, expected in (
-            ([], [], []),
-            ([1.0], [np.nan], []),
-            ([1.0], [2.0], [0]),
-            ([1.0, 1.0], [2.0, 2.0], [0]),
+    @patch("plot_logs.experiment_results.GROUP_MARKER_COUNT", 7)
+    def test_marker_averages_skip_empty_windows_and_nonfinite_samples(self) -> None:
+        x_values = np.concatenate(([np.nan], np.linspace(0, 100, 1001), [np.inf]))
+        y_values = 2 * x_values + 3
+        y_values[(x_values >= 45) & (x_values <= 55)] = np.nan
+
+        marker_x, marker_y = local_average_marker_points(x_values, y_values)
+
+        np.testing.assert_allclose(marker_x, [12.5, 25, 37.5, 62.5, 75, 87.5])
+        np.testing.assert_allclose(marker_y, 2 * marker_x + 3)
+        for x, y, expected_x, expected_y in (
+            ([], [], [], []),
+            ([1.0], [np.nan], [], []),
+            ([0.0, 100.0], [1.0, 2.0], [], []),
+            ([1.0], [2.0], [1.0], [2.0]),
+            ([1.0, 1.0], [2.0, 4.0], [1.0], [3.0]),
         ):
             with self.subTest(x=x, y=y):
-                self.assertEqual(sparse_marker_indices(np.array(x), np.array(y)), expected)
+                actual_x, actual_y = local_average_marker_points(np.array(x), np.array(y))
+                np.testing.assert_array_equal(actual_x, expected_x)
+                np.testing.assert_array_equal(actual_y, expected_y)
 
     def test_load_experiment_groups_ignores_missing_extra_group_source(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

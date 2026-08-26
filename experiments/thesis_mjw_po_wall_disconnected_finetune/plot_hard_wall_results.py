@@ -7,7 +7,10 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from experiments.thesis_plot_common import THESIS_GROUP_LINESTYLE_OVERRIDES
+from experiments.thesis_plot_common import (
+    THESIS_GROUP_LINESTYLE_OVERRIDES,
+    THESIS_GROUP_MARKER_OVERRIDES,
+)
 from plot_logs.experiment_results import plot_experiment_results
 
 EXPERIMENT_RUN_DIR = (
@@ -35,6 +38,7 @@ def main() -> int:
         group_order=GROUP_ORDER,
         display_name_overrides=DISPLAY_NAME_OVERRIDES,
         group_linestyle_overrides=THESIS_GROUP_LINESTYLE_OVERRIDES,
+        group_marker_overrides=THESIS_GROUP_MARKER_OVERRIDES,
         run_length_limit=RUN_LENGTH_LIMIT,
         cut_at_limit=True,
         title_suffix=TITLE_SUFFIX,
