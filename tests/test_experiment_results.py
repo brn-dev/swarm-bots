@@ -284,6 +284,8 @@ class ExperimentResultsTests(unittest.TestCase):
             name="ablation",
             group_names=("default", "dash_dot_dot", "solid"),
             display_name_overrides={"solid": "Renamed baseline"},
+            font_size=22,
+            legend_font_size=24,
         )
 
         with (
@@ -309,6 +311,8 @@ class ExperimentResultsTests(unittest.TestCase):
                     figure.canvas.draw()
                     axis = figure.axes[0]
                     is_selection = "ablation" in output_path.stem
+                    expected_marker_size = 12.375 if is_selection else GROUP_MARKER_SIZE
+                    expected_marker_edge_width = 1.2375 if is_selection else 0.9
                     plot_names = selection.group_names if is_selection else tuple(reversed(names))
                     runs_per_group = 2 if "individual" in output_path.stem else 1
                     legend_lines = axis.get_legend().get_lines()
@@ -325,7 +329,8 @@ class ExperimentResultsTests(unittest.TestCase):
                             self.assertEqual(line._unscaled_dash_pattern, expected._unscaled_dash_pattern)
                             self.assertEqual(line.get_marker(), "D" if name == "solid" else "None")
                             if name == "solid":
-                                self.assertEqual(line.get_markersize(), GROUP_MARKER_SIZE)
+                                self.assertEqual(line.get_markersize(), expected_marker_size)
+                                self.assertAlmostEqual(line.get_markeredgewidth(), expected_marker_edge_width)
                                 self.assertEqual(line.get_markerfacecolor(), "white")
                         for line in lines:
                             np.testing.assert_array_equal(line.get_xdata(), np.arange(101))
@@ -341,6 +346,8 @@ class ExperimentResultsTests(unittest.TestCase):
                         ])
                         np.testing.assert_allclose(marker_y, local_mean_steps / 200 * scale)
                         self.assertEqual(layer.get_marker(), "D")
+                        self.assertEqual(layer.get_markersize(), expected_marker_size)
+                        self.assertAlmostEqual(layer.get_markeredgewidth(), expected_marker_edge_width)
                         self.assertGreater(layer.get_zorder(), curve_lines[0].get_zorder())
                         self.assertEqual(layer.get_label(), "_nolegend_")
                     self.assertEqual(axis.lines[-1].get_linestyle(), "--")
