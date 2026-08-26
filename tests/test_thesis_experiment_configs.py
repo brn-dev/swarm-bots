@@ -402,6 +402,17 @@ def test_parallel_env_baseline_keeps_mat_qcx_color() -> None:
     )
 
 
+def test_parallel_env_plot_passes_a_distinct_marker_for_each_variant() -> None:
+    with patch.object(parallel_env_plot, "plot_experiment_results") as plot:
+        plot.return_value.output_paths = []
+        assert parallel_env_plot.main() == 0
+
+    markers = plot.call_args.kwargs["group_marker_overrides"]
+    groups = plot.call_args.kwargs["group_order"]
+    assert set(markers) == set(groups)
+    assert len(set(markers.values())) == len(groups)
+
+
 def test_thesis_main_labels_omit_nop_and_nop_ablations_label_both_sides() -> None:
     assert all(
         thesis_experiment_common.THESIS_VARIANT_CONFIGS[group_name].use_nop
