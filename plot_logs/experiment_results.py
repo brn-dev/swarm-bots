@@ -433,14 +433,20 @@ def add_theoretical_maximum_line(axis: Axes, value: float | None) -> Line2D | No
     )
 
 
-def group_marker_options(marker: str | None) -> dict[str, str | float]:
+def group_marker_options(
+    marker: str | None,
+    *,
+    font_size: float = PLOT_FONT_SIZE,
+    legend_font_size: float = LEGEND_FONT_SIZE,
+) -> dict[str, str | float]:
     if marker is None:
         return {}
+    scale = max(1.0, font_size / PLOT_FONT_SIZE, legend_font_size / LEGEND_FONT_SIZE)
     return {
         "marker": marker,
-        "markersize": GROUP_MARKER_SIZE,
+        "markersize": GROUP_MARKER_SIZE * scale,
         "markerfacecolor": "white",
-        "markeredgewidth": GROUP_MARKER_EDGE_WIDTH,
+        "markeredgewidth": GROUP_MARKER_EDGE_WIDTH * scale,
     }
 
 
@@ -483,7 +489,10 @@ def add_local_average_markers(axis: Axes, line: Line2D, marker: str | None) -> N
         alpha=line.get_alpha(),
         zorder=line.get_zorder() + 1,
         label="_nolegend_",
-        **group_marker_options(marker),
+        marker=marker,
+        markersize=line.get_markersize(),
+        markerfacecolor=line.get_markerfacecolor(),
+        markeredgewidth=line.get_markeredgewidth(),
     )
 
 
@@ -497,6 +506,7 @@ def add_group_legend(
     theoretical_maximum_line: Line2D | None = None,
     group_line_width: float = GROUP_LINE_WIDTH,
     group_line_alpha: float = GROUP_LINE_ALPHA,
+    font_size: float = PLOT_FONT_SIZE,
     legend_font_size: float = LEGEND_FONT_SIZE,
 ) -> None:
     linestyles = {} if linestyles is None else linestyles
@@ -510,7 +520,11 @@ def add_group_legend(
             alpha=group_line_alpha,
             lw=group_line_width,
             label=group_label(group),
-            **group_marker_options(markers.get(group.name)),
+            **group_marker_options(
+                markers.get(group.name),
+                font_size=font_size,
+                legend_font_size=legend_font_size,
+            ),
         )
         for group in groups
     ]
@@ -635,7 +649,9 @@ def plot_individual_metric(
     short_run_threshold = 0.99 * run_length_limit
     for group in groups:
         color = colors[group.name]
-        marker_options = group_marker_options(markers.get(group.name))
+        marker_options = group_marker_options(
+            markers.get(group.name), font_size=font_size, legend_font_size=legend_font_size,
+        )
         for run in group.runs:
             x_values, y_values = run_metric_series(
                 run,
@@ -684,6 +700,7 @@ def plot_individual_metric(
         theoretical_maximum_line=theoretical_maximum_line,
         group_line_width=group_line_width,
         group_line_alpha=group_line_alpha,
+        font_size=font_size,
         legend_font_size=legend_font_size,
     )
     figure.tight_layout()
@@ -814,7 +831,9 @@ def plot_group_metric(
         if x_values.size == 0:
             continue
         color = colors[group.name]
-        marker_options = group_marker_options(markers.get(group.name))
+        marker_options = group_marker_options(
+            markers.get(group.name), font_size=font_size, legend_font_size=legend_font_size,
+        )
         line, = axis.plot(
             x_values,
             mean_values,
