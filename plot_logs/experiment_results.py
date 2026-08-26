@@ -43,9 +43,10 @@ SHORT_RUN_MARKER_SIZE = 24
 SHORT_RUN_MARKER_EDGE_WIDTH = 0.6
 GROUP_LINE_WIDTH = 0.8
 GROUP_LINE_ALPHA = 0.8
-GROUP_MARKER_SIZE = 2.5
-GROUP_MARKER_EDGE_WIDTH = 0.6
-GROUP_MARKER_COUNT = 7
+GROUP_MARKER_SIZE = 9.0
+GROUP_MARKER_EDGE_WIDTH = 0.9
+GROUP_MARKER_COUNT = 12
+GROUP_MARKER_WINDOW_FRACTION = 0.02
 THEORETICAL_MAXIMUM_LINE_WIDTH = 1.0
 THEORETICAL_MAXIMUM_COLOR = "#444444"
 THEORETICAL_MAXIMUM_LABEL = "Theoretical maximum"
@@ -443,17 +444,47 @@ def group_marker_options(marker: str | None) -> dict[str, str | float]:
     }
 
 
-def sparse_marker_indices(x_values: np.ndarray, y_values: np.ndarray) -> list[int]:
-    finite_indices = np.flatnonzero(np.isfinite(x_values) & np.isfinite(y_values))
-    if finite_indices.size == 0:
-        return []
-    finite_x = x_values[finite_indices]
-    # Space by environment steps, so denser logging does not bunch up the markers.
-    targets = np.linspace(finite_x.min(), finite_x.max(), GROUP_MARKER_COUNT + 2)[1:-1]
-    return np.unique([
-        finite_indices[np.argmin(np.abs(finite_x - target))]
-        for target in targets
-    ]).tolist()
+def local_average_marker_points(
+    x_values: np.ndarray,
+    y_values: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    finite = np.isfinite(x_values) & np.isfinite(y_values)
+    if not finite.any():
+        return np.empty(0), np.empty(0)
+    finite_x, finite_y = x_values[finite], y_values[finite]
+    first_x, last_x = finite_x.min(), finite_x.max()
+    if first_x == last_x:
+        return np.array([first_x]), np.array([finite_y.mean()])
+
+    targets = np.linspace(first_x, last_x, GROUP_MARKER_COUNT + 2)[1:-1]
+    half_window = (last_x - first_x) * GROUP_MARKER_WINDOW_FRACTION / 2
+    marker_x: list[float] = []
+    marker_y: list[float] = []
+    for target in targets:
+        nearby = np.abs(finite_x - target) <= half_window
+        # Do not invent a marker across a gap with no nearby observations.
+        if nearby.any():
+            marker_x.append(float(target))
+            marker_y.append(float(finite_y[nearby].mean()))
+    return np.asarray(marker_x), np.asarray(marker_y)
+
+
+def add_local_average_markers(axis: Axes, line: Line2D, marker: str | None) -> None:
+    if marker is None:
+        return
+    marker_x, marker_y = local_average_marker_points(
+        line.get_xdata(orig=False), line.get_ydata(orig=False),
+    )
+    axis.plot(
+        marker_x,
+        marker_y,
+        linestyle="None",
+        color=line.get_color(),
+        alpha=line.get_alpha(),
+        zorder=line.get_zorder() + 1,
+        label="_nolegend_",
+        **group_marker_options(marker),
+    )
 
 
 def add_group_legend(
@@ -614,16 +645,18 @@ def plot_individual_metric(
             )
             if x_values.size == 0:
                 continue
-            axis.plot(
+            line, = axis.plot(
                 x_values,
                 y_values,
                 color=color,
                 linestyle=linestyles.get(group.name, "-"),
                 alpha=INDIVIDUAL_RUN_ALPHA,
                 linewidth=INDIVIDUAL_RUN_LINE_WIDTH,
-                markevery=sparse_marker_indices(x_values, y_values) if marker_options else None,
+                # Keep the marker style for legends; draw markers at local means separately.
+                markevery=[],
                 **marker_options,
             )
+            add_local_average_markers(axis, line, markers.get(group.name))
             if run.x_values[-1] < short_run_threshold:
                 final_point = final_finite_point(x_values, y_values)
                 if final_point is not None:
@@ -782,7 +815,7 @@ def plot_group_metric(
             continue
         color = colors[group.name]
         marker_options = group_marker_options(markers.get(group.name))
-        axis.plot(
+        line, = axis.plot(
             x_values,
             mean_values,
             color=color,
@@ -790,9 +823,10 @@ def plot_group_metric(
             alpha=group_line_alpha,
             linewidth=group_line_width,
             label=group_label(group),
-            markevery=sparse_marker_indices(x_values, mean_values) if marker_options else None,
+            markevery=[],
             **marker_options,
         )
+        add_local_average_markers(axis, line, markers.get(group.name))
         if len(group.runs) > 1:
             axis.fill_between(
                 x_values,

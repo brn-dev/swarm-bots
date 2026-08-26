@@ -357,10 +357,9 @@ def test_thesis_plot_entrypoints_pass_shared_line_styles(plot_module: ModuleType
     assert plot.call_args.kwargs["group_linestyle_overrides"] is (
         thesis_plot_common.THESIS_GROUP_LINESTYLE_OVERRIDES
     )
-    if plot_module is not po_wall_250m_plot:
-        assert plot.call_args.kwargs["group_marker_overrides"] is (
-            thesis_plot_common.THESIS_GROUP_MARKER_OVERRIDES
-        )
+    assert plot.call_args.kwargs["group_marker_overrides"] is (
+        thesis_plot_common.THESIS_GROUP_MARKER_OVERRIDES
+    )
 
 
 def test_every_thesis_variant_has_a_scenario_independent_color() -> None:
