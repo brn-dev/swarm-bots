@@ -1,4 +1,5 @@
 from pathlib import Path
+from types import ModuleType
 from unittest.mock import patch
 
 import pytest
@@ -344,6 +345,22 @@ def test_thesis_group_colors_match_requested_swaps() -> None:
         group_name: thesis_plot_common.THESIS_GROUP_COLOR_OVERRIDES[group_name]
         for group_name in thesis_plot_common.THESIS_MAIN_GROUP_ORDER
     } == expected_main_colors
+
+
+@pytest.mark.parametrize("plot_module", (po_wall_plot, find_opening_plot, po_wall_250m_plot))
+def test_thesis_plot_entrypoints_pass_shared_line_styles(plot_module: ModuleType) -> None:
+    target = po_wall_250m_plot if plot_module is po_wall_250m_plot else thesis_plot_common
+    with patch.object(target, "plot_experiment_results") as plot:
+        plot.return_value.output_paths = []
+        assert plot_module.main() == 0
+
+    assert plot.call_args.kwargs["group_linestyle_overrides"] is (
+        thesis_plot_common.THESIS_GROUP_LINESTYLE_OVERRIDES
+    )
+    if plot_module is not po_wall_250m_plot:
+        assert plot.call_args.kwargs["group_marker_overrides"] is (
+            thesis_plot_common.THESIS_GROUP_MARKER_OVERRIDES
+        )
 
 
 def test_every_thesis_variant_has_a_scenario_independent_color() -> None:
