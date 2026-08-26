@@ -43,6 +43,9 @@ SHORT_RUN_MARKER_SIZE = 24
 SHORT_RUN_MARKER_EDGE_WIDTH = 0.6
 GROUP_LINE_WIDTH = 0.8
 GROUP_LINE_ALPHA = 0.8
+GROUP_MARKER_SIZE = 2.5
+GROUP_MARKER_EDGE_WIDTH = 0.6
+GROUP_MARKER_COUNT = 7
 THEORETICAL_MAXIMUM_LINE_WIDTH = 1.0
 THEORETICAL_MAXIMUM_COLOR = "#444444"
 THEORETICAL_MAXIMUM_LABEL = "Theoretical maximum"
@@ -52,6 +55,7 @@ LEGEND_HANDLE_LENGTH = 2.8
 LEGEND_HANDLE_TEXT_PAD = 0.8
 LEGEND_LABEL_SPACING = 0.5
 LEGEND_BORDER_PAD = 0.7
+LineStyle = str | tuple[float, tuple[float, ...]]
 
 
 @dataclass(slots=True)
@@ -428,24 +432,54 @@ def add_theoretical_maximum_line(axis: Axes, value: float | None) -> Line2D | No
     )
 
 
+def group_marker_options(marker: str | None) -> dict[str, str | float]:
+    if marker is None:
+        return {}
+    return {
+        "marker": marker,
+        "markersize": GROUP_MARKER_SIZE,
+        "markerfacecolor": "white",
+        "markeredgewidth": GROUP_MARKER_EDGE_WIDTH,
+    }
+
+
+def sparse_marker_indices(x_values: np.ndarray, y_values: np.ndarray) -> list[int]:
+    finite_indices = np.flatnonzero(np.isfinite(x_values) & np.isfinite(y_values))
+    if finite_indices.size == 0:
+        return []
+    finite_x = x_values[finite_indices]
+    # Space by environment steps, so denser logging does not bunch up the markers.
+    targets = np.linspace(finite_x.min(), finite_x.max(), GROUP_MARKER_COUNT + 2)[1:-1]
+    return np.unique([
+        finite_indices[np.argmin(np.abs(finite_x - target))]
+        for target in targets
+    ]).tolist()
+
+
 def add_group_legend(
     axis: Axes,
     groups: Sequence[ExperimentGroup],
     colors: dict[str, tuple[float, float, float, float]],
     *,
+    linestyles: Mapping[str, LineStyle] | None = None,
+    markers: Mapping[str, str] | None = None,
     theoretical_maximum_line: Line2D | None = None,
     group_line_width: float = GROUP_LINE_WIDTH,
     group_line_alpha: float = GROUP_LINE_ALPHA,
     legend_font_size: float = LEGEND_FONT_SIZE,
 ) -> None:
+    linestyles = {} if linestyles is None else linestyles
+    markers = {} if markers is None else markers
     handles = [
         Line2D(
             [0],
             [0],
             color=colors[group.name],
+            linestyle=linestyles.get(group.name, "-"),
             alpha=group_line_alpha,
             lw=group_line_width,
             label=group_label(group),
+            **group_marker_options(markers.get(group.name)),
         )
         for group in groups
     ]
@@ -558,14 +592,19 @@ def plot_individual_metric(
     output_name: str | None = None,
     title: str | None = None,
     colors: dict[str, tuple[float, float, float, float]] | None = None,
+    linestyles: Mapping[str, LineStyle] | None = None,
+    markers: Mapping[str, str] | None = None,
     font_size: float = PLOT_FONT_SIZE,
     legend_font_size: float = LEGEND_FONT_SIZE,
 ) -> list[Path]:
     colors = group_colors(groups) if colors is None else colors
+    linestyles = {} if linestyles is None else linestyles
+    markers = {} if markers is None else markers
     figure, axis = plt.subplots(figsize=(16, 9))
     short_run_threshold = 0.99 * run_length_limit
     for group in groups:
         color = colors[group.name]
+        marker_options = group_marker_options(markers.get(group.name))
         for run in group.runs:
             x_values, y_values = run_metric_series(
                 run,
@@ -579,8 +618,11 @@ def plot_individual_metric(
                 x_values,
                 y_values,
                 color=color,
+                linestyle=linestyles.get(group.name, "-"),
                 alpha=INDIVIDUAL_RUN_ALPHA,
                 linewidth=INDIVIDUAL_RUN_LINE_WIDTH,
+                markevery=sparse_marker_indices(x_values, y_values) if marker_options else None,
+                **marker_options,
             )
             if run.x_values[-1] < short_run_threshold:
                 final_point = final_finite_point(x_values, y_values)
@@ -604,6 +646,8 @@ def plot_individual_metric(
         axis,
         groups,
         colors,
+        linestyles=linestyles,
+        markers=markers,
         theoretical_maximum_line=theoretical_maximum_line,
         group_line_width=group_line_width,
         group_line_alpha=group_line_alpha,
@@ -718,10 +762,14 @@ def plot_group_metric(
     output_name: str | None = None,
     title: str | None = None,
     colors: dict[str, tuple[float, float, float, float]] | None = None,
+    linestyles: Mapping[str, LineStyle] | None = None,
+    markers: Mapping[str, str] | None = None,
     font_size: float = PLOT_FONT_SIZE,
     legend_font_size: float = LEGEND_FONT_SIZE,
 ) -> list[Path]:
     colors = group_colors(groups) if colors is None else colors
+    linestyles = {} if linestyles is None else linestyles
+    markers = {} if markers is None else markers
     figure, axis = plt.subplots(figsize=(16, 9))
     for group in groups:
         x_values, mean_values, std_values = group_metric_mean_and_std(
@@ -733,13 +781,17 @@ def plot_group_metric(
         if x_values.size == 0:
             continue
         color = colors[group.name]
+        marker_options = group_marker_options(markers.get(group.name))
         axis.plot(
             x_values,
             mean_values,
             color=color,
+            linestyle=linestyles.get(group.name, "-"),
             alpha=group_line_alpha,
             linewidth=group_line_width,
             label=group_label(group),
+            markevery=sparse_marker_indices(x_values, mean_values) if marker_options else None,
+            **marker_options,
         )
         if len(group.runs) > 1:
             axis.fill_between(
@@ -787,6 +839,8 @@ def plot_experiment_selection(
     group_line_width: float,
     group_line_alpha: float,
     colors: dict[str, tuple[float, float, float, float]],
+    linestyles: Mapping[str, LineStyle] | None = None,
+    markers: Mapping[str, str] | None = None,
     title_suffix: str | None = None,
     include_selection_title_suffix: bool = True,
 ) -> list[Path]:
@@ -835,6 +889,8 @@ def plot_experiment_selection(
                     selection_title_suffix,
                 ),
                 colors=colors,
+                linestyles=linestyles,
+                markers=markers,
                 font_size=selection.font_size,
                 legend_font_size=selection.legend_font_size,
             )
@@ -858,6 +914,8 @@ def plot_experiment_selection(
                     selection_title_suffix,
                 ),
                 colors=colors,
+                linestyles=linestyles,
+                markers=markers,
                 font_size=selection.font_size,
                 legend_font_size=selection.legend_font_size,
             )
@@ -903,6 +961,8 @@ def plot_experiment_results(
     main_group_names: Sequence[str] | None = None,
     extra_plot_selections: Sequence[ExperimentPlotSelection] | None = None,
     group_color_overrides: Mapping[str, str] | None = None,
+    group_linestyle_overrides: Mapping[str, LineStyle] | None = None,
+    group_marker_overrides: Mapping[str, str] | None = None,
     title_suffix: str | None = None,
     include_selection_title_suffix: bool = True,
 ) -> ExperimentPlotResult:
@@ -955,6 +1015,8 @@ def plot_experiment_results(
                 metric=metric,
                 title=joined_plot_title(f"{metric.title} Per Run", title_suffix),
                 colors=colors,
+                linestyles=group_linestyle_overrides,
+                markers=group_marker_overrides,
             )
         )
         output_paths.extend(
@@ -971,6 +1033,8 @@ def plot_experiment_results(
                 metric=metric,
                 title=joined_plot_title(f"{metric.title} By Group", title_suffix),
                 colors=colors,
+                linestyles=group_linestyle_overrides,
+                markers=group_marker_overrides,
             )
         )
     if extra_plot_selections is not None:
@@ -988,6 +1052,8 @@ def plot_experiment_results(
                     group_line_width=group_line_width,
                     group_line_alpha=group_line_alpha,
                     colors=colors,
+                    linestyles=group_linestyle_overrides,
+                    markers=group_marker_overrides,
                     title_suffix=title_suffix,
                     include_selection_title_suffix=include_selection_title_suffix,
                 )

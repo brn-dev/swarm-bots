@@ -6,6 +6,7 @@ from pathlib import Path
 from plot_logs.experiment_results import (
     ExperimentPlotResult,
     ExperimentPlotSelection,
+    LineStyle,
     plot_experiment_results,
 )
 
@@ -52,6 +53,17 @@ THESIS_GROUP_COLOR_OVERRIDES = {
     "slstm_two_small_actor_state_critic_no_nop": "#000000",
     "lstm_two_small_actor_state_critic": "#8C564B",
     "slstm_two_small_actor_state_critic_no_memory_strength": "#666666",
+}
+THESIS_GROUP_LINESTYLE_OVERRIDES: dict[str, LineStyle] = {
+    "mappo": ":",
+    "mat_ind": (0, (3, 2, 1, 2, 1, 2)),
+    "mat_qcx": (0, (7, 3)),
+    "mat_orig": (0, (5, 2, 1, 2)),
+    "tmasac_baseline": "-",
+    "slstm_two_small_actor_state_critic": "-",
+}
+THESIS_GROUP_MARKER_OVERRIDES = {
+    "slstm_two_small_actor_state_critic": "D",
 }
 THESIS_ABLATION_PLOTS = (
     ExperimentPlotSelection(
@@ -222,6 +234,8 @@ def plot_thesis_experiment_results(
         main_group_names=THESIS_MAIN_GROUP_ORDER,
         extra_plot_selections=THESIS_ABLATION_PLOTS,
         group_color_overrides=THESIS_GROUP_COLOR_OVERRIDES,
+        group_linestyle_overrides=THESIS_GROUP_LINESTYLE_OVERRIDES,
+        group_marker_overrides=THESIS_GROUP_MARKER_OVERRIDES,
         run_length_limit=THESIS_RUN_LENGTH,
         cut_at_limit=True,
         title_suffix=scenario_title,

@@ -13,6 +13,7 @@ from experiments.thesis_mjw_po_wall_medium.plot_results import (
 from experiments.thesis_plot_common import (
     PO_WALL_MEDIUM_SCENARIO_TITLE,
     THESIS_GROUP_COLOR_OVERRIDES,
+    THESIS_GROUP_LINESTYLE_OVERRIDES,
 )
 from plot_logs.experiment_results import plot_experiment_results
 
@@ -47,6 +48,11 @@ GROUP_COLOR_OVERRIDES = {
     "mat_qcx_128x32": "#A6761D",
     "mat_qcx_64x64": "#666666",
 }
+GROUP_LINESTYLE_OVERRIDES = {
+    f"{algorithm_name}_{rollout_config_name}": THESIS_GROUP_LINESTYLE_OVERRIDES[algorithm_name]
+    for algorithm_name in ALGORITHM_NAMES
+    for rollout_config_name in ROLLOUT_CONFIG_NAMES
+}
 
 
 def main() -> int:
@@ -57,6 +63,7 @@ def main() -> int:
         display_name_overrides=DISPLAY_NAME_OVERRIDES,
         extra_group_sources=EXTRA_GROUP_SOURCES,
         group_color_overrides=GROUP_COLOR_OVERRIDES,
+        group_linestyle_overrides=GROUP_LINESTYLE_OVERRIDES,
         run_length_limit=100_000_000,
         cut_at_limit=True,
         title_suffix=PO_WALL_MEDIUM_SCENARIO_TITLE,

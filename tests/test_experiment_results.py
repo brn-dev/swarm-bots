@@ -5,21 +5,29 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import matplotlib.pyplot as plt
+import numpy as np
+from matplotlib.lines import Line2D
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from plot_logs.experiment_results import (
     DEFAULT_X_COLUMN,
     EP_REW_EMA_COLUMN,
     EP_SUCCESS_RATE_EMA_COLUMN,
+    GROUP_MARKER_SIZE,
     ExperimentGroup,
     ExperimentPlotSelection,
+    ExperimentRunLog,
     LEGEND_FONT_SIZE,
     PLOT_FONT_SIZE,
+    LineStyle,
     load_experiment_groups,
     joined_plot_title,
     plot_experiment_results,
     plot_experiment_selection,
     selected_groups_for_plot_selection,
+    sparse_marker_indices,
 )
 
 
@@ -240,6 +248,112 @@ class ExperimentResultsTests(unittest.TestCase):
                 call.kwargs["colors"]["variant"],
                 (0.9019607843137255, 0.6235294117647059, 0.0, 1.0),
             )
+
+    def test_line_styles_and_markers_reach_curves_and_legends_in_main_and_selection_plots(self) -> None:
+        styles: dict[str, LineStyle] = {
+            "dotted": ":",
+            "dash_dot_dot": (0, (3, 2, 1, 2, 1, 2)),
+            "dash_dot": (0, (5, 2, 1, 2)),
+            "dashed": (0, (7, 3)),
+            "solid": "-",
+        }
+        names = (*styles, "default")
+        groups = [
+            ExperimentGroup(
+                name=name,
+                display_name=name,
+                runs=[
+                    ExperimentRunLog(
+                        group_name=name,
+                        run_name=f"run-{index}",
+                        path=Path("unused.csv"),
+                        x_values=np.linspace(0.0, 200.0, 201),
+                        series={
+                            EP_REW_EMA_COLUMN: np.linspace(0.0, 1.0, 201),
+                            EP_SUCCESS_RATE_EMA_COLUMN: np.linspace(0.0, 50.0, 201),
+                        },
+                    )
+                    for index in range(2)
+                ],
+            )
+            for name in names
+        ]
+        selection = ExperimentPlotSelection(
+            name="ablation",
+            group_names=("default", "dash_dot_dot", "solid"),
+            display_name_overrides={"solid": "Renamed baseline"},
+        )
+
+        with (
+            patch("plot_logs.experiment_results.load_experiment_groups", return_value=groups),
+            patch("plot_logs.experiment_results.save_figure_variants", return_value=[]) as save,
+        ):
+            try:
+                plot_experiment_results(
+                    Path("unused"),
+                    Path("unused-output"),
+                    main_group_names=tuple(reversed(names)),
+                    extra_plot_selections=(selection,),
+                    group_linestyle_overrides=styles,
+                    group_marker_overrides={"solid": "D"},
+                    theoretical_maximum=100.0,
+                    run_length_limit=100,
+                    cut_at_limit=True,
+                )
+
+                self.assertEqual(save.call_count, 8)
+                for call in save.call_args_list:
+                    figure, output_path = call.args
+                    figure.canvas.draw()
+                    axis = figure.axes[0]
+                    is_selection = "ablation" in output_path.stem
+                    plot_names = selection.group_names if is_selection else tuple(reversed(names))
+                    runs_per_group = 2 if "individual" in output_path.stem else 1
+                    legend_lines = axis.get_legend().get_lines()
+                    self.assertEqual(len(axis.lines), len(plot_names) * runs_per_group + 1)
+                    self.assertEqual(len(legend_lines), len(plot_names) + 1)
+                    for index, name in enumerate(plot_names):
+                        expected = Line2D([], [], linestyle=styles.get(name, "-"))
+                        lines = axis.lines[index * runs_per_group:(index + 1) * runs_per_group]
+                        for line in (*lines, legend_lines[index]):
+                            # get_linestyle() collapses every custom dash sequence to "--".
+                            self.assertEqual(line._unscaled_dash_pattern, expected._unscaled_dash_pattern)
+                            self.assertEqual(line.get_marker(), "D" if name == "solid" else "None")
+                            if name == "solid":
+                                self.assertEqual(line.get_markersize(), GROUP_MARKER_SIZE)
+                                self.assertEqual(line.get_markerfacecolor(), "white")
+                        if name == "solid":
+                            for line in lines:
+                                marker_x = line.get_xdata()[line.get_markevery()]
+                                self.assertEqual(len(marker_x), 7)
+                                self.assertTrue(np.all((marker_x > 0) & (marker_x < 100)))
+                    self.assertEqual(axis.lines[-1].get_linestyle(), "--")
+                    self.assertEqual(legend_lines[-1].get_linestyle(), "--")
+            finally:
+                for call in save.call_args_list:
+                    plt.close(call.args[0])
+
+    def test_sparse_markers_use_environment_steps_and_only_finite_points(self) -> None:
+        x_values = np.concatenate((
+            [np.nan], np.linspace(0, 10, 101), np.arange(15, 101, 5), [np.inf],
+        ))
+        y_values = np.ones_like(x_values)
+        y_values[x_values == 50] = np.nan
+
+        indices = sparse_marker_indices(x_values, y_values)
+
+        self.assertEqual(len(indices), 7)
+        self.assertTrue(np.isfinite(y_values[indices]).all())
+        np.testing.assert_allclose(x_values[indices], np.linspace(12.5, 87.5, 7), atol=5)
+
+        for x, y, expected in (
+            ([], [], []),
+            ([1.0], [np.nan], []),
+            ([1.0], [2.0], [0]),
+            ([1.0, 1.0], [2.0, 2.0], [0]),
+        ):
+            with self.subTest(x=x, y=y):
+                self.assertEqual(sparse_marker_indices(np.array(x), np.array(y)), expected)
 
     def test_load_experiment_groups_ignores_missing_extra_group_source(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

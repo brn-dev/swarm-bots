@@ -15,6 +15,7 @@ from experiments.thesis_plot_common import (
     PO_WALL_MEDIUM_SCENARIO_TITLE,
     THESIS_DISPLAY_NAMES,
     THESIS_GROUP_COLOR_OVERRIDES,
+    THESIS_GROUP_LINESTYLE_OVERRIDES,
 )
 from plot_logs.experiment_results import plot_experiment_results
 
@@ -30,6 +31,7 @@ def main() -> int:
         group_order=GROUP_ORDER,
         display_name_overrides=THESIS_DISPLAY_NAMES,
         group_color_overrides=THESIS_GROUP_COLOR_OVERRIDES,
+        group_linestyle_overrides=THESIS_GROUP_LINESTYLE_OVERRIDES,
         run_length_limit=TOTAL_TIMESTEPS,
         cut_at_limit=True,
         title_suffix=PO_WALL_MEDIUM_SCENARIO_TITLE,
