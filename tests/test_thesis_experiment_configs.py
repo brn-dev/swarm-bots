@@ -1,10 +1,12 @@
+import runpy
+import sys
 from pathlib import Path
 from types import ModuleType
 from unittest.mock import patch
 
 import pytest
 
-from experiments import thesis_experiment_common, thesis_plot_common
+from experiments import thesis_experiment_common, thesis_plot_common, tmasac_experiment_common
 from experiments.thesis_mjw_find_opening import plot_results as find_opening_plot
 from experiments.thesis_mjw_find_opening.scripts import common as find_opening_common
 from experiments.thesis_mjw_po_wall_medium import plot_250m_results as po_wall_250m_plot
@@ -108,6 +110,13 @@ def test_ppo_thesis_variants_use_current_observation_and_action_defaults(
             False,
         ),
         (
+            "slstm_two_small_actor_state_critic_recurrent_skip",
+            "slstm_two_small_actor_state_critic_recurrent_skip",
+            "gumbel_softmax_sign_magnitude_beta",
+            True,
+            False,
+        ),
+        (
             "lstm_two_small_actor_state_critic",
             "lstm_two_small_actor_state_critic",
             "gumbel_softmax_sign_magnitude_beta",
@@ -181,6 +190,35 @@ def test_tmasac_thesis_variants_use_shared_current_architectures(
         include_slstm_memory_strength=include_slstm_memory_strength,
         variant_name=variant,
     )
+
+
+@pytest.mark.parametrize("suite_common", (find_opening_common, po_wall_common))
+def test_thesis_recurrent_skip_entrypoints_change_only_the_skip(
+    monkeypatch: pytest.MonkeyPatch,
+    suite_common: ModuleType,
+) -> None:
+    scripts_dir = Path(suite_common.__file__).parent
+    monkeypatch.setitem(sys.modules, "common", suite_common)
+    with patch.object(tmasac_experiment_common, "run_mjw_experiment") as run:
+        runpy.run_path(str(scripts_dir / "run_tmasac_slstm.py"), run_name="__main__")
+        runpy.run_path(
+            str(scripts_dir / "run_tmasac_slstm_recurrent_skip.py"), run_name="__main__"
+        )
+
+    assert run.call_count == 2
+    baseline, recurrent_skip = (call.kwargs for call in run.call_args_list)
+    assert baseline.keys() == recurrent_skip.keys()
+    assert {key for key in baseline if baseline[key] != recurrent_skip[key]} == {
+        "variant_name",
+        "entrypoint_path",
+        "rmat_temporal_residual",
+    }
+    assert baseline["variant_name"] == "slstm_two_small_actor_state_critic"
+    assert recurrent_skip["variant_name"] == "slstm_two_small_actor_state_critic_recurrent_skip"
+    assert baseline["rmat_temporal_residual"] is False
+    assert recurrent_skip["rmat_temporal_residual"] is True
+    assert recurrent_skip["experiment_run_name"] == suite_common.EXPERIMENT_RUN_NAME
+    assert recurrent_skip["total_timesteps"] == 100_000_000
 
 
 def test_thesis_suites_use_continuous_connector_scenario_configs() -> None:
@@ -310,6 +348,10 @@ def test_thesis_plots_keep_ablations_out_of_main_plot_and_use_pair_comparisons()
             "slstm_two_small_actor_state_critic",
             "slstm_two_small_actor_state_critic_no_memory_strength",
         ),
+        "slstm_tmasac_recurrent_skip": (
+            "slstm_two_small_actor_state_critic",
+            "slstm_two_small_actor_state_critic_recurrent_skip",
+        ),
     }
     assert thesis_plot_common.THESIS_GROUP_ORDER[-1] == (
         "slstm_two_small_actor_state_critic_no_memory_strength"
@@ -330,6 +372,19 @@ def test_thesis_plots_keep_ablations_out_of_main_plot_and_use_pair_comparisons()
         else:
             assert selection.font_size == 16
             assert selection.legend_font_size == 18
+
+
+def test_recurrent_skip_plot_requires_both_arms_and_stays_out_of_main_comparison() -> None:
+    selection = next(
+        selection
+        for selection in thesis_plot_common.THESIS_ABLATION_PLOTS
+        if selection.name == "slstm_tmasac_recurrent_skip"
+    )
+    assert selection.required_group_names == selection.group_names
+    assert selection.output_subdir == "recurrent_skip/slstm_tmasac"
+    assert "slstm_two_small_actor_state_critic_recurrent_skip" not in (
+        thesis_plot_common.THESIS_MAIN_GROUP_ORDER
+    )
 
 
 def test_thesis_group_colors_match_requested_swaps() -> None:

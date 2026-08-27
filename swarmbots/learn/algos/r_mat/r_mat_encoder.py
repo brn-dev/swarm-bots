@@ -31,7 +31,7 @@ class RMATEncoderConfig(MATEncoderConfig):
     temporal_model_cls: type[TemporalSequenceModel] | Sequence[type[TemporalSequenceModel]] = LSTMTemporalSequenceModel
     temporal_model_config: Any = field(default_factory=LSTMTemporalSequenceModelConfig)
     temporal_model_order: Literal["temporal_first", "inter_agent_attention_first"] = "inter_agent_attention_first"
-    inter_module_mlp: bool = False
+    inter_module_mlp: bool = True
     temporal_residual: bool = True
     temporal_layer_norm: bool = True
     use_temporal_output_projection: bool = True

@@ -41,6 +41,7 @@ Keep only durable architecture notes and costly gotchas. Delete stale implementa
 
 ## Policies, Recurrent Models, And World Models
 
+- The thesis `slstm_two_small_actor_state_critic_recurrent_skip` ablation changes only `rmat_temporal_residual` from the sLSTM-TMASAC baseline. Both keep the intermediate MLP enabled and the recurrent input LayerNorm/output projection disabled. Both thesis scenarios provide a launcher, and their standard plots include a separate `recurrent_skip/slstm_tmasac` comparison.
 - `MATQCBasePolicy` owns shared QCS/QCX/QCC PPO plumbing. QCC subclasses QCS with its own decoder; QCX is query-to-context only; `MATIndPolicy` is the decoderless encoder-actor variant. `MATDecPolicy` has separate critic and actor MAT encoders; the actor encoder uses local and global observations but has no agent attention, so it cannot mix other agents' local tokens and `act()` never runs the centralized critic encoder.
 - `MATOrigPolicy` requires a contiguous active-agent prefix and shifted previous-agent actions. QCS/QCC/QCX support arbitrary inactive positions if every row has an active agent; `assume_agent_mask_is_active_prefix=True` selects the cheaper prefix path.
 - Recurrent temporal cores must honor reset masks. Reset state with overwrite/selection, not multiplication by zero, because multiplication does not clear NaN or Inf values.
