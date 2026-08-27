@@ -32,6 +32,7 @@ THESIS_GROUP_ORDER = (
     "slstm_two_small_actor_state_critic_predicted_std",
     "slstm_two_small_actor_state_critic_no_nop",
     "lstm_two_small_actor_state_critic",
+    "slstm_two_small_actor_state_critic_recurrent_skip",
     "slstm_two_small_actor_state_critic_no_memory_strength",
 )
 THESIS_GROUP_COLOR_OVERRIDES = {
@@ -51,6 +52,7 @@ THESIS_GROUP_COLOR_OVERRIDES = {
     "slstm_two_small_actor_state_critic_predicted_std": "#A6761D",
     "slstm_two_small_actor_state_critic_no_nop": "#000000",
     "lstm_two_small_actor_state_critic": "#8C564B",
+    "slstm_two_small_actor_state_critic_recurrent_skip": "#9467BD",
     "slstm_two_small_actor_state_critic_no_memory_strength": "#666666",
 }
 THESIS_GROUP_LINESTYLE_OVERRIDES = dict.fromkeys(THESIS_GROUP_ORDER, "-")
@@ -61,6 +63,7 @@ THESIS_GROUP_MARKER_OVERRIDES = {
     "mat_orig": "v",
     "tmasac_baseline": "P",
     "slstm_two_small_actor_state_critic": "D",
+    "slstm_two_small_actor_state_critic_recurrent_skip": "X",
     "tmasac_no_connectors": "o",
 }
 THESIS_ABLATION_PLOTS = (
@@ -177,6 +180,24 @@ THESIS_ABLATION_PLOTS = (
         output_subdir="temporal_model/tmasac",
     ),
     ExperimentPlotSelection(
+        name="slstm_tmasac_recurrent_skip",
+        group_names=(
+            "slstm_two_small_actor_state_critic",
+            "slstm_two_small_actor_state_critic_recurrent_skip",
+        ),
+        required_group_names=(
+            "slstm_two_small_actor_state_critic",
+            "slstm_two_small_actor_state_critic_recurrent_skip",
+        ),
+        output_subdir="recurrent_skip/slstm_tmasac",
+        display_name_overrides={
+            "slstm_two_small_actor_state_critic": "TMASAC + sLSTM, no recurrent skip",
+            "slstm_two_small_actor_state_critic_recurrent_skip": (
+                "TMASAC + sLSTM, recurrent skip"
+            ),
+        },
+    ),
+    ExperimentPlotSelection(
         name="slstm_tmasac_memory_strength",
         group_names=(
             "slstm_two_small_actor_state_critic",
@@ -207,6 +228,9 @@ THESIS_DISPLAY_NAMES = {
     ),
     "slstm_two_small_actor_state_critic_no_nop": "TMASAC + sLSTM, no NOP",
     "lstm_two_small_actor_state_critic": "TMASAC + LSTM",
+    "slstm_two_small_actor_state_critic_recurrent_skip": (
+        "TMASAC + sLSTM, recurrent skip"
+    ),
     "slstm_two_small_actor_state_critic_no_memory_strength": (
         "TMASAC + sLSTM, no critic memory strength"
     ),

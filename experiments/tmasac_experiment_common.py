@@ -39,6 +39,7 @@ TMASACExperimentVariant = Literal[
     "tmasac_shared_encoder",
     "tmasac_swiglu",
     "slstm_two_small_actor_state_critic",
+    "slstm_two_small_actor_state_critic_recurrent_skip",
     "slstm_shared_encoder",
     "lstm_two_small_actor_state_critic",
     "slstm_two_small_swiglu_actor_state_critic",
@@ -152,7 +153,7 @@ def run_tmasac_experiment(
         nop_skip_first_transition_for_critic=True,
         rmat_temporal_model_cls=temporal_model_cls,
         rmat_temporal_model_config=temporal_model_config,
-        rmat_temporal_residual=False,
+        rmat_temporal_residual=variant == "slstm_two_small_actor_state_critic_recurrent_skip",
         rmat_temporal_layer_norm=False,
         rmat_use_temporal_output_projection=not is_recurrent,
         rmat_experimental_compile_lstm=variant.startswith("lstm_"),
@@ -177,6 +178,7 @@ def _make_feedforward_configs(
         return _make_stacked_swiglu_config(), None
     if variant in {
         "slstm_two_small_actor_state_critic",
+        "slstm_two_small_actor_state_critic_recurrent_skip",
         "lstm_two_small_actor_state_critic",
     }:
         return MLPConfig(hidden_dims=[512]), MLPConfig(hidden_dims=[512])

@@ -37,6 +37,7 @@ from swarmbots.learn.nn_components.feed_forward import (
         ("tmasac_shared_encoder", "tmasac"),
         ("tmasac_swiglu", "tmasac"),
         ("slstm_two_small_actor_state_critic", "r_tmasac"),
+        ("slstm_two_small_actor_state_critic_recurrent_skip", "r_tmasac"),
         ("slstm_shared_encoder", "r_tmasac"),
         ("lstm_two_small_actor_state_critic", "r_tmasac"),
         ("slstm_two_small_swiglu_actor_state_critic", "r_tmasac"),
@@ -287,6 +288,7 @@ def test_feedforward_tmasac_swiglu_stacks_two_parameter_matched_layers(
     ("variant", "expected_config_type"),
     [
         ("slstm_two_small_actor_state_critic", MLPConfig),
+        ("slstm_two_small_actor_state_critic_recurrent_skip", MLPConfig),
         ("slstm_two_small_swiglu_actor_state_critic", SwiGLUConfig),
     ],
 )
@@ -318,6 +320,30 @@ def test_slstm_variants_use_two_actor_feedforwards_and_actor_state_critic_input(
         projection_hidden_dims=(256,),
         include_slstm_memory_strength=False,
     )
+
+
+def test_slstm_recurrent_skip_changes_only_temporal_residual(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run_mjw_experiment = Mock()
+    monkeypatch.setattr(tmasac_common, "run_mjw_experiment", run_mjw_experiment)
+
+    _run_variant("slstm_two_small_actor_state_critic")
+    baseline = run_mjw_experiment.call_args.kwargs
+    _run_variant("slstm_two_small_actor_state_critic_recurrent_skip")
+    recurrent_skip = run_mjw_experiment.call_args.kwargs
+
+    assert baseline.keys() == recurrent_skip.keys()
+    assert {key for key in baseline if baseline[key] != recurrent_skip[key]} == {
+        "variant_name",
+        "rmat_temporal_residual",
+    }
+    assert baseline["rmat_temporal_residual"] is False
+    assert recurrent_skip["rmat_temporal_residual"] is True
+    assert recurrent_skip["rmat_actor_inter_module_mlp"] is True
+    assert recurrent_skip["rmat_temporal_layer_norm"] is False
+    assert recurrent_skip["rmat_use_temporal_output_projection"] is False
+    assert recurrent_skip["rmat_temporal_model_config"].output_norm is True
 
 
 def test_slstm_variant_can_include_memory_strength_in_critic_input(
