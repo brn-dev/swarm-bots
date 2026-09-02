@@ -12,6 +12,7 @@ import torch
 from gymnasium.vector import AutoresetMode, SyncVectorEnv
 
 from swarmbots.learn.action_dists.beta_action_dist import BetaConfig
+from swarmbots.learn.action_dists.bernstein_quantile_action_dist import BernsteinQuantileConfig
 from swarmbots.learn.action_dists.gsde_action_dist import GSDEConfig
 from swarmbots.learn.action_dists.gumbel_softmax_sign_magnitude_action_dist import (
     GumbelSoftmaxSignMagnitudeBetaConfig,
@@ -24,6 +25,9 @@ from swarmbots.learn.action_dists.reparameterized_sign_magnitude_kumaraswamy_act
 )
 from swarmbots.learn.action_dists.reparameterized_squashed_gaussian_mixture_action_dist import (
     ReparameterizedSquashedGaussianMixtureConfig,
+)
+from swarmbots.learn.action_dists.rational_quadratic_spline_quantile_action_dist import (
+    RationalQuadraticSplineQuantileConfig,
 )
 from swarmbots.learn.action_dists.squashed_diag_gaussian_action_dist import (
     SquashedDiagGaussianConfig,
@@ -139,6 +143,8 @@ def _supported_differentiable_configs() -> list[ContinuousActionDistConfig]:
         SquashedDiagGaussianConfig(std=0.5, std_learnable=True),
         ReparameterizedSignMagnitudeKumaraswamyConfig(),
         ReparameterizedSquashedGaussianMixtureConfig(inverse_cdf_iterations=8),
+        BernsteinQuantileConfig(),
+        RationalQuadraticSplineQuantileConfig(),
     ]
 
 

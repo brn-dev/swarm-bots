@@ -564,7 +564,7 @@ class MATOrigPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
             previous_action_i = None if previous_actions is None else previous_actions[:, agent_idx:agent_idx + 1, :]
 
             if return_log_probs:
-                action_i, log_prob_i = self.action_dist.get_actions_with_log_probs(
+                action_i, log_prob_i = self.action_dist.get_on_policy_actions_with_log_probs(
                     latent_pi,
                     deterministic=deterministic,
                     agent=sample_agent_idx,

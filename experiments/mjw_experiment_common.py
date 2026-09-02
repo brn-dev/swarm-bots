@@ -24,6 +24,7 @@ from experiments.transformer_policy_common import (
     NOPInitGains,
 )
 from swarmbots.learn.action_dists.beta_action_dist import BetaConfig
+from swarmbots.learn.action_dists.bernstein_quantile_action_dist import BernsteinQuantileConfig
 from swarmbots.learn.action_dists.bernoulli_action_dist import BernoulliConfig
 from swarmbots.learn.action_dists.entropy_utils import AgentActionsReduction, EntropyLossConfig
 from swarmbots.learn.action_dists.gsde_action_dist import GSDEConfig
@@ -37,6 +38,9 @@ from swarmbots.learn.action_dists.reparameterized_sign_magnitude_kumaraswamy_act
 )
 from swarmbots.learn.action_dists.reparameterized_squashed_gaussian_mixture_action_dist import (
     ReparameterizedSquashedGaussianMixtureConfig,
+)
+from swarmbots.learn.action_dists.rational_quadratic_spline_quantile_action_dist import (
+    RationalQuadraticSplineQuantileConfig,
 )
 from swarmbots.learn.action_dists.sign_magnitude_beta_action_dist import SignMagnitudeBetaConfig
 from swarmbots.learn.action_dists.sticky_action_dist import StickyActionDist
@@ -133,6 +137,10 @@ ContinuousActionDistVariant = Literal[
     "gumbel_softmax_sign_magnitude_kumaraswamy",
     "reparameterized_sign_magnitude_kumaraswamy",
     "reparameterized_squashed_gaussian_mixture",
+    "bernstein_6",
+    "bernstein_8",
+    "rqs_4",
+    "rqs_6",
     "beta",
     "predicted_std",
     "gsde",
@@ -422,6 +430,8 @@ def make_continuous_config(
         | GumbelSoftmaxSignMagnitudeKumaraswamyConfig
         | ReparameterizedSignMagnitudeKumaraswamyConfig
         | ReparameterizedSquashedGaussianMixtureConfig
+        | BernsteinQuantileConfig
+        | RationalQuadraticSplineQuantileConfig
         | BetaConfig
         | PredictedStdConfig
         | GSDEConfig
@@ -476,6 +486,30 @@ def make_continuous_config(
             gaussian_ent_scale=0.75,
             categorical_ent_loss_config=make_sign_magnitude_categorical_entropy_config(),
             gaussian_ent_loss_config=make_sign_magnitude_magnitude_entropy_config(),
+        )
+    if variant == "bernstein_6":
+        return BernsteinQuantileConfig(
+            degree=6,
+            ent_loss_coef=ent_loss_coef,
+            ent_loss_config=make_sign_magnitude_magnitude_entropy_config(),
+        )
+    if variant == "bernstein_8":
+        return BernsteinQuantileConfig(
+            degree=8,
+            ent_loss_coef=ent_loss_coef,
+            ent_loss_config=make_sign_magnitude_magnitude_entropy_config(),
+        )
+    if variant == "rqs_4":
+        return RationalQuadraticSplineQuantileConfig(
+            num_bins=4,
+            ent_loss_coef=ent_loss_coef,
+            ent_loss_config=make_sign_magnitude_magnitude_entropy_config(),
+        )
+    if variant == "rqs_6":
+        return RationalQuadraticSplineQuantileConfig(
+            num_bins=6,
+            ent_loss_coef=ent_loss_coef,
+            ent_loss_config=make_sign_magnitude_magnitude_entropy_config(),
         )
     if variant == "beta":
         return BetaConfig(

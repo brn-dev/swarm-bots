@@ -300,7 +300,7 @@ class PPOPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
         local_obs = self._mask_local_obs(local_obs, agent_mask)
         local_latents = self.shared_encoder(local_obs, global_obs)
         latent_pi = self.actor(local_latents)
-        actions, log_probs = self.action_dist.get_actions_with_log_probs(
+        actions, log_probs = self.action_dist.get_on_policy_actions_with_log_probs(
             latent_pi,
             deterministic,
             previous_actions=previous_actions,

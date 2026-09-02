@@ -1,10 +1,15 @@
 import math
+from unittest.mock import patch
 
 import torch
 from gymnasium import spaces
 from torch import nn
 
 from swarmbots.learn.action_dists.bernoulli_action_dist import BernoulliConfig
+from swarmbots.learn.action_dists.rational_quadratic_spline_quantile_action_dist import (
+    RationalQuadraticSplineQuantileActionDist,
+    RationalQuadraticSplineQuantileConfig,
+)
 from swarmbots.learn.action_dists.sticky_sign_magnitude_beta_action_dist import StickySignMagnitudeBetaConfig
 from swarmbots.learn.algos.mappo.mappo_actor import MAPPOActorConfig
 from swarmbots.learn.algos.mappo.mappo_policy import MAPPOCriticConfig, MAPPOPolicy, MAPPOPolicyConfig
@@ -83,6 +88,55 @@ def test_ppo_policy_exposes_popart_when_enabled_in_critic_config() -> None:
     )
 
     assert policy.has_popart
+
+
+def test_ppo_rollout_log_probs_round_trip_through_float32_rqs_actions() -> None:
+    policy = PPOPolicy(
+        env=_DummyLearnEnv(),
+        config=PPOPolicyConfig(
+            continuous_config=RationalQuadraticSplineQuantileConfig(),
+        ),
+    )
+    quantile_distribution = policy.action_dist.distributions[0]
+    assert isinstance(quantile_distribution, RationalQuadraticSplineQuantileActionDist)
+    torch.manual_seed(0)
+    with torch.no_grad():
+        quantile_distribution.action_net.weight.normal_(std=5.0)
+        quantile_distribution.action_net.bias.normal_(std=5.0)
+
+    batch_size = 32
+    local_obs = torch.randn(batch_size, _DummyLearnEnv.n_agents, _DummyLearnEnv.local_obs_dim)
+    global_obs = torch.randn(batch_size, _DummyLearnEnv.global_obs_dim)
+    hidden_local_vars = torch.randn(
+        batch_size,
+        _DummyLearnEnv.n_agents,
+        _DummyLearnEnv.hidden_local_vars_dim,
+    )
+    hidden_global_vars = torch.randn(batch_size, _DummyLearnEnv.hidden_global_vars_dim)
+    u = torch.rand(batch_size, _DummyLearnEnv.n_agents, 2)
+    with torch.no_grad(), patch(
+            "swarmbots.learn.action_dists.bounded_quantile_action_dist.torch.rand",
+            return_value=u,
+    ):
+        actions, rollout_log_probs, _values = policy(
+            local_obs,
+            global_obs,
+            hidden_local_vars,
+            hidden_global_vars,
+        )
+
+    with torch.no_grad():
+        latent_pi = policy.actor(policy.shared_encoder(local_obs, global_obs))
+        policy.action_dist.update_latent_features(latent_pi)
+        recomputed_log_probs = policy.action_dist.log_prob(actions)
+        _continuous_actions, continuous_log_det = quantile_distribution._transform_forward_and_log_det(u)
+        known_sample_log_probs = (
+            -continuous_log_det.sum(dim=-1)
+            + policy.action_dist.distributions[1].log_prob(actions[..., 2:])
+        )
+
+    torch.testing.assert_close(rollout_log_probs, recomputed_log_probs)
+    assert (known_sample_log_probs - recomputed_log_probs).abs().max().item() > 0.2
 
 
 def test_mappo_policy_initializes_internal_layers_and_heads_with_expected_gains() -> None:
