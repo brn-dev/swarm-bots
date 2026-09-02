@@ -10,6 +10,7 @@ from gymnasium import spaces
 
 from swarmbots.learn.action_dists.beta_action_dist import BetaConfig
 from swarmbots.learn.action_dists.beta_mixture_action_dist import BetaMixtureConfig
+from swarmbots.learn.action_dists.bernstein_quantile_action_dist import BernsteinQuantileConfig
 from swarmbots.learn.action_dists.gumbel_softmax_sign_magnitude_action_dist import (
     GumbelSoftmaxSignMagnitudeBetaConfig,
     GumbelSoftmaxSignMagnitudeKumaraswamyConfig,
@@ -22,6 +23,9 @@ from swarmbots.learn.action_dists.reparameterized_sign_magnitude_kumaraswamy_act
 )
 from swarmbots.learn.action_dists.reparameterized_squashed_gaussian_mixture_action_dist import (
     ReparameterizedSquashedGaussianMixtureConfig,
+)
+from swarmbots.learn.action_dists.rational_quadratic_spline_quantile_action_dist import (
+    RationalQuadraticSplineQuantileConfig,
 )
 from swarmbots.learn.action_dists.squashed_diag_gaussian_action_dist import SquashedDiagGaussianConfig
 from swarmbots.learn.algos.mat.mat_encoder import MATEncoderConfig
@@ -230,6 +234,8 @@ def _supported_differentiable_configs() -> list[ContinuousActionDistConfig]:
         SquashedDiagGaussianConfig(std=0.5, std_learnable=True),
         ReparameterizedSignMagnitudeKumaraswamyConfig(),
         ReparameterizedSquashedGaussianMixtureConfig(inverse_cdf_iterations=8),
+        BernsteinQuantileConfig(),
+        RationalQuadraticSplineQuantileConfig(),
     ]
 
 
@@ -980,6 +986,8 @@ class TMASACPolicyTests(unittest.TestCase):
             GumbelSoftmaxSignMagnitudeBetaConfig(ent_loss_coef=0.1),
             GumbelSoftmaxSignMagnitudeKumaraswamyConfig(ent_loss_coef=0.1),
             ReparameterizedSignMagnitudeKumaraswamyConfig(ent_loss_coef=0.1),
+            BernsteinQuantileConfig(ent_loss_coef=0.1),
+            RationalQuadraticSplineQuantileConfig(ent_loss_coef=0.1),
         )
         for continuous_config in configs:
             with self.subTest(continuous_config=type(continuous_config).__name__):
@@ -1153,9 +1161,11 @@ class TMASACPolicyTests(unittest.TestCase):
             compiled_actions, compiled_log_probs = compiled_policy.action_log_prob(**mode_kwargs)
             torch.testing.assert_close(compiled_actions, eager_actions)
             torch.testing.assert_close(compiled_log_probs, eager_log_probs)
+            torch.manual_seed(seed + 1_000)
             eager_extra_losses = eager_policy.action_dist.compute_extra_losses_without_metrics(
                 agent_mask=batch.agent_mask,
             )
+            torch.manual_seed(seed + 1_000)
             compiled_extra_losses = compiled_policy.action_dist.compute_extra_losses_without_metrics(
                 agent_mask=batch.agent_mask,
             )
@@ -1220,13 +1230,17 @@ class TMASACPolicyTests(unittest.TestCase):
                 },
                 **action_mode,
             )
+            torch.manual_seed(seed + 1_000)
+            compiled_extra_losses = compiled_policy.action_dist.compute_extra_losses_without_metrics(
+                agent_mask=batch.agent_mask,
+            )
+            torch.manual_seed(seed + 1_000)
+            eager_extra_losses = eager_policy.action_dist.compute_extra_losses_without_metrics(
+                agent_mask=batch.agent_mask,
+            )
             self._assert_loss_dict_close(
-                compiled_policy.action_dist.compute_extra_losses_without_metrics(
-                    agent_mask=batch.agent_mask,
-                ),
-                eager_policy.action_dist.compute_extra_losses_without_metrics(
-                    agent_mask=batch.agent_mask,
-                ),
+                compiled_extra_losses,
+                eager_extra_losses,
             )
         self.assertEqual(len(compiled_graphs), len(action_modes))
 

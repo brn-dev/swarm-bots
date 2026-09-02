@@ -11,6 +11,7 @@ from gymnasium import spaces
 
 from swarmbots.learn.action_dists.beta_action_dist import BetaActionDist, BetaConfig
 from swarmbots.learn.action_dists.bang_zero_bang_action_dist import BangZeroBangActionDist, BangZeroBangConfig
+from swarmbots.learn.action_dists.bernstein_quantile_action_dist import BernsteinQuantileConfig
 from swarmbots.learn.action_dists.gumbel_softmax_sign_magnitude_action_dist import (
     GumbelSoftmaxSignMagnitudeBetaConfig,
     GumbelSoftmaxSignMagnitudeKumaraswamyConfig,
@@ -20,6 +21,9 @@ from swarmbots.learn.action_dists.left_middle_right_beta_action_dist import Left
 from swarmbots.learn.action_dists.predicted_std_action_dist import PredictedStdActionDist, PredictedStdConfig
 from swarmbots.learn.action_dists.reparameterized_sign_magnitude_kumaraswamy_action_dist import (
     ReparameterizedSignMagnitudeKumaraswamyConfig,
+)
+from swarmbots.learn.action_dists.rational_quadratic_spline_quantile_action_dist import (
+    RationalQuadraticSplineQuantileConfig,
 )
 from swarmbots.learn.action_dists.sign_magnitude_beta_action_dist import (
     SignMagnitudeBetaActionDist,
@@ -122,6 +126,8 @@ class HybridActionDistFactoryTests(unittest.TestCase):
             GumbelSoftmaxSignMagnitudeKumaraswamyConfig(),
             TernarySignMagnitudeBetaConfig(),
             ReparameterizedSignMagnitudeKumaraswamyConfig(),
+            BernsteinQuantileConfig(),
+            RationalQuadraticSplineQuantileConfig(),
             StickySignMagnitudeBetaConfig(stickiness=0.25),
             SignMagnitudeBetaConfig(),
             LeftMiddleRightBetaConfig(eps_c=0.1),
@@ -188,9 +194,11 @@ class HybridActionDistFactoryTests(unittest.TestCase):
                         torch.testing.assert_close(compiled_actions, eager_actions)
                         torch.testing.assert_close(compiled_log_probs, eager_log_probs)
 
+                        torch.manual_seed(456)
                         eager_losses = eager_dist.compute_extra_losses_without_metrics(
                             agent_mask=agent_mask,
                         )
+                        torch.manual_seed(456)
                         compiled_losses = compiled_dist.compute_extra_losses_without_metrics(
                             agent_mask=agent_mask,
                         )

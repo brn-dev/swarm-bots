@@ -238,7 +238,7 @@ class MATIndPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
         latent_pi = self.actor_head(augmented_observations).contiguous()
         if return_log_probs:
-            actions, log_probs = self.action_dist.get_actions_with_log_probs(
+            actions, log_probs = self.action_dist.get_on_policy_actions_with_log_probs(
                 latent_pi,
                 deterministic=deterministic,
                 previous_actions=previous_actions,

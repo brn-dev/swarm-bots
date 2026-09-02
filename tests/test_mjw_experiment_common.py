@@ -25,6 +25,7 @@ from experiments.mjw_experiment_common import (
     wrap_vec_env,
 )
 from swarmbots.learn.action_dists.bernoulli_action_dist import BernoulliActionDist
+from swarmbots.learn.action_dists.bernstein_quantile_action_dist import BernsteinQuantileConfig
 from swarmbots.learn.action_dists.gsde_action_dist import GSDEActionDist
 from swarmbots.learn.action_dists.gumbel_softmax_sign_magnitude_action_dist import (
     GumbelSoftmaxSignMagnitudeBetaActionDist,
@@ -32,6 +33,9 @@ from swarmbots.learn.action_dists.gumbel_softmax_sign_magnitude_action_dist impo
 )
 from swarmbots.learn.action_dists.reparameterized_sign_magnitude_kumaraswamy_action_dist import (
     ReparameterizedSignMagnitudeKumaraswamyActionDist,
+)
+from swarmbots.learn.action_dists.rational_quadratic_spline_quantile_action_dist import (
+    RationalQuadraticSplineQuantileConfig,
 )
 from swarmbots.learn.action_dists.predicted_std_action_dist import PredictedStdActionDist
 from swarmbots.learn.action_dists.sign_magnitude_beta_action_dist import SignMagnitudeBetaActionDist
@@ -74,6 +78,28 @@ from swarmbots.learn.hybrid_action_space import HybridActionSpace
 from swarmbots.learn.nn_components.feed_forward import GLUStackConfig, MLPConfig, StackedGLU, SwiGLUConfig
 from swarmbots.learn.obs_indices import ObsIndices
 from swarmbots.learn.testing_env import TestingSwarmBotsEnv
+
+
+@pytest.mark.parametrize(
+    ("variant", "expected_config"),
+    (
+        ("bernstein_6", BernsteinQuantileConfig(degree=6, ent_loss_coef=1e-3)),
+        ("bernstein_8", BernsteinQuantileConfig(degree=8, ent_loss_coef=1e-3)),
+        ("rqs_4", RationalQuadraticSplineQuantileConfig(num_bins=4, ent_loss_coef=1e-3)),
+        ("rqs_6", RationalQuadraticSplineQuantileConfig(num_bins=6, ent_loss_coef=1e-3)),
+    ),
+)
+def test_make_continuous_config_supports_bounded_quantile_comparison_presets(
+        variant: experiment_common.ContinuousActionDistVariant,
+        expected_config: BernsteinQuantileConfig | RationalQuadraticSplineQuantileConfig,
+) -> None:
+    config = experiment_common.make_continuous_config(
+        variant=variant,
+        initial_stickiness=0.25,
+        gsde_init_stds=[0.5],
+    )
+
+    assert config == expected_config
 
 
 class _DummyEnv:

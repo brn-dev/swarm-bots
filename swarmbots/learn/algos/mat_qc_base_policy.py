@@ -396,7 +396,7 @@ class MATQCBasePolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
 
             previous_action_i = None if previous_actions is None else previous_actions[:, i:i + 1, :]
             if return_log_probs:
-                action, log_prob = self.action_dist.get_actions_with_log_probs(
+                action, log_prob = self.action_dist.get_on_policy_actions_with_log_probs(
                     latent_pi,
                     deterministic,
                     agent=sample_agent_idx,

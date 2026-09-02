@@ -43,17 +43,22 @@ from swarmbots.learn.action_dists.sticky_left_middle_right_beta_action_dist impo
     StickyLeftMiddleRightBetaConfig,
 )
 from swarmbots.learn.action_dists.beta_mixture_action_dist import BetaMixtureActionDist, BetaMixtureConfig
+from swarmbots.learn.action_dists.bernstein_quantile_action_dist import (
+    BernsteinQuantileActionDist,
+    BernsteinQuantileConfig,
+)
 from swarmbots.learn.action_dists.predicted_std_action_dist import PredictedStdActionDist, PredictedStdConfig
 from swarmbots.learn.action_dists.reparameterized_sign_magnitude_kumaraswamy_action_dist import (
     ReparameterizedSignMagnitudeKumaraswamyActionDist,
     ReparameterizedSignMagnitudeKumaraswamyConfig,
 )
-from swarmbots.learn.action_dists.sign_magnitude_kumaraswamy_action_dist import (
-    SignMagnitudeKumaraswamyConfig,
-)
 from swarmbots.learn.action_dists.reparameterized_squashed_gaussian_mixture_action_dist import (
     ReparameterizedSquashedGaussianMixtureActionDist,
     ReparameterizedSquashedGaussianMixtureConfig,
+)
+from swarmbots.learn.action_dists.rational_quadratic_spline_quantile_action_dist import (
+    RationalQuadraticSplineQuantileActionDist,
+    RationalQuadraticSplineQuantileConfig,
 )
 from swarmbots.learn.action_dists.squashed_diag_gaussian_action_dist import (
     SquashedDiagGaussianActionDist,
@@ -86,6 +91,8 @@ ContinuousActionDistConfig: TypeAlias = (
     | TernarySignMagnitudeBetaConfig
     | ReparameterizedSignMagnitudeKumaraswamyConfig
     | ReparameterizedSquashedGaussianMixtureConfig
+    | BernsteinQuantileConfig
+    | RationalQuadraticSplineQuantileConfig
     | StickySignMagnitudeBetaConfig
     | StickyLeftMiddleRightBetaConfig
     | SignMagnitudeBetaConfig
@@ -145,6 +152,14 @@ _CONTINUOUS_ACTION_DIST_SPECS: dict[type, _ContinuousActionDistSpec] = {
         ReparameterizedSquashedGaussianMixtureActionDist,
         ActionGradientEstimator.PATHWISE,
     ),
+    BernsteinQuantileConfig: _ContinuousActionDistSpec(
+        BernsteinQuantileActionDist,
+        ActionGradientEstimator.PATHWISE,
+    ),
+    RationalQuadraticSplineQuantileConfig: _ContinuousActionDistSpec(
+        RationalQuadraticSplineQuantileActionDist,
+        ActionGradientEstimator.PATHWISE,
+    ),
     StickySignMagnitudeBetaConfig: _ContinuousActionDistSpec(StickySignMagnitudeBetaActionDist),
     SignMagnitudeBetaConfig: _ContinuousActionDistSpec(SignMagnitudeBetaActionDist),
     StickyLeftMiddleRightBetaConfig: _ContinuousActionDistSpec(StickyLeftMiddleRightBetaActionDist),
@@ -166,6 +181,18 @@ def _continuous_action_dist_spec(config: ContinuousActionDistConfig) -> _Continu
         if spec is not None:
             return spec
     raise TypeError(f"Unsupported continuous action config type: {type(config).__name__}")
+
+
+def _replace_ent_loss_coef(
+        config: ContinuousActionDistConfig | None,
+        value: float,
+) -> ContinuousActionDistConfig | None:
+    if config is None or not any(
+            config_field.name == "ent_loss_coef"
+            for config_field in fields(config)
+    ):
+        return config
+    return replace(config, ent_loss_coef=value)
 
 
 def continuous_config_to_dicts(
@@ -350,6 +377,41 @@ class HybridActionDistribution(ActionDist):
             previous_actions: torch.Tensor | None = None,
             use_rsample: bool = False,
     ) -> tuple[torch.Tensor, torch.Tensor]:
+        return self._get_actions_with_log_probs_impl(
+            latent_pi=latent_pi,
+            deterministic=deterministic,
+            agent=agent,
+            previous_actions=previous_actions,
+            use_rsample=use_rsample,
+            on_policy=False,
+        )
+
+    def get_on_policy_actions_with_log_probs(
+            self,
+            latent_pi: torch.Tensor,
+            deterministic: bool = False,
+            agent: int | None = None,
+            previous_actions: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        return self._get_actions_with_log_probs_impl(
+            latent_pi=latent_pi,
+            deterministic=deterministic,
+            agent=agent,
+            previous_actions=previous_actions,
+            use_rsample=False,
+            on_policy=True,
+        )
+
+    def _get_actions_with_log_probs_impl(
+            self,
+            *,
+            latent_pi: torch.Tensor,
+            deterministic: bool,
+            agent: int | None,
+            previous_actions: torch.Tensor | None,
+            use_rsample: bool,
+            on_policy: bool,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         actions_parts: list[torch.Tensor] = []
         log_prob_parts: list[torch.Tensor] = []
         split_previous_actions: tuple[torch.Tensor | None, ...]
@@ -360,7 +422,14 @@ class HybridActionDistribution(ActionDist):
 
         for idx, dist in enumerate(self.distributions):
             previous_action = split_previous_actions[idx]
-            if dist.sampling_depends_on_agent:
+            if on_policy:
+                action_part, log_prob_part = dist.get_on_policy_actions_with_log_probs(
+                    latent_pi=latent_pi,
+                    deterministic=deterministic,
+                    agent=agent if dist.sampling_depends_on_agent else None,
+                    previous_actions=previous_action,
+                )
+            elif dist.sampling_depends_on_agent:
                 action_part, log_prob_part = dist.get_actions_with_log_probs(
                     latent_pi=latent_pi,
                     deterministic=deterministic,
@@ -494,15 +563,7 @@ class HybridActionDistribution(ActionDist):
             if callable(set_ent_loss_coef):
                 set_ent_loss_coef(value)
         for idx, config in enumerate(self.continuous_configs):
-            if isinstance(config,
-                          (SquashedDiagGaussianConfig, PredictedStdConfig, GSDEConfig,
-                           BetaConfig, BangZeroBangConfig, StickyBangZeroBangConfig, SignMagnitudeBetaConfig,
-                           StickySignMagnitudeBetaConfig, LeftMiddleRightBetaConfig,
-                           SignMagnitudeKumaraswamyConfig,
-                           ReparameterizedSquashedGaussianMixtureConfig,
-                           StickyLeftMiddleRightBetaConfig)
-            ):
-                self.continuous_configs[idx] = replace(config, ent_loss_coef=value)
+            self.continuous_configs[idx] = _replace_ent_loss_coef(config, value)
         if self.bernoulli_config is not None:
             self.bernoulli_config = replace(self.bernoulli_config, ent_loss_coef=value)
 
@@ -521,15 +582,7 @@ class HybridActionDistribution(ActionDist):
         set_ent_loss_coef(value)
 
         config = self.continuous_configs[sub_dist_idx]
-        if isinstance(config,
-                      (SquashedDiagGaussianConfig, PredictedStdConfig, GSDEConfig,
-                       BetaConfig, BangZeroBangConfig, StickyBangZeroBangConfig, SignMagnitudeBetaConfig,
-                       StickySignMagnitudeBetaConfig, LeftMiddleRightBetaConfig,
-                       SignMagnitudeKumaraswamyConfig,
-                       ReparameterizedSquashedGaussianMixtureConfig,
-                       StickyLeftMiddleRightBetaConfig)
-        ):
-            self.continuous_configs[sub_dist_idx] = replace(config, ent_loss_coef=value)
+        self.continuous_configs[sub_dist_idx] = _replace_ent_loss_coef(config, value)
 
     def set_all_stickiness(self, value: float) -> None:
         for dist in self.distributions:
