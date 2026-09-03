@@ -375,7 +375,7 @@ class BoundedQuantileActionDistTests(unittest.TestCase):
                 self.assertEqual(actions.dtype, torch.float32)
                 self.assertEqual(log_probs.dtype, torch.float32)
 
-    def test_deterministic_action_is_median(self) -> None:
+    def test_uniform_density_mode_prefers_the_median_among_equal_candidates(self) -> None:
         distributions = (
             BernsteinQuantileActionDist(latent_dim=3, action_dim=2),
             RationalQuadraticSplineQuantileActionDist(latent_dim=3, action_dim=2),
@@ -383,10 +383,7 @@ class BoundedQuantileActionDistTests(unittest.TestCase):
         for distribution in distributions:
             with self.subTest(distribution=type(distribution).__name__):
                 distribution.update_latent_features(torch.randn(4, 3))
-                expected, _log_det = distribution._transform_forward_and_log_det(
-                    torch.full((4, 2), 0.5)
-                )
-                torch.testing.assert_close(distribution.mode(), expected)
+                torch.testing.assert_close(distribution.mode(), torch.zeros(4, 2), atol=2e-6, rtol=0.0)
 
     def test_nonuniform_densities_integrate_to_one(self) -> None:
         distributions = (
@@ -408,6 +405,19 @@ class BoundedQuantileActionDistTests(unittest.TestCase):
 
 
 class BernsteinQuantileActionDistTests(unittest.TestCase):
+    def test_deterministic_action_uses_high_density_mode_instead_of_median(self) -> None:
+        distribution = BernsteinQuantileActionDist(latent_dim=1, action_dim=1, degree=3)
+        with torch.no_grad():
+            distribution.action_net.bias.copy_(torch.tensor([-8.0, 8.0, -8.0]))
+        distribution.update_latent_features(torch.zeros(1, 1))
+        median, _median_log_det = distribution._transform_forward_and_log_det(torch.full((1, 1), 0.5))
+
+        mode = distribution.mode()
+
+        self.assertLess(mode.item(), -0.9)
+        self.assertLess(abs(median.item()), 1e-6)
+        self.assertGreater(distribution.log_prob(mode).item(), distribution.log_prob(median).item())
+
     def test_inverse_log_prob_parameter_gradient_matches_finite_difference(self) -> None:
         distribution = BernsteinQuantileActionDist(latent_dim=1, action_dim=1, degree=3)
         latent = torch.ones(1, 1)
@@ -486,6 +496,74 @@ class BernsteinQuantileActionDistTests(unittest.TestCase):
 
 
 class RationalQuadraticSplineQuantileActionDistTests(unittest.TestCase):
+    def test_deterministic_action_uses_high_density_mode_instead_of_median(self) -> None:
+        num_bins = 4
+        distribution = RationalQuadraticSplineQuantileActionDist(
+            latent_dim=1,
+            action_dim=1,
+            num_bins=num_bins,
+            fixed_boundary_derivatives=False,
+        )
+        with torch.no_grad():
+            distribution.action_net.bias.zero_()
+            distribution.action_net.bias[2 * num_bins:] = torch.tensor([-12.0, 4.0, 4.0, 4.0, -12.0])
+        distribution.update_latent_features(torch.zeros(1, 1))
+        median, _median_log_det = distribution._transform_forward_and_log_det(torch.full((1, 1), 0.5))
+
+        mode = distribution.mode()
+
+        self.assertEqual(mode.item(), -1.0)
+        self.assertLess(abs(median.item()), 1e-6)
+        self.assertGreater(distribution.log_prob(mode).item(), distribution.log_prob(median).item())
+
+    def test_comparison_bin_lookup_matches_right_searchsorted_including_knots(self) -> None:
+        torch.manual_seed(5)
+        widths = torch.softmax(torch.randn(3, 2, 6), dim=-1)
+        knots = torch.cat(
+            (
+                torch.zeros_like(widths[..., :1]),
+                torch.cumsum(widths, dim=-1),
+            ),
+            dim=-1,
+        )
+        random_values = torch.rand(3, 2, 20)
+        exact_knots = knots[..., 1:-1]
+        values = torch.cat((random_values, exact_knots), dim=-1)
+        expanded_knots = knots.unsqueeze(-2).expand(3, 2, values.shape[-1], 7)
+
+        actual = RationalQuadraticSplineQuantileActionDist._find_bins(values, expanded_knots)
+        expected = torch.searchsorted(
+            expanded_knots[..., 1:-1].contiguous(),
+            values.unsqueeze(-1),
+            right=True,
+        ).squeeze(-1)
+
+        torch.testing.assert_close(actual, expected)
+
+    @unittest.skipUnless(torch.cuda.is_available(), "requires CUDA compilation")
+    def test_deterministic_rqs_compiles_for_checkpoint_evaluation_shapes(self) -> None:
+        latent = torch.randn(32, 8, 16, device="cuda")
+        for num_bins in (4, 6):
+            with self.subTest(num_bins=num_bins):
+                distribution = RationalQuadraticSplineQuantileActionDist(
+                    latent_dim=16,
+                    action_dim=4,
+                    num_bins=num_bins,
+                ).cuda()
+
+                def deterministic_actions(features: torch.Tensor) -> torch.Tensor:
+                    actions, _log_probs = distribution.get_actions_with_log_probs(
+                        features,
+                        deterministic=True,
+                    )
+                    return actions
+
+                compiled_actions = torch.compile(deterministic_actions, fullgraph=True)
+                actions = compiled_actions(latent)
+
+                self.assertEqual(tuple(actions.shape), (32, 8, 4))
+                self.assertTrue(torch.isfinite(actions).all())
+
     def test_inverse_log_prob_parameter_gradient_matches_finite_difference(self) -> None:
         distribution = RationalQuadraticSplineQuantileActionDist(
             latent_dim=1,
