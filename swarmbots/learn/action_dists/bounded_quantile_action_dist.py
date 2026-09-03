@@ -86,9 +86,7 @@ class BoundedQuantileActionDist(ActionDist, abc.ABC):
 
     def mode(self, previous_actions: torch.Tensor | None = None) -> torch.Tensor:
         _ = previous_actions
-        raw_parameters = self._get_raw_parameters()
-        u = torch.full(raw_parameters.shape[:-1], 0.5, device=raw_parameters.device, dtype=torch.float32)
-        actions, _log_det = self._transform_forward_and_log_det(u)
+        actions, _log_det = self._mode_and_log_det()
         return actions
 
     def get_actions_with_log_probs(
@@ -102,11 +100,10 @@ class BoundedQuantileActionDist(ActionDist, abc.ABC):
         _ = (agent, previous_actions)
         raw_parameters = self.update_latent_features(latent_pi)._get_raw_parameters()
         if deterministic:
-            u = torch.full(raw_parameters.shape[:-1], 0.5, device=raw_parameters.device, dtype=torch.float32)
+            actions, log_det = self._mode_and_log_det()
         else:
             u = torch.rand(raw_parameters.shape[:-1], device=raw_parameters.device, dtype=torch.float32)
-
-        actions, log_det = self._transform_forward_and_log_det(u)
+            actions, log_det = self._transform_forward_and_log_det(u)
         if not deterministic and not use_rsample:
             actions = actions.detach()
             if torch.is_grad_enabled():
@@ -130,6 +127,10 @@ class BoundedQuantileActionDist(ActionDist, abc.ABC):
 
     @abc.abstractmethod
     def _transform_forward_and_log_det(self, u: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        raise NotImplementedError
+
+    @abc.abstractmethod
+    def _mode_and_log_det(self) -> tuple[torch.Tensor, torch.Tensor]:
         raise NotImplementedError
 
     def get_metrics(
@@ -180,7 +181,7 @@ class BoundedQuantileActionDist(ActionDist, abc.ABC):
         return {
             **super().get_hyper_parameters(),
             "parameters_per_action": self.parameters_per_action,
-            "deterministic_action": "median",
+            "deterministic_action": "approximate_density_mode",
             "action_net_initialization": "zeros",
             "ent_loss_coef": self.ent_loss_coef,
             "ent_loss_config": serialize_dataclass(self.ent_loss_config),
@@ -206,4 +207,24 @@ class BoundedQuantileActionDist(ActionDist, abc.ABC):
         return self.ent_loss_coef * compute_ent_loss(
             config=self.ent_loss_config,
             entropy_per_action=entropy_per_action,
+        )
+
+    @staticmethod
+    def _select_min_log_det_candidate(
+            *,
+            actions: torch.Tensor,
+            log_det: torch.Tensor,
+            quantiles: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        min_log_det = log_det.amin(dim=-1, keepdim=True)
+        distance_from_median = (quantiles - 0.5).abs()
+        tie_break_scores = torch.where(
+            torch.isclose(log_det, min_log_det, rtol=1e-6, atol=1e-7),
+            distance_from_median,
+            torch.full_like(log_det, torch.inf),
+        )
+        best_indices = tie_break_scores.argmin(dim=-1, keepdim=True)
+        return (
+            actions.gather(dim=-1, index=best_indices).squeeze(-1),
+            log_det.gather(dim=-1, index=best_indices).squeeze(-1),
         )

@@ -533,6 +533,7 @@ def test_default_run_experiment_wires_ppo_contract(
     assert metadata["mat_decoder_lr_multiplier"] == pytest.approx(0.25)
     assert metadata["include_actor_head_lr_multiplier"] is False
     assert metadata["parameter_lr_multipliers"] == ppo_kwargs["parameter_lr_multipliers"]
+    assert metadata["evaluation_action_modes"] == ["stochastic", "deterministic"]
     assert learn_kwargs["post_iteration_hooks"] == [capture["recording_hook"], capture["evaluation_hook"]]
     recording_kwargs = capture["recording_kwargs"]
     assert isinstance(recording_kwargs, dict)
@@ -547,7 +548,7 @@ def test_default_run_experiment_wires_ppo_contract(
     assert evaluation_runner_kwargs["training_env"] is env
     assert evaluation_runner_kwargs["episodes_per_env"] == 1
     assert evaluation_runner_kwargs["seed"] == 1_000_000
-    assert evaluation_runner_kwargs["deterministic"] is True
+    assert "deterministic" not in evaluation_runner_kwargs
     assert evaluation_runner_kwargs["recording_config"].num_episodes == 0
     evaluation_hook_kwargs = capture["evaluation_hook_kwargs"]
     assert isinstance(evaluation_hook_kwargs, dict)
@@ -558,6 +559,9 @@ def test_default_run_experiment_wires_ppo_contract(
     evaluation_metrics_logger_kwargs = capture["evaluation_metrics_logger_kwargs"]
     assert isinstance(evaluation_metrics_logger_kwargs, dict)
     assert evaluation_metrics_logger_kwargs["filename"] == "eval_log.csv"
+    evaluation_console_keys = {entry[0] for entry in evaluation_metrics_logger_kwargs["console_keys"]}
+    assert "eval_stochastic_ep_rew" in evaluation_console_keys
+    assert "eval_deterministic_ep_rew" in evaluation_console_keys
     assert capture["evaluation_hook"].closed
     capture["evaluation_metrics_logger"].close.assert_called_once_with()
     logging_key_names = {entry[0] for entry in learn_kwargs["logging_console_keys"]}

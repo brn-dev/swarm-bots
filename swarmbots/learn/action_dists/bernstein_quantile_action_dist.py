@@ -21,6 +21,8 @@ class BernsteinQuantileConfig(BoundedQuantileConfig):
 
 
 class BernsteinQuantileActionDist(BoundedQuantileActionDist):
+    MODE_NUM_CANDIDATES = 33
+
     def __init__(
             self,
             latent_dim: int,
@@ -74,6 +76,11 @@ class BernsteinQuantileActionDist(BoundedQuantileActionDist):
             torch.tensor([math.comb(degree - 1, j) for j in range(degree)], dtype=torch.float32),
             persistent=False,
         )
+        self.register_buffer(
+            "mode_quantiles",
+            torch.linspace(0.0, 1.0, self.MODE_NUM_CANDIDATES, dtype=torch.float32),
+            persistent=False,
+        )
 
     def log_prob(
             self,
@@ -116,6 +123,17 @@ class BernsteinQuantileActionDist(BoundedQuantileActionDist):
         )
         actions = (coefficients * action_basis).sum(dim=-1)
         return actions, self._log_det_from_u(u, deltas)
+
+    def _mode_and_log_det(self) -> tuple[torch.Tensor, torch.Tensor]:
+        deltas, coefficients = self._deltas_and_coefficients()
+        quantiles = self.mode_quantiles.float()
+        actions = self._action_from_u(quantiles, coefficients.unsqueeze(-2))
+        log_det = self._log_det_from_u(quantiles, deltas.unsqueeze(-2))
+        return self._select_min_log_det_candidate(
+            actions=actions,
+            log_det=log_det,
+            quantiles=quantiles,
+        )
 
     def _log_det_from_u(self, u: torch.Tensor, deltas: torch.Tensor) -> torch.Tensor:
         return self._derivative_from_u(u, deltas).log()
@@ -175,4 +193,5 @@ class BernsteinQuantileActionDist(BoundedQuantileActionDist):
             "degree": self.degree,
             "min_normalized_increment": self.min_normalized_increment,
             "inverse_iterations": self.inverse_iterations,
+            "mode_num_candidates": self.MODE_NUM_CANDIDATES,
         }

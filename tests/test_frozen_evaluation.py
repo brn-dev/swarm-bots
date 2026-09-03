@@ -46,6 +46,8 @@ class _EvaluationPolicy(nn.Module):
         self.parameter = nn.Parameter(torch.zeros(()))
         self.action_dist = _StatefulActionDist()
         self.episode_start_masks: list[torch.Tensor] = []
+        self.deterministic_modes: list[bool] = []
+        self.random_values: list[torch.Tensor] = []
 
     def requires_previous_actions(self) -> bool:
         return True
@@ -73,9 +75,10 @@ class _EvaluationPolicy(nn.Module):
         temporal_state: torch.Tensor,
         episode_start_mask: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        _ = global_obs, hidden_local_vars, hidden_global_vars, agent_mask, previous_actions, deterministic
+        _ = global_obs, hidden_local_vars, hidden_global_vars, agent_mask, previous_actions
         self.episode_start_masks.append(episode_start_mask.clone())
-        torch.rand(())
+        self.deterministic_modes.append(deterministic)
+        self.random_values.append(torch.rand(()))
         return torch.zeros_like(local_obs), temporal_state + 1
 
 
@@ -152,17 +155,20 @@ def test_frozen_evaluation_collects_each_lane_requested_number_of_times_and_rest
         policy=policy,
         episodes_per_env=2,
         seed=123,
-        deterministic=True,
         recording_config=EvaluationRecordingConfig(num_episodes=3),
         video_folder=Path("videos/eval"),
     )
 
     metrics = runner.evaluate(timesteps=25, milestone_percentage=25.0)
 
-    assert metrics["eval_episodes"] == 4
-    assert metrics["eval_ep_rew"].n == 4
-    assert metrics["eval_ep_rew"].mean == 51.5
-    assert metrics["eval_success_rate"] == 50.0
+    assert metrics["eval_episodes"] == 8
+    assert metrics["eval_episodes_per_mode"] == 4
+    assert metrics["eval_stochastic_ep_rew"].n == 4
+    assert metrics["eval_stochastic_ep_rew"].mean == 51.5
+    assert metrics["eval_deterministic_ep_rew"].n == 4
+    assert metrics["eval_deterministic_ep_rew"].mean == 51.5
+    assert metrics["eval_stochastic_success_rate"] == 50.0
+    assert metrics["eval_deterministic_success_rate"] == 50.0
     assert metrics["timesteps"] == 25
     assert evaluation_env.reset_kwargs == {
         "seed": 123,
@@ -171,12 +177,17 @@ def test_frozen_evaluation_collects_each_lane_requested_number_of_times_and_rest
     assert torch.equal(policy.action_dist.state, torch.tensor([7.0]))
     assert policy.training
     assert torch.equal(torch.random.get_rng_state(), rng_state)
-    assert len(policy.episode_start_masks) == 6
+    assert len(policy.episode_start_masks) == 12
+    assert policy.deterministic_modes == [False] * 6 + [True] * 6
+    torch.testing.assert_close(
+        torch.stack(policy.random_values[:6]),
+        torch.stack(policy.random_values[6:]),
+    )
     assert evaluation_env.recording_kwargs is not None
     assert evaluation_env.recording_kwargs["num_episodes"] == 3
     assert evaluation_env.recording_kwargs["max_parallel_episodes"] == 2
     assert evaluation_env.recording_kwargs["frame_stride"] == 1
-    assert evaluation_env.recording_kwargs["video_name_prefix"] == "eval_025pct_25_steps"
+    assert evaluation_env.recording_kwargs["video_name_prefix"] == "eval_deterministic_025pct_25_steps"
 
     runner.close()
     assert evaluation_env.closed
@@ -189,14 +200,15 @@ def test_frozen_evaluation_can_reuse_stateful_environment() -> None:
         training_env=object(),
         policy=_EvaluationPolicy(),
         episodes_per_env=1,
-        deterministic=True,
     )
 
     first_metrics = runner.evaluate(timesteps=25, milestone_percentage=25.0)
     second_metrics = runner.evaluate(timesteps=50, milestone_percentage=50.0)
 
-    assert first_metrics["eval_ep_rew"].mean == second_metrics["eval_ep_rew"].mean
-    assert first_metrics["eval_success_rate"] == second_metrics["eval_success_rate"]
+    assert first_metrics["eval_stochastic_ep_rew"].mean == second_metrics["eval_stochastic_ep_rew"].mean
+    assert first_metrics["eval_deterministic_ep_rew"].mean == second_metrics["eval_deterministic_ep_rew"].mean
+    assert first_metrics["eval_stochastic_success_rate"] == second_metrics["eval_stochastic_success_rate"]
+    assert first_metrics["eval_deterministic_success_rate"] == second_metrics["eval_deterministic_success_rate"]
     assert evaluation_env.recording_kwargs is None
     runner.close()
     assert evaluation_env.closed

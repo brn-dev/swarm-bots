@@ -23,6 +23,8 @@ class RationalQuadraticSplineQuantileConfig(BoundedQuantileConfig):
 
 
 class RationalQuadraticSplineQuantileActionDist(BoundedQuantileActionDist):
+    MODE_CANDIDATES_PER_BIN = 9
+
     def __init__(
             self,
             latent_dim: int,
@@ -60,6 +62,11 @@ class RationalQuadraticSplineQuantileActionDist(BoundedQuantileActionDist):
         self.min_derivative = min_derivative
         self.fixed_boundary_derivatives = fixed_boundary_derivatives
         self.derivative_parameter_offset = math.log(math.expm1(2.0 - min_derivative))
+        self.register_buffer(
+            "mode_bin_coordinates",
+            torch.linspace(0.0, 1.0, self.MODE_CANDIDATES_PER_BIN, dtype=torch.float32),
+            persistent=False,
+        )
 
     def log_prob(
             self,
@@ -173,6 +180,24 @@ class RationalQuadraticSplineQuantileActionDist(BoundedQuantileActionDist):
             derivative_right=derivative_right,
         )
 
+    def _mode_and_log_det(self) -> tuple[torch.Tensor, torch.Tensor]:
+        widths, heights, derivatives, x_knots, y_knots = self._spline_parameters()
+        theta = self.mode_bin_coordinates.float()
+        actions, log_det = self._evaluate_bin(
+            theta=theta,
+            y_left=y_knots[..., :-1].unsqueeze(-1),
+            widths=widths.unsqueeze(-1),
+            heights=heights.unsqueeze(-1),
+            derivative_left=derivatives[..., :-1].unsqueeze(-1),
+            derivative_right=derivatives[..., 1:].unsqueeze(-1),
+        )
+        quantiles = x_knots[..., :-1].unsqueeze(-1) + widths.unsqueeze(-1) * theta
+        return self._select_min_log_det_candidate(
+            actions=actions.flatten(start_dim=-2),
+            log_det=log_det.flatten(start_dim=-2),
+            quantiles=quantiles.flatten(start_dim=-2),
+        )
+
     @staticmethod
     def _evaluate_bin(
             *,
@@ -245,8 +270,8 @@ class RationalQuadraticSplineQuantileActionDist(BoundedQuantileActionDist):
 
     @staticmethod
     def _find_bins(values: torch.Tensor, knots: torch.Tensor) -> torch.Tensor:
-        interior_knots = knots[..., 1:-1].contiguous()
-        return torch.searchsorted(interior_knots, values.unsqueeze(-1), right=True).squeeze(-1)
+        interior_knots = knots[..., 1:-1]
+        return (values.unsqueeze(-1) >= interior_knots).sum(dim=-1)
 
     @staticmethod
     def _gather(values: torch.Tensor, indices: torch.Tensor) -> torch.Tensor:
@@ -260,4 +285,5 @@ class RationalQuadraticSplineQuantileActionDist(BoundedQuantileActionDist):
             "min_bin_height": self.min_bin_height,
             "min_derivative": self.min_derivative,
             "fixed_boundary_derivatives": self.fixed_boundary_derivatives,
+            "mode_candidates_per_bin": self.MODE_CANDIDATES_PER_BIN,
         }

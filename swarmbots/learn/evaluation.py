@@ -18,6 +18,10 @@ from swarmbots.utils.recording_resolution import DEFAULT_RECORDING_HEIGHT, DEFAU
 
 
 DEFAULT_EVALUATION_MILESTONES: tuple[float, ...] = (25, 50, 75, 90, 95, 100)
+EVALUATION_ACTION_MODES: tuple[tuple[str, bool], ...] = (
+    ("stochastic", False),
+    ("deterministic", True),
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,7 +44,6 @@ class FrozenEvaluationRunner:
         policy: Any,
         episodes_per_env: int = 1,
         seed: int = 1_000_000,
-        deterministic: bool = True,
         recording_config: EvaluationRecordingConfig | None = None,
         video_folder: Path | None = None,
     ) -> None:
@@ -56,7 +59,6 @@ class FrozenEvaluationRunner:
         self._policy = policy
         self.episodes_per_env = int(episodes_per_env)
         self.seed = int(seed)
-        self.deterministic = bool(deterministic)
         self.recording_config = recording_config
         self.video_folder = video_folder
         self._env: Any | None = None
@@ -84,23 +86,35 @@ class FrozenEvaluationRunner:
         }
         cuda_devices = self._cuda_rng_devices()
         started_at = time.perf_counter()
+        metrics: dict[str, Any] = {}
 
         try:
             with torch.random.fork_rng(devices=cuda_devices):
-                torch.random.default_generator.manual_seed(self.seed)
-                for cuda_device in cuda_devices:
-                    with torch.cuda.device(cuda_device):
-                        torch.cuda.manual_seed(self.seed)
-                obs, _info = env.reset(
-                    seed=self.seed,
-                    options={"force_settled": True},
-                )
-                self._start_recording(
-                    env=env,
-                    timesteps=timesteps,
-                    milestone_percentage=milestone_percentage,
-                )
-                episode_metrics = self._collect_episodes(env=env, initial_obs=obs)
+                for action_mode, deterministic in EVALUATION_ACTION_MODES:
+                    mode_started_at = time.perf_counter()
+                    self._seed_rng(cuda_devices)
+                    if action_dist_state is not None:
+                        action_dist.set_temporal_correlation_state(
+                            clone_detach_temporal_state(action_dist_state)
+                        )
+                    obs, _info = env.reset(
+                        seed=self.seed,
+                        options={"force_settled": True},
+                    )
+                    if deterministic:
+                        self._start_recording(
+                            env=env,
+                            timesteps=timesteps,
+                            milestone_percentage=milestone_percentage,
+                            action_mode=action_mode,
+                        )
+                    episode_metrics = self._collect_episodes(
+                        env=env,
+                        initial_obs=obs,
+                        deterministic=deterministic,
+                    )
+                    metrics.update(self._summarize_metrics(episode_metrics, action_mode=action_mode))
+                    metrics[f"eval_{action_mode}_duration"] = time.perf_counter() - mode_started_at
         finally:
             if action_dist is not None and hasattr(action_dist, "set_temporal_correlation_state"):
                 action_dist.set_temporal_correlation_state(action_dist_state)
@@ -108,11 +122,12 @@ class FrozenEvaluationRunner:
                 module.training = was_training
 
         duration = time.perf_counter() - started_at
-        metrics = self._summarize_metrics(episode_metrics)
+        episodes_per_mode = env.num_envs * self.episodes_per_env
         metrics.update(
             {
                 "eval_duration": duration,
-                "eval_episodes": env.num_envs * self.episodes_per_env,
+                "eval_episodes": episodes_per_mode * len(EVALUATION_ACTION_MODES),
+                "eval_episodes_per_mode": episodes_per_mode,
                 "eval_episodes_per_env": self.episodes_per_env,
                 "eval_milestone_pct": float(milestone_percentage),
                 "timesteps": int(timesteps),
@@ -125,7 +140,13 @@ class FrozenEvaluationRunner:
             self._env.close()
             self._env = None
 
-    def _collect_episodes(self, *, env: Any, initial_obs: dict[str, torch.Tensor]) -> dict[str, list[float]]:
+    def _collect_episodes(
+        self,
+        *,
+        env: Any,
+        initial_obs: dict[str, torch.Tensor],
+        deterministic: bool,
+    ) -> dict[str, list[float]]:
         self._policy.eval()
         obs = initial_obs
         previous_actions = initial_previous_actions(
@@ -155,7 +176,7 @@ class FrozenEvaluationRunner:
                     action_dist.reset_temporal_correlations_on_ep_start(episode_start_mask)
                 if (
                     rollout_step_idx == 0
-                    and not self.deterministic
+                    and not deterministic
                     and bool(getattr(self._policy, "gsde_enabled", False))
                     and action_dist is not None
                     and hasattr(action_dist, "reset_temporal_correlations_on_step")
@@ -170,7 +191,7 @@ class FrozenEvaluationRunner:
                     agent_mask=obs.get("agent_mask"),
                     **({} if "scenario_id" not in obs else {"scenario_ids": obs["scenario_id"]}),
                     previous_actions=previous_actions,
-                    deterministic=self.deterministic,
+                    deterministic=deterministic,
                     temporal_state=temporal_state,
                     episode_start_mask=episode_start_mask,
                 )
@@ -233,28 +254,43 @@ class FrozenEvaluationRunner:
                     episode_metrics.setdefault(key, []).append(float(value))
 
     @staticmethod
-    def _summarize_metrics(episode_metrics: dict[str, list[float]]) -> dict[str, Any]:
+    def _summarize_metrics(
+        episode_metrics: dict[str, list[float]],
+        *,
+        action_mode: str,
+    ) -> dict[str, Any]:
         result: dict[str, Any] = {}
         summary_keys = {
-            "r": "eval_ep_rew",
-            "l": "eval_ep_len",
-            "progress_reward": "eval_progress_reward",
-            "guidance_reward": "eval_guidance_reward",
-            "successful_connections_per_unit_mean": "eval_successful_connections_per_unit_mean",
-            "successful_connections_per_unit_std": "eval_successful_connections_per_unit_std",
-            "successful_connections_per_unit_min": "eval_successful_connections_per_unit_min",
-            "successful_connections_per_unit_max": "eval_successful_connections_per_unit_max",
+            "r": "ep_rew",
+            "l": "ep_len",
+            "progress_reward": "progress_reward",
+            "guidance_reward": "guidance_reward",
+            "successful_connections_per_unit_mean": "successful_connections_per_unit_mean",
+            "successful_connections_per_unit_std": "successful_connections_per_unit_std",
+            "successful_connections_per_unit_min": "successful_connections_per_unit_min",
+            "successful_connections_per_unit_max": "successful_connections_per_unit_max",
         }
-        for source_key, metric_key in summary_keys.items():
+        for source_key, metric_suffix in summary_keys.items():
             values = episode_metrics.get(source_key)
             if values:
-                result[metric_key] = compute_summary_statistics(values, find_min=True, find_max=True)
+                result[f"eval_{action_mode}_{metric_suffix}"] = compute_summary_statistics(
+                    values,
+                    find_min=True,
+                    find_max=True,
+                )
         successes = episode_metrics.get("success")
         if successes:
-            result["eval_success_rate"] = 100.0 * sum(successes) / len(successes)
+            result[f"eval_{action_mode}_success_rate"] = 100.0 * sum(successes) / len(successes)
         return result
 
-    def _start_recording(self, *, env: Any, timesteps: int, milestone_percentage: float) -> None:
+    def _start_recording(
+        self,
+        *,
+        env: Any,
+        timesteps: int,
+        milestone_percentage: float,
+        action_mode: str,
+    ) -> None:
         config = self.recording_config
         if config is None or config.num_episodes == 0 or self.video_folder is None:
             return
@@ -267,7 +303,7 @@ class FrozenEvaluationRunner:
         start_recording(
             video_folder=str(self.video_folder),
             video_name_prefix=(
-                f"eval_{_format_percentage(milestone_percentage)}pct_{timesteps}_steps"
+                f"eval_{action_mode}_{_format_percentage(milestone_percentage)}pct_{timesteps}_steps"
             ),
             num_episodes=episode_count,
             max_parallel_episodes=min(episode_count, env.num_envs),
@@ -278,6 +314,12 @@ class FrozenEvaluationRunner:
             height=config.height,
             camera=config.camera,
         )
+
+    def _seed_rng(self, cuda_devices: list[int]) -> None:
+        torch.random.default_generator.manual_seed(self.seed)
+        for cuda_device in cuda_devices:
+            with torch.cuda.device(cuda_device):
+                torch.cuda.manual_seed(self.seed)
 
     def _cuda_rng_devices(self) -> list[int]:
         try:
