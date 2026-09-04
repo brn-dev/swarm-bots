@@ -502,7 +502,6 @@ class RationalQuadraticSplineQuantileActionDistTests(unittest.TestCase):
             latent_dim=1,
             action_dim=1,
             num_bins=num_bins,
-            fixed_boundary_derivatives=False,
         )
         with torch.no_grad():
             distribution.action_net.bias.zero_()
@@ -647,6 +646,7 @@ class RationalQuadraticSplineQuantileActionDistTests(unittest.TestCase):
             min_bin_width=0.02,
             min_bin_height=0.03,
             min_derivative=0.04,
+            fixed_boundary_derivatives=True,
         )
         with torch.no_grad():
             distribution.action_net.weight.normal_(std=5.0)
@@ -679,7 +679,6 @@ class RationalQuadraticSplineQuantileActionDistTests(unittest.TestCase):
             latent_dim=1,
             action_dim=1,
             num_bins=6,
-            fixed_boundary_derivatives=False,
         )
         with torch.no_grad():
             distribution.action_net.bias.normal_(std=20.0)

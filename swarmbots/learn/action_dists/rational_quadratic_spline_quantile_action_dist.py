@@ -19,7 +19,7 @@ class RationalQuadraticSplineQuantileConfig(BoundedQuantileConfig):
     min_bin_width: float = 1e-3
     min_bin_height: float = 1e-3
     min_derivative: float = 1e-3
-    fixed_boundary_derivatives: bool = True
+    fixed_boundary_derivatives: bool = False
 
 
 class RationalQuadraticSplineQuantileActionDist(BoundedQuantileActionDist):
@@ -33,7 +33,7 @@ class RationalQuadraticSplineQuantileActionDist(BoundedQuantileActionDist):
             min_bin_width: float = 1e-3,
             min_bin_height: float = 1e-3,
             min_derivative: float = 1e-3,
-            fixed_boundary_derivatives: bool = True,
+            fixed_boundary_derivatives: bool = False,
             action_net_initialization: ActionNetInitialization | None = None,
             ent_loss_coef: float = 0.0,
             ent_loss_config: EntropyLossConfig | None = None,
