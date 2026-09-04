@@ -11,6 +11,7 @@ from experiments.post_thesis_action_dist_plot_common import (
     summarize_post_thesis_action_dist_results,
 )
 from experiments.post_thesis_mjw_po_wall_medium_action_dists.plot_results import (
+    ALGORITHM_VARIANTS,
     BASELINE_SOURCES,
     EXPERIMENT_RUN_DIR,
 )
@@ -26,6 +27,7 @@ def main() -> int:
         baseline_sources=BASELINE_SOURCES,
         output_path=args.output,
         tail_points=args.tail_points,
+        algorithm_variants=ALGORITHM_VARIANTS,
     )
     print(output_path)
     return 0

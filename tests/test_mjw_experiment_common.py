@@ -85,6 +85,8 @@ from swarmbots.learn.testing_env import TestingSwarmBotsEnv
     (
         ("bernstein_6", BernsteinQuantileConfig(degree=6, ent_loss_coef=1e-3)),
         ("bernstein_8", BernsteinQuantileConfig(degree=8, ent_loss_coef=1e-3)),
+        ("bernstein_12", BernsteinQuantileConfig(degree=12, ent_loss_coef=1e-3)),
+        ("bernstein_18", BernsteinQuantileConfig(degree=18, ent_loss_coef=1e-3)),
         ("rqs_4", RationalQuadraticSplineQuantileConfig(num_bins=4, ent_loss_coef=1e-3)),
         ("rqs_6", RationalQuadraticSplineQuantileConfig(num_bins=6, ent_loss_coef=1e-3)),
     ),

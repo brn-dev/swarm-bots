@@ -139,6 +139,8 @@ ContinuousActionDistVariant = Literal[
     "reparameterized_squashed_gaussian_mixture",
     "bernstein_6",
     "bernstein_8",
+    "bernstein_12",
+    "bernstein_18",
     "rqs_4",
     "rqs_6",
     "beta",
@@ -487,15 +489,9 @@ def make_continuous_config(
             categorical_ent_loss_config=make_sign_magnitude_categorical_entropy_config(),
             gaussian_ent_loss_config=make_sign_magnitude_magnitude_entropy_config(),
         )
-    if variant == "bernstein_6":
+    if variant in ("bernstein_6", "bernstein_8", "bernstein_12", "bernstein_18"):
         return BernsteinQuantileConfig(
-            degree=6,
-            ent_loss_coef=ent_loss_coef,
-            ent_loss_config=make_sign_magnitude_magnitude_entropy_config(),
-        )
-    if variant == "bernstein_8":
-        return BernsteinQuantileConfig(
-            degree=8,
+            degree=int(variant.removeprefix("bernstein_")),
             ent_loss_coef=ent_loss_coef,
             ent_loss_config=make_sign_magnitude_magnitude_entropy_config(),
         )

@@ -190,6 +190,7 @@ def run_thesis_ppo_experiment(
     rollout_steps_per_env: int = 4,
     variant_name: str | None = None,
     total_timesteps: int = EXPERIMENT_TOTAL_TIMESTEPS,
+    continuous_action_dist: ContinuousActionDistVariant | None = None,
     load_path: str | Path | None = None,
     additional_timesteps: int | None = None,
     evaluation_scenario_kwargs: dict[str, object] | None = None,
@@ -221,7 +222,9 @@ def run_thesis_ppo_experiment(
         rollout_steps_per_env=rollout_steps_per_env,
         variant_name=variant if variant_name is None else variant_name,
         entrypoint_path=entrypoint_path,
-        continuous_action_dist=config.continuous_action_dist,
+        continuous_action_dist=(
+            config.continuous_action_dist if continuous_action_dist is None else continuous_action_dist
+        ),
         policy_variant=config.policy_variant,
         mat_add_agent_embeddings=False,
         mat_use_agent_attention=variant != "mappo",

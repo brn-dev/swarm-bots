@@ -9,6 +9,8 @@ if str(REPO_ROOT) not in sys.path:
 
 from experiments.post_thesis_action_dist_common import (
     PostThesisActionDistVariant,
+    PostThesisTMASACVariant,
+    SLSTM_TMASAC_GROUP,
     run_post_thesis_action_dist_experiment,
 )
 
@@ -20,6 +22,7 @@ def run_experiment(
         *,
         continuous_action_dist: PostThesisActionDistVariant,
         entrypoint_path: Path,
+        tmasac_variant: PostThesisTMASACVariant = "tmasac_baseline",
 ) -> None:
     run_post_thesis_action_dist_experiment(
         experiment_run_name=EXPERIMENT_RUN_NAME,
@@ -27,4 +30,17 @@ def run_experiment(
         scenario_kwargs=SCENARIO_KWARGS,
         continuous_action_dist=continuous_action_dist,
         entrypoint_path=entrypoint_path,
+        tmasac_variant=tmasac_variant,
+    )
+
+
+def run_slstm_tmasac_experiment(
+        *,
+        continuous_action_dist: PostThesisActionDistVariant,
+        entrypoint_path: Path,
+) -> None:
+    run_experiment(
+        continuous_action_dist=continuous_action_dist,
+        entrypoint_path=entrypoint_path,
+        tmasac_variant=SLSTM_TMASAC_GROUP,
     )
