@@ -25,7 +25,10 @@ from experiments.mjw_experiment_common import (
     wrap_vec_env,
 )
 from swarmbots.learn.action_dists.bernoulli_action_dist import BernoulliActionDist
-from swarmbots.learn.action_dists.bernstein_quantile_action_dist import BernsteinQuantileConfig
+from swarmbots.learn.action_dists.bernstein_quantile_action_dist import (
+    BernsteinQuantileActionDist,
+    BernsteinQuantileConfig,
+)
 from swarmbots.learn.action_dists.gsde_action_dist import GSDEActionDist
 from swarmbots.learn.action_dists.gumbel_softmax_sign_magnitude_action_dist import (
     GumbelSoftmaxSignMagnitudeBetaActionDist,
@@ -1346,6 +1349,22 @@ def test_non_gsde_policy_ignores_irrelevant_joint_std_layout() -> None:
         actuators_per_limb=3,
         joint_stds=[0.25, 0.30],
     )
+
+
+def test_base_policy_uses_bernstein_quantile_for_ppo_and_sac() -> None:
+    on_policy = _make_test_base_policy(
+        env=_DummyContinuousEnv(),
+        policy_variant="mat_ind",
+        continuous_action_dist="bernstein_18",
+    )
+    off_policy = _make_test_base_policy(
+        env=_DummyContinuousEnv(),
+        policy_variant="tmasac",
+        continuous_action_dist="bernstein_18",
+    )
+
+    assert isinstance(on_policy.action_dist.distributions[0], BernsteinQuantileActionDist)
+    assert isinstance(off_policy.action_dist.distributions[0], BernsteinQuantileActionDist)
 
 
 def test_gsde_joint_stds_are_assigned_by_joint_across_limbs() -> None:

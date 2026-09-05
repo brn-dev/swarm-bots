@@ -656,7 +656,11 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
                         detailed_grad_norms.add(self.policy.get_grad_norms())
                     compute_grad_norms_timings.append(compute_grad_norms_timer.get_duration())
 
-                total_grad_norm = torch.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
+                total_grad_norm = torch.nn.utils.clip_grad_norm_(
+                    self.policy.parameters(),
+                    self.max_grad_norm,
+                    error_if_nonfinite=True,
+                )
                 total_grad_norm_f = float(total_grad_norm)
                 grad_norms.append(total_grad_norm_f)
 
