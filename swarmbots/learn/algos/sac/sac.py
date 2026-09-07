@@ -6,6 +6,10 @@ import torch
 from loguru import logger
 
 from swarmbots.learn.action_dists.action_dist import ActionMetricsSplitterInput
+from swarmbots.learn.action_dists.action_sampling import (
+    ActionSampleStrategy,
+    expand_action_samples,
+)
 from swarmbots.learn.algos.base_algorithm import (
     BaseAlgorithm,
     LearningRate,
@@ -49,6 +53,12 @@ TrainStepResult = tuple[dict[str, TrainMetric], TrainMetric, TrainMetric]
 
 
 class SAC(BaseAlgorithm):
+    """SAC with independently configurable actor and Bellman action sample counts.
+
+    Stratification applies to bounded quantile distributions; other distributions
+    keep their iid samplers. Counts of one preserve the ordinary training path.
+    """
+
     policy: BaseSACPolicy
     learning_rate: float
     supports_recurrent_training = False
@@ -86,6 +96,9 @@ class SAC(BaseAlgorithm):
             sac_compile_optimizer_steps: bool | None = None,
             sac_compile_mode: str = "default",
             metrics_action_splitters: ActionMetricsSplitterInput = None,
+            actor_action_samples: int = 1,
+            target_action_samples: int = 1,
+            action_sample_strategy: ActionSampleStrategy = "iid",
     ) -> None:
         if not isinstance(learning_rate, float):
             raise TypeError(f"learning_rate must be a float, got {type(learning_rate).__name__}")
@@ -112,6 +125,9 @@ class SAC(BaseAlgorithm):
         self.rollout_warmup_steps_per_env = int(rollout_warmup_steps_per_env)
         self._rollout_warmup_done = self.rollout_warmup_steps_per_env == 0
         self.gradient_steps = int(gradient_steps)
+        self.actor_action_samples = actor_action_samples
+        self.target_action_samples = target_action_samples
+        self.action_sample_strategy = action_sample_strategy
         self.gamma = float(gamma)
         self.tau = float(tau)
         self.ent_coef = ent_coef
@@ -190,6 +206,9 @@ class SAC(BaseAlgorithm):
             "rollout_steps_per_iteration": self.rollout_steps_per_iteration,
             "rollout_warmup_steps_per_env": self.rollout_warmup_steps_per_env,
             "gradient_steps": self.gradient_steps,
+            "actor_action_samples": self.actor_action_samples,
+            "target_action_samples": self.target_action_samples,
+            "action_sample_strategy": self.action_sample_strategy,
             "gamma": self.gamma,
             "tau": self.tau,
             "ent_coef": self.ent_coef,
@@ -418,6 +437,8 @@ class SAC(BaseAlgorithm):
         skip_multi_step_nop_loss = self._uses_multi_step_nop() and nop_batch is None
         self._reset_train_gsde_noise(batch.local_obs)
         actions_pi, log_prob_pi = self.policy.action_log_prob(
+            num_action_samples=self.actor_action_samples,
+            action_sample_strategy=self.action_sample_strategy,
             local_obs=batch.local_obs,
             global_obs=batch.global_obs,
             hidden_local_vars=batch.hidden_local_vars,
@@ -436,7 +457,7 @@ class SAC(BaseAlgorithm):
         )
         log_prob_pi_mean = self._mean_agent_log_probs(log_prob_pi, batch.agent_mask)
         ent_coef, ent_coef_loss = self._update_entropy_coefficient(
-            log_prob_mean=log_prob_pi_mean,
+            log_prob_mean=self._mean_action_samples(log_prob_pi_mean, self.actor_action_samples),
             batch=batch,
         )
         target_entropy = self._target_entropy(
@@ -627,6 +648,8 @@ class SAC(BaseAlgorithm):
             ent_coef: torch.Tensor,
     ) -> torch.Tensor:
         next_actions, next_log_probs = self.policy.action_log_prob(
+            num_action_samples=self.target_action_samples,
+            action_sample_strategy=self.action_sample_strategy,
             local_obs=next_local_obs,
             global_obs=next_global_obs,
             hidden_local_vars=next_hidden_local_vars,
@@ -642,7 +665,9 @@ class SAC(BaseAlgorithm):
             use_rsample=False,
         )
         next_log_prob_mean = self._mean_agent_log_probs(next_log_probs, next_agent_mask)
-        target_q1, target_q2 = self.policy.target_q_values(
+        target_q1, target_q2 = self.policy.q_values_samples(
+            num_action_samples=self.target_action_samples,
+            target=True,
             local_obs=next_local_obs,
             global_obs=next_global_obs,
             hidden_local_vars=next_hidden_local_vars,
@@ -655,7 +680,7 @@ class SAC(BaseAlgorithm):
             ),
             actions=next_actions,
         )
-        return self._tensor_operations.bellman_target(
+        target_q = self._tensor_operations.bellman_target(
             batch.rewards,
             batch.terminal_mask,
             target_q1,
@@ -664,6 +689,7 @@ class SAC(BaseAlgorithm):
             ent_coef,
             self.gamma,
         )
+        return self._mean_action_samples(target_q, self.target_action_samples)
 
     def _critic_forward_phase(
             self,
@@ -689,7 +715,8 @@ class SAC(BaseAlgorithm):
             log_prob_mean: torch.Tensor,
             ent_coef: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        q1, q2 = self.policy.q_values(
+        q1, q2 = self.policy.q_values_samples(
+            num_action_samples=self.actor_action_samples,
             local_obs=batch.local_obs,
             global_obs=batch.global_obs,
             hidden_local_vars=batch.hidden_local_vars,
@@ -700,6 +727,10 @@ class SAC(BaseAlgorithm):
         )
         actor_loss = self._tensor_operations.actor_loss(q1, q2, log_prob_mean, ent_coef)
         return q1, q2, actor_loss
+
+    @staticmethod
+    def _mean_action_samples(value: torch.Tensor, count: int) -> torch.Tensor:
+        return value.mean(dim=0) if count > 1 and value.ndim > 0 else value
 
     def _setup_entropy_coefficient(self) -> None:
         if isinstance(self.ent_coef, str):
@@ -806,13 +837,20 @@ class SAC(BaseAlgorithm):
             agent_mask: torch.Tensor | None,
     ) -> tuple[dict[str, torch.Tensor], dict[str, Any]]:
         action_dist = getattr(self.policy, "action_dist", None)
+        if self.actor_action_samples > 1:
+            agent_mask = expand_action_samples(agent_mask, self.actor_action_samples)
         compute_extra_losses_without_metrics = getattr(action_dist, "compute_extra_losses_without_metrics", None)
         if callable(compute_extra_losses_without_metrics):
-            return compute_extra_losses_without_metrics(agent_mask=agent_mask), {}
-        compute_extra_losses = getattr(action_dist, "compute_extra_losses", None)
-        if not callable(compute_extra_losses):
-            return {}, {}
-        return compute_extra_losses(agent_mask=agent_mask)
+            losses, metrics = compute_extra_losses_without_metrics(agent_mask=agent_mask), {}
+        else:
+            compute_extra_losses = getattr(action_dist, "compute_extra_losses", None)
+            if not callable(compute_extra_losses):
+                return {}, {}
+            losses, metrics = compute_extra_losses(agent_mask=agent_mask)
+        return {
+            name: self._mean_action_samples(value, self.actor_action_samples)
+            for name, value in losses.items()
+        }, metrics
 
     def _reduce_actor_action_dist_extra_losses(
             self,
@@ -986,6 +1024,15 @@ class SAC(BaseAlgorithm):
         return self.gradient_steps
 
     def _validate_hyper_parameters(self) -> None:
+        for name in ("actor_action_samples", "target_action_samples"):
+            value = getattr(self, name)
+            if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+                raise ValueError(f"{name} must be an integer >= 1, got {value!r}")
+        if self.action_sample_strategy not in ("iid", "stratified"):
+            raise ValueError(f"Unknown action_sample_strategy: {self.action_sample_strategy!r}")
+        if max(self.actor_action_samples, self.target_action_samples) > 1:
+            if self.policy.gsde_enabled:
+                raise ValueError("Multi-sample SAC does not support temporally correlated gSDE noise.")
         if self.buffer_capacity_per_env <= 0:
             raise ValueError(f"buffer_capacity_per_env must be > 0, got {self.buffer_capacity_per_env}")
         if self.learning_rate_warmup_updates < 0:

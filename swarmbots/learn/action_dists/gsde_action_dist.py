@@ -270,7 +270,7 @@ class GSDEActionDist(ContinuousActionDist, TemporallyCorrelatedActionDist):
             raise RuntimeError("reset_noise() must be called before sampling GSDE actions.")
 
         if agent is not None:
-            exploration_noise = self._exploration_noise[:, agent:agent+1]
+            exploration_noise = self._exploration_noise[..., agent:agent + 1, :, :]
         else:
             exploration_noise = self._exploration_noise
 

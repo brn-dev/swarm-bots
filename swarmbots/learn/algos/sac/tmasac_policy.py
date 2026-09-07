@@ -7,6 +7,7 @@ import torch
 from gymnasium import spaces
 from torch import nn
 
+from swarmbots.learn.action_dists.action_sampling import ActionSampleStrategy, expand_action_samples
 from swarmbots.learn.action_dists.hybrid_action_dist import (
     ContinuousActionDistConfigInput,
     HybridActionDistribution,
@@ -509,6 +510,7 @@ class TMASACTwinCritic(nn.Module):
 class TMASACPolicy(BaseSACPolicy):
     _compiled_action_log_prob: Callable[..., tuple[torch.Tensor, torch.Tensor]] | None
     _compiled_actor_actions_and_log_probs: Callable[..., tuple[torch.Tensor, torch.Tensor]] | None
+    _compiled_actor_action_samples: Callable[..., tuple[torch.Tensor, torch.Tensor]] | None
     _compiled_actor_encoder: nn.Module | None
 
     def __init__(
@@ -519,6 +521,7 @@ class TMASACPolicy(BaseSACPolicy):
         super().__init__()
         object.__setattr__(self, "_compiled_action_log_prob", None)
         object.__setattr__(self, "_compiled_actor_actions_and_log_probs", None)
+        object.__setattr__(self, "_compiled_actor_action_samples", None)
         object.__setattr__(self, "_compiled_actor_encoder", None)
         self.config = config
         self._validate_continuous_action_space(env)
@@ -687,6 +690,11 @@ class TMASACPolicy(BaseSACPolicy):
         self.actor_nop = self._build_nop_module("actor")
         self.critic_nop = self._build_nop_module("critic")
         self._apply_optional_compile()
+        if self.config.compile_modules and self.action_dist.compile_friendly:
+            self._compiled_actor_action_samples = self._compile_callable(
+                self._actor_action_samples_impl,
+                fullgraph=True,
+            )
         self._keep_target_modules_in_eval_mode()
 
     @property
@@ -717,9 +725,12 @@ class TMASACPolicy(BaseSACPolicy):
             previous_actions: torch.Tensor | None = None,
             deterministic: bool = False,
             use_rsample: bool = True,
+            num_action_samples: int = 1,
+            action_sample_strategy: ActionSampleStrategy = "iid",
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        if self._compiled_action_log_prob is not None:
-            return self._compiled_action_log_prob(
+        if num_action_samples == 1:
+            sample_actions = self._compiled_action_log_prob or self._action_log_prob_impl
+            return sample_actions(
                 local_obs=local_obs,
                 global_obs=global_obs,
                 hidden_local_vars=hidden_local_vars,
@@ -730,16 +741,76 @@ class TMASACPolicy(BaseSACPolicy):
                 deterministic=deterministic,
                 use_rsample=use_rsample,
             )
-        return self._action_log_prob_impl(
+        actor_latents = self.encode_actor(
             local_obs=local_obs,
             global_obs=global_obs,
-            hidden_local_vars=hidden_local_vars,
-            hidden_global_vars=hidden_global_vars,
             agent_mask=agent_mask,
             scenario_ids=scenario_ids,
+        )
+        return self.action_log_prob_from_latents(
+            actor_latents=actor_latents,
+            agent_mask=agent_mask,
             previous_actions=previous_actions,
             deterministic=deterministic,
             use_rsample=use_rsample,
+            num_action_samples=num_action_samples,
+            action_sample_strategy=action_sample_strategy,
+        )
+
+    def action_log_prob_from_latents(
+            self,
+            *,
+            actor_latents: torch.Tensor,
+            agent_mask: torch.Tensor | None,
+            previous_actions: torch.Tensor | None,
+            deterministic: bool = False,
+            use_rsample: bool = True,
+            num_action_samples: int = 1,
+            action_sample_strategy: ActionSampleStrategy = "iid",
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """For K > 1 return [K, ..., agents, actions] and [K, ..., agents].
+
+        Keep recurrence outside the candidate axis; each QCX row is a joint action.
+        K = 1 retains the original shapes and compiled sampling entry point.
+        """
+        if num_action_samples == 1:
+            return self._actor_actions_and_log_probs(
+                actor_latents=actor_latents,
+                agent_mask=agent_mask,
+                previous_actions=previous_actions,
+                deterministic=deterministic,
+                use_rsample=use_rsample,
+            )
+        sample_actions = self._compiled_actor_action_samples or self._actor_action_samples_impl
+        return sample_actions(
+            actor_latents=actor_latents,
+            agent_mask=agent_mask,
+            previous_actions=previous_actions,
+            deterministic=deterministic,
+            use_rsample=use_rsample,
+            num_action_samples=num_action_samples,
+            action_sample_strategy=action_sample_strategy,
+        )
+
+    def _actor_action_samples_impl(
+            self,
+            *,
+            actor_latents: torch.Tensor,
+            agent_mask: torch.Tensor | None,
+            previous_actions: torch.Tensor | None,
+            deterministic: bool,
+            use_rsample: bool,
+            num_action_samples: int,
+            action_sample_strategy: ActionSampleStrategy,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        return self.actor_head.actions_and_log_probs(
+            actor_latents=expand_action_samples(actor_latents, num_action_samples),
+            action_dist=self.action_dist,
+            agent_mask=expand_action_samples(agent_mask, num_action_samples),
+            previous_actions=expand_action_samples(previous_actions, num_action_samples),
+            deterministic=deterministic,
+            use_rsample=use_rsample,
+            stratified_sample_dim=0 if action_sample_strategy == "stratified" else None,
         )
 
     def _action_log_prob_impl(

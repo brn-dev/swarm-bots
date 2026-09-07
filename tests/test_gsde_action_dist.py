@@ -182,12 +182,16 @@ class GSDEActionDistTests(unittest.TestCase):
             action_dim=1,
             base_std=1.0,
         )
-        latent_pi = torch.ones((2, 3, 2), dtype=torch.float32)
-        dist.reset_noise((2, 3))
-        full_actions = dist.update_latent_features(latent_pi).sample()
-        agent_actions = dist.update_latent_features(latent_pi[:, 1:2]).sample(agent=1)
-
-        self.assertTrue(torch.allclose(agent_actions, full_actions[:, 1:2]))
+        for batch_shape in ((2,), (2, 1), (2, 4)):
+            with self.subTest(batch_shape=batch_shape):
+                latent_pi = torch.randn(*batch_shape, 3, 2)
+                dist.reset_noise((*batch_shape, 3))
+                full_actions = dist.update_latent_features(latent_pi).sample()
+                for agent in range(3):
+                    agent_actions = dist.update_latent_features(
+                        latent_pi[..., agent:agent + 1, :],
+                    ).sample(agent=agent)
+                    torch.testing.assert_close(agent_actions, full_actions[..., agent:agent + 1, :])
 
     def test_rsample_tracks_distribution_head_gradient(self) -> None:
         dist = GSDEActionDist(

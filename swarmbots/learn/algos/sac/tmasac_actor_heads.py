@@ -40,6 +40,7 @@ class TMASACActorHead(nn.Module):
             previous_actions: torch.Tensor | None,
             deterministic: bool,
             use_rsample: bool,
+            stratified_sample_dim: int | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         raise NotImplementedError
 
@@ -100,6 +101,7 @@ class TMASACIndependentActorHead(TMASACActorHead):
             previous_actions: torch.Tensor | None,
             deterministic: bool,
             use_rsample: bool,
+            stratified_sample_dim: int | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         latent_pi = self(actor_latents, agent_mask=agent_mask)
         actions, log_probs = action_dist.get_actions_with_log_probs(
@@ -107,6 +109,7 @@ class TMASACIndependentActorHead(TMASACActorHead):
             deterministic=deterministic,
             previous_actions=previous_actions,
             use_rsample=use_rsample,
+            stratified_sample_dim=stratified_sample_dim,
         )
         return (
             self._mask_actions(actions, agent_mask),
@@ -240,6 +243,7 @@ class TMASACQCXActorHead(TMASACActorHead):
             previous_actions: torch.Tensor | None,
             deterministic: bool,
             use_rsample: bool,
+            stratified_sample_dim: int | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         leading_shape = actor_latents.shape[:-2]
         flat_actor_latents = actor_latents.reshape(-1, self.n_agents, actor_latents.shape[-1])
@@ -273,6 +277,7 @@ class TMASACQCXActorHead(TMASACActorHead):
                 agent=sample_agent_idx,
                 previous_actions=previous_action,
                 use_rsample=use_rsample,
+                stratified_sample_dim=stratified_sample_dim,
             )
             if agent_mask is not None:
                 active_agent = agent_mask[..., agent_idx:agent_idx + 1]

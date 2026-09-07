@@ -11,6 +11,7 @@ from unittest.mock import Mock, patch
 import torch
 from gymnasium.vector import AutoresetMode, SyncVectorEnv
 
+from swarmbots.learn.action_dists.action_sampling import ActionSampleStrategy, expand_action_samples
 from swarmbots.learn.action_dists.beta_action_dist import BetaConfig
 from swarmbots.learn.action_dists.bernstein_quantile_action_dist import BernsteinQuantileConfig
 from swarmbots.learn.action_dists.gsde_action_dist import GSDEConfig
@@ -173,9 +174,12 @@ class _ConstantTargetSACPolicy(BaseSACPolicy):
             hidden_local_vars: torch.Tensor | None = None,
             hidden_global_vars: torch.Tensor | None = None,
             agent_mask: torch.Tensor | None = None,
+            scenario_ids: torch.Tensor | None = None,
             previous_actions: torch.Tensor | None = None,
             deterministic: bool = False,
             use_rsample: bool = True,
+            num_action_samples: int = 1,
+            action_sample_strategy: ActionSampleStrategy = "iid",
     ) -> tuple[torch.Tensor, torch.Tensor]:
         _ = (global_obs, hidden_local_vars, hidden_global_vars, previous_actions, deterministic, use_rsample)
         actions = local_obs.new_ones((local_obs.shape[0], self.n_agents, self.action_dim)) * self.actor_scale
@@ -184,7 +188,9 @@ class _ConstantTargetSACPolicy(BaseSACPolicy):
         log_probs = local_obs.new_full((local_obs.shape[0], self.n_agents), self.log_prob_per_agent)
         if agent_mask is not None:
             log_probs = log_probs.masked_fill(~agent_mask, 0.0)
-        return actions, log_probs
+        if num_action_samples == 1:
+            return actions, log_probs
+        return expand_action_samples(actions, num_action_samples), expand_action_samples(log_probs, num_action_samples)
 
     def q_values(
             self,
@@ -309,6 +315,8 @@ class _ScenarioTrackingSACPolicy(_ConstantTargetSACPolicy):
             previous_actions: torch.Tensor | None = None,
             deterministic: bool = False,
             use_rsample: bool = True,
+            num_action_samples: int = 1,
+            action_sample_strategy: ActionSampleStrategy = "iid",
     ) -> tuple[torch.Tensor, torch.Tensor]:
         if scenario_ids is None:
             raise AssertionError("SAC actor calls must include scenario IDs.")
@@ -322,6 +330,8 @@ class _ScenarioTrackingSACPolicy(_ConstantTargetSACPolicy):
             previous_actions=previous_actions,
             deterministic=deterministic,
             use_rsample=use_rsample,
+            num_action_samples=num_action_samples,
+            action_sample_strategy=action_sample_strategy,
         )
 
     def q_values(
