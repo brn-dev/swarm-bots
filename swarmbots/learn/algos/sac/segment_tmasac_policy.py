@@ -3,6 +3,7 @@ from typing import Any, cast
 
 import torch
 
+from swarmbots.learn.action_dists.action_sampling import ActionSampleStrategy
 from swarmbots.learn.algos.sac.sac_nop import SACNOPSequenceBatch
 from swarmbots.learn.algos.sac.tmasac_policy import TMASACPolicy
 
@@ -112,7 +113,7 @@ class SegmentTMASACPolicy(TMASACPolicy):
             reset_mask: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         _ = initial_state, time_mask, reset_mask
-        flat_inputs, batch_size, sequence_length = self._flatten_sequence_inputs(
+        flat_inputs, batch_shape = self._flatten_sequence_inputs(
             local_obs=local_obs,
             global_obs=global_obs,
             agent_mask=agent_mask,
@@ -120,7 +121,7 @@ class SegmentTMASACPolicy(TMASACPolicy):
         )
         actor_latents = self.encode_actor(**flat_inputs)
         return (
-            self._restore_sequence(actor_latents, batch_size, sequence_length),
+            self._restore_sequence(actor_latents, batch_shape),
             self._dummy_state(local_obs),
         )
 
@@ -137,36 +138,28 @@ class SegmentTMASACPolicy(TMASACPolicy):
             initial_state: torch.Tensor | None,
             time_mask: torch.Tensor | None = None,
             reset_mask: torch.Tensor | None = None,
+            num_action_samples: int = 1,
+            action_sample_strategy: ActionSampleStrategy = "iid",
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        _ = initial_state, time_mask, reset_mask
-        flat_inputs, batch_size, sequence_length = self._flatten_sequence_inputs(
+        actor_latents, next_state = self.encode_actor_sequence(
             local_obs=local_obs,
             global_obs=global_obs,
             agent_mask=agent_mask,
             scenario_ids=scenario_ids,
-            previous_actions=previous_actions,
+            initial_state=initial_state,
+            time_mask=time_mask,
+            reset_mask=reset_mask,
         )
-        flat_agent_mask = flat_inputs["agent_mask"]
-        flat_previous_actions = flat_inputs["previous_actions"]
-        actor_latents = self.encode_actor(
-            local_obs=cast(torch.Tensor, flat_inputs["local_obs"]),
-            global_obs=cast(torch.Tensor, flat_inputs["global_obs"]),
-            agent_mask=flat_agent_mask,
-            scenario_ids=flat_inputs["scenario_ids"],
-        )
-        actions, log_probs = self._actor_actions_and_log_probs(
+        actions, log_probs = self.action_log_prob_from_latents(
             actor_latents=actor_latents,
-            agent_mask=flat_agent_mask,
-            previous_actions=flat_previous_actions,
+            agent_mask=agent_mask,
+            previous_actions=previous_actions,
             deterministic=deterministic,
             use_rsample=use_rsample,
+            num_action_samples=num_action_samples,
+            action_sample_strategy=action_sample_strategy,
         )
-        return (
-            self._restore_sequence(actions, batch_size, sequence_length),
-            self._restore_sequence(log_probs, batch_size, sequence_length),
-            self._restore_sequence(actor_latents, batch_size, sequence_length),
-            self._dummy_state(local_obs),
-        )
+        return actions, log_probs, actor_latents, next_state
 
     def action_log_prob_sequence_with_selected_states(
             self,
@@ -182,6 +175,8 @@ class SegmentTMASACPolicy(TMASACPolicy):
             state_output_indices: torch.Tensor,
             time_mask: torch.Tensor | None = None,
             reset_mask: torch.Tensor | None = None,
+            num_action_samples: int = 1,
+            action_sample_strategy: ActionSampleStrategy = "iid",
     ) -> tuple[
         torch.Tensor,
         torch.Tensor,
@@ -201,6 +196,8 @@ class SegmentTMASACPolicy(TMASACPolicy):
             initial_state=initial_state,
             time_mask=time_mask,
             reset_mask=reset_mask,
+            num_action_samples=num_action_samples,
+            action_sample_strategy=action_sample_strategy,
         )
         selected_states = torch.zeros(
             (state_output_indices.shape[0], 1),
@@ -223,26 +220,37 @@ class SegmentTMASACPolicy(TMASACPolicy):
             initial_state: Any = None,
             time_mask: torch.Tensor | None = None,
             reset_mask: torch.Tensor | None = None,
+            num_action_samples: int = 1,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None, None]:
         _ = initial_state, time_mask, reset_mask
-        flat_inputs, batch_size, sequence_length = self._flatten_sequence_inputs(
+        flat_inputs, batch_shape = self._flatten_sequence_inputs(
             local_obs=local_obs,
             global_obs=global_obs,
-            actions=actions,
+            actions=actions if num_action_samples == 1 else None,
             hidden_local_vars=hidden_local_vars,
             hidden_global_vars=hidden_global_vars,
             agent_mask=agent_mask,
             scenario_ids=scenario_ids,
         )
+        if num_action_samples > 1:
+            flat_inputs.pop("actions")
+            q1, q2 = self.q_values_samples(
+                actions=actions.reshape(num_action_samples, -1, *actions.shape[-2:]),
+                num_action_samples=num_action_samples,
+                target=target,
+                **flat_inputs,
+            )
+            value_shape = (num_action_samples, *batch_shape)
+            return q1.reshape(value_shape), q2.reshape(value_shape), None, None
         if target:
             q1, q2 = self.target_q_values(**flat_inputs)
             latents = None
         else:
             q1, q2, latents = self.q_values_with_nop_latents(**flat_inputs)
         return (
-            self._restore_sequence(q1, batch_size, sequence_length),
-            self._restore_sequence(q2, batch_size, sequence_length),
-            None if latents is None else self._restore_sequence(latents, batch_size, sequence_length),
+            self._restore_sequence(q1, batch_shape),
+            self._restore_sequence(q2, batch_shape),
+            None if latents is None else self._restore_sequence(latents, batch_shape),
             None,
         )
 
@@ -296,27 +304,21 @@ class SegmentTMASACPolicy(TMASACPolicy):
     @staticmethod
     def _restore_sequence(
             tensor: torch.Tensor,
-            batch_size: int,
-            sequence_length: int,
+            batch_shape: tuple[int, ...],
     ) -> torch.Tensor:
-        if sequence_length == 1:
-            return tensor
-        return tensor.reshape(batch_size, sequence_length, *tensor.shape[1:])
+        return tensor.reshape(*batch_shape, *tensor.shape[1:])
 
     @staticmethod
     def _flatten_sequence_inputs(
             **inputs: torch.Tensor | None,
-    ) -> tuple[dict[str, torch.Tensor | None], int, int]:
-        local_obs = inputs["local_obs"]
-        local_obs = cast(torch.Tensor, local_obs)
-        if local_obs.ndim == 3:
-            return inputs, local_obs.shape[0], 1
-        batch_size, sequence_length = local_obs.shape[:2]
+    ) -> tuple[dict[str, torch.Tensor | None], tuple[int, ...]]:
+        local_obs = cast(torch.Tensor, inputs["local_obs"])
+        batch_shape = tuple(local_obs.shape[:-2])
         return {
             name: (
                 None
                 if tensor is None
-                else tensor.reshape(batch_size * sequence_length, *tensor.shape[2:])
+                else tensor.flatten(0, len(batch_shape) - 1)
             )
             for name, tensor in inputs.items()
-        }, batch_size, sequence_length
+        }, batch_shape

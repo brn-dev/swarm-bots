@@ -804,9 +804,17 @@ def _perform_short_segment_update(
             train_device="cpu",
             rollout_device="cpu",
         )
-        policy.encode_actor_sequence = Mock(
-            side_effect=AssertionError("Feed-forward MAT must not execute burn-in."),
-        )
+        burn_in_states = algorithm._burn_in_states
+
+        def burn_in_without_encoding(batch: OffPolicyReplayEpisodeSegmentBatch) -> tuple[Any, Any, Any]:
+            with patch.object(
+                    policy,
+                    "encode_actor_sequence",
+                    side_effect=AssertionError("Feed-forward MAT must not execute burn-in."),
+            ):
+                return burn_in_states(batch)
+
+        algorithm._burn_in_states = burn_in_without_encoding
         episode_return_ema = ExponentialMovingAverage(alpha=0.1)
         episode_success_rate_ema = ExponentialMovingAverage(alpha=0.1)
 
@@ -1480,7 +1488,7 @@ class RecurrentTMASACTests(unittest.TestCase):
         self.assertIn(policy.critic, compiled_modules)
         self.assertIn(policy.critic_target, compiled_modules)
         self.assertTrue(policy.actor_end_to_end_compilation_enabled)
-        self.assertEqual(policy.compiled_actor_encoder_sequence_lengths, frozenset({2}))
+        self.assertEqual(policy.compiled_actor_encoder_sequence_lengths, frozenset({1, 2, 3}))
         self.assertEqual(policy.compiled_actor_sequence_lengths, frozenset({1}))
         self.assertEqual(policy.compiled_actor_selected_state_sequence_lengths, frozenset({3}))
         actor_compile_calls = [
@@ -1493,7 +1501,7 @@ class RecurrentTMASACTests(unittest.TestCase):
                 }
             )
         ]
-        self.assertEqual(len(actor_compile_calls), 3)
+        self.assertEqual(len(actor_compile_calls), 5)
         encoder_compile_call = next(
             call for call in actor_compile_calls
             if call.args[0] is policy.actor_encoder
@@ -2036,7 +2044,8 @@ class RecurrentTMASACTests(unittest.TestCase):
             )
             self.assertFalse(torch._dynamo.config.allow_rnn)
 
-        self.assertEqual(compile_allow_rnn_values, [True, True, True])
+        self.assertTrue(compile_allow_rnn_values)
+        self.assertTrue(all(compile_allow_rnn_values))
         self.assertEqual(allow_rnn_values, [True, True])
 
     @unittest.skipUnless(torch.cuda.is_available(), "experimental nn.LSTM compilation requires CUDA")
@@ -2187,9 +2196,9 @@ class RecurrentTMASACTests(unittest.TestCase):
             )
 
         self.assertEqual(policy.compiled_actor_sequence_lengths, frozenset({2}))
-        self.assertEqual(policy.compiled_actor_encoder_sequence_lengths, frozenset({1}))
+        self.assertEqual(policy.compiled_actor_encoder_sequence_lengths, frozenset({1, 2, 3}))
         self.assertEqual(policy.compiled_actor_selected_state_sequence_lengths, frozenset({3}))
-        self.assertEqual(len(compiled_actor_encoders), 1)
+        self.assertEqual(len(compiled_actor_encoders), 3)
         self.assertEqual(len(compiled_actor_action_sequences), 2)
         self.assertEqual(len(compiled_actor_action_sequences_with_selected_states), 1)
 
@@ -2249,7 +2258,8 @@ class RecurrentTMASACTests(unittest.TestCase):
                 initial_state=None,
             )
 
-        self.assertEqual(policy._compiled_actor_encoders[1].call_count, 0)
+        for encoder in policy._compiled_actor_encoders.values():
+            self.assertEqual(encoder.call_count, 0)
         self.assertEqual(policy._compiled_actor_action_sequences[2].call_count, 1)
         self.assertEqual(policy._compiled_actor_action_sequences_with_selected_states[3].call_count, 1)
 

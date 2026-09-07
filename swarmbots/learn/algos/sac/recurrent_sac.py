@@ -195,15 +195,11 @@ class RecurrentSAC(SAC):
             extra_losses=actor_action_dist_losses,
         )
 
-        flat_log_prob_pi = log_prob_pi.reshape(-1, log_prob_pi.shape[-1])
-        flat_agent_mask = (
-            None
-            if learning_batch.agent_mask is None
-            else learning_batch.agent_mask.reshape(-1, learning_batch.agent_mask.shape[-1])
-        )
-        log_prob_pi_mean = self._mean_agent_log_probs(flat_log_prob_pi, flat_agent_mask)
+        log_prob_pi_mean = self._mean_agent_log_probs(log_prob_pi, learning_batch.agent_mask)
         ent_coef, ent_coef_loss = self._update_entropy_coefficient(
-            log_prob_mean=log_prob_pi_mean,
+            log_prob_mean=self._mean_action_samples(
+                log_prob_pi_mean, self.actor_action_samples,
+            ).reshape(-1),
             batch=flat_batch,
         )
         target_entropy = self._target_entropy(
@@ -224,14 +220,15 @@ class RecurrentSAC(SAC):
                 truncation_indices=truncation_indices,
                 truncation_mask=state_output_mask,
                 return_actor_state=True,
+                actor_latents=(
+                    actor_latents.detach()
+                    if max(self.actor_action_samples, self.target_action_samples) > 1
+                    else None
+                ),
             )
             next_log_prob_mean = self._mean_agent_log_probs(
-                next_log_probs.reshape(-1, next_log_probs.shape[-1]),
-                None if bootstrap_batch.next_agent_mask is None else bootstrap_batch.next_agent_mask.reshape(
-                    -1,
-                    bootstrap_batch.next_agent_mask.shape[-1],
-                ),
-            ).reshape_as(learning_batch.rewards)
+                next_log_probs, bootstrap_batch.next_agent_mask,
+            )
             target_q1, target_q2 = self._target_next_q_values(
                 batch=bootstrap_batch,
                 next_actions=next_actions,
@@ -247,6 +244,7 @@ class RecurrentSAC(SAC):
                 ent_coef,
                 self.gamma,
             )
+            target_q = self._mean_action_samples(target_q, self.target_action_samples)
 
         current_q1, current_q2, critic_nop_latents, _next_critic_state = self.policy.q_values_sequence(
             local_obs=learning_batch.local_obs,
@@ -414,6 +412,8 @@ class RecurrentSAC(SAC):
                 previous_actions=batch.previous_actions,
                 deterministic=False,
                 use_rsample=True,
+                num_action_samples=self.actor_action_samples,
+                action_sample_strategy=self.action_sample_strategy,
                 initial_state=initial_state,
                 state_output_indices=state_output_indices,
                 time_mask=batch.train_mask,
@@ -437,6 +437,8 @@ class RecurrentSAC(SAC):
             previous_actions=batch.previous_actions,
             deterministic=False,
             use_rsample=True,
+            num_action_samples=self.actor_action_samples,
+            action_sample_strategy=self.action_sample_strategy,
             initial_state=initial_state,
             state_output_indices=state_output_indices,
             time_mask=batch.train_mask,
@@ -523,108 +525,53 @@ class RecurrentSAC(SAC):
             truncation_mask: torch.Tensor,
             current_actor_state: torch.Tensor | None = None,
             return_actor_state: bool = False,
+            actor_latents: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor] | tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
-        batch_size = batch.actions.shape[0]
-        selected_batch_indices = truncation_indices[:, 0]
-        selected_time_indices = truncation_indices[:, 1]
-        target_local_obs = torch.cat((
-            batch.next_local_obs[:, -1],
-            batch.next_local_obs[selected_batch_indices, selected_time_indices],
-        ))
-        target_global_obs = torch.cat((
-            batch.next_global_obs[:, -1],
-            batch.next_global_obs[selected_batch_indices, selected_time_indices],
-        ))
-        target_agent_mask = (
-            None
-            if batch.next_agent_mask is None
-            else torch.cat((
-                batch.next_agent_mask[:, -1],
-                batch.next_agent_mask[selected_batch_indices, selected_time_indices],
-            ))
+        target_inputs = _final_and_truncation_actor_inputs(
+            batch=batch,
+            next_actor_state=next_actor_state,
+            truncation_actor_states=truncation_actor_states,
+            truncation_indices=truncation_indices,
         )
-        target_scenario_ids = (
-            None
-            if batch.next_scenario_ids is None
-            else torch.cat((
-                batch.next_scenario_ids[:, -1],
-                batch.next_scenario_ids[selected_batch_indices, selected_time_indices],
-            ))
-        )
-        target_previous_actions = torch.cat((
-            batch.actions[:, -1],
-            batch.actions[selected_batch_indices, selected_time_indices],
-        ))
-        target_initial_state = concatenate_temporal_states((
-            next_actor_state,
-            truncation_actor_states,
-        ))
 
-        self._reset_train_gsde_noise(target_local_obs)
-        (
-            target_actions,
-            target_log_probs,
-            _latents,
-            target_next_actor_state,
-        ) = self.policy.action_log_prob_sequence(
-            local_obs=target_local_obs,
-            global_obs=target_global_obs,
-            agent_mask=target_agent_mask,
-            scenario_ids=target_scenario_ids,
-            previous_actions=target_previous_actions,
-            deterministic=False,
-            use_rsample=False,
-            initial_state=target_initial_state,
-        )
-        last_actions = target_actions[:batch_size]
-        last_log_probs = target_log_probs[:batch_size]
-        truncation_actions = target_actions[batch_size:]
-        truncation_log_probs = target_log_probs[batch_size:]
-
-        next_actions = torch.cat((actions_pi[:, 1:].detach(), last_actions.unsqueeze(1)), dim=1)
-        next_log_probs = torch.cat((log_prob_pi[:, 1:].detach(), last_log_probs.unsqueeze(1)), dim=1)
-        truncation_action_mask = truncation_mask.reshape(batch_size, *((1,) * (next_actions.ndim - 2)))
-        current_actions = next_actions[selected_batch_indices, selected_time_indices]
-        next_actions[selected_batch_indices, selected_time_indices] = torch.where(
-            truncation_action_mask,
-            truncation_actions,
-            current_actions,
-        )
-        truncation_log_prob_mask = truncation_mask.reshape(
-            batch_size,
-            *((1,) * (next_log_probs.ndim - 2)),
-        )
-        current_log_probs = next_log_probs[selected_batch_indices, selected_time_indices]
-        next_log_probs[selected_batch_indices, selected_time_indices] = torch.where(
-            truncation_log_prob_mask,
-            truncation_log_probs,
-            current_log_probs,
-        )
+        self._reset_train_gsde_noise(target_inputs["local_obs"])
+        if actor_latents is not None:
+            target_latents, target_next_actor_state = self.policy.encode_actor_sequence(**target_inputs)
+            next_latents = _successor_sequence(
+                actor_latents, target_latents, truncation_indices, truncation_mask,
+            )
+            next_actions, next_log_probs = self.policy.action_log_prob_from_latents(
+                actor_latents=next_latents,
+                agent_mask=batch.next_agent_mask,
+                previous_actions=batch.actions,
+                use_rsample=False,
+                num_action_samples=self.target_action_samples,
+                action_sample_strategy=self.action_sample_strategy,
+            )
+        else:
+            target_actions, target_log_probs, _latents, target_next_actor_state = self.policy.action_log_prob_sequence(
+                **target_inputs,
+                previous_actions=_final_and_truncation_rows(batch.actions, truncation_indices),
+                deterministic=False,
+                use_rsample=False,
+            )
+            next_actions = _successor_sequence(
+                actions_pi.detach(), target_actions, truncation_indices, truncation_mask,
+            )
+            next_log_probs = _successor_sequence(
+                log_prob_pi.detach(), target_log_probs, truncation_indices, truncation_mask,
+            )
         if not return_actor_state:
             return next_actions, next_log_probs
-        if current_actor_state is None:
-            return next_actions, next_log_probs, None
 
-        target_actor_state = self.policy.actor_state_critic_input(target_next_actor_state)
-        final_actor_state = target_actor_state[:batch_size]
-        truncation_actor_state = target_actor_state[batch_size:]
-        next_actor_state_input = torch.cat(
-            (current_actor_state[:, 1:], final_actor_state.unsqueeze(1)),
-            dim=1,
-        )
-        truncation_state_mask = truncation_mask.reshape(
-            batch_size,
-            *((1,) * (next_actor_state_input.ndim - 2)),
-        )
-        current_truncation_state = next_actor_state_input[
-            selected_batch_indices,
-            selected_time_indices,
-        ]
-        next_actor_state_input[selected_batch_indices, selected_time_indices] = torch.where(
-            truncation_state_mask,
-            truncation_actor_state,
-            current_truncation_state,
-        )
+        next_actor_state_input = None
+        if current_actor_state is not None:
+            next_actor_state_input = _successor_sequence(
+                current_actor_state,
+                self.policy.actor_state_critic_input(target_next_actor_state),
+                truncation_indices,
+                truncation_mask,
+            )
         return next_actions, next_log_probs, next_actor_state_input
 
     def _padded_truncation_indices(
@@ -645,8 +592,10 @@ class RecurrentSAC(SAC):
             initial_state: RecurrentCriticState | None,
             actor_state: torch.Tensor | None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
+        num_action_samples = next_actions.shape[0] if next_actions.ndim == batch.actions.ndim + 1 else 1
         if not self._critic_uses_temporal_state:
             q1, q2, _latents, _state = self.policy.q_values_sequence(
+                num_action_samples=num_action_samples,
                 local_obs=batch.next_local_obs,
                 global_obs=batch.next_global_obs,
                 actions=next_actions,
@@ -684,9 +633,10 @@ class RecurrentSAC(SAC):
                 ),
             )
             q1, q2, _latents, _branch_state = self.policy.q_values_sequence(
+                num_action_samples=num_action_samples,
                 local_obs=batch.next_local_obs[:, time_idx],
                 global_obs=batch.next_global_obs[:, time_idx],
-                actions=next_actions[:, time_idx],
+                actions=next_actions[:, :, time_idx] if num_action_samples > 1 else next_actions[:, time_idx],
                 hidden_local_vars=batch.next_hidden_local_vars[:, time_idx],
                 hidden_global_vars=batch.next_hidden_global_vars[:, time_idx],
                 agent_mask=(
@@ -704,7 +654,8 @@ class RecurrentSAC(SAC):
             )
             q1_values.append(q1)
             q2_values.append(q2)
-        return torch.stack(q1_values, dim=1), torch.stack(q2_values, dim=1)
+        time_dim = 2 if num_action_samples > 1 else 1
+        return torch.stack(q1_values, dim=time_dim), torch.stack(q2_values, dim=time_dim)
 
     def _actor_q_values(
             self,
@@ -714,8 +665,10 @@ class RecurrentSAC(SAC):
             initial_state: RecurrentCriticState | None,
             actor_state: torch.Tensor | None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
+        num_action_samples = actions_pi.shape[0] if actions_pi.ndim == batch.actions.ndim + 1 else 1
         if not self._critic_uses_temporal_state:
             q1, q2, _latents, _state = self.policy.q_values_sequence(
+                num_action_samples=num_action_samples,
                 local_obs=batch.local_obs,
                 global_obs=batch.global_obs,
                 actions=actions_pi,
@@ -738,9 +691,10 @@ class RecurrentSAC(SAC):
                 else batch.episode_start_mask[:, time_idx]
             )
             q1, q2, _latents, branch_state = self.policy.q_values_sequence(
+                num_action_samples=num_action_samples,
                 local_obs=batch.local_obs[:, time_idx],
                 global_obs=batch.global_obs[:, time_idx],
-                actions=actions_pi[:, time_idx],
+                actions=actions_pi[:, :, time_idx] if num_action_samples > 1 else actions_pi[:, time_idx],
                 hidden_local_vars=batch.hidden_local_vars[:, time_idx],
                 hidden_global_vars=batch.hidden_global_vars[:, time_idx],
                 agent_mask=None if batch.agent_mask is None else batch.agent_mask[:, time_idx],
@@ -774,7 +728,8 @@ class RecurrentSAC(SAC):
                 )
             q1_values.append(q1)
             q2_values.append(q2)
-        return torch.stack(q1_values, dim=1), torch.stack(q2_values, dim=1)
+        time_dim = 2 if num_action_samples > 1 else 1
+        return torch.stack(q1_values, dim=time_dim), torch.stack(q2_values, dim=time_dim)
 
     def _build_nop_training_batch(
             self,
@@ -884,6 +839,47 @@ class RecurrentSAC(SAC):
                 "Recurrent TMASAC NOP num_next_steps cannot exceed learning_steps; "
                 "NOP reuses the sampled learning sequence."
             )
+
+
+def _final_and_truncation_rows(
+        tensor: torch.Tensor | None,
+        truncation_indices: torch.Tensor,
+) -> torch.Tensor | None:
+    if tensor is None:
+        return None
+    rows, times = truncation_indices.unbind(-1)
+    return torch.cat((tensor[:, -1], tensor[rows, times]))
+
+
+def _final_and_truncation_actor_inputs(
+        *,
+        batch: OffPolicyReplayEpisodeSegmentBatch,
+        next_actor_state: Any,
+        truncation_actor_states: Any,
+        truncation_indices: torch.Tensor,
+) -> dict[str, Any]:
+    """Pack the final successor and one padded truncation successor per replay row."""
+    return {
+        "local_obs": _final_and_truncation_rows(batch.next_local_obs, truncation_indices),
+        "global_obs": _final_and_truncation_rows(batch.next_global_obs, truncation_indices),
+        "agent_mask": _final_and_truncation_rows(batch.next_agent_mask, truncation_indices),
+        "scenario_ids": _final_and_truncation_rows(batch.next_scenario_ids, truncation_indices),
+        "initial_state": concatenate_temporal_states((next_actor_state, truncation_actor_states)),
+    }
+
+
+def _successor_sequence(
+        current: torch.Tensor,
+        final_and_truncation: torch.Tensor,
+        truncation_indices: torch.Tensor,
+        truncation_mask: torch.Tensor,
+) -> torch.Tensor:
+    batch_size = current.shape[0]
+    successor = torch.cat((current[:, 1:], final_and_truncation[:batch_size].unsqueeze(1)), dim=1)
+    rows, times = truncation_indices.unbind(-1)
+    mask = truncation_mask.reshape(batch_size, *((1,) * (current.ndim - 2)))
+    successor[rows, times] = torch.where(mask, final_and_truncation[batch_size:], successor[rows, times])
+    return successor
 
 
 def _slice_segment(

@@ -14,6 +14,7 @@ from swarmbots.learn.action_dists.action_dist import (
     compute_action_metrics,
     resolve_action_metrics_splitter,
 )
+from swarmbots.learn.action_dists.action_sampling import sample_base_uniform
 from swarmbots.learn.action_dists.entropy_utils import EntropyLossConfig, compute_ent_loss, compute_ent_metrics
 from swarmbots.learn.losses import LossDict, LossMetrics
 from swarmbots.learn.serialization_utils import serialize_dataclass
@@ -96,13 +97,19 @@ class BoundedQuantileActionDist(ActionDist, abc.ABC):
             agent: int | None = None,
             previous_actions: torch.Tensor | None = None,
             use_rsample: bool = False,
+            stratified_sample_dim: int | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         _ = (agent, previous_actions)
         raw_parameters = self.update_latent_features(latent_pi)._get_raw_parameters()
         if deterministic:
             actions, log_det = self._mode_and_log_det()
         else:
-            u = torch.rand(raw_parameters.shape[:-1], device=raw_parameters.device, dtype=torch.float32)
+            u = sample_base_uniform(
+                raw_parameters.shape[:-1],
+                device=raw_parameters.device,
+                dtype=torch.float32,
+                stratified_sample_dim=stratified_sample_dim,
+            )
             actions, log_det = self._transform_forward_and_log_det(u)
         if not deterministic and not use_rsample:
             actions = actions.detach()

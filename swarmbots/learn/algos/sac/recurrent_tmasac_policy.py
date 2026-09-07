@@ -14,6 +14,7 @@ from swarmbots.learn.algos.off_policy.replay_buffer import (
 from swarmbots.learn.algos.r_mat.r_mat_encoder import RMATEncoder, RMATEncoderConfig, RMATEncoderState
 from swarmbots.learn.algos.r_mat.temporal_sequence_model import LSTMTemporalSequenceModel
 from swarmbots.learn.algos.sac.sac_nop import SACNOPLatentSource, SACNOPSequenceBatch
+from swarmbots.learn.action_dists.action_sampling import ActionSampleStrategy, expand_action_sample_batch
 from swarmbots.learn.algos.sac.tmasac_policy import (
     TMASACCriticConfig,
     TMASACObservationActionEncoder,
@@ -26,6 +27,7 @@ from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import B
 from swarmbots.learn.nn_components.feed_forward import MLP, MLPConfig
 from swarmbots.learn.nn_components.nn_init import make_init_linear_orthogonal
 from swarmbots.learn.serialization_utils import serialize_dataclass
+from swarmbots.learn.temporal_state import concatenate_temporal_states
 
 
 RecurrentCriticState = RMATEncoderState | tuple[RMATEncoderState, RMATEncoderState]
@@ -613,9 +615,9 @@ class RecurrentTMASACPolicy(TMASACPolicy):
             self._clear_compiled_actor_entry_points()
             return
 
-        encoder_lengths = encoder_only_lengths
-        if not self._actor_end_to_end_compilation_enabled:
-            encoder_lengths |= action_lengths | selected_state_action_lengths
+        # Multi-sample calls encode once before sampling, even when single-sample
+        # calls use an end-to-end compiled entry point for the same length.
+        encoder_lengths = encoder_only_lengths | action_lengths | selected_state_action_lengths
         if self._actor_encoder_compilation_enabled:
             actor_encoder_entry_point = (
                 self._encode_recurrent_shared_sequence_impl
@@ -798,7 +800,10 @@ class RecurrentTMASACPolicy(TMASACPolicy):
             previous_actions: torch.Tensor | None = None,
             deterministic: bool = False,
             use_rsample: bool = True,
+            num_action_samples: int = 1,
+            action_sample_strategy: ActionSampleStrategy = "iid",
     ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Sample from a reset recurrent state; sequence methods accept replay state."""
         _ = (hidden_local_vars, hidden_global_vars)
         actions, log_probs, _latents, _state = self.action_log_prob_sequence(
             local_obs=local_obs,
@@ -809,6 +814,8 @@ class RecurrentTMASACPolicy(TMASACPolicy):
             deterministic=deterministic,
             use_rsample=use_rsample,
             initial_state=None,
+            num_action_samples=num_action_samples,
+            action_sample_strategy=action_sample_strategy,
         )
         return actions, log_probs
 
@@ -839,8 +846,10 @@ class RecurrentTMASACPolicy(TMASACPolicy):
             initial_state: RMATEncoderState | None,
             time_mask: torch.Tensor | None = None,
             reset_mask: torch.Tensor | None = None,
+            num_action_samples: int = 1,
+            action_sample_strategy: ActionSampleStrategy = "iid",
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, RMATEncoderState]:
-        if self._actor_end_to_end_compilation_enabled:
+        if self._actor_end_to_end_compilation_enabled and num_action_samples == 1:
             sequence_length = self._actor_sequence_length(local_obs)
             actor_entry_point = self._compiled_actor_action_sequences.get(sequence_length)
             if actor_entry_point is None:
@@ -871,7 +880,9 @@ class RecurrentTMASACPolicy(TMASACPolicy):
             initial_state=initial_state,
             reset_mask=reset_mask,
         )
-        actions, log_probs = self._actor_actions_and_log_probs(
+        actions, log_probs = self.action_log_prob_from_latents(
+            num_action_samples=num_action_samples,
+            action_sample_strategy=action_sample_strategy,
             actor_latents=actor_latents,
             agent_mask=agent_mask,
             previous_actions=previous_actions,
@@ -894,6 +905,8 @@ class RecurrentTMASACPolicy(TMASACPolicy):
             state_output_indices: torch.Tensor,
             time_mask: torch.Tensor | None = None,
             reset_mask: torch.Tensor | None = None,
+            num_action_samples: int = 1,
+            action_sample_strategy: ActionSampleStrategy = "iid",
     ) -> tuple[
         torch.Tensor,
         torch.Tensor,
@@ -902,7 +915,7 @@ class RecurrentTMASACPolicy(TMASACPolicy):
         RMATEncoderState,
         Any | None,
     ]:
-        if self._actor_end_to_end_compilation_enabled:
+        if self._actor_end_to_end_compilation_enabled and num_action_samples == 1:
             sequence_length = self._actor_sequence_length(local_obs)
             actor_entry_point = self._compiled_actor_action_sequences_with_selected_states.get(
                 sequence_length,
@@ -943,7 +956,9 @@ class RecurrentTMASACPolicy(TMASACPolicy):
         else:
             actor_latents, next_state, selected_states = actor_encoder_result
             last_layer_state_sequence = None
-        actions, log_probs = self._actor_actions_and_log_probs(
+        actions, log_probs = self.action_log_prob_from_latents(
+            num_action_samples=num_action_samples,
+            action_sample_strategy=action_sample_strategy,
             actor_latents=actor_latents,
             agent_mask=agent_mask,
             previous_actions=previous_actions,
@@ -973,6 +988,8 @@ class RecurrentTMASACPolicy(TMASACPolicy):
             state_output_indices: torch.Tensor,
             time_mask: torch.Tensor | None = None,
             reset_mask: torch.Tensor | None = None,
+            num_action_samples: int = 1,
+            action_sample_strategy: ActionSampleStrategy = "iid",
     ) -> tuple[
         torch.Tensor,
         torch.Tensor,
@@ -994,7 +1011,9 @@ class RecurrentTMASACPolicy(TMASACPolicy):
             state_output_indices=state_output_indices,
         )
         actor_latents, next_state, selected_states, shared_latents = result
-        actions, log_probs = self._actor_actions_and_log_probs(
+        actions, log_probs = self.action_log_prob_from_latents(
+            num_action_samples=num_action_samples,
+            action_sample_strategy=action_sample_strategy,
             actor_latents=actor_latents,
             agent_mask=agent_mask,
             previous_actions=previous_actions,
@@ -1441,7 +1460,13 @@ class RecurrentTMASACPolicy(TMASACPolicy):
             actor_state: torch.Tensor | None = None,
             precomputed_shared_latents: torch.Tensor | None = None,
             precomputed_shared_state: RMATEncoderState | None = None,
+            num_action_samples: int = 1,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None, RecurrentCriticState | None]:
+        """Evaluate replay actions or K candidates branching from the same history.
+
+        Candidates return no NOP latents. Only observation-only recurrence can
+        return a common next state; action-conditioned branches have distinct states.
+        """
         if self.uses_recurrent_shared_encoder:
             return self._shared_encoder_q_values_sequence(
                 local_obs=local_obs,
@@ -1457,10 +1482,27 @@ class RecurrentTMASACPolicy(TMASACPolicy):
                 reset_mask=reset_mask,
                 precomputed_shared_latents=precomputed_shared_latents,
                 precomputed_shared_state=precomputed_shared_state,
+                num_action_samples=num_action_samples,
             )
         if precomputed_shared_latents is not None or precomputed_shared_state is not None:
             raise ValueError(
                 "Precomputed shared latents require recurrent shared observation encoding."
+            )
+        if num_action_samples > 1:
+            return self._q_values_sequence_candidates(
+                actions=actions,
+                num_action_samples=num_action_samples,
+                target=target,
+                initial_state=initial_state,
+                local_obs=local_obs,
+                global_obs=global_obs,
+                hidden_local_vars=hidden_local_vars,
+                hidden_global_vars=hidden_global_vars,
+                agent_mask=agent_mask,
+                scenario_ids=scenario_ids,
+                time_mask=time_mask,
+                reset_mask=reset_mask,
+                actor_state=actor_state,
             )
         if self.recurrent_critic:
             critic = self.critic_target if target else self.critic
@@ -1529,6 +1571,32 @@ class RecurrentTMASACPolicy(TMASACPolicy):
             latents = latents.reshape(batch_size, sequence_length, *latents.shape[1:])
         return q1, q2, latents, None
 
+    def _q_values_sequence_candidates(
+            self,
+            *,
+            actions: torch.Tensor,
+            num_action_samples: int,
+            target: bool,
+            initial_state: RecurrentCriticState | None,
+            **observations: torch.Tensor | None,
+    ) -> tuple[torch.Tensor, torch.Tensor, None, None]:
+        flat_observations = {
+            name: expand_action_sample_batch(value, num_action_samples)
+            for name, value in observations.items()
+        }
+        q1, q2, _latents, _state = self.q_values_sequence(
+            actions=actions.flatten(0, 1),
+            target=target,
+            initial_state=concatenate_temporal_states([initial_state] * num_action_samples),
+            **flat_observations,
+        )
+        return (
+            q1.unflatten(0, (num_action_samples, -1)),
+            q2.unflatten(0, (num_action_samples, -1)),
+            None,
+            None,
+        )
+
     def _shared_encoder_q_values_sequence(
             self,
             *,
@@ -1545,6 +1613,7 @@ class RecurrentTMASACPolicy(TMASACPolicy):
             reset_mask: torch.Tensor | None,
             precomputed_shared_latents: torch.Tensor | None,
             precomputed_shared_state: RMATEncoderState | None,
+            num_action_samples: int,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None, RMATEncoderState]:
         if scenario_ids is not None:
             raise ValueError(
@@ -1575,12 +1644,18 @@ class RecurrentTMASACPolicy(TMASACPolicy):
         flat_inputs, batch_size, sequence_length = self._flatten_sequence_inputs(
             local_obs=shared_latents,
             global_obs=global_obs,
-            actions=actions,
+            actions=actions if num_action_samples == 1 else None,
             hidden_local_vars=hidden_local_vars,
             hidden_global_vars=hidden_global_vars,
             agent_mask=agent_mask,
             scenario_ids=None,
         )
+        if num_action_samples > 1:
+            flat_inputs = {
+                name: expand_action_sample_batch(value, num_action_samples)
+                for name, value in flat_inputs.items()
+            }
+            flat_inputs["actions"] = actions.reshape(-1, *actions.shape[-2:])
         critic = self.critic_target if target else self.critic
         q1, q2, critic_latents = critic(
             local_obs=cast(torch.Tensor, flat_inputs["local_obs"]),
@@ -1590,6 +1665,11 @@ class RecurrentTMASACPolicy(TMASACPolicy):
             hidden_global_vars=flat_inputs["hidden_global_vars"],
             agent_mask=flat_inputs["agent_mask"],
         )
+        if num_action_samples > 1:
+            # Candidate forwards share the observation recurrence. NOP trains on
+            # executed replay actions, so its latents are not needed on this path.
+            value_shape = (num_action_samples, *local_obs.shape[:-2])
+            return q1.reshape(value_shape), q2.reshape(value_shape), None, next_state
         nop_latents = (
             shared_latents
             if self.nop_latent_source is SACNOPLatentSource.SHARED_ENCODER

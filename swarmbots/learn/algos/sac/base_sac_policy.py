@@ -3,6 +3,7 @@ from typing import Any
 
 import torch
 
+from swarmbots.learn.action_dists.action_sampling import ActionSampleStrategy, expand_action_sample_batch
 from swarmbots.learn.action_dists.hybrid_action_dist import HybridActionDistribution
 from swarmbots.learn.algos.off_policy.replay_buffer import OffPolicyReplayBatch, OffPolicyReplayEpisodeSegmentBatch
 from swarmbots.learn.base_policy import BasePolicy
@@ -29,7 +30,10 @@ class BaseSACPolicy(BasePolicy, abc.ABC):
             previous_actions: torch.Tensor | None = None,
             deterministic: bool = False,
             use_rsample: bool = True,
+            num_action_samples: int = 1,
+            action_sample_strategy: ActionSampleStrategy = "iid",
     ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Return ordinary action/log-prob shapes for one sample, otherwise prepend K."""
         raise NotImplementedError()
 
     @abc.abstractmethod
@@ -83,6 +87,25 @@ class BaseSACPolicy(BasePolicy, abc.ABC):
             scenario_ids: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         raise NotImplementedError()
+
+    def q_values_samples(
+            self,
+            *,
+            actions: torch.Tensor,
+            num_action_samples: int,
+            target: bool = False,
+            **observations: torch.Tensor | None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Evaluate candidates with the same observations, preserving the leading K axis."""
+        q_values = self.target_q_values if target else self.q_values
+        if num_action_samples == 1:
+            return q_values(actions=actions, **observations)
+        flat_observations = {
+            name: expand_action_sample_batch(value, num_action_samples)
+            for name, value in observations.items()
+        }
+        q1, q2 = q_values(actions=actions.flatten(0, 1), **flat_observations)
+        return q1.unflatten(0, (num_action_samples, -1)), q2.unflatten(0, (num_action_samples, -1))
 
     @abc.abstractmethod
     def actor_parameters(self) -> list[torch.nn.Parameter]:

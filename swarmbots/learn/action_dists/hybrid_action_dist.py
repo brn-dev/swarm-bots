@@ -18,6 +18,7 @@ from swarmbots.learn.action_dists.action_dist import (
 from swarmbots.learn.action_dists.bernoulli_action_dist import BernoulliActionDist
 from swarmbots.learn.action_dists.bernoulli_action_dist import BernoulliConfig
 from swarmbots.learn.action_dists.beta_action_dist import BetaActionDist, BetaConfig
+from swarmbots.learn.action_dists.bounded_quantile_action_dist import BoundedQuantileActionDist
 from swarmbots.learn.action_dists.bang_zero_bang_action_dist import BangZeroBangActionDist, BangZeroBangConfig
 from swarmbots.learn.action_dists.gsde_action_dist import GSDEActionDist, GSDEConfig
 from swarmbots.learn.action_dists.gumbel_softmax_sign_magnitude_action_dist import (
@@ -376,6 +377,7 @@ class HybridActionDistribution(ActionDist):
             agent: int | None = None,
             previous_actions: torch.Tensor | None = None,
             use_rsample: bool = False,
+            stratified_sample_dim: int | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         return self._get_actions_with_log_probs_impl(
             latent_pi=latent_pi,
@@ -384,6 +386,7 @@ class HybridActionDistribution(ActionDist):
             previous_actions=previous_actions,
             use_rsample=use_rsample,
             on_policy=False,
+            stratified_sample_dim=stratified_sample_dim,
         )
 
     def get_on_policy_actions_with_log_probs(
@@ -411,6 +414,7 @@ class HybridActionDistribution(ActionDist):
             previous_actions: torch.Tensor | None,
             use_rsample: bool,
             on_policy: bool,
+            stratified_sample_dim: int | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         actions_parts: list[torch.Tensor] = []
         log_prob_parts: list[torch.Tensor] = []
@@ -428,6 +432,14 @@ class HybridActionDistribution(ActionDist):
                     deterministic=deterministic,
                     agent=agent if dist.sampling_depends_on_agent else None,
                     previous_actions=previous_action,
+                )
+            elif stratified_sample_dim is not None and isinstance(dist, BoundedQuantileActionDist):
+                action_part, log_prob_part = dist.get_actions_with_log_probs(
+                    latent_pi=latent_pi,
+                    deterministic=deterministic,
+                    previous_actions=previous_action,
+                    use_rsample=use_rsample,
+                    stratified_sample_dim=stratified_sample_dim,
                 )
             elif dist.sampling_depends_on_agent:
                 action_part, log_prob_part = dist.get_actions_with_log_probs(
