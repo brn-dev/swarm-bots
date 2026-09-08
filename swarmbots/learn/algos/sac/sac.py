@@ -9,6 +9,7 @@ from swarmbots.learn.action_dists.action_dist import ActionMetricsSplitterInput
 from swarmbots.learn.action_dists.action_sampling import (
     ActionSampleStrategy,
     expand_action_samples,
+    validate_action_sampling,
 )
 from swarmbots.learn.algos.base_algorithm import (
     BaseAlgorithm,
@@ -1024,12 +1025,11 @@ class SAC(BaseAlgorithm):
         return self.gradient_steps
 
     def _validate_hyper_parameters(self) -> None:
-        for name in ("actor_action_samples", "target_action_samples"):
-            value = getattr(self, name)
-            if not isinstance(value, int) or isinstance(value, bool) or value < 1:
-                raise ValueError(f"{name} must be an integer >= 1, got {value!r}")
-        if self.action_sample_strategy not in ("iid", "stratified"):
-            raise ValueError(f"Unknown action_sample_strategy: {self.action_sample_strategy!r}")
+        validate_action_sampling(
+            actor_action_samples=self.actor_action_samples,
+            target_action_samples=self.target_action_samples,
+            action_sample_strategy=self.action_sample_strategy,
+        )
         if max(self.actor_action_samples, self.target_action_samples) > 1:
             if self.policy.gsde_enabled:
                 raise ValueError("Multi-sample SAC does not support temporally correlated gSDE noise.")
