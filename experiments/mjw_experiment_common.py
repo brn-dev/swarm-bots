@@ -23,6 +23,10 @@ from experiments.transformer_policy_common import (
     MATNormalizationConfig,
     NOPInitGains,
 )
+from swarmbots.learn.action_dists.action_sampling import (
+    ActionSampleStrategy,
+    validate_action_sampling,
+)
 from swarmbots.learn.action_dists.beta_action_dist import BetaConfig
 from swarmbots.learn.action_dists.bernstein_quantile_action_dist import BernsteinQuantileConfig
 from swarmbots.learn.action_dists.bernoulli_action_dist import BernoulliConfig
@@ -631,6 +635,9 @@ def run_experiment(
         sac_ent_coef_learning_rate: float | None = 1e-3,
         sac_ent_coef: float | str = "auto_0.05",
         sac_target_entropy: float | str = "auto_0.5",
+        sac_actor_action_samples: int = 1,
+        sac_target_action_samples: int = 1,
+        sac_action_sample_strategy: ActionSampleStrategy = "iid",
         sac_independent_nop_sampling: bool = False,
         sac_batch_size: int | None = None,
         sac_buffer_capacity_per_env: int | None = None,
@@ -735,6 +742,11 @@ def run_experiment(
         )
     if sac_batch_size is not None and sac_batch_size <= 0:
         raise ValueError(f"sac_batch_size must be > 0, got {sac_batch_size}")
+    validate_action_sampling(
+        actor_action_samples=sac_actor_action_samples,
+        target_action_samples=sac_target_action_samples,
+        action_sample_strategy=sac_action_sample_strategy,
+    )
 
     rollout_samples = num_envs * rollout_steps_per_env
     if rollout_samples % virtual_mini_batches != 0:
@@ -848,6 +860,9 @@ def run_experiment(
             f"sac_gradient_steps={sac_gradient_steps}, sac_ent_coef={sac_ent_coef}, "
             f"sac_ent_coef_learning_rate={sac_ent_coef_learning_rate}, "
             f"sac_target_entropy={sac_target_entropy}, "
+            f"sac_actor_action_samples={sac_actor_action_samples}, "
+            f"sac_target_action_samples={sac_target_action_samples}, "
+            f"sac_action_sample_strategy={sac_action_sample_strategy}, "
             f"sac_independent_nop_sampling={sac_independent_nop_sampling}"
         )
         if recurrent_sac_policy:
@@ -1093,6 +1108,9 @@ def run_experiment(
             ent_coef=sac_ent_coef,
             ent_coef_learning_rate=sac_ent_coef_learning_rate,
             target_entropy=sac_target_entropy,
+            actor_action_samples=sac_actor_action_samples,
+            target_action_samples=sac_target_action_samples,
+            action_sample_strategy=sac_action_sample_strategy,
             target_update_interval=1,
             max_grad_norm=2.0,
             independent_nop_sampling=sac_independent_nop_sampling,
@@ -1482,6 +1500,9 @@ def run_experiment(
                 "sac_ent_coef": sac_ent_coef,
                 "sac_ent_coef_learning_rate": sac_ent_coef_learning_rate,
                 "sac_target_entropy": sac_target_entropy,
+                "sac_actor_action_samples": sac_actor_action_samples,
+                "sac_target_action_samples": sac_target_action_samples,
+                "sac_action_sample_strategy": sac_action_sample_strategy,
             }
         )
         if recurrent_sac_policy:

@@ -12,6 +12,7 @@ from experiments.mjw_experiment_common import (
     MJWScenarioName,
 )
 from experiments.mjw_experiment_common import run_experiment as run_mjw_experiment
+from swarmbots.learn.action_dists.action_sampling import ActionSampleStrategy
 from swarmbots.learn.algos.r_mat.temporal_sequence_model import (
     LSTMTemporalSequenceModel,
     LSTMTemporalSequenceModelConfig,
@@ -54,6 +55,9 @@ def run_tmasac_experiment(
     variant: TMASACExperimentVariant,
     entrypoint_path: Path,
     continuous_action_dist: ContinuousActionDistVariant = "gumbel_softmax_sign_magnitude_beta",
+    actor_action_samples: int = 1,
+    target_action_samples: int = 1,
+    action_sample_strategy: ActionSampleStrategy = "iid",
     use_nop: bool = True,
     include_slstm_memory_strength: bool = False,
     variant_name: str | None = None,
@@ -121,6 +125,9 @@ def run_tmasac_experiment(
         sac_ent_coef_learning_rate=None,
         sac_ent_coef="auto_0.05",
         sac_target_entropy="auto_0.1",
+        sac_actor_action_samples=actor_action_samples,
+        sac_target_action_samples=target_action_samples,
+        sac_action_sample_strategy=action_sample_strategy,
         sac_batch_size=16 if is_recurrent else None,
         sac_buffer_capacity_per_env=1024 if is_recurrent else None,
         sac_recurrent_burn_in_steps=32,
