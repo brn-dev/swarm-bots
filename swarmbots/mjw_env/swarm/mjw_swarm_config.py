@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from swarmbots.mj_env.swarm.unit_config import UnitConfig
+from swarmbots.mjw_env.swarm.unit_config import UnitConfig
 
 
 def get_connector_suffix(connector: int) -> str:

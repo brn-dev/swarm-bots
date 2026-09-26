@@ -9,7 +9,7 @@ from gymnasium import spaces
 from gymnasium.vector.utils import batch_space
 
 from swarmbots.utils.connector_actions import connector_action_space
-from swarmbots.mj_env.float_or_dist_params import (
+from swarmbots.mjw_env.parameter_distributions import (
     BoundedDistParams,
     FloatOrBoundedDistParams,
     FloatOrDistParams,

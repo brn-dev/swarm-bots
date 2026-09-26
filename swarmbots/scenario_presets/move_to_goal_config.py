@@ -5,7 +5,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from swarmbots.mj_env.float_or_dist_params import FloatOrDistParams, UniformDistParams, eval_fodp
+from swarmbots.mjw_env.parameter_distributions import FloatOrDistParams, UniformDistParams, eval_fodp
 
 
 @dataclass(frozen=True, slots=True)

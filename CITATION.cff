@@ -1,0 +1,22 @@
+cff-version: 1.2.0
+message: "If you use SwarmBots in your research, please cite this software."
+title: "SwarmBots: a multi-agent benchmark for self-assembling modular robots"
+type: software
+authors:
+  - family-names: Baron
+    given-names: Dominik
+repository-code: "https://github.com/brn-dev/swarm-bots"
+license: Apache-2.0
+version: 0.1.0a1
+preferred-citation:
+  type: thesis
+  title: "SwarmBots: A GPU-Accelerated Multi-Agent Continuous Control Benchmark with Transformer Baselines"
+  authors:
+    - family-names: Baron
+      given-names: Dominik
+  institution:
+    name: "Johannes Kepler University Linz"
+  thesis-type: "Master's thesis"
+  month: 9
+  year: 2026
+  url: "https://github.com/brn-dev/msc-thesis-swarmbots-qcx-tmasac-nop-smb"

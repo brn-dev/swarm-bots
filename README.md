@@ -1,52 +1,92 @@
 # SwarmBots
 
-> [!IMPORTANT]
-> This is a research repository under active development. Its APIs, experiment
-> configurations, and results may change as further experiments are completed.
-> A stable, documented version of the SwarmBots benchmark will be released once
-> that work is finished.
+SwarmBots is a GPU-vectorized multi-agent reinforcement-learning benchmark for self-assembling modular robots. Each policy controls identical articulated units that can move independently and create or release load-bearing connections during an episode. The collective's physical graph therefore changes as part of the control problem.
 
-SwarmBots is a continuous-control multi-agent reinforcement learning benchmark
-for modular robots. Identical articulated units can move independently and
-create or release load-bearing connections during an episode. A policy therefore
-controls both the agents' motion and the changing morphology of the collective.
+The benchmark is built on [MuJoCo Warp](https://github.com/google-deepmind/mujoco_warp) and exposes Gymnasium-compatible vector environments backed by PyTorch tensors. It includes obstacle traversal, partial-observability, climbing, navigation, and payload-transport tasks.
 
-The repository accompanies research into scalable learning for these dynamic,
-partially observable swarms. It includes tasks for locomotion, obstacle
-traversal, spatial exploration, and payload transport, together with training
-and evaluation code for several multi-agent learning architectures.
+This repository deliberately does **not** contain a training framework or paper-specific experiment configurations. Bring your own MARL implementation and use the stable registry and evaluation API here.
 
-## Components
+## Install
 
-- **Simulation environments** (`swarmbots/mj_env`, `swarmbots/mjw_env`): an
-  interactive CPU MuJoCo environment for development and visualization, plus a
-  batched MuJoCo Warp environment for large-scale GPU training.
-- **Swarm embodiment and connectivity**: configurable articulated modules,
-  swarm generation, and controllable mechanical connectors that act as dynamic
-  edges in the swarm's physical graph.
-- **Scenario suite** (`swarmbots/*_env/scenarios`,
-  `swarmbots/scenario_presets`): navigation, wall and partially observable wall
-  traversal, opening discovery, climbing and bridging, and single- or
-  multi-payload transport tasks.
-- **Learning stack** (`swarmbots/learn`): PPO and MAPPO baselines,
-  Multi-Agent Transformer variants, Transformer-based Multi-Agent Soft
-  Actor-Critic (TMASAC), recurrent policies, replay and rollout infrastructure,
-  environment wrappers, checkpointing, metrics, and evaluation utilities.
-- **Research extensions**: typed multi-step next-observation prediction (NOP)
-  and bounded multimodal action distributions, including Signed-Magnitude Beta
-  (SMB).
-- **Experiments and analysis** (`experiments`, `scripts`): thesis experiment
-  configurations, ablations, morphology-transfer and connector studies,
-  evaluation/recording entry points, plotting utilities, and throughput
-  benchmarks.
-- **Tests** (`tests`): coverage for environments, scenarios, policies,
-  algorithms, action distributions, training infrastructure, and experiment
-  configurations.
+Python 3.11 or newer is required. CUDA is strongly recommended; CPU execution exists for development and tests but is not the benchmark's performance target. SwarmBots is currently versioned as an alpha. Once `0.1.0a1` is published to PyPI, install it explicitly with:
 
-## Environment
+```bash
+uv add "swarm-bots==0.1.0a1"
+```
 
-The project is packaged with `uv`; dependencies and optional feature groups are
-defined in `pyproject.toml`. The current package targets Python 3.13. Individual
-research runs are launched from the entry-point scripts under `experiments/` or
-`scripts/`; these should be treated as experiment specifications rather than a
-stable command-line interface.
+Install the PyTorch build appropriate for your system first, then install from source:
+
+```bash
+git clone https://github.com/brn-dev/swarm-bots.git
+cd swarm-bots
+uv sync
+```
+
+For contributors:
+
+```bash
+uv sync --extra dev
+```
+
+## Quick start
+
+List the registered tasks and run a short smoke test:
+
+```bash
+swarmbots list
+swarmbots smoke SwarmBots-WallEasy-v0 --device cuda --num-envs 64
+```
+
+Create an environment directly:
+
+```python
+import torch
+from swarmbots import make_env
+
+env = make_env("SwarmBots-WallEasy-v0", num_envs=256, device="cuda", seed=42)
+observations, info = env.reset(seed=42)
+
+actions = {
+    "actuators": torch.zeros(env.action_space["actuators"].shape, device=env.device),
+    "connectors": torch.zeros(env.action_space["connectors"].shape, device=env.device),
+}
+observations, rewards, terminations, truncations, info = env.step(actions)
+env.close()
+```
+
+The environment uses Gymnasium `SAME_STEP` autoreset. When a lane ends, the returned observation is already its next reset observation; the terminal observation is in `info["final_obs"]` and selected by `info["_final_obs"]`.
+
+## Multi-agent interface
+
+Observations are dictionaries of batched tensors:
+
+- `local_obs`: per-agent observations, shaped `(worlds, agents, features)`.
+- `global_obs`: task information visible to all agents.
+- `agent_mask`: which padded agent slots are active.
+- `hidden_local_vars` and `hidden_global_vars`: privileged state for centralized training or diagnostics. Do not pass these to an evaluated actor.
+
+Actions contain per-agent `actuators` and `connectors` tensors. Rewards and done flags are team-level tensors with one value per simulated world.
+
+The built-in `evaluate_policy` function passes only the non-privileged observation keys to the policy and reports episode returns, lengths, and success rate where defined.
+
+## Documentation
+
+- [Scenario catalog](docs/scenarios.md)
+- [Benchmark and reporting protocol](docs/benchmark_protocol.md)
+- [Python API and custom policies](docs/api.md)
+- [Contributing](CONTRIBUTING.md)
+- [Publishing releases](docs/publishing.md)
+
+The API is alpha. Benchmark IDs and protocol versions are explicit so semantic changes can be introduced without silently invalidating results.
+
+## Citation
+
+The benchmark and its original evaluation are described in:
+
+> Dominik Baron. *SwarmBots: A GPU-Accelerated Multi-Agent Continuous Control Benchmark with Transformer Baselines*. Master's thesis, Johannes Kepler University Linz, 2026.
+
+The complete [thesis and reproducibility artifact](https://github.com/brn-dev/msc-thesis-swarmbots-qcx-tmasac-nop-smb) contains the thesis PDF, training algorithms, experiment configurations, and analysis code. Machine-readable citation metadata is available in [CITATION.cff](CITATION.cff).
+
+## License
+
+SwarmBots is released under the [Apache License 2.0](LICENSE).

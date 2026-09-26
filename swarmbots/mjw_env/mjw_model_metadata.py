@@ -6,7 +6,7 @@ from typing import Any
 import mujoco
 import numpy as np
 
-import swarmbots.mj_env.mujoco_utils as mj_utils
+import swarmbots.mjw_env.mujoco_utils as mj_utils
 
 
 @dataclass

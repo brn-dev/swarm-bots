@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import shutil
 import sys
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
 
 import torch
+
+if TYPE_CHECKING:
+    from swarmbots.mjw_env.scenarios.mjw_payload_step_scenario import MJWPayloadStepScenario
 
 from swarmbots.mjw_env.scenarios.base_mjw_scenario import MJWRuntimeBindings, MJWStepResult
 from swarmbots.mjw_env.scenarios.mjw_payload_plane_runtime import (

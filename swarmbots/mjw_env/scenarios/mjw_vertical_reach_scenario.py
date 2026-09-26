@@ -8,7 +8,7 @@ import numpy as np
 from gymnasium import spaces
 from gymnasium.vector.utils import batch_space
 
-from swarmbots.mj_env.float_or_dist_params import FloatOrDistParams
+from swarmbots.mjw_env.parameter_distributions import FloatOrDistParams
 from swarmbots.mjw_env.scenarios.base_mjw_scenario import BaseMJWScenario, MJWRecordingCameraConfig, MJWRuntimeBindings
 from swarmbots.mjw_env.swarm.mjw_homogeneous_swarm import MJWHomogeneousSwarm
 from swarmbots.scenario_presets.scenario_obs_layouts import VERTICAL_REACH_GOAL_XYZ_GLOBAL_OBS_LAYOUT

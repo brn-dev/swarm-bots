@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 import mujoco
+import mujoco_warp as mjw
 import numpy as np
 import torch
 import warp as wp
@@ -57,6 +58,11 @@ class MJWRuntimeBindings:
     pool_quats_wp: Any
     inactive_unit_positions_wp: Any
     unit_qpos_adr_wp: Any
+
+
+def mjw_forward(bindings: MJWRuntimeBindings) -> None:
+    with wp.ScopedDevice(bindings.wp_device):
+        mjw.forward(bindings.model, bindings.data)
 
 
 @dataclass(slots=True)

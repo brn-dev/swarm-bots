@@ -6,7 +6,6 @@ import sys
 from typing import Callable
 
 import mujoco
-import mujoco_warp as mjw
 import numpy as np
 import torch
 
@@ -19,6 +18,7 @@ from swarmbots.mjw_env.scenarios.base_mjw_scenario import (
     MJWCommonSettledSnapshot,
     MJWRuntimeBindings,
     MJWStepResult,
+    mjw_forward,
 )
 from swarmbots.mjw_env.scenarios.mjw_bridge_scenario import (
     MJWBridgeRuntimeMetadata,
@@ -237,7 +237,7 @@ class BridgeMJWScenarioRuntime(BaseMJWScenarioRuntime):
     def apply_reset_batch(self, *, world_idx: torch.Tensor, reset_batch: BridgeResetBatch) -> None:
         self._apply_common_reset_batch(world_idx=world_idx, common_reset_batch=reset_batch.common)
         self._apply_bridge_position(world_idx=world_idx, bridge_x=reset_batch.bridge_x)
-        mjw.forward(self.bindings.model, self.bindings.data)
+        mjw_forward(self.bindings)
 
         self.bridge_x[world_idx, 0] = reset_batch.bridge_x
         self.progress[world_idx] = _compute_bridge_progress_baseline_torch(
@@ -274,7 +274,7 @@ class BridgeMJWScenarioRuntime(BaseMJWScenarioRuntime):
             device=self.bindings.device,
             dtype=self.progress.dtype,
         )
-        mjw.forward(self.bindings.model, self.bindings.data)
+        mjw_forward(self.bindings)
 
     def compute_step_rewards(self, *, stable_mask: torch.Tensor) -> MJWStepResult:
         (

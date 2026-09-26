@@ -3,12 +3,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 import shutil
 import sys
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
 
 import mujoco
-import mujoco_warp as mjw
 import numpy as np
 import torch
+
+if TYPE_CHECKING:
+    from swarmbots.mjw_env.scenarios.mjw_find_opening_scenario import MJWFindOpeningScenario
 
 from swarmbots.mjw_env.mjw_torch_utils import masked_mean, sample_float_or_bounded_dist
 from swarmbots.mjw_env.scenarios.base_mjw_scenario import (
@@ -19,6 +21,7 @@ from swarmbots.mjw_env.scenarios.base_mjw_scenario import (
     MJWCommonSettledSnapshot,
     MJWRuntimeBindings,
     MJWStepResult,
+    mjw_forward,
 )
 from swarmbots.mjw_env.scenarios.mjw_find_opening_scenario import (
     MJWFindOpeningRuntimeMetadata,
@@ -318,7 +321,7 @@ class FindOpeningMJWScenarioRuntime(BaseMJWScenarioRuntime):
     ) -> None:
         self._apply_common_reset_batch(world_idx=world_idx, common_reset_batch=reset_batch.common)
         self._apply_opening_position(world_idx=world_idx, opening_x=reset_batch.opening_x)
-        mjw.forward(self.bindings.model, self.bindings.data)
+        mjw_forward(self.bindings)
 
         self.opening_x[world_idx, 0] = reset_batch.opening_x
         self.opening_potential[world_idx] = _compute_opening_potential_torch(
@@ -389,7 +392,7 @@ class FindOpeningMJWScenarioRuntime(BaseMJWScenarioRuntime):
             dtype=self.wall_exploration_visited_cells.dtype,
         )
         self._sync_wall_exploration_hidden_obs(world_idx=world_idx)
-        mjw.forward(self.bindings.model, self.bindings.data)
+        mjw_forward(self.bindings)
 
     def compute_step_rewards(self, *, stable_mask: torch.Tensor) -> MJWStepResult:
         (

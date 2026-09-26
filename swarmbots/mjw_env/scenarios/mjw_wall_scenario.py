@@ -9,7 +9,7 @@ from gymnasium import spaces
 from gymnasium.vector.utils import batch_space
 
 from swarmbots.utils.connector_actions import connector_action_space
-from swarmbots.mj_env.float_or_dist_params import FloatOrDistParams
+from swarmbots.mjw_env.parameter_distributions import FloatOrDistParams
 from swarmbots.mjw_env.scenarios.base_mjw_scenario import BaseMJWScenario, MJWRuntimeBindings, MJWRecordingCameraConfig
 from swarmbots.mjw_env.swarm.mjw_homogeneous_swarm import MJWHomogeneousSwarm
 from swarmbots.utils.mujoco_render_geoms import add_wall_y_reference_line_geoms

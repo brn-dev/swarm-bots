@@ -1,7 +1,7 @@
 import mujoco
 import numpy as np
 
-from swarmbots.mj_env.float_or_dist_params import BoundedDistParams, FloatOrDistParams
+from swarmbots.mjw_env.parameter_distributions import BoundedDistParams, FloatOrDistParams
 
 
 def add_line_geom(

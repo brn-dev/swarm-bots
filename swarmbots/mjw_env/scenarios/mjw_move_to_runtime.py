@@ -3,12 +3,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 import shutil
 import sys
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
 
 import mujoco
-import mujoco_warp as mjw
 import numpy as np
 import torch
+
+if TYPE_CHECKING:
+    from swarmbots.mjw_env.scenarios.mjw_move_to_scenario import MJWMoveToScenario
 
 from swarmbots.mjw_env.mjw_torch_utils import masked_mean, sample_float_or_dist
 from swarmbots.mjw_env.scenarios.base_mjw_scenario import (
@@ -19,6 +21,7 @@ from swarmbots.mjw_env.scenarios.base_mjw_scenario import (
     MJWCommonSettledSnapshot,
     MJWRuntimeBindings,
     MJWStepResult,
+    mjw_forward,
 )
 from swarmbots.mjw_env.scenarios.mjw_move_to_scenario import MJWMoveToRuntimeMetadata
 from swarmbots.scenario_presets.move_to_goal_config import AbsoluteGoalConfig, RelativePolarGoalConfig
@@ -197,7 +200,7 @@ class MoveToMJWScenarioRuntime(BaseMJWScenarioRuntime):
     def apply_reset_batch(self, *, world_idx: torch.Tensor, reset_batch: MoveToResetBatch) -> None:
         self._apply_common_reset_batch(world_idx=world_idx, common_reset_batch=reset_batch.common)
         self._apply_goal_marker(world_idx=world_idx, goal_position=reset_batch.goal_position)
-        mjw.forward(self.bindings.model, self.bindings.data)
+        mjw_forward(self.bindings)
 
         self.goal_position[world_idx] = reset_batch.goal_position
         self.progress[world_idx] = _compute_goal_progress_baseline_torch(
@@ -234,7 +237,7 @@ class MoveToMJWScenarioRuntime(BaseMJWScenarioRuntime):
             device=self.bindings.device,
             dtype=self.progress.dtype,
         )
-        mjw.forward(self.bindings.model, self.bindings.data)
+        mjw_forward(self.bindings)
 
     def compute_step_rewards(self, *, stable_mask: torch.Tensor) -> MJWStepResult:
         (

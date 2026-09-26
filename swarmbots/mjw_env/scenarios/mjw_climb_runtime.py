@@ -3,12 +3,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 import shutil
 import sys
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
 
 import mujoco
-import mujoco_warp as mjw
 import numpy as np
 import torch
+
+if TYPE_CHECKING:
+    from swarmbots.mjw_env.scenarios.mjw_climb_scenario import MJWClimbScenario
 
 from swarmbots.mjw_env.mjw_torch_utils import masked_mean
 from swarmbots.mjw_env.scenarios.base_mjw_scenario import (
@@ -19,6 +21,7 @@ from swarmbots.mjw_env.scenarios.base_mjw_scenario import (
     MJWCommonSettledSnapshot,
     MJWRuntimeBindings,
     MJWStepResult,
+    mjw_forward,
 )
 
 
@@ -211,7 +214,7 @@ class ClimbMJWScenarioRuntime(BaseMJWScenarioRuntime):
 
     def apply_reset_batch(self, *, world_idx: torch.Tensor, reset_batch: MJWCommonResetBatch) -> None:
         self._apply_common_reset_batch(world_idx=world_idx, common_reset_batch=reset_batch)
-        mjw.forward(self.bindings.model, self.bindings.data)
+        mjw_forward(self.bindings)
         self._global_obs[world_idx] = self._goal_position
         unit_position = self._get_unit_position()[world_idx]
         units_active_mask = self.bindings.units_active_mask[world_idx]
@@ -252,7 +255,7 @@ class ClimbMJWScenarioRuntime(BaseMJWScenarioRuntime):
             dtype=self.height_progress.dtype,
         )
         self._global_obs[world_idx] = self._goal_position
-        mjw.forward(self.bindings.model, self.bindings.data)
+        mjw_forward(self.bindings)
 
     def compute_step_rewards(self, *, stable_mask: torch.Tensor) -> MJWStepResult:
         unit_position = self._get_unit_position()

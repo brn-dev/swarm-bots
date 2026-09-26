@@ -31,13 +31,8 @@ from swarmbots.mjw_env.mjw_model_metadata import MJWModelMetadata, build_model_m
 from swarmbots.mjw_env.mjw_torch_utils import to_device_bool_tensor
 from swarmbots.mjw_env.scenarios.base_mjw_scenario import BaseMJWScenario, MJWRuntimeBindings
 from swarmbots.mjw_env.swarm.mjw_homogeneous_swarm import MJWSwarmPool
-from swarmbots.learn.discord_notifications import (
-    notify_mjw_nefc_overflow_once,
-    notify_mjw_simulation_instability_once,
-)
-from swarmbots.learn.tensor_conversion import to_numpy_array
-from swarmbots.learn.torch_device import as_device as _resolve_torch_device
 from swarmbots.utils.recording_resolution import DEFAULT_RECORDING_HEIGHT, DEFAULT_RECORDING_WIDTH
+from swarmbots.utils.torch_utils import resolve_torch_device as _resolve_torch_device, to_numpy_array
 
 
 def _build_inactive_unit_positions(
@@ -81,9 +76,10 @@ class _PendingMJWStep:
 def _capture_step_graph(model: Any, data: Any, nstep: int) -> Any | None:
     if nstep <= 0:
         return None
-    with wp.ScopedCapture() as capture:
-        for _ in range(nstep):
-            mjw.step(model, data)
+    with wp.ScopedDevice(model.qpos.device):
+        with wp.ScopedCapture(device=model.qpos.device) as capture:
+            for _ in range(nstep):
+                mjw.step(model, data)
     return capture.graph
 
 
@@ -303,13 +299,14 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
             raise ValueError(f"Expected njmax > 0, got {resolved_njmax}")
         self._nconmax = resolved_nconmax
         self._njmax = resolved_njmax
-        self._model = mjw.put_model(self._host_model)
-        self._data = mjw.make_data(
-            self._host_model,
-            nworld=self.num_envs,
-            nconmax=self._nconmax,
-            njmax=self._njmax,
-        )
+        with wp.ScopedDevice(self._wp_device):
+            self._model = mjw.put_model(self._host_model)
+            self._data = mjw.make_data(
+                self._host_model,
+                nworld=self.num_envs,
+                nconmax=self._nconmax,
+                njmax=self._njmax,
+            )
 
         self._qpos = wp.to_torch(self._data.qpos)
         self._qvel = wp.to_torch(self._data.qvel)
@@ -536,6 +533,7 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
         self._live_episode_recorder = MJWLiveEpisodeRecorder(scenario=self.scenario)
         self._initial_settled_reset_done = False
         self._nefc_overflow_notification_checked = False
+        self._simulation_instability_warning_emitted = False
         self._max_nefc_since_overflow_check = torch.zeros((), device=self.device, dtype=self._nefc.dtype)
         self._steps_since_nefc_overflow_check = 0
         self._pending_step: _PendingMJWStep | None = None
@@ -803,11 +801,14 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
         if bool(step_status[0]):
             self._inject_connection_episode_stats(infos=infos, dones=dones)
             unstable_world_indices = torch.nonzero(step_status[1:], as_tuple=True)[0].tolist()
-            if unstable_world_indices:
-                notify_mjw_simulation_instability_once(
-                    scenario_name=type(self.scenario).__name__,
-                    num_envs=self.num_envs,
-                    unstable_world_indices=unstable_world_indices,
+            if unstable_world_indices and not self._simulation_instability_warning_emitted:
+                self._simulation_instability_warning_emitted = True
+                logger.warning(
+                    "MJW simulation instability in {} of {} worlds for {} (indices: {}).",
+                    len(unstable_world_indices),
+                    self.num_envs,
+                    type(self.scenario).__name__,
+                    unstable_world_indices[:20],
                 )
             infos["final_obs"] = {key: value.clone() for key, value in obs.items()}
             infos["_final_obs"] = dones.clone()
@@ -889,8 +890,9 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
         if self._physics_graph is not None:
             wp.capture_launch(self._physics_graph)
             return
-        for _ in range(self.action_repeat):
-            mjw.step(self._model, self._data)
+        with wp.ScopedDevice(self._wp_device):
+            for _ in range(self.action_repeat):
+                mjw.step(self._model, self._data)
 
     def _update_max_nefc_since_overflow_check(self) -> None:
         if self._nefc_overflow_notification_checked:
@@ -915,13 +917,6 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
         self._nefc_overflow_notification_checked = True
         logger.warning(
             f"MJW nefc overflow detected: current njmax={self._njmax}, observed nefc={required_njmax}."
-        )
-        notify_mjw_nefc_overflow_once(
-            scenario_name=type(self.scenario).__name__,
-            num_envs=self.num_envs,
-            nconmax=self._nconmax,
-            njmax=self._njmax,
-            required_njmax=required_njmax,
         )
 
     def _get_current_truncation_limit(self) -> torch.Tensor:

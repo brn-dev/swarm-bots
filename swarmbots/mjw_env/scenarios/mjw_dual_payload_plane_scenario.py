@@ -2,19 +2,31 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import math
+from collections.abc import Iterable
 from typing import Any
 
 import mujoco
 import numpy as np
 from gymnasium import spaces
 
-import swarmbots.mj_env.mujoco_utils as mj_utils
-from swarmbots.mj_env.scenarios.dual_payload_plane_scenario import _as_payload_pair
+import swarmbots.mjw_env.mujoco_utils as mj_utils
+from swarmbots.mjw_env.parameter_distributions import FloatOrDistParams
 from swarmbots.mjw_env.scenarios.base_mjw_scenario import MJWRecordingCameraConfig, MJWRuntimeBindings
 from swarmbots.mjw_env.scenarios.mjw_payload_plane_scenario import (
     MJWPayloadPlaneRuntimeMetadata,
     MJWPayloadPlaneScenario,
 )
+
+
+def _as_payload_pair(
+    value: FloatOrDistParams | Iterable[FloatOrDistParams],
+) -> tuple[FloatOrDistParams, FloatOrDistParams]:
+    if isinstance(value, (int, float)):
+        return value, value
+    values = tuple(value)
+    if len(values) != 2:
+        raise ValueError(f"Expected exactly two payload offsets, got {len(values)}")
+    return values[0], values[1]
 
 
 @dataclass

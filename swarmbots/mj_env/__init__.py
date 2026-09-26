@@ -1,3 +1,0 @@
-from swarmbots.utils.mujoco_bootstrap import configure_mujoco_gl_backend
-
-configure_mujoco_gl_backend()

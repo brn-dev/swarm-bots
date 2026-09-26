@@ -9,7 +9,7 @@ import sys
 import numpy as np
 import torch
 
-from swarmbots.mj_env.swarm.unit_config import (
+from swarmbots.mjw_env.swarm.unit_config import (
     UNIT_CONFIG_TETRAHEDRON_XY,
     UNIT_CONFIG_TETRAHEDRON_XYZ,
     UNIT_CONFIG_TETRAHEDRON_ZX,
@@ -27,8 +27,10 @@ from swarmbots.mjw_env.scenarios.mjw_wall_scenario import MJWWallScenario
 from swarmbots.mjw_env.swarm.mjw_homogeneous_swarm import MJWHomogeneousSwarm, MJWPreConnectedUnitLocationsConfig
 from swarmbots.scenario_presets import scenario_presets_kwargs as shared_kwargs
 from swarmbots.scenario_presets.scenario_presets_kwargs import (
+    PoWallDifficulty,
     WallDifficulty,
     make_scenario_kwargs,
+    po_wall_scenario_kwargs_with_difficulty,
     wall_scenario_kwargs_with_difficulty,
 )
 
@@ -188,6 +190,38 @@ def medium_wall(**kwargs: object) -> MJWWallScenario:
 
 def hard_wall(**kwargs: object) -> MJWWallScenario:
     return default_wall(difficulty="hard", **kwargs)
+
+
+def partially_observable_wall(
+    *,
+    difficulty: PoWallDifficulty = "easy",
+    seed: int | None = None,
+    swarm: MJWHomogeneousSwarm | None = None,
+    unit_start_locations: MJWPreConnectedUnitLocationsConfig | None = None,
+    quantize_connection_twist: int = 8,
+    joints: JointPreset = "zx",
+    **kwargs: object,
+) -> MJWWallScenario:
+    return _make_scenario(
+        MJWWallScenario,
+        scenario_kwargs=_preset_kwargs(
+            po_wall_scenario_kwargs_with_difficulty(difficulty),
+            overrides=kwargs,
+        ),
+        seed=seed,
+        swarm=swarm,
+        unit_start_locations=unit_start_locations,
+        quantize_connection_twist=quantize_connection_twist,
+        joints=joints,
+    )
+
+
+def easy_partially_observable_wall(**kwargs: object) -> MJWWallScenario:
+    return partially_observable_wall(difficulty="easy", **kwargs)
+
+
+def medium_partially_observable_wall(**kwargs: object) -> MJWWallScenario:
+    return partially_observable_wall(difficulty="medium", **kwargs)
 
 
 def default_bridge(

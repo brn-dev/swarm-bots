@@ -3,12 +3,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 import shutil
 import sys
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
 
 import mujoco
-import mujoco_warp as mjw
 import numpy as np
 import torch
+
+if TYPE_CHECKING:
+    from swarmbots.mjw_env.scenarios.mjw_wall_scenario import MJWWallScenario
 
 from swarmbots.mjw_env.scenarios.base_mjw_scenario import (
     BaseMJWCPUResetSettler,
@@ -18,6 +20,7 @@ from swarmbots.mjw_env.scenarios.base_mjw_scenario import (
     MJWCommonSettledSnapshot,
     MJWRuntimeBindings,
     MJWStepResult,
+    mjw_forward,
 )
 from swarmbots.mjw_env.mjw_torch_utils import masked_mean, sample_float_or_dist
 
@@ -546,7 +549,7 @@ class WallMJWScenarioRuntime(BaseMJWScenarioRuntime):
     def apply_reset_batch(self, *, world_idx: torch.Tensor, reset_batch: WallResetBatch) -> None:
         self._apply_common_reset_batch(world_idx=world_idx, common_reset_batch=reset_batch.common)
         self._apply_wall_configuration(world_idx=world_idx, hidden_global_vars=reset_batch.hidden_global_vars)
-        mjw.forward(self.bindings.model, self.bindings.data)
+        mjw_forward(self.bindings)
 
         self.hidden_global_vars[world_idx] = reset_batch.hidden_global_vars
         self.wall_y[world_idx] = reset_batch.hidden_global_vars[:, 0]
@@ -666,7 +669,7 @@ class WallMJWScenarioRuntime(BaseMJWScenarioRuntime):
             dtype=self.passed_thresholds_mask.dtype,
         )
         self._hidden_local_obs[world_idx] = self.passed_thresholds_mask[world_idx].to(dtype=torch.float32)
-        mjw.forward(self.bindings.model, self.bindings.data)
+        mjw_forward(self.bindings)
 
     def compute_step_rewards(self, *, stable_mask: torch.Tensor) -> MJWStepResult:
         unit_y = self._get_unit_y()

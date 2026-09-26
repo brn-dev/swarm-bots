@@ -3,14 +3,16 @@ from __future__ import annotations
 from dataclasses import dataclass
 import shutil
 import sys
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
 
 import mujoco
-import mujoco_warp as mjw
 import numpy as np
 import torch
 
-import swarmbots.mj_env.mujoco_utils as mj_utils
+if TYPE_CHECKING:
+    from swarmbots.mjw_env.scenarios.mjw_payload_plane_scenario import MJWPayloadPlaneScenario
+
+import swarmbots.mjw_env.mujoco_utils as mj_utils
 from swarmbots.mjw_env.mjw_torch_quat import quat_to_rot6d_torch
 from swarmbots.mjw_env.mjw_torch_utils import masked_mean, sample_float_or_dist
 from swarmbots.mjw_env.scenarios.base_mjw_scenario import (
@@ -21,6 +23,7 @@ from swarmbots.mjw_env.scenarios.base_mjw_scenario import (
     MJWCommonSettledSnapshot,
     MJWRuntimeBindings,
     MJWStepResult,
+    mjw_forward,
 )
 from swarmbots.mjw_env.scenarios.mjw_payload_plane_scenario import MJWPayloadPlaneRuntimeMetadata
 
@@ -263,7 +266,7 @@ class PayloadPlaneMJWScenarioRuntime(BaseMJWScenarioRuntime):
     def apply_reset_batch(self, *, world_idx: torch.Tensor, reset_batch: PayloadPlaneResetBatch) -> None:
         self._apply_common_reset_batch(world_idx=world_idx, common_reset_batch=reset_batch.common)
         self._apply_payload_position(world_idx=world_idx, payload_position=reset_batch.payload_position)
-        mjw.forward(self.bindings.model, self.bindings.data)
+        mjw_forward(self.bindings)
 
         self._update_payload_obs(world_idx=world_idx)
         self.progress[world_idx] = _compute_payload_progress_baseline_torch(
@@ -317,7 +320,7 @@ class PayloadPlaneMJWScenarioRuntime(BaseMJWScenarioRuntime):
             device=self.bindings.device,
             dtype=self.towards_payload_progress.dtype,
         )
-        mjw.forward(self.bindings.model, self.bindings.data)
+        mjw_forward(self.bindings)
 
     def compute_step_rewards(self, *, stable_mask: torch.Tensor) -> MJWStepResult:
         current_payload_position = self._get_payload_position()

@@ -8,7 +8,7 @@ import numpy as np
 from gymnasium import spaces
 from gymnasium.vector.utils import batch_space
 
-from swarmbots.mj_env.float_or_dist_params import (
+from swarmbots.mjw_env.parameter_distributions import (
     BoundedDistParams,
     FloatOrBoundedDistParams,
     FloatOrDistParams,

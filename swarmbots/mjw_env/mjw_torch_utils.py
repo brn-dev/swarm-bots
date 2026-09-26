@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import torch
 
-from swarmbots.mj_env.float_or_dist_params import (
+from swarmbots.mjw_env.parameter_distributions import (
     FloatOrBoundedDistParams,
     FloatOrDistParams,
     NormalDistParams,

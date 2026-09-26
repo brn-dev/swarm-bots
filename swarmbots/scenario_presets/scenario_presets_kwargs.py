@@ -5,7 +5,7 @@ from collections.abc import Mapping
 from copy import deepcopy
 from typing import Literal
 
-from swarmbots.mj_env.float_or_dist_params import SplitUniformDistParams, UniformDistParams
+from swarmbots.mjw_env.parameter_distributions import SplitUniformDistParams, UniformDistParams
 from swarmbots.scenario_presets.move_to_goal_config import RelativePolarGoalConfig
 
 
@@ -100,7 +100,7 @@ HARD_WALL_SCENARIO_KWARGS = wall_scenario_kwargs_with_difficulty("hard")
 
 BRIDGE_SCENARIO_KWARGS: dict[str, object] = {
     "street_width": 6.0,
-    "bridge_width": 1.0,
+    "bridge_width": 1.5,
     "bridge_length": 4.0,
     "bridge_x": 0.0,
     "platform_length": 4.0,
@@ -110,7 +110,7 @@ BRIDGE_SCENARIO_KWARGS: dict[str, object] = {
     "success_reward": 10.0,
     "swarm_start_x": 0.0,
     "swarm_start_y": 0.5,
-    "fell_off_bridge_reward": -5.0,
+    "fell_off_bridge_reward": -0.5,
 }
 
 FIND_OPENING_SCENARIO_KWARGS: dict[str, object] = {

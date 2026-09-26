@@ -1,13 +1,27 @@
 from __future__ import annotations
 
-import tempfile
+from contextlib import contextmanager
+import shutil
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+import uuid
 
 import numpy as np
 
 from swarmbots.mjw_env.mjw_live_recording import MJWLiveEpisodeRecorder, MJWRecordingConfig, MJWWorldSnapshot
+
+
+@contextmanager
+def _writable_temp_directory() -> object:
+    root = Path(__file__).resolve().parents[1] / ".tmp" / "recording-tests"
+    root.mkdir(parents=True, exist_ok=True)
+    path = root / uuid.uuid4().hex
+    path.mkdir()
+    try:
+        yield str(path)
+    finally:
+        shutil.rmtree(path, ignore_errors=True)
 
 
 class _DummyScenario:
@@ -107,7 +121,7 @@ class MJWLiveRecordingRendererReuseTests(unittest.TestCase):
             ),
         }
 
-        with tempfile.TemporaryDirectory() as tmpdir:
+        with _writable_temp_directory() as tmpdir:
             config = MJWRecordingConfig(
                 video_folder=Path(tmpdir) / "videos",
                 video_name_prefix="test",
@@ -144,7 +158,7 @@ class MJWLiveRecordingRendererReuseTests(unittest.TestCase):
     def test_start_failure_does_not_leave_recorder_active(self) -> None:
         recorder = MJWLiveEpisodeRecorder(scenario=_DummyScenario())
 
-        with tempfile.TemporaryDirectory() as tmpdir:
+        with _writable_temp_directory() as tmpdir:
             config = MJWRecordingConfig(
                 video_folder=Path(tmpdir) / "videos",
                 video_name_prefix="test",

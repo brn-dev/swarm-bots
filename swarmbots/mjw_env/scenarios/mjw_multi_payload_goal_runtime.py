@@ -3,14 +3,16 @@ from __future__ import annotations
 from dataclasses import dataclass
 import shutil
 import sys
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
 
 import mujoco
-import mujoco_warp as mjw
 import numpy as np
 import torch
 
-import swarmbots.mj_env.mujoco_utils as mj_utils
+if TYPE_CHECKING:
+    from swarmbots.mjw_env.scenarios.mjw_multi_payload_goal_scenario import MJWMultiPayloadGoalScenario
+
+import swarmbots.mjw_env.mujoco_utils as mj_utils
 from swarmbots.mjw_env.mjw_torch_quat import quat_to_rot6d_torch
 from swarmbots.mjw_env.scenarios.base_mjw_scenario import (
     BaseMJWCPUResetSettler,
@@ -20,6 +22,7 @@ from swarmbots.mjw_env.scenarios.base_mjw_scenario import (
     MJWCommonSettledSnapshot,
     MJWRuntimeBindings,
     MJWStepResult,
+    mjw_forward,
 )
 from swarmbots.mjw_env.scenarios.mjw_multi_payload_goal_scenario import (
     MJWMultiPayloadGoalRuntimeMetadata,
@@ -311,7 +314,7 @@ class MultiPayloadGoalMJWScenarioRuntime(BaseMJWScenarioRuntime):
             goal_position=reset_batch.goal_position,
             active_payload_mask=reset_batch.active_payload_mask,
         )
-        mjw.forward(self.bindings.model, self.bindings.data)
+        mjw_forward(self.bindings)
 
         self.payload_position[world_idx] = reset_batch.payload_position
         self.active_payload_mask[world_idx] = reset_batch.active_payload_mask
@@ -382,7 +385,7 @@ class MultiPayloadGoalMJWScenarioRuntime(BaseMJWScenarioRuntime):
             dtype=self.payload_progress.dtype,
         )
         self._update_payload_obs(world_idx=world_idx)
-        mjw.forward(self.bindings.model, self.bindings.data)
+        mjw_forward(self.bindings)
 
     def compute_step_rewards(self, *, stable_mask: torch.Tensor) -> MJWStepResult:
         current_payload_position = self._get_payload_position()

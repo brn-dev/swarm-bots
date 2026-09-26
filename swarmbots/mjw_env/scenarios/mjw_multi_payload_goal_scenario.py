@@ -9,8 +9,8 @@ import numpy as np
 from gymnasium import spaces
 from gymnasium.vector.utils import batch_space
 
-import swarmbots.mj_env.mujoco_utils as mj_utils
-from swarmbots.mj_env.float_or_dist_params import FloatOrDistParams
+import swarmbots.mjw_env.mujoco_utils as mj_utils
+from swarmbots.mjw_env.parameter_distributions import FloatOrDistParams
 from swarmbots.scenario_presets.multi_payload_goal import (
     PAYLOAD_GOAL_COLORS,
     PAYLOAD_GOAL_OBS_RECORD_DIM,

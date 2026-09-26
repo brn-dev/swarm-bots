@@ -8,9 +8,9 @@ import numpy as np
 import torch
 from mujoco import MjsBody
 
-from swarmbots.mj_env.random_utils import random_quat_shoemake
-from swarmbots.mj_env.swarm.unit import init_unit
-from swarmbots.mj_env.swarm.unit_config import UNIT_CONFIG_TETRAHEDRON_XY, UnitConfig
+from swarmbots.mjw_env.random_utils import random_quat_shoemake
+from swarmbots.mjw_env.swarm.unit import init_unit
+from swarmbots.mjw_env.swarm.unit_config import UNIT_CONFIG_TETRAHEDRON_XY, UnitConfig
 from swarmbots.mjw_env.swarm.mjw_swarm_config import MJWSwarmConfig
 
 
