@@ -45,4 +45,18 @@ git push origin v0.1.0a1
 
 The workflow rejects a tag that does not match the version in `pyproject.toml`. It builds and checks the wheel and source distribution in an unprivileged job, then passes only those artifacts to the OIDC-enabled publish job.
 
+The build job depends on the reusable CI workflow: Python 3.11/3.13 tests and lint must pass first. After testing, CI replaces the editable installation with the wheel, verifies that imports resolve inside the virtual environment, and runs the CLI outside the source checkout. Its dependency versions come from the tested environment; this is not a minimum-dependency-version compatibility test.
+
+Before tagging, validate the compiled GPU path on a CUDA machine with the appropriate compiler toolchain:
+
+```bash
+.venv/bin/python -c "import torch; assert torch.cuda.is_available(), 'CUDA validation requires a GPU'"
+.venv/bin/swarmbots smoke SwarmBots-WallEasy-v0 --device cuda --num-envs 2 --compiled
+.venv/bin/python -m pytest -m cuda
+```
+
+See [GPU setup](gpu_setup.md) for accelerator selection and compiler prerequisites. Ordinary CI runs on CPU and skips CUDA tests. Record the GPU, driver, dependency versions, and test output in the release notes. The integration matrix covers all registered scenarios with default settling, finite outputs, SAME_STEP reset, and repeatable seeded resets. Additional lifecycle tests cover partial resets, asynchronous settled-reset buffers, and staggered completion across three episodes per lane, with 500-step episode limits on CUDA. These checks do not replace extended stability or throughput measurements.
+
+Push the documentation assets to `main` before publishing: the README uses absolute image URLs so the demonstrations also work on PyPI.
+
 PyPI does not allow replacing a published file. Increment the version before retrying a release whose artifacts need to change.

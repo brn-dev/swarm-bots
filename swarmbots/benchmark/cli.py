@@ -50,14 +50,15 @@ def _smoke_command(
     num_envs: int,
     steps: int,
     seed: int,
+    compiled: bool = False,
 ) -> None:
     env = make_env(
         benchmark_id,
         num_envs=num_envs,
         device=device,
         seed=seed,
-        scenario_kwargs={"compile_reward_kernel": False},
-        compile_tensor_operations=False,
+        scenario_kwargs={"compile_reward_kernel": compiled},
+        compile_tensor_operations=compiled,
     )
     try:
         observations, _ = env.reset(seed=seed)
@@ -74,6 +75,7 @@ def _smoke_command(
             "device": str(env.device),
             "num_envs": env.num_envs,
             "steps": steps,
+            "compiled": compiled,
             "completed_episodes": completed_episodes,
             "mean_accumulated_reward": float(total_reward.mean().item()),
             "observation_shapes": {key: list(value.shape) for key, value in observations.items()},
@@ -82,6 +84,13 @@ def _smoke_command(
         print(json.dumps(summary, indent=2))
     finally:
         env.close()
+
+
+def _positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("expected a positive integer")
+    return parsed
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -97,9 +106,10 @@ def build_parser() -> argparse.ArgumentParser:
     smoke_parser = subparsers.add_parser("smoke", help="run random actions through an environment")
     smoke_parser.add_argument("benchmark_id")
     smoke_parser.add_argument("--device", default="auto")
-    smoke_parser.add_argument("--num-envs", type=int, default=2)
-    smoke_parser.add_argument("--steps", type=int, default=8)
+    smoke_parser.add_argument("--num-envs", type=_positive_int, default=2)
+    smoke_parser.add_argument("--steps", type=_positive_int, default=8)
     smoke_parser.add_argument("--seed", type=int, default=42)
+    smoke_parser.add_argument("--compiled", action="store_true", help="compile tensor operations and rewards")
     return parser
 
 
@@ -116,6 +126,7 @@ def main() -> None:
             num_envs=args.num_envs,
             steps=args.steps,
             seed=args.seed,
+            compiled=args.compiled,
         )
 
 

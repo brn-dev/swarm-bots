@@ -76,8 +76,8 @@ class _PendingMJWStep:
 def _capture_step_graph(model: Any, data: Any, nstep: int) -> Any | None:
     if nstep <= 0:
         return None
-    with wp.ScopedDevice(model.qpos.device):
-        with wp.ScopedCapture(device=model.qpos.device) as capture:
+    with wp.ScopedDevice(data.qpos.device):
+        with wp.ScopedCapture(device=data.qpos.device) as capture:
             for _ in range(nstep):
                 mjw.step(model, data)
     return capture.graph
@@ -197,7 +197,6 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
         episode_length: int = 500,
         first_episode_length: int | None = None,
         first_episode_lengths: list[int] | torch.Tensor | None = None,
-        settle_initial_reset: bool = False,
         settled_reset_buffer_size: int | None = None,
         settled_reset_batch_size: int | None = None,
         simulation_unstable_reward: float = -1.0,
@@ -239,7 +238,6 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
         self.episode_length = int(episode_length)
         self.first_episode_length = first_episode_length
         self.first_episode_lengths = first_episode_lengths
-        self.settle_initial_reset = bool(settle_initial_reset)
         self.settled_reset_buffer_size = settled_reset_buffer_size
         self.settled_reset_batch_size = settled_reset_batch_size
         self.action_repeat = int(scenario.action_repeat)
@@ -531,7 +529,6 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
         self._settle_executor: ThreadPoolExecutor | None = None
         self._settled_reset_buffer: _SettledResetSnapshotBuffer | None = None
         self._live_episode_recorder = MJWLiveEpisodeRecorder(scenario=self.scenario)
-        self._initial_settled_reset_done = False
         self._nefc_overflow_notification_checked = False
         self._simulation_instability_warning_emitted = False
         self._max_nefc_since_overflow_check = torch.zeros((), device=self.device, dtype=self._nefc.dtype)
@@ -631,17 +628,7 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
             if options is None or "reset_mask" not in options
             else to_device_bool_tensor(options["reset_mask"], device=self.device, expected_shape=(self.num_envs,))
         )
-        force_settled = bool(options is not None and options.get("force_settled", False))
-        if force_settled and not bool(torch.all(reset_mask)):
-            raise ValueError("force_settled requires resetting every MJW environment.")
-        if force_settled and self._use_settled_resets:
-            self._reset_worlds_with_settled_snapshots(reset_mask)
-            self._initial_settled_reset_done = True
-        elif self._should_use_initial_settled_reset(reset_mask):
-            self._reset_worlds_with_settled_snapshots(reset_mask)
-            self._initial_settled_reset_done = True
-        else:
-            self._reset_worlds(reset_mask)
+        self._reset_worlds(reset_mask)
         self.successful_connection_counts[reset_mask] = 0
         if self._live_episode_recorder.is_active():
             reset_world_idx = torch.nonzero(reset_mask, as_tuple=False).flatten()
@@ -813,7 +800,7 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
             infos["final_obs"] = {key: value.clone() for key, value in obs.items()}
             infos["_final_obs"] = dones.clone()
             self.is_first_episode[dones] = False
-            self._reset_done_worlds(dones)
+            self._reset_worlds(dones)
             self.successful_connection_counts[dones] = 0
             if self._live_episode_recorder.is_active():
                 done_world_idx = torch.nonzero(dones, as_tuple=False).flatten()
@@ -930,29 +917,17 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
         self._settled_reset_buffer.drain_ready()
         self._settled_reset_buffer.fill_async()
 
-    def _reset_done_worlds(self, done_mask: torch.Tensor) -> None:
-        if self._use_settled_resets:
-            self._reset_world_indices_with_settled_snapshots(torch.nonzero(done_mask, as_tuple=False).flatten())
-        else:
-            self._reset_worlds(done_mask)
-
     def _reset_worlds(self, reset_mask: torch.Tensor) -> None:
         world_idx = torch.nonzero(reset_mask, as_tuple=False).flatten()
         if world_idx.numel() == 0:
+            return
+        if self._use_settled_resets:
+            self._reset_world_indices_with_settled_snapshots(world_idx)
             return
         self._scenario_runtime.apply_reset_batch(
             world_idx=world_idx,
             reset_batch=self._scenario_runtime.sample_reset_batch(n_reset=int(world_idx.numel()), rng=self._rng),
         )
-
-    def _reset_worlds_with_settled_snapshots(self, reset_mask: torch.Tensor) -> None:
-        world_idx = torch.nonzero(reset_mask, as_tuple=False).flatten()
-        if world_idx.numel() == 0:
-            return
-
-        logger.info(f"Running initial settled reset for {int(world_idx.numel())} MJW envs.")
-        self._reset_world_indices_with_settled_snapshots(world_idx)
-        logger.info("Envs settled.")
 
     def _reset_world_indices_with_settled_snapshots(self, world_idx: torch.Tensor) -> None:
         if world_idx.numel() == 0:
@@ -965,15 +940,6 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
             specs = self._scenario_runtime.build_cpu_reset_specs(reset_batch=reset_batch)
             snapshots = self._scenario_runtime.settle_cpu_reset_specs(specs=specs)
         self._scenario_runtime.apply_settled_reset_batch(world_idx=world_idx, snapshots=snapshots)
-
-    def _should_use_initial_settled_reset(self, reset_mask: torch.Tensor) -> bool:
-        if self._initial_settled_reset_done:
-            return False
-        if not self.settle_initial_reset:
-            return False
-        if not self._use_settled_resets:
-            return False
-        return bool(torch.all(reset_mask))
 
     def _apply_actions(self, *, actuators: torch.Tensor, connectors: torch.Tensor) -> None:
         connector_action = self._tensor_operations.prepare_actions(

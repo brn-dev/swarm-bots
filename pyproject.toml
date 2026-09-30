@@ -65,6 +65,7 @@ include = ["swarmbots*"]
 testpaths = ["tests"]
 markers = [
     "integration: exercises a complete MJWarp environment",
+    "cuda: requires CUDA and exercises the compiled GPU environment",
 ]
 
 [tool.ruff]

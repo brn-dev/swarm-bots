@@ -80,6 +80,7 @@ class _FakeSettledResetBuffer:
         self.clear_calls: list[bool] = []
         self.drain_ready_calls = 0
         self.fill_async_calls = 0
+        self.take_calls: list[int] = []
 
     def clear(self, *, wait: bool) -> None:
         self.clear_calls.append(wait)
@@ -89,6 +90,10 @@ class _FakeSettledResetBuffer:
 
     def fill_async(self) -> None:
         self.fill_async_calls += 1
+
+    def take(self, n_snapshots: int) -> list[str]:
+        self.take_calls.append(n_snapshots)
+        return [f"settled-{index}" for index in range(n_snapshots)]
 
 
 def _make_uninitialized_env(
@@ -166,7 +171,7 @@ def test_mjw_indexless_cuda_device_uses_torch_current_device(monkeypatch: pytest
 def test_mjw_done_without_settled_resets_uses_raw_reset() -> None:
     env, runtime = _make_uninitialized_env(use_settled_resets=False)
 
-    env._reset_done_worlds(torch.tensor([False, True, False, True], dtype=torch.bool))
+    env._reset_worlds(torch.tensor([False, True, False, True], dtype=torch.bool))
 
     assert runtime.raw_reset_calls == [([1, 3], ["sample-0-0", "sample-0-1"])]
     assert runtime.settled_specs == []
@@ -176,7 +181,7 @@ def test_mjw_done_without_settled_resets_uses_raw_reset() -> None:
 def test_mjw_done_termination_without_buffer_uses_settled_reset() -> None:
     env, runtime = _make_uninitialized_env(use_settled_resets=True)
 
-    env._reset_done_worlds(torch.tensor([False, True, False, True], dtype=torch.bool))
+    env._reset_worlds(torch.tensor([False, True, False, True], dtype=torch.bool))
 
     assert runtime.raw_reset_calls == []
     assert runtime.settled_specs == [["spec-sample-0-0", "spec-sample-0-1"]]
@@ -216,7 +221,7 @@ def test_mjw_deferred_step_preserves_terminal_obs_and_returns_same_step_reset_ob
         reset_done_calls.append(dones.clone())
         env.current_step[dones] = 0
 
-    env._reset_done_worlds = reset_done_worlds
+    env._reset_worlds = reset_done_worlds
 
     actions = {
         "actuators": torch.zeros((2, 1, 1), dtype=torch.float32),
@@ -286,7 +291,7 @@ def test_mjw_step_terminates_worlds_with_any_nonfinite_physics_state(
         "hidden_local_vars": torch.ones((4, 1)),
         "hidden_global_vars": torch.ones((4, 1)),
     }
-    env._reset_done_worlds = lambda dones: reset_done_calls.append(dones.clone())
+    env._reset_worlds = lambda dones: reset_done_calls.append(dones.clone())
     monkeypatch.setattr(
         "swarmbots.mjw_env.mjw_swarm_bots_vector_env.logger.warning",
         lambda *args: instability_warnings.append(args),
@@ -322,7 +327,7 @@ def test_mjw_done_uses_ready_settled_snapshot_buffer() -> None:
     )
     env._settled_reset_buffer._snapshots.extend(["settled-buffer-0", "settled-buffer-1"])
 
-    env._reset_done_worlds(torch.tensor([True, False, True, False], dtype=torch.bool))
+    env._reset_worlds(torch.tensor([True, False, True, False], dtype=torch.bool))
 
     assert runtime.raw_reset_calls == []
     assert runtime.settled_reset_calls == [([0, 2], ["settled-buffer-0", "settled-buffer-1"])]
@@ -414,8 +419,6 @@ def test_mjw_reset_with_seed_clears_settled_buffer_before_reseeding() -> None:
     env, runtime = _make_uninitialized_env(use_settled_resets=True)
     buffer = _FakeSettledResetBuffer()
     env._settled_reset_buffer = buffer
-    env._initial_settled_reset_done = False
-    env.settle_initial_reset = False
     env._build_obs = lambda: {"obs": torch.empty((env.num_envs, 0))}
 
     obs, info = env.reset(seed=999)
@@ -425,32 +428,29 @@ def test_mjw_reset_with_seed_clears_settled_buffer_before_reseeding() -> None:
     assert buffer.clear_calls == [True]
     assert buffer.drain_ready_calls == 1
     assert buffer.fill_async_calls == 1
-    assert runtime.raw_reset_calls == [([0, 1, 2, 3], ["sample-0-0", "sample-0-1", "sample-0-2", "sample-0-3"])]
+    assert env._rng.initial_seed() == 999
+    assert runtime.raw_reset_calls == []
+    assert buffer.take_calls == [4]
+    assert runtime.settled_reset_calls == [([0, 1, 2, 3], ["settled-0", "settled-1", "settled-2", "settled-3"])]
 
 
-def test_mjw_force_settled_reset_repeats_settling_after_initial_reset() -> None:
-    env, runtime = _make_uninitialized_env(use_settled_resets=True)
-    env._settled_reset_buffer = None
-    env._initial_settled_reset_done = True
-    env.settle_initial_reset = True
+@pytest.mark.parametrize("use_settled_resets", [False, True])
+@pytest.mark.parametrize("reset_mask", [None, [False, True, False, True], [False] * 4])
+def test_explicit_resets_consistently_apply_scenario_settling(
+    use_settled_resets: bool, reset_mask: list[bool] | None,
+) -> None:
+    env, runtime = _make_uninitialized_env(use_settled_resets=use_settled_resets)
     env._build_obs = lambda: {"obs": torch.empty((env.num_envs, 0))}
+    options = None if reset_mask is None else {"reset_mask": reset_mask}
+    selected = list(range(4)) if reset_mask is None else [index for index, active in enumerate(reset_mask) if active]
 
-    env.reset(seed=999, options={"force_settled": True})
+    for _ in range(2):
+        env.reset(seed=999, options=options)
 
-    assert runtime.settled_specs == [[
-        "spec-sample-0-0",
-        "spec-sample-0-1",
-        "spec-sample-0-2",
-        "spec-sample-0-3",
-    ]]
-    assert runtime.settled_reset_calls == [
-        ([0, 1, 2, 3], [
-            "settled-spec-sample-0-0",
-            "settled-spec-sample-0-1",
-            "settled-spec-sample-0-2",
-            "settled-spec-sample-0-3",
-        ])
-    ]
+    calls = runtime.settled_reset_calls if use_settled_resets else runtime.raw_reset_calls
+    unused_calls = runtime.raw_reset_calls if use_settled_resets else runtime.settled_reset_calls
+    assert unused_calls == []
+    assert [indices for indices, _ in calls] == ([selected, selected] if selected else [])
 
 
 def test_mjw_close_clears_settled_buffer_without_waiting_then_shuts_down_executor() -> None:

@@ -3,6 +3,7 @@ name: CI
 on:
   push:
   pull_request:
+  workflow_call:
 
 jobs:
   test:
@@ -27,3 +28,12 @@ jobs:
       - run: .venv/bin/python -m pytest
       - run: uv build --no-sources
         if: matrix.python-version == '3.13'
+      - name: Test installed wheel outside checkout
+        if: matrix.python-version == '3.13'
+        shell: bash
+        run: |
+          uv pip install --python .venv/bin/python --reinstall --no-deps dist/*.whl
+          cd "$RUNNER_TEMP"
+          "$GITHUB_WORKSPACE/.venv/bin/python" -c 'import pathlib, sys, swarmbots; assert pathlib.Path(swarmbots.__file__).is_relative_to(pathlib.Path(sys.prefix))'
+          "$GITHUB_WORKSPACE/.venv/bin/swarmbots" list --json
+          "$GITHUB_WORKSPACE/.venv/bin/swarmbots" smoke SwarmBots-MoveTo-v0 --device cpu --num-envs 2 --steps 2

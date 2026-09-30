@@ -4,7 +4,7 @@ Bug reports, new scenarios, documentation fixes, and performance improvements ar
 
 ## Development setup
 
-Install a PyTorch build appropriate for your accelerator, then install the project:
+Install the project and its locked dependencies:
 
 ```bash
 uv sync --extra dev
@@ -12,6 +12,8 @@ uv sync --extra dev
 ```
 
 On Windows, use `.venv\Scripts\python.exe` instead of `.venv/bin/python`.
+
+For a different accelerator build, configure uv's PyTorch index before syncing. Verify CUDA availability in the resulting environment. The regular test suite runs the CPU integration matrix; CUDA-marked tests additionally run on machines with a CUDA device. See [release validation](docs/publishing.md) for the explicit GPU check.
 
 Before opening a pull request, run:
 

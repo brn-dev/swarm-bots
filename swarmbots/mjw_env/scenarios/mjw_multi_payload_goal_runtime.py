@@ -577,13 +577,15 @@ class MultiPayloadGoalMJWScenarioRuntime(BaseMJWScenarioRuntime):
         payload_quat = reset_qpos[:, self._payload_quat_qpos_indices]
         payload_rot6d = quat_to_rot6d_torch(payload_quat)
         self.payload_position[world_idx] = payload_position
+        reset_obs = self._global_obs[world_idx]
         self._write_payload_obs(
-            target=self._global_obs[world_idx],
+            target=reset_obs,
             payload_position=payload_position,
             payload_rot6d=payload_rot6d,
             active_payload_mask=self.active_payload_mask[world_idx],
             goal_position=self.goal_position[world_idx],
         )
+        self._global_obs[world_idx] = reset_obs
 
     @staticmethod
     def _write_payload_obs(
