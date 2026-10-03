@@ -2,7 +2,20 @@
 
 SwarmBots uses NVIDIA CUDA through PyTorch and MuJoCo Warp. Start with a recent NVIDIA driver and verify that `nvidia-smi` sees the intended GPU. The regular installation can select a CPU-only PyTorch build, particularly on Windows.
 
-## Select a CUDA build with uv
+## Install CUDA PyTorch in the existing environment
+
+After installing the project dependencies, replace CPU-only PyTorch with the CUDA build used for this alpha's validation:
+
+```bash
+uv pip install --python .venv/Scripts/python.exe --index https://download.pytorch.org/whl/cu132 --reinstall-package torch "torch==2.12.1+cu132"
+uv pip install --python .venv/Scripts/python.exe "triton-windows==3.7.1.post27"
+```
+
+These commands target Windows. On Linux, use `.venv/bin/python` and omit the `triton-windows` command; CUDA PyTorch installs its matching Triton dependency.
+
+This replaces packages in the environment without changing the project configuration. A later `uv sync` can restore the CPU build or remove Windows Triton. To retain the CUDA selection across syncs, configure its source as described below.
+
+## Retain a CUDA build with uv
 
 For a source checkout, add the following to `pyproject.toml`. Merge these entries into any existing uv tables:
 
