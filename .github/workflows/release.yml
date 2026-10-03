@@ -52,7 +52,7 @@ jobs:
     runs-on: ubuntu-latest
     environment:
       name: pypi
-      url: https://pypi.org/p/swarm-bots
+      url: https://pypi.org/p/swarmbots
     permissions:
       id-token: write
     steps:

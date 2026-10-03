@@ -36,4 +36,5 @@ jobs:
           cd "$RUNNER_TEMP"
           "$GITHUB_WORKSPACE/.venv/bin/python" -c 'import pathlib, sys, swarmbots; assert pathlib.Path(swarmbots.__file__).is_relative_to(pathlib.Path(sys.prefix))'
           "$GITHUB_WORKSPACE/.venv/bin/swarmbots" list --json
+          "$GITHUB_WORKSPACE/.venv/bin/python" -c 'import pkgutil, importlib, swarmbots.learn; from swarmbots.learn import list_variants; assert "tmasac_slstm" in list_variants(); [importlib.import_module(m.name) for m in pkgutil.walk_packages(swarmbots.learn.__path__, swarmbots.learn.__name__ + ".")]'
           "$GITHUB_WORKSPACE/.venv/bin/swarmbots" smoke SwarmBots-MoveTo-v0 --device cpu --num-envs 2 --steps 2

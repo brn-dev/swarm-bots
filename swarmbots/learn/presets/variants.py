@@ -1,0 +1,46 @@
+"""Canonical learning presets exposed by the benchmark training helpers."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import get_args
+
+from swarmbots.learn.presets.policy_factory import PolicyVariant
+from swarmbots.learn.presets.tmasac import TMASACVariant
+
+
+@dataclass(frozen=True)
+class LearningVariantConfig:
+    policy_variant: PolicyVariant | None = None
+    tmasac_variant: TMASACVariant | None = None
+    use_nop: bool = True
+    use_agent_attention: bool = True
+
+
+VARIANT_CONFIGS: dict[str, LearningVariantConfig] = {
+    name: LearningVariantConfig(policy_variant=name)
+    for name in (
+        "ppo",
+        "ppo_small",
+        "mappo",
+        "mappo_small",
+        "mat_orig",
+        "mat_ind",
+        "mat_dec",
+        "mat_qcx",
+        "mat_ind_lstm",
+        "mat_qcx_lstm",
+    )
+}
+VARIANT_CONFIGS.update({
+    name: LearningVariantConfig(tmasac_variant=name)
+    for name in get_args(TMASACVariant)
+})
+VARIANT_CONFIGS.update({
+    "mat_ind_no_attention": LearningVariantConfig(policy_variant="mat_ind", use_agent_attention=False),
+    "mat_qcx_no_nop": LearningVariantConfig(policy_variant="mat_qcx", use_nop=False),
+    "tmasac_no_nop": LearningVariantConfig(tmasac_variant="tmasac", use_nop=False),
+    "tmasac_slstm_no_nop": LearningVariantConfig(tmasac_variant="tmasac_slstm", use_nop=False),
+    "tmasac_lstm_no_actor_state": LearningVariantConfig(policy_variant="tmasac_recurrent"),
+    "tmasac_segment": LearningVariantConfig(policy_variant="tmasac_segment"),
+})

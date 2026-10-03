@@ -9,10 +9,11 @@ from swarmbots.benchmark import (
     list_benchmarks,
     make_env,
     make_scenario,
+    record_policy,
 )
 
 try:
-    __version__ = version("swarm-bots")
+    __version__ = version("swarmbots")
 except PackageNotFoundError:
     __version__ = "0.0.0"
 
@@ -26,4 +27,5 @@ __all__ = [
     "list_benchmarks",
     "make_env",
     "make_scenario",
+    "record_policy",
 ]

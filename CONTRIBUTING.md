@@ -25,4 +25,4 @@ uv build --no-sources
 
 New scenarios should expose Gymnasium spaces, deterministic seeded resets, reward terms in `info["reward_terms"]`, and a success signal when the task has a terminal objective. Add the scenario to the registry only after its semantics and default parameters are documented.
 
-Do not add training algorithms or experiment outputs here. This repository intentionally contains only the benchmark; research code belongs in a separate project.
+Learning algorithms and reusable policy presets live in `swarmbots/learn`. Document each preset's architecture, action distribution, and default settings. Keep runtime dependencies within the package or its declared dependencies. Do not commit experiment outputs, model checkpoints, or local caches.

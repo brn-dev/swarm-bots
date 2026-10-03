@@ -1,5 +1,7 @@
 # Python API
 
+Built-in PPO, MAT, TMASAC, recurrent policies, and configurable learning presets are available through `swarmbots.learn`. See [learning algorithms](learning.md) for `make_training`, `train`, and the benchmark policy adapter.
+
 ## Registry
 
 ```python
@@ -84,5 +86,7 @@ For a sweep across many different tasks or world counts, use one process per tas
 CUDA environments support `begin_step(actions)` followed by `end_step()`. This lets a caller overlap host work with asynchronous device execution. Ordinary callers should use `step(actions)`.
 
 ## Recording
+
+Use `swarmbots.record_policy(policy, benchmark_id, video_folder=...)` for any benchmark policy callable, or `swarmbots.learn.record_checkpoint(...)` to load a learning preset directly. The `swarmbots record` command and `examples/record_policy.py` expose these helpers. See [recording](recording.md) for checkpoint/custom-policy examples and camera, episode, and rendering options.
 
 Call `env.start_video_recording(...)` before stepping. Recording renders selected worlds with MuJoCo and writes MP4 files asynchronously. It is intended for qualitative inspection, not for high-throughput evaluation.

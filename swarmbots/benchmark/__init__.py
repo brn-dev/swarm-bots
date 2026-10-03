@@ -1,4 +1,5 @@
 from swarmbots.benchmark.evaluation import EvaluationResult, Policy, evaluate_policy, policy_observation
+from swarmbots.benchmark.recording import record_policy
 from swarmbots.benchmark.registry import (
     ALL_BENCHMARK_IDS,
     CORE_BENCHMARK_IDS,
@@ -21,4 +22,5 @@ __all__ = [
     "make_env",
     "make_scenario",
     "policy_observation",
+    "record_policy",
 ]

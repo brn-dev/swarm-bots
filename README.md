@@ -4,7 +4,7 @@ SwarmBots is a GPU-vectorized multi-agent reinforcement-learning benchmark for s
 
 The benchmark is built on [MuJoCo Warp](https://github.com/google-deepmind/mujoco_warp) and exposes vector environments with Gymnasium spaces and reset/step conventions, using PyTorch tensors on the simulation device. Gymnasium wrappers and training libraries that expect NumPy arrays require adaptation. It includes obstacle traversal, partial-observability, climbing, navigation, and payload-transport tasks.
 
-This repository deliberately does **not** contain a training framework or paper-specific experiment configurations. Bring your own MARL implementation and use the stable registry and evaluation API here.
+The package includes PPO/MAPPO, multi-agent transformer (MAT) policies, transformer-based SAC (TMASAC), and recurrent variants. Next-observation prediction (NOP), Signed-Magnitude Beta (SMB) action distributions, rollout collection, replay, normalization, checkpointing, logging, evaluation, and video recording are included. You can also use your own multi-agent reinforcement-learning implementation through the registry and evaluation API.
 
 | Wall traversal | Finding a hidden opening |
 | --- | --- |
@@ -17,7 +17,7 @@ These rollouts illustrate the tasks; they are not reference scores for protocol 
 Python 3.11 or newer is required. CUDA is strongly recommended; CPU execution exists for development and tests but is not the benchmark's performance target. SwarmBots is currently versioned as an alpha. Once `0.1.0a1` is published to PyPI, install it explicitly with:
 
 ```bash
-uv add "swarm-bots==0.1.0a1"
+uv add "swarmbots==0.1.0a1"
 ```
 
 Install from source:
@@ -85,12 +85,37 @@ The built-in `evaluate_policy` function passes only the non-privileged observati
 
 It collects only the first episode from each world. `num_episodes` must be no greater than `num_envs`; use additional seeds for more samples. The [evaluation example](https://github.com/brn-dev/swarm-bots/blob/main/docs/api.md#five-seed-report) writes raw episodes, settings, runtime versions, and statistics across five seeds to JSON.
 
+## Train a built-in variant
+
+Select a learning variant and any registered scenario:
+
+```python
+from swarmbots.learn import list_variants, train
+
+print(list_variants())
+trainer = train(
+    "SwarmBots-FindOpening-v0",
+    "tmasac_slstm",
+    num_envs=1024,
+    device="cuda",
+    compile_modules=True,
+    total_timesteps=100_000_000,
+    run_dir="runs/find-opening/tmasac-slstm",
+)
+```
+
+`make_training(...)` builds a trainer for custom training loops. `as_benchmark_policy(trainer)` adapts its actor, normalization, and recurrent state for the benchmark evaluator. See [learning](docs/learning.md) for variants, action distributions, customization, checkpoint continuation, and evaluation. Compilation is opt-in and requires the compiler setup described in the GPU guide.
+
+Record saved policies with `swarmbots record <benchmark-id> --checkpoint <path> --variant <variant>`. Custom policy factories are supported with `--policy module:function`. See [recording](docs/recording.md) for the checkout script and video options.
+
 ## Documentation
 
 - [Scenario catalog](https://github.com/brn-dev/swarm-bots/blob/main/docs/scenarios.md)
 - [GPU setup and compiled smoke test](https://github.com/brn-dev/swarm-bots/blob/main/docs/gpu_setup.md)
 - [Benchmark and reporting protocol](https://github.com/brn-dev/swarm-bots/blob/main/docs/benchmark_protocol.md)
 - [Python API, compatibility, and custom policies](https://github.com/brn-dev/swarm-bots/blob/main/docs/api.md)
+- [Built-in learning algorithms and presets](docs/learning.md)
+- [Policy recording and video options](docs/recording.md)
 - [Contributing](https://github.com/brn-dev/swarm-bots/blob/main/CONTRIBUTING.md)
 - [Publishing releases](https://github.com/brn-dev/swarm-bots/blob/main/docs/publishing.md)
 
@@ -98,11 +123,9 @@ The API is alpha. Benchmark IDs and protocol versions are explicit so semantic c
 
 ## Citation
 
-The benchmark and its original evaluation are described in:
+Please cite the software version used in your experiments. Machine-readable citation metadata is available in [CITATION.cff](https://github.com/brn-dev/swarm-bots/blob/main/CITATION.cff).
 
-> Dominik Baron. *SwarmBots: A GPU-Accelerated Multi-Agent Continuous Control Benchmark with Transformer Baselines*. Master's thesis, Johannes Kepler University Linz, 2026.
-
-The complete [thesis and reproducibility artifact](https://github.com/brn-dev/msc-thesis-swarmbots-qcx-tmasac-nop-smb) contains the thesis PDF, training algorithms, experiment configurations, and analysis code. Machine-readable citation metadata is available in [CITATION.cff](https://github.com/brn-dev/swarm-bots/blob/main/CITATION.cff).
+For background on the benchmark and policy designs, see the [master's thesis repository](https://github.com/brn-dev/msc-thesis-swarmbots-qcx-tmasac-nop-smb).
 
 ## License
 

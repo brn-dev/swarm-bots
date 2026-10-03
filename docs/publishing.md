@@ -8,7 +8,7 @@ Create a `pypi` environment under the GitHub repository's **Settings → Environ
 
 On PyPI, add a Trusted Publisher with these exact values:
 
-- PyPI project name: `swarm-bots`
+- PyPI project name: `swarmbots`
 - GitHub owner: `brn-dev`
 - GitHub repository: `swarm-bots`
 - Workflow filename: `release.yml`

@@ -34,7 +34,7 @@ def serialize_settings(settings: Mapping[str, Any]) -> dict[str, Any]:
 
 def runtime_metadata(device: torch.device) -> dict[str, Any]:
     packages = {}
-    for name in ("swarm-bots", "torch", "gymnasium", "numpy", "mujoco", "mujoco-warp", "warp-lang"):
+    for name in ("swarmbots", "torch", "gymnasium", "numpy", "mujoco", "mujoco-warp", "warp-lang"):
         try:
             packages[name] = version(name)
         except PackageNotFoundError:
