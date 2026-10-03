@@ -104,9 +104,9 @@ trainer = train(
 )
 ```
 
-`make_training(...)` builds a trainer for custom training loops. `as_benchmark_policy(trainer)` adapts its actor, normalization, and recurrent state for the benchmark evaluator. See [learning](docs/learning.md) for variants, action distributions, customization, checkpoint continuation, and evaluation. Compilation is opt-in and requires the compiler setup described in the GPU guide.
+`make_training(...)` builds a trainer for custom training loops. `as_benchmark_policy(trainer)` adapts its actor, normalization, and recurrent state for the benchmark evaluator. See [learning](https://github.com/brn-dev/swarm-bots/blob/main/docs/learning.md) for variants, action distributions, customization, checkpoint continuation, and evaluation. Compilation is opt-in and requires the compiler setup described in the GPU guide.
 
-Record saved policies with `swarmbots record <benchmark-id> --checkpoint <path> --variant <variant>`. Custom policy factories are supported with `--policy module:function`. See [recording](docs/recording.md) for the checkout script and video options.
+Record saved policies with `swarmbots record <benchmark-id> --checkpoint <path> --variant <variant>`. Custom policy factories are supported with `--policy module:function`. See [recording](https://github.com/brn-dev/swarm-bots/blob/main/docs/recording.md) for the checkout script and video options.
 
 ## Documentation
 
@@ -114,8 +114,8 @@ Record saved policies with `swarmbots record <benchmark-id> --checkpoint <path> 
 - [GPU setup and compiled smoke test](https://github.com/brn-dev/swarm-bots/blob/main/docs/gpu_setup.md)
 - [Benchmark and reporting protocol](https://github.com/brn-dev/swarm-bots/blob/main/docs/benchmark_protocol.md)
 - [Python API, compatibility, and custom policies](https://github.com/brn-dev/swarm-bots/blob/main/docs/api.md)
-- [Built-in learning algorithms and presets](docs/learning.md)
-- [Policy recording and video options](docs/recording.md)
+- [Built-in learning algorithms and presets](https://github.com/brn-dev/swarm-bots/blob/main/docs/learning.md)
+- [Policy recording and video options](https://github.com/brn-dev/swarm-bots/blob/main/docs/recording.md)
 - [Contributing](https://github.com/brn-dev/swarm-bots/blob/main/CONTRIBUTING.md)
 - [Publishing releases](https://github.com/brn-dev/swarm-bots/blob/main/docs/publishing.md)
 
