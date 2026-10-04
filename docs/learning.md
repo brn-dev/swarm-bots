@@ -1,8 +1,10 @@
-# Learning algorithms
+# Optional learning baselines
 
-`swarmbots.learn` provides policies and training loops for every registered benchmark task. It supports Proximal Policy Optimization (PPO), Soft Actor-Critic (SAC), multi-agent transformer (MAT) policies, transformer-based SAC (TMASAC), and recurrent variants with LSTM, sLSTM, or mLSTM modules.
+`swarmbots.learn` provides optional baselines and training helpers for SwarmBots experiments. You can use every registered task with Proximal Policy Optimization (PPO), Soft Actor-Critic (SAC), multi-agent transformer (MAT) policies, transformer-based SAC (TMASAC), and recurrent variants with LSTM, sLSTM, or mLSTM modules.
 
-For more information about TMASAC, MAT-QCX, NOP, and SMB, see the [master's thesis repository](https://github.com/brn-dev/msc-thesis-swarmbots-qcx-tmasac-nop-smb).
+The benchmark's [tasks](scenarios.md) and [evaluation protocol](benchmark_protocol.md) are independent of these implementations. To integrate your own learner, use the [benchmark Python API](api.md). The presets below provide starting configurations; their training defaults are not required benchmark settings or published reference scores.
+
+For more information about TMASAC, MAT-QCX, NOP, and SMB, see the [published master's thesis](https://resolver.obvsg.at/urn:nbn:at:at-ubl:1-108602). Its source and supplementary material are available in the [thesis repository](https://github.com/brn-dev/msc-thesis-swarmbots-qcx-tmasac-nop-smb).
 
 The package also includes next-observation prediction (NOP), self-predictive representations (SPR), action distributions, rollout collection, replay, truncated backpropagation through time (TBPTT), PopArt value normalization, observation normalization, learning-rate scheduling, checkpointing, metrics, evaluation, and video recording. The examples below use the package's built-in presets; architectures and optimizer settings can be customized through the same API.
 
@@ -172,7 +174,9 @@ print(result.to_dict())
 
 Create a fresh adapter for each evaluation call and use the policy's device. It passes only `local_obs`, `global_obs`, and `agent_mask` to the actor; privileged fields remain unavailable. Normalization statistics and the actor's training mode are preserved. The adapter owns its recurrent state and previous actions, resetting them at episode boundaries. Stochastic gSDE evaluation resamples noise each step. The actor is shared, so do not train and evaluate it concurrently.
 
-`evaluate_policy` follows the [benchmark protocol](benchmark_protocol.md), including one accepted episode per lane. For evaluation during training, `FrozenEvaluationRunner` runs a policy with frozen normalization and `ScheduledEvaluationHook` triggers it at configured intervals. These helpers are available in `swarmbots.learn.evaluation`; use `evaluate_policy` for protocol scores.
+This example evaluates one protocol seed. For a complete [benchmark report](benchmark_protocol.md), repeat it with a fresh adapter for each seed `1000` through `1004` and aggregate the five results as shown in the [reporting example](api.md#five-seed-report). Record the checkpoint identifier and architecture in `policy_metadata`, and the benchmark Git commit in `source_revision`.
+
+For evaluation during training, `FrozenEvaluationRunner` runs a policy with frozen normalization and `ScheduledEvaluationHook` triggers it at configured intervals. These helpers are available in `swarmbots.learn.evaluation`; use `evaluate_policy` for protocol scores.
 
 ## Record a checkpoint
 

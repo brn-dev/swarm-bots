@@ -1,6 +1,6 @@
 # Scenario catalog
 
-All registered scenarios use five padded agent slots by default, while reset pools may activate four or five units. Inactive slots are identified by `agent_mask`. Scenario constructors accept keyword overrides through `make_scenario(..., **scenario_kwargs)` or `make_env(..., scenario_kwargs={...})`.
+SwarmBots has 14 registered tasks covering coordinated locomotion, physical reconfiguration, partial observability, and payload transport. Eight tasks form the core evaluation suite. Every task uses the same articulated modular units and actuator/connector interface, so policies must control both the units' movement and their connections.
 
 | Wall traversal | Finding an opening |
 | --- | --- |
@@ -8,22 +8,36 @@ All registered scenarios use five padded agent slots by default, while reset poo
 
 These demonstrations illustrate behavior, not canonical evaluation results.
 
-| Benchmark ID | Category | Terminal success metric |
-| --- | --- | --- |
-| `SwarmBots-WallEasy-v0` | fixed 0.2 m wall | yes |
-| `SwarmBots-WallMedium-v0` | fixed 0.3 m wall | yes |
-| `SwarmBots-WallHard-v0` | fixed 0.4 m wall | yes |
-| `SwarmBots-POWallEasy-v0` | randomized hidden 0.25 m wall | yes |
-| `SwarmBots-POWallMedium-v0` | randomized hidden 0.3 m wall | yes |
-| `SwarmBots-Bridge-v0` | narrow bridge traversal | yes |
-| `SwarmBots-FindOpening-v0` | hidden-opening exploration | yes |
-| `SwarmBots-Climb-v0` | platform climbing | yes |
-| `SwarmBots-VerticalReach-v0` | elevated goal reaching | yes |
-| `SwarmBots-PayloadPlane-v0` | single-payload transport | no; report return |
-| `SwarmBots-PayloadStep-v0` | payload transport over a step | yes |
-| `SwarmBots-DualPayloadPlane-v0` | two-payload transport | no; report return |
-| `SwarmBots-MultiPayloadGoal-v0` | variable payload-to-goal assignment | yes |
-| `SwarmBots-MoveTo-v0` | sampled-goal navigation | no; report return |
+## Registered tasks
+
+| Benchmark ID | Task | Core suite | Terminal success metric |
+| --- | --- | --- | --- |
+| `SwarmBots-WallEasy-v0` | fixed 0.2 m wall | no | yes |
+| `SwarmBots-WallMedium-v0` | fixed 0.3 m wall | yes | yes |
+| `SwarmBots-WallHard-v0` | fixed 0.4 m wall | no | yes |
+| `SwarmBots-POWallEasy-v0` | randomized hidden 0.25 m wall | no | yes |
+| `SwarmBots-POWallMedium-v0` | randomized hidden 0.3 m wall | yes | yes |
+| `SwarmBots-Bridge-v0` | narrow movable bridge traversal | yes | yes |
+| `SwarmBots-FindOpening-v0` | hidden-opening exploration | yes | yes |
+| `SwarmBots-Climb-v0` | platform climbing | yes | yes |
+| `SwarmBots-VerticalReach-v0` | elevated goal reaching | yes | yes |
+| `SwarmBots-PayloadPlane-v0` | single-payload transport | no | no; report return |
+| `SwarmBots-PayloadStep-v0` | payload transport over a step | yes | yes |
+| `SwarmBots-DualPayloadPlane-v0` | two-payload transport | no | no; report return |
+| `SwarmBots-MultiPayloadGoal-v0` | variable payload-to-goal assignment | yes | yes |
+| `SwarmBots-MoveTo-v0` | sampled-goal navigation | no | no; report return |
+
+Fixed walls provide three obstacle heights. Partially observable walls randomize hidden geometry, while FindOpening requires exploration to locate a passage. Bridge adds a narrow movable support. Climb requires all active units to reach a platform goal; VerticalReach succeeds when at least one unit reaches the elevated goal volume. Payload tasks extend coordination to external objects, including multiple payloads with individual goals.
+
+Use `swarmbots.CORE_BENCHMARK_IDS` or `swarmbots.ALL_BENCHMARK_IDS` to select a suite, and follow the [benchmark protocol](benchmark_protocol.md) for comparable scores. Returns must be reported per task because reward scales differ.
+
+## Robot and assembly
+
+The default unit has four articulated limbs, eight hinges, and four connectors. Continuous actuator actions control its movement; connector actions request connections or disconnections. Connections carry physical loads, so changing the connection graph changes the swarm's mechanics during an episode.
+
+All registered scenarios use five padded agent slots, while reset pools may activate four or five units. Inactive slots are identified by `agent_mask`. Initial assemblies are sampled from the shared [morphology population](benchmark_protocol.md#morphology-population); the canonical evaluation does not use unseen morphologies.
+
+Scenario constructors accept keyword overrides through `make_scenario(..., **scenario_kwargs)` or `make_env(..., scenario_kwargs={...})`. See [scenario customization](#scenario-customization) for an example.
 
 ## Observation contract
 
@@ -93,6 +107,7 @@ env = make_env(
         "continuous_connector_actions": False,
     },
 )
+env.close()
 ```
 
 Treat any override as a new task. Report every override and do not label the result with the unchanged canonical benchmark ID.

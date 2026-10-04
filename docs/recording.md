@@ -1,8 +1,29 @@
-# Record policies on scenarios
+# Record benchmark policy behavior
 
-Use `swarmbots record` or the checkout script `examples/record_policy.py`. Both record complete episodes with the simulator's live MP4 recorder, including reward overlays and the scenario's default camera. They wait for video encoding before returning.
+Use `swarmbots record` or the checkout script `examples/record_policy.py` to inspect how a policy moves, reconfigures the swarm, and interacts with obstacles or payloads. Both support custom policies and included-baseline checkpoints. They record complete episodes with the simulator's live MP4 recorder, including reward overlays and the scenario's default camera, and wait for video encoding before returning.
 
-## Learning checkpoints
+Videos illustrate behavior. Use the [benchmark evaluator](api.md#policy-evaluation) and [reporting protocol](benchmark_protocol.md) for quantitative comparisons.
+
+## Custom policy factories
+
+Pass an importable factory with `--policy module:function`:
+
+```bash
+swarmbots record SwarmBots-Bridge-v0 --policy my_policy:make_policy --episodes 3 --device cuda
+```
+
+The factory receives these keyword arguments and returns a benchmark policy callable:
+
+```python
+import torch
+
+def make_policy(*, benchmark_id: str, device: torch.device, seed: int, deterministic: bool) -> MyPolicy:
+    return MyPolicy(benchmark_id, device=device, seed=seed, deterministic=deterministic)
+```
+
+The returned callable receives `(observations, episode_starts)` and returns an action dictionary. Observations contain only `local_obs`, `global_obs`, and `agent_mask`. Configure evaluation mode and frozen normalization in the factory. `--stochastic` passes `deterministic=False`; the factory controls how that affects its policy. See the [policy interface](api.md#policy-evaluation) for details.
+
+## Included-baseline checkpoints
 
 Choose any ID from `swarmbots list` and the learning variant used to train the checkpoint:
 
@@ -23,23 +44,6 @@ Policy weights and observation normalization are restored. Recording constructs 
 
 The selected task's observation/action spaces, architecture, action distribution, and NOP settings must match the checkpoint. The command does not infer them from checkpoint metadata. Use `--policy-kwargs '{"enc_d_model":32,"dec_d_model":16}'`, `--continuous-action-dist predicted_std_gaussian`, or `--no-use-nop` when needed. If PopArt was customized through training's `algorithm_kwargs`, pass the matching `use_popart` in recording's `--policy-kwargs`.
 
-## Custom policy factories
-
-Pass an importable factory with `--policy module:function`:
-
-```bash
-swarmbots record SwarmBots-Bridge-v0 --policy my_policy:make_policy --episodes 3 --device cuda
-```
-
-The factory receives these keyword arguments and returns a benchmark policy callable:
-
-```python
-def make_policy(*, benchmark_id: str, device: torch.device, seed: int, deterministic: bool) -> MyPolicy:
-    return MyPolicy(benchmark_id, device=device, seed=seed, deterministic=deterministic)
-```
-
-The returned callable receives `(observations, episode_starts)` and returns an action dictionary. Observations contain only `local_obs`, `global_obs`, and `agent_mask`. Configure evaluation mode and frozen normalization in the factory. `--stochastic` passes `deterministic=False`; the factory controls how that affects its policy. See the [policy interface](api.md#policy-evaluation) for details.
-
 ## Recording options
 
 - `--episodes` counts completed videos; `--parallel` caps the number of simulator worlds. More episodes reuse worlds after reset.
@@ -51,11 +55,23 @@ The returned callable receives `(observations, episode_starts)` and returns an a
 - `--compile-policy` opts into policy compilation; use the [GPU setup guide](gpu_setup.md) first.
 - The default directory is `recordings/<benchmark-id>/<timestamp>`. `--output` and `--prefix` select the directory and filename prefix. Reusing a directory and prefix can replace matching video filenames.
 
-Videos are for qualitative inspection. Use [benchmark evaluation](benchmark_protocol.md) to report scores.
-
 ## Python helpers
 
-Record a trainer that is already loaded, or any custom callable:
+`record_policy` accepts any benchmark policy callable:
+
+```python
+from swarmbots import record_policy
+
+record_policy(
+    policy,
+    "SwarmBots-Bridge-v0",
+    video_folder="recordings/bridge",
+    num_episodes=3,
+    device="cuda",
+)
+```
+
+To record an included baseline from a loaded trainer, use its policy adapter:
 
 ```python
 from swarmbots import record_policy

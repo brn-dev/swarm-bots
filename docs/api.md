@@ -1,20 +1,52 @@
-# Python API
+# Benchmark Python API
 
-Built-in PPO, MAT, TMASAC, recurrent policies, and configurable learning presets are available through `swarmbots.learn`. See [learning algorithms](learning.md) for `make_training`, `train`, and the benchmark policy adapter.
+Use `swarmbots` to discover tasks, create parallel environments, evaluate your own policies, and record their behavior. These APIs work independently of the included learning baselines. See the [scenario catalog](scenarios.md) for task definitions and the [benchmark protocol](benchmark_protocol.md) for comparable evaluation.
 
 ## Registry
 
 ```python
-from swarmbots import list_benchmarks, make_env, make_scenario
+from swarmbots import CORE_BENCHMARK_IDS, get_benchmark_spec, list_benchmarks
 
 for spec in list_benchmarks():
     print(spec.id, spec.description)
 
-scenario = make_scenario("SwarmBots-Climb-v0", seed=42)
-env = make_env("SwarmBots-Climb-v0", num_envs=256, device="cuda", seed=42)
+print(CORE_BENCHMARK_IDS)
+spec = get_benchmark_spec("SwarmBots-Climb-v0")
+print(spec.episode_length, spec.supports_success_metric)
 ```
 
-`make_env` forwards `scenario_kwargs` to the registered scenario factory and remaining keyword arguments to `MJWSwarmBotsVectorEnv`.
+`CORE_BENCHMARK_IDS` contains the eight core tasks; `ALL_BENCHMARK_IDS` contains all 14 registered tasks. Benchmark IDs belong to SwarmBots' own registry, so construct them with `swarmbots.make_env`.
+
+The CLI exposes the same task descriptions:
+
+```bash
+swarmbots list
+swarmbots describe SwarmBots-Climb-v0
+```
+
+## Create and step an environment
+
+```python
+import torch
+from swarmbots import make_env
+
+env = make_env("SwarmBots-Climb-v0", num_envs=256, device="cuda", seed=42)
+try:
+    observations, info = env.reset(seed=42)
+    actions = {
+        key: torch.zeros(space.shape, device=env.device)
+        for key, space in env.action_space.items()
+    }
+    observations, rewards, terminations, truncations, info = env.step(actions)
+finally:
+    env.close()
+```
+
+This example applies zero actions to the registered task. Use `num_envs=2, device="cpu"` for a small development run. CPU simulation is much slower than the intended CUDA path; see [GPU setup](gpu_setup.md) before running larger batches.
+
+`env.single_observation_space` and `env.single_action_space` describe one world. `env.observation_space` and `env.action_space` include the leading world dimension. Observations contain per-agent `local_obs`, shared `global_obs`, `agent_mask`, and privileged `hidden_local_vars` / `hidden_global_vars`. Actions contain per-agent `actuators` and `connectors`; rewards, terminations, and truncations have one value per world. See the [observation contract](scenarios.md#observation-contract) and [action contract](scenarios.md#action-contract) for field meanings and bounds.
+
+`make_env` forwards `scenario_kwargs` to the registered scenario factory and remaining keyword arguments to `MJWSwarmBotsVectorEnv`. `make_scenario(benchmark_id, seed=..., **scenario_kwargs)` constructs a scenario without a vector environment. Overrides create custom task variants and must be reported with their results.
 
 ## Gymnasium compatibility
 
@@ -22,14 +54,30 @@ The environment subclasses Gymnasium's `VectorEnv` and uses Gymnasium spaces, th
 
 Compatibility with Gymnasium's interface does not imply compatibility with every Gymnasium wrapper or training library. Wrappers that assume NumPy arrays, including `gymnasium.wrappers.vector.RecordEpisodeStatistics`, cannot be applied directly. Use tensor-aware integration code or an adapter that handles device transfer, nested values, and terminal observations. Converting CUDA tensors to CPU NumPy arrays adds transfers and synchronization to the rollout loop.
 
-Construct registered tasks with `swarmbots.make_env`; benchmark IDs are held in SwarmBots' own registry. The built-in evaluator consumes the tensor interface directly.
+The built-in evaluator consumes the tensor interface directly.
+
+## Episode lifecycle
+
+The environment uses `SAME_STEP` autoreset. On a done step, the returned observation belongs to the reset episode. The terminal observation is in `info["final_obs"]`, selected by `info["_final_obs"]`. Bootstrap a truncated episode from that terminal observation; terminated episodes should not bootstrap.
+
+Observation tensors can share environment buffers. Clone tensors you need to retain across calls to `step()` or `reset()`.
+
+Every reset, including the first reset and `options={"reset_mask": mask}` partial resets, applies the scenario's physics settling. Settling is outside the episode's control-step budget and return. Repeating `reset(seed=...)` with the same seed and configuration reproduces the initial observations on the same device/backend. Reseeding also clears prefetched reset snapshots. Partial resets preserve the unselected lanes' physical state.
+
+The old `settle_initial_reset` constructor argument and `force_settled` reset option are no longer needed. Remove them from callers. To disable settling for a custom variant, set `scenario_kwargs={"reset_settle_time": 0.0}`; this affects both explicit resets and autoresets and is not a canonical benchmark configuration.
 
 ## Policy evaluation
 
 A policy is any callable with this signature:
 
 ```python
-def policy(observations, episode_starts):
+from collections.abc import Mapping
+import torch
+
+def policy(
+    observations: Mapping[str, torch.Tensor],
+    episode_starts: torch.Tensor,
+) -> dict[str, torch.Tensor]:
     return {
         "actuators": actuator_actions,
         "connectors": connector_actions,
@@ -59,11 +107,7 @@ Use `policy.eval()` and frozen normalization for a trained neural network. The e
 
 Only the first episode per lane contributes. Results are ordered by lane, not completion time. `num_episodes <= num_envs` is required; requesting fewer episodes constructs only that many worlds. Reset recurrent state using `episode_starts`, including for lanes whose first episode has already completed.
 
-Observation tensors can share environment buffers. Clone tensors you need to retain across calls to `step()` or `reset()`. On SAME_STEP autoreset, bootstrap a truncated episode from `info["final_obs"]`, selected by `info["_final_obs"]`, rather than from the returned reset observation. Terminated episodes should not bootstrap.
-
-Every reset, including the first reset and `options={"reset_mask": mask}` partial resets, applies the scenario's physics settling. Repeating `reset(seed=...)` with the same seed and configuration reproduces the initial observations on the same device/backend. Reseeding also clears prefetched reset snapshots. Partial resets preserve the unselected lanes' physical state.
-
-The old `settle_initial_reset` constructor argument and `force_settled` reset option are no longer needed. Remove them from callers. To disable settling for a custom variant, set `scenario_kwargs={"reset_settle_time": 0.0}`; this affects both explicit resets and autoresets and is not a canonical benchmark configuration.
+This call evaluates one seed. Use the five-seed reporting workflow below for a protocol report.
 
 ## Five-seed report
 
@@ -90,3 +134,7 @@ CUDA environments support `begin_step(actions)` followed by `end_step()`. This l
 Use `swarmbots.record_policy(policy, benchmark_id, video_folder=...)` for any benchmark policy callable, or `swarmbots.learn.record_checkpoint(...)` to load a learning preset directly. The `swarmbots record` command and `examples/record_policy.py` expose these helpers. See [recording](recording.md) for checkpoint/custom-policy examples and camera, episode, and rendering options.
 
 Call `env.start_video_recording(...)` before stepping. Recording renders selected worlds with MuJoCo and writes MP4 files asynchronously. It is intended for qualitative inspection, not for high-throughput evaluation.
+
+## Learning baselines
+
+If you want an included training implementation, `swarmbots.learn` provides PPO/MAPPO, MAT, TMASAC, and recurrent presets. See [optional learning baselines](learning.md) for training, checkpoint continuation, and `as_benchmark_policy`, which adapts their actors to this policy interface.

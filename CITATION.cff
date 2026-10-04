@@ -1,6 +1,6 @@
 cff-version: 1.2.0
-message: "If you use SwarmBots, please cite this software."
-title: "SwarmBots: a multi-agent benchmark for self-assembling modular robots"
+message: "If you use SwarmBots, please cite this software. For the benchmark and policy designs, also cite the thesis listed under references."
+title: "SwarmBots: a multi-agent continuous-control benchmark for self-assembling modular robots"
 type: software
 authors:
   - family-names: Baron
@@ -8,3 +8,18 @@ authors:
 repository-code: "https://github.com/brn-dev/swarm-bots"
 license: Apache-2.0
 version: 0.1.0a1
+references:
+  - type: thesis
+    thesis-type: "Master's thesis"
+    title: "SwarmBots: a GPU-accelerated multi-agent continuous control benchmark with transformer baselines"
+    authors:
+      - family-names: Baron
+        given-names: Dominik
+    institution:
+      name: "Johannes Kepler University Linz"
+    year: 2026
+    url: "https://resolver.obvsg.at/urn:nbn:at:at-ubl:1-108602"
+    identifiers:
+      - type: other
+        value: "urn:nbn:at:at-ubl:1-108602"
+        description: "Persistent URN of the published master's thesis"

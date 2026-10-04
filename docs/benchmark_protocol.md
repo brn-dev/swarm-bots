@@ -1,17 +1,23 @@
 # Benchmark protocol 0.1
 
-This protocol defines comparable evaluation, not a required training procedure.
+Use this protocol to compare policies on the registered SwarmBots tasks. It standardizes task settings, evaluation episodes, permitted actor inputs, and reporting. Training algorithms and budgets are chosen by the experimenter and reported separately.
 
 ## Core suite
 
-The core suite is exposed as `swarmbots.CORE_BENCHMARK_IDS` and contains:
+The eight-task core suite is exposed as `swarmbots.CORE_BENCHMARK_IDS`:
 
-- fixed and partially observable medium walls;
-- bridge traversal and hidden-opening exploration;
-- climbing and vertical reach;
-- payload-over-step and multi-payload goal transport.
+| Benchmark ID | Challenge |
+| --- | --- |
+| `SwarmBots-WallMedium-v0` | Fixed 0.3 m wall traversal |
+| `SwarmBots-POWallMedium-v0` | Randomized hidden 0.3 m wall traversal |
+| `SwarmBots-Bridge-v0` | Narrow movable bridge traversal |
+| `SwarmBots-FindOpening-v0` | Hidden-opening exploration |
+| `SwarmBots-Climb-v0` | Platform climbing |
+| `SwarmBots-VerticalReach-v0` | Elevated goal reaching |
+| `SwarmBots-PayloadStep-v0` | Payload transport over a step |
+| `SwarmBots-MultiPayloadGoal-v0` | Multiple payloads delivered to assigned goals |
 
-The full suite is exposed as `swarmbots.ALL_BENCHMARK_IDS`. Report per-task values. Reward scales differ between tasks, so an unnormalized average return across the suite is not meaningful.
+The full 14-task suite is exposed as `swarmbots.ALL_BENCHMARK_IDS`. See the [scenario catalog](scenarios.md) for all tasks and success conditions. Report per-task values. Reward scales differ between tasks, so an unnormalized average return across the suite is not meaningful.
 
 ## Evaluation
 
@@ -22,7 +28,7 @@ For each task and checkpoint:
 3. Run 256 parallel worlds and accept exactly the first episode from each world for every seed.
 4. Use deterministic policy actions unless the experiment specifically studies stochastic evaluation.
 5. Report mean episode return for every task and success rate where the registry declares one.
-6. Report the mean and standard deviation across the five seed-level means, plus all raw per-episode values.
+6. Report the mean and population standard deviation across the five seed-level means, plus all raw per-episode values.
 
 This yields 1,280 evaluation episodes per task. Keeping one episode per lane avoids changing the sampled evaluation population when faster-terminating policies autoreset earlier.
 
@@ -31,6 +37,8 @@ All episodes start after the scenario's default physics settling, including the 
 The evaluator's defaults implement one 256-world seed at a time:
 
 ```python
+from swarmbots import evaluate_policy
+
 result = evaluate_policy(
     policy, benchmark_id, seed=1000, num_envs=256, num_episodes=256,
     action_mode="deterministic",
@@ -40,6 +48,8 @@ result = evaluate_policy(
 The evaluator accepts at most one episode per lane and returns episodes in lane order. It rejects `num_episodes > num_envs`. Smaller runs are useful for development but are not canonical protocol runs. Completed lanes still simulate while remaining lanes finish; their later rewards, successes, and episodes are ignored.
 
 `action_mode` records how the caller configured the policy. It does not force deterministic actions or call `policy.eval()`. Put neural-network policies in evaluation mode and freeze observation normalization yourself.
+
+See the [five-seed reporting example](api.md#five-seed-report) for JSON export and aggregation. A single evaluator call covers one seed; completing the protocol requires all five.
 
 ## Morphology population
 

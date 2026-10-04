@@ -1,23 +1,24 @@
 # GPU setup
 
-SwarmBots uses NVIDIA CUDA through PyTorch and MuJoCo Warp. Start with a recent NVIDIA driver and verify that `nvidia-smi` sees the intended GPU. The regular installation can select a CPU-only PyTorch build, particularly on Windows.
+SwarmBots uses NVIDIA CUDA through PyTorch and MuJoCo Warp. Start with a recent NVIDIA driver and verify that `nvidia-smi` sees the intended GPU.
 
-## Install CUDA PyTorch in the existing environment
+## Source checkout
 
-After installing the project dependencies, replace CPU-only PyTorch with the CUDA build used for this alpha's validation:
+The checkout includes a CUDA PyTorch source and a default `cuda` dependency group. Install the locked environment:
 
 ```bash
-uv pip install --python .venv/Scripts/python.exe --index https://download.pytorch.org/whl/cu132 --reinstall-package torch "torch==2.12.1+cu132"
-uv pip install --python .venv/Scripts/python.exe "triton-windows==3.7.1.post27"
+uv sync --locked
 ```
 
-These commands target Windows. On Linux, use `.venv/bin/python` and omit the `triton-windows` command; CUDA PyTorch installs its matching Triton dependency.
+On Windows and Linux, this selects PyTorch `2.12.1+cu132`. Windows also installs `triton-windows==3.7.1.post27`; Linux receives its matching Triton dependency from PyTorch. Other platforms use PyPI's PyTorch build.
 
-This replaces packages in the environment without changing the project configuration. A later `uv sync` can restore the CPU build or remove Windows Triton. To retain the CUDA selection across syncs, configure its source as described below.
+Ordinary `uv sync` also includes the default CUDA group, so subsequent syncs retain the CUDA build and Windows Triton. No local configuration edits or manual PyTorch reinstall are needed. CUDA PyTorch can also run the benchmark with `--device cpu`. Add `--extra wandb` or `--extra prompt` if you want optional logging or interactive training prompts.
 
-## Retain a CUDA build with uv
+The tested Windows combination is Python 3.13, PyTorch `2.12.1+cu132`, MuJoCo `3.10.0`, MuJoCo Warp `3.10.0.1`, Warp `1.14.0`, and `triton-windows==3.7.1.post27`, on an RTX 5070 Ti. This is a known working combination, not a claim that every version allowed by the package metadata has been tested. The Linux commands below are provided for setup; this local validation was on Windows.
 
-For a source checkout, add the following to `pyproject.toml`. Merge these entries into any existing uv tables:
+## Using the published package
+
+The PyPI package declares a standard PyTorch dependency. Configure accelerator selection in the application project that installs SwarmBots. For the validated CUDA build, add these entries to that project's `pyproject.toml`, merging any existing uv tables:
 
 ```toml
 [tool.uv.sources]
@@ -31,16 +32,15 @@ url = "https://download.pytorch.org/whl/cu132"
 explicit = true
 ```
 
-Then select the PyTorch version used for this alpha's Windows CUDA validation:
+Declare the matching PyTorch and Windows compiler dependencies in that application project:
 
 ```bash
 uv add "torch==2.12.1"
-uv sync --extra dev
+uv add "triton-windows==3.7.1.post27; sys_platform == 'win32'"
+uv sync
 ```
 
-This changes your local project configuration and lockfile so future syncs retain the selected accelerator source. The explicit index applies only to PyTorch; other packages continue to come from PyPI. See [uv's PyTorch guide](https://docs.astral.sh/uv/guides/integration/pytorch/) for other CUDA builds and driver compatibility choices.
-
-The tested Windows combination is Python 3.13, PyTorch `2.12.1+cu132`, MuJoCo `3.10.0`, MuJoCo Warp `3.10.0.1`, Warp `1.14.0`, and `triton-windows==3.7.1.post27`, on an RTX 5070 Ti. This is a known working combination, not a claim that every version allowed by the package metadata has been tested. The Linux commands below are provided for setup; this local validation was on Windows.
+The explicit index applies only to PyTorch; other packages continue to come from PyPI. This selection is retained by future syncs. See [uv's PyTorch guide](https://docs.astral.sh/uv/guides/integration/pytorch/) for other CUDA builds and driver compatibility choices.
 
 ## Linux
 
@@ -56,8 +56,6 @@ Install a C++ compiler such as GCC using your distribution's package manager. Th
 Install Visual Studio Build Tools with **Desktop development with C++** and a Windows SDK. Run these commands from its **x64 Native Tools Command Prompt**, where `cl.exe` and the SDK are available:
 
 ```powershell
-uv add "triton-windows==3.7.1.post27; sys_platform == 'win32'"
-uv sync --extra dev
 .venv\Scripts\python.exe -c "import torch; print(torch.__version__); assert torch.cuda.is_available(); print(torch.cuda.get_device_name())"
 .venv\Scripts\swarmbots.exe smoke SwarmBots-WallEasy-v0 --device cuda --num-envs 2 --compiled
 ```
@@ -67,11 +65,3 @@ Triton must match the PyTorch minor version: the tested PyTorch 2.12 build uses 
 ## What the smoke test checks
 
 Without `--compiled`, the smoke command exercises simulation and settled resets with eager PyTorch operations. With `--compiled`, it explicitly compiles both environment tensor operations and scenario rewards; compiler failures propagate and the JSON summary reports `"compiled": true` only after stepping succeeds. The first invocation can take substantially longer while kernels compile.
-
-For the release integration checks, run:
-
-```bash
-.venv/bin/python -m pytest -m cuda
-```
-
-On Windows, use `.venv\Scripts\python.exe`. These tests require CUDA; verify availability with the command above so an unavailable GPU does not silently turn the run into skipped tests. See [publishing](publishing.md) for the complete release process.

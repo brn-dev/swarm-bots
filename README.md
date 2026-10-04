@@ -1,16 +1,36 @@
 # SwarmBots
 
-SwarmBots is a GPU-vectorized multi-agent reinforcement-learning benchmark for self-assembling modular robots. Each policy controls identical articulated units that can move independently and create or release load-bearing connections during an episode. The collective's physical graph therefore changes as part of the control problem.
+SwarmBots is a **GPU-vectorized multi-agent reinforcement-learning benchmark for self-assembling modular robots**. Policies control both movement and assembly: identical articulated units can move independently, connect into load-bearing structures, and disconnect during an episode. The swarm's physical structure is part of the control problem.
 
-The benchmark is built on [MuJoCo Warp](https://github.com/google-deepmind/mujoco_warp) and exposes vector environments with Gymnasium spaces and reset/step conventions, using PyTorch tensors on the simulation device. Gymnasium wrappers and training libraries that expect NumPy arrays require adaptation. It includes obstacle traversal, partial-observability, climbing, navigation, and payload-transport tasks.
-
-The package includes PPO/MAPPO, multi-agent transformer (MAT) policies, transformer-based SAC (TMASAC), and recurrent variants. Next-observation prediction (NOP), Signed-Magnitude Beta (SMB) action distributions, rollout collection, replay, normalization, checkpointing, logging, evaluation, and video recording are included. You can also use your own multi-agent reinforcement-learning implementation through the registry and evaluation API.
+The task suite spans wall and bridge traversal, exploration under partial observability, climbing, navigation, and cooperative payload transport. Use your own learning algorithm with the benchmark's environment and evaluation API, or start with the included learning baselines.
 
 | Wall traversal | Finding a hidden opening |
 | --- | --- |
 | ![SwarmBots wall traversal](https://raw.githubusercontent.com/brn-dev/swarm-bots/main/docs/assets/wall.gif) | ![SwarmBots finding an opening](https://raw.githubusercontent.com/brn-dev/swarm-bots/main/docs/assets/find-opening.gif) |
 
 These rollouts illustrate the tasks; they are not reference scores for protocol 0.1. See the [scenario catalog](https://github.com/brn-dev/swarm-bots/blob/main/docs/scenarios.md) for task definitions.
+
+## Benchmark highlights
+
+- **Physical self-assembly.** Agents control articulated limbs and connectors. Forming or releasing a connection changes how the units can move together and transmit forces.
+- **Partial observability.** Hidden-wall and hidden-opening tasks require policies to act without direct access to obstacle geometry. Privileged simulator information is available for training critics, but excluded from evaluated actors.
+- **Variable assemblies.** Registered tasks sample initial morphologies with four or five active units. An agent mask identifies active units within five padded slots.
+- **GPU simulation.** Built on [MuJoCo Warp](https://github.com/google-deepmind/mujoco_warp), SwarmBots runs parallel worlds and keeps observations, actions, and rewards as PyTorch tensors on the simulation device.
+
+## Task suite
+
+The full suite has **14 registered tasks**, including an **eight-task core suite** for evaluation. Task names below expand to `SwarmBots-<name>-v0`.
+
+| Task family | Tasks | Challenge |
+| --- | --- | --- |
+| Obstacle traversal | `WallEasy`, `WallMedium`, `WallHard`, `Bridge` | Cross walls from 0.2 to 0.4 m high or a narrow movable bridge. |
+| Partial observability | `POWallEasy`, `POWallMedium`, `FindOpening` | Cross a randomized hidden wall or explore to find a hidden opening. |
+| Climbing and navigation | `Climb`, `VerticalReach`, `MoveTo` | Climb onto a platform, reach an elevated goal, or move toward a sampled planar goal. |
+| Payload transport | `PayloadPlane`, `PayloadStep`, `DualPayloadPlane`, `MultiPayloadGoal` | Move one or more payloads, overcome a step, and deliver a variable set of payloads to assigned goals. |
+
+The core suite covers medium fixed and hidden walls, bridge traversal, finding an opening, climbing, vertical reach, payload-over-step transport, and multi-payload goal transport. Access it through `swarmbots.CORE_BENCHMARK_IDS`; `swarmbots.ALL_BENCHMARK_IDS` exposes the full suite.
+
+Each task defines its own rewards and, where applicable, a terminal success condition. The [scenario catalog](https://github.com/brn-dev/swarm-bots/blob/main/docs/scenarios.md) lists exact benchmark IDs, observations, and success criteria. Scenario parameters are customizable for new experiments; report modified tasks as custom variants.
 
 ## Install
 
@@ -28,13 +48,7 @@ cd swarm-bots
 uv sync
 ```
 
-The lockfile selects the dependency versions. Follow [GPU setup](https://github.com/brn-dev/swarm-bots/blob/main/docs/gpu_setup.md) to select a CUDA PyTorch build, configure the compiler, and verify the compiled environment on Linux or Windows. An exact sync may replace a manually installed accelerator build, so keep the index selection in your project configuration.
-
-For contributors:
-
-```bash
-uv sync --extra dev
-```
+The source checkout selects CUDA PyTorch on Windows and Linux, including matching Windows Triton, through its lockfile and default `cuda` dependency group. Subsequent syncs retain that setup. Follow [GPU setup](https://github.com/brn-dev/swarm-bots/blob/main/docs/gpu_setup.md) to configure the compiler, verify the compiled environment, or select CUDA when using the published package in another project.
 
 ## Quick start
 
@@ -70,7 +84,9 @@ The environment uses Gymnasium `SAME_STEP` autoreset. When a lane ends, the retu
 
 Explicit resets and autoresets both settle physics before returning observations. The settling interval is outside the episode's control-step budget, so evaluation and training start from the same reset distribution.
 
-## Multi-agent interface
+## Use your own policy
+
+SwarmBots exposes vector environments with Gymnasium spaces and `reset()` / `step()` conventions. Data stays in PyTorch tensors; Gymnasium wrappers and training libraries that expect NumPy arrays require adaptation.
 
 Observations are dictionaries of batched tensors:
 
@@ -81,43 +97,74 @@ Observations are dictionaries of batched tensors:
 
 Actions contain per-agent `actuators` and `connectors` tensors. Rewards and done flags are team-level tensors with one value per simulated world.
 
-The built-in `evaluate_policy` function passes only the non-privileged observation keys to the policy and reports episode returns, lengths, and success rate where defined. Centralized, partially centralized, and decentralized actors are all allowed; actors may combine the permitted observations across agents within each world.
+Centralized, partially centralized, and decentralized actors are all allowed; actors may combine the permitted observations across agents within each world. The benchmark does not prescribe a learning algorithm or require decentralized execution. See the [Python API](https://github.com/brn-dev/swarm-bots/blob/main/docs/api.md) for integration details.
 
-It collects only the first episode from each world. `num_episodes` must be no greater than `num_envs`; use additional seeds for more samples. The [evaluation example](https://github.com/brn-dev/swarm-bots/blob/main/docs/api.md#five-seed-report) writes raw episodes, settings, runtime versions, and statistics across five seeds to JSON.
+## Evaluate and compare policies
 
-## Train a built-in variant
+The built-in evaluator accepts a callable `policy(observations, episode_starts)` that returns the `actuators` and `connectors` action tensors. It passes only non-privileged observations and reports episode returns, lengths, and success rate where defined. Recurrent policies use `episode_starts` to reset their state per world.
 
-Select a learning variant and any registered scenario:
+Evaluate one seed of your policy with:
 
 ```python
-from swarmbots.learn import list_variants, train
+from swarmbots import evaluate_policy
 
-print(list_variants())
+result = evaluate_policy(
+    policy,
+    "SwarmBots-WallMedium-v0",
+    num_envs=256,
+    num_episodes=256,
+    seed=1000,
+    device="cuda",
+    action_mode="deterministic",
+)
+print(result.mean_return, result.success_rate)
+```
+
+Put neural-network policies in evaluation mode, select deterministic actions, and freeze observation normalization before calling the evaluator. `action_mode` records that choice; it does not change policy behavior.
+
+For comparable results, [protocol 0.1](https://github.com/brn-dev/swarm-bots/blob/main/docs/benchmark_protocol.md) specifies:
+
+- Unmodified registered tasks with a 500-control-step episode limit.
+- Seeds `1000` through `1004`, with 256 worlds and exactly the first episode from each world per seed: **1,280 episodes per task**.
+- Per-task mean return and success rate where defined, with mean and standard deviation across the five seed-level means, plus raw episode data and runtime metadata.
+
+The evaluator requires `num_episodes <= num_envs`; additional seeds provide more samples. Reward scales differ between tasks, so report per-task scores. Evaluation samples the registered morphology pool; protocol 0.1 does not measure generalization to unseen morphologies. Report training budgets and training seeds separately.
+
+The [five-seed reporting example](https://github.com/brn-dev/swarm-bots/blob/main/docs/api.md#five-seed-report) starts from a uniform-random sanity baseline and shows how to export episodes, settings, runtime versions, and aggregate statistics to JSON.
+
+## Optional learning baselines
+
+The package includes PPO/MAPPO, multi-agent transformer (MAT), transformer-based SAC (TMASAC), and recurrent variants as starting points for benchmark experiments.
+
+```python
+from swarmbots.learn import train
+
 trainer = train(
-    "SwarmBots-FindOpening-v0",
-    "tmasac_slstm",
+    "SwarmBots-WallMedium-v0",
+    "mappo",
     num_envs=1024,
     device="cuda",
-    compile_modules=True,
     total_timesteps=100_000_000,
-    run_dir="runs/find-opening/tmasac-slstm",
+    run_dir="runs/wall-medium/mappo",
 )
 ```
 
-`make_training(...)` builds a trainer for custom training loops. `as_benchmark_policy(trainer)` adapts its actor, normalization, and recurrent state for the benchmark evaluator. See [learning](https://github.com/brn-dev/swarm-bots/blob/main/docs/learning.md) for variants, action distributions, customization, checkpoint continuation, and evaluation. Compilation is opt-in and requires the compiler setup described in the GPU guide.
+`list_variants()` lists the available presets, and `as_benchmark_policy(trainer)` adapts a trained actor for evaluation. See [learning baselines](https://github.com/brn-dev/swarm-bots/blob/main/docs/learning.md) for customization, checkpoint continuation, and custom training loops.
 
-Record saved policies with `swarmbots record <benchmark-id> --checkpoint <path> --variant <variant>`. Custom policy factories are supported with `--policy module:function`. See [recording](https://github.com/brn-dev/swarm-bots/blob/main/docs/recording.md) for the checkout script and video options.
+## Record policy behavior
+
+Record your policy with `swarmbots record <benchmark-id> --policy module:function`, or an included-baseline checkpoint with `--checkpoint <path> --variant <variant>`. See [recording](https://github.com/brn-dev/swarm-bots/blob/main/docs/recording.md) for the policy factory interface, checkout script, and video options.
 
 ## Documentation
 
+The [documentation guide](https://github.com/brn-dev/swarm-bots/blob/main/docs/README.md) provides a starting point for exploring tasks, integrating policies, and reporting results.
+
 - [Scenario catalog](https://github.com/brn-dev/swarm-bots/blob/main/docs/scenarios.md)
-- [GPU setup and compiled smoke test](https://github.com/brn-dev/swarm-bots/blob/main/docs/gpu_setup.md)
 - [Benchmark and reporting protocol](https://github.com/brn-dev/swarm-bots/blob/main/docs/benchmark_protocol.md)
 - [Python API, compatibility, and custom policies](https://github.com/brn-dev/swarm-bots/blob/main/docs/api.md)
-- [Built-in learning algorithms and presets](https://github.com/brn-dev/swarm-bots/blob/main/docs/learning.md)
+- [GPU setup and compiled smoke test](https://github.com/brn-dev/swarm-bots/blob/main/docs/gpu_setup.md)
 - [Policy recording and video options](https://github.com/brn-dev/swarm-bots/blob/main/docs/recording.md)
-- [Contributing](https://github.com/brn-dev/swarm-bots/blob/main/CONTRIBUTING.md)
-- [Publishing releases](https://github.com/brn-dev/swarm-bots/blob/main/docs/publishing.md)
+- [Optional learning baselines and presets](https://github.com/brn-dev/swarm-bots/blob/main/docs/learning.md)
 
 The API is alpha. Benchmark IDs and protocol versions are explicit so semantic changes can be introduced without silently invalidating results.
 
@@ -125,7 +172,9 @@ The API is alpha. Benchmark IDs and protocol versions are explicit so semantic c
 
 Please cite the software version used in your experiments. Machine-readable citation metadata is available in [CITATION.cff](https://github.com/brn-dev/swarm-bots/blob/main/CITATION.cff).
 
-For background on the benchmark and policy designs, see the [master's thesis repository](https://github.com/brn-dev/msc-thesis-swarmbots-qcx-tmasac-nop-smb).
+For the benchmark and policy designs, also cite Dominik Baron (2026), *SwarmBots: a GPU-accelerated multi-agent continuous control benchmark with transformer baselines*, master's thesis, Johannes Kepler University Linz. The published thesis is available under the persistent identifier [`urn:nbn:at:at-ubl:1-108602`](https://resolver.obvsg.at/urn:nbn:at:at-ubl:1-108602).
+
+Thesis source and supplementary material are available in the [thesis repository](https://github.com/brn-dev/msc-thesis-swarmbots-qcx-tmasac-nop-smb).
 
 ## License
 
