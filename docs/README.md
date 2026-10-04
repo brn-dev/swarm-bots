@@ -13,6 +13,7 @@ SwarmBots benchmarks cooperative control of robots that can change their physica
 | Configure CUDA and verify simulation and compilation | [GPU setup](gpu_setup.md) |
 | Record policy behavior as videos | [Policy recording](recording.md) |
 | Train an included baseline or customize a learning preset | [Optional learning baselines](learning.md) |
+| Cite algorithms, understand TMASAC's related work, and credit scientific software | [References and attribution](references.md) |
 
 The benchmark environment and evaluator work independently of the included learning implementations. The baseline guide is optional when you bring your own learner.
 

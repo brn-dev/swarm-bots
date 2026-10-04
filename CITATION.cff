@@ -1,5 +1,5 @@
 cff-version: 1.2.0
-message: "If you use SwarmBots, please cite this software. For the benchmark and policy designs, also cite the thesis listed under references."
+message: "If you use SwarmBots, please cite this software. For the benchmark and policy designs, also cite the thesis listed under references. See docs/references.md for algorithm and scientific-software attribution, with BibTeX entries in references.bib."
 title: "SwarmBots: a multi-agent continuous-control benchmark for self-assembling modular robots"
 type: software
 authors:
@@ -7,7 +7,7 @@ authors:
     given-names: Dominik
 repository-code: "https://github.com/brn-dev/swarm-bots"
 license: Apache-2.0
-version: 0.1.0a2
+version: 0.1.0a3
 references:
   - type: thesis
     thesis-type: "Master's thesis"

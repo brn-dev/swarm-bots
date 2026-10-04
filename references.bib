@@ -1,0 +1,281 @@
+% Selected references for SwarmBots. See docs/references.md for attribution and citation guidance.
+% Citation keys shared with the thesis bibliography are retained where applicable.
+% Software citations identify projects; report the exact installed versions separately.
+
+% SwarmBots benchmark and method designs
+
+@mastersthesis{swarmbots_thesis,
+  author  = {Baron, Dominik},
+  title   = {{SwarmBots}: a {GPU}-accelerated multi-agent continuous control benchmark with transformer baselines},
+  school  = {Johannes Kepler University Linz},
+  address = {Linz, Austria},
+  year    = {2026},
+  url     = {https://resolver.obvsg.at/urn:nbn:at:at-ubl:1-108602},
+  note    = {Master's thesis. Persistent identifier: urn:nbn:at:at-ubl:1-108602}
+}
+
+% Core learning algorithms
+
+@article{ppo,
+  author        = {Schulman, John and Wolski, Filip and Dhariwal, Prafulla and
+                   Radford, Alec and Klimov, Oleg},
+  title         = {Proximal Policy Optimization Algorithms},
+  journal       = {arXiv preprint arXiv:1707.06347},
+  year          = {2017},
+  eprint        = {1707.06347},
+  archiveprefix = {arXiv},
+  primaryclass  = {cs.LG},
+  doi           = {10.48550/arXiv.1707.06347},
+  url           = {https://arxiv.org/abs/1707.06347}
+}
+
+@inproceedings{mappo,
+  author    = {Yu, Chao and Velu, Akash and Vinitsky, Eugene and Gao, Jiaxuan and
+               Wang, Yu and Bayen, Alexandre and Wu, Yi},
+  title     = {The Surprising Effectiveness of {PPO} in Cooperative Multi-Agent Games},
+  booktitle = {Advances in Neural Information Processing Systems},
+  volume    = {35},
+  pages     = {24611--24624},
+  year      = {2022},
+  publisher = {Curran Associates, Inc.},
+  doi       = {10.52202/068431-1787},
+  url       = {https://proceedings.neurips.cc/paper_files/paper/2022/hash/9c1535a02f0ce079433344e14d910597-Abstract-Datasets_and_Benchmarks.html}
+}
+
+@inproceedings{mat,
+  author    = {Wen, Muning and Kuba, Jakub and Lin, Runji and Zhang, Weinan and
+               Wen, Ying and Wang, Jun and Yang, Yaodong},
+  title     = {Multi-Agent Reinforcement Learning Is a Sequence Modeling Problem},
+  booktitle = {Advances in Neural Information Processing Systems},
+  volume    = {35},
+  pages     = {16509--16521},
+  year      = {2022},
+  publisher = {Curran Associates, Inc.},
+  doi       = {10.52202/068431-1201},
+  url       = {https://proceedings.neurips.cc/paper_files/paper/2022/hash/69413f87e5a34897cd010ca698097d0a-Abstract-Conference.html}
+}
+
+@inproceedings{sac,
+  author    = {Haarnoja, Tuomas and Zhou, Aurick and Abbeel, Pieter and Levine, Sergey},
+  title     = {Soft Actor-Critic: Off-Policy Maximum Entropy Deep Reinforcement Learning with a Stochastic Actor},
+  booktitle = {Proceedings of the 35th International Conference on Machine Learning},
+  series    = {Proceedings of Machine Learning Research},
+  volume    = {80},
+  pages     = {1861--1870},
+  year      = {2018},
+  publisher = {PMLR},
+  url       = {https://proceedings.mlr.press/v80/haarnoja18b.html}
+}
+
+@article{sacapps,
+  author        = {Haarnoja, Tuomas and Zhou, Aurick and Hartikainen, Kristian and
+                   Tucker, George and Ha, Sehoon and Tan, Jie and Kumar, Vikash and
+                   Zhu, Henry and Gupta, Abhishek and Abbeel, Pieter and Levine, Sergey},
+  title         = {Soft Actor-Critic Algorithms and Applications},
+  journal       = {arXiv preprint arXiv:1812.05905},
+  year          = {2018},
+  eprint        = {1812.05905},
+  archiveprefix = {arXiv},
+  primaryclass  = {cs.LG},
+  doi           = {10.48550/arXiv.1812.05905},
+  url           = {https://arxiv.org/abs/1812.05905}
+}
+
+% Related attention-based multi-agent SAC methods; these are not included learners
+
+@inproceedings{maac,
+  author    = {Iqbal, Shariq and Sha, Fei},
+  title     = {Actor-Attention-Critic for Multi-Agent Reinforcement Learning},
+  booktitle = {Proceedings of the 36th International Conference on Machine Learning},
+  series    = {Proceedings of Machine Learning Research},
+  volume    = {97},
+  pages     = {2961--2970},
+  year      = {2019},
+  publisher = {PMLR},
+  url       = {https://proceedings.mlr.press/v97/iqbal19a.html}
+}
+
+@article{sacha,
+  author  = {Lin, Qiushi and Ma, Hang},
+  title   = {{SACHA}: Soft Actor-Critic with Heuristic-Based Attention for Partially Observable Multi-Agent Path Finding},
+  journal = {IEEE Robotics and Automation Letters},
+  volume  = {8},
+  number  = {8},
+  pages   = {5100--5107},
+  year    = {2023},
+  doi     = {10.1109/LRA.2023.3292004},
+  url     = {https://arxiv.org/abs/2307.02691}
+}
+
+@inproceedings{mdac,
+  author    = {Xu, Yihang and Zheng, Kai and Wang, Qiuxia},
+  title     = {{MDAC}: Multi-Agent Distributional Soft Actor-Critic with Attention for Warehouse Task Coordination},
+  booktitle = {Proceedings of the 2025 6th International Conference on Computer Information and Big Data Applications},
+  pages     = {876--883},
+  year      = {2025},
+  publisher = {Association for Computing Machinery},
+  doi       = {10.1145/3746709.3746860},
+  url       = {https://dl.acm.org/doi/10.1145/3746709.3746860}
+}
+
+@article{matrs,
+  author  = {Ge, Guanting and Sun, Mingde and Xue, Yiyuan and Pavlova, Svitlana},
+  title   = {Transformer-Based Soft Actor--Critic for {UAV} Path Planning in Precision Agriculture {IoT} Networks},
+  journal = {Sensors},
+  volume  = {25},
+  number  = {24},
+  pages   = {7463},
+  year    = {2025},
+  doi     = {10.3390/s25247463},
+  url     = {https://www.mdpi.com/1424-8220/25/24/7463}
+}
+
+% Reusable learning components
+
+@inproceedings{attiayn,
+  author    = {Vaswani, Ashish and Shazeer, Noam and Parmar, Niki and
+               Uszkoreit, Jakob and Jones, Llion and Gomez, Aidan N. and
+               Kaiser, {\L}ukasz and Polosukhin, Illia},
+  title     = {Attention Is All You Need},
+  booktitle = {Advances in Neural Information Processing Systems},
+  volume    = {30},
+  pages     = {5998--6008},
+  year      = {2017},
+  publisher = {Curran Associates, Inc.},
+  url       = {https://proceedings.neurips.cc/paper/2017/hash/3f5ee243547dee91fbd053c1c4a845aa-Abstract.html}
+}
+
+@inproceedings{deepsets,
+  author    = {Zaheer, Manzil and Kottur, Satwik and Ravanbakhsh, Siamak and P{\'o}czos, Barnab{\'a}s and Salakhutdinov, Ruslan and Smola, Alexander J.},
+  title     = {Deep Sets},
+  booktitle = {Advances in Neural Information Processing Systems},
+  volume    = {30},
+  year      = {2017},
+  publisher = {Curran Associates, Inc.},
+  url       = {https://proceedings.neurips.cc/paper/2017/hash/f22e4747da1aa27e363d86d40ff442fe-Abstract.html}
+}
+
+@article{lstm,
+  author  = {Hochreiter, Sepp and Schmidhuber, J{\"u}rgen},
+  title   = {Long Short-Term Memory},
+  journal = {Neural Computation},
+  volume  = {9},
+  number  = {8},
+  pages   = {1735--1780},
+  year    = {1997},
+  doi     = {10.1162/neco.1997.9.8.1735},
+  url     = {https://www.bioinf.jku.at/publications/older/2604.pdf}
+}
+
+@inproceedings{xlstm,
+  author    = {Beck, Maximilian and P{\"o}ppel, Korbinian and Spanring, Markus and Auer, Andreas and Prudnikova, Oleksandra and Kopp, Michael and Klambauer, G{\"u}nter and Brandstetter, Johannes and Hochreiter, Sepp},
+  title     = {{xLSTM}: Extended Long Short-Term Memory},
+  booktitle = {Advances in Neural Information Processing Systems},
+  volume    = {37},
+  pages     = {107547--107603},
+  year      = {2024},
+  publisher = {Curran Associates, Inc.},
+  doi       = {10.52202/079017-3417},
+  url       = {https://proceedings.neurips.cc/paper_files/paper/2024/hash/c2ce2f2701c10a2b2f2ea0bfa43cfaa3-Abstract-Conference.html}
+}
+
+@inproceedings{spr,
+  author    = {Schwarzer, Max and Anand, Ankesh and Goel, Rishab and Hjelm, R. Devon and Courville, Aaron and Bachman, Philip},
+  title     = {Data-Efficient Reinforcement Learning with Self-Predictive Representations},
+  booktitle = {International Conference on Learning Representations},
+  year      = {2021},
+  url       = {https://openreview.net/forum?id=uCQfPZwRaUu}
+}
+
+@inproceedings{betapolicy,
+  author    = {Chou, Po-Wei and Maturana, Daniel and Scherer, Sebastian},
+  title     = {Improving Stochastic Policy Gradients in Continuous Control with Deep Reinforcement Learning Using the Beta Distribution},
+  booktitle = {Proceedings of the 34th International Conference on Machine Learning},
+  series    = {Proceedings of Machine Learning Research},
+  volume    = {70},
+  pages     = {834--843},
+  year      = {2017},
+  publisher = {PMLR},
+  url       = {https://proceedings.mlr.press/v70/chou17a.html}
+}
+
+@inproceedings{gumbelsoftmax,
+  author    = {Jang, Eric and Gu, Shixiang and Poole, Ben},
+  title     = {Categorical Reparameterization with Gumbel-Softmax},
+  booktitle = {International Conference on Learning Representations},
+  year      = {2017},
+  url       = {https://openreview.net/forum?id=rkE3y85ee}
+}
+
+@inproceedings{gsde,
+  author    = {Raffin, Antonin and Kober, Jens and Stulp, Freek},
+  title     = {Smooth Exploration for Robotic Reinforcement Learning},
+  booktitle = {Proceedings of the 5th Conference on Robot Learning},
+  series    = {Proceedings of Machine Learning Research},
+  volume    = {164},
+  pages     = {1634--1644},
+  year      = {2022},
+  publisher = {PMLR},
+  url       = {https://proceedings.mlr.press/v164/raffin22a.html}
+}
+
+% Main scientific-software dependencies
+
+@article{gymnasium,
+  author        = {Towers, Mark and Kwiatkowski, Ariel and Terry, Jordan and
+                   Balis, John U. and De Cola, Gianluca and Deleu, Tristan and
+                   Goul{\~a}o, Manuel and Kallinteris, Andreas and Krimmel, Markus and
+                   KG, Arjun and Perez-Vicente, Rodrigo and Pierr{\'e}, Andrea and
+                   Schulhoff, Sander and Tai, Jun Jet and Tan, Hannah and Younis, Omar G.},
+  title         = {{Gymnasium}: A Standard Interface for Reinforcement Learning Environments},
+  journal       = {arXiv preprint arXiv:2407.17032},
+  year          = {2024},
+  eprint        = {2407.17032},
+  archiveprefix = {arXiv},
+  primaryclass  = {cs.LG},
+  doi           = {10.48550/arXiv.2407.17032},
+  url           = {https://arxiv.org/abs/2407.17032}
+}
+
+@inproceedings{todorov2012mujoco,
+  author    = {Todorov, Emanuel and Erez, Tom and Tassa, Yuval},
+  title     = {{MuJoCo}: A Physics Engine for Model-Based Control},
+  booktitle = {2012 IEEE/RSJ International Conference on Intelligent Robots and Systems},
+  pages     = {5026--5033},
+  year      = {2012},
+  publisher = {IEEE},
+  doi       = {10.1109/IROS.2012.6386109},
+  url       = {https://doi.org/10.1109/IROS.2012.6386109}
+}
+
+@misc{mujoco_warp,
+  author       = {{Google DeepMind and NVIDIA}},
+  title        = {{MuJoCo Warp} ({MJWarp})},
+  howpublished = {Software repository},
+  url          = {https://github.com/google-deepmind/mujoco_warp},
+  urldate      = {2026-10-04},
+  note         = {Accessed 2026-10-04. Report the software version used in the experiment}
+}
+
+@misc{warp,
+  author       = {Macklin, Miles},
+  title        = {{Warp}: A High-performance {Python} Framework for {GPU} Simulation and Graphics},
+  year         = {2022},
+  month        = mar,
+  howpublished = {NVIDIA GPU Technology Conference (GTC)},
+  url          = {https://github.com/NVIDIA/warp}
+}
+
+@inproceedings{pytorch,
+  author    = {Paszke, Adam and Gross, Sam and Massa, Francisco and Lerer, Adam and
+               Bradbury, James and Chanan, Gregory and Killeen, Trevor and Lin, Zeming and
+               Gimelshein, Natalia and Antiga, Luca and Desmaison, Alban and K{\"o}pf, Andreas and
+               Yang, Edward and DeVito, Zachary and Raison, Martin and Tejani, Alykhan and
+               Chilamkurthy, Sasank and Steiner, Benoit and Fang, Lu and Bai, Junjie and Chintala, Soumith},
+  title     = {{PyTorch}: An Imperative Style, High-Performance Deep Learning Library},
+  booktitle = {Advances in Neural Information Processing Systems},
+  volume    = {32},
+  year      = {2019},
+  publisher = {Curran Associates, Inc.},
+  url       = {https://proceedings.neurips.cc/paper/2019/hash/bdbca288fee7f92f2bfa9f7012727740-Abstract.html}
+}

@@ -26,7 +26,7 @@ Maturity and version identifiers serve different purposes:
 
 - **Scenario maturity** (`alpha`, `beta`, or eventually `stable`) records the current testing assessment. It is available as `BenchmarkSpec.maturity`, in `swarmbots list` / `describe`, and as `metadata.benchmark_maturity` in evaluation reports.
 - **Task version** (the `-v0` suffix in a benchmark ID) identifies the registered task definition. A maturity promotion alone does not change the ID. Changes to rewards, observations, success or termination conditions, morphology distributions, or physics that make scores incomparable should use a new task version.
-- **Package version** (such as `0.1.0a2`) identifies the implementation release. Record it and the Git commit, especially for development checkouts; the maturity label and task ID alone do not identify an exact implementation.
+- **Package version** (such as `0.1.0a3`) identifies the implementation release. Record it and the Git commit, especially for development checkouts; the maturity label and task ID alone do not identify an exact implementation.
 - **Protocol version** (currently `0.1`) identifies the evaluation and reporting procedure, independently of task maturity.
 
 ## Registered tasks
@@ -39,8 +39,8 @@ Maturity and version identifiers serve different purposes:
 | `SwarmBots-POWallEasy-v0` | connected locomotion over a hidden 0.25 m wall | Beta | no | yes |
 | `SwarmBots-POWallMedium-v0` | connected locomotion over a hidden 0.3 m wall | Beta | yes | yes |
 | `SwarmBots-POWallHard-v0` | connected locomotion over a hidden 0.4 m wall | Beta | no | yes |
-| `SwarmBots-Bridge-v0` | narrow movable bridge traversal | Alpha | yes | yes |
 | `SwarmBots-FindOpening-v0` | exploration within an episode to find a hidden opening | Beta | yes | yes |
+| `SwarmBots-Bridge-v0` | narrow movable bridge traversal | Alpha | yes | yes |
 | `SwarmBots-Climb-v0` | platform climbing | Alpha | yes | yes |
 | `SwarmBots-VerticalReach-v0` | elevated goal reaching | Alpha | yes | yes |
 | `SwarmBots-PayloadPlane-v0` | single-payload transport | Alpha | no | no; report return |
@@ -105,8 +105,8 @@ Success is a team-level boolean. Padding never counts toward success. For succes
 | Task | Success condition |
 | --- | --- |
 | Wall and PO Wall | Every active unit has `y > wall_y + wall_success_threshold` |
-| Bridge | Every active unit has `y > success_y`, with no active unit below `fall_z_threshold` |
 | FindOpening | Every active unit has `y > wall_y + opening_y_margin` |
+| Bridge | Every active unit has `y > success_y`, with no active unit below `fall_z_threshold` |
 | Climb | Every active unit's root lies within `goal_radius` of the 3D goal |
 | VerticalReach | At least one active unit's root lies inside the goal box |
 | PayloadStep | Payload centre reaches `payload_success_y` and the required height above the step |

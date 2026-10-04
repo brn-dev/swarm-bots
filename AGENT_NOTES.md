@@ -22,3 +22,46 @@
 - Different task observation shapes share Dynamo's function cache. A full 14-task sweep can exhaust its specialization limit. GPU tests reset compiler state between cases; use one process per task/configuration or explicitly reset compiler state after closing the previous environment. Do not silently reset callers' compiled policy state inside the environment.
 - Use `.venv/Scripts/python.exe` on Windows. In the managed Windows sandbox, redirect TEMP/TMP and TORCHINDUCTOR_CACHE_DIR into pre-created `.tmp` directories. Python 3.13 creates temporary directories with restrictive 0o700 ACLs that exclude the sandbox identity. For sandbox-only validation, a `.tmp` sitecustomize.py can wrap os.mkdir to replace 0o700 with 0o777 on Windows; set PYTHONPATH to that directory for subprocess builds too. Never ship that workaround in the package.
 - For sandboxed CLI runs outside pytest, also set `WARP_CACHE_PATH` to a writable `.tmp` directory; otherwise Warp compilation fails with `PermissionError` in the default AppData cache. The pytest fixture already redirects its own Warp cache.
+
+## Release procedure
+
+Keep this procedure in agent/contributor notes. The publication trigger is a pushed version tag, as defined in `.github/workflows/release.yml`; creating a GitHub Release is not required. The workflow runs the reusable CI suite, verifies the tag matches the package version, builds with `uv build --no-sources`, checks distribution metadata with Twine, generates attestations, and publishes through the PyPI trusted publisher using the `pypi` GitHub environment.
+
+1. Choose a new, unused package version. Preserve the alpha designation while the benchmark remains alpha. The example below uses `0.1.0a3`; replace it with the intended version for later releases. Run commands from the repository root in PowerShell and stop if any command fails.
+
+   ```powershell
+   $releaseVersion = '0.1.0a3'
+   uv version $releaseVersion --no-sync
+   ```
+
+   `uv version` updates `pyproject.toml` and re-locks `uv.lock`; `--no-sync` postpones the environment update until validation.
+
+2. Set `CITATION.cff`'s `version` to the same value, update the pinned installation example in `README.md`, and add a dated `## <version> - YYYY-MM-DD` section at the top of `CHANGELOG.md` describing the release. Preserve older changelog entries. `tests/test_release_metadata.py` checks consistency between the package version, citation metadata, and changelog.
+
+3. Validate the release metadata and CUDA path before publishing. CPU CI also runs lint, the full test suite, and installed-wheel checks on Linux with Python 3.11 and 3.13. Installed-wheel checks run outside the checkout. Use the sandbox/cache workarounds above only when validation runs in the managed Windows sandbox.
+
+   ```powershell
+   uv sync --locked --extra dev
+   .venv\Scripts\python.exe -m pytest tests/test_release_metadata.py
+   .venv\Scripts\python.exe -c "import torch; assert torch.cuda.is_available(), 'CUDA is unavailable for release validation'"
+   .venv\Scripts\python.exe -m pytest -m cuda
+   git diff --check
+   ```
+
+4. Stage the intended release files and review the staged diff before committing. The following covers metadata, agent notes, and documentation; explicitly stage any additional source or test changes intended for the release. Include new files, such as bibliography entries, rather than relying only on staging tracked changes.
+
+   ```powershell
+   git add pyproject.toml uv.lock CITATION.cff CHANGELOG.md README.md MANIFEST.in AGENT_NOTES.md docs references.bib
+   git diff --cached
+   git commit -m "Release $releaseVersion"
+   ```
+
+5. After successful validation and review, push the release commit to `main`, create an annotated tag, and push that specific tag. The tag must be exactly `v` followed by the package version. **Pushing the tag starts PyPI publication after CI passes.**
+
+   ```powershell
+   git push origin main
+   git tag -a "v$releaseVersion" -m "SwarmBots $releaseVersion"
+   git push origin "v$releaseVersion"
+   ```
+
+6. Monitor the [release workflow](https://github.com/brn-dev/swarm-bots/actions/workflows/release.yml) until the publish job succeeds, then verify the version on [PyPI](https://pypi.org/project/swarmbots/). A successful tag push alone does not confirm publication. If a released version needs a correction, prepare a new version instead of overwriting its tag or uploaded distributions.

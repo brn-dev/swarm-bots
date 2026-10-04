@@ -27,8 +27,8 @@ The full suite has **15 registered tasks**, including an **eight-task core suite
 | --- | --- | --- |--------------------------------------------------------------------------------------------------------------------------|
 | Wall traversal | `WallEasy`, `WallMedium`, `WallHard` | Beta | Connected locomotion over fixed walls from 0.2 to 0.4 m high.                                                            |
 | PO-wall traversal | `POWallEasy`, `POWallMedium`, `POWallHard` | Beta | Connected locomotion over randomized hidden walls from 0.25 to 0.4 m high, with partial observability adding difficulty. |
-| Bridge traversal | `Bridge` | Alpha | Locomotion across a narrow movable bridge.                                                                               |
 | Exploration under partial observability | `FindOpening` | Beta | Exploration within an episode to locate and pass through a hidden opening.                                               |
+| Bridge traversal | `Bridge` | Alpha | Locomotion across a narrow movable bridge.                                                                               |
 | Climbing and navigation | `Climb`, `VerticalReach`, `MoveTo` | Alpha | Platform climbing, elevated goal reaching, and navigation toward sampled planar goals.                                  |
 | Payload transport | `PayloadPlane`, `PayloadStep`, `DualPayloadPlane`, `MultiPayloadGoal` | Alpha | Cooperative payload transport, step traversal, and delivery of variable payload sets to assigned goals.                  |
 
@@ -43,7 +43,7 @@ Each task defines its own rewards and, where applicable, a terminal success cond
 Python 3.11 or newer is required. CUDA is strongly recommended; CPU execution exists for development and tests but is not the benchmark's performance target. SwarmBots is currently versioned as an alpha. Install the alpha release explicitly with:
 
 ```bash
-uv add "swarmbots==0.1.0a2"
+uv add "swarmbots==0.1.0a3"
 ```
 
 **On Windows, installing from PyPI selects CPU-only PyTorch by default.** Before running the CUDA examples below, configure CUDA PyTorch and matching Windows Triton in your application project using the [published-package GPU setup guide](https://github.com/brn-dev/swarm-bots/blob/main/docs/gpu_setup.md#using-the-published-package). The source checkout's CUDA configuration is not inherited by projects that install SwarmBots from PyPI.
@@ -142,7 +142,7 @@ The [five-seed reporting example](https://github.com/brn-dev/swarm-bots/blob/mai
 
 ## Optional learning baselines
 
-The package includes PPO/MAPPO, multi-agent transformer (MAT), transformer-based SAC (TMASAC), and recurrent variants as starting points for benchmark experiments.
+The package includes [PPO](https://arxiv.org/abs/1707.06347)/[MAPPO](https://proceedings.neurips.cc/paper_files/paper/2022/hash/9c1535a02f0ce079433344e14d910597-Abstract-Datasets_and_Benchmarks.html), [multi-agent transformer (MAT)](https://proceedings.neurips.cc/paper_files/paper/2022/hash/69413f87e5a34897cd010ca698097d0a-Abstract-Conference.html), [transformer-based SAC (TMASAC)](https://resolver.obvsg.at/urn:nbn:at:at-ubl:1-108602), and recurrent variants as starting points for benchmark experiments. See [references and attribution](https://github.com/brn-dev/swarm-bots/blob/main/docs/references.md) for algorithm origins, TMASAC's related work, and scientific-software credits.
 
 ```python
 from swarmbots.learn import train
@@ -173,6 +173,7 @@ The [documentation guide](https://github.com/brn-dev/swarm-bots/blob/main/docs/R
 - [GPU setup and compiled smoke test](https://github.com/brn-dev/swarm-bots/blob/main/docs/gpu_setup.md)
 - [Policy recording and video options](https://github.com/brn-dev/swarm-bots/blob/main/docs/recording.md)
 - [Optional learning baselines and presets](https://github.com/brn-dev/swarm-bots/blob/main/docs/learning.md)
+- [References and attribution](https://github.com/brn-dev/swarm-bots/blob/main/docs/references.md)
 
 The benchmark and API are alpha. Scenario maturity labels describe testing confidence; benchmark IDs, package releases, and protocol versions identify the task definition, implementation, and evaluation procedure used in an experiment. Record the exact package version and Git commit when reporting results.
 
@@ -183,6 +184,8 @@ Please cite the software version used in your experiments. Machine-readable cita
 For the benchmark and policy designs, also cite Dominik Baron (2026), *SwarmBots: a GPU-accelerated multi-agent continuous control benchmark with transformer baselines*, master's thesis, Johannes Kepler University Linz. The published thesis is available under the persistent identifier [`urn:nbn:at:at-ubl:1-108602`](https://resolver.obvsg.at/urn:nbn:at:at-ubl:1-108602).
 
 Thesis source and supplementary material are available in the [thesis repository](https://github.com/brn-dev/msc-thesis-swarmbots-qcx-tmasac-nop-smb).
+
+When using an included learner, also cite its original algorithm papers. The [reference guide](https://github.com/brn-dev/swarm-bots/blob/main/docs/references.md) maps each learner to its sources, distinguishes TMASAC from related attention-based multi-agent SAC methods, and credits Gymnasium, MuJoCo, MJWarp, NVIDIA Warp, and PyTorch. Reusable BibTeX entries are provided in [references.bib](https://github.com/brn-dev/swarm-bots/blob/main/references.bib).
 
 ## License
 

@@ -6,6 +6,8 @@ The benchmark's [tasks](scenarios.md) and [evaluation protocol](benchmark_protoc
 
 For more information about TMASAC, MAT-QCX, NOP, and SMB, see the [published master's thesis](https://resolver.obvsg.at/urn:nbn:at:at-ubl:1-108602). Its source and supplementary material are available in the [thesis repository](https://github.com/brn-dev/msc-thesis-swarmbots-qcx-tmasac-nop-smb).
 
+The included on-policy learners build on [PPO](https://arxiv.org/abs/1707.06347), [MAPPO](https://proceedings.neurips.cc/paper_files/paper/2022/hash/9c1535a02f0ce079433344e14d910597-Abstract-Datasets_and_Benchmarks.html), and [MAT](https://proceedings.neurips.cc/paper_files/paper/2022/hash/69413f87e5a34897cd010ca698097d0a-Abstract-Conference.html). TMASAC combines the thesis's architecture with [SAC](https://proceedings.mlr.press/v80/haarnoja18b.html) and its [automatic-temperature formulation](https://arxiv.org/abs/1812.05905). See [references and attribution](references.md) for citation guidance, prior attention-based multi-agent SAC methods, component credits, and reusable BibTeX entries.
+
 The package also includes next-observation prediction (NOP), self-predictive representations (SPR), action distributions, rollout collection, replay, truncated backpropagation through time (TBPTT), PopArt value normalization, observation normalization, learning-rate scheduling, checkpointing, metrics, evaluation, and video recording. The examples below use the package's built-in presets; architectures and optimizer settings can be customized through the same API.
 
 PyTorch 2.6 or newer is required. W&B logging and interactive command prompts are optional:
