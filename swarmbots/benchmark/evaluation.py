@@ -115,6 +115,7 @@ def evaluate_policy(
         canonical_scenario = not scenario_kwargs and not env_kwargs and episode_length in (None, spec.episode_length)
         metadata = serialize_settings({
             "runtime": runtime_metadata(env.device),
+            "benchmark_maturity": spec.maturity,
             "source_revision": source_revision,
             "num_envs": env.num_envs,
             "episode_limit": spec.episode_length if episode_length is None else episode_length,

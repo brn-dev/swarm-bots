@@ -44,6 +44,7 @@ MEDIUM_WALL_SCENARIO_KWARGS = make_scenario_kwargs(shared_kwargs.MEDIUM_WALL_SCE
 HARD_WALL_SCENARIO_KWARGS = make_scenario_kwargs(shared_kwargs.HARD_WALL_SCENARIO_KWARGS)
 PO_WALL_EASY_SCENARIO_KWARGS = make_scenario_kwargs(shared_kwargs.PO_WALL_EASY_SCENARIO_KWARGS)
 PO_WALL_MEDIUM_SCENARIO_KWARGS = make_scenario_kwargs(shared_kwargs.PO_WALL_MEDIUM_SCENARIO_KWARGS)
+PO_WALL_HARD_SCENARIO_KWARGS = make_scenario_kwargs(shared_kwargs.PO_WALL_HARD_SCENARIO_KWARGS)
 BRIDGE_SCENARIO_KWARGS = make_scenario_kwargs(shared_kwargs.BRIDGE_SCENARIO_KWARGS)
 FIND_OPENING_SCENARIO_KWARGS = make_scenario_kwargs(shared_kwargs.FIND_OPENING_SCENARIO_KWARGS)
 CLIMB_SCENARIO_KWARGS = make_scenario_kwargs(shared_kwargs.CLIMB_SCENARIO_KWARGS)
@@ -222,6 +223,10 @@ def easy_partially_observable_wall(**kwargs: object) -> MJWWallScenario:
 
 def medium_partially_observable_wall(**kwargs: object) -> MJWWallScenario:
     return partially_observable_wall(difficulty="medium", **kwargs)
+
+
+def hard_partially_observable_wall(**kwargs: object) -> MJWWallScenario:
+    return partially_observable_wall(difficulty="hard", **kwargs)
 
 
 def default_bridge(

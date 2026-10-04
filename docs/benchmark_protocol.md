@@ -2,6 +2,8 @@
 
 Use this protocol to compare policies on the registered SwarmBots tasks. It standardizes task settings, evaluation episodes, permitted actor inputs, and reporting. Training algorithms and budgets are chosen by the experimenter and reported separately.
 
+**SwarmBots is an alpha benchmark.** Following this protocol makes runs comparable within a recorded implementation; it does not establish that every task's difficulty, rewards, or success conditions have been validated. Check the [scenario maturity labels](scenarios.md#scenario-maturity-and-versioning) when selecting tasks. The core suite includes both alpha and beta scenarios and is selected for task coverage.
+
 ## Core suite
 
 The eight-task core suite is exposed as `swarmbots.CORE_BENCHMARK_IDS`:
@@ -9,15 +11,15 @@ The eight-task core suite is exposed as `swarmbots.CORE_BENCHMARK_IDS`:
 | Benchmark ID | Challenge |
 | --- | --- |
 | `SwarmBots-WallMedium-v0` | Fixed 0.3 m wall traversal |
-| `SwarmBots-POWallMedium-v0` | Randomized hidden 0.3 m wall traversal |
+| `SwarmBots-POWallMedium-v0` | Connected locomotion over a hidden 0.3 m wall, with partial observability adding difficulty |
 | `SwarmBots-Bridge-v0` | Narrow movable bridge traversal |
-| `SwarmBots-FindOpening-v0` | Hidden-opening exploration |
+| `SwarmBots-FindOpening-v0` | Exploration within an episode to locate a hidden opening |
 | `SwarmBots-Climb-v0` | Platform climbing |
 | `SwarmBots-VerticalReach-v0` | Elevated goal reaching |
 | `SwarmBots-PayloadStep-v0` | Payload transport over a step |
 | `SwarmBots-MultiPayloadGoal-v0` | Multiple payloads delivered to assigned goals |
 
-The full 14-task suite is exposed as `swarmbots.ALL_BENCHMARK_IDS`. See the [scenario catalog](scenarios.md) for all tasks and success conditions. Report per-task values. Reward scales differ between tasks, so an unnormalized average return across the suite is not meaningful.
+The full 15-task suite is exposed as `swarmbots.ALL_BENCHMARK_IDS`. See the [scenario catalog](scenarios.md) for all tasks and success conditions. Report per-task values. Reward scales differ between tasks, so an unnormalized average return across the suite is not meaningful.
 
 ## Evaluation
 
@@ -70,13 +72,15 @@ Critics may use privileged variables during training. Those variables must remai
 Publish or record:
 
 - package version and Git commit;
-- benchmark ID and protocol version;
+- benchmark ID, scenario maturity, and protocol version;
 - all scenario or episode-length overrides (canonical results should have none);
 - policy checkpoint, model architecture, access to other agents' observations, communication restrictions, and deterministic/stochastic action mode;
 - PyTorch, MuJoCo, MuJoCo Warp, Warp, CUDA, driver, and GPU versions;
 - raw `EvaluationResult.to_dict()` outputs for all five seeds.
 
 Changing active-unit distributions, morphology pools, connector semantics, observations, rewards, termination conditions, or physics parameters creates a different benchmark variant.
+
+`metadata.benchmark_maturity` records the base registered task's maturity at evaluation time. It does not validate custom overrides. Maturity can change as testing progresses without changing task behavior; it is separate from the version identifiers needed to reproduce a run.
 
 `EvaluationResult.to_dict()` includes `metadata` containing runtime package versions, Python/platform, device and GPU name, CUDA runtime, the resolved environment settings, requested overrides, actual world count, episode limit, action mode, and caller-supplied policy metadata and source revision. Supply `policy_metadata` with your checkpoint identifier/hash and architecture, and `source_revision` with the benchmark Git commit. Record the NVIDIA driver separately; it is not collected automatically.
 

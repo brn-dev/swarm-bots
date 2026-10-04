@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "swarmbots"
-version = "0.1.0a1"
+version = "0.1.0a2"
 description = "A GPU-vectorized multi-agent benchmark for self-assembling modular robots."
 readme = "README.md"
 requires-python = ">=3.11"

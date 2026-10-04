@@ -33,13 +33,24 @@ def test_registered_scenarios_expose_multi_agent_spaces(benchmark_id: str) -> No
     assert action_space["connectors"].shape[0] == scenario.swarm.num_units
 
 
-def test_partial_observable_wall_randomizes_a_privileged_wall_position() -> None:
+@pytest.mark.parametrize(
+    ("benchmark_id", "wall_height"),
+    [
+        ("SwarmBots-POWallEasy-v0", 0.25),
+        ("SwarmBots-POWallMedium-v0", 0.3),
+        ("SwarmBots-POWallHard-v0", 0.4),
+    ],
+)
+def test_partial_observable_wall_randomizes_a_privileged_wall_position(
+    benchmark_id: str, wall_height: float,
+) -> None:
     scenario = make_scenario(
-        "SwarmBots-POWallMedium-v0",
+        benchmark_id,
         compile_reward_kernel=False,
         reset_settle_time=0.0,
     )
 
+    assert scenario.wall_height == wall_height
     assert isinstance(scenario.wall_distance, UniformDistParams)
     assert scenario.get_single_observation_space()["global_obs"].shape == (0,)
     assert scenario.get_single_observation_space()["hidden_global_vars"].shape == (1,)

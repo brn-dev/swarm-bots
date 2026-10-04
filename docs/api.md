@@ -8,19 +8,22 @@ Use `swarmbots` to discover tasks, create parallel environments, evaluate your o
 from swarmbots import CORE_BENCHMARK_IDS, get_benchmark_spec, list_benchmarks
 
 for spec in list_benchmarks():
-    print(spec.id, spec.description)
+    print(spec.id, spec.maturity, spec.description)
 
 print(CORE_BENCHMARK_IDS)
 spec = get_benchmark_spec("SwarmBots-Climb-v0")
-print(spec.episode_length, spec.supports_success_metric)
+print(spec.maturity, spec.episode_length, spec.supports_success_metric)
 ```
 
-`CORE_BENCHMARK_IDS` contains the eight core tasks; `ALL_BENCHMARK_IDS` contains all 14 registered tasks. Benchmark IDs belong to SwarmBots' own registry, so construct them with `swarmbots.make_env`.
+`CORE_BENCHMARK_IDS` contains the eight core tasks; `ALL_BENCHMARK_IDS` contains all 15 registered tasks. Benchmark IDs belong to SwarmBots' own registry, so construct them with `swarmbots.make_env`.
 
-The CLI exposes the same task descriptions:
+`BenchmarkSpec.maturity` and `spec.to_dict()["maturity"]` expose each task's alpha or beta status. The benchmark as a whole remains alpha; core-suite membership does not imply a validated task. See [scenario maturity and versioning](scenarios.md#scenario-maturity-and-versioning) for the testing criteria and version identifiers.
+
+The CLI exposes the same task descriptions and maturity labels:
 
 ```bash
 swarmbots list
+swarmbots list --json
 swarmbots describe SwarmBots-Climb-v0
 ```
 

@@ -1,6 +1,6 @@
 # Scenario catalog
 
-SwarmBots has 14 registered tasks covering coordinated locomotion, physical reconfiguration, partial observability, and payload transport. Eight tasks form the core evaluation suite. Every task uses the same articulated modular units and actuator/connector interface, so policies must control both the units' movement and their connections.
+SwarmBots has 15 registered tasks covering coordinated locomotion, physical reconfiguration, partial observability, and payload transport. Eight tasks form the core evaluation suite. Every task uses the same articulated modular units and actuator/connector interface, so policies must control both the units' movement and their connections.
 
 | Wall traversal | Finding an opening |
 | --- | --- |
@@ -8,26 +8,52 @@ SwarmBots has 14 registered tasks covering coordinated locomotion, physical reco
 
 These demonstrations illustrate behavior, not canonical evaluation results.
 
+## Scenario maturity and versioning
+
+SwarmBots as a whole is an **alpha benchmark**. Each registered scenario also has a maturity label describing how thoroughly its task design has been tested:
+
+**All fixed-wall and PO-wall variants (easy, medium, and hard), plus FindOpening, are beta; every other registered scenario is alpha.**
+
+| Maturity | Meaning |
+| --- | --- |
+| **Alpha** | Limited task-level testing. Difficulty may be too high or too low, reward functions may encourage unintended behavior, and success conditions or other task details may need revision. |
+| **Beta** | Extensive internal testing, but no feedback from other researchers yet. Task design may still have gaps and is not considered final. |
+| **Stable** | Reserved for a future stage after broader validation and independent research feedback. No scenario currently has this status. |
+
+These labels assess testing confidence, not difficulty, policy performance, or core-suite membership. They apply to the registered defaults; custom variants need their own validation. The overall benchmark remains alpha even when individual scenarios are beta. Report problems and suggestions through [GitHub issues](https://github.com/brn-dev/swarm-bots/issues) or by emailing Dominik Baron at [dominik.b4ron@gmail.com](mailto:dominik.b4ron@gmail.com); useful feedback includes the task ID, package version or Git commit, configuration, seed, and observed behavior.
+
+Maturity and version identifiers serve different purposes:
+
+- **Scenario maturity** (`alpha`, `beta`, or eventually `stable`) records the current testing assessment. It is available as `BenchmarkSpec.maturity`, in `swarmbots list` / `describe`, and as `metadata.benchmark_maturity` in evaluation reports.
+- **Task version** (the `-v0` suffix in a benchmark ID) identifies the registered task definition. A maturity promotion alone does not change the ID. Changes to rewards, observations, success or termination conditions, morphology distributions, or physics that make scores incomparable should use a new task version.
+- **Package version** (such as `0.1.0a2`) identifies the implementation release. Record it and the Git commit, especially for development checkouts; the maturity label and task ID alone do not identify an exact implementation.
+- **Protocol version** (currently `0.1`) identifies the evaluation and reporting procedure, independently of task maturity.
+
 ## Registered tasks
 
-| Benchmark ID | Task | Core suite | Terminal success metric |
-| --- | --- | --- | --- |
-| `SwarmBots-WallEasy-v0` | fixed 0.2 m wall | no | yes |
-| `SwarmBots-WallMedium-v0` | fixed 0.3 m wall | yes | yes |
-| `SwarmBots-WallHard-v0` | fixed 0.4 m wall | no | yes |
-| `SwarmBots-POWallEasy-v0` | randomized hidden 0.25 m wall | no | yes |
-| `SwarmBots-POWallMedium-v0` | randomized hidden 0.3 m wall | yes | yes |
-| `SwarmBots-Bridge-v0` | narrow movable bridge traversal | yes | yes |
-| `SwarmBots-FindOpening-v0` | hidden-opening exploration | yes | yes |
-| `SwarmBots-Climb-v0` | platform climbing | yes | yes |
-| `SwarmBots-VerticalReach-v0` | elevated goal reaching | yes | yes |
-| `SwarmBots-PayloadPlane-v0` | single-payload transport | no | no; report return |
-| `SwarmBots-PayloadStep-v0` | payload transport over a step | yes | yes |
-| `SwarmBots-DualPayloadPlane-v0` | two-payload transport | no | no; report return |
-| `SwarmBots-MultiPayloadGoal-v0` | variable payload-to-goal assignment | yes | yes |
-| `SwarmBots-MoveTo-v0` | sampled-goal navigation | no | no; report return |
+| Benchmark ID | Task | Maturity | Core suite | Terminal success metric |
+| --- | --- | --- | --- | --- |
+| `SwarmBots-WallEasy-v0` | fixed 0.2 m wall | Beta | no | yes |
+| `SwarmBots-WallMedium-v0` | fixed 0.3 m wall | Beta | yes | yes |
+| `SwarmBots-WallHard-v0` | fixed 0.4 m wall | Beta | no | yes |
+| `SwarmBots-POWallEasy-v0` | connected locomotion over a hidden 0.25 m wall | Beta | no | yes |
+| `SwarmBots-POWallMedium-v0` | connected locomotion over a hidden 0.3 m wall | Beta | yes | yes |
+| `SwarmBots-POWallHard-v0` | connected locomotion over a hidden 0.4 m wall | Beta | no | yes |
+| `SwarmBots-Bridge-v0` | narrow movable bridge traversal | Alpha | yes | yes |
+| `SwarmBots-FindOpening-v0` | exploration within an episode to find a hidden opening | Beta | yes | yes |
+| `SwarmBots-Climb-v0` | platform climbing | Alpha | yes | yes |
+| `SwarmBots-VerticalReach-v0` | elevated goal reaching | Alpha | yes | yes |
+| `SwarmBots-PayloadPlane-v0` | single-payload transport | Alpha | no | no; report return |
+| `SwarmBots-PayloadStep-v0` | payload transport over a step | Alpha | yes | yes |
+| `SwarmBots-DualPayloadPlane-v0` | two-payload transport | Alpha | no | no; report return |
+| `SwarmBots-MultiPayloadGoal-v0` | variable payload-to-goal assignment | Alpha | yes | yes |
+| `SwarmBots-MoveTo-v0` | sampled-goal navigation | Alpha | no | no; report return |
 
-Fixed walls provide three obstacle heights. Partially observable walls randomize hidden geometry, while FindOpening requires exploration to locate a passage. Bridge adds a narrow movable support. Climb requires all active units to reach a platform goal; VerticalReach succeeds when at least one unit reaches the elevated goal volume. Payload tasks extend coordination to external objects, including multiple payloads with individual goals.
+Wall and PO-wall tasks primarily challenge connected locomotion through coordinated movement and physical connections during obstacle traversal. Fixed walls provide three heights: 0.2, 0.3, and 0.4 m. PO-wall adds difficulty through partial observability and randomized hidden geometry, with heights of 0.25, 0.3, and 0.4 m. The hard PO-wall shares the medium variant's observations, rewards, and randomization, with a higher wall.
+
+FindOpening focuses on partial observability and exploration within an episode. The task combines discovery of a hidden passage using observations gathered during that episode with coordinated swarm traversal through it.
+
+Bridge adds a narrow movable support. Climb requires all active units to reach a platform goal; VerticalReach succeeds when at least one unit reaches the elevated goal volume. Payload tasks extend coordination to external objects, including multiple payloads with individual goals.
 
 Use `swarmbots.CORE_BENCHMARK_IDS` or `swarmbots.ALL_BENCHMARK_IDS` to select a suite, and follow the [benchmark protocol](benchmark_protocol.md) for comparable scores. Returns must be reported per task because reward scales differ.
 
@@ -62,7 +88,8 @@ Shared task features in `global_obs` are positions in world coordinates unless s
 
 | Task | Shared features |
 | --- | --- |
-| Wall, PO Wall, Bridge, FindOpening | Empty; privileged obstacle information is not actor input |
+| Wall, PO Wall, Bridge | Empty; privileged obstacle information is not actor input |
+| FindOpening | Empty; privileged opening information is not actor input |
 | Climb, VerticalReach | Goal position `(x, y, z)` |
 | MoveTo | Goal position `(x, y)` |
 | PayloadPlane, PayloadStep | Payload position `(x, y, z)`, followed by its six-dimensional orientation |

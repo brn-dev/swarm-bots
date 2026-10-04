@@ -16,7 +16,7 @@ def make_scenario_kwargs(*parts: Mapping[str, object]) -> dict[str, object]:
     return merged
 
 WallDifficulty = Literal["easy", "medium", "hard"]
-PoWallDifficulty = Literal["easy", "medium"]
+PoWallDifficulty = Literal["easy", "medium", "hard"]
 
 COMMON_SCENARIO_KWARGS: dict[str, object] = {
     "timestep": 0.003,
@@ -265,6 +265,9 @@ PO_WALL_DIFFICULTY_UPDATES: dict[PoWallDifficulty, dict[str, object]] = {
     "medium": {
         "wall_height": 0.3,
     },
+    "hard": {
+        "wall_height": 0.4,
+    },
 }
 
 
@@ -276,3 +279,4 @@ def po_wall_scenario_kwargs_with_difficulty(
 
 PO_WALL_EASY_SCENARIO_KWARGS = po_wall_scenario_kwargs_with_difficulty("easy")
 PO_WALL_MEDIUM_SCENARIO_KWARGS = po_wall_scenario_kwargs_with_difficulty("medium")
+PO_WALL_HARD_SCENARIO_KWARGS = po_wall_scenario_kwargs_with_difficulty("hard")

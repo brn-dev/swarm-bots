@@ -42,7 +42,7 @@ def _list_command(*, as_json: bool) -> None:
         print(json.dumps([spec.to_dict() for spec in specs], indent=2))
         return
     for spec in specs:
-        print(f"{spec.id:<38} {spec.description}")
+        print(f"{spec.id:<38} [{spec.maturity}] {spec.description}")
 
 
 def _describe_command(benchmark_id: str) -> None:

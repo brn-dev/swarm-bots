@@ -4,6 +4,8 @@ SwarmBots is a **GPU-vectorized multi-agent reinforcement-learning benchmark for
 
 The task suite spans wall and bridge traversal, exploration under partial observability, climbing, navigation, and cooperative payload transport. Use your own learning algorithm with the benchmark's environment and evaluation API, or start with the included learning baselines.
 
+**SwarmBots is an alpha benchmark under active development.** Scenario difficulty, reward functions, and benchmark design are still being evaluated. Suggestions, bug reports, and feedback from researchers are welcome through [GitHub issues](https://github.com/brn-dev/swarm-bots/issues) or by emailing Dominik Baron at [dominik.b4ron@gmail.com](mailto:dominik.b4ron@gmail.com), especially reports of tasks that are too easy, too hard, or reward unintended behavior.
+
 | Wall traversal | Finding a hidden opening |
 | --- | --- |
 | ![SwarmBots wall traversal](https://raw.githubusercontent.com/brn-dev/swarm-bots/main/docs/assets/wall.gif) | ![SwarmBots finding an opening](https://raw.githubusercontent.com/brn-dev/swarm-bots/main/docs/assets/find-opening.gif) |
@@ -13,32 +15,38 @@ See the [scenario catalog](https://github.com/brn-dev/swarm-bots/blob/main/docs/
 ## Benchmark highlights
 
 - **Physical self-assembly.** Agents control articulated limbs and connectors. Forming or releasing a connection changes how the units can move together and transmit forces.
-- **Partial observability.** Hidden-wall and hidden-opening tasks require policies to act without direct access to obstacle geometry. Privileged simulator information is available for training critics, but excluded from evaluated actors.
+- **Partial observability and exploration.** FindOpening emphasizes exploration within an episode to locate a hidden passage. PO-wall adds partial observability to the connected locomotion challenge of wall traversal. Privileged simulator information is available for training critics, but excluded from evaluated actors.
 - **Variable assemblies.** Registered tasks sample initial morphologies with four or five active units. An agent mask identifies active units within five padded slots.
 - **GPU simulation.** Built on [MuJoCo Warp](https://github.com/google-deepmind/mujoco_warp), SwarmBots runs parallel worlds and keeps observations, actions, and rewards as PyTorch tensors on the simulation device.
 
 ## Task suite
 
-The full suite has **14 registered tasks**, including an **eight-task core suite** for evaluation. Task names below expand to `SwarmBots-<name>-v0`.
+The full suite has **15 registered tasks**, including an **eight-task core suite** for evaluation. Task names below expand to `SwarmBots-<name>-v0`.
 
-| Task family | Tasks | Challenge |
-| --- | --- | --- |
-| Obstacle traversal | `WallEasy`, `WallMedium`, `WallHard`, `Bridge` | Cross walls from 0.2 to 0.4 m high or a narrow movable bridge. |
-| Partial observability | `POWallEasy`, `POWallMedium`, `FindOpening` | Cross a randomized hidden wall or explore to find a hidden opening. |
-| Climbing and navigation | `Climb`, `VerticalReach`, `MoveTo` | Climb onto a platform, reach an elevated goal, or move toward a sampled planar goal. |
-| Payload transport | `PayloadPlane`, `PayloadStep`, `DualPayloadPlane`, `MultiPayloadGoal` | Move one or more payloads, overcome a step, and deliver a variable set of payloads to assigned goals. |
+| Task family | Tasks | Maturity | Challenge                                                                                                                |
+| --- | --- | --- |--------------------------------------------------------------------------------------------------------------------------|
+| Wall traversal | `WallEasy`, `WallMedium`, `WallHard` | Beta | Connected locomotion over fixed walls from 0.2 to 0.4 m high.                                                            |
+| PO-wall traversal | `POWallEasy`, `POWallMedium`, `POWallHard` | Beta | Connected locomotion over randomized hidden walls from 0.25 to 0.4 m high, with partial observability adding difficulty. |
+| Bridge traversal | `Bridge` | Alpha | Locomotion across a narrow movable bridge.                                                                               |
+| Exploration under partial observability | `FindOpening` | Beta | Exploration within an episode to locate and pass through a hidden opening.                                               |
+| Climbing and navigation | `Climb`, `VerticalReach`, `MoveTo` | Alpha | Platform climbing, elevated goal reaching, and navigation toward sampled planar goals.                                  |
+| Payload transport | `PayloadPlane`, `PayloadStep`, `DualPayloadPlane`, `MultiPayloadGoal` | Alpha | Cooperative payload transport, step traversal, and delivery of variable payload sets to assigned goals.                  |
 
 The core suite covers medium fixed and hidden walls, bridge traversal, finding an opening, climbing, vertical reach, payload-over-step transport, and multi-payload goal transport. Access it through `swarmbots.CORE_BENCHMARK_IDS`; `swarmbots.ALL_BENCHMARK_IDS` exposes the full suite.
+
+Scenario maturity is tracked separately from the overall benchmark's alpha status. **Beta** scenarios have undergone extensive internal testing, but have not yet received feedback from other researchers and are not considered final. **Alpha** scenarios have seen limited testing; their difficulty, rewards, or success conditions may need revision. Core-suite membership indicates task coverage, not maturity. See the [scenario maturity and versioning guide](https://github.com/brn-dev/swarm-bots/blob/main/docs/scenarios.md#scenario-maturity-and-versioning) for per-task labels and how they relate to package releases and `-v0` task IDs.
 
 Each task defines its own rewards and, where applicable, a terminal success condition. The [scenario catalog](https://github.com/brn-dev/swarm-bots/blob/main/docs/scenarios.md) lists exact benchmark IDs, observations, and success criteria. Scenario parameters are customizable for new experiments; report modified tasks as custom variants.
 
 ## Install
 
-Python 3.11 or newer is required. CUDA is strongly recommended; CPU execution exists for development and tests but is not the benchmark's performance target. SwarmBots is currently versioned as an alpha. Once `0.1.0a1` is published to PyPI, install it explicitly with:
+Python 3.11 or newer is required. CUDA is strongly recommended; CPU execution exists for development and tests but is not the benchmark's performance target. SwarmBots is currently versioned as an alpha. Install the alpha release explicitly with:
 
 ```bash
-uv add "swarmbots==0.1.0a1"
+uv add "swarmbots==0.1.0a2"
 ```
+
+**On Windows, installing from PyPI selects CPU-only PyTorch by default.** Before running the CUDA examples below, configure CUDA PyTorch and matching Windows Triton in your application project using the [published-package GPU setup guide](https://github.com/brn-dev/swarm-bots/blob/main/docs/gpu_setup.md#using-the-published-package). The source checkout's CUDA configuration is not inherited by projects that install SwarmBots from PyPI.
 
 Install from source:
 
@@ -166,7 +174,7 @@ The [documentation guide](https://github.com/brn-dev/swarm-bots/blob/main/docs/R
 - [Policy recording and video options](https://github.com/brn-dev/swarm-bots/blob/main/docs/recording.md)
 - [Optional learning baselines and presets](https://github.com/brn-dev/swarm-bots/blob/main/docs/learning.md)
 
-The API is alpha. Benchmark IDs and protocol versions are explicit so semantic changes can be introduced without silently invalidating results.
+The benchmark and API are alpha. Scenario maturity labels describe testing confidence; benchmark IDs, package releases, and protocol versions identify the task definition, implementation, and evaluation procedure used in an experiment. Record the exact package version and Git commit when reporting results.
 
 ## Citation
 
