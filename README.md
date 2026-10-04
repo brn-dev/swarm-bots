@@ -8,7 +8,7 @@ The task suite spans wall and bridge traversal, exploration under partial observ
 | --- | --- |
 | ![SwarmBots wall traversal](https://raw.githubusercontent.com/brn-dev/swarm-bots/main/docs/assets/wall.gif) | ![SwarmBots finding an opening](https://raw.githubusercontent.com/brn-dev/swarm-bots/main/docs/assets/find-opening.gif) |
 
-These rollouts illustrate the tasks; they are not reference scores for protocol 0.1. See the [scenario catalog](https://github.com/brn-dev/swarm-bots/blob/main/docs/scenarios.md) for task definitions.
+See the [scenario catalog](https://github.com/brn-dev/swarm-bots/blob/main/docs/scenarios.md) for task definitions.
 
 ## Benchmark highlights
 
