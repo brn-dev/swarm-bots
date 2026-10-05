@@ -17,15 +17,19 @@ from swarmbots.learn.algos.ppo.ppo_sampler import PPOSamplerConfig
 from swarmbots.learn.algos.r_mat.r_ppo_wm_sampler import RPPOWMSamplerConfig
 from swarmbots.learn.algos.sac.recurrent_sac import RecurrentSAC
 from swarmbots.learn.algos.sac.sac import SAC
+from swarmbots.learn.algos.td3 import DDPG, TD3, RecurrentTD3
 from swarmbots.learn.algos.world_modeling.next_obs_pred_mixin import NextObsPredConfig
 from swarmbots.learn.algos.world_modeling.next_obs_pred_ppo_wrapper import NextObsPredWrapper, NOPWorldModelConfig
 from swarmbots.learn.algos.world_modeling.ppo_wm_sampler import PPOWMSamplerConfig
 from swarmbots.learn.base_policy import BasePolicy
 from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
 from swarmbots.learn.gsde_reset import GSDEProbabilityResetMode
+from swarmbots.learn.nn_components.feed_forward import MLPConfig
 from swarmbots.learn.obs_indices import ObsIndices
 from swarmbots.learn.presets.policy_factory import (
     ContinuousActionDistVariant,
+    _is_deterministic_policy_variant,
+    _is_off_policy_variant,
     _is_sac_policy_variant,
     _make_base_policy,
     _make_mat_parameter_lr_multipliers,
@@ -55,12 +59,16 @@ def _variant_options(variant: str) -> tuple[dict[str, Any], dict[str, Any]]:
     else:
         policy_options = {"policy_variant": config.policy_variant}
         algorithm_options = {}
+    deterministic = _is_deterministic_policy_variant(policy_options["policy_variant"])
+    if deterministic or variant in {"masac_mlp", "masac_deepset"}:
+        policy_options["mat_encoder_transformer_ff_config"] = MLPConfig(hidden_dims=[512, 512])
+    default_distribution = None if deterministic else (
+        "predicted_std_gaussian"
+        if _is_sac_policy_variant(policy_options["policy_variant"])
+        else "sign_magnitude_beta"
+    )
     policy_options.update(
-        continuous_action_dist=(
-            "predicted_std_gaussian"
-            if _is_sac_policy_variant(policy_options["policy_variant"])
-            else "sign_magnitude_beta"
-        ),
+        continuous_action_dist=default_distribution,
         use_nop=config.use_nop,
         mat_use_agent_attention=config.use_agent_attention,
     )
@@ -138,8 +146,8 @@ def _make_policy_env(
     gamma: float = 0.99,
     compile_modules: bool = False,
 ) -> tuple[BaseLearnEnvWrapper, BasePolicy]:
-    is_sac = _is_sac_policy_variant(policy_options["policy_variant"])
-    use_popart = policy_options.get("use_popart", not is_sac)
+    is_off_policy = _is_off_policy_variant(policy_options["policy_variant"])
+    use_popart = policy_options.get("use_popart", not is_off_policy)
     torch.manual_seed(seed)
     vector_env = make_env(
         benchmark_id,
@@ -183,7 +191,7 @@ def _make_policy_env(
         }
         policy_builder_options.update(policy_options)
         policy = _make_base_policy(env=env, obs_indices=indices, **policy_builder_options)
-        if policy_builder_options["use_nop"] and not is_sac:
+        if policy_builder_options["use_nop"] and not is_off_policy:
             policy = _add_ppo_nop(policy, env, indices, policy_builder_options)
         set_actuator_gsde_init_joint_stds(
             policy=policy,
@@ -212,13 +220,13 @@ def make_training(
     rollout_steps_per_env: int | None = None,
     policy_kwargs: Mapping[str, Any] | None = None,
     algorithm_kwargs: Mapping[str, Any] | None = None,
-) -> PPO | SAC | RecurrentSAC:
+) -> PPO | SAC | RecurrentSAC | TD3 | DDPG:
     """Create a trainer owning its wrapped environment; the caller must close it.
 
     Architectures and optimizer defaults come from the selected preset. Task
     settings, including episode length and settled resets, come from the registry.
     ``policy_kwargs`` overrides the arguments to the preset policy builder;
-    ``algorithm_kwargs`` overrides arguments to PPO/SAC/RecurrentSAC.
+    ``algorithm_kwargs`` overrides arguments to PPO/SAC/RecurrentSAC/TD3/DDPG.
     """
     policy_options, algorithm_options = _variant_options(variant)
     policy_options.update(policy_kwargs or {})
@@ -229,6 +237,8 @@ def make_training(
         policy_options["use_nop"] = use_nop
     policy_variant = policy_options["policy_variant"]
     is_sac = _is_sac_policy_variant(policy_variant)
+    is_deterministic = _is_deterministic_policy_variant(policy_variant)
+    is_off_policy = is_sac or is_deterministic
     is_recurrent_ppo = policy_variant in {"mat_ind_lstm", "mat_qcx_lstm"}
     if (
         "use_popart" in policy_options
@@ -236,10 +246,10 @@ def make_training(
         and policy_options["use_popart"] != algorithm_options["use_popart"]
     ):
         raise ValueError("use_popart must agree in policy_kwargs and algorithm_kwargs")
-    use_popart = policy_options.setdefault("use_popart", algorithm_options.pop("use_popart", not is_sac))
+    use_popart = policy_options.setdefault("use_popart", algorithm_options.pop("use_popart", not is_off_policy))
     gamma = algorithm_options.get("gamma", 0.99)
     if rollout_steps_per_env is None:
-        rollout_steps_per_env = 1 if is_sac else 4
+        rollout_steps_per_env = 1 if is_off_policy else 4
     if rollout_steps_per_env <= 0:
         raise ValueError("rollout_steps_per_env must be positive")
     env, policy = _make_policy_env(
@@ -268,9 +278,11 @@ def make_training(
             "gsde_reset_mode": GSDEProbabilityResetMode(probability=1 / 6),
         }
         rollout_samples = num_envs * rollout_steps_per_env
-        if is_sac:
-            recurrent = policy_variant in {"tmasac_recurrent", "tmasac_segment"}
+        if is_off_policy:
+            recurrent = policy.requires_recurrent_training()
             algorithm_class = RecurrentSAC if recurrent else SAC
+            if is_deterministic:
+                algorithm_class = DDPG if policy_variant.startswith("maddpg") else RecurrentTD3 if recurrent else TD3
             algorithm_config = {
                 "learning_rate": 3e-4,
                 "buffer_capacity_per_env": vector_env.episode_length * 2,
@@ -278,12 +290,19 @@ def make_training(
                 "batch_size": rollout_samples,
                 "rollout_steps_per_iteration": rollout_samples,
                 "gradient_steps": 8,
-                "ent_coef": "auto_0.05",
-                "ent_coef_learning_rate": 1e-3,
-                "target_entropy": "auto_0.5",
                 "replay_storage_device": device,
                 "tau": 0.005,
             }
+            if is_sac:
+                algorithm_config.update(ent_coef="auto_0.05", ent_coef_learning_rate=1e-3, target_entropy="auto_0.5")
+            if is_deterministic and recurrent:
+                algorithm_config.update(
+                    batch_size=16,
+                    burn_in_steps=32,
+                    learning_steps=64,
+                    temporal_state_store_interval=16,
+                    temporal_state_storage_dtype=torch.float16,
+                )
             algorithm_config.update(shared_options)
             algorithm_config.update(algorithm_options)
             if "buffer_capacity_per_env" not in (algorithm_kwargs or {}):

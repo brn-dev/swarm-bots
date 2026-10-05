@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Literal
@@ -7,6 +8,7 @@ from typing import Any, Literal
 import torch
 
 from swarmbots.benchmark.recording import _record_episodes
+from swarmbots.learn.algos.td3.td3_policy import TD3Policy
 from swarmbots.learn.benchmark_policy import BenchmarkPolicy
 from swarmbots.learn.checkpointing import (
     align_torch_compile_state_dict_keys,
@@ -30,6 +32,7 @@ def record_checkpoint(
     num_episodes: int = 5,
     max_parallel_episodes: int = 4,
     deterministic: bool = True,
+    exploration_noise: float | None = None,
     device: str | torch.device = "auto",
     seed: int = 1_000,
     episode_length: int | None = None,
@@ -51,6 +54,8 @@ def record_checkpoint(
     Restores policy weights and normalization, including compiled checkpoint
     keys. The task, architecture, distribution and NOP settings must match the
     checkpoint. Replay buffers and optimizer state are not needed for inference.
+    DDPG/TD3 exploration noise is restored from saved policy settings unless
+    explicitly overridden; older checkpoints use the policy default.
     """
     if num_episodes <= 0 or max_parallel_episodes <= 0:
         raise ValueError("num_episodes and max_parallel_episodes must be positive")
@@ -74,6 +79,15 @@ def record_checkpoint(
         compile_modules=compile_modules,
     )
     try:
+        if isinstance(policy, TD3Policy):
+            if exploration_noise is None:
+                saved_settings = checkpoint.get("policy_hyper_parameters", {})
+                exploration_noise = saved_settings.get("exploration_noise", policy.exploration_noise)
+            if not math.isfinite(exploration_noise) or exploration_noise < 0:
+                raise ValueError("exploration_noise must be finite and nonnegative")
+            policy.exploration_noise = float(exploration_noise)
+        elif exploration_noise is not None:
+            raise ValueError("exploration_noise is only supported for DDPG/TD3 checkpoint recordings")
         policy.load_state_dict(
             align_torch_compile_state_dict_keys(
                 extract_policy_state_dict(checkpoint),

@@ -52,6 +52,10 @@ from swarmbots.learn.algos.sac.tmasac_policy import (
     TMASACPolicy,
     TMASACPolicyConfig,
 )
+from swarmbots.learn.algos.off_policy.joint_critic import JointCriticConfig
+from swarmbots.learn.algos.td3.recurrent_td3_policy import RecurrentTD3Policy, RecurrentTD3PolicyConfig
+from swarmbots.learn.algos.sac.masac_policy import MASACPolicy, MASACPolicyConfig
+from swarmbots.learn.algos.td3.td3_policy import TD3Policy, TD3PolicyConfig
 from swarmbots.learn.algos.world_modeling.next_obs_pred_mixin import NextObsPredConfig
 from swarmbots.learn.nn_components.activations import ActivationFactory
 from swarmbots.learn.nn_components.deep_set import DeepSetCriticConfig
@@ -73,6 +77,8 @@ ContinuousActionDistVariant = Literal[
 ]
 
 PolicyVariant = Literal[
+    "maddpg_mlp", "maddpg_deepset", "matd3_mlp", "matd3_deepset",
+    "masac_mlp", "masac_deepset", "tmatd3", "tmatd3_dec",
     "mat_qcx",
     "mat_dec",
     "mat_ind",
@@ -83,6 +89,8 @@ PolicyVariant = Literal[
     "ppo_small",
     "mappo",
     "mappo_small",
+    "mappo_mlp",
+    "mappo_mlp_small",
     "tmasac",
     "tmasac_dec",
     "tmasac_recurrent",
@@ -91,7 +99,15 @@ PolicyVariant = Literal[
 
 
 def _is_sac_policy_variant(policy_variant: PolicyVariant) -> bool:
-    return policy_variant in {"tmasac", "tmasac_dec", "tmasac_recurrent", "tmasac_segment"}
+    return policy_variant in {"masac_mlp", "masac_deepset", "tmasac", "tmasac_dec", "tmasac_recurrent", "tmasac_segment"}
+
+
+def _is_deterministic_policy_variant(policy_variant: PolicyVariant) -> bool:
+    return policy_variant in {"maddpg_mlp", "maddpg_deepset", "matd3_mlp", "matd3_deepset", "tmatd3", "tmatd3_dec"}
+
+
+def _is_off_policy_variant(policy_variant: PolicyVariant) -> bool:
+    return _is_sac_policy_variant(policy_variant) or _is_deterministic_policy_variant(policy_variant)
 
 
 def wrap_vec_env(
@@ -168,6 +184,8 @@ def set_actuator_gsde_init_joint_stds(
 ) -> None:
     from swarmbots.learn.action_dists.gsde_action_dist import GSDEActionDist
 
+    if not policy.gsde_enabled:
+        return
     gsde_dist = next(
         (dist for dist in policy.action_dist.distributions if isinstance(dist, GSDEActionDist)),
         None,
@@ -396,7 +414,7 @@ def _make_base_policy(
     popart_init_sigma: float,
     compile_policy_modules: bool,
     policy_compile_mode: str,
-    continuous_action_dist: ContinuousActionDistVariant,
+    continuous_action_dist: ContinuousActionDistVariant | None,
     gsde_init_stds: list[float],
     mat_add_agent_embeddings: bool,
     mat_use_agent_attention: bool,
@@ -433,6 +451,15 @@ def _make_base_policy(
     rmat_experimental_compile_lstm: bool = False,
     assume_agent_mask_is_active_prefix: bool = False,
     bernoulli_initial_prob: float = 0.8,
+    baseline_critic_hidden_dims: tuple[int, ...] = (512, 512, 512),
+    baseline_critic_element_hidden_dims: tuple[int, ...] = (512, 512, 512),
+    baseline_critic_context_in_elements: bool = True,
+    mappo_critic_context_in_elements: bool = True,
+    mat_joint_obs_embedding: bool = False,
+    critic_independent_encoders: bool | None = None,
+    td3_recurrent_actor: bool = False,
+    td3_recurrent_critic: bool = False,
+    td3_actor_state_critic_input_config: ActorStateCriticInputConfig | Literal["auto"] | None = "auto",
 ) -> (
     PPOPolicy
     | MAPPOPolicy
@@ -445,14 +472,28 @@ def _make_base_policy(
     | TMASACPolicy
     | RecurrentTMASACPolicy
     | SegmentTMASACPolicy
+    | TD3Policy
 ):
     sac_policy_variant = _is_sac_policy_variant(policy_variant)
+    deterministic_policy_variant = _is_deterministic_policy_variant(policy_variant)
+    if td3_recurrent_actor or td3_recurrent_critic:
+        if not deterministic_policy_variant or policy_variant.startswith("maddpg"):
+            raise ValueError("TD3 recurrence options require a TD3 preset")
+        if td3_recurrent_critic and (not td3_recurrent_actor or not policy_variant.startswith("tmatd3")):
+            raise ValueError("A recurrent TD3 critic requires a TMATD3 preset and td3_recurrent_actor=True")
+    if deterministic_policy_variant:
+        if continuous_action_dist is not None:
+            raise ValueError("DDPG/TD3 use deterministic actors; configure exploration_noise in algorithm_kwargs")
+        if use_popart:
+            raise ValueError("DDPG/TD3 baselines require use_popart=False")
+    if use_nop and policy_variant in {"maddpg_mlp", "matd3_mlp", "masac_mlp"}:
+        raise ValueError("MLP critics do not support NOP; use a Deep Set or transformer critic")
     continuous_config = make_continuous_config(
         variant=continuous_action_dist,
         gsde_init_stds=gsde_init_stds,
         action_net_init_gain=mat_init_gains.action_net,
         ent_loss_coef=0.0 if sac_policy_variant else 1e-3,
-    )
+    ) if not deterministic_policy_variant else None
     bernoulli_config = BernoulliConfig(
         initial_prob=bernoulli_initial_prob,
         ent_loss_coef=1e-3,
@@ -481,6 +522,7 @@ def _make_base_policy(
         normalize_obs_inputs=mat_normalization.normalize_obs_inputs,
         normalize_tokens=mat_normalization.normalize_encoder_tokens,
         use_agent_attention=mat_use_agent_attention,
+        joint_obs_embedding=mat_joint_obs_embedding,
     )
     rmat_encoder_config = RMATEncoderConfig(
         d_model=enc_d_model,
@@ -498,6 +540,7 @@ def _make_base_policy(
         normalize_obs_inputs=mat_normalization.normalize_obs_inputs,
         normalize_tokens=mat_normalization.normalize_encoder_tokens,
         use_agent_attention=mat_use_agent_attention,
+        joint_obs_embedding=mat_joint_obs_embedding,
         temporal_residual=rmat_temporal_residual,
         temporal_layer_norm=rmat_temporal_layer_norm,
         use_temporal_output_projection=rmat_use_temporal_output_projection,
@@ -519,6 +562,60 @@ def _make_base_policy(
         global_obs_encoder_config=MLPConfig(hidden_dims=[resolved_rmat_actor_d_model]),
         inter_module_mlp=rmat_actor_inter_module_mlp,
     )
+
+    joint_critic_config = JointCriticConfig(
+        kind="deepset" if policy_variant.endswith("_deepset") else "mlp",
+        hidden_dims=tuple(baseline_critic_hidden_dims),
+        element_hidden_dims=tuple(baseline_critic_element_hidden_dims),
+        context_in_elements=baseline_critic_context_in_elements,
+    )
+    if deterministic_policy_variant:
+        policy_class = RecurrentTD3Policy if td3_recurrent_actor else TD3Policy
+        config_class = RecurrentTD3PolicyConfig if td3_recurrent_actor else TD3PolicyConfig
+        return policy_class(env, config_class(
+            **({
+                "recurrent_critic": td3_recurrent_critic,
+                "actor_state_critic_input_config": td3_actor_state_critic_input_config,
+            } if td3_recurrent_actor else {}),
+            actor_encoder_config=replace(
+                rmat_actor_encoder_config if td3_recurrent_actor else mat_encoder_config,
+                use_agent_attention=policy_variant == "tmatd3",
+            ),
+            actor_head_config=TMASACActorHeadConfig(
+                hidden_dims=[dec_d_model], normalize_input=mat_normalization.normalize_actor_head_input,
+                init_gain=mat_init_gains.actor_head,
+            ),
+            critic_encoder_config=replace(
+                rmat_encoder_config if td3_recurrent_critic else mat_encoder_config, use_agent_attention=True,
+            ),
+            transformer_critic_config=TMASACCriticConfig(
+                independent_encoders=False if critic_independent_encoders is None else critic_independent_encoders,
+                n_local_projection_hidden_layers=2,
+                n_value_regressor_hidden_layers=1,
+                local_projection_init_gain=mat_init_gains.critic_local_projection,
+                value_regressor_init_gain=mat_init_gains.critic_value_regressor,
+                value_head_init_gain=mat_init_gains.critic_value_head,
+            ),
+            critic_kind="transformer" if policy_variant.startswith("tmatd3") else joint_critic_config.kind,
+            joint_critic_config=joint_critic_config,
+            n_critics=1 if policy_variant.startswith("maddpg") else 2,
+            nop_config=_make_sac_nop_config(
+                use_nop=use_nop, obs_indices=obs_indices, source_latent_dim=enc_d_model,
+                nop_init_gains=nop_init_gains,
+                nop_add_agent_embeddings_transition_model=nop_add_agent_embeddings_transition_model,
+                nop_skip_first_transition_for_critic=nop_skip_first_transition_for_critic,
+                latent_source=_resolve_tmasac_nop_latent_source(
+                    shared_encoder_num_layers=tmasac_shared_encoder_num_layers,
+                    latent_source=tmasac_nop_latent_source,
+                ),
+                compile_world_model_modules=compile_world_model_modules,
+                policy_compile_mode=policy_compile_mode, world_model_loss_coef=world_model_loss_coef,
+                num_next_steps=world_model_num_next_steps, transition_model_d_model=transition_model_d_model,
+                transition_model_nhead=transition_model_nhead, act_fn_cls=act_fn_cls,
+            ),
+            action_net_init_gain=mat_init_gains.action_net,
+            compile_modules=compile_policy_modules, compile_mode=policy_compile_mode,
+        ))
 
     if sac_policy_variant:
         if use_popart:
@@ -551,7 +648,11 @@ def _make_base_policy(
                 )
             ),
             "actor_head_config": TMASACActorHeadConfig(
-                kind=(TMASACActorHeadKind.DECENTRALIZED if policy_variant == "tmasac_dec" else tmasac_actor_head_kind),
+                kind=(
+                    TMASACActorHeadKind.DECENTRALIZED
+                    if policy_variant in {"tmasac_dec", "masac_mlp", "masac_deepset"}
+                    else tmasac_actor_head_kind
+                ),
                 hidden_dims=[dec_d_model],
                 normalize_input=mat_normalization.normalize_actor_head_input,
                 init_gain=mat_init_gains.actor_head,
@@ -575,6 +676,7 @@ def _make_base_policy(
                 ),
             ),
             "critic_config": TMASACCriticConfig(
+                independent_encoders=False if critic_independent_encoders is None else critic_independent_encoders,
                 n_local_projection_hidden_layers=2,
                 n_value_regressor_hidden_layers=1,
                 separate_observation_action_encoders=tmasac_separate_observation_action_encoders,
@@ -608,6 +710,10 @@ def _make_base_policy(
             "compile_mode": policy_compile_mode,
             "action_net_init_gain": mat_init_gains.action_net,
         }
+        if policy_variant in {"masac_mlp", "masac_deepset"}:
+            return MASACPolicy(env, MASACPolicyConfig(
+                joint_critic_config=joint_critic_config, **tmasac_config_kwargs,
+            ))
         if policy_variant == "tmasac_recurrent":
             return RecurrentTMASACPolicy(
                 env=env,
@@ -675,48 +781,27 @@ def _make_base_policy(
             ),
         )
 
-    if policy_variant == "mappo":
+    if policy_variant in {"mappo", "mappo_small", "mappo_mlp", "mappo_mlp_small"}:
+        small = policy_variant.endswith("_small")
+        mlp_critic = policy_variant in {"mappo_mlp", "mappo_mlp_small"}
+        value_regressor_hidden_dims = [192, 128] if small else [256, 128]
         return MAPPOPolicy(
             env=env,
             config=MAPPOPolicyConfig(
                 actor_config=MAPPOActorConfig(
-                    hidden_dims=[768, 512, 512, 384],
+                    hidden_dims=[512, 512, 384, 256] if small else [768, 512, 512, 384],
                     shared_encoder_latent_dim=256,
                     actor_head_hidden_dims=[128],
-                    latent_pi_dim=128,
+                    latent_pi_dim=112 if small else 128,
                     act_fun_class=act_fn_cls,
                 ),
                 critic_config=MAPPOCriticConfig(
-                    deep_set_config=DeepSetCriticConfig(
-                        local_projection_hidden_dims=[256, 128],
-                        value_regressor_hidden_dims=[256, 128],
+                    mlp_hidden_dims=value_regressor_hidden_dims if mlp_critic else [],
+                    deep_set_config=None if mlp_critic else DeepSetCriticConfig(
+                        local_projection_hidden_dims=[224, 112] if small else [256, 128],
+                        value_regressor_hidden_dims=value_regressor_hidden_dims,
                     ),
-                    act_fun_class=act_fn_cls,
-                    use_popart=use_popart,
-                ),
-                continuous_config=continuous_config,
-                bernoulli_config=bernoulli_config,
-                compile_modules=compile_policy_modules,
-                compile_mode=policy_compile_mode,
-            ),
-        )
-
-    if policy_variant == "mappo_small":
-        return MAPPOPolicy(
-            env=env,
-            config=MAPPOPolicyConfig(
-                actor_config=MAPPOActorConfig(
-                    hidden_dims=[512, 512, 384, 256],
-                    shared_encoder_latent_dim=256,
-                    actor_head_hidden_dims=[128],
-                    latent_pi_dim=112,
-                    act_fun_class=act_fn_cls,
-                ),
-                critic_config=MAPPOCriticConfig(
-                    deep_set_config=DeepSetCriticConfig(
-                        local_projection_hidden_dims=[224, 112],
-                        value_regressor_hidden_dims=[192, 128],
-                    ),
+                    context_in_elements=mappo_critic_context_in_elements,
                     act_fun_class=act_fn_cls,
                     use_popart=use_popart,
                 ),

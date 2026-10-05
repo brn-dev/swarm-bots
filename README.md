@@ -140,9 +140,11 @@ The evaluator requires `num_episodes <= num_envs`; additional seeds provide more
 
 The [five-seed reporting example](https://github.com/brn-dev/swarm-bots/blob/main/docs/api.md#five-seed-report) starts from a uniform-random sanity baseline and shows how to export episodes, settings, runtime versions, and aggregate statistics to JSON.
 
-## Optional learning baselines
+## Reference learning baselines
 
-The package includes [PPO](https://arxiv.org/abs/1707.06347)/[MAPPO](https://proceedings.neurips.cc/paper_files/paper/2022/hash/9c1535a02f0ce079433344e14d910597-Abstract-Datasets_and_Benchmarks.html), [multi-agent transformer (MAT)](https://proceedings.neurips.cc/paper_files/paper/2022/hash/69413f87e5a34897cd010ca698097d0a-Abstract-Conference.html), [transformer-based SAC (TMASAC)](https://resolver.obvsg.at/urn:nbn:at:at-ubl:1-108602), and recurrent variants as starting points for benchmark experiments. See [references and attribution](https://github.com/brn-dev/swarm-bots/blob/main/docs/references.md) for algorithm origins, TMASAC's related work, and scientific-software credits.
+The package includes [PPO](https://arxiv.org/abs/1707.06347)/[MAPPO](https://proceedings.neurips.cc/paper_files/paper/2022/hash/9c1535a02f0ce079433344e14d910597-Abstract-Datasets_and_Benchmarks.html), [MADDPG](https://arxiv.org/abs/1706.02275), [MATD3](https://arxiv.org/abs/1910.01465), [SAC](https://proceedings.mlr.press/v80/haarnoja18b.html), [multi-agent transformer (MAT)](https://proceedings.neurips.cc/paper_files/paper/2022/hash/69413f87e5a34897cd010ca698097d0a-Abstract-Conference.html), [transformer-based SAC (TMASAC)](https://resolver.obvsg.at/urn:nbn:at:at-ubl:1-108602), TMATD3, and recurrent variants as starting points for benchmark experiments. MADDPG, MATD3, and MASAC offer large flattened MLP critics (`*_mlp`, no NOP) or Deep Set critics (`*_deepset`, NOP enabled by default). TMATD3 enables NOP by default and uses transformer critics with either a transformer actor (`tmatd3`) or a decentralized actor (`tmatd3_dec`). See [references and attribution](https://github.com/brn-dev/swarm-bots/blob/main/docs/references.md) for algorithm origins, implementation sources, TMASAC's related work, and scientific-software credits.
+
+These learners are SwarmBots adaptations, not fully faithful reproductions of the original multi-agent methods: they use global shared team value functions, and MADDPG/MATD3 actor updates pass all current actor actions jointly through the team critic. See [differences from the original formulations](https://github.com/brn-dev/swarm-bots/blob/main/docs/learning.md#differences-from-the-original-multi-agent-methods) before comparing results.
 
 ```python
 from swarmbots.learn import train
@@ -172,7 +174,7 @@ The [documentation guide](https://github.com/brn-dev/swarm-bots/blob/main/docs/R
 - [Python API, compatibility, and custom policies](https://github.com/brn-dev/swarm-bots/blob/main/docs/api.md)
 - [GPU setup and compiled smoke test](https://github.com/brn-dev/swarm-bots/blob/main/docs/gpu_setup.md)
 - [Policy recording and video options](https://github.com/brn-dev/swarm-bots/blob/main/docs/recording.md)
-- [Optional learning baselines and presets](https://github.com/brn-dev/swarm-bots/blob/main/docs/learning.md)
+- [Reference learning baselines and presets](https://github.com/brn-dev/swarm-bots/blob/main/docs/learning.md)
 - [References and attribution](https://github.com/brn-dev/swarm-bots/blob/main/docs/references.md)
 
 The benchmark and API are alpha. Scenario maturity labels describe testing confidence; benchmark IDs, package releases, and protocol versions identify the task definition, implementation, and evaluation procedure used in an experiment. Record the exact package version and Git commit when reporting results.

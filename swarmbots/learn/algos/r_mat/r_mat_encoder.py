@@ -387,6 +387,7 @@ class RMATEncoder(nn.Module):
         self.local_obs_dim = local_obs_dim
         self.global_obs_dim = global_obs_dim
         self.has_global_obs = global_obs_dim > 0
+        self.joint_obs_embedding = config.joint_obs_embedding and self.has_global_obs
         self.add_agent_embeddings = config.add_agent_embeddings
         self.max_agents = max_agents
         self.d_model = config.d_model
@@ -405,7 +406,7 @@ class RMATEncoder(nn.Module):
         )
 
         self.local_obs_encoder = make_feedforward(
-            input_dim=self.local_obs_dim,
+            input_dim=self.local_obs_dim + (self.global_obs_dim if self.joint_obs_embedding else 0),
             output_dim=config.d_model,
             config=config.local_obs_encoder_config,
             linear_init=linear_init,
@@ -414,7 +415,7 @@ class RMATEncoder(nn.Module):
             bias=config.bias,
         )
 
-        if self.has_global_obs:
+        if self.has_global_obs and not self.joint_obs_embedding:
             self.global_obs_encoder = make_feedforward(
                 input_dim=self.global_obs_dim,
                 output_dim=config.d_model,
@@ -495,11 +496,15 @@ class RMATEncoder(nn.Module):
             raise ValueError(f"Expected local_obs agent dim <= {self.max_agents}, got {n_agents}")
 
         local_obs = self.local_obs_input_norm(local_obs)
+        if self.joint_obs_embedding:
+            global_obs = self.global_obs_input_norm(global_obs)
+            global_inputs = global_obs.unsqueeze(2).expand(-1, -1, n_agents, -1)
+            local_obs = torch.cat((local_obs, global_inputs), dim=-1)
         embeddings = self.local_obs_encoder(local_obs)
         if self.agent_embeddings is not None:
             embeddings = embeddings + self.agent_embeddings[:, :n_agents, :].unsqueeze(1)
 
-        if self.has_global_obs:
+        if self.global_obs_encoder is not None:
             global_obs = self.global_obs_input_norm(global_obs)
             global_embeddings = self.global_obs_encoder(global_obs)
             embeddings = embeddings + global_embeddings.unsqueeze(2)

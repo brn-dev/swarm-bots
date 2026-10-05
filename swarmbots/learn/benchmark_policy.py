@@ -35,7 +35,8 @@ class BenchmarkPolicy:
         self.normalizers = tuple(reversed(normalizers))
         self.temporal_state: Any = None
         self.previous_actions: torch.Tensor | None = None
-        self.distribution_state = tuple(None for _ in self.policy.action_dist.distributions)
+        action_dist = getattr(self.policy, "action_dist", None)
+        self.distribution_state = () if action_dist is None else tuple(None for _ in action_dist.distributions)
         self.initialized = False
 
     @torch.no_grad()
@@ -70,11 +71,14 @@ class BenchmarkPolicy:
         if self.previous_actions is not None:
             self.previous_actions[episode_starts] = 0
         module_training_modes = {module: module.training for module in self.policy.modules()}
-        training_distribution_state = self.policy.action_dist.get_temporal_correlation_state()
-        self.policy.action_dist.set_temporal_correlation_state(self.distribution_state)
+        action_dist = getattr(self.policy, "action_dist", None)
+        training_distribution_state = None if action_dist is None else action_dist.get_temporal_correlation_state()
+        if action_dist is not None:
+            action_dist.set_temporal_correlation_state(self.distribution_state)
         self.policy.eval()
         try:
-            self.policy.action_dist.reset_temporal_correlations_on_ep_start(episode_starts)
+            if action_dist is not None:
+                action_dist.reset_temporal_correlations_on_ep_start(episode_starts)
             if not self.deterministic and self.policy.gsde_enabled:
                 self.policy.action_dist.reset_temporal_correlations_on_step(batch_shape=tuple(local_obs.shape[:-1]))
             actions, temporal_state = self.policy.act_with_temporal_state(
@@ -84,11 +88,11 @@ class BenchmarkPolicy:
                 temporal_state=self.temporal_state,
                 episode_start_mask=episode_starts,
             )
-            self.distribution_state = clone_detach_temporal_state(
-                self.policy.action_dist.get_temporal_correlation_state()
-            )
+            if action_dist is not None:
+                self.distribution_state = clone_detach_temporal_state(action_dist.get_temporal_correlation_state())
         finally:
-            self.policy.action_dist.set_temporal_correlation_state(training_distribution_state)
+            if action_dist is not None:
+                action_dist.set_temporal_correlation_state(training_distribution_state)
             for module, was_training in module_training_modes.items():
                 module.training = was_training
         self.temporal_state = clone_detach_temporal_state(temporal_state)

@@ -145,6 +145,7 @@ def _record_command(args: argparse.Namespace) -> None:
             args.benchmark_id,
             args.variant,
             deterministic=not args.stochastic,
+            exploration_noise=args.exploration_noise,
             continuous_action_dist=args.continuous_action_dist,
             use_nop=args.use_nop,
             compile_modules=args.compile_policy,
@@ -199,6 +200,9 @@ def build_parser() -> argparse.ArgumentParser:
     record_parser.add_argument("--seed", type=int, default=1_000)
     record_parser.add_argument("--episode-length", type=_positive_int)
     record_parser.add_argument("--stochastic", action="store_true", help="sample actions instead of using modes")
+    record_parser.add_argument(
+        "--exploration-noise", type=float, help="override DDPG/TD3 checkpoint exploration noise for --stochastic"
+    )
     record_parser.add_argument("--fps", type=_positive_int, default=30)
     record_parser.add_argument("--fps-mode", choices=("compensate_stride", "fixed"), default="compensate_stride")
     record_parser.add_argument("--frame-stride", type=_positive_int, default=1)
@@ -239,6 +243,8 @@ def main(argv: Sequence[str] | None = None) -> None:
             parser.error("--checkpoint requires --variant matching the saved policy")
         if args.policy is not None and ":" not in args.policy:
             parser.error("--policy must have the form module:function")
+        if args.policy is not None and args.exploration_noise is not None:
+            parser.error("--exploration-noise requires a DDPG/TD3 checkpoint")
         _record_command(args)
 
 

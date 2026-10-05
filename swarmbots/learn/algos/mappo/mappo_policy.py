@@ -29,6 +29,7 @@ class MAPPOCriticConfig:
     local_projection_init_gain: float = 1.0
     value_regressor_init_gain: float = 1.0
     value_head_init_gain: float = 0.01
+    context_in_elements: bool = True
 
 
 @dataclass(frozen=True)
@@ -100,6 +101,8 @@ class MAPPOPolicy(PPOPolicy):
                 num_global_features=self.hidden_global_vars_dim,
                 set_dim=AGENTS_DIM,
                 pool_mode="mean",
+                context_in_elements=config.critic_config.context_in_elements and self.hidden_global_vars_dim > 0,
+                context_after_pool=True,
                 use_popart=config.critic_config.use_popart,
                 local_projection_linear_init_gain=config.critic_config.local_projection_init_gain,
                 value_regressor_linear_init_gain=config.critic_config.value_regressor_init_gain,

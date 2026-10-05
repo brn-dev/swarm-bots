@@ -24,6 +24,8 @@ VARIANT_CONFIGS: dict[str, LearningVariantConfig] = {
         "ppo_small",
         "mappo",
         "mappo_small",
+        "mappo_mlp",
+        "mappo_mlp_small",
         "mat_orig",
         "mat_ind",
         "mat_dec",
@@ -32,6 +34,13 @@ VARIANT_CONFIGS: dict[str, LearningVariantConfig] = {
         "mat_qcx_lstm",
     )
 }
+VARIANT_CONFIGS.update({
+    name: LearningVariantConfig(policy_variant=name, use_nop=not name.endswith("_mlp"))
+    for name in (
+        "maddpg_mlp", "maddpg_deepset", "matd3_mlp", "matd3_deepset",
+        "masac_mlp", "masac_deepset", "tmatd3", "tmatd3_dec",
+    )
+})
 VARIANT_CONFIGS.update({
     name: LearningVariantConfig(tmasac_variant=name)
     for name in get_args(TMASACVariant)

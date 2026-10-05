@@ -138,6 +138,6 @@ Use `swarmbots.record_policy(policy, benchmark_id, video_folder=...)` for any be
 
 Call `env.start_video_recording(...)` before stepping. Recording renders selected worlds with MuJoCo and writes MP4 files asynchronously. It is intended for qualitative inspection, not for high-throughput evaluation.
 
-## Learning baselines
+## Reference learning baselines
 
-If you want an included training implementation, `swarmbots.learn` provides PPO/MAPPO, MAT, TMASAC, and recurrent presets. See [optional learning baselines](learning.md) for training, checkpoint continuation, and `as_benchmark_policy`, which adapts their actors to this policy interface.
+If you want an included training implementation, `swarmbots.learn` provides PPO/MAPPO, MADDPG, MATD3, MASAC, MAT, TMASAC, TMATD3, and recurrent presets. The MADDPG/MATD3/MASAC baselines offer flattened MLP or Deep Set critics; TMATD3 offers transformer and decentralized actors with transformer critics. See [reference learning baselines](learning.md) for training, checkpoint continuation, and `as_benchmark_policy`, which adapts their actors to this policy interface.

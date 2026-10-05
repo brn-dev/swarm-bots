@@ -21,14 +21,17 @@ from swarmbots.learn.action_dists.sign_magnitude_beta_action_dist import SignMag
 from swarmbots.learn.algos.mappo.mappo_policy import MAPPOPolicy
 from swarmbots.learn.algos.mat.mat_ind_policy import MATIndPolicy
 from swarmbots.learn.algos.ppo.ppo import PPO
+from swarmbots.learn.algos.ppo.ppo_policy import PPOCritic
 from swarmbots.learn.algos.ppo.ppo_sampler import PPOSamples
 from swarmbots.learn.algos.sac.recurrent_sac import RecurrentSAC
 from swarmbots.learn.algos.sac.sac import SAC
+from swarmbots.learn.algos.td3 import TD3
 from swarmbots.learn.algos.sac.tmasac_policy import TMASACPolicy
 from swarmbots.learn.checkpointing import capture_env_state
 from swarmbots.learn.exponential_moving_average import ExponentialMovingAverage
 from swarmbots.learn.hybrid_action_space import HybridActionSpace
-from swarmbots.learn.presets.policy_factory import _is_sac_policy_variant, _make_base_policy
+from swarmbots.learn.nn_components.deep_set import DeepSetCritic
+from swarmbots.learn.presets.policy_factory import _is_off_policy_variant, _make_base_policy
 from swarmbots.learn.presets.transformer import MATInitGains, MATNormalizationConfig
 from swarmbots.learn.training import _variant_options
 from swarmbots.mjw_env.swarm.mjw_homogeneous_swarm import MJWPreConnectedUnitLocationsConfig
@@ -68,10 +71,14 @@ def _training_kwargs() -> dict[str, Any]:
 
 def test_variants_expose_only_canonical_architectures_and_ablations() -> None:
     assert set(list_variants()) == {
+        "maddpg_mlp", "maddpg_deepset", "matd3_mlp", "matd3_deepset",
+        "masac_mlp", "masac_deepset", "tmatd3", "tmatd3_dec",
         "ppo",
         "ppo_small",
         "mappo",
         "mappo_small",
+        "mappo_mlp",
+        "mappo_mlp_small",
         "mat_orig",
         "mat_ind",
         "mat_ind_no_attention",
@@ -116,7 +123,7 @@ def test_slstm_no_residual_ablation_changes_only_the_residual_connection() -> No
     assert main_options == {**ablation_options, "rmat_temporal_residual": True}
 
 
-def _small_sac_policy(variant: str, n_agents: int = 3) -> TMASACPolicy:
+def _small_policy(variant: str, n_agents: int = 3) -> TMASACPolicy | MAPPOPolicy:
     env = SimpleNamespace(
         n_agents=n_agents,
         local_obs_dim=5,
@@ -153,7 +160,7 @@ def _small_sac_policy(variant: str, n_agents: int = 3) -> TMASACPolicy:
 @pytest.mark.parametrize("variant", ["tmasac", "tmasac_dec", "tmasac_lstm_no_actor_state", "tmasac_segment"])
 def test_sac_presets_produce_actions_for_swarms_larger_than_twenty_agents(variant: str) -> None:
     n_agents = 21
-    policy = _small_sac_policy(variant, n_agents)
+    policy = _small_policy(variant, n_agents)
     with torch.no_grad():
         actions = policy.act(
             local_obs=torch.zeros(1, n_agents, policy.local_obs_dim),
@@ -168,8 +175,8 @@ def test_sac_presets_produce_actions_for_swarms_larger_than_twenty_agents(varian
 
 def test_tmasac_dec_actor_is_independent_and_critic_mixes_agents() -> None:
     torch.manual_seed(0)
-    policy = _small_sac_policy("tmasac_dec")
-    baseline = _small_sac_policy("tmasac")
+    policy = _small_policy("tmasac_dec")
+    baseline = _small_policy("tmasac")
     assert not any(isinstance(module, nn.MultiheadAttention) for module in policy.actor_encoder.modules())
     assert any(isinstance(module, nn.MultiheadAttention) for module in policy.critic.modules())
     assert policy.critic_encoder_config == baseline.critic_encoder_config
@@ -210,6 +217,30 @@ def test_tmasac_dec_actor_is_independent_and_critic_mixes_agents() -> None:
         assert any(torch.count_nonzero(gradient) for gradient in gradients)
 
 
+@pytest.mark.parametrize("small", [False, True])
+def test_mappo_critic_presets_keep_identical_actor_configurations_and_initial_weights(small: bool) -> None:
+    deepset_variant = "mappo_small" if small else "mappo"
+    mlp_variant = "mappo_mlp_small" if small else "mappo_mlp"
+    torch.manual_seed(42)
+    deepset = _small_policy(deepset_variant)
+    torch.manual_seed(42)
+    mlp = _small_policy(mlp_variant)
+    assert isinstance(deepset, MAPPOPolicy) and isinstance(mlp, MAPPOPolicy)
+    assert isinstance(deepset.critic, DeepSetCritic) and isinstance(mlp.critic, PPOCritic)
+    assert deepset.config.actor_config == mlp.config.actor_config
+    for name in ("shared_encoder", "actor", "action_dist"):
+        torch.testing.assert_close(getattr(deepset, name).state_dict(), getattr(mlp, name).state_dict(), rtol=0, atol=0)
+    expected_widths = [192, 128] if small else [256, 128]
+    assert mlp.critic.hidden_dims == expected_widths
+    assert mlp.config.critic_config.deep_set_config is None
+    assert deepset.config.critic_config.deep_set_config.value_regressor_hidden_dims == expected_widths
+    deep_options, deep_algorithm = _variant_options(deepset_variant)
+    mlp_options, mlp_algorithm = _variant_options(mlp_variant)
+    assert mlp_options["use_nop"] and not _is_off_policy_variant(mlp_options["policy_variant"])
+    del deep_options["policy_variant"], mlp_options["policy_variant"]
+    assert deep_options == mlp_options and deep_algorithm == mlp_algorithm
+
+
 @pytest.mark.integration
 @pytest.mark.parametrize(
     ("variant", "expected_ratios"),
@@ -218,6 +249,8 @@ def test_tmasac_dec_actor_is_independent_and_critic_mixes_agents() -> None:
         ("ppo_small", (1.04**2, 1.04)),
         ("mappo", (1.04, 1.04, 1.04)),
         ("mappo_small", (1.04, 1.04, 1.04)),
+        ("mappo_mlp", (1.04, 1.04, 1.04)),
+        ("mappo_mlp_small", (1.04, 1.04, 1.04)),
         ("mat_ind_no_attention", (1.04, 1.04, 1.04)),
     ],
 )
@@ -264,7 +297,8 @@ def test_each_variant_produces_finite_benchmark_actions(variant: str) -> None:
         expected_distribution = (
             PredictedStdGaussianActionDist if isinstance(algorithm, SAC) else SignMagnitudeBetaActionDist
         )
-        for distribution in algorithm.policy.action_dist.distributions:
+        distributions = () if isinstance(algorithm, TD3) else algorithm.policy.action_dist.distributions
+        for distribution in distributions:
             assert isinstance(distribution, expected_distribution)
             if isinstance(distribution, PredictedStdGaussianActionDist):
                 assert distribution.squash_output
@@ -322,7 +356,7 @@ def test_nop_can_be_constructed_for_every_registered_scenario(benchmark_id: str)
 def test_learning_updates_parameters_on_actual_benchmark_transitions(variant: str) -> None:
     algorithm_options: dict[str, Any]
     policy_options, _ = _variant_options(variant)
-    if _is_sac_policy_variant(policy_options["policy_variant"]):
+    if _is_off_policy_variant(policy_options["policy_variant"]):
         algorithm_options = {
             "learning_starts": 0,
             "batch_size": 2,
@@ -357,6 +391,223 @@ def test_learning_updates_parameters_on_actual_benchmark_transitions(variant: st
             for before, after in zip(parameters_before, algorithm.policy.parameters(), strict=True)
         )
         assert all(torch.isfinite(parameter).all() for parameter in algorithm.policy.parameters())
+    finally:
+        algorithm.env.close()
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("variant", ["maddpg_mlp", "matd3_deepset", "masac_mlp", "tmatd3_dec"])
+def test_new_off_policy_train_helper_saves_resumable_targets(variant: str, tmp_path: Path) -> None:
+    kwargs = _training_kwargs()
+    kwargs["policy_kwargs"].update(
+        baseline_critic_hidden_dims=(32, 32), baseline_critic_element_hidden_dims=(32, 32),
+    )
+    kwargs["algorithm_kwargs"] = {
+        "learning_starts": 0, "batch_size": 2, "buffer_capacity_per_env": 16,
+        "gradient_steps": 2, "learning_rate_warmup_updates": 0,
+    }
+    algorithm = train(
+        "SwarmBots-WallEasy-v0", variant, total_timesteps=4, run_dir=tmp_path / "first", **kwargs,
+    )
+    checkpoint = next((tmp_path / "first/models").glob("*_final.pt"))
+    restored = make_training("SwarmBots-WallEasy-v0", variant, **kwargs)
+    try:
+        restored.load(checkpoint)
+        assert restored.n_total_updates == algorithm.n_total_updates == 4
+        assert restored.actor_optimizer.state_dict()["state"]
+        assert restored.critic_optimizer.state_dict()["state"]
+        for name, parameter in restored.policy.state_dict().items():
+            torch.testing.assert_close(parameter, algorithm.policy.state_dict()[name], rtol=0, atol=0)
+        observations, _ = restored.env.unwrapped.reset(seed=17)
+        actions = as_benchmark_policy(restored)(observations, torch.ones(2, dtype=torch.bool))
+        assert all(torch.isfinite(action).all() for action in actions.values())
+    finally:
+        restored.env.close()
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("variant", ["maddpg_deepset", "matd3_deepset", "masac_deepset", "tmatd3", "tmatd3_dec"])
+@pytest.mark.parametrize("source", ["critic", "both"])
+def test_off_policy_nop_is_enabled_by_default_and_can_train(variant: str, source: str) -> None:
+    kwargs = _training_kwargs()
+    kwargs["policy_kwargs"].update(
+        baseline_critic_hidden_dims=(32, 32), baseline_critic_element_hidden_dims=(32, 32),
+        transition_model_d_model=16, transition_model_nhead=2,
+    )
+    if source == "both":
+        kwargs["policy_kwargs"]["tmasac_nop_latent_source"] = source
+    kwargs["algorithm_kwargs"] = {
+        "learning_starts": 0, "batch_size": 2, "buffer_capacity_per_env": 16,
+        "gradient_steps": 2, "learning_rate_warmup_updates": 0,
+    }
+    algorithm = make_training("SwarmBots-WallEasy-v0", variant, **kwargs)
+    try:
+        assert algorithm.policy.has_nop_loss()
+        assert algorithm.policy.critic_nop is not None
+        assert (algorithm.policy.actor_nop is not None) == (source == "both")
+        metrics, transitions = algorithm.perform_iteration(
+            ExponentialMovingAverage(0.1), ExponentialMovingAverage(0.1), update_ema=True,
+        )
+        assert transitions == 2 and algorithm.n_total_updates == 2
+        assert "critic_nop_loss" in metrics
+        assert ("actor_nop_loss" in metrics) == (source == "both")
+        assert all(torch.isfinite(parameter).all() for parameter in algorithm.policy.parameters())
+    finally:
+        algorithm.env.close()
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("variant", ["mappo", "mappo_small"])
+@pytest.mark.parametrize("context_in_elements", [False, True])
+def test_mappo_global_context_trains_and_restores_matching_checkpoints(
+    variant: str, context_in_elements: bool, tmp_path: Path,
+) -> None:
+    kwargs = _training_kwargs()
+    kwargs["policy_kwargs"].update(transition_model_d_model=16, transition_model_nhead=2)
+    if not context_in_elements:
+        kwargs["policy_kwargs"]["mappo_critic_context_in_elements"] = False
+    kwargs["algorithm_kwargs"] = {"learning_rate": 1e-3, "n_epochs": 1, "target_kl": None}
+    algorithm = make_training("SwarmBots-WallEasy-v0", variant, **kwargs)
+    try:
+        policy = algorithm.policy.policy
+        assert isinstance(policy, MAPPOPolicy) and policy.hidden_global_vars_dim > 0
+        assert policy.critic.context_in_elements is context_in_elements and policy.critic.context_after_pool
+        before = {name: parameter.detach().clone() for name, parameter in policy.critic.named_parameters()}
+        metrics, transitions = algorithm.perform_iteration(
+            ExponentialMovingAverage(0.1), ExponentialMovingAverage(0.1), update_ema=True,
+        )
+        assert transitions == 8 and algorithm.n_total_updates > 0 and "wm_loss" in metrics
+        assert any(not torch.equal(parameter, before[name]) for name, parameter in policy.critic.named_parameters())
+        assert all(torch.isfinite(parameter).all() for parameter in algorithm.policy.parameters())
+        path = tmp_path / "mappo.pt"
+        algorithm.save(path, optimizer_state_dict=algorithm._get_optimizer_state_dict())
+        checkpoint = torch.load(path, weights_only=False)
+        critic_config = checkpoint["policy_hyper_parameters"]["mappo_policy_config"]["critic_config"]
+        assert critic_config["context_in_elements"] is context_in_elements
+        if not context_in_elements:
+            del critic_config["context_in_elements"]
+            torch.save(checkpoint, path)
+        restored = make_training("SwarmBots-WallEasy-v0", variant, **kwargs)
+        try:
+            restored.load(path)
+            assert restored.n_total_updates == algorithm.n_total_updates
+            assert restored.optimizer.state_dict()["state"]
+            torch.testing.assert_close(restored.policy.state_dict(), algorithm.policy.state_dict(), rtol=0, atol=0)
+        finally:
+            restored.env.close()
+    finally:
+        algorithm.env.close()
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("variant", ["mappo_mlp", "mappo_mlp_small"])
+@pytest.mark.parametrize("use_nop", [False, True])
+@pytest.mark.parametrize("use_popart", [False, True])
+def test_mappo_mlp_presets_train_and_restore_nop_and_popart_settings(
+    variant: str, use_nop: bool, use_popart: bool, tmp_path: Path,
+) -> None:
+    kwargs = _training_kwargs()
+    kwargs["policy_kwargs"].update(transition_model_d_model=16, transition_model_nhead=2)
+    kwargs["algorithm_kwargs"] = {
+        "learning_rate": 1e-3, "n_epochs": 1, "target_kl": None, "use_popart": use_popart,
+    }
+    if not use_nop:
+        kwargs["use_nop"] = False
+    algorithm = make_training("SwarmBots-WallEasy-v0", variant, **kwargs)
+    try:
+        policy = algorithm.policy.policy if use_nop else algorithm.policy
+        assert isinstance(policy, MAPPOPolicy) and isinstance(policy.critic, PPOCritic)
+        assert policy.has_popart is use_popart
+        before = {name: parameter.detach().clone() for name, parameter in policy.critic.named_parameters()}
+        metrics, transitions = algorithm.perform_iteration(
+            ExponentialMovingAverage(0.1), ExponentialMovingAverage(0.1), update_ema=True,
+        )
+        assert transitions == 8 and algorithm.n_total_updates > 0
+        assert ("wm_loss" in metrics) is use_nop
+        assert any(not torch.equal(parameter, before[name]) for name, parameter in policy.critic.named_parameters())
+        assert all(torch.isfinite(parameter).all() for parameter in algorithm.policy.parameters())
+        path = tmp_path / "mappo-mlp.pt"
+        algorithm.save(path, optimizer_state_dict=algorithm._get_optimizer_state_dict())
+        checkpoint = torch.load(path, weights_only=False)
+        config = checkpoint["policy_hyper_parameters"]["mappo_policy_config"]["critic_config"]
+        assert config["deep_set_config"] is None and config["use_popart"] is use_popart
+        restored = make_training("SwarmBots-WallEasy-v0", variant, **kwargs)
+        try:
+            restored.load(path)
+            assert restored.n_total_updates == algorithm.n_total_updates
+            assert restored.optimizer.state_dict()["state"]
+            torch.testing.assert_close(restored.policy.state_dict(), algorithm.policy.state_dict(), rtol=0, atol=0)
+            observations, _ = restored.env.unwrapped.reset(seed=17)
+            actions = as_benchmark_policy(restored)(observations, torch.ones(2, dtype=torch.bool))
+            assert all(torch.isfinite(action).all() for action in actions.values())
+        finally:
+            restored.env.close()
+    finally:
+        algorithm.env.close()
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("variant", [
+    "mat_ind", "mat_qcx", "mat_dec", "mat_ind_lstm", "mat_qcx_lstm",
+    "tmasac", "tmasac_dec", "tmasac_slstm", "tmasac_lstm", "tmasac_segment",
+    "tmasac_shared_encoder", "tmasac_slstm_shared_encoder", "tmatd3", "tmatd3_dec",
+    "maddpg_deepset", "matd3_deepset", "masac_deepset",
+])
+def test_joint_observation_embedding_trains_and_restores_existing_presets(variant: str, tmp_path: Path) -> None:
+    kwargs = _training_kwargs()
+    kwargs["policy_kwargs"].update(
+        mat_joint_obs_embedding=True, rmat_actor_d_model=32, rmat_experimental_compile_lstm=False,
+        baseline_critic_hidden_dims=(32, 32), baseline_critic_element_hidden_dims=(32, 32),
+        transition_model_d_model=16, transition_model_nhead=2,
+    )
+    policy_options, _ = _variant_options(variant)
+    if _is_off_policy_variant(policy_options["policy_variant"]):
+        kwargs["algorithm_kwargs"] = {
+            "learning_starts": 0, "batch_size": 2, "buffer_capacity_per_env": 16,
+            "gradient_steps": 1, "learning_rate_warmup_updates": 0,
+            "sac_compile_tensor_operations": False, "sac_compile_optimizer_steps": False,
+        }
+        if policy_options["policy_variant"] in {"tmasac_recurrent", "tmasac_segment"}:
+            kwargs["algorithm_kwargs"].update(burn_in_steps=1, learning_steps=3, temporal_state_store_interval=1)
+    else:
+        kwargs["algorithm_kwargs"] = {"learning_rate": 1e-3, "n_epochs": 1, "target_kl": None}
+    algorithm = make_training("SwarmBots-PayloadPlane-v0", variant, rollout_steps_per_env=4, **kwargs)
+    try:
+        assert algorithm.env.global_obs_dim > 0
+        assert any(getattr(module, "joint_obs_embedding", False) for module in algorithm.policy.modules())
+
+        def includes_joint_setting(value):
+            if isinstance(value, dict):
+                return value.get("joint_obs_embedding") is True or any(includes_joint_setting(v) for v in value.values())
+            if isinstance(value, (list, tuple)):
+                return any(includes_joint_setting(v) for v in value)
+            return False
+
+        assert includes_joint_setting(algorithm.policy.get_hyper_parameters())
+        before = [parameter.detach().clone() for parameter in algorithm.policy.parameters()]
+        metrics, transitions = algorithm.perform_iteration(
+            ExponentialMovingAverage(0.1), ExponentialMovingAverage(0.1), update_ema=True,
+        )
+        assert metrics and transitions == 8 and algorithm.n_total_updates > 0
+        assert any(
+            not torch.equal(parameter, old)
+            for parameter, old in zip(algorithm.policy.parameters(), before, strict=True)
+        )
+        assert all(torch.isfinite(parameter).all() for parameter in algorithm.policy.parameters())
+        path = tmp_path / "joint.pt"
+        algorithm.save(path, optimizer_state_dict=algorithm._get_optimizer_state_dict())
+        checkpoint = torch.load(path, weights_only=False)
+        assert includes_joint_setting(checkpoint["policy_hyper_parameters"])
+        restored = make_training("SwarmBots-PayloadPlane-v0", variant, rollout_steps_per_env=4, **kwargs)
+        try:
+            restored.load(path)
+            assert restored.n_total_updates == algorithm.n_total_updates
+            torch.testing.assert_close(restored.policy.state_dict(), algorithm.policy.state_dict(), rtol=0, atol=0)
+            observations, _ = restored.env.unwrapped.reset(seed=17)
+            actions = as_benchmark_policy(restored)(observations, torch.ones(2, dtype=torch.bool))
+            assert all(torch.isfinite(action).all() for action in actions.values())
+        finally:
+            restored.env.close()
     finally:
         algorithm.env.close()
 
@@ -415,14 +666,14 @@ def test_training_saves_and_resumes_then_evaluates_without_updating_normalizatio
 @pytest.mark.integration
 def test_presets_select_the_intended_algorithm_and_actor() -> None:
     for variant, expected_class in (
-        ("mappo", PPO), ("mat_ind_no_attention", PPO), ("tmasac", SAC),
+        ("mappo", PPO), ("mappo_mlp", PPO), ("mat_ind_no_attention", PPO), ("tmasac", SAC),
         ("tmasac_dec", SAC), ("tmasac_slstm", RecurrentSAC),
         ("tmasac_slstm_no_residual", RecurrentSAC),
     ):
         algorithm = make_training("SwarmBots-WallEasy-v0", variant, **_training_kwargs())
         try:
             assert isinstance(algorithm, expected_class)
-            if variant == "mappo":
+            if variant in {"mappo", "mappo_mlp"}:
                 assert isinstance(algorithm.policy.policy, MAPPOPolicy)
             elif variant == "mat_ind_no_attention":
                 assert isinstance(algorithm.policy.policy, MATIndPolicy)

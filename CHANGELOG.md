@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- Added `mappo_mlp` and `mappo_mlp_small` with flattened MLP critics; `mappo` and `mappo_small` retain Deep Set critics. Both critic families support shared-encoder NOP and PopArt.
+- Checkpoint recordings preserve configured DDPG/TD3 exploration noise; Python and CLI overrides support older checkpoints.
+- Added cooperative MADDPG, MATD3, and MASAC baselines with large flattened MLP or masked Deep Set critics, plus TMATD3 and its decentralized-actor variant.
+- Added deterministic target actors, bounded exploration and target smoothing, persistent TD3 update delays, and deterministic-policy support in benchmark evaluation.
+- Added optional actor and critic NOP losses for Deep Set and transformer off-policy baselines, with multi-step replay and checkpoint continuation; flattened off-policy MLP critics reject NOP.
+- Enabled critic NOP by default for the Deep Set and transformer off-policy baselines; marked their MLP variants as (no NOP) in the learning guide.
+- Documented the baseline architectures and team-objective adaptation, with DDPG, TD3, MADDPG, MATD3, and Stable-Baselines3 citations and implementation references.
+
 ## 0.1.0a3 - 2026-10-05
 
 - Added direct references for PPO, MAPPO, MAT, and SAC, with the published thesis credited as the source of the SwarmBots TMASAC design and MAAC, SACHA, MDAC, and MATRS attributed as related prior work.

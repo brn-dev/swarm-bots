@@ -24,6 +24,8 @@ htmlcov/
 .review-*/
 _docs/
 tmp*/
+.local
+.ref
 
 # Runtime output and local caches
 .tmp/

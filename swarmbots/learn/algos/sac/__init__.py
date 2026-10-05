@@ -22,10 +22,13 @@ from swarmbots.learn.algos.sac.recurrent_tmasac_policy import (
 )
 from swarmbots.learn.algos.sac.recurrent_sac import RecurrentSAC
 from swarmbots.learn.algos.sac.segment_tmasac_policy import SegmentTMASACPolicy
+from swarmbots.learn.algos.sac.masac_policy import MASACPolicy, MASACPolicyConfig
 
 __all__ = [
     "ActorStateCriticInputConfig",
     "BaseSACPolicy",
+    "MASACPolicy",
+    "MASACPolicyConfig",
     "RecurrentSAC",
     "SegmentTMASACPolicy",
     "RecurrentTMASACPolicy",

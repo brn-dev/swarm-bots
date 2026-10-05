@@ -67,6 +67,7 @@ class DeepSet(nn.Module):
         pool_mode: PoolMode = "mean",
         context_features: int = 0,
         context_in_elements: bool = False,
+        context_after_pool: bool | None = None,
     ) -> None:
         super().__init__()
         self.element_encoder = element_encoder
@@ -75,6 +76,17 @@ class DeepSet(nn.Module):
         self.pool_mode: PoolMode = pool_mode
         self.context_features = int(context_features)
         self.context_in_elements = bool(context_in_elements)
+        # Preserve the previous placement when the decoder path is unspecified.
+        self.context_after_pool = (
+            not self.context_in_elements if context_after_pool is None else bool(context_after_pool)
+        )
+
+    def encode_elements(self, elements: torch.Tensor, *, context: torch.Tensor | None = None) -> torch.Tensor:
+        """Encode per-element features and any shared context without pooling."""
+        if self.context_in_elements:
+            expanded_context = context.unsqueeze(self.set_dim).expand(*elements.shape[:-1], context.shape[-1])
+            elements = torch.cat((elements, expanded_context), dim=-1)
+        return self.element_encoder(elements)
 
     def forward(
         self,
@@ -83,17 +95,22 @@ class DeepSet(nn.Module):
         context: torch.Tensor | None = None,
         element_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        if self.context_in_elements:
-            expanded_context = context.unsqueeze(self.set_dim).expand(*elements.shape[:-1], context.shape[-1])
-            elements = torch.cat((elements, expanded_context), dim=-1)
+        return self.forward_with_latents(elements, context=context, element_mask=element_mask)[0]
 
-        encoded = self.element_encoder(elements)
+    def forward_with_latents(
+        self,
+        elements: torch.Tensor,
+        *,
+        context: torch.Tensor | None = None,
+        element_mask: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        encoded = self.encode_elements(elements, context=context)
         pooled = _pool_over_set(encoded, set_dim=self.set_dim, mode=self.pool_mode, mask=element_mask)
 
-        if self.context_features > 0 and not self.context_in_elements:
+        if self.context_features > 0 and self.context_after_pool:
             pooled = torch.cat((pooled, context), dim=-1)
 
-        return self.set_decoder(pooled)
+        return self.set_decoder(pooled), encoded
 
 
 class DeepSetCriticHiddenDims(TypedDict):
@@ -110,6 +127,9 @@ class DeepSetCriticConfig:
 class DeepSetCritic(nn.Module):
     """
     Convenience wrapper for a scalar-value DeepSet critic.
+
+    Context can enter the element encoder, the value regressor after pooling, or both.
+    Leaving context_after_pool unset preserves the placement selected by context_in_elements.
     """
 
     def __init__(
@@ -127,6 +147,7 @@ class DeepSetCritic(nn.Module):
         value_head_linear_init_gain: float = 0.01,
         act_fn_cls: ActivationFactory = nn.Tanh,
         context_in_elements: bool = False,
+        context_after_pool: bool | None = None,
         use_popart: bool = False,
         popart_beta: float = 3e-4,
         popart_eps: float = 1e-5,
@@ -137,6 +158,9 @@ class DeepSetCritic(nn.Module):
         self.num_local_features = int(num_local_features)
         self.num_global_features = int(num_global_features)
         self.context_in_elements = bool(context_in_elements)
+        self.context_after_pool = (
+            not self.context_in_elements if context_after_pool is None else bool(context_after_pool)
+        )
         self.use_popart = bool(use_popart)
 
         if self.context_in_elements and self.num_global_features == 0:
@@ -152,7 +176,7 @@ class DeepSetCritic(nn.Module):
             value_head_linear_init = linear_init
 
         element_input_features = self.num_local_features + (self.num_global_features if self.context_in_elements else 0)
-        context_features_after_pool = 0 if self.context_in_elements else self.num_global_features
+        context_features_after_pool = self.num_global_features if self.context_after_pool else 0
 
         if local_projection_hidden_dims:
             element_encoder: nn.Module = MLP(
@@ -204,9 +228,18 @@ class DeepSetCritic(nn.Module):
             set_decoder=value_regressor,
             set_dim=set_dim,
             pool_mode=pool_mode,
-            context_features=context_features_after_pool,
+            context_features=self.num_global_features,
             context_in_elements=self.context_in_elements,
+            context_after_pool=self.context_after_pool,
         )
+
+    def encode_elements(
+        self,
+        local_features: torch.Tensor,
+        global_features: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        context = global_features if self.num_global_features > 0 else None
+        return self.deepset.encode_elements(local_features, context=context)
 
     def forward(
         self,
@@ -214,8 +247,19 @@ class DeepSetCritic(nn.Module):
         global_features: torch.Tensor | None = None,
         agent_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
+        return self.forward_with_latents(local_features, global_features, agent_mask)[0]
+
+    def forward_with_latents(
+        self,
+        local_features: torch.Tensor,
+        global_features: torch.Tensor | None = None,
+        agent_mask: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         context = global_features if self.num_global_features > 0 else None
-        return self.deepset(local_features, context=context, element_mask=agent_mask).squeeze(dim=-1)
+        values, latents = self.deepset.forward_with_latents(
+            local_features, context=context, element_mask=agent_mask,
+        )
+        return values.squeeze(dim=-1), latents
 
     @property
     def has_popart(self) -> bool:
