@@ -161,6 +161,8 @@ trainer = train(
 
 `list_variants()` lists the available presets, and `as_benchmark_policy(trainer)` adapts a trained actor for evaluation. See [learning baselines](https://github.com/brn-dev/swarm-bots/blob/main/docs/learning.md) for customization, checkpoint continuation, and custom training loops.
 
+The [runnable examples](https://github.com/brn-dev/swarm-bots/tree/main/examples) show random-policy evaluation and complete train → evaluate → record workflows for the public presets and recurrent TD3.
+
 ## Record policy behavior
 
 Record your policy with `swarmbots record <benchmark-id> --policy module:function`, or an included-baseline checkpoint with `--checkpoint <path> --variant <variant>`. See [recording](https://github.com/brn-dev/swarm-bots/blob/main/docs/recording.md) for the policy factory interface, checkout script, and video options.

@@ -117,7 +117,7 @@ This call evaluates one seed. Use the five-seed reporting workflow below for a p
 Run the included uniform-random policy as a stochastic sanity baseline:
 
 ```bash
-.venv/bin/python examples/random_policy.py SwarmBots-WallEasy-v0 --device cuda --output runs/wall-random.json
+.venv/bin/python examples/evaluate_random_policy.py SwarmBots-WallEasy-v0 --device cuda --output runs/wall-random.json
 ```
 
 On Windows, replace `.venv/bin/python` with `.venv\Scripts\python.exe`. The default run uses 256 worlds for each seed `1000` through `1004`. For a smaller development run, pass `--num-envs 2 --seeds 1000 --device cpu`. CPU episodes can still be slow; use the CLI smoke test for an installation check.

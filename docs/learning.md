@@ -47,6 +47,8 @@ trainer = train(
 
 This `mat_qcx` preset includes NOP and Signed-Magnitude Beta (SMB) action distributions. `train` closes the simulator when training ends or fails; the returned trainer retains the policy and normalization statistics. The run directory contains metrics, metadata, and the final checkpoint with optimizer and normalization state.
 
+For runnable training → evaluation → video-recording workflows, see the [examples](../examples/README.md). `examples/train_policy.py` accepts any public preset; `examples/train_recurrent_td3.py` demonstrates recurrent TD3 actor/critic options and sequence replay settings.
+
 | Variant | Learner and architecture |
 | --- | --- |
 | `ppo`, `ppo_small` | PPO with a joint MLP actor |

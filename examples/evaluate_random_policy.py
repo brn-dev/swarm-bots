@@ -1,3 +1,5 @@
+"""Evaluate a uniform-random policy across the benchmark's five reporting seeds."""
+
 from __future__ import annotations
 
 import argparse
