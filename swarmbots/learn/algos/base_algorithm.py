@@ -25,7 +25,13 @@ from swarmbots.learn.checkpointing import align_torch_compile_state_dict_keys, l
     freeze_env_normalization, capture_env_state, move_env_to_device
 from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
 from swarmbots.learn.exponential_moving_average import ExponentialMovingAverage, HybridEMA
-from swarmbots.learn.metrics_logger import MetricsLogger, mean_std, rate, summed
+from swarmbots.learn.logging_levels import ConsoleSelection, LoggingLevel
+from swarmbots.learn.metrics_logger import (
+    MetricsLogger,
+    mean_std,
+    rate,
+    summed,
+)
 from swarmbots.learn.performance_timer import PerformanceTimer
 from swarmbots.learn.recording import record_policy
 from swarmbots.utils.machine_specs import collect_machine_specs
@@ -170,7 +176,9 @@ class BaseAlgorithm(abc.ABC):
             wandb_mode: str | None = None,
             wandb_kwargs: dict[str, Any] | None = None,
             logging_ignore_keys_for_persistence: list[str] | None = None,
-            logging_console_keys: Collection[str] | Collection[tuple[str, str | None]] | None = None,
+            logging_console_keys: ConsoleSelection = "default",
+            logging_console_level: LoggingLevel = "minimal",
+            logging_persistence_level: LoggingLevel = "full",
             logging_buffer_size: int = 1,
             compress_metrics_log_on_exit: bool = False,
             enable_command_prompt: bool = True,
@@ -230,6 +238,8 @@ class BaseAlgorithm(abc.ABC):
             wandb_step_key="timesteps",
             ignore_keys_for_persistence=logging_ignore_keys_for_persistence,
             console_keys=logging_console_keys,
+            console_level=logging_console_level,
+            persistence_level=logging_persistence_level,
             buffer_size=logging_buffer_size,
         )
         episode_return_ema = HybridEMA(alpha=episode_return_ema_alpha)

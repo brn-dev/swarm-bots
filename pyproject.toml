@@ -42,6 +42,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+plot = ["matplotlib>=3.9"]
 wandb = ["wandb>=0.19"]
 prompt = ["prompt-toolkit>=3"]
 dev = [

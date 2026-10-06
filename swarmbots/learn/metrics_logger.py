@@ -13,6 +13,13 @@ from typing import Any
 import numpy as np
 from loguru import logger
 
+from swarmbots.learn.logging_levels import (
+    ConsoleMetricFormat,
+    ConsoleSelection,
+    LoggingLevel,
+    get_logging_profile,
+)
+
 try:
     import wandb
     wandb_available = True
@@ -31,7 +38,6 @@ from swarmbots.learn.summary_statistics import (
 
 NEWLINE_KEY = '<newline>'
 SUPPRESS_MISSING_CONSOLE_KEY_WARNINGS = "_suppress_missing_console_key_warnings"
-ConsoleMetricFormat = str | SummaryStatisticsFormat | None
 _MAX_PENDING_BATCHES = 2
 
 
@@ -88,14 +94,16 @@ class MetricsLogger:
             wandb_kwargs: dict[str, Any] | None = None,
             wandb_step_key: str | None = "timesteps",
             ignore_keys_for_persistence: Collection[str] | None = None,
-            console_keys: list[str] | list[
-                tuple[str, str | SummaryStatisticsFormat | None]
-                | tuple[str, str | SummaryStatisticsFormat | None, str]
-            ] | None = None,
+            console_keys: ConsoleSelection = "default",
+            warn_missing_console_keys: bool = True,
             buffer_size: int = 1,
+            console_level: LoggingLevel = "minimal",
+            persistence_level: LoggingLevel = "full",
     ) -> None:
         if buffer_size < 1:
             raise ValueError(f"buffer_size must be >= 1, got {buffer_size}")
+        console_profile = get_logging_profile(console_level)
+        persistence_profile = get_logging_profile(persistence_level)
 
         self.log_dir = Path(log_dir) if log_dir else None
         self.file_path = self.log_dir / filename if self.log_dir else None
@@ -107,13 +115,20 @@ class MetricsLogger:
         self.writer = None
         self._csv_fieldnames: list[str] | None = None
         self._warned_missing_console_keys: set[str] = set()
+        use_console_profile = console_keys == "default"
+        self._warn_missing_console_keys = warn_missing_console_keys and not use_console_profile
 
         self._wandb_run = wandb_run
         self._wandb_managed_run = False
         self._wandb_step_key = wandb_step_key
 
         self._ignore_keys_for_persistence = set(ignore_keys_for_persistence or [])
-        self._console_key_specs = self._normalize_console_keys(console_keys)
+        self._console_key_specs = self._normalize_console_keys(
+            console_profile.console_keys if use_console_profile else console_keys
+        )
+        self._persistence_keys = persistence_profile.persistence_keys
+        if self._persistence_keys is not None and wandb_step_key is not None:
+            self._persistence_keys = self._persistence_keys | {wandb_step_key}
         self._buffer_size = buffer_size
         self._metrics_buffer: _MetricsBatch = []
 
@@ -192,6 +207,11 @@ class MetricsLogger:
         persistence_metrics = {
             k: v for k, v in metrics.items()
             if k != SUPPRESS_MISSING_CONSOLE_KEY_WARNINGS
+            and (
+                self._persistence_keys is None
+                or k in self._persistence_keys
+                or k.rsplit("/", maxsplit=1)[-1] in self._persistence_keys
+            )
             and (not self._ignore_keys_for_persistence or k not in self._ignore_keys_for_persistence)
         }
 
@@ -277,7 +297,6 @@ class MetricsLogger:
                 parts.append(f"<underline>{key}</underline>: {val_str}")
 
         if not parts:
-            logger.warning('Nothing to log?')
             return
 
         logger.opt(colors=True).info(" | ".join(parts))
@@ -539,37 +558,32 @@ class MetricsLogger:
 
     def _normalize_console_keys(
         self,
-            console_keys: list[str] | list[
-                tuple[str, ConsoleMetricFormat]
-                | tuple[str, ConsoleMetricFormat, str]
-            ] | None = None
+        console_keys: ConsoleSelection = None,
     ) -> list[tuple[str, ConsoleMetricFormat, str]] | None:
         if console_keys is None:
             return None
 
-        items = list(console_keys)
-        if not items:
-            return []
-
-        if all(isinstance(item, str) for item in items):
-            key_specs: list[tuple[str, ConsoleMetricFormat, str]] = [(key, None, key) for key in items]
-            return key_specs
-
-        if all(isinstance(item, tuple) and 2 <= len(item) <= 3 for item in items):
-            key_specs = []
-            for key, fmt, *maybe_alias in items:
+        key_specs: list[tuple[str, ConsoleMetricFormat, str]] = []
+        for item in console_keys:
+            if isinstance(item, str):
+                key_specs.append((item, None, item))
+            elif isinstance(item, tuple) and 2 <= len(item) <= 3:
+                key, fmt, *maybe_alias = item
                 key_specs.append((key, fmt, maybe_alias[0] if maybe_alias else key))
-            return key_specs
-
-        raise TypeError(console_keys)
+            else:
+                raise TypeError(f"Invalid console metric specification: {item!r}")
+        return key_specs
 
     def _iter_console_metrics(self, metrics: dict[str, Any]) -> Iterable[tuple[str, Any, ConsoleMetricFormat]]:
         if self._console_key_specs is None:
             for key, value in metrics.items():
-                yield key, value, None
+                if key != SUPPRESS_MISSING_CONSOLE_KEY_WARNINGS:
+                    yield key, value, None
             return
 
-        warn_missing_console_keys = not bool(metrics.get(SUPPRESS_MISSING_CONSOLE_KEY_WARNINGS, False))
+        warn_missing_console_keys = self._warn_missing_console_keys and not bool(
+            metrics.get(SUPPRESS_MISSING_CONSOLE_KEY_WARNINGS, False)
+        )
         for key, fmt, alias in self._console_key_specs:
             if key == NEWLINE_KEY:
                 yield key, fmt, None
@@ -584,9 +598,17 @@ class MetricsLogger:
 
     def _format_console_value(self, value: Any, fmt: ConsoleMetricFormat) -> str:
 
+        if value is None:
+            return "n/a"
+        if isinstance(fmt, str) and isinstance(value, dict):
+            return "{" + ", ".join(f"{key}: {self._format_console_value(item, fmt)}" for key, item in value.items()) + "}"
+        if isinstance(fmt, str) and isinstance(value, (list, tuple)):
+            return "[" + ", ".join(self._format_console_value(item, fmt) for item in value) + "]"
         if isinstance(value, SummaryStatistics):
             assert fmt is None or isinstance(fmt, SummaryStatisticsFormat), 'supply a summary statistics format'
             return format_summary_statistics(value, fmt)
+        if isinstance(fmt, SummaryStatisticsFormat):
+            fmt = fmt.mean
 
         if value is not None and fmt is not None:
             try:

@@ -163,6 +163,8 @@ trainer = train(
 
 The [runnable examples](https://github.com/brn-dev/swarm-bots/tree/main/examples) show random-policy evaluation and complete train → evaluate → record workflows for the public presets and recurrent TD3.
 
+Install `swarmbots[plot]` to plot training CSVs and compare methods across seeds with `swarmbots.plotting`. See [log plotting](https://github.com/brn-dev/swarm-bots/blob/main/docs/log_plotting.md) for the Python API and runnable examples.
+
 ## Record policy behavior
 
 Record your policy with `swarmbots record <benchmark-id> --policy module:function`, or an included-baseline checkpoint with `--checkpoint <path> --variant <variant>`. See [recording](https://github.com/brn-dev/swarm-bots/blob/main/docs/recording.md) for the policy factory interface, checkout script, and video options.
@@ -177,6 +179,7 @@ The [documentation guide](https://github.com/brn-dev/swarm-bots/blob/main/docs/R
 - [GPU setup and compiled smoke test](https://github.com/brn-dev/swarm-bots/blob/main/docs/gpu_setup.md)
 - [Policy recording and video options](https://github.com/brn-dev/swarm-bots/blob/main/docs/recording.md)
 - [Reference learning baselines and presets](https://github.com/brn-dev/swarm-bots/blob/main/docs/learning.md)
+- [Training-log plots and seed comparisons](https://github.com/brn-dev/swarm-bots/blob/main/docs/log_plotting.md)
 - [References and attribution](https://github.com/brn-dev/swarm-bots/blob/main/docs/references.md)
 
 The benchmark and API are alpha. Scenario maturity labels describe testing confidence; benchmark IDs, package releases, and protocol versions identify the task definition, implementation, and evaluation procedure used in an experiment. Record the exact package version and Git commit when reporting results.

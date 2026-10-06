@@ -9,6 +9,7 @@ from typing import Any
 
 from swarmbots import evaluate_policy, record_policy
 from swarmbots.learn import as_benchmark_policy, list_variants, train
+from swarmbots.learn.logging_levels import LOGGING_LEVELS
 
 
 def positive_int(value: str) -> int:
@@ -45,6 +46,8 @@ def make_parser(
     )
     parser.add_argument("--compile", action="store_true", help="compile policy and world-model modules")
     parser.add_argument("--run-dir", type=Path, help=run_dir_help)
+    parser.add_argument("--console-log-level", choices=LOGGING_LEVELS, default="minimal")
+    parser.add_argument("--persistent-log-level", choices=LOGGING_LEVELS, default="full", help="CSV/W&B metric preset")
     return parser
 
 
@@ -71,7 +74,11 @@ def run_experiment(
         compile_modules=args.compile,
         policy_kwargs=policy_kwargs,
         algorithm_kwargs=algorithm_kwargs,
-        learn_kwargs={"log_interval": 10},
+        learn_kwargs={
+            "log_interval": 10,
+            "logging_console_level": args.console_log_level,
+            "logging_persistence_level": args.persistent_log_level,
+        },
     )
 
     # The adapter freezes normalization, chooses deterministic actions, and owns

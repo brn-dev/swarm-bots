@@ -1,5 +1,7 @@
 # Reference learning baselines
 
+For charts from the training CSVs, including comparisons across seeds, see [log plotting](log_plotting.md).
+
 `swarmbots.learn` provides reference baselines and training helpers for SwarmBots experiments. You can use every registered task with PPO/MAPPO, DDPG/MADDPG, TD3/MATD3, SAC/MASAC, multi-agent transformer (MAT) policies, transformer-based SAC (TMASAC) and TD3 (TMATD3), and recurrent variants with LSTM, sLSTM, or mLSTM modules.
 
 The benchmark's [tasks](scenarios.md) and [evaluation protocol](benchmark_protocol.md) are independent of these implementations. To integrate your own learner, use the [benchmark Python API](api.md). The presets below provide starting configurations; their training defaults are not required benchmark settings or published reference scores.
@@ -227,6 +229,67 @@ finally:
 - `compile_modules=True` enables policy/world-model compilation. Configure the CUDA compiler first; see [GPU setup](gpu_setup.md).
 
 The simulator and learning wrappers use Gymnasium `SAME_STEP` autoreset. Done-step returned observations belong to reset episodes; terminal observations are in `final_obs` with `_final_obs`. The supplied collectors, replay buffers, and wrappers already handle this convention.
+
+### Logging levels
+
+Choose console and persistence levels independently, through both `train(...)` and `trainer.learn(...)`. The defaults are **`minimal` for the console and `full` for persistence**. Persistence covers both CSV and W&B. All algorithms and recurrent variants use the same presets:
+
+| Level | Console | CSV/W&B |
+| --- | --- | --- |
+| `full` | All available metric fields with their original names and summary statistics | All metrics |
+| `minimal` | Progress, return/success EMAs, core losses, algorithm health diagnostics, learning rate, and throughput, with short labels | The important training metrics plus raw return/success metrics and timestamp/counter context |
+| `return_success` | Progress counters, return/success EMAs, mean episode return, best return EMA, and current episode success rate | Only return/success metrics and context: timestamps, learning-start time, iterations, environment steps, optimizer-update counts, and episode counts |
+
+```python
+from swarmbots.learn import train
+
+trainer = train(
+    "SwarmBots-WallEasy-v0",
+    "matd3_deepset",
+    total_timesteps=1_000_000,
+    run_dir="runs/wall-easy/td3",
+    learn_kwargs={
+        "logging_console_level": "minimal",
+        "logging_persistence_level": "return_success",
+    },
+)
+```
+
+The same settings go directly to `trainer.learn(...)`. Console selection does not restrict persisted fields, and persistence selection does not restrict console output. W&B's configured step field is retained by reduced persistence levels. `logging_ignore_keys_for_persistence` can explicitly exclude more metrics.
+
+Reduced console presets use iteration (`it`), environment steps (`steps`), total optimizer updates (`upd`), return EMA (`ret`), and success EMA in percent (`succ%`). Minimal adds learning rate (`lr`) and throughput (`fps`). TD3/DDPG/SAC show critic and actor losses (`q_loss`, `pi_loss`), policy and target Q values (`q_pi`, `q_tgt`), and any scaled NOP losses (`c_nop`, `a_nop`). Replay size (`replay`), random-action collection (`rnd`), skipped training (`skip`), and the fraction of optimizer steps that update the actor (`pi_upd`) expose warmup and delayed-update behavior. `skip` appears only when emitted; `rnd` and `skip` use 0/1 flags. SAC also shows its entropy coefficient (`alpha`), estimated policy entropy (`ent`), and target entropy (`ent_tgt`). PPO adds policy/value losses (`pi_loss`, `v_loss`), approximate KL (`kl`), clip fraction (`clip`), explained variance (`ev`), and the scaled world-model loss (`nop`) when present. `clip` is a fraction, not a percentage. Summary-statistic metrics show their means. Unavailable algorithm-specific fields are skipped, and EMAs print `n/a` before they are available. The `return_success` console preset also shows `ret_mean`, `best_ret`, and `succ_batch%` when present; log messages carry their timestamp in the console prefix.
+
+Persisted metrics retain their original names and all available statistics for selected metrics, including means, standard deviations, counts, and histograms. Reduced persistence presets also retain per-scenario return/success metrics and episode counts. When resuming an existing CSV, earlier rows and columns remain; excluded fields are blank in newly written rows. Levels affect metric records; checkpoints, run metadata, and messages such as checkpoint saves are independent of these settings.
+
+The training examples expose both choices:
+
+```bash
+python examples/train_policy.py SwarmBots-WallEasy-v0 --variant matd3_deepset --console-log-level return_success --persistent-log-level minimal
+```
+
+For a custom console selection, override the preset with `logging_console_keys`:
+
+```python
+trainer = train(
+    "SwarmBots-WallEasy-v0",
+    "matd3_deepset",
+    total_timesteps=1_000_000,
+    run_dir="runs/wall-easy/td3",
+    learn_kwargs={
+        "logging_console_keys": [
+            ("timesteps", ",d", "steps"),
+            ("ep_rew_ema", ".2f", "ret"),
+            ("ep_success_rate_ema", ".1f", "succ%"),
+            ("learning_rate", ".2e", "lr"),
+            ("fps", ".0f", "fps"),
+        ],
+    },
+)
+```
+
+An entry can be a key string, `(key, format)`, or `(key, format, display_name)`. Use `None` as the format for automatic formatting. For a metric containing summary statistics, such as `critic_loss`, use `SummaryStatisticsFormat(mean=".3f")` from `swarmbots.learn.summary_statistics` to select the mean and its precision. Missing explicitly requested keys warn once so typos are visible. Shared field selections and display formats live in `swarmbots.learn.logging_levels`.
+
+Pass `logging_console_keys=None` to show every metric, `logging_console_keys=[]` to silence metric rows, or `logging_console_keys="default"` (the default) to follow `logging_console_level`. Custom console selections do not change `logging_persistence_level`. With `trainer.learn(...)`, pass the option directly instead of through `learn_kwargs`.
 
 ## Action distributions
 

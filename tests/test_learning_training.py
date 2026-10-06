@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import csv
 from collections.abc import Iterator
 from pathlib import Path
 from types import SimpleNamespace
@@ -10,6 +11,7 @@ import pytest
 import torch
 from gymnasium import spaces
 from torch import nn
+from loguru import logger
 
 from swarmbots import ALL_BENCHMARK_IDS, evaluate_policy
 from swarmbots.learn import as_benchmark_policy, list_variants, make_training, train
@@ -31,6 +33,7 @@ from swarmbots.learn.checkpointing import capture_env_state
 from swarmbots.learn.exponential_moving_average import ExponentialMovingAverage
 from swarmbots.learn.hybrid_action_space import HybridActionSpace
 from swarmbots.learn.nn_components.deep_set import DeepSetCritic
+from swarmbots.learn.nn_components.feed_forward import MLP, MLPConfig, StackedGLU, SwiGLU, SwiGLUConfig
 from swarmbots.learn.presets.policy_factory import _is_off_policy_variant, _make_base_policy
 from swarmbots.learn.presets.transformer import MATInitGains, MATNormalizationConfig
 from swarmbots.learn.training import _variant_options
@@ -123,7 +126,12 @@ def test_slstm_no_residual_ablation_changes_only_the_residual_connection() -> No
     assert main_options == {**ablation_options, "rmat_temporal_residual": True}
 
 
-def _small_policy(variant: str, n_agents: int = 3) -> TMASACPolicy | MAPPOPolicy:
+def _small_policy(
+    variant: str,
+    n_agents: int = 3,
+    *,
+    policy_kwargs: dict[str, Any] | None = None,
+) -> TMASACPolicy | MAPPOPolicy:
     env = SimpleNamespace(
         n_agents=n_agents,
         local_obs_dim=5,
@@ -136,6 +144,7 @@ def _small_policy(variant: str, n_agents: int = 3) -> TMASACPolicy | MAPPOPolicy
         }),
     )
     options, _ = _variant_options(variant)
+    options.update(policy_kwargs or {})
     options["use_nop"] = False
     return _make_base_policy(
         env=env,
@@ -149,12 +158,106 @@ def _small_policy(variant: str, n_agents: int = 3) -> TMASACPolicy | MAPPOPolicy
         compile_policy_modules=False,
         policy_compile_mode="default",
         gsde_init_stds=[0.25, 0.30],
-        mat_add_agent_embeddings=True,
+        mat_add_agent_embeddings=options.pop("mat_add_agent_embeddings", True),
         act_fn_cls=nn.GELU,
         mat_init_gains=MATInitGains(),
         mat_normalization=MATNormalizationConfig(),
         **options,
     )
+
+
+@pytest.mark.parametrize("variant", [
+    "tmasac_slstm", "tmasac_slstm_no_residual", "tmasac_lstm", "tmasac_slstm_no_nop",
+])
+def test_recurrent_tmasac_presets_keep_full_critic_ff_and_split_actor_ff(variant: str) -> None:
+    options, _ = _variant_options(variant)
+    assert options["mat_encoder_transformer_ff_config"] == MLPConfig(hidden_dims=[512, 512])
+    assert options["rmat_actor_transformer_ff_config"] == MLPConfig(hidden_dims=[512])
+    policy = _small_policy(variant)
+    for critic in (policy.critic, policy.critic_target):
+        for layer in critic.encoder.layers:
+            assert isinstance(layer.feedforward, MLP)
+            widths = [(module.in_features, module.out_features) for module in layer.feedforward if isinstance(module, nn.Linear)]
+            assert widths == [(32, 512), (512, 512), (512, 32)]
+    for layer in policy.actor_encoder.layers:
+        for feedforward in (layer.inter_module_feedforward, layer.feedforward):
+            assert isinstance(feedforward, MLP)
+            widths = [(module.in_features, module.out_features) for module in feedforward if isinstance(module, nn.Linear)]
+            assert widths == [(256, 512), (512, 256)]
+
+
+def test_recurrent_tmasac_swiglu_preset_keeps_stacked_critic_ff_and_single_actor_ff() -> None:
+    options, _ = _variant_options("tmasac_slstm_swiglu")
+    baseline_options, _ = _variant_options("tmasac_swiglu")
+    critic_config = options["mat_encoder_transformer_ff_config"]
+    actor_config = options["rmat_actor_transformer_ff_config"]
+    assert critic_config == baseline_options["mat_encoder_transformer_ff_config"]
+    assert isinstance(critic_config, SwiGLUConfig) and critic_config.stacked.n_layers == 2
+    assert actor_config == SwiGLUConfig(hidden_dim=344)
+    policy = _small_policy("tmasac_slstm_swiglu")
+    for critic in (policy.critic, policy.critic_target):
+        for layer in critic.encoder.layers:
+            assert isinstance(layer.feedforward, StackedGLU)
+            assert len(layer.feedforward) == 2
+            for block in layer.feedforward:
+                assert isinstance(block, SwiGLU)
+                assert (block.gate_projection.in_features, block.gate_projection.out_features) == (32, 344)
+                assert (block.value_projection.in_features, block.value_projection.out_features) == (32, 344)
+                assert (block.output_projection.in_features, block.output_projection.out_features) == (344, 32)
+    for layer in policy.actor_encoder.layers:
+        for feedforward in (layer.inter_module_feedforward, layer.feedforward):
+            assert isinstance(feedforward, SwiGLU)
+            assert (feedforward.gate_projection.in_features, feedforward.gate_projection.out_features) == (256, 344)
+            assert (feedforward.value_projection.in_features, feedforward.value_projection.out_features) == (256, 344)
+            assert (feedforward.output_projection.in_features, feedforward.output_projection.out_features) == (344, 256)
+
+
+@pytest.mark.parametrize("variant,recurrent_critic", [
+    ("matd3_mlp", False), ("matd3_deepset", False),
+    ("tmatd3", False), ("tmatd3_dec", False),
+    ("tmatd3", True), ("tmatd3_dec", True),
+])
+def test_td3_split_actor_ff_override_preserves_full_critic_ff(variant: str, recurrent_critic: bool) -> None:
+    baseline = _small_policy(variant)
+    policy = _small_policy(variant, policy_kwargs={
+        "td3_recurrent_actor": True,
+        "td3_recurrent_critic": recurrent_critic,
+        "rmat_actor_transformer_ff_config": MLPConfig(hidden_dims=[512]),
+        "rmat_actor_inter_module_mlp": True,
+        # Isolate FF routing from the separate actor-state conditioning input.
+        "td3_actor_state_critic_input_config": None,
+    })
+    for actor in (policy.actor, policy.actor_target):
+        for layer in actor.encoder.layers:
+            for block in (layer.inter_module_feedforward, layer.feedforward):
+                assert isinstance(block, MLP)
+                widths = [(module.in_features, module.out_features) for module in block if isinstance(module, nn.Linear)]
+                assert widths == [(32, 512), (512, 32)]
+    if variant.startswith("tmatd3"):
+        for critic in (policy.critic, policy.critic_target):
+            for layer in critic.encoder.layers:
+                blocks = (layer.inter_module_feedforward, layer.feedforward) if recurrent_critic else (layer.feedforward,)
+                for block in blocks:
+                    assert isinstance(block, MLP)
+                    widths = [(module.in_features, module.out_features) for module in block if isinstance(module, nn.Linear)]
+                    assert widths == [(32, 512), (512, 512), (512, 32)]
+    else:
+        expected_shapes = {name: parameter.shape for name, parameter in baseline.critic.named_parameters()}
+        for critic in (policy.critic, policy.critic_target):
+            assert {name: parameter.shape for name, parameter in critic.named_parameters()} == expected_shapes
+
+
+@pytest.mark.parametrize("variant", ["mat_ind", "mat_qcx"])
+def test_recurrent_mat_extra_encoder_ff_preserves_critic_head_architecture(variant: str) -> None:
+    settings = {"mat_add_agent_embeddings": False}
+    baseline = _small_policy(variant, policy_kwargs=settings)
+    recurrent = _small_policy(variant + "_lstm", policy_kwargs=settings)
+    expected_shapes = {name: parameter.shape for name, parameter in baseline.critic.named_parameters()}
+    assert {name: parameter.shape for name, parameter in recurrent.critic.named_parameters()} == expected_shapes
+    for baseline_layer, recurrent_layer in zip(baseline.encoder.layers, recurrent.encoder.layers, strict=True):
+        expected_ff_shapes = {name: parameter.shape for name, parameter in baseline_layer.feedforward.named_parameters()}
+        for block in (recurrent_layer.inter_module_feedforward, recurrent_layer.feedforward):
+            assert {name: parameter.shape for name, parameter in block.named_parameters()} == expected_ff_shapes
 
 
 @pytest.mark.parametrize("variant", ["tmasac", "tmasac_dec", "tmasac_lstm_no_actor_state", "tmasac_segment"])
@@ -610,6 +713,52 @@ def test_joint_observation_embedding_trains_and_restores_existing_presets(varian
             restored.env.close()
     finally:
         algorithm.env.close()
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("variant", ["mappo", "matd3_deepset", "maddpg_mlp", "masac_mlp", "tmasac_slstm"])
+def test_training_levels_apply_independently_to_each_algorithm_family(variant: str, tmp_path: Path) -> None:
+    kwargs = _training_kwargs()
+    kwargs["use_nop"] = False
+    policy_options, _ = _variant_options(variant)
+    off_policy = _is_off_policy_variant(policy_options["policy_variant"])
+    if off_policy:
+        kwargs["algorithm_kwargs"] = {
+            "learning_starts": 0,
+            "batch_size": 2,
+            "buffer_capacity_per_env": 16,
+            "gradient_steps": 1,
+            "learning_rate_warmup_updates": 0,
+        }
+        if policy_options["policy_variant"] == "tmasac_recurrent":
+            kwargs["algorithm_kwargs"].update(burn_in_steps=1, learning_steps=3, temporal_state_store_interval=1)
+    else:
+        kwargs["algorithm_kwargs"] = {"n_epochs": 1, "target_kl": None, "learning_rate": 1e-3}
+    console_messages: list[str] = []
+    sink_id = logger.add(
+        lambda message: console_messages.append(message.record["message"]),
+        filter=lambda record: record["function"] == "_log_to_console",
+    )
+    try:
+        train(
+            "SwarmBots-WallEasy-v0",
+            variant,
+            total_timesteps=8,
+            rollout_steps_per_env=4,
+            run_dir=tmp_path,
+            learn_kwargs={"logging_console_level": "full", "logging_persistence_level": "return_success"},
+            **kwargs,
+        )
+    finally:
+        logger.remove(sink_id)
+    loss_key = "critic_loss" if off_policy else "val_loss_scaled"
+    assert any(loss_key in message for message in console_messages)
+    with (tmp_path / "log.csv").open(newline="", encoding="utf-8") as handle:
+        rows = list(csv.DictReader(handle, delimiter=";"))
+    assert rows and int(rows[-1]["timesteps"]) == 8
+    assert {"timestamp", "iteration", "total_updates", "ep_rew__mean", "ep_rew_ema", "ep_success_rate_ema"} <= rows[-1].keys()
+    assert f"{loss_key}__mean" not in rows[-1]
+    assert "learning_rate" not in rows[-1]
 
 
 @pytest.mark.integration

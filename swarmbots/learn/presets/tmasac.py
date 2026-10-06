@@ -117,10 +117,11 @@ def _make_feedforward_configs(
         "tmasac_slstm_no_residual",
         "tmasac_lstm",
     }:
-        return MLPConfig(hidden_dims=[512]), MLPConfig(hidden_dims=[512])
+        # Only the recurrent actor splits its feed-forward budget across the
+        # two RMAT blocks. The ordinary critic still needs the full MAT block.
+        return MLPConfig(hidden_dims=[512, 512]), MLPConfig(hidden_dims=[512])
     if variant == "tmasac_slstm_swiglu":
-        swiglu_config = SwiGLUConfig(hidden_dim=PARAMETER_MATCHED_SWIGLU_HIDDEN_DIM)
-        return swiglu_config, swiglu_config
+        return _make_stacked_swiglu_config(), SwiGLUConfig(hidden_dim=PARAMETER_MATCHED_SWIGLU_HIDDEN_DIM)
     raise ValueError(f"Unknown TMASAC variant: {variant!r}")
 
 
