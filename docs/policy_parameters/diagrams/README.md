@@ -28,7 +28,7 @@ python examples/diagram_policy_architectures.py --refresh
 python examples/diagram_policy_architectures.py --variants tmasac tmatd3 --scales 5M
 ```
 
-The default command reads the compact `counts.json.gz` snapshots included in the repository. `--refresh` reconstructs policies from current presets, updates these snapshots, and writes full parameter/layer reports to `../generated/<scale>/` before drawing. The geometry uses ordinary Python and SVG and needs no Graphviz, Mermaid CLI, browser service, or external network. Optional `png_preview` needs Pillow. See the [output storage guide](../README.md).
+The default command reads the compact `counts.json.gz` snapshots included in the repository. `--refresh` reconstructs policies from current presets, updates these snapshots, and writes full parameter/layer reports to `../generated/<scale>/` before drawing. Rebuilding an audit retains all core presets and any cached hidden presets still registered, even when `--variants` selects fewer diagrams. `--include-hidden` also draws optional presets, including the stacked SwiGLU variants. The geometry uses ordinary Python and SVG and needs no Graphviz, Mermaid CLI, browser service, or external network. Optional `png_preview` needs Pillow. See the [output storage guide](../README.md).
 
 Each `.mmd` works in Mermaid-compatible Markdown. A `.dot` can be rerendered with Graphviz:
 

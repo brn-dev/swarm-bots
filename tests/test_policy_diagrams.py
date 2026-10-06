@@ -13,7 +13,9 @@ from examples.diagram_policy_architectures import (
     mermaid_diagram,
     svg_diagram,
     dot_diagram,
+    generate,
 )
+from swarmbots.learn import list_model_scales, list_variants
 
 ROOT = Path(__file__).resolve().parents[1]
 REPORTS = [ROOT / "docs/policy_parameters" / folder / "counts.json.gz" for folder in ["", "2.5M", "10M"]]
@@ -157,8 +159,14 @@ def test_refresh_keeps_compact_inputs_and_writes_verbose_reports_to_generated(tm
     from examples import diagram_policy_architectures as diagrams
 
     report = json.loads(gzip.decompress(REPORTS[0].read_bytes()))
+    def inspect(benchmark_id, variants, *, model_scale):
+        assert benchmark_id == "SwarmBots-WallEasy-v0"
+        assert variants == list_variants()
+        assert model_scale == "5M NOP1M"
+        return report
+
     monkeypatch.setattr(diagrams, "ROOT", tmp_path)
-    monkeypatch.setattr(diagrams, "inspect_variants", lambda *args, **kwargs: report)
+    monkeypatch.setattr(diagrams, "inspect_variants", inspect)
     rows = diagrams.load_reports(["5M NOP1M"], ["tmasac"], refresh=True)
     assert [row["variant"] for row in rows] == ["tmasac"]
     docs = tmp_path / "docs/policy_parameters"
@@ -169,3 +177,79 @@ def test_refresh_keeps_compact_inputs_and_writes_verbose_reports_to_generated(tm
     assert (generated / "counts.csv").exists()
     assert (generated / "layer_layout.csv").exists()
     assert "[model-scale allocation](../../model_scale.md)" in (generated / "report.md").read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("report_path", REPORTS, ids=["5M", "2.5M", "10M"])
+@pytest.mark.parametrize("refresh", [False, True])
+def test_partial_audit_rebuild_preserves_core_and_cached_hidden_presets(tmp_path, monkeypatch, report_path, refresh):
+    from examples import diagram_policy_architectures as diagrams
+    from examples.inspect_policy_parameters import write_compressed_json
+
+    report = json.loads(gzip.decompress(report_path.read_bytes()))
+    scale = report["policies"][0]["model_scale"]["name"]
+    hidden_name = "tmasac_slstm_no_residual"
+    hidden_row = {**next(row for row in report["policies"] if row["variant"] == "tmasac_slstm"), "variant": hidden_name}
+    report["policies"].append(hidden_row)
+    report["requested_variants"].append(hidden_name)
+    cached = {
+        **report,
+        "policies": [row for row in report["policies"] if refresh or row["variant"] != "tmasac"],
+    }
+    path = tmp_path / report_path.relative_to(ROOT)
+    path.parent.mkdir(parents=True)
+    write_compressed_json(cached, path)
+    calls = []
+
+    def inspect(benchmark_id, variants, *, model_scale):
+        calls.append(variants)
+        assert model_scale == scale
+        by_name = {row["variant"]: row for row in report["policies"]}
+        return {
+            **report,
+            "requested_variants": list(variants),
+            "policies": [{**by_name[name], "refreshed": True} for name in variants],
+        }
+
+    monkeypatch.setattr(diagrams, "ROOT", tmp_path)
+    monkeypatch.setattr(diagrams, "inspect_variants", inspect)
+    rows = diagrams.load_reports([scale], ["tmasac"], refresh=refresh)
+    assert [row["variant"] for row in rows] == ["tmasac"]
+    assert calls == [(*list_variants(), hidden_name)]
+    saved = json.loads(gzip.decompress(path.read_bytes()))
+    assert saved["requested_variants"] == [*list_variants(), hidden_name]
+    assert {row["variant"] for row in saved["policies"]} == {*list_variants(), hidden_name}
+    assert all(row["refreshed"] for row in saved["policies"])
+    # The complete rebuilt audit is reusable for unselected presets without
+    # another inspection or snapshot rewrite.
+    before = path.read_bytes()
+    rows = diagrams.load_reports([scale], ["mappo", hidden_name], refresh=False)
+    assert {row["variant"] for row in rows} == {"mappo", hidden_name}
+    assert len(calls) == 1
+    assert path.read_bytes() == before
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("scale", list_model_scales())
+def test_stacked_swiglu_presets_generate_diagrams_from_actual_audits(scale, tmp_path):
+    import torch
+    from examples.inspect_policy_parameters import inspect_variants
+
+    variants = ("tmasac_swiglu", "tmasac_slstm_swiglu")
+    previous_threads = torch.get_num_threads()
+    torch.set_num_threads(1)
+    try:
+        report = inspect_variants("SwarmBots-WallEasy-v0", variants, model_scale=scale)
+    finally:
+        torch.set_num_threads(previous_threads)
+    assert not report["errors"]
+    diagrams = generate(report["policies"], tmp_path)
+    assert {d.variant for d in diagrams} == set(variants)
+    for d, row in zip(diagrams, report["policies"], strict=True):
+        assert sum(node.parameters or 0 for node in d.nodes) == row["trainable"]
+        stacked_lines = [line for node in d.nodes for line in node.lines if "2 × SwiGLU" in line]
+        assert len(stacked_lines) == (2 if d.variant == "tmasac_swiglu" else 1)
+        svg_path, = tmp_path.glob(f"*/{d.variant}.svg")
+        assert ElementTree.fromstring(svg_path.read_text(encoding="utf-8")).tag.endswith("svg")
+        assert "2 × SwiGLU" in svg_path.with_suffix(".mmd").read_text(encoding="utf-8")
+        assert "2 × SwiGLU" in svg_path.with_suffix(".dot").read_text(encoding="utf-8")
+    assert (tmp_path / "index.html").exists()

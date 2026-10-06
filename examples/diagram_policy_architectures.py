@@ -113,6 +113,26 @@ def chain(row, *paths, fallback=""):
         found = next((layer for layer in row["layer_layout"] if layer["module"] == path), None)
         if found:
             return found["dimensions"].replace(" -> ", " → ") + f" ({found['parameters']:,})"
+        # Stacked GLUs are audited as individual layers, including in existing
+        # snapshots. Describe their forward order while counting the whole stack,
+        # whose parameters also include any normalization between layers.
+        stack_prefix = path + ".layers."
+        layers = sorted(
+            (
+                layer for layer in row["layer_layout"]
+                if layer["module"].startswith(stack_prefix)
+                and layer["module"][len(stack_prefix):].isdigit()
+            ),
+            key=lambda layer: int(layer["module"][len(stack_prefix):]),
+        )
+        if layers:
+            descriptions = [f"{layer['kind']} ({layer['dimensions']})" for layer in layers]
+            dimensions = (
+                f"{len(layers)} × {descriptions[0]}"
+                if len(set(descriptions)) == 1
+                else "; ".join(descriptions)
+            )
+            return dimensions.replace(" -> ", " → ") + f" ({module_count(row, path):,})"
     if fallback:
         return fallback
     raise ValueError(f"Missing audited layer {paths} for {row['variant']}")
@@ -966,7 +986,16 @@ def load_reports(scales, variants, refresh):
             or not wanted <= {row["variant"] for row in report["policies"]}
             or any("module_parameter_counts" not in row for row in report["policies"] if row["variant"] in wanted)
         ):
-            report = inspect_variants("SwarmBots-WallEasy-v0", tuple(variants), model_scale=scale)
+            # A selection controls drawing, not the contents of the shared audit.
+            # Rebuild the complete audit together so its metadata stays consistent.
+            available = set(list_variants(include_hidden=True))
+            cached_variants = [row["variant"] for row in report["policies"]] if report is not None else []
+            audit_variants = tuple(dict.fromkeys([
+                *list_variants(),
+                *(name for name in cached_variants if name in available),
+                *variants,
+            ]))
+            report = inspect_variants("SwarmBots-WallEasy-v0", audit_variants, model_scale=scale)
             if report["errors"]:
                 raise RuntimeError(report["errors"])
             # Keep the compact audit input; verbose reports remain local outputs.
