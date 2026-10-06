@@ -128,8 +128,8 @@ def render_report(report: dict[str, Any]) -> str:
         "and prediction heads; its source encoder remains in actor, critic, or shared encoder. "
         "Targets are the frozen actor/critic/shared-encoder copies used by off-policy learning.", "",
         "Actor + critic + shared encoder + NOP + targets + other = total. "
-        "**Total − NOP** counts every parameter outside the NOP modules, including frozen targets. "
-        "The online main-policy total below additionally excludes targets. "
+        "**Trainable − NOP** is the trainable total minus trainable NOP parameters. "
+        "It excludes all frozen parameters, including target networks. "
         "Trainable excludes frozen parameters. Actor execution needs actor + shared encoder. "
         "Counts describe the entire policy, not a separate network per agent. "
         "Buffers (including normalization/PopArt state), optimizer state, replay, and activations are excluded. "
@@ -137,12 +137,12 @@ def render_report(report: dict[str, Any]) -> str:
         "Sizes depend on task shapes and architecture settings. These are the registered preset defaults "
         "unless overrides below are nonempty. A residual-connection ablation can have the same count.", "",
         f"Overrides: `{json.dumps(report['overrides'], sort_keys=True)}`.", "",
-        "| Variant | Actor | Critic | Shared encoder | NOP | Targets | Other | Total | Total − NOP | Trainable |",
+        "| Variant | Actor | Critic | Shared encoder | NOP | Targets | Other | Total | Trainable | Trainable − NOP |",
         "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
     for row in report["policies"]:
         counts = [row["roles"][role]["total"] for role in PARAMETER_ROLES]
-        lines.append(f"| {row['variant']} | " + " | ".join(f"{count:,}" for count in [*counts, row["total"], row["total_minus_nop"], row["trainable"]]) + " |")
+        lines.append(f"| {row['variant']} | " + " | ".join(f"{count:,}" for count in [*counts, row["total"], row["trainable"], row["trainable_minus_nop"]]) + " |")
     lines.extend([
         "", "## Main-policy MLP, projection, attention, and recurrent parameters", "",
         "This comparison includes only online actor, critic, shared encoder, and any other main-policy parameters. "
@@ -168,7 +168,7 @@ def render_report(report: dict[str, Any]) -> str:
         "Attention's matrix operations can add substantial compute without additional parameters. "
         "Matching MLP + linear totals alone can also hide different actor/critic allocations or layer shapes; "
         "use the role and module breakdowns when choosing an experimental control.", "",
-        "| Variant | Actor MLP + linear | Critic MLP + linear | Shared MLP + linear | Total MLP + linear | Attention | Recurrent | Remainder | Online total | Total − NOP |",
+        "| Variant | Actor MLP + linear | Critic MLP + linear | Shared MLP + linear | Total MLP + linear | Attention | Recurrent | Remainder | Online total | Trainable − NOP |",
         "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ])
     for row in report["policies"]:
@@ -177,7 +177,7 @@ def render_report(report: dict[str, Any]) -> str:
         values = [
             *(processing["roles"][role]["mlp_and_linear"]["total"] for role in PROCESSING_ROLES[:3]),
             processing["mlp_and_linear"]["total"], processing["kinds"]["attention"]["total"],
-            processing["kinds"]["recurrent"]["total"], remainder, processing["total"], row["total_minus_nop"],
+            processing["kinds"]["recurrent"]["total"], remainder, processing["total"], row["trainable_minus_nop"],
         ]
         lines.append(f"| {row['variant']} | " + " | ".join(f"{value:,}" for value in values) + " |")
     lines.extend([
@@ -269,14 +269,14 @@ def save_report(report: dict[str, Any], output_dir: Path) -> None:
     (output_dir / "counts.json").unlink(missing_ok=True)
     processing_columns = ["main_policy_total", "mlp_and_linear", *(f"processing_{kind}" for kind in PROCESSING_KINDS)]
     role_columns = [f"{role}_mlp_and_linear" for role in PROCESSING_ROLES]
-    columns = ["variant", *PARAMETER_ROLES, "total", "total_minus_nop", "trainable", "frozen", "parameter_bytes", *processing_columns, *role_columns]
+    columns = ["variant", *PARAMETER_ROLES, "total", "trainable", "trainable_minus_nop", "frozen", "parameter_bytes", *processing_columns, *role_columns]
     with (output_dir / "counts.csv").open("w", newline="", encoding="utf-8") as stream:
         writer = csv.DictWriter(stream, fieldnames=columns)
         writer.writeheader()
         for row in report["policies"]:
             processing = row["processing"]
             writer.writerow({
-                **{key: row[key] for key in ("variant", "total", "total_minus_nop", "trainable", "frozen", "parameter_bytes")},
+                **{key: row[key] for key in ("variant", "total", "trainable", "trainable_minus_nop", "frozen", "parameter_bytes")},
                 **{role: row["roles"][role]["total"] for role in PARAMETER_ROLES},
                 "main_policy_total": processing["total"],
                 "mlp_and_linear": processing["mlp_and_linear"]["total"],

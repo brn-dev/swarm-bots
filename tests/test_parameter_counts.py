@@ -36,7 +36,7 @@ def test_counts_separate_targets_nop_and_buffers() -> None:
     result = count_policy_parameters(policy)
 
     assert result["total"] == 56
-    assert result["total_minus_nop"] == 41  # includes the five frozen target parameters
+    assert result["trainable_minus_nop"] == 36  # excludes NOP and frozen targets
     assert result["trainable"] == 51
     assert result["frozen"] == 5
     assert result["parameter_bytes"] == 56 * 4
@@ -194,11 +194,12 @@ def test_processing_shared_encoder_counts_once_for_tied_actor_critic() -> None:
     assert processing["roles"]["actor"]["total"] == processing["roles"]["critic"]["total"] == 0
 
 
-def test_report_exports_total_minus_nop_and_lossless_compressed_json(tmp_path: Path) -> None:
+@pytest.mark.parametrize("nop_trainable", [False, True])
+def test_report_exports_trainable_minus_nop_and_lossless_compressed_json(tmp_path: Path, nop_trainable: bool) -> None:
     policy = nn.Module()
     policy.actor = nn.Linear(2, 1)  # 3
     policy.actor_target = copy.deepcopy(policy.actor).requires_grad_(False)  # 3
-    policy.actor_nop = nn.Linear(1, 2)  # 4
+    policy.actor_nop = nn.Linear(1, 2).requires_grad_(nop_trainable)  # 4, only subtract when trainable
     report = {
         "benchmark_id": "example", "device": "cpu", "generated_at": "2026-10-06",
         "requested_variants": ["example"], "overrides": {}, "errors": [],
@@ -212,6 +213,7 @@ def test_report_exports_total_minus_nop_and_lossless_compressed_json(tmp_path: P
     with (tmp_path / "counts.csv").open(newline="", encoding="utf-8") as stream:
         row, = csv.DictReader(stream)
     assert row["total"] == "10"
-    assert row["total_minus_nop"] == "6"
+    assert row["trainable_minus_nop"] == "3"
+    assert "total_minus_nop" not in row
     assert row["main_policy_total"] == "3"  # online-only processing excludes targets too
-    assert "Total − NOP" in (tmp_path / "report.md").read_text(encoding="utf-8")
+    assert "Trainable − NOP" in (tmp_path / "report.md").read_text(encoding="utf-8")

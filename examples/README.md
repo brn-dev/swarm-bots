@@ -60,7 +60,7 @@ The script instantiates every registered preset by default, using the same polic
 
 The main-policy processing comparison excludes NOP and targets. It splits MLPs, standalone linear projections, attention, recurrent modules, normalization, embeddings, and other parameters, by actor, critic, and shared encoder. **MLP + linear** includes transformer feed-forward blocks, SwiGLU gates, observation/latent projections, and action/value heads. Attention's Q/K/V/output projections and complete recurrent modules (including input/gate projections) count in their respective categories. This affine budget helps compare processing capacity across variants; it does not measure FLOPs or effective capacity.
 
-The **Total − NOP** column counts all parameters outside NOP, including frozen targets. The **Online total** in the processing comparison additionally excludes targets.
+The **Trainable − NOP** column counts the trainable total minus trainable NOP parameters. It excludes all frozen parameters, including target networks. The **Online total** in the processing comparison excludes NOP and targets but can include other frozen main-policy parameters.
 
 `--output-dir` saves a Markdown report, summary and component CSVs, `processing.csv` (processing counts by role), `processing_components.csv` (classified modules), and losslessly compressed `counts.json.gz` with resolved hyperparameters and task shapes. Read the JSON using `json.load(gzip.open(path, "rt", encoding="utf-8"))`. Use `--no-nop` or JSON `--policy-kwargs`, `--scenario-kwargs`, and `--env-kwargs` to match custom settings. Parameter counts depend on the task's observation/action shapes. See the [35-variant WallEasy results](../docs/policy_parameters/report.md) for the measured default sizes.
 

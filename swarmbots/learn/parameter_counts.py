@@ -138,7 +138,7 @@ def count_policy_parameters(policy: nn.Module) -> dict[str, Any]:
     Frozen target copies are included in ``total`` but excluded from
     ``trainable``. Buffers, optimizer state, replay, and activations are excluded.
     Parameter identity deduplicates aliases, including tied critic encoders.
-    ``total_minus_nop`` retains frozen target copies while removing NOP modules.
+    ``trainable_minus_nop`` counts trainable parameters outside NOP modules.
     ``processing`` excludes NOP and targets and separates affine MLP/projection
     weights from attention, complete recurrent modules, norms, and embeddings.
     This is a parameter budget, not a FLOP or effective-capacity measurement.
@@ -214,7 +214,7 @@ def count_policy_parameters(policy: nn.Module) -> dict[str, Any]:
     ]
     return {
         **totals,
-        "total_minus_nop": totals["total"] - roles["next_obs_prediction"]["total"],
+        "trainable_minus_nop": totals["trainable"] - roles["next_obs_prediction"]["trainable"],
         "roles": roles,
         "components": [
             {"role": role, "module": name, **counts}
