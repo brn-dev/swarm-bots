@@ -28,7 +28,14 @@ def make_parser(
 ) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=description)
     parser.add_argument("benchmark_id", nargs="?", default="SwarmBots-WallEasy-v0")
-    parser.add_argument("--variant", choices=list_variants() if variants is None else variants, default=default_variant)
+    allowed_variants = list_variants(include_hidden=True) if variants is None else variants
+    def variant_choice(value: str) -> str:
+        if value not in allowed_variants:
+            raise argparse.ArgumentTypeError(f"Unknown variant: {value}")
+        return value
+    parser.add_argument("--variant", type=variant_choice, default=default_variant, metavar="VARIANT",
+                        help="core presets: " + ", ".join(list_variants() if variants is None else variants))
+    parser.add_argument("--model-scale", default="5M NOP1M", help="fixed tiers: 2.5M, 5M (default), 10M; legacy uses custom widths")
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--num-envs", type=positive_int, default=256, help="parallel training worlds")
     parser.add_argument("--total-timesteps", type=positive_int, default=1_000_000)
@@ -71,6 +78,7 @@ def run_experiment(
         seed=args.seed,
         episode_length=args.episode_length,
         use_nop=args.nop,
+        model_scale=None if args.model_scale == "legacy" else args.model_scale,
         compile_modules=args.compile,
         policy_kwargs=policy_kwargs,
         algorithm_kwargs=algorithm_kwargs,

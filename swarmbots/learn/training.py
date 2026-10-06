@@ -36,6 +36,7 @@ from swarmbots.learn.presets.policy_factory import (
     set_actuator_gsde_init_joint_stds,
     wrap_vec_env,
 )
+from swarmbots.learn.presets.model_scale import DEFAULT_MODEL_SCALE, normalize_model_scale, ppo_nop_at_scale
 from swarmbots.learn.presets.tmasac import make_tmasac_options
 from swarmbots.learn.presets.transformer import MATInitGains, MATNormalizationConfig, NOPInitGains
 from swarmbots.learn.presets.variants import VARIANT_CONFIGS
@@ -45,14 +46,15 @@ from swarmbots.learn.scheduling.schedulers import ScheduleUnit
 from swarmbots.learn.swarmbots_obs_indices import build_obs_indices
 
 
-def list_variants() -> tuple[str, ...]:
-    """List built-in policy presets and learning variants."""
-    return tuple(VARIANT_CONFIGS)
+def list_variants(*, include_hidden: bool = False) -> tuple[str, ...]:
+    """List core presets; opt in to MLP baselines and optional controls."""
+    return tuple(name for name, config in VARIANT_CONFIGS.items() if include_hidden or not config.hidden)
 
 
-def _variant_options(variant: str) -> tuple[dict[str, Any], dict[str, Any]]:
+def _variant_options(variant: str, *, model_scale: str | None = DEFAULT_MODEL_SCALE) -> tuple[dict[str, Any], dict[str, Any]]:
     if variant not in VARIANT_CONFIGS:
         raise ValueError(f"Unknown learning variant {variant!r}. Available: {', '.join(list_variants())}")
+    model_scale = normalize_model_scale(model_scale)
     config = VARIANT_CONFIGS[variant]
     if config.tmasac_variant is not None:
         policy_options, algorithm_options = make_tmasac_options(config.tmasac_variant)
@@ -68,6 +70,7 @@ def _variant_options(variant: str) -> tuple[dict[str, Any], dict[str, Any]]:
         else "sign_magnitude_beta"
     )
     policy_options.update(
+        model_scale=model_scale,
         continuous_action_dist=default_distribution,
         use_nop=config.use_nop,
         mat_use_agent_attention=config.use_agent_attention,
@@ -91,46 +94,52 @@ def _observation_indices(env: Any) -> ObsIndices:
 def _add_ppo_nop(
     policy: BasePolicy, env: BaseLearnEnvWrapper, indices: ObsIndices, options: Mapping[str, Any]
 ) -> BasePolicy:
-    latent_dim = int(getattr(policy, "local_latent_dim", options["enc_d_model"]))
+    latent_dim = getattr(policy, "local_latent_dim", None)
+    if latent_dim is None:
+        latent_dim = policy.config.encoder_config.d_model
+    latent_dim = int(latent_dim)
     transition_dim = options.get("transition_model_d_model", 128)
     init_gains = options.get("nop_init_gains", NOPInitGains())
-    return NextObsPredWrapper(
-        policy=policy,
-        world_model_config=NOPWorldModelConfig(
-            n_agents=env.n_agents,
-            local_latent_dim=latent_dim,
-            action_dim=env.action_space.total_agent_action_dim,
-            world_model_loss_coef=options.get("world_model_loss_coef", 0.1),
-            compile_modules=options["compile_world_model_modules"],
-            compile_mode=options["policy_compile_mode"],
-            act_fn_cls=options["act_fn_cls"],
-            wm_pre_transition_init_gain=init_gains.pre_transition,
-            transition_model_coembed_init_gain=init_gains.transition_coembed,
-            transition_model_transformer_ff_init_gain=init_gains.transition_transformer_ff,
-            transition_model_head_init_gain=init_gains.transition_head,
-            wm_pre_predictors_init_gain=init_gains.pre_predictors,
-            wm_predictor_init_gain=init_gains.predictors,
-            wm_pre_transition_dims=[latent_dim],
-            d_model_transition_model=transition_dim,
-            nhead_transition_model=options.get("transition_model_nhead", 2),
-            num_layers_transition_model=2,
-            dim_feedforward_transition_model=transition_dim * 2,
-            add_agent_embeddings_transition_model=options.get("nop_add_agent_embeddings_transition_model", False),
-            transition_model_coembed_hidden_dims=[transition_dim],
-            wm_pre_predictors_dims=[transition_dim, transition_dim],
-            wm_scalar_predictor_hidden_dims=[],
-            wm_angle_predictor_hidden_dims=[],
-            wm_rot6d_predictor_hidden_dims=[],
-            wm_binary_predictor_hidden_dims=[],
-            scalar_loss_fn="smooth_l1",
-            next_obs_pred_config=NextObsPredConfig(
-                local_scalar_target_indices=indices.local_scalar_indices,
-                local_angle_target_indices=indices.local_angle_indices,
-                local_rot6d_target_indices=indices.local_rot6d_indices,
-                local_binary_target_indices=indices.local_binary_indices,
-            ),
+    world_model_config = NOPWorldModelConfig(
+        n_agents=env.n_agents,
+        local_latent_dim=latent_dim,
+        action_dim=env.action_space.total_agent_action_dim,
+        world_model_loss_coef=options.get("world_model_loss_coef", 0.1),
+        compile_modules=options["compile_world_model_modules"],
+        compile_mode=options["policy_compile_mode"],
+        act_fn_cls=options["act_fn_cls"],
+        wm_pre_transition_init_gain=init_gains.pre_transition,
+        transition_model_coembed_init_gain=init_gains.transition_coembed,
+        transition_model_transformer_ff_init_gain=init_gains.transition_transformer_ff,
+        transition_model_head_init_gain=init_gains.transition_head,
+        wm_pre_predictors_init_gain=init_gains.pre_predictors,
+        wm_predictor_init_gain=init_gains.predictors,
+        wm_pre_transition_dims=[latent_dim],
+        d_model_transition_model=transition_dim,
+        nhead_transition_model=options.get("transition_model_nhead", 2),
+        num_layers_transition_model=2,
+        dim_feedforward_transition_model=transition_dim * 2,
+        add_agent_embeddings_transition_model=options.get("nop_add_agent_embeddings_transition_model", False),
+        transition_model_coembed_hidden_dims=[transition_dim],
+        wm_pre_predictors_dims=[transition_dim, transition_dim],
+        wm_scalar_predictor_hidden_dims=[],
+        wm_angle_predictor_hidden_dims=[],
+        wm_rot6d_predictor_hidden_dims=[],
+        wm_binary_predictor_hidden_dims=[],
+        scalar_loss_fn="smooth_l1",
+        next_obs_pred_config=NextObsPredConfig(
+            local_scalar_target_indices=indices.local_scalar_indices,
+            local_angle_target_indices=indices.local_angle_indices,
+            local_rot6d_target_indices=indices.local_rot6d_indices,
+            local_binary_target_indices=indices.local_binary_indices,
         ),
     )
+    if options.get("model_scale") is not None:
+        world_model_config = ppo_nop_at_scale(world_model_config, options["model_scale"])
+    wrapped = NextObsPredWrapper(policy=policy, world_model_config=world_model_config)
+    if hasattr(policy, "model_scale"):
+        wrapped.model_scale = policy.model_scale
+    return wrapped
 
 
 def _make_policy_env(
@@ -146,6 +155,8 @@ def _make_policy_env(
     gamma: float = 0.99,
     compile_modules: bool = False,
 ) -> tuple[BaseLearnEnvWrapper, BasePolicy]:
+    policy_options = dict(policy_options)
+    policy_options["model_scale"] = normalize_model_scale(policy_options.get("model_scale"))
     is_off_policy = _is_off_policy_variant(policy_options["policy_variant"])
     use_popart = policy_options.get("use_popart", not is_off_policy)
     torch.manual_seed(seed)
@@ -216,6 +227,7 @@ def make_training(
     env_kwargs: Mapping[str, Any] | None = None,
     continuous_action_dist: ContinuousActionDistVariant | None = None,
     use_nop: bool | None = None,
+    model_scale: str | None = DEFAULT_MODEL_SCALE,
     compile_modules: bool = False,
     rollout_steps_per_env: int | None = None,
     policy_kwargs: Mapping[str, Any] | None = None,
@@ -225,10 +237,15 @@ def make_training(
 
     Architectures and optimizer defaults come from the selected preset. Task
     settings, including episode length and settled resets, come from the registry.
+    ``model_scale`` defaults to "5M NOP1M": online main-policy parameters
+    excluding frozen targets, plus a separate NOP budget. Pass None to use
+    explicit architecture widths. Fixed 2.5M/0.75M and 10M/2M layouts are also available;
+    sizes are declared per architecture and are not fitted to task shapes.
+    ``use_nop=False`` disables the auxiliary model without changing main widths.
     ``policy_kwargs`` overrides the arguments to the preset policy builder;
     ``algorithm_kwargs`` overrides arguments to PPO/SAC/RecurrentSAC/TD3/DDPG.
     """
-    policy_options, algorithm_options = _variant_options(variant)
+    policy_options, algorithm_options = _variant_options(variant, model_scale=model_scale)
     policy_options.update(policy_kwargs or {})
     algorithm_options.update(algorithm_kwargs or {})
     if continuous_action_dist is not None:
@@ -357,7 +374,7 @@ def make_training(
             "mc_ent_coef": 0.0,
             "vf_coef": 2.0 if use_popart else 0.5,
             "use_popart": use_popart,
-            "agent_logprob_reduction": "sum" if policy_variant in {"ppo", "ppo_small"} else None,
+            "agent_logprob_reduction": "sum" if policy_variant == "ppo" else None,
             "parameter_lr_multipliers": _make_mat_parameter_lr_multipliers(
                 policy_variant=policy_variant,
                 mat_decoder_lr_multiplier=0.25,

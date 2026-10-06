@@ -475,7 +475,7 @@ def test_checkpoint_recording_noise_overrides_and_legacy_formats(
 @pytest.mark.integration
 @pytest.mark.parametrize("variant", [
     "mat_qcx", "mat_ind_lstm", "tmasac_slstm",
-    "mappo_mlp", "mappo_mlp_small",
+    "mappo_mlp",
     "maddpg_mlp", "matd3_deepset", "masac_mlp", "tmatd3",
 ])
 def test_checkpoint_recording_restores_actor_and_normalization_and_writes_complete_episodes(

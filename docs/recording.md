@@ -54,6 +54,7 @@ The selected task's observation/action spaces, architecture, action distribution
 - `--width`/`--height` default to 1280×720. `--camera -1` uses the scenario camera; camera names and numeric IDs are accepted.
 - `--fps` defaults to 30. `--frame-stride 2` captures every second step and halves playback FPS to preserve duration. Use `--fps-mode fixed` to keep the requested FPS.
 - `--episode-length` overrides the registered task's limit. `--scenario-kwargs` and `--env-kwargs` accept JSON objects for scalar/list overrides.
+- `--model-scale "5M NOP1M"` selects the checkpoint's layout (the default); `2.5M` and `10M` select the additional fixed tiers; `--model-scale legacy` uses explicit widths for earlier checkpoints. Match training's scale and architecture settings.
 - `--compile-policy` opts into policy compilation; use the [GPU setup guide](gpu_setup.md) first.
 - The default directory is `recordings/<benchmark-id>/<timestamp>`. `--output` and `--prefix` select the directory and filename prefix. Reusing a directory and prefix can replace matching video filenames.
 
@@ -104,4 +105,4 @@ record_checkpoint(
 )
 ```
 
-Both helpers return the output directory after closing the simulator and finishing the writers. They accept `scenario_kwargs` and `env_kwargs`; `record_checkpoint` also accepts `policy_kwargs`, `use_nop`, and `continuous_action_dist`. Use Python for configuration objects such as `MJWPreConnectedUnitLocationsConfig`, which cannot be represented by the command's plain JSON overrides.
+Both helpers return the output directory after closing the simulator and finishing the writers. They accept `scenario_kwargs` and `env_kwargs`; `record_checkpoint` also accepts `model_scale`, `policy_kwargs`, `use_nop`, and `continuous_action_dist`. Use Python for configuration objects such as `MJWPreConnectedUnitLocationsConfig`, which cannot be represented by the command's plain JSON overrides.

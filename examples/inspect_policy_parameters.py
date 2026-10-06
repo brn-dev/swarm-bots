@@ -1,7 +1,7 @@
 """Instantiate registered presets and report their parameter counts without training.
 
 Run from the repository root:
-    python examples/inspect_policy_parameters.py --output-dir docs/policy_parameters
+    python examples/inspect_policy_parameters.py --output-dir docs/policy_parameters/generated/5M
 """
 
 from __future__ import annotations
@@ -10,12 +10,14 @@ import argparse
 import csv
 import gzip
 import json
+import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, get_args
 
 import torch
+from torch import nn
 
 from swarmbots import ALL_BENCHMARK_IDS
 from swarmbots.learn import list_variants
@@ -24,7 +26,12 @@ from swarmbots.learn.parameter_counts import (
     PROCESSING_KINDS,
     PROCESSING_ROLES,
     count_policy_parameters,
+    _parameter_role,
 )
+from swarmbots.learn.algos.mat_orig.mat_orig_encoder import MATOrigSelfAttention
+from swarmbots.learn.algos.r_mat.temporal_sequence_model import TemporalSequenceModel
+from swarmbots.learn.nn_components.feed_forward import GLU, MLP
+from swarmbots.learn.nn_components.popart import PopArtLinear
 from swarmbots.learn.presets.policy_factory import ContinuousActionDistVariant, _is_deterministic_policy_variant
 from swarmbots.learn.training import _make_policy_env, _variant_options
 
@@ -43,6 +50,72 @@ def _shape_metadata(env: Any) -> dict[str, Any]:
     }
 
 
+def layer_layout(policy: nn.Module) -> list[dict[str, Any]]:
+    """Record actual layer widths and their capacity, omitting target copies."""
+    base_policy = getattr(policy, "policy", policy)
+    modules = dict(policy.named_modules())
+    groups = (MLP, GLU, nn.MultiheadAttention, MATOrigSelfAttention, TemporalSequenceModel, nn.RNNBase)
+    def sequential_linears(module: nn.Module) -> list[nn.Module]:
+        if isinstance(module, (nn.Linear, PopArtLinear)):
+            return [module]
+        if not isinstance(module, nn.Sequential):
+            return []
+        layers = [linear for child in module for linear in sequential_linears(child)]
+        if any(left.out_features != right.in_features for left, right in zip(layers, layers[1:])):
+            return []
+        return layers
+    def is_group(module: nn.Module) -> bool:
+        return isinstance(module, groups) or (
+            isinstance(module, nn.Sequential) and bool(sequential_linears(module))
+        )
+    rows = []
+    for path, module in modules.items():
+        normalized = path.removeprefix("policy.")
+        role = _parameter_role(normalized, base_policy)
+        if role == "targets":
+            continue
+        parts = path.split(".")
+        if any(is_group(modules[".".join(parts[:depth])]) for depth in range(1, len(parts))):
+            continue
+        if isinstance(module, nn.Sequential):
+            linear_layers = sequential_linears(module)
+            if not linear_layers:
+                continue
+            widths = [linear_layers[0].in_features, *(layer.out_features for layer in linear_layers)]
+            dimensions = " -> ".join(map(str, widths))
+        elif isinstance(module, GLU):
+            dimensions = f"{module.gate_projection.in_features} -> {module.gate_projection.out_features} (gated) -> {module.output_projection.out_features}"
+        elif isinstance(module, nn.MultiheadAttention):
+            dimensions = f"d_model={module.embed_dim}, heads={module.num_heads}"
+        elif isinstance(module, MATOrigSelfAttention):
+            dimensions = f"d_model={module.d_model}, heads={module.nhead}"
+        elif isinstance(module, TemporalSequenceModel):
+            dimensions = f"hidden={module.hidden_dim}"
+        elif isinstance(module, nn.RNNBase):
+            dimensions = f"input={module.input_size}, hidden={module.hidden_size}, layers={module.num_layers}"
+        elif isinstance(module, (nn.Linear, PopArtLinear)):
+            dimensions = f"{module.in_features} -> {module.out_features}"
+        else:
+            continue
+        rows.append({"role": role, "module": normalized, "kind": type(module).__name__,
+                     "dimensions": dimensions, "parameters": sum(parameter.numel() for parameter in module.parameters())})
+    return rows
+
+
+def module_parameter_counts(policy: nn.Module) -> dict[str, int]:
+    """Count each online module, deduplicating shared weights within its subtree.
+
+    These are inclusive subtotals, not an additive partition: parents include
+    their children, and aliased modules expose the same count under each path.
+    """
+    base_policy = getattr(policy, "policy", policy)
+    return {
+        path.removeprefix("policy."): sum(parameter.numel() for parameter in module.parameters())
+        for path, module in policy.named_modules(remove_duplicate=False)
+        if path not in ("", "policy") and _parameter_role(path.removeprefix("policy."), base_policy) != "targets"
+    }
+
+
 def inspect_variants(
     benchmark_id: str,
     variants: tuple[str, ...],
@@ -50,6 +123,7 @@ def inspect_variants(
     device: str = "cpu",
     seed: int = 42,
     use_nop: bool | None = None,
+    model_scale: str | None = "5M NOP1M",
     continuous_action_dist: str | None = None,
     policy_kwargs: dict[str, Any] | None = None,
     scenario_kwargs: dict[str, Any] | None = None,
@@ -59,7 +133,7 @@ def inspect_variants(
     errors = []
     for variant in variants:
         print(f"Counting {variant}...", file=sys.stderr, flush=True)
-        options, _ = _variant_options(variant)
+        options, _ = _variant_options(variant, model_scale=model_scale)
         options.update(policy_kwargs or {})
         if use_nop is not None:
             options["use_nop"] = use_nop
@@ -79,15 +153,19 @@ def inspect_variants(
                 policy_options=options,
                 compile_modules=False,
             )
+            counts = count_policy_parameters(policy)
             rows.append({
                 "variant": variant,
                 "policy_class": type(policy).__name__,
                 "base_policy_class": type(getattr(policy, "policy", policy)).__name__,
                 "shape": _shape_metadata(env),
-                "use_nop": bool(options["use_nop"]),
+                "use_nop": counts["roles"]["next_obs_prediction"]["total"] > 0,
                 "continuous_action_dist": options["continuous_action_dist"],
+                "model_scale": getattr(policy, "model_scale", None),
+                "layer_layout": layer_layout(policy),
+                "module_parameter_counts": module_parameter_counts(policy),
                 "hyper_parameters": policy.get_hyper_parameters(),
-                **count_policy_parameters(policy),
+                **counts,
             })
             del policy
         except Exception as error:
@@ -105,6 +183,7 @@ def inspect_variants(
         "requested_variants": list(variants),
         "overrides": {
             "use_nop": use_nop,
+            "model_scale": model_scale,
             "continuous_action_dist": continuous_action_dist,
             "policy_kwargs": policy_kwargs or {},
             "scenario_kwargs": scenario_kwargs or {},
@@ -115,7 +194,7 @@ def inspect_variants(
     }
 
 
-def render_report(report: dict[str, Any]) -> str:
+def render_report(report: dict[str, Any], *, allocation_doc: str = "model_scale.md") -> str:
     lines = [
         "# Policy parameter counts", "",
         f"Task: `{report['benchmark_id']}`. Instantiated {len(report['policies'])} of "
@@ -132,9 +211,13 @@ def render_report(report: dict[str, Any]) -> str:
         "It excludes all frozen parameters, including target networks. "
         "Trainable excludes frozen parameters. Actor execution needs actor + shared encoder. "
         "Counts describe the entire policy, not a separate network per agent. "
+        "For model-scale allocation, half of the shared encoder is attributed to each side: "
+        "actor + shared/2 targets 40% and critic + shared/2 targets 60% of the main budget by default. "
+        "The additive columns below show the unique physical counts, with the shared encoder kept separate. "
         "Buffers (including normalization/PopArt state), optimizer state, replay, and activations are excluded. "
         "Parameter MiB below uses the tensors' actual dtypes and is not runtime or checkpoint memory.", "",
-        "Sizes depend on task shapes and architecture settings. These are the registered preset defaults "
+        "Supported model scales select fixed, reviewed architecture layouts; counts depend on task inputs and are not fitted at construction. "
+        f"See [model-scale allocation]({allocation_doc}) for the sizing rules. These are the registered preset defaults "
         "unless overrides below are nonempty. A residual-connection ablation can have the same count.", "",
         f"Overrides: `{json.dumps(report['overrides'], sort_keys=True)}`.", "",
         "| Variant | Actor | Critic | Shared encoder | NOP | Targets | Other | Total | Trainable | Trainable − NOP |",
@@ -183,20 +266,21 @@ def render_report(report: dict[str, Any]) -> str:
     lines.extend([
         "", "## Reproduce", "",
         "Run from the repository root with the installed package:", "", "```bash",
-        f"python examples/inspect_policy_parameters.py {report['benchmark_id']} --output-dir docs/policy_parameters",
+        f"python examples/inspect_policy_parameters.py {report['benchmark_id']} --output-dir docs/policy_parameters/generated/audit",
         "```", "",
-        "This command counts all current registered defaults. Use `--variants` to select a subset, "
+        "This command counts the core presets; --include-hidden adds optional baselines and controls. Use `--variants` to select a subset, "
+        "`--model-scale \"5+1M\"` for the fixed preset, `--model-scale legacy` for explicit widths, "
         "`--no-nop` to disable NOP, or `--policy-kwargs`, `--scenario-kwargs`, and `--env-kwargs` "
         "with JSON objects to match custom architectures/tasks. For example, "
-        "`--policy-kwargs '{\"enc_d_model\": 128, \"dec_d_model\": 64}'`. "
+        "`--model-scale legacy --policy-kwargs '{\"enc_d_model\": 128, \"dec_d_model\": 64}'` for custom widths. "
         "Reapply the overrides recorded above to reproduce a customized report. "
         "The losslessly compressed `counts.json.gz` output records resolved policy hyperparameters; "
-        "CSVs contain overall counts, "
+        "CSVs include actual layer dimensions and parameter counts in `layer_layout.csv`, overall counts, "
         "components, processing by role, and processing components. "
         "Failed variants are listed explicitly and cause a nonzero exit code.",
         "", "Read the compressed JSON in Python with:", "", "```python",
         "import gzip, json",
-        'with gzip.open("docs/policy_parameters/counts.json.gz", "rt", encoding="utf-8") as stream:',
+        'with gzip.open("docs/policy_parameters/generated/audit/counts.json.gz", "rt", encoding="utf-8") as stream:',
         "    counts = json.load(stream)", "```",
         "", "## Task shapes", "",
     ])
@@ -222,6 +306,12 @@ def render_report(report: dict[str, Any]) -> str:
                 f"| {component['role']} | `{component['module']}` | {component['total']:,} | "
                 f"{component['trainable']:,} | {component['frozen']:,} |"
             )
+        if row.get("layer_layout"):
+            lines.extend(["", "Actual layer dimensions (input -> hidden/output; fixed observation/action widths need not be round):", "",
+                          "| Role | Module | Kind | Dimensions | Parameters |",
+                          "| --- | --- | --- | --- | ---: |"])
+            for layer in row["layer_layout"]:
+                lines.append(f"| {layer['role']} | `{layer['module']}` | {layer['kind']} | {layer['dimensions']} | {layer['parameters']:,} |")
         lines.extend([
             "", "Online main-policy processing by role (NOP/targets excluded):", "",
             "| Role | MLP | Linear projection | MLP + linear | Attention | Recurrent | Normalization | Embedding | Other | Total |",
@@ -262,11 +352,16 @@ def write_compressed_json(value: Any, path: Path) -> None:
     path.write_bytes(gzip.compress(payload, compresslevel=9, mtime=0))
 
 
-def save_report(report: dict[str, Any], output_dir: Path) -> None:
+def save_report(report: dict[str, Any], output_dir: Path, *, allocation_doc: str = "model_scale.md") -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
-    (output_dir / "report.md").write_text(render_report(report), encoding="utf-8")
+    (output_dir / "report.md").write_text(render_report(report, allocation_doc=allocation_doc), encoding="utf-8")
     write_compressed_json(report, output_dir / "counts.json.gz")
     (output_dir / "counts.json").unlink(missing_ok=True)
+    with (output_dir / "layer_layout.csv").open("w", newline="", encoding="utf-8") as stream:
+        writer = csv.DictWriter(stream, fieldnames=["variant", "role", "module", "kind", "dimensions", "parameters"])
+        writer.writeheader()
+        for row in report["policies"]:
+            writer.writerows({"variant": row["variant"], **layer} for layer in row.get("layer_layout", []))
     processing_columns = ["main_policy_total", "mlp_and_linear", *(f"processing_{kind}" for kind in PROCESSING_KINDS)]
     role_columns = [f"{role}_mlp_and_linear" for role in PROCESSING_ROLES]
     columns = ["variant", *PARAMETER_ROLES, "total", "trainable", "trainable_minus_nop", "frozen", "parameter_bytes", *processing_columns, *role_columns]
@@ -320,7 +415,9 @@ def _json_object(text: str) -> dict[str, Any]:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("benchmark_id", nargs="?", default="SwarmBots-WallEasy-v0", choices=ALL_BENCHMARK_IDS)
-    parser.add_argument("--variants", nargs="+", choices=list_variants(), help="default: all registered variants")
+    parser.add_argument("--variants", nargs="+", help="explicit variant names; default: core variants")
+    parser.add_argument("--include-hidden", action="store_true", help="also count MLP baselines and optional controls")
+    parser.add_argument("--model-scale", default="5M NOP1M", help="fixed tiers: 2.5M, 5M (default), 10M; legacy uses custom widths")
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--nop", action=argparse.BooleanOptionalAction, default=None)
@@ -330,14 +427,18 @@ def main() -> int:
     parser.add_argument("--env-kwargs", type=_json_object, default={}, help="JSON environment overrides")
     parser.add_argument("--output-dir", type=Path, help="save Markdown, compressed JSON (.json.gz), overall/component CSVs, and processing CSVs")
     args = parser.parse_args()
+    unknown = set(args.variants or ()) - set(list_variants(include_hidden=True))
+    if unknown:
+        parser.error("Unknown variants: " + ", ".join(sorted(unknown)))
     # Small CPU initialization jobs are much faster without oversized BLAS pools.
     torch.set_num_threads(1)
     report = inspect_variants(
         args.benchmark_id,
-        tuple(args.variants) if args.variants else list_variants(),
+        tuple(args.variants) if args.variants else list_variants(include_hidden=args.include_hidden),
         device=args.device,
         seed=args.seed,
         use_nop=args.nop,
+        model_scale=None if args.model_scale == "legacy" else args.model_scale,
         continuous_action_dist=args.continuous_action_dist,
         policy_kwargs=args.policy_kwargs,
         scenario_kwargs=args.scenario_kwargs,
@@ -345,7 +446,8 @@ def main() -> int:
     )
     print(render_report(report))
     if args.output_dir is not None:
-        save_report(report, args.output_dir)
+        allocation_doc = os.path.relpath(Path(__file__).resolve().parents[1] / "docs/policy_parameters/model_scale.md", args.output_dir).replace("\\", "/")
+        save_report(report, args.output_dir, allocation_doc=allocation_doc)
         print(f"Saved reports to {args.output_dir}", file=sys.stderr)
     return 1 if report["errors"] else 0
 

@@ -10,7 +10,7 @@ import pytest
 import torch
 from torch import nn
 
-from examples.inspect_policy_parameters import save_report
+from examples.inspect_policy_parameters import layer_layout, module_parameter_counts, save_report
 from swarmbots.learn.algos.mat_orig.mat_orig_encoder import MATOrigSelfAttention
 from swarmbots.learn.algos.xlstm.slstm.slstm_temporal_sequence_model import (
     SLSTMTemporalSequenceModel,
@@ -91,6 +91,24 @@ def test_tied_twin_critic_encoder_is_not_counted_twice() -> None:
     policy.critic.q2 = nn.Linear(2, 1)  # 3
     result = count_policy_parameters(policy)
     assert result["total"] == result["roles"]["critic"]["total"] == 14
+
+
+def test_inclusive_module_counts_deduplicate_aliases_and_omit_targets() -> None:
+    policy = nn.Module()
+    policy.critic = nn.Module()
+    policy.critic.encoder = nn.Linear(3, 2)  # 8
+    policy.critic.encoder2 = policy.critic.encoder
+    policy.critic.q1 = nn.Linear(2, 1)  # 3
+    policy.critic.q2 = nn.Linear(2, 1)  # 3
+    policy.critic_target = copy.deepcopy(policy.critic).requires_grad_(False)
+    policy.critic.register_buffer("statistics", torch.zeros(100))
+    wrapper = nn.Module()
+    wrapper.policy = policy
+    counts = module_parameter_counts(wrapper)
+    assert counts["critic"] == 14
+    assert counts["critic.encoder"] == counts["critic.encoder2"] == 8
+    assert counts["critic.q1"] == counts["critic.q2"] == 3
+    assert not any("target" in path or path.startswith("policy.") for path in counts)
 
 
 def test_recurrent_weights_are_split_from_backbone() -> None:
@@ -217,3 +235,24 @@ def test_report_exports_trainable_minus_nop_and_lossless_compressed_json(tmp_pat
     assert "total_minus_nop" not in row
     assert row["main_policy_total"] == "3"  # online-only processing excludes targets too
     assert "Trainable − NOP" in (tmp_path / "report.md").read_text(encoding="utf-8")
+
+
+def test_layer_layout_shows_actual_dimensions_without_nested_duplicates() -> None:
+    policy = nn.Module()
+    policy.actor = nn.Sequential(nn.Linear(5, 128), nn.ReLU(), nn.Linear(128, 64))
+    policy.critic = nn.MultiheadAttention(64, 4, batch_first=True)
+    policy.critic_target = copy.deepcopy(policy.critic).requires_grad_(False)
+    rows = layer_layout(policy)
+    assert {row["module"] for row in rows} == {"actor", "critic"}
+    assert rows[0]["dimensions"] == "5 -> 128 -> 64"
+    assert rows[0]["parameters"] == sum(parameter.numel() for parameter in policy.actor.parameters())
+    assert rows[1]["dimensions"] == "d_model=64, heads=4"
+
+
+def test_layer_layout_includes_nested_regressor_trunk_and_head() -> None:
+    policy = nn.Module()
+    policy.critic = nn.Sequential(nn.Sequential(nn.Linear(384, 512), nn.ReLU(), nn.Linear(512, 256)), nn.Linear(256, 1))
+    rows = layer_layout(policy)
+    assert len(rows) == 1
+    assert rows[0]["dimensions"] == "384 -> 512 -> 256 -> 1"
+    assert rows[0]["parameters"] == sum(parameter.numel() for parameter in policy.critic.parameters())

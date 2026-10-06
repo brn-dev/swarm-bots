@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import get_args
 
 from swarmbots.learn.presets.policy_factory import PolicyVariant
@@ -15,17 +15,15 @@ class LearningVariantConfig:
     tmasac_variant: TMASACVariant | None = None
     use_nop: bool = True
     use_agent_attention: bool = True
+    hidden: bool = False
 
 
 VARIANT_CONFIGS: dict[str, LearningVariantConfig] = {
     name: LearningVariantConfig(policy_variant=name)
     for name in (
         "ppo",
-        "ppo_small",
         "mappo",
-        "mappo_small",
         "mappo_mlp",
-        "mappo_mlp_small",
         "mat_orig",
         "mat_ind",
         "mat_dec",
@@ -53,3 +51,16 @@ VARIANT_CONFIGS.update({
     "tmasac_lstm_no_actor_state": LearningVariantConfig(policy_variant="tmasac_recurrent"),
     "tmasac_segment": LearningVariantConfig(policy_variant="tmasac_segment"),
 })
+
+# Keep optional baselines/controls usable for explicit experiments and old
+# checkpoints, while keeping the normal selection and count sweep focused.
+_DEFAULT_VARIANTS = {
+    "ppo", "mappo", "mat_orig", "mat_ind", "mat_dec", "mat_qcx",
+    "mat_ind_lstm", "mat_qcx_lstm", "maddpg_deepset", "matd3_deepset",
+    "masac_deepset", "tmatd3", "tmatd3_dec", "tmasac", "tmasac_dec",
+    "tmasac_shared_encoder", "tmasac_slstm", "tmasac_lstm",
+}
+VARIANT_CONFIGS = {
+    name: replace(config, hidden=name not in _DEFAULT_VARIANTS)
+    for name, config in VARIANT_CONFIGS.items()
+}

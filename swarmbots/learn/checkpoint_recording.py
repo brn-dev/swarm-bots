@@ -18,6 +18,7 @@ from swarmbots.learn.checkpointing import (
     load_checkpoint,
 )
 from swarmbots.learn.presets.policy_factory import ContinuousActionDistVariant
+from swarmbots.learn.presets.model_scale import DEFAULT_MODEL_SCALE
 from swarmbots.learn.training import _make_policy_env, _variant_options
 from swarmbots.utils.recording_resolution import DEFAULT_RECORDING_HEIGHT, DEFAULT_RECORDING_WIDTH
 
@@ -40,6 +41,7 @@ def record_checkpoint(
     env_kwargs: Mapping[str, Any] | None = None,
     continuous_action_dist: ContinuousActionDistVariant | None = None,
     use_nop: bool | None = None,
+    model_scale: str | None = DEFAULT_MODEL_SCALE,
     compile_modules: bool = False,
     policy_kwargs: Mapping[str, Any] | None = None,
     fps: int = 30,
@@ -61,7 +63,7 @@ def record_checkpoint(
         raise ValueError("num_episodes and max_parallel_episodes must be positive")
     checkpoint_path = Path(checkpoint_path)
     checkpoint = load_checkpoint(checkpoint_path)
-    policy_options, _ = _variant_options(variant)
+    policy_options, _ = _variant_options(variant, model_scale=model_scale)
     policy_options.update(policy_kwargs or {})
     if continuous_action_dist is not None:
         policy_options["continuous_action_dist"] = continuous_action_dist

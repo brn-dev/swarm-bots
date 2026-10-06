@@ -63,6 +63,7 @@ def _scenario_kwargs() -> dict[str, Any]:
 
 def _training_kwargs() -> dict[str, Any]:
     return {
+        "model_scale": None,  # Exercise explicit architecture overrides in these tests.
         "num_envs": 2,
         "device": "cpu",
         "episode_length": 4,
@@ -73,15 +74,12 @@ def _training_kwargs() -> dict[str, Any]:
 
 
 def test_variants_expose_only_canonical_architectures_and_ablations() -> None:
-    assert set(list_variants()) == {
+    assert set(list_variants(include_hidden=True)) == {
         "maddpg_mlp", "maddpg_deepset", "matd3_mlp", "matd3_deepset",
         "masac_mlp", "masac_deepset", "tmatd3", "tmatd3_dec",
         "ppo",
-        "ppo_small",
         "mappo",
-        "mappo_small",
         "mappo_mlp",
-        "mappo_mlp_small",
         "mat_orig",
         "mat_ind",
         "mat_ind_no_attention",
@@ -103,6 +101,12 @@ def test_variants_expose_only_canonical_architectures_and_ablations() -> None:
         "tmasac_slstm_no_nop",
         "tmasac_swiglu",
         "tmasac_slstm_swiglu",
+    }
+    assert set(list_variants()) == {
+        "ppo", "mappo", "mat_orig", "mat_ind", "mat_dec", "mat_qcx",
+        "mat_ind_lstm", "mat_qcx_lstm", "maddpg_deepset", "matd3_deepset",
+        "masac_deepset", "tmatd3", "tmatd3_dec", "tmasac", "tmasac_dec",
+        "tmasac_shared_encoder", "tmasac_slstm", "tmasac_lstm",
     }
     assert len(list_variants()) == len(set(list_variants()))
 
@@ -143,7 +147,7 @@ def _small_policy(
             "connectors": spaces.Box(-1.0, 1.0, shape=(n_agents, 1)),
         }),
     )
-    options, _ = _variant_options(variant)
+    options, _ = _variant_options(variant, model_scale=None)
     options.update(policy_kwargs or {})
     options["use_nop"] = False
     return _make_base_policy(
@@ -170,7 +174,7 @@ def _small_policy(
     "tmasac_slstm", "tmasac_slstm_no_residual", "tmasac_lstm", "tmasac_slstm_no_nop",
 ])
 def test_recurrent_tmasac_presets_keep_full_critic_ff_and_split_actor_ff(variant: str) -> None:
-    options, _ = _variant_options(variant)
+    options, _ = _variant_options(variant, model_scale=None)
     assert options["mat_encoder_transformer_ff_config"] == MLPConfig(hidden_dims=[512, 512])
     assert options["rmat_actor_transformer_ff_config"] == MLPConfig(hidden_dims=[512])
     policy = _small_policy(variant)
@@ -320,10 +324,9 @@ def test_tmasac_dec_actor_is_independent_and_critic_mixes_agents() -> None:
         assert any(torch.count_nonzero(gradient) for gradient in gradients)
 
 
-@pytest.mark.parametrize("small", [False, True])
-def test_mappo_critic_presets_keep_identical_actor_configurations_and_initial_weights(small: bool) -> None:
-    deepset_variant = "mappo_small" if small else "mappo"
-    mlp_variant = "mappo_mlp_small" if small else "mappo_mlp"
+def test_mappo_critic_presets_keep_identical_actor_configurations_and_initial_weights() -> None:
+    deepset_variant = "mappo"
+    mlp_variant = "mappo_mlp"
     torch.manual_seed(42)
     deepset = _small_policy(deepset_variant)
     torch.manual_seed(42)
@@ -333,7 +336,7 @@ def test_mappo_critic_presets_keep_identical_actor_configurations_and_initial_we
     assert deepset.config.actor_config == mlp.config.actor_config
     for name in ("shared_encoder", "actor", "action_dist"):
         torch.testing.assert_close(getattr(deepset, name).state_dict(), getattr(mlp, name).state_dict(), rtol=0, atol=0)
-    expected_widths = [192, 128] if small else [256, 128]
+    expected_widths = [256, 128]
     assert mlp.critic.hidden_dims == expected_widths
     assert mlp.config.critic_config.deep_set_config is None
     assert deepset.config.critic_config.deep_set_config.value_regressor_hidden_dims == expected_widths
@@ -349,11 +352,8 @@ def test_mappo_critic_presets_keep_identical_actor_configurations_and_initial_we
     ("variant", "expected_ratios"),
     [
         ("ppo", (1.04**2, 1.04)),
-        ("ppo_small", (1.04**2, 1.04)),
         ("mappo", (1.04, 1.04, 1.04)),
-        ("mappo_small", (1.04, 1.04, 1.04)),
         ("mappo_mlp", (1.04, 1.04, 1.04)),
-        ("mappo_mlp_small", (1.04, 1.04, 1.04)),
         ("mat_ind_no_attention", (1.04, 1.04, 1.04)),
     ],
 )
@@ -560,7 +560,7 @@ def test_off_policy_nop_is_enabled_by_default_and_can_train(variant: str, source
 
 
 @pytest.mark.integration
-@pytest.mark.parametrize("variant", ["mappo", "mappo_small"])
+@pytest.mark.parametrize("variant", ["mappo"])
 @pytest.mark.parametrize("context_in_elements", [False, True])
 def test_mappo_global_context_trains_and_restores_matching_checkpoints(
     variant: str, context_in_elements: bool, tmp_path: Path,
@@ -603,7 +603,7 @@ def test_mappo_global_context_trains_and_restores_matching_checkpoints(
 
 
 @pytest.mark.integration
-@pytest.mark.parametrize("variant", ["mappo_mlp", "mappo_mlp_small"])
+@pytest.mark.parametrize("variant", ["mappo_mlp"])
 @pytest.mark.parametrize("use_nop", [False, True])
 @pytest.mark.parametrize("use_popart", [False, True])
 def test_mappo_mlp_presets_train_and_restore_nop_and_popart_settings(

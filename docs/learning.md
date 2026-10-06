@@ -53,32 +53,22 @@ For runnable training → evaluation → video-recording workflows, see the [exa
 
 | Variant | Learner and architecture |
 | --- | --- |
-| `ppo`, `ppo_small` | PPO with a joint MLP actor |
-| `mappo`, `mappo_small` | MAPPO with a per-agent MLP actor and masked Deep Set critic |
-| `mappo_mlp`, `mappo_mlp_small` | Same MAPPO actor sizes with a flattened MLP critic |
+| `ppo` | PPO with a joint MLP actor |
+| `mappo` | MAPPO with a per-agent MLP actor and masked Deep Set critic |
 | `mat_orig`, `mat_ind`, `mat_dec` | PPO with autoregressive, independent-head, or decentralized MAT |
 | `mat_qcx` | PPO with the QCX autoregressive query/context decoder |
-| `mat_ind_no_attention` | MAT-IND with agent attention disabled |
 | `mat_ind_lstm`, `mat_qcx_lstm` | Recurrent PPO with LSTM and TBPTT |
-| `maddpg_mlp` (no NOP) | DDPG with a shared per-agent deterministic actor and one centralized MLP critic |
 | `maddpg_deepset` | DDPG with a shared per-agent deterministic actor and one centralized Deep Set critic |
-| `matd3_mlp` (no NOP) | TD3 with a shared per-agent deterministic actor and two independent centralized MLP critics |
 | `matd3_deepset` | TD3 with a shared per-agent deterministic actor and two independent centralized Deep Set critics |
-| `masac_mlp` (no NOP) | SAC with a shared per-agent stochastic actor and two independent centralized MLP critics |
 | `masac_deepset` | SAC with a shared per-agent stochastic actor and two independent centralized Deep Set critics |
-| `tmatd3` | TD3 with a transformer actor and two independent transformer critics |
-| `tmatd3_dec` | TD3 with a per-agent MLP actor and the same transformer critics as `tmatd3` |
+| `tmatd3` | TD3 with a transformer actor and a transformer twin critic |
+| `tmatd3_dec` | TD3 with a per-agent MLP actor and the same transformer twin critic as `tmatd3` |
 | `tmasac` | SAC with a transformer actor and transformer twin critic |
 | `tmasac_dec` | SAC with a per-agent MLP actor and the same transformer twin critic as `tmasac` |
 | `tmasac_slstm`, `tmasac_lstm` | Recurrent TMASAC with sLSTM or LSTM and actor-state critic inputs |
-| `tmasac_shared_encoder`, `tmasac_slstm_shared_encoder` | Feed-forward or sLSTM TMASAC with a shared observation encoder |
-| `tmasac_slstm_no_residual` | sLSTM TMASAC without a residual connection around the temporal module |
-| `tmasac_swiglu`, `tmasac_slstm_swiglu` | Feed-forward or sLSTM TMASAC with SwiGLU feed-forward layers |
-| `tmasac_lstm_no_actor_state` | LSTM TMASAC without actor-state critic inputs |
-| `tmasac_segment` | Feed-forward TMASAC trained on episode segments |
-| `mat_qcx_no_nop`, `tmasac_no_nop`, `tmasac_slstm_no_nop` | Corresponding architecture with NOP disabled |
+| `tmasac_shared_encoder` | Feed-forward TMASAC with a shared observation encoder |
 
-`list_variants()` returns only these canonical names. Architecture names come first, followed by the recurrent module and any ablation suffix. The old development names and duplicate aliases are no longer accepted. `mappo` selects the MAPPO implementation; its former MAT-IND configuration is now `mat_ind_no_attention`.
+`list_variants()` returns these 18 core presets. MLP critics, recurrent shared encoders, SwiGLU controls, no-NOP/no-attention/no-residual controls, and segment/no-actor-state presets are omitted from the default list and parameter sweep. They remain available when explicitly named; `list_variants(include_hidden=True)` lists all supported optional names. The inspector's `--include-hidden` flag includes them in a sweep. The normal training CLI shows the core names in help and also accepts explicitly named hidden presets.
 
 The decentralized actors in `mat_dec` and `tmasac_dec` use each agent's local observation plus the task's non-privileged global observation. They do not mix other agents' local observations or actions. The `tmasac_dec` actor uses residual MLP blocks with agent attention disabled; its critic retains agent attention, and its NOP and optimizer defaults match `tmasac`.
 
@@ -86,7 +76,7 @@ MAT/RMAT observation encoders and the transformer critics in TMASAC/TMATD3 use s
 
 The default `mat_joint_obs_embedding=False` retains the additive architecture and existing checkpoint weight shapes and keys. Reconstruct a joint-embedding checkpoint with the switch enabled, including when using `record_checkpoint`. Encoders without global inputs retain their existing layout in either mode. `mat_orig` already concatenates local and global observations, and PPO/MAPPO use their existing input encoders independently of this switch.
 
-All MAPPO presets include non-privileged global observations in the shared per-agent encoder. `mappo` and `mappo_small` use Deep Set critics that condition each element encoder on privileged global variables, while retaining a direct privileged-global input to the value regressor after masked mean pooling. `mappo_mlp` and `mappo_mlp_small` flatten the masked per-agent features and local privileged variables into a fixed-slot MLP input, alongside privileged globals. Their critic hidden widths are `[256, 128]` and `[192, 128]`, respectively; their input layer grows with the padded agent count. MLP critics depend on agent order; Deep Set critics are permutation invariant. Corresponding regular/small presets have identical actor configurations, PPO settings, and action distributions.
+All MAPPO presets include non-privileged global observations in the shared per-agent encoder. `mappo` uses Deep Set critics that condition each element encoder on privileged global variables, while retaining a direct privileged-global input to the value regressor after masked mean pooling. `mappo_mlp` flattens the masked per-agent features and local privileged variables into a fixed-slot MLP input, alongside privileged globals. Widths are fitted to `model_scale`; the flattened input layer grows with the padded agent count. MLP critics depend on agent order; Deep Set critics are permutation invariant. Both critic types use the same actor template, PPO settings, and action distributions.
 
 NOP remains enabled by default for both MAPPO critic types: it uses the shared observation-encoder features, which remain independent of privileged inputs. PopArt is supported by both critics. Set `policy_kwargs={"mappo_critic_context_in_elements": False}` for the previous Deep Set layout or to reconstruct checkpoints trained with that layout; early conditioning changes the critic element encoder's input weight shapes when privileged globals are present. Low-level `MAPPOCriticConfig.context_in_elements` controls the same option for Deep Set critics; the MLP critic receives its global context directly in its input.
 
@@ -94,12 +84,23 @@ The sLSTM presets use a residual connection around the temporal module; `tmasac_
 
 The standard recurrent TMASAC presets (`tmasac_lstm`, `tmasac_slstm`, and their architecture variants) already condition their feed-forward critic on the actor's detached hidden state and memory. `tmasac_lstm_no_actor_state` disables this input explicitly. The recurrent shared observation encoder preset supplies temporal latents directly to actor and critic instead of adding a separate actor-state projection. Plain feed-forward TMASAC has no recurrent actor state.
 
+## Model scale
+
+All regular presets default to `model_scale="5M NOP1M"` (also `"5+1M"`). Three explicit tiers are available: `2.5M NOP0.75M`, `5M NOP1M` (default), and `10M NOP2M`. Bare `"2.5M"`, `"5M"`, and `"10M"` select the corresponding NOP allowance; `list_model_scales()` lists the canonical names. It selects fixed, reviewed dimensions for each architecture, targeting the named online main-policy and additional NOP allowances. The small tier deliberately retains more than the linearly scaled 0.5M auxiliary capacity. There is no runtime width search, parameter-count fitting, or resizing based on task shapes.
+
+The target allocation remains **2M actor / 3M combined critic** for separate encoders, or **2M shared encoder / 1M private actor / 2M combined private critic** with actor–critic sharing. Half the shared encoder is attributed to each side. Actual counts can differ so the architecture remains sensible. Actor layouts are held constant across critic choices, on-policy MAT variants share V-critic templates, and NOP uses common projection/transition/prediction widths. See the [explicit size table and comparison rationale](policy_parameters/model_scale.md), plus the report's actual layer dimensions and component counts.
+
+The main budget excludes frozen targets, buffers, optimizer state, and NOP. `use_nop=False` disables NOP without changing the main architecture. The optional off-policy MLP critics continue to omit NOP. The removed PPO/MAPPO `_small` names remain unavailable.
+
+`model_scale=None` (CLI `--model-scale legacy`) retains the explicit low-level builder widths for custom experiments and older checkpoints. With the fixed scale enabled, its declared widths take precedence over low-level width arguments; structural controls such as critic sharing, normalization, and recurrent inputs remain configurable. Unsupported tiers or alternative main/NOP pairings are rejected. Reconstruct checkpoints with the same scale/layout version, task, distribution, and structural settings as training. Resolved configurations and layout version are saved in checkpoint/run metadata.
+
 ## Training defaults
 
 Task settings come from the [scenario registry](scenarios.md). Architecture and optimizer settings come from the selected learning preset. Unless overridden, the helpers use:
 
 | Setting | Default |
 | --- | --- |
+| Model scale | `5M NOP1M` |
 | Parallel worlds | 1024 |
 | Device | `cuda`; select `cpu` explicitly for development |
 | Random seed | 42 |

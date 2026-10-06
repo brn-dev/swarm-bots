@@ -1,9 +1,13 @@
 from typing import Any
 
-__all__ = ["as_benchmark_policy", "list_variants", "make_training", "record_checkpoint", "train"]
+__all__ = ["as_benchmark_policy", "list_variants", "list_model_scales", "make_training", "record_checkpoint", "train"]
 
 
 def __getattr__(name: str) -> Any:
+    if name == "list_model_scales":
+        from swarmbots.learn.presets.model_scale import list_model_scales
+
+        return list_model_scales
     if name == "record_checkpoint":
         from swarmbots.learn.checkpoint_recording import record_checkpoint
 

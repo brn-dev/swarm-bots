@@ -86,11 +86,8 @@ PolicyVariant = Literal[
     "mat_qcx_lstm",
     "mat_ind_lstm",
     "ppo",
-    "ppo_small",
     "mappo",
-    "mappo_small",
     "mappo_mlp",
-    "mappo_mlp_small",
     "tmasac",
     "tmasac_dec",
     "tmasac_recurrent",
@@ -460,6 +457,7 @@ def _make_base_policy(
     td3_recurrent_actor: bool = False,
     td3_recurrent_critic: bool = False,
     td3_actor_state_critic_input_config: ActorStateCriticInputConfig | Literal["auto"] | None = "auto",
+    model_scale: str | None = None,
 ) -> (
     PPOPolicy
     | MAPPOPolicy
@@ -474,6 +472,12 @@ def _make_base_policy(
     | SegmentTMASACPolicy
     | TD3Policy
 ):
+    def build(policy_class: type, env: Any, config: Any) -> Any:
+        if model_scale is None:
+            return policy_class(env=env, config=config)
+        from swarmbots.learn.presets.model_scale import make_policy_at_scale
+        return make_policy_at_scale(policy_class, env, config, model_scale)
+
     sac_policy_variant = _is_sac_policy_variant(policy_variant)
     deterministic_policy_variant = _is_deterministic_policy_variant(policy_variant)
     if td3_recurrent_actor or td3_recurrent_critic:
@@ -572,7 +576,7 @@ def _make_base_policy(
     if deterministic_policy_variant:
         policy_class = RecurrentTD3Policy if td3_recurrent_actor else TD3Policy
         config_class = RecurrentTD3PolicyConfig if td3_recurrent_actor else TD3PolicyConfig
-        return policy_class(env, config_class(
+        return build(policy_class, env, config_class(
             **({
                 "recurrent_critic": td3_recurrent_critic,
                 "actor_state_critic_input_config": td3_actor_state_critic_input_config,
@@ -711,11 +715,11 @@ def _make_base_policy(
             "action_net_init_gain": mat_init_gains.action_net,
         }
         if policy_variant in {"masac_mlp", "masac_deepset"}:
-            return MASACPolicy(env, MASACPolicyConfig(
+            return build(MASACPolicy, env, MASACPolicyConfig(
                 joint_critic_config=joint_critic_config, **tmasac_config_kwargs,
             ))
         if policy_variant == "tmasac_recurrent":
-            return RecurrentTMASACPolicy(
+            return build(RecurrentTMASACPolicy,
                 env=env,
                 config=RecurrentTMASACPolicyConfig(
                     recurrent_critic=False,
@@ -726,17 +730,17 @@ def _make_base_policy(
                 ),
             )
         if policy_variant == "tmasac_segment":
-            return SegmentTMASACPolicy(
+            return build(SegmentTMASACPolicy,
                 env=env,
                 config=TMASACPolicyConfig(**tmasac_config_kwargs),
             )
-        return TMASACPolicy(
+        return build(TMASACPolicy,
             env=env,
             config=TMASACPolicyConfig(**tmasac_config_kwargs),
         )
 
     if policy_variant == "ppo":
-        return PPOPolicy(
+        return build(PPOPolicy,
             env=env,
             config=PPOPolicyConfig(
                 actor_config=PPOActorConfig(
@@ -758,47 +762,23 @@ def _make_base_policy(
             ),
         )
 
-    if policy_variant == "ppo_small":
-        return PPOPolicy(
-            env=env,
-            config=PPOPolicyConfig(
-                actor_config=PPOActorConfig(
-                    hidden_dims=[384, 320, 256, 192],
-                    shared_encoder_latent_dim_per_agent=160,
-                    actor_head_hidden_dims=[128, 96],
-                    latent_pi_dim_per_agent=64,
-                    act_fun_class=act_fn_cls,
-                ),
-                critic_config=PPOCriticConfig(
-                    hidden_dims=[160, 160],
-                    act_fun_class=act_fn_cls,
-                    use_popart=use_popart,
-                ),
-                continuous_config=continuous_config,
-                bernoulli_config=bernoulli_config,
-                compile_modules=compile_policy_modules,
-                compile_mode=policy_compile_mode,
-            ),
-        )
-
-    if policy_variant in {"mappo", "mappo_small", "mappo_mlp", "mappo_mlp_small"}:
-        small = policy_variant.endswith("_small")
-        mlp_critic = policy_variant in {"mappo_mlp", "mappo_mlp_small"}
-        value_regressor_hidden_dims = [192, 128] if small else [256, 128]
-        return MAPPOPolicy(
+    if policy_variant in {"mappo", "mappo_mlp"}:
+        mlp_critic = policy_variant == "mappo_mlp"
+        value_regressor_hidden_dims = [256, 128]
+        return build(MAPPOPolicy,
             env=env,
             config=MAPPOPolicyConfig(
                 actor_config=MAPPOActorConfig(
-                    hidden_dims=[512, 512, 384, 256] if small else [768, 512, 512, 384],
+                    hidden_dims=[768, 512, 512, 384],
                     shared_encoder_latent_dim=256,
                     actor_head_hidden_dims=[128],
-                    latent_pi_dim=112 if small else 128,
+                    latent_pi_dim=128,
                     act_fun_class=act_fn_cls,
                 ),
                 critic_config=MAPPOCriticConfig(
                     mlp_hidden_dims=value_regressor_hidden_dims if mlp_critic else [],
                     deep_set_config=None if mlp_critic else DeepSetCriticConfig(
-                        local_projection_hidden_dims=[224, 112] if small else [256, 128],
+                        local_projection_hidden_dims=[256, 128],
                         value_regressor_hidden_dims=value_regressor_hidden_dims,
                     ),
                     context_in_elements=mappo_critic_context_in_elements,
@@ -823,7 +803,7 @@ def _make_base_policy(
     )
 
     if policy_variant == "mat_qcx":
-        return MATQCXPolicy(
+        return build(MATQCXPolicy,
             env=env,
             config=MATQCXPolicyConfig(
                 encoder_config=mat_encoder_config,
@@ -861,7 +841,7 @@ def _make_base_policy(
         )
 
     if policy_variant == "mat_qcx_lstm":
-        return RMATQCXPolicy(
+        return build(RMATQCXPolicy,
             env=env,
             config=RMATQCXPolicyConfig(
                 encoder_config=rmat_encoder_config,
@@ -899,7 +879,7 @@ def _make_base_policy(
         )
 
     if policy_variant == "mat_dec":
-        return MATDecPolicy(
+        return build(MATDecPolicy,
             env=env,
             config=MATDecPolicyConfig(
                 encoder_config=mat_encoder_config,
@@ -918,7 +898,7 @@ def _make_base_policy(
         )
 
     if policy_variant == "mat_ind":
-        return MATIndPolicy(
+        return build(MATIndPolicy,
             env=env,
             config=MATIndPolicyConfig(
                 encoder_config=mat_encoder_config,
@@ -937,7 +917,7 @@ def _make_base_policy(
         )
 
     if policy_variant == "mat_ind_lstm":
-        return RMATIndPolicy(
+        return build(RMATIndPolicy,
             env=env,
             config=RMATIndPolicyConfig(
                 encoder_config=rmat_encoder_config,
@@ -956,7 +936,7 @@ def _make_base_policy(
         )
 
     if policy_variant == "mat_orig":
-        return MATOrigPolicy(
+        return build(MATOrigPolicy,
             env=env,
             config=MATOrigPolicyConfig(
                 encoder_config=mat_encoder_config,

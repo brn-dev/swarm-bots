@@ -23,7 +23,7 @@ python examples/train_policy.py SwarmBots-WallEasy-v0 --variant maddpg_mlp
 python examples/train_policy.py SwarmBots-POWallMedium-v0 --variant tmasac_slstm
 ```
 
-Each command trains for one million individual environment transitions using 256 parallel CUDA worlds, evaluates deterministic actions in a fresh environment at seed `1000`, and records two complete episodes at 640 × 480. Training follows the selected preset's defaults, including its action distribution and NOP setting. Use `--no-nop` to disable NOP or `--compile` to compile policy/world-model modules. MLP off-policy critics already disable NOP and reject `--nop`.
+Each command trains for one million individual environment transitions using 256 parallel CUDA worlds, evaluates deterministic actions in a fresh environment at seed `1000`, and records two complete episodes at 640 × 480. Training follows the selected preset's defaults, including its action distribution and NOP setting. Fixed tiers are `2.5M NOP0.75M`, `5M NOP1M` (default), and `10M NOP2M`; use `--model-scale 2.5M` or `--model-scale 10M` to select the added tiers. Dimensions are declared per architecture. Use `--model-scale legacy` for explicitly customized widths. Use `--no-nop` to disable NOP or `--compile` to compile policy/world-model modules. MLP off-policy critics already disable NOP and reject `--nop`.
 
 Outputs go to `runs/<benchmark-id>/<variant>/`: training metrics and metadata, checkpoints in `models/`, `evaluation.json`, and MP4s in `videos/`. Use `--run-dir` to select a separate directory for each experiment. Adjust `--total-timesteps`, `--num-envs`, `--eval-envs`, and `--video-episodes` to change the workload; `--device cpu` selects CPU execution. Off-policy presets collect at least 10,000 transitions before learning starts, and recurrent learners also need enough history for their replay segments.
 
@@ -52,7 +52,7 @@ Replace the checkpoint path with the file saved by your run. Architecture, distr
 ## Count policy parameters
 
 ```bash
-python examples/inspect_policy_parameters.py SwarmBots-WallEasy-v0 --output-dir docs/policy_parameters
+python examples/inspect_policy_parameters.py SwarmBots-WallEasy-v0 --output-dir docs/policy_parameters/generated/5M
 python examples/inspect_policy_parameters.py SwarmBots-POWallMedium-v0 --variants tmasac tmasac_slstm tmasac_lstm
 ```
 
@@ -62,7 +62,7 @@ The main-policy processing comparison excludes NOP and targets. It splits MLPs, 
 
 The **Trainable − NOP** column counts the trainable total minus trainable NOP parameters. It excludes all frozen parameters, including target networks. The **Online total** in the processing comparison excludes NOP and targets but can include other frozen main-policy parameters.
 
-`--output-dir` saves a Markdown report, summary and component CSVs, `processing.csv` (processing counts by role), `processing_components.csv` (classified modules), and losslessly compressed `counts.json.gz` with resolved hyperparameters and task shapes. Read the JSON using `json.load(gzip.open(path, "rt", encoding="utf-8"))`. Use `--no-nop` or JSON `--policy-kwargs`, `--scenario-kwargs`, and `--env-kwargs` to match custom settings. Parameter counts depend on the task's observation/action shapes. See the [35-variant WallEasy results](../docs/policy_parameters/report.md) for the measured default sizes.
+`--include-hidden` adds optional MLP baselines and ablation controls to the default core sweep. `--output-dir` saves `layer_layout.csv` with actual module dimensions and parameter counts, a Markdown report, summary and component CSVs, `processing.csv` (processing counts by role), `processing_components.csv` (classified modules), and losslessly compressed `counts.json.gz` with resolved hyperparameters and task shapes. Read the JSON using `json.load(gzip.open(path, "rt", encoding="utf-8"))`. Use `--model-scale "5M NOP1M"` to select the fixed layout, `--model-scale legacy` for explicit widths, `--no-nop`, or JSON `--policy-kwargs`, `--scenario-kwargs`, and `--env-kwargs` to match custom settings. Parameter counts depend on the task's observation/action shapes. See the [18-variant WallEasy comparison](../docs/policy_parameters/scale_comparison.md) for the measured sizes and the [storage guide](../docs/policy_parameters/README.md) for local report generation.
 
 ## Plot training logs
 
@@ -77,3 +77,11 @@ python examples/plot_experiment_results.py --group MAPPO runs/mappo/seed-42 runs
 ```
 
 `plot_logs.py` overlays scalar metrics from files or run directories; its defaults show return and success EMAs. `--show` opens a Matplotlib window. Compressed CSVs are accepted directly. `plot_experiment_results.py` saves per-metric grouped mean/std plots and individual-seed plots, using either an experiment root or explicit named groups. Both support custom columns, smoothing, and a training-step cutoff. See [log plotting](../docs/log_plotting.md) for layouts, aggregation semantics, and the Python API.
+
+## Draw policy architectures
+
+```bash
+python examples/diagram_policy_architectures.py --refresh
+```
+
+Generates diagrams for all core variants and scales, with actual module widths and data dependencies. Open `docs/policy_parameters/diagrams/index.html` for the offline gallery with variant/scale selectors; the [reading guide](../docs/policy_parameters/diagrams/README.md) describes the SVG, Mermaid, and Graphviz exports. Generated outputs remain local and are ignored by Git. Compact audit snapshots can be drawn without rebuilding by omitting `--refresh`.

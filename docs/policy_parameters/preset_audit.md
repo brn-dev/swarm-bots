@@ -1,6 +1,8 @@
 # Feed-forward preset audit
 
-Audited on 2026-10-06 after the recurrent TMASAC critic fix. The audit instantiated all **35 registered variants**, plus **six TD3 configurations** with recurrent actors and/or recurrent critics. It used the default `SwarmBots-WallEasy-v0` observation/action shapes and disabled NOP during construction. All 35 default main-policy processing counts matched [the saved report](report.md).
+Historical audit of explicit-width presets before the model-scale change. Its counts and 35-variant inventory describe that earlier configuration; current defaults and the 18 core variants are documented in [model scale](model_scale.md) and [the current parameter report](report.md). Use `--model-scale legacy` when inspecting the earlier width templates.
+
+Audited on 2026-10-06 after the recurrent TMASAC critic fix. The audit instantiated all **35 registered variants**, plus **six TD3 configurations** with recurrent actors and/or recurrent critics. It used the default `SwarmBots-WallEasy-v0` observation/action shapes and disabled NOP during construction. All 35 default main-policy processing counts matched the parameter report saved at the time.
 
 The [compressed audit JSON](preset_audit.json.gz) records the 41 configurations, actor/critic/shared parameter counts, and every MAT/RMAT encoder layer's resolved affine shapes, block counts, and temporal output projections. Counts below exclude NOP, targets, attention, recurrent modules, normalization, and embeddings. Read the JSON with `json.load(gzip.open(path, "rt", encoding="utf-8"))`.
 

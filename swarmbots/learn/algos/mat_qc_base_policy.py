@@ -34,6 +34,8 @@ from swarmbots.learn.serialization_utils import serialize_dataclass, serialize_v
 class MATCriticConfig:
     n_local_projection_hidden_layers: int = 1
     n_value_regressor_hidden_layers: int = 2
+    local_projection_hidden_dims: list[int] | None = None
+    value_regressor_hidden_dims: list[int] | None = None
     use_popart: bool = False
     popart_config: PopArtConfig = field(default_factory=PopArtConfig)
     local_projection_init_gain: float = 1.0
@@ -149,8 +151,16 @@ class MATQCBasePolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
 
         self.critic = DeepSetCritic(
             num_local_features=self.d_model_encoder + self.hidden_local_vars_dim,
-            local_projection_hidden_dims=[self.d_model_encoder] * config.critic_config.n_local_projection_hidden_layers,
-            value_regressor_hidden_dims=[self.d_model_encoder] * config.critic_config.n_value_regressor_hidden_layers,
+            local_projection_hidden_dims=(
+                config.critic_config.local_projection_hidden_dims
+                if config.critic_config.local_projection_hidden_dims is not None
+                else [self.d_model_encoder] * config.critic_config.n_local_projection_hidden_layers
+            ),
+            value_regressor_hidden_dims=(
+                config.critic_config.value_regressor_hidden_dims
+                if config.critic_config.value_regressor_hidden_dims is not None
+                else [self.d_model_encoder] * config.critic_config.n_value_regressor_hidden_layers
+            ),
             num_global_features=self.hidden_global_vars_dim,
             act_fn_cls=config.act_fn_cls,
             context_in_elements=self.hidden_global_vars_dim > 0,

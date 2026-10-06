@@ -379,6 +379,7 @@ class BaseAlgorithm(abc.ABC):
             "algorithm": type(self).__name__,
             "hyper_parameters": self.get_hyper_parameters(),
             "policy_hyper_parameters": self.policy.get_hyper_parameters(),
+            "model_scale": getattr(self.policy, "model_scale", None),
             "policy_repr": str(self.policy),
             "env_repr": str(self.env),
         }
@@ -467,6 +468,7 @@ class BaseAlgorithm(abc.ABC):
         save_dict = {
             'policy_state_dict': self.policy.state_dict(),
             'policy_hyper_parameters': self.policy.get_hyper_parameters(),
+            'model_scale': getattr(self.policy, 'model_scale', None),
             'env_state': env_state,
             'n_total_iterations': self.n_total_iterations,
             'n_total_updates': self.n_total_updates,

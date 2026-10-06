@@ -148,6 +148,7 @@ def _record_command(args: argparse.Namespace) -> None:
             exploration_noise=args.exploration_noise,
             continuous_action_dist=args.continuous_action_dist,
             use_nop=args.use_nop,
+            model_scale=None if args.model_scale == "legacy" else args.model_scale,
             compile_modules=args.compile_policy,
             policy_kwargs=args.policy_kwargs,
             **options,
@@ -218,6 +219,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     record_parser.add_argument("--continuous-action-dist", help="checkpoint action distribution override")
     record_parser.add_argument("--use-nop", action=argparse.BooleanOptionalAction, default=None)
+    record_parser.add_argument("--model-scale", default="5M NOP1M", help="matching checkpoint scale; legacy uses explicit widths")
     record_parser.add_argument("--compile-policy", action="store_true", help="compile checkpoint policy modules")
     return parser
 
