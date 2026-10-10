@@ -129,8 +129,6 @@ def _record_command(args: argparse.Namespace) -> None:
         "scenario_kwargs": args.scenario_kwargs,
         "env_kwargs": args.env_kwargs,
         "fps": args.fps,
-        "fps_mode": args.fps_mode,
-        "frame_stride": args.frame_stride,
         "width": args.width,
         "height": args.height,
         "camera": args.camera,
@@ -205,8 +203,6 @@ def build_parser() -> argparse.ArgumentParser:
         "--exploration-noise", type=float, help="override DDPG/TD3 checkpoint exploration noise for --stochastic"
     )
     record_parser.add_argument("--fps", type=_positive_int, default=30)
-    record_parser.add_argument("--fps-mode", choices=("compensate_stride", "fixed"), default="compensate_stride")
-    record_parser.add_argument("--frame-stride", type=_positive_int, default=1)
     record_parser.add_argument("--width", type=_positive_int, default=DEFAULT_RECORDING_WIDTH)
     record_parser.add_argument("--height", type=_positive_int, default=DEFAULT_RECORDING_HEIGHT)
     record_parser.add_argument(

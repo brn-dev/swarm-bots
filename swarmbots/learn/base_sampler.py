@@ -26,6 +26,10 @@ class BaseSampler(Generic[SamplesType, SamplerConfigType], abc.ABC):
     ):
         if config.batch_size <= 0:
             raise ValueError(f"batch_size must be > 0, got {config.batch_size}")
+        if config.batch_size > n_samples:
+            raise ValueError(
+                f"batch_size ({config.batch_size}) must not exceed rollout sample count ({n_samples})"
+            )
         self.config = config
         self.n_samples = n_samples
         self.index_device = None if index_device is None else torch.device(index_device)

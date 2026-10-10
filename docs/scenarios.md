@@ -109,7 +109,7 @@ Success is a team-level boolean. Padding never counts toward success. For succes
 | Bridge | Every active unit has `y > success_y`, with no active unit below `fall_z_threshold` |
 | Climb | Every active unit's root lies within `goal_radius` of the 3D goal |
 | VerticalReach | At least one active unit's root lies inside the goal box |
-| PayloadStep | Payload centre reaches `payload_success_y` and the required height above the step |
+| PayloadStep | Payload centre reaches `payload_success_y` and the required height while remaining over the step's finite width and length |
 | MultiPayloadGoal | Every active payload centre lies within `goal_radius` of its assigned 3D goal (goal height is the payload radius) |
 
 PayloadPlane, DualPayloadPlane, and MoveTo have no success metric; report return. Episodes truncate at 500 control steps by default. Success terminates an episode for the success-enabled tasks; bridge falls and nonfinite simulator state can also terminate unsuccessfully. The default control period is `0.003 * 10 = 0.03` seconds. Reward terms are exposed in `info["reward_terms"]`; weights and thresholds are in `env.get_settings()` and exported evaluation metadata.
@@ -138,3 +138,5 @@ env.close()
 ```
 
 Treat any override as a new task. Report every override and do not label the result with the unchanged canonical benchmark ID.
+
+`TruncatedNormalDistParams` bounds rejection sampling with `max_rejection_attempts` (default 1,000 draws per sample). Exhausting the limit raises an error instead of blocking reset indefinitely; impossible degenerate rejection distributions are rejected at construction.

@@ -32,8 +32,6 @@ class MJWRecordingConfig:
     num_episodes: int
     max_parallel_episodes: int
     fps: int
-    fps_mode: str
-    frame_stride: int
     width: int
     height: int
     camera: int | str
@@ -59,7 +57,10 @@ class _RenderContext:
 
 def _write_video_file(*, frames: list[np.ndarray], output_path: Path, fps: int) -> None:
     clip = moviepy.video.io.ImageSequenceClip.ImageSequenceClip(frames, fps=fps)
-    clip.write_videofile(output_path.as_posix(), logger=None)
+    try:
+        clip.write_videofile(output_path.as_posix(), logger=None)
+    finally:
+        clip.close()
 
 
 class MJWLiveEpisodeRecorder:
@@ -89,12 +90,8 @@ class MJWLiveEpisodeRecorder:
             raise ValueError(f"Expected num_episodes > 0, got {config.num_episodes}")
         if config.max_parallel_episodes <= 0:
             raise ValueError(f"Expected max_parallel_episodes > 0, got {config.max_parallel_episodes}")
-        if config.frame_stride <= 0:
-            raise ValueError(f"Expected frame_stride > 0, got {config.frame_stride}")
         if config.fps <= 0:
             raise ValueError(f"Expected fps > 0, got {config.fps}")
-        if config.fps_mode not in {"compensate_stride", "fixed"}:
-            raise ValueError(f"Unsupported fps_mode={config.fps_mode!r}")
         if config.width <= 0 or config.height <= 0:
             raise ValueError(f"Expected positive width/height, got {config.width=} {config.height=}")
 
@@ -147,9 +144,6 @@ class MJWLiveEpisodeRecorder:
             "num_episodes": int(self._config.num_episodes),
             "max_parallel_episodes": int(self._config.max_parallel_episodes),
             "fps": int(self._config.fps),
-            "fps_mode": self._config.fps_mode,
-            "effective_fps": int(self._effective_fps(self._config)),
-            "frame_stride": int(self._config.frame_stride),
             "width": int(self._config.width),
             "height": int(self._config.height),
             "camera": self._config.camera,
@@ -240,9 +234,7 @@ class MJWLiveEpisodeRecorder:
 
             done = bool(dones[world_idx])
             unstable = bool(unstable_mask[world_idx])
-            should_capture_frame = done or ((slot.step_count % self._config.frame_stride) == 0)
-
-            if should_capture_frame and not unstable:
+            if not unstable:
                 snapshot = snapshots_by_world.get(world_idx)
                 if snapshot is not None:
                     slot.frames.append(
@@ -262,9 +254,13 @@ class MJWLiveEpisodeRecorder:
             logger.warning(f"Dropping {len(self._active_slots_by_world)} incomplete MJW recording episode(s) on close.")
         self._active_slots_by_world.clear()
         self._config = None
-        self._close_render_context()
-        self._cleanup_writer_futures(wait=True)
-        self._writer_executor.shutdown(wait=True, cancel_futures=False)
+        try:
+            self._close_render_context()
+        finally:
+            try:
+                self._cleanup_writer_futures(wait=True)
+            finally:
+                self._writer_executor.shutdown(wait=True, cancel_futures=False)
 
     def _build_camera(self, camera: int | str) -> int | str | mujoco.MjvCamera:
         if camera != -1:
@@ -315,7 +311,7 @@ class MJWLiveEpisodeRecorder:
             f"-ep_rew={reward_str}{suffix}.mp4"
         )
         frames = slot.frames
-        fps = self._effective_fps(self._config)
+        fps = self._config.fps
         future = self._writer_executor.submit(_write_video_file, frames=frames, output_path=output_path, fps=fps)
         self._writer_futures.append(future)
         logger.warning(
@@ -332,27 +328,25 @@ class MJWLiveEpisodeRecorder:
 
     def _cleanup_writer_futures(self, *, wait: bool = False) -> None:
         remaining_futures: list[Future[None]] = []
+        first_error: Exception | None = None
         for future in self._writer_futures:
-            if wait:
-                future.result()
-                continue
-            if future.done():
-                future.result()
-                continue
-            remaining_futures.append(future)
+            if wait or future.done():
+                try:
+                    future.result()
+                except Exception as error:
+                    if first_error is None:
+                        first_error = error
+            else:
+                remaining_futures.append(future)
         self._writer_futures = remaining_futures
+        if first_error is not None:
+            raise first_error
 
     def _close_render_context(self) -> None:
         render_context = self._render_context
         if render_context is not None:
             render_context.renderer.close()
             self._render_context = None
-
-    @staticmethod
-    def _effective_fps(config: MJWRecordingConfig) -> int:
-        if config.fps_mode == "fixed":
-            return int(config.fps)
-        return max(1, int(round(config.fps / config.frame_stride)))
 
     def _get_default_recording_camera_config(self) -> MJWRecordingCameraConfig:
         scenario_camera_config = self._scenario.get_default_recording_camera_config()

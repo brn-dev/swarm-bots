@@ -48,6 +48,8 @@ def _compute_payload_step_reward_extras_kernel(
     payload_step_height_done: torch.Tensor,
     step_start_y: float,
     step_height: float,
+    step_width: float,
+    step_length: float,
     payload_ground_z: float,
     payload_step_height_reward_weight: float,
     payload_step_height_reward_distance: float,
@@ -81,6 +83,9 @@ def _compute_payload_step_reward_extras_kernel(
 
     success = (
         stable_mask
+        & (safe_payload_position[:, 0].abs() <= float(step_width) / 2.0)
+        & (safe_payload_position[:, 1] >= float(step_start_y))
+        & (safe_payload_position[:, 1] <= float(step_start_y) + float(step_length))
         & (safe_payload_position[:, 1] >= float(payload_success_y))
         & (safe_payload_position[:, 2] >= float(payload_success_min_z))
     )
@@ -188,6 +193,8 @@ class PayloadStepMJWScenarioRuntime(PayloadPlaneMJWScenarioRuntime):
             self.payload_step_height_done,
             float(self.scenario.step_start_y),
             float(self.scenario.step_height),
+            float(self.scenario.step_width),
+            float(self.scenario.step_length),
             float(self.scenario.payload_radius),
             float(self.scenario.payload_step_height_reward_weight),
             float(self.scenario.payload_step_height_reward_distance),

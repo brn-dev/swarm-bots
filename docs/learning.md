@@ -335,6 +335,8 @@ trainer = train(
 
 Use the benchmark adapter to freeze observation normalization, maintain per-lane recurrent state, and convert packed policy actions to the simulator's action dictionary:
 
+For lower-level trainers using `TorchTransitionObsWrapper`, the adapter also reconstructs observation/action history and clears it at episode starts. Evaluation history is independent of the training wrapper's state.
+
 ```python
 from swarmbots import evaluate_policy
 from swarmbots.learn import as_benchmark_policy

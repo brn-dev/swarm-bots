@@ -79,13 +79,19 @@ def sample_float_or_dist(
             low = float(value.low)
             high = float(value.high)
             invalid_mask = (samples < low) | (samples > high)
-            while bool(invalid_mask.any()):
+            for _ in range(value.max_rejection_attempts - 1):
+                if not bool(invalid_mask.any()):
+                    return samples
                 samples[invalid_mask] = torch.empty(
                     int(invalid_mask.sum().item()),
                     device=device,
                     dtype=torch.float32,
                 ).normal_(float(value.mean), float(value.std), generator=generator)
                 invalid_mask = (samples < low) | (samples > high)
+            if bool(invalid_mask.any()):
+                raise RuntimeError(
+                    f"Truncated normal rejection sampling exceeded {value.max_rejection_attempts} attempts: {value}"
+                )
             return samples
     raise TypeError(f"Unsupported distribution type: {type(value).__name__}")
 

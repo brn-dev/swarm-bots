@@ -27,9 +27,7 @@ EVALUATION_ACTION_MODES: tuple[tuple[str, bool], ...] = (
 @dataclass(frozen=True, slots=True)
 class EvaluationRecordingConfig:
     num_episodes: int = 0
-    frame_stride: int = 1
     fps: int = 30
-    fps_mode: str = "compensate_stride"
     width: int = DEFAULT_RECORDING_WIDTH
     height: int = DEFAULT_RECORDING_HEIGHT
     camera: int | str = -1
@@ -101,8 +99,9 @@ class FrozenEvaluationRunner:
                         seed=self.seed,
                         options={"force_settled": True},
                     )
+                    recording_started = False
                     if deterministic:
-                        self._start_recording(
+                        recording_started = self._start_recording(
                             env=env,
                             timesteps=timesteps,
                             milestone_percentage=milestone_percentage,
@@ -112,6 +111,7 @@ class FrozenEvaluationRunner:
                         env=env,
                         initial_obs=obs,
                         deterministic=deterministic,
+                        finish_recording=recording_started,
                     )
                     metrics.update(self._summarize_metrics(episode_metrics, action_mode=action_mode))
                     metrics[f"eval_{action_mode}_duration"] = time.perf_counter() - mode_started_at
@@ -146,6 +146,7 @@ class FrozenEvaluationRunner:
         env: Any,
         initial_obs: dict[str, torch.Tensor],
         deterministic: bool,
+        finish_recording: bool = False,
     ) -> dict[str, list[float]]:
         self._policy.eval()
         obs = initial_obs
@@ -171,7 +172,10 @@ class FrozenEvaluationRunner:
         action_dist = getattr(self._policy, "action_dist", None)
 
         with torch.no_grad():
-            while bool(torch.any(completed_per_env < self.episodes_per_env)):
+            while (
+                bool(torch.any(completed_per_env < self.episodes_per_env))
+                or (finish_recording and env.unwrapped.get_video_recording_status()["active"])
+            ):
                 if action_dist is not None and hasattr(action_dist, "reset_temporal_correlations_on_ep_start"):
                     action_dist.reset_temporal_correlations_on_ep_start(episode_start_mask)
                 if (
@@ -290,14 +294,16 @@ class FrozenEvaluationRunner:
         timesteps: int,
         milestone_percentage: float,
         action_mode: str,
-    ) -> None:
+    ) -> bool:
         config = self.recording_config
         if config is None or config.num_episodes == 0 or self.video_folder is None:
-            return
+            return False
         start_recording = getattr(env.unwrapped, "start_video_recording", None)
         if not callable(start_recording):
             logger.warning("Evaluation recording requested, but the evaluation environment cannot record video.")
-            return
+            return False
+        if not callable(getattr(env.unwrapped, "get_video_recording_status", None)):
+            raise ValueError("Evaluation recording requires get_video_recording_status().")
 
         episode_count = min(config.num_episodes, env.num_envs * self.episodes_per_env)
         start_recording(
@@ -308,12 +314,11 @@ class FrozenEvaluationRunner:
             num_episodes=episode_count,
             max_parallel_episodes=min(episode_count, env.num_envs),
             fps=config.fps,
-            fps_mode=config.fps_mode,
-            frame_stride=config.frame_stride,
             width=config.width,
             height=config.height,
             camera=config.camera,
         )
+        return True
 
     def _seed_rng(self, cuda_devices: list[int]) -> None:
         torch.random.default_generator.manual_seed(self.seed)

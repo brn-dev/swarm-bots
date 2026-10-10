@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Refresh simulator body frames after each control step on CPU and CUDA; preserve physics options during reset settling and reject nonpositive episode limits.
+- Require PayloadStep success to occur over the finite step, support scalar distributions for dual payload offsets, and bound truncated-normal rejection sampling.
+- Support transition-observation histories in benchmark policy adapters; reject oversized PPO batches and correct the optional Monte Carlo entropy gradient.
+- Finish evaluation episode capture before returning, clean up resources after video writer failures, and remove frame striding and its FPS mode options.
 - Added `mappo_mlp` and `mappo_mlp_small` with flattened MLP critics; `mappo` and `mappo_small` retain Deep Set critics. Both critic families support shared-encoder NOP and PopArt.
 - Checkpoint recordings preserve configured DDPG/TD3 exploration noise; Python and CLI overrides support older checkpoints.
 - Added cooperative MADDPG, MATD3, and MASAC baselines with large flattened MLP or masked Deep Set critics, plus TMATD3 and its decentralized-actor variant.

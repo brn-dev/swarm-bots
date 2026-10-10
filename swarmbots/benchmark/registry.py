@@ -173,11 +173,14 @@ def make_env(
     **env_kwargs: Any,
 ) -> MJWSwarmBotsVectorEnv:
     spec = get_benchmark_spec(benchmark_id)
+    resolved_episode_length = spec.episode_length if episode_length is None else int(episode_length)
+    if resolved_episode_length <= 0:
+        raise ValueError(f"Expected episode_length > 0, got {resolved_episode_length}")
     scenario = make_scenario(benchmark_id, seed=seed, **dict(scenario_kwargs or {}))
     return MJWSwarmBotsVectorEnv(
         scenario,
         num_envs=num_envs,
-        episode_length=spec.episode_length if episode_length is None else episode_length,
+        episode_length=resolved_episode_length,
         device=device,
         **env_kwargs,
     )

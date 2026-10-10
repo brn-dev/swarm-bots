@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Any
 
 import torch
@@ -10,8 +11,16 @@ from swarmbots.learn.base_policy import BasePolicy
 from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
 from swarmbots.learn.env_wrappers.learn_wrappers.swarm_bots_learn_env_wrapper import SwarmBotsLearnEnvWrapper
 from swarmbots.learn.env_wrappers.torch_feature_wise_obs_norm_wrapper import TorchFeatureWiseObsNormWrapper
+from swarmbots.learn.env_wrappers.torch_transition_obs_wrapper import TorchTransitionObsWrapper, _step_transition_tensors
 from swarmbots.learn.rollout_utils import initial_previous_actions
 from swarmbots.learn.temporal_state import clone_detach_temporal_state
+
+
+@dataclass
+class _TransitionObservationState:
+    local_obs: torch.Tensor
+    global_obs: torch.Tensor | None
+    actions: torch.Tensor
 
 
 class BenchmarkPolicy:
@@ -25,14 +34,17 @@ class BenchmarkPolicy:
     def __init__(self, policy: BasePolicy, env: BaseLearnEnvWrapper, *, deterministic: bool = True) -> None:
         self.policy = policy
         self.deterministic = deterministic
-        normalizers = []
+        observation_transforms = []
         while hasattr(env, "env"):
             if isinstance(env, TorchFeatureWiseObsNormWrapper) and env.obs_key in ("local_obs", "global_obs"):
-                normalizers.append(env)
+                observation_transforms.append(env)
+            if isinstance(env, TorchTransitionObsWrapper):
+                observation_transforms.append(env)
             if isinstance(env, SwarmBotsLearnEnvWrapper):
                 self.action_env = env
             env = env.env
-        self.normalizers = tuple(reversed(normalizers))
+        self.observation_transforms = tuple(reversed(observation_transforms))
+        self.transition_states: dict[TorchTransitionObsWrapper, _TransitionObservationState] = {}
         self.temporal_state: Any = None
         self.previous_actions: torch.Tensor | None = None
         action_dist = getattr(self.policy, "action_dist", None)
@@ -47,13 +59,16 @@ class BenchmarkPolicy:
     ) -> Mapping[str, torch.Tensor]:
         # The evaluator may pass privileged fields, but they must never reach the actor.
         actor_obs = {key: observations[key] for key in ("local_obs", "global_obs", "agent_mask")}
-        for normalizer in self.normalizers:
-            was_updating = normalizer.update_running_mean
-            normalizer.update_running_mean = False
-            try:
-                actor_obs = normalizer.observations(actor_obs)
-            finally:
-                normalizer.update_running_mean = was_updating
+        for transform in self.observation_transforms:
+            if isinstance(transform, TorchFeatureWiseObsNormWrapper):
+                was_updating = transform.update_running_mean
+                transform.update_running_mean = False
+                try:
+                    actor_obs = transform.observations(actor_obs)
+                finally:
+                    transform.update_running_mean = was_updating
+            else:
+                actor_obs = self._transition_observations(transform, actor_obs, episode_starts)
         local_obs = actor_obs["local_obs"]
         if not self.initialized:
             self.temporal_state = self.policy.initial_temporal_state(
@@ -96,9 +111,41 @@ class BenchmarkPolicy:
             for module, was_training in module_training_modes.items():
                 module.training = was_training
         self.temporal_state = clone_detach_temporal_state(temporal_state)
+        for transform, state in self.transition_states.items():
+            state.actions = transform._actions_to_features(actions, dtype=state.local_obs.dtype).clone()
         if self.previous_actions is not None:
             self.previous_actions = actions.clone()
         return self.action_env._actions_to_env(actions)
+
+    def _transition_observations(
+        self,
+        wrapper: TorchTransitionObsWrapper,
+        observations: dict[str, torch.Tensor],
+        episode_starts: torch.Tensor,
+    ) -> dict[str, torch.Tensor]:
+        local_obs = observations["local_obs"]
+        global_obs = observations.get("global_obs")
+        state = self.transition_states.get(wrapper)
+        if state is None:
+            state = _TransitionObservationState(
+                local_obs=torch.zeros_like(local_obs),
+                global_obs=None if global_obs is None else torch.zeros_like(global_obs),
+                actions=local_obs.new_zeros((*local_obs.shape[:-1], wrapper._n_action_features)),
+            )
+        stacked_local, _, _, stacked_global, _ = _step_transition_tensors(
+            local_obs, state.local_obs, state.actions, episode_starts,
+            global_obs, state.global_obs, wrapper.new_obs_first,
+        )
+        self.transition_states[wrapper] = _TransitionObservationState(
+            local_obs=local_obs.clone(),
+            global_obs=None if global_obs is None else global_obs.clone(),
+            actions=state.actions,
+        )
+        transformed = dict(observations)
+        transformed["local_obs"] = stacked_local
+        if stacked_global is not None:
+            transformed["global_obs"] = stacked_global
+        return transformed
 
 
 def as_benchmark_policy(algorithm: BaseAlgorithm, *, deterministic: bool = True) -> BenchmarkPolicy:

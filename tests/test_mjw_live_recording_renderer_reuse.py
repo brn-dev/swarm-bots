@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+from concurrent.futures import Future
 import shutil
 import unittest
 from pathlib import Path
@@ -95,6 +96,17 @@ class _FailingRenderer:
 
 
 class MJWLiveRecordingRendererReuseTests(unittest.TestCase):
+    def test_writer_failure_still_shuts_down_and_can_be_closed_again(self) -> None:
+        recorder = MJWLiveEpisodeRecorder(scenario=_DummyScenario())
+        failed = Future()
+        failed.set_exception(OSError("disk full"))
+        recorder._writer_futures.append(failed)
+        with self.assertRaisesRegex(OSError, "disk full"):
+            recorder.close()
+        self.assertTrue(recorder._writer_executor._shutdown)
+        self.assertEqual(recorder._writer_futures, [])
+        recorder.close()
+
     def test_start_uses_a_single_shared_renderer(self) -> None:
         _FakeMjData.init_count = 0
         _FakeRenderer.init_count = 0
@@ -128,8 +140,6 @@ class MJWLiveRecordingRendererReuseTests(unittest.TestCase):
                 num_episodes=2,
                 max_parallel_episodes=2,
                 fps=30,
-                fps_mode="fixed",
-                frame_stride=1,
                 width=16,
                 height=16,
                 camera=0,
@@ -180,8 +190,6 @@ class MJWLiveRecordingRendererReuseTests(unittest.TestCase):
                 num_episodes=1,
                 max_parallel_episodes=1,
                 fps=30,
-                fps_mode="fixed",
-                frame_stride=1,
                 width=1280,
                 height=720,
                 camera=0,

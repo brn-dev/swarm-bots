@@ -97,7 +97,6 @@ def test_recording_uses_reset_observations_and_resets_policy_state_for_each_done
         width=320,
         height=240,
         camera="overview",
-        frame_stride=2,
     )
     assert output == tmp_path
     assert environment_options["num_envs"] == 2
@@ -107,7 +106,6 @@ def test_recording_uses_reset_observations_and_resets_policy_state_for_each_done
     assert env.recording_options["camera"] == "overview"
     assert env.recording_options["width"] == 320
     assert env.recording_options["height"] == 240
-    assert env.recording_options["frame_stride"] == 2
     assert starts == [[True, True], [False, False], [True, False], [False, True]]
     assert env.closed
 
@@ -526,7 +524,7 @@ def test_checkpoint_recording_restores_actor_and_normalization_and_writes_comple
         written_frames: list[list[np.ndarray]] = []
 
         def write_video(*, frames: list[np.ndarray], output_path: Path, fps: int) -> None:
-            assert fps == 15
+            assert fps == 30
             written_frames.append(frames)
             output_path.write_bytes(b"encoded video")
 
@@ -541,14 +539,13 @@ def test_checkpoint_recording_restores_actor_and_normalization_and_writes_comple
             max_parallel_episodes=2,
             width=160,
             height=120,
-            frame_stride=2,
             **construction_options,
         )
         assert len(list(output.glob("*.mp4"))) == 3
         assert policy_calls == 8
         assert len(written_frames) == 3
         for frames in written_frames:
-            assert len(frames) == 3
+            assert len(frames) == 5
             assert all(frame.shape == (120, 160, 3) for frame in frames)
     finally:
         trainer.env.close()

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import abc
+import copy
 import math
 from dataclasses import dataclass
 from typing import Any, Protocol
@@ -24,6 +25,7 @@ class MJWRuntimeBindings:
     wp_device: Any
     num_envs: int
     model: Any
+    host_model: mujoco.MjModel
     data: Any
     metadata: MJWModelMetadata
     pool: MJWSwarmPool
@@ -383,7 +385,7 @@ class BaseMJWCPUResetSettler(abc.ABC):
     def __init__(self, *, scenario: BaseMJWScenario, bindings: MJWRuntimeBindings) -> None:
         self.scenario = scenario
         self.bindings = bindings
-        self.model = scenario.build_model()
+        self.model = copy.copy(bindings.host_model)
         self.data = mujoco.MjData(self.model)
 
         self._base_qpos = self.data.qpos.copy()

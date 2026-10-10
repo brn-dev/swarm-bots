@@ -52,7 +52,7 @@ The selected task's observation/action spaces, architecture, action distribution
 - Actions use deterministic modes by default for learning checkpoints; `--stochastic` samples instead.
 - `--seed` defaults to 1000 and seeds the simulator and PyTorch. `--device auto` selects CUDA when available, otherwise CPU.
 - `--width`/`--height` default to 1280×720. `--camera -1` uses the scenario camera; camera names and numeric IDs are accepted.
-- `--fps` defaults to 30. `--frame-stride 2` captures every second step and halves playback FPS to preserve duration. Use `--fps-mode fixed` to keep the requested FPS.
+- Every control step is recorded. `--fps` sets the playback frame rate and defaults to 30.
 - `--episode-length` overrides the registered task's limit. `--scenario-kwargs` and `--env-kwargs` accept JSON objects for scalar/list overrides.
 - `--model-scale "5M NOP1M"` selects the checkpoint's layout (the default); `2.5M` and `10M` select the additional fixed tiers; `--model-scale legacy` uses explicit widths for earlier checkpoints. Match training's scale and architecture settings.
 - `--compile-policy` opts into policy compilation; use the [GPU setup guide](gpu_setup.md) first.

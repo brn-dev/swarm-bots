@@ -73,13 +73,18 @@ class _PendingMJWStep:
     check_nefc_overflow: bool
 
 
+def _step_and_refresh(model: Any, data: Any, nstep: int) -> None:
+    for _ in range(nstep):
+        mjw.step(model, data)
+    mjw.kinematics(model, data)
+
+
 def _capture_step_graph(model: Any, data: Any, nstep: int) -> Any | None:
     if nstep <= 0:
         return None
     with wp.ScopedDevice(data.qpos.device):
         with wp.ScopedCapture(device=data.qpos.device) as capture:
-            for _ in range(nstep):
-                mjw.step(model, data)
+            _step_and_refresh(model, data, nstep)
     return capture.graph
 
 
@@ -209,6 +214,10 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
         tensor_operations_compile_mode: str = "default",
     ) -> None:
         super().__init__()
+
+        episode_length = int(episode_length)
+        if episode_length <= 0:
+            raise ValueError(f"Expected episode_length > 0, got {episode_length}")
         wp.init()
 
         if first_episode_length is not None and first_episode_lengths is not None:
@@ -483,6 +492,7 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
             wp_device=self._wp_device,
             num_envs=self.num_envs,
             model=self._model,
+            host_model=self._host_model,
             data=self._data,
             metadata=self._metadata,
             pool=self._pool,
@@ -653,13 +663,19 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
             self.end_step()
         if hasattr(self, "_max_nefc_since_overflow_check"):
             self._maybe_notify_nefc_overflow()
-        self._live_episode_recorder.close()
-        if self._settled_reset_buffer is not None:
-            self._settled_reset_buffer.clear(wait=False)
-            self._settled_reset_buffer = None
-        if self._settle_executor is not None:
-            self._settle_executor.shutdown(wait=True, cancel_futures=True)
-            self._settle_executor = None
+        try:
+            self._live_episode_recorder.close()
+        finally:
+            try:
+                if self._settled_reset_buffer is not None:
+                    buffer = self._settled_reset_buffer
+                    self._settled_reset_buffer = None
+                    buffer.clear(wait=False)
+            finally:
+                if self._settle_executor is not None:
+                    executor = self._settle_executor
+                    self._settle_executor = None
+                    executor.shutdown(wait=True, cancel_futures=True)
         return None
 
     def step(
@@ -829,8 +845,6 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
         num_episodes: int = 5,
         max_parallel_episodes: int = 4,
         fps: int = 20,
-        fps_mode: str = "compensate_stride",
-        frame_stride: int = 1,
         width: int = DEFAULT_RECORDING_WIDTH,
         height: int = DEFAULT_RECORDING_HEIGHT,
         camera: int | str = -1,
@@ -841,8 +855,6 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
             num_episodes=int(num_episodes),
             max_parallel_episodes=int(max_parallel_episodes),
             fps=int(fps),
-            fps_mode=str(fps_mode),
-            frame_stride=int(frame_stride),
             width=int(width),
             height=int(height),
             camera=camera,
@@ -887,8 +899,7 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
             wp.capture_launch(self._physics_graph)
             return
         with wp.ScopedDevice(self._wp_device):
-            for _ in range(self.action_repeat):
-                mjw.step(self._model, self._data)
+            _step_and_refresh(self._model, self._data, self.action_repeat)
 
     def _update_max_nefc_since_overflow_check(self) -> None:
         if self._nefc_overflow_notification_checked:

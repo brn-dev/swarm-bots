@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 
 import torch
 
@@ -45,8 +45,6 @@ def record_checkpoint(
     compile_modules: bool = False,
     policy_kwargs: Mapping[str, Any] | None = None,
     fps: int = 30,
-    fps_mode: Literal["compensate_stride", "fixed"] = "compensate_stride",
-    frame_stride: int = 1,
     width: int = DEFAULT_RECORDING_WIDTH,
     height: int = DEFAULT_RECORDING_HEIGHT,
     camera: int | str = -1,
@@ -106,8 +104,6 @@ def record_checkpoint(
             num_episodes=num_episodes,
             seed=seed,
             fps=fps,
-            fps_mode=fps_mode,
-            frame_stride=frame_stride,
             width=width,
             height=height,
             camera=camera,

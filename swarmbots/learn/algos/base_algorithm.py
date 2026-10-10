@@ -793,16 +793,16 @@ class BaseAlgorithm(abc.ABC):
     def _cmd_record(self, params: str) -> None:
         config = _parse_params_maybe_json(params)
         if isinstance(config, dict):
+            if "frame_stride" in config or "fps_mode" in config:
+                raise ValueError("Frame striding was removed; recording captures every control step")
             num_episodes = int(config.get("episodes", 3))
             if not _parse_bool(config.get("live", True)):
                 raise ValueError("Separate recording environments were removed; the record command uses live vector recording")
             deterministic = _parse_bool(config.get("deterministic", False))
             fps = int(config.get("fps", 30))
-            fps_mode = str(config.get("fps_mode", "compensate_stride"))
             prefix = str(config.get("prefix", f"record_{self.n_total_timesteps}"))
             video_folder = config.get("folder", None)
             max_parallel_episodes = int(config.get("parallel", config.get("max_parallel", min(num_episodes, 4))))
-            frame_stride = int(config.get("frame_stride", 1))
             width = int(config.get("width", DEFAULT_RECORDING_WIDTH))
             height = int(config.get("height", DEFAULT_RECORDING_HEIGHT))
             camera = config.get("camera", -1)
@@ -812,11 +812,9 @@ class BaseAlgorithm(abc.ABC):
                 num_episodes = int(params)
             deterministic = False
             fps = 30
-            fps_mode = "compensate_stride"
             prefix = f"record_{self.n_total_timesteps}"
             video_folder = None
             max_parallel_episodes = min(num_episodes, 10)
-            frame_stride = 1
             width = DEFAULT_RECORDING_WIDTH
             height = DEFAULT_RECORDING_HEIGHT
             camera = -1
@@ -839,16 +837,13 @@ class BaseAlgorithm(abc.ABC):
                 num_episodes=num_episodes,
                 max_parallel_episodes=max_parallel_episodes,
                 fps=fps,
-                fps_mode=fps_mode,
-                frame_stride=frame_stride,
                 width=width,
                 height=height,
                 camera=camera,
             )
             logger.warning(
                 f"Started live recording of {num_episodes} episode(s) to {folder.as_posix()} "
-                f"(parallel={max_parallel_episodes}, frame_stride={frame_stride}, fps={fps}, "
-                f"fps_mode={fps_mode}, resolution={width}x{height})"
+                f"(parallel={max_parallel_episodes}, fps={fps}, resolution={width}x{height})"
             )
             return
 

@@ -326,7 +326,20 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
             valid_mask=value_valid_mask,
         )
 
-        mc_entropy_loss = masked_mean(log_prob, valid_mask)
+        if self.mc_ent_coef == 0:
+            mc_entropy_loss = masked_mean(log_prob, valid_mask)
+        else:
+            # Use the joint likelihood ratio even when averaging agent entropies:
+            # autoregressive actors condition later actions on earlier samples.
+            entropy_valid_mask = self._build_batch_valid_mask(batch, log_probs)
+            entropy_log_probs = log_probs
+            entropy_old_log_probs = batch.log_probs.detach()
+            if entropy_valid_mask is not None:
+                entropy_log_probs = entropy_log_probs.masked_fill(~entropy_valid_mask, 0.)
+                entropy_old_log_probs = entropy_old_log_probs.masked_fill(~entropy_valid_mask, 0.)
+            joint_log_ratio = (entropy_log_probs - entropy_old_log_probs).sum(dim=-1, keepdim=True)
+            entropy_weights = torch.exp(joint_log_ratio)
+            mc_entropy_loss = self._reduce_extra_loss_value(batch, entropy_weights * entropy_log_probs)
 
         value_loss_scaled = self.vf_coef * value_loss
         mc_entropy_loss_scaled = self.mc_ent_coef * mc_entropy_loss

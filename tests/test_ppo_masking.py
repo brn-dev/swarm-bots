@@ -1,5 +1,7 @@
 import unittest
 
+import pytest
+
 import torch
 from torch import nn
 
@@ -36,6 +38,43 @@ def _ppo_with_reduction(agent_logprob_reduction: str | None) -> PPO:
     return ppo
 
 
+@pytest.mark.parametrize("reduction", [None, "mean", "sum"])
+@pytest.mark.parametrize("current_p", [0.5, 0.9])
+@pytest.mark.parametrize("autoregressive", [False, True])
+def test_mc_entropy_gradient_matches_current_policy_entropy(reduction, current_p, autoregressive):
+    # Enumerate the old independent Bernoulli(0.5) joint distribution exactly.
+    actions = torch.tensor([[0., 0.], [0., 1.], [1., 0.], [1., 1.]], dtype=torch.float64)
+    logits = torch.logit(torch.tensor(current_p, dtype=torch.float64)).requires_grad_()
+    distribution = torch.distributions.Bernoulli(logits=logits)
+    if autoregressive:
+        conditional = torch.distributions.Bernoulli(logits=logits + 2 * actions[:, 0] - 1)
+        current_log_probs = torch.stack((distribution.log_prob(actions[:, 0]), conditional.log_prob(actions[:, 1])), -1)
+    else:
+        current_log_probs = distribution.log_prob(actions)
+    batch = PPOSamples(
+        local_obs=torch.empty(4, 2, 0), global_obs=torch.empty(4, 0),
+        hidden_local_vars=torch.empty(4, 2, 0), hidden_global_vars=torch.empty(4, 0),
+        agent_mask=torch.ones(4, 2, dtype=torch.bool), previous_actions=None,
+        actions=actions.unsqueeze(-1),
+        log_probs=torch.distributions.Bernoulli(probs=0.5).log_prob(actions),
+        values=torch.zeros(4), returns=torch.zeros(4), advantages=torch.zeros(4),
+    )
+    ppo = _ppo_with_reduction(reduction)
+    ppo.normalize_advantage = False
+    ppo.clip_range = 0.2
+    ppo.clip_range_vf = None
+    ppo.use_popart = False
+    ppo.vf_coef = 0.
+    ppo.mc_ent_coef = 1.
+    loss, _, _ = ppo.compute_ppo_loss(batch, current_log_probs, batch.values)
+    actual = torch.autograd.grad(loss, logits, retain_graph=True)[0]
+    # Exact current joint negative entropy; normalize when agent entropies are averaged.
+    joint_log_prob = current_log_probs.sum(dim=-1)
+    expected_loss = (joint_log_prob.exp() * joint_log_prob).sum() / (1 if reduction == "sum" else 2)
+    expected = torch.autograd.grad(expected_loss, logits)[0]
+    torch.testing.assert_close(actual, expected)
+
+
 class _MaskedGradientPolicy(nn.Module):
     def __init__(self, batch: PPOSamples) -> None:
         super().__init__()
@@ -52,6 +91,30 @@ class _MaskedGradientPolicy(nn.Module):
         _ = batch
         _ = action_splitter
         return self.log_prob_delta, self.value_delta, {}, {}
+
+
+@pytest.mark.parametrize("reduction", [None, "mean", "sum"])
+def test_mc_entropy_excludes_inactive_agents_and_padded_steps(reduction):
+    batch = _make_samples()
+    batch.time_mask = torch.tensor([[True, False, True], [False, True, True]])
+    batch.advantages.zero_()
+    policy = _MaskedGradientPolicy(batch)
+    expected_mask = batch.agent_mask & batch.time_mask.unsqueeze(-1)
+    with torch.no_grad():
+        policy.log_prob_delta[~expected_mask] = 7.
+    ppo = _ppo_with_reduction(reduction)
+    ppo.policy = policy
+    ppo.metrics_action_splitters = []
+    ppo.normalize_advantage = False
+    ppo.clip_range = 0.2
+    ppo.clip_range_vf = None
+    ppo.use_popart = False
+    ppo.vf_coef = 0.
+    ppo.mc_ent_coef = 1.
+    loss, _, _ = ppo.compute_loss(batch)
+    loss.backward()
+    assert torch.equal(policy.log_prob_delta.grad != 0., expected_mask)
+    assert torch.isfinite(policy.log_prob_delta.grad).all()
 
 
 class PPOMaskingTests(unittest.TestCase):

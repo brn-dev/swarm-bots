@@ -149,6 +149,59 @@ class _EvaluationEnv:
     def start_video_recording(self, **kwargs: object) -> None:
         self.recording_kwargs = kwargs
 
+    def get_video_recording_status(self) -> dict[str, bool]:
+        return {"active": False}
+
+
+class _LongRecordingEnv(_EvaluationEnv):
+    def start_video_recording(self, **kwargs):
+        super().start_video_recording(**kwargs)
+        self.recording_slots = {0, 1}
+        self.recordings_started = 2
+        self.recordings_completed = 0
+
+    def get_video_recording_status(self):
+        return {"active": bool(getattr(self, "recording_slots", set()))}
+
+    def reset(self, **kwargs):
+        assert not self.get_video_recording_status()["active"]
+        self.total_steps = 0
+        return super().reset(**kwargs)
+
+    def step(self, actions):
+        self.total_steps += 1
+        self.steps += 1
+        lengths = torch.tensor([1 if self.episodes[0] < 2 else 50, 10])
+        dones = self.steps >= lengths
+        episode_lengths = self.steps.clone()
+        self.episodes += dones
+        self.steps[dones] = 0
+        for lane in torch.nonzero(dones).flatten().tolist():
+            if lane in getattr(self, "recording_slots", set()):
+                self.recording_slots.remove(lane)
+                self.recordings_completed += 1
+            if self.get_video_recording_status()["active"] and self.recordings_started < 4:
+                self.recording_slots.add(lane)
+                self.recordings_started += 1
+        infos = {"_episode": dones, "episode": {"r": self.episodes.float(), "l": episode_lengths}}
+        return _obs(), torch.zeros(2), dones, torch.zeros(2, dtype=torch.bool), infos
+
+
+def test_frozen_evaluation_finishes_recording_without_counting_extra_episodes():
+    env = _LongRecordingEnv()
+    runner = FrozenEvaluationRunner(
+        make_env=lambda: env, training_env=object(), policy=_EvaluationPolicy(),
+        episodes_per_env=2, recording_config=EvaluationRecordingConfig(num_episodes=4), video_folder=Path("videos"),
+    )
+    for milestone in (25., 50.):
+        metrics = runner.evaluate(timesteps=int(milestone), milestone_percentage=milestone)
+        assert metrics["eval_deterministic_ep_rew"].n == 4
+        assert metrics["eval_stochastic_ep_rew"].n == 4
+        assert env.recordings_completed == 4
+        assert env.total_steps == 52
+        assert not env.get_video_recording_status()["active"]
+    runner.close()
+
 
 def test_frozen_evaluation_collects_each_lane_requested_number_of_times_and_restores_state() -> None:
     training_env = object()
@@ -193,7 +246,6 @@ def test_frozen_evaluation_collects_each_lane_requested_number_of_times_and_rest
     assert evaluation_env.recording_kwargs is not None
     assert evaluation_env.recording_kwargs["num_episodes"] == 3
     assert evaluation_env.recording_kwargs["max_parallel_episodes"] == 2
-    assert evaluation_env.recording_kwargs["frame_stride"] == 1
     assert evaluation_env.recording_kwargs["video_name_prefix"] == "eval_deterministic_025pct_25_steps"
 
     runner.close()

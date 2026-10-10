@@ -27,6 +27,10 @@ class BaseSamplerTests(unittest.TestCase):
         self.assertEqual(len(batches), 1)
         torch.testing.assert_close(batches[0].sort().values, sampler.values)
 
+    def test_rejects_batch_size_exceeding_available_samples(self) -> None:
+        with self.assertRaisesRegex(ValueError, "must not exceed rollout sample count"):
+            _TensorSampler(config=BaseSamplerConfig(batch_size=64), n_samples=4)
+
     def test_mini_batches_drop_incomplete_batch_by_default(self) -> None:
         sampler = _TensorSampler(config=BaseSamplerConfig(batch_size=2), n_samples=5)
 

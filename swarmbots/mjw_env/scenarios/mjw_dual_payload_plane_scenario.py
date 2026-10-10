@@ -10,7 +10,7 @@ import numpy as np
 from gymnasium import spaces
 
 import swarmbots.mjw_env.mujoco_utils as mj_utils
-from swarmbots.mjw_env.parameter_distributions import FloatOrDistParams
+from swarmbots.mjw_env.parameter_distributions import DistParams, FloatOrDistParams
 from swarmbots.mjw_env.scenarios.base_mjw_scenario import MJWRecordingCameraConfig, MJWRuntimeBindings
 from swarmbots.mjw_env.scenarios.mjw_payload_plane_scenario import (
     MJWPayloadPlaneRuntimeMetadata,
@@ -21,7 +21,7 @@ from swarmbots.mjw_env.scenarios.mjw_payload_plane_scenario import (
 def _as_payload_pair(
     value: FloatOrDistParams | Iterable[FloatOrDistParams],
 ) -> tuple[FloatOrDistParams, FloatOrDistParams]:
-    if isinstance(value, (int, float)):
+    if isinstance(value, (int, float, DistParams)):
         return value, value
     values = tuple(value)
     if len(values) != 2:

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 
 import torch
 
@@ -21,8 +21,6 @@ def _record_episodes(
     num_episodes: int = 5,
     seed: int = 1_000,
     fps: int = 30,
-    fps_mode: Literal["compensate_stride", "fixed"] = "compensate_stride",
-    frame_stride: int = 1,
     width: int = DEFAULT_RECORDING_WIDTH,
     height: int = DEFAULT_RECORDING_HEIGHT,
     camera: int | str = -1,
@@ -35,8 +33,6 @@ def _record_episodes(
         num_episodes=num_episodes,
         max_parallel_episodes=env.num_envs,
         fps=fps,
-        fps_mode=fps_mode,
-        frame_stride=frame_stride,
         width=width,
         height=height,
         camera=camera,
@@ -63,8 +59,6 @@ def record_policy(
     scenario_kwargs: Mapping[str, object] | None = None,
     env_kwargs: Mapping[str, Any] | None = None,
     fps: int = 30,
-    fps_mode: Literal["compensate_stride", "fixed"] = "compensate_stride",
-    frame_stride: int = 1,
     width: int = DEFAULT_RECORDING_WIDTH,
     height: int = DEFAULT_RECORDING_HEIGHT,
     camera: int | str = -1,
@@ -95,8 +89,6 @@ def record_policy(
             num_episodes=num_episodes,
             seed=seed,
             fps=fps,
-            fps_mode=fps_mode,
-            frame_stride=frame_stride,
             width=width,
             height=height,
             camera=camera,

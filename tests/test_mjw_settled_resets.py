@@ -4,6 +4,7 @@ from collections.abc import Callable
 from concurrent.futures import Future
 from typing import Any
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 import torch
@@ -495,3 +496,19 @@ def test_mjw_close_clears_settled_buffer_without_waiting_then_shuts_down_executo
     assert buffer.clear_calls == [False]
     assert env._settled_reset_buffer is None
     assert env._settle_executor is None
+
+
+def test_mjw_writer_failure_does_not_prevent_settling_cleanup() -> None:
+    env, _ = _make_uninitialized_env()
+    env._live_episode_recorder = Mock()
+    env._live_episode_recorder.close.side_effect = [OSError("disk full"), None]
+    buffer = _FakeSettledResetBuffer()
+    executor = Mock()
+    env._settled_reset_buffer = buffer
+    env._settle_executor = executor
+    with pytest.raises(OSError, match="disk full"):
+        env.close()
+    assert buffer.clear_calls == [False]
+    executor.shutdown.assert_called_once_with(wait=True, cancel_futures=True)
+    assert env._settled_reset_buffer is None and env._settle_executor is None
+    env.close()
