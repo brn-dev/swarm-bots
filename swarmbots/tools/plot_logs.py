@@ -1,4 +1,4 @@
-"""Plot scalar training metrics from one or more files or run directories."""
+"""Command-line plotting of scalar metrics from files or run directories."""
 
 from __future__ import annotations
 

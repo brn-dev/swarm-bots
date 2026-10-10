@@ -15,11 +15,16 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
-from examples.inspect_policy_parameters import inspect_variants, save_report, write_compressed_json
+from swarmbots.tools.inspect_policy_parameters import (
+    allocation_doc_link,
+    inspect_variants,
+    save_report,
+    write_compressed_json,
+)
 from swarmbots.learn import list_model_scales, list_variants
 from swarmbots.learn.presets.model_scale import SCALE_LAYOUTS, normalize_model_scale
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path.cwd()
 COLORS = {
     "input": ("#edf2f7", "#64748b"),
     "shared": ("#e8f1ff", "#3565a8"),
@@ -1000,7 +1005,11 @@ def load_reports(scales, variants, refresh):
                 raise RuntimeError(report["errors"])
             # Keep the compact audit input; verbose reports remain local outputs.
             generated = ROOT / "docs/policy_parameters/generated" / f"{layout.main_parameters / 1e6:g}M"
-            save_report(report, generated, allocation_doc="../../model_scale.md")
+            save_report(
+                report,
+                generated,
+                allocation_doc=allocation_doc_link(generated, ROOT / "docs/policy_parameters/model_scale.md"),
+            )
             folder.mkdir(parents=True, exist_ok=True)
             write_compressed_json(report, path)
         rows.extend(row for row in report["policies"] if row["variant"] in wanted)

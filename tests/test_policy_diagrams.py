@@ -7,7 +7,7 @@ from xml.etree import ElementTree
 
 import pytest
 
-from examples.diagram_policy_architectures import (
+from swarmbots.tools.diagram_policy_architectures import (
     build_diagram,
     configuration,
     mermaid_diagram,
@@ -156,9 +156,12 @@ def test_deepset_feature_concatenation_adds_no_parameters():
 
 
 def test_refresh_keeps_compact_inputs_and_writes_verbose_reports_to_generated(tmp_path, monkeypatch):
-    from examples import diagram_policy_architectures as diagrams
+    from swarmbots.tools import diagram_policy_architectures as diagrams
 
     report = json.loads(gzip.decompress(REPORTS[0].read_bytes()))
+    guide = tmp_path / "docs/policy_parameters/model_scale.md"
+    guide.parent.mkdir(parents=True)
+    guide.write_text("Sizing guide", encoding="utf-8")
     def inspect(benchmark_id, variants, *, model_scale):
         assert benchmark_id == "SwarmBots-WallEasy-v0"
         assert variants == list_variants()
@@ -182,8 +185,8 @@ def test_refresh_keeps_compact_inputs_and_writes_verbose_reports_to_generated(tm
 @pytest.mark.parametrize("report_path", REPORTS, ids=["5M", "2.5M", "10M"])
 @pytest.mark.parametrize("refresh", [False, True])
 def test_partial_audit_rebuild_preserves_core_and_cached_hidden_presets(tmp_path, monkeypatch, report_path, refresh):
-    from examples import diagram_policy_architectures as diagrams
-    from examples.inspect_policy_parameters import write_compressed_json
+    from swarmbots.tools import diagram_policy_architectures as diagrams
+    from swarmbots.tools.inspect_policy_parameters import write_compressed_json
 
     report = json.loads(gzip.decompress(report_path.read_bytes()))
     scale = report["policies"][0]["model_scale"]["name"]
@@ -232,7 +235,7 @@ def test_partial_audit_rebuild_preserves_core_and_cached_hidden_presets(tmp_path
 @pytest.mark.parametrize("scale", list_model_scales())
 def test_stacked_swiglu_presets_generate_diagrams_from_actual_audits(scale, tmp_path):
     import torch
-    from examples.inspect_policy_parameters import inspect_variants
+    from swarmbots.tools.inspect_policy_parameters import inspect_variants
 
     variants = ("tmasac_swiglu", "tmasac_slstm_swiglu")
     previous_threads = torch.get_num_threads()

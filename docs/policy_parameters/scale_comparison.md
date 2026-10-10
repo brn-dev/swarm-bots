@@ -36,6 +36,6 @@ Full role breakdowns, module widths, and processing counts can be [generated loc
 Reproduce the added-tier audits:
 
 ```bash
-python examples/inspect_policy_parameters.py --model-scale 2.5M --output-dir docs/policy_parameters/generated/2.5M
-python examples/inspect_policy_parameters.py --model-scale 10M --output-dir docs/policy_parameters/generated/10M
+swarmbots-inspect-policies --model-scale 2.5M --output-dir docs/policy_parameters/generated/2.5M
+swarmbots-inspect-policies --model-scale 10M --output-dir docs/policy_parameters/generated/10M
 ```

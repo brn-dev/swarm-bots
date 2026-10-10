@@ -1,7 +1,7 @@
 """Instantiate registered presets and report their parameter counts without training.
 
 Run from the repository root:
-    python examples/inspect_policy_parameters.py --output-dir docs/policy_parameters/generated/5M
+    swarmbots-inspect-policies --output-dir docs/policy_parameters/generated/5M
 """
 
 from __future__ import annotations
@@ -194,6 +194,13 @@ def inspect_variants(
     }
 
 
+def allocation_doc_link(output_dir: Path, guide_path: Path) -> str:
+    """Link to a local sizing guide when present, otherwise the published guide."""
+    if guide_path.is_file():
+        return os.path.relpath(guide_path.resolve(), output_dir.resolve()).replace("\\", "/")
+    return "https://github.com/brn-dev/swarm-bots/blob/main/docs/policy_parameters/model_scale.md"
+
+
 def render_report(report: dict[str, Any], *, allocation_doc: str = "model_scale.md") -> str:
     lines = [
         "# Policy parameter counts", "",
@@ -266,7 +273,7 @@ def render_report(report: dict[str, Any], *, allocation_doc: str = "model_scale.
     lines.extend([
         "", "## Reproduce", "",
         "Run from the repository root with the installed package:", "", "```bash",
-        f"python examples/inspect_policy_parameters.py {report['benchmark_id']} --output-dir docs/policy_parameters/generated/audit",
+        f"swarmbots-inspect-policies {report['benchmark_id']} --output-dir docs/policy_parameters/generated/audit",
         "```", "",
         "This command counts the core presets; --include-hidden adds optional baselines and controls. Use `--variants` to select a subset, "
         "`--model-scale \"5+1M\"` for the fixed preset, `--model-scale legacy` for explicit widths, "
@@ -446,7 +453,7 @@ def main() -> int:
     )
     print(render_report(report))
     if args.output_dir is not None:
-        allocation_doc = os.path.relpath(Path(__file__).resolve().parents[1] / "docs/policy_parameters/model_scale.md", args.output_dir).replace("\\", "/")
+        allocation_doc = allocation_doc_link(args.output_dir, Path("docs/policy_parameters/model_scale.md"))
         save_report(report, args.output_dir, allocation_doc=allocation_doc)
         print(f"Saved reports to {args.output_dir}", file=sys.stderr)
     return 1 if report["errors"] else 0

@@ -49,39 +49,4 @@ python examples/record_policy.py SwarmBots-WallEasy-v0 --checkpoint runs/my-run/
 
 Replace the checkpoint path with the file saved by your run. Architecture, distribution, and NOP settings must match when rebuilding a checkpoint. `record_policy.py` also accepts custom `module:factory` policies; see [recording](../docs/recording.md). Every script provides `--help`.
 
-## Count policy parameters
-
-```bash
-python examples/inspect_policy_parameters.py SwarmBots-WallEasy-v0 --output-dir docs/policy_parameters/generated/5M
-python examples/inspect_policy_parameters.py SwarmBots-POWallMedium-v0 --variants tmasac tmasac_slstm tmasac_lstm
-```
-
-The script instantiates every registered preset by default, using the same policy factory as training, without allocating a trainer, replay buffer, or optimizer. It reports actor, critic, shared encoder, next-observation prediction (NOP), frozen target copies, and other parameters. Detailed component tables separate recurrent temporal modules, critic encoders/Q heads, and NOP projections/transition/prediction heads. Shared parameters count once; buffers are excluded. CPU execution and eager modules are the defaults.
-
-The main-policy processing comparison excludes NOP and targets. It splits MLPs, standalone linear projections, attention, recurrent modules, normalization, embeddings, and other parameters, by actor, critic, and shared encoder. **MLP + linear** includes transformer feed-forward blocks, SwiGLU gates, observation/latent projections, and action/value heads. Attention's Q/K/V/output projections and complete recurrent modules (including input/gate projections) count in their respective categories. This affine budget helps compare processing capacity across variants; it does not measure FLOPs or effective capacity.
-
-The **Trainable − NOP** column counts the trainable total minus trainable NOP parameters. It excludes all frozen parameters, including target networks. The **Online total** in the processing comparison excludes NOP and targets but can include other frozen main-policy parameters.
-
-`--include-hidden` adds optional MLP baselines and ablation controls to the default core sweep. `--output-dir` saves `layer_layout.csv` with actual module dimensions and parameter counts, a Markdown report, summary and component CSVs, `processing.csv` (processing counts by role), `processing_components.csv` (classified modules), and losslessly compressed `counts.json.gz` with resolved hyperparameters and task shapes. Read the JSON using `json.load(gzip.open(path, "rt", encoding="utf-8"))`. Use `--model-scale "5M NOP1M"` to select the fixed layout, `--model-scale legacy` for explicit widths, `--no-nop`, or JSON `--policy-kwargs`, `--scenario-kwargs`, and `--env-kwargs` to match custom settings. Parameter counts depend on the task's observation/action shapes. See the [18-variant WallEasy comparison](../docs/policy_parameters/scale_comparison.md) for the measured sizes and the [storage guide](../docs/policy_parameters/README.md) for local report generation.
-
-## Plot training logs
-
-Install `swarmbots[plot]` to use the plotting examples:
-
-```bash
-python examples/plot_logs.py runs/SwarmBots-WallEasy-v0/mappo --output plots/mappo.png
-python examples/plot_logs.py runs/my-run --list-columns
-python examples/plot_logs.py runs/seed-42 runs/seed-43 --columns ep_rew_ema --labels "Seed 42" "Seed 43"
-python examples/plot_experiment_results.py runs/wall-easy --output-dir plots/wall-easy --formats png pdf
-python examples/plot_experiment_results.py --group MAPPO runs/mappo/seed-42 runs/mappo/seed-43 --group TMASAC runs/tmasac/seed-42 runs/tmasac/seed-43
-```
-
-`plot_logs.py` overlays scalar metrics from files or run directories; its defaults show return and success EMAs. `--show` opens a Matplotlib window. Compressed CSVs are accepted directly. `plot_experiment_results.py` saves per-metric grouped mean/std plots and individual-seed plots, using either an experiment root or explicit named groups. Both support custom columns, smoothing, and a training-step cutoff. See [log plotting](../docs/log_plotting.md) for layouts, aggregation semantics, and the Python API.
-
-## Draw policy architectures
-
-```bash
-python examples/diagram_policy_architectures.py --refresh
-```
-
-Generates diagrams for all core variants and scales, with actual module widths and data dependencies. Open `docs/policy_parameters/diagrams/index.html` for the offline gallery with variant/scale selectors; the [reading guide](../docs/policy_parameters/diagrams/README.md) describes the SVG, Mermaid, and Graphviz exports. Generated outputs remain local and are ignored by Git. Compact audit snapshots can be drawn without rebuilding by omitting `--refresh`.
+Policy inspection, architecture diagrams, and log plotting are available as [installed command-line tools](../docs/tools.md).

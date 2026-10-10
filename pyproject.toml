@@ -60,6 +60,10 @@ cuda = [
 
 [project.scripts]
 swarmbots = "swarmbots.benchmark.cli:main"
+swarmbots-inspect-policies = "swarmbots.tools.inspect_policy_parameters:main"
+swarmbots-diagram-policies = "swarmbots.tools.diagram_policy_architectures:main"
+swarmbots-plot-logs = "swarmbots.tools.plot_logs:main"
+swarmbots-plot-experiments = "swarmbots.tools.plot_experiment_results:main"
 
 [project.urls]
 Homepage = "https://github.com/brn-dev/swarm-bots"

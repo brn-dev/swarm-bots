@@ -102,11 +102,11 @@ trainer = make_training("SwarmBots-WallEasy-v0", "tmasac", model_scale="5+1M")
 ```
 
 ```bash
-python examples/inspect_policy_parameters.py --model-scale "5+1M" --output-dir docs/policy_parameters/generated/5M
+swarmbots-inspect-policies --model-scale "5+1M" --output-dir docs/policy_parameters/generated/5M
 ```
 
 Only 18 core variants appear in the default list/sweep. MLP baselines, recurrent shared encoders, SwiGLU and other controls remain explicitly selectable; `list_variants(include_hidden=True)` lists them and the inspector's `--include-hidden` includes them. PPO/MAPPO `_small` names are removed. For custom dimensions use `model_scale=None` (CLI `legacy`); fixed-scale dimensions take precedence over low-level width arguments. Checkpoints record the selected tier, its layout version (`2.5+0.75M-v1`, `5+1M-v2`, or `10+2M-v2`), and resolved configurations. Reconstruct them with matching task, distribution, structural controls and layout version.
 
 ## Architecture diagrams
 
-The [diagram gallery and reading guide](diagrams/README.md) cover all 18 core variants at all three scales. [Open the offline selector](diagrams/index.html), or use the individual SVG/Mermaid/Graphviz files. Regenerate from current presets with `python examples/diagram_policy_architectures.py --refresh`.
+The [diagram gallery and reading guide](diagrams/README.md) cover all 18 core variants at all three scales. [Open the offline selector](diagrams/index.html), or use the individual SVG/Mermaid/Graphviz files. Regenerate from current presets with `swarmbots-diagram-policies --refresh`.

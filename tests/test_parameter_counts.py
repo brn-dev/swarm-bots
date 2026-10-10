@@ -10,7 +10,7 @@ import pytest
 import torch
 from torch import nn
 
-from examples.inspect_policy_parameters import layer_layout, module_parameter_counts, save_report
+from swarmbots.tools.inspect_policy_parameters import layer_layout, module_parameter_counts, save_report
 from swarmbots.learn.algos.mat_orig.mat_orig_encoder import MATOrigSelfAttention
 from swarmbots.learn.algos.xlstm.slstm.slstm_temporal_sequence_model import (
     SLSTMTemporalSequenceModel,

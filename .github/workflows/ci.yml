@@ -44,4 +44,8 @@ jobs:
           "$GITHUB_WORKSPACE/.venv/bin/swarmbots" list --json
           "$GITHUB_WORKSPACE/.venv/bin/python" -c 'import pkgutil, importlib, swarmbots.learn; from swarmbots.learn import list_variants; assert "tmasac_slstm" in list_variants(); [importlib.import_module(m.name) for m in pkgutil.walk_packages(swarmbots.learn.__path__, swarmbots.learn.__name__ + ".")]'
           "$GITHUB_WORKSPACE/.venv/bin/python" -c 'from swarmbots.plotting import plot_logs, plot_experiment_results; assert callable(plot_logs) and callable(plot_experiment_results)'
+          "$GITHUB_WORKSPACE/.venv/bin/swarmbots-inspect-policies" --help
+          "$GITHUB_WORKSPACE/.venv/bin/swarmbots-diagram-policies" --help
+          "$GITHUB_WORKSPACE/.venv/bin/swarmbots-plot-logs" --help
+          "$GITHUB_WORKSPACE/.venv/bin/swarmbots-plot-experiments" --help
           "$GITHUB_WORKSPACE/.venv/bin/swarmbots" smoke SwarmBots-MoveTo-v0 --device cpu --num-envs 2 --steps 2

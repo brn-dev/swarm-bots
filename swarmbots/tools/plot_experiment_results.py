@@ -1,4 +1,4 @@
-"""Save mean/std and individual-seed plots for an experiment."""
+"""Command-line mean/std and individual-seed plots for an experiment."""
 
 from __future__ import annotations
 

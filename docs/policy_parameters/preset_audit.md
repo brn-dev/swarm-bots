@@ -59,9 +59,9 @@ Added regression coverage that instantiates online and target TD3 policies, supp
 The existing parameter-count script reproduces the main comparisons:
 
 ```bash
-python examples/inspect_policy_parameters.py --variants mat_ind mat_ind_lstm mat_qcx mat_qcx_lstm --no-nop
-python examples/inspect_policy_parameters.py --variants tmatd3 tmatd3_dec --no-nop --policy-kwargs '{"td3_recurrent_actor": true}'
-python examples/inspect_policy_parameters.py --variants tmatd3 tmatd3_dec --no-nop --policy-kwargs '{"td3_recurrent_actor": true, "td3_recurrent_critic": true}'
+swarmbots-inspect-policies --variants mat_ind mat_ind_lstm mat_qcx mat_qcx_lstm --no-nop
+swarmbots-inspect-policies --variants tmatd3 tmatd3_dec --no-nop --policy-kwargs '{"td3_recurrent_actor": true}'
+swarmbots-inspect-policies --variants tmatd3 tmatd3_dec --no-nop --policy-kwargs '{"td3_recurrent_actor": true, "td3_recurrent_critic": true}'
 ```
 
 NOP toggles do not change the main-policy affine counts. Equal total affine counts alone do not establish equal actor/critic allocations or equal compute; the resolved layer shapes in the JSON make those differences visible.

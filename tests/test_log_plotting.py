@@ -29,9 +29,6 @@ from swarmbots.plotting import (
     plot_logs,
 )
 
-PROJECT_ROOT = Path(__file__).parents[1]
-
-
 def write_log(path: Path, content: str) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")
@@ -207,10 +204,10 @@ def test_experiment_exports_each_metric_and_closes_figures(tmp_path: Path, train
     assert plt.get_fignums() == before
 
 
-@pytest.mark.parametrize("script", ["plot_logs.py", "plot_experiment_results.py"])
-def test_examples_run_on_training_logs(tmp_path: Path, training_csv: str, script: str) -> None:
+@pytest.mark.parametrize("module", ["plot_logs", "plot_experiment_results"])
+def test_tools_run_on_training_logs(tmp_path: Path, training_csv: str, module: str) -> None:
     source = write_log(tmp_path / "method" / "log.csv", training_csv).parent
-    if script == "plot_logs.py":
+    if module == "plot_logs":
         args = [str(source), "--output", str(tmp_path / "training.png")]
         expected = [tmp_path / "training.png"]
     else:
@@ -220,7 +217,7 @@ def test_examples_run_on_training_logs(tmp_path: Path, training_csv: str, script
             tmp_path / "plots" / "ep_success_rate_ema_individual_runs.png",
         ]
     completed = subprocess.run(
-        [sys.executable, str(PROJECT_ROOT / "examples" / script), *args], cwd=tmp_path, capture_output=True, text=True
+        [sys.executable, "-m", f"swarmbots.tools.{module}", *args], cwd=tmp_path, capture_output=True, text=True
     )
     assert completed.returncode == 0, completed.stderr
     assert all(path.is_file() for path in expected)

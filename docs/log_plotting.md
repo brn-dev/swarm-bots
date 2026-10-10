@@ -114,14 +114,14 @@ plt.close(figure)
 
 The library keeps the caller's Matplotlib backend. For a headless job, set `MPLBACKEND=Agg` or call `matplotlib.use("Agg")` before importing plotting functions. Use `plt.show()` for an interactive Matplotlib window, and close returned figures when finished.
 
-## Runnable examples
+## Command-line tools
 
 ```bash
-python examples/plot_logs.py runs/SwarmBots-WallEasy-v0/mappo --output plots/mappo.png
-python examples/plot_logs.py runs/my-run --list-columns
-python examples/plot_logs.py runs/my-run --columns grad_norm_actor__mean grad_norm_critic__mean --x-column total_updates --output plots/gradients.png
-python examples/plot_experiment_results.py runs/wall-easy --output-dir plots/wall-easy --formats png pdf
-python examples/plot_experiment_results.py --group MAPPO runs/mappo/seed-42 runs/mappo/seed-43 --group TMASAC runs/tmasac/seed-42 runs/tmasac/seed-43
+swarmbots-plot-logs runs/SwarmBots-WallEasy-v0/mappo --output plots/mappo.png
+swarmbots-plot-logs runs/my-run --list-columns
+swarmbots-plot-logs runs/my-run --columns grad_norm_actor__mean grad_norm_critic__mean --x-column total_updates --output plots/gradients.png
+swarmbots-plot-experiments runs/wall-easy --output-dir plots/wall-easy --formats png pdf
+swarmbots-plot-experiments --group MAPPO runs/mappo/seed-42 runs/mappo/seed-43 --group TMASAC runs/tmasac/seed-42 runs/tmasac/seed-43
 ```
 
-Use gradient column names printed by `--list-columns`; their names depend on the learner. Both examples support `--help`, custom columns, an X column, smoothing, and a cutoff. `plot_logs.py --show` opens the saved figure. The default examples use the headless Agg backend.
+Use gradient column names printed by `--list-columns`; their names depend on the learner. Both tools support `--help`, custom columns, an X column, smoothing, and a cutoff. `swarmbots-plot-logs --show` opens the saved figure. The tools use the headless Agg backend by default. See [command-line tools](tools.md) for equivalent Python module commands.
