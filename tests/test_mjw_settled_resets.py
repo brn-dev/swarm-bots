@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from concurrent.futures import Future
 from typing import Any
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -60,6 +61,34 @@ class _FakeLiveEpisodeRecorder:
 
 class _FakeScenario:
     pass
+
+
+def test_morphology_pool_change_discards_prefetched_snapshots() -> None:
+    env, _ = _make_uninitialized_env()
+    buffer = _FakeSettledResetBuffer()
+    env._settled_reset_buffer = buffer
+    swarm = SimpleNamespace(size=50)
+
+    def set_size(size):
+        if not 1 <= size <= 50:
+            raise ValueError("invalid pool size")
+        swarm.size = size
+        return size
+
+    swarm.get_active_pool_size = lambda: swarm.size
+    swarm.set_active_pool_size = set_size
+    env.scenario = SimpleNamespace(swarm=swarm)
+    assert env.set_active_swarm_pool_size(1) == 1
+    assert buffer.clear_calls == [True]
+    env.set_active_swarm_pool_size(1)
+    assert buffer.clear_calls == [True]
+    with pytest.raises(ValueError):
+        env.set_active_swarm_pool_size(0)
+    assert buffer.clear_calls == [True]
+    env._pending_step = object()
+    with pytest.raises(RuntimeError, match="pending"):
+        env.set_active_swarm_pool_size(2)
+    assert swarm.size == 1
 
 
 class _ManualExecutor:

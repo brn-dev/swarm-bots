@@ -11,7 +11,14 @@ from swarmbots.learn.evaluation import (
     EvaluationRecordingConfig,
     FrozenEvaluationRunner,
     ScheduledEvaluationHook,
+    _format_percentage,
 )
+
+
+def test_recording_percentage_accepts_integer_and_fractional_milestones() -> None:
+    assert _format_percentage(25) == "025"
+    assert _format_percentage(25.0) == "025"
+    assert _format_percentage(25.5) == "25p5"
 
 
 def _obs(num_envs: int = 2) -> dict[str, torch.Tensor]:

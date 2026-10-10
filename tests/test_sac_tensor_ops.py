@@ -6,6 +6,7 @@ from unittest.mock import patch
 import torch
 
 import swarmbots.learn.algos.sac.sac_tensor_ops as sac_tensor_ops
+from swarmbots.learn.algos.off_policy.tensor_ops import _mean_agent_log_probs
 from swarmbots.learn.algos.sac.sac_tensor_ops import (
     build_optimizer_step,
     build_sac_tensor_operations,
@@ -28,6 +29,9 @@ def _compile_with_aot_eager(
 
 
 class SACTensorOperationsTests(unittest.TestCase):
+    def test_entropy_reduction_rejects_empty_swarm_instead_of_returning_nan(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "at least one active agent"):
+            _mean_agent_log_probs(torch.zeros(2, 3), torch.tensor([[True, False, False], [False, False, False]]))
     def test_eager_operations_match_explicit_sac_equations(self) -> None:
         operations = build_sac_tensor_operations(
             compile_operations=False,

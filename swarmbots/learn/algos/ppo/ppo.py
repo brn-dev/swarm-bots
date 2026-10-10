@@ -3,7 +3,7 @@ import json
 import math
 from collections.abc import Mapping
 from copy import deepcopy
-from dataclasses import dataclass, fields, is_dataclass, replace
+from dataclasses import dataclass, replace
 from typing import Optional, Any, Literal, TypeVar, Generic, Callable, Protocol, NotRequired, TypedDict, cast
 
 import torch
@@ -38,7 +38,6 @@ from swarmbots.learn.performance_timer import PerformanceTimer
 from swarmbots.learn.serialization_utils import serialize_dataclass, serialize_fn
 from swarmbots.learn.scheduling.schedulers import SchedulerManager
 from swarmbots.learn.summary_statistics import compute_summary_statistics
-from swarmbots.learn.temporal_state import index_temporal_state
 from swarmbots.learn.torch_device import as_device
 
 TARGET_KL_MARGIN = 1.5
@@ -131,7 +130,6 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
             metrics_action_splitters: list[Callable[[torch.Tensor], dict[str, torch.Tensor]] | None] | None = None,
             use_popart: bool = False,
             scheduler_manager: SchedulerManager | None = None,
-            virtual_mini_batches: int = 1,
             parameter_lr_multipliers: Mapping[str, float] | None = None,
             rollout_warmup_steps_per_env: int = 0,
     ):
@@ -174,13 +172,7 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
         self.clip_range = clip_range
         self.clip_range_vf = clip_range_vf
         self.normalize_advantage = normalize_advantage
-        self.virtual_mini_batches = self._validate_virtual_mini_batches(virtual_mini_batches)
-        if self.sampler_config.batch_size % self.virtual_mini_batches != 0:
-            raise ValueError(
-                f"sampler_config.batch_size must be divisible by virtual_mini_batches, got "
-                f"batch_size={self.sampler_config.batch_size} and "
-                f"virtual_mini_batches={self.virtual_mini_batches}"
-            )
+
         self.mc_ent_coef = mc_ent_coef
         self.vf_coef = vf_coef
         self.value_loss_fn = value_loss_fn if value_loss_fn is not None else nn.MSELoss(reduction="none")
@@ -270,7 +262,6 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
             'clip_range': self.clip_range,
             'clip_range_vf': self.clip_range_vf,
             'normalize_advantage': self.normalize_advantage,
-            'virtual_mini_batches': self.virtual_mini_batches,
             'mc_ent_coef': self.mc_ent_coef,
             'vf_coef': self.vf_coef,
             'value_loss_fn': str(self.value_loss_fn),
@@ -609,44 +600,22 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
 
                 update_timer.start()
 
-                if self.virtual_mini_batches == 1:
-                    loss, approx_kl_div, metrics = self.compute_loss(batch)
-                    loss_metrics.add(metrics)
+                loss, approx_kl_div, metrics = self.compute_loss(batch)
+                loss_metrics.add(metrics)
 
-                    if self.target_kl is not None and approx_kl_div > TARGET_KL_MARGIN * self.target_kl:
-                        continue_training = False
-                        early_stop_epoch = epoch
-                        early_stop_kl_div = approx_kl_div
-                        msg = f"Early stopping at epoch {epoch}, batch {i} due to reaching max kl: {approx_kl_div:.3f}"
-                        if epoch == 0:
-                            logger.warning(msg)
-                        else:
-                            logger.debug(msg)
-                        break
+                if self.target_kl is not None and approx_kl_div > TARGET_KL_MARGIN * self.target_kl:
+                    continue_training = False
+                    early_stop_epoch = epoch
+                    early_stop_kl_div = approx_kl_div
+                    msg = f"Early stopping at epoch {epoch}, batch {i} due to reaching max kl: {approx_kl_div:.3f}"
+                    if epoch == 0:
+                        logger.warning(msg)
+                    else:
+                        logger.debug(msg)
+                    break
 
-                    self.optimizer.zero_grad()
-                    loss.backward()
-                else:
-                    approx_kl_div = self._compute_virtual_batch_gradients(
-                        batch=batch,
-                        epoch=epoch,
-                        batch_idx=i,
-                        loss_metrics=loss_metrics,
-                    )
-                    if self.target_kl is not None and approx_kl_div > TARGET_KL_MARGIN * self.target_kl:
-                        continue_training = False
-                        early_stop_epoch = epoch
-                        early_stop_kl_div = approx_kl_div
-                        self.optimizer.zero_grad()
-                        msg = (
-                            f"Early stopping at epoch {epoch}, batch {i} due to reaching max kl "
-                            f"after virtual mini-batches: {approx_kl_div:.3f}"
-                        )
-                        if epoch == 0:
-                            logger.warning(msg)
-                        else:
-                            logger.debug(msg)
-                        break
+                self.optimizer.zero_grad()
+                loss.backward()
 
                 should_compute_grad_norms = (
                     compute_detailed_grad_norms_this_iteration
@@ -697,7 +666,6 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
             metrics: dict[str, Any] = {
                 **loss_metrics.compute_summary_statistics(),
                 'updates': n_updates,
-                'virtual_mini_batches': self.virtual_mini_batches,
                 'total_updates': self.n_total_updates,
                 'expl_var': explained_var,
                 'grad_norm': compute_summary_statistics(grad_norms, find_max=True, find_min=True),
@@ -834,96 +802,7 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
     def batch_size(self, value: int) -> None:
         if value <= 0:
             raise ValueError(f"batch_size must be > 0, got {value}")
-        if value % self.virtual_mini_batches != 0:
-            raise ValueError(
-                f"batch_size must be divisible by virtual_mini_batches, got "
-                f"{value=} and virtual_mini_batches={self.virtual_mini_batches}"
-            )
         self.sampler_config = replace(self.sampler_config, batch_size=value)
-
-    @staticmethod
-    def _validate_virtual_mini_batches(value: int) -> int:
-        if value <= 0:
-            raise ValueError(f"virtual_mini_batches must be > 0, got {value}")
-        return value
-
-    def _compute_virtual_batch_gradients(
-            self,
-            *,
-            batch: PPOSamplesType,
-            epoch: int,
-            batch_idx: int,
-            loss_metrics: MetricsLists[float],
-    ) -> float:
-        batch_size = self._get_batch_leading_dim(batch)
-        if batch_size % self.virtual_mini_batches != 0:
-            raise ValueError(
-                f"Logical PPO batch size must be divisible by virtual_mini_batches, got "
-                f"{batch_size=} and virtual_mini_batches={self.virtual_mini_batches} "
-                f"at epoch {epoch}, batch {batch_idx}"
-            )
-
-        batch = self._normalize_batch_advantages_once(batch)
-        virtual_batches = self._split_batch(batch, n_chunks=self.virtual_mini_batches)
-        self.optimizer.zero_grad()
-
-        approx_kl_values: list[float] = []
-        for virtual_batch in virtual_batches:
-            loss, approx_kl_div, metrics = self.compute_loss(
-                virtual_batch,
-                normalize_advantage=False,
-            )
-            loss_metrics.add(metrics)
-            approx_kl_values.append(approx_kl_div)
-            (loss / self.virtual_mini_batches).backward()
-
-        return sum(approx_kl_values) / len(approx_kl_values)
-
-    def _normalize_batch_advantages_once(
-            self,
-            batch: PPOSamplesType,
-    ) -> PPOSamplesType:
-        if not self.normalize_advantage or batch.advantages.numel() <= 1:
-            return batch
-        return replace(batch, advantages=self._normalize_advantages(batch, batch.advantages))
-
-    @classmethod
-    def _split_batch(
-            cls,
-            batch: PPOSamplesType,
-            *,
-            n_chunks: int,
-    ) -> list[PPOSamplesType]:
-        if not is_dataclass(batch):
-            raise TypeError(f"Expected dataclass batch, got {type(batch)}")
-        batch_size = cls._get_batch_leading_dim(batch)
-        if batch_size % n_chunks != 0:
-            raise ValueError(f"Expected batch size divisible by {n_chunks}, got {batch_size}")
-        chunk_size = batch_size // n_chunks
-        result: list[PPOSamplesType] = []
-        for chunk_idx in range(n_chunks):
-            start_idx = chunk_idx * chunk_size
-            end_idx = start_idx + chunk_size
-            values = {
-                field.name: cls._slice_batch_field(getattr(batch, field.name), start_idx, end_idx)
-                for field in fields(batch)
-            }
-            result.append(type(batch)(**values))
-        return result
-
-    @staticmethod
-    def _get_batch_leading_dim(batch: PPOSamples) -> int:
-        return int(batch.actions.shape[0])
-
-    @staticmethod
-    def _slice_batch_field(value: Any, start_idx: int, end_idx: int) -> Any:
-        if isinstance(value, torch.Tensor):
-            return value[start_idx:end_idx]
-        if value is None:
-            return None
-        if isinstance(value, (tuple, list, Mapping)):
-            return index_temporal_state(value, slice(start_idx, end_idx))
-        raise TypeError(f"Unsupported batch field type {type(value)}")
 
     def reduce_agents(
             self,
@@ -1196,16 +1075,6 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
             logger.warning(f"Setting batch_size to {batch_size}")
             self.batch_size = batch_size
             return True
-        elif cmd in {"set_virtual_mini_batches", "virtual_mini_batches"}:
-            virtual_mini_batches = self._validate_virtual_mini_batches(int(params))
-            if self.batch_size % virtual_mini_batches != 0:
-                raise ValueError(
-                    f"batch_size must be divisible by virtual_mini_batches, got "
-                    f"batch_size={self.batch_size} and virtual_mini_batches={virtual_mini_batches}"
-                )
-            logger.warning(f"Setting virtual_mini_batches to {virtual_mini_batches}")
-            self.virtual_mini_batches = virtual_mini_batches
-            return True
         elif cmd in {"set_normalize_advantage", "normalize_advantage"}:
             normalize_advantage = _parse_bool(params)
             logger.warning(f"Setting normalize_advantage to {normalize_advantage}")
@@ -1333,6 +1202,8 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
 
     def _get_optimizer_state_dict(self) -> dict[str, Any]:
         state_dict = self.optimizer.state_dict()
+        if self.scheduler_manager is not None:
+            state_dict["schedulers"] = self.scheduler_manager.state_dict()
         if self.automatic_lr is not None:
             state_dict["automatic_lr"] = {
                 "enabled": self._auto_lr_enabled,
@@ -1355,6 +1226,11 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
 
         state_dict = state_dict.copy()
         automatic_lr_state = state_dict.pop("automatic_lr", None)
+        scheduler_state = state_dict.pop("schedulers", None)
+        if scheduler_state is not None:
+            if self.scheduler_manager is None:
+                raise ValueError("Checkpoint contains schedulers; configure the matching SchedulerManager before loading")
+            self.scheduler_manager.load_state_dict(scheduler_state)
         self.optimizer.load_state_dict(state_dict)
         if self.automatic_lr is not None and automatic_lr_state is not None:
             self._auto_lr_enabled = automatic_lr_state["enabled"]

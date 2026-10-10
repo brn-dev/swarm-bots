@@ -395,6 +395,7 @@ class ScheduledEvaluationHook:
 
 
 def _format_percentage(percentage: float) -> str:
+    percentage = float(percentage)
     if percentage.is_integer():
         return f"{int(percentage):03d}"
     return str(percentage).rstrip("0").rstrip(".").replace(".", "p")

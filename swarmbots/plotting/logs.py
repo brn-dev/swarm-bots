@@ -266,7 +266,7 @@ def group_statistics(runs: Sequence[RunLog], column: str, *, smooth: float | Non
     x_values = np.unique(np.concatenate([run.x_values[np.isfinite(run.x_values)] for run in runs]))
     interpolated = np.full((len(runs), len(x_values)), np.nan)
     for row, run in enumerate(runs):
-        values = smooth_values(run.series.get(column, np.full_like(run.x_values, np.nan)), smooth)
+        values = run.series.get(column, np.full_like(run.x_values, np.nan))
         finite = np.isfinite(run.x_values) & np.isfinite(values)
         order = np.argsort(run.x_values[finite], kind="stable")
         run_x, run_y = run.x_values[finite][order], values[finite][order]
@@ -276,6 +276,7 @@ def group_statistics(runs: Sequence[RunLog], column: str, *, smooth: float | Non
         _, reverse_indices = np.unique(run_x[::-1], return_index=True)
         indices = np.sort(len(run_x) - 1 - reverse_indices)
         run_x, run_y = run_x[indices], run_y[indices]
+        run_y = smooth_values(run_y, smooth)
         in_range = (x_values >= run_x[0]) & (x_values <= run_x[-1])
         interpolated[row, in_range] = np.interp(x_values[in_range], run_x, run_y)
     finite = np.isfinite(interpolated)

@@ -982,8 +982,7 @@ class NextObsPredMixin(abc.ABC):
     @staticmethod
     def _rotvec_to_matrix(rotvec: torch.Tensor) -> torch.Tensor:
         angle = torch.linalg.norm(rotvec, dim=-1)
-        axis = rotvec / angle.clamp_min(1e-8).unsqueeze(-1)
-        x, y, z = axis.unbind(-1)
+        x, y, z = rotvec.unbind(-1)
         zeros = torch.zeros_like(x)
         k_mat = torch.stack(
             (
@@ -993,7 +992,10 @@ class NextObsPredMixin(abc.ABC):
             ),
             dim=-1,
         ).reshape(*rotvec.shape[:-1], 3, 3)
-        sin = torch.sin(angle)[..., None, None]
-        cos = torch.cos(angle)[..., None, None]
+        # sinc supplies the analytic small-angle limits without dividing by the rotation norm.
+        sin_over_angle = torch.sinc(angle / torch.pi)[..., None, None]
+        one_minus_cos_over_angle_squared = (
+            0.5 * torch.sinc(angle / (2.0 * torch.pi)).square()
+        )[..., None, None]
         eye = torch.eye(3, device=rotvec.device, dtype=rotvec.dtype).expand(*rotvec.shape[:-1], 3, 3)
-        return eye + sin * k_mat + (1.0 - cos) * (k_mat @ k_mat)
+        return eye + sin_over_angle * k_mat + one_minus_cos_over_angle_squared * (k_mat @ k_mat)

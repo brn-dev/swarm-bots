@@ -26,6 +26,8 @@ class MJWPreConnectedUnitLocationsConfig:
     active_pool_size: int | None = None
 
     def __post_init__(self) -> None:
+        if self.num_units < 1:
+            raise ValueError("A swarm must contain at least one unit")
         if not 0.0 <= self.unconnected_prob <= 1.0:
             raise ValueError("unconnected_prob must be in [0, 1]")
         if self.pool_seeds is not None:
@@ -41,6 +43,8 @@ class MJWPreConnectedUnitLocationsConfig:
         if self.active_pool_size < 1 or self.active_pool_size > pool_size:
             raise ValueError(f"active_pool_size must be in [1, {pool_size}], got {self.active_pool_size}")
         if self.num_unit_probs is not None:
+            if not self.num_unit_probs:
+                raise ValueError("num_unit_probs must not be empty")
             counts = np.asarray(list(self.num_unit_probs.keys()), dtype=int)
             probs = np.asarray(list(self.num_unit_probs.values()), dtype=float)
             if counts.max() != self.num_units:

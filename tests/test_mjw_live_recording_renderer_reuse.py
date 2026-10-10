@@ -146,6 +146,21 @@ class MJWLiveRecordingRendererReuseTests(unittest.TestCase):
                     episode_start_world_idx=np.array([0, 1], dtype=np.int64),
                     snapshots_by_world=snapshots_by_world,
                 )
+                old_slot = recorder._active_slots_by_world[0]
+                other_slot = recorder._active_slots_by_world[1]
+                old_slot.accumulated_reward = 7.0
+                old_slot.step_count = 1
+                old_slot.frames.append(np.zeros((2, 2, 3), dtype=np.uint8))
+                recorder.on_explicit_resets(world_idx=np.array([0]))
+                recorder.on_episode_starts(world_idx=np.array([0]), snapshots_by_world=snapshots_by_world)
+                fresh_slot = recorder._active_slots_by_world[0]
+                self.assertIsNot(fresh_slot, old_slot)
+                self.assertIs(recorder._active_slots_by_world[1], other_slot)
+                self.assertEqual(fresh_slot.accumulated_reward, 0.0)
+                self.assertEqual(fresh_slot.step_count, 0)
+                self.assertEqual(len(fresh_slot.frames), 1)
+                self.assertGreater(fresh_slot.episode_idx, other_slot.episode_idx)
+                self.assertEqual(recorder._episodes_started, 2)
                 status = recorder.get_status()
                 recorder.close()
 
@@ -153,7 +168,7 @@ class MJWLiveRecordingRendererReuseTests(unittest.TestCase):
         self.assertEqual(_FakeRenderer.init_count, 1)
         self.assertEqual(_FakeRenderer.close_count, 1)
         self.assertTrue(status["active"])
-        self.assertEqual(status["active_worlds"], [0, 1])
+        self.assertCountEqual(status["active_worlds"], [0, 1])
 
     def test_start_failure_does_not_leave_recorder_active(self) -> None:
         recorder = MJWLiveEpisodeRecorder(scenario=_DummyScenario())

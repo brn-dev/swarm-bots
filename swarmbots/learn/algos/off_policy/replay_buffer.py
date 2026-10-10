@@ -189,6 +189,8 @@ class OffPolicyReplayBuffer:
         self.local_obs_space = observation_space["local_obs"]
         self.n_envs = int(self.local_obs_space.shape[0])
         self.n_agents = int(self.local_obs_space.shape[1])
+        if self.n_agents < 1:
+            raise ValueError("Replay observations must contain at least one agent")
         self.agent_obs_shape = tuple(self.local_obs_space.shape[2:])
         self.global_obs_shape = tuple(observation_space["global_obs"].shape[1:])
         self.hidden_local_vars_shape = tuple(observation_space["hidden_local_vars"].shape[2:])
@@ -403,8 +405,24 @@ class OffPolicyReplayBuffer:
         terminal_obs may either be full vector-env observations or rows packed in done-env order.
         """
         slot = self._write_slot
+        for observations in (obs, next_obs):
+            if observations is not None and observations.get("agent_mask") is not None:
+                torch._assert_async(
+                    observations["agent_mask"].any(dim=-1).all(),
+                    "A swarm must contain at least one active agent",
+                )
         dones = torch.logical_or(terminations, truncations)
         done_env_indices = torch.nonzero(dones, as_tuple=False).flatten()
+        if len(done_env_indices) > 0 and terminal_obs is not None and terminal_obs.get("agent_mask") is not None:
+            terminal_agent_mask = terminal_obs["agent_mask"]
+            source_indices = self._terminal_obs_source_indices(
+                terminal_obs=terminal_obs,
+                done_env_indices=done_env_indices,
+            ).to(device=terminal_agent_mask.device)
+            torch._assert_async(
+                terminal_agent_mask[source_indices].any(dim=-1).all(),
+                "A swarm must contain at least one active agent",
+            )
         should_copy_current_obs = not self._has_current_obs if copy_current_obs is None else copy_current_obs
         storage_episode_start_mask: torch.Tensor | None = None
         if self.episode_starts is not None:

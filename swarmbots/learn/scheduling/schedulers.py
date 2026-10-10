@@ -1,4 +1,5 @@
 from dataclasses import dataclass, field
+from copy import deepcopy
 from enum import Enum
 from typing import Any, NotRequired, Optional, Protocol, TypedDict
 
@@ -65,6 +66,21 @@ class SchedulerManager:
 
     def add(self, scheduled_hyper_parameter: ScheduledHyperParameter) -> None:
         self.scheduled_hyper_parameters.append(scheduled_hyper_parameter)
+
+    def state_dict(self) -> list[dict[str, Any]]:
+        return [
+            {"name": item.name, "enabled": item.enabled, "value": float(item.get_value()), "state": deepcopy(item.state)}
+            for item in self.scheduled_hyper_parameters
+        ]
+
+    def load_state_dict(self, state_dict: list[dict[str, Any]]) -> None:
+        names = [item.name for item in self.scheduled_hyper_parameters]
+        if [item["name"] for item in state_dict] != names:
+            raise ValueError("Checkpoint schedulers must match the configured scheduler names and order")
+        for item, saved in zip(self.scheduled_hyper_parameters, state_dict, strict=True):
+            item.enabled = saved["enabled"]
+            item.state = deepcopy(saved["state"])
+            item.apply(saved["value"])
 
     def step(
             self,

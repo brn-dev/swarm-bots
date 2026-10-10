@@ -9,7 +9,6 @@ import numpy as np
 import torch
 from loguru import logger
 
-from swarmbots.learn.env_wrappers.feature_wise_obs_norm_wrapper import FeatureWiseObsNormWrapper
 from swarmbots.learn.env_wrappers.torch_feature_wise_obs_norm_wrapper import TorchFeatureWiseObsNormWrapper
 from swarmbots.learn.env_wrappers.torch_normalize_reward_wrapper import TorchNormalizeRewardWrapper
 from swarmbots.learn.torch_device import as_device
@@ -190,7 +189,7 @@ def capture_env_state(env: Any) -> list[dict[str, Any]]:
     while hasattr(current_env, "env"):
         wrapper_state: dict[str, Any] = {}
 
-        if isinstance(current_env, (FeatureWiseObsNormWrapper, TorchFeatureWiseObsNormWrapper)):
+        if isinstance(current_env, TorchFeatureWiseObsNormWrapper):
             wrapper_state['obs_key'] = current_env.obs_key
 
         for attr_name, value in iter_running_mean_std(current_env):
@@ -224,7 +223,7 @@ def apply_env_state(env: Any, env_state: Optional[list[dict[str, Any]]]) -> None
                 and any(key.endswith("_rms") for key in env_state[i])
             ]
             if candidates:
-                if isinstance(current_env, (FeatureWiseObsNormWrapper, TorchFeatureWiseObsNormWrapper)):
+                if isinstance(current_env, TorchFeatureWiseObsNormWrapper):
                     for i in candidates:
                         if env_state[i].get("obs_key") == current_env.obs_key:
                             match_idx = i

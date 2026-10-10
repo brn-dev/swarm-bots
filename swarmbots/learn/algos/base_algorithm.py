@@ -22,7 +22,7 @@ except ValueError:
 from swarmbots.learn.base_policy import BasePolicy
 from swarmbots.learn.checkpointing import align_torch_compile_state_dict_keys, load_checkpoint, \
     extract_policy_state_dict, extract_optimizer_state_dict, apply_env_state, extract_env_state, \
-    freeze_env_normalization, capture_env_state, move_env_to_device
+    capture_env_state
 from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
 from swarmbots.learn.exponential_moving_average import ExponentialMovingAverage, HybridEMA
 from swarmbots.learn.logging_levels import ConsoleSelection, LoggingLevel
@@ -33,7 +33,6 @@ from swarmbots.learn.metrics_logger import (
     summed,
 )
 from swarmbots.learn.performance_timer import PerformanceTimer
-from swarmbots.learn.recording import record_policy
 from swarmbots.utils.machine_specs import collect_machine_specs
 from swarmbots.utils.recording_resolution import DEFAULT_RECORDING_HEIGHT, DEFAULT_RECORDING_WIDTH
 
@@ -113,7 +112,6 @@ class BaseAlgorithm(abc.ABC):
         self._stop_requested = False
         self._stop_should_save = True
         self._stop_save_optimizer: bool | None = None
-        self._make_record_env: Callable[[], BaseLearnEnvWrapper] | None = None
         self._command_log_path: Path | None = None
         self._pause_until_monotonic: float | None = None
         self._pause_notice_logged: bool = False
@@ -182,7 +180,6 @@ class BaseAlgorithm(abc.ABC):
             logging_buffer_size: int = 1,
             compress_metrics_log_on_exit: bool = False,
             enable_command_prompt: bool = True,
-            make_record_env: Callable[[], BaseLearnEnvWrapper] | None = None,
             post_iteration_hooks: Collection[LearnIterationHook] | None = None,
     ) -> Self:
         assert (
@@ -258,7 +255,6 @@ class BaseAlgorithm(abc.ABC):
         self._stop_save_optimizer = None
         self._last_return_ema = None
         self._final_return_ema = None
-        self._make_record_env = make_record_env
         self._command_log_path = None if run_dir is None else (run_dir / "command_log.jsonl")
         should_compress_metrics_log = False
 
@@ -365,7 +361,6 @@ class BaseAlgorithm(abc.ABC):
                 self._stop_save_optimizer = None
                 self._last_return_ema = None
                 self._latest_hp_update = None
-                self._make_record_env = None
                 self._command_log_path = None
 
         return self
@@ -799,6 +794,8 @@ class BaseAlgorithm(abc.ABC):
         config = _parse_params_maybe_json(params)
         if isinstance(config, dict):
             num_episodes = int(config.get("episodes", 3))
+            if not _parse_bool(config.get("live", True)):
+                raise ValueError("Separate recording environments were removed; the record command uses live vector recording")
             deterministic = _parse_bool(config.get("deterministic", False))
             fps = int(config.get("fps", 30))
             fps_mode = str(config.get("fps_mode", "compensate_stride"))
@@ -809,7 +806,6 @@ class BaseAlgorithm(abc.ABC):
             width = int(config.get("width", DEFAULT_RECORDING_WIDTH))
             height = int(config.get("height", DEFAULT_RECORDING_HEIGHT))
             camera = config.get("camera", -1)
-            live = _parse_bool(config.get("live", True))
         else:
             num_episodes = 3
             if params.strip():
@@ -824,7 +820,6 @@ class BaseAlgorithm(abc.ABC):
             width = DEFAULT_RECORDING_WIDTH
             height = DEFAULT_RECORDING_HEIGHT
             camera = -1
-            live = True
 
         if video_folder is None:
             if self._active_run_dir is not None:
@@ -835,7 +830,7 @@ class BaseAlgorithm(abc.ABC):
             folder = Path(str(video_folder))
 
         live_record_fn = getattr(self.env.unwrapped, "start_video_recording", None)
-        if live and callable(live_record_fn):
+        if callable(live_record_fn):
             if deterministic:
                 logger.warning("Ignoring deterministic=... for live MJW recording; episodes come from the current training rollout.")
             live_record_fn(
@@ -857,74 +852,13 @@ class BaseAlgorithm(abc.ABC):
             )
             return
 
-        if self._make_record_env is None:
-            raise ValueError(
-                "record is unavailable: env has no live recording support and make_record_env is None"
-            )
-
-        requested_device = getattr(self, "record_device", getattr(self, "rollout_device", torch.device("cpu")))
-        policy_device = _infer_module_device(self.policy)
-        if policy_device is not None and requested_device != policy_device and _policy_uses_compiled_modules(self.policy):
-            logger.warning(
-                "Overriding record_device from "
-                f"{requested_device} to {policy_device} because compiled policy recording across devices "
-                "would trigger recompiles or backend compile failures."
-            )
-            device = policy_device
-        else:
-            device = requested_device
-        gsde_reset_mode = getattr(self, "gsde_reset_mode", None)
-        record_env: BaseLearnEnvWrapper | None = None
-
-        try:
-            record_env = self._make_record_env()
-            _set_record_env_render_resolution(record_env, width=width, height=height)
-            move_env_to_device(record_env, device)
-            apply_env_state(record_env, capture_env_state(self.env))
-            freeze_env_normalization(record_env)
-            first_frame = record_env.render()
-            if first_frame is None:
-                raise RuntimeError(
-                    "Recording env render() returned None. Ensure make_record_env creates SwarmBotsEnv with "
-                    "render_mode='rgb_array'."
-                )
-
-            logger.warning(
-                f"Recording {num_episodes} episode(s) to {folder.as_posix()} "
-                f"(deterministic={deterministic}, fps={fps}, resolution={width}x{height})"
-            )
-            record_policy(
-                env=record_env,
-                policy=self.policy,
-                video_folder=str(folder),
-                video_name_prefix=prefix,
-                num_episodes=num_episodes,
-                deterministic=deterministic,
-                gsde_reset_mode=gsde_reset_mode,
-                fps=fps,
-                device=device,
-            )
-        finally:
-            if record_env is not None:
-                record_env.close()
+        raise ValueError("record requires an environment with live vector recording support")
 
     def _cmd_record_status(self, params: str) -> None:
         _ = params
         get_status_fn = getattr(self.env.unwrapped, "get_video_recording_status", None)
         if callable(get_status_fn):
             logger.info({"recording": get_status_fn(), "recording_mode": "live_env"})
-            return
-
-        if self._make_record_env is not None:
-            logger.info(
-                {
-                    "recording": {
-                        "active": False,
-                        "message": "This env uses the legacy separate record-env flow. No live recording session exists.",
-                    },
-                    "recording_mode": "separate_record_env",
-                }
-            )
             return
 
         logger.info(
@@ -1042,32 +976,6 @@ def _parse_step_from_metadata_filename(path: Path) -> int | None:
     if not step_str.isdigit():
         return None
     return int(step_str)
-
-
-def _infer_module_device(module: torch.nn.Module) -> torch.device | None:
-    try:
-        first_parameter = next(module.parameters())
-    except StopIteration:
-        return None
-    return first_parameter.device
-
-
-def _policy_uses_compiled_modules(policy: BasePolicy) -> bool:
-    config = getattr(policy, "config", None)
-    if config is not None and bool(getattr(config, "compile_modules", False)):
-        return True
-
-    inner_policy = getattr(policy, "policy", None)
-    if inner_policy is not None and _policy_uses_compiled_modules(inner_policy):
-        return True
-
-    return bool(getattr(policy, "_wm_compile_modules", False))
-
-
-def _set_record_env_render_resolution(record_env: BaseLearnEnvWrapper, *, width: int, height: int) -> None:
-    set_resolution = getattr(record_env, "call", None)
-    if callable(set_resolution):
-        set_resolution("set_render_resolution", width=int(width), height=int(height))
 
 
 def _read_metadata_json(path: Path) -> dict[str, Any] | None:

@@ -8,6 +8,23 @@ from swarmbots.learn.algos.world_modeling.next_obs_pred_mixin import NextObsPred
 from swarmbots.learn.algos.world_modeling.ppo_wm_sampler import PPOWMSamples
 
 
+def test_rodrigues_gradient_is_correct_at_zero_and_matches_matrix_exponential() -> None:
+    for values in ([0.0, 0.0, 0.0], [1e-8, -2e-8, 3e-8], [0.3, -0.2, 0.5]):
+        rotvec = torch.tensor(values, dtype=torch.float64, requires_grad=True)
+        assert torch.autograd.gradcheck(NextObsPredMixin._rotvec_to_matrix, (rotvec,))
+        x, y, z = rotvec.unbind()
+        zero = torch.zeros_like(x)
+        skew = torch.stack((zero, -z, y, z, zero, -x, -y, x, zero)).reshape(3, 3)
+        torch.testing.assert_close(NextObsPredMixin._rotvec_to_matrix(rotvec), torch.matrix_exp(skew))
+    predictor = nn.Linear(1, 3)
+    nn.init.zeros_(predictor.weight)
+    nn.init.zeros_(predictor.bias)
+    target = NextObsPredMixin._rotvec_to_matrix(torch.tensor([[0.0, 0.0, 0.5]]))
+    prediction = NextObsPredMixin._rotvec_to_matrix(predictor(torch.ones(1, 1)))
+    (prediction - target).square().mean().backward()
+    assert predictor.bias.grad[2].abs() > 0.0
+
+
 class _IdentityTransition(nn.Module):
     def forward(
             self,

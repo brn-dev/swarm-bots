@@ -49,6 +49,7 @@ def _mean_agent_log_probs(
         return log_probs.mean(dim=-1)
     log_prob_sums = log_probs.masked_fill(~agent_mask, 0.0).sum(dim=-1)
     active_agent_counts = agent_mask.to(dtype=log_probs.dtype).sum(dim=-1)
+    torch._assert_async((active_agent_counts > 0).all(), "A swarm must contain at least one active agent")
     return log_prob_sums / active_agent_counts
 
 

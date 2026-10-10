@@ -15,6 +15,12 @@ from swarmbots.learn.summary_statistics import (
 
 
 class SummaryStatisticsTests(unittest.TestCase):
+    def test_single_sample_retains_data_for_deferred_histograms(self) -> None:
+        for values in ([2.0], np.array([2.0]), torch.tensor([2.0])):
+            stats = compute_summary_statistics(values, keep_data=True)
+            self.assertEqual(stats.data.tolist(), [2.0])
+            maybe_compute_summary_statistics(stats, make_histogram=True)
+            self.assertIsNotNone(stats.histogram)
     def test_compute_summary_statistics_does_not_keep_data_by_default(self) -> None:
         stats = compute_summary_statistics(torch.tensor([1.0, 2.0, 3.0]))
 

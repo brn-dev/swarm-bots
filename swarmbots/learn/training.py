@@ -180,6 +180,7 @@ def _make_policy_env(
             rollout_device=vector_env.device,
         )
         actuators_per_limb = env.actuators_dim // env.connectors_dim
+        env.action_space.seed(seed)
         gsde_stds = [0.25, 0.30] if actuators_per_limb == 2 else [0.25] * actuators_per_limb
         policy_builder_options = {
             "use_popart": use_popart,

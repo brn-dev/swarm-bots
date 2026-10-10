@@ -5,6 +5,7 @@ from unittest.mock import patch
 
 import gymnasium
 import numpy as np
+import pytest
 import torch
 from gymnasium import spaces
 from gymnasium.vector import AutoresetMode, SyncVectorEnv
@@ -22,6 +23,94 @@ from swarmbots.learn.env_wrappers.learn_wrappers.swarm_bots_learn_env_wrapper im
     SwarmBotsLearnEnvWrapper,
 )
 from swarmbots.learn.gsde_reset import GSDEIntervalResetMode, GSDEProbabilityResetMode
+
+
+def test_replay_rejects_empty_swarms_without_mutating_storage():
+    env = _make_agent_mask_env()
+    try:
+        buffer = _make_buffer(env, capacity_per_env=2)
+        current = _obs(0.0)
+        current["agent_mask"] = torch.tensor([[True, False]])
+        for invalid_key in ("obs", "next_obs", "terminal_obs"):
+            observations = {key: {name: value.clone() for name, value in current.items()}
+                            for key in ("obs", "next_obs", "terminal_obs")}
+            observations[invalid_key]["agent_mask"].zero_()
+            with pytest.raises(RuntimeError, match="at least one active agent"):
+                buffer.add(**observations, actions=_actions(0.0), rewards=torch.zeros(1),
+                           terminations=torch.tensor([True]), truncations=torch.tensor([False]))
+            assert len(buffer) == 0
+            assert not buffer.has_current_obs
+    finally:
+        env.close()
+
+
+@pytest.mark.parametrize("packed", [False, True])
+@pytest.mark.parametrize("done_flags", [
+    [False, False, False],
+    [False, True, False],
+    [True, False, True],
+    [True, True, True],
+])
+def test_replay_accepts_terminal_agent_mask_placeholders(packed: bool, done_flags: list[bool]) -> None:
+    env = _make_multi_env((), (), (), include_agent_mask=True)
+    try:
+        buffer = _make_buffer(env, capacity_per_env=2)
+        dones = torch.tensor(done_flags)
+        current = {**_multi_obs((0.0, 100.0, 200.0)), "agent_mask": torch.tensor([[True, False]] * 3)}
+        next_obs = {**_multi_obs((10.0, 110.0, 210.0)), "agent_mask": current["agent_mask"].clone()}
+        terminal_agent_mask = torch.zeros_like(current["agent_mask"])
+        terminal_agent_mask[dones, 1] = True
+        terminal_obs = {**_multi_obs((1.0, 101.0, 201.0)), "agent_mask": terminal_agent_mask}
+        expected_next_obs = torch.where(dones[:, None, None], terminal_obs["local_obs"], next_obs["local_obs"])
+        expected_next_agent_mask = torch.where(dones[:, None], terminal_agent_mask, next_obs["agent_mask"])
+        if packed:
+            terminal_obs = {key: value[dones] for key, value in terminal_obs.items()}
+
+        buffer.add(
+            obs=current,
+            actions=torch.zeros(3, 2, 2),
+            rewards=torch.zeros(3),
+            terminations=dones & torch.tensor([True, False, True]),
+            truncations=dones & torch.tensor([False, True, False]),
+            next_obs=next_obs,
+            terminal_obs=terminal_obs,
+        )
+
+        batch = buffer.get_all()
+        torch.testing.assert_close(batch.next_local_obs, expected_next_obs)
+        torch.testing.assert_close(batch.next_agent_mask, expected_next_agent_mask)
+    finally:
+        env.close()
+
+
+@pytest.mark.parametrize("packed", [False, True])
+def test_replay_rejects_empty_terminal_swarms_without_mutating_storage(packed: bool) -> None:
+    env = _make_multi_env((), (), (), include_agent_mask=True)
+    try:
+        buffer = _make_buffer(env, capacity_per_env=2)
+        current = {**_multi_obs((0.0, 100.0, 200.0)), "agent_mask": torch.tensor([[True, False]] * 3)}
+        dones = torch.tensor([True, False, True])
+        terminal_obs = {
+            **_multi_obs((1.0, 101.0, 201.0)),
+            "agent_mask": torch.tensor([[True, False], [False, False], [False, False]]),
+        }
+        if packed:
+            terminal_obs = {key: value[dones] for key, value in terminal_obs.items()}
+
+        with pytest.raises(RuntimeError, match="at least one active agent"):
+            buffer.add(
+                obs=current,
+                actions=torch.zeros(3, 2, 2),
+                rewards=torch.zeros(3),
+                terminations=dones,
+                truncations=torch.zeros(3, dtype=torch.bool),
+                next_obs=current,
+                terminal_obs=terminal_obs,
+            )
+        assert len(buffer) == 0
+        assert not buffer.has_current_obs
+    finally:
+        env.close()
 
 
 class _ScriptedOffPolicyEnv(gymnasium.Env):
@@ -140,12 +229,16 @@ def _make_scenario_env(*, done_steps: tuple[int, ...] = ()) -> SwarmBotsLearnEnv
     return SwarmBotsLearnEnvWrapper(vector_env)
 
 
-def _make_multi_env(*done_steps_per_env: tuple[int, ...]) -> SwarmBotsLearnEnvWrapper:
+def _make_multi_env(
+        *done_steps_per_env: tuple[int, ...],
+        include_agent_mask: bool = False,
+) -> SwarmBotsLearnEnvWrapper:
     vector_env = SyncVectorEnv(
         [
             (lambda env_id=env_id, done_steps=done_steps: _ScriptedOffPolicyEnv(
                 done_steps=done_steps,
                 env_id=env_id,
+                include_agent_mask=include_agent_mask,
             ))
             for env_id, done_steps in enumerate(done_steps_per_env)
         ],

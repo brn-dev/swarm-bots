@@ -46,6 +46,18 @@ class HybridActionSpace(Space[dict[str, Space[Any]]], typing.Mapping[str, Space[
                 )
         
         super().__init__(None, None, seed)
+        if isinstance(seed, np.random.Generator):
+            self._seed_subspaces()
+
+    def _seed_subspaces(self) -> dict[str, Any]:
+        return {
+            key: space.seed(int(self.np_random.integers(np.iinfo(np.int32).max)))
+            for key, space in self.space_map.items()
+        }
+
+    def seed(self, seed: int | None = None) -> dict[str, Any]:
+        Space.seed(self, seed)
+        return self._seed_subspaces()
 
     @property
     def spaces(self) -> OrderedDict[str, Space[Any]]:
@@ -167,6 +179,8 @@ class VectorHybridActionSpace(HybridActionSpace):
                 )
 
         Space.__init__(self, None, None, seed)
+        if isinstance(seed, np.random.Generator):
+            self._seed_subspaces()
 
 
 def get_vector_agent_action_dim(space: Space) -> int:

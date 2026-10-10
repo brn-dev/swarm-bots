@@ -181,6 +181,23 @@ class _DiagnosticAlgorithm(_DummyAlgorithm):
 
 
 class MetricsLoggerTests(unittest.TestCase):
+    def test_compressed_log_resume_preserves_history_and_schema(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            folder = Path(tmpdir)
+            first = MetricsLogger(log_dir=folder, console_keys=[])
+            first.log({"timesteps": 1, "old_metric": 10.0})
+            first.close()
+            first.compress_persisted_log()
+            resumed = MetricsLogger(log_dir=folder, console_keys=[])
+            resumed.log({"timesteps": 2, "new_metric": 20.0})
+            resumed.close()
+            self.assertFalse((folder / "log.csv.gz").exists())
+            resumed.compress_persisted_log()
+            with gzip.open(folder / "log.csv.gz", "rt", encoding="utf-8") as handle:
+                rows = list(csv.DictReader(handle, delimiter=";"))
+            self.assertEqual([row["timesteps"] for row in rows], ["1", "2"])
+            self.assertEqual(rows[0]["old_metric"], "10.0")
+            self.assertEqual(rows[1]["new_metric"], "20.0")
     def test_default_training_console_is_compact_and_csv_keeps_all_metrics(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir, capture_log_messages() as messages:
             algo = _DiagnosticAlgorithm(policy=_DummyPolicy(), env=_DummyEnv(), learning_rate=3e-4)
@@ -581,7 +598,6 @@ class MetricsLoggerTests(unittest.TestCase):
 
     def test_learn_clears_active_state_when_metrics_worker_fails(self) -> None:
         algo = _DummyAlgorithm(policy=_DummyPolicy(), env=_DummyEnv(), learning_rate=1e-3)
-        record_env_factory = mock.Mock()
 
         with mock.patch.object(
                 MetricsLogger,
@@ -593,7 +609,6 @@ class MetricsLoggerTests(unittest.TestCase):
                     max_total_timesteps=1,
                     save_optimizer=False,
                     enable_command_prompt=False,
-                    make_record_env=record_env_factory,
                     extra_run_metadata={"test": True},
                 )
 
@@ -608,7 +623,6 @@ class MetricsLoggerTests(unittest.TestCase):
         self.assertIsNone(algo._stop_save_optimizer)
         self.assertIsNone(algo._last_return_ema)
         self.assertIsNone(algo._latest_hp_update)
-        self.assertIsNone(algo._make_record_env)
         self.assertIsNone(algo._command_log_path)
 
     def test_compress_persisted_log_replaces_csv_with_gzip(self) -> None:

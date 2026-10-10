@@ -55,7 +55,7 @@ class PredictedStdGaussianActionDist(ContinuousActionDist):
         if log_std_net_initialization is not None:
             log_std_net_initialization(self.log_std_net)
 
-        self.base_log_std = math.log(base_std)
+        self.register_buffer("base_log_std", torch.tensor(math.log(base_std)))
         self.log_std_clamp_range = log_std_clamp_range
 
         self.squash_output = squash_output
@@ -170,12 +170,19 @@ class PredictedStdGaussianActionDist(ContinuousActionDist):
     def set_base_std(self, std: float) -> None:
         if std <= 0:
             raise ValueError(f"std must be > 0, got {std}")
-        self.base_log_std = math.log(std)
+        self.base_log_std.fill_(math.log(std))
 
     def scale_std(self, multiplier: float) -> None:
         if multiplier <= 0:
             raise ValueError(f"multiplier must be > 0, got {multiplier}")
-        self.base_log_std += math.log(multiplier)
+        self.base_log_std.add_(math.log(multiplier))
+
+    def _load_from_state_dict(self, state_dict, prefix, *args, **kwargs) -> None:
+        # Older checkpoints did not persist this scale; retain their constructor default.
+        key = prefix + "base_log_std"
+        if key not in state_dict:
+            state_dict[key] = self.base_log_std.detach().clone()
+        super()._load_from_state_dict(state_dict, prefix, *args, **kwargs)
 
     def get_hyper_parameters(self) -> dict[str, Any]:
         return {

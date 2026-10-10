@@ -35,6 +35,13 @@ def write_log(path: Path, content: str) -> Path:
     return path
 
 
+def test_resumed_duplicates_are_discarded_before_smoothing(tmp_path: Path) -> None:
+    source = write_log(tmp_path / "resumed.csv", "timesteps;metric\n0;0\n2;100\n2;4\n4;8\n")
+    statistics = group_statistics([load_log(source, columns=["metric"])], "metric", smooth=0.5)
+    np.testing.assert_allclose(statistics.x_values, [0, 2, 4])
+    np.testing.assert_allclose(statistics.mean, [0, 2, 5])
+
+
 @pytest.fixture
 def training_csv() -> str:
     return "timesteps;ep_rew_ema;ep_success_rate_ema;loss;loss__std\n0;0;;2;0.5\n1;2;25;1;0.25\n2;4;50;0.5;0.1\n"

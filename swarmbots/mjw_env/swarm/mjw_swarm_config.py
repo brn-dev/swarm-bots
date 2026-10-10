@@ -19,6 +19,8 @@ class MJWSwarmConfig:
     quantize_connection_twist: int
 
     def __post_init__(self) -> None:
+        if self.num_units < 1:
+            raise ValueError("A swarm must contain at least one unit")
         if self.quantize_connection_twist <= 0:
             raise ValueError(
                 f"Expected quantize_connection_twist > 0 for MJWarp, got {self.quantize_connection_twist}"

@@ -1,12 +1,14 @@
 import torch
+import pytest
 
 from swarmbots.learn.nn_components.deep_set import DeepSetCritic
 from swarmbots.learn.nn_components.popart import PopArtLinear
 
 
-def test_popart_update_preserves_unnormalized_predictions() -> None:
+@pytest.mark.parametrize("bias", [True, False])
+def test_popart_update_preserves_unnormalized_predictions(bias: bool) -> None:
     torch.manual_seed(0)
-    layer = PopArtLinear(3, out_features=2, beta=1.0)
+    layer = PopArtLinear(3, out_features=2, beta=1.0, bias=bias)
     x = torch.randn(5, 3)
     targets = torch.tensor(
         [
@@ -23,6 +25,12 @@ def test_popart_update_preserves_unnormalized_predictions() -> None:
     torch.testing.assert_close(layer(x), predictions_before, rtol=1e-5, atol=1e-6)
     torch.testing.assert_close(layer.normalize(targets).mean(dim=0), torch.zeros(2), atol=1e-6, rtol=0.0)
     torch.testing.assert_close(layer.normalize(targets).std(dim=0, unbiased=False), torch.ones(2), atol=1e-6, rtol=0.0)
+    if not bias:
+        assert layer.bias is None
+        assert list(dict(layer.named_parameters())) == ["weight"]
+        restored = PopArtLinear(3, out_features=2, beta=1.0, bias=False)
+        restored.load_state_dict(layer.state_dict())
+        torch.testing.assert_close(restored(x), predictions_before, rtol=1e-5, atol=1e-6)
 
 
 def test_popart_empty_update_is_noop() -> None:

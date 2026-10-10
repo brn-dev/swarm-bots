@@ -9,6 +9,36 @@ from swarmbots.learn.algos.ppo.ppo import PPO, AutomaticLearningRate, StepsRollo
 from swarmbots.learn.algos.ppo.ppo_sampler import PPOSamples, PPOSamplerConfig
 from swarmbots.learn.hybrid_action_space import VectorHybridActionSpace
 from swarmbots.learn.scheduling.auto_lr_updater import make_auto_lr_updater
+from swarmbots.learn.scheduling.schedulers import ScheduledHyperParameter, SchedulerManager
+
+
+def test_checkpoint_restores_custom_scheduler_state_and_enabled_flag(tmp_path) -> None:
+    def schedule(old_value, state, **kwargs):
+        state["calls"] = state.get("calls", 0) + 1
+        return {"new_value": old_value * 0.5 if state["calls"] % 2 == 0 else None}
+
+    def configure(ppo):
+        item = ScheduledHyperParameter("learning_rate", schedule, lambda: ppo.learning_rate, ppo.set_learning_rate)
+        disabled = ScheduledHyperParameter("disabled", schedule, lambda: 1.0, lambda value: None)
+        ppo.scheduler_manager = SchedulerManager([item, disabled])
+        return item, disabled
+
+    source, _ = _make_ppo()
+    item, disabled = configure(source)
+    disabled.enabled = False
+    source.scheduler_manager.step(n_iterations=1, n_model_updates=1, n_timesteps=1, metrics={})
+    path = tmp_path / "scheduler.pt"
+    source.save(path, optimizer_state_dict=source._get_optimizer_state_dict())
+    restored, _ = _make_ppo()
+    restored_item, restored_disabled = configure(restored)
+    restored.load(path)
+    assert restored_item.state == item.state == {"calls": 1}
+    assert not restored_disabled.enabled
+    restored_item.state["extra"] = True
+    assert "extra" not in item.state
+    for algorithm in (source, restored):
+        algorithm.scheduler_manager.step(n_iterations=2, n_model_updates=2, n_timesteps=2, metrics={})
+    assert restored.learning_rate == source.learning_rate == pytest.approx(0.005)
 
 
 class _DummyActionDist:

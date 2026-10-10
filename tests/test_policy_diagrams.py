@@ -14,12 +14,24 @@ from swarmbots.tools.diagram_policy_architectures import (
     svg_diagram,
     dot_diagram,
     generate,
+    write_gallery,
 )
 from swarmbots.learn import list_model_scales, list_variants
 
 ROOT = Path(__file__).resolve().parents[1]
 REPORTS = [ROOT / "docs/policy_parameters" / folder / "counts.json.gz" for folder in ["", "2.5M", "10M"]]
 ROWS = [row for path in REPORTS for row in json.loads(gzip.decompress(path.read_bytes()))["policies"]]
+
+
+def test_gallery_resolves_local_or_published_reading_guide(tmp_path: Path) -> None:
+    diagram = build_diagram(ROWS[0])
+    write_gallery([diagram], tmp_path)
+    assert 'href="https://github.com/brn-dev/swarm-bots/blob/main/docs/policy_parameters/diagrams/README.md"' in (
+        tmp_path / "index.html"
+    ).read_text(encoding="utf-8")
+    (tmp_path / "README.md").write_text("Local guide", encoding="utf-8")
+    write_gallery([diagram], tmp_path)
+    assert 'href="README.md"' in (tmp_path / "index.html").read_text(encoding="utf-8")
 
 
 def assert_line_order(node, *prefixes):

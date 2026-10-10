@@ -36,6 +36,7 @@ class PopArtLinear(nn.Module):
             self.bias = nn.Parameter(torch.empty((self.out_features,), **factory_kwargs))
         else:
             self.bias = None
+            self.register_buffer("normalization_bias", torch.zeros((self.out_features,), **factory_kwargs))
 
         self.register_buffer("mu", torch.full((self.out_features,), float(init_mu), **factory_kwargs))
         init_sigma_t = torch.full((self.out_features,), float(init_sigma), **factory_kwargs)
@@ -48,6 +49,8 @@ class PopArtLinear(nn.Module):
         nn.init.orthogonal_(self.weight, gain=self.init_gain)
         if self.bias is not None:
             nn.init.zeros_(self.bias)
+        else:
+            self.normalization_bias.zero_()
 
     @classmethod
     def from_linear(
@@ -121,12 +124,19 @@ class PopArtLinear(nn.Module):
 
         scale = old_sigma / new_sigma
         self.weight.mul_(scale.unsqueeze(-1))
-        if self.bias is not None:
-            self.bias.copy_((old_sigma * self.bias + old_mu - new_mu) / new_sigma)
+        bias = self.bias if self.bias is not None else self.normalization_bias
+        bias.copy_((old_sigma * bias + old_mu - new_mu) / new_sigma)
 
         self.mu.copy_(new_mu)
         self.nu.copy_(new_nu)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        y_norm = F.linear(x, self.weight, self.bias)
+        bias = self.bias if self.bias is not None else self.normalization_bias
+        y_norm = F.linear(x, self.weight, bias)
         return self.denormalize(y_norm)
+
+    def _load_from_state_dict(self, state_dict, prefix, *args, **kwargs) -> None:
+        key = prefix + "normalization_bias"
+        if self.bias is None and key not in state_dict:
+            state_dict[key] = torch.zeros_like(self.normalization_bias)
+        super()._load_from_state_dict(state_dict, prefix, *args, **kwargs)

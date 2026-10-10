@@ -1,8 +1,16 @@
 from __future__ import annotations
 
 import torch
+import pytest
 
 from swarmbots.mjw_env.mjw_swarm_bots_vector_env import MJWSwarmBotsVectorEnv
+from swarmbots.mjw_env.swarm.mjw_homogeneous_swarm import MJWPreConnectedUnitLocationsConfig
+
+
+@pytest.mark.parametrize("num_units", [0, -1])
+def test_swarm_configuration_rejects_empty_swarms(num_units):
+    with pytest.raises(ValueError, match="at least one unit"):
+        MJWPreConnectedUnitLocationsConfig(num_units=num_units, pool_seeds=[42])
 
 
 def test_connection_episode_stats_only_include_active_units() -> None:

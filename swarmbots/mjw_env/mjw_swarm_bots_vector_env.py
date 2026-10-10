@@ -609,7 +609,13 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
         return self.scenario.swarm.get_active_pool_size()
 
     def set_active_swarm_pool_size(self, active_pool_size: int) -> int:
-        return int(self.scenario.swarm.set_active_pool_size(active_pool_size))
+        if self._pending_step is not None:
+            raise RuntimeError("Cannot change the swarm pool while an MJW step is pending.")
+        previous_size = self.scenario.swarm.get_active_pool_size()
+        size = int(self.scenario.swarm.set_active_pool_size(active_pool_size))
+        if size != previous_size and self._settled_reset_buffer is not None:
+            self._settled_reset_buffer.clear(wait=True)
+        return size
 
     def reset(
         self,
@@ -632,6 +638,9 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
         self.successful_connection_counts[reset_mask] = 0
         if self._live_episode_recorder.is_active():
             reset_world_idx = torch.nonzero(reset_mask, as_tuple=False).flatten()
+            self._live_episode_recorder.on_explicit_resets(
+                world_idx=reset_world_idx.detach().cpu().numpy(),
+            )
             self._live_episode_recorder.on_episode_starts(
                 world_idx=reset_world_idx.detach().cpu().numpy(),
                 snapshots_by_world=self._capture_world_snapshots(reset_world_idx),

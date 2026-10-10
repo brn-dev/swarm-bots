@@ -222,6 +222,10 @@ def compute_summary_statistics(
                 max_val=summary_stats.max_value,
                 config=_resolve_histogram_config(make_histogram),
             )
+        if keep_data:
+            summary_stats.data = (
+                values.copy() if isinstance(values, np.ndarray) else values.detach().cpu().numpy().copy()
+            )
         return summary_stats
 
     summary_stats: SummaryStatistics = SummaryStatistics(

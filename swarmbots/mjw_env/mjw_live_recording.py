@@ -70,6 +70,7 @@ class MJWLiveEpisodeRecorder:
         self._render_context: _RenderContext | None = None
         self._active_slots_by_world: dict[int, _EpisodeSlot] = {}
         self._episodes_started = 0
+        self._next_episode_idx = 0
         self._episodes_completed = 0
         self._writer_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="mjw-video-write")
         self._writer_futures: list[Future[None]] = []
@@ -109,6 +110,7 @@ class MJWLiveEpisodeRecorder:
         )
 
         self._episodes_started = 0
+        self._next_episode_idx = 0
         self._episodes_completed = 0
         self._active_slots_by_world.clear()
         self._config = config
@@ -191,7 +193,8 @@ class MJWLiveEpisodeRecorder:
             if snapshot is None:
                 continue
 
-            episode_idx = self._episodes_started
+            episode_idx = self._next_episode_idx
+            self._next_episode_idx += 1
             slot = _EpisodeSlot(
                 world_idx=int(raw_world_idx),
                 episode_idx=episode_idx,
@@ -209,6 +212,12 @@ class MJWLiveEpisodeRecorder:
         if self._episodes_started >= self._config.num_episodes and not self._active_slots_by_world:
             logger.warning("MJW live recording finished immediately because no episode-start worlds were renderable.")
             self._config = None
+
+    def on_explicit_resets(self, *, world_idx: np.ndarray) -> None:
+        """Discard interrupted episodes so their replacements start with fresh recording slots."""
+        for index in np.asarray(world_idx, dtype=np.int64).tolist():
+            if self._active_slots_by_world.pop(index, None) is not None:
+                self._episodes_started -= 1
 
     def record_step(
         self,

@@ -345,6 +345,17 @@ class MetricsLogger:
         if self.file is not None:
             return
 
+        if not self.file_path.exists():
+            gz_path = self.file_path.with_suffix(f"{self.file_path.suffix}.gz")
+            if gz_path.exists():
+                restored_path = self.file_path.with_suffix(f"{self.file_path.suffix}.tmp")
+                try:
+                    with gzip.open(gz_path, "rb") as src, restored_path.open("wb") as dst:
+                        shutil.copyfileobj(src, dst)
+                    restored_path.replace(self.file_path)
+                    gz_path.unlink()
+                finally:
+                    restored_path.unlink(missing_ok=True)
         file_exists = self.file_path.exists()
         existing_fieldnames = self._read_csv_header_fieldnames() if file_exists else None
         self._csv_fieldnames = (

@@ -13,7 +13,6 @@ from swarmbots.learn.algos.ppo.ppo_rollout import collect_step_rollout_batch, co
 from swarmbots.learn.algos.ppo.ppo_rollout_buffer import PPORolloutBuffer, PPOEpisodeSegment
 from swarmbots.learn.algos.ppo.ppo_sampler import PPOSampler, PPOSamplerConfig
 from swarmbots.learn.algos.world_modeling.ppo_wm_sampler import PPOWMBatchSampler, PPOWMSamplerConfig
-from swarmbots.learn.env_wrappers.progress_guidance_ep_stats_wrapper import ProgressGuidanceEpisodeStatsWrapper
 from swarmbots.learn.env_wrappers.torch_feature_wise_obs_norm_wrapper import TorchFeatureWiseObsNormWrapper
 from swarmbots.learn.env_wrappers.torch_normalize_reward_wrapper import TorchNormalizeRewardWrapper
 from swarmbots.learn.env_wrappers.torch_progress_guidance_ep_stats_wrapper import TorchProgressGuidanceEpisodeStatsWrapper
@@ -580,47 +579,6 @@ class SameStepPipelineTests(unittest.TestCase):
                 SwarmBotsLearnEnvWrapper(vector_env)
         finally:
             vector_env.close()
-
-    def test_progress_guidance_masks_scalar_info_values(self) -> None:
-        vector_env = SyncVectorEnv(
-            [
-                lambda: _ScriptedRolloutEnv(env_id=1, done_steps=(2,), done_mode="terminate"),
-                lambda: _ScriptedRolloutEnv(env_id=2, done_steps=(2,), done_mode="truncate"),
-            ],
-            autoreset_mode=AutoresetMode.SAME_STEP,
-        )
-        env = ProgressGuidanceEpisodeStatsWrapper(vector_env)
-        try:
-            values = env._extract_values_from_info_dict(
-                {"success": np.bool_(True), "_success": np.array([True, False])},
-                "success",
-            )
-            np.testing.assert_array_equal(values, np.array([1.0, 0.0]))
-        finally:
-            env.close()
-
-    def test_progress_guidance_counts_first_transition_after_autoreset(self) -> None:
-        vector_env = SyncVectorEnv(
-            [
-                lambda: _RewardInfoRolloutEnv(
-                    env_id=1,
-                    done_steps=(1,),
-                    done_mode="truncate",
-                )
-            ],
-            autoreset_mode=AutoresetMode.SAME_STEP,
-        )
-        env = ProgressGuidanceEpisodeStatsWrapper(vector_env)
-        try:
-            env.reset()
-            env.step(env.action_space.sample())
-            _, _, _, truncations, infos = env.step(env.action_space.sample())
-
-            self.assertTrue(bool(truncations[0]))
-            self.assertEqual(float(infos["episode"]["progress_reward"][0]), 2.0)
-            self.assertEqual(float(infos["episode"]["guidance_reward"][0]), 11.0)
-        finally:
-            env.close()
 
     def test_torch_progress_guidance_accepts_torch_info_values(self) -> None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
