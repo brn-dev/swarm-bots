@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Place connector frames on capsule surfaces by default, preserving robot geometry and mass properties; expose `legacy_connector_positioning=True` to restore the original frames and assembly spacing.
+- Make asynchronous settled-reset sampling independent of worker completion timing, and retain agent-shuffle RNG state during repeated device setup.
+- Compute PPO rollout likelihoods from stored bounded actions, matching training recomputation for saturated Gaussian and gSDE actions while retaining SAC's cached pre-tanh path.
+- Reject undersized goal radii and nonpositive/nonfinite settling timestep scales; require Bridge success above the destination platform and sample collision-free MultiPayloadGoal assignments.
+- These benchmark corrections change dynamics, initial populations and task outcomes; rerun evaluations rather than combine scores from before and after the changes.
 - Refresh simulator body frames after each control step on CPU and CUDA; preserve physics options during reset settling and reject nonpositive episode limits.
 - Require PayloadStep success to occur over the finite step, support scalar distributions for dual payload offsets, and bound truncated-normal rejection sampling.
 - Support transition-observation histories in benchmark policy adapters; reject oversized PPO batches and correct the optional Monte Carlo entropy gradient.

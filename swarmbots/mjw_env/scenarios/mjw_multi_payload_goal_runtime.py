@@ -28,6 +28,7 @@ from swarmbots.mjw_env.scenarios.mjw_multi_payload_goal_scenario import (
     MJWMultiPayloadGoalRuntimeMetadata,
 )
 from swarmbots.scenario_presets.multi_payload_goal import PAYLOAD_GOAL_IDENTITY_ROT6D
+from swarmbots.mjw_env.scenarios.mjw_payload_goal_sampling import PayloadGoalSampler
 
 
 @dataclass(slots=True)
@@ -248,6 +249,12 @@ class MultiPayloadGoalMJWScenarioRuntime(BaseMJWScenarioRuntime):
             dtype=torch.long,
         )
         self._cpu_settler = _MultiPayloadGoalCPUResetSettler(scenario=scenario, bindings=bindings)
+        self._goal_sampler = PayloadGoalSampler(
+            layout=scenario._goal_sampling_layout,
+            max_payloads=scenario.max_payloads,
+            payload_shape=scenario.payload_shape,
+            device=bindings.device,
+        )
         self._reward_kernel: Callable[
             ...,
             tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor],
@@ -281,7 +288,7 @@ class MultiPayloadGoalMJWScenarioRuntime(BaseMJWScenarioRuntime):
     def sample_reset_batch(self, *, n_reset: int, rng: torch.Generator) -> MultiPayloadGoalResetBatch:
         common = self._sample_common_reset_batch(n_reset=n_reset, rng=rng)
         active_payload_mask = self._sample_active_payload_mask(n_reset=n_reset, rng=rng)
-        goal_position = self._sample_goal_positions(n_reset=n_reset, rng=rng)
+        goal_position = self._goal_sampler.sample(active_payload_mask=active_payload_mask, rng=rng)
         return MultiPayloadGoalResetBatch(
             common=common,
             payload_position=self._sample_payload_positions(
@@ -461,19 +468,6 @@ class MultiPayloadGoalMJWScenarioRuntime(BaseMJWScenarioRuntime):
             src=torch.arange(self.scenario.max_payloads, device=self.bindings.device).view(1, -1).expand(n_reset, -1),
         )
         return payload_rank < active_counts.view(-1, 1)
-
-    def _sample_goal_positions(self, *, n_reset: int, rng: torch.Generator) -> torch.Tensor:
-        x_min, x_max, y_min, y_max = self.scenario.goal_rect
-        unit_samples = torch.rand(
-            (n_reset, self.scenario.max_payloads, 2),
-            device=self.bindings.device,
-            dtype=torch.float32,
-            generator=rng,
-        )
-        goal_position = torch.empty_like(unit_samples)
-        goal_position[..., 0] = float(x_min) + unit_samples[..., 0] * (float(x_max) - float(x_min))
-        goal_position[..., 1] = float(y_min) + unit_samples[..., 1] * (float(y_max) - float(y_min))
-        return goal_position
 
     def _sample_payload_positions(
         self,

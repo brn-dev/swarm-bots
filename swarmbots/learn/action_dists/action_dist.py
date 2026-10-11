@@ -174,7 +174,10 @@ class ActionDist(nn.Module, abc.ABC):
             agent: int | None = None,
             previous_actions: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        return self.get_actions_with_log_probs(
+        # PPO reevaluates the stored action, including any rounding from squashing.
+        # Off-policy overrides may instead use a cached pre-squash sample.
+        return ActionDist.get_actions_with_log_probs(
+            self,
             latent_pi=latent_pi,
             deterministic=deterministic,
             agent=agent,

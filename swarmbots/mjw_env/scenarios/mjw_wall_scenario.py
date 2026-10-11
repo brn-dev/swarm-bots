@@ -9,6 +9,7 @@ from gymnasium import spaces
 from gymnasium.vector.utils import batch_space
 
 from swarmbots.utils.connector_actions import connector_action_space
+from swarmbots.mjw_env.scenarios.scenario_validation import finite_positive
 from swarmbots.mjw_env.parameter_distributions import FloatOrDistParams
 from swarmbots.mjw_env.scenarios.base_mjw_scenario import BaseMJWScenario, MJWRuntimeBindings, MJWRecordingCameraConfig
 from swarmbots.mjw_env.swarm.mjw_homogeneous_swarm import MJWHomogeneousSwarm
@@ -70,6 +71,9 @@ class MJWWallScenario(BaseMJWScenario):
     randomize_initial_swarm_z_rotation: bool = False
 
     def __post_init__(self) -> None:
+        self.reset_settle_timestep_scale = finite_positive(
+            self.reset_settle_timestep_scale, name="reset_settle_timestep_scale",
+        )
         if self.include_connectors_xquat_in_obs:
             raise ValueError("MJWWallScenario currently does not support connector quats in observations")
         if self.timestep <= 0.0:

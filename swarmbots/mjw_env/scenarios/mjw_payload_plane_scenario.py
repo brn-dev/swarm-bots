@@ -10,6 +10,7 @@ from gymnasium.vector.utils import batch_space
 
 import swarmbots.mjw_env.mujoco_utils as mj_utils
 from swarmbots.utils.connector_actions import connector_action_space
+from swarmbots.mjw_env.scenarios.scenario_validation import finite_positive
 from swarmbots.mjw_env.parameter_distributions import FloatOrDistParams
 from swarmbots.mjw_env.scenarios.base_mjw_scenario import BaseMJWScenario, MJWRecordingCameraConfig, MJWRuntimeBindings
 from swarmbots.mjw_env.swarm.mjw_homogeneous_swarm import MJWHomogeneousSwarm
@@ -80,6 +81,9 @@ class MJWPayloadPlaneScenario(BaseMJWScenario):
     physics_njmax: int | None = 200
 
     def __post_init__(self) -> None:
+        self.reset_settle_timestep_scale = finite_positive(
+            self.reset_settle_timestep_scale, name="reset_settle_timestep_scale",
+        )
         if self.include_connectors_xquat_in_obs:
             raise ValueError("MJWPayloadPlaneScenario currently does not support connector quats in observations")
         if self.timestep <= 0.0:

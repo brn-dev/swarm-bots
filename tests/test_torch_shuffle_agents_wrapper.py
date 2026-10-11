@@ -5,10 +5,13 @@ import unittest
 
 import gymnasium
 import numpy as np
+import pytest
 import torch
 from gymnasium import spaces
 from gymnasium.vector import AutoresetMode, SyncVectorEnv
 
+from swarmbots.learn.algos.off_policy.off_policy_rollout import collect_off_policy_steps
+from swarmbots.learn.algos.off_policy.replay_buffer import OffPolicyReplayBuffer
 from swarmbots.learn.env_wrappers.learn_wrappers.swarm_bots_learn_env_wrapper import SwarmBotsLearnEnvWrapper
 from swarmbots.learn.env_wrappers.torch_shuffle_agents_wrapper import TorchShuffleAgentsWrapper
 from swarmbots.learn.env_wrappers.torch_transition_obs_wrapper import TorchTransitionObsWrapper
@@ -158,6 +161,72 @@ def _assert_transition_parts(
     test_case.assertTrue(torch.equal(actual_prev_local, prev_local))
     test_case.assertTrue(torch.equal(actual_current_global, current_global))
     test_case.assertTrue(torch.equal(actual_prev_global, prev_global))
+
+
+@pytest.mark.parametrize("seed", [123, 456])
+@pytest.mark.parametrize("preserve_inactive_prefix_structure", [False, True])
+def test_off_policy_collection_preserves_shuffle_stream_on_same_device_calls(
+    seed: int, preserve_inactive_prefix_structure: bool,
+) -> None:
+    reference_env, _raw_envs = _make_env(
+        max_steps=1, n_envs=2, n_agents=8,
+        preserve_inactive_prefix_structure=preserve_inactive_prefix_structure, seed=seed,
+    )
+    chunked_env, _raw_envs = _make_env(
+        max_steps=1, n_envs=2, n_agents=8,
+        preserve_inactive_prefix_structure=preserve_inactive_prefix_structure, seed=seed,
+    )
+    try:
+        def make_replay(env: TorchShuffleAgentsWrapper) -> OffPolicyReplayBuffer:
+            return OffPolicyReplayBuffer(
+                capacity_per_env=8, observation_space=env.observation_space,
+                action_space=env.action_space, train_device="cpu",
+            )
+
+        reference_replay = make_replay(reference_env)
+        chunked_replay = make_replay(chunked_env)
+        collect_off_policy_steps(reference_env, reference_replay, n_steps=8, random_actions=True)
+        generator = chunked_env._rng
+        state = None
+        for _ in range(4):
+            _infos, _metrics, state = collect_off_policy_steps(
+                chunked_env, chunked_replay, n_steps=2, random_actions=True,
+                rollout_state=state, rollout_device="cpu:0",
+            )
+
+        assert chunked_env._rng is generator
+        reference = reference_replay.get_all()
+        chunked = chunked_replay.get_all()
+        for name in ("local_obs", "next_local_obs", "hidden_local_vars", "next_hidden_local_vars", "agent_mask", "next_agent_mask"):
+            torch.testing.assert_close(getattr(chunked, name), getattr(reference, name), rtol=0, atol=0)
+        assert torch.unique(chunked.local_obs[..., 0], dim=0).shape[0] > 1
+    finally:
+        reference_env.close()
+        chunked_env.close()
+
+
+@pytest.mark.cuda
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
+def test_shuffle_device_moves_retain_reset_seed() -> None:
+    env, _raw_envs = _make_env(n_agents=8, preserve_inactive_prefix_structure=False, seed=123)
+    try:
+        env.reset(seed=456)
+        for device in (torch.device("cuda", torch.cuda.current_device()), torch.device("cpu")):
+            env.set_device(device)
+            assert env._rng.initial_seed() == 456
+            expected_rng = torch.Generator(device=device).manual_seed(456)
+            expected = torch.rand((1, 8), generator=expected_rng, device=device).argsort(dim=1)
+            env._reset_agent_permutations(
+                reset_mask=torch.ones(1, device=device, dtype=torch.bool), agent_mask=None,
+            )
+            torch.testing.assert_close(env._agent_permutation, expected)
+            generator = env._rng
+            state = generator.get_state().clone()
+            env.set_device(device)
+            assert env._rng is generator
+            torch.testing.assert_close(env._rng.get_state(), state)
+    finally:
+        env.close()
 
 
 class TorchShuffleAgentsWrapperTests(unittest.TestCase):

@@ -95,7 +95,10 @@ class MJWHomogeneousSwarm:
         hinge_frictionloss: float | tuple[float, ...] = (0.0, 0.0),
         connection_torquescale: float = 50.0,
         quantize_connection_twist: int = 16,
+        legacy_connector_positioning: bool = False,
     ) -> None:
+        if not isinstance(legacy_connector_positioning, bool):
+            raise TypeError("legacy_connector_positioning must be a bool")
         self.unit_start_locations = unit_start_locations
         self.num_units = unit_start_locations.num_units
         self.config = MJWSwarmConfig(
@@ -112,7 +115,11 @@ class MJWHomogeneousSwarm:
         self.hinge_armature = hinge_armature
         self.hinge_damping = hinge_damping
         self.hinge_frictionloss = hinge_frictionloss
-        self.max_unit_extent = self.body_radius + self.leg_length
+        self.legacy_connector_positioning = legacy_connector_positioning
+        self.connector_distance = self.body_radius + self.leg_length + (
+            0.0 if legacy_connector_positioning else self.leg_radius
+        )
+        self.max_unit_extent = self.connector_distance
 
     @property
     def can_have_inactive_units(self) -> bool:
@@ -128,6 +135,8 @@ class MJWHomogeneousSwarm:
             "segment_1_ratio": self.segment_1_ratio,
             "minimal_contacts": True,
             "use_cylinders": False,
+            "legacy_connector_positioning": self.legacy_connector_positioning,
+            "connector_distance": self.connector_distance,
             "hinge_range": self.hinge_range,
             "hinge_armature": self.hinge_armature,
             "hinge_damping": self.hinge_damping,
@@ -171,6 +180,7 @@ class MJWHomogeneousSwarm:
                 segment_1_ratio=self.segment_1_ratio,
                 minimal_contacts=True,
                 use_cylinders=False,
+                legacy_connector_positioning=self.legacy_connector_positioning,
                 hinge_range=self.hinge_range,
                 hinge_armature=self.hinge_armature,
                 hinge_damping=self.hinge_damping,
@@ -289,7 +299,7 @@ class MJWHomogeneousSwarm:
         twist_idx = np.full((num_units, self.config.limbs_per_unit), -1, dtype=np.int64)
 
         rot_mats = np.zeros((num_active_units, 3, 3), dtype=float)
-        connector_distance = self.body_radius + self.leg_length
+        connector_distance = self.connector_distance
         min_center_distance = 2.0 * self.max_unit_extent
         available_connectors = [list(range(len(unit_config))) for _ in range(num_active_units)]
 

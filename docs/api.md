@@ -51,6 +51,8 @@ This example applies zero actions to the registered task. Use `num_envs=2, devic
 
 `make_env` forwards `scenario_kwargs` to the registered scenario factory and remaining keyword arguments to `MJWSwarmBotsVectorEnv`. `make_scenario(benchmark_id, seed=..., **scenario_kwargs)` constructs a scenario without a vector environment. Overrides create custom task variants and must be reported with their results.
 
+Corrected connector positioning is enabled by default. For the original positioning and initial assembly spacing, pass `scenario_kwargs={"legacy_connector_positioning": True}` to `make_env`, or `legacy_connector_positioning=True` to `make_scenario`. Both modes preserve the robot's geometry and mass properties relative to its joints; the original mode permits penetrating capsule ends at satisfied connections. The resolved mode is recorded in evaluation settings.
+
 ## Gymnasium compatibility
 
 The environment subclasses Gymnasium's `VectorEnv` and uses Gymnasium spaces, the `reset()` and `step()` return conventions, and `SAME_STEP` autoreset. Observations, rewards, termination flags, and truncation flags are PyTorch tensors on `env.device`. Actions are dictionaries of batched tensors; `info` contains tensors and nested dictionaries.
@@ -66,6 +68,8 @@ The environment uses `SAME_STEP` autoreset. On a done step, the returned observa
 Observation tensors can share environment buffers. Clone tensors you need to retain across calls to `step()` or `reset()`.
 
 Every reset, including the first reset and `options={"reset_mask": mask}` partial resets, applies the scenario's physics settling. Settling is outside the episode's control-step budget and return. Repeating `reset(seed=...)` with the same seed and configuration reproduces the initial observations on the same device/backend. Reseeding also clears prefetched reset snapshots. Partial resets preserve the unselected lanes' physical state.
+
+With an identical sequence of reset requests, asynchronous settled-reset buffering samples the same ordered reset records regardless of worker completion timing. Physics and policy reproducibility still depend on the device/backend and their numerical behavior.
 
 The old `settle_initial_reset` constructor argument and `force_settled` reset option are no longer needed. Remove them from callers. To disable settling for a custom variant, set `scenario_kwargs={"reset_settle_time": 0.0}`; this affects both explicit resets and autoresets and is not a canonical benchmark configuration.
 

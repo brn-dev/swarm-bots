@@ -61,6 +61,10 @@ Use `swarmbots.CORE_BENCHMARK_IDS` or `swarmbots.ALL_BENCHMARK_IDS` to select a 
 
 The default unit has four articulated limbs, eight hinges, and four connectors. Continuous actuator actions control its movement; connector actions request connections or disconnections. Connections carry physical loads, so changing the connection graph changes the swarm's mechanics during an episode.
 
+Connector frames sit on the outer surfaces of the rounded limb caps. Opposing caps meet when connected, without the penetration and opposing contact forces caused by the former endpoint placement. Joint positions, geom poses relative to the joints, and robot mass properties are preserved. Initial assembly spacing accounts for the new connector distance.
+
+`legacy_connector_positioning=False` is the default. Set `make_scenario(..., legacy_connector_positioning=True)` or `make_env(..., scenario_kwargs={"legacy_connector_positioning": True})` to restore the original frames and assembly spacing for a custom variant. The option and resolved connector distance are included in settings and evaluation metadata. It restores connector positioning, not all behavior of an older implementation.
+
 All registered scenarios use five padded agent slots, while reset pools may activate four or five units. Inactive slots are identified by `agent_mask`. Initial assemblies are sampled from the shared [morphology population](benchmark_protocol.md#morphology-population); the canonical evaluation does not use unseen morphologies.
 
 Scenario constructors accept keyword overrides through `make_scenario(..., **scenario_kwargs)` or `make_env(..., scenario_kwargs={...})`. See [scenario customization](#scenario-customization) for an example.
@@ -106,13 +110,15 @@ Success is a team-level boolean. Padding never counts toward success. For succes
 | --- | --- |
 | Wall and PO Wall | Every active unit has `y > wall_y + wall_success_threshold` |
 | FindOpening | Every active unit has `y > wall_y + opening_y_margin` |
-| Bridge | Every active unit has `y > success_y`, with no active unit below `fall_z_threshold` |
+| Bridge | Every active unit has `y > success_y` and its root at or above the destination platform top (`z >= 0`), with no active unit below `fall_z_threshold` |
 | Climb | Every active unit's root lies within `goal_radius` of the 3D goal |
 | VerticalReach | At least one active unit's root lies inside the goal box |
 | PayloadStep | Payload centre reaches `payload_success_y` and the required height while remaining over the step's finite width and length |
 | MultiPayloadGoal | Every active payload centre lies within `goal_radius` of its assigned 3D goal (goal height is the payload radius) |
 
 PayloadPlane, DualPayloadPlane, and MoveTo have no success metric; report return. Episodes truncate at 500 control steps by default. Success terminates an episode for the success-enabled tasks; bridge falls and nonfinite simulator state can also terminate unsuccessfully. The default control period is `0.003 * 10 = 0.03` seconds. Reward terms are exposed in `info["reward_terms"]`; weights and thresholds are in `env.get_settings()` and exported evaluation metadata.
+
+MultiPayloadGoal samples active goal centres with a guaranteed non-overlapping placement of the payloads at those centres in their reset orientation. It tries 16 batched random assignments, then uses a randomly translated and permuted grid if none are valid. Spheres use centre separation; boxes and horizontal capsules use conservative rectangular footprints. The goal rectangle bounds the centres, not the full payload shapes. Bounds round inward to float32; ranges and spans that cannot be represented safely are rejected. A custom rectangle that cannot accommodate the guaranteed grid for the maximum positive-probability active count is rejected during construction. Sampler parameters are recorded in settings.
 
 ## Action contract
 
@@ -140,3 +146,5 @@ env.close()
 Treat any override as a new task. Report every override and do not label the result with the unchanged canonical benchmark ID.
 
 `TruncatedNormalDistParams` bounds rejection sampling with `max_rejection_attempts` (default 1,000 draws per sample). Exhausting the limit raises an error instead of blocking reset indefinitely; impossible degenerate rejection distributions are rejected at construction.
+
+Climb and MultiPayloadGoal require finite `goal_radius >= 1e-6` metres. All scenarios require finite `reset_settle_timestep_scale > 0`, even when settling is disabled, so invalid settings fail during construction.

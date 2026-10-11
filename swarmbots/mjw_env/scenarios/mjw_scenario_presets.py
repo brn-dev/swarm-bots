@@ -110,10 +110,16 @@ def _resolve_swarm(
     unit_start_locations: MJWPreConnectedUnitLocationsConfig | None,
     quantize_connection_twist: int,
     joints: JointPreset,
+    legacy_connector_positioning: bool | None = None,
 ) -> MJWHomogeneousSwarm:
     if swarm is not None:
         if unit_start_locations is not None:
             raise ValueError("unit_start_locations can only be used when presets construct the swarm")
+        if (
+            legacy_connector_positioning is not None
+            and legacy_connector_positioning != swarm.legacy_connector_positioning
+        ):
+            raise ValueError("legacy_connector_positioning conflicts with the supplied swarm")
         return swarm
 
     return MJWHomogeneousSwarm(
@@ -123,6 +129,9 @@ def _resolve_swarm(
         leg_radius=0.025,
         connection_torquescale=50.0,
         quantize_connection_twist=quantize_connection_twist,
+        legacy_connector_positioning=(
+            False if legacy_connector_positioning is None else legacy_connector_positioning
+        ),
         **_JOINT_CONFIGS[joints],
     )
 
@@ -148,12 +157,19 @@ def _make_scenario(
     quantize_connection_twist: int,
     joints: JointPreset,
 ) -> ScenarioT:
+    scenario_kwargs = dict(scenario_kwargs)
+    if "legacy_connector_positioning" in scenario_kwargs and not isinstance(
+        scenario_kwargs["legacy_connector_positioning"], bool,
+    ):
+        raise TypeError("legacy_connector_positioning must be a bool")
+    legacy_connector_positioning = scenario_kwargs.pop("legacy_connector_positioning", None)
     return scenario_cls(
         swarm=_resolve_swarm(
             swarm=swarm,
             unit_start_locations=unit_start_locations,
             quantize_connection_twist=quantize_connection_twist,
             joints=joints,
+            legacy_connector_positioning=legacy_connector_positioning,
         ),
         seed=seed,
         **scenario_kwargs,

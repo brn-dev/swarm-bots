@@ -60,6 +60,7 @@ def _compute_bridge_reward_kernel(
     potential_reward_discount_factor: float,
     units_without_connections_reward_weight: float,
     guidance_reward_weight: float,
+    success_min_z: float = 0.0,
 ) -> tuple[
     torch.Tensor,
     torch.Tensor,
@@ -87,7 +88,7 @@ def _compute_bridge_reward_kernel(
     active_units_count = units_active_mask.sum(dim=-1)
     active_units_success = torch.where(
         units_active_mask,
-        unit_y > float(success_y),
+        (unit_y > float(success_y)) & (unit_z >= float(success_min_z)),
         torch.ones_like(units_active_mask),
     )
     success = (
@@ -301,6 +302,7 @@ class BridgeMJWScenarioRuntime(BaseMJWScenarioRuntime):
             float(self.scenario.potential_reward_discount_factor),
             float(self.scenario.units_without_connections_reward_weight),
             float(self.scenario.guidance_reward_weight),
+            float(self.scenario.platform_top_z),
         )
         self.progress[stable_mask] = new_progress[stable_mask]
         return MJWStepResult(

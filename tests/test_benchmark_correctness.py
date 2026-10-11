@@ -6,10 +6,11 @@ import numpy as np
 import pytest
 import torch
 
-from swarmbots import make_env, make_scenario
+from swarmbots import ALL_BENCHMARK_IDS, make_env, make_scenario
 from swarmbots.mjw_env.mjw_torch_utils import sample_float_or_dist
 from swarmbots.mjw_env.parameter_distributions import TruncatedNormalDistParams, UniformDistParams, eval_truncated_normal
 from swarmbots.mjw_env.scenarios.mjw_payload_step_runtime import _compute_payload_step_reward_extras_kernel
+from swarmbots.mjw_env.scenarios.mjw_bridge_runtime import _compute_bridge_reward_kernel
 from swarmbots.mjw_env.swarm.mjw_homogeneous_swarm import MJWPreConnectedUnitLocationsConfig
 
 
@@ -45,6 +46,49 @@ def test_payload_step_success_requires_position_over_the_step():
     )
     assert result[-1].tolist() == [False, False, True, False]
     torch.testing.assert_close(result[-2], torch.tensor([0., 0., 5., 0.]))
+
+
+@pytest.mark.parametrize("benchmark_id", ["SwarmBots-Climb-v0", "SwarmBots-MultiPayloadGoal-v0"])
+@pytest.mark.parametrize("radius", [0., -1., 1e-7, float("nan"), float("inf"), -float("inf")])
+def test_goal_radius_is_finite_and_large_enough_for_the_visual_geometry(benchmark_id, radius):
+    with pytest.raises(ValueError, match="finite goal_radius >= 1e-06"):
+        make_scenario(benchmark_id, goal_radius=radius, compile_reward_kernel=False)
+
+
+@pytest.mark.parametrize("benchmark_id", ["SwarmBots-Climb-v0", "SwarmBots-MultiPayloadGoal-v0"])
+def test_minimum_goal_radius_builds_a_model(benchmark_id):
+    cfg = MJWPreConnectedUnitLocationsConfig(num_units=1, pool_seeds=[42000])
+    scenario = make_scenario(
+        benchmark_id, goal_radius=1e-6, unit_start_locations=cfg, compile_reward_kernel=False,
+    )
+    assert scenario.goal_radius == 1e-6
+    assert scenario.build_model().ngeom > 0
+
+
+@pytest.mark.parametrize("benchmark_id", ALL_BENCHMARK_IDS)
+@pytest.mark.parametrize("scale", [0., -1., float("nan"), float("inf"), -float("inf")])
+@pytest.mark.parametrize("settle_time", [0., 1.])
+def test_invalid_settling_scale_is_rejected_even_when_settling_is_disabled(benchmark_id, scale, settle_time):
+    with pytest.raises(ValueError, match="finite reset_settle_timestep_scale > 0"):
+        make_scenario(
+            benchmark_id, reset_settle_timestep_scale=scale, reset_settle_time=settle_time,
+            compile_reward_kernel=False,
+        )
+
+
+def test_bridge_finish_requires_every_active_root_at_or_above_the_platform():
+    unit_y = torch.tensor([[6.6, 6.6], [6.6, 6.6], [6.6, 6.6], [6.5, 6.6], [6.6, 0.], [6.6, 6.6]])
+    unit_z = torch.tensor([[-1., -1.], [-.01, .2], [0., .2], [.1, .2], [.1, -10.], [-2., .2]])
+    active = torch.tensor([[True, True]] * 4 + [[True, False], [True, True]])
+    result = _compute_bridge_reward_kernel(
+        unit_y, unit_z, torch.ones(6, dtype=torch.bool), active, torch.full((6, 2, 4), -1),
+        torch.zeros(6), -1.5, -.5, 6.5, 10., 1., 1., -1e-5, 1.,
+    )
+    assert result[3].tolist() == [False, False, True, False, True, False]
+    assert result[5].tolist() == [False, False, False, False, False, True]
+    torch.testing.assert_close(result[4], torch.tensor([0., 0., 10., 0., 10., 0.]))
+    scenario = make_scenario("SwarmBots-Bridge-v0", compile_reward_kernel=False)
+    assert scenario.get_settings()["success_min_z"] == scenario.platform_top_z == 0.
 
 
 @pytest.mark.parametrize("backend", ["numpy", "torch"])

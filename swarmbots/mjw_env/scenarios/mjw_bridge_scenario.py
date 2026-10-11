@@ -9,6 +9,7 @@ from gymnasium import spaces
 from gymnasium.vector.utils import batch_space
 
 from swarmbots.utils.connector_actions import connector_action_space
+from swarmbots.mjw_env.scenarios.scenario_validation import finite_positive
 from swarmbots.mjw_env.parameter_distributions import (
     BoundedDistParams,
     FloatOrBoundedDistParams,
@@ -74,6 +75,9 @@ class MJWBridgeScenario(BaseMJWScenario):
     randomize_initial_swarm_z_rotation: bool = False
 
     def __post_init__(self) -> None:
+        self.reset_settle_timestep_scale = finite_positive(
+            self.reset_settle_timestep_scale, name="reset_settle_timestep_scale",
+        )
         if self.include_connectors_xquat_in_obs:
             raise ValueError("MJWBridgeScenario currently does not support connector quats in observations")
         if self.timestep <= 0.0:
@@ -114,6 +118,7 @@ class MJWBridgeScenario(BaseMJWScenario):
         self.bridge_center_y = (self.platform_length / 2.0) + (self.bridge_length / 2.0)
         self.bridge_y_max = (self.platform_length / 2.0) + self.bridge_length
         self.success_y = self.bridge_y_max + self.success_margin
+        self.platform_top_z = 0.0
         self.inactive_area_location = (-self.street_width * 1.5, 0.0, 0.1)
         self._validate_bridge_x()
 
@@ -165,6 +170,7 @@ class MJWBridgeScenario(BaseMJWScenario):
             "fall_z_threshold": self.fall_z_threshold,
             "success_margin": self.success_margin,
             "success_y": self.success_y,
+            "success_min_z": self.platform_top_z,
             "success_reward": self.success_reward,
             "fell_off_bridge_reward": self.fell_off_bridge_reward,
             "compile_reward_kernel": self.compile_reward_kernel,
@@ -199,8 +205,7 @@ class MJWBridgeScenario(BaseMJWScenario):
             pos=[-self.side_wall_x, 0, 0],
         )
 
-        platform_top_z = 0.0
-        platform_center_z = platform_top_z - (self.platform_height / 2.0)
+        platform_center_z = self.platform_top_z - (self.platform_height / 2.0)
         platform_rgba = [0.45, 0.45, 0.5, 1.0]
         worldbody.add_geom(
             type=mujoco.mjtGeom.mjGEOM_BOX,

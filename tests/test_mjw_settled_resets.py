@@ -6,6 +6,7 @@ from typing import Any
 from types import SimpleNamespace
 from unittest.mock import Mock
 
+import numpy as np
 import pytest
 import torch
 
@@ -19,7 +20,10 @@ from swarmbots.mjw_env.mjw_swarm_bots_vector_env import (
     _resolve_torch_device,
     _SettledResetSnapshotBuffer,
 )
+from swarmbots.mjw_env.parameter_distributions import UniformDistParams
 from swarmbots.mjw_env.scenarios.base_mjw_scenario import MJWStepResult
+from swarmbots.mjw_env.scenarios.mjw_move_to_runtime import MoveToMJWScenarioRuntime, MoveToResetSpec
+from swarmbots.scenario_presets.move_to_goal_config import RelativePolarGoalConfig
 
 
 class _FakeRuntime:
@@ -103,6 +107,54 @@ class _ManualExecutor:
 
     def shutdown(self, *, wait: bool, cancel_futures: bool) -> None:
         _ = wait, cancel_futures
+
+
+class _OnDemandFuture(Future[list[Any]]):
+    def __init__(self, fn: Callable[..., list[Any]], kwargs: dict[str, Any], *, immediate: bool) -> None:
+        super().__init__()
+        self._fn = fn
+        self._kwargs = kwargs
+        if immediate:
+            self.set_result(fn(**kwargs))
+
+    def result(self, timeout: float | None = None) -> list[Any]:
+        if not self.done():
+            self.set_result(self._fn(**self._kwargs))
+        return super().result(timeout=timeout)
+
+
+class _TimingControlledExecutor:
+    def __init__(self, *, immediate: bool) -> None:
+        self._immediate = immediate
+
+    def submit(self, fn: Callable[..., list[Any]], **kwargs: Any) -> Future[list[Any]]:
+        return _OnDemandFuture(fn, kwargs, immediate=self._immediate)
+
+
+def _make_spec_only_move_to_runtime() -> MoveToMJWScenarioRuntime:
+    runtime = object.__new__(MoveToMJWScenarioRuntime)
+    runtime.bindings = SimpleNamespace(device=torch.device("cpu"))
+    runtime.scenario = SimpleNamespace(
+        swarm=SimpleNamespace(get_active_pool_size=lambda: 50, max_unit_extent=0.1),
+        swarm_start_x=UniformDistParams(-1.0, 1.0),
+        swarm_start_y=UniformDistParams(-1.0, 1.0),
+        randomize_initial_swarm_z_rotation=True,
+        goal=RelativePolarGoalConfig(UniformDistParams(2.0, 5.0)),
+    )
+    runtime.sample_reset_batch = Mock(wraps=runtime.sample_reset_batch)
+    # Keep the actual reset sampling/spec conversion, with worker timing under
+    # test control and no physics needed to compare sampled records.
+    runtime.settle_cpu_reset_specs = lambda *, specs: specs
+    return runtime
+
+
+def _assert_move_to_specs_equal(actual: list[MoveToResetSpec], expected: list[MoveToResetSpec]) -> None:
+    assert len(actual) == len(expected)
+    for actual_spec, expected_spec in zip(actual, expected, strict=True):
+        assert actual_spec.common.pool_idx == expected_spec.common.pool_idx
+        assert actual_spec.common.initial_z_rotation == expected_spec.common.initial_z_rotation
+        np.testing.assert_array_equal(actual_spec.common.swarm_start, expected_spec.common.swarm_start)
+        np.testing.assert_array_equal(actual_spec.goal_position, expected_spec.goal_position)
 
 
 class _FakeSettledResetBuffer:
@@ -390,18 +442,22 @@ def test_mjw_settled_snapshot_buffer_rejects_non_positive_limits(
         )
 
 
-def test_mjw_settled_snapshot_buffer_fill_async_caps_batch_to_available_capacity() -> None:
+def test_mjw_settled_snapshot_buffer_refills_only_when_a_whole_sampling_chunk_fits() -> None:
     env, runtime = _make_uninitialized_env(use_settled_resets=True)
     executor = _ManualExecutor()
-    buffer = _make_snapshot_buffer(runtime=runtime, rng=env._rng, executor=executor, capacity=4, batch_size=3)
-    buffer._snapshots.extend(["ready-0", "ready-1"])
+    buffer = _make_snapshot_buffer(runtime=runtime, rng=env._rng, executor=executor, capacity=6, batch_size=3)
+    buffer._snapshots.extend(["ready-0", "ready-1", "ready-2", "ready-3"])
 
     buffer.fill_async()
     buffer.fill_async()
 
-    assert runtime.sampled_batches == [["sample-0-0", "sample-0-1"]]
+    assert runtime.sampled_batches == []
+    assert executor.submissions == []
+    assert buffer.take(1) == ["ready-0"]
+
+    assert runtime.sampled_batches == [["sample-0-0", "sample-0-1", "sample-0-2"]]
     assert len(executor.submissions) == 1
-    assert executor.submissions[0][1] == {"specs": ["spec-sample-0-0", "spec-sample-0-1"]}
+    assert executor.submissions[0][1] == {"specs": ["spec-sample-0-0", "spec-sample-0-1", "spec-sample-0-2"]}
 
 
 def test_mjw_settled_snapshot_buffer_drains_finished_future_without_refill() -> None:
@@ -443,6 +499,97 @@ def test_mjw_settled_snapshot_buffer_synchronously_settles_underflow() -> None:
     assert runtime.settled_specs == [["spec-sample-0-0", "spec-sample-0-1"]]
     assert len(executor.submissions) == 1
     assert executor.submissions[0][1] == {"specs": ["spec-sample-1-0", "spec-sample-1-1"]}
+
+
+@pytest.mark.parametrize(("capacity", "batch_size"), [(1, 1), (4, 2), (5, 3), (3, 8)])
+def test_mjw_settled_snapshot_buffer_real_samples_are_independent_of_worker_timing(
+    capacity: int,
+    batch_size: int,
+) -> None:
+    reference_runtime = _make_spec_only_move_to_runtime()
+    expected_initial = reference_runtime.build_cpu_reset_specs(
+        reset_batch=reference_runtime.sample_reset_batch(n_reset=7, rng=torch.Generator().manual_seed(7)),
+    )
+    results: list[tuple[list[MoveToResetSpec], list[int], torch.Tensor]] = []
+
+    for immediate in (True, False):
+        runtime = _make_spec_only_move_to_runtime()
+        rng = torch.Generator().manual_seed(7)
+        buffer = _SettledResetSnapshotBuffer(
+            scenario_runtime=runtime,
+            rng=rng,
+            executor=_TimingControlledExecutor(immediate=immediate),
+            capacity=capacity,
+            batch_size=batch_size,
+        )
+        initial = buffer.take(7)
+        _assert_move_to_specs_equal(initial, expected_initial)
+        sampled_specs = list(initial)
+
+        for requested in (3, 1, 8, 2, 4):
+            # Identical control-step refill calls see either already completed
+            # futures or futures that complete only when consumption waits.
+            for _ in range(3):
+                buffer.drain_ready()
+                buffer.fill_async()
+            sampled_specs.extend(buffer.take(requested))
+            reserved_count = len(buffer._snapshots) + len(buffer._reset_specs) + buffer._future_size
+            sample_chunk_size = min(batch_size, max(1, capacity // 2))
+            assert capacity - sample_chunk_size < reserved_count <= capacity
+
+        sample_sizes = [call.kwargs["n_reset"] for call in runtime.sample_reset_batch.call_args_list]
+        results.append((sampled_specs, sample_sizes, rng.get_state().clone()))
+        buffer.clear(wait=True)
+        assert buffer.ready_count() == 0
+        assert not buffer._reset_specs
+        assert buffer._future_size == 0
+        rng.manual_seed(7)
+        _assert_move_to_specs_equal(buffer.take(7), expected_initial)
+        buffer.clear(wait=True)
+
+    _assert_move_to_specs_equal(results[0][0], results[1][0])
+    assert results[0][1] == results[1][1]
+    torch.testing.assert_close(results[0][2], results[1][2])
+
+
+def test_mjw_settled_snapshot_buffer_large_underflow_keeps_bulk_settling() -> None:
+    runtime = _FakeRuntime()
+    buffer = _SettledResetSnapshotBuffer(
+        scenario_runtime=runtime,
+        rng=torch.Generator().manual_seed(7),
+        executor=_TimingControlledExecutor(immediate=False),
+        capacity=4,
+        batch_size=2,
+    )
+
+    assert len(buffer.take(32)) == 32
+    assert len(buffer.take(12)) == 12
+
+    assert [len(batch) for batch in runtime.sampled_batches] == [32, 4, 8, 4]
+    assert [len(specs) for specs in runtime.settled_specs] == [32, 2, 10]
+    assert len(buffer._reset_specs) + buffer._future_size == 4
+    buffer.clear(wait=True)
+
+
+def test_mjw_settled_snapshot_buffer_starts_fresh_work_with_prefetch_headroom() -> None:
+    runtime = _FakeRuntime()
+    buffer = _SettledResetSnapshotBuffer(
+        scenario_runtime=runtime,
+        rng=torch.Generator().manual_seed(7),
+        executor=_TimingControlledExecutor(immediate=False),
+        capacity=8,
+        batch_size=8,
+    )
+    buffer.take(32)
+
+    for _ in range(4):
+        buffer.take(1)
+
+    assert len(buffer._snapshots) == 4
+    assert buffer._future_size == 4
+    assert buffer._future is not None and not buffer._future.done()
+    assert [len(batch) for batch in runtime.sampled_batches] == [32, 8, 4]
+    buffer.clear(wait=True)
 
 
 def test_mjw_reset_with_seed_clears_settled_buffer_before_reseeding() -> None:

@@ -64,8 +64,13 @@ class TorchShuffleAgentsWrapper(TorchEnvWrapper):
         return self._shuffle_obs(observations, permutation=self._agent_permutation)
 
     def set_device(self, device: torch.device | str) -> None:
+        previous_device = self.device
         super().set_device(device)
-        self._rng = torch.Generator(device=self.device)
+        if self.device == previous_device:
+            return
+        # Generator states differ between backends; retain the explicit seed when
+        # moving to another device, while same-device calls preserve the stream.
+        self._rng = torch.Generator(device=self.device).manual_seed(self._rng.initial_seed())
         self._agent_indices = self._agent_indices.to(self.device)
         self._agent_permutation = self._agent_permutation.to(self.device)
         self._inv_agent_permutation = self._inv_agent_permutation.to(self.device)

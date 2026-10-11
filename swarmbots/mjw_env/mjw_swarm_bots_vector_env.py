@@ -130,7 +130,9 @@ class _SettledResetSnapshotBuffer:
         self._capacity = int(capacity)
         self._batch_size = int(batch_size)
         self._snapshots: deque[Any] = deque()
+        self._reset_specs: deque[Any] = deque()
         self._future: Future[list[Any]] | None = None
+        self._future_size = 0
 
     @property
     def capacity(self) -> int:
@@ -150,15 +152,31 @@ class _SettledResetSnapshotBuffer:
             return
         self._snapshots.extend(future.result())
         self._future = None
+        self._future_size = 0
 
     def fill_async(self) -> None:
-        if self._future is not None or len(self._snapshots) >= self._capacity:
+        # Reserve records according to consumption, regardless of how many the
+        # worker has finished. Sampling only the ready-snapshot deficit would
+        # change random-field batching when the worker completes at a new time.
+        reserved_count = len(self._snapshots) + len(self._reset_specs) + self._future_size
+        # Refill whole chunks to amortize CUDA sampling and CPU spec transfers
+        # when ready snapshots are consumed one at a time behind a slow worker.
+        sample_chunk_size = min(self._batch_size, max(1, self._capacity // 2))
+        n_reset = ((self._capacity - reserved_count) // sample_chunk_size) * sample_chunk_size
+        if n_reset > 0:
+            reset_batch = self._scenario_runtime.sample_reset_batch(
+                n_reset=n_reset,
+                rng=self._rng,
+            )
+            self._reset_specs.extend(self._scenario_runtime.build_cpu_reset_specs(reset_batch=reset_batch))
+
+        if self._future is not None or not self._reset_specs:
             return
 
-        n_reset = min(self._batch_size, self._capacity - len(self._snapshots))
-        reset_batch = self._scenario_runtime.sample_reset_batch(n_reset=n_reset, rng=self._rng)
-        specs = self._scenario_runtime.build_cpu_reset_specs(reset_batch=reset_batch)
+        n_reset = min(self._batch_size, len(self._reset_specs))
+        specs = [self._reset_specs.popleft() for _ in range(n_reset)]
         self._future = self._executor.submit(self._scenario_runtime.settle_cpu_reset_specs, specs=specs)
+        self._future_size = n_reset
 
     def take(self, n_snapshots: int) -> list[Any]:
         if n_snapshots <= 0:
@@ -168,11 +186,15 @@ class _SettledResetSnapshotBuffer:
         if len(self._snapshots) < n_snapshots and self._future is not None:
             self._snapshots.extend(self._future.result())
             self._future = None
+            self._future_size = 0
 
         if len(self._snapshots) < n_snapshots:
             missing = n_snapshots - len(self._snapshots)
-            reset_batch = self._scenario_runtime.sample_reset_batch(n_reset=missing, rng=self._rng)
-            specs = self._scenario_runtime.build_cpu_reset_specs(reset_batch=reset_batch)
+            n_reserved = min(missing, len(self._reset_specs))
+            specs = [self._reset_specs.popleft() for _ in range(n_reserved)]
+            if n_reserved < missing:
+                reset_batch = self._scenario_runtime.sample_reset_batch(n_reset=missing - n_reserved, rng=self._rng)
+                specs.extend(self._scenario_runtime.build_cpu_reset_specs(reset_batch=reset_batch))
             self._snapshots.extend(self._scenario_runtime.settle_cpu_reset_specs(specs=specs))
 
         snapshots = [self._snapshots.popleft() for _ in range(n_snapshots)]
@@ -181,12 +203,14 @@ class _SettledResetSnapshotBuffer:
 
     def clear(self, *, wait: bool) -> None:
         self._snapshots.clear()
+        self._reset_specs.clear()
         future = self._future
         if future is None:
             return
         if wait or not future.cancel():
             future.result()
         self._future = None
+        self._future_size = 0
 
 
 class MJWSwarmBotsVectorEnv(VectorEnv):

@@ -57,6 +57,7 @@ def init_unit(
     hinge_frictionloss: HingeJointParam = 0.0,
     minimal_contacts: bool = True,  # makes short limb segments and tips non-collidable and excludes long limb segments from the same unit from collision
     use_cylinders: bool = False,  # if false, uses capsules instead of cylinders
+    legacy_connector_positioning: bool = False,
 ) -> mujoco.MjsBody:
     if not 0.0 < segment_1_ratio < 1.0:
         raise ValueError(f"Expected segment_1_ratio in (0, 1), got {segment_1_ratio}")
@@ -104,6 +105,7 @@ def init_unit(
             joint_frictionlosses=joint_frictionlosses,
             minimal_contacts=minimal_contacts,
             use_cylinders=use_cylinders,
+            legacy_connector_positioning=legacy_connector_positioning,
         )
 
     if minimal_contacts:
@@ -145,6 +147,7 @@ def _build_limb(
         joint_frictionlosses: tuple[float, ...],
         minimal_contacts: bool,
         use_cylinders: bool,
+        legacy_connector_positioning: bool,
 ):
     rgba = tuple(limb_config.rgba)
     if len(joint_specs) < 2:
@@ -188,16 +191,20 @@ def _build_limb(
         parent_segment = segment_body
         tip_offset = seg_length
 
+    # Capsule fromto endpoints are the centers of their rounded caps. The
+    # connection frame belongs at the outer surface, where opposing caps meet.
+    connector_offset = 0.0 if use_cylinders or legacy_connector_positioning else radius
     connector: mujoco.MjsBody = parent_segment.add_body(
         name=get_connector_suffix(limb_idx),
-        pos=[0, 0, tip_offset]
+        pos=[0, 0, tip_offset + connector_offset]
     )
     connector_geom_kwargs: dict[str, int] = {}
     if minimal_contacts:
         connector_geom_kwargs = {"contype": 0, "conaffinity": 0}
     connector.add_geom(
         type=geom_type,
-        fromto=[0, 0, 0, 0, 0, -length * 0.02],
+        # Preserve the tip geom's pose and inertia when moving its body frame.
+        fromto=[0, 0, -connector_offset, 0, 0, -connector_offset - length * 0.02],
         size=[radius * 1.05, 0, 0],
         rgba=rgba,
         **connector_geom_kwargs,
