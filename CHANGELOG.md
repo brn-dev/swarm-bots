@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Condense agent notes to navigation and costly gotchas, removing duplicated defaults and implementation history.
 - Place connector frames on capsule surfaces by default, preserving robot geometry and mass properties; expose `legacy_connector_positioning=True` to restore the original frames and assembly spacing.
 - Make asynchronous settled-reset sampling independent of worker completion timing, and retain agent-shuffle RNG state during repeated device setup.
 - Compute PPO rollout likelihoods from stored bounded actions, matching training recomputation for saturated Gaussian and gSDE actions while retaining SAC's cached pre-tanh path.
@@ -11,13 +12,37 @@
 - Require PayloadStep success to occur over the finite step, support scalar distributions for dual payload offsets, and bound truncated-normal rejection sampling.
 - Support transition-observation histories in benchmark policy adapters; reject oversized PPO batches and correct the optional Monte Carlo entropy gradient.
 - Finish evaluation episode capture before returning, clean up resources after video writer failures, and remove frame striding and its FPS mode options.
-- Added `mappo_mlp` and `mappo_mlp_small` with flattened MLP critics; `mappo` and `mappo_small` retain Deep Set critics. Both critic families support shared-encoder NOP and PopArt.
+- Discard interrupted live-recording episodes after explicit resets while preserving the requested complete-episode count; fix recording filenames for fractional evaluation milestones.
+- Invalidate ready and in-flight settled-reset snapshots when the active morphology pool changes, and reject pool changes while a simulator step is pending.
+- Reject empty swarms in configuration, replay insertion, and SAC entropy reduction; propagate hybrid action-space seeds to all component spaces.
+- Preserve custom PPO scheduler state, enabled flags, and current values in checkpoints; require matching scheduler names and order when restoring.
+- Persist runtime changes to Predicted Std Gaussian's base standard deviation, while retaining constructor defaults for older checkpoints.
+- Restore compressed metrics logs before appending on resume, preserving earlier rows and columns; retain singleton samples for deferred summary-statistic histograms.
+- Preserve raw predictions when updating biasless PopArt statistics, and preserve NOP rotation-conversion gradients at zero rotation.
+- Remove PPO's `virtual_mini_batches` option and commands; configure the sampler's actual batch size instead.
+- Remove the NumPy observation-normalization and episode-statistics wrappers, worker-pool CPU environment, and separate-environment learning recording helper/fallback; use Torch wrappers and live vector recording.
+- Package policy inspection, architecture diagrams, and log/experiment plotting under `swarmbots.tools`, with installed `swarmbots-inspect-policies`, `swarmbots-diagram-policies`, `swarmbots-plot-logs`, and `swarmbots-plot-experiments` commands and equivalent Python module entry points.
+- Added offline policy architecture galleries with SVG, Mermaid, and Graphviz exports across model scales; retain complete parameter audits during partial diagram selections and support stacked SwiGLU layouts.
+- Added fixed `2.5M NOP0.75M`, `5M NOP1M`, and `10M NOP2M` model-scale tiers, with regular presets defaulting to `5M NOP1M`; expose `list_model_scales()` and save resolved layouts and versions in run/checkpoint metadata. Use `model_scale=None` or CLI `--model-scale legacy` for explicit widths and older checkpoints.
+- Replace `ppo_small`, `mappo_small`, and `mappo_mlp_small` preset names with model-scale selection; limit the default `list_variants()` and parameter sweep to 18 core presets while keeping optional presets available by name and listing them with `include_hidden=True`.
+- Added policy parameter and layer-layout audits, compact snapshots, and model-scale comparisons; `trainable_minus_nop` excludes frozen targets and shared parameters are counted once.
+- Added independent `full`, `minimal`, and `return_success` console and CSV/W&B logging levels, defaulting to `minimal` console output and `full` persistence, with custom console selections and retained scenario outcomes.
+- Added `swarmbots.plotting` and the optional `plot` extra for compressed training-log reading, individual-run plots, and equal-seed mean/standard-deviation comparisons over finite sample ranges; sort and deduplicate samples before optional smoothing.
+- Added runnable train/evaluate/record workflows for public presets and recurrent TD3; rename the random-policy example to `examples/evaluate_random_policy.py`.
+- Correct recurrent TMASAC critics to retain their full feed-forward capacity instead of inheriting the recurrent actor's split budget.
+- Added `mappo_mlp` with a flattened MLP critic; `mappo` retains a Deep Set critic. Both critic families support shared-encoder NOP and PopArt.
+- Condition MAPPO and off-policy baseline Deep Set element encoders on global context while retaining direct context after pooling; `mappo_critic_context_in_elements=False` and `baseline_critic_context_in_elements=False` restore their previous checkpoint layouts.
+- Added optional joint local/global observation embeddings for MAT/RMAT encoders and transformer critics via `mat_joint_obs_embedding=True`, retaining additive embeddings by default; reconstruct joint-embedding checkpoints with the same setting.
 - Checkpoint recordings preserve configured DDPG/TD3 exploration noise; Python and CLI overrides support older checkpoints.
 - Added cooperative MADDPG, MATD3, and MASAC baselines with large flattened MLP or masked Deep Set critics, plus TMATD3 and its decentralized-actor variant.
 - Added deterministic target actors, bounded exploration and target smoothing, persistent TD3 update delays, and deterministic-policy support in benchmark evaluation.
+- Added recurrent TD3 actors and optional recurrent TMATD3 critics, with sequence replay, burn-in, and separate online/target actor history states.
+- Feed-forward critics for recurrent TD3 condition on detached actor state by default; use `td3_actor_state_critic_input_config=None` for checkpoints trained without that input.
+- Expose `critic_independent_encoders` for TMASAC/TMATD3 transformer twin critics, which share an encoder by default; set it to `True` to reconstruct independent-encoder checkpoints.
+- Consolidate SAC/DDPG/TD3 rollout, replay, NOP, and checkpoint helpers under a shared off-policy lifecycle, retaining historical SAC imports; add opt-in delayed SAC actor/temperature updates and target smoothing with unchanged SAC defaults.
 - Added optional actor and critic NOP losses for Deep Set and transformer off-policy baselines, with multi-step replay and checkpoint continuation; flattened off-policy MLP critics reject NOP.
 - Enabled critic NOP by default for the Deep Set and transformer off-policy baselines; marked their MLP variants as (no NOP) in the learning guide.
-- Documented the baseline architectures and team-objective adaptation, with DDPG, TD3, MADDPG, MATD3, and Stable-Baselines3 citations and implementation references.
+- Documented the baseline architectures and team-objective adaptation, with DDPG, TD3, MADDPG, MATD3, and Stable-Baselines3 citations and implementation references; add a standalone software citation in `CITATION.bib`.
 
 ## 0.1.0a3 - 2026-10-05
 
