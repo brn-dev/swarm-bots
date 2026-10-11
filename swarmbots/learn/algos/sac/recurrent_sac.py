@@ -106,22 +106,6 @@ class RecurrentSAC(RecurrentOffPolicyMixin, SAC):
             current_actor_state = self.policy.actor_last_layer_state_critic_input(
                 last_layer_actor_state_sequence,
             )
-        actor_action_dist_losses, actor_action_dist_metrics = self._compute_actor_action_dist_extra_losses(
-            agent_mask=learning_batch.agent_mask,
-        )
-        actor_action_dist_losses = {
-            name: _flatten_sequence_tensor(
-                value,
-                batch_size=learning_batch.actions.shape[0],
-                sequence_length=learning_batch.actions.shape[1],
-            )
-            for name, value in actor_action_dist_losses.items()
-        }
-        reduced_actor_action_dist_losses = self._reduce_actor_action_dist_extra_losses(
-            batch=flat_batch,
-            extra_losses=actor_action_dist_losses,
-        )
-
         log_prob_pi_mean = self._mean_agent_log_probs(log_prob_pi, learning_batch.agent_mask)
         ent_coef, ent_coef_loss = self._update_entropy_coefficient(
             log_prob_mean=self._mean_action_samples(
@@ -258,10 +242,6 @@ class RecurrentSAC(RecurrentOffPolicyMixin, SAC):
                     batch=nop_training_batch.batch,
                 )
             actor_total_loss = actor_loss if actor_nop_loss is None else actor_loss + actor_nop_loss
-            if reduced_actor_action_dist_losses:
-                actor_total_loss = (
-                    actor_total_loss + torch.stack(tuple(reduced_actor_action_dist_losses.values())).sum()
-                )
 
             self.actor_optimizer.zero_grad()
             actor_total_loss.backward()
@@ -299,13 +279,6 @@ class RecurrentSAC(RecurrentOffPolicyMixin, SAC):
         if ent_coef_loss is not None:
             metrics["ent_coef_loss"] = ent_coef_loss.detach()
             metrics["ent_coef_learning_rate"] = self._resolved_ent_coef_learning_rate()
-        metrics.update(
-            {
-                f"actor_action_dist_{name}_loss_scaled": value.detach()
-                for name, value in reduced_actor_action_dist_losses.items()
-            }
-        )
-        metrics.update({f"actor_action_dist_{name}": value for name, value in actor_action_dist_metrics.items()})
         metrics.update(actor_nop_metrics)
         metrics.update(critic_nop_metrics)
         result = (metrics, actor_grad_norm, critic_grad_norm)
@@ -441,6 +414,7 @@ class RecurrentSAC(RecurrentOffPolicyMixin, SAC):
             )
             next_actions, next_log_probs = self.policy.action_log_prob_from_latents(
                 actor_latents=next_latents,
+                time_mask=batch.train_mask,
                 agent_mask=batch.next_agent_mask,
                 previous_actions=batch.actions,
                 use_rsample=False,
@@ -452,6 +426,12 @@ class RecurrentSAC(RecurrentOffPolicyMixin, SAC):
                 previous_actions=_final_and_truncation_rows(batch.actions, truncation_indices),
                 deterministic=False,
                 use_rsample=False,
+            )
+            target_time_mask = _final_and_truncation_rows(batch.train_mask, truncation_indices)
+            # Each replay row reserves a truncation successor, even when it never truncates.
+            target_time_mask[batch.actions.shape[0]:] &= truncation_mask
+            self.policy._set_action_dist_metrics_agent_mask(
+                target_inputs["agent_mask"], n_agents=target_actions.shape[-2], time_mask=target_time_mask,
             )
             next_actions = _successor_sequence(
                 actions_pi.detach(),

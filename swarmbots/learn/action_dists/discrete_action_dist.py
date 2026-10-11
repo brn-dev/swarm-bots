@@ -8,7 +8,9 @@ from swarmbots.learn.action_dists.action_dist import (
     ActionDist,
     ActionMetricsSplitterInput,
     compute_action_metrics,
+    resolve_action_metrics_splitter,
 )
+from swarmbots.learn.action_dists.entropy_utils import compute_entropy_metrics
 from swarmbots.learn.summary_statistics import HistogramConfig
 
 
@@ -19,7 +21,7 @@ class DiscreteActionDist(ActionDist, abc.ABC):
             latent_dim: int,
             action_dim: int,
             action_net_initialization: ActionNetInitialization,
-    ):
+    ) -> None:
         super().__init__(
             latent_dim=latent_dim,
             action_dim=action_dim,
@@ -34,16 +36,26 @@ class DiscreteActionDist(ActionDist, abc.ABC):
     def update_distribution_params(self, action_logits: torch.Tensor) -> Self:
         raise NotImplementedError
 
+    @torch.no_grad()
     def get_metrics(
             self,
             actions: torch.Tensor,
             action_splitter: ActionMetricsSplitterInput = None,
+            *,
+            agent_mask: torch.Tensor | None = None,
     ) -> dict[str, Any]:
-        return compute_action_metrics(
+        metrics = compute_action_metrics(
             actions,
             action_splitter,
             histogram=self._get_metrics_histogram(),
         )
+        if self.distribution is not None:
+            metrics.update(compute_entropy_metrics(
+                self.distribution.entropy(),
+                agent_mask=agent_mask,
+                action_splitter=resolve_action_metrics_splitter(action_splitter),
+            ))
+        return metrics
 
     def _get_metrics_histogram(self) -> HistogramConfig | int:
         return 11

@@ -12,14 +12,8 @@ from swarmbots.learn.action_dists.action_dist import (
     compute_action_metrics,
     resolve_action_metrics_splitter,
 )
-from swarmbots.learn.action_dists.entropy_utils import (
-    EntropyLossConfig,
-    compute_ent_loss,
-    compute_ent_metrics,
-)
-from swarmbots.learn.losses import LossMetrics
-from swarmbots.learn.serialization_utils import serialize_dataclass
 from swarmbots.learn.summary_statistics import compute_summary_statistics
+from swarmbots.learn.action_dists.entropy_utils import compute_entropy_metrics
 
 
 STD_HISTOGRAM_BINS = 11
@@ -32,18 +26,14 @@ class ContinuousActionDist(ActionDist, abc.ABC):
             latent_dim: int,
             action_dim: int,
             action_net_initialization: ActionNetInitialization,
-            ent_loss_coef: float = 0.0,
-            ent_loss_config: EntropyLossConfig | None = None,
-    ):
+            squash_output: bool = False,
+    ) -> None:
         super().__init__(
             latent_dim=latent_dim,
             action_dim=action_dim,
             action_net_initialization=action_net_initialization,
         )
-        if ent_loss_coef < 0:
-            raise ValueError(f"Expected ent_loss_coef >= 0, got {ent_loss_coef}")
-        self.ent_loss_coef = ent_loss_coef
-        self.ent_loss_config = ent_loss_config if ent_loss_config is not None else EntropyLossConfig()
+        self.squash_output = squash_output
 
         self.distribution: Optional[torchdist.Distribution] = None
 
@@ -62,43 +52,24 @@ class ContinuousActionDist(ActionDist, abc.ABC):
     ) -> torch.Tensor:
         return self.sum_action_dim(self.distribution.log_prob(actions))
 
-    def compute_entropy_loss(
-            self,
-            *,
-            agent_mask: torch.Tensor | None = None,
-            action_splitter: ActionMetricsSplitterInput = None,
-    ) -> tuple[Optional[torch.Tensor], LossMetrics]:
-        if self.ent_loss_coef <= 0:
-            return None, {}
-        entropy_per_action = self.distribution.entropy()
-        entropy_loss_per_agent = self.ent_loss_coef * compute_ent_loss(
-            config=self.ent_loss_config,
-            entropy_per_action=entropy_per_action,
-        )
-        metrics = compute_ent_metrics(
-            config=self.ent_loss_config,
-            entropy_per_action=entropy_per_action,
-            agent_mask=agent_mask,
-            metrics_action_splitter=resolve_action_metrics_splitter(action_splitter),
-            name="ent",
-        )
-        return entropy_loss_per_agent, metrics
-
-    def get_hyper_parameters(self) -> dict[str, Any]:
-        return {
-            **super().get_hyper_parameters(),
-            "ent_loss_coef": self.ent_loss_coef,
-            "ent_loss_config": serialize_dataclass(self.ent_loss_config),
-        }
-
-
+    @torch.no_grad()
     def get_metrics(
             self,
             actions: torch.Tensor,
             action_splitter: ActionMetricsSplitterInput = None,
+            *,
+            agent_mask: torch.Tensor | None = None,
     ) -> dict[str, Any]:
         splitter = resolve_action_metrics_splitter(action_splitter)
         metrics = compute_action_metrics(actions, splitter, histogram=BOUNDED_ACTION_HISTOGRAM)
+        distribution = getattr(self, "distribution", None)
+        if distribution is not None:
+            metrics.update(compute_entropy_metrics(
+                distribution.entropy(),
+                agent_mask=agent_mask,
+                action_splitter=splitter,
+                name="ent_normal" if self.squash_output else "ent",
+            ))
 
         if not hasattr(self, "log_stds"):
             return metrics
@@ -106,7 +77,7 @@ class ContinuousActionDist(ActionDist, abc.ABC):
         if not isinstance(log_stds, torch.Tensor):
             return metrics
 
-        std_values = torch.exp(log_stds)
+        std_values = self._std_values_for_metrics(agent_mask)
 
         can_split_stds = not (std_values.ndim >= 1 and std_values.shape[-1] == 1 and self.action_dim > 1)
         if splitter is not None and can_split_stds:
@@ -121,11 +92,9 @@ class ContinuousActionDist(ActionDist, abc.ABC):
 
         return metrics
 
+    def _std_values_for_metrics(self, agent_mask: torch.Tensor | None) -> torch.Tensor:
+        return self.log_stds.exp()
+
     @staticmethod
     def sum_action_dim(tensor: torch.Tensor) -> torch.Tensor:
         return tensor.sum(dim=-1)
-
-    def set_ent_loss_coef(self, value: float) -> None:
-        if value < 0:
-            raise ValueError(f"Expected ent_loss_coef >= 0, got {value}")
-        self.ent_loss_coef = value

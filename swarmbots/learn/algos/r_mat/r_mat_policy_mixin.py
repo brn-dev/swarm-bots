@@ -5,7 +5,6 @@ import torch
 from swarmbots.learn.algos.ppo.ppo_rollout_buffer import PPOEpisodeSegment
 from swarmbots.learn.algos.r_mat.r_mat_encoder import RMATEncoder, RMATEncoderState
 from swarmbots.learn.algos.r_mat.r_ppo_wm_sampler import RPPOWMSampler, RPPOWMSamplerConfig
-from swarmbots.learn.losses import LossDict
 
 
 class RMATPolicyMixin:
@@ -270,27 +269,3 @@ def flatten_time_agent_mask(
     if agent_mask is None:
         return time_mask.unsqueeze(-1).expand(*time_mask.shape, n_agents).reshape(-1, n_agents)
     return (agent_mask & time_mask.unsqueeze(-1)).reshape(-1, n_agents)
-
-
-def reshape_extra_losses(
-        *,
-        extra_losses: LossDict,
-        batch_size: int,
-        sequence_length: int,
-        n_agents: int,
-        time_mask: torch.Tensor,
-        loss_agent_mask: torch.Tensor,
-) -> LossDict:
-    reshaped_losses: LossDict = {}
-    flat_time_mask = time_mask.reshape(batch_size * sequence_length)
-    for name, value in extra_losses.items():
-        if value.ndim == 2 and value.shape == (batch_size * sequence_length, n_agents):
-            reshaped_value = value.masked_fill(~loss_agent_mask, 0.0)
-            reshaped_losses[name] = reshaped_value.reshape(batch_size, sequence_length, n_agents)
-            continue
-        if value.ndim == 1 and value.shape == (batch_size * sequence_length,):
-            reshaped_value = value.masked_fill(~flat_time_mask, 0.0)
-            reshaped_losses[name] = reshaped_value.reshape(batch_size, sequence_length)
-            continue
-        reshaped_losses[name] = value
-    return reshaped_losses

@@ -41,7 +41,7 @@ def _compile_with_eager_backend(
 
 
 class HybridActionDistFactoryTests(unittest.TestCase):
-    def test_inductor_actor_refreshes_distribution_state_for_external_entropy_loss(self) -> None:
+    def test_inductor_actor_refreshes_distribution_state_for_entropy_metrics(self) -> None:
         if sys.platform == "win32":
             self.skipTest("TorchInductor's C++ backend requires a complete OpenMP toolchain on Windows")
         torch._dynamo.reset()
@@ -50,7 +50,7 @@ class HybridActionDistFactoryTests(unittest.TestCase):
         action_space = HybridActionSpace([
             ("actions", spaces.Box(-1.0, 1.0, shape=(2, 2), dtype=np.float32)),
         ])
-        config = PredictedStdGaussianConfig(base_std=0.5, ent_loss_coef=0.2)
+        config = PredictedStdGaussianConfig(base_std=0.5)
         torch.manual_seed(321)
         eager_dist = HybridActionDistribution(
             latent_dim=4,
@@ -90,14 +90,11 @@ class HybridActionDistFactoryTests(unittest.TestCase):
             compiled_actions, compiled_log_probs = compiled_actor_fn(current_latent)
             torch.testing.assert_close(compiled_actions, eager_actions)
             torch.testing.assert_close(compiled_log_probs, eager_log_probs)
-            eager_losses = eager_dist.compute_extra_losses_without_metrics()
-            compiled_losses = compiled_dist.compute_extra_losses_without_metrics()
-            self.assertEqual(compiled_losses.keys(), eager_losses.keys())
-            self.assertTrue(compiled_losses)
-            for name in compiled_losses:
-                torch.testing.assert_close(compiled_losses[name], eager_losses[name])
+            eager_metrics = eager_dist.get_metrics(eager_actions)
+            compiled_metrics = compiled_dist.get_metrics(compiled_actions)
+            torch.testing.assert_close(compiled_metrics["act0_ent_normal"], eager_metrics["act0_ent_normal"])
 
-    def test_compile_friendly_continuous_distributions_with_external_losses_refresh_state(self) -> None:
+    def test_compile_friendly_continuous_distributions_refresh_entropy_metrics(self) -> None:
         configs = (
             SquashedDiagGaussianConfig(std=0.5, std_learnable=True),
             PredictedStdGaussianConfig(base_std=0.5),
@@ -135,8 +132,6 @@ class HybridActionDistFactoryTests(unittest.TestCase):
                     )
                     self.assertTrue(eager_dist.compile_friendly)
                     self.assertTrue(compiled_dist.compile_friendly)
-                    eager_dist.set_all_ent_loss_coefs(0.2)
-                    compiled_dist.set_all_ent_loss_coefs(0.2)
 
                     def compiled_actor(latent_pi: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
                         return compiled_dist.get_actions_with_log_probs(
@@ -164,18 +159,12 @@ class HybridActionDistFactoryTests(unittest.TestCase):
                         torch.testing.assert_close(compiled_actions, eager_actions)
                         torch.testing.assert_close(compiled_log_probs, eager_log_probs)
 
-                        torch.manual_seed(456)
-                        eager_losses = eager_dist.compute_extra_losses_without_metrics(
-                            agent_mask=agent_mask,
-                        )
-                        torch.manual_seed(456)
-                        compiled_losses = compiled_dist.compute_extra_losses_without_metrics(
-                            agent_mask=agent_mask,
-                        )
-                        self.assertEqual(compiled_losses.keys(), eager_losses.keys())
-                        self.assertTrue(compiled_losses)
-                        for name in compiled_losses:
-                            torch.testing.assert_close(compiled_losses[name], eager_losses[name])
+                        eager_metrics = eager_dist.get_metrics(eager_actions[agent_mask], agent_mask=agent_mask)
+                        compiled_metrics = compiled_dist.get_metrics(compiled_actions[agent_mask], agent_mask=agent_mask)
+                        entropy_names = {name for name in eager_metrics if "_ent" in name}
+                        self.assertTrue(entropy_names)
+                        for name in entropy_names:
+                            torch.testing.assert_close(compiled_metrics[name], eager_metrics[name])
                 finally:
                     torch._dynamo.reset()
 
@@ -280,19 +269,18 @@ class HybridActionDistFactoryTests(unittest.TestCase):
             action_space=spaces.Box(-1.0, 1.0, shape=(2, 2), dtype=np.float32),
             action_space_dim=2,
             action_net_initialization=init_linear_orthogonal,
-            continuous_config=BetaConfig(ent_loss_coef=1e-3),
+            continuous_config=BetaConfig(),
         )
         latent = torch.zeros(3, 2, 4)
 
         dist.update_latent_features(latent)
         actions = dist.mode()
         log_probs = dist.log_prob(actions)
-        losses, metrics = dist.compute_extra_losses()
+        metrics = dist.get_metrics(dist.mode())
 
         self.assertIsInstance(dist, BetaActionDist)
         self.assertEqual(actions.shape, (3, 2, 2))
         self.assertEqual(log_probs.shape, (3, 2))
-        self.assertIn("entropy", losses)
         self.assertIn("ent", metrics)
         self.assertTrue(dist.compile_friendly)
 
@@ -406,7 +394,7 @@ class HybridActionDistFactoryTests(unittest.TestCase):
         self.assertFalse(actions.requires_grad)
         self.assertTrue(log_probs.requires_grad)
 
-    def test_squashed_diag_gaussian_config_computes_entropy_loss(self) -> None:
+    def test_squashed_diag_gaussian_config_reports_normal_entropy(self) -> None:
         dist = make_proba_distribution(
             latent_dim=4,
             action_space=spaces.Box(-1.0, 1.0, shape=(2, 2), dtype=np.float32),
@@ -415,19 +403,17 @@ class HybridActionDistFactoryTests(unittest.TestCase):
             continuous_config=SquashedDiagGaussianConfig(
                 std=0.25,
                 std_learnable=True,
-                ent_loss_coef=1e-3,
             ),
         )
         latent = torch.zeros(3, 2, 4)
 
         dist.update_latent_features(latent)
-        losses, metrics = dist.compute_extra_losses()
+        metrics = dist.get_metrics(dist.mode())
 
         self.assertIsInstance(dist, SquashedDiagGaussianActionDist)
-        self.assertIn("entropy", losses)
-        self.assertIn("ent", metrics)
+        self.assertIn("ent_normal", metrics)
 
-    def test_predicted_std_gaussian_config_computes_entropy_loss_when_squashed_by_factory(self) -> None:
+    def test_predicted_std_gaussian_config_reports_normal_entropy_when_squashed_by_factory(self) -> None:
         dist = make_proba_distribution(
             latent_dim=4,
             action_space=spaces.Box(-1.0, 1.0, shape=(2, 2), dtype=np.float32),
@@ -435,18 +421,16 @@ class HybridActionDistFactoryTests(unittest.TestCase):
             action_net_initialization=init_linear_orthogonal,
             continuous_config=PredictedStdGaussianConfig(
                 base_std=0.25,
-                ent_loss_coef=1e-3,
             ),
         )
         latent = torch.zeros(3, 2, 4)
 
         dist.update_latent_features(latent)
-        losses, metrics = dist.compute_extra_losses()
+        metrics = dist.get_metrics(dist.mode())
 
         self.assertIsInstance(dist, PredictedStdGaussianActionDist)
         self.assertTrue(dist.squash_output)
-        self.assertIn("entropy", losses)
-        self.assertIn("ent", metrics)
+        self.assertIn("ent_normal", metrics)
 
     def test_predicted_std_gaussian_metrics_include_predicted_stds(self) -> None:
         dist = make_proba_distribution(

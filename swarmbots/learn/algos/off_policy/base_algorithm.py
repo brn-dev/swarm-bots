@@ -37,6 +37,7 @@ from swarmbots.learn.algos.off_policy.tensor_ops import (
 from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
 from swarmbots.learn.exponential_moving_average import ExponentialMovingAverage
 from swarmbots.learn.gsde_reset import (
+    GSDEEpisodeResetMode,
     GSDEResetMode,
     GSDEIntervalResetMode,
     GSDEProbabilityResetMode,
@@ -273,6 +274,8 @@ class OffPolicyAlgorithm(BaseAlgorithm):
 
         rollout_steps = int(rollout_metrics.get("transitions_collected", self.rollout_steps_per_iteration))
         rollout_actions = rollout_metrics.pop("_rollout_actions", None)
+        if rollout_actions is not None:
+            rollout_metrics.update(self._compute_action_metrics(rollout_actions, prefix="rollout"))
         self.n_total_timesteps += rollout_steps
         self.n_total_iterations += 1
 
@@ -304,8 +307,6 @@ class OffPolicyAlgorithm(BaseAlgorithm):
             "random_actions": random_actions,
             "replay_size": len(self.replay_buffer),
         }
-        if rollout_actions is not None:
-            metrics.update(self._compute_action_metrics(rollout_actions, prefix="rollout"))
         return metrics, rollout_steps
 
     def train(self, *, gradient_steps: int) -> dict[str, Any]:
@@ -317,7 +318,7 @@ class OffPolicyAlgorithm(BaseAlgorithm):
             self.policy.to(self.train_device)
             self._move_extra_training_tensors_to_device()
 
-        loss_metrics = MetricsLists[float]()
+        loss_metrics = MetricsLists[float | torch.Tensor]()
         actor_grad_norms: list[float] = []
         critic_grad_norms: list[float] = []
         pending_step_results: list[TrainStepResult] = []
@@ -757,18 +758,22 @@ class OffPolicyAlgorithm(BaseAlgorithm):
                     f"{total_replay_capacity}."
                 )
             self.batch_size = batch_size
+            if not self.independent_nop_sampling:
+                self.nop_batch_size = batch_size
             logger.warning(f"Setting batch_size to {self.batch_size}")
             return True
         if cmd == "set_gamma":
-            self.gamma = float(params)
-            if not (0.0 <= self.gamma <= 1.0):
-                raise ValueError(f"gamma must be in [0, 1], got {self.gamma}")
+            gamma = float(params)
+            if not (0.0 <= gamma <= 1.0):
+                raise ValueError(f"gamma must be in [0, 1], got {gamma}")
+            self.gamma = gamma
             logger.warning(f"Setting gamma to {self.gamma}")
             return True
         if cmd == "set_tau":
-            self.tau = float(params)
-            if not (0.0 < self.tau <= 1.0):
-                raise ValueError(f"tau must be in (0, 1], got {self.tau}")
+            tau = float(params)
+            if not (0.0 < tau <= 1.0):
+                raise ValueError(f"tau must be in (0, 1], got {tau}")
+            self.tau = tau
             logger.warning(f"Setting tau to {self.tau}")
             return True
         if cmd in {"set_nop_loss_coef", "set_wm_loss_coef", "wm_loss_coef"}:
@@ -785,6 +790,8 @@ class OffPolicyAlgorithm(BaseAlgorithm):
     def _serialize_gsde_reset_mode(mode: GSDEResetMode | None) -> dict[str, Any] | None:
         if mode is None:
             return None
+        if isinstance(mode, GSDEEpisodeResetMode):
+            return {"mode": "episode"}
         if isinstance(mode, GSDEIntervalResetMode):
             return {"type": "interval", "interval": mode.interval}
         if isinstance(mode, GSDEProbabilityResetMode):

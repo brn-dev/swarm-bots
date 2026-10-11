@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import torch
+from torch.nn import functional as F
 
 from swarmbots.learn.algos.base_algorithm import BaseAlgorithm
 from swarmbots.learn.base_policy import BasePolicy
@@ -31,9 +32,23 @@ class BenchmarkPolicy:
     and evaluation must not run concurrently.
     """
 
-    def __init__(self, policy: BasePolicy, env: BaseLearnEnvWrapper, *, deterministic: bool = True) -> None:
+    def __init__(
+        self,
+        policy: BasePolicy,
+        env: BaseLearnEnvWrapper,
+        *,
+        deterministic: bool = True,
+        scenario_id: int | None = None,
+    ) -> None:
         self.policy = policy
         self.deterministic = deterministic
+        self.scenario_id = scenario_id
+        self.has_scenario_id = env.has_scenario_id
+        if scenario_id is not None:
+            if not self.has_scenario_id:
+                raise ValueError("scenario_id selection requires a scenario-conditioned training environment.")
+            if not 0 <= scenario_id < len(env.scenario_names):
+                raise ValueError(f"scenario_id must be in [0, {len(env.scenario_names)}), got {scenario_id}.")
         observation_transforms = []
         while hasattr(env, "env"):
             if isinstance(env, TorchFeatureWiseObsNormWrapper) and env.obs_key in ("local_obs", "global_obs"):
@@ -59,6 +74,21 @@ class BenchmarkPolicy:
     ) -> Mapping[str, torch.Tensor]:
         # The evaluator may pass privileged fields, but they must never reach the actor.
         actor_obs = {key: observations[key] for key in ("local_obs", "global_obs", "agent_mask")}
+        scenario_ids = observations.get("scenario_id")
+        if scenario_ids is None and self.scenario_id is not None:
+            scenario_ids = torch.full_like(episode_starts, self.scenario_id, dtype=torch.long)
+        if self.has_scenario_id:
+            if scenario_ids is None:
+                raise ValueError(
+                    "Scenario-conditioned benchmark policies require observations['scenario_id'] "
+                    "or an explicit scenario_id selection."
+                )
+            global_obs = actor_obs["global_obs"]
+            padding = self.action_env.global_obs_dim - global_obs.shape[-1]
+            if padding > 0:
+                actor_obs["global_obs"] = F.pad(global_obs, (0, padding))
+        if scenario_ids is not None:
+            actor_obs["scenario_ids"] = scenario_ids
         for transform in self.observation_transforms:
             if isinstance(transform, TorchFeatureWiseObsNormWrapper):
                 was_updating = transform.update_running_mean
@@ -148,6 +178,16 @@ class BenchmarkPolicy:
         return transformed
 
 
-def as_benchmark_policy(algorithm: BaseAlgorithm, *, deterministic: bool = True) -> BenchmarkPolicy:
-    """Return a policy accepted by ``swarmbots.evaluate_policy``."""
-    return BenchmarkPolicy(algorithm.policy, algorithm.env, deterministic=deterministic)
+def as_benchmark_policy(
+    algorithm: BaseAlgorithm,
+    *,
+    deterministic: bool = True,
+    scenario_id: int | None = None,
+) -> BenchmarkPolicy:
+    """Adapt an actor for benchmark evaluation, selecting a scenario when needed.
+
+    ``scenario_id`` identifies a task in a scenario-conditioned training environment
+    when benchmark observations omit their own ``scenario_id``. Supplied observation
+    IDs take precedence. Single-task global observations are padded before normalization.
+    """
+    return BenchmarkPolicy(algorithm.policy, algorithm.env, deterministic=deterministic, scenario_id=scenario_id)

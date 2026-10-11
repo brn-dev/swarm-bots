@@ -246,6 +246,8 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
 
         if first_episode_length is not None and first_episode_lengths is not None:
             raise ValueError("Pass only one of first_episode_length or first_episode_lengths")
+        if first_episode_length is not None and first_episode_length < 0:
+            raise ValueError("first_episode_length must be >= 0")
         if first_episode_length is not None and first_episode_length > episode_length:
             raise ValueError(
                 f"first_episode_length can not be longer than episode_length ({episode_length}), got {first_episode_length}"
@@ -330,7 +332,7 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
             raise ValueError(f"Expected njmax > 0, got {resolved_njmax}")
         self._nconmax = resolved_nconmax
         self._njmax = resolved_njmax
-        with wp.ScopedDevice(self._wp_device):
+        with wp.ScopedDevice(self._wp_device), self._warp_stream_scope():
             self._model = mjw.put_model(self._host_model)
             self._data = mjw.make_data(
                 self._host_model,
@@ -651,7 +653,20 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
             self._settled_reset_buffer.clear(wait=True)
         return size
 
+    def _warp_stream_scope(self) -> wp.ScopedStream:
+        stream = wp.stream_from_torch(torch.cuda.current_stream(self.device)) if self.device.type == "cuda" else None
+        return wp.ScopedStream(stream)
+
     def reset(
+        self,
+        *,
+        seed: int | None = None,
+        options: dict[str, Any] | None = None,
+    ) -> tuple[dict[str, torch.Tensor], dict[str, Any]]:
+        with self._warp_stream_scope():
+            return self._reset(seed=seed, options=options)
+
+    def _reset(
         self,
         *,
         seed: int | None = None,
@@ -682,7 +697,7 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
         self._refill_settled_reset_buffer()
         return self._build_obs(), {}
 
-    def close(self) -> None:
+    def close_extras(self, **kwargs: Any) -> None:
         if self._pending_step is not None:
             self.end_step()
         if hasattr(self, "_max_nefc_since_overflow_check"):
@@ -718,6 +733,10 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
         return self._pending_step is not None
 
     def begin_step(self, actions: dict[str, torch.Tensor]) -> None:
+        with self._warp_stream_scope():
+            self._begin_step(actions)
+
+    def _begin_step(self, actions: dict[str, torch.Tensor]) -> None:
         if self._pending_step is not None:
             raise RuntimeError("begin_step() called while another MJW step is pending.")
 
@@ -814,6 +833,12 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
         )
 
     def end_step(
+        self,
+    ) -> tuple[dict[str, torch.Tensor], torch.Tensor, torch.Tensor, torch.Tensor, dict[str, Any]]:
+        with self._warp_stream_scope():
+            return self._end_step()
+
+    def _end_step(
         self,
     ) -> tuple[dict[str, torch.Tensor], torch.Tensor, torch.Tensor, torch.Tensor, dict[str, Any]]:
         pending_step = self._pending_step

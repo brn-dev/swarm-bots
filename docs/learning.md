@@ -10,7 +10,7 @@ For more information about TMASAC, MAT-QCX, NOP, and SMB, see the [published mas
 
 The included on-policy learners build on [PPO](https://arxiv.org/abs/1707.06347), [MAPPO](https://proceedings.neurips.cc/paper_files/paper/2022/hash/9c1535a02f0ce079433344e14d910597-Abstract-Datasets_and_Benchmarks.html), and [MAT](https://proceedings.neurips.cc/paper_files/paper/2022/hash/69413f87e5a34897cd010ca698097d0a-Abstract-Conference.html). TMASAC combines the thesis's architecture with [SAC](https://proceedings.mlr.press/v80/haarnoja18b.html) and its [automatic-temperature formulation](https://arxiv.org/abs/1812.05905). See [references and attribution](references.md) for citation guidance, prior attention-based multi-agent SAC methods, component credits, and reusable BibTeX entries.
 
-The package also includes next-observation prediction (NOP), self-predictive representations (SPR), action distributions, rollout collection, replay, truncated backpropagation through time (TBPTT), PopArt value normalization, observation normalization, learning-rate scheduling, checkpointing, metrics, evaluation, and video recording. The examples below use the package's built-in presets; architectures and optimizer settings can be customized through the same API.
+The package also includes next-observation prediction (NOP), action distributions, rollout collection, replay, truncated backpropagation through time (TBPTT), PopArt value normalization, observation normalization, learning-rate scheduling, checkpointing, metrics, evaluation, and video recording. PPO collects fixed step rollouts and requires zero dropout in its policy; auxiliary NOP models can use dropout independently. The examples below use the package's built-in presets; architectures and optimizer settings can be customized through the same API.
 
 PyTorch 2.6 or newer is required. W&B logging and interactive command prompts are optional:
 
@@ -311,6 +311,12 @@ trainer = make_training(
 
 Similarly, use `"mat_qcx"` with `continuous_action_dist="gsde"` to select state-dependent exploration.
 
+PPO uses one Monte Carlo entropy coefficient, `mc_ent_coef`, defaulting to `1e-3` in both the learner and training presets. Override it through `algorithm_kwargs`, including `0.0` to disable the bonus. The estimator uses stored action log probabilities with joint importance weights for autoregressive actors and excludes inactive agents and padded steps. SAC keeps its entropy objective and automatic temperature tuning. Distribution-specific entropy loss coefficients, floors, magnitude weighting, and Gaussian entropy quadrature are removed. The new PPO default is a starting value for tuning and changes the training objective from the former extras.
+
+Distribution diagnostics remain available independently of the regularizer: SMB reports categorical, magnitude, and combined entropy; squashed Gaussian `ent_normal` reports the underlying Normal's entropy. PPO's `mc_ent_loss` is the sampled negative-entropy estimate used by its objective, while SAC reports its sampled policy entropy separately.
+
+The `disable_gsde_reset` command selects episode-only noise resets: noise is initialized once and resampled when a lane starts a new episode.
+
 Standard diagonal/squashed Gaussians, discrete/categorical distributions, and Bernoulli distributions are available directly under `swarmbots.learn.action_dists`. Binary connector spaces select Bernoulli; continuous connector spaces use the continuous distribution. The registry's default connectors are continuous. SAC requires a pathwise or straight-through gradient estimator; ordinary SMB's categorical sample is intended for PPO, and Gumbel SMB is its SAC counterpart. Unsupported SAC distributions raise an error during construction.
 
 ## Continue a checkpoint
@@ -353,7 +359,9 @@ result = evaluate_policy(
 print(result.to_dict())
 ```
 
-Create a fresh adapter for each evaluation call and use the policy's device. It passes only `local_obs`, `global_obs`, and `agent_mask` to the actor; privileged fields remain unavailable. Normalization statistics and the actor's training mode are preserved. The adapter owns its recurrent state and previous actions, resetting them at episode boundaries. Stochastic gSDE evaluation resamples noise each step. The actor is shared, so do not train and evaluate it concurrently.
+Create a fresh adapter for each evaluation call and use the policy's device. It passes public observations and, for scenario-conditioned actors, the selected scenario IDs; privileged fields remain unavailable. Normalization statistics and the actor's training mode are preserved. The adapter owns its recurrent state and previous actions, resetting them at episode boundaries. Stochastic gSDE evaluation resamples noise each step. The actor is shared, so do not train and evaluate it concurrently.
+
+For a policy trained with `MultiScenarioVectorEnv`, select the task with `as_benchmark_policy(trainer, scenario_id=trainer.env.scenario_names.index(scenario_name))` when evaluating one registered benchmark. The adapter supplies that ID and pads global observations to the training width before frozen normalization. IDs supplied in multi-scenario observations take precedence over the fixed selection.
 
 This example evaluates one protocol seed. For a complete [benchmark report](benchmark_protocol.md), repeat it with a fresh adapter for each seed `1000` through `1004` and aggregate the five results as shown in the [reporting example](api.md#five-seed-report). Record the checkpoint identifier and architecture in `policy_metadata`, and the benchmark Git commit in `source_revision`.
 

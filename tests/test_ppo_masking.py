@@ -1,3 +1,4 @@
+import math
 import unittest
 
 import pytest
@@ -5,6 +6,7 @@ import pytest
 import torch
 from torch import nn
 
+from swarmbots.learn.action_dists.predicted_std_gaussian_action_dist import PredictedStdGaussianActionDist
 from swarmbots.learn.algos.ppo.ppo import PPO
 from swarmbots.learn.algos.ppo.ppo_sampler import PPOSamples
 
@@ -118,6 +120,25 @@ def test_mc_entropy_excludes_inactive_agents_and_padded_steps(reduction):
 
 
 class PPOMaskingTests(unittest.TestCase):
+    def test_action_diagnostics_drop_padded_steps_without_agent_masks(self) -> None:
+        batch = _make_samples()
+        batch.agent_mask = None
+        batch.time_mask = torch.tensor([[True, False, True], [False, True, True]])
+        actions = PPO._get_action_metrics_actions(batch)
+        expected_actions = batch.actions[batch.time_mask].reshape(-1, batch.actions.shape[-1])
+        torch.testing.assert_close(actions, expected_actions)
+
+        action_dist = PredictedStdGaussianActionDist(latent_dim=2, action_dim=2, base_std=1.)
+        stds = torch.full_like(batch.actions, .5)
+        stds[~batch.time_mask] = math.exp(2.)
+        action_dist.update_distribution_params(
+            torch.zeros_like(stds).flatten(0, 1), stds.log().flatten(0, 1),
+        )
+        valid_mask = PPO._build_action_metrics_valid_mask(batch).flatten(0, 1)
+        metrics = action_dist.get_metrics(actions, agent_mask=valid_mask)
+        self.assertAlmostEqual(metrics["ent"].item(), .5 * math.log(2. * math.pi * math.e) + math.log(.5))
+        self.assertAlmostEqual(metrics["std"].mean, .5)
+
     def test_compute_loss_does_not_backpropagate_through_padded_steps_or_inactive_agents(self) -> None:
         batch = _make_samples()
         batch.time_mask = torch.tensor([

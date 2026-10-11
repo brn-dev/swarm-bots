@@ -7,66 +7,37 @@ from swarmbots.learn.action_dists.gsde_action_dist import GSDEActionDist
 
 
 class GSDEActionDistTests(unittest.TestCase):
-    def test_squashed_gsde_entropy_loss_matches_unsquashed_gaussian_proxy(self) -> None:
-        unsquashed_dist = GSDEActionDist(
-            latent_dim=2,
-            action_dim=3,
-            base_std=0.75,
-            squash_output=False,
-            ent_loss_coef=0.1,
-        )
-        squashed_dist = GSDEActionDist(
-            latent_dim=2,
-            action_dim=3,
-            base_std=0.75,
-            squash_output=True,
-            ent_loss_coef=0.1,
-        )
+    def test_squashed_gsde_labels_underlying_normal_entropy(self) -> None:
+        unsquashed_dist = GSDEActionDist(latent_dim=2, action_dim=3, base_std=0.75)
+        squashed_dist = GSDEActionDist(latent_dim=2, action_dim=3, base_std=0.75, squash_output=True)
         squashed_dist.load_state_dict(unsquashed_dist.state_dict())
         latent_pi = torch.ones((2, 4, 2), dtype=torch.float32)
+        unsquashed_actions = unsquashed_dist.update_latent_features(latent_pi).mode()
+        squashed_actions = squashed_dist.update_latent_features(latent_pi).mode()
 
-        unsquashed_dist.update_latent_features(latent_pi)
-        squashed_dist.update_latent_features(latent_pi)
-        unsquashed_losses, unsquashed_metrics = unsquashed_dist.compute_extra_losses()
-        squashed_losses, squashed_metrics = squashed_dist.compute_extra_losses()
+        unsquashed_metrics = unsquashed_dist.get_metrics(unsquashed_actions)
+        squashed_metrics = squashed_dist.get_metrics(squashed_actions)
 
-        self.assertIn("entropy", squashed_losses)
-        self.assertEqual(tuple(squashed_losses["entropy"].shape), (2, 4))
-        self.assertTrue(torch.allclose(squashed_losses["entropy"], unsquashed_losses["entropy"]))
-        self.assertEqual(squashed_metrics["ent"], unsquashed_metrics["ent"])
+        torch.testing.assert_close(squashed_metrics["ent_normal"], unsquashed_metrics["ent"])
+        self.assertNotIn("ent", squashed_metrics)
+        self.assertFalse(squashed_metrics["ent_normal"].requires_grad)
 
     def test_squashed_gsde_entropy_metrics_respect_agent_mask_and_action_splitter(self) -> None:
-        dist = GSDEActionDist(
-            latent_dim=2,
-            action_dim=4,
-            base_std=0.75,
-            squash_output=True,
-            ent_loss_coef=0.1,
-        )
-        latent_pi = torch.ones((2, 3, 2), dtype=torch.float32)
-        agent_mask = torch.tensor(
-            [
-                [True, False, True],
-                [False, True, True],
-            ],
-            dtype=torch.bool,
-        )
+        dist = GSDEActionDist(latent_dim=2, action_dim=4, base_std=0.75, squash_output=True)
+        latent_pi = torch.tensor([[[1., 1.], [100., 100.], [2., 2.]], [[100., 100.], [3., 3.], [4., 4.]]])
+        agent_mask = torch.tensor([[True, False, True], [False, True, True]])
 
         def split_actions(values: torch.Tensor) -> dict[str, torch.Tensor]:
-            return {
-                "left": values[..., :2],
-                "right": values[..., 2:],
-            }
+            return {"left": values[..., :2], "right": values[..., 2:]}
 
-        dist.update_latent_features(latent_pi)
-        losses, metrics = dist.compute_extra_losses(
-            agent_mask=agent_mask,
-            action_splitter=split_actions,
-        )
+        actions = dist.update_latent_features(latent_pi).mode()
+        metrics = dist.get_metrics(actions[agent_mask], agent_mask=agent_mask, action_splitter=split_actions)
+        entropy = dist.distribution.entropy()
 
-        self.assertIn("entropy", losses)
-        self.assertEqual({"ent", "ent_left", "ent_right"}, set(metrics.keys()))
-        self.assertTrue(all(torch.isfinite(torch.tensor(value)) for value in metrics.values()))
+        for name, values in (("ent_normal", entropy), ("ent_normal_left", entropy[..., :2]),
+                             ("ent_normal_right", entropy[..., 2:])):
+            torch.testing.assert_close(metrics[name], values.mean(dim=-1)[agent_mask].mean())
+            self.assertFalse(metrics[name].requires_grad)
 
     def test_episode_start_reset_expands_env_mask_across_agent_noise(self) -> None:
         torch.manual_seed(1234)

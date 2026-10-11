@@ -319,7 +319,7 @@ class SACNOPTests(unittest.TestCase):
         torch.testing.assert_close(compiled_loss, eager_loss)
         self.assertEqual(compiled_metrics.keys(), eager_metrics.keys())
         for key in eager_metrics:
-            self.assertAlmostEqual(compiled_metrics[key], eager_metrics[key], places=6)
+            torch.testing.assert_close(compiled_metrics[key], eager_metrics[key], rtol=0.0, atol=5e-7)
         torch.testing.assert_close(compiled_latents.grad, eager_latents.grad)
         for (eager_name, eager_parameter), (compiled_name, compiled_parameter) in zip(
                 eager_module.named_parameters(),
@@ -406,11 +406,11 @@ class SACNOPTests(unittest.TestCase):
         )
 
         torch.testing.assert_close(scaled_loss, original_loss * 0.25)
-        self.assertAlmostEqual(
+        torch.testing.assert_close(
             scaled_metrics["test_nop_loss"],
             original_metrics["test_nop_loss"],
         )
-        self.assertAlmostEqual(
+        torch.testing.assert_close(
             scaled_metrics["test_nop_loss_scaled"],
             original_metrics["test_nop_loss_scaled"] * 0.25,
         )

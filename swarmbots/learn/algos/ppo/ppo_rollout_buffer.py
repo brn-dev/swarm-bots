@@ -356,7 +356,7 @@ class PPORolloutBuffer:
         self.accumulator.reset()
         self.episodes = []
 
-    def get_whole_episodes(self) -> list[PPOEpisodeSegment]:
+    def get_completed_episodes(self) -> list[PPOEpisodeSegment]:
         return self._episodes_to_train_dev(self.episodes)
 
     def dump_partial_episodes(

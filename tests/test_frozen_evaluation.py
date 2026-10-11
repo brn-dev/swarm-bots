@@ -4,6 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
 
+import pytest
 import torch
 from torch import nn
 
@@ -271,6 +272,47 @@ def test_frozen_evaluation_can_reuse_stateful_environment() -> None:
     assert evaluation_env.recording_kwargs is None
     runner.close()
     assert evaluation_env.closed
+
+
+@pytest.mark.parametrize("factory_fails", [False, True])
+@pytest.mark.parametrize("device", [
+    "cpu",
+    pytest.param(
+        "cuda", marks=[pytest.mark.cuda, pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")],
+    ),
+])
+def test_first_evaluation_preserves_rng_through_environment_construction(
+    factory_fails: bool, device: str,
+) -> None:
+    policy = _EvaluationPolicy().to(device)
+    evaluation_env = _EvaluationEnv()
+
+    def make_env() -> _EvaluationEnv:
+        torch.manual_seed(987)
+        torch.rand(3)
+        if device == "cuda":
+            torch.rand(3, device=device)
+        if factory_fails:
+            raise RuntimeError("environment construction failed")
+        return evaluation_env
+
+    runner = FrozenEvaluationRunner(make_env=make_env, training_env=object(), policy=policy)
+    cpu_rng_state = torch.random.get_rng_state().clone()
+    cuda_rng_states = torch.cuda.get_rng_state_all() if device == "cuda" else None
+    try:
+        if factory_fails:
+            with pytest.raises(RuntimeError, match="environment construction failed"):
+                runner.evaluate(timesteps=25, milestone_percentage=25.0)
+        else:
+            runner.evaluate(timesteps=25, milestone_percentage=25.0)
+        assert torch.equal(torch.random.get_rng_state(), cpu_rng_state)
+        if cuda_rng_states is not None:
+            assert all(
+                torch.equal(actual, expected)
+                for actual, expected in zip(torch.cuda.get_rng_state_all(), cuda_rng_states, strict=True)
+            )
+    finally:
+        runner.close()
 
 
 def test_scheduled_evaluation_runs_when_milestone_is_crossed() -> None:

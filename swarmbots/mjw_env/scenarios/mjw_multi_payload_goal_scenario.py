@@ -133,6 +133,11 @@ class MJWMultiPayloadGoalScenario:
             raise ValueError(f"Expected physics_njmax > 0, got {self.physics_njmax}")
         self.inactive_area_location = (50.0, 0.0, 0.1)
 
+    @property
+    def payload_spawn_spacing(self) -> float:
+        """Minimum row spacing; resets enlarge clearance for the sampled coordinates."""
+        return max(self.payload_spawn_margin, self._goal_sampling_layout.footprint[0] + 1e-5)
+
     def get_settings(self) -> dict[str, Any]:
         return {
             "swarm": self.swarm.get_settings(),
@@ -170,6 +175,7 @@ class MJWMultiPayloadGoalScenario:
             "payload_mass": self.payload_mass,
             "payload_spawn_y": self.payload_spawn_y,
             "payload_spawn_margin": self.payload_spawn_margin,
+            "payload_spawn_spacing": self.payload_spawn_spacing,
             "goal_rect": self.goal_rect,
             "goal_radius": self.goal_radius,
             "goal_sampling": {

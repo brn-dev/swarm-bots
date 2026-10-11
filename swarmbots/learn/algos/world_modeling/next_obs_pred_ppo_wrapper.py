@@ -104,6 +104,9 @@ class NextObsPredWrapper(
     def action_dist(self) -> HybridActionDistribution:
         return self.policy.action_dist
 
+    def validate_ppo_dropout(self) -> None:
+        self.policy.validate_ppo_dropout()
+
     @property
     def has_popart(self) -> bool:
         return self.policy.has_popart
@@ -196,8 +199,8 @@ class NextObsPredWrapper(
         merged_extra_losses["world_model"] = world_model_loss_scaled
         merged_extra_loss_metrics = dict(extra_loss_metrics)
         merged_extra_loss_metrics.update(nop_loss_metrics)
-        merged_extra_loss_metrics["wm_loss"] = next_obs_pred_loss.item()
-        merged_extra_loss_metrics["wm_loss_scaled"] = world_model_loss_scaled.item()
+        merged_extra_loss_metrics["wm_loss"] = next_obs_pred_loss.detach()
+        merged_extra_loss_metrics["wm_loss_scaled"] = world_model_loss_scaled.detach()
         return log_probs, values, merged_extra_losses, merged_extra_loss_metrics
 
     def make_sampler(

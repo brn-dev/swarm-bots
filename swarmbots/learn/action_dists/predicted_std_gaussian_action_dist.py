@@ -1,16 +1,14 @@
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional, Self, Any
 
 import torch
 import torch.distributions as torchdist
 from torch import nn
 
-from swarmbots.learn.action_dists.action_dist import ActionMetricsSplitterInput, ActionNetInitialization
+from swarmbots.learn.action_dists.action_dist import ActionNetInitialization
 from swarmbots.learn.action_dists.continuous_action_dist import ContinuousActionDist
-from swarmbots.learn.action_dists.entropy_utils import EntropyLossConfig
 from swarmbots.learn.action_dists.tanh_bijector import TanhBijector
-from swarmbots.learn.losses import LossDict, LossMetrics
 from swarmbots.learn.nn_components.nn_init import init_linear_orthogonal
 
 LogStdNetInitialization = ActionNetInitialization
@@ -22,8 +20,6 @@ class PredictedStdGaussianConfig:
     epsilon: float = 1e-6
     log_std_net_initialization: LogStdNetInitialization = init_linear_orthogonal
     log_std_clamp_range: tuple[float, float] = (-20.0, 2.0)
-    ent_loss_coef: float = 0.0
-    ent_loss_config: EntropyLossConfig = field(default_factory=EntropyLossConfig)
 
 
 class PredictedStdGaussianActionDist(ContinuousActionDist):
@@ -39,15 +35,12 @@ class PredictedStdGaussianActionDist(ContinuousActionDist):
             action_net_initialization: ActionNetInitialization = init_linear_orthogonal,
             log_std_net_initialization: LogStdNetInitialization = init_linear_orthogonal,
             log_std_clamp_range: tuple[float, float] = (-20.0, 2.0),
-            ent_loss_coef: float = 0.0,
-            ent_loss_config: EntropyLossConfig | None = None,
     ) -> None:
         super().__init__(
             latent_dim=latent_dim,
             action_dim=action_dim,
             action_net_initialization=action_net_initialization,
-            ent_loss_coef=ent_loss_coef,
-            ent_loss_config=ent_loss_config,
+            squash_output=squash_output,
         )
 
         self.log_std_net = nn.Linear(latent_dim, action_dim)
@@ -58,7 +51,6 @@ class PredictedStdGaussianActionDist(ContinuousActionDist):
         self.register_buffer("base_log_std", torch.tensor(math.log(base_std)))
         self.log_std_clamp_range = log_std_clamp_range
 
-        self.squash_output = squash_output
         self.epsilon = epsilon
 
         self.distribution: Optional[torchdist.Normal] = None
@@ -131,21 +123,6 @@ class PredictedStdGaussianActionDist(ContinuousActionDist):
 
         return log_prob
 
-    def compute_extra_losses(
-            self,
-            *,
-            agent_mask: torch.Tensor | None = None,
-            action_splitter: ActionMetricsSplitterInput = None,
-    ) -> tuple[LossDict, LossMetrics]:
-        ent_loss, ent_loss_metrics = self.compute_entropy_loss(
-            agent_mask=agent_mask,
-            action_splitter=action_splitter,
-        )
-        losses: LossDict = {}
-        if ent_loss is not None:
-            losses["entropy"] = ent_loss
-        return losses, ent_loss_metrics
-
     def get_actions_with_log_probs(
             self,
             latent_pi: torch.Tensor,
@@ -166,6 +143,10 @@ class PredictedStdGaussianActionDist(ContinuousActionDist):
 
     def set_std(self, std: float) -> None:
         self.set_base_std(std)
+
+    def _std_values_for_metrics(self, agent_mask: torch.Tensor | None) -> torch.Tensor:
+        std_values = super()._std_values_for_metrics(agent_mask)
+        return std_values if agent_mask is None else std_values[agent_mask]
 
     def set_base_std(self, std: float) -> None:
         if std <= 0:

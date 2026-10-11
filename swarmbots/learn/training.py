@@ -372,7 +372,7 @@ def make_training(
             "gae_lambda": 0.95,
             "clip_range": 0.05,
             "target_kl": target_kl,
-            "mc_ent_coef": 0.0,
+            "mc_ent_coef": 1e-3,
             "vf_coef": 2.0 if use_popart else 0.5,
             "use_popart": use_popart,
             "agent_logprob_reduction": "sum" if policy_variant == "ppo" else None,

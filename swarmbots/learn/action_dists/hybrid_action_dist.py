@@ -36,7 +36,6 @@ from swarmbots.learn.action_dists.squashed_diag_gaussian_action_dist import (
 )
 from swarmbots.learn.action_dists.temporally_correlated_action_dist import TemporallyCorrelatedActionDist
 from swarmbots.learn.hybrid_action_space import HybridActionSpace
-from swarmbots.learn.losses import LossDict, LossMetrics
 from swarmbots.learn.nn_components.nn_init import init_linear_orthogonal
 from swarmbots.learn.serialization_utils import serialize_dataclass
 
@@ -102,18 +101,6 @@ def _continuous_action_dist_spec(config: ContinuousActionDistConfig) -> _Continu
     raise TypeError(f"Unsupported continuous action config type: {type(config).__name__}")
 
 
-def _replace_ent_loss_coef(
-        config: ContinuousActionDistConfig | None,
-        value: float,
-) -> ContinuousActionDistConfig | None:
-    if config is None or not any(
-            config_field.name == "ent_loss_coef"
-            for config_field in fields(config)
-    ):
-        return config
-    return replace(config, ent_loss_coef=value)
-
-
 def continuous_config_to_dicts(
         continuous_config: ContinuousActionDistConfigInput,
 ) -> dict[str, Any] | list[dict[str, Any] | None] | None:
@@ -144,7 +131,7 @@ class HybridActionDistribution(ActionDist):
             continuous_config: ContinuousActionDistConfigInput,
             bernoulli_config: BernoulliConfig | None = None,
             action_net_initialization: ActionNetInitialization = init_linear_orthogonal,
-    ):
+    ) -> None:
         self.action_space = action_space
         self.action_dims = action_space.agent_action_dims
         if isinstance(continuous_config, list):
@@ -370,52 +357,13 @@ class HybridActionDistribution(ActionDist):
         log_probs = torch.stack(log_prob_parts, dim=-1).sum(dim=-1)
         return actions, log_probs
 
-    def compute_extra_losses(
-            self,
-            *,
-            agent_mask: torch.Tensor | None = None,
-            action_splitter: ActionMetricsSplitterInput = None,
-    ) -> tuple[LossDict, LossMetrics]:
-        losses: LossDict = {}
-        metrics: LossMetrics = {}
-        splitters = self._resolve_action_splitters(action_splitter)
-        for i, dist in enumerate(self.distributions):
-            dist_losses, dist_metrics = dist.compute_extra_losses(
-                agent_mask=agent_mask,
-                action_splitter=splitters[i],
-            )
-            prefix = f"act{i}_"
-            losses.update(self._prefix_named_values(dist_losses, prefix=prefix))
-            metrics.update(self._prefix_named_values(dist_metrics, prefix=prefix))
-        return losses, metrics
-
-    def compute_extra_losses_without_metrics(
-            self,
-            *,
-            agent_mask: torch.Tensor | None = None,
-            action_splitter: ActionMetricsSplitterInput = None,
-    ) -> LossDict:
-        losses: LossDict = {}
-        splitters = self._resolve_action_splitters(action_splitter)
-        for i, dist in enumerate(self.distributions):
-            compute_losses_without_metrics = getattr(dist, "compute_extra_losses_without_metrics", None)
-            if callable(compute_losses_without_metrics):
-                dist_losses = compute_losses_without_metrics(
-                    agent_mask=agent_mask,
-                    action_splitter=splitters[i],
-                )
-            else:
-                dist_losses, _dist_metrics = dist.compute_extra_losses(
-                    agent_mask=agent_mask,
-                    action_splitter=splitters[i],
-                )
-            losses.update(self._prefix_named_values(dist_losses, prefix=f"act{i}_"))
-        return losses
-
+    @torch.no_grad()
     def get_metrics(
             self,
             actions: torch.Tensor,
             action_splitter: ActionMetricsSplitterInput = None,
+            *,
+            agent_mask: torch.Tensor | None = None,
     ) -> dict[str, Any]:
         splitters = self._resolve_action_splitters(action_splitter)
         split_actions = torch.split(actions, self.action_dims, dim=AGENT_ACTIONS_DIM)
@@ -424,7 +372,9 @@ class HybridActionDistribution(ActionDist):
         for i, (dist, dist_actions, dist_splitter) in enumerate(
                 zip(self.distributions, split_actions, splitters, strict=True)
         ):
-            for metric_name, metric_value in dist.get_metrics(dist_actions, dist_splitter).items():
+            for metric_name, metric_value in dist.get_metrics(
+                dist_actions, dist_splitter, agent_mask=agent_mask,
+            ).items():
                 prefixed_name = self._prefix_distribution_metric_name(metric_name=metric_name, index=i)
                 metrics[prefixed_name] = metric_value
         return metrics
@@ -474,35 +424,6 @@ class HybridActionDistribution(ActionDist):
             if callable(scale_std):
                 scale_std(multiplier)
 
-    def set_all_ent_loss_coefs(self, value: float) -> None:
-        if value < 0:
-            raise ValueError(f"ent_loss_coef must be >= 0, got {value}")
-        for dist in self.distributions:
-            set_ent_loss_coef = getattr(dist, "set_ent_loss_coef", None)
-            if callable(set_ent_loss_coef):
-                set_ent_loss_coef(value)
-        for idx, config in enumerate(self.continuous_configs):
-            self.continuous_configs[idx] = _replace_ent_loss_coef(config, value)
-        if self.bernoulli_config is not None:
-            self.bernoulli_config = replace(self.bernoulli_config, ent_loss_coef=value)
-
-    def set_sub_ent_loss_coef(self, sub_dist_idx: int, value: float) -> None:
-        if value < 0:
-            raise ValueError(f"ent_loss_coef must be >= 0, got {value}")
-        if not (0 <= sub_dist_idx < len(self.distributions)):
-            raise IndexError(
-                f"sub_dist_idx out of range [0, {len(self.distributions) - 1}], got {sub_dist_idx}"
-            )
-
-        dist = self.distributions[sub_dist_idx]
-        set_ent_loss_coef = getattr(dist, "set_ent_loss_coef", None)
-        if not callable(set_ent_loss_coef):
-            raise ValueError(f"Action sub-dist {sub_dist_idx} does not support entropy coefficient updates")
-        set_ent_loss_coef(value)
-
-        config = self.continuous_configs[sub_dist_idx]
-        self.continuous_configs[sub_dist_idx] = _replace_ent_loss_coef(config, value)
-
     def set_all_gumbel_temperatures(self, value: float) -> None:
         if value <= 0.0:
             raise ValueError(f"gumbel temperature must be > 0, got {value}")
@@ -528,14 +449,6 @@ class HybridActionDistribution(ActionDist):
         config = self.continuous_configs[sub_dist_idx]
         if isinstance(config, GumbelSoftmaxSignMagnitudeBetaConfig):
             self.continuous_configs[sub_dist_idx] = replace(config, gumbel_temperature=value)
-
-    @staticmethod
-    def _prefix_named_values(
-            values: Mapping[str, Any],
-            *,
-            prefix: str,
-    ) -> dict[str, Any]:
-        return {f"{prefix}{name}": value for name, value in values.items()}
 
     def _resolve_action_splitters(
             self,
@@ -623,8 +536,6 @@ def make_proba_distribution(
             action_dim=action_space_dim,
             initial_prob=bernoulli_config.initial_prob if bernoulli_config is not None else None,
             action_net_initialization=action_net_initialization,
-            ent_loss_coef=bernoulli_config.ent_loss_coef if bernoulli_config is not None else 0.0,
-            ent_loss_config=bernoulli_config.ent_loss_config if bernoulli_config is not None else None,
         )
     else:
         raise NotImplementedError(f"Unsupported action space type: {type(action_space)}")

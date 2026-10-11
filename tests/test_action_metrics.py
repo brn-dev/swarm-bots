@@ -1,23 +1,15 @@
-import math
 import unittest
 
 import torch
 
 from swarmbots.learn.action_dists.bernoulli_action_dist import BernoulliActionDist
-from swarmbots.learn.action_dists.continuous_action_dist import ContinuousActionDist
-
-
-class _ContinuousMetricsFixture:
-    action_dim = 1
-    log_stds = torch.tensor([math.log(2.0)])
+from swarmbots.learn.action_dists.diag_gaussian_action_dist import DiagGaussianActionDist
 
 
 class ActionMetricsTests(unittest.TestCase):
     def test_continuous_action_and_std_histograms_use_separate_ranges(self) -> None:
-        metrics = ContinuousActionDist.get_metrics(
-            _ContinuousMetricsFixture(),
-            torch.zeros(4),
-        )
+        action_dist = DiagGaussianActionDist(latent_dim=2, action_dim=1, std=2.0, std_learnable=False)
+        metrics = action_dist.get_metrics(torch.zeros(4))
 
         action_histogram = metrics["act"].histogram
         std_histogram = metrics["std"].histogram

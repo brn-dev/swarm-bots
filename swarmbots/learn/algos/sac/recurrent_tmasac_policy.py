@@ -503,6 +503,7 @@ class RecurrentTMASACPolicy(TMASACPolicy):
         )
         actions, log_probs = self.action_log_prob_from_latents(
             num_action_samples=num_action_samples,
+            time_mask=time_mask,
             actor_latents=actor_latents,
             agent_mask=agent_mask,
             previous_actions=previous_actions,
@@ -577,6 +578,7 @@ class RecurrentTMASACPolicy(TMASACPolicy):
             last_layer_state_sequence = None
         actions, log_probs = self.action_log_prob_from_latents(
             num_action_samples=num_action_samples,
+            time_mask=time_mask,
             actor_latents=actor_latents,
             agent_mask=agent_mask,
             previous_actions=previous_actions,
@@ -630,6 +632,7 @@ class RecurrentTMASACPolicy(TMASACPolicy):
         actor_latents, next_state, selected_states, shared_latents = result
         actions, log_probs = self.action_log_prob_from_latents(
             num_action_samples=num_action_samples,
+            time_mask=time_mask,
             actor_latents=actor_latents,
             agent_mask=agent_mask,
             previous_actions=previous_actions,
@@ -1030,6 +1033,9 @@ class RecurrentTMASACPolicy(TMASACPolicy):
             entry_point: Callable[..., Any],
             **kwargs: Any,
     ) -> Any:
+        self._set_action_dist_metrics_agent_mask(
+            kwargs["agent_mask"], n_agents=kwargs["local_obs"].shape[-2], time_mask=kwargs.get("time_mask"),
+        )
         return self._run_with_optional_lstm_compilation(lambda: entry_point(**kwargs))
 
     def _run_with_optional_lstm_compilation(self, fn: Callable[[], Any]) -> Any:

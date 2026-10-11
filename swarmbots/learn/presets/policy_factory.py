@@ -9,7 +9,6 @@ from loguru import logger
 
 from swarmbots.learn.action_dists.bernoulli_action_dist import BernoulliConfig
 from swarmbots.learn.action_dists.beta_action_dist import BetaConfig
-from swarmbots.learn.action_dists.entropy_utils import AgentActionsReduction, EntropyLossConfig
 from swarmbots.learn.action_dists.gsde_action_dist import GSDEConfig
 from swarmbots.learn.action_dists.gumbel_softmax_sign_magnitude_action_dist import GumbelSoftmaxSignMagnitudeBetaConfig
 from swarmbots.learn.action_dists.hybrid_action_dist import ContinuousActionDistConfig
@@ -201,56 +200,22 @@ def set_actuator_gsde_init_joint_stds(
             gsde_dist.log_stds[:, i::actuators_per_limb] = math.log(joint_std)
 
 
-def make_sign_magnitude_categorical_entropy_config() -> EntropyLossConfig:
-    return EntropyLossConfig(
-        entropy_floor=0.35,
-        agent_actions_reduction=AgentActionsReduction.SUM,
-        metrics_reduction=AgentActionsReduction.MEAN,
-    )
-
-
-def make_sign_magnitude_magnitude_entropy_config() -> EntropyLossConfig:
-    return EntropyLossConfig(
-        agent_actions_reduction=AgentActionsReduction.SUM,
-        metrics_reduction=AgentActionsReduction.MEAN,
-    )
-
-
 def make_continuous_config(
     *,
     variant: ContinuousActionDistVariant,
     gsde_init_stds: list[float],
     action_net_init_gain: float = 0.01,
-    ent_loss_coef: float = 1e-3,
 ) -> ContinuousActionDistConfig:
     if variant == "sign_magnitude_beta":
-        return SignMagnitudeBetaConfig(
-            ent_loss_coef=ent_loss_coef,
-            beta_ent_scale=0.75,
-            categorical_ent_loss_config=make_sign_magnitude_categorical_entropy_config(),
-            beta_ent_loss_config=make_sign_magnitude_magnitude_entropy_config(),
-        )
+        return SignMagnitudeBetaConfig()
     if variant == "gumbel_softmax_sign_magnitude_beta":
-        return GumbelSoftmaxSignMagnitudeBetaConfig(
-            ent_loss_coef=ent_loss_coef,
-            beta_ent_scale=0.75,
-            categorical_ent_loss_config=make_sign_magnitude_categorical_entropy_config(),
-            beta_ent_loss_config=make_sign_magnitude_magnitude_entropy_config(),
-        )
+        return GumbelSoftmaxSignMagnitudeBetaConfig()
     if variant == "beta":
-        return BetaConfig(
-            ent_loss_coef=ent_loss_coef,
-            ent_loss_config=make_sign_magnitude_magnitude_entropy_config(),
-        )
+        return BetaConfig()
     if variant == "predicted_std_gaussian":
         return PredictedStdGaussianConfig(
             base_std=gsde_init_stds[0],
             log_std_net_initialization=make_init_linear_orthogonal(action_net_init_gain),
-            ent_loss_coef=ent_loss_coef,
-            ent_loss_config=EntropyLossConfig(
-                agent_actions_reduction=AgentActionsReduction.SUM,
-                metrics_reduction=AgentActionsReduction.MEAN,
-            ),
         )
     if variant == "gsde":
         return GSDEConfig(
@@ -261,21 +226,11 @@ def make_continuous_config(
             sde_learn_features=False,
             normalize_latent_sde_by_dim=True,
             log_std_clamp_range=(-20.0, 2.0),
-            ent_loss_coef=ent_loss_coef,
-            ent_loss_config=EntropyLossConfig(
-                agent_actions_reduction=AgentActionsReduction.SUM,
-                metrics_reduction=AgentActionsReduction.MEAN,
-            ),
         )
     if variant == "squashed_diag_gaussian":
         return SquashedDiagGaussianConfig(
             std=gsde_init_stds[0],
             std_learnable=True,
-            ent_loss_coef=ent_loss_coef,
-            ent_loss_config=EntropyLossConfig(
-                agent_actions_reduction=AgentActionsReduction.SUM,
-                metrics_reduction=AgentActionsReduction.MEAN,
-            ),
         )
     raise ValueError(f"Unknown continuous action dist variant: {variant}")
 
@@ -496,15 +451,9 @@ def _make_base_policy(
         variant=continuous_action_dist,
         gsde_init_stds=gsde_init_stds,
         action_net_init_gain=mat_init_gains.action_net,
-        ent_loss_coef=0.0 if sac_policy_variant else 1e-3,
     ) if not deterministic_policy_variant else None
     bernoulli_config = BernoulliConfig(
         initial_prob=bernoulli_initial_prob,
-        ent_loss_coef=1e-3,
-        ent_loss_config=EntropyLossConfig(
-            agent_actions_reduction=AgentActionsReduction.SUM,
-            metrics_reduction=AgentActionsReduction.MEAN,
-        ),
     )
     popart_config = PopArtConfig(
         beta=popart_beta,

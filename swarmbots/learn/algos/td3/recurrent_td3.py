@@ -5,6 +5,7 @@ from typing import Any
 import torch
 from torch.nn import functional as F
 
+from swarmbots.learn.algos.off_policy.base_algorithm import TrainStepResult
 from swarmbots.learn.algos.off_policy.recurrent import (
     RecurrentOffPolicyMixin,
     _RecurrentNOPTrainingBatch,
@@ -13,20 +14,28 @@ from swarmbots.learn.algos.off_policy.recurrent import (
     _slice_segment,
     _successor_sequence,
 )
+from swarmbots.learn.algos.off_policy.replay_buffer import OffPolicyReplayEpisodeSegmentBatch
+from swarmbots.learn.algos.r_mat.r_mat_encoder import RMATEncoderState
 from swarmbots.learn.algos.td3.recurrent_td3_policy import RecurrentTD3Policy
 from swarmbots.learn.algos.td3.td3 import TD3
+from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
 from swarmbots.learn.temporal_state import detach_temporal_state
 
 
 class RecurrentTD3(RecurrentOffPolicyMixin, TD3):
     policy: RecurrentTD3Policy
 
-    def __init__(self, policy: RecurrentTD3Policy, env, **kwargs: Any) -> None:
+    def __init__(self, policy: RecurrentTD3Policy, env: BaseLearnEnvWrapper, **kwargs: Any) -> None:
         if not isinstance(policy, RecurrentTD3Policy):
             raise TypeError("RecurrentTD3 requires RecurrentTD3Policy")
         super().__init__(policy, env, **kwargs)
 
-    def _burn_in_actor_state(self, batch, *, target):
+    def _burn_in_actor_state(
+        self,
+        batch: OffPolicyReplayEpisodeSegmentBatch,
+        *,
+        target: bool,
+    ) -> RMATEncoderState | None:
         state = (
             None
             if batch.initial_temporal_state is None
@@ -47,8 +56,14 @@ class RecurrentTD3(RecurrentOffPolicyMixin, TD3):
         return detach_temporal_state(state)
 
     def _train_step(
-        self, batch, *, nop_batch=None, reuse_critic_nop_latents=False, global_update_idx: int, materialize_metrics=True
-    ):
+        self,
+        batch: OffPolicyReplayEpisodeSegmentBatch,
+        *,
+        nop_batch: OffPolicyReplayEpisodeSegmentBatch | None = None,
+        reuse_critic_nop_latents: bool = False,
+        global_update_idx: int,
+        materialize_metrics: bool = True,
+    ) -> TrainStepResult:
         self._mark_cuda_graph_train_step_begin()
         learning_rate = self._apply_actor_critic_learning_rate_for_update(global_update_idx)
         update_actor = self._should_update_actor(global_update_idx)

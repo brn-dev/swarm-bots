@@ -1,5 +1,5 @@
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Optional, Self
 
 import torch
@@ -16,21 +16,7 @@ from swarmbots.learn.action_dists.action_dist import (
     resolve_action_metrics_splitter,
     validate_probability_clamp_epsilon,
 )
-from swarmbots.learn.action_dists.entropy_utils import (
-    AgentActionsReduction,
-    EntropyLossConfig,
-    compute_ent_loss,
-    compute_ent_metrics,
-)
-from swarmbots.learn.losses import LossDict, LossMetrics
-from swarmbots.learn.serialization_utils import serialize_dataclass
-
-
-def _default_entropy_loss_config() -> EntropyLossConfig:
-    return EntropyLossConfig(
-        agent_actions_reduction=AgentActionsReduction.SUM,
-        metrics_reduction=AgentActionsReduction.MEAN,
-    )
+from swarmbots.learn.action_dists.entropy_utils import compute_entropy_metrics
 
 
 @dataclass(frozen=True)
@@ -38,8 +24,6 @@ class BetaConfig:
     alpha: float = 1.0 + math.log(2.0)
     beta: float = 1.0 + math.log(2.0)
     epsilon: float = 1e-6
-    ent_loss_coef: float = 0.0
-    ent_loss_config: EntropyLossConfig = field(default_factory=_default_entropy_loss_config)
 
 
 class BetaActionDist(ActionDist):
@@ -53,8 +37,6 @@ class BetaActionDist(ActionDist):
             alpha: float = 1.0 + math.log(2.0),
             beta: float = 1.0 + math.log(2.0),
             epsilon: float = 1e-6,
-            ent_loss_coef: float = 0.0,
-            ent_loss_config: EntropyLossConfig | None = None,
     ) -> None:
         super().__init__(
             latent_dim=latent_dim,
@@ -68,14 +50,10 @@ class BetaActionDist(ActionDist):
         if beta <= 1.0:
             raise ValueError(f"beta must be > 1.0, got {beta}")
         validate_probability_clamp_epsilon(epsilon)
-        if ent_loss_coef < 0.0:
-            raise ValueError(f"ent_loss_coef must be >= 0, got {ent_loss_coef}")
 
         self.alpha = alpha
         self.beta = beta
         self.epsilon = epsilon
-        self.ent_loss_coef = ent_loss_coef
-        self.ent_loss_config = ent_loss_config if ent_loss_config is not None else _default_entropy_loss_config()
 
         self.output_net = nn.Linear(latent_dim, action_dim * self._OUTPUTS_PER_ACTION)
         if action_net_initialization is not None:
@@ -127,40 +105,22 @@ class BetaActionDist(ActionDist):
         log_prob_01 = self.distribution.log_prob(actions_01)
         return (log_prob_01 + math.log(0.5)).sum(dim=AGENT_ACTIONS_DIM)
 
-    def compute_extra_losses(
-            self,
-            *,
-            agent_mask: torch.Tensor | None = None,
-            action_splitter: ActionMetricsSplitterInput = None,
-    ) -> tuple[LossDict, LossMetrics]:
-        if self.ent_loss_coef <= 0.0:
-            return {}, {}
-
-        entropy_per_action = self.distribution.entropy() + math.log(2.0)
-        entropy_loss = self.ent_loss_coef * compute_ent_loss(
-            config=self.ent_loss_config,
-            entropy_per_action=entropy_per_action,
-        )
-        entropy_metrics = compute_ent_metrics(
-            config=self.ent_loss_config,
-            entropy_per_action=entropy_per_action,
-            agent_mask=agent_mask,
-            metrics_action_splitter=resolve_action_metrics_splitter(action_splitter),
-            name="ent",
-        )
-        return {"entropy": entropy_loss}, entropy_metrics
-
-    def set_ent_loss_coef(self, value: float) -> None:
-        if value < 0.0:
-            raise ValueError(f"ent_loss_coef must be >= 0, got {value}")
-        self.ent_loss_coef = value
-
+    @torch.no_grad()
     def get_metrics(
             self,
             actions: torch.Tensor,
             action_splitter: ActionMetricsSplitterInput = None,
+            *,
+            agent_mask: torch.Tensor | None = None,
     ) -> dict[str, Any]:
-        return compute_action_metrics(actions, action_splitter, histogram=BOUNDED_ACTION_HISTOGRAM)
+        metrics = compute_action_metrics(actions, action_splitter, histogram=BOUNDED_ACTION_HISTOGRAM)
+        if self.distribution is not None:
+            metrics.update(compute_entropy_metrics(
+                self.distribution.entropy() + math.log(2.0),
+                agent_mask=agent_mask,
+                action_splitter=resolve_action_metrics_splitter(action_splitter),
+            ))
+        return metrics
 
     @property
     def compile_friendly(self) -> bool:
@@ -172,8 +132,6 @@ class BetaActionDist(ActionDist):
             "alpha": self.alpha,
             "beta": self.beta,
             "epsilon": self.epsilon,
-            "ent_loss_coef": self.ent_loss_coef,
-            "ent_loss_config": serialize_dataclass(self.ent_loss_config),
         }
 
 

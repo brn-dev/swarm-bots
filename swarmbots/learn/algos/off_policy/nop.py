@@ -237,7 +237,7 @@ class SACNOPModule(nn.Module, NextObsPredMixin):
             *,
             source_latents: torch.Tensor,
             batch: OffPolicyReplayBatch | OffPolicyReplayEpisodeSegmentBatch | SACNOPSequenceBatch,
-    ) -> tuple[torch.Tensor, dict[str, Any]]:
+    ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
         next_obs_pred_loss, metrics = self.compute_next_obs_pred_loss(
             local_latents=source_latents,
             next_local_obs=batch.next_local_obs,
@@ -255,8 +255,8 @@ class SACNOPModule(nn.Module, NextObsPredMixin):
         )
         scaled_loss = self.nop_loss_coef * next_obs_pred_loss
         prefixed_metrics = {f"{self.name}_nop_{key}": value for key, value in metrics.items()}
-        prefixed_metrics[f"{self.name}_nop_loss"] = next_obs_pred_loss.item()
-        prefixed_metrics[f"{self.name}_nop_loss_scaled"] = scaled_loss.item()
+        prefixed_metrics[f"{self.name}_nop_loss"] = next_obs_pred_loss.detach()
+        prefixed_metrics[f"{self.name}_nop_loss_scaled"] = scaled_loss.detach()
         return scaled_loss, prefixed_metrics
 
     def get_hyper_parameters(self) -> dict[str, Any]:

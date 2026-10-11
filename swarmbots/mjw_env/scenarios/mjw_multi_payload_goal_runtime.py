@@ -488,8 +488,9 @@ class MultiPayloadGoalMJWScenarioRuntime(BaseMJWScenarioRuntime):
             max_payloads,
             device=self.bindings.device,
             dtype=torch.float32,
-        ).view(1, -1) * float(self.scenario.payload_spawn_margin)
+        ).view(1, -1) * self._payload_row_spacing(inactive_base[0])
         payload_position[:, :, 2] = float(self.scenario.payload_radius)
+        active_row_spacing = self._payload_row_spacing(common_reset_batch.swarm_start[:, 0])
 
         for reset_idx in range(n_reset):
             active_payload_indices = torch.nonzero(active_payload_mask[reset_idx], as_tuple=False).flatten()
@@ -498,7 +499,7 @@ class MultiPayloadGoalMJWScenarioRuntime(BaseMJWScenarioRuntime):
                 continue
             centered_slots = torch.arange(active_count, device=self.bindings.device, dtype=torch.float32)
             centered_slots -= float(active_count - 1) / 2.0
-            slot_x = centered_slots * float(self.scenario.payload_spawn_margin)
+            slot_x = centered_slots * active_row_spacing[reset_idx]
             slot_x = slot_x[torch.randperm(active_count, device=self.bindings.device, generator=rng)]
             payload_position[reset_idx, active_payload_indices, 0] = (
                 common_reset_batch.swarm_start[reset_idx, 0] + slot_x
@@ -509,6 +510,13 @@ class MultiPayloadGoalMJWScenarioRuntime(BaseMJWScenarioRuntime):
             payload_position[reset_idx, active_payload_indices, 2] = float(self.scenario.payload_radius)
 
         return payload_position
+
+    def _payload_row_spacing(self, origin_x: torch.Tensor) -> torch.Tensor:
+        # Include the row span: both slot multiplication and translation round in float32.
+        row_span = (self.scenario.max_payloads - 1) * self.scenario.payload_spawn_spacing
+        coordinate_scale = (origin_x.abs() + row_span).clamp_min(1.0)
+        clearance = (8.0 * torch.finfo(torch.float32).eps * coordinate_scale).clamp_min(1e-5)
+        return (self._goal_sampler.layout.footprint[0] + clearance).clamp_min(self.scenario.payload_spawn_margin)
 
     def _apply_payload_position(self, *, world_idx: torch.Tensor, payload_position: torch.Tensor) -> None:
         identity_quat = torch.tensor(

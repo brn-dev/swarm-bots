@@ -76,6 +76,7 @@ from swarmbots.learn.temporal_state import (
     stack_temporal_states,
 )
 from swarmbots.learn.testing_env import TestingSwarmBotsEnv
+from tests.action_dist_metrics import distribution_entropy_metrics
 
 _REAL_TORCH_COMPILE = torch.compile
 
@@ -396,7 +397,6 @@ def _small_nop_config(
 def _segment_policy_config(
         *,
         nop_config: SACNOPConfig | None = None,
-        ent_loss_coef: float = 0.0,
         scenario_encoder_config: TMASACScenarioEncoderConfig | None = None,
         actor_head_kind: TMASACActorHeadKind = TMASACActorHeadKind.INDEPENDENT,
 ) -> TMASACPolicyConfig:
@@ -416,7 +416,6 @@ def _segment_policy_config(
         ),
         continuous_config=PredictedStdGaussianConfig(
             base_std=0.5,
-            ent_loss_coef=ent_loss_coef,
         ),
         nop_config=SACNOPConfig() if nop_config is None else nop_config,
         scenario_encoder_config=scenario_encoder_config,
@@ -775,7 +774,6 @@ def _perform_short_recurrent_update(
 def _perform_short_segment_update(
         *,
         nop_config: SACNOPConfig | None = None,
-        ent_loss_coef: float = 0.0,
 ) -> tuple[dict[str, object], int]:
     env = _make_env(max_steps=20)
     try:
@@ -783,7 +781,6 @@ def _perform_short_segment_update(
             env=env,
             config=_segment_policy_config(
                 nop_config=nop_config,
-                ent_loss_coef=ent_loss_coef,
             ),
         )
         algorithm = RecurrentSAC(
@@ -1369,13 +1366,12 @@ class RecurrentTMASACTests(unittest.TestCase):
                     )
 
     def test_segment_tmasac_uses_recurrent_sac_without_temporal_actor_state(self) -> None:
-        metrics, total_updates = _perform_short_segment_update(ent_loss_coef=0.2)
+        metrics, total_updates = _perform_short_segment_update()
 
         self.assertEqual(metrics["updates"], 1)
         self.assertEqual(total_updates, 1)
         self.assertIn("actor_loss", metrics)
         self.assertIn("critic_loss", metrics)
-        self.assertIn("actor_action_dist_act0_entropy_loss_scaled", metrics)
 
     def test_segment_tmasac_supports_sequence_nop(self) -> None:
         metrics, total_updates = _perform_short_segment_update(
@@ -1634,7 +1630,7 @@ class RecurrentTMASACTests(unittest.TestCase):
         )
         eager_config = _policy_config(
             encoder_config,
-            continuous_config=GumbelSoftmaxSignMagnitudeBetaConfig(ent_loss_coef=0.1),
+            continuous_config=GumbelSoftmaxSignMagnitudeBetaConfig(),
         )
         eager_policy = RecurrentTMASACPolicy(
             env=_DummyContinuousEnv(),
@@ -1706,24 +1702,18 @@ class RecurrentTMASACTests(unittest.TestCase):
                 for compiled_tensor, eager_tensor in zip(compiled_layer, eager_layer, strict=True):
                     torch.testing.assert_close(compiled_tensor, eager_tensor)
 
-        eager_extra_losses = eager_policy.action_dist.compute_extra_losses_without_metrics(
-            agent_mask=agent_mask,
-        )
-        compiled_extra_losses = compiled_policy.action_dist.compute_extra_losses_without_metrics(
-            agent_mask=agent_mask,
-        )
-        self.assertEqual(compiled_extra_losses.keys(), eager_extra_losses.keys())
-        self.assertTrue(compiled_extra_losses)
-        for name in compiled_extra_losses:
-            torch.testing.assert_close(compiled_extra_losses[name], eager_extra_losses[name])
+        eager_distribution_metrics = distribution_entropy_metrics(eager_policy.action_dist, eager_outputs[0], agent_mask)
+        compiled_distribution_metrics = distribution_entropy_metrics(compiled_policy.action_dist, compiled_outputs[0], agent_mask)
+        self.assertEqual(compiled_distribution_metrics.keys(), eager_distribution_metrics.keys())
+        self.assertTrue(compiled_distribution_metrics)
+        for name in compiled_distribution_metrics:
+            torch.testing.assert_close(compiled_distribution_metrics[name], eager_distribution_metrics[name])
 
         eager_loss = (
             sum(tensor.square().mean() for tensor in eager_outputs[:3])
-            + torch.stack(tuple(eager_extra_losses.values())).sum()
         )
         compiled_loss = (
             sum(tensor.square().mean() for tensor in compiled_outputs[:3])
-            + torch.stack(tuple(compiled_extra_losses.values())).sum()
         )
         eager_loss.backward()
         compiled_loss.backward()
@@ -1748,18 +1738,14 @@ class RecurrentTMASACTests(unittest.TestCase):
             "global_obs": global_obs - 0.25,
         }
         torch.manual_seed(456)
-        eager_policy.action_log_prob_sequence_with_selected_states(**updated_call_kwargs)
+        updated_eager_outputs = eager_policy.action_log_prob_sequence_with_selected_states(**updated_call_kwargs)
         torch.manual_seed(456)
-        compiled_policy.action_log_prob_sequence_with_selected_states(**updated_call_kwargs)
-        updated_eager_losses = eager_policy.action_dist.compute_extra_losses_without_metrics(
-            agent_mask=agent_mask,
-        )
-        updated_compiled_losses = compiled_policy.action_dist.compute_extra_losses_without_metrics(
-            agent_mask=agent_mask,
-        )
-        self.assertEqual(updated_compiled_losses.keys(), updated_eager_losses.keys())
-        for name in updated_compiled_losses:
-            torch.testing.assert_close(updated_compiled_losses[name], updated_eager_losses[name])
+        updated_compiled_outputs = compiled_policy.action_log_prob_sequence_with_selected_states(**updated_call_kwargs)
+        updated_eager_metrics = distribution_entropy_metrics(eager_policy.action_dist, updated_eager_outputs[0], agent_mask)
+        updated_compiled_metrics = distribution_entropy_metrics(compiled_policy.action_dist, updated_compiled_outputs[0], agent_mask)
+        self.assertEqual(updated_compiled_metrics.keys(), updated_eager_metrics.keys())
+        for name in updated_compiled_metrics:
+            torch.testing.assert_close(updated_compiled_metrics[name], updated_eager_metrics[name])
         self.assertEqual(len(compiled_graphs), 1)
 
     def test_lstm_actor_encoder_compilation_is_opt_in(self) -> None:
@@ -1813,7 +1799,7 @@ class RecurrentTMASACTests(unittest.TestCase):
         )
         eager_config = _policy_config(
             encoder_config,
-            continuous_config=PredictedStdGaussianConfig(base_std=0.5, ent_loss_coef=0.1),
+            continuous_config=PredictedStdGaussianConfig(base_std=0.5),
             actor_head_kind=TMASACActorHeadKind.QCX,
         )
         eager_policy = RecurrentTMASACPolicy(
@@ -1872,15 +1858,11 @@ class RecurrentTMASACTests(unittest.TestCase):
 
         for compiled_tensor, eager_tensor in zip(compiled_outputs[:3], eager_outputs[:3], strict=True):
             torch.testing.assert_close(compiled_tensor, eager_tensor)
-        eager_extra_losses = eager_policy.action_dist.compute_extra_losses_without_metrics(
-            agent_mask=agent_mask,
-        )
-        compiled_extra_losses = compiled_policy.action_dist.compute_extra_losses_without_metrics(
-            agent_mask=agent_mask,
-        )
-        self.assertEqual(compiled_extra_losses.keys(), eager_extra_losses.keys())
-        for name in compiled_extra_losses:
-            torch.testing.assert_close(compiled_extra_losses[name], eager_extra_losses[name])
+        eager_distribution_metrics = distribution_entropy_metrics(eager_policy.action_dist, eager_outputs[0], agent_mask)
+        compiled_distribution_metrics = distribution_entropy_metrics(compiled_policy.action_dist, compiled_outputs[0], agent_mask)
+        self.assertEqual(compiled_distribution_metrics.keys(), eager_distribution_metrics.keys())
+        for name in compiled_distribution_metrics:
+            torch.testing.assert_close(compiled_distribution_metrics[name], eager_distribution_metrics[name])
         self.assertEqual(len(compiled_graphs), 1)
 
     def test_compiled_segment_qcx_sequence_uses_autoregressive_actor_tail(self) -> None:
@@ -4917,14 +4899,14 @@ class RecurrentTMASACTests(unittest.TestCase):
         finally:
             torch._dynamo.reset()
 
-    def test_compiled_recurrent_sac_update_uses_post_actor_distribution_state(self) -> None:
+    def test_compiled_recurrent_sac_updates_supported_actor_distributions(self) -> None:
         configurations = (
             (
-                PredictedStdGaussianConfig(base_std=0.5, ent_loss_coef=0.2),
+                PredictedStdGaussianConfig(base_std=0.5),
                 True,
             ),
             (
-                GumbelSoftmaxSignMagnitudeBetaConfig(ent_loss_coef=0.2),
+                GumbelSoftmaxSignMagnitudeBetaConfig(),
                 False,
             ),
         )
@@ -4944,10 +4926,6 @@ class RecurrentTMASACTests(unittest.TestCase):
                     self.assertEqual(metrics["updates"], 1)
                     self.assertEqual(total_updates, 1)
                     self.assertTrue(math.isfinite(_summary_mean(metrics["actor_total_loss"])))
-                    for action_idx in range(2):
-                        metric_name = f"actor_action_dist_act{action_idx}_entropy_loss_scaled"
-                        self.assertIn(metric_name, metrics)
-                        self.assertTrue(math.isfinite(_summary_mean(metrics[metric_name])))
                 finally:
                     torch._dynamo.reset()
 

@@ -9,7 +9,6 @@ from swarmbots.learn.algos.r_mat.r_mat_encoder import RMATEncoder, RMATEncoderCo
 from swarmbots.learn.algos.r_mat.r_mat_policy_mixin import (
     RMATPolicyMixin,
     flatten_time_agent_mask,
-    reshape_extra_losses,
 )
 from swarmbots.learn.algos.r_mat.r_ppo_wm_sampler import RPPOWMSamples
 from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import (
@@ -116,23 +115,10 @@ class RMATIndPolicy(RMATPolicyMixin, MATIndPolicy):
         flat_time_mask = batch.time_mask.reshape(flat_batch_size)
         flat_values = flat_values.masked_fill(~flat_time_mask, 0.0)
 
-        extra_losses, extra_loss_metrics = self.action_dist.compute_extra_losses(
-            agent_mask=flat_loss_agent_mask,
-            action_splitter=action_splitter,
-        )
-        reshaped_extra_losses = reshape_extra_losses(
-            extra_losses=extra_losses,
-            batch_size=batch_size,
-            sequence_length=sequence_length,
-            n_agents=n_agents,
-            time_mask=batch.time_mask,
-            loss_agent_mask=flat_loss_agent_mask,
-        )
-
         return (
             flat_log_probs.reshape(batch_size, sequence_length, n_agents),
             flat_values.reshape(batch_size, sequence_length),
-            reshaped_extra_losses,
-            extra_loss_metrics,
+            {},
+            {},
             augmented_observations,
         )

@@ -1321,6 +1321,32 @@ def test_multi_scenario_vector_env_closes_every_child() -> None:
     assert second.was_closed
 
 
+def test_multi_scenario_vector_env_closes_remaining_children_before_raising_first_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    children = [
+        _DirectVectorEnv(num_envs=1, global_obs_dim=1, hidden_local_vars_dim=1, hidden_global_vars_dim=1)
+        for _ in range(3)
+    ]
+    errors = [OSError("disk full"), RuntimeError("second close failed")]
+    for child, error in zip(children, errors):
+        original_close = child.close
+
+        def fail_close(
+            *, original_close: Any = original_close, error: Exception = error, **kwargs: Any,
+        ) -> None:
+            original_close(**kwargs)
+            raise error
+
+        monkeypatch.setattr(child, "close", fail_close)
+    env = MultiScenarioVectorEnv(dict(zip(("first", "second", "third"), children, strict=True)))
+    with pytest.raises(OSError, match="disk full") as raised:
+        env.close(terminate=True)
+    assert raised.value is errors[0]
+    assert all(child.was_closed for child in children)
+    assert all(child.close_kwargs == [{"terminate": True}] for child in children)
+
+
 def test_multi_scenario_vector_env_forwards_close_options() -> None:
     first = _DirectVectorEnv(
         num_envs=1,

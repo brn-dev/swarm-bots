@@ -120,9 +120,11 @@ PayloadPlane, DualPayloadPlane, and MoveTo have no success metric; report return
 
 MultiPayloadGoal samples active goal centres with a guaranteed non-overlapping placement of the payloads at those centres in their reset orientation. It tries 16 batched random assignments, then uses a randomly translated and permuted grid if none are valid. Spheres use centre separation; boxes and horizontal capsules use conservative rectangular footprints. The goal rectangle bounds the centres, not the full payload shapes. Bounds round inward to float32; ranges and spans that cannot be represented safely are rejected. A custom rectangle that cannot accommodate the guaranteed grid for the maximum positive-probability active count is rejected during construction. Sampler parameters are recorded in settings.
 
+Initial payload rows use `payload_spawn_margin` as a minimum centre spacing. The recorded `payload_spawn_spacing` also accommodates the payload's reset-orientation width with a small rounding clearance: horizontal capsules need `4 * payload_radius` along the row, while spheres and boxes need `2 * payload_radius`. Each reset increases clearance as needed for float32 rounding at the sampled row origin and across its span, including inactive payload rows. Both the requested margin and the minimum resolved spacing are recorded in settings.
+
 ## Action contract
 
-`actuators` are continuous values in `[-1, 1]`. `connectors` are continuous by default: positive values accumulate connection intent and negative values accumulate disconnection intent. Scenarios can still be constructed with `continuous_connector_actions=False` for ablations, but those results are not directly comparable to the registered defaults.
+`actuators` are continuous values in `[-1, 1]`. `connectors` are continuous by default: any positive value requests a connection immediately when an eligible partner is nearby. Negative values accumulate disconnection intent according to their magnitude; positive values reduce accumulated disconnection intent, and zero holds it unchanged. Scenarios can still be constructed with `continuous_connector_actions=False` for ablations, but those results are not directly comparable to the registered defaults.
 
 ## Scenario customization
 

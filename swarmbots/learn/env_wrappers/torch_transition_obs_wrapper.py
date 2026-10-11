@@ -120,10 +120,9 @@ class TorchTransitionObsWrapper(TorchEnvWrapper):
         if reset_mask is None:
             reset_mask = torch.ones((self._n_envs,), device=self.device, dtype=torch.bool)
 
-        self._prev_local = self._prev_local.clone()
+        self._prev_local = local.clone()
         self._current_prev_local = self._current_prev_local.clone()
         self._current_prev_actions = self._current_prev_actions.clone()
-        self._prev_local[reset_mask] = local[reset_mask]
         self._current_prev_local[reset_mask] = 0.0
         self._current_prev_actions[reset_mask] = 0.0
 
@@ -133,13 +132,10 @@ class TorchTransitionObsWrapper(TorchEnvWrapper):
         prev_global = None
         if self._has_global_obs and "global_obs" in obs:
             global_obs = obs["global_obs"]
-            if self._prev_global is None:
-                self._prev_global = torch.zeros_like(global_obs)
             if self._current_prev_global is None:
                 self._current_prev_global = torch.zeros_like(global_obs)
-            self._prev_global = self._prev_global.clone()
+            self._prev_global = global_obs.clone()
             self._current_prev_global = self._current_prev_global.clone()
-            self._prev_global[reset_mask] = global_obs[reset_mask]
             self._current_prev_global[reset_mask] = 0.0
             if old_current_prev_global is None:
                 prev_global = torch.zeros_like(global_obs)

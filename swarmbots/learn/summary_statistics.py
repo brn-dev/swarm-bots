@@ -181,7 +181,13 @@ def compute_summary_statistics(
         if isinstance(arr[0], SummaryStatistics):
             return combine_summary_statistics(arr, combine_data=False, combine_histograms=False)
         else:
-            values = np.array(arr).ravel()
+            tensor_value = next((value for value in arr if isinstance(value, torch.Tensor)), None)
+            if tensor_value is None:
+                values = np.array(arr).ravel()
+            else:
+                values = torch.stack([
+                    torch.as_tensor(value, device=tensor_value.device).detach() for value in arr
+                ]).cpu().numpy().ravel()
     elif isinstance(arr, np.ndarray):
         values = arr.ravel()
     elif isinstance(arr, torch.Tensor):

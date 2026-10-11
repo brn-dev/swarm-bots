@@ -47,6 +47,8 @@ finally:
 
 This example applies zero actions to the registered task. Use `num_envs=2, device="cpu"` for a small development run. CPU simulation is much slower than the intended CUDA path; see [GPU setup](gpu_setup.md) before running larger batches.
 
+On CUDA, physics, connector updates, and tensor operations follow the active PyTorch stream. This applies to explicit resets, autoresets, and the deferred `begin_step()` / `end_step()` interface as well as `step()`.
+
 `env.single_observation_space` and `env.single_action_space` describe one world. `env.observation_space` and `env.action_space` include the leading world dimension. Observations contain per-agent `local_obs`, shared `global_obs`, `agent_mask`, and privileged `hidden_local_vars` / `hidden_global_vars`. Actions contain per-agent `actuators` and `connectors`; rewards, terminations, and truncations have one value per world. See the [observation contract](scenarios.md#observation-contract) and [action contract](scenarios.md#action-contract) for field meanings and bounds.
 
 `make_env` forwards `scenario_kwargs` to the registered scenario factory and remaining keyword arguments to `MJWSwarmBotsVectorEnv`. `make_scenario(benchmark_id, seed=..., **scenario_kwargs)` constructs a scenario without a vector environment. Overrides create custom task variants and must be reported with their results.

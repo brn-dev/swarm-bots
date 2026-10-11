@@ -5,7 +5,6 @@ from loguru import logger
 
 from swarmbots.learn.action_dists.action_dist import ActionMetricsSplitterInput
 from swarmbots.learn.action_dists.action_sampling import (
-    expand_action_samples,
     validate_action_sampling,
 )
 from swarmbots.learn.algos.base_algorithm import (
@@ -23,6 +22,7 @@ from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import B
 from swarmbots.learn.gsde_reset import (
     GSDEResetMode,
 )
+from swarmbots.learn.metrics_list import materialize_scalar_metrics
 
 
 from swarmbots.learn.algos.off_policy.base_algorithm import (
@@ -131,13 +131,14 @@ class SAC(OffPolicyAlgorithm):
         }
 
     def _compute_action_metrics(self, actions: torch.Tensor, *, prefix: str) -> dict[str, Any]:
-        return {
+        return materialize_scalar_metrics({
             f"{prefix}_{name}": value
             for name, value in self.policy.action_dist.get_metrics(
                 actions,
                 action_splitter=self.metrics_action_splitters,
+                agent_mask=self.policy.action_dist_metrics_agent_mask,
             ).items()
-        }
+        })
 
     def _train_step(
         self,
@@ -164,13 +165,6 @@ class SAC(OffPolicyAlgorithm):
             **({} if batch.scenario_ids is None else {"scenario_ids": batch.scenario_ids}),
             previous_actions=batch.previous_actions,
             deterministic=False,
-        )
-        actor_action_dist_losses, actor_action_dist_metrics = self._compute_actor_action_dist_extra_losses(
-            agent_mask=batch.agent_mask,
-        )
-        reduced_actor_action_dist_losses = self._reduce_actor_action_dist_extra_losses(
-            batch=batch,
-            extra_losses=actor_action_dist_losses,
         )
         log_prob_pi_mean = self._mean_agent_log_probs(log_prob_pi, batch.agent_mask)
         ent_coef, ent_coef_loss = self._update_entropy_coefficient(
@@ -254,10 +248,6 @@ class SAC(OffPolicyAlgorithm):
             else:
                 actor_nop_loss, actor_nop_metrics = self.policy.compute_actor_nop_loss(nop_loss_batch)
             actor_total_loss = actor_loss if actor_nop_loss is None else actor_loss + actor_nop_loss
-            if reduced_actor_action_dist_losses:
-                actor_total_loss = (
-                    actor_total_loss + torch.stack(tuple(reduced_actor_action_dist_losses.values())).sum()
-                )
 
             self.actor_optimizer.zero_grad()
             actor_total_loss.backward()
@@ -295,13 +285,6 @@ class SAC(OffPolicyAlgorithm):
         if ent_coef_loss is not None:
             metrics["ent_coef_loss"] = ent_coef_loss.detach()
             metrics["ent_coef_learning_rate"] = self._resolved_ent_coef_learning_rate()
-        metrics.update(
-            {
-                f"actor_action_dist_{name}_loss_scaled": value.detach()
-                for name, value in reduced_actor_action_dist_losses.items()
-            }
-        )
-        metrics.update({f"actor_action_dist_{name}": value for name, value in actor_action_dist_metrics.items()})
         metrics.update(actor_nop_metrics)
         metrics.update(critic_nop_metrics)
         result = (metrics, actor_grad_norm, critic_grad_norm)
@@ -496,58 +479,6 @@ class SAC(OffPolicyAlgorithm):
         agent_mask: torch.Tensor | None,
     ) -> torch.Tensor:
         return self._tensor_operations.mean_agent_log_probs(log_probs, agent_mask)
-
-    def _compute_actor_action_dist_extra_losses(
-        self,
-        *,
-        agent_mask: torch.Tensor | None,
-    ) -> tuple[dict[str, torch.Tensor], dict[str, Any]]:
-        action_dist = getattr(self.policy, "action_dist", None)
-        if self.actor_action_samples > 1:
-            agent_mask = expand_action_samples(agent_mask, self.actor_action_samples)
-        compute_extra_losses_without_metrics = getattr(action_dist, "compute_extra_losses_without_metrics", None)
-        if callable(compute_extra_losses_without_metrics):
-            losses, metrics = compute_extra_losses_without_metrics(agent_mask=agent_mask), {}
-        else:
-            compute_extra_losses = getattr(action_dist, "compute_extra_losses", None)
-            if not callable(compute_extra_losses):
-                return {}, {}
-            losses, metrics = compute_extra_losses(agent_mask=agent_mask)
-        return {
-            name: self._mean_action_samples(value, self.actor_action_samples) for name, value in losses.items()
-        }, metrics
-
-    def _reduce_actor_action_dist_extra_losses(
-        self,
-        *,
-        batch: OffPolicyReplayBatch,
-        extra_losses: dict[str, torch.Tensor],
-    ) -> dict[str, torch.Tensor]:
-        return {
-            name: self._reduce_actor_action_dist_extra_loss(batch=batch, value=value)
-            for name, value in extra_losses.items()
-        }
-
-    def _reduce_actor_action_dist_extra_loss(
-        self,
-        *,
-        batch: OffPolicyReplayBatch,
-        value: torch.Tensor,
-    ) -> torch.Tensor:
-        if value.ndim == 0:
-            return value
-        if value.shape == batch.rewards.shape:
-            return value.mean()
-
-        expected_agent_shape = tuple(batch.local_obs.shape[:2])
-        if tuple(value.shape) != expected_agent_shape:
-            raise ValueError(
-                f"Expected SAC actor action-dist extra loss shape {expected_agent_shape} or "
-                f"{tuple(batch.rewards.shape)}, got {tuple(value.shape)}"
-            )
-        if batch.agent_mask is None:
-            return value.sum(dim=1).mean()
-        return (value * batch.agent_mask.to(dtype=value.dtype)).sum(dim=1).mean()
 
     def _reset_train_gsde_noise(self, local_obs: torch.Tensor) -> None:
         if not self.policy.gsde_enabled:

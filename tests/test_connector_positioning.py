@@ -30,9 +30,14 @@ def test_connected_capsules_have_no_preload_unless_legacy_is_requested(joints, l
     model = scenario.build_model()
     model.opt.gravity[:] = 0
     data = mujoco.MjData(model)
-    _, _, partners, connectors, twists = swarm._generate_preconnected_sample(
+    positions, quats, partners, connectors, twists = swarm._generate_preconnected_sample(
         rng=np.random.default_rng(42000),
     )
+    for unit_idx in range(swarm.num_units):
+        root_body = model.body(f"Unit{unit_idx}--main_body")
+        qpos_adr = int(model.jnt_qposadr[int(root_body.jntadr[0])])
+        data.qpos[qpos_adr:qpos_adr + 3] = positions[unit_idx]
+        data.qpos[qpos_adr + 3:qpos_adr + 7] = quats[unit_idx]
     connector = int(np.flatnonzero(partners[0] >= 0)[0])
     partner_connector = int(connectors[0, connector])
     name = swarm.config.get_eq_variant_name(
@@ -64,6 +69,8 @@ def test_moving_connector_frames_preserves_robot_geometry_and_mass_matrix(joints
     for legacy in [False, True]:
         model = _scenario(joints=joints, legacy=legacy, num_units=1).build_model()
         data = mujoco.MjData(model)
+        data.qpos[:3] = [0.0, 0.0, 3.0]
+        data.qpos[3:7] = [1.0, 0.0, 0.0, 0.0]
         if articulated:
             hinge_indices = model.jnt_qposadr[model.jnt_type == mujoco.mjtJoint.mjJNT_HINGE]
             data.qpos[hinge_indices] = np.linspace(-0.25, 0.25, len(hinge_indices))

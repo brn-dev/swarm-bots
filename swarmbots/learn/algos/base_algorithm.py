@@ -57,7 +57,7 @@ MEAN_STD_LOG_METRIC_KEYS = frozenset({
     "total_policy_forward_time",
     "total_env_step_time",
     "total_buffer_add_time",
-    "buffer_get_whole_episodes_time",
+    "rollout_finalize_time",
     "rollout_batch_builder_init_time",
     "rollout_batch_finalize_time",
     "to_train_device_time",

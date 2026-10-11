@@ -326,11 +326,7 @@ class MATOrigPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
             log_probs = self.action_dist.log_prob(actions, previous_actions=batch.previous_actions)
         if batch.agent_mask is not None:
             log_probs = log_probs.masked_fill(~batch.agent_mask, 0.0)
-        extra_losses, extra_loss_metrics = self.action_dist.compute_extra_losses(
-            agent_mask=batch.agent_mask,
-            action_splitter=action_splitter,
-        )
-        return log_probs, values, extra_losses, extra_loss_metrics, encoder_rep
+        return log_probs, values, {}, {}, encoder_rep
 
     def predict_values(
             self,
@@ -612,29 +608,6 @@ class MATOrigPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
             "critic": self._module_grad_norm(self.critic),
             "total": self._module_grad_norm(self),
         }
-
-    def update_loss_weights(self, **weights: float) -> None:
-        if not weights:
-            return
-
-        remaining_weights = dict(weights)
-        per_action_entropy_weights = self._pop_per_action_entropy_weights(remaining_weights)
-        for idx, value in per_action_entropy_weights.items():
-            if value < 0:
-                raise ValueError(f"act{idx}_ent_loss_coef must be >= 0, got {value}")
-            self.action_dist.set_sub_ent_loss_coef(idx, value)
-
-        entropy_weight = self._pop_loss_weight_alias(
-            remaining_weights,
-            aliases=("ent_loss_coef", "entropy", "ent"),
-        )
-        if entropy_weight is not None:
-            alias, value = entropy_weight
-            if value < 0:
-                raise ValueError(f"{alias} must be >= 0, got {value}")
-            self.action_dist.set_all_ent_loss_coefs(value)
-
-        super().update_loss_weights(**remaining_weights)
 
     def _apply_optional_compile(self) -> None:
         if not self.config.compile_modules:

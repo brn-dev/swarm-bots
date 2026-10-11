@@ -1,11 +1,13 @@
 import unittest
 
 import numpy as np
+import pytest
 import torch
 from gymnasium.vector import AutoresetMode, SyncVectorEnv
 
 from swarmbots.learn.env_wrappers.learn_wrappers.swarm_bots_learn_env_wrapper import SwarmBotsLearnEnvWrapper
 from swarmbots.learn.env_wrappers.torch_feature_wise_obs_norm_wrapper import TorchFeatureWiseObsNormWrapper
+from swarmbots.learn.env_wrappers.torch_transition_obs_wrapper import TorchTransitionObsWrapper
 from swarmbots.learn.testing_env import TestingSwarmBotsEnv
 from swarmbots.learn.torch_running_mean_std import TorchRunningMeanStd
 
@@ -345,6 +347,36 @@ class TorchFeatureWiseObsNormWrapperTests(unittest.TestCase):
                 )
         finally:
             env.close()
+
+
+@pytest.mark.parametrize("new_obs_first", [False, True])
+def test_partial_reset_transition_history_matches_last_returned_normalized_observation(new_obs_first: bool) -> None:
+    env = _make_env(n_envs=2, n_agents=1, n_local_obs=1, n_global_obs=1, max_steps=3)
+    for key in ("local_obs", "global_obs"):
+        env = TorchFeatureWiseObsNormWrapper(env, key, [0], [], compile_tensor_operations=False)
+    env = TorchTransitionObsWrapper(env, new_obs_first=new_obs_first, compile_tensor_operations=False)
+    current_index = 0 if new_obs_first else -1
+    previous_index = -1 if new_obs_first else 0
+    try:
+        env.reset()
+        actions = torch.zeros((2, 1, env.action_space.total_agent_action_dim))
+        env.step(actions)
+        before_reset, *_ = env.step(actions)
+        reset_obs, _ = env.reset(options={"reset_mask": torch.tensor([True, False])})
+        assert not torch.equal(
+            before_reset["local_obs"][1, ..., current_index], reset_obs["local_obs"][1, ..., current_index],
+        )
+        next_obs, _, _, truncations, infos = env.step(actions)
+        assert truncations.tolist() == [False, True]
+        for key in ("local_obs", "global_obs"):
+            torch.testing.assert_close(
+                next_obs[key][0, ..., previous_index], reset_obs[key][0, ..., current_index],
+            )
+            torch.testing.assert_close(
+                infos["final_obs"][1][key][..., previous_index], reset_obs[key][1, ..., current_index],
+            )
+    finally:
+        env.close()
 
 
 if __name__ == "__main__":

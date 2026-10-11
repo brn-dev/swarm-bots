@@ -37,6 +37,7 @@ from swarmbots.learn.algos.sac.tmasac_actor_heads import TMASACQCXActorHead
 from swarmbots.learn.algos.world_modeling.next_obs_pred_mixin import NextObsPredConfig
 from swarmbots.learn.hybrid_action_space import HybridActionSpace
 from swarmbots.learn.nn_components.feed_forward import GLUStackConfig, SwiGLUConfig, feedforward_linear_layers
+from tests.action_dist_metrics import distribution_entropy_metrics
 
 
 _REAL_TORCH_COMPILE = torch.compile
@@ -523,7 +524,7 @@ class TMASACPolicyTests(unittest.TestCase):
                 msg=f"{module_name} has only zero gradients",
             )
 
-    def test_qcx_actor_restores_full_distribution_state_for_auxiliary_losses(self) -> None:
+    def test_qcx_actor_restores_full_distribution_state_for_diagnostics(self) -> None:
         torch.manual_seed(0)
         env = _DummyContinuousEnv()
         policy = TMASACPolicy(
@@ -532,7 +533,6 @@ class TMASACPolicyTests(unittest.TestCase):
                 actor_head_kind=TMASACActorHeadKind.QCX,
                 continuous_config=PredictedStdGaussianConfig(
                     base_std=0.5,
-                    ent_loss_coef=0.1,
                 ),
             ),
         )
@@ -545,11 +545,9 @@ class TMASACPolicyTests(unittest.TestCase):
             deterministic=False,
             use_rsample=True,
         )
-        extra_losses = policy.action_dist.compute_extra_losses_without_metrics(
-            agent_mask=batch.agent_mask,
-        )
+        distribution_metrics = distribution_entropy_metrics(policy.action_dist, actions, batch.agent_mask)
 
-        self.assertTrue(extra_losses)
+        self.assertTrue(distribution_metrics)
         for distribution in policy.action_dist.distributions:
             self.assertEqual(
                 tuple(distribution.distribution.mean.shape[:-1]),
@@ -558,7 +556,6 @@ class TMASACPolicyTests(unittest.TestCase):
         total_loss = (
             actions.square().mean()
             + log_probs.square().mean()
-            + torch.stack(tuple(extra_losses.values())).sum()
         )
         total_loss.backward()
         self.assertTrue(
@@ -965,10 +962,10 @@ class TMASACPolicyTests(unittest.TestCase):
 
     def test_full_graph_compile_friendly_actors_match_eager_forward_and_gradients(self) -> None:
         configs: tuple[ContinuousActionDistConfig, ...] = (
-            PredictedStdGaussianConfig(base_std=0.5, ent_loss_coef=0.1),
-            SquashedDiagGaussianConfig(std=0.5, std_learnable=True, ent_loss_coef=0.1),
-            BetaConfig(ent_loss_coef=0.1),
-            GumbelSoftmaxSignMagnitudeBetaConfig(ent_loss_coef=0.1),
+            PredictedStdGaussianConfig(base_std=0.5),
+            SquashedDiagGaussianConfig(std=0.5, std_learnable=True),
+            BetaConfig(),
+            GumbelSoftmaxSignMagnitudeBetaConfig(),
         )
         for continuous_config in configs:
             with self.subTest(continuous_config=type(continuous_config).__name__):
@@ -982,7 +979,7 @@ class TMASACPolicyTests(unittest.TestCase):
         torch._dynamo.reset()
         try:
             self._assert_full_graph_actor_matches_eager(
-                GumbelSoftmaxSignMagnitudeBetaConfig(ent_loss_coef=0.1),
+                GumbelSoftmaxSignMagnitudeBetaConfig(),
                 actor_head_kind=TMASACActorHeadKind.QCX,
             )
         finally:
@@ -1128,7 +1125,6 @@ class TMASACPolicyTests(unittest.TestCase):
             torch.Tensor,
             torch.Tensor,
         ] | None = None
-        actor_update_extra_losses: tuple[dict[str, torch.Tensor], dict[str, torch.Tensor]] | None = None
         action_modes = (
             {"deterministic": False, "use_rsample": False},
             {"deterministic": False, "use_rsample": True},
@@ -1142,15 +1138,9 @@ class TMASACPolicyTests(unittest.TestCase):
             compiled_actions, compiled_log_probs = compiled_policy.action_log_prob(**mode_kwargs)
             torch.testing.assert_close(compiled_actions, eager_actions)
             torch.testing.assert_close(compiled_log_probs, eager_log_probs)
-            torch.manual_seed(seed + 1_000)
-            eager_extra_losses = eager_policy.action_dist.compute_extra_losses_without_metrics(
-                agent_mask=batch.agent_mask,
-            )
-            torch.manual_seed(seed + 1_000)
-            compiled_extra_losses = compiled_policy.action_dist.compute_extra_losses_without_metrics(
-                agent_mask=batch.agent_mask,
-            )
-            self._assert_loss_dict_close(compiled_extra_losses, eager_extra_losses)
+            eager_distribution_metrics = distribution_entropy_metrics(eager_policy.action_dist, eager_actions, batch.agent_mask)
+            compiled_distribution_metrics = distribution_entropy_metrics(compiled_policy.action_dist, compiled_actions, batch.agent_mask)
+            self._assert_metrics_close(compiled_distribution_metrics, eager_distribution_metrics)
             if action_mode["use_rsample"]:
                 actor_update_outputs = (
                     eager_actions,
@@ -1158,21 +1148,16 @@ class TMASACPolicyTests(unittest.TestCase):
                     compiled_actions,
                     compiled_log_probs,
                 )
-                actor_update_extra_losses = eager_extra_losses, compiled_extra_losses
 
         assert actor_update_outputs is not None
-        assert actor_update_extra_losses is not None
         eager_actions, eager_log_probs, compiled_actions, compiled_log_probs = actor_update_outputs
-        eager_extra_losses, compiled_extra_losses = actor_update_extra_losses
         eager_loss = (
             eager_actions.square().mean()
             + eager_log_probs.square().mean()
-            + torch.stack(tuple(eager_extra_losses.values())).sum()
         )
         compiled_loss = (
             compiled_actions.square().mean()
             + compiled_log_probs.square().mean()
-            + torch.stack(tuple(compiled_extra_losses.values())).sum()
         )
         eager_loss.backward()
         compiled_loss.backward()
@@ -1194,7 +1179,7 @@ class TMASACPolicyTests(unittest.TestCase):
         self.assertEqual(len(compiled_graphs), len(action_modes))
         for seed, action_mode in enumerate(action_modes, start=456):
             torch.manual_seed(seed)
-            eager_policy.action_log_prob(
+            eager_actions, eager_log_probs = eager_policy.action_log_prob(
                 **{
                     **call_kwargs,
                     "local_obs": call_kwargs["local_obs"] + 0.25,
@@ -1203,7 +1188,7 @@ class TMASACPolicyTests(unittest.TestCase):
                 **action_mode,
             )
             torch.manual_seed(seed)
-            compiled_policy.action_log_prob(
+            compiled_actions, compiled_log_probs = compiled_policy.action_log_prob(
                 **{
                     **call_kwargs,
                     "local_obs": call_kwargs["local_obs"] + 0.25,
@@ -1211,24 +1196,20 @@ class TMASACPolicyTests(unittest.TestCase):
                 },
                 **action_mode,
             )
-            torch.manual_seed(seed + 1_000)
-            compiled_extra_losses = compiled_policy.action_dist.compute_extra_losses_without_metrics(
-                agent_mask=batch.agent_mask,
-            )
-            torch.manual_seed(seed + 1_000)
-            eager_extra_losses = eager_policy.action_dist.compute_extra_losses_without_metrics(
-                agent_mask=batch.agent_mask,
-            )
-            self._assert_loss_dict_close(
-                compiled_extra_losses,
-                eager_extra_losses,
+            torch.testing.assert_close(compiled_actions, eager_actions)
+            torch.testing.assert_close(compiled_log_probs, eager_log_probs)
+            compiled_distribution_metrics = distribution_entropy_metrics(compiled_policy.action_dist, compiled_actions, batch.agent_mask)
+            eager_distribution_metrics = distribution_entropy_metrics(eager_policy.action_dist, eager_actions, batch.agent_mask)
+            self._assert_metrics_close(
+                compiled_distribution_metrics,
+                eager_distribution_metrics,
             )
         self.assertEqual(len(compiled_graphs), len(action_modes))
 
-    def _assert_loss_dict_close(
+    def _assert_metrics_close(
             self,
-            actual: dict[str, torch.Tensor],
-            expected: dict[str, torch.Tensor],
+            actual: dict[str, Any],
+            expected: dict[str, Any],
     ) -> None:
         self.assertEqual(actual.keys(), expected.keys())
         self.assertTrue(actual)

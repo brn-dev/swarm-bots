@@ -10,6 +10,7 @@ from swarmbots.learn.algos.ppo.ppo_rollout_buffer import PPOEpisodeSegment, PPOR
 from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
 from swarmbots.learn.gsde_reset import (
     GSDEResetMode,
+    GSDEEpisodeResetMode,
     GSDEIntervalResetMode,
     GSDEProbabilityResetMode,
     resolve_gsde_reset_mode,
@@ -40,27 +41,6 @@ class _RolloutTimers:
     buffer_add_timer: PerformanceTimer
 
 
-def _parse_gsde_reset_mode(
-        policy: BasePPOPolicy[Any, Any],
-        gsde_reset_mode: GSDEResetMode | None,
-) -> tuple[bool, bool, int, float]:
-    gsde_enabled = policy.gsde_enabled
-    active_reset_mode = resolve_gsde_reset_mode(
-        gsde_enabled=gsde_enabled,
-        reset_mode=gsde_reset_mode,
-    )
-    is_gsde_interval_reset_mode = False
-    gsde_reset_interval = -1
-    gsde_reset_prob = -1.0
-    if active_reset_mode is not None:
-        if isinstance(active_reset_mode, GSDEIntervalResetMode):
-            is_gsde_interval_reset_mode = True
-            gsde_reset_interval = active_reset_mode.interval
-        elif isinstance(active_reset_mode, GSDEProbabilityResetMode):
-            gsde_reset_prob = active_reset_mode.probability
-    return gsde_enabled, is_gsde_interval_reset_mode, gsde_reset_interval, gsde_reset_prob
-
-
 def _init_rollout_timers() -> _RolloutTimers:
     return _RolloutTimers(
         reset_noise_timings=[],
@@ -76,25 +56,29 @@ def _init_rollout_timers() -> _RolloutTimers:
 
 def _build_gsde_step_reset_mask(
         *,
-        gsde_enabled: bool,
-        is_gsde_interval_reset_mode: bool,
-        gsde_reset_interval: int,
-        gsde_reset_prob: float,
+        gsde_reset_mode: GSDEResetMode | None,
         rollout_step_idx: int,
         batch_shape: tuple[int, ...],
         rollout_device: torch.device,
 ) -> torch.Tensor | None:
-    if not gsde_enabled:
+    if gsde_reset_mode is None:
         return None
-    if is_gsde_interval_reset_mode:
-        if (rollout_step_idx % gsde_reset_interval) != 0:
+    if isinstance(gsde_reset_mode, GSDEEpisodeResetMode):
+        # Episode masks initially lack the agent axis, so initialize per-agent noise once.
+        if rollout_step_idx != 0:
             return None
-        return torch.ones(batch_shape, device=rollout_device, dtype=torch.bool)
-    return torch.empty(
-        batch_shape,
-        device=rollout_device,
-        dtype=torch.bool,
-    ).bernoulli_(gsde_reset_prob)
+    elif isinstance(gsde_reset_mode, GSDEIntervalResetMode):
+        if (rollout_step_idx % gsde_reset_mode.interval) != 0:
+            return None
+    elif isinstance(gsde_reset_mode, GSDEProbabilityResetMode):
+        return torch.empty(
+            batch_shape,
+            device=rollout_device,
+            dtype=torch.bool,
+        ).bernoulli_(gsde_reset_mode.probability)
+    else:
+        raise TypeError(f"Unknown gsde_reset_mode type: {type(gsde_reset_mode)}")
+    return torch.ones(batch_shape, device=rollout_device, dtype=torch.bool)
 
 
 def _reset_temporal_correlations(
@@ -102,12 +86,11 @@ def _reset_temporal_correlations(
         policy: BasePPOPolicy[Any, Any],
         episode_start_mask: torch.Tensor | None = None,
         step_reset_mask: torch.Tensor | None = None,
-        batch_shape: tuple[int, ...] | None = None,
 ) -> None:
     if episode_start_mask is not None:
         policy.action_dist.reset_temporal_correlations_on_ep_start(episode_start_mask)
-    if step_reset_mask is not None or batch_shape is not None:
-        policy.action_dist.reset_temporal_correlations_on_step(mask=step_reset_mask, batch_shape=batch_shape)
+    if step_reset_mask is not None:
+        policy.action_dist.reset_temporal_correlations_on_step(mask=step_reset_mask)
 
 
 def _evaluate_values(
@@ -176,19 +159,13 @@ def _collect_rollout_step(
         rollout_step_idx: int,
         timers: _RolloutTimers,
         episode_infos: list[dict[str, Any]],
-        gsde_enabled: bool,
-        is_gsde_interval_reset_mode: bool,
-        gsde_reset_interval: int,
-        gsde_reset_prob: float,
+        gsde_reset_mode: GSDEResetMode | None,
 ) -> tuple[dict[str, torch.Tensor], torch.Tensor, torch.Tensor | None, Any, int]:
     obs_snapshot = snapshot_obs(obs)
     local_obs = obs_snapshot["local_obs"]
     batch_shape = tuple(local_obs.shape[:-1])
     step_reset_mask = _build_gsde_step_reset_mask(
-        gsde_enabled=gsde_enabled,
-        is_gsde_interval_reset_mode=is_gsde_interval_reset_mode,
-        gsde_reset_interval=gsde_reset_interval,
-        gsde_reset_prob=gsde_reset_prob,
+        gsde_reset_mode=gsde_reset_mode,
         rollout_step_idx=rollout_step_idx,
         batch_shape=batch_shape,
         rollout_device=buffer.rollout_device,
@@ -276,18 +253,12 @@ def _warmup_rollout_step(
         previous_actions: torch.Tensor | None,
         temporal_state: Any,
         rollout_step_idx: int,
-        gsde_enabled: bool,
-        is_gsde_interval_reset_mode: bool,
-        gsde_reset_interval: int,
-        gsde_reset_prob: float,
+        gsde_reset_mode: GSDEResetMode | None,
 ) -> tuple[dict[str, torch.Tensor], torch.Tensor, torch.Tensor | None, Any, int]:
     local_obs = obs["local_obs"]
     batch_shape = tuple(local_obs.shape[:-1])
     step_reset_mask = _build_gsde_step_reset_mask(
-        gsde_enabled=gsde_enabled,
-        is_gsde_interval_reset_mode=is_gsde_interval_reset_mode,
-        gsde_reset_interval=gsde_reset_interval,
-        gsde_reset_prob=gsde_reset_prob,
+        gsde_reset_mode=gsde_reset_mode,
         rollout_step_idx=rollout_step_idx,
         batch_shape=batch_shape,
         rollout_device=local_obs.device,
@@ -327,7 +298,7 @@ def _build_rollout_metrics(
         env_reset_time: float,
         to_rollout_device_time: float,
         timers: _RolloutTimers,
-        buffer_get_whole_episodes_time: float,
+        rollout_finalize_time: float,
         episode_infos: list[dict[str, Any]],
 ) -> dict[str, Any]:
     metrics = {
@@ -341,7 +312,7 @@ def _build_rollout_metrics(
         "total_env_step_time": sum(timers.env_step_timings),
         "buffer_add_time": compute_summary_statistics(timers.buffer_add_timings),
         "total_buffer_add_time": sum(timers.buffer_add_timings),
-        "buffer_get_whole_episodes_time": buffer_get_whole_episodes_time,
+        "rollout_finalize_time": rollout_finalize_time,
     }
     success_values = [float(ep_info["success"]) for ep_info in episode_infos if "success" in ep_info]
     if success_values:
@@ -360,9 +331,9 @@ def warmup_rollout_steps(
     if n_steps <= 0:
         raise ValueError(f"n_steps must be > 0, got {n_steps}")
 
-    gsde_enabled, is_gsde_interval_reset_mode, gsde_reset_interval, gsde_reset_prob = _parse_gsde_reset_mode(
-        policy,
-        gsde_reset_mode,
+    gsde_reset_mode = resolve_gsde_reset_mode(
+        gsde_enabled=policy.gsde_enabled,
+        reset_mode=gsde_reset_mode,
     )
 
     if rollout_state is None:
@@ -392,10 +363,7 @@ def warmup_rollout_steps(
             previous_actions=previous_actions,
             temporal_state=temporal_state,
             rollout_step_idx=rollout_step_idx,
-            gsde_enabled=gsde_enabled,
-            is_gsde_interval_reset_mode=is_gsde_interval_reset_mode,
-            gsde_reset_interval=gsde_reset_interval,
-            gsde_reset_prob=gsde_reset_prob,
+            gsde_reset_mode=gsde_reset_mode,
         )
 
     return PPORolloutState(
@@ -408,74 +376,6 @@ def warmup_rollout_steps(
 
 
 @torch.no_grad()
-def collect_whole_episodes(
-        env: BaseLearnEnvWrapper,
-        policy: BasePPOPolicy[Any, Any],
-        buffer: PPORolloutBuffer,
-        n_episodes: int,
-        gsde_reset_mode: GSDEResetMode | None = None,
-) -> tuple[list[PPOEpisodeSegment], list[dict[str, Any]], dict[str, Any]]:
-    gsde_enabled, is_gsde_interval_reset_mode, gsde_reset_interval, gsde_reset_prob = _parse_gsde_reset_mode(
-        policy,
-        gsde_reset_mode,
-    )
-
-    buffer.reset()
-    with PerformanceTimer() as env_reset_timer:
-        obs, _info = env.reset()
-    episode_start_mask = torch.ones((buffer.n_envs,), dtype=torch.bool, device=buffer.rollout_device)
-    previous_actions = initial_previous_actions(
-        policy=policy,
-        obs=obs,
-        n_agent_actions=buffer.n_agent_actions,
-    )
-    temporal_state = policy.initial_temporal_state(
-        batch_size=buffer.n_envs,
-        n_agents=buffer.n_agents,
-        device=buffer.rollout_device,
-        dtype=buffer.rollout_dtype,
-    )
-
-    with PerformanceTimer() as to_rollout_device_timer:
-        policy.to(buffer.rollout_device)
-        policy.eval()
-
-    episode_infos: list[dict[str, Any]] = []
-    rollout_step_idx = 0
-    timers = _init_rollout_timers()
-
-    while len(buffer.episodes) < n_episodes:
-        obs, episode_start_mask, previous_actions, temporal_state, rollout_step_idx = _collect_rollout_step(
-            env=env,
-            policy=policy,
-            buffer=buffer,
-            obs=obs,
-            episode_start_mask=episode_start_mask,
-            previous_actions=previous_actions,
-            temporal_state=temporal_state,
-            rollout_step_idx=rollout_step_idx,
-            timers=timers,
-            episode_infos=episode_infos,
-            gsde_enabled=gsde_enabled,
-            is_gsde_interval_reset_mode=is_gsde_interval_reset_mode,
-            gsde_reset_interval=gsde_reset_interval,
-            gsde_reset_prob=gsde_reset_prob,
-        )
-
-    with PerformanceTimer() as buffer_get_whole_episodes_timer:
-        episodes = buffer.get_whole_episodes()
-
-    metrics = _build_rollout_metrics(
-        env_reset_time=env_reset_timer.get_duration(),
-        to_rollout_device_time=to_rollout_device_timer.get_duration(),
-        timers=timers,
-        buffer_get_whole_episodes_time=buffer_get_whole_episodes_timer.get_duration(),
-        episode_infos=episode_infos,
-    )
-    return episodes, episode_infos, metrics
-
-
-@torch.no_grad()
 def collect_step_rollout_batch(
         env: BaseLearnEnvWrapper,
         policy: BasePPOPolicy[Any, Any],
@@ -484,9 +384,9 @@ def collect_step_rollout_batch(
         rollout_state: PPORolloutState | None = None,
         gsde_reset_mode: GSDEResetMode | None = None,
 ) -> tuple[PPORolloutBatch, list[dict[str, Any]], dict[str, Any], PPORolloutState]:
-    gsde_enabled, is_gsde_interval_reset_mode, gsde_reset_interval, gsde_reset_prob = _parse_gsde_reset_mode(
-        policy,
-        gsde_reset_mode,
+    gsde_reset_mode = resolve_gsde_reset_mode(
+        gsde_enabled=policy.gsde_enabled,
+        reset_mode=gsde_reset_mode,
     )
 
     if n_steps <= 0:
@@ -550,10 +450,7 @@ def collect_step_rollout_batch(
         local_obs = obs_snapshot["local_obs"]
         batch_shape = tuple(local_obs.shape[:-1])
         step_reset_mask = _build_gsde_step_reset_mask(
-            gsde_enabled=gsde_enabled,
-            is_gsde_interval_reset_mode=is_gsde_interval_reset_mode,
-            gsde_reset_interval=gsde_reset_interval,
-            gsde_reset_prob=gsde_reset_prob,
+            gsde_reset_mode=gsde_reset_mode,
             rollout_step_idx=rollout_step_idx,
             batch_shape=batch_shape,
             rollout_device=buffer.rollout_device,
@@ -643,7 +540,7 @@ def collect_step_rollout_batch(
         env_reset_time=env_reset_time,
         to_rollout_device_time=to_rollout_device_timer.get_duration(),
         timers=timers,
-        buffer_get_whole_episodes_time=batch_finalize_timer.get_duration(),
+        rollout_finalize_time=batch_finalize_timer.get_duration(),
         episode_infos=episode_infos,
     )
     metrics["step_rollout_batch_path"] = True
@@ -668,9 +565,9 @@ def collect_steps(
         rollout_state: PPORolloutState | None = None,
         gsde_reset_mode: GSDEResetMode | None = None,
 ) -> tuple[list[PPOEpisodeSegment], list[dict[str, Any]], dict[str, Any], PPORolloutState]:
-    gsde_enabled, is_gsde_interval_reset_mode, gsde_reset_interval, gsde_reset_prob = _parse_gsde_reset_mode(
-        policy,
-        gsde_reset_mode,
+    gsde_reset_mode = resolve_gsde_reset_mode(
+        gsde_enabled=policy.gsde_enabled,
+        reset_mode=gsde_reset_mode,
     )
 
     buffer.reset()
@@ -724,10 +621,7 @@ def collect_steps(
             rollout_step_idx=rollout_step_idx,
             timers=timers,
             episode_infos=episode_infos,
-            gsde_enabled=gsde_enabled,
-            is_gsde_interval_reset_mode=is_gsde_interval_reset_mode,
-            gsde_reset_interval=gsde_reset_interval,
-            gsde_reset_prob=gsde_reset_prob,
+            gsde_reset_mode=gsde_reset_mode,
         )
 
     final_values = _evaluate_values(
@@ -738,16 +632,16 @@ def collect_steps(
         episode_start_mask=episode_start_mask,
     )
 
-    with PerformanceTimer() as buffer_get_whole_episodes_timer:
-        completed_episodes = buffer.get_whole_episodes()
-    buffer_get_whole_episodes_time = buffer_get_whole_episodes_timer.get_duration()
+    with PerformanceTimer() as rollout_finalize_timer:
+        completed_episodes = buffer.get_completed_episodes()
+    rollout_finalize_time = rollout_finalize_timer.get_duration()
     with PerformanceTimer() as buffer_dump_partial_episodes_timer:
         partial_episodes = buffer.dump_partial_episodes(
             final_obs=obs,
             final_values=final_values,
             clone_tensors=False,
         )
-    buffer_get_whole_episodes_time += buffer_dump_partial_episodes_timer.get_duration()
+    rollout_finalize_time += buffer_dump_partial_episodes_timer.get_duration()
 
     episodes = completed_episodes + partial_episodes
 
@@ -755,7 +649,7 @@ def collect_steps(
         env_reset_time=env_reset_time,
         to_rollout_device_time=to_rollout_device_timer.get_duration(),
         timers=timers,
-        buffer_get_whole_episodes_time=buffer_get_whole_episodes_time,
+        rollout_finalize_time=rollout_finalize_time,
         episode_infos=episode_infos,
     )
     new_state = PPORolloutState(

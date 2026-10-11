@@ -160,12 +160,7 @@ class MJWHomogeneousSwarm:
         return self._resolve_pool_seeds()[:self.get_active_pool_size()]
 
     def create_swarm_spec(self, *, seed: int | None = None) -> mujoco.MjSpec:
-        rng = np.random.default_rng(42 if seed is None else seed)
-        positions, quats, _partner_unit, _partner_connector, _twist_idx = self._generate_preconnected_sample(
-            rng=rng,
-            force_full=True,
-        )
-
+        """Build padded model slots independently of the sampled reset population."""
         spec = mujoco.MjSpec()
         spec.compiler.degree = 0
         worldbody: MjsBody = spec.worldbody
@@ -190,8 +185,8 @@ class MJWHomogeneousSwarm:
             )
             unit.add_joint(type=mujoco.mjtJoint.mjJNT_FREE)
             worldbody.add_frame(
-                pos=positions[unit_idx].tolist(),
-                quat=quats[unit_idx].tolist(),
+                pos=[(unit_idx - (self.num_units - 1) / 2.0) * 3.0 * self.max_unit_extent, 0.0, self.max_unit_extent],
+                quat=[1.0, 0.0, 0.0, 0.0],
             ).attach_body(unit, self.config.unit_prefixes[unit_idx], "")
 
         self._add_eq_constraints(spec)
@@ -260,14 +255,13 @@ class MJWHomogeneousSwarm:
         self,
         *,
         rng: np.random.Generator,
-        force_full: bool = False,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         random_config = self.unit_start_locations
         unit_config = self.config.unit_config
         num_units = random_config.num_units
         max_radius = random_config.max_radius
 
-        if force_full or random_config.num_unit_probs is None:
+        if random_config.num_unit_probs is None:
             num_active_units = num_units
         else:
             counts = list(random_config.num_unit_probs.keys())

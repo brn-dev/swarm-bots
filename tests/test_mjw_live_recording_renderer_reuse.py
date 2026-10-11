@@ -95,6 +95,13 @@ class _FailingRenderer:
         raise ValueError("renderer failed")
 
 
+class _FailingSceneRenderer(_FakeRenderer):
+    def update_scene(self, data: _FakeMjData, camera: object) -> None:
+        if camera == "missing-camera" and data.time > 0:
+            raise ValueError("camera does not exist")
+        super().update_scene(data, camera)
+
+
 class MJWLiveRecordingRendererReuseTests(unittest.TestCase):
     def test_writer_failure_still_shuts_down_and_can_be_closed_again(self) -> None:
         recorder = MJWLiveEpisodeRecorder(scenario=_DummyScenario())
@@ -208,6 +215,49 @@ class MJWLiveRecordingRendererReuseTests(unittest.TestCase):
 
         self.assertFalse(recorder.is_active())
         self.assertFalse(recorder.get_status()["active"])
+        recorder.close()
+
+    def test_render_failure_during_start_discards_partial_slots_and_allows_retry(self) -> None:
+        _FakeRenderer.init_count = 0
+        _FakeRenderer.close_count = 0
+        _FailingSceneRenderer.init_count = 0
+        _FailingSceneRenderer.close_count = 0
+        recorder = MJWLiveEpisodeRecorder(scenario=_DummyScenario())
+        snapshots = {
+            world: MJWWorldSnapshot(
+                qpos=np.zeros(1), qvel=np.zeros(1), eq_active=np.zeros(1),
+                mocap_pos=np.zeros(1), mocap_quat=np.zeros(1), time=float(world),
+            )
+            for world in range(2)
+        }
+        with _writable_temp_directory() as tmpdir:
+            config = MJWRecordingConfig(Path(tmpdir), "test", 2, 2, 30, 16, 16, "missing-camera")
+            with (
+                patch("swarmbots.mjw_env.mjw_live_recording.mujoco.MjData", _FakeMjData),
+                patch("swarmbots.mjw_env.mjw_live_recording.mujoco.Renderer", _FailingSceneRenderer),
+                patch("swarmbots.mjw_env.mjw_live_recording.mujoco.mj_forward", lambda model, data: None),
+                patch("swarmbots.mjw_env.mjw_live_recording.draw_accumulated_reward", lambda frame, *args, **kwargs: frame),
+                patch("swarmbots.mjw_env.mjw_live_recording._write_video_file") as write_video,
+            ):
+                try:
+                    with self.assertRaisesRegex(ValueError, "camera does not exist"):
+                        recorder.start(config=config, episode_start_world_idx=np.array([0, 1]), snapshots_by_world=snapshots)
+                    status = recorder.get_status()
+                    self.assertFalse(status["active"])
+                    self.assertEqual(status["active_worlds"], [])
+                    self.assertEqual(status["episodes_started"], 0)
+                    self.assertEqual(_FailingSceneRenderer.close_count, 1)
+                    config.camera = 0
+                    recorder.start(config=config, episode_start_world_idx=np.array([0, 1]), snapshots_by_world=snapshots)
+                    recorder.record_step(
+                        rewards=np.zeros(2), reward_terms=None, dones=np.ones(2, dtype=bool),
+                        unstable_mask=np.zeros(2, dtype=bool), snapshots_by_world=snapshots,
+                    )
+                finally:
+                    recorder.close()
+                self.assertEqual(write_video.call_count, 2)
+                self.assertEqual(recorder.get_status()["episodes_completed"], 2)
+                self.assertEqual(_FailingSceneRenderer.close_count, 2)
 
 
 if __name__ == "__main__":

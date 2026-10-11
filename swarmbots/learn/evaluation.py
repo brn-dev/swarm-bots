@@ -64,7 +64,10 @@ class FrozenEvaluationRunner:
     @property
     def env(self) -> Any:
         if self._env is None:
-            self._env = self._make_env()
+            # Environment factories may call torch.manual_seed, which also seeds other CUDA devices.
+            cuda_devices = list(range(torch.cuda.device_count())) if torch.cuda.is_initialized() else []
+            with torch.random.fork_rng(devices=cuda_devices):
+                self._env = self._make_env()
         return self._env
 
     def evaluate(self, *, timesteps: int, milestone_percentage: float) -> dict[str, Any]:

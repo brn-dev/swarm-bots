@@ -214,7 +214,7 @@ class NextObsPredGlobalTests(unittest.TestCase):
         )
 
         self.assertAlmostEqual(loss.item(), 1.0)
-        self.assertAlmostEqual(metrics["scalar_loss"], 1.0)
+        torch.testing.assert_close(metrics["scalar_loss"], torch.tensor(1.0))
 
     def test_local_angle_multistep_delta_wraps_and_uses_previous_target_state(self) -> None:
         harness = _make_harness(
@@ -236,7 +236,7 @@ class NextObsPredGlobalTests(unittest.TestCase):
         )
 
         self.assertAlmostEqual(loss.item(), 0.0, places=5)
-        self.assertAlmostEqual(metrics["angle_loss"], 0.0, places=5)
+        torch.testing.assert_close(metrics["angle_loss"], torch.tensor(0.0), rtol=0.0, atol=5e-6)
 
     def test_binary_target_ema_ignores_batches_without_valid_targets(self) -> None:
         harness = _make_harness(
@@ -256,7 +256,7 @@ class NextObsPredGlobalTests(unittest.TestCase):
         )
 
         self.assertAlmostEqual(loss.item(), 0.0)
-        self.assertAlmostEqual(metrics["binary_loss"], 0.0)
+        torch.testing.assert_close(metrics["binary_loss"], torch.tensor(0.0))
         torch.testing.assert_close(harness.binary_target_ema, torch.tensor([0.5]))
 
     def test_local_rot6d_multistep_delta_uses_previous_target_orientation(self) -> None:
@@ -285,7 +285,7 @@ class NextObsPredGlobalTests(unittest.TestCase):
         )
 
         self.assertAlmostEqual(loss.item(), 0.0, places=5)
-        self.assertAlmostEqual(metrics["rot6d_loss"], 0.0, places=5)
+        torch.testing.assert_close(metrics["rot6d_loss"], torch.tensor(0.0), rtol=0.0, atol=5e-6)
 
     def test_wrapper_masks_padded_horizons_and_applies_world_model_coefficient_once(self) -> None:
         policy = NextObsPredWrapper(
@@ -332,8 +332,8 @@ class NextObsPredGlobalTests(unittest.TestCase):
 
         _log_probs, _values, extra_losses, metrics = policy.evaluate_actions(batch)
 
-        self.assertAlmostEqual(metrics["wm_loss"], 1.0)
-        self.assertAlmostEqual(metrics["wm_loss_scaled"], 0.1)
+        torch.testing.assert_close(metrics["wm_loss"], torch.tensor(1.0))
+        torch.testing.assert_close(metrics["wm_loss_scaled"], torch.tensor(0.1))
         self.assertAlmostEqual(extra_losses["world_model"].item(), 0.1)
 
     def test_global_scalar_loss_uses_masked_agent_pool_and_does_not_require_local_obs(self) -> None:
@@ -384,7 +384,7 @@ class NextObsPredGlobalTests(unittest.TestCase):
         )
 
         self.assertAlmostEqual(loss.item(), 2.25)
-        self.assertAlmostEqual(metrics["global_scalar_loss"], 2.25)
+        torch.testing.assert_close(metrics["global_scalar_loss"], torch.tensor(2.25))
 
     def test_global_scalar_loss_accepts_per_item_custom_loss_with_mask(self) -> None:
         harness = _make_harness(
@@ -409,7 +409,7 @@ class NextObsPredGlobalTests(unittest.TestCase):
         )
 
         self.assertAlmostEqual(loss.item(), 1.0)
-        self.assertAlmostEqual(metrics["global_scalar_loss"], 1.0)
+        torch.testing.assert_close(metrics["global_scalar_loss"], torch.tensor(1.0))
 
     def test_global_pool_uses_next_state_loss_mask(self) -> None:
         harness = _make_harness(
@@ -545,7 +545,7 @@ class NextObsPredGlobalTests(unittest.TestCase):
         )
 
         self.assertAlmostEqual(loss.item(), 0.0)
-        self.assertAlmostEqual(metrics["global_rot6d_loss"], 0.0)
+        torch.testing.assert_close(metrics["global_rot6d_loss"], torch.tensor(0.0))
 
     def test_wrapper_without_global_targets_does_not_allocate_global_modules(self) -> None:
         policy = NextObsPredWrapper(

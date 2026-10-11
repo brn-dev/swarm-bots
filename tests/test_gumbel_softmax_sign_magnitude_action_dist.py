@@ -1,4 +1,5 @@
 import unittest
+import math
 from unittest.mock import patch
 
 import torch
@@ -35,6 +36,35 @@ def _make_distributions() -> list[
 
 
 class TestGumbelSoftmaxSignMagnitudeActionDist(unittest.TestCase):
+    def test_entropy_metrics_describe_disjoint_mixture_without_consuming_rng(self) -> None:
+        dist = GumbelSoftmaxSignMagnitudeBetaActionDist(
+            latent_dim=4,
+            action_dim=3,
+            action_net_initialization=_zero_init,
+            initial_positive_prob=0.4,
+            negative_alpha=2.0,
+            negative_beta=5.0,
+            positive_alpha=3.0,
+            positive_beta=4.0,
+        )
+        actions = dist.update_latent_features(torch.ones(2, 3, 4)).mode()
+        mask = torch.tensor([[True, False, True], [False, True, False]])
+        rng_state = torch.random.get_rng_state().clone()
+
+        metrics = dist.get_metrics(actions[mask], agent_mask=mask)
+
+        categorical_entropy = torch.tensor(-0.4 * math.log(0.4) - 0.6 * math.log(0.6))
+        magnitude_entropy = (
+            0.6 * torch.distributions.Beta(2.0, 5.0).entropy()
+            + 0.4 * torch.distributions.Beta(3.0, 4.0).entropy()
+        )
+        torch.testing.assert_close(metrics["ent_categorical"], categorical_entropy)
+        torch.testing.assert_close(metrics["ent_beta"], magnitude_entropy)
+        torch.testing.assert_close(metrics["ent"], categorical_entropy + magnitude_entropy)
+        torch.testing.assert_close(torch.random.get_rng_state(), rng_state)
+        for name in ("ent", "ent_categorical", "ent_beta"):
+            self.assertFalse(metrics[name].requires_grad)
+
     def test_beta_family_uses_sign_magnitude_base(self) -> None:
         self.assertTrue(issubclass(SignMagnitudeBetaActionDist, SignMagnitudeActionDist))
 

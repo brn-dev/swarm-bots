@@ -7,6 +7,7 @@ from swarmbots.learn.algos.off_policy.replay_buffer import OffPolicyReplayBuffer
 from swarmbots.learn.base_policy import BasePolicy
 from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
 from swarmbots.learn.gsde_reset import (
+    GSDEEpisodeResetMode,
     GSDEResetMode,
     GSDEIntervalResetMode,
     GSDEProbabilityResetMode,
@@ -130,6 +131,8 @@ def _reset_policy_action_noise(
     if force_step_reset:
         action_dist.reset_temporal_correlations_on_step(batch_shape=batch_shape)
     action_dist.reset_temporal_correlations_on_ep_start(episode_start_mask)
+    if isinstance(gsde_reset_mode, GSDEEpisodeResetMode):
+        return
     if isinstance(gsde_reset_mode, GSDEIntervalResetMode):
         if not force_step_reset and (rollout_step_idx % gsde_reset_mode.interval) == 0:
             action_dist.reset_temporal_correlations_on_step(batch_shape=batch_shape)

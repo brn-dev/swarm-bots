@@ -1,17 +1,15 @@
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional, Self, Any
 
 import torch
 import torch.distributions as torchdist
 from torch import nn
 
-from swarmbots.learn.action_dists.action_dist import ActionMetricsSplitterInput, ActionNetInitialization
+from swarmbots.learn.action_dists.action_dist import ActionNetInitialization
 from swarmbots.learn.action_dists.continuous_action_dist import ContinuousActionDist
-from swarmbots.learn.action_dists.entropy_utils import EntropyLossConfig
 from swarmbots.learn.action_dists.temporally_correlated_action_dist import TemporallyCorrelatedActionDist
 from swarmbots.learn.action_dists.tanh_bijector import TanhBijector
-from swarmbots.learn.losses import LossDict, LossMetrics
 from swarmbots.learn.nn_components.nn_init import init_linear_orthogonal
 
 LogStdNetInitialization = ActionNetInitialization
@@ -28,8 +26,6 @@ class GSDEConfig:
     sde_learn_features: bool = True
     latent_sde_net_initialization: ActionNetInitialization = init_linear_orthogonal
     log_std_clamp_range: tuple[float, float] = (-20.0, 2.0)
-    ent_loss_coef: float = 0.0
-    ent_loss_config: EntropyLossConfig = field(default_factory=EntropyLossConfig)
 
 
 class GSDEActionDist(ContinuousActionDist, TemporallyCorrelatedActionDist):
@@ -49,17 +45,14 @@ class GSDEActionDist(ContinuousActionDist, TemporallyCorrelatedActionDist):
             action_net_initialization: ActionNetInitialization = init_linear_orthogonal,
             latent_sde_net_initialization: ActionNetInitialization = init_linear_orthogonal,
             log_std_clamp_range: tuple[float, float] = (-20.0, 2.0),
-            ent_loss_coef: float = 0.0,
-            ent_loss_config: EntropyLossConfig | None = None,
-    ):
+    ) -> None:
         assert latent_sde_dim is None or latent_sde_dim == latent_dim or sde_learn_features
 
         super().__init__(
             latent_dim=latent_dim,
             action_dim=action_dim,
             action_net_initialization=action_net_initialization,
-            ent_loss_coef=ent_loss_coef,
-            ent_loss_config=ent_loss_config,
+            squash_output=squash_output,
         )
 
         self.latent_sde_dim = latent_dim if latent_sde_dim is None else latent_sde_dim
@@ -67,7 +60,6 @@ class GSDEActionDist(ContinuousActionDist, TemporallyCorrelatedActionDist):
         self.normalize_latent_sde_by_dim = normalize_latent_sde_by_dim
         self.full_std = full_std
         self.sde_learn_features = sde_learn_features
-        self.squash_output = squash_output
         self.epsilon = epsilon
         self.log_std_clamp_range = log_std_clamp_range
 
@@ -230,21 +222,6 @@ class GSDEActionDist(ContinuousActionDist, TemporallyCorrelatedActionDist):
         log_prob -= self.sum_action_dim(torch.log(1 - actions ** 2 + self.epsilon))
         return log_prob
 
-    def compute_extra_losses(
-            self,
-            *,
-            agent_mask: torch.Tensor | None = None,
-            action_splitter: ActionMetricsSplitterInput = None,
-    ) -> tuple[LossDict, LossMetrics]:
-        ent_loss, ent_loss_metrics = self.compute_entropy_loss(
-            agent_mask=agent_mask,
-            action_splitter=action_splitter,
-        )
-        losses: LossDict = {}
-        if ent_loss is not None:
-            losses["entropy"] = ent_loss
-        return losses, ent_loss_metrics
-
     def get_actions_with_log_probs(
             self,
             latent_pi: torch.Tensor,
@@ -252,7 +229,7 @@ class GSDEActionDist(ContinuousActionDist, TemporallyCorrelatedActionDist):
             agent: int | None = None,
             previous_actions: torch.Tensor | None = None,
             use_rsample: bool = False,
-    ):
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         actions = self.update_latent_features(latent_pi).get_actions(
             deterministic=deterministic,
             agent=agent,

@@ -307,6 +307,7 @@ class TMASACPolicy(BaseSACPolicy):
             use_rsample: bool = True,
             num_action_samples: int = 1,
     ) -> tuple[torch.Tensor, torch.Tensor]:
+        self._set_action_dist_metrics_agent_mask(agent_mask, num_action_samples, n_agents=local_obs.shape[-2])
         if num_action_samples == 1:
             sample_actions = self._compiled_action_log_prob or self._action_log_prob_impl
             return sample_actions(
@@ -344,12 +345,17 @@ class TMASACPolicy(BaseSACPolicy):
             deterministic: bool = False,
             use_rsample: bool = True,
             num_action_samples: int = 1,
+            time_mask: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """For K > 1 return [K, ..., agents, actions] and [K, ..., agents].
 
         Keep recurrence outside the candidate axis; each QCX row is a joint action.
         K = 1 retains the original shapes and compiled sampling entry point.
+        ``time_mask`` excludes padded timesteps from distribution diagnostics.
         """
+        self._set_action_dist_metrics_agent_mask(
+            agent_mask, num_action_samples, n_agents=actor_latents.shape[-2], time_mask=time_mask,
+        )
         if num_action_samples == 1:
             return self._actor_actions_and_log_probs(
                 actor_latents=actor_latents,
@@ -378,10 +384,11 @@ class TMASACPolicy(BaseSACPolicy):
             use_rsample: bool,
             num_action_samples: int,
     ) -> tuple[torch.Tensor, torch.Tensor]:
+        sample_agent_mask = expand_action_samples(agent_mask, num_action_samples)
         return self.actor_head.actions_and_log_probs(
             actor_latents=expand_action_samples(actor_latents, num_action_samples),
             action_dist=self.action_dist,
-            agent_mask=expand_action_samples(agent_mask, num_action_samples),
+            agent_mask=sample_agent_mask,
             previous_actions=expand_action_samples(previous_actions, num_action_samples),
             deterministic=deterministic,
             use_rsample=use_rsample,

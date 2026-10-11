@@ -46,7 +46,6 @@ def _make_policy(
         assume_agent_mask_is_active_prefix: bool = False,
         add_agent_embeddings: bool = False,
         compile_modules: bool = False,
-        ent_loss_coef: float = 0.0,
 ) -> MATQCXPolicy:
     return MATQCXPolicy(
         env=_DummyMATQCXEnv(),
@@ -68,13 +67,8 @@ def _make_policy(
                 add_agent_embeddings=add_agent_embeddings,
                 assume_agent_mask_is_active_prefix=assume_agent_mask_is_active_prefix,
             ),
-            continuous_config=SignMagnitudeBetaConfig(
-                ent_loss_coef=ent_loss_coef,
-            ),
-            bernoulli_config=BernoulliConfig(
-                initial_prob=0.5,
-                ent_loss_coef=ent_loss_coef,
-            ),
+            continuous_config=SignMagnitudeBetaConfig(),
+            bernoulli_config=BernoulliConfig(initial_prob=0.5),
             max_agents=8,
             compile_modules=compile_modules,
         ),
@@ -411,9 +405,9 @@ def test_qcx_policy_compile_modules_constructs_when_supported() -> None:
     assert policy.config.compile_modules
 
 
-def test_compiled_qc_evaluation_refreshes_distribution_state_for_extra_losses() -> None:
+def test_compiled_qc_evaluation_matches_eager_log_probs_values_and_gradients() -> None:
     torch.manual_seed(41)
-    eager_policy = _make_policy(ent_loss_coef=0.2)
+    eager_policy = _make_policy()
     torch.manual_seed(41)
     with (
         patch(
@@ -424,7 +418,7 @@ def test_compiled_qc_evaluation_refreshes_distribution_state_for_extra_losses() 
             side_effect=_compile_with_eager_backend,
         ),
     ):
-        compiled_policy = _make_policy(compile_modules=True, ent_loss_coef=0.2)
+        compiled_policy = _make_policy(compile_modules=True)
 
         batch_size = 3
         local_obs = torch.randn(batch_size, _DummyMATQCXEnv.n_agents, _DummyMATQCXEnv.local_obs_dim)
@@ -455,19 +449,16 @@ def test_compiled_qc_evaluation_refreshes_distribution_state_for_extra_losses() 
             compiled_outputs = compiled_policy.evaluate_actions(samples)
             torch.testing.assert_close(compiled_outputs[0], eager_outputs[0])
             torch.testing.assert_close(compiled_outputs[1], eager_outputs[1])
-            compiled_losses = compiled_outputs[2]
-            eager_losses = eager_outputs[2]
-            assert compiled_losses.keys() == eager_losses.keys()
-            assert compiled_losses
-            for name in compiled_losses:
-                torch.testing.assert_close(compiled_losses[name], eager_losses[name])
 
-        compiled_total_loss = (
-            compiled_outputs[0].mean()
-            + compiled_outputs[1].mean()
-            + torch.stack(tuple(compiled_outputs[2].values())).sum()
-        )
+        eager_total_loss = eager_outputs[0].mean() + eager_outputs[1].mean()
+        compiled_total_loss = compiled_outputs[0].mean() + compiled_outputs[1].mean()
+        eager_total_loss.backward()
         compiled_total_loss.backward()
+        torch.testing.assert_close(
+            {".".join(part for part in name.split(".") if part != "_orig_mod"): parameter.grad
+             for name, parameter in compiled_policy.named_parameters()},
+            {name: parameter.grad for name, parameter in eager_policy.named_parameters()},
+        )
         action_dist_gradients = [
             parameter.grad
             for parameter in compiled_policy.action_dist.parameters()

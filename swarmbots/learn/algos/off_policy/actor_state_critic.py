@@ -7,8 +7,9 @@ import torch
 
 from swarmbots.learn.algos.off_policy.joint_critic import JointQNetwork
 from swarmbots.learn.algos.off_policy.transformer_critic import TransformerTwinCritic
-from swarmbots.learn.algos.r_mat.temporal_sequence_model import LSTMTemporalSequenceModel
+from swarmbots.learn.algos.r_mat.temporal_sequence_model import LSTMTemporalSequenceModel, TemporalSequenceModel
 from swarmbots.learn.algos.xlstm.slstm import SLSTMTemporalSequenceModel
+from swarmbots.learn.nn_components.activations import ActivationFactory
 from swarmbots.learn.nn_components.feed_forward import MLP
 from swarmbots.learn.nn_components.nn_init import make_init_linear_orthogonal
 
@@ -22,7 +23,11 @@ class ActorStateCriticInputConfig:
     output_init_gain: float = 1.0
 
 
-def actor_state_input_dim(temporal_model, d_model: int, config: ActorStateCriticInputConfig) -> int:
+def actor_state_input_dim(
+    temporal_model: TemporalSequenceModel,
+    d_model: int,
+    config: ActorStateCriticInputConfig,
+) -> int:
     if isinstance(temporal_model, LSTMTemporalSequenceModel):
         return 2 * d_model
     if isinstance(temporal_model, SLSTMTemporalSequenceModel):
@@ -34,7 +39,9 @@ def actor_state_input_dim(temporal_model, d_model: int, config: ActorStateCritic
 
 
 def actor_state_critic_input(
-    temporal_model, last_layer_state: Any, config: ActorStateCriticInputConfig
+    temporal_model: TemporalSequenceModel,
+    last_layer_state: Any,
+    config: ActorStateCriticInputConfig,
 ) -> torch.Tensor:
     if isinstance(temporal_model, LSTMTemporalSequenceModel):
         hidden_state, cell_state = last_layer_state
@@ -54,7 +61,14 @@ def actor_state_critic_input(
 
 
 class _ActorStateInputMixin:
-    def _init_actor_state_encoder(self, *, input_dim, projection_dim, config, act_fn_cls) -> None:
+    def _init_actor_state_encoder(
+        self,
+        *,
+        input_dim: int,
+        projection_dim: int,
+        config: ActorStateCriticInputConfig,
+        act_fn_cls: ActivationFactory,
+    ) -> None:
         hidden_dims = (projection_dim,) if config.projection_hidden_dims is None else config.projection_hidden_dims
         self.actor_state_encoder = MLP(
             input_dim=input_dim,
@@ -96,7 +110,13 @@ class ActorStateTransformerTwinCritic(_ActorStateInputMixin, TransformerTwinCrit
     def encode(self, *, actor_state: torch.Tensor, local_inputs: torch.Tensor, **kwargs: Any) -> torch.Tensor:
         return super().encode(local_inputs=self._append_actor_state(local_inputs, actor_state), **kwargs)
 
-    def forward(self, *, actor_state: torch.Tensor, local_obs: torch.Tensor, **kwargs: Any):
+    def forward(
+        self,
+        *,
+        actor_state: torch.Tensor,
+        local_obs: torch.Tensor,
+        **kwargs: Any,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         return super().forward(local_obs=self._append_actor_state(local_obs, actor_state), **kwargs)
 
 
@@ -123,9 +143,21 @@ class ActorStateJointQNetwork(_ActorStateInputMixin, JointQNetwork):
             act_fn_cls=kwargs["act_fn_cls"],
         )
 
-    def forward_with_latents(self, *, actor_state: torch.Tensor, local_obs: torch.Tensor, **kwargs: Any):
+    def forward_with_latents(
+        self,
+        *,
+        actor_state: torch.Tensor,
+        local_obs: torch.Tensor,
+        **kwargs: Any,
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
         return super().forward_with_latents(local_obs=self._append_actor_state(local_obs, actor_state), **kwargs)
 
-    def forward(self, *, actor_state: torch.Tensor, local_obs: torch.Tensor, **kwargs: Any):
+    def forward(
+        self,
+        *,
+        actor_state: torch.Tensor,
+        local_obs: torch.Tensor,
+        **kwargs: Any,
+    ) -> torch.Tensor:
         values, _latents = self.forward_with_latents(actor_state=actor_state, local_obs=local_obs, **kwargs)
         return values

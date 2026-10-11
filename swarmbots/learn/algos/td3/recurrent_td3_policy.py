@@ -1,9 +1,10 @@
 """TD3 policies with independent online and target actor history states."""
 
 from dataclasses import dataclass, field, replace
-from typing import Any, Literal
+from typing import Any, Literal, TypeAlias
 
 import torch
+from torch import nn
 
 from swarmbots.learn.algos.off_policy.nop import SACNOPSequenceBatch
 from swarmbots.learn.algos.off_policy.actor_state_critic import (
@@ -13,9 +14,28 @@ from swarmbots.learn.algos.off_policy.actor_state_critic import (
     actor_state_input_dim,
     actor_state_critic_input,
 )
-from swarmbots.learn.algos.off_policy.recurrent_transformer_critic import RecurrentTransformerTwinCritic
-from swarmbots.learn.algos.r_mat.r_mat_encoder import RMATEncoder, RMATEncoderConfig
+from swarmbots.learn.algos.off_policy.joint_critic import JointQNetwork
+from swarmbots.learn.algos.off_policy.recurrent_transformer_critic import (
+    RecurrentCriticState,
+    RecurrentTransformerTwinCritic,
+)
+from swarmbots.learn.algos.off_policy.transformer_critic import TransformerTwinCritic
+from swarmbots.learn.algos.r_mat.r_mat_encoder import RMATEncoder, RMATEncoderConfig, RMATEncoderState
+from swarmbots.learn.algos.r_mat.temporal_sequence_model import TemporalModelState
 from swarmbots.learn.algos.td3.td3_policy import DeterministicActor, TD3Policy, TD3PolicyConfig
+from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
+
+
+ActorEncoderSequenceResult: TypeAlias = (
+    tuple[torch.Tensor, RMATEncoderState]
+    | tuple[torch.Tensor, RMATEncoderState, RMATEncoderState]
+    | tuple[torch.Tensor, RMATEncoderState, RMATEncoderState | None, TemporalModelState]
+)
+ActorActionsSequenceResult: TypeAlias = (
+    tuple[torch.Tensor, torch.Tensor, RMATEncoderState]
+    | tuple[torch.Tensor, torch.Tensor, RMATEncoderState, RMATEncoderState]
+    | tuple[torch.Tensor, torch.Tensor, RMATEncoderState, RMATEncoderState | None, TemporalModelState]
+)
 
 
 @dataclass(frozen=True)
@@ -26,7 +46,9 @@ class RecurrentTD3PolicyConfig(TD3PolicyConfig):
 
 
 class RecurrentDeterministicActor(DeterministicActor):
-    def _build_encoder(self, env, config: RecurrentTD3PolicyConfig) -> RMATEncoder:
+    encoder: RMATEncoder
+
+    def _build_encoder(self, env: BaseLearnEnvWrapper, config: RecurrentTD3PolicyConfig) -> RMATEncoder:
         return RMATEncoder(
             config.actor_encoder_config,
             max_agents=env.n_agents,
@@ -34,25 +56,46 @@ class RecurrentDeterministicActor(DeterministicActor):
             global_obs_dim=env.global_obs_dim,
         )
 
-    def encode(self, local_obs, global_obs, agent_mask=None, **kwargs):
+    def encode(
+        self,
+        local_obs: torch.Tensor,
+        global_obs: torch.Tensor,
+        agent_mask: torch.Tensor | None = None,
+        **kwargs: Any,
+    ) -> ActorEncoderSequenceResult:
         if agent_mask is not None:
             local_obs = local_obs.masked_fill(~agent_mask.unsqueeze(-1), 0.0)
         return self.encoder(local_obs, global_obs, agent_mask=agent_mask, **kwargs)
 
-    def actions_from_latents(self, latents, agent_mask=None):
+    def actions_from_latents(
+        self,
+        latents: torch.Tensor,
+        agent_mask: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         actions = self.action_net(self.head(latents, agent_mask=agent_mask)).tanh()
         actions = self.action_center + self.action_scale * actions
         return actions if agent_mask is None else actions.masked_fill(~agent_mask.unsqueeze(-1), 0.0)
 
-    def forward(self, local_obs, global_obs, agent_mask=None):
+    def forward(
+        self,
+        local_obs: torch.Tensor,
+        global_obs: torch.Tensor,
+        agent_mask: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         latents, _state = self.encode(local_obs, global_obs, agent_mask)
         return self.actions_from_latents(latents, agent_mask)
 
 
 class RecurrentTD3Policy(TD3Policy):
     config: RecurrentTD3PolicyConfig
+    actor: RecurrentDeterministicActor
+    actor_target: RecurrentDeterministicActor
 
-    def __init__(self, env, config: RecurrentTD3PolicyConfig = RecurrentTD3PolicyConfig()) -> None:
+    def __init__(
+        self,
+        env: BaseLearnEnvWrapper,
+        config: RecurrentTD3PolicyConfig = RecurrentTD3PolicyConfig(),
+    ) -> None:
         if config.actor_state_critic_input_config == "auto":
             config = replace(
                 config,
@@ -103,10 +146,14 @@ class RecurrentTD3Policy(TD3Policy):
                 )
                 object.__setattr__(self, name, forward)
 
-    def _build_actor(self, env, config):
+    def _build_actor(
+        self,
+        env: BaseLearnEnvWrapper,
+        config: RecurrentTD3PolicyConfig,
+    ) -> RecurrentDeterministicActor:
         return RecurrentDeterministicActor(env, config)
 
-    def _build_transformer_critic(self, **kwargs):
+    def _build_transformer_critic(self, **kwargs: Any) -> TransformerTwinCritic:
         if self.uses_actor_state_critic_input:
             return ActorStateTransformerTwinCritic(**kwargs, **self._actor_state_critic_kwargs())
         if not self.config.recurrent_critic:
@@ -114,12 +161,12 @@ class RecurrentTD3Policy(TD3Policy):
         kwargs.pop("act_fn_cls")
         return RecurrentTransformerTwinCritic(**kwargs)
 
-    def _build_joint_critic(self, **kwargs):
+    def _build_joint_critic(self, **kwargs: Any) -> JointQNetwork:
         if self.uses_actor_state_critic_input:
             return ActorStateJointQNetwork(**kwargs, **self._actor_state_critic_kwargs())
         return super()._build_joint_critic(**kwargs)
 
-    def _actor_state_critic_kwargs(self):
+    def _actor_state_critic_kwargs(self) -> dict[str, Any]:
         config = self.config.actor_state_critic_input_config
         return dict(
             actor_state_input_dim=actor_state_input_dim(
@@ -135,7 +182,12 @@ class RecurrentTD3Policy(TD3Policy):
     def uses_actor_state_critic_input(self) -> bool:
         return self.config.actor_state_critic_input_config is not None
 
-    def actor_last_layer_state_critic_input(self, state, *, target=False):
+    def actor_last_layer_state_critic_input(
+        self,
+        state: TemporalModelState,
+        *,
+        target: bool = False,
+    ) -> torch.Tensor:
         if not self.uses_actor_state_critic_input:
             raise RuntimeError("Actor-state critic input is not configured")
         actor = self.actor_target if target else self.actor
@@ -145,10 +197,15 @@ class RecurrentTD3Policy(TD3Policy):
             self.config.actor_state_critic_input_config,
         )
 
-    def actor_state_critic_input(self, state, *, target=False):
+    def actor_state_critic_input(self, state: RMATEncoderState, *, target: bool = False) -> torch.Tensor:
         return self.actor_last_layer_state_critic_input(state[-1], target=target)
 
-    def _stateless_actor_state_critic_input(self, observations, *, target=False):
+    def _stateless_actor_state_critic_input(
+        self,
+        observations: dict[str, torch.Tensor | None],
+        *,
+        target: bool = False,
+    ) -> torch.Tensor:
         with torch.no_grad():
             _latents, state = self.encode_actor_sequence(
                 local_obs=observations["local_obs"],
@@ -165,13 +222,24 @@ class RecurrentTD3Policy(TD3Policy):
     def requires_recurrent_training(self) -> bool:
         return True
 
-    def initial_temporal_state(self, batch_size, n_agents, *, device, dtype):
+    def initial_temporal_state(
+        self,
+        batch_size: int,
+        n_agents: int,
+        *,
+        device: torch.device,
+        dtype: torch.dtype,
+    ) -> dict[str, RMATEncoderState]:
         return {
             name: actor.encoder.initial_state(batch_size, n_agents, device=device, dtype=dtype)
             for name, actor in (("actor", self.actor), ("target_actor", self.actor_target))
         }
 
-    def _evaluate_critic(self, critic, **observations):
+    def _evaluate_critic(
+        self,
+        critic: nn.Module,
+        **observations: torch.Tensor | None,
+    ) -> tuple[torch.Tensor, ...]:
         if self.recurrent_critic:
             q1, q2, _latents, _state = self.q_values_sequence(
                 **observations,
@@ -189,7 +257,10 @@ class RecurrentTD3Policy(TD3Policy):
                 observations["actor_state"] = observations["actor_state"].masked_fill(~mask.unsqueeze(-1), 0.0)
         return super()._evaluate_critic(critic, **observations)
 
-    def _q_values_with_nop_latents(self, **observations):
+    def _q_values_with_nop_latents(
+        self,
+        **observations: torch.Tensor | None,
+    ) -> tuple[tuple[torch.Tensor, ...], torch.Tensor | None]:
         if self.recurrent_critic or self.uses_actor_state_critic_input:
             if self.uses_actor_state_critic_input and observations.get("actor_state") is None:
                 observations["actor_state"] = self._stateless_actor_state_critic_input(observations)
@@ -200,17 +271,17 @@ class RecurrentTD3Policy(TD3Policy):
     def encode_actor_sequence(
         self,
         *,
-        local_obs,
-        global_obs,
-        agent_mask=None,
-        target=False,
-        initial_state=None,
-        time_mask=None,
-        reset_mask=None,
-        scenario_ids=None,
-        state_output_indices=None,
-        return_last_layer_state_sequence=False,
-    ):
+        local_obs: torch.Tensor,
+        global_obs: torch.Tensor,
+        agent_mask: torch.Tensor | None = None,
+        target: bool = False,
+        initial_state: RMATEncoderState | None = None,
+        time_mask: torch.Tensor | None = None,
+        reset_mask: torch.Tensor | None = None,
+        scenario_ids: torch.Tensor | None = None,
+        state_output_indices: torch.Tensor | None = None,
+        return_last_layer_state_sequence: bool = False,
+    ) -> ActorEncoderSequenceResult:
         if scenario_ids is not None:
             raise ValueError("TD3 currently requires a single scenario observation layout")
         actor = self.actor_target if target else self.actor
@@ -228,7 +299,7 @@ class RecurrentTD3Policy(TD3Policy):
             return_last_layer_state_sequence=return_last_layer_state_sequence,
         )
 
-    def actor_actions_sequence(self, *, target=False, **kwargs):
+    def actor_actions_sequence(self, *, target: bool = False, **kwargs: Any) -> ActorActionsSequenceResult:
         result = self.encode_actor_sequence(target=target, **kwargs)
         latents, state, *selected_states = result
         actor = self.actor_target if target else self.actor
@@ -237,18 +308,18 @@ class RecurrentTD3Policy(TD3Policy):
 
     def act_with_temporal_state(
         self,
-        local_obs,
-        global_obs,
-        hidden_local_vars=None,
-        hidden_global_vars=None,
-        agent_mask=None,
-        scenario_ids=None,
-        previous_actions=None,
-        deterministic=False,
+        local_obs: torch.Tensor,
+        global_obs: torch.Tensor,
+        hidden_local_vars: torch.Tensor | None = None,
+        hidden_global_vars: torch.Tensor | None = None,
+        agent_mask: torch.Tensor | None = None,
+        scenario_ids: torch.Tensor | None = None,
+        previous_actions: torch.Tensor | None = None,
+        deterministic: bool = False,
         *,
-        temporal_state=None,
-        episode_start_mask=None,
-    ):
+        temporal_state: dict[str, RMATEncoderState] | None = None,
+        episode_start_mask: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, dict[str, RMATEncoderState]]:
         if temporal_state is None:
             temporal_state = self.initial_temporal_state(
                 local_obs.shape[0],
@@ -277,7 +348,15 @@ class RecurrentTD3Policy(TD3Policy):
             actions = self.add_action_noise(actions, std=self.exploration_noise, agent_mask=agent_mask)
         return actions, {"actor": actor_state, "target_actor": target_state}
 
-    def initial_critic_state(self, batch_size, n_agents, *, device, dtype, target=False):
+    def initial_critic_state(
+        self,
+        batch_size: int,
+        n_agents: int,
+        *,
+        device: torch.device,
+        dtype: torch.dtype,
+        target: bool = False,
+    ) -> RecurrentCriticState | None:
         if not self.recurrent_critic:
             return None
         critic = self.critic_target if target else self.critic
@@ -286,20 +365,20 @@ class RecurrentTD3Policy(TD3Policy):
     def q_values_sequence(
         self,
         *,
-        local_obs,
-        global_obs,
-        actions,
-        hidden_local_vars=None,
-        hidden_global_vars=None,
-        agent_mask=None,
-        target=False,
-        initial_state=None,
-        time_mask=None,
-        reset_mask=None,
-        scenario_ids=None,
-        num_action_samples=1,
-        actor_state=None,
-    ):
+        local_obs: torch.Tensor,
+        global_obs: torch.Tensor,
+        actions: torch.Tensor,
+        hidden_local_vars: torch.Tensor | None = None,
+        hidden_global_vars: torch.Tensor | None = None,
+        agent_mask: torch.Tensor | None = None,
+        target: bool = False,
+        initial_state: RecurrentCriticState | None = None,
+        time_mask: torch.Tensor | None = None,
+        reset_mask: torch.Tensor | None = None,
+        scenario_ids: torch.Tensor | None = None,
+        num_action_samples: int = 1,
+        actor_state: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None, RecurrentCriticState | None]:
         if scenario_ids is not None or num_action_samples != 1:
             raise ValueError("Recurrent TD3 uses a single scenario and one action candidate")
         observations = dict(
@@ -351,12 +430,22 @@ class RecurrentTD3Policy(TD3Policy):
             latents = latents.masked_fill(~agent_mask.unsqueeze(-1), 0.0)
         return q1, q2, latents, None
 
-    def compute_actor_nop_loss_from_latents(self, *, source_latents, batch: SACNOPSequenceBatch):
+    def compute_actor_nop_loss_from_latents(
+        self,
+        *,
+        source_latents: torch.Tensor,
+        batch: SACNOPSequenceBatch,
+    ) -> tuple[torch.Tensor | None, dict[str, torch.Tensor]]:
         if self.actor_nop is None:
             return None, {}
         return self.actor_nop.compute_loss(source_latents=source_latents, batch=batch)
 
-    def compute_critic_nop_loss_from_latents(self, *, source_latents, batch: SACNOPSequenceBatch):
+    def compute_critic_nop_loss_from_latents(
+        self,
+        *,
+        source_latents: torch.Tensor | None,
+        batch: SACNOPSequenceBatch,
+    ) -> tuple[torch.Tensor | None, dict[str, torch.Tensor]]:
         if self.critic_nop is None or source_latents is None:
             return None, {}
         return self.critic_nop.compute_loss(source_latents=source_latents, batch=batch)

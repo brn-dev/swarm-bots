@@ -335,11 +335,7 @@ class PPOPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
         critic_global_obs = self._build_critic_global_obs(hidden_global_vars)
         values = self.critic(critic_local_obs, critic_global_obs, agent_mask=agent_mask)
 
-        extra_losses, extra_loss_metrics = self.action_dist.compute_extra_losses(
-            agent_mask=agent_mask,
-            action_splitter=action_splitter,
-        )
-        return log_probs, values, extra_losses, extra_loss_metrics, local_latents
+        return log_probs, values, {}, {}, local_latents
 
     def predict_values(
             self,
@@ -480,26 +476,3 @@ class PPOPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
             )
         if not callable(torch.compile):
             raise RuntimeError("torch.compile is not callable in this environment.")
-
-    def update_loss_weights(self, **weights: float) -> None:
-        if not weights:
-            return
-
-        remaining_weights = dict(weights)
-        per_action_entropy_weights = self._pop_per_action_entropy_weights(remaining_weights)
-        for idx, value in per_action_entropy_weights.items():
-            if value < 0:
-                raise ValueError(f"act{idx}_ent_loss_coef must be >= 0, got {value}")
-            self.action_dist.set_sub_ent_loss_coef(idx, value)
-
-        entropy_weight = self._pop_loss_weight_alias(
-            remaining_weights,
-            aliases=("ent_loss_coef", "entropy", "ent"),
-        )
-        if entropy_weight is not None:
-            alias, value = entropy_weight
-            if value < 0:
-                raise ValueError(f"{alias} must be >= 0, got {value}")
-            self.action_dist.set_all_ent_loss_coefs(value)
-
-        super().update_loss_weights(**remaining_weights)

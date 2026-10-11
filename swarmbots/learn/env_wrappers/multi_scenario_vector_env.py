@@ -206,8 +206,15 @@ class MultiScenarioVectorEnv(VectorEnv):
             raise
 
     def close_extras(self, **kwargs: Any) -> None:
+        first_error: Exception | None = None
         for env in self.envs:
-            env.close(**kwargs)
+            try:
+                env.close(**kwargs)
+            except Exception as error:
+                if first_error is None:
+                    first_error = error
+        if first_error is not None:
+            raise first_error
 
     def get_settings(self) -> dict[str, Any]:
         return {

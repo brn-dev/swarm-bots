@@ -1,9 +1,10 @@
+
 import torch
 
 
 class TanhBijector:
 
-    def __init__(self, epsilon: float = 1e-6):
+    def __init__(self, epsilon: float = 1e-6) -> None:
         super().__init__()
         self.epsilon = epsilon
 

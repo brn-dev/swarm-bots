@@ -3,7 +3,7 @@ from typing import Any
 
 import torch
 
-from swarmbots.learn.action_dists.action_sampling import expand_action_sample_batch
+from swarmbots.learn.action_dists.action_sampling import expand_action_sample_batch, expand_action_samples
 from swarmbots.learn.action_dists.hybrid_action_dist import HybridActionDistribution
 from swarmbots.learn.algos.off_policy.replay_buffer import OffPolicyReplayBatch, OffPolicyReplayEpisodeSegmentBatch
 from swarmbots.learn.base_policy import BasePolicy
@@ -11,11 +11,30 @@ from swarmbots.learn.base_policy import BasePolicy
 
 class BaseSACPolicy(BasePolicy, abc.ABC):
     action_dist: HybridActionDistribution
+    action_dist_metrics_agent_mask: torch.Tensor | None = None
 
     @property
     def gsde_enabled(self) -> bool:
         action_dist = getattr(self, "action_dist", None)
         return bool(getattr(action_dist, "has_gsde", False))
+
+    def _set_action_dist_metrics_agent_mask(
+            self,
+            agent_mask: torch.Tensor | None,
+            num_action_samples: int = 1,
+            *,
+            n_agents: int,
+            time_mask: torch.Tensor | None = None,
+    ) -> None:
+        if time_mask is not None:
+            valid_time_agents = time_mask.unsqueeze(-1).expand(*time_mask.shape, n_agents)
+            agent_mask = valid_time_agents if agent_mask is None else agent_mask & valid_time_agents
+        # Environment resets reuse mask storage before the cached distribution is logged.
+        metrics_agent_mask = None if agent_mask is None else agent_mask.detach().clone()
+        self.action_dist_metrics_agent_mask = (
+            metrics_agent_mask if num_action_samples == 1
+            else expand_action_samples(metrics_agent_mask, num_action_samples)
+        )
 
     @abc.abstractmethod
     def action_log_prob(

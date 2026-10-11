@@ -1,18 +1,14 @@
 import math
-from dataclasses import dataclass, field
-from typing import Any
+from dataclasses import dataclass
 
 import torch
 from torch import distributions as torchdist
 
 from swarmbots.learn.action_dists.action_dist import ActionNetInitialization
-from swarmbots.learn.action_dists.entropy_utils import EntropyLossConfig
 from swarmbots.learn.action_dists.sign_magnitude_action_dist import (
     SignMagnitudeActionDist,
-    default_sign_magnitude_entropy_loss_config,
     shape_parameter_greater_than_one,
 )
-from swarmbots.learn.serialization_utils import serialize_dataclass
 
 
 @dataclass(frozen=True)
@@ -23,14 +19,6 @@ class SignMagnitudeBetaConfig:
     negative_beta: float = 1.0 + math.log(2.0)
     positive_alpha: float = 1.0 + math.log(2.0)
     positive_beta: float = 1.0 + math.log(2.0)
-    ent_loss_coef: float = 0.0
-    beta_ent_scale: float = 1.0
-    categorical_ent_loss_config: EntropyLossConfig = field(
-        default_factory=default_sign_magnitude_entropy_loss_config
-    )
-    beta_ent_loss_config: EntropyLossConfig = field(
-        default_factory=default_sign_magnitude_entropy_loss_config
-    )
 
 
 class SignMagnitudeBetaActionDist(SignMagnitudeActionDist):
@@ -45,10 +33,6 @@ class SignMagnitudeBetaActionDist(SignMagnitudeActionDist):
             negative_beta: float = 1.0 + math.log(2.0),
             positive_alpha: float = 1.0 + math.log(2.0),
             positive_beta: float = 1.0 + math.log(2.0),
-            ent_loss_coef: float = 0.0,
-            beta_ent_scale: float = 1.0,
-            categorical_ent_loss_config: EntropyLossConfig | None = None,
-            beta_ent_loss_config: EntropyLossConfig | None = None,
     ) -> None:
         super().__init__(
             latent_dim=latent_dim,
@@ -63,28 +47,8 @@ class SignMagnitudeBetaActionDist(SignMagnitudeActionDist):
                 "positive_alpha",
                 "positive_beta",
             ),
-            ent_loss_coef=ent_loss_coef,
-            magnitude_ent_scale=beta_ent_scale,
-            categorical_ent_loss_config=categorical_ent_loss_config,
-            magnitude_ent_loss_config=beta_ent_loss_config,
             magnitude_entropy_metric_name="ent_beta",
         )
-
-    @property
-    def beta_ent_scale(self) -> float:
-        return self.magnitude_ent_scale
-
-    @beta_ent_scale.setter
-    def beta_ent_scale(self, value: float) -> None:
-        self.set_magnitude_ent_scale(value)
-
-    @property
-    def beta_ent_loss_config(self) -> EntropyLossConfig:
-        return self.magnitude_ent_loss_config
-
-    @beta_ent_loss_config.setter
-    def beta_ent_loss_config(self, value: EntropyLossConfig) -> None:
-        self.magnitude_ent_loss_config = value
 
     @property
     def negative_beta_dist(self) -> torchdist.Beta | None:
@@ -132,13 +96,3 @@ class SignMagnitudeBetaActionDist(SignMagnitudeActionDist):
             )
 
         return beta_mode(self.negative_beta_dist), beta_mode(self.positive_beta_dist)
-
-    def set_beta_ent_scale(self, value: float) -> None:
-        self.set_magnitude_ent_scale(value)
-
-    def get_hyper_parameters(self) -> dict[str, Any]:
-        return {
-            **super().get_hyper_parameters(),
-            "beta_ent_scale": self.beta_ent_scale,
-            "beta_ent_loss_config": serialize_dataclass(self.beta_ent_loss_config),
-        }

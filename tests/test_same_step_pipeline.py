@@ -9,7 +9,7 @@ from gymnasium import spaces
 from gymnasium.vector import AutoresetMode, SyncVectorEnv
 
 from swarmbots.learn.algos.ppo.base_ppo_policy import BasePPOPolicy
-from swarmbots.learn.algos.ppo.ppo_rollout import collect_step_rollout_batch, collect_steps, collect_whole_episodes
+from swarmbots.learn.algos.ppo.ppo_rollout import collect_step_rollout_batch, collect_steps
 from swarmbots.learn.algos.ppo.ppo_rollout_buffer import PPORolloutBuffer, PPOEpisodeSegment
 from swarmbots.learn.algos.ppo.ppo_sampler import PPOSampler, PPOSamplerConfig
 from swarmbots.learn.algos.world_modeling.ppo_wm_sampler import PPOWMBatchSampler, PPOWMSamplerConfig
@@ -805,26 +805,31 @@ class SameStepPipelineTests(unittest.TestCase):
         finally:
             env.close()
 
-    def test_collect_whole_episodes_collects_done_env_infos_across_envs(self) -> None:
+    def test_step_rollouts_keep_slow_lanes_and_count_every_transition(self) -> None:
         env = _make_scripted_env(
-            (1, (2,), "truncate"),
-            (2, (3,), "truncate"),
+            (1, (1,), "truncate"),
+            (2, (100,), "truncate"),
         )
         try:
             policy = _ConstantValuePolicy(action_dim=env.action_space.total_agent_action_dim)
             buffer = _make_buffer(env)
 
-            episodes, episode_infos, _metrics = collect_whole_episodes(
-                env=env,
-                policy=policy,
-                buffer=buffer,
-                n_episodes=2,
-            )
+            rollout_state = None
+            for rollout_idx in range(2):
+                episodes, episode_infos, _metrics, rollout_state = collect_steps(
+                    env=env,
+                    policy=policy,
+                    buffer=buffer,
+                    n_steps=12,
+                    rollout_state=rollout_state,
+                )
 
-            self.assertEqual(len(episodes), 2)
-            self.assertEqual([episode.local_obs.shape[0] for episode in episodes], [2, 3])
-            self.assertEqual([_first_obs_value(episode.final_local_obs) for episode in episodes], [1102.0, 2103.0])
-            self.assertEqual([info["env_marker"] for info in episode_infos], [np.float64(102.0), np.float64(203.0)])
+                self.assertEqual(sum(episode.local_obs.shape[0] for episode in episodes), 12)
+                self.assertEqual(len(episode_infos), 6)
+                slow_lane_segment = next(episode for episode in episodes if episode.rollout_env_idx == 1)
+                self.assertEqual(slow_lane_segment.local_obs.shape[0], 6)
+                self.assertEqual(_first_obs_value(slow_lane_segment.local_obs[0]), 2100.0 + rollout_idx * 6)
+                self.assertEqual(slow_lane_segment.is_true_episode_start, rollout_idx == 0)
         finally:
             env.close()
 

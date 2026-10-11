@@ -17,21 +17,7 @@ from swarmbots.learn.action_dists.action_dist import (
     resolve_action_metrics_splitter,
     validate_probability_clamp_epsilon,
 )
-from swarmbots.learn.action_dists.entropy_utils import (
-    AgentActionsReduction,
-    EntropyLossConfig,
-    compute_ent_loss,
-    compute_ent_metrics,
-)
-from swarmbots.learn.losses import LossDict, LossMetrics
-from swarmbots.learn.serialization_utils import serialize_dataclass
-
-
-def default_sign_magnitude_entropy_loss_config() -> EntropyLossConfig:
-    return EntropyLossConfig(
-        agent_actions_reduction=AgentActionsReduction.SUM,
-        metrics_reduction=AgentActionsReduction.MEAN,
-    )
+from swarmbots.learn.action_dists.entropy_utils import compute_entropy_metrics
 
 
 def shape_parameter_greater_than_one(raw_parameter: torch.Tensor) -> torch.Tensor:
@@ -56,10 +42,6 @@ class SignMagnitudeActionDist(ActionDist):
             epsilon: float,
             initial_magnitude_parameters: tuple[float, float, float, float],
             magnitude_parameter_names: tuple[str, str, str, str],
-            ent_loss_coef: float,
-            magnitude_ent_scale: float,
-            categorical_ent_loss_config: EntropyLossConfig | None,
-            magnitude_ent_loss_config: EntropyLossConfig | None,
             magnitude_entropy_metric_name: str,
     ) -> None:
         super().__init__(
@@ -70,10 +52,6 @@ class SignMagnitudeActionDist(ActionDist):
         )
 
         validate_probability_clamp_epsilon(epsilon)
-        if ent_loss_coef < 0.0:
-            raise ValueError(f"ent_loss_coef must be >= 0, got {ent_loss_coef}")
-        if magnitude_ent_scale < 0.0:
-            raise ValueError(f"magnitude_ent_scale must be >= 0, got {magnitude_ent_scale}")
         if initial_positive_prob is not None and not (0.0 < initial_positive_prob < 1.0):
             raise ValueError(
                 f"initial_positive_prob must be strictly between 0 and 1, got {initial_positive_prob}"
@@ -84,18 +62,6 @@ class SignMagnitudeActionDist(ActionDist):
 
         self.initial_positive_prob = initial_positive_prob
         self.epsilon = epsilon
-        self.ent_loss_coef = ent_loss_coef
-        self.magnitude_ent_scale = magnitude_ent_scale
-        self.categorical_ent_loss_config = (
-            categorical_ent_loss_config
-            if categorical_ent_loss_config is not None
-            else default_sign_magnitude_entropy_loss_config()
-        )
-        self.magnitude_ent_loss_config = (
-            magnitude_ent_loss_config
-            if magnitude_ent_loss_config is not None
-            else default_sign_magnitude_entropy_loss_config()
-        )
         self.magnitude_entropy_metric_name = magnitude_entropy_metric_name
 
         self.output_net = nn.Linear(latent_dim, action_dim * self._OUTPUTS_PER_ACTION)
@@ -262,112 +228,49 @@ class SignMagnitudeActionDist(ActionDist):
         )
         return torch.stack(component_log_probs, dim=-1)
 
-    def compute_extra_losses(
-            self,
-            *,
-            agent_mask: torch.Tensor | None = None,
-            action_splitter: ActionMetricsSplitterInput = None,
-    ) -> tuple[LossDict, LossMetrics]:
-        losses, categorical_entropy_per_action, magnitude_entropy_per_action = (
-            self._compute_extra_losses_and_entropy_tensors(include_magnitude_entropy=True)
-        )
-        if not losses:
-            return {}, {}
-        assert categorical_entropy_per_action is not None
-        assert magnitude_entropy_per_action is not None
-
-        action_metrics_splitter = resolve_action_metrics_splitter(action_splitter)
-        categorical_ent_metrics = compute_ent_metrics(
-            config=self.categorical_ent_loss_config,
-            entropy_per_action=categorical_entropy_per_action,
-            agent_mask=agent_mask,
-            metrics_action_splitter=action_metrics_splitter,
-            name="ent_categorical",
-        )
-        magnitude_ent_metrics = compute_ent_metrics(
-            config=self.magnitude_ent_loss_config,
-            entropy_per_action=magnitude_entropy_per_action,
-            agent_mask=agent_mask,
-            metrics_action_splitter=action_metrics_splitter,
-            name=self.magnitude_entropy_metric_name,
-        )
-        return losses, {**categorical_ent_metrics, **magnitude_ent_metrics}
-
-    def compute_extra_losses_without_metrics(
-            self,
-            *,
-            agent_mask: torch.Tensor | None = None,
-            action_splitter: ActionMetricsSplitterInput = None,
-    ) -> LossDict:
-        _ = (agent_mask, action_splitter)
-        losses, _categorical_entropy, _magnitude_entropy = self._compute_extra_losses_and_entropy_tensors(
-            include_magnitude_entropy=self.magnitude_ent_scale > 0.0,
-        )
-        return losses
-
-    def _compute_extra_losses_and_entropy_tensors(
-            self,
-            *,
-            include_magnitude_entropy: bool,
-    ) -> tuple[LossDict, torch.Tensor | None, torch.Tensor | None]:
-        if self.ent_loss_coef <= 0.0:
-            return {}, None, None
-
-        self._assert_ready()
-        assert self.weight_logits is not None
-        assert self.negative_magnitude_dist is not None
-        assert self.positive_magnitude_dist is not None
-        weights = F.softmax(self.weight_logits, dim=-1)
-        categorical_entropy_per_action = -(weights * F.log_softmax(self.weight_logits, dim=-1)).sum(dim=-1)
-        categorical_ent_loss = compute_ent_loss(
-            config=self.categorical_ent_loss_config,
-            entropy_per_action=categorical_entropy_per_action,
-        )
-        magnitude_entropy_per_action = None
-        if include_magnitude_entropy:
-            magnitude_entropy_per_action = (
-                    weights[..., self._NEGATIVE_INDEX] * self.negative_magnitude_dist.entropy()
-                    + weights[..., self._POSITIVE_INDEX] * self.positive_magnitude_dist.entropy()
-            )
-            magnitude_ent_loss = compute_ent_loss(
-                config=self.magnitude_ent_loss_config,
-                entropy_per_action=magnitude_entropy_per_action,
-            )
-            entropy_loss = self.ent_loss_coef * (
-                    categorical_ent_loss + self.magnitude_ent_scale * magnitude_ent_loss
-            )
-        else:
-            entropy_loss = self.ent_loss_coef * categorical_ent_loss
-        return {"entropy": entropy_loss}, categorical_entropy_per_action, magnitude_entropy_per_action
-
-    def set_ent_loss_coef(self, value: float) -> None:
-        if value < 0.0:
-            raise ValueError(f"ent_loss_coef must be >= 0, got {value}")
-        self.ent_loss_coef = value
-
-    def set_magnitude_ent_scale(self, value: float) -> None:
-        if value < 0.0:
-            raise ValueError(f"magnitude_ent_scale must be >= 0, got {value}")
-        self.magnitude_ent_scale = value
-
     @property
     def compile_friendly(self) -> bool:
         return True
 
+    @torch.no_grad()
     def get_metrics(
             self,
             actions: torch.Tensor,
             action_splitter: ActionMetricsSplitterInput = None,
+            *,
+            agent_mask: torch.Tensor | None = None,
     ) -> dict[str, Any]:
-        return compute_action_metrics(actions, action_splitter, histogram=BOUNDED_ACTION_HISTOGRAM)
+        metrics = compute_action_metrics(actions, action_splitter, histogram=BOUNDED_ACTION_HISTOGRAM)
+        if self.weight_logits is None:
+            return metrics
+        assert self.negative_magnitude_dist is not None
+        assert self.positive_magnitude_dist is not None
+        with torch.no_grad():
+            weights = F.softmax(self.weight_logits, dim=-1)
+            categorical_entropy = -(weights * F.log_softmax(self.weight_logits, dim=-1)).sum(dim=-1)
+            magnitude_entropy = (
+                weights[..., self._NEGATIVE_INDEX] * self.negative_magnitude_dist.entropy()
+                + weights[..., self._POSITIVE_INDEX] * self.positive_magnitude_dist.entropy()
+            )
+        splitter = resolve_action_metrics_splitter(action_splitter)
+        for name, entropy in (
+            ("ent", categorical_entropy + magnitude_entropy),
+            ("ent_categorical", categorical_entropy),
+            (self.magnitude_entropy_metric_name, magnitude_entropy),
+        ):
+            metrics.update(compute_entropy_metrics(
+                entropy,
+                agent_mask=agent_mask,
+                action_splitter=splitter,
+                name=name,
+            ))
+        return metrics
 
     def get_hyper_parameters(self) -> dict[str, Any]:
         hyper_parameters = {
             **super().get_hyper_parameters(),
             "epsilon": self.epsilon,
-            "ent_loss_coef": self.ent_loss_coef,
             "initial_positive_prob": self.initial_positive_prob,
-            "categorical_ent_loss_config": serialize_dataclass(self.categorical_ent_loss_config),
         }
         return hyper_parameters
 

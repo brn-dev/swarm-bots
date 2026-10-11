@@ -69,8 +69,8 @@ def _algorithm(policy: TMASACPolicy, env: object, **kwargs: object) -> SAC:
 @pytest.mark.parametrize(
     "config",
     [
-        PredictedStdGaussianConfig(base_std=0.5, ent_loss_coef=0.1),
-        GumbelSoftmaxSignMagnitudeBetaConfig(ent_loss_coef=0.1),
+        PredictedStdGaussianConfig(base_std=0.5),
+        GumbelSoftmaxSignMagnitudeBetaConfig(),
     ],
 )
 @pytest.mark.parametrize("kind", list(TMASACActorHeadKind))
@@ -176,14 +176,14 @@ def test_recurrent_public_sampler_matches_reset_state_sequence(
 @pytest.mark.parametrize(
     "config",
     [
-        BetaConfig(ent_loss_coef=0.1),
-        SquashedDiagGaussianConfig(std=0.5, std_learnable=True, ent_loss_coef=0.1),
-        PredictedStdGaussianConfig(base_std=0.5, ent_loss_coef=0.1),
+        BetaConfig(),
+        SquashedDiagGaussianConfig(std=0.5, std_learnable=True),
+        PredictedStdGaussianConfig(base_std=0.5),
     ],
 )
 @pytest.mark.parametrize("counts", [(1, 1), (1, 4), (4, 4)])
 @pytest.mark.parametrize("sequence_length", [1, 3])
-def test_segment_training_preserves_entropy_loss_masks(
+def test_segment_multisample_training_with_inactive_agents(
         config: ContinuousActionDistConfig, counts: tuple[int, int], sequence_length: int,
 ) -> None:
     env = _make_env()
@@ -208,11 +208,6 @@ def test_segment_training_preserves_entropy_loss_masks(
         metrics, actor_grad, critic_grad = algo._train_step(batch, global_update_idx=1)
         assert all(torch.isfinite(torch.tensor(value)) for value in (*metrics.values(), actor_grad, critic_grad))
         assert actor_grad > 0 and critic_grad > 0
-        entropy_losses = [
-            value for name, value in metrics.items()
-            if name.startswith("actor_action_dist_") and name.endswith("entropy_loss_scaled")
-        ]
-        assert entropy_losses and any(value != 0 for value in entropy_losses)
     finally:
         env.close()
 
@@ -292,8 +287,8 @@ def test_clipped_double_q_and_temperature_average_over_candidates() -> None:
 @pytest.mark.parametrize(
     "config",
     [
-        PredictedStdGaussianConfig(base_std=0.5, ent_loss_coef=0.1),
-        GumbelSoftmaxSignMagnitudeBetaConfig(ent_loss_coef=0.1),
+        PredictedStdGaussianConfig(base_std=0.5),
+        GumbelSoftmaxSignMagnitudeBetaConfig(),
     ],
 )
 @pytest.mark.parametrize("variant", ["independent", "qcx", "recurrent_critic", "shared", "actor_state"])
@@ -422,29 +417,13 @@ def test_recurrent_candidates_branch_from_executed_action_history(target: bool) 
 
 
 @pytest.mark.parametrize("count", [1, 4])
-def test_auxiliary_loss_and_temperature_are_sample_count_invariant(count: int) -> None:
-    env = _make_env()
-    try:
-        policy = _make_policy(env, continuous_config=PredictedStdGaussianConfig(base_std=0.5, ent_loss_coef=0.1))
-        algo = _algorithm(policy, env, actor_action_samples=count)
-        batch = _make_bootstrap_batch(env)
-        batch = replace(batch, agent_mask=torch.tensor([[True, False], [True, True]]))
-        per_agent_loss = torch.tensor([[2.0, 100.0], [4.0, 6.0]])
-        losses = per_agent_loss if count == 1 else per_agent_loss.expand(count, -1, -1)
-        with patch.object(
-            policy.action_dist, "compute_extra_losses_without_metrics", return_value={"entropy": losses}
-        ):
-            extra, _ = algo._compute_actor_action_dist_extra_losses(agent_mask=batch.agent_mask)
-        reduced = algo._reduce_actor_action_dist_extra_losses(batch=batch, extra_losses=extra)
-        torch.testing.assert_close(reduced["entropy"], torch.tensor(6.0))
-        logs = torch.tensor([-2.0, -4.0])
-        samples = logs if count == 1 else logs.expand(count, -1)
-        alpha_loss = _entropy_coefficient_loss(
-            torch.tensor(0.5), algo._mean_action_samples(samples, count), torch.tensor(-1.0)
-        )
-        torch.testing.assert_close(alpha_loss, torch.tensor(2.0))
-    finally:
-        env.close()
+def test_temperature_loss_is_sample_count_invariant(count: int) -> None:
+    logs = torch.tensor([-2.0, -4.0])
+    samples = logs if count == 1 else logs.expand(count, -1)
+    alpha_loss = _entropy_coefficient_loss(
+        torch.tensor(0.5), SAC._mean_action_samples(samples, count), torch.tensor(-1.0),
+    )
+    torch.testing.assert_close(alpha_loss, torch.tensor(2.0))
 
 
 @pytest.mark.parametrize("kind", list(TMASACActorHeadKind))

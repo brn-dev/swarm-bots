@@ -150,6 +150,7 @@ class SegmentTMASACPolicy(TMASACPolicy):
         )
         actions, log_probs = self.action_log_prob_from_latents(
             actor_latents=actor_latents,
+            time_mask=time_mask,
             agent_mask=agent_mask,
             previous_actions=previous_actions,
             deterministic=deterministic,

@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- Scale payload-row clearance with sampled spawn coordinates and row span so float32 rounding cannot reintroduce capsule overlap far from the origin.
+- Capture rollout action diagnostics before replay training replaces the cached distribution, preserving rollout entropy and standard-deviation values without extra policy evaluation or duplicated metrics work.
+- Exclude padded timesteps and unused single-sample successor slots from recurrent SAC entropy and standard-deviation diagnostics across eager, compiled, shared-encoder, and segment sampling, including multiple action samples and observations without agent masks.
+- Run CUDA simulation, connectors, resets, and deferred steps on the caller's active PyTorch stream; use Gymnasium's close lifecycle and reject negative scalar first-episode limits.
+- Build padded simulator models independently of sampled assemblies, including populations with zero probability of a full swarm; resolve payload spawn spacing from actual shape footprints to prevent capsule penetration.
+- Preserve training RNG during evaluation environment construction; retain scenario IDs and adapt global observation widths for scenario-conditioned benchmark policies, and refresh transition histories after normalized partial resets.
+- Roll back recording state after first-render failures and close every scenario child before propagating cleanup errors; correct the documented continuous connector action contract.
+- Remove whole-episode PPO collection and SPR, use fixed-step PPO collection by default, require zero policy dropout, and make disabling gSDE step resets retain episode-only resets.
+- Remove distribution-specific entropy extras, coefficients, floors, magnitude weighting, commands, and Gaussian quadrature. PPO uses its importance-weighted Monte Carlo entropy term with default `mc_ent_coef=1e-3`; SAC retains its existing entropy objective and automatic temperature tuning. Keep entropy diagnostics outside the loss configuration, with underlying Gaussian entropy labeled `ent_normal`, exclude inactive agents and recurrent padding, and snapshot reusable environment masks.
+- Keep rejected off-policy parameter commands atomic and shared NOP batch-size settings consistent; complete recurrent TD3 helper annotations.
+- Retain NOP metrics as detached device tensors and snapshot reusable outputs, deferring CPU conversion to metric aggregation instead of synchronizing every update.
 - Condense agent notes to navigation and costly gotchas, removing duplicated defaults and implementation history.
 - Place connector frames on capsule surfaces by default, preserving robot geometry and mass properties; expose `legacy_connector_positioning=True` to restore the original frames and assembly spacing.
 - Make asynchronous settled-reset sampling independent of worker completion timing, and retain agent-shuffle RNG state during repeated device setup.

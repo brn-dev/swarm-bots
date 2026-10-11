@@ -1,4 +1,3 @@
-import abc
 import json
 import math
 from collections.abc import Mapping
@@ -17,7 +16,6 @@ from swarmbots.learn.algos.ppo.ppo_rollout import (
     PPORolloutState,
     collect_step_rollout_batch,
     collect_steps,
-    collect_whole_episodes,
     warmup_rollout_steps,
 )
 from swarmbots.learn.algos.ppo.ppo_rollout_batch import PPORolloutBatch
@@ -28,12 +26,13 @@ from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import B
 from swarmbots.learn.exponential_moving_average import ExponentialMovingAverage
 from swarmbots.learn.gsde_reset import (
     GSDEResetMode,
+    GSDEEpisodeResetMode,
     GSDEIntervalResetMode,
     GSDEProbabilityResetMode,
     resolve_gsde_reset_mode,
 )
 from swarmbots.learn.masking import masked_mean
-from swarmbots.learn.metrics_list import MetricsLists
+from swarmbots.learn.metrics_list import MetricsLists, materialize_scalar_metrics
 from swarmbots.learn.performance_timer import PerformanceTimer
 from swarmbots.learn.serialization_utils import serialize_dataclass, serialize_fn
 from swarmbots.learn.scheduling.schedulers import SchedulerManager
@@ -81,16 +80,8 @@ class AutomaticLearningRate:
 
 PPOLearningRate = float | AutomaticLearningRate
 
-class PPORolloutMode(abc.ABC):
-    pass
-
 @dataclass(slots=True, frozen=True)
-class WholeEpisodesRolloutMode(PPORolloutMode):
-    n_episodes_per_rollout: int
-
-
-@dataclass(slots=True, frozen=True)
-class StepsRolloutMode(PPORolloutMode):
+class StepsRolloutMode:
     n_steps_per_rollout: int
 
 
@@ -108,7 +99,7 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
             policy: BasePPOPolicy[PPOSamplesType, PPOSamplerConfigType],
             env: BaseLearnEnvWrapper,
             learning_rate: PPOLearningRate = 3e-4,
-            rollout_mode: PPORolloutMode = WholeEpisodesRolloutMode(6),
+            rollout_mode: StepsRolloutMode = StepsRolloutMode(2048),
             max_episode_length: int = 1000,
             sampler_config: PPOSamplerConfigType | None = None,
             n_epochs: int = 10,
@@ -117,7 +108,7 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
             clip_range: float = 0.2,
             clip_range_vf: Optional[float] = None,
             normalize_advantage: bool = True,
-            mc_ent_coef: float = 0.0,
+            mc_ent_coef: float = 1e-3,
             vf_coef: float = 0.5,
             value_loss_fn: nn.Module | None = None,
             max_grad_norm: float = 2.0,
@@ -133,6 +124,7 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
             parameter_lr_multipliers: Mapping[str, float] | None = None,
             rollout_warmup_steps_per_env: int = 0,
     ):
+        policy.validate_ppo_dropout()
         self.automatic_lr: AutomaticLearningRate | None = None
         self._auto_lr_enabled = False
         self._auto_lr_state: dict[str, Any] = {}
@@ -159,8 +151,6 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
             raise ValueError(
                 f"rollout_warmup_steps_per_env must be >= 0, got {self.rollout_warmup_steps_per_env}"
             )
-        if self.rollout_warmup_steps_per_env > 0 and not isinstance(self.rollout_mode, StepsRolloutMode):
-            raise ValueError("rollout_warmup_steps_per_env is only supported with StepsRolloutMode.")
         self._rollout_warmup_done = self.rollout_warmup_steps_per_env == 0
         self.max_episode_length = max_episode_length
         if sampler_config is None:
@@ -407,9 +397,6 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
         if self._rollout_state is not None:
             self._rollout_warmup_done = True
             return
-        if not isinstance(self.rollout_mode, StepsRolloutMode):
-            raise ValueError("rollout_warmup_steps_per_env is only supported with StepsRolloutMode.")
-
         warmup_transitions = self.rollout_warmup_steps_per_env * self.rollout_buffer.n_envs
         logger.info(
             f"Running rollout warmup for {self.rollout_warmup_steps_per_env} vector steps "
@@ -460,42 +447,28 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
             update_ema: bool,
     ) -> tuple[dict[str, Any], int]:
         with PerformanceTimer() as rollout_timer:
-            if isinstance(self.rollout_mode, WholeEpisodesRolloutMode):
-                episodes, episode_infos, rollout_metrics = collect_whole_episodes(
+            if self.policy.supports_rollout_batch_sampler(self.sampler_config):
+                rollout_batch, episode_infos, rollout_metrics, self._rollout_state = collect_step_rollout_batch(
                     env=self.env,
                     policy=self.policy,
                     buffer=self.rollout_buffer,
-                    n_episodes=self.rollout_mode.n_episodes_per_rollout,
+                    n_steps=self.rollout_mode.n_steps_per_rollout,
+                    rollout_state=self._rollout_state,
                     gsde_reset_mode=self.gsde_reset_mode,
                 )
-                training_data: list[PPOEpisodeSegment] | PPORolloutBatch = episodes
-                total_steps_in_rollout = sum(len(ep.rewards) for ep in episodes)
-                self._rollout_state = None
-            elif isinstance(self.rollout_mode, StepsRolloutMode):
-                if self.policy.supports_rollout_batch_sampler(self.sampler_config):
-                    rollout_batch, episode_infos, rollout_metrics, self._rollout_state = collect_step_rollout_batch(
-                        env=self.env,
-                        policy=self.policy,
-                        buffer=self.rollout_buffer,
-                        n_steps=self.rollout_mode.n_steps_per_rollout,
-                        rollout_state=self._rollout_state,
-                        gsde_reset_mode=self.gsde_reset_mode,
-                    )
-                    training_data = rollout_batch
-                    total_steps_in_rollout = rollout_batch.n_samples
-                else:
-                    episodes, episode_infos, rollout_metrics, self._rollout_state = collect_steps(
-                        env=self.env,
-                        policy=self.policy,
-                        buffer=self.rollout_buffer,
-                        n_steps=self.rollout_mode.n_steps_per_rollout,
-                        rollout_state=self._rollout_state,
-                        gsde_reset_mode=self.gsde_reset_mode,
-                    )
-                    training_data = episodes
-                    total_steps_in_rollout = sum(len(ep.rewards) for ep in episodes)
+                training_data: list[PPOEpisodeSegment] | PPORolloutBatch = rollout_batch
+                total_steps_in_rollout = rollout_batch.n_samples
             else:
-                raise TypeError(f"Unknown rollout_mode type: {type(self.rollout_mode)}")
+                episodes, episode_infos, rollout_metrics, self._rollout_state = collect_steps(
+                    env=self.env,
+                    policy=self.policy,
+                    buffer=self.rollout_buffer,
+                    n_steps=self.rollout_mode.n_steps_per_rollout,
+                    rollout_state=self._rollout_state,
+                    gsde_reset_mode=self.gsde_reset_mode,
+                )
+                training_data = episodes
+                total_steps_in_rollout = sum(len(ep.rewards) for ep in episodes)
         self.n_total_timesteps += total_steps_in_rollout
         self.n_total_iterations += 1
 
@@ -552,6 +525,7 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
         return metrics, total_steps_in_rollout
 
     def train(self, training_data: list[PPOEpisodeSegment] | PPORolloutBatch) -> dict[str, Any]:
+        self.policy.validate_ppo_dropout()
         with PerformanceTimer() as to_train_device_timer:
             self.policy.train()
             self.policy.to(self.train_device)
@@ -583,12 +557,13 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
         else:
             explained_var = 0.0
 
-        loss_metrics = MetricsLists[float]()
+        loss_metrics = MetricsLists[float | torch.Tensor]()
 
         continue_training = True
         early_stop_epoch: int | None = None
         early_stop_kl_div: float | None = None
         n_updates = 0
+        distribution_agent_mask: torch.Tensor | None = None
         grad_norms: list[float] = []
         n_grad_clipped = 0
 
@@ -614,6 +589,9 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
                 update_timer.start()
 
                 loss, approx_kl_div, metrics = self.compute_loss(batch)
+                distribution_agent_mask = self._build_action_metrics_valid_mask(batch)
+                if distribution_agent_mask is not None and batch.local_obs.ndim == 4:
+                    distribution_agent_mask = distribution_agent_mask.flatten(0, 1)
                 loss_metrics.add(metrics)
 
                 if self.target_kl is not None and approx_kl_div > TARGET_KL_MARGIN * self.target_kl:
@@ -696,12 +674,13 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
             metrics.update(auto_lr_metrics)
             metrics.update(self.policy.get_value_normalizer_metrics())
             actions_for_metrics = self._get_action_metrics_actions(sampler)
-            metrics.update(
+            metrics.update(materialize_scalar_metrics(
                 self.policy.action_dist.get_metrics(
                     actions=actions_for_metrics,
                     action_splitter=self.metrics_action_splitters,
+                    agent_mask=distribution_agent_mask,
                 )
-            )
+            ))
             metrics.update(self._maybe_apply_schedulers(metrics))
 
         metrics_timer.stop()
@@ -1028,7 +1007,7 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
 
         valid_mask = agent_mask
         if time_mask is not None:
-            time_agent_mask = time_mask.unsqueeze(-1)
+            time_agent_mask = time_mask.unsqueeze(-1).expand(batch.actions.shape[:-1])
             valid_mask = time_agent_mask if valid_mask is None else valid_mask & time_agent_mask
         return valid_mask
 
@@ -1108,8 +1087,8 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
             self.gsde_reset_mode = GSDEIntervalResetMode(interval=interval)
             return True
         elif cmd in {"disable_gsde_reset", "gsde_reset_off"}:
-            logger.warning("Disabling gsde_reset_mode")
-            self.gsde_reset_mode = None
+            logger.warning("Disabling gSDE step resets; noise still resets at episode starts")
+            self.gsde_reset_mode = GSDEEpisodeResetMode()
             return True
         elif cmd in {"set_max_grad_norm", "max_grad_norm"}:
             max_grad_norm = float(params)
@@ -1135,7 +1114,7 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
             if not isinstance(parsed_weights, dict):
                 raise ValueError(
                     "set_extra_loss_weights expects a JSON object, e.g. "
-                    "set_extra_loss_weights:{\"entropy\":0.001}"
+                    "set_extra_loss_weights:{\"world_model_loss_coef\":0.1}"
                 )
             if not parsed_weights:
                 logger.warning("No extra loss weights provided.")
@@ -1159,31 +1138,6 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
                 )
             logger.warning(f"Setting world_model_num_next_steps to {num_next_steps}")
             self.sampler_config = replace(self.sampler_config, num_next_steps=num_next_steps)
-            return True
-        elif cmd in {"set_wm_target_tau", "set_world_model_target_tau", "wm_target_tau"}:
-            param = params.strip().lower()
-            if param in {"none", "null", ""}:
-                tau: float | None = None
-                logger.warning("Disabling world_model_target_tau")
-            else:
-                tau = float(params)
-                if not (0.0 < tau <= 1.0):
-                    raise ValueError(f"world_model_target_tau must be in (0, 1], got {tau}")
-                logger.warning(f"Setting world_model_target_tau to {tau}")
-            if not hasattr(self.policy, "world_model_target_tau"):
-                raise ValueError(
-                    "Policy does not expose world_model_target_tau; cannot configure target-network update rate."
-                )
-            setattr(self.policy, "world_model_target_tau", tau)
-            return True
-        elif cmd in {"set_act_ent_loss_coef", "set_sub_ent_loss_coef", "set_action_ent_loss_coef"}:
-            sub_dist_idx, value = self._parse_indexed_float_params(
-                params,
-                idx_keys=("act", "idx", "index", "sub_dist"),
-                value_keys=("value", "coef", "ent_loss_coef", "ent", "entropy"),
-            )
-            logger.warning(f"Setting entropy loss coef for action sub-dist {sub_dist_idx} to {value}")
-            self.policy.update_loss_weights(**{f"act{sub_dist_idx}_ent_loss_coef": value})
             return True
         elif cmd in {"disable_auto_lr", "auto_lr_off", "disable_automatic_lr", "disable_auto_learning_rate"}:
             _ = params
@@ -1342,17 +1296,15 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
         return False
 
     @staticmethod
-    def _serialize_rollout_mode(rollout_mode: PPORolloutMode) -> dict[str, Any]:
-        if isinstance(rollout_mode, WholeEpisodesRolloutMode):
-            return {"mode": "whole_episodes", "n_episodes_per_rollout": rollout_mode.n_episodes_per_rollout}
-        if isinstance(rollout_mode, StepsRolloutMode):
-            return {"mode": "steps", "n_steps_per_rollout": rollout_mode.n_steps_per_rollout}
-        return {"mode": type(rollout_mode).__name__}
+    def _serialize_rollout_mode(rollout_mode: StepsRolloutMode) -> dict[str, Any]:
+        return {"mode": "steps", "n_steps_per_rollout": rollout_mode.n_steps_per_rollout}
 
     @staticmethod
     def _serialize_gsde_reset_mode(mode: GSDEResetMode | None) -> dict[str, Any] | None:
         if mode is None:
             return None
+        if isinstance(mode, GSDEEpisodeResetMode):
+            return {"mode": "episode"}
         if isinstance(mode, GSDEIntervalResetMode):
             return {"mode": "interval", "interval": mode.interval}
         if isinstance(mode, GSDEProbabilityResetMode):
@@ -1362,7 +1314,7 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
     @staticmethod
     def _resolve_rollout_buffer_max_episode_length(
             *,
-            rollout_mode: PPORolloutMode,
+            rollout_mode: StepsRolloutMode,
             max_episode_length: int,
             n_envs: int,
     ) -> int:
@@ -1370,39 +1322,6 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
             raise ValueError(f"max_episode_length must be > 0, got {max_episode_length}")
         if n_envs <= 0:
             raise ValueError(f"n_envs must be > 0, got {n_envs}")
-        if isinstance(rollout_mode, WholeEpisodesRolloutMode):
-            return max_episode_length
-        if isinstance(rollout_mode, StepsRolloutMode):
-            return min(max_episode_length, math.ceil(rollout_mode.n_steps_per_rollout / n_envs))
-        raise TypeError(f"Unknown rollout_mode type: {type(rollout_mode)}")
-
-    @staticmethod
-    def _parse_indexed_float_params(
-            params: str,
-            *,
-            idx_keys: tuple[str, ...],
-            value_keys: tuple[str, ...],
-    ) -> tuple[int, float]:
-        parsed = None
-        try:
-            parsed = json.loads(params)
-        except json.JSONDecodeError:
-            parsed = None
-
-        if isinstance(parsed, dict):
-            idx_key = next((key for key in idx_keys if key in parsed), None)
-            value_key = next((key for key in value_keys if key in parsed), None)
-            if idx_key is None or value_key is None:
-                raise ValueError(
-                    f"Expected JSON keys {idx_keys} and {value_keys}, got {tuple(parsed.keys())}"
-                )
-            return int(parsed[idx_key]), float(parsed[value_key])
-
-        values = [part.strip() for part in params.split(",")]
-        if len(values) != 2:
-            raise ValueError(
-                "Expected params as '<index>,<value>' or JSON object, "
-                "e.g. set_act_ent_loss_coef:0,0.01 or "
-                "set_act_ent_loss_coef:{\"act\":0,\"value\":0.01}"
-            )
-        return int(values[0]), float(values[1])
+        if rollout_mode.n_steps_per_rollout <= 0:
+            raise ValueError("n_steps_per_rollout must be > 0")
+        return min(max_episode_length, math.ceil(rollout_mode.n_steps_per_rollout / n_envs))

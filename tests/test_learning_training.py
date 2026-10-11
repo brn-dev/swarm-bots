@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import csv
+import math
 from collections.abc import Iterator
 from pathlib import Path
 from types import SimpleNamespace
@@ -363,7 +364,7 @@ def test_ppo_presets_clip_and_measure_kl_at_the_intended_action_scope(
     algorithm = make_training(
         "SwarmBots-WallEasy-v0",
         variant,
-        algorithm_kwargs={"use_popart": False},
+        algorithm_kwargs={"use_popart": False, "mc_ent_coef": 0.0},
         **_training_kwargs(),
     )
     try:
@@ -390,6 +391,42 @@ def test_ppo_presets_clip_and_measure_kl_at_the_intended_action_scope(
         assert metrics["clip_frac"] == pytest.approx((expected > 1.05).float().mean().item())
     finally:
         algorithm.env.close()
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("coefficient", [None, 0.0, 0.02])
+def test_ppo_preset_entropy_default_and_override(coefficient: float | None) -> None:
+    algorithm_kwargs = {} if coefficient is None else {"mc_ent_coef": coefficient}
+    algorithm = make_training(
+        "SwarmBots-WallEasy-v0", "mat_ind", algorithm_kwargs=algorithm_kwargs, **_training_kwargs(),
+    )
+    try:
+        assert algorithm.mc_ent_coef == pytest.approx(1e-3 if coefficient is None else coefficient)
+    finally:
+        algorithm.env.close()
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("variant", ["mat_ind", "tmasac"])
+def test_training_persists_numeric_distribution_entropy_diagnostics(variant: str, tmp_path: Path) -> None:
+    algorithm_kwargs = (
+        {"learning_starts": 0, "batch_size": 2, "gradient_steps": 1, "buffer_capacity_per_env": 16}
+        if variant == "tmasac"
+        else {"n_epochs": 1, "target_kl": None, "learning_rate": 1e-3}
+    )
+    train(
+        "SwarmBots-WallEasy-v0", variant, total_timesteps=8, rollout_steps_per_env=4,
+        run_dir=tmp_path, use_nop=False, algorithm_kwargs=algorithm_kwargs,
+        learn_kwargs={"logging_console_keys": []}, **_training_kwargs(),
+    )
+    with (tmp_path / "log.csv").open(newline="", encoding="utf-8") as handle:
+        rows = list(csv.DictReader(handle, delimiter=";"))
+    assert rows
+    prefix = "rollout_act" if variant == "tmasac" else "act"
+    entropy_columns = [name for name in rows[-1] if name.startswith(prefix) and "_ent" in name]
+    assert entropy_columns
+    for row in rows:
+        assert all(math.isfinite(float(row[name])) for name in entropy_columns)
 
 
 @pytest.mark.integration

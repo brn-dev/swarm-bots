@@ -22,7 +22,7 @@ from swarmbots.learn.base_policy import BasePolicy
 from swarmbots.learn.env_wrappers.learn_wrappers.swarm_bots_learn_env_wrapper import (
     SwarmBotsLearnEnvWrapper,
 )
-from swarmbots.learn.gsde_reset import GSDEIntervalResetMode, GSDEProbabilityResetMode
+from swarmbots.learn.gsde_reset import GSDEEpisodeResetMode, GSDEIntervalResetMode, GSDEProbabilityResetMode
 
 
 def test_replay_rejects_empty_swarms_without_mutating_storage():
@@ -619,6 +619,35 @@ class _GSDEPolicy(_NoPreviousActionPolicy):
 
 
 class OffPolicyReplayTests(unittest.TestCase):
+    def test_gsde_episode_mode_initializes_noise_and_resets_at_episode_starts(self) -> None:
+        env = _make_env(done_steps=(2,))
+        try:
+            buffer = _make_buffer(env, capacity_per_env=8)
+            policy = _GSDEPolicy()
+            _, _, rollout_state = collect_off_policy_steps(
+                env=env,
+                replay_buffer=buffer,
+                n_steps=3,
+                policy=policy,
+                gsde_reset_mode=GSDEEpisodeResetMode(),
+            )
+            collect_off_policy_steps(
+                env=env,
+                replay_buffer=buffer,
+                n_steps=2,
+                policy=policy,
+                rollout_state=rollout_state,
+                gsde_reset_mode=GSDEEpisodeResetMode(),
+            )
+
+            self.assertEqual(policy.action_dist.step_resets, [(None, (1, 2))])
+            self.assertEqual(
+                [mask.tolist() for mask in policy.action_dist.episode_start_masks],
+                [[True], [False], [True], [False], [True]],
+            )
+        finally:
+            env.close()
+
     def assertNoNextPreviousActions(self, batch: object) -> None:
         self.assertFalse(hasattr(batch, "next_previous_actions"))
 

@@ -8,6 +8,11 @@ class GSDEResetMode(abc.ABC):
 
 
 @dataclass(frozen=True)
+class GSDEEpisodeResetMode(GSDEResetMode):
+    pass
+
+
+@dataclass(frozen=True)
 class GSDEIntervalResetMode(GSDEResetMode):
     interval: int
 
@@ -26,6 +31,8 @@ def resolve_gsde_reset_mode(
         return None
     if reset_mode is None:
         raise ValueError("gsde_reset_mode is required when gSDE is enabled.")
+    if isinstance(reset_mode, GSDEEpisodeResetMode):
+        return reset_mode
     if isinstance(reset_mode, GSDEIntervalResetMode):
         if reset_mode.interval <= 0:
             raise ValueError(f"GSDEIntervalResetMode.interval must be > 0, got {reset_mode.interval}")

@@ -113,10 +113,19 @@ class MJWLiveEpisodeRecorder:
         self._config = config
         self._render_context = render_context
 
-        self.on_episode_starts(
-            world_idx=episode_start_world_idx,
-            snapshots_by_world=snapshots_by_world,
-        )
+        try:
+            self.on_episode_starts(
+                world_idx=episode_start_world_idx,
+                snapshots_by_world=snapshots_by_world,
+            )
+        except Exception:
+            self._config = None
+            self._active_slots_by_world.clear()
+            self._episodes_started = 0
+            self._next_episode_idx = 0
+            self._episodes_completed = 0
+            self._close_render_context()
+            raise
 
     def is_active(self) -> bool:
         return self._config is not None

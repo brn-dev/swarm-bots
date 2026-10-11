@@ -364,23 +364,6 @@ class _ScenarioTrackingSACPolicy(_ConstantTargetSACPolicy):
         )
 
 
-class _ConstantActionDistExtraLoss:
-    has_gsde = False
-
-    def compute_extra_losses(
-            self,
-            *,
-            agent_mask: torch.Tensor | None = None,
-            action_splitter: Any = None,
-    ) -> tuple[dict[str, torch.Tensor], dict[str, float]]:
-        _ = action_splitter
-        if agent_mask is None:
-            raise ValueError("agent_mask is required for this test helper.")
-        return {
-            "entropy": torch.full(agent_mask.shape, 2.0, dtype=torch.float32, device=agent_mask.device),
-        }, {
-            "ent_categorical": 0.25,
-        }
 
 
 def _make_bootstrap_batch(env: SwarmBotsLearnEnvWrapper) -> OffPolicyReplayBatch:
@@ -1567,10 +1550,10 @@ class SACTests(unittest.TestCase):
                 finally:
                     env.close()
 
-    def test_compiled_sac_update_uses_post_actor_distribution_state_for_extra_losses(self) -> None:
+    def test_compiled_sac_update_supports_differentiable_actors(self) -> None:
         continuous_configs: tuple[ContinuousActionDistConfig, ...] = (
-            PredictedStdGaussianConfig(base_std=0.7, ent_loss_coef=0.2),
-            GumbelSoftmaxSignMagnitudeBetaConfig(ent_loss_coef=0.2),
+            PredictedStdGaussianConfig(base_std=0.7),
+            GumbelSoftmaxSignMagnitudeBetaConfig(),
         )
         for continuous_config in continuous_configs:
             with self.subTest(config=type(continuous_config).__name__):
@@ -1607,10 +1590,6 @@ class SACTests(unittest.TestCase):
 
                     self.assertEqual(rollout_steps, 2)
                     self.assertEqual(metrics["updates"], 1)
-                    for action_idx in range(env.action_space.n_spaces):
-                        metric_name = f"actor_action_dist_act{action_idx}_entropy_loss_scaled"
-                        self.assertIn(metric_name, metrics)
-                        self.assertTrue(math.isfinite(_summary_mean(metrics[metric_name])))
                     self.assertTrue(math.isfinite(_summary_mean(metrics["actor_total_loss"])))
                 finally:
                     env.close()
@@ -2240,63 +2219,6 @@ class SACTests(unittest.TestCase):
         finally:
             env.close()
 
-    def test_actor_action_dist_extra_losses_are_included_with_agent_mask(self) -> None:
-        env = _make_env()
-        try:
-            policy = _ConstantTargetSACPolicy(
-                n_agents=env.n_agents,
-                action_dim=env.action_space.total_agent_action_dim,
-                target_q_value=0.0,
-            )
-            policy.action_dist = _ConstantActionDistExtraLoss()
-            algo = SAC(
-                policy=policy,
-                env=env,
-                learning_rate=1e-3,
-                buffer_capacity_per_env=4,
-                learning_starts=0,
-                batch_size=2,
-                ent_coef=0.0,
-                max_grad_norm=None,
-                train_device="cpu",
-                rollout_device="cpu",
-                replay_storage_device="cpu",
-            )
-            batch = _make_bootstrap_batch(env)
-            agent_mask = torch.tensor(
-                [
-                    [True, True],
-                    [True, False],
-                ],
-                dtype=torch.bool,
-            )
-            masked_batch = OffPolicyReplayBatch(
-                local_obs=batch.local_obs,
-                global_obs=batch.global_obs,
-                hidden_local_vars=batch.hidden_local_vars,
-                hidden_global_vars=batch.hidden_global_vars,
-                agent_mask=agent_mask,
-                actions=batch.actions,
-                rewards=batch.rewards,
-                terminations=batch.terminations,
-                truncations=batch.truncations,
-                previous_actions=batch.previous_actions,
-                next_local_obs=batch.next_local_obs,
-                next_global_obs=batch.next_global_obs,
-                next_hidden_local_vars=batch.next_hidden_local_vars,
-                next_hidden_global_vars=batch.next_hidden_global_vars,
-                next_agent_mask=batch.next_agent_mask,
-            )
-
-            metrics, _actor_grad_norm, _critic_grad_norm = algo._train_step(
-                masked_batch,
-                global_update_idx=0,
-            )
-
-            self.assertAlmostEqual(metrics["actor_action_dist_entropy_loss_scaled"], 3.0)
-            self.assertAlmostEqual(metrics["actor_action_dist_ent_categorical"], 0.25)
-        finally:
-            env.close()
 
     def test_non_finite_terminal_next_q_does_not_poison_target(self) -> None:
         env = _make_env()

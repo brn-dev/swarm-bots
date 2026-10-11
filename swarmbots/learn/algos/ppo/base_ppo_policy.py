@@ -1,8 +1,8 @@
 import abc
-import re
 from typing import TYPE_CHECKING, Any, TypeVar, Generic
 
 import torch
+from torch import nn
 
 from swarmbots.learn.action_dists.action_dist import ActionMetricsSplitterInput
 from swarmbots.learn.action_dists.hybrid_action_dist import HybridActionDistribution
@@ -21,11 +21,28 @@ PPOSamplerConfigType = TypeVar('PPOSamplerConfigType', bound=PPOSamplerConfig)
 
 class BasePPOPolicy(BasePolicy, Generic[PPOSamplesType, PPOSamplerConfigType], abc.ABC):
     action_dist: HybridActionDistribution
-    _PER_ACTION_ENTROPY_WEIGHT_PATTERN = re.compile(r"^act(?P<idx>\d+)_(?P<alias>ent_loss_coef|entropy|ent)$")
 
     @property
     def gsde_enabled(self) -> bool:
         return self.action_dist.has_gsde
+
+    def validate_ppo_dropout(self) -> None:
+        dropout_modules = (
+            nn.Dropout, nn.Dropout1d, nn.Dropout2d, nn.Dropout3d,
+            nn.AlphaDropout, nn.FeatureAlphaDropout,
+        )
+        for name, module in self.named_modules():
+            if isinstance(module, dropout_modules):
+                probability = module.p
+            elif isinstance(module, (nn.MultiheadAttention, nn.RNNBase)):
+                probability = module.dropout
+            else:
+                continue
+            if probability != 0.0:
+                raise ValueError(
+                    f"PPO requires zero policy dropout to preserve rollout likelihoods; "
+                    f"{name or type(module).__name__} has dropout={probability}."
+                )
 
     @abc.abstractmethod
     def forward(
@@ -193,20 +210,6 @@ class BasePPOPolicy(BasePolicy, Generic[PPOSamplesType, PPOSamplerConfigType], a
         alias = matching_aliases[0]
         value = float(weights.pop(alias))
         return alias, value
-
-    def _pop_per_action_entropy_weights(self, weights: dict[str, float]) -> dict[int, float]:
-        updates: dict[int, float] = {}
-        for key in list(weights):
-            match = self._PER_ACTION_ENTROPY_WEIGHT_PATTERN.match(key)
-            if match is None:
-                continue
-
-            idx = int(match.group("idx"))
-            if idx in updates:
-                raise ValueError(f"Multiple entropy aliases for action index {idx} are not allowed")
-            updates[idx] = float(weights.pop(key))
-        return updates
-
 
 class DelegatingPPOPolicyTemporalStateMixin:
     policy: BasePPOPolicy[Any, Any]

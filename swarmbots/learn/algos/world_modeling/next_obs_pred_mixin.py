@@ -452,7 +452,7 @@ class NextObsPredMixin(abc.ABC):
             agent_mask: torch.Tensor | None = None,
             loss_agent_mask: torch.Tensor | None = None,
             time_mask: torch.Tensor | None = None,
-    ) -> tuple[torch.Tensor, dict[str, Any]]:
+    ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
         (
             total_loss,
             scalar_loss,
@@ -472,31 +472,19 @@ class NextObsPredMixin(abc.ABC):
             loss_agent_mask=loss_agent_mask,
             time_mask=time_mask,
         )
-        metrics: dict[str, Any] = {}
-        if scalar_loss is not None:
-            scalar_loss_scaled = scalar_loss * self.scalar_loss_weight
-            metrics["scalar_loss"] = scalar_loss.item()
-            metrics["scalar_loss_scaled"] = scalar_loss_scaled.item()
-        if angle_loss is not None:
-            angle_loss_scaled = angle_loss * self.angle_loss_weight
-            metrics["angle_loss"] = angle_loss.item()
-            metrics["angle_loss_scaled"] = angle_loss_scaled.item()
-        if rot6d_loss is not None:
-            rot6d_loss_scaled = rot6d_loss * self.rot6d_loss_weight
-            metrics["rot6d_loss"] = rot6d_loss.item()
-            metrics["rot6d_loss_scaled"] = rot6d_loss_scaled.item()
-        if binary_loss is not None:
-            binary_loss_scaled = binary_loss * self.binary_loss_weight
-            metrics["binary_loss"] = binary_loss.item()
-            metrics["binary_loss_scaled"] = binary_loss_scaled.item()
-        if global_scalar_loss is not None:
-            global_scalar_loss_scaled = global_scalar_loss * self.global_scalar_loss_weight
-            metrics["global_scalar_loss"] = global_scalar_loss.item()
-            metrics["global_scalar_loss_scaled"] = global_scalar_loss_scaled.item()
-        if global_rot6d_loss is not None:
-            global_rot6d_loss_scaled = global_rot6d_loss * self.global_rot6d_loss_weight
-            metrics["global_rot6d_loss"] = global_rot6d_loss.item()
-            metrics["global_rot6d_loss_scaled"] = global_rot6d_loss_scaled.item()
+        metrics: dict[str, torch.Tensor] = {}
+        for name, loss, weight in (
+            ("scalar", scalar_loss, self.scalar_loss_weight),
+            ("angle", angle_loss, self.angle_loss_weight),
+            ("rot6d", rot6d_loss, self.rot6d_loss_weight),
+            ("binary", binary_loss, self.binary_loss_weight),
+            ("global_scalar", global_scalar_loss, self.global_scalar_loss_weight),
+            ("global_rot6d", global_rot6d_loss, self.global_rot6d_loss_weight),
+        ):
+            if loss is not None:
+                detached_loss = loss.detach()
+                metrics[f"{name}_loss"] = detached_loss
+                metrics[f"{name}_loss_scaled"] = detached_loss * weight
         return total_loss, metrics
 
     def _compute_next_obs_pred_loss_impl(

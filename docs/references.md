@@ -59,7 +59,6 @@ Use `\cite{swarmbots_thesis,sac,sacapps,mat}` for the design and foundations, an
 | Permutation-invariant critic aggregation | Zaheer et al. (2017), [*Deep Sets*](https://proceedings.neurips.cc/paper/2017/hash/f22e4747da1aa27e363d86d40ff442fe-Abstract.html), `deepsets` |
 | LSTM recurrent modules | Hochreiter and Schmidhuber (1997), [*Long Short-Term Memory*](https://www.bioinf.jku.at/publications/older/2604.pdf), `lstm` |
 | sLSTM / mLSTM recurrent modules | Beck et al. (2024), [*xLSTM: Extended Long Short-Term Memory*](https://proceedings.neurips.cc/paper_files/paper/2024/hash/c2ce2f2701c10a2b2f2ea0bfa43cfaa3-Abstract-Conference.html), `xlstm` |
-| Optional self-predictive representations (SPR) | Schwarzer et al. (2021), [*Data-Efficient Reinforcement Learning with Self-Predictive Representations*](https://openreview.net/forum?id=uCQfPZwRaUu), `spr` |
 | Beta action policies, also a foundation for SMB | Chou et al. (2017), [*Improving Stochastic Policy Gradients in Continuous Control with Deep Reinforcement Learning Using the Beta Distribution*](https://proceedings.mlr.press/v70/chou17a.html), `betapolicy` |
 | Straight-through Gumbel–Softmax used by Gumbel SMB | Jang et al. (2017), [*Categorical Reparameterization with Gumbel-Softmax*](https://openreview.net/forum?id=rkE3y85ee), `gumbelsoftmax` |
 | Optional generalized state-dependent exploration (gSDE) | Raffin et al. (2022), [*Smooth Exploration for Robotic Reinforcement Learning*](https://proceedings.mlr.press/v164/raffin22a.html), `gsde` |

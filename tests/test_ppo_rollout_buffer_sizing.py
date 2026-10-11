@@ -4,7 +4,7 @@ import torch
 from gymnasium.vector import AutoresetMode, SyncVectorEnv
 
 from swarmbots.learn.algos.ppo.base_ppo_policy import BasePPOPolicy
-from swarmbots.learn.algos.ppo.ppo import PPO, StepsRolloutMode, WholeEpisodesRolloutMode
+from swarmbots.learn.algos.ppo.ppo import PPO, StepsRolloutMode
 from swarmbots.learn.algos.ppo.ppo_rollout_buffer import PPOEpisodeSegment
 from swarmbots.learn.algos.ppo.ppo_sampler import PPOSampler, PPOSamplerConfig
 from swarmbots.learn.env_wrappers.learn_wrappers.swarm_bots_learn_env_wrapper import SwarmBotsLearnEnvWrapper
@@ -144,19 +144,19 @@ class PPORolloutBufferSizingTests(unittest.TestCase):
         finally:
             env.close()
 
-    def test_whole_episode_rollout_keeps_full_episode_capacity(self) -> None:
+    def test_default_rollout_uses_fixed_step_collection(self) -> None:
         env = _make_env(n_envs=16)
         try:
             policy = _DummyPolicy(action_dim=env.action_space.total_agent_action_dim)
             algo = PPO(
                 policy=policy,
                 env=env,
-                rollout_mode=WholeEpisodesRolloutMode(2),
                 max_episode_length=512,
             )
 
-            self.assertEqual(algo.rollout_buffer_max_episode_length, 512)
-            self.assertEqual(algo.rollout_buffer.max_episode_length, 512)
+            self.assertEqual(algo.rollout_mode.n_steps_per_rollout, 2048)
+            self.assertEqual(algo.rollout_buffer_max_episode_length, 128)
+            self.assertEqual(algo.rollout_buffer.max_episode_length, 128)
         finally:
             env.close()
 
