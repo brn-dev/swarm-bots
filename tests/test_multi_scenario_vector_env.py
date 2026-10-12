@@ -16,7 +16,7 @@ from swarmbots.learn.env_wrappers.learn_wrappers.swarm_bots_learn_env_wrapper im
 from swarmbots.learn.env_wrappers.learn_wrappers.torch_env_wrapper import TorchEnvWrapper
 from swarmbots.learn.env_wrappers.multi_scenario_vector_env import MultiScenarioVectorEnv
 from swarmbots.learn.env_wrappers.torch_record_episode_statistics_wrapper import TorchRecordEpisodeStatisticsWrapper
-from swarmbots.learn.env_wrappers.torch_progress_guidance_ep_stats_wrapper import TorchProgressGuidanceEpisodeStatsWrapper
+from swarmbots.learn.env_wrappers.torch_task_ep_stats_wrapper import TorchTaskEpisodeStatsWrapper
 from swarmbots.learn.rollout_utils import append_episode_infos
 from swarmbots.learn.evaluation import FrozenEvaluationRunner
 
@@ -1490,7 +1490,7 @@ def test_mixed_scenario_statistics_exclude_undefined_success(placement: str, suc
             return observations, rewards, terminated, truncated, infos
 
     vector = MultiScenarioVectorEnv({"wall": OptionalSuccessEnv(True), "move_to": OptionalSuccessEnv(False)})
-    env = TorchProgressGuidanceEpisodeStatsWrapper(
+    env = TorchTaskEpisodeStatsWrapper(
         TorchRecordEpisodeStatisticsWrapper(SwarmBotsLearnEnvWrapper(vector))
     )
     try:

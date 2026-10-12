@@ -50,7 +50,6 @@ def _compute_bridge_reward_kernel(
     unit_z: torch.Tensor,
     stable_mask: torch.Tensor,
     units_active_mask: torch.Tensor,
-    partner_unit: torch.Tensor,
     progress: torch.Tensor,
     fall_z_threshold: float,
     fell_off_bridge_reward_value: float,
@@ -58,11 +57,8 @@ def _compute_bridge_reward_kernel(
     success_reward_value: float,
     progress_reward_weight: float,
     potential_reward_discount_factor: float,
-    units_without_connections_reward_weight: float,
-    guidance_reward_weight: float,
     success_min_z: float = 0.0,
 ) -> tuple[
-    torch.Tensor,
     torch.Tensor,
     torch.Tensor,
     torch.Tensor,
@@ -101,22 +97,9 @@ def _compute_bridge_reward_kernel(
         float(success_reward_value) * float(progress_reward_weight)
     )
 
-    connection_mask = partner_unit >= 0
-    units_without_connections = (~connection_mask).all(dim=-1) & units_active_mask
-    guidance_reward = torch.where(
-        active_units_count > 0,
-        (
-            units_without_connections.sum(dim=-1).to(dtype=torch.float32)
-            / active_units_count.to(dtype=torch.float32)
-        ) * float(units_without_connections_reward_weight),
-        torch.zeros_like(progress, dtype=torch.float32),
-    )
-    guidance_reward *= float(guidance_reward_weight)
-
     return (
         new_progress,
         progress_reward,
-        guidance_reward,
         success,
         success_reward,
         fell_off_bridge,
@@ -281,7 +264,6 @@ class BridgeMJWScenarioRuntime(BaseMJWScenarioRuntime):
         (
             new_progress,
             progress_reward,
-            guidance_reward,
             success,
             success_reward,
             fell_off_bridge,
@@ -292,7 +274,6 @@ class BridgeMJWScenarioRuntime(BaseMJWScenarioRuntime):
             self._get_unit_z(),
             stable_mask,
             self.bindings.units_active_mask,
-            self.bindings.partner_unit,
             self.progress,
             float(self.scenario.fall_z_threshold),
             float(self.scenario.fell_off_bridge_reward),
@@ -300,16 +281,13 @@ class BridgeMJWScenarioRuntime(BaseMJWScenarioRuntime):
             float(self.scenario.success_reward),
             float(self.scenario.progress_reward_weight),
             float(self.scenario.potential_reward_discount_factor),
-            float(self.scenario.units_without_connections_reward_weight),
-            float(self.scenario.guidance_reward_weight),
             float(self.scenario.platform_top_z),
         )
         self.progress[stable_mask] = new_progress[stable_mask]
         return MJWStepResult(
-            reward=progress_reward + success_reward + guidance_reward + fell_off_bridge_reward,
+            reward=progress_reward + success_reward + fell_off_bridge_reward,
             info={
                 "progress_reward": progress_reward,
-                "guidance_reward": guidance_reward,
                 "success": success,
                 "success_reward": success_reward,
                 "fell_off_bridge": fell_off_bridge,
@@ -317,7 +295,6 @@ class BridgeMJWScenarioRuntime(BaseMJWScenarioRuntime):
                 "reward_terms": {
                     "progress": progress_reward,
                     "success": success_reward,
-                    "guidance": guidance_reward,
                     "fall": fell_off_bridge_reward,
                 },
             },

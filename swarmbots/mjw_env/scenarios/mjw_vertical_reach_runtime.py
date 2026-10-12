@@ -39,7 +39,6 @@ def _compute_vertical_reach_reward_kernel(
     goal_box_half_size: torch.Tensor,
     stable_mask: torch.Tensor,
     units_active_mask: torch.Tensor,
-    partner_unit: torch.Tensor,
     horizontal_progress: torch.Tensor,
     height_progress: torch.Tensor,
     reach_column_progress: torch.Tensor,
@@ -51,10 +50,7 @@ def _compute_vertical_reach_reward_kernel(
     reach_column_min_y: float,
     reach_column_max_y: float,
     potential_reward_discount_factor: float,
-    units_without_connections_reward_weight: float,
-    guidance_reward_weight: float,
 ) -> tuple[
-    torch.Tensor,
     torch.Tensor,
     torch.Tensor,
     torch.Tensor,
@@ -95,19 +91,6 @@ def _compute_vertical_reach_reward_kernel(
     ) * float(reach_column_reward_weight)
     progress_reward = (horizontal_reward + height_reward + reach_column_reward) * float(progress_reward_weight)
 
-    connection_mask = partner_unit >= 0
-    units_without_connections = (~connection_mask).all(dim=-1) & units_active_mask
-    active_units_count = units_active_mask.sum(dim=-1)
-    guidance_reward = torch.where(
-        active_units_count > 0,
-        (
-            units_without_connections.sum(dim=-1).to(dtype=torch.float32)
-            / active_units_count.to(dtype=torch.float32)
-        ) * float(units_without_connections_reward_weight),
-        torch.zeros_like(horizontal_progress, dtype=torch.float32),
-    )
-    guidance_reward *= float(guidance_reward_weight)
-
     return (
         new_horizontal_progress,
         new_height_progress,
@@ -116,7 +99,6 @@ def _compute_vertical_reach_reward_kernel(
         horizontal_reward * float(progress_reward_weight),
         height_reward * float(progress_reward_weight),
         reach_column_reward * float(progress_reward_weight),
-        guidance_reward,
     )
 
 
@@ -314,7 +296,6 @@ class VerticalReachMJWScenarioRuntime(BaseMJWScenarioRuntime):
             horizontal_reward,
             height_reward,
             reach_column_reward,
-            guidance_reward,
         ) = self._reward_kernel(
             unit_position,
             self._global_obs,
@@ -322,7 +303,6 @@ class VerticalReachMJWScenarioRuntime(BaseMJWScenarioRuntime):
             self._goal_box_half_size,
             stable_mask,
             self.bindings.units_active_mask,
-            self.bindings.partner_unit,
             self.horizontal_progress,
             self.height_progress,
             self.reach_column_progress,
@@ -334,8 +314,6 @@ class VerticalReachMJWScenarioRuntime(BaseMJWScenarioRuntime):
             float(self.scenario.reach_column_min_y),
             float(self.scenario.reach_column_max_y),
             float(self.scenario.potential_reward_discount_factor),
-            float(self.scenario.units_without_connections_reward_weight),
-            float(self.scenario.guidance_reward_weight),
         )
         self.horizontal_progress[stable_mask] = new_horizontal_progress[stable_mask]
         self.height_progress[stable_mask] = new_height_progress[stable_mask]
@@ -353,7 +331,7 @@ class VerticalReachMJWScenarioRuntime(BaseMJWScenarioRuntime):
         progress_reward = progress_reward + goal_success_reward
 
         return MJWStepResult(
-            reward=progress_reward + guidance_reward,
+            reward=progress_reward,
             info={
                 "success": success_terminations,
                 "progress_reward": progress_reward,
@@ -361,13 +339,11 @@ class VerticalReachMJWScenarioRuntime(BaseMJWScenarioRuntime):
                 "height_reward": height_reward,
                 "reach_column_reward": reach_column_reward,
                 "goal_success_reward": goal_success_reward,
-                "guidance_reward": guidance_reward,
                 "reward_terms": {
                     "horizontal": horizontal_reward,
                     "height": height_reward,
                     "reach_column": reach_column_reward,
                     "success": goal_success_reward,
-                    "guidance": guidance_reward,
                 },
             },
             terminations=success_terminations,

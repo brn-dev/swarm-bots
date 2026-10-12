@@ -37,7 +37,6 @@ def _compute_climb_reward_kernel(
     goal_position: torch.Tensor,
     stable_mask: torch.Tensor,
     units_active_mask: torch.Tensor,
-    partner_unit: torch.Tensor,
     horizontal_progress: torch.Tensor,
     height_progress: torch.Tensor,
     horizontal_goal_radius: float,
@@ -46,10 +45,7 @@ def _compute_climb_reward_kernel(
     horizontal_reward_weight: float,
     height_reward_weight: float,
     potential_reward_discount_factor: float,
-    units_without_connections_reward_weight: float,
-    guidance_reward_weight: float,
 ) -> tuple[
-    torch.Tensor,
     torch.Tensor,
     torch.Tensor,
     torch.Tensor,
@@ -78,26 +74,12 @@ def _compute_climb_reward_kernel(
     ) * float(height_reward_weight)
     progress_reward = (horizontal_reward + height_reward) * float(progress_reward_weight)
 
-    connection_mask = partner_unit >= 0
-    units_without_connections = (~connection_mask).all(dim=-1) & units_active_mask
-    active_units_count = units_active_mask.sum(dim=-1)
-    guidance_reward = torch.where(
-        active_units_count > 0,
-        (
-            units_without_connections.sum(dim=-1).to(dtype=torch.float32)
-            / active_units_count.to(dtype=torch.float32)
-        ) * float(units_without_connections_reward_weight),
-        torch.zeros_like(horizontal_progress, dtype=torch.float32),
-    )
-    guidance_reward *= float(guidance_reward_weight)
-
     return (
         new_horizontal_progress,
         new_height_progress,
         progress_reward,
         horizontal_reward * float(progress_reward_weight),
         height_reward * float(progress_reward_weight),
-        guidance_reward,
     )
 
 
@@ -265,13 +247,11 @@ class ClimbMJWScenarioRuntime(BaseMJWScenarioRuntime):
             progress_reward,
             horizontal_reward,
             height_reward,
-            guidance_reward,
         ) = self._reward_kernel(
             unit_position,
             self._global_obs,
             stable_mask,
             self.bindings.units_active_mask,
-            self.bindings.partner_unit,
             self.horizontal_progress,
             self.height_progress,
             float(self.scenario.horizontal_goal_radius),
@@ -280,8 +260,6 @@ class ClimbMJWScenarioRuntime(BaseMJWScenarioRuntime):
             float(self.scenario.horizontal_reward_weight),
             float(self.scenario.height_reward_weight),
             float(self.scenario.potential_reward_discount_factor),
-            float(self.scenario.units_without_connections_reward_weight),
-            float(self.scenario.guidance_reward_weight),
         )
         self.horizontal_progress[stable_mask] = new_horizontal_progress[stable_mask]
         self.height_progress[stable_mask] = new_height_progress[stable_mask]
@@ -298,19 +276,17 @@ class ClimbMJWScenarioRuntime(BaseMJWScenarioRuntime):
         progress_reward = progress_reward + goal_success_reward
 
         return MJWStepResult(
-            reward=progress_reward + guidance_reward,
+            reward=progress_reward,
             info={
                 "success": success_terminations,
                 "progress_reward": progress_reward,
                 "horizontal_reward": horizontal_reward,
                 "height_reward": height_reward,
                 "goal_success_reward": goal_success_reward,
-                "guidance_reward": guidance_reward,
                 "reward_terms": {
                     "horizontal": horizontal_reward,
                     "height": height_reward,
                     "success": goal_success_reward,
-                    "guidance": guidance_reward,
                 },
             },
             terminations=success_terminations,

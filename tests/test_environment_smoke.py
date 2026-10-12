@@ -44,6 +44,11 @@ def test_environment_reset_step_and_same_step_autoreset(benchmark_id: str, devic
         assert rewards.shape == (2,)
         assert (terminations | truncations).all()
         assert torch.isfinite(rewards).all()
+        torch.testing.assert_close(rewards, sum(infos["reward_terms"].values()))
+        assert "guidance_reward" not in infos
+        assert "units_without_connections_reward" not in infos
+        assert "guidance" not in infos["reward_terms"]
+        assert "units_without_connections" not in infos["reward_terms"]
         assert all(torch.isfinite(value).all() for value in next_observations.values())
         assert infos["_final_obs"].all()
         assert (env._time >= env.scenario.reset_settle_time).all()
@@ -54,6 +59,8 @@ def test_environment_reset_step_and_same_step_autoreset(benchmark_id: str, devic
         for key in original:
             torch.testing.assert_close(repeated[key], original[key])
         settings = serialize_settings(env.get_settings())
+        assert "guidance_reward_weight" not in settings["scenario"]["reward_weights"]
+        assert "units_without_connections_reward_weight" not in settings["scenario"]["reward_weights"]
         assert settings["scenario"]["swarm"]["unit_start_locations"]["pool_seeds"] == list(range(42_000, 42_050))
     finally:
         env.close()

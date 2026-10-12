@@ -170,13 +170,11 @@ class PayloadStepMJWScenarioRuntime(PayloadPlaneMJWScenarioRuntime):
             forward_reward,
             towards_payload_reward,
             payload_x_penalty,
-            guidance_reward,
         ) = self._reward_kernel(
             self._get_unit_xy(),
             current_payload_position,
             stable_mask,
             self.bindings.units_active_mask,
-            self.bindings.partner_unit,
             self.progress,
             self.towards_payload_progress,
             float(self.scenario.progress_reward_weight),
@@ -189,8 +187,6 @@ class PayloadStepMJWScenarioRuntime(PayloadPlaneMJWScenarioRuntime):
             float(self.scenario.payload_centering_penalty_weight),
             float(self.scenario.payload_centering_penalty_power),
             float(self.scenario.payload_centering_tolerance),
-            float(self.scenario.units_without_connections_reward_weight),
-            float(self.scenario.guidance_reward_weight),
         )
         (
             payload_step_height_potential,
@@ -224,7 +220,7 @@ class PayloadStepMJWScenarioRuntime(PayloadPlaneMJWScenarioRuntime):
         progress_reward = progress_reward + payload_step_height_reward + payload_success_reward
 
         return MJWStepResult(
-            reward=progress_reward + guidance_reward,
+            reward=progress_reward,
             info={
                 "success": success_terminations,
                 "progress_reward": progress_reward,
@@ -234,14 +230,12 @@ class PayloadStepMJWScenarioRuntime(PayloadPlaneMJWScenarioRuntime):
                 "payload_x_penalty": payload_x_penalty,
                 "payload_step_height_reward": payload_step_height_reward,
                 "payload_success_reward": payload_success_reward,
-                "guidance_reward": guidance_reward,
                 "reward_terms": {
                     "forward": forward_reward,
                     "towards_payload": towards_payload_reward,
                     "payload_x": payload_x_penalty,
                     "payload_step_height": payload_step_height_reward,
                     "success": payload_success_reward,
-                    "guidance": guidance_reward,
                 },
             },
             terminations=success_terminations,

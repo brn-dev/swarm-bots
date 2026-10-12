@@ -28,7 +28,6 @@ def _make_runtime(
         units_active_mask=torch.ones((1, num_units), device=device, dtype=torch.bool)
         if units_active_mask is None
         else torch.tensor([units_active_mask], device=device, dtype=torch.bool),
-        partner_unit=torch.full((1, num_units), -1, device=device, dtype=torch.long),
     )
     runtime.scenario = SimpleNamespace(
         progress_reward_weight=0.5,
@@ -44,8 +43,6 @@ def _make_runtime(
         wall_climb_reward_weight=0.0,
         wall_climb_reward_distance=0.5,
         potential_reward_discount_factor=1.0,
-        units_without_connections_reward_weight=0.0,
-        guidance_reward_weight=1.0,
     )
     runtime.progress = torch.zeros((1,), device=device, dtype=torch.float32)
     runtime.wall_y = torch.zeros((1,), device=device, dtype=torch.float32)
@@ -170,18 +167,15 @@ def test_forward_reward_applies_discount_factor_to_current_potential_in_mjw() ->
     assert float(runtime.progress[0]) == pytest.approx(2.0)
 
 
-def test_units_without_connections_reward_is_named_explicitly_in_mjw_info() -> None:
-    runtime = _make_runtime(num_units=2)
-    runtime.scenario.units_without_connections_reward_weight = -0.25
+def test_stationary_units_receive_no_reward_without_task_progress() -> None:
+    runtime = _make_runtime(num_units=2, wall_pass_reward_weight=0.0)
     stable_mask = torch.tensor([True], dtype=torch.bool)
 
     runtime._get_unit_y = lambda: torch.tensor([[0.0, 0.0]], dtype=torch.float32)
     result = runtime.compute_step_rewards(stable_mask=stable_mask)
 
-    assert float(result.info["units_without_connections_reward"][0]) == pytest.approx(-0.25)
-    assert float(result.info["guidance_reward"][0]) == pytest.approx(-0.25)
-    assert float(result.info["reward_terms"]["units_without_connections"][0]) == pytest.approx(-0.25)
-    assert "guidance" not in result.info["reward_terms"]
+    assert float(result.reward[0]) == pytest.approx(0.0)
+    assert float(result.info["progress_reward"][0]) == pytest.approx(0.0)
 
 
 def test_default_wall_pass_reward_skew_keeps_equal_rank_rewards() -> None:

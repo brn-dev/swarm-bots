@@ -122,8 +122,8 @@ def wrap_vec_env(
     from swarmbots.learn.env_wrappers.learn_wrappers.swarm_bots_learn_env_wrapper import SwarmBotsLearnEnvWrapper
     from swarmbots.learn.env_wrappers.torch_feature_wise_obs_norm_wrapper import TorchFeatureWiseObsNormWrapper
     from swarmbots.learn.env_wrappers.torch_normalize_reward_wrapper import TorchNormalizeRewardWrapper
-    from swarmbots.learn.env_wrappers.torch_progress_guidance_ep_stats_wrapper import (
-        TorchProgressGuidanceEpisodeStatsWrapper,
+    from swarmbots.learn.env_wrappers.torch_task_ep_stats_wrapper import (
+        TorchTaskEpisodeStatsWrapper,
     )
     from swarmbots.learn.env_wrappers.torch_record_episode_statistics_wrapper import TorchRecordEpisodeStatisticsWrapper
     from swarmbots.learn.env_wrappers.torch_shuffle_agents_wrapper import TorchShuffleAgentsWrapper
@@ -140,7 +140,7 @@ def wrap_vec_env(
             preserve_inactive_prefix_structure=preserve_inactive_prefix_structure,
         )
     env = TorchRecordEpisodeStatisticsWrapper(env)
-    env = TorchProgressGuidanceEpisodeStatsWrapper(env)
+    env = TorchTaskEpisodeStatsWrapper(env)
     env = TorchFeatureWiseObsNormWrapper(
         env,
         obs_key="local_obs",

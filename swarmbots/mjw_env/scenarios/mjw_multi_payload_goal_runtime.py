@@ -61,8 +61,6 @@ def _compute_multi_payload_goal_reward_kernel(
     goal_position: torch.Tensor,
     active_payload_mask: torch.Tensor,
     stable_mask: torch.Tensor,
-    units_active_mask: torch.Tensor,
-    partner_unit: torch.Tensor,
     payload_progress: torch.Tensor,
     progress_reward_weight: float,
     forward_reward_weight: float,
@@ -70,9 +68,7 @@ def _compute_multi_payload_goal_reward_kernel(
     payload_radius: float,
     goal_radius: float,
     success_reward: float,
-    units_without_connections_reward_weight: float,
-    guidance_reward_weight: float,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     stable_payload_position = torch.where(
         stable_mask.view(-1, 1, 1),
         payload_position,
@@ -105,20 +101,7 @@ def _compute_multi_payload_goal_reward_kernel(
     )
     progress_reward = forward_reward + goal_success_reward
 
-    connection_mask = partner_unit >= 0
-    units_without_connections = (~connection_mask).all(dim=-1) & units_active_mask
-    active_units_count = units_active_mask.sum(dim=-1)
-    guidance_reward = torch.where(
-        active_units_count > 0,
-        (
-            units_without_connections.sum(dim=-1).to(dtype=torch.float32)
-            / active_units_count.to(dtype=torch.float32)
-        ) * float(units_without_connections_reward_weight),
-        torch.zeros_like(forward_reward, dtype=torch.float32),
-    )
-    guidance_reward *= float(guidance_reward_weight)
-
-    return new_payload_progress, progress_reward, forward_reward, goal_success_reward, guidance_reward, success
+    return new_payload_progress, progress_reward, forward_reward, goal_success_reward, success
 
 
 class _MultiPayloadGoalCPUResetSettler(BaseMJWCPUResetSettler):
@@ -403,15 +386,12 @@ class MultiPayloadGoalMJWScenarioRuntime(BaseMJWScenarioRuntime):
             progress_reward,
             forward_reward,
             goal_success_reward,
-            guidance_reward,
             success_terminations,
         ) = self._reward_kernel(
             current_payload_position,
             self.goal_position,
             self.active_payload_mask,
             stable_mask,
-            self.bindings.units_active_mask,
-            self.bindings.partner_unit,
             self.payload_progress,
             float(self.scenario.progress_reward_weight),
             float(self.scenario.forward_reward_weight),
@@ -419,24 +399,20 @@ class MultiPayloadGoalMJWScenarioRuntime(BaseMJWScenarioRuntime):
             float(self.scenario.payload_radius),
             float(self.scenario.goal_radius),
             float(self.scenario.success_reward),
-            float(self.scenario.units_without_connections_reward_weight),
-            float(self.scenario.guidance_reward_weight),
         )
         self.payload_progress[stable_mask] = new_payload_progress[stable_mask]
 
         return MJWStepResult(
-            reward=progress_reward + guidance_reward,
+            reward=progress_reward,
             info={
                 "success": success_terminations,
                 "progress_reward": progress_reward,
                 "forward_reward": forward_reward,
                 "forward_progress_reward": forward_reward,
                 "goal_success_reward": goal_success_reward,
-                "guidance_reward": guidance_reward,
                 "reward_terms": {
                     "forward": forward_reward,
                     "success": goal_success_reward,
-                    "guidance": guidance_reward,
                 },
             },
             terminations=success_terminations,

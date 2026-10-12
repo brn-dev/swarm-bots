@@ -15,7 +15,7 @@ from swarmbots.learn.algos.ppo.ppo_sampler import PPOSampler, PPOSamplerConfig
 from swarmbots.learn.algos.world_modeling.ppo_wm_sampler import PPOWMBatchSampler, PPOWMSamplerConfig
 from swarmbots.learn.env_wrappers.torch_feature_wise_obs_norm_wrapper import TorchFeatureWiseObsNormWrapper
 from swarmbots.learn.env_wrappers.torch_normalize_reward_wrapper import TorchNormalizeRewardWrapper
-from swarmbots.learn.env_wrappers.torch_progress_guidance_ep_stats_wrapper import TorchProgressGuidanceEpisodeStatsWrapper
+from swarmbots.learn.env_wrappers.torch_task_ep_stats_wrapper import TorchTaskEpisodeStatsWrapper
 from swarmbots.learn.env_wrappers.torch_record_episode_statistics_wrapper import TorchRecordEpisodeStatisticsWrapper
 from swarmbots.learn.env_wrappers.torch_transition_obs_wrapper import TorchTransitionObsWrapper
 from swarmbots.learn.env_wrappers.learn_wrappers.swarm_bots_learn_env_wrapper import SwarmBotsLearnEnvWrapper
@@ -330,7 +330,6 @@ class _RewardInfoRolloutEnv(_ScriptedRolloutEnv):
         obs, reward, terminated, truncated, info = super().step(action)
         info.pop("episode", None)
         info["progress_reward"] = np.float64(self.env_id + self.step_count)
-        info["guidance_reward"] = np.float64(10 * self.env_id + self.step_count)
         info["success"] = np.bool_(terminated)
         return obs, reward, terminated, truncated, info
 
@@ -494,7 +493,7 @@ def _make_reward_info_env(*configs: tuple[int, tuple[int, ...], str]) -> SwarmBo
 def _make_full_non_shuffle_wrapper_chain(*configs: tuple[int, tuple[int, ...], str]) -> SwarmBotsLearnEnvWrapper:
     env: SwarmBotsLearnEnvWrapper = _make_reward_info_env(*configs)
     env = TorchRecordEpisodeStatisticsWrapper(env)
-    env = TorchProgressGuidanceEpisodeStatsWrapper(env)
+    env = TorchTaskEpisodeStatsWrapper(env)
     env = TorchFeatureWiseObsNormWrapper(env, obs_key="local_obs", scalar_feature_indices=[], quaternion_indices=[])
     env = TorchFeatureWiseObsNormWrapper(env, obs_key="global_obs", scalar_feature_indices=[], quaternion_indices=[])
     env = TorchFeatureWiseObsNormWrapper(
@@ -580,9 +579,9 @@ class SameStepPipelineTests(unittest.TestCase):
         finally:
             vector_env.close()
 
-    def test_torch_progress_guidance_accepts_torch_info_values(self) -> None:
+    def test_torch_task_stats_accepts_torch_info_values(self) -> None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        env = TorchProgressGuidanceEpisodeStatsWrapper(
+        env = TorchTaskEpisodeStatsWrapper(
             _make_scripted_env(
                 (1, (2,), "terminate"),
                 (2, (2,), "truncate"),
@@ -645,10 +644,6 @@ class SameStepPipelineTests(unittest.TestCase):
             self.assertEqual(
                 float(second_infos["episode"]["progress_reward"][0].item()),
                 2.0,
-            )
-            self.assertEqual(
-                float(second_infos["episode"]["guidance_reward"][0].item()),
-                11.0,
             )
             self.assertEqual(float(env.returns[0].item()), 11.0)
         finally:
@@ -1182,7 +1177,6 @@ class SameStepPipelineTests(unittest.TestCase):
             self.assertEqual(float(infos["episode"]["r"][0].item()), 23.0)
             self.assertEqual(int(infos["episode"]["l"][0].item()), 2)
             self.assertEqual(float(infos["episode"]["progress_reward"][0].item()), 5.0)
-            self.assertEqual(float(infos["episode"]["guidance_reward"][0].item()), 23.0)
             self.assertFalse(bool(infos["episode"]["success"][0].item()))
         finally:
             env.close()
@@ -1239,13 +1233,11 @@ class SameStepPipelineTests(unittest.TestCase):
             self.assertEqual(episode_infos[0]["r"], 23.0)
             self.assertEqual(episode_infos[0]["l"], 2)
             self.assertEqual(episode_infos[0]["progress_reward"], 5.0)
-            self.assertEqual(episode_infos[0]["guidance_reward"], 23.0)
             self.assertFalse(bool(episode_infos[0]["success"]))
             self.assertIn("t", episode_infos[0])
             self.assertEqual(episode_infos[1]["r"], 43.0)
             self.assertEqual(episode_infos[1]["l"], 2)
             self.assertEqual(episode_infos[1]["progress_reward"], 7.0)
-            self.assertEqual(episode_infos[1]["guidance_reward"], 43.0)
             self.assertTrue(bool(episode_infos[1]["success"]))
             self.assertIn("t", episode_infos[1])
             self.assertEqual(_metrics["ep_success_rate"], 50.0)

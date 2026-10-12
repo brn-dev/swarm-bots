@@ -157,17 +157,17 @@ def test_invalid_settling_scale_is_rejected_even_when_settling_is_disabled(bench
         )
 
 
-def test_bridge_finish_requires_every_active_root_at_or_above_the_platform():
+def test_bridge_finish_requires_every_active_root_at_or_above_the_platform() -> None:
     unit_y = torch.tensor([[6.6, 6.6], [6.6, 6.6], [6.6, 6.6], [6.5, 6.6], [6.6, 0.], [6.6, 6.6]])
     unit_z = torch.tensor([[-1., -1.], [-.01, .2], [0., .2], [.1, .2], [.1, -10.], [-2., .2]])
     active = torch.tensor([[True, True]] * 4 + [[True, False], [True, True]])
     result = _compute_bridge_reward_kernel(
-        unit_y, unit_z, torch.ones(6, dtype=torch.bool), active, torch.full((6, 2, 4), -1),
-        torch.zeros(6), -1.5, -.5, 6.5, 10., 1., 1., -1e-5, 1.,
+        unit_y, unit_z, torch.ones(6, dtype=torch.bool), active,
+        torch.zeros(6), -1.5, -.5, 6.5, 10., 1., 1.,
     )
-    assert result[3].tolist() == [False, False, True, False, True, False]
-    assert result[5].tolist() == [False, False, False, False, False, True]
-    torch.testing.assert_close(result[4], torch.tensor([0., 0., 10., 0., 10., 0.]))
+    assert result[2].tolist() == [False, False, True, False, True, False]
+    assert result[4].tolist() == [False, False, False, False, False, True]
+    torch.testing.assert_close(result[3], torch.tensor([0., 0., 10., 0., 10., 0.]))
     scenario = make_scenario("SwarmBots-Bridge-v0", compile_reward_kernel=False)
     assert scenario.get_settings()["success_min_z"] == scenario.platform_top_z == 0.
 

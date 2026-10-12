@@ -28,8 +28,6 @@ COMMON_SCENARIO_KWARGS: dict[str, object] = {
     "disconnect_potential_threshold": 5.0,
     "continuous_connector_actions": True,
     "progress_reward_weight": 1.0,
-    "guidance_reward_weight": 1.0,
-    "units_without_connections_reward_weight": -1e-5,
     "potential_reward_discount_factor": 1.0,
     "include_connectors_xpos_in_obs": True,
     "include_connectors_xquat_in_obs": False,
@@ -71,7 +69,6 @@ WALL_DIFFICULTY_UPDATES: dict[WallDifficulty, dict[str, object]] = {
         "wall_pass_reward_weight": 5.0,
         "wall_pass_reward_skew": 4.0,
         "wall_pass_thresholds": [0.2, 0.5],
-        "units_without_connections_reward_weight": -3e-3,
     },
     "hard": {
         "wall_height": 0.4,
@@ -82,7 +79,6 @@ WALL_DIFFICULTY_UPDATES: dict[WallDifficulty, dict[str, object]] = {
         "wall_pass_reward_weight": 5.0,
         "wall_pass_reward_skew": 4.0,
         "wall_pass_thresholds": [0.2, 0.5],
-        "units_without_connections_reward_weight": -3e-3,
     },
 }
 
@@ -149,7 +145,6 @@ CLIMB_SCENARIO_KWARGS: dict[str, object] = {
     "horizontal_reward_weight": 2.0,
     "height_reward_weight": 8.0,
     "visualize_goal": True,
-    "units_without_connections_reward_weight": -1e-4,
 }
 
 VERTICAL_REACH_SCENARIO_KWARGS: dict[str, object] = {
@@ -173,7 +168,6 @@ VERTICAL_REACH_SCENARIO_KWARGS: dict[str, object] = {
     "horizontal_reward_weight": 1.0,
     "height_reward_weight": 0.25,
     "visualize_goal": True,
-    "units_without_connections_reward_weight": -3e-3,
 }
 
 PAYLOAD_PLANE_SCENARIO_KWARGS: dict[str, object] = {

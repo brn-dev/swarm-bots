@@ -83,7 +83,6 @@ def _compute_find_opening_reward_kernel(
     opening_x: torch.Tensor,
     stable_mask: torch.Tensor,
     units_active_mask: torch.Tensor,
-    partner_unit: torch.Tensor,
     opening_potential: torch.Tensor,
     opening_waypoint_y: float,
     opening_distance_reward_weight: float,
@@ -97,9 +96,7 @@ def _compute_find_opening_reward_kernel(
     wall_exploration_cell_depth: float,
     side_wall_x: float,
     wall_front_y: float,
-    units_without_connections_reward_weight: float,
-    guidance_reward_weight: float,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     distance_to_waypoint = torch.sqrt(
         torch.square(unit_x - opening_x.unsqueeze(1))
         + torch.square(unit_y - float(opening_waypoint_y))
@@ -142,23 +139,11 @@ def _compute_find_opening_reward_kernel(
         float(wall_exploration_cell_reward) * float(progress_reward_weight)
     )
 
-    connection_mask = partner_unit >= 0
-    units_without_connections = (~connection_mask).all(dim=-1) & units_active_mask
-    guidance_reward = torch.where(
-        active_units_count > 0,
-        (
-            units_without_connections.sum(dim=-1).to(dtype=torch.float32)
-            / active_units_count.to(dtype=torch.float32)
-        ) * float(units_without_connections_reward_weight),
-        torch.zeros_like(opening_potential, dtype=torch.float32),
-    )
-    guidance_reward *= float(guidance_reward_weight)
     return (
         new_opening_potential,
         opening_reward,
         exploration_reward,
         success_reward,
-        guidance_reward,
         success,
         new_wall_exploration_visited_cells,
     )
@@ -400,7 +385,6 @@ class FindOpeningMJWScenarioRuntime(BaseMJWScenarioRuntime):
             opening_reward,
             exploration_reward,
             success_reward,
-            guidance_reward,
             success,
             new_wall_exploration_visited_cells,
         ) = self._reward_kernel(
@@ -409,7 +393,6 @@ class FindOpeningMJWScenarioRuntime(BaseMJWScenarioRuntime):
             self.opening_x[:, 0],
             stable_mask,
             self.bindings.units_active_mask,
-            self.bindings.partner_unit,
             self.opening_potential,
             float(self.scenario.wall_y + self.scenario.opening_y_margin),
             float(self.scenario.opening_distance_reward_weight),
@@ -423,27 +406,23 @@ class FindOpeningMJWScenarioRuntime(BaseMJWScenarioRuntime):
             float(self.scenario.wall_exploration_cell_depth),
             float(self.scenario.side_wall_x),
             float(self.scenario.wall_y - (self.scenario.wall_thickness / 2.0)),
-            float(self.scenario.units_without_connections_reward_weight),
-            float(self.scenario.guidance_reward_weight),
         )
         self.opening_potential[stable_mask] = new_opening_potential[stable_mask]
         self.wall_exploration_visited_cells[stable_mask] = new_wall_exploration_visited_cells[stable_mask]
         self._sync_wall_exploration_hidden_obs(world_idx=stable_mask)
         progress_reward = opening_reward + exploration_reward + success_reward
         return MJWStepResult(
-            reward=progress_reward + guidance_reward,
+            reward=progress_reward,
             info={
                 "success": success,
                 "progress_reward": progress_reward,
                 "opening_reward": opening_reward,
                 "wall_exploration_reward": exploration_reward,
                 "success_reward": success_reward,
-                "guidance_reward": guidance_reward,
                 "reward_terms": {
                     "opening": opening_reward,
                     "exploration": exploration_reward,
                     "success": success_reward,
-                    "guidance": guidance_reward,
                 },
             },
             terminations=success,

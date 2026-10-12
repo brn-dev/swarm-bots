@@ -147,7 +147,6 @@ def _compute_wall_reward_kernel(
     unit_z: torch.Tensor,
     stable_mask: torch.Tensor,
     units_active_mask: torch.Tensor,
-    partner_unit: torch.Tensor,
     wall_pass_absolute_thresholds: torch.Tensor,
     wall_y: torch.Tensor,
     wall_height: float,
@@ -172,10 +171,7 @@ def _compute_wall_reward_kernel(
     forward_reward_wall_boost_distance: float,
     forward_reward_wall_boost_height_margin: float,
     unit_ground_z: float,
-    units_without_connections_reward_weight: float,
-    guidance_reward_weight: float,
 ) -> tuple[
-    torch.Tensor,
     torch.Tensor,
     torch.Tensor,
     torch.Tensor,
@@ -304,26 +300,12 @@ def _compute_wall_reward_kernel(
     wall_pass_reward = wall_pass_reward * float(progress_reward_weight)
     wall_climb_reward = wall_climb_reward * float(progress_reward_weight)
 
-    connection_mask = partner_unit >= 0
-    units_without_connections = (~connection_mask).all(dim=-1) & units_active_mask
-    active_units_count = units_active_mask.sum(dim=-1)
-    units_without_connections_reward = torch.where(
-        active_units_count > 0,
-        (
-            units_without_connections.sum(dim=-1).to(dtype=torch.float32)
-            / active_units_count.to(dtype=torch.float32)
-        ) * float(units_without_connections_reward_weight),
-        torch.zeros_like(progress, dtype=torch.float32),
-    )
-    units_without_connections_reward *= float(guidance_reward_weight)
-
     return (
         new_progress,
         progress_reward,
         forward_reward,
         wall_pass_reward,
         wall_climb_reward,
-        units_without_connections_reward,
         latched_thresholds,
         new_wall_climb_potential,
         new_wall_climb_done_mask,
@@ -713,7 +695,6 @@ class WallMJWScenarioRuntime(BaseMJWScenarioRuntime):
             forward_reward,
             wall_pass_reward,
             wall_climb_reward,
-            units_without_connections_reward,
             latched_thresholds,
             wall_climb_potential,
             wall_climb_done_mask,
@@ -724,7 +705,6 @@ class WallMJWScenarioRuntime(BaseMJWScenarioRuntime):
             unit_z,
             stable_mask,
             self.bindings.units_active_mask,
-            self.bindings.partner_unit,
             self.wall_pass_absolute_thresholds,
             wall_y,
             float(self.scenario.wall_height),
@@ -749,8 +729,6 @@ class WallMJWScenarioRuntime(BaseMJWScenarioRuntime):
             forward_reward_wall_boost_distance,
             forward_reward_wall_boost_height_margin,
             unit_ground_z,
-            float(self.scenario.units_without_connections_reward_weight),
-            float(self.scenario.guidance_reward_weight),
         )
         self.progress[stable_mask] = new_progress[stable_mask]
         self.forward_progress_unit_y[stable_mask] = forward_progress_unit_y[stable_mask]
@@ -767,7 +745,7 @@ class WallMJWScenarioRuntime(BaseMJWScenarioRuntime):
         progress_reward = progress_reward + wall_success_reward
 
         return MJWStepResult(
-            reward=progress_reward + units_without_connections_reward,
+            reward=progress_reward,
             info={
                 "success": success_terminations,
                 "progress_reward": progress_reward,
@@ -776,14 +754,11 @@ class WallMJWScenarioRuntime(BaseMJWScenarioRuntime):
                 "wall_pass_reward": wall_pass_reward,
                 "wall_climb_reward": wall_climb_reward,
                 "wall_success_reward": wall_success_reward,
-                "units_without_connections_reward": units_without_connections_reward,
-                "guidance_reward": units_without_connections_reward,
                 "reward_terms": {
                     "forward": forward_reward,
                     "wall": wall_pass_reward,
                     "climb": wall_climb_reward,
                     "success": wall_success_reward,
-                    "units_without_connections": units_without_connections_reward,
                 },
             },
             terminations=success_terminations,

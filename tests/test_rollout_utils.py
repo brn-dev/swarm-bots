@@ -122,8 +122,8 @@ def test_append_episode_infos_omits_stats_masked_out_for_a_scenario() -> None:
             "r": np.asarray([1.0, 2.0]),
             "success": np.asarray([True, False]),
             "_success": np.asarray([True, False]),
-            "guidance_reward": np.asarray([0.0, 5.0]),
-            "_guidance_reward": np.asarray([False, True]),
+            "progress_reward": np.asarray([0.0, 5.0]),
+            "_progress_reward": np.asarray([False, True]),
         },
         "_episode": np.asarray([True, True]),
         "scenario_name": np.asarray(["wall", "payload"], dtype=object),
@@ -143,7 +143,7 @@ def test_append_episode_infos_omits_stats_masked_out_for_a_scenario() -> None:
         },
         {
             "r": 2.0,
-            "guidance_reward": 5.0,
+            "progress_reward": 5.0,
             "scenario_name": "payload",
         },
     ]

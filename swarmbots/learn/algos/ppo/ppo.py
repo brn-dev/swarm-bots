@@ -485,12 +485,6 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
             find_max=True,
             make_histogram=20,
         )
-        ep_guidance_rew = compute_summary_statistics(
-            [ep['guidance_reward'] for ep in episode_infos if 'guidance_reward' in ep],
-            find_min=True,
-            find_max=True,
-            make_histogram=20,
-        )
         connection_metrics = {
             f"ep_successful_connections_per_unit_{statistic_name}": compute_summary_statistics(
                 [
@@ -519,7 +513,6 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
             'ep_len': ep_len,
             'ep_time': ep_time,
             'ep_progress_rew': ep_progress_rew,
-            'ep_guidance_rew': ep_guidance_rew,
             **connection_metrics,
         }
         return metrics, total_steps_in_rollout

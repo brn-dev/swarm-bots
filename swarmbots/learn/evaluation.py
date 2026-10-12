@@ -271,7 +271,6 @@ class FrozenEvaluationRunner:
             "r": "ep_rew",
             "l": "ep_len",
             "progress_reward": "progress_reward",
-            "guidance_reward": "guidance_reward",
             "successful_connections_per_unit_mean": "successful_connections_per_unit_mean",
             "successful_connections_per_unit_std": "successful_connections_per_unit_std",
             "successful_connections_per_unit_min": "successful_connections_per_unit_min",

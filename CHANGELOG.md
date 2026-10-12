@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Remove the isolation penalty from every scenario, along with guidance reward configuration, reward terms, and training/evaluation metrics; rename the remaining progress/success statistics wrapper to `TorchTaskEpisodeStatsWrapper`. Reward definitions have changed, so rerun evaluations before comparing returns.
 - Restrict PayloadStep climb shaping to the platform width and latch completion only over the finite platform at the required height, including reset state.
 - Compute squashed Gaussian likelihood Jacobians from pre-tanh samples with a stable formula, preserving SAC entropy gradients at saturated actions and PPO likelihood consistency.
 - Share gSDE reset scheduling across collectors and benchmark adapters; inherit trainer schedules, persist algorithm settings in trainer checkpoints to restore recording schedules, and retain independent per-agent noise between resets.

@@ -38,8 +38,6 @@ class MJWClimbScenario(BaseMJWScenario):
     progress_reward_weight: float
     horizontal_reward_weight: float
     height_reward_weight: float
-    guidance_reward_weight: float
-    units_without_connections_reward_weight: float
     potential_reward_discount_factor: float
     include_connectors_xpos_in_obs: bool
     include_connectors_xquat_in_obs: bool
@@ -135,8 +133,6 @@ class MJWClimbScenario(BaseMJWScenario):
             "actuator_strength": self.actuator_strength,
             "reward_weights": {
                 "progress_reward_weight": self.progress_reward_weight,
-                "guidance_reward_weight": self.guidance_reward_weight,
-                "units_without_connections_reward_weight": self.units_without_connections_reward_weight,
             },
             "potential_reward_discount_factor": self.potential_reward_discount_factor,
             "include_connectors_xpos_in_obs": self.include_connectors_xpos_in_obs,

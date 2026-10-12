@@ -8,25 +8,22 @@ from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import B
 from swarmbots.learn.env_wrappers.learn_wrappers.torch_env_wrapper import TorchEnvWrapper
 from swarmbots.learn.tensor_conversion import to_torch_tensor
 
-__all__ = ["TorchProgressGuidanceEpisodeStatsWrapper"]
+__all__ = ["TorchTaskEpisodeStatsWrapper"]
 
 
-class TorchProgressGuidanceEpisodeStatsWrapper(TorchEnvWrapper):
+class TorchTaskEpisodeStatsWrapper(TorchEnvWrapper):
     def __init__(
         self,
         env: BaseLearnEnvWrapper,
         progress_key: str = "progress_reward",
-        guidance_key: str = "guidance_reward",
         success_key: str = "success",
         stats_key: str = "episode",
     ) -> None:
         super().__init__(env)
         self.progress_key = progress_key
-        self.guidance_key = guidance_key
         self.success_key = success_key
         self._stats_key = stats_key
         self.episode_progress_rewards = torch.zeros((self._n_envs,), device=self.device, dtype=torch.float64)
-        self.episode_guidance_rewards = torch.zeros((self._n_envs,), device=self.device, dtype=torch.float64)
         self.prev_dones = torch.zeros((self._n_envs,), device=self.device, dtype=torch.bool)
 
     def reset(self, **kwargs: Any) -> tuple[TorchObs, dict[str, Any]]:
@@ -34,11 +31,9 @@ class TorchProgressGuidanceEpisodeStatsWrapper(TorchEnvWrapper):
         reset_mask = self._extract_reset_mask(kwargs)
         if reset_mask is None:
             self.episode_progress_rewards.zero_()
-            self.episode_guidance_rewards.zero_()
             self.prev_dones.zero_()
         else:
             self.episode_progress_rewards[reset_mask] = 0.0
-            self.episode_guidance_rewards[reset_mask] = 0.0
             self.prev_dones[reset_mask] = False
         return obs, info
 
@@ -49,19 +44,15 @@ class TorchProgressGuidanceEpisodeStatsWrapper(TorchEnvWrapper):
         observations, rewards, terminations, truncations, infos = self.env.step(actions)
         if not isinstance(infos, dict):
             raise ValueError(
-                "`TorchProgressGuidanceEpisodeStatsWrapper` requires info type to be dict, "
+                "`TorchTaskEpisodeStatsWrapper` requires info type to be dict, "
                 f"got {type(infos)}."
             )
 
         self.episode_progress_rewards[self.prev_dones] = 0.0
-        self.episode_guidance_rewards[self.prev_dones] = 0.0
 
         progress_values = self._extract_step_values(infos, self.progress_key)
-        guidance_values = self._extract_step_values(infos, self.guidance_key)
         if progress_values is not None:
             self.episode_progress_rewards += progress_values
-        if guidance_values is not None:
-            self.episode_guidance_rewards += guidance_values
 
         dones = torch.logical_or(terminations, truncations)
         self.prev_dones = dones
@@ -73,7 +64,6 @@ class TorchProgressGuidanceEpisodeStatsWrapper(TorchEnvWrapper):
     def set_device(self, device: torch.device | str) -> None:
         new_device = torch.device(device)
         self.episode_progress_rewards = self.episode_progress_rewards.to(new_device)
-        self.episode_guidance_rewards = self.episode_guidance_rewards.to(new_device)
         self.prev_dones = self.prev_dones.to(new_device)
         super().set_device(new_device)
 
@@ -210,7 +200,6 @@ class TorchProgressGuidanceEpisodeStatsWrapper(TorchEnvWrapper):
 
     def _inject_episode_stats(self, *, infos: dict[str, Any], dones: torch.Tensor) -> None:
         progress_sum = torch.where(dones, self.episode_progress_rewards, torch.zeros_like(self.episode_progress_rewards))
-        guidance_sum = torch.where(dones, self.episode_guidance_rewards, torch.zeros_like(self.episode_guidance_rewards))
         success_values, success_mask = self._extract_step_values_with_mask(infos, self.success_key)
 
         stats_mask_key = f"_{self._stats_key}"
@@ -230,7 +219,6 @@ class TorchProgressGuidanceEpisodeStatsWrapper(TorchEnvWrapper):
             raise ValueError(f"Expected infos['{self._stats_key}'] to be dict, got {type(stats)}")
         new_stats = {
             self.progress_key: progress_sum.detach().clone(),
-            self.guidance_key: guidance_sum.detach().clone(),
         }
         if success_values is not None:
             new_stats[self.success_key] = torch.where(dones, success_values, 0.0).detach().clone()

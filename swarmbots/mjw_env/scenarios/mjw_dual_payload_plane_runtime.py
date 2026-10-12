@@ -54,7 +54,6 @@ def _compute_dual_payload_plane_reward_kernel(
     payload_position: torch.Tensor,
     stable_mask: torch.Tensor,
     units_active_mask: torch.Tensor,
-    partner_unit: torch.Tensor,
     payload_progress: torch.Tensor,
     back_payload_progress: torch.Tensor,
     towards_payload_progress: torch.Tensor,
@@ -70,10 +69,7 @@ def _compute_dual_payload_plane_reward_kernel(
     payload_centering_penalty_weight: float,
     payload_centering_penalty_power: float,
     payload_centering_tolerance: float,
-    units_without_connections_reward_weight: float,
-    guidance_reward_weight: float,
 ) -> tuple[
-    torch.Tensor,
     torch.Tensor,
     torch.Tensor,
     torch.Tensor,
@@ -130,19 +126,6 @@ def _compute_dual_payload_plane_reward_kernel(
     towards_payload_reward = towards_payload_reward * float(progress_reward_weight)
     payload_x_penalty = payload_x_penalty * float(progress_reward_weight)
 
-    connection_mask = partner_unit >= 0
-    units_without_connections = (~connection_mask).all(dim=-1) & units_active_mask
-    active_units_count = units_active_mask.sum(dim=-1)
-    guidance_reward = torch.where(
-        active_units_count > 0,
-        (
-            units_without_connections.sum(dim=-1).to(dtype=torch.float32)
-            / active_units_count.to(dtype=torch.float32)
-        ) * float(units_without_connections_reward_weight),
-        torch.zeros_like(back_payload_progress, dtype=torch.float32),
-    )
-    guidance_reward *= float(guidance_reward_weight)
-
     return (
         new_payload_progress,
         new_back_payload_progress,
@@ -151,7 +134,6 @@ def _compute_dual_payload_plane_reward_kernel(
         forward_reward,
         towards_payload_reward,
         payload_x_penalty,
-        guidance_reward,
     )
 
 
@@ -398,13 +380,11 @@ class DualPayloadPlaneMJWScenarioRuntime(BaseMJWScenarioRuntime):
             forward_reward,
             towards_payload_reward,
             payload_x_penalty,
-            guidance_reward,
         ) = self._reward_kernel(
             self._get_unit_xy(),
             current_payload_position,
             stable_mask,
             self.bindings.units_active_mask,
-            self.bindings.partner_unit,
             self.payload_progress,
             self.back_payload_progress,
             self.towards_payload_progress,
@@ -420,27 +400,23 @@ class DualPayloadPlaneMJWScenarioRuntime(BaseMJWScenarioRuntime):
             float(self.scenario.payload_centering_penalty_weight),
             float(self.scenario.payload_centering_penalty_power),
             float(self.scenario.payload_centering_tolerance),
-            float(self.scenario.units_without_connections_reward_weight),
-            float(self.scenario.guidance_reward_weight),
         )
         self.payload_progress[stable_mask] = new_payload_progress[stable_mask]
         self.back_payload_progress[stable_mask] = new_back_payload_progress[stable_mask]
         self.towards_payload_progress[stable_mask] = new_towards_payload_progress[stable_mask]
 
         return MJWStepResult(
-            reward=progress_reward + guidance_reward,
+            reward=progress_reward,
             info={
                 "progress_reward": progress_reward,
                 "forward_reward": forward_reward,
                 "forward_progress_reward": forward_reward,
                 "towards_payload_reward": towards_payload_reward,
                 "payload_x_penalty": payload_x_penalty,
-                "guidance_reward": guidance_reward,
                 "reward_terms": {
                     "forward": forward_reward,
                     "towards_payload": towards_payload_reward,
                     "payload_x": payload_x_penalty,
-                    "guidance": guidance_reward,
                 },
             },
         )
