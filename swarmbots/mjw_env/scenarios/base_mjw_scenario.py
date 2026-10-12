@@ -177,10 +177,6 @@ class BaseMJWScenarioRuntime(abc.ABC):
         raise NotImplementedError
 
     @abc.abstractmethod
-    def select_reset_batch(self, *, reset_batch: Any, mask: torch.Tensor) -> Any:
-        raise NotImplementedError
-
-    @abc.abstractmethod
     def apply_reset_batch(self, *, world_idx: torch.Tensor, reset_batch: Any) -> None:
         raise NotImplementedError
 
@@ -206,18 +202,6 @@ class BaseMJWScenarioRuntime(abc.ABC):
             pool_idx=torch.randint(active_pool_size, (n_reset,), device=self.bindings.device, generator=rng),
             swarm_start=self._sample_swarm_start(n_reset=n_reset, rng=rng),
             initial_z_rotation=self._sample_initial_z_rotation(n_reset=n_reset, rng=rng),
-        )
-
-    def _select_common_reset_batch(
-        self,
-        *,
-        common_reset_batch: MJWCommonResetBatch,
-        mask: torch.Tensor,
-    ) -> MJWCommonResetBatch:
-        return MJWCommonResetBatch(
-            pool_idx=common_reset_batch.pool_idx[mask],
-            swarm_start=common_reset_batch.swarm_start[mask],
-            initial_z_rotation=common_reset_batch.initial_z_rotation[mask],
         )
 
     def _apply_common_reset_batch(self, *, world_idx: torch.Tensor, common_reset_batch: MJWCommonResetBatch) -> None:

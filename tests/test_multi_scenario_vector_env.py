@@ -1489,7 +1489,7 @@ def test_mixed_scenario_statistics_exclude_undefined_success(placement: str, suc
                     infos["_final_info"] = torch.ones(1, dtype=torch.bool)
             return observations, rewards, terminated, truncated, infos
 
-    vector = MultiScenarioVectorEnv({"wall": OptionalSuccessEnv(True), "move_to": OptionalSuccessEnv(False)})
+    vector = MultiScenarioVectorEnv({"wall": OptionalSuccessEnv(True), "move_to_goal": OptionalSuccessEnv(False)})
     env = TorchTaskEpisodeStatsWrapper(
         TorchRecordEpisodeStatisticsWrapper(SwarmBotsLearnEnvWrapper(vector))
     )

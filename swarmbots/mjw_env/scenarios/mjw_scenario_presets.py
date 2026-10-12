@@ -18,7 +18,7 @@ from swarmbots.mjw_env.scenarios.mjw_bridge_scenario import MJWBridgeScenario
 from swarmbots.mjw_env.scenarios.mjw_climb_scenario import MJWClimbScenario
 from swarmbots.mjw_env.scenarios.mjw_dual_payload_plane_scenario import MJWDualPayloadPlaneScenario
 from swarmbots.mjw_env.scenarios.mjw_find_opening_scenario import MJWFindOpeningScenario
-from swarmbots.mjw_env.scenarios.mjw_move_to_scenario import MJWMoveToScenario
+from swarmbots.mjw_env.scenarios.mjw_move_to_goal_scenario import MJWMoveToGoalScenario
 from swarmbots.mjw_env.scenarios.mjw_multi_payload_goal_scenario import MJWMultiPayloadGoalScenario
 from swarmbots.mjw_env.scenarios.mjw_payload_plane_scenario import MJWPayloadPlaneScenario
 from swarmbots.mjw_env.scenarios.mjw_payload_step_scenario import MJWPayloadStepScenario
@@ -53,7 +53,7 @@ PAYLOAD_PLANE_SCENARIO_KWARGS = make_scenario_kwargs(shared_kwargs.PAYLOAD_PLANE
 PAYLOAD_STEP_SCENARIO_KWARGS = make_scenario_kwargs(shared_kwargs.PAYLOAD_STEP_SCENARIO_KWARGS)
 DUAL_PAYLOAD_PLANE_SCENARIO_KWARGS = make_scenario_kwargs(shared_kwargs.DUAL_PAYLOAD_PLANE_SCENARIO_KWARGS)
 MULTI_PAYLOAD_GOAL_SCENARIO_KWARGS = make_scenario_kwargs(shared_kwargs.MULTI_PAYLOAD_GOAL_SCENARIO_KWARGS)
-MOVE_TO_SCENARIO_KWARGS = make_scenario_kwargs(shared_kwargs.MOVE_TO_SCENARIO_KWARGS)
+MOVE_TO_GOAL_SCENARIO_KWARGS = make_scenario_kwargs(shared_kwargs.MOVE_TO_GOAL_SCENARIO_KWARGS)
 
 _JOINT_CONFIGS: dict[JointPreset, dict[str, object]] = {
     "zx": {
@@ -414,7 +414,7 @@ def default_payload_step(
     )
 
 
-def default_move_to(
+def default_move_to_goal(
     *,
     seed: int | None = None,
     swarm: MJWHomogeneousSwarm | None = None,
@@ -422,10 +422,10 @@ def default_move_to(
     quantize_connection_twist: int = 8,
     joints: JointPreset = "zx",
     **kwargs: object,
-) -> MJWMoveToScenario:
+) -> MJWMoveToGoalScenario:
     return _make_scenario(
-        MJWMoveToScenario,
-        scenario_kwargs=_preset_kwargs(MOVE_TO_SCENARIO_KWARGS, overrides=kwargs),
+        MJWMoveToGoalScenario,
+        scenario_kwargs=_preset_kwargs(MOVE_TO_GOAL_SCENARIO_KWARGS, overrides=kwargs),
         seed=seed,
         swarm=swarm,
         unit_start_locations=unit_start_locations,

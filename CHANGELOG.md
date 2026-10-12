@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Rename `SwarmBots-MoveTo-v0` to `SwarmBots-MoveToGoal-v0`, including scenario/runtime modules and classes, preset names, documentation, and CI; replace the old names without aliases.
+- Enable seeded initial episode staggering in training, retaining explicit first-episode overrides and full-length evaluation/recording episodes.
+- Remove unused reset-batch selection, MoveTo-to-payload adapters and normalization branches, custom decoder/activation/wrapper modules, and stranded sampling/MuJoCo/world-model helpers; restrict robot construction to capsule limbs with minimal contacts.
 - Remove the isolation penalty from every scenario, along with guidance reward configuration, reward terms, and training/evaluation metrics; rename the remaining progress/success statistics wrapper to `TorchTaskEpisodeStatsWrapper`. Reward definitions have changed, so rerun evaluations before comparing returns.
 - Restrict PayloadStep climb shaping to the platform width and latch completion only over the finite platform at the required height, including reset state.
 - Compute squashed Gaussian likelihood Jacobians from pre-tanh samples with a stable formula, preserving SAC entropy gradients at saturated actions and PPO likelihood consistency.

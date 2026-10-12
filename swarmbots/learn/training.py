@@ -10,7 +10,7 @@ from typing import Any
 import torch
 from torch import nn
 
-from swarmbots.benchmark.registry import make_env
+from swarmbots.benchmark.registry import get_benchmark_spec, make_env
 from swarmbots.learn.algos.base_algorithm import BaseAlgorithm
 from swarmbots.learn.algos.ppo.ppo import PPO, AutomaticLearningRate, StepsRolloutMode
 from swarmbots.learn.algos.ppo.ppo_sampler import PPOSamplerConfig
@@ -270,6 +270,17 @@ def make_training(
         rollout_steps_per_env = 1 if is_off_policy else 4
     if rollout_steps_per_env <= 0:
         raise ValueError("rollout_steps_per_env must be positive")
+    env_kwargs = dict(env_kwargs or {})
+    if "first_episode_length" not in env_kwargs and "first_episode_lengths" not in env_kwargs:
+        episode_limit = get_benchmark_spec(benchmark_id).episode_length if episode_length is None else int(episode_length)
+        if episode_limit <= 0:
+            raise ValueError(f"Expected episode_length > 0, got {episode_limit}")
+        if num_envs <= 0:
+            raise ValueError(f"Expected num_envs > 0, got {num_envs}")
+        stagger_rng = torch.Generator().manual_seed(seed)
+        env_kwargs["first_episode_lengths"] = torch.randint(
+            1, episode_limit + 1, (num_envs,), generator=stagger_rng,
+        ).tolist()
     env, policy = _make_policy_env(
         benchmark_id,
         num_envs=num_envs,

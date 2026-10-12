@@ -106,7 +106,7 @@ def test_staggered_episodes_with_settled_buffer_and_seeded_restart(device: str, 
         torch.compiler.reset()
     first_lengths = [episode_length // 3, 2 * episode_length // 3]
     env = make_env(
-        "SwarmBots-MoveTo-v0", num_envs=2, device=device, seed=7,
+        "SwarmBots-MoveToGoal-v0", num_envs=2, device=device, seed=7,
         episode_length=episode_length, first_episode_lengths=first_lengths,
         settled_reset_buffer_size=2, settled_reset_batch_size=1,
         scenario_kwargs={"compile_reward_kernel": device == "cuda"},

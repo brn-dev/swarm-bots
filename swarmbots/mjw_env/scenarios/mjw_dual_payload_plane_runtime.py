@@ -286,17 +286,6 @@ class DualPayloadPlaneMJWScenarioRuntime(BaseMJWScenarioRuntime):
             payload_position=self._sample_payload_positions(common_reset_batch=common, rng=rng),
         )
 
-    def select_reset_batch(
-        self,
-        *,
-        reset_batch: DualPayloadPlaneResetBatch,
-        mask: torch.Tensor,
-    ) -> DualPayloadPlaneResetBatch:
-        return DualPayloadPlaneResetBatch(
-            common=self._select_common_reset_batch(common_reset_batch=reset_batch.common, mask=mask),
-            payload_position=reset_batch.payload_position[mask],
-        )
-
     def apply_reset_batch(self, *, world_idx: torch.Tensor, reset_batch: DualPayloadPlaneResetBatch) -> None:
         self._apply_common_reset_batch(world_idx=world_idx, common_reset_batch=reset_batch.common)
         self._apply_payload_position(world_idx=world_idx, payload_position=reset_batch.payload_position)

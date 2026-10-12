@@ -11,7 +11,7 @@ from swarmbots.mjw_env.swarm.mjw_homogeneous_swarm import MJWPreConnectedUnitLoc
 
 def _scenario(*, joints: str, legacy: bool, num_units: int = 2):
     return make_scenario(
-        "SwarmBots-MoveTo-v0",
+        "SwarmBots-MoveToGoal-v0",
         seed=42000,
         joints=joints,
         unit_start_locations=MJWPreConnectedUnitLocationsConfig(
@@ -97,12 +97,12 @@ def test_connector_positioning_option_is_available_in_every_preset_and_metadata(
 
 def test_connector_positioning_override_rejects_conflicting_custom_swarm():
     swarm = _scenario(joints="zx", legacy=True).swarm
-    assert make_scenario("SwarmBots-MoveTo-v0", swarm=swarm).swarm is swarm
+    assert make_scenario("SwarmBots-MoveToGoal-v0", swarm=swarm).swarm is swarm
     with pytest.raises(ValueError, match="conflicts"):
-        make_scenario("SwarmBots-MoveTo-v0", swarm=swarm, legacy_connector_positioning=False)
+        make_scenario("SwarmBots-MoveToGoal-v0", swarm=swarm, legacy_connector_positioning=False)
 
 
 @pytest.mark.parametrize("value", [None, 1, "false"])
 def test_connector_positioning_override_requires_bool(value):
     with pytest.raises(TypeError, match="must be a bool"):
-        make_scenario("SwarmBots-MoveTo-v0", legacy_connector_positioning=value)
+        make_scenario("SwarmBots-MoveToGoal-v0", legacy_connector_positioning=value)

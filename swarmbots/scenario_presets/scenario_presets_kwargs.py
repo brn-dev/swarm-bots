@@ -232,7 +232,7 @@ MULTI_PAYLOAD_GOAL_SCENARIO_KWARGS: dict[str, object] = {
     "success_reward": 5.0,
 }
 
-MOVE_TO_SCENARIO_KWARGS: dict[str, object] = {
+MOVE_TO_GOAL_SCENARIO_KWARGS: dict[str, object] = {
     "plane_size": 100.0,
     "swarm_start_x": 0.0,
     "swarm_start_y": 0.0,

@@ -522,13 +522,6 @@ class WallMJWScenarioRuntime(BaseMJWScenarioRuntime):
             wall_pass_thresholds=wall_pass_thresholds,
         )
 
-    def select_reset_batch(self, *, reset_batch: WallResetBatch, mask: torch.Tensor) -> WallResetBatch:
-        return WallResetBatch(
-            common=self._select_common_reset_batch(common_reset_batch=reset_batch.common, mask=mask),
-            hidden_global_vars=reset_batch.hidden_global_vars[mask],
-            wall_pass_thresholds=reset_batch.wall_pass_thresholds[mask],
-        )
-
     def apply_reset_batch(self, *, world_idx: torch.Tensor, reset_batch: WallResetBatch) -> None:
         self._apply_common_reset_batch(world_idx=world_idx, common_reset_batch=reset_batch.common)
         self._apply_wall_configuration(world_idx=world_idx, hidden_global_vars=reset_batch.hidden_global_vars)
@@ -938,4 +931,3 @@ def _apply_forward_reward_wall_boost_to_potential_torch(
         forward_progress_unit_y * float(forward_reward_wall_boost_factor),
         forward_progress_unit_y,
     )
-

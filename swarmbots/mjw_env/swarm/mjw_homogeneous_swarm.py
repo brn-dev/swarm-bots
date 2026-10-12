@@ -173,8 +173,6 @@ class MJWHomogeneousSwarm:
                 leg_length=self.leg_length,
                 leg_radius=self.leg_radius,
                 segment_1_ratio=self.segment_1_ratio,
-                minimal_contacts=True,
-                use_cylinders=False,
                 legacy_connector_positioning=self.legacy_connector_positioning,
                 hinge_range=self.hinge_range,
                 hinge_armature=self.hinge_armature,

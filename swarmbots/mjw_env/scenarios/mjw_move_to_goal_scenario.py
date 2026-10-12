@@ -17,7 +17,7 @@ from swarmbots.scenario_presets.move_to_goal_config import AbsoluteGoalConfig, M
 
 
 @dataclass(frozen=True, slots=True)
-class MJWMoveToRuntimeMetadata:
+class MJWMoveToGoalRuntimeMetadata:
     goal_mocap_id: int
 
 
@@ -35,7 +35,7 @@ def _hinges_per_limb(unit_config: tuple[object, ...]) -> int:
 
 
 @dataclass
-class MJWMoveToScenario(BaseMJWScenario):
+class MJWMoveToGoalScenario(BaseMJWScenario):
     swarm: MJWHomogeneousSwarm
     timestep: float
     action_repeat: int
@@ -69,7 +69,7 @@ class MJWMoveToScenario(BaseMJWScenario):
             self.reset_settle_timestep_scale, name="reset_settle_timestep_scale",
         )
         if self.include_connectors_xquat_in_obs:
-            raise ValueError("MJWMoveToScenario currently does not support connector quats in observations")
+            raise ValueError("MJWMoveToGoalScenario currently does not support connector quats in observations")
         if self.timestep <= 0.0:
             raise ValueError(f"Expected timestep > 0, got {self.timestep}")
         if self.action_repeat <= 0:
@@ -221,16 +221,16 @@ class MJWMoveToScenario(BaseMJWScenario):
     def get_batched_action_space(self, num_envs: int) -> spaces.Dict:
         return batch_space(self.get_single_action_space(), n=num_envs)
 
-    def build_runtime_metadata(self, *, host_model: mujoco.MjModel) -> MJWMoveToRuntimeMetadata:
+    def build_runtime_metadata(self, *, host_model: mujoco.MjModel) -> MJWMoveToGoalRuntimeMetadata:
         goal_body_id = mujoco.mj_name2id(host_model, mujoco.mjtObj.mjOBJ_BODY, "Goal")
         if goal_body_id < 0:
-            raise ValueError("Goal body not found in MoveTo model.")
-        return MJWMoveToRuntimeMetadata(goal_mocap_id=int(host_model.body_mocapid[goal_body_id]))
+            raise ValueError("Goal body not found in MoveToGoal model.")
+        return MJWMoveToGoalRuntimeMetadata(goal_mocap_id=int(host_model.body_mocapid[goal_body_id]))
 
     def create_runtime(self, *, bindings: MJWRuntimeBindings, runtime_metadata: Any) -> Any:
-        from swarmbots.mjw_env.scenarios.mjw_move_to_runtime import MoveToMJWScenarioRuntime
+        from swarmbots.mjw_env.scenarios.mjw_move_to_goal_runtime import MoveToGoalMJWScenarioRuntime
 
-        return MoveToMJWScenarioRuntime(
+        return MoveToGoalMJWScenarioRuntime(
             scenario=self,
             bindings=bindings,
             runtime_metadata=runtime_metadata,

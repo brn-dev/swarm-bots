@@ -287,17 +287,6 @@ class FindOpeningMJWScenarioRuntime(BaseMJWScenarioRuntime):
             ),
         )
 
-    def select_reset_batch(
-        self,
-        *,
-        reset_batch: FindOpeningResetBatch,
-        mask: torch.Tensor,
-    ) -> FindOpeningResetBatch:
-        return FindOpeningResetBatch(
-            common=self._select_common_reset_batch(common_reset_batch=reset_batch.common, mask=mask),
-            opening_x=reset_batch.opening_x[mask],
-        )
-
     def apply_reset_batch(
         self,
         *,

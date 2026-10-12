@@ -212,12 +212,6 @@ class BridgeMJWScenarioRuntime(BaseMJWScenarioRuntime):
             ),
         )
 
-    def select_reset_batch(self, *, reset_batch: BridgeResetBatch, mask: torch.Tensor) -> BridgeResetBatch:
-        return BridgeResetBatch(
-            common=self._select_common_reset_batch(common_reset_batch=reset_batch.common, mask=mask),
-            bridge_x=reset_batch.bridge_x[mask],
-        )
-
     def apply_reset_batch(self, *, world_idx: torch.Tensor, reset_batch: BridgeResetBatch) -> None:
         self._apply_common_reset_batch(world_idx=world_idx, common_reset_batch=reset_batch.common)
         self._apply_bridge_position(world_idx=world_idx, bridge_x=reset_batch.bridge_x)

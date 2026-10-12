@@ -1,13 +1,5 @@
-from typing import Union
-
 import mujoco
-import numpy as np
 
-
-def quat_z2vec(vec: Union[list, tuple, np.array]):
-    quat = np.empty(4)
-    mujoco.mju_quatZ2Vec(quat, vec)
-    return quat
 
 def body_ids_for_prefix(model: mujoco.MjModel, prefix: str) -> list[int]:
     """Return all body ids whose names start with prefix."""
@@ -87,16 +79,6 @@ def dof_indices_for_prefix(model: mujoco.MjModel, prefix: str) -> list[int]:
         out.update(dof_indices_for_body(model, model.body(bid).name))
     return sorted(out)
 
-def ctrl_index_for_actuator(model: mujoco.MjModel, actuator_name: str) -> int:
-    """Single ctrl index for a named actuator."""
-    return model.actuator(actuator_name).id
-
-
 def ctrl_indices_for_prefix(model: mujoco.MjModel, prefix: str) -> list[int]:
     """All ctrl indices for actuators whose names start with prefix."""
     return actuator_ids_for_prefix(model, prefix)
-
-def apply_twist(model: mujoco.MjModel, eq_idx: int, twist: float):
-    model.eq_data[eq_idx, 7] = np.cos(twist / 2)
-    model.eq_data[eq_idx, 8] = np.sin(twist / 2)
-

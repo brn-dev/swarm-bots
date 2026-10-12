@@ -28,7 +28,7 @@ def test_negative_first_episode_length_is_rejected_before_building_physics() -> 
 @pytest.mark.integration
 def test_mjw_close_is_idempotent_even_with_a_pending_step(monkeypatch: pytest.MonkeyPatch) -> None:
     env = make_env(
-        "SwarmBots-MoveTo-v0", num_envs=1, device="cpu", compile_tensor_operations=False,
+        "SwarmBots-MoveToGoal-v0", num_envs=1, device="cpu", compile_tensor_operations=False,
         scenario_kwargs=dict(unit_start_locations=_small_swarm(num_units=1), reset_settle_time=0, compile_reward_kernel=False),
     )
     try:
@@ -55,7 +55,7 @@ def test_small_radius_population_without_full_swarms_retains_every_model_slot() 
         pool_seeds=(42000, 42001), z_pos=3.0,
     )
     env = make_env(
-        "SwarmBots-MoveTo-v0", num_envs=2, device="cpu", compile_tensor_operations=False,
+        "SwarmBots-MoveToGoal-v0", num_envs=2, device="cpu", compile_tensor_operations=False,
         scenario_kwargs=dict(unit_start_locations=config, reset_settle_time=0, compile_reward_kernel=False),
     )
     try:
@@ -149,7 +149,7 @@ def test_custom_cuda_stream_matches_default_through_reset_deferred_steps_and_aut
 
     def make_stream_env() -> MJWSwarmBotsVectorEnv:
         return make_env(
-            "SwarmBots-MoveTo-v0", num_envs=2, device="cuda", episode_length=3,
+            "SwarmBots-MoveToGoal-v0", num_envs=2, device="cuda", episode_length=3,
             first_episode_lengths=[1, 3], compile_tensor_operations=compile_operations,
             scenario_kwargs=dict(
                 unit_start_locations=_small_swarm(), reset_settle_time=0, compile_reward_kernel=compile_operations,

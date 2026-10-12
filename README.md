@@ -29,7 +29,7 @@ The full suite has **15 registered tasks**, including an **eight-task core suite
 | PO-wall traversal | `POWallEasy`, `POWallMedium`, `POWallHard` | Beta | Connected locomotion over randomized hidden walls from 0.25 to 0.4 m high, with partial observability adding difficulty. |
 | Exploration under partial observability | `FindOpening` | Beta | Exploration within an episode to locate and pass through a hidden opening.                                               |
 | Bridge traversal | `Bridge` | Alpha | Locomotion across a narrow movable bridge.                                                                               |
-| Climbing and navigation | `Climb`, `VerticalReach`, `MoveTo` | Alpha | Platform climbing, elevated goal reaching, and navigation toward sampled planar goals.                                  |
+| Climbing and navigation | `Climb`, `VerticalReach`, `MoveToGoal` | Alpha | Platform climbing, elevated goal reaching, and navigation toward sampled planar goals.                                  |
 | Payload transport | `PayloadPlane`, `PayloadStep`, `DualPayloadPlane`, `MultiPayloadGoal` | Alpha | Cooperative payload transport, step traversal, and delivery of variable payload sets to assigned goals.                  |
 
 The core suite covers medium fixed and hidden walls, bridge traversal, finding an opening, climbing, vertical reach, payload-over-step transport, and multi-payload goal transport. Access it through `swarmbots.CORE_BENCHMARK_IDS`; `swarmbots.ALL_BENCHMARK_IDS` exposes the full suite.

@@ -168,20 +168,6 @@ def build_wm_episode_windows_batch(
     )
 
 
-def _build_time_windows(
-        tensor: torch.Tensor,
-        *,
-        window_size: int,
-        num_steps: int,
-) -> torch.Tensor:
-    windows = tensor.unfold(0, window_size, 1)[:num_steps]
-    if tensor.ndim == 1:
-        return windows.contiguous()
-
-    permute_dims = (0, tensor.ndim, *range(1, tensor.ndim))
-    return windows.permute(*permute_dims).contiguous()
-
-
 def _validate_episode_for_wm_windows(
         episode: PPOEpisodeSegment,
         num_next_steps: int,

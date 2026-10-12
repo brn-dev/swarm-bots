@@ -22,7 +22,7 @@ from swarmbots.mjw_env.mjw_swarm_bots_vector_env import (
 )
 from swarmbots.mjw_env.parameter_distributions import UniformDistParams
 from swarmbots.mjw_env.scenarios.base_mjw_scenario import MJWStepResult
-from swarmbots.mjw_env.scenarios.mjw_move_to_runtime import MoveToMJWScenarioRuntime, MoveToResetSpec
+from swarmbots.mjw_env.scenarios.mjw_move_to_goal_runtime import MoveToGoalMJWScenarioRuntime, MoveToGoalResetSpec
 from swarmbots.scenario_presets.move_to_goal_config import RelativePolarGoalConfig
 
 
@@ -38,9 +38,6 @@ class _FakeRuntime:
         batch = [f"sample-{len(self.sampled_batches)}-{idx}" for idx in range(n_reset)]
         self.sampled_batches.append(batch)
         return batch
-
-    def select_reset_batch(self, *, reset_batch: list[str], mask: torch.Tensor) -> list[str]:
-        return [value for value, selected in zip(reset_batch, mask.tolist(), strict=True) if selected]
 
     def apply_reset_batch(self, *, world_idx: torch.Tensor, reset_batch: Any) -> None:
         self.raw_reset_calls.append((world_idx.detach().cpu().tolist(), reset_batch))
@@ -131,8 +128,8 @@ class _TimingControlledExecutor:
         return _OnDemandFuture(fn, kwargs, immediate=self._immediate)
 
 
-def _make_spec_only_move_to_runtime() -> MoveToMJWScenarioRuntime:
-    runtime = object.__new__(MoveToMJWScenarioRuntime)
+def _make_spec_only_move_to_goal_runtime() -> MoveToGoalMJWScenarioRuntime:
+    runtime = object.__new__(MoveToGoalMJWScenarioRuntime)
     runtime.bindings = SimpleNamespace(device=torch.device("cpu"))
     runtime.scenario = SimpleNamespace(
         swarm=SimpleNamespace(get_active_pool_size=lambda: 50, max_unit_extent=0.1),
@@ -148,7 +145,7 @@ def _make_spec_only_move_to_runtime() -> MoveToMJWScenarioRuntime:
     return runtime
 
 
-def _assert_move_to_specs_equal(actual: list[MoveToResetSpec], expected: list[MoveToResetSpec]) -> None:
+def _assert_move_to_goal_specs_equal(actual: list[MoveToGoalResetSpec], expected: list[MoveToGoalResetSpec]) -> None:
     assert len(actual) == len(expected)
     for actual_spec, expected_spec in zip(actual, expected, strict=True):
         assert actual_spec.common.pool_idx == expected_spec.common.pool_idx
@@ -506,14 +503,14 @@ def test_mjw_settled_snapshot_buffer_real_samples_are_independent_of_worker_timi
     capacity: int,
     batch_size: int,
 ) -> None:
-    reference_runtime = _make_spec_only_move_to_runtime()
+    reference_runtime = _make_spec_only_move_to_goal_runtime()
     expected_initial = reference_runtime.build_cpu_reset_specs(
         reset_batch=reference_runtime.sample_reset_batch(n_reset=7, rng=torch.Generator().manual_seed(7)),
     )
-    results: list[tuple[list[MoveToResetSpec], list[int], torch.Tensor]] = []
+    results: list[tuple[list[MoveToGoalResetSpec], list[int], torch.Tensor]] = []
 
     for immediate in (True, False):
-        runtime = _make_spec_only_move_to_runtime()
+        runtime = _make_spec_only_move_to_goal_runtime()
         rng = torch.Generator().manual_seed(7)
         buffer = _SettledResetSnapshotBuffer(
             scenario_runtime=runtime,
@@ -523,7 +520,7 @@ def test_mjw_settled_snapshot_buffer_real_samples_are_independent_of_worker_timi
             batch_size=batch_size,
         )
         initial = buffer.take(7)
-        _assert_move_to_specs_equal(initial, expected_initial)
+        _assert_move_to_goal_specs_equal(initial, expected_initial)
         sampled_specs = list(initial)
 
         for requested in (3, 1, 8, 2, 4):
@@ -544,10 +541,10 @@ def test_mjw_settled_snapshot_buffer_real_samples_are_independent_of_worker_timi
         assert not buffer._reset_specs
         assert buffer._future_size == 0
         rng.manual_seed(7)
-        _assert_move_to_specs_equal(buffer.take(7), expected_initial)
+        _assert_move_to_goal_specs_equal(buffer.take(7), expected_initial)
         buffer.clear(wait=True)
 
-    _assert_move_to_specs_equal(results[0][0], results[1][0])
+    _assert_move_to_goal_specs_equal(results[0][0], results[1][0])
     assert results[0][1] == results[1][1]
     torch.testing.assert_close(results[0][2], results[1][2])
 

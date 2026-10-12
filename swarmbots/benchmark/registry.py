@@ -14,7 +14,7 @@ from swarmbots.mjw_env.scenarios.mjw_scenario_presets import (
     default_climb,
     default_dual_payload_plane,
     default_find_opening,
-    default_move_to,
+    default_move_to_goal,
     default_multi_payload_goal,
     default_payload_plane,
     default_payload_step,
@@ -118,10 +118,10 @@ _SPECS = (
         default_multi_payload_goal,
     ),
     BenchmarkSpec(
-        "SwarmBots-MoveTo-v0",
+        "SwarmBots-MoveToGoal-v0",
         "Navigation toward a sampled planar goal.",
         "locomotion",
-        default_move_to,
+        default_move_to_goal,
         supports_success_metric=False,
     ),
 )

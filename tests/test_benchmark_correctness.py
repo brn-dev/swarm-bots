@@ -20,7 +20,7 @@ def test_invalid_episode_limit_is_rejected_before_scenario_creation(limit, monke
     factory = Mock(side_effect=AssertionError("Scenario must not be constructed"))
     monkeypatch.setattr("swarmbots.benchmark.registry.make_scenario", factory)
     with pytest.raises(ValueError, match="episode_length > 0"):
-        make_env("SwarmBots-MoveTo-v0", num_envs=1, episode_length=limit)
+        make_env("SwarmBots-MoveToGoal-v0", num_envs=1, episode_length=limit)
     factory.assert_not_called()
 
 
@@ -217,7 +217,7 @@ def test_connector_geometry_is_current_and_independent_of_other_world_resets(dev
     surviving_observations = []
     for limits in ([10, 10], [1, 10]):
         env = make_env(
-            "SwarmBots-MoveTo-v0", num_envs=2, device=device, seed=2,
+            "SwarmBots-MoveToGoal-v0", num_envs=2, device=device, seed=2,
             episode_length=10, first_episode_lengths=limits, compile_tensor_operations=False,
             scenario_kwargs=dict(unit_start_locations=cfg, reset_settle_time=0,
                                  compile_reward_kernel=False, action_repeat=action_repeat),
@@ -241,7 +241,7 @@ def test_connector_geometry_is_current_and_independent_of_other_world_resets(dev
 def test_settling_preserves_live_physics_options_in_an_independent_model():
     cfg = MJWPreConnectedUnitLocationsConfig(num_units=1, pool_seeds=[42000])
     env = make_env(
-        "SwarmBots-MoveTo-v0", num_envs=1, device="cpu", ccd_iterations=1,
+        "SwarmBots-MoveToGoal-v0", num_envs=1, device="cpu", ccd_iterations=1,
         compile_tensor_operations=False,
         scenario_kwargs=dict(unit_start_locations=cfg, compile_reward_kernel=False, reset_settle_time=0.01),
     )

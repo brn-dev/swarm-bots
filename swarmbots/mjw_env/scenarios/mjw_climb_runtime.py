@@ -191,9 +191,6 @@ class ClimbMJWScenarioRuntime(BaseMJWScenarioRuntime):
     def sample_reset_batch(self, *, n_reset: int, rng: torch.Generator) -> MJWCommonResetBatch:
         return self._sample_common_reset_batch(n_reset=n_reset, rng=rng)
 
-    def select_reset_batch(self, *, reset_batch: MJWCommonResetBatch, mask: torch.Tensor) -> MJWCommonResetBatch:
-        return self._select_common_reset_batch(common_reset_batch=reset_batch, mask=mask)
-
     def apply_reset_batch(self, *, world_idx: torch.Tensor, reset_batch: MJWCommonResetBatch) -> None:
         self._apply_common_reset_batch(world_idx=world_idx, common_reset_batch=reset_batch)
         mjw_forward(self.bindings)

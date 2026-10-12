@@ -10,7 +10,7 @@ import numpy as np
 import torch
 
 if TYPE_CHECKING:
-    from swarmbots.mjw_env.scenarios.mjw_move_to_scenario import MJWMoveToScenario
+    from swarmbots.mjw_env.scenarios.mjw_move_to_goal_scenario import MJWMoveToGoalScenario
 
 from swarmbots.mjw_env.mjw_torch_utils import masked_mean, sample_float_or_dist
 from swarmbots.mjw_env.scenarios.base_mjw_scenario import (
@@ -23,30 +23,30 @@ from swarmbots.mjw_env.scenarios.base_mjw_scenario import (
     MJWStepResult,
     mjw_forward,
 )
-from swarmbots.mjw_env.scenarios.mjw_move_to_scenario import MJWMoveToRuntimeMetadata
+from swarmbots.mjw_env.scenarios.mjw_move_to_goal_scenario import MJWMoveToGoalRuntimeMetadata
 from swarmbots.scenario_presets.move_to_goal_config import AbsoluteGoalConfig, RelativePolarGoalConfig
 
 
 @dataclass(slots=True)
-class MoveToResetBatch:
+class MoveToGoalResetBatch:
     common: MJWCommonResetBatch
     goal_position: torch.Tensor
 
 
 @dataclass(slots=True)
-class MoveToResetSpec:
+class MoveToGoalResetSpec:
     common: MJWCommonResetSpec
     goal_position: np.ndarray
 
 
 @dataclass(slots=True)
-class MoveToSettledSnapshot:
+class MoveToGoalSettledSnapshot:
     common: MJWCommonSettledSnapshot
     goal_position: np.ndarray
     progress: float
 
 
-def _compute_move_to_reward_kernel(
+def _compute_move_to_goal_reward_kernel(
     unit_xy: torch.Tensor,
     goal_position: torch.Tensor,
     stable_mask: torch.Tensor,
@@ -72,16 +72,16 @@ def _compute_move_to_reward_kernel(
     return new_progress, progress_reward, progress_reward
 
 
-class _MoveToCPUResetSettler(BaseMJWCPUResetSettler):
-    def __init__(self, *, scenario: "MJWMoveToScenario", bindings: MJWRuntimeBindings, goal_mocap_id: int) -> None:
+class _MoveToGoalCPUResetSettler(BaseMJWCPUResetSettler):
+    def __init__(self, *, scenario: "MJWMoveToGoalScenario", bindings: MJWRuntimeBindings, goal_mocap_id: int) -> None:
         super().__init__(scenario=scenario, bindings=bindings)
         self.scenario = scenario
         self.goal_mocap_id = int(goal_mocap_id)
 
-    def settle_batch(self, *, specs: list[MoveToResetSpec]) -> list[MoveToSettledSnapshot]:
+    def settle_batch(self, *, specs: list[MoveToGoalResetSpec]) -> list[MoveToGoalSettledSnapshot]:
         return [self._settle_one(spec=spec) for spec in specs]
 
-    def _settle_one(self, *, spec: MoveToResetSpec) -> MoveToSettledSnapshot:
+    def _settle_one(self, *, spec: MoveToGoalResetSpec) -> MoveToGoalSettledSnapshot:
         self._apply_common_reset(common_reset_spec=spec.common)
         self._apply_goal_marker(goal_position=spec.goal_position)
         mujoco.mj_forward(self.model, self.data)
@@ -101,7 +101,7 @@ class _MoveToCPUResetSettler(BaseMJWCPUResetSettler):
             active_mask=active_mask,
             goal_radius=self.scenario.goal_radius,
         )
-        return MoveToSettledSnapshot(
+        return MoveToGoalSettledSnapshot(
             common=self._build_common_snapshot(common_reset_spec=spec.common),
             goal_position=spec.goal_position.copy(),
             progress=progress,
@@ -113,13 +113,13 @@ class _MoveToCPUResetSettler(BaseMJWCPUResetSettler):
         self.data.mocap_pos[self.goal_mocap_id] = [float(goal_position[0]), float(goal_position[1]), 0.0]
 
 
-class MoveToMJWScenarioRuntime(BaseMJWScenarioRuntime):
+class MoveToGoalMJWScenarioRuntime(BaseMJWScenarioRuntime):
     def __init__(
         self,
         *,
-        scenario: "MJWMoveToScenario",
+        scenario: "MJWMoveToGoalScenario",
         bindings: MJWRuntimeBindings,
-        runtime_metadata: MJWMoveToRuntimeMetadata,
+        runtime_metadata: MJWMoveToGoalRuntimeMetadata,
     ) -> None:
         super().__init__(scenario=scenario, bindings=bindings, runtime_metadata=runtime_metadata)
         self.goal_position = torch.zeros((bindings.num_envs, 2), device=bindings.device, dtype=torch.float32)
@@ -129,7 +129,7 @@ class MoveToMJWScenarioRuntime(BaseMJWScenarioRuntime):
         self._unit_qpos_adr = torch.as_tensor(bindings.metadata.unit_qpos_adr, device=bindings.device, dtype=torch.long)
         self._xy_offsets = torch.tensor([0, 1], device=bindings.device, dtype=torch.long)
         self._goal_mocap_id = int(runtime_metadata.goal_mocap_id)
-        self._cpu_settler = _MoveToCPUResetSettler(
+        self._cpu_settler = _MoveToGoalCPUResetSettler(
             scenario=scenario,
             bindings=bindings,
             goal_mocap_id=self._goal_mocap_id,
@@ -137,7 +137,7 @@ class MoveToMJWScenarioRuntime(BaseMJWScenarioRuntime):
         self._reward_kernel: Callable[
             ...,
             tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor],
-        ] = _compute_move_to_reward_kernel
+        ] = _compute_move_to_goal_reward_kernel
         if scenario.compile_reward_kernel:
             if not hasattr(torch, "compile"):
                 raise RuntimeError("compile_reward_kernel=True requires torch.compile support.")
@@ -164,9 +164,9 @@ class MoveToMJWScenarioRuntime(BaseMJWScenarioRuntime):
     def hidden_global_obs(self) -> torch.Tensor:
         return self._hidden_global_obs
 
-    def sample_reset_batch(self, *, n_reset: int, rng: torch.Generator) -> MoveToResetBatch:
+    def sample_reset_batch(self, *, n_reset: int, rng: torch.Generator) -> MoveToGoalResetBatch:
         common = self._sample_common_reset_batch(n_reset=n_reset, rng=rng)
-        return MoveToResetBatch(
+        return MoveToGoalResetBatch(
             common=common,
             goal_position=self._sample_goal_positions(
                 n_reset=n_reset,
@@ -175,13 +175,7 @@ class MoveToMJWScenarioRuntime(BaseMJWScenarioRuntime):
             ),
         )
 
-    def select_reset_batch(self, *, reset_batch: MoveToResetBatch, mask: torch.Tensor) -> MoveToResetBatch:
-        return MoveToResetBatch(
-            common=self._select_common_reset_batch(common_reset_batch=reset_batch.common, mask=mask),
-            goal_position=reset_batch.goal_position[mask],
-        )
-
-    def apply_reset_batch(self, *, world_idx: torch.Tensor, reset_batch: MoveToResetBatch) -> None:
+    def apply_reset_batch(self, *, world_idx: torch.Tensor, reset_batch: MoveToGoalResetBatch) -> None:
         self._apply_common_reset_batch(world_idx=world_idx, common_reset_batch=reset_batch.common)
         self._apply_goal_marker(world_idx=world_idx, goal_position=reset_batch.goal_position)
         mjw_forward(self.bindings)
@@ -194,21 +188,21 @@ class MoveToMJWScenarioRuntime(BaseMJWScenarioRuntime):
             goal_radius=self.scenario.goal_radius,
         )
 
-    def build_cpu_reset_specs(self, *, reset_batch: MoveToResetBatch) -> list[MoveToResetSpec]:
+    def build_cpu_reset_specs(self, *, reset_batch: MoveToGoalResetBatch) -> list[MoveToGoalResetSpec]:
         common_specs = self._build_common_reset_specs(common_reset_batch=reset_batch.common)
         goal_position = reset_batch.goal_position.detach().cpu().numpy()
         return [
-            MoveToResetSpec(
+            MoveToGoalResetSpec(
                 common=common_specs[i],
                 goal_position=goal_position[i].copy(),
             )
             for i in range(len(common_specs))
         ]
 
-    def settle_cpu_reset_specs(self, *, specs: list[MoveToResetSpec]) -> list[MoveToSettledSnapshot]:
+    def settle_cpu_reset_specs(self, *, specs: list[MoveToGoalResetSpec]) -> list[MoveToGoalSettledSnapshot]:
         return self._cpu_settler.settle_batch(specs=specs)
 
-    def apply_settled_reset_batch(self, *, world_idx: torch.Tensor, snapshots: list[MoveToSettledSnapshot]) -> None:
+    def apply_settled_reset_batch(self, *, world_idx: torch.Tensor, snapshots: list[MoveToGoalSettledSnapshot]) -> None:
         self._apply_common_settled_snapshot_batch(world_idx=world_idx, snapshots=[snapshot.common for snapshot in snapshots])
         self.goal_position[world_idx] = torch.as_tensor(
             np.stack([snapshot.goal_position for snapshot in snapshots]),
@@ -277,7 +271,7 @@ class MoveToMJWScenarioRuntime(BaseMJWScenarioRuntime):
             offset = torch.stack((distance * torch.cos(angle), distance * torch.sin(angle)), dim=-1)
             return swarm_start[:, :2] + offset
         if not isinstance(goal, AbsoluteGoalConfig):
-            raise TypeError(f"Unsupported move-to goal config: {type(goal).__name__}")
+            raise TypeError(f"Unsupported move-to-goal configuration: {type(goal).__name__}")
 
         goal_x = sample_float_or_dist(
             goal.x,

@@ -283,19 +283,6 @@ class MultiPayloadGoalMJWScenarioRuntime(BaseMJWScenarioRuntime):
             goal_position=goal_position,
         )
 
-    def select_reset_batch(
-        self,
-        *,
-        reset_batch: MultiPayloadGoalResetBatch,
-        mask: torch.Tensor,
-    ) -> MultiPayloadGoalResetBatch:
-        return MultiPayloadGoalResetBatch(
-            common=self._select_common_reset_batch(common_reset_batch=reset_batch.common, mask=mask),
-            payload_position=reset_batch.payload_position[mask],
-            active_payload_mask=reset_batch.active_payload_mask[mask],
-            goal_position=reset_batch.goal_position[mask],
-        )
-
     def apply_reset_batch(self, *, world_idx: torch.Tensor, reset_batch: MultiPayloadGoalResetBatch) -> None:
         self._apply_common_reset_batch(world_idx=world_idx, common_reset_batch=reset_batch.common)
         self._apply_payload_position(world_idx=world_idx, payload_position=reset_batch.payload_position)

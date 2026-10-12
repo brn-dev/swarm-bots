@@ -48,4 +48,4 @@ jobs:
           "$GITHUB_WORKSPACE/.venv/bin/swarmbots-diagram-policies" --help
           "$GITHUB_WORKSPACE/.venv/bin/swarmbots-plot-logs" --help
           "$GITHUB_WORKSPACE/.venv/bin/swarmbots-plot-experiments" --help
-          "$GITHUB_WORKSPACE/.venv/bin/swarmbots" smoke SwarmBots-MoveTo-v0 --device cpu --num-envs 2 --steps 2
+          "$GITHUB_WORKSPACE/.venv/bin/swarmbots" smoke SwarmBots-MoveToGoal-v0 --device cpu --num-envs 2 --steps 2

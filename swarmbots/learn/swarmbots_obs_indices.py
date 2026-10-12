@@ -3,9 +3,7 @@ from typing import Any
 from swarmbots.learn.obs_indices import ObsIndices
 from swarmbots.scenario_presets.scenario_obs_layouts import (
     CLIMB_GOAL_XYZ_GLOBAL_OBS_LAYOUT,
-    DUAL_PAYLOAD_GLOBAL_OBS_ADAPTER_NAME,
     MULTI_PAYLOAD_GOAL_GLOBAL_OBS_LAYOUT,
-    PAYLOAD_GLOBAL_OBS_ADAPTER_NAME,
     VERTICAL_REACH_GOAL_XYZ_GLOBAL_OBS_LAYOUT,
 )
 
@@ -22,16 +20,6 @@ def _hinges_per_limb(limb_type: str) -> int:
 def _global_scalar_indices(scenario_settings: dict[str, Any], global_obs_dim: int) -> list[int]:
     if global_obs_dim == 0:
         return []
-
-    if scenario_settings.get("global_obs_adapter") == PAYLOAD_GLOBAL_OBS_ADAPTER_NAME:
-        if global_obs_dim != 9:
-            raise ValueError(f"Unexpected adapted move-to global_obs_dim for obs indices: {global_obs_dim}")
-        return [0, 1, 2]
-
-    if scenario_settings.get("global_obs_adapter") == DUAL_PAYLOAD_GLOBAL_OBS_ADAPTER_NAME:
-        if global_obs_dim != 18:
-            raise ValueError(f"Unexpected adapted move-to dual-payload global_obs_dim for obs indices: {global_obs_dim}")
-        return [0, 1, 2, 9, 10, 11]
 
     if scenario_settings.get("global_obs_layout") == MULTI_PAYLOAD_GOAL_GLOBAL_OBS_LAYOUT:
         num_payloads = int(scenario_settings["num_payloads"])
@@ -56,7 +44,7 @@ def _global_scalar_indices(scenario_settings: dict[str, Any], global_obs_dim: in
 
     if "goal" in scenario_settings:
         if global_obs_dim != 2:
-            raise ValueError(f"Unexpected move-to global_obs_dim for obs indices: {global_obs_dim}")
+            raise ValueError(f"Unexpected move-to-goal global_obs_dim for obs indices: {global_obs_dim}")
         return [0, 1]
 
     if scenario_settings.get("global_obs_layout") in (
@@ -72,11 +60,6 @@ def _global_scalar_indices(scenario_settings: dict[str, Any], global_obs_dim: in
 
 def _global_rot6d_indices(scenario_settings: dict[str, Any], global_obs_dim: int) -> list[int]:
     if global_obs_dim == 0:
-        return []
-    if scenario_settings.get("global_obs_adapter") in (
-        PAYLOAD_GLOBAL_OBS_ADAPTER_NAME,
-        DUAL_PAYLOAD_GLOBAL_OBS_ADAPTER_NAME,
-    ):
         return []
     if scenario_settings.get("global_obs_layout") == MULTI_PAYLOAD_GOAL_GLOBAL_OBS_LAYOUT:
         num_payloads = int(scenario_settings["num_payloads"])

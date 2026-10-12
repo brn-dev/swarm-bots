@@ -47,7 +47,7 @@ Maturity and version identifiers serve different purposes:
 | `SwarmBots-PayloadStep-v0` | payload transport over a step | Alpha | yes | yes |
 | `SwarmBots-DualPayloadPlane-v0` | two-payload transport | Alpha | no | no; report return |
 | `SwarmBots-MultiPayloadGoal-v0` | variable payload-to-goal assignment | Alpha | yes | yes |
-| `SwarmBots-MoveTo-v0` | sampled-goal navigation | Alpha | no | no; report return |
+| `SwarmBots-MoveToGoal-v0` | sampled-goal navigation | Alpha | no | no; report return |
 
 Wall and PO-wall tasks primarily challenge connected locomotion through coordinated movement and physical connections during obstacle traversal. Fixed walls provide three heights: 0.2, 0.3, and 0.4 m. PO-wall adds difficulty through partial observability and randomized hidden geometry, with heights of 0.25, 0.3, and 0.4 m. The hard PO-wall shares the medium variant's observations, rewards, and randomization, with a higher wall.
 
@@ -97,7 +97,7 @@ Shared task features in `global_obs` are positions in world coordinates unless s
 | Wall, PO Wall, Bridge | Empty; privileged obstacle information is not actor input |
 | FindOpening | Empty; privileged opening information is not actor input |
 | Climb, VerticalReach | Goal position `(x, y, z)` |
-| MoveTo | Goal position `(x, y)` |
+| MoveToGoal | Goal position `(x, y)` |
 | PayloadPlane, PayloadStep | Payload position `(x, y, z)`, followed by its six-dimensional orientation |
 | DualPayloadPlane | Two consecutive payload position/orientation records |
 | MultiPayloadGoal | One 12-feature record per payload slot: active flag, position (3), orientation (6), goal `(x, y)` |
@@ -118,7 +118,7 @@ Success is a team-level boolean. Padding never counts toward success. For succes
 | PayloadStep | Payload centre reaches `payload_success_y` and the required height while remaining over the step's finite width and length |
 | MultiPayloadGoal | Every active payload centre lies within `goal_radius` of its assigned 3D goal (goal height is the payload radius) |
 
-PayloadPlane, DualPayloadPlane, and MoveTo have no success metric; report return. Episodes truncate at 500 control steps by default. Success terminates an episode for the success-enabled tasks; bridge falls and nonfinite simulator state can also terminate unsuccessfully. The default control period is `0.003 * 10 = 0.03` seconds. Reward terms are exposed in `info["reward_terms"]`; weights and thresholds are in `env.get_settings()` and exported evaluation metadata.
+PayloadPlane, DualPayloadPlane, and MoveToGoal have no success metric; report return. Episodes truncate at 500 control steps by default. Success terminates an episode for the success-enabled tasks; bridge falls and nonfinite simulator state can also terminate unsuccessfully. The default control period is `0.003 * 10 = 0.03` seconds. Reward terms are exposed in `info["reward_terms"]`; weights and thresholds are in `env.get_settings()` and exported evaluation metadata.
 
 Rewards measure task progress and task-specific outcomes. Connection topology contributes no direct reward or penalty; connections affect the swarm's physical behavior. The former isolation penalty has been removed from every scenario. Rerun evaluations when comparing against revisions that included it.
 

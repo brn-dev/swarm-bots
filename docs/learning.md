@@ -107,10 +107,12 @@ Task settings come from the [scenario registry](scenarios.md). Architecture and 
 | Episode limit | 500 control steps, with physics settling before each episode |
 | Morphology population | The registered task's pool; see the [benchmark protocol](benchmark_protocol.md#morphology-population) |
 | Policy/world-model compilation | Disabled; enable with `compile_modules=True` |
-| Initial episode staggering | Disabled |
+| Initial episode staggering | Seeded uniform first-episode limits from 1 through the episode limit |
 | Rollout warmup | 0 steps |
 | Rollout steps per world per iteration | 4 for PPO, 1 for SAC/DDPG/TD3 |
 | Training budget in `train` | 100 million transitions |
+
+Training staggers the first episode in each world to spread reset work over time; later episodes use the full episode limit. The training seed determines these limits without consuming the policy's RNG. Explicit `env_kwargs` containing `first_episode_length` or `first_episode_lengths` take precedence; pass `env_kwargs={"first_episode_lengths": None}` to disable staggering. Benchmark evaluation and checkpoint recording retain full initial episodes by default.
 
 Learning presets enable NOP by default, except for the flattened MLP baselines marked **(no NOP)** and the explicit `*_no_nop` ablations. Deep Set and transformer MADDPG/MATD3/MASAC/TMATD3 presets use critic NOP by default; flattened MLP critics reject NOP. These off-policy baselines do not support PopArt. On-policy presets (PPO, MAPPO, and MAT) use Signed-Magnitude Beta (`sign_magnitude_beta`). All SAC presets, including MASAC and recurrent TMASAC, use Predicted Std Gaussian (`predicted_std_gaussian`). For stochastic policies, action distributions are configured independently of variant names through `continuous_action_dist`; `use_nop` overrides NOP on supported policies. DDPG/TD3 use deterministic tanh actors with Gaussian exploration noise. Learning rate, replay capacity, minibatch sizes, and recurrent sequence settings depend on the selected preset and can be overridden with `algorithm_kwargs`.
 
