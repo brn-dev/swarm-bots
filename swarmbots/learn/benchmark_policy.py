@@ -13,6 +13,13 @@ from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import B
 from swarmbots.learn.env_wrappers.learn_wrappers.swarm_bots_learn_env_wrapper import SwarmBotsLearnEnvWrapper
 from swarmbots.learn.env_wrappers.torch_feature_wise_obs_norm_wrapper import TorchFeatureWiseObsNormWrapper
 from swarmbots.learn.env_wrappers.torch_transition_obs_wrapper import TorchTransitionObsWrapper, _step_transition_tensors
+from swarmbots.learn.gsde_reset import (
+    GSDEResetMode,
+    GSDEEpisodeResetMode,
+    GSDEProbabilityResetMode,
+    build_gsde_step_reset_mask,
+    resolve_gsde_reset_mode,
+)
 from swarmbots.learn.rollout_utils import initial_previous_actions
 from swarmbots.learn.temporal_state import clone_detach_temporal_state
 
@@ -39,10 +46,16 @@ class BenchmarkPolicy:
         *,
         deterministic: bool = True,
         scenario_id: int | None = None,
+        gsde_reset_mode: GSDEResetMode | None = None,
     ) -> None:
         self.policy = policy
         self.deterministic = deterministic
         self.scenario_id = scenario_id
+        self.gsde_reset_mode = resolve_gsde_reset_mode(
+            gsde_enabled=policy.gsde_enabled,
+            reset_mode=GSDEEpisodeResetMode() if gsde_reset_mode is None else gsde_reset_mode,
+        )
+        self.rollout_step_idx = 0
         self.has_scenario_id = env.has_scenario_id
         if scenario_id is not None:
             if not self.has_scenario_id:
@@ -122,10 +135,24 @@ class BenchmarkPolicy:
             action_dist.set_temporal_correlation_state(self.distribution_state)
         self.policy.eval()
         try:
+            step_reset_mask = None
+            if not self.deterministic and self.gsde_reset_mode is not None:
+                if self.rollout_step_idx == 0:
+                    action_dist.reset_temporal_correlations_on_step(batch_shape=tuple(local_obs.shape[:-1]))
+                else:
+                    step_reset_mask = build_gsde_step_reset_mask(
+                        gsde_reset_mode=self.gsde_reset_mode,
+                        rollout_step_idx=self.rollout_step_idx,
+                        batch_shape=tuple(local_obs.shape[:-1]),
+                        rollout_device=local_obs.device,
+                    )
             if action_dist is not None:
                 action_dist.reset_temporal_correlations_on_ep_start(episode_starts)
-            if not self.deterministic and self.policy.gsde_enabled:
-                self.policy.action_dist.reset_temporal_correlations_on_step(batch_shape=tuple(local_obs.shape[:-1]))
+            if step_reset_mask is not None:
+                if isinstance(self.gsde_reset_mode, GSDEProbabilityResetMode):
+                    action_dist.reset_temporal_correlations_on_step(mask=step_reset_mask)
+                else:
+                    action_dist.reset_temporal_correlations_on_step(batch_shape=tuple(local_obs.shape[:-1]))
             actions, temporal_state = self.policy.act_with_temporal_state(
                 **actor_obs,
                 previous_actions=self.previous_actions,
@@ -141,6 +168,7 @@ class BenchmarkPolicy:
             for module, was_training in module_training_modes.items():
                 module.training = was_training
         self.temporal_state = clone_detach_temporal_state(temporal_state)
+        self.rollout_step_idx += 1
         for transform, state in self.transition_states.items():
             state.actions = transform._actions_to_features(actions, dtype=state.local_obs.dtype).clone()
         if self.previous_actions is not None:
@@ -183,11 +211,18 @@ def as_benchmark_policy(
     *,
     deterministic: bool = True,
     scenario_id: int | None = None,
+    gsde_reset_mode: GSDEResetMode | None = None,
 ) -> BenchmarkPolicy:
     """Adapt an actor for benchmark evaluation, selecting a scenario when needed.
 
     ``scenario_id`` identifies a task in a scenario-conditioned training environment
     when benchmark observations omit their own ``scenario_id``. Supplied observation
     IDs take precedence. Single-task global observations are padded before normalization.
+    Stochastic gSDE actions inherit the trainer's reset schedule unless explicitly overridden.
     """
-    return BenchmarkPolicy(algorithm.policy, algorithm.env, deterministic=deterministic, scenario_id=scenario_id)
+    return BenchmarkPolicy(
+        algorithm.policy, algorithm.env, deterministic=deterministic, scenario_id=scenario_id,
+        gsde_reset_mode=(
+            getattr(algorithm, "gsde_reset_mode", None) if gsde_reset_mode is None else gsde_reset_mode
+        ),
+    )

@@ -19,6 +19,7 @@ from swarmbots.learn.checkpointing import (
 )
 from swarmbots.learn.presets.policy_factory import ContinuousActionDistVariant
 from swarmbots.learn.presets.model_scale import DEFAULT_MODEL_SCALE
+from swarmbots.learn.gsde_reset import GSDEResetMode, gsde_reset_mode_from_settings
 from swarmbots.learn.training import _make_policy_env, _variant_options
 from swarmbots.utils.recording_resolution import DEFAULT_RECORDING_HEIGHT, DEFAULT_RECORDING_WIDTH
 
@@ -34,6 +35,7 @@ def record_checkpoint(
     max_parallel_episodes: int = 4,
     deterministic: bool = True,
     exploration_noise: float | None = None,
+    gsde_reset_mode: GSDEResetMode | None = None,
     device: str | torch.device = "auto",
     seed: int = 1_000,
     episode_length: int | None = None,
@@ -56,6 +58,8 @@ def record_checkpoint(
     checkpoint. Replay buffers and optimizer state are not needed for inference.
     DDPG/TD3 exploration noise is restored from saved policy settings unless
     explicitly overridden; older checkpoints use the policy default.
+    gSDE recordings restore the saved reset schedule, defaulting to episode-only
+    resets when absent; ``gsde_reset_mode`` overrides that schedule.
     """
     if num_episodes <= 0 or max_parallel_episodes <= 0:
         raise ValueError("num_episodes and max_parallel_episodes must be positive")
@@ -95,10 +99,14 @@ def record_checkpoint(
             )
         )
         apply_env_state(env, extract_env_state(checkpoint))
+        if gsde_reset_mode is None and policy.gsde_enabled:
+            gsde_reset_mode = gsde_reset_mode_from_settings(
+                checkpoint.get("hyper_parameters", {}).get("gsde_reset_mode")
+            )
         del checkpoint
         _record_episodes(
             env.unwrapped,
-            BenchmarkPolicy(policy, env, deterministic=deterministic),
+            BenchmarkPolicy(policy, env, deterministic=deterministic, gsde_reset_mode=gsde_reset_mode),
             video_folder=video_folder,
             video_name_prefix=checkpoint_path.stem if video_name_prefix is None else video_name_prefix,
             num_episodes=num_episodes,

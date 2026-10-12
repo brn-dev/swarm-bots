@@ -359,7 +359,7 @@ result = evaluate_policy(
 print(result.to_dict())
 ```
 
-Create a fresh adapter for each evaluation call and use the policy's device. It passes public observations and, for scenario-conditioned actors, the selected scenario IDs; privileged fields remain unavailable. Normalization statistics and the actor's training mode are preserved. The adapter owns its recurrent state and previous actions, resetting them at episode boundaries. Stochastic gSDE evaluation resamples noise each step. The actor is shared, so do not train and evaluate it concurrently.
+Create a fresh adapter for each evaluation call and use the policy's device. It passes public observations and, for scenario-conditioned actors, the selected scenario IDs; privileged fields remain unavailable. Normalization statistics and the actor's training mode are preserved. The adapter owns its recurrent state, previous actions, and exploration noise. Stochastic gSDE evaluation inherits the trainer's episode, interval, or probability reset schedule; pass `gsde_reset_mode` to override it. Direct `BenchmarkPolicy` construction defaults to episode-only resets. The actor is shared, so do not train and evaluate it concurrently.
 
 For a policy trained with `MultiScenarioVectorEnv`, select the task with `as_benchmark_policy(trainer, scenario_id=trainer.env.scenario_names.index(scenario_name))` when evaluating one registered benchmark. The adapter supplies that ID and pads global observations to the training width before frozen normalization. IDs supplied in multi-scenario observations take precedence over the fixed selection.
 

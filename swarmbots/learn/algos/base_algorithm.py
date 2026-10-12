@@ -463,6 +463,7 @@ class BaseAlgorithm(abc.ABC):
         save_dict = {
             'policy_state_dict': self.policy.state_dict(),
             'policy_hyper_parameters': self.policy.get_hyper_parameters(),
+            'hyper_parameters': self.get_hyper_parameters(),
             'model_scale': getattr(self.policy, 'model_scale', None),
             'env_state': env_state,
             'n_total_iterations': self.n_total_iterations,

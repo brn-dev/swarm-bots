@@ -219,7 +219,7 @@ class GSDEActionDist(ContinuousActionDist, TemporallyCorrelatedActionDist):
             gaussian_actions = TanhBijector.inverse(actions)
 
         log_prob = super().log_prob(gaussian_actions)
-        log_prob -= self.sum_action_dim(torch.log(1 - actions ** 2 + self.epsilon))
+        log_prob -= self.sum_action_dim(TanhBijector.log_abs_det_jacobian(gaussian_actions))
         return log_prob
 
     def get_actions_with_log_probs(

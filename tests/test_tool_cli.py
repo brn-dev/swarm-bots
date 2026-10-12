@@ -35,3 +35,12 @@ def test_report_links_work_with_and_without_checkout_guides(tmp_path: Path, loca
         assert link == "../../model_scale.md"
     else:
         assert link == "https://github.com/brn-dev/swarm-bots/blob/main/docs/policy_parameters/model_scale.md"
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows drive-relative paths")
+def test_report_export_links_to_published_guide_across_drives(tmp_path: Path) -> None:
+    guide = tmp_path / "model_scale.md"
+    guide.write_text("Sizing guide", encoding="utf-8")
+    other_drive = "D:" if tmp_path.drive.upper() != "D:" else "E:"
+    link = allocation_doc_link(Path(other_drive + "/swarmbots-reports"), guide)
+    assert link == "https://github.com/brn-dev/swarm-bots/blob/main/docs/policy_parameters/model_scale.md"

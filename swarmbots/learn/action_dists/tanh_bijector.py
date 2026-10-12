@@ -1,5 +1,7 @@
+import math
 
 import torch
+from torch.nn import functional as F
 
 
 class TanhBijector:
@@ -22,6 +24,9 @@ class TanhBijector:
         # Clip the action to avoid NaN
         return TanhBijector.atanh(y.clamp(min=-1.0 + eps, max=1.0 - eps))
 
+    @staticmethod
+    def log_abs_det_jacobian(value: torch.Tensor) -> torch.Tensor:
+        return 2.0 * (math.log(2.0) - value - F.softplus(-2.0 * value))
+
     def log_prob_correction(self, x: torch.Tensor) -> torch.Tensor:
-        # Squash correction (from original SAC implementation)
-        return torch.log(1.0 - torch.tanh(x) ** 2 + self.epsilon)
+        return self.log_abs_det_jacobian(x)

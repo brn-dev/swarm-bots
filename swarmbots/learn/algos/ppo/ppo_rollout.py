@@ -10,9 +10,7 @@ from swarmbots.learn.algos.ppo.ppo_rollout_buffer import PPOEpisodeSegment, PPOR
 from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
 from swarmbots.learn.gsde_reset import (
     GSDEResetMode,
-    GSDEEpisodeResetMode,
-    GSDEIntervalResetMode,
-    GSDEProbabilityResetMode,
+    build_gsde_step_reset_mask,
     resolve_gsde_reset_mode,
 )
 from swarmbots.learn.performance_timer import PerformanceTimer
@@ -52,33 +50,6 @@ def _init_rollout_timers() -> _RolloutTimers:
         env_step_timer=PerformanceTimer(),
         buffer_add_timer=PerformanceTimer(),
     )
-
-
-def _build_gsde_step_reset_mask(
-        *,
-        gsde_reset_mode: GSDEResetMode | None,
-        rollout_step_idx: int,
-        batch_shape: tuple[int, ...],
-        rollout_device: torch.device,
-) -> torch.Tensor | None:
-    if gsde_reset_mode is None:
-        return None
-    if isinstance(gsde_reset_mode, GSDEEpisodeResetMode):
-        # Episode masks initially lack the agent axis, so initialize per-agent noise once.
-        if rollout_step_idx != 0:
-            return None
-    elif isinstance(gsde_reset_mode, GSDEIntervalResetMode):
-        if (rollout_step_idx % gsde_reset_mode.interval) != 0:
-            return None
-    elif isinstance(gsde_reset_mode, GSDEProbabilityResetMode):
-        return torch.empty(
-            batch_shape,
-            device=rollout_device,
-            dtype=torch.bool,
-        ).bernoulli_(gsde_reset_mode.probability)
-    else:
-        raise TypeError(f"Unknown gsde_reset_mode type: {type(gsde_reset_mode)}")
-    return torch.ones(batch_shape, device=rollout_device, dtype=torch.bool)
 
 
 def _reset_temporal_correlations(
@@ -164,11 +135,12 @@ def _collect_rollout_step(
     obs_snapshot = snapshot_obs(obs)
     local_obs = obs_snapshot["local_obs"]
     batch_shape = tuple(local_obs.shape[:-1])
-    step_reset_mask = _build_gsde_step_reset_mask(
+    step_reset_mask = build_gsde_step_reset_mask(
         gsde_reset_mode=gsde_reset_mode,
         rollout_step_idx=rollout_step_idx,
         batch_shape=batch_shape,
         rollout_device=buffer.rollout_device,
+        initialize=rollout_step_idx == 0,
     )
 
     with timers.reset_noise_timer:
@@ -257,11 +229,12 @@ def _warmup_rollout_step(
 ) -> tuple[dict[str, torch.Tensor], torch.Tensor, torch.Tensor | None, Any, int]:
     local_obs = obs["local_obs"]
     batch_shape = tuple(local_obs.shape[:-1])
-    step_reset_mask = _build_gsde_step_reset_mask(
+    step_reset_mask = build_gsde_step_reset_mask(
         gsde_reset_mode=gsde_reset_mode,
         rollout_step_idx=rollout_step_idx,
         batch_shape=batch_shape,
         rollout_device=local_obs.device,
+        initialize=rollout_step_idx == 0,
     )
 
     _reset_temporal_correlations(
@@ -449,11 +422,12 @@ def collect_step_rollout_batch(
         obs_snapshot = snapshot_obs(obs)
         local_obs = obs_snapshot["local_obs"]
         batch_shape = tuple(local_obs.shape[:-1])
-        step_reset_mask = _build_gsde_step_reset_mask(
+        step_reset_mask = build_gsde_step_reset_mask(
             gsde_reset_mode=gsde_reset_mode,
             rollout_step_idx=rollout_step_idx,
             batch_shape=batch_shape,
             rollout_device=buffer.rollout_device,
+            initialize=rollout_step_idx == 0,
         )
 
         with timers.reset_noise_timer:

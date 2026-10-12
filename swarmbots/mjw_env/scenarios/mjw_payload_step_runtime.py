@@ -22,6 +22,7 @@ def _compute_payload_step_height_potential_torch(
     *,
     payload_position: torch.Tensor,
     step_start_y: float,
+    step_width: float,
     payload_ground_z: float,
     step_height: float,
     payload_step_height_reward_distance: float,
@@ -38,7 +39,18 @@ def _compute_payload_step_height_potential_torch(
         min=0.0,
         max=1.0,
     )
-    return approach * height
+    within_width = payload_position[:, 0].abs() <= float(step_width) / 2.0
+    return approach * height * within_width
+
+
+def _payload_over_step(
+    payload_position: torch.Tensor, step_start_y: float, step_width: float, step_length: float
+) -> torch.Tensor:
+    return (
+        (payload_position[:, 0].abs() <= float(step_width) / 2.0)
+        & (payload_position[:, 1] >= float(step_start_y))
+        & (payload_position[:, 1] <= float(step_start_y) + float(step_length))
+    )
 
 
 def _compute_payload_step_reward_extras_kernel(
@@ -67,13 +79,15 @@ def _compute_payload_step_reward_extras_kernel(
     current_potential = _compute_payload_step_height_potential_torch(
         payload_position=safe_payload_position,
         step_start_y=step_start_y,
+        step_width=step_width,
         payload_ground_z=payload_ground_z,
         step_height=step_height,
         payload_step_height_reward_distance=payload_step_height_reward_distance,
     )
-    crossed_step = safe_payload_position[:, 1] >= float(step_start_y)
-    newly_done = crossed_step & ~payload_step_height_done
-    done = payload_step_height_done | crossed_step
+    over_step = _payload_over_step(safe_payload_position, step_start_y, step_width, step_length)
+    climbed_step = over_step & (safe_payload_position[:, 2] >= float(payload_success_min_z))
+    newly_done = climbed_step & ~payload_step_height_done
+    done = payload_step_height_done | climbed_step
     current_potential = torch.where(done, torch.zeros_like(current_potential), current_potential)
     height_delta = (current_potential * float(potential_reward_discount_factor)) - payload_step_height_potential
     height_delta = torch.where(newly_done & (height_delta < 0.0), torch.zeros_like(height_delta), height_delta)
@@ -83,9 +97,7 @@ def _compute_payload_step_reward_extras_kernel(
 
     success = (
         stable_mask
-        & (safe_payload_position[:, 0].abs() <= float(step_width) / 2.0)
-        & (safe_payload_position[:, 1] >= float(step_start_y))
-        & (safe_payload_position[:, 1] <= float(step_start_y) + float(step_length))
+        & over_step
         & (safe_payload_position[:, 1] >= float(payload_success_y))
         & (safe_payload_position[:, 2] >= float(payload_success_min_z))
     )
@@ -237,17 +249,20 @@ class PayloadStepMJWScenarioRuntime(PayloadPlaneMJWScenarioRuntime):
 
     def _reset_payload_step_state(self, *, world_idx: torch.Tensor) -> None:
         payload_position = self.payload_position[world_idx]
-        crossed_step = payload_position[:, 1] >= float(self.scenario.step_start_y)
+        climbed_step = _payload_over_step(
+            payload_position, self.scenario.step_start_y, self.scenario.step_width, self.scenario.step_length,
+        ) & (payload_position[:, 2] >= self._payload_success_min_z())
         potential = _compute_payload_step_height_potential_torch(
             payload_position=payload_position,
             step_start_y=float(self.scenario.step_start_y),
+            step_width=float(self.scenario.step_width),
             payload_ground_z=float(self.scenario.payload_radius),
             step_height=float(self.scenario.step_height),
             payload_step_height_reward_distance=float(self.scenario.payload_step_height_reward_distance),
         )
-        self.payload_step_height_done[world_idx] = crossed_step
+        self.payload_step_height_done[world_idx] = climbed_step
         self.payload_step_height_potential[world_idx] = torch.where(
-            crossed_step,
+            climbed_step,
             torch.zeros_like(potential),
             potential,
         )

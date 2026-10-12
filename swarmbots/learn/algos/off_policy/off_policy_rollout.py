@@ -7,10 +7,9 @@ from swarmbots.learn.algos.off_policy.replay_buffer import OffPolicyReplayBuffer
 from swarmbots.learn.base_policy import BasePolicy
 from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
 from swarmbots.learn.gsde_reset import (
-    GSDEEpisodeResetMode,
     GSDEResetMode,
-    GSDEIntervalResetMode,
     GSDEProbabilityResetMode,
+    build_gsde_step_reset_mask,
     resolve_gsde_reset_mode,
 )
 from swarmbots.learn.performance_timer import PerformanceTimer
@@ -131,19 +130,19 @@ def _reset_policy_action_noise(
     if force_step_reset:
         action_dist.reset_temporal_correlations_on_step(batch_shape=batch_shape)
     action_dist.reset_temporal_correlations_on_ep_start(episode_start_mask)
-    if isinstance(gsde_reset_mode, GSDEEpisodeResetMode):
+    if force_step_reset:
         return
-    if isinstance(gsde_reset_mode, GSDEIntervalResetMode):
-        if not force_step_reset and (rollout_step_idx % gsde_reset_mode.interval) == 0:
+    step_reset_mask = build_gsde_step_reset_mask(
+        gsde_reset_mode=gsde_reset_mode,
+        rollout_step_idx=rollout_step_idx,
+        batch_shape=batch_shape,
+        rollout_device=local_obs.device,
+    )
+    if step_reset_mask is not None:
+        if isinstance(gsde_reset_mode, GSDEProbabilityResetMode):
+            action_dist.reset_temporal_correlations_on_step(mask=step_reset_mask)
+        else:
             action_dist.reset_temporal_correlations_on_step(batch_shape=batch_shape)
-        return
-    if isinstance(gsde_reset_mode, GSDEProbabilityResetMode):
-        if force_step_reset:
-            return
-        mask = torch.empty(batch_shape, device=local_obs.device, dtype=torch.bool).bernoulli_(gsde_reset_mode.probability)
-        action_dist.reset_temporal_correlations_on_step(mask=mask)
-        return
-    raise TypeError(f"Unknown gsde_reset_mode type: {type(gsde_reset_mode)}")
 
 
 def _build_rollout_metrics(

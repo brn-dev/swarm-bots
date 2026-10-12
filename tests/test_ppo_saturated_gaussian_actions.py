@@ -3,7 +3,7 @@ import torch
 from gymnasium.vector import AutoresetMode, SyncVectorEnv
 
 from swarmbots.learn.action_dists.gsde_action_dist import GSDEConfig
-from swarmbots.learn.action_dists.hybrid_action_dist import HybridActionDistribution
+from swarmbots.learn.action_dists.hybrid_action_dist import ContinuousActionDistConfig, HybridActionDistribution
 from swarmbots.learn.action_dists.predicted_std_gaussian_action_dist import PredictedStdGaussianConfig
 from swarmbots.learn.action_dists.squashed_diag_gaussian_action_dist import SquashedDiagGaussianConfig
 from swarmbots.learn.algos.ppo.ppo import PPO, StepsRolloutMode
@@ -97,15 +97,18 @@ def test_saturated_gaussian_ppo_rollout_has_unit_ratio_and_trains(config, mean: 
 
 
 @pytest.mark.parametrize("config", _GAUSSIAN_CONFIGS, ids=lambda config: type(config).__name__)
-def test_sac_gaussian_sampling_retains_cached_likelihood_and_gradients(config) -> None:
+@pytest.mark.parametrize("mean", [-10.0, 10.0])
+def test_sac_gaussian_sampling_retains_cached_likelihood_and_gradients(
+    config: ContinuousActionDistConfig, mean: float,
+) -> None:
     env = _make_env()
     try:
         action_dist = HybridActionDistribution(4, env.action_space, config)
-        _set_gaussian_means(action_dist, 10.0)
+        _set_gaussian_means(action_dist, mean)
         action_dist.reset_temporal_correlations_on_step(batch_shape=(1, 2))
         actions, log_probs = action_dist.get_actions_with_log_probs(torch.ones(1, 2, 4), use_rsample=True)
 
-        assert torch.equal(actions, torch.ones_like(actions))
+        assert torch.equal(actions, torch.full_like(actions, 1.0 if mean > 0 else -1.0))
         cached_log_probs = torch.stack(
             [
                 dist.log_prob(action, gaussian_actions=dist._last_gaussian_actions)
@@ -114,9 +117,19 @@ def test_sac_gaussian_sampling_retains_cached_likelihood_and_gradients(config) -
             dim=-1,
         ).sum(dim=-1)
         torch.testing.assert_close(log_probs, cached_log_probs)
+        expected_log_probs = torch.stack([
+            (
+                dist.distribution.log_prob(dist._last_gaussian_actions.double())
+                + 2.0 * dist._last_gaussian_actions.double().cosh().log()
+            ).sum(dim=-1)
+            for dist in action_dist.distributions
+        ], dim=-1).sum(dim=-1)
+        torch.testing.assert_close(log_probs.double(), expected_log_probs, atol=1e-5, rtol=1e-5)
         assert not torch.allclose(log_probs, action_dist.log_prob(actions))
         log_probs.sum().backward()
         for dist in action_dist.distributions:
+            expected_mean_gradient = 2.0 * dist._last_gaussian_actions.tanh().sum(dim=(0, 1))
+            torch.testing.assert_close(dist.action_net.bias.grad, expected_mean_gradient)
             std_parameter = dist.log_std_net.bias if hasattr(dist, "log_std_net") else dist.log_stds
             assert std_parameter.grad is not None
             assert torch.isfinite(std_parameter.grad).all()

@@ -197,7 +197,10 @@ def inspect_variants(
 def allocation_doc_link(output_dir: Path, guide_path: Path) -> str:
     """Link to a local sizing guide when present, otherwise the published guide."""
     if guide_path.is_file():
-        return os.path.relpath(guide_path.resolve(), output_dir.resolve()).replace("\\", "/")
+        try:
+            return os.path.relpath(guide_path.resolve(), output_dir.resolve()).replace("\\", "/")
+        except ValueError:
+            pass
     return "https://github.com/brn-dev/swarm-bots/blob/main/docs/policy_parameters/model_scale.md"
 
 

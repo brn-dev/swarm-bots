@@ -51,6 +51,8 @@ Maturity and version identifiers serve different purposes:
 
 Wall and PO-wall tasks primarily challenge connected locomotion through coordinated movement and physical connections during obstacle traversal. Fixed walls provide three heights: 0.2, 0.3, and 0.4 m. PO-wall adds difficulty through partial observability and randomized hidden geometry, with heights of 0.25, 0.3, and 0.4 m. The hard PO-wall shares the medium variant's observations, rewards, and randomization, with a higher wall.
 
+Wall resets intentionally include partially solved assemblies: some units may already be beyond the wall after settling. This provides an implicit curriculum within the fixed reset distribution. Already-crossed climb and pass milestones are latched at reset and do not earn retroactive rewards; success still requires every active unit to reach the finish threshold.
+
 FindOpening focuses on partial observability and exploration within an episode. The task combines discovery of a hidden passage using observations gathered during that episode with coordinated swarm traversal through it.
 
 Bridge adds a narrow movable support. Climb requires all active units to reach a platform goal; VerticalReach succeeds when at least one unit reaches the elevated goal volume. Payload tasks extend coordination to external objects, including multiple payloads with individual goals.
@@ -121,6 +123,10 @@ PayloadPlane, DualPayloadPlane, and MoveTo have no success metric; report return
 MultiPayloadGoal samples active goal centres with a guaranteed non-overlapping placement of the payloads at those centres in their reset orientation. It tries 16 batched random assignments, then uses a randomly translated and permuted grid if none are valid. Spheres use centre separation; boxes and horizontal capsules use conservative rectangular footprints. The goal rectangle bounds the centres, not the full payload shapes. Bounds round inward to float32; ranges and spans that cannot be represented safely are rejected. A custom rectangle that cannot accommodate the guaranteed grid for the maximum positive-probability active count is rejected during construction. Sampler parameters are recorded in settings.
 
 Initial payload rows use `payload_spawn_margin` as a minimum centre spacing. The recorded `payload_spawn_spacing` also accommodates the payload's reset-orientation width with a small rounding clearance: horizontal capsules need `4 * payload_radius` along the row, while spheres and boxes need `2 * payload_radius`. Each reset increases clearance as needed for float32 rounding at the sampled row origin and across its span, including inactive payload rows. Both the requested margin and the minimum resolved spacing are recorded in settings.
+
+DualPayloadPlane expands its default X offsets when the payload shape or radius needs more separation. Explicit `payload_offset_x` overrides are used as supplied; custom placements must provide their own collision clearance.
+
+PayloadStep height shaping applies within the platform's width. Its climb milestone requires the payload centre to be over the finite platform and at the required height. Crossing the front line beside the platform or below that height does not retain a climb bonus.
 
 ## Action contract
 

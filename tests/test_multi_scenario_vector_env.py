@@ -15,6 +15,10 @@ from swarmbots.learn.env_wrappers.learn_wrappers.swarm_bots_learn_env_wrapper im
 )
 from swarmbots.learn.env_wrappers.learn_wrappers.torch_env_wrapper import TorchEnvWrapper
 from swarmbots.learn.env_wrappers.multi_scenario_vector_env import MultiScenarioVectorEnv
+from swarmbots.learn.env_wrappers.torch_record_episode_statistics_wrapper import TorchRecordEpisodeStatisticsWrapper
+from swarmbots.learn.env_wrappers.torch_progress_guidance_ep_stats_wrapper import TorchProgressGuidanceEpisodeStatsWrapper
+from swarmbots.learn.rollout_utils import append_episode_infos
+from swarmbots.learn.evaluation import FrozenEvaluationRunner
 
 
 class _ScenarioEnv(gymnasium.Env):
@@ -1461,3 +1465,47 @@ def test_multi_scenario_vector_env_rejects_different_local_observation_spaces() 
 
     with pytest.raises(ValueError, match="same local observation space"):
         MultiScenarioVectorEnv({"first": first, "second": second})
+
+
+@pytest.mark.parametrize("placement", ["step", "final"])
+@pytest.mark.parametrize("success", [False, True])
+def test_mixed_scenario_statistics_exclude_undefined_success(placement: str, success: bool) -> None:
+    class OptionalSuccessEnv(_DirectVectorEnv):
+        def __init__(self, supports_success: bool) -> None:
+            super().__init__(
+                num_envs=1, global_obs_dim=0, hidden_local_vars_dim=0, hidden_global_vars_dim=0,
+                backend="torch", final_obs_mask=(True,),
+            )
+            self.supports_success = supports_success
+
+        def step(self, actions: dict[str, torch.Tensor]) -> tuple:
+            observations, rewards, terminated, truncated, infos = super().step(actions)
+            if self.supports_success:
+                values = {"success": torch.tensor([success])}
+                if placement == "step":
+                    infos.update(values)
+                else:
+                    infos["final_info"] = values
+                    infos["_final_info"] = torch.ones(1, dtype=torch.bool)
+            return observations, rewards, terminated, truncated, infos
+
+    vector = MultiScenarioVectorEnv({"wall": OptionalSuccessEnv(True), "move_to": OptionalSuccessEnv(False)})
+    env = TorchProgressGuidanceEpisodeStatsWrapper(
+        TorchRecordEpisodeStatisticsWrapper(SwarmBotsLearnEnvWrapper(vector))
+    )
+    try:
+        env.reset()
+        _, _, terminated, truncated, infos = env.step(torch.zeros(2, 2, 2))
+        dones = terminated | truncated
+        episodes = []
+        append_episode_infos(episode_infos=episodes, infos=infos, dones=dones)
+        assert episodes[0]["success"] == success
+        assert "success" not in episodes[1]
+        metrics = {}
+        FrozenEvaluationRunner._append_episode_metrics(
+            episode_metrics=metrics, infos=infos, accepted_dones=dones, dones=dones,
+        )
+        summary = FrozenEvaluationRunner._summarize_metrics(metrics, action_mode="deterministic")
+        assert summary["eval_deterministic_success_rate"] == (100.0 if success else 0.0)
+    finally:
+        env.close()

@@ -44,6 +44,8 @@ Policy weights and observation normalization are restored. Recording constructs 
 
 DDPG/TD3 checkpoints saved by the trainer retain the configured exploration noise for `--stochastic` recordings. Use `--exploration-noise 0.4` (Python: `exploration_noise=0.4`) to override it. Older checkpoints without saved policy settings use the default `0.1` unless overridden. Deterministic recording omits exploration noise.
 
+Stochastic gSDE checkpoint recordings restore the saved noise-reset schedule. Checkpoints without that setting use episode-only resets. The Python `record_checkpoint` helper accepts `gsde_reset_mode` to override the saved schedule.
+
 The selected task's observation/action spaces, architecture, action distribution, and NOP settings must match the checkpoint. The command does not infer them from checkpoint metadata. Use `--policy-kwargs '{"enc_d_model":32,"dec_d_model":16}'`, `--continuous-action-dist predicted_std_gaussian`, or `--no-use-nop` when needed. If PopArt was customized through training's `algorithm_kwargs`, pass the matching `use_popart` in recording's `--policy-kwargs`.
 
 ## Recording options

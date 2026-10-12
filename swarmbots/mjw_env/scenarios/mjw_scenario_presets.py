@@ -354,9 +354,18 @@ def default_dual_payload_plane(
     joints: JointPreset = "zx",
     **kwargs: object,
 ) -> MJWDualPayloadPlaneScenario:
+    scenario_kwargs = _preset_kwargs(DUAL_PAYLOAD_PLANE_SCENARIO_KWARGS, overrides=kwargs)
+    if "payload_offset_x" not in kwargs:
+        default_half_spacing = float(DUAL_PAYLOAD_PLANE_SCENARIO_KWARGS["payload_offset_x"][1])
+        default_radius = float(DUAL_PAYLOAD_PLANE_SCENARIO_KWARGS["payload_radius"])
+        half_width = float(scenario_kwargs["payload_radius"]) * (
+            2.0 if scenario_kwargs["payload_shape"] == "capsule" else 1.0
+        )
+        half_spacing = max(default_half_spacing, half_width + default_half_spacing - default_radius)
+        scenario_kwargs["payload_offset_x"] = (-half_spacing, half_spacing)
     return _make_scenario(
         MJWDualPayloadPlaneScenario,
-        scenario_kwargs=_preset_kwargs(DUAL_PAYLOAD_PLANE_SCENARIO_KWARGS, overrides=kwargs),
+        scenario_kwargs=scenario_kwargs,
         seed=seed,
         swarm=swarm,
         unit_start_locations=unit_start_locations,

@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Restrict PayloadStep climb shaping to the platform width and latch completion only over the finite platform at the required height, including reset state.
+- Compute squashed Gaussian likelihood Jacobians from pre-tanh samples with a stable formula, preserving SAC entropy gradients at saturated actions and PPO likelihood consistency.
+- Share gSDE reset scheduling across collectors and benchmark adapters; inherit trainer schedules, persist algorithm settings in trainer checkpoints to restore recording schedules, and retain independent per-agent noise between resets.
+- Preserve success-presence masks in mixed-scenario episode statistics so tasks without a success metric are excluded from success rates.
+- Expand DualPayloadPlane's default offsets for payload shape and radius, preventing capsule overlap while honoring explicit placement overrides.
+- Preserve custom wall-threshold field ordering in reset and latched crossing observations; document partially solved wall resets as intentional curriculum.
+- Use the published sizing-guide link when policy reports are exported across Windows drives.
 - Scale payload-row clearance with sampled spawn coordinates and row span so float32 rounding cannot reintroduce capsule overlap far from the origin.
 - Capture rollout action diagnostics before replay training replaces the cached distribution, preserving rollout entropy and standard-deviation values without extra policy evaluation or duplicated metrics work.
 - Exclude padded timesteps and unused single-sample successor slots from recurrent SAC entropy and standard-deviation diagnostics across eager, compiled, shared-encoder, and segment sampling, including multiple action samples and observations without agent masks.

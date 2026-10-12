@@ -3,6 +3,7 @@ from __future__ import annotations
 from unittest.mock import Mock
 
 import numpy as np
+import mujoco
 import pytest
 import torch
 
@@ -46,6 +47,86 @@ def test_payload_step_success_requires_position_over_the_step():
     )
     assert result[-1].tolist() == [False, False, True, False]
     torch.testing.assert_close(result[-2], torch.tensor([0., 0., 5., 0.]))
+
+
+@pytest.mark.parametrize("positions, climbed", [
+    ([(3., 1.4, .35), (3., 1.5, .35), (3., 1., .25)], False),
+    ([(0., 1.4, .35), (0., 1.5, .25), (0., 1., .25)], False),
+    ([(0., 1.4, .35), (0., 1.6, .35), (0., 2., .35)], True),
+    ([(0., 4.6, .35)], False),
+])
+def test_payload_step_climb_reward_requires_an_actual_ascent(
+    positions: list[tuple[float, float, float]], climbed: bool,
+) -> None:
+    scenario = make_scenario("SwarmBots-PayloadStep-v0", compile_reward_kernel=False)
+    potential = torch.zeros(1)
+    done = torch.zeros(1, dtype=torch.bool)
+    total_reward = torch.zeros(1)
+    for position in positions:
+        potential, done, height_reward, _, success = _compute_payload_step_reward_extras_kernel(
+            torch.tensor([position]), torch.ones(1, dtype=torch.bool), potential, done,
+            scenario.step_start_y, scenario.step_height, scenario.step_width, scenario.step_length,
+            scenario.payload_radius, scenario.payload_step_height_reward_weight,
+            scenario.payload_step_height_reward_distance, scenario.payload_success_y,
+            scenario.payload_radius + scenario.step_height - scenario.payload_success_height_tolerance,
+            scenario.payload_success_reward, scenario.progress_reward_weight,
+            scenario.potential_reward_discount_factor,
+        )
+        total_reward += height_reward
+        assert not success.any()
+    assert done.item() is climbed
+    assert (total_reward.item() > 0.0) is climbed
+
+
+@pytest.mark.parametrize("shape", ["box", "sphere", "capsule"])
+@pytest.mark.parametrize("radius", [.3, .6])
+def test_dual_payload_default_offsets_keep_reset_geometry_separate(shape: str, radius: float) -> None:
+    scenario = make_scenario(
+        "SwarmBots-DualPayloadPlane-v0", payload_shape=shape, payload_radius=radius,
+        unit_start_locations=MJWPreConnectedUnitLocationsConfig(num_units=1, pool_seeds=[42000]),
+        compile_reward_kernel=False,
+    )
+    model = scenario.build_model()
+    data = mujoco.MjData(model)
+    payload_indices = scenario.build_runtime_metadata(host_model=model).payload_qpos_indices
+    payload_bodies = {model.body("Payload0").id, model.body("Payload1").id}
+    for index in range(2):
+        data.qpos[payload_indices[index, :3]] = (
+            scenario.payload_offset_x[index], scenario.payload_offset_y[index], scenario.payload_radius,
+        )
+    mujoco.mj_forward(model, data)
+    for contact in data.contact:
+        if all(int(model.geom_bodyid[geom]) in payload_bodies for geom in contact.geom):
+            assert contact.dist >= 0.0
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("settle_time", [0.0, .01])
+@pytest.mark.parametrize("device", ["cpu", pytest.param("cuda", marks=pytest.mark.cuda)])
+def test_payload_step_side_spawns_do_not_complete_the_climb_on_reset_or_autoreset(
+    settle_time: float, device: str,
+) -> None:
+    if device == "cuda" and not torch.cuda.is_available():
+        pytest.skip("CUDA unavailable")
+    env = make_env(
+        "SwarmBots-PayloadStep-v0", num_envs=1, device=device, episode_length=1,
+        compile_tensor_operations=False,
+        scenario_kwargs=dict(
+            unit_start_locations=MJWPreConnectedUnitLocationsConfig(num_units=1, pool_seeds=[42000], z_pos=3.),
+            compile_reward_kernel=False, reset_settle_time=settle_time,
+            payload_offset_x=3., payload_offset_y=1.6,
+        ),
+    )
+    try:
+        env.reset(seed=7)
+        assert not env._scenario_runtime.payload_step_height_done.any()
+        actions = {key: torch.zeros(space.shape, device=env.device) for key, space in env.action_space.items()}
+        _, _, _, truncated, infos = env.step(actions)
+        assert truncated.all()
+        assert not env._scenario_runtime.payload_step_height_done.any()
+        assert not infos["payload_step_height_reward"].any()
+    finally:
+        env.close()
 
 
 @pytest.mark.parametrize("benchmark_id", ["SwarmBots-Climb-v0", "SwarmBots-MultiPayloadGoal-v0"])
@@ -169,5 +250,38 @@ def test_settling_preserves_live_physics_options_in_an_independent_model():
         assert settler_model.opt.ccd_iterations == env._host_model.opt.ccd_iterations == 1
         settler_model.opt.ccd_iterations = 3
         assert env._host_model.opt.ccd_iterations == 1
+    finally:
+        env.close()
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("settle_time", [0.0, .01])
+@pytest.mark.parametrize("device", ["cpu", pytest.param("cuda", marks=pytest.mark.cuda)])
+def test_wall_threshold_observations_retain_custom_order_and_latch_crossings(
+    settle_time: float, device: str,
+) -> None:
+    if device == "cuda" and not torch.cuda.is_available():
+        pytest.skip("CUDA unavailable")
+    env = make_env(
+        "SwarmBots-WallMedium-v0", num_envs=1, device=device, compile_tensor_operations=False,
+        scenario_kwargs=dict(
+            unit_start_locations=MJWPreConnectedUnitLocationsConfig(num_units=1, pool_seeds=[42000], z_pos=3.),
+            compile_reward_kernel=False, reset_settle_time=settle_time,
+            swarm_start_y=1.3, wall_pass_thresholds=[.5, .2],
+        ),
+    )
+    try:
+        observations, _ = env.reset(seed=7)
+        assert observations["hidden_local_vars"][0, 0].tolist() == [0.0, 1.0]
+        actions = {key: torch.zeros(space.shape, device=env.device) for key, space in env.action_space.items()}
+        root_y = int(env._metadata.unit_qpos_adr[0]) + 1
+        env._qpos[0, root_y] = 1.6
+        observations, *_ = env.step(actions)
+        assert observations["hidden_local_vars"][0, 0].tolist() == [1.0, 1.0]
+        env._qpos[0, root_y] = 1.1
+        observations, *_ = env.step(actions)
+        assert observations["hidden_local_vars"][0, 0].tolist() == [1.0, 1.0]
+        observations, _ = env.reset(seed=7)
+        assert observations["hidden_local_vars"][0, 0].tolist() == [0.0, 1.0]
     finally:
         env.close()

@@ -472,7 +472,8 @@ class WallMJWScenarioRuntime(BaseMJWScenarioRuntime):
             dtype=torch.float32,
         )
         self._threshold_values = torch.as_tensor(scenario.wall_pass_thresholds, device=bindings.device, dtype=torch.float32)
-        self._threshold_index_torch = torch.arange(total_thresholds, device=bindings.device, dtype=torch.long)
+        # Latched counts follow increasing thresholds; observation fields retain the configured order.
+        self._threshold_index_torch = self._threshold_values.argsort(stable=True).argsort(stable=True)
         self._unit_rank_torch = torch.arange(1, scenario.swarm.num_units + 1, device=bindings.device, dtype=torch.long)
         self._wall_pass_rank_weights = torch.zeros(
             (scenario.swarm.num_units + 1, scenario.swarm.num_units),
@@ -480,7 +481,7 @@ class WallMJWScenarioRuntime(BaseMJWScenarioRuntime):
             dtype=torch.float32,
         )
         self._wall_pass_rank_weights_skew: float | None = None
-        self._threshold_index_np = np.arange(total_thresholds, dtype=np.int64)
+        self._threshold_index_np = self._threshold_index_torch.cpu().numpy()
         self._num_wall_thresholds = len(scenario.wall_pass_thresholds)
         self._cpu_settler = _WallCPUResetSettler(
             scenario=scenario,
