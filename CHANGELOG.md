@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Prepend the raw active-agent count to `hidden_global_vars` at the environment level for every scenario, shift task-field normalization indices, and remove the duplicate count from Deep Set Q critics. This replaces the hidden observation layout; older checkpoints require migration, including Deep Set checkpoints whose parameter shapes still match.
 - Rename `SwarmBots-MoveTo-v0` to `SwarmBots-MoveToGoal-v0`, including scenario/runtime modules and classes, preset names, documentation, and CI; replace the old names without aliases.
 - Enable seeded initial episode staggering in training, retaining explicit first-episode overrides and full-length evaluation/recording episodes.
 - Remove unused reset-batch selection, MoveTo-to-payload adapters and normalization branches, custom decoder/activation/wrapper modules, and stranded sampling/MuJoCo/world-model helpers; restrict robot construction to capsule limbs with minimal contacts.

@@ -148,7 +148,7 @@ def test_autoregressive_decoders_only_feedback_previous_agent_actions(row):
         assert "FF / block: 192 → 256 → 192 (98,752)" in actor.lines
 
 
-def test_default_tmasac_labels_show_exact_subtotals_and_whole_components():
+def test_default_tmasac_labels_show_exact_subtotals_and_whole_components() -> None:
     row = next(row for row in ROWS if row["variant"] == "tmasac" and row["model_scale"]["name"] == "5M NOP1M")
     d = build_diagram(row)
     nodes = {node.id: node for node in d.nodes}
@@ -156,7 +156,7 @@ def test_default_tmasac_labels_show_exact_subtotals_and_whole_components():
     assert "regressor: 384 → 384 → 1 (148,225)" in nodes["head1"].lines
     assert nodes["head1"].parameters == 295_680 + 148_225
     assert nodes["head2"].parameters == nodes["head1"].parameters
-    assert nodes["critic_encoder"].parameters == 2_305_024
+    assert nodes["critic_encoder"].parameters == 2_305_408
     assert nodes["critic_encoder"].parameters + 2 * nodes["head1"].parameters == row["roles"]["critic"]["total"]
     assert "block total: 987,008 per block" in nodes["critic_encoder"].lines
 

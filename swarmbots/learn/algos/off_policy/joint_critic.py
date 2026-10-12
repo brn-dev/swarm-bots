@@ -58,15 +58,14 @@ class JointQNetwork(nn.Module):
                 final_linear_init=make_init_linear_orthogonal(0.01),
             )
         else:
-            # Masked mean pooling plus cardinality retains swarm-size information.
             self.network = DeepSetCritic(
                 num_local_features=local_dim,
-                num_global_features=global_dim + 1,
+                num_global_features=global_dim,
                 local_projection_hidden_dims=list(config.element_hidden_dims),
                 value_regressor_hidden_dims=list(config.hidden_dims),
                 pool_mode="mean",
                 act_fn_cls=act_fn_cls,
-                context_in_elements=config.context_in_elements,
+                context_in_elements=config.context_in_elements and global_dim > 0,
                 context_after_pool=True,
             )
 
@@ -115,23 +114,16 @@ class JointQNetwork(nn.Module):
         if self.config.kind == "mlp":
             raise ValueError("MLP critics do not support NOP")
         local, global_features, agent_mask = self._observation_features(**observations)
-        context = self._deepset_context(global_features, agent_mask)
-        latents = self.network.encode_elements(local, global_features=context)
+        latents = self.network.encode_elements(local, global_features=global_features)
         return latents.masked_fill(~agent_mask.unsqueeze(-1), 0.0)
-
-    @staticmethod
-    def _deepset_context(global_features: torch.Tensor, agent_mask: torch.Tensor) -> torch.Tensor:
-        cardinality = agent_mask.to(global_features.dtype).sum(-1, keepdim=True)
-        return torch.cat((global_features, cardinality), dim=-1)
 
     def forward_with_latents(self, **observations) -> tuple[torch.Tensor, torch.Tensor | None]:
         local, global_features, agent_mask = self._observation_features(**observations)
-        mask_features = agent_mask.to(local.dtype)
         if self.config.kind == "mlp":
+            mask_features = agent_mask.to(local.dtype)
             features = torch.cat((local.flatten(-2), global_features, mask_features), dim=-1)
             return self.network(features).squeeze(-1), None
-        context = self._deepset_context(global_features, agent_mask)
-        values, latents = self.network.forward_with_latents(local, global_features=context, agent_mask=agent_mask)
+        values, latents = self.network.forward_with_latents(local, global_features=global_features, agent_mask=agent_mask)
         return values, latents.masked_fill(~agent_mask.unsqueeze(-1), 0.0)
 
 

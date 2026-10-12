@@ -164,7 +164,11 @@ def build_obs_indices(
     # Keep them unnormalized.
     hidden_local_vars_scalar_indices: list[int] = []
     hidden_local_vars_quaternion_indices: list[int] = []
-    hidden_global_vars_scalar_indices = _hidden_global_scalar_indices(scenario_settings, hidden_global_vars_dim)
+    # The environment prefixes a raw active-agent count before the scenario's fields.
+    hidden_global_vars_scalar_indices = [
+        index + 1
+        for index in _hidden_global_scalar_indices(scenario_settings, hidden_global_vars_dim - 1)
+    ]
     hidden_global_vars_quaternion_indices: list[int] = []
 
     hinge_sin_start = 3 + free_joint_rot_dim

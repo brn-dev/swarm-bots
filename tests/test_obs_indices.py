@@ -38,7 +38,7 @@ class ObsIndicesTests(unittest.TestCase):
             local_obs_dim=70,
             global_obs_dim=0,
             hidden_local_vars_dim=4,
-            hidden_global_vars_dim=2,
+            hidden_global_vars_dim=3,
         )
 
         self.assertEqual(
@@ -51,7 +51,7 @@ class ObsIndicesTests(unittest.TestCase):
         self.assertEqual(obs_indices.local_binary_indices, [34, 39, 44])
         self.assertEqual(obs_indices.hidden_local_vars_scalar_indices, [])
         self.assertEqual(obs_indices.hidden_local_vars_quaternion_indices, [])
-        self.assertEqual(obs_indices.hidden_global_vars_scalar_indices, [0, 1])
+        self.assertEqual(obs_indices.hidden_global_vars_scalar_indices, [1, 2])
 
     def test_rot6d_local_layout_keeps_rotations_out_of_scalar_normalization(self) -> None:
         obs_indices = build_obs_indices(
@@ -64,7 +64,7 @@ class ObsIndicesTests(unittest.TestCase):
             local_obs_dim=40,
             global_obs_dim=0,
             hidden_local_vars_dim=0,
-            hidden_global_vars_dim=1,
+            hidden_global_vars_dim=2,
         )
 
         self.assertEqual(obs_indices.local_scalar_indices, [0, 1, 2, *range(19, 30), 34, 39])
@@ -74,7 +74,7 @@ class ObsIndicesTests(unittest.TestCase):
         self.assertEqual(obs_indices.local_binary_indices, [30, 35])
         self.assertEqual(obs_indices.global_scalar_indices, [])
         self.assertEqual(obs_indices.global_rot6d_indices, [])
-        self.assertEqual(obs_indices.hidden_global_vars_scalar_indices, [0])
+        self.assertEqual(obs_indices.hidden_global_vars_scalar_indices, [1])
 
     def test_move_to_goal_global_obs_is_treated_as_scalars(self) -> None:
         obs_indices = build_obs_indices(
@@ -88,12 +88,13 @@ class ObsIndicesTests(unittest.TestCase):
             local_obs_dim=29,
             global_obs_dim=2,
             hidden_local_vars_dim=0,
-            hidden_global_vars_dim=0,
+            hidden_global_vars_dim=1,
         )
 
         self.assertEqual(obs_indices.global_scalar_indices, [0, 1])
         self.assertEqual(obs_indices.global_rot6d_indices, [])
         self.assertEqual(obs_indices.global_quaternion_indices, [])
+        self.assertEqual(obs_indices.hidden_global_vars_scalar_indices, [])
 
     def test_payload_global_obs_only_normalizes_position_not_rot6d_orientation(self) -> None:
         obs_indices = build_obs_indices(
@@ -107,7 +108,7 @@ class ObsIndicesTests(unittest.TestCase):
             local_obs_dim=29,
             global_obs_dim=9,
             hidden_local_vars_dim=0,
-            hidden_global_vars_dim=0,
+            hidden_global_vars_dim=1,
         )
 
         self.assertEqual(obs_indices.global_scalar_indices, [0, 1, 2])
@@ -126,7 +127,7 @@ class ObsIndicesTests(unittest.TestCase):
             local_obs_dim=29,
             global_obs_dim=3,
             hidden_local_vars_dim=0,
-            hidden_global_vars_dim=0,
+            hidden_global_vars_dim=1,
         )
 
         self.assertEqual(obs_indices.global_scalar_indices, [0, 1, 2])
@@ -145,7 +146,7 @@ class ObsIndicesTests(unittest.TestCase):
             local_obs_dim=29,
             global_obs_dim=18,
             hidden_local_vars_dim=0,
-            hidden_global_vars_dim=0,
+            hidden_global_vars_dim=1,
         )
 
         self.assertEqual(obs_indices.global_scalar_indices, [0, 1, 2, 9, 10, 11])
@@ -168,7 +169,7 @@ class ObsIndicesTests(unittest.TestCase):
             local_obs_dim=29,
             global_obs_dim=36,
             hidden_local_vars_dim=0,
-            hidden_global_vars_dim=0,
+            hidden_global_vars_dim=1,
         )
 
         self.assertEqual(
@@ -194,12 +195,12 @@ class ObsIndicesTests(unittest.TestCase):
             local_obs_dim=29,
             global_obs_dim=0,
             hidden_local_vars_dim=0,
-            hidden_global_vars_dim=18,
+            hidden_global_vars_dim=19,
         )
 
         self.assertEqual(obs_indices.global_scalar_indices, [])
         self.assertEqual(obs_indices.global_rot6d_indices, [])
-        self.assertEqual(obs_indices.hidden_global_vars_scalar_indices, [0, 1, 2, 9, 10, 11])
+        self.assertEqual(obs_indices.hidden_global_vars_scalar_indices, [1, 2, 3, 10, 11, 12])
         self.assertEqual(obs_indices.hidden_global_vars_quaternion_indices, [])
 
     def test_find_opening_hidden_globals_only_normalize_opening_x(self) -> None:
@@ -218,10 +219,10 @@ class ObsIndicesTests(unittest.TestCase):
             local_obs_dim=29,
             global_obs_dim=0,
             hidden_local_vars_dim=0,
-            hidden_global_vars_dim=11,
+            hidden_global_vars_dim=12,
         )
 
-        self.assertEqual(obs_indices.hidden_global_vars_scalar_indices, [0])
+        self.assertEqual(obs_indices.hidden_global_vars_scalar_indices, [1])
         self.assertEqual(obs_indices.hidden_global_vars_quaternion_indices, [])
 
     def test_find_opening_legacy_settings_keep_visited_cells_unnormalized(self) -> None:
@@ -239,10 +240,10 @@ class ObsIndicesTests(unittest.TestCase):
             local_obs_dim=29,
             global_obs_dim=0,
             hidden_local_vars_dim=0,
-            hidden_global_vars_dim=5,
+            hidden_global_vars_dim=6,
         )
 
-        self.assertEqual(obs_indices.hidden_global_vars_scalar_indices, [0])
+        self.assertEqual(obs_indices.hidden_global_vars_scalar_indices, [1])
         self.assertEqual(obs_indices.hidden_global_vars_quaternion_indices, [])
 
     def test_unknown_non_empty_global_obs_layout_must_be_added_explicitly(self) -> None:
@@ -257,7 +258,7 @@ class ObsIndicesTests(unittest.TestCase):
                 local_obs_dim=29,
                 global_obs_dim=3,
                 hidden_local_vars_dim=0,
-                hidden_global_vars_dim=0,
+                hidden_global_vars_dim=1,
             )
 
     def test_local_obs_dim_mismatch_raises_with_expected_layout_context(self) -> None:
@@ -272,7 +273,7 @@ class ObsIndicesTests(unittest.TestCase):
                 local_obs_dim=32,
                 global_obs_dim=0,
                 hidden_local_vars_dim=0,
-                hidden_global_vars_dim=0,
+                hidden_global_vars_dim=1,
             )
 
 

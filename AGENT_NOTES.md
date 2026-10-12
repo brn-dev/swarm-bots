@@ -30,6 +30,7 @@ Keep navigation and costly gotchas; defaults/layouts belong in source, history i
 
 - Planar goal navigation is `SwarmBots-MoveToGoal-v0`: `mjw_move_to_goal_scenario.py` / `mjw_move_to_goal_runtime.py`, `MJWMoveToGoalScenario`, and `default_move_to_goal`. The goal config remains in `scenario_presets/move_to_goal_config.py`.
 - Protocol 0.1 allows cross-agent non-privileged actor inputs; privilege boundaries do not require decentralization. Observations are device-resident Torch tensors. Default pool seeds 42000–42049; evaluation seeds change sampling, not membership or held-out generalization.
+- `MJWSwarmBotsVectorEnv` owns the raw active-agent count at `hidden_global_vars[..., 0]`; scenario spaces/runtimes describe only the suffix. Normalization indices shift scenario fields by one and leave the count raw. Deep Set Q critics consume this field without appending cardinality; former checkpoints need migration even when weight shapes match.
 - Wall resets intentionally straddle the obstacle as implicit curriculum. Keep that distribution; already-solved milestones are latched without retroactive rewards.
 - Fresh `as_benchmark_policy` per evaluation, on policy device: owns recurrent/action/distribution state, freezes normalization without changing training RMS, preserves module modes. Actor is shared; no concurrent training.
 - Scenario-conditioned adapters need an explicit `scenario_id` for single-task evaluation; supplied observation IDs take precedence. Pad public globals to the training width before frozen transforms, never forward privileged fields.

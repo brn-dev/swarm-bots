@@ -204,7 +204,7 @@ def test_baseline_rollout_update_and_privileged_boundary(env, variant):
 
 
 @pytest.mark.parametrize("kind", ["mlp", "deepset"])
-def test_joint_critics_mask_nan_padding_and_include_presence_bits(kind):
+def test_joint_critics_mask_nan_padding_and_include_presence_bits(kind: str) -> None:
     critic = JointQNetwork(
         n_agents=3,
         local_obs_dim=2,
@@ -218,7 +218,7 @@ def test_joint_critics_mask_nan_padding_and_include_presence_bits(kind):
         local_obs=torch.zeros(2, 3, 2),
         global_obs=torch.zeros(2, 1),
         hidden_local_vars=torch.zeros(2, 3, 1),
-        hidden_global_vars=torch.zeros(2, 1),
+        hidden_global_vars=torch.tensor([[2.0], [0.0]]),
         actions=torch.zeros(2, 3, 1),
         agent_mask=torch.tensor([[True, False, True], [False, False, False]]),
     )
@@ -228,6 +228,7 @@ def test_joint_critics_mask_nan_padding_and_include_presence_bits(kind):
     torch.testing.assert_close(critic(**obs), baseline)
     assert torch.isfinite(baseline).all()
     obs["agent_mask"] = torch.zeros_like(obs["agent_mask"])
+    obs["hidden_global_vars"].zero_()
     q_empty = critic(**obs)
     assert not torch.equal(q_empty[0], baseline[0])
 
@@ -268,23 +269,23 @@ def test_set_and_transformer_critics_are_permutation_invariant(env, variant):
         torch.testing.assert_close(q1, q2, atol=1e-6, rtol=1e-5)
 
 
-def test_deepset_joint_critic_retains_cardinality_and_privileged_context():
+def test_deepset_joint_critic_retains_observed_cardinality_and_privileged_context() -> None:
     critic = JointQNetwork(
         n_agents=3, local_obs_dim=1, global_obs_dim=1, hidden_local_vars_dim=1,
-        hidden_global_vars_dim=1, action_dim=1, config=JointCriticConfig("deepset", (4,), (1,)),
+        hidden_global_vars_dim=2, action_dim=1, config=JointCriticConfig("deepset", (4,), (1,)),
     )
     encoder = nn.Linear(6, 1, bias=False)
     decoder = nn.Linear(4, 1, bias=False)
     with torch.no_grad():
         encoder.weight.copy_(torch.tensor([[1.0, 1.0, 1.0, 0.0, 0.0, 0.0]]))
-        decoder.weight.copy_(torch.tensor([[1.0, 1.0, 1.0, 100.0]]))
+        decoder.weight.copy_(torch.tensor([[1.0, 1.0, 100.0, 1.0]]))
     critic.network.deepset.element_encoder = encoder
     critic.network.deepset.set_decoder = decoder
     mask = torch.tensor([[True, False, False], [True, True, False], [False, False, False]])
     obs = dict(
         local_obs=torch.full((3, 3, 1), 2.0), actions=torch.full((3, 3, 1), 3.0),
         hidden_local_vars=torch.full((3, 3, 1), 5.0), global_obs=torch.full((3, 1), 7.0),
-        hidden_global_vars=torch.full((3, 1), 11.0), agent_mask=mask,
+        hidden_global_vars=torch.tensor([[1.0, 11.0], [2.0, 11.0], [0.0, 11.0]]), agent_mask=mask,
     )
     for key in ("local_obs", "actions", "hidden_local_vars"):
         obs[key][~mask] = float("nan")
@@ -295,6 +296,22 @@ def test_deepset_joint_critic_retains_cardinality_and_privileged_context():
     torch.testing.assert_close(
         latents.squeeze(-1), torch.tensor([[10.0, 0.0, 0.0], [10.0, 10.0, 0.0], [0.0, 0.0, 0.0]]),
     )
+
+
+@pytest.mark.parametrize("context_in_elements", [False, True])
+def test_deepset_joint_critic_supports_observations_without_global_context(context_in_elements: bool) -> None:
+    critic = JointQNetwork(
+        n_agents=3, local_obs_dim=1, global_obs_dim=0, hidden_local_vars_dim=0,
+        hidden_global_vars_dim=0, action_dim=1,
+        config=JointCriticConfig("deepset", (4,), (4,), context_in_elements=context_in_elements),
+    )
+    observations = dict(
+        local_obs=torch.ones(2, 3, 1), actions=torch.zeros(2, 3, 1), global_obs=torch.empty(2, 0),
+        agent_mask=torch.tensor([[True, False, True], [False, True, True]]),
+    )
+    values, latents = critic.forward_with_latents(**observations)
+    assert torch.isfinite(values).all()
+    torch.testing.assert_close(critic.encode(**observations), latents)
 
 
 @pytest.mark.parametrize("variant", ["maddpg_deepset", "matd3_deepset", "masac_deepset"])

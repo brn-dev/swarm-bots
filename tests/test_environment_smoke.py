@@ -5,6 +5,14 @@ import torch
 
 from swarmbots import ALL_BENCHMARK_IDS, get_benchmark_spec, make_env
 from swarmbots.benchmark.metadata import serialize_settings
+from swarmbots.mjw_env.mjw_swarm_bots_vector_env import MJWSwarmBotsVectorEnv
+
+
+def _assert_active_agent_count(observations: dict[str, torch.Tensor]) -> None:
+    torch.testing.assert_close(
+        observations["hidden_global_vars"][:, 0],
+        observations["agent_mask"].sum(dim=-1, dtype=torch.float32),
+    )
 
 
 @pytest.mark.integration
@@ -27,6 +35,9 @@ def test_environment_reset_step_and_same_step_autoreset(benchmark_id: str, devic
     )
     try:
         observations, _ = env.reset(seed=7)
+        _assert_active_agent_count(observations)
+        assert observations["hidden_global_vars"].shape == env.observation_space["hidden_global_vars"].shape
+        assert env.single_observation_space["hidden_global_vars"].shape == observations["hidden_global_vars"].shape[1:]
         original = {key: value.clone() for key, value in observations.items()}
         assert (env._time >= env.scenario.reset_settle_time).all()
         repeated, _ = env.reset(seed=7)
@@ -53,6 +64,8 @@ def test_environment_reset_step_and_same_step_autoreset(benchmark_id: str, devic
         assert infos["_final_obs"].all()
         assert (env._time >= env.scenario.reset_settle_time).all()
         assert set(infos["final_obs"]) == set(observations)
+        _assert_active_agent_count(next_observations)
+        _assert_active_agent_count(infos["final_obs"])
         if get_benchmark_spec(benchmark_id).supports_success_metric:
             assert infos["success"].shape == (2,)
         repeated, _ = env.reset(seed=7)
@@ -66,6 +79,38 @@ def test_environment_reset_step_and_same_step_autoreset(benchmark_id: str, devic
         env.close()
         if device == "cuda":
             torch.compiler.reset()
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("benchmark_id", [
+    "SwarmBots-PayloadPlane-v0", "SwarmBots-PayloadStep-v0", "SwarmBots-DualPayloadPlane-v0",
+])
+def test_hidden_payload_pose_follows_active_agent_count(benchmark_id: str) -> None:
+    def make_payload_env(payload_pos_observable: bool) -> MJWSwarmBotsVectorEnv:
+        return make_env(
+            benchmark_id, num_envs=2, device="cpu", seed=7,
+            scenario_kwargs={
+                "payload_pos_observable": payload_pos_observable,
+                "compile_reward_kernel": False,
+                "reset_settle_time": 0.0,
+            },
+            compile_tensor_operations=False,
+        )
+
+    observable_env = make_payload_env(True)
+    try:
+        hidden_env = make_payload_env(False)
+        try:
+            observable, _ = observable_env.reset(seed=7)
+            hidden, _ = hidden_env.reset(seed=7)
+            _assert_active_agent_count(hidden)
+            torch.testing.assert_close(hidden["hidden_global_vars"][:, 1:], observable["global_obs"])
+            assert hidden["global_obs"].shape == (2, 0)
+            assert observable["hidden_global_vars"].shape == (2, 1)
+        finally:
+            hidden_env.close()
+    finally:
+        observable_env.close()
 
 
 @pytest.mark.integration
@@ -84,6 +129,7 @@ def test_multi_payload_partial_reset_updates_only_selected_world_observations() 
         assert (payload_records[:, :, 0].sum(dim=1) > 0).all()
 
         reset_observations, _ = env.reset(seed=8, options={"reset_mask": torch.tensor([True, False])})
+        _assert_active_agent_count(reset_observations)
         assert not torch.equal(reset_observations["global_obs"][0], original["global_obs"][0])
         for key, value in original.items():
             torch.testing.assert_close(reset_observations[key][1], value[1])

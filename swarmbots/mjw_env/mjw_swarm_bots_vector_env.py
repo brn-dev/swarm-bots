@@ -8,9 +8,12 @@ from pathlib import Path
 from typing import Any
 
 import mujoco_warp as mjw
+import numpy as np
 import torch
 import warp as wp
+from gymnasium import spaces
 from gymnasium.vector import AutoresetMode, VectorEnv
+from gymnasium.vector.utils import batch_space
 from loguru import logger
 
 from swarmbots.mjw_env.mjw_env_tensor_ops import (
@@ -288,9 +291,21 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
         )
         self.tensor_operations_compile_mode = str(tensor_operations_compile_mode)
 
-        self.single_observation_space = scenario.get_single_observation_space()
+        scenario_observation_space = scenario.get_single_observation_space()
+        scenario_hidden_globals = scenario_observation_space["hidden_global_vars"]
+        self.single_observation_space = spaces.Dict({
+            **scenario_observation_space.spaces,
+            "hidden_global_vars": spaces.Box(
+                low=np.concatenate((np.array([0.0], dtype=scenario_hidden_globals.dtype), scenario_hidden_globals.low)),
+                high=np.concatenate((
+                    np.array([scenario.swarm.num_units], dtype=scenario_hidden_globals.dtype),
+                    scenario_hidden_globals.high,
+                )),
+                dtype=scenario_hidden_globals.dtype,
+            ),
+        })
         self.single_action_space = scenario.get_single_action_space()
-        self.observation_space = scenario.get_batched_observation_space(self.num_envs)
+        self.observation_space = batch_space(self.single_observation_space, n=self.num_envs)
         self.action_space = scenario.get_batched_action_space(self.num_envs)
 
         self._n_agents = scenario.swarm.num_units
@@ -557,6 +572,11 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
         self._scenario_runtime = self.scenario.create_runtime(
             bindings=self._runtime_bindings,
             runtime_metadata=self._scenario_runtime_metadata,
+        )
+        self._hidden_global_obs = torch.empty(
+            self.observation_space["hidden_global_vars"].shape,
+            device=self.device,
+            dtype=torch.float32,
         )
 
         self._rng = torch.Generator(device=self.device)
@@ -1283,6 +1303,13 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
         self.disconnect_potentials[world_idx, unit2, connector2] = 0.0
 
     def _build_obs(self) -> dict[str, torch.Tensor]:
+        torch.sum(
+            self.units_active_mask,
+            dim=-1,
+            dtype=self._hidden_global_obs.dtype,
+            out=self._hidden_global_obs[:, 0],
+        )
+        self._hidden_global_obs[:, 1:].copy_(self._scenario_runtime.hidden_global_obs)
         local_obs = self._tensor_operations.build_local_obs(
             self._local_obs,
             self._qpos,
@@ -1300,21 +1327,22 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
             "local_obs": local_obs,
             "global_obs": self._scenario_runtime.global_obs,
             "hidden_local_vars": self._scenario_runtime.hidden_local_obs,
-            "hidden_global_vars": self._scenario_runtime.hidden_global_obs,
+            "hidden_global_vars": self._hidden_global_obs,
             "agent_mask": self.units_active_mask,
         }
 
     def _apply_error_obs(self, obs: dict[str, torch.Tensor], unstable_mask: torch.Tensor) -> dict[str, torch.Tensor]:
+        # Swarm membership remains valid when physics fails, so preserve its count.
         (
             obs["local_obs"],
             obs["global_obs"],
             obs["hidden_local_vars"],
-            obs["hidden_global_vars"],
+            obs["hidden_global_vars"][:, 1:],
         ) = self._tensor_operations.mask_error_observations(
             obs["local_obs"],
             obs["global_obs"],
             obs["hidden_local_vars"],
-            obs["hidden_global_vars"],
+            obs["hidden_global_vars"][:, 1:],
             unstable_mask,
         )
         return obs

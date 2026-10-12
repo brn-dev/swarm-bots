@@ -528,6 +528,7 @@ class MJWEnvTensorOperationsTests(unittest.TestCase):
             _qvel_flat_indices=inputs[9],
             _connector_body_indices=inputs[10],
             _scenario_runtime=runtime,
+            _hidden_global_obs=torch.empty(2, 3),
             units_active_mask=units_active_mask,
         )
 
@@ -536,7 +537,9 @@ class MJWEnvTensorOperationsTests(unittest.TestCase):
         self.assertEqual(obs["local_obs"].data_ptr(), inputs[0].data_ptr())
         self.assertEqual(obs["global_obs"].data_ptr(), global_obs.data_ptr())
         self.assertEqual(obs["hidden_local_vars"].data_ptr(), hidden_local_obs.data_ptr())
-        self.assertEqual(obs["hidden_global_vars"].data_ptr(), hidden_global_obs.data_ptr())
+        self.assertEqual(obs["hidden_global_vars"].data_ptr(), env._hidden_global_obs.data_ptr())
+        torch.testing.assert_close(obs["hidden_global_vars"][:, 0], torch.tensor([1.0, 2.0]))
+        torch.testing.assert_close(obs["hidden_global_vars"][:, 1:], hidden_global_obs)
         self.assertEqual(obs["agent_mask"].data_ptr(), units_active_mask.data_ptr())
 
         masked_obs = MJWSwarmBotsVectorEnv._apply_error_obs(
@@ -544,8 +547,9 @@ class MJWEnvTensorOperationsTests(unittest.TestCase):
             obs,
             torch.tensor([False, True]),
         )
-        for key in ("local_obs", "global_obs", "hidden_local_vars", "hidden_global_vars"):
+        for key in ("local_obs", "global_obs", "hidden_local_vars"):
             self.assertTrue((masked_obs[key][1] == 0).all())
+        torch.testing.assert_close(masked_obs["hidden_global_vars"][1], torch.tensor([2.0, 0.0, 0.0]))
         torch.testing.assert_close(masked_obs["agent_mask"], units_active_mask)
 
 
