@@ -77,6 +77,9 @@ def _compute_wall_exploration_visited_cells_torch(
     return (one_hot_cells & valid.unsqueeze(-1)).any(dim=1)
 
 
+FindOpeningRewardOutput = tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]
+
+
 def _compute_find_opening_reward_kernel(
     unit_x: torch.Tensor,
     unit_y: torch.Tensor,
@@ -96,7 +99,7 @@ def _compute_find_opening_reward_kernel(
     wall_exploration_cell_depth: float,
     side_wall_x: float,
     wall_front_y: float,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+) -> FindOpeningRewardOutput:
     distance_to_waypoint = torch.sqrt(
         torch.square(unit_x - opening_x.unsqueeze(1))
         + torch.square(unit_y - float(opening_waypoint_y))
@@ -241,10 +244,7 @@ class FindOpeningMJWScenarioRuntime(BaseMJWScenarioRuntime):
             bindings=bindings,
             barrier_mocap_id=self._barrier_mocap_id,
         )
-        self._reward_kernel: Callable[
-            ...,
-            tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor],
-        ] = _compute_find_opening_reward_kernel
+        self._reward_kernel: Callable[..., FindOpeningRewardOutput] = _compute_find_opening_reward_kernel
         if scenario.compile_reward_kernel:
             if not hasattr(torch, "compile"):
                 raise RuntimeError("compile_reward_kernel=True requires torch.compile support")

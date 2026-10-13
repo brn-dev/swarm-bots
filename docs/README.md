@@ -10,6 +10,7 @@ SwarmBots benchmarks cooperative control of robots that can change their physica
 | Check scenario readiness and understand task/package versioning | [Scenario maturity and versioning](scenarios.md#scenario-maturity-and-versioning) |
 | Select the core suite and report comparable scores | [Benchmark protocol 0.1](benchmark_protocol.md) |
 | Create environments and evaluate a custom policy | [Benchmark Python API](api.md) |
+| Train a custom PyTorch policy without the included learning framework | [Standalone PPO example](../examples/README.md#train-without-the-included-learning-framework) |
 | Configure CUDA and verify simulation and compilation | [GPU setup](gpu_setup.md) |
 | Record policy behavior as videos | [Policy recording](recording.md) |
 | Train an included baseline or customize a learning preset | [Reference learning baselines](learning.md) |

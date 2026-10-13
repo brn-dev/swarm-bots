@@ -1,8 +1,11 @@
 from collections.abc import Callable
+from dataclasses import replace
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
 
 import torch
+import pytest
 from gymnasium import spaces
 
 from swarmbots.learn.action_dists.bernoulli_action_dist import BernoulliConfig
@@ -11,6 +14,10 @@ from swarmbots.learn.action_dists.sign_magnitude_beta_action_dist import (
 )
 from swarmbots.learn.algos.mat.mat_encoder import MATEncoderConfig
 from swarmbots.learn.algos.mat.mat_ind_policy import MATIndPolicy, MATIndPolicyConfig
+from swarmbots.learn.algos.mat.mat_dec_policy import MATDecPolicy, MATDecPolicyConfig
+from swarmbots.learn.algos.r_mat.r_mat_ind_policy import RMATIndPolicy, RMATIndPolicyConfig
+from swarmbots.learn.algos.r_mat.r_mat_encoder import RMATEncoderConfig
+from swarmbots.learn.temporal_state import clone_temporal_state
 from swarmbots.learn.hybrid_action_space import HybridActionSpace
 
 _REAL_TORCH_COMPILE = torch.compile
@@ -51,11 +58,20 @@ class _DummyDefaultMATIndEnv:
 def _make_policy(
         *,
         compile_modules: bool = False,
+        recurrent: bool = False,
+        decentralized: bool = False,
 ) -> MATIndPolicy:
-    return MATIndPolicy(
+    if recurrent:
+        policy_cls, config_cls = RMATIndPolicy, RMATIndPolicyConfig
+    elif decentralized:
+        policy_cls, config_cls = MATDecPolicy, MATDecPolicyConfig
+    else:
+        policy_cls, config_cls = MATIndPolicy, MATIndPolicyConfig
+    encoder_config_cls = RMATEncoderConfig if recurrent else MATEncoderConfig
+    return policy_cls(
         env=_DummyMATIndEnv(),
-        config=MATIndPolicyConfig(
-            encoder_config=MATEncoderConfig(
+        config=config_cls(
+            encoder_config=encoder_config_cls(
                 d_model=16,
                 nhead=4,
                 num_layers=1,
@@ -75,6 +91,77 @@ def test_default_config_constructs_policy() -> None:
 
     assert isinstance(policy.config, MATIndPolicyConfig)
     assert policy.max_agents == _DummyDefaultMATIndEnv.n_agents
+
+
+@pytest.mark.cuda
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA unavailable")
+@pytest.mark.parametrize("variant", ["ind", "recurrent", "dec"])
+def test_cuda_graph_policy_calls_preserve_rollout_outputs_across_bootstrap_and_actions(variant: str) -> None:
+    recurrent = variant == "recurrent"
+    torch.manual_seed(43)
+    eager = _make_policy(recurrent=recurrent, decentralized=variant == "dec").cuda().eval()
+    torch.manual_seed(43)
+    compiled = type(eager)(
+        _DummyMATIndEnv(), replace(eager.config, compile_modules=True, compile_mode="reduce-overhead"),
+    ).cuda().eval()
+    observations = {
+        "local_obs": torch.randn(2, 4, 6, device="cuda"),
+        "global_obs": torch.randn(2, 3, device="cuda"),
+        "hidden_local_vars": torch.randn(2, 4, 2, device="cuda"),
+        "hidden_global_vars": torch.randn(2, 5, device="cuda"),
+        "agent_mask": torch.tensor([[True, True, True, False], [True, True, False, False]], device="cuda"),
+        "previous_actions": torch.zeros(2, 4, 3, device="cuda"),
+    }
+    with torch.no_grad():
+        retained = []
+        for offset in (0., .25, .5):
+            current = {**observations, "local_obs": observations["local_obs"] + offset}
+            expected = eager(**current, deterministic=True)
+            outputs = compiled(**current, deterministic=True)
+            torch.testing.assert_close(outputs, expected, rtol=1e-4, atol=1e-5)
+            retained.append((outputs, tuple(value.clone() for value in outputs)))
+            torch.testing.assert_close(compiled.predict_values(**current), eager.predict_values(**current),
+                                       rtol=1e-4, atol=1e-5)
+            torch.testing.assert_close(compiled.act(**current, deterministic=True), expected[0],
+                                       rtol=1e-4, atol=1e-5)
+        for outputs, snapshot in retained:
+            torch.testing.assert_close(outputs, snapshot, rtol=0, atol=0)
+        if recurrent:
+            eager_state = eager.initial_temporal_state(2, 4, device=torch.device("cuda"), dtype=torch.float32)
+            compiled_state = clone_temporal_state(eager_state)
+            for _ in range(3):
+                expected = eager.forward_with_temporal_state(
+                    **observations, temporal_state=eager_state, deterministic=True,
+                )
+                outputs = compiled.forward_with_temporal_state(
+                    **observations, temporal_state=compiled_state, deterministic=True,
+                )
+                torch.testing.assert_close(outputs, expected, rtol=1e-4, atol=1e-5)
+                snapshot = clone_temporal_state(outputs)
+                bootstrap, _ = compiled.predict_values_with_temporal_state(
+                    **observations, temporal_state=outputs[-1],
+                )
+                eager_bootstrap, _ = eager.predict_values_with_temporal_state(
+                    **observations, temporal_state=expected[-1],
+                )
+                torch.testing.assert_close(bootstrap, eager_bootstrap, rtol=1e-4, atol=1e-5)
+                compiled.act_with_temporal_state(**observations, temporal_state=outputs[-1], deterministic=True)
+                torch.testing.assert_close(outputs, snapshot, rtol=0, atol=0)
+                eager_state, compiled_state = expected[-1], outputs[-1]
+    if not recurrent:
+        batch = SimpleNamespace(**observations, actions=retained[0][0][0])
+        eager_log_probs, eager_values, *_ = eager.evaluate_actions(batch)
+        compiled_log_probs, compiled_values, *_ = compiled.evaluate_actions(batch)
+        torch.testing.assert_close(compiled_log_probs, eager_log_probs, rtol=1e-4, atol=1e-5)
+        torch.testing.assert_close(compiled_values, eager_values, rtol=1e-4, atol=1e-5)
+        (-eager_log_probs.mean() + eager_values.square().mean()).backward()
+        (-compiled_log_probs.mean() + compiled_values.square().mean()).backward()
+        torch.testing.assert_close(
+            {".".join(part for part in name.split(".") if part != "_orig_mod"): parameter.grad
+             for name, parameter in compiled.named_parameters()},
+            {name: parameter.grad for name, parameter in eager.named_parameters()},
+            rtol=1e-4, atol=1e-5,
+        )
 
 
 def test_forward_and_value_paths_match_pipeline_shapes() -> None:

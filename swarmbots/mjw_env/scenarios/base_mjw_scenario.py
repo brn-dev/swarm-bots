@@ -351,7 +351,7 @@ class BaseMJWScenarioRuntime(abc.ABC):
                 swarm_start_y,
                 torch.full(
                     (n_reset,),
-                    self.scenario.swarm.max_unit_extent * 1.1,
+                    self.scenario.swarm.initial_z_offset,
                     device=self.bindings.device,
                     dtype=torch.float32,
                 ),

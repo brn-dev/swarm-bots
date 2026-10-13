@@ -53,6 +53,9 @@ def _payload_over_step(
     )
 
 
+PayloadStepRewardOutput = tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]
+
+
 def _compute_payload_step_reward_extras_kernel(
     payload_position: torch.Tensor,
     stable_mask: torch.Tensor,
@@ -70,7 +73,7 @@ def _compute_payload_step_reward_extras_kernel(
     payload_success_reward_value: float,
     progress_reward_weight: float,
     potential_reward_discount_factor: float,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+) -> PayloadStepRewardOutput:
     safe_payload_position = torch.where(
         stable_mask.view(-1, 1),
         payload_position,

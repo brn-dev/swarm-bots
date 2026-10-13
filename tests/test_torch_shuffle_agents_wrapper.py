@@ -13,6 +13,7 @@ from gymnasium.vector import AutoresetMode, SyncVectorEnv
 from swarmbots.learn.algos.off_policy.off_policy_rollout import collect_off_policy_steps
 from swarmbots.learn.algos.off_policy.replay_buffer import OffPolicyReplayBuffer
 from swarmbots.learn.env_wrappers.learn_wrappers.swarm_bots_learn_env_wrapper import SwarmBotsLearnEnvWrapper
+from swarmbots.learn.env_wrappers.multi_scenario_vector_env import MultiScenarioVectorEnv
 from swarmbots.learn.env_wrappers.torch_shuffle_agents_wrapper import TorchShuffleAgentsWrapper
 from swarmbots.learn.env_wrappers.torch_transition_obs_wrapper import TorchTransitionObsWrapper
 
@@ -102,6 +103,7 @@ def _make_env(
     active_agents: int = 3,
     preserve_inactive_prefix_structure: bool = True,
     seed: int = 123,
+    multi_scenario: bool = False,
 ) -> tuple[TorchShuffleAgentsWrapper, list[_AgentIdEnv]]:
     raw_envs = [
         _AgentIdEnv(n_agents=n_agents, active_agents=active_agents, max_steps=max_steps)
@@ -111,6 +113,8 @@ def _make_env(
         [lambda raw_env=raw_env: raw_env for raw_env in raw_envs],
         autoreset_mode=AutoresetMode.SAME_STEP,
     )
+    if multi_scenario:
+        vector_env = MultiScenarioVectorEnv({"agents": vector_env})
     learn_env = SwarmBotsLearnEnvWrapper(vector_env)
     return (
         TorchShuffleAgentsWrapper(
@@ -227,6 +231,114 @@ def test_shuffle_device_moves_retain_reset_seed() -> None:
             torch.testing.assert_close(env._rng.get_state(), state)
     finally:
         env.close()
+
+
+@pytest.mark.parametrize("preserve_inactive_prefix_structure", [False, True])
+@pytest.mark.parametrize("wrapper_seed", [123, 2**64 - 1])
+def test_list_reset_seeds_repeat_permutations_and_keep_lanes_independent(
+    preserve_inactive_prefix_structure: bool,
+    wrapper_seed: int,
+) -> None:
+    env, _ = _make_env(
+        n_envs=2, n_agents=8, active_agents=5, max_steps=1,
+        preserve_inactive_prefix_structure=preserve_inactive_prefix_structure,
+        seed=wrapper_seed,
+    )
+    reference, _ = _make_env(
+        n_envs=2, n_agents=8, active_agents=5, max_steps=1,
+        preserve_inactive_prefix_structure=preserve_inactive_prefix_structure,
+        seed=wrapper_seed,
+    )
+    try:
+        initial, _ = env.reset(seed=[123, 456])
+        repeated, _ = env.reset(seed=[123, 456])
+        torch.testing.assert_close(initial["local_obs"], repeated["local_obs"], rtol=0, atol=0)
+        reference_obs, _ = reference.reset(seed=[123, 999])
+        torch.testing.assert_close(repeated["local_obs"][0], reference_obs["local_obs"][0], rtol=0, atol=0)
+
+        partial, _ = env.reset(seed=[888, 789], options={"reset_mask": np.array([False, True])})
+        torch.testing.assert_close(partial["local_obs"][0], repeated["local_obs"][0], rtol=0, atol=0)
+        actions = torch.zeros(2, env.n_agents, env.action_space.total_agent_action_dim)
+        for _ in range(4):
+            observed, *_ = env.step(actions)
+            expected, *_ = reference.step(actions)
+            torch.testing.assert_close(observed["local_obs"][0], expected["local_obs"][0], rtol=0, atol=0)
+    finally:
+        env.close()
+        reference.close()
+
+
+@pytest.mark.parametrize("preserve_inactive_prefix_structure", [False, True])
+@pytest.mark.parametrize("initial_seed, partial_seed", [
+    (123, [888, 789]),
+    (123, 789),
+    ([123, 456], 789),
+])
+@pytest.mark.parametrize("reset_mask", [[False, True], [True, False], [False, False]])
+@pytest.mark.parametrize("device", ["cpu", pytest.param("cuda", marks=pytest.mark.cuda)])
+def test_partial_seeded_resets_preserve_untouched_world_shuffle_streams(
+    preserve_inactive_prefix_structure: bool,
+    initial_seed: int | list[int],
+    partial_seed: int | list[int],
+    reset_mask: list[bool],
+    device: str,
+) -> None:
+    if device == "cuda" and not torch.cuda.is_available():
+        pytest.skip("CUDA unavailable")
+    env, _ = _make_env(
+        n_envs=2, n_agents=8, active_agents=5, max_steps=1,
+        preserve_inactive_prefix_structure=preserve_inactive_prefix_structure,
+        multi_scenario=True,
+    )
+    reference, _ = _make_env(
+        n_envs=2, n_agents=8, active_agents=5, max_steps=1,
+        preserve_inactive_prefix_structure=preserve_inactive_prefix_structure,
+        multi_scenario=True,
+    )
+    try:
+        env.set_device(device)
+        reference.set_device(device)
+        initial, _ = env.reset(seed=initial_seed)
+        reference.reset(seed=initial_seed)
+        untouched = ~torch.tensor(reset_mask, device=device)
+        observed, _ = env.reset(seed=partial_seed, options={"reset_mask": np.array(reset_mask)})
+        reference.reset(options={"reset_mask": np.array(reset_mask)})
+        torch.testing.assert_close(observed["local_obs"][untouched], initial["local_obs"][untouched], rtol=0, atol=0)
+        actions = torch.zeros(2, env.n_agents, env.action_space.total_agent_action_dim, device=device)
+        for _ in range(4):
+            observed, *_ = env.step(actions)
+            expected, *_ = reference.step(actions)
+            torch.testing.assert_close(observed["local_obs"][untouched], expected["local_obs"][untouched], rtol=0, atol=0)
+    finally:
+        env.close()
+        reference.close()
+
+
+@pytest.mark.parametrize("preserve_inactive_prefix_structure", [False, True])
+def test_full_integer_reset_restores_the_original_shuffle_sequence(
+    preserve_inactive_prefix_structure: bool,
+) -> None:
+    env, _ = _make_env(
+        n_envs=2, n_agents=8, active_agents=5, max_steps=1,
+        preserve_inactive_prefix_structure=preserve_inactive_prefix_structure,
+    )
+    reference, _ = _make_env(
+        n_envs=2, n_agents=8, active_agents=5, max_steps=1,
+        preserve_inactive_prefix_structure=preserve_inactive_prefix_structure,
+    )
+    try:
+        env.reset(seed=[123, 456])
+        observed, _ = env.reset(seed=789)
+        expected, _ = reference.reset(seed=789)
+        torch.testing.assert_close(observed["local_obs"], expected["local_obs"], rtol=0, atol=0)
+        actions = torch.zeros(2, env.n_agents, env.action_space.total_agent_action_dim)
+        for _ in range(4):
+            observed, *_ = env.step(actions)
+            expected, *_ = reference.step(actions)
+            torch.testing.assert_close(observed["local_obs"], expected["local_obs"], rtol=0, atol=0)
+    finally:
+        env.close()
+        reference.close()
 
 
 class TorchShuffleAgentsWrapperTests(unittest.TestCase):

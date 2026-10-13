@@ -46,6 +46,9 @@ class MoveToGoalSettledSnapshot:
     progress: float
 
 
+MoveToGoalRewardOutput = tuple[torch.Tensor, torch.Tensor, torch.Tensor]
+
+
 def _compute_move_to_goal_reward_kernel(
     unit_xy: torch.Tensor,
     goal_position: torch.Tensor,
@@ -56,7 +59,7 @@ def _compute_move_to_goal_reward_kernel(
     progress_reward_weight: float,
     forward_reward_weight: float,
     potential_reward_discount_factor: float,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+) -> MoveToGoalRewardOutput:
     safe_unit_xy = torch.where(stable_mask.view(-1, 1, 1), unit_xy, torch.zeros_like(unit_xy))
     new_progress = _compute_goal_progress_baseline_torch(
         unit_xy=safe_unit_xy,
@@ -134,10 +137,7 @@ class MoveToGoalMJWScenarioRuntime(BaseMJWScenarioRuntime):
             bindings=bindings,
             goal_mocap_id=self._goal_mocap_id,
         )
-        self._reward_kernel: Callable[
-            ...,
-            tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor],
-        ] = _compute_move_to_goal_reward_kernel
+        self._reward_kernel: Callable[..., MoveToGoalRewardOutput] = _compute_move_to_goal_reward_kernel
         if scenario.compile_reward_kernel:
             if not hasattr(torch, "compile"):
                 raise RuntimeError("compile_reward_kernel=True requires torch.compile support.")

@@ -2,12 +2,14 @@ from typing import Optional
 
 import torch
 
+from swarmbots.learn.base_policy import PolicyCompileConfig, policy_inference_step
 from swarmbots.learn.algos.ppo.ppo_rollout_buffer import PPOEpisodeSegment
 from swarmbots.learn.algos.r_mat.r_mat_encoder import RMATEncoder, RMATEncoderState
 from swarmbots.learn.algos.r_mat.r_ppo_wm_sampler import RPPOWMSampler, RPPOWMSamplerConfig
 
 
 class RMATPolicyMixin:
+    config: PolicyCompileConfig
     encoder: RMATEncoder
     hidden_local_vars_dim: int
     hidden_global_vars_dim: int
@@ -23,6 +25,7 @@ class RMATPolicyMixin:
     ) -> tuple[torch.Tensor, Optional[torch.Tensor]]:
         raise NotImplementedError()
 
+    @policy_inference_step
     def forward(
             self,
             local_obs: torch.Tensor,
@@ -56,6 +59,7 @@ class RMATPolicyMixin:
         assert log_probs is not None
         return actions, log_probs, values
 
+    @policy_inference_step
     def predict_values(
             self,
             local_obs: torch.Tensor,
@@ -80,6 +84,7 @@ class RMATPolicyMixin:
             agent_mask=agent_mask,
         )
 
+    @policy_inference_step
     def act(
             self,
             local_obs: torch.Tensor,
@@ -138,6 +143,7 @@ class RMATPolicyMixin:
             dtype=dtype,
         )
 
+    @policy_inference_step
     def forward_with_temporal_state(
             self,
             local_obs: torch.Tensor,
@@ -174,6 +180,7 @@ class RMATPolicyMixin:
         assert log_probs is not None
         return actions, log_probs, values, next_state
 
+    @policy_inference_step
     def predict_values_with_temporal_state(
             self,
             local_obs: torch.Tensor,
@@ -202,6 +209,7 @@ class RMATPolicyMixin:
         )
         return values, next_state
 
+    @policy_inference_step
     def act_with_temporal_state(
             self,
             local_obs: torch.Tensor,

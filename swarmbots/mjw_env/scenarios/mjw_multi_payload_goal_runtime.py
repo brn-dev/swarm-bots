@@ -56,6 +56,9 @@ class MultiPayloadGoalSettledSnapshot:
     payload_progress: np.ndarray
 
 
+MultiPayloadGoalRewardOutput = tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]
+
+
 def _compute_multi_payload_goal_reward_kernel(
     payload_position: torch.Tensor,
     goal_position: torch.Tensor,
@@ -68,7 +71,7 @@ def _compute_multi_payload_goal_reward_kernel(
     payload_radius: float,
     goal_radius: float,
     success_reward: float,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+) -> MultiPayloadGoalRewardOutput:
     stable_payload_position = torch.where(
         stable_mask.view(-1, 1, 1),
         payload_position,
@@ -83,7 +86,7 @@ def _compute_multi_payload_goal_reward_kernel(
         dim=-1,
     )
     delta = stable_payload_position - goal_position_xyz
-    distance_to_goal = torch.sqrt((delta * delta).sum(dim=-1))
+    distance_to_goal = torch.hypot(torch.hypot(delta[..., 0], delta[..., 1]), delta[..., 2])
     remaining_distance = torch.clamp(distance_to_goal - float(goal_radius), min=0.0)
     new_payload_progress = torch.where(active_mask, -remaining_distance, torch.zeros_like(remaining_distance))
 
@@ -238,10 +241,7 @@ class MultiPayloadGoalMJWScenarioRuntime(BaseMJWScenarioRuntime):
             payload_shape=scenario.payload_shape,
             device=bindings.device,
         )
-        self._reward_kernel: Callable[
-            ...,
-            tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor],
-        ] = _compute_multi_payload_goal_reward_kernel
+        self._reward_kernel: Callable[..., MultiPayloadGoalRewardOutput] = _compute_multi_payload_goal_reward_kernel
         if scenario.compile_reward_kernel:
             if not hasattr(torch, "compile"):
                 raise RuntimeError("compile_reward_kernel=True requires torch.compile support.")
@@ -588,7 +588,8 @@ def _compute_payload_progress_np(
     goal_position_xyz = np.zeros((goal_position.shape[0], 3), dtype=np.float64)
     goal_position_xyz[:, :2] = goal_position
     goal_position_xyz[:, 2] = float(payload_radius)
-    distance_to_goal = np.linalg.norm(payload_position - goal_position_xyz, axis=1)
+    delta = payload_position - goal_position_xyz
+    distance_to_goal = np.hypot(np.hypot(delta[:, 0], delta[:, 1]), delta[:, 2])
     remaining_distance = np.maximum(distance_to_goal - float(goal_radius), 0.0)
     progress = np.zeros((goal_position.shape[0],), dtype=np.float64)
     progress[np.asarray(active_payload_mask, dtype=bool)] = -remaining_distance[
@@ -613,6 +614,6 @@ def _compute_payload_progress_torch(
         dim=-1,
     )
     delta = payload_position - goal_position_xyz
-    distance_to_goal = torch.sqrt((delta * delta).sum(dim=-1))
+    distance_to_goal = torch.hypot(torch.hypot(delta[..., 0], delta[..., 1]), delta[..., 2])
     remaining_distance = torch.clamp(distance_to_goal - float(goal_radius), min=0.0)
     return torch.where(active_payload_mask, -remaining_distance, torch.zeros_like(remaining_distance))

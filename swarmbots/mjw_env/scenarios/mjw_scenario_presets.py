@@ -99,7 +99,6 @@ def _default_unit_start_locations() -> MJWPreConnectedUnitLocationsConfig:
         },
         max_radius=1.5,
         unconnected_prob=0.02,
-        z_pos=0.5,
         pool_seeds=tuple(range(42_000, 42_050)),
     )
 

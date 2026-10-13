@@ -10,6 +10,40 @@ python examples/evaluate_random_policy.py SwarmBots-WallEasy-v0 --device cuda --
 
 This evaluates a uniform-random policy over seeds `1000` through `1004` and writes raw episodes, runtime metadata, and aggregate statistics to JSON. Use `--num-envs 2 --seeds 1000 --device cpu` for a smaller run.
 
+## Train without the included learning framework
+
+```bash
+python examples/train_standalone_ppo.py SwarmBots-WallEasy-v0 --device cuda
+```
+
+This minimal PyTorch PPO loop has no imports from `swarmbots.learn` and no additional dependencies. A small shared network uses `local_obs` and `global_obs` for both the per-agent actor and the team critic. Gaussian actions with a learned standard deviation are squashed through `tanh` for both actuators and connectors. Inactive agents contribute neither actions, likelihoods, nor pooled critic features.
+
+The loop stores pre-tanh Gaussian samples: the squash Jacobian cancels in PPO's likelihood ratio, so no inverse `tanh` or Jacobian calculation is needed. It copies reusable observation buffers and bootstraps time-limit truncations from `info["final_obs"]`, while stopping advantage traces at all episode boundaries.
+
+Defaults are one million world transitions, 256 parallel worlds, and 128 steps per rollout. Each rollout gets four training epochs using minibatches of up to 1024 world transitions. The script prints mean reward per transition; hyperparameters are directly in the code. Tensor operations and rewards run eagerly, and physics uses MuJoCo Warp. Settings illustrate integration and are not tuned benchmark baselines.
+
+For a short CPU execution check:
+
+```bash
+python examples/train_standalone_ppo.py --device cpu --num-envs 2 --total-timesteps 8 --rollout-steps 4
+```
+
+To use the trained model in your own code, call `train()` and pass its deterministic `act` method to the evaluator:
+
+```python
+from examples.train_standalone_ppo import train
+from swarmbots import evaluate_policy
+
+model = train("SwarmBots-WallEasy-v0", device="cuda")
+result = evaluate_policy(
+    model.act, "SwarmBots-WallEasy-v0", device="cuda",
+    num_envs=256, num_episodes=256, seed=1000, action_mode="deterministic",
+)
+print(result.mean_return, result.success_rate)
+```
+
+Run this snippet from the repository root; `examples` is checkout code rather than an installed package API. This evaluates one seed; follow the [evaluation protocol](../docs/benchmark_protocol.md) for reportable results.
+
 ## Train, evaluate, and record a preset
 
 `train_policy.py` accepts every name returned by `swarmbots.learn.list_variants()`:

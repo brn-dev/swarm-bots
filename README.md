@@ -107,6 +107,8 @@ Actions contain per-agent `actuators` and `connectors` tensors. Rewards and done
 
 Centralized, partially centralized, and decentralized actors are all allowed; actors may combine the permitted observations across agents within each world. The benchmark does not prescribe a learning algorithm or require decentralized execution. See the [Python API](https://github.com/brn-dev/swarm-bots/blob/main/docs/api.md) for integration details.
 
+For a complete training loop using only PyTorch and the environment API, see the [standalone PPO example](https://github.com/brn-dev/swarm-bots/tree/main/examples#train-without-the-included-learning-framework). It shows action sampling, masking, rollout storage, time-limit bootstrapping, optimization, and evaluation without `swarmbots.learn`.
+
 ## Evaluate and compare policies
 
 The built-in evaluator accepts a callable `policy(observations, episode_starts)` that returns the `actuators` and `connectors` action tensors. It passes only non-privileged observations and reports episode returns, lengths, and success rate where defined. Recurrent policies use `episode_starts` to reset their state per world.

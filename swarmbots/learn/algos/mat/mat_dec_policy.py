@@ -3,6 +3,7 @@ from typing import Any
 
 import torch
 
+from swarmbots.learn.base_policy import policy_inference_step
 from swarmbots.learn.algos.mat.mat_encoder import MATEncoder, MATEncoderConfig
 from swarmbots.learn.algos.mat.mat_ind_policy import MATIndPolicy, MATIndPolicyConfig
 from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import (
@@ -71,6 +72,7 @@ class MATDecPolicy(MATIndPolicy):
             "mat_dec_policy_config": policy_config,
         }
 
+    @policy_inference_step
     def act(
             self,
             local_obs: torch.Tensor,

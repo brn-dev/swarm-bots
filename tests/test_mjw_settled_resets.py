@@ -132,7 +132,7 @@ def _make_spec_only_move_to_goal_runtime() -> MoveToGoalMJWScenarioRuntime:
     runtime = object.__new__(MoveToGoalMJWScenarioRuntime)
     runtime.bindings = SimpleNamespace(device=torch.device("cpu"))
     runtime.scenario = SimpleNamespace(
-        swarm=SimpleNamespace(get_active_pool_size=lambda: 50, max_unit_extent=0.1),
+        swarm=SimpleNamespace(get_active_pool_size=lambda: 50, initial_z_offset=0.0),
         swarm_start_x=UniformDistParams(-1.0, 1.0),
         swarm_start_y=UniformDistParams(-1.0, 1.0),
         randomize_initial_swarm_z_rotation=True,
@@ -388,8 +388,9 @@ def test_mjw_step_terminates_worlds_with_any_nonfinite_physics_state(
     assert torch.equal(terminations, expected_unstable)
     assert not truncations.any()
     assert torch.equal(infos["_final_obs"], expected_unstable)
-    for final_obs in infos["final_obs"].values():
-        assert torch.equal(final_obs[:3], torch.zeros((3, 1)))
+    for key in ("local_obs", "global_obs", "hidden_local_vars"):
+        assert torch.equal(infos["final_obs"][key][:3], torch.zeros((3, 1)))
+    torch.testing.assert_close(infos["final_obs"]["hidden_global_vars"][:, 0], torch.ones(4))
     assert len(reset_done_calls) == 1
     assert torch.equal(reset_done_calls[0], expected_unstable)
     assert len(instability_warnings) == 1

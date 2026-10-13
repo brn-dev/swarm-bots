@@ -11,22 +11,10 @@ from gymnasium.vector.utils import batch_space
 from swarmbots.mjw_env.parameter_distributions import FloatOrDistParams
 from swarmbots.mjw_env.scenarios.base_mjw_scenario import BaseMJWScenario, MJWRecordingCameraConfig, MJWRuntimeBindings
 from swarmbots.mjw_env.swarm.mjw_homogeneous_swarm import MJWHomogeneousSwarm
+from swarmbots.mjw_env.swarm.unit import get_unit_hinge_count
 from swarmbots.scenario_presets.scenario_obs_layouts import VERTICAL_REACH_GOAL_XYZ_GLOBAL_OBS_LAYOUT
 from swarmbots.utils.connector_actions import connector_action_space
 from swarmbots.mjw_env.scenarios.scenario_validation import finite_positive
-
-
-def _hinges_per_limb(unit_config: tuple[object, ...]) -> int:
-    total = 0
-    for limb in unit_config:
-        limb_type = str(limb.type).removeprefix("LimbType.")
-        if limb_type in ("xy", "zx"):
-            total += 2
-        elif limb_type == "xyz":
-            total += 3
-        else:
-            raise ValueError(f"Unsupported limb type: {limb_type}")
-    return total
 
 
 @dataclass
@@ -248,7 +236,7 @@ class MJWVerticalReachScenario(BaseMJWScenario):
 
     def get_single_observation_space(self) -> spaces.Dict:
         limbs_per_unit = self.swarm.config.limbs_per_unit
-        num_hinges = _hinges_per_limb(self.swarm.config.unit_config)
+        num_hinges = get_unit_hinge_count(self.swarm.config.unit_config)
         free_joint_rot_dim = 6 if self.quat_rot6d_representation else 4
         qpos_obs_dim = 3 + free_joint_rot_dim + (2 * num_hinges)
         qvel_dim = 6 + num_hinges
@@ -276,7 +264,7 @@ class MJWVerticalReachScenario(BaseMJWScenario):
         )
 
     def get_single_action_space(self) -> spaces.Dict:
-        actuators_per_unit = _hinges_per_limb(self.swarm.config.unit_config)
+        actuators_per_unit = get_unit_hinge_count(self.swarm.config.unit_config)
         return spaces.Dict(
             {
                 "actuators": spaces.Box(

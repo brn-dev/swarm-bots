@@ -1,9 +1,59 @@
 import abc
-from collections.abc import Iterable
-from typing import Any
+from collections.abc import Callable, Iterable
+from functools import wraps
+from typing import Any, Concatenate, ParamSpec, Protocol, TypeVar
 
 import torch
 from torch import nn
+
+from swarmbots.learn.temporal_state import clone_temporal_state
+
+
+PolicyInferenceArgs = ParamSpec("PolicyInferenceArgs")
+PolicyInferenceResult = TypeVar("PolicyInferenceResult")
+
+
+class PolicyCompileConfig(Protocol):
+    @property
+    def compile_modules(self) -> bool: ...
+
+    @property
+    def compile_mode(self) -> str: ...
+
+
+class CompiledPolicy(Protocol):
+    @property
+    def config(self) -> PolicyCompileConfig: ...
+
+
+PolicyInferenceOwner = TypeVar("PolicyInferenceOwner", bound=CompiledPolicy)
+
+
+def policy_inference_step(
+    method: Callable[Concatenate[PolicyInferenceOwner, torch.Tensor, PolicyInferenceArgs], PolicyInferenceResult],
+) -> Callable[Concatenate[PolicyInferenceOwner, torch.Tensor, PolicyInferenceArgs], PolicyInferenceResult]:
+    @wraps(method)
+    def inference_step(
+        policy: PolicyInferenceOwner,
+        local_obs: torch.Tensor,
+        *args: PolicyInferenceArgs.args,
+        **kwargs: PolicyInferenceArgs.kwargs,
+    ) -> PolicyInferenceResult:
+        config = policy.config
+        uses_cuda_graphs = (
+            local_obs.is_cuda
+            and not torch.is_grad_enabled()
+            and config.compile_modules
+            and config.compile_mode in ("reduce-overhead", "max-autotune")
+        )
+        if not uses_cuda_graphs:
+            return method(policy, local_obs, *args, **kwargs)
+        # Composed compiled modules share a graph iteration; returned tensors
+        # must survive the next policy call, including bootstrap predictions.
+        torch.compiler.cudagraph_mark_step_begin()
+        return clone_temporal_state(method(policy, local_obs, *args, **kwargs))
+
+    return inference_step
 
 
 class BasePolicy(nn.Module, abc.ABC):

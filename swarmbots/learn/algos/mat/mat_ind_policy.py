@@ -27,6 +27,7 @@ from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import (
     BaseLearnEnvWrapper,
 )
 from swarmbots.learn.losses import LossDict, LossMetrics
+from swarmbots.learn.base_policy import policy_inference_step
 from swarmbots.learn.nn_components.activations import ActivationFactory
 from swarmbots.learn.nn_components.deep_set import DeepSetCritic
 from swarmbots.learn.nn_components.feed_forward import MLP
@@ -186,6 +187,7 @@ class MATIndPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
     def requires_previous_actions(self) -> bool:
         return self.action_dist.requires_previous_actions()
 
+    @policy_inference_step
     def forward(
             self,
             local_obs: torch.Tensor,
@@ -287,6 +289,7 @@ class MATIndPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
 
         return log_probs, values, {}, {}, augmented_observations
 
+    @policy_inference_step
     def predict_values(
             self,
             local_obs: torch.Tensor,
@@ -389,6 +392,7 @@ class MATIndPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
         log_probs = self.action_dist.log_prob(actions, previous_actions=previous_actions)
         return self._mask_log_probs(log_probs, agent_mask), values, augmented_observations
 
+    @policy_inference_step
     def act(
             self,
             local_obs: torch.Tensor,

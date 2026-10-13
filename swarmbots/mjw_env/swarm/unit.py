@@ -1,10 +1,34 @@
 import mujoco
+import numpy as np
 from typing import TypeAlias
 
 from swarmbots.mjw_env.swarm.mjw_swarm_config import get_connector_suffix
 from swarmbots.mjw_env.swarm.unit_config import UnitConfig, LimbConfig, LimbType
 
 HingeJointParam: TypeAlias = float | tuple[float, ...]
+CONNECTOR_GEOM_LENGTH_RATIO = 0.02
+CONNECTOR_GEOM_RADIUS_SCALE = 1.05
+
+
+def get_unit_rest_min_z(
+    rotation_matrices: np.ndarray,
+    *,
+    unit_config: UnitConfig,
+    body_radius: float,
+    leg_length: float,
+    leg_radius: float,
+) -> np.ndarray:
+    """Lowest surface relative to each root with every hinge at zero."""
+    limb_directions = np.stack([limb.vec for limb in unit_config], axis=-1)
+    limb_z = rotation_matrices[:, 2, :] @ limb_directions
+    hip_z = body_radius * limb_z
+    tip_z = (body_radius + leg_length) * limb_z
+    limb_min_z = np.minimum(hip_z, tip_z) - leg_radius
+    connector_base_z = (body_radius + leg_length * (1.0 - CONNECTOR_GEOM_LENGTH_RATIO)) * limb_z
+    connector_min_z = np.minimum(connector_base_z, tip_z) - leg_radius * CONNECTOR_GEOM_RADIUS_SCALE
+    # Zero-angle limb segments are collinear; their split and connector frame
+    # offsets do not affect the capsule endpoints in root coordinates.
+    return np.minimum(-body_radius, np.minimum(limb_min_z.min(axis=-1), connector_min_z.min(axis=-1)))
 
 
 def _limb_joint_specs(limb_type: LimbType) -> tuple[tuple[str, tuple[float, float, float]], ...]:
@@ -25,6 +49,14 @@ def _limb_joint_specs(limb_type: LimbType) -> tuple[tuple[str, tuple[float, floa
             ("hinge3z", (0.0, 0.0, 1.0)),
         )
     raise NotImplementedError(limb_type)
+
+
+def get_limb_hinge_count(limb_type: LimbType) -> int:
+    return len(_limb_joint_specs(limb_type))
+
+
+def get_unit_hinge_count(unit_config: UnitConfig) -> int:
+    return sum(get_limb_hinge_count(limb.type) for limb in unit_config)
 
 
 def get_limb_segment_names(limb_idx: int, limb_config: LimbConfig) -> tuple[str, ...]:
@@ -193,8 +225,8 @@ def _build_limb(
     connector.add_geom(
         type=mujoco.mjtGeom.mjGEOM_CAPSULE,
         # Preserve the tip geom's pose and inertia when moving its body frame.
-        fromto=[0, 0, -connector_offset, 0, 0, -connector_offset - length * 0.02],
-        size=[radius * 1.05, 0, 0],
+        fromto=[0, 0, -connector_offset, 0, 0, -connector_offset - length * CONNECTOR_GEOM_LENGTH_RATIO],
+        size=[radius * CONNECTOR_GEOM_RADIUS_SCALE, 0, 0],
         rgba=rgba,
         contype=0,
         conaffinity=0,

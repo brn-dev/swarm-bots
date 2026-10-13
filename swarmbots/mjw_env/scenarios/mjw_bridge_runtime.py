@@ -45,6 +45,17 @@ class BridgeSettledSnapshot:
     progress: float
 
 
+BridgeRewardOutput = tuple[
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+]
+
+
 def _compute_bridge_reward_kernel(
     unit_y: torch.Tensor,
     unit_z: torch.Tensor,
@@ -58,15 +69,7 @@ def _compute_bridge_reward_kernel(
     progress_reward_weight: float,
     potential_reward_discount_factor: float,
     success_min_z: float = 0.0,
-) -> tuple[
-    torch.Tensor,
-    torch.Tensor,
-    torch.Tensor,
-    torch.Tensor,
-    torch.Tensor,
-    torch.Tensor,
-    torch.Tensor,
-]:
+) -> BridgeRewardOutput:
     safe_unit_y = torch.where(stable_mask.unsqueeze(1), unit_y, torch.zeros_like(unit_y))
     new_progress = masked_mean(safe_unit_y, units_active_mask, dim=1)
     progress_reward = (
@@ -162,19 +165,7 @@ class BridgeMJWScenarioRuntime(BaseMJWScenarioRuntime):
             bindings=bindings,
             bridge_mocap_id=self._bridge_mocap_id,
         )
-        self._reward_kernel: Callable[
-            ...,
-            tuple[
-                torch.Tensor,
-                torch.Tensor,
-                torch.Tensor,
-                torch.Tensor,
-                torch.Tensor,
-                torch.Tensor,
-                torch.Tensor,
-                torch.Tensor,
-            ],
-        ] = _compute_bridge_reward_kernel
+        self._reward_kernel: Callable[..., BridgeRewardOutput] = _compute_bridge_reward_kernel
         if scenario.compile_reward_kernel:
             if not hasattr(torch, "compile"):
                 raise RuntimeError("compile_reward_kernel=True requires torch.compile support.")

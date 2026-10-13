@@ -9,7 +9,7 @@ import torch
 from mujoco import MjsBody
 
 from swarmbots.mjw_env.random_utils import random_quat_shoemake
-from swarmbots.mjw_env.swarm.unit import init_unit
+from swarmbots.mjw_env.swarm.unit import get_unit_rest_min_z, init_unit
 from swarmbots.mjw_env.swarm.unit_config import UNIT_CONFIG_TETRAHEDRON_XY, UnitConfig
 from swarmbots.mjw_env.swarm.mjw_swarm_config import MJWSwarmConfig
 
@@ -20,16 +20,19 @@ class MJWPreConnectedUnitLocationsConfig:
     num_unit_probs: dict[int, float] | None = None
     unconnected_prob: float = 0.0
     max_radius: float = 1e8
-    z_pos: float = 0.0
+    z_pos: float | None = None
     center: bool = True
     pool_seeds: Collection[int] | None = None
     active_pool_size: int | None = None
+    ground_clearance: float = 0.001
 
     def __post_init__(self) -> None:
         if self.num_units < 1:
             raise ValueError("A swarm must contain at least one unit")
         if not 0.0 <= self.unconnected_prob <= 1.0:
             raise ValueError("unconnected_prob must be in [0, 1]")
+        if not np.isfinite(self.ground_clearance) or self.ground_clearance < 0.0:
+            raise ValueError("ground_clearance must be finite and nonnegative")
         if self.pool_seeds is not None:
             pool_seeds = tuple(sorted({int(seed) for seed in self.pool_seeds}))
             if not pool_seeds:
@@ -124,6 +127,10 @@ class MJWHomogeneousSwarm:
     @property
     def can_have_inactive_units(self) -> bool:
         return self.unit_start_locations.num_unit_probs is not None
+
+    @property
+    def initial_z_offset(self) -> float:
+        return 0.0 if self.unit_start_locations.z_pos is None else self.max_unit_extent * 1.1
 
     def get_settings(self) -> dict[str, object]:
         return {
@@ -364,7 +371,18 @@ class MJWHomogeneousSwarm:
         if random_config.center:
             mean = positions[:num_active_units].mean(axis=0, keepdims=True)
             positions[:num_active_units] -= mean
-        positions[:num_active_units, 2] += random_config.z_pos
+        if random_config.z_pos is None:
+            unit_min_z = get_unit_rest_min_z(
+                rot_mats,
+                unit_config=unit_config,
+                body_radius=self.body_radius,
+                leg_length=self.leg_length,
+                leg_radius=self.leg_radius,
+            )
+            lowest_z = float((positions[:num_active_units, 2] + unit_min_z).min())
+            positions[:num_active_units, 2] += random_config.ground_clearance - lowest_z
+        else:
+            positions[:num_active_units, 2] += random_config.z_pos
         quats[num_active_units:] = np.array([1.0, 0.0, 0.0, 0.0], dtype=float)
         positions[num_active_units:] = 0.0
 

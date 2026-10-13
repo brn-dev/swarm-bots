@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Place initial swarm assemblies using their analytical lowest sphere/capsule surface, with 1 mm floor clearance by default; retain explicit `z_pos` fixed-height overrides and share placement across raw and settled resets. Initial conditions have changed, so rerun evaluations.
+- Add a minimal standalone PyTorch PPO example independent of `swarmbots.learn`, using public observations, tanh-squashed Gaussian actuator/connector actions, and masked SAME_STEP rollouts.
+- Add modest payload contact headroom to MultiPayloadGoal's default physics capacity, retaining explicit overrides and other tasks' capacities.
+- Verify payload contact capacity from identical poses and sorted contacts on CPU/CUDA, retaining CPU trajectory comparisons without relying on deterministic CUDA trajectories.
+- Establish complete MAT/RMAT inference boundaries for CUDA graph compilation and preserve returned actions, values, and recurrent states across subsequent calls.
+- Support per-world reset seed lists in agent shuffling, retaining full integer-seed sequences and untouched-world streams across mixed-format partial and empty resets.
+- Limit MultiPayloadGoal rectangle coordinates to ±100,000 and compute payload-goal distances with overflow-safe norms in rewards and reset baselines.
+- Correct the instability test's active-agent-count expectation, share scenario reward-output annotations, and derive shared hinge counts from robot joint definitions.
 - Prepend the raw active-agent count to `hidden_global_vars` at the environment level for every scenario, shift task-field normalization indices, and remove the duplicate count from Deep Set Q critics. This replaces the hidden observation layout; older checkpoints require migration, including Deep Set checkpoints whose parameter shapes still match.
 - Rename `SwarmBots-MoveTo-v0` to `SwarmBots-MoveToGoal-v0`, including scenario/runtime modules and classes, preset names, documentation, and CI; replace the old names without aliases.
 - Enable seeded initial episode staggering in training, retaining explicit first-episode overrides and full-length evaluation/recording episodes.

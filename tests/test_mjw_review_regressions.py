@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+from contextlib import ExitStack
 from typing import Any
 from unittest.mock import Mock
 
 import mujoco
+import mujoco_warp as mjw
+import numpy as np
 import pytest
 import torch
+import warp as wp
 
 from swarmbots import make_env
 from swarmbots.mjw_env.mjw_swarm_bots_vector_env import MJWSwarmBotsVectorEnv
@@ -17,12 +21,91 @@ def _small_swarm(*, num_units: int = 2) -> MJWPreConnectedUnitLocationsConfig:
     return MJWPreConnectedUnitLocationsConfig(num_units=num_units, pool_seeds=(42000,), z_pos=3.0)
 
 
+def _make_payload_capacity_env(*, device: str, capacity: int | None) -> MJWSwarmBotsVectorEnv:
+    return make_env(
+        "SwarmBots-MultiPayloadGoal-v0", num_envs=1, device=device,
+        nconmax=capacity, compile_tensor_operations=False, settled_reset_buffer_size=0,
+        scenario_kwargs={"compile_reward_kernel": False},
+    )
+
+
+def _contacts_at_geometry_state(
+    env: MJWSwarmBotsVectorEnv, geometry_state: dict[str, torch.Tensor],
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    with wp.ScopedDevice(env._wp_device), env._warp_stream_scope():
+        for name, value in geometry_state.items():
+            wp.to_torch(getattr(env._data, name)).copy_(value)
+        mjw.kinematics(env._model, env._data)
+        mjw.collision(env._model, env._data)
+        contact_count = int(env._data.nacon.numpy()[0])
+        assert 0 < contact_count <= env._data.naconmax
+        contacts = env._data.contact
+        contact_keys = np.column_stack((
+            np.sort(contacts.geom.numpy()[:contact_count], axis=1),
+            contacts.geomcollisionid.numpy()[:contact_count],
+        ))
+        # GPU contact writes use atomics; the pair and local contact ID identify
+        # the same contact independently of its slot in the output buffer.
+        order = np.lexsort((contact_keys[:, 2], contact_keys[:, 1], contact_keys[:, 0]))
+        return (
+            contact_keys[order],
+            contacts.pos.numpy()[:contact_count][order],
+            contacts.dist.numpy()[:contact_count][order],
+        )
+
+
 def test_negative_first_episode_length_is_rejected_before_building_physics() -> None:
     scenario = Mock()
     scenario.build_model.side_effect = AssertionError("invalid limits must not allocate physics")
     with pytest.raises(ValueError, match="first_episode_length must be >= 0"):
         MJWSwarmBotsVectorEnv(scenario, num_envs=1, episode_length=3, first_episode_length=-1, device="cpu")
     scenario.build_model.assert_not_called()
+
+
+@pytest.mark.integration
+def test_default_multi_payload_cpu_dynamics_match_a_generous_capacity() -> None:
+    trajectories = []
+    for capacity in (None, 128):
+        env = _make_payload_capacity_env(device="cpu", capacity=capacity)
+        try:
+            env.reset(seed=0)
+            actions = {key: torch.zeros(space.shape, device=env.device) for key, space in env.action_space.items()}
+            trajectory = []
+            for _ in range(5):
+                _, rewards, terminated, truncated, _ = env.step(actions)
+                assert int(env._data.nacon.numpy()[0]) <= env._data.naconmax
+                trajectory.append((env._qpos.clone(), rewards.clone(), terminated.clone(), truncated.clone()))
+            trajectories.append(trajectory)
+        finally:
+            env.close()
+    torch.testing.assert_close(trajectories[0], trajectories[1], rtol=1e-4, atol=1e-5)
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("device", ["cpu", pytest.param("cuda", marks=pytest.mark.cuda)])
+@pytest.mark.parametrize("seed", [2, 4])
+def test_default_multi_payload_contacts_match_a_generous_capacity_at_identical_poses(device: str, seed: int) -> None:
+    if device == "cuda" and not torch.cuda.is_available():
+        pytest.skip("CUDA unavailable")
+    with ExitStack() as cleanup:
+        env = _make_payload_capacity_env(device=device, capacity=None)
+        cleanup.callback(env.close)
+        reference = _make_payload_capacity_env(device=device, capacity=128)
+        cleanup.callback(reference.close)
+        env.reset(seed=seed)
+        reference.reset(seed=seed)
+        actions = {key: torch.zeros(space.shape, device=reference.device) for key, space in reference.action_space.items()}
+        for _ in range(5):
+            reference.step(actions)
+            geometry_state = {
+                name: wp.to_torch(getattr(reference._data, name)).clone()
+                for name in ("qpos", "mocap_pos", "mocap_quat")
+            }
+            expected_keys, expected_positions, expected_distances = _contacts_at_geometry_state(reference, geometry_state)
+            keys, positions, distances = _contacts_at_geometry_state(env, geometry_state)
+            np.testing.assert_array_equal(keys, expected_keys)
+            np.testing.assert_allclose(positions, expected_positions, rtol=1e-6, atol=1e-6)
+            np.testing.assert_allclose(distances, expected_distances, rtol=1e-6, atol=1e-6)
 
 
 @pytest.mark.integration

@@ -32,6 +32,9 @@ class ClimbSettledSnapshot:
     height_progress: float
 
 
+ClimbRewardOutput = tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]
+
+
 def _compute_climb_reward_kernel(
     unit_position: torch.Tensor,
     goal_position: torch.Tensor,
@@ -45,13 +48,7 @@ def _compute_climb_reward_kernel(
     horizontal_reward_weight: float,
     height_reward_weight: float,
     potential_reward_discount_factor: float,
-) -> tuple[
-    torch.Tensor,
-    torch.Tensor,
-    torch.Tensor,
-    torch.Tensor,
-    torch.Tensor,
-]:
+) -> ClimbRewardOutput:
     safe_unit_position = torch.where(stable_mask.view(-1, 1, 1), unit_position, torch.zeros_like(unit_position))
     new_horizontal_progress = _compute_climb_horizontal_progress_baseline_torch(
         unit_position=safe_unit_position,
@@ -151,17 +148,7 @@ class ClimbMJWScenarioRuntime(BaseMJWScenarioRuntime):
         self._unit_qpos_adr = torch.as_tensor(bindings.metadata.unit_qpos_adr, device=bindings.device, dtype=torch.long)
         self._xyz_offsets = torch.tensor([0, 1, 2], device=bindings.device, dtype=torch.long)
         self._cpu_settler = _ClimbCPUResetSettler(scenario=scenario, bindings=bindings)
-        self._reward_kernel: Callable[
-            ...,
-            tuple[
-                torch.Tensor,
-                torch.Tensor,
-                torch.Tensor,
-                torch.Tensor,
-                torch.Tensor,
-                torch.Tensor,
-            ],
-        ] = _compute_climb_reward_kernel
+        self._reward_kernel: Callable[..., ClimbRewardOutput] = _compute_climb_reward_kernel
         if scenario.compile_reward_kernel:
             if not hasattr(torch, "compile"):
                 raise RuntimeError("compile_reward_kernel=True requires torch.compile support.")

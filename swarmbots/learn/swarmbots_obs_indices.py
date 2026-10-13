@@ -1,20 +1,13 @@
 from typing import Any
 
 from swarmbots.learn.obs_indices import ObsIndices
+from swarmbots.mjw_env.swarm.unit import get_limb_hinge_count
+from swarmbots.mjw_env.swarm.unit_config import LimbType
 from swarmbots.scenario_presets.scenario_obs_layouts import (
     CLIMB_GOAL_XYZ_GLOBAL_OBS_LAYOUT,
     MULTI_PAYLOAD_GOAL_GLOBAL_OBS_LAYOUT,
     VERTICAL_REACH_GOAL_XYZ_GLOBAL_OBS_LAYOUT,
 )
-
-
-def _hinges_per_limb(limb_type: str) -> int:
-    name = limb_type.removeprefix("LimbType.")
-    if name in ("xy", "zx"):
-        return 2
-    if name == "xyz":
-        return 3
-    raise ValueError(f"Unsupported limb type: {limb_type}")
 
 
 def _global_scalar_indices(scenario_settings: dict[str, Any], global_obs_dim: int) -> list[int]:
@@ -120,7 +113,7 @@ def build_obs_indices(
     include_connectors_xpos_in_obs = bool(scenario_settings["include_connectors_xpos_in_obs"])
     include_connectors_xquat_in_obs = bool(scenario_settings["include_connectors_xquat_in_obs"])
 
-    num_hinges = sum(_hinges_per_limb(limb["type"]) for limb in unit_config)
+    num_hinges = sum(get_limb_hinge_count(LimbType[limb["type"].removeprefix("LimbType.")]) for limb in unit_config)
     free_joint_rot_dim = 6 if quat_rot6d_representation else 4
     qpos_obs_dim = 3 + free_joint_rot_dim + 2 * num_hinges
     qvel_dim = 6 + num_hinges

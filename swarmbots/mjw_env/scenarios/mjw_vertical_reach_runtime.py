@@ -32,6 +32,17 @@ class VerticalReachSettledSnapshot:
     reach_column_progress: float
 
 
+VerticalReachRewardOutput = tuple[
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+]
+
+
 def _compute_vertical_reach_reward_kernel(
     unit_position: torch.Tensor,
     goal_position: torch.Tensor,
@@ -50,15 +61,7 @@ def _compute_vertical_reach_reward_kernel(
     reach_column_min_y: float,
     reach_column_max_y: float,
     potential_reward_discount_factor: float,
-) -> tuple[
-    torch.Tensor,
-    torch.Tensor,
-    torch.Tensor,
-    torch.Tensor,
-    torch.Tensor,
-    torch.Tensor,
-    torch.Tensor,
-]:
+) -> VerticalReachRewardOutput:
     new_horizontal_progress, new_height_progress = _compute_vertical_reach_progress_baselines_torch(
         unit_position=unit_position,
         goal_position=goal_position,
@@ -185,19 +188,7 @@ class VerticalReachMJWScenarioRuntime(BaseMJWScenarioRuntime):
         self._unit_qpos_adr = torch.as_tensor(bindings.metadata.unit_qpos_adr, device=bindings.device, dtype=torch.long)
         self._xyz_offsets = torch.tensor([0, 1, 2], device=bindings.device, dtype=torch.long)
         self._cpu_settler = _VerticalReachCPUResetSettler(scenario=scenario, bindings=bindings)
-        self._reward_kernel: Callable[
-            ...,
-            tuple[
-                torch.Tensor,
-                torch.Tensor,
-                torch.Tensor,
-                torch.Tensor,
-                torch.Tensor,
-                torch.Tensor,
-                torch.Tensor,
-                torch.Tensor,
-            ],
-        ] = _compute_vertical_reach_reward_kernel
+        self._reward_kernel: Callable[..., VerticalReachRewardOutput] = _compute_vertical_reach_reward_kernel
         if scenario.compile_reward_kernel:
             if not hasattr(torch, "compile"):
                 raise RuntimeError("compile_reward_kernel=True requires torch.compile support.")

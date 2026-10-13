@@ -63,6 +63,12 @@ Compatibility with Gymnasium's interface does not imply compatibility with every
 
 The built-in evaluator consumes the tensor interface directly.
 
+## Train with your own learner
+
+The [standalone PyTorch PPO example](../examples/README.md#train-without-the-included-learning-framework) shows a minimal training loop without `swarmbots.learn`: environment construction, squashed Gaussian actions, active-agent masking, rollout storage, advantage estimation, and optimizer updates. Both actor and critic use only public observations; the returned model can be evaluated directly.
+
+Use its rollout handling when integrating another learner: retain copies of reusable observation tensors, bootstrap time-limit truncations from terminal observations, and stop temporal traces at autoreset boundaries. Libraries expecting NumPy arrays need an adapter as described above.
+
 ## Episode lifecycle
 
 The environment uses `SAME_STEP` autoreset. On a done step, the returned observation belongs to the reset episode. The terminal observation is in `info["final_obs"]`, selected by `info["_final_obs"]`. Bootstrap a truncated episode from that terminal observation; terminated episodes should not bootstrap.

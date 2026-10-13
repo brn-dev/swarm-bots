@@ -49,6 +49,17 @@ class DualPayloadPlaneSettledSnapshot:
     towards_payload_progress: np.ndarray
 
 
+DualPayloadPlaneRewardOutput = tuple[
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+]
+
+
 def _compute_dual_payload_plane_reward_kernel(
     unit_xy: torch.Tensor,
     payload_position: torch.Tensor,
@@ -69,15 +80,7 @@ def _compute_dual_payload_plane_reward_kernel(
     payload_centering_penalty_weight: float,
     payload_centering_penalty_power: float,
     payload_centering_tolerance: float,
-) -> tuple[
-    torch.Tensor,
-    torch.Tensor,
-    torch.Tensor,
-    torch.Tensor,
-    torch.Tensor,
-    torch.Tensor,
-    torch.Tensor,
-]:
+) -> DualPayloadPlaneRewardOutput:
     safe_unit_xy = torch.where(stable_mask.view(-1, 1, 1), unit_xy, torch.zeros_like(unit_xy))
     safe_payload_position = torch.where(stable_mask.view(-1, 1, 1), payload_position, torch.zeros_like(payload_position))
     safe_payload_x = safe_payload_position[:, :, 0]
@@ -240,19 +243,7 @@ class DualPayloadPlaneMJWScenarioRuntime(BaseMJWScenarioRuntime):
         self._unit_qpos_adr = torch.as_tensor(bindings.metadata.unit_qpos_adr, device=bindings.device, dtype=torch.long)
         self._xy_offsets = torch.tensor([0, 1], device=bindings.device, dtype=torch.long)
         self._cpu_settler = _DualPayloadPlaneCPUResetSettler(scenario=scenario, bindings=bindings)
-        self._reward_kernel: Callable[
-            ...,
-            tuple[
-                torch.Tensor,
-                torch.Tensor,
-                torch.Tensor,
-                torch.Tensor,
-                torch.Tensor,
-                torch.Tensor,
-                torch.Tensor,
-                torch.Tensor,
-            ],
-        ] = _compute_dual_payload_plane_reward_kernel
+        self._reward_kernel: Callable[..., DualPayloadPlaneRewardOutput] = _compute_dual_payload_plane_reward_kernel
         if scenario.compile_reward_kernel:
             if not hasattr(torch, "compile"):
                 raise RuntimeError("compile_reward_kernel=True requires torch.compile support.")

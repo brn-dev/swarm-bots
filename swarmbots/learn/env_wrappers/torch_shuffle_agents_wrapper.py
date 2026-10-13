@@ -24,6 +24,7 @@ class TorchShuffleAgentsWrapper(TorchEnvWrapper):
 
         self.preserve_inactive_prefix_structure = bool(preserve_inactive_prefix_structure)
         self._rng = torch.Generator(device=self.device)
+        self._lane_rngs: dict[int, torch.Generator] = {}
         if seed is not None:
             self._rng.manual_seed(int(seed))
 
@@ -32,14 +33,26 @@ class TorchShuffleAgentsWrapper(TorchEnvWrapper):
         self._inv_agent_permutation = self._agent_permutation.clone()
 
     def reset(self, **kwargs: Any) -> tuple[TorchObs, dict[str, Any]]:
-        seed = kwargs.get("seed", None)
-        if seed is not None:
-            self._rng.manual_seed(int(seed))
-
         obs, info = self.env.reset(**kwargs)
         reset_mask = self._reset_mask_from_kwargs(kwargs)
+        self._seed_agent_permutations(seed=kwargs.get("seed", None), reset_mask=reset_mask)
         self._reset_agent_permutations(reset_mask=reset_mask, agent_mask=obs.get("agent_mask", None))
         return self._shuffle_obs(obs, permutation=self._agent_permutation), info
+
+    def _seed_agent_permutations(self, *, seed: int | list[int | None] | None, reset_mask: torch.Tensor) -> None:
+        if seed is None or not bool(reset_mask.any()):
+            return
+        if not isinstance(seed, list) and bool(reset_mask.all()):
+            self._rng.manual_seed(int(seed))
+            self._lane_rngs.clear()
+            return
+        for world_idx in torch.nonzero(reset_mask, as_tuple=False).flatten().tolist():
+            world_seed = seed[world_idx] if isinstance(seed, list) else (int(seed) + world_idx) % (2**64)
+            if world_seed is None:
+                continue
+            if world_idx not in self._lane_rngs:
+                self._lane_rngs[world_idx] = torch.Generator(device=self.device)
+            self._lane_rngs[world_idx].manual_seed(world_seed)
 
     def step(
         self,
@@ -71,6 +84,10 @@ class TorchShuffleAgentsWrapper(TorchEnvWrapper):
         # Generator states differ between backends; retain the explicit seed when
         # moving to another device, while same-device calls preserve the stream.
         self._rng = torch.Generator(device=self.device).manual_seed(self._rng.initial_seed())
+        self._lane_rngs = {
+            world_idx: torch.Generator(device=self.device).manual_seed(generator.initial_seed())
+            for world_idx, generator in self._lane_rngs.items()
+        }
         self._agent_indices = self._agent_indices.to(self.device)
         self._agent_permutation = self._agent_permutation.to(self.device)
         self._inv_agent_permutation = self._inv_agent_permutation.to(self.device)
@@ -86,29 +103,40 @@ class TorchShuffleAgentsWrapper(TorchEnvWrapper):
         if world_idx.numel() == 0:
             return
 
+        random_scores = self._sample_random_scores(world_idx)
         if self.preserve_inactive_prefix_structure:
             if agent_mask is None:
                 raise ValueError("preserve_inactive_prefix_structure=True requires agent_mask in observations.")
-            new_permutation = self._sample_active_only_permutations(agent_mask[world_idx])
+            new_permutation = self._sample_active_only_permutations(agent_mask[world_idx], random_scores)
         else:
-            random_scores = torch.rand(
-                (int(world_idx.numel()), self.n_agents),
-                generator=self._rng,
-                device=self.device,
-            )
             new_permutation = random_scores.argsort(dim=1)
 
         self._agent_permutation[world_idx] = new_permutation
         self._inv_agent_permutation[world_idx] = new_permutation.argsort(dim=1)
 
-    def _sample_active_only_permutations(self, agent_mask: torch.Tensor) -> torch.Tensor:
+    def _sample_random_scores(self, world_idx: torch.Tensor) -> torch.Tensor:
+        if len(self._lane_rngs) == self._n_envs:
+            return torch.stack([
+                torch.rand((self.n_agents,), generator=self._lane_rngs[index], device=self.device)
+                for index in world_idx.tolist()
+            ])
+        # Reserve every reset world's shared draw so individually seeded worlds
+        # cannot shift the sequence of worlds still using the shared generator.
+        random_scores = torch.rand(
+            (int(world_idx.numel()), self.n_agents), generator=self._rng, device=self.device,
+        )
+        if self._lane_rngs:
+            for row_idx, index in enumerate(world_idx.tolist()):
+                generator = self._lane_rngs.get(index)
+                if generator is not None:
+                    random_scores[row_idx] = torch.rand((self.n_agents,), generator=generator, device=self.device)
+        return random_scores
+
+    def _sample_active_only_permutations(
+        self, agent_mask: torch.Tensor, random_scores: torch.Tensor,
+    ) -> torch.Tensor:
         batch_size = int(agent_mask.shape[0])
         base_permutation = self._agent_indices.expand(batch_size, self.n_agents).clone()
-        random_scores = torch.rand(
-            (batch_size, self.n_agents),
-            generator=self._rng,
-            device=self.device,
-        )
         active_order = random_scores.masked_fill(~agent_mask, torch.inf).argsort(dim=1)
         active_counts = agent_mask.sum(dim=1, keepdim=True)
         active_value_mask = self._agent_indices.view(1, self.n_agents) < active_counts

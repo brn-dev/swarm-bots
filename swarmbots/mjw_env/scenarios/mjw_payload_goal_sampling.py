@@ -8,6 +8,7 @@ import torch
 
 
 GOAL_SAMPLING_ATTEMPTS = 16
+MAX_GOAL_COORDINATE = 100_000.0
 
 
 def _float32_bound(value: float, *, up: bool) -> float:
@@ -45,8 +46,8 @@ def make_payload_goal_layout(
 ) -> PayloadGoalLayout:
     if not all(math.isfinite(value) for value in goal_rect):
         raise ValueError(f"Expected finite goal_rect bounds, got {goal_rect!r}")
-    if max(abs(value) for value in goal_rect) > torch.finfo(torch.float32).max / 8.0:
-        raise ValueError("goal_rect bounds must be representable in float32 goal positions")
+    if max(abs(value) for value in goal_rect) > MAX_GOAL_COORDINATE:
+        raise ValueError(f"goal_rect bounds must lie within [-{MAX_GOAL_COORDINATE:g}, {MAX_GOAL_COORDINATE:g}]")
     x_min, x_max, y_min, y_max = goal_rect
     x_min, y_min = (_float32_bound(value, up=True) for value in (x_min, y_min))
     x_max, y_max = (_float32_bound(value, up=False) for value in (x_max, y_max))

@@ -142,6 +142,20 @@ def _compute_wall_climb_done_mask_torch(
     return crossed_wall_y & units_active_mask
 
 
+WallRewardOutput = tuple[
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+]
+
+
 def _compute_wall_reward_kernel(
     unit_y: torch.Tensor,
     unit_z: torch.Tensor,
@@ -171,18 +185,7 @@ def _compute_wall_reward_kernel(
     forward_reward_wall_boost_distance: float,
     forward_reward_wall_boost_height_margin: float,
     unit_ground_z: float,
-) -> tuple[
-    torch.Tensor,
-    torch.Tensor,
-    torch.Tensor,
-    torch.Tensor,
-    torch.Tensor,
-    torch.Tensor,
-    torch.Tensor,
-    torch.Tensor,
-    torch.Tensor,
-    torch.Tensor,
-]:
+) -> WallRewardOutput:
     safe_unit_y = torch.where(stable_mask.unsqueeze(1), unit_y, torch.zeros_like(unit_y))
     capped_unit_y = torch.minimum(safe_unit_y, forward_reward_cap_y.unsqueeze(1))
     if forward_reward_wall_boost_factor == 1.0:
@@ -470,22 +473,7 @@ class WallMJWScenarioRuntime(BaseMJWScenarioRuntime):
             bindings=bindings,
             threshold_index=self._threshold_index_np,
         )
-        self._reward_kernel: Callable[
-            ...,
-            tuple[
-                torch.Tensor,
-                torch.Tensor,
-                torch.Tensor,
-                torch.Tensor,
-                torch.Tensor,
-                torch.Tensor,
-                torch.Tensor,
-                torch.Tensor,
-                torch.Tensor,
-                torch.Tensor,
-                torch.Tensor,
-            ],
-        ]
+        self._reward_kernel: Callable[..., WallRewardOutput]
         self._reward_kernel = _compute_wall_reward_kernel
         if scenario.compile_reward_kernel:
             if not hasattr(torch, "compile"):

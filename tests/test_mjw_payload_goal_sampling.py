@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import mujoco
+import math
 import numpy as np
 import pytest
 import torch
@@ -8,6 +9,11 @@ import torch
 from swarmbots import make_env, make_scenario
 from swarmbots.mjw_env.scenarios.mjw_payload_goal_sampling import PayloadGoalSampler, make_payload_goal_layout
 from swarmbots.mjw_env.swarm.mjw_homogeneous_swarm import MJWPreConnectedUnitLocationsConfig
+from swarmbots.mjw_env.scenarios.mjw_multi_payload_goal_runtime import (
+    _compute_multi_payload_goal_reward_kernel,
+    _compute_payload_progress_np,
+    _compute_payload_progress_torch,
+)
 
 
 def _sampler(*, shape="box", rect=(-2.5, 2.5, 2.5, 4.5), max_active=4, slots=8, device="cpu"):
@@ -89,9 +95,13 @@ def test_single_payload_and_caller_default_dtype_do_not_change_the_float32_contr
     assert (goals >= 0.0).all() and (goals.double() <= 0.01).all()
 
 
-@pytest.mark.parametrize("rect", [(100000001.0, 100000002.0, 0.0, 1.0), (1e39, 1.01e39, 0.0, 1.0)])
-def test_float32_unrepresentable_goal_rectangles_are_rejected_at_construction(rect):
-    with pytest.raises(ValueError, match="float32"):
+@pytest.mark.parametrize("rect", [
+    (100000.0, 100000.1, 0.0, 1.0), (-100000.1, -100000.0, 0.0, 1.0),
+    (0.0, 1.0, 100000.0, 100000.1), (0.0, 1.0, -100000.1, -100000.0),
+    (1e20, 1.01e20, 1e20, 1.01e20),
+])
+def test_out_of_range_goal_rectangles_are_rejected_at_construction(rect: tuple[float, ...]) -> None:
+    with pytest.raises(ValueError, match="100000"):
         make_scenario(
             "SwarmBots-MultiPayloadGoal-v0",
             max_payloads=1,
@@ -99,6 +109,54 @@ def test_float32_unrepresentable_goal_rectangles_are_rejected_at_construction(re
             goal_rect=rect,
             compile_reward_kernel=False,
         )
+
+
+def test_goal_coordinate_limits_are_inclusive_and_keep_samples_finite() -> None:
+    sampler = _sampler(rect=(-100000.0, 100000.0, -100000.0, 100000.0), slots=4)
+    goals = sampler.sample(
+        active_payload_mask=torch.ones((256, 4), dtype=torch.bool),
+        rng=torch.Generator().manual_seed(123),
+    )
+    assert torch.isfinite(goals).all()
+    assert (goals.abs() <= 100000.0).all()
+
+
+def test_float32_unrepresentable_goal_span_is_rejected_within_coordinate_limits() -> None:
+    with pytest.raises(ValueError, match="float32 span"):
+        _sampler(rect=(99999.000001, 99999.000002, 0.0, 1.0), max_active=1, slots=1)
+
+
+@pytest.mark.parametrize("device", ["cpu", pytest.param("cuda", marks=pytest.mark.cuda)])
+@pytest.mark.parametrize("compile_kernel", [False, True])
+def test_payload_goal_distances_remain_finite_when_float32_squares_overflow(
+    device: str, compile_kernel: bool,
+) -> None:
+    if device == "cuda" and not torch.cuda.is_available():
+        pytest.skip("CUDA unavailable")
+    if compile_kernel and device == "cpu":
+        pytest.skip("Compiled reward regression exercises the CUDA benchmark path")
+    positions = torch.tensor([[[3e20, 4e20, .3], [0., 0., .3]]], device=device)
+    goals = torch.zeros((1, 2, 2), device=device)
+    active = torch.tensor([[True, False]], device=device)
+    progress = _compute_payload_progress_torch(
+        payload_position=positions, goal_position=goals, active_payload_mask=active,
+        payload_radius=.3, goal_radius=.1,
+    )
+    cpu_progress = _compute_payload_progress_np(
+        payload_position=positions[0].cpu().numpy(), goal_position=goals[0].cpu().numpy(),
+        active_payload_mask=active[0].cpu().numpy(), payload_radius=.3, goal_radius=.1,
+    )
+    expected_distance = math.hypot(float(positions[0, 0, 0]), float(positions[0, 0, 1]))
+    assert torch.isfinite(progress).all()
+    assert float(progress[0, 0]) == pytest.approx(-expected_distance, rel=1e-6)
+    torch.testing.assert_close(progress[0].double().cpu(), torch.from_numpy(cpu_progress))
+    kernel = _compute_multi_payload_goal_reward_kernel
+    if compile_kernel:
+        kernel = torch.compile(kernel, fullgraph=True)
+    result = kernel(positions, goals, active, torch.ones(1, device=device, dtype=torch.bool),
+                    progress, 1., 1., .99, .3, .1, 5.)
+    assert all(torch.isfinite(value).all() for value in result)
+    assert float(result[1][0]) == pytest.approx(expected_distance * .01, rel=1e-5)
 
 
 def test_ordinary_decimal_bounds_are_rounded_inward_without_losing_finite_goals():

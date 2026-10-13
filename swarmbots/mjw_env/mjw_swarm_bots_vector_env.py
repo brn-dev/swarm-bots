@@ -91,8 +91,8 @@ def _capture_step_graph(model: Any, data: Any, nstep: int) -> Any | None:
     return capture.graph
 
 
-def _default_nconmax(*, num_units: int, num_total_connectors: int) -> int:
-    return max(32, num_total_connectors + (2 * num_units))
+def _default_nconmax(*, num_units: int, num_total_connectors: int, num_payloads: int = 0) -> int:
+    return max(32, num_total_connectors + (2 * num_units)) + (2 * num_payloads)
 
 
 def _default_njmax(*, num_units: int, nconmax: int) -> int:
@@ -326,6 +326,7 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
         default_nconmax = _default_nconmax(
             num_units=self._n_agents,
             num_total_connectors=self._n_total_connectors,
+            num_payloads=getattr(scenario, "max_payloads", 0),
         )
         resolved_nconmax = _resolve_workspace_cap(
             explicit_value=nconmax,
