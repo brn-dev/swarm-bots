@@ -117,6 +117,7 @@ class MATIndPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
             num_global_features=self.hidden_global_vars_dim,
             act_fn_cls=config.act_fn_cls,
             context_in_elements=self.hidden_global_vars_dim > 0,
+            interaction_config=config.critic_config.interaction_config,
             local_projection_linear_init_gain=config.critic_config.local_projection_init_gain,
             value_regressor_linear_init_gain=config.critic_config.value_regressor_init_gain,
             value_head_linear_init_gain=config.critic_config.value_head_init_gain,

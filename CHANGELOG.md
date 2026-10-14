@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Resolve TD3/DDPG's effective critic kind before choosing fixed-scale widths, preventing oversized Deep Set critics when the nested critic config retains its default kind.
+- Replace one-pass Deep Set critics with configurable iterative local/set interaction blocks across MAPPO, MAT/RMAT, DDPG/TD3/SAC baselines, and transformer Q heads. Default to four normalized residual local-MLP and masked global-message updates for standalone DDPG/TD3/SAC Deep Set critics, and two for on-policy critics and transformer Q readouts; share masks and final equivariant features with critic NOP. Rebalance and version the fixed model-scale layouts, refresh parameter docs and architecture diagrams, and require manual migration of old checkpoints without built-in compatibility code.
 - Place initial swarm assemblies using their analytical lowest sphere/capsule surface, with 1 mm floor clearance by default; retain explicit `z_pos` fixed-height overrides and share placement across raw and settled resets. Initial conditions have changed, so rerun evaluations.
 - Add a minimal standalone PyTorch PPO example independent of `swarmbots.learn`, using public observations, tanh-squashed Gaussian actuator/connector actions, and masked SAME_STEP rollouts.
 - Add modest payload contact headroom to MultiPayloadGoal's default physics capacity, retaining explicit overrides and other tasks' capacities.

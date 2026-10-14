@@ -280,6 +280,20 @@ def layout_counted_diagram(d):
         node.x, node.y = positions[node.id]
         node.width = 280 if node.role == "input" else 300 if node.role == "output" else 320
         node.__post_init__()
+    for first, second in (("q1_network", "q2_network"), ("head1", "head2")):
+        if second in nodes:
+            nodes[second].y = max(nodes[second].y, nodes[first].y + nodes[first].height + 24)
+            nodes["q2"].y = nodes[second].y + 10
+    readout_bottom = max(
+        (node.y + node.height for node in d.nodes if node.id in {"value", "q1_network", "q2_network", "head1", "head2"}),
+        default=0,
+    )
+    nop_y = max(1150, readout_bottom + 50)
+    for id in ("nop_bridge", "transition", "predictions"):
+        if id in nodes:
+            nodes[id].y = nop_y
+    if "future_actions" in nodes:
+        nodes["future_actions"].y = nop_y - 30
     for edge in d.edges:
         if edge.source == edge.target:
             node = nodes[edge.source]
@@ -289,16 +303,42 @@ def layout_counted_diagram(d):
         elif (edge.source, edge.target) == ("actions", "actor"):
             edge.via = [(1500, 95), (935, 95)]
         elif (edge.source, edge.target) == ("actions", "q_inputs"):
-            edge.via = [(1500, port(nodes["actions"], "right")[1]), (1500, 1110), (160, 1110)]
+            edge.target_port = "right"
+            edge.via = [
+                (1500, port(nodes["actions"], "right")[1]), (1500, nop_y - 12),
+                (345, nop_y - 12), (345, port(nodes["q_inputs"], "right")[1]),
+            ]
         elif (edge.source, edge.target) == ("future_actions", "transition"):
-            edge.via = [(345, port(nodes["future_actions"], "right")[1]), (345, 1128), (935, 1128)]
+            edge.via = [(345, port(nodes["future_actions"], "right")[1]), (345, nop_y - 22), (935, nop_y - 22)]
     d.width = 1530
     d.height = max(1450, max(node.y + node.height for node in d.nodes) + 50 + len(d.notes) * 16)
 
 
-def critic_lines(row, prefix):
-    return [
-        "element MLP: " + chain(row, prefix + ".deepset.element_encoder"),
+def critic_lines(row: dict[str, Any], prefix: str) -> list[str]:
+    interaction_prefix = prefix + ".deepset.interactions."
+    blocks = [
+        path for path in row["module_parameter_counts"]
+        if path.startswith(interaction_prefix) and path.removeprefix(interaction_prefix).isdigit()
+    ]
+    lines = ["element MLP: " + chain(row, prefix + ".deepset.element_encoder")]
+    if blocks:
+        block = interaction_prefix + "0"
+        policy_config = configuration(row)
+        critic_config = (
+            policy_config["joint_critic_config"] if prefix.endswith(".network")
+            else policy_config.get("transformer_critic_config") or policy_config["critic_config"]
+        )
+        interaction = (critic_config.get("deep_set_config") or critic_config)["interaction_config"]
+        lines.extend([
+            f"repeat {len(blocks)} set interaction blocks",
+            "pre-LayerNorm; " + interaction["local_update"] if interaction["normalize"] else interaction["local_update"],
+            "messages / block: " + chain(row, block + ".message_encoder"),
+            "masked mean → global MLP → broadcast",
+            "global / block: " + chain(row, block + ".global_update"),
+            "local / block: " + chain(row, block + ".local_encoder", fallback="identity"),
+            "block total: " + f"{module_count(row, block):,}",
+        ])
+    return [*lines,
         "masked mean across agents",
         "regressor: " + chain(row, prefix + ".deepset.set_decoder"),
         "output: one team value",
@@ -627,14 +667,14 @@ def build_diagram(row):
                 element_width = joint["element_hidden_dims"][-1]
                 d.node(
                     source,
-                    "Pre-pooling critic features",
+                    "Final equivariant critic features",
                     [f"{count} × (N × {element_width})", f"concatenate → N × {count * element_width}"],
                     "critic",
                     340,
                     660,
                 )
                 for id in source_nodes:
-                    d.edge(id, source, "element features", source_port="left", target_port="right")
+                    d.edge(id, source, "after set interactions", source_port="left", target_port="right")
         else:
             cc = cfg.get("critic_encoder_config")
             d.node(

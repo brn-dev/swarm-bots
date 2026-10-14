@@ -57,7 +57,7 @@ from swarmbots.learn.algos.sac.masac_policy import MASACPolicy, MASACPolicyConfi
 from swarmbots.learn.algos.td3.td3_policy import TD3Policy, TD3PolicyConfig
 from swarmbots.learn.algos.world_modeling.next_obs_pred_mixin import NextObsPredConfig
 from swarmbots.learn.nn_components.activations import ActivationFactory
-from swarmbots.learn.nn_components.deep_set import DeepSetCriticConfig
+from swarmbots.learn.nn_components.deep_set import DeepSetCriticConfig, DeepSetInteractionConfig
 from swarmbots.learn.nn_components.nn_init import make_init_linear_orthogonal
 from swarmbots.learn.obs_indices import ObsIndices
 from swarmbots.learn.presets.transformer import (
@@ -407,6 +407,7 @@ def _make_base_policy(
     baseline_critic_element_hidden_dims: tuple[int, ...] = (512, 512, 512),
     baseline_critic_context_in_elements: bool = True,
     mappo_critic_context_in_elements: bool = True,
+    deepset_interaction_config: DeepSetInteractionConfig | dict[str, Any] | None = None,
     mat_joint_obs_embedding: bool = False,
     critic_independent_encoders: bool | None = None,
     td3_recurrent_actor: bool = False,
@@ -516,11 +517,15 @@ def _make_base_policy(
         inter_module_mlp=rmat_actor_inter_module_mlp,
     )
 
+    if isinstance(deepset_interaction_config, dict):
+        deepset_interaction_config = DeepSetInteractionConfig(**deepset_interaction_config)
+    interaction_config = deepset_interaction_config or DeepSetInteractionConfig()
     joint_critic_config = JointCriticConfig(
         kind="deepset" if policy_variant.endswith("_deepset") else "mlp",
         hidden_dims=tuple(baseline_critic_hidden_dims),
         element_hidden_dims=tuple(baseline_critic_element_hidden_dims),
         context_in_elements=baseline_critic_context_in_elements,
+        interaction_config=deepset_interaction_config or JointCriticConfig().interaction_config,
     )
     if deterministic_policy_variant:
         policy_class = RecurrentTD3Policy if td3_recurrent_actor else TD3Policy
@@ -542,6 +547,7 @@ def _make_base_policy(
                 rmat_encoder_config if td3_recurrent_critic else mat_encoder_config, use_agent_attention=True,
             ),
             transformer_critic_config=TMASACCriticConfig(
+                interaction_config=interaction_config,
                 independent_encoders=False if critic_independent_encoders is None else critic_independent_encoders,
                 n_local_projection_hidden_layers=2,
                 n_value_regressor_hidden_layers=1,
@@ -629,6 +635,7 @@ def _make_base_policy(
                 ),
             ),
             "critic_config": TMASACCriticConfig(
+                interaction_config=interaction_config,
                 independent_encoders=False if critic_independent_encoders is None else critic_independent_encoders,
                 n_local_projection_hidden_layers=2,
                 n_value_regressor_hidden_layers=1,
@@ -727,6 +734,7 @@ def _make_base_policy(
                 critic_config=MAPPOCriticConfig(
                     mlp_hidden_dims=value_regressor_hidden_dims if mlp_critic else [],
                     deep_set_config=None if mlp_critic else DeepSetCriticConfig(
+                        interaction_config=interaction_config,
                         local_projection_hidden_dims=[256, 128],
                         value_regressor_hidden_dims=value_regressor_hidden_dims,
                     ),
@@ -742,6 +750,7 @@ def _make_base_policy(
         )
 
     mat_critic_config = MATCriticConfig(
+        interaction_config=interaction_config,
         n_local_projection_hidden_layers=2,
         n_value_regressor_hidden_layers=1,
         use_popart=use_popart,

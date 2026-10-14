@@ -24,7 +24,7 @@ from swarmbots.learn.algos.ppo.ppo_sampler import PPOSamples, PPOSampler, PPOSam
 from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
 from swarmbots.learn.losses import LossDict, LossMetrics
 from swarmbots.learn.nn_components.activations import ActivationFactory, make_activation
-from swarmbots.learn.nn_components.deep_set import DeepSetCritic
+from swarmbots.learn.nn_components.deep_set import DeepSetCritic, DeepSetInteractionConfig
 from swarmbots.learn.nn_components.feed_forward import MLP
 from swarmbots.learn.nn_components.nn_init import make_init_linear_orthogonal
 from swarmbots.learn.serialization_utils import serialize_dataclass, serialize_value
@@ -41,6 +41,7 @@ class MATCriticConfig:
     local_projection_init_gain: float = 1.0
     value_regressor_init_gain: float = 1.0
     value_head_init_gain: float = 0.01
+    interaction_config: DeepSetInteractionConfig = field(default_factory=DeepSetInteractionConfig)
 
 @dataclass(frozen=True)
 class MATQCBasePolicyConfig:
@@ -164,6 +165,7 @@ class MATQCBasePolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
             num_global_features=self.hidden_global_vars_dim,
             act_fn_cls=config.act_fn_cls,
             context_in_elements=self.hidden_global_vars_dim > 0,
+            interaction_config=config.critic_config.interaction_config,
             local_projection_linear_init_gain=config.critic_config.local_projection_init_gain,
             value_regressor_linear_init_gain=config.critic_config.value_regressor_init_gain,
             value_head_linear_init_gain=config.critic_config.value_head_init_gain,

@@ -1,13 +1,13 @@
 """Centralized team Q functions for padded, variable-size swarms."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal
 
 import torch
 from torch import nn
 
 from swarmbots.learn.nn_components.activations import ActivationFactory
-from swarmbots.learn.nn_components.deep_set import DeepSetCritic
+from swarmbots.learn.nn_components.deep_set import DeepSetCritic, DeepSetInteractionConfig
 from swarmbots.learn.nn_components.feed_forward import MLP
 from swarmbots.learn.nn_components.nn_init import make_init_linear_orthogonal
 
@@ -19,6 +19,9 @@ class JointCriticConfig:
     element_hidden_dims: tuple[int, ...] = (512, 512, 512)
     # Deep Set conditioning; flattened MLP critics already receive all global inputs.
     context_in_elements: bool = True
+    interaction_config: DeepSetInteractionConfig = field(
+        default_factory=lambda: DeepSetInteractionConfig(num_layers=4),
+    )
 
     def __post_init__(self) -> None:
         if self.kind not in {"mlp", "deepset"}:
@@ -67,6 +70,7 @@ class JointQNetwork(nn.Module):
                 act_fn_cls=act_fn_cls,
                 context_in_elements=config.context_in_elements and global_dim > 0,
                 context_after_pool=True,
+                interaction_config=config.interaction_config,
             )
 
     def forward(
@@ -114,7 +118,7 @@ class JointQNetwork(nn.Module):
         if self.config.kind == "mlp":
             raise ValueError("MLP critics do not support NOP")
         local, global_features, agent_mask = self._observation_features(**observations)
-        latents = self.network.encode_elements(local, global_features=global_features)
+        latents = self.network.encode_elements(local, global_features=global_features, agent_mask=agent_mask)
         return latents.masked_fill(~agent_mask.unsqueeze(-1), 0.0)
 
     def forward_with_latents(self, **observations) -> tuple[torch.Tensor, torch.Tensor | None]:

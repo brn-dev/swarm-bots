@@ -8,7 +8,7 @@ from torch import nn
 from swarmbots.learn.algos.mat.mat_encoder import MATEncoderConfig, MATEncoderLayer
 from swarmbots.learn.algos.ppo.ppo_policy import PopArtConfig
 from swarmbots.learn.nn_components.activations import ActivationFactory
-from swarmbots.learn.nn_components.deep_set import DeepSetCritic
+from swarmbots.learn.nn_components.deep_set import DeepSetCritic, DeepSetInteractionConfig
 from swarmbots.learn.nn_components.feed_forward import MLP, feedforward_linear_layers, make_feedforward
 from swarmbots.learn.nn_components.nn_init import make_init_linear_orthogonal, reinitialize_multihead_attention
 
@@ -28,6 +28,9 @@ class TransformerCriticConfig:
     local_projection_init_gain: float = 1.0
     value_regressor_init_gain: float = 1.0
     value_head_init_gain: float = 0.01
+    interaction_config: DeepSetInteractionConfig = field(default_factory=DeepSetInteractionConfig)
+    local_projection_hidden_dims: list[int] | None = None
+    value_regressor_hidden_dims: list[int] | None = None
 
 
 class ObservationActionEncoder(nn.Module):
@@ -445,8 +448,17 @@ class TransformerTwinCritic(nn.Module):
     ) -> DeepSetCritic:
         return DeepSetCritic(
             num_local_features=q_local_dim,
-            local_projection_hidden_dims=[q_local_dim] * critic_config.n_local_projection_hidden_layers,
-            value_regressor_hidden_dims=[q_local_dim] * critic_config.n_value_regressor_hidden_layers,
+            local_projection_hidden_dims=(
+                critic_config.local_projection_hidden_dims
+                if critic_config.local_projection_hidden_dims is not None
+                else [q_local_dim] * critic_config.n_local_projection_hidden_layers
+            ),
+            value_regressor_hidden_dims=(
+                critic_config.value_regressor_hidden_dims
+                if critic_config.value_regressor_hidden_dims is not None
+                else [q_local_dim] * critic_config.n_value_regressor_hidden_layers
+            ),
+            interaction_config=critic_config.interaction_config,
             act_fn_cls=act_fn_cls,
             local_projection_linear_init_gain=critic_config.local_projection_init_gain,
             value_regressor_linear_init_gain=critic_config.value_regressor_init_gain,

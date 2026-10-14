@@ -152,9 +152,11 @@ def test_default_tmasac_labels_show_exact_subtotals_and_whole_components() -> No
     row = next(row for row in ROWS if row["variant"] == "tmasac" and row["model_scale"]["name"] == "5M NOP1M")
     d = build_diagram(row)
     nodes = {node.id: node for node in d.nodes}
-    assert "element MLP: 384 → 384 → 384 (295,680)" in nodes["head1"].lines
-    assert "regressor: 384 → 384 → 1 (148,225)" in nodes["head1"].lines
-    assert nodes["head1"].parameters == 295_680 + 148_225
+    assert "element MLP: 384 → 128 (49,280)" in nodes["head1"].lines
+    assert "repeat 2 set interaction blocks" in nodes["head1"].lines
+    assert "pre-LayerNorm; residual_mlp" in nodes["head1"].lines
+    assert "regressor: 128 → 128 → 128 → 1 (33,153)" in nodes["head1"].lines
+    assert nodes["head1"].parameters == 49_280 + 2 * 99_328 + 33_153
     assert nodes["head2"].parameters == nodes["head1"].parameters
     assert nodes["critic_encoder"].parameters == 2_305_408
     assert nodes["critic_encoder"].parameters + 2 * nodes["head1"].parameters == row["roles"]["critic"]["total"]

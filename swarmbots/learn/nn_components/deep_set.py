@@ -17,6 +17,23 @@ from swarmbots.learn.nn_components.nn_init import (
 from swarmbots.learn.nn_components.popart import PopArtLinear
 
 PoolMode = Literal["mean", "sum", "max"]
+LocalUpdate = Literal["residual", "linear", "mlp", "residual_mlp"]
+
+
+@dataclass(frozen=True)
+class DeepSetInteractionConfig:
+    num_layers: int = 2
+    hidden_dims: tuple[int, ...] | None = None
+    local_update: LocalUpdate = "residual_mlp"
+    normalize: bool = True
+
+    def __post_init__(self) -> None:
+        if self.num_layers < 1:
+            raise ValueError("Deep Set interaction num_layers must be positive")
+        if self.hidden_dims is not None and any(width <= 0 for width in self.hidden_dims):
+            raise ValueError("Deep Set interaction hidden dimensions must be positive")
+        if self.local_update not in {"residual", "linear", "mlp", "residual_mlp"}:
+            raise ValueError(f"Unknown Deep Set local update: {self.local_update!r}")
 
 
 def _pool_over_set(
@@ -43,6 +60,7 @@ def _pool_over_set(
         raise ValueError(f"Expected mask shape {x.shape[:-1]}, got {mask.shape}")
 
     mask_f = mask.to(dtype=x.dtype).unsqueeze(-1)
+    x = x.masked_fill(~mask.unsqueeze(-1), 0.0)
     if mode == "sum":
         return (x * mask_f).sum(dim=set_dim)
     if mode == "mean":
@@ -52,9 +70,62 @@ def _pool_over_set(
         neg_inf = torch.finfo(x.dtype).min
         x_masked = x.masked_fill(~mask.unsqueeze(-1), neg_inf)
         pooled = x_masked.max(dim=set_dim).values
-        any_valid = mask.any(dim=set_dim)
+        any_valid = mask.any(dim=set_dim % x.ndim)
         return torch.where(any_valid.unsqueeze(-1), pooled, torch.zeros_like(pooled))
     raise ValueError(f"Unknown pool mode: {mode}")
+
+
+class DeepSetInteraction(nn.Module):
+    """A permutation-equivariant local update plus a broadcast set message."""
+
+    def __init__(
+        self,
+        features: int,
+        *,
+        config: DeepSetInteractionConfig,
+        set_dim: int,
+        pool_mode: PoolMode,
+        linear_init: LinearInitialization,
+        act_fn_cls: ActivationFactory,
+    ) -> None:
+        super().__init__()
+        self.set_dim = set_dim
+        self.pool_mode = pool_mode
+        self.local_update = config.local_update
+        self.norm = nn.LayerNorm(features) if config.normalize else nn.Identity()
+        hidden_dims = [features] if config.hidden_dims is None else list(config.hidden_dims)
+
+        def make_mlp(*, end_with_act_fn: bool = False) -> MLP:
+            return MLP(
+                input_dim=features, hidden_dims=[*hidden_dims, features],
+                end_with_act_fn=end_with_act_fn, linear_init=linear_init, act_fn_cls=act_fn_cls,
+            )
+
+        self.message_encoder = make_mlp(end_with_act_fn=True)
+        self.global_update = make_mlp()
+        if config.local_update == "residual":
+            self.local_encoder: nn.Module = nn.Identity()
+        elif config.local_update == "linear":
+            self.local_encoder = MLP(
+                input_dim=features, hidden_dims=[features], end_with_act_fn=True,
+                linear_init=linear_init, act_fn_cls=act_fn_cls,
+            )
+        else:
+            self.local_encoder = make_mlp()
+
+    def forward(self, elements: torch.Tensor, element_mask: torch.Tensor | None = None) -> torch.Tensor:
+        normalized = self.norm(elements)
+        message = _pool_over_set(
+            self.message_encoder(normalized), set_dim=self.set_dim, mode=self.pool_mode, mask=element_mask,
+        )
+        if self.local_update == "residual":
+            local = elements
+        else:
+            local = self.local_encoder(normalized)
+            if self.local_update == "residual_mlp":
+                local = elements + local
+        updated = local + self.global_update(message).unsqueeze(self.set_dim)
+        return updated if element_mask is None else updated.masked_fill(~element_mask.unsqueeze(-1), 0.0)
 
 
 class DeepSet(nn.Module):
@@ -68,10 +139,12 @@ class DeepSet(nn.Module):
         context_features: int = 0,
         context_in_elements: bool = False,
         context_after_pool: bool | None = None,
+        interactions: list[DeepSetInteraction] | None = None,
     ) -> None:
         super().__init__()
         self.element_encoder = element_encoder
         self.set_decoder = set_decoder
+        self.interactions = nn.ModuleList(interactions or [])
         self.set_dim = int(set_dim)
         self.pool_mode: PoolMode = pool_mode
         self.context_features = int(context_features)
@@ -81,12 +154,20 @@ class DeepSet(nn.Module):
             not self.context_in_elements if context_after_pool is None else bool(context_after_pool)
         )
 
-    def encode_elements(self, elements: torch.Tensor, *, context: torch.Tensor | None = None) -> torch.Tensor:
-        """Encode per-element features and any shared context without pooling."""
+    def encode_elements(
+        self, elements: torch.Tensor, *, context: torch.Tensor | None = None,
+        element_mask: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """Return the final equivariant features, sharing all interaction masks with the readout."""
+        if self.interactions and element_mask is not None:
+            elements = elements.masked_fill(~element_mask.unsqueeze(-1), 0.0)
         if self.context_in_elements:
             expanded_context = context.unsqueeze(self.set_dim).expand(*elements.shape[:-1], context.shape[-1])
             elements = torch.cat((elements, expanded_context), dim=-1)
-        return self.element_encoder(elements)
+        encoded = self.element_encoder(elements)
+        for interaction in self.interactions:
+            encoded = interaction(encoded, element_mask)
+        return encoded
 
     def forward(
         self,
@@ -104,7 +185,7 @@ class DeepSet(nn.Module):
         context: torch.Tensor | None = None,
         element_mask: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        encoded = self.encode_elements(elements, context=context)
+        encoded = self.encode_elements(elements, context=context, element_mask=element_mask)
         pooled = _pool_over_set(encoded, set_dim=self.set_dim, mode=self.pool_mode, mask=element_mask)
 
         if self.context_features > 0 and self.context_after_pool:
@@ -122,6 +203,7 @@ class DeepSetCriticHiddenDims(TypedDict):
 class DeepSetCriticConfig:
     local_projection_hidden_dims: list[int] = field(default_factory=list)
     value_regressor_hidden_dims: list[int] = field(default_factory=list)
+    interaction_config: DeepSetInteractionConfig = field(default_factory=DeepSetInteractionConfig)
 
 
 class DeepSetCritic(nn.Module):
@@ -148,6 +230,7 @@ class DeepSetCritic(nn.Module):
         act_fn_cls: ActivationFactory = nn.Tanh,
         context_in_elements: bool = False,
         context_after_pool: bool | None = None,
+        interaction_config: DeepSetInteractionConfig = DeepSetInteractionConfig(),
         use_popart: bool = False,
         popart_beta: float = 3e-4,
         popart_eps: float = 1e-5,
@@ -231,15 +314,23 @@ class DeepSetCritic(nn.Module):
             context_features=self.num_global_features,
             context_in_elements=self.context_in_elements,
             context_after_pool=self.context_after_pool,
+            interactions=[
+                DeepSetInteraction(
+                    pooled_dim, config=interaction_config, set_dim=set_dim, pool_mode=pool_mode,
+                    linear_init=local_projection_linear_init, act_fn_cls=act_fn_cls,
+                )
+                for _ in range(interaction_config.num_layers)
+            ],
         )
 
     def encode_elements(
         self,
         local_features: torch.Tensor,
         global_features: torch.Tensor | None = None,
+        agent_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
         context = global_features if self.num_global_features > 0 else None
-        return self.deepset.encode_elements(local_features, context=context)
+        return self.deepset.encode_elements(local_features, context=context, element_mask=agent_mask)
 
     def forward(
         self,

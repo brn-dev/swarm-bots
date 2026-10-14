@@ -47,12 +47,16 @@ class ScaleLayout:
     state_bridge_width: int
     single_joint_width: int
     twin_joint_width: int
+    deepset_v_width: int
+    deepset_dec_width: int
+    deepset_single_q_width: int
+    deepset_twin_q_width: int
+    deepset_q_head_width: int
     gated_width: int
     ppo_backbone: tuple[int, ...]
     mappo_backbone: tuple[int, ...]
     private_actor: tuple[int, ...]
     shared_v: tuple[int, ...]
-    separate_v_elements: tuple[int, ...]
     separate_v_regressor: tuple[int, ...]
     orig_v: tuple[int, ...]
     nop_width: int
@@ -70,7 +74,7 @@ SCALE_LAYOUTS = {
         name="2.5M NOP0.75M",
         main_parameters=2_500_000,
         nop_parameters=750_000,
-        version="2.5+0.75M-v1",
+        version="2.5+0.75M-v3",
         width=192,
         mlp_latent_width=192,
         ff_width=384,
@@ -92,12 +96,16 @@ SCALE_LAYOUTS = {
         state_bridge_width=192,
         single_joint_width=512,
         twin_joint_width=384,
+        deepset_v_width=192,
+        deepset_dec_width=128,
+        deepset_single_q_width=192,
+        deepset_twin_q_width=128,
+        deepset_q_head_width=128,
         gated_width=256,
         ppo_backbone=(512, 512, 384, 384),
         mappo_backbone=(768, 512, 512, 384),
         private_actor=(512, 384, 384),
         shared_v=(768, 384),
-        separate_v_elements=(384, 384),
         separate_v_regressor=(512, 384),
         orig_v=(768, 768, 384),
         nop_width=128,
@@ -110,7 +118,7 @@ SCALE_LAYOUTS = {
         name="5M NOP1M",
         main_parameters=5_000_000,
         nop_parameters=1_000_000,
-        version="5+1M-v2",
+        version="5+1M-v4",
         width=256,
         mlp_latent_width=256,
         ff_width=512,
@@ -132,12 +140,16 @@ SCALE_LAYOUTS = {
         state_bridge_width=256,
         single_joint_width=768,
         twin_joint_width=512,
+        deepset_v_width=256,
+        deepset_dec_width=192,
+        deepset_single_q_width=256,
+        deepset_twin_q_width=192,
+        deepset_q_head_width=128,
         gated_width=384,
         ppo_backbone=(768, 768, 512, 512),
         mappo_backbone=(1024, 768, 768, 512),
         private_actor=(768, 512, 512),
         shared_v=(1024, 512),
-        separate_v_elements=(512, 512),
         separate_v_regressor=(768, 512),
         orig_v=(1024, 1024, 512),
         nop_width=192,
@@ -150,7 +162,7 @@ SCALE_LAYOUTS = {
         name="10M NOP2M",
         main_parameters=10_000_000,
         nop_parameters=2_000_000,
-        version="10+2M-v2",
+        version="10+2M-v4",
         width=256,
         mlp_latent_width=384,
         ff_width=768,
@@ -172,12 +184,16 @@ SCALE_LAYOUTS = {
         state_bridge_width=384,
         single_joint_width=1024,
         twin_joint_width=768,
+        deepset_v_width=384,
+        deepset_dec_width=256,
+        deepset_single_q_width=384,
+        deepset_twin_q_width=256,
+        deepset_q_head_width=192,
         gated_width=512,
         ppo_backbone=(1024, 1024, 768, 768),
         mappo_backbone=(1536, 1024, 1024, 768),
         private_actor=(1024, 768, 768),
         shared_v=(1536, 768),
-        separate_v_elements=(768, 768),
         separate_v_regressor=(1024, 768),
         orig_v=(1536, 1536, 768),
         nop_width=192,
@@ -297,7 +313,7 @@ def _mlp_on_policy(config: Any, layout: ScaleLayout) -> Any:
                 critic,
                 deep_set_config=replace(
                     critic.deep_set_config,
-                    local_projection_hidden_dims=list(layout.shared_v),
+                    local_projection_hidden_dims=[layout.deepset_v_width],
                     value_regressor_hidden_dims=list(layout.shared_v),
                 ),
             )
@@ -321,9 +337,9 @@ def _mat(config: Any, layout: ScaleLayout) -> Any:
         # MAT-DEC must also pay for its own critic encoder, so its tails are smaller.
         critic = replace(
             critic,
-            n_local_projection_hidden_layers=2,
+            n_local_projection_hidden_layers=1,
             n_value_regressor_hidden_layers=2,
-            local_projection_hidden_dims=list(layout.separate_v_elements if separate else layout.shared_v),
+            local_projection_hidden_dims=[layout.deepset_dec_width if separate else layout.deepset_v_width],
             value_regressor_hidden_dims=list(layout.separate_v_regressor if separate else layout.shared_v),
         )
     else:
@@ -347,10 +363,11 @@ def _mat(config: Any, layout: ScaleLayout) -> Any:
 def _off_policy(config: Any, layout: ScaleLayout) -> Any:
     actor_config = config.actor_encoder_config
     shared = getattr(config, "shared_encoder_config", None) is not None
-    joint = (
-        hasattr(config, "joint_critic_config")
-        and getattr(config, "critic_kind", config.joint_critic_config.kind) != "transformer"
+    critic_kind = (
+        getattr(config, "critic_kind", config.joint_critic_config.kind)
+        if hasattr(config, "joint_critic_config") else "transformer"
     )
+    joint = critic_kind != "transformer"
     decentralized = (
         joint
         or not actor_config.use_agent_attention
@@ -411,6 +428,11 @@ def _off_policy(config: Any, layout: ScaleLayout) -> Any:
         "actor_head_config": head,
         "critic_encoder_config": critic_encoder,
         "nop_config": _nop(config.nop_config, layout),
+        critic_name: replace(
+            critic,
+            local_projection_hidden_dims=[layout.deepset_q_head_width],
+            value_regressor_hidden_dims=[layout.deepset_q_head_width, layout.deepset_q_head_width],
+        ),
     }
     if shared:
         updates["shared_encoder_config"] = _encoder(
@@ -419,7 +441,14 @@ def _off_policy(config: Any, layout: ScaleLayout) -> Any:
     if joint:
         width = layout.single_joint_width if getattr(config, "n_critics", 2) == 1 else layout.twin_joint_width
         updates["joint_critic_config"] = replace(
-            config.joint_critic_config, hidden_dims=(width, width, width), element_hidden_dims=(width, width, width)
+            config.joint_critic_config,
+            kind=critic_kind,
+            hidden_dims=(width, width, width),
+            element_hidden_dims=(
+                (layout.deepset_single_q_width if getattr(config, "n_critics", 2) == 1 else layout.deepset_twin_q_width,)
+                if critic_kind == "deepset"
+                else (width, width, width)
+            ),
         )
     if hasattr(config, "actor_state_critic_input_config") and isinstance(
         config.actor_state_critic_input_config, ActorStateCriticInputConfig

@@ -2,7 +2,7 @@
 
 See the [fixed layouts and allocation rules](model_scale.md), [cross-scale comparison](scale_comparison.md), and [diagram reading guide](diagrams/README.md). The commands below are [installed tools](../tools.md); run them from the repository root to reuse the checked-in snapshots.
 
-The repository keeps the guides, compact comparison, and three compressed audit snapshots (`counts.json.gz`, `2.5M/counts.json.gz`, and `10M/counts.json.gz`). Together the snapshots are about 100 KiB and provide the dimensions, parameter counts, and configurations needed by the diagram generator and its tests. The small historical preset audit is retained separately.
+The repository keeps the guides, compact comparison, and three compressed audit snapshots (`counts.json.gz`, `2.5M/counts.json.gz`, and `10M/counts.json.gz`). Together the snapshots are about 180 KiB and provide the dimensions, parameter counts, and configurations needed by the diagram generator and its tests. The small historical preset audit is retained separately.
 
 Detailed Markdown reports and CSV exports live in `generated/<scale>/`; rendered diagrams, their export formats, and the offline gallery live in `diagrams/`. These generated outputs stay local and are excluded from Git and source packages. Existing local outputs remain usable.
 

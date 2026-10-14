@@ -7,14 +7,20 @@ from gymnasium import spaces
 from torch import nn
 
 from swarmbots.learn import list_variants, list_model_scales
+from swarmbots.learn.algos.off_policy.joint_critic import JointCriticConfig
+from swarmbots.learn.algos.td3.recurrent_td3_policy import RecurrentTD3PolicyConfig
+from swarmbots.learn.algos.td3.td3_policy import TD3PolicyConfig
 from swarmbots.learn.hybrid_action_space import HybridActionSpace
 from swarmbots.learn.obs_indices import ObsIndices
 from swarmbots.learn.parameter_counts import count_policy_parameters
 from swarmbots.learn.presets.policy_factory import _is_off_policy_variant, _make_base_policy
 from swarmbots.learn.presets.transformer import MATInitGains, MATNormalizationConfig
-from swarmbots.learn.presets.model_scale import DEFAULT_MODEL_SCALE, SCALE_LAYOUTS, normalize_model_scale
+from swarmbots.learn.presets.model_scale import (
+    DEFAULT_MODEL_SCALE, SCALE_LAYOUTS, model_config_at_scale, normalize_model_scale,
+)
 from swarmbots.learn.training import _add_ppo_nop, _variant_options
 from swarmbots.learn.serialization_utils import serialize_dataclass
+from swarmbots.learn.nn_components.deep_set import DeepSetCritic, DeepSetInteractionConfig
 
 
 @pytest.fixture(autouse=True, scope="module")
@@ -97,6 +103,23 @@ def test_unsupported_scales_fail_before_building_environment(value):
 
 def test_custom_width_mode_is_available():
     assert normalize_model_scale(None) is None
+
+
+@pytest.mark.parametrize("scale", list_model_scales())
+@pytest.mark.parametrize("config_class", [TD3PolicyConfig, RecurrentTD3PolicyConfig])
+@pytest.mark.parametrize("critic_kind", ["mlp", "deepset"])
+@pytest.mark.parametrize("n_critics", [1, 2])
+def test_td3_scale_uses_top_level_critic_kind(
+    scale: str, config_class: type[TD3PolicyConfig], critic_kind: str, n_critics: int,
+) -> None:
+    config = config_class(
+        critic_kind=critic_kind,
+        n_critics=n_critics,
+        joint_critic_config=JointCriticConfig(kind="mlp" if critic_kind == "deepset" else "deepset"),
+    )
+    matching_config = replace(config, joint_critic_config=replace(config.joint_critic_config, kind=critic_kind))
+
+    assert model_config_at_scale(config, scale) == model_config_at_scale(matching_config, scale)
 
 
 @pytest.mark.parametrize("scale", list_model_scales())
@@ -276,6 +299,35 @@ def test_nop_layout_is_common_and_does_not_change_main_weights():
         assert policy.config.nop_config.transition_model_d_model == enabled._wm_pre_transition_dims[-1] == 192
         assert policy.config.nop_config.latent_projection_hidden_dims == [256, 256]
         assert policy.config.nop_config.transition_model_num_layers == 2
+
+
+@pytest.mark.parametrize("scale", list_model_scales())
+@pytest.mark.parametrize("variant", [
+    "mappo", "mat_ind", "mat_qcx", "mat_dec", "mat_ind_lstm", "mat_qcx_lstm",
+    "maddpg_deepset", "matd3_deepset", "masac_deepset", "tmatd3", "tmasac", "tmasac_lstm",
+])
+@pytest.mark.parametrize("custom", [False, True])
+def test_deepset_presets_use_family_defaults_and_honor_overrides(
+    scale: str, variant: str, custom: bool,
+) -> None:
+    settings = {"num_layers": 3, "local_update": "linear", "normalize": False, "hidden_dims": [64]}
+    with torch.device("meta"):
+        policy = make_policy(variant, scale, **({"deepset_interaction_config": settings} if custom else {}))
+    critics = [module for module in policy.modules() if isinstance(module, DeepSetCritic)]
+    assert critics
+    default_layers = 4 if variant.endswith("_deepset") else 2
+    expected = DeepSetInteractionConfig(**settings) if custom else DeepSetInteractionConfig(num_layers=default_layers)
+    for critic in critics:
+        assert len(critic.deepset.interactions) == expected.num_layers
+        assert all(block.local_update == expected.local_update for block in critic.deepset.interactions)
+        assert all(isinstance(block.norm, nn.LayerNorm) == expected.normalize for block in critic.deepset.interactions)
+    metadata = next(value for key, value in policy.get_hyper_parameters().items() if key.endswith("policy_config"))
+    critic_config = (
+        metadata["joint_critic_config"] if variant.endswith("_deepset")
+        else metadata.get("transformer_critic_config") or metadata["critic_config"]
+    )
+    interaction = (critic_config.get("deep_set_config") or critic_config)["interaction_config"]
+    assert interaction == serialize_dataclass(expected)
 
 
 @pytest.mark.parametrize("scale", list_model_scales())

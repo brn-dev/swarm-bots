@@ -281,6 +281,7 @@ def test_deepset_joint_critic_retains_observed_cardinality_and_privileged_contex
         decoder.weight.copy_(torch.tensor([[1.0, 1.0, 100.0, 1.0]]))
     critic.network.deepset.element_encoder = encoder
     critic.network.deepset.set_decoder = decoder
+    critic.network.deepset.interactions = nn.ModuleList()
     mask = torch.tensor([[True, False, False], [True, True, False], [False, False, False]])
     obs = dict(
         local_obs=torch.full((3, 3, 1), 2.0), actions=torch.full((3, 3, 1), 3.0),
@@ -388,7 +389,7 @@ def test_deepset_nop_reused_and_reencoded_global_context_produce_the_same_loss(e
 
 
 @pytest.mark.parametrize("variant", ["maddpg_deepset", "matd3_deepset", "masac_deepset"])
-def test_legacy_deepset_checkpoint_loads_with_late_context_option(env, variant, tmp_path):
+def test_deepset_checkpoint_loads_with_explicit_late_context_option(env, variant, tmp_path):
     algorithm = make_algorithm(env, variant, policy_options={"baseline_critic_context_in_elements": False})
     fill_replay(algorithm)
     algorithm.train(gradient_steps=2)

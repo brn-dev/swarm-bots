@@ -66,6 +66,7 @@ def test_mappo_critic_conditions_elements_and_keeps_direct_context_for_empty_swa
         decoder.weight.copy_(torch.tensor([[2.0, 1.0, 0.0, 0.0, 0.0, 0.0]]))
     policy.critic.deepset.element_encoder = encoder
     policy.critic.deepset.set_decoder = decoder
+    policy.critic.deepset.interactions = nn.ModuleList()
     local = torch.zeros(2, env.n_agents, local_width)
     global_context = torch.tensor([[1.0, 0.0, 0.0, 0.0, 0.0], [2.0, 0.0, 0.0, 0.0, 0.0]], requires_grad=True)
     mask = torch.tensor([[True, False, True, False], [False, False, False, False]])

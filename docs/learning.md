@@ -78,11 +78,39 @@ The default `mat_joint_obs_embedding=False` retains the additive architecture an
 
 All MAPPO presets include non-privileged global observations in the shared per-agent encoder. `mappo` uses Deep Set critics that condition each element encoder on privileged global variables, while retaining a direct privileged-global input to the value regressor after masked mean pooling. `mappo_mlp` flattens the masked per-agent features and local privileged variables into a fixed-slot MLP input, alongside privileged globals. Widths are fitted to `model_scale`; the flattened input layer grows with the padded agent count. MLP critics depend on agent order; Deep Set critics are permutation invariant. Both critic types use the same actor template, PPO settings, and action distributions.
 
-NOP remains enabled by default for both MAPPO critic types: it uses the shared observation-encoder features, which remain independent of privileged inputs. PopArt is supported by both critics. Set `policy_kwargs={"mappo_critic_context_in_elements": False}` for the previous Deep Set layout or to reconstruct checkpoints trained with that layout; early conditioning changes the critic element encoder's input weight shapes when privileged globals are present. Low-level `MAPPOCriticConfig.context_in_elements` controls the same option for Deep Set critics; the MLP critic receives its global context directly in its input.
+NOP remains enabled by default for both MAPPO critic types: it uses the shared observation-encoder features, which remain independent of privileged inputs. PopArt is supported by both critics. Set `policy_kwargs={"mappo_critic_context_in_elements": False}` to supply privileged global context only after pooling. Low-level `MAPPOCriticConfig.context_in_elements` controls the same option for Deep Set critics; the MLP critic receives its global context directly in its input.
 
 The sLSTM presets use a residual connection around the temporal module; `tmasac_slstm_no_residual` disables it. They disable memory-strength inputs to the critic. To enable those inputs, set `policy_kwargs["tmasac_actor_state_critic_input_config"]` to an `ActorStateCriticInputConfig` with `include_slstm_memory_strength=True`. Import that configuration class from `swarmbots.learn.algos.sac.recurrent_tmasac_policy`.
 
 The standard recurrent TMASAC presets (`tmasac_lstm`, `tmasac_slstm`, and their architecture variants) already condition their feed-forward critic on the actor's detached hidden state and memory. `tmasac_lstm_no_actor_state` disables this input explicitly. The recurrent shared observation encoder preset supplies temporal latents directly to actor and critic instead of adding a separate actor-state projection. Plain feed-forward TMASAC has no recurrent actor state.
+
+## Iterative Deep Set critics
+
+Every Deep Set critic projects agent features, runs independent set interaction blocks, then performs final masked mean pooling and scalar regression. Standalone `maddpg_deepset`, `matd3_deepset`, and `masac_deepset` critics default to **four blocks** at every model scale. MAPPO, MAT/RMAT value heads, and Q readouts after transformer encoders default to **two blocks**. Each default block computes
+
+```text
+z_i = LayerNorm(x_i)
+x'_i = x_i + local_MLP(z_i) + global_MLP(masked_mean(message_MLP(z_1:N)))
+```
+
+Each MLP has one hidden layer as wide as the agent features. Message MLPs end with the policy activation; local/global updates end with a linear layer. Blocks have separate weights. LayerNorm acts within each agent's feature vector. Inactive agents are excluded from every aggregation and their final features are zero. Critic NOP for the Deep Set baselines uses these final equivariant features with the same mask.
+
+Configure all presets through `policy_kwargs["deepset_interaction_config"]`, using either a `DeepSetInteractionConfig` from `swarmbots.learn.nn_components.deep_set` or a dictionary:
+
+```python
+policy_kwargs = {
+    "deepset_interaction_config": {
+        "num_layers": 3,
+        "hidden_dims": [256, 256],
+        "local_update": "residual_mlp",
+        "normalize": True,
+    },
+}
+```
+
+`num_layers` must be positive. `hidden_dims=None` selects one hidden layer at the feature width; an empty list selects a single affine layer. `local_update` selects the local branch: `residual` keeps `x_i`; `linear` uses `Act(W z_i + b)`; `mlp` uses `MLP(z_i)`; `residual_mlp` adds `x_i + MLP(z_i)`. All modes add the same pooled global-message branch. Set `normalize=False` to use `z_i=x_i` for the unnormalized formulas. Fixed scales supply the element/regressor widths and preserve these interaction settings across variants and tiers.
+
+This replaces the one-pass architecture. Old checkpoints require manual migration; there is no automatic weight conversion or compatibility layout. More interaction rounds enable context-dependent agent processing before the final pooling, but learning improvements still need empirical comparison.
 
 ## Model scale
 
@@ -92,7 +120,7 @@ The target allocation remains **2M actor / 3M combined critic** for separate enc
 
 The main budget excludes frozen targets, buffers, optimizer state, and NOP. `use_nop=False` disables NOP without changing the main architecture. The optional off-policy MLP critics continue to omit NOP. The removed PPO/MAPPO `_small` names remain unavailable.
 
-`model_scale=None` (CLI `--model-scale legacy`) retains the explicit low-level builder widths for custom experiments and older checkpoints. With the fixed scale enabled, its declared widths take precedence over low-level width arguments; structural controls such as critic sharing, normalization, and recurrent inputs remain configurable. Unsupported tiers or alternative main/NOP pairings are rejected. Reconstruct checkpoints with the same scale/layout version, task, distribution, and structural settings as training. Resolved configurations and layout version are saved in checkpoint/run metadata.
+`model_scale=None` (CLI `--model-scale legacy`) retains the explicit low-level builder widths for custom experiments; the CLI name does not restore the old one-pass Deep Set architecture. With the fixed scale enabled, its declared widths take precedence over low-level width arguments; structural controls such as critic sharing, normalization, and recurrent inputs remain configurable. Unsupported tiers or alternative main/NOP pairings are rejected. Reconstruct checkpoints with the same scale/layout version, task, distribution, and structural settings as training. Resolved configurations and layout version are saved in checkpoint/run metadata.
 
 ## Training defaults
 
@@ -136,10 +164,10 @@ All of these presets learn a scalar team value from SwarmBots' shared reward. Ac
 
 The critic architecture suffix selects:
 
-- **`_mlp`:** zero inactive local observations, privileged local fields, and actions; flatten them in padded agent-slot order; concatenate global observations, privileged global fields, and the complete agent mask. Each Q network has three 512-wide hidden layers. This critic is sensitive to agent order and is built for the task's fixed maximum number of slots.
-- **`_deepset`:** encode each active agent's local observation, privileged local fields, and action using three shared 512-wide layers. Masked mean pooling produces a set representation. Concatenate global observations and privileged global fields, which include the environment's active-agent count, then apply three more 512-wide layers and a scalar Q head. Each critic is invariant to a joint permutation of agent observations, actions, and masks.
+- **`_mlp`:** zero inactive local observations, privileged local fields, and actions; flatten them in padded agent-slot order; concatenate global observations, privileged global fields, and the complete agent mask. At the default 5M scale, DDPG has three 768-wide hidden layers; each TD3/SAC Q network has three 512-wide hidden layers. This critic is sensitive to agent order and is built for the task's fixed maximum number of slots.
+- **`_deepset`:** project each agent's local observation, privileged local fields, action, and shared global context, then apply four local/global set interaction blocks. Every block uses masked mean message aggregation and broadcasts the learned set message back to active agents. Final masked mean pooling produces a set representation; concatenate shared global context again, then apply a three-layer regressor and scalar Q head. At the default 5M scale, DDPG uses 256-wide agent features and a 768-wide regressor; each TD3/SAC critic uses 192-wide features and a 512-wide regressor. Each critic is invariant to a joint permutation of agent observations, actions, and masks.
 
-The decentralized actors use the same per-agent residual MLP backbone as `tmasac_dec`: 256-dimensional features, two residual blocks with 512/512 feed-forward layers, and a 128-wide action head. They receive local and non-privileged global observations. `tmatd3` enables attention across agents in this backbone; `tmatd3_dec` disables actor attention. Both use the action-conditioned transformer critic from TMASAC, sharing one encoder between their two Q heads by default. Their default transformer width is 256, with four attention heads and two layers. Privileged observations are confined to the critics.
+At the default 5M scale, the decentralized actors use the same per-agent residual MLP backbone as `tmasac_dec`: 256-dimensional features, three residual blocks with 512/512 feed-forward layers, and a 128-wide action head. They receive local and non-privileged global observations. `tmatd3` uses two attention blocks in this backbone; `tmatd3_dec` uses the three-block decentralized actor. Both use the action-conditioned transformer critic from TMASAC, sharing one encoder between their two Q heads by default. Their default critic transformer width is 384, with four attention heads and two layers. Privileged observations are confined to the critics.
 
 Transformer critic sharing is configurable for both algorithms with `policy_kwargs["critic_independent_encoders"]`. TMASAC and TMATD3 both default to `False`, sharing one action-conditioned encoder between their two Q heads. Set it to `True` for independent critic encoders. This option is separate from TMASAC's optional shared observation encoder between actor and critic. Changing encoder sharing changes checkpoint parameter shapes and keys; reconstruct a checkpoint with the setting used during training. Earlier TMATD3 checkpoints trained with independent encoders require `critic_independent_encoders=True`.
 

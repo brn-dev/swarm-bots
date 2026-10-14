@@ -8,11 +8,11 @@ Three supported scales select explicit architecture layouts in [model_scale.py](
 | 5M | 1M | `5M NOP1M` (default) | `5M` or `5+1M` |
 | 10M | 2M | `10M NOP2M` | `10M` or `10+2M` |
 
-There is no automatic parameter-count fitting, continuous width multiplier, or task-dependent size search. `list_model_scales()` lists the available names. Unregistered pairings are rejected; `model_scale=None` keeps the low-level builder's custom width arguments. The 5M layout is version `5+1M-v2`, which widens the QCX decoder block FFN to `192 → 256 → 192`.
+There is no automatic parameter-count fitting, continuous width multiplier, or task-dependent size search. `list_model_scales()` lists the available names. Unregistered pairings are rejected; `model_scale=None` keeps the low-level builder's custom width arguments. Layout versions `2.5+0.75M-v3`, `5+1M-v4`, and `10+2M-v4` use four interaction blocks for standalone DDPG/TD3/SAC Deep Set critics and rebalance their widths. On-policy Deep Set critics and transformer Q readouts retain two interaction blocks. Older checkpoints require manual migration. The 5M QCX decoder retains its `192 → 256 → 192` FFN.
 
-The 10M layout is version `10+2M-v2` and grows depth as well as feed-forward capacity. Main attention/recurrent encoders and autoregressive decoders use **three blocks**; comparable FF-only actors use **four blocks**. Actor–critic shared variants use three shared blocks and two private blocks on each side. Regular transformer actors retain D=256 with FF `[768,768]`; shared twin-Q encoders use D=384 with a conventional fourfold FF expansion to 1536. This keeps the nominal separate actor/critic budgets at 4M/6M. Three blocks provide the depth increase within the reviewed parameter allowance.
+The 10M layout grows depth as well as feed-forward capacity. Main attention/recurrent encoders and autoregressive decoders use **three blocks**; comparable FF-only actors use **four blocks**. Actor–critic shared variants use three shared blocks and two private blocks on each side. Regular transformer actors retain D=256 with FF `[768,768]`; shared twin-Q encoders use D=384 with a conventional fourfold FF expansion to 1536. This keeps the nominal separate actor/critic budgets at 4M/6M. Standalone Deep Set critics use four set interaction blocks at every tier, with configurable depth.
 
-The 2.5M tier preserves the 5M tier's 256-wide source bridge and 192-wide prediction MLPs. Its transition model uses D=128 with FF=512 and two layers: a larger expansion instead of reducing every auxiliary component. This gives about **0.65M–0.82M actual NOP parameters** on WallEasy, rather than the 0.5M allowance a linear reduction would suggest. The 10M tier uses a three-layer D=192, FF=768 transition model, bridge `[384,384]`, and prediction MLPs `[256,256]`, targeting about 2M. Every algorithm in a tier uses the same auxiliary core; source adapter input sizes account for the remaining count differences.
+The 2.5M tier preserves the 5M tier's 256-wide source bridge and 192-wide prediction MLPs. Its transition model uses D=128 with FF=512 and two layers: a larger expansion instead of reducing every auxiliary component. This gives about **0.65M–0.68M actual NOP parameters** on WallEasy, rather than the 0.5M allowance a linear reduction would suggest. The 10M tier uses a three-layer D=192, FF=768 transition model, bridge `[384,384]`, and prediction MLPs `[256,256]`, targeting about 2M. Every algorithm in a tier uses the same auxiliary core; source adapter input sizes account for the remaining count differences.
 
 See the [cross-scale counts](scale_comparison.md) and [instructions for generating full audits and diagrams](README.md).
 
@@ -49,9 +49,16 @@ Each entry below is declared directly; no scale multiplier generates these width
 | Independent/recurrent critic D / FF | 192 / 384 | 256 / 512 | 256 / 1024 |
 | Actor-state critic bridge | 192 | 256 | 384 |
 | Head-only actor processing | `[512,384,384]` | `[768,512,512]` | `[1024,768,768]` |
-| Shared V element/regressor MLPs | `[768,384]` | `[1024,512]` | `[1536,768]` |
-| Joint single-Q hidden width (three layers per stage) | 512 | 768 | 1024 |
-| Joint twin-Q hidden width (three layers per stage) | 384 | 512 | 768 |
+| Shared Deep Set V element / interaction width | 192 | 256 | 384 |
+| Separate MAT-DEC V element / interaction width | 128 | 192 | 256 |
+| Shared V regressor MLPs | `[768,384]` | `[1024,512]` | `[1536,768]` |
+| Joint single-Q Deep Set element / interaction width | 192 | 256 | 384 |
+| Joint twin-Q Deep Set element / interaction width | 128 | 192 | 256 |
+| Joint single-Q regressor width (three layers) | 512 | 768 | 1024 |
+| Joint twin-Q regressor width (three layers) | 384 | 512 | 768 |
+| Transformer Deep Set Q element / interaction / regressor width | 128 | 128 | 192 |
+| Standalone DDPG/TD3/SAC Deep Set interaction blocks | 4 | 4 | 4 |
+| On-policy / transformer Q Deep Set interaction blocks | 2 | 2 | 2 |
 | NOP transition blocks | 2 | 2 | 3 |
 | NOP latent / transition D | 128 | 192 | 192 |
 | NOP FF width | 512 | 384 | 768 |
@@ -65,17 +72,19 @@ All widths are powers of two or common intermediate sizes (128, 192, 256, 384, 5
 | Family | Representation / actor | Critic |
 | --- | --- | --- |
 | PPO | Joint MLP shared backbone `[768,768,512,512]`, 256 features per agent; private actor `[768,512]` and latent 512 | Flattened V MLP `[1024,512]` |
-| MAPPO | Per-agent shared backbone `[1024,768,768,512]`, latent 256; same private actor dimensions as PPO | Deep Set elements `[1024,512]`, pooled regressor `[1024,512]` |
+| MAPPO | Per-agent shared backbone `[1024,768,768,512]`, latent 256; same private actor dimensions as PPO | Deep Set element projection 256, two 256-wide interaction blocks, pooled regressor `[1024,512]` |
 | MAT-Orig / MAT-IND / MAT-QCX | Shared encoder D=256, two blocks, FF `[512,512]`; observation projections use D | IND private MLP `[768,512,512]`; Orig/QCX use a two-layer D=192 decoder. Shared IND/QCX V critics use the same Deep Set template as MAPPO. Orig retains token-wise V prediction with head `[1024,1024,512]` before mean pooling. |
 | Recurrent MAT-IND / MAT-QCX | Shared LSTM encoder D=192, two blocks, FF 512 in each of its two FF stages; same private actor/decoder dimensions as feed-forward MAT | Same V-head template as feed-forward MAT; no automatic widening/narrowing when selecting the decoder |
-| MAT-DEC | Separate actor D=256, three FF-only blocks with FF `[512,512]`, head 128; critic encoder D=256, two attention blocks, FF `[512,512]` | Smaller private Deep Set elements `[512,512]`, regressor `[768,512]`, because the critic also pays for its encoder |
-| DDPG / TD3 / SAC with Deep Set critics | Common decentralized actor: D=256, three FF-only blocks, FF `[512,512]`, head 128 | Single Q: three 768-wide layers in each element/regressor stage. Twin Q: three 512-wide layers in each stage of each complete Q network. |
-| TMASAC / TMATD3 | Transformer actor D=256, two attention/FF blocks, FF `[512,512]`, head 128 | Shared twin-Q encoder D=384, two blocks, FF 512; Q tails derive from critic width |
+| MAT-DEC | Separate actor D=256, three FF-only blocks with FF `[512,512]`, head 128; critic encoder D=256, two attention blocks, FF `[512,512]` | Private Deep Set projection 192, two 192-wide interaction blocks, regressor `[768,512]`, because the critic also pays for its encoder |
+| DDPG / TD3 / SAC with Deep Set critics | Common decentralized actor: D=256, three FF-only blocks, FF `[512,512]`, head 128 | Single Q: projection and four interaction blocks at width 256, three-layer regressor at width 768. Twin Q: each complete Q network uses projection and four interaction blocks at width 192, three-layer regressor at width 512. |
+| TMASAC / TMATD3 | Transformer actor D=256, two attention/FF blocks, FF `[512,512]`, head 128 | Shared twin-Q encoder D=384, two blocks, FF 512; each Deep Set Q tail uses projection 128, two 128-wide interaction blocks, regressor `[128,128]` |
 | Decentralized TMASAC / TMATD3 | Exactly the same three-block decentralized actor layout as the Deep Set algorithms | Exactly the same transformer critic as the corresponding attention actor variant |
 | Recurrent TMASAC | sLSTM actor D=256; LSTM actor D=192; both two encoder blocks, FF 512 in each FF stage, head 128 | Same D=384 transformer critic as feed-forward TMASAC, plus a 256-wide actor-state bridge |
 | Shared-encoder TMASAC | Shared D=256 encoder, two blocks, FF `[512,512]`; private actor D=256, one block, FF `[512,512]`, head 128 | Private critic D=384, one block, FF 512, twin Q tails |
 
 Attention uses four heads throughout the fixed layouts. Original MAT and QCX decoders both use D=192 and two layers. QCX uses a `192 → 256 → 192` FFN in each decoder block, including the recurrent MAT-QCX variant. Original MAT retains a `192 → 192 → 192` decoder MLP.
+
+All Deep Set variants share the [interaction configuration](../learning.md#iterative-deep-set-critics), pre-normalization, and residual local/global MLP updates. Standalone DDPG/TD3/SAC Deep Set critics use four independent blocks; on-policy critics and transformer Q readouts use two. Each branch has one hidden layer at the interaction width. Narrower agent features pay for deeper iterative processing while retaining the existing actor and pooled-regressor templates; transformer Q heads use a separate declared width. Custom depth, hidden widths, local update mode, and normalization survive scale selection.
 
 ## Why these comparisons are cleaner
 
@@ -84,7 +93,7 @@ Attention uses four heads throughout the fixed layouts. Original MAT and QCX dec
 - MAT-IND and MAT-QCX share their encoder and V-critic layouts; recurrent versions share those private head/decoder layouts as well. Original MAT retains its own value-pooling semantics.
 - LSTM uses D=192 because dense recurrent gates cost more than the sLSTM recurrence. Both retain FF=512 and head=128. Recurrent TMASAC's critic keeps its normal backbone instead of shrinking to pay for actor-state inputs.
 - Switching twin transformer critics to independent encoders leaves the actor untouched. At 5M, the independent/recurrent critic layout uses D=256, two blocks, FF=512; at 10M it uses D=256, three blocks, FF=1024. Counts for optional structural combinations remain visible rather than triggering a new fit.
-- At 10M, three shared blocks and two smaller private blocks put the shared-encoder TMASAC counts at about 3.90M shared / 1.83M actor / 4.05M critic. Attributing half the shared encoder to each side gives about 3.78M actor / 6.00M critic. QCX retains D=192 while gaining a third decoder block and FF=512, so its more involved blocks stay close to the private actor allowance; original MAT uses three D=256 blocks. PPO/MAPPO keep their existing 10M MLP layouts and 384-wide shared latents.
+- At 10M, three shared blocks and two smaller private blocks put the shared-encoder TMASAC counts at about 3.90M shared / 1.83M actor / 4.35M critic. Attributing half the shared encoder to each side gives about 3.78M actor / 6.30M critic. QCX retains D=192 while gaining a third decoder block and FF=512, so its more involved blocks stay close to the private actor allowance; original MAT uses three D=256 blocks. PPO/MAPPO keep their existing 10M MLP layouts and 384-wide shared latents.
 
 ## One common NOP architecture
 
@@ -105,7 +114,7 @@ trainer = make_training("SwarmBots-WallEasy-v0", "tmasac", model_scale="5+1M")
 swarmbots-inspect-policies --model-scale "5+1M" --output-dir docs/policy_parameters/generated/5M
 ```
 
-Only 18 core variants appear in the default list/sweep. MLP baselines, recurrent shared encoders, SwiGLU and other controls remain explicitly selectable; `list_variants(include_hidden=True)` lists them and the inspector's `--include-hidden` includes them. PPO/MAPPO `_small` names are removed. For custom dimensions use `model_scale=None` (CLI `legacy`); fixed-scale dimensions take precedence over low-level width arguments. Checkpoints record the selected tier, its layout version (`2.5+0.75M-v1`, `5+1M-v2`, or `10+2M-v2`), and resolved configurations. Reconstruct them with matching task, distribution, structural controls and layout version.
+Only 18 core variants appear in the default list/sweep. MLP baselines, recurrent shared encoders, SwiGLU and other controls remain explicitly selectable; `list_variants(include_hidden=True)` lists them and the inspector's `--include-hidden` includes them. PPO/MAPPO `_small` names are removed. For custom dimensions use `model_scale=None` (CLI `legacy`); fixed-scale dimensions take precedence over low-level width arguments. Checkpoints record the selected tier, its layout version (`2.5+0.75M-v3`, `5+1M-v4`, or `10+2M-v4`), and resolved configurations. Reconstruct them with matching task, distribution, structural controls and layout version.
 
 ## Architecture diagrams
 
