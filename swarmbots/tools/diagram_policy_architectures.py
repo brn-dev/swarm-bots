@@ -13,7 +13,7 @@ import json
 import textwrap
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 from swarmbots.tools.inspect_policy_parameters import (
     allocation_doc_link,
@@ -23,6 +23,7 @@ from swarmbots.tools.inspect_policy_parameters import (
 )
 from swarmbots.learn import list_model_scales, list_variants
 from swarmbots.learn.presets.model_scale import SCALE_LAYOUTS, normalize_model_scale
+from swarmbots.tools.policy_diagram_layout import DiagramLane, EdgeLabel, edge_points, layout_diagram
 
 ROOT = Path.cwd()
 COLORS = {
@@ -36,35 +37,112 @@ COLORS = {
 
 
 @dataclass
+class ComponentBlock:
+    title: str
+    content: list[str | ComponentBlock]
+    repeat: int | None = None
+    parameters: int | None = None
+
+    @property
+    def heading(self) -> str:
+        return self.title if self.repeat is None else f"{self.title} × {self.repeat}"
+
+    @property
+    def labels(self) -> list[str]:
+        labels = [self.heading]
+        if self.parameters is not None:
+            scope = "Per block" if self.repeat is not None else "Subtotal"
+            labels.append(f"{scope}: {self.parameters:,} parameters")
+        if self.repeat is not None:
+            labels.append("Independent weights per block")
+        return labels
+
+    @property
+    def lines(self) -> list[str]:
+        return [*self.labels, *content_lines(self.content)]
+
+
+def content_lines(content: list[str | ComponentBlock]) -> Iterator[str]:
+    for item in content:
+        if isinstance(item, ComponentBlock):
+            yield from item.labels
+            yield from content_lines(item.content)
+        else:
+            yield item
+
+
+@dataclass
+class ContentText:
+    text: str
+    x: int
+    y: int
+    bold: bool = False
+
+
+@dataclass
+class ContentBox:
+    block: ComponentBlock
+    x: int
+    y: int
+    width: int
+    height: int
+
+
+def layout_content(
+    content: list[str | ComponentBlock], x: int, y: int, width: int,
+) -> tuple[list[ContentText | ContentBox], int]:
+    """Share nested-box geometry between the SVG and raster renderers."""
+    elements: list[ContentText | ContentBox] = []
+    top = y
+    for item in content:
+        if isinstance(item, ComponentBlock):
+            heading, heading_height = layout_content([item.heading], x + 10, y + 10, width - 20)
+            for text in heading:
+                text.bold = True
+            details, details_height = layout_content(item.labels[1:], x + 10, y + 10 + heading_height, width - 20)
+            labels, label_height = [*heading, *details], heading_height + details_height
+            body, body_height = layout_content(item.content, x + 10, y + 10 + label_height, width - 20)
+            height = 20 + label_height + body_height
+            elements.extend([ContentBox(item, x, y, width, height), *labels, *body])
+            y += height + 10
+        else:
+            for part in textwrap.wrap(item, int(width / 6.3), break_long_words=False) or [""]:
+                elements.append(ContentText(part, x, y + 13))
+                y += 18
+    return elements, y - top
+
+
+@dataclass
 class Node:
     id: str
     title: str
-    lines: list[str]
+    content: list[str | ComponentBlock]
     role: str
-    x: int
-    y: int
+    x: int = 0
+    y: int = 0
     width: int = 280
     height: int = 0
     parameters: int | None = None
     parameter_role: str | None = None
 
-    def __post_init__(self):
-        self.height = max(82, self.text_offset + 2 + len(self.wrapped_lines) * 18)
+    def __post_init__(self) -> None:
+        _, height = self.content_layout
+        self.height = max(82, self.text_offset + height + 12)
 
     @property
-    def wrapped_lines(self):
-        return [
-            part
-            for line in self.lines
-            for part in textwrap.wrap(line, int((self.width - 26) / 6.3), break_long_words=False) or [""]
-        ]
+    def lines(self) -> list[str]:
+        return list(content_lines(self.content))
 
     @property
-    def text_offset(self):
-        return 68 if self.parameters is not None else 47
+    def content_layout(self) -> tuple[list[ContentText | ContentBox], int]:
+        return layout_content(self.content, self.x + 13, self.y + self.text_offset, self.width - 26)
 
     @property
-    def parameter_label(self):
+    def text_offset(self) -> int:
+        return 55 if self.parameters is not None else 34
+
+    @property
+    def parameter_label(self) -> str:
         return f"Total: {self.parameters:,} parameters" if self.parameters is not None else ""
 
 
@@ -76,7 +154,10 @@ class Edge:
     kind: str = "data"
     source_port: str = "right"
     target_port: str = "left"
-    via: list[tuple[int, int]] = field(default_factory=list)
+    via: list[tuple[float, float]] = field(default_factory=list)
+    source_offset: float = 0.5
+    target_offset: float = 0.5
+    label_box: EdgeLabel | None = None
 
 
 @dataclass
@@ -90,15 +171,18 @@ class Diagram:
     main_parameters: int = 0
     nop_parameters: int = 0
     role_parameters: dict[str, int] = field(default_factory=dict)
+    lanes: list[DiagramLane] = field(default_factory=list)
     width: int = 1330
     height: int = 1050
 
-    def node(self, id, title, lines, role, x, y, width=280):
-        self.nodes.append(Node(id, title, lines, role, x, y, width))
+    def node(
+        self, id: str, title: str, content: list[str | ComponentBlock], role: str,
+    ) -> str:
+        self.nodes.append(Node(id, title, content, role))
         return id
 
-    def edge(self, source, target, label="", kind="data", source_port="right", target_port="left", via=()):
-        self.edges.append(Edge(source, target, label, kind, source_port, target_port, list(via)))
+    def edge(self, source: str, target: str, label: str = "", kind: str = "data") -> None:
+        self.edges.append(Edge(source, target, label, kind))
 
     @property
     def parameter_summary(self):
@@ -150,7 +234,9 @@ def module_count(row, *paths):
     raise ValueError(f"Missing audited module {paths} for {row['variant']}")
 
 
-def encoder_lines(row, config, prefix, projection=""):
+def encoder_lines(
+    row: dict[str, Any], config: dict[str, Any], prefix: str, projection: str = "",
+) -> list[str | ComponentBlock]:
     """List input projections, the repeated block's forward order, then output."""
     width = config["d_model"]
     block = prefix + ".layers.0"
@@ -159,7 +245,7 @@ def encoder_lines(row, config, prefix, projection=""):
         if config["use_agent_attention"]
         else "agent attention: disabled"
     )
-    lines = []
+    lines: list[str | ComponentBlock] = []
     if projection:
         lines.append("obs MLP (once): " + projection)
         if prefix + ".global_obs_encoder" in row["module_parameter_counts"]:
@@ -169,24 +255,20 @@ def encoder_lines(row, config, prefix, projection=""):
                     "add local and global token projections",
                 ]
             )
-    lines.extend(
-        [
-            f"repeat {config['num_layers']} block{'s' if config['num_layers'] != 1 else ''} · D={width}",
-            f"block total: {module_count(row, block):,} per block",
-        ]
-    )
+    block_lines = [f"feature width: D={width}"]
     temporal = config.get("temporal_model_cls")
     if temporal:
         kind = "sLSTM" if "SLSTM" in temporal else "LSTM"
         temporal_line = f"{kind} / block: hidden={width} ({module_count(row, block + '.temporal_model'):,})"
         temporal_first = config["temporal_model_order"] == "temporal_first"
-        lines.append(temporal_line if temporal_first else attention)
+        block_lines.append(temporal_line if temporal_first else attention)
         if config.get("inter_module_mlp"):
-            lines.append("inter FF / block: " + chain(row, block + ".inter_module_feedforward"))
-        lines.append(attention if temporal_first else temporal_line)
+            block_lines.append("inter FF / block: " + chain(row, block + ".inter_module_feedforward"))
+        block_lines.append(attention if temporal_first else temporal_line)
     else:
-        lines.append(attention)
-    lines.append("FF / block: " + chain(row, block + ".feedforward"))
+        block_lines.append(attention)
+    block_lines.append("FF / block: " + chain(row, block + ".feedforward"))
+    lines.append(ComponentBlock("Encoder block", block_lines, config["num_layers"], module_count(row, block)))
     lines.append(f"output: N × {width}")
     return lines
 
@@ -243,84 +325,16 @@ def annotate_component_totals(d, row):
         raise ValueError(f"Negative component count for {d.variant}")
 
 
-def layout_counted_diagram(d):
-    """Leave room for exact count labels while retaining the four-column sketch."""
-    nodes = {node.id: node for node in d.nodes}
-    positions = {
-        "public": (20, 230),
-        "privileged": (20, 650),
-        "actions": (1170, 110),
-        "representation": (380, 370),
-        "actor_encoder": (380, 110),
-        "actor": (775, 110),
-        "value": (775, 650),
-        "v": (1170, 670),
-        "q_inputs": (20, 850),
-        "critic_encoder": (380, 650),
-        "state_bridge": (380, 480),
-        "q1_network": (775, 580),
-        "q2_network": (775, 850),
-        "head1": (775, 580),
-        "head2": (775, 850),
-        "q1": (1170, 590),
-        "q2": (1170, 860),
-        "q_features": (380, 1000),
-        "nop_bridge": (380, 1150),
-        "transition": (775, 1150),
-        "predictions": (1170, 1150),
-        "future_actions": (20, 1120),
-    }
-    if "actor_encoder" in nodes and nodes["actor_encoder"].x == 675:
-        positions["actor_encoder"] = (775, 110)
-    if "state_bridge" in nodes and nodes["state_bridge"].x == 675:
-        positions["state_bridge"] = (775, 480)
-    if "representation" in nodes and nodes["representation"].role == "critic":
-        positions["representation"] = (380, 650)
-    for node in d.nodes:
-        node.x, node.y = positions[node.id]
-        node.width = 280 if node.role == "input" else 300 if node.role == "output" else 320
-        node.__post_init__()
-    for first, second in (("q1_network", "q2_network"), ("head1", "head2")):
-        if second in nodes:
-            nodes[second].y = max(nodes[second].y, nodes[first].y + nodes[first].height + 24)
-            nodes["q2"].y = nodes[second].y + 10
-    readout_bottom = max(
-        (node.y + node.height for node in d.nodes if node.id in {"value", "q1_network", "q2_network", "head1", "head2"}),
-        default=0,
-    )
-    nop_y = max(1150, readout_bottom + 50)
-    for id in ("nop_bridge", "transition", "predictions"):
-        if id in nodes:
-            nodes[id].y = nop_y
-    if "future_actions" in nodes:
-        nodes["future_actions"].y = nop_y - 30
-    for edge in d.edges:
-        if edge.source == edge.target:
-            node = nodes[edge.source]
-            edge.via = [(node.x + node.width - 18, node.y - 4), (node.x + 18, node.y - 4)]
-        elif (edge.source, edge.target) == ("public", "q_inputs"):
-            edge.via = [(345, port(nodes["public"], "right")[1]), (345, port(nodes["q_inputs"], "right")[1])]
-        elif (edge.source, edge.target) == ("actions", "actor"):
-            edge.via = [(1500, 95), (935, 95)]
-        elif (edge.source, edge.target) == ("actions", "q_inputs"):
-            edge.target_port = "right"
-            edge.via = [
-                (1500, port(nodes["actions"], "right")[1]), (1500, nop_y - 12),
-                (345, nop_y - 12), (345, port(nodes["q_inputs"], "right")[1]),
-            ]
-        elif (edge.source, edge.target) == ("future_actions", "transition"):
-            edge.via = [(345, port(nodes["future_actions"], "right")[1]), (345, nop_y - 22), (935, nop_y - 22)]
-    d.width = 1530
-    d.height = max(1450, max(node.y + node.height for node in d.nodes) + 50 + len(d.notes) * 16)
-
-
-def critic_lines(row: dict[str, Any], prefix: str) -> list[str]:
+def critic_lines(row: dict[str, Any], prefix: str) -> list[str | ComponentBlock]:
+    layers = {layer["module"]: layer["dimensions"] for layer in row["layer_layout"]}
+    features = int(layers[prefix + ".deepset.element_encoder"].split(" -> ")[-1])
+    readout_input = int(layers[prefix + ".deepset.set_decoder"].split(" -> ")[0])
     interaction_prefix = prefix + ".deepset.interactions."
     blocks = [
         path for path in row["module_parameter_counts"]
         if path.startswith(interaction_prefix) and path.removeprefix(interaction_prefix).isdigit()
     ]
-    lines = ["element MLP: " + chain(row, prefix + ".deepset.element_encoder")]
+    lines: list[str | ComponentBlock] = ["element MLP (once): " + chain(row, prefix + ".deepset.element_encoder")]
     if blocks:
         block = interaction_prefix + "0"
         policy_config = configuration(row)
@@ -329,42 +343,54 @@ def critic_lines(row: dict[str, Any], prefix: str) -> list[str]:
             else policy_config.get("transformer_critic_config") or policy_config["critic_config"]
         )
         interaction = (critic_config.get("deep_set_config") or critic_config)["interaction_config"]
-        lines.extend([
-            f"repeat {len(blocks)} set interaction blocks",
-            "pre-LayerNorm; " + interaction["local_update"] if interaction["normalize"] else interaction["local_update"],
-            "messages / block: " + chain(row, block + ".message_encoder"),
-            "masked mean → global MLP → broadcast",
-            "global / block: " + chain(row, block + ".global_update"),
-            "local / block: " + chain(row, block + ".local_encoder", fallback="identity"),
-            "block total: " + f"{module_count(row, block):,}",
-        ])
+        update = interaction["local_update"]
+        local_lines = ["local MLP: " + chain(row, block + ".local_encoder", fallback="identity (0)")]
+        if update == "residual":
+            local_lines = ["l = h (identity / skip)"]
+        else:
+            local_lines.append("l = h + local MLP(u)" if update == "residual_mlp" else "l = local MLP(u)")
+        lines.append(ComponentBlock("Set interaction", [
+            f"input: per-agent h · N × {features}",
+            "u = LayerNorm(h)" if interaction["normalize"] else "u = h (no normalization)",
+            "Parallel local / set-message branches:",
+            ComponentBlock("Local branch · per agent", local_lines),
+            ComponentBlock("Set-message branch · across agents", [
+                "message MLP: " + chain(row, block + ".message_encoder"),
+                "masked mean of message MLP(u)",
+                "global MLP: " + chain(row, block + ".global_update"),
+                "g = global MLP(pooled messages)",
+                f"broadcast g: {features} → N × {features}",
+            ]),
+            "merge: h_next = l + g",
+            "zero masked agents; pass to next block",
+        ], len(blocks), module_count(row, block)))
+    readout = ["final masked mean across agents"]
+    if readout_input > features:
+        readout.append(f"append global context: {readout_input - features} features")
+    readout.append("regressor: " + chain(row, prefix + ".deepset.set_decoder"))
     return [*lines,
-        "masked mean across agents",
-        "regressor: " + chain(row, prefix + ".deepset.set_decoder"),
+        f"final features: N × {features} (before pooling)",
+        ComponentBlock("Team readout · once", readout),
         "output: one team value",
     ]
 
 
-def add_readout(d, row, prefix, id, title, x, y):
-    d.node(id, title, critic_lines(row, prefix), "critic", x, y)
+def add_readout(d: Diagram, row: dict[str, Any], prefix: str, id: str, title: str) -> str:
+    d.node(id, title, critic_lines(row, prefix), "critic")
     return id
 
 
-def add_memory(d, id, config):
+def add_memory(d: Diagram, id: str, config: dict[str, Any]) -> None:
     if config.get("temporal_model_cls"):
-        node = next(node for node in d.nodes if node.id == id)
         d.edge(
             id,
             id,
             "previous temporal state",
             "state",
-            "top",
-            "top",
-            [(node.x + node.width - 18, node.y - 4), (node.x + 18, node.y - 4)],
         )
 
 
-def build_diagram(row):
+def build_diagram(row: dict[str, Any]) -> Diagram:
     cfg = configuration(row)
     s = row["shape"]
     d = Diagram(
@@ -392,18 +418,12 @@ def build_diagram(row):
         "Public observations",
         [f"local: N × {local}", f"global: {glob}", "actor-visible inputs"],
         "input",
-        20,
-        185,
-        250,
     )
     d.node(
         "privileged",
         "Privileged context",
         [f"local: N × {private}", f"global: {private_global}", "critic only"],
         "input",
-        20,
-        415,
-        250,
     )
     distribution = row.get("continuous_action_dist")
     output_label = (
@@ -418,13 +438,10 @@ def build_diagram(row):
         "Actions",
         [output_label, f"N × {action}", "autoregressive if decoder shown"],
         "output",
-        1010,
-        95,
-        270,
     )
     d.notes = [
         f"N={n}; batch B omitted. Fixed input/output widths are task-specific.",
-        "Solid = data. Dashed = causal actions / detached state. Masks and normalization are implicit.",
+        "Solid = data. Dashed = causal actions / detached state. Insets show sub-component scope; crossing lines do not join.",
         "Main sketch is online networks. Frozen target copies and optimizer updates are omitted.",
     ]
     source = "representation"
@@ -433,7 +450,7 @@ def build_diagram(row):
             ac = cfg["actor_config"]
             width = ac.get("shared_encoder_latent_dim", ac.get("shared_encoder_latent_dim_per_agent"))
             kind = "Joint MLP shared encoder" if "latent_pi_dim_per_agent" in ac else "Per-agent shared encoder"
-            d.node(source, kind, [chain(row, "shared_encoder.mlp"), f"reshape/output: N × {width}"], "shared", 340, 225)
+            d.node(source, kind, [chain(row, "shared_encoder.mlp"), f"reshape/output: N × {width}"], "shared")
         else:
             ec = cfg["encoder_config"]
             width = ec["d_model"]
@@ -442,8 +459,6 @@ def build_diagram(row):
                 "Shared observation encoder" if shared else "Critic observation encoder",
                 encoder_lines(row, ec, "encoder", chain(row, "encoder.local_obs_encoder")),
                 "shared" if shared else "critic",
-                340,
-                245 if shared else 410,
             )
             add_memory(d, source, ec)
         d.edge("public", source)
@@ -455,8 +470,6 @@ def build_diagram(row):
                 "Actor observation encoder",
                 encoder_lines(row, ac, "actor_encoder", chain(row, "actor_encoder.local_obs_encoder")),
                 "actor",
-                340,
-                80,
             )
             d.edge("public", "actor_encoder")
             actor_source = "actor_encoder"
@@ -472,12 +485,11 @@ def build_diagram(row):
                 f"{'query' if qcx else 'obs'} projection (once): {projection}",
                 f"action embedding (once): {action_embedding}",
                 f"{'memory' if qcx else 'obs context'} width: {width if qcx else dec_width}",
-                f"repeat {dec['num_layers']} blocks · D={dec_width} · {dec['nhead']} heads",
             ]
             block = "decoder.layers.0" if qcx else "decoder.blocks.0"
-            lines.append(f"block total: {module_count(row, block):,} per block")
+            block_lines = [f"D={dec_width} · {dec['nhead']} heads"]
             if qcx:
-                lines.extend(
+                block_lines.extend(
                     [
                         "context MLP / block: " + chain(row, block + ".context_encoder", fallback="identity (0)"),
                         f"causal attn / block: {module_count(row, block + '.query_context_attn'):,}",
@@ -486,31 +498,30 @@ def build_diagram(row):
                     ]
                 )
             else:
-                lines.extend(
+                block_lines.extend(
                     [
                         f"causal self-attn / block: {module_count(row, block + '.attn1'):,}",
                         f"obs-query attn / block: {module_count(row, block + '.attn2'):,}",
                         "FF / block: " + chain(row, block + ".mlp"),
-                        "decoder head: " + chain(row, "decoder.head"),
                     ]
                 )
+            lines.append(ComponentBlock("Decoder block", block_lines, dec['num_layers'], module_count(row, block)))
+            if not qcx:
+                lines.append("decoder head (once): " + chain(row, "decoder.head"))
             lines.append(f"output: N × {dec_width if qcx else dec.get('latent_pi_dim') or dec_width}")
-            d.node("actor", "QCX autoregressive decoder" if qcx else "Original MAT decoder", lines, "actor", 675, 80)
+            d.node("actor", "QCX autoregressive decoder" if qcx else "Original MAT decoder", lines, "actor")
             d.edge(actor_source, "actor", f"N × {width}; {'obs + memory' if qcx else 'obs context'}")
             d.edge(
                 "actions",
                 "actor",
                 "previous agents only",
                 "causal",
-                "bottom",
-                "top",
-                [(1297, 65), (815, 65)],
             )
             d.notes.append(
                 "Decoder loop is across agent order, not future observations; training may teacher-force actions."
             )
         else:
-            d.node("actor", "Private actor MLP", [chain(row, "actor.mlp", "actor_head"), "per agent"], "actor", 675, 95)
+            d.node("actor", "Private actor MLP", [chain(row, "actor.mlp", "actor_head"), "per agent"], "actor")
             d.edge(actor_source, "actor", f"N × {cfg.get('actor_encoder_config', {}).get('d_model', width)}")
         d.edge("actor", "actions")
         if row["base_policy_class"] == "MATOrigPolicy":
@@ -524,8 +535,6 @@ def build_diagram(row):
                     "masked mean → team V",
                 ],
                 "critic",
-                675,
-                435,
             )
         elif (
             "actor_config" in cfg
@@ -542,14 +551,12 @@ def build_diagram(row):
                     "scalar team V",
                 ],
                 "critic",
-                675,
-                435,
             )
         else:
-            add_readout(d, row, "critic", "value", "Deep Set V critic", 675, 435)
+            add_readout(d, row, "critic", "value", "Deep Set V critic")
         d.edge(source, "value", f"N × {width}")
         d.edge("privileged", "value", "local + global context")
-        d.node("v", "V", ["scalar per world"], "output", 1010, 455, 270)
+        d.node("v", "V", ["scalar per world"], "output")
         d.edge("value", "v")
     else:
         actor_cfg = cfg["actor_encoder_config"]
@@ -567,8 +574,6 @@ def build_diagram(row):
                     chain(row, "shared_observation_encoder.local_obs_encoder"),
                 ),
                 "shared",
-                340,
-                230,
             )
             d.edge("public", source)
             actor_source = source
@@ -583,8 +588,6 @@ def build_diagram(row):
                 chain(row, "_actor_encoder.local_obs_encoder", "actor.encoder.local_obs_encoder"),
             ),
             "actor",
-            340 if not shared else 675,
-            80,
         )
         add_memory(d, "actor_encoder", actor_cfg)
         d.edge(actor_source, "actor_encoder", f"N × {cfg['shared_encoder_config']['d_model']}" if shared else "public")
@@ -597,14 +600,14 @@ def build_diagram(row):
         # TD3 nests the backbone inside actor; the audited actor MLP width is still explicit.
         if shared:
             actor_node = next(node for node in d.nodes if node.id == "actor_encoder")
-            actor_node.lines[-1:] = [
+            actor_node.content[-1:] = [
                 "head: " + actor_chain,
                 f"output: N × {cfg['actor_head_config']['hidden_dims'][-1]}",
             ]
             actor_node.__post_init__()
             d.edge("actor_encoder", "actions")
         else:
-            d.node("actor", "Actor output MLP", [actor_chain, "distribution/tanh readout"], "actor", 675, 95)
+            d.node("actor", "Actor output MLP", [actor_chain, "distribution/tanh readout"], "actor")
             d.edge("actor_encoder", "actor", f"N × {acwidth}")
             d.edge("actor", "actions")
         d.node(
@@ -614,30 +617,19 @@ def build_diagram(row):
             if shared
             else ["public observations", "privileged local + global", f"actions: N × {action}"],
             "input",
-            20,
-            555,
-            250,
         )
         if not shared:
-            public_node = next(node for node in d.nodes if node.id == "public")
-            input_node = next(node for node in d.nodes if node.id == "q_inputs")
             d.edge(
                 "public",
                 "q_inputs",
                 "public",
-                source_port="right",
-                target_port="right",
-                via=[(295, public_node.y + public_node.height / 2), (295, input_node.y + input_node.height / 2)],
             )
-        d.edge("privileged", "q_inputs", source_port="bottom", target_port="top")
+        d.edge("privileged", "q_inputs")
         d.edge(
             "actions",
             "q_inputs",
             "replay / policy",
             "causal",
-            "right",
-            "bottom",
-            [(1297, 146), (1297, 700), (145, 700)],
         )
         joint = cfg.get("joint_critic_config")
         is_joint = row["variant"].endswith("_deepset") or row["variant"].endswith("_mlp")
@@ -651,15 +643,14 @@ def build_diagram(row):
                     if row["base_policy_class"] in {"TD3Policy", "RecurrentTD3Policy"}
                     else f"critic.q{index}.network"
                 )
-                y = 355 + i * 185
                 if joint["kind"] == "mlp":
                     lines = ["flatten observations/actions/mask", chain(row, prefix), "scalar Q"]
                 else:
                     lines = critic_lines(row, prefix)
                     lines.insert(0, "global context + active count")
-                d.node(f"q{index}_network", f"Independent Q{index} network", lines, "critic", 675, y)
+                d.node(f"q{index}_network", f"Independent Q{index} network", lines, "critic")
                 d.edge("q_inputs", f"q{index}_network")
-                d.node(f"q{index}", f"Q{index}", ["scalar per world"], "output", 1010, y + 10, 270)
+                d.node(f"q{index}", f"Q{index}", ["scalar per world"], "output")
                 d.edge(f"q{index}_network", f"q{index}")
                 source_nodes.append(f"q{index}_network")
             if joint["kind"] == "deepset":
@@ -670,11 +661,9 @@ def build_diagram(row):
                     "Final equivariant critic features",
                     [f"{count} × (N × {element_width})", f"concatenate → N × {count * element_width}"],
                     "critic",
-                    340,
-                    660,
                 )
                 for id in source_nodes:
-                    d.edge(id, source, "after set interactions", source_port="left", target_port="right")
+                    d.edge(id, source, "per-agent features")
         else:
             cc = cfg.get("critic_encoder_config")
             d.node(
@@ -687,8 +676,6 @@ def build_diagram(row):
                     *encoder_lines(row, cc, "critic.encoder"),
                 ],
                 "critic",
-                340,
-                415,
             )
             d.edge("q_inputs", "critic_encoder")
             if shared:
@@ -700,16 +687,13 @@ def build_diagram(row):
                     "Actor-state bridge",
                     ["detach last actor state", bridge],
                     "critic",
-                    675 if shared else 340,
-                    300,
                 )
-                d.edge("actor_encoder", "state_bridge", "h/c or h/m", "state", "bottom", "top")
-                d.edge("state_bridge", "critic_encoder", "append to critic inputs", "state", "bottom", "top")
+                d.edge("actor_encoder", "state_bridge", "h/c or h/m", "state")
+                d.edge("state_bridge", "critic_encoder", "append to critic inputs", "state")
             for i in [1, 2]:
-                y = 355 + (i - 1) * 185
-                add_readout(d, row, f"critic.q{i}", f"head{i}", f"Separate Q{i} head", 675, y)
+                add_readout(d, row, f"critic.q{i}", f"head{i}", f"Separate Q{i} head")
                 d.edge("critic_encoder", f"head{i}", f"N × {cc['d_model']}")
-                d.node(f"q{i}", f"Q{i}", ["scalar per world"], "output", 1010, y + 10, 270)
+                d.node(f"q{i}", f"Q{i}", ["scalar per world"], "output")
                 d.edge(f"head{i}", f"q{i}")
             source = (
                 "representation"
@@ -723,23 +707,23 @@ def build_diagram(row):
         prediction_chain = chain(row, prefix + "pre_predictors_transform")
         layout = SCALE_LAYOUTS[d.scale]
         block = prefix + "transition_model.encoder.layers.0"
-        d.node("nop_bridge", "NOP source projection", ["from source features; before pooling", bridge], "nop", 340, 780)
-        d.edge(source, "nop_bridge", "latents", source_port="bottom", target_port="top")
+        d.node("nop_bridge", "NOP source projection", ["from source features; before pooling", bridge], "nop")
+        d.edge(source, "nop_bridge", "latents")
         d.node(
             "transition",
             "NOP transition model",
             [
                 "coembed (per step): " + chain(row, prefix + "transition_model.coembed"),
-                f"repeat {layout.nop_layers} blocks · D={layout.nop_width} · 4 heads",
-                f"block total: {module_count(row, block):,} per block",
-                f"attention / block: {module_count(row, block + '.self_attn'):,}",
-                f"FF / block: {layout.nop_width} → {layout.nop_ff} → {layout.nop_width} ({module_count(row, block + '.linear1') + module_count(row, block + '.linear2'):,})",
+                ComponentBlock("Transition encoder block", [
+                    f"D={layout.nop_width} · 4 heads",
+                    f"attention / block: {module_count(row, block + '.self_attn'):,}",
+                    f"FF / block: {layout.nop_width} → {layout.nop_ff} → {layout.nop_width} ({module_count(row, block + '.linear1') + module_count(row, block + '.linear2'):,})",
+                ], layout.nop_layers, module_count(row, block)),
                 "head: " + chain(row, prefix + "transition_model.head"),
                 "latent residual; repeated future steps",
+                "same transition weights at every step",
             ],
             "nop",
-            675,
-            780,
         )
         d.edge("nop_bridge", "transition", "z_t")
         d.node(
@@ -747,18 +731,11 @@ def build_diagram(row):
             "Rollout / replay actions",
             [f"sequence: K × N × {action}", "known training trajectory", "one action per predicted step"],
             "input",
-            20,
-            750,
-            250,
         )
-        action_node = next(node for node in d.nodes if node.id == "future_actions")
         d.edge(
             "future_actions",
             "transition",
             "action sequence",
-            source_port="right",
-            target_port="top",
-            via=[(310, action_node.y + action_node.height / 2), (310, 760), (815, 760)],
         )
         heads = []
         for key, label in [
@@ -780,9 +757,6 @@ def build_diagram(row):
                 "future observations supervise loss",
             ],
             "nop",
-            1010,
-            780,
-            270,
         )
         d.edge("transition", "predictions", "predicted next latents")
     else:
@@ -791,7 +765,7 @@ def build_diagram(row):
         "Counts include weights/biases and normalization. Box totals are additive; inner counts are included subtotals."
     )
     annotate_component_totals(d, row)
-    layout_counted_diagram(d)
+    layout_diagram(d)
     validate_diagram(d)
     return d
 
@@ -814,48 +788,7 @@ def validate_diagram(d):
                 raise ValueError(f"Overlapping diagram nodes: {left.id}, {right.id}")
 
 
-def port(node, side):
-    return {
-        "left": (node.x, node.y + node.height / 2),
-        "right": (node.x + node.width, node.y + node.height / 2),
-        "top": (node.x + node.width / 2, node.y),
-        "bottom": (node.x + node.width / 2, node.y + node.height),
-    }[side]
-
-
-def edge_points(edge, nodes):
-    start = port(nodes[edge.source], edge.source_port)
-    end = port(nodes[edge.target], edge.target_port)
-    if edge.via:
-        return [start, *edge.via, end]
-    if edge.source_port in {"top", "bottom"} and edge.target_port in {"top", "bottom"}:
-        middle = (start[1] + end[1]) / 2
-        return [start, (start[0], middle), (end[0], middle), end]
-    middle = (start[0] + end[0]) / 2
-    return [start, (middle, start[1]), (middle, end[1]), end]
-
-
-def label_position(edge, nodes, points):
-    start, end = points[0], points[-1]
-    if not edge.via and {edge.source_port, edge.target_port} == {"right", "left"}:
-        return (start[0] + end[0]) / 2, end[1] - 8
-    if edge.via:
-        sections = [(a, b) for a, b in zip(points, points[1:]) if a[1] == b[1]]
-        if sections:
-            a, b = max(sections, key=lambda pair: abs(pair[0][0] - pair[1][0]))
-            return (a[0] + b[0]) / 2, a[1] - 8
-    before = points[-2]
-    return (before[0] + end[0]) / 2, (before[1] + end[1]) / 2 - 8
-
-
-def edge_label_lines(edge, points):
-    width = abs(points[0][0] - points[-1][0])
-    if not edge.via and {edge.source_port, edge.target_port} == {"right", "left"}:
-        return textwrap.wrap(edge.label, max(8, int((width - 10) / 6)), break_long_words=False)
-    return [edge.label]
-
-
-def svg_diagram(d):
+def svg_diagram(d: Diagram) -> str:
     esc = html.escape
     bits = [
         f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {d.width} {d.height}" role="img" font-family="Arial, sans-serif" fill="#182538">',
@@ -869,25 +802,27 @@ def svg_diagram(d):
         '<g font-family="Arial, sans-serif" fill="#182538">',
     ]
     nodes = {node.id: node for node in d.nodes}
+    for lane in d.lanes:
+        bits.extend([
+            f'<rect x="35" y="{lane.y}" width="{d.width - 70}" height="{lane.height}" rx="12" fill="#f5f7fb" stroke="#e0e6ef"/>',
+            f'<text x="50" y="{lane.y + 23}" font-size="14" font-weight="700" fill="#526176">{esc(lane.title)}</text>',
+        ])
     for edge in d.edges:
         points = edge_points(edge, nodes)
         coords = " ".join(f"{x:g},{y:g}" for x, y in points)
         dash = ' stroke-dasharray="6 4"' if edge.kind != "data" else ""
+        bits.append(f'<polyline points="{coords}" fill="none" stroke="#fafbfe" stroke-width="5"{dash}/>')
         bits.append(
             f'<polyline points="{coords}" fill="none" stroke="#6b7280" stroke-width="1.7" marker-end="url(#arrow)"{dash}/>'
         )
-        if edge.label:
-            # Put a small white label on the final incoming segment.
-            lx, ly = label_position(edge, nodes, points)
-            labels = edge_label_lines(edge, points)
-            w = max(map(len, labels)) * 6.0 + 8
-            top = ly - (len(labels) - 1) * 14
+        if edge.label_box:
+            box = edge.label_box
             bits.append(
-                f'<rect x="{lx - w / 2:g}" y="{top - 11:g}" width="{w:g}" height="{len(labels) * 14 + 1}" fill="#fafbfe"/>'
+                f'<rect x="{box.x:g}" y="{box.y:g}" width="{box.width:g}" height="{box.height:g}" rx="3" fill="#fafbfe"/>'
             )
-            for i, label in enumerate(labels):
+            for i, label in enumerate(box.lines):
                 bits.append(
-                    f'<text x="{lx:g}" y="{top + i * 14:g}" font-size="11" text-anchor="middle">{esc(label)}</text>'
+                    f'<text x="{box.x + box.width / 2:g}" y="{box.y + 12 + i * 14:g}" font-size="11" text-anchor="middle">{esc(label)}</text>'
                 )
     for node in d.nodes:
         fill, border = COLORS[node.role]
@@ -901,24 +836,48 @@ def svg_diagram(d):
             bits.append(
                 f'<text x="{node.x + 13}" y="{node.y + 46}" font-size="12.3" font-weight="700" fill="{border}">{esc(node.parameter_label)}</text>'
             )
-        for index, line in enumerate(node.wrapped_lines):
-            bits.append(
-                f'<text x="{node.x + 13}" y="{node.y + node.text_offset + index * 18}" font-size="12.3">{esc(line)}</text>'
-            )
+        for element in node.content_layout[0]:
+            if isinstance(element, ContentBox):
+                dash = ' stroke-dasharray="5 3"' if element.block.repeat is not None else ""
+                bits.append(
+                    f'<g data-component="{esc(element.block.title)}" data-repeat="{element.block.repeat or 1}">'
+                    f'<rect x="{element.x}" y="{element.y}" width="{element.width}" height="{element.height}" '
+                    f'rx="6" fill="#ffffff" fill-opacity="0.6" stroke="{border}" stroke-width="1"{dash}/></g>'
+                )
+            else:
+                weight = ' font-weight="700"' if element.bold else ""
+                bits.append(
+                    f'<text x="{element.x}" y="{element.y}" font-size="12.3"{weight}>{esc(element.text)}</text>'
+                )
     for i, note in enumerate(d.notes):
         bits.append(f'<text x="22" y="{d.height - 20 - (len(d.notes) - i) * 16}" font-size="11">{esc(note)}</text>')
     bits.append("</g></svg>")
     return "\n".join(bits)
 
 
-def png_preview(d, path):
+def png_preview(d: Diagram, path: Path) -> None:
     """Optional Pillow raster preview of the same graph geometry (not needed for SVG)."""
     from PIL import Image, ImageDraw, ImageFont
 
     font_path = Path("C:/Windows/Fonts/arial.ttf")
 
-    def font(size):
-        return ImageFont.truetype(str(font_path) if font_path.exists() else "DejaVuSans.ttf", size)
+    def font(size: int, *, bold: bool = False) -> ImageFont.FreeTypeFont:
+        selected = font_path.with_name("arialbd.ttf") if bold else font_path
+        return ImageFont.truetype(str(selected) if selected.exists() else "DejaVuSans.ttf", size)
+
+    def connection(points: list[tuple[float, float]], color: str, width: int, *, dashed: bool) -> None:
+        if not dashed:
+            draw.line(points, fill=color, width=width)
+            return
+        for start, end in zip(points, points[1:]):
+            dx, dy = end[0] - start[0], end[1] - start[1]
+            length = (dx * dx + dy * dy) ** 0.5
+            for offset in range(0, int(length) + 1, 10):
+                a, b = offset / length, min((offset + 6) / length, 1)
+                draw.line(
+                    [(start[0] + dx * a, start[1] + dy * a), (start[0] + dx * b, start[1] + dy * b)],
+                    fill=color, width=width,
+                )
 
     canvas = Image.new("RGB", (d.width, d.height), "#fafbfe")
     draw = ImageDraw.Draw(canvas)
@@ -931,9 +890,15 @@ def png_preview(d, path):
     )
     draw.text((22, 58), d.role_summary, fill="#182538", font=font(13))
     nodes = {node.id: node for node in d.nodes}
+    for lane in d.lanes:
+        draw.rounded_rectangle(
+            (35, lane.y, d.width - 35, lane.y + lane.height), radius=12, fill="#f5f7fb", outline="#e0e6ef",
+        )
+        draw.text((50, lane.y + 9), lane.title, fill="#526176", font=font(14, bold=True))
     for edge in d.edges:
         points = edge_points(edge, nodes)
-        draw.line(points, fill="#6b7280", width=2)
+        connection(points, "#fafbfe", 6, dashed=edge.kind != "data")
+        connection(points, "#6b7280", 2, dashed=edge.kind != "data")
         endx, endy = points[-1]
         beforex, beforey = points[-2]
         dx, dy = endx - beforex, endy - beforey
@@ -947,12 +912,14 @@ def png_preview(d, path):
             ],
             fill="#6b7280",
         )
-        if edge.label:
-            lx, ly = label_position(edge, nodes, points)
-            labels = edge_label_lines(edge, points)
-            for i, label in enumerate(labels):
+        if edge.label_box:
+            box = edge.label_box
+            draw.rounded_rectangle(
+                (box.x, box.y, box.x + box.width, box.y + box.height), radius=3, fill="#fafbfe",
+            )
+            for i, label in enumerate(box.lines):
                 draw.text(
-                    (lx, ly - 11 - (len(labels) - i - 1) * 14),
+                    (box.x + box.width / 2, box.y + 1 + i * 14),
                     label,
                     fill="#182538",
                     font=font(11),
@@ -968,44 +935,102 @@ def png_preview(d, path):
         draw.text((node.x + 13, node.y + 9), node.title, fill="#182538", font=font(16))
         if node.parameter_label:
             draw.text((node.x + 13, node.y + 32), node.parameter_label, fill=border, font=font(12))
-        for i, line in enumerate(node.wrapped_lines):
-            draw.text((node.x + 13, node.y + node.text_offset - 14 + i * 18), line, fill="#182538", font=font(12))
+        for element in node.content_layout[0]:
+            if isinstance(element, ContentBox):
+                draw.rounded_rectangle(
+                    (element.x, element.y, element.x + element.width, element.y + element.height),
+                    radius=6, fill="#ffffff", outline=border,
+                )
+            else:
+                draw.text((element.x, element.y - 13), element.text, fill="#182538", font=font(12, bold=element.bold))
     for i, note in enumerate(d.notes):
         draw.text((22, d.height - 33 - (len(d.notes) - i) * 16), note, fill="#182538", font=font(11))
     path.parent.mkdir(parents=True, exist_ok=True)
     canvas.save(path)
 
 
-def mermaid_diagram(d):
+def content_groups(content: list[str | ComponentBlock]) -> Iterator[list[str] | ComponentBlock]:
+    pending: list[str] = []
+    for item in content:
+        if isinstance(item, ComponentBlock):
+            if pending:
+                yield pending
+                pending = []
+            yield item
+        else:
+            pending.append(item)
+    if pending:
+        yield pending
+
+
+def mermaid_diagram(d: Diagram) -> str:
     lines = ["flowchart LR", f"  %% {d.parameter_summary}", f"  %% {d.role_summary}"]
+    role_ids: dict[str, list[str]] = {role: [] for role in COLORS}
+
+    def label(labels: list[str]) -> str:
+        return "<br/>".join(html.escape(line, quote=True) for line in labels)
+
+    def container(id: str, labels: list[str], content: list[str | ComponentBlock], role: str) -> None:
+        lines.extend([f'  subgraph {id}["{label(labels)}"]', "    direction TB"])
+        children = []
+        for index, group in enumerate(content_groups(content)):
+            child = f"{id}_part{index}"
+            children.append(child)
+            if isinstance(group, ComponentBlock):
+                container(child, group.labels, group.content, role)
+            else:
+                lines.append(f'    {child}["{label(group)}"]')
+            role_ids[role].append(child)
+        # Invisible links retain reading order without implying that parallel
+        # local/set branches feed each other.
+        for previous, current in zip(children, children[1:]):
+            lines.append(f"    {previous} ~~~ {current}")
+        lines.append("  end")
+
     for node in d.nodes:
-        label = html.escape(
-            "<br/>".join([node.title, *([node.parameter_label] if node.parameter_label else []), *node.lines]),
-            quote=True,
-        ).replace("&lt;br/&gt;", "<br/>")
-        lines.append(f'  {node.id}["{label}"]')
+        labels = [node.title, *([node.parameter_label] if node.parameter_label else [])]
+        if any(isinstance(item, ComponentBlock) for item in node.content):
+            container(node.id, labels, node.content, node.role)
+        else:
+            lines.append(f'  {node.id}["{label([*labels, *node.lines])}"]')
+        role_ids[node.role].append(node.id)
     for edge in d.edges:
         arrow = "-->" if edge.kind == "data" else "-.->"
         label = f'|"{html.escape(edge.label, quote=True)}"|' if edge.label else ""
         lines.append(f"  {edge.source} {arrow}{label} {edge.target}")
     for role, (fill, border) in COLORS.items():
         lines.append(f"  classDef {role} fill:{fill},stroke:{border},color:#182538")
-        ids = ",".join(node.id for node in d.nodes if node.role == role)
+        ids = ",".join(role_ids[role])
         if ids:
             lines.append(f"  class {ids} {role}")
     return "\n".join(lines) + "\n"
 
 
-def dot_diagram(d):
+def dot_diagram(d: Diagram) -> str:
     lines = [
         "digraph policy {",
         '  rankdir=LR; graph [bgcolor="white"]; node [shape=box,style="rounded,filled",fontname="Arial"];',
         f"  label={json.dumps(d.parameter_summary + chr(10) + d.role_summary, ensure_ascii=False)}; labelloc=t;",
     ]
+    def table(labels: list[str], content: list[str | ComponentBlock], *, border: int = 0) -> str:
+        rows = []
+        for index, text in enumerate(labels):
+            text = html.escape(text, quote=True)
+            if index == 0:
+                text = f"<B>{text}</B>"
+            rows.append(f'<TR><TD ALIGN="LEFT">{text}</TD></TR>')
+        for group in content_groups(content):
+            if isinstance(group, ComponentBlock):
+                rows.append(f"<TR><TD>{table(group.labels, group.content, border=1)}</TD></TR>")
+            else:
+                rows.extend(f'<TR><TD ALIGN="LEFT">{html.escape(line, quote=True)}</TD></TR>' for line in group)
+        return f'<TABLE BORDER="{border}" CELLBORDER="0" CELLSPACING="0" CELLPADDING="5">' + "".join(rows) + "</TABLE>"
+
     for node in d.nodes:
-        label = "\n".join([node.title, *([node.parameter_label] if node.parameter_label else []), *node.lines])
+        labels = [node.title, *([node.parameter_label] if node.parameter_label else [])]
+        label = table(labels, node.content)
         fill, color = COLORS[node.role]
-        lines.append(f'  {node.id} [label={json.dumps(label, ensure_ascii=False)},fillcolor="{fill}",color="{color}"];')
+        lines.append(f'  {node.id} [label=<{label}>,fillcolor="{fill}",color="{color}"];')
     for edge in d.edges:
         lines.append(
             f"  {edge.source} -> {edge.target} [label={json.dumps(edge.label)},style={'solid' if edge.kind == 'data' else 'dashed'}];"

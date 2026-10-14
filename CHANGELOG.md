@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Size major architecture-diagram rows from their contents, align actors and critic readouts with their outputs, and route orthogonal connections around component boxes and reserved labels. Give action feedback and temporal memory clear return paths and separate actor, critic, and NOP sections.
+- Group architecture-diagram internals into nested sub-components, with explicit repetition and parameter scopes. Separate iterative Deep Set local and set-message branches, their merge, and the final team readout; use the same grouping for encoder, decoder, and NOP block stacks across SVG, Mermaid, Graphviz, and JSON exports.
 - Resolve TD3/DDPG's effective critic kind before choosing fixed-scale widths, preventing oversized Deep Set critics when the nested critic config retains its default kind.
 - Replace one-pass Deep Set critics with configurable iterative local/set interaction blocks across MAPPO, MAT/RMAT, DDPG/TD3/SAC baselines, and transformer Q heads. Default to four normalized residual local-MLP and masked global-message updates for standalone DDPG/TD3/SAC Deep Set critics, and two for on-policy critics and transformer Q readouts; share masks and final equivariant features with critic NOP. Rebalance and version the fixed model-scale layouts, refresh parameter docs and architecture diagrams, and require manual migration of old checkpoints without built-in compatibility code.
 - Place initial swarm assemblies using their analytical lowest sphere/capsule surface, with 1 mm floor clearance by default; retain explicit `z_pos` fixed-height overrides and share placement across raw and settled resets. Initial conditions have changed, so rerun evaluations.

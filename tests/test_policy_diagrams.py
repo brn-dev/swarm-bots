@@ -3,11 +3,14 @@ from __future__ import annotations
 import gzip
 import json
 from pathlib import Path
+from typing import Any
 from xml.etree import ElementTree
 
 import pytest
 
 from swarmbots.tools.diagram_policy_architectures import (
+    ComponentBlock,
+    Node,
     build_diagram,
     configuration,
     mermaid_diagram,
@@ -17,6 +20,7 @@ from swarmbots.tools.diagram_policy_architectures import (
     write_gallery,
 )
 from swarmbots.learn import list_model_scales, list_variants
+from swarmbots.tools.policy_diagram_layout import crosses_bounds, edge_points, layout_diagram, node_bounds
 
 ROOT = Path(__file__).resolve().parents[1]
 REPORTS = [ROOT / "docs/policy_parameters" / folder / "counts.json.gz" for folder in ["", "2.5M", "10M"]]
@@ -34,13 +38,13 @@ def test_gallery_resolves_local_or_published_reading_guide(tmp_path: Path) -> No
     assert 'href="README.md"' in (tmp_path / "index.html").read_text(encoding="utf-8")
 
 
-def assert_line_order(node, *prefixes):
+def assert_line_order(node: Node, *prefixes: str) -> None:
     positions = [next(i for i, line in enumerate(node.lines) if line.startswith(prefix)) for prefix in prefixes]
     assert positions == sorted(positions), (node.id, prefixes, node.lines)
 
 
 @pytest.mark.parametrize("row", ROWS, ids=lambda row: row["variant"] + "-" + row["model_scale"]["name"])
-def test_all_core_diagrams_render_with_valid_dimensions_and_privilege_boundary(row):
+def test_all_core_diagrams_render_with_valid_dimensions_and_privilege_boundary(row: dict[str, Any]) -> None:
     d = build_diagram(row)
     root = ElementTree.fromstring(svg_diagram(d))
     assert root.tag.endswith("svg")
@@ -64,14 +68,14 @@ def test_all_core_diagrams_render_with_valid_dimensions_and_privilege_boundary(r
             assert node.parameter_label in mermaid_diagram(d)
             assert node.parameter_label in dot_diagram(d)
         if any(line.startswith("obs MLP (once):") for line in node.lines):
-            assert_line_order(node, "obs MLP (once):", "repeat ", "FF / block:", "output:")
+            assert_line_order(node, "obs MLP (once):", "Encoder block ×", "FF / block:", "output:")
         if any(line.startswith("local/action MLP (once):") for line in node.lines):
             assert_line_order(
                 node,
                 "local/action MLP (once):",
                 "global MLP (once):",
                 "add local",
-                "repeat ",
+                "Encoder block ×",
                 "attention / block:",
                 "FF / block:",
                 "output:",
@@ -88,7 +92,7 @@ def test_all_core_diagrams_render_with_valid_dimensions_and_privilege_boundary(r
             assert_line_order(node, first + " / block:", "inter FF / block:", second + " / block:", "FF / block:")
         if node.id == "transition":
             assert_line_order(
-                node, "coembed (per step):", "repeat ", "attention / block:", "FF / block:", "head:", "latent residual;"
+                node, "coembed (per step):", "Transition encoder block ×", "attention / block:", "FF / block:", "head:", "latent residual;"
             )
         if node.id == "state_bridge":
             assert node.lines[0] == "detach last actor state"
@@ -130,7 +134,7 @@ def test_independent_deepset_critics_concatenate_element_features_for_nop(row):
 
 
 @pytest.mark.parametrize("row", [row for row in ROWS if row["variant"] in ["mat_orig", "mat_qcx", "mat_qcx_lstm"]])
-def test_autoregressive_decoders_only_feedback_previous_agent_actions(row):
+def test_autoregressive_decoders_only_feedback_previous_agent_actions(row: dict[str, Any]) -> None:
     d = build_diagram(row)
     feedback = next(edge for edge in d.edges if edge.source == "actions" and edge.target == "actor")
     assert feedback.kind == "causal"
@@ -140,7 +144,7 @@ def test_autoregressive_decoders_only_feedback_previous_agent_actions(row):
         actor,
         "query projection (once):" if "qcx" in row["variant"] else "obs projection (once):",
         "action embedding (once):",
-        "repeat ",
+        "Decoder block ×",
         "FF / block:",
         "output:",
     )
@@ -152,15 +156,98 @@ def test_default_tmasac_labels_show_exact_subtotals_and_whole_components() -> No
     row = next(row for row in ROWS if row["variant"] == "tmasac" and row["model_scale"]["name"] == "5M NOP1M")
     d = build_diagram(row)
     nodes = {node.id: node for node in d.nodes}
-    assert "element MLP: 384 → 128 (49,280)" in nodes["head1"].lines
-    assert "repeat 2 set interaction blocks" in nodes["head1"].lines
-    assert "pre-LayerNorm; residual_mlp" in nodes["head1"].lines
+    assert "element MLP (once): 384 → 128 (49,280)" in nodes["head1"].lines
+    assert "Set interaction × 2" in nodes["head1"].lines
+    assert "u = LayerNorm(h)" in nodes["head1"].lines
+    assert "l = h + local MLP(u)" in nodes["head1"].lines
     assert "regressor: 128 → 128 → 128 → 1 (33,153)" in nodes["head1"].lines
     assert nodes["head1"].parameters == 49_280 + 2 * 99_328 + 33_153
     assert nodes["head2"].parameters == nodes["head1"].parameters
     assert nodes["critic_encoder"].parameters == 2_305_408
     assert nodes["critic_encoder"].parameters + 2 * nodes["head1"].parameters == row["roles"]["critic"]["total"]
-    assert "block total: 987,008 per block" in nodes["critic_encoder"].lines
+    assert "Per block: 987,008 parameters" in nodes["critic_encoder"].lines
+
+
+@pytest.mark.parametrize("row", ROWS, ids=lambda row: row["variant"] + "-" + row["model_scale"]["name"])
+def test_repeated_operations_are_scoped_separately_from_projections_and_readouts(row: dict[str, Any]) -> None:
+    diagram = build_diagram(row)
+    for node in diagram.nodes:
+        repeated = [item for item in node.content if isinstance(item, ComponentBlock) and item.repeat is not None]
+        for block in repeated:
+            assert block.repeat >= 1
+            assert block.parameters is not None
+            assert all("(once)" not in line and not line.startswith(("output:", "regressor:")) for line in block.lines)
+        if any("element MLP (once):" in line for line in node.lines):
+            interaction, = repeated
+            assert interaction.title == "Set interaction"
+            assert interaction.repeat == (4 if row["variant"].endswith("_deepset") else 2)
+            local, messages = [item for item in interaction.content if isinstance(item, ComponentBlock)]
+            assert "local MLP:" in local.content[0]
+            assert "masked mean of message MLP(u)" in messages.content
+            assert any(line.startswith("broadcast g:") for line in messages.content)
+            assert "merge: h_next = l + g" in interaction.content
+            readout = next(item for item in node.content if isinstance(item, ComponentBlock) and item.repeat is None)
+            assert "final masked mean across agents" in readout.content
+            assert readout.content[-1].startswith("regressor:")
+            assert node.content.index(interaction) < node.content.index(readout)
+
+
+@pytest.mark.parametrize("row", ROWS, ids=lambda row: row["variant"] + "-" + row["model_scale"]["name"])
+def test_connections_and_labels_leave_components_unobstructed(row: dict[str, Any]) -> None:
+    diagram = build_diagram(row)
+    nodes = {node.id: node for node in diagram.nodes}
+    labels = [edge.label_box for edge in diagram.edges if edge.label_box is not None]
+    for edge in diagram.edges:
+        points = edge_points(edge, nodes)
+        assert all(0 <= x <= diagram.width and 95 <= y < diagram.height - 20 for x, y in points)
+        assert points[0] != points[-1]
+        for start, end in zip(points, points[1:]):
+            assert start != end
+            assert start[0] == end[0] or start[1] == end[1], (edge, start, end)
+            assert not any(crosses_bounds(start, end, node_bounds(node)) for node in diagram.nodes), edge
+            assert not any(crosses_bounds(start, end, label) for label in labels if label is not edge.label_box), edge
+        assert bool(edge.label) == (edge.label_box is not None)
+    for index, label in enumerate(labels):
+        assert 0 <= label.x and label.x + label.width <= diagram.width
+        assert 95 <= label.y and label.y + label.height < diagram.height - 20
+        assert not any(label.overlaps(node_bounds(node)) for node in diagram.nodes)
+        assert not any(label.overlaps(other) for other in labels[index + 1:])
+
+
+def test_layout_expands_for_a_critic_encoder_taller_than_its_readout() -> None:
+    diagram = build_diagram(next(row for row in ROWS if row["variant"] == "mat_dec"))
+    nodes = {node.id: node for node in diagram.nodes}
+    encoder = nodes["representation"]
+    encoder.content.extend(["Additional architecture detail"] * 40)
+    layout_diagram(diagram)
+    assert encoder.height > nodes["value"].height
+    assert nodes["actor_encoder"].y + nodes["actor_encoder"].height < encoder.y
+    assert encoder.y + encoder.height < nodes["nop_bridge"].y
+    for edge in diagram.edges:
+        points = edge_points(edge, nodes)
+        assert not any(
+            crosses_bounds(start, end, node_bounds(node))
+            for start, end in zip(points, points[1:]) for node in diagram.nodes
+        )
+
+
+@pytest.mark.parametrize("row", ROWS, ids=lambda row: row["variant"] + "-" + row["model_scale"]["name"])
+def test_major_paths_follow_separate_actor_critic_and_prediction_rows(row: dict[str, Any]) -> None:
+    diagram = build_diagram(row)
+    nodes = {node.id: node for node in diagram.nodes}
+    actor_ids = {"public", "actor_encoder", "actor", "actions"}
+    if "representation" in nodes and nodes["representation"].role == "shared":
+        actor_ids.add("representation")
+    actor_bottom = max(node.y + node.height for node in diagram.nodes if node.id in actor_ids)
+    critic_nodes = [node for node in diagram.nodes if node.role == "critic" and node.id != "state_bridge"]
+    assert actor_bottom < min(node.y for node in critic_nodes)
+    if row["use_nop"]:
+        assert max(node.y + node.height for node in critic_nodes) < min(
+            node.y for node in diagram.nodes if node.role == "nop"
+        )
+    for encoder, output in (("actor", "actions"), ("value", "v"), ("head1", "q1"), ("head2", "q2")):
+        if encoder in nodes:
+            assert nodes[encoder].x + nodes[encoder].width < nodes[output].x
 
 
 def test_deepset_feature_concatenation_adds_no_parameters():

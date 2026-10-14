@@ -9,6 +9,7 @@ Keep navigation and costly gotchas; defaults/layouts belong in source, history i
 - `mappo` is MAPPO/Deep Set, `mappo_mlp` flattened MAPPO, `mat_ind_no_attention` the former attention-disabled MAT-IND. `tmasac_dec` disables actor attention only. sLSTM TMASAC has temporal residuals except `tmasac_slstm_no_residual`.
 - Tools: `swarmbots/tools`; plotting: `swarmbots/plotting`. Matplotlib is optional/lazy; preserve caller backend and direct `plot_logs` export despite module-name collision. Aggregation: finite within-run interpolation, last finite duplicate-X, cutoff before interpolation, population std; seed counts vary with X.
 - `docs/policy_parameters`: track compact snapshots/guides/comparisons only; verbose reports in ignored `generated/<scale>/`, diagrams ignored except README. `--refresh` updates snapshots, not tracked verbose reports.
+- Architecture diagrams use nested `ComponentBlock` content in `tools/diagram_policy_architectures.py`; repetition and inclusive subtotals belong to the inset, additive parameter accounting to outer `Node` boxes. `tools/policy_diagram_layout.py` sizes actor/critic/NOP lanes and routes orthogonal connections around nodes and reserved labels. SVG/Pillow share geometry; Mermaid/Graphviz/JSON preserve nesting. Keep one-time projections/readouts outside repeated blocks.
 
 ## Learning and checkpoints
 
