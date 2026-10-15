@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
 import gzip
 import json
 from pathlib import Path
@@ -19,12 +20,22 @@ from swarmbots.tools.diagram_policy_architectures import (
     generate,
     write_gallery,
 )
-from swarmbots.learn import list_model_scales, list_variants
+from swarmbots.learn import list_variants
 from swarmbots.tools.policy_diagram_layout import crosses_bounds, edge_points, layout_diagram, node_bounds
 
 ROOT = Path(__file__).resolve().parents[1]
 REPORTS = [ROOT / "docs/policy_parameters" / folder / "counts.json.gz" for folder in ["", "2.5M", "10M"]]
 ROWS = [row for path in REPORTS for row in json.loads(gzip.decompress(path.read_bytes()))["policies"]]
+
+
+@pytest.fixture(scope="module")
+def single_thread() -> Iterator[None]:
+    import torch
+
+    previous_threads = torch.get_num_threads()
+    torch.set_num_threads(1)
+    yield
+    torch.set_num_threads(previous_threads)
 
 
 def test_gallery_resolves_local_or_published_reading_guide(tmp_path: Path) -> None:
@@ -85,7 +96,13 @@ def test_all_core_diagrams_render_with_valid_dimensions_and_privilege_boundary(r
             None,
         )
         if temporal:
-            cfg = configuration(row)["actor_encoder_config" if node.id == "actor_encoder" else "encoder_config"]
+            policy_config = configuration(row)
+            config_key = (
+                "critic_encoder_config" if node.id == "critic_encoder"
+                else "encoder_config" if "encoder_config" in policy_config
+                else "actor_encoder_config"
+            )
+            cfg = policy_config[config_key]
             first, second = (
                 (temporal, "attention") if cfg["temporal_model_order"] == "temporal_first" else ("attention", temporal)
             )
@@ -96,7 +113,7 @@ def test_all_core_diagrams_render_with_valid_dimensions_and_privilege_boundary(r
             )
         if node.id == "state_bridge":
             assert node.lines[0] == "detach last actor state"
-    if row["variant"] == "tmasac_shared_encoder":
+    if row["variant"] == "tmasac__ac_shared_observation_encoder":
         actor = next(node for node in d.nodes if node.id == "actor_encoder")
         assert_line_order(actor, "FF / block:", "head:", "output:")
         assert actor.lines[-1] == f"output: N × {configuration(row)['actor_head_config']['hidden_dims'][-1]}"
@@ -107,7 +124,7 @@ def test_all_core_diagrams_render_with_valid_dimensions_and_privilege_boundary(r
     [
         row
         for row in ROWS
-        if row["variant"] in ["tmasac", "tmatd3", "tmasac_slstm", "tmasac_lstm", "tmasac_shared_encoder"]
+        if row["variant"] in ["tmasac", "tmatd3", "tmasac__slstm", "tmasac__lstm"]
     ],
     ids=lambda row: row["variant"] + "-" + row["model_scale"]["name"],
 )
@@ -116,24 +133,29 @@ def test_transformer_q_heads_share_one_encoder_and_recurrent_inputs_are_detached
     edges = {(edge.source, edge.target): edge for edge in d.edges}
     assert ("critic_encoder", "head1") in edges and ("critic_encoder", "head2") in edges
     assert len([node for node in d.nodes if node.id == "critic_encoder"]) == 1
-    if row["variant"] in ["tmasac_lstm", "tmasac_slstm"]:
+    if row["variant"] in ["tmasac__lstm", "tmasac__slstm"]:
         assert edges["state_bridge", "critic_encoder"].kind == "state"
         assert ("actor_encoder", "actor_encoder") in edges
     else:
         assert "state_bridge" not in {node.id for node in d.nodes}
 
 
-@pytest.mark.parametrize("row", [row for row in ROWS if row["variant"] in ["matd3_deepset", "masac_deepset"]])
-def test_independent_deepset_critics_concatenate_element_features_for_nop(row):
+@pytest.mark.parametrize("row", [row for row in ROWS if row["variant"] in ["matd3__deepset_critic", "masac__deepset_critic"]])
+def test_deepset_twin_critics_share_encoder_pooling_and_nop_features(row: dict[str, Any]) -> None:
     d = build_diagram(row)
     edges = {(edge.source, edge.target) for edge in d.edges}
-    assert ("q_inputs", "q1_network") in edges and ("q_inputs", "q2_network") in edges
-    assert ("q1_network", "q_features") in edges and ("q2_network", "q_features") in edges
-    assert ("q_features", "nop_bridge") in edges
-    assert "critic_encoder" not in {node.id for node in d.nodes}
+    nodes = {node.id: node for node in d.nodes}
+    assert ("q_inputs", "critic_encoder") in edges
+    assert ("critic_encoder", "head1") in edges and ("critic_encoder", "head2") in edges
+    assert ("critic_encoder", "nop_bridge") in edges
+    assert not {"q1_network", "q2_network", "q_features", "critic_encoder2"} & nodes.keys()
+    assert any("Team pooling" in line for line in nodes["critic_encoder"].lines)
+    for id in ("head1", "head2"):
+        assert not any("Set interaction" in line or "masked mean" in line for line in nodes[id].lines)
+        assert any(line.startswith("regressor:") for line in nodes[id].lines)
 
 
-@pytest.mark.parametrize("row", [row for row in ROWS if row["variant"] in ["mat_orig", "mat_qcx", "mat_qcx_lstm"]])
+@pytest.mark.parametrize("row", [row for row in ROWS if row["variant"] in ["mat_orig", "mat_qcx", "mat_qcx__lstm"]])
 def test_autoregressive_decoders_only_feedback_previous_agent_actions(row: dict[str, Any]) -> None:
     d = build_diagram(row)
     feedback = next(edge for edge in d.edges if edge.source == "actions" and edge.target == "actor")
@@ -158,10 +180,12 @@ def test_default_tmasac_labels_show_exact_subtotals_and_whole_components() -> No
     nodes = {node.id: node for node in d.nodes}
     assert "element MLP (once): 384 → 128 (49,280)" in nodes["head1"].lines
     assert "Set interaction × 2" in nodes["head1"].lines
-    assert "u = LayerNorm(h)" in nodes["head1"].lines
-    assert "l = h + local MLP(u)" in nodes["head1"].lines
+    assert "z = global LayerNorm(h)" in nodes["head1"].lines
+    assert "global residual: u = h + g" in nodes["head1"].lines
+    assert "v = local LayerNorm(u)" in nodes["head1"].lines
+    assert "local residual: h_next = u + local MLP(v)" in nodes["head1"].lines
     assert "regressor: 128 → 128 → 128 → 1 (33,153)" in nodes["head1"].lines
-    assert nodes["head1"].parameters == 49_280 + 2 * 99_328 + 33_153
+    assert nodes["head1"].parameters == 49_280 + 2 * 99_584 + 33_153
     assert nodes["head2"].parameters == nodes["head1"].parameters
     assert nodes["critic_encoder"].parameters == 2_305_408
     assert nodes["critic_encoder"].parameters + 2 * nodes["head1"].parameters == row["roles"]["critic"]["total"]
@@ -180,15 +204,18 @@ def test_repeated_operations_are_scoped_separately_from_projections_and_readouts
         if any("element MLP (once):" in line for line in node.lines):
             interaction, = repeated
             assert interaction.title == "Set interaction"
-            assert interaction.repeat == (4 if row["variant"].endswith("_deepset") else 2)
-            local, messages = [item for item in interaction.content if isinstance(item, ComponentBlock)]
-            assert "local MLP:" in local.content[0]
-            assert "masked mean of message MLP(u)" in messages.content
+            assert interaction.repeat == (4 if row["variant"].endswith("__deepset_critic") else 2)
+            messages, local = [item for item in interaction.content if isinstance(item, ComponentBlock)]
+            assert local.content[0] == "v = local LayerNorm(u)"
+            assert "local MLP:" in local.content[1]
+            assert "masked mean of message MLP(z)" in messages.content
             assert any(line.startswith("broadcast g:") for line in messages.content)
-            assert "merge: h_next = l + g" in interaction.content
+            assert messages.content[-1] == "global residual: u = h + g"
+            assert local.content[-1] == "local residual: h_next = u + local MLP(v)"
+            assert_line_order(node, "global residual:", "v = local LayerNorm(u)", "local residual:")
             readout = next(item for item in node.content if isinstance(item, ComponentBlock) and item.repeat is None)
             assert "final masked mean across agents" in readout.content
-            assert readout.content[-1].startswith("regressor:")
+            assert readout.content[-1].startswith("output:" if node.id.startswith("critic_encoder") else "regressor:")
             assert node.content.index(interaction) < node.content.index(readout)
 
 
@@ -217,7 +244,7 @@ def test_connections_and_labels_leave_components_unobstructed(row: dict[str, Any
 def test_layout_expands_for_a_critic_encoder_taller_than_its_readout() -> None:
     diagram = build_diagram(next(row for row in ROWS if row["variant"] == "mat_dec"))
     nodes = {node.id: node for node in diagram.nodes}
-    encoder = nodes["representation"]
+    encoder = nodes["critic_encoder"]
     encoder.content.extend(["Additional architecture detail"] * 40)
     layout_diagram(diagram)
     assert encoder.height > nodes["value"].height
@@ -250,8 +277,8 @@ def test_major_paths_follow_separate_actor_critic_and_prediction_rows(row: dict[
             assert nodes[encoder].x + nodes[encoder].width < nodes[output].x
 
 
-def test_deepset_feature_concatenation_adds_no_parameters():
-    row = next(row for row in ROWS if row["variant"] == "matd3_deepset" and row["model_scale"]["name"] == "5M NOP1M")
+def test_deepset_feature_extraction_adds_no_parameters() -> None:
+    row = next(row for row in ROWS if row["variant"] == "maddpg__deepset_critic" and row["model_scale"]["name"] == "5M NOP1M")
     d = build_diagram(row)
     assert next(node for node in d.nodes if node.id == "q_features").parameters == 0
 
@@ -291,8 +318,8 @@ def test_partial_audit_rebuild_preserves_core_and_cached_hidden_presets(tmp_path
 
     report = json.loads(gzip.decompress(report_path.read_bytes()))
     scale = report["policies"][0]["model_scale"]["name"]
-    hidden_name = "tmasac_slstm_no_residual"
-    hidden_row = {**next(row for row in report["policies"] if row["variant"] == "tmasac_slstm"), "variant": hidden_name}
+    hidden_name = "mat_ind__no_attention"
+    hidden_row = {**next(row for row in report["policies"] if row["variant"] == "tmasac__slstm"), "variant": hidden_name}
     report["policies"].append(hidden_row)
     report["requested_variants"].append(hidden_name)
     cached = {
@@ -333,27 +360,78 @@ def test_partial_audit_rebuild_preserves_core_and_cached_hidden_presets(tmp_path
 
 
 @pytest.mark.integration
-@pytest.mark.parametrize("scale", list_model_scales())
-def test_stacked_swiglu_presets_generate_diagrams_from_actual_audits(scale, tmp_path):
-    import torch
+@pytest.mark.usefixtures("single_thread")
+@pytest.mark.parametrize("independent_encoders", [False, True])
+@pytest.mark.parametrize("actor_state_input", [False, True])
+def test_recurrent_deepset_diagrams_preserve_actor_state_inputs_and_parameter_totals(
+    tmp_path: Path, independent_encoders: bool, actor_state_input: bool,
+) -> None:
     from swarmbots.tools.inspect_policy_parameters import inspect_variants
 
-    variants = ("tmasac_swiglu", "tmasac_slstm_swiglu")
-    previous_threads = torch.get_num_threads()
-    torch.set_num_threads(1)
-    try:
-        report = inspect_variants("SwarmBots-WallEasy-v0", variants, model_scale=scale)
-    finally:
-        torch.set_num_threads(previous_threads)
+    report = inspect_variants(
+        "SwarmBots-WallEasy-v0", ("matd3__deepset_critic",), model_scale="2.5M",
+        policy_kwargs={
+            "td3_recurrent_actor": True,
+            "critic_independent_encoders": independent_encoders,
+            "td3_actor_state_critic_input_config": "auto" if actor_state_input else None,
+        },
+    )
     assert not report["errors"]
-    diagrams = generate(report["policies"], tmp_path)
-    assert {d.variant for d in diagrams} == set(variants)
-    for d, row in zip(diagrams, report["policies"], strict=True):
-        assert sum(node.parameters or 0 for node in d.nodes) == row["trainable"]
-        stacked_lines = [line for node in d.nodes for line in node.lines if "2 × SwiGLU" in line]
-        assert len(stacked_lines) == (2 if d.variant == "tmasac_swiglu" else 1)
-        svg_path, = tmp_path.glob(f"*/{d.variant}.svg")
-        assert ElementTree.fromstring(svg_path.read_text(encoding="utf-8")).tag.endswith("svg")
-        assert "2 × SwiGLU" in svg_path.with_suffix(".mmd").read_text(encoding="utf-8")
-        assert "2 × SwiGLU" in svg_path.with_suffix(".dot").read_text(encoding="utf-8")
-    assert (tmp_path / "index.html").exists()
+    row, = report["policies"]
+    diagram, = generate(report["policies"], tmp_path)
+    nodes = {node.id: node for node in diagram.nodes}
+    edges = {(edge.source, edge.target) for edge in diagram.edges}
+    assert ("state_bridge" in nodes) is actor_state_input
+    if actor_state_input:
+        assert nodes["state_bridge"].parameters == row["module_parameter_counts"]["critic.actor_state_encoder"]
+        assert "detach last actor state" in nodes["state_bridge"].lines
+        assert ("actor_encoder", "state_bridge") in edges
+        assert ("state_bridge", "critic_encoder") in edges
+        assert (("state_bridge", "critic_encoder2") in edges) is independent_encoders
+    for role, counts in diagram.role_parameters.items():
+        assert sum(node.parameters or 0 for node in diagram.nodes if node.parameter_role == role) == counts
+    assert sum(node.parameters or 0 for node in diagram.nodes) == row["trainable"]
+    for edge in diagram.edges:
+        assert not any(
+            crosses_bounds(start, end, node_bounds(node))
+            for start, end in zip(edge_points(edge, nodes), edge_points(edge, nodes)[1:])
+            for node in diagram.nodes
+        )
+    svg_path, = tmp_path.glob("*/matd3__deepset_critic.svg")
+    assert ElementTree.fromstring(svg_path.read_text(encoding="utf-8")).tag.endswith("svg")
+
+
+@pytest.mark.integration
+@pytest.mark.usefixtures("single_thread")
+def test_independent_deepset_encoders_feed_private_readouts_and_concatenated_nop(tmp_path: Path) -> None:
+    from swarmbots.learn.nn_components.deep_set import DeepSetInteractionConfig
+    from swarmbots.tools.inspect_policy_parameters import inspect_variants
+
+    report = inspect_variants(
+        "SwarmBots-WallEasy-v0", ("masac__deepset_critic", "matd3__deepset_critic"), model_scale="2.5M",
+        policy_kwargs={
+            "critic_independent_encoders": True,
+            "deepset_interaction_config": DeepSetInteractionConfig(local_update="residual", normalize=False),
+        },
+    )
+    assert not report["errors"]
+    for diagram, row in zip(generate(report["policies"], tmp_path), report["policies"], strict=True):
+        nodes = {node.id: node for node in diagram.nodes}
+        edges = {(edge.source, edge.target) for edge in diagram.edges}
+        assert ("q_inputs", "critic_encoder") in edges and ("q_inputs", "critic_encoder2") in edges
+        assert ("critic_encoder", "head1") in edges and ("critic_encoder2", "head2") in edges
+        assert ("critic_encoder", "head2") not in edges and ("critic_encoder2", "head1") not in edges
+        assert ("critic_encoder", "q_features") in edges and ("critic_encoder2", "q_features") in edges
+        assert ("q_features", "nop_bridge") in edges
+        assert nodes["q_features"].parameters == 0
+        assert sum(node.parameters or 0 for node in diagram.nodes) == row["trainable"]
+        for id in ("critic_encoder", "critic_encoder2"):
+            assert "z = h (no normalization)" in nodes[id].lines
+            assert "h_next = u; local processing omitted" in nodes[id].lines
+            assert not any(line.startswith(("local MLP:", "v = local")) for line in nodes[id].lines)
+        for edge in diagram.edges:
+            assert not any(
+                crosses_bounds(start, end, node_bounds(node))
+                for start, end in zip(edge_points(edge, nodes), edge_points(edge, nodes)[1:])
+                for node in diagram.nodes
+            )

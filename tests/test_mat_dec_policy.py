@@ -102,7 +102,7 @@ def test_act_is_decentralized_and_does_not_run_the_mat_encoder() -> None:
     changed_local_obs[:, 1:, :] += 100.0
     global_obs = torch.randn(2, _DummyMATDecEnv.global_obs_dim)
 
-    with patch.object(policy.encoder, "forward", side_effect=AssertionError("actor used MAT encoder")):
+    with patch.object(policy.critic_encoder, "forward", side_effect=AssertionError("actor used MAT encoder")):
         actions = policy.act(local_obs, global_obs, deterministic=True)
         changed_actions = policy.act(
             changed_local_obs,
@@ -120,9 +120,9 @@ def test_actor_encoder_uses_global_observations_without_mixing_local_tokens() ->
     changed_local_obs[:, 1:, :] += 100.0
     global_obs = torch.randn(2, _DummyMATDecEnv.global_obs_dim)
 
-    actor_features = policy._encode_actor_observations(local_obs, global_obs)
-    changed_local_features = policy._encode_actor_observations(changed_local_obs, global_obs)
-    changed_global_features = policy._encode_actor_observations(local_obs, global_obs + 1.0)
+    actor_features = policy.actor_encoder(local_obs, global_obs)
+    changed_local_features = policy.actor_encoder(changed_local_obs, global_obs)
+    changed_global_features = policy.actor_encoder(local_obs, global_obs + 1.0)
 
     torch.testing.assert_close(changed_local_features[:, 0], actor_features[:, 0])
     assert not torch.allclose(changed_global_features[:, 0], actor_features[:, 0])
@@ -147,7 +147,7 @@ def test_actor_objective_does_not_backpropagate_through_mat_encoder() -> None:
     )
     (-log_probs.mean()).backward()
 
-    assert all(parameter.grad is None for parameter in policy.encoder.parameters())
+    assert all(parameter.grad is None for parameter in policy.critic_encoder.parameters())
     assert any(parameter.grad is not None for parameter in policy.actor_encoder.parameters())
     assert any(parameter.grad is not None for parameter in policy.actor_head.parameters())
 
@@ -156,7 +156,7 @@ def test_hyper_parameters_use_mat_dec_name() -> None:
     hyper_parameters = _make_policy().get_hyper_parameters()
 
     assert hyper_parameters.keys() == {"mat_dec_policy_config"}
-    actor_encoder_config = hyper_parameters["mat_dec_policy_config"]["actor_encoder_config"]
+    actor_encoder_config = hyper_parameters["mat_dec_policy_config"]["encoder_config"]
     assert actor_encoder_config["global_obs_encoder_config"] is not None
     assert actor_encoder_config["use_agent_attention"] is False
 

@@ -47,7 +47,7 @@ from swarmbots.learn.swarmbots_obs_indices import build_obs_indices
 
 
 def list_variants(*, include_hidden: bool = False) -> tuple[str, ...]:
-    """List core presets; opt in to MLP baselines and optional controls."""
+    """List core presets; opt in to hidden attention and NOP controls."""
     return tuple(name for name, config in VARIANT_CONFIGS.items() if include_hidden or not config.hidden)
 
 
@@ -62,7 +62,7 @@ def _variant_options(variant: str, *, model_scale: str | None = DEFAULT_MODEL_SC
         policy_options = {"policy_variant": config.policy_variant}
         algorithm_options = {}
     deterministic = _is_deterministic_policy_variant(policy_options["policy_variant"])
-    if deterministic or variant in {"masac_mlp", "masac_deepset"}:
+    if deterministic or variant in {"masac__mlp_critic", "masac__deepset_critic"}:
         policy_options["mat_encoder_transformer_ff_config"] = MLPConfig(hidden_dims=[512, 512])
     default_distribution = None if deterministic else (
         "predicted_std_gaussian"
@@ -257,7 +257,7 @@ def make_training(
     is_sac = _is_sac_policy_variant(policy_variant)
     is_deterministic = _is_deterministic_policy_variant(policy_variant)
     is_off_policy = is_sac or is_deterministic
-    is_recurrent_ppo = policy_variant in {"mat_ind_lstm", "mat_qcx_lstm"}
+    is_recurrent_ppo = policy_variant in {"mat_ind__lstm", "mat_qcx__lstm"}
     if (
         "use_popart" in policy_options
         and "use_popart" in algorithm_options

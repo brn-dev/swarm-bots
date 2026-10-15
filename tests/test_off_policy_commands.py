@@ -55,7 +55,7 @@ def _make_algorithm(
         policy = _make_policy(env, nop_config=nop_config)
         algorithm_class = SAC
     else:
-        variant = "matd3_deepset" if kind == "td3" else "maddpg_deepset"
+        variant = "matd3__deepset_critic" if kind == "td3" else "maddpg__deepset_critic"
         policy = make_policy(env, variant, **nop_options(steps=1))
         algorithm_class = TD3 if kind == "td3" else DDPG
     return algorithm_class(

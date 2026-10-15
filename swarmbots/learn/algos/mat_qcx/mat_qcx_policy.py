@@ -201,7 +201,8 @@ class MATQCXPolicy(MATQCBasePolicy):
 
     def get_grad_norms(self) -> dict[str, float]:
         return {
-            "encoder": self._module_grad_norm(self.encoder),
+            "actor_encoder": self._module_grad_norm(self.actor_encoder),
+            "critic_encoder": self._module_grad_norm(self.critic_encoder),
             "action_input_norm": self._module_grad_norm(self.action_input_norm),
             "action_encoder": self._module_grad_norm(self.action_encoder),
             "action_token_norm": self._module_grad_norm(self.action_token_norm),

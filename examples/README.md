@@ -52,12 +52,12 @@ Run this snippet from the repository root; `examples` is checkout code rather th
 python examples/train_policy.py SwarmBots-WallEasy-v0 --variant mappo
 python examples/train_policy.py SwarmBots-WallEasy-v0 --variant mat_ind
 python examples/train_policy.py SwarmBots-WallEasy-v0 --variant tmasac
-python examples/train_policy.py SwarmBots-WallEasy-v0 --variant matd3_deepset
-python examples/train_policy.py SwarmBots-WallEasy-v0 --variant maddpg_mlp
-python examples/train_policy.py SwarmBots-POWallMedium-v0 --variant tmasac_slstm
+python examples/train_policy.py SwarmBots-WallEasy-v0 --variant matd3__deepset_critic
+python examples/train_policy.py SwarmBots-WallEasy-v0 --variant maddpg__deepset_critic
+python examples/train_policy.py SwarmBots-POWallMedium-v0 --variant tmasac__slstm
 ```
 
-Each command trains for one million individual environment transitions using 256 parallel CUDA worlds, evaluates deterministic actions in a fresh environment at seed `1000`, and records two complete episodes at 640 × 480. Training follows the selected preset's defaults, including its action distribution and NOP setting. Fixed tiers are `2.5M NOP0.75M`, `5M NOP1M` (default), and `10M NOP2M`; use `--model-scale 2.5M` or `--model-scale 10M` to select the added tiers. Dimensions are declared per architecture. Use `--model-scale legacy` for explicitly customized widths. Use `--no-nop` to disable NOP or `--compile` to compile policy/world-model modules. MLP off-policy critics already disable NOP and reject `--nop`.
+Each command trains for one million individual environment transitions using 256 parallel CUDA worlds, evaluates deterministic actions in a fresh environment at seed `1000`, and records two complete episodes at 640 × 480. Training follows the selected preset's defaults, including its action distribution and NOP setting. Fixed tiers are `2.5M NOP0.75M`, `5M NOP1M` (default), and `10M NOP2M`; use `--model-scale 2.5M` or `--model-scale 10M` to select the added tiers. Dimensions are declared per architecture. Use `--model-scale legacy` for explicitly customized widths. Use `--no-nop` to disable NOP or `--compile` to compile policy/world-model modules.
 
 Outputs go to `runs/<benchmark-id>/<variant>/`: training metrics and metadata, checkpoints in `models/`, `evaluation.json`, and MP4s in `videos/`. Use `--run-dir` to select a separate directory for each experiment. Adjust `--total-timesteps`, `--num-envs`, `--eval-envs`, and `--video-episodes` to change the workload; `--device cpu` selects CPU execution. Off-policy presets collect at least 10,000 transitions before learning starts, and recurrent learners also need enough history for their replay segments.
 
@@ -70,7 +70,7 @@ The example shows a single evaluation seed. For a complete protocol report, eval
 ```bash
 python examples/train_recurrent_td3.py SwarmBots-POWallMedium-v0 --variant tmatd3
 python examples/train_recurrent_td3.py SwarmBots-POWallMedium-v0 --variant tmatd3_dec --recurrent-critic
-python examples/train_recurrent_td3.py SwarmBots-POWallMedium-v0 --variant matd3_deepset
+python examples/train_recurrent_td3.py SwarmBots-POWallMedium-v0 --variant matd3__deepset_critic
 ```
 
 This example enables the recurrent actor through `policy_kwargs` and shows sequence-replay settings through `algorithm_kwargs`: 32 burn-in steps, 64 learning steps, and a stored actor-state interval of 16 steps. By default, feed-forward critics receive detached actor state. `--recurrent-critic` gives TMATD3's transformer critic its own recurrent history. The same training, evaluation, and recording workflow is reused, with separate default output directories for the two critic choices.

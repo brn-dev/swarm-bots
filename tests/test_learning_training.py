@@ -24,7 +24,6 @@ from swarmbots.learn.action_dists.sign_magnitude_beta_action_dist import SignMag
 from swarmbots.learn.algos.mappo.mappo_policy import MAPPOPolicy
 from swarmbots.learn.algos.mat.mat_ind_policy import MATIndPolicy
 from swarmbots.learn.algos.ppo.ppo import PPO
-from swarmbots.learn.algos.ppo.ppo_policy import PPOCritic
 from swarmbots.learn.algos.ppo.ppo_sampler import PPOSamples
 from swarmbots.learn.algos.sac.recurrent_sac import RecurrentSAC
 from swarmbots.learn.algos.sac.sac import SAC
@@ -33,9 +32,9 @@ from swarmbots.learn.algos.sac.tmasac_policy import TMASACPolicy
 from swarmbots.learn.checkpointing import capture_env_state
 from swarmbots.learn.exponential_moving_average import ExponentialMovingAverage
 from swarmbots.learn.hybrid_action_space import HybridActionSpace
-from swarmbots.learn.nn_components.deep_set import DeepSetCritic
-from swarmbots.learn.nn_components.feed_forward import MLP, MLPConfig, StackedGLU, SwiGLU, SwiGLUConfig
+from swarmbots.learn.nn_components.feed_forward import MLP, MLPConfig
 from swarmbots.learn.presets.policy_factory import _is_off_policy_variant, _make_base_policy
+from swarmbots.learn.presets.tmasac import make_tmasac_options, TMASACVariant
 from swarmbots.learn.presets.transformer import MATInitGains, MATNormalizationConfig
 from swarmbots.learn.training import _variant_options
 from swarmbots.mjw_env.swarm.mjw_homogeneous_swarm import MJWPreConnectedUnitLocationsConfig
@@ -76,59 +75,65 @@ def _training_kwargs() -> dict[str, Any]:
 
 def test_variants_expose_only_canonical_architectures_and_ablations() -> None:
     assert set(list_variants(include_hidden=True)) == {
-        "maddpg_mlp", "maddpg_deepset", "matd3_mlp", "matd3_deepset",
-        "masac_mlp", "masac_deepset", "tmatd3", "tmatd3_dec",
+        "maddpg__deepset_critic",
+        "matd3__deepset_critic",
+        "masac__deepset_critic",
+        "tmatd3",
+        "tmatd3_dec",
         "ppo",
         "mappo",
-        "mappo_mlp",
         "mat_orig",
         "mat_ind",
-        "mat_ind_no_attention",
+        "mat_ind__no_attention",
         "mat_qcx",
         "mat_dec",
-        "mat_ind_lstm",
-        "mat_qcx_lstm",
+        "mat_ind__lstm",
+        "mat_qcx__lstm",
         "tmasac",
         "tmasac_dec",
-        "tmasac_slstm",
-        "tmasac_lstm",
-        "tmasac_lstm_no_actor_state",
-        "tmasac_segment",
-        "tmasac_shared_encoder",
-        "tmasac_slstm_shared_encoder",
-        "mat_qcx_no_nop",
-        "tmasac_no_nop",
-        "tmasac_slstm_no_residual",
-        "tmasac_slstm_no_nop",
-        "tmasac_swiglu",
-        "tmasac_slstm_swiglu",
+        "tmasac__slstm",
+        "tmasac__lstm",
+        "mat_qcx__no_nop",
+        "tmasac__no_nop",
     }
     assert set(list_variants()) == {
-        "ppo", "mappo", "mat_orig", "mat_ind", "mat_dec", "mat_qcx",
-        "mat_ind_lstm", "mat_qcx_lstm", "maddpg_deepset", "matd3_deepset",
-        "masac_deepset", "tmatd3", "tmatd3_dec", "tmasac", "tmasac_dec",
-        "tmasac_shared_encoder", "tmasac_slstm", "tmasac_lstm",
+        "ppo",
+        "mappo",
+        "mat_orig",
+        "mat_ind",
+        "mat_dec",
+        "mat_qcx",
+        "mat_ind__lstm",
+        "mat_qcx__lstm",
+        "maddpg__deepset_critic",
+        "matd3__deepset_critic",
+        "masac__deepset_critic",
+        "tmatd3",
+        "tmatd3_dec",
+        "tmasac",
+        "tmasac_dec",
+        "tmasac__slstm",
+        "tmasac__lstm",
     }
     assert len(list_variants()) == len(set(list_variants()))
 
 
 @pytest.mark.parametrize("variant", [
-    "tmasac_slstm",
-    "tmasac_slstm_no_nop",
-    "tmasac_slstm_shared_encoder",
-    "tmasac_slstm_swiglu",
+    "mat__orig", "mat__ind", "mat__dec", "mat__qcx", "mat__ind__lstm", "mat__qcx__lstm",
+    "mat__ind__no_attention", "mat__qcx__no_nop", "tmasac__dec", "tmatd3__dec",
+    "mat_ind_lstm", "mat_qcx_lstm", "maddpg_deepset", "matd3_deepset", "masac_deepset",
+    "tmasac_lstm", "tmasac_slstm", "mat_ind_no_attention",
+    "mat_qcx_no_nop", "tmasac_no_nop", "tmasac_shared_encoder",
 ])
+def test_replaced_variant_names_are_rejected(variant: str) -> None:
+    with pytest.raises(ValueError, match="Unknown learning variant"):
+        _variant_options(variant)
+
+
+@pytest.mark.parametrize("variant", ["tmasac__slstm"])
 def test_slstm_presets_include_the_temporal_residual_connection(variant: str) -> None:
     options, _ = _variant_options(variant)
     assert options["rmat_temporal_residual"] is True
-
-
-def test_slstm_no_residual_ablation_changes_only_the_residual_connection() -> None:
-    main_options, main_algorithm = _variant_options("tmasac_slstm")
-    ablation_options, ablation_algorithm = _variant_options("tmasac_slstm_no_residual")
-    assert ablation_options["rmat_temporal_residual"] is False
-    assert main_algorithm == ablation_algorithm
-    assert main_options == {**ablation_options, "rmat_temporal_residual": True}
 
 
 def _small_policy(
@@ -172,8 +177,26 @@ def _small_policy(
 
 
 @pytest.mark.parametrize("variant", [
-    "tmasac_slstm", "tmasac_slstm_no_residual", "tmasac_lstm", "tmasac_slstm_no_nop",
+    "tmasac__ac_shared_observation_encoder", "tmasac__slstm__ac_shared_observation_encoder",
 ])
+def test_low_level_shared_observation_presets_remain_available_but_unregistered(variant: TMASACVariant) -> None:
+    options, _ = make_tmasac_options(variant)
+    policy = _small_policy("tmasac", policy_kwargs=options)
+
+    assert policy.shared_observation_encoder is not None
+    assert policy.shared_observation_encoder_target is not None
+    assert variant not in list_variants(include_hidden=True)
+    with pytest.raises(ValueError, match="Unknown learning variant"):
+        _variant_options(variant)
+
+
+@pytest.mark.parametrize("variant", ["tmasac_shared_encoder", "tmasac_slstm_shared_encoder"])
+def test_low_level_shared_observation_presets_reject_old_names(variant: str) -> None:
+    with pytest.raises(ValueError, match="Unknown TMASAC variant"):
+        make_tmasac_options(variant)
+
+
+@pytest.mark.parametrize("variant", ["tmasac__slstm", "tmasac__lstm"])
 def test_recurrent_tmasac_presets_keep_full_critic_ff_and_split_actor_ff(variant: str) -> None:
     options, _ = _variant_options(variant, model_scale=None)
     assert options["mat_encoder_transformer_ff_config"] == MLPConfig(hidden_dims=[512, 512])
@@ -191,37 +214,7 @@ def test_recurrent_tmasac_presets_keep_full_critic_ff_and_split_actor_ff(variant
             assert widths == [(256, 512), (512, 256)]
 
 
-def test_recurrent_tmasac_swiglu_preset_keeps_stacked_critic_ff_and_single_actor_ff() -> None:
-    options, _ = _variant_options("tmasac_slstm_swiglu")
-    baseline_options, _ = _variant_options("tmasac_swiglu")
-    critic_config = options["mat_encoder_transformer_ff_config"]
-    actor_config = options["rmat_actor_transformer_ff_config"]
-    assert critic_config == baseline_options["mat_encoder_transformer_ff_config"]
-    assert isinstance(critic_config, SwiGLUConfig) and critic_config.stacked.n_layers == 2
-    assert actor_config == SwiGLUConfig(hidden_dim=344)
-    policy = _small_policy("tmasac_slstm_swiglu")
-    for critic in (policy.critic, policy.critic_target):
-        for layer in critic.encoder.layers:
-            assert isinstance(layer.feedforward, StackedGLU)
-            assert len(layer.feedforward) == 2
-            for block in layer.feedforward:
-                assert isinstance(block, SwiGLU)
-                assert (block.gate_projection.in_features, block.gate_projection.out_features) == (32, 344)
-                assert (block.value_projection.in_features, block.value_projection.out_features) == (32, 344)
-                assert (block.output_projection.in_features, block.output_projection.out_features) == (344, 32)
-    for layer in policy.actor_encoder.layers:
-        for feedforward in (layer.inter_module_feedforward, layer.feedforward):
-            assert isinstance(feedforward, SwiGLU)
-            assert (feedforward.gate_projection.in_features, feedforward.gate_projection.out_features) == (256, 344)
-            assert (feedforward.value_projection.in_features, feedforward.value_projection.out_features) == (256, 344)
-            assert (feedforward.output_projection.in_features, feedforward.output_projection.out_features) == (344, 256)
-
-
-@pytest.mark.parametrize("variant,recurrent_critic", [
-    ("matd3_mlp", False), ("matd3_deepset", False),
-    ("tmatd3", False), ("tmatd3_dec", False),
-    ("tmatd3", True), ("tmatd3_dec", True),
-])
+@pytest.mark.parametrize("variant,recurrent_critic", [("matd3__deepset_critic", False), ("tmatd3", False), ("tmatd3_dec", False), ("tmatd3", True), ("tmatd3_dec", True)])
 def test_td3_split_actor_ff_override_preserves_full_critic_ff(variant: str, recurrent_critic: bool) -> None:
     baseline = _small_policy(variant)
     policy = _small_policy(variant, policy_kwargs={
@@ -256,16 +249,16 @@ def test_td3_split_actor_ff_override_preserves_full_critic_ff(variant: str, recu
 def test_recurrent_mat_extra_encoder_ff_preserves_critic_head_architecture(variant: str) -> None:
     settings = {"mat_add_agent_embeddings": False}
     baseline = _small_policy(variant, policy_kwargs=settings)
-    recurrent = _small_policy(variant + "_lstm", policy_kwargs=settings)
+    recurrent = _small_policy(variant + "__lstm", policy_kwargs=settings)
     expected_shapes = {name: parameter.shape for name, parameter in baseline.critic.named_parameters()}
     assert {name: parameter.shape for name, parameter in recurrent.critic.named_parameters()} == expected_shapes
-    for baseline_layer, recurrent_layer in zip(baseline.encoder.layers, recurrent.encoder.layers, strict=True):
+    for baseline_layer, recurrent_layer in zip(baseline.actor_encoder.layers, recurrent.actor_encoder.layers, strict=True):
         expected_ff_shapes = {name: parameter.shape for name, parameter in baseline_layer.feedforward.named_parameters()}
         for block in (recurrent_layer.inter_module_feedforward, recurrent_layer.feedforward):
             assert {name: parameter.shape for name, parameter in block.named_parameters()} == expected_ff_shapes
 
 
-@pytest.mark.parametrize("variant", ["tmasac", "tmasac_dec", "tmasac_lstm_no_actor_state", "tmasac_segment"])
+@pytest.mark.parametrize("variant", ["tmasac", "tmasac_dec"])
 def test_sac_presets_produce_actions_for_swarms_larger_than_twenty_agents(variant: str) -> None:
     n_agents = 21
     policy = _small_policy(variant, n_agents)
@@ -325,38 +318,10 @@ def test_tmasac_dec_actor_is_independent_and_critic_mixes_agents() -> None:
         assert any(torch.count_nonzero(gradient) for gradient in gradients)
 
 
-def test_mappo_critic_presets_keep_identical_actor_configurations_and_initial_weights() -> None:
-    deepset_variant = "mappo"
-    mlp_variant = "mappo_mlp"
-    torch.manual_seed(42)
-    deepset = _small_policy(deepset_variant)
-    torch.manual_seed(42)
-    mlp = _small_policy(mlp_variant)
-    assert isinstance(deepset, MAPPOPolicy) and isinstance(mlp, MAPPOPolicy)
-    assert isinstance(deepset.critic, DeepSetCritic) and isinstance(mlp.critic, PPOCritic)
-    assert deepset.config.actor_config == mlp.config.actor_config
-    for name in ("shared_encoder", "actor", "action_dist"):
-        torch.testing.assert_close(getattr(deepset, name).state_dict(), getattr(mlp, name).state_dict(), rtol=0, atol=0)
-    expected_widths = [256, 128]
-    assert mlp.critic.hidden_dims == expected_widths
-    assert mlp.config.critic_config.deep_set_config is None
-    assert deepset.config.critic_config.deep_set_config.value_regressor_hidden_dims == expected_widths
-    deep_options, deep_algorithm = _variant_options(deepset_variant)
-    mlp_options, mlp_algorithm = _variant_options(mlp_variant)
-    assert mlp_options["use_nop"] and not _is_off_policy_variant(mlp_options["policy_variant"])
-    del deep_options["policy_variant"], mlp_options["policy_variant"]
-    assert deep_options == mlp_options and deep_algorithm == mlp_algorithm
-
-
 @pytest.mark.integration
 @pytest.mark.parametrize(
     ("variant", "expected_ratios"),
-    [
-        ("ppo", (1.04**2, 1.04)),
-        ("mappo", (1.04, 1.04, 1.04)),
-        ("mappo_mlp", (1.04, 1.04, 1.04)),
-        ("mat_ind_no_attention", (1.04, 1.04, 1.04)),
-    ],
+    [("ppo", (1.04**2, 1.04)), ("mappo", (1.04, 1.04, 1.04)), ("mat_ind__no_attention", (1.04, 1.04, 1.04))],
 )
 def test_ppo_presets_clip_and_measure_kl_at_the_intended_action_scope(
     variant: str, expected_ratios: tuple[float, ...]
@@ -455,7 +420,7 @@ def test_each_variant_produces_finite_benchmark_actions(variant: str) -> None:
 
 
 @pytest.mark.integration
-@pytest.mark.parametrize("variant", ["tmasac", "tmasac_dec", "tmasac_slstm"])
+@pytest.mark.parametrize("variant", ["tmasac", "tmasac_dec", "tmasac__slstm"])
 def test_sac_action_distribution_can_be_overridden_without_changing_the_architecture(variant: str) -> None:
     algorithm = make_training(
         "SwarmBots-WallEasy-v0", variant,
@@ -505,7 +470,7 @@ def test_learning_updates_parameters_on_actual_benchmark_transitions(variant: st
             "learning_rate": 1e-3,
             "learning_rate_warmup_updates": 0,
         }
-        if policy_options["policy_variant"] in {"tmasac_recurrent", "tmasac_segment"}:
+        if policy_options["policy_variant"] in {"tmasac__recurrent"}:
             algorithm_options.update(burn_in_steps=1, learning_steps=3, temporal_state_store_interval=1)
     else:
         algorithm_options = {"learning_rate": 1e-3, "n_epochs": 1, "target_kl": None}
@@ -536,7 +501,7 @@ def test_learning_updates_parameters_on_actual_benchmark_transitions(variant: st
 
 
 @pytest.mark.integration
-@pytest.mark.parametrize("variant", ["maddpg_mlp", "matd3_deepset", "masac_mlp", "tmatd3_dec"])
+@pytest.mark.parametrize("variant", ["matd3__deepset_critic", "tmatd3_dec"])
 def test_new_off_policy_train_helper_saves_resumable_targets(variant: str, tmp_path: Path) -> None:
     kwargs = _training_kwargs()
     kwargs["policy_kwargs"].update(
@@ -566,7 +531,7 @@ def test_new_off_policy_train_helper_saves_resumable_targets(variant: str, tmp_p
 
 
 @pytest.mark.integration
-@pytest.mark.parametrize("variant", ["maddpg_deepset", "matd3_deepset", "masac_deepset", "tmatd3", "tmatd3_dec"])
+@pytest.mark.parametrize("variant", ["maddpg__deepset_critic", "matd3__deepset_critic", "masac__deepset_critic", "tmatd3", "tmatd3_dec"])
 @pytest.mark.parametrize("source", ["critic", "both"])
 def test_off_policy_nop_is_enabled_by_default_and_can_train(variant: str, source: str) -> None:
     kwargs = _training_kwargs()
@@ -640,58 +605,21 @@ def test_mappo_global_context_trains_and_restores_matching_checkpoints(
 
 
 @pytest.mark.integration
-@pytest.mark.parametrize("variant", ["mappo_mlp"])
-@pytest.mark.parametrize("use_nop", [False, True])
-@pytest.mark.parametrize("use_popart", [False, True])
-def test_mappo_mlp_presets_train_and_restore_nop_and_popart_settings(
-    variant: str, use_nop: bool, use_popart: bool, tmp_path: Path,
-) -> None:
-    kwargs = _training_kwargs()
-    kwargs["policy_kwargs"].update(transition_model_d_model=16, transition_model_nhead=2)
-    kwargs["algorithm_kwargs"] = {
-        "learning_rate": 1e-3, "n_epochs": 1, "target_kl": None, "use_popart": use_popart,
-    }
-    if not use_nop:
-        kwargs["use_nop"] = False
-    algorithm = make_training("SwarmBots-WallEasy-v0", variant, **kwargs)
-    try:
-        policy = algorithm.policy.policy if use_nop else algorithm.policy
-        assert isinstance(policy, MAPPOPolicy) and isinstance(policy.critic, PPOCritic)
-        assert policy.has_popart is use_popart
-        before = {name: parameter.detach().clone() for name, parameter in policy.critic.named_parameters()}
-        metrics, transitions = algorithm.perform_iteration(
-            ExponentialMovingAverage(0.1), ExponentialMovingAverage(0.1), update_ema=True,
-        )
-        assert transitions == 8 and algorithm.n_total_updates > 0
-        assert ("wm_loss" in metrics) is use_nop
-        assert any(not torch.equal(parameter, before[name]) for name, parameter in policy.critic.named_parameters())
-        assert all(torch.isfinite(parameter).all() for parameter in algorithm.policy.parameters())
-        path = tmp_path / "mappo-mlp.pt"
-        algorithm.save(path, optimizer_state_dict=algorithm._get_optimizer_state_dict())
-        checkpoint = torch.load(path, weights_only=False)
-        config = checkpoint["policy_hyper_parameters"]["mappo_policy_config"]["critic_config"]
-        assert config["deep_set_config"] is None and config["use_popart"] is use_popart
-        restored = make_training("SwarmBots-WallEasy-v0", variant, **kwargs)
-        try:
-            restored.load(path)
-            assert restored.n_total_updates == algorithm.n_total_updates
-            assert restored.optimizer.state_dict()["state"]
-            torch.testing.assert_close(restored.policy.state_dict(), algorithm.policy.state_dict(), rtol=0, atol=0)
-            observations, _ = restored.env.unwrapped.reset(seed=17)
-            actions = as_benchmark_policy(restored)(observations, torch.ones(2, dtype=torch.bool))
-            assert all(torch.isfinite(action).all() for action in actions.values())
-        finally:
-            restored.env.close()
-    finally:
-        algorithm.env.close()
-
-
-@pytest.mark.integration
 @pytest.mark.parametrize("variant", [
-    "mat_ind", "mat_qcx", "mat_dec", "mat_ind_lstm", "mat_qcx_lstm",
-    "tmasac", "tmasac_dec", "tmasac_slstm", "tmasac_lstm", "tmasac_segment",
-    "tmasac_shared_encoder", "tmasac_slstm_shared_encoder", "tmatd3", "tmatd3_dec",
-    "maddpg_deepset", "matd3_deepset", "masac_deepset",
+    "mat_ind",
+    "mat_qcx",
+    "mat_dec",
+    "mat_ind__lstm",
+    "mat_qcx__lstm",
+    "tmasac",
+    "tmasac_dec",
+    "tmasac__slstm",
+    "tmasac__lstm",
+    "tmatd3",
+    "tmatd3_dec",
+    "maddpg__deepset_critic",
+    "matd3__deepset_critic",
+    "masac__deepset_critic",
 ])
 def test_joint_observation_embedding_trains_and_restores_existing_presets(variant: str, tmp_path: Path) -> None:
     kwargs = _training_kwargs()
@@ -707,7 +635,7 @@ def test_joint_observation_embedding_trains_and_restores_existing_presets(varian
             "gradient_steps": 1, "learning_rate_warmup_updates": 0,
             "sac_compile_tensor_operations": False, "sac_compile_optimizer_steps": False,
         }
-        if policy_options["policy_variant"] in {"tmasac_recurrent", "tmasac_segment"}:
+        if policy_options["policy_variant"] in {"tmasac__recurrent"}:
             kwargs["algorithm_kwargs"].update(burn_in_steps=1, learning_steps=3, temporal_state_store_interval=1)
     else:
         kwargs["algorithm_kwargs"] = {"learning_rate": 1e-3, "n_epochs": 1, "target_kl": None}
@@ -753,7 +681,7 @@ def test_joint_observation_embedding_trains_and_restores_existing_presets(varian
 
 
 @pytest.mark.integration
-@pytest.mark.parametrize("variant", ["mappo", "matd3_deepset", "maddpg_mlp", "masac_mlp", "tmasac_slstm"])
+@pytest.mark.parametrize("variant", ["mappo", "matd3__deepset_critic", "tmasac__slstm"])
 def test_training_levels_apply_independently_to_each_algorithm_family(variant: str, tmp_path: Path) -> None:
     kwargs = _training_kwargs()
     kwargs["use_nop"] = False
@@ -767,7 +695,7 @@ def test_training_levels_apply_independently_to_each_algorithm_family(variant: s
             "gradient_steps": 1,
             "learning_rate_warmup_updates": 0,
         }
-        if policy_options["policy_variant"] == "tmasac_recurrent":
+        if policy_options["policy_variant"] == "tmasac__recurrent":
             kwargs["algorithm_kwargs"].update(burn_in_steps=1, learning_steps=3, temporal_state_store_interval=1)
     else:
         kwargs["algorithm_kwargs"] = {"n_epochs": 1, "target_kl": None, "learning_rate": 1e-3}
@@ -851,21 +779,17 @@ def test_training_saves_and_resumes_then_evaluates_without_updating_normalizatio
 
 @pytest.mark.integration
 def test_presets_select_the_intended_algorithm_and_actor() -> None:
-    for variant, expected_class in (
-        ("mappo", PPO), ("mappo_mlp", PPO), ("mat_ind_no_attention", PPO), ("tmasac", SAC),
-        ("tmasac_dec", SAC), ("tmasac_slstm", RecurrentSAC),
-        ("tmasac_slstm_no_residual", RecurrentSAC),
-    ):
+    for variant, expected_class in (("mappo", PPO), ("mat_ind__no_attention", PPO), ("tmasac", SAC), ("tmasac_dec", SAC), ("tmasac__slstm", RecurrentSAC)):
         algorithm = make_training("SwarmBots-WallEasy-v0", variant, **_training_kwargs())
         try:
             assert isinstance(algorithm, expected_class)
-            if variant in {"mappo", "mappo_mlp"}:
+            if variant in {"mappo"}:
                 assert isinstance(algorithm.policy.policy, MAPPOPolicy)
-            elif variant == "mat_ind_no_attention":
+            elif variant == "mat_ind__no_attention":
                 assert isinstance(algorithm.policy.policy, MATIndPolicy)
                 assert algorithm.policy.policy.config.encoder_config.use_agent_attention is False
-            elif variant in {"tmasac_slstm", "tmasac_slstm_no_residual"}:
-                assert algorithm.policy.actor_encoder.config.temporal_residual is (variant == "tmasac_slstm")
+            elif variant in {"tmasac__slstm"}:
+                assert algorithm.policy.actor_encoder.config.temporal_residual is (variant == "tmasac__slstm")
         finally:
             algorithm.env.close()
 
@@ -924,7 +848,7 @@ def test_ppo_learning_rate_controller_uses_the_selected_kl_target(target_kl: flo
 
 
 @pytest.mark.integration
-@pytest.mark.parametrize("variant", ["mat_ind_lstm", "tmasac_slstm", "tmasac_lstm"])
+@pytest.mark.parametrize("variant", ["mat_ind__lstm", "tmasac__slstm", "tmasac__lstm"])
 def test_benchmark_adapter_resets_memory_for_the_selected_lanes(variant: str) -> None:
     algorithm = make_training("SwarmBots-WallEasy-v0", variant, **_training_kwargs())
     try:

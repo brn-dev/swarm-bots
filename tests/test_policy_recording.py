@@ -139,7 +139,7 @@ def test_record_command_forwards_checkpoint_exploration_noise(
 
     monkeypatch.setattr("swarmbots.learn.record_checkpoint", record)
     cli.main([
-        "record", "SwarmBots-WallEasy-v0", "--checkpoint", "policy.pt", "--variant", "matd3_mlp",
+        "record", "SwarmBots-WallEasy-v0", "--checkpoint", "policy.pt", "--variant", "matd3__deepset_critic",
         "--stochastic", "--exploration-noise", exploration_noise, "--device", "cpu", "--output", str(tmp_path),
     ])
     assert options["exploration_noise"] == float(exploration_noise)
@@ -280,7 +280,7 @@ def test_invalid_recording_exploration_noise_closes_environment(
     monkeypatch.setattr(checkpoint_recording, "_make_policy_env", make_policy_env)
     with pytest.raises(ValueError, match="exploration_noise must be finite and nonnegative"):
         record_checkpoint(
-            checkpoint_path, "SwarmBots-WallEasy-v0", "matd3_mlp", video_folder=tmp_path,
+            checkpoint_path, "SwarmBots-WallEasy-v0", "matd3__deepset_critic", video_folder=tmp_path,
             exploration_noise=exploration_noise if source == "override" else None,
             **checkpoint_construction_options,
         )
@@ -288,7 +288,7 @@ def test_invalid_recording_exploration_noise_closes_environment(
 
 
 @pytest.mark.integration
-@pytest.mark.parametrize("variant", ["mat_ind", "tmasac_shared_encoder", "tmasac_slstm", "tmatd3"])
+@pytest.mark.parametrize("variant", ["mat_ind", "tmasac__slstm", "tmatd3"])
 def test_checkpoint_recording_reconstructs_joint_observation_embedding(
     variant: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     single_torch_thread: None, checkpoint_construction_options: dict[str, Any],
@@ -336,16 +336,13 @@ def test_recording_rejects_exploration_noise_for_stochastic_policies(
     torch.save({}, checkpoint_path)
     with pytest.raises(ValueError, match="only supported for DDPG/TD3"):
         record_checkpoint(
-            checkpoint_path, "SwarmBots-WallEasy-v0", "masac_mlp", video_folder=tmp_path, exploration_noise=0.4,
+            checkpoint_path, "SwarmBots-WallEasy-v0", "masac__deepset_critic", video_folder=tmp_path, exploration_noise=0.4,
         )
     assert env.closed
 
 
 @pytest.mark.integration
-@pytest.mark.parametrize("variant,recurrent", [
-    ("maddpg_mlp", False), ("matd3_deepset", False), ("tmatd3", False),
-    ("matd3_deepset", True), ("tmatd3", True),
-])
+@pytest.mark.parametrize("variant,recurrent", [("matd3__deepset_critic", False), ("tmatd3", False), ("matd3__deepset_critic", True), ("tmatd3", True)])
 @pytest.mark.parametrize("exploration_noise", [0.0, 0.4])
 @pytest.mark.parametrize("deterministic", [False, True])
 def test_checkpoint_recording_preserves_custom_exploration_noise(
@@ -426,7 +423,7 @@ def test_checkpoint_recording_noise_overrides_and_legacy_formats(
     import swarmbots.learn.checkpoint_recording as checkpoint_recording
 
     trainer = make_training(
-        "SwarmBots-WallEasy-v0", "matd3_mlp", num_envs=2,
+        "SwarmBots-WallEasy-v0", "matd3__deepset_critic", num_envs=2,
         algorithm_kwargs={
             "exploration_noise": 0.7, "learning_starts": 0, "batch_size": 2, "buffer_capacity_per_env": 16,
         },
@@ -461,7 +458,7 @@ def test_checkpoint_recording_noise_overrides_and_legacy_formats(
 
         monkeypatch.setattr(checkpoint_recording, "_record_episodes", record)
         record_checkpoint(
-            checkpoint_path, "SwarmBots-WallEasy-v0", "matd3_mlp", video_folder=tmp_path / "videos",
+            checkpoint_path, "SwarmBots-WallEasy-v0", "matd3__deepset_critic", video_folder=tmp_path / "videos",
             num_episodes=2, deterministic=False, exploration_noise=exploration_noise,
             **checkpoint_construction_options,
         )
@@ -471,11 +468,7 @@ def test_checkpoint_recording_noise_overrides_and_legacy_formats(
 
 
 @pytest.mark.integration
-@pytest.mark.parametrize("variant", [
-    "mat_qcx", "mat_ind_lstm", "tmasac_slstm",
-    "mappo_mlp",
-    "maddpg_mlp", "matd3_deepset", "masac_mlp", "tmatd3",
-])
+@pytest.mark.parametrize("variant", ["mat_qcx", "mat_ind__lstm", "tmasac__slstm", "matd3__deepset_critic", "tmatd3"])
 def test_checkpoint_recording_restores_actor_and_normalization_and_writes_complete_episodes(
     variant: str,
     tmp_path: Path,

@@ -36,6 +36,10 @@ class ScaleLayout:
     private_critic_ff: int
     dense_temporal_width: int
     dense_temporal_ff: int
+    autoregressive_actor_width: int
+    autoregressive_actor_ff: int
+    autoregressive_temporal_width: int
+    autoregressive_temporal_ff: int
     head_width: int
     decoder_width: int
     qcx_decoder_width: int
@@ -74,7 +78,7 @@ SCALE_LAYOUTS = {
         name="2.5M NOP0.75M",
         main_parameters=2_500_000,
         nop_parameters=750_000,
-        version="2.5+0.75M-v3",
+        version="2.5+0.75M-v5",
         width=192,
         mlp_latent_width=192,
         ff_width=384,
@@ -85,6 +89,10 @@ SCALE_LAYOUTS = {
         private_critic_ff=384,
         dense_temporal_width=128,
         dense_temporal_ff=512,
+        autoregressive_actor_width=128,
+        autoregressive_actor_ff=256,
+        autoregressive_temporal_width=128,
+        autoregressive_temporal_ff=256,
         head_width=128,
         decoder_width=128,
         qcx_decoder_width=128,
@@ -107,7 +115,7 @@ SCALE_LAYOUTS = {
         private_actor=(512, 384, 384),
         shared_v=(768, 384),
         separate_v_regressor=(512, 384),
-        orig_v=(768, 768, 384),
+        orig_v=(512, 512, 384),
         nop_width=128,
         nop_ff=512,
         nop_layers=2,
@@ -118,7 +126,7 @@ SCALE_LAYOUTS = {
         name="5M NOP1M",
         main_parameters=5_000_000,
         nop_parameters=1_000_000,
-        version="5+1M-v4",
+        version="5+1M-v6",
         width=256,
         mlp_latent_width=256,
         ff_width=512,
@@ -129,6 +137,10 @@ SCALE_LAYOUTS = {
         private_critic_ff=512,
         dense_temporal_width=192,
         dense_temporal_ff=512,
+        autoregressive_actor_width=192,
+        autoregressive_actor_ff=384,
+        autoregressive_temporal_width=128,
+        autoregressive_temporal_ff=384,
         head_width=128,
         decoder_width=192,
         qcx_decoder_width=192,
@@ -151,7 +163,7 @@ SCALE_LAYOUTS = {
         private_actor=(768, 512, 512),
         shared_v=(1024, 512),
         separate_v_regressor=(768, 512),
-        orig_v=(1024, 1024, 512),
+        orig_v=(768, 768, 512),
         nop_width=192,
         nop_ff=384,
         nop_layers=2,
@@ -162,7 +174,7 @@ SCALE_LAYOUTS = {
         name="10M NOP2M",
         main_parameters=10_000_000,
         nop_parameters=2_000_000,
-        version="10+2M-v4",
+        version="10+2M-v6",
         width=256,
         mlp_latent_width=384,
         ff_width=768,
@@ -173,6 +185,10 @@ SCALE_LAYOUTS = {
         private_critic_ff=1024,
         dense_temporal_width=256,
         dense_temporal_ff=512,
+        autoregressive_actor_width=192,
+        autoregressive_actor_ff=512,
+        autoregressive_temporal_width=192,
+        autoregressive_temporal_ff=384,
         head_width=192,
         decoder_width=256,
         qcx_decoder_width=192,
@@ -195,7 +211,7 @@ SCALE_LAYOUTS = {
         private_actor=(1024, 768, 768),
         shared_v=(1536, 768),
         separate_v_regressor=(1024, 768),
-        orig_v=(1536, 1536, 768),
+        orig_v=(1024, 1024, 768),
         nop_width=192,
         nop_ff=768,
         nop_layers=3,
@@ -321,42 +337,47 @@ def _mlp_on_policy(config: Any, layout: ScaleLayout) -> Any:
 
 
 def _mat(config: Any, layout: ScaleLayout) -> Any:
-    separate = isinstance(config, MATDecPolicyConfig)
+    decentralized = isinstance(config, MATDecPolicyConfig)
     recurrent = isinstance(config.encoder_config, RMATEncoderConfig)
-    encoder = _encoder(
-        config.encoder_config,
-        layout.dense_temporal_width if recurrent else layout.width,
-        [layout.dense_temporal_ff] if recurrent else [layout.ff_width, layout.ff_width],
-        layout.layers,
-        layout,
+    autoregressive = hasattr(config, "decoder_config")
+    if recurrent:
+        actor_width = layout.autoregressive_temporal_width if autoregressive else layout.dense_temporal_width
+        actor_ff = layout.autoregressive_temporal_ff if autoregressive else layout.dense_temporal_ff
+        actor_ff_dims = [actor_ff]
+    else:
+        actor_width = layout.autoregressive_actor_width if autoregressive else layout.width
+        actor_ff = layout.autoregressive_actor_ff if autoregressive else layout.ff_width
+        actor_ff_dims = [actor_ff, actor_ff]
+    actor = _encoder(
+        config.encoder_config, actor_width, actor_ff_dims,
+        layout.decentralized_layers if decentralized else layout.layers, layout,
     )
-    updates = {"encoder_config": encoder}
+    critic_source = config.critic_encoder_config or config.encoder_config
+    critic_recurrent = isinstance(critic_source, RMATEncoderConfig)
+    critic_encoder = _encoder(
+        critic_source,
+        layout.dense_temporal_width if critic_recurrent else layout.width,
+        [layout.dense_temporal_ff] if critic_recurrent else [layout.ff_width, layout.ff_width],
+        layout.layers, layout,
+    )
+    critic_encoder = replace(critic_encoder, use_agent_attention=True)
+    updates = {"encoder_config": actor, "critic_encoder_config": critic_encoder}
     critic = config.critic_config
     if isinstance(critic, MATCriticConfig):
-        # Shared MAT variants use the same Deep Set V architecture as MAPPO.
-        # MAT-DEC must also pay for its own critic encoder, so its tails are smaller.
         critic = replace(
             critic,
             n_local_projection_hidden_layers=1,
             n_value_regressor_hidden_layers=2,
-            local_projection_hidden_dims=[layout.deepset_dec_width if separate else layout.deepset_v_width],
-            value_regressor_hidden_dims=list(layout.separate_v_regressor if separate else layout.shared_v),
+            local_projection_hidden_dims=[layout.deepset_dec_width],
+            value_regressor_hidden_dims=list(layout.separate_v_regressor),
         )
     else:
         critic = replace(critic, value_head_hidden_dims=list(layout.orig_v))
     updates["critic_config"] = critic
-    if hasattr(config, "decoder_config"):
+    if autoregressive:
         updates["decoder_config"] = _decoder(config.decoder_config, layout)
     if hasattr(config, "actor_head_hidden_dims"):
-        updates["actor_head_hidden_dims"] = [layout.head_width] if separate else list(layout.private_actor)
-    if separate:
-        updates["actor_encoder_config"] = _encoder(
-            config.actor_encoder_config or config.encoder_config,
-            layout.width,
-            [layout.ff_width, layout.ff_width],
-            layout.decentralized_layers,
-            layout,
-        )
+        updates["actor_head_hidden_dims"] = [layout.head_width]
     return replace(config, **updates)
 
 
@@ -445,7 +466,11 @@ def _off_policy(config: Any, layout: ScaleLayout) -> Any:
             kind=critic_kind,
             hidden_dims=(width, width, width),
             element_hidden_dims=(
-                (layout.deepset_single_q_width if getattr(config, "n_critics", 2) == 1 else layout.deepset_twin_q_width,)
+                (
+                    layout.deepset_single_q_width
+                    if getattr(config, "n_critics", 2) == 1 or not config.joint_critic_config.independent_encoders
+                    else layout.deepset_twin_q_width,
+                )
                 if critic_kind == "deepset"
                 else (width, width, width)
             ),
@@ -486,7 +511,6 @@ def make_policy_at_scale(policy_class: type, env: Any, config: Any, scale: str) 
     policy = policy_class(env=env, config=resolved)
     shared = (
         hasattr(config, "actor_config")
-        or (hasattr(config, "encoder_config") and not isinstance(config, MATDecPolicyConfig))
         or getattr(config, "shared_encoder_config", None) is not None
     )
     policy.model_scale = {

@@ -110,7 +110,7 @@ def test_actor_latents_depend_on_previous_agent_actions() -> None:
     actions_b[:, 0, :] = 1.0
 
     with torch.no_grad():
-        encoder_rep = policy.encoder(local_obs, global_obs, agent_mask=agent_mask)
+        encoder_rep = policy.actor_encoder(local_obs, global_obs, agent_mask=agent_mask)
         latent_a = policy._actor_latents_from_actions(encoder_rep, actions_a, agent_mask=agent_mask)
         latent_b = policy._actor_latents_from_actions(encoder_rep, actions_b, agent_mask=agent_mask)
 
@@ -172,7 +172,7 @@ def test_forward_and_value_paths_match_pipeline_shapes() -> None:
 def test_forward_supports_different_encoder_and_decoder_dims() -> None:
     policy = _make_policy(encoder_d_model=32, decoder_d_model=16)
     torch.manual_seed(3)
-    assert any(isinstance(module, nn.GELU) for module in policy.encoder.modules())
+    assert any(isinstance(module, nn.GELU) for module in policy.actor_encoder.modules())
 
     batch_size = 2
     local_obs = torch.randn(batch_size, _DummyMATOrigEnv.n_agents, _DummyMATOrigEnv.local_obs_dim)

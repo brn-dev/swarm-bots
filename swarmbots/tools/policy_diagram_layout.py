@@ -105,10 +105,9 @@ def place_components(diagram: Diagram) -> None:
     readout_height = sum(nodes[id].height for id in readout_ids) + 100 * (len(readout_ids) - 1)
     input_ids = [id for id in ("privileged", "q_inputs") if id in nodes]
     input_height = sum(nodes[id].height for id in input_ids) + 90 * (len(input_ids) - 1)
-    encoder_heights = [
-        nodes[id].height for id in ("critic_encoder", "representation") if id in nodes and nodes[id].role == "critic"
-    ]
-    critic_height = max([readout_height, input_height, *encoder_heights])
+    encoder_ids = [id for id in ("critic_encoder", "critic_encoder2", "representation") if id in nodes and nodes[id].role == "critic"]
+    encoder_height = sum(nodes[id].height for id in encoder_ids) + 100 * (len(encoder_ids) - 1)
+    critic_height = max(readout_height, input_height, encoder_height)
     y = critic_top + (critic_height - readout_height) // 2
     for id in readout_ids:
         node = nodes[id]
@@ -121,10 +120,11 @@ def place_components(diagram: Diagram) -> None:
         node = nodes[id]
         node.x, node.y = columns[0], y
         y += node.height + 90
-    for id in ("critic_encoder", "representation"):
-        if id in nodes and nodes[id].role == "critic":
-            node = nodes[id]
-            node.x, node.y = columns[1], critic_top + (critic_height - node.height) // 2
+    y = critic_top + (critic_height - encoder_height) // 2
+    for id in encoder_ids:
+        node = nodes[id]
+        node.x, node.y = columns[1], y
+        y += node.height + 100
     critic_bottom = critic_top + critic_height
     if "q_features" in nodes:
         node = nodes["q_features"]
@@ -157,6 +157,8 @@ def assign_ports(diagram: Diagram) -> None:
         elif (edge.source, edge.target) == ("actions", "q_inputs"):
             edge.source_port, edge.target_port = "right", "right"
         elif (edge.source, edge.target) == ("public", "q_inputs"):
+            edge.source_port, edge.target_port = "right", "right"
+        elif edge.target == "q_features" and source.x == target.x:
             edge.source_port, edge.target_port = "right", "right"
         elif source.x == target.x:
             edge.source_port, edge.target_port = ("bottom", "top") if source.y < target.y else ("top", "bottom")
@@ -331,7 +333,10 @@ def route_connections(diagram: Diagram) -> None:
         elif edge.target == "q_features":
             returns = [connection for connection in diagram.edges if connection.target == "q_features"]
             left = nodes[edge.target].x + nodes[edge.target].width
-            channel = left + (nodes[edge.source].x - left) * (returns.index(edge) + 1) / (len(returns) + 1)
+            index = returns.index(edge) + 1
+            channel = left + 40 * index if nodes[edge.source].x == nodes[edge.target].x else (
+                left + (nodes[edge.source].x - left) * index / (len(returns) + 1)
+            )
             stops.extend([(channel, first[1]), (channel, last[1])])
         stops.append(last)
         points = [start]

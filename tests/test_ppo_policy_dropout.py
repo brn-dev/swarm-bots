@@ -106,6 +106,6 @@ def test_nop_dropout_is_allowed_without_bypassing_core_policy_guard() -> None:
     algorithm.policy.train()
     assert wrapper.transition_model.encoder.layers[0].dropout.p == 0.25
 
-    policy.encoder.layers[0].self_attn.dropout = 0.25
+    policy.actor_encoder.layers[0].self_attn.dropout = 0.25
     with pytest.raises(ValueError, match="zero policy dropout"):
         _make_ppo(env, wrapper)

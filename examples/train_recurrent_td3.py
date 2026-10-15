@@ -11,7 +11,7 @@ else:
 def main() -> None:
     parser = make_parser(
         description=__doc__,
-        variants=("matd3_mlp", "matd3_deepset", "tmatd3", "tmatd3_dec"),
+        variants=("matd3__deepset_critic", "tmatd3", "tmatd3_dec"),
         default_variant="tmatd3",
         run_dir_help="defaults to runs/<benchmark-id>/<variant>_recurrent_actor (or _recurrent_critic)",
     )

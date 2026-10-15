@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from typing import get_args
 
 from swarmbots.learn.presets.policy_factory import PolicyVariant
 from swarmbots.learn.presets.tmasac import TMASACVariant
@@ -23,42 +22,36 @@ VARIANT_CONFIGS: dict[str, LearningVariantConfig] = {
     for name in (
         "ppo",
         "mappo",
-        "mappo_mlp",
         "mat_orig",
         "mat_ind",
         "mat_dec",
         "mat_qcx",
-        "mat_ind_lstm",
-        "mat_qcx_lstm",
+        "mat_ind__lstm",
+        "mat_qcx__lstm",
     )
 }
 VARIANT_CONFIGS.update({
-    name: LearningVariantConfig(policy_variant=name, use_nop=not name.endswith("_mlp"))
+    name: LearningVariantConfig(policy_variant=name)
     for name in (
-        "maddpg_mlp", "maddpg_deepset", "matd3_mlp", "matd3_deepset",
-        "masac_mlp", "masac_deepset", "tmatd3", "tmatd3_dec",
+        "maddpg__deepset_critic", "matd3__deepset_critic", "masac__deepset_critic", "tmatd3", "tmatd3_dec",
     )
 })
 VARIANT_CONFIGS.update({
     name: LearningVariantConfig(tmasac_variant=name)
-    for name in get_args(TMASACVariant)
+    for name in ("tmasac", "tmasac_dec", "tmasac__slstm", "tmasac__lstm")
 })
 VARIANT_CONFIGS.update({
-    "mat_ind_no_attention": LearningVariantConfig(policy_variant="mat_ind", use_agent_attention=False),
-    "mat_qcx_no_nop": LearningVariantConfig(policy_variant="mat_qcx", use_nop=False),
-    "tmasac_no_nop": LearningVariantConfig(tmasac_variant="tmasac", use_nop=False),
-    "tmasac_slstm_no_nop": LearningVariantConfig(tmasac_variant="tmasac_slstm", use_nop=False),
-    "tmasac_lstm_no_actor_state": LearningVariantConfig(policy_variant="tmasac_recurrent"),
-    "tmasac_segment": LearningVariantConfig(policy_variant="tmasac_segment"),
+    "mat_ind__no_attention": LearningVariantConfig(policy_variant="mat_ind", use_agent_attention=False),
+    "mat_qcx__no_nop": LearningVariantConfig(policy_variant="mat_qcx", use_nop=False),
+    "tmasac__no_nop": LearningVariantConfig(tmasac_variant="tmasac", use_nop=False),
 })
 
-# Keep optional baselines/controls usable for explicit experiments and old
-# checkpoints, while keeping the normal selection and count sweep focused.
+# Auxiliary-loss and attention controls remain explicit selections.
 _DEFAULT_VARIANTS = {
     "ppo", "mappo", "mat_orig", "mat_ind", "mat_dec", "mat_qcx",
-    "mat_ind_lstm", "mat_qcx_lstm", "maddpg_deepset", "matd3_deepset",
-    "masac_deepset", "tmatd3", "tmatd3_dec", "tmasac", "tmasac_dec",
-    "tmasac_shared_encoder", "tmasac_slstm", "tmasac_lstm",
+    "mat_ind__lstm", "mat_qcx__lstm", "maddpg__deepset_critic", "matd3__deepset_critic",
+    "masac__deepset_critic", "tmatd3", "tmatd3_dec", "tmasac", "tmasac_dec",
+    "tmasac__slstm", "tmasac__lstm",
 }
 VARIANT_CONFIGS = {
     name: replace(config, hidden=name not in _DEFAULT_VARIANTS)

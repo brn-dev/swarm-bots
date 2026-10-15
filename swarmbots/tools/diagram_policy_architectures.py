@@ -295,11 +295,12 @@ def annotate_component_totals(d, row):
     if "representation" in nodes:
         role = "shared_encoder" if nodes["representation"].role == "shared" else "critic"
         assign("representation", roles[role] if role == "shared_encoder" else module_count(row, "encoder"), role)
+    for id, prefix in (("critic_encoder", "critic.encoder"), ("critic_encoder2", "critic.encoder2")):
+        if id in nodes:
+            assign(id, module_count(row, id, prefix), "critic")
     if "value" in nodes:
         used = sum(node.parameters or 0 for node in d.nodes if node.parameter_role == "critic")
         assign("value", roles["critic"] - used, "critic")
-    if "critic_encoder" in nodes:
-        assign("critic_encoder", module_count(row, "critic.encoder"), "critic")
     if "state_bridge" in nodes:
         assign("state_bridge", module_count(row, "critic.actor_state_encoder"), "critic")
     for index in (1, 2):
@@ -325,51 +326,61 @@ def annotate_component_totals(d, row):
         raise ValueError(f"Negative component count for {d.variant}")
 
 
-def critic_lines(row: dict[str, Any], prefix: str) -> list[str | ComponentBlock]:
+def deepset_encoder_lines(
+    row: dict[str, Any], prefix: str, interaction: dict[str, Any],
+) -> list[str | ComponentBlock]:
     layers = {layer["module"]: layer["dimensions"] for layer in row["layer_layout"]}
-    features = int(layers[prefix + ".deepset.element_encoder"].split(" -> ")[-1])
-    readout_input = int(layers[prefix + ".deepset.set_decoder"].split(" -> ")[0])
-    interaction_prefix = prefix + ".deepset.interactions."
+    features = int(layers[prefix + ".element_encoder"].split(" -> ")[-1])
+    interaction_prefix = prefix + ".interactions."
     blocks = [
         path for path in row["module_parameter_counts"]
         if path.startswith(interaction_prefix) and path.removeprefix(interaction_prefix).isdigit()
     ]
-    lines: list[str | ComponentBlock] = ["element MLP (once): " + chain(row, prefix + ".deepset.element_encoder")]
+    lines: list[str | ComponentBlock] = ["element MLP (once): " + chain(row, prefix + ".element_encoder")]
     if blocks:
         block = interaction_prefix + "0"
-        policy_config = configuration(row)
-        critic_config = (
-            policy_config["joint_critic_config"] if prefix.endswith(".network")
-            else policy_config.get("transformer_critic_config") or policy_config["critic_config"]
-        )
-        interaction = (critic_config.get("deep_set_config") or critic_config)["interaction_config"]
         update = interaction["local_update"]
-        local_lines = ["local MLP: " + chain(row, block + ".local_encoder", fallback="identity (0)")]
-        if update == "residual":
-            local_lines = ["l = h (identity / skip)"]
-        else:
-            local_lines.append("l = h + local MLP(u)" if update == "residual_mlp" else "l = local MLP(u)")
-        lines.append(ComponentBlock("Set interaction", [
+        content: list[str | ComponentBlock] = [
             f"input: per-agent h · N × {features}",
-            "u = LayerNorm(h)" if interaction["normalize"] else "u = h (no normalization)",
-            "Parallel local / set-message branches:",
-            ComponentBlock("Local branch · per agent", local_lines),
-            ComponentBlock("Set-message branch · across agents", [
+            ComponentBlock("Global interaction · across agents", [
+                "z = global LayerNorm(h)" if interaction["normalize"] else "z = h (no normalization)",
                 "message MLP: " + chain(row, block + ".message_encoder"),
-                "masked mean of message MLP(u)",
+                "masked mean of message MLP(z)",
                 "global MLP: " + chain(row, block + ".global_update"),
                 "g = global MLP(pooled messages)",
                 f"broadcast g: {features} → N × {features}",
+                "global residual: u = h + g",
             ]),
-            "merge: h_next = l + g",
-            "zero masked agents; pass to next block",
-        ], len(blocks), module_count(row, block)))
+        ]
+        if update == "residual":
+            content.append("h_next = u; local processing omitted")
+        else:
+            content.append(ComponentBlock("Local update · per agent", [
+                "v = local LayerNorm(u)" if interaction["normalize"] else "v = u (no normalization)",
+                "local MLP: " + chain(row, block + ".local_encoder"),
+                "local residual: h_next = u + local MLP(v)" if update == "residual_mlp" else "h_next = local MLP(v)",
+            ]))
+        content.append("zero masked agents; pass to next block")
+        lines.append(ComponentBlock("Set interaction", content, len(blocks), module_count(row, block)))
+    return [*lines, f"final features: N × {features} (before pooling)"]
+
+
+def critic_lines(row: dict[str, Any], prefix: str) -> list[str | ComponentBlock]:
+    policy_config = configuration(row)
+    critic_config = (
+        policy_config["joint_critic_config"] if prefix.endswith(".network")
+        else policy_config.get("transformer_critic_config") or policy_config["critic_config"]
+    )
+    interaction = (critic_config.get("deep_set_config") or critic_config)["interaction_config"]
+    lines = deepset_encoder_lines(row, prefix + ".deepset", interaction)
+    layers = {layer["module"]: layer["dimensions"] for layer in row["layer_layout"]}
+    features = int(layers[prefix + ".deepset.element_encoder"].split(" -> ")[-1])
+    readout_input = int(layers[prefix + ".deepset.set_decoder"].split(" -> ")[0])
     readout = ["final masked mean across agents"]
     if readout_input > features:
         readout.append(f"append global context: {readout_input - features} features")
     readout.append("regressor: " + chain(row, prefix + ".deepset.set_decoder"))
     return [*lines,
-        f"final features: N × {features} (before pooling)",
         ComponentBlock("Team readout · once", readout),
         "output: one team value",
     ]
@@ -388,6 +399,21 @@ def add_memory(d: Diagram, id: str, config: dict[str, Any]) -> None:
             "previous temporal state",
             "state",
         )
+
+
+def add_actor_state_bridge(d: Diagram, row: dict[str, Any]) -> None:
+    if "critic.actor_state_encoder" not in row["module_parameter_counts"]:
+        return
+    d.node(
+        "state_bridge",
+        "Actor-state bridge",
+        ["detach last actor state", chain(row, "critic.actor_state_encoder")],
+        "critic",
+    )
+    d.edge("actor_encoder", "state_bridge", "h/c or h/m", "state")
+    for node in d.nodes:
+        if node.id in {"critic_encoder", "critic_encoder2"}:
+            d.edge("state_bridge", node.id, "append to critic inputs", "state")
 
 
 def build_diagram(row: dict[str, Any]) -> Diagram:
@@ -412,7 +438,7 @@ def build_diagram(row: dict[str, Any]) -> Diagram:
         )
     )
     on_policy = "encoder_config" in cfg or "actor_config" in cfg
-    shared = on_policy and row["base_policy_class"] != "MATDecPolicy" or cfg.get("shared_encoder_config") is not None
+    shared = "actor_config" in cfg or cfg.get("shared_encoder_config") is not None
     d.node(
         "public",
         "Public observations",
@@ -454,17 +480,19 @@ def build_diagram(row: dict[str, Any]) -> Diagram:
         else:
             ec = cfg["encoder_config"]
             width = ec["d_model"]
+            source = "critic_encoder"
+            cc = cfg["critic_encoder_config"]
             d.node(
                 source,
-                "Shared observation encoder" if shared else "Critic observation encoder",
-                encoder_lines(row, ec, "encoder", chain(row, "encoder.local_obs_encoder")),
-                "shared" if shared else "critic",
+                "Critic observation encoder",
+                encoder_lines(row, cc, source, chain(row, source + ".local_obs_encoder")),
+                "critic",
             )
-            add_memory(d, source, ec)
+            add_memory(d, source, cc)
         d.edge("public", source)
         actor_source = source
         if not shared:
-            ac = cfg["actor_encoder_config"]
+            ac = cfg["encoder_config"]
             d.node(
                 "actor_encoder",
                 "Actor observation encoder",
@@ -472,6 +500,7 @@ def build_diagram(row: dict[str, Any]) -> Diagram:
                 "actor",
             )
             d.edge("public", "actor_encoder")
+            add_memory(d, "actor_encoder", ac)
             actor_source = "actor_encoder"
         if "decoder_config" in cfg:
             dec = cfg["decoder_config"]
@@ -554,10 +583,12 @@ def build_diagram(row: dict[str, Any]) -> Diagram:
             )
         else:
             add_readout(d, row, "critic", "value", "Deep Set V critic")
-        d.edge(source, "value", f"N × {width}")
+        critic_width = width if shared else cfg["critic_encoder_config"]["d_model"]
+        d.edge(source, "value", f"N × {critic_width}")
         d.edge("privileged", "value", "local + global context")
         d.node("v", "V", ["scalar per world"], "output")
         d.edge("value", "v")
+        source = actor_source
     else:
         actor_cfg = cfg["actor_encoder_config"]
         acwidth = actor_cfg["d_model"]
@@ -632,8 +663,53 @@ def build_diagram(row: dict[str, Any]) -> Diagram:
             "causal",
         )
         joint = cfg.get("joint_critic_config")
-        is_joint = row["variant"].endswith("_deepset") or row["variant"].endswith("_mlp")
-        if is_joint:
+        is_joint = row["variant"].endswith(("__deepset_critic", "__mlp_critic"))
+        if is_joint and joint["kind"] == "deepset" and "critic.encoder" in row["module_parameter_counts"]:
+            element_width = joint["element_hidden_dims"][-1]
+            global_width = glob + private_global
+            independent = joint["independent_encoders"]
+            for index in range(1, 3 if independent else 2):
+                suffix = "" if index == 1 else "2"
+                id = "critic_encoder" + suffix
+                pooling = ["final masked mean across agents"]
+                if global_width:
+                    pooling.append(f"append global context: {global_width} features")
+                pooling.append(f"output: {element_width + global_width} pooled features")
+                d.node(
+                    id,
+                    f"Independent critic encoder {index}" if independent else "ONE shared Deep Set encoder",
+                    [
+                        "global context + active count",
+                        *deepset_encoder_lines(row, "critic.encoder" + suffix + ".network", joint["interaction_config"]),
+                        ComponentBlock("Team pooling · once", pooling),
+                    ],
+                    "critic",
+                )
+                d.edge("q_inputs", id)
+            for index in (1, 2):
+                d.node(
+                    f"head{index}", f"Separate Q{index} readout",
+                    ["pooled features + global context", "regressor: " + chain(row, f"critic.q{index}"), "output: one team value"],
+                    "critic",
+                )
+                encoder = "critic_encoder2" if independent and index == 2 else "critic_encoder"
+                d.edge(encoder, f"head{index}", f"pooled: {element_width + global_width}")
+                d.node(f"q{index}", f"Q{index}", ["scalar per world"], "output")
+                d.edge(f"head{index}", f"q{index}")
+            source = "critic_encoder"
+            if independent:
+                source = "q_features"
+                d.node(
+                    source, "Final equivariant critic features",
+                    [f"2 × (N × {element_width})", f"concatenate → N × {2 * element_width}"], "critic",
+                )
+                for id in ("critic_encoder", "critic_encoder2"):
+                    d.edge(id, source, "per-agent features")
+            d.notes.append(
+                "The two Q readouts have separate parameters; the shared Deep Set runs once."
+                if not independent else "Independent critic encoders concatenate their pre-pooling features for NOP."
+            )
+        elif is_joint:
             count = 1 if row["variant"].startswith("maddpg") else 2
             source_nodes = []
             for i in range(count):
@@ -659,7 +735,8 @@ def build_diagram(row: dict[str, Any]) -> Diagram:
                 d.node(
                     source,
                     "Final equivariant critic features",
-                    [f"{count} × (N × {element_width})", f"concatenate → N × {count * element_width}"],
+                    [f"N × {element_width}; before pooling"] if count == 1
+                    else [f"{count} × (N × {element_width})", f"concatenate → N × {count * element_width}"],
                     "critic",
                 )
                 for id in source_nodes:
@@ -680,16 +757,6 @@ def build_diagram(row: dict[str, Any]) -> Diagram:
             d.edge("q_inputs", "critic_encoder")
             if shared:
                 d.edge(source, "critic_encoder", f"N × {cfg['shared_encoder_config']['d_model']}")
-            if cfg.get("actor_state_critic_input_config"):
-                bridge = chain(row, "critic.actor_state_encoder")
-                d.node(
-                    "state_bridge",
-                    "Actor-state bridge",
-                    ["detach last actor state", bridge],
-                    "critic",
-                )
-                d.edge("actor_encoder", "state_bridge", "h/c or h/m", "state")
-                d.edge("state_bridge", "critic_encoder", "append to critic inputs", "state")
             for i in [1, 2]:
                 add_readout(d, row, f"critic.q{i}", f"head{i}", f"Separate Q{i} head")
                 d.edge("critic_encoder", f"head{i}", f"N × {cc['d_model']}")
@@ -701,6 +768,7 @@ def build_diagram(row: dict[str, Any]) -> Diagram:
                 else "critic_encoder"
             )
             d.notes.append("The two Q heads have separate parameters; the shared transformer runs once.")
+        add_actor_state_bridge(d, row)
     if row["use_nop"]:
         prefix = "" if on_policy else "critic_nop."
         bridge = chain(row, prefix + "pre_transition_transform")
@@ -981,8 +1049,7 @@ def mermaid_diagram(d: Diagram) -> str:
             else:
                 lines.append(f'    {child}["{label(group)}"]')
             role_ids[role].append(child)
-        # Invisible links retain reading order without implying that parallel
-        # local/set branches feed each other.
+        # Subgraphs preserve displayed scope; invisible links only set reading order.
         for previous, current in zip(children, children[1:]):
             lines.append(f"    {previous} ~~~ {current}")
         lines.append("  end")

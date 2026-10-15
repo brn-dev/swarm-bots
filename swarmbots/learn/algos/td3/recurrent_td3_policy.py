@@ -10,11 +10,12 @@ from swarmbots.learn.algos.off_policy.nop import SACNOPSequenceBatch
 from swarmbots.learn.algos.off_policy.actor_state_critic import (
     ActorStateCriticInputConfig,
     ActorStateJointQNetwork,
+    ActorStateJointTwinCritic,
     ActorStateTransformerTwinCritic,
     actor_state_input_dim,
     actor_state_critic_input,
 )
-from swarmbots.learn.algos.off_policy.joint_critic import JointQNetwork
+from swarmbots.learn.algos.off_policy.joint_critic import JointQNetwork, JointTwinCritic
 from swarmbots.learn.algos.off_policy.recurrent_transformer_critic import (
     RecurrentCriticState,
     RecurrentTransformerTwinCritic,
@@ -138,7 +139,7 @@ class RecurrentTD3Policy(TD3Policy):
             ):
                 forward = (
                     torch.compile(critic, mode=config.compile_mode, dynamic=False)
-                    if config.critic_kind == "transformer"
+                    if not isinstance(critic, nn.ModuleList)
                     else tuple(
                         torch.compile(network.forward_with_latents, mode=config.compile_mode, dynamic=False)
                         for network in critic
@@ -165,6 +166,11 @@ class RecurrentTD3Policy(TD3Policy):
         if self.uses_actor_state_critic_input:
             return ActorStateJointQNetwork(**kwargs, **self._actor_state_critic_kwargs())
         return super()._build_joint_critic(**kwargs)
+
+    def _build_joint_twin_critic(self, **kwargs: Any) -> JointTwinCritic:
+        if self.uses_actor_state_critic_input:
+            return ActorStateJointTwinCritic(**kwargs, **self._actor_state_critic_kwargs())
+        return super()._build_joint_twin_critic(**kwargs)
 
     def _actor_state_critic_kwargs(self) -> dict[str, Any]:
         config = self.config.actor_state_critic_input_config
@@ -410,7 +416,7 @@ class RecurrentTD3Policy(TD3Policy):
                 name: None if value is None else value.reshape(batch_size * length, *value.shape[2:])
                 for name, value in observations.items()
             }
-        if self.config.critic_kind == "transformer":
+        if not isinstance(critic, nn.ModuleList):
             forward = self._target_critic_sequence_forward if target else self._critic_sequence_forward
             q1, q2, latents = (critic if forward is None else forward)(**observations)
         else:

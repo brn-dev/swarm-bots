@@ -555,7 +555,8 @@ def test_rmat_rollout_and_training_use_env_major_tbptt_rows(
         log_probs, values, _, _ = policy.evaluate_actions(batch)
 
         assert batch.local_obs.shape[:2] == (2, 4)
-        assert batch.initial_temporal_state[0][0].shape == (2, 2, 1, 16)
+        assert batch.initial_temporal_state["actor"][0][0].shape == (2, 2, 1, 16)
+        assert batch.initial_temporal_state["critic"][0][0].shape == (2, 2, 1, 16)
         assert torch.equal(
             batch.episode_start_mask,
             torch.tensor([

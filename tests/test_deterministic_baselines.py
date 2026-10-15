@@ -9,7 +9,7 @@ from gymnasium.vector import AutoresetMode, SyncVectorEnv
 from torch import nn
 
 from swarmbots.learn.algos.off_policy import collect_off_policy_steps
-from swarmbots.learn.algos.off_policy.joint_critic import JointCriticConfig, JointQNetwork
+from swarmbots.learn.algos.off_policy.joint_critic import JointCriticConfig, JointQNetwork, JointTwinCritic
 from swarmbots.learn.algos.sac import SAC, MASACPolicy
 from swarmbots.learn.algos.sac.sac_nop import SACNOPConfig
 from swarmbots.learn.algos.world_modeling.next_obs_pred_mixin import NextObsPredConfig
@@ -26,12 +26,12 @@ from swarmbots.learn.training import _variant_options
 
 
 VARIANTS = (
-    "maddpg_mlp",
-    "maddpg_deepset",
-    "matd3_mlp",
-    "matd3_deepset",
-    "masac_mlp",
-    "masac_deepset",
+    "maddpg__mlp_critic",
+    "maddpg__deepset_critic",
+    "matd3__mlp_critic",
+    "matd3__deepset_critic",
+    "masac__mlp_critic",
+    "masac__deepset_critic",
     "tmatd3",
     "tmatd3_dec",
 )
@@ -72,7 +72,10 @@ def env():
 
 
 def make_policy(env, variant, *, small=True, compile_modules=False, **overrides):
-    options, _ = _variant_options(variant)
+    registered_variant = variant.replace("__mlp_critic", "__deepset_critic")
+    options, _ = _variant_options(registered_variant)
+    if variant.endswith("__mlp_critic"):
+        options["policy_variant"] = variant
     options["use_nop"] = False
     if small:
         options.update(
@@ -125,7 +128,7 @@ def fill_replay(algorithm):
     return algorithm.replay_buffer.sample(4)
 
 
-NOP_VARIANTS = ("maddpg_deepset", "matd3_deepset", "masac_deepset", "tmatd3", "tmatd3_dec")
+NOP_VARIANTS = ("maddpg__deepset_critic", "matd3__deepset_critic", "masac__deepset_critic", "tmatd3", "tmatd3_dec")
 
 
 def nop_options(source="critic", steps=3, **overrides):
@@ -256,7 +259,7 @@ def test_critic_gradients_ignore_nan_padding_and_reach_all_active_actions(env, v
     assert all(p.grad is None for p in policy.critic_target.parameters())
 
 
-@pytest.mark.parametrize("variant", ["maddpg_deepset", "matd3_deepset", "masac_deepset", "tmatd3"])
+@pytest.mark.parametrize("variant", ["maddpg__deepset_critic", "matd3__deepset_critic", "masac__deepset_critic", "tmatd3"])
 def test_set_and_transformer_critics_are_permutation_invariant(env, variant):
     policy = make_policy(env, variant).eval()
     obs = observations(env)
@@ -315,12 +318,16 @@ def test_deepset_joint_critic_supports_observations_without_global_context(conte
     torch.testing.assert_close(critic.encode(**observations), latents)
 
 
-@pytest.mark.parametrize("variant", ["maddpg_deepset", "matd3_deepset", "masac_deepset"])
+@pytest.mark.parametrize("variant", ["maddpg__deepset_critic", "matd3__deepset_critic", "masac__deepset_critic"])
 @pytest.mark.parametrize("context_in_elements", [False, True])
-def test_deepset_nop_latents_condition_on_globals_and_match_encoding_paths(env, variant, context_in_elements):
+@pytest.mark.parametrize("independent_encoders", [False, True])
+def test_deepset_nop_latents_condition_on_globals_and_match_encoding_paths(
+    env, variant, context_in_elements, independent_encoders,
+):
     torch.manual_seed(42)
     policy = make_policy(
         env, variant, **nop_options(), baseline_critic_context_in_elements=context_in_elements,
+        critic_independent_encoders=independent_encoders,
     )
     config_key = "td3_policy_config" if isinstance(policy, TD3Policy) else "masac_policy_config"
     assert policy.get_hyper_parameters()[config_key]["joint_critic_config"]["context_in_elements"] is context_in_elements
@@ -335,7 +342,10 @@ def test_deepset_nop_latents_condition_on_globals_and_match_encoding_paths(env, 
     obs["hidden_global_vars"].requires_grad_()
     result = policy.q_values_with_nop_latents(**obs)
     latents = result[1] if isinstance(policy, TD3Policy) else result[2]
-    networks = list(policy.critic) if isinstance(policy, TD3Policy) else [policy.critic.q1, policy.critic.q2]
+    networks = (
+        [encoder for encoder in (policy.critic.encoder, policy.critic.encoder2) if encoder is not None]
+        if isinstance(policy.critic, JointTwinCritic) else list(policy.critic)
+    )
     torch.testing.assert_close(torch.cat([network.encode(**obs) for network in networks], dim=-1), latents)
     assert torch.isfinite(latents).all() and (latents[~obs["agent_mask"]] == 0).all()
     assert all(network.network.context_after_pool for network in networks)
@@ -359,11 +369,17 @@ def test_deepset_nop_latents_condition_on_globals_and_match_encoding_paths(env, 
             assert gradient is None
 
 
-@pytest.mark.parametrize("variant", ["maddpg_deepset", "matd3_deepset", "masac_deepset"])
+@pytest.mark.parametrize("variant", ["maddpg__deepset_critic", "matd3__deepset_critic", "masac__deepset_critic"])
 @pytest.mark.parametrize("independent", [False, True])
-def test_deepset_nop_reused_and_reencoded_global_context_produce_the_same_loss(env, variant, independent):
+@pytest.mark.parametrize("independent_encoders", [False, True])
+def test_deepset_nop_reused_and_reencoded_global_context_produce_the_same_loss(
+    env, variant, independent, independent_encoders,
+):
     torch.manual_seed(42)
-    algorithm = make_algorithm(env, variant, policy_options=nop_options(), independent_nop_sampling=independent)
+    algorithm = make_algorithm(
+        env, variant, policy_options={**nop_options(), "critic_independent_encoders": independent_encoders},
+        independent_nop_sampling=independent,
+    )
     fill_replay(algorithm)
     _, nop_batch, reuse = algorithm._sample_training_batches()
     assert reuse is not independent
@@ -388,7 +404,7 @@ def test_deepset_nop_reused_and_reencoded_global_context_produce_the_same_loss(e
             torch.testing.assert_close(actual, expected)
 
 
-@pytest.mark.parametrize("variant", ["maddpg_deepset", "matd3_deepset", "masac_deepset"])
+@pytest.mark.parametrize("variant", ["maddpg__deepset_critic", "matd3__deepset_critic", "masac__deepset_critic"])
 def test_deepset_checkpoint_loads_with_explicit_late_context_option(env, variant, tmp_path):
     algorithm = make_algorithm(env, variant, policy_options={"baseline_critic_context_in_elements": False})
     fill_replay(algorithm)
@@ -476,8 +492,12 @@ def test_nop_sources_update_online_encoders_and_predictors(env, variant, source)
             encoder = policy.actor.encoder if isinstance(algorithm, TD3) else policy.actor_encoder
             encoders = [encoder]
         elif policy.config.joint_critic_config.kind == "deepset" and not variant.startswith("tmatd3"):
-            networks = policy.critic if isinstance(algorithm, TD3) else (policy.critic.q1, policy.critic.q2)
-            encoders = [network.network.deepset.element_encoder for network in networks]
+            encoders = (
+                [encoder.network.element_encoder for encoder in (policy.critic.encoder, policy.critic.encoder2)
+                 if encoder is not None]
+                if isinstance(policy.critic, JointTwinCritic) else
+                [network.network.deepset.element_encoder for network in policy.critic]
+            )
         else:
             encoders = [encoder for encoder in (policy.critic.encoder, policy.critic.encoder2) if encoder is not None]
         for encoder in encoders:
@@ -496,7 +516,7 @@ def test_nop_sources_update_online_encoders_and_predictors(env, variant, source)
     assert all(torch.isfinite(p).all() for p in policy.parameters())
 
 
-@pytest.mark.parametrize("variant", ["maddpg_mlp", "matd3_mlp", "masac_mlp"])
+@pytest.mark.parametrize("variant", ["maddpg__mlp_critic", "matd3__mlp_critic", "masac__mlp_critic"])
 @pytest.mark.parametrize("source", ["critic", "actor", "both"])
 def test_mlp_presets_reject_nop_for_every_source(env, variant, source):
     with pytest.raises(ValueError, match="MLP critics do not support NOP"):
@@ -559,7 +579,7 @@ def test_nop_checkpoint_continuation_and_independent_sampling(env, variant, inde
     assert_optimizer_states_equal(restored, algorithm)
 
 
-@pytest.mark.parametrize("variant", ["matd3_deepset", "tmatd3", "tmatd3_dec"])
+@pytest.mark.parametrize("variant", ["matd3__deepset_critic", "tmatd3", "tmatd3_dec"])
 def test_td3_delays_actor_nop_but_trains_critic_nop_every_step(env, variant):
     algorithm = make_algorithm(env, variant, policy_options=nop_options("both"))
     fill_replay(algorithm)
@@ -677,7 +697,7 @@ def test_cuda_compiled_nop_update(env, variant):
 
 
 def test_td3_delays_actor_and_targets_and_resumes_delay_across_train_calls(env, tmp_path):
-    algorithm = make_algorithm(env, "matd3_mlp")
+    algorithm = make_algorithm(env, "matd3__mlp_critic")
     fill_replay(algorithm)
     policy = algorithm.policy
     snapshot = {name: value.clone() for name, value in policy.state_dict().items()}
@@ -692,7 +712,7 @@ def test_td3_delays_actor_and_targets_and_resumes_delay_across_train_calls(env, 
     )
     path = tmp_path / "td3.pt"
     algorithm.save(path, optimizer_state_dict=algorithm._get_optimizer_state_dict())
-    restored = make_algorithm(env, "matd3_mlp")
+    restored = make_algorithm(env, "matd3__mlp_critic")
     restored.load(path, restore_env_state=False)
     assert restored.n_total_updates == 1
     assert restored.actor_optimizer.state_dict() == algorithm.actor_optimizer.state_dict()
@@ -708,7 +728,7 @@ def test_td3_delays_actor_and_targets_and_resumes_delay_across_train_calls(env, 
         )
 
 
-@pytest.mark.parametrize("variant", ["matd3_mlp", "matd3_deepset", "tmatd3", "tmatd3_dec"])
+@pytest.mark.parametrize("variant", ["matd3__mlp_critic", "matd3__deepset_critic", "tmatd3", "tmatd3_dec"])
 def test_custom_td3_delay_and_polyak_values_across_uneven_train_calls(env, variant):
     torch.manual_seed(42)
     algorithm = make_algorithm(env, variant, policy_delay=3, tau=0.2)
@@ -782,7 +802,7 @@ def test_checkpoint_continuation_matches_uninterrupted_updates(env, variant, tmp
             assert_optimizer_states_equal(restored, algorithm)
 
 
-@pytest.mark.parametrize("variant", ["maddpg_mlp", "matd3_mlp"])
+@pytest.mark.parametrize("variant", ["maddpg__mlp_critic", "matd3__mlp_critic"])
 def test_bellman_uses_target_actor_minimum_and_only_terminations_stop_bootstrap(env, variant):
     algorithm = make_algorithm(env, variant)
     batch = fill_replay(algorithm)
@@ -803,7 +823,7 @@ def test_bellman_uses_target_actor_minimum_and_only_terminations_stop_bootstrap(
     torch.testing.assert_close(target, torch.tensor([1.0] + [1.0 + algorithm.gamma * expected] * 3))
 
 
-@pytest.mark.parametrize("variant", ["maddpg_mlp", "matd3_deepset", "tmatd3"])
+@pytest.mark.parametrize("variant", ["maddpg__mlp_critic", "matd3__deepset_critic", "tmatd3"])
 def test_terminal_nan_observations_cannot_poison_bellman_targets(env, variant):
     torch.manual_seed(42)
     algorithm = make_algorithm(env, variant)
@@ -831,7 +851,7 @@ def test_terminal_nan_observations_cannot_poison_bellman_targets(env, variant):
     assert all(torch.isfinite(p).all() for p in algorithm.policy.parameters())
 
 
-@pytest.mark.parametrize("variant", ["masac_mlp", "masac_deepset"])
+@pytest.mark.parametrize("variant", ["masac__mlp_critic", "masac__deepset_critic"])
 @pytest.mark.parametrize("distribution", ["predicted_std_gaussian", "gumbel_softmax_sign_magnitude_beta"])
 def test_masac_multiple_action_samples_match_individual_critic_evaluations(env, variant, distribution):
     torch.manual_seed(42)
@@ -871,7 +891,7 @@ def test_noise_respects_asymmetric_physical_bounds_and_masks():
         hidden_global_vars_dim=0,
         action_space=HybridActionSpace({"control": spaces.Box(2.0, 6.0, (3, 2))}),
     )
-    policy = make_policy(env, "matd3_mlp")
+    policy = make_policy(env, "matd3__mlp_critic")
     actions = torch.full((2, 3, 2), 4.0)
     mask = torch.tensor([[True, False, True], [True, True, True]])
     smoothed = policy.add_action_noise(actions, std=100.0, clip=0.25, agent_mask=mask)
@@ -898,7 +918,7 @@ def heterogeneous_bounds_env(vectorized):
 
 @pytest.mark.parametrize("vectorized", [False, True])
 def test_actor_maps_normalized_actions_to_each_hybrid_component_bound(vectorized):
-    policy = make_policy(heterogeneous_bounds_env(vectorized), "matd3_mlp")
+    policy = make_policy(heterogeneous_bounds_env(vectorized), "matd3__mlp_critic")
     with torch.no_grad():
         for actor in (policy.actor, policy.actor_target):
             actor.action_net.weight.zero_()
@@ -916,7 +936,7 @@ def test_actor_maps_normalized_actions_to_each_hybrid_component_bound(vectorized
 @pytest.mark.parametrize("vectorized", [False, True])
 @pytest.mark.parametrize("clip", [None, 0.25])
 def test_noise_is_scaled_per_component_clipped_before_scaling_and_bounded(vectorized, clip):
-    policy = make_policy(heterogeneous_bounds_env(vectorized), "matd3_mlp")
+    policy = make_policy(heterogeneous_bounds_env(vectorized), "matd3__mlp_critic")
     actions = torch.tensor([
         [[-2.0, 2.0, 0.5], [-4.0, 3.0, 0.5], [1.0, -1.0, 0.5]],
         [[6.0, 6.0, 1.5], [2.0, 9.0, 1.5], [9.0, 3.0, 1.5]],
@@ -942,7 +962,7 @@ def test_noise_is_scaled_per_component_clipped_before_scaling_and_bounded(vector
 @pytest.mark.parametrize("noise_std", [0.0, 0.4])
 def test_bellman_evaluates_clipped_target_noise_and_ignores_exploration_noise(env, noise_std):
     algorithm = make_algorithm(
-        env, "matd3_mlp", target_policy_noise=noise_std, target_noise_clip=0.2, exploration_noise=100.0, gamma=0.5,
+        env, "matd3__mlp_critic", target_policy_noise=noise_std, target_noise_clip=0.2, exploration_noise=100.0, gamma=0.5,
     )
     batch = replace(
         fill_replay(algorithm), rewards=torch.arange(4, dtype=torch.float32),
@@ -973,7 +993,7 @@ def test_bellman_evaluates_clipped_target_noise_and_ignores_exploration_noise(en
 
 @pytest.mark.parametrize("failure_point", ["actor_actions", "optimizer_step"])
 def test_actor_update_failure_restores_critic_gradients_and_leaves_targets_unchanged(env, failure_point):
-    algorithm = make_algorithm(env, "matd3_mlp")
+    algorithm = make_algorithm(env, "matd3__mlp_critic")
     batch = fill_replay(algorithm)
     policy = algorithm.policy
     targets_before = {name: value.clone() for name, value in policy.state_dict().items()
@@ -1018,7 +1038,7 @@ def test_deterministic_actors_reject_unsupported_action_spaces(invalid_space, me
         }[invalid_space]
         env.action_space = HybridActionSpace({"control": subspace})
     with pytest.raises(ValueError, match=message):
-        make_policy(env, "matd3_mlp")
+        make_policy(env, "matd3__mlp_critic")
 
 
 @pytest.mark.parametrize("field", ["hidden_dims", "element_hidden_dims"])
@@ -1044,7 +1064,7 @@ def test_joint_critics_require_configured_privileged_fields(kind, missing):
         critic(**obs)
 
 
-@pytest.mark.parametrize("variant", ["maddpg_mlp", "matd3_deepset", "tmatd3"])
+@pytest.mark.parametrize("variant", ["maddpg__mlp_critic", "matd3__deepset_critic", "tmatd3"])
 @pytest.mark.parametrize("exploration_noise", [0.0, 0.4])
 def test_deterministic_evaluation_bypasses_configured_exploration(env, variant, exploration_noise):
     algorithm = make_algorithm(env, variant, exploration_noise=exploration_noise)
@@ -1062,7 +1082,7 @@ def test_deterministic_evaluation_bypasses_configured_exploration(env, variant, 
 
 
 def test_td3_actor_optimizes_q1_even_when_q2_is_smaller(env):
-    algorithm = make_algorithm(env, "matd3_mlp")
+    algorithm = make_algorithm(env, "matd3__mlp_critic")
     batch = fill_replay(algorithm)
     original_q_values = algorithm.policy.q_values
 
@@ -1112,7 +1132,7 @@ def test_low_level_td3_configuration_is_resolved_and_reported_consistently(env):
 
 
 def test_td3_does_not_accept_entropy_commands(env):
-    algorithm = make_algorithm(env, "matd3_mlp")
+    algorithm = make_algorithm(env, "matd3__mlp_critic")
     with pytest.raises(ValueError, match="entropy coefficient"):
         algorithm._execute_command("set_ent_coef", "0.5", None)
     assert algorithm.ent_coef_tensor is None
@@ -1139,7 +1159,7 @@ def test_td3_does_not_accept_entropy_commands(env):
     ],
 )
 def test_invalid_td3_settings_are_rejected_before_allocating_replay(env, option, value):
-    policy = make_policy(env, "matd3_mlp")
+    policy = make_policy(env, "matd3__mlp_critic")
     with patch.object(TD3, "_build_replay_buffer") as allocate_replay:
         with pytest.raises(ValueError):
             TD3(policy, env, **{option: value})
@@ -1148,7 +1168,7 @@ def test_invalid_td3_settings_are_rejected_before_allocating_replay(env, option,
 
 @pytest.mark.parametrize("option,value", [("policy_delay", 2), ("target_policy_noise", 0.2), ("target_noise_clip", 0.5)])
 def test_ddpg_rejects_td3_delay_and_smoothing_before_allocating_replay(env, option, value):
-    policy = make_policy(env, "maddpg_mlp")
+    policy = make_policy(env, "maddpg__mlp_critic")
     with patch.object(DDPG, "_build_replay_buffer") as allocate_replay:
         with pytest.raises(ValueError, match=f"DDPG requires {option}"):
             DDPG(policy, env, **{option: value})
@@ -1156,7 +1176,7 @@ def test_ddpg_rejects_td3_delay_and_smoothing_before_allocating_replay(env, opti
 
 
 def test_ddpg_updates_actor_and_targets_on_the_first_step(env):
-    algorithm = make_algorithm(env, "maddpg_mlp")
+    algorithm = make_algorithm(env, "maddpg__mlp_critic")
     batch = fill_replay(algorithm)
     before = {name: parameter.clone() for name, parameter in algorithm.policy.state_dict().items()}
     algorithm._train_step(batch, global_update_idx=0)

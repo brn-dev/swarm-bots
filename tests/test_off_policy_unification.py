@@ -82,7 +82,7 @@ def test_objectives_and_legacy_critic_imports_share_the_neutral_components():
     assert TMASACTwinCritic is TransformerTwinCritic
 
 
-@pytest.mark.parametrize("variant", ["tmasac", "tmasac_dec", "tmatd3", "tmatd3_dec"])
+@pytest.mark.parametrize("variant", ["tmasac", "tmasac_dec", "tmatd3", "tmatd3_dec", "masac__deepset_critic", "matd3__deepset_critic"])
 def test_factory_sharing_defaults_and_opt_in_override(env, variant):
     policy = make_policy(env, variant)
     independent_default = False
@@ -92,7 +92,7 @@ def test_factory_sharing_defaults_and_opt_in_override(env, variant):
     assert policy.critic.nop_source_latent_dim == policy.critic.d_model * (2 if independent_default else 1)
 
 
-@pytest.mark.parametrize("variant", ["tmasac", "tmasac_dec", "masac_deepset"])
+@pytest.mark.parametrize("variant", ["tmasac", "tmasac_dec", "masac__deepset_critic"])
 def test_sac_defaults_match_explicit_disabled_options_for_every_update(env, variant):
     torch.manual_seed(123)
     policy = make_policy(env, variant)
@@ -241,7 +241,9 @@ def recurrent_td3(
         critic_encoder_config=critic_config,
         actor_head_config=TMASACActorHeadConfig(hidden_dims=[8]),
         critic_kind=critic_kind,
-        joint_critic_config=JointCriticConfig(kind="deepset", hidden_dims=(8,), element_hidden_dims=(8,)),
+        joint_critic_config=JointCriticConfig(
+            kind="deepset", hidden_dims=(8,), element_hidden_dims=(8,), independent_encoders=not shared,
+        ),
         recurrent_critic=recurrent_critic,
         actor_state_critic_input_config=actor_state_config,
         compile_modules=compile_modules,
@@ -285,6 +287,7 @@ def test_recurrent_sac_delay_and_multi_sample_smoothing(env):
         (True, False, True, "transformer"),
         (True, True, True, "transformer"),
         (False, False, True, "deepset"),
+        (False, True, True, "deepset"),
         (False, False, False, "mlp"),
     ],
 )
@@ -460,17 +463,22 @@ def test_recurrent_td3_online_and_target_states_are_independent(env):
     assert set(index_temporal_state(advanced, slice(0, 1))) == {"actor", "target_actor"}
 
 
-@pytest.mark.parametrize("recurrent_critic", [False, True])
-def test_recurrent_td3_compiled_sequence_entry_points_preserve_updates(env, recurrent_critic):
+@pytest.mark.parametrize(
+    "recurrent_critic,shared,critic_kind",
+    [(False, False, "transformer"), (True, False, "transformer"), (False, False, "deepset"), (False, True, "deepset")],
+)
+def test_recurrent_td3_compiled_sequence_entry_points_preserve_updates(env, recurrent_critic, shared, critic_kind):
     torch._dynamo.reset()
     real_compile = torch.compile
     torch.manual_seed(99)
-    eager_policy, eager = recurrent_td3(env, recurrent_critic=recurrent_critic, nop=True)
+    eager_policy, eager = recurrent_td3(
+        env, recurrent_critic=recurrent_critic, shared=shared, critic_kind=critic_kind, nop=True,
+    )
     with patch(
         "torch.compile", side_effect=lambda function, **kwargs: real_compile(function, backend="eager", **kwargs)
     ):
         compiled_policy, compiled = recurrent_td3(
-            env, recurrent_critic=recurrent_critic, nop=True, compile_modules=True
+            env, recurrent_critic=recurrent_critic, shared=shared, critic_kind=critic_kind, nop=True, compile_modules=True,
         )
     compiled_policy.load_state_dict(eager_policy.state_dict())
     batch = recurrent_batch(env)
@@ -557,17 +565,12 @@ def test_training_helper_selects_recurrent_td3_for_the_opt_in_flags():
         algorithm.env.close()
 
 
-@pytest.mark.parametrize("variant", ["tmasac_lstm", "tmasac_slstm", "tmasac_slstm_swiglu"])
+@pytest.mark.parametrize("variant", ["tmasac__lstm", "tmasac__slstm"])
 def test_standard_recurrent_tmasac_presets_condition_the_feedforward_critic_on_actor_state(env, variant):
     policy = make_policy(env, variant)
     assert policy.uses_actor_state_critic_input
     assert not policy.recurrent_critic
     assert hasattr(policy.critic, "actor_state_encoder")
-
-
-@pytest.mark.parametrize("variant", ["tmasac_lstm_no_actor_state", "tmasac_slstm_shared_encoder"])
-def test_tmasac_actor_state_ablation_and_shared_temporal_latents_keep_their_existing_inputs(env, variant):
-    assert not make_policy(env, variant).uses_actor_state_critic_input
 
 
 @pytest.mark.parametrize("kind", ["mlp", "deepset", "transformer"])
@@ -590,7 +593,7 @@ def test_recurrent_td3_feedforward_critic_uses_detached_actor_state_by_default(e
     (q1.mean() + q2.mean()).backward()
     assert actor_state.grad is None
     assert all(parameter.grad is None for parameter in policy.actor.parameters())
-    modules = [policy.critic] if kind == "transformer" else list(policy.critic)
+    modules = list(policy.critic) if kind == "mlp" else [policy.critic]
     for module in modules:
         assert any(
             parameter.grad is not None and parameter.grad.abs().sum() > 0

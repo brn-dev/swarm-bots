@@ -76,30 +76,30 @@ ContinuousActionDistVariant = Literal[
 ]
 
 PolicyVariant = Literal[
-    "maddpg_mlp", "maddpg_deepset", "matd3_mlp", "matd3_deepset",
-    "masac_mlp", "masac_deepset", "tmatd3", "tmatd3_dec",
+    "maddpg__mlp_critic", "maddpg__deepset_critic", "matd3__mlp_critic", "matd3__deepset_critic",
+    "masac__mlp_critic", "masac__deepset_critic", "tmatd3", "tmatd3_dec",
     "mat_qcx",
     "mat_dec",
     "mat_ind",
     "mat_orig",
-    "mat_qcx_lstm",
-    "mat_ind_lstm",
+    "mat_qcx__lstm",
+    "mat_ind__lstm",
     "ppo",
     "mappo",
-    "mappo_mlp",
+    "mappo__mlp_critic",
     "tmasac",
     "tmasac_dec",
-    "tmasac_recurrent",
-    "tmasac_segment",
+    "tmasac__recurrent",
+    "tmasac__segment",
 ]
 
 
 def _is_sac_policy_variant(policy_variant: PolicyVariant) -> bool:
-    return policy_variant in {"masac_mlp", "masac_deepset", "tmasac", "tmasac_dec", "tmasac_recurrent", "tmasac_segment"}
+    return policy_variant in {"masac__mlp_critic", "masac__deepset_critic", "tmasac", "tmasac_dec", "tmasac__recurrent", "tmasac__segment"}
 
 
 def _is_deterministic_policy_variant(policy_variant: PolicyVariant) -> bool:
-    return policy_variant in {"maddpg_mlp", "maddpg_deepset", "matd3_mlp", "matd3_deepset", "tmatd3", "tmatd3_dec"}
+    return policy_variant in {"maddpg__mlp_critic", "maddpg__deepset_critic", "matd3__mlp_critic", "matd3__deepset_critic", "tmatd3", "tmatd3_dec"}
 
 
 def _is_off_policy_variant(policy_variant: PolicyVariant) -> bool:
@@ -258,7 +258,7 @@ def _make_mat_parameter_lr_multipliers(
             "encoder_decoder_projection": mat_decoder_lr_multiplier,
         }
 
-    if policy_variant in {"mat_qcx", "mat_qcx_lstm"}:
+    if policy_variant in {"mat_qcx", "mat_qcx__lstm"}:
         return make_prefix_multipliers(
             "decoder",
             "action_input_norm",
@@ -270,7 +270,7 @@ def _make_mat_parameter_lr_multipliers(
             include_actor_head_input_norm=True,
         )
 
-    if policy_variant in {"mat_dec", "mat_ind", "mat_ind_lstm"} and include_actor_head_lr_multiplier:
+    if policy_variant in {"mat_dec", "mat_ind", "mat_ind__lstm"} and include_actor_head_lr_multiplier:
         return make_prefix_multipliers()
 
     logger.warning(f"Ignoring decoder LR multiplier for policy_variant={policy_variant!r}")
@@ -446,7 +446,7 @@ def _make_base_policy(
             raise ValueError("DDPG/TD3 use deterministic actors; configure exploration_noise in algorithm_kwargs")
         if use_popart:
             raise ValueError("DDPG/TD3 baselines require use_popart=False")
-    if use_nop and policy_variant in {"maddpg_mlp", "matd3_mlp", "masac_mlp"}:
+    if use_nop and policy_variant in {"maddpg__mlp_critic", "matd3__mlp_critic", "masac__mlp_critic"}:
         raise ValueError("MLP critics do not support NOP; use a Deep Set or transformer critic")
     continuous_config = make_continuous_config(
         variant=continuous_action_dist,
@@ -521,11 +521,12 @@ def _make_base_policy(
         deepset_interaction_config = DeepSetInteractionConfig(**deepset_interaction_config)
     interaction_config = deepset_interaction_config or DeepSetInteractionConfig()
     joint_critic_config = JointCriticConfig(
-        kind="deepset" if policy_variant.endswith("_deepset") else "mlp",
+        kind="deepset" if policy_variant.endswith("__deepset_critic") else "mlp",
         hidden_dims=tuple(baseline_critic_hidden_dims),
         element_hidden_dims=tuple(baseline_critic_element_hidden_dims),
         context_in_elements=baseline_critic_context_in_elements,
         interaction_config=deepset_interaction_config or JointCriticConfig().interaction_config,
+        independent_encoders=False if critic_independent_encoders is None else critic_independent_encoders,
     )
     if deterministic_policy_variant:
         policy_class = RecurrentTD3Policy if td3_recurrent_actor else TD3Policy
@@ -588,7 +589,7 @@ def _make_base_policy(
                 replace(
                     (
                         rmat_actor_encoder_config
-                        if policy_variant == "tmasac_recurrent" and not tmasac_recurrent_shared_encoder
+                        if policy_variant == "tmasac__recurrent" and not tmasac_recurrent_shared_encoder
                         else mat_encoder_config
                     ),
                     num_layers=tmasac_actor_encoder_num_layers,
@@ -609,7 +610,7 @@ def _make_base_policy(
             "actor_head_config": TMASACActorHeadConfig(
                 kind=(
                     TMASACActorHeadKind.DECENTRALIZED
-                    if policy_variant in {"tmasac_dec", "masac_mlp", "masac_deepset"}
+                    if policy_variant in {"tmasac_dec", "masac__mlp_critic", "masac__deepset_critic"}
                     else tmasac_actor_head_kind
                 ),
                 hidden_dims=[dec_d_model],
@@ -670,11 +671,11 @@ def _make_base_policy(
             "compile_mode": policy_compile_mode,
             "action_net_init_gain": mat_init_gains.action_net,
         }
-        if policy_variant in {"masac_mlp", "masac_deepset"}:
+        if policy_variant in {"masac__mlp_critic", "masac__deepset_critic"}:
             return build(MASACPolicy, env, MASACPolicyConfig(
                 joint_critic_config=joint_critic_config, **tmasac_config_kwargs,
             ))
-        if policy_variant == "tmasac_recurrent":
+        if policy_variant == "tmasac__recurrent":
             return build(RecurrentTMASACPolicy,
                 env=env,
                 config=RecurrentTMASACPolicyConfig(
@@ -685,7 +686,7 @@ def _make_base_policy(
                     **tmasac_config_kwargs,
                 ),
             )
-        if policy_variant == "tmasac_segment":
+        if policy_variant == "tmasac__segment":
             return build(SegmentTMASACPolicy,
                 env=env,
                 config=TMASACPolicyConfig(**tmasac_config_kwargs),
@@ -718,8 +719,8 @@ def _make_base_policy(
             ),
         )
 
-    if policy_variant in {"mappo", "mappo_mlp"}:
-        mlp_critic = policy_variant == "mappo_mlp"
+    if policy_variant in {"mappo", "mappo__mlp_critic"}:
+        mlp_critic = policy_variant == "mappo__mlp_critic"
         value_regressor_hidden_dims = [256, 128]
         return build(MAPPOPolicy,
             env=env,
@@ -798,7 +799,7 @@ def _make_base_policy(
             ),
         )
 
-    if policy_variant == "mat_qcx_lstm":
+    if policy_variant == "mat_qcx__lstm":
         return build(RMATQCXPolicy,
             env=env,
             config=RMATQCXPolicyConfig(
@@ -841,6 +842,7 @@ def _make_base_policy(
             env=env,
             config=MATDecPolicyConfig(
                 encoder_config=mat_encoder_config,
+                critic_encoder_config=mat_encoder_config,
                 critic_config=mat_critic_config,
                 actor_head_hidden_dims=[dec_d_model, dec_d_model],
                 dropout=0.0,
@@ -860,6 +862,7 @@ def _make_base_policy(
             env=env,
             config=MATIndPolicyConfig(
                 encoder_config=mat_encoder_config,
+                critic_encoder_config=replace(mat_encoder_config, use_agent_attention=True),
                 critic_config=mat_critic_config,
                 actor_head_hidden_dims=[dec_d_model],
                 dropout=0.0,
@@ -874,7 +877,7 @@ def _make_base_policy(
             ),
         )
 
-    if policy_variant == "mat_ind_lstm":
+    if policy_variant == "mat_ind__lstm":
         return build(RMATIndPolicy,
             env=env,
             config=RMATIndPolicyConfig(

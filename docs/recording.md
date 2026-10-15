@@ -30,14 +30,14 @@ Choose any ID from `swarmbots list` and the learning variant used to train the c
 ```bash
 swarmbots record SwarmBots-POWallMedium-v0 \
   --checkpoint runs/po-wall/slstm/models/model_100000000_steps_final.pt \
-  --variant tmasac_slstm --episodes 5 --parallel 2 --device cuda \
+  --variant tmasac__slstm --episodes 5 --parallel 2 --device cuda \
   --output recordings/po-wall/slstm
 ```
 
 From a Windows checkout, the equivalent is:
 
 ```powershell
-.\.venv\Scripts\python.exe examples/record_policy.py SwarmBots-POWallMedium-v0 --checkpoint runs/po-wall/slstm/models/model_100000000_steps_final.pt --variant tmasac_slstm --episodes 5 --parallel 2 --device cuda --output recordings/po-wall/slstm
+.\.venv\Scripts\python.exe examples/record_policy.py SwarmBots-POWallMedium-v0 --checkpoint runs/po-wall/slstm/models/model_100000000_steps_final.pt --variant tmasac__slstm --episodes 5 --parallel 2 --device cuda --output recordings/po-wall/slstm
 ```
 
 Policy weights and observation normalization are restored. Recording constructs the policy and environment without allocating a trainer, replay buffer, or optimizer. Recurrent state, previous actions, and distribution state reset at episode boundaries. Compiled checkpoint keys also load into eager policies.
@@ -100,7 +100,7 @@ from swarmbots.learn import record_checkpoint
 record_checkpoint(
     "runs/po-wall/slstm/models/model_100000000_steps_final.pt",
     "SwarmBots-POWallMedium-v0",
-    "tmasac_slstm",
+    "tmasac__slstm",
     video_folder="recordings/po-wall/slstm",
     num_episodes=5,
     device="cuda",

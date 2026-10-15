@@ -10,7 +10,7 @@ from gymnasium import spaces
 from torch import nn
 
 from swarmbots.learn.algos.mat.mat_encoder import MATEncoder, MATEncoderConfig
-from swarmbots.learn.algos.off_policy.joint_critic import JointCriticConfig, JointQNetwork
+from swarmbots.learn.algos.off_policy.joint_critic import JointCriticConfig, JointQNetwork, JointTwinCritic
 from swarmbots.learn.algos.off_policy.action_noise import add_normalized_action_noise
 from swarmbots.learn.algos.off_policy.replay_buffer import OffPolicyReplayBatch, OffPolicyReplayEpisodeSegmentBatch
 from swarmbots.learn.algos.off_policy.nop import SACNOPConfig, SACNOPLatentSource, SACNOPModule, normalize_nop_latent_source
@@ -149,6 +149,14 @@ class TD3Policy(BasePolicy):
                 dropout=0.0,
                 **critic_kwargs,
             )
+        elif config.critic_kind == "deepset" and config.n_critics == 2:
+            self.critic = self._build_joint_twin_critic(
+                n_agents=env.n_agents,
+                local_obs_dim=env.local_obs_dim,
+                global_obs_dim=env.global_obs_dim,
+                config=config.joint_critic_config,
+                **critic_kwargs,
+            )
         else:
             self.critic = nn.ModuleList(
                 [
@@ -190,6 +198,9 @@ class TD3Policy(BasePolicy):
 
     def _build_joint_critic(self, **kwargs) -> JointQNetwork:
         return JointQNetwork(**kwargs)
+
+    def _build_joint_twin_critic(self, **kwargs: Any) -> JointTwinCritic:
+        return JointTwinCritic(**kwargs)
 
     @property
     def gsde_enabled(self) -> bool:
@@ -244,7 +255,7 @@ class TD3Policy(BasePolicy):
             actions = self.add_action_noise(actions, std=self.exploration_noise, agent_mask=agent_mask)
         return actions
 
-    def _evaluate_critic(self, critic, **observations):
+    def _evaluate_critic(self, critic: nn.Module, **observations: torch.Tensor | None) -> tuple[torch.Tensor, ...]:
         for key in ("hidden_local_vars", "hidden_global_vars", "agent_mask"):
             observations.setdefault(key, None)
         if self.config.critic_kind == "transformer":
@@ -253,6 +264,8 @@ class TD3Policy(BasePolicy):
                 for key in ("local_obs", "hidden_local_vars", "actions"):
                     if observations[key] is not None:
                         observations[key] = observations[key].masked_fill(~mask.unsqueeze(-1), 0.0)
+            return critic(**observations)[:2]
+        if isinstance(critic, JointTwinCritic):
             return critic(**observations)[:2]
         return tuple(network(**observations) for network in critic)
 
@@ -270,7 +283,9 @@ class TD3Policy(BasePolicy):
         forward = self._target_q_values if self._target_critic_forward is None else self._target_critic_forward
         return forward(**observations)
 
-    def _q_values_with_nop_latents(self, **observations):
+    def _q_values_with_nop_latents(
+        self, **observations: torch.Tensor | None,
+    ) -> tuple[tuple[torch.Tensor, ...], torch.Tensor | None]:
         for key in ("hidden_local_vars", "hidden_global_vars", "agent_mask"):
             observations.setdefault(key, None)
         if self.config.critic_kind == "transformer":
@@ -282,6 +297,9 @@ class TD3Policy(BasePolicy):
             q1, q2, latents = self.critic(**observations)
             if mask is not None:
                 latents = latents.masked_fill(~mask.unsqueeze(-1), 0.0)
+            return (q1, q2), latents
+        if isinstance(self.critic, JointTwinCritic):
+            q1, q2, latents = self.critic(**observations)
             return (q1, q2), latents
         results = [network.forward_with_latents(**observations) for network in self.critic]
         return tuple(value for value, _ in results), torch.cat([latents for _, latents in results], dim=-1)
@@ -300,7 +318,7 @@ class TD3Policy(BasePolicy):
         if not config.enabled or source not in (SACNOPLatentSource(source_name), SACNOPLatentSource.BOTH):
             return None
         latent_dim = self.config.actor_encoder_config.d_model if source_name == "actor" else (
-            self.critic.nop_source_latent_dim if self.config.critic_kind == "transformer" else
+            self.critic.nop_source_latent_dim if not isinstance(self.critic, nn.ModuleList) else
             sum(network.nop_source_latent_dim for network in self.critic)
         )
         return SACNOPModule(

@@ -15,6 +15,7 @@ from swarmbots.learn.action_dists.hybrid_action_dist import (
     continuous_config_to_dicts,
     bernoulli_config_to_dict,
 )
+from swarmbots.learn.algos.mat.independent_encoders import make_critic_encoder
 from swarmbots.learn.algos.mat.mat_encoder import MATEncoder, MATEncoderConfig
 from swarmbots.learn.algos.ppo.base_ppo_policy import BasePPOPolicy
 from swarmbots.learn.algos.ppo.ppo import AGENTS_DIM
@@ -46,6 +47,7 @@ class MATCriticConfig:
 @dataclass(frozen=True)
 class MATQCBasePolicyConfig:
     encoder_config: MATEncoderConfig = field(default_factory=MATEncoderConfig)
+    critic_encoder_config: MATEncoderConfig | None = None
     decoder_config: Any = None
     critic_config: MATCriticConfig = field(default_factory=MATCriticConfig)
     act_fn_cls: ActivationFactory = nn.GELU
@@ -101,8 +103,13 @@ class MATQCBasePolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
             else config.decoder_config.d_model
         )
 
-        self.encoder_config = self._build_encoder_config()
-        self.encoder = self._build_encoder()
+        self.actor_encoder_config = self._build_encoder_config()
+        self.actor_encoder = self._build_encoder()
+        self.critic_encoder_config, self.critic_encoder = make_critic_encoder(
+            config.critic_encoder_config or config.encoder_config, self.actor_encoder_config,
+            env=env, max_agents=self.max_agents,
+        )
+        self.d_model_critic_encoder = self.critic_encoder_config.d_model
 
         self.agent_embeddings_decoder: nn.Parameter | None = None
         if config.decoder_config.add_agent_embeddings:
@@ -151,16 +158,16 @@ class MATQCBasePolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
         self.action_dist = self._build_action_dist(env=env, latent_pi_dim=latent_pi_dim)
 
         self.critic = DeepSetCritic(
-            num_local_features=self.d_model_encoder + self.hidden_local_vars_dim,
+            num_local_features=self.d_model_critic_encoder + self.hidden_local_vars_dim,
             local_projection_hidden_dims=(
                 config.critic_config.local_projection_hidden_dims
                 if config.critic_config.local_projection_hidden_dims is not None
-                else [self.d_model_encoder] * config.critic_config.n_local_projection_hidden_layers
+                else [self.d_model_critic_encoder] * config.critic_config.n_local_projection_hidden_layers
             ),
             value_regressor_hidden_dims=(
                 config.critic_config.value_regressor_hidden_dims
                 if config.critic_config.value_regressor_hidden_dims is not None
-                else [self.d_model_encoder] * config.critic_config.n_value_regressor_hidden_layers
+                else [self.d_model_critic_encoder] * config.critic_config.n_value_regressor_hidden_layers
             ),
             num_global_features=self.hidden_global_vars_dim,
             act_fn_cls=config.act_fn_cls,
@@ -194,7 +201,7 @@ class MATQCBasePolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
 
     def _build_encoder(self) -> nn.Module:
         return MATEncoder(
-            config=self.encoder_config,
+            config=self.actor_encoder_config,
             max_agents=self.max_agents,
             local_obs_dim=self.local_obs_dim,
             global_obs_dim=self.global_obs_dim,
@@ -275,7 +282,8 @@ class MATQCBasePolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
 
     def _get_hyper_parameters_payload(self) -> dict[str, Any]:
         return {
-            "encoder_config": serialize_dataclass(self.encoder_config),
+            "encoder_config": serialize_dataclass(self.actor_encoder_config),
+            "critic_encoder_config": serialize_dataclass(self.critic_encoder_config),
             "decoder_config": serialize_dataclass(self.decoder_config),
             "critic_config": serialize_dataclass(self.config.critic_config),
             "act_fn_cls": serialize_value(self.act_fn_cls),
@@ -452,7 +460,7 @@ class MATQCBasePolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
             previous_actions: torch.Tensor | None = None,
             deterministic: bool = False,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        augmented_observations = self.encoder(local_obs, global_obs, agent_mask=agent_mask)
+        augmented_observations = self.actor_encoder(local_obs, global_obs, agent_mask=agent_mask)
         actions, log_probs = self._generate_actions(
             augmented_observations=augmented_observations,
             batch_size=local_obs.shape[0],
@@ -461,8 +469,9 @@ class MATQCBasePolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
             deterministic=deterministic,
             return_log_probs=True,
         )
+        critic_observations = self.critic_encoder(local_obs, global_obs, agent_mask=agent_mask)
         values = self._critic_with_hidden_vars(
-            augmented_observations,
+            critic_observations,
             hidden_local_vars,
             hidden_global_vars,
             agent_mask=agent_mask,
@@ -508,9 +517,9 @@ class MATQCBasePolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
             previous_actions: torch.Tensor | None = None,
     ) -> torch.Tensor:
         _ = previous_actions
-        augmented_observations = self.encoder(local_obs, global_obs, agent_mask=agent_mask)
+        critic_observations = self.critic_encoder(local_obs, global_obs, agent_mask=agent_mask)
         return self._critic_with_hidden_vars(
-            augmented_observations,
+            critic_observations,
             hidden_local_vars,
             hidden_global_vars,
             agent_mask=agent_mask,
@@ -545,7 +554,7 @@ class MATQCBasePolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
             agent_mask: torch.Tensor | None,
             actions: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        augmented_observations = self.encoder(local_obs, global_obs, agent_mask=agent_mask)
+        augmented_observations = self.actor_encoder(local_obs, global_obs, agent_mask=agent_mask)
         query_tokens = self._encode_query_tokens(augmented_observations)
         memory_tokens = self._encode_memory_tokens(augmented_observations)
         context_observations, context_actions = self._parallel_decoder_context_inputs(
@@ -564,8 +573,9 @@ class MATQCBasePolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
             memory_mask=agent_mask,
         )
         latent_pi = self.actor_head(self.actor_head_input_norm(decoder_output)).contiguous()
+        critic_observations = self.critic_encoder(local_obs, global_obs, agent_mask=agent_mask)
         values = self._critic_with_hidden_vars(
-            augmented_observations,
+            critic_observations,
             hidden_local_vars,
             hidden_global_vars,
             agent_mask=agent_mask,
@@ -628,7 +638,7 @@ class MATQCBasePolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
     ) -> torch.Tensor:
         _ = hidden_local_vars
         _ = hidden_global_vars
-        augmented_observations = self.encoder(local_obs, global_obs, agent_mask=agent_mask)
+        augmented_observations = self.actor_encoder(local_obs, global_obs, agent_mask=agent_mask)
         actions, _ = self._generate_actions(
             augmented_observations=augmented_observations,
             batch_size=local_obs.shape[0],
@@ -686,7 +696,8 @@ class MATQCBasePolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
 
     def get_grad_norms(self) -> dict[str, float]:
         return {
-            "encoder": self._module_grad_norm(self.encoder),
+            "actor_encoder": self._module_grad_norm(self.actor_encoder),
+            "critic_encoder": self._module_grad_norm(self.critic_encoder),
             "query_input_norm": self._module_grad_norm(self.query_input_norm),
             "query_encoder": self._module_grad_norm(self.query_encoder),
             "query_token_norm": self._module_grad_norm(self.query_token_norm),
@@ -774,7 +785,8 @@ class MATQCBasePolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
 
         _ensure_torch_compile_available(compile_mode=self.config.compile_mode)
 
-        self.encoder = self._compile_module(self.encoder)
+        self.actor_encoder = self._compile_module(self.actor_encoder)
+        self.critic_encoder = self._compile_module(self.critic_encoder)
         self.query_input_norm = self._compile_module(self.query_input_norm)
         self.query_encoder = self._compile_module(self.query_encoder)
         self.query_token_norm = self._compile_module(self.query_token_norm)

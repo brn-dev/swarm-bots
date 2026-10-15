@@ -20,11 +20,12 @@ from swarmbots.learn.losses import LossDict, LossMetrics
 @dataclass(frozen=True)
 class RMATIndPolicyConfig(MATIndPolicyConfig):
     encoder_config: RMATEncoderConfig = field(default_factory=RMATEncoderConfig)
+    critic_encoder_config: RMATEncoderConfig | None = None
 
 
 class RMATIndPolicy(RMATPolicyMixin, MATIndPolicy):
 
-    encoder_config: RMATEncoderConfig
+    actor_encoder_config: RMATEncoderConfig
 
     def __init__(
             self,
@@ -43,7 +44,7 @@ class RMATIndPolicy(RMATPolicyMixin, MATIndPolicy):
 
     def _build_encoder(self) -> nn.Module:
         return RMATEncoder(
-            config=self.encoder_config,
+            config=self.actor_encoder_config,
             max_agents=self.max_agents,
             local_obs_dim=self.local_obs_dim,
             global_obs_dim=self.global_obs_dim,
@@ -73,14 +74,7 @@ class RMATIndPolicy(RMATPolicyMixin, MATIndPolicy):
     ) -> tuple[torch.Tensor, torch.Tensor, LossDict, LossMetrics, torch.Tensor]:
         local_obs = batch.local_obs
         batch_size, sequence_length, n_agents, _local_obs_dim = local_obs.shape
-        augmented_observations, _ = self.encoder(
-            local_obs,
-            batch.global_obs,
-            agent_mask=batch.agent_mask,
-            time_mask=batch.time_mask,
-            initial_state=batch.initial_temporal_state,
-            reset_mask=batch.episode_start_mask,
-        )
+        augmented_observations, critic_observations = self._encode_training_observations(batch)
 
         flat_batch_size = batch_size * sequence_length
         flat_augmented_observations = augmented_observations.reshape(
@@ -106,8 +100,11 @@ class RMATIndPolicy(RMATPolicyMixin, MATIndPolicy):
         flat_log_probs = self.action_dist.log_prob(flat_actions, previous_actions=flat_previous_actions)
         flat_log_probs = flat_log_probs.masked_fill(~flat_loss_agent_mask, 0.0)
 
+        flat_critic_observations = critic_observations.reshape(
+            flat_batch_size, n_agents, self.d_model_critic_encoder,
+        )
         flat_values = self._critic_with_hidden_vars(
-            flat_augmented_observations,
+            flat_critic_observations,
             batch.hidden_local_vars.reshape(flat_batch_size, n_agents, self.hidden_local_vars_dim),
             batch.hidden_global_vars.reshape(flat_batch_size, self.hidden_global_vars_dim),
             agent_mask=flat_agent_mask,

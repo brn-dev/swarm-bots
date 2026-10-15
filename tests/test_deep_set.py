@@ -238,10 +238,10 @@ def test_agent_features_depend_on_other_active_agents_before_final_pooling() -> 
 
 
 @pytest.mark.parametrize("local_update,expected", [
-    ("residual", [97.0, 99.0]), ("linear", [184.0, 216.0]),
-    ("mlp", [184.0, 216.0]), ("residual_mlp", [217.0, 267.0]),
+    ("residual", [97.0, 99.0]), ("linear", [1552.0, 1584.0]),
+    ("mlp", [1552.0, 1584.0]), ("residual_mlp", [2425.0, 2475.0]),
 ])
-def test_local_update_modes_apply_repeated_broadcast_messages(local_update: str, expected: list[float]) -> None:
+def test_local_update_modes_process_current_broadcast_messages(local_update: str, expected: list[float]) -> None:
     critic = DeepSetCritic(
         num_local_features=1, local_projection_hidden_dims=[], value_regressor_hidden_dims=[],
         act_fn_cls=nn.Identity,
@@ -260,6 +260,27 @@ def test_local_update_modes_apply_repeated_broadcast_messages(local_update: str,
                 block.local_encoder[0].bias.zero_()
     latents = critic.encode_elements(torch.tensor([[[1.0], [3.0]]]))
     torch.testing.assert_close(latents, torch.tensor(expected).reshape(1, 2, 1))
+
+
+def test_one_block_locally_interprets_the_current_global_message() -> None:
+    critic = DeepSetCritic(
+        num_local_features=1, local_projection_hidden_dims=[], value_regressor_hidden_dims=[],
+        interaction_config=DeepSetInteractionConfig(num_layers=1, normalize=False),
+    )
+    block = critic.deepset.interactions[0]
+    block.message_encoder = nn.Identity()
+    block.global_update = nn.Identity()
+    block.local_encoder = nn.ReLU()
+    baseline = torch.tensor([[[-1.0], [-3.0]]])
+    changed = torch.tensor([[[-1.0], [5.0]]], requires_grad=True)
+
+    baseline_latents = critic.encode_elements(baseline)
+    changed_latents = critic.encode_elements(changed)
+
+    torch.testing.assert_close(baseline_latents[0, 0], torch.tensor([-3.0]))
+    torch.testing.assert_close(changed_latents[0, 0], torch.tensor([2.0]))
+    changed_latents[0, 0].sum().backward()
+    torch.testing.assert_close(changed.grad[0, 1], torch.tensor([1.0]))
 
 
 def test_iterative_critic_compiles_without_graph_breaks() -> None:

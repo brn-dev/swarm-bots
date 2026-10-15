@@ -76,7 +76,7 @@ def _pool_over_set(
 
 
 class DeepSetInteraction(nn.Module):
-    """A permutation-equivariant local update plus a broadcast set message."""
+    """Broadcast a set message, then process it with a per-element update."""
 
     def __init__(
         self,
@@ -92,7 +92,10 @@ class DeepSetInteraction(nn.Module):
         self.set_dim = set_dim
         self.pool_mode = pool_mode
         self.local_update = config.local_update
-        self.norm = nn.LayerNorm(features) if config.normalize else nn.Identity()
+        self.global_norm = nn.LayerNorm(features) if config.normalize else nn.Identity()
+        self.local_norm = (
+            nn.LayerNorm(features) if config.normalize and config.local_update != "residual" else nn.Identity()
+        )
         hidden_dims = [features] if config.hidden_dims is None else list(config.hidden_dims)
 
         def make_mlp(*, end_with_act_fn: bool = False) -> MLP:
@@ -114,17 +117,17 @@ class DeepSetInteraction(nn.Module):
             self.local_encoder = make_mlp()
 
     def forward(self, elements: torch.Tensor, element_mask: torch.Tensor | None = None) -> torch.Tensor:
-        normalized = self.norm(elements)
+        normalized = self.global_norm(elements)
         message = _pool_over_set(
             self.message_encoder(normalized), set_dim=self.set_dim, mode=self.pool_mode, mask=element_mask,
         )
-        if self.local_update == "residual":
-            local = elements
-        else:
-            local = self.local_encoder(normalized)
+        updated = elements + self.global_update(message).unsqueeze(self.set_dim)
+        if self.local_update != "residual":
+            local = self.local_encoder(self.local_norm(updated))
             if self.local_update == "residual_mlp":
-                local = elements + local
-        updated = local + self.global_update(message).unsqueeze(self.set_dim)
+                updated = updated + local
+            else:
+                updated = local
         return updated if element_mask is None else updated.masked_fill(~element_mask.unsqueeze(-1), 0.0)
 
 
@@ -152,6 +155,43 @@ class DeepSet(nn.Module):
         # Preserve the previous placement when the decoder path is unspecified.
         self.context_after_pool = (
             not self.context_in_elements if context_after_pool is None else bool(context_after_pool)
+        )
+
+    @classmethod
+    def from_dimensions(
+        cls,
+        *,
+        element_input_features: int,
+        local_projection_hidden_dims: list[int],
+        set_decoder: nn.Module,
+        interaction_config: DeepSetInteractionConfig,
+        linear_init: LinearInitialization = init_linear_orthogonal,
+        act_fn_cls: ActivationFactory = nn.Tanh,
+        set_dim: int = 1,
+        pool_mode: PoolMode = "mean",
+        context_features: int = 0,
+        context_in_elements: bool = False,
+        context_after_pool: bool | None = None,
+    ) -> DeepSet:
+        element_encoder: nn.Module = (
+            MLP(
+                input_dim=element_input_features, hidden_dims=local_projection_hidden_dims,
+                end_with_act_fn=True, linear_init=linear_init, act_fn_cls=act_fn_cls,
+            )
+            if local_projection_hidden_dims else nn.Identity()
+        )
+        features = local_projection_hidden_dims[-1] if local_projection_hidden_dims else element_input_features
+        return cls(
+            element_encoder=element_encoder, set_decoder=set_decoder,
+            set_dim=set_dim, pool_mode=pool_mode, context_features=context_features,
+            context_in_elements=context_in_elements, context_after_pool=context_after_pool,
+            interactions=[
+                DeepSetInteraction(
+                    features, config=interaction_config, set_dim=set_dim, pool_mode=pool_mode,
+                    linear_init=linear_init, act_fn_cls=act_fn_cls,
+                )
+                for _ in range(interaction_config.num_layers)
+            ],
         )
 
     def encode_elements(
@@ -186,12 +226,22 @@ class DeepSet(nn.Module):
         element_mask: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         encoded = self.encode_elements(elements, context=context, element_mask=element_mask)
+        return self.decode_elements(encoded, context=context, element_mask=element_mask), encoded
+
+    def decode_elements(
+        self,
+        encoded: torch.Tensor,
+        *,
+        context: torch.Tensor | None = None,
+        element_mask: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """Read out already encoded elements, allowing multiple heads to share an encoder."""
         pooled = _pool_over_set(encoded, set_dim=self.set_dim, mode=self.pool_mode, mask=element_mask)
 
         if self.context_features > 0 and self.context_after_pool:
             pooled = torch.cat((pooled, context), dim=-1)
 
-        return self.set_decoder(pooled), encoded
+        return self.set_decoder(pooled)
 
 
 class DeepSetCriticHiddenDims(TypedDict):
@@ -261,18 +311,7 @@ class DeepSetCritic(nn.Module):
         element_input_features = self.num_local_features + (self.num_global_features if self.context_in_elements else 0)
         context_features_after_pool = self.num_global_features if self.context_after_pool else 0
 
-        if local_projection_hidden_dims:
-            element_encoder: nn.Module = MLP(
-                input_dim=element_input_features,
-                hidden_dims=local_projection_hidden_dims,
-                end_with_act_fn=True,
-                linear_init=local_projection_linear_init,
-                act_fn_cls=act_fn_cls,
-            )
-            pooled_dim = int(local_projection_hidden_dims[-1])
-        else:
-            element_encoder = nn.Identity()
-            pooled_dim = element_input_features
+        pooled_dim = int(local_projection_hidden_dims[-1]) if local_projection_hidden_dims else element_input_features
 
         value_regressor_input_dim = pooled_dim + context_features_after_pool
         if value_regressor_hidden_dims:
@@ -306,21 +345,18 @@ class DeepSetCritic(nn.Module):
 
         value_regressor = nn.Sequential(value_regressor_trunk, value_regressor_head)
 
-        self.deepset = DeepSet(
-            element_encoder=element_encoder,
+        self.deepset = DeepSet.from_dimensions(
+            element_input_features=element_input_features,
+            local_projection_hidden_dims=local_projection_hidden_dims,
             set_decoder=value_regressor,
             set_dim=set_dim,
             pool_mode=pool_mode,
             context_features=self.num_global_features,
             context_in_elements=self.context_in_elements,
             context_after_pool=self.context_after_pool,
-            interactions=[
-                DeepSetInteraction(
-                    pooled_dim, config=interaction_config, set_dim=set_dim, pool_mode=pool_mode,
-                    linear_init=local_projection_linear_init, act_fn_cls=act_fn_cls,
-                )
-                for _ in range(interaction_config.num_layers)
-            ],
+            interaction_config=interaction_config,
+            linear_init=local_projection_linear_init,
+            act_fn_cls=act_fn_cls,
         )
 
     def encode_elements(

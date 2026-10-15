@@ -42,8 +42,7 @@ def _parameter_role(path: str, base_policy: nn.Module) -> str:
     if root in {"shared_encoder", "shared_observation_encoder"}:
         return "shared_encoder"
     if root == "encoder":
-        # MATDec has a separate actor encoder; its inherited encoder feeds the
-        # critic and NOP only. Other on-policy MAT encoders feed actor and critic.
+        # Retained low-level policies may still expose an encoder under this name.
         return "critic" if hasattr(base_policy, "actor_encoder") else "shared_encoder"
     if root == "critic" or root.startswith("critic_"):
         return "critic"
@@ -60,7 +59,7 @@ def _component_path(path: str) -> str:
         root = ".".join(parts[:2]) if len(parts) > 2 else root
     if "temporal_model" in parts:
         return root + ".temporal_model"
-    if parts[0] in {"encoder", "actor_encoder", "_actor_encoder", "shared_observation_encoder"}:
+    if parts[0] in {"encoder", "actor_encoder", "critic_encoder", "_actor_encoder", "shared_observation_encoder"}:
         return root + ".backbone"
     return root
 

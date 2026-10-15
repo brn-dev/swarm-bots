@@ -28,13 +28,13 @@ PARAMETER_MATCHED_SWIGLU_HIDDEN_DIM = 344
 TMASACVariant = Literal[
     "tmasac",
     "tmasac_dec",
-    "tmasac_shared_encoder",
-    "tmasac_swiglu",
-    "tmasac_slstm",
-    "tmasac_slstm_no_residual",
-    "tmasac_slstm_shared_encoder",
-    "tmasac_lstm",
-    "tmasac_slstm_swiglu",
+    "tmasac__ac_shared_observation_encoder",
+    "tmasac__swiglu",
+    "tmasac__slstm",
+    "tmasac__slstm__no_residual",
+    "tmasac__slstm__ac_shared_observation_encoder",
+    "tmasac__lstm",
+    "tmasac__slstm__swiglu",
 ]
 
 
@@ -46,11 +46,11 @@ def make_tmasac_options(
     """Resolve a TMASAC preset's architecture and optimizer/replay settings."""
     temporal_model_cls, temporal_model_config = _make_temporal_model_spec(variant=variant)
     is_recurrent = temporal_model_cls is not None
-    recurrent_shared_encoder = variant == "tmasac_slstm_shared_encoder"
-    shared_encoder = variant == "tmasac_shared_encoder" or recurrent_shared_encoder
+    recurrent_shared_encoder = variant == "tmasac__slstm__ac_shared_observation_encoder"
+    shared_encoder = variant == "tmasac__ac_shared_observation_encoder" or recurrent_shared_encoder
     encoder_ff_config, actor_ff_config = _make_feedforward_configs(variant=variant)
     policy_options = {
-        "policy_variant": "tmasac_recurrent" if is_recurrent else "tmasac_dec" if variant == "tmasac_dec" else "tmasac",
+        "policy_variant": "tmasac__recurrent" if is_recurrent else "tmasac_dec" if variant == "tmasac_dec" else "tmasac",
         "mat_encoder_transformer_ff_config": encoder_ff_config,
         "rmat_actor_d_model": ACTOR_D_MODEL if is_recurrent else None,
         "rmat_actor_transformer_ff_config": actor_ff_config if is_recurrent else None,
@@ -73,10 +73,10 @@ def make_tmasac_options(
         ),
         "rmat_temporal_model_cls": temporal_model_cls,
         "rmat_temporal_model_config": temporal_model_config,
-        "rmat_temporal_residual": variant.startswith("tmasac_slstm") and variant != "tmasac_slstm_no_residual",
+        "rmat_temporal_residual": variant.startswith("tmasac__slstm") and variant != "tmasac__slstm__no_residual",
         "rmat_temporal_layer_norm": False,
         "rmat_use_temporal_output_projection": not is_recurrent,
-        "rmat_experimental_compile_lstm": variant == "tmasac_lstm",
+        "rmat_experimental_compile_lstm": variant == "tmasac__lstm",
     }
     algorithm_options: dict[str, Any] = {
         "learning_rate": 5e-5,
@@ -103,24 +103,24 @@ def _make_feedforward_configs(
     if variant in {
         "tmasac",
         "tmasac_dec",
-        "tmasac_shared_encoder",
-        "tmasac_slstm_shared_encoder",
+        "tmasac__ac_shared_observation_encoder",
+        "tmasac__slstm__ac_shared_observation_encoder",
     }:
-        if variant == "tmasac_slstm_shared_encoder":
+        if variant == "tmasac__slstm__ac_shared_observation_encoder":
             config = MLPConfig(hidden_dims=[512, 512])
             return config, config
         return MLPConfig(hidden_dims=[512, 512]), None
-    if variant == "tmasac_swiglu":
+    if variant == "tmasac__swiglu":
         return _make_stacked_swiglu_config(), None
     if variant in {
-        "tmasac_slstm",
-        "tmasac_slstm_no_residual",
-        "tmasac_lstm",
+        "tmasac__slstm",
+        "tmasac__slstm__no_residual",
+        "tmasac__lstm",
     }:
         # Only the recurrent actor splits its feed-forward budget across the
         # two RMAT blocks. The ordinary critic still needs the full MAT block.
         return MLPConfig(hidden_dims=[512, 512]), MLPConfig(hidden_dims=[512])
-    if variant == "tmasac_slstm_swiglu":
+    if variant == "tmasac__slstm__swiglu":
         return _make_stacked_swiglu_config(), SwiGLUConfig(hidden_dim=PARAMETER_MATCHED_SWIGLU_HIDDEN_DIM)
     raise ValueError(f"Unknown TMASAC variant: {variant!r}")
 
@@ -129,9 +129,9 @@ def _make_temporal_model_spec(
     *,
     variant: TMASACVariant,
 ) -> tuple[type[nn.Module] | None, object | None]:
-    if variant.startswith("tmasac_slstm"):
+    if variant.startswith("tmasac__slstm"):
         return SLSTMTemporalSequenceModel, SLSTMTemporalSequenceModelConfig(num_heads=4)
-    if variant == "tmasac_lstm":
+    if variant == "tmasac__lstm":
         return LSTMTemporalSequenceModel, LSTMTemporalSequenceModelConfig()
     return None, None
 

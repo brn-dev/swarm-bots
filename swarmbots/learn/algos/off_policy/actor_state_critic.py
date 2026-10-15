@@ -5,7 +5,7 @@ from typing import Any
 
 import torch
 
-from swarmbots.learn.algos.off_policy.joint_critic import JointQNetwork
+from swarmbots.learn.algos.off_policy.joint_critic import JointQNetwork, JointTwinCritic
 from swarmbots.learn.algos.off_policy.transformer_critic import TransformerTwinCritic
 from swarmbots.learn.algos.r_mat.temporal_sequence_model import LSTMTemporalSequenceModel, TemporalSequenceModel
 from swarmbots.learn.algos.xlstm.slstm import SLSTMTemporalSequenceModel
@@ -161,3 +161,39 @@ class ActorStateJointQNetwork(_ActorStateInputMixin, JointQNetwork):
     ) -> torch.Tensor:
         values, _latents = self.forward_with_latents(actor_state=actor_state, local_obs=local_obs, **kwargs)
         return values
+
+
+class ActorStateJointTwinCritic(_ActorStateInputMixin, JointTwinCritic):
+    def __init__(
+        self,
+        *,
+        actor_state_input_dim: int,
+        actor_state_config: ActorStateCriticInputConfig,
+        actor_state_default_projection_dim: int,
+        **kwargs: Any,
+    ) -> None:
+        projection_dim = (
+            actor_state_default_projection_dim
+            if actor_state_config.projection_dim is None
+            else int(actor_state_config.projection_dim)
+        )
+        local_obs_dim = int(kwargs.pop("local_obs_dim"))
+        super().__init__(local_obs_dim=local_obs_dim + projection_dim, **kwargs)
+        self._init_actor_state_encoder(
+            input_dim=actor_state_input_dim,
+            projection_dim=projection_dim,
+            config=actor_state_config,
+            act_fn_cls=kwargs["act_fn_cls"],
+        )
+
+    def encode(self, *, actor_state: torch.Tensor, local_inputs: torch.Tensor, **kwargs: Any) -> torch.Tensor:
+        return super().encode(local_inputs=self._append_actor_state(local_inputs, actor_state), **kwargs)
+
+    def forward(
+        self,
+        *,
+        actor_state: torch.Tensor,
+        local_obs: torch.Tensor,
+        **kwargs: Any,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
+        return super().forward(local_obs=self._append_actor_state(local_obs, actor_state), **kwargs)

@@ -1,6 +1,6 @@
 # Feed-forward preset audit
 
-Historical audit of explicit-width presets before the model-scale change. Its counts and 35-variant inventory describe that earlier configuration; current defaults and the 18 core variants are documented in [model scale](model_scale.md) and [the current parameter report](report.md). Use `--model-scale legacy` when inspecting the earlier width templates.
+Historical audit of explicit-width presets before the model-scale change. Its counts, names and 35-variant inventory describe that earlier configuration; current defaults and the 17 core variants are documented in [model scale](model_scale.md) and [the current parameter report](scale_comparison.md). Historical names below are not accepted as aliases. `--model-scale legacy` now selects current explicit-width templates, not the historical shared MAT architectures or removed registry names.
 
 Audited on 2026-10-06 after the recurrent TMASAC critic fix. The audit instantiated all **35 registered variants**, plus **six TD3 configurations** with recurrent actors and/or recurrent critics. It used the default `SwarmBots-WallEasy-v0` observation/action shapes and disabled NOP during construction. All 35 default main-policy processing counts matched the parameter report saved at the time.
 
