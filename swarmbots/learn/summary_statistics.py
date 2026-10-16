@@ -381,6 +381,8 @@ def _compute_histogram(
         histogram_values = values.detach()
         if not histogram_values.is_floating_point():
             histogram_values = histogram_values.to(dtype=torch.float32)
+        if config.has_fixed_range:
+            histogram_values = histogram_values.clamp(min=low, max=high)
 
         counts = torch.histc(histogram_values, bins=bin_count, min=float(low), max=float(high))
         counts_np = counts.to(device="cpu", dtype=torch.float64).numpy()
@@ -399,7 +401,8 @@ def _compute_histogram(
             bin_edges=[float(x) for x in edges.tolist()],
         )
 
-    counts, edges = np.histogram(values, bins=bin_count, range=(low, high))
+    histogram_values = np.clip(values, low, high) if config.has_fixed_range else values
+    counts, edges = np.histogram(histogram_values, bins=bin_count, range=(low, high))
     total = float(counts.sum())
     frequencies = (counts.astype(np.float64) / total) if total > 0.0 else np.zeros_like(counts, dtype=np.float64)
 

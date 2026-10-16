@@ -15,6 +15,41 @@ from swarmbots.learn.summary_statistics import (
 
 
 class SummaryStatisticsTests(unittest.TestCase):
+    def test_fixed_histogram_range_clamps_outliers_without_changing_summary_or_input(self) -> None:
+        source = np.array([-2.0, 0.25, 0.75, 3.0])
+        config = HistogramConfig(bins=2, low=0.0, high=1.0)
+        for values in (source.copy(), torch.tensor(source)):
+            stats = compute_summary_statistics(values, make_histogram=config, find_min=True, find_max=True, keep_data=True)
+
+            self.assertEqual(stats.histogram.bin_frequencies, [0.5, 0.5])
+            self.assertEqual(stats.histogram.bin_edges, [0.0, 0.5, 1.0])
+            self.assertAlmostEqual(stats.mean, source.mean())
+            self.assertAlmostEqual(stats.std, source.std())
+            self.assertEqual(stats.min_value, -2.0)
+            self.assertEqual(stats.max_value, 3.0)
+            np.testing.assert_array_equal(stats.data, source)
+            np.testing.assert_array_equal(np.asarray(values), source)
+
+    def test_fixed_range_histograms_keep_outliers_when_merging_unequal_batches(self) -> None:
+        config = HistogramConfig(bins=2, low=0.0, high=1.0)
+        first_values = [-2.0, -2.0, -2.0, 0.25]
+        second_values = [0.75]
+        for convert in (np.asarray, torch.tensor):
+            first = compute_summary_statistics(convert(first_values), make_histogram=config)
+            second = compute_summary_statistics(convert(second_values), make_histogram=config)
+            combined = combine_summary_statistics([first, second], combine_histograms=True)
+            direct = compute_summary_statistics(convert(first_values + second_values), make_histogram=config)
+
+            np.testing.assert_allclose(combined.histogram.bin_frequencies, [0.8, 0.2])
+            np.testing.assert_allclose(combined.histogram.bin_frequencies, direct.histogram.bin_frequencies)
+
+    def test_fixed_histogram_range_places_single_outlier_in_boundary_bin(self) -> None:
+        config = HistogramConfig(bins=2, low=0.0, high=1.0)
+        for value, expected in ((-2.0, [1.0, 0.0]), (3.0, [0.0, 1.0])):
+            for values in (np.array([value]), torch.tensor([value])):
+                stats = compute_summary_statistics(values, make_histogram=config)
+                self.assertEqual(stats.histogram.bin_frequencies, expected)
+
     def test_single_sample_retains_data_for_deferred_histograms(self) -> None:
         for values in ([2.0], np.array([2.0]), torch.tensor([2.0])):
             stats = compute_summary_statistics(values, keep_data=True)

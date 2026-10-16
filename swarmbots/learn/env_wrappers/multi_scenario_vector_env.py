@@ -227,6 +227,23 @@ class MultiScenarioVectorEnv(VectorEnv):
             "scenario_observation_dims": self.scenario_observation_dims,
         }
 
+    def get_reward_weights(self) -> dict[str, dict[str, float]]:
+        return {
+            name: env.get_reward_weights()
+            for name, env in zip(self.scenario_names, self.envs, strict=True)
+        }
+
+    def validate_reward_weights(self, reward_weights: Mapping[str, float]) -> None:
+        for env in self.envs:
+            env.validate_reward_weights(reward_weights)
+
+    def update_reward_weights(self, reward_weights: Mapping[str, float]) -> dict[str, dict[str, float]]:
+        self.validate_reward_weights(reward_weights)
+        return {
+            name: env.update_reward_weights(reward_weights)
+            for name, env in zip(self.scenario_names, self.envs, strict=True)
+        }
+
     def get_swarm_pool_size(self) -> int:
         return self._common_child_value("get_swarm_pool_size")
 

@@ -869,14 +869,7 @@ class BaseAlgorithm(abc.ABC):
 
     def _cmd_show_reward_weights(self, params: str) -> None:
         _ = params
-        results = self.env.unwrapped.call("get_reward_weights")
-
-        if not isinstance(results, list):
-            logger.info({"reward_weights": results})
-            return
-
-        first = results[0] if results else None
-        logger.info(first)
+        logger.info({"reward_weights": self.env.unwrapped.get_reward_weights()})
 
     def _cmd_show_eta(self, params: str) -> None:
         _ = params
@@ -905,26 +898,10 @@ class BaseAlgorithm(abc.ABC):
                 "{\"reward_weights\": {...}}"
             )
 
-        results = self.env.unwrapped.call("update_reward_weights", reward_weights)
-
-        if not isinstance(results, tuple):
-            logger.warning(f"Updated reward weights with unexpected results: {results} for {reward_weights}")
-            return
-
-        failed: list[tuple[int, dict[str, Any]]] = []
-        for i, res in enumerate(results):
-            if isinstance(res, dict) and res.get("ok", True) is False:
-                failed.append((i, res))
-
-        if not failed:
-            logger.warning(f"Updated reward weights in {len(results)} env(s): {reward_weights}")
-            if extra_run_metadata is not None:
-                extra_run_metadata['updated_reward_weights'] = results[0]
-            return
-
-        logger.error(f"Reward weights update failed in {len(failed)}/{len(results)} env(s): {reward_weights}")
-        for i, res in failed:
-            logger.error(f"env[{i}] update failed: {res}")
+        updated_weights = self.env.unwrapped.update_reward_weights(reward_weights)
+        logger.warning(f"Updated reward weights: {updated_weights}")
+        if extra_run_metadata is not None:
+            extra_run_metadata["updated_reward_weights"] = updated_weights
 
     def _build_run_eta_estimate(
             self,

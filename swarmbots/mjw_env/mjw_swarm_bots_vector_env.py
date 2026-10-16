@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import deque
+from collections.abc import Mapping
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 import math
@@ -658,6 +659,26 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
                 else None
             ),
         }
+
+    def get_reward_weights(self) -> dict[str, float]:
+        """Return the reward coefficients the scenario exposes for live updates."""
+        return dict(self.scenario.get_settings()["reward_weights"])
+
+    def validate_reward_weights(self, reward_weights: Mapping[str, float]) -> dict[str, float]:
+        if self._pending_step is not None:
+            raise RuntimeError("Cannot change reward weights while an MJW step is pending.")
+        unknown_weights = reward_weights.keys() - self.get_reward_weights().keys()
+        if unknown_weights:
+            raise ValueError(f"Unknown live reward weights: {sorted(unknown_weights)}")
+        resolved_weights = {name: float(value) for name, value in reward_weights.items()}
+        if not all(math.isfinite(value) for value in resolved_weights.values()):
+            raise ValueError("Reward weights must be finite")
+        return resolved_weights
+
+    def update_reward_weights(self, reward_weights: Mapping[str, float]) -> dict[str, float]:
+        for name, value in self.validate_reward_weights(reward_weights).items():
+            setattr(self.scenario, name, value)
+        return self.get_reward_weights()
 
     def get_swarm_pool_size(self) -> int:
         return self.scenario.swarm.get_pool_size()

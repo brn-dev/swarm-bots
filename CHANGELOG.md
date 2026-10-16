@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Fix live reward-weight commands through the benchmark environment API, validate updates before applying them across scenarios, and retain the resolved weights in command metadata.
+- Clamp fixed-range histogram inputs to the boundary bins so outliers remain represented and merged histograms retain the correct sample weights; keep summary statistics based on the original data.
 - Apply fixed-scale recurrent memory widths explicitly, clearing custom or previously resolved overrides when the selected layout uses token-width memory.
 - Align MASAC's learning rate and automatic-temperature defaults with TMASAC, retaining explicit overrides and the on-policy decoder learning-rate multiplier. Isolate example runs by scale, seed and unique run ID; reject reuse of an explicit output directory.
 - Match 5M-3L recurrent main-policy counts to their 2L counterparts with narrower temporal modules and input/output projections, preserving feed-forward backbones. Size actor-state critic inputs from the actual memory width and show the memory projections in diagrams; version the changed 3L layout as v2.

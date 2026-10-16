@@ -38,6 +38,7 @@ Keep navigation and costly gotchas; defaults/layouts belong in source, history i
 
 ## Benchmark and simulator
 
+- Live reward updates accept only coefficients in `scenario.get_settings()["reward_weights"]` (currently `progress_reward_weight`). Other reward parameters can affect cached potentials/reset snapshots and are constructor settings. Multi-scenario updates validate every child before changing any; do not use Gymnasium's `call` API for the custom vector environments.
 - Planar goal navigation is `SwarmBots-MoveToGoal-v0`: `mjw_move_to_goal_scenario.py` / `mjw_move_to_goal_runtime.py`, `MJWMoveToGoalScenario`, and `default_move_to_goal`. The goal config remains in `scenario_presets/move_to_goal_config.py`.
 - Scenario spaces and serialized observation indices share hinge counts from `mjw_env/swarm/unit.py`, derived from the same joint definitions used to build robots.
 - Protocol 0.1 allows cross-agent non-privileged actor inputs; privilege boundaries do not require decentralization. Observations are device-resident Torch tensors. Default pool seeds 42000–42049; evaluation seeds change sampling, not membership or held-out generalization.
