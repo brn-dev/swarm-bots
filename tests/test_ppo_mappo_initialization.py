@@ -92,7 +92,7 @@ def test_mappo_policy_initializes_internal_layers_and_heads_with_expected_gains(
         config=MAPPOPolicyConfig(
             actor_config=MAPPOActorConfig(
                 hidden_dims=[12],
-                shared_encoder_latent_dim=8,
+                latent_dim=8,
                 actor_head_hidden_dims=[6],
                 latent_pi_dim=4,
             ),
@@ -108,11 +108,13 @@ def test_mappo_policy_initializes_internal_layers_and_heads_with_expected_gains(
     )
 
     actor_linears = _linear_modules(policy.actor.mlp)
-    shared_encoder_linears = _linear_modules(policy.shared_encoder.mlp)
+    actor_encoder_linears = _linear_modules(policy.actor_encoder.mlp)
+    critic_encoder_linears = _linear_modules(policy.critic_encoder.mlp)
     critic_local_projection_linears = _linear_modules(policy.critic.deepset.element_encoder)
     critic_value_regressor_linears = _linear_modules(policy.critic.deepset.set_decoder[0])
 
-    _assert_orthogonal_gain(shared_encoder_linears[0], 1.0)
+    _assert_orthogonal_gain(actor_encoder_linears[0], 1.0)
+    _assert_orthogonal_gain(critic_encoder_linears[0], 1.0)
     _assert_orthogonal_gain(actor_linears[0], 1.0)
     _assert_orthogonal_gain(actor_linears[-1], 0.01)
     _assert_orthogonal_gain(critic_local_projection_linears[0], 1.0)

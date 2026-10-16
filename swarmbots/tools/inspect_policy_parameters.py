@@ -428,7 +428,7 @@ def main() -> int:
     parser.add_argument("benchmark_id", nargs="?", default="SwarmBots-WallEasy-v0", choices=ALL_BENCHMARK_IDS)
     parser.add_argument("--variants", nargs="+", help="explicit variant names; default: core variants")
     parser.add_argument("--include-hidden", action="store_true", help="also count MLP baselines and optional controls")
-    parser.add_argument("--model-scale", default="5M-2L NOP1M", help="fixed tiers: 2.5M, 5M-2L (default), 5M-3L, 10M; legacy uses custom widths")
+    parser.add_argument("--model-scale", default="5M-2L NOP1M", help="fixed tiers: 2.5M, 5M-2L (default), 5M-3L, 10M-3L, 10M-4L, 10M-5L; legacy uses custom widths")
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--nop", action=argparse.BooleanOptionalAction, default=None)

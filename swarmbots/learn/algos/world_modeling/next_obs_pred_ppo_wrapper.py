@@ -252,6 +252,7 @@ class NextObsPredWrapper(
                 "compile_mode": self._wm_compile_mode,
                 "n_agents": self._wm_n_agents,
                 "local_latent_dim": self._wm_local_latent_dim,
+                "latent_source": self.policy.nop_latent_source,
                 "action_dim": self._wm_action_dim,
                 "act_fn_cls": str(self._wm_act_fn_cls),
                 "transition_model_dropout": self._wm_transition_model_dropout,

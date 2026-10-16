@@ -235,6 +235,9 @@ class MATOrigPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
             bernoulli_config=config.bernoulli_config,
             action_net_initialization=make_init_linear_orthogonal(config.action_net_init_gain),
         )
+        self.nop_latent_dim = self.critic_encoder_config.d_model
+        self.nop_latent_source = "critic_encoder"
+
         self.critic = MATOrigCritic(
             encoder_dim=self.critic_encoder_config.d_model,
             hidden_local_vars_dim=self.hidden_local_vars_dim,
@@ -311,7 +314,7 @@ class MATOrigPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
         actions = self._policy_actions(batch.actions)
         self._validate_agent_mask(batch.agent_mask, batch_size=batch.local_obs.shape[0], n_agents=batch.local_obs.shape[1])
         if self.action_dist.compile_friendly:
-            log_probs, values, encoder_rep = self._evaluate_actions_core(
+            log_probs, values, critic_rep = self._evaluate_actions_core(
                 local_obs=batch.local_obs,
                 global_obs=batch.global_obs,
                 hidden_local_vars=batch.hidden_local_vars,
@@ -321,7 +324,7 @@ class MATOrigPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
                 actions=actions,
             )
         else:
-            latent_pi, values, encoder_rep = self._evaluate_latent_and_values(
+            latent_pi, values, critic_rep = self._evaluate_latent_and_values(
                 local_obs=batch.local_obs,
                 global_obs=batch.global_obs,
                 hidden_local_vars=batch.hidden_local_vars,
@@ -333,7 +336,7 @@ class MATOrigPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
             log_probs = self.action_dist.log_prob(actions, previous_actions=batch.previous_actions)
         if batch.agent_mask is not None:
             log_probs = log_probs.masked_fill(~batch.agent_mask, 0.0)
-        return log_probs, values, {}, {}, encoder_rep
+        return log_probs, values, {}, {}, critic_rep
 
     def predict_values(
             self,
@@ -444,7 +447,7 @@ class MATOrigPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
             hidden_global_vars=hidden_global_vars,
             agent_mask=agent_mask,
         )
-        return latent_pi, values, encoder_rep
+        return latent_pi, values, critic_rep
 
     def _evaluate_actions_core(
             self,
@@ -478,7 +481,7 @@ class MATOrigPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
             previous_actions: torch.Tensor | None,
             actions: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        latent_pi, values, encoder_rep = self._evaluate_latent_and_values_impl(
+        latent_pi, values, critic_rep = self._evaluate_latent_and_values_impl(
             local_obs=local_obs,
             global_obs=global_obs,
             hidden_local_vars=hidden_local_vars,
@@ -488,7 +491,7 @@ class MATOrigPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
         )
         self.action_dist.update_latent_features(latent_pi)
         log_probs = self.action_dist.log_prob(actions, previous_actions=previous_actions)
-        return log_probs, values, encoder_rep
+        return log_probs, values, critic_rep
 
     @staticmethod
     def _build_shifted_actions(

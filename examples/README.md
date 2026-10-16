@@ -1,34 +1,96 @@
 # Examples
 
-Run these scripts from the repository root after installing `swarmbots`. The commands below use `python`; in a source checkout, use `.venv/bin/python` or `.venv\Scripts\python.exe` on Windows.
+Run these scripts from the repository root after [installing the checkout](../README.md#install). CUDA is recommended; check [GPU setup](../docs/gpu_setup.md) first.
+
+The commands below use `.venv/bin/python`. On Windows, use `.\.venv\Scripts\python.exe` instead. No environment activation is needed. Every script supports `--help`.
+
+## Train, evaluate, and record a preset
+
+Start with one complete run:
+
+```bash
+.venv/bin/python examples/train_policy.py SwarmBots-WallEasy-v0 --variant mappo --run-dir runs/first-mappo
+```
+
+On Windows:
+
+```powershell
+.\.venv\Scripts\python.exe examples/train_policy.py SwarmBots-WallEasy-v0 --variant mappo --run-dir runs/first-mappo
+```
+
+The script trains for one million environment transitions using 256 parallel CUDA worlds, evaluates deterministic actions at seed `1000`, then records two episodes at 640 × 480. A short run demonstrates the workflow; it may not learn to solve the task.
+
+Inspect the saved outputs:
+
+| Path under `runs/first-mappo/` | Contents |
+| --- | --- |
+| `log.csv` or its compressed counterpart | Learning curves and diagnostics |
+| `run_metadata_*.json` | Settings and runtime information |
+| `models/` | Checkpoints; the final file ends in `_steps_final.pt` |
+| `evaluation.json` | Evaluation summary, individual episodes, and metadata |
+| `videos/` | MP4 recordings |
+
+An explicit `--run-dir` must not already exist. Omit it to create a separate directory automatically under `runs/<benchmark-id>/<variant>/<scale>/seed-<seed>/`. Repeating a configuration then creates a new run. Use the [Python continuation workflow](../docs/learning.md#continue-a-checkpoint) to resume training.
+
+Change the task or choose another [learning preset](../docs/learning.md#select-a-variant-and-task):
+
+```bash
+.venv/bin/python examples/train_policy.py SwarmBots-WallEasy-v0 --variant mat_qcx
+.venv/bin/python examples/train_policy.py SwarmBots-WallEasy-v0 --variant tmasac
+.venv/bin/python examples/train_policy.py SwarmBots-WallEasy-v0 --variant matd3__deepset_critic
+.venv/bin/python examples/train_policy.py SwarmBots-POWallMedium-v0 --variant tmasac__slstm
+```
+
+| Option | Effect |
+| --- | --- |
+| `--total-timesteps 10000000` | Sets the training budget across all worlds |
+| `--num-envs 64` | Reduces parallel training worlds and memory use |
+| `--eval-envs 64` | Sets the number of development evaluation worlds |
+| `--video-episodes 1` | Sets the number of recorded episodes |
+| `--model-scale 2.5M` | Selects a smaller model; other choices are `5M-2L` (default), `5M-3L`, `10M-3L`, `10M-4L`, and `10M-5L` |
+| `--no-nop` | Disables auxiliary next-observation prediction |
+| `--compile` | Enables policy compilation in addition to the environment's default CUDA compilation |
+| `--seed 43` | Sets the training seed |
+| `--console-log-level return_success` | Limits console metrics to progress and return/success |
+| `--persistent-log-level minimal` | Reduces saved metrics; the default is `full` |
+
+SAC, DDPG, and TD3 collect at least 10,000 transitions before learning starts; recurrent policies also need enough history. A very short run may end before any optimizer updates. CPU runs use `--device cpu` and can be slow even with few worlds.
+
+The script's evaluation covers one seed. The [saved-checkpoint report recipe](../docs/learning.md#five-seed-report-from-a-saved-checkpoint) evaluates all five protocol seeds and exports reportable scores.
 
 ## Evaluate a random policy
 
 ```bash
-python examples/evaluate_random_policy.py SwarmBots-WallEasy-v0 --device cuda --output runs/wall-random.json
+.venv/bin/python examples/evaluate_random_policy.py SwarmBots-WallEasy-v0 --device cuda --output runs/wall-random.json
 ```
 
-This evaluates a uniform-random policy over seeds `1000` through `1004` and writes raw episodes, runtime metadata, and aggregate statistics to JSON. Use `--num-envs 2 --seeds 1000 --device cpu` for a smaller run.
+This evaluates a uniform-random policy over all five protocol seeds and writes raw episodes, runtime metadata, and aggregate statistics to JSON. It is a stochastic sanity check. Adapt its reporting loop to a trained policy for a benchmark report.
+
+For a smaller development run:
+
+```bash
+.venv/bin/python examples/evaluate_random_policy.py SwarmBots-WallEasy-v0 --num-envs 2 --seeds 1000 --device cpu --output runs/random-check.json
+```
+
+Full episodes can still be slow on CPU. Use the [smoke test](../README.md#quick-start) for an installation check.
 
 ## Train without the included learning framework
 
 ```bash
-python examples/train_standalone_ppo.py SwarmBots-WallEasy-v0 --device cuda
+.venv/bin/python examples/train_standalone_ppo.py SwarmBots-WallEasy-v0 --device cuda
 ```
 
-This minimal PyTorch PPO loop has no imports from `swarmbots.learn` and no additional dependencies. A small shared network uses `local_obs` and `global_obs` for both the per-agent actor and the team critic. Gaussian actions with a learned standard deviation are squashed through `tanh` for both actuators and connectors. Inactive agents contribute neither actions, likelihoods, nor pooled critic features.
+This minimal PyTorch PPO example uses the environment API directly, without `swarmbots.learn` or additional dependencies. It provides a starting point for custom-learner integration. It demonstrates public observation inputs, bounded actions, active-agent masks, rollout collection, and episode handling.
 
-The loop stores pre-tanh Gaussian samples: the squash Jacobian cancels in PPO's likelihood ratio, so no inverse `tanh` or Jacobian calculation is needed. It copies reusable observation buffers and bootstraps time-limit truncations from `info["final_obs"]`, while stopping advantage traces at all episode boundaries.
-
-Defaults are one million world transitions, 256 parallel worlds, and 128 steps per rollout. Each rollout gets four training epochs using minibatches of up to 1024 world transitions. The script prints mean reward per transition; hyperparameters are directly in the code. Tensor operations and rewards run eagerly, and physics uses MuJoCo Warp. Settings illustrate integration and are not tuned benchmark baselines.
+Defaults are one million transitions, 256 worlds, and 128 steps per rollout. It prints mean reward per transition; it does not produce the preset example's checkpoint, evaluation, and video outputs. The settings illustrate integration and are not tuned reference baselines.
 
 For a short CPU execution check:
 
 ```bash
-python examples/train_standalone_ppo.py --device cpu --num-envs 2 --total-timesteps 8 --rollout-steps 4
+.venv/bin/python examples/train_standalone_ppo.py --device cpu --num-envs 2 --total-timesteps 8 --rollout-steps 4
 ```
 
-To use the trained model in your own code, call `train()` and pass its deterministic `act` method to the evaluator:
+To evaluate the trained model, call it from Python at the repository root:
 
 ```python
 from examples.train_standalone_ppo import train
@@ -36,51 +98,39 @@ from swarmbots import evaluate_policy
 
 model = train("SwarmBots-WallEasy-v0", device="cuda")
 result = evaluate_policy(
-    model.act, "SwarmBots-WallEasy-v0", device="cuda",
-    num_envs=256, num_episodes=256, seed=1000, action_mode="deterministic",
+    model.act,
+    "SwarmBots-WallEasy-v0",
+    device="cuda",
+    num_envs=256,
+    num_episodes=256,
+    seed=1000,
+    action_mode="deterministic",
 )
 print(result.mean_return, result.success_rate)
 ```
 
-Run this snippet from the repository root; `examples` is checkout code rather than an installed package API. This evaluates one seed; follow the [evaluation protocol](../docs/benchmark_protocol.md) for reportable results.
-
-## Train, evaluate, and record a preset
-
-`train_policy.py` accepts every name returned by `swarmbots.learn.list_variants()`:
-
-```bash
-python examples/train_policy.py SwarmBots-WallEasy-v0 --variant mappo
-python examples/train_policy.py SwarmBots-WallEasy-v0 --variant mat_ind
-python examples/train_policy.py SwarmBots-WallEasy-v0 --variant tmasac
-python examples/train_policy.py SwarmBots-WallEasy-v0 --variant matd3__deepset_critic
-python examples/train_policy.py SwarmBots-WallEasy-v0 --variant maddpg__deepset_critic
-python examples/train_policy.py SwarmBots-POWallMedium-v0 --variant tmasac__slstm
-```
-
-Each command trains for one million individual environment transitions using 256 parallel CUDA worlds, evaluates deterministic actions in a fresh environment at seed `1000`, and records two complete episodes at 640 × 480. Training follows the selected preset's defaults, including its action distribution and NOP setting. Fixed tiers are `2.5M NOP0.75M`, `5M-2L NOP1M` (default), `5M-3L NOP1M`, and `10M NOP2M`; use `--model-scale 5M-3L`, `--model-scale 2.5M`, or `--model-scale 10M` to select the added tiers. Dimensions are declared per architecture. Use `--model-scale legacy` for explicitly customized widths. Use `--no-nop` to disable NOP or `--compile` to compile policy/world-model modules.
-
-Each invocation creates `runs/<benchmark-id>/<variant>/<scale>/seed-<seed>/<nop-mode>-<unique-id>/`: training metrics and metadata, checkpoints in `models/`, `evaluation.json`, and MP4s in `videos/`. Repeating the same configuration creates a separate run. `--run-dir` selects an explicit new directory; existing directories are rejected to protect saved outputs. The recurrent TD3 example uses the same rule. Adjust `--total-timesteps`, `--num-envs`, `--eval-envs`, and `--video-episodes` to change the workload; `--device cpu` selects CPU execution. Off-policy presets collect at least 10,000 transitions before learning starts, and recurrent learners also need enough history for their replay segments.
-
-Console metrics default to `minimal`, while persisted CSV/W&B metrics default to `full`. Select them independently with `--console-log-level` and `--persistent-log-level`; both accept `full`, `minimal`, and `return_success`. For example, add `--console-log-level return_success --persistent-log-level minimal` to reduce both outputs. The same flags apply to `train_recurrent_td3.py`. See [logging levels](../docs/learning.md#logging-levels) for retained fields and Python settings.
-
-The example shows a single evaluation seed. For a complete protocol report, evaluate a fresh `as_benchmark_policy(trainer)` adapter at each seed `1000` through `1004`, with 256 episodes per seed, and aggregate the results as in `evaluate_random_policy.py`. See the [evaluation protocol](../docs/benchmark_protocol.md).
+The `examples` imports are checkout code, not installed package APIs. This evaluates one seed; use the full [evaluation protocol](../docs/benchmark_protocol.md) for a report.
 
 ## Train recurrent TD3
 
 ```bash
-python examples/train_recurrent_td3.py SwarmBots-POWallMedium-v0 --variant tmatd3
-python examples/train_recurrent_td3.py SwarmBots-POWallMedium-v0 --variant tmatd3_dec --recurrent-critic
-python examples/train_recurrent_td3.py SwarmBots-POWallMedium-v0 --variant matd3__deepset_critic
+.venv/bin/python examples/train_recurrent_td3.py SwarmBots-POWallMedium-v0 --variant tmatd3
+.venv/bin/python examples/train_recurrent_td3.py SwarmBots-POWallMedium-v0 --variant tmatd3_dec --recurrent-critic
+.venv/bin/python examples/train_recurrent_td3.py SwarmBots-POWallMedium-v0 --variant matd3__deepset_critic
 ```
 
-This example enables the recurrent actor through `policy_kwargs` and shows sequence-replay settings through `algorithm_kwargs`: 32 burn-in steps, 64 learning steps, and a stored actor-state interval of 16 steps. By default, feed-forward critics receive detached actor state. `--recurrent-critic` gives TMATD3's transformer critic its own recurrent history. The same training, evaluation, and recording workflow is reused, with separate default output directories for the two critic choices.
+This uses the same train → evaluate → record workflow with a recurrent actor and sequence replay. `--recurrent-critic` also gives the critic memory and is available for `tmatd3` and `tmatd3_dec`. The workload, output-directory, scale, and logging options above apply here too.
+
+Checkpoint reconstruction requires `policy_kwargs={"td3_recurrent_actor": True}`; a run with `--recurrent-critic` additionally requires `"td3_recurrent_critic": True`. These settings apply to Python continuation and evaluation as well as recording. The [recording guide](../docs/recording.md#included-baseline-checkpoints) includes the corresponding `--policy-kwargs` command.
 
 ## Record an existing policy
 
+Find the final checkpoint in the run's `models/` directory and substitute its actual filename below:
+
 ```bash
-python examples/record_policy.py SwarmBots-WallEasy-v0 --checkpoint runs/my-run/models/model_final.pt --variant mappo --output videos/mappo
+.venv/bin/python examples/record_policy.py SwarmBots-WallEasy-v0 --checkpoint runs/first-mappo/models/model_1000000_steps_final.pt --variant mappo --output recordings/mappo
 ```
 
-Replace the checkpoint path with the file saved by your run. Architecture, distribution, and NOP settings must match when rebuilding a checkpoint. `record_policy.py` also accepts custom `module:factory` policies; see [recording](../docs/recording.md). Every script provides `--help`.
+The saved step count can exceed the requested training budget by one collection batch. Match the checkpoint's task, model scale, architecture, action distribution, and NOP setting. The script also accepts custom `module:factory` policies; see [recording](../docs/recording.md).
 
-Policy inspection, architecture diagrams, and log plotting are available as [installed command-line tools](../docs/tools.md).
+The [log plotting guide](../docs/log_plotting.md) covers learning curves and seed comparisons. Policy inspection and architecture diagrams are available as [installed command-line tools](../docs/tools.md).

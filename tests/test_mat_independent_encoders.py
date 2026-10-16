@@ -5,6 +5,12 @@ import pytest
 import torch
 from gymnasium import spaces
 
+from swarmbots.learn.algos.mappo.mappo_actor import MAPPOActorConfig
+from swarmbots.learn.algos.mappo.mappo_encoder import MAPPOEncoderConfig
+from swarmbots.learn.algos.mappo.mappo_policy import MAPPOCriticConfig, MAPPOPolicy, MAPPOPolicyConfig
+from swarmbots.learn.nn_components.deep_set import DeepSetCriticConfig
+from swarmbots.learn.algos.world_modeling.next_obs_pred_mixin import NextObsPredConfig
+from swarmbots.learn.algos.world_modeling.next_obs_pred_ppo_wrapper import NextObsPredWrapper, NOPWorldModelConfig
 from swarmbots.learn.algos.mat.mat_dec_policy import MATDecPolicy, MATDecPolicyConfig
 from swarmbots.learn.algos.mat.mat_encoder import MATEncoderConfig
 from swarmbots.learn.algos.mat.mat_ind_policy import MATIndPolicy, MATIndPolicyConfig
@@ -21,6 +27,7 @@ from swarmbots.learn.temporal_state import clone_temporal_state
 from swarmbots.learn.training import _variant_options
 
 POLICIES = (
+    (MAPPOPolicy, MAPPOPolicyConfig),
     (MATIndPolicy, MATIndPolicyConfig), (MATDecPolicy, MATDecPolicyConfig),
     (MATOrigPolicy, MATOrigPolicyConfig), (MATQCXPolicy, MATQCXPolicyConfig),
     (RMATIndPolicy, RMATIndPolicyConfig), (RMATQCXPolicy, RMATQCXPolicyConfig),
@@ -28,14 +35,22 @@ POLICIES = (
 RECURRENT_POLICIES = POLICIES[-2:]
 
 
-def make_policy(policy_class: type, config_class: type) -> torch.nn.Module:
+def make_policy(policy_class: type, config_class: type, *, compile_modules: bool = False) -> torch.nn.Module:
     env = SimpleNamespace(
         n_agents=3, local_obs_dim=5, global_obs_dim=2,
         hidden_local_vars_dim=2, hidden_global_vars_dim=1,
         action_space=HybridActionSpace({"connectors": spaces.MultiBinary((3, 2))}),
     )
+    if policy_class is MAPPOPolicy:
+        return policy_class(env=env, config=config_class(
+            actor_config=MAPPOActorConfig(hidden_dims=[16], latent_dim=16, latent_pi_dim=16),
+            critic_encoder_config=MAPPOEncoderConfig(hidden_dims=[12], latent_dim=12),
+            critic_config=MAPPOCriticConfig(deep_set_config=DeepSetCriticConfig([12], [12])),
+            compile_modules=compile_modules,
+        ))
     encoder_class = RMATEncoderConfig if policy_class in (RMATIndPolicy, RMATQCXPolicy) else MATEncoderConfig
     settings = dict(
+        compile_modules=compile_modules,
         encoder_config=encoder_class(d_model=16, nhead=4, num_layers=1, dim_feedforward=32),
         critic_encoder_config=encoder_class(d_model=12, nhead=4, num_layers=1, dim_feedforward=24),
     )
@@ -171,3 +186,58 @@ def test_sequence_training_reproduces_both_rollout_histories(policy_class: type,
 def test_removed_presets_are_rejected(variant: str) -> None:
     with pytest.raises(ValueError, match="Unknown learning variant"):
         _variant_options(variant)
+
+
+@pytest.mark.parametrize("policy_class,config_class", POLICIES)
+@pytest.mark.parametrize("device", ["cpu", pytest.param("cuda", marks=pytest.mark.cuda)])
+def test_nop_trains_critic_features_without_updating_actor_or_value_head(
+    policy_class: type, config_class: type, device: str, request: pytest.FixtureRequest,
+) -> None:
+    if device == "cuda":
+        if not torch.cuda.is_available():
+            pytest.skip("CUDA is unavailable")
+        torch.compiler.reset()
+        request.addfinalizer(torch.compiler.reset)
+    torch.manual_seed(29)
+    policy = make_policy(policy_class, config_class, compile_modules=device == "cuda").to(device)
+    wrapper = NextObsPredWrapper(policy, world_model_config=NOPWorldModelConfig(
+        n_agents=3, local_latent_dim=policy.nop_latent_dim, action_dim=2,
+        d_model_transition_model=12, nhead_transition_model=2, num_layers_transition_model=1,
+        dim_feedforward_transition_model=24, wm_pre_transition_dims=[12],
+        next_obs_pred_config=NextObsPredConfig(local_scalar_target_indices=[0, 1], predict_delta=False),
+    )).to(device)
+    obs = {key: value.to(device) for key, value in observations().items()}
+    with torch.no_grad():
+        actions, _, _ = policy(**obs)
+    recurrent = policy_class in (RMATIndPolicy, RMATQCXPolicy)
+    if recurrent:
+        batch = SimpleNamespace(
+            **{key: value.unsqueeze(1) for key, value in obs.items()},
+            actions=actions.unsqueeze(1), previous_actions=None,
+            time_mask=torch.ones(2, 1, dtype=torch.bool, device=device),
+            episode_start_mask=torch.ones(2, 1, dtype=torch.bool, device=device), initial_temporal_state=None,
+        )
+    else:
+        batch = SimpleNamespace(**obs, actions=actions, previous_actions=None)
+    prefix = batch.local_obs.shape[:-2]
+    batch.next_local_obs = torch.randn(*prefix, 2, 3, 5, device=device)
+    batch.wm_actions = torch.randn(*prefix, 2, 3, 2, device=device)
+    batch.wm_agent_mask = batch.agent_mask.unsqueeze(-2).expand(*prefix, 2, 3)
+    batch.wm_loss_agent_mask = batch.wm_agent_mask
+    batch.wm_target_time_mask = torch.ones(*prefix, 2, dtype=torch.bool, device=device)
+    untouched_before = {name: parameter.detach().clone() for name, parameter in policy.named_parameters()
+                        if not name.startswith("critic_encoder")}
+    _, _, losses, _ = wrapper.evaluate_actions(batch)
+    losses["world_model"].backward()
+    assert policy.nop_latent_dim == 12
+    assert wrapper.get_hyper_parameters()["next_obs_pred_wrapper"]["latent_source"] == "critic_encoder"
+    assert any(parameter.grad is not None and parameter.grad.abs().sum() > 0
+               for parameter in policy.critic_encoder.parameters())
+    # A compiled joint evaluation can materialize zero gradients for unused outputs.
+    for name, parameter in policy.named_parameters():
+        if name in untouched_before and parameter.grad is not None:
+            torch.testing.assert_close(parameter.grad, torch.zeros_like(parameter.grad), rtol=0, atol=0)
+    torch.optim.Adam(wrapper.parameters(), lr=0.01).step()
+    for name, parameter in policy.named_parameters():
+        if name in untouched_before:
+            torch.testing.assert_close(parameter, untouched_before[name], rtol=0, atol=0)

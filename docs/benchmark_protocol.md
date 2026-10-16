@@ -1,8 +1,8 @@
 # Benchmark protocol 0.1
 
-Use this protocol to compare policies on the registered SwarmBots tasks. It standardizes task settings, evaluation episodes, permitted actor inputs, and reporting. Training algorithms and budgets are chosen by the experimenter and reported separately.
+Protocol 0.1 standardizes task settings, evaluation episodes, permitted actor inputs, and reporting for comparisons on registered SwarmBots tasks. Training algorithms and budgets are chosen by the experimenter and reported separately.
 
-**SwarmBots is an alpha benchmark.** Following this protocol makes runs comparable within a recorded implementation; it does not establish that every task's difficulty, rewards, or success conditions have been validated. Check the [scenario maturity labels](scenarios.md#scenario-maturity-and-versioning) when selecting tasks. The core suite includes both alpha and beta scenarios and is selected for task coverage.
+**SwarmBots is an alpha benchmark.** Following this protocol makes runs comparable within a recorded implementation; it does not establish that every task's difficulty, rewards, or success conditions have been validated. The [scenario maturity labels](scenarios.md#scenario-maturity-and-versioning) describe task readiness. The core suite includes both alpha and beta scenarios and is selected for task coverage.
 
 ## Core suite
 
@@ -19,7 +19,7 @@ The eight-task core suite is exposed as `swarmbots.CORE_BENCHMARK_IDS`:
 | `SwarmBots-PayloadStep-v0` | Payload transport over a step |
 | `SwarmBots-MultiPayloadGoal-v0` | Multiple payloads delivered to assigned goals |
 
-The full 15-task suite is exposed as `swarmbots.ALL_BENCHMARK_IDS`. See the [scenario catalog](scenarios.md) for all tasks and success conditions. Report per-task values. Reward scales differ between tasks, so an unnormalized average return across the suite is not meaningful.
+The full 15-task suite is exposed as `swarmbots.ALL_BENCHMARK_IDS`. The [scenario catalog](scenarios.md) lists all tasks and success conditions. Scores are reported per task. Reward scales differ between tasks, so an unnormalized average return across the suite is not meaningful.
 
 ## Evaluation
 
@@ -49,9 +49,9 @@ result = evaluate_policy(
 
 The evaluator accepts at most one episode per lane and returns episodes in lane order. It rejects `num_episodes > num_envs`. Smaller runs are useful for development but are not canonical protocol runs. Completed lanes still simulate while remaining lanes finish; their later rewards, successes, and episodes are ignored.
 
-`action_mode` records how the caller configured the policy. It does not force deterministic actions or call `policy.eval()`. Put neural-network policies in evaluation mode and freeze observation normalization yourself.
+`action_mode` records how the caller configured the policy. It does not force deterministic actions or call `policy.eval()`. Configure neural-network policies in evaluation mode and freeze observation normalization before evaluation.
 
-See the [five-seed reporting example](api.md#five-seed-report) for JSON export and aggregation. A single evaluator call covers one seed; completing the protocol requires all five.
+The [five-seed reporting example](api.md#five-seed-report) demonstrates JSON export and aggregation. A single evaluator call covers one seed; completing the protocol requires all five.
 
 ## Morphology population
 
@@ -82,6 +82,6 @@ Changing active-unit distributions, morphology pools, connector semantics, obser
 
 `metadata.benchmark_maturity` records the base registered task's maturity at evaluation time. It does not validate custom overrides. Maturity can change as testing progresses without changing task behavior; it is separate from the version identifiers needed to reproduce a run.
 
-`EvaluationResult.to_dict()` includes `metadata` containing runtime package versions, Python/platform, device and GPU name, CUDA runtime, the resolved environment settings, requested overrides, actual world count, episode limit, action mode, and caller-supplied policy metadata and source revision. Supply `policy_metadata` with your checkpoint identifier/hash and architecture, and `source_revision` with the benchmark Git commit. Record the NVIDIA driver separately; it is not collected automatically.
+`EvaluationResult.to_dict()` includes `metadata` containing runtime package versions, Python/platform, device and GPU name, CUDA runtime, the resolved environment settings, requested overrides, actual world count, episode limit, action mode, and caller-supplied policy metadata and source revision. Supply `policy_metadata` with the checkpoint identifier/hash and architecture, and `source_revision` with the benchmark Git commit. Record the NVIDIA driver separately; it is not collected automatically.
 
 `metadata.canonical_scenario` is false when scenario/environment overrides are supplied or the episode limit changes. This deliberately also flags performance-only overrides for review. `metadata.canonical_evaluation` additionally requires 256 worlds, a protocol seed, and declared deterministic actions. These flags describe one seed-level run, not completion of the five-seed protocol. For custom runs, the top-level `benchmark_id` identifies the base task only; report the overrides with it.

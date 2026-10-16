@@ -94,8 +94,11 @@ def make_policy(variant, scale="5M-2L NOP1M", *, n_agents=3, **overrides):
         (" 5m-2l nop1m ", DEFAULT_MODEL_SCALE),
         ("2.5M", "2.5M NOP0.75M"),
         ("2.5+0.75M", "2.5M NOP0.75M"),
-        ("10M", "10M NOP2M"),
-        ("10+2M", "10M NOP2M"),
+        ("10M-3L", "10M-3L NOP2M"),
+        ("10M-3L+2M", "10M-3L NOP2M"),
+        ("10M-4L", "10M-4L NOP2M"),
+        ("10M-5L", "10M-5L NOP2M"),
+        (" 10m-5l nop2m ", "10M-5L NOP2M"),
         ("5M-2L", "5M-2L NOP1M"),
         ("5M-3L", "5M-3L NOP1M"),
         (" 5m-3l nop1m ", "5M-3L NOP1M"),
@@ -107,11 +110,18 @@ def test_only_supported_scale_aliases(value, expected):
 
 @pytest.mark.parametrize(
     "value", ["1M", "2M NOP200K", "2.5M NOP0.5M", "10M NOP1M", "20M", "", 5,
-              "5M", "5M NOP1M", "5+1M", "5M+1M"],
+              "5M", "5M NOP1M", "5+1M", "5M+1M", "10M", "10M NOP2M", "10+2M", "10M+2M"],
 )
 def test_unsupported_scales_fail_before_building_environment(value):
     with pytest.raises(ValueError, match="Supported fixed"):
         _variant_options("mappo", model_scale=value)
+
+
+def test_model_scales_are_ordered_by_budget_and_depth() -> None:
+    assert list_model_scales() == (
+        "2.5M NOP0.75M", "5M-2L NOP1M", "5M-3L NOP1M",
+        "10M-3L NOP2M", "10M-4L NOP2M", "10M-5L NOP2M",
+    )
 
 
 def test_custom_width_mode_is_available():
@@ -152,18 +162,27 @@ def test_fixed_scales_override_existing_recurrent_memory_widths(
 
 
 @pytest.mark.parametrize("variant", list_variants(include_hidden=True))
-def test_five_million_depth_choices_preserve_heads_and_auxiliary_architecture(variant: str) -> None:
+@pytest.mark.parametrize(
+    ("scales", "depths", "decentralized_depth"),
+    [
+        (("5M-2L", "5M-3L"), (2, 3), 3),
+        (("10M-3L", "10M-4L", "10M-5L"), (3, 4, 5), 4),
+    ],
+)
+def test_depth_choices_preserve_heads_and_auxiliary_architecture(
+    variant: str, scales: tuple[str, ...], depths: tuple[int, ...], decentralized_depth: int,
+) -> None:
     with torch.device("meta"):
-        policies = [make_policy(variant, scale) for scale in ("5M-2L", "5M-3L")]
+        policies = [make_policy(variant, scale) for scale in scales]
     bases = [getattr(policy, "policy", policy) for policy in policies]
-    for depth, base in zip((2, 3), bases, strict=True):
+    for depth, base in zip(depths, bases, strict=True):
         config = base.config
         if hasattr(config, "actor_config"):
-            assert len(config.actor_config.hidden_dims) == 4
+            assert config == bases[0].config
         else:
             actor_encoder = base.actor_encoder if hasattr(base, "actor_encoder") else base.actor.encoder
             uses_attention = actor_encoder.layers[0].self_attn is not None
-            assert len(actor_encoder.layers) == (depth if uses_attention else 3)
+            assert len(actor_encoder.layers) == (depth if uses_attention else decentralized_depth)
             if hasattr(base, "critic_encoder"):
                 critic_encoder = base.critic_encoder
             else:
@@ -172,28 +191,24 @@ def test_five_million_depth_choices_preserve_heads_and_auxiliary_architecture(va
                 if not hasattr(critic_encoder, "layers"):
                     critic_encoder = critic_encoder.network
             assert len(critic_encoder.layers) == depth
-    first, second = bases
-    if hasattr(first.config, "actor_config"):
-        assert first.config == second.config
-    else:
-        actor_config_name = "encoder_config" if hasattr(first.config, "encoder_config") else "actor_encoder_config"
-        if variant == "mat_dec" or not getattr(first.config, actor_config_name).use_agent_attention:
-            assert getattr(first.config, actor_config_name) == getattr(second.config, actor_config_name)
-    if hasattr(first.config, "decoder_config"):
-        assert first.config.decoder_config == second.config.decoder_config
-    if hasattr(first.config, "actor_head_config"):
-        assert first.config.actor_head_config == second.config.actor_head_config
-    if hasattr(first.config, "nop_config"):
-        assert first.config.nop_config == second.config.nop_config
-    if hasattr(first.config, "critic_config"):
-        assert first.config.critic_config == second.config.critic_config
-    if hasattr(first.config, "transformer_critic_config"):
-        assert first.config.transformer_critic_config == second.config.transformer_critic_config
+    first = bases[0]
+    for second in bases[1:]:
+        if hasattr(first.config, "actor_config"):
+            assert first.config == second.config
+        else:
+            actor_config_name = "encoder_config" if hasattr(first.config, "encoder_config") else "actor_encoder_config"
+            if variant == "mat_dec" or not getattr(first.config, actor_config_name).use_agent_attention:
+                assert getattr(first.config, actor_config_name) == getattr(second.config, actor_config_name)
+        for config_name in (
+            "decoder_config", "actor_head_config", "nop_config", "critic_config", "transformer_critic_config",
+        ):
+            if hasattr(first.config, config_name):
+                assert getattr(first.config, config_name) == getattr(second.config, config_name)
     if hasattr(policies[0], "world_model_config"):
-        assert policies[0].world_model_config == policies[1].world_model_config
+        assert all(policy.world_model_config == policies[0].world_model_config for policy in policies[1:])
     counts = [count_policy_parameters(policy)["trainable_minus_nop"] for policy in policies]
     tolerance = 0.01 if variant.endswith(("__lstm", "__slstm")) else 0.05
-    assert abs(counts[1] / counts[0] - 1) < tolerance
+    assert all(abs(count / counts[0] - 1) < tolerance for count in counts[1:])
 
 
 @pytest.mark.parametrize("scale", [None, *list_model_scales()])
@@ -337,7 +352,7 @@ def test_core_presets_have_explicit_conventional_layouts(variant, scale):
         "actor": layout.main_parameters // 5 if shared else layout.main_parameters * 2 // 5,
         "critic": layout.main_parameters * 2 // 5 if shared else layout.main_parameters * 3 // 5,
     }
-    allowed = {128, 192, 256, 320, 384, 512, 768, 1024, 1536}
+    allowed = {128, 192, 256, 320, 384, 400, 480, 512, 608, 768, 960, 1024, 1536}
 
     def check(config):
         if not is_dataclass(config):
@@ -352,7 +367,7 @@ def test_core_presets_have_explicit_conventional_layouts(variant, scale):
                     "hidden_dim",
                     "latent_pi_dim",
                     "latent_pi_dim_per_agent",
-                    "shared_encoder_latent_dim",
+                    "latent_dim",
                     "shared_encoder_latent_dim_per_agent",
                     "projection_dim",
                     "nop_latent_dim",

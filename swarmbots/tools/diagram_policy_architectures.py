@@ -1,16 +1,16 @@
-"""Generate simple, dimensioned policy dependency diagrams from audited presets.
+"""Generate simple, dimensioned policy dependency diagrams from current presets.
 
 Outputs SVG, Mermaid, Graphviz DOT, graph JSON, Markdown, and an offline gallery.
-Use --refresh to reconstruct policies and refresh the parameter/layer audits.
+Construct selected policies on demand to measure their parameters and layers.
 """
 
 from __future__ import annotations
 
 import argparse
-import gzip
 import html
 import json
 import textwrap
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Iterator
@@ -19,7 +19,6 @@ from swarmbots.tools.inspect_policy_parameters import (
     allocation_doc_link,
     inspect_variants,
     save_report,
-    write_compressed_json,
 )
 from swarmbots.learn import list_model_scales, list_variants
 from swarmbots.learn.presets.model_scale import SCALE_LAYOUTS, normalize_model_scale
@@ -202,8 +201,8 @@ def chain(row, *paths, fallback=""):
         found = next((layer for layer in row["layer_layout"] if layer["module"] == path), None)
         if found:
             return found["dimensions"].replace(" -> ", " → ") + f" ({found['parameters']:,})"
-        # Stacked GLUs are audited as individual layers, including in existing
-        # snapshots. Describe their forward order while counting the whole stack,
+        # Stacked GLUs are audited as individual layers. Describe their forward
+        # order while counting the whole stack,
         # whose parameters also include any normalization between layers.
         stack_prefix = path + ".layers."
         layers = sorted(
@@ -520,7 +519,9 @@ def build_diagram(row: dict[str, Any]) -> Diagram:
         )
     )
     on_policy = "encoder_config" in cfg or "actor_config" in cfg
-    shared = "actor_config" in cfg or cfg.get("shared_encoder_config") is not None
+    shared = ("actor_config" in cfg and "latent_pi_dim_per_agent" in cfg["actor_config"]) or (
+        cfg.get("shared_encoder_config") is not None
+    )
     d.node(
         "public",
         "Public observations",
@@ -556,9 +557,16 @@ def build_diagram(row: dict[str, Any]) -> Diagram:
     if on_policy:
         if "actor_config" in cfg:
             ac = cfg["actor_config"]
-            width = ac.get("shared_encoder_latent_dim", ac.get("shared_encoder_latent_dim_per_agent"))
-            kind = "Joint MLP shared encoder" if "latent_pi_dim_per_agent" in ac else "Per-agent shared encoder"
-            d.node(source, kind, [chain(row, "shared_encoder.mlp"), f"reshape/output: N × {width}"], "shared")
+            if shared:
+                width = ac["shared_encoder_latent_dim_per_agent"]
+                d.node(source, "Joint MLP shared encoder",
+                       [chain(row, "shared_encoder.mlp"), f"reshape/output: N \u00d7 {width}"], "shared")
+            else:
+                width = ac["latent_dim"]
+                source = "critic_encoder"
+                critic_width = cfg["critic_encoder_config"]["latent_dim"]
+                d.node(source, "Critic observation encoder",
+                       [chain(row, "critic_encoder.mlp"), f"output: N \u00d7 {critic_width}"], "critic")
         else:
             ec = cfg["encoder_config"]
             width = ec["d_model"]
@@ -574,15 +582,19 @@ def build_diagram(row: dict[str, Any]) -> Diagram:
         d.edge("public", source)
         actor_source = source
         if not shared:
-            ac = cfg["encoder_config"]
-            d.node(
-                "actor_encoder",
-                "Actor observation encoder",
-                encoder_lines(row, ac, "actor_encoder", chain(row, "actor_encoder.local_obs_encoder")),
-                "actor",
-            )
+            if "actor_config" in cfg:
+                d.node("actor_encoder", "Actor observation encoder",
+                       [chain(row, "actor_encoder.mlp"), f"output: N \u00d7 {width}"], "actor")
+            else:
+                ac = cfg["encoder_config"]
+                d.node(
+                    "actor_encoder",
+                    "Actor observation encoder",
+                    encoder_lines(row, ac, "actor_encoder", chain(row, "actor_encoder.local_obs_encoder")),
+                    "actor",
+                )
+                add_memory(d, "actor_encoder", ac)
             d.edge("public", "actor_encoder")
-            add_memory(d, "actor_encoder", ac)
             actor_source = "actor_encoder"
         if "decoder_config" in cfg:
             dec = cfg["decoder_config"]
@@ -665,12 +677,14 @@ def build_diagram(row: dict[str, Any]) -> Diagram:
             )
         else:
             add_readout(d, row, "critic", "value", "Deep Set V critic")
-        critic_width = width if shared else cfg["critic_encoder_config"]["d_model"]
+        critic_width = width if shared else (
+            cfg["critic_encoder_config"]["latent_dim"] if "actor_config" in cfg
+            else cfg["critic_encoder_config"]["d_model"]
+        )
         d.edge(source, "value", f"N × {critic_width}")
         d.edge("privileged", "value", "local + global context")
         d.node("v", "V", ["scalar per world"], "output")
         d.edge("value", "v")
-        source = actor_source
     else:
         actor_cfg = cfg["actor_encoder_config"]
         acwidth = actor_cfg["d_model"]
@@ -1166,59 +1180,34 @@ def dot_diagram(d: Diagram) -> str:
     return "\n".join([*lines, "}"]) + "\n"
 
 
-def load_reports(scales, variants, refresh):
+def inspect_reports(scales: Sequence[str], variants: Sequence[str]) -> list[dict[str, Any]]:
     rows = []
     for scale in scales:
         layout = SCALE_LAYOUTS[scale]
-        folder = (
-            ROOT
-            / "docs/policy_parameters"
-            / layout.slug
+        report = inspect_variants("SwarmBots-WallEasy-v0", tuple(variants), model_scale=scale)
+        if report["errors"]:
+            raise RuntimeError(report["errors"])
+        generated = ROOT / "docs/policy_parameters/generated" / layout.slug
+        save_report(
+            report,
+            generated,
+            allocation_doc=allocation_doc_link(generated, ROOT / "docs/policy_parameters/model_scale.md"),
         )
-        path = folder / "counts.json.gz"
-        report = json.loads(gzip.decompress(path.read_bytes())) if path.exists() else None
-        wanted = set(variants)
-        if (
-            refresh
-            or report is None
-            or not wanted <= {row["variant"] for row in report["policies"]}
-            or any("module_parameter_counts" not in row for row in report["policies"] if row["variant"] in wanted)
-        ):
-            # A selection controls drawing, not the contents of the shared audit.
-            # Rebuild the complete audit together so its metadata stays consistent.
-            available = set(list_variants(include_hidden=True))
-            cached_variants = [row["variant"] for row in report["policies"]] if report is not None else []
-            audit_variants = tuple(dict.fromkeys([
-                *list_variants(),
-                *(name for name in cached_variants if name in available),
-                *variants,
-            ]))
-            report = inspect_variants("SwarmBots-WallEasy-v0", audit_variants, model_scale=scale)
-            if report["errors"]:
-                raise RuntimeError(report["errors"])
-            # Keep the compact audit input; verbose reports remain local outputs.
-            generated = ROOT / "docs/policy_parameters/generated" / layout.slug
-            save_report(
-                report,
-                generated,
-                allocation_doc=allocation_doc_link(generated, ROOT / "docs/policy_parameters/model_scale.md"),
-            )
-            folder.mkdir(parents=True, exist_ok=True)
-            write_compressed_json(report, path)
-        rows.extend(row for row in report["policies"] if row["variant"] in wanted)
+        rows.extend(report["policies"])
     return rows
 
 
-def write_gallery(diagrams, output):
+def write_gallery(diagrams: Sequence[Diagram], output: Path) -> None:
     entries = {}
     for d in diagrams:
         slug = SCALE_LAYOUTS[d.scale].slug
         entries[d.scale + "/" + d.variant] = {"svg": svg_diagram(d), "path": f"{slug}/{d.variant}", "notes": d.notes}
     data = json.dumps(entries, ensure_ascii=False).replace("</", r"<\/")
     variants = list(dict.fromkeys(d.variant for d in diagrams))
-    scales = list(dict.fromkeys(d.scale for d in diagrams))
+    selected_scales = {diagram.scale for diagram in diagrams}
+    scales = [scale for scale in list_model_scales() if scale in selected_scales]
 
-    def options(values):
+    def options(values: Sequence[str]) -> str:
         return "".join(f"<option>{html.escape(v)}</option>" for v in values)
 
     page = """<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
@@ -1258,12 +1247,11 @@ def generate(rows, output):
     return diagrams
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--variants", nargs="+", help="default: core variants")
     parser.add_argument("--include-hidden", action="store_true")
-    parser.add_argument("--scales", nargs="+", default=list(list_model_scales()), help="e.g. 2.5M 5M-2L 5M-3L 10M")
-    parser.add_argument("--refresh", action="store_true", help="rebuild audited models from current presets")
+    parser.add_argument("--scales", nargs="+", default=list(list_model_scales()), help="e.g. 2.5M 5M-2L 5M-3L 10M-3L 10M-4L 10M-5L")
     parser.add_argument("--output-dir", type=Path, default=ROOT / "docs/policy_parameters/diagrams")
     args = parser.parse_args()
     scales = [normalize_model_scale(scale) for scale in args.scales]
@@ -1274,7 +1262,7 @@ def main():
     import torch
 
     torch.set_num_threads(1)
-    diagrams = generate(load_reports(scales, variants, args.refresh), args.output_dir)
+    diagrams = generate(inspect_reports(scales, variants), args.output_dir)
     print(f"Generated {len(diagrams)} architecture diagrams in {args.output_dir}")
 
 

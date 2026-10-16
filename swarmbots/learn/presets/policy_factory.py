@@ -16,6 +16,7 @@ from swarmbots.learn.action_dists.predicted_std_gaussian_action_dist import Pred
 from swarmbots.learn.action_dists.sign_magnitude_beta_action_dist import SignMagnitudeBetaConfig
 from swarmbots.learn.action_dists.squashed_diag_gaussian_action_dist import SquashedDiagGaussianConfig
 from swarmbots.learn.algos.mappo.mappo_actor import MAPPOActorConfig
+from swarmbots.learn.algos.mappo.mappo_encoder import MAPPOEncoderConfig
 from swarmbots.learn.algos.mappo.mappo_policy import MAPPOCriticConfig, MAPPOPolicy, MAPPOPolicyConfig
 from swarmbots.learn.algos.mat import FeedForwardConfig, MATEncoderConfig, MLPConfig
 from swarmbots.learn.algos.mat_qc_base_policy import MATCriticConfig
@@ -742,10 +743,13 @@ def _make_base_policy(
             config=MAPPOPolicyConfig(
                 actor_config=MAPPOActorConfig(
                     hidden_dims=[768, 512, 512, 384],
-                    shared_encoder_latent_dim=256,
+                    latent_dim=256,
                     actor_head_hidden_dims=[128],
                     latent_pi_dim=128,
                     act_fun_class=act_fn_cls,
+                ),
+                critic_encoder_config=MAPPOEncoderConfig(
+                    hidden_dims=[768, 512, 512, 384], latent_dim=256, act_fun_class=act_fn_cls,
                 ),
                 critic_config=MAPPOCriticConfig(
                     mlp_hidden_dims=value_regressor_hidden_dims if mlp_critic else [],

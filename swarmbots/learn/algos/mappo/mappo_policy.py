@@ -1,5 +1,6 @@
 from dataclasses import dataclass, field
 from typing import Any
+import torch
 from torch import nn
 
 from swarmbots.learn.action_dists.hybrid_action_dist import (
@@ -9,7 +10,8 @@ from swarmbots.learn.action_dists.hybrid_action_dist import (
     bernoulli_config_to_dict,
 )
 from swarmbots.learn.action_dists.bernoulli_action_dist import BernoulliConfig
-from swarmbots.learn.algos.mappo.mappo_actor import MAPPOActor, MAPPOActorConfig, MAPPOSharedEncoder
+from swarmbots.learn.algos.mappo.mappo_actor import MAPPOActor, MAPPOActorConfig
+from swarmbots.learn.algos.mappo.mappo_encoder import MAPPOEncoder, MAPPOEncoderConfig
 from swarmbots.learn.algos.ppo.ppo import AGENTS_DIM
 from swarmbots.learn.algos.ppo.ppo_policy import PPOCritic, PPOPolicy, PPOCriticConfig
 from swarmbots.learn.base_policy import BasePolicy
@@ -35,6 +37,7 @@ class MAPPOCriticConfig:
 @dataclass(frozen=True)
 class MAPPOPolicyConfig:
     actor_config: MAPPOActorConfig = field(default_factory=MAPPOActorConfig)
+    critic_encoder_config: MAPPOEncoderConfig = field(default_factory=MAPPOEncoderConfig)
     critic_config: MAPPOCriticConfig = field(default_factory=MAPPOCriticConfig)
     continuous_config: ContinuousActionDistConfigInput = None
     bernoulli_config: BernoulliConfig | None = None
@@ -48,7 +51,7 @@ class MAPPOPolicy(PPOPolicy):
             self,
             env: BaseLearnEnvWrapper,
             config: MAPPOPolicyConfig = MAPPOPolicyConfig(),
-    ):
+    ) -> None:
         BasePolicy.__init__(self)
         self.config = config
 
@@ -58,17 +61,21 @@ class MAPPOPolicy(PPOPolicy):
         self.hidden_local_vars_dim = env.hidden_local_vars_dim
         self.hidden_global_vars_dim = env.hidden_global_vars_dim
         self.latent_pi_dim = config.actor_config.latent_pi_dim
-        self.local_latent_dim = (
-            config.actor_config.latent_pi_dim
-            if config.actor_config.shared_encoder_latent_dim is None
-            else config.actor_config.shared_encoder_latent_dim
-        )
-
-        self.shared_encoder = MAPPOSharedEncoder(
+        self.local_latent_dim = config.actor_config.latent_dim
+        self.critic_latent_dim = config.critic_encoder_config.latent_dim
+        self.nop_latent_dim = self.critic_latent_dim
+        self.nop_latent_source = "critic_encoder"
+        self.actor_encoder = MAPPOEncoder(
             n_agents=env.n_agents,
             local_obs_dim=env.local_obs_dim,
             global_obs_dim=env.global_obs_dim,
             config=config.actor_config,
+        )
+        self.critic_encoder = MAPPOEncoder(
+            n_agents=env.n_agents,
+            local_obs_dim=env.local_obs_dim,
+            global_obs_dim=env.global_obs_dim,
+            config=config.critic_encoder_config,
         )
         self.actor = MAPPOActor(
             local_latent_dim=self.local_latent_dim,
@@ -84,7 +91,7 @@ class MAPPOPolicy(PPOPolicy):
         if config.critic_config.deep_set_config is None:
             self.critic = MAPPOCritic(
                 n_agents=env.n_agents,
-                local_obs_dim=self.local_latent_dim + self.hidden_local_vars_dim,
+                local_obs_dim=self.critic_latent_dim + self.hidden_local_vars_dim,
                 global_obs_dim=self.hidden_global_vars_dim,
                 config=PPOCriticConfig(
                     hidden_dims=config.critic_config.mlp_hidden_dims or [],
@@ -95,7 +102,7 @@ class MAPPOPolicy(PPOPolicy):
             )
         else:
             self.critic = DeepSetCritic(
-                num_local_features=self.local_latent_dim + self.hidden_local_vars_dim,
+                num_local_features=self.critic_latent_dim + self.hidden_local_vars_dim,
                 local_projection_hidden_dims=config.critic_config.deep_set_config.local_projection_hidden_dims,
                 value_regressor_hidden_dims=config.critic_config.deep_set_config.value_regressor_hidden_dims,
                 num_global_features=self.hidden_global_vars_dim,
@@ -116,6 +123,7 @@ class MAPPOPolicy(PPOPolicy):
         return {
             "mappo_policy_config": {
                 "actor_config": serialize_dataclass(self.config.actor_config),
+                "critic_encoder_config": serialize_dataclass(self.config.critic_encoder_config),
                 "critic_config": serialize_dataclass(self.config.critic_config),
                 "continuous_config": continuous_config_to_dicts(self.action_dist.continuous_configs),
                 "bernoulli_config": bernoulli_config_to_dict(self.action_dist.bernoulli_config),
@@ -123,3 +131,31 @@ class MAPPOPolicy(PPOPolicy):
                 "compile_mode": self.config.compile_mode,
             }
         }
+
+    def _encode_actor_observations(
+        self, local_obs: torch.Tensor, global_obs: torch.Tensor,
+    ) -> torch.Tensor:
+        return self.actor_encoder(local_obs, global_obs)
+
+    def _encode_critic_observations(
+        self, local_obs: torch.Tensor, global_obs: torch.Tensor, *, actor_latents: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        return self.critic_encoder(local_obs, global_obs)
+
+    def get_grad_norms(self) -> dict[str, float]:
+        return {
+            "actor_encoder": self._module_grad_norm(self.actor_encoder),
+            "critic_encoder": self._module_grad_norm(self.critic_encoder),
+            "actor": self._module_grad_norm(self.actor),
+            "action_dist": self._module_grad_norm(self.action_dist),
+            "critic": self._module_grad_norm(self.critic),
+            "total": self._module_grad_norm(self),
+        }
+
+    def _apply_optional_compile(self) -> None:
+        if self.config.compile_modules:
+            self._ensure_torch_compile_available()
+            self.actor_encoder = self._compile_module(self.actor_encoder)
+            self.critic_encoder = self._compile_module(self.critic_encoder)
+            self.actor = self._compile_module(self.actor)
+            self.critic = self._compile_module(self.critic)

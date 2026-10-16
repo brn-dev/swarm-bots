@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
+from functools import cache
 import gzip
 import json
 from pathlib import Path
@@ -25,16 +26,21 @@ from swarmbots.tools.diagram_policy_architectures import (
 from swarmbots.learn import list_variants
 from swarmbots.learn.presets.model_scale import DEFAULT_MODEL_SCALE, SCALE_LAYOUTS
 from swarmbots.tools.policy_diagram_layout import crosses_bounds, edge_points, layout_diagram, node_bounds
+from swarmbots.tools.inspect_policy_parameters import inspect_variants
 
-ROOT = Path(__file__).resolve().parents[1]
-REPORTS = [
-    ROOT / "docs/policy_parameters" / SCALE_LAYOUTS[scale].slug / "counts.json.gz"
-    for scale in (DEFAULT_MODEL_SCALE, *(scale for scale in SCALE_LAYOUTS if scale != DEFAULT_MODEL_SCALE))
-]
-ROWS = [row for path in REPORTS for row in json.loads(gzip.decompress(path.read_bytes()))["policies"]]
+PolicyRow = Callable[[str, str], dict[str, Any]]
+SCALES = (DEFAULT_MODEL_SCALE, *(scale for scale in SCALE_LAYOUTS if scale != DEFAULT_MODEL_SCALE))
 
 
-@pytest.fixture(scope="module")
+def policy_cases(*variants: str) -> list[Any]:
+    return [
+        pytest.param((variant, scale), id=f"{variant}-{scale}")
+        for scale in SCALES
+        for variant in (variants or list_variants(include_hidden=True))
+    ]
+
+
+@pytest.fixture(scope="session")
 def single_thread() -> Iterator[None]:
     import torch
 
@@ -44,8 +50,26 @@ def single_thread() -> Iterator[None]:
     torch.set_num_threads(previous_threads)
 
 
-def test_gallery_resolves_local_or_published_reading_guide(tmp_path: Path) -> None:
-    diagram = build_diagram(ROWS[0])
+@pytest.fixture(scope="session")
+def policy_row(single_thread: None) -> PolicyRow:
+    @cache
+    def inspect(variant: str, model_scale: str) -> dict[str, Any]:
+        report = inspect_variants("SwarmBots-WallEasy-v0", (variant,), model_scale=model_scale)
+        assert not report["errors"]
+        row, = report["policies"]
+        return row
+
+    return inspect
+
+
+@pytest.fixture(scope="session")
+def row(request: pytest.FixtureRequest, policy_row: PolicyRow) -> dict[str, Any]:
+    return policy_row(*request.param)
+
+
+@pytest.mark.integration
+def test_gallery_resolves_local_or_published_reading_guide(tmp_path: Path, policy_row: PolicyRow) -> None:
+    diagram = build_diagram(policy_row("tmasac", DEFAULT_MODEL_SCALE))
     write_gallery([diagram], tmp_path)
     assert 'href="https://github.com/brn-dev/swarm-bots/blob/main/docs/policy_parameters/diagrams/README.md"' in (
         tmp_path / "index.html"
@@ -55,17 +79,52 @@ def test_gallery_resolves_local_or_published_reading_guide(tmp_path: Path) -> No
     assert 'href="README.md"' in (tmp_path / "index.html").read_text(encoding="utf-8")
 
 
-def test_depth_choices_export_to_distinct_files_and_gallery_entries(tmp_path: Path) -> None:
-    rows = [row for row in ROWS if row["variant"] == "tmasac" and row["model_scale"]["name"].startswith("5M-")]
+@pytest.mark.parametrize(
+    ("selected", "expected"),
+    [
+        (
+            ("10M-5L NOP2M", "5M-3L NOP1M", "10M-3L NOP2M", "2.5M NOP0.75M", "10M-4L NOP2M", "5M-2L NOP1M"),
+            ("2.5M NOP0.75M", "5M-2L NOP1M", "5M-3L NOP1M", "10M-3L NOP2M", "10M-4L NOP2M", "10M-5L NOP2M"),
+        ),
+        (
+            ("10M-5L NOP2M", "5M-2L NOP1M", "10M-3L NOP2M"),
+            ("5M-2L NOP1M", "10M-3L NOP2M", "10M-5L NOP2M"),
+        ),
+    ],
+)
+def test_gallery_orders_selected_scales_by_budget_then_depth(
+    tmp_path: Path, selected: tuple[str, ...], expected: tuple[str, ...],
+) -> None:
+    diagrams = [
+        Diagram(
+            variant="tmasac", scale=scale, shape={},
+            role_parameters={"actor": 0, "critic": 0, "shared_encoder": 0},
+        )
+        for scale in selected
+    ]
+    write_gallery(diagrams, tmp_path)
+    gallery = (tmp_path / "index.html").read_text(encoding="utf-8")
+    options = gallery.split('<select id="scale">', 1)[1].split("</select>", 1)[0]
+    select = ElementTree.fromstring("<select>" + options + "</select>")
+    assert tuple(option.text for option in select) == expected
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(("budget", "depths"), [("5M", (2, 3)), ("10M", (3, 4, 5))])
+def test_depth_choices_export_to_distinct_files_and_gallery_entries(
+    tmp_path: Path, policy_row: PolicyRow, budget: str, depths: tuple[int, ...],
+) -> None:
+    rows = [policy_row("tmasac", scale) for scale in SCALES if scale.startswith(budget + "-")]
     diagrams = generate(rows, tmp_path)
-    assert len(diagrams) == 2
-    for depth in (2, 3):
-        svg_path = tmp_path / f"5M-{depth}L/tmasac.svg"
+    assert len(diagrams) == len(depths)
+    gallery = (tmp_path / "index.html").read_text(encoding="utf-8")
+    for depth in depths:
+        name = f"{budget}-{depth}L/tmasac"
+        svg_path = tmp_path / (name + ".svg")
         assert svg_path.is_file()
         root = ElementTree.fromstring(svg_path.read_text(encoding="utf-8"))
-        assert f"Encoder block × {depth}" in "".join(root.itertext())
-    gallery = (tmp_path / "index.html").read_text(encoding="utf-8")
-    assert "5M-2L/tmasac" in gallery and "5M-3L/tmasac" in gallery
+        assert f"Encoder block \u00d7 {depth}" in "".join(root.itertext())
+        assert name in gallery
 
 
 def assert_line_order(node: Node, *prefixes: str) -> None:
@@ -73,7 +132,8 @@ def assert_line_order(node: Node, *prefixes: str) -> None:
     assert positions == sorted(positions), (node.id, prefixes, node.lines)
 
 
-@pytest.mark.parametrize("row", ROWS, ids=lambda row: row["variant"] + "-" + row["model_scale"]["name"])
+@pytest.mark.integration
+@pytest.mark.parametrize("row", policy_cases(), indirect=True)
 def test_all_core_diagrams_render_with_valid_dimensions_and_privilege_boundary(row: dict[str, Any]) -> None:
     d = build_diagram(row)
     root = ElementTree.fromstring(svg_diagram(d))
@@ -87,6 +147,15 @@ def test_all_core_diagrams_render_with_valid_dimensions_and_privilege_boundary(r
     assert not destinations & {"actor", "actor_encoder", "actions"}
     assert (("future_actions", "transition") in {(edge.source, edge.target) for edge in d.edges}) is row["use_nop"]
     assert ("actions", "transition") not in {(edge.source, edge.target) for edge in d.edges}
+    if row["use_nop"] and ("actor_config" in configuration(row) or "encoder_config" in configuration(row)):
+        source = "representation" if row["variant"] == "ppo" else "critic_encoder"
+        edges = {(edge.source, edge.target) for edge in d.edges}
+        assert (source, "nop_bridge") in edges
+        assert ("actor_encoder", "nop_bridge") not in edges
+    if row["variant"] == "mappo":
+        assert row["roles"]["shared_encoder"]["total"] == 0
+        assert {"actor_encoder", "critic_encoder"} <= {node.id for node in d.nodes}
+
     for role in ("actor", "critic", "shared_encoder", "next_obs_prediction"):
         assert (
             sum(node.parameters or 0 for node in d.nodes if node.parameter_role == role) == row["roles"][role]["total"]
@@ -146,16 +215,9 @@ def test_all_core_diagrams_render_with_valid_dimensions_and_privilege_boundary(r
         assert actor.lines[-1] == f"output: N × {configuration(row)['actor_head_config']['hidden_dims'][-1]}"
 
 
-@pytest.mark.parametrize(
-    "row",
-    [
-        row
-        for row in ROWS
-        if row["variant"] in ["tmasac", "tmatd3", "tmasac__slstm", "tmasac__lstm"]
-    ],
-    ids=lambda row: row["variant"] + "-" + row["model_scale"]["name"],
-)
-def test_transformer_q_heads_share_one_encoder_and_recurrent_inputs_are_detached(row):
+@pytest.mark.integration
+@pytest.mark.parametrize("row", policy_cases("tmasac", "tmatd3", "tmasac__slstm", "tmasac__lstm"), indirect=True)
+def test_transformer_q_heads_share_one_encoder_and_recurrent_inputs_are_detached(row: dict[str, Any]) -> None:
     d = build_diagram(row)
     edges = {(edge.source, edge.target): edge for edge in d.edges}
     assert ("critic_encoder", "head1") in edges and ("critic_encoder", "head2") in edges
@@ -167,7 +229,8 @@ def test_transformer_q_heads_share_one_encoder_and_recurrent_inputs_are_detached
         assert "state_bridge" not in {node.id for node in d.nodes}
 
 
-@pytest.mark.parametrize("row", [row for row in ROWS if row["variant"] in ["matd3__deepset_critic", "masac__deepset_critic"]])
+@pytest.mark.integration
+@pytest.mark.parametrize("row", policy_cases("matd3__deepset_critic", "masac__deepset_critic"), indirect=True)
 def test_deepset_twin_critics_share_encoder_and_pool_inside_private_heads(row: dict[str, Any]) -> None:
     d = build_diagram(row)
     edges = {(edge.source, edge.target) for edge in d.edges}
@@ -183,7 +246,8 @@ def test_deepset_twin_critics_share_encoder_and_pool_inside_private_heads(row: d
         assert any(line.startswith("regressor:") for line in nodes[id].lines)
 
 
-@pytest.mark.parametrize("row", [row for row in ROWS if row["variant"] in ["mat_orig", "mat_qcx", "mat_qcx__lstm"]])
+@pytest.mark.integration
+@pytest.mark.parametrize("row", policy_cases("mat_orig", "mat_qcx", "mat_qcx__lstm"), indirect=True)
 def test_autoregressive_decoders_only_feedback_previous_agent_actions(row: dict[str, Any]) -> None:
     d = build_diagram(row)
     feedback = next(edge for edge in d.edges if edge.source == "actions" and edge.target == "actor")
@@ -198,29 +262,39 @@ def test_autoregressive_decoders_only_feedback_previous_agent_actions(row: dict[
         "FF / block:",
         "output:",
     )
-    if "qcx" in row["variant"] and row["model_scale"]["name"] == "5M-2L NOP1M":
-        assert "FF / block: 192 → 256 → 192 (98,752)" in actor.lines
+    if "qcx" in row["variant"]:
+        layers = {layer["module"]: layer for layer in row["layer_layout"]}
+        first, second = (layers[f"decoder.layers.0.linear{index}"] for index in (1, 2))
+        dimensions = first["dimensions"] + " -> " + second["dimensions"].split(" -> ")[-1]
+        parameters = first["parameters"] + second["parameters"]
+        assert f"FF / block: {dimensions.replace(' -> ', ' → ')} ({parameters:,})" in actor.lines
 
 
-def test_default_tmasac_labels_show_exact_subtotals_and_whole_components() -> None:
-    row = next(row for row in ROWS if row["variant"] == "tmasac" and row["model_scale"]["name"] == "5M-2L NOP1M")
+@pytest.mark.integration
+def test_default_tmasac_labels_show_exact_subtotals_and_whole_components(policy_row: PolicyRow) -> None:
+    row = policy_row("tmasac", DEFAULT_MODEL_SCALE)
     d = build_diagram(row)
     nodes = {node.id: node for node in d.nodes}
-    assert "element MLP (once): 384 → 128 (49,280)" in nodes["head1"].lines
+    layers = {layer["module"]: layer for layer in row["layer_layout"]}
+    counts = row["module_parameter_counts"]
+    for label, module in (("element MLP (once)", "element_encoder"), ("regressor", "set_decoder")):
+        layer = layers[f"critic.q1.deepset.{module}"]
+        dimensions = layer["dimensions"].replace(" -> ", " → ")
+        assert f"{label}: {dimensions} ({layer['parameters']:,})" in nodes["head1"].lines
     assert "Set interaction × 2" in nodes["head1"].lines
     assert "z = global LayerNorm(h)" in nodes["head1"].lines
     assert "global residual: u = h + g" in nodes["head1"].lines
     assert "v = local LayerNorm(u)" in nodes["head1"].lines
     assert "local residual: h_next = u + local MLP(v)" in nodes["head1"].lines
-    assert "regressor: 128 → 128 → 128 → 1 (33,153)" in nodes["head1"].lines
-    assert nodes["head1"].parameters == 49_280 + 2 * 100_416 + 33_153
+    assert nodes["head1"].parameters == counts["critic.q1"]
     assert nodes["head2"].parameters == nodes["head1"].parameters
-    assert nodes["critic_encoder"].parameters == 2_305_408
+    assert nodes["critic_encoder"].parameters == counts["critic.encoder"]
     assert nodes["critic_encoder"].parameters + 2 * nodes["head1"].parameters == row["roles"]["critic"]["total"]
-    assert "Per block: 987,008 parameters" in nodes["critic_encoder"].lines
+    assert f"Per block: {counts['critic.encoder.layers.0']:,} parameters" in nodes["critic_encoder"].lines
 
 
-@pytest.mark.parametrize("row", ROWS, ids=lambda row: row["variant"] + "-" + row["model_scale"]["name"])
+@pytest.mark.integration
+@pytest.mark.parametrize("row", policy_cases(), indirect=True)
 def test_repeated_operations_are_scoped_separately_from_projections_and_readouts(row: dict[str, Any]) -> None:
     diagram = build_diagram(row)
     for node in diagram.nodes:
@@ -249,7 +323,8 @@ def test_repeated_operations_are_scoped_separately_from_projections_and_readouts
             assert node.content.index(interaction) < node.content.index(readout)
 
 
-@pytest.mark.parametrize("row", ROWS, ids=lambda row: row["variant"] + "-" + row["model_scale"]["name"])
+@pytest.mark.integration
+@pytest.mark.parametrize("row", policy_cases(), indirect=True)
 def test_connections_and_labels_leave_components_unobstructed(row: dict[str, Any]) -> None:
     assert_connections_and_labels_leave_components_unobstructed(build_diagram(row))
 
@@ -293,8 +368,9 @@ def test_connection_labels_find_clear_space_near_segment_ends(vertical: bool) ->
     assert canvas.y <= label.y and label.y + label.height <= canvas.y + canvas.height
 
 
-def test_layout_expands_for_a_critic_encoder_taller_than_its_readout() -> None:
-    diagram = build_diagram(next(row for row in ROWS if row["variant"] == "mat_dec"))
+@pytest.mark.integration
+def test_layout_expands_for_a_critic_encoder_taller_than_its_readout(policy_row: PolicyRow) -> None:
+    diagram = build_diagram(policy_row("mat_dec", DEFAULT_MODEL_SCALE))
     nodes = {node.id: node for node in diagram.nodes}
     encoder = nodes["critic_encoder"]
     encoder.content.extend(["Additional architecture detail"] * 40)
@@ -310,7 +386,8 @@ def test_layout_expands_for_a_critic_encoder_taller_than_its_readout() -> None:
         )
 
 
-@pytest.mark.parametrize("row", ROWS, ids=lambda row: row["variant"] + "-" + row["model_scale"]["name"])
+@pytest.mark.integration
+@pytest.mark.parametrize("row", policy_cases(), indirect=True)
 def test_major_paths_follow_separate_actor_critic_and_prediction_rows(row: dict[str, Any]) -> None:
     diagram = build_diagram(row)
     nodes = {node.id: node for node in diagram.nodes}
@@ -329,8 +406,9 @@ def test_major_paths_follow_separate_actor_critic_and_prediction_rows(row: dict[
             assert nodes[encoder].x + nodes[encoder].width < nodes[output].x
 
 
-def test_ddpg_has_one_standard_head_and_uses_encoder_features_for_nop() -> None:
-    row = next(row for row in ROWS if row["variant"] == "maddpg__deepset_critic" and row["model_scale"]["name"] == "5M-2L NOP1M")
+@pytest.mark.integration
+def test_ddpg_has_one_standard_head_and_uses_encoder_features_for_nop(policy_row: PolicyRow) -> None:
+    row = policy_row("maddpg__deepset_critic", DEFAULT_MODEL_SCALE)
     d = build_diagram(row)
     nodes = {node.id: node for node in d.nodes}
     edges = {(edge.source, edge.target) for edge in d.edges}
@@ -340,81 +418,70 @@ def test_ddpg_has_one_standard_head_and_uses_encoder_features_for_nop() -> None:
     assert "final masked mean across agents" in nodes["head1"].lines
 
 
-def test_refresh_keeps_compact_inputs_and_writes_verbose_reports_to_generated(tmp_path, monkeypatch):
+@pytest.mark.integration
+@pytest.mark.parametrize("scale", SCALES)
+def test_diagram_inspection_uses_current_selection_and_saves_only_local_reports(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, policy_row: PolicyRow, scale: str,
+) -> None:
     from swarmbots.tools import diagram_policy_architectures as diagrams
 
-    report = json.loads(gzip.decompress(REPORTS[0].read_bytes()))
     guide = tmp_path / "docs/policy_parameters/model_scale.md"
     guide.parent.mkdir(parents=True)
     guide.write_text("Sizing guide", encoding="utf-8")
-    def inspect(benchmark_id, variants, *, model_scale):
-        assert benchmark_id == "SwarmBots-WallEasy-v0"
-        assert variants == list_variants()
-        assert model_scale == "5M-2L NOP1M"
-        return report
-
-    monkeypatch.setattr(diagrams, "ROOT", tmp_path)
-    monkeypatch.setattr(diagrams, "inspect_variants", inspect)
-    rows = diagrams.load_reports(["5M-2L NOP1M"], ["tmasac"], refresh=True)
-    assert [row["variant"] for row in rows] == ["tmasac"]
-    docs = tmp_path / "docs/policy_parameters"
-    assert json.loads(gzip.decompress((docs / "5M-2L/counts.json.gz").read_bytes())) == report
-    assert not (docs / "report.md").exists()
-    assert not (docs / "counts.csv").exists()
-    generated = docs / "generated/5M-2L"
-    assert (generated / "counts.csv").exists()
-    assert (generated / "layer_layout.csv").exists()
-    assert "[model-scale allocation](../../model_scale.md)" in (generated / "report.md").read_text(encoding="utf-8")
-
-
-@pytest.mark.parametrize("report_path", REPORTS, ids=lambda path: path.parent.name)
-@pytest.mark.parametrize("refresh", [False, True])
-def test_partial_audit_rebuild_preserves_core_and_cached_hidden_presets(tmp_path, monkeypatch, report_path, refresh):
-    from swarmbots.tools import diagram_policy_architectures as diagrams
-    from swarmbots.tools.inspect_policy_parameters import write_compressed_json
-
-    report = json.loads(gzip.decompress(report_path.read_bytes()))
-    scale = report["policies"][0]["model_scale"]["name"]
-    hidden_name = "tmasac__no_nop"
-    hidden_row = {**next(row for row in report["policies"] if row["variant"] == "tmasac__slstm"), "variant": hidden_name}
-    report["policies"] = [row for row in report["policies"] if row["variant"] in list_variants()]
-    report["policies"].append(hidden_row)
-    report["requested_variants"].append(hidden_name)
-    cached = {
-        **report,
-        "policies": [row for row in report["policies"] if refresh or row["variant"] != "tmasac"],
-    }
-    path = tmp_path / report_path.relative_to(ROOT)
-    path.parent.mkdir(parents=True)
-    write_compressed_json(cached, path)
+    stale = guide.parent / SCALE_LAYOUTS[scale].slug / "counts.json.gz"
+    stale.parent.mkdir()
+    stale.write_bytes(b"obsolete snapshot")
+    variants = ("tmasac", "tmasac__no_nop")
     calls = []
+    use_nop: bool | None = None
 
-    def inspect(benchmark_id, variants, *, model_scale):
-        calls.append(variants)
-        assert model_scale == scale
-        by_name = {row["variant"]: row for row in report["policies"]}
-        return {
-            **report,
-            "requested_variants": list(variants),
-            "policies": [{**by_name[name], "refreshed": True} for name in variants],
-        }
+    def inspect(benchmark_id: str, selected: tuple[str, ...], *, model_scale: str) -> dict[str, Any]:
+        calls.append(selected)
+        return inspect_variants(benchmark_id, selected, model_scale=model_scale, use_nop=use_nop)
 
     monkeypatch.setattr(diagrams, "ROOT", tmp_path)
     monkeypatch.setattr(diagrams, "inspect_variants", inspect)
-    rows = diagrams.load_reports([scale], ["tmasac"], refresh=refresh)
-    assert [row["variant"] for row in rows] == ["tmasac"]
-    assert calls == [(*list_variants(), hidden_name)]
-    saved = json.loads(gzip.decompress(path.read_bytes()))
-    assert saved["requested_variants"] == [*list_variants(), hidden_name]
-    assert {row["variant"] for row in saved["policies"]} == {*list_variants(), hidden_name}
-    assert all(row["refreshed"] for row in saved["policies"])
-    # The complete rebuilt audit is reusable for unselected presets without
-    # another inspection or snapshot rewrite.
-    before = path.read_bytes()
-    rows = diagrams.load_reports([scale], ["mappo", hidden_name], refresh=False)
-    assert {row["variant"] for row in rows} == {"mappo", hidden_name}
-    assert len(calls) == 1
-    assert path.read_bytes() == before
+    rows = diagrams.inspect_reports([scale], variants)
+    assert [row["variant"] for row in rows] == list(variants)
+    assert calls == [variants]
+    assert stale.read_bytes() == b"obsolete snapshot"
+    generated = guide.parent / "generated" / SCALE_LAYOUTS[scale].slug
+    with gzip.open(generated / "counts.json.gz", "rt", encoding="utf-8") as stream:
+        report = json.load(stream)
+    assert report["benchmark_id"] == "SwarmBots-WallEasy-v0"
+    assert report["requested_variants"] == list(variants)
+    assert report["policies"] == rows
+    assert rows[0]["total"] == policy_row("tmasac", scale)["total"]
+    assert (generated / "counts.csv").is_file()
+    assert (generated / "layer_layout.csv").is_file()
+    assert "[model-scale allocation](../../model_scale.md)" in (generated / "report.md").read_text(encoding="utf-8")
+    assert not (guide.parent / "report.md").exists()
+
+    output = generated / "counts.json.gz"
+    use_nop = False
+    selected = ("tmasac",)
+    refreshed_rows = diagrams.inspect_reports([scale], selected)
+    assert calls == [variants, selected]
+    assert [row["variant"] for row in refreshed_rows] == list(selected)
+    assert refreshed_rows[0]["use_nop"] is False
+    assert refreshed_rows[0]["total"] < rows[0]["total"]
+    with gzip.open(output, "rt", encoding="utf-8") as stream:
+        refreshed_report = json.load(stream)
+    assert refreshed_report["requested_variants"] == list(selected)
+    assert refreshed_report["policies"] == refreshed_rows
+
+
+def test_diagram_inspection_does_not_export_failed_policies(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from swarmbots.tools import diagram_policy_architectures as diagrams
+
+    def inspect(benchmark_id: str, variants: tuple[str, ...], *, model_scale: str) -> dict[str, Any]:
+        return {"errors": [{"variant": "tmasac", "error": "construction failed"}]}
+
+    monkeypatch.setattr(diagrams, "ROOT", tmp_path)
+    monkeypatch.setattr(diagrams, "inspect_variants", inspect)
+    with pytest.raises(RuntimeError, match="construction failed"):
+        diagrams.inspect_reports([DEFAULT_MODEL_SCALE], ["tmasac"])
+    assert not (tmp_path / "docs").exists()
 
 
 @pytest.mark.integration
@@ -497,16 +564,13 @@ def test_independent_deepset_encoders_feed_private_readouts_and_concatenated_nop
 
 @pytest.mark.integration
 @pytest.mark.usefixtures("single_thread")
-@pytest.mark.parametrize("model_scale", ["2.5M", "5M-2L", "5M-3L", "10M"])
-def test_expanding_and_gated_deepset_diagrams_show_reception_and_complete_counts(model_scale: str) -> None:
-    from swarmbots.tools.inspect_policy_parameters import inspect_variants
-
+@pytest.mark.parametrize("model_scale", SCALES)
+def test_expanding_and_gated_deepset_diagrams_show_reception_and_complete_counts(
+    model_scale: str, policy_row: PolicyRow,
+) -> None:
     bases = ("maddpg__deepset_critic", "matd3__deepset_critic", "masac__deepset_critic")
-    report = inspect_variants(
-        "SwarmBots-WallEasy-v0", (*bases, *(base + "__gated" for base in bases)), model_scale=model_scale,
-    )
-    assert not report["errors"]
-    for row in report["policies"]:
+    for variant in (*bases, *(base + "__gated" for base in bases)):
+        row = policy_row(variant, model_scale)
         diagram = build_diagram(row)
         nodes = {node.id: node for node in diagram.nodes}
         gated = row["variant"].endswith("__gated")

@@ -129,5 +129,5 @@ class RMATQCXPolicy(RMATPolicyMixin, MATQCXPolicy):
             flat_values.reshape(batch_size, sequence_length),
             {},
             {},
-            augmented_observations,
+            critic_observations,
         )

@@ -1,6 +1,6 @@
 # Benchmark Python API
 
-Use `swarmbots` to discover tasks, create parallel environments, evaluate your own policies, and record their behavior. These APIs work independently of the included learning baselines. See the [scenario catalog](scenarios.md) for task definitions and the [benchmark protocol](benchmark_protocol.md) for comparable evaluation.
+`swarmbots` exposes task discovery, parallel environments, custom-policy evaluation, and video recording. These APIs work independently of the included learning baselines. The [scenario catalog](scenarios.md) defines the tasks; the [benchmark protocol](benchmark_protocol.md) specifies comparable evaluation.
 
 ## Registry
 
@@ -15,9 +15,9 @@ spec = get_benchmark_spec("SwarmBots-Climb-v0")
 print(spec.maturity, spec.episode_length, spec.supports_success_metric)
 ```
 
-`CORE_BENCHMARK_IDS` contains the eight core tasks; `ALL_BENCHMARK_IDS` contains all 15 registered tasks. Benchmark IDs belong to SwarmBots' own registry, so construct them with `swarmbots.make_env`.
+`CORE_BENCHMARK_IDS` contains the eight core tasks; `ALL_BENCHMARK_IDS` contains all 15 registered tasks. Benchmark IDs belong to SwarmBots' own registry; `swarmbots.make_env` constructs their environments.
 
-`BenchmarkSpec.maturity` and `spec.to_dict()["maturity"]` expose each task's alpha or beta status. The benchmark as a whole remains alpha; core-suite membership does not imply a validated task. See [scenario maturity and versioning](scenarios.md#scenario-maturity-and-versioning) for the testing criteria and version identifiers.
+`BenchmarkSpec.maturity` and `spec.to_dict()["maturity"]` expose each task's alpha or beta status. The benchmark as a whole remains alpha; core-suite membership does not imply a validated task. [Scenario maturity and versioning](scenarios.md#scenario-maturity-and-versioning) defines the testing criteria and version identifiers.
 
 The CLI exposes the same task descriptions and maturity labels:
 
@@ -47,43 +47,48 @@ finally:
 
 This example applies zero actions to the registered task. Use `num_envs=2, device="cpu"` for a small development run. CPU simulation is much slower than the intended CUDA path; see [GPU setup](gpu_setup.md) before running larger batches.
 
-On CUDA, physics, connector updates, and tensor operations follow the active PyTorch stream. This applies to explicit resets, autoresets, and the deferred `begin_step()` / `end_step()` interface as well as `step()`.
+`env.single_observation_space` and `env.single_action_space` describe one world. The spaces without `single_` include the leading world dimension.
 
-`env.single_observation_space` and `env.single_action_space` describe one world. `env.observation_space` and `env.action_space` include the leading world dimension. Observations contain per-agent `local_obs`, shared `global_obs`, `agent_mask`, and privileged `hidden_local_vars` / `hidden_global_vars`. Actions contain per-agent `actuators` and `connectors`; rewards, terminations, and truncations have one value per world. See the [observation contract](scenarios.md#observation-contract) and [action contract](scenarios.md#action-contract) for field meanings and bounds.
+| Field | Meaning | Typical dimensions |
+| --- | --- | --- |
+| `local_obs` | Each robot's public observations | `(worlds, agents, features)` |
+| `global_obs` | Public task information | `(worlds, features)` |
+| `agent_mask` | Active robot slots; exclude inactive padding | `(worlds, agents)` |
+| `hidden_local_vars`, `hidden_global_vars` | Privileged training/diagnostic information; exclude from actors | Per-agent or per-world |
+| `actuators`, `connectors` | Per-agent action tensors | `(worlds, agents, actions)` |
+| Rewards, terminations, truncations | Team outcome for each world | `(worlds,)` |
+
+The selected task's spaces define exact dimensions and action bounds. The [observation contract](scenarios.md#observation-contract) and [action contract](scenarios.md#action-contract) describe field meanings.
 
 `make_env` forwards `scenario_kwargs` to the registered scenario factory and remaining keyword arguments to `MJWSwarmBotsVectorEnv`. `make_scenario(benchmark_id, seed=..., **scenario_kwargs)` constructs a scenario without a vector environment. Overrides create custom task variants and must be reported with their results.
-
-Corrected connector positioning is enabled by default. For the original positioning and initial assembly spacing, pass `scenario_kwargs={"legacy_connector_positioning": True}` to `make_env`, or `legacy_connector_positioning=True` to `make_scenario`. Both modes preserve the robot's geometry and mass properties relative to its joints; the original mode permits penetrating capsule ends at satisfied connections. The resolved mode is recorded in evaluation settings.
 
 ## Gymnasium compatibility
 
 The environment subclasses Gymnasium's `VectorEnv` and uses Gymnasium spaces, the `reset()` and `step()` return conventions, and `SAME_STEP` autoreset. Observations, rewards, termination flags, and truncation flags are PyTorch tensors on `env.device`. Actions are dictionaries of batched tensors; `info` contains tensors and nested dictionaries.
 
-Compatibility with Gymnasium's interface does not imply compatibility with every Gymnasium wrapper or training library. Wrappers that assume NumPy arrays, including `gymnasium.wrappers.vector.RecordEpisodeStatistics`, cannot be applied directly. Use tensor-aware integration code or an adapter that handles device transfer, nested values, and terminal observations. Converting CUDA tensors to CPU NumPy arrays adds transfers and synchronization to the rollout loop.
+Compatibility with Gymnasium's interface does not imply compatibility with every Gymnasium wrapper or training library. Wrappers that assume NumPy arrays, including `gymnasium.wrappers.vector.RecordEpisodeStatistics`, cannot be applied directly. Integration requires tensor-aware code or an adapter that handles device transfer, nested values, and terminal observations. Converting CUDA tensors to CPU NumPy arrays adds transfers and synchronization to the rollout loop.
 
-The built-in evaluator consumes the tensor interface directly.
+The built-in evaluator consumes the tensor interface directly. CUDA environments compile tensor operations by default; the [GPU setup guide](gpu_setup.md) covers compiler prerequisites.
 
-## Train with your own learner
+## Integrate a custom learner
 
 The [standalone PyTorch PPO example](../examples/README.md#train-without-the-included-learning-framework) shows a minimal training loop without `swarmbots.learn`: environment construction, squashed Gaussian actions, active-agent masking, rollout storage, advantage estimation, and optimizer updates. Both actor and critic use only public observations; the returned model can be evaluated directly.
 
-Use its rollout handling when integrating another learner: retain copies of reusable observation tensors, bootstrap time-limit truncations from terminal observations, and stop temporal traces at autoreset boundaries. Libraries expecting NumPy arrays need an adapter as described above.
+The example handles reusable observation buffers, time-limit bootstrapping from terminal observations, and temporal traces across autoreset boundaries. Libraries expecting NumPy arrays need an adapter as described above.
 
 ## Episode lifecycle
 
 The environment uses `SAME_STEP` autoreset. On a done step, the returned observation belongs to the reset episode. The terminal observation is in `info["final_obs"]`, selected by `info["_final_obs"]`. Bootstrap a truncated episode from that terminal observation; terminated episodes should not bootstrap.
 
-Observation tensors can share environment buffers. Clone tensors you need to retain across calls to `step()` or `reset()`.
+Observation tensors can share environment buffers. Clone tensors that must be retained across calls to `step()` or `reset()`.
 
-Every reset, including the first reset and `options={"reset_mask": mask}` partial resets, applies the scenario's physics settling. Settling is outside the episode's control-step budget and return. Repeating `reset(seed=...)` with the same seed and configuration reproduces the initial observations on the same device/backend. Reseeding also clears prefetched reset snapshots. Partial resets preserve the unselected lanes' physical state.
+Every reset applies the scenario's physics settling before returning observations. Settling is outside the episode's control-step budget and return. Use `reset(seed=...)` for reproducible initial sampling with the same configuration and backend; numerical trajectories can still differ between devices.
 
-With an identical sequence of reset requests, asynchronous settled-reset buffering samples the same ordered reset records regardless of worker completion timing. Physics and policy reproducibility still depend on the device/backend and their numerical behavior.
-
-The old `settle_initial_reset` constructor argument and `force_settled` reset option are no longer needed. Remove them from callers. To disable settling for a custom variant, set `scenario_kwargs={"reset_settle_time": 0.0}`; this affects both explicit resets and autoresets and is not a canonical benchmark configuration.
+For a partial reset, pass `options={"reset_mask": mask}` to preserve unselected worlds. Disabling settling with `scenario_kwargs={"reset_settle_time": 0.0}` creates a custom task variant.
 
 ## Policy evaluation
 
-A policy is any callable with this signature:
+A policy is any callable with this signature. Replace the action variables below with the model's bounded outputs, matching the task's batched action spaces:
 
 ```python
 from collections.abc import Mapping
@@ -118,11 +123,11 @@ print(result.to_dict())
 
 Only `local_obs`, `global_obs`, and `agent_mask` are passed to the policy. The policy receives these for all agents in each world and may combine them in a centralized or partially centralized actor, or process them separately in a decentralized actor. The benchmark does not require decentralized execution. Privileged observation keys remain excluded for every actor architecture.
 
-Use `policy.eval()` and frozen normalization for a trained neural network. The evaluator uses `torch.inference_mode()` but cannot configure an arbitrary callable's action distribution. `action_mode` records your choice; it does not change policy behavior. The evaluator raises an error if a success-enabled task fails to provide `info["success"]`.
+Use `policy.eval()` and frozen normalization for a trained neural network. The evaluator uses `torch.inference_mode()` but cannot configure an arbitrary callable's action distribution. `action_mode` records the configured action mode; it does not change policy behavior. The evaluator raises an error if a success-enabled task fails to provide `info["success"]`.
 
 Only the first episode per lane contributes. Results are ordered by lane, not completion time. `num_episodes <= num_envs` is required; requesting fewer episodes constructs only that many worlds. Reset recurrent state using `episode_starts`, including for lanes whose first episode has already completed.
 
-This call evaluates one seed. Use the five-seed reporting workflow below for a protocol report.
+This call evaluates one seed. The five-seed workflow below produces a protocol report.
 
 ## Five-seed report
 
@@ -136,20 +141,22 @@ On Windows, replace `.venv/bin/python` with `.venv\Scripts\python.exe`. The defa
 
 The JSON contains every raw episode, per-seed metadata, the mean of seed-level mean returns, and the population standard deviation across those seed means. Success rates are aggregated the same way for tasks that define success. This random policy is labeled stochastic, so it is not a canonical deterministic-policy result.
 
-Adapt the example to load your trained policy, set `action_mode="deterministic"`, and supply checkpoint metadata. Keep the five-seed loop and aggregation. Reinitialize policy state for each seed; use `--source-revision` to record the benchmark commit. See the [protocol](benchmark_protocol.md) for reporting requirements.
+Adapt the example to load a trained policy, set `action_mode="deterministic"`, and supply checkpoint metadata. Keep the five-seed loop and aggregation. Reinitialize policy state for each seed; use `--source-revision` to record the benchmark commit. See the [protocol](benchmark_protocol.md) for reporting requirements.
 
-For a sweep across many different tasks or world counts, use one process per task/configuration. PyTorch caches compiled variants by function and can exhaust its specialization limit when many observation shapes share one process. If running tasks sequentially in one process, close the previous environment and call `torch.compiler.reset()` before constructing the next; this also clears compiled policy caches. The GPU integration matrix isolates compiler state between cases for this reason.
+The [saved-checkpoint report recipe](learning.md#five-seed-report-from-a-saved-checkpoint) provides a complete five-seed workflow for an included trained policy, including loading, aggregation, and JSON export.
+
+For sweeps across many task shapes or world counts, use one process per configuration to avoid exhausting PyTorch's compilation cache. Close environments when finished.
 
 ## Deferred stepping
 
-CUDA environments support `begin_step(actions)` followed by `end_step()`. This lets a caller overlap host work with asynchronous device execution. Ordinary callers should use `step(actions)`.
+`step(actions)` provides the ordinary stepping interface. The CUDA `begin_step(actions)` / `end_step()` pair supports overlap between host work and device execution. Environment operations follow the active PyTorch stream.
 
 ## Recording
 
-Use `swarmbots.record_policy(policy, benchmark_id, video_folder=...)` for any benchmark policy callable, or `swarmbots.learn.record_checkpoint(...)` to load a learning preset directly. The `swarmbots record` command and `examples/record_policy.py` expose these helpers. See [recording](recording.md) for checkpoint/custom-policy examples and camera, episode, and rendering options.
+`swarmbots.record_policy(policy, benchmark_id, video_folder=...)` records any benchmark policy callable; `swarmbots.learn.record_checkpoint(...)` loads and records an included learning preset. The `swarmbots record` command and `examples/record_policy.py` expose these helpers. The [recording guide](recording.md) covers checkpoint/custom-policy examples and camera, episode, and rendering options.
 
-Call `env.start_video_recording(...)` before stepping. Recording renders selected worlds with MuJoCo and writes MP4 files asynchronously. It is intended for qualitative inspection, not for high-throughput evaluation.
+For recording during a custom rollout, call `env.start_video_recording(...)` before stepping. Recording is intended for qualitative inspection and adds rendering and encoding work.
 
 ## Reference learning baselines
 
-If you want an included training implementation, `swarmbots.learn` provides PPO/MAPPO, MADDPG, MATD3, MASAC, MAT, TMASAC, TMATD3, and recurrent presets. The MADDPG/MATD3/MASAC baselines offer flattened MLP or Deep Set critics; TMATD3 offers transformer and decentralized actors with transformer critics. See [reference learning baselines](learning.md) for training, checkpoint continuation, and `as_benchmark_policy`, which adapts their actors to this policy interface.
+The [learning guide](learning.md) covers included presets, training, and checkpoint continuation. `as_benchmark_policy(trainer)` adapts those actors to the evaluator's policy interface and freezes observation normalization.

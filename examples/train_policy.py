@@ -37,7 +37,7 @@ def make_parser(
         return value
     parser.add_argument("--variant", type=variant_choice, default=default_variant, metavar="VARIANT",
                         help="core presets: " + ", ".join(list_variants() if variants is None else variants))
-    parser.add_argument("--model-scale", default="5M-2L NOP1M", help="fixed tiers: 2.5M, 5M-2L (default), 5M-3L, 10M; legacy uses custom widths")
+    parser.add_argument("--model-scale", default="5M-2L NOP1M", help="fixed tiers: 2.5M, 5M-2L (default), 5M-3L, 10M-3L, 10M-4L, 10M-5L; legacy uses custom widths")
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--num-envs", type=positive_int, default=256, help="parallel training worlds")
     parser.add_argument("--total-timesteps", type=positive_int, default=1_000_000)

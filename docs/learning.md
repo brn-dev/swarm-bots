@@ -1,276 +1,291 @@
 # Reference learning baselines
 
-For charts from the training CSVs, including comparisons across seeds, see [log plotting](log_plotting.md).
+`swarmbots.learn` provides included policy learners, checkpoint continuation, evaluation adapters, and recording helpers. The presets are starting configurations, not published reference scores or required benchmark settings.
 
-`swarmbots.learn` provides reference baselines and training helpers for SwarmBots experiments. You can use every registered task with PPO/MAPPO, DDPG/MADDPG, TD3/MATD3, SAC/MASAC, multi-agent transformer (MAT) policies, transformer-based SAC (TMASAC) and TD3 (TMATD3), and recurrent variants with LSTM, sLSTM, or mLSTM modules.
+The [runnable examples](../examples/README.md) combine training, evaluation, and recording in one script. The [Python API](api.md) supports custom-learner integration.
 
-The benchmark's [tasks](scenarios.md) and [evaluation protocol](benchmark_protocol.md) are independent of these implementations. To integrate your own learner, use the [benchmark Python API](api.md). The presets below provide starting configurations; their training defaults are not required benchmark settings or published reference scores.
+The presets and options below describe the current source checkout. The published `0.1.0a3` release has a [versioned learning guide](https://github.com/brn-dev/swarm-bots/blob/v0.1.0a3/docs/learning.md); its preset names and available options differ.
 
-For more information about TMASAC, MAT-QCX, NOP, and SMB, see the [published master's thesis](https://resolver.obvsg.at/urn:nbn:at:at-ubl:1-108602). Its source and supplementary material are available in the [thesis repository](https://github.com/brn-dev/msc-thesis-swarmbots-qcx-tmasac-nop-smb).
+## Train a policy
 
-The included on-policy learners build on [PPO](https://arxiv.org/abs/1707.06347), [MAPPO](https://proceedings.neurips.cc/paper_files/paper/2022/hash/9c1535a02f0ce079433344e14d910597-Abstract-Datasets_and_Benchmarks.html), and [MAT](https://proceedings.neurips.cc/paper_files/paper/2022/hash/69413f87e5a34897cd010ca698097d0a-Abstract-Conference.html). TMASAC combines the thesis's architecture with [SAC](https://proceedings.mlr.press/v80/haarnoja18b.html) and its [automatic-temperature formulation](https://arxiv.org/abs/1812.05905). See [references and attribution](references.md) for citation guidance, prior attention-based multi-agent SAC methods, component credits, and reusable BibTeX entries.
+```python
+from swarmbots.learn import train
 
-The package also includes next-observation prediction (NOP), action distributions, rollout collection, replay, truncated backpropagation through time (TBPTT), PopArt value normalization, observation normalization, learning-rate scheduling, checkpointing, metrics, evaluation, and video recording. PPO collects fixed step rollouts and requires zero dropout in its policy; auxiliary NOP models can use dropout independently. The examples below use the package's built-in presets; architectures and optimizer settings can be customized through the same API.
-
-PyTorch 2.6 or newer is required. W&B logging and interactive command prompts are optional:
-
-```bash
-uv sync --extra wandb --extra prompt
+trainer = train(
+    "SwarmBots-WallEasy-v0",
+    "mappo",
+    num_envs=256,
+    device="cuda",
+    total_timesteps=1_000_000,
+    run_dir="runs/wall-easy/mappo",
+)
 ```
 
-## Differences from the original multi-agent methods
+Run this after [installation](../README.md#install). `total_timesteps` counts transitions across all parallel worlds: one step with 256 worlds adds 256 transitions. A short run checks the workflow; reaching good performance may need a larger budget and tuning.
 
-The included multi-agent learners are adaptations for SwarmBots' cooperative team objective, not fully faithful reproductions of the original formulations. In particular, MAT (including `mat_orig`), MAPPO, and the MADDPG/MATD3 baselines use global shared team value functions here, rather than the per-agent value estimates used in their original formulations. On-policy critics produce one scalar team V per world; off-policy critics produce one scalar team Q per critic, with TD3/SAC retaining two independent Q networks. A centralized critic can still estimate separate values for each agent in the original methods; centralization alone does not imply our shared team-value objective.
-
-The [original MAT implementation](https://github.com/PKU-MARL/Multi-Agent-Transformer/blob/main/mat/algorithms/mat/algorithm/ma_transformer.py) produces a value estimate for each agent token using a shared network. SwarmBots' `mat_orig` pools its token-level value predictions into a single team value, while the other MAT variants use a pooled team critic. Sharing network parameters and sharing a single team value are different choices; the `mat_orig` name identifies the autoregressive architecture lineage, not an exact reproduction of the original value formulation.
-
-The actor update also differs for multi-agent TD3 (MATD3) and MADDPG. In the original implementations, an update for agent i replaces only that agent's replay action with its current actor action and evaluates its per-agent critic; all other agents' actions remain fixed to their replay values. Our shared actor instead generates current actions for all active agents at the replayed observations and passes the entire joint action through the shared team critic at once. The policy gradient therefore flows through every active agent's action. MATD3/TMATD3 use the first of their twin team critics for this actor objective. See [implementation sources](references.md#deterministic-baseline-implementation-sources).
-
-These changes affect the value objective and policy gradient and can affect learning behavior and results. Report the shared team-value formulation, joint actor update, and selected architecture when comparing these baselines with the original methods.
-
-All MAT variants, including `mat_orig`, now use independent actor and critic encoders. `encoder_config` describes the actor and `critic_encoder_config` describes the critic in low-level configs. Actors retain their attention/decentralized or autoregressive structure; critics retain the team-V objective and exclusive privileged inputs. Recurrent MAT keeps separate actor/critic history mappings throughout rollout, bootstrap and TBPTT. NOP uses actor features. Earlier shared-encoder MAT checkpoints require retraining or manual migration; no automatic migration is provided.
+`train` saves logs and checkpoints when `run_dir` is set and closes the simulator when it finishes. The returned trainer retains the learned policy and observation-normalization statistics for evaluation. Choose a separate run directory for each experiment.
 
 ## Select a variant and task
 
-Every registered benchmark ID can be passed to the training helpers:
+The training helpers accept every [registered task](scenarios.md). `list_variants()` returns the available policy names:
 
 ```python
-from swarmbots.learn import list_variants, train
+from swarmbots.learn import list_variants
 
 print(list_variants())
-trainer = train(
-    "SwarmBots-POWallMedium-v0",
-    "mat_qcx",
-    num_envs=1024,
-    device="cuda",
-    compile_modules=True,
-    total_timesteps=100_000_000,
-    run_dir="runs/po-wall-medium/mat-qcx",
-)
 ```
 
-This `mat_qcx` preset includes NOP and Signed-Magnitude Beta (SMB) action distributions. `train` closes the simulator when training ends or fails; the returned trainer retains the policy and normalization statistics. The run directory contains metrics, metadata, and the final checkpoint with optimizer and normalization state.
-
-For runnable training → evaluation → video-recording workflows, see the [examples](../examples/README.md). `examples/train_policy.py` accepts any public preset; `examples/train_recurrent_td3.py` demonstrates recurrent TD3 actor/critic options and sequence replay settings.
-
-| Variant | Learner and architecture |
+| Preset | What it runs |
 | --- | --- |
-| `ppo` | PPO with a joint MLP actor |
-| `mappo` | MAPPO with a per-agent MLP actor and masked Deep Set critic |
-| `mat_orig`, `mat_ind`, `mat_dec` | PPO with autoregressive, independent-head, or decentralized MAT |
-| `mat_qcx` | PPO with the QCX autoregressive query/context decoder |
-| `mat_ind__lstm`, `mat_qcx__lstm` | Recurrent PPO with LSTM and TBPTT |
-| `maddpg__deepset_critic` | DDPG with a shared per-agent deterministic actor and one centralized Deep Set critic |
-| `matd3__deepset_critic` | TD3 with a shared per-agent deterministic actor and two independent centralized Deep Set critics |
-| `masac__deepset_critic` | SAC with a shared per-agent stochastic actor and two independent centralized Deep Set critics |
-| `tmatd3` | TD3 with a transformer actor and a transformer twin critic |
-| `tmatd3_dec` | TD3 with a per-agent MLP actor and the same transformer twin critic as `tmatd3` |
-| `tmasac` | SAC with a transformer actor and transformer twin critic |
-| `tmasac_dec` | SAC with a per-agent MLP actor and the same transformer twin critic as `tmasac` |
-| `tmasac__slstm`, `tmasac__lstm` | Recurrent TMASAC with sLSTM or LSTM and actor-state critic inputs |
+| `ppo` | PPO with a joint multilayer perceptron (MLP) actor |
+| `mappo` | MAPPO with independent actor/critic encoders and a centralized team critic |
+| `mat_orig`, `mat_ind`, `mat_dec` | PPO with autoregressive, independent-head, or decentralized multi-agent transformer (MAT) actors |
+| `mat_qcx` | PPO with the query/context autoregressive MAT decoder |
+| `mat_ind__lstm`, `mat_qcx__lstm` | MAT policies with LSTM memory |
+| `maddpg__deepset_critic` | DDPG with a shared per-agent actor and a Deep Set critic |
+| `matd3__deepset_critic` | TD3 with a shared per-agent actor and Deep Set critics |
+| `masac__deepset_critic` | SAC with a shared per-agent actor and Deep Set critics |
+| `tmatd3`, `tmatd3_dec` | TD3 with transformer or decentralized actors and transformer critics |
+| `tmasac`, `tmasac_dec` | SAC with transformer or decentralized actors and transformer critics |
+| `tmasac__lstm`, `tmasac__slstm` | TMASAC with recurrent memory |
 
-`list_variants()` returns these 17 core presets. `list_variants(include_hidden=True)` also lists `mat_qcx__no_nop`, `tmasac__no_nop`, and the three `*__deepset_critic__gated` presets. `mat_ind__no_attention` is removed. MLP-suffixed, SwiGLU, shared-encoder, optional recurrent-control, and segment-training names are removed from the registry and rejected by the training helpers and CLIs. Their low-level classes/configuration machinery remain available. Plain PPO and MAPPO remain registered.
+A decentralized actor uses its own agent's local observations and the public task observations. Other actors can combine public observations across agents. All evaluated actors exclude privileged fields.
 
-Variant names use `base_variant__modifier__modifier`. Major architecture choices stay in the base name with a single underscore: `mat_orig`, `mat_ind`, `mat_dec`, `mat_qcx`, `tmasac_dec`, and `tmatd3_dec`. Double underscores separate additional recurrent, critic, and ablation modifiers, such as `mat_qcx__lstm`, `masac__deepset_critic`, and `masac__deepset_critic__gated`. Single underscores join words inside modifier phrases such as `deepset_critic` or `no_nop`. Defaults without modifiers keep their short names, such as `ppo`, `mappo`, `tmasac`, and `tmatd3`.
+`list_variants(include_hidden=True)` also lists NOP-disabled controls and gated Deep Set presets for architecture comparisons. Training and recording commands accept these exact names.
 
-| Previous name | Current name |
-| --- | --- |
-| `mat__qcx` | `mat_qcx` |
-| `mat__qcx__lstm` | `mat_qcx__lstm` |
-| `tmasac__dec` | `tmasac_dec` |
-| `masac_deepset` | `masac__deepset_critic` |
-| `mat_ind_lstm` | `mat_ind__lstm` |
-| `tmasac_lstm` | `tmasac__lstm` |
-| `mat_qcx_no_nop` | `mat_qcx__no_nop` |
-| `tmasac_shared_encoder` (low-level only) | `tmasac__ac_shared_observation_encoder` (low-level only) |
-
-Superseded spellings in the previous-name column are rejected rather than accepted as aliases. Update CLI arguments and the variant name supplied to training or checkpoint recording. Renaming preserves architecture, configuration fields, module paths, checkpoint weight keys and model-scale versions. The earlier MAT architecture change still requires its separate checkpoint migration.
-
-The retained low-level TMASAC builder also uses `tmasac__slstm__ac_shared_observation_encoder` for recurrent sharing. Here `ac` identifies a public observation encoder shared between actor and critic; sharing an action-conditioned encoder between the critic's two Q heads is a separate setting. These actor/critic sharing presets remain outside the registry.
-
-The decentralized actors in `mat_dec` and `tmasac_dec` use each agent's local observation plus the task's non-privileged global observation. They do not mix other agents' local observations or actions. The `tmasac_dec` actor uses residual MLP blocks with agent attention disabled; its critic retains agent attention, and its NOP and optimizer defaults match `tmasac`.
-
-MAT/RMAT observation encoders and the transformer critics in TMASAC/TMATD3 use separate local and global projections added together by default. Set `policy_kwargs={"mat_joint_obs_embedding": True}` to concatenate the local and global inputs before the per-agent token projection. Joint mode uses the local encoder's feed-forward configuration; the presets use MLP input encoders. Action-conditioned critics include public and privileged globals in this projection, after any optional observation/action pre-encoders. The switch also applies to recurrent and shared observation encoders, and to MAT-based actors in the other off-policy baselines. It introduces no new variant names. Low-level `MATEncoderConfig.joint_obs_embedding` (inherited by `RMATEncoderConfig`) controls the same setting.
-
-Encoders preserve observation and action features before projection; raw-input LayerNorm is removed because it discards absolute values and erases scalar inputs. Feature-wise observation normalization remains in the environment wrappers, and learned tokens and hidden features retain their existing normalization.
-
-The default `mat_joint_obs_embedding=False` retains the additive architecture and existing checkpoint weight shapes and keys. Reconstruct a joint-embedding checkpoint with the switch enabled, including when using `record_checkpoint`. Encoders without global inputs retain their existing layout in either mode. `mat_orig` already concatenates local and global observations, and PPO/MAPPO use their existing input encoders independently of this switch.
-
-`mappo` includes non-privileged global observations in its shared per-agent MLP encoder. Its Deep Set critic conditions element encoding on privileged globals and retains a direct privileged-global input after pooling. The underlying flattened MAPPO critic remains available through low-level configuration, but `mappo__mlp_critic` is no longer registered. All hidden layouts are fixed declarations; actual input/output counts depend on the task.
-
-MAPPO enables NOP on its shared non-privileged features and supports PopArt. Set `policy_kwargs={"mappo_critic_context_in_elements": False}` to supply privileged global context only after pooling. Low-level `MAPPOCriticConfig.context_in_elements` controls the same option.
-
-The canonical `tmasac__slstm` uses a temporal residual and disables memory-strength inputs to the critic. To enable those inputs, supply an `ActorStateCriticInputConfig` with `include_slstm_memory_strength=True` through `tmasac_actor_state_critic_input_config`. The no-residual preset is no longer registered.
-
-The canonical `tmasac__lstm` and `tmasac__slstm` condition their feed-forward critic on detached actor hidden state and memory. To disable conditioning explicitly, use `policy_kwargs={"tmasac_actor_state_critic_input_config": None}`. Optional shared-recurrent, no-actor-state, SwiGLU and segment presets are no longer registered.
-
-## Iterative Deep Set critics
-
-Deep Set interactions maintain D-dimensional agent tokens and pool M=5D/4-dimensional messages. The global branch uses an activation before masked pooling and another while processing the pooled message; its final projection is linear and bias-free:
-
-```text
-z_i = LayerNorm(x_i)
-a_i = Act(Linear_D_to_M(z_i))
-g = Act(Linear_M_to_M(masked_mean(a_1:N)))
-u_i = x_i + Linear_M_to_D(g)
-x'_i = u_i + local_MLP(LayerNorm(u_i))
-```
-
-The two residual sublayers have separate normalizations. Shared off-policy Deep Set encoders reuse the transformer embedding and local-FFN code, with the same token widths and 2/2/3 encoder blocks across scales. Private V/Q heads use two interaction blocks by default; every off-policy Q head then performs its own masked pooling and common regression. DDPG retains one ordinary head rather than enlarging it to compensate for the missing second head. NOP receives masked shared critic features before private Q-head processing.
-
-The gated presets add `gate_i = sigmoid(GateMLP(concat(z_i, g)))`, apply `gate_i * g` in the expanded space, and only then down-project to D. The gate network is shared across agents and has a D/4-wide hidden layer. All standard dimensions remain unchanged. Gating selects message features per receiver; pooling still merges the senders.
-
-Configure interactions through `policy_kwargs["deepset_interaction_config"]`, using `DeepSetInteractionConfig` or a dictionary. `message_dim` controls M independently of local `hidden_dims`; `gated` selects the gated block and `gate_hidden_dim` controls gate capacity. For example:
-
-```python
-policy_kwargs = {
-    "deepset_interaction_config": {
-        "num_layers": 2,
-        "message_dim": 480,
-        "hidden_dims": [512],
-        "gated": True,
-        "gate_hidden_dim": 96,
-    },
-}
-```
-
-For standalone V/Q interactions, `num_layers`, `local_update` and `normalize` control the complete interaction stack. Shared off-policy encoder depth, local FFNs and outer normalization come from the encoder configuration to preserve the transformer comparison; interaction settings control its message computation and gate. Fixed-scale configs save resolved message widths and the gate hidden width when enabled. Custom overrides can intentionally depart from the matched defaults.
-
-These layouts replace the previous fixed-width message and pooled-MLP critic designs. Earlier checkpoints require retraining or manual migration; no automatic conversion is provided. Canonical recurrent policies retain baseline feed-forward processing and add memory, so their counts can exceed the nominal scale.
-
-## Model scale
-
-All regular presets default to `model_scale="5M-2L NOP1M"`. Four explicit choices are available: `2.5M NOP0.75M`, `5M-2L NOP1M` (default), `5M-3L NOP1M`, and `10M NOP2M`. Their short names are `2.5M`, `5M-2L`, `5M-3L`, and `10M`; `list_model_scales()` lists canonical names. `5M-2L` preserves the former 5M architecture; old `5M`/`5+1M` aliases are rejected. The 3L choice changes only attention/Deep Set encoder stacks and reduces widths to retain a comparable feed-forward budget. MLP depths, decoders, Q/V heads, and NOP core remain unchanged; PPO/MAPPO are identical across the depth choices. Recurrence remains additional capacity relative to feed-forward models; narrower 3L memory modules match complete 2L recurrent counts within 0.5% on WallEasy. Gates remain additional capacity. Layouts are fixed per architecture, with no runtime fitting or task-dependent resizing. See the [layout and depth comparison](policy_parameters/model_scale.md).
-
-The target allocation remains **2M actor / 3M combined critic** for separate encoders, or **2M shared encoder / 1M private actor / 2M combined private critic** with actor–critic sharing. Half the shared encoder is attributed to each side. Actual counts can differ so the architecture remains sensible. Actor layouts are held constant across critic choices, on-policy MAT variants share V-critic templates, and NOP uses common projection/transition/prediction widths. See the [explicit size table and comparison rationale](policy_parameters/model_scale.md), plus the report's actual layer dimensions and component counts.
-
-The main budget excludes frozen targets, buffers, optimizer state, and NOP. `use_nop=False` disables NOP without changing the main architecture. The optional off-policy MLP critics continue to omit NOP. The removed PPO/MAPPO `_small` names remain unavailable.
-
-`model_scale=None` (CLI `--model-scale legacy`) retains the explicit low-level builder widths for custom experiments; the CLI name does not restore the old one-pass Deep Set architecture. With the fixed scale enabled, its declared widths take precedence over low-level width arguments; structural controls such as critic sharing, normalization, and recurrent inputs remain configurable. Unsupported tiers or alternative main/NOP pairings are rejected. Reconstruct checkpoints with the same scale/layout version, task, distribution, and structural settings as training. Resolved configurations and layout version are saved in checkpoint/run metadata.
+The [references guide](references.md) maps learners to their original papers. The [method differences](#differences-from-the-original-multi-agent-methods) explain how these adaptations affect comparisons with original implementations.
 
 ## Training defaults
 
-Task settings come from the [scenario registry](scenarios.md). Architecture and optimizer settings come from the selected learning preset. Unless overridden, the helpers use:
+The Python helper and the runnable example use different workload defaults:
 
-| Setting | Default |
-| --- | --- |
-| Model scale | `5M-2L NOP1M` |
-| Parallel worlds | 1024 |
-| Device | `cuda`; select `cpu` explicitly for development |
-| Random seed | 42 |
-| Episode limit | 500 control steps, with physics settling before each episode |
-| Morphology population | The registered task's pool; see the [benchmark protocol](benchmark_protocol.md#morphology-population) |
-| Policy/world-model compilation | Disabled; enable with `compile_modules=True` |
-| Initial episode staggering | Seeded uniform first-episode limits from 1 through the episode limit |
-| Rollout warmup | 0 steps |
-| Rollout steps per world per iteration | 4 for PPO, 1 for SAC/DDPG/TD3 |
-| Training budget in `train` | 100 million transitions |
+| Setting | `train(...)` | `examples/train_policy.py` |
+| --- | --- | --- |
+| Training budget | 100 million transitions | 1 million transitions |
+| Parallel training worlds | 1024 | 256 |
+| Device | CUDA | CUDA |
+| Training seed | 42 | 42 |
+| Model scale | `5M-2L NOP1M` | `5M-2L NOP1M` |
+| Policy compilation | Disabled | Disabled |
+| Evaluation and videos | Separate evaluation and recording helpers | One evaluation seed, then two videos |
 
-Training staggers the first episode in each world to spread reset work over time; later episodes use the full episode limit. The training seed determines these limits without consuming the policy's RNG. Explicit `env_kwargs` containing `first_episode_length` or `first_episode_lengths` take precedence; pass `env_kwargs={"first_episode_lengths": None}` to disable staggering. Benchmark evaluation and checkpoint recording retain full initial episodes by default.
+Tasks normally have a 500-control-step episode limit. Training spreads the first episode endings across worlds to avoid simultaneous resets; subsequent episodes use the full limit. Evaluation and recording start with full episodes.
 
-Registered learning presets enable NOP by default, except for explicit `*_no_nop` controls. MAT NOP trains actor encoder features; PPO/MAPPO NOP uses their shared MLP features; off-policy presets default to critic NOP. Off-policy policies do not support PopArt. On-policy presets use Signed-Magnitude Beta (`sign_magnitude_beta`); SAC presets use Predicted Std Gaussian (`predicted_std_gaussian`). Distributions are selected independently with `continuous_action_dist`; `use_nop` toggles auxiliary learning. DDPG/TD3 use deterministic tanh actors with Gaussian exploration noise. Optimizer and replay settings remain preset-dependent and can be overridden with `algorithm_kwargs`.
+CUDA environments compile tensor operations by default, independently of policy compilation. The [GPU setup guide](gpu_setup.md) covers the compiler prerequisites for ordinary CUDA runs.
 
-SAC, MASAC, and TMASAC retain `policy_delay=1`, `target_policy_noise=0.0`, and `target_noise_clip=0.0`. The actor and temperature update every critic step, and target actions receive no additional noise. These defaults also apply to recurrent SAC. You can opt into delayed updates and target smoothing through `algorithm_kwargs`:
+SAC, DDPG, and TD3 collect at least 10,000 transitions before learning starts. Recurrent learners also need enough history for their replay sequences. Early random actions or missing losses during this warmup are expected.
 
-```python
-algorithm_kwargs={
-    "policy_delay": 2,
-    "target_policy_noise": 0.2,
-    "target_noise_clip": 0.5,
-}
-```
+## Model scale
 
-All SAC presets use TMASAC as the training reference: actor/critic learning rate `5e-5`, automatic temperature initialized at `0.05`, temperature learning rate inherited from the actor/critic rate, and target entropy `auto_0.1`. Explicit `algorithm_kwargs` override these defaults. On-policy MAT decoders retain their `0.25` learning-rate multiplier.
+The `model_scale` argument selects a fixed layout; `model_scale="2.5M"` selects the smallest tier:
 
-For SAC, the delay applies to the actor, actor NOP, and automatic temperature updates. Critics and critic/shared-encoder NOP still update every step. Target networks retain their separate `target_update_interval` schedule. Target smoothing adds clipped Gaussian noise in normalized action coordinates, scales it to the physical action bounds, and keeps inactive actions zero. It changes the actions evaluated by the target critic; the entropy term uses the original policy sample's log-probability. This is an experimental modification of the SAC target, so compare it against the unchanged defaults for your task. Set both noise options to positive values to enable smoothing.
+| Short name | Intended main-policy budget | Auxiliary prediction budget |
+| --- | --- | --- |
+| `2.5M` | 2.5 million parameters | 0.75 million |
+| `5M-2L` (default) | 5 million | 1 million |
+| `5M-3L` | 5 million, with deeper attention/Deep Set encoders | 1 million |
+| `10M-3L` | 10 million, with three encoder blocks | 2 million |
+| `10M-4L` | 10 million, with four encoder blocks | 2 million |
+| `10M-5L` | 10 million, with five encoder blocks | 2 million |
 
-## DDPG, TD3 and centralized critic baselines
+NOP means **next-observation prediction**, an auxiliary training objective enabled by default in the core presets. MAT, recurrent MAT, and MAPPO train NOP from critic-encoder features; the prediction loss updates the critic encoder without updating the actor. Plain PPO retains its shared feature encoder. `use_nop=False` disables it without changing the main policy's dimensions.
 
-Names identify the critic explicitly, for example `masac__deepset_critic`. `DDPG` and `TD3` are available directly from `swarmbots.learn.algos.td3`. They support the single-agent case as well as joint swarm actions; the public multi-agent presets use the `maddpg` and `matd3` prefixes.
+The scale names describe approximate feed-forward budgets, not exact counts or GPU memory requirements. Recurrent memory and optional gates add parameters; targets and optimizer state need additional memory. Fewer parallel worlds or a smaller model scale reduce memory requirements.
 
-All of these presets learn a scalar team value from SwarmBots' shared reward. Actor parameters are shared across agents, and the team policy gradient differentiates through every active agent's action. This is a cooperative adaptation of MADDPG/MATD3: the original implementations use separate actors and per-agent critics and hold other agents' replay actions fixed during each actor's update. These presets do not implement mixed competitive rewards or policy ensembles. See [references and implementation sources](references.md#deterministic-baseline-implementation-sources).
-
-The registered `__deepset_critic` baselines use the following critic. Flattened MLP critic classes remain available for direct low-level construction, but `*__mlp_critic` names are no longer registered.
-
-- **`__deepset_critic`:** use the same action-conditioned observation embeddings, token widths, encoder depth, residuals, normalization and local FFNs as transformer critics. Each encoder block replaces attention with nonlinear message expansion, masked mean pooling, nonlinear processing of the pooled message and a linear projection back to token width. Every private Q head then projects tokens, runs two further Deep Set interactions, pools, and applies the same two-hidden-layer regression MLP. DDPG uses one ordinary Q head, while TD3/SAC use two. The default 5M shared encoder has width 384 and two blocks; each Q head has width 128. No raw global context bypasses pooling under the canonical settings. Each critic remains invariant to joint permutation of agent observations, actions and masks.
-- **`__deepset_critic__gated`:** optional DDPG/TD3/MASAC presets add token-dependent sigmoid reception gates in the shared encoder and Q-head interactions. Gates consume the normalized token and global message, select message features in the expanded space, and precede bias-free compression. All ungated widths and depths are retained, so gates add parameters. Select these presets explicitly or list them with `include_hidden=True`.
-
-At the default 5M scale, the decentralized actors use the same per-agent residual MLP backbone as `tmasac_dec`: 256-dimensional features, three residual blocks with 512/512 feed-forward layers, and a 128-wide action head. They receive local and non-privileged global observations. `tmatd3` uses two attention blocks in this backbone; `tmatd3_dec` uses the three-block decentralized actor. Both use the action-conditioned transformer critic from TMASAC, sharing one encoder between their two Q heads by default. Their default critic transformer width is 384, with four attention heads and two layers. Privileged observations are confined to the critics.
-
-All registered off-policy presets share one critic encoder between their Q heads. The low-level `policy_kwargs["critic_independent_encoders"]` option remains available for direct experiments; it is not a registered variant and now duplicates encoders without resizing them. Actor/critic sharing remains a separate concept. Both Deep Set and transformer critics use identical private Deep Set Q-head structures. Shared representations can correlate Q estimates, so sharing is an explicit design choice rather than a claim of improved learning. Reconstruct checkpoints with their saved architecture version and configuration. The expanding interactions, aligned heads and additive recurrent layouts replace their predecessors and require retraining or manual checkpoint migration.
-
-DDPG uses one critic, an actor target, and a critic target; actor and targets update on every gradient step. TD3 uses two critics, the minimum target Q, target-action smoothing (`target_policy_noise=0.2`, `target_noise_clip=0.5`), and actor/target updates every second critic step (`policy_delay=2`). Both optimize the actor against Q1 and use `tau=0.005`. The delay counter continues across training iterations and checkpoint reloads. Rollout exploration defaults to `exploration_noise=0.1`; all noise scales use normalized action coordinates and are converted to the physical action bounds before clipping. Inactive actions remain zero. Deterministic evaluation omits exploration noise.
-
-```python
-from swarmbots.learn import make_training
-
-trainer = make_training(
-    "SwarmBots-WallEasy-v0",
-    "matd3__deepset_critic",
-    policy_kwargs={
-        "baseline_critic_hidden_dims": (512, 512, 512),
-        "baseline_critic_element_hidden_dims": (512, 512, 512),
-    },
-    algorithm_kwargs={
-        "exploration_noise": 0.1,
-        "policy_delay": 2,
-        "target_policy_noise": 0.2,
-        "target_noise_clip": 0.5,
-    },
-)
-```
-
-`baseline_critic_element_hidden_dims` controls the Deep Set action/observation embedding MLP (its last dimension is the token width); `baseline_critic_hidden_dims` controls the flattened MLP or post-pooling Deep Set value regressor. These custom-width controls apply with `model_scale=None`; fixed scales choose their common layouts. Unspecified Deep Set widths use the matched encoder/head templates. DDPG fixes the delay to one and target smoothing to zero. DDPG/TD3 require finite continuous Box action spaces, including continuous connectors. Passing `continuous_action_dist` or SAC entropy options to a deterministic preset raises an error. MASAC retains SAC's distribution choices, entropy tuning, and multiple-action-sample support.
-
-Deep Set baseline critics condition each element encoder on the non-privileged global observations and privileged global variables, including the raw active-agent count at `hidden_global_vars[0]`. Canonical Q heads receive that context through the shared token features, without a second raw-global bypass after pooling. The per-agent NOP features therefore have access to global conditions. Set `policy_kwargs={"baseline_critic_context_in_elements": False}` to put global context only after pooling; changing this setting changes the encoder/readout architecture and checkpoint parameter shapes. The environment supplies the count for every scenario and critic architecture; Deep Set critics do not append a second count. Checkpoints using the former observation layout require migration before use, even when their parameter shapes still match, because hidden field order has changed.
-
-Next-observation prediction is enabled by default on `maddpg__deepset_critic`, `matd3__deepset_critic`, `masac__deepset_critic`, `tmatd3`, and `tmatd3_dec`. Pass `use_nop=False` to `make_training` or `train` to disable it. NOP defaults to the critic source. Set `policy_kwargs={"tmasac_nop_latent_source": "actor"}` or `"both"` to train actor representations as well; this option applies to DDPG/TD3 too. Deep Set NOP uses per-agent features before pooling, and transformer NOP uses action-conditioned encoder features. Independent critic features are concatenated along the feature axis; shared Deep Set and transformer critics supply the common encoder features once. Critic NOP follows `nop_skip_first_transition_for_critic`, which defaults to true because these features already include the current action.
-
-NOP uses the existing replay windows and episode masks. `algorithm_kwargs` accepts `nop_batch_size` and `independent_nop_sampling` when NOP is enabled. DDPG trains actor and critic NOP every step. TD3 trains critic NOP every step and actor NOP on delayed actor updates. Auxiliary losses train only online networks. Retained low-level flattened MLP critic implementations reject NOP for every latent source.
-
-When loading or recording a checkpoint created with NOP disabled, reconstruct the policy with `use_nop=False`.
-
-TD3 can use recurrent actors with any MATD3/TMATD3 critic. Enable `policy_kwargs["td3_recurrent_actor"]`; the existing `rmat_temporal_model_cls`, `rmat_temporal_model_config`, and other `rmat_*` options configure its temporal module. TMATD3 additionally supports a recurrent critic through `td3_recurrent_critic=True`, which requires the recurrent actor option. Existing presets remain feed-forward unless these flags are set.
-
-With a recurrent actor and a feed-forward critic, TD3 now supplies actor state to the critic by default, matching standard recurrent TMASAC. LSTM inputs contain hidden and cell states; sLSTM inputs contain hidden state and normalized memory. A critic-owned projection encodes these detached features, so critic training does not update actor parameters through this input. The target critic receives the target actor's corresponding state, including at truncation successors. This applies to MLP, Deep Set, and transformer critics. Set `policy_kwargs["td3_actor_state_critic_input_config"]=None` to disable it, or provide an `ActorStateCriticInputConfig` from `swarmbots.learn.algos.off_policy.actor_state_critic` to customize it. A recurrent critic uses its own history and defaults to no additional actor-state input. Actor-state inputs support LSTM and sLSTM; disable them for other temporal modules. Earlier recurrent TD3 checkpoints without actor-state conditioning require this option set to `None`.
-
-```python
-trainer = make_training(
-    "SwarmBots-WallEasy-v0",
-    "tmatd3",
-    policy_kwargs={
-        "td3_recurrent_actor": True,
-        "td3_recurrent_critic": True,
-        "critic_independent_encoders": False,
-    },
-    algorithm_kwargs={
-        "batch_size": 16,
-        "burn_in_steps": 32,
-        "learning_steps": 64,
-        "temporal_state_store_interval": 32,
-    },
-)
-```
-
-The trainer selects `RecurrentTD3` automatically, defaulting to 16 replay sequences per batch, 32 burn-in steps, 64 learning steps, and float16 temporal-state anchors every 16 steps. Override these values with `algorithm_kwargs`. `RecurrentTD3`, `RecurrentTD3Policy`, and `RecurrentTD3PolicyConfig` are also available from `swarmbots.learn.algos.td3`. Recurrent SAC and TD3 share sequence replay, burn-in, episode reset masks, truncation bootstrap handling, and NOP windows. TD3 stores separate online and target actor history states in replay; action-conditioned critic histories advance using replay actions, with policy actions evaluated on branches from that history. Its actor and target updates retain the TD3 policy delay.
+`model_scale=None` (CLI: `--model-scale legacy`) enables custom widths; fixed scales take precedence over width overrides. This selects the current custom-width builders and does not restore an older architecture. `5M-2L` replaces the former `5M` scale name. `10M-3L` selects the three-block 10M reference; the old `10M` name is rejected. The [model layouts](policy_parameters/model_scale.md) and [parameter inspection guide](policy_parameters/README.md) cover detailed comparisons.
 
 ## Customize training
 
-Use `make_training` when you need access to the environment, policy, or learning loop:
+Pass common settings directly and learner settings through `algorithm_kwargs`:
+
+```python
+from swarmbots.learn import train
+
+trainer = train(
+    "SwarmBots-POWallMedium-v0",
+    "mat_qcx",
+    num_envs=256,
+    total_timesteps=10_000_000,
+    run_dir="runs/po-wall/mat-qcx",
+    model_scale="2.5M",
+    use_nop=False,
+    algorithm_kwargs={"learning_rate": 1e-4},
+    learn_kwargs={"log_interval": 10},
+)
+```
+
+| Argument | Purpose |
+| --- | --- |
+| `num_envs`, `device`, `seed` | Workload, hardware, and reproducibility |
+| `total_timesteps`, `run_dir`, `load_path` | Budget, output location, and checkpoint continuation |
+| `model_scale`, `use_nop`, `continuous_action_dist` | Model size, auxiliary prediction, and stochastic action sampling |
+| `algorithm_kwargs` | Learner-specific learning rate, batch size, replay, or exploration settings |
+| `learn_kwargs` | Logging, saving, W&B configuration, and evaluation hooks |
+| `policy_kwargs` | Architecture experiments beyond the presets |
+| `scenario_kwargs`, `env_kwargs`, `episode_length` | Custom task or simulator settings; report these as custom variants |
+| `compile_modules=True` | Policy compilation after checking [GPU setup](gpu_setup.md) |
+
+PPO, SAC, and TD3 accept different learner options. The [recurrent TD3 example](../examples/README.md#train-recurrent-td3) supplies the recurrent actor and replay settings.
+
+### Logging levels
+
+The default console output is `minimal`; persisted CSV/W&B metrics use `full`. Select them independently through `learn_kwargs`:
+
+```python
+learn_kwargs = {
+    "logging_console_level": "return_success",
+    "logging_persistence_level": "minimal",
+}
+```
+
+| Level | Contents |
+| --- | --- |
+| `full` | All available metrics and statistics |
+| `minimal` | Progress, return/success, core losses, learning rate, and algorithm diagnostics |
+| `return_success` | Return/success metrics and progress counters |
+
+Console labels include `steps` (environment transitions), `ret` (return moving average), `succ%` (success moving average in percent), `lr` (learning rate), and `fps` (throughput). Fields appear only when available. Tasks without a success condition do not produce success scores.
+
+For custom console selection, `logging_console_keys` accepts metric names; `[]` silences metric rows and `None` shows all metrics. Persisted fields keep their original names. The [plotting guide](log_plotting.md) covers CSV column listing and charts.
+
+W&B and interactive prompts are optional. In a checkout, install them with `uv sync --extra wandb --extra prompt`; in an application project, use `uv add "swarmbots[wandb,prompt]==0.1.0a3"`. W&B starts only when explicitly configured through logging options.
+
+## Action distributions
+
+PPO/MAT presets use Signed-Magnitude Beta (`sign_magnitude_beta`) by default. SAC presets use `predicted_std_gaussian`. DDPG/TD3 use deterministic actions with exploration noise during training.
+
+`continuous_action_dist` selects the sampling distribution for distribution experiments. PPO supports `sign_magnitude_beta`, `gumbel_softmax_sign_magnitude_beta`, `beta`, `predicted_std_gaussian`, `gsde`, and `squashed_diag_gaussian`. SAC needs distributions with differentiable sampling; `gumbel_softmax_sign_magnitude_beta` provides its signed-magnitude counterpart. Checkpoint reconstruction requires the distribution used during training.
+
+PPO's entropy bonus is controlled by `algorithm_kwargs={"mc_ent_coef": 1e-3}` (the default); `0.0` disables it. SAC presets use automatic entropy-temperature tuning. DDPG/TD3 exploration is controlled by `algorithm_kwargs={"exploration_noise": 0.1}` (the default), and omitted during deterministic evaluation.
+
+## Continue a checkpoint
+
+Recreate the task, variant, model scale, NOP setting, action distribution, and architecture used for training:
+
+```python
+from swarmbots.learn import train
+
+trainer = train(
+    "SwarmBots-WallEasy-v0",
+    "mappo",
+    load_path="runs/wall-easy/mappo/models/model_1000000_steps_final.pt",
+    total_timesteps=2_000_000,
+    run_dir="runs/wall-easy/mappo-continuation",
+    num_envs=256,
+    device="cuda",
+)
+```
+
+Replace the path with the actual checkpoint saved by the training run. Final checkpoints are named `model_<steps>_steps_final.pt`; the actual counter can pass the requested budget by a collection batch.
+
+`total_timesteps` is the final total counter, so resuming at one million with a target of two million adds about one million transitions. Checkpoints restore model parameters, saved optimizer state, counters, and normalization. Earlier MAPPO shared-encoder checkpoints and MAT actor-NOP checkpoints require retraining or manual migration; no compatibility mode is included. Off-policy replay buffers are rebuilt and refilled after loading.
+
+The Python API supports continuation in an existing run directory. The training example scripts require a fresh directory for each invocation. Older checkpoints from changed architectures or observation layouts may need manual migration or retraining; matching a variant name alone is insufficient. The [layout versions](policy_parameters/model_scale.md) and [changelog](../CHANGELOG.md) record these changes.
+
+## Evaluate a trained policy
+
+Use a fresh adapter to freeze normalization and handle recurrent state for each evaluation:
+
+```python
+from swarmbots import evaluate_policy
+from swarmbots.learn import as_benchmark_policy
+
+result = evaluate_policy(
+    as_benchmark_policy(trainer, deterministic=True),
+    "SwarmBots-WallEasy-v0",
+    num_envs=256,
+    num_episodes=256,
+    seed=1000,
+    device="cuda",
+    action_mode="deterministic",
+)
+print(result.mean_return, result.success_rate)
+```
+
+Use the policy's device. The adapter shares the trained actor, so run evaluation after training or between updates. It preserves the actor's mode and training normalization statistics.
+
+This evaluates one seed. For a [complete benchmark report](benchmark_protocol.md), repeat with a fresh adapter at each seed `1000` through `1004` and aggregate the five results as in the [reporting example](api.md#five-seed-report). Include the checkpoint and architecture in `policy_metadata`, and the benchmark commit in `source_revision`.
+
+### Five-seed report from a saved checkpoint
+
+The first training script exits after its single-seed evaluation. The following standalone recipe loads the saved MAPPO checkpoint and writes `runs/first-mappo/benchmark_report.json` with all five protocol seeds, raw episodes, runtime metadata, and aggregate scores. Run it from the source checkout root after the [first training example](../examples/README.md#train-evaluate-and-record-a-preset):
+
+```python
+import json
+from pathlib import Path
+import statistics
+import subprocess
+
+from swarmbots import evaluate_policy
+from swarmbots.learn import as_benchmark_policy, make_training
+
+run_dir = Path("runs/first-mappo")
+checkpoint = next((run_dir / "models").glob("*_steps_final.pt"))
+training_seed = json.loads((run_dir / "evaluation.json").read_text(encoding="utf-8"))["metadata"]["policy"]["training_seed"]
+benchmark_id = "SwarmBots-WallEasy-v0"
+source_revision = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+trainer = make_training(benchmark_id, "mappo", num_envs=2, device="cuda")
+try:
+    trainer.load(checkpoint, restore_optimizer_state=False)
+    results = [
+        evaluate_policy(
+            as_benchmark_policy(trainer, deterministic=True),
+            benchmark_id,
+            num_envs=256,
+            num_episodes=256,
+            seed=seed,
+            device="cuda",
+            action_mode="deterministic",
+            source_revision=source_revision,
+            policy_metadata={
+                "variant": "mappo",
+                "checkpoint": str(checkpoint),
+                "training_seed": training_seed,
+                "training_timesteps": trainer.n_total_timesteps,
+                "settings": trainer.policy.get_hyper_parameters(),
+            },
+        )
+        for seed in range(1000, 1005)
+    ]
+finally:
+    trainer.env.close()
+
+seed_returns = [result.mean_return for result in results]
+seed_successes = [result.success_rate for result in results if result.success_rate is not None]
+report = {
+    "benchmark_id": benchmark_id,
+    "seeds": [result.seed for result in results],
+    "mean_return": statistics.fmean(seed_returns),
+    "std_seed_mean_return": statistics.pstdev(seed_returns),
+    "mean_success_rate": statistics.fmean(seed_successes) if seed_successes else None,
+    "std_seed_success_rate": statistics.pstdev(seed_successes) if seed_successes else None,
+    "results": [result.to_dict() for result in results],
+}
+output = run_dir / "benchmark_report.json"
+output.write_text(json.dumps(report, indent=2, allow_nan=False) + "\n", encoding="utf-8")
+print(output)
+```
+
+The two-world trainer restores the policy and normalization; each evaluation uses a separate 256-world environment. This recipe performs no training updates. The report includes the restored training-step count and the training seed from the first script's `evaluation.json`. Other checkpoints require their original task, variant, model scale, NOP, distribution, and architecture settings in `make_training`.
+
+The recorded Git revision identifies the checkout used for evaluation. The training commit needs a separate record alongside the original checkpoint, `evaluation.json`, and run metadata; the default run metadata does not capture that commit or the training seed.
+
+## Record a checkpoint
+
+```bash
+swarmbots record SwarmBots-WallEasy-v0 --checkpoint runs/wall-easy/mappo/models/model_1000000_steps_final.pt --variant mappo --episodes 3 --output recordings/mappo
+```
+
+Use the actual checkpoint path and matching training settings. The Python equivalent is `swarmbots.learn.record_checkpoint(...)`. The [recording guide](recording.md) covers model-scale options, custom policies, and camera settings; [log plotting](log_plotting.md) covers learning curves.
+
+## Custom training loops
+
+`make_training` exposes the learning loop for custom control. The caller must close its environment:
 
 ```python
 from swarmbots.learn import make_training
 
-trainer = make_training(
-    "SwarmBots-Bridge-v0",
-    "mat_dec",
-    num_envs=256,
-    device="cuda",
-    use_nop=False,
-    continuous_action_dist="predicted_std_gaussian",
-    rollout_steps_per_env=16,
-    algorithm_kwargs={"n_epochs": 4, "learning_rate": 1e-4},
-)
+trainer = make_training("SwarmBots-Bridge-v0", "mat_dec", num_envs=256)
 try:
     trainer.learn(
         max_total_timesteps=10_000_000,
@@ -281,150 +296,14 @@ finally:
     trainer.env.close()
 ```
 
-- `scenario_kwargs` overrides scenario construction; `env_kwargs` configures the vector simulator.
-- `policy_kwargs` overrides the preset policy builder's architecture arguments, such as `enc_d_model`, `dec_d_model`, `mat_encoder_transformer_ff_config`, `rmat_temporal_model_cls`, and `rmat_temporal_model_config`. Low-level policy config dataclasses and classes remain available under `swarmbots.learn.algos` for custom architectures.
-- `algorithm_kwargs` overrides PPO/SAC/RecurrentSAC/DDPG/TD3 constructor arguments, including learning rate, minibatches, rollout warmup, replay capacity, exploration noise, policy delay, burn-in, and learning sequence length. For recurrent PPO, sampler batch sizes count sequence rows rather than transitions.
-- `learn_kwargs` on `train` forwards logging, save, and evaluation-hook settings to `BaseAlgorithm.learn`. Custom `extra_run_metadata` is merged with the task and variant identifiers. `total_timesteps` and `run_dir` belong to `train` and take precedence over the forwarded options. Logging to W&B starts only when explicitly configured.
-- `compile_modules=True` enables policy/world-model compilation. Configure the CUDA compiler first; see [GPU setup](gpu_setup.md).
+The included collectors handle active-agent masks, terminal observations, and immediate autoreset. The [episode-handling guide](api.md#episode-lifecycle) and [standalone PPO example](../examples/README.md#train-without-the-included-learning-framework) cover independent learners.
 
-The simulator and learning wrappers use Gymnasium `SAME_STEP` autoreset. Done-step returned observations belong to reset episodes; terminal observations are in `final_obs` with `_final_obs`. The supplied collectors, replay buffers, and wrappers already handle this convention.
+## Differences from the original multi-agent methods
 
-### Logging levels
+These learners adapt the original algorithms to SwarmBots' cooperative team objective. The following choices affect comparisons with original implementations:
 
-Choose console and persistence levels independently, through both `train(...)` and `trainer.learn(...)`. The defaults are **`minimal` for the console and `full` for persistence**. Persistence covers both CSV and W&B. All algorithms and recurrent variants use the same presets:
+- MAPPO and MAT, including `mat_orig`, estimate one shared team value per world instead of separate per-agent values.
+- MADDPG/MATD3 use team critics. Their shared actor updates all active agents' current actions jointly through the team critic, so gradients flow through the entire joint action.
+- MAT actors and critics use separate encoders. The `mat_orig` name identifies its autoregressive architecture lineage, not an exact reproduction of the original method.
 
-| Level | Console | CSV/W&B |
-| --- | --- | --- |
-| `full` | All available metric fields with their original names and summary statistics | All metrics |
-| `minimal` | Progress, return/success EMAs, core losses, algorithm health diagnostics, learning rate, and throughput, with short labels | The important training metrics plus raw return/success metrics and timestamp/counter context |
-| `return_success` | Progress counters, return/success EMAs, mean episode return, best return EMA, and current episode success rate | Only return/success metrics and context: timestamps, learning-start time, iterations, environment steps, optimizer-update counts, and episode counts |
-
-```python
-from swarmbots.learn import train
-
-trainer = train(
-    "SwarmBots-WallEasy-v0",
-    "matd3__deepset_critic",
-    total_timesteps=1_000_000,
-    run_dir="runs/wall-easy/td3",
-    learn_kwargs={
-        "logging_console_level": "minimal",
-        "logging_persistence_level": "return_success",
-    },
-)
-```
-
-The same settings go directly to `trainer.learn(...)`. Console selection does not restrict persisted fields, and persistence selection does not restrict console output. W&B's configured step field is retained by reduced persistence levels. `logging_ignore_keys_for_persistence` can explicitly exclude more metrics.
-
-Reduced console presets use iteration (`it`), environment steps (`steps`), total optimizer updates (`upd`), return EMA (`ret`), and success EMA in percent (`succ%`). Minimal adds learning rate (`lr`) and throughput (`fps`). TD3/DDPG/SAC show critic and actor losses (`q_loss`, `pi_loss`), policy and target Q values (`q_pi`, `q_tgt`), and any scaled NOP losses (`c_nop`, `a_nop`). Replay size (`replay`), random-action collection (`rnd`), skipped training (`skip`), and the fraction of optimizer steps that update the actor (`pi_upd`) expose warmup and delayed-update behavior. `skip` appears only when emitted; `rnd` and `skip` use 0/1 flags. SAC also shows its entropy coefficient (`alpha`), estimated policy entropy (`ent`), and target entropy (`ent_tgt`). PPO adds policy/value losses (`pi_loss`, `v_loss`), approximate KL (`kl`), clip fraction (`clip`), explained variance (`ev`), and the scaled world-model loss (`nop`) when present. `clip` is a fraction, not a percentage. Summary-statistic metrics show their means. Unavailable algorithm-specific fields are skipped, and EMAs print `n/a` before they are available. The `return_success` console preset also shows `ret_mean`, `best_ret`, and `succ_batch%` when present; log messages carry their timestamp in the console prefix.
-
-Persisted metrics retain their original names and all available statistics for selected metrics, including means, standard deviations, counts, and histograms. Reduced persistence presets also retain per-scenario return/success metrics and episode counts. When resuming an existing CSV, earlier rows and columns remain; excluded fields are blank in newly written rows. Levels affect metric records; checkpoints, run metadata, and messages such as checkpoint saves are independent of these settings.
-
-The training examples expose both choices:
-
-```bash
-python examples/train_policy.py SwarmBots-WallEasy-v0 --variant matd3__deepset_critic --console-log-level return_success --persistent-log-level minimal
-```
-
-For a custom console selection, override the preset with `logging_console_keys`:
-
-```python
-trainer = train(
-    "SwarmBots-WallEasy-v0",
-    "matd3__deepset_critic",
-    total_timesteps=1_000_000,
-    run_dir="runs/wall-easy/td3",
-    learn_kwargs={
-        "logging_console_keys": [
-            ("timesteps", ",d", "steps"),
-            ("ep_rew_ema", ".2f", "ret"),
-            ("ep_success_rate_ema", ".1f", "succ%"),
-            ("learning_rate", ".2e", "lr"),
-            ("fps", ".0f", "fps"),
-        ],
-    },
-)
-```
-
-An entry can be a key string, `(key, format)`, or `(key, format, display_name)`. Use `None` as the format for automatic formatting. For a metric containing summary statistics, such as `critic_loss`, use `SummaryStatisticsFormat(mean=".3f")` from `swarmbots.learn.summary_statistics` to select the mean and its precision. Missing explicitly requested keys warn once so typos are visible. Shared field selections and display formats live in `swarmbots.learn.logging_levels`.
-
-Pass `logging_console_keys=None` to show every metric, `logging_console_keys=[]` to silence metric rows, or `logging_console_keys="default"` (the default) to follow `logging_console_level`. Custom console selections do not change `logging_persistence_level`. With `trainer.learn(...)`, pass the option directly instead of through `learn_kwargs`.
-
-## Action distributions
-
-For stochastic policies, the `continuous_action_dist` selector supports six distributions: `sign_magnitude_beta`, `gumbel_softmax_sign_magnitude_beta`, `beta`, `predicted_std_gaussian`, `gsde`, and `squashed_diag_gaussian`. Discrete action spaces use categorical or Bernoulli distributions. DDPG/TD3 instead use a deterministic action head and the noise settings above.
-
-Predicted Std Gaussian predicts both the mean and standard deviation from the actor's features. The action factory applies tanh squashing to keep actions within the simulator's bounds. Its low-level classes are `PredictedStdGaussianConfig` and `PredictedStdGaussianActionDist` in `swarmbots.learn.action_dists.predicted_std_gaussian_action_dist`.
-
-To compare SAC with SMB, keep the same architecture and override the distribution:
-
-```python
-trainer = make_training(
-    "SwarmBots-POWallMedium-v0",
-    "tmasac__slstm",
-    continuous_action_dist="gumbel_softmax_sign_magnitude_beta",
-    device="cuda",
-)
-```
-
-Similarly, use `"mat_qcx"` with `continuous_action_dist="gsde"` to select state-dependent exploration.
-
-PPO uses one Monte Carlo entropy coefficient, `mc_ent_coef`, defaulting to `1e-3` in both the learner and training presets. Override it through `algorithm_kwargs`, including `0.0` to disable the bonus. The estimator uses stored action log probabilities with joint importance weights for autoregressive actors and excludes inactive agents and padded steps. SAC keeps its entropy objective and automatic temperature tuning. Distribution-specific entropy loss coefficients, floors, magnitude weighting, and Gaussian entropy quadrature are removed. The new PPO default is a starting value for tuning and changes the training objective from the former extras.
-
-Distribution diagnostics remain available independently of the regularizer: SMB reports categorical, magnitude, and combined entropy; squashed Gaussian `ent_normal` reports the underlying Normal's entropy. PPO's `mc_ent_loss` is the sampled negative-entropy estimate used by its objective, while SAC reports its sampled policy entropy separately.
-
-The `disable_gsde_reset` command selects episode-only noise resets: noise is initialized once and resampled when a lane starts a new episode.
-
-Standard diagonal/squashed Gaussians, discrete/categorical distributions, and Bernoulli distributions are available directly under `swarmbots.learn.action_dists`. Binary connector spaces select Bernoulli; continuous connector spaces use the continuous distribution. The registry's default connectors are continuous. SAC requires a pathwise or straight-through gradient estimator; ordinary SMB's categorical sample is intended for PPO, and Gumbel SMB is its SAC counterpart. Unsupported SAC distributions raise an error during construction.
-
-## Continue a checkpoint
-
-Recreate the same variant, task, and architecture, then load the checkpoint:
-
-```python
-trainer = train(
-    "SwarmBots-POWallMedium-v0",
-    "tmasac__slstm",
-    load_path="runs/po-wall/slstm/models/model_100000000_steps_final.pt",
-    total_timesteps=150_000_000,
-    run_dir="runs/po-wall/slstm-continuation",
-    device="cuda",
-    compile_modules=True,
-)
-```
-
-`total_timesteps` is the absolute final counter, so this example adds 50 million transitions. Checkpoints restore model parameters, optimizer state, counters, and normalization, including DDPG/TD3 actor and critic target networks. SAC/DDPG/TD3 replay is intentionally not checkpointed; it is rebuilt and refilled after loading. Lower-level `trainer.load(...)` also supports the existing policy-state transforms and transfer options.
-
-## Evaluate a trained policy
-
-Use the benchmark adapter to freeze observation normalization, maintain per-lane recurrent state, and convert packed policy actions to the simulator's action dictionary:
-
-For lower-level trainers using `TorchTransitionObsWrapper`, the adapter also reconstructs observation/action history and clears it at episode starts. Evaluation history is independent of the training wrapper's state.
-
-```python
-from swarmbots import evaluate_policy
-from swarmbots.learn import as_benchmark_policy
-
-result = evaluate_policy(
-    as_benchmark_policy(trainer, deterministic=True),
-    "SwarmBots-POWallMedium-v0",
-    num_envs=256,
-    num_episodes=256,
-    seed=1000,
-    device="cuda",
-    action_mode="deterministic",
-)
-print(result.to_dict())
-```
-
-Create a fresh adapter for each evaluation call and use the policy's device. It passes public observations and, for scenario-conditioned actors, the selected scenario IDs; privileged fields remain unavailable. Normalization statistics and the actor's training mode are preserved. The adapter owns its recurrent state, previous actions, and exploration noise. Stochastic gSDE evaluation inherits the trainer's episode, interval, or probability reset schedule; pass `gsde_reset_mode` to override it. Direct `BenchmarkPolicy` construction defaults to episode-only resets. The actor is shared, so do not train and evaluate it concurrently.
-
-For a policy trained with `MultiScenarioVectorEnv`, select the task with `as_benchmark_policy(trainer, scenario_id=trainer.env.scenario_names.index(scenario_name))` when evaluating one registered benchmark. The adapter supplies that ID and pads global observations to the training width before frozen normalization. IDs supplied in multi-scenario observations take precedence over the fixed selection.
-
-This example evaluates one protocol seed. For a complete [benchmark report](benchmark_protocol.md), repeat it with a fresh adapter for each seed `1000` through `1004` and aggregate the five results as shown in the [reporting example](api.md#five-seed-report). Record the checkpoint identifier and architecture in `policy_metadata`, and the benchmark Git commit in `source_revision`.
-
-For evaluation during training, `FrozenEvaluationRunner` runs a policy with frozen normalization and `ScheduledEvaluationHook` triggers it at configured intervals. These helpers are available in `swarmbots.learn.evaluation`; use `evaluate_policy` for protocol scores.
-
-## Record a checkpoint
-
-`swarmbots record <benchmark-id> --checkpoint <path> --variant <variant> --episodes 5` records a saved policy with frozen normalization. The Python equivalent is `swarmbots.learn.record_checkpoint(...)`. Recording builds only the policy and environment, and handles recurrent state without allocating training buffers. See [recording](recording.md) for the checkout script, custom policies, and rendering options.
+The [references and implementation sources](references.md) identify the original formulations. The [model reference](policy_parameters/README.md) covers model dimensions, critic interactions, parameter accounting, and recurrent layouts. The [published thesis](https://resolver.obvsg.at/urn:nbn:at:at-ubl:1-108602) describes TMASAC, MAT-QCX, NOP, and signed-magnitude actions.

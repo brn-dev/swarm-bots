@@ -20,13 +20,13 @@ SwarmBots as a whole is an **alpha benchmark**. Each registered scenario also ha
 | **Beta** | Extensive internal testing, but no feedback from other researchers yet. Task design may still have gaps and is not considered final. |
 | **Stable** | Reserved for a future stage after broader validation and independent research feedback. No scenario currently has this status. |
 
-These labels assess testing confidence, not difficulty, policy performance, or core-suite membership. They apply to the registered defaults; custom variants need their own validation. The overall benchmark remains alpha even when individual scenarios are beta. Report problems and suggestions through [GitHub issues](https://github.com/brn-dev/swarm-bots/issues) or by emailing Dominik Baron at [dominik.b4ron@gmail.com](mailto:dominik.b4ron@gmail.com); useful feedback includes the task ID, package version or Git commit, configuration, seed, and observed behavior.
+These labels assess testing confidence, not difficulty, policy performance, or core-suite membership. They apply to the registered defaults; custom variants need their own validation. The overall benchmark remains alpha even when individual scenarios are beta. Feedback channels are [GitHub issues](https://github.com/brn-dev/swarm-bots/issues) and email to Dominik Baron at [dominik.b4ron@gmail.com](mailto:dominik.b4ron@gmail.com); useful reports include the task ID, package version or Git commit, configuration, seed, and observed behavior.
 
 Maturity and version identifiers serve different purposes:
 
 - **Scenario maturity** (`alpha`, `beta`, or eventually `stable`) records the current testing assessment. It is available as `BenchmarkSpec.maturity`, in `swarmbots list` / `describe`, and as `metadata.benchmark_maturity` in evaluation reports.
 - **Task version** (the `-v0` suffix in a benchmark ID) identifies the registered task definition. A maturity promotion alone does not change the ID. Changes to rewards, observations, success or termination conditions, morphology distributions, or physics that make scores incomparable should use a new task version.
-- **Package version** (such as `0.1.0a3`) identifies the implementation release. Record it and the Git commit, especially for development checkouts; the maturity label and task ID alone do not identify an exact implementation.
+- **Package version** (such as `0.1.0a3`) identifies the implementation release. Together with the Git commit, it identifies the implementation, including development checkouts; the maturity label and task ID alone do not.
 - **Protocol version** (currently `0.1`) identifies the evaluation and reporting procedure, independently of task maturity.
 
 ## Registered tasks
@@ -57,23 +57,19 @@ FindOpening focuses on partial observability and exploration within an episode. 
 
 Bridge adds a narrow movable support. Climb requires all active units to reach a platform goal; VerticalReach succeeds when at least one unit reaches the elevated goal volume. Payload tasks extend coordination to external objects, including multiple payloads with individual goals.
 
-Use `swarmbots.CORE_BENCHMARK_IDS` or `swarmbots.ALL_BENCHMARK_IDS` to select a suite, and follow the [benchmark protocol](benchmark_protocol.md) for comparable scores. Returns must be reported per task because reward scales differ.
+`swarmbots.CORE_BENCHMARK_IDS` and `swarmbots.ALL_BENCHMARK_IDS` expose the core and full suites. The [benchmark protocol](benchmark_protocol.md) defines comparable evaluation. Reward scales differ, so meaningful return comparisons are per task.
 
 ## Robot and assembly
 
 The default unit has four articulated limbs, eight hinges, and four connectors. Continuous actuator actions control its movement; connector actions request connections or disconnections. Connections carry physical loads, so changing the connection graph changes the swarm's mechanics during an episode.
 
-Connector frames sit on the outer surfaces of the rounded limb caps. Opposing caps meet when connected, without the penetration and opposing contact forces caused by the former endpoint placement. Joint positions, geom poses relative to the joints, and robot mass properties are preserved. Initial assembly spacing accounts for the new connector distance.
-
-`legacy_connector_positioning=False` is the default. Set `make_scenario(..., legacy_connector_positioning=True)` or `make_env(..., scenario_kwargs={"legacy_connector_positioning": True})` to restore the original frames and assembly spacing for a custom variant. The option and resolved connector distance are included in settings and evaluation metadata. It restores connector positioning, not all behavior of an older implementation.
+Connectors sit on the outer surfaces of the rounded limb caps. Initial assembly spacing follows the connector distance. The registered defaults use surface positioning; `scenario_kwargs={"legacy_connector_positioning": True}` selects the earlier positioning and spacing for a custom variant.
 
 All registered scenarios use five padded agent slots, while reset pools may activate four or five units. Inactive slots are identified by `agent_mask`. Initial assemblies are sampled from the shared [morphology population](benchmark_protocol.md#morphology-population); the canonical evaluation does not use unseen morphologies.
 
-Each initial assembly is shifted vertically so its lowest sphere or capsule surface, including connector tips, sits 1 mm above the floor at `z=0`. The bound is computed analytically from active-unit poses with zero hinge angles when the morphology pool is built. Reset yaw preserves this bound, and the whole assembly receives one rigid translation. Both raw resets and CPU settling start from these poses; settling can then bring the swarm into contact with the floor. This changes initial conditions, so previous evaluations need rerunning.
+Initial assemblies start with their lowest surface 1 mm above the floor and settle under physics before the episode begins. Settling does not consume control steps or contribute to episode return.
 
-`MJWPreConnectedUnitLocationsConfig.ground_clearance` controls this gap in metres and defaults to `0.001`; it must be finite and nonnegative. `z_pos=None` selects automatic placement. An explicit numeric `z_pos` retains the previous fixed-height behavior, including the extra reset offset of `1.1 * swarm.max_unit_extent`, and takes precedence over `ground_clearance`.
-
-Scenario constructors accept keyword overrides through `make_scenario(..., **scenario_kwargs)` or `make_env(..., scenario_kwargs={...})`. See [scenario customization](#scenario-customization) for an example.
+Scenario constructors accept keyword overrides through `make_scenario(..., **scenario_kwargs)` or `make_env(..., scenario_kwargs={...})`. The [customization example](#scenario-customization) illustrates a modified task.
 
 ## Observation contract
 
@@ -94,7 +90,7 @@ For the default four-limb, eight-hinge robot, each agent's `local_obs` has 71 fl
 | `39:59` | Four connector records: `(disconnected, connected, sin(twist), cos(twist), disconnect_potential)` |
 | `59:71` | Four connector positions in world coordinates, metres, flattened `(x, y, z)` |
 
-Twist sine/cosine are zero when no valid connection exists. Disconnect potential is an accumulated control quantity, not a physical measurement. Use `agent_mask` to exclude inactive slots; custom joint/observation settings change these offsets. Actions use the same hinge and connector ordering as their observation records.
+Twist sine/cosine are zero when no valid connection exists. Disconnect potential is an accumulated control quantity, not a physical measurement. `agent_mask` identifies inactive slots; custom joint/observation settings change these offsets. Actions use the same hinge and connector ordering as their observation records.
 
 Shared task features in `global_obs` are positions in world coordinates unless stated otherwise:
 
@@ -108,7 +104,7 @@ Shared task features in `global_obs` are positions in world coordinates unless s
 | DualPayloadPlane | Two consecutive payload position/orientation records |
 | MultiPayloadGoal | One 12-feature record per payload slot: active flag, position (3), orientation (6), goal `(x, y)` |
 
-Inactive MultiPayloadGoal records have zero positions/goals and identity orientation. These payload masks are separate from `agent_mask`. Query `env.single_observation_space` and `env.single_action_space` for the selected task; the corresponding spaces without `single_` include the world dimension.
+Inactive MultiPayloadGoal records have zero positions/goals and identity orientation. These payload masks are separate from `agent_mask`. `env.single_observation_space` and `env.single_action_space` describe the selected task; the corresponding spaces without `single_` include the world dimension.
 
 ## Success and termination
 
@@ -124,13 +120,13 @@ Success is a team-level boolean. Padding never counts toward success. For succes
 | PayloadStep | Payload centre reaches `payload_success_y` and the required height while remaining over the step's finite width and length |
 | MultiPayloadGoal | Every active payload centre lies within `goal_radius` of its assigned 3D goal (goal height is the payload radius) |
 
-PayloadPlane, DualPayloadPlane, and MoveToGoal have no success metric; report return. Episodes truncate at 500 control steps by default. Success terminates an episode for the success-enabled tasks; bridge falls and nonfinite simulator state can also terminate unsuccessfully. The default control period is `0.003 * 10 = 0.03` seconds. Reward terms are exposed in `info["reward_terms"]`; weights and thresholds are in `env.get_settings()` and exported evaluation metadata.
+PayloadPlane, DualPayloadPlane, and MoveToGoal have no success metric; their scores are episode returns. Episodes truncate at 500 control steps by default. Success terminates an episode for the success-enabled tasks; bridge falls and nonfinite simulator state can also terminate unsuccessfully. The default control period is `0.003 * 10 = 0.03` seconds. Reward terms are exposed in `info["reward_terms"]`; weights and thresholds are in `env.get_settings()` and exported evaluation metadata.
 
-Rewards measure task progress and task-specific outcomes. Connection topology contributes no direct reward or penalty; connections affect the swarm's physical behavior. The former isolation penalty has been removed from every scenario. Rerun evaluations when comparing against revisions that included it.
+Rewards measure task progress and task-specific outcomes. Connection topology contributes no direct reward or penalty; connections affect the swarm's physical behavior. Historical reward and physics changes are recorded in the [changelog](../CHANGELOG.md) and can make scores from different revisions incomparable.
 
-MultiPayloadGoal samples active goal centres with a guaranteed non-overlapping placement of the payloads at those centres in their reset orientation. It tries 16 batched random assignments, then uses a randomly translated and permuted grid if none are valid. Spheres use centre separation; boxes and horizontal capsules use conservative rectangular footprints. The goal rectangle bounds the centres, not the full payload shapes. Each bound must lie within [-100,000, 100,000]. Bounds round inward to float32; spans that cannot be represented safely are rejected. A custom rectangle that cannot accommodate the guaranteed grid for the maximum positive-probability active count is rejected during construction. Sampler parameters are recorded in settings.
+MultiPayloadGoal samples assignments that allow all active payloads to occupy their goals without overlap in their reset orientation. The goal rectangle bounds payload centres, not their full shapes. Custom rectangles must accommodate the maximum possible active count; invalid configurations fail during construction.
 
-Initial payload rows use `payload_spawn_margin` as a minimum centre spacing. The recorded `payload_spawn_spacing` also accommodates the payload's reset-orientation width with a small rounding clearance: horizontal capsules need `4 * payload_radius` along the row, while spheres and boxes need `2 * payload_radius`. Each reset increases clearance as needed for float32 rounding at the sampled row origin and across its span, including inactive payload rows. Both the requested margin and the minimum resolved spacing are recorded in settings.
+Payload reset spacing accounts for shape and radius. `payload_spawn_margin` is the requested minimum centre spacing; the resolved `payload_spawn_spacing` may be larger to avoid overlap. Both values are recorded in settings.
 
 DualPayloadPlane expands its default X offsets when the payload shape or radius needs more separation. Explicit `payload_offset_x` overrides are used as supplied; custom placements must provide their own collision clearance.
 
@@ -142,7 +138,7 @@ PayloadStep height shaping applies within the platform's width. Its climb milest
 
 ## Scenario customization
 
-The registry fixes defaults, not the implementation. Custom variants remain easy to construct:
+Scenario overrides create custom variants of a registered task:
 
 ```python
 from swarmbots import make_env
@@ -159,8 +155,6 @@ env = make_env(
 env.close()
 ```
 
-Treat any override as a new task. Report every override and do not label the result with the unchanged canonical benchmark ID.
+A result with overrides describes a custom variant of the base task. Reporting includes every override and distinguishes it from the canonical registered configuration.
 
-`TruncatedNormalDistParams` bounds rejection sampling with `max_rejection_attempts` (default 1,000 draws per sample). Exhausting the limit raises an error instead of blocking reset indefinitely; impossible degenerate rejection distributions are rejected at construction.
-
-Climb and MultiPayloadGoal require finite `goal_radius >= 1e-6` metres. All scenarios require finite `reset_settle_timestep_scale > 0`, even when settling is disabled, so invalid settings fail during construction.
+Custom geometry and reset settings are validated during construction. Climb and MultiPayloadGoal require finite `goal_radius >= 1e-6` metres; reset settling requires finite `reset_settle_timestep_scale > 0`. Invalid sampling distributions or goal regions raise errors rather than producing a valid canonical task.

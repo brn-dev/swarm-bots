@@ -41,8 +41,9 @@ recordings/
 throughput_benchmark_results/
 MUJOCO_LOG.TXT
 
-# Generated policy reports and architecture renders (keep guides and compact audits)
+# Generated policy reports and architecture renders (keep guides)
 /docs/policy_parameters/**/*.csv
+/docs/policy_parameters/**/*.json.gz
 /docs/policy_parameters/**/report.md
 /docs/policy_parameters/generated/
 /docs/policy_parameters/diagrams/*

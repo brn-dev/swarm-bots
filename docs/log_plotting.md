@@ -1,12 +1,14 @@
-# Plot training logs
+# Training-log plots
 
-`swarmbots.plotting` reads the semicolon-delimited CSV logs written by the included learners and produces Matplotlib figures. The plotting implementation lives in `swarmbots/plotting/plot_logs.py`. Install the optional plotting dependency:
+`swarmbots.plotting` produces learning curves from the included learners' CSV logs, overlays individual runs, and compares methods across training seeds. Plotting is available in the current source checkout; the published `0.1.0a3` package does not include this module or the `plot` extra.
+
+From the repository root, the following command installs plotting support:
 
 ```bash
-pip install 'swarmbots[plot]'
+uv sync --extra plot
 ```
 
-In a source checkout, use `uv sync --extra dev --extra plot`. Plotting needs no simulator instance or GPU. The helpers accept a CSV file, a compressed CSV (`.gz`, `.bz2`, `.xz`, or `.zip`), or a run directory containing `log.csv` or its compressed counterpart. A directory prefers `log.csv` when both versions exist. ZIP archives must contain one CSV, or exactly one file named `log.csv`.
+Plotting needs no simulator instance or GPU. Inputs are run directories containing `log.csv`, individual CSV files, or compressed CSVs (`.gz`, `.bz2`, `.xz`, or `.zip`). ZIP archives must contain one CSV, or exactly one file named `log.csv`.
 
 ## Plot one or more runs
 
@@ -14,12 +16,14 @@ In a source checkout, use `uv sync --extra dev --extra plot`. Plotting needs no 
 from swarmbots.plotting import plot_logs
 
 figure = plot_logs(
-    "runs/SwarmBots-WallEasy-v0/mappo",
+    "runs/first-mappo",
     output_path="plots/mappo.png",
 )
 ```
 
-The default panels show the available `ep_rew_ema` and `ep_success_rate_ema` columns. Success EMA values are already percentages in the training log. These charts describe training behavior; use [benchmark evaluation](benchmark_protocol.md) to report policy scores.
+The path above matches the explicit `--run-dir runs/first-mappo` in the [training example](../examples/README.md#train-evaluate-and-record-a-preset). Automatically generated runs place logs in deeper scale/seed/run directories; plotting requires the directory containing `log.csv`, not a parent folder.
+
+The default panels show the available `ep_rew_ema` and `ep_success_rate_ema` columns. Success EMA values are already percentages in the training log. These charts describe training behavior; reportable policy scores come from [benchmark evaluation](benchmark_protocol.md).
 
 Pass a list of paths to overlay runs, and select any scalar columns explicitly:
 
@@ -117,11 +121,11 @@ The library keeps the caller's Matplotlib backend. For a headless job, set `MPLB
 ## Command-line tools
 
 ```bash
-swarmbots-plot-logs runs/SwarmBots-WallEasy-v0/mappo --output plots/mappo.png
+swarmbots-plot-logs runs/first-mappo --output plots/mappo.png
 swarmbots-plot-logs runs/my-run --list-columns
 swarmbots-plot-logs runs/my-run --columns grad_norm_actor__mean grad_norm_critic__mean --x-column total_updates --output plots/gradients.png
 swarmbots-plot-experiments runs/wall-easy --output-dir plots/wall-easy --formats png pdf
 swarmbots-plot-experiments --group MAPPO runs/mappo/seed-42 runs/mappo/seed-43 --group TMASAC runs/tmasac/seed-42 runs/tmasac/seed-43
 ```
 
-Use gradient column names printed by `--list-columns`; their names depend on the learner. Both tools support `--help`, custom columns, an X column, smoothing, and a cutoff. `swarmbots-plot-logs --show` opens the saved figure. The tools use the headless Agg backend by default. See [command-line tools](tools.md) for equivalent Python module commands.
+Use gradient column names printed by `--list-columns`; their names depend on the learner. Both tools support `--help`, custom columns, an X column, smoothing, and a cutoff. `swarmbots-plot-logs --show` opens the saved figure. The tools use the headless Agg backend by default. The [command-line guide](tools.md) lists equivalent Python module commands.

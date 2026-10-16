@@ -98,10 +98,7 @@ def _observation_indices(env: Any) -> ObsIndices:
 def _add_ppo_nop(
     policy: BasePolicy, env: BaseLearnEnvWrapper, indices: ObsIndices, options: Mapping[str, Any]
 ) -> BasePolicy:
-    latent_dim = getattr(policy, "local_latent_dim", None)
-    if latent_dim is None:
-        latent_dim = policy.config.encoder_config.d_model
-    latent_dim = int(latent_dim)
+    latent_dim = policy.nop_latent_dim
     transition_dim = options.get("transition_model_d_model", 128)
     init_gains = options.get("nop_init_gains", NOPInitGains())
     world_model_config = NOPWorldModelConfig(
@@ -244,7 +241,7 @@ def make_training(
     settings, including episode length and settled resets, come from the registry.
     ``model_scale`` defaults to "5M-2L NOP1M": online main-policy parameters
     excluding frozen targets, plus a separate NOP budget. Pass None to use
-    explicit architecture widths. Fixed 2.5M/0.75M and 10M/2M layouts are also available;
+    explicit architecture widths. Fixed 2.5M/0.75M and 10M-3L/4L/5L with 2M NOP layouts are also available;
     sizes are declared per architecture and are not fitted to task shapes.
     ``use_nop=False`` disables the auxiliary model without changing main widths.
     ``policy_kwargs`` overrides the arguments to the preset policy builder;

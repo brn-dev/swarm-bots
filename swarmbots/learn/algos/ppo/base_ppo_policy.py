@@ -21,6 +21,8 @@ PPOSamplerConfigType = TypeVar('PPOSamplerConfigType', bound=PPOSamplerConfig)
 
 class BasePPOPolicy(BasePolicy, Generic[PPOSamplesType, PPOSamplerConfigType], abc.ABC):
     action_dist: HybridActionDistribution
+    nop_latent_dim: int
+    nop_latent_source: str
 
     @property
     def gsde_enabled(self) -> bool:
@@ -127,7 +129,7 @@ class BasePPOPolicy(BasePolicy, Generic[PPOSamplesType, PPOSamplerConfigType], a
             action_splitter: ActionMetricsSplitterInput = None,
     ) -> tuple[torch.Tensor, torch.Tensor, LossDict, LossMetrics, torch.Tensor]:
         """
-        :return: log_probs, values, extra_losses, extra_loss_metrics, local_latents
+        :return: log_probs, values, extra_losses, extra_loss_metrics, NOP source latents
         """
         raise NotImplementedError()
 

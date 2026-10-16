@@ -32,7 +32,7 @@ def make_env(hidden_global_vars_dim=5):
 def make_policy(env, *, context_in_elements=True, use_popart=False, deepset=True, compile_modules=False):
     return MAPPOPolicy(env, MAPPOPolicyConfig(
         actor_config=MAPPOActorConfig(
-            hidden_dims=[8], shared_encoder_latent_dim=6, actor_head_hidden_dims=[8], latent_pi_dim=4,
+            hidden_dims=[8], latent_dim=6, actor_head_hidden_dims=[8], latent_pi_dim=4,
         ),
         critic_config=MAPPOCriticConfig(
             deep_set_config=DeepSetCriticConfig([8], [8]) if deepset else None,
@@ -56,7 +56,7 @@ def observations(env, *, device="cpu"):
 def test_mappo_critic_conditions_elements_and_keeps_direct_context_for_empty_swarms(context_in_elements):
     env = make_env()
     policy = make_policy(env, context_in_elements=context_in_elements)
-    local_width = policy.local_latent_dim + env.hidden_local_vars_dim
+    local_width = policy.critic_latent_dim + env.hidden_local_vars_dim
     encoder = nn.Linear(local_width + (env.hidden_global_vars_dim if context_in_elements else 0), 1, bias=False)
     decoder = nn.Linear(1 + env.hidden_global_vars_dim, 1, bias=False)
     with torch.no_grad():
@@ -125,9 +125,10 @@ def test_mappo_global_context_preserves_actor_boundary_masking_and_value_gradien
         assert (obs[field].grad[~obs["agent_mask"]] == 0).all()
     assert (obs["global_obs"].grad[1] == 0).all()
     assert obs["hidden_global_vars"].grad[1].abs().sum() > 0
+    assert all(parameter.grad is None for parameter in policy.actor_encoder.parameters())
     assert all(parameter.grad is None for parameter in policy.actor.parameters())
     assert all(parameter.grad is None for parameter in policy.action_dist.parameters())
-    for module in (policy.shared_encoder, policy.critic):
+    for module in (policy.critic_encoder, policy.critic):
         gradients = [parameter.grad for parameter in module.parameters()]
         assert all(gradient is not None and torch.isfinite(gradient).all() for gradient in gradients)
         assert any(gradient.abs().sum() > 0 for gradient in gradients)
@@ -157,7 +158,7 @@ def test_mappo_flattened_critic_ignores_element_context_setting():
 def test_mappo_mlp_flattening_masks_agent_slots_and_is_order_sensitive():
     env = make_env()
     policy = make_policy(env, deepset=False)
-    local_width = policy.local_latent_dim + env.hidden_local_vars_dim
+    local_width = policy.critic_latent_dim + env.hidden_local_vars_dim
     policy.critic.value_features = nn.Identity()
     head = nn.Linear(env.n_agents * local_width + env.hidden_global_vars_dim, 1, bias=False)
     with torch.no_grad():

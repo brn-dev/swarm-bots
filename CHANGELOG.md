@@ -2,12 +2,20 @@
 
 ## Unreleased
 
+- Train MAT/RMAT NOP from critic-encoder features and separate MAPPO actor/critic MLP encoders, with critic-side NOP and independent inference/gradient paths. Rebalance fixed MAPPO widths, version the changed layouts, and record NOP source metadata. Replace the old architectures without a compatibility mode.
+
+- Replace the 10M model-scale name with `10M-3L` as the three-block reference; reject the old aliases and add parameter-comparable `10M-4L` and `10M-5L` encoder layouts. Order architecture-gallery scales by budget and depth.
+
+- Distinguish current-checkout documentation and tools from the published `0.1.0a3` release, replace the unavailable plotting-extra install recipe with checkout setup, and correct the variant-reference link.
+- Refine documentation for repository newcomers with subject-focused prose and persistent writing guidance. Add a saved-checkpoint five-seed report, recurrent TD3 reconstruction settings, headless rendering prerequisites, and consistent training-to-plotting paths; clarify environment versus policy compilation.
+- Generate policy parameter reports and architecture diagrams from current presets on demand; remove tracked count snapshots, measured comparison tables, historical audits and the redundant `--refresh` flag. Exclude local count exports from source packages. Build diagram-test metadata once per variant/scale per test session and verify fresh reports across repeated invocations.
+- Rework the README and guides around installation, first runs, training outputs, checkpoint continuation, evaluation, and recording. Use neutral language, simplify architecture-heavy explanations, improve navigation, and add GPU troubleshooting and clearer platform commands.
 - Fix live reward-weight commands through the benchmark environment API, validate updates before applying them across scenarios, and retain the resolved weights in command metadata.
 - Clamp fixed-range histogram inputs to the boundary bins so outliers remain represented and merged histograms retain the correct sample weights; keep summary statistics based on the original data.
 - Apply fixed-scale recurrent memory widths explicitly, clearing custom or previously resolved overrides when the selected layout uses token-width memory.
 - Align MASAC's learning rate and automatic-temperature defaults with TMASAC, retaining explicit overrides and the on-policy decoder learning-rate multiplier. Isolate example runs by scale, seed and unique run ID; reject reuse of an explicit output directory.
 - Match 5M-3L recurrent main-policy counts to their 2L counterparts with narrower temporal modules and input/output projections, preserving feed-forward backbones. Size actor-state critic inputs from the actual memory width and show the memory projections in diagrams; version the changed 3L layout as v2.
-- Replace the `5M` scale name with `5M-2L` (the unchanged architecture and new default) and add `5M-3L` for every preset. Vary only attention/Deep Set encoder depth with comparable feed-forward parameter budgets; retain MLP/decoder depths, prediction heads and NOP core. Give each choice separate audits and diagram exports; reject the removed `5M` aliases.
+- Replace the `5M` scale name with `5M-2L` (the two-block reference and new default) and add `5M-3L` for every preset. Vary only attention/Deep Set encoder depth with comparable feed-forward parameter budgets; retain MLP/decoder depths, prediction heads and NOP core. Give each choice separate audits and diagram exports; reject the removed `5M` aliases.
 - Widen major architecture-diagram components and the gallery canvas so component text stays on its original lines, while keeping clear connection spacing.
 - Reject unsupported PopArt in effective nested Deep Set critic heads for DDPG/TD3/MASAC, including direct policy construction. Show optional observation/action encoders and token normalization in architecture diagrams, with their actual forward order; keep connection labels clear when these controls change component heights.
 - Preserve explicit Deep Set encoder/head controls when applying a fixed model scale, including joint embeddings, token normalization, separate action encoders, gating and initialization. Keep fallback templates and fixed-scale precedence over legacy baseline width arguments.
@@ -56,7 +64,7 @@
 - Remove distribution-specific entropy extras, coefficients, floors, magnitude weighting, commands, and Gaussian quadrature. PPO uses its importance-weighted Monte Carlo entropy term with default `mc_ent_coef=1e-3`; SAC retains its existing entropy objective and automatic temperature tuning. Keep entropy diagnostics outside the loss configuration, with underlying Gaussian entropy labeled `ent_normal`, exclude inactive agents and recurrent padding, and snapshot reusable environment masks.
 - Keep rejected off-policy parameter commands atomic and shared NOP batch-size settings consistent; complete recurrent TD3 helper annotations.
 - Retain NOP metrics as detached device tensors and snapshot reusable outputs, deferring CPU conversion to metric aggregation instead of synchronizing every update.
-- Condense agent notes to navigation and costly gotchas, removing duplicated defaults and implementation history.
+- Condense agent notes to navigation, documentation style, behavioral invariants and release hazards, removing duplicated defaults and implementation history.
 - Place connector frames on capsule surfaces by default, preserving robot geometry and mass properties; expose `legacy_connector_positioning=True` to restore the original frames and assembly spacing.
 - Make asynchronous settled-reset sampling independent of worker completion timing, and retain agent-shuffle RNG state during repeated device setup.
 - Compute PPO rollout likelihoods from stored bounded actions, matching training recomputation for saturated Gaussian and gSDE actions while retaining SAC's cached pre-tanh path.

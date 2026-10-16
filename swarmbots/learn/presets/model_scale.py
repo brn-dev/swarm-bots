@@ -51,7 +51,8 @@ class ScaleLayout:
     deepset_q_head_width: int
     gated_width: int
     ppo_backbone: tuple[int, ...]
-    mappo_backbone: tuple[int, ...]
+    mappo_actor_backbone: tuple[int, ...]
+    mappo_critic_backbone: tuple[int, ...]
     private_actor: tuple[int, ...]
     shared_v: tuple[int, ...]
     separate_v_regressor: tuple[int, ...]
@@ -81,7 +82,7 @@ SCALE_LAYOUTS = {
         name="2.5M NOP0.75M",
         main_parameters=2_500_000,
         nop_parameters=750_000,
-        version="2.5+0.75M-v6",
+        version="2.5+0.75M-v7",
         width=192,
         mlp_latent_width=192,
         ff_width=384,
@@ -106,7 +107,8 @@ SCALE_LAYOUTS = {
         deepset_q_head_width=128,
         gated_width=256,
         ppo_backbone=(512, 512, 384, 384),
-        mappo_backbone=(768, 512, 512, 384),
+        mappo_actor_backbone=(512, 384, 384),
+        mappo_critic_backbone=(512, 512, 384, 384),
         private_actor=(512, 384, 384),
         shared_v=(768, 384),
         separate_v_regressor=(512, 384),
@@ -121,7 +123,7 @@ SCALE_LAYOUTS = {
         name="5M-2L NOP1M",
         main_parameters=5_000_000,
         nop_parameters=1_000_000,
-        version="5M-2L+1M-v1",
+        version="5M-2L+1M-v2",
         width=256,
         mlp_latent_width=256,
         ff_width=512,
@@ -146,7 +148,8 @@ SCALE_LAYOUTS = {
         deepset_q_head_width=128,
         gated_width=384,
         ppo_backbone=(768, 768, 512, 512),
-        mappo_backbone=(1024, 768, 768, 512),
+        mappo_actor_backbone=(768, 512, 512, 384),
+        mappo_critic_backbone=(1024, 768, 512),
         private_actor=(768, 512, 512),
         shared_v=(1024, 512),
         separate_v_regressor=(768, 512),
@@ -157,11 +160,31 @@ SCALE_LAYOUTS = {
         nop_projection=(256, 256),
         nop_predictors=(192, 192),
     ),
-    "10M NOP2M": ScaleLayout(
-        name="10M NOP2M",
+}
+
+SCALE_LAYOUTS.update({
+    "5M-3L NOP1M": replace(
+        SCALE_LAYOUTS[DEFAULT_MODEL_SCALE],
+        name="5M-3L NOP1M",
+        version="5M-3L+1M-v3",
+        layers=3,
+        decentralized_layers=3,
+        ff_width=320,
+        decentralized_ff_width=512,
+        autoregressive_actor_ff=256,
+        decoder_layers=2,
+        critic_width=320,
+        critic_ff=384,
+        temporal_hidden_dim=192,
+        autoregressive_temporal_hidden_dim=136,
+        lstm_actor_temporal_hidden_dim=192,
+        slstm_actor_temporal_hidden_dim=168,
+    ),
+    "10M-3L NOP2M": ScaleLayout(
+        name="10M-3L NOP2M",
         main_parameters=10_000_000,
         nop_parameters=2_000_000,
-        version="10+2M-v7",
+        version="10M-3L+2M-v1",
         width=256,
         mlp_latent_width=384,
         ff_width=768,
@@ -186,7 +209,8 @@ SCALE_LAYOUTS = {
         deepset_q_head_width=192,
         gated_width=512,
         ppo_backbone=(1024, 1024, 768, 768),
-        mappo_backbone=(1536, 1024, 1024, 768),
+        mappo_actor_backbone=(1024, 768, 768, 512),
+        mappo_critic_backbone=(1024, 1024, 768),
         private_actor=(1024, 768, 768),
         shared_v=(1536, 768),
         separate_v_regressor=(1024, 768),
@@ -197,25 +221,38 @@ SCALE_LAYOUTS = {
         nop_projection=(384, 384),
         nop_predictors=(256, 256),
     ),
-}
+})
 
 SCALE_LAYOUTS.update({
-    "5M-3L NOP1M": replace(
-        SCALE_LAYOUTS[DEFAULT_MODEL_SCALE],
-        name="5M-3L NOP1M",
-        version="5M-3L+1M-v2",
-        layers=3,
-        decentralized_layers=3,
-        ff_width=320,
-        decentralized_ff_width=512,
-        autoregressive_actor_ff=256,
-        decoder_layers=2,
-        critic_width=320,
-        critic_ff=384,
-        temporal_hidden_dim=192,
-        autoregressive_temporal_hidden_dim=136,
+    "10M-4L NOP2M": replace(
+        SCALE_LAYOUTS["10M-3L NOP2M"],
+        name="10M-4L NOP2M",
+        version="10M-4L+2M-v2",
+        layers=4,
+        ff_width=608,
+        decentralized_ff_width=768,
+        autoregressive_actor_ff=400,
+        decoder_layers=3,
+        critic_ff=960,
+        temporal_hidden_dim=204,
+        autoregressive_temporal_hidden_dim=144,
         lstm_actor_temporal_hidden_dim=192,
-        slstm_actor_temporal_hidden_dim=168,
+        slstm_actor_temporal_hidden_dim=144,
+    ),
+    "10M-5L NOP2M": replace(
+        SCALE_LAYOUTS["10M-3L NOP2M"],
+        name="10M-5L NOP2M",
+        version="10M-5L+2M-v2",
+        layers=5,
+        ff_width=480,
+        decentralized_ff_width=768,
+        autoregressive_actor_ff=320,
+        decoder_layers=3,
+        critic_ff=608,
+        temporal_hidden_dim=184,
+        autoregressive_temporal_hidden_dim=128,
+        lstm_actor_temporal_hidden_dim=176,
+        slstm_actor_temporal_hidden_dim=136,
     ),
 })
 
@@ -334,8 +371,8 @@ def _mlp_on_policy(config: Any, layout: ScaleLayout) -> Any:
     else:
         actor = replace(
             actor,
-            hidden_dims=list(layout.mappo_backbone),
-            shared_encoder_latent_dim=layout.mlp_latent_width,
+            hidden_dims=list(layout.mappo_actor_backbone),
+            latent_dim=layout.mlp_latent_width,
             actor_head_hidden_dims=list(layout.private_actor[:-1]),
             latent_pi_dim=layout.private_actor[-1],
         )
@@ -354,6 +391,16 @@ def _mlp_on_policy(config: Any, layout: ScaleLayout) -> Any:
                     ),
                 ),
             )
+        return replace(
+            config,
+            actor_config=actor,
+            critic_encoder_config=replace(
+                config.critic_encoder_config,
+                hidden_dims=list(layout.mappo_critic_backbone),
+                latent_dim=layout.mlp_latent_width,
+            ),
+            critic_config=critic,
+        )
     return replace(config, actor_config=actor, critic_config=critic)
 
 
@@ -535,7 +582,7 @@ def make_policy_at_scale(policy_class: type, env: Any, config: Any, scale: str) 
     resolved = model_config_at_scale(config, scale)
     policy = policy_class(env=env, config=resolved)
     shared = (
-        hasattr(config, "actor_config")
+        (hasattr(config, "actor_config") and not hasattr(config, "critic_encoder_config"))
         or getattr(config, "shared_encoder_config", None) is not None
     )
     policy.model_scale = {

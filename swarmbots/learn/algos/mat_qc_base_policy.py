@@ -110,6 +110,8 @@ class MATQCBasePolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
             env=env, max_agents=self.max_agents,
         )
         self.d_model_critic_encoder = self.critic_encoder_config.d_model
+        self.nop_latent_dim = self.d_model_critic_encoder
+        self.nop_latent_source = "critic_encoder"
 
         self.agent_embeddings_decoder: nn.Parameter | None = None
         if config.decoder_config.add_agent_embeddings:
@@ -485,7 +487,7 @@ class MATQCBasePolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
     ) -> tuple[torch.Tensor, torch.Tensor, LossDict, LossMetrics, torch.Tensor]:
         actions = self._policy_actions(batch.actions)
         if self.action_dist.compile_friendly:
-            log_probs, values, augmented_observations = self._evaluate_actions_core(
+            log_probs, values, critic_observations = self._evaluate_actions_core(
                 local_obs=batch.local_obs,
                 global_obs=batch.global_obs,
                 hidden_local_vars=batch.hidden_local_vars,
@@ -495,7 +497,7 @@ class MATQCBasePolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
                 actions=actions,
             )
         else:
-            latent_pi, values, augmented_observations = self._evaluate_latent_and_values(
+            latent_pi, values, critic_observations = self._evaluate_latent_and_values(
                 local_obs=batch.local_obs,
                 global_obs=batch.global_obs,
                 hidden_local_vars=batch.hidden_local_vars,
@@ -505,7 +507,7 @@ class MATQCBasePolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
             )
             self.action_dist.update_latent_features(latent_pi)
             log_probs = self.action_dist.log_prob(actions, previous_actions=batch.previous_actions)
-        return log_probs, values, {}, {}, augmented_observations
+        return log_probs, values, {}, {}, critic_observations
 
     def predict_values(
             self,
@@ -580,7 +582,7 @@ class MATQCBasePolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
             hidden_global_vars,
             agent_mask=agent_mask,
         )
-        return latent_pi, values, augmented_observations
+        return latent_pi, values, critic_observations
 
     def _evaluate_actions_core(
             self,
@@ -614,7 +616,7 @@ class MATQCBasePolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
             previous_actions: torch.Tensor | None,
             actions: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        latent_pi, values, augmented_observations = self._evaluate_latent_and_values_impl(
+        latent_pi, values, critic_observations = self._evaluate_latent_and_values_impl(
             local_obs=local_obs,
             global_obs=global_obs,
             hidden_local_vars=hidden_local_vars,
@@ -624,7 +626,7 @@ class MATQCBasePolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
         )
         self.action_dist.update_latent_features(latent_pi)
         log_probs = self.action_dist.log_prob(actions, previous_actions=previous_actions)
-        return log_probs, values, augmented_observations
+        return log_probs, values, critic_observations
 
     def act(
             self,
