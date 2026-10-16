@@ -8,7 +8,12 @@ from torch import nn
 from swarmbots.learn.algos.mat.mat_encoder import MATEncoderConfig, MATEncoderLayer
 from swarmbots.learn.algos.ppo.ppo_policy import PopArtConfig
 from swarmbots.learn.nn_components.activations import ActivationFactory
-from swarmbots.learn.nn_components.deep_set import DeepSetCritic, DeepSetInteractionConfig
+from swarmbots.learn.nn_components.deep_set import (
+    DeepSetCritic,
+    DeepSetInteraction,
+    DeepSetInteractionConfig,
+    GatedDeepSetInteraction,
+)
 from swarmbots.learn.nn_components.feed_forward import MLP, feedforward_linear_layers, make_feedforward
 from swarmbots.learn.nn_components.nn_init import make_init_linear_orthogonal, reinitialize_multihead_attention
 
@@ -77,6 +82,35 @@ class ObservationActionEncoder(nn.Module):
         )
 
 
+class DeepSetEncoderLayer(MATEncoderLayer):
+    """Use the transformer block unchanged apart from its set communication operator."""
+
+    def __init__(self, config: MATEncoderConfig, interaction_config: DeepSetInteractionConfig) -> None:
+        super().__init__(replace(config, use_agent_attention=False))
+        interaction_type = GatedDeepSetInteraction if interaction_config.gated else DeepSetInteraction
+        self.interaction = interaction_type(
+            config.d_model,
+            config=replace(interaction_config, local_update="residual", normalize=False),
+            set_dim=1,
+            pool_mode="mean",
+            linear_init=make_init_linear_orthogonal(config.linear_init_gain),
+            act_fn_cls=config.act_fn_cls,
+        )
+
+    def _self_attention_block(
+        self,
+        embeddings: torch.Tensor,
+        *,
+        attention_mask: torch.Tensor | None,
+        key_padding_mask: torch.Tensor | None,
+        is_causal: bool,
+    ) -> torch.Tensor:
+        if attention_mask is not None or is_causal:
+            raise ValueError("Deep Set communication does not support pairwise or causal attention masks")
+        element_mask = None if key_padding_mask is None else ~key_padding_mask
+        return self.dropout1(self.interaction.message_update(embeddings, element_mask))
+
+
 class ActionConditionedEncoder(nn.Module):
     def __init__(
         self,
@@ -90,6 +124,7 @@ class ActionConditionedEncoder(nn.Module):
         encoder_config: MATEncoderConfig,
         critic_config: TransformerCriticConfig,
         act_fn_cls: ActivationFactory,
+        interaction_config: DeepSetInteractionConfig | None = None,
     ) -> None:
         super().__init__()
         self.max_agents = int(max_agents)
@@ -121,9 +156,6 @@ class ActionConditionedEncoder(nn.Module):
             if self.observation_action_encoder is None
             else self.observation_action_encoder.output_dim
         )
-        self.local_action_input_norm = (
-            nn.LayerNorm(local_action_input_dim) if encoder_config.normalize_obs_inputs else nn.Identity()
-        )
         action_coembed_hidden_dims = (
             [self.d_model]
             if critic_config.action_coembed_hidden_dims is None
@@ -138,11 +170,6 @@ class ActionConditionedEncoder(nn.Module):
             act_fn_cls=act_fn_cls,
         )
 
-        self.global_input_norm = (
-            nn.LayerNorm(self.global_encoder_input_dim)
-            if encoder_config.normalize_obs_inputs and self.has_global_input
-            else nn.Identity()
-        )
         if self.has_global_input and not self.joint_obs_embedding:
             linear_init = make_init_linear_orthogonal(encoder_config.linear_init_gain)
             projection_linear_init = (
@@ -162,7 +189,11 @@ class ActionConditionedEncoder(nn.Module):
             self.global_encoder = None
 
         self.token_norm = nn.LayerNorm(self.d_model) if encoder_config.normalize_tokens else nn.Identity()
-        prototype_layer = MATEncoderLayer(encoder_config)
+        prototype_layer = (
+            MATEncoderLayer(encoder_config)
+            if interaction_config is None
+            else DeepSetEncoderLayer(encoder_config, interaction_config)
+        )
         self.layers = nn.ModuleList([copy.deepcopy(prototype_layer) for _ in range(encoder_config.num_layers)])
         self.norm = nn.LayerNorm(
             self.d_model,
@@ -170,7 +201,10 @@ class ActionConditionedEncoder(nn.Module):
             bias=encoder_config.bias,
         )
         if encoder_config.transformer_ff_init_gain is not None:
-            self._reinitialize_layers(feedforward_init_gain=encoder_config.transformer_ff_init_gain)
+            self._reinitialize_layers(
+                feedforward_init_gain=encoder_config.transformer_ff_init_gain,
+                communication_init_gain=encoder_config.linear_init_gain,
+            )
 
         self.agent_embeddings: nn.Parameter | None = None
         if encoder_config.add_agent_embeddings:
@@ -193,6 +227,12 @@ class ActionConditionedEncoder(nn.Module):
         n_agents = local_inputs.shape[1]
         if n_agents > self.max_agents:
             raise ValueError(f"Expected local_inputs second dim <= {self.max_agents}, got {n_agents}")
+        if agent_mask is not None:
+            padding = ~agent_mask.unsqueeze(-1)
+            local_inputs = local_inputs.masked_fill(padding, 0.0)
+            actions = actions.masked_fill(padding, 0.0)
+            if hidden_local_vars is not None:
+                hidden_local_vars = hidden_local_vars.masked_fill(padding, 0.0)
 
         observation_parts = [local_inputs]
         if self.hidden_local_vars_dim > 0:
@@ -207,10 +247,8 @@ class ActionConditionedEncoder(nn.Module):
             if self.observation_action_encoder is None
             else self.observation_action_encoder(observation_inputs, actions)
         )
-        token_inputs = self.local_action_input_norm(token_inputs)
         if self.joint_obs_embedding:
             global_encoder_inputs = self._global_observation_inputs(global_inputs, hidden_global_vars)
-            global_encoder_inputs = self.global_input_norm(global_encoder_inputs)
             token_inputs = torch.cat(
                 (token_inputs, global_encoder_inputs.unsqueeze(1).expand(-1, n_agents, -1)),
                 dim=-1,
@@ -221,14 +259,19 @@ class ActionConditionedEncoder(nn.Module):
 
         if self.global_encoder is not None:
             global_encoder_inputs = self._global_observation_inputs(global_inputs, hidden_global_vars)
-            global_tokens = self.global_encoder(self.global_input_norm(global_encoder_inputs))
+            global_tokens = self.global_encoder(global_encoder_inputs)
             tokens = tokens + global_tokens.unsqueeze(1).expand(-1, n_agents, -1)
         tokens = self.token_norm(tokens)
 
         src_key_padding_mask = None if agent_mask is None else ~agent_mask
+        if src_key_padding_mask is not None and self.layers and self.layers[0].self_attn is not None:
+            # A padded dummy key keeps completely empty rows finite without affecting valid rows.
+            src_key_padding_mask = src_key_padding_mask.clone()
+            src_key_padding_mask[:, 0] &= ~src_key_padding_mask.all(dim=1)
         for layer in self.layers:
             tokens = layer(tokens, src_key_padding_mask=src_key_padding_mask)
-        return self.norm(tokens)
+        tokens = self.norm(tokens)
+        return tokens if agent_mask is None else tokens.masked_fill(~agent_mask.unsqueeze(-1), 0.0)
 
     def _global_observation_inputs(
         self,
@@ -242,12 +285,17 @@ class ActionConditionedEncoder(nn.Module):
             global_parts.append(hidden_global_vars)
         return global_parts[0] if len(global_parts) == 1 else torch.cat(global_parts, dim=-1)
 
-    def _reinitialize_layers(self, *, feedforward_init_gain: float) -> None:
+    def _reinitialize_layers(self, *, feedforward_init_gain: float, communication_init_gain: float) -> None:
         hidden_linear_init = make_init_linear_orthogonal(feedforward_init_gain)
         output_linear_init = make_init_linear_orthogonal(1.0)
+        communication_linear_init = make_init_linear_orthogonal(communication_init_gain)
         for layer in self.layers:
             if layer.self_attn is not None:
                 reinitialize_multihead_attention(layer.self_attn)
+            elif isinstance(layer, DeepSetEncoderLayer):
+                for module in layer.interaction.modules():
+                    if isinstance(module, nn.Linear):
+                        communication_linear_init(module)
             hidden_layers, output_layers = feedforward_linear_layers(layer.feedforward)
             for linear in hidden_layers:
                 hidden_linear_init(linear)
@@ -300,12 +348,12 @@ class TransformerTwinCritic(nn.Module):
         self.encoder2 = build_encoder() if critic_config.independent_encoders else None
         self.nop_source_latent_dim = self.d_model * (2 if self.encoder2 is not None else 1)
         q_local_dim = self.d_model
-        self.q1 = self._build_q_network(
+        self.q1 = build_q_network(
             q_local_dim=q_local_dim,
             critic_config=critic_config,
             act_fn_cls=act_fn_cls,
         )
-        self.q2 = self._build_q_network(
+        self.q2 = build_q_network(
             q_local_dim=q_local_dim,
             critic_config=critic_config,
             act_fn_cls=act_fn_cls,
@@ -439,33 +487,36 @@ class TransformerTwinCritic(nn.Module):
             error_msgs,
         )
 
-    @staticmethod
-    def _build_q_network(
-        *,
-        q_local_dim: int,
-        critic_config: TransformerCriticConfig,
-        act_fn_cls: ActivationFactory,
-    ) -> DeepSetCritic:
-        return DeepSetCritic(
-            num_local_features=q_local_dim,
-            local_projection_hidden_dims=(
-                critic_config.local_projection_hidden_dims
-                if critic_config.local_projection_hidden_dims is not None
-                else [q_local_dim] * critic_config.n_local_projection_hidden_layers
-            ),
-            value_regressor_hidden_dims=(
-                critic_config.value_regressor_hidden_dims
-                if critic_config.value_regressor_hidden_dims is not None
-                else [q_local_dim] * critic_config.n_value_regressor_hidden_layers
-            ),
-            interaction_config=critic_config.interaction_config,
-            act_fn_cls=act_fn_cls,
-            local_projection_linear_init_gain=critic_config.local_projection_init_gain,
-            value_regressor_linear_init_gain=critic_config.value_regressor_init_gain,
-            value_head_linear_init_gain=critic_config.value_head_init_gain,
-            use_popart=critic_config.use_popart,
-            popart_beta=critic_config.popart_config.beta,
-            popart_eps=critic_config.popart_config.eps,
-            popart_min_std=critic_config.popart_config.min_std,
-            popart_init_sigma=critic_config.popart_config.init_sigma,
-        )
+
+def build_q_network(
+    *,
+    q_local_dim: int,
+    critic_config: TransformerCriticConfig,
+    act_fn_cls: ActivationFactory,
+    num_global_features: int = 0,
+) -> DeepSetCritic:
+    """Common private set readout for single, twin, transformer and Deep Set critics."""
+    return DeepSetCritic(
+        num_global_features=num_global_features,
+        num_local_features=q_local_dim,
+        local_projection_hidden_dims=(
+            critic_config.local_projection_hidden_dims
+            if critic_config.local_projection_hidden_dims is not None
+            else [q_local_dim] * critic_config.n_local_projection_hidden_layers
+        ),
+        value_regressor_hidden_dims=(
+            critic_config.value_regressor_hidden_dims
+            if critic_config.value_regressor_hidden_dims is not None
+            else [q_local_dim] * critic_config.n_value_regressor_hidden_layers
+        ),
+        interaction_config=critic_config.interaction_config,
+        act_fn_cls=act_fn_cls,
+        local_projection_linear_init_gain=critic_config.local_projection_init_gain,
+        value_regressor_linear_init_gain=critic_config.value_regressor_init_gain,
+        value_head_linear_init_gain=critic_config.value_head_init_gain,
+        use_popart=critic_config.use_popart,
+        popart_beta=critic_config.popart_config.beta,
+        popart_eps=critic_config.popart_config.eps,
+        popart_min_std=critic_config.popart_config.min_std,
+        popart_init_sigma=critic_config.popart_config.init_sigma,
+    )

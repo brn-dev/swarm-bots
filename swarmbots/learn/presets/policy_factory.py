@@ -397,14 +397,14 @@ def _make_base_policy(
     obs_indices: ObsIndices | None = None,
     rmat_temporal_model_cls: Any = None,
     rmat_temporal_model_config: Any = None,
-    rmat_temporal_residual: bool = False,
-    rmat_temporal_layer_norm: bool = False,
+    rmat_temporal_residual: bool = True,
+    rmat_temporal_layer_norm: bool = True,
     rmat_use_temporal_output_projection: bool = True,
     rmat_experimental_compile_lstm: bool = False,
     assume_agent_mask_is_active_prefix: bool = False,
     bernoulli_initial_prob: float = 0.8,
-    baseline_critic_hidden_dims: tuple[int, ...] = (512, 512, 512),
-    baseline_critic_element_hidden_dims: tuple[int, ...] = (512, 512, 512),
+    baseline_critic_hidden_dims: tuple[int, ...] | None = None,
+    baseline_critic_element_hidden_dims: tuple[int, ...] | None = None,
     baseline_critic_context_in_elements: bool = True,
     mappo_critic_context_in_elements: bool = True,
     deepset_interaction_config: DeepSetInteractionConfig | dict[str, Any] | None = None,
@@ -473,7 +473,6 @@ def _make_base_policy(
         transformer_ff_config=mat_encoder_transformer_ff_config,
         local_obs_encoder_config=MLPConfig(hidden_dims=[enc_d_model, enc_d_model]),
         global_obs_encoder_config=MLPConfig(hidden_dims=[enc_d_model]),
-        normalize_obs_inputs=mat_normalization.normalize_obs_inputs,
         normalize_tokens=mat_normalization.normalize_encoder_tokens,
         use_agent_attention=mat_use_agent_attention,
         joint_obs_embedding=mat_joint_obs_embedding,
@@ -491,12 +490,12 @@ def _make_base_policy(
         transformer_ff_config=mat_encoder_transformer_ff_config,
         local_obs_encoder_config=MLPConfig(hidden_dims=[enc_d_model, enc_d_model]),
         global_obs_encoder_config=MLPConfig(hidden_dims=[enc_d_model]),
-        normalize_obs_inputs=mat_normalization.normalize_obs_inputs,
         normalize_tokens=mat_normalization.normalize_encoder_tokens,
         use_agent_attention=mat_use_agent_attention,
         joint_obs_embedding=mat_joint_obs_embedding,
         temporal_residual=rmat_temporal_residual,
         temporal_layer_norm=rmat_temporal_layer_norm,
+        inter_module_mlp=False,
         use_temporal_output_projection=rmat_use_temporal_output_projection,
         **({} if rmat_temporal_model_cls is None else {"temporal_model_cls": rmat_temporal_model_cls}),
         **({} if rmat_temporal_model_config is None else {"temporal_model_config": rmat_temporal_model_config}),
@@ -520,14 +519,49 @@ def _make_base_policy(
     if isinstance(deepset_interaction_config, dict):
         deepset_interaction_config = DeepSetInteractionConfig(**deepset_interaction_config)
     interaction_config = deepset_interaction_config or DeepSetInteractionConfig()
+    critic_config = TMASACCriticConfig(
+        interaction_config=interaction_config,
+        independent_encoders=False if critic_independent_encoders is None else critic_independent_encoders,
+        local_projection_hidden_dims=[dec_d_model],
+        value_regressor_hidden_dims=[dec_d_model, dec_d_model],
+        separate_observation_action_encoders=tmasac_separate_observation_action_encoders,
+        use_popart=False,
+        popart_config=popart_config,
+        local_projection_init_gain=mat_init_gains.critic_local_projection,
+        value_regressor_init_gain=mat_init_gains.critic_value_regressor,
+        value_head_init_gain=mat_init_gains.critic_value_head,
+    )
+    deepset_critic = policy_variant.endswith("__deepset_critic")
+    default_regressor_dims = (dec_d_model, dec_d_model) if deepset_critic else (512, 512, 512)
+    default_element_dims = (enc_d_model, enc_d_model) if deepset_critic else (512, 512, 512)
     joint_critic_config = JointCriticConfig(
-        kind="deepset" if policy_variant.endswith("__deepset_critic") else "mlp",
-        hidden_dims=tuple(baseline_critic_hidden_dims),
-        element_hidden_dims=tuple(baseline_critic_element_hidden_dims),
+        kind="deepset" if deepset_critic else "mlp",
+        hidden_dims=default_regressor_dims if baseline_critic_hidden_dims is None else tuple(baseline_critic_hidden_dims),
+        element_hidden_dims=default_element_dims if baseline_critic_element_hidden_dims is None
+        else tuple(baseline_critic_element_hidden_dims),
         context_in_elements=baseline_critic_context_in_elements,
-        interaction_config=deepset_interaction_config or JointCriticConfig().interaction_config,
+        interaction_config=interaction_config,
+        encoder_config=replace(mat_encoder_config, use_agent_attention=True),
+        head_config=critic_config,
         independent_encoders=False if critic_independent_encoders is None else critic_independent_encoders,
     )
+    if joint_critic_config.kind == "deepset" and model_scale is None:
+        joint_encoder = joint_critic_config.encoder_config
+        joint_head = critic_config
+        if baseline_critic_element_hidden_dims is not None:
+            token_width = joint_critic_config.element_hidden_dims[-1]
+            joint_encoder = replace(
+                joint_encoder,
+                d_model=token_width,
+                local_obs_encoder_config=MLPConfig(hidden_dims=list(joint_critic_config.element_hidden_dims)),
+                global_obs_encoder_config=MLPConfig(hidden_dims=[token_width]),
+            )
+            joint_head = replace(
+                joint_head, action_coembed_hidden_dims=list(joint_critic_config.element_hidden_dims[:-1]),
+            )
+        if baseline_critic_hidden_dims is not None:
+            joint_head = replace(joint_head, value_regressor_hidden_dims=list(joint_critic_config.hidden_dims))
+        joint_critic_config = replace(joint_critic_config, encoder_config=joint_encoder, head_config=joint_head)
     if deterministic_policy_variant:
         policy_class = RecurrentTD3Policy if td3_recurrent_actor else TD3Policy
         config_class = RecurrentTD3PolicyConfig if td3_recurrent_actor else TD3PolicyConfig
@@ -547,15 +581,7 @@ def _make_base_policy(
             critic_encoder_config=replace(
                 rmat_encoder_config if td3_recurrent_critic else mat_encoder_config, use_agent_attention=True,
             ),
-            transformer_critic_config=TMASACCriticConfig(
-                interaction_config=interaction_config,
-                independent_encoders=False if critic_independent_encoders is None else critic_independent_encoders,
-                n_local_projection_hidden_layers=2,
-                n_value_regressor_hidden_layers=1,
-                local_projection_init_gain=mat_init_gains.critic_local_projection,
-                value_regressor_init_gain=mat_init_gains.critic_value_regressor,
-                value_head_init_gain=mat_init_gains.critic_value_head,
-            ),
+            transformer_critic_config=critic_config,
             critic_kind="transformer" if policy_variant.startswith("tmatd3") else joint_critic_config.kind,
             joint_critic_config=joint_critic_config,
             n_critics=1 if policy_variant.startswith("maddpg") else 2,
@@ -635,18 +661,7 @@ def _make_base_policy(
                     assume_agent_mask_is_active_prefix=assume_agent_mask_is_active_prefix,
                 ),
             ),
-            "critic_config": TMASACCriticConfig(
-                interaction_config=interaction_config,
-                independent_encoders=False if critic_independent_encoders is None else critic_independent_encoders,
-                n_local_projection_hidden_layers=2,
-                n_value_regressor_hidden_layers=1,
-                separate_observation_action_encoders=tmasac_separate_observation_action_encoders,
-                use_popart=False,
-                popart_config=popart_config,
-                local_projection_init_gain=mat_init_gains.critic_local_projection,
-                value_regressor_init_gain=mat_init_gains.critic_value_regressor,
-                value_head_init_gain=mat_init_gains.critic_value_head,
-            ),
+            "critic_config": critic_config,
             "dropout": 0.0,
             "act_fn_cls": act_fn_cls,
             "continuous_config": continuous_config,

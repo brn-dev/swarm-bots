@@ -18,13 +18,16 @@ def single_torch_thread():
     torch.set_num_threads(previous)
 
 
-def make_encoder(kind, *, joint=False, global_dim=3, normalize=False, feedforward=None, layers=1):
+def make_encoder(
+    kind: str, *, joint: bool = False, global_dim: int = 3,
+    feedforward: MLPConfig | SwiGLUConfig | None = None, layers: int = 1,
+) -> nn.Module:
     config_cls = RMATEncoderConfig if kind == "rmat" else MATEncoderConfig
     config = config_cls(
         d_model=8, nhead=2, num_layers=layers, dim_feedforward=16,
         local_obs_encoder_config=feedforward or MLPConfig([8, 8]),
         global_obs_encoder_config=MLPConfig([8]),
-        joint_obs_embedding=joint, normalize_obs_inputs=normalize,
+        joint_obs_embedding=joint,
     )
     if kind == "critic":
         return TMASACActionConditionedEncoder(
@@ -76,11 +79,12 @@ def test_default_embedding_matches_explicit_additive_state_and_forward(kind):
 
 
 @pytest.mark.parametrize("kind", ["mat", "rmat"])
-@pytest.mark.parametrize("normalize", [False, True])
 @pytest.mark.parametrize("feedforward", [MLPConfig([8, 8]), SwiGLUConfig(hidden_dim=12)])
-def test_joint_observation_input_keeps_separate_normalization_and_reaches_both_fields(kind, normalize, feedforward):
+def test_joint_observation_input_preserves_features_and_reaches_both_fields(
+    kind: str, feedforward: MLPConfig | SwiGLUConfig,
+) -> None:
     torch.manual_seed(42)
-    encoder = make_encoder(kind, joint=True, normalize=normalize, feedforward=feedforward)
+    encoder = make_encoder(kind, joint=True, feedforward=feedforward)
     inputs = encoder_inputs(kind)
     captured = []
     hook = encoder.local_obs_encoder.register_forward_pre_hook(lambda _module, args: captured.append(args[0]))
@@ -88,9 +92,7 @@ def test_joint_observation_input_keeps_separate_normalization_and_reaches_both_f
         output = run_encoder(kind, encoder, inputs)
     finally:
         hook.remove()
-    normalized_local = encoder.local_obs_input_norm(inputs["local_obs"])
-    normalized_global = encoder.global_obs_input_norm(inputs["global_obs"])
-    expected_input = torch.cat((normalized_local, normalized_global.unsqueeze(1).expand(-1, 3, -1)), dim=-1)
+    expected_input = torch.cat((inputs["local_obs"], inputs["global_obs"].unsqueeze(1).expand(-1, 3, -1)), dim=-1)
     if kind == "rmat":
         expected_input = expected_input.unsqueeze(1)
     torch.testing.assert_close(captured[0], expected_input)
@@ -141,6 +143,28 @@ def test_joint_option_without_globals_preserves_additive_checkpoint_shapes(kind)
     torch.testing.assert_close(run_encoder(kind, joint, inputs), run_encoder(kind, additive, inputs), rtol=0, atol=0)
 
 
+@pytest.mark.parametrize("kind", ["mat", "rmat", "critic"])
+@pytest.mark.parametrize("joint", [False, True])
+def test_scalar_global_observations_remain_distinguishable_and_differentiable(kind: str, joint: bool) -> None:
+    torch.manual_seed(42)
+    encoder = make_encoder(kind, joint=joint, global_dim=1)
+    inputs = encoder_inputs(kind, global_dim=1)
+    local_field = "local_inputs" if kind == "critic" else "local_obs"
+    global_field = "global_inputs" if kind == "critic" else "global_obs"
+    inputs[local_field] = inputs[local_field][:1].expand(2, -1, -1)
+    if kind == "critic":
+        inputs["actions"] = inputs["actions"][:1].expand(2, -1, -1)
+    inputs["agent_mask"] = torch.ones(2, 3, dtype=torch.bool)
+    scalar_globals = torch.tensor([[1.0], [3.0]], requires_grad=True)
+    inputs[global_field] = scalar_globals
+
+    output = run_encoder(kind, encoder, inputs)
+
+    assert not torch.allclose(output[0], output[1])
+    gradient = torch.autograd.grad((output * torch.arange(1, 9)).sum(), scalar_globals)[0]
+    assert torch.isfinite(gradient).all() and (gradient.abs() > 0).all()
+
+
 @pytest.mark.parametrize("joint", [False, True])
 def test_joint_recurrent_embedding_matches_stepwise_resets_and_masked_gradients(joint):
     torch.manual_seed(42)
@@ -168,18 +192,16 @@ def test_joint_recurrent_embedding_matches_stepwise_resets_and_masked_gradients(
 
 @pytest.mark.parametrize("joint", [False, True])
 @pytest.mark.parametrize("separate_actions", [False, True])
-@pytest.mark.parametrize("normalize", [False, True])
 @pytest.mark.parametrize("global_dims", [(3, 2), (0, 2), (3, 0), (0, 0)])
 def test_action_conditioned_joint_embedding_includes_privileged_globals_and_supports_action_preencoders(
-    joint, separate_actions, normalize, global_dims,
-):
+    joint: bool, separate_actions: bool, global_dims: tuple[int, int],
+) -> None:
     torch.manual_seed(42)
     public_dim, hidden_dim = global_dims
     encoder = TMASACActionConditionedEncoder(
         max_agents=3, local_input_dim=4, global_input_dim=public_dim, hidden_local_vars_dim=2,
         hidden_global_vars_dim=hidden_dim, action_dim=2,
-        encoder_config=MATEncoderConfig(d_model=8, nhead=2, num_layers=1, joint_obs_embedding=joint,
-                                       normalize_obs_inputs=normalize),
+        encoder_config=MATEncoderConfig(d_model=8, nhead=2, num_layers=1, joint_obs_embedding=joint),
         critic_config=TMASACCriticConfig(separate_observation_action_encoders=separate_actions), act_fn_cls=nn.GELU,
     )
     inputs = dict(
@@ -196,17 +218,18 @@ def test_action_conditioned_joint_embedding_includes_privileged_globals_and_supp
         output = encoder(**inputs)
     finally:
         hook.remove()
-    observation_inputs = torch.cat((inputs["local_inputs"], inputs["hidden_local_vars"]), dim=-1)
-    local_inputs = encoder.observation_action_encoder(observation_inputs, inputs["actions"]) if separate_actions else (
-        torch.cat((observation_inputs, inputs["actions"]), dim=-1)
+    padding = ~inputs["agent_mask"].unsqueeze(-1)
+    observation_inputs = torch.cat((inputs["local_inputs"], inputs["hidden_local_vars"]), dim=-1).masked_fill(padding, 0.0)
+    actions = inputs["actions"].masked_fill(padding, 0.0)
+    expected_input = encoder.observation_action_encoder(observation_inputs, actions) if separate_actions else (
+        torch.cat((observation_inputs, actions), dim=-1)
     )
-    expected_input = encoder.local_action_input_norm(local_inputs)
     effective_joint = joint and public_dim + hidden_dim > 0
     if effective_joint:
         parts = [inputs["global_inputs"]] if public_dim else []
         if hidden_dim:
             parts.append(inputs["hidden_global_vars"])
-        global_inputs = encoder.global_input_norm(torch.cat(parts, dim=-1))
+        global_inputs = torch.cat(parts, dim=-1)
         expected_input = torch.cat((expected_input, global_inputs.unsqueeze(1).expand(-1, 3, -1)), dim=-1)
     torch.testing.assert_close(captured[0], expected_input)
     assert encoder.joint_obs_embedding is effective_joint

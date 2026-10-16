@@ -72,10 +72,6 @@ def migrate_tmasac_removed_connector_action_dims(
         ".observation_action_encoder.action_encoder.0.weight",
         ".transition_model.coembed.0.weight",
     )
-    trailing_input_norm_suffixes = (
-        ".local_action_input_norm.weight",
-        ".local_action_input_norm.bias",
-    )
 
     for key, value in state_dict.items():
         canonical_key = ".".join(
@@ -95,14 +91,6 @@ def migrate_tmasac_removed_connector_action_dims(
             and value.shape[1] > target.shape[1]
         ):
             migrated[key] = value[:, : target.shape[1]]
-            migrated_keys.append(key)
-        elif (
-            canonical_key.endswith(trailing_input_norm_suffixes)
-            and value.ndim == 1
-            and target.ndim == 1
-            and value.shape[0] > target.shape[0]
-        ):
-            migrated[key] = value[: target.shape[0]]
             migrated_keys.append(key)
 
     if migrated_keys:

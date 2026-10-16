@@ -1868,7 +1868,6 @@ class RecurrentTMASACPolicy(TMASACPolicy):
         if actor_state_config is not None:
             state_dim = actor_state_input_dim(
                 self._actor_encoder.layers[-1].temporal_model,
-                self.actor_encoder_config.d_model,
                 actor_state_config,
             )
             return ActorStateTMASACTwinCritic(

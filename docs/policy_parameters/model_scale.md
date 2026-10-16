@@ -4,11 +4,31 @@ The supported scales select explicit architecture layouts in [model_scale.py](..
 
 | Canonical name | Main budget | NOP budget | Current version |
 | --- | ---: | ---: | --- |
-| `2.5M NOP0.75M` | 2.5M | 0.75M | `2.5+0.75M-v5` |
-| `5M NOP1M` (default) | 5M | 1M | `5+1M-v6` |
-| `10M NOP2M` | 10M | 2M | `10+2M-v6` |
+| `2.5M NOP0.75M` | 2.5M | 0.75M | `2.5+0.75M-v6` |
+| `5M-2L NOP1M` (default) | 5M | 1M | `5M-2L+1M-v1` |
+| `5M-3L NOP1M` | 5M | 1M | `5M-3L+1M-v2` |
+| `10M NOP2M` | 10M | 2M | `10+2M-v7` |
 
-Short names `2.5M`, `5M`, and `10M` select these tiers. `model_scale=None` (CLI `legacy`) uses current explicit-width builder arguments. It does not restore old shared MAT architectures. Fixed-scale dimensions take precedence over low-level width arguments.
+Short names `2.5M`, `5M-2L`, `5M-3L`, and `10M` select these layouts. The old `5M`, `5M NOP1M`, and `5+1M` aliases are removed; select `5M-2L` for their unchanged architecture. `model_scale=None` (CLI `legacy`) uses current explicit-width builder arguments. It does not restore old shared MAT architectures. Fixed-scale dimensions take precedence over low-level width arguments.
+
+The main budgets describe feed-forward reference architectures. DDPG uses one ordinary Q head and therefore has fewer parameters than the twin-head reference. Recurrent variants preserve their corresponding feed-forward backbones and add temporal modules, normalization and, for recurrent off-policy actors, critic state conditioning. The 5M-3L temporal modules are narrower to match complete recurrent 2L counts. Gated variants add reception gates without shrinking other components.
+
+## Five-million encoder-depth comparison
+
+`5M-2L` preserves the original 5M architecture. `5M-3L` adds a third block only to attention and action-conditioned Deep Set encoder stacks, with narrower feed-forward layers or tokens to retain comparable feed-forward capacity. The measured non-recurrent main counts differ by less than 2.4% between choices on WallEasy.
+
+| Encoder | 5M-2L | 5M-3L |
+| --- | --- | --- |
+| Attention actor D / FF | 256 / `[512,512]`, 2 blocks | 256 / `[320,320]`, 3 blocks |
+| Orig / QCX actor encoder D / FF | 192 / `[384,384]`, 2 blocks | 192 / `[256,256]`, 3 blocks |
+| MAT critic encoder D / FF | 256 / `[512,512]`, 2 blocks | 256 / `[320,320]`, 3 blocks |
+| Off-policy shared critic encoder D / FF | 384 / `[512]`, 2 blocks | 320 / `[384]`, 3 blocks |
+
+FF-only actors keep three blocks with D=256 and FF `[512,512]`. Decoder stacks keep two blocks and their original widths. Q/V readout templates, their two Deep Set interactions, prediction heads, and the NOP core keep their architecture. The NOP source adapter follows its source encoder's width, so its parameter count can change slightly. PPO/MAPPO have no affected encoder stack and are identical across these choices. Gates remain additional capacity.
+
+Recurrent main counts still exceed the feed-forward 5M reference, but the 2L and 3L recurrent pairs differ by less than 0.5% on WallEasy. The 3L layout v2 uses memory widths 192 for MAT-IND actor/critic, 136 for MAT-QCX actor and 192 for its critic, 192 for TMASAC LSTM, and 168 for TMASAC sLSTM. Bias-free input/output projections connect each memory module to the unchanged encoder token width. The detached actor-state critic adapter takes the actual memory width; its output remains 256. Other scales retain memory width equal to token width.
+
+See the [measured depth comparison](scale_comparison.md#five-million-depth-comparison). The tier tables below describe the 2L five-million reference; this section lists the 3L differences.
 
 ## Actor and critic ownership
 
@@ -22,7 +42,7 @@ The nominal complete-actor/complete-critic budgets are 1M/1.5M, 2M/3M and 4M/6M.
 
 All attention encoders and decoders use four heads. Counts include weights, biases, attention, recurrence, normalization and output heads; frozen targets, buffers, optimizer state and NOP are excluded from main counts.
 
-| Component | 2.5M | 5M | 10M |
+| Component | 2.5M | 5M-2L | 10M |
 | --- | --- | --- | --- |
 | Main encoder / decoder blocks | 2 | 2 | 3 |
 | Decentralized actor blocks | 3 | 3 | 4 |
@@ -35,21 +55,35 @@ All attention encoders and decoders use four heads. Counts include weights, bias
 | Deep Set V element / interaction width | 128 | 192 | 256 |
 | Deep Set V regressor | `[512,384]` | `[768,512]` | `[1024,768]` |
 | Original MAT token-wise V hidden widths | `[512,512,384]` | `[768,768,512]` | `[1024,1024,768]` |
-| Recurrent IND actor D / each FF stage | 128 / 512 | 192 / 512 | 256 / 512 |
-| Recurrent QCX actor D / each FF stage | 128 / 256 | 128 / 384 | 192 / 384 |
-| Recurrent MAT critic D / each FF stage | 128 / 512 | 192 / 512 | 256 / 512 |
+| Recurrent IND actor D / FF | 192 / `[384,384]` | 256 / `[512,512]` | 256 / `[768,768]` |
+| Recurrent QCX actor D / FF | 128 / `[256,256]` | 192 / `[384,384]` | 192 / `[512,512]` |
+| Recurrent MAT critic D / FF | 192 / `[384,384]` | 256 / `[512,512]` | 256 / `[768,768]` |
 
 The IND actor pays for its encoder and only a small action head. Autoregressive actors reserve more of their budget for the decoder and therefore use a smaller encoder. All MAT Deep Set value heads account for a private critic encoder; recurrent critics keep their own history and the same V-readout template. Original MAT retains token-wise prediction and masked pooling. These layouts are starting points; establishing the best width/depth trade-off requires training experiments.
 
 ## Other families
 
-PPO/MAPPO retain their existing fixed MLP layouts and latent widths 192/256/384. Standalone Deep Set DDPG/TD3/SAC use the common decentralized actor and four set interactions. On-policy value heads and transformer Q readouts use two set interactions. Deep Set and transformer twins default to one action-conditioned critic encoder with private Q heads; `critic_independent_encoders=True` creates separate critic encoders. Actor and critic parameters remain separate in registered TMASAC/TMATD3 presets.
+PPO/MAPPO retain their existing fixed MLP layouts and latent widths 192/256/384. Off-policy Deep Set DDPG/TD3/SAC use the common decentralized actor. Their critic embeddings, token width, block count, normalization, residuals and local feed-forward networks match the transformer critic. Only the shared encoder's communication operator differs. Actor and critic parameters remain separate.
 
-Ordinary TMASAC actors use D=192/256/256, FF `[384,384]` / `[512,512]` / `[768,768]`, and 2/2/3 blocks. Shared twin transformer critics use D=256/384/384 with FF=384/512/1536. The canonical LSTM actor uses D=128/192/256 and FF=512 in each FF stage. The sLSTM actor uses D=192/256/256 and FF=384/512/768 in each stage. Their feed-forward critics retain actor-state conditioning, projected to 192/256/384 features. Independent twin-critic layouts and custom Deep Set interaction controls remain available through policy kwargs.
+For low-level Deep Set policies, explicit `joint_critic_config.encoder_config` and `head_config` supply the structural settings used during scaling. Fixed layouts set their standard widths and depths while preserving embedding mode, token normalization, separate observation/action encoding, interaction controls and initialization gains. Missing nested configs use the top-level critic templates. Legacy `baseline_critic_element_hidden_dims` and `baseline_critic_hidden_dims` builder arguments apply only without a fixed scale.
+
+Ordinary TMASAC actors use D=192/256/256, FF `[384,384]` / `[512,512]` / `[768,768]`, and 2/2/3 blocks. Both shared critic families use D=256/384/384, FF=384/512/1536, and 2/2/3 blocks. Every off-policy Q head projects tokens to 128/128/192 features, applies two Deep Set interaction blocks, pools with a masked mean, and uses two regression hidden layers of that same width. DDPG uses one such head; TD3/SAC use two.
+
+LSTM and sLSTM actors retain their feed-forward baseline dimensions and add recurrence at the same positions, with temporal residuals and layer normalization. They do not split or duplicate the existing FF network. Their ordinary critics retain actor-state conditioning, projected to 192/256/384 features. The low-level independent-encoder option remains available without resizing either encoder; it is not a registered variant.
+
+## Expanding and gated Deep Set interactions
+
+A token has width D; the pooled message has width M=5D/4. The global branch is pre-norm, `D -> M -> activation -> masked mean -> M -> activation -> D`, followed by residual addition. The final projection is linear and bias-free. A separately normalized local FF residual follows, matching the transformer block. For shared critic encoders, the two families execute the same local FF module implementation.
+
+The expanding communication branch has approximately `2DM + M² = 4.0625D²` weights, compared with attention's `4D²`; biases and normalization are excluded from this approximation. This controls parameter allocation, not expressive power or runtime.
+
+The optional `maddpg__deepset_critic__gated`, `matd3__deepset_critic__gated`, and `masac__deepset_critic__gated` presets retain the standard dimensions and add feature-wise reception gates in both the shared critic encoder and private Q heads. Each gate receives the normalized local token and processed global message, uses a D/4-wide hidden layer and sigmoid outputs, and selects M-dimensional message features before compression. Gate parameters are additional capacity; no other component is shrunk. Pooling remains shared, so gating does not recover receiver-specific sender selection.
+
+`deepset_interaction_config` exposes `message_dim`, local `hidden_dims`, `gated`, and `gate_hidden_dim`. Fixed-scale configs record resolved message and gate dimensions. Low-level custom configurations can intentionally depart from the matched defaults.
 
 ## Common NOP core
 
-| Component | 2.5M | 5M | 10M |
+| Component | 2.5M | 5M-2L / 5M-3L | 10M |
 | --- | --- | --- | --- |
 | Latent / transition width | 128 | 192 | 192 |
 | Transition FF width | 512 | 384 | 768 |
@@ -61,15 +95,17 @@ Only the source adapter input depends on the policy encoder width. MAT attaches 
 
 ## Registry, counts and checkpoints
 
-The default list contains 17 core presets. `list_variants(include_hidden=True)` also lists `mat_ind__no_attention`, `mat_qcx__no_nop` and `tmasac__no_nop`. MLP-suffixed, SwiGLU, shared-encoder, optional recurrent-control and segment presets are removed from the registry; their low-level implementation machinery remains. Plain PPO and MAPPO remain registered.
+The default list contains 17 core presets. `list_variants(include_hidden=True)` also lists two NOP controls (`mat_qcx__no_nop`, `tmasac__no_nop`) and the three gated Deep Set presets. `mat_ind__no_attention` is removed. MLP-suffixed, SwiGLU, shared-encoder, optional recurrent-control and segment presets remain unregistered; their low-level implementation machinery remains. Plain PPO and MAPPO remain registered.
 
 Names follow `base_variant__modifier__modifier`: major architecture names keep single underscores (`mat_qcx`, `tmasac_dec`), while additional modifiers use double underscores (`mat_qcx__lstm`, `matd3__deepset_critic`). Superseded spellings are rejected without aliases. This naming change preserves architecture, checkpoint weight keys and layout versions; see the [naming and migration guide](../learning.md).
 
 Earlier MAT checkpoints need retraining or manual migration because encoder ownership, layer widths and recurrent-state structure changed. No automatic shared-to-independent migration or compatibility mode is provided. New checkpoints record resolved actor/critic configs and the layout version. Use matching task, distribution, NOP settings and version when reconstructing them.
 
+The expanding interaction layout, common off-policy Q heads and additive recurrent layouts replace earlier versions. Existing weights need retraining or manual migration. Selecting `legacy` does not restore those earlier architectures.
+
 See the [measured cross-scale counts](scale_comparison.md), [inspector commands](README.md), and [architecture diagrams](diagrams/README.md). Observation/action dimensions and padded agent slots can affect actual counts, particularly for flattened PPO; the hidden layouts stay fixed across tasks.
 
 ```bash
-swarmbots-inspect-policies --model-scale 5M --output-dir docs/policy_parameters/generated/5M
+swarmbots-inspect-policies --model-scale 5M-2L --output-dir docs/policy_parameters/generated/5M-2L
 swarmbots-diagram-policies --refresh
 ```

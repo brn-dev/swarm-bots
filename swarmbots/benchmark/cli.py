@@ -215,7 +215,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     record_parser.add_argument("--continuous-action-dist", help="checkpoint action distribution override")
     record_parser.add_argument("--use-nop", action=argparse.BooleanOptionalAction, default=None)
-    record_parser.add_argument("--model-scale", default="5M NOP1M", help="matching checkpoint scale; legacy uses explicit widths")
+    record_parser.add_argument("--model-scale", default="5M-2L NOP1M", help="matching checkpoint scale; legacy uses explicit widths")
     record_parser.add_argument("--compile-policy", action="store_true", help="compile checkpoint policy modules")
     return parser
 

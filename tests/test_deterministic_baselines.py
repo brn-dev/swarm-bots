@@ -8,6 +8,7 @@ from gymnasium import spaces
 from gymnasium.vector import AutoresetMode, SyncVectorEnv
 from torch import nn
 
+from swarmbots.learn import list_model_scales
 from swarmbots.learn.algos.off_policy import collect_off_policy_steps
 from swarmbots.learn.algos.off_policy.joint_critic import JointCriticConfig, JointQNetwork, JointTwinCritic
 from swarmbots.learn.algos.sac import SAC, MASACPolicy
@@ -18,8 +19,10 @@ from swarmbots.learn.algos.td3 import DDPG, TD3, TD3Policy
 from swarmbots.learn.env_wrappers.learn_wrappers.swarm_bots_learn_env_wrapper import SwarmBotsLearnEnvWrapper
 from swarmbots.learn.hybrid_action_space import HybridActionSpace, VectorHybridActionSpace
 from swarmbots.learn.nn_components.feed_forward import MLPConfig
+from swarmbots.learn.nn_components.popart import PopArtLinear
 from swarmbots.learn.obs_indices import ObsIndices
 from swarmbots.learn.presets.policy_factory import _make_base_policy
+from swarmbots.learn.presets.model_scale import make_policy_at_scale
 from swarmbots.learn.presets.transformer import MATInitGains, MATNormalizationConfig
 from swarmbots.learn.testing_env import TestingSwarmBotsEnv as SwarmTestEnv
 from swarmbots.learn.training import _variant_options
@@ -165,9 +168,12 @@ def assert_optimizer_states_equal(actual, expected):
 
 
 @pytest.mark.parametrize("variant", VARIANTS)
-def test_baseline_rollout_update_and_privileged_boundary(env, variant):
+@pytest.mark.parametrize("scale", ["5M-2L", "5M-3L"])
+def test_baseline_rollout_update_and_privileged_boundary(
+    env: SwarmBotsLearnEnvWrapper, variant: str, scale: str,
+) -> None:
     torch.manual_seed(42)
-    algorithm = make_algorithm(env, variant)
+    algorithm = make_algorithm(env, variant, policy_options={"model_scale": scale})
     policy = algorithm.policy
     obs = observations(env)
     actions = policy.act(**obs, deterministic=True)
@@ -273,18 +279,11 @@ def test_set_and_transformer_critics_are_permutation_invariant(env, variant):
 
 
 def test_deepset_joint_critic_retains_observed_cardinality_and_privileged_context() -> None:
+    torch.manual_seed(42)
     critic = JointQNetwork(
         n_agents=3, local_obs_dim=1, global_obs_dim=1, hidden_local_vars_dim=1,
-        hidden_global_vars_dim=2, action_dim=1, config=JointCriticConfig("deepset", (4,), (1,)),
+        hidden_global_vars_dim=2, action_dim=1, config=JointCriticConfig("deepset", (16,), (16,)),
     )
-    encoder = nn.Linear(6, 1, bias=False)
-    decoder = nn.Linear(4, 1, bias=False)
-    with torch.no_grad():
-        encoder.weight.copy_(torch.tensor([[1.0, 1.0, 1.0, 0.0, 0.0, 0.0]]))
-        decoder.weight.copy_(torch.tensor([[1.0, 1.0, 100.0, 1.0]]))
-    critic.network.deepset.element_encoder = encoder
-    critic.network.deepset.set_decoder = decoder
-    critic.network.deepset.interactions = nn.ModuleList()
     mask = torch.tensor([[True, False, False], [True, True, False], [False, False, False]])
     obs = dict(
         local_obs=torch.full((3, 3, 1), 2.0), actions=torch.full((3, 3, 1), 3.0),
@@ -293,13 +292,28 @@ def test_deepset_joint_critic_retains_observed_cardinality_and_privileged_contex
     )
     for key in ("local_obs", "actions", "hidden_local_vars"):
         obs[key][~mask] = float("nan")
+    for key in ("hidden_local_vars", "hidden_global_vars", "global_obs"):
+        obs[key].requires_grad_()
 
     values, latents = critic.forward_with_latents(**obs)
 
-    torch.testing.assert_close(values, torch.tensor([128.0, 228.0, 18.0]))
-    torch.testing.assert_close(
-        latents.squeeze(-1), torch.tensor([[10.0, 0.0, 0.0], [10.0, 10.0, 0.0], [0.0, 0.0, 0.0]]),
-    )
+    assert torch.isfinite(values).all() and torch.isfinite(latents).all()
+    assert (latents[~mask] == 0).all()
+    assert not torch.equal(values[0], values[1])
+    for index in range(2):
+        modified_context = obs["hidden_global_vars"].detach().clone()
+        modified_context[0, index] += 1.0
+        changed_values = critic(**{**obs, "hidden_global_vars": modified_context})
+        assert not torch.equal(changed_values[0], values[0])
+    values.sum().backward()
+    for key in ("hidden_local_vars", "hidden_global_vars", "global_obs"):
+        gradient = obs[key].grad
+        assert torch.isfinite(gradient).all()
+        if gradient.ndim == 3:
+            assert (gradient[~mask] == 0).all()
+            assert (gradient[mask].abs().sum(-1) > 0).all()
+        else:
+            assert (gradient[:2].abs() > 0).all() and (gradient[2] == 0).all()
 
 
 @pytest.mark.parametrize("context_in_elements", [False, True])
@@ -348,7 +362,13 @@ def test_deepset_nop_latents_condition_on_globals_and_match_encoding_paths(
     )
     torch.testing.assert_close(torch.cat([network.encode(**obs) for network in networks], dim=-1), latents)
     assert torch.isfinite(latents).all() and (latents[~obs["agent_mask"]] == 0).all()
-    assert all(network.network.context_after_pool for network in networks)
+    q_heads = (
+        [policy.critic.q1, policy.critic.q2]
+        if isinstance(policy.critic, JointTwinCritic) else [network.network for network in networks]
+    )
+    for head in q_heads:
+        assert not head.context_in_elements
+        assert head.num_global_features == (0 if context_in_elements else env.global_obs_dim + env.hidden_global_vars_dim)
 
     for field in ("global_obs", "hidden_global_vars"):
         changed = {**obs, field: obs[field] + 10}
@@ -358,8 +378,12 @@ def test_deepset_nop_latents_condition_on_globals_and_match_encoding_paths(
             assert not torch.allclose(changed_latents[obs["agent_mask"]], latents[obs["agent_mask"]])
         else:
             torch.testing.assert_close(changed_latents, latents, rtol=0, atol=0)
+        original_qs = result[0] if isinstance(policy, TD3Policy) else result[:2]
+        changed_qs = changed_result[0] if isinstance(policy, TD3Policy) else changed_result[:2]
+        for original_q, changed_q in zip(original_qs, changed_qs, strict=True):
+            assert not torch.equal(original_q[0], changed_q[0])
     gradients = torch.autograd.grad(
-        latents.square().sum(), (obs["global_obs"], obs["hidden_global_vars"]), allow_unused=True,
+        latents[..., 0].sum(), (obs["global_obs"], obs["hidden_global_vars"]), allow_unused=True,
     )
     for gradient in gradients:
         if context_in_elements:
@@ -470,9 +494,12 @@ def test_actor_nan_padding_and_empty_swarms_have_zero_input_gradients(env, varia
 
 @pytest.mark.parametrize("variant", NOP_VARIANTS)
 @pytest.mark.parametrize("source", ["critic", "actor", "both"])
-def test_nop_sources_update_online_encoders_and_predictors(env, variant, source):
+@pytest.mark.parametrize("scale", ["5M-2L", "5M-3L"])
+def test_nop_sources_update_online_encoders_and_predictors(
+    env: SwarmBotsLearnEnvWrapper, variant: str, source: str, scale: str,
+) -> None:
     torch.manual_seed(42)
-    algorithm = make_algorithm(env, variant, policy_options=nop_options(source))
+    algorithm = make_algorithm(env, variant, policy_options=nop_options(source, model_scale=scale))
     policy = algorithm.policy
     assert policy.has_nop_loss() and policy.get_nop_num_next_steps() == 3
     assert (policy.actor_nop is not None) == (source in {"actor", "both"})
@@ -493,10 +520,10 @@ def test_nop_sources_update_online_encoders_and_predictors(env, variant, source)
             encoders = [encoder]
         elif policy.config.joint_critic_config.kind == "deepset" and not variant.startswith("tmatd3"):
             encoders = (
-                [encoder.network.element_encoder for encoder in (policy.critic.encoder, policy.critic.encoder2)
+                [encoder.network.local_action_encoder for encoder in (policy.critic.encoder, policy.critic.encoder2)
                  if encoder is not None]
                 if isinstance(policy.critic, JointTwinCritic) else
-                [network.network.deepset.element_encoder for network in policy.critic]
+                [network.encoder.network.local_action_encoder for network in policy.critic]
             )
         else:
             encoders = [encoder for encoder in (policy.critic.encoder, policy.critic.encoder2) if encoder is not None]
@@ -1060,7 +1087,7 @@ def test_joint_critics_require_configured_privileged_fields(kind, missing):
         hidden_local_vars=torch.zeros(2, 3, 1), hidden_global_vars=torch.zeros(2, 1),
     )
     del obs[missing]
-    with pytest.raises(ValueError, match=f"{missing} are required"):
+    with pytest.raises(ValueError, match=missing):
         critic(**obs)
 
 
@@ -1114,6 +1141,55 @@ def test_direct_masac_construction_defaults_to_a_decentralized_actor(env):
     policy = MASACPolicy(env)
     assert not any(isinstance(module, nn.MultiheadAttention) for module in policy.actor_encoder.modules())
     assert not any(isinstance(module, nn.MultiheadAttention) for module in policy.critic.modules())
+
+
+@pytest.mark.parametrize("scale", [None, *list_model_scales()])
+@pytest.mark.parametrize(
+    ("variant", "recurrent_actor"),
+    [("maddpg__deepset_critic", False), ("matd3__deepset_critic", False),
+     ("matd3__deepset_critic", True), ("masac__deepset_critic", False)],
+)
+def test_off_policy_deepset_rejects_popart_in_its_effective_head(
+    env: SwarmBotsLearnEnvWrapper, variant: str, recurrent_actor: bool, scale: str | None,
+) -> None:
+    policy = make_policy(env, variant, model_scale=None, td3_recurrent_actor=recurrent_actor)
+    joint = policy.config.joint_critic_config
+    config = replace(policy.config, joint_critic_config=replace(
+        joint, head_config=replace(joint.resolved_head_config(), use_popart=True),
+    ))
+    error = NotImplementedError if variant.startswith("masac") else ValueError
+
+    with pytest.raises(error, match="PopArt"):
+        if scale is None:
+            type(policy)(env=env, config=config)
+        else:
+            make_policy_at_scale(type(policy), env, config, scale)
+
+
+@pytest.mark.parametrize("variant", ["maddpg__deepset_critic", "matd3__deepset_critic", "masac__deepset_critic"])
+def test_off_policy_top_level_popart_rejection_is_preserved(env: SwarmBotsLearnEnvWrapper, variant: str) -> None:
+    policy = make_policy(env, variant, model_scale=None)
+    field = "critic_config" if variant.startswith("masac") else "transformer_critic_config"
+    config = replace(policy.config, **{field: replace(getattr(policy.config, field), use_popart=True)})
+    error = NotImplementedError if variant.startswith("masac") else ValueError
+
+    with pytest.raises(error, match="PopArt"):
+        type(policy)(env=env, config=config)
+
+
+@pytest.mark.parametrize("variant", ["maddpg__mlp_critic", "matd3__mlp_critic", "masac__mlp_critic", "tmatd3"])
+def test_unused_joint_head_settings_do_not_enable_popart_or_reject_other_critics(
+    env: SwarmBotsLearnEnvWrapper, variant: str,
+) -> None:
+    policy = make_policy(env, variant, model_scale=None)
+    joint = policy.config.joint_critic_config
+    config = replace(policy.config, joint_critic_config=replace(
+        joint, head_config=replace(joint.resolved_head_config(), use_popart=True),
+    ))
+
+    rebuilt = type(policy)(env=env, config=config)
+
+    assert not any(isinstance(module, PopArtLinear) for module in rebuilt.critic.modules())
 
 
 def test_low_level_td3_configuration_is_resolved_and_reported_consistently(env):

@@ -13,7 +13,7 @@ Each command supports `--help`. You can also run a tool with the environment's P
 
 ```bash
 python -m swarmbots.tools.inspect_policy_parameters --help
-python -m swarmbots.tools.diagram_policy_architectures --variants tmasac --scales 5M
+python -m swarmbots.tools.diagram_policy_architectures --variants tmasac --scales 5M-2L
 python -m swarmbots.tools.plot_logs runs/my-run --output plots/training.png
 python -m swarmbots.tools.plot_experiment_results runs/my-experiment --output-dir plots/comparison
 ```

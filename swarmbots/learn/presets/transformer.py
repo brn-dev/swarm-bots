@@ -30,7 +30,6 @@ class NOPInitGains:
 
 @dataclass(frozen=True)
 class MATNormalizationConfig:
-    normalize_obs_inputs: bool = False
     normalize_encoder_tokens: bool = False
     normalize_query_input: bool = False
     normalize_context_input: bool = False

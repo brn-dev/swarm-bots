@@ -13,11 +13,12 @@ from swarmbots.learn.algos.mat.mat_dec_policy import MATDecPolicyConfig
 from swarmbots.learn.algos.mat_qc_base_policy import MATCriticConfig
 from swarmbots.learn.algos.off_policy.actor_heads import TMASACActorHeadKind
 from swarmbots.learn.algos.off_policy.actor_state_critic import ActorStateCriticInputConfig
-from swarmbots.learn.algos.r_mat.r_mat_encoder import RMATEncoderConfig
 from swarmbots.learn.algos.world_modeling.next_obs_pred_ppo_wrapper import NOPWorldModelConfig
+from swarmbots.learn.algos.xlstm.slstm import SLSTMTemporalSequenceModel
 from swarmbots.learn.nn_components.feed_forward import MLPConfig
+from swarmbots.learn.nn_components.deep_set import DeepSetInteractionConfig
 
-DEFAULT_MODEL_SCALE = "5M NOP1M"
+DEFAULT_MODEL_SCALE = "5M-2L NOP1M"
 
 
 @dataclass(frozen=True)
@@ -34,27 +35,19 @@ class ScaleLayout:
     private_layers: int
     private_ff_width: int
     private_critic_ff: int
-    dense_temporal_width: int
-    dense_temporal_ff: int
     autoregressive_actor_width: int
     autoregressive_actor_ff: int
-    autoregressive_temporal_width: int
-    autoregressive_temporal_ff: int
     head_width: int
     decoder_width: int
     qcx_decoder_width: int
     qcx_ff_width: int
     critic_width: int
     critic_ff: int
-    secondary_critic_width: int
-    secondary_critic_ff: int
     state_bridge_width: int
     single_joint_width: int
     twin_joint_width: int
     deepset_v_width: int
     deepset_dec_width: int
-    deepset_single_q_width: int
-    deepset_twin_q_width: int
     deepset_q_head_width: int
     gated_width: int
     ppo_backbone: tuple[int, ...]
@@ -68,6 +61,16 @@ class ScaleLayout:
     nop_layers: int
     nop_projection: tuple[int, ...]
     nop_predictors: tuple[int, ...]
+    decentralized_ff_width: int | None = None
+    decoder_layers: int | None = None
+    temporal_hidden_dim: int | None = None
+    autoregressive_temporal_hidden_dim: int | None = None
+    lstm_actor_temporal_hidden_dim: int | None = None
+    slstm_actor_temporal_hidden_dim: int | None = None
+
+    @property
+    def slug(self) -> str:
+        return self.name.split(" ", 1)[0]
 
 
 # These are reviewed declarations, not widths generated from a multiplier.
@@ -78,7 +81,7 @@ SCALE_LAYOUTS = {
         name="2.5M NOP0.75M",
         main_parameters=2_500_000,
         nop_parameters=750_000,
-        version="2.5+0.75M-v5",
+        version="2.5+0.75M-v6",
         width=192,
         mlp_latent_width=192,
         ff_width=384,
@@ -87,27 +90,19 @@ SCALE_LAYOUTS = {
         private_layers=1,
         private_ff_width=384,
         private_critic_ff=384,
-        dense_temporal_width=128,
-        dense_temporal_ff=512,
         autoregressive_actor_width=128,
         autoregressive_actor_ff=256,
-        autoregressive_temporal_width=128,
-        autoregressive_temporal_ff=256,
         head_width=128,
         decoder_width=128,
         qcx_decoder_width=128,
         qcx_ff_width=128,
         critic_width=256,
         critic_ff=384,
-        secondary_critic_width=192,
-        secondary_critic_ff=384,
         state_bridge_width=192,
         single_joint_width=512,
         twin_joint_width=384,
         deepset_v_width=192,
         deepset_dec_width=128,
-        deepset_single_q_width=192,
-        deepset_twin_q_width=128,
         deepset_q_head_width=128,
         gated_width=256,
         ppo_backbone=(512, 512, 384, 384),
@@ -122,11 +117,11 @@ SCALE_LAYOUTS = {
         nop_projection=(256, 256),
         nop_predictors=(192, 192),
     ),
-    "5M NOP1M": ScaleLayout(
-        name="5M NOP1M",
+    "5M-2L NOP1M": ScaleLayout(
+        name="5M-2L NOP1M",
         main_parameters=5_000_000,
         nop_parameters=1_000_000,
-        version="5+1M-v6",
+        version="5M-2L+1M-v1",
         width=256,
         mlp_latent_width=256,
         ff_width=512,
@@ -135,27 +130,19 @@ SCALE_LAYOUTS = {
         private_layers=1,
         private_ff_width=512,
         private_critic_ff=512,
-        dense_temporal_width=192,
-        dense_temporal_ff=512,
         autoregressive_actor_width=192,
         autoregressive_actor_ff=384,
-        autoregressive_temporal_width=128,
-        autoregressive_temporal_ff=384,
         head_width=128,
         decoder_width=192,
         qcx_decoder_width=192,
         qcx_ff_width=256,
         critic_width=384,
         critic_ff=512,
-        secondary_critic_width=256,
-        secondary_critic_ff=512,
         state_bridge_width=256,
         single_joint_width=768,
         twin_joint_width=512,
         deepset_v_width=256,
         deepset_dec_width=192,
-        deepset_single_q_width=256,
-        deepset_twin_q_width=192,
         deepset_q_head_width=128,
         gated_width=384,
         ppo_backbone=(768, 768, 512, 512),
@@ -174,7 +161,7 @@ SCALE_LAYOUTS = {
         name="10M NOP2M",
         main_parameters=10_000_000,
         nop_parameters=2_000_000,
-        version="10+2M-v6",
+        version="10+2M-v7",
         width=256,
         mlp_latent_width=384,
         ff_width=768,
@@ -183,27 +170,19 @@ SCALE_LAYOUTS = {
         private_layers=2,
         private_ff_width=512,
         private_critic_ff=1024,
-        dense_temporal_width=256,
-        dense_temporal_ff=512,
         autoregressive_actor_width=192,
         autoregressive_actor_ff=512,
-        autoregressive_temporal_width=192,
-        autoregressive_temporal_ff=384,
         head_width=192,
         decoder_width=256,
         qcx_decoder_width=192,
         qcx_ff_width=512,
         critic_width=384,
         critic_ff=1536,
-        secondary_critic_width=256,
-        secondary_critic_ff=1024,
         state_bridge_width=384,
         single_joint_width=1024,
         twin_joint_width=768,
         deepset_v_width=384,
         deepset_dec_width=256,
-        deepset_single_q_width=384,
-        deepset_twin_q_width=256,
         deepset_q_head_width=192,
         gated_width=512,
         ppo_backbone=(1024, 1024, 768, 768),
@@ -219,6 +198,26 @@ SCALE_LAYOUTS = {
         nop_predictors=(256, 256),
     ),
 }
+
+SCALE_LAYOUTS.update({
+    "5M-3L NOP1M": replace(
+        SCALE_LAYOUTS[DEFAULT_MODEL_SCALE],
+        name="5M-3L NOP1M",
+        version="5M-3L+1M-v2",
+        layers=3,
+        decentralized_layers=3,
+        ff_width=320,
+        decentralized_ff_width=512,
+        autoregressive_actor_ff=256,
+        decoder_layers=2,
+        critic_width=320,
+        critic_ff=384,
+        temporal_hidden_dim=192,
+        autoregressive_temporal_hidden_dim=136,
+        lstm_actor_temporal_hidden_dim=192,
+        slstm_actor_temporal_hidden_dim=168,
+    ),
+})
 
 
 def list_model_scales() -> tuple[str, ...]:
@@ -243,12 +242,19 @@ def _layout(scale: str) -> ScaleLayout:
     return SCALE_LAYOUTS[normalize_model_scale(scale)]
 
 
-def _encoder(config: Any, width: int, ff: list[int], layers: int, layout: ScaleLayout) -> Any:
+def _encoder(
+    config: Any, width: int, ff: list[int], layers: int, layout: ScaleLayout,
+    *, temporal_hidden_dim: int | None = None,
+) -> Any:
     existing_ff = config.transformer_ff_config
     if existing_ff is not None and hasattr(existing_ff, "hidden_dim"):
         ff_config = replace(existing_ff, hidden_dim=layout.gated_width)
     else:
         ff_config = MLPConfig(hidden_dims=ff)
+    temporal_options = (
+        {"temporal_hidden_dim": temporal_hidden_dim}
+        if hasattr(config, "temporal_hidden_dim") else {}
+    )
     return replace(
         config,
         d_model=width,
@@ -258,12 +264,13 @@ def _encoder(config: Any, width: int, ff: list[int], layers: int, layout: ScaleL
         transformer_ff_config=ff_config,
         local_obs_encoder_config=MLPConfig(hidden_dims=[width, width]),
         global_obs_encoder_config=MLPConfig(hidden_dims=[width]),
+        **temporal_options,
     )
 
 
 def _decoder(config: Any, layout: ScaleLayout) -> Any:
     width = layout.qcx_decoder_width if hasattr(config, "dim_feedforward") else layout.decoder_width
-    updates = dict(d_model=width, nhead=4, num_layers=layout.layers)
+    updates = dict(d_model=width, nhead=4, num_layers=layout.decoder_layers or layout.layers)
     if hasattr(config, "dim_feedforward"):
         updates.update(
             dim_feedforward=layout.qcx_ff_width, context_encoder_hidden_dims=[width], action_encoder_dims=[width, width]
@@ -284,6 +291,17 @@ def _nop(config: Any, layout: ScaleLayout) -> Any:
         transition_model_num_layers=layout.nop_layers,
         transition_model_dim_feedforward=layout.nop_ff,
         transition_model_coembed_hidden_dims=[layout.nop_width],
+    )
+
+
+def _interaction_at_width(
+    config: DeepSetInteractionConfig, width: int, ff_width: int | None = None,
+) -> DeepSetInteractionConfig:
+    return replace(
+        config,
+        message_dim=width * 5 // 4 if config.message_dim is None else config.message_dim,
+        hidden_dims=(ff_width or width,) if config.hidden_dims is None else config.hidden_dims,
+        gate_hidden_dim=max(1, width // 4) if config.gated and config.gate_hidden_dim is None else config.gate_hidden_dim,
     )
 
 
@@ -331,6 +349,9 @@ def _mlp_on_policy(config: Any, layout: ScaleLayout) -> Any:
                     critic.deep_set_config,
                     local_projection_hidden_dims=[layout.deepset_v_width],
                     value_regressor_hidden_dims=list(layout.shared_v),
+                    interaction_config=_interaction_at_width(
+                        critic.deep_set_config.interaction_config, layout.deepset_v_width,
+                    ),
                 ),
             )
     return replace(config, actor_config=actor, critic_config=critic)
@@ -338,27 +359,25 @@ def _mlp_on_policy(config: Any, layout: ScaleLayout) -> Any:
 
 def _mat(config: Any, layout: ScaleLayout) -> Any:
     decentralized = isinstance(config, MATDecPolicyConfig)
-    recurrent = isinstance(config.encoder_config, RMATEncoderConfig)
     autoregressive = hasattr(config, "decoder_config")
-    if recurrent:
-        actor_width = layout.autoregressive_temporal_width if autoregressive else layout.dense_temporal_width
-        actor_ff = layout.autoregressive_temporal_ff if autoregressive else layout.dense_temporal_ff
-        actor_ff_dims = [actor_ff]
-    else:
-        actor_width = layout.autoregressive_actor_width if autoregressive else layout.width
-        actor_ff = layout.autoregressive_actor_ff if autoregressive else layout.ff_width
-        actor_ff_dims = [actor_ff, actor_ff]
+    actor_width = layout.autoregressive_actor_width if autoregressive else layout.width
+    actor_ff = layout.autoregressive_actor_ff if autoregressive else layout.ff_width
+    if decentralized:
+        actor_ff = layout.decentralized_ff_width or actor_ff
     actor = _encoder(
-        config.encoder_config, actor_width, actor_ff_dims,
+        config.encoder_config, actor_width, [actor_ff, actor_ff],
         layout.decentralized_layers if decentralized else layout.layers, layout,
+        temporal_hidden_dim=(
+            layout.autoregressive_temporal_hidden_dim if autoregressive else layout.temporal_hidden_dim
+        ),
     )
     critic_source = config.critic_encoder_config or config.encoder_config
-    critic_recurrent = isinstance(critic_source, RMATEncoderConfig)
     critic_encoder = _encoder(
         critic_source,
-        layout.dense_temporal_width if critic_recurrent else layout.width,
-        [layout.dense_temporal_ff] if critic_recurrent else [layout.ff_width, layout.ff_width],
+        layout.width,
+        [layout.ff_width, layout.ff_width],
         layout.layers, layout,
+        temporal_hidden_dim=layout.temporal_hidden_dim,
     )
     critic_encoder = replace(critic_encoder, use_agent_attention=True)
     updates = {"encoder_config": actor, "critic_encoder_config": critic_encoder}
@@ -370,6 +389,7 @@ def _mat(config: Any, layout: ScaleLayout) -> Any:
             n_value_regressor_hidden_layers=2,
             local_projection_hidden_dims=[layout.deepset_dec_width],
             value_regressor_hidden_dims=list(layout.separate_v_regressor),
+            interaction_config=_interaction_at_width(critic.interaction_config, layout.deepset_dec_width),
         )
     else:
         critic = replace(critic, value_head_hidden_dims=list(layout.orig_v))
@@ -394,9 +414,13 @@ def _off_policy(config: Any, layout: ScaleLayout) -> Any:
         or not actor_config.use_agent_attention
         or TMASACActorHeadKind(config.actor_head_config.kind) is TMASACActorHeadKind.DECENTRALIZED
     )
-    recurrent_actor = isinstance(actor_config, RMATEncoderConfig)
     if decentralized:
         actor_config = replace(actor_config, use_agent_attention=False)
+    actor_temporal_hidden_dim = (
+        layout.slstm_actor_temporal_hidden_dim
+        if getattr(actor_config, "temporal_model_cls", None) is SLSTMTemporalSequenceModel
+        else layout.lstm_actor_temporal_hidden_dim
+    )
     if shared:
         actor = _encoder(
             actor_config,
@@ -404,23 +428,17 @@ def _off_policy(config: Any, layout: ScaleLayout) -> Any:
             [layout.private_ff_width, layout.private_ff_width],
             layout.private_layers,
             layout,
-        )
-    elif recurrent_actor:
-        slstm = "SLSTM" in getattr(actor_config.temporal_model_cls, "__name__", "")
-        width = layout.width if slstm else layout.dense_temporal_width
-        ff = layout.ff_width if slstm else layout.dense_temporal_ff
-        actor = _encoder(
-            actor_config, width, [ff] if actor_config.inter_module_mlp else [ff, ff], layout.layers, layout
+            temporal_hidden_dim=actor_temporal_hidden_dim,
         )
     else:
-        # All nonrecurrent decentralized actors share the same FF-only layout.
-        # One extra FF-only block compensates for the absent agent attention.
+        actor_ff = (layout.decentralized_ff_width or layout.ff_width) if decentralized else layout.ff_width
         actor = _encoder(
             actor_config,
             layout.width,
-            [layout.ff_width, layout.ff_width],
+            [actor_ff, actor_ff],
             layout.decentralized_layers if decentralized else layout.layers,
             layout,
+            temporal_hidden_dim=actor_temporal_hidden_dim,
         )
     head = replace(
         config.actor_head_config,
@@ -429,51 +447,58 @@ def _off_policy(config: Any, layout: ScaleLayout) -> Any:
     )
     critic_name = "transformer_critic_config" if hasattr(config, "transformer_critic_config") else "critic_config"
     critic = getattr(config, critic_name)
-    independent = critic.independent_encoders
+    critic_encoder_source = config.critic_encoder_config
+    if critic_kind == "deepset":
+        joint_config = config.joint_critic_config
+        # Missing nested configs retain the existing fixed-scale templates.
+        if joint_config.encoder_config is not None:
+            act_fn_cls = getattr(config, "act_fn_cls", critic_encoder_source.act_fn_cls)
+            critic_encoder_source = joint_config.resolved_encoder_config(act_fn_cls)
+        if joint_config.head_config is not None:
+            critic = joint_config.resolved_head_config()
     recurrent_critic = bool(getattr(config, "recurrent_critic", False))
     critic_encoder = _encoder(
-        config.critic_encoder_config,
-        layout.secondary_critic_width if independent or recurrent_critic or joint else layout.critic_width,
-        [
-            layout.private_critic_ff
-            if shared
-            else layout.secondary_critic_ff
-            if independent or recurrent_critic or joint
-            else layout.critic_ff
-        ],
+        critic_encoder_source,
+        layout.critic_width,
+        [layout.private_critic_ff if shared else layout.critic_ff],
         layout.private_layers if shared else layout.layers,
         layout,
+        temporal_hidden_dim=layout.temporal_hidden_dim,
+    )
+    head_interaction = _interaction_at_width(critic.interaction_config, layout.deepset_q_head_width)
+    critic = replace(
+        critic,
+        local_projection_hidden_dims=[layout.deepset_q_head_width],
+        value_regressor_hidden_dims=[layout.deepset_q_head_width, layout.deepset_q_head_width],
+        interaction_config=head_interaction,
     )
     updates = {
         "actor_encoder_config": actor,
         "actor_head_config": head,
         "critic_encoder_config": critic_encoder,
         "nop_config": _nop(config.nop_config, layout),
-        critic_name: replace(
-            critic,
-            local_projection_hidden_dims=[layout.deepset_q_head_width],
-            value_regressor_hidden_dims=[layout.deepset_q_head_width, layout.deepset_q_head_width],
-        ),
+        critic_name: critic,
     }
     if shared:
         updates["shared_encoder_config"] = _encoder(
-            config.shared_encoder_config, layout.width, [layout.ff_width, layout.ff_width], layout.layers, layout
+            config.shared_encoder_config, layout.width, [layout.ff_width, layout.ff_width], layout.layers, layout,
+            temporal_hidden_dim=actor_temporal_hidden_dim,
         )
     if joint:
         width = layout.single_joint_width if getattr(config, "n_critics", 2) == 1 else layout.twin_joint_width
+        joint_config = config.joint_critic_config
         updates["joint_critic_config"] = replace(
-            config.joint_critic_config,
+            joint_config,
             kind=critic_kind,
-            hidden_dims=(width, width, width),
-            element_hidden_dims=(
-                (
-                    layout.deepset_single_q_width
-                    if getattr(config, "n_critics", 2) == 1 or not config.joint_critic_config.independent_encoders
-                    else layout.deepset_twin_q_width,
-                )
-                if critic_kind == "deepset"
-                else (width, width, width)
-            ),
+            hidden_dims=(layout.deepset_q_head_width, layout.deepset_q_head_width) if critic_kind == "deepset"
+            else (width, width, width),
+            element_hidden_dims=(layout.critic_width,) if critic_kind == "deepset" else (width, width, width),
+            encoder_config=critic_encoder if critic_kind == "deepset" else None,
+            head_config=critic if critic_kind == "deepset" else None,
+            interaction_config=replace(
+                _interaction_at_width(joint_config.interaction_config, layout.critic_width, layout.critic_ff),
+                num_layers=layout.layers,
+            ) if critic_kind == "deepset" else joint_config.interaction_config,
         )
     if hasattr(config, "actor_state_critic_input_config") and isinstance(
         config.actor_state_critic_input_config, ActorStateCriticInputConfig

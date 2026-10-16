@@ -73,18 +73,45 @@ def _training_kwargs() -> dict[str, Any]:
     }
 
 
+@pytest.mark.integration
+@pytest.mark.parametrize("variant", [
+    "masac__deepset_critic", "masac__deepset_critic__gated",
+    "tmasac", "tmasac_dec", "tmasac__lstm", "tmasac__slstm",
+])
+@pytest.mark.parametrize("override", [False, True])
+def test_sac_presets_share_tmasac_training_defaults_and_honor_overrides(variant: str, override: bool) -> None:
+    options: dict[str, Any] = {"learning_rate_warmup_updates": 0}
+    learning_rate, temperature_rate, entropy, target = 5e-5, 5e-5, "auto_0.05", "auto_0.1"
+    if override:
+        learning_rate, temperature_rate, entropy, target = 2e-4, 7e-4, "auto_0.2", "auto_0.3"
+        options.update(learning_rate=learning_rate, ent_coef_learning_rate=temperature_rate,
+                       ent_coef=entropy, target_entropy=target)
+    algorithm = make_training("SwarmBots-WallEasy-v0", variant, algorithm_kwargs=options, **_training_kwargs())
+    try:
+        assert algorithm.learning_rate == pytest.approx(learning_rate)
+        for optimizer in (algorithm.actor_optimizer, algorithm.critic_optimizer):
+            assert all(group["lr"] == pytest.approx(learning_rate) for group in optimizer.param_groups)
+        assert algorithm.ent_coef_optimizer.param_groups[0]["lr"] == pytest.approx(temperature_rate)
+        assert algorithm.ent_coef == entropy
+        assert algorithm.target_entropy == target
+    finally:
+        algorithm.env.close()
+
+
 def test_variants_expose_only_canonical_architectures_and_ablations() -> None:
     assert set(list_variants(include_hidden=True)) == {
         "maddpg__deepset_critic",
         "matd3__deepset_critic",
         "masac__deepset_critic",
+        "maddpg__deepset_critic__gated",
+        "matd3__deepset_critic__gated",
+        "masac__deepset_critic__gated",
         "tmatd3",
         "tmatd3_dec",
         "ppo",
         "mappo",
         "mat_orig",
         "mat_ind",
-        "mat_ind__no_attention",
         "mat_qcx",
         "mat_dec",
         "mat_ind__lstm",
@@ -122,7 +149,7 @@ def test_variants_expose_only_canonical_architectures_and_ablations() -> None:
     "mat__orig", "mat__ind", "mat__dec", "mat__qcx", "mat__ind__lstm", "mat__qcx__lstm",
     "mat__ind__no_attention", "mat__qcx__no_nop", "tmasac__dec", "tmatd3__dec",
     "mat_ind_lstm", "mat_qcx_lstm", "maddpg_deepset", "matd3_deepset", "masac_deepset",
-    "tmasac_lstm", "tmasac_slstm", "mat_ind_no_attention",
+    "tmasac_lstm", "tmasac_slstm", "mat_ind_no_attention", "mat_ind__no_attention",
     "mat_qcx_no_nop", "tmasac_no_nop", "tmasac_shared_encoder",
 ])
 def test_replaced_variant_names_are_rejected(variant: str) -> None:
@@ -130,10 +157,11 @@ def test_replaced_variant_names_are_rejected(variant: str) -> None:
         _variant_options(variant)
 
 
-@pytest.mark.parametrize("variant", ["tmasac__slstm"])
-def test_slstm_presets_include_the_temporal_residual_connection(variant: str) -> None:
+@pytest.mark.parametrize("variant", ["tmasac__slstm", "tmasac__lstm"])
+def test_recurrent_presets_use_common_temporal_residual_and_normalization(variant: str) -> None:
     options, _ = _variant_options(variant)
     assert options["rmat_temporal_residual"] is True
+    assert options["rmat_temporal_layer_norm"] is True
 
 
 def _small_policy(
@@ -176,6 +204,34 @@ def _small_policy(
     )
 
 
+@pytest.mark.parametrize("variant", ["maddpg__deepset_critic", "matd3__deepset_critic", "masac__deepset_critic"])
+def test_gated_deepset_presets_add_only_reception_gates_and_record_the_architecture(variant: str) -> None:
+    baseline = _small_policy(variant)
+    gated = _small_policy(variant + "__gated")
+    baseline_shapes = {name: parameter.shape for name, parameter in baseline.critic.named_parameters()}
+    gated_shapes = {name: parameter.shape for name, parameter in gated.critic.named_parameters()}
+    gate_names = {name for name in gated_shapes if ".reception_gate." in name}
+    assert gate_names
+    assert {name: shape for name, shape in gated_shapes.items() if name not in gate_names} == baseline_shapes
+
+    settings = gated.get_hyper_parameters()
+    config_name = "masac_policy_config" if variant.startswith("masac") else "td3_policy_config"
+    assert settings[config_name]["joint_critic_config"]["interaction_config"]["gated"] is True
+    assert settings[config_name]["joint_critic_config"]["head_config"]["interaction_config"]["gated"] is True
+
+    agent_mask = torch.tensor([[True, True, False], [True, True, True]])
+    values = gated.q_values(
+        local_obs=torch.randn(2, 3, 5), global_obs=torch.randn(2, 2),
+        actions=torch.randn(2, 3, 3), agent_mask=agent_mask,
+    )
+    sum(value.square().mean() for value in values).backward()
+    gate_gradients = [
+        parameter.grad for name, parameter in gated.critic.named_parameters() if name in gate_names
+    ]
+    assert all(gradient is not None and torch.isfinite(gradient).all() for gradient in gate_gradients)
+    assert any(torch.count_nonzero(gradient) for gradient in gate_gradients)
+
+
 @pytest.mark.parametrize("variant", [
     "tmasac__ac_shared_observation_encoder", "tmasac__slstm__ac_shared_observation_encoder",
 ])
@@ -197,10 +253,11 @@ def test_low_level_shared_observation_presets_reject_old_names(variant: str) -> 
 
 
 @pytest.mark.parametrize("variant", ["tmasac__slstm", "tmasac__lstm"])
-def test_recurrent_tmasac_presets_keep_full_critic_ff_and_split_actor_ff(variant: str) -> None:
+def test_recurrent_tmasac_presets_keep_the_full_actor_and_critic_feedforward_networks(variant: str) -> None:
     options, _ = _variant_options(variant, model_scale=None)
     assert options["mat_encoder_transformer_ff_config"] == MLPConfig(hidden_dims=[512, 512])
-    assert options["rmat_actor_transformer_ff_config"] == MLPConfig(hidden_dims=[512])
+    assert options["rmat_actor_transformer_ff_config"] == MLPConfig(hidden_dims=[512, 512])
+    assert options["rmat_actor_inter_module_mlp"] is False
     policy = _small_policy(variant)
     for critic in (policy.critic, policy.critic_target):
         for layer in critic.encoder.layers:
@@ -208,10 +265,10 @@ def test_recurrent_tmasac_presets_keep_full_critic_ff_and_split_actor_ff(variant
             widths = [(module.in_features, module.out_features) for module in layer.feedforward if isinstance(module, nn.Linear)]
             assert widths == [(32, 512), (512, 512), (512, 32)]
     for layer in policy.actor_encoder.layers:
-        for feedforward in (layer.inter_module_feedforward, layer.feedforward):
-            assert isinstance(feedforward, MLP)
-            widths = [(module.in_features, module.out_features) for module in feedforward if isinstance(module, nn.Linear)]
-            assert widths == [(256, 512), (512, 256)]
+        assert layer.inter_module_feedforward is None
+        assert isinstance(layer.feedforward, MLP)
+        widths = [(module.in_features, module.out_features) for module in layer.feedforward if isinstance(module, nn.Linear)]
+        assert widths == [(32, 512), (512, 512), (512, 32)]
 
 
 @pytest.mark.parametrize("variant,recurrent_critic", [("matd3__deepset_critic", False), ("tmatd3", False), ("tmatd3_dec", False), ("tmatd3", True), ("tmatd3_dec", True)])
@@ -234,11 +291,11 @@ def test_td3_split_actor_ff_override_preserves_full_critic_ff(variant: str, recu
     if variant.startswith("tmatd3"):
         for critic in (policy.critic, policy.critic_target):
             for layer in critic.encoder.layers:
-                blocks = (layer.inter_module_feedforward, layer.feedforward) if recurrent_critic else (layer.feedforward,)
-                for block in blocks:
-                    assert isinstance(block, MLP)
-                    widths = [(module.in_features, module.out_features) for module in block if isinstance(module, nn.Linear)]
-                    assert widths == [(32, 512), (512, 512), (512, 32)]
+                if recurrent_critic:
+                    assert layer.inter_module_feedforward is None
+                assert isinstance(layer.feedforward, MLP)
+                widths = [(module.in_features, module.out_features) for module in layer.feedforward if isinstance(module, nn.Linear)]
+                assert widths == [(32, 512), (512, 512), (512, 32)]
     else:
         expected_shapes = {name: parameter.shape for name, parameter in baseline.critic.named_parameters()}
         for critic in (policy.critic, policy.critic_target):
@@ -246,7 +303,7 @@ def test_td3_split_actor_ff_override_preserves_full_critic_ff(variant: str, recu
 
 
 @pytest.mark.parametrize("variant", ["mat_ind", "mat_qcx"])
-def test_recurrent_mat_extra_encoder_ff_preserves_critic_head_architecture(variant: str) -> None:
+def test_recurrent_mat_preserves_base_feedforward_networks_and_critic_heads(variant: str) -> None:
     settings = {"mat_add_agent_embeddings": False}
     baseline = _small_policy(variant, policy_kwargs=settings)
     recurrent = _small_policy(variant + "__lstm", policy_kwargs=settings)
@@ -254,8 +311,8 @@ def test_recurrent_mat_extra_encoder_ff_preserves_critic_head_architecture(varia
     assert {name: parameter.shape for name, parameter in recurrent.critic.named_parameters()} == expected_shapes
     for baseline_layer, recurrent_layer in zip(baseline.actor_encoder.layers, recurrent.actor_encoder.layers, strict=True):
         expected_ff_shapes = {name: parameter.shape for name, parameter in baseline_layer.feedforward.named_parameters()}
-        for block in (recurrent_layer.inter_module_feedforward, recurrent_layer.feedforward):
-            assert {name: parameter.shape for name, parameter in block.named_parameters()} == expected_ff_shapes
+        assert recurrent_layer.inter_module_feedforward is None
+        assert {name: parameter.shape for name, parameter in recurrent_layer.feedforward.named_parameters()} == expected_ff_shapes
 
 
 @pytest.mark.parametrize("variant", ["tmasac", "tmasac_dec"])
@@ -321,7 +378,7 @@ def test_tmasac_dec_actor_is_independent_and_critic_mixes_agents() -> None:
 @pytest.mark.integration
 @pytest.mark.parametrize(
     ("variant", "expected_ratios"),
-    [("ppo", (1.04**2, 1.04)), ("mappo", (1.04, 1.04, 1.04)), ("mat_ind__no_attention", (1.04, 1.04, 1.04))],
+    [("ppo", (1.04**2, 1.04)), ("mappo", (1.04, 1.04, 1.04)), ("mat_ind", (1.04, 1.04, 1.04))],
 )
 def test_ppo_presets_clip_and_measure_kl_at_the_intended_action_scope(
     variant: str, expected_ratios: tuple[float, ...]
@@ -620,6 +677,9 @@ def test_mappo_global_context_trains_and_restores_matching_checkpoints(
     "maddpg__deepset_critic",
     "matd3__deepset_critic",
     "masac__deepset_critic",
+    "maddpg__deepset_critic__gated",
+    "matd3__deepset_critic__gated",
+    "masac__deepset_critic__gated",
 ])
 def test_joint_observation_embedding_trains_and_restores_existing_presets(variant: str, tmp_path: Path) -> None:
     kwargs = _training_kwargs()
@@ -779,17 +839,18 @@ def test_training_saves_and_resumes_then_evaluates_without_updating_normalizatio
 
 @pytest.mark.integration
 def test_presets_select_the_intended_algorithm_and_actor() -> None:
-    for variant, expected_class in (("mappo", PPO), ("mat_ind__no_attention", PPO), ("tmasac", SAC), ("tmasac_dec", SAC), ("tmasac__slstm", RecurrentSAC)):
+    for variant, expected_class in (("mappo", PPO), ("mat_ind", PPO), ("tmasac", SAC), ("tmasac_dec", SAC), ("tmasac__slstm", RecurrentSAC), ("tmasac__lstm", RecurrentSAC)):
         algorithm = make_training("SwarmBots-WallEasy-v0", variant, **_training_kwargs())
         try:
             assert isinstance(algorithm, expected_class)
             if variant in {"mappo"}:
                 assert isinstance(algorithm.policy.policy, MAPPOPolicy)
-            elif variant == "mat_ind__no_attention":
+            elif variant == "mat_ind":
                 assert isinstance(algorithm.policy.policy, MATIndPolicy)
-                assert algorithm.policy.policy.config.encoder_config.use_agent_attention is False
-            elif variant in {"tmasac__slstm"}:
-                assert algorithm.policy.actor_encoder.config.temporal_residual is (variant == "tmasac__slstm")
+                assert algorithm.policy.policy.config.encoder_config.use_agent_attention is True
+            elif variant in {"tmasac__slstm", "tmasac__lstm"}:
+                assert algorithm.policy.actor_encoder.config.temporal_residual is True
+                assert algorithm.policy.actor_encoder.config.temporal_layer_norm is True
         finally:
             algorithm.env.close()
 

@@ -177,7 +177,6 @@ class RecurrentTD3Policy(TD3Policy):
         return dict(
             actor_state_input_dim=actor_state_input_dim(
                 self.actor.encoder.layers[-1].temporal_model,
-                self.config.actor_encoder_config.d_model,
                 config,
             ),
             actor_state_config=config,

@@ -156,7 +156,6 @@ def test_mat_encoder_forward_matches_reference_stack_with_embedding_options() ->
         add_agent_embeddings=True,
         local_obs_encoder_config=MLPConfig(hidden_dims=[7]),
         global_obs_encoder_config=MLPConfig(hidden_dims=[6]),
-        normalize_obs_inputs=True,
         normalize_tokens=True,
         transformer_ff_init_gain=None,
     )
@@ -178,10 +177,10 @@ def test_mat_encoder_forward_matches_reference_stack_with_embedding_options() ->
         [True, False, True, True],
         [False, True, True, True],
     ])
-    tokens = mat_encoder.local_obs_encoder(mat_encoder.local_obs_input_norm(local_obs))
+    tokens = mat_encoder.local_obs_encoder(local_obs)
     assert mat_encoder.agent_embeddings is not None
     tokens = tokens + mat_encoder.agent_embeddings[:, :local_obs.shape[1], :]
-    global_tokens = mat_encoder.global_obs_encoder(mat_encoder.global_obs_input_norm(global_obs))
+    global_tokens = mat_encoder.global_obs_encoder(global_obs)
     tokens = tokens + global_tokens.unsqueeze(1).expand(-1, local_obs.shape[1], -1)
     tokens = mat_encoder.token_norm(tokens)
 

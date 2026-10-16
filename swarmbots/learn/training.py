@@ -25,6 +25,7 @@ from swarmbots.learn.base_policy import BasePolicy
 from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
 from swarmbots.learn.gsde_reset import GSDEProbabilityResetMode
 from swarmbots.learn.nn_components.feed_forward import MLPConfig
+from swarmbots.learn.nn_components.deep_set import DeepSetInteractionConfig
 from swarmbots.learn.obs_indices import ObsIndices
 from swarmbots.learn.presets.policy_factory import (
     ContinuousActionDistVariant,
@@ -38,6 +39,7 @@ from swarmbots.learn.presets.policy_factory import (
 )
 from swarmbots.learn.presets.model_scale import DEFAULT_MODEL_SCALE, normalize_model_scale, ppo_nop_at_scale
 from swarmbots.learn.presets.tmasac import make_tmasac_options
+from swarmbots.learn.presets.sac import make_sac_algorithm_options
 from swarmbots.learn.presets.transformer import MATInitGains, MATNormalizationConfig, NOPInitGains
 from swarmbots.learn.presets.variants import VARIANT_CONFIGS
 from swarmbots.learn.scheduling.auto_lr_updater import make_auto_lr_updater
@@ -62,7 +64,7 @@ def _variant_options(variant: str, *, model_scale: str | None = DEFAULT_MODEL_SC
         policy_options = {"policy_variant": config.policy_variant}
         algorithm_options = {}
     deterministic = _is_deterministic_policy_variant(policy_options["policy_variant"])
-    if deterministic or variant in {"masac__mlp_critic", "masac__deepset_critic"}:
+    if deterministic or policy_options["policy_variant"] in {"masac__mlp_critic", "masac__deepset_critic"}:
         policy_options["mat_encoder_transformer_ff_config"] = MLPConfig(hidden_dims=[512, 512])
     default_distribution = None if deterministic else (
         "predicted_std_gaussian"
@@ -75,6 +77,8 @@ def _variant_options(variant: str, *, model_scale: str | None = DEFAULT_MODEL_SC
         use_nop=config.use_nop,
         mat_use_agent_attention=config.use_agent_attention,
     )
+    if config.gated_deepset:
+        policy_options["deepset_interaction_config"] = DeepSetInteractionConfig(gated=True)
     return policy_options, algorithm_options
 
 
@@ -238,7 +242,7 @@ def make_training(
 
     Architectures and optimizer defaults come from the selected preset. Task
     settings, including episode length and settled resets, come from the registry.
-    ``model_scale`` defaults to "5M NOP1M": online main-policy parameters
+    ``model_scale`` defaults to "5M-2L NOP1M": online main-policy parameters
     excluding frozen targets, plus a separate NOP budget. Pass None to use
     explicit architecture widths. Fixed 2.5M/0.75M and 10M/2M layouts are also available;
     sizes are declared per architecture and are not fitted to task shapes.
@@ -323,7 +327,7 @@ def make_training(
                 "tau": 0.005,
             }
             if is_sac:
-                algorithm_config.update(ent_coef="auto_0.05", ent_coef_learning_rate=1e-3, target_entropy="auto_0.5")
+                algorithm_config.update(make_sac_algorithm_options())
             if is_deterministic and recurrent:
                 algorithm_config.update(
                     batch_size=16,

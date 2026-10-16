@@ -20,6 +20,7 @@ from swarmbots.learn.nn_components.feed_forward import (
     MLPConfig,
     SwiGLUConfig,
 )
+from swarmbots.learn.presets.sac import make_sac_algorithm_options
 
 ACTOR_D_MODEL = 256
 
@@ -52,9 +53,9 @@ def make_tmasac_options(
     policy_options = {
         "policy_variant": "tmasac__recurrent" if is_recurrent else "tmasac_dec" if variant == "tmasac_dec" else "tmasac",
         "mat_encoder_transformer_ff_config": encoder_ff_config,
-        "rmat_actor_d_model": ACTOR_D_MODEL if is_recurrent else None,
+        "rmat_actor_d_model": None,
         "rmat_actor_transformer_ff_config": actor_ff_config if is_recurrent else None,
-        "rmat_actor_inter_module_mlp": is_recurrent and not recurrent_shared_encoder,
+        "rmat_actor_inter_module_mlp": False,
         "tmasac_actor_state_critic_input_config": (
             ActorStateCriticInputConfig(
                 projection_dim=ACTOR_D_MODEL,
@@ -73,17 +74,12 @@ def make_tmasac_options(
         ),
         "rmat_temporal_model_cls": temporal_model_cls,
         "rmat_temporal_model_config": temporal_model_config,
-        "rmat_temporal_residual": variant.startswith("tmasac__slstm") and variant != "tmasac__slstm__no_residual",
-        "rmat_temporal_layer_norm": False,
+        "rmat_temporal_residual": is_recurrent and variant != "tmasac__slstm__no_residual",
+        "rmat_temporal_layer_norm": is_recurrent,
         "rmat_use_temporal_output_projection": not is_recurrent,
         "rmat_experimental_compile_lstm": variant == "tmasac__lstm",
     }
-    algorithm_options: dict[str, Any] = {
-        "learning_rate": 5e-5,
-        "ent_coef_learning_rate": None,
-        "ent_coef": "auto_0.05",
-        "target_entropy": "auto_0.1",
-    }
+    algorithm_options = make_sac_algorithm_options()
     if is_recurrent:
         algorithm_options.update(
             batch_size=16,
@@ -105,23 +101,17 @@ def _make_feedforward_configs(
         "tmasac_dec",
         "tmasac__ac_shared_observation_encoder",
         "tmasac__slstm__ac_shared_observation_encoder",
-    }:
-        if variant == "tmasac__slstm__ac_shared_observation_encoder":
-            config = MLPConfig(hidden_dims=[512, 512])
-            return config, config
-        return MLPConfig(hidden_dims=[512, 512]), None
-    if variant == "tmasac__swiglu":
-        return _make_stacked_swiglu_config(), None
-    if variant in {
         "tmasac__slstm",
         "tmasac__slstm__no_residual",
         "tmasac__lstm",
     }:
-        # Only the recurrent actor splits its feed-forward budget across the
-        # two RMAT blocks. The ordinary critic still needs the full MAT block.
-        return MLPConfig(hidden_dims=[512, 512]), MLPConfig(hidden_dims=[512])
+        config = MLPConfig(hidden_dims=[512, 512])
+        return config, config if variant.startswith(("tmasac__lstm", "tmasac__slstm")) else None
+    if variant == "tmasac__swiglu":
+        return _make_stacked_swiglu_config(), None
     if variant == "tmasac__slstm__swiglu":
-        return _make_stacked_swiglu_config(), SwiGLUConfig(hidden_dim=PARAMETER_MATCHED_SWIGLU_HIDDEN_DIM)
+        config = _make_stacked_swiglu_config()
+        return config, config
     raise ValueError(f"Unknown TMASAC variant: {variant!r}")
 
 

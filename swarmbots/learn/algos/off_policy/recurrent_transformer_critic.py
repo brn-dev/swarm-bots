@@ -9,6 +9,7 @@ from swarmbots.learn.algos.off_policy.transformer_critic import (
     TransformerCriticConfig,
     TransformerTwinCritic,
     ObservationActionEncoder,
+    build_q_network,
 )
 from swarmbots.learn.nn_components.feed_forward import MLPConfig
 
@@ -87,12 +88,12 @@ class RecurrentTransformerTwinCritic(TransformerTwinCritic):
             else None
         )
         self.nop_source_latent_dim = self.d_model * (2 if self.encoder2 is not None else 1)
-        self.q1 = self._build_q_network(
+        self.q1 = build_q_network(
             q_local_dim=self.d_model,
             critic_config=critic_config,
             act_fn_cls=encoder_config.act_fn_cls,
         )
-        self.q2 = self._build_q_network(
+        self.q2 = build_q_network(
             q_local_dim=self.d_model,
             critic_config=critic_config,
             act_fn_cls=encoder_config.act_fn_cls,

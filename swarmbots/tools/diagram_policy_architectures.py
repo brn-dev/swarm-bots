@@ -234,17 +234,57 @@ def module_count(row, *paths):
     raise ValueError(f"Missing audited module {paths} for {row['variant']}")
 
 
+def deepset_communication_lines(
+    row: dict[str, Any], prefix: str, features: int, *, normalize: bool,
+) -> list[str | ComponentBlock]:
+    dimensions = next(
+        layer["dimensions"] for layer in row["layer_layout"] if layer["module"] == prefix + ".message_encoder"
+    )
+    message_width = int(dimensions.split(" -> ")[-1])
+    content: list[str | ComponentBlock] = [
+        "z = global LayerNorm(h)" if normalize else "z = h (no normalization)",
+        f"token width D={features}; expanded message width M={message_width}",
+        "nonlinear expansion before pooling: " + chain(row, prefix + ".message_encoder"),
+        "masked mean in the expanded message space",
+        "nonlinear pooled-message processing: " + chain(row, prefix + ".global_update"),
+    ]
+    if prefix + ".reception_gate" in row["module_parameter_counts"]:
+        content.append(ComponentBlock("Per-token reception gate", [
+            "concatenate normalized local token and shared global message",
+            "gate MLP: " + chain(row, prefix + ".reception_gate"),
+            "sigmoid: one independent gate per message feature",
+            "multiply expanded message by token-specific gates before compression",
+        ], parameters=module_count(row, prefix + ".reception_gate")))
+    content.extend([
+        "linear down-projection (bias-free): " + chain(row, prefix + ".message_projection"),
+        f"received message g: N × {features}",
+        "global residual: u = h + g",
+    ])
+    return content
+
+
 def encoder_lines(
     row: dict[str, Any], config: dict[str, Any], prefix: str, projection: str = "",
 ) -> list[str | ComponentBlock]:
     """List input projections, the repeated block's forward order, then output."""
     width = config["d_model"]
     block = prefix + ".layers.0"
-    attention = (
-        f"attention / block: {config['nhead']} heads ({module_count(row, block + '.self_attn'):,})"
-        if config["use_agent_attention"]
-        else "agent attention: disabled"
-    )
+    is_deepset = block + ".interaction" in row["module_parameter_counts"]
+    if is_deepset:
+        communication = deepset_communication_lines(
+            row, block + ".interaction", width, normalize=config["norm_first"],
+        )
+        if not config["norm_first"]:
+            communication[-1] = "global residual: u = LayerNorm(h + g)"
+        attention: str | ComponentBlock = ComponentBlock(
+            "Global interaction · across agents", communication,
+            parameters=module_count(row, block + ".interaction"),
+        )
+    else:
+        attention = (
+            f"attention / block: {config['nhead']} heads ({module_count(row, block + '.self_attn'):,})"
+            if config["use_agent_attention"] else "agent attention: disabled"
+        )
     lines: list[str | ComponentBlock] = []
     if projection:
         lines.append("obs MLP (once): " + projection)
@@ -255,21 +295,67 @@ def encoder_lines(
                     "add local and global token projections",
                 ]
             )
-    block_lines = [f"feature width: D={width}"]
+    if config.get("normalize_tokens"):
+        lines.append(f"token LayerNorm (once): {module_count(row, prefix + '.token_norm'):,} parameters")
+    block_lines: list[str | ComponentBlock] = [f"feature width: D={width}"]
     temporal = config.get("temporal_model_cls")
     if temporal:
         kind = "sLSTM" if "SLSTM" in temporal else "LSTM"
-        temporal_line = f"{kind} / block: hidden={width} ({module_count(row, block + '.temporal_model'):,})"
+        temporal_width = config.get("temporal_hidden_dim") or width
+        temporal_lines = []
+        if temporal_width != width:
+            temporal_lines.append(f"memory input / block: {width} → {temporal_width}")
+        temporal_lines.append(
+            f"{kind} / block: hidden={temporal_width} ({module_count(row, block + '.temporal_model'):,})"
+        )
+        if config.get("use_temporal_output_projection", True) or temporal_width != width:
+            temporal_lines.append(f"memory output / block: {temporal_width} → {width}")
         temporal_first = config["temporal_model_order"] == "temporal_first"
-        block_lines.append(temporal_line if temporal_first else attention)
+        block_lines.extend(temporal_lines if temporal_first else [attention])
         if config.get("inter_module_mlp"):
             block_lines.append("inter FF / block: " + chain(row, block + ".inter_module_feedforward"))
-        block_lines.append(attention if temporal_first else temporal_line)
+        block_lines.extend([attention] if temporal_first else temporal_lines)
     else:
         block_lines.append(attention)
-    block_lines.append("FF / block: " + chain(row, block + ".feedforward"))
+    if is_deepset:
+        block_lines.extend([
+            "v = local LayerNorm(u)" if config["norm_first"] else "v = u; normalize after residual",
+            "FF / block: " + chain(row, block + ".feedforward"),
+            "local residual: h_next = u + FF(v)" if config["norm_first"]
+            else "local residual: h_next = LayerNorm(u + FF(v))",
+        ])
+    else:
+        block_lines.append("FF / block: " + chain(row, block + ".feedforward"))
     lines.append(ComponentBlock("Encoder block", block_lines, config["num_layers"], module_count(row, block)))
+    if prefix + ".norm" in row["module_parameter_counts"]:
+        lines.append(f"final LayerNorm (once): {module_count(row, prefix + '.norm'):,} parameters")
     lines.append(f"output: N × {width}")
+    return lines
+
+
+def critic_embedding_lines(
+    row: dict[str, Any], config: dict[str, Any], prefix: str, *, context_in_encoder: bool = True,
+) -> list[str]:
+    lines: list[str] = []
+    preencoder = prefix + ".observation_action_encoder"
+    if preencoder in row["module_parameter_counts"]:
+        lines.extend([
+            "observation MLP (once): " + chain(row, preencoder + ".observation_encoder"),
+            "action MLP (once): " + chain(row, preencoder + ".action_encoder"),
+            "concatenate observation and action features",
+        ])
+    has_global_encoder = prefix + ".global_encoder" in row["module_parameter_counts"]
+    if not has_global_encoder and context_in_encoder and config["joint_obs_embedding"] and (
+        row["shape"]["global_obs_dim"] + row["shape"]["hidden_global_vars_dim"]
+    ):
+        lines.append("concatenate local/action and global inputs before projection")
+    lines.append("local/action MLP (once): " + chain(row, prefix + ".local_action_encoder"))
+    if has_global_encoder:
+        lines.extend([
+            "global context + active count",
+            "global MLP (once): " + chain(row, prefix + ".global_encoder"),
+            "add local and global token projections",
+        ])
     return lines
 
 
@@ -297,7 +383,7 @@ def annotate_component_totals(d, row):
         assign("representation", roles[role] if role == "shared_encoder" else module_count(row, "encoder"), role)
     for id, prefix in (("critic_encoder", "critic.encoder"), ("critic_encoder2", "critic.encoder2")):
         if id in nodes:
-            assign(id, module_count(row, id, prefix), "critic")
+            assign(id, module_count(row, id, prefix, "critic.0.encoder"), "critic")
     if "value" in nodes:
         used = sum(node.parameters or 0 for node in d.nodes if node.parameter_role == "critic")
         assign("value", roles["critic"] - used, "critic")
@@ -305,7 +391,7 @@ def annotate_component_totals(d, row):
         assign("state_bridge", module_count(row, "critic.actor_state_encoder"), "critic")
     for index in (1, 2):
         if f"head{index}" in nodes:
-            assign(f"head{index}", module_count(row, f"critic.q{index}"), "critic")
+            assign(f"head{index}", module_count(row, f"critic.q{index}", "critic.0.network"), "critic")
         if f"q{index}_network" in nodes:
             assign(f"q{index}_network", module_count(row, f"critic.{index - 1}", f"critic.q{index}"), "critic")
     if "q_features" in nodes:
@@ -342,15 +428,10 @@ def deepset_encoder_lines(
         update = interaction["local_update"]
         content: list[str | ComponentBlock] = [
             f"input: per-agent h · N × {features}",
-            ComponentBlock("Global interaction · across agents", [
-                "z = global LayerNorm(h)" if interaction["normalize"] else "z = h (no normalization)",
-                "message MLP: " + chain(row, block + ".message_encoder"),
-                "masked mean of message MLP(z)",
-                "global MLP: " + chain(row, block + ".global_update"),
-                "g = global MLP(pooled messages)",
-                f"broadcast g: {features} → N × {features}",
-                "global residual: u = h + g",
-            ]),
+            ComponentBlock(
+                "Global interaction · across agents",
+                deepset_communication_lines(row, block, features, normalize=interaction["normalize"]),
+            ),
         ]
         if update == "residual":
             content.append("h_next = u; local processing omitted")
@@ -367,10 +448,11 @@ def deepset_encoder_lines(
 
 def critic_lines(row: dict[str, Any], prefix: str) -> list[str | ComponentBlock]:
     policy_config = configuration(row)
-    critic_config = (
-        policy_config["joint_critic_config"] if prefix.endswith(".network")
-        else policy_config.get("transformer_critic_config") or policy_config["critic_config"]
-    )
+    joint = policy_config.get("joint_critic_config")
+    if joint and joint["kind"] == "deepset":
+        critic_config = joint.get("head_config") or joint
+    else:
+        critic_config = policy_config.get("transformer_critic_config") or policy_config["critic_config"]
     interaction = (critic_config.get("deep_set_config") or critic_config)["interaction_config"]
     lines = deepset_encoder_lines(row, prefix + ".deepset", interaction)
     layers = {layer["module"]: layer["dimensions"] for layer in row["layer_layout"]}
@@ -663,37 +745,35 @@ def build_diagram(row: dict[str, Any]) -> Diagram:
             "causal",
         )
         joint = cfg.get("joint_critic_config")
-        is_joint = row["variant"].endswith(("__deepset_critic", "__mlp_critic"))
-        if is_joint and joint["kind"] == "deepset" and "critic.encoder" in row["module_parameter_counts"]:
-            element_width = joint["element_hidden_dims"][-1]
-            global_width = glob + private_global
-            independent = joint["independent_encoders"]
+        is_joint = joint is not None and cfg.get("critic_kind", joint["kind"]) != "transformer"
+        if is_joint and joint["kind"] == "deepset":
+            single_head = "critic.0.encoder" in row["module_parameter_counts"]
+            encoder_config = joint["encoder_config"]
+            element_width = encoder_config["d_model"]
+            independent = joint["independent_encoders"] and not single_head
             for index in range(1, 3 if independent else 2):
                 suffix = "" if index == 1 else "2"
                 id = "critic_encoder" + suffix
-                pooling = ["final masked mean across agents"]
-                if global_width:
-                    pooling.append(f"append global context: {global_width} features")
-                pooling.append(f"output: {element_width + global_width} pooled features")
+                prefix = "critic.0.encoder.network" if single_head else "critic.encoder" + suffix + ".network"
                 d.node(
                     id,
-                    f"Independent critic encoder {index}" if independent else "ONE shared Deep Set encoder",
+                    f"Independent critic encoder {index}" if independent else "ONE Deep Set critic encoder",
                     [
-                        "global context + active count",
-                        *deepset_encoder_lines(row, "critic.encoder" + suffix + ".network", joint["interaction_config"]),
-                        ComponentBlock("Team pooling · once", pooling),
+                        *critic_embedding_lines(row, encoder_config, prefix, context_in_encoder=joint["context_in_elements"]),
+                        *encoder_lines(row, encoder_config, prefix),
                     ],
                     "critic",
                 )
                 d.edge("q_inputs", id)
-            for index in (1, 2):
-                d.node(
-                    f"head{index}", f"Separate Q{index} readout",
-                    ["pooled features + global context", "regressor: " + chain(row, f"critic.q{index}"), "output: one team value"],
-                    "critic",
+            for index in range(1, 2 if single_head else 3):
+                add_readout(
+                    d, row, "critic.0.network" if single_head else f"critic.q{index}",
+                    f"head{index}", f"Separate Q{index} head",
                 )
                 encoder = "critic_encoder2" if independent and index == 2 else "critic_encoder"
-                d.edge(encoder, f"head{index}", f"pooled: {element_width + global_width}")
+                d.edge(encoder, f"head{index}", f"N × {element_width}")
+                if not joint["context_in_elements"] and glob + private_global:
+                    d.edge("q_inputs", f"head{index}", "global context after pooling")
                 d.node(f"q{index}", f"Q{index}", ["scalar per world"], "output")
                 d.edge(f"head{index}", f"q{index}")
             source = "critic_encoder"
@@ -704,14 +784,14 @@ def build_diagram(row: dict[str, Any]) -> Diagram:
                     [f"2 × (N × {element_width})", f"concatenate → N × {2 * element_width}"], "critic",
                 )
                 for id in ("critic_encoder", "critic_encoder2"):
-                    d.edge(id, source, "per-agent features")
+                    d.edge(id, source, "tokens")
             d.notes.append(
-                "The two Q readouts have separate parameters; the shared Deep Set runs once."
+                "DDPG has one standard Q head; twin-Q algorithms use two independent heads."
+                if single_head else "The two Q heads have separate parameters; the shared Deep Set runs once."
                 if not independent else "Independent critic encoders concatenate their pre-pooling features for NOP."
             )
         elif is_joint:
             count = 1 if row["variant"].startswith("maddpg") else 2
-            source_nodes = []
             for i in range(count):
                 index = i + 1
                 prefix = (
@@ -719,37 +799,18 @@ def build_diagram(row: dict[str, Any]) -> Diagram:
                     if row["base_policy_class"] in {"TD3Policy", "RecurrentTD3Policy"}
                     else f"critic.q{index}.network"
                 )
-                if joint["kind"] == "mlp":
-                    lines = ["flatten observations/actions/mask", chain(row, prefix), "scalar Q"]
-                else:
-                    lines = critic_lines(row, prefix)
-                    lines.insert(0, "global context + active count")
+                lines = ["flatten observations/actions/mask", chain(row, prefix), "scalar Q"]
                 d.node(f"q{index}_network", f"Independent Q{index} network", lines, "critic")
                 d.edge("q_inputs", f"q{index}_network")
                 d.node(f"q{index}", f"Q{index}", ["scalar per world"], "output")
                 d.edge(f"q{index}_network", f"q{index}")
-                source_nodes.append(f"q{index}_network")
-            if joint["kind"] == "deepset":
-                source = "q_features"
-                element_width = joint["element_hidden_dims"][-1]
-                d.node(
-                    source,
-                    "Final equivariant critic features",
-                    [f"N × {element_width}; before pooling"] if count == 1
-                    else [f"{count} × (N × {element_width})", f"concatenate → N × {count * element_width}"],
-                    "critic",
-                )
-                for id in source_nodes:
-                    d.edge(id, source, "per-agent features")
         else:
             cc = cfg.get("critic_encoder_config")
             d.node(
                 "critic_encoder",
                 "ONE shared critic encoder",
                 [
-                    "local/action MLP (once): " + chain(row, "critic.encoder.local_action_encoder"),
-                    "global MLP (once): " + chain(row, "critic.encoder.global_encoder", fallback="none"),
-                    "add local and global token projections",
+                    *critic_embedding_lines(row, cc, "critic.encoder"),
                     *encoder_lines(row, cc, "critic.encoder"),
                 ],
                 "critic",
@@ -1112,7 +1173,7 @@ def load_reports(scales, variants, refresh):
         folder = (
             ROOT
             / "docs/policy_parameters"
-            / ("" if layout.main_parameters == 5_000_000 else f"{layout.main_parameters / 1e6:g}M")
+            / layout.slug
         )
         path = folder / "counts.json.gz"
         report = json.loads(gzip.decompress(path.read_bytes())) if path.exists() else None
@@ -1136,7 +1197,7 @@ def load_reports(scales, variants, refresh):
             if report["errors"]:
                 raise RuntimeError(report["errors"])
             # Keep the compact audit input; verbose reports remain local outputs.
-            generated = ROOT / "docs/policy_parameters/generated" / f"{layout.main_parameters / 1e6:g}M"
+            generated = ROOT / "docs/policy_parameters/generated" / layout.slug
             save_report(
                 report,
                 generated,
@@ -1151,7 +1212,7 @@ def load_reports(scales, variants, refresh):
 def write_gallery(diagrams, output):
     entries = {}
     for d in diagrams:
-        slug = f"{SCALE_LAYOUTS[d.scale].main_parameters / 1e6:g}M"
+        slug = SCALE_LAYOUTS[d.scale].slug
         entries[d.scale + "/" + d.variant] = {"svg": svg_diagram(d), "path": f"{slug}/{d.variant}", "notes": d.notes}
     data = json.dumps(entries, ensure_ascii=False).replace("</", r"<\/")
     variants = list(dict.fromkeys(d.variant for d in diagrams))
@@ -1162,9 +1223,9 @@ def write_gallery(diagrams, output):
 
     page = """<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Policy architecture diagrams</title><style>
-body{font:15px Arial,sans-serif;margin:0;color:#182538;background:#eef2f7}header{padding:22px 28px;background:#fff;border-bottom:1px solid #d9e1eb}h1{font-size:24px;margin:0 0 14px}label{margin-right:18px}select{padding:8px;max-width:320px;font:inherit}nav{margin:12px 0 0}a{color:#3565a8;margin-right:18px}.legend{display:flex;gap:18px;margin:16px 0 0;font-size:13px}.legend span:before{content:"";display:inline-block;width:12px;height:12px;background:var(--color);margin-right:6px;border-radius:3px}main{padding:18px;overflow:auto}.canvas{background:#fafbfe;border-radius:12px;max-width:1440px;margin:auto;box-shadow:0 2px 14px #14213a13}.canvas svg{display:block;width:100%;height:auto;min-width:920px}p{margin:12px 0 0;font-size:13px;color:#526176}
+body{font:15px Arial,sans-serif;margin:0;color:#182538;background:#eef2f7}header{padding:22px 28px;background:#fff;border-bottom:1px solid #d9e1eb}h1{font-size:24px;margin:0 0 14px}label{margin-right:18px}select{padding:8px;max-width:320px;font:inherit}nav{margin:12px 0 0}a{color:#3565a8;margin-right:18px}.legend{display:flex;gap:18px;margin:16px 0 0;font-size:13px}.legend span:before{content:"";display:inline-block;width:12px;height:12px;background:var(--color);margin-right:6px;border-radius:3px}main{padding:18px;overflow:auto}.canvas{background:#fafbfe;border-radius:12px;max-width:2100px;margin:auto;box-shadow:0 2px 14px #14213a13}.canvas svg{display:block;width:100%;height:auto;min-width:1300px}p{margin:12px 0 0;font-size:13px;color:#526176}
 </style><header><h1>Policy architecture diagrams</h1><label>Variant <select id="variant">VARIANTS</select></label><label>Scale <select id="scale">SCALES</select></label><nav><a id="svg" download>SVG</a><a id="mermaid" download>Mermaid source</a><a id="dot" download>Graphviz source</a><a href="GUIDE_URL">Reading guide</a></nav><div class="legend"><span style="--color:#edf2f7">Inputs</span><span style="--color:#e8f1ff">Shared</span><span style="--color:#e9f5ee">Actor</span><span style="--color:#fff0df">Critic</span><span style="--color:#f0eafa">NOP</span></div><p>Solid arrows show data; dashed arrows show causal actions or detached state. Batch dimension and training-only target copies are omitted.</p></header><main><div id="canvas" class="canvas"></div></main><script>
-const entries=DATA;const variant=document.getElementById('variant'),scale=document.getElementById('scale');function update(){const item=entries[scale.value+'/'+variant.value];document.getElementById('canvas').innerHTML=item.svg;for(const [id,ext] of [['svg','svg'],['mermaid','mmd'],['dot','dot']])document.getElementById(id).href=item.path+'.'+ext;location.hash=encodeURIComponent(scale.value)+'/'+variant.value;}const initial=decodeURIComponent(location.hash.slice(1)).split('/');if(initial.length===2&&entries[initial[0]+'/'+initial[1]]){scale.value=initial[0];variant.value=initial[1];}else{scale.value='5M NOP1M';if(!scale.value)scale.selectedIndex=0;variant.value='tmasac';if(!variant.value)variant.selectedIndex=0;}variant.addEventListener('change',update);scale.addEventListener('change',update);update();
+const entries=DATA;const variant=document.getElementById('variant'),scale=document.getElementById('scale');function update(){const item=entries[scale.value+'/'+variant.value];document.getElementById('canvas').innerHTML=item.svg;for(const [id,ext] of [['svg','svg'],['mermaid','mmd'],['dot','dot']])document.getElementById(id).href=item.path+'.'+ext;location.hash=encodeURIComponent(scale.value)+'/'+variant.value;}const initial=decodeURIComponent(location.hash.slice(1)).split('/');if(initial.length===2&&entries[initial[0]+'/'+initial[1]]){scale.value=initial[0];variant.value=initial[1];}else{scale.value='5M-2L NOP1M';if(!scale.value)scale.selectedIndex=0;variant.value='tmasac';if(!variant.value)variant.selectedIndex=0;}variant.addEventListener('change',update);scale.addEventListener('change',update);update();
 </script></html>"""
     guide = (
         "README.md" if (output / "README.md").is_file()
@@ -1179,7 +1240,7 @@ def generate(rows, output):
     output.mkdir(parents=True, exist_ok=True)
     diagrams = [build_diagram(row) for row in rows]
     for d in diagrams:
-        slug = f"{SCALE_LAYOUTS[d.scale].main_parameters / 1e6:g}M"
+        slug = SCALE_LAYOUTS[d.scale].slug
         folder = output / slug
         folder.mkdir(exist_ok=True)
         base = folder / d.variant
@@ -1201,7 +1262,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--variants", nargs="+", help="default: core variants")
     parser.add_argument("--include-hidden", action="store_true")
-    parser.add_argument("--scales", nargs="+", default=list(list_model_scales()), help="e.g. 2.5M 5M 10M")
+    parser.add_argument("--scales", nargs="+", default=list(list_model_scales()), help="e.g. 2.5M 5M-2L 5M-3L 10M")
     parser.add_argument("--refresh", action="store_true", help="rebuild audited models from current presets")
     parser.add_argument("--output-dir", type=Path, default=ROOT / "docs/policy_parameters/diagrams")
     args = parser.parse_args()

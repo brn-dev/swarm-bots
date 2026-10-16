@@ -1,5 +1,6 @@
 import math
 from collections.abc import Callable
+from dataclasses import fields
 
 import pytest
 import torch
@@ -564,3 +565,52 @@ def test_feedforward_configs_serialize_with_architecture_options() -> None:
         },
     }
     assert serialized["local_obs_encoder_config"] == {"hidden_dims": [128, 64]}
+
+
+def test_additive_recurrence_preserves_feedforward_behavior_with_zero_temporal_updates() -> None:
+    baseline_config = MATEncoderConfig(
+        d_model=8,
+        nhead=2,
+        num_layers=2,
+        transformer_ff_config=MLPConfig(hidden_dims=[13, 11]),
+        local_obs_encoder_config=MLPConfig(hidden_dims=[9, 8]),
+        global_obs_encoder_config=MLPConfig(hidden_dims=[7]),
+    )
+    baseline = MATEncoder(baseline_config, max_agents=4, local_obs_dim=5, global_obs_dim=3).eval()
+    recurrent = RMATEncoder(
+        RMATEncoderConfig(
+            **{field.name: getattr(baseline_config, field.name) for field in fields(baseline_config)},
+            inter_module_mlp=False,
+            temporal_residual=True,
+            temporal_layer_norm=True,
+        ),
+        max_agents=4,
+        local_obs_dim=5,
+        global_obs_dim=3,
+    ).eval()
+    shared_state = {
+        name.replace(".norm1.", ".attention_norm.").replace(".norm2.", ".feedforward_norm."): value
+        for name, value in baseline.state_dict().items()
+    }
+    incompatibilities = recurrent.load_state_dict(shared_state, strict=False)
+    assert not incompatibilities.unexpected_keys
+    assert all(".temporal_" in name for name in incompatibilities.missing_keys)
+    with torch.no_grad():
+        for layer in recurrent.layers:
+            for parameter in layer.temporal_model.parameters():
+                parameter.zero_()
+
+    local_obs = torch.randn(2, 3, 4, 5)
+    global_obs = torch.randn(2, 3, 3)
+    agent_mask = torch.tensor([
+        [[True, True, False, True], [True, False, False, True], [True, True, True, True]],
+        [[True, False, True, False], [True, True, True, True], [False, True, True, True]],
+    ])
+    expected = baseline(
+        local_obs.flatten(0, 1), global_obs.flatten(0, 1), agent_mask.flatten(0, 1),
+    ).unflatten(0, (2, 3))
+    actual, state = recurrent(local_obs, global_obs, agent_mask)
+
+    torch.testing.assert_close(actual[agent_mask], expected[agent_mask])
+    torch.testing.assert_close(actual[~agent_mask], torch.zeros_like(actual[~agent_mask]))
+    assert len(state) == baseline_config.num_layers

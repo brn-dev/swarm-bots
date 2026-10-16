@@ -1,7 +1,7 @@
 """Instantiate registered presets and report their parameter counts without training.
 
 Run from the repository root:
-    swarmbots-inspect-policies --output-dir docs/policy_parameters/generated/5M
+    swarmbots-inspect-policies --output-dir docs/policy_parameters/generated/5M-2L
 """
 
 from __future__ import annotations
@@ -123,7 +123,7 @@ def inspect_variants(
     device: str = "cpu",
     seed: int = 42,
     use_nop: bool | None = None,
-    model_scale: str | None = "5M NOP1M",
+    model_scale: str | None = "5M-2L NOP1M",
     continuous_action_dist: str | None = None,
     policy_kwargs: dict[str, Any] | None = None,
     scenario_kwargs: dict[str, Any] | None = None,
@@ -279,7 +279,8 @@ def render_report(report: dict[str, Any], *, allocation_doc: str = "model_scale.
         f"swarmbots-inspect-policies {report['benchmark_id']} --output-dir docs/policy_parameters/generated/audit",
         "```", "",
         "This command counts the core presets; --include-hidden adds optional baselines and controls. Use `--variants` to select a subset, "
-        "`--model-scale \"5+1M\"` for the fixed preset, `--model-scale legacy` for explicit widths, "
+        "`--model-scale 5M-2L` or `--model-scale 5M-3L` for the fixed depth choices, "
+        "`--model-scale legacy` for explicit widths, "
         "`--no-nop` to disable NOP, or `--policy-kwargs`, `--scenario-kwargs`, and `--env-kwargs` "
         "with JSON objects to match custom architectures/tasks. For example, "
         "`--model-scale legacy --policy-kwargs '{\"enc_d_model\": 128, \"dec_d_model\": 64}'` for custom widths. "
@@ -427,7 +428,7 @@ def main() -> int:
     parser.add_argument("benchmark_id", nargs="?", default="SwarmBots-WallEasy-v0", choices=ALL_BENCHMARK_IDS)
     parser.add_argument("--variants", nargs="+", help="explicit variant names; default: core variants")
     parser.add_argument("--include-hidden", action="store_true", help="also count MLP baselines and optional controls")
-    parser.add_argument("--model-scale", default="5M NOP1M", help="fixed tiers: 2.5M, 5M (default), 10M; legacy uses custom widths")
+    parser.add_argument("--model-scale", default="5M-2L NOP1M", help="fixed tiers: 2.5M, 5M-2L (default), 5M-3L, 10M; legacy uses custom widths")
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--nop", action=argparse.BooleanOptionalAction, default=None)

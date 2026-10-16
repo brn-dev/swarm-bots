@@ -17,6 +17,8 @@ from swarmbots.learn.algos.r_mat.r_mat_policy_mixin import RMATPolicyMixin
 from swarmbots.learn.algos.r_mat.r_mat_qcx_policy import RMATQCXPolicy, RMATQCXPolicyConfig
 from swarmbots.learn.algos.r_mat.r_ppo_wm_sampler import RPPOWMSamplerConfig
 from swarmbots.learn.algos.r_mat.temporal_sequence_model import TemporalSequenceModel
+from swarmbots.learn.algos.r_mat.temporal_sequence_model import LSTMTemporalSequenceModel, LSTMTemporalSequenceModelConfig
+from swarmbots.learn.algos.xlstm.slstm import SLSTMTemporalSequenceModel, SLSTMTemporalSequenceModelConfig
 from swarmbots.learn.env_wrappers.learn_wrappers.swarm_bots_learn_env_wrapper import SwarmBotsLearnEnvWrapper
 from swarmbots.learn.testing_env import TestingSwarmBotsEnv as _TestingSwarmBotsEnv
 
@@ -49,7 +51,16 @@ class _IdentityTemporalSequenceModel(TemporalSequenceModel):
         return inputs, None
 
 
-def test_rmat_sequence_matches_explicit_step_state_flow() -> None:
+@pytest.mark.parametrize("temporal_hidden_dim", [None, 4])
+@pytest.mark.parametrize("temporal_model_cls,temporal_model_config", [
+    (LSTMTemporalSequenceModel, LSTMTemporalSequenceModelConfig()),
+    (SLSTMTemporalSequenceModel, SLSTMTemporalSequenceModelConfig(num_heads=2)),
+])
+def test_rmat_sequence_matches_explicit_step_state_flow(
+    temporal_hidden_dim: int | None,
+    temporal_model_cls: type[TemporalSequenceModel],
+    temporal_model_config: object,
+) -> None:
     torch.manual_seed(0)
     encoder = RMATEncoder(
         RMATEncoderConfig(
@@ -58,6 +69,9 @@ def test_rmat_sequence_matches_explicit_step_state_flow() -> None:
             num_layers=2,
             dim_feedforward=16,
             dropout=0.0,
+            temporal_hidden_dim=temporal_hidden_dim,
+            temporal_model_cls=temporal_model_cls,
+            temporal_model_config=temporal_model_config,
         ),
         max_agents=3,
         local_obs_dim=4,
@@ -71,6 +85,7 @@ def test_rmat_sequence_matches_explicit_step_state_flow() -> None:
     local_obs = torch.randn(batch_size, sequence_length, n_agents, 4)
     global_obs = torch.randn(batch_size, sequence_length, 2)
     agent_mask = torch.ones(batch_size, sequence_length, n_agents, dtype=torch.bool)
+    agent_mask[0, :, -1] = False
     episode_start_mask = torch.tensor([
         [True, False, False, False],
         [True, False, True, False],
@@ -107,6 +122,14 @@ def test_rmat_sequence_matches_explicit_step_state_flow() -> None:
     for sequence_layer_state, step_layer_state in zip(sequence_state, step_state, strict=True):
         for sequence_tensor, step_tensor in zip(sequence_layer_state, step_layer_state, strict=True):
             torch.testing.assert_close(sequence_tensor, step_tensor)
+            assert sequence_tensor.shape[-1] == (temporal_hidden_dim or 8)
+    assert torch.count_nonzero(sequence_output[0, :, -1]) == 0
+    sequence_output.square().sum().backward()
+    if temporal_hidden_dim is not None:
+        for layer in encoder.layers:
+            gradient = layer.temporal_input_projection.weight.grad
+            assert gradient is not None and torch.isfinite(gradient).all()
+            assert torch.count_nonzero(gradient) > 0
 
 
 @pytest.mark.parametrize("norm_first", [True, False])
@@ -323,7 +346,6 @@ def test_rmat_custom_feedforward_hidden_dims_preserve_masked_sequence_contract()
             add_agent_embeddings=True,
             local_obs_encoder_config=MLPConfig(hidden_dims=[7]),
             global_obs_encoder_config=MLPConfig(hidden_dims=[6]),
-            normalize_obs_inputs=True,
             normalize_tokens=True,
         ),
         max_agents=4,

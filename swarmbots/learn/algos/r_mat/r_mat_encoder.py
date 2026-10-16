@@ -35,6 +35,7 @@ class RMATEncoderConfig(MATEncoderConfig):
     temporal_residual: bool = True
     temporal_layer_norm: bool = True
     use_temporal_output_projection: bool = True
+    temporal_hidden_dim: int | None = None
 
 
 class RMATEncoderLayer(nn.Module):
@@ -71,18 +72,23 @@ class RMATEncoderLayer(nn.Module):
             num_layers=config.num_layers,
             name="temporal_model_config",
         )
+        temporal_hidden_dim = config.temporal_hidden_dim or config.d_model
+        temporal_projection_gain = (
+            config.linear_init_gain
+            if config.linear_projection_init_gain is None
+            else config.linear_projection_init_gain
+        )
+        self.temporal_input_projection: nn.Module = nn.Identity()
+        if temporal_hidden_dim != config.d_model:
+            self.temporal_input_projection = nn.Linear(config.d_model, temporal_hidden_dim, bias=False)
+            nn.init.orthogonal_(self.temporal_input_projection.weight, gain=temporal_projection_gain)
         self.temporal_model = temporal_model_cls(
-            hidden_dim=config.d_model,
+            hidden_dim=temporal_hidden_dim,
             config=temporal_model_config,
         )
-        if config.use_temporal_output_projection:
-            temporal_output_projection_gain = (
-                config.linear_init_gain
-                if config.linear_projection_init_gain is None
-                else config.linear_projection_init_gain
-            )
-            self.temporal_output_projection: nn.Module = nn.Linear(config.d_model, config.d_model, bias=False)
-            nn.init.orthogonal_(self.temporal_output_projection.weight, gain=temporal_output_projection_gain)
+        if config.use_temporal_output_projection or temporal_hidden_dim != config.d_model:
+            self.temporal_output_projection: nn.Module = nn.Linear(temporal_hidden_dim, config.d_model, bias=False)
+            nn.init.orthogonal_(self.temporal_output_projection.weight, gain=temporal_projection_gain)
         else:
             self.temporal_output_projection = nn.Identity()
         self.temporal_norm: nn.Module = (
@@ -288,6 +294,7 @@ class RMATEncoderLayer(nn.Module):
             sequence_length,
             hidden_dim,
         )
+        flat_temporal_inputs = self.temporal_input_projection(flat_temporal_inputs)
         temporal_valid_mask = None
         if valid_agent_time_mask is not None:
             temporal_valid_mask = valid_agent_time_mask.permute(0, 2, 1).reshape(batch_size * n_agents, sequence_length)
@@ -391,12 +398,6 @@ class RMATEncoder(nn.Module):
         self.add_agent_embeddings = config.add_agent_embeddings
         self.max_agents = max_agents
         self.d_model = config.d_model
-        self.local_obs_input_norm = nn.LayerNorm(local_obs_dim) if config.normalize_obs_inputs else nn.Identity()
-        self.global_obs_input_norm = (
-            nn.LayerNorm(global_obs_dim)
-            if config.normalize_obs_inputs and self.has_global_obs
-            else nn.Identity()
-        )
         self.token_norm = nn.LayerNorm(config.d_model) if config.normalize_tokens else nn.Identity()
         linear_init = make_init_linear_orthogonal(config.linear_init_gain)
         projection_linear_init = (
@@ -495,9 +496,7 @@ class RMATEncoder(nn.Module):
         if n_agents > self.max_agents:
             raise ValueError(f"Expected local_obs agent dim <= {self.max_agents}, got {n_agents}")
 
-        local_obs = self.local_obs_input_norm(local_obs)
         if self.joint_obs_embedding:
-            global_obs = self.global_obs_input_norm(global_obs)
             global_inputs = global_obs.unsqueeze(2).expand(-1, -1, n_agents, -1)
             local_obs = torch.cat((local_obs, global_inputs), dim=-1)
         embeddings = self.local_obs_encoder(local_obs)
@@ -505,7 +504,6 @@ class RMATEncoder(nn.Module):
             embeddings = embeddings + self.agent_embeddings[:, :n_agents, :].unsqueeze(1)
 
         if self.global_obs_encoder is not None:
-            global_obs = self.global_obs_input_norm(global_obs)
             global_embeddings = self.global_obs_encoder(global_obs)
             embeddings = embeddings + global_embeddings.unsqueeze(2)
         embeddings = self.token_norm(embeddings)

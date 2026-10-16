@@ -1,6 +1,6 @@
 """SAC with a decentralized actor and an MLP or Deep Set team critic."""
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from swarmbots.learn.algos.off_policy.joint_critic import JointCriticConfig, JointTwinCritic
@@ -26,6 +26,13 @@ class MASACPolicy(TMASACPolicy):
         if config.share_observation_encoder or config.shared_encoder_config is not None:
             raise ValueError("MASAC baselines use separate actor and critic observation inputs")
         super().__init__(env, config)
+
+    @staticmethod
+    def _validate_config(config: MASACPolicyConfig) -> None:
+        TMASACPolicy._validate_config(config)
+        if config.joint_critic_config.kind == "deepset":
+            head_config = config.joint_critic_config.resolved_head_config()
+            TMASACPolicy._validate_config(replace(config, critic_config=head_config))
 
     def _build_critic(self, *, local_input_dim: int, global_input_dim: int) -> JointTwinCritic:
         return JointTwinCritic(

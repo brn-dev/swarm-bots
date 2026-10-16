@@ -121,7 +121,9 @@ class TD3Policy(BasePolicy):
             )
         if config.critic_kind != "transformer":
             config = replace(config, joint_critic_config=replace(config.joint_critic_config, kind=config.critic_kind))
-        if config.transformer_critic_config.use_popart:
+        if config.transformer_critic_config.use_popart or (
+            config.critic_kind == "deepset" and config.joint_critic_config.resolved_head_config().use_popart
+        ):
             raise ValueError("DDPG/TD3 do not support PopArt")
         if getattr(env, "has_scenario_id", False):
             raise ValueError("DDPG/TD3 currently require a single scenario observation layout")

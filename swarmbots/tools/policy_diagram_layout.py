@@ -76,9 +76,11 @@ def edge_points(edge: Edge, nodes: dict[str, Node]) -> list[Point]:
 
 def place_components(diagram: Diagram) -> None:
     nodes = {node.id: node for node in diagram.nodes}
-    columns = (60, 480, 920, 1360)
+    component_width = 560
+    column_step = component_width + 120
+    columns = (60, 480, 480 + column_step, 480 + 2 * column_step)
     for node in diagram.nodes:
-        node.width = 280 if node.role == "input" else 300 if node.role == "output" else 320
+        node.width = 280 if node.role == "input" else 300 if node.role == "output" else component_width
         node.__post_init__()
 
     actor_ids = ["public", "actor_encoder", "actor", "actions"]
@@ -139,7 +141,7 @@ def place_components(diagram: Diagram) -> None:
         for column, node in enumerate(nop_nodes):
             node.x, node.y = columns[column], nop_top + (nop_height - node.height) // 2
         diagram.lanes.append(DiagramLane("Next-observation prediction · training", nop_top - 40, nop_height + 65))
-    diagram.width = columns[-1] + 440
+    diagram.width = columns[-1] + component_width + 120
     diagram.height = max(node.y + node.height for node in diagram.nodes) + 140 + len(diagram.notes) * 16
 
 
@@ -274,9 +276,21 @@ def place_label(
             width, height = max(map(len, lines)) * 6 + 12, len(lines) * 14 + 4
             if length < (width if horizontal else height) + 10:
                 continue
-            for fraction in (0.5, 0.3, 0.7):
-                x = start[0] + (end[0] - start[0]) * fraction - width / 2
-                y = start[1] + (end[1] - start[1]) * fraction
+            axis = 0 if horizontal else 1
+            half_extent = (width if horizontal else height) / 2
+            lower = min(start[axis], end[axis]) + half_extent + 5
+            upper = max(start[axis], end[axis]) - half_extent - 5
+            centers = [start[axis] + (end[axis] - start[axis]) * fraction for fraction in (0.5, 0.3, 0.7)]
+            boundaries = {lower, upper}
+            for box in obstacles:
+                origin, extent = (box.x, box.width) if horizontal else (box.y, box.height)
+                boundaries.update((origin - half_extent - 5, origin + extent + half_extent + 5))
+            centers.extend(sorted(boundaries, key=lambda position: abs(position - (lower + upper) / 2)))
+            for center in dict.fromkeys(centers):
+                if not lower <= center <= upper:
+                    continue
+                x = (center if horizontal else start[0]) - width / 2
+                y = start[1] if horizontal else center
                 tops = [y - height / 2] if not horizontal else [
                     top for gap in (8, 24) for top in (y - height - gap, y + gap)
                 ]

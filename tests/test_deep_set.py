@@ -1,10 +1,18 @@
 from collections.abc import Iterator
+from dataclasses import asdict
 
 import pytest
 import torch
 from torch import nn
 
-from swarmbots.learn.nn_components.deep_set import DeepSet, DeepSetCritic, DeepSetInteractionConfig
+from swarmbots.learn.nn_components.deep_set import (
+    DeepSet,
+    DeepSetCritic,
+    DeepSetInteraction,
+    DeepSetInteractionConfig,
+    GatedDeepSetInteraction,
+)
+from swarmbots.learn.nn_components.nn_init import init_linear_orthogonal
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -182,15 +190,18 @@ def test_unknown_pooling_mode_is_rejected(use_mask):
 @pytest.mark.parametrize("local_update", ["residual", "linear", "mlp", "residual_mlp"])
 @pytest.mark.parametrize("pool_mode", ["mean", "sum", "max"])
 @pytest.mark.parametrize("set_dim", [1, 2, -2])
+@pytest.mark.parametrize("gated", [False, True])
 def test_iterative_features_ignore_padding_and_are_equivariant(
-    local_update: str, pool_mode: str, set_dim: int,
+    local_update: str, pool_mode: str, set_dim: int, gated: bool,
 ) -> None:
     torch.manual_seed(12)
     critic = DeepSetCritic(
         num_local_features=3, num_global_features=2,
         local_projection_hidden_dims=[8], value_regressor_hidden_dims=[5],
         context_in_elements=True, context_after_pool=True, set_dim=set_dim, pool_mode=pool_mode,
-        interaction_config=DeepSetInteractionConfig(num_layers=3, hidden_dims=(6,), local_update=local_update),
+        interaction_config=DeepSetInteractionConfig(
+            num_layers=3, hidden_dims=(6,), local_update=local_update, gated=gated,
+        ),
     )
     local = torch.randn(2, 4, 3)
     mask = torch.tensor([[True, False, True, True], [False, False, False, False]])
@@ -255,6 +266,7 @@ def test_local_update_modes_process_current_broadcast_messages(local_update: str
             block.message_encoder[0].bias.zero_()
             block.global_update[0].weight.fill_(3)
             block.global_update[0].bias.zero_()
+            block.message_projection.weight.fill_(1)
             if local_update != "residual":
                 block.local_encoder[0].weight.fill_(4)
                 block.local_encoder[0].bias.zero_()
@@ -270,6 +282,7 @@ def test_one_block_locally_interprets_the_current_global_message() -> None:
     block = critic.deepset.interactions[0]
     block.message_encoder = nn.Identity()
     block.global_update = nn.Identity()
+    block.message_projection = nn.Identity()
     block.local_encoder = nn.ReLU()
     baseline = torch.tensor([[[-1.0], [-3.0]]])
     changed = torch.tensor([[[-1.0], [5.0]]], requires_grad=True)
@@ -283,9 +296,11 @@ def test_one_block_locally_interprets_the_current_global_message() -> None:
     torch.testing.assert_close(changed.grad[0, 1], torch.tensor([1.0]))
 
 
-def test_iterative_critic_compiles_without_graph_breaks() -> None:
+@pytest.mark.parametrize("gated", [False, True])
+def test_iterative_critic_compiles_without_graph_breaks(gated: bool) -> None:
     critic = DeepSetCritic(
         num_local_features=3, local_projection_hidden_dims=[8], value_regressor_hidden_dims=[4],
+        interaction_config=DeepSetInteractionConfig(gated=gated),
     )
     compiled = torch.compile(critic.forward_with_latents, backend="eager", fullgraph=True)
     local = torch.randn(2, 3, 3)
@@ -295,7 +310,141 @@ def test_iterative_critic_compiles_without_graph_breaks() -> None:
 
 @pytest.mark.parametrize("kwargs", [
     {"num_layers": 0}, {"num_layers": -1}, {"hidden_dims": (0,)}, {"local_update": "unknown"},
+    {"message_dim": 0}, {"message_dim": -1}, {"gate_hidden_dim": 0}, {"gate_hidden_dim": -1},
 ])
 def test_invalid_interaction_configuration_is_rejected(kwargs: dict) -> None:
     with pytest.raises(ValueError):
         DeepSetInteractionConfig(**kwargs)
+
+
+@pytest.mark.parametrize("gated", [False, True])
+def test_message_and_local_widths_resolve_independently(gated: bool) -> None:
+    critic = DeepSetCritic(
+        num_local_features=3, local_projection_hidden_dims=[16], value_regressor_hidden_dims=[4],
+        interaction_config=DeepSetInteractionConfig(
+            hidden_dims=(48,), message_dim=28, gated=gated, gate_hidden_dim=7,
+        ),
+    )
+    block = critic.deepset.interactions[0]
+    assert isinstance(block, GatedDeepSetInteraction if gated else DeepSetInteraction)
+    assert block.message_encoder[0].in_features == 16
+    assert block.message_encoder[0].out_features == 28
+    assert block.global_update[0].in_features == block.global_update[0].out_features == 28
+    assert block.message_projection.in_features == 28 and block.message_projection.out_features == 16
+    assert block.local_encoder[0].out_features == 48
+    assert block.local_encoder[2].out_features == 16
+    assert asdict(block.config)["message_dim"] == 28
+    if gated:
+        assert block.reception_gate[0][0].out_features == 7
+        assert asdict(block.config)["gate_hidden_dim"] == 7
+    assert critic.encode_elements(torch.randn(2, 5, 3)).shape == (2, 5, 16)
+
+
+@pytest.mark.parametrize("features", [128, 256, 384])
+def test_default_expanded_communication_budget_is_close_to_attention(features: int) -> None:
+    block = DeepSetInteraction(
+        features, config=DeepSetInteractionConfig(), set_dim=1, pool_mode="mean",
+        linear_init=init_linear_orthogonal, act_fn_cls=nn.GELU,
+    )
+    attention = nn.MultiheadAttention(features, num_heads=4, batch_first=True)
+    communication_parameters = sum(
+        parameter.numel()
+        for module in (block.message_encoder, block.global_update, block.message_projection)
+        for parameter in module.parameters()
+    )
+    attention_parameters = sum(parameter.numel() for parameter in attention.parameters())
+    assert block.message_dim == features * 5 // 4
+    assert 0.98 < communication_parameters / attention_parameters < 1.02
+
+
+def test_nonlinearity_before_pooling_distinguishes_equal_mean_sets() -> None:
+    block = DeepSetInteraction(
+        1, config=DeepSetInteractionConfig(message_dim=2, normalize=False, local_update="residual"),
+        set_dim=1, pool_mode="mean", linear_init=init_linear_orthogonal, act_fn_cls=nn.GELU,
+    )
+    with torch.no_grad():
+        block.message_encoder[0].weight.fill_(1)
+        block.message_encoder[0].bias.zero_()
+        block.global_update[0].weight.copy_(torch.eye(2))
+        block.global_update[0].bias.zero_()
+        block.message_projection.weight.fill_(1)
+    spread = torch.tensor([[[-1.0], [1.0]]])
+    concentrated = torch.zeros_like(spread)
+    torch.testing.assert_close(spread.mean(1), concentrated.mean(1))
+    spread_update = block(spread) - spread
+    concentrated_update = block(concentrated) - concentrated
+    assert not torch.allclose(spread_update, concentrated_update)
+
+
+def test_nonlinear_global_processing_happens_before_message_compression() -> None:
+    block = DeepSetInteraction(
+        2, config=DeepSetInteractionConfig(message_dim=5, normalize=False, local_update="residual"),
+        set_dim=1, pool_mode="mean", linear_init=init_linear_orthogonal, act_fn_cls=nn.GELU,
+    )
+    observed_inputs: list[torch.Tensor] = []
+    handle = block.message_projection.register_forward_pre_hook(
+        lambda _module, inputs: observed_inputs.append(inputs[0].detach()),
+    )
+    elements = torch.randn(3, 4, 2)
+    block(elements)
+    handle.remove()
+    pooled = block.message_encoder(elements).mean(dim=1)
+    torch.testing.assert_close(observed_inputs[0], block.global_update(pooled))
+    assert isinstance(block.global_update[-1], nn.GELU)
+    assert observed_inputs[0].shape == (3, 5)
+
+
+def test_gates_select_different_message_features_for_different_tokens() -> None:
+    block = GatedDeepSetInteraction(
+        2, config=DeepSetInteractionConfig(
+            message_dim=3, gate_hidden_dim=2, normalize=False, local_update="residual", gated=True,
+        ),
+        set_dim=1, pool_mode="mean", linear_init=init_linear_orthogonal, act_fn_cls=nn.GELU,
+    )
+    with torch.no_grad():
+        block.message_encoder[0].weight.zero_()
+        block.message_encoder[0].bias.fill_(1)
+        block.global_update[0].weight.copy_(torch.eye(3))
+        block.global_update[0].bias.zero_()
+        block.message_projection.weight.copy_(torch.tensor([[1., 0., 0.], [0., 1., 0.]]))
+        first, last = block.reception_gate[0][0], block.reception_gate[0][2]
+        first.weight.zero_()
+        first.bias.zero_()
+        first.weight[0, 0], first.weight[1, 0] = 1, -1
+        last.weight.copy_(torch.tensor([[2., 0.], [0., 2.], [0., 0.]]))
+        last.bias.zero_()
+    elements = torch.tensor([[[-2., 0.], [2., 0.]]])
+    updates = block(elements) - elements
+    assert updates[0, 0, 0] < updates[0, 1, 0]
+    assert updates[0, 0, 1] > updates[0, 1, 1]
+
+
+def test_gates_condition_on_the_global_message_as_well_as_the_receiver() -> None:
+    torch.manual_seed(46)
+    block = GatedDeepSetInteraction(
+        4, config=DeepSetInteractionConfig(gated=True, gate_hidden_dim=3),
+        set_dim=1, pool_mode="mean", linear_init=init_linear_orthogonal, act_fn_cls=nn.GELU,
+    )
+    elements = torch.randn(1, 3, 4, requires_grad=True)
+    received_gates: list[torch.Tensor] = []
+    handle = block.reception_gate.register_forward_hook(
+        lambda _module, _inputs, output: received_gates.append(output),
+    )
+    block(elements)
+    received_gates[0][0, 0].square().sum().backward()
+    handle.remove()
+    assert elements.grad[0, 0].abs().sum() > 0
+    assert elements.grad[0, 1:].abs().sum() > 0
+
+
+def test_completely_closed_gates_produce_no_message_update() -> None:
+    block = GatedDeepSetInteraction(
+        4, config=DeepSetInteractionConfig(gated=True, local_update="residual"),
+        set_dim=-2, pool_mode="mean", linear_init=init_linear_orthogonal, act_fn_cls=nn.GELU,
+    )
+    with torch.no_grad():
+        block.reception_gate[0][-1].weight.zero_()
+        block.reception_gate[0][-1].bias.fill_(-float("inf"))
+    elements = torch.randn(2, 3, 5, 4)
+    torch.testing.assert_close(block(elements), elements)
+    assert block.message_projection.bias is None

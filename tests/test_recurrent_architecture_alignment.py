@@ -1,0 +1,97 @@
+from dataclasses import fields
+
+import pytest
+import torch
+from torch import nn
+
+from swarmbots.learn import list_model_scales
+from swarmbots.learn.algos.mat import MATEncoderConfig
+from swarmbots.learn.algos.r_mat import RMATEncoder
+from test_model_scale import make_policy
+
+
+def _parameter_shapes(module: nn.Module) -> dict[str, torch.Size]:
+    return {name: parameter.shape for name, parameter in module.named_parameters()}
+
+
+def _non_temporal_parameter_shapes(module: nn.Module) -> dict[str, torch.Size]:
+    return {
+        name.replace(".norm1.", ".attention_norm.").replace(".norm2.", ".feedforward_norm."): shape
+        for name, shape in _parameter_shapes(module).items()
+        if ".temporal_" not in name
+    }
+
+
+def _assert_additive_recurrent_encoder(baseline: nn.Module, recurrent: RMATEncoder) -> None:
+    assert _non_temporal_parameter_shapes(recurrent) == _non_temporal_parameter_shapes(baseline)
+    assert sum(parameter.numel() for parameter in recurrent.parameters()) > sum(
+        parameter.numel() for parameter in baseline.parameters()
+    )
+    assert recurrent.config.temporal_residual
+    assert recurrent.config.temporal_layer_norm
+    assert recurrent.config.temporal_model_order == "inter_agent_attention_first"
+    assert not recurrent.config.inter_module_mlp
+    assert all(layer.inter_module_feedforward is None for layer in recurrent.layers)
+
+
+@pytest.mark.parametrize("scale", [None, *list_model_scales()])
+@pytest.mark.parametrize(
+    ("baseline_variant", "recurrent_variant"),
+    [
+        ("mat_ind", "mat_ind__lstm"),
+        ("mat_qcx", "mat_qcx__lstm"),
+        ("tmasac", "tmasac__lstm"),
+        ("tmasac", "tmasac__slstm"),
+    ],
+)
+def test_recurrent_presets_add_memory_without_resizing_the_base(
+    scale: str | None, baseline_variant: str, recurrent_variant: str,
+) -> None:
+    with torch.device("meta"):
+        baseline = make_policy(baseline_variant, scale, use_nop=False)
+        recurrent = make_policy(recurrent_variant, scale, use_nop=False)
+
+    for field in fields(MATEncoderConfig):
+        assert getattr(recurrent.actor_encoder_config, field.name) == getattr(
+            baseline.actor_encoder_config, field.name
+        ), field.name
+        assert getattr(recurrent.critic_encoder_config, field.name) == getattr(
+            baseline.critic_encoder_config, field.name
+        ), field.name
+    _assert_additive_recurrent_encoder(baseline.actor_encoder, recurrent.actor_encoder)
+    assert _parameter_shapes(recurrent.actor_head) == _parameter_shapes(baseline.actor_head)
+    assert recurrent.config.critic_config == baseline.config.critic_config
+
+    if baseline_variant.startswith("mat_"):
+        _assert_additive_recurrent_encoder(baseline.critic_encoder, recurrent.critic_encoder)
+        assert _parameter_shapes(recurrent.critic) == _parameter_shapes(baseline.critic)
+        assert recurrent.actor_encoder is not recurrent.critic_encoder
+        if baseline_variant == "mat_qcx":
+            assert recurrent.config.decoder_config == baseline.config.decoder_config
+            assert _parameter_shapes(recurrent.decoder) == _parameter_shapes(baseline.decoder)
+    else:
+        assert _parameter_shapes(recurrent.critic.q1) == _parameter_shapes(baseline.critic.q1)
+        assert _parameter_shapes(recurrent.critic.q2) == _parameter_shapes(baseline.critic.q2)
+        assert recurrent.config.actor_state_critic_input_config is not None
+        assert sum(parameter.numel() for parameter in recurrent.critic.actor_state_encoder.parameters()) > 0
+        assert _parameter_shapes(recurrent.critic.encoder.layers) == _parameter_shapes(baseline.critic.encoder.layers)
+
+
+@pytest.mark.parametrize("scale", [None, *list_model_scales()])
+def test_lstm_and_slstm_use_the_same_non_temporal_architecture(scale: str | None) -> None:
+    with torch.device("meta"):
+        lstm = make_policy("tmasac__lstm", scale, use_nop=False)
+        slstm = make_policy("tmasac__slstm", scale, use_nop=False)
+
+    assert _non_temporal_parameter_shapes(lstm.actor_encoder) == _non_temporal_parameter_shapes(slstm.actor_encoder)
+    assert _parameter_shapes(lstm.actor_head) == _parameter_shapes(slstm.actor_head)
+    critic_shapes = [
+        {name: shape for name, shape in _parameter_shapes(policy.critic).items()
+         if not name.startswith("actor_state_encoder.")}
+        for policy in (lstm, slstm)
+    ]
+    assert critic_shapes[0] == critic_shapes[1]
+    for policy in (lstm, slstm):
+        state_width = policy.actor_encoder.layers[-1].temporal_model.hidden_dim
+        first_linear = next(module for module in policy.critic.actor_state_encoder.modules() if isinstance(module, nn.Linear))
+        assert first_linear.in_features == state_width * 2

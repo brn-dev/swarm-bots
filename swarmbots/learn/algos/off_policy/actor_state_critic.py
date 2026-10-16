@@ -25,13 +25,12 @@ class ActorStateCriticInputConfig:
 
 def actor_state_input_dim(
     temporal_model: TemporalSequenceModel,
-    d_model: int,
     config: ActorStateCriticInputConfig,
 ) -> int:
     if isinstance(temporal_model, LSTMTemporalSequenceModel):
-        return 2 * d_model
+        return 2 * temporal_model.hidden_dim
     if isinstance(temporal_model, SLSTMTemporalSequenceModel):
-        return (3 if config.include_slstm_memory_strength else 2) * d_model
+        return (3 if config.include_slstm_memory_strength else 2) * temporal_model.hidden_dim
     raise TypeError(
         "Actor-state critic input supports only LSTMTemporalSequenceModel and "
         f"SLSTMTemporalSequenceModel, got {type(temporal_model).__name__}."
@@ -56,7 +55,7 @@ def actor_state_critic_input(
         bounded_memory_strength = torch.nn.functional.softsign(log_memory_strength)
         return torch.cat((hidden_state, normalized_memory, bounded_memory_strength), dim=-1).detach()
     # Use the same unsupported-model diagnostic as dimension resolution.
-    actor_state_input_dim(temporal_model, 1, config)
+    actor_state_input_dim(temporal_model, config)
     raise AssertionError("Unreachable")
 
 

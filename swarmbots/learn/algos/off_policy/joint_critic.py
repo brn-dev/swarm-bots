@@ -1,14 +1,20 @@
 """Centralized team Q functions for padded, variable-size swarms."""
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Literal
 
 import torch
 from torch import nn
 
+from swarmbots.learn.algos.mat.mat_encoder import MATEncoderConfig
+from swarmbots.learn.algos.off_policy.transformer_critic import (
+    ActionConditionedEncoder,
+    TransformerCriticConfig,
+    build_q_network,
+)
 from swarmbots.learn.nn_components.activations import ActivationFactory
-from swarmbots.learn.nn_components.deep_set import DeepSet, DeepSetCritic, DeepSetInteractionConfig
-from swarmbots.learn.nn_components.feed_forward import MLP
+from swarmbots.learn.nn_components.deep_set import DeepSetInteractionConfig
+from swarmbots.learn.nn_components.feed_forward import MLP, MLPConfig
 from swarmbots.learn.nn_components.nn_init import make_init_linear_orthogonal
 
 
@@ -17,12 +23,11 @@ class JointCriticConfig:
     kind: Literal["mlp", "deepset"] = "mlp"
     hidden_dims: tuple[int, ...] = (512, 512, 512)
     element_hidden_dims: tuple[int, ...] = (512, 512, 512)
-    # Deep Set conditioning; flattened MLP critics already receive all global inputs.
     context_in_elements: bool = True
-    interaction_config: DeepSetInteractionConfig = field(
-        default_factory=lambda: DeepSetInteractionConfig(num_layers=4),
-    )
+    interaction_config: DeepSetInteractionConfig = field(default_factory=DeepSetInteractionConfig)
     independent_encoders: bool = False
+    encoder_config: MATEncoderConfig | None = None
+    head_config: TransformerCriticConfig | None = None
 
     def __post_init__(self) -> None:
         if self.kind not in {"mlp", "deepset"}:
@@ -30,6 +35,31 @@ class JointCriticConfig:
         for dims in (self.hidden_dims, self.element_hidden_dims):
             if not dims or any(dim <= 0 for dim in dims):
                 raise ValueError("Critic hidden dimensions must be nonempty and positive")
+
+    def resolved_encoder_config(self, act_fn_cls: ActivationFactory) -> MATEncoderConfig:
+        if self.encoder_config is not None:
+            return replace(self.encoder_config, act_fn_cls=act_fn_cls)
+        token_width = self.element_hidden_dims[-1]
+        local_hidden_dims = self.interaction_config.hidden_dims
+        return MATEncoderConfig(
+            d_model=token_width,
+            nhead=1,
+            num_layers=self.interaction_config.num_layers,
+            dim_feedforward=token_width,
+            transformer_ff_config=(None if local_hidden_dims is None else MLPConfig(hidden_dims=list(local_hidden_dims))),
+            act_fn_cls=act_fn_cls,
+        )
+
+    def resolved_head_config(self) -> TransformerCriticConfig:
+        if self.head_config is not None:
+            return self.head_config
+        token_width = self.element_hidden_dims[-1] if self.encoder_config is None else self.encoder_config.d_model
+        return TransformerCriticConfig(
+            action_coembed_hidden_dims=list(self.element_hidden_dims[:-1]),
+            local_projection_hidden_dims=[token_width],
+            value_regressor_hidden_dims=list(self.hidden_dims),
+            interaction_config=replace(self.interaction_config, num_layers=2),
+        )
 
 
 class _JointObservationInputs(nn.Module):
@@ -49,6 +79,9 @@ class _JointObservationInputs(nn.Module):
         self.config = config
         self.hidden_local_vars_dim = hidden_local_vars_dim
         self.hidden_global_vars_dim = hidden_global_vars_dim
+        self.local_obs_dim = local_obs_dim
+        self.global_obs_dim = global_obs_dim
+        self.action_dim = action_dim
         self.local_dim = local_obs_dim + hidden_local_vars_dim + action_dim
         self.global_dim = global_obs_dim + hidden_global_vars_dim
 
@@ -85,6 +118,7 @@ class _JointObservationInputs(nn.Module):
 class JointQNetwork(_JointObservationInputs):
     def __init__(self, *, config: JointCriticConfig, act_fn_cls: ActivationFactory = nn.GELU, **kwargs: Any) -> None:
         super().__init__(config=config, **kwargs)
+        self.encoder: JointDeepSetEncoder | None = None
         if config.kind == "mlp":
             # Every slot (including its presence bit) has a fixed position.
             self.network = MLP(
@@ -95,16 +129,12 @@ class JointQNetwork(_JointObservationInputs):
                 final_linear_init=make_init_linear_orthogonal(0.01),
             )
         else:
-            self.network = DeepSetCritic(
-                num_local_features=self.local_dim,
-                num_global_features=self.global_dim,
-                local_projection_hidden_dims=list(config.element_hidden_dims),
-                value_regressor_hidden_dims=list(config.hidden_dims),
-                pool_mode="mean",
+            self.encoder = JointDeepSetEncoder(config=config, act_fn_cls=act_fn_cls, **kwargs)
+            self.network = build_q_network(
+                q_local_dim=self.encoder.d_model,
+                critic_config=config.resolved_head_config(),
                 act_fn_cls=act_fn_cls,
-                context_in_elements=config.context_in_elements and self.global_dim > 0,
-                context_after_pool=True,
-                interaction_config=config.interaction_config,
+                num_global_features=self.global_dim if not config.context_in_elements else 0,
             )
 
     def forward(
@@ -115,56 +145,65 @@ class JointQNetwork(_JointObservationInputs):
 
     @property
     def nop_source_latent_dim(self) -> int:
-        if self.config.kind == "mlp":
+        if self.encoder is None:
             raise ValueError("MLP critics do not support NOP")
-        return self.config.element_hidden_dims[-1]
+        return self.encoder.d_model
 
     def encode(self, **observations: torch.Tensor | None) -> torch.Tensor:
-        if self.config.kind == "mlp":
+        if self.encoder is None:
             raise ValueError("MLP critics do not support NOP")
-        local, global_features, agent_mask = self._observation_features(**observations)
-        latents = self.network.encode_elements(local, global_features=global_features, agent_mask=agent_mask)
-        return latents.masked_fill(~agent_mask.unsqueeze(-1), 0.0)
+        return self.encoder.encode(**observations)
 
     def forward_with_latents(self, **observations: torch.Tensor | None) -> tuple[torch.Tensor, torch.Tensor | None]:
-        local, global_features, agent_mask = self._observation_features(**observations)
-        if self.config.kind == "mlp":
+        if self.encoder is None:
+            local, global_features, agent_mask = self._observation_features(**observations)
             mask_features = agent_mask.to(local.dtype)
             features = torch.cat((local.flatten(-2), global_features, mask_features), dim=-1)
             return self.network(features).squeeze(-1), None
-        values, latents = self.network.forward_with_latents(local, global_features=global_features, agent_mask=agent_mask)
-        return values, latents.masked_fill(~agent_mask.unsqueeze(-1), 0.0)
+        latents = self.encoder.encode(**observations)
+        global_features = (
+            None if self.config.context_in_elements else self._observation_features(**observations)[1]
+        )
+        return self.network(latents, global_features=global_features, agent_mask=observations.get("agent_mask")), latents
 
 
 class JointDeepSetEncoder(_JointObservationInputs):
-    """Action-conditioned equivariant trunk and masked pooling for twin team critics."""
+    """Transformer-compatible action embeddings with expanding Deep Set communication."""
 
     def __init__(self, *, config: JointCriticConfig, act_fn_cls: ActivationFactory = nn.GELU, **kwargs: Any) -> None:
         super().__init__(config=config, **kwargs)
-        self.d_model = config.element_hidden_dims[-1]
-        context_in_elements = config.context_in_elements and self.global_dim > 0
-        self.network = DeepSet.from_dimensions(
-            element_input_features=self.local_dim + (self.global_dim if context_in_elements else 0),
-            local_projection_hidden_dims=list(config.element_hidden_dims),
-            set_decoder=nn.Identity(),
-            pool_mode="mean",
-            context_features=self.global_dim,
-            context_in_elements=context_in_elements,
-            context_after_pool=True,
+        encoder_config = config.resolved_encoder_config(act_fn_cls)
+        self.d_model = encoder_config.d_model
+        self.network = ActionConditionedEncoder(
+            max_agents=self.n_agents,
+            local_input_dim=self.local_obs_dim,
+            global_input_dim=self.global_obs_dim if config.context_in_elements else 0,
+            hidden_local_vars_dim=self.hidden_local_vars_dim,
+            hidden_global_vars_dim=self.hidden_global_vars_dim if config.context_in_elements else 0,
+            action_dim=self.action_dim,
+            encoder_config=encoder_config,
+            critic_config=config.resolved_head_config(),
             interaction_config=config.interaction_config,
             act_fn_cls=act_fn_cls,
-            set_dim=-2,
         )
 
     def encode(self, **observations: torch.Tensor | None) -> torch.Tensor:
-        local, global_features, agent_mask = self._observation_features(**observations)
-        latents = self.network.encode_elements(local, context=global_features, element_mask=agent_mask)
-        return latents.masked_fill(~agent_mask.unsqueeze(-1), 0.0)
+        return self.network(
+            local_inputs=observations["local_obs"],
+            global_inputs=observations["global_obs"],
+            actions=observations["actions"],
+            hidden_local_vars=observations.get("hidden_local_vars"),
+            hidden_global_vars=observations.get("hidden_global_vars"),
+            agent_mask=observations.get("agent_mask"),
+        )
 
     def forward_with_latents(self, **observations: torch.Tensor | None) -> tuple[torch.Tensor, torch.Tensor]:
-        local, global_features, agent_mask = self._observation_features(**observations)
-        pooled, latents = self.network.forward_with_latents(local, context=global_features, element_mask=agent_mask)
-        return pooled, latents.masked_fill(~agent_mask.unsqueeze(-1), 0.0)
+        latents = self.encode(**observations)
+        agent_mask = observations.get("agent_mask")
+        if agent_mask is None:
+            return latents.mean(dim=1), latents
+        count = agent_mask.sum(dim=1, keepdim=True).clamp_min(1)
+        return latents.sum(dim=1) / count, latents
 
 
 class JointTwinCritic(nn.Module):
@@ -184,15 +223,16 @@ class JointTwinCritic(nn.Module):
         )
         self.d_model = self.encoder.d_model
 
-        def make_head() -> MLP:
-            return MLP(
-                input_dim=self.d_model + self.encoder.global_dim,
-                hidden_dims=[*config.hidden_dims, 1], end_with_act_fn=False, act_fn_cls=act_fn_cls,
-                final_linear_init=make_init_linear_orthogonal(0.01),
-            )
-
-        self.q1 = make_head()
-        self.q2 = make_head()
+        head_config = config.resolved_head_config()
+        head_global_dim = self.encoder.global_dim if not config.context_in_elements else 0
+        self.q1 = build_q_network(
+            q_local_dim=self.d_model, critic_config=head_config, act_fn_cls=act_fn_cls,
+            num_global_features=head_global_dim,
+        )
+        self.q2 = build_q_network(
+            q_local_dim=self.d_model, critic_config=head_config, act_fn_cls=act_fn_cls,
+            num_global_features=head_global_dim,
+        )
 
     @property
     def nop_source_latent_dim(self) -> int:
@@ -214,9 +254,15 @@ class JointTwinCritic(nn.Module):
     def forward(self, **observations: torch.Tensor | None) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
         if self.encoder is None:
             return self.q1(**observations), self.q2(**observations), None
-        pooled1, latents1 = self.encoder.forward_with_latents(**observations)
-        pooled2, latents2 = (
-            (pooled1, latents1) if self.encoder2 is None else self.encoder2.forward_with_latents(**observations)
-        )
+        latents1 = self.encoder.encode(**observations)
+        latents2 = latents1 if self.encoder2 is None else self.encoder2.encode(**observations)
         latents = latents1 if self.encoder2 is None else torch.cat((latents1, latents2), dim=-1)
-        return self.q1(pooled1).squeeze(-1), self.q2(pooled2).squeeze(-1), latents
+        agent_mask = observations.get("agent_mask")
+        global_features = (
+            None if self.config.context_in_elements else self.encoder._observation_features(**observations)[1]
+        )
+        return (
+            self.q1(latents1, global_features=global_features, agent_mask=agent_mask),
+            self.q2(latents2, global_features=global_features, agent_mask=agent_mask),
+            latents,
+        )

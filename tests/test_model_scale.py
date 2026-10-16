@@ -7,20 +7,24 @@ from gymnasium import spaces
 from torch import nn
 
 from swarmbots.learn import list_variants, list_model_scales
+from swarmbots.learn.algos.mat.mat_encoder import MATEncoderConfig
 from swarmbots.learn.algos.off_policy.joint_critic import JointCriticConfig
+from swarmbots.learn.algos.off_policy.transformer_critic import TransformerCriticConfig
+from swarmbots.learn.algos.r_mat import RMATEncoder
+from swarmbots.learn.algos.sac.masac_policy import MASACPolicy, MASACPolicyConfig
 from swarmbots.learn.algos.td3.recurrent_td3_policy import RecurrentTD3PolicyConfig
-from swarmbots.learn.algos.td3.td3_policy import TD3PolicyConfig
+from swarmbots.learn.algos.td3.td3_policy import TD3Policy, TD3PolicyConfig
 from swarmbots.learn.hybrid_action_space import HybridActionSpace
 from swarmbots.learn.obs_indices import ObsIndices
 from swarmbots.learn.parameter_counts import count_policy_parameters
 from swarmbots.learn.presets.policy_factory import _is_off_policy_variant, _make_base_policy
 from swarmbots.learn.presets.transformer import MATInitGains, MATNormalizationConfig
 from swarmbots.learn.presets.model_scale import (
-    DEFAULT_MODEL_SCALE, SCALE_LAYOUTS, model_config_at_scale, normalize_model_scale,
+    DEFAULT_MODEL_SCALE, SCALE_LAYOUTS, make_policy_at_scale, model_config_at_scale, normalize_model_scale,
 )
 from swarmbots.learn.training import _add_ppo_nop, _variant_options
 from swarmbots.learn.serialization_utils import serialize_dataclass
-from swarmbots.learn.nn_components.deep_set import DeepSet, DeepSetInteractionConfig
+from swarmbots.learn.nn_components.deep_set import DeepSet, DeepSetInteractionConfig, GatedDeepSetInteraction
 
 
 @pytest.fixture(autouse=True, scope="module")
@@ -31,8 +35,8 @@ def single_thread():
     torch.set_num_threads(previous)
 
 
-def make_policy(variant, scale="5M NOP1M", *, n_agents=3, **overrides):
-    env = SimpleNamespace(
+def _make_env(n_agents: int = 3) -> SimpleNamespace:
+    return SimpleNamespace(
         n_agents=n_agents,
         local_obs_dim=5,
         global_obs_dim=2,
@@ -45,6 +49,10 @@ def make_policy(variant, scale="5M NOP1M", *, n_agents=3, **overrides):
             }
         ),
     )
+
+
+def make_policy(variant, scale="5M-2L NOP1M", *, n_agents=3, **overrides):
+    env = _make_env(n_agents)
     indices = ObsIndices(**{field.name: [] for field in fields(ObsIndices)})
     indices = ObsIndices(
         **{
@@ -81,21 +89,26 @@ def make_policy(variant, scale="5M NOP1M", *, n_agents=3, **overrides):
 @pytest.mark.parametrize(
     ("value", "expected"),
     [
-        ("5M NOP1M", DEFAULT_MODEL_SCALE),
-        ("5+1M", DEFAULT_MODEL_SCALE),
-        ("5M+1M", DEFAULT_MODEL_SCALE),
-        (" 5m nop1m ", DEFAULT_MODEL_SCALE),
+        ("5M-2L NOP1M", DEFAULT_MODEL_SCALE),
+        ("5M-2L+1M", DEFAULT_MODEL_SCALE),
+        (" 5m-2l nop1m ", DEFAULT_MODEL_SCALE),
         ("2.5M", "2.5M NOP0.75M"),
         ("2.5+0.75M", "2.5M NOP0.75M"),
         ("10M", "10M NOP2M"),
         ("10+2M", "10M NOP2M"),
+        ("5M-2L", "5M-2L NOP1M"),
+        ("5M-3L", "5M-3L NOP1M"),
+        (" 5m-3l nop1m ", "5M-3L NOP1M"),
     ],
 )
 def test_only_supported_scale_aliases(value, expected):
     assert normalize_model_scale(value) == expected
 
 
-@pytest.mark.parametrize("value", ["1M", "2M NOP200K", "2.5M NOP0.5M", "10M NOP1M", "20M", "", 5])
+@pytest.mark.parametrize(
+    "value", ["1M", "2M NOP200K", "2.5M NOP0.5M", "10M NOP1M", "20M", "", 5,
+              "5M", "5M NOP1M", "5+1M", "5M+1M"],
+)
 def test_unsupported_scales_fail_before_building_environment(value):
     with pytest.raises(ValueError, match="Supported fixed"):
         _variant_options("mappo", model_scale=value)
@@ -105,11 +118,89 @@ def test_custom_width_mode_is_available():
     assert normalize_model_scale(None) is None
 
 
+@pytest.mark.parametrize("scale", list_model_scales())
+@pytest.mark.parametrize("variant", ["mat_ind__lstm", "mat_qcx__lstm", "tmasac__lstm", "tmasac__slstm"])
+@pytest.mark.parametrize("custom_memory_width", [None, 8])
+def test_fixed_scales_override_existing_recurrent_memory_widths(
+    scale: str, variant: str, custom_memory_width: int | None,
+) -> None:
+    encoder_names = (
+        ("encoder_config", "critic_encoder_config") if variant.startswith("mat_") else ("actor_encoder_config",)
+    )
+    with torch.device("meta"):
+        source = make_policy(variant, "5M-3L", use_nop=False)
+        reference = make_policy(variant, scale, use_nop=False)
+        source_config = source.config
+        if custom_memory_width is not None:
+            source_config = replace(source_config, **{
+                name: replace(getattr(source_config, name), temporal_hidden_dim=custom_memory_width)
+                for name in encoder_names
+            })
+        scaled = make_policy_at_scale(type(source), _make_env(), source_config, scale)
+
+    for name in ("actor_encoder", "critic_encoder"):
+        reference_encoder = getattr(reference, name, None)
+        if not isinstance(reference_encoder, RMATEncoder):
+            continue
+        scaled_encoder = getattr(scaled, name)
+        assert [layer.temporal_model.hidden_dim for layer in scaled_encoder.layers] == [
+            layer.temporal_model.hidden_dim for layer in reference_encoder.layers
+        ]
+        assert {name: parameter.shape for name, parameter in scaled_encoder.named_parameters()} == {
+            name: parameter.shape for name, parameter in reference_encoder.named_parameters()
+        }
+
+
+@pytest.mark.parametrize("variant", list_variants(include_hidden=True))
+def test_five_million_depth_choices_preserve_heads_and_auxiliary_architecture(variant: str) -> None:
+    with torch.device("meta"):
+        policies = [make_policy(variant, scale) for scale in ("5M-2L", "5M-3L")]
+    bases = [getattr(policy, "policy", policy) for policy in policies]
+    for depth, base in zip((2, 3), bases, strict=True):
+        config = base.config
+        if hasattr(config, "actor_config"):
+            assert len(config.actor_config.hidden_dims) == 4
+        else:
+            actor_encoder = base.actor_encoder if hasattr(base, "actor_encoder") else base.actor.encoder
+            uses_attention = actor_encoder.layers[0].self_attn is not None
+            assert len(actor_encoder.layers) == (depth if uses_attention else 3)
+            if hasattr(base, "critic_encoder"):
+                critic_encoder = base.critic_encoder
+            else:
+                critic = base.critic[0] if isinstance(base.critic, nn.ModuleList) else base.critic
+                critic_encoder = critic.encoder
+                if not hasattr(critic_encoder, "layers"):
+                    critic_encoder = critic_encoder.network
+            assert len(critic_encoder.layers) == depth
+    first, second = bases
+    if hasattr(first.config, "actor_config"):
+        assert first.config == second.config
+    else:
+        actor_config_name = "encoder_config" if hasattr(first.config, "encoder_config") else "actor_encoder_config"
+        if variant == "mat_dec" or not getattr(first.config, actor_config_name).use_agent_attention:
+            assert getattr(first.config, actor_config_name) == getattr(second.config, actor_config_name)
+    if hasattr(first.config, "decoder_config"):
+        assert first.config.decoder_config == second.config.decoder_config
+    if hasattr(first.config, "actor_head_config"):
+        assert first.config.actor_head_config == second.config.actor_head_config
+    if hasattr(first.config, "nop_config"):
+        assert first.config.nop_config == second.config.nop_config
+    if hasattr(first.config, "critic_config"):
+        assert first.config.critic_config == second.config.critic_config
+    if hasattr(first.config, "transformer_critic_config"):
+        assert first.config.transformer_critic_config == second.config.transformer_critic_config
+    if hasattr(policies[0], "world_model_config"):
+        assert policies[0].world_model_config == policies[1].world_model_config
+    counts = [count_policy_parameters(policy)["trainable_minus_nop"] for policy in policies]
+    tolerance = 0.01 if variant.endswith(("__lstm", "__slstm")) else 0.05
+    assert abs(counts[1] / counts[0] - 1) < tolerance
+
+
 @pytest.mark.parametrize("scale", [None, *list_model_scales()])
 def test_actor_attention_ablation_preserves_critic_architecture(scale: str | None) -> None:
     with torch.device("meta"):
         baseline = make_policy("mat_ind", scale, use_nop=False)
-        ablation = make_policy("mat_ind__no_attention", scale, use_nop=False)
+        ablation = make_policy("mat_ind", scale, use_nop=False, mat_use_agent_attention=False)
 
     assert baseline.actor_encoder_config.use_agent_attention
     assert not ablation.actor_encoder_config.use_agent_attention
@@ -136,13 +227,108 @@ def test_td3_scale_uses_top_level_critic_kind(
 
 
 @pytest.mark.parametrize("scale", list_model_scales())
+@pytest.mark.parametrize("family", ["ddpg", "td3", "sac"])
+def test_scaled_deepset_policies_preserve_explicit_encoder_and_head_controls(family: str, scale: str) -> None:
+    encoder_config = MATEncoderConfig(
+        d_model=16, nhead=4, joint_obs_embedding=True, normalize_tokens=True,
+        norm_first=False, bias=False, layer_norm_eps=1e-4, act_fn_cls=nn.ReLU,
+        transformer_ff_init_gain=0.7,
+    )
+    head_config = TransformerCriticConfig(
+        separate_observation_action_encoders=True, action_encoder_dim=7, value_head_init_gain=0.123,
+        interaction_config=DeepSetInteractionConfig(
+            gated=True, message_dim=24, gate_hidden_dim=5, normalize=False, local_update="linear",
+        ),
+    )
+    joint_config = JointCriticConfig(kind="deepset", encoder_config=encoder_config, head_config=head_config)
+    top_level_encoder = MATEncoderConfig(act_fn_cls=nn.Tanh)
+    if family == "sac":
+        config = MASACPolicyConfig(
+            joint_critic_config=joint_config, critic_encoder_config=top_level_encoder, act_fn_cls=nn.SiLU,
+        )
+        policy_class = MASACPolicy
+        head_config_name = "critic_config"
+        activation = nn.SiLU
+    else:
+        config = TD3PolicyConfig(
+            critic_kind="deepset", n_critics=1 if family == "ddpg" else 2,
+            joint_critic_config=joint_config, critic_encoder_config=top_level_encoder,
+        )
+        policy_class = TD3Policy
+        head_config_name = "transformer_critic_config"
+        activation = nn.Tanh
+    env = _make_env()
+    with torch.device("meta"):
+        baseline = policy_class(env=env, config=config)
+        scaled = make_policy_at_scale(policy_class, env, config, scale)
+    single_q = family == "ddpg"
+    baseline_encoder = baseline.critic[0].encoder.network if single_q else baseline.critic.encoder.network
+    encoder = scaled.critic[0].encoder.network if single_q else scaled.critic.encoder.network
+    heads = [scaled.critic[0].network] if single_q else [scaled.critic.q1, scaled.critic.q2]
+    layout = SCALE_LAYOUTS[scale]
+
+    assert encoder.joint_obs_embedding == baseline_encoder.joint_obs_embedding is True
+    assert isinstance(encoder.token_norm, nn.LayerNorm)
+    assert encoder.observation_action_encoder is not None
+    assert encoder.observation_action_encoder.action_encoder_dim == 7
+    assert encoder.d_model == layout.critic_width and len(encoder.layers) == layout.layers
+    assert all(not layer.norm_first and layer.norm1.bias is None for layer in encoder.layers)
+    assert encoder.norm.eps == 1e-4
+    assert any(isinstance(module, activation) for module in encoder.local_action_encoder.modules())
+    for head in heads:
+        assert all(block.features == layout.deepset_q_head_width for block in head.deepset.interactions)
+        assert all(isinstance(block, GatedDeepSetInteraction) for block in head.deepset.interactions)
+        assert all(block.message_dim == 24 and block.gate_hidden_dim == 5 for block in head.deepset.interactions)
+        assert all(isinstance(block.global_norm, nn.Identity) for block in head.deepset.interactions)
+        assert all(block.local_update == "linear" for block in head.deepset.interactions)
+    resolved = scaled.config.joint_critic_config
+    assert resolved.encoder_config == scaled.config.critic_encoder_config
+    assert resolved.encoder_config.transformer_ff_init_gain == 0.7
+    assert resolved.head_config == getattr(scaled.config, head_config_name)
+    assert resolved.head_config.value_head_init_gain == 0.123
+
+
+@pytest.mark.parametrize("scale", list_model_scales())
+@pytest.mark.parametrize("family", ["td3", "sac"])
+def test_scaled_deepset_configs_keep_top_level_templates_when_nested_configs_are_absent(
+    family: str, scale: str,
+) -> None:
+    encoder = MATEncoderConfig(joint_obs_embedding=True, normalize_tokens=True)
+    head = TransformerCriticConfig(
+        separate_observation_action_encoders=True, value_head_init_gain=0.123,
+        interaction_config=DeepSetInteractionConfig(gated=True),
+    )
+    joint = JointCriticConfig(kind="deepset")
+    config = (
+        MASACPolicyConfig(joint_critic_config=joint, critic_encoder_config=encoder, critic_config=head)
+        if family == "sac" else TD3PolicyConfig(
+            critic_kind="deepset", joint_critic_config=joint,
+            critic_encoder_config=encoder, transformer_critic_config=head,
+        )
+    )
+
+    resolved = model_config_at_scale(config, scale).joint_critic_config
+
+    assert resolved.encoder_config.joint_obs_embedding and resolved.encoder_config.normalize_tokens
+    assert resolved.head_config.separate_observation_action_encoders
+    assert resolved.head_config.interaction_config.gated
+    assert resolved.head_config.value_head_init_gain == 0.123
+
+
+@pytest.mark.parametrize("scale", list_model_scales())
 @pytest.mark.parametrize("variant", list_variants())
 def test_core_presets_have_explicit_conventional_layouts(variant, scale):
     with torch.device("meta"):
         policy = make_policy(variant, scale)
     layout = SCALE_LAYOUTS[scale]
     counts = count_policy_parameters(policy)
-    assert 0.7 * layout.main_parameters < counts["trainable_minus_nop"] < 1.3 * layout.main_parameters
+    reference_counts = counts
+    if variant.endswith(("__lstm", "__slstm")):
+        with torch.device("meta"):
+            reference = make_policy(variant.rsplit("__", 1)[0], scale)
+        reference_counts = count_policy_parameters(reference)
+        assert counts["trainable_minus_nop"] > reference_counts["trainable_minus_nop"]
+    assert 0.7 * layout.main_parameters < reference_counts["trainable_minus_nop"] < 1.3 * layout.main_parameters
     assert policy.model_scale["name"] == scale
     assert policy.model_scale["layout_version"] == layout.version
     shared = counts["roles"]["shared_encoder"]["trainable"] > 0
@@ -151,7 +337,7 @@ def test_core_presets_have_explicit_conventional_layouts(variant, scale):
         "actor": layout.main_parameters // 5 if shared else layout.main_parameters * 2 // 5,
         "critic": layout.main_parameters * 2 // 5 if shared else layout.main_parameters * 3 // 5,
     }
-    allowed = {128, 192, 256, 384, 512, 768, 1024, 1536}
+    allowed = {128, 192, 256, 320, 384, 512, 768, 1024, 1536}
 
     def check(config):
         if not is_dataclass(config):
@@ -194,7 +380,7 @@ def test_core_presets_have_explicit_conventional_layouts(variant, scale):
         assert len(base.critic_encoder.layers) == layout.layers
     if hasattr(config, "decoder_config"):
         blocks = getattr(base.decoder, "layers", getattr(base.decoder, "blocks", None))
-        assert len(blocks) == layout.layers
+        assert len(blocks) == (layout.decoder_layers or layout.layers)
     if hasattr(config, "actor_encoder_config"):
         actor_encoder = base.actor_encoder if hasattr(base, "actor_encoder") else base.actor.encoder
         if getattr(config, "shared_encoder_config", None) is not None:
@@ -282,6 +468,76 @@ def test_off_policy_decentralized_actor_is_common_across_algorithms(scale):
 
 
 @pytest.mark.parametrize("scale", list_model_scales())
+def test_all_off_policy_q_heads_share_the_same_architecture(scale: str) -> None:
+    names = (
+        "maddpg__deepset_critic", "matd3__deepset_critic", "masac__deepset_critic",
+        "tmatd3", "tmatd3_dec", "tmasac", "tmasac_dec", "tmasac__lstm", "tmasac__slstm",
+    )
+    with torch.device("meta"):
+        policies = [make_policy(name, scale, use_nop=False) for name in names]
+    reference = policies[0].critic[0].network
+    shapes = {name: parameter.shape for name, parameter in reference.named_parameters()}
+    for policy in policies[1:]:
+        for head in (policy.critic.q1, policy.critic.q2):
+            assert {name: parameter.shape for name, parameter in head.named_parameters()} == shapes
+    assert policies[0].config.joint_critic_config.encoder_config == policies[1].config.joint_critic_config.encoder_config
+    single_count = count_policy_parameters(policies[0])["roles"]["critic"]["trainable"]
+    twin_count = count_policy_parameters(policies[1])["roles"]["critic"]["trainable"]
+    assert twin_count - single_count == sum(parameter.numel() for parameter in reference.parameters())
+
+
+@pytest.mark.parametrize("scale", list_model_scales())
+@pytest.mark.parametrize("variant", ["tmasac", "tmatd3", "masac__deepset_critic", "matd3__deepset_critic"])
+def test_independent_critic_encoders_duplicate_without_resizing(variant: str, scale: str) -> None:
+    with torch.device("meta"):
+        shared = make_policy(variant, scale, use_nop=False)
+        independent = make_policy(variant, scale, use_nop=False, critic_independent_encoders=True)
+    for name in ("encoder", "q1", "q2"):
+        assert {
+            key: parameter.shape for key, parameter in getattr(shared.critic, name).named_parameters()
+        } == {key: parameter.shape for key, parameter in getattr(independent.critic, name).named_parameters()}
+    assert count_policy_parameters(independent)["trainable_minus_nop"] - count_policy_parameters(shared)[
+        "trainable_minus_nop"
+    ] == sum(parameter.numel() for parameter in independent.critic.encoder2.parameters())
+
+
+@pytest.mark.parametrize("variant", ["maddpg__deepset_critic", "matd3__deepset_critic", "masac__deepset_critic"])
+@pytest.mark.parametrize("gated", [False, True])
+@pytest.mark.parametrize("scale", [None, *list_model_scales()])
+def test_custom_deepset_widths_apply_only_without_a_fixed_scale(
+    variant: str, gated: bool, scale: str | None,
+) -> None:
+    name = variant + ("__gated" if gated else "")
+    with torch.device("meta"):
+        policy = make_policy(
+            name, scale, use_nop=False,
+            baseline_critic_element_hidden_dims=(17, 19), baseline_critic_hidden_dims=(23, 29),
+        )
+        if scale is not None:
+            baseline = make_policy(name, scale, use_nop=False)
+            assert policy.config.joint_critic_config == baseline.config.joint_critic_config
+            assert policy.config.critic_encoder_config == baseline.config.critic_encoder_config
+            assert {key: parameter.shape for key, parameter in policy.critic.named_parameters()} == {
+                key: parameter.shape for key, parameter in baseline.critic.named_parameters()
+            }
+            return
+    single = variant.startswith("maddpg")
+    encoder = policy.critic[0].encoder.network if single else policy.critic.encoder.network
+    heads = [policy.critic[0].network] if single else [policy.critic.q1, policy.critic.q2]
+    assert encoder.d_model == 19
+    assert [module.out_features for module in encoder.local_action_encoder if isinstance(module, nn.Linear)] == [17, 19]
+    for head in heads:
+        assert [
+            module.out_features for module in head.deepset.set_decoder.modules() if isinstance(module, nn.Linear)
+        ] == [23, 29, 1]
+    interaction = encoder.layers[0].interaction
+    for module_name in ("message_encoder", "global_update", "message_projection"):
+        first = next(getattr(interaction, module_name).parameters())
+        second = next(getattr(encoder.layers[1].interaction, module_name).parameters())
+        assert first is not second
+
+
+@pytest.mark.parametrize("scale", list_model_scales())
 def test_shared_mat_v_critics_and_decoders_use_common_dimensions(scale):
     with torch.device("meta"):
         policies = [
@@ -329,8 +585,7 @@ def test_deepset_presets_use_family_defaults_and_honor_overrides(
         policy = make_policy(variant, scale, **({"deepset_interaction_config": settings} if custom else {}))
     critics = [module for module in policy.modules() if isinstance(module, DeepSet)]
     assert critics
-    default_layers = 4 if variant.endswith("__deepset_critic") else 2
-    expected = DeepSetInteractionConfig(**settings) if custom else DeepSetInteractionConfig(num_layers=default_layers)
+    expected = DeepSetInteractionConfig(**settings) if custom else DeepSetInteractionConfig()
     for critic in critics:
         assert len(critic.interactions) == expected.num_layers
         assert all(block.local_update == expected.local_update for block in critic.interactions)
@@ -338,11 +593,16 @@ def test_deepset_presets_use_family_defaults_and_honor_overrides(
         assert all(isinstance(block.local_norm, nn.LayerNorm) == expected.normalize for block in critic.interactions)
     metadata = next(value for key, value in policy.get_hyper_parameters().items() if key.endswith("policy_config"))
     critic_config = (
-        metadata["joint_critic_config"] if variant.endswith("__deepset_critic")
+        metadata["joint_critic_config"]["head_config"] if variant.endswith("__deepset_critic")
         else metadata.get("transformer_critic_config") or metadata["critic_config"]
     )
     interaction = (critic_config.get("deep_set_config") or critic_config)["interaction_config"]
-    assert interaction == serialize_dataclass(expected)
+    for name in ("num_layers", "local_update", "normalize"):
+        assert interaction[name] == getattr(expected, name)
+    if custom:
+        assert interaction["hidden_dims"] == settings["hidden_dims"]
+    else:
+        assert interaction["message_dim"] is not None
 
 
 @pytest.mark.parametrize("scale", list_model_scales())

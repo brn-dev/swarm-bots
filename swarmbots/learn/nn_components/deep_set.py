@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Literal, TypedDict
 
 import torch
@@ -24,6 +24,9 @@ LocalUpdate = Literal["residual", "linear", "mlp", "residual_mlp"]
 class DeepSetInteractionConfig:
     num_layers: int = 2
     hidden_dims: tuple[int, ...] | None = None
+    message_dim: int | None = None
+    gated: bool = False
+    gate_hidden_dim: int | None = None
     local_update: LocalUpdate = "residual_mlp"
     normalize: bool = True
 
@@ -32,6 +35,10 @@ class DeepSetInteractionConfig:
             raise ValueError("Deep Set interaction num_layers must be positive")
         if self.hidden_dims is not None and any(width <= 0 for width in self.hidden_dims):
             raise ValueError("Deep Set interaction hidden dimensions must be positive")
+        if self.message_dim is not None and self.message_dim <= 0:
+            raise ValueError("Deep Set interaction message dimension must be positive")
+        if self.gate_hidden_dim is not None and self.gate_hidden_dim <= 0:
+            raise ValueError("Deep Set interaction gate hidden dimension must be positive")
         if self.local_update not in {"residual", "linear", "mlp", "residual_mlp"}:
             raise ValueError(f"Unknown Deep Set local update: {self.local_update!r}")
 
@@ -76,7 +83,7 @@ def _pool_over_set(
 
 
 class DeepSetInteraction(nn.Module):
-    """Broadcast a set message, then process it with a per-element update."""
+    """Pool nonlinear expanded features, then broadcast a learned global update."""
 
     def __init__(
         self,
@@ -89,6 +96,10 @@ class DeepSetInteraction(nn.Module):
         act_fn_cls: ActivationFactory,
     ) -> None:
         super().__init__()
+        self.features = features
+        self.message_dim = max(1, features * 5 // 4) if config.message_dim is None else config.message_dim
+        hidden_dims = (features,) if config.hidden_dims is None else config.hidden_dims
+        self.config = replace(config, hidden_dims=hidden_dims, message_dim=self.message_dim)
         self.set_dim = set_dim
         self.pool_mode = pool_mode
         self.local_update = config.local_update
@@ -96,16 +107,16 @@ class DeepSetInteraction(nn.Module):
         self.local_norm = (
             nn.LayerNorm(features) if config.normalize and config.local_update != "residual" else nn.Identity()
         )
-        hidden_dims = [features] if config.hidden_dims is None else list(config.hidden_dims)
-
-        def make_mlp(*, end_with_act_fn: bool = False) -> MLP:
-            return MLP(
-                input_dim=features, hidden_dims=[*hidden_dims, features],
-                end_with_act_fn=end_with_act_fn, linear_init=linear_init, act_fn_cls=act_fn_cls,
-            )
-
-        self.message_encoder = make_mlp(end_with_act_fn=True)
-        self.global_update = make_mlp()
+        self.message_encoder = MLP(
+            input_dim=features, hidden_dims=[self.message_dim], end_with_act_fn=True,
+            linear_init=linear_init, act_fn_cls=act_fn_cls,
+        )
+        self.global_update = MLP(
+            input_dim=self.message_dim, hidden_dims=[self.message_dim], end_with_act_fn=True,
+            linear_init=linear_init, act_fn_cls=act_fn_cls,
+        )
+        self.message_projection = nn.Linear(self.message_dim, features, bias=False)
+        linear_init(self.message_projection)
         if config.local_update == "residual":
             self.local_encoder: nn.Module = nn.Identity()
         elif config.local_update == "linear":
@@ -114,14 +125,31 @@ class DeepSetInteraction(nn.Module):
                 linear_init=linear_init, act_fn_cls=act_fn_cls,
             )
         else:
-            self.local_encoder = make_mlp()
+            self.local_encoder = MLP(
+                input_dim=features, hidden_dims=[*hidden_dims, features], end_with_act_fn=False,
+                linear_init=linear_init, act_fn_cls=act_fn_cls,
+            )
+
+    def _broadcast_update(self, normalized: torch.Tensor, message: torch.Tensor) -> torch.Tensor:
+        return self.message_projection(message).unsqueeze(self.set_dim)
+
+    def message_update(
+        self, normalized_elements: torch.Tensor, element_mask: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """Return the communication delta for an externally normalized residual block."""
+        if element_mask is not None:
+            normalized_elements = normalized_elements.masked_fill(~element_mask.unsqueeze(-1), 0.0)
+        message = _pool_over_set(
+            self.message_encoder(normalized_elements),
+            set_dim=self.set_dim, mode=self.pool_mode, mask=element_mask,
+        )
+        return self._broadcast_update(normalized_elements, self.global_update(message))
 
     def forward(self, elements: torch.Tensor, element_mask: torch.Tensor | None = None) -> torch.Tensor:
+        if element_mask is not None:
+            elements = elements.masked_fill(~element_mask.unsqueeze(-1), 0.0)
         normalized = self.global_norm(elements)
-        message = _pool_over_set(
-            self.message_encoder(normalized), set_dim=self.set_dim, mode=self.pool_mode, mask=element_mask,
-        )
-        updated = elements + self.global_update(message).unsqueeze(self.set_dim)
+        updated = elements + self.message_update(normalized, element_mask)
         if self.local_update != "residual":
             local = self.local_encoder(self.local_norm(updated))
             if self.local_update == "residual_mlp":
@@ -129,6 +157,40 @@ class DeepSetInteraction(nn.Module):
             else:
                 updated = local
         return updated if element_mask is None else updated.masked_fill(~element_mask.unsqueeze(-1), 0.0)
+
+
+class GatedDeepSetInteraction(DeepSetInteraction):
+    """Let each token select global message features before their shared projection."""
+
+    def __init__(
+        self,
+        features: int,
+        *,
+        config: DeepSetInteractionConfig,
+        set_dim: int,
+        pool_mode: PoolMode,
+        linear_init: LinearInitialization,
+        act_fn_cls: ActivationFactory,
+    ) -> None:
+        super().__init__(
+            features, config=config, set_dim=set_dim, pool_mode=pool_mode,
+            linear_init=linear_init, act_fn_cls=act_fn_cls,
+        )
+        self.gate_hidden_dim = max(1, features // 4) if config.gate_hidden_dim is None else config.gate_hidden_dim
+        self.config = replace(self.config, gated=True, gate_hidden_dim=self.gate_hidden_dim)
+        self.reception_gate = nn.Sequential(
+            MLP(
+                input_dim=features + self.message_dim,
+                hidden_dims=[self.gate_hidden_dim, self.message_dim], end_with_act_fn=False,
+                linear_init=linear_init, act_fn_cls=act_fn_cls,
+            ),
+            nn.Sigmoid(),
+        )
+
+    def _broadcast_update(self, normalized: torch.Tensor, message: torch.Tensor) -> torch.Tensor:
+        expanded_message = message.unsqueeze(self.set_dim).expand(*normalized.shape[:-1], self.message_dim)
+        gate = self.reception_gate(torch.cat((normalized, expanded_message), dim=-1))
+        return self.message_projection(gate * expanded_message)
 
 
 class DeepSet(nn.Module):
@@ -181,12 +243,13 @@ class DeepSet(nn.Module):
             if local_projection_hidden_dims else nn.Identity()
         )
         features = local_projection_hidden_dims[-1] if local_projection_hidden_dims else element_input_features
+        interaction_cls = GatedDeepSetInteraction if interaction_config.gated else DeepSetInteraction
         return cls(
             element_encoder=element_encoder, set_decoder=set_decoder,
             set_dim=set_dim, pool_mode=pool_mode, context_features=context_features,
             context_in_elements=context_in_elements, context_after_pool=context_after_pool,
             interactions=[
-                DeepSetInteraction(
+                interaction_cls(
                     features, config=interaction_config, set_dim=set_dim, pool_mode=pool_mode,
                     linear_init=linear_init, act_fn_cls=act_fn_cls,
                 )

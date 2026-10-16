@@ -69,9 +69,9 @@ For runnable training → evaluation → video-recording workflows, see the [exa
 | `tmasac_dec` | SAC with a per-agent MLP actor and the same transformer twin critic as `tmasac` |
 | `tmasac__slstm`, `tmasac__lstm` | Recurrent TMASAC with sLSTM or LSTM and actor-state critic inputs |
 
-`list_variants()` returns these 17 core presets. `list_variants(include_hidden=True)` also lists `mat_ind__no_attention`, `mat_qcx__no_nop`, and `tmasac__no_nop`. MLP-suffixed, SwiGLU, shared-encoder, optional recurrent-control, and segment-training names are removed from the registry and rejected by the training helpers and CLIs. Their low-level classes/configuration machinery remain available. Plain PPO and MAPPO remain registered.
+`list_variants()` returns these 17 core presets. `list_variants(include_hidden=True)` also lists `mat_qcx__no_nop`, `tmasac__no_nop`, and the three `*__deepset_critic__gated` presets. `mat_ind__no_attention` is removed. MLP-suffixed, SwiGLU, shared-encoder, optional recurrent-control, and segment-training names are removed from the registry and rejected by the training helpers and CLIs. Their low-level classes/configuration machinery remain available. Plain PPO and MAPPO remain registered.
 
-Variant names use `base_variant__modifier__modifier`. Major architecture choices stay in the base name with a single underscore: `mat_orig`, `mat_ind`, `mat_dec`, `mat_qcx`, `tmasac_dec`, and `tmatd3_dec`. Double underscores separate additional recurrent, critic, and ablation modifiers, such as `mat_qcx__lstm`, `masac__deepset_critic`, and `mat_ind__no_attention`. Single underscores join words inside modifier phrases such as `deepset_critic` or `no_nop`. Defaults without modifiers keep their short names, such as `ppo`, `mappo`, `tmasac`, and `tmatd3`.
+Variant names use `base_variant__modifier__modifier`. Major architecture choices stay in the base name with a single underscore: `mat_orig`, `mat_ind`, `mat_dec`, `mat_qcx`, `tmasac_dec`, and `tmatd3_dec`. Double underscores separate additional recurrent, critic, and ablation modifiers, such as `mat_qcx__lstm`, `masac__deepset_critic`, and `masac__deepset_critic__gated`. Single underscores join words inside modifier phrases such as `deepset_critic` or `no_nop`. Defaults without modifiers keep their short names, such as `ppo`, `mappo`, `tmasac`, and `tmatd3`.
 
 | Previous name | Current name |
 | --- | --- |
@@ -90,7 +90,9 @@ The retained low-level TMASAC builder also uses `tmasac__slstm__ac_shared_observ
 
 The decentralized actors in `mat_dec` and `tmasac_dec` use each agent's local observation plus the task's non-privileged global observation. They do not mix other agents' local observations or actions. The `tmasac_dec` actor uses residual MLP blocks with agent attention disabled; its critic retains agent attention, and its NOP and optimizer defaults match `tmasac`.
 
-MAT/RMAT observation encoders and the transformer critics in TMASAC/TMATD3 use separate local and global projections added together by default. Set `policy_kwargs={"mat_joint_obs_embedding": True}` to concatenate the separately normalized local and global inputs before the per-agent token projection. Joint mode uses the local encoder's feed-forward configuration; the presets use MLP input encoders. Action-conditioned critics include public and privileged globals in this projection, after any optional observation/action pre-encoders. The switch also applies to recurrent and shared observation encoders, and to MAT-based actors in the other off-policy baselines. It introduces no new variant names. Low-level `MATEncoderConfig.joint_obs_embedding` (inherited by `RMATEncoderConfig`) controls the same setting.
+MAT/RMAT observation encoders and the transformer critics in TMASAC/TMATD3 use separate local and global projections added together by default. Set `policy_kwargs={"mat_joint_obs_embedding": True}` to concatenate the local and global inputs before the per-agent token projection. Joint mode uses the local encoder's feed-forward configuration; the presets use MLP input encoders. Action-conditioned critics include public and privileged globals in this projection, after any optional observation/action pre-encoders. The switch also applies to recurrent and shared observation encoders, and to MAT-based actors in the other off-policy baselines. It introduces no new variant names. Low-level `MATEncoderConfig.joint_obs_embedding` (inherited by `RMATEncoderConfig`) controls the same setting.
+
+Encoders preserve observation and action features before projection; raw-input LayerNorm is removed because it discards absolute values and erases scalar inputs. Feature-wise observation normalization remains in the environment wrappers, and learned tokens and hidden features retain their existing normalization.
 
 The default `mat_joint_obs_embedding=False` retains the additive architecture and existing checkpoint weight shapes and keys. Reconstruct a joint-embedding checkpoint with the switch enabled, including when using `record_checkpoint`. Encoders without global inputs retain their existing layout in either mode. `mat_orig` already concatenates local and global observations, and PPO/MAPPO use their existing input encoders independently of this switch.
 
@@ -104,37 +106,41 @@ The canonical `tmasac__lstm` and `tmasac__slstm` condition their feed-forward cr
 
 ## Iterative Deep Set critics
 
-Every Deep Set critic projects agent features, runs independent set interaction blocks, then performs final masked mean pooling and scalar regression. Standalone `maddpg__deepset_critic`, `matd3__deepset_critic`, and `masac__deepset_critic` critics default to **four blocks** at every model scale. MAPPO, MAT/RMAT value heads, and Q readouts after transformer encoders default to **two blocks**. Each default block computes
+Deep Set interactions maintain D-dimensional agent tokens and pool M=5D/4-dimensional messages. The global branch uses an activation before masked pooling and another while processing the pooled message; its final projection is linear and bias-free:
 
 ```text
 z_i = LayerNorm(x_i)
-g = global_MLP(masked_mean(message_MLP(z_1:N)))
-u_i = x_i + g
+a_i = Act(Linear_D_to_M(z_i))
+g = Act(Linear_M_to_M(masked_mean(a_1:N)))
+u_i = x_i + Linear_M_to_D(g)
 x'_i = u_i + local_MLP(LayerNorm(u_i))
 ```
 
-Each block follows the pre-normalized transformer ordering: set mixing with a residual addition, then per-agent feed-forward processing with a second residual addition. The two sublayers have separate LayerNorms, so the local MLP processes the global message produced in the same block. Each MLP has one hidden layer as wide as the agent features. Message MLPs end with the policy activation; local/global updates end with a linear layer. Blocks have separate weights. LayerNorm acts within each agent's feature vector. Inactive agents are excluded from every aggregation and their final features are zero. Critic NOP for the Deep Set baselines uses these final equivariant features with the same mask.
+The two residual sublayers have separate normalizations. Shared off-policy Deep Set encoders reuse the transformer embedding and local-FFN code, with the same token widths and 2/2/3 encoder blocks across scales. Private V/Q heads use two interaction blocks by default; every off-policy Q head then performs its own masked pooling and common regression. DDPG retains one ordinary head rather than enlarging it to compensate for the missing second head. NOP receives masked shared critic features before private Q-head processing.
 
-Configure all presets through `policy_kwargs["deepset_interaction_config"]`, using either a `DeepSetInteractionConfig` from `swarmbots.learn.nn_components.deep_set` or a dictionary:
+The gated presets add `gate_i = sigmoid(GateMLP(concat(z_i, g)))`, apply `gate_i * g` in the expanded space, and only then down-project to D. The gate network is shared across agents and has a D/4-wide hidden layer. All standard dimensions remain unchanged. Gating selects message features per receiver; pooling still merges the senders.
+
+Configure interactions through `policy_kwargs["deepset_interaction_config"]`, using `DeepSetInteractionConfig` or a dictionary. `message_dim` controls M independently of local `hidden_dims`; `gated` selects the gated block and `gate_hidden_dim` controls gate capacity. For example:
 
 ```python
 policy_kwargs = {
     "deepset_interaction_config": {
-        "num_layers": 3,
-        "hidden_dims": [256, 256],
-        "local_update": "residual_mlp",
-        "normalize": True,
+        "num_layers": 2,
+        "message_dim": 480,
+        "hidden_dims": [512],
+        "gated": True,
+        "gate_hidden_dim": 96,
     },
 }
 ```
 
-`num_layers` must be positive. `hidden_dims=None` selects one hidden layer at the feature width; an empty list selects a single affine layer. `local_update` selects processing after the global residual update: `residual` keeps `u_i`; `linear` uses `Act(W local_norm(u_i) + b)`; `mlp` uses `MLP(local_norm(u_i))`; `residual_mlp` adds `u_i + MLP(local_norm(u_i))`. The `residual` mode omits the local MLP and its normalization. Set `normalize=False` to disable both LayerNorms. Fixed scales supply the element/regressor widths and preserve these interaction settings across variants and tiers.
+For standalone V/Q interactions, `num_layers`, `local_update` and `normalize` control the complete interaction stack. Shared off-policy encoder depth, local FFNs and outer normalization come from the encoder configuration to preserve the transformer comparison; interaction settings control its message computation and gate. Fixed-scale configs save resolved message widths and the gate hidden width when enabled. Custom overrides can intentionally depart from the matched defaults.
 
-This replaces the former parallel local/global updates as well as the earlier one-pass architecture. Old checkpoints require retraining or manual migration; there is no automatic weight conversion or compatibility layout. More interaction rounds enable context-dependent agent processing before the final pooling, but learning improvements still need empirical comparison.
+These layouts replace the previous fixed-width message and pooled-MLP critic designs. Earlier checkpoints require retraining or manual migration; no automatic conversion is provided. Canonical recurrent policies retain baseline feed-forward processing and add memory, so their counts can exceed the nominal scale.
 
 ## Model scale
 
-All regular presets default to `model_scale="5M NOP1M"` (also `"5+1M"`). Three explicit tiers are available: `2.5M NOP0.75M`, `5M NOP1M` (default), and `10M NOP2M`. Bare `"2.5M"`, `"5M"`, and `"10M"` select the corresponding NOP allowance; `list_model_scales()` lists the canonical names. It selects fixed, reviewed dimensions for each architecture, targeting the named online main-policy and additional NOP allowances. The small tier deliberately retains more than the linearly scaled 0.5M auxiliary capacity. There is no runtime width search, parameter-count fitting, or resizing based on task shapes.
+All regular presets default to `model_scale="5M-2L NOP1M"`. Four explicit choices are available: `2.5M NOP0.75M`, `5M-2L NOP1M` (default), `5M-3L NOP1M`, and `10M NOP2M`. Their short names are `2.5M`, `5M-2L`, `5M-3L`, and `10M`; `list_model_scales()` lists canonical names. `5M-2L` preserves the former 5M architecture; old `5M`/`5+1M` aliases are rejected. The 3L choice changes only attention/Deep Set encoder stacks and reduces widths to retain a comparable feed-forward budget. MLP depths, decoders, Q/V heads, and NOP core remain unchanged; PPO/MAPPO are identical across the depth choices. Recurrence remains additional capacity relative to feed-forward models; narrower 3L memory modules match complete 2L recurrent counts within 0.5% on WallEasy. Gates remain additional capacity. Layouts are fixed per architecture, with no runtime fitting or task-dependent resizing. See the [layout and depth comparison](policy_parameters/model_scale.md).
 
 The target allocation remains **2M actor / 3M combined critic** for separate encoders, or **2M shared encoder / 1M private actor / 2M combined private critic** with actor–critic sharing. Half the shared encoder is attributed to each side. Actual counts can differ so the architecture remains sensible. Actor layouts are held constant across critic choices, on-policy MAT variants share V-critic templates, and NOP uses common projection/transition/prediction widths. See the [explicit size table and comparison rationale](policy_parameters/model_scale.md), plus the report's actual layer dimensions and component counts.
 
@@ -148,7 +154,7 @@ Task settings come from the [scenario registry](scenarios.md). Architecture and 
 
 | Setting | Default |
 | --- | --- |
-| Model scale | `5M NOP1M` |
+| Model scale | `5M-2L NOP1M` |
 | Parallel worlds | 1024 |
 | Device | `cuda`; select `cpu` explicitly for development |
 | Random seed | 42 |
@@ -174,6 +180,8 @@ algorithm_kwargs={
 }
 ```
 
+All SAC presets use TMASAC as the training reference: actor/critic learning rate `5e-5`, automatic temperature initialized at `0.05`, temperature learning rate inherited from the actor/critic rate, and target entropy `auto_0.1`. Explicit `algorithm_kwargs` override these defaults. On-policy MAT decoders retain their `0.25` learning-rate multiplier.
+
 For SAC, the delay applies to the actor, actor NOP, and automatic temperature updates. Critics and critic/shared-encoder NOP still update every step. Target networks retain their separate `target_update_interval` schedule. Target smoothing adds clipped Gaussian noise in normalized action coordinates, scales it to the physical action bounds, and keeps inactive actions zero. It changes the actions evaluated by the target critic; the entropy term uses the original policy sample's log-probability. This is an experimental modification of the SAC target, so compare it against the unchanged defaults for your task. Set both noise options to positive values to enable smoothing.
 
 ## DDPG, TD3 and centralized critic baselines
@@ -184,11 +192,12 @@ All of these presets learn a scalar team value from SwarmBots' shared reward. Ac
 
 The registered `__deepset_critic` baselines use the following critic. Flattened MLP critic classes remain available for direct low-level construction, but `*__mlp_critic` names are no longer registered.
 
-- **`__deepset_critic`:** project each agent's local observation, privileged local fields, action, and shared global context, then apply four global-then-local set interaction blocks. Every block uses masked mean message aggregation, broadcasts the learned set message back to active agents, then processes the result with a local MLP. Final masked mean pooling produces a set representation; concatenate shared global context again, then apply a three-layer regressor and scalar Q head. TD3/SAC share the projection and interaction stack between their two independently initialized Q regressors by default. At the default 5M scale, the shared encoder and DDPG encoder both use 256-wide agent features; DDPG uses a 768-wide regressor and each TD3/SAC head uses a 512-wide regressor. Independent TD3/SAC encoders use 192-wide features. Each critic is invariant to a joint permutation of agent observations, actions, and masks.
+- **`__deepset_critic`:** use the same action-conditioned observation embeddings, token widths, encoder depth, residuals, normalization and local FFNs as transformer critics. Each encoder block replaces attention with nonlinear message expansion, masked mean pooling, nonlinear processing of the pooled message and a linear projection back to token width. Every private Q head then projects tokens, runs two further Deep Set interactions, pools, and applies the same two-hidden-layer regression MLP. DDPG uses one ordinary Q head, while TD3/SAC use two. The default 5M shared encoder has width 384 and two blocks; each Q head has width 128. No raw global context bypasses pooling under the canonical settings. Each critic remains invariant to joint permutation of agent observations, actions and masks.
+- **`__deepset_critic__gated`:** optional DDPG/TD3/MASAC presets add token-dependent sigmoid reception gates in the shared encoder and Q-head interactions. Gates consume the normalized token and global message, select message features in the expanded space, and precede bias-free compression. All ungated widths and depths are retained, so gates add parameters. Select these presets explicitly or list them with `include_hidden=True`.
 
 At the default 5M scale, the decentralized actors use the same per-agent residual MLP backbone as `tmasac_dec`: 256-dimensional features, three residual blocks with 512/512 feed-forward layers, and a 128-wide action head. They receive local and non-privileged global observations. `tmatd3` uses two attention blocks in this backbone; `tmatd3_dec` uses the three-block decentralized actor. Both use the action-conditioned transformer critic from TMASAC, sharing one encoder between their two Q heads by default. Their default critic transformer width is 384, with four attention heads and two layers. Privileged observations are confined to the critics.
 
-Twin-critic encoder sharing is configurable with `policy_kwargs["critic_independent_encoders"]`. TMASAC, TMATD3, MASAC Deep Set, and MATD3 Deep Set default to `False`, sharing one action-conditioned encoder between their two Q heads. Set it to `True` for independent critic encoders. Sharing between Q heads is distinct from actor–critic sharing; the registered transformer presets keep actor and critic encoders independent. The transformer Q heads each retain private Deep Set interactions; shared Deep Set critics instead use private pooled MLP regressors. Shared representations can correlate the two estimates, so this is a comparison control rather than a claim that sharing improves learning. Changing encoder sharing changes checkpoint parameter shapes and keys; reconstruct a checkpoint with the setting used during training. The sequential Deep Set layout replaces the old layout and requires retraining or manual checkpoint migration, even with independent encoders selected.
+All registered off-policy presets share one critic encoder between their Q heads. The low-level `policy_kwargs["critic_independent_encoders"]` option remains available for direct experiments; it is not a registered variant and now duplicates encoders without resizing them. Actor/critic sharing remains a separate concept. Both Deep Set and transformer critics use identical private Deep Set Q-head structures. Shared representations can correlate Q estimates, so sharing is an explicit design choice rather than a claim of improved learning. Reconstruct checkpoints with their saved architecture version and configuration. The expanding interactions, aligned heads and additive recurrent layouts replace their predecessors and require retraining or manual checkpoint migration.
 
 DDPG uses one critic, an actor target, and a critic target; actor and targets update on every gradient step. TD3 uses two critics, the minimum target Q, target-action smoothing (`target_policy_noise=0.2`, `target_noise_clip=0.5`), and actor/target updates every second critic step (`policy_delay=2`). Both optimize the actor against Q1 and use `tau=0.005`. The delay counter continues across training iterations and checkpoint reloads. Rollout exploration defaults to `exploration_noise=0.1`; all noise scales use normalized action coordinates and are converted to the physical action bounds before clipping. Inactive actions remain zero. Deterministic evaluation omits exploration noise.
 
@@ -211,9 +220,9 @@ trainer = make_training(
 )
 ```
 
-`baseline_critic_element_hidden_dims` controls the Deep Set element encoder; `baseline_critic_hidden_dims` controls the flattened MLP or the Deep Set value regressor. DDPG fixes the delay to one and target smoothing to zero. DDPG/TD3 require finite continuous Box action spaces, including continuous connectors. Passing `continuous_action_dist` or SAC entropy options to a deterministic preset raises an error. MASAC retains SAC's distribution choices, entropy tuning, and multiple-action-sample support.
+`baseline_critic_element_hidden_dims` controls the Deep Set action/observation embedding MLP (its last dimension is the token width); `baseline_critic_hidden_dims` controls the flattened MLP or post-pooling Deep Set value regressor. These custom-width controls apply with `model_scale=None`; fixed scales choose their common layouts. Unspecified Deep Set widths use the matched encoder/head templates. DDPG fixes the delay to one and target smoothing to zero. DDPG/TD3 require finite continuous Box action spaces, including continuous connectors. Passing `continuous_action_dist` or SAC entropy options to a deterministic preset raises an error. MASAC retains SAC's distribution choices, entropy tuning, and multiple-action-sample support.
 
-Deep Set baseline critics condition each element encoder on the non-privileged global observations and privileged global variables, including the raw active-agent count at `hidden_global_vars[0]`. The same context also enters the value regressor directly after masked mean pooling. This gives the per-agent NOP features access to global conditions. Set `policy_kwargs={"baseline_critic_context_in_elements": False}` to put global context only after pooling; changing this setting changes the element encoder's input weight shapes. The environment supplies the count for every scenario and critic architecture; Deep Set critics do not append a second count. Checkpoints using the former observation layout require migration before use, even when their parameter shapes still match, because hidden field order has changed.
+Deep Set baseline critics condition each element encoder on the non-privileged global observations and privileged global variables, including the raw active-agent count at `hidden_global_vars[0]`. Canonical Q heads receive that context through the shared token features, without a second raw-global bypass after pooling. The per-agent NOP features therefore have access to global conditions. Set `policy_kwargs={"baseline_critic_context_in_elements": False}` to put global context only after pooling; changing this setting changes the encoder/readout architecture and checkpoint parameter shapes. The environment supplies the count for every scenario and critic architecture; Deep Set critics do not append a second count. Checkpoints using the former observation layout require migration before use, even when their parameter shapes still match, because hidden field order has changed.
 
 Next-observation prediction is enabled by default on `maddpg__deepset_critic`, `matd3__deepset_critic`, `masac__deepset_critic`, `tmatd3`, and `tmatd3_dec`. Pass `use_nop=False` to `make_training` or `train` to disable it. NOP defaults to the critic source. Set `policy_kwargs={"tmasac_nop_latent_source": "actor"}` or `"both"` to train actor representations as well; this option applies to DDPG/TD3 too. Deep Set NOP uses per-agent features before pooling, and transformer NOP uses action-conditioned encoder features. Independent critic features are concatenated along the feature axis; shared Deep Set and transformer critics supply the common encoder features once. Critic NOP follows `nop_skip_first_transition_for_critic`, which defaults to true because these features already include the current action.
 

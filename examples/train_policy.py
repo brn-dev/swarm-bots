@@ -6,10 +6,12 @@ import argparse
 import json
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from swarmbots import evaluate_policy, record_policy
 from swarmbots.learn import as_benchmark_policy, list_variants, train
 from swarmbots.learn.logging_levels import LOGGING_LEVELS
+from swarmbots.learn.presets.model_scale import SCALE_LAYOUTS, normalize_model_scale
 
 
 def positive_int(value: str) -> int:
@@ -24,7 +26,7 @@ def make_parser(
     description: str = __doc__,
     variants: tuple[str, ...] | None = None,
     default_variant: str = "mappo",
-    run_dir_help: str = "defaults to runs/<benchmark-id>/<variant>",
+    run_dir_help: str = "fresh directory under runs/<benchmark-id>/<variant>/<scale>/seed-<seed>/",
 ) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=description)
     parser.add_argument("benchmark_id", nargs="?", default="SwarmBots-WallEasy-v0")
@@ -35,7 +37,7 @@ def make_parser(
         return value
     parser.add_argument("--variant", type=variant_choice, default=default_variant, metavar="VARIANT",
                         help="core presets: " + ", ".join(list_variants() if variants is None else variants))
-    parser.add_argument("--model-scale", default="5M NOP1M", help="fixed tiers: 2.5M, 5M (default), 10M; legacy uses custom widths")
+    parser.add_argument("--model-scale", default="5M-2L NOP1M", help="fixed tiers: 2.5M, 5M-2L (default), 5M-3L, 10M; legacy uses custom widths")
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--num-envs", type=positive_int, default=256, help="parallel training worlds")
     parser.add_argument("--total-timesteps", type=positive_int, default=1_000_000)
@@ -58,13 +60,28 @@ def make_parser(
     return parser
 
 
+def create_run_directory(args: argparse.Namespace) -> Path:
+    scale = normalize_model_scale(None if args.model_scale == "legacy" else args.model_scale)
+    if args.run_dir is not None:
+        run_dir = args.run_dir
+    else:
+        scale_slug = "legacy" if scale is None else SCALE_LAYOUTS[scale].slug
+        nop_mode = "nop-preset" if args.nop is None else "nop" if args.nop else "no-nop"
+        run_dir = (
+            Path("runs") / args.benchmark_id / args.variant / scale_slug / f"seed-{args.seed}"
+            / f"{nop_mode}-{uuid4().hex[:12]}"
+        )
+    run_dir.mkdir(parents=True, exist_ok=False)
+    return run_dir
+
+
 def run_experiment(
     args: argparse.Namespace,
     *,
     policy_kwargs: dict[str, Any] | None = None,
     algorithm_kwargs: dict[str, Any] | None = None,
 ) -> None:
-    run_dir = args.run_dir or Path("runs") / args.benchmark_id / args.variant
+    run_dir = create_run_directory(args)
 
     # train() saves metrics/checkpoints and closes the training simulator. The
     # returned trainer retains its actor and observation-normalization statistics.

@@ -15,6 +15,7 @@ class LearningVariantConfig:
     use_nop: bool = True
     use_agent_attention: bool = True
     hidden: bool = False
+    gated_deepset: bool = False
 
 
 VARIANT_CONFIGS: dict[str, LearningVariantConfig] = {
@@ -41,9 +42,12 @@ VARIANT_CONFIGS.update({
     for name in ("tmasac", "tmasac_dec", "tmasac__slstm", "tmasac__lstm")
 })
 VARIANT_CONFIGS.update({
-    "mat_ind__no_attention": LearningVariantConfig(policy_variant="mat_ind", use_agent_attention=False),
     "mat_qcx__no_nop": LearningVariantConfig(policy_variant="mat_qcx", use_nop=False),
     "tmasac__no_nop": LearningVariantConfig(tmasac_variant="tmasac", use_nop=False),
+})
+VARIANT_CONFIGS.update({
+    f"{name}__gated": LearningVariantConfig(policy_variant=name, gated_deepset=True)
+    for name in ("maddpg__deepset_critic", "matd3__deepset_critic", "masac__deepset_critic")
 })
 
 # Auxiliary-loss and attention controls remain explicit selections.
