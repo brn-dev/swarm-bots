@@ -568,12 +568,16 @@ def test_independent_deepset_encoders_feed_private_readouts_and_concatenated_nop
 def test_expanding_and_gated_deepset_diagrams_show_reception_and_complete_counts(
     model_scale: str, policy_row: PolicyRow,
 ) -> None:
-    bases = ("maddpg__deepset_critic", "matd3__deepset_critic", "masac__deepset_critic")
-    for variant in (*bases, *(base + "__gated" for base in bases)):
+    variants = (
+        f"{algorithm}__{critic}"
+        for critic in ("deepset_critic", "gated_deepset_critic")
+        for algorithm in ("maddpg", "matd3", "masac")
+    )
+    for variant in variants:
         row = policy_row(variant, model_scale)
         diagram = build_diagram(row)
         nodes = {node.id: node for node in diagram.nodes}
-        gated = row["variant"].endswith("__gated")
+        gated = row["variant"].endswith("__gated_deepset_critic")
         encoder = nodes["critic_encoder"]
         assert any("expanded message width M=" in line for line in encoder.lines)
         assert any(line.startswith("nonlinear expansion before pooling:") for line in encoder.lines)
@@ -664,10 +668,10 @@ def test_independent_critic_diagrams_keep_late_global_context_labels_clear_with_
     from swarmbots.learn.presets.transformer import MATNormalizationConfig
     from swarmbots.tools.inspect_policy_parameters import inspect_variants
 
-    suffix = "__gated" if gated else ""
+    critic = "gated_deepset_critic" if gated else "deepset_critic"
     report = inspect_variants(
         "SwarmBots-WallEasy-v0",
-        tuple(base + suffix for base in ("matd3__deepset_critic", "masac__deepset_critic")),
+        tuple(f"{algorithm}__{critic}" for algorithm in ("matd3", "masac")),
         model_scale="2.5M",
         policy_kwargs={
             "baseline_critic_context_in_elements": False,

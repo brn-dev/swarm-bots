@@ -1,4 +1,5 @@
 from dataclasses import replace
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -796,9 +797,13 @@ def test_custom_td3_delay_and_polyak_values_across_uneven_train_calls(env, varia
 
 
 @pytest.mark.parametrize("variant", VARIANTS)
-def test_checkpoint_continuation_matches_uninterrupted_updates(env, variant, tmp_path):
+@pytest.mark.parametrize("learning_rate", [3e-4, 1e-5])
+def test_checkpoint_continuation_matches_uninterrupted_updates(
+    env: SwarmBotsLearnEnvWrapper, variant: str, tmp_path: Path, learning_rate: float,
+) -> None:
     torch.manual_seed(42)
     algorithm = make_algorithm(env, variant, learning_rate_warmup_updates=5)
+    algorithm.set_learning_rate(learning_rate)
     batch = fill_replay(algorithm)
     algorithm.train(gradient_steps=3)
     path = tmp_path / f"{variant}.pt"
@@ -810,6 +815,7 @@ def test_checkpoint_continuation_matches_uninterrupted_updates(env, variant, tmp
     assert len(restored.replay_buffer) == 0
     assert not restored._should_train()
     assert restored.n_total_updates == algorithm.n_total_updates == 3
+    assert restored.learning_rate == algorithm.learning_rate == learning_rate
     assert restored.actor_optimizer.state_dict()["state"]
     assert_optimizer_states_equal(restored, algorithm)
 
@@ -827,6 +833,25 @@ def test_checkpoint_continuation_matches_uninterrupted_updates(env, variant, tmp
             assert restored.n_total_updates == algorithm.n_total_updates
             torch.testing.assert_close(restored.policy.state_dict(), algorithm.policy.state_dict(), rtol=0, atol=0)
             assert_optimizer_states_equal(restored, algorithm)
+
+
+@pytest.mark.parametrize("variant", ["maddpg__mlp_critic", "matd3__mlp_critic", "masac__mlp_critic"])
+def test_weights_only_load_keeps_the_configured_learning_rate(
+    env: SwarmBotsLearnEnvWrapper, variant: str, tmp_path: Path,
+) -> None:
+    algorithm = make_algorithm(env, variant, policy_options={"model_scale": None})
+    algorithm.set_learning_rate(1e-5)
+    fill_replay(algorithm)
+    algorithm.train(gradient_steps=1)
+    path = tmp_path / "checkpoint.pt"
+    algorithm.save(path, optimizer_state_dict=algorithm._get_optimizer_state_dict())
+    restored = make_algorithm(env, variant, policy_options={"model_scale": None}, learning_rate=5e-4)
+    restored.load(path, restore_optimizer_state=False, restore_env_state=False)
+    fill_replay(restored)
+    restored.train(gradient_steps=1)
+    assert restored.learning_rate == 5e-4
+    assert restored.actor_optimizer.param_groups[0]["lr"] == 5e-4
+    assert restored.critic_optimizer.param_groups[0]["lr"] == 5e-4
 
 
 @pytest.mark.parametrize("variant", ["maddpg__mlp_critic", "matd3__mlp_critic"])

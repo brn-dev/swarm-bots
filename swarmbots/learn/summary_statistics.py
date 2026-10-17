@@ -192,6 +192,8 @@ def compute_summary_statistics(
         values = arr.ravel()
     elif isinstance(arr, torch.Tensor):
         values = arr.ravel()
+        if not values.is_floating_point() and not values.is_complex():
+            values = values.to(dtype=torch.float64)
     else:
         raise ValueError(arr)
 
@@ -291,6 +293,10 @@ def maybe_compute_summary_statistics(
         keep_data: bool = False,
 ) -> Optional[SummaryStatistics]:
     if is_summary_statistics(x):
+        if find_min and x.min_value in (None, NO_DATA):
+            x.min_value = x.data.min().item() if x.data is not None and x.n > 0 else NO_DATA
+        if find_max and x.max_value in (None, NO_DATA):
+            x.max_value = x.data.max().item() if x.data is not None and x.n > 0 else NO_DATA
         if make_histogram and x.histogram in (None, NO_DATA) and x.data is not None:
             compute_histogram(x, config=_resolve_histogram_config(make_histogram))
         if compute_skewness or compute_kurtosis:
@@ -421,26 +427,9 @@ def _compute_standardized_moments(
     if std is None or not np.isfinite(std) or std <= 0.0:
         return None, None
 
-    if isinstance(values, np.ndarray):
-        centered = values - mean
-        skewness = None
-        kurtosis = None
-        if compute_skewness:
-            m3 = np.mean(centered ** 3)
-            skewness = float(m3 / (std ** 3))
-        if compute_kurtosis:
-            m4 = np.mean(centered ** 4)
-            kurtosis = float(m4 / (std ** 4))
-    else:
-        centered = values - mean
-        skewness = None
-        kurtosis = None
-        if compute_skewness:
-            m3 = (centered ** 3).mean()
-            skewness = (m3 / (std ** 3)).item()
-        if compute_kurtosis:
-            m4 = (centered ** 4).mean()
-            kurtosis = (m4 / (std ** 4)).item()
+    standardized = (values - mean) / std
+    skewness = (standardized ** 3).mean().item() if compute_skewness else None
+    kurtosis = (standardized ** 4).mean().item() if compute_kurtosis else None
 
     if skewness is not None and not np.isfinite(skewness):
         skewness = None
@@ -478,6 +467,51 @@ def _format_histogram_blocks(freqs: list[float], n_bins: Optional[int] = None) -
         chars.append(HISTOGRAM_BLOCKS[idx])
     return "[" + "".join(chars) + "]"
 
+
+def _combine_standardized_moments(
+    stats_list: list[SummaryStatistics], mean: float, std: float,
+) -> tuple[float | NoData | None, float | NoData | None]:
+    if len(stats_list) == 1:
+        return stats_list[0].skewness, stats_list[0].kurtosis
+    skewness = NO_DATA if any(stats.skewness is not None for stats in stats_list) else None
+    kurtosis = NO_DATA if any(stats.kurtosis is not None for stats in stats_list) else None
+    if (skewness is None and kurtosis is None) or not np.isfinite(std) or std <= 0.0:
+        return skewness, kurtosis
+
+    total_n = sum(stats.n for stats in stats_list)
+    third_moment = 0.0
+    fourth_moment = 0.0
+    third_available = True
+    fourth_available = True
+    for stats in stats_list:
+        group_std = float(stats.std) if stats.n > 1 else 0.0
+        # Normalize before taking powers to avoid overflowing dimensional moments.
+        std_ratio = group_std / std
+        delta = (float(stats.mean) - mean) / std
+        weight = stats.n / total_n
+        has_third = group_std == 0.0 or (
+            stats.skewness not in (None, NO_DATA) and np.isfinite(stats.skewness)
+        )
+        group_third = float(stats.skewness) * std_ratio**3 if has_third and group_std > 0.0 else 0.0
+        if skewness is not None:
+            third_available &= has_third
+            third_moment += weight * (group_third + 3 * delta * std_ratio**2 + delta**3)
+        if kurtosis is not None:
+            has_fourth = group_std == 0.0 or (
+                stats.kurtosis not in (None, NO_DATA) and np.isfinite(stats.kurtosis)
+            )
+            group_fourth = float(stats.kurtosis) * std_ratio**4 if has_fourth and group_std > 0.0 else 0.0
+            fourth_available &= has_fourth and (has_third or delta == 0.0)
+            fourth_moment += weight * (
+                group_fourth + 4 * delta * group_third + 6 * delta**2 * std_ratio**2 + delta**4
+            )
+    if skewness is not None and third_available and np.isfinite(third_moment):
+        skewness = third_moment
+    if kurtosis is not None and fourth_available and np.isfinite(fourth_moment):
+        kurtosis = fourth_moment
+    return skewness, kurtosis
+
+
 def combine_summary_statistics(
     stats_list: list[SummaryStatistics],
     combine_data: bool = False,
@@ -503,7 +537,11 @@ def combine_summary_statistics(
     invalid_mean = [s for s in stats_with_data if s.mean is NO_DATA]
     if invalid_mean:
         raise ValueError("SummaryStatistics with n>0 must have mean.")
-    combined_mean = sum(float(s.mean) * int(s.n) for s in stats_with_data) / total_n
+    # Center the weighted sum so identical source means stay identical.
+    reference_mean = float(stats_with_data[0].mean)
+    combined_mean = reference_mean + sum(
+        (float(s.mean) - reference_mean) * int(s.n) for s in stats_with_data
+    ) / total_n
 
     if total_n == 1:
         combined_std: Optional[float] = 0.0
@@ -523,6 +561,9 @@ def combine_summary_statistics(
         n=total_n,
         mean=combined_mean,
         std=combined_std,
+    )
+    combined.skewness, combined.kurtosis = _combine_standardized_moments(
+        stats_with_data, combined_mean, combined_std,
     )
 
     min_values = [s.min_value for s in stats_with_data if s.min_value is not None and s.min_value is not NO_DATA]

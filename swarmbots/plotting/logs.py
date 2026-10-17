@@ -252,6 +252,19 @@ def smooth_values(values: np.ndarray, alpha: float | None) -> np.ndarray:
     return result
 
 
+def _prepare_series(
+    x_values: np.ndarray, values: np.ndarray, *, smooth: float | None = None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    indices = np.flatnonzero(np.isfinite(x_values))
+    if indices.size:
+        # Finite samples sort after missing ones, so each X keeps its last finite value.
+        order = np.lexsort((indices, np.isfinite(values[indices]), x_values[indices]))
+        indices = indices[order]
+        keep = np.r_[x_values[indices[:-1]] != x_values[indices[1:]], True]
+        indices = indices[keep]
+    return x_values[indices], smooth_values(values[indices], smooth), indices
+
+
 def group_statistics(runs: Sequence[RunLog], column: str, *, smooth: float | None = None) -> GroupStatistics:
     """Interpolate runs on their combined X grid, with no endpoint extrapolation.
 
@@ -267,16 +280,11 @@ def group_statistics(runs: Sequence[RunLog], column: str, *, smooth: float | Non
     interpolated = np.full((len(runs), len(x_values)), np.nan)
     for row, run in enumerate(runs):
         values = run.series.get(column, np.full_like(run.x_values, np.nan))
-        finite = np.isfinite(run.x_values) & np.isfinite(values)
-        order = np.argsort(run.x_values[finite], kind="stable")
-        run_x, run_y = run.x_values[finite][order], values[finite][order]
+        run_x, run_y, _ = _prepare_series(run.x_values, values, smooth=smooth)
+        finite = np.isfinite(run_y)
+        run_x, run_y = run_x[finite], run_y[finite]
         if run_x.size == 0:
             continue
-        # Stable sorting plus reversed uniqueness keeps the latest resumed sample.
-        _, reverse_indices = np.unique(run_x[::-1], return_index=True)
-        indices = np.sort(len(run_x) - 1 - reverse_indices)
-        run_x, run_y = run_x[indices], run_y[indices]
-        run_y = smooth_values(run_y, smooth)
         in_range = (x_values >= run_x[0]) & (x_values <= run_x[-1])
         interpolated[row, in_range] = np.interp(x_values[in_range], run_x, run_y)
     finite = np.isfinite(interpolated)

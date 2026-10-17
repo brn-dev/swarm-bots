@@ -409,6 +409,7 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
                 n_steps=warmup_transitions,
                 rollout_state=None,
                 gsde_reset_mode=self.gsde_reset_mode,
+                rollout_device=self.rollout_device,
             )
         self.rollout_buffer.reset()
         self._rollout_warmup_done = True

@@ -527,6 +527,8 @@ class BaseAlgorithm(abc.ABC):
                 logger.warning('Skipping optimizer state dict load, as we have missing/unexpected keys')
                 self._apply_learning_rate(self.learning_rate)
             else:
+                # Warmup schedules recompute optimizer rates from the base rate on the next update.
+                self.learning_rate = checkpoint.get("hyper_parameters", {}).get("learning_rate", self.learning_rate)
                 self._apply_optimizer_state_dict(
                     optimizer_state_dict,
                     missing_keys=missing_keys,

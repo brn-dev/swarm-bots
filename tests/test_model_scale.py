@@ -516,13 +516,14 @@ def test_independent_critic_encoders_duplicate_without_resizing(variant: str, sc
     ] == sum(parameter.numel() for parameter in independent.critic.encoder2.parameters())
 
 
-@pytest.mark.parametrize("variant", ["maddpg__deepset_critic", "matd3__deepset_critic", "masac__deepset_critic"])
+@pytest.mark.parametrize("algorithm", ["maddpg", "matd3", "masac"])
 @pytest.mark.parametrize("gated", [False, True])
 @pytest.mark.parametrize("scale", [None, *list_model_scales()])
 def test_custom_deepset_widths_apply_only_without_a_fixed_scale(
-    variant: str, gated: bool, scale: str | None,
+    algorithm: str, gated: bool, scale: str | None,
 ) -> None:
-    name = variant + ("__gated" if gated else "")
+    critic = "gated_deepset_critic" if gated else "deepset_critic"
+    name = f"{algorithm}__{critic}"
     with torch.device("meta"):
         policy = make_policy(
             name, scale, use_nop=False,
@@ -536,7 +537,7 @@ def test_custom_deepset_widths_apply_only_without_a_fixed_scale(
                 key: parameter.shape for key, parameter in baseline.critic.named_parameters()
             }
             return
-    single = variant.startswith("maddpg")
+    single = algorithm == "maddpg"
     encoder = policy.critic[0].encoder.network if single else policy.critic.encoder.network
     heads = [policy.critic[0].network] if single else [policy.critic.q1, policy.critic.q2]
     assert encoder.d_model == 19

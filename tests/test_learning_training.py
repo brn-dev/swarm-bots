@@ -75,7 +75,7 @@ def _training_kwargs() -> dict[str, Any]:
 
 @pytest.mark.integration
 @pytest.mark.parametrize("variant", [
-    "masac__deepset_critic", "masac__deepset_critic__gated",
+    "masac__deepset_critic", "masac__gated_deepset_critic",
     "tmasac", "tmasac_dec", "tmasac__lstm", "tmasac__slstm",
 ])
 @pytest.mark.parametrize("override", [False, True])
@@ -103,9 +103,9 @@ def test_variants_expose_only_canonical_architectures_and_ablations() -> None:
         "maddpg__deepset_critic",
         "matd3__deepset_critic",
         "masac__deepset_critic",
-        "maddpg__deepset_critic__gated",
-        "matd3__deepset_critic__gated",
-        "masac__deepset_critic__gated",
+        "maddpg__gated_deepset_critic",
+        "matd3__gated_deepset_critic",
+        "masac__gated_deepset_critic",
         "tmatd3",
         "tmatd3_dec",
         "ppo",
@@ -151,6 +151,7 @@ def test_variants_expose_only_canonical_architectures_and_ablations() -> None:
     "mat_ind_lstm", "mat_qcx_lstm", "maddpg_deepset", "matd3_deepset", "masac_deepset",
     "tmasac_lstm", "tmasac_slstm", "mat_ind_no_attention", "mat_ind__no_attention",
     "mat_qcx_no_nop", "tmasac_no_nop", "tmasac_shared_encoder",
+    "maddpg__deepset_critic__gated", "matd3__deepset_critic__gated", "masac__deepset_critic__gated",
 ])
 def test_replaced_variant_names_are_rejected(variant: str) -> None:
     with pytest.raises(ValueError, match="Unknown learning variant"):
@@ -204,10 +205,10 @@ def _small_policy(
     )
 
 
-@pytest.mark.parametrize("variant", ["maddpg__deepset_critic", "matd3__deepset_critic", "masac__deepset_critic"])
-def test_gated_deepset_presets_add_only_reception_gates_and_record_the_architecture(variant: str) -> None:
-    baseline = _small_policy(variant)
-    gated = _small_policy(variant + "__gated")
+@pytest.mark.parametrize("algorithm", ["maddpg", "matd3", "masac"])
+def test_gated_deepset_presets_add_only_reception_gates_and_record_the_architecture(algorithm: str) -> None:
+    baseline = _small_policy(f"{algorithm}__deepset_critic")
+    gated = _small_policy(f"{algorithm}__gated_deepset_critic")
     baseline_shapes = {name: parameter.shape for name, parameter in baseline.critic.named_parameters()}
     gated_shapes = {name: parameter.shape for name, parameter in gated.critic.named_parameters()}
     gate_names = {name for name in gated_shapes if ".reception_gate." in name}
@@ -215,7 +216,7 @@ def test_gated_deepset_presets_add_only_reception_gates_and_record_the_architect
     assert {name: shape for name, shape in gated_shapes.items() if name not in gate_names} == baseline_shapes
 
     settings = gated.get_hyper_parameters()
-    config_name = "masac_policy_config" if variant.startswith("masac") else "td3_policy_config"
+    config_name = "masac_policy_config" if algorithm == "masac" else "td3_policy_config"
     assert settings[config_name]["joint_critic_config"]["interaction_config"]["gated"] is True
     assert settings[config_name]["joint_critic_config"]["head_config"]["interaction_config"]["gated"] is True
 
@@ -677,9 +678,9 @@ def test_mappo_global_context_trains_and_restores_matching_checkpoints(
     "maddpg__deepset_critic",
     "matd3__deepset_critic",
     "masac__deepset_critic",
-    "maddpg__deepset_critic__gated",
-    "matd3__deepset_critic__gated",
-    "masac__deepset_critic__gated",
+    "maddpg__gated_deepset_critic",
+    "matd3__gated_deepset_critic",
+    "masac__gated_deepset_critic",
 ])
 def test_joint_observation_embedding_trains_and_restores_existing_presets(variant: str, tmp_path: Path) -> None:
     kwargs = _training_kwargs()

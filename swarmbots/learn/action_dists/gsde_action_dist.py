@@ -81,7 +81,7 @@ class GSDEActionDist(ContinuousActionDist, TemporallyCorrelatedActionDist):
         self._latent_sde: Optional[torch.Tensor] = None
         self._last_gaussian_actions: Optional[torch.Tensor] = None
 
-        self._exploration_noise: Optional[torch.Tensor] = None
+        self.register_buffer("_exploration_noise", None, persistent=False)
         self._exploration_batch_shape: Optional[tuple[int, ...]] = None
 
     def set_std(self, std: float) -> None:

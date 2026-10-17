@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Rename gated Deep Set presets to `maddpg__gated_deepset_critic`, `matd3__gated_deepset_critic`, and `masac__gated_deepset_critic`, replacing the old `*__deepset_critic__gated` names without aliases.
+- Restore the saved base learning rate when resuming optimizer state, preserving off-policy warmup and runtime rate changes. Move PPO environment wrappers and carried recurrent/exploration state with the rollout device, including warmup.
+- Share sorting and last-finite duplicate-timestep handling across individual and grouped plots before smoothing, including logged standard-deviation bands.
+- Support integer/Boolean tensors in summary statistics, preserve higher moments through buffered logging without retaining samples, and honor deferred minimum/maximum requests.
+- Compute only requested aggregate moments, avoiding unnecessary fourth-moment overflow in skewness-only buffered logging.
+- Preserve equal source means in kurtosis-only aggregation, normalize moment calculations before exponentiation, and mark non-finite moments unavailable.
+
 - Train MAT/RMAT NOP from critic-encoder features and separate MAPPO actor/critic MLP encoders, with critic-side NOP and independent inference/gradient paths. Rebalance fixed MAPPO widths, version the changed layouts, and record NOP source metadata. Replace the old architectures without a compatibility mode.
 
 - Replace the 10M model-scale name with `10M-3L` as the three-block reference; reject the old aliases and add parameter-comparable `10M-4L` and `10M-5L` encoder layouts. Order architecture-gallery scales by budget and depth.

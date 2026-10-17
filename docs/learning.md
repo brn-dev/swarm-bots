@@ -51,7 +51,7 @@ print(list_variants())
 
 A decentralized actor uses its own agent's local observations and the public task observations. Other actors can combine public observations across agents. All evaluated actors exclude privileged fields.
 
-`list_variants(include_hidden=True)` also lists NOP-disabled controls and gated Deep Set presets for architecture comparisons. Training and recording commands accept these exact names.
+`list_variants(include_hidden=True)` also lists NOP-disabled controls and gated Deep Set presets (`maddpg__gated_deepset_critic`, `matd3__gated_deepset_critic`, and `masac__gated_deepset_critic`) for architecture comparisons. Training and recording commands accept these exact names.
 
 The [references guide](references.md) maps learners to their original papers. The [method differences](#differences-from-the-original-multi-agent-methods) explain how these adaptations affect comparisons with original implementations.
 

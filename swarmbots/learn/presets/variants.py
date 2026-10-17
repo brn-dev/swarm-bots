@@ -46,8 +46,10 @@ VARIANT_CONFIGS.update({
     "tmasac__no_nop": LearningVariantConfig(tmasac_variant="tmasac", use_nop=False),
 })
 VARIANT_CONFIGS.update({
-    f"{name}__gated": LearningVariantConfig(policy_variant=name, gated_deepset=True)
-    for name in ("maddpg__deepset_critic", "matd3__deepset_critic", "masac__deepset_critic")
+    f"{algorithm}__gated_deepset_critic": LearningVariantConfig(
+        policy_variant=f"{algorithm}__deepset_critic", gated_deepset=True,
+    )
+    for algorithm in ("maddpg", "matd3", "masac")
 })
 
 # Auxiliary-loss and attention controls remain explicit selections.

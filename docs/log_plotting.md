@@ -44,9 +44,9 @@ figure = plot_logs(
 plt.close(figure)
 ```
 
-`std_columns` maps each metric to its logged standard-deviation column. Blank metric cells stay missing. Explicitly requested columns must exist in every input log; default selection permits a missing success column. List-valued histogram columns are not scalar metrics.
+`std_columns` maps each metric to its logged standard-deviation column, using the same selected rows as the metric. Blank metric cells stay missing. Explicitly requested columns must exist in every input log; default selection permits a missing success column. List-valued histogram columns are not scalar metrics.
 
-`smooth=0.05` optionally applies another EMA to finite metric values, retaining gaps at missing cells. The default adds no smoothing, including to the learner's existing EMA columns. `max_steps` cuts numeric X values before plotting or aggregation and has no default limit. `x_column="timestamp"` supports ISO timestamps; `max_steps` applies only to numeric axes. Use `delimiter=","` for comma-delimited external logs. `timesteps` axes display millions; other numeric axes retain their original units.
+All curves sort samples by X and keep the last finite value at duplicate X values before smoothing. `smooth=0.05` optionally applies another EMA to finite metric values, retaining gaps at missing cells. The default adds no smoothing, including to the learner's existing EMA columns. `max_steps` cuts numeric X values before plotting or aggregation and has no default limit. `x_column="timestamp"` supports ISO timestamps; `max_steps` applies only to numeric axes. Use `delimiter=","` for comma-delimited external logs. `timesteps` axes display millions; other numeric axes retain their original units.
 
 ## Compare methods across seeds
 

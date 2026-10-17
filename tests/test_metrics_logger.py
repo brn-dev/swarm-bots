@@ -181,6 +181,54 @@ class _DiagnosticAlgorithm(_DummyAlgorithm):
 
 
 class MetricsLoggerTests(unittest.TestCase):
+    def test_precomputed_higher_moments_reach_csv_and_wandb(self) -> None:
+        stats = compute_summary_statistics([1.0, 2.0, 4.0], compute_skewness=True, compute_kurtosis=True)
+        with tempfile.TemporaryDirectory() as tmp_dir, enable_mock_wandb():
+            wandb_run = mock.Mock()
+            metrics_logger = MetricsLogger(log_dir=tmp_dir, wandb_run=wandb_run, console_keys=None)
+            try:
+                metrics_logger.log({"metric": stats})
+            finally:
+                metrics_logger.close()
+            with (Path(tmp_dir) / "log.csv").open(newline="", encoding="utf-8") as handle:
+                saved_csv = next(csv.DictReader(handle, delimiter=";"))
+            saved_wandb = wandb_run.log.call_args.args[0]
+            for saved in (saved_csv, saved_wandb):
+                self.assertAlmostEqual(float(saved["metric__skew"]), stats.skewness, places=6)
+                self.assertAlmostEqual(float(saved["metric__kurt"]), stats.kurtosis, places=6)
+
+    def test_buffered_skewness_only_summaries_with_large_values_reach_csv(self) -> None:
+        shards = ([1.0, 2.0, 4.0], [10.0, 12.0, 19.0])
+        expected = compute_summary_statistics(shards[0] + shards[1], compute_skewness=True)
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            metrics_logger = MetricsLogger(log_dir=tmp_dir, buffer_size=2, console_keys=None)
+            try:
+                for values in shards:
+                    stats = compute_summary_statistics([value * 1e80 for value in values], compute_skewness=True)
+                    metrics_logger.log({"metric": stats})
+            finally:
+                metrics_logger.close()
+            with (Path(tmp_dir) / "log.csv").open(newline="", encoding="utf-8") as handle:
+                rows = list(csv.DictReader(handle, delimiter=";"))
+            self.assertEqual(len(rows), 1)
+            self.assertAlmostEqual(float(rows[0]["metric__skew"]), expected.skewness, places=6)
+            self.assertEqual(rows[0]["metric__n"], "6")
+            self.assertNotIn("metric__kurt", rows[0])
+
+    def test_buffered_kurtosis_only_summaries_preserve_equal_means(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            metrics_logger = MetricsLogger(log_dir=tmp_dir, buffer_size=2, console_keys=None)
+            try:
+                for values in ([0.0, 0.2], [0.1]):
+                    metrics_logger.log({"metric": compute_summary_statistics(values, compute_kurtosis=True)})
+            finally:
+                metrics_logger.close()
+            with (Path(tmp_dir) / "log.csv").open(newline="", encoding="utf-8") as handle:
+                rows = list(csv.DictReader(handle, delimiter=";"))
+            self.assertEqual(len(rows), 1)
+            self.assertAlmostEqual(float(rows[0]["metric__kurt"]), 1.5)
+            self.assertNotIn("metric__skew", rows[0])
+
     def test_compressed_log_resume_preserves_history_and_schema(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             folder = Path(tmpdir)

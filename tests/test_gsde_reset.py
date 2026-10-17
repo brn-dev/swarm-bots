@@ -16,6 +16,7 @@ from swarmbots.learn.hybrid_action_space import VectorHybridActionSpace
 
 
 class _EpisodeEnv:
+    device = torch.device("cpu")
     n_agents = 2
     local_obs_dim = 3
     global_obs_dim = 1
@@ -32,6 +33,9 @@ class _EpisodeEnv:
             "hidden_local_vars": spaces.Box(-1.0, 1.0, (2, 2, 0)),
             "hidden_global_vars": spaces.Box(-1.0, 1.0, (2, 0)),
         })
+
+    def set_device(self, device: torch.device | str) -> None:
+        assert torch.device(device) == self.device
 
     def _observations(self) -> dict[str, torch.Tensor]:
         return {

@@ -111,7 +111,7 @@ A token has width D; the pooled message has width M=5D/4. The global branch is p
 
 The expanding communication branch has approximately `2DM + M² = 4.0625D²` weights, compared with attention's `4D²`; biases and normalization are excluded from this approximation. This controls parameter allocation, not expressive power or runtime.
 
-The optional `maddpg__deepset_critic__gated`, `matd3__deepset_critic__gated`, and `masac__deepset_critic__gated` presets retain the standard dimensions and add feature-wise reception gates in both the shared critic encoder and private Q heads. Each gate receives the normalized local token and processed global message, uses a D/4-wide hidden layer and sigmoid outputs, and selects M-dimensional message features before compression. Gate parameters are additional capacity; no other component is shrunk. Pooling remains shared, so gating does not recover receiver-specific sender selection.
+The optional `maddpg__gated_deepset_critic`, `matd3__gated_deepset_critic`, and `masac__gated_deepset_critic` presets retain the standard dimensions and add feature-wise reception gates in both the shared critic encoder and private Q heads. Each gate receives the normalized local token and processed global message, uses a D/4-wide hidden layer and sigmoid outputs, and selects M-dimensional message features before compression. Gate parameters are additional capacity; no other component is shrunk. Pooling remains shared, so gating does not recover receiver-specific sender selection.
 
 `deepset_interaction_config` exposes `message_dim`, local `hidden_dims`, `gated`, and `gate_hidden_dim`. Fixed-scale configs record resolved message and gate dimensions. Low-level custom configurations can intentionally depart from the matched defaults.
 

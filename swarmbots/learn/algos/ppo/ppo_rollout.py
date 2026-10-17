@@ -16,6 +16,8 @@ from swarmbots.learn.gsde_reset import (
 from swarmbots.learn.performance_timer import PerformanceTimer
 from swarmbots.learn.rollout_utils import append_episode_infos, extract_bootstrap_obs, initial_previous_actions, snapshot_obs
 from swarmbots.learn.summary_statistics import compute_summary_statistics
+from swarmbots.learn.temporal_state import move_temporal_state
+from swarmbots.learn.torch_device import as_device
 
 
 @dataclass(slots=True)
@@ -87,6 +89,29 @@ def _evaluate_values(
     if terminated_mask is None:
         return values
     return values.masked_fill(terminated_mask, 0.0)
+
+
+def _prepare_rollout_device(
+        *,
+        env: BaseLearnEnvWrapper,
+        policy: BasePPOPolicy[Any, Any],
+        rollout_state: PPORolloutState | None,
+        device: torch.device,
+) -> PPORolloutState | None:
+    env.set_device(device)
+    policy.to(device)
+    policy.eval()
+    if rollout_state is None or rollout_state.obs["local_obs"].device == device:
+        return rollout_state
+    return PPORolloutState(
+        obs={key: value.to(device=device) for key, value in rollout_state.obs.items()},
+        episode_start_mask=rollout_state.episode_start_mask.to(device=device),
+        previous_actions=(
+            None if rollout_state.previous_actions is None else rollout_state.previous_actions.to(device=device)
+        ),
+        temporal_state=move_temporal_state(rollout_state.temporal_state, device=device),
+        rollout_step_idx=rollout_state.rollout_step_idx,
+    )
 
 
 def _reset_rollout_state(
@@ -300,6 +325,7 @@ def warmup_rollout_steps(
         n_steps: int,
         rollout_state: PPORolloutState | None = None,
         gsde_reset_mode: GSDEResetMode | None = None,
+        rollout_device: torch.device | str | None = None,
 ) -> PPORolloutState:
     if n_steps <= 0:
         raise ValueError(f"n_steps must be > 0, got {n_steps}")
@@ -309,6 +335,12 @@ def warmup_rollout_steps(
         reset_mode=gsde_reset_mode,
     )
 
+    rollout_state = _prepare_rollout_device(
+        env=env,
+        policy=policy,
+        rollout_state=rollout_state,
+        device=as_device(env.device if rollout_device is None else rollout_device),
+    )
     if rollout_state is None:
         rollout_state = _reset_rollout_state(
             env=env,
@@ -321,9 +353,6 @@ def warmup_rollout_steps(
     previous_actions = rollout_state.previous_actions
     temporal_state = rollout_state.temporal_state
     rollout_step_idx = rollout_state.rollout_step_idx
-
-    policy.to(obs["local_obs"].device)
-    policy.eval()
 
     transitions_collected = 0
     while transitions_collected < n_steps:
@@ -367,34 +396,22 @@ def collect_step_rollout_batch(
 
     buffer.reset()
 
+    with PerformanceTimer() as to_rollout_device_timer:
+        rollout_state = _prepare_rollout_device(
+            env=env, policy=policy, rollout_state=rollout_state, device=buffer.rollout_device,
+        )
     env_reset_time = 0.0
     if rollout_state is None:
         with PerformanceTimer() as env_reset_timer:
-            obs, _info = env.reset()
+            rollout_state = _reset_rollout_state(
+                env=env, policy=policy, n_agent_actions=buffer.n_agent_actions,
+            )
         env_reset_time = env_reset_timer.get_duration()
-        episode_start_mask = torch.ones((buffer.n_envs,), dtype=torch.bool, device=buffer.rollout_device)
-        previous_actions = initial_previous_actions(
-            policy=policy,
-            obs=obs,
-            n_agent_actions=buffer.n_agent_actions,
-        )
-        temporal_state = policy.initial_temporal_state(
-            batch_size=buffer.n_envs,
-            n_agents=buffer.n_agents,
-            device=buffer.rollout_device,
-            dtype=buffer.rollout_dtype,
-        )
-        rollout_step_idx = 0
-    else:
-        obs = rollout_state.obs
-        episode_start_mask = rollout_state.episode_start_mask
-        previous_actions = rollout_state.previous_actions
-        temporal_state = rollout_state.temporal_state
-        rollout_step_idx = rollout_state.rollout_step_idx
-
-    with PerformanceTimer() as to_rollout_device_timer:
-        policy.to(buffer.rollout_device)
-        policy.eval()
+    obs = rollout_state.obs
+    episode_start_mask = rollout_state.episode_start_mask
+    previous_actions = rollout_state.previous_actions
+    temporal_state = rollout_state.temporal_state
+    rollout_step_idx = rollout_state.rollout_step_idx
 
     vector_steps = math.ceil(n_steps / buffer.n_envs)
     with PerformanceTimer() as batch_builder_init_timer:
@@ -546,34 +563,22 @@ def collect_steps(
 
     buffer.reset()
 
+    with PerformanceTimer() as to_rollout_device_timer:
+        rollout_state = _prepare_rollout_device(
+            env=env, policy=policy, rollout_state=rollout_state, device=buffer.rollout_device,
+        )
     env_reset_time = 0.0
     if rollout_state is None:
         with PerformanceTimer() as env_reset_timer:
-            obs, _info = env.reset()
+            rollout_state = _reset_rollout_state(
+                env=env, policy=policy, n_agent_actions=buffer.n_agent_actions,
+            )
         env_reset_time = env_reset_timer.get_duration()
-        episode_start_mask = torch.ones((buffer.n_envs,), dtype=torch.bool, device=buffer.rollout_device)
-        previous_actions = initial_previous_actions(
-            policy=policy,
-            obs=obs,
-            n_agent_actions=buffer.n_agent_actions,
-        )
-        temporal_state = policy.initial_temporal_state(
-            batch_size=buffer.n_envs,
-            n_agents=buffer.n_agents,
-            device=buffer.rollout_device,
-            dtype=buffer.rollout_dtype,
-        )
-        rollout_step_idx = 0
-    else:
-        obs = rollout_state.obs
-        episode_start_mask = rollout_state.episode_start_mask
-        previous_actions = rollout_state.previous_actions
-        temporal_state = rollout_state.temporal_state
-        rollout_step_idx = rollout_state.rollout_step_idx
-
-    with PerformanceTimer() as to_rollout_device_timer:
-        policy.to(buffer.rollout_device)
-        policy.eval()
+    obs = rollout_state.obs
+    episode_start_mask = rollout_state.episode_start_mask
+    previous_actions = rollout_state.previous_actions
+    temporal_state = rollout_state.temporal_state
+    rollout_step_idx = rollout_state.rollout_step_idx
 
     episode_infos: list[dict[str, Any]] = []
     timers = _init_rollout_timers()

@@ -6,6 +6,9 @@ import torch
 from swarmbots.learn.metrics_list import MetricsLists
 from swarmbots.learn.summary_statistics import (
     HISTOGRAM_DEFAULT_BINS,
+    NO_DATA,
+    SummaryStatisticsFormat,
+    format_summary_statistics,
     HistogramConfig,
     SummaryStatistics,
     combine_summary_statistics,
@@ -15,6 +18,118 @@ from swarmbots.learn.summary_statistics import (
 
 
 class SummaryStatisticsTests(unittest.TestCase):
+    def test_integer_and_boolean_tensor_statistics_match_numpy(self) -> None:
+        for values in (
+            torch.tensor([True, False, True]),
+            torch.tensor([1, 2, 4], dtype=torch.int16),
+            torch.tensor([2**40, 2**40 + 1, 2**40 + 4]),
+        ):
+            with self.subTest(dtype=values.dtype):
+                expected = compute_summary_statistics(
+                    values.numpy().astype(np.float64), find_min=True, find_max=True, make_histogram=3,
+                )
+                actual = compute_summary_statistics(values, find_min=True, find_max=True, make_histogram=3)
+                self.assertAlmostEqual(actual.mean, expected.mean)
+                self.assertAlmostEqual(actual.std, expected.std)
+                self.assertEqual(actual.min_value, expected.min_value)
+                self.assertEqual(actual.max_value, expected.max_value)
+                np.testing.assert_allclose(actual.histogram.bin_frequencies, expected.histogram.bin_frequencies)
+
+    def test_combined_higher_moments_match_the_original_population_without_raw_samples(self) -> None:
+        shards = [[1.0, 2.0, 4.0], [10.0, 10.0], [30.0]]
+        stats = [compute_summary_statistics(values, compute_skewness=True, compute_kurtosis=True) for values in shards]
+        combined = combine_summary_statistics(stats)
+        expected = compute_summary_statistics(
+            [value for shard in shards for value in shard], compute_skewness=True, compute_kurtosis=True,
+        )
+        self.assertAlmostEqual(combined.skewness, expected.skewness)
+        self.assertAlmostEqual(combined.kurtosis, expected.kurtosis)
+        self.assertIsNone(combined.data)
+
+    def test_skewness_only_merge_is_scale_invariant_for_large_values(self) -> None:
+        for shards in (([1.0], [2.0]), ([1.0, 2.0, 4.0], [10.0, 12.0, 19.0])):
+            with self.subTest(shards=shards):
+                population = np.concatenate(shards)
+                expected_skewness = np.mean(((population - population.mean()) / population.std()) ** 3)
+                stats = [
+                    compute_summary_statistics(np.asarray(values) * 1e80, compute_skewness=True)
+                    for values in shards
+                ]
+                combined = combine_summary_statistics(stats)
+                self.assertAlmostEqual(combined.skewness, expected_skewness)
+                self.assertIsNone(combined.kurtosis)
+                self.assertIsNone(combined.data)
+
+    def test_single_summary_preserves_independently_requested_higher_moments(self) -> None:
+        for compute_skewness, compute_kurtosis in ((True, False), (False, True), (True, True)):
+            original = compute_summary_statistics(
+                [1.0, 2.0, 4.0], compute_skewness=compute_skewness, compute_kurtosis=compute_kurtosis,
+            )
+            combined = combine_summary_statistics([original])
+            self.assertEqual(combined.skewness, original.skewness)
+            self.assertEqual(combined.kurtosis, original.kurtosis)
+
+    def test_combined_higher_moments_report_missing_inputs(self) -> None:
+        known = compute_summary_statistics([1.0, 2.0, 4.0], compute_skewness=True, compute_kurtosis=True)
+        missing = compute_summary_statistics([10.0, 12.0])
+        combined = combine_summary_statistics([known, missing])
+        self.assertIs(combined.skewness, NO_DATA)
+        self.assertIs(combined.kurtosis, NO_DATA)
+
+    def test_kurtosis_only_merge_preserves_equal_source_means(self) -> None:
+        for shards in (([0.0, 0.2], [0.1]), ([0.1], [0.0, 0.2])):
+            with self.subTest(shards=shards):
+                stats = [compute_summary_statistics(values, compute_kurtosis=True) for values in shards]
+                combined = combine_summary_statistics(stats)
+                self.assertEqual(combined.mean, 0.1)
+                self.assertAlmostEqual(combined.kurtosis, 1.5)
+                self.assertIsNone(combined.skewness)
+
+    def test_kurtosis_only_merge_requires_third_moments_for_different_means(self) -> None:
+        stats = [
+            compute_summary_statistics(values, compute_kurtosis=True)
+            for values in ([0.0, 0.2], [0.4])
+        ]
+        self.assertIs(combine_summary_statistics(stats).kurtosis, NO_DATA)
+
+    def test_extreme_aggregate_moments_remain_finite_or_unavailable(self) -> None:
+        for scale, moment in ((1e80, "kurtosis"), (1e110, "skewness"), (1e-100, "kurtosis"), (1e-110, "skewness")):
+            with self.subTest(scale=scale, moment=moment), np.errstate(all="raise"):
+                stats = [
+                    compute_summary_statistics([value * scale], **{f"compute_{moment}": True})
+                    for value in (1.0, 2.0)
+                ]
+                result = getattr(combine_summary_statistics(stats), moment)
+                self.assertTrue(result is NO_DATA or np.isfinite(result))
+
+    def test_nonfinite_source_moments_are_unavailable(self) -> None:
+        stats = [
+            SummaryStatistics(n=2, mean=0.0, std=1.0, skewness=float("nan"), kurtosis=float("inf")),
+            compute_summary_statistics([-1.0, 1.0], compute_skewness=True, compute_kurtosis=True),
+        ]
+        with np.errstate(all="raise"):
+            combined = combine_summary_statistics(stats)
+        self.assertIs(combined.skewness, NO_DATA)
+        self.assertIs(combined.kurtosis, NO_DATA)
+        self.assertEqual(combined.mean, 0.0)
+        self.assertEqual(combined.std, 1.0)
+
+    def test_deferred_bounds_are_available_to_console_formatting(self) -> None:
+        stats = compute_summary_statistics([1.0, 2.0, 4.0], keep_data=True)
+        formatted = format_summary_statistics(
+            stats, SummaryStatisticsFormat(mean=".1f", min_value=".1f", max_value=".1f"),
+        )
+        self.assertEqual(formatted, "2.3 [1.0, 4.0]")
+        self.assertEqual(stats.min_value, 1.0)
+        self.assertEqual(stats.max_value, 4.0)
+
+    def test_deferred_bounds_report_unavailable_samples(self) -> None:
+        for values in ([], [1.0, 2.0]):
+            stats = compute_summary_statistics(values)
+            maybe_compute_summary_statistics(stats, find_min=True, find_max=True)
+            self.assertIs(stats.min_value, NO_DATA)
+            self.assertIs(stats.max_value, NO_DATA)
+
     def test_fixed_histogram_range_clamps_outliers_without_changing_summary_or_input(self) -> None:
         source = np.array([-2.0, 0.25, 0.75, 3.0])
         config = HistogramConfig(bins=2, low=0.0, high=1.0)

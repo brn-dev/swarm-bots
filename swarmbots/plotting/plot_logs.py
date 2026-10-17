@@ -18,6 +18,7 @@ from swarmbots.plotting.logs import (
     GroupSources,
     LogSources,
     RunLog,
+    _prepare_series,
     _source_paths,
     group_statistics,
     load_groups,
@@ -143,9 +144,10 @@ def plot_logs(
     """Plot one panel per scalar metric from files or run directories.
 
     Defaults to available return/success EMAs. ``std_columns`` maps metrics to
-    logged standard deviations for shaded bands; these are distinct from the
-    across-run standard deviations in grouped plots. ``smooth`` is an optional
-    EMA alpha. The returned figure remains open for customization or plt.show().
+    logged standard deviations from the selected metric rows for shaded bands;
+    these are distinct from across-run standard deviations in grouped plots.
+    ``smooth`` is an optional EMA alpha. The returned figure remains open for
+    customization or plt.show().
     """
     plt = _pyplot()
     paths = _source_paths(sources)
@@ -193,11 +195,11 @@ def plot_logs(
             for run in runs:
                 if column not in run.series or not np.isfinite(run.series[column]).any():
                     continue
-                values = smooth_values(run.series[column], smooth)
-                (line,) = axis.plot(run.x_values, values, label=run.label, marker="." if len(values) == 1 else None)
+                run_x, values, indices = _prepare_series(run.x_values, run.series[column], smooth=smooth)
+                (line,) = axis.plot(run_x, values, label=run.label, marker="." if len(values) == 1 else None)
                 if std_columns and column in std_columns:
-                    std = smooth_values(run.series[std_columns[column]], smooth)
-                    axis.fill_between(run.x_values, values - std, values + std, color=line.get_color(), alpha=0.2)
+                    std = smooth_values(run.series[std_columns[column]][indices], smooth)
+                    axis.fill_between(run_x, values - std, values + std, color=line.get_color(), alpha=0.2)
         _finish_figure(figure, font_size=font_size)
         if output_path is not None:
             _save_figure(figure, output_path, dpi=dpi)
@@ -251,14 +253,15 @@ def plot_groups(
                 label = f"{name} (n={len(metric_runs)})"
                 if individual_runs:
                     for run_index, run in enumerate(metric_runs):
+                        run_x, run_y, _ = _prepare_series(run.x_values, run.series[column], smooth=smooth)
                         axis.plot(
-                            run.x_values,
-                            smooth_values(run.series[column], smooth),
+                            run_x,
+                            run_y,
                             color=color,
                             linestyle=style,
                             alpha=0.7,
                             linewidth=1,
-                            marker="." if len(run.x_values) == 1 else None,
+                            marker="." if len(run_x) == 1 else None,
                             label=label if run_index == 0 else "_nolegend_",
                         )
                 else:

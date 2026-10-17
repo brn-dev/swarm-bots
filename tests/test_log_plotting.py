@@ -42,6 +42,58 @@ def test_resumed_duplicates_are_discarded_before_smoothing(tmp_path: Path) -> No
     np.testing.assert_allclose(statistics.mean, [0, 2, 5])
 
 
+@pytest.mark.parametrize("smooth", [None, 0.5])
+def test_individual_and_grouped_curves_share_resumed_samples(tmp_path: Path, smooth: float | None) -> None:
+    source = write_log(
+        tmp_path / "resumed.csv",
+        "timesteps;metric\n4;8\n0;0\n2;100\n2;4\n2;\n6;\n",
+    )
+    groups = {"Run": [load_log(source, columns=["metric"])]}
+    expected_y = [0, 4, 8, np.nan] if smooth is None else [0, 2, 5, np.nan]
+    figures = [
+        plot_logs(source, columns=["metric"], smooth=smooth),
+        plot_groups(groups, columns=["metric"], individual_runs=True, smooth=smooth),
+        plot_groups(groups, columns=["metric"], smooth=smooth),
+    ]
+    try:
+        for figure in figures:
+            line = figure.axes[0].lines[0]
+            np.testing.assert_allclose(line.get_xdata(), [0, 2, 4, 6])
+            np.testing.assert_allclose(line.get_ydata(), expected_y)
+    finally:
+        for figure in figures:
+            plt.close(figure)
+
+
+def test_resumed_standard_deviation_bands_discard_superseded_samples(tmp_path: Path) -> None:
+    source = write_log(
+        tmp_path / "resumed.csv",
+        "timesteps;loss;loss__std\n0;0;1\n2;100;100\n2;4;2\n4;8;3\n",
+    )
+    figure = plot_logs(source, columns=["loss"], std_columns={"loss": "loss__std"}, smooth=0.5)
+    try:
+        vertices = figure.axes[0].collections[0].get_paths()[0].vertices
+        np.testing.assert_allclose(np.unique(vertices[vertices[:, 0] == 2, 1]), [0.5, 3.5])
+    finally:
+        plt.close(figure)
+
+
+@pytest.mark.parametrize("smooth", [None, 0.5])
+def test_std_bands_keep_missing_values_from_selected_mean_rows(tmp_path: Path, smooth: float | None) -> None:
+    source = write_log(
+        tmp_path / "resumed.csv",
+        "timesteps;loss;loss__std\n0;0;1\n2;100;100\n2;4;\n4;8;3\n",
+    )
+    figure = plot_logs(source, columns=["loss"], std_columns={"loss": "loss__std"}, smooth=smooth)
+    try:
+        vertices = np.concatenate([path.vertices for path in figure.axes[0].collections[0].get_paths()])
+        assert not np.any(vertices[:, 0] == 2)
+        expected_bounds = [5, 11] if smooth is None else [3, 7]
+        np.testing.assert_allclose(np.unique(vertices[vertices[:, 0] == 4, 1]), expected_bounds)
+    finally:
+        plt.close(figure)
+
+
 @pytest.fixture
 def training_csv() -> str:
     return "timesteps;ep_rew_ema;ep_success_rate_ema;loss;loss__std\n0;0;;2;0.5\n1;2;25;1;0.25\n2;4;50;0.5;0.1\n"
