@@ -280,10 +280,10 @@ def render_report(report: dict[str, Any], *, allocation_doc: str = "model_scale.
         "```", "",
         "This command counts the core presets; --include-hidden adds optional baselines and controls. Use `--variants` to select a subset, "
         "`--model-scale 5M-2L` or `--model-scale 5M-3L` for the fixed depth choices, "
-        "`--model-scale legacy` for explicit widths, "
+        "`--model-scale custom` for explicit widths, "
         "`--no-nop` to disable NOP, or `--policy-kwargs`, `--scenario-kwargs`, and `--env-kwargs` "
         "with JSON objects to match custom architectures/tasks. For example, "
-        "`--model-scale legacy --policy-kwargs '{\"enc_d_model\": 128, \"dec_d_model\": 64}'` for custom widths. "
+        "`--model-scale custom --policy-kwargs '{\"enc_d_model\": 128, \"dec_d_model\": 64}'` for custom widths. "
         "Reapply the overrides recorded above to reproduce a customized report. "
         "The losslessly compressed `counts.json.gz` output records resolved policy hyperparameters; "
         "CSVs include actual layer dimensions and parameter counts in `layer_layout.csv`, overall counts, "
@@ -428,7 +428,7 @@ def main() -> int:
     parser.add_argument("benchmark_id", nargs="?", default="SwarmBots-WallEasy-v0", choices=ALL_BENCHMARK_IDS)
     parser.add_argument("--variants", nargs="+", help="explicit variant names; default: core variants")
     parser.add_argument("--include-hidden", action="store_true", help="also count MLP baselines and optional controls")
-    parser.add_argument("--model-scale", default="5M-2L NOP1M", help="fixed tiers: 2.5M, 5M-2L (default), 5M-3L, 10M-3L, 10M-4L, 10M-5L; legacy uses custom widths")
+    parser.add_argument("--model-scale", default="5M-2L NOP1M", help="fixed tiers: 2.5M, 5M-2L (default), 5M-3L, 10M-3L, 10M-4L, 10M-5L; custom uses custom widths")
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--nop", action=argparse.BooleanOptionalAction, default=None)
@@ -449,7 +449,7 @@ def main() -> int:
         device=args.device,
         seed=args.seed,
         use_nop=args.nop,
-        model_scale=None if args.model_scale == "legacy" else args.model_scale,
+        model_scale=None if args.model_scale == "custom" else args.model_scale,
         continuous_action_dist=args.continuous_action_dist,
         policy_kwargs=args.policy_kwargs,
         scenario_kwargs=args.scenario_kwargs,

@@ -13,15 +13,20 @@ from swarmbots.learn.algos.mat.mat_encoder import MATEncoder, MATEncoderConfig
 from swarmbots.learn.algos.off_policy.joint_critic import JointCriticConfig, JointQNetwork, JointTwinCritic
 from swarmbots.learn.algos.off_policy.action_noise import add_normalized_action_noise
 from swarmbots.learn.algos.off_policy.replay_buffer import OffPolicyReplayBatch, OffPolicyReplayEpisodeSegmentBatch
-from swarmbots.learn.algos.off_policy.nop import SACNOPConfig, SACNOPLatentSource, SACNOPModule, normalize_nop_latent_source
+from swarmbots.learn.algos.off_policy.nop import (
+    SACNOPConfig,
+    SACNOPLatentSource,
+    SACNOPModule,
+    normalize_nop_latent_source,
+)
 from swarmbots.learn.algos.off_policy.actor_heads import (
     TMASACActorHeadConfig,
     TMASACActorHeadKind,
     TMASACIndependentActorHead,
 )
 from swarmbots.learn.algos.off_policy.transformer_critic import (
-    TransformerCriticConfig as TMASACCriticConfig,
-    TransformerTwinCritic as TMASACTwinCritic,
+    TransformerCriticConfig,
+    TransformerTwinCritic,
 )
 from swarmbots.learn.base_policy import BasePolicy
 from swarmbots.learn.nn_components.nn_init import make_init_linear_orthogonal
@@ -34,8 +39,8 @@ class TD3PolicyConfig:
     actor_encoder_config: MATEncoderConfig = field(default_factory=lambda: MATEncoderConfig(use_agent_attention=False))
     actor_head_config: TMASACActorHeadConfig = field(default_factory=TMASACActorHeadConfig)
     critic_encoder_config: MATEncoderConfig = field(default_factory=MATEncoderConfig)
-    transformer_critic_config: TMASACCriticConfig = field(
-        default_factory=TMASACCriticConfig
+    transformer_critic_config: TransformerCriticConfig = field(
+        default_factory=TransformerCriticConfig
     )
     critic_kind: Literal["mlp", "deepset", "transformer"] = "mlp"
     joint_critic_config: JointCriticConfig = field(default_factory=JointCriticConfig)
@@ -195,8 +200,8 @@ class TD3Policy(BasePolicy):
     def _build_actor(self, env, config: TD3PolicyConfig) -> DeterministicActor:
         return DeterministicActor(env, config)
 
-    def _build_transformer_critic(self, **kwargs) -> TMASACTwinCritic:
-        return TMASACTwinCritic(**kwargs)
+    def _build_transformer_critic(self, **kwargs) -> TransformerTwinCritic:
+        return TransformerTwinCritic(**kwargs)
 
     def _build_joint_critic(self, **kwargs) -> JointQNetwork:
         return JointQNetwork(**kwargs)

@@ -10,8 +10,8 @@ from swarmbots.learn.algos.off_policy.replay_buffer import (
     OffPolicyReplayBatch,
     OffPolicyReplayEpisodeSegmentBatch,
 )
-from swarmbots.learn.algos.sac import sac_nop
-from swarmbots.learn.algos.sac.sac_nop import SACNOPConfig, SACNOPModule
+from swarmbots.learn.algos.off_policy import nop as sac_nop
+from swarmbots.learn.algos.off_policy.nop import SACNOPConfig, SACNOPModule
 from swarmbots.learn.algos.world_modeling.next_obs_pred_mixin import NextObsPredConfig
 
 _REAL_TORCH_COMPILE = torch.compile

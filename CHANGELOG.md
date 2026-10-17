@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Verify learner checkpoint continuation with optional Deep Set Q-head gating, including head-only and combined encoder/head gating for MADDPG, MATD3, and MASAC. Remove obsolete local `5M` parameter-report exports.
+- Default gated Deep Set presets to critic-encoder reception gates with ordinary private Q heads. Add independent Q-head reception gating through `policy_kwargs={"critic_deepset_head_gating": True}` for ablations. Regenerate the local parameter reports and diagram gallery with the current variant names.
+- Reset all model-scale layout versions to `v1` as the baseline for new training runs.
+- Remove historical checkpoint migrations, missing-field/buffer repairs, normalization wrapper aliases, critic encoder copying, optimizer-state recovery, and SAC import/type shims. Require the current checkpoint format and matching saved LR controllers while preserving optional optimizer saves, compiled/uncompiled loading, and dynamic log columns. Replace the CLI `legacy` width selector with `custom`, remove the obsolete shared-encoder Boolean and connector-positioning mode, require explicit FindOpening scenario metadata, and use one gSDE schedule format across learners.
+
 - Rename gated Deep Set presets to `maddpg__gated_deepset_critic`, `matd3__gated_deepset_critic`, and `masac__gated_deepset_critic`, replacing the old `*__deepset_critic__gated` names without aliases.
 - Restore the saved base learning rate when resuming optimizer state, preserving off-policy warmup and runtime rate changes. Move PPO environment wrappers and carried recurrent/exploration state with the rollout device, including warmup.
 - Share sorting and last-finite duplicate-timestep handling across individual and grouped plots before smoothing, including logged standard-deviation bands.

@@ -42,14 +42,14 @@ from swarmbots.learn.algos.sac import (
     SegmentTMASACPolicy,
     TMASACActorHeadConfig,
     TMASACActorHeadKind,
-    TMASACCriticConfig,
     TMASACPolicy,
     TMASACPolicyConfig,
     TMASACScenarioEncoderConfig,
 )
+from swarmbots.learn.algos.off_policy.transformer_critic import TransformerCriticConfig
 from swarmbots.learn.algos.sac.recurrent_sac import _flatten_segment, _slice_segment
-from swarmbots.learn.algos.sac.recurrent_tmasac_policy import RecurrentTMASACTwinCritic
-from swarmbots.learn.algos.sac.tmasac_policy import TMASACTwinCritic
+from swarmbots.learn.algos.off_policy.recurrent_transformer_critic import RecurrentTransformerTwinCritic
+from swarmbots.learn.algos.off_policy.transformer_critic import TransformerTwinCritic
 from swarmbots.learn.algos.world_modeling.next_obs_pred_mixin import NextObsPredConfig
 from swarmbots.learn.algos.xlstm.mlstm import (
     MLSTMTemporalSequenceModel,
@@ -273,7 +273,7 @@ def _policy_config(
         actor_encoder_config=encoder_config,
         critic_encoder_config=critic_encoder_config,
         actor_head_config=_actor_head_config(actor_head_kind),
-        critic_config=TMASACCriticConfig(
+        critic_config=TransformerCriticConfig(
             n_local_projection_hidden_layers=1,
             n_value_regressor_hidden_layers=1,
             separate_observation_action_encoders=separate_observation_action_encoders,
@@ -315,7 +315,7 @@ def _shared_recurrent_policy_config(
         shared_encoder_config=shared_encoder_config,
         recurrent_shared_encoder=True,
         actor_head_config=_actor_head_config(),
-        critic_config=TMASACCriticConfig(
+        critic_config=TransformerCriticConfig(
             n_local_projection_hidden_layers=1,
             n_value_regressor_hidden_layers=1,
         ),
@@ -410,7 +410,7 @@ def _segment_policy_config(
         actor_encoder_config=encoder_config,
         critic_encoder_config=encoder_config,
         actor_head_config=_actor_head_config(actor_head_kind),
-        critic_config=TMASACCriticConfig(
+        critic_config=TransformerCriticConfig(
             n_local_projection_hidden_layers=1,
             n_value_regressor_hidden_layers=1,
         ),
@@ -1420,8 +1420,8 @@ class RecurrentTMASACTests(unittest.TestCase):
             policy = RecurrentTMASACPolicy(env=_DummyContinuousEnv(), config=config)
 
         self.assertIsInstance(policy.actor_encoder, RMATEncoder)
-        self.assertIsInstance(policy.critic, TMASACTwinCritic)
-        self.assertNotIsInstance(policy.critic, RecurrentTMASACTwinCritic)
+        self.assertIsInstance(policy.critic, TransformerTwinCritic)
+        self.assertNotIsInstance(policy.critic, RecurrentTransformerTwinCritic)
         self.assertIs(type(policy.critic_encoder_config), MATEncoderConfig)
         self.assertFalse(policy.recurrent_critic)
 
@@ -1432,8 +1432,8 @@ class RecurrentTMASACTests(unittest.TestCase):
         )
         policy = RecurrentTMASACPolicy(env=_DummyContinuousEnv(), config=config)
 
-        self.assertIsInstance(policy.critic, RecurrentTMASACTwinCritic)
-        self.assertIsInstance(policy.critic_target, RecurrentTMASACTwinCritic)
+        self.assertIsInstance(policy.critic, RecurrentTransformerTwinCritic)
+        self.assertIsInstance(policy.critic_target, RecurrentTransformerTwinCritic)
 
     def test_state_free_actor_and_nop_apis_are_unsupported(self) -> None:
         policy = RecurrentTMASACPolicy(
@@ -2592,7 +2592,7 @@ class RecurrentTMASACTests(unittest.TestCase):
             ),
         )
         critic = policy.critic
-        assert isinstance(critic, RecurrentTMASACTwinCritic)
+        assert isinstance(critic, RecurrentTransformerTwinCritic)
         observation_action_encoder = critic.observation_action_encoder
         assert observation_action_encoder is not None
         observation_linear = next(
@@ -2649,7 +2649,7 @@ class RecurrentTMASACTests(unittest.TestCase):
         )
         policy = RecurrentTMASACPolicy(env=env, config=config)
         critic = policy.critic
-        assert isinstance(critic, RecurrentTMASACTwinCritic)
+        assert isinstance(critic, RecurrentTransformerTwinCritic)
         self.assertIsNotNone(critic.encoder2)
         self.assertIsNotNone(critic.observation_action_encoder2)
 

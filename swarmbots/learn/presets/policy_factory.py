@@ -41,17 +41,14 @@ from swarmbots.learn.algos.sac.recurrent_tmasac_policy import (
     RecurrentTMASACPolicy,
     RecurrentTMASACPolicyConfig,
 )
-from swarmbots.learn.algos.sac.sac_nop import SACNOPConfig, SACNOPLatentSource
+from swarmbots.learn.algos.off_policy.nop import SACNOPConfig, SACNOPLatentSource
 from swarmbots.learn.algos.sac.segment_tmasac_policy import SegmentTMASACPolicy
-from swarmbots.learn.algos.sac.tmasac_actor_heads import (
+from swarmbots.learn.algos.off_policy.actor_heads import (
     TMASACActorHeadConfig,
     TMASACActorHeadKind,
 )
-from swarmbots.learn.algos.sac.tmasac_policy import (
-    TMASACCriticConfig,
-    TMASACPolicy,
-    TMASACPolicyConfig,
-)
+from swarmbots.learn.algos.off_policy.transformer_critic import TransformerCriticConfig
+from swarmbots.learn.algos.sac.tmasac_policy import TMASACPolicy, TMASACPolicyConfig
 from swarmbots.learn.algos.off_policy.joint_critic import JointCriticConfig
 from swarmbots.learn.algos.td3.recurrent_td3_policy import RecurrentTD3Policy, RecurrentTD3PolicyConfig
 from swarmbots.learn.algos.sac.masac_policy import MASACPolicy, MASACPolicyConfig
@@ -409,6 +406,7 @@ def _make_base_policy(
     baseline_critic_context_in_elements: bool = True,
     mappo_critic_context_in_elements: bool = True,
     deepset_interaction_config: DeepSetInteractionConfig | dict[str, Any] | None = None,
+    critic_deepset_head_gating: bool = False,
     mat_joint_obs_embedding: bool = False,
     critic_independent_encoders: bool | None = None,
     td3_recurrent_actor: bool = False,
@@ -520,8 +518,11 @@ def _make_base_policy(
     if isinstance(deepset_interaction_config, dict):
         deepset_interaction_config = DeepSetInteractionConfig(**deepset_interaction_config)
     interaction_config = deepset_interaction_config or DeepSetInteractionConfig()
-    critic_config = TMASACCriticConfig(
-        interaction_config=interaction_config,
+    critic_config = TransformerCriticConfig(
+        interaction_config=replace(
+            interaction_config, gated=critic_deepset_head_gating,
+            gate_hidden_dim=interaction_config.gate_hidden_dim if critic_deepset_head_gating else None,
+        ),
         independent_encoders=False if critic_independent_encoders is None else critic_independent_encoders,
         local_projection_hidden_dims=[dec_d_model],
         value_regressor_hidden_dims=[dec_d_model, dec_d_model],

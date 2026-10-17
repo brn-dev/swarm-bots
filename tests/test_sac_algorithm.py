@@ -34,10 +34,10 @@ from swarmbots.learn.algos.sac import (
     SACNOPConfig,
     SACNOPLatentSource,
     TMASACActorHeadConfig,
-    TMASACCriticConfig,
     TMASACPolicy,
     TMASACPolicyConfig,
 )
+from swarmbots.learn.algos.off_policy.transformer_critic import TransformerCriticConfig
 from swarmbots.learn.algos.world_modeling.next_obs_pred_mixin import NextObsPredConfig
 from swarmbots.learn.env_wrappers.learn_wrappers.swarm_bots_learn_env_wrapper import (
     SwarmBotsLearnEnvWrapper,
@@ -113,7 +113,7 @@ def _make_policy(
             actor_encoder_config=encoder_config,
             critic_encoder_config=encoder_config,
             actor_head_config=TMASACActorHeadConfig(hidden_dims=[8]),
-            critic_config=TMASACCriticConfig(
+            critic_config=TransformerCriticConfig(
                 n_local_projection_hidden_layers=1,
                 n_value_regressor_hidden_layers=1,
             ),
@@ -505,7 +505,7 @@ class SACTests(unittest.TestCase):
         self.assertEqual(metrics["ep_successful_connections_per_unit_min"].min_value, 0.0)
         self.assertEqual(metrics["ep_successful_connections_per_unit_max"].max_value, 5.0)
 
-    def test_episode_metrics_add_no_scenario_schema_for_legacy_infos(self) -> None:
+    def test_episode_metrics_add_no_scenario_schema_for_unconditioned_environments(self) -> None:
         metrics = SAC._episode_metrics([{"r": 2.0, "l": 5}])
 
         self.assertFalse(any(key.startswith("scenario/") for key in metrics))
@@ -658,7 +658,7 @@ class SACTests(unittest.TestCase):
         try:
             policy = _make_policy(env)
             with patch(
-                    "swarmbots.learn.algos.sac.sac_tensor_ops.torch.compile",
+                    "swarmbots.learn.algos.off_policy.tensor_ops.torch.compile",
                     side_effect=lambda function, **_kwargs: function,
             ) as compile_mock:
                 algo = SAC(
@@ -745,7 +745,7 @@ class SACTests(unittest.TestCase):
         try:
             policy = _make_policy(env)
             with patch(
-                    "swarmbots.learn.algos.sac.sac_tensor_ops.torch.compile",
+                    "swarmbots.learn.algos.off_policy.tensor_ops.torch.compile",
             ) as compile_mock:
                 algo = SAC(
                     policy=policy,
@@ -1382,104 +1382,17 @@ class SACTests(unittest.TestCase):
         finally:
             env.close()
 
-    def test_reinitialized_critic_optimizer_uses_refreshed_compiled_step(self) -> None:
+    def test_checkpoint_rejects_changed_critic_optimizer_parameters(self) -> None:
         env = _make_env()
         try:
-            with patch(
-                    "swarmbots.learn.algos.sac.sac_tensor_ops.torch.compile",
-                    side_effect=lambda function, **_kwargs: function,
-            ):
-                algo = SAC(
-                    policy=_make_policy(env),
-                    env=env,
-                    learning_rate=1e-3,
-                    learning_rate_warmup_updates=0,
-                    buffer_capacity_per_env=4,
-                    learning_starts=0,
-                    batch_size=2,
-                    ent_coef=0.2,
-                    train_device="cpu",
-                    rollout_device="cpu",
-                    replay_storage_device="cpu",
-                    sac_compile_optimizer_steps=True,
-                )
-                optimizer_state = algo._get_optimizer_state_dict()
-                optimizer_state["critic_optimizer"]["param_groups"][0]["params"].pop()
-                previous_critic_optimizer = algo.critic_optimizer
-                previous_critic_optimizer.param_groups[0]["lr"] = 0.0
-                algo._apply_optimizer_state_dict(
-                    optimizer_state,
-                    missing_keys=[],
-                    unexpected_keys=[],
-                )
-                critic_parameters_before_update = [
-                    parameter.detach().clone()
-                    for parameter in algo.policy.critic_parameters()
-                ]
-
-                algo._train_step(
-                    _make_bootstrap_batch(env),
-                    global_update_idx=0,
-                )
-
-            self.assertIsNot(algo.critic_optimizer, previous_critic_optimizer)
-            self.assertTrue(any(
-                not torch.equal(parameter_before, parameter_after)
-                for parameter_before, parameter_after in zip(
-                    critic_parameters_before_update,
-                    algo.policy.critic_parameters(),
-                    strict=True,
-                )
-            ))
-        finally:
-            env.close()
-
-    def test_legacy_checkpoint_entropy_coefficient_is_reset_for_mean_reduction(self) -> None:
-        env = _make_env()
-        try:
-            source = SAC(
-                policy=_ConstantTargetSACPolicy(
-                    n_agents=env.n_agents,
-                    action_dim=env.action_space.total_agent_action_dim,
-                    target_q_value=0.0,
-                ),
-                env=env,
-                learning_rate=1e-3,
-                buffer_capacity_per_env=4,
-                learning_starts=0,
-                batch_size=2,
-                ent_coef="auto_0.1",
-                train_device="cpu",
-                rollout_device="cpu",
-                replay_storage_device="cpu",
+            algorithm = SAC(
+                policy=_make_policy(env), env=env, buffer_capacity_per_env=4, learning_starts=0,
+                batch_size=2, train_device="cpu", rollout_device="cpu", replay_storage_device="cpu",
             )
-            restored = SAC(
-                policy=_ConstantTargetSACPolicy(
-                    n_agents=env.n_agents,
-                    action_dim=env.action_space.total_agent_action_dim,
-                    target_q_value=0.0,
-                ),
-                env=env,
-                learning_rate=1e-3,
-                buffer_capacity_per_env=4,
-                learning_starts=0,
-                batch_size=2,
-                ent_coef="auto_0.25",
-                train_device="cpu",
-                rollout_device="cpu",
-                replay_storage_device="cpu",
-            )
-            legacy_optimizer_state = source._get_optimizer_state_dict()
-            legacy_optimizer_state.pop("entropy_agent_reduction")
-
-            restored._apply_optimizer_state_dict(
-                legacy_optimizer_state,
-                missing_keys=[],
-                unexpected_keys=[],
-            )
-
-            assert restored.log_ent_coef is not None
-            self.assertAlmostEqual(restored.log_ent_coef.detach().exp().item(), 0.25)
+            state = algorithm._get_optimizer_state_dict()
+            state["critic_optimizer"]["param_groups"][0]["params"].pop()
+            with self.assertRaisesRegex(ValueError, "parameter group"):
+                algorithm._apply_optimizer_state_dict(state, missing_keys=[], unexpected_keys=[])
         finally:
             env.close()
 

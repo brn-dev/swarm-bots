@@ -3,7 +3,7 @@ from typing import Any, cast
 
 import torch
 
-from swarmbots.learn.algos.sac.sac_nop import SACNOPSequenceBatch
+from swarmbots.learn.algos.off_policy.nop import SACNOPSequenceBatch
 from swarmbots.learn.algos.sac.tmasac_policy import TMASACPolicy
 
 

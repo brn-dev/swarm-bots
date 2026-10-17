@@ -8,7 +8,7 @@ from torch._dynamo import config as torch_dynamo_config
 
 from swarmbots.learn.algos.off_policy.actor_state_critic import (
     ActorStateCriticInputConfig as ActorStateCriticInputConfig,
-    ActorStateTransformerTwinCritic as ActorStateTMASACTwinCritic,
+    ActorStateTransformerTwinCritic,
     actor_state_critic_input,
     actor_state_input_dim,
 )
@@ -19,13 +19,10 @@ from swarmbots.learn.algos.off_policy.replay_buffer import (
     OffPolicyReplayEpisodeSegmentBatch,
 )
 from swarmbots.learn.algos.r_mat.r_mat_encoder import RMATEncoder, RMATEncoderConfig, RMATEncoderState
-from swarmbots.learn.algos.sac.sac_nop import SACNOPLatentSource, SACNOPSequenceBatch
+from swarmbots.learn.algos.off_policy.nop import SACNOPLatentSource, SACNOPSequenceBatch
 from swarmbots.learn.action_dists.action_sampling import expand_action_sample_batch
-from swarmbots.learn.algos.sac.tmasac_policy import (
-    TMASACPolicy,
-    TMASACPolicyConfig,
-    TMASACTwinCritic,
-)
+from swarmbots.learn.algos.sac.tmasac_policy import TMASACPolicy, TMASACPolicyConfig
+from swarmbots.learn.algos.off_policy.transformer_critic import TransformerTwinCritic
 from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
 from swarmbots.learn.serialization_utils import serialize_dataclass
 from swarmbots.learn.temporal_state import concatenate_temporal_states
@@ -33,7 +30,7 @@ from swarmbots.learn.temporal_state import concatenate_temporal_states
 
 from swarmbots.learn.algos.off_policy.recurrent_transformer_critic import (
     RecurrentCriticState as RecurrentCriticState,
-    RecurrentTransformerTwinCritic as RecurrentTMASACTwinCritic,
+    RecurrentTransformerTwinCritic,
 )
 ActorEncoderCallable = Callable[
     ...,
@@ -119,7 +116,7 @@ class RecurrentTMASACPolicy(TMASACPolicy):
                 raise TypeError(
                     "RecurrentTMASACPolicy requires an RMATEncoderConfig for actor_encoder_config."
                 )
-            if config.shared_encoder_config is not None or config.share_observation_encoder:
+            if config.shared_encoder_config is not None:
                 raise ValueError(
                     "RecurrentTMASACPolicy only supports a shared observation encoder when "
                     "recurrent_shared_encoder=True."
@@ -1111,7 +1108,7 @@ class RecurrentTMASACPolicy(TMASACPolicy):
             )
         if self.recurrent_critic:
             critic = self.critic_target if target else self.critic
-            assert isinstance(critic, RecurrentTMASACTwinCritic)
+            assert isinstance(critic, RecurrentTransformerTwinCritic)
             (
                 critic_local_inputs,
                 critic_global_inputs,
@@ -1567,7 +1564,7 @@ class RecurrentTMASACPolicy(TMASACPolicy):
                 scenario_ids=scenario_ids,
             )
             critic = self._critic_module()
-            assert isinstance(critic, ActorStateTMASACTwinCritic)
+            assert isinstance(critic, ActorStateTransformerTwinCritic)
             (
                 critic_local_inputs,
                 critic_global_inputs,
@@ -1602,7 +1599,7 @@ class RecurrentTMASACPolicy(TMASACPolicy):
                 scenario_ids=scenario_ids,
             )
         critic = self._critic_module()
-        assert isinstance(critic, RecurrentTMASACTwinCritic)
+        assert isinstance(critic, RecurrentTransformerTwinCritic)
         (
             critic_local_inputs,
             critic_global_inputs,
@@ -1703,7 +1700,7 @@ class RecurrentTMASACPolicy(TMASACPolicy):
         if not self.recurrent_critic:
             return None
         critic = self.critic_target if target else self.critic
-        assert isinstance(critic, RecurrentTMASACTwinCritic)
+        assert isinstance(critic, RecurrentTransformerTwinCritic)
         return critic.initial_state(
             batch_size=batch_size,
             n_agents=n_agents,
@@ -1863,14 +1860,14 @@ class RecurrentTMASACPolicy(TMASACPolicy):
             *,
             local_input_dim: int,
             global_input_dim: int,
-    ) -> TMASACTwinCritic:
+    ) -> TransformerTwinCritic:
         actor_state_config = self.config.actor_state_critic_input_config
         if actor_state_config is not None:
             state_dim = actor_state_input_dim(
                 self._actor_encoder.layers[-1].temporal_model,
                 actor_state_config,
             )
-            return ActorStateTMASACTwinCritic(
+            return ActorStateTransformerTwinCritic(
                 n_agents=self.n_agents,
                 max_agents=self.max_agents,
                 local_input_dim=local_input_dim,
@@ -1892,7 +1889,7 @@ class RecurrentTMASACPolicy(TMASACPolicy):
                 global_input_dim=global_input_dim,
             )
         encoder_config = cast(RMATEncoderConfig, self.critic_encoder_config)
-        return RecurrentTMASACTwinCritic(
+        return RecurrentTransformerTwinCritic(
             n_agents=self.n_agents,
             max_agents=self.max_agents,
             local_input_dim=local_input_dim,
@@ -1905,11 +1902,11 @@ class RecurrentTMASACPolicy(TMASACPolicy):
             dropout=self.dropout,
         )
 
-    def _critic_module(self) -> TMASACTwinCritic:
-        if isinstance(self.critic, TMASACTwinCritic):
+    def _critic_module(self) -> TransformerTwinCritic:
+        if isinstance(self.critic, TransformerTwinCritic):
             return self.critic
         orig_mod = getattr(self.critic, "_orig_mod", None)
-        if isinstance(orig_mod, TMASACTwinCritic):
+        if isinstance(orig_mod, TransformerTwinCritic):
             return orig_mod
         raise RuntimeError(f"Cannot resolve TMASAC critic from {type(self.critic).__name__}")
 

@@ -4,14 +4,14 @@ The supported scales select explicit architecture layouts in [model_scale.py](..
 
 | Canonical name | Main budget | NOP budget | Current version |
 | --- | ---: | ---: | --- |
-| `2.5M NOP0.75M` | 2.5M | 0.75M | `2.5+0.75M-v7` |
-| `5M-2L NOP1M` (default) | 5M | 1M | `5M-2L+1M-v2` |
-| `5M-3L NOP1M` | 5M | 1M | `5M-3L+1M-v3` |
+| `2.5M NOP0.75M` | 2.5M | 0.75M | `2.5+0.75M-v1` |
+| `5M-2L NOP1M` (default) | 5M | 1M | `5M-2L+1M-v1` |
+| `5M-3L NOP1M` | 5M | 1M | `5M-3L+1M-v1` |
 | `10M-3L NOP2M` | 10M | 2M | `10M-3L+2M-v1` |
-| `10M-4L NOP2M` | 10M | 2M | `10M-4L+2M-v2` |
-| `10M-5L NOP2M` | 10M | 2M | `10M-5L+2M-v2` |
+| `10M-4L NOP2M` | 10M | 2M | `10M-4L+2M-v1` |
+| `10M-5L NOP2M` | 10M | 2M | `10M-5L+2M-v1` |
 
-Short names `2.5M`, `5M-2L`, `5M-3L`, `10M-3L`, `10M-4L`, and `10M-5L` select these layouts. `10M-3L` names the three-block 10M reference. Current layout versions include critic-side MAT NOP and independent MAPPO encoders. The old `10M`, `10M NOP2M`, and `10+2M` names are rejected without aliases. The old `5M`, `5M NOP1M`, and `5+1M` aliases are removed; select `5M-2L` for the current two-block reference. `model_scale=None` (CLI `legacy`) uses current explicit-width builder arguments. It does not restore old shared MAT architectures. Fixed-scale dimensions take precedence over low-level width arguments.
+Short names `2.5M`, `5M-2L`, `5M-3L`, `10M-3L`, `10M-4L`, and `10M-5L` select these layouts. `10M-3L` names the three-block 10M reference. `model_scale=None` (CLI `--model-scale custom`) enables explicit-width builder arguments. Fixed-scale dimensions take precedence over low-level width arguments.
 
 The main budgets describe feed-forward reference architectures. DDPG uses one ordinary Q head and therefore has fewer parameters than the twin-head reference. Recurrent variants preserve their corresponding feed-forward backbones and add temporal modules, normalization and, for recurrent off-policy actors, critic state conditioning. The deeper 5M and 10M temporal modules are narrower to keep complete recurrent counts comparable within each budget. Gated variants add reception gates without shrinking other components.
 
@@ -99,7 +99,7 @@ Both encoders use public local/global observations and have independent weights.
 
 Off-policy Deep Set DDPG/TD3/SAC use the common decentralized actor. Their critic embeddings, token width, block count, normalization, residuals and local feed-forward networks match the transformer critic. Only the shared encoder's communication operator differs. Actor and critic parameters remain separate.
 
-For low-level Deep Set policies, explicit `joint_critic_config.encoder_config` and `head_config` supply the structural settings used during scaling. Fixed layouts set their standard widths and depths while preserving embedding mode, token normalization, separate observation/action encoding, interaction controls and initialization gains. Missing nested configs use the top-level critic templates. Legacy `baseline_critic_element_hidden_dims` and `baseline_critic_hidden_dims` builder arguments apply only without a fixed scale.
+For low-level Deep Set policies, explicit `joint_critic_config.encoder_config` and `head_config` supply the structural settings used during scaling. Fixed layouts set their standard widths and depths while preserving embedding mode, token normalization, separate observation/action encoding, interaction controls and initialization gains. Missing nested configs use the top-level critic templates. Top-level `baseline_critic_element_hidden_dims` and `baseline_critic_hidden_dims` builder arguments apply only without a fixed scale.
 
 At the 2.5M, 5M-2L, and 10M-3L reference layouts, ordinary TMASAC actors use D=192/256/256, FF `[384,384]` / `[512,512]` / `[768,768]`, and 2/2/3 blocks. Both shared critic families use D=256/384/384, FF=384/512/1536, and 2/2/3 blocks. Every off-policy Q head projects tokens to 128/128/192 features, applies two Deep Set interaction blocks, pools with a masked mean, and uses two regression hidden layers of that same width. DDPG uses one such head; TD3/SAC use two.
 
@@ -111,9 +111,9 @@ A token has width D; the pooled message has width M=5D/4. The global branch is p
 
 The expanding communication branch has approximately `2DM + M² = 4.0625D²` weights, compared with attention's `4D²`; biases and normalization are excluded from this approximation. This controls parameter allocation, not expressive power or runtime.
 
-The optional `maddpg__gated_deepset_critic`, `matd3__gated_deepset_critic`, and `masac__gated_deepset_critic` presets retain the standard dimensions and add feature-wise reception gates in both the shared critic encoder and private Q heads. Each gate receives the normalized local token and processed global message, uses a D/4-wide hidden layer and sigmoid outputs, and selects M-dimensional message features before compression. Gate parameters are additional capacity; no other component is shrunk. Pooling remains shared, so gating does not recover receiver-specific sender selection.
+The optional `maddpg__gated_deepset_critic`, `matd3__gated_deepset_critic`, and `masac__gated_deepset_critic` presets retain the standard dimensions and add feature-wise reception gates only in the critic encoder. Their private Q heads remain ordinary Deep Sets with the same architecture as the corresponding ungated presets. Each gate receives the normalized local token and processed global message, uses a D/4-wide hidden layer and sigmoid outputs, and selects M-dimensional message features before compression. Gate parameters are additional capacity; no other component is shrunk. Pooling remains shared, so gating does not recover receiver-specific sender selection.
 
-`deepset_interaction_config` exposes `message_dim`, local `hidden_dims`, `gated`, and `gate_hidden_dim`. Fixed-scale configs record resolved message and gate dimensions. Low-level custom configurations can intentionally depart from the matched defaults.
+`deepset_interaction_config` exposes `message_dim`, local `hidden_dims`, `gated`, and `gate_hidden_dim`. For off-policy Deep Set presets, `gated` controls the encoder. The separate `critic_deepset_head_gating` builder option defaults to `False` and controls reception gates in the off-policy Q heads independently. `policy_kwargs={"critic_deepset_head_gating": True}` enables head gating for ablations, with or without a gated encoder. Fixed-scale configs record the resolved encoder and head settings, including message and gate dimensions. Explicit low-level configurations can intentionally depart from these defaults.
 
 ## Common NOP core
 
@@ -133,9 +133,7 @@ The default list contains 17 core presets. `list_variants(include_hidden=True)` 
 
 Names follow `base_variant__modifier__modifier`: major architecture names keep single underscores (`mat_qcx`, `tmasac_dec`), while additional modifiers use double underscores (`mat_qcx__lstm`, `matd3__deepset_critic`). Superseded spellings are rejected without aliases. This naming change preserves architecture, checkpoint weight keys and layout versions. The [available-variant reference](../learning.md#select-a-variant-and-task) lists current names; the [changelog](../../CHANGELOG.md) records historical changes.
 
-Earlier shared-encoder MAPPO checkpoints require retraining or manual migration. MAT NOP weights trained on actor features no longer describe the current critic-side objective; differing actor/critic widths also change the NOP source projection. Still older MAT checkpoints additionally differ in encoder ownership, layer widths, or recurrent-state structure. No automatic migration or legacy architecture mode is provided. New checkpoints record resolved actor/critic configs and the layout version. Use matching task, distribution, NOP settings and version when reconstructing them.
-
-The expanding interaction layout, common off-policy Q heads and additive recurrent layouts replace earlier versions. Existing weights need retraining or manual migration. Selecting `legacy` does not restore those earlier architectures.
+Checkpoints record resolved actor/critic configs and the layout version. Loading requires the current checkpoint format, task, distribution, NOP settings, architecture and observation layout.
 
 Generate current counts using the [inspector commands](README.md) or [architecture diagrams](diagrams/README.md). Observation/action dimensions and padded agent slots can affect actual counts, particularly for flattened PPO; the hidden layouts stay fixed across tasks.
 

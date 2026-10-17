@@ -110,7 +110,7 @@ def test_only_supported_scale_aliases(value, expected):
 
 @pytest.mark.parametrize(
     "value", ["1M", "2M NOP200K", "2.5M NOP0.5M", "10M NOP1M", "20M", "", 5,
-              "5M", "5M NOP1M", "5+1M", "5M+1M", "10M", "10M NOP2M", "10+2M", "10M+2M"],
+              "5M", "5M NOP1M", "5+1M", "5M+1M", "10M", "10M NOP2M", "10+2M", "10M+2M", "legacy"],
 )
 def test_unsupported_scales_fail_before_building_environment(value):
     with pytest.raises(ValueError, match="Supported fixed"):
@@ -516,6 +516,38 @@ def test_independent_critic_encoders_duplicate_without_resizing(variant: str, sc
     ] == sum(parameter.numel() for parameter in independent.critic.encoder2.parameters())
 
 
+@pytest.mark.parametrize(("algorithm", "independent_encoders"), [
+    ("maddpg", False), ("matd3", False), ("masac", False), ("matd3", True), ("masac", True),
+])
+@pytest.mark.parametrize("scale", [None, *list_model_scales()])
+def test_gated_deepset_presets_preserve_regular_q_heads_at_every_scale(
+    algorithm: str, independent_encoders: bool, scale: str | None,
+) -> None:
+    with torch.device("meta"):
+        baseline = make_policy(
+            f"{algorithm}__deepset_critic", scale, use_nop=False, critic_independent_encoders=independent_encoders,
+        )
+        gated = make_policy(
+            f"{algorithm}__gated_deepset_critic", scale, use_nop=False,
+            critic_independent_encoders=independent_encoders,
+        )
+    assert gated.config.joint_critic_config.interaction_config.gated
+    assert gated.config.joint_critic_config.head_config == baseline.config.joint_critic_config.head_config
+    baseline_shapes = {name: parameter.shape for name, parameter in baseline.named_parameters()}
+    gated_shapes = {name: parameter.shape for name, parameter in gated.named_parameters()}
+    gate_names = {name for name in gated_shapes if ".reception_gate." in name}
+    encoder_names = ("0.encoder",) if algorithm == "maddpg" else ("encoder",)
+    if independent_encoders:
+        encoder_names += ("encoder2",)
+    encoder_prefixes = tuple(
+        f"{critic}.{encoder}." for critic in ("critic", "critic_target") for encoder in encoder_names
+    )
+    assert gate_names
+    assert all(name.startswith(encoder_prefixes) for name in gate_names)
+    assert all(any(name.startswith(prefix) for name in gate_names) for prefix in encoder_prefixes)
+    assert {name: shape for name, shape in gated_shapes.items() if name not in gate_names} == baseline_shapes
+
+
 @pytest.mark.parametrize("algorithm", ["maddpg", "matd3", "masac"])
 @pytest.mark.parametrize("gated", [False, True])
 @pytest.mark.parametrize("scale", [None, *list_model_scales()])
@@ -551,6 +583,27 @@ def test_custom_deepset_widths_apply_only_without_a_fixed_scale(
         first = next(getattr(interaction, module_name).parameters())
         second = next(getattr(encoder.layers[1].interaction, module_name).parameters())
         assert first is not second
+
+
+@pytest.mark.parametrize("variant", [
+    "maddpg__deepset_critic", "maddpg__gated_deepset_critic",
+    "matd3__deepset_critic", "matd3__gated_deepset_critic",
+    "masac__deepset_critic", "masac__gated_deepset_critic", "tmatd3", "tmasac",
+])
+@pytest.mark.parametrize("head_gating", [False, True])
+@pytest.mark.parametrize("scale", [None, *list_model_scales()])
+def test_q_head_gating_is_independent_of_encoder_gating(
+    variant: str, head_gating: bool, scale: str | None,
+) -> None:
+    with torch.device("meta"):
+        policy = make_policy(variant, scale, use_nop=False, critic_deepset_head_gating=head_gating)
+    single_q = variant.startswith("maddpg")
+    encoder = policy.critic[0].encoder if single_q else policy.critic.encoder
+    heads = [policy.critic[0].network] if single_q else [policy.critic.q1, policy.critic.q2]
+    for head in heads:
+        assert all(isinstance(block, GatedDeepSetInteraction) is head_gating for block in head.deepset.interactions)
+    encoder_gates = [module for module in encoder.modules() if isinstance(module, GatedDeepSetInteraction)]
+    assert bool(encoder_gates) is variant.endswith("__gated_deepset_critic")
 
 
 @pytest.mark.parametrize("scale", list_model_scales())

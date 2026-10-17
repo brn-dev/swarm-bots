@@ -13,8 +13,6 @@ from swarmbots.learn.benchmark_policy import BenchmarkPolicy
 from swarmbots.learn.checkpointing import (
     align_torch_compile_state_dict_keys,
     apply_env_state,
-    extract_env_state,
-    extract_policy_state_dict,
     load_checkpoint,
 )
 from swarmbots.learn.presets.policy_factory import ContinuousActionDistVariant
@@ -57,9 +55,8 @@ def record_checkpoint(
     keys. The task, architecture, distribution and NOP settings must match the
     checkpoint. Replay buffers and optimizer state are not needed for inference.
     DDPG/TD3 exploration noise is restored from saved policy settings unless
-    explicitly overridden; older checkpoints use the policy default.
-    gSDE recordings restore the saved reset schedule, defaulting to episode-only
-    resets when absent; ``gsde_reset_mode`` overrides that schedule.
+    explicitly overridden. gSDE recordings restore the saved reset schedule;
+    ``gsde_reset_mode`` overrides that schedule.
     """
     if num_episodes <= 0 or max_parallel_episodes <= 0:
         raise ValueError("num_episodes and max_parallel_episodes must be positive")
@@ -85,8 +82,7 @@ def record_checkpoint(
     try:
         if isinstance(policy, TD3Policy):
             if exploration_noise is None:
-                saved_settings = checkpoint.get("policy_hyper_parameters", {})
-                exploration_noise = saved_settings.get("exploration_noise", policy.exploration_noise)
+                exploration_noise = checkpoint["policy_hyper_parameters"]["exploration_noise"]
             if not math.isfinite(exploration_noise) or exploration_noise < 0:
                 raise ValueError("exploration_noise must be finite and nonnegative")
             policy.exploration_noise = float(exploration_noise)
@@ -94,14 +90,14 @@ def record_checkpoint(
             raise ValueError("exploration_noise is only supported for DDPG/TD3 checkpoint recordings")
         policy.load_state_dict(
             align_torch_compile_state_dict_keys(
-                extract_policy_state_dict(checkpoint),
+                checkpoint["policy_state_dict"],
                 target_keys=policy.state_dict().keys(),
             )
         )
-        apply_env_state(env, extract_env_state(checkpoint))
+        apply_env_state(env, checkpoint["env_state"])
         if gsde_reset_mode is None and policy.gsde_enabled:
             gsde_reset_mode = gsde_reset_mode_from_settings(
-                checkpoint.get("hyper_parameters", {}).get("gsde_reset_mode")
+                checkpoint["hyper_parameters"]["gsde_reset_mode"]
             )
         del checkpoint
         _record_episodes(

@@ -206,19 +206,27 @@ def _small_policy(
 
 
 @pytest.mark.parametrize("algorithm", ["maddpg", "matd3", "masac"])
-def test_gated_deepset_presets_add_only_reception_gates_and_record_the_architecture(algorithm: str) -> None:
+@pytest.mark.parametrize("head_gating", [False, True])
+def test_gated_deepset_presets_gate_encoder_and_toggle_q_heads(algorithm: str, head_gating: bool) -> None:
     baseline = _small_policy(f"{algorithm}__deepset_critic")
-    gated = _small_policy(f"{algorithm}__gated_deepset_critic")
+    gated = _small_policy(
+        f"{algorithm}__gated_deepset_critic",
+        policy_kwargs={"critic_deepset_head_gating": True} if head_gating else None,
+    )
     baseline_shapes = {name: parameter.shape for name, parameter in baseline.critic.named_parameters()}
     gated_shapes = {name: parameter.shape for name, parameter in gated.critic.named_parameters()}
     gate_names = {name for name in gated_shapes if ".reception_gate." in name}
     assert gate_names
+    encoder_prefix = "0.encoder." if algorithm == "maddpg" else "encoder."
+    encoder_gate_names = {name for name in gate_names if name.startswith(encoder_prefix)}
+    assert encoder_gate_names
+    assert bool(gate_names - encoder_gate_names) is head_gating
     assert {name: shape for name, shape in gated_shapes.items() if name not in gate_names} == baseline_shapes
 
     settings = gated.get_hyper_parameters()
     config_name = "masac_policy_config" if algorithm == "masac" else "td3_policy_config"
     assert settings[config_name]["joint_critic_config"]["interaction_config"]["gated"] is True
-    assert settings[config_name]["joint_critic_config"]["head_config"]["interaction_config"]["gated"] is True
+    assert settings[config_name]["joint_critic_config"]["head_config"]["interaction_config"]["gated"] is head_gating
 
     agent_mask = torch.tensor([[True, True, False], [True, True, True]])
     values = gated.q_values(

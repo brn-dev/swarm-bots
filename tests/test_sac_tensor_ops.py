@@ -5,9 +5,9 @@ from unittest.mock import patch
 
 import torch
 
-import swarmbots.learn.algos.sac.sac_tensor_ops as sac_tensor_ops
+import swarmbots.learn.algos.off_policy.tensor_ops as sac_tensor_ops
 from swarmbots.learn.algos.off_policy.tensor_ops import _mean_agent_log_probs
-from swarmbots.learn.algos.sac.sac_tensor_ops import (
+from swarmbots.learn.algos.off_policy.tensor_ops import (
     build_optimizer_step,
     build_sac_tensor_operations,
 )

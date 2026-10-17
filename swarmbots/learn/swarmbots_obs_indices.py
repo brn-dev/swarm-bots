@@ -74,11 +74,7 @@ def _global_rot6d_indices(scenario_settings: dict[str, Any], global_obs_dim: int
 def _hidden_global_scalar_indices(scenario_settings: dict[str, Any], hidden_global_vars_dim: int) -> list[int]:
     if hidden_global_vars_dim == 0:
         return []
-    is_find_opening = (
-        scenario_settings.get("scenario_type") == "find_opening"
-        or ("opening_x" in scenario_settings and "wall_exploration_cell_count" in scenario_settings)
-    )
-    if is_find_opening:
+    if scenario_settings.get("scenario_type") == "find_opening":
         expected_hidden_global_vars_dim = 1 + int(scenario_settings["wall_exploration_cell_count"])
         if hidden_global_vars_dim != expected_hidden_global_vars_dim:
             raise ValueError(

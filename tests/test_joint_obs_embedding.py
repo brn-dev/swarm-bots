@@ -4,8 +4,8 @@ from torch import nn
 
 from swarmbots.learn.algos.mat.mat_encoder import MATEncoder, MATEncoderConfig
 from swarmbots.learn.algos.r_mat.r_mat_encoder import RMATEncoder, RMATEncoderConfig
-from swarmbots.learn.algos.sac.recurrent_tmasac_policy import RecurrentTMASACTwinCritic
-from swarmbots.learn.algos.sac.tmasac_policy import TMASACActionConditionedEncoder, TMASACCriticConfig
+from swarmbots.learn.algos.off_policy.recurrent_transformer_critic import RecurrentTransformerTwinCritic
+from swarmbots.learn.algos.off_policy.transformer_critic import ActionConditionedEncoder, TransformerCriticConfig
 from swarmbots.learn.nn_components.feed_forward import MLPConfig, SwiGLUConfig
 from swarmbots.learn.serialization_utils import serialize_dataclass
 
@@ -30,10 +30,10 @@ def make_encoder(
         joint_obs_embedding=joint,
     )
     if kind == "critic":
-        return TMASACActionConditionedEncoder(
+        return ActionConditionedEncoder(
             max_agents=3, local_input_dim=4, global_input_dim=global_dim, hidden_local_vars_dim=0,
             hidden_global_vars_dim=0, action_dim=2, encoder_config=config,
-            critic_config=TMASACCriticConfig(), act_fn_cls=nn.GELU,
+            critic_config=TransformerCriticConfig(), act_fn_cls=nn.GELU,
         )
     cls = RMATEncoder if kind == "rmat" else MATEncoder
     return cls(config, max_agents=3, local_obs_dim=4, global_obs_dim=global_dim)
@@ -198,11 +198,11 @@ def test_action_conditioned_joint_embedding_includes_privileged_globals_and_supp
 ) -> None:
     torch.manual_seed(42)
     public_dim, hidden_dim = global_dims
-    encoder = TMASACActionConditionedEncoder(
+    encoder = ActionConditionedEncoder(
         max_agents=3, local_input_dim=4, global_input_dim=public_dim, hidden_local_vars_dim=2,
         hidden_global_vars_dim=hidden_dim, action_dim=2,
         encoder_config=MATEncoderConfig(d_model=8, nhead=2, num_layers=1, joint_obs_embedding=joint),
-        critic_config=TMASACCriticConfig(separate_observation_action_encoders=separate_actions), act_fn_cls=nn.GELU,
+        critic_config=TransformerCriticConfig(separate_observation_action_encoders=separate_actions), act_fn_cls=nn.GELU,
     )
     inputs = dict(
         local_inputs=torch.randn(2, 3, 4, requires_grad=True),
@@ -248,10 +248,10 @@ def test_action_conditioned_joint_embedding_includes_privileged_globals_and_supp
 def test_recurrent_twin_critics_use_joint_context_for_both_nop_sources(separate_actions):
     torch.manual_seed(42)
     encoder_config = RMATEncoderConfig(d_model=8, nhead=2, num_layers=1, joint_obs_embedding=True)
-    critic = RecurrentTMASACTwinCritic(
+    critic = RecurrentTransformerTwinCritic(
         n_agents=3, max_agents=3, local_input_dim=4, global_input_dim=3, hidden_local_vars_dim=2,
         hidden_global_vars_dim=2, action_dim=2, encoder_config=encoder_config,
-        critic_config=TMASACCriticConfig(independent_encoders=True,
+        critic_config=TransformerCriticConfig(independent_encoders=True,
                                        separate_observation_action_encoders=separate_actions), dropout=0.0,
     )
     obs = dict(

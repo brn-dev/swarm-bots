@@ -93,7 +93,7 @@ class TestGumbelSoftmaxSignMagnitudeActionDist(unittest.TestCase):
 
                 torch.testing.assert_close(actions, torch.full_like(actions, -0.5))
 
-    def test_negative_branch_preserves_legacy_unit_interval_mapping(self) -> None:
+    def test_negative_branch_maps_unit_interval_to_negative_actions(self) -> None:
         for dist in _make_distributions():
             with self.subTest(distribution=type(dist).__name__):
                 negative_components = torch.full((2, 3), dist._NEGATIVE_INDEX)

@@ -2,6 +2,7 @@ from pathlib import Path
 from typing import Any
 
 import torch
+import pytest
 
 from swarmbots.learn.algos.base_algorithm import BaseAlgorithm, LearningRate
 from swarmbots.learn.base_policy import BasePolicy
@@ -12,6 +13,9 @@ class _Policy(BasePolicy):
     def __init__(self) -> None:
         super().__init__()
         self.weight = torch.nn.Parameter(torch.tensor(0.0))
+
+    def forward(self, inputs: torch.Tensor) -> torch.Tensor:
+        return inputs * self.weight
 
     @property
     def gsde_enabled(self) -> bool:
@@ -62,8 +66,8 @@ class _Algorithm(BaseAlgorithm):
         self.saved_checkpoints: list[tuple[Path, dict[str, Any] | None, float | None]] = []
         self.loaded_optimizer_state: dict[str, Any] | None = None
 
-    def get_hyper_parameters(self) -> dict[str, int]:
-        return {"timesteps_per_iteration": self.timesteps_per_iteration}
+    def get_hyper_parameters(self) -> dict[str, int | float]:
+        return {"timesteps_per_iteration": self.timesteps_per_iteration, "learning_rate": self.learning_rate}
 
     def _get_optimizer_state_dict(self) -> dict[str, Any]:
         return {"optimizer_step": self.n_total_updates}
@@ -153,3 +157,74 @@ def test_checkpoint_round_trip_restores_policy_counters_and_optimizer(tmp_path: 
     assert restored.n_total_timesteps == 13
     assert restored._best_return_ema == 4.5
     assert restored.loaded_optimizer_state == {"optimizer_step": 11}
+
+
+@pytest.mark.parametrize("field", [
+    "policy_state_dict", "hyper_parameters", "n_total_iterations", "n_total_updates",
+    "n_total_timesteps", "best_return_ema", "env_state",
+])
+def test_checkpoint_requires_current_fields(tmp_path: Path, field: str) -> None:
+    source = _Algorithm()
+    path = tmp_path / "checkpoint.pt"
+    BaseAlgorithm.save(source, path, optimizer_state_dict=source._get_optimizer_state_dict())
+    checkpoint = torch.load(path, weights_only=False)
+    del checkpoint[field]
+    torch.save(checkpoint, path)
+
+    with pytest.raises(KeyError, match=field):
+        _Algorithm().load(path)
+
+
+def test_checkpoint_can_omit_optimizer_state(tmp_path: Path) -> None:
+    source = _Algorithm()
+    source.policy.weight.data.fill_(2.0)
+    path = tmp_path / "weights-and-metadata.pt"
+    BaseAlgorithm.save(source, path)
+    restored = _Algorithm()
+
+    restored.load(path)
+
+    torch.testing.assert_close(restored.policy.weight, source.policy.weight)
+    assert restored.loaded_optimizer_state is None
+
+
+class _OptimizerAlgorithm(_Algorithm):
+    def __init__(self, *, compiled: bool) -> None:
+        super().__init__()
+        if compiled:
+            self.policy = torch.compile(self.policy, backend="eager")
+        self.optimizer = torch.optim.Adam(self.policy.parameters(), lr=self.learning_rate)
+
+    def _get_optimizer_state_dict(self) -> dict[str, Any]:
+        return self.optimizer.state_dict()
+
+    def _apply_optimizer_state_dict(
+        self, state_dict: dict[str, Any], missing_keys: list[str], unexpected_keys: list[str],
+    ) -> None:
+        self.optimizer.load_state_dict(state_dict)
+
+
+@pytest.mark.parametrize("compiled_source", [False, True])
+@pytest.mark.parametrize("compiled_target", [False, True])
+def test_checkpoint_continuation_preserves_adam_across_compile_modes(
+    tmp_path: Path, compiled_source: bool, compiled_target: bool,
+) -> None:
+    def update(algorithm: _OptimizerAlgorithm) -> None:
+        algorithm.optimizer.zero_grad()
+        (algorithm.policy(torch.ones(2)) - 1.0).square().mean().backward()
+        algorithm.optimizer.step()
+
+    source = _OptimizerAlgorithm(compiled=compiled_source)
+    update(source)
+    path = tmp_path / "checkpoint.pt"
+    BaseAlgorithm.save(source, path, optimizer_state_dict=source._get_optimizer_state_dict())
+    restored = _OptimizerAlgorithm(compiled=compiled_target)
+    restored.load(path)
+
+    update(source)
+    update(restored)
+
+    torch.testing.assert_close(restored.policy.weight, source.policy.weight, rtol=0, atol=0)
+    for source_state, restored_state in zip(source.optimizer.state.values(), restored.optimizer.state.values(), strict=True):
+        for key, value in source_state.items():
+            torch.testing.assert_close(restored_state[key], value, rtol=0, atol=0)

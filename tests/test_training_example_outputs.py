@@ -5,7 +5,7 @@ import pytest
 from examples.train_policy import create_run_directory, make_parser, run_experiment
 
 
-@pytest.mark.parametrize("scale", ["5M-2L", "5M-3L", "legacy"])
+@pytest.mark.parametrize("scale", ["5M-2L", "5M-3L", "custom"])
 def test_fresh_runs_keep_scale_seed_and_repetitions_separate(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, scale: str,
 ) -> None:

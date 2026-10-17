@@ -16,7 +16,7 @@ from swarmbots.learn.algos.sac.scenario_obs_encoder import (
     ScenarioObservationSpec,
     TMASACScenarioEncoderConfig,
 )
-from swarmbots.learn.algos.sac.tmasac_actor_heads import TMASACActorHeadConfig
+from swarmbots.learn.algos.off_policy.actor_heads import TMASACActorHeadConfig
 from swarmbots.learn.algos.sac.tmasac_policy import TMASACPolicy, TMASACPolicyConfig
 from swarmbots.learn.benchmark_policy import as_benchmark_policy
 from swarmbots.learn.env_wrappers.learn_wrappers.swarm_bots_learn_env_wrapper import SwarmBotsLearnEnvWrapper

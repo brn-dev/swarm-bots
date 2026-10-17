@@ -98,10 +98,7 @@ class MJWHomogeneousSwarm:
         hinge_frictionloss: float | tuple[float, ...] = (0.0, 0.0),
         connection_torquescale: float = 50.0,
         quantize_connection_twist: int = 16,
-        legacy_connector_positioning: bool = False,
     ) -> None:
-        if not isinstance(legacy_connector_positioning, bool):
-            raise TypeError("legacy_connector_positioning must be a bool")
         self.unit_start_locations = unit_start_locations
         self.num_units = unit_start_locations.num_units
         self.config = MJWSwarmConfig(
@@ -118,10 +115,7 @@ class MJWHomogeneousSwarm:
         self.hinge_armature = hinge_armature
         self.hinge_damping = hinge_damping
         self.hinge_frictionloss = hinge_frictionloss
-        self.legacy_connector_positioning = legacy_connector_positioning
-        self.connector_distance = self.body_radius + self.leg_length + (
-            0.0 if legacy_connector_positioning else self.leg_radius
-        )
+        self.connector_distance = self.body_radius + self.leg_length + self.leg_radius
         self.max_unit_extent = self.connector_distance
 
     @property
@@ -142,7 +136,6 @@ class MJWHomogeneousSwarm:
             "segment_1_ratio": self.segment_1_ratio,
             "minimal_contacts": True,
             "use_cylinders": False,
-            "legacy_connector_positioning": self.legacy_connector_positioning,
             "connector_distance": self.connector_distance,
             "hinge_range": self.hinge_range,
             "hinge_armature": self.hinge_armature,
@@ -180,7 +173,6 @@ class MJWHomogeneousSwarm:
                 leg_length=self.leg_length,
                 leg_radius=self.leg_radius,
                 segment_1_ratio=self.segment_1_ratio,
-                legacy_connector_positioning=self.legacy_connector_positioning,
                 hinge_range=self.hinge_range,
                 hinge_armature=self.hinge_armature,
                 hinge_damping=self.hinge_damping,

@@ -19,7 +19,7 @@ from swarmbots.learn.algos.sac import (
     TMASACActorHeadKind,
     TMASACPolicy,
 )
-from swarmbots.learn.algos.sac.sac_tensor_ops import (
+from swarmbots.learn.algos.off_policy.tensor_ops import (
     _actor_loss,
     _entropy_coefficient_loss,
 )

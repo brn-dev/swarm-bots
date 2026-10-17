@@ -87,7 +87,6 @@ def init_unit(
     hinge_armature: HingeJointParam = 0.0,
     hinge_damping: HingeJointParam = 0.0,
     hinge_frictionloss: HingeJointParam = 0.0,
-    legacy_connector_positioning: bool = False,
 ) -> mujoco.MjsBody:
     if not 0.0 < segment_1_ratio < 1.0:
         raise ValueError(f"Expected segment_1_ratio in (0, 1), got {segment_1_ratio}")
@@ -133,7 +132,6 @@ def init_unit(
             joint_armatures=joint_armatures,
             joint_dampings=joint_dampings,
             joint_frictionlosses=joint_frictionlosses,
-            legacy_connector_positioning=legacy_connector_positioning,
         )
 
     _add_same_unit_long_segment_excludes(spec, unit_config)
@@ -172,7 +170,6 @@ def _build_limb(
         joint_armatures: tuple[float, ...],
         joint_dampings: tuple[float, ...],
         joint_frictionlosses: tuple[float, ...],
-        legacy_connector_positioning: bool,
 ) -> None:
     rgba = tuple(limb_config.rgba)
     if len(joint_specs) < 2:
@@ -217,15 +214,14 @@ def _build_limb(
 
     # Capsule fromto endpoints are the centers of their rounded caps. The
     # connection frame belongs at the outer surface, where opposing caps meet.
-    connector_offset = 0.0 if legacy_connector_positioning else radius
     connector: mujoco.MjsBody = parent_segment.add_body(
         name=get_connector_suffix(limb_idx),
-        pos=[0, 0, tip_offset + connector_offset]
+        pos=[0, 0, tip_offset + radius]
     )
     connector.add_geom(
         type=mujoco.mjtGeom.mjGEOM_CAPSULE,
         # Preserve the tip geom's pose and inertia when moving its body frame.
-        fromto=[0, 0, -connector_offset, 0, 0, -connector_offset - length * CONNECTOR_GEOM_LENGTH_RATIO],
+        fromto=[0, 0, -radius, 0, 0, -radius - length * CONNECTOR_GEOM_LENGTH_RATIO],
         size=[radius * CONNECTOR_GEOM_RADIUS_SCALE, 0, 0],
         rgba=rgba,
         contype=0,

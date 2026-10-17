@@ -15,7 +15,7 @@ from swarmbots.learn.algos.off_policy.replay_buffer import (
     OffPolicyReplayEpisodeSegmentBatch,
 )
 from swarmbots.learn.algos.sac.base_sac_policy import BaseSACPolicy
-from swarmbots.learn.algos.sac.sac_tensor_ops import (
+from swarmbots.learn.algos.off_policy.tensor_ops import (
     build_optimizer_step,
 )
 from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
@@ -503,7 +503,6 @@ class SAC(OffPolicyAlgorithm):
         return {
             "actor_optimizer": self.actor_optimizer.state_dict(),
             "critic_optimizer": self.critic_optimizer.state_dict(),
-            "entropy_agent_reduction": ENTROPY_AGENT_REDUCTION,
             "ent_coef_optimizer": None if self.ent_coef_optimizer is None else self.ent_coef_optimizer.state_dict(),
             "log_ent_coef": None if self.log_ent_coef is None else self.log_ent_coef.detach(),
             "ent_coef_tensor": None if self.ent_coef_tensor is None else self.ent_coef_tensor.detach(),
@@ -520,52 +519,24 @@ class SAC(OffPolicyAlgorithm):
         if unexpected_keys:
             logger.warning(f"Loading SAC optimizer state with unexpected policy keys: {unexpected_keys}")
         self.actor_optimizer.load_state_dict(state_dict["actor_optimizer"])
-        critic_optimizer_state = state_dict["critic_optimizer"]
-        saved_critic_parameter_count = sum(
-            len(param_group["params"]) for param_group in critic_optimizer_state["param_groups"]
-        )
-        current_critic_parameter_count = sum(
-            len(param_group["params"]) for param_group in self.critic_optimizer.param_groups
-        )
-        if saved_critic_parameter_count == current_critic_parameter_count:
-            self.critic_optimizer.load_state_dict(critic_optimizer_state)
-        else:
-            logger.warning(
-                "Critic optimizer parameter count changed "
-                f"({saved_critic_parameter_count} -> {current_critic_parameter_count}); "
-                "reinitializing critic optimizer state."
-            )
-            self.critic_optimizer = torch.optim.Adam(
-                self.policy.critic_parameters(),
-                lr=self._actor_critic_learning_rate_for_update(self.n_total_updates),
-            )
-        saved_entropy_agent_reduction = state_dict.get("entropy_agent_reduction")
+        self.critic_optimizer.load_state_dict(state_dict["critic_optimizer"])
         self.log_ent_coef = None
         self.ent_coef_optimizer = None
         self.ent_coef_tensor = None
-        if saved_entropy_agent_reduction != ENTROPY_AGENT_REDUCTION:
-            logger.warning(
-                "Loaded a SAC checkpoint without compatible mean-agent entropy semantics; "
-                "resetting the entropy coefficient from the current configuration."
+        log_ent_coef = state_dict["log_ent_coef"]
+        ent_coef_tensor = state_dict["ent_coef_tensor"]
+        if log_ent_coef is not None and ent_coef_tensor is not None:
+            raise ValueError("Invalid SAC optimizer state: both log_ent_coef and ent_coef_tensor are set.")
+        if log_ent_coef is not None:
+            self.log_ent_coef = log_ent_coef.to(self.train_device).detach().requires_grad_(True)
+            self.ent_coef_optimizer = torch.optim.Adam(
+                [self.log_ent_coef],
+                lr=self._resolved_ent_coef_learning_rate(),
             )
-            self._setup_entropy_coefficient()
-        else:
-            log_ent_coef = state_dict.get("log_ent_coef", None)
-            ent_coef_tensor = state_dict.get("ent_coef_tensor", None)
-            if log_ent_coef is not None and ent_coef_tensor is not None:
-                raise ValueError("Invalid SAC optimizer state: both log_ent_coef and ent_coef_tensor are set.")
-            if log_ent_coef is not None:
-                self.log_ent_coef = log_ent_coef.to(self.train_device).detach().requires_grad_(True)
-                self.ent_coef_optimizer = torch.optim.Adam(
-                    [self.log_ent_coef],
-                    lr=self._resolved_ent_coef_learning_rate(),
-                )
-                ent_state = state_dict.get("ent_coef_optimizer", None)
-                if ent_state is not None:
-                    self.ent_coef_optimizer.load_state_dict(ent_state)
-                self._apply_entropy_coefficient_learning_rate()
-            if ent_coef_tensor is not None:
-                self.ent_coef_tensor = ent_coef_tensor.to(self.train_device).detach()
+            self.ent_coef_optimizer.load_state_dict(state_dict["ent_coef_optimizer"])
+            self._apply_entropy_coefficient_learning_rate()
+        if ent_coef_tensor is not None:
+            self.ent_coef_tensor = ent_coef_tensor.to(self.train_device).detach()
         self._move_optimizer_state_to_device(self.actor_optimizer, self.train_device)
         self._move_optimizer_state_to_device(self.critic_optimizer, self.train_device)
         if self.ent_coef_optimizer is not None:

@@ -10,7 +10,7 @@ from swarmbots.learn.algos.r_mat.temporal_sequence_model import (
     LSTMTemporalSequenceModelConfig,
 )
 from swarmbots.learn.algos.sac.recurrent_tmasac_policy import ActorStateCriticInputConfig
-from swarmbots.learn.algos.sac.sac_nop import SACNOPLatentSource
+from swarmbots.learn.algos.off_policy.nop import SACNOPLatentSource
 from swarmbots.learn.algos.xlstm.slstm import (
     SLSTMTemporalSequenceModel,
     SLSTMTemporalSequenceModelConfig,

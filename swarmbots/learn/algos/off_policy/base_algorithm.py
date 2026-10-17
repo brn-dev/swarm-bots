@@ -12,7 +12,6 @@ from swarmbots.learn.action_dists.action_dist import ActionMetricsSplitterInput
 from swarmbots.learn.algos.base_algorithm import (
     BaseAlgorithm,
     LearningRate,
-    PolicyStateDictTransform,
 )
 from swarmbots.learn.algos.off_policy import (
     OffPolicyReplayBuffer,
@@ -537,7 +536,6 @@ class OffPolicyAlgorithm(BaseAlgorithm):
         map_location: Any | None = "cpu",
         recover_best_return_ema: bool = True,
         strict_load_state_dict: bool = True,
-        policy_state_dict_transform: PolicyStateDictTransform | None = None,
         restore_optimizer_state: bool = True,
         restore_env_state: bool = True,
     ) -> None:
@@ -546,7 +544,6 @@ class OffPolicyAlgorithm(BaseAlgorithm):
             map_location=map_location,
             recover_best_return_ema=recover_best_return_ema,
             strict_load_state_dict=strict_load_state_dict,
-            policy_state_dict_transform=policy_state_dict_transform,
             restore_optimizer_state=restore_optimizer_state,
             restore_env_state=restore_env_state,
         )
@@ -791,10 +788,10 @@ class OffPolicyAlgorithm(BaseAlgorithm):
         if isinstance(mode, GSDEEpisodeResetMode):
             return {"mode": "episode"}
         if isinstance(mode, GSDEIntervalResetMode):
-            return {"type": "interval", "interval": mode.interval}
+            return {"mode": "interval", "interval": mode.interval}
         if isinstance(mode, GSDEProbabilityResetMode):
-            return {"type": "probability", "probability": mode.probability}
-        return {"type": type(mode).__name__}
+            return {"mode": "probability", "probability": mode.probability}
+        return {"mode": type(mode).__name__}
 
     def _move_extra_training_tensors_to_device(self) -> None:
         pass

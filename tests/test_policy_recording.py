@@ -410,10 +410,8 @@ def test_checkpoint_recording_preserves_custom_exploration_noise(
 
 
 @pytest.mark.integration
-@pytest.mark.parametrize("checkpoint_format", ["full", "legacy", "state_dict"])
 @pytest.mark.parametrize("exploration_noise", [None, 0.0, 0.4])
-def test_checkpoint_recording_noise_overrides_and_legacy_formats(
-    checkpoint_format: str,
+def test_checkpoint_recording_noise_overrides(
     exploration_noise: float | None,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -432,13 +430,7 @@ def test_checkpoint_recording_noise_overrides_and_legacy_formats(
     checkpoint_path = tmp_path / "model.pt"
     try:
         trainer.save(checkpoint_path)
-        checkpoint = torch.load(checkpoint_path, weights_only=False)
-        if checkpoint_format == "legacy":
-            del checkpoint["policy_hyper_parameters"]
-        elif checkpoint_format == "state_dict":
-            checkpoint = checkpoint["policy_state_dict"]
-        torch.save(checkpoint, checkpoint_path)
-        expected_noise = (0.7 if checkpoint_format == "full" else 0.1) if exploration_noise is None else exploration_noise
+        expected_noise = 0.7 if exploration_noise is None else exploration_noise
         trainer.policy.exploration_noise = expected_noise
         expected_policy = as_benchmark_policy(trainer, deterministic=False)
         recorded = False

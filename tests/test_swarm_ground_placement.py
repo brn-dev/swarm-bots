@@ -41,17 +41,16 @@ def _active_geom_indices(model: mujoco.MjModel, active_mask: np.ndarray) -> np.n
 @pytest.mark.parametrize("unit_config", [
     UNIT_CONFIG_TETRAHEDRON_XY, UNIT_CONFIG_TETRAHEDRON_ZX, UNIT_CONFIG_TETRAHEDRON_XYZ, UNIT_CONFIG_CUBE_ZX,
 ])
-@pytest.mark.parametrize("legacy", [False, True])
 @pytest.mark.parametrize("dimensions", [(0.1, 0.2, 0.025), (0.8, 0.01, 0.02), (0.05, 0.4, 0.08)])
 @pytest.mark.parametrize("segment_1_ratio", [0.1, 0.65])
 def test_analytical_unit_bottom_matches_mujoco_geometry(
-    unit_config: UnitConfig, legacy: bool, dimensions: tuple[float, float, float], segment_1_ratio: float,
+    unit_config: UnitConfig, dimensions: tuple[float, float, float], segment_1_ratio: float,
 ) -> None:
     body_radius, leg_length, leg_radius = dimensions
     swarm = MJWHomogeneousSwarm(
         MJWPreConnectedUnitLocationsConfig(num_units=1, pool_seeds=(42000,)),
         unit_config=unit_config, body_radius=body_radius, leg_length=leg_length, leg_radius=leg_radius,
-        segment_1_ratio=segment_1_ratio, legacy_connector_positioning=legacy,
+        segment_1_ratio=segment_1_ratio,
         hinge_range=(np.pi / 3,) * (3 if unit_config is UNIT_CONFIG_TETRAHEDRON_XYZ else 2),
         hinge_armature=0.0, hinge_damping=0.0, hinge_frictionloss=0.0,
     )

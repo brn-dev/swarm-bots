@@ -2,7 +2,6 @@
 
 from dataclasses import dataclass, field, replace
 import copy
-from typing import Any
 import torch
 from torch import nn
 from swarmbots.learn.algos.mat.mat_encoder import MATEncoderConfig, MATEncoderLayer
@@ -457,36 +456,6 @@ class TransformerTwinCritic(nn.Module):
             hidden_global_vars=hidden_global_vars,
             agent_mask=agent_mask,
         )
-
-    def _load_from_state_dict(
-        self,
-        state_dict: dict[str, Any],
-        prefix: str,
-        local_metadata: dict[str, Any],
-        strict: bool,
-        missing_keys: list[str],
-        unexpected_keys: list[str],
-        error_msgs: list[str],
-    ) -> None:
-        if self.encoder2 is not None:
-            primary_prefix = f"{prefix}encoder."
-            secondary_prefix = f"{prefix}encoder2."
-            has_primary_encoder = any(key.startswith(primary_prefix) for key in state_dict)
-            has_secondary_encoder = any(key.startswith(secondary_prefix) for key in state_dict)
-            if has_primary_encoder and not has_secondary_encoder:
-                for key, value in list(state_dict.items()):
-                    if key.startswith(primary_prefix):
-                        state_dict[f"{secondary_prefix}{key.removeprefix(primary_prefix)}"] = value
-        super()._load_from_state_dict(
-            state_dict,
-            prefix,
-            local_metadata,
-            strict,
-            missing_keys,
-            unexpected_keys,
-            error_msgs,
-        )
-
 
 def build_q_network(
     *,

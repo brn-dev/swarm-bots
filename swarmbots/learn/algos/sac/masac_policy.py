@@ -4,7 +4,7 @@ from dataclasses import dataclass, field, replace
 from typing import Any
 
 from swarmbots.learn.algos.off_policy.joint_critic import JointCriticConfig, JointTwinCritic
-from swarmbots.learn.algos.sac.tmasac_actor_heads import TMASACActorHeadConfig, TMASACActorHeadKind
+from swarmbots.learn.algos.off_policy.actor_heads import TMASACActorHeadConfig, TMASACActorHeadKind
 from swarmbots.learn.algos.sac.tmasac_policy import TMASACPolicy, TMASACPolicyConfig
 from swarmbots.learn.serialization_utils import serialize_dataclass
 
@@ -23,7 +23,7 @@ class MASACPolicy(TMASACPolicy):
     def __init__(self, env, config: MASACPolicyConfig = MASACPolicyConfig()) -> None:
         if config.nop_config.enabled and config.joint_critic_config.kind == "mlp":
             raise ValueError("MLP critics do not support NOP; use a Deep Set critic or set use_nop=False")
-        if config.share_observation_encoder or config.shared_encoder_config is not None:
+        if config.shared_encoder_config is not None:
             raise ValueError("MASAC baselines use separate actor and critic observation inputs")
         super().__init__(env, config)
 

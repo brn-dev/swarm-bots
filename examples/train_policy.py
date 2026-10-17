@@ -37,7 +37,7 @@ def make_parser(
         return value
     parser.add_argument("--variant", type=variant_choice, default=default_variant, metavar="VARIANT",
                         help="core presets: " + ", ".join(list_variants() if variants is None else variants))
-    parser.add_argument("--model-scale", default="5M-2L NOP1M", help="fixed tiers: 2.5M, 5M-2L (default), 5M-3L, 10M-3L, 10M-4L, 10M-5L; legacy uses custom widths")
+    parser.add_argument("--model-scale", default="5M-2L NOP1M", help="fixed tiers: 2.5M, 5M-2L (default), 5M-3L, 10M-3L, 10M-4L, 10M-5L; custom uses custom widths")
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--num-envs", type=positive_int, default=256, help="parallel training worlds")
     parser.add_argument("--total-timesteps", type=positive_int, default=1_000_000)
@@ -61,11 +61,11 @@ def make_parser(
 
 
 def create_run_directory(args: argparse.Namespace) -> Path:
-    scale = normalize_model_scale(None if args.model_scale == "legacy" else args.model_scale)
+    scale = normalize_model_scale(None if args.model_scale == "custom" else args.model_scale)
     if args.run_dir is not None:
         run_dir = args.run_dir
     else:
-        scale_slug = "legacy" if scale is None else SCALE_LAYOUTS[scale].slug
+        scale_slug = "custom" if scale is None else SCALE_LAYOUTS[scale].slug
         nop_mode = "nop-preset" if args.nop is None else "nop" if args.nop else "no-nop"
         run_dir = (
             Path("runs") / args.benchmark_id / args.variant / scale_slug / f"seed-{args.seed}"
@@ -95,7 +95,7 @@ def run_experiment(
         seed=args.seed,
         episode_length=args.episode_length,
         use_nop=args.nop,
-        model_scale=None if args.model_scale == "legacy" else args.model_scale,
+        model_scale=None if args.model_scale == "custom" else args.model_scale,
         compile_modules=args.compile,
         policy_kwargs=policy_kwargs,
         algorithm_kwargs=algorithm_kwargs,

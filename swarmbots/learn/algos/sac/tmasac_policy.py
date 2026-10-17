@@ -18,7 +18,7 @@ from swarmbots.learn.action_dists.predicted_std_gaussian_action_dist import Pred
 from swarmbots.learn.algos.mat.mat_encoder import MATEncoder, MATEncoderConfig
 from swarmbots.learn.algos.off_policy.replay_buffer import OffPolicyReplayBatch, OffPolicyReplayEpisodeSegmentBatch
 from swarmbots.learn.algos.sac.base_sac_policy import BaseSACPolicy
-from swarmbots.learn.algos.sac.sac_nop import (
+from swarmbots.learn.algos.off_policy.nop import (
     SACNOPConfig,
     SACNOPLatentSource,
     SACNOPModule,
@@ -28,7 +28,7 @@ from swarmbots.learn.algos.sac.scenario_obs_encoder import (
     TMASACScenarioEncoderConfig,
     TMASACScenarioObservationEncoder,
 )
-from swarmbots.learn.algos.sac.tmasac_actor_heads import (
+from swarmbots.learn.algos.off_policy.actor_heads import (
     TMASACActorHead,
     TMASACActorHeadConfig,
     TMASACActorHeadKind,
@@ -40,22 +40,12 @@ from swarmbots.learn.nn_components.activations import ActivationFactory
 from swarmbots.learn.nn_components.nn_init import make_init_linear_orthogonal
 from swarmbots.learn.polyak_update import polyak_update
 from swarmbots.learn.serialization_utils import serialize_dataclass, serialize_value
-
-
-
-
 from swarmbots.learn.algos.off_policy.transformer_critic import (
-    ActionConditionedEncoder as TMASACActionConditionedEncoder,
-    ObservationActionEncoder as TMASACObservationActionEncoder,
-    TransformerCriticConfig as TMASACCriticConfig,
-    TransformerTwinCritic as TMASACTwinCritic,
+    TransformerCriticConfig,
+    TransformerTwinCritic,
 )
 
 __all__ = [
-    "TMASACActionConditionedEncoder",
-    "TMASACObservationActionEncoder",
-    "TMASACCriticConfig",
-    "TMASACTwinCritic",
     "TMASACPolicyConfig",
     "TMASACPolicy",
 ]
@@ -65,9 +55,8 @@ class TMASACPolicyConfig:
     actor_encoder_config: MATEncoderConfig = field(default_factory=MATEncoderConfig)
     critic_encoder_config: MATEncoderConfig = field(default_factory=MATEncoderConfig)
     shared_encoder_config: MATEncoderConfig | None = None
-    share_observation_encoder: bool = False
     actor_head_config: TMASACActorHeadConfig = field(default_factory=TMASACActorHeadConfig)
-    critic_config: TMASACCriticConfig = field(default_factory=TMASACCriticConfig)
+    critic_config: TransformerCriticConfig = field(default_factory=TransformerCriticConfig)
     act_fn_cls: ActivationFactory = nn.GELU
     dropout: float = 0.0
     continuous_config: ContinuousActionDistConfigInput = field(
@@ -120,10 +109,7 @@ class TMASACPolicy(BaseSACPolicy):
         self.dropout = float(config.dropout)
         self.actor_head_kind = self._normalize_actor_head_kind(config.actor_head_config.kind)
         self.nop_latent_source = normalize_nop_latent_source(config.nop_config.latent_source)
-        self.share_observation_encoder = (
-            bool(config.share_observation_encoder)
-            or config.shared_encoder_config is not None
-        )
+        self.share_observation_encoder = config.shared_encoder_config is not None
         if (
                 self.actor_head_kind is TMASACActorHeadKind.DECENTRALIZED
                 and self.share_observation_encoder
@@ -200,7 +186,7 @@ class TMASACPolicy(BaseSACPolicy):
             None
             if not self.share_observation_encoder
             else replace(
-                config.shared_encoder_config or config.actor_encoder_config,
+                config.shared_encoder_config,
                 act_fn_cls=config.act_fn_cls,
                 dropout=config.dropout,
             )
@@ -959,8 +945,8 @@ class TMASACPolicy(BaseSACPolicy):
             *,
             local_input_dim: int,
             global_input_dim: int,
-    ) -> TMASACTwinCritic:
-        return TMASACTwinCritic(
+    ) -> TransformerTwinCritic:
+        return TransformerTwinCritic(
             n_agents=self.n_agents,
             max_agents=self.max_agents,
             local_input_dim=local_input_dim,
@@ -1119,13 +1105,13 @@ class TMASACPolicy(BaseSACPolicy):
             dynamic=False,
         )
 
-    def _critic_module(self) -> TMASACTwinCritic:
-        if isinstance(self.critic, TMASACTwinCritic):
+    def _critic_module(self) -> TransformerTwinCritic:
+        if isinstance(self.critic, TransformerTwinCritic):
             return self.critic
         orig_mod = getattr(self.critic, "_orig_mod", None)
-        if isinstance(orig_mod, TMASACTwinCritic):
+        if isinstance(orig_mod, TransformerTwinCritic):
             return orig_mod
-        raise RuntimeError(f"Cannot resolve TMASACTwinCritic from compiled module {type(self.critic).__name__}")
+        raise RuntimeError(f"Cannot resolve TransformerTwinCritic from compiled module {type(self.critic).__name__}")
 
     @staticmethod
     def _nop_initial_obs(

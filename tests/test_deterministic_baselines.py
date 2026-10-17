@@ -13,9 +13,9 @@ from swarmbots.learn import list_model_scales
 from swarmbots.learn.algos.off_policy import collect_off_policy_steps
 from swarmbots.learn.algos.off_policy.joint_critic import JointCriticConfig, JointQNetwork, JointTwinCritic
 from swarmbots.learn.algos.sac import SAC, MASACPolicy
-from swarmbots.learn.algos.sac.sac_nop import SACNOPConfig
+from swarmbots.learn.algos.off_policy.nop import SACNOPConfig
 from swarmbots.learn.algos.world_modeling.next_obs_pred_mixin import NextObsPredConfig
-from swarmbots.learn.algos.sac.tmasac_actor_heads import TMASACActorHeadConfig, TMASACActorHeadKind
+from swarmbots.learn.algos.off_policy.actor_heads import TMASACActorHeadConfig, TMASACActorHeadKind
 from swarmbots.learn.algos.td3 import DDPG, TD3, TD3Policy
 from swarmbots.learn.env_wrappers.learn_wrappers.swarm_bots_learn_env_wrapper import SwarmBotsLearnEnvWrapper
 from swarmbots.learn.hybrid_action_space import HybridActionSpace, VectorHybridActionSpace
@@ -209,7 +209,6 @@ def test_baseline_rollout_update_and_privileged_boundary(
     assert all(p.grad is None and not p.requires_grad for p in policy.critic_target.parameters())
     if isinstance(algorithm, TD3):
         assert all(p.grad is None and not p.requires_grad for p in policy.actor_target.parameters())
-        assert algorithm.ent_coef_optimizer is None and algorithm.ent_coef_tensor is None
         assert not hasattr(policy, "action_dist")
 
 
@@ -796,20 +795,34 @@ def test_custom_td3_delay_and_polyak_values_across_uneven_train_calls(env, varia
     assert algorithm.n_total_updates == 9
 
 
-@pytest.mark.parametrize("variant", VARIANTS)
+@pytest.mark.parametrize(("variant", "head_gating"), [
+    *(pytest.param(variant, False, id=variant) for variant in VARIANTS),
+    *(
+        pytest.param(f"{algorithm}__{critic}", True, id=f"{algorithm}__{critic}-head-gating")
+        for algorithm in ("maddpg", "matd3", "masac")
+        for critic in ("deepset_critic", "gated_deepset_critic")
+    ),
+])
 @pytest.mark.parametrize("learning_rate", [3e-4, 1e-5])
 def test_checkpoint_continuation_matches_uninterrupted_updates(
-    env: SwarmBotsLearnEnvWrapper, variant: str, tmp_path: Path, learning_rate: float,
+    env: SwarmBotsLearnEnvWrapper, variant: str, head_gating: bool, tmp_path: Path, learning_rate: float,
 ) -> None:
+    policy_options = {"critic_deepset_head_gating": True, "model_scale": "2.5M"} if head_gating else None
     torch.manual_seed(42)
-    algorithm = make_algorithm(env, variant, learning_rate_warmup_updates=5)
+    algorithm = make_algorithm(env, variant, policy_options=policy_options, learning_rate_warmup_updates=5)
     algorithm.set_learning_rate(learning_rate)
     batch = fill_replay(algorithm)
     algorithm.train(gradient_steps=3)
     path = tmp_path / f"{variant}.pt"
     algorithm.save(path, optimizer_state_dict=algorithm._get_optimizer_state_dict())
+    if head_gating:
+        checkpoint = torch.load(path, weights_only=False)
+        config_key = "masac_policy_config" if variant.startswith("masac") else "td3_policy_config"
+        critic_config = checkpoint["policy_hyper_parameters"][config_key]["joint_critic_config"]
+        assert critic_config["head_config"]["interaction_config"]["gated"] is True
+        assert critic_config["interaction_config"]["gated"] is variant.endswith("__gated_deepset_critic")
 
-    restored = make_algorithm(env, variant, learning_rate_warmup_updates=5)
+    restored = make_algorithm(env, variant, policy_options=policy_options, learning_rate_warmup_updates=5)
     fill_replay(restored)
     restored.load(path, restore_env_state=False)
     assert len(restored.replay_buffer) == 0
@@ -1236,8 +1249,6 @@ def test_td3_does_not_accept_entropy_commands(env):
     algorithm = make_algorithm(env, "matd3__mlp_critic")
     with pytest.raises(ValueError, match="entropy coefficient"):
         algorithm._execute_command("set_ent_coef", "0.5", None)
-    assert algorithm.ent_coef_tensor is None
-    assert algorithm.ent_coef_optimizer is None
 
 
 @pytest.mark.parametrize(

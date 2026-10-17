@@ -594,6 +594,7 @@ def test_expanding_and_gated_deepset_diagrams_show_reception_and_complete_counts
         for node in nodes.values():
             if node.id.startswith("head"):
                 assert "final masked mean across agents" in node.lines
+                assert "Per-token reception gate" not in node.lines
         assert sum(node.parameters or 0 for node in nodes.values()) == row["trainable"]
         for edge in diagram.edges:
             assert not any(
@@ -601,6 +602,25 @@ def test_expanding_and_gated_deepset_diagrams_show_reception_and_complete_counts
                 for start, end in zip(edge_points(edge, nodes), edge_points(edge, nodes)[1:])
                 for node in nodes.values()
             )
+        assert ElementTree.fromstring(svg_diagram(diagram)).tag.endswith("svg")
+
+
+@pytest.mark.integration
+@pytest.mark.usefixtures("single_thread")
+def test_q_head_gating_ablation_diagrams_show_gates_and_complete_counts() -> None:
+    report = inspect_variants(
+        "SwarmBots-WallEasy-v0",
+        tuple(f"{algorithm}__gated_deepset_critic" for algorithm in ("maddpg", "matd3", "masac")),
+        model_scale="2.5M", policy_kwargs={"critic_deepset_head_gating": True},
+    )
+    assert not report["errors"]
+    for row in report["policies"]:
+        diagram = build_diagram(row)
+        for node in diagram.nodes:
+            if node.id.startswith("head"):
+                assert "Per-token reception gate" in node.lines
+        assert_connections_and_labels_leave_components_unobstructed(diagram)
+        assert sum(node.parameters or 0 for node in diagram.nodes) == row["trainable"]
         assert ElementTree.fromstring(svg_diagram(diagram)).tag.endswith("svg")
 
 

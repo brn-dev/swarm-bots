@@ -27,13 +27,13 @@ from swarmbots.learn.algos.sac import (
     ScenarioObservationSpec,
     TMASACActorHeadConfig,
     TMASACActorHeadKind,
-    TMASACCriticConfig,
     TMASACPolicy,
     TMASACPolicyConfig,
     TMASACScenarioEncoderConfig,
 )
+from swarmbots.learn.algos.off_policy.transformer_critic import TransformerCriticConfig
 from swarmbots.learn.algos.sac.scenario_obs_encoder import TMASACScenarioObservationEncoder
-from swarmbots.learn.algos.sac.tmasac_actor_heads import TMASACQCXActorHead
+from swarmbots.learn.algos.off_policy.actor_heads import TMASACQCXActorHead
 from swarmbots.learn.algos.world_modeling.next_obs_pred_mixin import NextObsPredConfig
 from swarmbots.learn.hybrid_action_space import HybridActionSpace
 from swarmbots.learn.nn_components.feed_forward import GLUStackConfig, SwiGLUConfig, feedforward_linear_layers
@@ -110,7 +110,6 @@ def _small_encoder_config() -> MATEncoderConfig:
 def _make_config(
         nop_config: SACNOPConfig | None = None,
         *,
-        share_observation_encoder: bool = False,
         shared_encoder_config: MATEncoderConfig | None = None,
         continuous_config: ContinuousActionDistConfig | None = None,
         dropout: float = 0.0,
@@ -123,7 +122,6 @@ def _make_config(
         actor_encoder_config=_small_encoder_config(),
         critic_encoder_config=_small_encoder_config(),
         shared_encoder_config=shared_encoder_config,
-        share_observation_encoder=share_observation_encoder,
         actor_head_config=TMASACActorHeadConfig(
             kind=actor_head_kind,
             hidden_dims=[10],
@@ -135,7 +133,7 @@ def _make_config(
                 assume_agent_mask_is_active_prefix=False,
             ),
         ),
-        critic_config=TMASACCriticConfig(
+        critic_config=TransformerCriticConfig(
             n_local_projection_hidden_layers=1,
             n_value_regressor_hidden_layers=1,
             independent_encoders=independent_critic_encoders,
@@ -814,7 +812,7 @@ class TMASACPolicyTests(unittest.TestCase):
     def test_scenario_policy_rejects_shared_observation_encoding(self) -> None:
         config = replace(
             _make_config(),
-            share_observation_encoder=True,
+            shared_encoder_config=_small_encoder_config(),
             scenario_encoder_config=_scenario_encoder_config(),
         )
 
@@ -1345,25 +1343,18 @@ class TMASACPolicyTests(unittest.TestCase):
         encoder2_parameter_ids = {id(parameter) for parameter in policy.critic.encoder2.parameters()}
         self.assertFalse(encoder1_parameter_ids & encoder2_parameter_ids)
 
-    def test_legacy_shared_critic_encoder_checkpoint_initializes_both_encoders(self) -> None:
+    def test_independent_critic_checkpoint_requires_both_encoders(self) -> None:
         config = _make_config(independent_critic_encoders=True)
         policy = TMASACPolicy(env=_DummyContinuousEnv(), config=config)
-        legacy_state_dict = {
+        state_dict = {
             key: value
             for key, value in policy.state_dict().items()
             if ".encoder2." not in key
         }
         restored = TMASACPolicy(env=_DummyContinuousEnv(), config=config)
 
-        restored.load_state_dict(legacy_state_dict, strict=True)
-
-        assert restored.critic.encoder2 is not None
-        for primary, secondary in zip(
-                restored.critic.encoder.parameters(),
-                restored.critic.encoder2.parameters(),
-                strict=True,
-        ):
-            torch.testing.assert_close(primary, secondary)
+        with self.assertRaisesRegex(RuntimeError, "encoder2"):
+            restored.load_state_dict(state_dict, strict=True)
 
     def test_critic_actions_condition_transformer_inputs(self) -> None:
         torch.manual_seed(0)
@@ -1504,15 +1495,6 @@ class TMASACPolicyTests(unittest.TestCase):
         )
         (q1 + q2).sum().backward()
         self.assertTrue(any(parameter.grad is not None for parameter in policy.shared_observation_encoder.parameters()))
-
-    def test_legacy_share_observation_encoder_uses_policy_owned_encoder(self) -> None:
-        policy = TMASACPolicy(
-            env=_DummyContinuousEnv(),
-            config=_make_config(share_observation_encoder=True),
-        )
-
-        self.assertIsNotNone(policy.shared_observation_encoder)
-        self.assertIsNot(policy.actor_encoder, policy.critic.encoder)
 
     def test_nop_config_defaults_to_disabled(self) -> None:
         policy = TMASACPolicy(env=_DummyContinuousEnv(), config=_make_config())
@@ -1682,7 +1664,7 @@ class TMASACPolicyTests(unittest.TestCase):
             actor_encoder_config=config.actor_encoder_config,
             critic_encoder_config=config.critic_encoder_config,
             actor_head_config=config.actor_head_config,
-            critic_config=TMASACCriticConfig(use_popart=True),
+            critic_config=TransformerCriticConfig(use_popart=True),
             continuous_config=config.continuous_config,
             nop_config=config.nop_config,
         )

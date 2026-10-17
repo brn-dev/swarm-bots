@@ -91,18 +91,18 @@ def test_benchmark_gsde_probability_does_not_reset_every_agent_every_step(gsde_a
 
 
 @pytest.mark.parametrize("saved_mode", [
-    None, GSDEEpisodeResetMode(), GSDEIntervalResetMode(3), GSDEProbabilityResetMode(.25),
+    GSDEEpisodeResetMode(), GSDEIntervalResetMode(3), GSDEProbabilityResetMode(.25),
 ])
 @pytest.mark.parametrize("variant", ["ppo", "tmasac"])
 @pytest.mark.parametrize("override", [False, True])
 def test_checkpoint_recording_restores_gsde_schedule(
     gsde_actor: GSDEActorFixture, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-    saved_mode: GSDEResetMode | None, variant: Literal["ppo", "tmasac"], override: bool,
+    saved_mode: GSDEResetMode, variant: Literal["ppo", "tmasac"], override: bool,
 ) -> None:
     import swarmbots.learn.checkpoint_recording as recording
 
     env, policy, _ = gsde_actor
-    reset_mode = GSDEEpisodeResetMode() if saved_mode is None else saved_mode
+    reset_mode = saved_mode
     trainer: PPO | SAC
     if variant == "ppo":
         trainer = PPO(
@@ -121,10 +121,6 @@ def test_checkpoint_recording_restores_gsde_schedule(
         )
     checkpoint_path = tmp_path / "gsde.pt"
     trainer.save(checkpoint_path)
-    if saved_mode is None:
-        checkpoint = torch.load(checkpoint_path, weights_only=False)
-        checkpoint.pop("hyper_parameters", None)
-        torch.save(checkpoint, checkpoint_path)
     monkeypatch.setattr(recording, "_make_policy_env", lambda *args, **kwargs: (env, trainer.policy))
     captured = []
     monkeypatch.setattr(recording, "_record_episodes", lambda env, adapter, **kwargs: captured.append(adapter))

@@ -134,9 +134,3 @@ class PopArtLinear(nn.Module):
         bias = self.bias if self.bias is not None else self.normalization_bias
         y_norm = F.linear(x, self.weight, bias)
         return self.denormalize(y_norm)
-
-    def _load_from_state_dict(self, state_dict, prefix, *args, **kwargs) -> None:
-        key = prefix + "normalization_bias"
-        if self.bias is None and key not in state_dict:
-            state_dict[key] = torch.zeros_like(self.normalization_bias)
-        super()._load_from_state_dict(state_dict, prefix, *args, **kwargs)

@@ -65,10 +65,6 @@ class TD3(OffPolicyAlgorithm):
         self.target_noise_clip = float(target_noise_clip)
         self.exploration_noise = float(exploration_noise)
         policy.exploration_noise = self.exploration_noise
-        # Retain the historical inspection attributes; no entropy optimizer exists.
-        self.log_ent_coef = None
-        self.ent_coef_tensor = None
-        self.ent_coef_optimizer = None
         super().__init__(
             policy, env,
             policy_delay=policy_delay, target_policy_noise=target_policy_noise,

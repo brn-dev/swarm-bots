@@ -63,7 +63,7 @@ Bridge adds a narrow movable support. Climb requires all active units to reach a
 
 The default unit has four articulated limbs, eight hinges, and four connectors. Continuous actuator actions control its movement; connector actions request connections or disconnections. Connections carry physical loads, so changing the connection graph changes the swarm's mechanics during an episode.
 
-Connectors sit on the outer surfaces of the rounded limb caps. Initial assembly spacing follows the connector distance. The registered defaults use surface positioning; `scenario_kwargs={"legacy_connector_positioning": True}` selects the earlier positioning and spacing for a custom variant.
+Connectors sit on the outer surfaces of the rounded limb caps. Initial assembly spacing follows the connector distance.
 
 All registered scenarios use five padded agent slots, while reset pools may activate four or five units. Inactive slots are identified by `agent_mask`. Initial assemblies are sampled from the shared [morphology population](benchmark_protocol.md#morphology-population); the canonical evaluation does not use unseen morphologies.
 

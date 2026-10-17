@@ -53,15 +53,15 @@ def test_release_versions_match() -> None:
     assert re.search(rf"^## {re.escape(project_version)}(?:\s|$)", changelog, flags=re.MULTILINE)
 
 
-@pytest.mark.parametrize("legacy_distribution_installed", [False, True])
+@pytest.mark.parametrize("other_distribution_installed", [False, True])
 def test_versions_identify_the_current_installed_distribution(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
-    legacy_distribution_installed: bool,
+    other_distribution_installed: bool,
 ) -> None:
     project = tomllib.loads((PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]
     distributions = {project["name"]: project["version"]}
-    if legacy_distribution_installed:
+    if other_distribution_installed:
         distributions["swarm-bots"] = "0.0.1"
     for name, version in distributions.items():
         dist_info = tmp_path / f"{name.replace('-', '_')}-{version}.dist-info"

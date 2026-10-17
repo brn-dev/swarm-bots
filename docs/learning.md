@@ -92,7 +92,7 @@ NOP means **next-observation prediction**, an auxiliary training objective enabl
 
 The scale names describe approximate feed-forward budgets, not exact counts or GPU memory requirements. Recurrent memory and optional gates add parameters; targets and optimizer state need additional memory. Fewer parallel worlds or a smaller model scale reduce memory requirements.
 
-`model_scale=None` (CLI: `--model-scale legacy`) enables custom widths; fixed scales take precedence over width overrides. This selects the current custom-width builders and does not restore an older architecture. `5M-2L` replaces the former `5M` scale name. `10M-3L` selects the three-block 10M reference; the old `10M` name is rejected. The [model layouts](policy_parameters/model_scale.md) and [parameter inspection guide](policy_parameters/README.md) cover detailed comparisons.
+`model_scale=None` (CLI: `--model-scale custom`) enables custom widths; fixed scales take precedence over width overrides. The [model layouts](policy_parameters/model_scale.md) and [parameter inspection guide](policy_parameters/README.md) cover detailed comparisons.
 
 ## Customize training
 
@@ -126,6 +126,8 @@ trainer = train(
 | `compile_modules=True` | Policy compilation after checking [GPU setup](gpu_setup.md) |
 
 PPO, SAC, and TD3 accept different learner options. The [recurrent TD3 example](../examples/README.md#train-recurrent-td3) supplies the recurrent actor and replay settings.
+
+Gated Deep Set presets gate the critic encoder and keep their Q heads ungated by default. `policy_kwargs={"critic_deepset_head_gating": True}` enables Q-head reception gates independently for architecture ablations; the same setting works with ordinary Deep Set and transformer off-policy presets.
 
 ### Logging levels
 
@@ -178,9 +180,9 @@ trainer = train(
 
 Replace the path with the actual checkpoint saved by the training run. Final checkpoints are named `model_<steps>_steps_final.pt`; the actual counter can pass the requested budget by a collection batch.
 
-`total_timesteps` is the final total counter, so resuming at one million with a target of two million adds about one million transitions. Checkpoints restore model parameters, saved optimizer state, counters, and normalization. Earlier MAPPO shared-encoder checkpoints and MAT actor-NOP checkpoints require retraining or manual migration; no compatibility mode is included. Off-policy replay buffers are rebuilt and refilled after loading.
+`total_timesteps` is the final total counter, so resuming at one million with a target of two million adds about one million transitions. Checkpoints restore model parameters, saved optimizer state, counters, and normalization. Loading requires the current checkpoint format and matching model settings. Off-policy replay buffers are rebuilt and refilled after loading.
 
-The Python API supports continuation in an existing run directory. The training example scripts require a fresh directory for each invocation. Older checkpoints from changed architectures or observation layouts may need manual migration or retraining; matching a variant name alone is insufficient. The [layout versions](policy_parameters/model_scale.md) and [changelog](../CHANGELOG.md) record these changes.
+The Python API supports continuation in an existing run directory. The training example scripts require a fresh directory for each invocation. Checkpoints require matching architectures and observation layouts; matching a variant name alone is insufficient. The [layout versions](policy_parameters/model_scale.md) and [changelog](../CHANGELOG.md) record these changes.
 
 ## Evaluate a trained policy
 

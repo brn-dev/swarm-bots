@@ -48,6 +48,14 @@ def test_popart_empty_update_is_noop() -> None:
     torch.testing.assert_close(layer.sigma(), sigma_before)
 
 
+def test_biasless_popart_checkpoint_requires_normalization_offset() -> None:
+    layer = PopArtLinear(3, bias=False)
+    state = layer.state_dict()
+    del state["normalization_bias"]
+    with pytest.raises(RuntimeError, match="normalization_bias"):
+        layer.load_state_dict(state)
+
+
 def test_deepset_critic_popart_update_preserves_values_and_normalizes_targets() -> None:
     torch.manual_seed(0)
     critic = DeepSetCritic(

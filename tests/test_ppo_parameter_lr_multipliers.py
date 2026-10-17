@@ -245,7 +245,7 @@ def test_optimizer_state_dict_round_trip_recovers_base_learning_rate() -> None:
     assert restored_groups[id(restored_policy.context_encoder.weight)]["lr"] == pytest.approx(7.5e-3)
 
 
-def test_ppo_can_restore_legacy_optimizer_state_without_controller_metadata() -> None:
+def test_ppo_rejects_optimizer_state_without_controller_metadata() -> None:
     original, _ = _make_ppo(learning_rate=1e-3)
     restored = PPO(
         policy=_DummyPolicy(),
@@ -253,8 +253,25 @@ def test_ppo_can_restore_legacy_optimizer_state_without_controller_metadata() ->
         learning_rate=AutomaticLearningRate(initial_lr=0.123, updater=make_auto_lr_updater()),
         target_kl=0.002,
     )
-    restored._apply_optimizer_state_dict(original.optimizer.state_dict(), missing_keys=[], unexpected_keys=[])
-    assert restored.learning_rate == pytest.approx(original.learning_rate)
-    restored._maybe_update_automatic_lr(None, None, {})
-    restored._maybe_update_automatic_lr(None, None, {})
-    assert restored.learning_rate == pytest.approx(original.learning_rate * 1.1)
+    with pytest.raises(KeyError, match="automatic_lr"):
+        restored._apply_optimizer_state_dict(original.optimizer.state_dict(), missing_keys=[], unexpected_keys=[])
+
+
+def test_automatic_lr_checkpoint_preserves_controller_state() -> None:
+    def make_ppo() -> PPO:
+        return PPO(
+            policy=_DummyPolicy(), env=_DummyEnv(), target_kl=0.002,
+            learning_rate=AutomaticLearningRate(initial_lr=0.01, updater=make_auto_lr_updater()),
+        )
+
+    source = make_ppo()
+    source._maybe_update_automatic_lr(None, None, {})
+    source._maybe_update_automatic_lr(None, None, {})
+    source._auto_lr_enabled = False
+    restored = make_ppo()
+
+    restored._apply_optimizer_state_dict(source._get_optimizer_state_dict(), missing_keys=[], unexpected_keys=[])
+
+    assert restored.learning_rate == pytest.approx(source.learning_rate)
+    assert restored._auto_lr_state == source._auto_lr_state
+    assert not restored._auto_lr_enabled

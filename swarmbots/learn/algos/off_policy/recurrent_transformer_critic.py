@@ -1,7 +1,7 @@
 """Recurrent action-conditioned transformer team critics."""
 
 from dataclasses import replace
-from typing import Any, cast
+from typing import cast
 import torch
 from torch import nn
 from swarmbots.learn.algos.r_mat.r_mat_encoder import RMATEncoder, RMATEncoderConfig, RMATEncoderState
@@ -273,35 +273,6 @@ class RecurrentTransformerTwinCritic(TransformerTwinCritic):
         else:
             global_encoder_inputs = global_inputs
         return local_encoder_inputs, global_encoder_inputs
-
-    def _load_from_state_dict(
-        self,
-        state_dict: dict[str, Any],
-        prefix: str,
-        local_metadata: dict[str, Any],
-        strict: bool,
-        missing_keys: list[str],
-        unexpected_keys: list[str],
-        error_msgs: list[str],
-    ) -> None:
-        if self.observation_action_encoder2 is not None:
-            primary_prefix = f"{prefix}observation_action_encoder."
-            secondary_prefix = f"{prefix}observation_action_encoder2."
-            has_primary_encoder = any(key.startswith(primary_prefix) for key in state_dict)
-            has_secondary_encoder = any(key.startswith(secondary_prefix) for key in state_dict)
-            if has_primary_encoder and not has_secondary_encoder:
-                for key, value in list(state_dict.items()):
-                    if key.startswith(primary_prefix):
-                        state_dict[f"{secondary_prefix}{key.removeprefix(primary_prefix)}"] = value
-        super()._load_from_state_dict(
-            state_dict,
-            prefix,
-            local_metadata,
-            strict,
-            missing_keys,
-            unexpected_keys,
-            error_msgs,
-        )
 
     def _split_initial_state(
         self,

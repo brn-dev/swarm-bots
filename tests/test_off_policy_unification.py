@@ -9,17 +9,15 @@ import torch
 
 from swarmbots.learn.algos.mat.mat_encoder import MATEncoderConfig
 from swarmbots.learn.algos.off_policy import collect_off_policy_steps
-from swarmbots.learn.algos.off_policy.base_algorithm import OffPolicyAlgorithm
 from swarmbots.learn.algos.off_policy.nop import SACNOPLatentSource
-from swarmbots.learn.algos.off_policy.transformer_critic import TransformerCriticConfig, TransformerTwinCritic
+from swarmbots.learn.algos.off_policy.transformer_critic import TransformerCriticConfig
 from swarmbots.learn.algos.off_policy.actor_state_critic import ActorStateCriticInputConfig
 from swarmbots.learn.algos.r_mat.r_mat_encoder import RMATEncoderConfig
-from swarmbots.learn.algos.sac import SAC, RecurrentSAC, TMASACCriticConfig
+from swarmbots.learn.algos.sac import SAC, RecurrentSAC
 from swarmbots.learn.algos.sac.recurrent_tmasac_policy import RecurrentTMASACPolicy
-from swarmbots.learn.algos.sac.tmasac_policy import TMASACTwinCritic
 from swarmbots.learn.algos.td3 import RecurrentTD3, RecurrentTD3Policy, RecurrentTD3PolicyConfig, TD3
 from swarmbots.learn.algos.td3.td3_policy import TD3Policy
-from swarmbots.learn.algos.sac.tmasac_actor_heads import TMASACActorHeadConfig
+from swarmbots.learn.algos.off_policy.actor_heads import TMASACActorHeadConfig
 from swarmbots.learn.algos.off_policy.joint_critic import JointCriticConfig
 from tests.test_sac_algorithm import _make_env, _make_policy
 from tests.test_deterministic_baselines import make_policy
@@ -72,14 +70,6 @@ def assert_parameters_equal(before, parameters):
 
 def parameter_snapshot(parameters):
     return [value.detach().clone() for value in parameters]
-
-
-def test_objectives_and_legacy_critic_imports_share_the_neutral_components():
-    assert issubclass(SAC, OffPolicyAlgorithm)
-    assert issubclass(TD3, OffPolicyAlgorithm)
-    assert not issubclass(TD3, SAC)
-    assert TMASACCriticConfig is TransformerCriticConfig
-    assert TMASACTwinCritic is TransformerTwinCritic
 
 
 @pytest.mark.parametrize("variant", ["tmasac", "tmasac_dec", "tmatd3", "tmatd3_dec", "masac__deepset_critic", "matd3__deepset_critic"])

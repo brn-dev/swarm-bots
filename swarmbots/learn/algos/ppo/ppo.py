@@ -1163,13 +1163,13 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
 
     def _get_optimizer_state_dict(self) -> dict[str, Any]:
         state_dict = self.optimizer.state_dict()
-        if self.scheduler_manager is not None:
-            state_dict["schedulers"] = self.scheduler_manager.state_dict()
-        if self.automatic_lr is not None:
-            state_dict["automatic_lr"] = {
+        state_dict["schedulers"] = None if self.scheduler_manager is None else self.scheduler_manager.state_dict()
+        state_dict["automatic_lr"] = (
+            None if self.automatic_lr is None else {
                 "enabled": self._auto_lr_enabled,
                 "state": deepcopy(self._auto_lr_state),
             }
+        )
         return state_dict
 
     def _apply_optimizer_state_dict(
@@ -1186,11 +1186,13 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
                 state_dict.pop(k, None)
 
         state_dict = state_dict.copy()
-        automatic_lr_state = state_dict.pop("automatic_lr", None)
-        scheduler_state = state_dict.pop("schedulers", None)
+        automatic_lr_state = state_dict.pop("automatic_lr")
+        scheduler_state = state_dict.pop("schedulers")
+        if (automatic_lr_state is None) != (self.automatic_lr is None):
+            raise ValueError("Checkpoint automatic learning rate configuration does not match the trainer")
+        if (scheduler_state is None) != (self.scheduler_manager is None):
+            raise ValueError("Checkpoint schedulers do not match the trainer; configure the matching SchedulerManager")
         if scheduler_state is not None:
-            if self.scheduler_manager is None:
-                raise ValueError("Checkpoint contains schedulers; configure the matching SchedulerManager before loading")
             self.scheduler_manager.load_state_dict(scheduler_state)
         self.optimizer.load_state_dict(state_dict)
         if self.automatic_lr is not None and automatic_lr_state is not None:

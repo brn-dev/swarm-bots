@@ -149,7 +149,7 @@ def test_append_episode_infos_omits_stats_masked_out_for_a_scenario() -> None:
     ]
 
 
-def test_append_episode_infos_keeps_legacy_behavior_without_scenario_metadata() -> None:
+def test_append_episode_infos_supports_unconditioned_environments() -> None:
     episode_infos: list[dict[str, object]] = []
 
     append_episode_infos(

@@ -9,7 +9,7 @@ import sys
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Optional, Collection, Callable, Mapping, Self
+from typing import Any, Optional, Collection, Callable, Self
 
 import torch
 from loguru import logger
@@ -20,9 +20,12 @@ except ValueError:
     logger.level("SAVE", no=21, color="<magenta>")
 
 from swarmbots.learn.base_policy import BasePolicy
-from swarmbots.learn.checkpointing import align_torch_compile_state_dict_keys, load_checkpoint, \
-    extract_policy_state_dict, extract_optimizer_state_dict, apply_env_state, extract_env_state, \
-    capture_env_state
+from swarmbots.learn.checkpointing import (
+    align_torch_compile_state_dict_keys,
+    apply_env_state,
+    capture_env_state,
+    load_checkpoint,
+)
 from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
 from swarmbots.learn.exponential_moving_average import ExponentialMovingAverage, HybridEMA
 from swarmbots.learn.logging_levels import ConsoleSelection, LoggingLevel
@@ -44,10 +47,6 @@ MIN_ITERATIONS_FOR_BEST = 100
 
 LearningRate = float | list[float] | dict[str, float]
 LearnIterationHook = Callable[["BaseAlgorithm", dict[str, Any], int], None]
-PolicyStateDictTransform = Callable[
-    [dict[str, Any], Mapping[str, Any]],
-    dict[str, Any],
-]
 
 MEAN_STD_LOG_METRIC_KEYS = frozenset({
     "rollout_time",
@@ -495,21 +494,14 @@ class BaseAlgorithm(abc.ABC):
             map_location: Any | None = "cpu",
             recover_best_return_ema: bool = True,
             strict_load_state_dict: bool = True,
-            policy_state_dict_transform: PolicyStateDictTransform | None = None,
             restore_optimizer_state: bool = True,
             restore_env_state: bool = True,
     ) -> None:
         checkpoint = load_checkpoint(path, map_location=map_location)
-        target_state_dict = self.policy.state_dict()
         policy_state_dict = align_torch_compile_state_dict_keys(
-            extract_policy_state_dict(checkpoint),
-            target_keys=target_state_dict.keys(),
+            checkpoint["policy_state_dict"],
+            target_keys=self.policy.state_dict().keys(),
         )
-        if policy_state_dict_transform is not None:
-            policy_state_dict = policy_state_dict_transform(
-                policy_state_dict,
-                target_state_dict,
-            )
         missing_keys, unexpected_keys = self.policy.load_state_dict(
             policy_state_dict,
             strict=strict_load_state_dict
@@ -518,7 +510,7 @@ class BaseAlgorithm(abc.ABC):
             logger.warning(f'{missing_keys = },  {unexpected_keys = }')
 
         optimizer_state_dict = (
-            extract_optimizer_state_dict(checkpoint)
+            checkpoint.get("optimizer_state_dict")
             if restore_optimizer_state
             else None
         )
@@ -528,7 +520,7 @@ class BaseAlgorithm(abc.ABC):
                 self._apply_learning_rate(self.learning_rate)
             else:
                 # Warmup schedules recompute optimizer rates from the base rate on the next update.
-                self.learning_rate = checkpoint.get("hyper_parameters", {}).get("learning_rate", self.learning_rate)
+                self.learning_rate = checkpoint["hyper_parameters"]["learning_rate"]
                 self._apply_optimizer_state_dict(
                     optimizer_state_dict,
                     missing_keys=missing_keys,
@@ -537,15 +529,14 @@ class BaseAlgorithm(abc.ABC):
         else:
             self._apply_learning_rate(self.learning_rate)
 
-        if isinstance(checkpoint, dict):
-            self.n_total_iterations = checkpoint.get("n_total_iterations", 0)
-            self.n_total_updates = checkpoint.get("n_total_updates", 0)
-            self.n_total_timesteps = checkpoint.get("n_total_timesteps", 0)
-            if recover_best_return_ema:
-                self._best_return_ema = checkpoint.get("best_return_ema", checkpoint.get("return_ema", None))
+        self.n_total_iterations = checkpoint["n_total_iterations"]
+        self.n_total_updates = checkpoint["n_total_updates"]
+        self.n_total_timesteps = checkpoint["n_total_timesteps"]
+        if recover_best_return_ema:
+            self._best_return_ema = checkpoint["best_return_ema"]
 
         if restore_env_state:
-            apply_env_state(self.env, extract_env_state(checkpoint))
+            apply_env_state(self.env, checkpoint["env_state"])
 
     def _execute_command(
             self,

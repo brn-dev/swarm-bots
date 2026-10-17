@@ -158,13 +158,6 @@ class PredictedStdGaussianActionDist(ContinuousActionDist):
             raise ValueError(f"multiplier must be > 0, got {multiplier}")
         self.base_log_std.add_(math.log(multiplier))
 
-    def _load_from_state_dict(self, state_dict, prefix, *args, **kwargs) -> None:
-        # Older checkpoints did not persist this scale; retain their constructor default.
-        key = prefix + "base_log_std"
-        if key not in state_dict:
-            state_dict[key] = self.base_log_std.detach().clone()
-        super()._load_from_state_dict(state_dict, prefix, *args, **kwargs)
-
     def get_hyper_parameters(self) -> dict[str, Any]:
         return {
             **super().get_hyper_parameters(),

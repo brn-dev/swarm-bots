@@ -30,7 +30,7 @@ The command restores policy weights and observation normalization, records compl
 | NOP disabled | `--no-use-nop` |
 | Different action distribution | `--continuous-action-dist predicted_std_gaussian` (or the saved choice) |
 | Custom architecture | `--policy-kwargs` with matching settings as a JSON object |
-| Custom-width model | `--model-scale legacy` plus matching architecture settings |
+| Custom-width model | `--model-scale custom` plus matching architecture settings |
 | Recurrent TD3 actor | `--policy-kwargs '{"td3_recurrent_actor":true}'` |
 | Recurrent TD3 actor and critic | `--policy-kwargs '{"td3_recurrent_actor":true,"td3_recurrent_critic":true}'` |
 
@@ -42,7 +42,7 @@ swarmbots record SwarmBots-POWallMedium-v0 --checkpoint checkpoints/recurrent-td
 
 Replace the checkpoint path with the saved file. The same dictionaries apply as `policy_kwargs` in Python checkpoint continuation, saved-policy evaluation, and `record_checkpoint`.
 
-If PopArt was customized through training's `algorithm_kwargs`, supply matching `use_popart` through recording's `--policy-kwargs`. Architecture changes between package versions can require manual checkpoint migration or retraining; see the [changelog](../CHANGELOG.md).
+If PopArt was customized through training's `algorithm_kwargs`, supply matching `use_popart` through recording's `--policy-kwargs`. Loading requires the current checkpoint format and matching architecture and observation layouts.
 
 ## Recording options
 

@@ -54,7 +54,7 @@ def build_gsde_step_reset_mask(
 def gsde_reset_mode_from_settings(settings: Mapping[str, Any] | None) -> GSDEResetMode | None:
     if settings is None:
         return None
-    mode = settings.get("mode", settings.get("type"))
+    mode = settings["mode"]
     if mode == "episode":
         return GSDEEpisodeResetMode()
     if mode == "interval":
