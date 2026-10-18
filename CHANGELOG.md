@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Separate incoming public/action arrows from outgoing critic-encoder arrows around off-policy joint critic inputs, and order attachment points by their destinations.
 - Route on-policy public observations straight toward the actor and downward toward the critic, removing crossed arrows beside the input box.
 - Correct the documented MAPPO BibTeX key to `mappo`, matching `references.bib`.
 - Refresh the local policy diagram gallery and parameter reports for every current variant and scale, including MAPPO's Deep Set critic and early privileged inputs, and archive obsolete generated exports outside the gallery.

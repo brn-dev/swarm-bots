@@ -396,6 +396,24 @@ def assert_connections_and_labels_leave_components_unobstructed(diagram: Diagram
         assert 95 <= label.y and label.y + label.height < diagram.height - 20
         assert not any(label.overlaps(node_bounds(node)) for node in diagram.nodes)
         assert not any(label.overlaps(other) for other in labels[index + 1:])
+    assert_joint_critic_inputs_do_not_intersect_outputs(diagram)
+
+
+def assert_joint_critic_inputs_do_not_intersect_outputs(diagram: Diagram) -> None:
+    nodes = {node.id: node for node in diagram.nodes}
+    inputs = [edge for edge in diagram.edges if edge.target == "q_inputs"]
+    outputs = [edge for edge in diagram.edges if edge.source == "q_inputs"]
+    for edge in inputs:
+        points = edge_points(edge, nodes)
+        for other in outputs:
+            other_points = edge_points(other, nodes)
+            for start, end in zip(points, points[1:]):
+                for other_start, other_end in zip(other_points, other_points[1:]):
+                    assert any(
+                        max(min(start[axis], end[axis]), min(other_start[axis], other_end[axis]))
+                        > min(max(start[axis], end[axis]), max(other_start[axis], other_end[axis]))
+                        for axis in (0, 1)
+                    ), (edge.source, edge.target, other.source, other.target, start, end, other_start, other_end)
 
 
 @pytest.mark.parametrize("vertical", [False, True])
@@ -553,6 +571,7 @@ def test_recurrent_deepset_diagrams_preserve_actor_state_inputs_and_parameter_to
     assert not report["errors"]
     row, = report["policies"]
     diagram, = generate(report["policies"], tmp_path)
+    assert_joint_critic_inputs_do_not_intersect_outputs(diagram)
     nodes = {node.id: node for node in diagram.nodes}
     edges = {(edge.source, edge.target) for edge in diagram.edges}
     assert ("state_bridge" in nodes) is actor_state_input
@@ -590,6 +609,7 @@ def test_independent_deepset_encoders_feed_private_readouts_and_concatenated_nop
     )
     assert not report["errors"]
     for diagram, row in zip(generate(report["policies"], tmp_path), report["policies"], strict=True):
+        assert_joint_critic_inputs_do_not_intersect_outputs(diagram)
         nodes = {node.id: node for node in diagram.nodes}
         edges = {(edge.source, edge.target) for edge in diagram.edges}
         assert ("q_inputs", "critic_encoder") in edges and ("q_inputs", "critic_encoder2") in edges

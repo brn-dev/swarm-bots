@@ -152,14 +152,15 @@ def assign_ports(diagram: Diagram) -> None:
         source, target = nodes[edge.source], nodes[edge.target]
         edge.via = []
         edge.label_box = None
+        edge.source_offset = edge.target_offset = 0.5
         if edge.source == edge.target:
             edge.source_port, edge.target_port = "top", "top"
         elif (edge.source, edge.target) == ("actions", "actor"):
             edge.source_port, edge.target_port = "right", "top"
         elif (edge.source, edge.target) == ("actions", "q_inputs"):
-            edge.source_port, edge.target_port = "right", "right"
+            edge.source_port, edge.target_port = "right", "top"
         elif (edge.source, edge.target) == ("public", "q_inputs"):
-            edge.source_port, edge.target_port = "right", "right"
+            edge.source_port, edge.target_port = "bottom", "left"
         elif edge.source == "public" and target.role == "critic":
             edge.source_port, edge.target_port = "bottom", "left"
         elif edge.target == "q_features" and source.x == target.x:
@@ -172,9 +173,23 @@ def assign_ports(diagram: Diagram) -> None:
             edge.source_port, edge.target_port = "left", "right"
         endpoints[edge.source, edge.source_port].append((edge, "source"))
         endpoints[edge.target, edge.target_port].append((edge, "target"))
-    for connections in endpoints.values():
-        for index, (edge, end) in enumerate(connections, start=1):
-            setattr(edge, end + "_offset", index / (len(connections) + 1))
+
+    def remote_attachment(connection: tuple[Edge, str]) -> Point:
+        edge, end = connection
+        other_end = "target" if end == "source" else "source"
+        return port(
+            nodes[getattr(edge, other_end)],
+            getattr(edge, other_end + "_port"),
+            getattr(edge, other_end + "_offset"),
+        )
+
+    # Refine the ordering after remote fan-in ports have moved away from node centers.
+    for _ in range(2):
+        for (_, side), connections in endpoints.items():
+            axis = 1 if side in {"left", "right"} else 0
+            connections.sort(key=lambda connection: remote_attachment(connection)[axis])
+            for index, (edge, end) in enumerate(connections, start=1):
+                setattr(edge, end + "_offset", index / (len(connections) + 1))
 
 
 def simplified(points: list[Point]) -> list[Point]:
