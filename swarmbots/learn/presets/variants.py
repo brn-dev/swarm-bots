@@ -22,7 +22,7 @@ VARIANT_CONFIGS: dict[str, LearningVariantConfig] = {
     name: LearningVariantConfig(policy_variant=name)
     for name in (
         "ppo",
-        "mappo",
+        "mappo__deepset_critic",
         "mat_orig",
         "mat_ind",
         "mat_dec",
@@ -54,7 +54,7 @@ VARIANT_CONFIGS.update({
 
 # Auxiliary-loss and attention controls remain explicit selections.
 _DEFAULT_VARIANTS = {
-    "ppo", "mappo", "mat_orig", "mat_ind", "mat_dec", "mat_qcx",
+    "ppo", "mappo__deepset_critic", "mat_orig", "mat_ind", "mat_dec", "mat_qcx",
     "mat_ind__lstm", "mat_qcx__lstm", "maddpg__deepset_critic", "matd3__deepset_critic",
     "masac__deepset_critic", "tmatd3", "tmatd3_dec", "tmasac", "tmasac_dec",
     "tmasac__slstm", "tmasac__lstm",

@@ -2,6 +2,7 @@ from typing import Optional
 
 import torch
 
+from swarmbots.learn.algos.mat.independent_encoders import encode_critic_observations
 from swarmbots.learn.base_policy import PolicyCompileConfig, policy_inference_step
 from swarmbots.learn.algos.ppo.ppo_rollout_buffer import PPOEpisodeSegment
 from swarmbots.learn.algos.r_mat.r_mat_encoder import RMATEncoder, RMATEncoderState
@@ -57,11 +58,10 @@ class RMATPolicyMixin:
         critic_observations, _ = self._encode_critic_observations(
             local_obs=local_obs, global_obs=global_obs, agent_mask=agent_mask,
             temporal_state=next_state, episode_start_mask=None,
+            hidden_local_vars=hidden_local_vars, hidden_global_vars=hidden_global_vars,
         )
-        values = self._critic_with_hidden_vars(
+        values = self.critic(
             critic_observations,
-            hidden_local_vars,
-            hidden_global_vars,
             agent_mask=agent_mask,
         )
         assert log_probs is not None
@@ -84,11 +84,10 @@ class RMATPolicyMixin:
             agent_mask=agent_mask,
             temporal_state=None,
             episode_start_mask=None,
+            hidden_local_vars=hidden_local_vars, hidden_global_vars=hidden_global_vars,
         )
-        return self._critic_with_hidden_vars(
+        return self.critic(
             critic_observations,
-            hidden_local_vars,
-            hidden_global_vars,
             agent_mask=agent_mask,
         )
 
@@ -182,11 +181,10 @@ class RMATPolicyMixin:
         critic_observations, next_state = self._encode_critic_observations(
             local_obs=local_obs, global_obs=global_obs, agent_mask=agent_mask,
             temporal_state=next_state, episode_start_mask=episode_start_mask,
+            hidden_local_vars=hidden_local_vars, hidden_global_vars=hidden_global_vars,
         )
-        values = self._critic_with_hidden_vars(
+        values = self.critic(
             critic_observations,
-            hidden_local_vars,
-            hidden_global_vars,
             agent_mask=agent_mask,
         )
         assert log_probs is not None
@@ -212,11 +210,10 @@ class RMATPolicyMixin:
             agent_mask=agent_mask,
             temporal_state=temporal_state,
             episode_start_mask=episode_start_mask,
+            hidden_local_vars=hidden_local_vars, hidden_global_vars=hidden_global_vars,
         )
-        values = self._critic_with_hidden_vars(
+        values = self.critic(
             critic_observations,
-            hidden_local_vars,
-            hidden_global_vars,
             agent_mask=agent_mask,
         )
         return values, next_state
@@ -285,6 +282,8 @@ class RMATPolicyMixin:
         *,
         local_obs: torch.Tensor,
         global_obs: torch.Tensor,
+        hidden_local_vars: torch.Tensor | None,
+        hidden_global_vars: torch.Tensor | None,
         agent_mask: torch.Tensor | None,
         temporal_state: RMATPolicyState | None,
         episode_start_mask: torch.Tensor | None,
@@ -294,23 +293,26 @@ class RMATPolicyMixin:
                 batch_size=local_obs.shape[0], n_agents=local_obs.shape[-2],
                 device=local_obs.device, dtype=local_obs.dtype,
             )
-        observations, critic_state = self.critic_encoder(
-            local_obs, global_obs, agent_mask=agent_mask,
+        observations, critic_state = encode_critic_observations(
+            self.critic_encoder, local_obs, global_obs, hidden_local_vars, hidden_global_vars, agent_mask,
             initial_state=temporal_state["critic"], reset_mask=episode_start_mask,
         )
         return observations, {**temporal_state, "critic": critic_state}
 
     def _encode_training_observations(self, batch: RPPOWMSamples) -> tuple[torch.Tensor, torch.Tensor]:
         states = batch.initial_temporal_state
-        encoded = []
-        for role, encoder in (("actor", self.actor_encoder), ("critic", self.critic_encoder)):
-            observations, _ = encoder(
-                batch.local_obs, batch.global_obs, agent_mask=batch.agent_mask,
-                time_mask=batch.time_mask, initial_state=None if states is None else states[role],
-                reset_mask=batch.episode_start_mask,
-            )
-            encoded.append(observations)
-        return encoded[0], encoded[1]
+        actor_observations, _ = self.actor_encoder(
+            batch.local_obs, batch.global_obs, agent_mask=batch.agent_mask,
+            time_mask=batch.time_mask, initial_state=None if states is None else states["actor"],
+            reset_mask=batch.episode_start_mask,
+        )
+        critic_observations, _ = encode_critic_observations(
+            self.critic_encoder, batch.local_obs, batch.global_obs,
+            batch.hidden_local_vars, batch.hidden_global_vars, batch.agent_mask,
+            time_mask=batch.time_mask, initial_state=None if states is None else states["critic"],
+            reset_mask=batch.episode_start_mask,
+        )
+        return actor_observations, critic_observations
 
 
 def flatten_time_agent_mask(

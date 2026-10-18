@@ -309,10 +309,9 @@ class PPOPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
             previous_actions=previous_actions,
         )
 
-        critic_latents = self._encode_critic_observations(local_obs, global_obs, actor_latents=local_latents)
-        critic_local_obs = self._build_critic_local_obs(critic_latents, hidden_local_vars)
-        critic_global_obs = self._build_critic_global_obs(hidden_global_vars)
-        values = self.critic(critic_local_obs, critic_global_obs, agent_mask=agent_mask)
+        values, _ = self._evaluate_critic(
+            local_obs, global_obs, hidden_local_vars, hidden_global_vars, agent_mask, actor_latents=local_latents,
+        )
         return actions, log_probs, values
 
     def _evaluate_actions(
@@ -335,10 +334,9 @@ class PPOPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
         self.action_dist.update_latent_features(latent_pi)
         log_probs = self.action_dist.log_prob(actions, previous_actions=previous_actions)
 
-        critic_latents = self._encode_critic_observations(local_obs, global_obs, actor_latents=local_latents)
-        critic_local_obs = self._build_critic_local_obs(critic_latents, hidden_local_vars)
-        critic_global_obs = self._build_critic_global_obs(hidden_global_vars)
-        values = self.critic(critic_local_obs, critic_global_obs, agent_mask=agent_mask)
+        values, critic_latents = self._evaluate_critic(
+            local_obs, global_obs, hidden_local_vars, hidden_global_vars, agent_mask, actor_latents=local_latents,
+        )
 
         return log_probs, values, {}, {}, critic_latents
 
@@ -353,10 +351,7 @@ class PPOPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
     ) -> torch.Tensor:
         _ = previous_actions
         local_obs = self._mask_local_obs(local_obs, agent_mask)
-        critic_latents = self._encode_critic_observations(local_obs, global_obs)
-        critic_local_obs = self._build_critic_local_obs(critic_latents, hidden_local_vars)
-        critic_global_obs = self._build_critic_global_obs(hidden_global_vars)
-        return self.critic(critic_local_obs, critic_global_obs, agent_mask=agent_mask)
+        return self._evaluate_critic(local_obs, global_obs, hidden_local_vars, hidden_global_vars, agent_mask)[0]
 
     def act(
             self,
@@ -390,6 +385,16 @@ class PPOPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
         if actor_latents is not None:
             return actor_latents
         return self.shared_encoder(local_obs, global_obs)
+
+    def _evaluate_critic(
+        self, local_obs: torch.Tensor, global_obs: torch.Tensor,
+        hidden_local_vars: torch.Tensor | None, hidden_global_vars: torch.Tensor | None,
+        agent_mask: torch.Tensor | None, *, actor_latents: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        critic_latents = self._encode_critic_observations(local_obs, global_obs, actor_latents=actor_latents)
+        critic_local_obs = self._build_critic_local_obs(critic_latents, hidden_local_vars)
+        critic_global_obs = self._build_critic_global_obs(hidden_global_vars)
+        return self.critic(critic_local_obs, critic_global_obs, agent_mask=agent_mask), critic_latents
 
     def make_sampler(
             self,

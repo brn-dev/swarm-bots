@@ -12,6 +12,7 @@ class MAPPOEncoderConfig:
     hidden_dims: list[int] = field(default_factory=list)
     latent_dim: int = 64
     act_fun_class: type[nn.Module] = nn.Tanh
+    layer_norm: bool = False
 
 
 class MAPPOEncoder(nn.Module):
@@ -28,6 +29,7 @@ class MAPPOEncoder(nn.Module):
             end_with_act_fn=True,
             linear_init=linear_init,
             act_fn_cls=config.act_fun_class,
+            layer_norm=config.layer_norm,
         )
 
     def forward(self, local_obs: torch.Tensor, global_obs: torch.Tensor) -> torch.Tensor:

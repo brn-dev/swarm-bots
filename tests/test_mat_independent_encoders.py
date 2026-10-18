@@ -6,9 +6,8 @@ import torch
 from gymnasium import spaces
 
 from swarmbots.learn.algos.mappo.mappo_actor import MAPPOActorConfig
-from swarmbots.learn.algos.mappo.mappo_encoder import MAPPOEncoderConfig
-from swarmbots.learn.algos.mappo.mappo_policy import MAPPOCriticConfig, MAPPOPolicy, MAPPOPolicyConfig
-from swarmbots.learn.nn_components.deep_set import DeepSetCriticConfig
+from swarmbots.learn.algos.mappo.mappo_policy import MAPPOPolicy, MAPPOPolicyConfig
+from swarmbots.learn.algos.mat_qc_base_policy import MATCriticConfig
 from swarmbots.learn.algos.world_modeling.next_obs_pred_mixin import NextObsPredConfig
 from swarmbots.learn.algos.world_modeling.next_obs_pred_ppo_wrapper import NextObsPredWrapper, NOPWorldModelConfig
 from swarmbots.learn.algos.mat.mat_dec_policy import MATDecPolicy, MATDecPolicyConfig
@@ -44,8 +43,8 @@ def make_policy(policy_class: type, config_class: type, *, compile_modules: bool
     if policy_class is MAPPOPolicy:
         return policy_class(env=env, config=config_class(
             actor_config=MAPPOActorConfig(hidden_dims=[16], latent_dim=16, latent_pi_dim=16),
-            critic_encoder_config=MAPPOEncoderConfig(hidden_dims=[12], latent_dim=12),
-            critic_config=MAPPOCriticConfig(deep_set_config=DeepSetCriticConfig([12], [12])),
+            critic_encoder_config=MATEncoderConfig(d_model=12, nhead=4, num_layers=1, dim_feedforward=24),
+            critic_config=MATCriticConfig(local_projection_hidden_dims=[12], value_regressor_hidden_dims=[12]),
             compile_modules=compile_modules,
         ))
     encoder_class = RMATEncoderConfig if policy_class in (RMATIndPolicy, RMATQCXPolicy) else MATEncoderConfig
@@ -67,6 +66,45 @@ def observations() -> dict[str, torch.Tensor]:
         hidden_local_vars=torch.randn(2, 3, 2), hidden_global_vars=torch.randn(2, 1),
         agent_mask=torch.tensor([[True, True, False], [True, True, True]]),
     )
+
+
+@pytest.mark.parametrize("policy_class,config_class", POLICIES)
+@pytest.mark.parametrize("privileged_key", ["hidden_local_vars", "hidden_global_vars"])
+def test_privileged_inputs_enter_critic_communication_and_leave_actor_unchanged(
+    policy_class: type, config_class: type, privileged_key: str,
+) -> None:
+    policy = make_policy(policy_class, config_class)
+    obs = observations()
+    features = []
+    handle = policy.critic_encoder.register_forward_hook(
+        lambda _module, _inputs, output: features.append((output[0] if isinstance(output, tuple) else output).detach().clone())
+    )
+    changed = {**obs, privileged_key: obs[privileged_key].clone()}
+    if privileged_key == "hidden_local_vars":
+        changed[privileged_key][:, 0] += 2
+    else:
+        changed[privileged_key] += 2
+    try:
+        values = policy.predict_values(**obs)
+        changed_values = policy.predict_values(**changed)
+    finally:
+        handle.remove()
+    assert not torch.allclose(features[0][:, 1], features[1][:, 1])
+    assert not torch.allclose(values, changed_values)
+    torch.testing.assert_close(policy.act(**obs, deterministic=True), policy.act(**changed, deterministic=True))
+
+
+@pytest.mark.parametrize("policy_class,config_class", POLICIES)
+def test_critic_encoding_ignores_nonfinite_inactive_observations(
+    policy_class: type, config_class: type,
+) -> None:
+    policy = make_policy(policy_class, config_class)
+    obs = observations()
+    reference = policy.predict_values(**obs)
+    padded = {**obs}
+    for name in ("local_obs", "hidden_local_vars"):
+        padded[name] = obs[name].masked_fill(~obs["agent_mask"].unsqueeze(-1), torch.nan)
+    torch.testing.assert_close(policy.predict_values(**padded), reference)
 
 
 @pytest.mark.parametrize("policy_class,config_class", POLICIES)
@@ -179,7 +217,7 @@ def test_sequence_training_reproduces_both_rollout_histories(policy_class: type,
 
 
 @pytest.mark.parametrize("variant", [
-    "mappo__mlp_critic", "maddpg__mlp_critic", "matd3__mlp_critic", "masac__mlp_critic", "tmasac__ac_shared_observation_encoder",
+    "mappo", "mappo__mlp_critic", "maddpg__mlp_critic", "matd3__mlp_critic", "masac__mlp_critic", "tmasac__ac_shared_observation_encoder",
     "tmasac__swiglu", "tmasac__slstm__swiglu", "tmasac__slstm__no_residual",
     "tmasac__slstm__ac_shared_observation_encoder", "tmasac__slstm__no_nop", "tmasac__lstm__no_actor_state", "tmasac__segment",
 ])

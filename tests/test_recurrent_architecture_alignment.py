@@ -7,6 +7,7 @@ from torch import nn
 from swarmbots.learn import list_model_scales
 from swarmbots.learn.algos.mat import MATEncoderConfig
 from swarmbots.learn.algos.r_mat import RMATEncoder
+from swarmbots.learn.parameter_counts import count_policy_parameters
 from test_model_scale import make_policy
 
 
@@ -40,8 +41,6 @@ def _assert_additive_recurrent_encoder(baseline: nn.Module, recurrent: RMATEncod
     [
         ("mat_ind", "mat_ind__lstm"),
         ("mat_qcx", "mat_qcx__lstm"),
-        ("tmasac", "tmasac__lstm"),
-        ("tmasac", "tmasac__slstm"),
     ],
 )
 def test_recurrent_presets_add_memory_without_resizing_the_base(
@@ -62,23 +61,51 @@ def test_recurrent_presets_add_memory_without_resizing_the_base(
     assert _parameter_shapes(recurrent.actor_head) == _parameter_shapes(baseline.actor_head)
     assert recurrent.config.critic_config == baseline.config.critic_config
 
-    if baseline_variant.startswith("mat_"):
-        _assert_additive_recurrent_encoder(baseline.critic_encoder, recurrent.critic_encoder)
-        assert _parameter_shapes(recurrent.critic) == _parameter_shapes(baseline.critic)
-        assert recurrent.actor_encoder is not recurrent.critic_encoder
-        if baseline_variant == "mat_qcx":
-            assert recurrent.config.decoder_config == baseline.config.decoder_config
-            assert _parameter_shapes(recurrent.decoder) == _parameter_shapes(baseline.decoder)
-    else:
-        assert _parameter_shapes(recurrent.critic.q1) == _parameter_shapes(baseline.critic.q1)
-        assert _parameter_shapes(recurrent.critic.q2) == _parameter_shapes(baseline.critic.q2)
-        assert recurrent.config.actor_state_critic_input_config is not None
-        assert sum(parameter.numel() for parameter in recurrent.critic.actor_state_encoder.parameters()) > 0
-        assert _parameter_shapes(recurrent.critic.encoder.layers) == _parameter_shapes(baseline.critic.encoder.layers)
+    _assert_additive_recurrent_encoder(baseline.critic_encoder, recurrent.critic_encoder)
+    assert _parameter_shapes(recurrent.critic) == _parameter_shapes(baseline.critic)
+    assert recurrent.actor_encoder is not recurrent.critic_encoder
+    if baseline_variant == "mat_qcx":
+        assert recurrent.config.decoder_config == baseline.config.decoder_config
+        assert _parameter_shapes(recurrent.decoder) == _parameter_shapes(baseline.decoder)
 
 
 @pytest.mark.parametrize("scale", [None, *list_model_scales()])
-def test_lstm_and_slstm_use_the_same_non_temporal_architecture(scale: str | None) -> None:
+@pytest.mark.parametrize("variant", ["tmasac__lstm", "tmasac__slstm"])
+def test_recurrent_tmasac_splits_actor_mlp_budget_and_preserves_critic(
+    scale: str | None, variant: str,
+) -> None:
+    with torch.device("meta"):
+        baseline = make_policy("tmasac", scale, use_nop=False)
+        recurrent = make_policy(variant, scale, use_nop=False)
+
+    for field in fields(MATEncoderConfig):
+        if field.name not in {"transformer_ff_config", "dim_feedforward"}:
+            assert getattr(recurrent.actor_encoder_config, field.name) == getattr(baseline.actor_encoder_config, field.name)
+        assert getattr(recurrent.critic_encoder_config, field.name) == getattr(baseline.critic_encoder_config, field.name)
+    assert recurrent.actor_encoder.config.temporal_model_order == "inter_agent_attention_first"
+    assert recurrent.actor_encoder.config.inter_module_mlp
+    for reference_layer, layer in zip(baseline.actor_encoder.layers, recurrent.actor_encoder.layers, strict=True):
+        assert _parameter_shapes(layer.self_attn) == _parameter_shapes(reference_layer.self_attn)
+        reference_count = sum(parameter.numel() for parameter in reference_layer.feedforward.parameters())
+        for feedforward in (layer.inter_module_feedforward, layer.feedforward):
+            linears = [module for module in feedforward.modules() if isinstance(module, nn.Linear)]
+            assert len(linears) == 2
+            assert linears[0].in_features == linears[-1].out_features == layer.d_model
+            assert sum(parameter.numel() for parameter in feedforward.parameters()) == pytest.approx(reference_count / 2, rel=0.01)
+        assert not {id(parameter) for parameter in layer.inter_module_feedforward.parameters()} & {
+            id(parameter) for parameter in layer.feedforward.parameters()
+        }
+        assert layer.temporal_residual and layer.temporal_layer_norm
+    assert _parameter_shapes(recurrent.actor_head) == _parameter_shapes(baseline.actor_head)
+    assert recurrent.config.critic_config == baseline.config.critic_config
+    assert _parameter_shapes(recurrent.critic.q1) == _parameter_shapes(baseline.critic.q1)
+    assert _parameter_shapes(recurrent.critic.q2) == _parameter_shapes(baseline.critic.q2)
+    assert recurrent.config.actor_state_critic_input_config is not None
+    assert _parameter_shapes(recurrent.critic.encoder.layers) == _parameter_shapes(baseline.critic.encoder.layers)
+
+
+@pytest.mark.parametrize("scale", [None, *list_model_scales()])
+def test_lstm_and_slstm_match_non_temporal_architecture_and_fixed_main_budget(scale: str | None) -> None:
     with torch.device("meta"):
         lstm = make_policy("tmasac__lstm", scale, use_nop=False)
         slstm = make_policy("tmasac__slstm", scale, use_nop=False)
@@ -91,6 +118,10 @@ def test_lstm_and_slstm_use_the_same_non_temporal_architecture(scale: str | None
         for policy in (lstm, slstm)
     ]
     assert critic_shapes[0] == critic_shapes[1]
+    if scale is not None:
+        lstm_count = count_policy_parameters(lstm)["trainable_minus_nop"]
+        slstm_count = count_policy_parameters(slstm)["trainable_minus_nop"]
+        assert lstm_count == pytest.approx(slstm_count, rel=0.005)
     for policy in (lstm, slstm):
         state_width = policy.actor_encoder.layers[-1].temporal_model.hidden_dim
         first_linear = next(module for module in policy.critic.actor_state_encoder.modules() if isinstance(module, nn.Linear))

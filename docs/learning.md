@@ -13,7 +13,7 @@ from swarmbots.learn import train
 
 trainer = train(
     "SwarmBots-WallEasy-v0",
-    "mappo",
+    "mappo__deepset_critic",
     num_envs=256,
     device="cuda",
     total_timesteps=1_000_000,
@@ -38,7 +38,7 @@ print(list_variants())
 | Preset | What it runs |
 | --- | --- |
 | `ppo` | PPO with a joint multilayer perceptron (MLP) actor |
-| `mappo` | MAPPO with independent actor/critic encoders and a centralized team critic |
+| `mappo__deepset_critic` | MAPPO with a local MLP actor and a centralized Deep Set critic; privileged inputs enter before critic encoding |
 | `mat_orig`, `mat_ind`, `mat_dec` | PPO with autoregressive, independent-head, or decentralized multi-agent transformer (MAT) actors |
 | `mat_qcx` | PPO with the query/context autoregressive MAT decoder |
 | `mat_ind__lstm`, `mat_qcx__lstm` | MAT policies with LSTM memory |
@@ -88,6 +88,8 @@ The `model_scale` argument selects a fixed layout; `model_scale="2.5M"` selects 
 | `10M-4L` | 10 million, with four encoder blocks | 2 million |
 | `10M-5L` | 10 million, with five encoder blocks | 2 million |
 
+At the 5M budget, 2L actors use 320-wide features and 3L actors use 256-wide features across MAT, MAPPO and off-policy families. FF/head widths balance their parameter budgets; plain PPO retains its shared backbone.
+
 NOP means **next-observation prediction**, an auxiliary training objective enabled by default in the core presets. MAT, recurrent MAT, and MAPPO train NOP from critic-encoder features; the prediction loss updates the critic encoder without updating the actor. Plain PPO retains its shared feature encoder. `use_nop=False` disables it without changing the main policy's dimensions.
 
 The scale names describe approximate feed-forward budgets, not exact counts or GPU memory requirements. Recurrent memory and optional gates add parameters; targets and optimizer state need additional memory. Fewer parallel worlds or a smaller model scale reduce memory requirements.
@@ -127,7 +129,47 @@ trainer = train(
 
 PPO, SAC, and TD3 accept different learner options. The [recurrent TD3 example](../examples/README.md#train-recurrent-td3) supplies the recurrent actor and replay settings.
 
+Off-policy default batches target 1,024 learning positions independently of environment count and rollout length. Feed-forward learners sample 1,024 transitions; recurrent learners divide this budget by their effective `learning_steps`, rounding up to at least one whole sequence. The default 64-step learning horizon therefore uses 16 sequences per update. An explicit `algorithm_kwargs={"batch_size": ...}` overrides this default and counts transitions for feed-forward learners or sequences for recurrent learners. Burn-in adds computation outside the scored learning-position budget.
+
+`make_training` shares these defaults across SAC, DDPG and TD3 presets, including hidden controls:
+
+| Setting | Shared off-policy default |
+| --- | --- |
+| Actor/critic optimizer and learning rate | Adam, `5e-5` |
+| Actor/critic learning-rate warmup | 500 critic updates, starting at 1% of the base rate |
+| Learning positions per batch / gradient steps | 1,024 / 8 |
+| Rollout | One vector-environment step per iteration |
+| Discount / target mixing coefficient | `gamma=0.99` / `tau=0.005` |
+| Maximum gradient norm | `2.0` |
+| Learning starts | `max(10_000, 4 × rollout transitions per iteration)` |
+| Replay capacity per environment | Twice the episode length, enlarged for learning starts, batch positions and recurrent segment storage |
+| NOP when enabled | Three-step prediction, loss coefficient `0.1`, reusing the critic replay batch |
+
+All SAC presets also share automatic temperature tuning with initial coefficient `0.05`, target entropy `"auto_0.1"`, and temperature learning rate equal to the base actor/critic rate. Actor and target evaluation each sample one action; actor, temperature and target updates occur every critic update, without target-action smoothing. DDPG and TD3 use exploration noise `0.1`; TD3 retains a two-update actor/target delay and target smoothing noise `0.2`, clipped at `0.5`. DDPG retains one critic, no delay and no target smoothing.
+
+Recurrent SAC and TD3 share 32 burn-in steps, 64 learning steps, and temporal-state snapshots every 16 steps stored in float16. Their minimum history requirement can delay the first update. Matching batch positions does not match temporal correlation or compute; [experimental comparison details](policy_parameters/model_scale.md#experimental-comparisons) describe these differences. PPO/MAT retain their on-policy rollout, epoch and learning-rate schedules.
+
 Gated Deep Set presets gate the critic encoder and keep their Q heads ungated by default. `policy_kwargs={"critic_deepset_head_gating": True}` enables Q-head reception gates independently for architecture ablations; the same setting works with ordinary Deep Set and transformer off-policy presets.
+
+### Recurrent layer settings
+
+`policy_kwargs` accepts shared temporal defaults through `rmat_temporal_model_cls` and `rmat_temporal_model_config`. Recurrent MAT and TD3 critics can override these independently with `rmat_critic_temporal_model_cls` and `rmat_critic_temporal_model_config`. An omitted critic override inherits the corresponding shared setting. A single class or config applies to every layer; a per-layer sequence must match that encoder's resolved depth.
+
+Fixed-scale MAT actors and critics have different depths. At `5M-2L`, the actor has one recurrent layer and the critic has two, so independent config sequences take this form:
+
+```python
+from swarmbots.learn.algos.r_mat.temporal_sequence_model import LSTMTemporalSequenceModelConfig
+
+policy_kwargs = {
+    "rmat_temporal_model_config": [LSTMTemporalSequenceModelConfig()],
+    "rmat_critic_temporal_model_config": [
+        LSTMTemporalSequenceModelConfig(),
+        LSTMTemporalSequenceModelConfig(),
+    ],
+}
+```
+
+Per-layer class sequences follow the same rule, with a matching config type for each selected temporal model. A TMASAC temporal stack containing sLSTM uses the scale's sLSTM memory width, including mixed and per-layer class sequences. These widths support both the default four heads and an explicit eight-head configuration; other head counts must divide the selected memory width.
 
 ### Logging levels
 
@@ -169,7 +211,7 @@ from swarmbots.learn import train
 
 trainer = train(
     "SwarmBots-WallEasy-v0",
-    "mappo",
+    "mappo__deepset_critic",
     load_path="runs/wall-easy/mappo/models/model_1000000_steps_final.pt",
     total_timesteps=2_000_000,
     run_dir="runs/wall-easy/mappo-continuation",
@@ -226,7 +268,7 @@ checkpoint = next((run_dir / "models").glob("*_steps_final.pt"))
 training_seed = json.loads((run_dir / "evaluation.json").read_text(encoding="utf-8"))["metadata"]["policy"]["training_seed"]
 benchmark_id = "SwarmBots-WallEasy-v0"
 source_revision = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
-trainer = make_training(benchmark_id, "mappo", num_envs=2, device="cuda")
+trainer = make_training(benchmark_id, "mappo__deepset_critic", num_envs=2, device="cuda")
 try:
     trainer.load(checkpoint, restore_optimizer_state=False)
     results = [
@@ -240,7 +282,7 @@ try:
             action_mode="deterministic",
             source_revision=source_revision,
             policy_metadata={
-                "variant": "mappo",
+                "variant": "mappo__deepset_critic",
                 "checkpoint": str(checkpoint),
                 "training_seed": training_seed,
                 "training_timesteps": trainer.n_total_timesteps,
@@ -275,7 +317,7 @@ The recorded Git revision identifies the checkout used for evaluation. The train
 ## Record a checkpoint
 
 ```bash
-swarmbots record SwarmBots-WallEasy-v0 --checkpoint runs/wall-easy/mappo/models/model_1000000_steps_final.pt --variant mappo --episodes 3 --output recordings/mappo
+swarmbots record SwarmBots-WallEasy-v0 --checkpoint runs/wall-easy/mappo/models/model_1000000_steps_final.pt --variant mappo__deepset_critic --episodes 3 --output recordings/mappo
 ```
 
 Use the actual checkpoint path and matching training settings. The Python equivalent is `swarmbots.learn.record_checkpoint(...)`. The [recording guide](recording.md) covers model-scale options, custom policies, and camera settings; [log plotting](log_plotting.md) covers learning curves.

@@ -13,7 +13,7 @@ from swarmbots.learn.action_dists.hybrid_action_dist import (
     bernoulli_config_to_dict,
     continuous_config_to_dicts,
 )
-from swarmbots.learn.algos.mat.independent_encoders import make_critic_encoder
+from swarmbots.learn.algos.mat.independent_encoders import encode_critic_observations, make_critic_encoder, make_value_head
 from swarmbots.learn.algos.mat.mat_encoder import MATEncoder, MATEncoderConfig
 from swarmbots.learn.algos.mat_qc_base_policy import MATCriticConfig
 from swarmbots.learn.algos.mat_qc_base_policy import _ensure_torch_compile_available
@@ -30,7 +30,6 @@ from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import (
 from swarmbots.learn.losses import LossDict, LossMetrics
 from swarmbots.learn.base_policy import policy_inference_step
 from swarmbots.learn.nn_components.activations import ActivationFactory
-from swarmbots.learn.nn_components.deep_set import DeepSetCritic
 from swarmbots.learn.nn_components.feed_forward import MLP
 from swarmbots.learn.nn_components.nn_init import make_init_linear_orthogonal
 from swarmbots.learn.serialization_utils import serialize_dataclass, serialize_value
@@ -83,7 +82,7 @@ class MATIndPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
         self.actor_encoder_config = self._build_encoder_config()
         self.actor_encoder = self._build_encoder()
         self.critic_encoder_config, self.critic_encoder = make_critic_encoder(
-            config.critic_encoder_config or config.encoder_config, self.actor_encoder_config,
+            config.critic_encoder_config, self.actor_encoder_config,
             env=env, max_agents=self.max_agents,
         )
         self.d_model_critic_encoder = self.critic_encoder_config.d_model
@@ -111,31 +110,7 @@ class MATIndPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
             action_net_initialization=make_init_linear_orthogonal(config.action_net_init_gain),
         )
 
-        self.critic = DeepSetCritic(
-            num_local_features=self.d_model_critic_encoder + self.hidden_local_vars_dim,
-            local_projection_hidden_dims=(
-                config.critic_config.local_projection_hidden_dims
-                if config.critic_config.local_projection_hidden_dims is not None
-                else [self.d_model_critic_encoder] * config.critic_config.n_local_projection_hidden_layers
-            ),
-            value_regressor_hidden_dims=(
-                config.critic_config.value_regressor_hidden_dims
-                if config.critic_config.value_regressor_hidden_dims is not None
-                else [self.d_model_critic_encoder] * config.critic_config.n_value_regressor_hidden_layers
-            ),
-            num_global_features=self.hidden_global_vars_dim,
-            act_fn_cls=config.act_fn_cls,
-            context_in_elements=self.hidden_global_vars_dim > 0,
-            interaction_config=config.critic_config.interaction_config,
-            local_projection_linear_init_gain=config.critic_config.local_projection_init_gain,
-            value_regressor_linear_init_gain=config.critic_config.value_regressor_init_gain,
-            value_head_linear_init_gain=config.critic_config.value_head_init_gain,
-            use_popart=config.critic_config.use_popart,
-            popart_beta=config.critic_config.popart_config.beta,
-            popart_eps=config.critic_config.popart_config.eps,
-            popart_min_std=config.critic_config.popart_config.min_std,
-            popart_init_sigma=config.critic_config.popart_config.init_sigma,
-        )
+        self.critic = make_value_head(config.critic_config, self.d_model_critic_encoder, config.act_fn_cls)
 
         self._generate_actions_fn: Callable[..., tuple[torch.Tensor, torch.Tensor | None]] = self._generate_actions_impl
         self._evaluate_latent_and_values_fn: Callable[..., tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = (
@@ -221,11 +196,11 @@ class MATIndPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
             deterministic=deterministic,
             return_log_probs=True,
         )
-        critic_observations = self.critic_encoder(local_obs, global_obs, agent_mask=agent_mask)
-        values = self._critic_with_hidden_vars(
+        critic_observations = encode_critic_observations(
+            self.critic_encoder, local_obs, global_obs, hidden_local_vars, hidden_global_vars, agent_mask,
+        )
+        values = self.critic(
             critic_observations,
-            hidden_local_vars,
-            hidden_global_vars,
             agent_mask=agent_mask,
         )
         return actions, log_probs, values
@@ -312,11 +287,11 @@ class MATIndPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
             previous_actions: torch.Tensor | None = None,
     ) -> torch.Tensor:
         _ = previous_actions
-        critic_observations = self.critic_encoder(local_obs, global_obs, agent_mask=agent_mask)
-        return self._critic_with_hidden_vars(
+        critic_observations = encode_critic_observations(
+            self.critic_encoder, local_obs, global_obs, hidden_local_vars, hidden_global_vars, agent_mask,
+        )
+        return self.critic(
             critic_observations,
-            hidden_local_vars,
-            hidden_global_vars,
             agent_mask=agent_mask,
         )
 
@@ -353,11 +328,11 @@ class MATIndPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
             augmented_observations,
         )
         latent_pi = self.actor_head(actor_observations).contiguous()
-        critic_observations = self.critic_encoder(local_obs, global_obs, agent_mask=agent_mask)
-        values = self._critic_with_hidden_vars(
+        critic_observations = encode_critic_observations(
+            self.critic_encoder, local_obs, global_obs, hidden_local_vars, hidden_global_vars, agent_mask,
+        )
+        values = self.critic(
             critic_observations,
-            hidden_local_vars,
-            hidden_global_vars,
             agent_mask=agent_mask,
         )
         return latent_pi, values, critic_observations
@@ -438,25 +413,6 @@ class MATIndPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
             config=config,
             requires_previous_actions=self.requires_previous_actions(),
         )
-
-    def _critic_with_hidden_vars(
-            self,
-            augmented_observations: torch.Tensor,
-            hidden_local_vars: torch.Tensor | None,
-            hidden_global_vars: torch.Tensor | None,
-            agent_mask: torch.Tensor | None = None,
-    ) -> torch.Tensor:
-        critic_local_obs = augmented_observations
-        if self.hidden_local_vars_dim > 0:
-            if hidden_local_vars is None:
-                raise ValueError("hidden_local_vars must be provided when hidden_local_vars_dim > 0")
-            critic_local_obs = torch.cat((augmented_observations, hidden_local_vars), dim=-1)
-
-        if self.hidden_global_vars_dim <= 0:
-            return self.critic(critic_local_obs, agent_mask=agent_mask)
-        if hidden_global_vars is None:
-            raise ValueError("hidden_global_vars must be provided when hidden_global_vars_dim > 0")
-        return self.critic(critic_local_obs, hidden_global_vars, agent_mask=agent_mask)
 
     @property
     def has_popart(self) -> bool:

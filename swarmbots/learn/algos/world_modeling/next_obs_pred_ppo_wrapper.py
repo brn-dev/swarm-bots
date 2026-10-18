@@ -46,6 +46,7 @@ class NOPWorldModelConfig:
     nhead_transition_model: int = 4
     num_layers_transition_model: int = 2
     dim_feedforward_transition_model: int = 256
+    transition_model_num_feedforward_hidden_layers: int = 1
     add_agent_embeddings_transition_model: bool = False
     transition_model_coembed_hidden_dims: list[int] | None = None
     transition_model_head_hidden_dims: list[int] | None = None
@@ -546,6 +547,7 @@ class NextObsPredWrapper(
             nhead=world_model_config.nhead_transition_model,
             num_layers=world_model_config.num_layers_transition_model,
             dim_feedforward=world_model_config.dim_feedforward_transition_model,
+            num_feedforward_hidden_layers=world_model_config.transition_model_num_feedforward_hidden_layers,
             dropout=self._wm_transition_model_dropout,
             act_fn_cls=self._wm_act_fn_cls,
             add_agent_embeddings=world_model_config.add_agent_embeddings_transition_model,

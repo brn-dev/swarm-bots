@@ -22,6 +22,7 @@ class MLP(nn.Sequential):
             act_fn_cls: ActivationFactory = nn.Tanh,
             bias: bool = True,
             dropout: float = 0.0,
+            layer_norm: bool = False,
     ) -> None:
         assert len(hidden_dims) > 0
 
@@ -49,6 +50,8 @@ class MLP(nn.Sequential):
 
             if i < n_layers - 1 or end_with_act_fn:
                 modules.append(make_activation(act_fn_cls, num_features=dims[i + 1]))
+                if layer_norm:
+                    modules.append(nn.LayerNorm(dims[i + 1]))
                 if dropout > 0.0:
                     modules.append(nn.Dropout(dropout))
 

@@ -6,6 +6,7 @@ from dataclasses import replace
 from typing import Any
 from unittest.mock import Mock, patch
 
+import pytest
 import torch
 from gymnasium import spaces
 from gymnasium.vector import AutoresetMode, SyncVectorEnv
@@ -2028,6 +2029,7 @@ class RecurrentTMASACTests(unittest.TestCase):
         self.assertTrue(all(compile_allow_rnn_values))
         self.assertEqual(allow_rnn_values, [True, True])
 
+    @pytest.mark.cuda
     @unittest.skipUnless(torch.cuda.is_available(), "experimental nn.LSTM compilation requires CUDA")
     def test_experimental_lstm_compiled_encoder_matches_eager_forward_and_gradients(self) -> None:
         torch._dynamo.reset()

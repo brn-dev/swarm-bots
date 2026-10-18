@@ -564,9 +564,9 @@ def build_diagram(row: dict[str, Any]) -> Diagram:
             else:
                 width = ac["latent_dim"]
                 source = "critic_encoder"
-                critic_width = cfg["critic_encoder_config"]["latent_dim"]
-                d.node(source, "Critic observation encoder",
-                       [chain(row, "critic_encoder.mlp"), f"output: N \u00d7 {critic_width}"], "critic")
+                cc = cfg["critic_encoder_config"]
+                d.node(source, "Deep Set critic observation encoder",
+                       encoder_lines(row, cc, source, chain(row, source + ".local_obs_encoder")), "critic")
         else:
             ec = cfg["encoder_config"]
             width = ec["d_model"]
@@ -580,11 +580,15 @@ def build_diagram(row: dict[str, Any]) -> Diagram:
             )
             add_memory(d, source, cc)
         d.edge("public", source)
+        if not shared:
+            d.edge("privileged", source, "local + global context before encoding")
         actor_source = source
         if not shared:
             if "actor_config" in cfg:
                 d.node("actor_encoder", "Actor observation encoder",
-                       [chain(row, "actor_encoder.mlp"), f"output: N \u00d7 {width}"], "actor")
+                       [chain(row, "actor_encoder.mlp"),
+                        *(["LayerNorm after each activation"] if ac.get("layer_norm") else []),
+                        f"output: N \u00d7 {width}"], "actor")
             else:
                 ac = cfg["encoder_config"]
                 d.node(
@@ -631,7 +635,13 @@ def build_diagram(row: dict[str, Any]) -> Diagram:
             lines.append(ComponentBlock("Decoder block", block_lines, dec['num_layers'], module_count(row, block)))
             if not qcx:
                 lines.append("decoder head (once): " + chain(row, "decoder.head"))
-            lines.append(f"output: N × {dec_width if qcx else dec.get('latent_pi_dim') or dec_width}")
+            else:
+                lines.append("actor head (once): " + chain(row, "actor_head", fallback="identity (0)"))
+            output_width = (
+                dec['actor_head_hidden_dims'][-1] if qcx and dec.get('actor_head_hidden_dims')
+                else dec_width if qcx else dec.get('latent_pi_dim') or dec_width
+            )
+            lines.append(f"output: N × {output_width}")
             d.node("actor", "QCX autoregressive decoder" if qcx else "Original MAT decoder", lines, "actor")
             d.edge(actor_source, "actor", f"N × {width}; {'obs + memory' if qcx else 'obs context'}")
             d.edge(
@@ -652,18 +662,14 @@ def build_diagram(row: dict[str, Any]) -> Diagram:
                 "value",
                 "Token-wise V head",
                 [
-                    "fuse encoded + privileged inputs",
+                    "encoded critic features",
                     chain(row, "critic.value_head", fallback="see layer table"),
                     "one scalar per agent",
                     "masked mean → team V",
                 ],
                 "critic",
             )
-        elif (
-            "actor_config" in cfg
-            and "latent_pi_dim_per_agent" in cfg["actor_config"]
-            or cfg.get("critic_config", {}).get("deep_set_config", "absent") is None
-        ):
+        elif shared:
             d.node(
                 "value",
                 "Flattened V critic",
@@ -677,12 +683,10 @@ def build_diagram(row: dict[str, Any]) -> Diagram:
             )
         else:
             add_readout(d, row, "critic", "value", "Deep Set V critic")
-        critic_width = width if shared else (
-            cfg["critic_encoder_config"]["latent_dim"] if "actor_config" in cfg
-            else cfg["critic_encoder_config"]["d_model"]
-        )
+        critic_width = width if shared else cfg["critic_encoder_config"]["d_model"]
         d.edge(source, "value", f"N × {critic_width}")
-        d.edge("privileged", "value", "local + global context")
+        if shared:
+            d.edge("privileged", "value", "local + global context")
         d.node("v", "V", ["scalar per world"], "output")
         d.edge("value", "v")
     else:
@@ -850,6 +854,12 @@ def build_diagram(row: dict[str, Any]) -> Diagram:
         prediction_chain = chain(row, prefix + "pre_predictors_transform")
         layout = SCALE_LAYOUTS[d.scale]
         block = prefix + "transition_model.encoder.layers.0"
+        transition_ff = (
+            chain(row, block + ".feedforward")
+            if block + ".feedforward" in row["module_parameter_counts"] else
+            f"{layout.nop_width} → {layout.nop_ff} → {layout.nop_width} "
+            f"({module_count(row, block + '.linear1') + module_count(row, block + '.linear2'):,})"
+        )
         d.node("nop_bridge", "NOP source projection", ["from source features; before pooling", bridge], "nop")
         d.edge(source, "nop_bridge", "latents")
         d.node(
@@ -860,7 +870,7 @@ def build_diagram(row: dict[str, Any]) -> Diagram:
                 ComponentBlock("Transition encoder block", [
                     f"D={layout.nop_width} · 4 heads",
                     f"attention / block: {module_count(row, block + '.self_attn'):,}",
-                    f"FF / block: {layout.nop_width} → {layout.nop_ff} → {layout.nop_width} ({module_count(row, block + '.linear1') + module_count(row, block + '.linear2'):,})",
+                    "FF / block: " + transition_ff,
                 ], layout.nop_layers, module_count(row, block)),
                 "head: " + chain(row, prefix + "transition_model.head"),
                 "latent residual; repeated future steps",

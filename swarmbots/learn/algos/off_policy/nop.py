@@ -55,6 +55,7 @@ class SACNOPConfig:
     transition_model_nhead: int = 4
     transition_model_num_layers: int = 2
     transition_model_dim_feedforward: int = 256
+    transition_model_num_feedforward_hidden_layers: int = 1
     transition_model_add_agent_embeddings: bool = False
     transition_model_predict_delta: bool = True
     transition_model_coembed_hidden_dims: list[int] | None = None
@@ -169,6 +170,7 @@ class SACNOPModule(nn.Module, NextObsPredMixin):
             nhead=config.transition_model_nhead,
             num_layers=config.transition_model_num_layers,
             dim_feedforward=config.transition_model_dim_feedforward,
+            num_feedforward_hidden_layers=config.transition_model_num_feedforward_hidden_layers,
             dropout=config.transition_model_dropout,
             act_fn_cls=config.act_fn_cls,
             add_agent_embeddings=config.transition_model_add_agent_embeddings,

@@ -57,7 +57,7 @@ A successful smoke test prints a JSON summary after stepping the environment. Fo
 The checkout includes a script that trains a policy, evaluates it, and records videos:
 
 ```bash
-.venv/bin/python examples/train_policy.py SwarmBots-WallEasy-v0 --variant mappo --run-dir runs/first-mappo
+.venv/bin/python examples/train_policy.py SwarmBots-WallEasy-v0 --variant mappo__deepset_critic --run-dir runs/first-mappo
 ```
 
 On Windows, replace `.venv/bin/python` with `.\.venv\Scripts\python.exe`.
@@ -143,7 +143,7 @@ This assumes `trainer` is the result of [training from Python](https://github.co
 
 ## Documentation and support
 
-The [documentation guide](https://github.com/brn-dev/swarm-bots/blob/main/docs/README.md) links setup, training, custom-policy integration, evaluation, recording, and plotting workflows. [Command-line tools](https://github.com/brn-dev/swarm-bots/blob/main/docs/tools.md) also inspect policy sizes and generate architecture diagrams.
+The [documentation guide](https://github.com/brn-dev/swarm-bots/blob/main/docs/README.md) links setup, training, custom-policy integration, evaluation, recording, and plotting workflows. The [online diagram viewer](https://brn-dev.github.io/swarm-bots/policy-diagrams/) shows model architectures without a local installation. [Command-line tools](https://github.com/brn-dev/swarm-bots/blob/main/docs/tools.md) also inspect policy sizes and generate architecture diagrams.
 
 [GitHub issues](https://github.com/brn-dev/swarm-bots/issues) and email to Dominik Baron at [dominik.b4ron@gmail.com](mailto:dominik.b4ron@gmail.com) are the channels for bug reports and task-design feedback. Reports are most useful with the task ID, version or commit, command, seed, and observed behavior.
 

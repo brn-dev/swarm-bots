@@ -1,4 +1,5 @@
 import copy
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 import torch
@@ -167,6 +168,7 @@ class MATEncoder(nn.Module):
             max_agents: int,
             local_obs_dim: int,
             global_obs_dim: int,
+            layer_factory: Callable[[MATEncoderConfig], MATEncoderLayer] = MATEncoderLayer,
     ) -> None:
         super().__init__()
         self.local_obs_dim: int = local_obs_dim
@@ -204,7 +206,7 @@ class MATEncoder(nn.Module):
         else:
             self.global_obs_encoder = None
 
-        prototype_layer = MATEncoderLayer(config)
+        prototype_layer = layer_factory(config)
         self.layers = nn.ModuleList([
             copy.deepcopy(prototype_layer)
             for _ in range(config.num_layers)

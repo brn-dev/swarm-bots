@@ -9,13 +9,13 @@ The commands below use `.venv/bin/python`. On Windows, use `.\.venv\Scripts\pyth
 Start with one complete run:
 
 ```bash
-.venv/bin/python examples/train_policy.py SwarmBots-WallEasy-v0 --variant mappo --run-dir runs/first-mappo
+.venv/bin/python examples/train_policy.py SwarmBots-WallEasy-v0 --variant mappo__deepset_critic --run-dir runs/first-mappo
 ```
 
 On Windows:
 
 ```powershell
-.\.venv\Scripts\python.exe examples/train_policy.py SwarmBots-WallEasy-v0 --variant mappo --run-dir runs/first-mappo
+.\.venv\Scripts\python.exe examples/train_policy.py SwarmBots-WallEasy-v0 --variant mappo__deepset_critic --run-dir runs/first-mappo
 ```
 
 The script trains for one million environment transitions using 256 parallel CUDA worlds, evaluates deterministic actions at seed `1000`, then records two episodes at 640 × 480. A short run demonstrates the workflow; it may not learn to solve the task.
@@ -128,7 +128,7 @@ Checkpoint reconstruction requires `policy_kwargs={"td3_recurrent_actor": True}`
 Find the final checkpoint in the run's `models/` directory and substitute its actual filename below:
 
 ```bash
-.venv/bin/python examples/record_policy.py SwarmBots-WallEasy-v0 --checkpoint runs/first-mappo/models/model_1000000_steps_final.pt --variant mappo --output recordings/mappo
+.venv/bin/python examples/record_policy.py SwarmBots-WallEasy-v0 --checkpoint runs/first-mappo/models/model_1000000_steps_final.pt --variant mappo__deepset_critic --output recordings/mappo
 ```
 
 The saved step count can exceed the requested training budget by one collection batch. Match the checkpoint's task, model scale, architecture, action distribution, and NOP setting. The script also accepts custom `module:factory` policies; see [recording](../docs/recording.md).

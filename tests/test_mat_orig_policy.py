@@ -2,6 +2,7 @@ from collections.abc import Callable
 from typing import Any
 from unittest.mock import patch
 
+import pytest
 import torch
 import torch.nn as nn
 from gymnasium import spaces
@@ -9,12 +10,29 @@ from gymnasium import spaces
 from swarmbots.learn.action_dists.bernoulli_action_dist import BernoulliConfig
 from swarmbots.learn.action_dists.sign_magnitude_beta_action_dist import SignMagnitudeBetaConfig
 from swarmbots.learn.algos.mat import MATEncoderConfig, MLPConfig
-from swarmbots.learn.algos.mat_orig.mat_orig_decoder import MATOrigDecoderConfig
+from swarmbots.learn.algos.mat_orig.mat_orig_decoder import MATOrigDecoder, MATOrigDecoderConfig
 from swarmbots.learn.algos.mat_orig.mat_orig_policy import MATOrigPolicy, MATOrigPolicyConfig
 from swarmbots.learn.hybrid_action_space import HybridActionSpace
 
 
 _REAL_TORCH_COMPILE = torch.compile
+
+
+@pytest.mark.parametrize("feedforward_width", [None, 48])
+def test_decoder_feedforward_width_trains_without_changing_action_shape(feedforward_width: int | None) -> None:
+    decoder = MATOrigDecoder(
+        MATOrigDecoderConfig(d_model=16, num_layers=2, latent_pi_dim=12, dim_feedforward=feedforward_width),
+        max_agents=3, action_input_dim=4,
+    )
+    actions = torch.randn(2, 3, 4)
+    observations = torch.randn(2, 3, 16)
+    output = decoder(actions, observations)
+    assert output.shape == (2, 3, 12)
+    output.square().mean().backward()
+    for block in decoder.blocks:
+        assert block.mlp[0].out_features == (16 if feedforward_width is None else feedforward_width)
+        assert all(parameter.grad is not None and torch.isfinite(parameter.grad).all()
+                   for parameter in block.mlp.parameters())
 
 
 def _compile_with_eager_backend(

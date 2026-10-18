@@ -38,6 +38,7 @@ from swarmbots.learn.presets.policy_factory import (
     wrap_vec_env,
 )
 from swarmbots.learn.presets.model_scale import DEFAULT_MODEL_SCALE, normalize_model_scale, ppo_nop_at_scale
+from swarmbots.learn.presets.off_policy import make_off_policy_algorithm_options, make_recurrent_replay_options
 from swarmbots.learn.presets.tmasac import make_tmasac_options
 from swarmbots.learn.presets.sac import make_sac_algorithm_options
 from swarmbots.learn.presets.transformer import MATInitGains, MATNormalizationConfig, NOPInitGains
@@ -246,6 +247,10 @@ def make_training(
     ``use_nop=False`` disables the auxiliary model without changing main widths.
     ``policy_kwargs`` overrides the arguments to the preset policy builder;
     ``algorithm_kwargs`` overrides arguments to PPO/SAC/RecurrentSAC/TD3/DDPG.
+    Off-policy default batches target 1,024 learning positions independently of
+    rollout size. Recurrent batches round up to whole learning sequences;
+    an explicit ``batch_size`` counts sequences for recurrent learners and
+    transitions for feed-forward learners.
     """
     policy_options, algorithm_options = _variant_options(variant, model_scale=model_scale)
     policy_options.update(policy_kwargs or {})
@@ -314,31 +319,38 @@ def make_training(
             if is_deterministic:
                 algorithm_class = DDPG if policy_variant.startswith("maddpg") else RecurrentTD3 if recurrent else TD3
             algorithm_config = {
-                "learning_rate": 3e-4,
+                **make_off_policy_algorithm_options(),
                 "buffer_capacity_per_env": vector_env.episode_length * 2,
                 "learning_starts": max(10_000, rollout_samples * 4),
-                "batch_size": rollout_samples,
                 "rollout_steps_per_iteration": rollout_samples,
-                "gradient_steps": 8,
                 "replay_storage_device": device,
-                "tau": 0.005,
             }
             if is_sac:
                 algorithm_config.update(make_sac_algorithm_options())
-            if is_deterministic and recurrent:
-                algorithm_config.update(
-                    batch_size=16,
-                    burn_in_steps=32,
-                    learning_steps=64,
-                    temporal_state_store_interval=16,
-                    temporal_state_storage_dtype=torch.float16,
-                )
+            if recurrent:
+                algorithm_config.update(make_recurrent_replay_options())
             algorithm_config.update(shared_options)
             algorithm_config.update(algorithm_options)
+            if recurrent and "batch_size" not in algorithm_options:
+                learning_steps = int(algorithm_config.get("learning_steps", 64))
+                if learning_steps <= 0:
+                    raise ValueError(f"learning_steps must be > 0, got {learning_steps}")
+                # Recurrent batches count whole sequences rather than transitions.
+                algorithm_config["batch_size"] = max(1, math.ceil(algorithm_config["batch_size"] / learning_steps))
             if "buffer_capacity_per_env" not in (algorithm_kwargs or {}):
+                learning_positions = algorithm_config["batch_size"]
+                if recurrent:
+                    learning_positions *= algorithm_config["learning_steps"]
+                    minimum_sequence_capacity = (
+                        algorithm_config["burn_in_steps"] + algorithm_config["learning_steps"]
+                        + algorithm_config["temporal_state_store_interval"] - 1
+                    )
+                    algorithm_config["buffer_capacity_per_env"] = max(
+                        algorithm_config["buffer_capacity_per_env"], minimum_sequence_capacity,
+                    )
                 algorithm_config["buffer_capacity_per_env"] = max(
                     algorithm_config["buffer_capacity_per_env"],
-                    math.ceil(max(algorithm_config["learning_starts"], algorithm_config["batch_size"]) / num_envs),
+                    math.ceil(max(algorithm_config["learning_starts"], learning_positions) / num_envs),
                 )
             return algorithm_class(**algorithm_config)
         n_epochs = algorithm_options.get("n_epochs", 8)

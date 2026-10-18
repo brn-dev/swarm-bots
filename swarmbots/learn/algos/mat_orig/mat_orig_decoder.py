@@ -14,6 +14,7 @@ class MATOrigDecodeBlock(nn.Module):
             nhead: int,
             *,
             max_agents: int,
+            dim_feedforward: int | None = None,
     ) -> None:
         super().__init__()
         self.ln1 = nn.LayerNorm(d_model)
@@ -21,10 +22,11 @@ class MATOrigDecodeBlock(nn.Module):
         self.ln3 = nn.LayerNorm(d_model)
         self.attn1 = MATOrigSelfAttention(d_model, nhead, max_agents=max_agents, masked=True)
         self.attn2 = MATOrigSelfAttention(d_model, nhead, max_agents=max_agents, masked=True)
+        feedforward_dim = d_model if dim_feedforward is None else dim_feedforward
         self.mlp = nn.Sequential(
-            _init_linear(nn.Linear(d_model, d_model), activate=True),
+            _init_linear(nn.Linear(d_model, feedforward_dim), activate=True),
             nn.GELU(),
-            _init_linear(nn.Linear(d_model, d_model)),
+            _init_linear(nn.Linear(feedforward_dim, d_model)),
         )
 
     def forward(
@@ -64,6 +66,7 @@ class MATOrigDecoderConfig:
     nhead: int = 4
     num_layers: int = 2
     latent_pi_dim: int | None = None
+    dim_feedforward: int | None = None
 
 
 class MATOrigDecoder(nn.Module):
@@ -87,7 +90,9 @@ class MATOrigDecoder(nn.Module):
         )
         self.ln = nn.LayerNorm(config.d_model)
         self.blocks = nn.ModuleList([
-            MATOrigDecodeBlock(config.d_model, config.nhead, max_agents=max_agents)
+            MATOrigDecodeBlock(
+                config.d_model, config.nhead, max_agents=max_agents, dim_feedforward=config.dim_feedforward,
+            )
             for _ in range(config.num_layers)
         ])
         self.head = nn.Sequential(

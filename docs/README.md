@@ -34,7 +34,7 @@ The environment and evaluator work independently of the included learners. Custo
 
 ## Model reference
 
-The [parameter inspection guide](policy_parameters/README.md), [fixed model layouts](policy_parameters/model_scale.md), and [architecture diagrams](policy_parameters/diagrams/README.md) explain the dimensions and parameter counts behind the training presets.
+The [online diagram viewer](https://brn-dev.github.io/swarm-bots/policy-diagrams/), [parameter inspection guide](policy_parameters/README.md), [fixed model layouts](policy_parameters/model_scale.md), and [diagram reading guide](policy_parameters/diagrams/README.md) explain the dimensions and parameter counts behind the training presets. The online viewer requires no installation or local diagram data.
 
 ## Repository layout
 

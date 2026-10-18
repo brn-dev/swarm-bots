@@ -1,13 +1,15 @@
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass
 from typing import Any
 
 import torch
 from torch import nn
 
+from swarmbots.learn.algos.mat.mat_encoder import MATEncoderConfig, MATEncoderLayer
 from swarmbots.learn.nn_components.activations import ActivationFactory, make_activation
-from swarmbots.learn.nn_components.feed_forward import MLP
+from swarmbots.learn.nn_components.feed_forward import MLP, MLPConfig
 from swarmbots.learn.nn_components.nn_init import (
     make_init_linear_orthogonal,
     reinitialize_transformer_stack,
@@ -23,6 +25,7 @@ class TransformerTransitionModelConfig:
     nhead: int = 4
     num_layers: int = 2
     dim_feedforward: int = 256
+    num_feedforward_hidden_layers: int = 1
     dropout: float = 0.0
     act_fn_cls: ActivationFactory = nn.GELU
     add_agent_embeddings: bool = False
@@ -34,6 +37,29 @@ class TransformerTransitionModelConfig:
     transformer_ff_init_gain: float | None = 1.0
     norm_first: bool = True
     layer_norm_eps: float = 1e-5
+
+
+class _DeepTransitionEncoder(nn.Module):
+    def __init__(self, config: TransformerTransitionModelConfig) -> None:
+        super().__init__()
+        layer_config = MATEncoderConfig(
+            d_model=config.d_model, nhead=config.nhead, dropout=config.dropout,
+            dim_feedforward=config.dim_feedforward,
+            transformer_ff_config=MLPConfig(hidden_dims=[config.dim_feedforward] * config.num_feedforward_hidden_layers),
+            act_fn_cls=config.act_fn_cls, norm_first=config.norm_first, layer_norm_eps=config.layer_norm_eps,
+            transformer_ff_init_gain=config.transformer_ff_init_gain,
+        )
+        prototype = MATEncoderLayer(layer_config)
+        self.layers = nn.ModuleList([copy.deepcopy(prototype) for _ in range(config.num_layers)])
+        self.norm = nn.LayerNorm(config.d_model, eps=config.layer_norm_eps)
+        if config.transformer_ff_init_gain is not None:
+            reinitialize_transformer_stack(self, feedforward_init_gain=config.transformer_ff_init_gain)
+
+    def forward(self, src: torch.Tensor, *, src_key_padding_mask: torch.Tensor | None = None) -> torch.Tensor:
+        for layer in self.layers:
+            src = layer(src, src_key_padding_mask=src_key_padding_mask)
+        return self.norm(src)
+
 
 class TransformerTransitionModel(nn.Module):
     """
@@ -48,6 +74,8 @@ class TransformerTransitionModel(nn.Module):
         config: TransformerTransitionModelConfig,
     ) -> None:
         super().__init__()
+        if config.num_feedforward_hidden_layers < 1:
+            raise ValueError("num_feedforward_hidden_layers must be >= 1")
         self.n_agents = config.n_agents
         self.latent_dim = config.latent_dim
         self.action_dim = config.action_dim
@@ -55,6 +83,7 @@ class TransformerTransitionModel(nn.Module):
         self.nhead = config.nhead
         self.num_layers = config.num_layers
         self.dim_feedforward = config.dim_feedforward
+        self.num_feedforward_hidden_layers = config.num_feedforward_hidden_layers
         self.dropout = config.dropout
         self.act_fn_cls = config.act_fn_cls
         self.add_agent_embeddings = config.add_agent_embeddings
@@ -66,7 +95,7 @@ class TransformerTransitionModel(nn.Module):
         self.transformer_ff_init_gain = config.transformer_ff_init_gain
         self.norm_first = config.norm_first
         self.layer_norm_eps = config.layer_norm_eps
-        self.enable_nested_tensor = not config.norm_first
+        self.enable_nested_tensor = not config.norm_first and config.num_feedforward_hidden_layers == 1
 
         in_dim = config.latent_dim + config.action_dim
         coembed_linear_init = make_init_linear_orthogonal(config.coembed_init_gain)
@@ -87,28 +116,28 @@ class TransformerTransitionModel(nn.Module):
             self.agent_embeddings = nn.Parameter(torch.zeros(1, config.n_agents, config.d_model), requires_grad=True)
             nn.init.orthogonal_(self.agent_embeddings)
 
-        encoder_layer = nn.TransformerEncoderLayer(
-            d_model=config.d_model,
-            nhead=config.nhead,
-            dim_feedforward=config.dim_feedforward,
-            dropout=config.dropout,
-            activation=make_activation(config.act_fn_cls, num_features=config.dim_feedforward),
-            layer_norm_eps=config.layer_norm_eps,
-            batch_first=True,
-            norm_first=config.norm_first,
-            bias=True,
-        )
-        self.encoder = nn.TransformerEncoder(
-            encoder_layer=encoder_layer,
-            num_layers=config.num_layers,
-            norm=nn.LayerNorm(config.d_model, eps=config.layer_norm_eps),
-            enable_nested_tensor=self.enable_nested_tensor,
-        )
-        if config.transformer_ff_init_gain is not None:
-            reinitialize_transformer_stack(
-                self.encoder,
-                feedforward_init_gain=config.transformer_ff_init_gain,
+        if config.num_feedforward_hidden_layers > 1:
+            self.encoder = _DeepTransitionEncoder(config)
+        else:
+            encoder_layer = nn.TransformerEncoderLayer(
+                d_model=config.d_model,
+                nhead=config.nhead,
+                dim_feedforward=config.dim_feedforward,
+                dropout=config.dropout,
+                activation=make_activation(config.act_fn_cls, num_features=config.dim_feedforward),
+                layer_norm_eps=config.layer_norm_eps,
+                batch_first=True,
+                norm_first=config.norm_first,
+                bias=True,
             )
+            self.encoder = nn.TransformerEncoder(
+                encoder_layer=encoder_layer,
+                num_layers=config.num_layers,
+                norm=nn.LayerNorm(config.d_model, eps=config.layer_norm_eps),
+                enable_nested_tensor=self.enable_nested_tensor,
+            )
+            if config.transformer_ff_init_gain is not None:
+                reinitialize_transformer_stack(self.encoder, feedforward_init_gain=config.transformer_ff_init_gain)
 
         head_linear_init = make_init_linear_orthogonal(config.head_init_gain)
         if config.head_mlp_hidden_dims is None:
@@ -132,6 +161,7 @@ class TransformerTransitionModel(nn.Module):
             "nhead": self.nhead,
             "num_layers": self.num_layers,
             "dim_feedforward": self.dim_feedforward,
+            "num_feedforward_hidden_layers": self.num_feedforward_hidden_layers,
             "dropout": self.dropout,
             "act_fn_cls": str(self.act_fn_cls),
             "add_agent_embeddings": self.add_agent_embeddings,

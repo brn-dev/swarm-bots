@@ -23,8 +23,16 @@ def make_init_linear_orthogonal(gain: float) -> LinearInitialization:
 
 
 def init_transformer_feedforward(layer: nn.Module, *, gain: float) -> None:
-    init_linear_orthogonal(layer.linear1, gain=gain)
-    init_linear_orthogonal(layer.linear2, gain=1.0)
+    if hasattr(layer, "feedforward"):
+        from swarmbots.learn.nn_components.feed_forward import feedforward_linear_layers
+
+        hidden_layers, output_layers = feedforward_linear_layers(layer.feedforward)
+    else:
+        hidden_layers, output_layers = [layer.linear1], [layer.linear2]
+    for linear in hidden_layers:
+        init_linear_orthogonal(linear, gain=gain)
+    for linear in output_layers:
+        init_linear_orthogonal(linear, gain=1.0)
 
 
 def reinitialize_multihead_attention(module: nn.MultiheadAttention) -> None:
@@ -50,7 +58,7 @@ def reinitialize_multihead_attention(module: nn.MultiheadAttention) -> None:
 
 
 def reinitialize_transformer_stack(
-        stack: nn.TransformerEncoder | nn.TransformerDecoder,
+        stack: nn.Module,
         *,
         feedforward_init_gain: float,
 ) -> None:

@@ -1,0 +1,69 @@
+name: Publish policy diagrams
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/policy-diagrams.yml"
+      - "swarmbots/**"
+      - "pyproject.toml"
+      - "uv.lock"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      MUJOCO_GL: egl
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install headless OpenGL libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libegl1 libegl-mesa0 libgl1-mesa-dri
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: "0.12.19"
+          python-version: "3.11"
+          enable-cache: true
+      - name: Install dependencies
+        run: uv sync --locked --no-default-groups
+      - name: Generate all policy diagrams
+        run: |
+          .venv/bin/python -m swarmbots.tools.diagram_policy_architectures --include-hidden --output-dir .tmp/pages/policy-diagrams
+          cat > .tmp/pages/index.html <<'HTML'
+          <!doctype html><html lang="en"><meta charset="utf-8">
+          <meta http-equiv="refresh" content="0; url=policy-diagrams/">
+          <title>SwarmBots policy diagrams</title>
+          <a href="policy-diagrams/">Open policy diagrams</a></html>
+          HTML
+      - name: Upload site
+        uses: actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b # v4
+        with:
+          path: .tmp/pages
+
+  deploy:
+    if: github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}policy-diagrams/
+    steps:
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5

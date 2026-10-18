@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-import torch
 from torch import nn
 
 from swarmbots.learn.algos.r_mat.temporal_sequence_model import (
@@ -21,6 +20,7 @@ from swarmbots.learn.nn_components.feed_forward import (
     SwiGLUConfig,
 )
 from swarmbots.learn.presets.sac import make_sac_algorithm_options
+from swarmbots.learn.presets.off_policy import make_recurrent_replay_options
 
 ACTOR_D_MODEL = 256
 
@@ -55,7 +55,7 @@ def make_tmasac_options(
         "mat_encoder_transformer_ff_config": encoder_ff_config,
         "rmat_actor_d_model": None,
         "rmat_actor_transformer_ff_config": actor_ff_config if is_recurrent else None,
-        "rmat_actor_inter_module_mlp": False,
+        "rmat_actor_inter_module_mlp": is_recurrent,
         "tmasac_actor_state_critic_input_config": (
             ActorStateCriticInputConfig(
                 projection_dim=ACTOR_D_MODEL,
@@ -81,14 +81,7 @@ def make_tmasac_options(
     }
     algorithm_options = make_sac_algorithm_options()
     if is_recurrent:
-        algorithm_options.update(
-            batch_size=16,
-            buffer_capacity_per_env=1024,
-            burn_in_steps=32,
-            learning_steps=64,
-            temporal_state_store_interval=16,
-            temporal_state_storage_dtype=torch.float16,
-        )
+        algorithm_options.update(make_recurrent_replay_options())
     return policy_options, algorithm_options
 
 
@@ -106,12 +99,13 @@ def _make_feedforward_configs(
         "tmasac__lstm",
     }:
         config = MLPConfig(hidden_dims=[512, 512])
-        return config, config if variant.startswith(("tmasac__lstm", "tmasac__slstm")) else None
+        actor_config = MLPConfig(hidden_dims=[512]) if variant.startswith(("tmasac__lstm", "tmasac__slstm")) else None
+        return config, actor_config
     if variant == "tmasac__swiglu":
         return _make_stacked_swiglu_config(), None
     if variant == "tmasac__slstm__swiglu":
         config = _make_stacked_swiglu_config()
-        return config, config
+        return config, SwiGLUConfig(hidden_dim=config.hidden_dim)
     raise ValueError(f"Unknown TMASAC variant: {variant!r}")
 
 

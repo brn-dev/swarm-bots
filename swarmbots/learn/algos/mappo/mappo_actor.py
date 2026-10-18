@@ -12,7 +12,7 @@ from swarmbots.learn.nn_components.nn_init import LinearInitialization, init_lin
 class MAPPOActorConfig(MAPPOEncoderConfig):
     actor_head_hidden_dims: list[int] = field(default_factory=list)
     latent_pi_dim: int = 64
-    actor_head_init_gain: float = 0.01
+    actor_head_init_gain: float = 1.0
 
 
 class MAPPOActor(nn.Module):

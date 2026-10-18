@@ -115,10 +115,8 @@ class RMATQCXPolicy(RMATPolicyMixin, MATQCXPolicy):
         flat_critic_observations = critic_observations.reshape(
             flat_batch_size, n_agents, self.d_model_critic_encoder,
         )
-        flat_values = self._critic_with_hidden_vars(
+        flat_values = self.critic(
             flat_critic_observations,
-            batch.hidden_local_vars.reshape(flat_batch_size, n_agents, self.hidden_local_vars_dim),
-            batch.hidden_global_vars.reshape(flat_batch_size, self.hidden_global_vars_dim),
             agent_mask=flat_agent_mask,
         )
         flat_time_mask = batch.time_mask.reshape(flat_batch_size)

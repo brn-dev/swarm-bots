@@ -25,7 +25,7 @@ def make_parser(
     *,
     description: str = __doc__,
     variants: tuple[str, ...] | None = None,
-    default_variant: str = "mappo",
+    default_variant: str = "mappo__deepset_critic",
     run_dir_help: str = "fresh directory under runs/<benchmark-id>/<variant>/<scale>/seed-<seed>/",
 ) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=description)

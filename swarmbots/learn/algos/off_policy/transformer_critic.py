@@ -5,13 +5,12 @@ import copy
 import torch
 from torch import nn
 from swarmbots.learn.algos.mat.mat_encoder import MATEncoderConfig, MATEncoderLayer
+from swarmbots.learn.algos.mat.deep_set_encoder import DeepSetEncoderLayer
 from swarmbots.learn.algos.ppo.ppo_policy import PopArtConfig
 from swarmbots.learn.nn_components.activations import ActivationFactory
 from swarmbots.learn.nn_components.deep_set import (
     DeepSetCritic,
-    DeepSetInteraction,
     DeepSetInteractionConfig,
-    GatedDeepSetInteraction,
 )
 from swarmbots.learn.nn_components.feed_forward import MLP, feedforward_linear_layers, make_feedforward
 from swarmbots.learn.nn_components.nn_init import make_init_linear_orthogonal, reinitialize_multihead_attention
@@ -79,35 +78,6 @@ class ObservationActionEncoder(nn.Module):
             ),
             dim=-1,
         )
-
-
-class DeepSetEncoderLayer(MATEncoderLayer):
-    """Use the transformer block unchanged apart from its set communication operator."""
-
-    def __init__(self, config: MATEncoderConfig, interaction_config: DeepSetInteractionConfig) -> None:
-        super().__init__(replace(config, use_agent_attention=False))
-        interaction_type = GatedDeepSetInteraction if interaction_config.gated else DeepSetInteraction
-        self.interaction = interaction_type(
-            config.d_model,
-            config=replace(interaction_config, local_update="residual", normalize=False),
-            set_dim=1,
-            pool_mode="mean",
-            linear_init=make_init_linear_orthogonal(config.linear_init_gain),
-            act_fn_cls=config.act_fn_cls,
-        )
-
-    def _self_attention_block(
-        self,
-        embeddings: torch.Tensor,
-        *,
-        attention_mask: torch.Tensor | None,
-        key_padding_mask: torch.Tensor | None,
-        is_causal: bool,
-    ) -> torch.Tensor:
-        if attention_mask is not None or is_causal:
-            raise ValueError("Deep Set communication does not support pairwise or causal attention masks")
-        element_mask = None if key_padding_mask is None else ~key_padding_mask
-        return self.dropout1(self.interaction.message_update(embeddings, element_mask))
 
 
 class ActionConditionedEncoder(nn.Module):
@@ -287,14 +257,11 @@ class ActionConditionedEncoder(nn.Module):
     def _reinitialize_layers(self, *, feedforward_init_gain: float, communication_init_gain: float) -> None:
         hidden_linear_init = make_init_linear_orthogonal(feedforward_init_gain)
         output_linear_init = make_init_linear_orthogonal(1.0)
-        communication_linear_init = make_init_linear_orthogonal(communication_init_gain)
         for layer in self.layers:
             if layer.self_attn is not None:
                 reinitialize_multihead_attention(layer.self_attn)
             elif isinstance(layer, DeepSetEncoderLayer):
-                for module in layer.interaction.modules():
-                    if isinstance(module, nn.Linear):
-                        communication_linear_init(module)
+                layer.reinitialize_communication(communication_init_gain)
             hidden_layers, output_layers = feedforward_linear_layers(layer.feedforward)
             for linear in hidden_layers:
                 hidden_linear_init(linear)

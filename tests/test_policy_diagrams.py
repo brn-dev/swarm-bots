@@ -127,6 +127,22 @@ def test_depth_choices_export_to_distinct_files_and_gallery_entries(
         assert name in gallery
 
 
+@pytest.mark.integration
+@pytest.mark.parametrize(("budget", "maximum_main"), [("5M", 5_350_000), ("10M", 10_650_000)])
+@pytest.mark.parametrize("variant", list_variants(include_hidden=True))
+def test_fixed_presets_meet_main_budget_and_match_across_depths(
+    policy_row: PolicyRow, variant: str, budget: str, maximum_main: int,
+) -> None:
+    scales = [scale for scale in SCALES if scale.startswith(budget + "-")]
+    rows = [policy_row(variant, scale) for scale in scales]
+    counts = [row["trainable_minus_nop"] for row in rows]
+    assert all(count >= SCALE_LAYOUTS[scales[0]].main_parameters for count in counts)
+    tolerance = 0.03 if budget == "10M" and "__gated_" in variant else 0.01
+    assert all(abs(count / counts[0] - 1) < tolerance for count in counts[1:])
+    if not variant.endswith(("__lstm", "__slstm")) and "__gated_" not in variant:
+        assert all(count <= maximum_main for count in counts)
+
+
 def assert_line_order(node: Node, *prefixes: str) -> None:
     positions = [next(i for i, line in enumerate(node.lines) if line.startswith(prefix)) for prefix in prefixes]
     assert positions == sorted(positions), (node.id, prefixes, node.lines)
@@ -142,19 +158,21 @@ def test_all_core_diagrams_render_with_valid_dimensions_and_privilege_boundary(r
     assert dot_diagram(d).startswith("digraph policy")
     assert all("see layer table" not in " ".join(node.lines) for node in d.nodes)
     destinations = {"privileged"}
+    edges = {(edge.source, edge.target) for edge in d.edges}
     for _ in range(len(d.nodes)):
         destinations |= {edge.target for edge in d.edges if edge.source in destinations}
     assert not destinations & {"actor", "actor_encoder", "actions"}
-    assert (("future_actions", "transition") in {(edge.source, edge.target) for edge in d.edges}) is row["use_nop"]
-    assert ("actions", "transition") not in {(edge.source, edge.target) for edge in d.edges}
+    assert (("future_actions", "transition") in edges) is row["use_nop"]
+    assert ("actions", "transition") not in edges
     if row["use_nop"] and ("actor_config" in configuration(row) or "encoder_config" in configuration(row)):
         source = "representation" if row["variant"] == "ppo" else "critic_encoder"
-        edges = {(edge.source, edge.target) for edge in d.edges}
         assert (source, "nop_bridge") in edges
         assert ("actor_encoder", "nop_bridge") not in edges
-    if row["variant"] == "mappo":
+    if row["variant"] == "mappo__deepset_critic":
         assert row["roles"]["shared_encoder"]["total"] == 0
         assert {"actor_encoder", "critic_encoder"} <= {node.id for node in d.nodes}
+        assert ("privileged", "critic_encoder") in edges
+        assert ("privileged", "value") not in edges
 
     for role in ("actor", "critic", "shared_encoder", "next_obs_prediction"):
         assert (
@@ -213,6 +231,16 @@ def test_all_core_diagrams_render_with_valid_dimensions_and_privilege_boundary(r
         actor = next(node for node in d.nodes if node.id == "actor_encoder")
         assert_line_order(actor, "FF / block:", "head:", "output:")
         assert actor.lines[-1] == f"output: N × {configuration(row)['actor_head_config']['hidden_dims'][-1]}"
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("row", policy_cases("mat_qcx", "mat_qcx__lstm"), indirect=True)
+def test_qcx_diagram_includes_final_actor_projection_and_output_width(row: dict[str, Any]) -> None:
+    diagram = build_diagram(row)
+    actor = next(node for node in diagram.nodes if node.id == "actor")
+    config = configuration(row)["decoder_config"]
+    assert any(line.startswith("actor head (once):") for line in actor.lines)
+    assert actor.lines[-1] == f"output: N × {config['actor_head_hidden_dims'][-1]}"
 
 
 @pytest.mark.integration

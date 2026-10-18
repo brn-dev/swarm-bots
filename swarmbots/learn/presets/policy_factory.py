@@ -16,8 +16,7 @@ from swarmbots.learn.action_dists.predicted_std_gaussian_action_dist import Pred
 from swarmbots.learn.action_dists.sign_magnitude_beta_action_dist import SignMagnitudeBetaConfig
 from swarmbots.learn.action_dists.squashed_diag_gaussian_action_dist import SquashedDiagGaussianConfig
 from swarmbots.learn.algos.mappo.mappo_actor import MAPPOActorConfig
-from swarmbots.learn.algos.mappo.mappo_encoder import MAPPOEncoderConfig
-from swarmbots.learn.algos.mappo.mappo_policy import MAPPOCriticConfig, MAPPOPolicy, MAPPOPolicyConfig
+from swarmbots.learn.algos.mappo.mappo_policy import MAPPOPolicy, MAPPOPolicyConfig
 from swarmbots.learn.algos.mat import FeedForwardConfig, MATEncoderConfig, MLPConfig
 from swarmbots.learn.algos.mat_qc_base_policy import MATCriticConfig
 from swarmbots.learn.algos.mat.mat_dec_policy import MATDecPolicy, MATDecPolicyConfig
@@ -55,7 +54,7 @@ from swarmbots.learn.algos.sac.masac_policy import MASACPolicy, MASACPolicyConfi
 from swarmbots.learn.algos.td3.td3_policy import TD3Policy, TD3PolicyConfig
 from swarmbots.learn.algos.world_modeling.next_obs_pred_mixin import NextObsPredConfig
 from swarmbots.learn.nn_components.activations import ActivationFactory
-from swarmbots.learn.nn_components.deep_set import DeepSetCriticConfig, DeepSetInteractionConfig
+from swarmbots.learn.nn_components.deep_set import DeepSetInteractionConfig
 from swarmbots.learn.nn_components.nn_init import make_init_linear_orthogonal
 from swarmbots.learn.obs_indices import ObsIndices
 from swarmbots.learn.presets.transformer import (
@@ -83,8 +82,7 @@ PolicyVariant = Literal[
     "mat_qcx__lstm",
     "mat_ind__lstm",
     "ppo",
-    "mappo",
-    "mappo__mlp_critic",
+    "mappo__deepset_critic",
     "tmasac",
     "tmasac_dec",
     "tmasac__recurrent",
@@ -395,6 +393,8 @@ def _make_base_policy(
     obs_indices: ObsIndices | None = None,
     rmat_temporal_model_cls: Any = None,
     rmat_temporal_model_config: Any = None,
+    rmat_critic_temporal_model_cls: Any = None,
+    rmat_critic_temporal_model_config: Any = None,
     rmat_temporal_residual: bool = True,
     rmat_temporal_layer_norm: bool = True,
     rmat_use_temporal_output_projection: bool = True,
@@ -404,7 +404,6 @@ def _make_base_policy(
     baseline_critic_hidden_dims: tuple[int, ...] | None = None,
     baseline_critic_element_hidden_dims: tuple[int, ...] | None = None,
     baseline_critic_context_in_elements: bool = True,
-    mappo_critic_context_in_elements: bool = True,
     deepset_interaction_config: DeepSetInteractionConfig | dict[str, Any] | None = None,
     critic_deepset_head_gating: bool = False,
     mat_joint_obs_embedding: bool = False,
@@ -499,6 +498,12 @@ def _make_base_policy(
         **({} if rmat_temporal_model_cls is None else {"temporal_model_cls": rmat_temporal_model_cls}),
         **({} if rmat_temporal_model_config is None else {"temporal_model_config": rmat_temporal_model_config}),
     )
+    rmat_critic_encoder_config = replace(
+        rmat_encoder_config,
+        **({} if rmat_critic_temporal_model_cls is None else {"temporal_model_cls": rmat_critic_temporal_model_cls}),
+        **({} if rmat_critic_temporal_model_config is None
+           else {"temporal_model_config": rmat_critic_temporal_model_config}),
+    )
     resolved_rmat_actor_d_model = enc_d_model if rmat_actor_d_model is None else rmat_actor_d_model
     resolved_rmat_actor_ff_config = (
         mat_encoder_transformer_ff_config
@@ -581,7 +586,7 @@ def _make_base_policy(
                 init_gain=mat_init_gains.actor_head,
             ),
             critic_encoder_config=replace(
-                rmat_encoder_config if td3_recurrent_critic else mat_encoder_config, use_agent_attention=True,
+                rmat_critic_encoder_config if td3_recurrent_critic else mat_encoder_config, use_agent_attention=True,
             ),
             transformer_critic_config=critic_config,
             critic_kind="transformer" if policy_variant.startswith("tmatd3") else joint_critic_config.kind,
@@ -736,9 +741,7 @@ def _make_base_policy(
             ),
         )
 
-    if policy_variant in {"mappo", "mappo__mlp_critic"}:
-        mlp_critic = policy_variant == "mappo__mlp_critic"
-        value_regressor_hidden_dims = [256, 128]
+    if policy_variant == "mappo__deepset_critic":
         return build(MAPPOPolicy,
             env=env,
             config=MAPPOPolicyConfig(
@@ -748,28 +751,36 @@ def _make_base_policy(
                     actor_head_hidden_dims=[128],
                     latent_pi_dim=128,
                     act_fun_class=act_fn_cls,
+                    actor_head_init_gain=mat_init_gains.actor_head,
+                    layer_norm=True,
                 ),
-                critic_encoder_config=MAPPOEncoderConfig(
-                    hidden_dims=[768, 512, 512, 384], latent_dim=256, act_fun_class=act_fn_cls,
+                critic_encoder_config=replace(
+                    mat_encoder_config, use_agent_attention=False,
+                    local_obs_encoder_config=MLPConfig(hidden_dims=[enc_d_model]),
                 ),
-                critic_config=MAPPOCriticConfig(
-                    mlp_hidden_dims=value_regressor_hidden_dims if mlp_critic else [],
-                    deep_set_config=None if mlp_critic else DeepSetCriticConfig(
-                        interaction_config=interaction_config,
-                        local_projection_hidden_dims=[256, 128],
-                        value_regressor_hidden_dims=value_regressor_hidden_dims,
-                    ),
-                    context_in_elements=mappo_critic_context_in_elements,
-                    act_fun_class=act_fn_cls,
+                critic_interaction_config=interaction_config,
+                critic_config=MATCriticConfig(
+                    local_projection_hidden_dims=[128],
+                    value_regressor_hidden_dims=[256, 128],
+                    interaction_config=interaction_config,
                     use_popart=use_popart,
+                    popart_config=popart_config,
+                    local_projection_init_gain=mat_init_gains.critic_local_projection,
+                    value_regressor_init_gain=mat_init_gains.critic_value_regressor,
+                    value_head_init_gain=mat_init_gains.critic_value_head,
                 ),
                 continuous_config=continuous_config,
                 bernoulli_config=bernoulli_config,
                 compile_modules=compile_policy_modules,
                 compile_mode=policy_compile_mode,
+                action_net_init_gain=mat_init_gains.action_net,
             ),
         )
 
+    rmat_critic_encoder_config = replace(
+        rmat_critic_encoder_config, use_agent_attention=True,
+        local_obs_encoder_config=MLPConfig(hidden_dims=[enc_d_model]),
+    )
     mat_critic_config = MATCriticConfig(
         interaction_config=interaction_config,
         n_local_projection_hidden_layers=2,
@@ -824,6 +835,7 @@ def _make_base_policy(
             env=env,
             config=RMATQCXPolicyConfig(
                 encoder_config=rmat_encoder_config,
+                critic_encoder_config=rmat_critic_encoder_config,
                 decoder_config=MATQCXDecoderConfig(
                     d_model=dec_d_model,
                     nhead=dec_nhead,
@@ -862,7 +874,9 @@ def _make_base_policy(
             env=env,
             config=MATDecPolicyConfig(
                 encoder_config=mat_encoder_config,
-                critic_encoder_config=mat_encoder_config,
+                critic_encoder_config=replace(
+                    mat_encoder_config, local_obs_encoder_config=MLPConfig(hidden_dims=[enc_d_model]),
+                ),
                 critic_config=mat_critic_config,
                 actor_head_hidden_dims=[dec_d_model, dec_d_model],
                 dropout=0.0,
@@ -882,7 +896,10 @@ def _make_base_policy(
             env=env,
             config=MATIndPolicyConfig(
                 encoder_config=mat_encoder_config,
-                critic_encoder_config=replace(mat_encoder_config, use_agent_attention=True),
+                critic_encoder_config=replace(
+                    mat_encoder_config, use_agent_attention=True,
+                    local_obs_encoder_config=MLPConfig(hidden_dims=[enc_d_model]),
+                ),
                 critic_config=mat_critic_config,
                 actor_head_hidden_dims=[dec_d_model],
                 dropout=0.0,
@@ -902,6 +919,7 @@ def _make_base_policy(
             env=env,
             config=RMATIndPolicyConfig(
                 encoder_config=rmat_encoder_config,
+                critic_encoder_config=rmat_critic_encoder_config,
                 critic_config=mat_critic_config,
                 actor_head_hidden_dims=[dec_d_model],
                 dropout=0.0,

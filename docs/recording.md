@@ -11,13 +11,13 @@ Headless Linux recording requires [EGL/OpenGL libraries](gpu_setup.md#headless-v
 Find a checkpoint in the training run's `models/` directory. Supply the task and variant used for training, replacing the example filename with the saved checkpoint:
 
 ```bash
-swarmbots record SwarmBots-WallEasy-v0 --checkpoint runs/first-mappo/models/model_1000000_steps_final.pt --variant mappo --episodes 3 --output recordings/mappo
+swarmbots record SwarmBots-WallEasy-v0 --checkpoint runs/first-mappo/models/model_1000000_steps_final.pt --variant mappo__deepset_critic --episodes 3 --output recordings/mappo
 ```
 
 Without environment activation, use `.venv/bin/swarmbots` on Linux or `.\.venv\Scripts\swarmbots.exe` on Windows. The checkout script can also be run on Windows:
 
 ```powershell
-.\.venv\Scripts\python.exe examples/record_policy.py SwarmBots-WallEasy-v0 --checkpoint runs/first-mappo/models/model_1000000_steps_final.pt --variant mappo --episodes 3 --output recordings/mappo
+.\.venv\Scripts\python.exe examples/record_policy.py SwarmBots-WallEasy-v0 --checkpoint runs/first-mappo/models/model_1000000_steps_final.pt --variant mappo__deepset_critic --episodes 3 --output recordings/mappo
 ```
 
 The command restores policy weights and observation normalization, records complete episodes, and waits for encoding before printing the output directory. It uses deterministic actions by default and resets recurrent state between episodes.
@@ -95,7 +95,7 @@ from swarmbots.learn import record_checkpoint
 video_folder = record_checkpoint(
     "runs/first-mappo/models/model_1000000_steps_final.pt",
     "SwarmBots-WallEasy-v0",
-    "mappo",
+    "mappo__deepset_critic",
     video_folder="recordings/mappo",
     num_episodes=3,
     device="cuda",

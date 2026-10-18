@@ -7,9 +7,9 @@ from torch import nn
 from swarmbots.learn.action_dists.bernoulli_action_dist import BernoulliConfig
 from swarmbots.learn.action_dists.sign_magnitude_beta_action_dist import SignMagnitudeBetaConfig
 from swarmbots.learn.algos.mappo.mappo_actor import MAPPOActorConfig
-from swarmbots.learn.algos.mappo.mappo_policy import MAPPOCriticConfig, MAPPOPolicy, MAPPOPolicyConfig
+from swarmbots.learn.algos.mappo.mappo_policy import MAPPOPolicy, MAPPOPolicyConfig
+from swarmbots.learn.algos.mat_qc_base_policy import MATCriticConfig
 from swarmbots.learn.algos.ppo.ppo_policy import PPOActorConfig, PPOCriticConfig, PPOPolicy, PPOPolicyConfig
-from swarmbots.learn.nn_components.deep_set import DeepSetCriticConfig
 from swarmbots.learn.hybrid_action_space import HybridActionSpace
 
 
@@ -96,11 +96,9 @@ def test_mappo_policy_initializes_internal_layers_and_heads_with_expected_gains(
                 actor_head_hidden_dims=[6],
                 latent_pi_dim=4,
             ),
-            critic_config=MAPPOCriticConfig(
-                deep_set_config=DeepSetCriticConfig(
-                    local_projection_hidden_dims=[10],
-                    value_regressor_hidden_dims=[10],
-                ),
+            critic_config=MATCriticConfig(
+                local_projection_hidden_dims=[10],
+                value_regressor_hidden_dims=[10],
             ),
             continuous_config=SignMagnitudeBetaConfig(),
             bernoulli_config=BernoulliConfig(initial_prob=0.5),
@@ -109,14 +107,16 @@ def test_mappo_policy_initializes_internal_layers_and_heads_with_expected_gains(
 
     actor_linears = _linear_modules(policy.actor.mlp)
     actor_encoder_linears = _linear_modules(policy.actor_encoder.mlp)
-    critic_encoder_linears = _linear_modules(policy.critic_encoder.mlp)
+    critic_encoder_linears = _linear_modules(policy.critic_encoder.local_obs_encoder)
     critic_local_projection_linears = _linear_modules(policy.critic.deepset.element_encoder)
     critic_value_regressor_linears = _linear_modules(policy.critic.deepset.set_decoder[0])
 
     _assert_orthogonal_gain(actor_encoder_linears[0], 1.0)
     _assert_orthogonal_gain(critic_encoder_linears[0], 1.0)
     _assert_orthogonal_gain(actor_linears[0], 1.0)
-    _assert_orthogonal_gain(actor_linears[-1], 0.01)
+    _assert_orthogonal_gain(actor_linears[-1], 1.0)
+    for linear in _linear_modules(policy.action_dist):
+        _assert_orthogonal_gain(linear, 0.01)
     _assert_orthogonal_gain(critic_local_projection_linears[0], 1.0)
     _assert_orthogonal_gain(critic_value_regressor_linears[0], 1.0)
     _assert_orthogonal_gain(policy.critic.deepset.set_decoder[1], 0.01)
@@ -126,11 +126,9 @@ def test_mappo_policy_exposes_popart_when_enabled_in_critic_config() -> None:
     policy = MAPPOPolicy(
         env=_DummyLearnEnv(),
         config=MAPPOPolicyConfig(
-            critic_config=MAPPOCriticConfig(
-                deep_set_config=DeepSetCriticConfig(
-                    local_projection_hidden_dims=[10],
-                    value_regressor_hidden_dims=[10],
-                ),
+            critic_config=MATCriticConfig(
+                local_projection_hidden_dims=[10],
+                value_regressor_hidden_dims=[10],
                 use_popart=True,
             ),
             continuous_config=SignMagnitudeBetaConfig(),

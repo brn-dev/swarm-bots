@@ -40,6 +40,12 @@ from swarmbots.learn.training import _variant_options
 from swarmbots.mjw_env.swarm.mjw_homogeneous_swarm import MJWPreConnectedUnitLocationsConfig
 
 
+OFF_POLICY_VARIANTS = tuple(
+    variant for variant in list_variants(include_hidden=True)
+    if _is_off_policy_variant(_variant_options(variant)[0]["policy_variant"])
+)
+
+
 @pytest.fixture(scope="module", autouse=True)
 def single_torch_thread() -> Iterator[None]:
     previous = torch.get_num_threads()
@@ -73,10 +79,196 @@ def _training_kwargs() -> dict[str, Any]:
     }
 
 
+@pytest.fixture
+def capture_training_configuration(monkeypatch: pytest.MonkeyPatch) -> None:
+    def make_environment(
+        _benchmark_id: str, *, policy_options: dict[str, Any], **_kwargs: Any,
+    ) -> tuple[SimpleNamespace, SimpleNamespace]:
+        recurrent = (
+            policy_options["policy_variant"] == "tmasac__recurrent"
+            or policy_options.get("td3_recurrent_actor", False)
+        )
+        policy = SimpleNamespace(requires_recurrent_training=lambda: recurrent)
+        env = SimpleNamespace(unwrapped=SimpleNamespace(
+            device=torch.device("cpu"), episode_length=_kwargs["episode_length"] or 500,
+        ))
+        return env, policy
+
+    def capture_algorithm(**kwargs: Any) -> dict[str, Any]:
+        return kwargs
+
+    monkeypatch.setattr("swarmbots.learn.training._make_policy_env", make_environment)
+    for algorithm_name in ("SAC", "RecurrentSAC", "TD3", "RecurrentTD3", "DDPG"):
+        monkeypatch.setattr(f"swarmbots.learn.training.{algorithm_name}", capture_algorithm)
+
+
+@pytest.mark.parametrize("variant", OFF_POLICY_VARIANTS)
+def test_off_policy_presets_share_common_training_defaults(
+    capture_training_configuration: None, variant: str,
+) -> None:
+    config = make_training("SwarmBots-WallEasy-v0", variant, num_envs=256)
+    assert {key: config[key] for key in (
+        "learning_rate", "learning_rate_warmup_updates", "learning_rate_warmup_start_factor",
+        "buffer_capacity_per_env", "learning_starts", "rollout_steps_per_iteration", "gradient_steps",
+        "gamma", "tau", "max_grad_norm",
+    )} == {
+        "learning_rate": 5e-5, "learning_rate_warmup_updates": 500, "learning_rate_warmup_start_factor": 0.01,
+        "buffer_capacity_per_env": 1000, "learning_starts": 10_000, "rollout_steps_per_iteration": 256,
+        "gradient_steps": 8, "gamma": 0.99, "tau": 0.005, "max_grad_norm": 2.0,
+    }
+    learning_positions = config["batch_size"] * config.get("learning_steps", 1)
+    assert learning_positions == 1024
+
+
+@pytest.mark.parametrize("variant", OFF_POLICY_VARIANTS)
+def test_off_policy_presets_honor_common_training_overrides(
+    capture_training_configuration: None, variant: str,
+) -> None:
+    overrides = {
+        "learning_rate": 2e-4, "learning_rate_warmup_updates": 20, "learning_rate_warmup_start_factor": 0.1,
+        "buffer_capacity_per_env": 256, "learning_starts": 512, "rollout_steps_per_iteration": 512,
+        "batch_size": 3, "gradient_steps": 2, "gamma": 0.95, "tau": 0.02, "max_grad_norm": 0.7,
+    }
+    config = make_training("SwarmBots-WallEasy-v0", variant, num_envs=256, algorithm_kwargs=overrides)
+    assert {key: config[key] for key in overrides} == overrides
+
+
+@pytest.mark.parametrize("variant", ["tmasac__lstm", "tmasac__slstm", "tmatd3"])
+@pytest.mark.parametrize(("num_envs", "rollout_steps", "learning_steps"), [
+    (64, 1, 64), (256, 1, 64), (1024, 1, 64), (4096, 1, 64), (256, 4, 64), (256, 1, 32), (256, 1, 128),
+])
+def test_recurrent_default_batches_match_feedforward_replay_exposure(
+    capture_training_configuration: None, variant: str, num_envs: int, rollout_steps: int, learning_steps: int,
+) -> None:
+    common = dict(num_envs=num_envs, rollout_steps_per_env=rollout_steps)
+    baseline = make_training("SwarmBots-WallEasy-v0", "tmatd3" if variant == "tmatd3" else "tmasac", **common)
+    recurrent = make_training(
+        "SwarmBots-WallEasy-v0", variant, **common,
+        policy_kwargs={"td3_recurrent_actor": True} if variant == "tmatd3" else {},
+        algorithm_kwargs={"learning_steps": learning_steps},
+    )
+    baseline_positions = baseline["batch_size"]
+    recurrent_positions = recurrent["batch_size"] * recurrent["learning_steps"]
+    assert baseline_positions == recurrent_positions == 1024
+    assert baseline["gradient_steps"] == recurrent["gradient_steps"] == 8
+    assert baseline["rollout_steps_per_iteration"] == recurrent["rollout_steps_per_iteration"] == num_envs * rollout_steps
+    assert baseline["learning_rate"] == recurrent["learning_rate"] == 5e-5
+    assert {key: recurrent[key] for key in (
+        "burn_in_steps", "temporal_state_store_interval", "temporal_state_storage_dtype",
+    )} == {"burn_in_steps": 32, "temporal_state_store_interval": 16, "temporal_state_storage_dtype": torch.float16}
+
+
+@pytest.mark.parametrize("learning_steps", [3, 63, 100, 2048])
+def test_recurrent_default_batches_round_up_to_whole_learning_sequences(
+    capture_training_configuration: None, learning_steps: int,
+) -> None:
+    config = make_training(
+        "SwarmBots-WallEasy-v0", "tmasac__lstm", num_envs=256,
+        algorithm_kwargs={"learning_steps": learning_steps, "temporal_state_store_interval": 1},
+    )
+    positions = config["batch_size"] * config["learning_steps"]
+    assert config["batch_size"] >= 1
+    assert 0 <= positions - 1024 < learning_steps
+
+
+@pytest.mark.parametrize("variant", ["tmasac__lstm", "tmasac__slstm", "tmatd3"])
+def test_recurrent_default_replay_capacity_supports_custom_horizons(
+    capture_training_configuration: None, variant: str,
+) -> None:
+    config = make_training(
+        "SwarmBots-WallEasy-v0", variant, num_envs=4096, episode_length=4,
+        policy_kwargs={"td3_recurrent_actor": True} if variant == "tmatd3" else {},
+        algorithm_kwargs={"learning_steps": 256, "burn_in_steps": 16, "temporal_state_store_interval": 32},
+    )
+    assert config["buffer_capacity_per_env"] >= 16 + 256 + 32 - 1
+
+
+@pytest.mark.parametrize("variant", ["tmasac__lstm", "tmasac__slstm", "tmatd3"])
+def test_explicit_recurrent_batch_size_remains_a_sequence_count(
+    capture_training_configuration: None, variant: str,
+) -> None:
+    config = make_training(
+        "SwarmBots-WallEasy-v0", variant, num_envs=256,
+        policy_kwargs={"td3_recurrent_actor": True} if variant == "tmatd3" else {},
+        algorithm_kwargs={"batch_size": 7, "learning_steps": 32},
+    )
+    assert config["batch_size"] == 7
+    assert config["learning_steps"] == 32
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("variant", [
+    "maddpg__deepset_critic", "tmatd3", "tmasac", "tmasac__lstm", "tmasac__slstm",
+])
+def test_off_policy_training_updates_with_default_batch_budget(variant: str) -> None:
+    kwargs = _training_kwargs()
+    kwargs["episode_length"] = 128
+    recurrent = variant in {"tmasac__lstm", "tmasac__slstm"}
+    algorithm = make_training(
+        "SwarmBots-WallEasy-v0", variant, **kwargs, rollout_steps_per_env=96 if recurrent else 512,
+        algorithm_kwargs={
+            "learning_starts": 0, "gradient_steps": 1,
+            "buffer_capacity_per_env": 128 if recurrent else 512, "learning_rate_warmup_updates": 0,
+        },
+    )
+    try:
+        assert algorithm.batch_size == (16 if recurrent else 1024)
+        if recurrent:
+            assert algorithm.learning_steps == 64
+            assert algorithm.burn_in_steps == 32
+        assert algorithm.batch_size * getattr(algorithm, "learning_steps", 1) == 1024
+        parameters_before = [parameter.detach().clone() for parameter in algorithm.policy.parameters()]
+        algorithm.perform_iteration(ExponentialMovingAverage(0.1), ExponentialMovingAverage(0.1), update_ema=True)
+        assert algorithm.n_total_updates > 0
+        assert any(
+            not torch.equal(before, after)
+            for before, after in zip(parameters_before, algorithm.policy.parameters(), strict=True)
+        )
+        assert all(torch.isfinite(parameter).all() for parameter in algorithm.policy.parameters())
+    finally:
+        algorithm.env.close()
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("variant", OFF_POLICY_VARIANTS)
+def test_off_policy_presets_retain_algorithm_specific_defaults(variant: str) -> None:
+    algorithm = make_training("SwarmBots-WallEasy-v0", variant, **_training_kwargs())
+    try:
+        assert algorithm.learning_rate == 5e-5
+        for optimizer in (algorithm.actor_optimizer, algorithm.critic_optimizer):
+            assert all(group["lr"] == pytest.approx(5e-7) for group in optimizer.param_groups)
+        assert algorithm.learning_rate_warmup_updates == 500
+        assert algorithm.learning_rate_warmup_start_factor == 0.01
+        assert algorithm.batch_size * getattr(algorithm, "learning_steps", 1) == 1024
+        assert algorithm.gradient_steps == 8
+        assert algorithm.nop_batch_size == algorithm.batch_size
+        assert not algorithm.independent_nop_sampling
+        if isinstance(algorithm, SAC):
+            assert algorithm.policy_delay == 1
+            assert algorithm.target_update_interval == 1
+            assert algorithm.target_policy_noise == algorithm.target_noise_clip == 0
+            assert algorithm.actor_action_samples == algorithm.target_action_samples == 1
+            assert algorithm.ent_coef == "auto_0.05"
+            assert algorithm.target_entropy == "auto_0.1"
+            assert algorithm.ent_coef_optimizer.param_groups[0]["lr"] == 5e-5
+        else:
+            ddpg = variant.startswith("maddpg")
+            assert algorithm.policy_delay == (1 if ddpg else 2)
+            assert algorithm.target_policy_noise == (0.0 if ddpg else 0.2)
+            assert algorithm.target_noise_clip == (0.0 if ddpg else 0.5)
+            assert algorithm.exploration_noise == 0.1
+        if algorithm.policy.has_nop_loss():
+            assert algorithm.policy.get_nop_num_next_steps() == 3
+            assert algorithm.policy.critic_nop.nop_loss_coef == 0.1
+            assert algorithm.policy.actor_nop is None
+    finally:
+        algorithm.env.close()
+
+
 @pytest.mark.integration
 @pytest.mark.parametrize("variant", [
     "masac__deepset_critic", "masac__gated_deepset_critic",
-    "tmasac", "tmasac_dec", "tmasac__lstm", "tmasac__slstm",
+    "tmasac", "tmasac_dec", "tmasac__no_nop", "tmasac__lstm", "tmasac__slstm",
 ])
 @pytest.mark.parametrize("override", [False, True])
 def test_sac_presets_share_tmasac_training_defaults_and_honor_overrides(variant: str, override: bool) -> None:
@@ -109,7 +301,7 @@ def test_variants_expose_only_canonical_architectures_and_ablations() -> None:
         "tmatd3",
         "tmatd3_dec",
         "ppo",
-        "mappo",
+        "mappo__deepset_critic",
         "mat_orig",
         "mat_ind",
         "mat_qcx",
@@ -125,7 +317,7 @@ def test_variants_expose_only_canonical_architectures_and_ablations() -> None:
     }
     assert set(list_variants()) == {
         "ppo",
-        "mappo",
+        "mappo__deepset_critic",
         "mat_orig",
         "mat_ind",
         "mat_dec",
@@ -262,11 +454,11 @@ def test_low_level_shared_observation_presets_reject_old_names(variant: str) -> 
 
 
 @pytest.mark.parametrize("variant", ["tmasac__slstm", "tmasac__lstm"])
-def test_recurrent_tmasac_presets_keep_the_full_actor_and_critic_feedforward_networks(variant: str) -> None:
+def test_recurrent_tmasac_presets_split_actor_ff_and_preserve_full_critic_ff(variant: str) -> None:
     options, _ = _variant_options(variant, model_scale=None)
     assert options["mat_encoder_transformer_ff_config"] == MLPConfig(hidden_dims=[512, 512])
-    assert options["rmat_actor_transformer_ff_config"] == MLPConfig(hidden_dims=[512, 512])
-    assert options["rmat_actor_inter_module_mlp"] is False
+    assert options["rmat_actor_transformer_ff_config"] == MLPConfig(hidden_dims=[512])
+    assert options["rmat_actor_inter_module_mlp"] is True
     policy = _small_policy(variant)
     for critic in (policy.critic, policy.critic_target):
         for layer in critic.encoder.layers:
@@ -274,10 +466,37 @@ def test_recurrent_tmasac_presets_keep_the_full_actor_and_critic_feedforward_net
             widths = [(module.in_features, module.out_features) for module in layer.feedforward if isinstance(module, nn.Linear)]
             assert widths == [(32, 512), (512, 512), (512, 32)]
     for layer in policy.actor_encoder.layers:
-        assert layer.inter_module_feedforward is None
-        assert isinstance(layer.feedforward, MLP)
-        widths = [(module.in_features, module.out_features) for module in layer.feedforward if isinstance(module, nn.Linear)]
-        assert widths == [(32, 512), (512, 512), (512, 32)]
+        for feedforward in (layer.inter_module_feedforward, layer.feedforward):
+            assert isinstance(feedforward, MLP)
+            widths = [(module.in_features, module.out_features) for module in feedforward if isinstance(module, nn.Linear)]
+            assert widths == [(32, 512), (512, 32)]
+
+
+@pytest.mark.parametrize("variant", ["tmasac__slstm", "tmasac__lstm"])
+def test_recurrent_tmasac_executes_and_trains_both_ff_stages_around_memory(variant: str) -> None:
+    policy = _small_policy(variant, policy_kwargs={"rmat_experimental_compile_lstm": False})
+    layer = policy.actor_encoder.layers[0]
+    execution_order = []
+    handles = [
+        module.register_forward_hook(lambda _module, _inputs, _output, name=name: execution_order.append(name))
+        for name, module in (
+            ("attention", layer.self_attn), ("pre_mlp", layer.inter_module_feedforward),
+            ("memory", layer.temporal_model), ("post_mlp", layer.feedforward),
+        )
+    ]
+    try:
+        output, _ = policy.actor_encoder(
+            local_obs=torch.randn(1, 2, 3, 5), global_obs=torch.randn(1, 2, 2),
+            agent_mask=torch.ones(1, 2, 3, dtype=torch.bool),
+        )
+    finally:
+        for handle in handles:
+            handle.remove()
+    assert execution_order == ["attention", "pre_mlp", "memory", "post_mlp"]
+    output[..., 0].square().mean().backward()
+    for encoder_layer in policy.actor_encoder.layers:
+        for feedforward in (encoder_layer.inter_module_feedforward, encoder_layer.feedforward):
+            assert any(parameter.grad is not None and torch.count_nonzero(parameter.grad) for parameter in feedforward.parameters())
 
 
 @pytest.mark.parametrize("variant,recurrent_critic", [("matd3__deepset_critic", False), ("tmatd3", False), ("tmatd3_dec", False), ("tmatd3", True), ("tmatd3_dec", True)])
@@ -387,7 +606,7 @@ def test_tmasac_dec_actor_is_independent_and_critic_mixes_agents() -> None:
 @pytest.mark.integration
 @pytest.mark.parametrize(
     ("variant", "expected_ratios"),
-    [("ppo", (1.04**2, 1.04)), ("mappo", (1.04, 1.04, 1.04)), ("mat_ind", (1.04, 1.04, 1.04))],
+    [("ppo", (1.04**2, 1.04)), ("mappo__deepset_critic", (1.04, 1.04, 1.04)), ("mat_ind", (1.04, 1.04, 1.04))],
 )
 def test_ppo_presets_clip_and_measure_kl_at_the_intended_action_scope(
     variant: str, expected_ratios: tuple[float, ...]
@@ -628,21 +847,21 @@ def test_off_policy_nop_is_enabled_by_default_and_can_train(variant: str, source
 
 
 @pytest.mark.integration
-@pytest.mark.parametrize("variant", ["mappo"])
-@pytest.mark.parametrize("context_in_elements", [False, True])
-def test_mappo_global_context_trains_and_restores_matching_checkpoints(
-    variant: str, context_in_elements: bool, tmp_path: Path,
+@pytest.mark.parametrize("variant", ["mappo__deepset_critic"])
+@pytest.mark.parametrize("model_scale", [None, "5M-2L"])
+def test_mappo_deepset_critic_trains_and_restores_matching_checkpoints(
+    variant: str, model_scale: str | None, tmp_path: Path,
 ) -> None:
     kwargs = _training_kwargs()
+    kwargs["model_scale"] = model_scale
     kwargs["policy_kwargs"].update(transition_model_d_model=16, transition_model_nhead=2)
-    if not context_in_elements:
-        kwargs["policy_kwargs"]["mappo_critic_context_in_elements"] = False
     kwargs["algorithm_kwargs"] = {"learning_rate": 1e-3, "n_epochs": 1, "target_kl": None}
     algorithm = make_training("SwarmBots-WallEasy-v0", variant, **kwargs)
     try:
         policy = algorithm.policy.policy
         assert isinstance(policy, MAPPOPolicy) and policy.hidden_global_vars_dim > 0
-        assert policy.critic.context_in_elements is context_in_elements and policy.critic.context_after_pool
+        assert policy.critic_encoder.global_obs_dim == policy.global_obs_dim + policy.hidden_global_vars_dim
+        assert policy.critic.num_global_features == 0
         before = {name: parameter.detach().clone() for name, parameter in policy.critic.named_parameters()}
         metrics, transitions = algorithm.perform_iteration(
             ExponentialMovingAverage(0.1), ExponentialMovingAverage(0.1), update_ema=True,
@@ -653,11 +872,9 @@ def test_mappo_global_context_trains_and_restores_matching_checkpoints(
         path = tmp_path / "mappo.pt"
         algorithm.save(path, optimizer_state_dict=algorithm._get_optimizer_state_dict())
         checkpoint = torch.load(path, weights_only=False)
-        critic_config = checkpoint["policy_hyper_parameters"]["mappo_policy_config"]["critic_config"]
-        assert critic_config["context_in_elements"] is context_in_elements
-        if not context_in_elements:
-            del critic_config["context_in_elements"]
-            torch.save(checkpoint, path)
+        saved_config = checkpoint["policy_hyper_parameters"]["mappo_policy_config"]
+        assert not saved_config["critic_encoder_config"]["use_agent_attention"]
+        assert "critic_interaction_config" in saved_config
         restored = make_training("SwarmBots-WallEasy-v0", variant, **kwargs)
         try:
             restored.load(path)
@@ -750,7 +967,7 @@ def test_joint_observation_embedding_trains_and_restores_existing_presets(varian
 
 
 @pytest.mark.integration
-@pytest.mark.parametrize("variant", ["mappo", "matd3__deepset_critic", "tmasac__slstm"])
+@pytest.mark.parametrize("variant", ["mappo__deepset_critic", "matd3__deepset_critic", "tmasac__slstm"])
 def test_training_levels_apply_independently_to_each_algorithm_family(variant: str, tmp_path: Path) -> None:
     kwargs = _training_kwargs()
     kwargs["use_nop"] = False
@@ -848,11 +1065,11 @@ def test_training_saves_and_resumes_then_evaluates_without_updating_normalizatio
 
 @pytest.mark.integration
 def test_presets_select_the_intended_algorithm_and_actor() -> None:
-    for variant, expected_class in (("mappo", PPO), ("mat_ind", PPO), ("tmasac", SAC), ("tmasac_dec", SAC), ("tmasac__slstm", RecurrentSAC), ("tmasac__lstm", RecurrentSAC)):
+    for variant, expected_class in (("mappo__deepset_critic", PPO), ("mat_ind", PPO), ("tmasac", SAC), ("tmasac_dec", SAC), ("tmasac__slstm", RecurrentSAC), ("tmasac__lstm", RecurrentSAC)):
         algorithm = make_training("SwarmBots-WallEasy-v0", variant, **_training_kwargs())
         try:
             assert isinstance(algorithm, expected_class)
-            if variant in {"mappo"}:
+            if variant in {"mappo__deepset_critic"}:
                 assert isinstance(algorithm.policy.policy, MAPPOPolicy)
             elif variant == "mat_ind":
                 assert isinstance(algorithm.policy.policy, MATIndPolicy)

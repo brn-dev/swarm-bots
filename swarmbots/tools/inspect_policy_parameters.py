@@ -227,6 +227,8 @@ def render_report(report: dict[str, Any], *, allocation_doc: str = "model_scale.
         "Buffers (including normalization/PopArt state), optimizer state, replay, and activations are excluded. "
         "Parameter MiB below uses the tensors' actual dtypes and is not runtime or checkpoint memory.", "",
         "Supported model scales select fixed, reviewed architecture layouts; counts depend on task inputs and are not fitted at construction. "
+        "Scale names describe feed-forward references. Recurrent and gated presets retain matched backbones and add capacity; "
+        "fixed TMASAC LSTM/sLSTM layouts use different memory widths to match complete main counts. "
         f"See [model-scale allocation]({allocation_doc}) for the sizing rules. These are the registered preset defaults "
         "unless overrides below are nonempty. A residual-connection ablation can have the same count.", "",
         f"Overrides: `{json.dumps(report['overrides'], sort_keys=True)}`.", "",

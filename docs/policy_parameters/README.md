@@ -1,10 +1,10 @@
 # Policy parameter sizing
 
-The [fixed layouts and allocation rules](model_scale.md) define model sizes; the [diagram guide](diagrams/README.md) explains the generated architectures. The commands below are [installed tools](../tools.md), with output paths relative to the repository root.
+The [fixed layouts and allocation rules](model_scale.md) define model sizes; the [online diagram viewer](https://brn-dev.github.io/swarm-bots/policy-diagrams/) and [diagram guide](diagrams/README.md) explain the generated architectures. The viewer requires no local installation or generated data. The commands below are [installed tools](../tools.md), with output paths relative to the repository root.
 
 Parameter counts and layer dimensions are measured from current policies when requested. The repository keeps explanatory guides; generated counts and comparison reports are local outputs, so architecture changes do not require synchronizing documentation snapshots.
 
-Detailed Markdown reports and CSV exports live in `generated/<scale>/`; rendered diagrams, their export formats, and the offline gallery live in `diagrams/`. These generated outputs stay local and are excluded from Git and source packages. Existing local outputs remain usable.
+Detailed Markdown reports and CSV exports live in `generated/<scale>/`; rendered diagrams, their export formats, and the offline gallery live in `diagrams/`. Generated outputs are excluded from Git and source packages. GitHub Pages hosts a separately generated gallery for browsing online; existing local outputs remain usable.
 
 Generate the gallery and parameter reports from current presets:
 
@@ -39,5 +39,7 @@ The tool instantiates every core preset by default, using the same policy factor
 The main-policy processing comparison excludes NOP and targets. It splits MLPs, standalone linear projections, attention, recurrent modules, normalization, embeddings, and other parameters, by actor, critic, and shared encoder. **MLP + linear** includes transformer feed-forward blocks, SwiGLU gates, observation/latent projections, and action/value heads. Attention's Q/K/V/output projections and complete recurrent modules (including input/gate projections) count in their respective categories. This affine budget helps compare processing capacity across variants; it does not measure FLOPs or effective capacity.
 
 The **Trainable − NOP** column counts the trainable total minus trainable NOP parameters. It excludes all frozen parameters, including target networks. The **Online total** in the processing comparison excludes NOP and targets but can include other frozen main-policy parameters.
+
+Scale names describe feed-forward reference budgets. Recurrent and gated presets add capacity to matched backbones; fixed TMASAC LSTM/sLSTM layouts use different memory widths to match complete main counts. The [comparability reference](model_scale.md#comparability-limits) identifies matched components and remaining differences for each family and control.
 
 `--include-hidden` adds the NOP controls and gated Deep Set presets to the default core sweep. `--output-dir` saves `layer_layout.csv` with actual module dimensions and parameter counts, a Markdown report, summary and component CSVs, `processing.csv` (processing counts by role), `processing_components.csv` (classified modules), and losslessly compressed `counts.json.gz` with resolved hyperparameters and task shapes. Read the JSON using `json.load(gzip.open(path, "rt", encoding="utf-8"))`. Use `--model-scale "5M-2L NOP1M"` to select the fixed layout, `--model-scale custom` for explicit widths, `--no-nop`, or JSON `--policy-kwargs`, `--scenario-kwargs`, and `--env-kwargs` to match custom settings. Parameter counts depend on the task's observation/action shapes; use the same task and overrides when comparing model scales.
