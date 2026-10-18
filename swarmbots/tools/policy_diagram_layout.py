@@ -160,6 +160,8 @@ def assign_ports(diagram: Diagram) -> None:
             edge.source_port, edge.target_port = "right", "right"
         elif (edge.source, edge.target) == ("public", "q_inputs"):
             edge.source_port, edge.target_port = "right", "right"
+        elif edge.source == "public" and target.role == "critic":
+            edge.source_port, edge.target_port = "bottom", "left"
         elif edge.target == "q_features" and source.x == target.x:
             edge.source_port, edge.target_port = "right", "right"
         elif source.x == target.x:

@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Route on-policy public observations straight toward the actor and downward toward the critic, removing crossed arrows beside the input box.
 - Correct the documented MAPPO BibTeX key to `mappo`, matching `references.bib`.
 - Refresh the local policy diagram gallery and parameter reports for every current variant and scale, including MAPPO's Deep Set critic and early privileged inputs, and archive obsolete generated exports outside the gallery.
 - Replace `mappo` with `mappo__deepset_critic`: retain the local MLP actor, encode public and privileged observations together before Deep Set communication, and share MAT's pooled value-head template. Align critic widths/depth/FF with the other families, retain critic-side NOP and matched budgets, remove the old late-context/MLP-critic options without aliases or migrations, and keep layout versions at `v1` for fresh runs.

@@ -357,6 +357,27 @@ def test_connections_and_labels_leave_components_unobstructed(row: dict[str, Any
     assert_connections_and_labels_leave_components_unobstructed(build_diagram(row))
 
 
+@pytest.mark.integration
+@pytest.mark.parametrize("row", policy_cases(
+    "ppo", "mappo__deepset_critic", "mat_ind", "mat_dec", "mat_orig", "mat_qcx",
+    "mat_ind__lstm", "mat_qcx__lstm", "mat_qcx__no_nop",
+), indirect=True)
+def test_on_policy_public_inputs_separate_actor_and_critic_branches(row: dict[str, Any]) -> None:
+    diagram = build_diagram(row)
+    nodes = {node.id: node for node in diagram.nodes}
+    public_edges = [edge for edge in diagram.edges if edge.source == "public"]
+    actor_edge, = [edge for edge in public_edges if nodes[edge.target].role in {"actor", "shared"}]
+    actor_points = edge_points(actor_edge, nodes)
+    actor_ys = [y for _, y in actor_points]
+    assert max(actor_ys) - min(actor_ys) <= 1
+    for edge in public_edges:
+        if nodes[edge.target].role == "critic":
+            critic_points = edge_points(edge, nodes)
+            start, following = critic_points[:2]
+            assert start[0] == following[0] and start[1] < following[1]
+            assert min(y for _, y in critic_points) > max(actor_ys)
+
+
 def assert_connections_and_labels_leave_components_unobstructed(diagram: Diagram) -> None:
     nodes = {node.id: node for node in diagram.nodes}
     labels = [edge.label_box for edge in diagram.edges if edge.label_box is not None]
