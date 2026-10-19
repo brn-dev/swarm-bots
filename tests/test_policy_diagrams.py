@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from functools import cache
+from itertools import combinations, product
 import gzip
 import json
 from pathlib import Path
@@ -14,6 +15,7 @@ from swarmbots.tools.diagram_policy_architectures import (
     ComponentBlock,
     ContentText,
     Diagram,
+    Edge,
     Node,
     build_diagram,
     configuration,
@@ -373,7 +375,9 @@ def test_repeated_operations_are_scoped_separately_from_projections_and_readouts
 @pytest.mark.integration
 @pytest.mark.parametrize("row", policy_cases(), indirect=True)
 def test_connections_and_labels_leave_components_unobstructed(row: dict[str, Any]) -> None:
-    assert_connections_and_labels_leave_components_unobstructed(build_diagram(row))
+    diagram = build_diagram(row)
+    assert_connections_and_labels_leave_components_unobstructed(diagram)
+    assert_connection_pairs_do_not_intersect(diagram, combinations(diagram.edges, 2))
 
 
 @pytest.mark.integration
@@ -419,20 +423,22 @@ def assert_connections_and_labels_leave_components_unobstructed(diagram: Diagram
 
 
 def assert_joint_critic_inputs_do_not_intersect_outputs(diagram: Diagram) -> None:
-    nodes = {node.id: node for node in diagram.nodes}
     inputs = [edge for edge in diagram.edges if edge.target == "q_inputs"]
     outputs = [edge for edge in diagram.edges if edge.source == "q_inputs"]
-    for edge in inputs:
-        points = edge_points(edge, nodes)
-        for other in outputs:
-            other_points = edge_points(other, nodes)
-            for start, end in zip(points, points[1:]):
-                for other_start, other_end in zip(other_points, other_points[1:]):
-                    assert any(
-                        max(min(start[axis], end[axis]), min(other_start[axis], other_end[axis]))
-                        > min(max(start[axis], end[axis]), max(other_start[axis], other_end[axis]))
-                        for axis in (0, 1)
-                    ), (edge.source, edge.target, other.source, other.target, start, end, other_start, other_end)
+    assert_connection_pairs_do_not_intersect(diagram, product(inputs, outputs))
+
+
+def assert_connection_pairs_do_not_intersect(diagram: Diagram, pairs: Iterable[tuple[Edge, Edge]]) -> None:
+    nodes = {node.id: node for node in diagram.nodes}
+    for edge, other in pairs:
+        points, other_points = edge_points(edge, nodes), edge_points(other, nodes)
+        for start, end in zip(points, points[1:]):
+            for other_start, other_end in zip(other_points, other_points[1:]):
+                assert any(
+                    max(min(start[axis], end[axis]), min(other_start[axis], other_end[axis]))
+                    > min(max(start[axis], end[axis]), max(other_start[axis], other_end[axis]))
+                    for axis in (0, 1)
+                ), (edge.source, edge.target, other.source, other.target, start, end, other_start, other_end)
 
 
 @pytest.mark.parametrize("vertical", [False, True])

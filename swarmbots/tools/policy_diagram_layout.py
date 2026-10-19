@@ -120,7 +120,8 @@ def place_components(diagram: Diagram) -> None:
     y = critic_top + (critic_height - input_height) // 2
     for id in input_ids:
         node = nodes[id]
-        node.x, node.y = columns[0], y
+        node.x = columns[1] + component_width - node.width if shared else columns[0]
+        node.y = y
         y += node.height + 90
     y = critic_top + (critic_height - encoder_height) // 2
     for id in encoder_ids:
@@ -135,10 +136,14 @@ def place_components(diagram: Diagram) -> None:
     diagram.lanes.append(DiagramLane("Critic", critic_top - 40, critic_bottom - critic_top + 65))
 
     if "transition" in nodes:
-        nop_nodes = [nodes[id] for id in ("future_actions", "nop_bridge", "transition", "predictions")]
-        nop_height = max(node.height for node in nop_nodes)
+        bridge, actions = nodes["nop_bridge"], nodes["future_actions"]
+        input_height = bridge.height + 70 + actions.height
+        nop_height = max(input_height, nodes["transition"].height, nodes["predictions"].height)
         nop_top = critic_bottom + 180
-        for column, node in enumerate(nop_nodes):
+        bridge.x, bridge.y = columns[1], nop_top + (nop_height - input_height) // 2
+        actions.x, actions.y = columns[1], bridge.y + bridge.height + 70
+        for column, id in ((2, "transition"), (3, "predictions")):
+            node = nodes[id]
             node.x, node.y = columns[column], nop_top + (nop_height - node.height) // 2
         diagram.lanes.append(DiagramLane("Next-observation prediction · training", nop_top - 40, nop_height + 65))
     diagram.width = columns[-1] + component_width + 120
@@ -158,7 +163,8 @@ def assign_ports(diagram: Diagram) -> None:
         elif (edge.source, edge.target) == ("actions", "actor"):
             edge.source_port, edge.target_port = "right", "top"
         elif (edge.source, edge.target) == ("actions", "q_inputs"):
-            edge.source_port, edge.target_port = "right", "top"
+            edge.source_port = "right"
+            edge.target_port = "bottom" if "state_bridge" in nodes else "top"
         elif (edge.source, edge.target) == ("public", "q_inputs"):
             edge.source_port, edge.target_port = "bottom", "left"
         elif edge.source == "public" and target.role == "critic":
@@ -359,7 +365,10 @@ def route_connections(diagram: Diagram) -> None:
             top = min(nodes["actor"].y, nodes["actions"].y) - 70
             stops.extend([(diagram.width - 30, first[1]), (diagram.width - 30, top), (last[0], top)])
         elif (edge.source, edge.target) == ("actions", "q_inputs"):
-            rail = diagram.lanes[1].y - 25
+            # Recurrent actor-to-critic state occupies the gap between the lanes.
+            rail = max(node.y + node.height for node in diagram.nodes) + 28 if "state_bridge" in nodes else (
+                diagram.lanes[1].y - 25
+            )
             stops.extend([(diagram.width - 30, first[1]), (diagram.width - 30, rail), (last[0], rail)])
         elif edge.target == "q_features":
             returns = [connection for connection in diagram.edges if connection.target == "q_features"]

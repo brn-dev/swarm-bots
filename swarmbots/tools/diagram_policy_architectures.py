@@ -569,7 +569,7 @@ def build_diagram(row: dict[str, Any]) -> Diagram:
     )
     d.notes = [
         f"N={n}; batch B omitted. Fixed input/output widths are task-specific.",
-        "Solid = data. Dashed = causal actions / detached state. Insets show sub-component scope; crossing lines do not join.",
+        "Solid = data. Dashed = causal actions / detached state. Insets show sub-component scope.",
         "Main sketch is online networks. Frozen target copies and optimizer updates are omitted.",
     ]
     if row["model_scale"]["depth_scope"] == "encoder":

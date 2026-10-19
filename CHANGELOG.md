@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Separate NOP source features and rollout/replay actions into stacked input rows to remove crossed arrows. Fix shared PPO and recurrent TMASAC routing, check every arrow pair for intersections across the diagram gallery, and regenerate local exports.
 - Recheck encoder-heavy comparisons with fresh independent architecture, training and runtime reviews. Route optional recurrent TD3 critics through the common critic memory allocation instead of legacy per-scale widths, preserving actors, Q heads and non-temporal processing. Clarify initialization variance and experiment-record requirements.
 - Make fixed-scale depth labels count actual actor and critic encoder blocks. Move 80–90% of base actor capacity into the encoder, retain one small pre-norm residual action head, and hold actor widths/heads fixed across each budget's depth choices. Match QCX/Original MAT non-attention head capacity and report decoder attention as additional parameters. Rebalance additive recurrent memory, update parameter reports and regenerate the complete dimensioned diagram gallery, keeping fresh-run `v1` layouts without migrations.
 - Default all training examples to 1,024 parallel worlds, matching the training API. Update training guides and replay-exposure examples to use the common default of 1,024 collected transitions per one-step off-policy cycle.
