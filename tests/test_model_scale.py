@@ -371,7 +371,7 @@ def test_scaled_deepset_policies_preserve_explicit_encoder_and_head_controls(fam
     head_config = TransformerCriticConfig(
         separate_observation_action_encoders=True, action_encoder_dim=7, value_head_init_gain=0.123,
         interaction_config=DeepSetInteractionConfig(
-            gated=True, message_dim=24, gate_hidden_dim=5, normalize=False, local_update="linear",
+            gated=True, message_dim=24, gate_hidden_dim=5, gate_input_dim_cap=3, normalize=False, local_update="linear",
         ),
     )
     joint_config = JointCriticConfig(kind="deepset", encoder_config=encoder_config, head_config=head_config)
@@ -413,6 +413,7 @@ def test_scaled_deepset_policies_preserve_explicit_encoder_and_head_controls(fam
         assert all(block.features == layout.critic_head_width for block in head.deepset.interactions)
         assert all(isinstance(block, GatedDeepSetInteraction) for block in head.deepset.interactions)
         assert all(block.message_dim == 24 and block.gate_hidden_dim == 5 for block in head.deepset.interactions)
+        assert all(block.config.gate_input_dim_cap == 3 for block in head.deepset.interactions)
         assert all(isinstance(block.global_norm, nn.Identity) for block in head.deepset.interactions)
         assert all(block.local_update == "linear" for block in head.deepset.interactions)
     resolved = scaled.config.joint_critic_config
@@ -695,7 +696,12 @@ def test_q_head_gating_is_independent_of_encoder_gating(
     variant: str, head_gating: bool, scale: str | None,
 ) -> None:
     with torch.device("meta"):
-        policy = make_policy(variant, scale, use_nop=False, critic_deepset_head_gating=head_gating)
+        policy = make_policy(
+            variant, scale, use_nop=False, critic_deepset_head_gating=head_gating,
+            deepset_interaction_config={
+                "gated": variant.endswith("__gated_deepset_critic"), "gate_input_dim_cap": 7, "gate_hidden_dim": 11,
+            },
+        )
     single_q = variant.startswith("maddpg")
     encoder = policy.critic[0].encoder if single_q else policy.critic.encoder
     heads = [policy.critic[0].network] if single_q else [policy.critic.q1, policy.critic.q2]
@@ -703,6 +709,11 @@ def test_q_head_gating_is_independent_of_encoder_gating(
         assert all(isinstance(block, GatedDeepSetInteraction) is head_gating for block in head.deepset.interactions)
     encoder_gates = [module for module in encoder.modules() if isinstance(module, GatedDeepSetInteraction)]
     assert bool(encoder_gates) is variant.endswith("__gated_deepset_critic")
+    for module in policy.modules():
+        if isinstance(module, GatedDeepSetInteraction):
+            assert module.config.gate_input_dim_cap == 7
+            assert module.gate_hidden_dim == 11
+            assert module.reception_gate[0][0].in_features == 14
 
 
 @pytest.mark.parametrize("scale", [None, *list_model_scales()])

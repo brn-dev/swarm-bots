@@ -411,11 +411,17 @@ def _small_policy(
 
 @pytest.mark.parametrize("algorithm", ["maddpg", "matd3", "masac"])
 @pytest.mark.parametrize("head_gating", [False, True])
-def test_gated_deepset_presets_gate_encoder_and_toggle_q_heads(algorithm: str, head_gating: bool) -> None:
+@pytest.mark.parametrize("gate_input_dim_cap", [None, 5])
+def test_gated_deepset_presets_gate_encoder_and_toggle_q_heads(
+    algorithm: str, head_gating: bool, gate_input_dim_cap: int | None,
+) -> None:
     baseline = _small_policy(f"{algorithm}__deepset_critic")
     gated = _small_policy(
         f"{algorithm}__gated_deepset_critic",
-        policy_kwargs={"critic_deepset_head_gating": True} if head_gating else None,
+        policy_kwargs={
+            "critic_deepset_head_gating": head_gating,
+            "deepset_interaction_config": {"gated": True, "gate_input_dim_cap": gate_input_dim_cap, "gate_hidden_dim": 7},
+        },
     )
     baseline_shapes = {name: parameter.shape for name, parameter in baseline.critic.named_parameters()}
     gated_shapes = {name: parameter.shape for name, parameter in gated.critic.named_parameters()}
@@ -431,6 +437,12 @@ def test_gated_deepset_presets_gate_encoder_and_toggle_q_heads(algorithm: str, h
     config_name = "masac_policy_config" if algorithm == "masac" else "td3_policy_config"
     assert settings[config_name]["joint_critic_config"]["interaction_config"]["gated"] is True
     assert settings[config_name]["joint_critic_config"]["head_config"]["interaction_config"]["gated"] is head_gating
+    interaction = settings[config_name]["joint_critic_config"]["interaction_config"]
+    head_interaction = settings[config_name]["joint_critic_config"]["head_config"]["interaction_config"]
+    assert interaction["gate_input_dim_cap"] == gate_input_dim_cap
+    assert interaction["gate_hidden_dim"] == 7
+    assert head_interaction["gate_input_dim_cap"] == (gate_input_dim_cap if head_gating else None)
+    assert head_interaction["gate_hidden_dim"] == (7 if head_gating else None)
 
     agent_mask = torch.tensor([[True, True, False], [True, True, True]])
     values = gated.q_values(

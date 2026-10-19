@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Add an optional per-vector `gate_input_dim_cap` to gated Deep Set inputs, retaining full message outputs and independent `gate_hidden_dim` control. Default to all features and record custom caps in policy metadata and diagrams.
 - Round actor memory widths to multiples of eight while retaining matched LSTM/sLSTM budgets and custom temporal overrides. Fix component tests after the 2.5M width change and clarify depth-comparison guidance. Prevent touching arcs from crashing PNG export and other connections from overwriting SVG/PNG bridge arcs.
 - Draw permitted arrow crossings with solid bridge arcs in SVG diagrams and PNG previews, making the jump clear on dashed connections.
 - Preserve encoder processing balances across every fixed scale: actor local FF capacity stays approximately twice attention, and critic local FF capacity approximately matches communication. Vary widths with encoder depth while keeping them identical across methods in each layout, balance pooled V/Q-head interactions near 50/50 with wider local MLPs, and rematch action heads and additive recurrent budgets. Keep fresh-run layouts at `v1` without migrations.

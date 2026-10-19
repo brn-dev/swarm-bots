@@ -248,9 +248,12 @@ def deepset_communication_lines(
         "nonlinear pooled-message processing: " + chain(row, prefix + ".global_update"),
     ]
     if prefix + ".reception_gate" in row["module_parameter_counts"]:
+        gate_chain = chain(row, prefix + ".reception_gate")
+        gate_input_features = int(gate_chain.split(" → ")[0])
         content.append(ComponentBlock("Per-token reception gate", [
-            "concatenate normalized local token and shared global message",
-            "gate MLP: " + chain(row, prefix + ".reception_gate"),
+            "concatenate leading local and global features only" if gate_input_features < features + message_width
+            else "concatenate normalized local token and shared global message",
+            "gate MLP: " + gate_chain,
             "sigmoid: one independent gate per message feature",
             "multiply expanded message by token-specific gates before compression",
         ], parameters=module_count(row, prefix + ".reception_gate")))

@@ -27,6 +27,7 @@ class DeepSetInteractionConfig:
     message_dim: int | None = None
     gated: bool = False
     gate_hidden_dim: int | None = None
+    gate_input_dim_cap: int | None = None
     local_update: LocalUpdate = "residual_mlp"
     normalize: bool = True
 
@@ -39,6 +40,8 @@ class DeepSetInteractionConfig:
             raise ValueError("Deep Set interaction message dimension must be positive")
         if self.gate_hidden_dim is not None and self.gate_hidden_dim <= 0:
             raise ValueError("Deep Set interaction gate hidden dimension must be positive")
+        if self.gate_input_dim_cap is not None and self.gate_input_dim_cap <= 0:
+            raise ValueError("Deep Set interaction gate input dimension cap must be positive")
         if self.local_update not in {"residual", "linear", "mlp", "residual_mlp"}:
             raise ValueError(f"Unknown Deep Set local update: {self.local_update!r}")
 
@@ -177,10 +180,15 @@ class GatedDeepSetInteraction(DeepSetInteraction):
             linear_init=linear_init, act_fn_cls=act_fn_cls,
         )
         self.gate_hidden_dim = max(1, features // 4) if config.gate_hidden_dim is None else config.gate_hidden_dim
+        self.gate_input_dim_cap = config.gate_input_dim_cap
+        gate_input_features = (
+            features + self.message_dim if self.gate_input_dim_cap is None
+            else min(features, self.gate_input_dim_cap) + min(self.message_dim, self.gate_input_dim_cap)
+        )
         self.config = replace(self.config, gated=True, gate_hidden_dim=self.gate_hidden_dim)
         self.reception_gate = nn.Sequential(
             MLP(
-                input_dim=features + self.message_dim,
+                input_dim=gate_input_features,
                 hidden_dims=[self.gate_hidden_dim, self.message_dim], end_with_act_fn=False,
                 linear_init=linear_init, act_fn_cls=act_fn_cls,
             ),
@@ -189,7 +197,9 @@ class GatedDeepSetInteraction(DeepSetInteraction):
 
     def _broadcast_update(self, normalized: torch.Tensor, message: torch.Tensor) -> torch.Tensor:
         expanded_message = message.unsqueeze(self.set_dim).expand(*normalized.shape[:-1], self.message_dim)
-        gate = self.reception_gate(torch.cat((normalized, expanded_message), dim=-1))
+        gate = self.reception_gate(torch.cat((
+            normalized[..., :self.gate_input_dim_cap], expanded_message[..., :self.gate_input_dim_cap],
+        ), dim=-1))
         return self.message_projection(gate * expanded_message)
 
 

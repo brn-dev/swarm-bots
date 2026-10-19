@@ -843,18 +843,25 @@ def test_expanding_and_gated_deepset_diagrams_show_reception_and_complete_counts
 
 @pytest.mark.integration
 @pytest.mark.usefixtures("single_thread")
-def test_q_head_gating_ablation_diagrams_show_gates_and_complete_counts() -> None:
+@pytest.mark.parametrize("gate_input_dim_cap", [None, 64])
+def test_q_head_gating_ablation_diagrams_show_gates_and_complete_counts(gate_input_dim_cap: int | None) -> None:
     report = inspect_variants(
         "SwarmBots-WallEasy-v0",
         tuple(f"{algorithm}__gated_deepset_critic" for algorithm in ("maddpg", "matd3", "masac")),
-        model_scale="2.5M", policy_kwargs={"critic_deepset_head_gating": True},
+        model_scale="2.5M", policy_kwargs={
+            "critic_deepset_head_gating": True,
+            "deepset_interaction_config": {"gated": True, "gate_input_dim_cap": gate_input_dim_cap},
+        },
     )
     assert not report["errors"]
     for row in report["policies"]:
         diagram = build_diagram(row)
         for node in diagram.nodes:
-            if node.id.startswith("head"):
+            if node.id.startswith("head") or node.id == "critic_encoder":
                 assert "Per-token reception gate" in node.lines
+                assert ("concatenate leading local and global features only" in node.lines) is (
+                    gate_input_dim_cap is not None
+                )
         assert_connections_and_labels_leave_components_unobstructed(diagram)
         assert sum(node.parameters or 0 for node in diagram.nodes) == row["trainable"]
         assert ElementTree.fromstring(svg_diagram(diagram)).tag.endswith("svg")

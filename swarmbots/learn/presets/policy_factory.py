@@ -527,6 +527,7 @@ def _make_base_policy(
         interaction_config=replace(
             interaction_config, gated=critic_deepset_head_gating,
             gate_hidden_dim=interaction_config.gate_hidden_dim if critic_deepset_head_gating else None,
+            gate_input_dim_cap=interaction_config.gate_input_dim_cap if critic_deepset_head_gating else None,
         ),
         independent_encoders=False if critic_independent_encoders is None else critic_independent_encoders,
         local_projection_hidden_dims=[dec_d_model],

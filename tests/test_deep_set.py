@@ -1,5 +1,5 @@
 from collections.abc import Iterator
-from dataclasses import asdict
+from dataclasses import asdict, replace
 
 import pytest
 import torch
@@ -190,9 +190,9 @@ def test_unknown_pooling_mode_is_rejected(use_mask):
 @pytest.mark.parametrize("local_update", ["residual", "linear", "mlp", "residual_mlp"])
 @pytest.mark.parametrize("pool_mode", ["mean", "sum", "max"])
 @pytest.mark.parametrize("set_dim", [1, 2, -2])
-@pytest.mark.parametrize("gated", [False, True])
+@pytest.mark.parametrize("gated,gate_input_dim_cap", [(False, None), (True, None), (True, 3)])
 def test_iterative_features_ignore_padding_and_are_equivariant(
-    local_update: str, pool_mode: str, set_dim: int, gated: bool,
+    local_update: str, pool_mode: str, set_dim: int, gated: bool, gate_input_dim_cap: int | None,
 ) -> None:
     torch.manual_seed(12)
     critic = DeepSetCritic(
@@ -200,7 +200,7 @@ def test_iterative_features_ignore_padding_and_are_equivariant(
         local_projection_hidden_dims=[8], value_regressor_hidden_dims=[5],
         context_in_elements=True, context_after_pool=True, set_dim=set_dim, pool_mode=pool_mode,
         interaction_config=DeepSetInteractionConfig(
-            num_layers=3, hidden_dims=(6,), local_update=local_update, gated=gated,
+            num_layers=3, hidden_dims=(6,), local_update=local_update, gated=gated, gate_input_dim_cap=gate_input_dim_cap,
         ),
     )
     local = torch.randn(2, 4, 3)
@@ -296,11 +296,11 @@ def test_one_block_locally_interprets_the_current_global_message() -> None:
     torch.testing.assert_close(changed.grad[0, 1], torch.tensor([1.0]))
 
 
-@pytest.mark.parametrize("gated", [False, True])
-def test_iterative_critic_compiles_without_graph_breaks(gated: bool) -> None:
+@pytest.mark.parametrize("gated,gate_input_dim_cap", [(False, None), (True, None), (True, 3)])
+def test_iterative_critic_compiles_without_graph_breaks(gated: bool, gate_input_dim_cap: int | None) -> None:
     critic = DeepSetCritic(
         num_local_features=3, local_projection_hidden_dims=[8], value_regressor_hidden_dims=[4],
-        interaction_config=DeepSetInteractionConfig(gated=gated),
+        interaction_config=DeepSetInteractionConfig(gated=gated, gate_input_dim_cap=gate_input_dim_cap),
     )
     compiled = torch.compile(critic.forward_with_latents, backend="eager", fullgraph=True)
     local = torch.randn(2, 3, 3)
@@ -311,6 +311,7 @@ def test_iterative_critic_compiles_without_graph_breaks(gated: bool) -> None:
 @pytest.mark.parametrize("kwargs", [
     {"num_layers": 0}, {"num_layers": -1}, {"hidden_dims": (0,)}, {"local_update": "unknown"},
     {"message_dim": 0}, {"message_dim": -1}, {"gate_hidden_dim": 0}, {"gate_hidden_dim": -1},
+    {"gate_input_dim_cap": 0}, {"gate_input_dim_cap": -1},
 ])
 def test_invalid_interaction_configuration_is_rejected(kwargs: dict) -> None:
     with pytest.raises(ValueError):
@@ -338,6 +339,87 @@ def test_message_and_local_widths_resolve_independently(gated: bool) -> None:
         assert block.reception_gate[0][0].out_features == 7
         assert asdict(block.config)["gate_hidden_dim"] == 7
     assert critic.encode_elements(torch.randn(2, 5, 3)).shape == (2, 5, 16)
+
+
+@pytest.mark.parametrize("features,message_dim,cap,input_width", [
+    (4, 9, None, 13), (4, 9, 2, 4), (4, 9, 6, 10), (9, 4, 6, 10), (4, 9, 20, 13),
+])
+@pytest.mark.parametrize("hidden_dim", [None, 7])
+def test_gate_input_cap_and_hidden_width_resolve_independently(
+    features: int, message_dim: int, cap: int | None, input_width: int, hidden_dim: int | None,
+) -> None:
+    block = GatedDeepSetInteraction(
+        features, config=DeepSetInteractionConfig(
+            message_dim=message_dim, gate_input_dim_cap=cap, gate_hidden_dim=hidden_dim,
+        ),
+        set_dim=1, pool_mode="mean", linear_init=init_linear_orthogonal, act_fn_cls=nn.GELU,
+    )
+    assert block.reception_gate[0][0].in_features == input_width
+    assert block.gate_hidden_dim == (max(1, features // 4) if hidden_dim is None else hidden_dim)
+    assert block.reception_gate[0][-1].out_features == message_dim
+    assert asdict(block.config)["gate_input_dim_cap"] == cap
+    assert block(torch.randn(2, 3, features)).shape == (2, 3, features)
+
+
+def test_gate_cap_limits_conditioning_but_preserves_all_message_features_and_gradients() -> None:
+    block = GatedDeepSetInteraction(
+        4, config=DeepSetInteractionConfig(message_dim=5, gate_input_dim_cap=2, gate_hidden_dim=3),
+        set_dim=1, pool_mode="mean", linear_init=init_linear_orthogonal, act_fn_cls=nn.Identity,
+    )
+    with torch.no_grad():
+        for module in block.reception_gate.modules():
+            if isinstance(module, nn.Linear):
+                module.weight.fill_(0.1)
+                module.bias.zero_()
+        block.message_projection.weight.fill_(0.2)
+    local = torch.ones(2, 3, 4, requires_grad=True)
+    message = torch.ones(2, 5, requires_grad=True)
+    received_gates: list[torch.Tensor] = []
+    handle = block.reception_gate.register_forward_hook(
+        lambda _module, _inputs, output: received_gates.append(output),
+    )
+    baseline = block._broadcast_update(local, message)
+    changed_local = local.detach().clone()
+    changed_local[..., 2:] += 3
+    unchanged_update = block._broadcast_update(changed_local, message)
+    changed_message = message.detach().clone()
+    changed_message[..., 2:] += 3
+    changed_update = block._broadcast_update(local, changed_message)
+    handle.remove()
+
+    assert received_gates[0].shape == (2, 3, 5)
+    torch.testing.assert_close(received_gates[0], received_gates[1])
+    torch.testing.assert_close(received_gates[0], received_gates[2])
+    torch.testing.assert_close(baseline, unchanged_update)
+    assert (changed_update > baseline).all()
+    local_gate_gradient, message_gate_gradient = torch.autograd.grad(
+        received_gates[0].sum(), (local, message), retain_graph=True,
+    )
+    assert (local_gate_gradient[..., :2] > 0).all()
+    assert (message_gate_gradient[..., :2] > 0).all()
+    assert (local_gate_gradient[..., 2:] == 0).all()
+    assert (message_gate_gradient[..., 2:] == 0).all()
+    baseline.sum().backward()
+    assert (message.grad[..., 2:] > 0).all()
+
+
+def test_gate_cap_above_both_widths_matches_full_input() -> None:
+    config = DeepSetInteractionConfig(message_dim=7, gate_hidden_dim=3)
+    blocks = [
+        GatedDeepSetInteraction(
+            4, config=replace(config, gate_input_dim_cap=cap),
+            set_dim=1, pool_mode="mean", linear_init=init_linear_orthogonal, act_fn_cls=nn.GELU,
+        )
+        for cap in (None, 10)
+    ]
+    blocks[1].load_state_dict(blocks[0].state_dict())
+    elements = torch.randn(2, 3, 4, requires_grad=True)
+    full, capped = (block(elements) for block in blocks)
+    torch.testing.assert_close(full, capped, rtol=0, atol=0)
+    torch.testing.assert_close(
+        torch.autograd.grad(full.sum(), elements)[0], torch.autograd.grad(capped.sum(), elements)[0],
+        rtol=0, atol=0,
+    )
 
 
 @pytest.mark.parametrize("features", [128, 256, 384])
