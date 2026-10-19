@@ -22,7 +22,7 @@ from swarmbots.tools.inspect_policy_parameters import (
 )
 from swarmbots.learn import list_model_scales, list_variants
 from swarmbots.learn.presets.model_scale import SCALE_LAYOUTS, normalize_model_scale
-from swarmbots.tools.policy_diagram_layout import DiagramLane, EdgeLabel, edge_points, layout_diagram
+from swarmbots.tools.policy_diagram_layout import DiagramLane, EdgeLabel, connection_paths, layout_diagram
 
 ROOT = Path.cwd()
 COLORS = {
@@ -514,6 +514,7 @@ def add_actor_state_bridge(d: Diagram, row: dict[str, Any]) -> None:
     for node in d.nodes:
         if node.id in {"critic_encoder", "critic_encoder2"}:
             d.edge("state_bridge", node.id, "append to critic inputs", "state")
+    d.notes.append("The action-to-critic arrow jumps over the actor-state connection; no junction.")
 
 
 def build_diagram(row: dict[str, Any]) -> Diagram:
@@ -1003,20 +1004,32 @@ def svg_diagram(d: Diagram) -> str:
         f'<text x="22" y="74" font-size="13">{esc(d.role_summary)}</text>',
         '<g font-family="Arial, sans-serif" fill="#182538">',
     ]
-    nodes = {node.id: node for node in d.nodes}
     for lane in d.lanes:
         bits.extend([
             f'<rect x="35" y="{lane.y}" width="{d.width - 70}" height="{lane.height}" rx="12" fill="#f5f7fb" stroke="#e0e6ef"/>',
             f'<text x="50" y="{lane.y + 23}" font-size="14" font-weight="700" fill="#526176">{esc(lane.title)}</text>',
         ])
-    for edge in d.edges:
-        points = edge_points(edge, nodes)
-        coords = " ".join(f"{x:g},{y:g}" for x, y in points)
+    connections = connection_paths(d)
+    for connection in connections:
+        edge = connection.edge
+        coords = " ".join(f"{x:g},{y:g}" for x, y in connection.points)
         dash = ' stroke-dasharray="6 4"' if edge.kind != "data" else ""
         bits.append(f'<polyline points="{coords}" fill="none" stroke="#fafbfe" stroke-width="5"{dash}/>')
         bits.append(
             f'<polyline points="{coords}" fill="none" stroke="#6b7280" stroke-width="1.7" marker-end="url(#arrow)"{dash}/>'
         )
+    # Paint bridges after every path so other jumping connections cannot overwrite them.
+    for connection in connections:
+        for arc in connection.bridges:
+            arc_coords = " ".join(f"{x:g},{y:g}" for x, y in arc)
+            bits.append(
+                f'<polyline points="{arc_coords}" fill="none" stroke="#fafbfe" stroke-width="6" stroke-linejoin="round"/>'
+            )
+            bits.append(
+                f'<polyline points="{arc_coords}" fill="none" stroke="#6b7280" stroke-width="1.7" stroke-linejoin="round"/>'
+            )
+    for connection in connections:
+        edge = connection.edge
         if edge.label_box:
             box = edge.label_box
             bits.append(
@@ -1091,14 +1104,14 @@ def png_preview(d: Diagram, path: Path) -> None:
         font=font(13),
     )
     draw.text((22, 58), d.role_summary, fill="#182538", font=font(13))
-    nodes = {node.id: node for node in d.nodes}
     for lane in d.lanes:
         draw.rounded_rectangle(
             (35, lane.y, d.width - 35, lane.y + lane.height), radius=12, fill="#f5f7fb", outline="#e0e6ef",
         )
         draw.text((50, lane.y + 9), lane.title, fill="#526176", font=font(14, bold=True))
-    for edge in d.edges:
-        points = edge_points(edge, nodes)
+    connections = connection_paths(d)
+    for connection_path in connections:
+        edge, points = connection_path.edge, connection_path.points
         connection(points, "#fafbfe", 6, dashed=edge.kind != "data")
         connection(points, "#6b7280", 2, dashed=edge.kind != "data")
         endx, endy = points[-1]
@@ -1114,6 +1127,12 @@ def png_preview(d: Diagram, path: Path) -> None:
             ],
             fill="#6b7280",
         )
+    for connection_path in connections:
+        for arc in connection_path.bridges:
+            connection(arc, "#fafbfe", 6, dashed=False)
+            connection(arc, "#6b7280", 2, dashed=False)
+    for connection_path in connections:
+        edge = connection_path.edge
         if edge.label_box:
             box = edge.label_box
             draw.rounded_rectangle(

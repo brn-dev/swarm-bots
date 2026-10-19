@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import heapq
+import math
 import textwrap
 from collections import defaultdict
 from dataclasses import dataclass
@@ -72,6 +73,45 @@ def edge_points(edge: Edge, nodes: dict[str, Node]) -> list[Point]:
         *edge.via,
         port(nodes[edge.target], edge.target_port, edge.target_offset),
     ]
+
+
+@dataclass
+class ConnectionPath:
+    edge: Edge
+    points: list[Point]
+    bridges: list[list[Point]]
+
+
+def connection_paths(diagram: Diagram) -> list[ConnectionPath]:
+    """Share crossing jumps between renderers while retaining orthogonal routing geometry."""
+    nodes = {node.id: node for node in diagram.nodes}
+    paths = [edge_points(edge, nodes) for edge in diagram.edges]
+    vertical_segments = [
+        (index, start, end)
+        for index, points in enumerate(paths) for start, end in zip(points, points[1:]) if start[0] == end[0]
+    ]
+    connections = []
+    for index, (edge, points) in enumerate(zip(diagram.edges, paths)):
+        curved_points, bridges = [points[0]], []
+        for start, end in zip(points, points[1:]):
+            if start[1] == end[1]:
+                crossings = sorted({
+                    a[0] for owner, a, b in vertical_segments
+                    if owner != index and min(start[0], end[0]) < a[0] < max(start[0], end[0])
+                    and min(a[1], b[1]) < start[1] < max(a[1], b[1])
+                }, reverse=start[0] > end[0])
+                positions = [start[0], *crossings, end[0]]
+                for previous, x, following in zip(positions, positions[1:], positions[2:]):
+                    radius = min(10, abs(x - previous) / 2, abs(following - x) / 2)
+                    angles = [math.pi * (1 - step / 16) for step in range(17)]
+                    arc = [(x + radius * math.cos(angle), start[1] - radius * math.sin(angle)) for angle in angles]
+                    if start[0] > end[0]:
+                        arc.reverse()
+                    curved_points.extend(arc)
+                    bridges.append(arc)
+            curved_points.append(end)
+        connections.append(ConnectionPath(edge, simplified(curved_points), bridges))
+    return connections
 
 
 def place_components(diagram: Diagram) -> None:
@@ -163,8 +203,7 @@ def assign_ports(diagram: Diagram) -> None:
         elif (edge.source, edge.target) == ("actions", "actor"):
             edge.source_port, edge.target_port = "right", "top"
         elif (edge.source, edge.target) == ("actions", "q_inputs"):
-            edge.source_port = "right"
-            edge.target_port = "bottom" if "state_bridge" in nodes else "top"
+            edge.source_port, edge.target_port = "right", "top"
         elif (edge.source, edge.target) == ("public", "q_inputs"):
             edge.source_port, edge.target_port = "bottom", "left"
         elif edge.source == "public" and target.role == "critic":
@@ -365,10 +404,7 @@ def route_connections(diagram: Diagram) -> None:
             top = min(nodes["actor"].y, nodes["actions"].y) - 70
             stops.extend([(diagram.width - 30, first[1]), (diagram.width - 30, top), (last[0], top)])
         elif (edge.source, edge.target) == ("actions", "q_inputs"):
-            # Recurrent actor-to-critic state occupies the gap between the lanes.
-            rail = max(node.y + node.height for node in diagram.nodes) + 28 if "state_bridge" in nodes else (
-                diagram.lanes[1].y - 25
-            )
+            rail = diagram.lanes[1].y - 25
             stops.extend([(diagram.width - 30, first[1]), (diagram.width - 30, rail), (last[0], rail)])
         elif edge.target == "q_features":
             returns = [connection for connection in diagram.edges if connection.target == "q_features"]

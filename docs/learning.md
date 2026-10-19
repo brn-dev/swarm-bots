@@ -155,13 +155,16 @@ Gated Deep Set presets gate the critic encoder and keep their Q heads ungated by
 
 `policy_kwargs` accepts shared temporal defaults through `rmat_temporal_model_cls` and `rmat_temporal_model_config`. Recurrent MAT and TD3 critics can override these independently with `rmat_critic_temporal_model_cls` and `rmat_critic_temporal_model_config`. An omitted critic override inherits the corresponding shared setting. A single class or config applies to every layer; a per-layer sequence must match that encoder's resolved depth.
 
-Fixed-scale MAT actors and critics have different depths. At `5M-2L`, the actor has one recurrent layer and the critic has two, so independent config sequences take this form:
+Fixed-scale MAT actors and critics have matching depths. At `5M-2L`, both have two recurrent layers, and independent config sequences take this form:
 
 ```python
 from swarmbots.learn.algos.r_mat.temporal_sequence_model import LSTMTemporalSequenceModelConfig
 
 policy_kwargs = {
-    "rmat_temporal_model_config": [LSTMTemporalSequenceModelConfig()],
+    "rmat_temporal_model_config": [
+        LSTMTemporalSequenceModelConfig(),
+        LSTMTemporalSequenceModelConfig(),
+    ],
     "rmat_critic_temporal_model_config": [
         LSTMTemporalSequenceModelConfig(),
         LSTMTemporalSequenceModelConfig(),

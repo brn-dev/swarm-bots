@@ -138,7 +138,7 @@ def test_five_million_two_layer_heads_use_the_approved_dimensions() -> None:
 def test_local_actor_heads_keep_agents_independent_and_all_layers_trainable(variant: str) -> None:
     policy = make_policy(variant, "2.5M", use_nop=False)
     head = _local_head(policy)
-    inputs = torch.randn(2, 3, 192, requires_grad=True)
+    inputs = torch.randn(2, 3, head.norm.normalized_shape[0], requires_grad=True)
     outputs = head(inputs)
     changed = inputs.detach().clone()
     changed[:, 1:] += 3
@@ -156,8 +156,8 @@ def test_local_actor_heads_preserve_the_residual_stream_when_updates_are_zero(va
             if isinstance(module, nn.Linear):
                 nn.init.zeros_(module.weight)
                 nn.init.zeros_(module.bias)
-    inputs = torch.randn(2, 3, 192)
-    torch.testing.assert_close(head(inputs), nn.functional.layer_norm(inputs, (192,)), rtol=0, atol=0)
+    inputs = torch.randn(2, 3, head.norm.normalized_shape[0])
+    torch.testing.assert_close(head(inputs), nn.functional.layer_norm(inputs, inputs.shape[-1:]), rtol=0, atol=0)
 
 
 def test_local_encoder_replacements_learn_without_mixing_agent_observations() -> None:

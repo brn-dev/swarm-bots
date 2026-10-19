@@ -26,20 +26,22 @@ MAT, MAPPO, SAC, TD3 and DDPG assign approximately 40% of the base main budget t
 | Pooled V/Q readouts | Projection, two Deep Set interactions, masked mean and two regression hidden layers | Each pooled V or Q head has the same architecture and widths; single critics omit the second head |
 | NOP | Common projection, transition and predictor layouts within a budget | Source adapters follow actual source-feature widths |
 
-The depth label counts encoder blocks in both actor and critic. A `2L` transformer actor has two attention/FF encoder blocks followed by its separate action head. Decentralized encoders retain the same block count and FF widths; each missing attention operation receives a local residual MLP with the same leading parameter count, approximately `4D²`. This preserves the allocation between ordinary FF processing and the processing assigned to communication, while local replacements remain independent across agents. Critic readout interactions and actor head blocks are reported separately from encoder depth. Plain PPO retains its flattened MLP baseline.
+The depth label counts encoder blocks in both actor and critic. A `2L` transformer actor has two attention/FF encoder blocks followed by its separate action head. Actor encoder FF branches have approximately twice the parameters of attention; critic encoder FF and communication branches have approximately equal counts. These ratios describe the repeated blocks, excluding embeddings, heads and additive recurrence. Widths vary between depth choices to preserve these ratios and comparable budgets; all methods retain identical actor widths and identical critic widths at a given scale and depth.
+
+Decentralized encoders retain the same block count and FF widths; each missing attention operation receives a local residual MLP with the same leading parameter count, approximately `4D²`. This preserves the allocation between ordinary FF processing and the processing assigned to communication, while local replacements remain independent across agents. Critic readout interactions and actor head blocks are reported separately from encoder depth. Plain PPO retains its flattened MLP baseline.
 
 ## Actor encoder and action-generation layouts
 
 | Layout | Actor width D | Encoder blocks | Encoder FF hidden widths | MLP head hidden width | QCX feature width | QCX FF hidden width | Original MAT FF hidden width |
 | --- | ---: | ---: | --- | ---: | ---: | ---: | ---: |
-| 2.5M | 192 | 2 | `[320,320]` | 384 | 128 | 248 | 312 |
+| 2.5M | 176 | 2 | `[360,360]` | 416 | 128 | 256 | 320 |
 | 5M-2L | 256 | 2 | `[512,512]` | 512 | 160 | 392 | 472 |
-| 5M-3L | 256 | 3 | `[320,320]` | 512 | 160 | 392 | 472 |
-| 10M-3L | 320 | 3 | `[584,584]` | 640 | 192 | 544 | 640 |
-| 10M-4L | 320 | 4 | `[408,408]` | 640 | 192 | 544 | 640 |
-| 10M-5L | 320 | 5 | `[280,280]` | 640 | 192 | 544 | 640 |
+| 5M-3L | 212 | 3 | `[424,424]` | 616 | 160 | 432 | 512 |
+| 10M-3L | 304 | 3 | `[608,608]` | 672 | 192 | 560 | 656 |
+| 10M-4L | 264 | 4 | `[536,536]` | 776 | 192 | 600 | 696 |
+| 10M-5L | 240 | 5 | `[472,472]` | 856 | 192 | 628 | 724 |
 
-Every fixed layout uses one local residual MLP head block or one autoregressive decoder block, independently of encoder depth. MAPPO uses the same local encoder blocks as MAT-DEC and decentralized off-policy actors. The 5M depth choices share 256-wide actor streams and identical heads; all 10M depth choices share 320-wide streams and identical heads. Encoder FF widths narrow as block count increases to retain the base actor budget.
+Every fixed layout uses one local residual MLP head block or one autoregressive decoder block, independently of encoder depth. MAPPO uses the same local encoder blocks as MAT-DEC and decentralized off-policy actors. Deeper layouts narrow both actor streams and encoder FF branches to retain their processing balance. Action-head hidden widths compensate for the narrower streams to preserve comparable non-attention head budgets across depths.
 
 MAT-IND, MAT-DEC, MAPPO and independent SAC/TD3/DDPG actors share a generic per-agent [residual MLP](../../swarmbots/learn/nn_components/residual_mlp.py) head. It computes `x = x + Linear2(GELU(Linear1(LayerNorm(x))))`, with a constant D-wide residual stream and a `D -> H -> D` branch, then a final LayerNorm and the action distribution/readout. There is no activation after the residual addition and no separate context or encoder-memory branch. At `5M-2L`, one `256 -> 512 -> 256` block plus final normalization uses 263,936 parameters before the action distribution. Custom-width builders retain their explicit MLP layouts unless a `ResidualMLPConfig` is supplied.
 
@@ -49,32 +51,35 @@ At `5M-2L`, QCX projects encoder queries `256 -> 160`, actions `A -> 160`, and c
 
 | Layout | Additional QCX decoder attention | Additional Original MAT decoder attention |
 | --- | ---: | ---: |
-| 2.5M | 148,480 | 132,096 |
-| 5M-2L / 5M-3L | 236,800 | 206,080 |
-| 10M-3L / 10M-4L / 10M-5L | 345,600 | 296,448 |
+| 2.5M | 144,384 | 132,096 |
+| 5M-2L | 236,800 | 206,080 |
+| 5M-3L | 222,720 | 206,080 |
+| 10M-3L | 339,456 | 296,448 |
+| 10M-4L | 324,096 | 296,448 |
+| 10M-5L | 314,880 | 296,448 |
 
 These counts include attention Q/K/V/output projections and biases at the default settings. They are already included in actual actor/main totals, rather than added to those totals again. Parameter reports and diagrams identify this additional capacity explicitly. Nominal scale budgets describe the base architecture; autoregressive comparisons match encoders and non-attention heads, rather than total actor parameters.
 
 ### Five-million encoder-depth comparison
 
-`5M-2L` and `5M-3L` use 256-wide actor features, two and three actor encoder blocks, and identical one-block action heads. All token-based actor families follow these depths, including decentralized and off-policy actors. Critic depth also increases from two to three blocks; NOP and plain PPO's shared architecture retain their budget-specific layouts.
+`5M-2L` and `5M-3L` use 256- and 212-wide actor features, respectively, with two and three actor encoder blocks and comparable one-block action-head budgets. All token-based actor families follow these widths and depths, including decentralized and off-policy actors. Critic depth also increases from two to three blocks; NOP and plain PPO's shared architecture retain their budget-specific layouts.
 
 ### Ten-million encoder-depth comparison
 
-The 10M actor and critic encoder depths are three, four and five blocks. Actor streams stay 320-wide and action heads remain identical one-block structures. Attention and local actors use the same encoder block counts. The NOP core retains three blocks at every depth. Base main counts stay comparable by adjusting encoder FF widths.
+The 10M actor and critic encoder depths are three, four and five blocks. Actor streams use widths 304, 264 and 240; critic streams use 440, 384 and 348. Attention and local actors use the same widths and encoder block counts within each layout. Action heads retain one block and comparable non-attention budgets. The NOP core retains three blocks at every depth. Base main counts and encoder processing ratios stay comparable as encoder widths and FF widths change together.
 
 ## Critic layouts
 
 | Layout | Encoder width | Blocks | Encoder FF hidden width | Each V/Q readout width |
 | --- | ---: | ---: | ---: | ---: |
-| 2.5M | 256 | 2 | 384 | 128 |
-| 5M-2L | 384 | 2 | 784 | 128 |
-| 5M-3L | 320 | 3 | 656 | 128 |
-| 10M-3L | 384 | 3 | 1416 | 192 |
-| 10M-4L | 384 | 4 | 864 | 192 |
-| 10M-5L | 384 | 5 | 536 | 192 |
+| 2.5M | 248 | 2 | 528 | 128 |
+| 5M-2L | 380 | 2 | 748 | 128 |
+| 5M-3L | 316 | 3 | 632 | 128 |
+| 10M-3L | 440 | 3 | 892 | 192 |
+| 10M-4L | 384 | 4 | 784 | 192 |
+| 10M-5L | 348 | 5 | 700 | 192 |
 
-Each pooled V and Q readout has the same feature widths, two interaction blocks and two regression hidden layers. Twin critics add a second ordinary head to the shared encoder. Single V and DDPG critics have fewer parameters by approximately one Q head; their remaining components are not enlarged to compensate. Observation/action conditioning can cause small encoder-count differences. Original MAT retains token-wise value prediction and pooling, with a separately sized value MLP matching one ordinary head. On WallEasy, critic-role counts match within 1% after accounting for the extra twin-Q head.
+Each pooled V and Q readout has the same feature widths, two interaction blocks and two regression hidden layers. Within each readout interaction, the local hidden width is twice the feature width: 256 for a 128-wide head and 384 for a 192-wide head. Expanded messages retain width `5D/4`. This gives approximately equal local and global parameter counts, excluding normalization and optional gates. Twin critics add a second ordinary head to the shared encoder. Single V and DDPG critics have fewer parameters by approximately one Q head; their remaining components are not enlarged to compensate. Observation/action conditioning can cause small encoder-count differences. Original MAT retains token-wise value prediction and pooling, with a separately sized value MLP matching one ordinary head. On WallEasy, critic-role counts match within 1% after accounting for the extra twin-Q head.
 
 Pooled V/Q heads expose Deep Set message width, local updates, gates and normalization. Shared critic encoders expose message width and gates through the interaction config, while the surrounding encoder config owns LayerNorm and local FF processing; the nested communication module omits duplicate normalization and uses a residual update. Explicit nested off-policy encoder/head configs retain these structural controls; fixed scales choose their standard feature widths and block counts. Low-level flattened MLP critics also use the same per-head width for single and twin configurations. Independent twin encoders duplicate capacity without resizing either encoder.
 
@@ -86,16 +91,16 @@ Recurrent MAT adds memory to both actor and critic encoders. Default recurrent T
 
 | Layout | MAT actor LSTM memory | TMASAC LSTM memory | TMASAC sLSTM memory |
 | --- | ---: | ---: | ---: |
-| 2.5M | 192 | 137 | 224 |
-| 5M-2L | 208 | 166 | 264 |
-| 5M-3L | 160 | 130 | 208 |
+| 2.5M | 176 | 136 | 224 |
+| 5M-2L | 208 | 168 | 264 |
+| 5M-3L | 168 | 136 | 224 |
 | 10M-3L | 280 | 184 | 288 |
-| 10M-4L | 232 | 156 | 248 |
-| 10M-5L | 204 | 140 | 216 |
+| 10M-4L | 248 | 160 | 256 |
+| 10M-5L | 216 | 144 | 232 |
 
-TMASAC uses narrower dense LSTM memory than headwise sLSTM memory to match complete main counts within 0.5% on WallEasy. Temporal projections and detached critic-state adapters follow the actual memory width. Per-layer temporal specifications follow encoder depth; fixed actor and critic depths agree, while custom layouts can select different depths.
+TMASAC uses narrower dense LSTM memory than headwise sLSTM memory to match complete main counts within 0.5% on WallEasy. Memory widths use multiples of eight rather than single-unit tuning. Temporal projections and detached critic-state adapters follow the actual memory width. Per-layer temporal specifications follow encoder depth; fixed actor and critic depths agree, while custom layouts can select different depths.
 
-The optional recurrent TD3 critic uses the same per-layer memory width as recurrent MAT's critic: 192/256/212/256/220/196 across the six layouts. Enabling it adds memory to the unchanged critic backbone and retains the ordinary Q heads. Different recurrence placements remain complete-method comparisons; their total added capacity need not be identical.
+The optional recurrent TD3 critic uses the same per-layer memory width as recurrent MAT's critic: 192/256/208/256/220/196 across the six layouts. Enabling it adds memory to the unchanged critic backbone and retains the ordinary Q heads. Different recurrence placements remain complete-method comparisons; their total added capacity need not be identical.
 
 ## Comparability limits
 
@@ -166,7 +171,7 @@ Independent MLP heads and QCX share pre-norm residual processing, but QCX applie
 
 Plain PPO uses joint-agent likelihood ratios and KL, whereas MAT/MAPPO clip per-agent ratios. Identical clipping ranges and KL targets therefore do not imply identical effective trust regions or adaptive learning-rate signals. Plain PPO is a complete architecture/objective baseline.
 
-Depth choices reallocate a fixed budget from FF processing to additional interaction blocks. Actor width and action heads stay fixed within each budget tier; the 5M critic layouts also change encoder width from 384 to 320. These are matched-budget encoder-depth comparisons, not pure depth ablations; report the measured attention/MLP proportions with any depth result. QCX and Original MAT retain the same additional decoder-attention allowance across the depths of a budget tier.
+Depth choices use narrower actor and critic streams with more encoder blocks, preserving the repeated blocks' FF/communication parameter ratios and comparable main budgets. Action-head hidden widths compensate for the narrower actor streams. These are matched-budget encoder-depth comparisons, not pure depth ablations. QCX decoder attention decreases with actor width because its memory projections consume encoder features; Original MAT's decoder-attention allowance stays constant within each budget tier.
 
 TMASAC/TMATD3 use centralized attention actors. Compare their decentralized `*_dec` controls against MASAC/MATD3 to isolate critic communication; comparing the primary centralized variants also changes actor communication. The detached actor-state critic bridge adds both capacity and input information, so canonical recurrent off-policy presets are not actor-only recurrence ablations.
 

@@ -20,6 +20,7 @@ from swarmbots.tools.diagram_policy_architectures import (
     build_diagram,
     configuration,
     mermaid_diagram,
+    png_preview,
     svg_diagram,
     dot_diagram,
     generate,
@@ -27,7 +28,7 @@ from swarmbots.tools.diagram_policy_architectures import (
 )
 from swarmbots.learn import list_variants
 from swarmbots.learn.presets.model_scale import DEFAULT_MODEL_SCALE, SCALE_LAYOUTS
-from swarmbots.tools.policy_diagram_layout import crosses_bounds, edge_points, layout_diagram, node_bounds
+from swarmbots.tools.policy_diagram_layout import connection_paths, crosses_bounds, edge_points, layout_diagram, node_bounds
 from swarmbots.tools.inspect_policy_parameters import inspect_variants
 
 PolicyRow = Callable[[str, str], dict[str, Any]]
@@ -377,7 +378,16 @@ def test_repeated_operations_are_scoped_separately_from_projections_and_readouts
 def test_connections_and_labels_leave_components_unobstructed(row: dict[str, Any]) -> None:
     diagram = build_diagram(row)
     assert_connections_and_labels_leave_components_unobstructed(diagram)
-    assert_connection_pairs_do_not_intersect(diagram, combinations(diagram.edges, 2))
+    nodes = {node.id: node for node in diagram.nodes}
+    allowed_crossing = None
+    if "state_bridge" in nodes:
+        action_edge = next(edge for edge in diagram.edges if (edge.source, edge.target) == ("actions", "q_inputs"))
+        state_edge = next(
+            edge for edge in diagram.edges if (edge.source, edge.target) == ("state_bridge", "critic_encoder")
+        )
+        allowed_crossing = (action_edge, state_edge)
+        assert max(y for _, y in edge_points(action_edge, nodes)) <= nodes["q_inputs"].y
+    assert_connection_pairs_do_not_intersect(diagram, combinations(diagram.edges, 2), allowed_crossing=allowed_crossing)
 
 
 @pytest.mark.integration
@@ -428,17 +438,34 @@ def assert_joint_critic_inputs_do_not_intersect_outputs(diagram: Diagram) -> Non
     assert_connection_pairs_do_not_intersect(diagram, product(inputs, outputs))
 
 
-def assert_connection_pairs_do_not_intersect(diagram: Diagram, pairs: Iterable[tuple[Edge, Edge]]) -> None:
+def assert_connection_pairs_do_not_intersect(
+    diagram: Diagram, pairs: Iterable[tuple[Edge, Edge]], *, allowed_crossing: tuple[Edge, Edge] | None = None,
+) -> None:
     nodes = {node.id: node for node in diagram.nodes}
+    crossings: set[tuple[float, float]] = set()
     for edge, other in pairs:
         points, other_points = edge_points(edge, nodes), edge_points(other, nodes)
         for start, end in zip(points, points[1:]):
             for other_start, other_end in zip(other_points, other_points[1:]):
-                assert any(
+                if any(
                     max(min(start[axis], end[axis]), min(other_start[axis], other_end[axis]))
                     > min(max(start[axis], end[axis]), max(other_start[axis], other_end[axis]))
                     for axis in (0, 1)
-                ), (edge.source, edge.target, other.source, other.target, start, end, other_start, other_end)
+                ):
+                    continue
+                assert allowed_crossing in ((edge, other), (other, edge)), (
+                    edge.source, edge.target, other.source, other.target, start, end, other_start, other_end,
+                )
+                assert (start[1] == end[1]) != (other_start[1] == other_end[1])
+                horizontal, vertical = (
+                    ((start, end), (other_start, other_end)) if start[1] == end[1]
+                    else ((other_start, other_end), (start, end))
+                )
+                x, y = vertical[0][0], horizontal[0][1]
+                assert min(horizontal[0][0], horizontal[1][0]) < x < max(horizontal[0][0], horizontal[1][0])
+                assert min(vertical[0][1], vertical[1][1]) < y < max(vertical[0][1], vertical[1][1])
+                crossings.add((x, y))
+    assert len(crossings) <= 1
 
 
 @pytest.mark.parametrize("vertical", [False, True])
@@ -458,6 +485,121 @@ def test_connection_labels_find_clear_space_near_segment_ends(vertical: bool) ->
     assert not any(label.overlaps(box) for box in obstacles)
     assert canvas.x <= label.x and label.x + label.width <= canvas.x + canvas.width
     assert canvas.y <= label.y and label.y + label.height <= canvas.y + canvas.height
+
+
+def _crossing_diagram(
+    crossing_xs: tuple[int, ...] = (260,), *, reverse_arrow: bool = False, reverse_order: bool = False,
+) -> Diagram:
+    horizontal = Edge("right", "left", kind="causal", source_port="left", target_port="right") if reverse_arrow else (
+        Edge("left", "right", kind="causal")
+    )
+    verticals = []
+    for index, x in enumerate(crossing_xs, start=1):
+        offset = index / (len(crossing_xs) + 1)
+        port_x = 210 + 100 * offset
+        verticals.append(Edge(
+            "top", "bottom", kind="state", source_port="bottom", target_port="top",
+            source_offset=offset, target_offset=offset,
+            via=[(port_x, 200), (x, 200), (x, 380), (port_x, 380)] if x != port_x else [],
+        ))
+    return Diagram(
+        "crossing", "test", {}, width=560, height=560,
+        role_parameters={"actor": 0, "critic": 0, "shared_encoder": 0},
+        nodes=[
+            Node("left", "Left", [], "input", x=20, y=240, width=100),
+            Node("right", "Right", [], "output", x=400, y=240, width=100),
+            Node("top", "Top", [], "input", x=210, y=100, width=100),
+            Node("bottom", "Bottom", [], "output", x=210, y=400, width=100),
+        ],
+        edges=[*verticals, horizontal] if reverse_order else [horizontal, *verticals],
+    )
+
+
+@pytest.mark.parametrize("reverse_arrow", [False, True])
+@pytest.mark.parametrize("reverse_order", [False, True])
+@pytest.mark.parametrize("crossing_xs", [(260,), (255, 265)])
+def test_crossed_dashed_arrows_show_a_solid_jump_in_both_renderers(
+    tmp_path: Path, reverse_arrow: bool, reverse_order: bool, crossing_xs: tuple[int, ...],
+) -> None:
+    from PIL import Image
+
+    diagram = _crossing_diagram(crossing_xs, reverse_arrow=reverse_arrow, reverse_order=reverse_order)
+    horizontal = next(edge for edge in diagram.edges if edge.kind == "causal")
+    nodes = {node.id: node for node in diagram.nodes}
+    rendered = connection_paths(diagram)
+    jumping, = [connection for connection in rendered if connection.bridges]
+    assert jumping.edge is horizontal
+    assert jumping.points[0] == edge_points(horizontal, nodes)[0]
+    assert jumping.points[-1] == edge_points(horizontal, nodes)[-1]
+    assert all(start != end for start, end in zip(jumping.points, jumping.points[1:]))
+
+    root = ElementTree.fromstring(svg_diagram(diagram))
+    solid_bridges = [
+        line for line in root.findall(".//{*}polyline")
+        if line.get("stroke") == "#6b7280" and line.get("stroke-dasharray") is None
+    ]
+    assert len(solid_bridges) == len(crossing_xs)
+    for bridge, x in zip(solid_bridges, reversed(crossing_xs) if reverse_arrow else crossing_xs, strict=True):
+        points = [tuple(map(float, point.split(","))) for point in bridge.get("points").split()]
+        assert min(px for px, _ in points) < x < max(px for px, _ in points)
+        assert min(y for _, y in points) < 281
+
+    output = tmp_path / "crossing.png"
+    png_preview(diagram, output)
+    with Image.open(output) as preview:
+        ink = (107, 114, 128)
+        for x in crossing_xs:
+            for side in (-1, 1):
+                assert any(
+                    preview.getpixel((x + side * dx, 281 - dy)) == ink
+                    for dx in range(1, 5) for dy in range(1, 13)
+                )
+                assert preview.getpixel((x + side * 2, 281)) != ink
+
+
+@pytest.mark.parametrize("reverse_order", [False, True])
+def test_jumping_connections_do_not_paint_over_other_bridges(tmp_path: Path, reverse_order: bool) -> None:
+    from PIL import Image
+
+    diagram = _crossing_diagram()
+    diagram.width = 760
+    vertical = diagram.edges[1]
+    vertical.kind = "data"
+    vertical.via = [(260, 330), (350, 330), (350, 380), (260, 380)]
+    diagram.nodes.extend([
+        Node("extra_top", "Top", [], "input", x=600, y=100, width=100),
+        Node("extra_bottom", "Bottom", [], "output", x=600, y=400, width=100),
+    ])
+    diagram.edges.append(Edge(
+        "extra_top", "extra_bottom", kind="state", source_port="bottom", target_port="top",
+        via=[(650, 210), (310, 210), (310, 385), (650, 385)],
+    ))
+    if reverse_order:
+        diagram.edges.reverse()
+    assert sum(bool(connection.bridges) for connection in connection_paths(diagram)) >= 2
+
+    root = ElementTree.fromstring(svg_diagram(diagram))
+    lines = root.findall(".//{*}polyline")
+    path_positions = [index for index, line in enumerate(lines) if line.get("marker-end")]
+    bridge_positions = [index for index, line in enumerate(lines) if line.get("stroke-linejoin") == "round"]
+    assert max(path_positions) < min(bridge_positions)
+
+    output = tmp_path / "multiple-jumps.png"
+    png_preview(diagram, output)
+    with Image.open(output) as preview:
+        assert preview.getpixel((260, 271)) == (107, 114, 128)
+        assert preview.getpixel((260, 273)) == (250, 251, 254)
+        assert preview.getpixel((260, 277)) == (107, 114, 128)
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("row", policy_cases("tmasac__lstm", "tmasac__slstm"), indirect=True)
+def test_recurrent_action_crossing_has_exactly_one_jump(row: dict[str, Any]) -> None:
+    connections = connection_paths(build_diagram(row))
+    assert [
+        (connection.edge.source, connection.edge.target, len(connection.bridges))
+        for connection in connections if connection.bridges
+    ] == [("actions", "q_inputs", 1)]
 
 
 @pytest.mark.integration

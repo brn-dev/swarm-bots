@@ -19,6 +19,7 @@ from swarmbots.learn.algos.sac.masac_policy import MASACPolicy, MASACPolicyConfi
 from swarmbots.learn.algos.td3.recurrent_td3_policy import RecurrentTD3PolicyConfig
 from swarmbots.learn.algos.td3.td3_policy import TD3Policy, TD3PolicyConfig
 from swarmbots.learn.algos.xlstm.slstm import SLSTMTemporalSequenceModel, SLSTMTemporalSequenceModelConfig
+from swarmbots.learn.algos.xlstm.mlstm import MLSTMTemporalSequenceModel, MLSTMTemporalSequenceModelConfig
 from swarmbots.learn.hybrid_action_space import HybridActionSpace
 from swarmbots.learn.obs_indices import ObsIndices
 from swarmbots.learn.parameter_counts import count_policy_parameters
@@ -29,7 +30,9 @@ from swarmbots.learn.presets.model_scale import (
 )
 from swarmbots.learn.training import _add_ppo_nop, _variant_options
 from swarmbots.learn.serialization_utils import serialize_dataclass
-from swarmbots.learn.nn_components.deep_set import DeepSet, DeepSetInteractionConfig, GatedDeepSetInteraction
+from swarmbots.learn.nn_components.deep_set import (
+    DeepSet, DeepSetInteraction, DeepSetInteractionConfig, GatedDeepSetInteraction,
+)
 from swarmbots.learn.nn_components.residual_mlp import ResidualMLP
 
 
@@ -235,24 +238,64 @@ def test_depth_choices_preserve_parameter_and_auxiliary_budgets(
 
 @pytest.mark.parametrize("variant", [name for name in list_variants(include_hidden=True) if name != "ppo"])
 @pytest.mark.parametrize("scales", [("5M-2L", "5M-3L"), ("10M-3L", "10M-4L", "10M-5L")])
-def test_depth_choices_preserve_actor_width_and_output_head(variant: str, scales: tuple[str, ...]) -> None:
+def test_depth_choices_preserve_action_head_budget(variant: str, scales: tuple[str, ...]) -> None:
     with torch.device("meta"):
         policies = [getattr(policy, "policy", policy) for policy in (
             make_policy(variant, scale, use_nop=False) for scale in scales
         )]
     encoders = [policy.actor_encoder if hasattr(policy, "actor_encoder") else policy.actor.encoder for policy in policies]
-    widths = [encoder.norm.normalized_shape[0] for encoder in encoders]
-    assert len(set(widths)) == 1
-    for policy in policies[1:]:
-        if hasattr(policies[0].config, "decoder_config"):
-            assert policy.config.decoder_config == policies[0].config.decoder_config
-        elif variant == "mappo__deepset_critic":
-            assert policy.config.actor_config == policies[0].config.actor_config
-        elif hasattr(policy.config, "actor_head_config"):
-            assert policy.config.actor_head_config == policies[0].config.actor_head_config
-        else:
-            assert policy.config.residual_mlp_config == policies[0].config.residual_mlp_config
-            assert policy.config.actor_head_hidden_dims == policies[0].config.actor_head_hidden_dims
+    head_counts = []
+    for policy, encoder in zip(policies, encoders, strict=True):
+        counts = count_policy_parameters(policy)
+        head_counts.append(
+            counts["roles"]["actor"]["trainable"]
+            - sum(parameter.numel() for parameter in encoder.parameters())
+            - counts["processing"]["actor_decoder_attention_parameters"]
+        )
+    assert max(head_counts) / min(head_counts) < 1.015
+
+
+@pytest.mark.parametrize("scale", list_model_scales())
+@pytest.mark.parametrize("variant", [
+    "mat_ind", "mat_dec", "mat_ind__lstm", "mappo__deepset_critic", "tmasac", "masac__deepset_critic",
+])
+def test_encoders_preserve_local_and_communication_parameter_balance(variant: str, scale: str) -> None:
+    with torch.device("meta"):
+        policy = make_policy(variant, scale, use_nop=False)
+    actor_encoder = policy.actor_encoder if hasattr(policy, "actor_encoder") else policy.actor.encoder
+    critic_encoder = policy.critic_encoder if hasattr(policy, "critic_encoder") else policy.critic.encoder
+    if not hasattr(critic_encoder, "layers"):
+        critic_encoder = critic_encoder.network
+
+    def parameter_count(module: nn.Module) -> int:
+        return sum(parameter.numel() for parameter in module.parameters())
+
+    for encoder, target in ((actor_encoder, 2.0), (critic_encoder, 1.0)):
+        for layer in encoder.layers:
+            communication = layer.self_attn
+            if communication is None:
+                communication = layer.interaction if hasattr(layer, "interaction") else layer.attention_replacement
+            local_parameters = parameter_count(layer.feedforward)
+            assert local_parameters / parameter_count(communication) == pytest.approx(target, rel=0.08)
+
+
+@pytest.mark.parametrize("scale", list_model_scales())
+@pytest.mark.parametrize("variant", ["mat_ind", "mappo__deepset_critic", "tmasac", "masac__deepset_critic"])
+def test_critic_head_interactions_balance_local_and_global_parameters(variant: str, scale: str) -> None:
+    with torch.device("meta"):
+        policy = make_policy(variant, scale, use_nop=False)
+    interactions = [module for module in policy.critic.modules() if isinstance(module, DeepSetInteraction)]
+    interactions = [module for module in interactions if not isinstance(module.local_encoder, nn.Identity)]
+    assert interactions
+    for interaction in interactions:
+        global_parameters = sum(
+            parameter.numel()
+            for module in (interaction.message_encoder, interaction.global_update, interaction.message_projection)
+            for parameter in module.parameters()
+        )
+        local_parameters = sum(parameter.numel() for parameter in interaction.local_encoder.parameters())
+        assert global_parameters / local_parameters == pytest.approx(1.0, rel=0.02)
+        assert interaction.message_dim > interaction.features
 
 
 @pytest.mark.parametrize("variant", ["mat_ind", "mat_qcx", "mat_orig", "tmasac", "tmatd3"])
@@ -678,6 +721,43 @@ def test_eight_head_slstm_produces_actions_at_every_scale(scale: str | None) -> 
     assert all(layer.temporal_model.config.num_heads == 8 for layer in policy.actor_encoder.layers)
 
 
+@pytest.mark.parametrize("scale", list_model_scales())
+def test_fixed_tmasac_supports_mlstm_temporal_overrides(scale: str) -> None:
+    policy = make_policy(
+        "tmasac__lstm", scale, use_nop=False,
+        rmat_temporal_model_cls=MLSTMTemporalSequenceModel,
+        rmat_temporal_model_config=MLSTMTemporalSequenceModelConfig(),
+        tmasac_actor_state_critic_input_config=None,
+    )
+    with torch.no_grad():
+        actions, log_probs = policy.action_log_prob(
+            local_obs=torch.randn(2, 3, 5), global_obs=torch.randn(2, 2),
+            agent_mask=torch.ones(2, 3, dtype=torch.bool), deterministic=True,
+        )
+    assert actions.shape == (2, 3, 3) and log_probs.shape == (2, 3)
+    assert torch.isfinite(actions).all() and torch.isfinite(log_probs).all()
+
+
+@pytest.mark.parametrize("variant", ["mat_ind__lstm", "mat_qcx__lstm"])
+def test_recurrent_mat_supports_eight_head_slstm_actor_with_independent_lstm_critic(variant: str) -> None:
+    policy = make_policy(
+        variant, "10M-4L", use_nop=False,
+        rmat_temporal_model_cls=SLSTMTemporalSequenceModel,
+        rmat_temporal_model_config=SLSTMTemporalSequenceModelConfig(num_heads=8),
+        rmat_critic_temporal_model_cls=LSTMTemporalSequenceModel,
+        rmat_critic_temporal_model_config=LSTMTemporalSequenceModelConfig(),
+        rmat_experimental_compile_lstm=False,
+    )
+    with torch.no_grad():
+        actions, log_probs, values, _ = policy.forward_with_temporal_state(
+            local_obs=torch.randn(2, 3, 5), global_obs=torch.randn(2, 2),
+            hidden_local_vars=torch.randn(2, 3, 2), hidden_global_vars=torch.randn(2, 1),
+            agent_mask=torch.ones(2, 3, dtype=torch.bool), deterministic=True,
+        )
+    assert actions.shape == (2, 3, 3)
+    assert torch.isfinite(actions).all() and torch.isfinite(log_probs).all() and torch.isfinite(values).all()
+
+
 @pytest.mark.parametrize("scale", [None, *list_model_scales()])
 @pytest.mark.parametrize("variant", ["mat_ind__lstm", "mat_qcx__lstm"])
 @pytest.mark.parametrize("specification", ["classes", "configs", "both"])
@@ -875,6 +955,15 @@ def test_actor_roles_and_encoder_head_depth_are_controlled_across_methods(
     for variant in variants:
         policy = policies[variant]
         encoder = policy.actor_encoder if hasattr(policy, "actor_encoder") else policy.actor.encoder
+        assert encoder.norm.normalized_shape == policies["mat_ind"].actor_encoder.norm.normalized_shape
+        if hasattr(policy, "critic_encoder"):
+            critic_encoder = policy.critic_encoder
+        else:
+            critic = policy.critic[0] if isinstance(policy.critic, nn.ModuleList) else policy.critic
+            critic_encoder = critic.encoder
+            if not hasattr(critic_encoder, "layers"):
+                critic_encoder = critic_encoder.network
+        assert critic_encoder.norm.normalized_shape == policies["mat_ind"].critic_encoder.norm.normalized_shape
         encoder_count = sum(parameter.numel() for parameter in encoder.parameters())
         base_actor_count = (
             counts[variant]["roles"]["actor"]["trainable"]
